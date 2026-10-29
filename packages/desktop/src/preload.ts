@@ -14,13 +14,14 @@ contextBridge.exposeInMainWorld('yaacWindow', {
   openExternal: (url: string) => ipcRenderer.send('window:open-external', url),
   // Show the shell's Servers page (the SPA's Servers button and server badge).
   showServers: () => ipcRenderer.send('window:show-servers'),
-  // Follow the forwards the app bound at a fallback local port: called with
-  // the current table, then on every change. Returns an unsubscribe.
-  onForwardRemaps: (cb: (remaps: unknown) => void) => {
-    const listener = (_e: unknown, remaps: unknown): void => cb(remaps)
-    ipcRenderer.on('forward:remaps', listener)
-    void ipcRenderer.invoke('forward:remaps').then(cb)
-    return () => { ipcRenderer.removeListener('forward:remaps', listener) }
+  // Follow where the app routes workspace hostnames (null when it does
+  // not): called with the current port, then on every change. Returns an
+  // unsubscribe.
+  onHostsPort: (cb: (port: unknown) => void) => {
+    const listener = (_e: unknown, port: unknown): void => cb(port)
+    ipcRenderer.on('forward:hosts-port', listener)
+    void ipcRenderer.invoke('forward:hosts-port').then(cb)
+    return () => { ipcRenderer.removeListener('forward:hosts-port', listener) }
   },
   // A hidden preview pane's lifecycle, for the <webview> guest with this
   // webContents id (preview-lifecycle.ts).

@@ -31,7 +31,13 @@ Declaring also allocates: if two workspaces of a project both ask for 3000,
 the k8s driver gives the second the next free port. It cannot see what else
 holds a port on the user's machine, so a clash there is the client's to
 resolve (see "Taken ports"). Under `containerless` the mapping is the
-identity, since the config's port is the port the dev server binds.
+identity at a port allocated for that workspace, which its dev server is
+told to bind (docs/workspace-hostnames.md).
+
+Every workspace port also has a hostname, `<port>.<id8>.localhost`. The
+server routes these names on its own listener for its own machine, and
+`yaac forward` and the desktop app route them for a server elsewhere
+(docs/workspace-hostnames.md).
 
 **A client binds.** `startForward` in `@yaac/shared` listens on the host port
 and, per accepted TCP connection, opens a WebSocket to
@@ -41,8 +47,10 @@ to a `dialPort` stream into the workspace (`attachPortTunnel`); under k8s
 that is a `tcp` stream through the pod's streamd (docs/stream-relay.md).
 
 `id` must be an exact workspace id (missing is a 400). The k8s driver dials
-only a port the workspace declared or its detector surfaced, never yaac's
-in-pod infra range (`isInfraPort`), which configs cannot declare either.
+only a port the workspace forwards (config-declared, or forwarded from the
+webapp), so a listener the detector merely suggests stays unreachable until
+the user forwards it, and so does yaac's in-pod infra range (`isInfraPort`),
+which configs cannot declare.
 
 One WebSocket per TCP connection, as kubectl does, keeps the protocol
 trivial: each binary frame is the next bytes of that one connection. The
@@ -77,8 +85,9 @@ from the server's `/events` snapshots (`startEventsMonitor` and
 
 - **`yaac forward [workspace-id]`**, for headless machines. It follows
   every running workspace's ports, or the named one's.
-  `--port <container[:host]>` names ports directly (one the server does
-  not know, or a different local port), and
+  `--port <container[:host]>` names ports directly (some of the offered
+  ones, or at a different local port; the workspace must still forward
+  each), and
   `--bind <address>` listens somewhere other than loopback, for a
   forwarder that is not on the user's machine.
 - **The desktop app**, resident in the tray. The stream that drives its
@@ -91,16 +100,23 @@ from the server's `/events` snapshots (`startEventsMonitor` and
 
 ## Where a preview is offered
 
-Only the desktop and iPhone apps offer a preview: each holds the forward on
-its own loopback and shows the page in its own web view. A browser cannot
-hold a listener, and a link to the server's host reaches nothing there, so
-the webapp shows a browser no preview and no port links. (Even with a
-listener on the server host, a browser would refuse a plain-http link to a
-`*.ts.net` name, which is on the browsers' HSTS preload list.) The iPhone
-app tells the webapp it can preview by giving its bridge an `openPreview`
-call (`windowApi()` in `packages/frontend/src/components/WindowControls.tsx`).
+The desktop and iPhone apps offer a preview of every forwarded port: each
+reaches the port on its own loopback and shows the page in its own web view.
+A browser cannot hold a listener, so it gets a preview only when the page
+came from a server on its own machine, which routes the workspace hostnames
+on its own port. That preview opens in a new tab
+(docs/workspace-hostnames.md). A browser on a remote origin gets no preview
+and no port links. (Even with a listener on the server host, a browser would
+refuse a plain-http link to a `*.ts.net` name, which is on the browsers'
+HSTS preload list.) The iPhone app tells the webapp it can preview by giving
+its bridge an `openPreview` call (`windowApi()` in
+`packages/frontend/src/components/WindowControls.tsx`).
 
-The desktop app previews each forwarded port in its own pane, so a
+The desktop app's preview pane loads the port's workspace hostname, so
+previews of different workspaces keep their cookies apart and a preview
+reaches the workspace whatever else holds that port number on this machine.
+Until the app knows where the names are routed, the pane waits. It
+previews each forwarded port in its own pane, so a
 workspace can show several side by side. A pane is a `preview:<port>`
 layout target (`#lib/preview`), so the saved layout remembers which port
 each pane shows across reloads and server switches. A pane whose port is
@@ -112,21 +128,19 @@ the pane's own window closes the pane.
 
 Another process on the client's machine may already hold an offered host
 port: a local kind cluster's server on 8790, say, while a remote workspace
-offers 8790 too. A preview of that port would then quietly open the other
-process. So the desktop app and `yaac forward` bind the next free port above
-it instead (`fallback` in `createForwardSet`), skipping ports other forwards
-in the set ask for, and keep that port for as long as the server offers the
-forward, so the URL does not move under an open page.
+offers 8790 too. A tool pointed at that port would then quietly reach the
+other process. So the desktop app and `yaac forward` bind the next free port
+above it instead (`fallback` in `createForwardSet`), skipping ports other
+forwards in the set ask for, and keep that port for as long as the server
+offers the forward, so the URL does not move under an open page.
 
 The server never learns of the move; the client reports it:
 
 - **`yaac forward`** prints the port it bound, with `(port N is in use
   here)`. A port named with `--port` is bound as named or not at all.
-- **The desktop app** keeps a remap table (`DesktopForwarder.remaps`) and
-  pushes it to the webapp over IPC (`onForwardRemaps` on the preload
-  bridge). The webapp's `useLocalPorts` swaps each remapped forward's host
-  port for the local one, so the preview pane reaches the workspace and
-  its port labels read `:3000→:3001`.
+- **The desktop app** writes the move to its log. Its preview pane loads
+  the workspace hostname, which names the workspace rather than a port
+  number here, so a move never sends the preview to the wrong process.
 - **The iPhone app** binds a free port when the offered one is taken and
   loads its preview from whichever it bound. Nothing else on the phone can
   use that port (see ios/README.md "Previews"), so the webapp never needs
@@ -148,7 +162,7 @@ and iPhone previews work against a remote containerless server too.
 Only a listener the containerless port sweep found can be dialled, at the
 address it is bound to. The sweep covers only the workspace's process tree,
 which acts as an allowlist, with the sensitive-port denylist on top
-(docs/containerless-driver.md "Ports"). The k8s driver also dials a declared
+(docs/containerless-driver.md "Ports"). The k8s driver also dials a forwarded
 port with nothing listening yet, so a forward survives a dev server restart;
 that is fine in a sandboxed pod but not on the user's own machine.
 

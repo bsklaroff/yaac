@@ -97,8 +97,9 @@ streamd's concurrent-stream limit).
 
 An agent can still start a plausible-looking listener and hope for a click.
 That is why `persist: true` is a separate, clearly labeled action, and why
-a forward reaches nothing until a client forwards it
-(docs/port-forward-tunnel.md). Forwarding is by port number, not process,
+a suggested port is reachable by no path, neither a client's tunnel nor a
+workspace hostname, until it is forwarded: `dialPort` refuses any port the
+workspace does not forward (docs/port-forward-tunnel.md). Forwarding is by port number, not process,
 so the agent could rebind the port between detection and forward; this is
 accepted as low severity, and config-declared forwards behave the same way.
 

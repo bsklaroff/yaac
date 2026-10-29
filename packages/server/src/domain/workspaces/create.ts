@@ -1361,13 +1361,18 @@ export async function createWorkspace(
     }
   }
 
-  // Decide each forwarded port's host port before launch, since the status
-  // bar shows them. Only a declaration: clients hold the listeners
-  // (docs/port-forward-tunnel.md).
-  const forwardedPorts = runtime.declareForwards(workspaceId, config.portForward ?? [])
-  for (const { containerPort, hostPort } of forwardedPorts) {
+  // Decide each forwarded port before launch, since the status bar shows
+  // them. Only a declaration: clients hold the listeners
+  // (docs/port-forward-tunnel.md). `YAAC_PORT_<n>` tells the dev server
+  // which port to bind for config entry `n`: its own under k8s, and one
+  // allocated for this workspace under containerless, where workspaces
+  // share the host's ports (docs/workspace-hostnames.md).
+  const portForward = config.portForward ?? []
+  const forwardedPorts = await runtime.declareForwards(workspaceId, portForward)
+  forwardedPorts.forEach(({ containerPort, hostPort }, i) => {
+    env.push(`YAAC_PORT_${portForward[i].containerPort}=${containerPort}`)
     emit(`Offering host port ${hostPort} -> container port ${containerPort}`, options)
-  }
+  })
 
   // Inputs for yaac-workspace-init.
   env.push(`YAAC_TOOL=${tool}`)

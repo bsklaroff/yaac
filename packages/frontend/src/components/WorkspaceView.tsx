@@ -6,7 +6,8 @@ import { layoutOf, useUiStore } from '#lib/store'
 import { WorkspaceTerminal } from '#components/WorkspaceTerminal'
 import { ErrorBoundary } from '#components/ErrorBoundary'
 import { WorkspacePreview } from '#components/WorkspacePreview'
-import { useLocalPorts } from '#lib/useLocalPorts'
+import { useHostsPort } from '#lib/useHostsPort'
+import { workspaceHostUrl } from '@yaac/shared/workspace-hosts'
 import { WorkspaceChat } from '#components/WorkspaceChat'
 import { TuiTranscriptSearch } from '#components/TuiTranscriptSearch'
 import { WorkspaceFiles } from '#components/WorkspaceFiles'
@@ -147,14 +148,16 @@ export function WorkspaceView({
   const gitAuthFailures = (workspace && snapshot?.gitAuthFailures?.[workspace.projectId]) || []
   const project = (snapshot?.projects ?? []).find((p) => p.id === workspace?.projectId)
 
-  // Forwarded ports open in a preview: a pane in the desktop app, or a
-  // native view in the iPhone app. Each forwards the port to its own
-  // loopback; a browser cannot, so it offers no preview
-  // (docs/port-forward-tunnel.md).
+  // Forwarded ports open in a preview: a pane in the desktop app, at the
+  // port's workspace hostname, or a native view in the iPhone app, which
+  // forwards the port to its own loopback (docs/port-forward-tunnel.md). A
+  // browser gets a preview only where this machine routes the hostnames,
+  // and opens it in a new tab (docs/workspace-hostnames.md).
   const embedPreview = isElectron()
   const nativePreview = windowApi()?.openPreview
-  const localPorts = useLocalPorts(sid, workspace?.forwardedPorts ?? [])
-  const previewPorts = embedPreview || nativePreview ? localPorts : []
+  const hostsPort = useHostsPort()
+  const forwarded = workspace?.forwardedPorts ?? []
+  const previewPorts = embedPreview || nativePreview || hostsPort !== null ? forwarded : []
   // Under containerless a forwarded port is the dev server's own host port,
   // so there is no forward to stop.
   const canUnforward = snapshot?.driver !== 'containerless'
@@ -311,13 +314,28 @@ export function WorkspaceView({
   }
   /** Open (or focus) the preview of one forwarded port. */
   const showPreview = (id: string, containerPort: number): void => {
-    if (!nativePreview) {
+    if (embedPreview) {
       openPreview(id, containerPort)
       return
     }
     const port = previewPorts.find((p) => p.containerPort === containerPort)
-    if (port) nativePreview(id, port)
+    if (!port) return
+    if (nativePreview) nativePreview(id, port)
+    else if (hostsPort !== null) window.open(workspaceHostUrl(id, containerPort, hostsPort), '_blank', 'noopener')
   }
+  /**
+   * The URL a preview pane loads: its port's workspace hostname, which keeps
+   * each workspace's cookies apart and reaches the workspace whatever else
+   * holds that port number here (docs/workspace-hostnames.md). Undefined,
+   * so the pane waits, while the port is not forwarded or nothing routes
+   * the names yet (the desktop app's router for a remote server is still
+   * binding). Only the selected workspace's ports are known here; a hidden
+   * pane keeps its page, since only a new URL reloads it.
+   */
+  const previewPaneUrl = (id: string, containerPort: number): string | undefined =>
+    id === sid && hostsPort !== null && previewPorts.some((p) => p.containerPort === containerPort)
+      ? workspaceHostUrl(id, containerPort, hostsPort)
+      : undefined
   const closePane = (target: string): void => {
     if (!sid) return
     if (!isFileTarget(target)) {
@@ -510,9 +528,7 @@ export function WorkspaceView({
                 />
               ) : previewPorts.length > 0 && (
                 // The one control in the bar whose width varies. Below lg it
-                // drops its word, as its neighbors do, so the port shows; a
-                // remap still too long for the bar truncates, and the title
-                // names it in full.
+                // drops its word, as its neighbors do, so the port shows.
                 <span className="group flex min-w-0 items-center rounded transition hover:bg-surface-2">
                   <button
                     onClick={() => showPreview(workspace.workspaceId, previewPorts[0].containerPort)}
@@ -706,11 +722,7 @@ export function WorkspaceView({
                   <WorkspacePreview
                     workspaceId={id}
                     containerPort={previewTargetPort(target)}
-                    // previewPorts are the selected workspace's; a hidden
-                    // preview keeps its page, since only a new port reloads.
-                    hostPort={id === sid
-                      ? previewPorts.find((p) => p.containerPort === previewTargetPort(target))?.hostPort
-                      : undefined}
+                    url={previewPaneUrl(id, previewTargetPort(target))}
                     visible={onScreen}
                     onStopForwarding={canUnforward ? (p) => stopForwarding(id, p) : undefined}
                   />

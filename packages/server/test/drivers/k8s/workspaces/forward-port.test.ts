@@ -12,7 +12,6 @@ vi.mock('#drivers/k8s/workspaces/port-forwarders', () => ({
 
 vi.mock('#drivers/k8s/workspaces/port-detector', () => ({
   getUnforwardedPorts: vi.fn().mockReturnValue([]),
-  isDetectedPort: vi.fn().mockReturnValue(false),
 }))
 
 
@@ -25,7 +24,7 @@ vi.mock('#drivers/k8s/substrate/stream-relay', () => ({
 import type * as podsModule from '#drivers/k8s/substrate/pods'
 import { listWorkspacePods, type PodInfo } from '#drivers/k8s/substrate/pods'
 import { addWorkspaceForwarder, getWorkspacePorts } from '#drivers/k8s/workspaces/port-forwarders'
-import { getUnforwardedPorts, isDetectedPort } from '#drivers/k8s/workspaces/port-detector'
+import { getUnforwardedPorts } from '#drivers/k8s/workspaces/port-detector'
 import { relayDial } from '#drivers/k8s/substrate/stream-relay'
 import { dialWorkspacePort, forwardWorkspacePort } from '#drivers/k8s/workspaces/forward-port'
 
@@ -33,7 +32,6 @@ const mockList = vi.mocked(listWorkspacePods)
 const mockAdd = vi.mocked(addWorkspaceForwarder)
 const mockDetected = vi.mocked(getUnforwardedPorts)
 const mockDeclared = vi.mocked(getWorkspacePorts)
-const mockIsDetected = vi.mocked(isDetectedPort)
 const mockRelayDial = vi.mocked(relayDial)
 
 const target = { workspaceId: 'sess-1', projectId: 'proj', jobName: 'yaac-proj-sess-1' }
@@ -60,7 +58,6 @@ beforeEach(() => {
   mockAdd.mockResolvedValue({ containerPort: 8090, hostPort: 8090 })
   mockList.mockResolvedValue([])
   mockDeclared.mockReturnValue([])
-  mockIsDetected.mockReturnValue(false)
 })
 
 describe('forwardWorkspacePort', () => {
@@ -122,14 +119,14 @@ describe('dialWorkspacePort', () => {
     expect(mockRelayDial).toHaveBeenCalledWith('sess-1', { kind: 'tcp', port: 5173 })
   })
 
-  it('dials a detected listener nobody declared, but never an arbitrary port', async () => {
-    mockRelayDial.mockResolvedValue({ destroy: vi.fn() } as never)
-    mockIsDetected.mockImplementation((_id, port) => port === 3000)
-    await expect(dialWorkspacePort('sess-1', 3000)).resolves.toBeDefined()
-
-    // yaac's relay port is refused, so the tunnel cannot reach the pod's
-    // control endpoints.
-    await expect(dialWorkspacePort('sess-1', 10260)).rejects.toThrow(/neither declared nor a detected/)
-    expect(mockRelayDial).toHaveBeenCalledTimes(1)
+  it('refuses any port not forwarded: a surfaced listener nobody forwarded, and yaac\'s own', async () => {
+    // A listener the detector only suggests stays unreachable until the user
+    // forwards it, by tunnel and by workspace hostname alike, and the relay
+    // port never is, so the pod's control endpoints stay out of reach.
+    mockDeclared.mockReturnValue([{ containerPort: 5173, hostPort: 5173 }])
+    mockDetected.mockReturnValue([3000])
+    await expect(dialWorkspacePort('sess-1', 3000)).rejects.toThrow(/not forwarded/)
+    await expect(dialWorkspacePort('sess-1', 10260)).rejects.toThrow(/not forwarded/)
+    expect(mockRelayDial).not.toHaveBeenCalled()
   })
 })

@@ -1,8 +1,9 @@
 import { api } from '#commands/api'
-import { resolveServerTarget } from '@yaac/shared/server-api'
+import { isLoopbackOrigin, resolveServerTarget } from '@yaac/shared/server-api'
 import { startEventsMonitor } from '@yaac/shared/events'
 import { createForwardSet, serverNeedsForwarder, snapshotForwards } from '@yaac/shared/port-tunnel-set'
 import type { DriverKind } from '@yaac/shared/types'
+import { WORKSPACE_HOSTS_PORT } from '@yaac/shared/workspace-hosts'
 import type { ForwardSpec } from '@yaac/shared/port-tunnel'
 
 /**
@@ -16,12 +17,18 @@ import type { ForwardSpec } from '@yaac/shared/port-tunnel'
  * The server's offer is followed over `/events`, so ports that come and go
  * while this runs are picked up. An offered port something else here holds
  * is forwarded at the next free port, and the line announcing it says so.
+ *
+ * Against a server on another machine it also routes the workspace
+ * hostnames (`<port>.<id8>.localhost`) at `WORKSPACE_HOSTS_PORT`, which a
+ * server on this machine routes on its own port
+ * (docs/workspace-hostnames.md).
  */
 
 export interface ForwardOptions {
   /**
    * `container` or `container:host`, repeatable. Replaces what the server
-   * offers: for a port it does not know about, or a different local port.
+   * offers: only some of its ports, or at a different local port. The
+   * workspace must still forward each one, or its connections are refused.
    */
   port?: string[]
   /** What to bind. Loopback unless you mean to serve the network. */
@@ -67,7 +74,8 @@ async function refuseLocalContainerlessForward(baseUrl: string, bind: string | u
     'this server runs the containerless driver on this machine, where a '
     + 'workspace\'s processes bind the host ports themselves — the ports are '
     + 'already reachable here and there is nothing to tunnel.\n'
-    + '    `yaac workspace list` shows what each one is listening on; from '
+    + '    `yaac workspace list` shows what each one is listening on, at its '
+    + 'workspace hostname; from '
     + 'another machine `yaac forward` tunnels them, and `--bind <addr>` '
     + 'publishes them on another interface of this one '
     + '(docs/port-forward-tunnel.md).',
@@ -94,14 +102,22 @@ export async function forward(
     ? options.port.map((raw) => parsePortOption(raw, workspaceId ?? ''))
     : undefined
 
+  const bindHost = options.bind ?? '127.0.0.1'
   const set = createForwardSet(
     { baseUrl: target.baseUrl },
     {
-      bindHost: options.bind,
+      bindHost,
       // A port named with --port is bound as named or not at all.
       fallback: !explicit,
+      ...(isLoopbackOrigin(target.baseUrl) ? {} : { hostsPort: WORKSPACE_HOSTS_PORT }),
+      onHostsBound: (port) => {
+        console.log(`routing workspace hostnames at ${bindHost}:${port} (http://<port>.<workspace>.localhost:${port}/)`)
+      },
+      onHostsError: (message) => {
+        console.error(`cannot route workspace hostnames: ${message}`)
+      },
       onChange: (f, state) => {
-        const arrow = `${options.bind ?? '127.0.0.1'}:${f.localPort} -> ${f.session.slice(0, 8)}:${f.containerPort}`
+        const arrow = `${bindHost}:${f.localPort} -> ${f.session.slice(0, 8)}:${f.containerPort}`
         const moved = f.localPort === f.hostPort ? '' : ` (port ${f.hostPort} is in use here)`
         console.log(state === 'up' ? `forwarding ${arrow}${moved}` : `dropped ${arrow}`)
       },

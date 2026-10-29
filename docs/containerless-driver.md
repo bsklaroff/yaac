@@ -418,9 +418,12 @@ liveness client would hand the panes the host's ssh-agent.
 
 Here the workspace's processes bind host ports directly, so a listener is
 already reachable on this machine and the mapping is the identity. Ports
-appear as `forwardedPorts`; `unforwardedPorts` is always empty, there is no
-"forward this" action, and a config's `portForward` entry is just the port
-the dev server binds.
+appear as `forwardedPorts`; `unforwardedPorts` is always empty, and there is
+no "forward this" action. Workspaces share the host's ports, so each
+`portForward` entry gets a port of its own per workspace, passed to the dev
+server as `YAAC_PORT_<n>`, and every port has a `<port>.<id8>.localhost`
+name that the server routes on its own port
+(docs/workspace-hostnames.md).
 
 Detection polls each running workspace's process tree every 3 seconds
 (`lsof` over the tmux server's descendants), with the same sensitive-port

@@ -12,6 +12,8 @@ describe('isAllowedPreviewUrl', () => {
     expect(isAllowedPreviewUrl('http://127.0.0.1:3000/some/path?q=1')).toBe(true)
     expect(isAllowedPreviewUrl('https://localhost:8443/')).toBe(true)
     expect(isAllowedPreviewUrl('http://[::1]:3000/')).toBe(true)
+    // A workspace hostname, which Chromium resolves to loopback itself.
+    expect(isAllowedPreviewUrl('http://3000.ab12cd34.localhost:8787/')).toBe(true)
   })
 
   it('rejects every host but loopback, the attached server included', () => {

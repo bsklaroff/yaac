@@ -1,5 +1,6 @@
 import {
   startForward,
+  startHostRouter,
   type ForwardEvents,
   type ForwardHandle,
   type ForwardSpec,
@@ -59,17 +60,50 @@ export interface ForwardSetEvents extends ForwardEvents {
    * retries this one.
    */
   onBindError?: (spec: ForwardSpec, message: string) => void
+  /** The hostname router (`hostsPort`) is up, at this local port. */
+  onHostsBound?: (port: number) => void
+  /** The hostname router could not bind; the next reconcile retries. */
+  onHostsError?: (message: string) => void
 }
 
 export interface ForwardSet {
   /** Start new specs and stop missing ones, leaving the rest untouched. */
   reconcile(specs: ForwardSpec[]): Promise<void>
   live(): LiveForward[]
+  /** The port the hostname router holds, once it is up. */
+  hostsPort(): number | undefined
   close(): void
 }
 
 function isAddressInUse(err: unknown): boolean {
   return (err as { code?: unknown } | null)?.code === 'EADDRINUSE'
+}
+
+/**
+ * Bind with `start(port)`, or with `fallback` the first port above `port`
+ * that is free here and not in `reserved`.
+ */
+async function bindFrom(
+  port: number,
+  fallback: boolean,
+  reserved: Set<number>,
+  start: (port: number) => Promise<ForwardHandle>,
+): Promise<ForwardHandle> {
+  try {
+    return await start(port)
+  } catch (err) {
+    if (!fallback || !isAddressInUse(err)) throw err
+  }
+  const last = Math.min(65535, port + FALLBACK_PORT_SPAN)
+  for (let next = port + 1; next <= last; next++) {
+    if (reserved.has(next)) continue
+    try {
+      return await start(next)
+    } catch (err) {
+      if (!isAddressInUse(err)) throw err
+    }
+  }
+  throw new Error(`no free port in ${String(port)}–${String(last)}`)
 }
 
 /**
@@ -79,13 +113,19 @@ function isAddressInUse(err: unknown): boolean {
  * (docs/port-forward-tunnel.md), so a clash is only found here. A forward
  * keeps its fallback port until the server stops offering it, so its URL
  * stays put even after the original port frees up.
+ *
+ * With `hostsPort`, the set also binds one hostname router there (moving
+ * up like a forward with `fallback`), which routes the workspace hostnames
+ * of the forwards last asked for (docs/workspace-hostnames.md).
  */
 export function createForwardSet(
   target: TunnelTarget,
-  opts: { bindHost?: string; fallback?: boolean } & ForwardSetEvents = {},
+  opts: { bindHost?: string; fallback?: boolean; hostsPort?: number } & ForwardSetEvents = {},
 ): ForwardSet {
-  const { onChange, onBindError, fallback = false, ...forwardOpts } = opts
+  const { onChange, onBindError, onHostsBound, onHostsError, fallback = false, hostsPort, ...forwardOpts } = opts
   const live = new Map<string, { forward: LiveForward; handle: ForwardHandle }>()
+  let offered: ForwardSpec[] = []
+  let router: ForwardHandle | null = null
   let closed = false
   // One reconcile at a time, or two would both bind a newly offered port.
   let running: Promise<void> = Promise.resolve()
@@ -99,12 +139,28 @@ export function createForwardSet(
       entry.handle.close()
       onChange?.(entry.forward, 'down')
     }
+    offered = specs
     const reserved = new Set(specs.map((s) => s.hostPort))
     for (const { forward } of live.values()) reserved.add(forward.localPort)
+    if (hostsPort !== undefined && !router) {
+      try {
+        const handle = await bindFrom(hostsPort, true, reserved, (port) => startHostRouter(target, port, route, forwardOpts))
+        if (closed) {
+          handle.close()
+          return
+        }
+        router = handle
+        reserved.add(handle.hostPort)
+        onHostsBound?.(handle.hostPort)
+      } catch (err) {
+        onHostsError?.(err instanceof Error ? err.message : String(err))
+      }
+    }
     for (const [key, spec] of wanted) {
       if (live.has(key)) continue
       try {
-        const handle = await bind(spec, reserved)
+        const handle = await bindFrom(spec.hostPort, fallback, reserved, (port) =>
+          startForward(target, { ...spec, hostPort: port }, forwardOpts))
         // close() may have run while binding.
         if (closed) {
           handle.close()
@@ -120,27 +176,17 @@ export function createForwardSet(
     }
   }
 
-  /** Bind `spec.hostPort`, or with `fallback` the first free port above it. */
-  const bind = async (spec: ForwardSpec, reserved: Set<number>): Promise<ForwardHandle> => {
-    try {
-      return await startForward(target, spec, forwardOpts)
-    } catch (err) {
-      if (!fallback || !isAddressInUse(err)) throw err
-    }
-    const last = Math.min(65535, spec.hostPort + FALLBACK_PORT_SPAN)
-    for (let port = spec.hostPort + 1; port <= last; port++) {
-      if (reserved.has(port)) continue
-      try {
-        return await startForward(target, { ...spec, hostPort: port }, forwardOpts)
-      } catch (err) {
-        if (!isAddressInUse(err)) throw err
-      }
-    }
-    throw new Error(`no free port in ${String(spec.hostPort)}–${String(last)}`)
+  /** The offered forward a workspace hostname names, or none when its id
+   *  prefix names more than one workspace, as the server's router answers. */
+  const route = ({ port, idPrefix }: { port: number; idPrefix: string }): ForwardSpec | undefined => {
+    const matches = offered.filter((s) => s.session.startsWith(idPrefix))
+    if (new Set(matches.map((s) => s.session)).size !== 1) return undefined
+    return matches.find((s) => s.containerPort === port)
   }
 
   return {
     live: () => [...live.values()].map((e) => e.forward),
+    hostsPort: () => router?.hostPort,
     reconcile(specs) {
       running = running.then(() => apply(specs))
       return running
@@ -149,6 +195,8 @@ export function createForwardSet(
       closed = true
       for (const { handle } of live.values()) handle.close()
       live.clear()
+      router?.close()
+      router = null
     },
   }
 }

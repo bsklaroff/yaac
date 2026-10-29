@@ -718,7 +718,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       }
     }, 60_000)
 
-    it('refuses to tunnel onto a port the workspace neither declared nor surfaced', async () => {
+    it('refuses to tunnel onto a port the workspace does not forward', async () => {
       // 10300 is streamd, which is listening, so the refusal comes from the
       // tunnel's port check.
       const local = await freeLocalPort()

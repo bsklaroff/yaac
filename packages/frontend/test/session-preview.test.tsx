@@ -11,7 +11,7 @@ afterEach(() => {
 describe('WorkspacePreview', () => {
   it('creates a partitioned webview and shows the address', () => {
     const { container } = render(
-      <WorkspacePreview workspaceId="abc" visible containerPort={5173} hostPort={15173} />,
+      <WorkspacePreview workspaceId="abc" visible containerPort={5173} url="http://127.0.0.1:15173/" />,
     )
     const wv = container.querySelector('webview')
     expect(wv).not.toBeNull()
@@ -22,7 +22,7 @@ describe('WorkspacePreview', () => {
   })
 
   it('shows a waiting state while its port is not forwarded, with nothing to stop', async () => {
-    render(<WorkspacePreview workspaceId="abc" visible containerPort={5173} hostPort={undefined} onStopForwarding={() => {}} />)
+    render(<WorkspacePreview workspaceId="abc" visible containerPort={5173} url={undefined} onStopForwarding={() => {}} />)
     expect(screen.getByText('Waiting for the dev server on :5173…')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Preview menu' }))
     await screen.findByText('Home')
@@ -34,14 +34,14 @@ describe('WorkspacePreview', () => {
     ;(window as unknown as { yaacWindow?: unknown }).yaacWindow = {
       minimize() {}, toggleMaximize() {}, close() {}, openExternal,
     }
-    render(<WorkspacePreview workspaceId="abc" visible containerPort={5173} hostPort={15173} />)
+    render(<WorkspacePreview workspaceId="abc" visible containerPort={5173} url="http://127.0.0.1:15173/" />)
     fireEvent.click(screen.getByRole('button', { name: 'Open in browser' }))
     expect(openExternal).toHaveBeenCalledWith('http://127.0.0.1:15173/')
   })
 
   it('has an overflow menu whose actions drive the webview', async () => {
     const { container } = render(
-      <WorkspacePreview workspaceId="abc" visible containerPort={5173} hostPort={15173} />,
+      <WorkspacePreview workspaceId="abc" visible containerPort={5173} url="http://127.0.0.1:15173/" />,
     )
     const wv = container.querySelector('webview')
     const openDevTools = vi.fn()
@@ -59,7 +59,7 @@ describe('WorkspacePreview', () => {
 
   it('stops forwarding the port it shows', async () => {
     const onStopForwarding = vi.fn()
-    render(<WorkspacePreview workspaceId="abc" visible containerPort={5173} hostPort={15173} onStopForwarding={onStopForwarding} />)
+    render(<WorkspacePreview workspaceId="abc" visible containerPort={5173} url="http://127.0.0.1:15173/" onStopForwarding={onStopForwarding} />)
     fireEvent.click(screen.getByRole('button', { name: 'Preview menu' }))
     fireEvent.click(await screen.findByText('Stop forwarding :5173'))
     expect(onStopForwarding).toHaveBeenCalledWith(5173)
@@ -67,7 +67,7 @@ describe('WorkspacePreview', () => {
 
   it('constrains the webview to a device width, with a clearable pill', async () => {
     const { container } = render(
-      <WorkspacePreview workspaceId="abc" visible containerPort={5173} hostPort={15173} />,
+      <WorkspacePreview workspaceId="abc" visible containerPort={5173} url="http://127.0.0.1:15173/" />,
     )
     const host = container.querySelector('webview')?.parentElement as HTMLElement
     expect(host.style.width).toBe('100%')
@@ -99,7 +99,7 @@ describe('WorkspacePreview', () => {
       return wv
     }
     const preview = (visible: boolean): JSX.Element =>
-      <WorkspacePreview workspaceId="abc" containerPort={5173} hostPort={15173} visible={visible} />
+      <WorkspacePreview workspaceId="abc" containerPort={5173} url="http://127.0.0.1:15173/" visible={visible} />
     const advance = (ms: number): Promise<void> => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
 
     beforeEach(() => {
@@ -163,7 +163,7 @@ describe('WorkspacePreview', () => {
       const panes = (shown: number[]): JSX.Element => <>
         {[0, 1, 2, 3].map((i) => (
           <div key={i} data-pane={i}>
-            <WorkspacePreview workspaceId="abc" containerPort={5173 + i} hostPort={15173 + i} visible={shown.includes(i)} />
+            <WorkspacePreview workspaceId="abc" containerPort={5173 + i} url={`http://127.0.0.1:${15173 + i}/`} visible={shown.includes(i)} />
           </div>
         ))}
       </>

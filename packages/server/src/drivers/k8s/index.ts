@@ -121,7 +121,7 @@ export function createK8sDriver(): WorkspaceDriver {
     refreshedCredentials: () => refreshedCredentials(),
     launch: (spec) => launchWorkspace(spec),
     awaitReady: (handle) => waitForJobPodReady(handle.jobName),
-    declareForwards: (workspaceId, forwards) => declareWorkspaceForwards(workspaceId, forwards),
+    declareForwards: (workspaceId, forwards) => Promise.resolve(declareWorkspaceForwards(workspaceId, forwards)),
     dialPort: (workspaceId, containerPort) => dialWorkspacePort(workspaceId, containerPort),
 
     registerWorkspace: (reg) => registerWorkspace(reg),

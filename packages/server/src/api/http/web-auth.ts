@@ -72,6 +72,14 @@ function decodeIdentityHeader(value: string): string {
   return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
 }
 
+/** Whether `tailscale serve` forwarded the request: it sets
+ *  `X-Forwarded-For` on everything, and the identity headers for a user. */
+export function cameThroughServe(header: (name: string) => string | undefined): boolean {
+  return header('x-forwarded-for') !== undefined
+    || header('tailscale-user-login') !== undefined
+    || header('tailscale-user-name') !== undefined
+}
+
 /**
  * Who a request is from, or why that can't be determined
  * (docs/remote-hosting.md).
@@ -99,10 +107,7 @@ function identifyRequest(
   url: string,
 ): Caller | { refused: string } {
   const login = header('tailscale-user-login')
-  const proxied = header('x-forwarded-for') !== undefined
-    || login !== undefined
-    || header('tailscale-user-name') !== undefined
-  if (proxied) {
+  if (cameThroughServe(header)) {
     if (login) {
       const name = header('tailscale-user-name')
       return {

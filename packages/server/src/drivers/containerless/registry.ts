@@ -6,6 +6,7 @@ import { containerlessJobName, markerPath, containerlessStateDir } from './paths
 import type {
   AgentMode,
   AgentTool,
+  PortMapping,
   WorkspaceDeathCause,
 } from '@yaac/shared/types'
 import type { RuntimeHandle, RuntimeSnapshot, StrayUnit, TeardownTarget } from '#drivers/contract'
@@ -31,6 +32,9 @@ export interface WorkspaceMarker {
    *  key and is killed at teardown. Verified before signalling, since pids
    *  are recycled. */
   sshAgentPid?: number
+  /** The ports `declareForwards` allocated it, which its processes were
+   *  told to bind (`declareWorkspacePorts`). */
+  ports?: PortMapping[]
   /**
    * The launch's own env entries (caller's and git's) minus credentials, so
    * a restarted server can rebuild `workspaceRunEnvironment`.
@@ -89,6 +93,17 @@ export function workspaceEnv(workspaceId: string): NodeJS.ProcessEnv | undefined
 
 export function workspaceLaunchEnv(workspaceId: string): Record<string, string> | undefined {
   return entries.get(workspaceId)?.marker.launchEnv
+}
+
+export function markerPorts(workspaceId: string): PortMapping[] | undefined {
+  return entries.get(workspaceId)?.marker.ports
+}
+
+/** Every port a running workspace was allocated. */
+export function runningWorkspacePorts(): number[] {
+  return [...entries.values()]
+    .filter((e) => e.running)
+    .flatMap((e) => (e.marker.ports ?? []).map((p) => p.containerPort))
 }
 
 export function tmuxPidOf(workspaceId: string): number | undefined {

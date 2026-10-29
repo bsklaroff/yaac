@@ -6,7 +6,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 const startForward = vi.hoisted(() => vi.fn())
-vi.mock('#port-tunnel', () => ({ startForward }))
+const startHostRouter = vi.hoisted(() => vi.fn())
+vi.mock('#port-tunnel', () => ({ startForward, startHostRouter }))
 
 import { createForwardSet, serverNeedsForwarder, snapshotForwards } from '#port-tunnel-set'
 import type { ForwardSpec } from '#port-tunnel'
@@ -195,6 +196,40 @@ describe('createForwardSet', () => {
     await set.reconcile([spec('a', 3000)])
     expect(startForward).toHaveBeenCalledTimes(1)
     expect(set.live()).toEqual([])
+  })
+
+  it('binds one hostname router, past a taken port, routing to what was last offered', async () => {
+    const taken = new Set([8786])
+    let route!: (name: { port: number; idPrefix: string }) => ForwardSpec | undefined
+    const routerClose = vi.fn()
+    startHostRouter.mockImplementation((_t: unknown, port: number, resolve: typeof route) => {
+      if (taken.has(port)) return Promise.reject(inUse())
+      route = resolve
+      return Promise.resolve({ hostPort: port, close: routerClose })
+    })
+    const bound: number[] = []
+    const set = createForwardSet(TARGET, { hostsPort: 8786, onHostsBound: (p) => bound.push(p) })
+    const a = spec('ab12cd34-0000', 3000)
+    await set.reconcile([a])
+    await set.reconcile([a, spec('ffff0000-0000', 3000, 3001)])
+
+    expect(startHostRouter).toHaveBeenCalledTimes(2)
+    expect(bound).toEqual([8787])
+    expect(set.hostsPort()).toBe(8787)
+    expect(route({ port: 3000, idPrefix: 'ab12cd34' })).toEqual(a)
+    expect(route({ port: 3000, idPrefix: 'ffff0000' })?.hostPort).toBe(3001)
+    expect(route({ port: 5173, idPrefix: 'ab12cd34' })).toBeUndefined()
+    // A prefix two workspaces share names neither, whichever port it asks for.
+    await set.reconcile([a, spec('ab12cd34-1111', 5173)])
+    expect(route({ port: 3000, idPrefix: 'ab12cd34' })).toBeUndefined()
+    expect(route({ port: 5173, idPrefix: 'ab12cd34' })).toBeUndefined()
+    // A port the server stops offering stops routing with its forward.
+    await set.reconcile([])
+    expect(route({ port: 3000, idPrefix: 'ab12cd34' })).toBeUndefined()
+
+    set.close()
+    expect(routerClose).toHaveBeenCalledTimes(1)
+    expect(set.hostsPort()).toBeUndefined()
   })
 
   it('runs overlapping reconciles one at a time, so a new port is bound once', async () => {

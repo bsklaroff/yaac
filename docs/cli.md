@@ -122,7 +122,9 @@ yaac group                      Named sidebar groups of workspaces
   delete <project> <group>      Its workspaces return to the default list
 
 yaac forward [workspace-id]     Bind a workspace's forwarded ports here (all
-                                running workspaces if omitted); runs until stopped
+                                running workspaces if omitted), and route their
+                                *.localhost names for a remote server
+                                (docs/workspace-hostnames.md); runs until stopped
   -p, --port <container[:host]> Forward this port instead (repeatable)
   -b, --bind <address>          Address to bind (default 127.0.0.1)
 

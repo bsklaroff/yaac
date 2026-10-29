@@ -282,6 +282,12 @@ Things to keep in mind:
   unidentified browser can still load the app and be told why it was
   refused. `GET /whoami` returns what the server decided, and the request
   log names the tailnet user on every line.
+- **A workspace hostname never reaches the API.** A request whose `Host`
+  is `<port>.<id8>.localhost` is routed to that workspace port before any
+  of this runs, and only in a `local` install for a request that did not
+  come through serve; anything else naming one gets a 403
+  (docs/workspace-hostnames.md). Such a page is cross-site to the server,
+  so the guards below refuse its calls to the API.
 - **There is no "this server is fronted" switch to forget.** The access mode
   is recorded, not configured per start. A non-loopback name is admitted
   only if it is the install's tailnet name, and every request to such a name

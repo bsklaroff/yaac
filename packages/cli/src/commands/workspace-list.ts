@@ -1,6 +1,8 @@
 import { api, projectScope, resolveProjectId } from '#commands/api'
 import { printTable } from '#commands/table'
 import { formatDuration, formatInZone } from '@yaac/shared/schedule'
+import { isLoopbackOrigin, resolveServerTarget } from '@yaac/shared/server-api'
+import { WORKSPACE_HOSTS_PORT, workspaceHostUrl } from '@yaac/shared/workspace-hosts'
 import type { GitAuthFailure, QueuedWorkspaceEntry, StoppedWorkspacePage, WorkspaceListEntry } from '@yaac/shared/types'
 
 export interface WorkspaceListOptions {
@@ -31,11 +33,12 @@ export async function workspaceList(
   }
 
   const ids = new Set(projectId ? [projectId] : scope.projects.map((p) => p.id))
-  const [result, { groups }, queued, { timeZone }] = await Promise.all([
+  const [result, { groups }, queued, { timeZone }, target] = await Promise.all([
     api.workspace.list.$get({ query: {} }),
     api.workspace.group.list.$get({ query: {} }),
     api.workspace.queue.list.$get(),
     api.config['time-zone'].$get(),
+    resolveServerTarget(),
   ])
   const zone = timeZone ?? 'UTC'
   const workspaces = result.workspaces.filter((w) => ids.has(w.projectId))
@@ -46,6 +49,7 @@ export async function workspaceList(
     console.log(`No running workspaces${suffix}. Create one with: yaac workspace create <project>`)
   } else {
     renderRunning(workspaces, new Map(groups.map((g) => [g.groupId, g.name])), names, zone)
+    renderPorts(workspaces, target.baseUrl)
     renderBlockedHosts(workspaces)
   }
   if (scheduled.length > 0) renderScheduled(scheduled, names, zone)
@@ -85,6 +89,25 @@ function renderRunning(
       w.prompt ?? '',
     ]),
   )
+}
+
+/**
+ * Each workspace's ports at their hostnames (docs/workspace-hostnames.md).
+ * A server on this machine routes them on its own port; for one elsewhere,
+ * `yaac forward` or the desktop app routes them here.
+ */
+function renderPorts(workspaces: WorkspaceListEntry[], baseUrl: string): void {
+  const rows = workspaces.flatMap((w) => w.forwardedPorts.map((p) => ({ id: w.workspaceId, port: p.containerPort })))
+  if (rows.length === 0) return
+  const url = new URL(baseUrl)
+  const local = isLoopbackOrigin(baseUrl)
+  const routerPort = local ? Number(url.port || (url.protocol === 'https:' ? 443 : 80)) : WORKSPACE_HOSTS_PORT
+  console.log(local
+    ? 'Ports:'
+    : `Ports (while \`yaac forward\` or the desktop app runs here, at ${String(WORKSPACE_HOSTS_PORT)} `
+      + 'or the port `yaac forward` printed):')
+  for (const { id, port } of rows) console.log(`  ${id.slice(0, 8)}  ${workspaceHostUrl(id, port, routerPort)}`)
+  console.log('')
 }
 
 /** Workspaces queued to start at a time, soonest first. */

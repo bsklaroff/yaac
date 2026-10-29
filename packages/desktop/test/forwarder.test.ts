@@ -34,35 +34,26 @@ function snapshot(
   return { driver, workspaces } as unknown as ServerSnapshot
 }
 
-/**
- * A fake reconciler that records every desired set it is handed, and binds
- * each spec at the port `taken` moves it to, as the real one's fallback
- * would.
- */
+/** A fake reconciler that records every desired set it is handed. */
 function fakeSet(): {
   create: ReturnType<typeof vi.fn>
   reconciled: ForwardSpec[][]
   closes: number
   targets: string[]
-  taken: Map<number, number>
 } {
   const state = {
     create: vi.fn(),
     reconciled: [] as ForwardSpec[][],
     closes: 0,
     targets: [] as string[],
-    taken: new Map<number, number>(),
   }
   state.create.mockImplementation((target: { baseUrl: string }) => {
     state.targets.push(target.baseUrl)
-    let live: ForwardSpec[] = []
     return {
       reconcile: (specs: ForwardSpec[]) => {
         state.reconciled.push(specs)
-        live = specs
         return Promise.resolve()
       },
-      live: () => live.map((s) => ({ ...s, localPort: state.taken.get(s.hostPort) ?? s.hostPort })),
       close: () => { state.closes += 1 },
     }
   })
@@ -164,36 +155,34 @@ describe('startForwarder', () => {
     expect(set.reconciled).toHaveLength(1)
   })
 
-  it('publishes the forwards bound away from their offered port, on change only', async () => {
-    // The preview pane must load the port the app holds, not whatever else
-    // on this machine answers on the offered one.
-    set.taken.set(8790, 8791)
-    const published: unknown[] = []
+  it('routes workspace hostnames only for a remote server, and tells the page where', async () => {
+    // A server on this machine routes them on its own port.
+    const published: Array<number | null> = []
     const forwarder = startForwarder({
       resolveTarget,
       createSet: set.create as never,
-      onRemaps: (r) => published.push(r),
+      onHostsPort: (p) => published.push(p),
     })
+    forwarder.apply(snapshot([]))
+    await settle()
+    const optsOf = (i: number): { hostsPort?: number; onHostsBound: (p: number) => void } =>
+      set.create.mock.calls[i][1] as never
+    expect(optsOf(0).hostsPort).toBeUndefined()
 
-    forwarder.apply(snapshot([workspace('a', [[8790, 8790], [3000, 3000]])]))
+    resolveTarget.mockResolvedValue(OTHER)
+    forwarder.apply(snapshot([]))
     await settle()
-    forwarder.apply(snapshot([workspace('a', [[8790, 8790], [3000, 3000]])]))
-    await settle()
-    const remap = { workspaceId: 'a', containerPort: 8790, hostPort: 8790, localPort: 8791 }
-    expect(forwarder.remaps()).toEqual([remap])
-    expect(published).toEqual([[remap]])
+    expect(optsOf(1).hostsPort).toBe(8786)
+    optsOf(1).onHostsBound(8787)
+    expect(forwarder.hostsPort()).toBe(8787)
 
-    forwarder.apply(snapshot([workspace('a', [[3000, 3000]])]))
+    // A switch away, and a stop, take it back from the page.
+    resolveTarget.mockResolvedValue(LOCAL)
+    forwarder.apply(snapshot([]))
     await settle()
-    expect(published).toEqual([[remap], []])
-
-    // Stopping with remaps live clears the page's table, since a successor
-    // forwarder starting empty would never push.
-    forwarder.apply(snapshot([workspace('a', [[8790, 8790]])]))
-    await settle()
+    expect(forwarder.hostsPort()).toBeNull()
     forwarder.stop()
-    expect(forwarder.remaps()).toEqual([])
-    expect(published).toEqual([[remap], [], [remap], []])
+    expect(published).toEqual([8787, null])
   })
 
   it('lets every forward go on stop, and takes no more snapshots', async () => {
