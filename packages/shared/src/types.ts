@@ -1160,7 +1160,9 @@ export interface WorkspaceFiles {
   paths: string[]
   /** The entries of `paths` that are symlinks. */
   symlinks: Record<string, SymlinkTarget>
-  /** Ignored files, and wholly ignored folders as one `dir/` entry each. */
+  /** Ignored files, and wholly ignored folders as one `dir/` entry each.
+   *  A scratch dir holding no path of `paths` counts as a wholly ignored
+   *  folder. */
   ignored: string[]
   /** Folders holding no path of `paths`, which the list alone cannot show. */
   emptyDirs: string[]

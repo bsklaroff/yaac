@@ -196,6 +196,13 @@ the agent across a branch rename, and, when asked, lists the checkout:
   (through pinned descriptors, not following links, skipping ignored
   folders) to find ones with no listed file: `emptyDirs`, which keep a "New
   folder" visible on the next poll.
+- The server then folds in the workspace's scratch dirs (docs/project-config.md
+  "Scratch directories"): each one that holds no path of `paths` becomes one
+  `dir/` entry of `ignored`, replacing whatever `ignored` and `emptyDirs` named
+  in it. So the explorer hides the empty `target` every workspace is given
+  even in a project that neither builds with cargo nor ignores it. One that
+  holds a file git would list, or a changed one such as a tracked file a
+  scratch volume hides, stays as it is, so nothing git cares about is hidden.
 
 The listing's sections are NUL-separated, since a path can hold a newline,
 and print before the completion marker, so a run that died partway cannot
@@ -445,7 +452,8 @@ compare with the fork branch again.
   (`lib → src/lib` shows `src/lib/*` as `lib/*`), lazily, so a link to an
   ancestor does not loop. The server follows the link when a file under it
   opens. The filter searches real paths only.
-- **Ignored files** come with every listing, so the toggle refetches nothing.
+- **Ignored files**, scratch dirs among them, come with every listing, so the
+  toggle refetches nothing.
   A wholly ignored folder's children come from the `dir` route on first
   expand. The filter searches ignored files but not inside ignored folders.
 - **Create / rename / delete** use an inline input (a `/` in the name creates
