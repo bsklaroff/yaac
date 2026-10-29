@@ -15,12 +15,20 @@
 set -eu
 
 url="${2:-}"
+
+# Delete the lines sed expression $2 matches from file $1, keeping the
+# file's inode and mode. Portable where `sed -i` is not.
+strip() {
+  [ -f "$1" ] || return 0
+  sed "$2" "$1" > "$1.yaac-tmp" && cat "$1.yaac-tmp" > "$1" && rm -f "$1.yaac-tmp"
+}
+
 case "$1" in
   npm)
     # Created owned by the pod's uid, for the reason Dockerfile.default gives
     # for keeping npm's prefix out of it.
     f="$HOME/.npmrc"
-    sed -i '/^registry=http:\/\/yaac-npm-cache\./d' "$f" 2>/dev/null || true
+    strip "$f" '/^registry=http:\/\/yaac-npm-cache\./d'
     if [ -n "$url" ] && ! grep -qs '^registry=' "$f"; then
       printf 'registry=%s\n' "$url" >> "$f"
     fi
@@ -29,7 +37,7 @@ case "$1" in
     # The image's CARGO_HOME (Dockerfile.default) is group-0 writable, so
     # the pod's uid can write its config.
     f="${CARGO_HOME:-$HOME/.cargo}/config.toml"
-    sed -i '/^# yaac-crates-cache begin$/,/^# yaac-crates-cache end$/d' "$f" 2>/dev/null || true
+    strip "$f" '/^# yaac-crates-cache begin$/,/^# yaac-crates-cache end$/d'
     if [ -n "$url" ] && ! grep -qs '^\[source\.crates-io\]' "$f"; then
       mkdir -p "$(dirname "$f")"
       printf '%s\n' '# yaac-crates-cache begin' '[source.crates-io]' 'replace-with = "yaac-crates-cache"' \

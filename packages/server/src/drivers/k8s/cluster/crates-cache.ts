@@ -31,7 +31,9 @@ const NGINX_GID = 101
  * one upstream fetch.
  *
  * The index's `config.json` is answered here, pointing cargo's downloads
- * back at this cache, and names no `api`, so cargo has nowhere to publish.
+ * back at this cache, and names no `api`, so `--registry yaac-crates-cache`
+ * has nowhere to publish. (A plain `cargo publish`, like cargo's other
+ * crates.io API commands, refuses under source replacement on its own.)
  * Only GET and HEAD go out, without a client's `Authorization` or `Cookie`,
  * and over a certificate-checked connection. Accept-Encoding is dropped so
  * every client is served the one stored copy. Past `max_size`, or when the

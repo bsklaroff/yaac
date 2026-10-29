@@ -355,7 +355,8 @@ describe('launchWorkspace', () => {
     // Each keeps the workspace off one cache (no URL, no label) and leaves
     // it on the other:
     //  - the project turned it off;
-    //  - the allowlist excludes its upstream (the cache bypasses the proxy);
+    //  - the allowlist excludes one of its upstream hosts (the cache
+    //    bypasses the proxy);
     //  - a proxied secret for its upstream (the cache fetches anonymously).
     const defaults = ['github.com', 'api.anthropic.com']
     const cases: Array<[SubstrateIntent, 'npm' | 'crates', 'npm' | 'crates']> = [
@@ -363,6 +364,11 @@ describe('launchWorkspace', () => {
       [{ ...INTENT, config: { cratesCache: false } }, 'crates', 'npm'],
       [{ ...INTENT, allowlist: { hosts: [...defaults, 'registry.npmjs.org'], defaults: false } }, 'crates', 'npm'],
       [{ ...INTENT, allowlist: { hosts: [...defaults, '*.crates.io', 'crates.io'], defaults: false } }, 'npm', 'crates'],
+      // Every crates.io host, since the cache fetches the index too.
+      [{
+        ...INTENT,
+        allowlist: { hosts: [...defaults, 'registry.npmjs.org', 'crates.io', 'static.crates.io'], defaults: false },
+      }, 'crates', 'npm'],
       [{
         ...INTENT,
         proxySecretRules: { NPM_TOKEN: { hosts: ['registry.npmjs.org'], header: 'Authorization' } },

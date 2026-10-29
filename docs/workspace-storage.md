@@ -875,7 +875,8 @@ while crates.io is down. A 404 is kept as long, since cargo asks for names that
 do not exist. `.crate` files (`/crates/...`, from `static.crates.io`) never
 change once published, so they are kept a year. Identical concurrent misses wait
 on one upstream fetch. nginx answers the index's `config.json` itself, pointing
-downloads back at the cache and naming no API, so there is nowhere to publish.
+downloads back at the cache and naming no API, so publishing to the cache by
+name (`--registry yaac-crates-cache`) goes nowhere.
 Past 2 GB of index or 16 GB of crates, or when the disk has under 2 GB free, it
 evicts least-recently-used entries.
 
@@ -893,6 +894,10 @@ registry = "sparse+http://yaac-crates-cache.<namespace>.svc.cluster.local:4875/i
 cargo reads that file below a project's own `.cargo/config.toml`, so a project
 that replaces crates.io itself keeps its replacement, and the block is left out
 when the file already replaces it. Replacement leaves `Cargo.lock` unchanged.
+Under the replacement, cargo's crates.io API commands (`cargo search`, `cargo
+info`, `cargo login`, `cargo publish`) refuse with "crates-io is replaced with
+non-remote-registry source". Adding `--registry crates-io` runs them against
+crates.io itself, through the egress proxy.
 
 Compiled artifacts are not shared. A cache of build output (sccache and the
 like) that every workspace could write would let one workspace plant objects
