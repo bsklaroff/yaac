@@ -100,6 +100,15 @@ export async function listTreeSubdirs(repoPath: string, ref: string, treePath: s
     .map((entry) => entry.slice(entry.indexOf('\t') + 1))
 }
 
+/** Which of `paths` git tracks at `ref`, as a tree or a file, in the order
+ *  given. Rejects when `ref` does not resolve. */
+export async function listTrackedPaths(repoPath: string, ref: string, paths: string[]): Promise<string[]> {
+  if (paths.length === 0) return []
+  const out = await runGit(repo(repoPath), ['--literal-pathspecs', 'ls-tree', '-z', '--name-only', ref, '--', ...paths])
+  const found = new Set(out.split('\0'))
+  return paths.filter((p) => found.has(p))
+}
+
 /** The blob at `ref:blobPath` as text, or null when there is none. Read
  *  with `cat-file`, which applies no conversion of any kind. */
 export async function readBlobAt(repoPath: string, ref: string, blobPath: string): Promise<string | null> {
@@ -266,7 +275,7 @@ const CHECKOUT_WORKERS = 8
 
 /**
  * Create a workspace's checkout at `workspacePath`, which may already exist
- * with entries (mount points for ephemeral module dirs are created first).
+ * with entries (mount points for scratch dirs are created first).
  *
  * The checkout is its own clone (docs/server-git.md): a full `.git` with a
  * snapshot of the main clone's `origin/*` and tags, `branch` at

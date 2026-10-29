@@ -1,5 +1,6 @@
 import path from 'node:path'
 import { mergeEnvEntries } from '#lib/env-entries'
+import type { ScratchDirMount } from '#drivers/contract'
 import {
   CA_CONFIGMAP_NAME,
   LABEL_INSTALL_ID,
@@ -57,24 +58,19 @@ export const NESTED_GRAPHROOT_ANNOTATIONS: Record<string, string> =
   sentryTmpfsAnnotations(NESTED_GRAPHROOT_VOLUME, NESTED_GRAPHROOT_TMPFS_BYTES)
 
 /**
- * Volume-name prefix of a workspace's module dirs (`PodJobParams.moduleDirs`),
- * one volume per dir: `pnpm-modules-0` for the first, and so on.
+ * Volume-name prefix of a workspace's scratch dirs (`PodJobParams.scratchDirs`),
+ * one volume per dir: `scratch-0` for the first, and so on.
  */
-const MODULES_VOLUME_PREFIX = 'pnpm-modules'
+const SCRATCH_VOLUME_PREFIX = 'scratch'
 
 /**
- * Tmpfs cap of each module-dir volume, sized for a large monorepo's root
- * `node_modules` including the pnpm store (this repo's is ~1.5GiB).
- * Disk-backed like the graphroot.
+ * How far a scratch-dir volume's emptyDir sizeLimit sits above its tmpfs
+ * cap, the dir's own `sizeBytes` (see NESTED_GRAPHROOT_SIZELIMIT_BYTES).
  */
-export const MODULES_TMPFS_BYTES = 8 * 1024 ** 3
+export const SCRATCH_SIZELIMIT_SLACK_BYTES = 1024 ** 3
 
-/** emptyDir sizeLimit of each module-dir volume (see
- *  NESTED_GRAPHROOT_SIZELIMIT_BYTES). */
-export const MODULES_SIZELIMIT_BYTES = MODULES_TMPFS_BYTES + 1024 ** 3
-
-/** What module dirs add to the ephemeral-storage request: one typical install. */
-export const MODULES_REQUEST_BYTES = 2 * 1024 ** 3
+/** What scratch dirs add to the ephemeral-storage request: one typical install. */
+export const SCRATCH_REQUEST_BYTES = 2 * 1024 ** 3
 
 /** Volume-name prefix per source kind; the suffix is the mount's index. */
 const VOLUME_NAME_PREFIX: Record<MountSource['kind'], string> = {
@@ -142,7 +138,7 @@ export interface PodJobParams {
   ephemeralStorageRequestBytes: number
   /**
    * Ephemeral-storage limit; kubelet evicts the pod past it, which protects
-   * other pods on the node. The graphroot and module-dir sizeLimits are
+   * other pods on the node. The graphroot and scratch-dir sizeLimits are
    * added on top when present.
    */
   ephemeralStorageLimitBytes: number
@@ -151,12 +147,12 @@ export interface PodJobParams {
   /** Run the in-pod rootful podman: adds its graphroot, caps and gVisor handler. */
   nested?: boolean
   /**
-   * Container paths of the workspace's module dirs, each its own disk-backed
-   * sentry tmpfs, so pnpm's file traffic stays inside the sandbox instead of
-   * crossing the gofer, and a store inside the root dir can hardlink. Lost
-   * with the pod; init commands reinstall.
+   * The workspace's scratch dirs, each its own disk-backed sentry tmpfs
+   * capped at its `sizeBytes`, so pnpm's file traffic stays inside the
+   * sandbox instead of crossing the gofer, and a store inside the root dir
+   * can hardlink. Lost with the pod; init commands reinstall.
    */
-  moduleDirs?: string[]
+  scratchDirs?: ScratchDirMount[]
   /**
    * postStart hook argv (`yaac-workspace-init`). The pod is not Ready until
    * it exits, so Ready means in-pod setup is done. A nonzero exit fails the
@@ -262,22 +258,22 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
 
   // One volume per dir (see sentryTmpfsAnnotations). A tmpfs root is
   // world-writable, so the workspace user can install into it.
-  const moduleDirs = p.moduleDirs ?? []
+  const scratchDirs = p.scratchDirs ?? []
   let annotations: Record<string, string> = {
     ...WORKSPACE_POD_ANNOTATIONS,
     ...(p.nested ? NESTED_GRAPHROOT_ANNOTATIONS : {}),
   }
-  moduleDirs.forEach((dir, i) => {
-    const name = `${MODULES_VOLUME_PREFIX}-${i}`
-    volumes.push({ name, emptyDir: { sizeLimit: String(MODULES_SIZELIMIT_BYTES) } })
-    volumeMounts.push({ name, mountPath: dir })
-    annotations = { ...annotations, ...sentryTmpfsAnnotations(name, MODULES_TMPFS_BYTES) }
+  scratchDirs.forEach((dir, i) => {
+    const name = `${SCRATCH_VOLUME_PREFIX}-${i}`
+    volumes.push({ name, emptyDir: { sizeLimit: String(dir.sizeBytes + SCRATCH_SIZELIMIT_SLACK_BYTES) } })
+    volumeMounts.push({ name, mountPath: dir.path })
+    annotations = { ...annotations, ...sentryTmpfsAnnotations(name, dir.sizeBytes) }
   })
-  // The limit adds ONE module dir's sizeLimit however many dirs there are:
-  // in a pnpm workspace the nested dirs hold only symlinks. Several
-  // independent installs could still reach the limit together.
-  const modulesLimit = moduleDirs.length > 0 ? MODULES_SIZELIMIT_BYTES : 0
-  const modulesRequest = moduleDirs.length > 0 ? MODULES_REQUEST_BYTES : 0
+  // The limit adds every dir's sizeLimit, so no dir can evict the pod before
+  // its own tmpfs cap fails the write. The request adds one typical install
+  // however many dirs there are, since the scheduler packs pods by request.
+  const scratchLimit = scratchDirs.reduce((sum, d) => sum + d.sizeBytes + SCRATCH_SIZELIMIT_SLACK_BYTES, 0)
+  const scratchRequest = scratchDirs.length > 0 ? SCRATCH_REQUEST_BYTES : 0
 
   return {
     apiVersion: 'batch/v1',
@@ -342,7 +338,7 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
                 requests: {
                   cpu: `${p.cpuRequestMillis}m`,
                   memory: String(p.memoryRequestBytes),
-                  'ephemeral-storage': String(p.ephemeralStorageRequestBytes + modulesRequest),
+                  'ephemeral-storage': String(p.ephemeralStorageRequestBytes + scratchRequest),
                 },
                 limits: {
                   // Also sets runsc's virtual CPU count (see cpuLimitMillis).
@@ -353,7 +349,7 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
                   'ephemeral-storage': String(
                     p.ephemeralStorageLimitBytes
                     + (p.nested ? NESTED_GRAPHROOT_SIZELIMIT_BYTES : 0)
-                    + modulesLimit,
+                    + scratchLimit,
                   ),
                 },
               },

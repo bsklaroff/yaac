@@ -223,11 +223,11 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   env.push(`YAAC_STREAM_TOKEN=${substrate.streamToken}`)
   // One pnpm store per workspace: pnpm indexes the store in a SQLite WAL
   // database, which cannot be shared across pods. Put it inside the root
-  // node_modules when that is a module dir, so pnpm hardlinks rather than
+  // node_modules when that is a scratch dir, so pnpm hardlinks rather than
   // copies; otherwise on the pod's own disk. Set under both names: pnpm 11+
   // reads only `pnpm_config_` for this key, pnpm 10 only `npm_config_`.
   const rootModules = `${k8sWorkspacePaths().workspaceDir}/node_modules`
-  const store = spec.moduleDirs.includes(rootModules)
+  const store = spec.scratchDirs.some((d) => d.path === rootModules)
     ? `${rootModules}/.pnpm-store`
     : '/home/yaac/.local/share/pnpm/store'
   env.push(`pnpm_config_store_dir=${store}`, `npm_config_store_dir=${store}`)
@@ -286,7 +286,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     ephemeralStorageLimitBytes: spec.resources.ephemeralStorageLimitBytes,
     proxyHost: substrate.proxyHost,
     nested: spec.nestedContainers,
-    moduleDirs: spec.moduleDirs,
+    scratchDirs: spec.scratchDirs,
     // In-pod setup (git identity, tmux, streamd, nested engine) runs as
     // postStart, so kubelet holds Ready until it finishes.
     postStartExec: spec.postStartExec,

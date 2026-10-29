@@ -1,4 +1,5 @@
-import { AGENT_CLIS } from '@yaac/shared/types'
+import { AGENT_CLIS, DEFAULT_SCRATCH_DIR_GIB, type ScratchDir } from '@yaac/shared/types'
+import type { ScratchDirMount } from '#drivers/contract'
 import { openRoot, type ConfinedRoot } from '#lib/confined-fs'
 
 // `lastOnboardingVersion` must be >= the running CLI's version, or a newer
@@ -94,21 +95,21 @@ async function readJson(claudeHome: ConfinedRoot, rel: string): Promise<Record<s
 }
 
 /**
- * Create each ephemeral-modules dir in the checkout before launch (so a pod
- * does not create its mount point root-owned) and return them as the
- * workspace sees them, for `moduleDirs`.
+ * Create each scratch dir in the checkout before launch (so a pod does not
+ * create its mount point root-owned) and return them as the workspace sees
+ * them, for `scratchDirs`.
  */
-export async function prepareModuleDirs(
+export async function prepareScratchDirs(
   workspaceDirPath: string,
-  relPaths: string[],
-): Promise<string[]> {
+  dirs: ScratchDir[],
+): Promise<ScratchDirMount[]> {
   // Confined to the checkout: a committed symlink must not turn this into a
   // mkdir elsewhere on the host. Links inside the checkout are followed.
   const checkout = await openRoot(workspaceDirPath, 'inside')
-  for (const rel of relPaths) {
-    await checkout.mkdirp(rel).catch((err: unknown) => {
-      throw new Error(`ephemeralModulesPaths: "${rel}": ${err instanceof Error ? err.message : String(err)}`)
+  for (const { path } of dirs) {
+    await checkout.mkdirp(path).catch((err: unknown) => {
+      throw new Error(`scratch dir "${path}": ${err instanceof Error ? err.message : String(err)}`)
     })
   }
-  return relPaths.map((rel) => `/workspace/${rel}`)
+  return dirs.map(({ path, sizeGiB = DEFAULT_SCRATCH_DIR_GIB }) => ({ path: `/workspace/${path}`, sizeBytes: sizeGiB * 1024 ** 3 }))
 }

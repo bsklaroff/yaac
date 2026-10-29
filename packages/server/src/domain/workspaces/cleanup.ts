@@ -3,12 +3,11 @@ import { constants as fsConstants } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { workspaceDriver } from '#drivers/driver'
-import { resolveEphemeralModulesPaths, resolveProjectConfig } from '#domain/projects'
 import { forgetWorkspaceChanges } from './changes'
 import { removeAgentHistory } from './history'
 import { deletionHeld, inFlightWorkspaceIds } from './provisioning'
 import { workspaceBinDir } from './workspace-bin'
-import { applyWorkspaceEvent, getProjectRow, listProjectRows, listUncleanedStoppedWorkspaces } from '#db'
+import { applyWorkspaceEvent, getProjectRow, getWorkspaceRow, listProjectRows, listUncleanedStoppedWorkspaces } from '#db'
 import {
   clearWorkspaceTerminating,
   evictWorkspaceStatus,
@@ -77,23 +76,30 @@ export function tearingDown(workspaceId: string): boolean {
 }
 
 /**
- * The ephemeral-modules paths inside the checkout, to remove at stop. Under
- * containerless they hold the real contents; under a pod they are empty
- * mount points. The restart's init commands rebuild them.
+ * The scratch dirs inside the checkout, to remove at stop: the ones its
+ * runtime was started with, never the project's list as it is now. Under
+ * containerless they hold the real contents; under a pod they are mount
+ * points, holding whatever git checked out beneath them. Files git tracks
+ * go too: they stay in its history. The restart's init commands rebuild
+ * the rest.
  *
  * Symlinks, and paths reached through a symlink leading out of the
  * checkout, are skipped: the checkout holds agent-written content, and
  * `rm -rf` through a link would delete host files.
  */
-async function checkoutEphemeralPaths(
+async function checkoutScratchDirs(
   projectId: string,
   workspaceId: string,
 ): Promise<Array<{ abs: string; remove: () => Promise<void> }>> {
   const checkout = await openRoot(workspaceDir(projectId, workspaceId), 'inside').catch(() => null)
   if (checkout === null) return []
-  const config = await resolveProjectConfig(projectId).catch(() => null)
+  const row = await getWorkspaceRow(projectId, workspaceId).catch(() => undefined)
+  // A workspace started before its list was recorded, and not filled in by
+  // the config import, was started with the old default
+  // (docs/legacy-compat-shims.md).
+  const dirs = row?.scratchDirs ?? ['node_modules']
   const paths: Array<{ abs: string; remove: () => Promise<void> }> = []
-  for (const rel of resolveEphemeralModulesPaths(config)) {
+  for (const rel of dirs) {
     const at = await checkout.parent(rel).catch(() => null)
     if (at === null) continue
     const stat = await fs.lstat(at.dir.child(at.name)).catch(() => null)
@@ -288,7 +294,7 @@ export async function cleanupWorkspace(params: {
   // orphan sweep remove them later.
   if (runtimeGone) {
     // Best-effort: a node still unmounting answers EBUSY.
-    for (const p of await checkoutEphemeralPaths(projectId, workspaceId)) {
+    for (const p of await checkoutScratchDirs(projectId, workspaceId)) {
       await p.remove().catch((err: unknown) => {
         serverLog(`[server] remove ${p.abs} at stop: ${String(err)}`)
       })
@@ -333,7 +339,7 @@ export async function cleanupWorkspaceDetached(params: {
     // cannot reach.
     await runtime.deregisterWorkspace(workspaceId)
 
-    const ephemeralModulesRms = (await checkoutEphemeralPaths(projectId, workspaceId))
+    const scratchDirRms = (await checkoutScratchDirs(projectId, workspaceId))
       .map((p) => `rm -rf ${shellQuote(p.abs)} 2>/dev/null || true`)
 
     const workspaceDirRm =
@@ -343,7 +349,7 @@ export async function cleanupWorkspaceDetached(params: {
     // idempotent, so a resumed teardown can re-run it all.
     const script = [
       runtime.detachedTeardownCommand(target),
-      ...ephemeralModulesRms,
+      ...scratchDirRms,
       workspaceDirRm,
     ].join('; ')
 
@@ -471,7 +477,7 @@ export async function reconcileIgnoredFileCleans(view: RuntimeSnapshot): Promise
  * never removed here: on disk a dead spare's and a stopped workspace's look
  * the same, so spares' are removed by `reapSpare`, from their unit's mark.
  */
-export async function gcOrphanEphemeralModuleDirs(view: RuntimeSnapshot): Promise<void> {
+export async function gcOrphanScratchDirs(view: RuntimeSnapshot): Promise<void> {
   // A create the listing missed looks like an orphan. `inUseBySweep`
   // guards against that.
   const live = await liveWorkspaceIds(view)

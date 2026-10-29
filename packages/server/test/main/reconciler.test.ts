@@ -18,7 +18,7 @@ vi.mock('#domain/workspaces/agent-session-registry', () => ({
 }))
 vi.mock('#domain/workspaces/cleanup', async (importOriginal) => ({
   ...(await importOriginal<typeof cleanupModule>()),
-  gcOrphanEphemeralModuleDirs: vi.fn(),
+  gcOrphanScratchDirs: vi.fn(),
   reapOrphanNodeLocal: vi.fn(),
 }))
 vi.mock('#domain/auth/runtime-push', () => ({
@@ -40,7 +40,7 @@ import type { PassContext, ReconcileStep, ReconcileTrigger } from '#drivers/cont
 import { reconcileStaleWorkspaces } from '#domain/workspaces/stale-workspaces'
 import { reconcilePrewarmPool } from '#domain/workspaces/prewarm-reconcile'
 import { reconcileAgentSessions } from '#domain/workspaces/agent-session-registry'
-import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal } from '#domain/workspaces/cleanup'
+import { gcOrphanScratchDirs, reapOrphanNodeLocal } from '#domain/workspaces/cleanup'
 import { adoptRefreshedToolCredentials } from '#domain/auth/runtime-push'
 import { reconcileGeneratedTitles } from '#domain/workspaces/title-generation'
 import { reconcileRevokedShares } from '#domain/workspaces/project-teardown'
@@ -54,7 +54,7 @@ const ALL_STEP_FNS = [
   runtimePrePool, reconcilePrewarmPool,
   reconcileAgentSessions,
   runtimeMaintenance,
-  gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal, adoptRefreshedToolCredentials,
+  gcOrphanScratchDirs, reapOrphanNodeLocal, adoptRefreshedToolCredentials,
   reconcileGeneratedTitles,
 ] as const
 

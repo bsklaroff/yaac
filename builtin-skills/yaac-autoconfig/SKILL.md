@@ -179,7 +179,10 @@ Every option is optional. Include only what the project needs.
 | `hideInitPane` | `boolean` (default `false`) | When `true`, close the init tmux pane after commands finish/error instead of keeping it (with `remain-on-exit`) for inspection. Per-window override via each object entry's `hidePane`. |
 | `cacheVolumes` | `Record<string,string>` | Per-project persistent caches that survive across sessions. Key = cache name, value = absolute container path. (pnpm's store is already shared at `~/.cached-packages` — no entry needed.) |
 | `nestedContainers` | `boolean` | Run an in-pod podman so `docker build`/`run`/`compose up` work inside the session (the `docker` CLI talks to podman's socket). Needed for docker-compose-based projects. |
-| `ephemeralModulesPaths` | `string[]` (default `["node_modules"]`) | Paths (relative to `/workspace`) bind-mounted onto per-session storage so package-manager writes don't touch the host workspace. `[]` disables the redirect. |
+
+Dependency and build-output dirs each workspace keeps off its checkout
+(`node_modules` and `target` by default) are a project setting, not a config
+key: Settings → Project Config, or `yaac config scratch-dirs`.
 
 ## Gotchas
 

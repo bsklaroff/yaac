@@ -117,6 +117,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       forwardedPorts: w.forwardedPorts,
       unforwardedPorts: w.unforwardedPorts,
       baseBranch: row?.baseBranch,
+      ...(row !== undefined && row.trackedScratchDirs.length > 0 ? { trackedScratchDirs: row.trackedScratchDirs } : {}),
     }
   })
 

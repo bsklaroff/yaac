@@ -208,7 +208,7 @@ every hostPath stays the host path. Grouped by what matters for mounting:
 | proxy CA public cert | `/etc/yaac/certs` | read-only |
 | socket dir | `/run/yaac` | the egress and streamd sockets (see above) |
 | tmux socket dir | emptyDir | private scratch |
-| module dirs (`node_modules`, …) | **inside `/workspace`** | private, heavy small-file I/O, must not be on the shared filesystem |
+| scratch dirs (`node_modules`, …) | **inside `/workspace`** | private, heavy small-file I/O, must not be on the shared filesystem |
 
 ### Rules every backend must keep
 
@@ -245,7 +245,7 @@ every hostPath stays the host path. Grouped by what matters for mounting:
 
 - The mount list maps one to one onto the pod spec's volumes, including
   nested and single-file mounts, and read-only holds at the gofer.
-- **Module dirs and tmux dir:** disk-backed sentry tmpfs through the same
+- **Scratch dirs and tmux dir:** disk-backed sentry tmpfs through the same
   `dev.gvisor.spec.mount.*` annotations the pod spec sets, passed with
   `nerdctl --annotation`.
 - `cachedCheckout` is true, as under k8s.
@@ -263,7 +263,7 @@ every hostPath stays the host path. Grouped by what matters for mounting:
 - **Read-only:** must be enforced by Apple's host-side virtiofs server.
   This is a spike, because it decides whether the `.git` and attachments
   mounts are safe.
-- **Module dirs:** one named ext4 volume per module dir, mounted over its
+- **Scratch dirs:** one named ext4 volume per scratch dir, mounted over its
   path. A block volume is fast, private and counts against disk, not
   memory. It is never shared, so cache volumes stay binds.
 - **tmux dir:** a small tmpfs.
@@ -415,7 +415,7 @@ socket egress before the apple backend exists.
 
 - `--network none`, the egress socket mounted in and streamd's published;
 - virtiofs staging for single files;
-- ext4 volumes for module dirs;
+- ext4 volumes for scratch dirs;
 - a `logs -f` liveness edge, because Apple has no events.
 
 `install` checks for macOS 26, Apple silicon, the pinned `container`

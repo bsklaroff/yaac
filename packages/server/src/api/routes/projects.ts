@@ -16,7 +16,6 @@ import {
   registerStagedProject,
   removeProjectConfig,
   removeProjectEnvVar,
-  resolveProjectConfigWithSource,
   setProjectAllowlist,
   setProjectEnvVar,
   writeProjectConfig,
@@ -26,6 +25,8 @@ import {
   serveHostedRepo,
   setDefaultBranchGuard,
   setKeptIgnoredPaths,
+  setScratchDirs,
+  scratchDirSettingsPatchSchema,
   shareProject,
 } from '#domain/projects'
 import { previewWorkspaceRetention, removeProject, setWorkspaceRetention, unshareProject } from '#domain/workspaces'
@@ -132,6 +133,16 @@ export const projectApp = new Hono<IdentityEnv>()
       return c.json({ paths })
     },
   )
+  // Which dirs live with a workspace's runtime rather than its checkout, with
+  // their caps, and which of them git tracks without the user wanting a
+  // warning. Either may be left out to keep it; both are answered as stored.
+  .put(
+    '/:projectId/scratch-dirs',
+    zv('json', scratchDirSettingsPatchSchema),
+    async (c) => {
+      return c.json(await setScratchDirs(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.valid('json')))
+    },
+  )
   // Stopped-workspace auto-delete. The GET counts what a retention of `days`
   // would delete right away, and the cutoff it counted by, which clients
   // show before they confirm the PUT. The PUT deletes no workspace stopped
@@ -175,9 +186,8 @@ export const projectApp = new Hono<IdentityEnv>()
     await removeProject(c.get('principal'), await resolveProjectId(c.req.param('projectId')))
     return c.body(null, 204)
   })
-  .get('/:projectId/config', async (c) => c.json(await resolveProjectConfigWithSource(await resolveProjectId(c.req.param('projectId')))))
-  // Raw text for the CLI's $EDITOR flow: unlike the parsed GET above it
-  // returns malformed content verbatim so it can be repaired.
+  // Raw text, not parsed, so a malformed or invalid file still opens in an
+  // editor to be repaired.
   .get('/:projectId/config/raw', async (c) =>
     c.json({ content: await readProjectConfigRaw(await resolveProjectId(c.req.param('projectId'))) }))
   .put(

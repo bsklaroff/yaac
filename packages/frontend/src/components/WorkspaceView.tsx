@@ -34,6 +34,7 @@ import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { ContainerlessBadge } from '#components/ContainerlessBadge'
 import { UnforwardedPortsBadge } from '#components/UnforwardedPortsBadge'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
+import { TrackedScratchDirsBadge } from '#components/TrackedScratchDirsBadge'
 import { GitStatusBar } from '#components/GitStatusBar'
 import { StopForwardButton } from '#components/StopForwardButton'
 import { api } from '#lib/api'
@@ -144,6 +145,7 @@ export function WorkspaceView({
   const routineOf = routines.find((r) => r.id === workspace?.routineId)
   // Project-wide, but shown here since it breaks git in this workspace too.
   const gitAuthFailures = (workspace && snapshot?.gitAuthFailures?.[workspace.projectId]) || []
+  const project = (snapshot?.projects ?? []).find((p) => p.id === workspace?.projectId)
 
   // Forwarded ports open in a preview: a pane in the desktop app, or a
   // native view in the iPhone app. Each forwards the port to its own
@@ -553,6 +555,9 @@ export function WorkspaceView({
               iconSize={12}
               className="hover:bg-danger/25"
             />
+          )}
+          {project && workspace.trackedScratchDirs && (
+            <TrackedScratchDirsBadge workspace={workspace} project={project} className="hover:bg-warning/25" />
           )}
           {stopError?.id === workspace.workspaceId && (
             <button

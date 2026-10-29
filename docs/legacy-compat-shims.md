@@ -356,3 +356,57 @@ restarted is stale and never claimed.
   current base image, so it suffices that every workspace running at the
   upgrade has stopped or restarted since. Containerless workspaces never
   needed it.
+
+## `ephemeralModulesPaths` in a project's yaac-config.json
+
+A project's scratch dirs are a column on its row
+(`projects.scratchDirs`, docs/project-config.md). They used to be a
+`yaac-config.json` key, which the config parser now refuses as unknown. At
+start, before anything reads the config, the server runs
+`importScratchDirsFromConfig` (`#domain/projects`): for each project
+whose config file still has the key, it copies the value onto the row, each
+dir with no cap of its own, and rewrites the file without it. A file that is not JSON, or a value that does
+not validate, is logged and left for the user to fix, and until then the
+parser's error for the key (`RETIRED_FIELDS` in `domain/projects/config.ts`)
+says where the setting went. Delete that hint along with the import.
+
+- **What it reads.** Every project's `yaac-config.json` under its config dir.
+- **What breaks if it goes too early.** Not silent: every create in a
+  project whose file still has the key fails with `unknown field
+  "ephemeralModulesPaths"` until someone edits it out, and the list they had
+  set, `[]` or extra nested `node_modules`, is lost unless they re-enter it
+  as the project setting.
+- **When it is safe to remove.** Once every install has started a server
+  with the import at least once. No config file then has the key, which
+  `grep -l ephemeralModulesPaths ~/.yaac*/global/projects/*/config/yaac-config.json`
+  confirms for a given data dir.
+
+## A workspace row with no `scratchDirs`
+
+A stop removes the scratch dirs a workspace was started with, recorded on its
+row (`workspaces.scratchDirs`) by the create, restart or spare claim. A
+workspace whose runtime started before that column existed has it null. Two
+pieces cover it, and both go together:
+
+- `importScratchDirsFromConfig` (see the entry above), when it moves a
+  project's `ephemeralModulesPaths`, also fills that project's null rows with
+  the moved list (`backfillWorkspaceScratchDirs` in `#db`), since every null
+  row then is a workspace started with it.
+- `checkoutScratchDirs` (`#domain/workspaces` cleanup) treats a row still
+  null as started with the old default, `node_modules` alone. It never reads
+  the project's current list, which the migration set to `node_modules` and
+  `target` and which says nothing about what an older runtime mounted.
+
+- **What it reads.** Each project's config file at start; at stop, the
+  workspace row's null `scratchDirs`.
+- **What breaks silently if it goes too early.** A workspace running at the
+  upgrade is stopped without its scratch dirs being removed: under k8s that
+  leaves empty mount points, under containerless a full copy of every
+  dependency in its checkout. Reading the project's list instead would be
+  worse, since it deletes a `target/` the workspace keeps in its checkout.
+- **When it is safe to remove.** Once no running workspace has a null
+  `scratchDirs`, that is once every workspace running at the upgrade has
+  stopped:
+  `SELECT count(*) FROM workspaces WHERE scratch_dirs IS NULL AND stopped_at IS NULL`
+  is zero. A stopped one restarted later without the fallback only keeps its
+  old `node_modules` contents, which its init commands install over.

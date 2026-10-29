@@ -1,4 +1,4 @@
-import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal, reconcileAgentSessions, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileRevokedShares, reconcileStoppedAgentSessions, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, startScheduledWorkspaces } from '#domain/workspaces'
+import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileAgentSessions, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileRevokedShares, reconcileStoppedAgentSessions, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, startScheduledWorkspaces } from '#domain/workspaces'
 import { refreshProjectOrigins } from '#domain/projects'
 import { adoptRefreshedToolCredentials, syncToolCredentials } from '#domain/auth'
 import { workspaceDriver } from '#drivers/driver'
@@ -80,11 +80,11 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // above so a just-reaped workspace's leftovers are collected the same
     // pass.
     ...runtime.maintenance,
-    // Delete module dirs left by workspaces whose runtime is gone (crashes,
-    // reboots, a spare's pod dying; see gcOrphanEphemeralModuleDirs).
+    // Delete scratch dirs left by workspaces whose runtime is gone (crashes,
+    // reboots, a spare's pod dying; see gcOrphanScratchDirs).
     // In-flight creates are registered synchronously before staging, so
     // their dirs are never swept. Resync-only, and cheap.
-    { name: 'orphan-modules-gc', triggers: [], run: (ctx) => gcOrphanEphemeralModuleDirs(ctx.snapshot()) },
+    { name: 'orphan-modules-gc', triggers: [], run: (ctx) => gcOrphanScratchDirs(ctx.snapshot()) },
     // Remove the ignored files of stopped workspaces whose stop could not,
     // one per pass in the background, since under k8s each runs a pod.
     { name: 'ignored-file-clean', triggers: ['workspaces'],

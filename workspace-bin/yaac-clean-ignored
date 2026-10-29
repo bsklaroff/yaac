@@ -34,7 +34,7 @@ git_() {
 esc() { printf '%s' "$1" | sed 's/[][\\*? ]/\\&/g'; }
 
 # The mount points under the checkout, relative to it: a running
-# workspace's module dirs and cache volumes, whose contents a cache volume
+# workspace's scratch dirs and cache volumes, whose contents a cache volume
 # shares with other workspaces. Read from the kernel rather than the
 # project config, which may have changed since the workspace started.
 # mountinfo escapes a path's space, tab, newline and backslash in octal.

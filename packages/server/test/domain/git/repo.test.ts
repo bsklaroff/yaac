@@ -13,6 +13,7 @@ import {
   initHostedRepo,
   lastFetchedAtMs,
   listRemoteBranches,
+  listTrackedPaths,
   listTreeSubdirs,
   maintainRepo,
   readBlobAt,
@@ -588,6 +589,18 @@ describe('listTreeSubdirs', () => {
 
     expect(await listTreeSubdirs(sourceRepo, 'HEAD', 'skills')).toEqual(['alpha'])
     expect(await listTreeSubdirs(sourceRepo, 'HEAD', 'no-such-dir')).toEqual([])
+  })
+})
+
+describe('listTrackedPaths', () => {
+  it('names the given paths git tracks at a ref, nested or not, and rejects an unknown ref', async () => {
+    await fs.mkdir(path.join(sourceRepo, 'web', 'node_modules', 'pkg'), { recursive: true })
+    await fs.writeFile(path.join(sourceRepo, 'web', 'node_modules', 'pkg', 'index.js'), 'x\n')
+    await commitToSource('target', 'a file, not a dir')
+
+    expect(await listTrackedPaths(sourceRepo, 'HEAD', ['node_modules', 'target', 'web/node_modules', '*']))
+      .toEqual(['target', 'web/node_modules'])
+    await expect(listTrackedPaths(sourceRepo, 'refs/remotes/origin/no-such', ['target'])).rejects.toThrow()
   })
 })
 

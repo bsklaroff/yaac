@@ -50,7 +50,7 @@ function spec(overrides: Partial<WorkspaceSpec> = {}): WorkspaceSpec {
     env: ['YAAC_GIT_NAME=Ada', 'YAAC_GIT_EMAIL=ada@example.com', 'YAAC_STATUS_RIGHT= demo 4bfc59c6 '],
     secretEnvKeys: [],
     mounts: [],
-    moduleDirs: [],
+    scratchDirs: [],
     resources: {
       memoryRequestBytes: 1, memoryLimitBytes: 1, cpuRequestMillis: 1,
       cpuLimitMillis: 1, ephemeralStorageRequestBytes: 1, ephemeralStorageLimitBytes: 1,
@@ -274,7 +274,7 @@ describe('launchWorkspace', () => {
 
   it('leaves a redirect INTO the checkout alone, so git never sees a link', async () => {
     // Unlike a pod mount, a symlink is visible to git: `git add -A` would
-    // commit an absolute host path, and the ephemeral-modules guard would
+    // commit an absolute host path, and the scratch-dirs guard would
     // trip on it, making a stopped workspace unrestartable.
     const modules = path.join(dataDir, 'modules-cache')
     const mounts: WorkspaceMount[] = [

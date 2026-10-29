@@ -41,13 +41,41 @@ Both are stored on the server, so this works against a remote server too.
 - **npmCache:** whether workspaces use the install's npm cache (k8s only;
   default `true`). With `false`, pnpm goes to npmjs through the proxy. A
   project's own `.npmrc` `registry=` wins either way.
-- **ephemeralModulesPaths:** dependency directories (relative to the checkout)
-  that live with the workspace's runtime instead of the shared checkout, and
-  are removed at stop. Default `["node_modules"]`; `[]` turns it off.
+A field not listed here is an error: saving the file refuses it, and so does
+every create while it is there, rather than ignoring a misspelt key.
 
 There is no way to mount a host directory into a workspace, since a client on
 another machine can't name a path on the server. Use `cacheVolumes`, or bake
 the files into the image.
+
+## Scratch directories
+
+A project's scratch directories are dirs of installed packages and build
+output, relative to the checkout, that each workspace keeps off the shared
+checkout and empties when it stops
+([workspace-storage.md](workspace-storage.md) "Package installs"). Each has a
+cap: under k8s a write past it fails, and under containerless it is not
+enforced. A dir names its own cap or gets the default, 16 GiB, which a large
+cargo build can pass. The default dirs are `node_modules` and `target`. They
+are a project setting stored on the server rather than a `yaac-config.json`
+key: edit them under Settings → Project Config, or with
+`yaac config scratch-dirs <project> [dirs...]`, each dir `path` or `path:GiB`
+(`--none` for none).
+
+A stop empties a scratch directory even where git tracks files in it: they
+stay in git history, and `git checkout` brings them back, but after a
+restart they show as deleted, and committing that deletes them from the
+branch. Under k8s they show as deleted while the workspace runs too, hidden
+by the dir's volume. So when a workspace starts, the server checks its base
+branch, and its own branch once pushed, for scratch directories git tracks,
+and the workspace bar warns about any it finds, with two answers. One keeps
+the dir in the checkout: it comes off the project's list and off the list
+this workspace started with, so the stop of the restart that follows leaves
+the dir as it is, and the workspace comes back with it in its checkout.
+Under k8s that is the dir as checked out beneath the volume; what was
+written into the volume is gone. The other stops warning about the dir in
+this project. Settings lists the ones not warned about, each of which can be
+warned about again.
 
 ## Environment variables and secrets
 

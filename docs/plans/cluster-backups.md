@@ -287,9 +287,9 @@ before relying on it.
   workspace's backup holds none, but a running workspace's output sits on
   GLOBAL and its rebuilds rewrite it, so every backup taken while it runs
   would upload the changed artifacts. Proposed answer: no backup-specific
-  setting. A project lists those directories in `ephemeralModulesPaths`
+  setting. A project lists those directories among its scratch dirs
   (docs/project-config.md), which makes them node-local while the workspace
   runs. That keeps them out of every backup, and off NFS. The backup does no
   automatic detection of caches either: which directories are disposable
   while running is the project's call, made explicitly. The `cluster backup`
-  docs should point users at `ephemeralModulesPaths`.
+  docs should point users at scratch dirs.

@@ -14,7 +14,8 @@
 
 export { reconcileAgentSessions, reconcileStoppedAgentSessions } from './agent-session-registry'
 export { toAgentSessionEntry } from './agent-session-entry'
-export { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal, reconcileIgnoredFileCleans } from './cleanup'
+export { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileIgnoredFileCleans } from './cleanup'
+export { keepScratchDirsInCheckout } from './tracked-scratch-dirs'
 export { deleteWorkspace } from './delete'
 export {
   getWorkspaceBlockedHosts,

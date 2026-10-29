@@ -8,23 +8,6 @@ import { isInfraPort } from '#lib/port-policy'
 
 const CACHE_VOLUME_KEY_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/
 
-/** Default when `ephemeralModulesPaths` is unset — redirect the root
- *  node_modules only. Set to `[]` in yaac-config.json to opt out. */
-export const DEFAULT_EPHEMERAL_MODULES_PATHS: readonly string[] = ['node_modules']
-
-/**
- * Return the effective ephemeral-modules list:
- *   unset → ["node_modules"]
- *   []    → []   (feature disabled)
- *   [...] → as given
- */
-export function resolveEphemeralModulesPaths(config: YaacConfig | null): string[] {
-  if (!config || config.ephemeralModulesPaths === undefined) {
-    return [...DEFAULT_EPHEMERAL_MODULES_PATHS]
-  }
-  return [...config.ephemeralModulesPaths]
-}
-
 /** tmux window names an `initCommands` entry may not use, so it can't
  *  clobber an agent or yaac window. */
 const RESERVED_INIT_WINDOW_NAMES: ReadonlySet<string> = new Set(
@@ -83,7 +66,7 @@ const initCommandsSchema = z.array(z.unknown(), { error: 'must be an array' })
   })
 
 /** A path relative to the checkout (/workspace), with any surrounding
- *  slashes stripped: an `ephemeralModulesPaths` entry, or a kept ignored
+ *  slashes stripped: a scratch dir (`./scratch-dirs`), or a kept ignored
  *  path (`./kept-paths`). */
 export const checkoutPathSchema = z.string({ error: 'must be a string' })
   .refine((raw) => !raw.startsWith('/'), 'must be relative to /workspace (no leading slash)')
@@ -122,7 +105,6 @@ const projectConfigSchema = z.object({
   ).optional(),
   nestedContainers: BOOLEAN,
   npmCache: BOOLEAN,
-  ephemeralModulesPaths: z.array(checkoutPathSchema, { error: 'must be a string array' }).optional(),
 })
 
 /** Where an issue is, as a config key path: `initCommands[0].name`. */
@@ -130,15 +112,27 @@ function issuePath(at: PropertyKey[]): string {
   return at.map((k, i) => typeof k === 'number' ? `[${k}]` : `${i === 0 ? '' : '.'}${String(k)}`).join('')
 }
 
+/** Where a retired field went, for the error that refuses it
+ *  (docs/legacy-compat-shims.md). */
+const RETIRED_FIELDS: Record<string, string> = {
+  ephemeralModulesPaths: 'is now the project\'s scratch directories, set under Settings → Project Config '
+    + 'or with `yaac config scratch-dirs`',
+}
+
 /**
- * Parse a yaac-config.json. Unknown fields are warned about and dropped;
- * anything else invalid throws, naming the first bad field.
+ * Parse a yaac-config.json. Anything invalid throws, naming the first bad
+ * field; an unknown field is invalid, so a misspelt or retired key fails
+ * loudly instead of being ignored.
  */
 export function parseProjectConfig(raw: string): YaacConfig {
   const parsed: unknown = JSON.parse(raw)
   if (!isPlainObject(parsed)) throw new Error('yaac-config.json must be a JSON object')
-  for (const key of Object.keys(parsed as object)) {
-    if (!Object.hasOwn(projectConfigSchema.shape, key)) console.warn(`yaac-config.json: unknown field "${key}"`)
+  const unknown = Object.keys(parsed as object).find((key) => !Object.hasOwn(projectConfigSchema.shape, key))
+  if (unknown !== undefined && Object.hasOwn(RETIRED_FIELDS, unknown)) {
+    throw new Error(`yaac-config.json: "${unknown}" ${RETIRED_FIELDS[unknown]}; remove it from this file`)
+  }
+  if (unknown !== undefined) {
+    throw new Error(`yaac-config.json: unknown field "${unknown}"; the fields are ${Object.keys(projectConfigSchema.shape).join(', ')}`)
   }
   const result = projectConfigSchema.safeParse(parsed)
   if (!result.success) {

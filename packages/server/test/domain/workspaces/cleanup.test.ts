@@ -18,7 +18,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
-import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal, reconcileIgnoredFileCleans } from '#domain/workspaces'
+import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileIgnoredFileCleans } from '#domain/workspaces'
 import { setDataDir, workspaceDir } from '@yaac/shared/project-paths'
 import type { NodeLocalLiveSet, RuntimeSnapshot, StrayUnit, RuntimeHandle } from '#drivers/contract'
 import { BUILT_IN_USER_ID, closeDb, getWorkspaceRow, listProjectRows, setProjectKeptIgnoredPaths } from '#db'
@@ -65,7 +65,7 @@ function seeNothing(): void {
 }
 
 async function setUpSweep(): Promise<void> {
-  gcDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-gc-ephemeral-'))
+  gcDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-gc-scratch-'))
   setDataDir(gcDataDir)
   reaped = []
   installFakeWorkspaceDriver({
@@ -99,7 +99,7 @@ async function seedWorkspacesDir(projectId: string, sid: string): Promise<string
   return dir
 }
 
-describe('gcOrphanEphemeralModuleDirs', () => {
+describe('gcOrphanScratchDirs', () => {
   beforeEach(setUpSweep)
   afterEach(tearDownSweep)
 
@@ -110,7 +110,7 @@ describe('gcOrphanEphemeralModuleDirs', () => {
 
     seeRunning([handleFixture({ workspaceId: 'live-1', projectId: PROJ_A })])
 
-    await gcOrphanEphemeralModuleDirs(view)
+    await gcOrphanScratchDirs(view)
 
     await expect(fs.access(liveTmux)).resolves.toBeUndefined()
     await expect(fs.access(deadTmux)).rejects.toThrow()
@@ -133,7 +133,7 @@ describe('gcOrphanEphemeralModuleDirs', () => {
       return dir
     }))
 
-    await gcOrphanEphemeralModuleDirs(view)
+    await gcOrphanScratchDirs(view)
 
     for (const dir of checkouts) await expect(fs.access(dir)).resolves.toBeUndefined()
     await expect(fs.access(slugSession)).rejects.toThrow()
@@ -148,7 +148,7 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     publishInFlight(['creating-1'])
     spawningSpares.set('spare-1', PROJ_A)
 
-    await gcOrphanEphemeralModuleDirs(view)
+    await gcOrphanScratchDirs(view)
 
     await expect(fs.access(staging)).resolves.toBeUndefined()
     await expect(fs.access(warming)).resolves.toBeUndefined()
@@ -167,14 +167,14 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     settleSpare('spare-1')
     await run()
 
-    await gcOrphanEphemeralModuleDirs(before)
+    await gcOrphanScratchDirs(before)
     await expect(fs.access(spare)).resolves.toBeUndefined()
     await expect(fs.access(created)).resolves.toBeUndefined()
 
     // A listing read after they settled would show them if they were alive.
     await new Promise((resolve) => setTimeout(resolve, 2))
     seeRunning([])
-    await gcOrphanEphemeralModuleDirs(view)
+    await gcOrphanScratchDirs(view)
     await expect(fs.access(spare)).rejects.toThrow()
     await expect(fs.access(created)).rejects.toThrow()
   })
@@ -185,7 +185,7 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     const fresh = await seedWorkspacesDir(PROJ_A, 'staging-1')
     await fs.utimes(fresh, new Date(), new Date())
 
-    await gcOrphanEphemeralModuleDirs(view)
+    await gcOrphanScratchDirs(view)
 
     await expect(fs.access(fresh)).resolves.toBeUndefined()
   })
@@ -195,7 +195,7 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     const dead = await seedWorkspacesDir(PROJ_A, 'would-be-removed')
     seeNothing()
 
-    await expect(gcOrphanEphemeralModuleDirs(view)).rejects.toThrow('cluster offline')
+    await expect(gcOrphanScratchDirs(view)).rejects.toThrow('cluster offline')
     await expect(fs.access(dead)).resolves.toBeUndefined()
   })
 })

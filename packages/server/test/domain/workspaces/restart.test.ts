@@ -31,7 +31,7 @@ vi.mock('#db', async (importOriginal) => {
     listActiveAgentSessions: vi.fn(actual.listActiveAgentSessions),
   }
 })
-import { listProvisioning, prepareRestart, prepareStart, stopWorkspace } from '#domain/workspaces'
+import { keepScratchDirsInCheckout, listProvisioning, prepareRestart, prepareStart, stopWorkspace } from '#domain/workspaces'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import {
   applyWorkspaceEvent,
@@ -41,16 +41,18 @@ import {
   listActiveAgentSessions,
   listWorkspaceAgentSessions,
   getWorkspaceRow,
+  setProjectScratchDirs,
   setWorkspaceGroup,
   setWorkspaceGroupLimit,
 } from '#db'
-import { closeDb } from '#db/client'
+import { eq } from 'drizzle-orm'
+import { closeDb, getDb } from '#db/client'
+import { workspaces } from '#db/schema'
 import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
 import { git } from '@yaac/test-utils/git'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
 import { DEMO_PROJECT_ID, seedProject } from '@yaac/test-utils/project-fixture'
 import { CLAUDE_POD_CWD, projectDir, repoDir, workspaceDir, workspaceStateDir } from '@yaac/shared/project-paths'
-import { projectConfigDir } from '@yaac/shared/paths'
 import { isWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#runtime/status/liveness'
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
@@ -470,7 +472,7 @@ describe('prepareRestart', () => {
     expect(await resumedAs('codex', 'dontAsk' as PermissionMode)).toBe('read-only')
   })
 
-  // The empty module dir an earlier attempt left is not the user's work.
+  // The empty scratch dir an earlier attempt left is not the user's work.
   it('recreates a missing checkout from its base branch, or the default once origin lost that', async () => {
     const repo = repoDir(DEMO_PROJECT_ID)
     const ref = async (name: string): Promise<string> => (await git(repo, ['rev-parse', name])).trim()
@@ -666,20 +668,20 @@ describe('prepareRestart', () => {
 
   // The unit's mount sources go only once it is confirmed gone, and a
   // checkout path reached through a link is never followed out of it.
-  it('removes the old unit\'s ephemeral dirs only once it is gone, leaving what a link points at', async () => {
+  it('removes the old unit\'s scratch dirs only once it is gone, leaving what a link points at', async () => {
+    await setProjectScratchDirs(DEMO_PROJECT_ID, { dirs: [{ path: 'node_modules', sizeGiB: 8 }, { path: 'web/node_modules', sizeGiB: 8 }, { path: 'vendor', sizeGiB: 8 }] })
     await stoppedWorkspace('wt-dirs')
     const checkout = workspaceDir(DEMO_PROJECT_ID, 'wt-dirs')
     const outside = path.join(tmpDir, 'outside')
     await fs.mkdir(path.join(outside, 'node_modules', 'kept'), { recursive: true })
     await fs.mkdir(path.join(checkout, 'node_modules', 'left-pad'), { recursive: true })
+    // The start made both as dirs; a link is put in each one's place.
+    await fs.rm(path.join(checkout, 'web'), { recursive: true })
+    await fs.rm(path.join(checkout, 'vendor'), { recursive: true })
     await fs.symlink(outside, path.join(checkout, 'web'))
     // A listed path that is itself a link.
     await fs.symlink(path.join(outside, 'node_modules'), path.join(checkout, 'vendor'))
     await fs.mkdir(path.join(workspaceStateDir(DEMO_PROJECT_ID, 'wt-dirs'), 'scratch'), { recursive: true })
-    await fs.mkdir(projectConfigDir(DEMO_PROJECT_ID), { recursive: true })
-    await fs.writeFile(path.join(projectConfigDir(DEMO_PROJECT_ID), 'yaac-config.json'), JSON.stringify({
-      ephemeralModulesPaths: ['node_modules', 'web/node_modules', 'vendor'],
-    }))
     live = handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-dirs', jobName: 'yaac-wt-dirs' })
     let presentAtDestroy: boolean | undefined
     installDriver({
@@ -698,6 +700,70 @@ describe('prepareRestart', () => {
     await expect(fs.access(path.join(workspaceStateDir(DEMO_PROJECT_ID, 'wt-dirs'), 'scratch'))).rejects.toThrow()
     await expect(fs.access(path.join(outside, 'node_modules', 'kept'))).resolves.toBeUndefined()
     expect((await fs.lstat(path.join(checkout, 'vendor'))).isSymbolicLink()).toBe(true)
+  })
+
+  // A dir the project lists only since the workspace started is real
+  // content in its checkout, so it stays.
+  it('removes the scratch dirs the old unit was started with, not ones the project lists since', async () => {
+    await stoppedWorkspace('wt-listed')
+    const checkout = workspaceDir(DEMO_PROJECT_ID, 'wt-listed')
+    await fs.mkdir(path.join(checkout, 'node_modules', 'left-pad'), { recursive: true })
+    await fs.mkdir(path.join(checkout, 'vendor'), { recursive: true })
+    await fs.writeFile(path.join(checkout, 'vendor', 'kept.txt'), 'mine\n')
+    await setProjectScratchDirs(DEMO_PROJECT_ID, { dirs: [{ path: 'node_modules', sizeGiB: 8 }, { path: 'vendor', sizeGiB: 8 }] })
+    live = handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-listed', jobName: 'yaac-wt-listed' })
+    installDriver({ destroy: () => { live = undefined; return Promise.resolve(true) } })
+
+    await restart('wt-listed')
+
+    await expect(fs.access(path.join(checkout, 'node_modules', 'left-pad'))).rejects.toThrow()
+    expect(await fs.readFile(path.join(checkout, 'vendor', 'kept.txt'), 'utf8')).toBe('mine\n')
+    // The restart is started with the project's list as it is now.
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-listed'))?.scratchDirs).toEqual(['node_modules', 'vendor'])
+  })
+
+  // A scratch dir is emptied at stop even where git tracks files in it: they
+  // stay in its history. "Keep in the checkout and restart" first takes the
+  // dir off the workspace's own list, so that restart's stop keeps it.
+  it('empties a scratch dir git tracks, unless it was kept in the checkout first', async () => {
+    const tracked = async (workspaceId: string): Promise<string> => {
+      await stoppedWorkspace(workspaceId)
+      await applyWorkspaceEvent({ type: 'tracked-scratch-dirs-found', projectId: DEMO_PROJECT_ID, workspaceId, paths: ['target'] })
+      const checkout = workspaceDir(DEMO_PROJECT_ID, workspaceId)
+      await fs.mkdir(path.join(checkout, 'node_modules', 'left-pad'), { recursive: true })
+      await fs.writeFile(path.join(checkout, 'target', 'out.bin'), 'tracked\n')
+      live = handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId, jobName: `yaac-${workspaceId}` })
+      installDriver({ destroy: () => { live = undefined; return Promise.resolve(true) } })
+      return checkout
+    }
+
+    const emptied = await tracked('wt-tracked')
+    await restart('wt-tracked')
+    await expect(fs.access(path.join(emptied, 'target', 'out.bin'))).rejects.toThrow()
+
+    const kept = await tracked('wt-kept')
+    await keepScratchDirsInCheckout(local, 'wt-kept', ['target'])
+    await restart('wt-kept')
+    await expect(fs.access(path.join(kept, 'node_modules', 'left-pad'))).rejects.toThrow()
+    expect(await fs.readFile(path.join(kept, 'target', 'out.bin'), 'utf8')).toBe('tracked\n')
+  })
+
+  // One started before its list was recorded, by a release whose default
+  // was node_modules alone: its `target/` is real content.
+  it('removes only node_modules for an old unit started before scratch dirs were recorded', async () => {
+    await stoppedWorkspace('wt-legacy')
+    await (await getDb()).update(workspaces).set({ scratchDirs: null })
+      .where(eq(workspaces.workspaceId, 'wt-legacy'))
+    const checkout = workspaceDir(DEMO_PROJECT_ID, 'wt-legacy')
+    await fs.mkdir(path.join(checkout, 'node_modules', 'left-pad'), { recursive: true })
+    await fs.writeFile(path.join(checkout, 'target', 'out.bin'), 'built\n')
+    live = handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-legacy', jobName: 'yaac-wt-legacy' })
+    installDriver({ destroy: () => { live = undefined; return Promise.resolve(true) } })
+
+    await restart('wt-legacy')
+
+    await expect(fs.access(path.join(checkout, 'node_modules', 'left-pad'))).rejects.toThrow()
+    expect(await fs.readFile(path.join(checkout, 'target', 'out.bin'), 'utf8')).toBe('built\n')
   })
 
   // A unit still shutting down may write to its checkout, so its dirs stay.

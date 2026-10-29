@@ -4,6 +4,7 @@ import type {
   AgentTool,
   EgressAllowlist,
   PermissionMode,
+  ScratchDirSettings,
   WorkspaceDeathReason,
 } from '@yaac/shared/types'
 import { boolean, index, integer, jsonb, primaryKey, snakeCase, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core'
@@ -146,6 +147,17 @@ export const projects = snakeCase.table('projects', {
    *  removes a workspace's ignored files (docs/workspace-storage.md
    *  "Ignored files at stop"). */
   keptIgnoredPaths: jsonb().$type<string[]>().notNull().default([]),
+  /**
+   * Checkout-relative dirs of installed packages and build output that live
+   * with a workspace's runtime rather than its checkout, and go at stop, each
+   * with the cap it names, if any; and those git tracks that the user chose
+   * not to be warned about again (docs/workspace-storage.md "Package
+   * installs").
+   */
+  scratchDirs: jsonb().$type<ScratchDirSettings>().notNull().default({
+    dirs: [{ path: 'node_modules' }, { path: 'target' }],
+    ignoredTracked: [],
+  }),
 }, (t) => [uniqueIndex().on(t.sharedFrom, t.owner)])
 
 /**
@@ -281,6 +293,18 @@ export const workspaces = snakeCase.table('workspaces', {
    *  last stop finished (docs/workspace-storage.md "Ignored files at stop").
    *  A stopped row without one is still to be cleaned. */
   ignoredCleanedAt: timestamp({ withTimezone: true }),
+  /**
+   * The scratch dirs its current or last runtime was started with, which its
+   * stop removes from the checkout. Recorded at start rather than read from
+   * the project at stop, so a later edit of the project's list never deletes
+   * a dir this workspace keeps in its checkout. Null for a workspace started
+   * before this was recorded (docs/legacy-compat-shims.md).
+   */
+  scratchDirs: text().array(),
+  /** The project's scratch dirs that git tracks at this workspace's base
+   *  branch (or its own pushed branch), found when it last started. Their
+   *  tracked files show as deleted inside it, which the webapp warns about. */
+  trackedScratchDirs: text().array().notNull().default([]),
 }, (t) => [index().on(t.projectId)])
 
 /**

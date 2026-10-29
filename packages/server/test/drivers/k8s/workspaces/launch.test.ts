@@ -94,7 +94,7 @@ function specOf(
     env: ['CALLER_SAID=yes'],
     secretEnvKeys: [],
     mounts: [{ source: { kind: 'hostPath', path: workspaceDir(PROJECT_ID, 's1') }, mountPath: '/workspace' }],
-    moduleDirs: [],
+    scratchDirs: [],
     resources: {
       memoryRequestBytes: 1, memoryLimitBytes: 2,
       cpuRequestMillis: 3, cpuLimitMillis: 4,
@@ -285,23 +285,24 @@ describe('launchWorkspace', () => {
 
   // pnpm's SQLite store index cannot be shared between pods, so each pod
   // has its own store on the same volume as `.pnpm`, letting pnpm hardlink.
-  it('backs each module dir with its own volume and keeps pnpm\'s store inside the root one', async () => {
+  it('backs each scratch dir with its own volume and keeps pnpm\'s store inside the root one', async () => {
     const plain = await prepareWorkspaceSubstrate(INTENT)
+    const web = { path: '/workspace/packages/web/node_modules', sizeBytes: 8 * 1024 ** 3 }
     await launchWorkspace(specOf(plain, {
-      moduleDirs: ['/workspace/node_modules', '/workspace/packages/web/node_modules'],
+      scratchDirs: [{ path: '/workspace/node_modules', sizeBytes: 8 * 1024 ** 3 }, web],
     }))
 
     const job = appliedJob().spec.template
     const volumes = job.spec.volumes.map((v) => v.name)
-    expect(volumes).toContain('pnpm-modules-0')
-    expect(volumes).toContain('pnpm-modules-1')
+    expect(volumes).toContain('scratch-0')
+    expect(volumes).toContain('scratch-1')
     const mounts = job.spec.containers[0].volumeMounts
-    expect(mounts).toContainEqual({ name: 'pnpm-modules-0', mountPath: '/workspace/node_modules' })
-    expect(mounts).toContainEqual({ name: 'pnpm-modules-1', mountPath: '/workspace/packages/web/node_modules' })
+    expect(mounts).toContainEqual({ name: 'scratch-0', mountPath: '/workspace/node_modules' })
+    expect(mounts).toContainEqual({ name: 'scratch-1', mountPath: '/workspace/packages/web/node_modules' })
     expect(job.metadata).toMatchObject({
       annotations: {
-        'dev.gvisor.spec.mount.pnpm-modules-0.type': 'bind',
-        'dev.gvisor.spec.mount.pnpm-modules-1.type': 'bind',
+        'dev.gvisor.spec.mount.scratch-0.type': 'bind',
+        'dev.gvisor.spec.mount.scratch-1.type': 'bind',
       },
     })
     expect(job.spec.initContainers).toBeUndefined()
@@ -311,9 +312,9 @@ describe('launchWorkspace', () => {
       npm_config_store_dir: '/workspace/node_modules/.pnpm-store',
     })
 
-    // Without a root module dir the store stays off the checkout.
+    // Without a root scratch dir the store stays off the checkout.
     fakeCluster.calls = []
-    await launchWorkspace(specOf(plain, { moduleDirs: ['/workspace/packages/web/node_modules'] }))
+    await launchWorkspace(specOf(plain, { scratchDirs: [web] }))
     expect(containerEnv()).toMatchObject({
       pnpm_config_store_dir: '/home/yaac/.local/share/pnpm/store',
       npm_config_store_dir: '/home/yaac/.local/share/pnpm/store',

@@ -32,7 +32,7 @@ import { clearPrewarmStateForTests, refreshing } from '#domain/workspaces/prewar
 import { setWorkspaceBinDir } from '#domain/workspaces/workspace-bin'
 import type { StartWorkspaceRequest } from '#domain/workspaces/start'
 import type { WorkspaceCreateResult } from '#domain/workspaces/create'
-import { setProjectEnvVar } from '#domain/projects'
+import { setScratchDirs, setProjectEnvVar } from '#domain/projects'
 import { _clearTmuxAliveCacheForTests } from '#runtime/status/liveness'
 import { _resetAcpRegistryForTests, registerAcpConversation } from '#runtime/agents/acp-registry'
 import type { AcpConversation } from '#runtime/agents'
@@ -976,6 +976,42 @@ describe('prepareStart', () => {
       }
       expect((await rowAtImage('wt-1', 'dev'))?.baseBranch).toBe('dev')
       expect((await rowAtImage('wt-2'))?.baseBranch).toBe('main')
+    })
+
+    it('makes each of the project\'s scratch dirs a scratch dir, recording the ones origin tracks', async () => {
+      // Tracked at the base branch, or at the workspace's own pushed branch.
+      const repo = repoDir(DEMO_PROJECT_ID)
+      const commitTo = async (ref: string, file: string): Promise<void> => {
+        await fs.mkdir(path.dirname(path.join(repo, file)), { recursive: true })
+        await fs.writeFile(path.join(repo, file), 'built\n')
+        await git(repo, ['add', '-A'])
+        await git(repo, ['commit', '-qm', file])
+        await git(repo, ['update-ref', ref, 'HEAD'])
+      }
+      await git(repo, ['checkout', '-qb', 'tracked'])
+      await commitTo('refs/remotes/origin/tracked', 'target/out.bin')
+      await commitTo('refs/remotes/origin/agent/wt-tracked', 'web/node_modules/pkg/index.js')
+      await git(repo, ['checkout', '-q', 'main'])
+      await setScratchDirs(local, DEMO_PROJECT_ID, {
+        dirs: [{ path: 'node_modules', sizeGiB: 8 }, { path: 'target', sizeGiB: 32 }, { path: 'web/node_modules', sizeGiB: 2 }],
+      })
+
+      await start({ workspaceId: 'wt-tracked', branch: 'tracked' })
+      // Each with its own cap.
+      const GIB = 1024 ** 3
+      expect(specs[0].scratchDirs).toEqual([
+        { path: '/workspace/node_modules', sizeBytes: 8 * GIB },
+        { path: '/workspace/target', sizeBytes: 32 * GIB },
+        { path: '/workspace/web/node_modules', sizeBytes: 2 * GIB },
+      ])
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-tracked')).toMatchObject({
+        // What its stop removes, whatever the project lists by then.
+        scratchDirs: ['node_modules', 'target', 'web/node_modules'],
+        trackedScratchDirs: ['target', 'web/node_modules'],
+      })
+      // Nothing tracked on main.
+      const plain = await start()
+      expect((await getWorkspaceRow(DEMO_PROJECT_ID, plain.workspaceId))?.trackedScratchDirs).toEqual([])
     })
 
     it('launches in the time zone clients report, and records it', async () => {

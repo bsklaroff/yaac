@@ -3,7 +3,7 @@ import { getDb } from './client'
 import { projects, projectToolDefaults } from './schema'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { nullsToUndefined } from '#lib/nulls'
-import type { AgentTool, EgressAllowlist, ProjectMeta, ToolCreateDefaults } from '@yaac/shared/types'
+import type { AgentTool, EgressAllowlist, ProjectMeta, ScratchDirSettings, ToolCreateDefaults } from '@yaac/shared/types'
 
 /*
  * Which projects exist, as the server records them. The clone, config and
@@ -79,6 +79,7 @@ export interface ProjectRow extends ProjectMeta {
   stoppedWorkspaceRetentionDays?: number
   /** Gitignored checkout paths a stop keeps. */
   keptIgnoredPaths: string[]
+  scratchDirs: ScratchDirSettings
 }
 
 function toProjectRow(
@@ -137,6 +138,22 @@ export async function setProjectKeptIgnoredPaths(projectId: string, keptIgnoredP
     .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
   notifyWorkspaceListChanged()
   return rows.length > 0
+}
+
+/** Replace the project's scratch dirs, or the tracked ones it is not warned
+ *  about; each is left as it is when absent. Answers the settings as stored,
+ *  or undefined when there is no such project. */
+export async function setProjectScratchDirs(
+  projectId: string,
+  set: Partial<ScratchDirSettings>,
+): Promise<ScratchDirSettings | undefined> {
+  const db = await getDb()
+  const [row] = await db.update(projects)
+    .set({ scratchDirs: sql`${projects.scratchDirs} || ${JSON.stringify(set)}::jsonb` })
+    .where(eq(projects.id, projectId))
+    .returning({ scratchDirs: projects.scratchDirs })
+  notifyWorkspaceListChanged()
+  return row?.scratchDirs
 }
 
 /** Remove a share from its owner, or give it back. False when there is no

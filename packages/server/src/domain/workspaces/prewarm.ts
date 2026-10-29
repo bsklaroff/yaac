@@ -22,6 +22,7 @@ import { workspaceDriver } from '#drivers/driver'
 import { cleanupWorkspace, deleteWorkspaceState } from './cleanup'
 import { claimProvisioning, spawningSpares } from './provisioning'
 import { rebranchSpare, retoolSpare } from './spare-pool'
+import { recordTrackedScratchDirs } from './tracked-scratch-dirs'
 import {
   applyWorkspaceEvent,
   findWorkspaceRow,
@@ -92,6 +93,8 @@ export interface SpareSettings {
   baseBranch?: string
   /** The image it runs; absent for a driver that runs none. */
   image?: string
+  /** The scratch dirs its checkout was prepared with. */
+  scratchDirs?: string[]
 }
 
 /**
@@ -507,6 +510,7 @@ export async function tryClaimPrewarmed(
       ...(setup.model !== undefined ? { model: setup.model } : {}),
       ...(setup.effort !== undefined ? { effort: setup.effort } : {}),
       ...(timeZone !== undefined ? { timeZone } : {}),
+      ...(warmed?.scratchDirs !== undefined ? { scratchDirs: warmed.scratchDirs } : {}),
     })
     inserted = true
     // Its life began at warm time, but stamping it now only drops reports
@@ -609,6 +613,13 @@ export async function tryClaimPrewarmed(
         )
       }),
     ])
+    // Not awaited: a claim never waits out a slow fetch.
+    void fetched.then(async () => recordTrackedScratchDirs(
+      projectId,
+      claimedId,
+      prep?.branch ?? baseBranch ?? undefined,
+      warmed?.scratchDirs ?? [],
+    )).catch(() => { /* a failed fetch is the branch prep's to report */ })
 
     // Unmark the runtime. A lost race throws and falls back to a cold
     // create; so does a lost response to a claim that landed, which is why
