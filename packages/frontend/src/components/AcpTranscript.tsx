@@ -831,8 +831,10 @@ export function ToolRow({
   )
 }
 
+/** Thinking starts open, unlike a tool call: it reads as part of the
+ *  conversation rather than as detail behind it. */
 function ThoughtRow({ text, reveal }: { text: string; reveal: boolean }): JSX.Element {
-  const [open, setOpen] = useOpen(reveal, false)
+  const [open, setOpen] = useOpen(reveal, true)
   return (
     <div>
       <DisclosureRow open={open} onToggle={() => setOpen(!open)} expandable icon={ThinkingIcon}>

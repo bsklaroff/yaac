@@ -64,6 +64,8 @@ describe('ReadOnlyTranscript', () => {
   it('finds text the rows hide, steps through it, and keeps the current match open on close', async () => {
     renderWithClient(<ReadOnlyTranscript workspaceId="w1" sessions={[session()]} />)
     await settle()
+    fireEvent.click(screen.getByRole('button', { name: /Thinking/ }))
+    expect(screen.queryByText('maybe a needle here')).toBeNull()
     expect(screen.queryByText('src/a.ts: needle')).toBeNull()
 
     pressFind()
@@ -102,7 +104,7 @@ describe('ReadOnlyTranscript', () => {
     renderWithClient(<ReadOnlyTranscript workspaceId="w1" sessions={[session()]} />)
     await settle()
     fireEvent.click(screen.getByRole('button', { name: /Thinking/ }))
-    expect(screen.getByText('maybe a needle here')).toBeTruthy()
+    expect(screen.queryByText('maybe a needle here')).toBeNull()
 
     pressFind()
     fireEvent.change(find(), { target: { value: 'needle' } })
@@ -118,7 +120,7 @@ describe('ReadOnlyTranscript', () => {
     expect(status()).toBe('2 of 2')
     fireEvent.keyDown(find(), { key: 'Escape' })
     await settle()
-    expect(screen.getByText('maybe a needle here')).toBeTruthy()
+    expect(screen.queryByText('maybe a needle here')).toBeNull()
     expect(screen.queryByText('src/a.ts: needle')).toBeNull()
   })
 })

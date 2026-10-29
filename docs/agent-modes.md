@@ -379,8 +379,8 @@ jumping to the start and scrolling down loads the rest.
   transcript route above and refreshed while the workspace runs. Escape
   returns to the terminal.
 
-A search must find what a row hides until opened (thinking, tool output, a
-condensed view's folded runs), so it runs in two passes, each counted in a
+A search must find what a row hides until opened (tool output, thinking the
+reader closed, a condensed view's folded runs), so it runs in two passes, each counted in a
 Worker like the file editor's find (docs/file-editor.md): first over the
 conversation's events, to open the rows that hold a match, then over the
 text rendered on screen. The first pass reads messages as markdown source,
