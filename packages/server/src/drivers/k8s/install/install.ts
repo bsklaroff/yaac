@@ -471,6 +471,25 @@ function diagnoseOldKind(kindVersionOut: string): string | null {
 }
 
 /**
+ * The commands that enable the rootful podman socket and grant this user
+ * access, verbatim from the block in docs/cluster-setup.md "Linux: rootful
+ * podman" (a test holds the two together). `$(id -u)` and `$(id -un)` are
+ * left for the user's shell, so the drop-in names the uid that runs them.
+ */
+const ROOTFUL_PODMAN_STEPS = [
+  'sudo apt install podman aardvark-dns nftables acl   # Debian/Ubuntu (or dnf on Fedora/RHEL)',
+  'sudo mkdir -p /etc/systemd/system/podman.socket.d',
+  'sudo tee "/etc/systemd/system/podman.socket.d/yaac-$(id -un).conf" >/dev/null <<EOF',
+  '[Socket]',
+  `ExecStartPost=-/usr/bin/setfacl -m u:$(id -u):x ${path.dirname(ROOTFUL_PODMAN_SOCKET)}`,
+  `ExecStartPost=-/usr/bin/setfacl -m u:$(id -u):rw ${ROOTFUL_PODMAN_SOCKET}`,
+  'EOF',
+  'sudo systemctl daemon-reload',
+  'sudo systemctl enable podman.socket',
+  'sudo systemctl restart podman.socket',
+].join('\n')
+
+/**
  * Linux counterpart to `ensurePodmanMachineSetup`: point at the rootful
  * podman socket (calico-node needs host netfilter and routing access; see
  * docs/cluster-setup.md "Linux: rootful podman") and check that it answers.
@@ -486,10 +505,11 @@ async function ensureRootfulPodmanReachable(deps: ClusterInstallDeps): Promise<s
       'Rootful podman is not reachable. yaac runs kind on the rootful podman '
       + 'engine on Linux (the calico-node DaemonSet needs the host netfilter '
       + 'and routing access that rootless podman does not delegate). Enable the '
-      + 'socket and grant your user access:\n'
-      + '  sudo systemctl enable --now podman.socket\n'
-      + '  sudo setfacl -m u:$USER:x /run/podman\n'
-      + `  sudo setfacl -m u:$USER:rw ${ROOTFUL_PODMAN_SOCKET}`,
+      + 'socket and grant your user access through a podman.socket drop-in, '
+      + 'which re-applies it whenever the socket is re-created. Run these as '
+      + 'your own user, not in a root shell (docs/cluster-setup.md "Linux: '
+      + 'rootful podman" says how to revoke the grant):\n\n'
+      + ROOTFUL_PODMAN_STEPS,
     )
   }
 }

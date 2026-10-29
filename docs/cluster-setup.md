@@ -140,19 +140,47 @@ inherits it, so its podman provider uses the rootful engine, and every
 yourself is left alone.
 
 The rootful socket is root-owned and started by systemd, so yaac cannot
-start it. Enable it once and grant your user access:
+start it. Enable it once and grant your user access, as your own user (not
+in a root shell). systemd re-creates the socket on every boot, which drops a
+plain `setfacl` grant, so the grant lives in a `podman.socket` drop-in whose
+`ExecStartPost=` lines re-apply it each time the socket is created. The
+restart creates the socket afresh, so the drop-in applies the grant now as
+well. It also restarts podman's API service, which interrupts any call made
+through the socket at that moment. Running containers, kind's node among
+them, are unaffected:
 
 ```sh
-sudo apt install podman aardvark-dns nftables   # Debian/Ubuntu (or dnf on Fedora/RHEL)
-sudo systemctl enable --now podman.socket
-sudo setfacl -m u:$USER:x /run/podman
-sudo setfacl -m u:$USER:rw /run/podman/podman.sock
+sudo apt install podman aardvark-dns nftables acl   # Debian/Ubuntu (or dnf on Fedora/RHEL)
+sudo mkdir -p /etc/systemd/system/podman.socket.d
+sudo tee "/etc/systemd/system/podman.socket.d/yaac-$(id -un).conf" >/dev/null <<EOF
+[Socket]
+ExecStartPost=-/usr/bin/setfacl -m u:$(id -u):x /run/podman
+ExecStartPost=-/usr/bin/setfacl -m u:$(id -u):rw /run/podman/podman.sock
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable podman.socket
+sudo systemctl restart podman.socket
 ```
 
-For access that survives the socket being re-created, add a
-`podman.socket` drop-in (`sudo systemctl edit podman.socket`) with
-`SocketMode=0660` and `SocketGroup=` set to a group you are in. Install
-prints these steps when the socket is unreachable. It also refuses a host
+The grant names your numeric uid, and the drop-in's file name says whose
+it is. The `-` before each command lets the socket keep listening for
+everyone else if the grant fails, as it does once `acl` is removed. A
+per-user ACL rather than `SocketGroup=` takes effect without logging out
+and back in, and grants nothing to anyone else.
+
+Access to this socket is equivalent to root on the machine, and the drop-in
+re-grants it on every boot, so revoke it when it is no longer wanted. Do
+this before deleting an account, so a later account given the same uid
+does not inherit the grant (for another account, substitute its name and
+uid):
+
+```sh
+sudo rm "/etc/systemd/system/podman.socket.d/yaac-$(id -un).conf"
+sudo systemctl daemon-reload
+sudo setfacl -x "u:$(id -u)" /run/podman /run/podman/podman.sock
+```
+
+Install prints the grant steps when the socket is unreachable. It also refuses a host
 without aardvark-dns, since kind's network then has no DNS and the node
 cannot pull images. It refuses a host without `nft` too when netavark uses
 its nftables firewall driver: on netavark 2 unless containers.conf picks

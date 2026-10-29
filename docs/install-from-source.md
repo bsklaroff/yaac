@@ -44,10 +44,18 @@ sudo install -m 755 kind /usr/local/bin/kind && rm kind
 curl -fsSLo kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/$(dpkg --print-architecture)/kubectl"
 sudo install -m 755 kubectl /usr/local/bin/kubectl && rm kubectl
 
-# yaac uses rootful podman on Linux.
-sudo systemctl enable --now podman.socket
-sudo setfacl -m u:$USER:x /run/podman
-sudo setfacl -m u:$USER:rw /run/podman/podman.sock
+# yaac uses rootful podman on Linux. The drop-in re-grants your user
+# access each time the socket is re-created, as on every boot; to revoke
+# it, see cluster-setup.md "Linux: rootful podman".
+sudo mkdir -p /etc/systemd/system/podman.socket.d
+sudo tee "/etc/systemd/system/podman.socket.d/yaac-$(id -un).conf" >/dev/null <<EOF
+[Socket]
+ExecStartPost=-/usr/bin/setfacl -m u:$(id -u):x /run/podman
+ExecStartPost=-/usr/bin/setfacl -m u:$(id -u):rw /run/podman/podman.sock
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable podman.socket
+sudo systemctl restart podman.socket
 
 # Download and install yaac
 git clone https://github.com/bsklaroff/yaac.git && cd yaac
