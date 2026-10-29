@@ -52,6 +52,24 @@ RUN case "$(dpkg --print-architecture)" in \
     echo "${SHA256}  /tmp/node.tar.xz" | sha256sum -c - && \
     tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 && rm /tmp/node.tar.xz
 RUN corepack enable
+# Rust, system-wide as in the official image. Its tree is made group-0
+# writable in this same layer, so a pod running as any uid can add
+# toolchains and crates. The minimal profile leaves out docs; clippy and
+# rustfmt are the components agents reach for. rustup verifies each
+# toolchain download against the channel manifest.
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH="/usr/local/cargo/bin:${PATH}"
+ARG RUSTUP_VERSION=1.29.2
+ARG RUST_VERSION=1.99.1
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) TRIPLE=x86_64-unknown-linux-gnu SHA256=5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4 ;; \
+      arm64) TRIPLE=aarch64-unknown-linux-gnu SHA256=a9c168dbea81a84671c6b7a5c1795cb0eb699020110d107ddfca427bd797e697 ;; \
+    esac && \
+    curl -fsSL -o /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${TRIPLE}/rustup-init" && \
+    echo "${SHA256}  /tmp/rustup-init" | sha256sum -c - && chmod 755 /tmp/rustup-init && \
+    /tmp/rustup-init -y --no-modify-path --profile minimal \
+      --default-toolchain ${RUST_VERSION} --component clippy,rustfmt && \
+    rm /tmp/rustup-init && \
+    chgrp -R 0 "$RUSTUP_HOME" "$CARGO_HOME" && chmod -R g=u "$RUSTUP_HOME" "$CARGO_HOME"
 # streamd: the in-pod stream daemon (PTY/ctrl/exec/tcp streams) the server
 # dials through the proxy relay. Started by the pod's setup, not the
 # entrypoint. Its source is part of this image's content hash (see

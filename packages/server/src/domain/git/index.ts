@@ -30,6 +30,7 @@ export {
   getDefaultBranch,
   lastFetchedAtMs,
   listRemoteBranches,
+  listTrackedPaths,
   listTreeSubdirs,
   maintainRepo,
   readBlobAt,

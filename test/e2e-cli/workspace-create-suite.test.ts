@@ -225,6 +225,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     name: string,
     opts: {
       yaacConfig?: Record<string, unknown>
+      scratchDirs?: string[]
       files?: Record<string, string>
       extraBranches?: Record<string, Record<string, string>>
       headers?: Record<string, string>
@@ -247,6 +248,14 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     await registerTestProject(server!, projectId, name, fakeRemote, opts.headers)
     await assignTestGitCredential(server!, projectId, 'fake-ghp-token', undefined, opts.headers)
 
+    if (opts.scratchDirs) {
+      const res = await fetch(`${base}/api/project/${projectId}/scratch-dirs`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', ...opts.headers },
+        body: JSON.stringify({ dirs: opts.scratchDirs.map((p) => ({ path: p })) }),
+      })
+      expect(res.status).toBe(200)
+    }
     if (opts.yaacConfig) {
       const configDir = path.join(projectPath, 'config')
       await fs.mkdir(configDir, { recursive: true })
@@ -423,9 +432,9 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         // tracked `frontends/` makes the checkout populate a dir whose mount
         // point already exists.
         files: { '.gitignore': 'node_modules\n', 'frontends/app.txt': 'app\n' },
+        // A root path and a nested one under a tracked dir.
+        scratchDirs: ['node_modules', 'frontends/node_modules'],
         yaacConfig: {
-          // A root path and a nested one under a tracked dir.
-          ephemeralModulesPaths: ['node_modules', 'frontends/node_modules'],
           // Stored under the project dir, so removed with the temp data dir.
           cacheVolumes: { 'test-cache': '/tmp/test-cache' },
           // `sleep` keeps the init window alive long enough for the server
@@ -1288,9 +1297,9 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       await waitForListStatus('waiting', 30_000)
     }, 240_000)
 
-    it('keeps each module dir and pnpm\'s store on pod-local volumes, installing through the npm cache', async () => {
+    it('keeps each scratch dir and pnpm\'s store on pod-local volumes, installing through the npm cache', async () => {
       // Last kitchen test: it stops the workspace.
-      // Each module dir is a real directory on its own tmpfs, not a symlink
+      // Each scratch dir is a real directory on its own tmpfs, not a symlink
       // (which would break pnpm's mkdir).
       await expect(execInJob(jobName, [
         'readlink', '/workspace/node_modules',
@@ -1376,13 +1385,14 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     }, 360_000)
   })
 
-  describe('provisioning hand-off + ephemeralModulesPaths [] + npmCache false', () => {
+  describe('provisioning hand-off + no scratch dirs + npmCache false', () => {
     it('a webapp create with a client id yields a real session of that id, and the provisioning row drops on hand-off', async () => {
-      // Also covers ephemeralModulesPaths: [] and npmCache: false. The cache
+      // Also covers an empty scratch-dirs list and npmCache: false. The cache
       // exists, so only the project setting keeps this pod off it.
       await ensureNpmCache()
-      await setupProject('no-ephemeral', {
-        yaacConfig: { ephemeralModulesPaths: [], npmCache: false },
+      await setupProject('no-scratch', {
+        scratchDirs: [],
+        yaacConfig: { npmCache: false },
       })
       const workspaceId = randomUUID()
       onTestFinished(() => stopWorkspace(workspaceId))
@@ -1394,18 +1404,18 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       const createDone = fetch(`${base}/api/workspace/create`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ project: 'no-ephemeral', tool: 'claude', mode: 'tui', workspaceId }),
+        body: JSON.stringify({ project: 'no-scratch', tool: 'claude', mode: 'tui', workspaceId }),
       }).then((r) => r.text())
 
       await vi.waitFor(() => expect(sub.latest()?.provisioning.find((p) => p.workspaceId === workspaceId))
-        .toMatchObject({ kind: 'create', projectId: idOf('no-ephemeral') }), { timeout: 20_000, interval: 200 })
+        .toMatchObject({ kind: 'create', projectId: idOf('no-scratch') }), { timeout: 20_000, interval: 200 })
 
       const ndjson = await createDone
       expect(ndjson).toContain('"type":"result"')
       expect(ndjson).not.toContain('"type":"error"')
 
       // The workspace has the client-supplied id...
-      const list = await (await fetch(`${base}/api/workspace/list?project=no-ephemeral`)).json() as
+      const list = await (await fetch(`${base}/api/workspace/list?project=no-scratch`)).json() as
         { workspaces: Array<{ workspaceId: string }> }
       expect(list.workspaces.some((s) => s.workspaceId === workspaceId)).toBe(true)
 
@@ -1419,7 +1429,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       sub.ws.close()
 
       // No redirect, so no node_modules at all.
-      const pod = await findWorkspacePod('no-ephemeral')
+      const pod = await findWorkspacePod('no-scratch')
       await expect(execInJob(pod.jobName, [
         'test', '-e', '/workspace/node_modules',
       ])).rejects.toThrow()

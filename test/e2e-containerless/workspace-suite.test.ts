@@ -548,6 +548,36 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(bad.stderr).toContain('not a whole number of days')
   })
 
+  it('yaac config scratch-dirs shows the defaults with their caps, replaces them, clears them with --none, and refuses a bad dir', async () => {
+    const run = (...args: string[]): ReturnType<typeof runYaac> => runYaac(serverEnv, 'config', 'scratch-dirs', NAME, ...args)
+    expect((await run()).stdout)
+      .toContain(`Scratch directories in ${NAME}: node_modules (16 GiB, the default), target (16 GiB, the default)`)
+
+    // A dir named without a cap gets the default.
+    const set = await run('node_modules:4', 'target:32', 'web/node_modules/')
+    expect(set.exitCode, set.stderr).toBe(0)
+    // What was stored, normalized, not what was typed.
+    expect(set.stdout).toContain(
+      `Scratch directories in ${NAME} are now: node_modules (4 GiB), target (32 GiB), web/node_modules (16 GiB, the default).`,
+    )
+    expect((await run('target')).stdout)
+      .toContain(`Scratch directories in ${NAME} are now: target (16 GiB, the default).`)
+
+    expect((await run('--none')).exitCode).toBe(0)
+    expect((await run()).stdout).toContain(`Scratch directories in ${NAME}: none`)
+    const both = await run('target', '--none')
+    expect(both.exitCode).toBe(1)
+    expect(both.stderr).toContain('not both')
+    const bad = await run('../up')
+    expect(bad.exitCode).toBe(1)
+    expect(bad.stderr).toContain('must not contain')
+    const tooBig = await run('target:2000')
+    expect(tooBig.exitCode).toBe(1)
+
+    // Put back what the cases below run with.
+    expect((await run('node_modules', 'target')).exitCode).toBe(0)
+  })
+
   it('creates a workspace as a tmux session on this host', async () => {
     workspaceId = await createWorkspace('--effort', 'high')
     // A tmux server of its own on this host.
@@ -1786,7 +1816,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
 
   // Destroys its subject — keep last.
   it('stops the workspace by taking its tmux server down', async () => {
-    // Here ephemeral paths live in the checkout, and stop removes them
+    // Here scratch dirs live in the checkout, and stop removes them
     // (checked in the next case).
     const checkout = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', workspaceId)
     await fs.mkdir(path.join(checkout, 'node_modules', 'left-pad'), { recursive: true })
@@ -1805,7 +1835,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', workspaceId,
     )
     await expect(fs.stat(dir)).resolves.toBeDefined()
-    // Without its ephemeral paths, which would otherwise be a full copy of
+    // Without its scratch dirs, which would otherwise be a full copy of
     // every dependency. Polled, since teardown is detached.
     await vi.waitFor(
       async () => { await expect(fs.stat(path.join(dir, 'node_modules'))).rejects.toThrow() },

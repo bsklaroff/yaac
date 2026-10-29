@@ -4,7 +4,7 @@ import type { Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { jsonBodyLimit, optionalProjectRef, projectRef, zv } from '#routes/validator'
 import { z } from 'zod'
-import { allowWorkspaceHost, claimDraft, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getAgentSessionTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toAgentSessionEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand, type QueueStart, listQueuedWorkspaces, setWorkspaceTimeout } from '#domain/workspaces'
+import { allowWorkspaceHost, claimDraft, keepScratchDirsInCheckout, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getAgentSessionTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toAgentSessionEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand, type QueueStart, listQueuedWorkspaces, setWorkspaceTimeout } from '#domain/workspaces'
 import { createShellWindow, killWindowTerminal } from '#runtime/terminals'
 import {
   createWorkspaceGroup,
@@ -602,6 +602,16 @@ export const workspaceApp = new Hono<IdentityEnv>()
       const { projectId, workspaceId } = row
       await authorizeProject(c.get('principal'), projectId)
       await setWorkspaceTitle(projectId, workspaceId, c.req.valid('json').title)
+      return c.body(null, 204)
+    },
+  )
+  // Keep scratch dirs git tracks in the workspace's checkout: the badge's
+  // answer, before it restarts the workspace (docs/project-config.md).
+  .post(
+    '/:id/keep-scratch-dirs',
+    zv('json', z.object({ paths: z.array(z.string()) })),
+    async (c) => {
+      await keepScratchDirsInCheckout(c.get('principal'), await resolveWorkspaceId(c.req.param('id')), c.req.valid('json').paths)
       return c.body(null, 204)
     },
   )

@@ -786,9 +786,9 @@ Each workspace container requests **500m cpu, 2Gi memory and 2Gi
 ephemeral storage**, and is limited to **8 cores, 16Gi memory and 16Gi
 ephemeral storage**. A nested-containers workspace adds its podman
 graphroot volume's size to the storage limit, since kubelet charges it
-there. A workspace with module dirs (the default, `node_modules`) adds 2Gi
-to the storage request, the install it really holds, and one module dir's
-9Gi volume cap to the limit. Requests are what the scheduler reserves, and
+there. A workspace with scratch dirs (by default `node_modules` and `target`)
+adds 2Gi to the storage request, the install it really holds, and each
+scratch dir's volume cap, its size plus 1Gi, to the limit. Requests are what the scheduler reserves, and
 they sit well under the limits: the node is deliberately overcommitted, to
 fit many mostly-idle workspaces.
 

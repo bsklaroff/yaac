@@ -26,10 +26,12 @@ export {
   renameBuildFile,
   writeBuildFile,
 } from './build-files'
+export { resolveProjectConfig } from './config'
 export {
-  resolveEphemeralModulesPaths,
-  resolveProjectConfig,
-} from './config'
+  importScratchDirsFromConfig,
+  scratchDirSettingsPatchSchema,
+  setScratchDirs,
+} from './scratch-dirs'
 export { dismissImageBuild, retryImageBuild } from './images'
 export { setKeptIgnoredPaths } from './kept-paths'
 export {
@@ -51,7 +53,6 @@ export {
   getProjectDetail,
   projectRemoteUrl,
   resolveProjectId,
-  resolveProjectConfigWithSource,
 } from './detail'
 export {
   readProjectDockerfile,

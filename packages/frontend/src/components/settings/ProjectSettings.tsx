@@ -4,6 +4,7 @@ import { FileEditor } from '#components/settings/FileEditor'
 import { BuildFiles } from '#components/settings/BuildFiles'
 import { ProjectEnv } from '#components/settings/ProjectEnv'
 import { EgressAllowlist } from '#components/settings/EgressAllowlist'
+import { ScratchDirs } from '#components/settings/ScratchDirs'
 import { HostedRemote } from '#components/settings/HostedRemote'
 import { ProjectSharing } from '#components/settings/ProjectSharing'
 import { WorkspaceAutoDelete } from '#components/settings/WorkspaceAutoDelete'
@@ -17,9 +18,11 @@ import { useTeammateView, useWhoami } from '#lib/viewer'
 
 const project = api.project[':projectId']
 
+/** The stored file as written, so one the server cannot parse still opens
+ *  to be fixed rather than as an empty editor whose save would replace it. */
 async function loadConfig(projectId: string): Promise<string> {
-  const { config } = await project.config.$get({ param: { projectId } })
-  return JSON.stringify(config ?? {}, null, 2) + '\n'
+  const { content } = await project.config.raw.$get({ param: { projectId } })
+  return content === '' ? '{}\n' : content
 }
 
 async function saveConfig(projectId: string, text: string): Promise<void> {
@@ -126,6 +129,15 @@ export function ProjectSettings(): JSX.Element {
           {mediatedEgress && <div className="mt-6">
             <EgressAllowlist key={`allowlist:${projectId}`} projectId={projectId} readOnly={readOnly} />
           </div>}
+
+          <div className="mt-6">
+            <ScratchDirs
+              key={`scratch:${projectId}`}
+              projectId={projectId}
+              settings={selected.scratchDirs}
+              readOnly={readOnly}
+            />
+          </div>
 
           <div className="mt-6">
             <WorkspaceAutoDelete

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { closeDb } from '#db/client'
 import {
@@ -11,6 +12,7 @@ import {
   setProjectKeptIgnoredPaths,
   setProjectWorkspaceRetention,
   setProjectEgressAllowlist,
+  setProjectScratchDirs,
   setProjectGitCredential,
   setProjectShareRevoked,
 } from '#db/project-store'
@@ -55,6 +57,7 @@ describe('recordProject', () => {
       guardDefaultBranch: true,
       shareRevoked: false,
       keptIgnoredPaths: [],
+      scratchDirs: { dirs: [{ path: 'node_modules' }, { path: 'target' }], ignoredTracked: [] },
     })
   })
 
@@ -148,8 +151,30 @@ describe('listProjectRows', () => {
         guardDefaultBranch: true,
         shareRevoked: false,
         keptIgnoredPaths: [],
+        scratchDirs: { dirs: [{ path: 'node_modules' }, { path: 'target' }], ignoredTracked: [] },
       },
     ])
+  })
+})
+
+describe('setProjectScratchDirs', () => {
+  let tmpDir: string
+  beforeEach(async () => { tmpDir = await createTempDataDir() })
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  it('replaces whichever part it is given, answering the settings as stored, or undefined for no such project', async () => {
+    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    const dirs = [{ path: 'node_modules' }, { path: 'target' }]
+    expect(await setProjectScratchDirs(APP, { ignoredTracked: ['target'] }))
+      .toEqual({ dirs, ignoredTracked: ['target'] })
+    expect(await setProjectScratchDirs(APP, { dirs: [{ path: 'node_modules', sizeGiB: 4 }] }))
+      .toEqual({ dirs: [{ path: 'node_modules', sizeGiB: 4 }], ignoredTracked: ['target'] })
+    expect((await getProjectRow(APP))?.scratchDirs)
+      .toEqual({ dirs: [{ path: 'node_modules', sizeGiB: 4 }], ignoredTracked: ['target'] })
+    expect(await setProjectScratchDirs(randomUUID(), { dirs: [] })).toBeUndefined()
   })
 })
 

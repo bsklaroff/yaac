@@ -158,8 +158,8 @@ in its progress output.
 **Mounts into the checkout.** A pod mounts cache volumes under `/workspace`
 onto separate storage that git never sees. A symlink there would show as
 untracked (`git add -A` would commit an absolute host path) and trip the
-ephemeral-modules guard. The checkout is already on local disk, so nothing
-is lost. Module dirs (`ephemeralModulesPaths`) also stay in the checkout;
+scratch-dirs guard. The checkout is already on local disk, so nothing
+is lost. The project's scratch directories also stay in the checkout;
 a stop deletes them and a restart's init commands rebuild them.
 
 The rebuild is a relink, not a download, because every workspace uses the

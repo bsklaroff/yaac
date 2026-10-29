@@ -1,5 +1,5 @@
 import { workspaceDriver } from '#drivers/driver'
-import { resolveProjectConfig, resolveEphemeralModulesPaths } from '#domain/projects'
+import { resolveProjectConfig } from '#domain/projects'
 import { loadToolAuthEntry } from '#domain/auth'
 import { getProjectRow } from '#db'
 import { shellEscape } from '#lib/shell'
@@ -80,16 +80,16 @@ export async function retoolSpare(
 }
 
 /**
- * Checkout-relative mount points (ephemeral modules and cache volumes under
+ * Checkout-relative mount points (scratch dirs and cache volumes under
  * the checkout). `git clean` must skip them: removing a mount point fails
  * with EBUSY.
  */
-function workspaceMountPaths(config: YaacConfig, workspaceDir: string): string[] {
+function workspaceMountPaths(config: YaacConfig, modules: string[], workspaceDir: string): string[] {
   const prefix = `${workspaceDir}/`
   const underWorkspace = (p: string): string | null =>
     p.startsWith(prefix) ? p.slice(prefix.length) : null
   return [
-    ...resolveEphemeralModulesPaths(config),
+    ...modules,
     ...Object.values(config.cacheVolumes ?? {}).map(underWorkspace),
   ].filter((p): p is string => p !== null && p.length > 0)
 }
@@ -120,7 +120,8 @@ export async function rebranchSpare(
   // Move `agent/<id>` to the SHA and remove untracked files. `clean -fd` not
   // `-x`, which would empty mounted module and cache dirs. reset+clean walks
   // the whole checkout, so allow longer than the default.
-  const cleanExcludes = workspaceMountPaths(config, wd)
+  const modules = (await getProjectRow(spare.projectId))?.scratchDirs.dirs.map((d) => d.path) ?? []
+  const cleanExcludes = workspaceMountPaths(config, modules, wd)
     .map((p) => ` -e '${shellEscape(p)}'`)
     .join('')
   await runtime.exec(spare.jobName, `sh -c "git -C ${wd} reset --hard ${sha} `

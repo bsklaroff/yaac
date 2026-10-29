@@ -12,6 +12,7 @@ import {
   removeWorkspaceRecords,
   recordWaitingUnseen,
   setWorkspaceBaseBranch,
+  setWorkspaceTrackedScratchDirs,
   setWorkspaceEffort,
   setWorkspacePermissionMode,
 } from './workspace-store'
@@ -44,6 +45,9 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
       return
     case 'base-branch-resolved':
       await setWorkspaceBaseBranch(event.projectId, event.workspaceId, event.baseBranch)
+      return
+    case 'tracked-scratch-dirs-found':
+      await setWorkspaceTrackedScratchDirs(event.projectId, event.workspaceId, event.paths)
       return
     case 'sessions-launched': {
       const { projectId, workspaceId, sessions } = event
@@ -79,9 +83,10 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
 }
 
 async function applyCreated(event: WorkspaceCreated): Promise<void> {
-  const { projectId, workspaceId, baseBranch, title, generatedTitle, groupId, resume, permissionMode, model, mode, effort, timeZone, deadline } = event
+  const { projectId, workspaceId, baseBranch, title, generatedTitle, groupId, resume, permissionMode, model, mode, effort, timeZone, deadline, scratchDirs } = event
   const launch = {
     ...(deadline !== undefined ? { deadline } : {}),
+    ...(scratchDirs !== undefined ? { scratchDirs } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(mode !== undefined ? { mode } : {}),

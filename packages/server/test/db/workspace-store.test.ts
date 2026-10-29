@@ -5,7 +5,9 @@ import { claudeDir } from '@yaac/shared/project-paths'
 import { sql } from 'drizzle-orm'
 import { closeDb, getDb } from '#db/client'
 import {
+  backfillWorkspaceScratchDirs,
   deleteProjectWorkspaces,
+  forgetWorkspaceScratchDirs,
   deleteWorkspaceRecords,
   findWorkspaceRow,
   listLiveWorkspaceRows,
@@ -291,6 +293,33 @@ describe('session store', () => {
         ['has-prompt', true], ['has-transcript', true], ['never-ran', false],
         ['opencode-named', true], ['opencode-pin', false],
       ])
+    })
+  })
+
+  describe('forgetWorkspaceScratchDirs', () => {
+    it('takes the paths off what the workspace started with, leaving a row that records none', async () => {
+      await create('started', { scratchDirs: ['node_modules', 'target'] })
+      await create('old')
+
+      await forgetWorkspaceScratchDirs(PROJ, 'started', ['target'])
+      await forgetWorkspaceScratchDirs(PROJ, 'old', ['target'])
+
+      expect((await getWorkspaceRow(PROJ, 'started'))?.scratchDirs).toEqual(['node_modules'])
+      expect((await getWorkspaceRow(PROJ, 'old'))?.scratchDirs).toBeUndefined()
+    })
+  })
+
+  describe('backfillWorkspaceScratchDirs', () => {
+    it('fills only the project\'s rows that record none', async () => {
+      await create('old')
+      await create('new', { scratchDirs: ['node_modules', 'target'] })
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'elsewhere' })
+
+      await backfillWorkspaceScratchDirs(PROJ, ['web/node_modules'])
+
+      expect((await getWorkspaceRow(PROJ, 'old'))?.scratchDirs).toEqual(['web/node_modules'])
+      expect((await getWorkspaceRow(PROJ, 'new'))?.scratchDirs).toEqual(['node_modules', 'target'])
+      expect((await getWorkspaceRow(OTHER, 'elsewhere'))?.scratchDirs).toBeUndefined()
     })
   })
 

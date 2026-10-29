@@ -114,6 +114,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'GET', path: '/api/project/:projectId/workspace-auto-delete', request: `${P}/workspace-auto-delete?days=30`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/workspace-auto-delete', request: `${P}/workspace-auto-delete`, body: { days: 30 }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/kept-ignored-paths', request: `${P}/kept-ignored-paths`, body: { paths: ['.env'] }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'PUT', path: '/api/project/:projectId/scratch-dirs', request: `${P}/scratch-dirs`, body: { dirs: [] }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/default-branch-guard', request: `${P}/default-branch-guard`, body: { enabled: false }, access: 'owner', k8s: MISSING, containerless: MISSING },
   // A hosted project's remote, for the user's own git; a push is the
   // owner's.
@@ -121,7 +122,6 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/project/:projectId/git/git-upload-pack', request: `${P}/git/git-upload-pack`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/project/:projectId/git/git-receive-pack', request: `${P}/git/git-receive-pack`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/git-credential', request: `${P}/git-credential`, body: { credentialId: ID.credential }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'GET', path: '/api/project/:projectId/config', request: `${P}/config`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/project/:projectId/config/raw', request: `${P}/config/raw`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/config', request: `${P}/config`, body: { config: {} }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'DELETE', path: '/api/project/:projectId/config', request: `${P}/config`, access: 'owner', k8s: MISSING, containerless: MISSING },
@@ -226,6 +226,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/workspace/group/delete', body: { projectId: ID.project, groupId: ID.group }, access: 'owner', k8s: MISSING, containerless: MISSING },
   // Idempotent for an id with no entry.
   { method: 'POST', path: '/api/workspace/provisioning/:id/dismiss', request: `/api/workspace/provisioning/${ID.provisioning}/dismiss`, access: 'owner', k8s: 204, containerless: 204 },
+  { method: 'POST', path: '/api/workspace/:id/keep-scratch-dirs', request: `${W}/keep-scratch-dirs`, body: { paths: ['target'] }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/title', request: `${W}/title`, body: { title: 't' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id', request: W, access: 'reader', k8s: [404, 503], containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/agent-sessions', request: `${W}/agent-sessions`, access: 'reader', k8s: MISSING, containerless: MISSING },

@@ -334,7 +334,7 @@ describe('stopWorkspace', () => {
       expect(logged?.split('\n')).toHaveLength(11)
     })
 
-    // A pod's module dirs and cache volumes are mounts into the checkout; a
+    // A pod's scratch dirs and cache volumes are mounts into the checkout; a
     // cache volume's contents are shared with other workspaces. The clean
     // finds them from the kernel, so a user namespace stands in for the pod.
     it.runIf(process.platform === 'linux')('keeps everything mounted under the checkout, whatever the project config says', async () => {

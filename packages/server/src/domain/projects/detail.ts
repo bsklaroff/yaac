@@ -1,10 +1,9 @@
-import { hostedRepoDir, projectConfigDir } from '@yaac/shared/project-paths'
+import { hostedRepoDir } from '@yaac/shared/project-paths'
 import { getProjectRow, listProjectRows } from '#db'
 import { workspaceDriver } from '#drivers/driver'
-import { loadProjectConfig } from './config'
 import { ServerError } from '@yaac/shared/errors'
 import { resolveProjectRef } from '@yaac/shared/project-name'
-import type { ProjectMeta, YaacConfig } from '@yaac/shared/types'
+import type { ProjectMeta } from '@yaac/shared/types'
 
 export interface ProjectDetail {
   id: string
@@ -13,10 +12,6 @@ export interface ProjectDetail {
   addedAt: string
   hosted: boolean
   workspaceCount: number
-}
-
-export interface ProjectConfigResult {
-  config: YaacConfig | null
 }
 
 async function loadProjectMeta(projectId: string): Promise<ProjectMeta & { hosted: boolean; sharedFrom?: string; shareRevoked: boolean }> {
@@ -59,18 +54,9 @@ export async function projectFetchUrl(projectId: string): Promise<string> {
 }
 
 /**
- * The project's config from its config directory, like
- * `resolveProjectConfig` but throwing NOT_FOUND for an unknown project.
- */
-export async function resolveProjectConfigWithSource(projectId: string): Promise<ProjectConfigResult> {
-  await loadProjectMeta(projectId)
-  return { config: await loadProjectConfig(projectConfigDir(projectId)) }
-}
-
-/**
- * The project's row and live workspace count. Leaves the config to
- * `GET /project/:projectId/config`, so a malformed one never stops a client
- * resolving the project, e.g. to repair that config.
+ * The project's row and live workspace count. Leaves its config out, so a
+ * malformed one never stops a client resolving the project, e.g. to repair
+ * that config.
  */
 export async function getProjectDetail(projectId: string): Promise<ProjectDetail> {
   const meta = await loadProjectMeta(projectId)

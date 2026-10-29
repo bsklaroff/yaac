@@ -56,6 +56,8 @@ export interface WorkspaceCreatedInput {
   timeZone?: string
   /** When the server stops it. */
   deadline?: Date
+  /** The scratch dirs it is started with (see `workspaces.scratchDirs`). */
+  scratchDirs?: string[]
 }
 
 type Row = typeof workspaces.$inferSelect
@@ -106,6 +108,7 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
       ...(input.effort !== undefined ? { effort: input.effort } : {}),
       ...(input.timeZone !== undefined ? { timeZone: input.timeZone } : {}),
       ...(input.deadline !== undefined ? timeoutColumns(input.deadline) : {}),
+      ...(input.scratchDirs !== undefined ? { scratchDirs: input.scratchDirs } : {}),
     })
     .onConflictDoNothing({ target: workspaces.workspaceId })
     .returning({ workspaceId: workspaces.workspaceId })
@@ -126,7 +129,7 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
 export async function recordWorkspaceResumed(
   input: Pick<
     WorkspaceCreatedInput,
-    'projectId' | 'workspaceId' | 'permissionMode' | 'model' | 'mode' | 'effort' | 'timeZone' | 'deadline'
+    'projectId' | 'workspaceId' | 'permissionMode' | 'model' | 'mode' | 'effort' | 'timeZone' | 'deadline' | 'scratchDirs'
   >,
 ): Promise<void> {
   const db = await getDb()
@@ -135,6 +138,7 @@ export async function recordWorkspaceResumed(
     ...(input.model !== undefined ? { model: input.model } : {}),
     ...(input.mode !== undefined ? { mode: input.mode } : {}),
     ...(input.effort !== undefined ? { effort: input.effort } : {}),
+    ...(input.scratchDirs !== undefined ? { scratchDirs: input.scratchDirs } : {}),
     // A resume launches a new process, in the zone the create read now.
     timeZone: input.timeZone ?? null,
     // A restart stops only at a timeout the restart itself set.
@@ -596,6 +600,33 @@ export async function setWorkspaceBaseBranch(
 ): Promise<void> {
   const db = await getDb()
   await db.update(workspaces).set({ baseBranch }).where(key(projectId, workspaceId))
+}
+
+/** Take `paths` off the scratch dirs a workspace was started with, so its
+ *  stop leaves them in its checkout. A row recording none is left as is. */
+export async function forgetWorkspaceScratchDirs(projectId: string, workspaceId: string, paths: string[]): Promise<void> {
+  const db = await getDb()
+  const [row] = await db.select({ scratchDirs: workspaces.scratchDirs }).from(workspaces).where(key(projectId, workspaceId))
+  if (!row?.scratchDirs) return
+  await db.update(workspaces).set({ scratchDirs: row.scratchDirs.filter((d) => !paths.includes(d)) })
+    .where(key(projectId, workspaceId))
+}
+
+/** Record `scratchDirs` for each of the project's workspaces that has none
+ *  recorded, all of which predate the column (docs/legacy-compat-shims.md). */
+export async function backfillWorkspaceScratchDirs(projectId: string, scratchDirs: string[]): Promise<void> {
+  const db = await getDb()
+  await db.update(workspaces).set({ scratchDirs })
+    .where(and(eq(workspaces.projectId, projectId), isNull(workspaces.scratchDirs)))
+}
+
+export async function setWorkspaceTrackedScratchDirs(
+  projectId: string,
+  workspaceId: string,
+  trackedScratchDirs: string[],
+): Promise<void> {
+  const db = await getDb()
+  await db.update(workspaces).set({ trackedScratchDirs }).where(key(projectId, workspaceId))
 }
 
 /** Record the permission mode the running agent moved to. */

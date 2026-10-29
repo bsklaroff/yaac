@@ -16,9 +16,8 @@ import { buildPodJobManifest } from '#drivers/k8s/workspaces'
 // Internals, for fixtures and bounds only.
 import {
   CA_MOUNT_DIR,
-  MODULES_REQUEST_BYTES,
-  MODULES_SIZELIMIT_BYTES,
-  MODULES_TMPFS_BYTES,
+  SCRATCH_REQUEST_BYTES,
+  SCRATCH_SIZELIMIT_SLACK_BYTES,
   NESTED_GRAPHROOT_SIZELIMIT_BYTES,
   NESTED_GRAPHROOT_TMPFS_BYTES,
   WORKSPACE_POD_ANNOTATIONS,
@@ -624,45 +623,49 @@ describe('buildPodJobManifest', () => {
     })
   })
 
-  describe('moduleDirs', () => {
-    const moduleDirs = ['/workspace/node_modules', '/workspace/packages/web/node_modules']
+  describe('scratchDirs', () => {
+    const GIB = 1024 ** 3
+    const scratchDirs = [
+      { path: '/workspace/node_modules', sizeBytes: 8 * GIB },
+      { path: '/workspace/target', sizeBytes: 32 * GIB },
+    ]
 
     // One volume per dir: the tmpfs annotation applies per volume, not to
-    // a subPath.
-    it('backs each dir with its own sentry-tmpfs emptyDir, alongside the graphroot', () => {
-      const m = build({ moduleDirs, nested: true })
+    // a subPath. Each is capped at its own size.
+    it('backs each dir with its own sentry-tmpfs emptyDir at its own cap, alongside the graphroot', () => {
+      const m = build({ scratchDirs, nested: true })
       const spec = m.spec.template.spec
       expect(spec.volumes).toContainEqual({
-        name: 'pnpm-modules-0', emptyDir: { sizeLimit: String(MODULES_SIZELIMIT_BYTES) },
+        name: 'scratch-0', emptyDir: { sizeLimit: String(8 * GIB + SCRATCH_SIZELIMIT_SLACK_BYTES) },
       })
       expect(spec.volumes).toContainEqual({
-        name: 'pnpm-modules-1', emptyDir: { sizeLimit: String(MODULES_SIZELIMIT_BYTES) },
+        name: 'scratch-1', emptyDir: { sizeLimit: String(32 * GIB + SCRATCH_SIZELIMIT_SLACK_BYTES) },
       })
       expect(spec.containers[0].volumeMounts).toContainEqual({
-        name: 'pnpm-modules-0', mountPath: '/workspace/node_modules',
+        name: 'scratch-0', mountPath: '/workspace/node_modules',
       })
       expect(spec.containers[0].volumeMounts).toContainEqual({
-        name: 'pnpm-modules-1', mountPath: '/workspace/packages/web/node_modules',
+        name: 'scratch-1', mountPath: '/workspace/target',
       })
       expect(m.spec.template.metadata.annotations).toEqual({
         ...WORKSPACE_POD_ANNOTATIONS,
         ...sentryTmpfsAnnotations('podman-graphroot', NESTED_GRAPHROOT_TMPFS_BYTES),
-        ...sentryTmpfsAnnotations('pnpm-modules-0', MODULES_TMPFS_BYTES),
-        ...sentryTmpfsAnnotations('pnpm-modules-1', MODULES_TMPFS_BYTES),
+        ...sentryTmpfsAnnotations('scratch-0', 8 * GIB),
+        ...sentryTmpfsAnnotations('scratch-1', 32 * GIB),
       })
       expect(spec.initContainers).toBeUndefined()
     })
 
-    it('grows the ephemeral-storage request by one install and the limit by one dir\'s ceiling', () => {
-      const { resources } = build({ moduleDirs }).spec.template.spec.containers[0]
+    it('grows the ephemeral-storage request by one install and the limit by every dir\'s ceiling', () => {
+      const { resources } = build({ scratchDirs }).spec.template.spec.containers[0]
       expect(resources.requests['ephemeral-storage'])
-        .toBe(String(2 * 1024 ** 3 + MODULES_REQUEST_BYTES))
+        .toBe(String(2 * 1024 ** 3 + SCRATCH_REQUEST_BYTES))
       expect(resources.limits['ephemeral-storage'])
-        .toBe(String(16 * 1024 ** 3 + MODULES_SIZELIMIT_BYTES))
+        .toBe(String(16 * GIB + 40 * GIB + 2 * SCRATCH_SIZELIMIT_SLACK_BYTES))
     })
 
     it('leaves a pod with none exactly as it was', () => {
-      expect(build({ moduleDirs: [] })).toEqual(build())
+      expect(build({ scratchDirs: [] })).toEqual(build())
       expect(build().spec.template.metadata.annotations).toEqual(WORKSPACE_POD_ANNOTATIONS)
     })
   })

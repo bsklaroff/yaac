@@ -136,6 +136,11 @@ yaac config
                                 Show or set after how many days the project's
                                 stopped workspaces are deleted (setting it asks
                                 for confirmation, so it needs a terminal)
+  scratch-dirs <project> [dirs...]
+                                Show or replace the dirs each workspace keeps
+                                off its checkout, each `path` or `path:GiB`
+                                (docs/project-config.md)
+    --none                      Keep every dir in the checkout
 
 yaac auth
   list                          List credentials (masked; git credentials by name)

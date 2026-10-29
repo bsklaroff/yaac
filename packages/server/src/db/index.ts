@@ -124,6 +124,7 @@ export {
   recordProjectCreate,
   setProjectDefaultBranchGuard,
   setProjectEgressAllowlist,
+  setProjectScratchDirs,
   setProjectGitCredential,
   setProjectKeptIgnoredPaths,
   setProjectShareRevoked,
@@ -144,8 +145,10 @@ export {
   seeTailnetUser,
 } from './user-store'
 export {
+  backfillWorkspaceScratchDirs,
   clearWorkspaceStopped,
   countStoppedWorkspaces,
+  forgetWorkspaceScratchDirs,
   deleteProjectWorkspaces,
   deleteWorkspaceRecords,
   findWorkspaceRow,

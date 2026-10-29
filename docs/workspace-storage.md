@@ -778,32 +778,36 @@ Two limits remain:
 
 ## Package installs
 
-A workspace's installed packages (its `ephemeralModulesPaths`, `node_modules`
-by default) live and die with its runtime, not in the shared checkout.
-`prepareModuleDirs` creates each one in the checkout and passes them to the
-driver as the spec's `moduleDirs`. A stop removes them from the checkout, and a
-restart's init commands reinstall.
+A workspace's installed packages and build output (its project's scratch
+dirs, `node_modules` and cargo's `target` by default; docs/project-config.md)
+live and die with its runtime, not in the shared checkout. `prepareScratchDirs`
+creates each one in the checkout and passes them to the driver as the spec's
+`scratchDirs`. A stop removes the ones the workspace started with from the
+checkout, files git tracks in them included (docs/project-config.md "Scratch
+directories"), and a restart's init commands rebuild them.
 
 ### Under k8s
 
-Each module dir is its own pod-local emptyDir volume, which the gVisor mount
+Each scratch dir is its own pod-local emptyDir volume, which the gVisor mount
 hints (`sentryTmpfsAnnotations`) turn into a tmpfs inside the gVisor sentry,
 backed by a file in the emptyDir: node disk rather than pinned memory, and file
 metadata traffic that never crosses the gofer. The hint applies per volume, so
 each dir gets its own volume rather than a subPath. The volume goes with the pod
-(a workspace Job never restarts in place). Each dir is capped at 8 GiB, and the
-pod's ephemeral-storage limit covers one dir's cap.
+(a workspace Job never restarts in place). Each dir is capped at its own size
+from the project's settings, and the pod's ephemeral-storage limit grows by
+every dir's cap, so a full dir fails its own writes rather than evicting the
+pod. The request grows by one typical
+install only, since the scheduler packs pods by request.
 
 pnpm's store is also per pod, set in both `pnpm_config_store_dir` and
 `npm_config_store_dir` (pnpm 11+ reads only the first, a corepack-pinned pnpm 10
-only the second). It sits inside the root module dir,
+only the second). It sits inside the root scratch dir,
 `/workspace/node_modules/.pnpm-store`, on the same mount as
 `node_modules/.pnpm`, so pnpm can hardlink instead of copy. If the project's
-module dirs leave out the root one, the store goes on the pod's own disk, never
-in the checkout. In a pnpm workspace the nested module dirs only hold symlinks
-into the root one. Module dirs that are independent installs (with their own
-lockfiles) each hold a full copy, so several of them count against the one-dir
-limit.
+scratch dirs leave out the root one, the store goes on the pod's own disk, never
+in the checkout. In a pnpm workspace the nested scratch dirs only hold symlinks
+into the root one. Scratch dirs that are independent installs (with their own
+lockfiles) each hold a full copy, each within its own cap.
 
 A store shared between pods is not possible. pnpm indexes the store in one
 SQLite database in WAL mode, which needs every writer on one kernel, and each
@@ -870,7 +874,7 @@ volume claim is node disk with no quota.
 
 ### Under containerless
 
-The module dirs stay in the checkout on the host's disk, and all workspaces of
+The scratch dirs stay in the checkout on the host's disk, and all workspaces of
 a project share one pnpm store under `.cached-packages`. That is safe because
 they are all processes on one kernel (docs/containerless-driver.md).
 
@@ -878,7 +882,7 @@ they are all processes on one kernel (docs/containerless-driver.md).
 
 Claude puts the worktrees it makes (`EnterWorktree`, or a subagent run with
 worktree isolation) under `<checkout>/.claude/worktrees/`. Each one is a fresh
-checkout with no module dirs, so its agent installs packages into it. Under
+checkout with no scratch dirs, so its agent installs packages into it. Under
 k8s that install lands on the shared tier: pnpm cannot hardlink from a store
 on tmpfs, so it copies tens of thousands of files onto the network filesystem,
 and a few at once slow every read in the pod
@@ -887,12 +891,12 @@ deny rules for both ways in (`EnterWorktree` and `Agent(isolation:worktree)`)
 to the project's claude settings. A custom agent whose definition sets
 `isolation: worktree` matches neither rule.
 
-Linking the workspace's module dirs into each worktree instead (claude's
+Linking the workspace's scratch dirs into each worktree instead (claude's
 `worktree.symlinkDirectories`) is not safe. An install in the worktree then
 reconciles the workspace's own tree to the worktree's lockfile, and claude
 branches worktrees from the default branch, so that lockfile often differs.
 
-Under containerless worktrees stay allowed: the module dirs are on local disk
+Under containerless worktrees stay allowed: the scratch dirs are on local disk
 and the project's pnpm store is shared, so a worktree's install is cheap.
 
 On both drivers `createCheckout` writes `.git/info/exclude` with

@@ -1394,7 +1394,7 @@ describe('WorkspaceList', () => {
   it('shows a share its source\'s owner removed read-only to its own owner', () => {
     const removed = {
       id: 'proj', name: 'proj', remoteUrl: '', addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0,
-      deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: true, guardDefaultBranch: true,
+      deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: true, guardDefaultBranch: true, scratchDirs: { dirs: [], ignoredTracked: [] },
       sharedFrom: { projectId: 'src', revoked: true },
     }
     useUiStore.setState({ activeProjectId: 'proj' })

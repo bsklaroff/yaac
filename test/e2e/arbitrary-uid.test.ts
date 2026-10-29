@@ -193,6 +193,9 @@ describe('a workspace pod running as a uid no image knows', () => {
     expect(await ok('zsh -ic "print -P %n"')).toContain('yaac')
     await ok('claude --version')
     await ok('codex --version')
+    // rustup's proxies resolve the toolchain through RUSTUP_HOME, which any
+    // uid can read.
+    await ok('rustc --version && cargo --version && cargo clippy --version && cargo fmt --version')
   })
 
   it('leaves no directory in the image that the pod can neither own nor write', async () => {

@@ -184,14 +184,14 @@ Under `containerless`, each project's workspaces share one pnpm store in
 `cachedPackagesDir` (node-local), so `node_modules` hardlinks into it. pnpm
 never removes a package from it, and yaac never runs `pnpm store prune`, so
 it holds every version any workspace of the project ever installed. A pod
-keeps its store in its module dirs instead, which go when it stops, so
+keeps its store in its scratch dirs instead, which go when it stops, so
 `k8s` is unaffected.
 
 Fix: a reconcile step on containerless that runs `pnpm store prune` against
 a project's store, about once a day, only while none of the project's
 workspaces is running. Prune drops only packages no `node_modules` still
-links, so it never breaks a checkout. A stopped workspace's ephemeral
-module dirs are removed at stop, so their packages are freed and a restart
+links, so it never breaks a checkout. A stopped workspace's scratch
+dirs are removed at stop, so their packages are freed and a restart
 re-downloads them. Pruning only when the project is idle avoids racing an
 install.
 

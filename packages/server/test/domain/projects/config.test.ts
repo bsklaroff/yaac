@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { resolveEphemeralModulesPaths, resolveProjectConfig } from '#domain/projects'
+import { resolveProjectConfig } from '#domain/projects'
 import { setDataDir, projectConfigDir } from '@yaac/shared/project-paths'
 import type { YaacConfig } from '@yaac/shared/types'
 
@@ -56,19 +56,14 @@ describe('resolveProjectConfig', () => {
     await expect(resolveProjectConfig(projectId)).rejects.toThrow()
   })
 
-  it('warns about unknown fields but keeps the known ones', async () => {
-    const warns: string[] = []
-    const origWarn = console.warn
-    console.warn = (msg: string) => warns.push(msg)
-    try {
-      // A name every object inherits is still unknown here.
-      expect(await roundTrip({ initCommands: ['pnpm install'], unknownField: true, toString: 1 }))
-        .toEqual({ initCommands: ['pnpm install'] })
-    } finally {
-      console.warn = origWarn
-    }
-    expect(warns).toContain('yaac-config.json: unknown field "unknownField"')
-    expect(warns).toContain('yaac-config.json: unknown field "toString"')
+  it('rejects an unknown field, naming it and the fields there are', async () => {
+    await expect(roundTrip({ initCommands: ['pnpm install'], unknownField: true }))
+      .rejects.toThrow('yaac-config.json: unknown field "unknownField"; the fields are cacheVolumes, initCommands,')
+    // A name every object inherits is still unknown here.
+    await expect(roundTrip({ toString: 1 })).rejects.toThrow('unknown field "toString"')
+    // A retired one says where its setting went.
+    await expect(roundTrip({ ephemeralModulesPaths: ['node_modules'] }))
+      .rejects.toThrow('"ephemeralModulesPaths" is now the project\'s scratch directories')
   })
 
   describe('cacheVolumes', () => {
@@ -232,48 +227,5 @@ describe('resolveProjectConfig', () => {
     it('round-trips hideInitPane', async () => {
       expect(await roundTrip({ hideInitPane: true })).toEqual({ hideInitPane: true })
     })
-  })
-
-  describe('ephemeralModulesPaths', () => {
-    it('normalizes a string array, stripping surrounding slashes', async () => {
-      expect(await roundTrip({
-        ephemeralModulesPaths: ['node_modules', 'packages/web/node_modules/', 'apps/api/node_modules'],
-      })).toEqual({
-        ephemeralModulesPaths: ['node_modules', 'packages/web/node_modules', 'apps/api/node_modules'],
-      })
-      expect(await roundTrip({ ephemeralModulesPaths: [] })).toEqual({ ephemeralModulesPaths: [] })
-    })
-
-    it('rejects non-arrays, non-strings, absolute paths, and traversal', async () => {
-      await expect(roundTrip({ ephemeralModulesPaths: 'node_modules' }))
-        .rejects.toThrow(/must be a string array/)
-      await expect(roundTrip({ ephemeralModulesPaths: ['node_modules', 5] }))
-        .rejects.toThrow('ephemeralModulesPaths[1] must be a string')
-      await expect(roundTrip({ ephemeralModulesPaths: ['/etc/passwd'] }))
-        .rejects.toThrow(/relative to \/workspace/)
-      await expect(roundTrip({ ephemeralModulesPaths: [''] })).rejects.toThrow(/must not be empty/)
-      for (const bad of ['../escape', 'a/./b', 'packages/../escape']) {
-        await expect(roundTrip({ ephemeralModulesPaths: [bad] })).rejects.toThrow(/must not contain/)
-      }
-    })
-  })
-})
-
-describe('resolveEphemeralModulesPaths', () => {
-  it('defaults to the root node_modules when unset or unconfigured', () => {
-    expect(resolveEphemeralModulesPaths(null)).toEqual(['node_modules'])
-    expect(resolveEphemeralModulesPaths({})).toEqual(['node_modules'])
-  })
-
-  it('returns the user list when set, and [] when explicitly disabled', () => {
-    expect(resolveEphemeralModulesPaths({
-      ephemeralModulesPaths: ['node_modules', 'packages/web/node_modules'],
-    })).toEqual(['node_modules', 'packages/web/node_modules'])
-    expect(resolveEphemeralModulesPaths({ ephemeralModulesPaths: [] })).toEqual([])
-  })
-
-  it('returns a fresh array each call (not a shared reference)', () => {
-    resolveEphemeralModulesPaths({}).push('mutated')
-    expect(resolveEphemeralModulesPaths({})).toEqual(['node_modules'])
   })
 })

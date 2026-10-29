@@ -215,7 +215,7 @@ async function realizeMount(
   if (mountPath === source.path) return 'nothing-to-do'
 
   // Skip mounts into the checkout: git would see a symlink as an untracked
-  // file (and could commit it), and the ephemeral-modules symlink guard
+  // file (and could commit it), and the scratch-dirs symlink guard
   // would reject it. The checkout is on local disk, so a cache can simply
   // live there.
   if (mountPath.startsWith('/workspace/')

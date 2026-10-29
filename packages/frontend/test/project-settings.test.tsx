@@ -23,7 +23,7 @@ afterEach(() => {
 /** A project keyed by `id-<name>`, so a test can tell the key from the
  *  displayed name. */
 const project = (name: string, remoteUrl: string): ProjectSummary =>
-  ({ id: `id-${name}`, name, remoteUrl, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true })
+  ({ id: `id-${name}`, name, remoteUrl, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true, scratchDirs: { dirs: [], ignoredTracked: [] } })
 
 /** Show settings for `alpha` (and `beta`) on a containerless server, whose
  *  env routes keep `vars` in memory. */
@@ -45,9 +45,9 @@ function renderAlpha(vars: ProjectEnvVar[] = []): FetchMock {
       vars = vars.filter((v) => v.id !== 'v1')
       return undefined
     },
-    'GET /api/project/id-alpha/config': { config: { a: 1 } },
+    'GET /api/project/id-alpha/config/raw': { content: '{"a": 1}' },
     'GET /api/project/id-beta/env': { vars: [] },
-    'GET /api/project/id-beta/config': { config: null },
+    'GET /api/project/id-beta/config/raw': { content: '' },
   })
   renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
   return server
@@ -76,7 +76,7 @@ describe('ProjectSettings', () => {
     })
     const server = mockFetch({
       'GET /api/project/id-gamma/env': { vars: [] },
-      'GET /api/project/id-gamma/config': { config: null },
+      'GET /api/project/id-gamma/config/raw': { content: '' },
       'PUT /api/project/id-gamma/default-branch-guard': () => undefined,
     })
     renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
@@ -100,7 +100,7 @@ describe('ProjectSettings', () => {
     })
     const server = mockFetch({
       'GET /api/project/id-alpha/env': { vars: [] },
-      'GET /api/project/id-alpha/config': { config: null },
+      'GET /api/project/id-alpha/config/raw': { content: '' },
       'PUT /api/project/id-alpha/kept-ignored-paths': ({ body }: FetchCall) => body,
     })
     renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
@@ -113,6 +113,53 @@ describe('ProjectSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove .env' }))
     await waitFor(() => expect(server.called('PUT /api/project/id-alpha/kept-ignored-paths').map((c) => c.body))
       .toEqual([{ paths: ['.env', 'data/dev.db'] }, { paths: [] }]))
+  })
+
+  it('adds, resizes and removes scratch directories, and warns again about an ignored one', async () => {
+    useUiStore.setState({ activeProjectId: 'id-delta' })
+    const snapshot = serverSnapshot({
+      driver: 'containerless',
+      projects: [{
+        ...project('delta', 'https://github.com/o/delta.git'),
+        scratchDirs: { dirs: [{ path: 'node_modules', sizeGiB: 8 }, { path: 'target', sizeGiB: 32 }], ignoredTracked: ['target'] },
+      }],
+    })
+    const server = mockFetch({
+      'GET /api/project/id-delta/env': { vars: [] },
+      'GET /api/project/id-delta/config/raw': { content: '' },
+      'PUT /api/project/id-delta/scratch-dirs': { dirs: [], ignoredTracked: [] },
+    })
+    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
+    const puts = (): unknown[] => server.called('PUT /api/project/id-delta/scratch-dirs').map((c) => c.body)
+    const settled = (name: string): Promise<void> =>
+      waitFor(() => expect(screen.getByRole<HTMLButtonElement>('button', { name }).disabled).toBe(false))
+    const node = { path: 'node_modules', sizeGiB: 8 }
+
+    fireEvent.change(screen.getByPlaceholderText('packages/web/node_modules'), { target: { value: 'web/node_modules' } })
+    fireEvent.change(screen.getByLabelText('Cap of the new directory in GiB'), { target: { value: '2' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add scratch directory' }))
+    await waitFor(() => expect(puts()).toEqual([{
+      dirs: [node, { path: 'target', sizeGiB: 32 }, { path: 'web/node_modules', sizeGiB: 2 }],
+    }]))
+
+    // A cap is saved once it leaves the field.
+    await settled('Remove target')
+    const cap = screen.getByLabelText('Cap of target in GiB')
+    fireEvent.change(cap, { target: { value: '48' } })
+    fireEvent.blur(cap)
+    await waitFor(() => expect(puts().slice(1)).toEqual([{ dirs: [node, { path: 'target', sizeGiB: 48 }] }]))
+    // An emptied cap is the default again.
+    await settled('Remove target')
+    fireEvent.change(cap, { target: { value: '' } })
+    fireEvent.blur(cap)
+    await waitFor(() => expect(puts().slice(2)).toEqual([{ dirs: [node, { path: 'target' }] }]))
+
+    await settled('Remove target')
+    fireEvent.click(screen.getByRole('button', { name: 'Remove target' }))
+    await waitFor(() => expect(puts().slice(3)).toEqual([{ dirs: [node] }]))
+    await settled('Warn again')
+    fireEvent.click(screen.getByRole('button', { name: 'Warn again' }))
+    await waitFor(() => expect(puts().slice(4)).toEqual([{ ignoredTracked: [] }]))
   })
 
   it('confirms a stopped-workspace auto-delete with the count it deletes at once, and turns it off without asking', async () => {
@@ -147,7 +194,7 @@ describe('ProjectSettings', () => {
     useUiStore.setState({ activeProjectId: 'id-alpha' })
     const kept = mockFetch({
       'GET /api/project/id-alpha/env': { vars: [] },
-      'GET /api/project/id-alpha/config': { config: null },
+      'GET /api/project/id-alpha/config/raw': { content: '' },
       'GET /api/project/id-alpha/workspace-auto-delete': { expired: 0, before: '2026-08-24T12:00:00.000Z' },
       'PUT /api/project/id-alpha/workspace-auto-delete': { deleted: 0, kept: [] },
     })
@@ -184,7 +231,7 @@ describe('ProjectSettings', () => {
     })
     const server = mockFetch({
       'GET /api/project/id-gamma/env': { vars: [] },
-      'GET /api/project/id-gamma/config': { config: null },
+      'GET /api/project/id-gamma/config/raw': { content: '' },
       'POST /api/project/id-gamma/shares': { id: 'id-bo-gamma', name: 'gamma', remoteUrl: '', addedAt: '' },
       'DELETE /api/project/id-gamma/shares/u-ada': () => undefined,
     })
@@ -216,7 +263,7 @@ describe('ProjectSettings', () => {
         { ...hosted, id: 'id-mine', sharedFrom: { projectId: 'id-gamma', revoked: false } },
       ],
     })
-    mockFetch({ 'GET /api/project/id-mine/env': { vars: [] }, 'GET /api/project/id-mine/config': { config: null } })
+    mockFetch({ 'GET /api/project/id-mine/env': { vars: [] }, 'GET /api/project/id-mine/config/raw': { content: '' } })
     renderWithClient(<ProjectSettings />, testQueryClient(whoami, snapshot))
 
     screen.getByText('Shared by Ada')
@@ -231,7 +278,7 @@ describe('ProjectSettings', () => {
       driver: 'containerless',
       projects: [{ ...hosted, id: 'id-mine', sharedFrom: { projectId: 'id-gamma', revoked: true } }],
     })
-    mockFetch({ 'GET /api/project/id-mine/env': { vars: [] }, 'GET /api/project/id-mine/config': { config: null } })
+    mockFetch({ 'GET /api/project/id-mine/env': { vars: [] }, 'GET /api/project/id-mine/config/raw': { content: '' } })
     renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
 
     screen.getByText('Sharing removed')
@@ -281,7 +328,7 @@ describe('ProjectSettings', () => {
         { id: 'v1', name: 'PLAIN', secret: false, value: 'visible-elsewhere', hasValue: true },
         { id: 'v2', name: 'TOKEN', secret: true, hasValue: true, rule: { hosts: ['api.example.com'] } },
       ] },
-      'GET /api/project/id-hers/config': { config: { a: 1 } },
+      'GET /api/project/id-hers/config/raw': { content: '{"a": 1}' },
       'GET /api/project/id-hers/dockerfile': { content: 'FROM scratch\n' },
       'GET /api/project/id-hers/build-files': { files: [{ path: 'init.lua', size: 3, binary: false }] },
       'GET /api/project/id-hers/build-files/file': { path: 'init.lua', size: 3, binary: false, content: 'x=1' },

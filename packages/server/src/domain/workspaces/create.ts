@@ -43,7 +43,7 @@ import {
 } from '@yaac/shared/paths'
 import { buildCloneLinkExec, buildStatusWarmupExec } from '@yaac/shared/git'
 import { parseGitRemote } from '@yaac/shared/git-remote'
-import { fetchProjectOrigin, missingCredentialError, resolveEphemeralModulesPaths, resolveProjectConfig, resolveProjectCredential, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
+import { fetchProjectOrigin, missingCredentialError, resolveProjectConfig, resolveProjectCredential, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { readLock } from '@yaac/shared/lock'
 import {
@@ -73,10 +73,11 @@ import {
   setWorkspaceMamaTokenHash,
 } from '#db'
 import { reportAgentLaunchFailure, throwIfProvisionStopped } from './provisioning'
+import { recordTrackedScratchDirs } from './tracked-scratch-dirs'
 import { spareSettings } from './prewarm'
 import { CODEX_CONTAINER_HOME, codexHomeMounts } from './codex-home'
 import {
-  prepareModuleDirs,
+  prepareScratchDirs,
   seedClaudeJson,
   seedClaudeSettings,
 } from './seed'
@@ -129,7 +130,7 @@ const ACP_CONVERSATION_WAIT_MS = 60_000
  *  `<here>/.claude.json`. */
 const CLAUDE_CONTAINER_HOME = '/home/yaac/.claude'
 /** The project's package cache, shared by its workspaces: pnpm's store and
- *  the backing dirs of the ephemeral-modules mounts. */
+ *  the backing dirs of the scratch-dirs mounts. */
 const CACHED_PACKAGES_CONTAINER_DIR = '/home/yaac/.cached-packages'
 /** In-pod pi home, where the project's shared `piDir` is mounted. */
 const PI_CONTAINER_HOME = '/home/yaac/.pi'
@@ -309,7 +310,7 @@ const WORKSPACE_RESOURCES: WorkspaceResources = {
   cpuLimitMillis: 8000,
   // Repo, checkout and caches are on mounts. This covers the writable layer,
   // logs and pod-local scratch; the limit only bounds a runaway workspace.
-  // The k8s driver adds the `moduleDirs` volumes' budget on top.
+  // The k8s driver adds the `scratchDirs` volumes' budget on top.
   ephemeralStorageRequestBytes: 2 * 1024 ** 3,
   ephemeralStorageLimitBytes: 16 * 1024 ** 3,
 }
@@ -934,6 +935,7 @@ export async function createWorkspace(
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.effort !== undefined ? { effort: options.effort } : {}),
     ...(timeZone !== null ? { timeZone } : {}),
+    scratchDirs: projectRow.scratchDirs.dirs.map((d) => d.path),
   }
   throwIfProvisionStopped(workspaceId)
   if (options.prewarm !== true) {
@@ -953,10 +955,10 @@ export async function createWorkspace(
   // Pre-create the checkout dir so its hostPath mount (type Directory)
   // works while the checkout is still running.
   await fs.mkdir(wtDir, { recursive: true })
-  // Create the ephemeral-module mount points (inside the checkout) now;
+  // Create the scratch-dir mount points (inside the checkout) now;
   // otherwise the pod may create them root-owned 0700. createCheckout copes
   // with the non-empty destination.
-  const moduleDirs = await prepareModuleDirs(wtDir, resolveEphemeralModulesPaths(config))
+  const scratchDirs = await prepareScratchDirs(wtDir, projectRow.scratchDirs.dirs)
 
   if (!options.prewarm) {
     // Start a new life after the row exists and before any handle is
@@ -1054,7 +1056,12 @@ export async function createWorkspace(
     await refuseCheckingOutOver(wtDir)
     emit(`Creating workspace from ${base}...`, options)
     await createCheckout(repo, wtDir, { branch, baseBranch: base, remoteUrl })
-  })()
+  })().then(async () => {
+    // A spare's are read when it is claimed, against the branch it is
+    // claimed for.
+    if (options.prewarm === true) return
+    await recordTrackedScratchDirs(projectId, workspaceId, refBranch ?? options.branch, launch.scratchDirs)
+  })
   workspaceTask.catch(() => { /* awaited later */ })
 
   // Egress registration and registry plumbing, owned by the workspace.
@@ -1342,7 +1349,7 @@ export async function createWorkspace(
   // `node_modules` hardlinks into it instead of holding a full copy. Set
   // under both names since pnpm 11+ reads only `pnpm_config_` and 10.x only
   // `npm_config_`. Pods cannot share one: pnpm's SQLite (WAL) index needs
-  // all writers on one kernel. A pod keeps its store in its `moduleDirs`.
+  // all writers on one kernel. A pod keeps its store in its `scratchDirs`.
   // The store path is absolute and pnpm records it in `node_modules`, so a
   // checkout whose data dir or project dir moved would make a non-TTY
   // `pnpm install` abort rather than relink; purging is allowed instead,
@@ -1458,7 +1465,7 @@ export async function createWorkspace(
     env,
     secretEnvKeys,
     mounts,
-    moduleDirs,
+    scratchDirs,
     resources: WORKSPACE_RESOURCES,
     // In-workspace setup (git identity, tmux, agent transport, nested
     // engine); the runtime reports ready only after it finishes.

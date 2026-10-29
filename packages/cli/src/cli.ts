@@ -26,6 +26,7 @@ import { authList } from '#commands/auth-list'
 import { configEditProject, configEditDockerfile, configEditUserDockerfile } from '#commands/config-edit'
 import { configGitIdentity } from '#commands/config-git-identity'
 import { configWorkspaceAutoDelete } from '#commands/config-workspace-auto-delete'
+import { configScratchDirs } from '#commands/config-scratch-dirs'
 import { authFake } from '#commands/auth-fake'
 import { remoteAdd, remoteConnect, remoteDisconnect, remoteList, remoteRemove } from '#commands/remote'
 import {
@@ -516,6 +517,14 @@ config
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('[days]', 'Days a workspace stays stopped before it is deleted, or off to keep stopped workspaces until deleted by hand')
   .action(configWorkspaceAutoDelete)
+
+config
+  .command('scratch-dirs')
+  .description('Show a project\'s scratch directories, which each workspace keeps off its checkout and empties when it stops (installed packages, build output), or replace them')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('[dirs...]', 'Directories relative to the checkout, each optionally with its cap in GiB, e.g. node_modules target:32; one without a cap gets the default, 16')
+  .option('--none', 'Keep every directory in the checkout')
+  .action(configScratchDirs)
 
 // Top-level, not under `workspace`: with no workspace named it forwards all
 // running ones, as the desktop app does from its tray.

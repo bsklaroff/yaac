@@ -5,12 +5,11 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 import { projectConfigDir, repoDir } from '@yaac/shared/project-paths'
-import { getProjectDetail, resolveProjectConfigWithSource, assertProjectExists, projectRemoteUrl, resolveProjectId } from '#domain/projects'
+import { getProjectDetail, assertProjectExists, projectRemoteUrl, resolveProjectId } from '#domain/projects'
 import { ServerError } from '@yaac/shared/errors'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
 
 const FOO = 'acbd18db-4cc2-485c-8def-654fccc4a4d8'
-const EMPTY = 'a2e4822a-9833-4283-839f-7b60acf85ec9'
 const NOPE = '4101bef8-794f-4d98-8e95-dfb54850c68b'
 const MISSING = 'ea21841d-a70e-4405-8f19-fabc4ff8bdd9'
 
@@ -67,40 +66,6 @@ describe('getProjectDetail', () => {
 
     const detail = await getProjectDetail(FOO)
     expect(detail.workspaceCount).toBe(0)
-  })
-})
-
-describe('resolveProjectConfigWithSource', () => {
-  it('throws NOT_FOUND when the projectId is unknown', async () => {
-    await expect(resolveProjectConfigWithSource(NOPE)).rejects.toMatchObject({ code: 'NOT_FOUND' })
-  })
-
-  it('returns the local config when it exists', async () => {
-    await recordTestProject(FOO, { remoteUrl: 'x', addedAt: '2026-01-01T00:00:00.000Z' })
-    await fs.mkdir(projectConfigDir(FOO), { recursive: true })
-    await fs.writeFile(
-      path.join(projectConfigDir(FOO), 'yaac-config.json'),
-      JSON.stringify({ initCommands: ['pnpm build'] }),
-    )
-    const result = await resolveProjectConfigWithSource(FOO)
-    expect(result.config).toEqual({ initCommands: ['pnpm build'] })
-  })
-
-  it('ignores yaac-config.json checked into the cloned repo', async () => {
-    await recordTestProject(FOO, { remoteUrl: 'x', addedAt: '2026-01-01T00:00:00.000Z' })
-    await fs.mkdir(repoDir(FOO), { recursive: true })
-    await fs.writeFile(
-      path.join(repoDir(FOO), 'yaac-config.json'),
-      JSON.stringify({ initCommands: ['echo hi'] }),
-    )
-    const result = await resolveProjectConfigWithSource(FOO)
-    expect(result.config).toBeNull()
-  })
-
-  it('returns null when no config exists', async () => {
-    await recordTestProject(EMPTY, { remoteUrl: 'x', addedAt: '2026-01-01T00:00:00.000Z' })
-    const result = await resolveProjectConfigWithSource(EMPTY)
-    expect(result).toEqual({ config: null })
   })
 })
 

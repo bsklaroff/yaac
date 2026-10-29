@@ -264,6 +264,12 @@ export type WorkspaceGitCredential =
   | { kind: 'ssh'; privateKey: string }
   | { kind: 'hosted'; origin: string; token: string }
 
+/** A scratch dir as the workspace sees it, and its cap. */
+export interface ScratchDirMount {
+  path: string
+  sizeBytes: number
+}
+
 /**
  * A workspace to launch, in substrate-neutral terms. `env` and `mounts` are
  * the caller's; the driver adds its own (transport token, CA trust, nested
@@ -289,12 +295,13 @@ export interface WorkspaceSpec {
   /** Caller-decided mounts; the runtime appends its own. */
   mounts: WorkspaceMount[]
   /**
-   * Package dirs inside the checkout (e.g. `node_modules`), as the workspace
-   * sees them. Disposable and rebuilt by init commands; the caller has
-   * created them. The driver decides how to back them (and where the package
-   * store goes, since it must share their filesystem to hardlink).
+   * Package and build-output dirs inside the checkout (e.g. `node_modules`),
+   * as the workspace sees them, each with the most it may hold. Disposable
+   * and rebuilt by init commands; the caller has created them. The driver
+   * decides how to back them, whether it enforces the caps, and where the
+   * package store goes, since it must share their filesystem to hardlink.
    */
-  moduleDirs: string[]
+  scratchDirs: ScratchDirMount[]
   resources: WorkspaceResources
   /** Setup command run inside the workspace before it is reported ready. */
   postStartExec: string[]

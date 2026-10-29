@@ -20,6 +20,7 @@ export type WorkspaceEvent =
   | WorkspaceCreateFailed
   | WorkspaceLifeStarted
   | BaseBranchResolved
+  | TrackedScratchDirsFound
   | SessionsLaunched
   | SessionsDiscovered
   | SessionsCaptured
@@ -64,6 +65,8 @@ export interface WorkspaceCreated {
   /** When the server stops it (see `workspaces.deadline`). A resume without
    *  one clears the deadline. */
   deadline?: Date
+  /** The scratch dirs it is started with (see `workspaces.scratchDirs`). */
+  scratchDirs?: string[]
 }
 
 /**
@@ -97,6 +100,15 @@ export interface BaseBranchResolved {
   projectId: string
   workspaceId: string
   baseBranch: string
+}
+
+/** Which of its scratch dirs git tracks, read from the main clone as a
+ *  workspace starts. Replaces what the last start found. */
+export interface TrackedScratchDirsFound {
+  type: 'tracked-scratch-dirs-found'
+  projectId: string
+  workspaceId: string
+  paths: string[]
 }
 
 /**

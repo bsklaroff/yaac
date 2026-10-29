@@ -536,7 +536,7 @@ host process never sets these variables, so under containerless the tiers
 are just three folders of one directory.
 
 NODE-LOCAL holds nothing durable: per project, the pnpm store and the
-per-workspace module dirs, the image-store generations
+per-workspace scratch dirs, the image-store generations
 (docs/nested-containers.md), and each opencode workspace's working copy
 (docs/workspace-storage.md "opencode"). On a multi-node cluster those bytes
 are on whichever node the workspace ran on, so the server never touches them

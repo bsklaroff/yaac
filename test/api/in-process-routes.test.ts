@@ -11,6 +11,7 @@ import {
   listWorkspaceRows,
 } from '@yaac/server/db/workspace-store'
 import { BUILT_IN_USER_ID, seeTailnetUser } from '@yaac/server/db/user-store'
+import { getProjectRow } from '@yaac/server/db/project-store'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
 
 /**
@@ -78,6 +79,29 @@ const BULK = '0a0a0a0a-0000-4000-8000-000000000003'
 const OTHER = '0a0a0a0a-0000-4000-8000-000000000004'
 
 /** Each case uses its own project to stay isolated. */
+describe('scratch dirs route', () => {
+  const SCRATCH = '0a0a0a0a-0000-4000-8000-000000000010'
+
+  it('sets either part, keeping the other, and refuses a path outside the checkout or a bad cap', async () => {
+    await recordTestProject(SCRATCH)
+    const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+    const scratch = client.project[':projectId']['scratch-dirs']
+    const param = { projectId: SCRATCH }
+
+    expect((await scratch.$put({ param, json: { ignoredTracked: ['target/'] } })).status).toBe(200)
+    // Answered as stored: normalized and deduplicated.
+    const res = await scratch.$put({
+      param, json: { dirs: [{ path: 'node_modules/', sizeGiB: 4 }, { path: 'node_modules', sizeGiB: 9 }] },
+    })
+    const stored = { dirs: [{ path: 'node_modules', sizeGiB: 4 }], ignoredTracked: ['target'] }
+    expect(await res.json()).toEqual(stored)
+    expect((await getProjectRow(SCRATCH))?.scratchDirs).toEqual(stored)
+    expect((await scratch.$put({ param, json: { dirs: [{ path: '../up', sizeGiB: 8 }] } })).status).toBe(400)
+    expect((await scratch.$put({ param, json: { dirs: [{ path: 'target', sizeGiB: 0 }] } })).status).toBe(400)
+    expect((await getProjectRow(SCRATCH))?.scratchDirs).toEqual(stored)
+  })
+})
+
 describe('workspace death read-marks', () => {
   beforeAll(async () => {
     for (const [id, name] of [[ONE, 'one'], [EMPTY, 'empty'], [BULK, 'bulk'], [OTHER, 'other']]) {
