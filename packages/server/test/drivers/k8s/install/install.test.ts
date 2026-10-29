@@ -978,6 +978,73 @@ describe('runClusterInstall', () => {
     expect((err as Error).message).toContain('systemctl enable --now podman.socket')
   })
 
+  it('refuses a Linux host missing aardvark-dns, or nft under the nftables driver, before creating anything', async () => {
+    const install = async (opts: {
+      dns?: string
+      netavark?: string
+      /** Where nft resolves: on PATH, only at /usr/sbin (a Debian non-root PATH), or nowhere. */
+      nft?: 'path' | 'sbin'
+      /** containers.conf.d drop-ins, by dir, each `[name, body]`. */
+      dropIns?: Record<string, Array<[string, string]>>
+      /** podman before 4.6 reports no networkBackendInfo. */
+      noBackendInfo?: boolean
+    }): Promise<unknown> => {
+      const info = JSON.stringify({ host: { networkBackend: 'netavark', ...(opts.noBackendInfo ? {} : {
+        networkBackendInfo: { version: `netavark ${opts.netavark ?? '1.14.0'}`, dns: { version: opts.dns ?? '' } },
+      }) } })
+      const run = vi.fn((file: string, args: string[]) => {
+        if (file === 'podman' && args[0] === 'info') return Promise.resolve({ stdout: info, stderr: '' })
+        if (file === 'nft' && opts.nft !== 'path') return Promise.reject(new Error('ENOENT'))
+        if (file === '/usr/sbin/nft' && !opts.nft) return Promise.reject(new Error('ENOENT'))
+        return happyRun(file, args)
+      }) as RunMock
+      const dropIns = opts.dropIns ?? {}
+      const deps = makeDeps({
+        run,
+        listDir: vi.fn((dir: string) => Promise.resolve((dropIns[dir] ?? []).map(([name]) => name))),
+        readTextFile: vi.fn((p: string) => {
+          for (const [dir, files] of Object.entries(dropIns)) {
+            for (const [name, body] of files) if (p === `${dir}/${name}`) return Promise.resolve(body)
+          }
+          return fakeCalicoReadTextFile(p)
+        }),
+      })
+      const err = await runClusterInstall({}, deps).catch((e: unknown) => e)
+      if (err) {
+        expect(deps.runStreaming.mock.calls.some(([f]) => f === 'kind')).toBe(false)
+        expect(ran('ensureMainRegistry')).toBe(0)
+      }
+      return err
+    }
+    const dns = 'aardvark-dns 1.14.0'
+    const driver = (d: string): string => `[network]\nfirewall_driver = "${d}"\n`
+    const etc = '/etc/containers/containers.conf.d'
+    const usr = '/usr/share/containers/containers.conf.d'
+
+    expect(String(await install({}))).toMatch(/no aardvark-dns[\s\S]*apt install aardvark-dns/)
+    // netavark 2 defaults to nftables and has no iptables driver to switch to.
+    const v2 = String(await install({ dns, netavark: '2.0.0' }))
+    expect(v2).toMatch(/nft is not installed[\s\S]*dnf install nftables/)
+    expect(v2).not.toContain('iptables')
+    // On 1.x only a configured nftables driver needs nft. A drop-in in a
+    // higher-priority dir shadows one of the same name, and a later name wins.
+    expect(String(await install({ dns, dropIns: { [usr]: [['50-fw.conf', driver('nftables')]] } })))
+      .toMatch(/nft is not installed[\s\S]*switch netavark to iptables/)
+    expect(await install({ dns, dropIns: {
+      [etc]: [['50-fw.conf', driver('iptables')]], [usr]: [['50-fw.conf', driver('nftables')]],
+    } })).toBeUndefined()
+    expect(await install({ dns, dropIns: {
+      [etc]: [['10-fw.conf', driver('nftables')]], [usr]: [['90-fw.conf', driver('iptables')]],
+    } })).toBeUndefined()
+    // Unset on 1.x is the build's choice, which may be iptables.
+    expect(await install({ dns })).toBeUndefined()
+    // nft found on PATH or at /usr/sbin.
+    expect(await install({ dns, netavark: '2.0.0', nft: 'path' })).toBeUndefined()
+    expect(await install({ dns, netavark: '2.0.0', nft: 'sbin' })).toBeUndefined()
+    // A podman before 4.6 reports nothing to judge.
+    expect(await install({ noBackendInfo: true })).toBeUndefined()
+  })
+
   it('drops the CIDR caches so a long-lived process cannot render for the old cluster', async () => {
     // A cluster can be deleted and recreated in one process. Cached node
     // addresses would then be dead and cached pod CIDRs wrong, so the cache

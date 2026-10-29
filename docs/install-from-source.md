@@ -30,7 +30,7 @@ For k8s, add swap before the first install; see
 [cluster-setup.md](cluster-setup.md#linux-swap).
 
 ```sh
-sudo apt install podman acl libgomp1
+sudo apt install podman aardvark-dns nftables acl libgomp1
 sudo apt install tmux socat fd-find ripgrep   # for the containerless driver
 
 # Node from nvm: apt's build lacks the type stripping `vite build` needs.

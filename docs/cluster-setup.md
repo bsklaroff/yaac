@@ -143,7 +143,7 @@ The rootful socket is root-owned and started by systemd, so yaac cannot
 start it. Enable it once and grant your user access:
 
 ```sh
-sudo apt install podman              # Debian/Ubuntu (or dnf on Fedora/RHEL)
+sudo apt install podman aardvark-dns nftables   # Debian/Ubuntu (or dnf on Fedora/RHEL)
 sudo systemctl enable --now podman.socket
 sudo setfacl -m u:$USER:x /run/podman
 sudo setfacl -m u:$USER:rw /run/podman/podman.sock
@@ -152,7 +152,12 @@ sudo setfacl -m u:$USER:rw /run/podman/podman.sock
 For access that survives the socket being re-created, add a
 `podman.socket` drop-in (`sudo systemctl edit podman.socket`) with
 `SocketMode=0660` and `SocketGroup=` set to a group you are in. Install
-prints these steps when the socket is unreachable.
+prints these steps when the socket is unreachable. It also refuses a host
+without aardvark-dns, since kind's network then has no DNS and the node
+cannot pull images. It refuses a host without `nft` too when netavark uses
+its nftables firewall driver: on netavark 2 unless containers.conf picks
+another driver (nftables is its only built-in default), and on 1.x when
+containers.conf sets `firewall_driver = "nftables"`.
 
 ## Linux: swap
 
