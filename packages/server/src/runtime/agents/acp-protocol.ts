@@ -31,6 +31,7 @@ import type {
   AcpWake,
 } from '@yaac/shared/acp'
 import { IMAGE_MIME_TYPES } from '@yaac/shared/attachments'
+import { ACP_ADAPTERS } from '@yaac/shared/types'
 import { asRecord, asString } from '#lib/narrow'
 
 /** The ACP revision this client negotiates. */
@@ -545,6 +546,9 @@ export class AcpProjection {
    * so a run woken then is found by its first output instead (`apply`).
    */
   private runEnded = false
+  /** A steer joined the run and no output has followed it yet, so the next
+   *  result is that of the cycle the steer aborted, not the run's end. */
+  private steered = false
   /** claude's task notifications since its last run ended: what may wake it
    *  into the next one. */
   private wakes: AcpWake[] = []
@@ -569,6 +573,10 @@ export class AcpProjection {
   /** The id of the `session/load` request whose reply ends its replay;
    *  set while one runs. */
   private loadRequest: string | undefined
+  /** The message the last main-thread update was output of, if it was. */
+  private lastMessage: string | undefined
+  /** The life's adapter is claude's, as its `initialize` reply says. */
+  private claudeAdapter = false
   /** The subagents and tasks a replay rebuilt, which only it may settle. */
   private readonly replayedSubagents = new Set<string>()
   private readonly replayedTasks = new Set<string>()
@@ -605,17 +613,17 @@ export class AcpProjection {
     return started ? this.startRun() : []
   }
 
-  /** Drop notifications no run has claimed: a prompt or a new agent life
-   *  starts a run they did not wake. */
-  forgetWakes(): void {
+  /** A prompt or a new agent life starts a run the notifications since the
+   *  last one did not wake, so they are dropped. */
+  beginRun(): void {
+    this.runEnded = false
     this.wakes = []
     this.notified = false
   }
 
   private startRun(): AcpEventInit[] {
-    this.runEnded = false
     this.runCauses = this.wakes.length > 0 ? this.wakes : this.notified ? [] : this.monitorCauses()
-    this.forgetWakes()
+    this.beginRun()
     return [{ type: 'agent-turn' }]
   }
 
@@ -650,7 +658,10 @@ export class AcpProjection {
     const outcome = asRecord(result)?.outcome
     // `startedNewTurn` began a turn of its own, so it does end the one
     // before it.
-    if (outcome === 'injected') return { type: 'user', content, steered: true }
+    if (outcome === 'injected') {
+      this.steered = true
+      return { type: 'user', content, steered: true }
+    }
     return outcome === 'startedNewTurn' ? { type: 'user', content } : undefined
   }
 
@@ -715,6 +726,7 @@ export class AcpProjection {
     }
     const thread = this.threadOf(params) ?? parentToolUseId
     if (update !== undefined) {
+      out.push(...this.replayedRun(update, thread))
       const compaction = this.applyCompaction(update, thread)
       if (compaction !== undefined) return [...out, ...compaction]
       const replayed = this.replayedWake(update, thread, asString(asRecord(params)?.sessionId))
@@ -723,11 +735,9 @@ export class AcpProjection {
         && CLAUDE_INTERRUPT.test(asString(asRecord(update.content)?.text) ?? '')) {
         return [...out, { type: 'turn-end', stopReason: 'cancelled' }]
       }
-      // Only a notification starts a run inside a held prompt; output after
-      // any other result (a steer aborting the cycle it interrupts) goes on.
-      const held = this.runEnded && this.agentRunning && this.wakes.length > 0
-      if (thread === undefined && held && RUN_STARTS.has(String(update.sessionUpdate))) {
-        out.push(...this.startRun())
+      if (thread === undefined && RUN_STARTS.has(String(update.sessionUpdate))) {
+        this.steered = false
+        if (this.runEnded && this.agentRunning) out.push(...this.startRun())
       }
       const ended = this.endRun(update)
       if (ended !== undefined) out.push(ended)
@@ -1023,6 +1033,33 @@ export class AcpProjection {
     return [...(first ? [{ type: 'agent-turn' as const }] : []), ...moved, { type: 'woken', causes: this.replayedCauses }]
   }
 
+  /** Note which adapter the life runs, from the reply that names it
+   *  (`initialize`'s). */
+  noteAgent(result: unknown): void {
+    const name = asString(asRecord(asRecord(result)?.agentInfo)?.name)
+    if (name !== undefined) this.claudeAdapter = name === ACP_ADAPTERS.claude.package
+  }
+
+  /**
+   * claude's adapter replays a `session/load` with no state reports or
+   * results, and leaves out the notifications that woke a run, so such a
+   * run follows the reply before it with nothing between. Its replay shows
+   * nearly every tool call, so one message's output straight after
+   * another's begins a new run. The replay yaac rebuilds from claude's
+   * transcript keeps the notifications and holds no `initialize`, so the
+   * rule is not applied to it; nor to opencode's, which gives a message's
+   * reasoning an id of its own.
+   */
+  private replayedRun(update: Record<string, unknown>, thread: string | undefined): AcpEventInit[] {
+    if (thread !== undefined) return []
+    const previous = this.lastMessage
+    const output = update.sessionUpdate === 'agent_message_chunk' || update.sessionUpdate === 'agent_thought_chunk'
+    this.lastMessage = output ? asString(update.messageId) : undefined
+    const next = this.claudeAdapter && this.loadRequest !== undefined && previous !== undefined
+      && this.lastMessage !== undefined && this.lastMessage !== previous
+    return next ? [{ type: 'agent-turn' }] : []
+  }
+
   /** Note the `session/load` request a record holds; see `closeLoad`. */
   openLoad(requestId: string): void {
     this.loadRequest = requestId
@@ -1066,12 +1103,17 @@ export class AcpProjection {
   /**
    * End a claude run at its result, the `usage_update` that names what
    * started it. Only a run started by a task notification is credited, with
-   * the causes taken when it began.
+   * the causes taken when it began. The result of a cycle a steer aborted
+   * ends nothing: the steered reply goes on in the same run.
    */
   private endRun(update: Record<string, unknown>): AcpEventInit | undefined {
     if (update.sessionUpdate !== 'usage_update') return undefined
     const origin = asRecord(asRecord(update._meta)?.['_claude/origin'])?.kind
     if (origin === undefined) return undefined
+    if (this.steered) {
+      this.steered = false
+      return undefined
+    }
     this.runEnded = true
     const causes = this.runCauses
     this.runCauses = []

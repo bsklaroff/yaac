@@ -61,7 +61,10 @@ that mapping cannot bring back.
   transcript. Past the transcript cap, the adapter's `session/load` replay
   sends no notifications at all, so a task or background subagent it
   rebuilds shows as ended even when it finished, and no run shows what woke
-  it.
+  it. Each such run still starts its own reply, found where one message
+  follows another with nothing between them. The replay also leaves out a
+  `TaskGet` and a failed Task call, so a run that made one between two
+  messages shows as two runs.
 - **Quoted notification markup.** A message whose text quotes a
   `<task-notification>` block after other text shows without the block,
   since the adapter's history reader strips that markup.
