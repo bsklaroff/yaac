@@ -975,7 +975,16 @@ describe('runClusterInstall', () => {
     }) as RunMock
     const err = await runClusterInstall({}, makeDeps({ run, platform: 'linux' })).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ClusterInstallError)
-    expect((err as Error).message).toContain('systemctl enable --now podman.socket')
+    // The hint prints the grant block docs/cluster-setup.md documents, and
+    // docs/install-from-source.md repeats it after its own apt line.
+    const repo = path.resolve(import.meta.dirname, '../../../../../..')
+    const setup = await fs.readFile(path.join(repo, 'docs/cluster-setup.md'), 'utf8')
+    const section = setup.slice(setup.indexOf('## Linux: rootful podman'))
+    const block = /```sh\n([\s\S]*?)\n```/.exec(section)?.[1] ?? ''
+    expect(block).toContain('ExecStartPost=-/usr/bin/setfacl -m u:$(id -u):rw /run/podman/podman.sock')
+    expect((err as Error).message).toContain(block)
+    const fromSource = await fs.readFile(path.join(repo, 'docs/install-from-source.md'), 'utf8')
+    expect(fromSource).toContain(block.slice(block.indexOf('\n') + 1))
   })
 
   it('refuses a Linux host missing aardvark-dns, or nft under the nftables driver, before creating anything', async () => {
