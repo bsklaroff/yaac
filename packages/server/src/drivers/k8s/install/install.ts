@@ -259,8 +259,10 @@ export async function runClusterInstall(
     bindInstall(installId, legacy)
   }
 
+  // `podman info` on Linux, for the kind network's preflight.
+  let podmanInfo: string | undefined
   if (deps.platform === 'darwin') await ensurePodmanMachineSetup(deps)
-  else await ensureRootfulPodmanReachable(deps)
+  else podmanInfo = await ensureRootfulPodmanReachable(deps)
 
   if (opts.byo) {
     // Drop cached facts about another cluster. No node fixups: those are
@@ -268,6 +270,7 @@ export async function runClusterInstall(
     resetClusterCidrCache()
   } else {
     await preflightKindProvider(deps, kindVersion)
+    if (podmanInfo !== undefined) await preflightPodmanNetwork(deps, podmanInfo)
     const created = (await kindNodes(deps, cluster)).length === 0
     if (created) {
       await createKindCluster(deps, cluster, nodeCount)
@@ -472,11 +475,12 @@ function diagnoseOldKind(kindVersionOut: string): string | null {
  * podman socket (calico-node needs host netfilter and routing access; see
  * docs/cluster-setup.md "Linux: rootful podman") and check that it answers.
  * yaac cannot enable the root-owned socket itself, so it only instructs.
+ * Returns `podman info`'s JSON.
  */
-async function ensureRootfulPodmanReachable(deps: ClusterInstallDeps): Promise<void> {
+async function ensureRootfulPodmanReachable(deps: ClusterInstallDeps): Promise<string> {
   ensureRootfulPodmanHost()
   try {
-    await deps.run('podman', ['info', '--format', 'json'])
+    return (await deps.run('podman', ['info', '--format', 'json'])).stdout
   } catch {
     throw new ClusterInstallError(
       'Rootful podman is not reachable. yaac runs kind on the rootful podman '
@@ -508,6 +512,59 @@ async function preflightKindProvider(deps: ClusterInstallDeps, kindVersion: stri
       + 'v0.33.0+ release rather than a pre-release build (kind#4201).',
     )
   }
+}
+
+/**
+ * Refuse a Linux host missing a podman package that kind's network needs.
+ * Distros package these apart from podman, so a minimal install can lack
+ * them. Without aardvark-dns the kind network has no DNS and the node pulls
+ * nothing (install hangs on the registry pod's ErrImagePull). Without nft,
+ * netavark's nftables firewall driver fails every network setup.
+ *
+ * The driver is containers.conf's `firewall_driver`. Unset, it is a build
+ * choice: netavark 2's default is always nftables, while 1.x builds pick
+ * either, so nft is required there only when the config names nftables.
+ * A podman older than 4.6 reports no `networkBackendInfo`, so it is not
+ * checked.
+ */
+async function preflightPodmanNetwork(deps: ClusterInstallDeps, podmanInfo: string): Promise<void> {
+  let backend: { version?: string; dns?: { version?: string } } | undefined
+  try {
+    const host = (JSON.parse(podmanInfo) as {
+      host?: { networkBackend?: string; networkBackendInfo?: typeof backend }
+    }).host
+    if (host?.networkBackend === 'netavark') backend = host.networkBackendInfo
+  } catch { /* unparseable: nothing to check */ }
+  if (!backend) return
+  const install = (pkg: string): string =>
+    `  sudo apt install ${pkg}   # Debian/Ubuntu\n  sudo dnf install ${pkg}   # Fedora/RHEL`
+  if (!backend.dns?.version) {
+    throw new ClusterInstallError(
+      'podman has no aardvark-dns, so containers on the kind network cannot '
+      + `resolve names and the cluster cannot pull images. Install it:\n${install('aardvark-dns')}`,
+    )
+  }
+  const sources: string[] = []
+  for (const p of ['/usr/share/containers/containers.conf', '/etc/containers/containers.conf']) {
+    const content = await deps.readTextFile(p)
+    if (content !== null) sources.push(content)
+  }
+  sources.push(...await readDropIns(deps, [
+    '/etc/containers/containers.rootful.conf.d', '/etc/containers/containers.conf.d',
+    '/usr/share/containers/containers.rootful.conf.d', '/usr/share/containers/containers.conf.d',
+  ]))
+  const driver = containersConfValue(sources, 'network', 'firewall_driver')
+  const v2 = Number(/(\d+)\./.exec(backend.version ?? '')?.[1] ?? 0) >= 2
+  if (driver ? driver !== 'nftables' : !v2) return
+  // `nft` alone misses /usr/sbin on a Debian non-root PATH.
+  for (const nft of ['nft', '/usr/sbin/nft']) {
+    if (await deps.run(nft, ['--version']).then(() => true, () => false)) return
+  }
+  throw new ClusterInstallError(
+    'netavark uses its nftables firewall driver, but nft is not installed. Install it:\n'
+    + install('nftables')
+    + (v2 ? '' : '\nor switch netavark to iptables (docs/cluster-setup.md "Linux: ufw").'),
+  )
 }
 
 /** Node names of the kind cluster; [] when the cluster does not exist. */
@@ -1135,20 +1192,39 @@ async function deployNpmCache(deps: ClusterInstallDeps): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Effective `[machine] provider` from containers.conf sources in order
- * (base file, then conf.d drop-ins alphabetically; later wins).
- * Unparseable sources are skipped.
+ * Effective `[section] key` from containers.conf sources in order (base
+ * files, then conf.d drop-ins alphabetically; later wins). Unparseable
+ * sources are skipped.
  */
-function effectiveMachineProvider(sources: string[]): string | undefined {
-  let provider: string | undefined
+function containersConfValue(sources: string[], section: string, key: string): string | undefined {
+  let value: string | undefined
   for (const src of sources) {
     try {
-      const parsed = parseToml(src) as { machine?: { provider?: unknown } }
-      const p = parsed.machine?.provider
-      if (typeof p === 'string') provider = p
+      const v = (parseToml(src) as Record<string, Record<string, unknown> | undefined>)[section]?.[key]
+      if (typeof v === 'string') value = v
     } catch { /* not valid TOML — ignore this source */ }
   }
-  return provider
+  return value
+}
+
+/**
+ * The `.conf` drop-ins of containers.conf.d dirs, given highest priority
+ * first: pooled by file name (the higher-priority dir's copy wins), then
+ * sorted by name.
+ */
+async function readDropIns(deps: ClusterInstallDeps, dirs: string[]): Promise<string[]> {
+  const byName = new Map<string, string>()
+  for (const dir of dirs) {
+    for (const f of (await deps.listDir(dir)).filter((f) => f.endsWith('.conf'))) {
+      if (!byName.has(f)) byName.set(f, path.join(dir, f))
+    }
+  }
+  const sources: string[] = []
+  for (const [, file] of [...byName].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    const content = await deps.readTextFile(file)
+    if (content !== null) sources.push(content)
+  }
+  return sources
 }
 
 /**
@@ -1221,12 +1297,8 @@ async function ensurePodmanMachineSetup(deps: ClusterInstallDeps): Promise<void>
   const sources: string[] = []
   const base = await deps.readTextFile(path.join(confDir, 'containers.conf'))
   if (base !== null) sources.push(base)
-  const dropinDir = path.join(confDir, 'containers.conf.d')
-  for (const f of (await deps.listDir(dropinDir)).filter((f) => f.endsWith('.conf')).sort()) {
-    const content = await deps.readTextFile(path.join(dropinDir, f))
-    if (content !== null) sources.push(content)
-  }
-  if (effectiveMachineProvider(sources) !== 'libkrun') {
+  sources.push(...await readDropIns(deps, [path.join(confDir, 'containers.conf.d')]))
+  if (containersConfValue(sources, 'machine', 'provider') !== 'libkrun') {
     deps.log('Setting the podman machine provider to libkrun '
       + '(gVisor session pods need its ownership-preserving virtiofs)...')
     await deps.writeTextFile(
