@@ -12,17 +12,20 @@ vi.mock('#db', async (importOriginal) => {
     listProjectRows: vi.fn(actual.listProjectRows),
   }
 })
+import { execFile, execFileSync } from 'node:child_process'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { promisify } from 'node:util'
 
-import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal } from '#domain/workspaces'
+import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal, reconcileIgnoredFileCleans } from '#domain/workspaces'
 import { setDataDir, workspaceDir } from '@yaac/shared/project-paths'
 import type { NodeLocalLiveSet, RuntimeSnapshot, StrayUnit, RuntimeHandle } from '#drivers/contract'
-import { BUILT_IN_USER_ID, closeDb, listProjectRows } from '#db'
-import { recordWorkspaceCreated } from '#db/workspace-store'
+import { BUILT_IN_USER_ID, closeDb, getWorkspaceRow, listProjectRows, setProjectKeptIgnoredPaths } from '#db'
+import { recordIgnoredFilesCleaned, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { recordProject } from '#db/project-store'
 import {
+  claimDeletion,
   clearAllProvisioningForTests,
   provision,
   registerProvisioning,
@@ -247,5 +250,136 @@ describe('reapOrphanNodeLocal', () => {
     seeNothing()
     await expect(reapOrphanNodeLocal(view)).rejects.toThrow('cluster offline')
     expect(reaped).toHaveLength(0)
+  })
+})
+
+describe('reconcileIgnoredFileCleans', () => {
+  /** The checkouts the runtime was asked to run the clean on, with the
+   *  paths it was told to keep. */
+  let runs: Array<{ workspaceId: string; args: string[] }>
+  /** Holds each run until released, when set. */
+  let hold: Promise<void> | null
+
+  beforeEach(async () => {
+    await setUpSweep()
+    runs = []
+    hold = null
+    // The runtime runs the script on the checkout for real, as the
+    // containerless driver does.
+    installFakeWorkspaceDriver({
+      runInStoppedCheckout: async ({ projectId, workspaceId }, script, args) => {
+        runs.push({ workspaceId, args })
+        await hold
+        await promisify(execFile)('sh', ['-c', script, 'sh', workspaceDir(projectId, workspaceId), ...args])
+      },
+    })
+    await recordProject({ id: PROJ_A, name: 'demo', remoteUrl: 'https://x/proj-a', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+  })
+  afterEach(tearDownSweep)
+
+  /** A stopped workspace whose checkout holds an ignored, a kept and an
+   *  untracked file. */
+  async function stoppedWithBuildOutput(workspaceId: string): Promise<string> {
+    const dir = workspaceDir(PROJ_A, workspaceId)
+    await fs.mkdir(path.join(dir, 'out'), { recursive: true })
+    await fs.writeFile(path.join(dir, '.gitignore'), 'out/\n.env\n')
+    execFileSync('git', ['init', '-q'], { cwd: dir })
+    for (const rel of ['out/bundle.js', '.env', 'notes.txt']) await fs.writeFile(path.join(dir, rel), '')
+    await recordWorkspaceCreated({ projectId: PROJ_A, workspaceId })
+    await recordWorkspaceStopped(PROJ_A, workspaceId)
+    return dir
+  }
+
+  const cleaned = async (workspaceId: string): Promise<boolean> =>
+    (await getWorkspaceRow(PROJ_A, workspaceId))?.ignoredCleanedAt !== undefined
+
+  it('cleans one stopped workspace per pass, one at a time, keeping its kept paths, and skips the live, the in-flight, the deleting and the cleaned', async () => {
+    await setProjectKeptIgnoredPaths(PROJ_A, ['.env'])
+    const dead = await stoppedWithBuildOutput('dead')
+    await stoppedWithBuildOutput('gone')
+    await fs.rm(workspaceDir(PROJ_A, 'gone'), { recursive: true })
+    for (const id of ['stuck', 'restarting', 'deleting', 'done']) await stoppedWithBuildOutput(id)
+    await recordIgnoredFilesCleaned(PROJ_A, 'done', new Date())
+    registerProvisioning({ workspaceId: 'restarting', projectId: PROJ_A, tool: 'claude', kind: 'restart' })
+    claimDeletion('deleting')
+    seeRunning([handleFixture({ workspaceId: 'stuck', projectId: PROJ_A })])
+
+    let release!: () => void
+    hold = new Promise((resolve) => { release = resolve })
+    await reconcileIgnoredFileCleans(view)
+    await vi.waitFor(() => { expect(runs).toHaveLength(1) })
+    await reconcileIgnoredFileCleans(view)
+    expect(runs).toEqual([{ workspaceId: 'dead', args: ['.env'] }])
+    release()
+    await vi.waitFor(async () => { expect(await cleaned('dead')).toBe(true) }, { timeout: 30_000 })
+    expect((await fs.readdir(dead)).sort()).toEqual(['.env', '.git', '.gitignore', 'notes.txt'])
+
+    // A checkout that is gone has nothing to clean, so it is only stamped.
+    await reconcileIgnoredFileCleans(view)
+    await vi.waitFor(async () => { expect(await cleaned('gone')).toBe(true) }, { timeout: 30_000 })
+    await reconcileIgnoredFileCleans(view)
+    expect(runs.map((r) => r.workspaceId)).toEqual(['dead'])
+    for (const id of ['stuck', 'restarting', 'deleting']) expect(await cleaned(id), id).toBe(false)
+  })
+
+  // The fallback runs as root on what the agent wrote, so the repository's
+  // config gets no say beyond its ignore rules.
+  it('runs nothing the repository\'s config names, and keeps to its work tree and its own ignore rules', async () => {
+    const dir = await stoppedWithBuildOutput('hostile')
+    const git = (...args: string[]): string =>
+      execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: dir, encoding: 'utf8' }).trim()
+    const elsewhere = path.join(gcDataDir, 'elsewhere')
+    const ran = path.join(gcDataDir, 'ran')
+    await fs.mkdir(path.join(elsewhere, 'out'), { recursive: true })
+    await fs.writeFile(path.join(elsewhere, 'out', 'victim'), '')
+    await fs.writeFile(path.join(gcDataDir, 'everything'), '*\n')
+    // Walking into `sub/` (it holds an untracked file) reads its
+    // skip-worktree .gitignore from the index, and a missing blob would be
+    // lazily fetched through the promisor remote's upload-pack.
+    await fs.mkdir(path.join(dir, 'sub'))
+    await fs.writeFile(path.join(dir, 'sub', '.gitignore'), 'x\n')
+    git('add', '.gitignore', 'sub/.gitignore')
+    git('commit', '-qm', 'init')
+    const blob = git('rev-parse', 'HEAD:sub/.gitignore')
+    git('update-index', '--skip-worktree', 'sub/.gitignore')
+    await fs.rm(path.join(dir, 'sub', '.gitignore'))
+    await fs.rm(path.join(dir, '.git', 'objects', blob.slice(0, 2), blob.slice(2)))
+    await fs.writeFile(path.join(dir, 'sub', 'draft.txt'), '')
+    for (const [key, value] of [
+      ['core.repositoryformatversion', '1'],
+      ['extensions.partialClone', 'origin'],
+      ['remote.origin.promisor', 'true'],
+      ['remote.origin.url', elsewhere],
+      ['remote.origin.uploadpack', `sh -c 'touch ${ran}-uploadpack' #`],
+      ['core.fsmonitor', `sh -c 'touch ${ran}-fsmonitor' #`],
+      ['core.worktree', elsewhere],
+      ['core.excludesFile', path.join(gcDataDir, 'everything')],
+    ]) git('config', key, value)
+
+    await reconcileIgnoredFileCleans(view)
+    await vi.waitFor(async () => { expect(await cleaned('hostile')).toBe(true) }, { timeout: 30_000 })
+
+    expect((await fs.readdir(gcDataDir)).filter((n) => n.startsWith('ran'))).toEqual([])
+    expect(await fs.readdir(path.join(elsewhere, 'out'))).toEqual(['victim'])
+    expect((await fs.readdir(dir)).sort()).toEqual(['.git', '.gitignore', 'notes.txt', 'sub'])
+  })
+
+  it('tries a checkout it failed on again only after a wait', async () => {
+    await stoppedWithBuildOutput('dead')
+    hold = Promise.reject(new Error('pod failed'))
+    hold.catch(() => undefined)
+    await reconcileIgnoredFileCleans(view)
+    await vi.waitFor(() => { expect(runs).toHaveLength(1) })
+    hold = null
+    await reconcileIgnoredFileCleans(view)
+    expect(runs).toHaveLength(1)
+    expect(await cleaned('dead')).toBe(false)
+
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 2 * 60 * 60_000)
+    seeRunning([])
+    await reconcileIgnoredFileCleans(view)
+    await vi.waitFor(async () => { expect(await cleaned('dead')).toBe(true) }, { timeout: 30_000 })
+    expect(runs).toHaveLength(2)
+    vi.restoreAllMocks()
   })
 })

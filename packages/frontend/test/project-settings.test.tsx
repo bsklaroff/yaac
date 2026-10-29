@@ -92,6 +92,29 @@ describe('ProjectSettings', () => {
       .toEqual([{ enabled: false }]))
   })
 
+  it('adds a kept ignored path to the snapshot\'s list, and removes one', async () => {
+    useUiStore.setState({ activeProjectId: 'id-alpha' })
+    const snapshot = serverSnapshot({
+      driver: 'containerless',
+      projects: [{ ...project('alpha', 'https://github.com/o/alpha.git'), keptIgnoredPaths: ['.env'] }],
+    })
+    const server = mockFetch({
+      'GET /api/project/id-alpha/env': { vars: [] },
+      'GET /api/project/id-alpha/config': { config: null },
+      'PUT /api/project/id-alpha/kept-ignored-paths': ({ body }: FetchCall) => body,
+    })
+    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
+
+    expect(screen.getByRole('button', { name: 'Remove .env' })).toBeTruthy()
+    const input = screen.getByRole<HTMLInputElement>('textbox', { name: 'Path to keep' })
+    fireEvent.change(input, { target: { value: ' data/dev.db ' } })
+    fireEvent.submit(input.closest('form')!)
+    await waitFor(() => expect(input.value).toBe(''))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove .env' }))
+    await waitFor(() => expect(server.called('PUT /api/project/id-alpha/kept-ignored-paths').map((c) => c.body))
+      .toEqual([{ paths: ['.env', 'data/dev.db'] }, { paths: [] }]))
+  })
+
   it('confirms a stopped-workspace auto-delete with the count it deletes at once, and turns it off without asking', async () => {
     const server = renderAlpha()
     const before = '2026-10-16T12:00:00.000Z'

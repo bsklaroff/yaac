@@ -7,16 +7,17 @@ import { BUILDER_MIRROR_TAG } from '#drivers/k8s/cluster/builder-image'
 import { fakeRegistry } from './fake-registry'
 
 /**
- * The cluster's side of the k8s root remover (`removeAsRoot`) in unit
- * tests. Each pod the code applies ends in its given phase at once; one
- * that succeeds first does its work, running its own script against the
- * directory its subPath names, after making the named entries writable as
- * root would find them.
+ * The cluster's side of the k8s root pods (`removeAsRoot`,
+ * `runInStoppedCheckout`) in unit tests. Each pod the code applies ends in
+ * its given phase at once; one that succeeds first does its work, running
+ * its own script against the directory its subPath names. The remover's
+ * named entries are first made writable, as root would find them.
  */
 
 interface RootPod {
   spec: {
     containers: Array<{
+      name: string
       command: string[]
       securityContext: { runAsUser: number }
       volumeMounts: Array<{ mountPath: string; subPath: string }>
@@ -39,9 +40,14 @@ export function podsRunAsRoot(...phases: Array<'Succeeded' | 'Failed'>): void {
       const [container] = (c.body as unknown as RootPod).spec.containers
       const [{ mountPath, subPath }] = container.volumeMounts
       const dir = path.join(globalRoot(), subPath)
-      const [, , script, , ...names] = container.command
-      execFileSync('chmod', ['-R', 'u+w', ...names.map((n) => path.join(dir, n))])
-      execFileSync('sh', ['-c', script.replace(mountPath, dir), '--', ...names])
+      const [, , script, arg0, ...args] = container.command
+      if (container.name === 'rm') {
+        execFileSync('chmod', ['-R', 'u+w', ...args.map((n) => path.join(dir, n))])
+        execFileSync('sh', ['-c', script.replace(mountPath, dir), arg0, ...args])
+      } else {
+        // The checkout's path as the pod sees it comes first.
+        execFileSync('sh', ['-c', script, arg0, ...args.map((a) => a === mountPath ? dir : a)])
+      }
     }
     c.body = { ...c.body, status: { phase } }
   })

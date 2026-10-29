@@ -1417,6 +1417,9 @@ export interface ProjectSummary {
   /** Days a stopped workspace is kept before the server deletes it, set by
    *  the owner; absent keeps them forever. */
   stoppedWorkspaceRetentionDays?: number
+  /** Gitignored paths, relative to the checkout, that a stop keeps when it
+   *  removes the rest; absent when there are none. */
+  keptIgnoredPaths?: string[]
 }
 
 /**

@@ -199,6 +199,25 @@ export async function recordWorkspaceStopped(
     or(isNull(workspaces.stoppedAt), lt(workspaces.stoppedAt, workspaces.lifeStartedAt))))
 }
 
+/** Stamp a stopped workspace's ignored files as removed by a clean that
+ *  began at `at`, unless its stop came later. */
+export async function recordIgnoredFilesCleaned(projectId: string, workspaceId: string, at: Date): Promise<void> {
+  const db = await getDb()
+  await db.update(workspaces).set({ ignoredCleanedAt: at })
+    .where(and(key(projectId, workspaceId), lte(workspaces.stoppedAt, at)))
+}
+
+/** Stopped workspaces whose ignored files no clean has removed since the
+ *  stop, oldest stop first. */
+export async function listUncleanedStoppedWorkspaces(): Promise<Array<{ projectId: string; workspaceId: string }>> {
+  const db = await getDb()
+  return await db.select({ projectId: workspaces.projectId, workspaceId: workspaces.workspaceId })
+    .from(workspaces)
+    .where(and(isNotNull(workspaces.stoppedAt),
+      or(isNull(workspaces.ignoredCleanedAt), lt(workspaces.ignoredCleanedAt, workspaces.stoppedAt))))
+    .orderBy(workspaces.stoppedAt)
+}
+
 /** Clear a workspace's stop (its id is live again after a restart). */
 export async function clearWorkspaceStopped(
   projectId: string,

@@ -77,6 +77,8 @@ export interface ProjectRow extends ProjectMeta {
   shareRevoked: boolean
   /** Days a stopped workspace is kept; absent keeps them forever. */
   stoppedWorkspaceRetentionDays?: number
+  /** Gitignored checkout paths a stop keeps. */
+  keptIgnoredPaths: string[]
 }
 
 function toProjectRow(
@@ -122,6 +124,16 @@ export async function setProjectDefaultBranchGuard(projectId: string, enabled: b
 export async function setProjectWorkspaceRetention(projectId: string, days: number | null): Promise<boolean> {
   const db = await getDb()
   const rows = await db.update(projects).set({ stoppedWorkspaceRetentionDays: days })
+    .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
+  notifyWorkspaceListChanged()
+  return rows.length > 0
+}
+
+/** Replace the gitignored paths a stop keeps. False when there is no such
+ *  project. */
+export async function setProjectKeptIgnoredPaths(projectId: string, keptIgnoredPaths: string[]): Promise<boolean> {
+  const db = await getDb()
+  const rows = await db.update(projects).set({ keptIgnoredPaths })
     .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
   notifyWorkspaceListChanged()
   return rows.length > 0

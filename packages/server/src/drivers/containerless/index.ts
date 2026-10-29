@@ -1,5 +1,5 @@
 import { ServerError } from '@yaac/shared/errors'
-import { execInWorkspace } from './exec'
+import { execInWorkspace, runInStoppedCheckout } from './exec'
 import { dialCtrlStream, dialPtyStream, reviveStatusStream } from './dial'
 import { awaitReady, launchWorkspace, prepareSubstrate } from './launch'
 import {
@@ -134,6 +134,7 @@ export function createContainerlessDriver(): WorkspaceDriver {
     // A workspace writes as the server's own user, so nothing it leaves
     // needs more than that user to remove.
     removeAsRoot: () => Promise.resolve(false),
+    runInStoppedCheckout: (target, script, args, opts) => runInStoppedCheckout(target, script, args, opts),
 
     // yaac-mama posts directly to `/workspace/mama` here.
     mamaRelay: null,

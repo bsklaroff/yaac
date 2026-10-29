@@ -142,7 +142,12 @@ downloads only what the main clone lacks.
   checkout's state runs inside the workspace, so only while it runs: the
   changes diff, the file explorer, the git status bar's ahead/behind
   count (docs/file-editor.md), a spare's HEAD and its move to a new base
-  tip, and the refresh above. A workspace's base branch comes from its row,
+  tip, a stop's removal of ignored files, and the refresh above. The one
+  exception is that removal's fallback for a stopped workspace, which runs
+  git on the checkout as root in a one-shot gVisor pod that mounts nothing
+  else, or as the server's user under containerless, with the
+  repository's config kept from running anything (docs/workspace-storage.md
+  "Ignored files at stop"). A workspace's base branch comes from its row,
   never from the checkout's config, which the agent can rewrite. The one read
   that works on a stopped workspace parses its git dir without running git
   (below).

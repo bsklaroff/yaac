@@ -373,7 +373,7 @@ workspace
 
 workspace
   .command('stop')
-  .description('Stop a workspace: tear down its container, keep its checkout and diff')
+  .description('Stop a workspace: tear down its container, keep its checkout and diff (less its gitignored files)')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
   .action(workspaceStop)
 

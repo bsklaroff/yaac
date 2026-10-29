@@ -113,6 +113,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'DELETE', path: '/api/project/:projectId/shares/:userId', request: `${P}/shares/${ID.user}`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/project/:projectId/workspace-auto-delete', request: `${P}/workspace-auto-delete?days=30`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/workspace-auto-delete', request: `${P}/workspace-auto-delete`, body: { days: 30 }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'PUT', path: '/api/project/:projectId/kept-ignored-paths', request: `${P}/kept-ignored-paths`, body: { paths: ['.env'] }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/default-branch-guard', request: `${P}/default-branch-guard`, body: { enabled: false }, access: 'owner', k8s: MISSING, containerless: MISSING },
   // A hosted project's remote, for the user's own git; a push is the
   // owner's.

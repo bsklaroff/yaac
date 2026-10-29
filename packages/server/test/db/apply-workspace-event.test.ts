@@ -284,6 +284,19 @@ describe('applyWorkspaceEvent', () => {
     expect((await rowOf('wt-2'))?.deathReason).toBeUndefined()
   })
 
+  // A clean that began before the latest stop (one that outlived a
+  // restart) does not answer for it.
+  it('stamps a clean of the ignored files only against a stop recorded before it began', async () => {
+    const before = new Date(Date.now() - 1_000)
+    await stopped('wt-1')
+    await applyWorkspaceEvent({ type: 'ignored-files-cleaned', projectId: PROJ, workspaceId: 'wt-1', at: before })
+    expect((await rowOf('wt-1'))?.ignoredCleanedAt).toBeUndefined()
+
+    const at = new Date()
+    await applyWorkspaceEvent({ type: 'ignored-files-cleaned', projectId: PROJ, workspaceId: 'wt-1', at })
+    expect((await rowOf('wt-1'))?.ignoredCleanedAt).toEqual(at)
+  })
+
   it('touches only the workspace the event names', async () => {
     await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'wt-2' })
 

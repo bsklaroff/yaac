@@ -61,6 +61,17 @@ form/JSON body field). Under containerless the real value goes into the
 environment. GitHub access comes from the project's HTTPS git credential, so
 you don't need a `GITHUB_TOKEN` secret.
 
+## Kept ignored files
+
+Stopping a workspace deletes every file the repository's `.gitignore`
+matches, not only build output: `.env` files, local databases, editor and
+agent settings, and any new file in an ignored folder. Files git lists as
+untracked stay. Also not in `yaac-config.json`: under Settings
+→ Project Config → Kept ignored files, list paths relative to the
+repository root to keep anyway, each a file or a folder and everything in
+it (`.env`, `data/dev.db`). Changes apply from the next stop. See
+[workspace-storage.md](workspace-storage.md) "Ignored files at stop".
+
 ## Egress allowlist (k8s)
 
 Also not in `yaac-config.json`: set it under Settings → Project Config →

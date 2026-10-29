@@ -1,7 +1,7 @@
 // Public interface of the sealed projects folder (`#domain/projects`): a
 // project's rows and its files on disk. That covers the clone and its
 // branches, the remote of a project the server hosts, both config layers,
-// the egress allowlist, the Dockerfile and build-dir files, which of its
+// the egress allowlist, the ignored paths a stop keeps, the Dockerfile and build-dir files, which of its
 // owner's git credentials it uses, and the project lifecycle verbs.
 // Nothing below this layer reads project state; a driver that needs a
 // project's config is handed it (`PassContext.projectConfig`, a launch
@@ -31,6 +31,7 @@ export {
   resolveProjectConfig,
 } from './config'
 export { dismissImageBuild, retryImageBuild } from './images'
+export { setKeptIgnoredPaths } from './kept-paths'
 export {
   listProjectEnv,
   parseSecretProxyRule,

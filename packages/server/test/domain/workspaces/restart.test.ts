@@ -757,7 +757,8 @@ describe('prepareRestart', () => {
     const restarting = restart('wt-race').then(() => { settled = true })
     await new Promise((r) => setTimeout(r, 100))
     expect(settled).toBe(false)
-    expect(calls).toEqual([])
+    // The create's own window check may still land; nothing is relaunched.
+    expect(calls.filter((c) => /^(launch|destroy) /.test(c))).toEqual([])
 
     teardowns.children[0].emit('exit', 0)
     await restarting

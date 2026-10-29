@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { EventEmitter } from 'node:events'
+import { execFile, execFileSync } from 'node:child_process'
 import type * as ChildProcessModule from 'node:child_process'
 
 /** The detached teardown scripts a stop spawned, each with the child that
@@ -32,17 +33,18 @@ import {
 import { clearQueuedLaunchesForTests } from '#domain/workspaces/queued-workspaces'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { getQueuedWorkspaceRow } from '#db/queued-workspace-store'
-import { createWorkspaceGroup, getWorkspaceRow, listWorkspaceAgentSessions, setWorkspaceGroup, setWorkspaceGroupLimit } from '#db'
+import { createWorkspaceGroup, getWorkspaceRow, listWorkspaceAgentSessions, setProjectKeptIgnoredPaths, setWorkspaceGroup, setWorkspaceGroupLimit } from '#db'
 import { clearWorkspaceStopped, recordWorkspaceCreated } from '#db/workspace-store'
 import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
+import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver, workspacePathsFixture } from '#test/support/fake-driver'
 import { seedProject } from '@yaac/test-utils/project-fixture'
 import { WorkspaceExecError } from '#drivers/contract'
 import { BUILT_IN_USER_ID } from '#db'
 import { isWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { serverLog } from '#lib/log'
 import { workspaceDir } from '@yaac/shared/project-paths'
+import { shellQuote } from '#lib/shell'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -197,13 +199,30 @@ describe('stopWorkspace', () => {
     /** What the runtime was asked, in order. */
     let calls: string[]
 
-    function installTeardown(salvage: () => Promise<void> = () => Promise.resolve()): void {
+    /** A workspace whose commands run for real, in its checkout. */
+    const inCheckout = (cmd: string, opts?: { stdin?: string }): Promise<{ stdout: string; stderr: string }> =>
+      new Promise((resolve, reject) => {
+        const child = execFile('sh', ['-c', cmd], { cwd: workspaceDir(PROJ, 'parent') }, (err, stdout, stderr) => {
+          // As streamd words it: the exit and the command's stderr.
+          const code = typeof err?.code === 'number' ? err.code : -1
+          if (err) reject(new WorkspaceExecError(`command exited ${String(code)}: ${stderr.trim()}`, code, stdout, stderr))
+          else resolve({ stdout, stderr })
+        })
+        child.stdin?.end(opts?.stdin ?? '')
+      })
+
+    function installTeardown(
+      salvage: () => Promise<void> = () => Promise.resolve(),
+      exec: typeof inCheckout = () => Promise.resolve({ stdout: '', stderr: '' }),
+    ): void {
       installFakeWorkspaceDriver({
         findForTeardown: (id) => Promise.resolve(id === 'parent'
           ? { workspaceId: 'parent', projectId: PROJ, unitName: 'yaac-proj-parent' }
           : undefined),
         deregisterWorkspace: (id) => { calls.push(`deregister ${id}`); return Promise.resolve() },
         salvageImages: (target) => { calls.push(`salvage ${target.unitName}`); return salvage() },
+        workspacePaths: () => workspacePathsFixture({ workspaceDir: workspaceDir(PROJ, 'parent') }),
+        exec: (_job, cmd, opts) => exec(cmd, opts),
         detachedTeardownCommand: () => TEARDOWN,
       })
     }
@@ -242,10 +261,101 @@ describe('stopWorkspace', () => {
       expect(script.indexOf(TEARDOWN)).toBeLessThan(script.indexOf('rm -rf'))
     })
 
-    it('spawns the teardown even when the salvage fails', async () => {
-      installTeardown(() => Promise.reject(new Error('registry down')))
+    it('spawns the teardown even when the salvage fails and the workspace cannot be reached', async () => {
+      installTeardown(() => Promise.reject(new Error('registry down')), () => Promise.reject(new Error('pod gone')))
       await stopWorkspace(local, 'parent')
       await vi.waitFor(() => { expect(teardowns.spawned).toHaveLength(1) })
+      // Left for the fallback, which looks for stopped rows without a clean.
+      expect((await getWorkspaceRow(PROJ, 'parent'))?.ignoredCleanedAt).toBeUndefined()
+    })
+
+    it('first removes the ignored files, by every .gitignore, keeping untracked files, kept paths and nested repositories\' own untracked files', async () => {
+      const checkout = workspaceDir(PROJ, 'parent')
+      const git = (cwd: string, ...args: string[]): void => {
+        execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, stdio: 'ignore' })
+      }
+      const files: Record<string, string> = {
+        '.gitignore': 'node_modules/\ntarget/\n.env\n*.log\nvendor/\n',
+        'pkg/.gitignore': 'gen/\n',
+        'vendor/lib/.gitignore': 'build/\n',
+      }
+      for (const [rel, text] of Object.entries(files)) {
+        await fs.mkdir(path.dirname(path.join(checkout, rel)), { recursive: true })
+        await fs.writeFile(path.join(checkout, rel), text)
+      }
+      git(path.join(checkout, 'vendor/lib'), 'init', '-q')
+      git(path.join(checkout, 'vendor/lib'), 'add', '.')
+      git(path.join(checkout, 'vendor/lib'), 'commit', '-qm', 'lib')
+      git(checkout, 'init', '-q')
+      git(checkout, 'add', '.gitignore', 'pkg/.gitignore')
+      git(checkout, 'commit', '-qm', 'init')
+      const removed = ['app.log', 'target/debug/b', 'pkg/gen/o', 'vendor/junk', 'vendor/lib/build/o', 'node_modules/x/a.log']
+      const kept = ['notes.txt', 'vendor/lib/new.txt', '.env', 'target/release/bin', 'target/release/deps/x.log']
+      for (const rel of [...removed, ...kept]) {
+        await fs.mkdir(path.dirname(path.join(checkout, rel)), { recursive: true })
+        await fs.writeFile(path.join(checkout, rel), '')
+      }
+      await setProjectKeptIgnoredPaths(PROJ, ['.env', 'target/release'])
+      installTeardown(undefined, inCheckout)
+
+      await stopWorkspace(local, 'parent')
+      // The clean runs real git first.
+      await vi.waitFor(() => { expect(teardowns.spawned).toHaveLength(1) }, { timeout: 30_000 })
+
+      const exists = (rel: string): Promise<boolean> => fs.access(path.join(checkout, rel)).then(() => true, () => false)
+      expect(Object.fromEntries(await Promise.all([...removed, ...kept].map(async (rel) => [rel, await exists(rel)]))))
+        .toEqual(Object.fromEntries([...removed.map((rel) => [rel, false]), ...kept.map((rel) => [rel, true])]))
+      expect((await getWorkspaceRow(PROJ, 'parent'))?.ignoredCleanedAt).toBeInstanceOf(Date)
+    })
+
+    // A `sudo npm install` leaves thousands of files the workspace's user
+    // cannot remove; the fallback removes them as root.
+    it('leaves a clean that could not remove everything to the fallback, logging only its tail', async () => {
+      const checkout = workspaceDir(PROJ, 'parent')
+      const locked = path.join(checkout, 'out', 'locked')
+      await fs.mkdir(locked, { recursive: true })
+      await fs.writeFile(path.join(checkout, '.gitignore'), 'out/\n')
+      for (let i = 0; i < 200; i++) await fs.writeFile(path.join(locked, `f${String(i)}`), '')
+      execFileSync('git', ['init', '-q'], { cwd: checkout })
+      await fs.chmod(locked, 0o555)
+      vi.mocked(serverLog).mockClear()
+      installTeardown(undefined, inCheckout)
+      try {
+        await stopWorkspace(local, 'parent')
+        await vi.waitFor(() => { expect(teardowns.spawned).toHaveLength(1) }, { timeout: 30_000 })
+      } finally {
+        await fs.chmod(locked, 0o755)
+      }
+
+      expect((await getWorkspaceRow(PROJ, 'parent'))?.ignoredCleanedAt).toBeUndefined()
+      const logged = vi.mocked(serverLog).mock.calls.map(([m]) => m).find((m) => m.includes('ignored-file clean'))
+      expect(logged).toContain('with 200 lines of errors')
+      // The count's line, then the last 10.
+      expect(logged?.split('\n')).toHaveLength(11)
+    })
+
+    // A pod's module dirs and cache volumes are mounts into the checkout; a
+    // cache volume's contents are shared with other workspaces. The clean
+    // finds them from the kernel, so a user namespace stands in for the pod.
+    it.runIf(process.platform === 'linux')('keeps everything mounted under the checkout, whatever the project config says', async () => {
+      const checkout = workspaceDir(PROJ, 'parent')
+      const shared = path.join(tmpDir, 'shared-cache')
+      await fs.mkdir(path.join(checkout, 'cache'), { recursive: true })
+      await fs.mkdir(shared)
+      await fs.writeFile(path.join(shared, 'entry.log'), '')
+      await fs.writeFile(path.join(checkout, '.gitignore'), 'cache/\n*.log\n')
+      await fs.writeFile(path.join(checkout, 'app.log'), '')
+      execFileSync('git', ['init', '-q'], { cwd: checkout })
+      installTeardown(undefined, (cmd, opts) => inCheckout(
+        `unshare -rm sh -c 'mount --bind "$1" "$2" && exec sh -c "$3"' sh ${shellQuote(shared)} ${shellQuote(path.join(checkout, 'cache'))} ${shellQuote(cmd)}`,
+        opts,
+      ))
+
+      await stopWorkspace(local, 'parent')
+      await vi.waitFor(() => { expect(teardowns.spawned).toHaveLength(1) }, { timeout: 30_000 })
+
+      expect(await fs.readdir(shared)).toEqual(['entry.log'])
+      await expect(fs.access(path.join(checkout, 'app.log'))).rejects.toMatchObject({ code: 'ENOENT' })
     })
   })
 

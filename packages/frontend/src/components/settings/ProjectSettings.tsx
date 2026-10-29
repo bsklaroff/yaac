@@ -7,6 +7,7 @@ import { EgressAllowlist } from '#components/settings/EgressAllowlist'
 import { HostedRemote } from '#components/settings/HostedRemote'
 import { ProjectSharing } from '#components/settings/ProjectSharing'
 import { WorkspaceAutoDelete } from '#components/settings/WorkspaceAutoDelete'
+import { KeptIgnoredPaths } from '#components/settings/KeptIgnoredPaths'
 import { ProjectSelect, useSettingsProject } from '#components/settings/ProjectPicker'
 import { api } from '#lib/api'
 import { WarningIcon } from '#lib/icons'
@@ -132,6 +133,15 @@ export function ProjectSettings(): JSX.Element {
               projectId={projectId}
               name={selected.name}
               days={selected.stoppedWorkspaceRetentionDays}
+              readOnly={readOnly}
+            />
+          </div>
+
+          <div className="mt-6">
+            <KeptIgnoredPaths
+              key={`kept-ignored:${projectId}`}
+              projectId={projectId}
+              paths={selected.keptIgnoredPaths ?? []}
               readOnly={readOnly}
             />
           </div>

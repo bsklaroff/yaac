@@ -1,0 +1,127 @@
+#!/bin/sh
+# yaac-clean-ignored CHECKOUT [KEPT...]
+#
+# Remove the checkout's gitignored files, keeping untracked files, each
+# KEPT path (relative to CHECKOUT: a file, or a folder and all it holds)
+# and every mount point under CHECKOUT, then do the same in each nested
+# repository inside an ignored folder, by that repository's own rules
+# (docs/workspace-storage.md "Ignored files at stop"). The server runs it when a workspace stops, inside the workspace,
+# and again as root on the checkout of one where that did not succeed.
+#
+# Exits nonzero only when something could not be removed, which running as
+# root may fix. A repository git cannot read is skipped with a note on
+# stderr.
+set -u
+[ -e "$1/.git" ] || exit 0
+tmp=$(mktemp -d) || exit 1
+trap 'rm -rf "$tmp"' EXIT
+
+# git_ DIR ARGS: git on the repository at DIR. Its config is the agent's,
+# so these are pinned over it: the work tree; fsmonitor and hooks, which
+# run commands; lazy fetches and every transport, since a fetch runs the
+# remote's upload-pack or ssh command; and the excludes file, so only the
+# repository's own rules decide. As root the checkout belongs to another
+# user, which git refuses unless told otherwise.
+git_() {
+  d=$1
+  shift
+  LC_ALL=C GIT_NO_LAZY_FETCH=1 git -C "$d" --work-tree="$d" -c core.fsmonitor=false \
+    -c core.hooksPath=/dev/null -c protocol.allow=never -c core.excludesFile=/dev/null \
+    -c safe.directory='*' -c core.quotePath=false "$@"
+}
+# A path as a gitignore pattern, every character a pattern gives meaning to
+# escaped.
+esc() { printf '%s' "$1" | sed 's/[][\\*? ]/\\&/g'; }
+
+# The mount points under the checkout, relative to it: a running
+# workspace's module dirs and cache volumes, whose contents a cache volume
+# shares with other workspaces. Read from the kernel rather than the
+# project config, which may have changed since the workspace started.
+# mountinfo escapes a path's space, tab, newline and backslash in octal.
+mounts() {
+  [ -r /proc/self/mountinfo ] || return 0
+  R=$1 awk '
+    function unescape(s,   out, c) {
+      out = ""
+      while ((c = index(s, "\\")) > 0 && substr(s, c + 1, 3) ~ /^[0-7][0-7][0-7]$/) {
+        out = out substr(s, 1, c - 1) sprintf("%c", substr(s, c + 1, 1) * 64 + substr(s, c + 2, 1) * 8 + substr(s, c + 3, 1))
+        s = substr(s, c + 4)
+      }
+      return out s
+    }
+    BEGIN { root = ENVIRON["R"] "/" }
+    { m = unescape($5); if (index(m, root) == 1) print substr(m, length(root) + 1) }
+  ' /proc/self/mountinfo
+}
+
+status=0
+printf '%s\n' "$1" > "$tmp/repos"
+root=$1
+shift
+{ for k in "$@"; do printf '%s\n' "$k"; done; mounts "$root"; } > "$tmp/kept.1"
+n=0
+while [ "$n" -lt 50 ] && [ "$n" -lt $(($(wc -l < "$tmp/repos"))) ]; do
+  n=$((n + 1))
+  dir=$(sed -n "${n}p" "$tmp/repos")
+  kept=$tmp/kept.$n
+
+  # Which folders above a kept path git ignores. Without the answer a kept
+  # path could go with its folder, so the repository is skipped.
+  while IFS= read -r k; do
+    while [ "${k%/*}" != "$k" ]; do k=${k%/*}; printf '%s/\n' "$k"; done
+  done < "$kept" > "$tmp/above"
+  tr '\n' '\0' < "$tmp/above" | git_ "$dir" check-ignore -z --stdin > "$tmp/ignored"
+  if [ $? -gt 1 ]; then echo "$dir: cannot tell which folders git ignores; skipped" >&2; continue; fi
+  tr '\0' '\n' < "$tmp/ignored" > "$tmp/ignored-dirs"
+
+  # Under -X an -e pattern is an ignore rule ranked above every .gitignore,
+  # so `!` un-ignores a kept path and all it holds. An ignored folder above
+  # one is un-ignored too, or git would remove it whole, and its other
+  # entries are ignored again, as they were before (gitignore's re-include
+  # recipe). The last matching pattern decides, so every re-ignore goes
+  # first.
+  : > "$tmp/reignore"
+  : > "$tmp/keep"
+  while IFS= read -r k; do
+    above= rest=$k inside=
+    while [ "${rest#*/}" != "$rest" ]; do
+      above=${above:+$above/}${rest%%/*}
+      rest=${rest#*/}
+      if [ -n "$inside" ] || grep -qxF -e "$above/" "$tmp/ignored-dirs"; then
+        inside=1
+        printf '/%s/*\n' "$(esc "$above")" >> "$tmp/reignore"
+        printf '!/%s/\n' "$(esc "$above")" >> "$tmp/keep"
+      fi
+    done
+    printf '!/%s\n!/%s/**\n' "$(esc "$k")" "$(esc "$k")" >> "$tmp/keep"
+  done < "$kept"
+  cat "$tmp/reignore" "$tmp/keep" > "$tmp/patterns"
+  set --
+  while IFS= read -r p; do set -- "$@" -e "$p"; done < "$tmp/patterns"
+  # git warns once per file it cannot remove, so only a count and the last
+  # 10 lines are passed on: a `sudo npm install` leaves thousands.
+  git_ "$dir" clean -fdX "$@" > "$tmp/out" 2> "$tmp/err"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "$dir: git clean exited $rc with $(($(wc -l < "$tmp/err"))) lines of errors, ending:" >&2
+    tail -n 10 "$tmp/err" >&2
+  fi
+  if [ "$rc" -eq 1 ]; then status=1; elif [ "$rc" -ne 0 ]; then echo "$dir: skipped" >&2; fi
+
+  # The nested repositories git skipped, with the kept paths inside each.
+  # Under -X git reports only those inside an ignored folder: a nested
+  # clone it would not remove is never entered. A quoted name holds a
+  # character git escapes; that repository is left as it is, as is one
+  # inside a kept path.
+  sed -n 's/^Skipping repository //p' "$tmp/out" | while IFS= read -r repo; do
+    repo=${repo%/}
+    case $repo in '"'* | .. | ../* | */.. | */../*) continue ;; esac
+    if R=$repo awk 'BEGIN { r = ENVIRON["R"] "/" } index(r, $0 "/") == 1 { f = 1 } END { exit !f }' "$kept"; then
+      continue
+    fi
+    m=$(($(wc -l < "$tmp/repos") + 1))
+    R=$repo awk 'BEGIN { r = ENVIRON["R"] "/" } index($0, r) == 1 { print substr($0, length(r) + 1) }' "$kept" > "$tmp/kept.$m"
+    printf '%s/%s\n' "$dir" "$repo" >> "$tmp/repos"
+  done
+done
+exit "$status"

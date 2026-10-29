@@ -7,6 +7,7 @@ import {
   recordWorkspaceCreated,
   recordWorkspaceLife,
   recordWorkspaceResumed,
+  recordIgnoredFilesCleaned,
   recordWorkspaceStopped,
   removeWorkspaceRecords,
   recordWaitingUnseen,
@@ -70,6 +71,9 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
       return
     case 'workspace-stopped':
       await recordWorkspaceStopped(event.projectId, event.workspaceId, event.cause)
+      return
+    case 'ignored-files-cleaned':
+      await recordIgnoredFilesCleaned(event.projectId, event.workspaceId, event.at)
       return
   }
 }

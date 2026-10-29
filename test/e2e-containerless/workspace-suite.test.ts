@@ -1322,6 +1322,13 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(missing.code).toBe(1)
     expect(missing.out).toContain('no workspace')
 
+    // Build output it leaves behind is ignored; notes are only untracked.
+    const doomedCheckout = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', doomed)
+    await fs.appendFile(path.join(doomedCheckout, '.git', 'info', 'exclude'), '/build-output/\n')
+    await fs.mkdir(path.join(doomedCheckout, 'build-output'))
+    await fs.writeFile(path.join(doomedCheckout, 'build-output', 'bundle.js'), '')
+    await fs.writeFile(path.join(doomedCheckout, 'notes.txt'), '')
+
     // With no workspace named it stops itself. The reply may not survive,
     // so assert that the tmux server goes away.
     await asDoomed('stop').catch(() => undefined)
@@ -1331,9 +1338,10 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       if (!gone) await new Promise((r) => setTimeout(r, 1_000))
     }
     expect(gone).toBe(true)
-    // A stop keeps the checkout.
-    const doomedCheckout = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', doomed)
-    await expect(fs.stat(doomedCheckout)).resolves.toBeDefined()
+    // A stop keeps the checkout, with its untracked files but not its
+    // ignored ones, which go before the tmux server does.
+    await expect(fs.stat(path.join(doomedCheckout, 'notes.txt'))).resolves.toBeDefined()
+    await expect(fs.stat(path.join(doomedCheckout, 'build-output'))).rejects.toMatchObject({ code: 'ENOENT' })
 
     // ...and its committed work stays readable: this workspace fetches it
     // into its own checkout, standing in that checkout as an agent does.

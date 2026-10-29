@@ -196,6 +196,7 @@ function defaultRuntime(): WorkspaceDriver {
     registerWorkspace: () => Promise.resolve(),
     deregisterWorkspace: () => Promise.resolve(),
     salvageImages: () => Promise.resolve(),
+    runInStoppedCheckout: () => Promise.resolve(),
     // Defaults to "it really went away"; timeout cases override it.
     destroy: () => Promise.resolve(true),
     detachedTeardownCommand: () => 'true',

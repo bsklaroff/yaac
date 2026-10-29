@@ -398,7 +398,10 @@ image) mounting only the refused entries' directory, as a subPath of
 `yaac-global`, and removes just those entries. It mounts the claim rather
 than a hostPath, so it works on byo storage too, except on an export that
 squashes root, where its root is mapped to an unprivileged uid and may be
-refused just as the server was.
+refused just as the server was. The same kind of pod, on the yaac base image and under gVisor
+since it reads what a workspace wrote, removes a stopped workspace's
+gitignored files when its stop could not (docs/workspace-storage.md
+"Ignored files at stop").
 
 ## Lifecycle
 
