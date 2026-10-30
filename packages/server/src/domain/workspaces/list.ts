@@ -3,19 +3,21 @@ import {
   getProjectRow,
   getProjectWorkspaceRows,
   conversationTitle,
+  listOpenSessionsFor,
   openingPrompt,
   routineRunWorkspaces,
   type ConversationLinkRow,
+  type SessionRow,
   type WorkspaceRow,
 } from '#db'
-import { listedStatus, toConversationEntry } from './conversation-entry'
+import { listedStatus, toConversationEntry, toSessionEntry } from './conversation-entry'
 import { HELD_PROMPT_GRACE_MS } from './conversation-registry'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import { observeWorkspaces, type WorkspaceRuntimeReport } from '#runtime/status'
-import type { AgentLiveness } from '#drivers/contract'
-import type { ActiveWorkspacesResult, AgentStatus, WorkspaceListEntry } from '@yaac/shared/types'
+import { KEEPER_STARTING, KEEPER_WINDOW, type WorkspaceWindow } from '#drivers/contract'
+import type { ActiveWorkspacesResult, SessionEntry, WorkspaceListEntry, WorkspaceTerminalEntry } from '@yaac/shared/types'
 
 export async function ensureProjectExists(projectId: string): Promise<void> {
   if (!await getProjectRow(projectId)) {
@@ -62,17 +64,18 @@ export function _clearListActiveInflightForTests(): void {
  * down. Joins what the runtime observes now with recorded rows (title,
  * group, creation time, conversations) (docs/layered-server.md).
  *
- * A chat workspace still holding its create prompt (`pendingPrompt`) lists
- * as `running`, and so do its waiting conversations: its agent is starting
- * up to work on that prompt, so the `waiting` the status store reports
- * before the first turn would show an unread reply that does not exist.
- * Only within `HELD_PROMPT_GRACE_MS` of the latest of the row's creation,
- * the runtime's, and the wait's start (the agent's attach or first status),
- * after which the start is stuck and its real status shows, as a wait
- * clients have not seen yet. Each covers a case the others start too early
- * for: a cold create writes its row before a slow image build and boot, a
- * runtime's watcher takes a moment to attach, and a claimed spare's agent
- * may have been waiting since it was warmed.
+ * A chat session still holding its opening prompt (`pendingPrompt`) lists
+ * as `running` rather than `waiting`, and so does its workspace when
+ * nothing else waits: its agent is starting up to work on that prompt, so
+ * the `waiting` the status store reports before the first turn would show
+ * an unread reply that does not exist. Only within `HELD_PROMPT_GRACE_MS`
+ * of the latest of the session's opening, the runtime's creation, and the
+ * wait's start (the agent's attach or first status), after which the start
+ * is stuck and its real status shows, as a wait clients have not seen yet.
+ * Each covers a case the others start too early for: a cold create opens
+ * its session before a slow image build and boot, a runtime's watcher takes
+ * a moment to attach, and a claimed spare's agent may have been waiting
+ * since it was warmed.
  */
 export async function listActiveWorkspaces(projectFilter?: string): Promise<ActiveWorkspacesResult> {
   const key = projectFilter ?? ''
@@ -112,54 +115,53 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
     (w.projectId && w.workspaceId
       ? agentsByProject.get(w.projectId)?.get(w.workspaceId)
       : undefined) ?? []
+  const sessionsByWorkspace = await listOpenSessionsFor(report.workspaces.map((w) => w.workspaceId).filter((v) => !!v))
 
   const workspaces = report.workspaces.map((w): WorkspaceListEntry => {
     const row = rowFor(w)
     const links = agentsFor(w)
+    const sessions = sessionsByWorkspace.get(w.workspaceId) ?? []
     const base = {
       workspaceId: w.workspaceId,
       projectId: w.projectId,
-      tool: w.tool,
       // The recorded time survives a runtime restart; fall back if no row yet.
       createdAt: formatUtcTimestamp((row?.createdAt ?? new Date(w.createdAtMs)).getTime()),
-      prompt: openingPrompt(links) ?? row?.pendingPrompt,
+      prompt: openingPrompt(links) ?? sessions[0]?.firstPrompt,
       title: row?.title ?? conversationTitle(links) ?? row?.generatedTitle,
       groupId: row?.groupId,
-      ...(row !== undefined ? { mode: row.mode, permissionMode: row.permissionMode } : {}),
-      ...(row?.effort !== undefined ? { effort: row.effort } : {}),
+      conversations: links.map(toConversationEntry),
       ...(row?.deadline !== undefined ? { deadline: row.deadline.toISOString() } : {}),
       ...(routineRuns.has(w.workspaceId) ? { routineId: routineRuns.get(w.workspaceId) } : {}),
     }
     if (w.phase === 'terminating') {
       // Non-interactive placeholder: no ports, and `running` so no attention
-      // badge fires. Conversations are kept only to show the model.
+      // badge fires. Sessions are kept only to show the model.
       return {
         ...base,
         status: 'running',
         stopping: true,
-        conversations: links.map((l) => toConversationEntry(l)),
+        sessions: sessions.map((s) => toSessionEntry(s, links)),
         blockedHosts: [],
         forwardedPorts: [],
         unforwardedPorts: [],
       }
     }
-    const startingUntil = row?.pendingPrompt !== undefined
-      ? Math.max(row.createdAt.getTime(), w.createdAtMs, w.waitingSinceMs ?? 0) + HELD_PROMPT_GRACE_MS
-      : undefined
-    const starting = startingUntil !== undefined && Date.now() < startingUntil
-    if (starting) republishAt(startingUntil)
-    const shown = (live: LiveStatus): LiveStatus => (starting && live.status === 'waiting' ? { status: 'running' } : live)
-    const status = shown(w)
+    const starting = new Set<string>()
+    const entries = sessions.map((s) => {
+      const entry = toSessionEntry(s, links, { agents: w.agents, ...(w.windows !== undefined ? { windows: w.windows } : {}) })
+      const until = startingUntil(s, entry, w)
+      if (until === undefined) return entry
+      starting.add(s.id)
+      republishAt(until)
+      if (entry.status !== 'waiting' || entry.asking === true) return entry
+      const { waitingSinceMs: _, ...rest } = entry
+      return { ...rest, status: 'running' as const }
+    })
     return {
       ...base,
-      ...listedStatus(status.status),
-      ...(status.waitingSinceMs !== undefined ? { waitingSinceMs: status.waitingSinceMs } : {}),
-      ...(row !== undefined && row.waitingSeenBy.length > 0 ? { waitingSeenBy: row.waitingSeenBy } : {}),
-      conversations: links.map((l) => {
-        const live = liveStatus(w.agents, l)
-        return toConversationEntry(l, live && shown(live))
-      }),
-      ...(w.terminals !== undefined ? { terminals: w.terminals } : {}),
+      ...workspaceStatus(entries, w, starting.size > 0),
+      sessions: entries,
+      ...(w.windows !== undefined ? { terminals: terminalsOf(w.windows, sessions) } : {}),
       blockedHosts: w.blockedHosts,
       forwardedPorts: w.forwardedPorts,
       unforwardedPorts: w.unforwardedPorts,
@@ -179,26 +181,36 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
 }
 
 /**
- * A conversation's status, matched by the handle it was last
- * seen on (tmux pane id under `tui`, acpd window name under `acp`).
- * Undefined for inactive conversations, which lets clients tell "open" from
- * "was open".
+ * The workspace's status from its sessions': the runtime's aggregate while
+ * any is running, `idle` with none.
  */
-function liveStatus(
-  agents: AgentLiveness[],
-  l: ConversationLinkRow,
-): LiveStatus | undefined {
-  if (!l.active || l.paneId === undefined) return undefined
-  const agent = agents.find((a) => a.handle === l.paneId)
-  if (agent === undefined) return undefined
+function workspaceStatus(
+  sessions: SessionEntry[],
+  w: WorkspaceRuntimeReport,
+  starting: boolean,
+): Pick<WorkspaceListEntry, 'status' | 'asking' | 'waitingSinceMs'> {
+  if (!sessions.some((s) => s.exited !== true)) return { status: 'idle' }
+  if (starting && w.status === 'waiting' && !sessions.some((s) => s.status === 'waiting')) return { status: 'running' }
   return {
-    status: agent.status,
-    ...(agent.waitingSinceMs !== undefined ? { waitingSinceMs: agent.waitingSinceMs } : {}),
+    ...listedStatus(w.status),
+    ...(w.waitingSinceMs !== undefined ? { waitingSinceMs: w.waitingSinceMs } : {}),
   }
 }
 
-/** A status as listed, with the start of its waiting spell. */
-interface LiveStatus {
-  status: AgentStatus
-  waitingSinceMs?: number
+/** The windows the webapp opens as terminals: all but the keeper and the
+ *  sessions'. */
+function terminalsOf(windows: WorkspaceWindow[], sessions: SessionRow[]): WorkspaceTerminalEntry[] {
+  const taken = new Set([KEEPER_WINDOW, KEEPER_STARTING, ...sessions.map((s) => s.window)])
+  return windows.filter((w) => !taken.has(w.name)).map((w) => ({ target: `window:${w.id}`, name: w.name }))
+}
+
+/**
+ * When a session still holding its opening prompt stops counting as
+ * starting, or undefined once it does not (see `listActiveWorkspaces`).
+ */
+function startingUntil(s: SessionRow, entry: SessionEntry, w: WorkspaceRuntimeReport): number | undefined {
+  if (s.pendingPrompt === undefined) return undefined
+  const from = Math.max(s.openedAt.getTime(), w.createdAtMs, entry.waitingSinceMs ?? w.waitingSinceMs ?? 0)
+  const until = from + HELD_PROMPT_GRACE_MS
+  return Date.now() < until ? until : undefined
 }

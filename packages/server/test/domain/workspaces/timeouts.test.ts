@@ -65,7 +65,7 @@ afterEach(async () => {
 
 describe('reconcileWorkspaceTimeouts', () => {
   it('stops a running workspace past its deadline as a natural stop, so what was queued after it starts', async () => {
-    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'timed', deadline: past(), mode: 'tui' })
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'timed', deadline: past() })
     await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'later', deadline: new Date(Date.now() + 3_600_000) })
     await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'untimed' })
     const child = await queueWorkspace(local, PROJ, { parent: 'timed', prompt: 'follow up', tool: 'claude' }, 'user')

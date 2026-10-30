@@ -9,7 +9,8 @@ import {
   isNewWorkspaceForm, seedNewWorkspace, type NewWorkspaceForm, type NewWorkspaceOpts, type PendingDraft,
 } from '#lib/newWorkspace'
 import type {
-  AgentTool, ProjectSummary, ProvisioningWorkspaceEntry, ServerSnapshot, StoppedWorkspaceEntry, WorkspaceListEntry,
+  AgentTool, ProjectSummary, ProvisioningWorkspaceEntry, ServerSnapshot, SessionEntry, StoppedWorkspaceEntry,
+  WorkspaceListEntry,
 } from '@yaac/shared/types'
 
 /** Desktop sidebar width in px: the default and the drag bounds. */
@@ -214,8 +215,9 @@ export const FILE_DIFF_MODES = ['plain', 'added', 'inline', 'changes'] as const
 export type FileDiffMode = typeof FILE_DIFF_MODES[number]
 
 /** The statuses the sidebar's filter can narrow its rows to, in menu order.
- *  `background` is an agent between turns with background work live. */
-export const SIDEBAR_STATUSES = ['waiting', 'running', 'background', 'stopped'] as const
+ *  `background` is an agent between turns with background work live, and
+ *  `idle` a running workspace with no session running. */
+export const SIDEBAR_STATUSES = ['waiting', 'running', 'background', 'idle', 'stopped'] as const
 export type SidebarStatus = typeof SIDEBAR_STATUSES[number]
 
 /** The store fields saved across reloads. */
@@ -280,16 +282,14 @@ function savePersisted(field: keyof UiState, value: unknown): void {
 
 /**
  * A workspace's layout. A workspace with none stored shows the single pane
- * `fallback`. Callers that don't know the workspace's mode use `agent`; in an
- * `acp` workspace the window sync (`syncPaneLayout`) then puts the chat pane
- * in its place.
+ * `fallback`, or none without one.
  */
 export function layoutOf(
   layouts: Record<string, PaneLayout>,
   workspaceId: string,
-  fallback = 'agent',
+  fallback?: string,
 ): PaneLayout {
-  return layouts[workspaceId] ?? singleColumn(fallback)
+  return layouts[workspaceId] ?? (fallback !== undefined ? singleColumn(fallback) : [])
 }
 
 /**
@@ -334,15 +334,23 @@ export function paneViewKey(workspaceId: string, pane: string): string {
 }
 
 /**
- * Whether a workspace is waiting and `viewerId` (the caller, whoever's
- * workspace it is) hasn't viewed it since its agents last started a turn.
+ * Whether a session is waiting and `viewerId` (the caller, whoever's
+ * workspace it is) hasn't viewed it since its agent last started a turn.
  * The server keeps `waitingSeenBy`, so every client of one user agrees.
  */
-export function isUnreadWaiting(
-  workspace: Pick<WorkspaceListEntry, 'status' | 'waitingSeenBy'>,
+export function isSessionUnread(
+  session: Pick<SessionEntry, 'status' | 'waitingSeenBy'>,
   viewerId: string | undefined,
 ): boolean {
-  return workspace.status === 'waiting' && (viewerId === undefined || workspace.waitingSeenBy?.includes(viewerId) !== true)
+  return session.status === 'waiting' && (viewerId === undefined || session.waitingSeenBy?.includes(viewerId) !== true)
+}
+
+/** Whether any of a workspace's sessions is unread (`isSessionUnread`). */
+export function isUnreadWaiting(
+  workspace: Pick<WorkspaceListEntry, 'sessions'>,
+  viewerId: string | undefined,
+): boolean {
+  return workspace.sessions.some((s) => isSessionUnread(s, viewerId))
 }
 
 /**
@@ -373,7 +381,7 @@ export function unseenDeaths(
  * `pendingDeleteIds`) don't count.
  */
 export function unreadWaitingByProject(
-  workspaces: Pick<WorkspaceListEntry, 'workspaceId' | 'projectId' | 'status' | 'waitingSeenBy' | 'stopping' | 'asking'>[],
+  workspaces: Pick<WorkspaceListEntry, 'workspaceId' | 'projectId' | 'sessions' | 'stopping' | 'asking'>[],
   viewerId: string | undefined,
   pendingDeleteIds: string[] = [],
 ): Record<string, number> {
@@ -767,9 +775,12 @@ interface UiState {
   /** Drop an optimistic stopped entry, once the server's list has it or on
    *  restart. */
   removeOptimisticStopped: (workspaceId: string) => void
-  /** Show a workspace as read by `userId` in the held snapshot, ahead of
-   *  the server recording it (`/workspace/mark-waiting-seen`). */
-  markWaitingSeen: (workspaceId: string, userId: string) => void
+  /** Show a session as read by `userId` in the held snapshot, ahead of the
+   *  server recording it (`/workspace/mark-waiting-seen`). */
+  markWaitingSeen: (sessionId: string, userId: string) => void
+  /** Drop a closed session from the held snapshot, ahead of the server's
+   *  next one, so its pane does not come back meanwhile. */
+  dropSession: (sessionId: string) => void
 }
 
 /** Open a special pane as its own column (if not already open) and focus it. */
@@ -806,12 +817,10 @@ export function guardNewWorkspace(read: () => PendingDraft | null): () => void {
 export type LaunchPane = 'shell' | 'files' | 'changes'
 
 /**
- * What a create still has to show once its workspace is listed: a chat
- * create's opening prompt, which its chat pane shows until the agent echoes
- * it, and the pane the create was started from the bar to open.
+ * What a create still has to show once its workspace is listed: the pane
+ * the create was started from the bar to open.
  */
 export interface Launch {
-  prompt?: string
   pane?: LaunchPane
 }
 
@@ -931,7 +940,7 @@ export const useUiStore = create<UiState>((set, get) => ({
     }))
     const kept = get().newWorkspace
     const blank = opts.parent === undefined && opts.draftId === undefined && opts.editId === undefined
-      && opts.routineId === undefined
+      && opts.routineId === undefined && opts.inWorkspace === undefined
     if (blank && kept?.projectId === opts.projectId && kept.editId === undefined && kept.draftId === undefined
       && kept.editRoutineId === undefined) {
       show(kept)
@@ -1255,12 +1264,29 @@ export const useUiStore = create<UiState>((set, get) => ({
       ? { optimisticStopped: s.optimisticStopped.filter((e) => e.workspaceId !== workspaceId) }
       : s
   )),
-  markWaitingSeen: (workspaceId, userId) => set((s) => (
+  dropSession: (sessionId) => set((s) => (
     s.snapshot === undefined ? s : {
       snapshot: {
         ...s.snapshot,
         workspaces: s.snapshot.workspaces.map((w) => (
-          w.workspaceId === workspaceId ? { ...w, waitingSeenBy: [...w.waitingSeenBy ?? [], userId] } : w)),
+          w.sessions.some((x) => x.sessionId === sessionId)
+            ? { ...w, sessions: w.sessions.filter((x) => x.sessionId !== sessionId) }
+            : w)),
+      },
+    }
+  )),
+  markWaitingSeen: (sessionId, userId) => set((s) => (
+    s.snapshot === undefined ? s : {
+      snapshot: {
+        ...s.snapshot,
+        workspaces: s.snapshot.workspaces.map((w) => (
+          w.sessions.some((x) => x.sessionId === sessionId)
+            ? {
+              ...w,
+              sessions: w.sessions.map((x) => (
+                x.sessionId === sessionId ? { ...x, waitingSeenBy: [...x.waitingSeenBy ?? [], userId] } : x)),
+            }
+            : w)),
       },
     }
   )),

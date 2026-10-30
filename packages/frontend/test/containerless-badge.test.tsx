@@ -21,8 +21,8 @@ const workspace = workspaceEntry({ terminals: [] })
 const stopped: StoppedWorkspaceEntry = {
   workspaceId: 's2',
   projectId: 'proj',
-  tool: 'claude',
   createdAt: '2026-08-10 00:00:00',
+  sessions: [],
   stoppedAt: '2026-08-10 01:00:00',
   title: 'Stopped run',
   deathSeenBy: [],

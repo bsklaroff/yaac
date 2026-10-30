@@ -19,14 +19,13 @@ function link(over: Partial<ConversationLinkRow> = {}): ConversationLinkRow {
 }
 
 describe('toConversationEntry', () => {
-  it('renders a live conversation with the observed status folded in', () => {
+  it('renders a conversation with its session and opening message', () => {
     const entry = toConversationEntry(
       link({
         firstPrompt: 'fix the thing',
+        sessionId: 'sess-1',
         lastActiveAt: new Date('2026-03-04T05:06:07.891Z'),
-        paneId: '%3',
       }),
-      { status: 'waiting', waitingSinceMs: 1_700_000_000_000 },
     )
     expect(entry).toEqual({
       conversationId: 'sid-1',
@@ -34,8 +33,7 @@ describe('toConversationEntry', () => {
       mode: 'tui',
       ordinal: 0,
       active: true,
-      status: 'waiting',
-      waitingSinceMs: 1_700_000_000_000,
+      sessionId: 'sess-1',
       prompt: 'fix the thing',
       // Every surface shows this format. Both forms are strings, so tsc
       // would not catch a mismatch.
@@ -56,7 +54,7 @@ describe('toConversationEntry', () => {
     expect('modelName' in typed).toBe(false)
   })
 
-  it('omits the live half entirely for a conversation nothing is observing', () => {
+  it('omits what a conversation has not recorded', () => {
     const entry = toConversationEntry(link({ active: false, ordinal: 2 }))
     expect(entry).toEqual({
       conversationId: 'sid-1',
@@ -65,17 +63,9 @@ describe('toConversationEntry', () => {
       ordinal: 2,
       active: false,
     })
-    // Keys are absent, not undefined: that is how a client tells an open
-    // conversation from a closed one.
-    expect('status' in entry).toBe(false)
+    // Keys are absent, not undefined.
+    expect('sessionId' in entry).toBe(false)
     expect('lastActiveAt' in entry).toBe(false)
     expect('prompt' in entry).toBe(false)
-  })
-
-  it('carries a running conversation that has no waiting spell', () => {
-    const entry = toConversationEntry(link({ mode: 'acp' }), { status: 'running' })
-    expect(entry.status).toBe('running')
-    expect(entry.mode).toBe('acp')
-    expect('waitingSinceMs' in entry).toBe(false)
   })
 })

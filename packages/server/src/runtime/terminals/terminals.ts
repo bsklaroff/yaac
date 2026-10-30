@@ -5,16 +5,17 @@ import type { WorkspaceTerminalEntry } from '@yaac/shared/types'
 
 /**
  * Manage a workspace's webapp terminals: the windows of its `yaac` tmux
- * session. The lowest-index window is the agent, reached through the
- * 'agent' target, so kills refuse it (and `listTerminals` skips it). Scratch shells
- * ('shell', 'shell-2', …) are ordinary windows created on demand.
+ * session that run no session. Kills refuse the keeper window, which holds
+ * the tmux server open (`KEEPER_WINDOW`); a session's window is closed by
+ * closing its session. Scratch shells ('shell', 'shell-2', …) are ordinary
+ * windows created on demand.
  */
 
 const WINDOW_ID = /^@\d{1,6}$/
 const CREATED = /^(@\d{1,6}) (shell(?:-\d{1,4})?)$/
 /** Exit codes of the kill script's refusals. */
 const KILL_BLIND = 90
-const KILL_AGENT = 91
+const KILL_KEEPER = 91
 
 /**
  * Create a scratch-shell window under the first free name (shell, shell-2,
@@ -40,10 +41,10 @@ export async function createShellWindow(jobName: string): Promise<WorkspaceTermi
 }
 
 /**
- * Kill a window and what runs in it. The agent window (the first listed) is
- * refused: killing it stops the agent (and, as the last window, the whole
- * tmux session, which then gets reaped as a zombie). The check runs in the
- * same script as the kill, for the round trip `createShellWindow` saves.
+ * Kill a window and what runs in it. The keeper (the first listed) is
+ * refused: as the last window, killing it would end the whole tmux session,
+ * which then gets reaped as a zombie. The check runs in the same script as
+ * the kill, for the round trip `createShellWindow` saves.
  */
 export async function killWindowTerminal(jobName: string, target: string): Promise<void> {
   const id = target.startsWith('window:') ? target.slice('window:'.length) : ''
@@ -54,7 +55,7 @@ export async function killWindowTerminal(jobName: string, target: string): Promi
     await driver.exec(
       jobName,
       `a=$(${tmux} list-windows -t yaac -F '#{window_id}' | head -n 1); `
-      + `[ -n "$a" ] || exit ${KILL_BLIND}; [ "$a" != ${id} ] || exit ${KILL_AGENT}; `
+      + `[ -n "$a" ] || exit ${KILL_BLIND}; [ "$a" != ${id} ] || exit ${KILL_KEEPER}; `
       + `${tmux} kill-window -t ${id}`,
       { maxAttempts: 1 },
     )
@@ -62,8 +63,8 @@ export async function killWindowTerminal(jobName: string, target: string): Promi
     if (err instanceof WorkspaceExecError && err.code === KILL_BLIND) {
       throw new Error('no yaac windows listed; refusing to kill blind', { cause: err })
     }
-    if (err instanceof WorkspaceExecError && err.code === KILL_AGENT) {
-      throw new Error('refusing to kill the agent window', { cause: err })
+    if (err instanceof WorkspaceExecError && err.code === KILL_KEEPER) {
+      throw new Error('refusing to kill the keeper window', { cause: err })
     }
     throw err
   }

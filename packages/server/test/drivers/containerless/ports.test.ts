@@ -83,7 +83,7 @@ function lsofArgv(): string[] {
 
 function running(): void {
   rememberWorkspace({
-    projectId: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
+    projectId: 'demo', workspaceId: UUID,
     createdAtMs: 1_000, launchEnv: {}, tmuxPid: 4242,
   })
 }
@@ -175,7 +175,7 @@ describe('sweepPorts', () => {
   it('reports nothing for a workspace whose tmux pid was never recorded', async () => {
     // Without a tree root pid, the workspace's ports go unreported.
     rememberWorkspace({
-      projectId: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
+      projectId: 'demo', workspaceId: UUID,
       createdAtMs: 1_000, launchEnv: {},
     })
     await sweepPorts()
@@ -313,7 +313,7 @@ describe('declareWorkspacePorts', () => {
     try {
       // A running workspace recovered from its marker holds base + 1.
       rememberWorkspace({
-        projectId: 'demo', workspaceId: OTHER, tool: 'claude', mode: 'tui',
+        projectId: 'demo', workspaceId: OTHER,
         createdAtMs: 1_000, launchEnv: {}, ports: [{ containerPort: base + 1, hostPort: base + 1 }],
       })
       // Two entries in one config never share a port, and each maps to

@@ -13,6 +13,7 @@
 // packages/server/test/domain/workspaces/.
 
 export { reconcileConversations, reconcileStoppedConversations } from './conversation-registry'
+export { closeSession, openSession, reconcileSessions, renameSession, resumeSession, type OpenSessionRequest } from './sessions'
 export { toConversationEntry } from './conversation-entry'
 export { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileIgnoredFileCleans } from './cleanup'
 export { keepScratchDirsInCheckout } from './tracked-scratch-dirs'
@@ -33,7 +34,6 @@ export {
   saveDraftWorkspace,
 } from './drafts'
 export { reconcileRevokedShares, removeProject, unshareProject } from './project-teardown'
-export { recordedLaunch } from './prewarm'
 export { reconcilePrewarmPool } from './prewarm-reconcile'
 export { dismissProvisioning, listProvisioning } from './provisioning'
 export {
@@ -87,7 +87,7 @@ export {
   uploadWorkspaceFile,
   writeWorkspaceFile,
 } from './files'
-export { runMamaCommand } from './mama'
+export { mamaCaller, runMamaCommand } from './mama'
 export { convergeAgentHistory, removeAgentHistory } from './history'
 export { reconcileGeneratedTitles } from './title-generation'
 export { serverUsageReport } from './usage-report'

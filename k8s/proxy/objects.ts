@@ -130,7 +130,6 @@ export type ProxyRegistration = {
   /** Absent means block all — fail closed. */
   allowedHosts: string[]
   repoUrl?: string
-  tool: string
   projectId: string
   /** The owner key whose credentials this workspace spends. */
   owner: string
@@ -421,7 +420,6 @@ export function decodeRegistration(
   const o = parseJson(cm.data?.['registration.json'])
   if (!o) return null
   if (!Array.isArray(o.rules) || !Array.isArray(o.allowedHosts)) return null
-  if (typeof o.tool !== 'string' || !o.tool) return null
   if (typeof o.projectId !== 'string' || !o.projectId) return null
   // A key the credentials Secret could hold.
   if (typeof o.owner !== 'string' || !OWNER_KEY.test(o.owner)) return null
@@ -431,7 +429,6 @@ export function decodeRegistration(
       rules: o.rules as HostInjectionRule[],
       allowedHosts: (o.allowedHosts as unknown[]).filter((h): h is string => typeof h === 'string'),
       repoUrl: typeof o.repoUrl === 'string' && o.repoUrl ? o.repoUrl : undefined,
-      tool: o.tool,
       projectId: o.projectId,
       owner: o.owner,
       upstreamRedirects: decodeRedirects(o.upstreamRedirects),

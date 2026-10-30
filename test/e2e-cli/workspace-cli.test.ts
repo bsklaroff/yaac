@@ -642,11 +642,11 @@ describe('with seeded projects', () => {
   })
 
   /**
-   * `yaac workspace agents`: a workspace's conversations are recorded
-   * state that outlives its pod, so no cluster is needed.
+   * `yaac workspace conversations`: a workspace's conversations are
+   * recorded state that outlives its pod, so no cluster is needed.
    */
-  describe('yaac workspace agents (real CLI + real server)', () => {
-    const AG_NAME = 'proj-agents'
+  describe('yaac workspace conversations (real CLI + real server)', () => {
+    const AG_NAME = 'proj-conversations'
     const stoppedId = crypto.randomUUID()
     const convA = crypto.randomUUID()
     const convB = crypto.randomUUID()
@@ -681,28 +681,29 @@ describe('with seeded projects', () => {
       server = await spawnYaacServer(testEnv.env)
     })
 
-    it('workspace agents lists a STOPPED workspace\'s conversations, open first', async () => {
+    it('workspace conversations lists a STOPPED workspace\'s conversations, live first', async () => {
       // Resolved from rows, since a stopped workspace has no pod.
-      const { stdout, exitCode } = await runYaac(testEnv.env, 'workspace', 'agents', stoppedId)
+      const { stdout, exitCode } = await runYaac(testEnv.env, 'workspace', 'conversations', stoppedId)
       expect(exitCode).toBe(0)
+      expect(stdout).toMatch(/CONVERSATION\s+TOOL\s+STATE\s+SESSION\s+FIRST MESSAGE/)
       expect(stdout).toContain(convA)
       expect(stdout).toContain(convB)
       expect(stdout).toContain('the original ask')
-      // Open before closed.
+      // Live before ended.
       expect(stdout.indexOf(convB)).toBeLessThan(stdout.indexOf(convA))
-      expect(stdout).toMatch(/open/)
-      expect(stdout).toMatch(/closed/)
+      expect(stdout).toMatch(new RegExp(`${convB}\\s+claude\\s+live`))
+      expect(stdout).toMatch(new RegExp(`${convA}\\s+claude\\s+ended`))
     })
 
-    it('workspace agents reports a workspace that has none', async () => {
-      const { stdout, exitCode } = await runYaac(testEnv.env, 'workspace', 'agents', bareId)
+    it('workspace conversations reports a workspace that has none', async () => {
+      const { stdout, exitCode } = await runYaac(testEnv.env, 'workspace', 'conversations', bareId)
       expect(exitCode).toBe(0)
-      expect(stdout).toContain('No agent sessions recorded')
+      expect(stdout).toContain(`No conversations recorded for workspace "${bareId}".`)
     })
 
-    it('workspace agents 404s for an id no workspace has', async () => {
+    it('workspace conversations 404s for an id no workspace has', async () => {
       const { stdout, stderr, exitCode } = await runYaac(
-        testEnv.env, 'workspace', 'agents', crypto.randomUUID(),
+        testEnv.env, 'workspace', 'conversations', crypto.randomUUID(),
       )
       expect(exitCode).not.toBe(0)
       expect(`${stdout}${stderr}`).toMatch(/not found/i)
@@ -732,6 +733,26 @@ describe('with seeded projects', () => {
       )
       expect(exitCode).not.toBe(0)
       expect(stderr).toMatch(/has no git credential/)
+    })
+
+    // Refused by the CLI before it asks the server for anything, so they
+    // need no project or workspace. The paths that open sessions are in
+    // workspace-create-suite.test.ts ("sessions").
+    it('refuses session flags that cannot go together', async () => {
+      const refused = async (args: string[], message: string): Promise<void> => {
+        const { stderr, exitCode } = await runYaac(testEnv.env, 'workspace', 'create', ...args)
+        expect(exitCode, args.join(' ')).not.toBe(0)
+        expect(stderr, args.join(' ')).toContain(message)
+      }
+      for (const [flag, ...value] of [['--prompt', 'go'], ['--tool', 'claude'], ['--mode', 'acp'], ['--permission-mode', 'plan']]) {
+        await refused(['some-project', '--no-session', flag, ...value], `--no-session does not take ${flag}: a workspace with no session runs no agent.`)
+      }
+      await refused(['some-project', '--workspace', 'abc123'], 'Give a project or --workspace, not both')
+      for (const [flag, value] of [['--branch', 'main'], ['--group', 'g'], ['--timeout', '1h']]) {
+        await refused(['--workspace', 'abc123', flag, value], `${flag} is a workspace's setting, which --workspace (a session in a running one) does not take.`)
+      }
+      await refused(['--workspace', 'abc123', '--no-session'], '--no-session starts a new workspace; it does not take --workspace.')
+      await refused(['some-project', '--resume', 'conv-1'], '--resume needs --workspace: a conversation resumes in the workspace that holds it.')
     })
 
     it('rejects an unknown --tool value via server VALIDATION', async () => {

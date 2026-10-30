@@ -11,9 +11,12 @@ import type { ConversationEntry } from '@yaac/shared/types'
  * the workspace runs, laid over the terminal until the find bar closes or
  * the pane leaves the screen, so a hidden pane never keeps refreshing it.
  */
-export function TuiTranscriptSearch({ workspaceId, sessions, visible, focused }: {
+export function TuiTranscriptSearch({ workspaceId, paneTarget, conversations, visible, focused }: {
   workspaceId: string
-  sessions: ConversationEntry[]
+  /** The session pane it lays over, which focus returns to. */
+  paneTarget: string
+  /** The session's conversations. */
+  conversations: ConversationEntry[]
   visible: boolean
   /** The pane the user is in, which Cmd/Ctrl-F searches. */
   focused: boolean
@@ -28,14 +31,14 @@ export function TuiTranscriptSearch({ workspaceId, sessions, visible, focused }:
     <div className="absolute inset-0 flex flex-col bg-bg">
       <ReadOnlyTranscript
         workspaceId={workspaceId}
-        sessions={sessions.filter((s) => s.mode !== 'acp')}
+        conversations={conversations.filter((s) => s.mode !== 'acp')}
         live
         find={{
           chord: focused,
           defaultOpen: true,
           onClose: () => {
             setOpen(false)
-            useUiStore.getState().focusTerminal(workspaceId, 'agent')
+            useUiStore.getState().focusTerminal(workspaceId, paneTarget)
           },
         }}
       />

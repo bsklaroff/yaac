@@ -7,7 +7,7 @@ import { NewWorkspaceButton } from '#components/NewWorkspaceButton'
 import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
 import { ServerBadge } from '#components/ServerBadge'
 import { UsageBadge } from '#components/UsageBadge'
-import { agentLabel, workspaceModel } from '#lib/agentLabel'
+import { agentLabel, workspaceAgentLabel } from '#lib/agentLabel'
 import { api } from '#lib/api'
 import { CloseIcon, LoadingIcon, SearchIcon } from '#lib/icons'
 import { usePressDrag } from '#lib/usePressDrag'
@@ -97,7 +97,7 @@ function heldAsStopped(h: HeldWorkspaceEntry): StoppedWorkspaceEntry {
   return {
     workspaceId: h.workspaceId,
     projectId: h.projectId,
-    tool: h.tool,
+    sessions: h.sessions,
     createdAt: h.stoppedAt,
     stoppedAt: h.stoppedAt,
     ...(h.prompt !== undefined ? { prompt: h.prompt } : {}),
@@ -313,10 +313,10 @@ export function narrowRows(
     (status === undefined || statuses.length === 0 || (status !== null && statuses.includes(status)))
     && (!q || texts.some((t) => t?.toLowerCase().includes(q)))
   return {
-    workspaces: rows.workspaces.filter((w) => keep(w.status, w.title, w.prompt, agentLabel(w.tool, workspaceModel(w)))),
+    workspaces: rows.workspaces.filter((w) => keep(w.status, w.title, w.prompt, workspaceAgentLabel(w))),
     provisioning: rows.provisioning.filter((p) => keep('running', p.title, p.prompt, agentLabel(p.tool, p))),
     queued: rows.queued.filter((e) => keep(undefined, queuedTitle(e), e.prompt, agentLabel(e.tool, undefined))),
-    held: rows.held.filter((h) => keep('stopped', h.title, h.prompt, agentLabel(h.tool, undefined))),
+    held: rows.held.filter((h) => keep('stopped', h.title, h.prompt, workspaceAgentLabel(h))),
     drafts: rows.drafts.filter((d) => keep(null, d.title, d.generatedTitle, d.prompt)),
   }
 }

@@ -7,6 +7,7 @@ import type {
   ScratchDirSettings,
   WorkspaceDeathReason,
 } from '@yaac/shared/types'
+import { sql } from 'drizzle-orm'
 import { boolean, index, integer, jsonb, primaryKey, snakeCase, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core'
 
 /**
@@ -186,20 +187,14 @@ export const projectToolDefaults = snakeCase.table('project_tool_defaults', {
  * rows with `stoppedAt` are the stopped listing, and a restart reuses the id
  * and clears it. A row matches a checkout that stays on disk while stopped.
  *
- * The tool and founding prompt are read from the workspace's first agent
- * session, so they survive a `/clear` (which starts a second conversation).
+ * What its agents run with is on its sessions (`sessions`), and its founding
+ * prompt is its first session's, so it survives a `/clear` (which starts a
+ * second conversation).
  *
  * Every stop sets `stoppedAt`; `deathReason`/`deathDetail` are set only when
  * the stale reaper (not the user) stopped it. `deathSeenBy` lists the users
  * who viewed that detail, each of whom no longer gets the "Stopped
  * workspaces" dot for it.
- *
- * `waitingSeenBy` lists the users who have viewed the workspace's current
- * waiting spell, so each user's unread dot is the same on every client they
- * use, and a teammate reading the workspace has their own. It is emptied
- * when the workspace goes back to work rather than keyed on the spell's
- * start, since spell starts are server memory and restamp on a server
- * restart.
  */
 export const workspaces = snakeCase.table('workspaces', {
   projectId: uuid().notNull(),
@@ -226,38 +221,9 @@ export const workspaces = snakeCase.table('workspaces', {
   deathReason: text().$type<WorkspaceDeathReason>(),
   deathDetail: text(),
   deathSeenBy: uuid().array().notNull().default([]),
-  waitingSeenBy: uuid().array().notNull().default([]),
-  /**
-   * When the current runtime (a "life") came up; null when none is running.
-   * `recordWorkspaceLife` sets this and clears every
-   * `workspace_conversations.paneId` in one transaction, since tmux pane
-   * ids restart at `%0` in a new runtime.
-   */
+  /** When the current runtime (a "life") came up; null when none is
+   *  running. A session launched before it has no window in this life. */
   lifeStartedAt: timestamp({ withTimezone: true }),
-  /**
-   * The `PermissionMode` this workspace's agents run in, translated per tool
-   * at launch (pi has none and is always `bypass`). Set at create or claim,
-   * then updated whenever the running agent reports a change
-   * (docs/permission-modes.md, "Following the agent"). Stored so a restart
-   * relaunches in the last mode rather than today's default.
-   *
-   * Defaults to `bypass`, what a sandboxed runtime resolves to. The launch
-   * path re-checks the value against the tool.
-   */
-  permissionMode: text().$type<PermissionMode>().notNull().default('bypass'),
-  /**
-   * The model and agent mode (`tui` / `acp`) its first agent launched with.
-   * `model` is null when the launch named none.
-   */
-  model: text(),
-  mode: text().$type<AgentMode>().notNull().default('acp'),
-  /**
-   * The effort level its agents run at, in the tool's words. Set at create
-   * or claim, then updated whenever the running agent reports a change, so a
-   * restart relaunches at it (docs/effort-levels.md). Null when its model
-   * has no effort setting.
-   */
-  effort: text(),
   /**
    * The IANA zone it launched with as `TZ`, null when none was set.
    */
@@ -272,14 +238,6 @@ export const workspaces = snakeCase.table('workspaces', {
   /** The deadline is a routine's next tick, which the next run takes over
    *  from, rather than a timeout; a stop there ended at the next run. */
   deadlineIsNextRun: boolean().notNull().default(false),
-  /**
-   * An `acp` create's prompt, until a conversation in its first agent window
-   * takes it (`takePendingPrompt`). Held here rather than in memory because
-   * that conversation may come up long after the create returns: after a
-   * server restart, or only once a workspace restart replaces an agent that
-   * never connected.
-   */
-  pendingPrompt: text(),
   /**
    * SHA-256 of the bearer token this workspace's `yaac-mama` presents, for
    * containerless workspaces that reach the server directly. Null under k8s,
@@ -331,6 +289,69 @@ export const workspaceGroups = snakeCase.table('workspace_groups', {
 }, (t) => [primaryKey({ columns: [t.projectId, t.groupId] })])
 
 /**
+ * One agent a workspace runs, or ran (docs/sessions.md): one process in a
+ * tmux window of its own, launched with these settings. yaac mints the id
+ * before anything launches, so the window, the status the agent reports and
+ * the pane that shows it are all addressed by the session from the start;
+ * the conversation the agent holds can change under it (`/clear`).
+ *
+ * A row without `closedAt` is open: a running workspace has a window for it
+ * (`reconcileSessions` launches a missing one), and a restart brings it back.
+ * Closing one kills its window and keeps its conversations as history.
+ */
+export const sessions = snakeCase.table('sessions', {
+  id: uuid().primaryKey().defaultRandom(),
+  projectId: uuid().notNull(),
+  workspaceId: text().notNull().references(() => workspaces.workspaceId, { onDelete: 'cascade' }),
+  tool: text().$type<AgentTool>().notNull(),
+  mode: text().$type<AgentMode>().notNull(),
+  /**
+   * The model it launched with, then the one its agent last reported, in the
+   * tool's naming. A restart relaunches on it. Null when the launch named
+   * none and the agent has not reported one.
+   */
+  model: text(),
+  /**
+   * Its permission posture, translated per tool at launch, then whatever the
+   * agent last reported (docs/permission-modes.md, "Following the agent").
+   */
+  permissionMode: text().$type<PermissionMode>().notNull(),
+  /** Its effort level, in the tool's words (docs/effort-levels.md). Null
+   *  when its model has no effort setting. */
+  effort: text(),
+  /** Display and restore order within its workspace. */
+  ordinal: integer().notNull(),
+  /** The tmux window it runs in, which is also its handle: the status
+   *  store's key and, under `acp`, its acpd socket's name. */
+  window: text().notNull(),
+  openedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  closedAt: timestamp({ withTimezone: true }),
+  /** When its window was last launched. One launched before the workspace's
+   *  current life (`lifeStartedAt`) has no window yet in this one. */
+  launchedAt: timestamp({ withTimezone: true }),
+  /** The message it was opened with, shown until its agent names a
+   *  conversation that records its own. */
+  firstPrompt: text(),
+  /**
+   * An `acp` session's opening message, until its conversation takes it
+   * (`takeSessionPrompt`), since the conversation may come up long after
+   * the open returns: after a server restart, or only after a restart
+   * replaces an agent that never connected.
+   */
+  pendingPrompt: text(),
+  /** The conversation its agent holds now; null until the agent names one. */
+  conversationId: text(),
+  /** The user's name for it. */
+  title: text(),
+  /** The users who have viewed its current waiting spell, so each one's
+   *  unread dot agrees on every client. Emptied when it goes back to work. */
+  waitingSeenBy: uuid().array().notNull().default([]),
+}, (t) => [
+  index().on(t.workspaceId),
+  uniqueIndex().on(t.workspaceId, t.window).where(sql`${t.closedAt} IS NULL`),
+])
+
+/**
  * One row per agent conversation, keyed by the tool's own session id. A
  * workspace accumulates many (every `/clear`, `/resume`, `/compact`, or a
  * second `claude` in another terminal).
@@ -380,14 +401,15 @@ export const conversations = snakeCase.table('conversations', {
 }, (t) => [primaryKey({ columns: [t.projectId, t.tool, t.conversationId] })])
 
 /**
- * Which agent sessions belong to which workspace (many-to-many: a
- * conversation can be resumed into another workspace).
+ * Which conversations belong to which workspace (many-to-many: a
+ * conversation can be resumed into another workspace), and which session
+ * held each.
  *
  * `active`: the conversation had a live agent the last time the workspace was
- * observed running. Maintained from the live pane set while running and left
- * alone by teardown, so a restart knows what to bring back. `ordinal` orders
- * the restore (0 is the primary agent window, named `yaac:<tool>`); `paneId`
- * is where it was last seen.
+ * observed running. Maintained from the live agents while running and left
+ * alone by teardown, so a restart can bring back one that ran in a terminal
+ * rather than a session. `ordinal` is the order the workspace first saw
+ * them in.
  */
 export const workspaceConversations = snakeCase.table('workspace_conversations', {
   projectId: uuid().notNull(),
@@ -396,7 +418,9 @@ export const workspaceConversations = snakeCase.table('workspace_conversations',
   conversationId: text().notNull(),
   active: boolean().notNull().default(true),
   ordinal: integer().notNull().default(0),
-  paneId: text(),
+  /** The session that held it, or null for one an agent started by hand in
+   *  a terminal. */
+  sessionId: uuid(),
   firstSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   lastSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 }, (t) => [primaryKey({

@@ -38,15 +38,20 @@ import {
   clearWorkspaceStopped,
   createWorkspaceGroup,
   findWorkspaceRow,
+  getSessionRow,
+  insertSession,
   listActiveConversations,
   listWorkspaceConversations,
+  listWorkspaceSessions,
   getWorkspaceRow,
+  type SessionRow,
   setProjectScratchDirs,
   setWorkspaceGroup,
   setWorkspaceGroupLimit,
 } from '#db'
 import { eq } from 'drizzle-orm'
 import { closeDb, getDb } from '#db/client'
+import { recordConversations } from '#db/conversation-store'
 import { workspaces } from '#db/schema'
 import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
 import { git } from '@yaac/test-utils/git'
@@ -145,11 +150,28 @@ async function history(workspaceId: string, tool: 'claude' | 'codex', conversati
 }
 
 /** Restart as the route does: checked first, then run. */
-async function restart(idOrPrefix: string, onProgress?: (message: string) => void): Promise<{ workspaceId: string; tool: AgentTool }> {
+async function restart(idOrPrefix: string, onProgress?: (message: string) => void): Promise<{ workspaceId: string }> {
   return await (await prepareRestart(local, idOrPrefix))(onProgress)
 }
 
-const respawn = (): string | undefined => calls.find((c) => c.includes('respawn-window'))
+/** The command that opened the relaunch's session windows. */
+const windowsExec = (): string | undefined => calls.find((c) => c.includes('new-window -d -t yaac -n '))
+
+/** The workspace's first session, which its create opened. */
+const lead = async (workspaceId: string): Promise<SessionRow> => (await listWorkspaceSessions(workspaceId))[0]
+
+/** Another session of the workspace, as one opened beside the first. */
+const beside = (workspaceId: string, over: Partial<Parameters<typeof insertSession>[2]> = {}): Promise<SessionRow> =>
+  insertSession(DEMO_PROJECT_ID, workspaceId, { tool: 'claude', mode: 'tui', permissionMode: 'bypass', ...over })
+
+/** What a session's agent reported, as the registry records it. */
+const reported = async (s: SessionRow, report: { conversationId?: string; model?: string; permissionMode?: PermissionMode; effort?: string }): Promise<void> => {
+  await applyWorkspaceEvent({ type: 'session-reported', projectId: DEMO_PROJECT_ID, workspaceId: s.workspaceId, sessionId: s.id, ...report })
+}
+
+/** A session's window in the relaunch command, up to the end of its
+ *  command. */
+const windowOf = (s: SessionRow): string => windowsExec()?.match(new RegExp(`-n ${s.window} [^']*'[^']*'`))?.[0] ?? ''
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
@@ -175,15 +197,12 @@ afterEach(async () => {
 })
 
 describe('prepareRestart', () => {
-  it('tears down the live unit while marked in flight, resumes every active conversation, and clears the stop', async () => {
+  it('tears down the live unit while marked in flight, relaunches every open session, and clears the stop', async () => {
     await stoppedWorkspace('wt-1', { tool: 'codex' })
-    const sessions = [
-      { tool: 'codex' as const, conversationId: 'wt-1', mode: 'tui' as const },
-      { tool: 'claude' as const, conversationId: 'conv-2', mode: 'tui' as const },
-    ]
-    await applyWorkspaceEvent({ type: 'conversations-launched', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1', sessions })
     await history('wt-1', 'claude', 'conv-2')
-    live = handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1', jobName: 'yaac-wt-1', tool: 'codex' })
+    const claude = await beside('wt-1', { conversationId: 'conv-2' })
+    const codex = await lead('wt-1')
+    live = handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1', jobName: 'yaac-wt-1' })
     let rowAtTeardown: ReturnType<typeof listProvisioning>[number] | undefined
     installDriver({
       destroy: (target) => {
@@ -198,23 +217,22 @@ describe('prepareRestart', () => {
     // Addressed by prefix, as the CLI usually does.
     const result = await restart('wt', (m) => progress.push(m))
 
-    expect(result).toMatchObject({ workspaceId: 'wt-1', tool: 'codex' })
+    expect(result).toMatchObject({ workspaceId: 'wt-1' })
     // The row is what keeps the stale reaper from deleting the dirs the
     // create is about to mount.
     expect(calls[0]).toBe('destroy yaac-wt-1')
     expect(rowAtTeardown).toMatchObject({ workspaceId: 'wt-1', kind: 'restart', tool: 'codex' })
     expect(calls).toContain('launch wt-1')
-    // Each conversation comes back in its own window, in order. No codex
-    // conversation has the workspace-id pin, so `codex resume wt-1` would
-    // find nothing and kill the window: it starts fresh. claude finds a
-    // conversation by its id. The codex one keeps the model it launched on.
-    const windows = respawn()!
-    expect(windows).toMatch(new RegExp(`respawn-window -k -t yaac:codex 'exec codex -C /workspace [^']* --yolo --model ${FALLBACK_MODELS.codex}'`))
-    expect(windows).not.toContain('resume wt-1')
-    expect(windows).toMatch(/new-window -d -t yaac -n claude-2 -c \/workspace '[^']* --resume conv-2'/)
+    // Each session comes back in its own window, in order. The codex one
+    // never named a conversation, so it starts fresh on the model it
+    // launched on; claude resumes the one it holds.
+    expect(windowsExec()!.indexOf(codex.window)).toBeLessThan(windowsExec()!.indexOf(claude.window))
+    expect(windowOf(codex)).toMatch(new RegExp(`exec codex -C /workspace [^']* --yolo --model ${FALLBACK_MODELS.codex}'$`))
+    expect(windowOf(codex)).not.toContain('resume')
+    expect(windowOf(claude)).toMatch(/--resume conv-2'$/)
     expect(progress).toEqual(expect.arrayContaining([
       'Stopping session job yaac-wt-1...',
-      'Restoring 2 agent sessions...',
+      'Restoring 2 sessions...',
       `Reusing existing workspace at ${workspaceDir(DEMO_PROJECT_ID, 'wt-1')}`,
     ]))
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-1'))?.stoppedAt).toBeUndefined()
@@ -223,78 +241,61 @@ describe('prepareRestart', () => {
     expect(listProvisioning()).toEqual([])
   })
 
-  // A chat create whose agent never connected holds its prompt and records
-  // no conversation. The restart has none to load, so it starts a fresh one,
+  // A chat session whose agent never connected holds its prompt and names no
+  // conversation. The restart has none to load, so it starts a fresh one,
   // and the prompt stays held for the sweep to send it once that one is up.
-  it('starts a chat workspace that never recorded a conversation afresh, keeping its held prompt', async () => {
+  it('starts a chat session that never named a conversation afresh, keeping its held prompt', async () => {
     await stoppedWorkspace('wt-chat', { mode: 'acp', prompt: 'add shared projects' })
-    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-chat'))?.pendingPrompt).toBe('add shared projects')
+    const chat = await lead('wt-chat')
+    expect(chat.pendingPrompt).toBe('add shared projects')
 
     await restart('wt-chat')
 
-    // Nothing is recorded under the workspace-id placeholder, which the
-    // agent connection would otherwise try to load.
     expect(await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-chat')).toEqual([])
-    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-chat'))?.pendingPrompt).toBe('add shared projects')
+    expect((await getSessionRow(chat.id))?.pendingPrompt).toBe('add shared projects')
   })
 
-  // The agent exited while an init window kept tmux alive, so the registry
-  // last saw no conversation. The workspace's first, under its id, still has
-  // its transcript, and launching it fresh under that id would be refused
-  // as in use.
-  it('resumes the first conversation when none was left active', async () => {
+  // A claude session's conversation is the session's own id from launch,
+  // which the agent may have written to before the registry first saw it.
+  // Launching it fresh under that id would be refused as in use.
+  it("resumes a session that never reported its conversation under the session's own id", async () => {
     await stoppedWorkspace('wt-empty')
-    await history('wt-empty', 'claude', 'wt-empty')
-    await applyWorkspaceEvent({ type: 'conversations-active', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-empty', active: [] })
+    const session = await lead('wt-empty')
+    await history('wt-empty', 'claude', session.id)
 
     await restart('wt-empty')
 
-    expect(respawn()).toMatch(/respawn-window -k -t yaac:claude '[^']* --resume wt-empty'/)
+    expect(windowOf(session)).toMatch(new RegExp(`--resume ${session.id}'$`))
   })
 
-  // A spare has no row until claimed, so it cannot be restarted. A tui claim
-  // inserts the row, then records the running agent under the workspace id
-  // with the create's prompt (prewarm.ts). Neither wrote history, so nothing
-  // is lost and the agent starts fresh.
+  // A spare has no row until claimed, so it cannot be restarted. A claim
+  // opens the create's session on it; if that agent never wrote history,
+  // nothing is lost and it starts fresh.
   it('refuses an unclaimed spare, and restarts a claimed one that never got a conversation', async () => {
     await expect(prepareRestart(local, 'wt-spare')).rejects.toMatchObject({ code: 'NOT_FOUND' })
 
-    await applyWorkspaceEvent({
-      type: 'workspace-created', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-spare', permissionMode: 'bypass', mode: 'tui',
-      resume: false,
-    })
-    await applyWorkspaceEvent({
-      type: 'conversations-launched',
-      projectId: DEMO_PROJECT_ID,
-      workspaceId: 'wt-spare',
-      sessions: [{ tool: 'claude', conversationId: 'wt-spare', firstPrompt: 'fix the bug' }],
-    })
+    await applyWorkspaceEvent({ type: 'workspace-created', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-spare', resume: false })
+    const session = await beside('wt-spare', { prompt: 'fix the bug' })
     await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-spare' })
 
     await restart('wt-spare')
 
-    expect(respawn()).toMatch(/respawn-window -k -t yaac:claude '[^']* --session-id wt-spare'/)
+    expect(windowOf(session)).toMatch(new RegExp(`--session-id ${session.id}'$`))
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-spare'))?.stoppedAt).toBeUndefined()
   })
 
   // A chat conversation that connected but was never sent anything has no
-  // history to load. It is relaunched unrecorded, so its handshake starts a
-  // fresh conversation, and the create's prompt stays held for that one.
+  // history to load. The session is relaunched on a fresh one, and the
+  // create's prompt stays held for that one.
   it('replaces a never-prompted chat conversation with a fresh one, keeping the held prompt', async () => {
     await stoppedWorkspace('wt-quiet', { mode: 'acp', prompt: 'add shared projects' })
-    await applyWorkspaceEvent({
-      type: 'conversations-launched',
-      projectId: DEMO_PROJECT_ID,
-      workspaceId: 'wt-quiet',
-      sessions: [{ tool: 'claude', conversationId: 'acp-quiet', mode: 'acp', paneId: 'claude' }],
-    })
+    const chat = await lead('wt-quiet')
+    await reported(chat, { conversationId: 'acp-quiet' })
 
     await restart('wt-quiet')
 
-    // Its handle is not recorded, so the connection cannot try to load it.
-    const quiet = (await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-quiet')).find((l) => l.conversationId === 'acp-quiet')
-    expect(quiet?.paneId).toBeUndefined()
-    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-quiet'))?.pendingPrompt).toBe('add shared projects')
+    expect(windowOf(chat)).not.toContain('acp-quiet')
+    expect((await getSessionRow(chat.id))?.pendingPrompt).toBe('add shared projects')
   })
 
   // The workspace is running by then, so a lost clear must not report it
@@ -306,109 +307,66 @@ describe('prepareRestart', () => {
     expect(listProvisioning()).toEqual([])
   })
 
-  it('relaunches a stopped workspace with no unit to tear down, in its recorded posture and effort', async () => {
+  it('relaunches a stopped workspace with no unit to tear down, each session in its recorded posture and effort', async () => {
     await stoppedWorkspace('wt-2', { permissionMode: 'plan', model: 'claude-opus-4-7', effort: 'max' })
     // The agent moved itself since; the restart follows it.
-    await applyWorkspaceEvent({ type: 'effort-changed', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-2', effort: 'low' })
+    await reported(await lead('wt-2'), { effort: 'low' })
 
     await restart('wt-2')
 
     expect(calls.some((c) => c.startsWith('destroy'))).toBe(false)
     // The checkout predates this launch, so the command that starts the
     // agent first relinks it to the main clone and brings `origin/*` up.
-    expect(respawn()).toMatch(/^printf .*\/\.git\/objects\/info\/alternates && \{ git -C \S+ fetch /)
-    expect(respawn()).toContain('--permission-mode plan')
-    expect(respawn()).toContain('--effort low')
+    expect(windowsExec()).toMatch(/^printf .*\/\.git\/objects\/info\/alternates && \{ git -C \S+ fetch /)
+    expect(windowsExec()).toContain('--permission-mode plan')
+    expect(windowsExec()).toContain('--effort low')
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-2'))?.stoppedAt).toBeUndefined()
   })
 
   // A launch naming no model would take whatever the shared tool home holds.
-  // Each conversation resumes on its own model, at the row's effort where
-  // that model has it.
-  it('relaunches each conversation on the model it last reported', async () => {
+  // Each session resumes on its own model, at its effort where that model
+  // has it.
+  it('relaunches each session on the model it last reported', async () => {
     await stoppedWorkspace('wt-6', { model: 'claude-opus-4-7', effort: 'max' })
     // The first switched with `/model` to a 1M context; the third never
-    // reported.
-    await applyWorkspaceEvent({
-      type: 'conversations-launched',
-      projectId: DEMO_PROJECT_ID,
-      workspaceId: 'wt-6',
-      sessions: [
-        { tool: 'claude', conversationId: 'wt-6', mode: 'tui', model: 'claude-opus-5-5[1m]' },
-        { tool: 'codex', conversationId: 'conv-2', mode: 'tui', model: 'gpt-5.5' },
-        { tool: 'claude', conversationId: 'conv-3', mode: 'tui' },
-      ],
-    })
-    for (const id of ['wt-6', 'conv-3']) await history('wt-6', 'claude', id)
+    // reported one.
+    const first = await lead('wt-6')
+    await reported(first, { model: 'claude-opus-5-5[1m]' })
     await history('wt-6', 'codex', 'conv-2')
+    const codex = await beside('wt-6', { tool: 'codex', conversationId: 'conv-2', model: 'gpt-5.5', effort: 'max' })
+    const third = await beside('wt-6', { effort: 'max' })
 
     await restart('wt-6')
 
-    const windows = respawn()!
     // Quoted, since a bare `[1m]` is a shell glob.
-    expect(windows).toMatch(/respawn-window -k -t yaac:claude '[^']* --model "claude-opus-5-5\[1m\]" --effort max --resume wt-6'/)
+    expect(windowOf(first)).toMatch(/ --model "claude-opus-5-5\[1m\]" --effort max --session-id /)
     // gpt-5.5 has no `max`, so it takes its own default.
-    expect(windows).toMatch(/-n codex-2 [^']*'[^']*model_reasoning_effort=medium[^']* resume conv-2 --model gpt-5\.5'/)
-    expect(windows).toMatch(/-n claude-3 [^']*'(?:(?!--model)[^'])* --effort max --resume conv-3'/)
-    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-6'))?.model).toBe('claude-opus-5-5[1m]')
+    expect(windowOf(codex)).toMatch(/model_reasoning_effort=medium[^']* resume conv-2 --model gpt-5\.5'$/)
+    expect(windowOf(third)).not.toContain('--model')
+    expect(windowOf(third)).toContain('--effort max')
+    expect((await getSessionRow(first.id))?.model).toBe('claude-opus-5-5[1m]')
   })
 
   // Anything in the workspace can set the pane option a model is reported
   // through, so a value a launch could not carry bare is never relaunched.
-  it('refuses a reported model a launch could not carry, falling back to the row only for the founding tool', async () => {
+  it('refuses a recorded model a launch could not carry', async () => {
     await stoppedWorkspace('wt-7', { model: 'claude-opus-4-7' })
     const hostile = ['--foo; touch /tmp/pwned', '-cx', 'a b', 'opus\n--x', 'x[1m][1m]']
-    await applyWorkspaceEvent({
-      type: 'conversations-launched',
-      projectId: DEMO_PROJECT_ID,
-      workspaceId: 'wt-7',
-      sessions: hostile.map((model, i) => ({
-        tool: 'claude' as const, conversationId: i === 0 ? 'wt-7' : `conv-${String(i)}`, mode: 'tui' as const, model,
-      })),
-    })
-
-    await history('wt-7', 'claude', 'wt-7')
+    for (const model of hostile) await beside('wt-7', { model })
 
     await restart('wt-7')
 
-    const windows = respawn()!
-    expect(windows).toMatch(/respawn-window -k -t yaac:claude '[^']* --model claude-opus-4-7 [^']*--resume wt-7'/)
+    const windows = windowsExec()!
+    expect(windowOf(await lead('wt-7'))).toContain('--model claude-opus-4-7 ')
     expect(windows.match(/--model/g)).toHaveLength(1)
     for (const fragment of ['--foo', 'pwned', '-cx', 'a b', '--x', '[1m]']) expect(windows).not.toContain(fragment)
-  })
-
-  // The row's model is the founding conversation's. Once that one has
-  // closed, the first active conversation may be another tool's, which must
-  // not launch on a claude model, nor put its own on the row for a later
-  // claude conversation to fall back to.
-  it("keeps the row's model and a first conversation on another tool apart", async () => {
-    await stoppedWorkspace('wt-8', { model: 'claude-opus-4-7', effort: 'max' })
-    await applyWorkspaceEvent({
-      type: 'conversations-launched',
-      projectId: DEMO_PROJECT_ID,
-      workspaceId: 'wt-8',
-      sessions: [
-        { tool: 'codex', conversationId: 'conv-cx', mode: 'tui' },
-        { tool: 'codex', conversationId: 'conv-2', mode: 'tui', model: 'gpt-5.5' },
-      ],
-    })
-    for (const id of ['conv-cx', 'conv-2']) await history('wt-8', 'codex', id)
-
-    await restart('wt-8')
-
-    const windows = respawn()!
-    expect(windows).toMatch(/respawn-window -k -t yaac:claude 'exec codex (?:(?!--model)[^'])* resume conv-cx'/)
-    expect(windows).toMatch(/-n codex-2 [^']*'[^']* --model gpt-5\.5'/)
-    expect(windows).not.toContain('claude-opus-4-7')
-    expect(windows).not.toContain('model_reasoning_effort=max')
-    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-8'))?.model).toBe('claude-opus-4-7')
   })
 
   // Relaunching without the recorded posture would take the driver's
   // default, `bypass` in a container: a `plan` workspace must never come
   // back looser. Running, so the runtime alone names it and the row is read
   // only for what the relaunch takes from it.
-  it('refuses rather than relaunch when the recorded posture cannot be read', async () => {
+  it('refuses rather than relaunch when its row cannot be read', async () => {
     await stoppedWorkspace('wt-plan', { permissionMode: 'plan' })
     live = handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-plan', jobName: 'yaac-wt-plan' })
     // The first read expands the id; the second is the row the relaunch
@@ -423,8 +381,9 @@ describe('prepareRestart', () => {
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-plan'))?.stoppedAt).toBeInstanceOf(Date)
   })
 
-  // Starting fresh would drop every conversation the workspace had open.
-  it('refuses rather than relaunch fresh when its conversations cannot be read', async () => {
+  // Starting without them would drop every conversation an agent ran in a
+  // terminal.
+  it('refuses rather than relaunch when its conversations cannot be read', async () => {
     await stoppedWorkspace('wt-convs')
     vi.mocked(listActiveConversations).mockRejectedValueOnce(new Error('db read failed'))
 
@@ -434,42 +393,54 @@ describe('prepareRestart', () => {
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-convs'))?.stoppedAt).toBeInstanceOf(Date)
   })
 
-  // A row with no effort (a model without one, since switched by the agent
-  // to one with levels) still names one: the model's default, since naming
-  // none would take whatever the shared tool home holds.
-  it("relaunches a row with no effort at its model's default", async () => {
+  // An agent ran by hand in a terminal has no session of its own, so the
+  // restart opens one for it, in the posture of the workspace's first
+  // session, on the model it last reported.
+  it('brings back a conversation an agent ran in a terminal as a session of its own', async () => {
+    await stoppedWorkspace('wt-term', { permissionMode: 'plan' })
+    await recordConversations(DEMO_PROJECT_ID, 'wt-term', [{ tool: 'claude', conversationId: 'conv-t', model: 'claude-opus-4-7' }])
+    await history('wt-term', 'claude', 'conv-t')
+
+    await restart('wt-term')
+
+    const adopted = (await listWorkspaceSessions('wt-term'))[1]
+    expect(adopted).toMatchObject({ tool: 'claude', mode: 'tui', permissionMode: 'plan', conversationId: 'conv-t', model: 'claude-opus-4-7' })
+    expect(windowOf(adopted)).toMatch(/--permission-mode plan [^']*--resume conv-t'$/)
+    expect((await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-term'))[0]?.sessionId).toBe(adopted.id)
+  })
+
+  // A session with no effort (a model without one, since switched by the
+  // agent to one with levels) still names one: the model's default, since
+  // naming none would take whatever the shared tool home holds.
+  it("relaunches a session with no effort at its model's default", async () => {
     await stoppedWorkspace('wt-5', { model: 'claude-opus-4-5' })
-    await applyWorkspaceEvent({
-      type: 'conversations-discovered',
-      projectId: DEMO_PROJECT_ID,
-      workspaceId: 'wt-5',
-      sessions: [{ tool: 'claude', conversationId: 'wt-5', model: 'claude-opus-4-7' }],
-    })
+    await reported(await lead('wt-5'), { model: 'claude-opus-4-7' })
 
     await restart('wt-5')
 
-    expect(respawn()).toContain('--effort xhigh')
+    expect(windowsExec()).toContain('--effort xhigh')
   })
 
-  // A restart reuses the row's posture, which another build may have
-  // written. Refusing it would strand a checkout, and the driver default
-  // could be looser (bypass), so it launches in the nearest mode the tool
-  // has that is no looser, else the tool's strictest.
+  // A session's posture may have been written by another build. Refusing it
+  // would strand a checkout, and the driver default could be looser
+  // (bypass), so it launches in the nearest mode the tool has that is no
+  // looser, else the tool's strictest.
   it('launches a recorded posture the tool lacks in the nearest stricter one', async () => {
-    const resumedAs = async (tool: AgentTool, permissionMode: PermissionMode): Promise<string | undefined> => {
-      const id = `wt-${tool}-${permissionMode}`
-      await stoppedWorkspace(id, { tool })
-      await applyWorkspaceEvent({ type: 'permission-mode-changed', projectId: DEMO_PROJECT_ID, workspaceId: id, permissionMode })
-      await restart(id)
-      return (await getWorkspaceRow(DEMO_PROJECT_ID, id))?.permissionMode
-    }
-    expect(await resumedAs('claude', 'manual')).toBe('manual')
-    expect(await resumedAs('codex', 'plan')).toBe('read-only')
-    expect(await resumedAs('claude', 'read-only')).toBe('plan')
-    // pi has nothing but bypass.
-    expect(await resumedAs('pi', 'plan')).toBe('bypass')
-    // A mode this build does not know gets the strictest, never bypass.
-    expect(await resumedAs('codex', 'dontAsk' as PermissionMode)).toBe('read-only')
+    await stoppedWorkspace('wt-posture')
+    const sessions = await Promise.all([
+      beside('wt-posture', { permissionMode: 'manual' }),
+      beside('wt-posture', { tool: 'codex', permissionMode: 'plan' }),
+      // A mode this build does not know gets the strictest, never bypass.
+      beside('wt-posture', { tool: 'codex', permissionMode: 'dontAsk' as PermissionMode }),
+    ])
+
+    await restart('wt-posture')
+
+    const [manual, codexPlan, unknown] = sessions.map(windowOf)
+    expect(manual).toContain('--permission-mode manual')
+    expect(codexPlan).toContain('--sandbox read-only')
+    expect(unknown).toContain('--sandbox read-only')
+    expect(unknown).not.toContain('--yolo')
   })
 
   // The empty scratch dir an earlier attempt left is not the user's work.
@@ -490,7 +461,7 @@ describe('prepareRestart', () => {
 
     expect(await git(checkout, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('agent/wt-gone\n')
     // A checkout the launch made is linked and current already.
-    expect(respawn()).not.toContain('objects/info/alternates')
+    expect(windowsExec()).not.toContain('objects/info/alternates')
     expect((await git(checkout, ['rev-parse', 'HEAD'])).trim()).toBe(dev)
 
     await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-gone' })
@@ -550,29 +521,22 @@ describe('prepareRestart', () => {
   // resuming it would kill its agent and starting over would drop the work,
   // so the restart fails, naming each, before anything launches.
   it('resumes what is on disk, starts a never-written conversation fresh, and refuses one that lost its history', async () => {
-    await stoppedWorkspace('wt-lost')
-    await applyWorkspaceEvent({
-      type: 'conversations-launched',
-      projectId: DEMO_PROJECT_ID,
-      workspaceId: 'wt-lost',
-      sessions: [
-        { tool: 'claude', conversationId: 'wt-lost', mode: 'tui', firstPrompt: 'never delivered' },
-        { tool: 'codex', conversationId: 'conv-cx', mode: 'tui' },
-        { tool: 'claude', conversationId: 'conv-3', mode: 'tui' },
-        { tool: 'claude', conversationId: 'conv-4', mode: 'tui' },
-      ],
-    })
+    await stoppedWorkspace('wt-lost', { prompt: 'never delivered' })
+    const fresh = await lead('wt-lost')
     const written = [await history('wt-lost', 'codex', 'conv-cx'), await history('wt-lost', 'claude', 'conv-3')]
-    const unrecorded = path.join(projectDir(DEMO_PROJECT_ID), 'history', 'wt-lost', 'claude', CLAUDE_POD_CWD, 'conv-4.jsonl')
-    await fs.writeFile(unrecorded, '{}\n')
+    const codex = await beside('wt-lost', { tool: 'codex', conversationId: 'conv-cx' })
+    const claude = await beside('wt-lost', { conversationId: 'conv-3' })
+    const unrecorded = await beside('wt-lost', { conversationId: 'conv-4' })
+    await fs.writeFile(path.join(projectDir(DEMO_PROJECT_ID), 'history', 'wt-lost', 'claude', CLAUDE_POD_CWD, 'conv-4.jsonl'), '{}\n')
 
     await restart('wt-lost')
 
-    const windows = respawn()!
-    expect(windows).toMatch(/respawn-window -k -t yaac:claude '[^']* --session-id wt-lost'/)
-    expect(windows).toMatch(/-n codex-2 [^']*'[^']* resume conv-cx'/)
-    expect(windows).toMatch(/-n claude-3 [^']*'[^']* --resume conv-3'/)
-    expect(windows).toMatch(/-n claude-4 [^']*'[^']* --resume conv-4'/)
+    expect(windowOf(fresh)).toMatch(new RegExp(`--session-id ${fresh.id}'$`))
+    expect(windowOf(codex)).toMatch(/ resume conv-cx'$/)
+    expect(windowOf(claude)).toMatch(/--resume conv-3'$/)
+    expect(windowOf(unrecorded)).toMatch(/--resume conv-4'$/)
+    // A resumed session's opening message is not typed in again.
+    expect(calls.some((c) => c.includes('.yaac-prompt-'))).toBe(false)
 
     await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-lost' })
     for (const file of written) await fs.rm(file)
@@ -586,13 +550,9 @@ describe('prepareRestart', () => {
 
     // Under acp the record shows a message was sent, so a transcript was
     // written.
-    await stoppedWorkspace('wt-acp')
-    await applyWorkspaceEvent({
-      type: 'conversations-launched',
-      projectId: DEMO_PROJECT_ID,
-      workspaceId: 'wt-acp',
-      sessions: [{ tool: 'claude', conversationId: 'acp-1', mode: 'acp', firstPrompt: 'hello' }],
-    })
+    await stoppedWorkspace('wt-acp', { mode: 'acp' })
+    await recordConversations(DEMO_PROJECT_ID, 'wt-acp', [{ tool: 'claude', conversationId: 'acp-1', mode: 'acp', firstPrompt: 'hello' }])
+    await reported(await lead('wt-acp'), { conversationId: 'acp-1' })
     await expect(restart('wt-acp')).rejects.toThrow('history of Claude Code conversation acp-1 is gone')
   })
 

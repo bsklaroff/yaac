@@ -19,21 +19,17 @@
  * session subscription (`PANE_SESSION_FORMAT`), so `/model`, Shift+Tab,
  * `/clear` and agents started by hand all arrive as pushes.
  *
- * A conversation's handle here is its tmux pane id (`%3`).
+ * Which windows run agents comes from the workspace's open `tui` sessions
+ * (`AgentConnectDeps.sessions`). A session's agent is addressed by its
+ * window name; one started by hand in a terminal by its pane id (`%3`).
  */
 
 import { WorkspaceExecError } from '#drivers/contract'
-import {
-  BOOT_SUBSCRIPTION_PREFIX,
-  ControlModeConnection,
-  PLACEHOLDER_FORMAT,
-  type ControlModeNotification,
-} from './control-mode'
+import { ControlModeConnection, type ControlModeNotification } from './control-mode'
 import {
   PANE_SESSION_FORMAT,
   agentReportFormat,
   agentStatusFormat,
-  agentWindowTool,
   classifyAgentObservation,
   parsePaneSession,
   resolveAgentModel,
@@ -50,6 +46,7 @@ import type {
   AgentObservation,
   DrivenWorkspace,
   LiveAgent,
+  WatchedSession,
 } from './drivers'
 import type { AgentTool } from '@yaac/shared/types'
 
@@ -70,10 +67,23 @@ function subscriptionName(prefix: string, paneId: string): string {
   return `${prefix}${paneId.replace('%', '')}`
 }
 
+/** One listed pane. */
+interface ListedPane {
+  paneId: string
+  /** The tool of the session whose agent runs in it; undefined for any
+   *  other pane (a terminal, or a session pane past its first). */
+  tool?: AgentTool
+  /** Its session's window, the agent's handle. */
+  window?: string
+  dead: boolean
+  session: PaneSession | undefined
+}
+
 class TuiConnection extends ControlModeConnection {
-  /** Panes with a status subscription, each with its window's tool (panes
-   *  in one workspace can run different tools). */
-  private readonly subscribed = new Map<string, AgentTool>()
+  /** Agent panes with status and report subscriptions, each with its
+   *  session's tool and window (panes in one workspace can run different
+   *  tools). */
+  private readonly subscribed = new Map<string, { tool: AgentTool; window: string }>()
   /** Each pane's model, as its model subscription last resolved it. */
   private readonly models = new Map<string, string>()
   /** Each pane's latest pushed model value, so a slow resolution (codex's
@@ -83,68 +93,75 @@ class TuiConnection extends ControlModeConnection {
   private readonly modes = new Map<string, string>()
   /** Each pane's reported effort level, in its tool's words. */
   private readonly efforts = new Map<string, string>()
-  /** Every pane with a session subscription (agent windows and scratch
-   *  shells), with the conversation it last named. */
+  /** Every pane with a session subscription (agent panes and terminals),
+   *  with the conversation it last named. */
   private readonly sessions = new Map<string, PaneSession | undefined>()
+  /** The live agent panes, as of the last listing. */
+  private agentPanes = new Set<string>()
+  private readonly readSessions: () => Promise<WatchedSession[]>
+  /** The `tui` sessions' tools by window, as last read. */
+  private sessionTools = new Map<string, AgentTool>()
 
   constructor(session: DrivenWorkspace, sink: (obs: AgentObservation) => void, deps: AgentConnectDeps) {
     super(session, sink, deps, 'tui-driver')
+    this.readSessions = deps.sessions ?? (() => Promise.resolve([]))
     this.start()
   }
 
   /**
-   * List panes and subscribe their formats. Agent panes (windows named
-   * `<tool>`, `<tool>-2`, …) get status and report subscriptions; init
-   * windows and scratch shells do not. Every pane gets the session
-   * subscription, which records conversations started by hand in a shell.
+   * List panes and subscribe their formats. The first pane of each `tui`
+   * session's window is its agent and gets status, report and death
+   * subscriptions; the rest do not. Every pane gets the session
+   * subscription, which records conversations started by hand in a
+   * terminal.
    *
    * The listing includes each pane's current session value, since a
-   * subscription's first push may lag up to a second and a live set
-   * published before it would look like every agent exited.
+   * subscription's first push may lag up to a second.
    *
-   * Re-run on each heartbeat and window add/close. Already-subscribed panes
-   * are skipped. A respawn announces nothing, so a placeholder pane is
-   * watched until the agent replaces it. tmux pushes each subscription's
-   * value at its next ~1s check; until then the attach itself proves tmux
-   * is up.
+   * Re-run on each heartbeat, window add or close, and agent exit.
+   * Already-subscribed panes are skipped.
    */
   protected async sync(): Promise<void> {
     // Tab-separated: names and paths can contain spaces, and the session
     // format strips tabs.
-    const listed = await this.send(
-      `list-panes -s -F '#{pane_id}\t#{window_name}\t${PLACEHOLDER_FORMAT}\t${PANE_SESSION_FORMAT}' -t yaac`)
+    const [listed, sessions] = await Promise.all([
+      this.send(`list-panes -s -F '#{pane_id}\t#{window_name}\t#{pane_dead}\t${PANE_SESSION_FORMAT}' -t yaac`),
+      this.readSessions().catch(() => undefined),
+    ])
     if (this.done) return
+    if (sessions !== undefined) {
+      this.sessionTools = new Map(sessions.filter((s) => s.mode === 'tui').map((s) => [s.window, s.tool]))
+    }
 
+    const seenWindows = new Set<string>()
     const panes = listed.split('\n')
       .map((line) => line.split('\t'))
-      .flatMap(([paneId, windowName, placeholder, session]) => {
+      .flatMap(([paneId, windowName = '', dead, session]): ListedPane[] => {
         if (paneId === undefined || !paneId.startsWith('%')) return []
-        // Classify with the pane's own tool, not the workspace's.
-        const tool = placeholder === '1' ? undefined : agentWindowTool(windowName ?? '')
-        return [{ paneId, placeholder: placeholder === '1', tool, session: parsePaneSession(session ?? '') }]
+        const tool = seenWindows.has(windowName) ? undefined : this.sessionTools.get(windowName)
+        seenWindows.add(windowName)
+        return [{
+          paneId,
+          ...(tool !== undefined ? { tool, window: windowName } : {}),
+          dead: dead === '1',
+          session: parsePaneSession(session ?? ''),
+        }]
       })
-
-    for (const { paneId } of panes.filter((p) => p.placeholder)) {
-      await this.send(`refresh-client -B '${subscriptionName(BOOT_SUBSCRIPTION_PREFIX, paneId)}:${paneId}:${PLACEHOLDER_FORMAT}'`)
-      if (this.done) return
-    }
-
-    if (!panes.some((p) => p.tool !== undefined)) {
-      // No agent window yet. Never publish an empty set, which would read
-      // as "every agent exited".
-      return
-    }
 
     // Read only unwatched panes from the listing (a watched pane's pushes
     // are newer), all before any await so a push arriving meanwhile wins.
     const unwatched = new Set(panes.filter((p) => !this.sessions.has(p.paneId)).map((p) => p.paneId))
     for (const { paneId, session } of panes) if (unwatched.has(paneId)) this.sessions.set(paneId, session)
-    for (const { paneId, tool } of panes) {
+    this.agentPanes = new Set(panes.filter((p) => p.tool !== undefined && !p.dead).map((p) => p.paneId))
+    for (const { paneId, tool, window, dead } of panes) {
       if (unwatched.has(paneId)) {
         await this.send(`refresh-client -B '${subscriptionName(SESSION_SUBSCRIPTION_PREFIX, paneId)}:${paneId}:${PANE_SESSION_FORMAT}'`)
         if (this.done) return
       }
-      if (tool === undefined || this.subscribed.has(paneId)) continue
+      if (tool === undefined || window === undefined) continue
+      await this.watchPaneDeath(paneId)
+      if (this.done) return
+      if (dead || this.subscribed.has(paneId)) continue
       // Single-quote the -B argument: tmux processes C escapes inside double
       // quotes, which would corrupt an ERE `\b`. The format never contains
       // `'`.
@@ -152,11 +169,11 @@ class TuiConnection extends ControlModeConnection {
       if (this.done) return
       await this.send(`refresh-client -B '${subscriptionName(REPORT_SUBSCRIPTION_PREFIX, paneId)}:${paneId}:${agentReportFormat(tool)}'`)
       if (this.done) return
-      this.subscribed.set(paneId, tool)
+      this.subscribed.set(paneId, { tool, window })
     }
-    const liveIds = panes.map((p) => p.paneId)
+    const liveIds = new Set(panes.map((p) => p.paneId))
     for (const paneId of [...this.sessions.keys()]) {
-      if (liveIds.includes(paneId)) continue
+      if (liveIds.has(paneId)) continue
       this.subscribed.delete(paneId)
       this.models.delete(paneId)
       this.modelPushes.delete(paneId)
@@ -168,30 +185,30 @@ class TuiConnection extends ControlModeConnection {
   }
 
   /**
-   * The live set: every agent pane, plus any other pane naming a
-   * conversation, with its latest reports. Not published until an agent pane
-   * has been seen (see `sync`).
+   * The live set: every session's agent, under its window, plus any other
+   * pane naming a conversation, under its pane id, with its latest reports.
    */
   private publishAgents(): void {
-    if (this.subscribed.size === 0) return
     const agents: LiveAgent[] = []
-    for (const [handle, session] of this.sessions) {
-      const tool = this.subscribed.get(handle) ?? session?.tool
+    for (const [paneId, session] of this.sessions) {
+      const agent = this.agentPanes.has(paneId) ? this.subscribed.get(paneId) : undefined
+      const tool = agent?.tool ?? session?.tool
       if (tool === undefined) continue
-      // Only its own tool's conversation: a respawned pane keeps its
-      // options, so a retooled spare still names its warm-time agent's.
+      // Only its own tool's conversation: a pane keeps its options across a
+      // respawn, which may run another tool.
       const own = session?.tool === tool ? session : undefined
-      const model = this.models.get(handle)
-      const reportedMode = this.modes.get(handle)
-      const reportedEffort = this.efforts.get(handle)
+      if (agent === undefined && own === undefined) continue
+      const model = this.models.get(paneId)
+      const reportedMode = this.modes.get(paneId)
+      const reportedEffort = this.efforts.get(paneId)
       agents.push({
-        handle,
+        handle: agent?.window ?? paneId,
         tool,
         ...(own !== undefined ? { conversationId: own.conversationId } : {}),
         ...(own?.transcriptPath !== undefined ? { transcriptPath: own.transcriptPath } : {}),
-        ...(model !== undefined ? { model } : {}),
-        ...(reportedMode !== undefined ? { reportedMode } : {}),
-        ...(reportedEffort !== undefined ? { reportedEffort } : {}),
+        ...(agent !== undefined && model !== undefined ? { model } : {}),
+        ...(agent !== undefined && reportedMode !== undefined ? { reportedMode } : {}),
+        ...(agent !== undefined && reportedEffort !== undefined ? { reportedEffort } : {}),
       })
     }
     this.sink({ kind: 'live-agents', agents })
@@ -223,7 +240,7 @@ class TuiConnection extends ControlModeConnection {
 
   /**
    * A pane's model changed. Published as a live-set change, which the
-   * agent-session registry joins against on its reconcile pass. Empty keeps
+   * conversation registry joins against on its reconcile pass. Empty keeps
    * the previous value.
    */
   private async onModel(paneId: string, tool: AgentTool, value: string): Promise<void> {
@@ -241,19 +258,19 @@ class TuiConnection extends ControlModeConnection {
       this.onSession(n.paneId, n.value)
       return
     }
-    const tool = this.subscribed.get(n.paneId)
-    if (tool === undefined) return
+    const agent = this.subscribed.get(n.paneId)
+    if (agent === undefined || !this.agentPanes.has(n.paneId)) return
     if (n.name.startsWith(REPORT_SUBSCRIPTION_PREFIX)) {
       const { model, mode, effort } = splitAgentReport(n.value)
       this.onReport(n.paneId, mode, effort)
-      void this.onModel(n.paneId, tool, model)
+      void this.onModel(n.paneId, agent.tool, model)
       return
     }
     if (!n.name.startsWith(SUBSCRIPTION_PREFIX)) return
     this.sink({
       kind: 'status',
-      handle: n.paneId,
-      status: classifyAgentObservation(tool, n.value),
+      handle: agent.window,
+      status: classifyAgentObservation(agent.tool, n.value),
     })
   }
 
@@ -262,7 +279,9 @@ class TuiConnection extends ControlModeConnection {
     this.models.clear()
     this.modelPushes.clear()
     this.modes.clear()
+    this.efforts.clear()
     this.sessions.clear()
+    this.agentPanes.clear()
   }
 }
 
@@ -302,15 +321,17 @@ export const tuiDriver: AgentDriver = {
   },
 
   async deliverPrompt(session: DrivenWorkspace, handle: string, text: string, opts = {}): Promise<void> {
-    // The handle is a pane id, a valid paste target.
+    // A session's handle is its window, which pastes into the window's
+    // active pane; a terminal's agent is addressed by its pane id.
+    const target = handle.startsWith('%') ? handle : `yaac:${handle}`
     const driver = workspaceDriver()
     const paths = driver.workspacePaths(session.jobName)
     if (opts.running === undefined) {
-      const { cmd, stdin } = buildPromptPasteBgCmd(handle, text, paths)
+      const { cmd, stdin } = buildPromptPasteBgCmd(target, text, paths)
       await driver.exec(session.jobName, cmd, { maxAttempts: 1, timeout: 15_000, stdin })
       return
     }
-    const { cmd, stdin } = buildMessageCmd(handle, text, paths, { tool: session.tool, conversationId: opts.running.conversationId })
+    const { cmd, stdin } = buildMessageCmd(target, text, paths, opts.running)
     await driver.exec(session.jobName, cmd, {
       maxAttempts: 1,
       timeout: 30_000,

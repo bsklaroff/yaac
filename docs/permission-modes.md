@@ -1,7 +1,8 @@
 # Permission modes
 
-A permission mode (or *posture*) sets how much a workspace's agent may do
-before it stops to ask. It is one enum, `PermissionMode` in `@yaac/shared`,
+A permission mode (or *posture*) sets how much a session's agent may do
+before it stops to ask (each session of a workspace has its own,
+docs/sessions.md). It is one enum, `PermissionMode` in `@yaac/shared`,
 translated per tool at launch by `buildAgentCmd` (effort levels travel the
 same paths, docs/effort-levels.md):
 
@@ -163,7 +164,7 @@ permissive mode the adapter offers that is no looser than the posture (an
 which mode the session is actually in. The handshake happens before any pane
 attaches, so the conversation keeps the message and shows it to every pane
 until a later `session/set_mode` succeeds. The actual mode is recorded on
-the workspace row like any other move (see "Following the agent"), so a
+the session's row like any other move (see "Following the agent"), so a
 restart asks for it.
 
 ## Resolution
@@ -192,11 +193,19 @@ since it may have been recorded before a tool update.
 `yaac-mama create`, `yaac-mama queue`, `yaac-mama edit-queued` and
 `yaac-mama routine create|edit` (docs/queued-workspaces.md,
 docs/routines.md) resolve the posture with `agentPermissionMode`
-(`@yaac/shared/types`) instead. It treats the **caller's** posture (read from the
-caller's row, never from the request) as a ceiling: a sibling may run at
-most as permissively as its parent, in the order `bypass > auto >
-accept-edits > manual > plan = read-only`. Otherwise an agent left in `plan`
-could get its work done unrestricted by asking a sibling.
+(`@yaac/shared/types`) instead. It treats the **caller's** posture as a
+ceiling: a sibling may run at most as permissively as its parent, in the
+order `bypass > auto > accept-edits > manual > plan = read-only`. Otherwise
+an agent left in `plan` could get its work done unrestricted by asking a
+sibling. The caller is the session whose agent asked, which every launch
+names in `YAAC_SESSION_ID` and `yaac-mama` sends; the server takes it only
+as one of the calling workspace's open sessions, and reads its posture
+from its row, never from the request (`mamaCaller`). A call from outside
+any session gets the strictest posture among the workspace's open
+sessions. Anything in the workspace could name another of its sessions,
+so this is a guardrail rather than a boundary (docs/sessions.md). The same
+ceiling applies to a session `yaac-mama create --workspace` opens in a
+running workspace.
 
 The project's remembered posture is skipped, since a spawned sibling runs
 unwatched and a remembered `plan` would leave it waiting forever. Likewise a
@@ -215,18 +224,18 @@ person (see "Following the agent") and shows as waiting.
   the tool, which re-resolves it as unnamed. `run-queued`, `routine run`
   and `routine resume` refuse one above the ceiling outright.
 
-`yaac-mama send`, which hands a running workspace's agent a message, holds
+`yaac-mama send`, which hands a running session's agent a message, holds
 the **target's** posture to the same ceiling: a message is as good as a
-prompt, so an agent may message only a conversation at or below its own.
-Both the target's row and the conversation's own reported mode are checked,
-since the row records only the last change any of its agents reported; a
-reported mode that maps to no posture is refused.
+prompt, so an agent may message only a session at or below its own. Both
+the target session's row and its agent's latest reported mode are checked,
+since the row follows reports a reconcile pass behind; a reported mode that
+maps to no posture is refused.
 
 `yaac-mama restart`, which brings a stopped sibling back, holds the
-target's posture to the ceiling too. Every conversation relaunches in the
-row's posture, or the nearest its tool has (`launchablePermissionMode`, which
+target's postures to the ceiling too. Every session relaunches in its own
+posture, or the nearest its tool has (`launchablePermissionMode`, which
 gives pi `bypass` whatever the row says), so an agent may restart only a
-workspace whose every conversation would come back at or below its own
+workspace whose every session would come back at or below its own
 (`decideRestart` in `#domain/workspaces`).
 
 The check sees a mode as the agent reported it, and a `tui` agent reports a
@@ -237,9 +246,9 @@ sent before then runs under it. The raise is that user's own grant, which is
 why this is accepted.
 
 The ceiling applies only to agents; the webapp and `/workspace/queue/*`
-routes are the user's. It is the caller's current row value, which follows
-the running agent: a caller that moved into plan mode caps siblings at
-`plan`, and one a person moved to `bypass` may spawn `bypass` siblings.
+routes are the user's. It is the calling session's current row value, which
+follows the running agent: a caller that moved into plan mode caps siblings
+at `plan`, and one a person moved to `bypass` may spawn `bypass` siblings.
 
 The ceiling binds only the `yaac-mama` channel. Under k8s that is the only
 channel a pod has: the proxy identifies the caller by source IP, and the
@@ -271,9 +280,10 @@ when a create names one) is what the dialog opens on while origin still has
 it, else the remote's default. A create naming no branch uses the remote's
 default, so the CLI and spare pool never depend on the webapp's last pick.
 
-The resolved posture is stored in `workspaces.permissionMode`, so a restart
-relaunches in the posture the agents were in. A restart re-uses it without
-choosing again: it is neither remembered nor refused if unsupported.
+The resolved posture is stored on the session (`sessions.permissionMode`),
+so a restart relaunches each agent in the posture it was in. A restart
+re-uses it without choosing again: it is neither remembered nor refused if
+unsupported.
 
 ## How a conversation applies a posture
 
@@ -318,9 +328,9 @@ The agent can leave its launch posture: Shift+Tab in claude's TUI,
 `/permissions` in codex's, the chat pane's posture menu, a plan-exit answer
 like "yes, and auto-accept edits", or the agent entering plan mode on its
 own.
-`workspaces.permissionMode` follows, up or down, because both its readers
-want the current posture: a restart relaunches in it, and `yaac-mama create`
-caps siblings at it.
+The session's `permissionMode` follows, up or down, because both its
+readers want the current posture: a restart relaunches in it, and
+`yaac-mama` caps what the session's agent starts or messages at it.
 
 Every report comes from inside the workspace (a pane option, a codex rollout,
 acpd's socket and record), so anything running there could forge one, e.g.
@@ -328,13 +338,13 @@ a forged `bypass` to raise the spawn ceiling. This is accepted: it needs a
 process already running in the workspace. Under k8s the sandbox contains such
 a process; under containerless it already runs as the user.
 
-Only a *change* in what an agent reports is recorded, since the row is shared
-by every agent in the workspace. A first report counts as a change, which is
-how a move made while no server was watching reaches the row later (tmux
-keeps the pane option, acpd's record keeps the mode, a rollout keeps its
-settings). The registry's reconcile pass writes it as a
-`permission-mode-changed` workspace event. A mode that matches no posture
-(pi's thinking levels, a project's own opencode agent) is not recorded.
+A report that differs from the session's row is recorded, each row
+following only its own agent, which is also how a move made while no
+server was watching reaches the row later (tmux keeps the pane option,
+acpd's record keeps the mode, a rollout keeps its settings). The registry's
+reconcile pass writes it as a `session-reported` workspace event. A mode
+that matches no posture (pi's thinking levels, a project's own opencode
+agent) is not recorded.
 claude's `dontAsk` reads as `manual`.
 
 ### Under `acp`
@@ -348,12 +358,12 @@ maps it to a posture through the adapter profile (`modeIds`, then
 `plan` names a posture, and pi's modes are thinking levels.
 
 Each conversation answers its own asks according to its adapter's current
-mode, so one conversation entering plan mode, or a user choosing "yes, and
-bypass permissions" in one pane, does not change how another answers. The
-workspace row is used only when the adapter's mode names no posture
-(opencode's agents), and only by the connection that launched the
-conversation. A connection reads the row once when it connects, then follows
-each recorded `permission-mode-changed` (`setAcpPermissionMode`). A reattach
+mode, so one session entering plan mode, or a user choosing "yes, and
+bypass permissions" in one pane, does not change how another answers. Its
+session row is used only when the adapter's mode names no posture
+(opencode's agents). A connection reads it on each window listing, then
+follows each recorded change of that session's posture
+(`setAcpPermissionMode`). A reattach
 reads its session's mode, and the modes it offers, back from the acpd record;
 an ask arriving meanwhile waits. If the record names no posture, every ask is
 forwarded. A `bypass` conversation that enters plan mode shows its plan-exit
@@ -367,9 +377,9 @@ posture is among them, so opencode, which maps only `plan` to a mode, shows
 its posture without a menu: leaving it could not be undone from the pane.
 Under containerless the menu still offers `bypass`, marked as having no
 sandbox: it is the user's own grant, after which the agent acts as the user
-on this machine. Like a Shift+Tab, a switch moves the row, so raising the
-posture also raises the ceiling `yaac-mama` holds this workspace's spawns
-and messages to.
+on this machine. Like a Shift+Tab, a switch moves the session's row, so
+raising the posture also raises the ceiling `yaac-mama` holds that
+session's spawns and messages to.
 
 ### Under `tui`
 
@@ -386,7 +396,7 @@ it writes it down:
 - **opencode.** Shift+Tab switches between its `build` and `plan` agents; the
   server emits `session.agent.selected` when a prompt is sent, and the plugin
   that reports the model reports it. The agent is read against the
-  workspace's posture, since the rules come from the launch config: `plan`
+  session's posture, since the rules come from the launch config: `plan`
   and `manual` share rules, so a switch moves between those two, and `build`
   under any other posture is that posture. The plan agent over `bypass` or
   `accept-edits` rules matches no posture and is not recorded; nor is the
@@ -410,15 +420,8 @@ in the workspace cannot forge control-mode lines.
 
 ## Prewarmed spares
 
-A spare is warmed as its project's untouched create: the last agent, with its
-remembered model, posture and agent mode, which the server holds in memory
-until a claim records them on the row (docs/workspace-storage.md). A claim
-prefers a spare whose launch matches. A spare in the same agent mode but with
-a different agent, model or posture can still be claimed; its agent is
-respawned with what was asked, so the posture is never weaker than requested.
-A spare in the other agent mode is skipped, because an `acp` pod has a mount
-for acpd's records that a `tui` pod lacks, fixed at warm time. So is one
-running another image than the project now builds (a Dockerfile edit or a
-`nestedContainers` toggle since it was warmed), since a pod's image is fixed
-too. The pool replaces spares whose mode or image no longer matches their
-project's.
+A spare runs no session, so no posture is fixed at warm time: a claim opens
+its session with what was asked, as in any running workspace
+(docs/sessions.md). A spare running another image than the project now
+builds (a Dockerfile edit or a `nestedContainers` toggle since it was
+warmed) is skipped, since a pod's image is fixed, and the pool replaces it.

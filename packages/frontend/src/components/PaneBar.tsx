@@ -3,13 +3,13 @@ import clsx from 'clsx'
 import { Menu } from '@base-ui/react/menu'
 import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import {
-  AddIcon, ChangesIcon, FilesIcon, MoreIcon, NavBackIcon, PreviewIcon, SidebarIcon, TabsIcon, TilesIcon, TOOL_LABEL,
+  AddIcon, ChangesIcon, ChatIcon, FilesIcon, MoreIcon, NavBackIcon, PreviewIcon, SidebarIcon, TabsIcon, TilesIcon,
 } from '#lib/icons'
 import { goBackScreen } from '#lib/mobileHistory'
 import { previewLabel } from '#lib/preview'
 import { useUiStore } from '#lib/store'
 import { useIsMobile } from '#lib/viewport'
-import type { AgentTool, PortMapping } from '@yaac/shared/types'
+import type { PortMapping } from '@yaac/shared/types'
 
 /*
  * The bar over the main pane, shared by a workspace's header and the
@@ -66,8 +66,10 @@ export function PaneBarLeading(): JSX.Element | null {
 }
 
 /** What the pane actions do; `disabled` says why they can't, and `titles`
- *  overrides their hover text. */
+ *  overrides their hover text. A running workspace can also open a session
+ *  (`onNewSession`). */
 interface PaneActions {
+  onNewSession?: () => void
   onNewShell: () => void
   onOpenFiles: () => void
   onOpenChanges: () => void
@@ -76,7 +78,9 @@ interface PaneActions {
 }
 
 /** The desktop bar's view toggle and pane buttons. */
-export function PaneBarActions({ onNewShell, onOpenFiles, onOpenChanges, disabled, titles }: PaneActions): JSX.Element {
+export function PaneBarActions({
+  onNewSession, onNewShell, onOpenFiles, onOpenChanges, disabled, titles,
+}: PaneActions): JSX.Element {
   const viewMode = useUiStore((s) => s.viewMode)
   const setViewMode = useUiStore((s) => s.setViewMode)
   const tiled = viewMode === 'tiles'
@@ -91,6 +95,12 @@ export function PaneBarActions({ onNewShell, onOpenFiles, onOpenChanges, disable
         {tiled ? <TabsIcon size={13} /> : <TilesIcon size={13} />}
         <span className="max-lg:sr-only">{tiled ? 'Tab view' : 'Tile view'}</span>
       </button>
+      {onNewSession !== undefined && (
+        <button onClick={onNewSession} disabled={off} title={disabled ?? 'Start another agent session here'} className={BAR_BUTTON}>
+          <ChatIcon size={13} />
+          <span className="max-lg:sr-only">New Session</span>
+        </button>
+      )}
       <button onClick={onNewShell} disabled={off} title={disabled ?? titles?.shell ?? 'New shell'} className={BAR_BUTTON}>
         <AddIcon size={13} />
         <span className="max-lg:sr-only">New Shell</span>
@@ -124,15 +134,17 @@ export function PaneBarActions({ onNewShell, onOpenFiles, onOpenChanges, disable
  * fit on a phone. Warning badges stay in the bar.
  */
 export function PaneOverflowMenu({
-  tool,
+  label,
   previewPorts = [],
   onOpenPreview,
+  onNewSession,
   onNewShell,
   onOpenChanges,
   onOpenFiles,
   disabled,
 }: PaneActions & {
-  tool: AgentTool
+  /** The menu's footnote: the workspace's agent. */
+  label: string
   /** Forwarded ports to preview (empty in a browser). */
   previewPorts?: PortMapping[]
   onOpenPreview?: (containerPort: number) => void
@@ -151,6 +163,12 @@ export function PaneOverflowMenu({
         <MoreIcon size={18} />
       </Menu.Trigger>
       <MenuPopup side="bottom" align="end" sideOffset={6} className="min-w-[200px]">
+        {onNewSession !== undefined && (
+          <Menu.Item className={ITEM} disabled={off} onClick={onNewSession}>
+            <ChatIcon size={14} />
+            New session
+          </Menu.Item>
+        )}
         <Menu.Item className={ITEM} disabled={off} onClick={onNewShell}>
           <AddIcon size={14} />
           New shell
@@ -169,7 +187,7 @@ export function PaneOverflowMenu({
             {previewLabel(previewPorts.length > 1 ? p : undefined)}
           </Menu.Item>
         ))}
-        <div className="px-2 pb-1 pt-1.5 text-[11px] text-text-faint">{disabled ?? TOOL_LABEL[tool]}</div>
+        <div className="px-2 pb-1 pt-1.5 text-[11px] text-text-faint">{disabled ?? label}</div>
       </MenuPopup>
     </Menu.Root>
   )

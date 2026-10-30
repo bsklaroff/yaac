@@ -62,7 +62,7 @@ const status = (): string => screen.getByRole('status').textContent ?? ''
 
 describe('ReadOnlyTranscript', () => {
   it('finds text the rows hide, steps through it, and keeps the current match open on close', async () => {
-    renderWithClient(<ReadOnlyTranscript workspaceId="w1" sessions={[session()]} />)
+    renderWithClient(<ReadOnlyTranscript workspaceId="w1" conversations={[session()]} />)
     await settle()
     fireEvent.click(screen.getByRole('button', { name: /Thinking/ }))
     expect(screen.queryByText('maybe a needle here')).toBeNull()
@@ -101,7 +101,7 @@ describe('ReadOnlyTranscript', () => {
   })
 
   it('never overrides what the reader opened or closed', async () => {
-    renderWithClient(<ReadOnlyTranscript workspaceId="w1" sessions={[session()]} />)
+    renderWithClient(<ReadOnlyTranscript workspaceId="w1" conversations={[session()]} />)
     await settle()
     fireEvent.click(screen.getByRole('button', { name: /Thinking/ }))
     expect(screen.queryByText('maybe a needle here')).toBeNull()
@@ -129,13 +129,13 @@ describe('TuiTranscriptSearch', () => {
   it('lays the conversation over the focused terminal on Cmd/Ctrl-F, and Escape returns to it', async () => {
     const sessions = [session(), session({ conversationId: 'a1', mode: 'acp', ordinal: 1 })]
     const client = testQueryClient()
-    const { rerender } = renderWithClient(<TuiTranscriptSearch workspaceId="w1" sessions={sessions} visible focused={false} />, client)
+    const { rerender } = renderWithClient(<TuiTranscriptSearch workspaceId="w1" paneTarget="session:s1" conversations={sessions} visible focused={false} />, client)
     pressFind()
     expect(screen.queryByRole('textbox', { name: 'Find' })).toBeNull()
 
     rerender(
       <QueryClientProvider client={client}>
-        <TuiTranscriptSearch workspaceId="w1" sessions={sessions} visible focused />
+        <TuiTranscriptSearch workspaceId="w1" paneTarget="session:s1" conversations={sessions} visible focused />
       </QueryClientProvider>,
     )
     pressFind()
@@ -151,7 +151,7 @@ describe('TuiTranscriptSearch', () => {
 
     fireEvent.keyDown(find(), { key: 'Escape' })
     expect(screen.queryByText('Found the needle.')).toBeNull()
-    expect(useUiStore.getState().activeTabs.w1).toBe('agent')
+    expect(useUiStore.getState().activeTabs.w1).toBe('session:s1')
 
     // A pane that leaves the screen drops the overlay, and with it the
     // transcript's refresh.
@@ -160,7 +160,7 @@ describe('TuiTranscriptSearch', () => {
     expect(screen.getByText('Found the needle.')).toBeTruthy()
     rerender(
       <QueryClientProvider client={client}>
-        <TuiTranscriptSearch workspaceId="w1" sessions={sessions} visible={false} focused={false} />
+        <TuiTranscriptSearch workspaceId="w1" paneTarget="session:s1" conversations={sessions} visible={false} focused={false} />
       </QueryClientProvider>,
     )
     expect(screen.queryByText('Found the needle.')).toBeNull()

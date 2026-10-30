@@ -43,8 +43,8 @@ import {
   BUILT_IN_USER_ID,
   setTimeZone,
   setToolCredential,
-  applyWorkspaceEvent,
   createWorkspaceGroup,
+  insertSession,
   listWorkspaceGroupRows,
   setWorkspaceGroup,
   setWorkspaceGroupLimit,
@@ -94,9 +94,7 @@ beforeEach(async () => {
     await recordWorkspaceCreated({
       projectId: projectId, workspaceId: opts.workspaceId ?? 'minted', ...(opts.groupId !== undefined ? { groupId: opts.groupId } : {}),
     })
-    return {
-      workspaceId: opts.workspaceId ?? 'minted', jobName: 'j', forwardedPorts: [], tool: opts.tool ?? 'claude', mode: 'tui',
-    }
+    return { workspaceId: opts.workspaceId ?? 'minted', jobName: 'j', forwardedPorts: [] }
   })
 })
 
@@ -106,7 +104,7 @@ afterEach(async () => {
   await cleanupTempDir(tmpDir)
 })
 
-/** A workspace as a create leaves it: a row, and its first conversation. */
+/** A workspace as a create leaves it: a row, and its first session. */
 async function workspace(
   workspaceId: string,
   over: {
@@ -120,21 +118,14 @@ async function workspace(
   await recordWorkspaceCreated({
     projectId: PROJ,
     workspaceId,
-    permissionMode: over.permissionMode ?? 'auto',
-    mode: over.mode ?? 'tui',
     ...(over.baseBranch !== null ? { baseBranch: over.baseBranch ?? 'develop' } : {}),
   })
-  await applyWorkspaceEvent({
-    type: 'conversations-launched',
-    projectId: PROJ,
-    workspaceId,
-    sessions: [{
-      conversationId: workspaceId,
-      tool: over.tool ?? 'claude',
-      mode: over.mode ?? 'tui',
-      model: over.model ?? 'claude-sonnet-5',
-      firstPrompt: `founding ask of ${workspaceId}`,
-    }],
+  await insertSession(PROJ, workspaceId, {
+    tool: over.tool ?? 'claude',
+    mode: over.mode ?? 'tui',
+    permissionMode: over.permissionMode ?? 'auto',
+    model: over.model ?? 'claude-sonnet-5',
+    prompt: `founding ask of ${workspaceId}`,
   })
 }
 
@@ -189,7 +180,7 @@ describe('queueWorkspace', () => {
   it('stores a branch for a parent still provisioning and for one whose row predates it', async () => {
     // Mid-create there is no conversation yet, so the provisioning row
     // supplies the tool.
-    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'booting', permissionMode: 'bypass', baseBranch: 'main' })
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'booting', baseBranch: 'main' })
     registerProvisioning({ workspaceId: 'booting', projectId: PROJ, tool: 'opencode', kind: 'create' })
     const early = await queueWorkspace(local, PROJ, { parent: 'booting', prompt: 'x' }, 'user')
     expect(early).toMatchObject({ tool: 'opencode', permissionMode: 'bypass', branch: 'main' })
@@ -335,7 +326,7 @@ describe('queueWorkspace', () => {
     await setWorkspaceGroupLimit(PROJ, groupId, 2)
     const later = await queueWorkspace(local, PROJ, { prompt: 'later', group: groupId }, 'user')
     await launched(1)
-    expect(mockCreate.mock.calls[0][1]).toMatchObject({ initialPrompt: 'wait', groupId })
+    expect(mockCreate.mock.calls[0][1]).toMatchObject({ session: { prompt: 'wait' }, groupId })
     await settled(entry.id, true)
     expect(await getQueuedWorkspaceRow(later.id)).toMatchObject({ prompt: 'later' })
   })
@@ -477,7 +468,7 @@ describe('discardQueuedWorkspace', () => {
 
     await setGroupWorkspaceLimit(PROJ, groupId, null)
     await launched(1)
-    expect(mockCreate.mock.calls[0][1].initialPrompt).toBe('after released')
+    expect(mockCreate.mock.calls[0][1].session?.prompt).toBe('after released')
     await settled(afterReleased.id, true)
     expect((await getQueuedWorkspaceRow(afterFailed.id))?.launchWorkspaceId).toBeUndefined()
     expect(mockCreate).toHaveBeenCalledTimes(1)
@@ -500,11 +491,10 @@ describe('runQueuedWorkspace', () => {
     await launched(1)
     expect(mockCreate.mock.calls[0]).toEqual([PROJ, expect.objectContaining({
       workspaceId,
-      tool: 'codex',
-      model: 'gpt-5.5',
-      permissionMode: 'accept-edits',
+      session: expect.objectContaining({
+        tool: 'codex', model: 'gpt-5.5', permissionMode: 'accept-edits', prompt: 'go',
+      }) as unknown,
       branch: 'develop',
-      initialPrompt: 'go',
       title: 'Named',
       groupId: group.groupId,
     })])
@@ -524,7 +514,7 @@ describe('runQueuedWorkspace', () => {
     })
     await runQueuedWorkspace(local, child.id)
     await launched(2)
-    expect(mockCreate.mock.calls[1][1]).toMatchObject({ initialPrompt: 'after', generatedTitle: 'Generated' })
+    expect(mockCreate.mock.calls[1][1]).toMatchObject({ session: { prompt: 'after' }, generatedTitle: 'Generated' })
     expect(mockCreate.mock.calls[1][1]).not.toHaveProperty('title')
     expect(rows).toEqual([expect.objectContaining({ title: 'Generated' })])
   })
@@ -631,7 +621,8 @@ describe('listHeldWorkspaces', () => {
     await queueWorkspace(local, PROJ, { parent: 'alive', prompt: 'y' }, 'user')
 
     expect(await listHeldWorkspaces()).toEqual([expect.objectContaining({
-      workspaceId: 'dead', tool: 'claude', prompt: 'founding ask of dead', deathReason: 'oom',
+      workspaceId: 'dead', prompt: 'founding ask of dead', deathReason: 'oom',
+      sessions: [expect.objectContaining({ tool: 'claude', mode: 'tui', prompt: 'founding ask of dead' })],
     })])
     await discardQueuedWorkspace(local, entry.id)
     expect(await listHeldWorkspaces()).toEqual([])
@@ -682,7 +673,7 @@ describe('resumeQueuedWorkspaces', () => {
     await resumeQueuedWorkspaces()
     const waiting = await queueWorkspace(local, PROJ, { prompt: 'waiting', group: groupId }, 'user')
     await launched(1)
-    expect(mockCreate.mock.calls[0][1]).toMatchObject({ initialPrompt: 'waiting', groupId })
+    expect(mockCreate.mock.calls[0][1]).toMatchObject({ session: { prompt: 'waiting' }, groupId })
     await settled(waiting.id, true)
   })
 
@@ -720,7 +711,7 @@ describe('resumeQueuedWorkspaces', () => {
     await launched(2)
     await settled(entries[0].id, true)
     await settled(entries[1].id, true)
-    expect(mockCreate.mock.calls.map((c) => c[1].initialPrompt)).toEqual(['a', 'b'])
+    expect(mockCreate.mock.calls.map((c) => c[1].session?.prompt)).toEqual(['a', 'b'])
     expect(await getQueuedWorkspaceRow(entries[2].id)).toMatchObject({ prompt: 'c' })
   })
 
@@ -733,7 +724,7 @@ describe('resumeQueuedWorkspaces', () => {
     await resumeQueuedWorkspaces()
     await launched(1)
     await settled(a.id, true)
-    expect(mockCreate.mock.calls[0][1].initialPrompt).toBe('a')
+    expect(mockCreate.mock.calls[0][1].session?.prompt).toBe('a')
     expect((await getQueuedWorkspaceRow(b.id))?.releasedAt).toBeUndefined()
   })
 })
@@ -748,7 +739,7 @@ describe('startScheduledWorkspaces', () => {
     await launched(1)
     await settled(due.id, true)
     expect(mockCreate.mock.calls[0][1]).toMatchObject({
-      initialPrompt: 'due',
+      session: { prompt: 'due' },
       deadline: new Date(startAt.getTime() + 60 * 60_000),
     })
     expect((await getQueuedWorkspaceRow(later.id))?.releasedAt).toBeUndefined()
@@ -794,7 +785,7 @@ describe('startScheduledWorkspaces', () => {
     await recordWorkspaceStopped(PROJ, 'busy')
     await startQueuedChildren(PROJ, 'busy')
     await launched(1)
-    expect(mockCreate.mock.calls[0][1].initialPrompt).toBe('due')
+    expect(mockCreate.mock.calls[0][1].session?.prompt).toBe('due')
     expect((await getQueuedWorkspaceRow(later.id))?.releasedAt).toBeUndefined()
   })
 })

@@ -12,7 +12,7 @@ import { api } from '#lib/api'
 import { useTranscriptPages } from '#lib/useTranscriptPages'
 import { ServerError } from '@yaac/shared/errors'
 import type { AcpEvent, AcpTranscriptPage } from '@yaac/shared/acp'
-import type { ConversationEntry } from '@yaac/shared/types'
+import type { ConversationEntry, SessionEntry } from '@yaac/shared/types'
 
 /** One empty list for every render without a transcript, so the view's
  *  memos and effects keyed on the events do not rerun each render. */
@@ -20,6 +20,9 @@ const NO_EVENTS: AcpEvent[] = []
 
 interface ConversationProps {
   workspaceId: string
+  /** The open sessions of a live workspace, whose statuses its
+   *  conversations' tabs show. */
+  liveSessions?: SessionEntry[]
   /** The starting prompt, shown when there is no readable transcript. */
   prompt?: string
   /** The workspace is running, so its conversations are followed. */
@@ -39,8 +42,9 @@ interface ConversationProps {
  * sits. Conversations survive the container: an `acp` one as acpd's
  * record, a `tui` one as the tool's own history, translated server-side.
  *
- * A workspace can have several (`/clear`, or more than one agent); they show
- * as tabs in restore order, each with its status while the workspace runs.
+ * A workspace can have several (`/clear`, or more than one session); they
+ * show as tabs in the order the workspace first saw them, each with its
+ * session's status while the workspace runs.
  * A conversation opens at its end, on its last page, and the pages before
  * it load as the reader scrolls up or jumps to the start
  * (`useTranscriptPages`).
@@ -59,12 +63,12 @@ interface ConversationProps {
  * title bar in the footer's place.
  */
 export function ReadOnlyTranscript({
-  sessions,
+  conversations,
   ...props
-}: ConversationProps & { sessions: ConversationEntry[] }): JSX.Element {
+}: ConversationProps & { conversations: ConversationEntry[] }): JSX.Element {
   const viewable = useMemo(
-    () => [...sessions].sort((a, b) => a.ordinal - b.ordinal),
-    [sessions],
+    () => [...conversations].sort((a, b) => a.ordinal - b.ordinal),
+    [conversations],
   )
   const [picked, setPicked] = useState<string | null>(null)
   // The user's pick, else the last conversation, else the first. Derived
@@ -90,8 +94,8 @@ export function ReadOnlyTranscript({
         >
           {props.live === true && (
             <StatusMark
-              status={s.status}
-              asking={s.asking === true}
+              status={sessionOf(props.liveSessions, s)?.status}
+              asking={sessionOf(props.liveSessions, s)?.asking === true}
               {...(props.owner !== undefined ? { owner: props.owner } : {})}
             />
           )}
@@ -105,12 +109,18 @@ export function ReadOnlyTranscript({
   return <Conversation key={selected?.conversationId ?? ''} {...props} session={selected} tabs={tabs} />
 }
 
+/** The open session holding a conversation now, if any. */
+function sessionOf(sessions: SessionEntry[] | undefined, c: ConversationEntry): SessionEntry | undefined {
+  return sessions?.find((s) => s.sessionId === c.sessionId && s.conversationId === c.conversationId)
+}
+
 /** One conversation of `ReadOnlyTranscript`, under its tabs. */
 function Conversation({
   workspaceId,
   session,
   prompt,
   live = false,
+  liveSessions,
   owner,
   find = { chord: true },
   footer,
@@ -129,8 +139,8 @@ function Conversation({
     queryKey: ['transcript', workspaceId, session?.conversationId, live],
     queryFn: session === undefined ? skipToken : async (): Promise<AcpTranscriptPage | null> => {
       try {
-        return await api.workspace[':id']['conversations'][':sessionId'].transcript.$get({
-          param: { id: workspaceId, sessionId: session.conversationId },
+        return await api.workspace[':id'].conversations[':conversationId'].transcript.$get({
+          param: { id: workspaceId, conversationId: session.conversationId },
           query: {},
         })
       } catch (err) {
@@ -154,9 +164,10 @@ function Conversation({
   // A turn is in flight per the stream's turn boundaries, which arrive in
   // step with its content; else per the conversation's status, the same the
   // sidebar shows, as for a `tui` one, whose history has no turns.
+  const holder = session !== undefined ? sessionOf(liveSessions, session) : undefined
   const working = live && (streamed && !stream.history
     ? stream.busy
-    : session?.status === 'running' || session?.asking === true)
+    : holder?.status === 'running' || holder?.asking === true)
   const { view, open, activity, groups, findBar, body, titleBar } = useConversationView({
     workspaceId,
     events: pages.events,

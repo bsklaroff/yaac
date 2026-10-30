@@ -4,7 +4,7 @@ import type { Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { jsonBodyLimit, optionalProjectRef, projectRef, zv } from '#routes/validator'
 import { z } from 'zod'
-import { allowWorkspaceHost, claimDraft, keepScratchDirsInCheckout, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getConversationTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toConversationEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand, type QueueStart, listQueuedWorkspaces, setWorkspaceTimeout } from '#domain/workspaces'
+import { allowWorkspaceHost, claimDraft, keepScratchDirsInCheckout, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getConversationTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toConversationEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand, mamaCaller, openSession, closeSession, resumeSession, renameSession, type QueueStart, listQueuedWorkspaces, setWorkspaceTimeout } from '#domain/workspaces'
 import { createShellWindow, killWindowTerminal } from '#runtime/terminals'
 import {
   createWorkspaceGroup,
@@ -12,6 +12,7 @@ import {
   findWorkspaceRow,
   getQueuedWorkspaceRow,
   getRoutineRow,
+  getSessionRow,
   listDraftWorkspaceRows,
   listWorkspaceConversations,
   recordAllDeathsSeen,
@@ -25,7 +26,7 @@ import { streamProvisioned } from '#routes/provisioned-stream'
 import { withPreviews } from '#api/prompt-previews'
 import { requireDriverFeature } from '#api/http/driver-features'
 import type { IdentityEnv } from '#api/http/web-auth'
-import { authorizeProject, workspacePrincipal } from '#domain/access'
+import { authorizeProject } from '#domain/access'
 import { workspaceDriver } from '#drivers/driver'
 import { serveHostedRepo } from '#domain/projects'
 import { ServerError } from '@yaac/shared/errors'
@@ -79,6 +80,20 @@ function minutesFromNow(minutes: number): Date {
   return new Date(Date.now() + minutes * 60_000)
 }
 
+/**
+ * A session id given under a workspace's path, checked to be that
+ * workspace's, so a request never acts on a session it did not name the
+ * workspace of.
+ */
+async function sessionOf(workspaceIdOrPrefix: string, sessionId: string): Promise<string> {
+  const workspaceId = await resolveWorkspaceId(workspaceIdOrPrefix)
+  const session = z.uuid().safeParse(sessionId).success ? await getSessionRow(sessionId) : undefined
+  if (session?.workspaceId !== workspaceId) {
+    throw new ServerError('NOT_FOUND', `workspace ${workspaceIdOrPrefix} has no session ${sessionId}`)
+  }
+  return session.id
+}
+
 /** A full git object id, SHA-1 or SHA-256. */
 const GIT_OID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/
 
@@ -124,22 +139,14 @@ function mamaRoute(identifyCaller: IdentifyCaller) {
       command: z.string().min(1).max(32),
       args: z.record(z.string(), z.string()).optional(),
       body: promptText.optional(),
+      /** The calling agent's session (`YAAC_SESSION_ID`), when it has one. */
+      session: z.string().max(64).optional(),
     })),
     async (c) => {
       const caller = await callerOf(c)
-      const { command, args, body } = c.req.valid('json')
-      // Take the caller's tool from the runtime, not the request, which could
-      // claim any.
-      const handle = await workspaceDriver().find(caller.workspaceId).catch(() => null)
+      const { command, args, body, session } = c.req.valid('json')
       const outcome = await runMamaCommand(
-        {
-          workspaceId: caller.workspaceId,
-          principal: await workspacePrincipal(caller.workspaceId, caller.projectId),
-          projectId: caller.projectId,
-          ...(handle?.declaredTool !== undefined ? { tool: handle.declaredTool } : {}),
-          permissionMode: caller.permissionMode,
-          mode: caller.mode,
-        },
+        await mamaCaller(caller, session),
         { command, args: args ?? {}, body: body ?? '' },
       )
       if (!outcome.ok) return c.json({ error: outcome.error }, 422)
@@ -234,9 +241,16 @@ export const workspaceApp = new Hono<IdentityEnv>()
       // stopped. The webapp sets it, since its sidebar is where the draft is
       // retried from; a CLI retry could only add another draft.
       draftOnFailure: z.boolean().optional(),
+      // Start it with no session; the agent settings and prompt are refused
+      // beside it.
+      noSession: z.boolean().optional(),
     })),
     async (c) => {
       const body = c.req.valid('json')
+      if (body.noSession === true && (['tool', 'model', 'permissionMode', 'effort', 'mode', 'prompt'] as const)
+        .some((k) => body[k] !== undefined)) {
+        throw new ServerError('VALIDATION', 'a workspace with no session takes no prompt or agent settings')
+      }
       const workspaceId = body.workspaceId ?? randomUUID()
       // A client-chosen id already in use is a plain 409 before the stream
       // opens. The row insert inside the create guards against races.
@@ -265,6 +279,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
         ...(generatedTitle !== undefined ? { generatedTitle } : {}),
         ...(body.group !== undefined ? { group: body.group } : {}),
         ...(body.timeout !== undefined ? { deadline: minutesFromNow(body.timeout) } : {}),
+        ...(body.noSession === true ? { noSession: true } : {}),
         // A user request, so its settings become the project's defaults.
         rememberDefaults: true,
         claimSpare: true,
@@ -284,9 +299,8 @@ export const workspaceApp = new Hono<IdentityEnv>()
     zv('json', z.object({
       // An id or its unique prefix.
       workspaceId: z.string().min(1),
-      // No `mode`: a workspace restarts in the mode it had, read from its
-      // first conversation, else its row. No `gitUser`: the commit identity is a server
-      // setting.
+      // No agent settings: each session restarts as it was. No `gitUser`:
+      // the commit identity is a server setting.
       // Minutes from the restart until the server stops it; without one the
       // restart clears any timeout it had.
       timeout: timeoutMinutesSchema.optional(),
@@ -342,20 +356,19 @@ export const workspaceApp = new Hono<IdentityEnv>()
       return c.body(null, 204)
     },
   )
-  // Record that the caller viewed a waiting workspace's current spell,
+  // Record that the caller viewed a waiting session's current spell,
   // clearing the caller's unread dot on every client. Open to every user,
   // since each has their own dot. `marked` is false when the spell named is
-  // no longer the workspace's.
+  // no longer the session's.
   .post(
     '/mark-waiting-seen',
     zv('json', z.object({
-      projectId: projectRef,
-      workspaceId: z.string().min(1),
+      sessionId: z.uuid(),
       waitingSinceMs: z.number().int().nonnegative(),
     })),
     async (c) => {
-      const { projectId, workspaceId, waitingSinceMs } = c.req.valid('json')
-      return c.json({ marked: await markWaitingSeen(c.get('principal'), projectId, workspaceId, waitingSinceMs) })
+      const { sessionId, waitingSinceMs } = c.req.valid('json')
+      return c.json({ marked: await markWaitingSeen(c.get('principal'), sessionId, waitingSinceMs) })
     },
   )
   // The same for every death in a project ("mark all as read").
@@ -615,8 +628,61 @@ export const workspaceApp = new Hono<IdentityEnv>()
       return c.body(null, 204)
     },
   )
-  // A workspace's conversations, active first (`yaac workspace agents <id>`
-  // and the webapp's history list).
+  // Open a session in a running workspace (docs/sessions.md). Unnamed
+  // settings resolve as a create's, and named ones become the project's
+  // next defaults. Answers once its window is launched.
+  .post(
+    '/:id/sessions',
+    zv('json', z.object({
+      tool: queuedSettings.tool,
+      model: queuedSettings.model,
+      mode: queuedSettings.mode,
+      permissionMode: queuedSettings.permissionMode,
+      effort: queuedSettings.effort,
+      prompt: queuedSettings.prompt.optional(),
+      title: queuedSettings.title,
+      // One of the workspace's earlier conversations to resume.
+      resume: z.string().min(1).max(256).optional(),
+    })),
+    async (c) => {
+      const body = c.req.valid('json')
+      const session = await openSession(c.get('principal'), c.req.param('id'), {
+        ...(body.tool !== undefined ? { tool: body.tool } : {}),
+        ...(body.model !== undefined ? { model: body.model } : {}),
+        ...(body.mode !== undefined ? { mode: body.mode } : {}),
+        ...(body.permissionMode !== undefined ? { permissionMode: body.permissionMode } : {}),
+        ...(body.effort !== undefined ? { effort: body.effort } : {}),
+        ...(body.prompt !== undefined ? { prompt: body.prompt } : {}),
+        ...(body.title !== undefined ? { title: body.title } : {}),
+        ...(body.resume !== undefined ? { resume: body.resume } : {}),
+        rememberDefaults: true,
+      })
+      return c.json({ sessionId: session.id, workspaceId: session.workspaceId }, 201)
+    },
+  )
+  // Close a session: its agent stops, its conversations stay as history, and
+  // the workspace keeps running.
+  .post('/:id/sessions/:sessionId/close', async (c) => {
+    await closeSession(c.get('principal'), await sessionOf(c.req.param('id'), c.req.param('sessionId')))
+    return c.body(null, 204)
+  })
+  // Relaunch a session whose agent exited, on its conversation.
+  .post('/:id/sessions/:sessionId/resume', async (c) => {
+    await resumeSession(c.get('principal'), await sessionOf(c.req.param('id'), c.req.param('sessionId')))
+    return c.body(null, 204)
+  })
+  // Name a session; blank clears the name.
+  .post(
+    '/:id/sessions/:sessionId/title',
+    zv('json', z.object({ title: z.string().max(MAX_TITLE_LENGTH) })),
+    async (c) => {
+      const sessionId = await sessionOf(c.req.param('id'), c.req.param('sessionId'))
+      await renameSession(c.get('principal'), sessionId, c.req.valid('json').title)
+      return c.body(null, 204)
+    },
+  )
+  // A workspace's conversations, in the order it first saw them
+  // (`yaac workspace conversations <id>` and the webapp's history list).
   .get('/:id/conversations', async (c) => {
     // Resolved from the record, so a stopped workspace works too.
     const { projectId, workspaceId } = await resolveWorkspaceRecord(c.req.param('id'))
@@ -627,13 +693,13 @@ export const workspaceApp = new Hono<IdentityEnv>()
   // the last. Resolved from the record so the stopped-workspaces view can
   // read it.
   .get(
-    '/:id/conversations/:sessionId/transcript',
+    '/:id/conversations/:conversationId/transcript',
     // An empty `page` is a missing one, not page 0.
     zv('query', z.object({ page: z.preprocess((v) => (v === '' ? undefined : v), z.coerce.number().int().nonnegative().optional()) })),
     async (c) => {
       const { projectId, workspaceId } = await resolveWorkspaceRecord(c.req.param('id'))
       return c.json(await getConversationTranscript(
-        projectId, workspaceId, c.req.param('sessionId'), c.req.valid('query').page,
+        projectId, workspaceId, c.req.param('conversationId'), c.req.valid('query').page,
       ))
     },
   )

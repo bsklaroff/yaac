@@ -4,7 +4,6 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   agentTitlesItself,
-  agentWindowName,
   getConversationFirstMessage,
   getConversationTitle,
   resolveAgentPermissionMode,
@@ -19,19 +18,6 @@ import type { AgentTool } from '@yaac/shared/types'
 // Workspaces sandboxed, as under k8s; a test wanting containerless
 // installs its own.
 beforeEach(() => { installFakeWorkspaceDriver() })
-
-describe('agentWindowName', () => {
-  it("gives the workspace's first agent the bare tool name", () => {
-    // `yaac:<tool>` targets depend on the first window being unsuffixed.
-    expect(agentWindowName('claude', 0)).toBe('claude')
-    expect(agentWindowName('codex', 0)).toBe('codex')
-  })
-
-  it('suffixes extra agents with their 1-based ordinal', () => {
-    expect(agentWindowName('claude', 1)).toBe('claude-2')
-    expect(agentWindowName('pi', 4)).toBe('pi-5')
-  })
-})
 
 describe('getConversationFirstMessage', () => {
   let dir: string

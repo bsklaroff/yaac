@@ -10,12 +10,10 @@ import {
   recordIgnoredFilesCleaned,
   recordWorkspaceStopped,
   removeWorkspaceRecords,
-  recordWaitingUnseen,
   setWorkspaceBaseBranch,
   setWorkspaceTrackedScratchDirs,
-  setWorkspaceEffort,
-  setWorkspacePermissionMode,
 } from './workspace-store'
+import { recordSessionReport, recordSessionWaitingUnseen } from './session-store'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import type { WorkspaceEvent, WorkspaceCreateFailed, WorkspaceCreated } from './events'
 
@@ -49,12 +47,6 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
     case 'tracked-scratch-dirs-found':
       await setWorkspaceTrackedScratchDirs(event.projectId, event.workspaceId, event.paths)
       return
-    case 'conversations-launched': {
-      const { projectId, workspaceId, sessions } = event
-      await recordConversations(projectId, workspaceId, sessions)
-      await setActiveConversations(projectId, workspaceId, sessions)
-      return
-    }
     case 'conversations-discovered':
       await recordConversations(event.projectId, event.workspaceId, event.sessions)
       return
@@ -64,14 +56,11 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
     case 'conversations-active':
       await setActiveConversations(event.projectId, event.workspaceId, event.active)
       return
-    case 'permission-mode-changed':
-      await setWorkspacePermissionMode(event.projectId, event.workspaceId, event.permissionMode)
-      return
-    case 'effort-changed':
-      await setWorkspaceEffort(event.projectId, event.workspaceId, event.effort)
+    case 'session-reported':
+      await recordSessionReport(event.sessionId, event)
       return
     case 'waiting-ended':
-      await recordWaitingUnseen(event.projectId, event.workspaceId)
+      await recordSessionWaitingUnseen(event.workspaceId, event.window)
       return
     case 'workspace-stopped':
       await recordWorkspaceStopped(event.projectId, event.workspaceId, event.cause)
@@ -83,14 +72,10 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
 }
 
 async function applyCreated(event: WorkspaceCreated): Promise<void> {
-  const { projectId, workspaceId, baseBranch, title, generatedTitle, groupId, resume, permissionMode, model, mode, effort, timeZone, deadline, scratchDirs } = event
+  const { projectId, workspaceId, baseBranch, title, generatedTitle, groupId, resume, timeZone, deadline, scratchDirs } = event
   const launch = {
     ...(deadline !== undefined ? { deadline } : {}),
     ...(scratchDirs !== undefined ? { scratchDirs } : {}),
-    ...(permissionMode !== undefined ? { permissionMode } : {}),
-    ...(model !== undefined ? { model } : {}),
-    ...(mode !== undefined ? { mode } : {}),
-    ...(effort !== undefined ? { effort } : {}),
     ...(timeZone !== undefined ? { timeZone } : {}),
   }
   // A fresh create inserts the row (refusing a taken id); a resume updates

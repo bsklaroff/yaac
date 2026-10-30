@@ -4,10 +4,6 @@
  * delegates to that tool's module, keeping tool-specific formats (claude's
  * spinner titles, opencode's busy markers, codex's rollout files) out of
  * callers.
- *
- * Window naming is here too: setup names an agent's window
- * (`agentWindowName`) and the status watcher parses it back
- * (`agentWindowTool`), so the two must stay in sync.
  */
 import path from 'node:path'
 import { AGENT_TOOLS, MAX_MODEL_LENGTH, PERMISSION_MODES, conversationIdSchema } from '@yaac/shared/types'
@@ -272,27 +268,3 @@ export function classifyAgentObservation(tool: AgentTool, observed: string): Age
   return classifyClaudeTitle(observed)
 }
 
-/**
- * The tmux window name for a workspace's Nth agent: the bare tool name for
- * the first (so `yaac:<tool>` targets keep working), then `<tool>-2`,
- * `<tool>-3`, …
- */
-export function agentWindowName(tool: AgentTool, index: number): string {
-  return index === 0 ? tool : `${tool}-${index + 1}`
-}
-
-/**
- * The agent tool a tmux window runs, or undefined for non-agent windows;
- * the inverse of `agentWindowName`.
- *
- * Any tool matches, not just the workspace's, since a workspace can hold a
- * codex conversation beside claude ones; dropping it would make the next
- * restart forget it.
- *
- * Init windows and scratch shells are excluded. An agent started by hand in
- * a scratch window is still linked (its hook fires) but gets no status;
- * naming the window after the tool opts it in.
- */
-export function agentWindowTool(windowName: string): AgentTool | undefined {
-  return AGENT_TOOLS.find((t) => windowName === t || new RegExp(`^${t}-\\d+$`).test(windowName))
-}

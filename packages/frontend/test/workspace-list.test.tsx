@@ -29,7 +29,7 @@ vi.mock('#lib/useProvisionWorkspace', () => ({ useProvisionWorkspace: () => prov
 import { ListTitle, WorkspaceList, type ProjectScope } from '#components/WorkspaceList'
 import { createWorkspace, renameWorkspace } from '#lib/createWorkspace'
 import { useUiStore } from '#lib/store'
-import { mockFetch, renderWithClient, serverError, serverSnapshot, testQueryClient, TEST_USER_ID, type FetchCall, type FetchMock } from './harness'
+import { mockFetch, renderWithClient, serverError, serverSnapshot, sessionEntry, testQueryClient, TEST_USER_ID, type FetchCall, type FetchMock } from './harness'
 import { intersect, intersection } from './setup'
 
 /** Scroll every load-more marker into view: jsdom has no layout, so the
@@ -77,7 +77,7 @@ function listStopped(c: FetchCall): StoppedWorkspacePage {
 const stoppedEntry = (workspaceId: string, over: Partial<StoppedWorkspaceEntry> = {}): StoppedWorkspaceEntry => ({
   workspaceId,
   projectId: 'proj',
-  tool: 'claude',
+  sessions: [],
   createdAt: '2026-08-10 00:00:00',
   stoppedAt: '2026-08-10 01:00:00',
   title: `Stopped ${workspaceId}`,
@@ -123,7 +123,7 @@ afterEach(() => {
 const entry = (over: Partial<WorkspaceListEntry> = {}): WorkspaceListEntry => ({
   workspaceId: 's1',
   projectId: 'proj',
-  tool: 'claude',
+  sessions: [sessionEntry()],
   status: 'running',
   createdAt: '2026-08-10 00:00:00',
   conversations: [],
@@ -243,7 +243,8 @@ describe('WorkspaceList', () => {
     renderList([
       entry({ workspaceId: 'a', title: 'Working', status: 'running' }),
       entry({ workspaceId: 'b', title: 'Watching', status: 'background' }),
-      entry({ workspaceId: 'c', title: 'Done', status: 'waiting', waitingSinceMs: 1 }),
+      // Unread is its session's: waiting, and not yet seen by the viewer.
+      entry({ workspaceId: 'c', title: 'Done', status: 'waiting', waitingSinceMs: 1, sessions: [sessionEntry({ status: 'waiting' })] }),
       entry({ workspaceId: 'd', title: 'Blocked', status: 'waiting', asking: true, waitingSinceMs: 1 }),
     ])
 
@@ -260,16 +261,11 @@ describe('WorkspaceList', () => {
   })
 
   it('names each row\'s tool and the model it is answering as', () => {
-    // The model comes from the live conversation, not the launch settings. A
-    // workspace whose agent has not replied yet, and every opencode one (no
-    // readable transcript), shows just the tool name.
+    // The model is its session's, which follows the agent. A session whose
+    // agent has not named one yet shows just the tool name.
     renderList([
-      entry({
-        workspaceId: 'a',
-        title: 'Answered once',
-        conversations: [{ conversationId: 'c1', tool: 'claude', ordinal: 0, active: true, model: 'claude-opus-5' }],
-      }),
-      entry({ workspaceId: 'b', title: 'Not yet', tool: 'opencode' }),
+      entry({ workspaceId: 'a', title: 'Answered once', sessions: [sessionEntry({ model: 'claude-opus-5' })] }),
+      entry({ workspaceId: 'b', title: 'Not yet', sessions: [sessionEntry({ tool: 'opencode' })] }),
     ])
 
     expect(screen.getByText('Claude · Opus 5')).toBeTruthy()
@@ -354,7 +350,7 @@ describe('WorkspaceList', () => {
 
   it('keeps a held member on screen as its queue comes and goes', async () => {
     const live = [entry({ workspaceId: 'b', title: 'Filed one', groupId: 'g1' })]
-    const held = [{ workspaceId: 's', projectId: 'proj', tool: 'claude' as const, title: 'Stopped s', groupId: 'g1',
+    const held = [{ workspaceId: 's', projectId: 'proj', sessions: [], title: 'Stopped s', groupId: 'g1',
       stoppedAt: '2026-08-10 01:00:00', deathSeenBy: [] }]
     stoppedRows.push(stoppedEntry('s', { groupId: 'g1' }))
     const rerender = renderList(live, {
@@ -463,7 +459,7 @@ describe('WorkspaceList', () => {
       renderList([], {
         // The snapshot's count leaves them out already.
         project: { stoppedCount: 2, deaths: 0, deathsSeenBy: {} },
-        held: [{ workspaceId: 'held', projectId: 'proj', tool: 'claude', title: 'Stopped held', stoppedAt: '2026-08-10 01:00:00', deathSeenBy: [] }],
+        held: [{ workspaceId: 'held', projectId: 'proj', sessions: [], title: 'Stopped held', stoppedAt: '2026-08-10 01:00:00', deathSeenBy: [] }],
         queued: [queuedEntry('q1', { parentWorkspaceId: 'held' })],
         // A create stopped mid-provision keeps its failed row, and is listed
         // as stopped too.
@@ -792,6 +788,34 @@ describe('WorkspaceList', () => {
     expect(screen.getByText('Restarting workspace')).toBeTruthy()
   })
 
+  // A workspace with no session runs no agent, one with a single session is
+  // named by it, and one with several lists them under its row.
+  it('names a workspace by its sessions, listing several under its row', () => {
+    renderList([
+      entry({ workspaceId: 'a', title: 'Bare', sessions: [], status: 'idle' }),
+      entry({
+        workspaceId: 'b',
+        title: 'Busy',
+        sessions: [
+          sessionEntry({ sessionId: 'sa', prompt: 'write the parser\nand tests', status: 'running' }),
+          sessionEntry({ sessionId: 'sb', tool: 'codex', title: 'Reviewer', status: 'waiting', ordinal: 1 }),
+        ],
+      }),
+    ])
+    expect(screen.getByText('No agent')).toBeTruthy()
+    expect(screen.getByText('2 sessions')).toBeTruthy()
+    // Each session row: its own name, agent and status.
+    const row = screen.getByText('Reviewer').closest('button')!
+    expect(row.textContent).toContain('Codex')
+    expect(row.querySelector('.bg-amber-500')).toBeTruthy()
+    expect(screen.getByText('write the parser').closest('button')!.querySelector('.braille-spinner')).toBeTruthy()
+
+    // A session row opens its workspace on that session's pane.
+    fireEvent.click(row)
+    expect(useUiStore.getState().selectedWorkspaceId).toBe('b')
+    expect(useUiStore.getState().activeTabs.b).toBe('session:sb')
+  })
+
   it('selects a workspace on tap, which is what advances the mobile pane screen', () => {
     renderList([entry({ workspaceId: 'a', title: 'Fix parser' })])
     fireEvent.click(screen.getByText('Fix parser'))
@@ -803,9 +827,15 @@ describe('WorkspaceList', () => {
     renderList([entry({ workspaceId: 'a', title: 'Fix parser' })])
     fireEvent.click(screen.getByRole('button', { name: 'Workspace actions' }))
     const items = (await screen.findAllByRole('menuitem')).map((i) => i.textContent)
-    expect(items).toEqual(['Rename', 'Move to group…', 'Queue workspace after this…', 'Stop…'])
+    expect(items).toEqual(['New session…', 'Rename', 'Move to group…', 'Queue workspace after this…', 'Stop…'])
     fireEvent.click(screen.getByRole('menuitem', { name: 'Move to group…' }))
     expect(await screen.findByText('Add to group')).toBeTruthy()
+
+    // New session opens the create form aimed at this workspace.
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+    fireEvent.click(screen.getByRole('button', { name: 'Workspace actions' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'New session…' }))
+    expect(useUiStore.getState().newWorkspace).toMatchObject({ projectId: 'proj', inWorkspace: 'a' })
   })
 
   it('confirms a stop, naming what it will start', async () => {
@@ -884,7 +914,7 @@ describe('WorkspaceList', () => {
         groups: [group()],
       })
       expect(screen.getByRole('group', { name: group().name }).textContent).toContain('Step q1')
-      const held = [{ workspaceId: 'a', projectId: 'proj', tool: 'claude' as const, title: 'Parent',
+      const held = [{ workspaceId: 'a', projectId: 'proj', sessions: [], title: 'Parent',
         stoppedAt: '2026-08-10 00:00:00', deathSeenBy: [] }]
       rerender([], { queued, held })
       expect(screen.getByText('Parent')).toBeTruthy()
@@ -936,7 +966,7 @@ describe('WorkspaceList', () => {
           queuedEntry('q9', { parentWorkspaceId: 'never', orphaned: true }),
         ],
         held: [{
-          workspaceId: 'dead', projectId: 'proj', tool: 'claude', title: 'Crashed one',
+          workspaceId: 'dead', projectId: 'proj', sessions: [], title: 'Crashed one',
           stoppedAt: '2026-08-10 00:00:00', deathReason: 'oom', deathSeenBy: [],
         }],
       })
@@ -950,7 +980,7 @@ describe('WorkspaceList', () => {
       renderList([], {
         groups: [group()],
         queued: [queuedEntry('q1', { parentWorkspaceId: 'dead' })],
-        held: [{ workspaceId: 'dead', projectId: 'proj', tool: 'claude', groupId: 'g1', stoppedAt: '', deathSeenBy: [] }],
+        held: [{ workspaceId: 'dead', projectId: 'proj', sessions: [], groupId: 'g1', stoppedAt: '', deathSeenBy: [] }],
       })
       fireEvent.click(screen.getByRole('button', { name: '1 queued workspace' }))
       expect(screen.getByRole('group', { name: 'Release' }).textContent).toContain('Step q1')
@@ -1112,7 +1142,7 @@ describe('WorkspaceList', () => {
       renderList([entry({ title: 'Live', deadline: inMinutes(42) })], {
         queued: [queuedEntry('q1', { parentWorkspaceId: 'done' })],
         held: [{
-          workspaceId: 'done', projectId: 'proj', tool: 'claude', title: 'Ran out', stoppedAt: '2026-08-10 00:00:00',
+          workspaceId: 'done', projectId: 'proj', sessions: [], title: 'Ran out', stoppedAt: '2026-08-10 00:00:00',
           timedOut: true, deathSeenBy: [],
         }],
       })
@@ -1412,7 +1442,7 @@ describe('WorkspaceList', () => {
     // Viewing another user (#lib/viewer): the caller is TEST_USER_ID.
     useUiStore.setState({ viewedUserId: 'u-ada' })
     stoppedRows.push({
-      workspaceId: 'ghost', projectId: 'proj', tool: 'claude', createdAt: '2026-08-09 00:00:00',
+      workspaceId: 'ghost', projectId: 'proj', sessions: [], createdAt: '2026-08-09 00:00:00',
       stoppedAt: '2026-08-09 01:00:00', title: 'Old run', deathSeenBy: [], conversations: [], groupId: 'g1',
     })
     renderList([entry({ workspaceId: 'a', title: 'Their run' }), entry({ workspaceId: 'b', title: 'Filed', groupId: 'g1' })], {

@@ -57,7 +57,7 @@ function seedRegistration(
 }
 
 const REG: ProxyRegistration = {
-  rules: [], allowedHosts: ['api.example.com'], tool: 'claude', projectId: 'demo', owner: 'o',
+  rules: [], allowedHosts: ['api.example.com'], projectId: 'demo', owner: 'o',
 }
 
 beforeEach(() => {
@@ -78,7 +78,6 @@ describe('buildProxyRegistration', () => {
       config: {},
       allowlist: DEFAULTS,
       remoteUrl: 'https://github.com/acme/repo',
-      tool: 'claude',
       projectId: 'acme-repo',
       owner: 'o',
       secretRules: {
@@ -129,7 +128,6 @@ describe('buildProxyRegistration', () => {
     // The registration is a plain ConfigMap and holds only secret names.
     expect(JSON.stringify(reg)).not.toContain('sekrit')
     expect(reg.repoUrl).toBe('https://github.com/acme/repo')
-    expect(reg.tool).toBe('claude')
     expect(reg.projectId).toBe('acme-repo')
   })
 
@@ -138,7 +136,6 @@ describe('buildProxyRegistration', () => {
       config: {},
       allowlist: DEFAULTS,
       remoteUrl: 'https://github.com/acme/repo',
-      tool: 'codex',
       projectId: 'acme-repo',
       owner: 'o',
       secretRules: {},
@@ -151,18 +148,18 @@ describe('buildProxyRegistration', () => {
   it('honors the project allowlist, with or without the defaults', () => {
     expect(buildProxyRegistration({
       config: {}, allowlist: { hosts: ['only.example.com'], defaults: false },
-      remoteUrl: 'u', tool: 'claude', projectId: 'p', owner: 'o', secretRules: {}, env: {},
+      remoteUrl: 'u', projectId: 'p', owner: 'o', secretRules: {}, env: {},
     }).allowedHosts).toEqual(['only.example.com'])
     expect(buildProxyRegistration({
       config: {}, allowlist: { hosts: ['extra.example.com'], defaults: true },
-      remoteUrl: 'u', tool: 'claude', projectId: 'p', owner: 'o', secretRules: {}, env: {},
+      remoteUrl: 'u', projectId: 'p', owner: 'o', secretRules: {}, env: {},
     }).allowedHosts).toContain('extra.example.com')
   })
 
   it('auto-appends the registry/CDN pull hosts for nestedContainers sessions', () => {
     const reg = buildProxyRegistration({
       config: { nestedContainers: true }, allowlist: DEFAULTS,
-      remoteUrl: 'u', tool: 'claude', projectId: 'p', owner: 'o', secretRules: {}, env: {},
+      remoteUrl: 'u', projectId: 'p', owner: 'o', secretRules: {}, env: {},
     })
     for (const host of NESTED_PULL_HOSTS) {
       expect(reg.allowedHosts).toContain(host)
@@ -178,7 +175,7 @@ describe('buildProxyRegistration', () => {
   it('still appends the pull hosts on top of added hosts', () => {
     const reg = buildProxyRegistration({
       config: { nestedContainers: true }, allowlist: { hosts: ['extra.example.com'], defaults: true },
-      remoteUrl: 'u', tool: 'claude', projectId: 'p', owner: 'o', secretRules: {}, env: {},
+      remoteUrl: 'u', projectId: 'p', owner: 'o', secretRules: {}, env: {},
     })
     expect(reg.allowedHosts).toContain('extra.example.com')
     expect(reg.allowedHosts).toContain('registry-1.docker.io')
@@ -187,7 +184,7 @@ describe('buildProxyRegistration', () => {
   it('does NOT append the pull hosts with the defaults off (exact list)', () => {
     const reg = buildProxyRegistration({
       config: { nestedContainers: true }, allowlist: { hosts: ['only.example.com'], defaults: false },
-      remoteUrl: 'u', tool: 'claude', projectId: 'p', owner: 'o', secretRules: {}, env: {},
+      remoteUrl: 'u', projectId: 'p', owner: 'o', secretRules: {}, env: {},
     })
     expect(reg.allowedHosts).toEqual(['only.example.com'])
   })
@@ -196,7 +193,7 @@ describe('buildProxyRegistration', () => {
     const reg = buildProxyRegistration({
       config: {},
       allowlist: DEFAULTS,
-      remoteUrl: 'u', tool: 'claude', projectId: 'p', owner: 'o', secretRules: {}, env: {},
+      remoteUrl: 'u', projectId: 'p', owner: 'o', secretRules: {}, env: {},
     })
     expect(reg.allowedHosts).toEqual([...DEFAULT_ALLOWED_HOSTS])
     expect(reg.allowedHosts).not.toContain('cdn01.quay.io')
@@ -208,7 +205,6 @@ describe('buildProxyRegistration', () => {
       config: {},
       allowlist: DEFAULTS,
       remoteUrl: 'u',
-      tool: 'opencode',
       projectId: 'p',
       owner: 'o',
       secretRules: {},
@@ -245,7 +241,6 @@ describe('registerWorkspaceEgress', () => {
       workspaceId: 'w1',
       projectId: 'demo',
       owner: 'o',
-      tool: 'codex',
       config: {},
       allowlist: { hosts: ['api.example.com'], defaults: true },
       remoteUrl: 'https://github.com/example/repo.git',
@@ -256,7 +251,6 @@ describe('registerWorkspaceEgress', () => {
     const [cm] = applied()
     expect(cm.metadata.labels['yaac.workspace-id']).toBe('w1')
     const state = payloadOf(cm)
-    expect(state.tool).toBe('codex')
     expect(state.projectId).toBe('demo')
     expect(state.owner).toBe('o')
     expect(state.repoUrl).toBe('https://github.com/example/repo.git')
@@ -275,7 +269,6 @@ describe('registerWorkspaceEgress', () => {
       workspaceId: 'w1',
       projectId: 'demo',
       owner: 'o',
-      tool: 'claude',
       config: {},
       allowlist: DEFAULTS,
       remoteUrl: '',
@@ -315,7 +308,7 @@ describe('allowWorkspaceHost', () => {
     expect(cm.metadata.name).toBe('yaac-proxy-reg-w1')
     expect(payloadOf(cm).allowedHosts).toEqual(['api.example.com', 'new.example.com'])
     // The rest of the registration is kept.
-    expect(payloadOf(cm)).toMatchObject({ tool: 'claude', projectId: 'demo' })
+    expect(payloadOf(cm)).toMatchObject({ projectId: 'demo' })
     expect(notified).toBe(1)
   })
 

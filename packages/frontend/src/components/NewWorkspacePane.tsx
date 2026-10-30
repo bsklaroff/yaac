@@ -12,6 +12,8 @@ import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { NumberInput } from '#components/ui/NumberInput'
 import { Typeahead } from '#components/ui/Typeahead'
 import { api } from '#lib/api'
+import { openSession } from '#lib/createWorkspace'
+import { sessionTarget } from '#lib/panes'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { shownGroups } from '#lib/groups'
 import { entryStart, SCHEDULE, START_AT, START_IN, START_WHEN_ROOM, type NewWorkspaceForm, type PendingDraft } from '#lib/newWorkspace'
@@ -83,17 +85,19 @@ interface StartOption {
   seed?: Seed
 }
 
-/** A live workspace's settings, from its first agent session and its row.
- *  The model is that session's current one, so a `/model` switch carries
- *  over to a child. */
+/** A live workspace's settings, from its first session and its row. The
+ *  model is that session's current one, so a `/model` switch carries over
+ *  to a child. */
 function workspaceSeed(w: WorkspaceListEntry): Seed {
-  const first = [...w.conversations].sort((a, b) => a.ordinal - b.ordinal)[0]
+  const [first] = w.sessions
   return {
-    tool: first?.tool ?? w.tool,
-    ...(first?.mode !== undefined ? { mode: first.mode } : {}),
-    ...(first?.model !== undefined ? { model: first.model } : {}),
-    ...(w.permissionMode !== undefined ? { permissionMode: w.permissionMode } : {}),
-    ...(w.effort !== undefined ? { effort: w.effort } : {}),
+    ...(first !== undefined ? {
+      tool: first.tool,
+      mode: first.mode,
+      permissionMode: first.permissionMode,
+      ...(first.model !== undefined ? { model: first.model } : {}),
+      ...(first.effort !== undefined ? { effort: first.effort } : {}),
+    } : {}),
     ...(w.baseBranch !== undefined ? { branch: w.baseBranch } : {}),
     ...(w.groupId !== undefined ? { groupId: w.groupId } : {}),
   }
@@ -181,9 +185,18 @@ export function NewWorkspacePane({ projectId, bar }: {
     const cur = useUiStore.getState().newWorkspace
     setForm({ ...(cur?.projectId === projectId ? cur : blankForm(projectId)), ...patch })
   }
-  const { prompt, title, start } = form
+  const { prompt, title } = form
 
   const snapshot = useSnapshot()
+  // Where the agent runs: a new workspace, or a running one of the project,
+  // which takes only an agent's settings (docs/sessions.md). A workspace
+  // with no agent starts now and takes no prompt.
+  const inTarget = form.inWorkspace !== undefined
+    ? (snapshot?.workspaces ?? []).find((w) => w.workspaceId === form.inWorkspace && !w.stopping)
+    : undefined
+  const inWorkspace = inTarget !== undefined
+  const noAgent = form.noAgent === true && !inWorkspace
+  const start = inWorkspace || noAgent ? '' : form.start
   const defaults = useCreateDefaults(projectId)
   const createWorkspace = useCreateWorkspace()
   const openSettings = useUiStore((s) => s.openSettings)
@@ -259,7 +272,7 @@ export function NewWorkspacePane({ projectId, bar }: {
         : provisioning !== undefined ? 'After the new workspace stops'
         : 'Its current parent (gone)',
       ...(held !== undefined
-        ? { seed: { tool: held.tool, ...(held.groupId !== undefined ? { groupId: held.groupId } : {}) } }
+        ? { seed: { ...(held.sessions[0] !== undefined ? { tool: held.sessions[0].tool } : {}), ...(held.groupId !== undefined ? { groupId: held.groupId } : {}) } }
         : provisioning?.groupId !== undefined ? { seed: { groupId: provisioning.groupId } }
         : {}),
     })
@@ -397,6 +410,7 @@ export function NewWorkspacePane({ projectId, bar }: {
   // entry or routine), unless it matches the reopened draft exactly.
   const saved = draft !== undefined ? { ...draft, prompt: form.savedPrompt ?? draft.prompt } : undefined
   const pending: PendingDraft | null = form.editId === undefined && form.editRoutineId === undefined && text !== ''
+    && !inWorkspace && !noAgent
     && (saved === undefined || DRAFT_FIELDS.some((k) => current[k] !== saved[k]))
     ? { projectId, settings: current, ...(draft !== undefined ? { id: draft.id } : {}) }
     : null
@@ -409,22 +423,22 @@ export function NewWorkspacePane({ projectId, bar }: {
   // settings, so it also needs a model and a branch.
   const storesEntry = queued || editing !== undefined
   const blocked = !defaults.ready || loadingPrompt ? 'Loading…'
-    : needsGitAuth ? 'Add git authentication first'
-    : !signedIn ? `Sign in to ${TOOL_LABEL[tool]} first`
-    : modelQuery !== null ? 'Pick a model from the list'
-    : branchQuery !== null ? 'Pick a branch from the list'
-    : branchUnverified ? 'Loading branches…'
-    : !toolSupportsPermissionMode(tool, permissionMode) ? 'Pick a permission mode this agent offers'
+    : needsGitAuth && !inWorkspace ? 'Add git authentication first'
+    : !noAgent && !signedIn ? `Sign in to ${TOOL_LABEL[tool]} first`
+    : !noAgent && modelQuery !== null ? 'Pick a model from the list'
+    : !inWorkspace && branchQuery !== null ? 'Pick a branch from the list'
+    : !inWorkspace && branchUnverified ? 'Loading branches…'
+    : !noAgent && !toolSupportsPermissionMode(tool, permissionMode) ? 'Pick a permission mode this agent offers'
     : storesEntry && model === '' ? 'Pick a model'
     : storesEntry && branchValue === '' ? 'Pick a branch'
-    : newGroup !== null && newGroupName === '' ? 'Name the new group'
-    : timeoutText !== '' && timeout === undefined ? 'Give the timeout as a duration like 1h30m'
+    : !inWorkspace && newGroup !== null && newGroupName === '' ? 'Name the new group'
+    : !inWorkspace && timeoutText !== '' && timeout === undefined ? 'Give the timeout as a duration like 1h30m'
     : start === START_AT && form.startAt === undefined ? 'Pick a start time'
     : start === START_IN && startIn === undefined ? 'Give the delay as a duration like 2h30m'
     : routineMode && titleText === '' ? 'Name the routine'
     : scheduleError ?? null
   const submitLabel = editing !== undefined || editingRoutine !== undefined ? 'Save'
-    : routineMode ? 'Create routine' : queued ? 'Queue' : 'Create'
+    : routineMode ? 'Create routine' : queued ? 'Queue' : inWorkspace ? 'Start session' : 'Create'
 
   // A routine needs a name, so its name box opens as soon as it is one.
   useEffect(() => { if (routineMode && titleText === '') titleEdit.start() }, [routineMode])
@@ -441,20 +455,45 @@ export function NewWorkspacePane({ projectId, bar }: {
   /** Why the workspace can't start now from a button, or null. */
   const startBlocked = blocked ?? (storesEntry ? 'Set Start to Now to start it here' : null)
 
+  /** Open the session in the running workspace Where names, then show it
+   *  there, focused once the snapshot lists it. */
+  const openHere = (): void => {
+    if (busy || blocked !== null || inTarget === undefined) return
+    const { workspaceId } = inTarget
+    run(openSession(workspaceId, {
+      tool,
+      mode,
+      permissionMode,
+      ...(model !== '' ? { model } : {}),
+      ...(effort !== undefined ? { effort } : {}),
+      ...(text !== '' ? { prompt: text } : {}),
+    }).then((sessionId) => {
+      const st = useUiStore.getState()
+      st.selectWorkspace(workspaceId)
+      st.focusTerminal(workspaceId, sessionTarget(sessionId))
+    }))
+  }
+
   /** Create now, with the typed prompt if any, opening `pane` once it is up.
    *  The server deletes a source draft only once the create succeeds. */
   const startNow = (pane?: LaunchPane): void => {
+    if (inWorkspace) {
+      openHere()
+      return
+    }
     if (busy || startBlocked !== null) return
     setForm(null)
     createWorkspace({
       projectId,
-      tool,
-      mode,
-      permissionMode,
-      model,
-      ...(modelName !== undefined ? { modelName } : {}),
-      ...(effort !== undefined ? { effort } : {}),
-      ...(text !== '' ? { prompt: text } : {}),
+      ...(noAgent ? { noSession: true } : {
+        tool,
+        mode,
+        permissionMode,
+        model,
+        ...(modelName !== undefined ? { modelName } : {}),
+        ...(effort !== undefined ? { effort } : {}),
+        ...(text !== '' ? { prompt: text } : {}),
+      }),
       ...(titleText !== '' ? { title: titleText } : {}),
       ...(generatedTitle !== undefined ? { shownTitle: generatedTitle } : {}),
       ...(branchValue !== '' ? { branch: branchValue } : {}),
@@ -504,9 +543,10 @@ export function NewWorkspacePane({ projectId, bar }: {
       }))
   }
 
-  /** Send: create, queue or save the entry, which needs a prompt. */
+  /** Send: create, queue or save the entry, which needs a prompt (unless it
+   *  starts no agent). */
   const submit = (): void => {
-    if (busy || blocked !== null || text === '') return
+    if (busy || blocked !== null || (text === '' && !noAgent)) return
     if (!storesEntry) {
       startNow()
       return
@@ -583,14 +623,17 @@ export function NewWorkspacePane({ projectId, bar }: {
     )
   }
 
-  const sendTitle = blocked ?? (text === '' ? 'Type a prompt' : `${submitLabel} (Enter)`)
+  const sendTitle = blocked ?? (text === '' && !noAgent ? 'Type a prompt' : `${submitLabel} (Enter)`)
+  const fresh = form.editId === undefined && form.editRoutineId === undefined && form.draftId === undefined
 
   return (
     <div onKeyDown={onKeyDown} className="@container flex h-full w-full flex-col bg-bg">
       {bar !== null && createPortal(
         <>
           <span className="titlebar-drag flex min-w-0 flex-1 items-center gap-0.5">
-            {titleEdit.editing ? (
+            {inTarget !== undefined ? (
+              <h2 className="min-w-0 truncate font-medium text-text">New session in “{workspaceName(inTarget)}”</h2>
+            ) : titleEdit.editing ? (
               <input
                 ref={titleEdit.inputRef}
                 aria-label={routineMode ? 'Routine name' : 'Workspace title'}
@@ -623,9 +666,9 @@ export function NewWorkspacePane({ projectId, bar }: {
             )}
           </span>
           <ContainerlessBadge />
-          {isMobile ? (
+          {inWorkspace ? null : isMobile ? (
             <PaneOverflowMenu
-              tool={tool}
+              label={noAgent ? 'No agent' : TOOL_LABEL[tool]}
               onNewShell={() => startNow('shell')}
               onOpenFiles={() => startNow('files')}
               onOpenChanges={() => startNow('changes')}
@@ -649,11 +692,26 @@ export function NewWorkspacePane({ projectId, bar }: {
       )}
       <div className="flex flex-1 overflow-y-auto px-4 py-4">
         <div className="m-auto w-full max-w-md">
-          <Row label="Start">
-            <select aria-label="Start" value={start} onChange={(e) => update({ start: e.target.value })} className={SELECT}>
-              {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-          </Row>
+          {fresh && live.length > 0 && (
+            <Row label="Where" title="A new workspace, or another agent session in a running one, on its checkout">
+              <select
+                aria-label="Where"
+                value={inTarget?.workspaceId ?? ''}
+                onChange={(e) => update({ inWorkspace: e.target.value === '' ? undefined : e.target.value })}
+                className={SELECT}
+              >
+                <option value="">New workspace</option>
+                {live.map((w) => <option key={w.workspaceId} value={w.workspaceId}>In “{workspaceName(w)}”</option>)}
+              </select>
+            </Row>
+          )}
+          {!inWorkspace && !noAgent && (
+            <Row label="Start">
+              <select aria-label="Start" value={start} onChange={(e) => update({ start: e.target.value })} className={SELECT}>
+                {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </Row>
+          )}
           {start === START_AT && (
             <Row label="Time">
               <input
@@ -688,6 +746,7 @@ export function NewWorkspacePane({ projectId, bar }: {
             />
           )}
 
+          {!inWorkspace && <>
           <Row label="Group">
             {newGroup === null ? (
               <select
@@ -768,15 +827,20 @@ export function NewWorkspacePane({ projectId, bar }: {
             </div>
           </Row>
           {queued && <div className={NOTE}>latest from origin when it starts</div>}
+          </>}
 
           <Row label="Agent">
             <select
               aria-label="Agent"
-              value={tool}
+              value={noAgent ? '' : tool}
               onChange={(e) => {
+                if (e.target.value === '') {
+                  update({ noAgent: true })
+                  return
+                }
                 // A different agent brings its own remembered defaults.
                 const next = e.target.value as AgentTool
-                update({ tool: next, picked: { tool: next, picks: {} } })
+                update({ noAgent: undefined, tool: next, picked: { tool: next, picks: {} } })
                 setModelQuery(null)
               }}
               className={SELECT}
@@ -786,10 +850,11 @@ export function NewWorkspacePane({ projectId, bar }: {
                   {TOOL_LABEL[t]}{defaults.configured.has(t) ? '' : ' (sign in)'}
                 </option>
               ))}
+              {fresh && !inWorkspace && <option value="">None</option>}
             </select>
           </Row>
 
-          {needsGitAuth ? (
+          {noAgent ? null : needsGitAuth && !inWorkspace ? (
             <Notice
               text="This project has no git credential"
               action="Add git authentication…"
@@ -838,7 +903,7 @@ export function NewWorkspacePane({ projectId, bar }: {
 
           {editing === undefined && editingRoutine === undefined && (
             <div className="mt-3 flex gap-2 px-1 max-md:flex-col">
-              {!queued && (
+              {!queued && !noAgent && (
                 <button
                   type="button"
                   onClick={() => startNow()}
@@ -852,15 +917,17 @@ export function NewWorkspacePane({ projectId, bar }: {
                   Start without a prompt
                 </button>
               )}
-              <button
-                type="button"
-                onClick={() => { if (pending !== null) run(keepDraft(pending)) }}
-                disabled={busy || pending === null}
-                title={pending !== null ? undefined : text === '' ? 'Type a prompt to save a draft' : 'No changes to save'}
-                className={BUTTON}
-              >
-                Save draft
-              </button>
+              {!inWorkspace && !noAgent && (
+                <button
+                  type="button"
+                  onClick={() => { if (pending !== null) run(keepDraft(pending)) }}
+                  disabled={busy || pending === null}
+                  title={pending !== null ? undefined : text === '' ? 'Type a prompt to save a draft' : 'No changes to save'}
+                  className={BUTTON}
+                >
+                  Save draft
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -874,15 +941,16 @@ export function NewWorkspacePane({ projectId, bar }: {
           ref={promptRef}
           aria-label="Prompt"
           rows={1}
-          value={prompt}
-          readOnly={loadingPrompt}
+          value={noAgent ? '' : prompt}
+          readOnly={loadingPrompt || noAgent}
           onChange={(e) => update({ prompt: e.target.value })}
-          placeholder={queued || editing !== undefined ? 'What should it do?' : 'Message the agent…'}
+          placeholder={noAgent ? 'No agent, so no prompt: Create starts the workspace on its own'
+            : queued || editing !== undefined ? 'What should it do?' : 'Message the agent…'}
           className={COMPOSER_INPUT}
         />
         <div className="flex items-center justify-between px-2 pb-2">
           <div className="mr-auto flex min-w-0 items-center">
-            {signedIn && (
+            {signedIn && !noAgent && (
               <PermissionModeSelect
                 current={permissionMode}
                 available={SUPPORTED_PERMISSION_MODES[tool]}
@@ -890,7 +958,7 @@ export function NewWorkspacePane({ projectId, bar }: {
                 onSelect={(m) => setPicks({ permissionMode: m })}
               />
             )}
-            {signedIn && efforts !== undefined && effort !== undefined && (
+            {signedIn && !noAgent && efforts !== undefined && effort !== undefined && (
               <EffortSelect
                 current={effort}
                 available={efforts.levels.map((l) => ({ value: l, name: effortLabel(l) }))}
@@ -907,7 +975,7 @@ export function NewWorkspacePane({ projectId, bar }: {
             aria-label={submitLabel}
             title={sendTitle}
             onClick={() => submit()}
-            disabled={busy || blocked !== null || text === ''}
+            disabled={busy || blocked !== null || (text === '' && !noAgent)}
             className={ROUND_BUTTON}
           >
             <SendIcon size={15} strokeWidth={2.5} />

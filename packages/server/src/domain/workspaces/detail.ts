@@ -2,14 +2,13 @@ import { ServerError } from '@yaac/shared/errors'
 import { resolveWorkspaceId } from './resolve'
 import { workspaceDriver } from '#drivers/driver'
 import type { RuntimeHandle } from '#drivers/contract'
-import type { AgentTool, GitAuthFailure } from '@yaac/shared/types'
+import type { GitAuthFailure } from '@yaac/shared/types'
 
 export interface WorkspaceDetail {
   workspaceId: string
   projectId: string
   jobName: string
   state: string
-  tool: AgentTool
   labels: Record<string, string>
   blockedHostsCount: number
   /** Git credentials rejected upstream for this workspace's project. */
@@ -38,7 +37,6 @@ export async function getWorkspaceDetail(idOrPrefix: string): Promise<WorkspaceD
     projectId: match.projectId,
     jobName: match.jobName,
     state: match.state,
-    tool: match.tool,
     labels: match.labels,
     blockedHostsCount: blocked.length,
     gitAuthFailures,

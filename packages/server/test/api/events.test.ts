@@ -240,8 +240,8 @@ describe('buildSnapshot provisioning', () => {
     // removes it, or clients attach to a half-built workspace.
     vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
       workspaces: [{
-        workspaceId: 'prov-2', projectId: 'p', tool: 'claude',
-        status: 'waiting', createdAt: '2026-01-01 00:00:00', conversations: [],
+        workspaceId: 'prov-2', projectId: 'p',
+        status: 'waiting', createdAt: '2026-01-01 00:00:00', sessions: [], conversations: [],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
@@ -257,7 +257,7 @@ describe('buildSnapshot provisioning', () => {
     // A restart keeps the row's stop until it succeeds, so the workspace is
     // still held; the provisioning row stands in for it meanwhile.
     vi.mocked(listHeldWorkspaces).mockResolvedValueOnce([{
-      workspaceId: 'held-1', projectId: 'p', tool: 'claude', stoppedAt: '2026-01-01 00:00:00', deathSeenBy: [],
+      workspaceId: 'held-1', projectId: 'p', sessions: [], stoppedAt: '2026-01-01 00:00:00', deathSeenBy: [],
     }])
     registerProvisioning({ workspaceId: 'held-1', projectId: 'p', tool: 'claude', kind: 'restart' })
     const snap = await buildSnapshot()
@@ -270,8 +270,8 @@ describe('buildSnapshot provisioning', () => {
     // would show it beside the row still creating it.
     vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
       workspaces: [{
-        workspaceId: 'spare-1', projectId: 'p', tool: 'claude',
-        status: 'waiting', createdAt: '2026-01-01 00:00:00', conversations: [],
+        workspaceId: 'spare-1', projectId: 'p',
+        status: 'waiting', createdAt: '2026-01-01 00:00:00', sessions: [], conversations: [],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
@@ -290,8 +290,8 @@ describe('buildSnapshot provisioning', () => {
     // the claimed workspace must not stay hidden with it.
     vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
       workspaces: [{
-        workspaceId: 'spare-2', projectId: 'p', tool: 'claude',
-        status: 'waiting', createdAt: '2026-01-01 00:00:00', conversations: [],
+        workspaceId: 'spare-2', projectId: 'p',
+        status: 'waiting', createdAt: '2026-01-01 00:00:00', sessions: [], conversations: [],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
@@ -309,8 +309,8 @@ describe('buildSnapshot provisioning', () => {
   it('lists the session once its provisioning entry is removed (the hand-off)', async () => {
     vi.mocked(listActiveWorkspaces).mockResolvedValue({
       workspaces: [{
-        workspaceId: 'prov-3', projectId: 'p', tool: 'claude',
-        status: 'waiting', createdAt: '2026-01-01 00:00:00', conversations: [],
+        workspaceId: 'prov-3', projectId: 'p',
+        status: 'waiting', createdAt: '2026-01-01 00:00:00', sessions: [], conversations: [],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
@@ -339,8 +339,8 @@ describe('buildSnapshot prompts', () => {
     const conversationPrompt = cutAt(CONVERSATION_PROMPT_PREVIEW_LENGTH)
     vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
       workspaces: [{
-        workspaceId: 'w-1', projectId: 'p', tool: 'claude', prompt: long,
-        status: 'running', createdAt: '2026-01-01 00:00:00',
+        workspaceId: 'w-1', projectId: 'p', prompt: long,
+        status: 'running', createdAt: '2026-01-01 00:00:00', sessions: [],
         conversations: [{ conversationId: 'a-1', tool: 'claude', ordinal: 0, active: true, prompt: conversationPrompt }],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
@@ -348,7 +348,7 @@ describe('buildSnapshot prompts', () => {
       gitAuthFailures: {},
     })
     vi.mocked(listHeldWorkspaces).mockResolvedValueOnce([{
-      workspaceId: 'held', projectId: 'p', tool: 'claude', prompt: long, stoppedAt: '2026-01-01 00:00:00', deathSeenBy: [],
+      workspaceId: 'held', projectId: 'p', sessions: [], prompt: long, stoppedAt: '2026-01-01 00:00:00', deathSeenBy: [],
     }])
     registerProvisioning({ workspaceId: 'req-1', projectId: 'p', tool: 'claude', kind: 'create', prompt: long })
     await insertQueuedWorkspace(PROJ, { parentWorkspaceId: 'w-1' }, {
@@ -387,15 +387,15 @@ describe('buildSnapshot stopped counts', () => {
     }
     vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
       workspaces: [{
-        workspaceId: 'stopping', projectId: PROJ, tool: 'claude', groupId,
-        status: 'running', stopping: true, createdAt: '2026-01-01 00:00:00', conversations: [],
+        workspaceId: 'stopping', projectId: PROJ, groupId,
+        status: 'running', stopping: true, createdAt: '2026-01-01 00:00:00', sessions: [], conversations: [],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
       gitAuthFailures: {},
     })
     vi.mocked(listHeldWorkspaces).mockResolvedValueOnce([{
-      workspaceId: 'held', projectId: PROJ, tool: 'claude', groupId, stoppedAt: '2026-01-01 00:00:00', deathSeenBy: [],
+      workspaceId: 'held', projectId: PROJ, sessions: [], groupId, stoppedAt: '2026-01-01 00:00:00', deathSeenBy: [],
     }])
     registerProvisioning({ workspaceId: 'back', projectId: PROJ, tool: 'claude', kind: 'restart', groupId })
     registerProvisioning({ workspaceId: 'failed', projectId: PROJ, tool: 'claude', kind: 'create', groupId })

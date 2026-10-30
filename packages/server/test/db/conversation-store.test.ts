@@ -5,7 +5,6 @@ import { closeDb } from '#db/client'
 import { getDb } from '#db/client'
 import { conversations } from '#db/schema'
 import {
-  recordedConversationHandles,
   deleteWorkspaceConversations,
   listUncapturedStoppedConversations,
   listWorkspaceConversations,
@@ -127,40 +126,19 @@ describe('recordConversations', () => {
       { tool: 'claude', conversationId: 'conv-b', model: 'claude-opus-5', title: 'Lexer port' },
     ])
     await recordConversations(DEMO_PROJECT_ID, 'wt-1', [
-      { tool: 'claude', conversationId: 'conv-b', paneId: '%1' },
+      { tool: 'claude', conversationId: 'conv-b' },
     ])
 
     expect(await conversation('conv-b')).toMatchObject({ model: 'claude-opus-5', title: 'Lexer port' })
   })
-})
 
-describe('recordedConversationHandles', () => {
-  let tmpDir: string
-
-  beforeEach(async () => {
-    tmpDir = await createTempDataDir()
-  })
-
-  afterEach(async () => {
-    await closeDb()
-    await cleanupTempDir(tmpDir)
-  })
-
-  // Keyed by the driver's handle, and only conversations that are on one:
-  // the ACP driver re-addresses a live agent by handle, so a link with no
-  // pane id names nothing it could attach to.
-  it('reports only the recorded conversations that sit on a handle', async () => {
+  it('links a conversation to the session holding it, which a sighting naming none keeps', async () => {
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1' })
-    await recordConversations(DEMO_PROJECT_ID, 'wt-1', [
-      { tool: 'claude', conversationId: 'conv-a', paneId: '%0' },
-      { tool: 'claude', conversationId: 'conv-b' },
-      { tool: 'claude', conversationId: 'conv-c', paneId: '%2' },
-    ])
+    const sessionId = '11111111-2222-4333-8444-555555555555'
+    await recordConversations(DEMO_PROJECT_ID, 'wt-1', [{ tool: 'claude', conversationId: 'conv-c', sessionId }])
+    await recordConversations(DEMO_PROJECT_ID, 'wt-1', [{ tool: 'claude', conversationId: 'conv-c' }])
 
-    expect(await recordedConversationHandles(DEMO_PROJECT_ID, 'wt-1')).toEqual([
-      { handle: '%0', conversationId: 'conv-a' },
-      { handle: '%2', conversationId: 'conv-c' },
-    ])
+    expect(await conversation('conv-c')).toMatchObject({ sessionId })
   })
 })
 

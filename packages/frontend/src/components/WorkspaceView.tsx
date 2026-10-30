@@ -2,14 +2,12 @@ import { useEffect, useRef, useState, type JSX, type ReactNode, type RefObject }
 import clsx from 'clsx'
 import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { Menu } from '@base-ui/react/menu'
-import { layoutOf, useUiStore } from '#lib/store'
+import { isSessionUnread, layoutOf, useUiStore } from '#lib/store'
 import { WorkspaceTerminal } from '#components/WorkspaceTerminal'
 import { ErrorBoundary } from '#components/ErrorBoundary'
 import { WorkspacePreview } from '#components/WorkspacePreview'
 import { useHostsPort } from '#lib/useHostsPort'
 import { workspaceHostUrl } from '@yaac/shared/workspace-hosts'
-import { WorkspaceChat } from '#components/WorkspaceChat'
-import { TuiTranscriptSearch } from '#components/TuiTranscriptSearch'
 import { WorkspaceFiles } from '#components/WorkspaceFiles'
 import { WorkspaceFile } from '#components/WorkspaceFile'
 import { isPreviewTarget, portLabel, previewLabel, previewTarget, previewTargetPort } from '#lib/preview'
@@ -17,13 +15,14 @@ import {
   discardFileSavers, fileKey, fileTabLabels, fileTargetPath, flushFileSavers, isChangesTarget, isFileTarget,
   isFilesTarget,
 } from '#lib/files'
-import { acpTargetSession, isAcpTarget } from '@yaac/shared/acp'
-import { defaultPaneTarget, isAgentPane, isSpecialPane, syncPaneLayout } from '#lib/panes'
-import { agentLabel } from '#lib/agentLabel'
+import { defaultPaneTarget, isSessionTarget, isSpecialPane, paneSession, sessionTarget, syncPaneLayout } from '#lib/panes'
+import { agentLabel, workspaceAgentLabel } from '#lib/agentLabel'
 import { isElectron, windowApi } from '#lib/platform'
 import { useIsMobile } from '#lib/viewport'
 import { WorkspaceTitle } from '#components/WorkspaceTitle'
-import { AcpStartingPane, CreatingPane } from '#components/CreatingPane'
+import { CreatingPane } from '#components/CreatingPane'
+import { EmptyWorkspace } from '#components/EmptyWorkspace'
+import { SessionPane, sessionPtyTarget } from '#components/SessionPane'
 import { NewWorkspacePane } from '#components/NewWorkspacePane'
 import { RoutinePane } from '#components/RoutinePane'
 import { DeadlineChip } from '#components/DeadlineChip'
@@ -39,6 +38,8 @@ import { TrackedScratchDirsBadge } from '#components/TrackedScratchDirsBadge'
 import { GitStatusBar } from '#components/GitStatusBar'
 import { StopForwardButton } from '#components/StopForwardButton'
 import { api } from '#lib/api'
+import { closeSession } from '#lib/createWorkspace'
+import { useWhoami } from '#lib/viewer'
 import { usePressDrag } from '#lib/usePressDrag'
 import { useKeptPanes } from '#lib/useKeptPanes'
 import { usePaneShortcuts } from '#lib/usePaneShortcuts'
@@ -98,12 +99,9 @@ function paneName(
   if (isFilesTarget(target)) return 'Files'
   if (isChangesTarget(target)) return 'Changes'
   if (isFileTarget(target)) return fileLabels?.[fileTargetPath(target)] ?? fileTargetPath(target)
-  if (target === 'agent' || isAcpTarget(target)) {
-    const sessions = workspace?.conversations ?? []
-    const session = isAcpTarget(target)
-      ? sessions.find((a) => a.conversationId === acpTargetSession(target))
-      : [...sessions].sort((a, b) => a.ordinal - b.ordinal).find((a) => a.mode !== 'acp')
-    return workspace === undefined ? 'Agent' : agentLabel(workspace.tool, session)
+  if (isSessionTarget(target)) {
+    const session = paneSession(workspace, target)
+    return session === undefined ? 'Agent' : session.title ?? agentLabel(session.tool, session)
   }
   const entry = terminals?.find((t) => t.target === target)
   return entry?.name ?? 'window'
@@ -128,6 +126,7 @@ export function WorkspaceView({
   const viewMode = useUiStore((s) => s.viewMode)
   const activeTabs = useUiStore((s) => s.activeTabs)
   const focusTerminal = useUiStore((s) => s.focusTerminal)
+  const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
   const openPreview = useUiStore((s) => s.openPreview)
   const openChanges = useUiStore((s) => s.openChanges)
   const openFiles = useUiStore((s) => s.openFiles)
@@ -199,20 +198,22 @@ export function WorkspaceView({
     return () => ro.disconnect()
   }, [])
 
-  // Keep the layout's panes in line with the workspace's windows and
-  // conversations. Layouts are saved, so outside the desktop app this also
-  // drops a preview pane one restored, which could never load there.
+  // Keep the layout's panes in line with the workspace's sessions and
+  // windows. Layouts are saved, so outside the desktop app this also drops a
+  // preview pane one restored, which could never load there. The first
+  // layout is stored even unchanged, so a pane the store opens next goes
+  // beside the default one rather than in its place.
   useEffect(() => {
     if (!sid || !workspace?.terminals) return
     let next = syncPaneLayout(layout, workspace, workspace.terminals.map((t) => t.target))
     if (!embedPreview) for (const t of paneTargets(next).filter(isPreviewTarget)) next = removeTarget(next, t)
-    if (next !== layout) setWorkspaceLayout(sid, next)
+    if (next !== layout || !(sid in layouts)) setWorkspaceLayout(sid, next)
     const pending = pendingFocus.current
     if (pending?.sid === sid && paneTargets(next).includes(pending.target)) {
       pendingFocus.current = null
       useUiStore.getState().focusTerminal(sid, pending.target)
     }
-  }, [sid, workspace, layout, setWorkspaceLayout, embedPreview])
+  }, [sid, workspace, layout, layouts, setWorkspaceLayout, embedPreview])
 
   // Tabs mode shows all panes as one tab strip; the column layout is kept so
   // switching back to tiles restores it.
@@ -244,9 +245,9 @@ export function WorkspaceView({
     layouts,
     workspaces,
     eagerKeys: workspaces
-      .filter((s) => !s.stopping)
+      .filter((s) => !s.stopping && defaultPaneTarget(s) !== undefined)
       .slice(0, isMobile ? MOBILE_EAGER_ATTACH_MAX : EAGER_ATTACH_MAX)
-      .map((s) => `${s.workspaceId}|${defaultPaneTarget(s)}`),
+      .map((s) => `${s.workspaceId}|${defaultPaneTarget(s) ?? ''}`),
     // The tabs-mode rect, which is the size a pane is first shown at.
     eagerRect: wsSize.w > 0 && wsSize.h > 0
       ? { left: PAD, top: headerH, width: wsSize.w - PAD * 2, height: wsSize.h - headerH - PAD }
@@ -278,8 +279,10 @@ export function WorkspaceView({
     else openShell()
   }, [sid, launchPane])
 
-  // The pane's × or the kill shortcut asks before killing a tmux window.
+  // The pane's × or the kill shortcut asks before killing a tmux window, or
+  // before closing a session whose agent is mid-turn.
   const [confirmKill, setConfirmKill] = useState<{ target: string; name: string } | null>(null)
+  const [confirmClose, setConfirmClose] = useState<{ sessionId: string; name: string } | null>(null)
   // A file pane whose unsaved text could not be saved on close.
   const [confirmDiscard, setConfirmDiscard] = useState<{ target: string; name: string } | null>(null)
 
@@ -290,6 +293,53 @@ export function WorkspaceView({
     void api.workspace[':id'].terminals.close.$post({ param: { id: sid }, json: { target } })
       .catch((e: unknown) => console.error('kill terminal failed', e))
   }
+
+  /** Close a session: its agent stops, its conversations stay as history.
+   *  Its pane goes at once; the snapshot confirms it. */
+  const closeSessionPane = (sessionId: string): void => {
+    if (!sid) return
+    useUiStore.getState().dropSession(sessionId)
+    dropPane(sid, sessionTarget(sessionId))
+    void closeSession(sid, sessionId).catch((e: unknown) => console.error('close session failed', e))
+  }
+  /** A session pane's ×: ask first only if its agent is busy. */
+  const askCloseSession = (target: string): void => {
+    const session = paneSession(workspace, target)
+    if (!session) return
+    if (session.status === 'running' || session.asking === true) {
+      setConfirmClose({ sessionId: session.sessionId, name: paneName(target, terminals, undefined, workspace) })
+    } else closeSessionPane(session.sessionId)
+  }
+  /** Open a session here: the new-workspace pane, aimed at this one. */
+  const newSession = (): void => {
+    if (workspace) openNewWorkspace({ projectId: workspace.projectId, inWorkspace: workspace.workspaceId })
+  }
+
+  // Viewing a waiting session marks its spell read by the caller on the
+  // server, whether it was shown while waiting or started waiting while
+  // shown. A teammate's workspace is marked too, since each user has their
+  // own dot. A spell whose mark failed or was refused (it had already
+  // ended) is not sent again this page load, so a write whose next snapshot
+  // shows it unread cannot loop.
+  const me = useWhoami()?.userId
+  const markingSpells = useRef(new Set<string>())
+  const shownTargets = tiled ? cols.map((c) => c.group.active) : activeTab !== undefined ? [activeTab] : []
+  useEffect(() => {
+    if (!workspace || me === undefined) return
+    for (const target of shownTargets) {
+      const session = paneSession(workspace, target)
+      if (session === undefined || !isSessionUnread(session, me)) continue
+      const spell = `${session.sessionId}:${String(session.waitingSinceMs ?? 0)}`
+      if (markingSpells.current.has(spell)) continue
+      markingSpells.current.add(spell)
+      useUiStore.getState().markWaitingSeen(session.sessionId, me)
+      void api.workspace['mark-waiting-seen'].$post({
+        json: { sessionId: session.sessionId, waitingSinceMs: session.waitingSinceMs ?? 0 },
+      }).then(({ marked }) => {
+        if (marked) markingSpells.current.delete(spell)
+      }).catch(() => {})
+    }
+  }, [workspace, me, shownTargets.join('|')])
 
   // Close a special pane without confirmation. A file pane saves first and
   // asks only if the save fails.
@@ -370,7 +420,10 @@ export function WorkspaceView({
     isMobile,
     openShell,
     closePane,
-    askKill: (target) => setConfirmKill({ target, name: paneName(target, terminals) }),
+    askKill: (target) => {
+      if (isSessionTarget(target)) askCloseSession(target)
+      else setConfirmKill({ target, name: paneName(target, terminals) })
+    },
   })
 
   // --- tab drag (rearrange columns / merge into tabs) ---
@@ -432,7 +485,7 @@ export function WorkspaceView({
             // Finger-sized on mobile, where this strip is the only pane switcher.
             'max-md:h-8 max-md:rounded-md max-md:px-3 max-md:text-xs',
             opts.draggable && 'cursor-grab select-none active:cursor-grabbing',
-            !isAgentPane(t) && 'pr-5 max-md:pr-7',
+            'pr-5 max-md:pr-7',
             drag?.item === t && 'opacity-60',
             opts.isActive
               ? 'bg-surface-3 font-medium text-text'
@@ -441,7 +494,18 @@ export function WorkspaceView({
         >
           {tabName(t)}
         </button>
-        {isAgentPane(t) ? null : isSpecialPane(t) ? (
+        {isSessionTarget(t) ? (
+          <button
+            onClick={() => askCloseSession(t)}
+            title={`Close ${tabName(t)}`}
+            aria-label={`Close session ${tabName(t)}`}
+            className="absolute right-0.5 flex h-4 w-4 items-center justify-center rounded
+              text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100
+              max-md:h-6 max-md:w-6 max-md:opacity-100"
+          >
+            <CloseIcon size={10} />
+          </button>
+        ) : isSpecialPane(t) ? (
           // A file with unsaved text shows a dot in place of the × until hovered.
           <button
             onClick={() => closePane(t)}
@@ -473,10 +537,13 @@ export function WorkspaceView({
   const leading: ReactNode = isMobile || !sidebarOpen ? <PaneBarLeading /> : null
   const headerClass = paneBarClass(isMobile)
 
-  // The mobile key bar, only over a terminal pane. An `acp` workspace's
-  // `agent` pane is acpd's log at most, which takes no input.
-  const keyBarTarget = isMobile && workspace && activeTab && !isSpecialPane(activeTab)
-    && !(activeTab === 'agent' && workspace.mode === 'acp') ? activeTab : null
+  // The mobile key bar, only over a terminal pane: a terminal's, or a `tui`
+  // session's.
+  const activeSession = activeTab !== undefined ? paneSession(workspace, activeTab) : undefined
+  const keyBarTarget = !isMobile || !workspace || activeTab === undefined || isSpecialPane(activeTab) ? null
+    : activeSession !== undefined ? (activeSession.mode === 'tui' ? sessionPtyTarget(activeSession) : null)
+    : isSessionTarget(activeTab) ? null
+    : activeTab
 
   return (
     <main className="flex h-full min-w-0 flex-col">
@@ -514,6 +581,7 @@ export function WorkspaceView({
           {!isMobile && (
             <>
               <PaneBarActions
+                onNewSession={newSession}
                 onNewShell={openShell}
                 onOpenFiles={() => openFiles(workspace.workspaceId)}
                 onOpenChanges={() => openChanges(workspace.workspaceId)}
@@ -591,8 +659,9 @@ export function WorkspaceView({
           )}
           {isMobile && (
             <PaneOverflowMenu
-              tool={workspace.tool}
+              label={workspaceAgentLabel(workspace)}
               previewPorts={previewPorts}
+              onNewSession={newSession}
               onNewShell={openShell}
               onOpenChanges={() => openChanges(workspace.workspaceId)}
               onOpenFiles={() => openFiles(workspace.workspaceId)}
@@ -646,6 +715,13 @@ export function WorkspaceView({
           </section>
         ))}
 
+        {/* A workspace with no pane open: what it can start. */}
+        {workspace && targets.length === 0 && (
+          <PaneCard headerH={headerH}>
+            <EmptyWorkspace workspace={workspace} onNewSession={newSession} onNewShell={openShell} />
+          </PaneCard>
+        )}
+
         {/* Tabs mode: one card whose strip lists every pane. */}
         {workspace && !tiled && targets.length > 0 && (
           // Full-bleed on mobile, without rounding, border or shadow.
@@ -673,7 +749,8 @@ export function WorkspaceView({
           const preview = isPreviewTarget(target)
           const explorer = isFilesTarget(target) || isChangesTarget(target)
           const file = isFileTarget(target)
-          const chat = acpTargetSession(target)
+          const owner = workspaces.find((s) => s.workspaceId === id)
+          const session = paneSession(owner, target)
           // Explorer panes unmount when off-screen, since they poll the
           // workspace. Chat panes stay mounted (re-attaching replays the
           // conversation), as do file panes (unmounting loses undo history,
@@ -727,11 +804,17 @@ export function WorkspaceView({
                     onStopForwarding={canUnforward ? (p) => stopForwarding(id, p) : undefined}
                   />
                 </div>
-              ) : chat !== undefined ? (
-                <div className="h-full w-full overflow-hidden rounded-md">
-                  <WorkspaceChat workspaceId={id} conversationId={chat} visible={onScreen} focused={focused} />
-                </div>
-              ) : file ? (
+              ) : session !== undefined && owner !== undefined ? (
+                <SessionPane
+                  workspace={owner}
+                  session={session}
+                  paneTarget={target}
+                  visible={onScreen}
+                  focused={focused}
+                  {...(id === sid && target === focusTarget ? { focusKey: focusNonce } : {})}
+                  nonce={terminalNonces[id] ?? 0}
+                />
+              ) : isSessionTarget(target) ? null : file ? (
                 <div className="h-full w-full overflow-hidden rounded-md">
                   <WorkspaceFile
                     workspaceId={id}
@@ -755,31 +838,19 @@ export function WorkspaceView({
                   })()}
                 </div>
               ) : (
-                <AcpStartingPane
-                  workspace={target === 'agent' ? workspaces.find((s) => s.workspaceId === id) : undefined}
-                >
-                  <div className="relative h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
-                    {/* Its own boundary: a terminal that fails to mount (an
-                        xterm internal it reaches for has moved) takes down
-                        this pane, not the app. */}
-                    <ErrorBoundary key={`${key}:${terminalNonces[id] ?? 0}`}>
-                      <WorkspaceTerminal
-                        workspaceId={id}
-                        target={target}
-                        visible={onScreen}
-                        focusKey={id === sid && target === focusTarget ? focusNonce : undefined}
-                      />
-                    </ErrorBoundary>
-                    {target === 'agent' && (
-                      <TuiTranscriptSearch
-                        workspaceId={id}
-                        sessions={workspaces.find((s) => s.workspaceId === id)?.conversations ?? []}
-                        visible={onScreen}
-                        focused={focused}
-                      />
-                    )}
-                  </div>
-                </AcpStartingPane>
+                <div className="relative h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
+                  {/* Its own boundary: a terminal that fails to mount (an
+                      xterm internal it reaches for has moved) takes down
+                      this pane, not the app. */}
+                  <ErrorBoundary key={`${key}:${terminalNonces[id] ?? 0}`}>
+                    <WorkspaceTerminal
+                      workspaceId={id}
+                      target={target}
+                      visible={onScreen}
+                      focusKey={id === sid && target === focusTarget ? focusNonce : undefined}
+                    />
+                  </ErrorBoundary>
+                </div>
               )}
             </div>
           )
@@ -827,6 +898,17 @@ export function WorkspaceView({
         onConfirm={() => {
           if (confirmDiscard && sid) dropPane(sid, confirmDiscard.target)
           setConfirmDiscard(null)
+        }}
+      />
+      <ConfirmDialog
+        open={!!confirmClose}
+        onOpenChange={(next) => { if (!next) setConfirmClose(null) }}
+        title={`Close “${confirmClose?.name ?? ''}”?`}
+        description="Its agent stops mid-turn. The conversation stays in this workspace's history, to read or resume."
+        confirmLabel="Close"
+        onConfirm={() => {
+          if (confirmClose) closeSessionPane(confirmClose.sessionId)
+          setConfirmClose(null)
         }}
       />
       <ConfirmDialog

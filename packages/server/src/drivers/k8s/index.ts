@@ -106,7 +106,7 @@ export function createK8sDriver(): WorkspaceDriver {
     dialPty: (jobName, argv, size) => dialPtyStream(workspaceIdFromJobName(jobName), argv, size),
     reviveStatusStream: (jobName) => bootStreamd(jobName),
 
-    claimSpare: (workspaceId, tool) => claimSpareWorkspace(workspaceId, tool),
+    claimSpare: (workspaceId) => claimSpareWorkspace(workspaceId),
 
     // The image decides at build time which tools it ships, so there is
     // nothing to check or install here. A missing tool surfaces in the

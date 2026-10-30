@@ -27,7 +27,7 @@ import {
 } from './registry'
 import { allocatedPorts } from './ports'
 import { TOOL_HOME_VARS, overriddenToolHomeVars } from './tool-homes'
-import type { RuntimeHandle, WorkspaceMount, WorkspacePaths, WorkspaceSpec } from '#drivers/contract'
+import { KEEPER_STARTING, type RuntimeHandle, type WorkspaceMount, type WorkspacePaths, type WorkspaceSpec } from '#drivers/contract'
 
 /**
  * Starting a workspace on the host: its environment (the user's own, with
@@ -472,18 +472,17 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   }
 
   spec.onProgress?.('Starting the workspace session...')
-  // One tmux call, since each costs a process start. It starts on a
-  // placeholder, as the pod's init script does; the agent is respawned in
-  // after setup, and the stale reaper recognizes the placeholder
-  // (PLACEHOLDER_FORMAT). macOS's sleep has no `infinity`. A large -x/-y lets
-  // tmux shrink to the client on attach, which TUIs handle better than
-  // growing.
+  // One tmux call, since each costs a process start. It opens on the keeper
+  // window, as the pod's init script does (`KEEPER_STARTING`); sessions get
+  // windows of their own after setup. macOS's sleep has no `infinity`. A
+  // large -x/-y lets tmux shrink to the client on attach, which TUIs handle
+  // better than growing.
   //
   // `update-environment` is emptied before any client attaches; otherwise
   // the liveness watch (attaching with the server's env) would give the
   // panes the host's SSH_AUTH_SOCK. `history-limit` and the shells are set
   // before the session, since tmux fixes a pane's limit and shell when it is
-  // created and the agent keeps this first pane across respawns.
+  // created.
   //
   // `-f /dev/null`, as in a pod: the user's `~/.tmux.conf` could set hooks,
   // rename windows or end the session. Then the same UX options as the
@@ -497,7 +496,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     'set-option', '-g', 'history-limit', '200000', ';',
     'set-option', '-g', 'default-shell', startup.defaultShell, ';',
     'set-option', '-g', 'default-command', startup.command, ';',
-    'new-session', '-d', '-s', 'yaac', '-n', spec.tool,
+    'new-session', '-d', '-s', 'yaac', '-n', KEEPER_STARTING,
     '-x', '500', '-y', '200', '-c', paths.workspaceDir,
     'sleep 2147483647', ';',
     'set-option', '-g', 'update-environment', '', ';',
@@ -527,8 +526,6 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   const marker: WorkspaceMarker = {
     projectId: spec.projectId,
     workspaceId: spec.workspaceId,
-    tool: spec.tool,
-    mode: spec.mode,
     createdAtMs: Date.now(),
     ...(Number.isInteger(tmuxPid) && tmuxPid > 0 ? { tmuxPid } : {}),
     // So teardown can kill the ssh-agent.

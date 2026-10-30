@@ -49,6 +49,7 @@ export async function workspaceList(
     console.log(`No running workspaces${suffix}. Create one with: yaac workspace create <project>`)
   } else {
     renderRunning(workspaces, new Map(groups.map((g) => [g.groupId, g.name])), names, zone)
+    renderSessions(workspaces)
     renderPorts(workspaces, target.baseUrl)
     renderBlockedHosts(workspaces)
   }
@@ -64,7 +65,7 @@ function renderRunning(
   projectNames: Map<string, string>,
   zone: string,
 ): void {
-  const statusOrder: Record<string, number> = { waiting: 0, background: 1, running: 2 }
+  const statusOrder: Record<string, number> = { waiting: 0, background: 1, running: 2, idle: 3 }
   const sorted = [...workspaces].sort((a, b) =>
     (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9)
       || a.createdAt.localeCompare(b.createdAt),
@@ -73,15 +74,15 @@ function renderRunning(
   printTable(
     [
       { header: 'WORKSPACE' }, { header: 'PROJECT' }, { header: 'TOOL' }, { header: 'STATUS' },
-      { header: 'AGENTS' }, { header: 'GROUP', optional: true }, { header: `STOPS (${zone})`, optional: true },
+      { header: 'SESSIONS' }, { header: 'GROUP', optional: true }, { header: `STOPS (${zone})`, optional: true },
       { header: 'TITLE', optional: true }, { header: 'CREATED' }, { header: 'PROMPT' },
     ],
     sorted.map((w) => [
       (w.workspaceId || '?').slice(0, 8),
       projectNames.get(w.projectId) ?? w.projectId,
-      w.tool,
+      toolsOf(w.sessions),
       w.status,
-      String(w.conversations.filter((a) => a.active).length || 1),
+      String(w.sessions.length),
       w.groupId !== undefined ? groupNames.get(w.groupId) ?? '' : '',
       w.deadline !== undefined ? formatInZone(new Date(w.deadline), zone) : '',
       w.title ?? '',
@@ -89,6 +90,31 @@ function renderRunning(
       w.prompt ?? '',
     ]),
   )
+}
+
+/** A workspace's agents, as the TOOL column shows them. */
+function toolsOf(sessions: Array<{ tool: string }>): string {
+  return [...new Set(sessions.map((s) => s.tool))].join(',') || '-'
+}
+
+/** Each running workspace's open sessions, for `--session` to name. */
+function renderSessions(workspaces: WorkspaceListEntry[]): void {
+  const rows = workspaces.flatMap((w) => w.sessions.map((s) => [
+    w.workspaceId.slice(0, 8),
+    s.sessionId.slice(0, 8),
+    s.modelName !== undefined ? `${s.tool} · ${s.modelName}` : s.tool,
+    s.mode,
+    s.exited === true ? 'exited' : s.status ?? 'starting',
+    s.title ?? s.prompt ?? '',
+  ]))
+  if (rows.length === 0) return
+  console.log('')
+  printTable(
+    [{ header: 'WORKSPACE' }, { header: 'SESSION' }, { header: 'AGENT' }, { header: 'MODE' },
+      { header: 'STATUS' }, { header: 'TITLE' }],
+    rows,
+  )
+  console.log('')
 }
 
 /**
@@ -192,7 +218,7 @@ function renderStopped(
     stopped.map((s) => [
       s.workspaceId.slice(0, 8),
       projectNames.get(s.projectId) ?? s.projectId,
-      s.tool,
+      toolsOf(s.sessions),
       s.stoppedAt,
       s.endedAtNextRun === true ? 'ended at next run' : s.timedOut === true ? 'timed out' : s.deathReason ?? '',
       s.title ?? '',

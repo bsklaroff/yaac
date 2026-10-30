@@ -729,7 +729,7 @@ export interface StdinScript {
  * script from stdin to a workspace-local file and setsid it, so the exec
  * returns at once instead of waiting through the script's polling (5s+ on
  * a fresh agent). The script survives the exec stream closing and logs to
- * `yaac-prompt.log` in the scratch dir. macOS has no setsid, so a
+ * `yaac-prompt-<target>.log` in the scratch dir. macOS has no setsid, so a
  * containerless host there detaches it with nohup.
  */
 export function buildPromptPasteBgCmd(
@@ -737,8 +737,10 @@ export function buildPromptPasteBgCmd(
   prompt: string,
   paths: WorkspacePaths,
 ): StdinScript {
-  const script = `${paths.scratchDir}/.yaac-prompt.sh`
-  const log = `${paths.scratchDir}/yaac-prompt.log`
+  // Per target, since two sessions can be handed prompts at once.
+  const name = target.replace(/[^\w-]/g, '_')
+  const script = `${paths.scratchDir}/.yaac-prompt-${name}.sh`
+  const log = `${paths.scratchDir}/yaac-prompt-${name}.log`
   return {
     // `cat` stays out of the backgrounded list, whose stdin sh replaces with
     // /dev/null.
@@ -750,23 +752,21 @@ export function buildPromptPasteBgCmd(
 }
 
 /**
- * In-workspace probe that every agent window survived its respawn.
- * `respawn-window` succeeds even when the command dies at once (e.g. the
- * tool binary is missing), after which tmux closes the window and the pane
- * silently falls back to another window (see attachArgs). The sleep gives
- * such a command time to exit; slower crashes are not caught.
+ * In-workspace probe that every agent window is still running. Launching a
+ * window succeeds even when its command dies at once (e.g. the tool binary
+ * is missing), after which its pane stays dead (`remain-on-exit`). The sleep
+ * gives such a command time to exit; slower crashes are not caught.
  *
- * Takes a list because one launch can open several conversations
- * (`claude`, `claude-2`, `codex`). Each missing window is printed to stderr.
- * Window names are tool names with an optional `-N`, so they need no
- * escaping.
+ * Takes a list because one launch can open several sessions. Each window
+ * gone or dead is printed to stderr. Window names are a tool name and a
+ * suffix of letters and digits, so they need no escaping.
  */
 export function buildAgentWindowCheck(windowNames: string[], paths: WorkspacePaths): string {
   const probes = windowNames
-    .map((name) => `echo \\"\\$names\\" | grep -qxF ${name} || { echo ${name} >&2; rc=1; }`)
+    .map((name) => `echo \\"\\$names\\" | grep -qxF '${name} 0' || { echo ${name} >&2; rc=1; }`)
     .join('; ')
   return `sh -c "sleep 1; rc=0; names=\\$(${tmuxCmd(paths)} list-windows -t =yaac `
-    + `-F '#{window_name}') || exit 1; ${probes}; exit \\$rc"`
+    + `-F '#{window_name} #{pane_dead}') || exit 1; ${probes}; exit \\$rc"`
 }
 
 /**

@@ -27,17 +27,19 @@ describe('verifyAgentWindowAlive', () => {
     await expect(verifyAgentWindowAlive('yaac-job-1', ['claude', 'claude-2', 'codex'])).resolves.toBeUndefined()
     const [jobName, cmd] = podExec.mock.calls.at(-1)!
     expect(jobName).toBe('yaac-job-1')
-    // respawn-window succeeds even if the command dies at once, so it waits
-    // first. One exit code covers all windows; each missing name is echoed.
+    // Opening a window succeeds even if its command dies at once, so it
+    // waits first. A session's window outlives its agent, so a live one is
+    // listed with its pane not dead. One exit code covers all windows; each
+    // missing or dead name is echoed.
     expect(cmd.match(/sleep 1;/g)).toHaveLength(1)
     expect(cmd.match(/list-windows/g)).toHaveLength(1)
-    expect(cmd).toContain(`names=\\$(${TMUX} list-windows -t =yaac -F '#{window_name}')`)
+    expect(cmd).toContain(`names=\\$(${TMUX} list-windows -t =yaac -F '#{window_name} #{pane_dead}')`)
     for (const w of ['claude', 'claude-2', 'codex']) {
-      expect(cmd).toContain(`grep -qxF ${w} || { echo ${w} >&2; rc=1; }`)
+      expect(cmd).toContain(`grep -qxF '${w} 0' || { echo ${w} >&2; rc=1; }`)
     }
     expect(cmd.endsWith('exit \\$rc"')).toBe(true)
     // A dead tmux server must fail the probe, not read as no windows.
-    expect(cmd).toContain("#{window_name}') || exit 1")
+    expect(cmd).toContain("#{pane_dead}') || exit 1")
   })
 
   it('reports a missing window as a dead agent when the probe ran in the pod', async () => {

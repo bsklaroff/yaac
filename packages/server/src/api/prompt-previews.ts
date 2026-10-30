@@ -2,6 +2,7 @@ import {
   CONVERSATION_PROMPT_PREVIEW_LENGTH,
   PROMPT_PREVIEW_LENGTH,
   type ConversationEntry,
+  type SessionEntry,
 } from '@yaac/shared/types'
 
 /**
@@ -18,10 +19,16 @@ export function previewed<T extends { prompt?: string }>(entry: T, max = PROMPT_
   return { ...entry, prompt: prompt.slice(0, max).replace(/[\uD800-\uDBFF]$/, '') }
 }
 
-/** `previewed`, with its conversations' first prompts cut further. */
-export function withPreviews<T extends { prompt?: string; conversations: ConversationEntry[] }>(entry: T): T {
+/** `previewed`, with its sessions' and conversations' first prompts cut
+ *  further. */
+export function withPreviews<T extends {
+  prompt?: string
+  sessions: SessionEntry[]
+  conversations: ConversationEntry[]
+}>(entry: T): T {
   return {
     ...previewed(entry),
+    sessions: entry.sessions.map((s) => previewed(s, CONVERSATION_PROMPT_PREVIEW_LENGTH)),
     conversations: entry.conversations.map((a) => previewed(a, CONVERSATION_PROMPT_PREVIEW_LENGTH)),
   }
 }

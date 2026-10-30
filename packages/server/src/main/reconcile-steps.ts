@@ -1,4 +1,4 @@
-import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileConversations, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileRevokedShares, reconcileStoppedConversations, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, startScheduledWorkspaces } from '#domain/workspaces'
+import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileConversations, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileRevokedShares, reconcileSessions, reconcileStoppedConversations, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, startScheduledWorkspaces } from '#domain/workspaces'
 import { refreshProjectOrigins } from '#domain/projects'
 import { adoptRefreshedToolCredentials, syncToolCredentials } from '#domain/auth'
 import { workspaceDriver } from '#drivers/driver'
@@ -65,10 +65,15 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // freed first.
     ...runtime.prePool,
     ...pool,
-    // Record each workspace's agent sessions, which are live, and their
-    // opening messages, from the watcher's live agent set. The only step
-    // that reads that set, so `live-agents` makes a new conversation a row
-    // within a debounce rather than a resync.
+    // Give every open session of a running workspace a window: one opened
+    // while it was stopped, or one a server restart cut off mid-launch.
+    { name: 'sessions', triggers: ['workspaces', 'live-agents'],
+      run: (ctx) => reconcileSessions(ctx.snapshot()) },
+    // Record each workspace's conversations, which are live, and their
+    // opening messages, and what each session's agent reports, from the
+    // watcher's live agent set. The step that reads that set, so
+    // `live-agents` makes a new conversation a row within a debounce rather
+    // than a resync.
     { name: 'conversations', triggers: ['workspaces', 'live-agents'],
       run: (ctx) => reconcileConversations(ctx.snapshot()) },
     // What stopped workspaces' conversations left on disk, read once each

@@ -1,9 +1,9 @@
 import { TOOL_LABEL } from '#lib/icons'
-import type { ConversationEntry, AgentTool } from '@yaac/shared/types'
+import type { AgentTool, SessionEntry } from '@yaac/shared/types'
 
 /**
- * The display name of a workspace's agent: the tool, plus the model when
- * known ("Claude · Opus 5").
+ * The display name of an agent: the tool, plus the model when known
+ * ("Claude · Opus 5").
  *
  * The server sends the catalog's display name (`modelName`) when it has one.
  * Otherwise the raw model id is shortened here, conservatively: an id that
@@ -39,26 +39,23 @@ export function modelLabel(named: { model?: string; modelName?: string }): strin
   return named.modelName ?? (named.model !== undefined ? formatModel(named.model) : undefined)
 }
 
-/** "Claude · Opus 5", or just the tool name when no model is known yet. */
+/** "Claude · Opus 5", or just the tool name when no model is known yet, or
+ *  "No agent" without a tool (a workspace with no session). */
 export function agentLabel(
-  tool: AgentTool,
+  tool: AgentTool | undefined,
   named: { model?: string; modelName?: string } | undefined,
 ): string {
+  if (tool === undefined) return 'No agent'
   const model = named !== undefined ? modelLabel(named) : undefined
   return model === undefined ? TOOL_LABEL[tool] : `${TOOL_LABEL[tool]} · ${model}`
 }
 
 /**
- * The agent session whose model names the workspace in its sidebar row.
- * Prefers active sessions, then the lowest ordinal (the primary agent). If
- * no active session has reported a model, falls back to history. On a
- * stopped workspace this is the model last used, which a restart may not
- * resume with.
+ * A workspace's agent as one label: its first session's ("Claude ·
+ * Opus 5"), or "No agent" for a workspace with none. A stopped workspace's
+ * are the sessions a restart brings back.
  */
-export function workspaceModel(
-  workspace: { conversations: ConversationEntry[] },
-): ConversationEntry | undefined {
-  const byOrdinal = [...workspace.conversations].sort((a, b) => a.ordinal - b.ordinal)
-  const named = (s: ConversationEntry): boolean => s.model !== undefined
-  return byOrdinal.find((s) => s.active && named(s)) ?? byOrdinal.find(named)
+export function workspaceAgentLabel(workspace: { sessions: SessionEntry[] }): string {
+  const [first] = workspace.sessions
+  return agentLabel(first?.tool, first)
 }

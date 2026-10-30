@@ -16,7 +16,7 @@ import {
 import { createWorkspaceGroup } from '#db/group-store'
 import { recordConversations } from '#db/conversation-store'
 import { closeDb } from '#db/client'
-import { BUILT_IN_USER_ID, holdPendingPrompt, recordProject, seeTailnetUser } from '#db'
+import { BUILT_IN_USER_ID, insertSession, recordProject, seeTailnetUser } from '#db'
 import { claudeDir } from '@yaac/shared/project-paths'
 import { listStoppedWorkspaces } from '#domain/workspaces/stopped-list'
 import type { AgentTool, StoppedWorkspaceEntry } from '@yaac/shared/types'
@@ -33,8 +33,8 @@ async function seedWorkspace(
   opts: { tool?: AgentTool; deleted?: boolean } = {},
 ): Promise<void> {
   await recordWorkspaceCreated({ projectId: projectId, workspaceId })
-  // A real create always records a conversation, which is where the tool
-  // and first prompt are read from.
+  // The conversation its agent recorded, which is where the first prompt is
+  // read from.
   await recordConversations(projectId, workspaceId, [
     { tool: opts.tool ?? 'claude', conversationId: workspaceId },
   ])
@@ -82,7 +82,7 @@ describe('listStoppedWorkspaces', () => {
     expect(result[0]).toMatchObject({
       workspaceId: 'aaaaaa',
       projectId: DEMO_PROJECT_ID,
-      tool: 'claude',
+      conversations: [expect.objectContaining({ tool: 'claude', conversationId: 'aaaaaa' })],
     })
     expect(result[0]?.stoppedAt).toBeDefined()
   })
@@ -253,7 +253,7 @@ describe('listStoppedWorkspaces', () => {
     expect(idle?.lastActiveAt).toBe(idle?.createdAt)
   })
 
-  it('takes the prompt from the row alone: the captured one, else one still held for a chat, else unset', async () => {
+  it('takes the prompt from the rows alone: the captured one, else its first session\'s, else unset', async () => {
     const workspacesDir = path.join(claudeDir(DEMO_PROJECT_ID), 'projects', '-workspace')
     await fs.mkdir(workspacesDir, { recursive: true })
     const first = JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello there' } })
@@ -265,11 +265,14 @@ describe('listStoppedWorkspaces', () => {
     ])
 
     await seedWorkspace(DEMO_PROJECT_ID, 'held', { deleted: true })
-    await holdPendingPrompt(DEMO_PROJECT_ID, 'held', 'fix the parser')
+    await insertSession(DEMO_PROJECT_ID, 'held', { tool: 'claude', mode: 'acp', permissionMode: 'bypass', prompt: 'fix the parser' })
 
     const result = await entries()
     expect(result.find((r) => r.workspaceId === 'captured')?.prompt).toBe('port the lexer')
-    expect(result.find((r) => r.workspaceId === 'held')?.prompt).toBe('fix the parser')
+    const held = result.find((r) => r.workspaceId === 'held')
+    expect(held?.prompt).toBe('fix the parser')
+    // Its open session is what a restart brings back.
+    expect(held?.sessions).toEqual([expect.objectContaining({ tool: 'claude', mode: 'acp', prompt: 'fix the parser' })])
     expect(result.find((r) => r.workspaceId === 'uncaptured')?.prompt).toBeUndefined()
   })
 })

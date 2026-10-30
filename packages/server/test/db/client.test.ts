@@ -176,6 +176,80 @@ describe('openDb', () => {
     }
   })
 
+  // Every conversation live at the upgrade becomes an open session with the
+  // settings its workspace row held, in the window it already runs in, so a
+  // running agent is watched as before and a restart brings back the same
+  // agents. A workspace that recorded no conversation keeps the one session
+  // its restart started.
+  it('opens a session for each live conversation, on the settings its workspace held', async () => {
+    const P = '11111111-2222-4333-8444-555555555555'
+    const SEEN = '0a0a0a0a-0000-4000-8000-000000000001'
+    const db = await seedBefore('add_sessions', `
+      INSERT INTO projects (id, owner, name, remote_url, added_at, last_tool)
+        VALUES ('${P}', (SELECT id FROM users LIMIT 1), 'p', 'git@h:o/p.git', 'now', 'codex');
+      INSERT INTO workspaces (project_id, workspace_id, permission_mode, effort, model, mode, life_started_at, waiting_seen_by)
+        VALUES ('${P}', 'running', 'plan', 'high', 'claude-opus-5', 'tui', '2026-10-01T00:00:00Z', '{${SEEN}}');
+      INSERT INTO workspaces (project_id, workspace_id, mode, stopped_at) VALUES ('${P}', 'chat', 'acp', now());
+      INSERT INTO workspaces (project_id, workspace_id, mode, stopped_at, pending_prompt)
+        VALUES ('${P}', 'unnamed', 'acp', now(), 'queued ask');
+      INSERT INTO workspaces (project_id, workspace_id, mode, stopped_at) VALUES ('${P}', 'twins', 'acp', now());
+      INSERT INTO conversations (project_id, tool, conversation_id, mode, first_prompt, model) VALUES
+        ('${P}', 'claude', 'conv-1', 'tui', 'hello', NULL),
+        ('${P}', 'codex', 'running', 'tui', NULL, NULL),
+        ('${P}', 'claude', 'conv-old', 'tui', NULL, NULL),
+        ('${P}', 'claude', 'conv-b', 'acp', NULL, 'claude-sonnet-5'),
+        ('${P}', 'claude', 'conv-t1', 'acp', NULL, NULL),
+        ('${P}', 'claude', 'conv-t2', 'acp', NULL, NULL);
+      INSERT INTO workspace_conversations (project_id, workspace_id, tool, conversation_id, active, ordinal, pane_id) VALUES
+        ('${P}', 'running', 'claude', 'conv-1', true, 0, '%3'),
+        ('${P}', 'running', 'codex', 'running', true, 1, NULL),
+        ('${P}', 'running', 'claude', 'conv-old', false, 2, NULL),
+        ('${P}', 'chat', 'claude', 'conv-b', true, 0, 'claude-2'),
+        ('${P}', 'twins', 'claude', 'conv-t1', true, 0, 'claude'),
+        ('${P}', 'twins', 'claude', 'conv-t2', true, 1, 'claude');
+    `)
+    try {
+      const sessions = (await db.$client.query<Record<string, unknown>>(
+        `SELECT id, workspace_id, tool, mode, model, permission_mode, effort, ordinal, "window", launched_at,
+          first_prompt, pending_prompt, conversation_id, waiting_seen_by FROM sessions ORDER BY workspace_id, ordinal`,
+      )).rows
+      const of = (workspaceId: string): Array<Record<string, unknown>> => sessions.filter((s) => s.workspace_id === workspaceId)
+      const [first, pin] = of('running')
+      expect(of('running')).toHaveLength(2)
+      expect(first).toMatchObject({
+        tool: 'claude', mode: 'tui', model: 'claude-opus-5', permission_mode: 'plan', effort: 'high',
+        window: 'claude', conversation_id: 'conv-1', first_prompt: 'hello', waiting_seen_by: [SEEN],
+      })
+      expect(first.launched_at).toEqual(new Date('2026-10-01T00:00:00Z'))
+      // codex names its own conversations, so one under the workspace id
+      // never had a real one.
+      expect(pin).toMatchObject({ tool: 'codex', window: 'codex-2', conversation_id: null, model: null })
+      expect(of('chat')).toEqual([expect.objectContaining({
+        mode: 'acp', window: 'claude-2', model: 'claude-sonnet-5', conversation_id: 'conv-b', launched_at: null,
+      })])
+      expect(of('unnamed')).toEqual([expect.objectContaining({
+        tool: 'codex', mode: 'acp', window: 'codex', first_prompt: 'queued ask', pending_prompt: 'queued ask',
+      })])
+      // Two sessions never share a window: one of the pair keeps it.
+      const twins = of('twins').map((s) => s.window as string).sort()
+      expect(twins[0]).toBe('claude')
+      expect(twins[1]).toMatch(/^claude-[0-9a-f]{8}$/)
+
+      const links = (await db.$client.query<{ conversation_id: string; session_id: string | null }>(
+        "SELECT conversation_id, session_id FROM workspace_conversations WHERE workspace_id = 'running' ORDER BY ordinal",
+      )).rows
+      expect(links.map((l) => l.session_id)).toEqual([first.id, pin.id, null])
+      const columns = (await db.$client.query<{ column_name: string }>(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'workspaces'",
+      )).rows.map((r) => r.column_name)
+      for (const gone of ['mode', 'model', 'permission_mode', 'effort', 'pending_prompt', 'waiting_seen_by']) {
+        expect(columns).not.toContain(gone)
+      }
+    } finally {
+      await db.$client.close()
+    }
+  })
+
   // The same refusal covers a newer server's database and an install that
   // lost its own migration files, so the message names both.
   it('refuses a database recording a migration this build does not ship', async () => {

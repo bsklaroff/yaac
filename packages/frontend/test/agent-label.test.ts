@@ -1,26 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { agentLabel, formatModel, workspaceModel } from '#lib/agentLabel'
-import type { ConversationEntry, WorkspaceListEntry } from '@yaac/shared/types'
-
-const session = (over: Partial<ConversationEntry> = {}): ConversationEntry => ({
-  conversationId: 'conv-a',
-  tool: 'claude',
-  ordinal: 0,
-  active: true,
-  ...over,
-})
-
-const workspace = (conversations: ConversationEntry[]): WorkspaceListEntry => ({
-  workspaceId: 's1',
-  projectId: 'proj',
-  tool: 'claude',
-  status: 'running',
-  createdAt: '2026-08-10 00:00:00',
-  conversations,
-  blockedHosts: [],
-  forwardedPorts: [],
-  unforwardedPorts: [],
-})
+import { agentLabel, formatModel, workspaceAgentLabel } from '#lib/agentLabel'
+import { sessionEntry } from './harness'
 
 /**
  * Shortening a raw model id for display. Conservative, since a wrong short
@@ -73,33 +53,18 @@ describe('agentLabel', () => {
   })
 })
 
-describe('workspaceModel', () => {
-  it('prefers a live conversation over the workspace\'s history', () => {
-    // A `/clear`ed conversation still names a model, but the live one wins.
-    expect(workspaceModel(workspace([
-      session({ conversationId: 'old', ordinal: 0, active: false, model: 'claude-opus-4-8' }),
-      session({ conversationId: 'live', ordinal: 1, active: true, model: 'claude-opus-5' }),
-    ]))?.model).toBe('claude-opus-5')
+describe('workspaceAgentLabel', () => {
+  it('names a workspace by its first session\'s agent', () => {
+    expect(workspaceAgentLabel({
+      sessions: [
+        sessionEntry({ sessionId: 'a', model: 'claude-opus-5' }),
+        sessionEntry({ sessionId: 'b', tool: 'codex', model: 'gpt-6-sol' }),
+      ],
+    })).toBe('Claude · Opus 5')
   })
 
-  it('takes the primary agent when several are live', () => {
-    // Ordinal 0 is the workspace's primary agent.
-    expect(workspaceModel(workspace([
-      session({ conversationId: 'second', ordinal: 1, model: 'claude-fable-5' }),
-      session({ conversationId: 'primary', ordinal: 0, model: 'claude-opus-5' }),
-    ]))?.model).toBe('claude-opus-5')
-  })
-
-  it('falls back to history when no live conversation has reported one', () => {
-    // With no live model yet, fall back to the recorded one.
-    expect(workspaceModel(workspace([
-      session({ conversationId: 'old', ordinal: 0, active: false, model: 'claude-opus-5' }),
-      session({ conversationId: 'live', ordinal: 1, active: true }),
-    ]))?.model).toBe('claude-opus-5')
-  })
-
-  it('reports none for a workspace whose agents have not answered yet', () => {
-    expect(workspaceModel(workspace([session()]))).toBeUndefined()
-    expect(workspaceModel(workspace([]))).toBeUndefined()
+  it('says a workspace with no session runs no agent', () => {
+    expect(workspaceAgentLabel({ sessions: [] })).toBe('No agent')
+    expect(agentLabel(undefined, undefined)).toBe('No agent')
   })
 })

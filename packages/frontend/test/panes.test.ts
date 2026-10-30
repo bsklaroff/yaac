@@ -1,131 +1,102 @@
 import { describe, it, expect } from 'vitest'
 import { FILES_TARGET } from '#lib/files'
-import { acpPaneTargets, defaultPaneTarget, paneStillLive, syncPaneLayout } from '#lib/panes'
-import { addColumn, addTab, paneTargets, singleColumn } from '#lib/layout'
+import {
+  defaultPaneTarget,
+  isSessionTarget,
+  isSpecialPane,
+  paneSession,
+  paneStillLive,
+  sessionPaneTargets,
+  sessionTarget,
+  sessionTargetId,
+  syncPaneLayout,
+} from '#lib/panes'
+import { addColumn, paneTargets, singleColumn } from '#lib/layout'
 import { previewTarget } from '#lib/preview'
-import type { ConversationEntry, WorkspaceListEntry } from '@yaac/shared/types'
+import { sessionEntry, workspaceEntry } from './harness'
 
 /**
- * Which panes a workspace has. Chat panes stay mounted while hidden, so
- * `paneStillLive` is what unmounts an ended conversation's pane; otherwise
- * it would keep retrying a socket the server refuses.
+ * Which panes a workspace has: one per open session, whatever its mode, plus
+ * its terminals and the webapp's own. Session panes stay mounted while
+ * hidden, so `paneStillLive` is what unmounts a closed session's pane.
  */
 
-function session(over: Partial<ConversationEntry> = {}): ConversationEntry {
-  return { conversationId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true, ...over }
-}
+const chat = sessionEntry({ sessionId: 'sa' })
+const term = sessionEntry({ sessionId: 'sb', mode: 'tui', tool: 'codex', window: 'codex-sb', ordinal: 1 })
+const two = workspaceEntry({ sessions: [chat, term] })
+const none = workspaceEntry()
 
-function workspace(sessions: ConversationEntry[]): WorkspaceListEntry {
-  return {
-    workspaceId: 'w1',
-    projectId: 'proj',
-    tool: 'claude',
-    status: 'running',
-    createdAt: '2026-01-01 00:00:00',
-    blockedHosts: [],
-    forwardedPorts: [],
-    unforwardedPorts: [],
-    conversations: sessions,
-  }
-}
+describe('sessionTarget', () => {
+  it('addresses a session pane by its id, both ways', () => {
+    expect(sessionTarget('sa')).toBe('session:sa')
+    expect(isSessionTarget('session:sa')).toBe(true)
+    expect(isSessionTarget('window:@3')).toBe(false)
+    expect(sessionTargetId('session:sa')).toBe('sa')
+    // A session pane is not one the webapp keeps on its own.
+    expect(isSpecialPane('session:sa')).toBe(false)
+  })
+})
 
-/** A `tui` workspace: one agent, no conversation of its own. */
-const tui = workspace([session({ mode: 'tui' })])
-/** An `acp` workspace mid-conversation. */
-const acp = workspace([session({ conversationId: 'conv-a' })])
-/** An ACP workspace whose agent hasn't answered `session/new` yet. */
-const booting = workspace([])
+describe('paneSession', () => {
+  it('finds an open session behind its pane, and nothing behind any other', () => {
+    expect(paneSession(two, 'session:sb')).toBe(term)
+    expect(paneSession(two, 'session:gone')).toBeUndefined()
+    expect(paneSession(two, 'window:@3')).toBeUndefined()
+    expect(paneSession(undefined, 'session:sa')).toBeUndefined()
+  })
+})
 
-describe('acpPaneTargets', () => {
-  it('names the live conversations and nothing else', () => {
-    const mixed = workspace([
-      session({ conversationId: 'conv-a' }),
-      // Ended: no agent is behind it now.
-      session({ conversationId: 'conv-b', active: false, ordinal: 1 }),
-      // A TUI agent is a terminal, not a chat pane.
-      session({ conversationId: 'conv-c', mode: 'tui', ordinal: 2 }),
-      session({ conversationId: 'conv-d', mode: undefined, ordinal: 3 }),
-    ])
-    expect(acpPaneTargets(mixed)).toEqual(['acp:conv-a'])
-    expect(acpPaneTargets(tui)).toEqual([])
-    expect(acpPaneTargets(undefined)).toEqual([])
+describe('sessionPaneTargets', () => {
+  it('lists every open session, chat and terminal alike, in order', () => {
+    expect(sessionPaneTargets(two)).toEqual(['session:sa', 'session:sb'])
+    expect(sessionPaneTargets(none)).toEqual([])
+    expect(sessionPaneTargets(undefined)).toEqual([])
   })
 })
 
 describe('defaultPaneTarget', () => {
-  it('opens the chat pane of an acp workspace and the terminal of a tui one', () => {
-    // The warm-up attaches this pane, so an ACP workspace must answer its
-    // chat pane, not acpd's `agent` window.
-    expect(defaultPaneTarget(acp)).toBe('acp:conv-a')
-    expect(defaultPaneTarget(tui)).toBe('agent')
-  })
-
-  it('falls back to the terminal while an acp workspace has no conversation yet', () => {
-    expect(defaultPaneTarget(booting)).toBe('agent')
-    expect(defaultPaneTarget(undefined)).toBe('agent')
-  })
-
-  it('opens the first conversation when a workspace has several', () => {
-    const many = workspace([
-      session({ conversationId: 'conv-a' }),
-      session({ conversationId: 'conv-b', ordinal: 1 }),
-    ])
-    expect(defaultPaneTarget(many)).toBe('acp:conv-a')
+  it('opens the first session, and nothing for a workspace with none', () => {
+    expect(defaultPaneTarget(two)).toBe('session:sa')
+    expect(defaultPaneTarget(none)).toBeUndefined()
+    expect(defaultPaneTarget(undefined)).toBeUndefined()
   })
 })
 
 describe('paneStillLive', () => {
-  it('drops a conversation that has ended, and keeps the ones that have not', () => {
-    expect(paneStillLive(acp, 'acp:conv-a')).toBe(true)
-    // An ended conversation's pane is no longer live.
-    expect(paneStillLive(workspace([session({ conversationId: 'conv-a', active: false })]),
-      'acp:conv-a')).toBe(false)
-    // Nor is an unknown conversation's.
-    expect(paneStillLive(acp, 'acp:conv-z')).toBe(false)
-  })
-
-  it('drops the raw agent pane of an acp workspace, whose window is acpd log', () => {
-    // The warm-up may open `agent` while booting; once a conversation
-    // appears, that pane must go.
-    expect(paneStillLive(booting, 'agent')).toBe(true)
-    expect(paneStillLive(acp, 'agent')).toBe(false)
-    expect(paneStillLive(tui, 'agent')).toBe(true)
+  it('keeps an open session\'s pane and drops a closed one\'s', () => {
+    expect(paneStillLive(two, 'session:sa')).toBe(true)
+    expect(paneStillLive(workspaceEntry({ sessions: [term] }), 'session:sa')).toBe(false)
   })
 
   it('keeps a terminal pane while its window is listed, and special panes always', () => {
     const shell = { target: 'window:@3', name: 'shell' }
-    for (const wt of [acp, tui, booting]) {
+    for (const ws of [two, none]) {
       // Windows not listed yet: nothing is known to be gone.
-      expect(paneStillLive(wt, 'window:@3')).toBe(true)
-      expect(paneStillLive({ ...wt, terminals: [shell] }, 'window:@3')).toBe(true)
-      expect(paneStillLive({ ...wt, terminals: [] }, 'window:@3')).toBe(false)
-      expect(paneStillLive({ ...wt, terminals: [] }, previewTarget(3000))).toBe(true)
-      expect(paneStillLive({ ...wt, terminals: [] }, FILES_TARGET)).toBe(true)
+      expect(paneStillLive(ws, 'window:@3')).toBe(true)
+      expect(paneStillLive({ ...ws, terminals: [shell] }, 'window:@3')).toBe(true)
+      expect(paneStillLive({ ...ws, terminals: [] }, 'window:@3')).toBe(false)
+      expect(paneStillLive({ ...ws, terminals: [] }, previewTarget(3000))).toBe(true)
+      expect(paneStillLive({ ...ws, terminals: [] }, FILES_TARGET)).toBe(true)
     }
   })
 })
 
 describe('syncPaneLayout', () => {
-  it('appends new windows, drops killed ones, and keeps special panes', () => {
-    const layout = addColumn(addColumn(singleColumn('agent'), '%1'), previewTarget(3000))
-    const next = syncPaneLayout(layout, tui, ['%2'])
-    expect(paneTargets(next)).toEqual(['agent', previewTarget(3000), '%2'])
+  it('appends new sessions and windows, drops closed and killed ones, and keeps special panes', () => {
+    const layout = addColumn(addColumn(singleColumn('session:gone'), '%1'), previewTarget(3000))
+    const next = syncPaneLayout(layout, two, ['%2'])
+    expect(paneTargets(next)).toEqual([previewTarget(3000), 'session:sa', 'session:sb', '%2'])
     // Already in line: the same reference, so nothing is stored.
-    expect(syncPaneLayout(next, tui, ['%2'])).toBe(next)
+    expect(syncPaneLayout(next, two, ['%2'])).toBe(next)
   })
 
-  it('puts the chat pane where the agent fallback was, left of panes opened beside it', () => {
-    // A shell opened before the conversation (or before any layout was
-    // stored) lands beside `agent`; the chat pane must take agent's column.
-    const layout = addColumn(singleColumn('agent'), '%1')
-    expect(paneTargets(syncPaneLayout(layout, acp, ['%1']))).toEqual(['acp:conv-a', '%1'])
-    // Also as a tab: it takes agent's tab, active if agent was.
-    const tabbed = addTab(singleColumn('%1'), 0, 'agent')
-    expect(syncPaneLayout(tabbed, acp, ['%1'])).toEqual([{ tabs: ['%1', 'acp:conv-a'], active: 'acp:conv-a' }])
+  it('drops the panes a stored layout kept from before sessions', () => {
+    const legacy = addColumn(addColumn(singleColumn('agent'), 'acp:conv-a'), '%1')
+    expect(paneTargets(syncPaneLayout(legacy, workspaceEntry({ sessions: [chat] }), ['%1'])))
+      .toEqual(['%1', 'session:sa'])
   })
 
-  it('drops the agent pane once the chat pane is already shown, and ended conversations', () => {
-    const layout = addColumn(addColumn(singleColumn('acp:conv-a'), 'agent'), 'acp:conv-old')
-    expect(paneTargets(syncPaneLayout(layout, acp, []))).toEqual(['acp:conv-a'])
+  it('leaves a workspace with no session and no window with no pane', () => {
+    expect(syncPaneLayout([], none, [])).toEqual([])
   })
 })

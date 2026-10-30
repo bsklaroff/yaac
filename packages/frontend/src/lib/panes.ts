@@ -4,94 +4,86 @@
  *
  * The window sync, the warm-up after a reload and the keep-alive set all use
  * these, so they agree and no pane stays mounted with nothing behind it.
- * `acp` workspaces are the tricky case: their `agent` window runs acpd, not
- * the conversation.
+ * Each open session has one pane, `session:<id>`, whichever mode it runs
+ * in; `WorkspaceView` picks its renderer.
  */
 
-import { acpTarget, isAcpTarget } from '@yaac/shared/acp'
-import type { WorkspaceListEntry } from '@yaac/shared/types'
+import type { SessionEntry, WorkspaceListEntry } from '@yaac/shared/types'
 import { isChangesTarget, isFilesTarget, isFileTarget } from './files'
-import { addColumn, paneTargets, removeTarget, renameTargets, type PaneLayout } from './layout'
+import { addColumn, paneTargets, removeTarget, type PaneLayout } from './layout'
 import { isPreviewTarget } from './preview'
 
+const SESSION_PREFIX = 'session:'
+
+/** A session's pane target. */
+export function sessionTarget(sessionId: string): string {
+  return `${SESSION_PREFIX}${sessionId}`
+}
+
+export function isSessionTarget(target: string): boolean {
+  return target.startsWith(SESSION_PREFIX)
+}
+
+/** The session a session pane shows. */
+export function sessionTargetId(target: string): string {
+  return target.slice(SESSION_PREFIX.length)
+}
+
+/** The session behind a pane target, if it is one and still open. */
+export function paneSession(workspace: WorkspaceListEntry | undefined, target: string): SessionEntry | undefined {
+  if (!isSessionTarget(target)) return undefined
+  const id = sessionTargetId(target)
+  return workspace?.sessions.find((s) => s.sessionId === id)
+}
+
 /**
- * Non-terminal panes: left out of the tmux-window sync and closed without a
- * kill confirmation (a file pane saves first, and asks only if that fails).
- * ACP chat panes count too: their tmux window runs acpd, not the
- * conversation, and they are addressed by conversation id. They are agent
- * panes as well, so they get no close button (`isAgentPane`).
+ * Panes the webapp keeps on its own: left out of the window sync and closed
+ * without asking (a file pane saves first, and asks only if that fails).
  */
 export function isSpecialPane(target: string): boolean {
   return isPreviewTarget(target) || isFilesTarget(target) || isChangesTarget(target) || isFileTarget(target)
-    || isAcpTarget(target)
+}
+
+/** The workspace's open sessions, as pane targets. */
+export function sessionPaneTargets(workspace: WorkspaceListEntry | undefined): string[] {
+  return (workspace?.sessions ?? []).map((s) => sessionTarget(s.sessionId))
 }
 
 /**
- * The agent's own pane: the `tui` agent terminal or an `acp` conversation.
- * It can be neither killed nor closed, since the window sync would reopen a
- * live conversation's pane as soon as it was closed.
+ * The pane a workspace opens with: its first session's. A workspace with
+ * none opens empty, showing what it can start (`EmptyWorkspace`).
  */
-export function isAgentPane(target: string): boolean {
-  return target === 'agent' || isAcpTarget(target)
-}
-
-/** The workspace's live conversations, as pane targets. */
-export function acpPaneTargets(workspace: WorkspaceListEntry | undefined): string[] {
-  return (workspace?.conversations ?? [])
-    .filter((a) => a.mode === 'acp' && a.active)
-    .map((a) => acpTarget(a.conversationId))
+export function defaultPaneTarget(workspace: WorkspaceListEntry | undefined): string | undefined {
+  return sessionPaneTargets(workspace)[0]
 }
 
 /**
- * The pane a workspace opens with: the agent terminal for `tui`, the first
- * conversation's chat pane for `acp`. An `acp` workspace with no
- * conversation yet (its agent still starting) has the `agent` pane, drawn
- * as the agent starting (`AcpStartingPane`), and the window sync swaps in
- * the chat pane when it appears.
- */
-export function defaultPaneTarget(workspace: WorkspaceListEntry | undefined): string {
-  return acpPaneTargets(workspace)[0] ?? 'agent'
-}
-
-/**
- * Whether a mounted pane still exists in this workspace:
- *
- *  - An ended conversation's pane is gone; otherwise it would keep retrying
- *    a socket the server refuses.
- *  - An `acp` workspace's `agent` pane (acpd's log) is only kept while no
- *    conversation exists yet.
- *  - A terminal pane lasts while the snapshot lists its window, or while the
- *    windows are not listed yet.
+ * Whether a mounted pane still exists in this workspace: a session's while
+ * it is open, a terminal's while the snapshot lists its window (or while
+ * the windows are not listed yet), and the webapp's own always.
  */
 export function paneStillLive(workspace: WorkspaceListEntry, target: string): boolean {
-  const acp = acpPaneTargets(workspace)
-  if (target === 'agent') return acp.length === 0
-  if (isAcpTarget(target)) return acp.includes(target)
+  if (isSessionTarget(target)) return sessionPaneTargets(workspace).includes(target)
   if (isSpecialPane(target)) return true
   return workspace.terminals?.some((t) => t.target === target) ?? true
 }
 
 /**
- * Keep one pane per live tmux window and conversation: new ones (init
- * commands, scratch shells) are appended as columns, and gone ones are
- * removed, including kills by another client and stale ids restored from
- * localStorage. Other special panes and the user's arrangement are kept.
- *
- * Once an `acp` workspace has a conversation, its `agent` pane (acpd's log)
- * hands its place to the chat pane, so panes opened beside the `agent`
- * fallback stay to the right of the chat pane that replaces it.
+ * Keep one pane per open session and live tmux window: new ones (a session
+ * another client opened, init commands, scratch shells) are appended as
+ * columns, and gone ones are removed, including closes and kills by
+ * another client and stale targets restored from localStorage. The webapp's
+ * own panes and the user's arrangement are kept.
  */
 export function syncPaneLayout(
   layout: PaneLayout,
   workspace: WorkspaceListEntry,
   terminalTargets: string[],
 ): PaneLayout {
-  const acp = acpPaneTargets(workspace)
-  const live = [...(acp.length > 0 ? [] : ['agent']), ...acp, ...terminalTargets]
-  const unshown = acp.find((t) => !paneTargets(layout).includes(t))
-  let next = unshown ? renameTargets(layout, 'agent', unshown) : layout
+  const live = [...sessionPaneTargets(workspace), ...terminalTargets]
+  let next = layout
   for (const t of paneTargets(next)) {
-    if (!live.includes(t) && (isAcpTarget(t) || !isSpecialPane(t))) next = removeTarget(next, t)
+    if (!live.includes(t) && !isSpecialPane(t)) next = removeTarget(next, t)
   }
   for (const t of live) next = addColumn(next, t)
   return next

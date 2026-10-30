@@ -11,7 +11,7 @@
 //
 // How an agent is observed belongs to its `AgentDriver` (`#runtime/agents`),
 // so the watcher's respawn/backoff logic serves both `tui` and `acp`. The
-// store keys statuses by the driver's opaque conversation handle.
+// store keys statuses by the driver's opaque handle (a session's window).
 //
 // Each export needs a unit test in packages/server/test/runtime/status/.
 
@@ -20,7 +20,7 @@ export { observeWorkspaces, type WorkspaceRuntimeReport } from './observe'
 export {
   forgetLiveness,
   isTmuxSessionAlive,
-  probeAgentPaneState,
+  probeSetupState,
   probeTmuxLiveness,
   type ProbeTarget,
   type TmuxLiveness,
@@ -31,8 +31,10 @@ export {
   onLiveAgentsChanged,
   onStreamHealthLost,
   onWaitingEnded,
+  readAgentStatus,
   readWorkspaceStatus,
   readWorkspaceWaitingSince,
+  readWorkspaceWindows,
 } from './status-store'
 export {
   StatusWatcherManager,

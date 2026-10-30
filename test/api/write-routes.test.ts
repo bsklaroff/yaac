@@ -165,6 +165,8 @@ function rawInit(init: RequestInit = {}): RequestInit {
 
 /** Every test starts with this project recorded; requests name it by id or name. */
 const DEMO = DEMO_PROJECT_ID
+/** The session a create's mock reports opening. */
+const SESSION = '44444444-4444-4444-8444-444444444444'
 const WEB = '0b0b0b0b-0000-4000-8000-000000000001'
 
 async function writeProject(id: string, remoteUrl = 'https://example.com/foo', name = 'demo'): Promise<void> {
@@ -665,7 +667,7 @@ describe('write routes', () => {
     // previous values.
     it('remembers the agent and what the request named for it', async () => {
       mockCreateWorkspace.mockResolvedValue({
-        workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
+        workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [],
       })
       const app = buildApp({ buildId: 'test' })
       const create = async (body: Record<string, unknown>): Promise<void> => {
@@ -689,10 +691,10 @@ describe('write routes', () => {
       // with no mode remembered, it is chat.
       await create({ tool: 'claude' })
       expect(mockCreateWorkspace.mock.calls.at(-1)?.[1]).toMatchObject({
-        tool: 'claude', model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp', effort: 'max',
+        session: { tool: 'claude', model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp', effort: 'max' },
       })
       await create({ tool: 'pi' })
-      expect(mockCreateWorkspace.mock.calls.at(-1)?.[1]).toMatchObject({ tool: 'pi', mode: 'acp' })
+      expect(mockCreateWorkspace.mock.calls.at(-1)?.[1]).toMatchObject({ session: { tool: 'pi', mode: 'acp' } })
       // ...and records only the agent.
       expect((await getProjectRow(DEMO))?.createDefaults.claude)
         .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp', effort: 'max' })
@@ -710,7 +712,7 @@ describe('write routes', () => {
       let rowModel: unknown
       mockCreateWorkspace.mockImplementation((_projectId, opts) => {
         rowModel = listProvisioning().find((p) => p.workspaceId === opts.workspaceId)
-        return Promise.resolve({ workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' as const })
+        return Promise.resolve({ workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [] })
       })
       const app = buildApp({ buildId: 'test' })
       const res = await app.request('/api/workspace/create', rawInit({
@@ -724,13 +726,7 @@ describe('write routes', () => {
       mockCreateWorkspace.mockImplementation((_projectId, opts) => {
         opts.onProgress?.('Fetching latest from remote...')
         opts.onProgress?.('Creating session job yaac-demo-sess-x...')
-        return Promise.resolve({
-          workspaceId: 'sess-x',
-          jobName: 'yaac-demo-sess-x',
-          forwardedPorts: [],
-          tool: 'claude',
-          mode: 'tui' as const,
-        })
+        return Promise.resolve({ workspaceId: 'sess-x', jobName: 'yaac-demo-sess-x', forwardedPorts: [], sessionId: SESSION })
       })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.workspace.create.$post({
@@ -745,21 +741,9 @@ describe('write routes', () => {
       expect(events).toEqual([
         { type: 'progress', message: 'Fetching latest from remote...' },
         { type: 'progress', message: 'Creating session job yaac-demo-sess-x...' },
-        {
-          type: 'result',
-          result: {
-            workspaceId: 'sess-x',
-            jobName: 'yaac-demo-sess-x',
-            forwardedPorts: [],
-            tool: 'claude',
-            // The CLI reads this so it doesn't attach a PTY to an acp
-            // workspace.
-            mode: 'tui',
-          },
-        },
+        // The CLI attaches to the session the create opened.
+        { type: 'result', result: { workspaceId: 'sess-x', jobName: 'yaac-demo-sess-x', forwardedPorts: [], sessionId: SESSION } },
       ])
-      expect(mockCreateWorkspace).toHaveBeenCalledWith(DEMO, expect.objectContaining({
-      }))
     })
 
     it('emits a terminal error event when createWorkspace throws', async () => {
@@ -775,7 +759,7 @@ describe('write routes', () => {
 
     it('threads a branch into createWorkspace', async () => {
       mockCreateWorkspace.mockResolvedValue({
-        workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
+        workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [],
       })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.workspace.create.$post({ json: { project: DEMO, branch: 'dev' } })
@@ -787,7 +771,7 @@ describe('write routes', () => {
     // What the CLI sends as typed: a name, an id or an id prefix.
     it('resolves the project a create names, and refuses an ambiguous or unknown one', async () => {
       mockCreateWorkspace.mockResolvedValue({
-        workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
+        workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [],
       })
       const app = buildApp({ buildId: 'test' })
       const create = async (project: string): Promise<{ status: number; text: string }> => {
@@ -822,7 +806,7 @@ describe('write routes', () => {
 
     it('threads a client-supplied workspaceId into createWorkspace', async () => {
       mockCreateWorkspace.mockResolvedValue({
-        workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
+        workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [],
       })
       const id = '11111111-1111-4111-8111-111111111111'
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
@@ -865,6 +849,32 @@ describe('write routes', () => {
       expect(mockCreateWorkspace).not.toHaveBeenCalled()
       expect(listProvisioning()).toEqual([expect.objectContaining({ workspaceId: id, message: 'Starting…' })])
       expect(listProvisioning()[0].error).toBeUndefined()
+    })
+
+    // A workspace with no session runs no agent, so nothing a session would
+    // take may come with it, and no agent's defaults are remembered.
+    it('starts a workspace with no session, refusing a prompt or agent setting beside it', async () => {
+      mockCreateWorkspace.mockResolvedValue({ workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [] })
+      const app = buildApp({ buildId: 'test' })
+      const create = (body: Record<string, unknown>): Promise<Response> => Promise.resolve(app.request('/api/workspace/create', rawInit({
+        method: 'POST', body: JSON.stringify({ project: DEMO, noSession: true, ...body }),
+      })))
+
+      const res = await create({ title: 'Scratch' })
+      expect(res.status).toBe(200)
+      await res.text()
+      expect(mockCreateWorkspace.mock.calls[0][1]).toMatchObject({ title: 'Scratch' })
+      expect(mockCreateWorkspace.mock.calls[0][1]).not.toHaveProperty('session')
+      expect((await getProjectRow(DEMO))?.lastTool).toBeUndefined()
+
+      for (const extra of [{ prompt: 'go' }, { tool: 'claude' }, { permissionMode: 'plan' }, { mode: 'acp' }]) {
+        const refused = await create(extra)
+        expect(refused.status, JSON.stringify(extra)).toBe(400)
+        expect((await refused.json() as { error: unknown }).error).toEqual({
+          code: 'VALIDATION', message: 'a workspace with no session takes no prompt or agent settings',
+        })
+      }
+      expect(mockCreateWorkspace).toHaveBeenCalledTimes(1)
     })
 
     it('rejects a non-uuid workspaceId with VALIDATION', async () => {
@@ -918,13 +928,7 @@ describe('write routes', () => {
       await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'sess-x' })
       mockCreateWorkspace.mockImplementation((_projectId, opts) => {
         opts.onProgress?.('Reusing existing workspace at /wt/sess-x')
-        return Promise.resolve({
-          workspaceId: 'sess-x',
-          jobName: 'yaac-demo-sess-x',
-          forwardedPorts: [],
-          tool: 'claude',
-          mode: 'tui' as const,
-        })
+        return Promise.resolve({ workspaceId: 'sess-x', jobName: 'yaac-demo-sess-x', forwardedPorts: [] })
       })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       // The CLI sends a prefix as typed; the route resolves the full id.
@@ -938,24 +942,10 @@ describe('write routes', () => {
       const events = (await res.text()).trim().split('\n').map((line) => JSON.parse(line) as unknown)
       expect(events).toEqual([
         { type: 'progress', message: 'Reusing existing workspace at /wt/sess-x' },
-        {
-          type: 'result',
-          result: {
-            workspaceId: 'sess-x',
-            jobName: 'yaac-demo-sess-x',
-            forwardedPorts: [],
-            tool: 'claude',
-            // The CLI reads this so it doesn't attach a PTY to an acp
-            // workspace.
-            mode: 'tui',
-          },
-        },
+        { type: 'result', result: { workspaceId: 'sess-x', jobName: 'yaac-demo-sess-x', forwardedPorts: [] } },
       ])
-      // With no conversation recorded, the first comes back under the
-      // workspace id, fresh since it has no history.
-      expect(mockCreateWorkspace).toHaveBeenCalledWith(DEMO, expect.objectContaining({
-        workspaceId: 'sess-x', resume: [{ conversationId: 'sess-x', tool: 'claude' }],
-      }))
+      // It brings back the sessions the workspace had open.
+      expect(mockCreateWorkspace).toHaveBeenCalledWith(DEMO, expect.objectContaining({ workspaceId: 'sess-x', resume: true }))
     })
 
     it('emits a terminal error event when the relaunch throws', async () => {
@@ -1286,7 +1276,7 @@ describe('write routes', () => {
       })))
 
     beforeEach(async () => {
-      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'parent', baseBranch: 'main', permissionMode: 'plan' })
+      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'parent', baseBranch: 'main' })
     })
 
     it('queues, edits and runs one — once', async () => {
@@ -1319,7 +1309,7 @@ describe('write routes', () => {
       mockCreateWorkspace.mockImplementation((projectId, opts) => new Promise((resolve) => {
         finish = () => {
           void recordWorkspaceCreated({ projectId: projectId, workspaceId: opts.workspaceId ?? 'x' }).then(() =>
-            resolve({ workspaceId: opts.workspaceId ?? 'x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' }))
+            resolve({ workspaceId: opts.workspaceId ?? 'x', jobName: 'j', forwardedPorts: [] }))
         }
       }))
       const run = await client().workspace.queue.run.$post({ json: { id: queued.id } })
@@ -1331,9 +1321,8 @@ describe('write routes', () => {
       await vi.waitFor(() => { expect(mockCreateWorkspace).toHaveBeenCalledTimes(1) })
       expect(mockCreateWorkspace.mock.calls[0][1]).toMatchObject({
         workspaceId,
-        initialPrompt: 'follow up, edited',
+        session: expect.objectContaining({ prompt: 'follow up, edited', permissionMode: 'plan' }) as unknown,
         branch: 'main',
-        permissionMode: 'plan',
         title: 'Named',
         groupId: refiled.groupId,
       })
@@ -1492,7 +1481,7 @@ describe('write routes', () => {
       await setDraftWorkspaceTitle(failed, 'someday', 'Someday')
       let finish!: () => void
       mockCreateWorkspace.mockImplementationOnce(() => new Promise((resolve) => {
-        finish = () => resolve({ workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' })
+        finish = () => resolve({ workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [] })
       }))
       const created = client.workspace.create.$post({
         json: { project: DEMO, prompt: 'someday', draftId: failed },
@@ -1515,7 +1504,7 @@ describe('write routes', () => {
         json: { project: DEMO, parent: 'nope', prompt: 'p', draftId: queued },
       })).status).toBe(404)
       expect(await ids()).toEqual([queued])
-      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'parent', baseBranch: 'main', permissionMode: 'plan' })
+      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'parent', baseBranch: 'main' })
       expect((await client.workspace.queue.create.$post({
         json: { project: DEMO, parent: 'parent', prompt: 'someday', draftId: queued },
       })).status).toBe(200)

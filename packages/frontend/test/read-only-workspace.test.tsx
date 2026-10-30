@@ -11,7 +11,7 @@ import { ReadOnlyWorkspace, type ReadOnlySubject } from '#components/ReadOnlyWor
 import { useStoppedEntry } from '#lib/useStoppedWorkspaces'
 import { useUiStore } from '#lib/store'
 import {
-  agentEvent, conversation, mockFetch, renderWithClient, serverError, TEST_USER_ID, TEST_WHOAMI, testQueryClient, userEvent, workspaceEntry,
+  agentEvent, conversation, mockFetch, renderWithClient, serverError, TEST_USER_ID, TEST_WHOAMI, testQueryClient, sessionEntry, userEvent, workspaceEntry,
   type FetchCall, type FetchMock,
 } from './harness'
 
@@ -27,8 +27,8 @@ const initial = useUiStore.getState()
 const stopped = (over: Partial<StoppedWorkspaceEntry> = {}): StoppedWorkspaceEntry => ({
   workspaceId: 's1',
   projectId: 'proj',
-  tool: 'claude',
   createdAt: '2026-07-13 00:00:00',
+  sessions: [],
   stoppedAt: '2026-07-13 01:00:00',
   title: 'OOMed run',
   prompt: 'fix the parser',
@@ -73,7 +73,7 @@ const renderPane = (subject: ReadOnlySubject): ReturnType<typeof renderWithClien
 
 describe('ReadOnlyWorkspace', () => {
   it('shows a stopped workspace\'s facts and conversation, and restarts it in place', async () => {
-    const entry = stopped({ deathReason: 'oom', deathDetail: 'exit code 137' })
+    const entry = stopped({ deathReason: 'oom', deathDetail: 'exit code 137', sessions: [sessionEntry({ mode: 'tui' })] })
     renderPane({ kind: 'stopped', entry })
 
     expect(screen.getByText('OOMed run')).toBeTruthy()
@@ -165,10 +165,11 @@ describe('ReadOnlyWorkspace', () => {
   })
 
   it('shows a teammate\'s running workspace with its status and no actions', () => {
+    const codex = sessionEntry({ tool: 'codex', mode: 'tui' })
     useUiStore.setState({ viewedUserId: 'u-ada' })
     const client = testQueryClient({ ...TEST_WHOAMI, users: [...TEST_WHOAMI.users, { id: 'u-ada', login: 'ada@example.com', name: 'Ada' }] })
     const view = renderWithClient(
-      <ReadOnlyWorkspace subject={{ kind: 'live', entry: workspaceEntry({ workspaceId: 'w1', tool: 'codex', title: 'Their run' }) }} />,
+      <ReadOnlyWorkspace subject={{ kind: 'live', entry: workspaceEntry({ workspaceId: 'w1', sessions: [codex], title: 'Their run' }) }} />,
       client,
     )
     expect(screen.getByText('Their run')).toBeTruthy()
@@ -180,7 +181,7 @@ describe('ReadOnlyWorkspace', () => {
       <QueryClientProvider client={client}>
         <ReadOnlyWorkspace subject={{
           kind: 'live',
-          entry: workspaceEntry({ workspaceId: 'w1', tool: 'codex', title: 'Their run', status: 'waiting', asking: true }),
+          entry: workspaceEntry({ workspaceId: 'w1', sessions: [codex], title: 'Their run', status: 'waiting', asking: true }),
         }} />
       </QueryClientProvider>,
     )

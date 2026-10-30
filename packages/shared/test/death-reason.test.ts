@@ -9,8 +9,8 @@ describe('describeWorkspaceDeathReason', () => {
       ['evicted', 'evicted by the node'],
       ['crashed', 'crashed'],
       ['pod-stopped', 'container stopped'],
-      ['agent-exited', 'agent exited'],
-      ['never-started', 'agent never started'],
+      ['agent-exited', 'its tmux server exited'],
+      ['never-started', 'its setup never finished'],
       ['orphaned', 'removed outside yaac'],
     ]
     for (const [reason, copy] of cases) {

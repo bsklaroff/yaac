@@ -22,7 +22,8 @@ import { k8sNamespace, readObject } from '@yaac/server/drivers/k8s/substrate/api
 import { nodeLocalNodePath } from '@yaac/server/drivers/k8s/substrate/mount-sources'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import { AGENT_CLIS } from '@yaac/shared/types'
-import type { ResourceReport } from '@yaac/shared/types'
+import type { ResourceReport, SessionEntry } from '@yaac/shared/types'
+import { KEEPER_WINDOW } from '@yaac/server/drivers/contract'
 import {
   startMockLLM,
   startMockGit,
@@ -1444,6 +1445,113 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       ])
       expect(dial.trim()).toBe('000')
     }, 240_000)
+  })
+
+  /**
+   * Sessions (docs/sessions.md), through the CLI: a workspace started with
+   * none, then agents opened in it with `--workspace`, listed, attached to,
+   * closed and resumed. One workspace serves every case, in order; it is
+   * stopped only once they are done.
+   */
+  describe('sessions', () => {
+    const NAME = 'sessions'
+    let workspaceId = ''
+    let jobName = ''
+
+    /** The workspace's tmux windows. */
+    const windows = async (): Promise<string[]> => (await execInJob(jobName, [
+      'tmux', '-S', CONTAINER_TMUX_SOCK, 'list-windows', '-t', 'yaac', '-F', '#{window_name}',
+    ])).stdout.trim().split('\n')
+
+    /** The workspace's open sessions, oldest first. */
+    const sessions = async (): Promise<SessionEntry[]> => {
+      const res = await fetch(`${base}/api/workspace/list?project=${NAME}`)
+      const { workspaces } = await res.json() as { workspaces: Array<{ workspaceId: string; sessions: SessionEntry[] }> }
+      return workspaces.find((w) => w.workspaceId === workspaceId)?.sessions ?? []
+    }
+
+    const yaac = async (...args: string[]): Promise<string> => {
+      const { stdout, stderr, exitCode } = await runYaac(serverEnv, ...args)
+      if (exitCode !== 0) throw new Error(`yaac ${args.join(' ')} failed (exit ${exitCode}):\n${stderr}`)
+      return stdout
+    }
+
+    beforeAll(async () => {
+      await skipClaudeOnboarding(await setupProject(NAME))
+      const stdout = await yaac('workspace', 'create', NAME, '--no-session')
+      // With no session to attach to, it names the workspace instead.
+      workspaceId = /Workspace (\S+) is running/.exec(stdout)?.[1] ?? ''
+      expect(workspaceId).not.toBe('')
+      jobName = (await findWorkspacePod(NAME)).jobName
+    }, 240_000)
+
+    afterAll(() => stopWorkspace(workspaceId))
+
+    it('starts a workspace with no session: no agent window, and none listed', async () => {
+      expect(await windows()).toEqual([KEEPER_WINDOW])
+      expect(await sessions()).toEqual([])
+      const row = (await yaac('workspace', 'list')).split('\n').find((l) => l.startsWith(workspaceId.slice(0, 8)))
+      // No tool, and a session count of 0.
+      expect(row).toMatch(/\s-\s+\S+\s+0\b/)
+    })
+
+    it('opens sessions in the running workspace with --workspace, each in a window of its own, listed under SESSION', async () => {
+      await yaac('workspace', 'create', '--workspace', workspaceId.slice(0, 8), '--tool', 'claude', '--mode', 'tui', '--prompt', 'say hi')
+      await yaac('workspace', 'create', '--workspace', workspaceId, '--tool', 'codex', '--mode', 'tui')
+      const [claude, codex] = await sessions()
+      expect([claude, codex]).toMatchObject([
+        { tool: 'claude', mode: 'tui', prompt: 'say hi' },
+        { tool: 'codex', mode: 'tui' },
+      ])
+      await vi.waitFor(async () => {
+        expect(await windows()).toEqual(expect.arrayContaining([claude.window, codex.window]))
+      }, { timeout: 30_000, interval: 500 })
+
+      const listed = await yaac('workspace', 'list')
+      expect(listed).toMatch(/WORKSPACE\s+SESSION\s+AGENT\s+MODE\s+STATUS\s+TITLE/)
+      for (const s of [claude, codex]) {
+        expect(listed).toMatch(new RegExp(`${workspaceId.slice(0, 8)}\\s+${s.sessionId.slice(0, 8)}\\s+${s.tool}`))
+      }
+    })
+
+    // e2e runs have no TTY, so only a refusal, which comes before the
+    // terminal is touched, can be checked here.
+    it('refuses to attach to a session the workspace does not have', async () => {
+      const { stderr, exitCode } = await runYaac(serverEnv, 'workspace', 'attach', '--session', 'ffffffff', workspaceId)
+      expect(exitCode).not.toBe(0)
+      expect(stderr).toContain(`Workspace ${workspaceId} has no open session "ffffffff".`)
+    })
+
+    it('closes one session with stop --session, killing its window and leaving the workspace running', async () => {
+      const codex = (await sessions()).find((s) => s.tool === 'codex')!
+      expect(await yaac('workspace', 'stop', '--session', codex.sessionId.slice(0, 8))).toContain(
+        `Session ${codex.sessionId} closed; its conversations stay in workspace ${workspaceId}'s history. The workspace keeps running.`,
+      )
+      expect((await sessions()).map((s) => s.tool)).toEqual(['claude'])
+      await vi.waitFor(async () => { expect(await windows()).not.toContain(codex.window) }, { timeout: 15_000, interval: 500 })
+      expect((await findWorkspacePod(NAME)).running).toBe(true)
+    })
+
+    // claude's conversation is the session's own id, recorded once its
+    // pane names it. Closed, it comes back as a new session with --resume.
+    it('opens a session on an earlier conversation with --resume', async () => {
+      const [claude] = await sessions()
+      const conversationId = await vi.waitFor(async () => {
+        const res = await fetch(`${base}/api/workspace/${workspaceId}/conversations`)
+        const recorded = (await res.json() as Array<{ conversationId: string; sessionId?: string }>)
+          .find((c) => c.sessionId === claude.sessionId)
+        expect(recorded).toBeDefined()
+        return recorded!.conversationId
+      }, { timeout: 60_000, interval: 1_000 })
+      await yaac('workspace', 'stop', '--session', claude.sessionId)
+      expect(await yaac('workspace', 'conversations', workspaceId)).toMatch(new RegExp(`${conversationId}\\s+claude\\s+ended`))
+
+      await yaac('workspace', 'create', '--workspace', workspaceId, '--resume', conversationId)
+      const [resumed] = await sessions()
+      expect(resumed).toMatchObject({ tool: 'claude', conversationId })
+      expect(resumed.sessionId).not.toBe(claude.sessionId)
+      await vi.waitFor(async () => { expect(await windows()).toContain(resumed.window) }, { timeout: 30_000, interval: 500 })
+    }, 120_000)
   })
 
   describe('codex session', () => {

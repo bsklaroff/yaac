@@ -66,8 +66,8 @@ next viewer. `pause-after` is not used, because with it set tmux ignores
 
 Each attach is seeded from tmux itself, with no emulator on the server:
 
-1. Resolve the target to its pane (`yaac:^` is the agent window, the
-   lowest index), then size its window (below).
+1. Resolve the target to its pane (`session:<name>` is a session's window,
+   by name; `window:@<id>` any other), then size its window (below).
 2. One command line: `display -p` for the pane's size, cursor and the modes
    tmux exposes (alternate screen, mouse tracking and encoding, keypad
    modes, insert, wrap, origin, scroll region, cursor visibility and

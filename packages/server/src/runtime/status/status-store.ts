@@ -2,11 +2,10 @@
  * In-memory store of agent status, fed by the status watchers
  * (`status-watcher.ts`) and read by every display path.
  *
- * Status is per conversation: a workspace can hold several, each with its
- * own busy/idle, and the workspace's status is an aggregate. Conversations
- * are keyed by the driver's handle (tmux pane id `%3` for `tui`, acpd window
- * name `claude-2` for `acp`), so the store is mode-agnostic; the registry
- * maps handles back to conversations.
+ * Status is per agent: a workspace can run several sessions, each with its
+ * own busy/idle, and the workspace's status is an aggregate. Agents are
+ * keyed by the driver's handle (a session's window name), so the store is
+ * mode-agnostic; the registry maps handles back to sessions.
  *
  * Drivers push changes as they observe them, so reads are synchronous
  * lookups and never trigger an exec.
@@ -28,7 +27,8 @@
 
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import type { LiveAgent } from '#runtime/agents'
-import type { AgentStatus, WorkspaceTerminalEntry } from '@yaac/shared/types'
+import type { WorkspaceWindow } from '#drivers/contract'
+import type { AgentStatus } from '@yaac/shared/types'
 
 export interface AgentStatusEntry {
   status: AgentStatus
@@ -60,13 +60,13 @@ export interface WorkspaceStatusEntry {
 }
 
 const store = new Map<string, WorkspaceStatusEntry>()
-/** Each workspace's non-agent tmux windows, as its watcher last listed them.
- *  Kept apart from `store`, whose entry creation marks an attach. */
-const terminals = new Map<string, WorkspaceTerminalEntry[]>()
+/** Each workspace's tmux windows, as its watcher last listed them. Kept
+ *  apart from `store`, whose entry creation marks an attach. */
+const windows = new Map<string, WorkspaceWindow[]>()
 
 let liveAgentsListener: (() => void) | null = null
 let streamHealthLostListener: (() => void) | null = null
-let waitingEndedListener: ((projectId: string, workspaceId: string) => void) | null = null
+let waitingEndedListener: ((projectId: string, workspaceId: string, handle: string) => void) | null = null
 
 function key(projectId: string, workspaceId: string): string {
   return `${projectId}/${workspaceId}`
@@ -98,14 +98,12 @@ export function onLiveAgentsChanged(fn: () => void): void {
 }
 
 /**
- * Register the handler fired when the workspace's waiting spell ends, which
- * makes its next one unread (`settleStatus` says when). A workspace with no
- * entry reads as `waiting`, so an agent found mid-turn after a server
- * restart fires this while one idle across it does not. Another
- * conversation's turn does not fire it while the spell's own conversation
- * still waits. Single listener.
+ * Register the handler fired when an agent stops needing the user, which
+ * makes its next waiting spell unread. An agent with no status yet reads as
+ * waiting, so one found mid-turn after a server restart fires this while
+ * one idle across it does not. Single listener.
  */
-export function onWaitingEnded(fn: (projectId: string, workspaceId: string) => void): void {
+export function onWaitingEnded(fn: (projectId: string, workspaceId: string, handle: string) => void): void {
   waitingEndedListener = fn
 }
 
@@ -138,35 +136,6 @@ function classifiedSpell(e: WorkspaceStatusEntry | undefined): number | undefine
     if (earliest === undefined || a.waitingSinceMs < earliest) earliest = a.waitingSinceMs
   }
   return earliest
-}
-
-/** What a write is compared against, to tell whether it ended a spell. */
-interface StatusMark {
-  status: AgentStatus
-  spell: number | undefined
-}
-
-function statusMark(projectId: string, workspaceId: string): StatusMark {
-  return {
-    status: readWorkspaceStatus(projectId, workspaceId),
-    spell: classifiedSpell(store.get(key(projectId, workspaceId))),
-  }
-}
-
-/**
- * The workspace's status after a write, firing `onWaitingEnded` if the
- * write ended its waiting spell. That is either the workspace going from
- * needing the user to work, or its spell's start moving because the
- * conversation that began it stopped waiting (it went to work or closed)
- * while another still waits, whose reply nobody has necessarily seen.
- */
-function settleStatus(projectId: string, workspaceId: string, before: StatusMark): AgentStatus {
-  const after = statusMark(projectId, workspaceId)
-  if ((needsUser(before.status) && !needsUser(after.status))
-    || (before.spell !== undefined && after.spell !== before.spell)) {
-    waitingEndedListener?.(projectId, workspaceId)
-  }
-  return after.status
 }
 
 /** Statuses from most to least pressing; the aggregate takes the first. */
@@ -234,7 +203,7 @@ export function setAgentStatus(
   status: AgentStatus,
 ): void {
   const k = key(projectId, workspaceId)
-  const before = statusMark(projectId, workspaceId)
+  const before = readWorkspaceStatus(projectId, workspaceId)
   const hadEntry = store.has(k)
   const wasHealthy = store.get(k)?.streamHealthy ?? false
   const e = entry(k)
@@ -255,13 +224,16 @@ export function setAgentStatus(
   delete e.attachedWaitingSinceMs
   e.streamHealthy = true
   e.updatedAtMs = Date.now()
+  if ((prev === undefined || needsUser(prev.status)) && !needsUser(status)) {
+    waitingEndedListener?.(projectId, workspaceId, handle)
+  }
   // Also notify when health returns, which clients render even if the
   // status held.
   const entryChanged = !prev
     || prev.status !== status
     || prev.waitingSinceMs !== waitingSinceMs
-  const after = settleStatus(projectId, workspaceId, before)
-  if (entryChanged || !hadEntry || !wasHealthy || after !== before.status) {
+  const after = readWorkspaceStatus(projectId, workspaceId)
+  if (entryChanged || !hadEntry || !wasHealthy || after !== before) {
     notifyWorkspaceListChanged()
   }
 }
@@ -272,7 +244,7 @@ export function setAgentStatus(
  */
 export function setLiveAgents(projectId: string, workspaceId: string, agents: LiveAgent[]): void {
   const k = key(projectId, workspaceId)
-  const before = statusMark(projectId, workspaceId)
+  const before = readWorkspaceStatus(projectId, workspaceId)
   const e = entry(k)
   const next = new Set(agents.map((a) => a.handle))
   const previous = e.liveAgents
@@ -289,8 +261,8 @@ export function setLiveAgents(projectId: string, workspaceId: string, agents: Li
   // (the registry joins against them), so a new ACP conversation becomes a
   // row without waiting for the resync.
   if (changed) liveAgentsListener?.()
-  const after = settleStatus(projectId, workspaceId, before)
-  if (changed || after !== before.status) notifyWorkspaceListChanged()
+  const after = readWorkspaceStatus(projectId, workspaceId)
+  if (changed || after !== before) notifyWorkspaceListChanged()
 }
 
 /**
@@ -318,39 +290,39 @@ export function setWorkspaceStreamHealth(projectId: string, workspaceId: string,
   if (!healthy) streamHealthLostListener?.()
 }
 
-/** Record the workspace's terminals, notifying only on a change. */
-export function setWorkspaceTerminals(
+/** Record the workspace's windows, notifying only on a change. */
+export function setWorkspaceWindows(
   projectId: string,
   workspaceId: string,
-  entries: WorkspaceTerminalEntry[],
+  entries: WorkspaceWindow[],
 ): void {
   const k = key(projectId, workspaceId)
-  if (JSON.stringify(terminals.get(k)) === JSON.stringify(entries)) return
-  terminals.set(k, entries)
+  if (JSON.stringify(windows.get(k)) === JSON.stringify(entries)) return
+  windows.set(k, entries)
   notifyWorkspaceListChanged()
 }
 
-/** The workspace's terminals, or undefined before its watcher first listed
+/** The workspace's windows, or undefined before its watcher first listed
  *  them (unknown, not none). */
-export function readWorkspaceTerminals(projectId: string, workspaceId: string): WorkspaceTerminalEntry[] | undefined {
-  return terminals.get(key(projectId, workspaceId))
+export function readWorkspaceWindows(projectId: string, workspaceId: string): WorkspaceWindow[] | undefined {
+  return windows.get(key(projectId, workspaceId))
 }
 
 /**
- * Drop a workspace's entry and terminals, on teardown (`#domain/workspaces` cleanup) and
+ * Drop a workspace's entry and windows, on teardown (`#domain/workspaces` cleanup) and
  * when the watcher manager retires a workspace, so a reused id never sees
  * the previous status.
  */
 export function evictWorkspaceStatus(projectId: string, workspaceId: string): void {
   const k = key(projectId, workspaceId)
-  const hadTerminals = terminals.delete(k)
-  if (store.delete(k) || hadTerminals) notifyWorkspaceListChanged()
+  const hadWindows = windows.delete(k)
+  if (store.delete(k) || hadWindows) notifyWorkspaceListChanged()
 }
 
 /** Test-only: drop every entry and the change listener. */
 export function _resetWorkspaceStatusStoreForTests(): void {
   store.clear()
-  terminals.clear()
+  windows.clear()
   liveAgentsListener = null
   streamHealthLostListener = null
   waitingEndedListener = null

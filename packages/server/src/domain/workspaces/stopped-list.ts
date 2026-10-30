@@ -1,6 +1,7 @@
 import { workspaceDriver } from '#drivers/driver'
 import {
   getConversationsFor,
+  listOpenSessionsFor,
   listProjectRows,
   listStoppedWorkspaceRows,
   conversationTitle,
@@ -9,7 +10,7 @@ import {
   type StoppedRowCursor,
   type WorkspaceRow,
 } from '#db'
-import { toConversationEntry } from './conversation-entry'
+import { toConversationEntry, toSessionEntry } from './conversation-entry'
 import { ensureProjectExists } from './list'
 import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
@@ -79,21 +80,23 @@ export async function listStoppedWorkspaces(query: StoppedListQuery = {}): Promi
 
 /** Stopped rows in wire form, with their conversations. */
 export async function toStoppedEntries(rows: WorkspaceRow[]): Promise<StoppedWorkspaceEntry[]> {
-  const linksByWorkspace = await getConversationsFor(rows)
+  const [linksByWorkspace, sessionsByWorkspace] = await Promise.all([
+    getConversationsFor(rows),
+    listOpenSessionsFor(rows.map((r) => r.workspaceId)),
+  ])
   return rows.map((r) => {
     const links = linksByWorkspace.get(`${r.projectId}/${r.workspaceId}`) ?? []
-    const first = links[0]
-    const prompt = openingPrompt(links) ?? r.pendingPrompt
+    const sessions = sessionsByWorkspace.get(r.workspaceId) ?? []
+    const prompt = openingPrompt(links) ?? sessions[0]?.firstPrompt
     const title = r.title ?? conversationTitle(links) ?? r.generatedTitle
     return {
       workspaceId: r.workspaceId,
       projectId: r.projectId,
-      // From the first conversation; claude if none, as restart assumes.
-      tool: first?.tool ?? 'claude',
       createdAt: formatUtcTimestamp(r.createdAt.getTime()),
       lastActiveAt: formatUtcTimestamp(lastActiveMs(links) ?? r.createdAt.getTime()),
       stoppedAt: formatUtcTimestamp(stoppedAtOf(r).getTime()),
-      conversations: links.map((l) => toConversationEntry(l)),
+      sessions: sessions.map((s) => toSessionEntry(s, links)),
+      conversations: links.map(toConversationEntry),
       deathSeenBy: r.deathSeenBy,
       ...(prompt !== undefined ? { prompt } : {}),
       ...(title !== undefined ? { title } : {}),

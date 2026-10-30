@@ -18,13 +18,6 @@ export const LABEL_PROJECT_ID = 'yaac.project-id'
  * podSelector for workspace pods matches on it.
  */
 export const LABEL_WORKSPACE_ID = 'yaac.workspace-id'
-export const LABEL_TOOL = 'yaac.tool'
-/**
- * The workspace's agent mode (`AgentMode`). Set only for `acp`; a pod
- * without it is `tui`. A label lets the status watcher pick its driver from
- * informer events without a database query per pod event.
- */
-export const LABEL_MODE = 'yaac.mode'
 /**
  * Marks a workspace pod and its Job as a prewarmed spare: provisioned with
  * its agent booted, but not yet handed to a user. Spares are hidden from
@@ -86,9 +79,6 @@ export interface PodInfo {
   workspaceId: string
   /** See LABEL_PROJECT_ID. */
   projectId: string
-  tool: string
-  /** `yaac.mode` when stamped; absent on every TUI pod (see LABEL_MODE). */
-  mode?: string
   /** Pod phase: Pending | Running | Succeeded | Failed | Unknown. */
   phase: string
   /** True when the pod is Running and not terminating. */
@@ -141,7 +131,6 @@ const podItemSchema = z.object({
       [JOB_NAME_LABEL]: z.string().min(1),
       [LABEL_WORKSPACE_ID]: z.string().min(1),
       [LABEL_PROJECT_ID]: z.string().min(1),
-      [LABEL_TOOL]: z.string().min(1),
     }).catchall(z.string()),
     creationTimestamp: timestampSchema,
     deletionTimestamp: timestampSchema.optional(),
@@ -187,8 +176,6 @@ function mapPodItem({ metadata, status }: PodItem): PodInfo {
     podName: metadata.name,
     workspaceId: metadata.labels[LABEL_WORKSPACE_ID],
     projectId: metadata.labels[LABEL_PROJECT_ID],
-    tool: metadata.labels[LABEL_TOOL],
-    ...(metadata.labels[LABEL_MODE] !== undefined ? { mode: metadata.labels[LABEL_MODE] } : {}),
     phase: status.phase,
     running: status.phase === 'Running' && !terminating,
     terminating,

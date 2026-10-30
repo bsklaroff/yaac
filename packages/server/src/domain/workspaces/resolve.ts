@@ -4,7 +4,6 @@ import { listProvisioning } from './provisioning'
 import type { RuntimeHandle } from '#drivers/contract'
 import { authorizeProject, type Actor } from '#domain/access'
 import { ServerError } from '@yaac/shared/errors'
-import type { AgentTool } from '@yaac/shared/types'
 
 export interface ResolvedWorkspace {
   jobName: string
@@ -53,7 +52,6 @@ export interface ResolvedWorkspaceRecord {
   workspaceId: string
   /** Absent when resolved from the row only (nothing running). */
   jobName?: string
-  tool?: AgentTool
 }
 
 /**
@@ -72,7 +70,6 @@ export async function resolveWorkspaceRecord(
       projectId: match.projectId,
       workspaceId: match.workspaceId,
       jobName: match.jobName,
-      tool: match.tool,
     }
   }
   const row = await findWorkspaceRow(id)

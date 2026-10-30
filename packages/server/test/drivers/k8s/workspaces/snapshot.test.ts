@@ -38,7 +38,7 @@ function healthyCache(): ClusterCache {
   return {
     healthy: () => true,
     workspacePods: (): PodInfo[] => [{
-      podName: 'cached', workspaceId: 'cached', jobName: 'yaac-demo-cached', projectId: PROJECT, tool: 'claude',
+      podName: 'cached', workspaceId: 'cached', jobName: 'yaac-demo-cached', projectId: PROJECT,
       phase: 'Running', running: true, terminating: false, createdAtMs: 1, labels: {},
     }],
     workspaceJobs: () => [],

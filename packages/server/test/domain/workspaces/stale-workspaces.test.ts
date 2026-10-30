@@ -6,7 +6,7 @@ import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-dr
 // destructive action the tests assert on, run for real where a case says so.
 vi.mock('#runtime/status/liveness', () => ({
   probeTmuxLiveness: vi.fn(),
-  probeAgentPaneState: vi.fn(),
+  probeSetupState: vi.fn(),
   forgetLiveness: vi.fn(),
 }))
 vi.mock('#domain/workspaces/cleanup', () => ({
@@ -31,7 +31,7 @@ vi.mock('#db', () => ({
   listQueuedWorkspaceRows: vi.fn().mockResolvedValue([]),
 }))
 
-import { probeTmuxLiveness, probeAgentPaneState } from '#runtime/status/liveness'
+import { probeTmuxLiveness, probeSetupState } from '#runtime/status/liveness'
 import { cleanupWorkspace, cleanupWorkspaceDetached, deleteWorkspaceState } from '#domain/workspaces/cleanup'
 import type * as CleanupModule from '#domain/workspaces/cleanup'
 import { markWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
@@ -50,7 +50,7 @@ const mockWorkspaces = vi.fn<() => Promise<RuntimeHandle[]>>()
 const mockStrays = vi.fn<() => Promise<StrayUnit[]>>()
 const view = { resync: true, takenAtMs: 0, workspaces: mockWorkspaces, strayUnits: mockStrays }
 const mockProbe = vi.mocked(probeTmuxLiveness)
-const mockPaneProbe = vi.mocked(probeAgentPaneState)
+const mockSetupProbe = vi.mocked(probeSetupState)
 const mockCleanup = vi.mocked(cleanupWorkspaceDetached)
 const appliedEvents: WorkspaceEvent[] = []
 const stopsReported = (): Array<[string, string, unknown]> => appliedEvents
@@ -79,8 +79,6 @@ function pod(workspaceId: string, running = true): RuntimeHandle {
     jobName: `yaac-proj-${workspaceId}`,
     workspaceId,
     projectId: 'proj',
-    tool: 'claude',
-    declaredTool: 'claude',
     running,
     state: running ? 'running' : 'failed',
     createdAtMs: 1,
@@ -102,7 +100,7 @@ describe('reconcileStaleWorkspaces', () => {
     mockStrays.mockReset().mockResolvedValue([])
     installFakeWorkspaceDriver()
     mockProbe.mockReset()
-    mockPaneProbe.mockReset().mockResolvedValue('started')
+    mockSetupProbe.mockReset().mockResolvedValue('done')
     mockCleanup.mockClear()
     appliedEvents.length = 0
     vi.mocked(applyWorkspaceEvent).mockImplementation((event) => {
@@ -293,10 +291,10 @@ describe('reconcileStaleWorkspaces', () => {
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
-  it('reaps a live-tmux pod whose agent pane is still the placeholder past grace', async () => {
+  it('reaps a live-tmux pod whose setup never finished, past grace', async () => {
     mockWorkspaces.mockResolvedValue([pod('half-1')])
     mockProbe.mockResolvedValue('alive')
-    mockPaneProbe.mockResolvedValue('placeholder')
+    mockSetupProbe.mockResolvedValue('starting')
 
     await reconcileStaleWorkspaces(view)
 
@@ -305,13 +303,13 @@ describe('reconcileStaleWorkspaces', () => {
     )
     const log = loggedLines()
     expect(log).toContain('reaping session=half-1')
-    expect(log).toContain('agent never started')
+    expect(log).toContain('setup never finished')
   })
 
-  it('keeps a placeholder pane past grace while its create is still provisioning', async () => {
+  it('keeps an unfinished setup past grace while its create is still provisioning', async () => {
     mockWorkspaces.mockResolvedValue([pod('warming-1')])
     mockProbe.mockResolvedValue('alive')
-    mockPaneProbe.mockResolvedValue('placeholder')
+    mockSetupProbe.mockResolvedValue('starting')
     setDesired({ provisioning: ['warming-1'] })
 
     await reconcileStaleWorkspaces(view)
@@ -319,21 +317,21 @@ describe('reconcileStaleWorkspaces', () => {
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
-  it('keeps a placeholder pane while the pod is inside the grace window', async () => {
+  it('keeps an unfinished setup while the pod is inside the grace window', async () => {
     const fresh = { ...pod('fresh-1'), createdAtMs: Date.now() }
     mockWorkspaces.mockResolvedValue([fresh])
     mockProbe.mockResolvedValue('alive')
-    mockPaneProbe.mockResolvedValue('placeholder')
+    mockSetupProbe.mockResolvedValue('starting')
 
     await reconcileStaleWorkspaces(view)
 
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
-  it('does NOT reap on an inconclusive agent-pane probe', async () => {
+  it('does NOT reap on an inconclusive setup probe', async () => {
     mockWorkspaces.mockResolvedValue([pod('pane-blip-1')])
     mockProbe.mockResolvedValue('alive')
-    mockPaneProbe.mockResolvedValue('unknown')
+    mockSetupProbe.mockResolvedValue('unknown')
 
     await reconcileStaleWorkspaces(view)
 

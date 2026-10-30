@@ -69,8 +69,8 @@ function pageQuery(workspaceId: string, conversationId: string, life: string | u
   return {
     queryKey: ['transcript-page', workspaceId, conversationId, life, page],
     queryFn: async () => {
-      const read = await api.workspace[':id']['conversations'][':sessionId'].transcript.$get({
-        param: { id: workspaceId, sessionId: conversationId },
+      const read = await api.workspace[':id'].conversations[':conversationId'].transcript.$get({
+        param: { id: workspaceId, conversationId },
         query: { page: String(page) },
       })
       if (read.life !== life) throw new Error('the conversation restarted')

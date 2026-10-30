@@ -16,12 +16,12 @@ const snap = (entries: Array<Partial<WorkspaceListEntry>>): ServerSnapshot => ({
   workspaces: entries.map((s, i): WorkspaceListEntry => ({
     workspaceId: s.workspaceId ?? `s${i}`,
     projectId: s.projectId ?? 'proj',
-    tool: s.tool ?? 'claude',
     status: s.status ?? 'running',
     createdAt: '2026-01-01 00:00:00',
     blockedHosts: [],
     forwardedPorts: [],
     unforwardedPorts: [],
+    sessions: [],
     conversations: [],
     ...s,
   })),

@@ -37,7 +37,7 @@ import {
   failQueuedLaunch,
   findWorkspaceRow,
   finishQueuedLaunch,
-  firstConversation,
+  listWorkspaceSessions,
   getProjectRow,
   getProjectWorkspaceRows,
   getQueuedWorkspaceRow,
@@ -600,16 +600,16 @@ async function parentInfo(projectId: string, pointer: QueuedParent): Promise<Par
     return { pointer, ...(entry !== undefined ? settingsOf(entry) : {}) }
   }
   const workspaceId = pointer.parentWorkspaceId
-  const [row, first] = await Promise.all([
+  const [row, [first]] = await Promise.all([
     getProjectWorkspaceRows(projectId).then((rows) => rows.get(workspaceId)),
-    firstConversation(projectId, workspaceId),
+    listWorkspaceSessions(workspaceId),
   ])
   const creating = inFlightCreate(workspaceId)
-  // The conversation's model is as its agent reported it, which anything in
-  // the workspace can set, so only a launchable one is inherited.
+  // The session's model is as its agent reported it, which anything in the
+  // workspace can set, so only a launchable one is inherited.
   const reported = first?.model !== undefined ? launchableModel(first.tool, first.model) : undefined
-  const model = reported ?? row?.model ?? creating?.model
-  const mode = first?.mode ?? row?.mode
+  const model = reported ?? creating?.model
+  const mode = first?.mode
   const tool = first?.tool ?? creating?.tool
   const branch = row?.baseBranch ?? creating?.branch
   const groupId = row !== undefined ? row.groupId : creating?.groupId
@@ -618,7 +618,7 @@ async function parentInfo(projectId: string, pointer: QueuedParent): Promise<Par
     ...(tool !== undefined ? { tool } : {}),
     ...(mode !== undefined ? { mode } : {}),
     ...(model !== undefined ? { model } : {}),
-    ...(row !== undefined ? { permissionMode: row.permissionMode } : {}),
+    ...(first !== undefined ? { permissionMode: first.permissionMode } : {}),
     ...(branch !== undefined ? { branch } : {}),
     ...(groupId !== undefined ? { groupId } : {}),
   }

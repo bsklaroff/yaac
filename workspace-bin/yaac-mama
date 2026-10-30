@@ -5,6 +5,8 @@
 #   yaac-mama list [<workspace>...]
 #   yaac-mama list --stopped [--search S] [--group G] [--limit N] [--cursor C]
 #   yaac-mama create [opts] "<prompt>"
+#   yaac-mama create --workspace W [session opts] ["<prompt>"]
+#   yaac-mama create --no-session [--branch B] [--group G] [--title T] [--timeout D]
 #   yaac-mama queue [--parent-workspace W | --start-at T | --start-in D] [opts] "<prompt>"
 #   yaac-mama edit-queued [--parent-workspace W | --no-parent | --start-at T | --start-in D] [opts] <queued> ["<prompt>"]
 #   yaac-mama run-queued <queued>
@@ -15,11 +17,12 @@
 #   yaac-mama routine edit [--name N] [--cron C] [--tz Z] [opts] <routine> ["<prompt>"]
 #   yaac-mama routine pause|resume|run|delete <routine>
 #     where opts are create's but --title
-#   yaac-mama send [--conversation C] <workspace> "<message>"
+#   yaac-mama send [--session S | --conversation C] <workspace> "<message>"
 #   (each prompt or message also as - for stdin, or as --prompt-file F)
 #   yaac-mama rename [<workspace>] "<title>"
 #   yaac-mama set-base <branch>
 #   yaac-mama stop [<workspace>]
+#   yaac-mama stop --session [<session>]
 #   yaac-mama restart [--timeout D] <workspace>
 #   yaac-mama group create "<name>"
 #   yaac-mama group move <workspace> ["<group>"]
@@ -42,8 +45,10 @@
 # `fetch` reads another workspace's branches into this
 # checkout and `history` its conversations; neither writes to theirs.
 #
-# One request, a JSON envelope {command, args, body} POSTed to the server's
-# /api/workspace/mama, which owns what the commands mean. The substrates
+# One request, a JSON envelope {command, args, body, session} POSTed to the
+# server's /api/workspace/mama, which owns what the commands mean. `session`
+# is $YAAC_SESSION_ID, which each session's launch sets, so the server knows
+# which of the workspace's agents is asking. The substrates
 # differ only in how it gets there and how the caller is identified:
 #
 #   - Containerless ($YAAC_MAMA_URL set): the workspace is a host process
@@ -72,6 +77,11 @@ Usage:
   yaac-mama list --stopped [--search <text>] [--group <name>] [--limit <n>]
                                                    # stopped ones, newest first
   yaac-mama create [opts] "<prompt>"               # start another workspace
+  yaac-mama create --workspace <id> [opts] "<prompt>"
+                                                   # start another agent in a
+                                                   # running workspace (yours:
+                                                   # "$YAAC_WORKSPACE_ID")
+  yaac-mama create --no-session [opts]             # a workspace with no agent
   yaac-mama queue --parent-workspace <id> [opts] "<prompt>"
                                                    # start one when <id> stops
   yaac-mama queue --group <name> [opts] "<prompt>"
@@ -90,13 +100,16 @@ Usage:
   yaac-mama routine edit [opts] <routine> ["<prompt>"]
                                                    # change a routine
   yaac-mama routine pause|resume|run|delete <routine>
-  yaac-mama send [--conversation <c>] <workspace> "<message>"
-                                                   # message its running agent
+  yaac-mama send [--session <s>] <workspace> "<message>"
+                                                   # message one of its agents
   Any "<prompt>" or "<message>" can instead be - (read from stdin) or
   --prompt-file <path>, given before the other arguments.
   yaac-mama rename [<workspace>] "<title>"          # retitle (default: yourself)
   yaac-mama set-base <branch>                      # change your base branch
   yaac-mama stop [<workspace>]                      # stop it (default: yourself)
+  yaac-mama stop --session [<session>]             # close one agent's session
+                                                   # (default: yours); its
+                                                   # workspace keeps running
   yaac-mama restart [--timeout <d>] <workspace>    # restart a stopped one
   yaac-mama group create "<name>"                  # make an empty group
   yaac-mama group move <workspace> ["<group>"]      # omit the group to ungroup
@@ -148,6 +161,20 @@ but --title):
                    counts from that time. edit-queued can change a queued
                    workspace's timeout to any length, or clear it with
                    --timeout none.
+
+create also takes:
+  --workspace <id> start the agent as a new session in this running workspace
+                   of the project, on its checkout, rather than in a new
+                   workspace. It takes the agent options (--tool, --model,
+                   --effort, --permission-mode, --ui-mode, --title for the
+                   session's title) but not a workspace's (--branch, --group,
+                   --timeout). It prints the new session's id.
+  --resume <conversation>
+                   with --workspace: open the session on one of that
+                   workspace's earlier conversations (see `yaac-mama history`)
+                   instead of a new one; the prompt is then optional.
+  --no-session     start a workspace with no agent. It takes no prompt and
+                   no agent options.
 
 queue also takes at most one of:
   --parent-workspace <id>
@@ -227,8 +254,15 @@ out, or died (oom, crashed, evicted, …). --search matches titles, first prompt
 names; --group keeps one group's. A page that has more ends with the command
 for the next one (--cursor).
 
-create prints the new workspace's id and queue the queued workspace's id;
-a create provisions in the background (watch it in the yaac webapp).
+create prints the new workspace's id (or, with --workspace, the new
+session's) and queue the queued workspace's id; a create provisions in the
+background (watch it in the yaac webapp).
+
+Each running workspace's agents are its sessions, listed under the
+workspaces by `yaac-mama list` (yours marked "(you)"). send messages one:
+the one --session names, or the workspace's first. stop --session closes
+one, by default your own; the workspace keeps running, with no agent once
+its last session closes.
 Everything else prints a short report.
 
 fetch copies another workspace's branches and HEAD, running or stopped, into
@@ -355,7 +389,9 @@ envelope() {
     fi
     shift 2
   done
-  printf '%s' "{\"command\":$(printf '%s' "$cmd" | json_string),\"args\":{$args},\"body\":"
+  printf '%s' "{\"command\":$(printf '%s' "$cmd" | json_string),\"args\":{$args},"
+  [ -z "${YAAC_SESSION_ID:-}" ] || printf '%s' "\"session\":$(printf '%s' "$YAAC_SESSION_ID" | json_string),"
+  printf '%s' '"body":'
   if [ -n "${body_file:-}" ]; then json_string < "$body_file"; else printf '%s' "$body" | json_string; fi
   printf '}'
 }
@@ -617,11 +653,12 @@ EOF
   create|queue|edit-queued|routine-create|routine-edit)
     cmd=$1; shift
     tool=""; model=""; effort=""; perm=""; ui_mode=""; branch=""; group=""; title=""; parent=""; no_parent=""; prompt_file=""
-    timeout=""; start_at=""; start_in=""; routine_name=""; cron=""; tz=""
+    timeout=""; start_at=""; start_in=""; routine_name=""; cron=""; tz=""; target=""; resume=""; no_session=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --no-parent) no_parent=1; shift; continue ;;
-        --tool|--model|--effort|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace|--prompt-file|--timeout|--start-at|--start-in|--name|--cron|--tz)
+        --no-session) no_session=1; shift; continue ;;
+        --tool|--model|--effort|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace|--prompt-file|--timeout|--start-at|--start-in|--name|--cron|--tz|--workspace|--resume)
           [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a value" >&2; exit 2; } ;;
         *) break ;;
       esac
@@ -642,9 +679,15 @@ EOF
         --timeout) timeout=$2 ;;
         --start-at) start_at=$2 ;;
         --start-in) start_in=$2 ;;
+        --workspace) target=$2 ;;
+        --resume) resume=$2 ;;
       esac
       shift 2
     done
+    if [ "$cmd" != create ] && { [ -n "$target" ] || [ -n "$resume" ] || [ -n "$no_session" ]; }; then
+      echo "yaac-mama: --workspace, --resume and --no-session are create's" >&2
+      exit 2
+    fi
     opts='[--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T] [--timeout D]'
     if [ "$cmd" = create ] && { [ -n "$parent" ] || [ -n "$start_at" ] || [ -n "$start_in" ]; }; then
       echo 'yaac-mama: create starts now; use queue for --parent-workspace, --start-at or --start-in' >&2
@@ -677,7 +720,10 @@ EOF
         ;;
       *)
         [ -z "$prompt_file" ] || [ $# -lt 1 ] || both_prompts
+        # A workspace with no session takes no prompt, and a resumed
+        # conversation needs none.
         if [ -n "$prompt_file" ] && [ $# -eq 0 ]; then :
+        elif { [ -n "$no_session" ] || [ -n "$resume" ]; } && [ $# -eq 0 ]; then :
         elif [ $# -ne 1 ] || [ -z "$1" ]; then
           echo "usage: yaac-mama $use \"<prompt>\" | - | --prompt-file F" >&2
           exit 2
@@ -689,7 +735,7 @@ EOF
     set -- "$cmd" "$prompt" queued "$queued" routine "$routine" parent-workspace "$parent" no-parent "$no_parent" \
       tool "$tool" model "$model" effort "$effort" permission-mode "$perm" ui-mode "$ui_mode" branch "$branch" \
       group "$group" title "$title" timeout "$timeout" start-at "$start_at" start-in "$start_in" \
-      name "$routine_name" cron "$cron" tz "$tz"
+      name "$routine_name" cron "$cron" tz "$tz" workspace "$target" resume "$resume" no-session "$no_session"
     case "$cmd" in queue|routine-create) ;; *) run "$@" ;; esac
     # The new id alone on stdout, for `id=$(yaac-mama queue …)`; any note
     # the server adds after it goes to stderr.
@@ -701,15 +747,16 @@ EOF
 
   send)
     shift
-    conversation=""; prompt_file=""
+    conversation=""; session=""; prompt_file=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --conversation|--prompt-file)
+        --conversation|--session|--prompt-file)
           [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a value" >&2; exit 2; } ;;
         *) break ;;
       esac
       case "$1" in
         --conversation) conversation=$2 ;;
+        --session) session=$2 ;;
         --prompt-file) prompt_file=$2 ;;
       esac
       shift 2
@@ -717,12 +764,12 @@ EOF
     [ -z "$prompt_file" ] || [ $# -lt 2 ] || both_prompts
     if [ -z "${1:-}" ] || { [ -n "$prompt_file" ] && [ $# -ne 1 ]; } \
       || { [ -z "$prompt_file" ] && { [ $# -ne 2 ] || [ -z "$2" ]; }; }; then
-      echo 'usage: yaac-mama send [--conversation C] <workspace> "<message>" | - | --prompt-file F' >&2
+      echo 'usage: yaac-mama send [--session S | --conversation C] <workspace> "<message>" | - | --prompt-file F' >&2
       exit 2
     fi
     prompt=${2:-}
     read_prompt
-    run send "$prompt" workspace "$1" conversation "$conversation"
+    run send "$prompt" workspace "$1" session "$session" conversation "$conversation"
     ;;
 
   rename)
@@ -750,6 +797,18 @@ EOF
 
   stop)
     shift
+    # `--session` closes one session instead, the caller's own without an
+    # argument. That needs the caller's id, which only a session's agent has.
+    if [ "${1:-}" = --session ]; then
+      shift
+      if [ $# -gt 1 ] || { [ $# -eq 1 ] && [ -z "$1" ]; }; then
+        echo 'usage: yaac-mama stop --session [<session>]   (omit the session to close your own)' >&2
+        exit 2
+      fi
+      target=${1:-${YAAC_SESSION_ID:-}}
+      [ -n "$target" ] || { echo 'yaac-mama: stop --session needs a session id here, outside any session (see: yaac-mama list)' >&2; exit 2; }
+      run stop '' session "$target"
+    fi
     # No argument stops the caller — the same "omitted means me" idiom rename
     # uses, and the common case here. `run` drops an empty-valued pair, so
     # that sends no `workspace` at all, which is what the server reads as "me".

@@ -16,7 +16,7 @@ import { NESTED_PULL_HOSTS, resolveAllowedHosts } from '#lib/allowed-hosts'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
-import type { AgentTool, EgressAllowlist, SecretProxyRule, YaacConfig } from '@yaac/shared/types'
+import type { EgressAllowlist, SecretProxyRule, YaacConfig } from '@yaac/shared/types'
 import type { PassContext, WorkspaceRegistration } from '#drivers/contract'
 
 /**
@@ -60,9 +60,9 @@ export interface UpstreamRedirect {
 }
 
 /**
- * The registration ConfigMap's payload. `tool` and `projectId` are
- * required (the proxy drops a registration without them); git-auth-failure
- * records are keyed by the owning project. `owner` names
+ * The registration ConfigMap's payload. `projectId` is required (the proxy
+ * drops a registration without it); git-auth-failure records are keyed by
+ * the owning project. `owner` names
  * the credentials Secret entry every swap, refresh and ssh key resolves
  * through.
  */
@@ -70,7 +70,6 @@ export interface ProxyRegistration {
   rules: InjectionRule[]
   allowedHosts: string[]
   repoUrl?: string
-  tool: AgentTool
   projectId: string
   owner: string
   upstreamRedirects?: Record<string, UpstreamRedirect>
@@ -154,7 +153,6 @@ export function buildProxyRegistration(input: {
   config: YaacConfig
   allowlist: EgressAllowlist
   remoteUrl: string
-  tool: AgentTool
   projectId: string
   owner: string
   secretRules: Record<string, SecretProxyRule>
@@ -172,7 +170,6 @@ export function buildProxyRegistration(input: {
     rules: buildRulesFromSecrets(input.projectId, input.secretRules),
     allowedHosts,
     repoUrl: input.remoteUrl,
-    tool: input.tool,
     projectId: input.projectId,
     owner: input.owner,
     upstreamRedirects: parseUpstreamRedirectsEnv(env.YAAC_E2E_UPSTREAM_REDIRECTS),
@@ -190,7 +187,7 @@ export async function applyProxyRegistration(
 }
 
 /**
- * Write a workspace's full registration from the config, tool and remote
+ * Write a workspace's full registration from the config and remote
  * the caller resolved, and return it. Idempotent; a claimed prewarmed
  * workspace calls it again to pick up the project's current allowlist and
  * proxied secrets.
@@ -202,7 +199,6 @@ export async function registerWorkspaceEgress(
     config: reg.config,
     allowlist: reg.allowlist,
     remoteUrl: reg.remoteUrl,
-    tool: reg.tool,
     projectId: reg.projectId,
     owner: reg.owner,
     secretRules: reg.proxySecretRules,

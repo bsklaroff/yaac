@@ -40,9 +40,9 @@ afterEach(async () => {
 const client = (): ReturnType<typeof makeTestApiClient> =>
   makeTestApiClient(buildApp({ buildId: 'test' }))
 
-async function get(sessionId: string, page?: string): Promise<{ status: number; events?: AcpEvent[] }> {
-  const res = await client().workspace[':id']['conversations'][':sessionId'].transcript.$get({
-    param: { id: WORKSPACE, sessionId },
+async function get(conversationId: string, page?: string): Promise<{ status: number; events?: AcpEvent[] }> {
+  const res = await client().workspace[':id'].conversations[':conversationId'].transcript.$get({
+    param: { id: WORKSPACE, conversationId },
     query: page === undefined ? {} : { page },
   })
   if (res.status !== 200) return { status: res.status }
@@ -72,7 +72,7 @@ async function recordAcpConversation(): Promise<void> {
   ].map((l) => JSON.stringify(l)).join('\n') + '\n')
 }
 
-describe('GET /workspace/:id/conversations/:sessionId/transcript', () => {
+describe('GET /workspace/:id/conversations/:conversationId/transcript', () => {
   it('serves an acp conversation from the record acpd wrote', async () => {
     await recordAcpConversation()
 

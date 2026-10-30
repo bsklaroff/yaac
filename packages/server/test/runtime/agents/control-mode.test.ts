@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
-import { ControlModeClient, listTerminals, type ControlModeNotification } from '#runtime/agents'
+import { ControlModeClient, listWindows, type ControlModeNotification } from '#runtime/agents'
 
-const LIST_FORMAT = "list-windows -t yaac -F '#{window_index}|#{window_id}|#{window_name}'"
+const LIST_FORMAT = "list-windows -t yaac -F '#{window_id}|#{pane_dead}|#{window_name}'"
 
 /** A client wired to capture writes and notifications, past the reply
  *  block tmux sends for the attach itself. */
@@ -103,18 +103,18 @@ describe('ControlModeClient', () => {
   })
 })
 
-describe('listTerminals', () => {
-  it('maps every window but the agent (lowest index), pipes in names and all', async () => {
-    const tmux = vi.fn((_args: string) => Promise.resolve('0|@0|claude\n1|@3|dev-server\n2|@5|a|b|c\n'))
-    expect(await listTerminals(tmux)).toEqual([
-      { target: 'window:@3', name: 'dev-server' },
-      { target: 'window:@5', name: 'a|b|c' },
+describe('listWindows', () => {
+  it('maps every window with whether its pane is dead, pipes in names and all', async () => {
+    const tmux = vi.fn((_args: string) => Promise.resolve('@0|0|_yaac\n@3|1|claude-1a2b3c4d\n@5|0|a|b|c\n'))
+    expect(await listWindows(tmux)).toEqual([
+      { id: '@0', name: '_yaac', dead: false },
+      { id: '@3', name: 'claude-1a2b3c4d', dead: true },
+      { id: '@5', name: 'a|b|c', dead: false },
     ])
     expect(tmux).toHaveBeenCalledWith(LIST_FORMAT)
   })
 
-  it('is empty for a lone agent window and for garbage', async () => {
-    expect(await listTerminals(() => Promise.resolve('0|@0|claude\n'))).toEqual([])
-    expect(await listTerminals(() => Promise.resolve('no pipes here\n???\n'))).toEqual([])
+  it('skips garbage', async () => {
+    expect(await listWindows(() => Promise.resolve('no pipes here\n???\n'))).toEqual([])
   })
 })

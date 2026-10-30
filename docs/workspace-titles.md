@@ -9,12 +9,16 @@ What a workspace is called, first match wins:
    older install stays until it is cleared.
 2. **The agent's own title** for the conversation that labels the workspace
    (`conversations.title`, picked by `conversationTitle` in `#db`): the
-   conversation `openingPrompt` reads, else the first conversation, in window
-   order, that has one.
+   conversation `openingPrompt` reads, else the first conversation, in the
+   order the workspace saw them, that has one.
 3. **A generated title** (`workspaces.generatedTitle`), from yaac's local
    title model (docs/workspace-title-model-eval.md), or carried over from the
    draft or queued entry the workspace was created from.
-4. The opening prompt, then "New workspace".
+4. The opening prompt (its first session's), then "New workspace".
+
+A session shows its user's name for it (a rename), else its current
+conversation's agent title, else the message it was opened with
+(docs/sessions.md).
 
 The listings resolve the wire `title` from 1 to 3; clients fall back to the
 prompt. Drafts and queued entries have no agent yet, so they show their own

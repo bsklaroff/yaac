@@ -6,7 +6,8 @@ import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 export interface CreateWorkspaceResult {
   workspaceId: string
   jobName: string
-  tool: AgentTool
+  /** The session it opened; absent for a workspace with none. */
+  sessionId?: string
 }
 
 /**
@@ -37,13 +38,17 @@ async function streamWorkspaceOp(
 /**
  * A create from the webapp: its settings, every one sent so all become the
  * project's next defaults for that agent, plus what its provisioning row
- * shows until the workspace is listed.
+ * shows until the workspace is listed. A workspace with no session sends
+ * no agent settings.
  */
 export interface WorkspaceCreate {
   projectId: string
-  tool: AgentTool
-  mode: AgentMode
-  permissionMode: PermissionMode
+  /** Absent with `noSession`. */
+  tool?: AgentTool
+  mode?: AgentMode
+  permissionMode?: PermissionMode
+  /** Start it with no session. */
+  noSession?: true
   /** Absent or empty when the provider lists no models: it launches without one. */
   model?: string
   modelName?: string
@@ -78,9 +83,7 @@ export async function createWorkspace(
   const body = {
     project: c.projectId,
     workspaceId,
-    tool: c.tool,
-    mode: c.mode,
-    permissionMode: c.permissionMode,
+    ...(c.noSession === true ? { noSession: true } : { tool: c.tool, mode: c.mode, permissionMode: c.permissionMode }),
     ...(c.model ? { model: c.model } : {}),
     ...(c.effort !== undefined ? { effort: c.effort } : {}),
     ...(c.prompt ? { prompt: c.prompt } : {}),
@@ -109,6 +112,36 @@ export async function dismissProvisioning(workspaceId: string): Promise<void> {
 
 export async function stopWorkspace(workspaceId: string): Promise<void> {
   await api.workspace.stop.$post({ json: { workspaceId } })
+}
+
+/** What a session is opened with in a running workspace; unset fields
+ *  resolve as a create's. */
+export interface SessionOpen {
+  tool?: AgentTool
+  mode?: AgentMode
+  permissionMode?: PermissionMode
+  model?: string
+  effort?: string
+  prompt?: string
+  /** One of the workspace's earlier conversations to resume. */
+  resume?: string
+}
+
+/** Open a session in a running workspace; resolves with its id once its
+ *  window is launched. */
+export async function openSession(workspaceId: string, s: SessionOpen): Promise<string> {
+  const { sessionId } = await api.workspace[':id'].sessions.$post({ param: { id: workspaceId }, json: s })
+  return sessionId
+}
+
+/** Close a session: its agent stops, its conversations stay as history. */
+export async function closeSession(workspaceId: string, sessionId: string): Promise<void> {
+  await api.workspace[':id'].sessions[':sessionId'].close.$post({ param: { id: workspaceId, sessionId } })
+}
+
+/** Relaunch a session whose agent exited. */
+export async function resumeSession(workspaceId: string, sessionId: string): Promise<void> {
+  await api.workspace[':id'].sessions[':sessionId'].resume.$post({ param: { id: workspaceId, sessionId } })
 }
 
 /** Set a workspace's display title; blank clears it. */

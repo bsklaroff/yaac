@@ -1,14 +1,13 @@
 import { createHash } from 'node:crypto'
-import { and, count, desc, eq, exists, ilike, inArray, isNotNull, isNull, lt, lte, notInArray, or, sql, type SQL } from 'drizzle-orm'
+import { and, count, desc, eq, exists, ilike, inArray, isNotNull, isNull, lt, lte, notInArray, or, sql, type AnyColumn, type SQL } from 'drizzle-orm'
 import { getDb } from './client'
-import { conversations, workspaceConversations, workspaceGroups, workspaces } from './schema'
+import { conversations, sessions, workspaceConversations, workspaceGroups, workspaces } from './schema'
 import { deleteWorkspaceConversations } from './conversation-store'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { normalizeTitle } from '@yaac/shared/titles'
 import { ServerError } from '@yaac/shared/errors'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
-import { SELF_NAMING_TOOLS } from '@yaac/shared/types'
-import type { AgentMode, PermissionMode, WorkspaceDeathCause } from '@yaac/shared/types'
+import type { WorkspaceDeathCause } from '@yaac/shared/types'
 
 /**
  * One row per workspace yaac has created. The runtime is authoritative for
@@ -45,13 +44,6 @@ export interface WorkspaceCreatedInput {
   generatedTitle?: string
   /** The sidebar group; left ungrouped if the group no longer exists. */
   groupId?: string
-  /** The permission mode its agents launch in. */
-  permissionMode?: PermissionMode
-  /** The model and agent mode its first agent launches with. */
-  model?: string
-  mode?: AgentMode
-  /** The effort its agents launch at. */
-  effort?: string
   /** The zone it launches with as `TZ`. */
   timeZone?: string
   /** When the server stops it. */
@@ -102,10 +94,6 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
             ))})`,
         }
         : {}),
-      ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
-      ...(input.model !== undefined ? { model: input.model } : {}),
-      ...(input.mode !== undefined ? { mode: input.mode } : {}),
-      ...(input.effort !== undefined ? { effort: input.effort } : {}),
       ...(input.timeZone !== undefined ? { timeZone: input.timeZone } : {}),
       ...(input.deadline !== undefined ? timeoutColumns(input.deadline) : {}),
       ...(input.scratchDirs !== undefined ? { scratchDirs: input.scratchDirs } : {}),
@@ -129,15 +117,11 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
 export async function recordWorkspaceResumed(
   input: Pick<
     WorkspaceCreatedInput,
-    'projectId' | 'workspaceId' | 'permissionMode' | 'model' | 'mode' | 'effort' | 'timeZone' | 'deadline' | 'scratchDirs'
+    'projectId' | 'workspaceId' | 'timeZone' | 'deadline' | 'scratchDirs'
   >,
 ): Promise<void> {
   const db = await getDb()
   const rows = await db.update(workspaces).set({
-    ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
-    ...(input.model !== undefined ? { model: input.model } : {}),
-    ...(input.mode !== undefined ? { mode: input.mode } : {}),
-    ...(input.effort !== undefined ? { effort: input.effort } : {}),
     ...(input.scratchDirs !== undefined ? { scratchDirs: input.scratchDirs } : {}),
     // A resume launches a new process, in the zone the create read now.
     timeZone: input.timeZone ?? null,
@@ -150,30 +134,16 @@ export async function recordWorkspaceResumed(
   }
 }
 
-/**
- * Record that a new runtime (a "life") has come up, and clear every handle
- * the previous life recorded, in one transaction. Handles restart with each
- * life (tmux pane ids at `%0`, acpd sockets at the tool's name), so an old
- * handle would name something in the new life, and the ACP driver
- * re-addresses conversations by recorded handle
- * (`recordedConversationHandles`).
- */
+/** Record that a new runtime (a "life") has come up, so none of the
+ *  workspace's sessions has a window in it yet. */
 export async function recordWorkspaceLife(
   projectId: string,
   workspaceId: string,
 ): Promise<void> {
   const db = await getDb()
-  await db.transaction(async (tx) => {
-    await tx.update(workspaces)
-      .set({ lifeStartedAt: new Date() })
-      .where(key(projectId, workspaceId))
-    await tx.update(workspaceConversations)
-      .set({ paneId: null })
-      .where(and(
-        eq(workspaceConversations.projectId, projectId),
-        eq(workspaceConversations.workspaceId, workspaceId),
-      ))
-  })
+  await db.update(workspaces)
+    .set({ lifeStartedAt: new Date() })
+    .where(key(projectId, workspaceId))
 }
 
 /**
@@ -185,8 +155,8 @@ export async function recordWorkspaceLife(
  * current life began is overwritten: a restart whose clear of it was lost
  * would otherwise keep the old date, which retention ages the workspace by.
  *
- * Leaves `workspace_conversations.active` alone: that last observed set is
- * what a restart brings back.
+ * Leaves its sessions open and `workspace_conversations.active` alone: they
+ * are what a restart brings back.
  */
 export async function recordWorkspaceStopped(
   projectId: string,
@@ -245,25 +215,6 @@ export async function recordDeathSeen(projectId: string, workspaceId: string, us
   notifyWorkspaceListChanged()
 }
 
-/** Mark a waiting workspace as viewed by `userId`, clearing that user's
- *  unread dot on every client. Notifies only when the user is new to the
- *  spell, since every view sends one. */
-export async function recordWaitingSeen(projectId: string, workspaceId: string, userId: string): Promise<void> {
-  const db = await getDb()
-  const added = await db.update(workspaces).set({ waitingSeenBy: appendUser(workspaces.waitingSeenBy, userId) })
-    .where(and(key(projectId, workspaceId), lacksUser(workspaces.waitingSeenBy, userId)))
-    .returning({ workspaceId: workspaces.workspaceId })
-  if (added.length > 0) notifyWorkspaceListChanged()
-}
-
-/** Forget who saw the waiting spell when the workspace stops needing the
- *  user. Only a non-empty list is written, since this runs on every turn. */
-export async function recordWaitingUnseen(projectId: string, workspaceId: string): Promise<void> {
-  const db = await getDb()
-  await db.update(workspaces).set({ waitingSeenBy: [] })
-    .where(and(key(projectId, workspaceId), sql`cardinality(${workspaces.waitingSeenBy}) > 0`))
-}
-
 /**
  * Mark every recorded abnormal death in a project as seen by `userId`
  * ("mark all as read"). Only rows that actually died are touched.
@@ -281,10 +232,10 @@ export async function recordAllDeathsSeen(projectId: string, userId: string): Pr
 
 /** A seen-by list with `userId` added, and the check that it is not in one
  *  yet, so a repeated mark leaves the row alone. */
-function appendUser(list: typeof workspaces.deathSeenBy, userId: string): SQL {
+export function appendUser(list: AnyColumn, userId: string): SQL {
   return sql`array_append(${list}, ${userId}::uuid)`
 }
-function lacksUser(list: typeof workspaces.deathSeenBy, userId: string): SQL {
+export function lacksUser(list: AnyColumn, userId: string): SQL {
   return sql`not (${userId}::uuid = any(${list}))`
 }
 
@@ -376,30 +327,6 @@ export async function setWorkspaceGeneratedTitle(projectId: string, workspaceId:
     .where(and(key(projectId, workspaceId), isNull(workspaces.generatedTitle)))
     .returning({ workspaceId: workspaces.workspaceId })
   if (rows.length > 0) notifyWorkspaceListChanged()
-}
-
-/** Hold an `acp` create's prompt until a conversation takes it (see the
- *  `pendingPrompt` column). Never replaces one already held. */
-export async function holdPendingPrompt(projectId: string, workspaceId: string, prompt: string): Promise<void> {
-  const db = await getDb()
-  await db.update(workspaces).set({ pendingPrompt: prompt })
-    .where(and(key(projectId, workspaceId), isNull(workspaces.pendingPrompt)))
-}
-
-/**
- * Clear and return the held prompt, if any. The clear is conditional on the
- * value read, so of two callers racing to deliver it only one gets it.
- */
-export async function takePendingPrompt(projectId: string, workspaceId: string): Promise<string | undefined> {
-  const db = await getDb()
-  const [row] = await db.select({ prompt: workspaces.pendingPrompt }).from(workspaces)
-    .where(key(projectId, workspaceId))
-  const prompt = row?.prompt
-  if (prompt == null) return undefined
-  const taken = await db.update(workspaces).set({ pendingPrompt: null })
-    .where(and(key(projectId, workspaceId), eq(workspaces.pendingPrompt, prompt)))
-    .returning({ workspaceId: workspaces.workspaceId })
-  return taken[0] ? prompt : undefined
 }
 
 /** Every row of a project, keyed by workspace id, in one query. */
@@ -629,26 +556,6 @@ export async function setWorkspaceTrackedScratchDirs(
   await db.update(workspaces).set({ trackedScratchDirs }).where(key(projectId, workspaceId))
 }
 
-/** Record the permission mode the running agent moved to. */
-export async function setWorkspacePermissionMode(
-  projectId: string,
-  workspaceId: string,
-  permissionMode: PermissionMode,
-): Promise<void> {
-  const db = await getDb()
-  await db.update(workspaces).set({ permissionMode }).where(key(projectId, workspaceId))
-}
-
-/** Record the effort level the running agent moved to. */
-export async function setWorkspaceEffort(
-  projectId: string,
-  workspaceId: string,
-  effort: string,
-): Promise<void> {
-  const db = await getDb()
-  await db.update(workspaces).set({ effort }).where(key(projectId, workspaceId))
-}
-
 /**
  * Workspaces with no recorded stop, which the reaper checks for a missing
  * runtime. `ran` is true if the agent ever started (a captured opening
@@ -665,25 +572,15 @@ export async function listLiveWorkspaceRows(): Promise<Array<{
     projectId: workspaces.projectId,
     workspaceId: workspaces.workspaceId,
   }).from(workspaces).where(isNull(workspaces.stoppedAt))
-  // A link alone proves nothing, since create records one before launching
-  // the agent; a prompt or transcript does, as does an id a self-naming tool
-  // minted (opencode keeps neither a prompt nor a transcript yaac reads).
-  const links = await db.select({
+  // A conversation proves its agent started, since only a live agent
+  // names one, and a launched session proves the create got that far.
+  const conversed = await db.selectDistinct({
     projectId: workspaceConversations.projectId,
     workspaceId: workspaceConversations.workspaceId,
-    tool: workspaceConversations.tool,
-    conversationId: workspaceConversations.conversationId,
-    firstPrompt: conversations.firstPrompt,
-    transcriptPath: conversations.transcriptPath,
-  }).from(workspaceConversations).innerJoin(conversations, and(
-    eq(workspaceConversations.projectId, conversations.projectId),
-    eq(workspaceConversations.tool, conversations.tool),
-    eq(workspaceConversations.conversationId, conversations.conversationId),
-  ))
-  const ran = new Set(links
-    .filter((l) => l.firstPrompt !== null || l.transcriptPath !== null
-      || (SELF_NAMING_TOOLS.includes(l.tool) && l.conversationId !== l.workspaceId))
-    .map((l) => `${l.projectId}/${l.workspaceId}`))
+  }).from(workspaceConversations)
+  const launched = await db.selectDistinct({ projectId: sessions.projectId, workspaceId: sessions.workspaceId })
+    .from(sessions).where(isNotNull(sessions.launchedAt))
+  const ran = new Set([...conversed, ...launched].map((l) => `${l.projectId}/${l.workspaceId}`))
   return rows.map((r) => ({
     projectId: r.projectId,
     workspaceId: r.workspaceId,

@@ -179,8 +179,6 @@ describe('transcripts', () => {
 
       await write(path.join(opencodeCheckpointDir(projectId, wt), 'opencode.db'))
       expect(await resumable('opencode', 'ses_1')).toBe(true)
-      // The pin a self-naming tool never ran under.
-      expect(await resumable('opencode', wt)).toBe(false)
       await write(path.join(agentHistoryDir(projectId, wt, 'pi'), '20261003T120000_p-1.jsonl'))
       expect(await resumable('pi', 'p-1')).toBe(true)
     })

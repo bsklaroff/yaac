@@ -287,7 +287,7 @@ export async function sessionTranscriptPath(
  * Whether a conversation's history is where its tool resumes it from:
  * claude's transcript, codex's rollout, pi's log, or for opencode the
  * workspace's database, which is as close as the host can tell without
- * opening it (opencode never runs under the workspace-id pin). Only a
+ * opening it. Only a
  * missing file or dir answers false; any other failure to look throws, so a
  * passing read error is never taken for lost history.
  */
@@ -300,7 +300,7 @@ export async function hasConversationHistory(
     case 'claude': return await findClaudeTranscript(projectId, workspaceId, conversationId, true) !== undefined
     case 'codex': return (await codexRolloutFiles(projectId, workspaceId, true)).has(conversationId)
     case 'pi': return (await piSessionLogs(projectId, workspaceId, conversationId, true)).length > 0
-    case 'opencode': return conversationId !== workspaceId && await opencodeDatabase(projectId, workspaceId, true) !== undefined
+    case 'opencode': return await opencodeDatabase(projectId, workspaceId, true) !== undefined
   }
 }
 

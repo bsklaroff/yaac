@@ -159,7 +159,7 @@ class FakeTmux implements StreamChild {
     if (display) {
       const target = display[1].replace(/'/g, '')
       const p = this.pane
-      if (![p.vars.pane_id, p.vars.window_id, 'yaac:^'].includes(target)) return 'no such pane\n'
+      if (![p.vars.pane_id, p.vars.window_id, '=yaac:=claude-1'].includes(target)) return 'no such pane\n'
       return `${display[2].replace(/#\{(\w+)\}/g, (_, name: string) => p.vars[name] ?? '')}\n`
     }
     if (cmd.startsWith('capture-pane')) {
@@ -247,15 +247,15 @@ async function view(
 
 describe('attachPty', () => {
   it('seeds a webapp viewer from tmux, then streams its pane\'s raw output', async () => {
-    const sock = await view(job(20), { target: 'agent', cols: '120', rows: '3' })
+    const sock = await view(job(20), { target: 'session:claude-1', cols: '120', rows: '3' })
     const tmux = tmuxes[0]
     // One read-write control client, attached to the session.
     expect(dialCtrlMock).toHaveBeenCalledWith(job(20), [
       'tmux', '-S', '/tmp/yaac-tmux/server', '-C', 'attach-session', '-t', 'yaac',
     ])
     expect(tmux.commands.slice(0, 5)).toEqual([
-      // The agent is the lowest-index window.
-      "display -p -t 'yaac:^' '#{pane_id} #{window_id}'",
+      // A session's window, by its exact name.
+      "display -p -t '=yaac:=claude-1' '#{pane_id} #{window_id}'",
       'set-option -w -t @1 window-size latest',
       // Sized before the snapshot is taken: this window, and the first
       // viewer's size as the default for windows nobody views (else 80x24).
@@ -284,12 +284,14 @@ describe('attachPty', () => {
     expect(tmux.commands.filter((c) => c.includes('%9'))).toEqual(["refresh-client -A '%9:off'"])
     expect(sock.binaries()).toHaveLength(2)
 
-    // A malformed or injected target falls back to the agent; a window
-    // target names its window.
+    // A malformed or injected target falls back to the CLI's native attach,
+    // never reaching the mirror; a window target names its window.
     const resolved = (): string | undefined => tmux.commands.filter((c) => c.endsWith("'#{pane_id} #{window_id}'")).at(-1)
-    for (const target of [undefined, 'window:7', 'window:@x', "window:@1' \\; kill-server"]) {
+    for (const target of [undefined, 'window:7', 'window:@x', "window:@1' \\; kill-server", "session:x' \\; kill-server"]) {
+      const dialed = dialPtyMock.mock.calls.length
       await view(job(20), { target })
-      expect(resolved(), `target ${String(target)}`).toBe("display -p -t 'yaac:^' '#{pane_id} #{window_id}'")
+      expect(dialPtyMock.mock.calls.length, `target ${String(target)}`).toBe(dialed + 1)
+      expect(resolved()).toBe("display -p -t '=yaac:=claude-1' '#{pane_id} #{window_id}'")
     }
     await view(job(20), { target: 'window:@1' })
     expect(resolved()).toBe("display -p -t '@1' '#{pane_id} #{window_id}'")
@@ -299,7 +301,7 @@ describe('attachPty', () => {
   it('drops output the snapshot already holds and replays what followed it', async () => {
     nextPane = normalPane
     const sock = new FakeSock()
-    attachPty(job(21), sock, { target: 'agent' })
+    attachPty(job(21), sock, { target: 'session:claude-1' })
     await Promise.resolve()
     const tmux = tmuxes[0]
     // Output before the seed's last reply is in the capture, including
@@ -340,7 +342,7 @@ describe('attachPty', () => {
       p.screen = ['ALT', 'TUI', '>']
       return p
     }
-    const sock = await view(job(22), { target: 'agent' })
+    const sock = await view(job(22), { target: 'session:claude-1' })
     // On the alternate screen: the history, the saved normal screen and the
     // alternate screen, captured separately.
     expect(tmuxes[0].commands.slice(2)).toEqual([
@@ -360,7 +362,7 @@ describe('attachPty', () => {
   })
 
   it('sends input to the pane through tmux, and sizes it after the latest client', async () => {
-    const a = await view(job(23), { target: 'agent', cols: '100', rows: '30' })
+    const a = await view(job(23), { target: 'session:claude-1', cols: '100', rows: '30' })
     const b = await view(job(23), { target: 'window:@1', cols: '80', rows: '20' })
     const tmux = tmuxes[0]
     const sent = (): string[] => tmux.commands.filter((c) => /^(send-keys|set-buffer|paste-buffer|refresh-client -C)/.test(c))
@@ -412,7 +414,7 @@ describe('attachPty', () => {
     // over; when the last one leaves, the window goes back to tmux's other
     // clients (a CLI attach), since this client's size would override theirs.
     tmux.commands.length = 0
-    const c = await view(job(23), { target: 'agent', cols: '60', rows: '20' })
+    const c = await view(job(23), { target: 'session:claude-1', cols: '60', rows: '20' })
     tmux.commands.length = 0
     c.emitClose()
     b.emitClose()
@@ -437,7 +439,7 @@ describe('attachPty', () => {
   it('follows the pane: resizes, closes with it, and re-seeds a client that fell behind', async () => {
     vi.useFakeTimers()
     try {
-      const a = await view(job(24), { target: 'agent' })
+      const a = await view(job(24), { target: 'session:claude-1' })
       const tmux = tmuxes[0]
       tmux.emit('%layout-change @1 c0de,100x40,0,0,3 c0de,100x40,0,0,3 *\n')
       // A change elsewhere is not this pane's.
@@ -464,7 +466,7 @@ describe('attachPty', () => {
       tmux.emit('%layout-change @1 c0de,100x40,0,0,4 c0de,100x40,0,0,4 *\n')
       expect(a.closed).toEqual([[1000, 'pane closed']])
       expect(b.closed).toEqual([[1000, 'pane closed']])
-      const c = await view(job(24), { target: 'agent' })
+      const c = await view(job(24), { target: 'session:claude-1' })
       tmux.emit('%window-close @1\n')
       expect(c.closed).toEqual([[1000, 'window closed']])
     } finally {
@@ -475,29 +477,29 @@ describe('attachPty', () => {
   it('shares one control client per workspace and ends it after the last viewer', async () => {
     vi.useFakeTimers()
     try {
-      const a = await view(job(25), { target: 'agent' })
-      const b = await view(job(25), { target: 'agent' })
+      const a = await view(job(25), { target: 'session:claude-1' })
+      const b = await view(job(25), { target: 'session:claude-1' })
       expect(dialCtrlMock).toHaveBeenCalledTimes(1)
       a.emitClose()
       b.emitClose()
       vi.advanceTimersByTime(MIRROR_IDLE_MS - 1)
       expect(tmuxes[0].killed).toBe(false)
       // A viewer within the idle window keeps it.
-      const c = await view(job(25), { target: 'agent' })
+      const c = await view(job(25), { target: 'session:claude-1' })
       c.emitClose()
       vi.advanceTimersByTime(MIRROR_IDLE_MS)
       expect(tmuxes[0].killed).toBe(true)
-      await view(job(25), { target: 'agent' })
+      await view(job(25), { target: 'session:claude-1' })
       expect(dialCtrlMock).toHaveBeenCalledTimes(2)
 
       // The stream ending (tmux gone, a dropped relay) closes open viewers
       // so they reconnect to a fresh client; one that cannot resolve its
       // pane is refused.
-      const d = await view(job(26), { target: 'agent' })
+      const d = await view(job(26), { target: 'session:claude-1' })
       tmuxes[2].exit()
       expect(d.closed).toEqual([[1011, 'stream closed']])
       nextPane = (): FakePane => ({ ...normalPane(), vars: { ...normalPane().vars, pane_id: '' } })
-      const e = await view(job(27), { target: 'agent' })
+      const e = await view(job(27), { target: 'session:claude-1' })
       expect(e.closed[0]?.[0]).toBe(1011)
     } finally {
       vi.useRealTimers()

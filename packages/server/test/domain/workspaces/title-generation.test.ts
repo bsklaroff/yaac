@@ -112,14 +112,14 @@ function session(overrides: Partial<Seeded> = {}): Seeded {
   return { projectId: P, workspaceId: 's1', prompt: PROMPT, ...overrides }
 }
 
-/** Record each workspace as a create does: its row, then its first
- *  conversation with the opening message. */
+/** Record each workspace with its row, then its first conversation with
+ *  the opening message, as its agent reports it. */
 async function seed(...workspaces: Seeded[]): Promise<void> {
   const real = await vi.importActual<typeof storeModule>('#db/workspace-store')
   for (const { projectId, workspaceId, prompt, title, tool = 'pi', agentTitle, generatedTitle, stopped, blankFirst } of workspaces) {
     await applyWorkspaceEvent({ type: 'workspace-created', projectId, workspaceId, ...(generatedTitle ? { generatedTitle } : {}) })
     await applyWorkspaceEvent({
-      type: 'conversations-launched', projectId, workspaceId,
+      type: 'conversations-discovered', projectId, workspaceId,
       sessions: [
         ...(blankFirst ? [{ conversationId: `${workspaceId}-blank`, tool }] : []),
         { conversationId: `${workspaceId}-a`, tool, firstPrompt: prompt },

@@ -7,9 +7,11 @@
  *
  * One implementation per `AgentMode`: `tui-driver` watches the terminal UI
  * through tmux control mode, `acp-driver` speaks JSON-RPC to an agent under
- * acpd. Both run the agent in a tmux window and connect over the workspace
- * driver's `ctrl` stream, and both track the workspace's windows through a
- * tmux control-mode client.
+ * acpd. Both run each agent in a tmux window of its own session and connect
+ * over the workspace driver's `ctrl` stream, and both track the workspace's
+ * windows through a tmux control-mode client. A workspace can hold sessions
+ * of both modes, so its status watcher connects both, and each watches only
+ * its own mode's sessions.
  *
  * Content is not part of this interface: PTY bytes and ACP events have
  * nothing in common, and the webapp picks a renderer per pane. Retry policy
@@ -23,19 +25,49 @@ import type { AgentMode, AgentStatus, AgentTool, PermissionMode } from '@yaac/sh
 import type { PiProvider } from '@yaac/shared/tool-providers'
 import type { StreamChild, WorkspacePaths } from '#drivers/contract'
 
-/** The session a driver is connected to. */
+/** The workspace a driver is connected to. */
 export interface DrivenWorkspace {
   projectId: string
   /** The workspace id, which streams are addressed by. */
   workspaceId: string
   jobName: string
-  tool: AgentTool
 }
 
 /**
- * One conversation the driver sees running. `handle` is its address inside
- * the workspace and the status store's key: a tmux pane id (`%3`) for `tui`,
- * the window/acpd socket name (`claude`, `claude-2`) for `acp`.
+ * One open session of the workspace, as the drivers need it: which window
+ * to watch, how, and what to tell its agent. Read from `#db` by the caller,
+ * since only the rows know which windows are sessions and in which mode.
+ */
+export interface WatchedSession {
+  /** Its tmux window, which is its handle. */
+  window: string
+  tool: AgentTool
+  mode: AgentMode
+  /** The conversation its agent holds, once named. `acp` re-addresses a
+   *  live agent by it after a reconnect, or `session/load`s it after a
+   *  restart. */
+  conversationId?: string
+  /** The id its window was launched under, which names a fresh `acp`
+   *  record until its conversation is named (see `adoptLog`). */
+  sessionId: string
+  /**
+   * Its permission posture, which `acp` sends to the adapter
+   * (`session/set_mode`) and uses to decide who answers asks. Followed
+   * afterwards through `setAcpPermissionMode`.
+   */
+  permissionMode: PermissionMode
+  /** Its effort level, which `acp` puts a new or loaded conversation at
+   *  (`session/set_config_option`). `tui` passes it at launch. */
+  effort?: string
+  /** The model it launched with, which `acp` tells an adapter that takes it
+   *  no other way, once, after `session/new`. */
+  model?: string
+}
+
+/**
+ * One agent the driver sees running. `handle` is its address inside the
+ * workspace and the status store's key: its session's window name, or for
+ * an agent started by hand in a terminal, that pane's id (`%3`).
  */
 export interface LiveAgent {
   handle: string
@@ -81,9 +113,7 @@ export type AgentObservation =
   | { kind: 'up' }
   /** It dropped. The caller respawns; status stays sticky. */
   | { kind: 'down'; reason: string }
-  /** The conversations running now. Never emitted empty before the agent
-   *  starts, since an empty set means "every agent exited" and deactivates
-   *  the workspace's conversations. */
+  /** The agents running now, emitted after each listing of the windows. */
   | { kind: 'live-agents'; agents: LiveAgent[] }
   | { kind: 'status'; handle: string; status: AgentStatus }
   /**
@@ -103,33 +133,10 @@ export interface AgentConnection {
  *  hard-code (timeouts, the dial). */
 export interface AgentConnectDeps {
   /**
-   * The workspace's recorded conversations, by handle. `acp` needs them to
-   * re-address a live agent after a reconnect (or `session/load` after a
-   * restart); the agent mints the id and only the DB remembers it.
+   * The workspace's open sessions, read on each listing of its windows. A
+   * failed read leaves the connection watching what it had.
    */
-  recordedSessions?: () => Promise<Array<{ handle: string; conversationId: string }>>
-  /**
-   * The workspace's permission posture, read once at connect and then
-   * followed through `setAcpPermissionMode`. `acp` sends it to the adapter
-   * (`session/set_mode`) and uses it to decide who answers asks; a
-   * connection is rebuilt apart from the launch, so it cannot come from
-   * `AgentLaunchSpec`.
-   *
-   * `undefined` means unknown (no row, failed read) and is not `bypass`:
-   * asks are forwarded, since a needless prompt is recoverable and a
-   * needless approval is not. Omitting the accessor gives `bypass`.
-   */
-  permissionMode?: () => Promise<PermissionMode | undefined>
-  /**
-   * The model the workspace launched `tool` with, which `acp` tells an
-   * adapter that takes it no other way, once, after `session/new`.
-   */
-  launchModel?: (tool: AgentTool) => Promise<string | undefined>
-  /**
-   * The workspace's effort level, which `acp` puts a new or loaded
-   * conversation at (`session/set_config_option`). `tui` passes it at launch.
-   */
-  effort?: () => Promise<string | undefined>
+  sessions?: () => Promise<WatchedSession[]>
   /** Test hook replacing the ctrl-stream dial, the process boundary both
    *  drivers are mocked at. */
   dial?: (session: DrivenWorkspace, argv: string[]) => StreamChild
@@ -151,8 +158,9 @@ export interface AgentLaunchSpec {
   paths: WorkspacePaths
   /**
    * The conversation to create or resume. For `tui`, the id passed to the
-   * tool's `--session-id`/resume flag. For `acp`, used only on resume; a new
-   * conversation's id comes from `session/new`.
+   * tool's `--session-id`/resume flag. For `acp`, what its record is named
+   * for; a new conversation's id comes from `session/new`, and its record is
+   * renamed then.
    */
   conversationId: string
   resume: boolean
@@ -173,11 +181,7 @@ export interface AgentLaunchSpec {
   beforeCheckout?: boolean
 }
 
-/**
- * The driver for a mode. The only place the two are chosen between, so the
- * mode does not leak into session create, the status watcher or the
- * registry.
- */
+/** The driver for a mode, chosen per session. */
 export function agentDriver(mode: AgentMode): AgentDriver {
   return mode === 'acp' ? acpDriver : tuiDriver
 }
@@ -211,6 +215,6 @@ export interface AgentDriver {
     session: DrivenWorkspace,
     handle: string,
     text: string,
-    opts?: { running?: { conversationId: string } },
+    opts?: { running?: { tool: AgentTool; conversationId: string } },
   ): Promise<void>
 }

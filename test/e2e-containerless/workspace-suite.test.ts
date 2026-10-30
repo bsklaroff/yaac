@@ -25,7 +25,7 @@ import { ACP_ADAPTERS, AGENT_TOOLS, MAX_PROMPT_LENGTH } from '@yaac/shared/types
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { FALLBACK_MODELS, PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import type {
-  ConversationEntry, AgentTool, ResourceReport, RoutineEntry, ServerSnapshot, WorkspaceChanges, WorkspaceTerminalEntry,
+  ConversationEntry, AgentTool, ResourceReport, RoutineEntry, ServerSnapshot, SessionEntry, WorkspaceChanges, WorkspaceTerminalEntry,
 } from '@yaac/shared/types'
 
 const execFileAsync = promisify(execFile)
@@ -293,6 +293,7 @@ interface ListedWorkspace {
   groupId?: string
   forwardedPorts: Array<{ containerPort: number; hostPort: number }>
   conversations: ConversationEntry[]
+  sessions: SessionEntry[]
   terminals?: WorkspaceTerminalEntry[]
 }
 
@@ -2137,7 +2138,10 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
         expect((await launches(prompted)).at(-1)).toMatch(new RegExp(` resume ${thread} --model ${model.replaceAll('.', '\\.')}$`))
         const active = await codexSessions(prompted)
         expect(active.map((s) => s.conversationId)).toEqual([thread])
-        expect(active[0]?.status).toBeDefined()
+        // Its session is back on it, with a live status.
+        const [session] = (await listWorkspaces()).find((w) => w.workspaceId === prompted)?.sessions ?? []
+        expect(session?.conversationId).toBe(thread)
+        expect(session?.status).toBeDefined()
       }, { timeout: 30_000, interval: 250 })
     }
 

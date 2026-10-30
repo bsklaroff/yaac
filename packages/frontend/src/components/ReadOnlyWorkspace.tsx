@@ -8,7 +8,7 @@ import { PaneBarLeading, paneBarClass } from '#components/PaneBar'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { EmptyState } from '#components/ui/EmptyState'
 import { api } from '#lib/api'
-import { agentLabel, workspaceModel } from '#lib/agentLabel'
+import { workspaceAgentLabel } from '#lib/agentLabel'
 import { RestartIcon, TerminalIcon } from '#lib/icons'
 import { isUnseenDeath } from '#lib/store'
 import { relativeAge } from '#lib/time'
@@ -78,7 +78,8 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
           <ReadOnlyTranscript
             key={subject.entry.workspaceId}
             workspaceId={subject.entry.workspaceId}
-            sessions={subject.entry.conversations}
+            conversations={subject.entry.conversations}
+            {...(subject.kind === 'live' ? { liveSessions: subject.entry.sessions } : {})}
             {...(subject.entry.prompt !== undefined ? { prompt: subject.entry.prompt } : {})}
             live={subject.kind === 'live'}
             {...(owner !== undefined ? { owner } : {})}
@@ -130,7 +131,7 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
 function Facts({ subject, owner }: { subject: ReadOnlySubject; owner?: string }): JSX.Element {
   const { entry } = subject
   const facts: [string, ReactNode][] = [
-    ['Agent', agentLabel(entry.tool, workspaceModel(entry))],
+    ['Agent', workspaceAgentLabel(entry)],
     ['Created', relativeAge(entry.createdAt) || '—'],
   ]
   if (subject.kind === 'live') {

@@ -3,12 +3,12 @@ import { eq } from 'drizzle-orm'
 import { buildApp } from '@yaac/server/main/server'
 import { workspaceDriver } from '@yaac/server/drivers/driver'
 import { closeDb, getDb } from '@yaac/server/db/client'
-import { draftWorkspaces, gitCredentials, queuedWorkspaces, routines } from '@yaac/server/db/schema'
+import { draftWorkspaces, gitCredentials, queuedWorkspaces, routines, sessions } from '@yaac/server/db/schema'
 import { insertRoutine } from '@yaac/server/db/routine-store'
 import { recordWorkspaceCreated } from '@yaac/server/db/workspace-store'
 import { insertQueuedWorkspace } from '@yaac/server/db/queued-workspace-store'
 import { insertDraftWorkspace } from '@yaac/server/db/draft-workspace-store'
-import { BUILT_IN_USER_ID, insertGitCredential } from '@yaac/server/db'
+import { BUILT_IN_USER_ID, insertGitCredential, insertSession } from '@yaac/server/db'
 import { clearAllProvisioningForTests, registerProvisioning } from '@yaac/server/domain/workspaces/provisioning'
 import { registerImageBuild } from '@yaac/server/drivers/k8s/images/image-builds'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
@@ -82,6 +82,7 @@ const ID = {
   draft: '8b4c3f5d-0e6a-4b1c-9d9f-3a4b5c6d7e8f',
   routine: 'c3d4e5f6-a7b8-4c9d-8e1f-2a3b4c5d6e7f',
   provisioning: '9c5d4a6e-1f7b-4c2d-8e0a-4b5c6d7e8f9a',
+  session: 'd4e5f6a7-b8c9-4d0e-8f1a-2b3c4d5e6f7a',
   group: 'g1',
   credential: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
   user: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
@@ -184,7 +185,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/workspace/stop', body: { workspaceId: ID.workspace }, access: 'owner', k8s: [404, 503], containerless: MISSING },
   { method: 'POST', path: '/api/workspace/delete', body: { workspaceId: ID.workspace }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/mark-death-seen', body: { projectId: ID.project, workspaceId: ID.workspace }, access: 'reader', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/workspace/mark-waiting-seen', body: { projectId: ID.project, workspaceId: ID.workspace, waitingSinceMs: 0 }, access: 'reader', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/mark-waiting-seen', body: { sessionId: ID.session, waitingSinceMs: 0 }, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/mark-all-deaths-seen', body: { projectId: ID.project }, access: 'reader', k8s: MISSING, containerless: MISSING },
   // The in-workspace command channel, authenticated by the calling
   // workspace's own credential rather than a user. Containerless answers 401
@@ -232,7 +233,13 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'GET', path: '/api/workspace/:id/conversations', request: `${W}/conversations`, access: 'reader', k8s: MISSING, containerless: MISSING },
   // Reads recorded state and host files, so both drivers agree. Its 501 is
   // for a tool (opencode) whose history lives in the container.
-  { method: 'GET', path: '/api/workspace/:id/conversations/:sessionId/transcript', request: `${W}/conversations/s1/transcript`, access: 'reader', k8s: MISSING, containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/conversations/:conversationId/transcript', request: `${W}/conversations/c1/transcript`, access: 'reader', k8s: MISSING, containerless: MISSING },
+  // A session is opened in a running workspace; the others act on one of
+  // its sessions, running or not.
+  { method: 'POST', path: '/api/workspace/:id/sessions', request: `${W}/sessions`, body: { tool: 'claude', prompt: 'p' }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/:id/sessions/:sessionId/close', request: `${W}/sessions/${ID.session}/close`, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/:id/sessions/:sessionId/resume', request: `${W}/sessions/${ID.session}/resume`, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/:id/sessions/:sessionId/title', request: `${W}/sessions/${ID.session}/title`, body: { title: 't' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/acp-images/:hash', request: `${W}/acp-images/${'0'.repeat(64)}`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/changes', request: `${W}/changes`, access: 'reader', k8s: [404, 503], containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/changes/diff', request: `${W}/changes/diff`, body: { base: '0'.repeat(40), work: '0'.repeat(40), files: [{ path: 'a' }] }, access: 'reader', k8s: [404, 503], containerless: MISSING },
@@ -355,6 +362,8 @@ async function seedOwnedFixtures(): Promise<void> {
   await recordWorkspaceCreated({ projectId: ID.project, workspaceId: ID.workspace })
   const settings = { prompt: 'p', tool: 'claude', mode: 'tui', permissionMode: 'manual' } as const
   const db = await getDb()
+  const session = await insertSession(ID.project, ID.workspace, settings)
+  await db.update(sessions).set({ id: ID.session }).where(eq(sessions.id, session.id))
   const queued = await insertQueuedWorkspace(ID.project, { parentWorkspaceId: ID.workspace }, { ...settings, model: 'm', branch: 'main' })
   await db.update(queuedWorkspaces).set({ id: ID.queued }).where(eq(queuedWorkspaces.id, queued.id))
   const draft = await insertDraftWorkspace(ID.project, settings)

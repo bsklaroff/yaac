@@ -46,7 +46,6 @@ vi.mock('@kubernetes/client-node', async (importOriginal) => {
 import {
   ClusterCache,
   LABEL_PROJECT_ID,
-  LABEL_TOOL,
   getActiveClusterCache,
   k8sNamespace,
   readWorkspaceJobs,
@@ -117,7 +116,6 @@ function rawPod(name: string, project = 'proj'): unknown {
         [JOB_NAME_LABEL]: `yaac-${project}-${name}`,
         ...workspaceIdLabels(`sid-${name}`),
         [LABEL_PROJECT_ID]: project,
-        [LABEL_TOOL]: 'claude',
       },
       creationTimestamp: '2026-07-21T00:00:00Z',
     },

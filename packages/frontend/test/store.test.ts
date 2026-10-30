@@ -1,13 +1,14 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { CHANGES_TARGET, FILES_TARGET } from '#lib/files'
 import {
-  isUnreadWaiting, isUnseenDeath, defaultViewMode, mergeProvisioning, paneViewKey,
+  isSessionUnread, isUnreadWaiting, isUnseenDeath, defaultViewMode, mergeProvisioning, paneViewKey,
   resolveVacantSelection, unreadWaitingByProject, unseenDeaths, useUiStore,
 } from '#lib/store'
 import type {
   ListedAgentStatus, ProvisioningWorkspaceEntry, ServerSnapshot, WorkspaceListEntry,
 } from '@yaac/shared/types'
 import { previewTarget } from '#lib/preview'
+import { sessionEntry, workspaceEntry } from './harness'
 
 const initial = useUiStore.getState()
 
@@ -35,8 +36,8 @@ describe('pending-delete tracking', () => {
 
 describe('optimistic deleted tracking', () => {
   const entry = (workspaceId: string) => ({
-    workspaceId, projectId: 'p', tool: 'claude' as const, createdAt: '2026-01-01 00:00:00',
-    stoppedAt: '2026-01-01 00:00:01', prompt: 'hi', deathSeenBy: [], conversations: [],
+    workspaceId, projectId: 'p', createdAt: '2026-01-01 00:00:00',
+    stoppedAt: '2026-01-01 00:00:01', prompt: 'hi', deathSeenBy: [], sessions: [], conversations: [],
   })
 
   it('addOptimisticStopped prepends, with no duplicates', () => {
@@ -57,11 +58,19 @@ describe('optimistic deleted tracking', () => {
 })
 
 describe('markWaitingSeen', () => {
-  it('shows the workspace as read in the held snapshot, leaving the others', () => {
-    const w = (workspaceId: string) => ({ workspaceId, status: 'waiting' }) as WorkspaceListEntry
-    useUiStore.setState({ snapshot: { workspaces: [w('a'), w('b')] } as unknown as ServerSnapshot })
+  it('shows the session as read in the held snapshot, leaving the others', () => {
+    const waiting = (sessionId: string) => sessionEntry({ sessionId, status: 'waiting' })
+    useUiStore.setState({
+      snapshot: {
+        workspaces: [
+          workspaceEntry({ workspaceId: 'w1', sessions: [waiting('a'), waiting('b')] }),
+          workspaceEntry({ workspaceId: 'w2', sessions: [waiting('c')] }),
+        ],
+      } as unknown as ServerSnapshot,
+    })
     useUiStore.getState().markWaitingSeen('a', 'me')
-    expect(useUiStore.getState().snapshot?.workspaces.map((x) => x.waitingSeenBy)).toEqual([['me'], undefined])
+    expect(useUiStore.getState().snapshot?.workspaces.map((w) => w.sessions.map((s) => s.waitingSeenBy)))
+      .toEqual([[['me'], undefined], [undefined]])
   })
 
   it('is a no-op before the first snapshot', () => {
@@ -93,21 +102,35 @@ describe('unseenDeaths', () => {
   })
 })
 
-describe('isUnreadWaiting', () => {
-  it('flags a waiting workspace the server has not marked seen by the viewer', () => {
-    expect(isUnreadWaiting({ status: 'waiting' }, 'me')).toBe(true)
-    expect(isUnreadWaiting({ status: 'waiting', waitingSeenBy: ['owner'] }, 'me')).toBe(true)
-    expect(isUnreadWaiting({ status: 'waiting', waitingSeenBy: ['owner', 'me'] }, 'me')).toBe(false)
+describe('isSessionUnread', () => {
+  it('flags a waiting session the server has not marked seen by the viewer', () => {
+    expect(isSessionUnread({ status: 'waiting' }, 'me')).toBe(true)
+    expect(isSessionUnread({ status: 'waiting', waitingSeenBy: ['owner'] }, 'me')).toBe(true)
+    expect(isSessionUnread({ status: 'waiting', waitingSeenBy: ['owner', 'me'] }, 'me')).toBe(false)
   })
 
-  it('never flags a running workspace', () => {
-    expect(isUnreadWaiting({ status: 'running' }, 'me')).toBe(false)
+  it('never flags a running session, or one that has no status', () => {
+    expect(isSessionUnread({ status: 'running' }, 'me')).toBe(false)
+    expect(isSessionUnread({}, 'me')).toBe(false)
+  })
+})
+
+describe('isUnreadWaiting', () => {
+  it('flags a workspace with any unread session, even beside a read one', () => {
+    const read = sessionEntry({ sessionId: 'a', status: 'waiting', waitingSeenBy: ['me'] })
+    const unread = sessionEntry({ sessionId: 'b', status: 'waiting' })
+    expect(isUnreadWaiting({ sessions: [read, unread] }, 'me')).toBe(true)
+    expect(isUnreadWaiting({ sessions: [read] }, 'me')).toBe(false)
+    expect(isUnreadWaiting({ sessions: [] }, 'me')).toBe(false)
   })
 })
 
 describe('unreadWaitingByProject', () => {
-  const s = (workspaceId: string, projectId: string, status: ListedAgentStatus, seen?: true) =>
-    ({ workspaceId, projectId, status, ...(seen ? { waitingSeenBy: ['me'] } : {}) })
+  const s = (workspaceId: string, projectId: string, status: ListedAgentStatus, seen?: true) => ({
+    workspaceId,
+    projectId,
+    sessions: [sessionEntry({ status, ...(seen ? { waitingSeenBy: ['me'] } : {}) })],
+  })
 
   it('counts only unread waiting workspaces, grouped by project', () => {
     const workspaces = [
@@ -392,16 +415,14 @@ describe('receiveSnapshot', () => {
   // What a create still has to show waits for the workspace it became.
   it('moves a create\'s launch to the spare it claimed, whichever is learned first', () => {
     const s = useUiStore.getState()
-    s.setLaunch('early', { prompt: 'first task' })
-    s.setLaunch('late', { prompt: 'second task', pane: 'files' })
+    s.setLaunch('early', { pane: 'shell' })
+    s.setLaunch('late', { pane: 'files' })
     s.receiveSnapshot(snap([], [prov('early', { claimedId: 'spare-1' })]))
     s.recordClaim('late', 'spare-2')
-    expect(useUiStore.getState().launches)
-      .toEqual({ 'spare-1': { prompt: 'first task' }, 'spare-2': { prompt: 'second task', pane: 'files' } })
-    // Each part ends on its own; the entry goes with the last.
+    expect(useUiStore.getState().launches).toEqual({ 'spare-1': { pane: 'shell' }, 'spare-2': { pane: 'files' } })
+    // The entry goes once its pane has opened.
     s.endLaunch('spare-2', 'pane')
-    s.endLaunch('spare-1', 'prompt')
-    expect(useUiStore.getState().launches).toEqual({ 'spare-2': { prompt: 'second task' } })
+    expect(useUiStore.getState().launches).toEqual({ 'spare-1': { pane: 'shell' } })
   })
 
   it('does not mark a stop for a workspace the last snapshot no longer lists', () => {
@@ -520,7 +541,6 @@ describe('view mode (tiles vs tabs)', () => {
     useUiStore.getState().openPreview('s1', 3000)
     const state = useUiStore.getState()
     expect(state.layouts.s1).toEqual([
-      { tabs: ['agent'], active: 'agent' },
       { tabs: [previewTarget(3000)], active: previewTarget(3000) },
       { tabs: [CHANGES_TARGET], active: CHANGES_TARGET },
       { tabs: [previewTarget(4000)], active: previewTarget(4000) },
@@ -537,14 +557,13 @@ describe('view mode (tiles vs tabs)', () => {
     useUiStore.getState().openFile('s1', 'src/a.ts')
     useUiStore.getState().openFile('s1', 'src/b.ts')
     expect(useUiStore.getState().layouts.s1).toEqual([
-      { tabs: ['agent'], active: 'agent' },
       { tabs: ['files'], active: 'files' },
       { tabs: ['file:src/a.ts', 'file:src/b.ts'], active: 'file:src/b.ts' },
     ])
     expect(useUiStore.getState().activeTabs.s1).toBe('file:src/b.ts')
     // Opening one already open only surfaces it.
     useUiStore.getState().openFile('s1', 'src/a.ts')
-    expect(useUiStore.getState().layouts.s1?.[2]).toEqual({ tabs: ['file:src/a.ts', 'file:src/b.ts'], active: 'file:src/a.ts' })
+    expect(useUiStore.getState().layouts.s1?.[1]).toEqual({ tabs: ['file:src/a.ts', 'file:src/b.ts'], active: 'file:src/a.ts' })
   })
 
   it('renameFiles moves the open panes and dirty marks under a renamed folder', () => {
@@ -553,11 +572,11 @@ describe('view mode (tiles vs tabs)', () => {
     useUiStore.getState().setFileDirty('s1', 'src/a.ts', true)
     useUiStore.getState().renameFiles('s1', 'src', 'lib')
     const state = useUiStore.getState()
-    expect(state.layouts.s1?.flatMap((g) => g.tabs)).toEqual(['agent', 'file:lib/a.ts', 'file:other.ts'])
+    expect(state.layouts.s1?.flatMap((g) => g.tabs)).toEqual(['file:lib/a.ts', 'file:other.ts'])
     expect(state.dirtyFiles).toEqual({ 's1|lib/a.ts': true })
     expect(state.activeTabs.s1).toBe('file:other.ts')
     useUiStore.getState().closeFiles('s1', ['lib/a.ts'])
-    expect(useUiStore.getState().layouts.s1?.flatMap((g) => g.tabs)).toEqual(['agent', 'file:other.ts'])
+    expect(useUiStore.getState().layouts.s1?.flatMap((g) => g.tabs)).toEqual(['file:other.ts'])
     expect(useUiStore.getState().dirtyFiles).toEqual({})
   })
 })

@@ -52,9 +52,13 @@ function echoKey(text: string, images: number): string {
   return `${text}\u0000${String(images)}`
 }
 
-export function WorkspaceChat({ workspaceId, conversationId, visible, focused }: {
+export function WorkspaceChat({ workspaceId, conversationId, launchPrompt, visible, focused }: {
   workspaceId: string
   conversationId: string
+  /** The message its session was opened with, shown with the working
+   *  spinner until the agent echoes it, so the session's start shows no
+   *  gap. Only for its session's first conversation. */
+  launchPrompt?: string
   visible: boolean
   /** The pane the user is in, which Cmd/Ctrl-F searches. */
   focused: boolean
@@ -82,8 +86,6 @@ export function WorkspaceChat({ workspaceId, conversationId, visible, focused }:
     return () => clearTimeout(timer)
   }, [connected, refused])
   const setChatDraft = useUiStore((s) => s.setChatDraft)
-  const launchPrompt = useUiStore((s) => s.launches[workspaceId]?.prompt)
-  const endLaunch = useUiStore((s) => s.endLaunch)
   const setChatSent = useUiStore((s) => s.setChatSent)
   const column = useChatColumn()
   /**
@@ -185,13 +187,10 @@ export function WorkspaceChat({ workspaceId, conversationId, visible, focused }:
     setChatDraft(workspaceId, conversationId, draft)
   }, [draft, workspaceId, conversationId, setChatDraft])
 
-  /** The create's prompt stands in for the conversation until the agent
-   *  echoes it (or fails), so the create's spinner carries on unbroken. */
+  /** The session's opening message stands in for the conversation until
+   *  the agent echoes it (or fails), so its spinner carries on unbroken. */
   const started = events.some((e) => (e.type === 'user' && e.thread === undefined) || e.type === 'error')
   const launching = launchPrompt !== undefined && !started
-  useEffect(() => {
-    if (started && launchPrompt !== undefined) endLaunch(workspaceId, 'prompt')
-  }, [started, launchPrompt, workspaceId, endLaunch])
 
   /**
    * On first connect, settle a message a previous mount sent but never saw

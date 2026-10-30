@@ -9,7 +9,7 @@ import {
 } from '#domain/workspaces'
 import { clearQueuedLaunchesForTests } from '#domain/workspaces/queued-workspaces'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
-import { BUILT_IN_USER_ID, createWorkspaceGroup, getWorkspaceRow, listWorkspaceConversations, listWorkspaceGroupRows } from '#db'
+import { BUILT_IN_USER_ID, createWorkspaceGroup, getWorkspaceRow, listWorkspaceSessions, listWorkspaceGroupRows } from '#db'
 import { getQueuedWorkspaceRow, listQueuedWorkspaceRows } from '#db/queued-workspace-store'
 import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { closeDb } from '#db/client'
@@ -71,10 +71,10 @@ async function running(workspaceId: string, inGroup?: string): Promise<void> {
 async function launchedPrompts(n: number): Promise<string[]> {
   await vi.waitFor(async () => {
     const prompts = await Promise.all(launched.map(async (id) =>
-      (await listWorkspaceConversations(PROJ, id))[0]?.firstPrompt))
+      (await listWorkspaceSessions(id))[0]?.firstPrompt))
     expect(prompts.filter((p) => p !== undefined)).toHaveLength(n)
   }, { timeout: 60_000 })
-  return await Promise.all(launched.map(async (id) => (await listWorkspaceConversations(PROJ, id))[0]?.firstPrompt ?? ''))
+  return await Promise.all(launched.map(async (id) => (await listWorkspaceSessions(id))[0]?.firstPrompt ?? ''))
 }
 
 describe('moveWorkspaceToGroup', () => {
@@ -170,7 +170,7 @@ describe('setGroupWorkspaceLimit', () => {
 
     fail()
     await vi.waitFor(async () => {
-      expect(await Promise.all(launched.map(async (id) => (await listWorkspaceConversations(PROJ, id))[0]?.firstPrompt)))
+      expect(await Promise.all(launched.map(async (id) => (await listWorkspaceSessions(id))[0]?.firstPrompt)))
         .toContain('next')
     }, { timeout: 60_000 })
     await vi.waitFor(async () => { expect(await getQueuedWorkspaceRow(next.id)).toBeUndefined() })

@@ -21,7 +21,6 @@
 
 export {
   deleteProjectConversations,
-  firstConversation,
   getConversationsFor,
   getProjectConversations,
   listActiveConversations,
@@ -29,9 +28,23 @@ export {
   listWorkspaceConversations,
   conversationTitle,
   openingPrompt,
-  recordedConversationHandles,
   type ConversationLinkRow,
 } from './conversation-store'
+export {
+  closeSessionRow,
+  getSessionRow,
+  holdSessionPrompt,
+  insertSession,
+  listOpenSessionsFor,
+  listWorkspaceSessions,
+  markSessionsLaunched,
+  recordSessionWaitingSeen,
+  sessionWindowName,
+  setSessionTitle,
+  takeSessionPrompt,
+  type SessionLaunchSettings,
+  type SessionRow,
+} from './session-store'
 export { applyWorkspaceEvent } from './apply-workspace-event'
 export type { CapturedConversation, DiscoveredConversation, WorkspaceEvent } from './events'
 export { desiredWorkspaces } from './desired-workspaces'
@@ -154,7 +167,6 @@ export {
   findWorkspaceRow,
   getProjectWorkspaceRows,
   getWorkspaceRow,
-  holdPendingPrompt,
   listProjectWorkspaceIds,
   listStoppedWorkspaceRows,
   listUncleanedStoppedWorkspaces,
@@ -162,14 +174,12 @@ export {
   listWorkspaceRows,
   recordAllDeathsSeen,
   recordDeathSeen,
-  recordWaitingSeen,
   findWorkspaceByMamaToken,
   setWorkspaceMamaTokenHash,
   setWorkspaceDeadline,
   markDeadlineIsNextRun,
   setWorkspaceGeneratedTitle,
   setWorkspaceTitle,
-  takePendingPrompt,
   type StoppedCount,
   type StoppedRowCursor,
   type WorkspaceRow,
