@@ -24,6 +24,10 @@ import type { AcpEvent } from '@yaac/shared/acp'
  *  page past it to load. */
 const LOAD_MARGIN_PX = 800
 
+/** How far from the bottom, in pixels, still counts as at it. Under a
+ *  sub-pixel layout (CSS zoom, Firefox) the bottom can read over 1px off. */
+export const TAIL_SLACK_PX = 2
+
 /** Where to put the list after the next render: as far from its bottom as
  *  it was (a page added above), or at an end. */
 type Placement = { at: 'kept'; fromBottom: number } | { at: 'top' } | { at: 'bottom' }
@@ -44,8 +48,8 @@ export interface TranscriptPages {
   atEnd: boolean
   /** A page past an end of the shown ones is being read. */
   loading: 'earlier' | 'later' | undefined
-  /** Whether there is more of the conversation above or below the screen,
-   *  for offering to jump there. */
+  /** Whether there is any more of the conversation above or below the
+   *  screen, for offering to jump there. */
   above: boolean
   below: boolean
   /** The scrolling element's `onScroll`. */
@@ -130,8 +134,8 @@ export function useTranscriptPages({ workspaceId, agentSessionId, life, last, la
     const el = scrollRef.current
     if (!el) return
     const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    const above = from > 0 || el.scrollTop > el.clientHeight
-    const below = !atEnd || fromBottom > el.clientHeight
+    const above = from > 0 || el.scrollTop > 1
+    const below = !atEnd || fromBottom >= TAIL_SLACK_PX
     setEdges((cur) => (cur.above === above && cur.below === below ? cur : { above, below }))
     if (el.scrollTop < LOAD_MARGIN_PX && from > 0) {
       show(from - 1, 'earlier', { ...span, from: from - 1 }, () => ({ at: 'kept', fromBottom: el.scrollHeight - el.scrollTop }))

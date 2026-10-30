@@ -13,7 +13,7 @@ import { useConversationFind, type FindOptions } from '#components/ConversationF
 import type { AcpStream } from '#lib/acp'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { CondenseIcon, JumpBottomIcon, JumpTopIcon, LoadingIcon, NarrowIcon, UncondenseIcon, WidenIcon } from '#lib/icons'
-import type { TranscriptPages } from '#lib/useTranscriptPages'
+import { TAIL_SLACK_PX, type TranscriptPages } from '#lib/useTranscriptPages'
 import { useUiStore } from '#lib/store'
 import type { AcpEvent } from '@yaac/shared/acp'
 
@@ -199,81 +199,146 @@ export function Working({ caption = 'working' }: { caption?: string }): JSX.Elem
 
 /**
  * Keep a chat pane's list at its tail while the reader is there, so what
- * arrives shows as it comes, but never move a reader who scrolled up or is
- * on an earlier page. A new `view` starts at its tail. Gives the list's
- * `onScroll`; `keep`, for a layout change elsewhere (the composer growing)
- * to keep a reader at the tail there; and `pin`, to follow the tail again
- * (the reader sent a message).
+ * arrives shows as it comes, but never move a reader who scrolled up, even
+ * slightly, or is on an earlier page. A new `view` starts at its tail. Gives
+ * the list's `onScroll`; `keep`, for a layout change elsewhere (the composer
+ * growing) to keep a reader at the tail there; `pin`, to follow the tail
+ * again (the reader sent a message); and `unseen`, whether events arrived
+ * at the tail while the reader was away from it, cleared once they are back.
  *
- * Any move up unpins at once, however small. A trackpad's first steps, or a
- * smooth scroll's first frames, stay near the tail, and a render then (one
- * per streamed event) would snap back to it and cancel the scroll. The
- * wheel and keys unpin before the scroll starts, since a render can land
- * before its first scroll event. A zoom (ctrl+wheel, a pinch) or sideways
- * (shift+wheel) wheel scrolls nothing up, and so leaves the pane pinned.
+ * Any move up unpins at once. A trackpad's first steps, or a smooth scroll's
+ * first frames, stay near the tail, and a render then (one per streamed
+ * event) would snap back to it and cancel the scroll. The wheel, keys and a
+ * swipe down unpin before the scroll starts, since a render can land before
+ * its first scroll event. A zoom (ctrl+wheel, a pinch), a sideways wheel or
+ * swipe, and a tap's jitter scroll nothing up, and so leave the pane pinned.
+ *
+ * A scroll re-pins when it lands at the tail, or moves toward it and lands
+ * near it. The second case catches a fling or a smooth scroll that ends on
+ * the bottom it aimed at, which the stream has since moved further down.
+ * Neither the browser's scroll anchoring (which keeps the distance from the
+ * bottom as it is) nor the stream's growth (which adds to it) moves toward
+ * the tail, so a reader who stopped short of it stays where they are. `End`
+ * re-pins at once, whatever the list does before its smooth scroll ends.
  */
 export function useFollowTail(
   scrollRef: RefObject<HTMLElement | null>,
-  pages: Pick<TranscriptPages, 'atEnd' | 'onScroll'>,
+  pages: Pick<TranscriptPages, 'atEnd' | 'events' | 'onScroll'>,
   view: unknown,
-): { onScroll: () => void; keep: () => void; pin: () => void } {
+): { onScroll: () => void; keep: () => void; pin: () => void; unseen: boolean } {
   const pinned = useRef(true)
   const fromBottom = useRef(0)
+  const [unseen, setUnseen] = useState(false)
   const atEnd = useRef(pages.atEnd)
   atEnd.current = pages.atEnd
   const keep = useCallback(() => {
     const el = scrollRef.current
     if (el && pinned.current && atEnd.current) el.scrollTop = el.scrollHeight
   }, [scrollRef])
-  useLayoutEffect(() => {
+  const pin = useCallback(() => {
     pinned.current = true
-  }, [view])
+    setUnseen(false)
+  }, [])
+  useLayoutEffect(pin, [view, pin])
   // After every render, since anything rendered may have grown the list.
   useLayoutEffect(keep)
+  /** The newest event, while the tail is shown. */
+  const tail = pages.atEnd ? pages.events[pages.events.length - 1]?.seq : undefined
+  const seenTail = useRef(tail)
+  useLayoutEffect(() => {
+    if (!pinned.current && tail !== undefined && seenTail.current !== undefined && tail !== seenTail.current) {
+      setUnseen(true)
+    }
+    seenTail.current = tail
+  }, [tail])
   // And when the list shrinks, e.g. when a phone's soft keyboard opens.
-  // The reader's wheel and keys are heard here too, to unpin.
+  // The reader's wheel, keys and swipes are heard here too.
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
     const ro = new ResizeObserver(keep)
     ro.observe(el)
     const onWheel = (e: WheelEvent): void => {
-      if (e.deltaY < 0 && !e.ctrlKey && !e.shiftKey && scrollsList(el, e.target)) pinned.current = false
+      if (e.deltaY < 0 && !e.ctrlKey && !e.shiftKey && scrollsList(el, e.target, 'up')) pinned.current = false
+    }
+    /** Where the reader last pressed, which a key pressed with nothing
+     *  focused scrolls from, as browsers do. */
+    let pressed: EventTarget | null = null
+    const onPointerDown = (e: PointerEvent): void => {
+      pressed = e.target
     }
     const onKey = (e: KeyboardEvent): void => {
-      if (UP_KEYS.has(e.key) && scrollsList(el, e.target)) pinned.current = false
+      const from = e.target === document.body ? pressed : e.target
+      if (!(from instanceof Node) || !el.contains(from)) return
+      if (UP_KEYS.has(e.key) && scrollsList(el, from, 'up')) pinned.current = false
+      else if (e.key === 'End' && scrollsList(el, from, 'down')) pin()
+    }
+    /** Where a one-finger touch began, until it is past the slop and so
+     *  decided; unset for a pinch. */
+    let start: { x: number; y: number } | undefined
+    const onTouchStart = (e: TouchEvent): void => {
+      const t = e.touches[0]
+      start = e.touches.length === 1 && t ? { x: t.clientX, y: t.clientY } : undefined
+    }
+    const onTouchMove = (e: TouchEvent): void => {
+      const t = e.touches[0]
+      if (start === undefined || e.touches.length !== 1 || !t) {
+        start = undefined
+        return
+      }
+      const dx = t.clientX - start.x
+      const dy = t.clientY - start.y
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < TOUCH_SLOP_PX) return
+      if (dy > Math.abs(dx) && scrollsList(el, e.target, 'up')) pinned.current = false
+      start = undefined
     }
     el.addEventListener('wheel', onWheel, { passive: true })
-    el.addEventListener('keydown', onKey)
+    document.addEventListener('pointerdown', onPointerDown, true)
+    document.addEventListener('keydown', onKey)
+    el.addEventListener('touchstart', onTouchStart, { passive: true })
+    el.addEventListener('touchmove', onTouchMove, { passive: true })
     return () => {
       ro.disconnect()
       el.removeEventListener('wheel', onWheel)
-      el.removeEventListener('keydown', onKey)
+      document.removeEventListener('pointerdown', onPointerDown, true)
+      document.removeEventListener('keydown', onKey)
+      el.removeEventListener('touchstart', onTouchStart)
+      el.removeEventListener('touchmove', onTouchMove)
     }
-  }, [scrollRef, keep])
-  // A pixel's slack, since a zoomed page's tail can sit a fraction off. The
-  // floor at 0 keeps WebKit's bounce past the tail from reading as a move up.
+  }, [scrollRef, keep, pin])
+  // The floor at 0 keeps WebKit's bounce past the tail from reading as a
+  // move away from it.
   const onScroll = (): void => {
     const el = scrollRef.current
     if (!el) return
     const now = Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight)
-    pinned.current = now < 60 && now - fromBottom.current <= 1
+    if (now < TAIL_SLACK_PX || (now < fromBottom.current - 1 && now < NEAR_TAIL_PX)) pin()
+    else pinned.current = false
     fromBottom.current = now
     pages.onScroll()
   }
-  return { onScroll, keep, pin: () => { pinned.current = true } }
+  return { onScroll, keep, pin, unseen }
 }
+
+/** How close to the bottom a scroll toward it must land to re-pin. */
+const NEAR_TAIL_PX = 60
+
+/** How far a finger moves before a touch counts as a swipe, past a tap's
+ *  jitter. */
+const TOUCH_SLOP_PX = 10
 
 /** Keys that scroll a focused list up. */
 const UP_KEYS = new Set(['ArrowUp', 'PageUp', 'Home'])
 
-/** Whether scrolling up from `target` moves `list` itself: it is not at its
- *  top, and no box between them (a tool's output) can scroll up first. */
-function scrollsList(list: HTMLElement, target: EventTarget | null): boolean {
+/** Whether scrolling `way` from `target` moves `list` itself: it has room
+ *  that way, and no box between them (a tool's output) can scroll first. */
+function scrollsList(list: HTMLElement, target: EventTarget | null, way: 'up' | 'down'): boolean {
+  const room = (box: Element): boolean =>
+    way === 'up' ? box.scrollTop > 0 : box.scrollHeight - box.scrollTop - box.clientHeight > 1
   for (let node = target instanceof Element ? target : null; node && node !== list; node = node.parentElement) {
-    if (node.scrollTop > 0 && /auto|scroll/.test(getComputedStyle(node).overflowY)) return false
+    if (room(node) && /auto|scroll/.test(getComputedStyle(node).overflowY)) return false
   }
-  return list.scrollTop > 0
+  return room(list)
 }
 
 /** In place of a page of the conversation being read, at the end it joins. */
@@ -287,9 +352,10 @@ export function PageLoading(): JSX.Element {
 }
 
 /** The buttons over a conversation that jump to its first message or back
- *  to its latest, shown while there is more that way than fits on screen.
- *  Its parent must be positioned. */
-export function JumpButtons({ pages }: { pages: TranscriptPages }): JSX.Element | null {
+ *  to its latest, each shown once the reader is off that end at all. The
+ *  latest is dotted while there is `unseen` activity there. Its parent must
+ *  be positioned. */
+export function JumpButtons({ pages, unseen }: { pages: TranscriptPages; unseen: boolean }): JSX.Element | null {
   if (!pages.above && !pages.below) return null
   const button = 'pointer-events-auto flex size-8 items-center justify-center rounded-full border border-border '
     + 'bg-surface text-text-dim shadow-sm hover:bg-surface-2 hover:text-text'
@@ -301,8 +367,15 @@ export function JumpButtons({ pages }: { pages: TranscriptPages }): JSX.Element 
         </button>
       )}
       {pages.below && (
-        <button type="button" aria-label="Jump to the latest" title="Jump to the latest" onClick={pages.jumpToBottom} className={button}>
+        <button
+          type="button"
+          aria-label={unseen ? 'Jump to the latest (new activity)' : 'Jump to the latest'}
+          title={unseen ? 'New activity below' : 'Jump to the latest'}
+          onClick={pages.jumpToBottom}
+          className={clsx(button, 'relative')}
+        >
           <JumpBottomIcon size={15} />
+          {unseen && <span className="absolute -top-0.5 -right-0.5 size-2.5 rounded-full border-2 border-surface bg-accent" />}
         </button>
       )}
     </div>
