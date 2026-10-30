@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import {
+  activityStarts,
   readAcpFirstPrompt,
   readAcpRecovery,
   replayAcpLog,
@@ -516,6 +517,28 @@ describe('readAcpPage', () => {
   })
 })
 
+describe('activityStarts', () => {
+  it('dates a subagent a later life carries on by its start in the history, and one it spawns by its own', async () => {
+    const t0 = Date.parse('2026-01-01T00:00:00.000Z')
+    const mark = (at: number): string => line({ jsonrpc: '2.0', method: '_acpd/time', params: { at } })
+    const spawn = (id: string): string => update({ sessionUpdate: 'subagent_spawned', subagentSessionId: id, name: 'Explore', task: 'look' })
+    const history = replayAcpLog([
+      life('l1'), spawn('undated'), mark(t0), spawn('sub-1'),
+      update({ sessionUpdate: 'async_task_spawned', asyncTaskId: 'b1', name: 'npm run dev', taskType: 'shell', description: '' }),
+    ].join('\n'))
+    const starts = activityStarts(history)
+    expect([...starts.values()]).toEqual([t0, t0])
+
+    // The next life resumes sub-1 under the id the history gave it.
+    const { file, ref } = await record()
+    await fs.writeFile(file, [life('l2'), mark(t0 + 3_600_000), spawn('sub-1'), spawn('sub-2')].join('\n') + '\n')
+    const read = await readAcpPage(ref, undefined, { firstPage: 1, skipReplay: true, starts })
+    expect(read.events.flatMap((e) => (e.type === 'subagent' ? [[e.subagent.id, e.subagent.startedAt]] : []))).toEqual([
+      ['sub-1', t0], ['sub-2', t0 + 3_600_000],
+    ])
+  })
+})
+
 describe('replayAcpLog', () => {
   it('reads a record', () => {
     const events = replayAcpLog([
@@ -960,7 +983,7 @@ describe('replayAcpLog', () => {
     expect(events[2]).toMatchObject({ content: [{ type: 'text', text: 'second ask' }] })
   })
 
-  it('dates each message by the record\'s last time mark, and a replay only by marks older than it', () => {
+  it('dates each message by the record\'s last time mark, a replay only by marks older than it, and each subagent and task by its first', () => {
     const t0 = Date.parse('2026-01-01T00:00:00.000Z')
     const mark = (at: number): string => line({ jsonrpc: '2.0', method: '_acpd/time', params: { at } })
     const echoed = (text: string): string => update({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text } })
@@ -985,6 +1008,26 @@ describe('replayAcpLog', () => {
     expect(dated([load, echoed('undated'), mark(t0), echoed('from history')])).toEqual([
       ['undated', undefined], ['from history', t0],
     ])
+
+    // A subagent or task keeps its first event's time through every later
+    // one, including the copy a compaction's page opens with.
+    const spawned = replayAcpLog([
+      life('life-1'),
+      update({ sessionUpdate: 'subagent_spawned', subagentSessionId: 'undated', name: 'Explore', task: 'look' }),
+      mark(t0),
+      update({ sessionUpdate: 'subagent_spawned', subagentSessionId: 'sub-1', name: 'Explore', task: 'look' }),
+      update({ sessionUpdate: 'async_task_spawned', asyncTaskId: 'b1', name: 'npm run dev', taskType: 'shell', description: '' }),
+      mark(t0 + 60_000),
+      update({ sessionUpdate: 'subagent_state_update', subagentSessionId: 'undated', state: 'completed' }),
+      update({ sessionUpdate: 'subagent_state_update', subagentSessionId: 'sub-1', state: 'completed' }),
+      compaction('c1', 'completed'),
+    ].join('\n'))
+    expect(spawned.flatMap((e) => (
+      e.type === 'subagent' ? [[e.subagent.id, e.subagent.startedAt]] : e.type === 'task' ? [[e.task.id, e.task.startedAt]] : []
+    ))).toEqual([
+      ['undated', undefined], ['sub-1', t0], ['b1', t0], ['undated', undefined], ['sub-1', t0], ['b1', t0],
+    ])
+    expect(acpPageOf(spawned.at(-1)!.seq)).toBe(1)
   })
 
   it('gives each subagent its own thread and follows subagents and tasks to their latest state', () => {

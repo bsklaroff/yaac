@@ -3,7 +3,7 @@ import { StringDecoder } from 'node:string_decoder'
 import { ServerError } from '@yaac/shared/errors'
 import { ConfinedPathError } from '#lib/confined-fs'
 import { sniffImage } from '@yaac/shared/attachments'
-import { ACP_RECORD_NAME, ClaudeTranscriptReplay, acpPage, acpStoredImage, openSandboxDir, openSandboxFile, readAcpLife, readAcpPage, claudeSubagentThreads, claudeTranscriptAsAcp, codexTranscriptAsAcp, conversationFiles, opencodeTranscriptAsAcp, piTranscriptAsAcp, sessionTranscriptPath, readSandboxFile, type AcpLife, type RecordOrigin, type SandboxFile } from '#runtime/agents'
+import { ACP_RECORD_NAME, ClaudeTranscriptReplay, acpPage, activityStarts, acpStoredImage, openSandboxDir, openSandboxFile, readAcpLife, readAcpPage, claudeSubagentThreads, claudeTranscriptAsAcp, codexTranscriptAsAcp, conversationFiles, opencodeTranscriptAsAcp, piTranscriptAsAcp, sessionTranscriptPath, readSandboxFile, type AcpLife, type RecordOrigin, type SandboxFile } from '#runtime/agents'
 import { listWorkspaceAgentSessions, type AgentSessionLinkRow } from '#db'
 import { serverLog } from '#lib/log'
 import { recordedTranscript } from './agent-session-paths'
@@ -58,7 +58,8 @@ export async function getAgentSessionTranscript(
  * tool's own history of what came before the life it holds. The live pane
  * numbers the record's pages from it (`attachAcp`), and the transcript route
  * from the same answer, cached per life since that history no longer
- * changes.
+ * changes. It carries the history's subagent and task starts, so the
+ * record dates one it carries on as the history did.
  */
 export function recordOrigin(
   projectId: string,
@@ -72,7 +73,8 @@ export function recordOrigin(
     if (session === undefined) return NO_HISTORY
     const own = await historyBefore(projectId, workspaceId, session, await claudeTranscript(projectId, workspaceId, session), life)
     const last = own?.events.at(-1)
-    return last === undefined ? NO_HISTORY : { firstPage: acpPageOf(last.seq) + 1, skipReplay: true }
+    if (own === undefined || last === undefined) return NO_HISTORY
+    return { firstPage: acpPageOf(last.seq) + 1, skipReplay: true, starts: activityStarts(own.events) }
   })
 }
 

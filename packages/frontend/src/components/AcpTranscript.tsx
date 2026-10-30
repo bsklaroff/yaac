@@ -1362,7 +1362,7 @@ function WokenCaption({
 
 /** When a message was sent, in the viewer's own zone (`useTimeZone`),
  *  leading the faint caption above it, with the full date and zone on hover. */
-function MessageTime({ at }: { at: number }): JSX.Element {
+export function MessageTime({ at }: { at: number }): JSX.Element {
   const timeZone = useTimeZone()
   const date = new Date(at)
   return (

@@ -37,7 +37,8 @@ that mapping cannot bring back.
   record's `session/load` replay stands in, which claude and pi send only
   from their latest compaction, so the turns before that are not shown.
   The replayed messages are also undated, since the replay says only when
-  it was sent (docs/agent-modes.md, "Where history lives").
+  it was sent (docs/agent-modes.md, "Where history lives"), and a subagent
+  or task launched in an earlier life shows no "Started" time.
 
 ## claude
 
@@ -72,6 +73,10 @@ that mapping cannot bring back.
 - **When a run was woken.** A restored "Woken by" caption is dated by the
   `<task-notification>` entry claude wrote, which can be a few seconds
   before the live record saw the run start, so its time can read a minute
+  earlier than it did live.
+- **When a subagent or task started.** A restored "Started" time is the
+  timestamp of the transcript entry that launched it, which can be a moment
+  before the live record saw the launch, so it too can read a minute
   earlier than it did live.
 
 ## codex
@@ -116,7 +121,8 @@ compactions, and nothing else:
 - **A turn opencode starts itself** reaches neither the record nor the live
   pane, but its messages are in opencode's history, so the replay shows them.
 - **Message times.** The replay carries none, so the messages of earlier
-  lives show undated.
+  lives show undated, and a subagent or task launched in one shows no
+  "Started" time.
 
 A `tui` conversation's transcript is read from opencode's database:
 

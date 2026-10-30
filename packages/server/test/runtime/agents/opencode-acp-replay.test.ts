@@ -64,8 +64,8 @@ async function writeExport(root: string, body: string): Promise<string> {
  * as many chunks and a call as several updates, which a pane merges, so
  * chunks are joined and each call and subagent is shown once, where it
  * first appeared, in its last state. Session state a transcript does not
- * show (commands, models) is left out, and so are times, which the live
- * fixture's record does not hold.
+ * show (commands, models) is left out, and so are times (a message's, a
+ * subagent's start), which the live fixture's record does not hold.
  */
 function rendered(events: AcpEvent[]): unknown[] {
   const out: Array<Record<string, unknown>> = []
@@ -73,6 +73,10 @@ function rendered(events: AcpEvent[]): unknown[] {
   for (const e of events) {
     if (e.type === 'commands' || e.type === 'models') continue
     const { seq: _, at: _at, ...shown } = e as AcpEvent & Record<string, unknown>
+    if (e.type === 'subagent') {
+      const { startedAt: _started, ...subagent } = e.subagent
+      shown.subagent = subagent
+    }
     if (e.type === 'tool' || e.type === 'subagent') {
       const key = e.type === 'tool' ? e.call.toolCallId : e.subagent.id
       const i = at.get(key)

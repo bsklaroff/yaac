@@ -259,8 +259,15 @@ describe('getAgentSessionTranscript', () => {
       const first = await getAgentSessionTranscript(PROJECT, WORKSPACE, id, 0)
       expect([first.page, first.life, said(first.events)], id).toEqual([0, 'life-2', ['first ask', 'first answer']])
       expect(await recordOrigin(PROJECT, WORKSPACE, id, { id: 'life-2', startedAt: restart }), id)
-        .toEqual({ firstPage: 1, skipReplay: true })
+        .toMatchObject({ firstPage: 1, skipReplay: true })
     }
+    // The record dates what the history started as the history did, so a
+    // subagent this life resumes keeps its first start.
+    const starts = async (id: string): Promise<number[]> =>
+      [...(await recordOrigin(PROJECT, WORKSPACE, id, { id: 'life-2', startedAt: restart })).starts?.values() ?? []]
+    expect(await starts(ACP_SESSION)).toEqual([Date.parse(before), Date.parse(before)])
+    expect(await starts(CODEX)).toEqual([Date.parse(before)])
+    expect(await starts(PI)).toEqual([])
     // What the life before left running died with it, so the history does
     // not show it going.
     const ended = async (id: string): Promise<string[]> => (await getAgentSessionTranscript(PROJECT, WORKSPACE, id, 0)).events

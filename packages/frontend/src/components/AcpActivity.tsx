@@ -1,7 +1,7 @@
 import { useEffect, useRef, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import {
-  active, MAX_TOOL_OUTPUT_CHARS, StateMark, subagentCategory, taskCategory, ToolRow, type ActivityCategory,
+  active, MAX_TOOL_OUTPUT_CHARS, MessageTime, StateMark, subagentCategory, taskCategory, ToolRow, type ActivityCategory,
 } from '#components/AcpTranscript'
 import { NavBackIcon, StopIcon } from '#lib/icons'
 import type { TaskOutput } from '#lib/acp'
@@ -148,6 +148,16 @@ export function ActivityTitleBar({
         <StateMark state={state} live={live} />
       </div>
       {controls !== undefined && <div className="flex items-center px-1.5 pb-1.5">{controls}</div>}
+    </div>
+  )
+}
+
+/** When the subagent or task shown began, atop its view. */
+export function ActivityStarted({ at }: { at: number }): JSX.Element {
+  return (
+    <div className="mb-3 flex gap-x-1 px-1 text-[11px] text-text-faint">
+      <span>Started</span>
+      <MessageTime at={at} />
     </div>
   )
 }
