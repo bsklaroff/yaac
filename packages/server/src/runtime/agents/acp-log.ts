@@ -154,6 +154,26 @@ export function acpPage(events: AcpEvent[], page?: number): AcpTranscriptPage {
 export interface RecordOrigin {
   firstPage: number
   skipReplay: boolean
+  /** When the history's subagents and tasks started (`activityStarts`), so
+   *  one this life carries on, such as a subagent it resumes, keeps the start
+   *  it first had. */
+  starts?: ReadonlyMap<string, number>
+}
+
+/** When each subagent and task in `events` started, by the key a
+ *  `RecordProjection` tracks it under. */
+export function activityStarts(events: AcpEvent[]): Map<string, number> {
+  const starts = new Map<string, number>()
+  for (const e of events) {
+    if (e.type !== 'subagent' && e.type !== 'task') continue
+    const at = e.type === 'subagent' ? e.subagent.startedAt : e.task.startedAt
+    if (at !== undefined && !starts.has(activityKey(e))) starts.set(activityKey(e), at)
+  }
+  return starts
+}
+
+function activityKey(e: Extract<AcpEventInit, { type: 'subagent' | 'task' }>): string {
+  return e.type === 'subagent' ? `s:${e.subagent.id}` : `t:${e.task.id}`
 }
 
 /** A record with no history before it. */
@@ -470,7 +490,10 @@ const DATED_EVENTS: ReadonlySet<AcpEvent['type']> = new Set(['user', 'woken'])
  * dated only by marks older than the `session/load` that asked for it: a
  * history built from the tool's own (`AcpRecordWriter`) carries marks from
  * when it happened, while acpd's marks during a live replay say only when
- * it was replayed.
+ * it was replayed. Each subagent and task carries the time of its first
+ * event as `startedAt` on every later one, so a page that opens with it
+ * still standing (`Pager`) says when it began; one the history before the
+ * life already holds keeps the start it had there (`RecordOrigin.starts`).
  */
 export class RecordProjection {
   private readonly projection = new AcpProjection()
@@ -486,8 +509,12 @@ export class RecordProjection {
   private mark: number | undefined
   /** The open `session/load`, and the time mark it was sent under. */
   private load: { id: string; sentAt: number } | undefined
+  /** Each subagent's and task's start, by `activityKey`: the history's, or
+   *  else its first event's time here, undefined when that was undated. */
+  private readonly starts: Map<string, number | undefined>
 
   constructor(origin: RecordOrigin = NO_HISTORY) {
+    this.starts = new Map(origin.starts)
     this.pager = new Pager(origin.firstPage)
     this.skipReplay = origin.skipReplay
   }
@@ -508,7 +535,18 @@ export class RecordProjection {
     if (msg.method === undefined && lineId(msg) === this.load?.id) this.load = undefined
     const at = this.time()
     if (at !== undefined) events = events.map((e) => (DATED_EVENTS.has(e.type) ? { ...e, at } : e))
-    return this.pager.number(events, line.length + 1)
+    return this.pager.number(events.map((e) => this.started(e, at)), line.length + 1)
+  }
+
+  /** A subagent's or task's event recorded at `at`, with its start if that
+   *  is known. */
+  private started(e: AcpEventInit, at: number | undefined): AcpEventInit {
+    if (e.type !== 'subagent' && e.type !== 'task') return e
+    const key = activityKey(e)
+    if (!this.starts.has(key)) this.starts.set(key, at)
+    const startedAt = this.starts.get(key)
+    if (startedAt === undefined) return e
+    return e.type === 'subagent' ? { ...e, subagent: { ...e.subagent, startedAt } } : { ...e, task: { ...e.task, startedAt } }
   }
 
   /** When the line being projected was recorded, if the record says. */

@@ -7,7 +7,7 @@ import {
   AcpTranscript, active, groupEvents, subagentCategory, taskCategory, USER_BUBBLE, type Group,
 } from '#components/AcpTranscript'
 import {
-  ActivityTitleBar, callOf, latestActivity, StopTaskButton, SubagentPrompt, TaskView, type ActivityTarget,
+  ActivityStarted, ActivityTitleBar, callOf, latestActivity, StopTaskButton, SubagentPrompt, TaskView, type ActivityTarget,
 } from '#components/AcpActivity'
 import { useConversationFind, type FindOptions } from '#components/ConversationFind'
 import type { AcpStream } from '#lib/acp'
@@ -85,6 +85,7 @@ export function useConversationView({
   const subagent = opened?.kind === 'subagent' ? activity.subagents.get(opened.id) : undefined
   const task = opened?.kind === 'task' ? activity.tasks.get(opened.id) : undefined
   const view = subagent !== undefined || task !== undefined ? opened : undefined
+  const startedAt = (subagent ?? task)?.startedAt
 
   /** A subagent the record shows without its thread is read from its own
    *  transcript: a finished one a `session/load` replay left out, or any one
@@ -128,39 +129,44 @@ export function useConversationView({
     activity,
     groups,
     findBar,
-    body: task !== undefined ? (
-      <TaskView
-        workspaceId={workspaceId}
-        task={task}
-        {...(call.call !== undefined ? { call: call.call } : {})}
-        streamed={call.output}
-        {...(stream?.taskOutputs[task.id] !== undefined ? { output: stream.taskOutputs[task.id] } : {})}
-        live={live}
-        {...(stream !== undefined && !stream.history && task.outputFile !== undefined
-          ? { onRefresh: () => stream.send({ type: 'task-output', taskId: task.id }) }
-          : {})}
-      />
-    ) : (
+    body: (
       <>
-        {subagent !== undefined && <SubagentPrompt task={subagent.task} />}
-        <AcpTranscript
-          workspaceId={workspaceId}
-          groups={groups}
-          found={found}
-          busy={working}
-          live={live}
-          condensed={condensed}
-          {...(control !== undefined
-            ? {
-              onAnswerPermission: (requestId: string, optionId?: string) =>
-                control.send({ type: 'permission', requestId, ...(optionId !== undefined ? { optionId } : {}) }),
-            }
-            : {})}
-          {...(live && readOnly !== undefined ? { waitingOn: readOnly.owner ?? null } : {})}
-          onOpenSubagent={(id) => setOpened({ kind: 'subagent', id })}
-          onOpenTask={(id) => setOpened({ kind: 'task', id })}
-        />
-        {working && !groups.some((g) => g.kind === 'permission' && g.decided === undefined) && <Working />}
+        {startedAt !== undefined && <ActivityStarted at={startedAt} />}
+        {task !== undefined ? (
+          <TaskView
+            workspaceId={workspaceId}
+            task={task}
+            {...(call.call !== undefined ? { call: call.call } : {})}
+            streamed={call.output}
+            {...(stream?.taskOutputs[task.id] !== undefined ? { output: stream.taskOutputs[task.id] } : {})}
+            live={live}
+            {...(stream !== undefined && !stream.history && task.outputFile !== undefined
+              ? { onRefresh: () => stream.send({ type: 'task-output', taskId: task.id }) }
+              : {})}
+          />
+        ) : (
+          <>
+            {subagent !== undefined && <SubagentPrompt task={subagent.task} />}
+            <AcpTranscript
+              workspaceId={workspaceId}
+              groups={groups}
+              found={found}
+              busy={working}
+              live={live}
+              condensed={condensed}
+              {...(control !== undefined
+                ? {
+                  onAnswerPermission: (requestId: string, optionId?: string) =>
+                    control.send({ type: 'permission', requestId, ...(optionId !== undefined ? { optionId } : {}) }),
+                }
+                : {})}
+              {...(live && readOnly !== undefined ? { waitingOn: readOnly.owner ?? null } : {})}
+              onOpenSubagent={(id) => setOpened({ kind: 'subagent', id })}
+              onOpenTask={(id) => setOpened({ kind: 'task', id })}
+            />
+            {working && !groups.some((g) => g.kind === 'permission' && g.decided === undefined) && <Working />}
+          </>
+        )}
       </>
     ),
     titleBar: subagent !== undefined ? (

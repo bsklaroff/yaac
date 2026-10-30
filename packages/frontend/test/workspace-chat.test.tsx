@@ -1655,8 +1655,9 @@ describe('WorkspaceChat focus', () => {
 })
 
 describe('WorkspaceChat subagents and background tasks', () => {
+  const started = Date.UTC(2026, 9, 17, 23, 30)
   const subagent = (seq: number, state: 'running' | 'completed'): AcpEvent => ({
-    type: 'subagent', seq, subagent: { id: 'sub-1', name: 'Explore', task: 'find the router', state },
+    type: 'subagent', seq, subagent: { id: 'sub-1', name: 'Explore', task: 'find the router', state, startedAt: started },
   })
   const shell = (seq: number, state: 'running' | 'stopped'): AcpEvent => ({
     type: 'task',
@@ -1710,11 +1711,17 @@ describe('WorkspaceChat subagents and background tasks', () => {
     expect(screen.queryByText('Delegating.')).toBeNull()
     expect(screen.queryByRole('textbox')).toBeNull()
     expect(screen.getByText('working')).toBeTruthy()
+    // Topped by when it began, which the record knows for the subagent but
+    // not here for the shell.
+    const startedAt = screen.getByText('Started').nextElementSibling
+    expect(startedAt?.getAttribute('datetime')).toBe(new Date(started).toISOString())
 
     // Esc goes back to the conversation and its composer.
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(screen.getByText('Delegating.')).toBeTruthy()
     expect(box()).toBeTruthy()
+    fireEvent.click(within(strip).getByRole('button', { name: 'Shell: npm run dev' }))
+    expect(screen.queryByText('Started')).toBeNull()
   })
 
   it('shows a subagent\'s ask in its own view, to answer there, and does not call it working', () => {

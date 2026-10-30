@@ -147,6 +147,9 @@ export interface AcpSubagent {
    *  shown as another way into it where it was made. */
   resumedBy?: string[]
   state: AcpSubagentState
+  /** When it was spawned (epoch ms, to within a second); absent where the
+   *  record does not say. */
+  startedAt?: number
   /** Its final report, when the adapter sends one apart from its messages
    *  (claude does). */
   summary?: string
@@ -177,6 +180,9 @@ export interface AcpTask {
   kind: string
   description: string
   state: AcpTaskState
+  /** When it was started (epoch ms, to within a second); absent where the
+   *  record does not say. */
+  startedAt?: number
   /** The tool call that started it, when the adapter names one. */
   toolCallId?: string
   /** Where in the workspace its output is written; see `task-output`. */
