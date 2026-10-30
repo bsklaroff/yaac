@@ -117,8 +117,10 @@ export function active(item: AcpSubagent | AcpTask): boolean {
  * - a subagent's card goes in the thread that spawned it, in place of the
  *   call that spawned it when that is in the stream (claude's Agent call),
  *   and again in place of each call that resumed it (claude's SendMessage);
- *   its final report, once it has finished, ends its own thread. Task
- *   cards, compactions and turn outcomes go in the main conversation;
+ *   its final report, once it has finished, ends its own thread. A task's
+ *   card goes in the thread that started it too. Either goes in the main
+ *   conversation when its parent is not in `events`, as do compactions and
+ *   turn outcomes;
  * - a call's streamed output is appended to it, keeping the end;
  * - a call that started a task still running is not interrupted by its turn
  *   ending: it runs on in the background;
@@ -167,6 +169,13 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
   /** The subagent this thread is, at its latest state. */
   let self: AcpSubagent | undefined
   const main = thread === undefined
+  /** The thread a card goes in: its parent's, or the main conversation's
+   *  when no loaded page holds the parent, whose thread could not be opened
+   *  (a later page opens with a task still running, not its finished
+   *  subagent). */
+  const subagentIds = new Set(events.flatMap((e) => (e.type === 'subagent' ? [e.subagent.id] : [])))
+  const home = (parent: string | undefined): string | undefined =>
+    (parent !== undefined && subagentIds.has(parent) ? parent : undefined)
   /** Add a card, or replace it in place once it exists. */
   const card = (key: string, group: Extract<Group, { kind: 'subagent' | 'task' | 'compaction' }>): void => {
     const at = cardIndex.get(key)
@@ -200,7 +209,7 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
     }
     if (e.type === 'subagent' && e.subagent.id === thread) self = e.subagent
     if (e.type === 'subagent') {
-      if (e.subagent.parent !== thread) continue
+      if (home(e.subagent.parent) !== thread) continue
       for (const id of [e.subagent.id, ...e.subagent.resumedBy ?? []]) {
         const key = `s:${id}`
         const call = toolIndex.get(id)
@@ -214,7 +223,7 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
       continue
     }
     if (e.type === 'task') {
-      if (main) card(`t:${e.task.id}`, { kind: 'task', seq: e.seq, task: e.task })
+      if (home(e.task.parent) === thread) card(`t:${e.task.id}`, { kind: 'task', seq: e.seq, task: e.task })
       continue
     }
     if (e.type === 'compaction') {
