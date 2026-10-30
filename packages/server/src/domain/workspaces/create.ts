@@ -86,7 +86,11 @@ import {
 } from '#domain/skills'
 import { convergeAgentHistory } from './history'
 import { deleteWorkspaceState } from './cleanup'
-import { deliverPendingPrompt, reconcileWorkspaceAgentSessions } from './agent-session-registry'
+import {
+  ACP_CONVERSATION_WAIT_MS,
+  deliverPendingPrompt,
+  reconcileWorkspaceAgentSessions,
+} from './agent-session-registry'
 import {
   OPENCODE_CHECKPOINT_SCRIPT,
   WORKSPACE_INIT_SCRIPT,
@@ -120,10 +124,6 @@ import {
   toolApiKeyEnvVar,
   type PiProvider,
 } from '@yaac/shared/tool-providers'
-
-/** How long a launch's watch and a claim's hand-over wait for an acp
- *  conversation to be named, and the hand-over for its handshake. */
-const ACP_CONVERSATION_WAIT_MS = 60_000
 
 /** In-pod claude home, where `claudeDir` is mounted. `CLAUDE_CONFIG_DIR`
  *  points here, which also puts claude's global config at

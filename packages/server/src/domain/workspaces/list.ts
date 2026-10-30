@@ -9,6 +9,8 @@ import {
   type WorkspaceRow,
 } from '#db'
 import { listedStatus, toAgentSessionEntry } from './agent-session-entry'
+import { HELD_PROMPT_GRACE_MS } from './agent-session-registry'
+import { notifyWorkspaceListChanged } from '#lib/notify'
 import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import { observeWorkspaces, type WorkspaceRuntimeReport } from '#runtime/status'
@@ -27,15 +29,50 @@ export async function ensureProjectExists(projectId: string): Promise<void> {
  */
 const listActiveInflight = new Map<string, Promise<ActiveWorkspacesResult>>()
 
-/** Test helper: drop shared in-flight calls between test cases. */
+/**
+ * The earliest end of a held prompt's grace the listings have seen, and the
+ * timer that republishes the snapshot then. A start that hangs silently
+ * changes nothing else, so without it the row would keep listing as working
+ * until some unrelated change rebuilt the snapshot. The next listing arms
+ * the following end.
+ */
+let graceEnd: { at: number; timer: NodeJS.Timeout } | undefined
+
+function republishAt(at: number): void {
+  if (graceEnd !== undefined && graceEnd.at <= at) return
+  clearTimeout(graceEnd?.timer)
+  const timer = setTimeout(() => {
+    graceEnd = undefined
+    notifyWorkspaceListChanged()
+  }, at - Date.now())
+  timer.unref()
+  graceEnd = { at, timer }
+}
+
+/** Test helper: drop shared in-flight calls and the grace timer between
+ *  test cases. */
 export function _clearListActiveInflightForTests(): void {
   listActiveInflight.clear()
+  clearTimeout(graceEnd?.timer)
+  graceEnd = undefined
 }
 
 /**
  * Active workspaces for display, plus the stale set the caller should tear
  * down. Joins what the runtime observes now with recorded rows (title,
  * group, creation time, conversations) (docs/layered-server.md).
+ *
+ * A chat workspace still holding its create prompt (`pendingPrompt`) lists
+ * as `running`, and so do its waiting conversations: its agent is starting
+ * up to work on that prompt, so the `waiting` the status store reports
+ * before the first turn would show an unread reply that does not exist.
+ * Only within `HELD_PROMPT_GRACE_MS` of the latest of the row's creation,
+ * the runtime's, and the wait's start (the agent's attach or first status),
+ * after which the start is stuck and its real status shows, as a wait
+ * clients have not seen yet. Each covers a case the others start too early
+ * for: a cold create writes its row before a slow image build and boot, a
+ * runtime's watcher takes a moment to attach, and a claimed spare's agent
+ * may have been waiting since it was warmed.
  */
 export async function listActiveWorkspaces(projectFilter?: string): Promise<ActiveWorkspacesResult> {
   const key = projectFilter ?? ''
@@ -106,12 +143,22 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
         unforwardedPorts: [],
       }
     }
+    const startingUntil = row?.pendingPrompt !== undefined
+      ? Math.max(row.createdAt.getTime(), w.createdAtMs, w.waitingSinceMs ?? 0) + HELD_PROMPT_GRACE_MS
+      : undefined
+    const starting = startingUntil !== undefined && Date.now() < startingUntil
+    if (starting) republishAt(startingUntil)
+    const shown = (live: LiveStatus): LiveStatus => (starting && live.status === 'waiting' ? { status: 'running' } : live)
+    const status = shown(w)
     return {
       ...base,
-      ...listedStatus(w.status),
-      ...(w.waitingSinceMs !== undefined ? { waitingSinceMs: w.waitingSinceMs } : {}),
+      ...listedStatus(status.status),
+      ...(status.waitingSinceMs !== undefined ? { waitingSinceMs: status.waitingSinceMs } : {}),
       ...(row !== undefined && row.waitingSeenBy.length > 0 ? { waitingSeenBy: row.waitingSeenBy } : {}),
-      agentSessions: links.map((l) => toAgentSessionEntry(l, liveStatus(w.agents, l))),
+      agentSessions: links.map((l) => {
+        const live = liveStatus(w.agents, l)
+        return toAgentSessionEntry(l, live && shown(live))
+      }),
       ...(w.terminals !== undefined ? { terminals: w.terminals } : {}),
       blockedHosts: w.blockedHosts,
       forwardedPorts: w.forwardedPorts,
@@ -140,7 +187,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
 function liveStatus(
   agents: AgentLiveness[],
   l: AgentSessionLinkRow,
-): { status: AgentStatus; waitingSinceMs?: number } | undefined {
+): LiveStatus | undefined {
   if (!l.active || l.paneId === undefined) return undefined
   const agent = agents.find((a) => a.handle === l.paneId)
   if (agent === undefined) return undefined
@@ -148,4 +195,10 @@ function liveStatus(
     status: agent.status,
     ...(agent.waitingSinceMs !== undefined ? { waitingSinceMs: agent.waitingSinceMs } : {}),
   }
+}
+
+/** A status as listed, with the start of its waiting spell. */
+interface LiveStatus {
+  status: AgentStatus
+  waitingSinceMs?: number
 }
