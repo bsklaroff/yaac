@@ -18,6 +18,7 @@ import { setDataDir } from '@yaac/shared/paths'
 import { workspaceDir } from '@yaac/shared/project-paths'
 import fs from 'node:fs/promises'
 import { closeDb } from '@yaac/server/db/client'
+import { insertSession } from '@yaac/server/db/session-store'
 import type { ServerSnapshot } from '@yaac/shared/types'
 
 /** Open a WS and resolve the first `snapshot` frame's data. */
@@ -292,12 +293,15 @@ describe('with seeded projects', () => {
     )
     const allIds = Array.from({ length: 3 }, () => crypto.randomUUID())
 
-    /** One recorded workspace that is stopped, with one claude conversation. */
+    /** One recorded workspace that is stopped, with one claude session and
+     *  its conversation. */
     async function seedStopped(projectId: string, workspaceId: string, firstPrompt?: string): Promise<void> {
       await recordWorkspaceCreated({ projectId: projectId, workspaceId })
+      const conversationId = crypto.randomUUID()
       await recordConversations(projectId, workspaceId, [
-        { tool: 'claude', conversationId: crypto.randomUUID(), ...(firstPrompt !== undefined ? { firstPrompt } : {}) },
+        { tool: 'claude', conversationId, ...(firstPrompt !== undefined ? { firstPrompt } : {}) },
       ])
+      await insertSession(projectId, workspaceId, { tool: 'claude', mode: 'tui', permissionMode: 'bypass', conversationId })
       await recordWorkspaceStopped(projectId, workspaceId)
     }
 

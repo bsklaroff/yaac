@@ -202,9 +202,10 @@ export async function attachStarted(res: Response, { attach = true } = {}): Prom
 async function attachSession(workspaceId: string, sessionId: string, { attach }: { attach: boolean }): Promise<void> {
   const session = await findSession(workspaceId, sessionId)
   if (session?.mode === 'acp') {
-    console.log(`Session ${sessionId} of workspace ${workspaceId} runs in ACP mode — open it in the web app to chat with the agent.`)
+    console.log(`Workspace ${workspaceId} is running in ACP mode — open it in the web app to chat with the agent `
+      + `(session ${sessionId}).`)
   } else if (!attach || session === undefined) {
-    console.log(`Session ${sessionId} of workspace ${workspaceId} is running — attach with `
+    console.log(`Workspace ${workspaceId} is running — attach with `
       + `\`yaac workspace attach --session ${sessionId} ${workspaceId}\`.`)
   } else if (!testEnv.e2eNoAttach) {
     await attachWorkspacePty(workspaceId, `native:${session.window}`)

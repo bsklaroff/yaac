@@ -425,16 +425,49 @@ async function writeUserRc(): Promise<void> {
   await fs.writeFile(path.join(userHome(), '.bash_profile'), `${exports}${dataDir}PS1='\\w\\$ '\n`)
 }
 
+/** Workspace `id`'s first session, listed as `headers` asks. */
+async function firstSession(id: string, headers: Record<string, string> = {}): Promise<SessionEntry> {
+  const { workspaces } = await (await fetch(`${origin()}/api/workspace/list`, { headers })).json() as {
+    workspaces: Array<{ workspaceId: string; sessions: SessionEntry[] }>
+  }
+  const session = workspaces.find((w) => w.workspaceId === id)?.sessions[0]
+  if (session === undefined) throw new Error(`workspace ${id} has no session`)
+  return session
+}
+
 /**
- * The environment of workspace `id`'s first pane, once its agent has replaced
- * the placeholder, which reports nothing. `show-environment` shows what
- * future panes get rather than what the launch set, and running `printenv` in
- * a new window would change the shared fixture.
+ * Name the conversation of workspace `id`'s first session on its pane, as
+ * claude's SessionStart hook would (the fake claude reports nothing), and
+ * wait for the server to link it. A fresh claude session's conversation id
+ * is the session's own, which this returns.
+ */
+async function reportClaudeConversation(
+  project: string,
+  id: string,
+  headers: Record<string, string> = {},
+): Promise<string> {
+  const session = await firstSession(id, headers)
+  const sock = containerlessWorkspacePaths(containerlessJobName(project, id)).tmuxSock
+  await execFileAsync('tmux', ['-S', sock, 'set-option', '-p', '-t', `yaac:${session.window}`,
+    '@yaac-session', `claude|${session.sessionId}|`])
+  await vi.waitFor(async () => {
+    const linked = await (await fetch(`${origin()}/api/workspace/${id}/conversations`, { headers })).json() as
+      Array<{ conversationId: string }>
+    expect(linked.map((c) => c.conversationId)).toContain(session.sessionId)
+  }, { timeout: 30_000, interval: 250 })
+  return session.sessionId
+}
+
+/**
+ * The environment of workspace `id`'s first session's agent, which the fake
+ * agent dumps as it starts. `show-environment` shows what future panes get
+ * rather than what the launch set, and running `printenv` in a new window
+ * would change the shared fixture.
  */
 async function paneEnv(id: string): Promise<Record<string, string>> {
   let env: Record<string, string> = {}
   await vi.waitFor(async () => {
-    env = await processEnv((await tmux(id, 'display-message', '-p', '-t', 'yaac', '#{pane_pid}')).trim())
+    env = await processEnv((await tmux(id, 'display-message', '-p', '-t', `yaac:${(await firstSession(id)).window}`, '#{pane_pid}')).trim())
     expect(Object.keys(env)).not.toHaveLength(0)
   }, { timeout: 30_000, interval: 250 })
   return env
@@ -628,9 +661,9 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // yet); the fake agent reports nothing, so this comes from the launch.
     const res = await fetch(`${origin()}/api/workspace/list`)
     const { workspaces } = await res.json() as {
-      workspaces: Array<{ workspaceId: string; conversations: ConversationEntry[] }>
+      workspaces: Array<{ workspaceId: string; sessions: SessionEntry[] }>
     }
-    expect(workspaces.find((w) => w.workspaceId === workspaceId)?.conversations[0])
+    expect(workspaces.find((w) => w.workspaceId === workspaceId)?.sessions[0])
       .toMatchObject({ model: FALLBACK_MODELS.claude, modelName: 'Opus 5.5' })
   }, 120_000)
 
@@ -1523,6 +1556,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // runs in.
     const doomed = await createWorkspace()
     const theirs = await paneEnv(doomed)
+    const conv = await reportClaudeConversation(projectId, doomed)
     const asDoomed = async (...args: string[]): Promise<{ code: number; out: string }> => {
       const quoted = args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(' ')
       const { stdout } = await execFileAsync('sh', ['-c',
@@ -1573,22 +1607,22 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const { stdout: subject } = await execFileAsync('git', ['-C', mine, 'log', '-1', '--format=%s', `yaac/peers/${short}/HEAD`])
     expect(subject.trim()).toBe('left behind')
 
-    // Its conversation history stays readable too. The founding claude
-    // conversation runs under the workspace id; give it a subagent.
+    // Its conversation history stays readable too. The session's claude
+    // conversation runs under the session id; give it a subagent.
     const conversations = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'history', doomed, 'claude', '-workspace')
-    await fs.mkdir(path.join(conversations, doomed, 'subagents'), { recursive: true })
-    await fs.appendFile(path.join(conversations, `${doomed}.jsonl`), '{"left":"behind"}\n')
-    await fs.writeFile(path.join(conversations, doomed, 'subagents', 'agent-e2e.jsonl'), '{"sub":"agent"}\n')
+    await fs.mkdir(path.join(conversations, conv, 'subagents'), { recursive: true })
+    await fs.appendFile(path.join(conversations, `${conv}.jsonl`), '{"left":"behind"}\n')
+    await fs.writeFile(path.join(conversations, conv, 'subagents', 'agent-e2e.jsonl'), '{"sub":"agent"}\n')
     const mama = (...args: string[]) => execFileAsync(path.join(process.cwd(), 'workspace-bin', 'yaac-mama'), args,
       { cwd: mine, env: { ...process.env, YAAC_MAMA_URL: creds.YAAC_MAMA_URL, YAAC_MAMA_TOKEN: creds.YAAC_MAMA_TOKEN } })
-    expect((await mama('history', short)).stdout).toMatch(new RegExp(`${doomed}\\s+claude\\s+tui`))
-    const printed = (await mama('history', short, doomed.slice(0, 12))).stdout
+    expect((await mama('history', short)).stdout).toMatch(new RegExp(`${conv}\\s+claude\\s+tui`))
+    const printed = (await mama('history', short, conv.slice(0, 12))).stdout
     expect(printed).toContain('{"left":"behind"}\n')
     expect(printed.endsWith('{"sub":"agent"}\n')).toBe(true)
     const saved = path.join(testEnv.scratchDir, `history-of-${short}`)
     const written = (await mama('history', short, '-o', saved)).stdout
-    expect(written).toContain(`${saved}/${doomed}/${doomed}/subagents/agent-e2e.jsonl`)
-    expect(await fs.readFile(path.join(saved, doomed, doomed, 'subagents', 'agent-e2e.jsonl'), 'utf8'))
+    expect(written).toContain(`${saved}/${conv}/${conv}/subagents/agent-e2e.jsonl`)
+    expect(await fs.readFile(path.join(saved, conv, conv, 'subagents', 'agent-e2e.jsonl'), 'utf8'))
       .toBe('{"sub":"agent"}\n')
 
     // It is found by what it was about, and a message waits for a restart.
@@ -1944,9 +1978,9 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect((await tmux(workspaceId, 'show-options', '-p', '-t', pane, '-v', '@yaac-effort')).trim()).toBe('max')
     await vi.waitFor(async () => {
       const { workspaces } = await (await fetch(`${origin()}/api/workspace/list`)).json() as {
-        workspaces: Array<{ workspaceId: string; effort?: string }>
+        workspaces: Array<{ workspaceId: string; sessions: SessionEntry[] }>
       }
-      expect(workspaces.find((w) => w.workspaceId === workspaceId)?.effort).toBe('max')
+      expect(workspaces.find((w) => w.workspaceId === workspaceId)?.sessions[0]?.effort).toBe('max')
     }, { timeout: 30_000, interval: 500 })
   }, 120_000)
 
@@ -2242,10 +2276,10 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
       await vi.waitFor(async () => {
         const res = await fetch(`${origin()}/api/workspace/list`)
         const { workspaces } = await res.json() as {
-          workspaces: Array<{ workspaceId: string; mode?: string; conversations: ConversationEntry[] }>
+          workspaces: Array<{ workspaceId: string; sessions: SessionEntry[]; conversations: ConversationEntry[] }>
         }
         const row = workspaces.find((w) => w.workspaceId === id)
-        expect(row?.mode).toBe('acp')
+        expect(row?.sessions[0]?.mode).toBe('acp')
         expect(row?.conversations.map((s) => s.conversationId)).toContain(`e2e-acp-${tool}`)
         expect(row?.conversations[0]?.mode).toBe('acp')
         // From the record; most tools leave no transcript to read.
@@ -2291,10 +2325,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
       expect(setMode?.params?.modeId).toBe(modeId)
       // The row keeps the posture asked for; a refused switch would record
       // the adapter's looser default instead.
-      const after = await (await fetch(`${origin()}/api/workspace/list`)).json() as {
-        workspaces: Array<{ workspaceId: string; permissionMode?: string }>
-      }
-      expect(after.workspaces.find((w) => w.workspaceId === id)?.permissionMode).toBe(posture)
+      expect((await firstSession(id)).permissionMode).toBe(posture)
 
       // Check the launch command; a wrong variable would be silently ignored.
       const startCmd = await tmux(id, 'display', '-p', '-t', `yaac:${tool}`, '#{pane_start_command}')
@@ -2808,13 +2839,13 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
         const messageFile = path.join(testEnv.dataDir, 'message.md')
         await fs.writeFile(messageFile, message)
         expect(await mamaAs(sender, 'send', '--prompt-file', messageFile, child.slice(0, 8)))
-          .toMatch(new RegExp(`^Sent to ${child.slice(0, 8)}'s codex conversation thread-`))
+          .toMatch(new RegExp(`^Sent to ${child.slice(0, 8)}'s codex session [0-9a-f]{8}\\.`))
         await vi.waitFor(async () => {
           expect((await fs.readFile(sent, 'utf8').catch(() => '')).includes(`\n${message}\n`)).toBe(true)
         }, { timeout: 30_000, interval: 500 })
 
         expect(await mamaAs(sender, 'send', child.slice(0, 8), 'a message from a peer'))
-          .toMatch(new RegExp(`^Sent to ${child.slice(0, 8)}'s codex conversation thread-`))
+          .toMatch(new RegExp(`^Sent to ${child.slice(0, 8)}'s codex session [0-9a-f]{8}\\.`))
         await vi.waitFor(async () => {
           expect(await fs.readFile(sent, 'utf8').catch(() => ''))
             .toContain(`Sent from ${sender} via yaac-mama:\n\na message from a peer\n`)
@@ -3040,19 +3071,21 @@ describe.skipIf(!CAN_RUN)('two users on a tailnet install', () => {
   })
 
   it('lets bob read alice\'s transcript, but not attach to or write her workspace', async () => {
-    // The founding claude conversation runs under the workspace id.
+    // Her workspace is stopped by now. A claude in its shell reported this
+    // conversation, and its restart moved the transcript into its history.
+    const conv = 'e2e-conv'
     const conversation = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'history', workspaceId,
-      'claude', '-workspace', `${workspaceId}.jsonl`)
-    await fs.mkdir(path.dirname(conversation), { recursive: true })
+      'claude', '-workspace', `${conv}.jsonl`)
+    await expect(fs.stat(conversation)).resolves.toBeDefined()
     await fs.appendFile(conversation, JSON.stringify({
-      type: 'user', uuid: 'u-two-users', parentUuid: null, sessionId: workspaceId, cwd: '/workspace',
+      type: 'user', uuid: 'u-two-users', parentUuid: null, sessionId: conv, cwd: '/workspace',
       timestamp: '2026-01-01T00:00:00Z', message: { role: 'user', content: 'for bob to read' },
     }) + '\n')
     const sessions = await as(BOB, `/workspace/${workspaceId}/conversations`)
     expect(sessions.status).toBe(200)
     expect((await sessions.json() as Array<{ conversationId: string }>).map((s) => s.conversationId))
-      .toContain(workspaceId)
-    const transcript = await as(BOB, `/workspace/${workspaceId}/conversations/${workspaceId}/transcript`)
+      .toContain(conv)
+    const transcript = await as(BOB, `/workspace/${workspaceId}/conversations/${conv}/transcript`)
     expect(transcript.status).toBe(200)
     expect(JSON.stringify(await transcript.json())).toContain('for bob to read')
 
@@ -3079,10 +3112,11 @@ describe.skipIf(!CAN_RUN)('two users on a tailnet install', () => {
   }, 60_000)
 
   it('lets alice follow bob\'s running conversation as claude writes it, without driving it', async () => {
+    const conv = await reportClaudeConversation(bobProjectId, bobWorkspace, BOB)
     const conversation = path.join(testEnv.dataDir, 'global', 'projects', bobProjectId, 'history', bobWorkspace,
-      'claude', '-workspace', `${bobWorkspace}.jsonl`)
+      'claude', '-workspace', `${conv}.jsonl`)
     const line = (uuid: string, parentUuid: string | null, content: string): string => JSON.stringify({
-      type: 'user', uuid, parentUuid, sessionId: bobWorkspace, cwd: '/workspace',
+      type: 'user', uuid, parentUuid, sessionId: conv, cwd: '/workspace',
       timestamp: '2026-01-01T00:00:00Z', message: { role: 'user', content },
     }) + '\n'
     await fs.mkdir(path.dirname(conversation), { recursive: true })
@@ -3090,7 +3124,7 @@ describe.skipIf(!CAN_RUN)('two users on a tailnet install', () => {
 
     const frames: Array<{ type: string }> = []
     const ws = new WebSocket(
-      `ws://127.0.0.1:${String(server.lock.port)}/api/acp/observe?id=${bobWorkspace}&session=${bobWorkspace}`, { headers: ALICE },
+      `ws://127.0.0.1:${String(server.lock.port)}/api/acp/observe?id=${bobWorkspace}&session=${conv}`, { headers: ALICE },
     )
     ws.on('message', (data: Buffer) => frames.push(JSON.parse(data.toString('utf8')) as { type: string }))
     try {
