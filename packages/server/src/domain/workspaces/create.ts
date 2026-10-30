@@ -138,8 +138,8 @@ const PI_CONTAINER_HOME = '/home/yaac/.pi'
  *  mounted. */
 const OPENCODE_CONFIG_CONTAINER_DIR = '/home/yaac/.config/opencode'
 /** Where pi writes its JSONL session logs (PI_CODING_AGENT_SESSION_DIR).
- *  Per-workspace history, kept outside the shared home so containerless can
- *  realize it as a plain link. */
+ *  Per-workspace history, kept outside the shared home so a pod can mount it
+ *  as-is. */
 const PI_SESSIONS_CONTAINER_DIR = '/home/yaac/.yaac-pi-sessions'
 /** Where codex keeps its sqlite state (CODEX_SQLITE_HOME). Per workspace,
  *  outside the shared home, like pi's sessions. */
@@ -1104,8 +1104,14 @@ export async function createWorkspace(
     // shared one.
     const claudeSessions = path.join(workspaceStateDir(projectId, workspaceId), 'claude-sessions')
     // Pre-created so they are server-owned (and so writable in-pod) rather
-    // than root-owned. None may overlap the main clone's mount.
-    const cacheVolumeEntries = Object.entries(config.cacheVolumes ?? {})
+    // than root-owned. None may overlap the main clone's mount. Containerless
+    // mounts none: a tool on the host keeps its cache where it always does,
+    // in the checkout or the user's home.
+    const cacheVolumeEntries = runtime.kind === 'containerless' ? [] : Object.entries(config.cacheVolumes ?? {})
+    if (runtime.kind === 'containerless' && Object.keys(config.cacheVolumes ?? {}).length > 0) {
+      emit('Not mounting this config\'s cacheVolumes: on this host, tools keep their caches where they '
+        + 'always do.', options)
+    }
     const repoMount = `${repo}/.git`
     for (const [key, p] of cacheVolumeEntries) {
       if (p === repoMount || p.startsWith(`${repoMount}/`) || repoMount.startsWith(`${p}/`)) {
@@ -1383,8 +1389,9 @@ export async function createWorkspace(
 
   // Mounts are declared against host paths; each driver realizes them its
   // own way (k8s: subPaths of the global claim or node-local dirs;
-  // containerless: symlinks). A path's storage tier (global or node-local)
-  // comes from project-paths.ts. emptyDir is for pod-local scratch.
+  // containerless: mostly the env values naming them). A path's storage
+  // tier (global or node-local) comes from project-paths.ts. emptyDir is for
+  // pod-local scratch.
   //
   // Under k8s, opencode works on a node-local copy of its history (SQLite
   // fails on a network filesystem) and checkpoints it to the global tier.

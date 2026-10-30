@@ -226,8 +226,8 @@ here.
 ## Keeping the watch alive
 
 The monitor can stop without warning (process restart, teardown). When you
-notice, **do not just restart it** — the seen-state in
-`$HOME/.yaac-watch-prs-seen` (override with `YAAC_WATCH_PRS_STATE`) is
+notice, **do not just restart it** — the seen-state
+(`$YAAC_WATCH_PRS_STATE`, else `$HOME/.yaac-watch-prs-seen`) is
 per-workspace, so a restarted watcher re-baselines and any PR opened during the
 downtime is recorded as seen and **never reviewed**. Instead run
 `gh pr list --state all --limit 10 --json number,title,state,createdAt --jq '.[] | [.number, .state, .createdAt, .title] | @tsv'`,

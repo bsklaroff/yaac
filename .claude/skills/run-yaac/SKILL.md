@@ -11,6 +11,8 @@ tmux servers). Paths below are relative to the repo root.
 
 This assumes a normal host. **If `/etc/yaac/certs` exists you are inside a
 yaac workspace pod** — skip to [Inside a yaac workspace](#inside-a-yaac-workspace).
+**If `$YAAC_SHELL_ENV` is set you are in a containerless workspace** — see
+[Inside a containerless workspace](#inside-a-containerless-workspace).
 
 ## Set up and run
 
@@ -129,6 +131,26 @@ pnpm test:api-k8s / test:e2e / test:e2e-cli # need a cluster (below)
 
 The k8s tiers run against whatever cluster `kubectl` points at, isolating
 their objects in per-run namespaces. Run a targeted file, not the whole suite.
+
+## Inside a containerless workspace
+
+A containerless workspace runs on the host, as the host's user, with the
+host's own `$HOME`. So a bare `yaac` drives the **host's own install**, the
+server running this workspace: `yaac server stop` would stop it, and `yaac
+auth fake` would replace the user's real sign-ins. This repo's
+`yaac-config.json` starts the workspace's own server with
+`YAAC_DATA_DIR=$PWD/.yaac-dev`, and installs the branch's `yaac` under
+`$PWD/.yaac-dev-npm` rather than over the host's global one (all
+gitignored), so export the same first in every shell that runs `yaac`:
+
+```bash
+# from the checkout root
+export YAAC_DATA_DIR="$PWD/.yaac-dev" NPM_CONFIG_PREFIX="$PWD/.yaac-dev-npm" \
+       npm_config_prefix="$PWD/.yaac-dev-npm" PATH="$PWD/.yaac-dev-npm/bin:$PATH"
+yaac server status                      # `yaac server start` if it is down
+```
+
+With it exported, the server is yours to mutate freely, as in a pod.
 
 ## Inside a yaac workspace
 

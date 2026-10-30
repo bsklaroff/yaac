@@ -25,7 +25,7 @@ export const TEST_CLI_DIR = path.join(REPO_ROOT, 'dist-test')
  * every spawned process (1.3s vs 0.36s per command, 16.4s vs 5.4s per server
  * start). It is rebuilt before every run, and tests the artifact users run,
  * including the files it reads from beside cli.js (migrations, manifests,
- * skills, workspace-bin).
+ * skills, workspace-bin, host-shell).
  */
 export const TEST_CLI_ENTRY = path.join(TEST_CLI_DIR, 'cli.js')
 

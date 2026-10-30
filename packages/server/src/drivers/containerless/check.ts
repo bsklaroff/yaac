@@ -341,13 +341,11 @@ export async function runHostCheck(): Promise<CheckResult[]> {
       ? 'none set — agents resolve their config from this project\'s own dirs'
       : `${overridden.join(', ')} set here, not used inside workspaces`,
     ...(overridden.length === 0 ? {} : {
-      fix: 'A workspace reads its tool config from this project\'s dirs — named '
-        + 'outright where a tool has a home variable, and reached through its '
-        + 'private HOME where none exists — so these are cleared rather than '
-        + 'followed. Otherwise an agent would read your own config and '
-        + 'credentials and write its transcripts where yaac does not look. '
-        + 'Nothing to fix unless you meant a workspace to use them; per-workspace '
-        + 'values go in the project config.',
+      fix: 'A workspace reads its tool config from this project\'s dirs, and gh '
+        + 'from its own, so these are cleared rather than followed. Otherwise an '
+        + 'agent would read your own config and credentials and write its '
+        + 'transcripts where yaac does not look. Nothing to fix unless you meant '
+        + 'a workspace to use them; per-workspace values go in the project config.',
     }),
   })
 

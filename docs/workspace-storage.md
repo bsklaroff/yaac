@@ -412,7 +412,7 @@ An absolute path would include the data dir, so moving the data dir (a restored
 backup, a changed `YAAC_DATA_DIR`) would silently break every row. Relative to
 the project rather than a tool home, the column can be read without knowing the
 tool. The reporter is passed its home and that home's name
-(`yaac-agent-links "$HOME/.claude" claude`) and computes the relative form with
+(`yaac-agent-links "$CLAUDE_CONFIG_DIR" claude`) and computes the relative form with
 shell parameter expansion. It also tries the home's physical path, since a tool
 reached through a link may report the link target.
 
@@ -456,13 +456,12 @@ plugins, `config.toml`) stays shared on purpose.
 | `claude/` | claude's `projects/` (transcripts, subagent logs, tool results) | mounted at `~/.claude/projects` | the folder claude files this checkout under, linked to `claude/-workspace` |
 | `claude-file-history/` | claude's `file-history/<sid>/` (what `/rewind` restores) | mounted at `~/.claude/file-history` | one link per conversation in the shared `file-history/` |
 | `codex/` | codex's `sessions/` rollouts | mounted at `~/.codex/sessions` | one link per rollout in the shared `sessions/` |
-| `codex-sqlite/` | codex's SQLite state | mounted at `~/.codex-sqlite`, named by `CODEX_SQLITE_HOME` | the same variable, pointing at a link in the private HOME |
+| `codex-sqlite/` | codex's SQLite state | mounted at `~/.codex-sqlite`, named by `CODEX_SQLITE_HOME` | the same variable, pointing at it |
 | `pi/` | pi's session logs | mounted at `~/.yaac-pi-sessions`, named by `PI_CODING_AGENT_SESSION_DIR` | likewise |
 
 Where a tool has an env override, the directory sits outside every tool home
 and both drivers use it directly. The other three are nested inside a shared
-home. A pod mounts them over it, but a host has no mount namespace, and a link
-written inside a home that is itself a link lands in the shared dir. So a host
+home. A pod mounts them over it, but a host has no mount namespace, so a host
 create plants links in the shared homes instead. On both drivers every
 conversation is filed under `-workspace` (a pod's cwd), which is why one
 folder link is enough on a host.

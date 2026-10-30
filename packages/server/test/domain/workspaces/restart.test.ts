@@ -209,7 +209,7 @@ describe('prepareRestart', () => {
     // find nothing and kill the window: it starts fresh. claude finds a
     // conversation by its id. The codex one keeps the model it launched on.
     const windows = respawn()!
-    expect(windows).toMatch(new RegExp(`respawn-window -k -t yaac:codex 'codex -C /workspace [^']* --yolo --model ${FALLBACK_MODELS.codex}'`))
+    expect(windows).toMatch(new RegExp(`respawn-window -k -t yaac:codex 'exec codex -C /workspace [^']* --yolo --model ${FALLBACK_MODELS.codex}'`))
     expect(windows).not.toContain('resume wt-1')
     expect(windows).toMatch(/new-window -d -t yaac -n claude-2 -c \/workspace '[^']* --resume conv-2'/)
     expect(progress).toEqual(expect.arrayContaining([
@@ -397,7 +397,7 @@ describe('prepareRestart', () => {
     await restart('wt-8')
 
     const windows = respawn()!
-    expect(windows).toMatch(/respawn-window -k -t yaac:claude 'codex (?:(?!--model)[^'])* resume conv-cx'/)
+    expect(windows).toMatch(/respawn-window -k -t yaac:claude 'exec codex (?:(?!--model)[^'])* resume conv-cx'/)
     expect(windows).toMatch(/-n codex-2 [^']*'[^']* --model gpt-5\.5'/)
     expect(windows).not.toContain('claude-opus-4-7')
     expect(windows).not.toContain('model_reasoning_effort=max')

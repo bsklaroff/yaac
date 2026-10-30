@@ -40,7 +40,8 @@ Both are stored on the server, so this works against a remote server too.
   ([workspace-hostnames.md](workspace-hostnames.md)).
 - **cacheVolumes:** named directories that persist across workspaces. Keys
   are names (stored at `global/projects/<project id>/cache-volumes/<name>`),
-  values are absolute paths in the workspace.
+  values are absolute paths in the workspace. k8s only: a containerless
+  workspace's tools keep their caches where they always do on the host.
 - **nestedContainers:** run a container engine inside the workspace so
   `docker build`, `docker run` and `docker compose` work. k8s only; see
   [nested-containers.md](nested-containers.md).

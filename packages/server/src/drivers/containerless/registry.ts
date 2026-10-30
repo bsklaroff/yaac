@@ -36,8 +36,8 @@ export interface WorkspaceMarker {
    *  told to bind (`declareWorkspacePorts`). */
   ports?: PortMapping[]
   /**
-   * The launch's own env entries (caller's and git's) minus credentials, so
-   * a restarted server can rebuild `workspaceRunEnvironment`.
+   * The launch's own env entries (the caller's, git's and the shell's) minus
+   * credentials, so a restarted server can rebuild `workspaceRunEnvironment`.
    */
   launchEnv: Record<string, string>
 }

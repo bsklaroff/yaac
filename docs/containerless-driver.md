@@ -66,6 +66,8 @@ workspace, since all workspaces share one filesystem.
 | tmux socket | `/tmp/yaac-tmux/server` (pod-local) | `$TMPDIR/yaac-<hash>/<short-id>.sock` |
 | scratch | `/tmp` | `<state dir>/containerless/scratch` |
 | ACP record | `/home/yaac/.yaac-acp` (mounted) | `~/.yaac-server/global/projects/<project-id>/acp/<id>` |
+| `$HOME` | `/home/yaac` | the user's own |
+| git config | `/home/yaac/.gitconfig` | `<state dir>/containerless/gitconfig` (`GIT_CONFIG_GLOBAL`) |
 
 The state dir is `~/.yaac-server/global/projects/<project-id>/sessions/<id>`.
 
@@ -86,41 +88,38 @@ the line (`buildCloneLinkExec`).
 The data dir has the same three tiers on every substrate: `global/`,
 `server-local/` and `node-local/` under `~/.yaac-server` (tier legend in
 `packages/shared/src/paths.ts`). Under k8s they are volume claims and a node
-hostPath; here they are plain subdirectories. Global and node-local paths are
-symlinked into the workspace's HOME the same way. The only difference: a
-node-local source dir that does not exist yet (the project's pnpm store, on
-its first workspace) is created by the driver, where a pod's init container
-would create it.
+hostPath; here they are plain subdirectories, which a workspace reaches by
+path. The only difference: a node-local source dir that does not exist yet
+(the project's pnpm store, on its first workspace) is created by the driver,
+where a pod's init container would create it.
 
-## Mounts become symlinks
+## The workspace's environment
 
-The driver contract lets a host-process driver realize a hostPath mount "as a
-bind or a symlink". This one uses symlinks, since bind mounts need root.
-Each workspace gets a private `$HOME` under its state dir, with the project's
-tool homes (`claude`, `codex`, `pi`, the opencode config) linked in, and a
-private bin dir on `PATH` holding the helper scripts a pod has in
-`/usr/local/bin`.
+A workspace runs with the user's own `$HOME`, PATH and toolchain: their
+`~/.kube`, cloud profiles, `~/.npmrc`, language caches and shell setup all
+apply, as they would in any terminal. Nothing here is isolated, so hiding
+them would only make the machine harder to use. (OpenSSH reads its config
+and keys from the account's passwd home whatever `$HOME` says, so `~/.ssh`
+applies too.)
 
-This driver inherits the host environment, where the user may have pointed a
-tool elsewhere. Left alone, the agent would silently use the server user's
-own config and credentials, and write transcripts where yaac never looks. So
-tool homes are handled two ways:
+What yaac does need is for the agents, git and gh to use the project's
+config and credentials rather than the user's, since sessions, sign-ins and
+reporting are per project on both drivers. The driver gets that from the
+environment, by variables it names and variables it clears.
 
 - **Named.** Where a tool has a home override, every create sets it:
   `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR` and pi's session
   dir. Creates write these as container paths on both drivers; here each is
   translated to the host dir its mount came from, the project's shared one.
+  The pnpm store (below) is named the same way. The launch adds
+  `GIT_CONFIG_GLOBAL` and `GH_CONFIG_DIR`, both in the driver's state dir.
 - **Cleared.** Any variable that could redirect a tool without an override
-  is removed, along with the server's `YAAC_*` settings. The named variables
-  are cleared too, so no host value survives even if a create forgets one.
-
-opencode is why clearing is needed. It has no home override:
-`OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG` and `OPENCODE_CONFIG_CONTENT` add
-config inputs, so a host `OPENCODE_CONFIG_DIR` would load the server user's
-config and provider keys. Its real homes come from `XDG_CONFIG_HOME` and
-`XDG_DATA_HOME`, which, once cleared, resolve through the `$HOME` links.
-(yaac's own `OPENCODE_CONFIG_CONTENT` is set on the launch command line,
-after the clearing.)
+  is removed (`TOOL_HOME_VARS`: `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG` and
+  `OPENCODE_CONFIG_CONTENT` add config inputs, so a host value would load the
+  user's own config and keys), along with the server's `YAAC_*` settings.
+  The named variables are cleared too, so no host value survives even if a
+  create forgets one. (yaac's own `OPENCODE_CONFIG_CONTENT` is set on the
+  launch command line, after the clearing.)
 
 The clearing also removes the variables a claude session sets on processes
 it spawns (`AGENT_SESSION_VARS`: `CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`,
@@ -130,13 +129,38 @@ stops saving its transcript. `GIT_EDITOR=true`, which that session also sets,
 is dropped only as that exact value alongside `CLAUDECODE`; otherwise it is
 the user's preference.
 
-The translation points at the mount's source, not the workspace's
-`$HOME/<tool>` link. Both reach the same files, but claude keys its macOS
-Keychain item on the path string, and on first token refresh it moves the
-credential into that item and deletes `.credentials.json`. A per-workspace
-string would let the first refresh in any workspace delete the file every
-other workspace of the project uses. Keeping the rule in the translation
-means no call site can get it wrong.
+Under the real `$HOME`, anything an agent writes to a fixed path there
+would be shared by every workspace and the user's own sessions. The pinned
+CLIs and adapters keep to their home variables, with one exception that
+yaac's patch fixes: pi-acp's session map and prompt commands follow
+`PI_CODING_AGENT_DIR`, as pi's do, rather than `~/.pi`
+(`dockerfiles/agent-patches/pi-acp.js`).
+
+gh gets a config dir of its own, so it never sees the user's own login. An
+HTTPS GitHub project's workspace is logged in through `GH_TOKEN`; any other
+project's gh is logged out, and a `gh auth login` in a pane lasts until the
+workspace stops.
+
+Each mount a create declares already has a route here, so none is bound
+(that would need root):
+
+| Pod mount | Here |
+|---|---|
+| the tool homes, history dirs and pnpm store under `/home/yaac` | the env value naming each |
+| `.config/opencode`, `.local/share/opencode` | links in the opencode wrapper's dirs (below) |
+| the helper scripts in `/usr/local/bin` | their staging dir, first on PATH |
+| the ACP record and attachments | `WorkspacePaths` |
+| the checkout and main clone | already in place |
+
+Any other mount refuses the create, so a mount can never quietly write into
+the user's home.
+
+The translation points at the mount's source rather than any per-workspace
+path, because claude keys its macOS Keychain item on the path string, and on
+first token refresh it moves the credential into that item and deletes
+`.credentials.json`. A per-workspace string would let the first refresh in
+any workspace delete the file every other workspace of the project uses.
+Keeping the rule in the translation means no call site can get it wrong.
 
 Naming the claude config dir also moves claude's global config: claude reads
 `<$CLAUDE_CONFIG_DIR or home>/.claude.json` and never the other. So the
@@ -153,30 +177,98 @@ None of this is visible inside a workspace, so `yaac host check` lists the
 host variables that will be overridden or cleared, and a create mentions them
 in its progress output.
 
+### opencode
+
+opencode has no home override: its config, data, state and cache come from
+the XDG base dirs. Setting those for the whole workspace would hide the
+user's XDG layout from every other tool, so the launch writes an `opencode`
+wrapper into the driver's bin dir, ahead of the pinned agents on PATH, which
+sets them for opencode alone and runs the pinned binary. Config and data
+are links to the project's dirs. State and cache are the workspace's own: a
+plain `opencode` registers and joins a background service in its state dir,
+and that service keeps the environment of the first client that started it,
+so a shared one would run a later workspace's reporter with the first one's
+`YAAC_*` values. yaac's launches and an `opencode` typed in a pane both go
+through the wrapper; the commands opencode runs inherit its XDG values.
+
+### Shell startup
+
+The user's rc files run in a workspace's shells, and an rc may export its
+own `CLAUDE_CONFIG_DIR` or `GH_TOKEN`, or put its own `claude` first on
+PATH. yaac's settings must win over those, while the rest of the user's
+setup applies.
+
+So every shell reads yaac's startup files around the user's own: after the
+user's files it re-applies the `YAAC_SHELL_ENV` file, which the launch
+writes with every entry it set (credentials such as `GH_TOKEN` included,
+so owner-only), the tool-home variables it cleared, and the PATH prefix.
+Anything else the rc sets, `YAAC_DATA_DIR` included, stays the user's. The
+files are shipped in `host-shell/`, and also name the checkout `~workspace`
+for prompts.
+
+tmux runs every window command as `default-shell -c`, so launches run in
+the user's shell as a pod's do in zsh, and `SHELL` is the user's in panes
+and agents. tmux sets a pane's `SHELL` to its `default-shell`, and fixes a
+pane's shell when the pane is created, so the shell options are set before
+the session. Each launch command is POSIX sh, and `exec`s its program so
+the pane's pid is the agent's. A pane opened without a command starts the
+user's shell through `default-command`, as a login shell.
+
+- **zsh**: `ZDOTDIR` points at a dir in the state dir linking
+  `host-shell/zsh`'s files, since zsh writes there while it does (Debian's
+  global `compinit` dump). Those files source the user's
+  (`YAAC_USER_ZDOTDIR`, else `$HOME`) with `ZDOTDIR` set as those expect,
+  then the env file, which points `ZDOTDIR` back at them. So every zsh, a
+  launch's `zsh -c`, a nested one and a zsh script, starts through them.
+  `ZDOTDIR` is set whatever the user's shell, since an agent may start a
+  zsh of its own (claude does). `hash -d` names the checkout.
+- **bash**: every non-interactive bash, a launch's `bash -c` and `bash -lc`
+  included, reads the env file as its `BASH_ENV`, after the user's profile.
+  A pane starts `bash --rcfile`, since a login shell reads none, and the
+  rcfile reads what a login shell would. A nested interactive bash (`bash`,
+  `bash -ic`) reads `~/.bashrc` with nothing after it, so there the user's
+  rc wins. A `PROMPT_COMMAND` stands in for `\w`.
+- **fish** has no hook after `config.fish` but its `-C` flag, which tmux
+  cannot pass to a launch. So a fish user's launches, like those of any
+  other shell, run under `/bin/sh`, which reads no rc, and agents there see
+  `SHELL=/bin/sh`. A pane starts `fish -l -C` sourcing a fish-syntax copy of
+  the env file. A `vendor_conf.d` file, reached through `XDG_DATA_DIRS`,
+  wraps `prompt_pwd`. `fish -c` (an init command) and a nested fish read
+  `config.fish` last, so there the user's rc wins.
+
+A prompt that does not shorten through named dirs (starship, say) shows the
+full path. A shell whose rc activates an older node through nvm runs the
+pinned agents on it; they need node 22.
+
+Init commands run as `$SHELL -c`: project configs are written for a pod's
+zsh, so they run in the user's shell even where launches do not.
+
+The tmux server starts with `-f /dev/null`, as in a pod: a user's
+`~/.tmux.conf` could set hooks, rename windows or end the session.
+
+### What a workspace keeps in the state dir
+
+The driver's state dir (`<state dir>/containerless`) holds the marker, the
+gitconfig and git credential store, the SSH public key, gh's config,
+opencode's wrapper and its state and cache, zsh's startup dir,
+`yaac-watch-prs`'s seen state (`YAAC_WATCH_PRS_STATE`) and the
+`YAAC_SHELL_ENV` file and its fish copy. A stop removes it with the rest of the state dir.
+
 ### Mounts that are not realized
 
-**Mounts into the checkout.** A pod mounts cache volumes under `/workspace`
-onto separate storage that git never sees. A symlink there would show as
-untracked (`git add -A` would commit an absolute host path) and trip the
-scratch-dirs guard. The checkout is already on local disk, so nothing
-is lost. The project's scratch directories also stay in the checkout;
-a stop deletes them and a restart's init commands rebuild them.
+**Cache volumes.** A pod mounts a config's `cacheVolumes` onto storage that
+outlives it. Here the create declares none: a tool on the host keeps its
+cache where it always does, in the user's home or the checkout.
+
+**Scratch directories** (the project setting) stay in the checkout; a stop
+deletes them and a restart's init commands rebuild them.
 
 The rebuild is a relink, not a download, because every workspace uses the
 project's shared `.cached-packages/pnpm-store`: the create sets
 `pnpm_config_store_dir` (and `npm_config_store_dir`, for pnpm 10) to it. A
 shared store is safe only here: pnpm indexes it in SQLite in WAL mode,
 which needs every writer on one kernel, and pods are not (each keeps its own
-store; docs/workspace-storage.md "Package installs"). Otherwise pnpm would
-put a full store in each private HOME, kept alive by the checkout's
-hardlinked `node_modules` after the HOME is deleted.
-
-**Nested mounts.** A pod mounts the project's claude dir at
-`/home/yaac/.claude` and then a builtin skill inside it. Here the first is a
-link into shared state, so the second would write into a directory every
-workspace reads. Nested mounts are skipped and logged; builtin skills and
-agent history write host state instead (below). A mount with no host
-equivalent fails the create.
+store; docs/workspace-storage.md "Package installs").
 
 ## Agent history
 
@@ -184,8 +276,8 @@ A pod reaches its conversations through mounts over the tool homes
 (docs/workspace-storage.md "Agent history"). The two with an env override
 (codex's sqlite home, pi's session dir) are handled like any other mount.
 The other three (claude's `projects/` and `file-history/`, codex's
-`sessions/`) would be nested, so the create plants links in the shared homes
-instead:
+`sessions/`) sit inside the shared tool homes, so the create plants links
+in those homes instead:
 
 - The folder claude files this checkout's conversations under (named from
   the cwd by claude's rule, for every spelling of the data dir) links to the
@@ -230,7 +322,7 @@ a frozen copy would lose the version lockstep.
 
 The same skill text reaches both drivers, so it may only assume what a host
 has; there is no image supplying `Dockerfile.default`'s utilities. The same
-applies to the helper scripts in the private bin dir. So skills filter GitHub
+applies to the helper scripts on its PATH. So skills filter GitHub
 JSON with `gh --jq` rather than piping to `jq` (`yaac-watch-prs` needs only
 `gh`), and find the repo with `git rev-parse --show-toplevel`, using
 `/workspace` only as a fallback.
@@ -303,28 +395,32 @@ attempted, and the attempt is the damage.
 
 ### Git credentials
 
-The checkout's `origin` has no token (server-side git adds it per command),
-and the private `HOME` hides the user's `~/.gitconfig` and `~/.ssh`. In a
-pod the proxy adds the credential in flight. Here the launch receives the
-resolved credential and writes it into the workspace's home: an HTTPS token
-becomes a line in `$HOME/.git-credentials`, git's credential store default
-file.
+The checkout's `origin` has no token (server-side git adds it per command).
+In a pod the proxy adds the credential in flight. Here the launch receives
+the resolved credential and writes it into the driver's state dir, beside
+the gitconfig `GIT_CONFIG_GLOBAL` names, so the user's `~/.gitconfig` never
+applies. An HTTPS token becomes a line in a credential store the helper
+names with `store --file=`; without it, `store` would read the user's own
+`~/.git-credentials`, write the project's token into it, and could erase the
+user's entry after a failed push.
 
 An SSH key is never written to disk. The launch starts an **ssh-agent per
 workspace**, detached beside the tmux server, and pipes yaac's generated key
 (docs/git-credentials.md) into `ssh-add -`. Only the public half goes in the
-home, named by `GIT_SSH_COMMAND` with `-i` and `IdentitiesOnly`, so ssh does
+state dir, named by `GIT_SSH_COMMAND` with `-F /dev/null`, `-i` and
+`IdentitiesOnly`, so the user's ssh config does not apply and ssh does
 not offer every key the agent holds (which could lock the account). The
 agent's pid is stored in the workspace marker so teardown stops it and
 recovery can tell a live agent from a stale socket. A state dir can outlive
 a workspace whose host rebooted, so recovery also clears the credential
-store of any workspace it finds dead. Host keys use the same project-scoped
+store and gh's config of any workspace it finds dead. Host keys use the same project-scoped
 known_hosts as the pod path.
 
 The credential helper list is reset before `store` is added, so a system
 credential manager cannot answer first. `GIT_CONFIG_GLOBAL` points at the
 file the launch wrote, since an inherited value would hide it, including
-identity and trusted directories. The workspace's SSH command omits the Tor
+identity and trusted directories. Through the real `$HOME`, git does find
+the user's `~/.config/git/ignore` and `attributes`. The workspace's SSH command omits the Tor
 options the server's own git uses; see "Egress control" below.
 
 A project the server hosts (docs/hosted-projects.md) needs no secret of its
@@ -401,13 +497,14 @@ Nothing supervises a host server. When its database stops answering
 
 Every command the server runs in a workspace (exec, stream, changes diff)
 gets the workspace's environment, not the server's, whose `YAAC_*` settings
-and host `HOME` would point it at the server user's config. After a restart
-the server rebuilds that environment from the marker, which stores the
-launch's own entries. tmux's environment dump cannot be used because it does
+and tool homes would point it at the server's own config. After a restart
+the server rebuilds that environment: the state-dir paths from the ids, and
+the launch's own entries from the marker. tmux's environment dump cannot be used because it does
 not escape multi-line values. Secrets (`secretEnvKeys` on the spec: API
 keys, `GH_TOKEN`, proxied project secrets, the `yaac-mama` token) are left
-out of the marker; they live encrypted in the database and in the tmux
-server's memory, never in a file.
+out of the marker; they live encrypted in the database, in the tmux
+server's memory, and in the owner-only `YAAC_SHELL_ENV` file, which a stop
+removes and recovery clears for a dead workspace.
 
 By default tmux copies an attaching client's `SSH_AUTH_SOCK` (and a few
 other variables) into the session environment. So the launch empties

@@ -410,3 +410,43 @@ pieces cover it, and both go together:
   `SELECT count(*) FROM workspaces WHERE scratch_dirs IS NULL AND stopped_at IS NULL`
   is zero. A stopped one restarted later without the fallback only keeps its
   old `node_modules` contents, which its init commands install over.
+
+## A dead containerless workspace's private HOME
+
+A containerless workspace once ran with a private `$HOME` under its state
+dir, `<state dir>/containerless/home`, which held its git credential store
+(`.git-credentials`) and gh's login. Workspaces now keep both directly in
+`<state dir>/containerless`. `sweepDeadWorkspaceSecrets` in
+`packages/server/src/drivers/containerless/lifecycle.ts` deletes `home` along
+with the current paths for any workspace recovery finds dead, and
+`launchWorkspace` deletes it when a restart relaunches one.
+
+- **What it reads.** `<state dir>/containerless/home` of each dead workspace
+  whose marker survives (its host rebooted, or tmux died while the server
+  was down), and of each workspace a launch starts.
+- **What breaks silently if it goes too early.** A project's HTTPS token,
+  and any `gh auth login` a pane made, stay on disk for a workspace that will
+  never run again, until someone deletes or restarts it.
+- **When it is safe to remove.** Once no state dir on any host has a
+  `containerless/home`: every workspace launched before the change has been
+  stopped, restarted or deleted. A workspace still running from before keeps
+  its private HOME in its tmux server until it stops or restarts.
+
+## claude's session hook naming `$HOME/.claude`
+
+yaac's claude `SessionStart` and `SessionEnd` hooks, merged into each
+project's shared claude `settings.json`, once passed the home as
+`"$HOME/.claude"`. A containerless workspace now runs on the user's own
+`$HOME`, so the hooks name `"$CLAUDE_CONFIG_DIR"`, and `mergeHooks` in
+`packages/server/src/runtime/agents/agent-reporters.ts` drops the old
+command (`RETIRED_HOOKS`) whenever a create merges the file.
+
+- **What it reads.** The `hooks` of `<project>/claude/settings.json`.
+- **What breaks silently if it goes too early.** Both hooks fire on every
+  session change. Under containerless the old one names the user's own
+  `~/.claude`, so it reports the conversation with no transcript path, and
+  the two race to set the pane's conversation, so a row can lose its
+  transcript path.
+- **When it is safe to remove.** Once every project's claude settings have
+  been merged by a create since the change, that is, every project has
+  started a workspace since.

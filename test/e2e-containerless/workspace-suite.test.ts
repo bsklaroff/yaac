@@ -15,8 +15,8 @@ import { addTestProject } from '#support/cluster'
 import { collectSnapshots } from '@yaac/test-utils/events-ws'
 import {
   containerlessJobName,
+  containerlessStateDir,
   containerlessWorkspacePaths,
-  workspaceHome,
 } from '@yaac/server/drivers/containerless/paths'
 import { builtinSkillsDir, sharedSkillRoots } from '@yaac/server/domain/skills'
 import { defaultModelFor } from '@yaac/server/domain/auth'
@@ -398,6 +398,32 @@ async function processEnv(pid: string): Promise<Record<string, string>> {
 
 const agentEnvDir = (): string => path.join(testEnv.scratchDir, 'agent-env')
 
+/** The server user's HOME, which workspaces run on. */
+const userHome = (): string => path.join(testEnv.scratchDir, 'home')
+
+/** The user shell the rc case runs in: zsh, else bash, else none. */
+const USER_SHELL = CAN_RUN
+  ? (await execFileAsync('sh', ['-c', 'command -v zsh || command -v bash']).catch(() => ({ stdout: '' }))).stdout.trim()
+  : ''
+
+/**
+ * The user's own rc files, which re-point a tool home and gh's token, put
+ * their own bin dir first and name a yaac data dir, as a real user's may.
+ * Launches and panes read them; yaac's settings must still win there, and
+ * the rest is the user's.
+ */
+async function writeUserRc(): Promise<void> {
+  const exports = 'export CLAUDE_CONFIG_DIR=/from/user/rc\nexport PATH=/from/user/rc/bin:$PATH\n'
+    + 'export GH_TOKEN=from-user-rc\n'
+  // Interactive only: the CLI's own pty runs (`script`) start `zsh -c`,
+  // which reads .zshenv, and must keep the test's data dir.
+  const dataDir = 'export YAAC_DATA_DIR=/from/user/rc/yaac\n'
+  await fs.mkdir(userHome(), { recursive: true })
+  await fs.writeFile(path.join(userHome(), '.zshenv'), exports)
+  await fs.writeFile(path.join(userHome(), '.zshrc'), `${dataDir}PROMPT='%~ %# '\n`)
+  await fs.writeFile(path.join(userHome(), '.bash_profile'), `${exports}${dataDir}PS1='\\w\\$ '\n`)
+}
+
 /**
  * The environment of workspace `id`'s first pane, once its agent has replaced
  * the placeholder, which reports nothing. `show-environment` shows what
@@ -431,8 +457,13 @@ beforeAll(async () => {
   if (!CAN_RUN) return
   testEnv = await createYaacTestEnv()
   await installFakeAgents()
+  await writeUserRc()
   serverEnv = {
     ...testEnv.env,
+    // Workspaces run on the user's own HOME and shell.
+    HOME: userHome(),
+    SHELL: USER_SHELL || '/bin/sh',
+    ZDOTDIR: userHome(),
     // Create would otherwise attach a PTY and hang without a TTY.
     YAAC_E2E_NO_ATTACH: '1',
     // The project's remote is fake; skip the fetch.
@@ -455,6 +486,8 @@ beforeAll(async () => {
     // case below).
     TZ: 'UTC',
   }
+  // Set only inside a workspace, which this test run may itself be in.
+  delete serverEnv.YAAC_USER_ZDOTDIR
   server = await spawnYaacServer(serverEnv)
 
   // Create needs a tool credential.
@@ -760,25 +793,26 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   })
 
   it('gives the workspace\'s own git the project\'s credential', async () => {
-    // The checkout's `origin` has no token and the private HOME hides the
-    // user's git config, so real git must get the credential from the
-    // config the create wrote.
-    const home = workspaceHome(projectId, workspaceId)
+    // The checkout's `origin` has no token and the user's git config does
+    // not apply, so real git must get the credential from the config the
+    // create wrote.
+    const state = containerlessStateDir(projectId, workspaceId)
     const dir = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', workspaceId)
     // Read from the workspace's tmux environment, which also shows the
     // launch set it. The host's own GIT_CONFIG_GLOBAL would otherwise leak in.
     const gitConfigGlobal = await workspaceEnvVar(workspaceId, 'GIT_CONFIG_GLOBAL')
-    expect(gitConfigGlobal).toBe(path.join(home, '.gitconfig'))
+    expect(gitConfigGlobal).toBe(path.join(state, 'gitconfig'))
     const filled = await new Promise<string>((resolve, reject) => {
       const child = execFile(
         'git', ['credential', 'fill'],
         {
           cwd: dir,
-          // GIT_CONFIG_GLOBAL picks the config; HOME locates the credential
-          // store. No prompt, so a failure fails instead of hanging.
+          // GIT_CONFIG_GLOBAL picks the config, which names the credential
+          // store, so the user's HOME holds none. No prompt, so a failure
+          // fails instead of hanging.
           env: {
             ...process.env,
-            HOME: home,
+            HOME: userHome(),
             GIT_CONFIG_GLOBAL: gitConfigGlobal,
             GIT_TERMINAL_PROMPT: '0',
           },
@@ -793,6 +827,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // The real token: there is no proxy to swap in a placeholder
     // (docs/containerless-driver.md).
     expect(filled).toContain(`password=${GIT_TOKEN}`)
+    await expect(fs.access(path.join(userHome(), '.git-credentials'))).rejects.toThrow()
   })
 
   it('opens and kills a shell window, and the listing follows both', async () => {
@@ -873,7 +908,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   it('attaches and opens a shell by a unique id prefix', async () => {
     const prefix = workspaceId.slice(0, 8)
     // Type only once the far end draws, or early bytes can be flushed. The
-    // first Enter answers zsh's new-user menu (a fresh HOME shows it).
+    // first Enter answers zsh's new-user menu, should a shell show one.
     const shell = await runYaac(serverEnv, 'workspace', 'shell', prefix, {
       stdinOnPrompt: [
         { when: /Type one of the keys|[%$#] /, send: '\n' },
@@ -1038,13 +1073,12 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
     const command = (await commandsIn(path.join(project, 'claude', 'settings.json'), 'SessionStart'))
       .find((c) => c.includes('yaac-agent-links'))
-    expect(command).toBe('yaac-agent-links "$HOME/.claude" claude')
+    expect(command).toBe('yaac-agent-links "$CLAUDE_CONFIG_DIR" claude')
     // codex runs the same script from its own home.
     expect(await commandsIn(path.join(project, 'codex', 'hooks.json'), 'SessionStart'))
       .toEqual(['yaac-agent-links "$CODEX_HOME" codex'])
 
-    const home = path.join(project, 'sessions', workspaceId, 'containerless', 'home')
-    const binDir = path.join(home, '.local', 'bin')
+    const binDir = path.join(project, 'sessions', workspaceId, 'bin')
     await expect(fs.access(path.join(binDir, 'yaac-agent-links'), fs.constants.X_OK))
       .resolves.toBeUndefined()
 
@@ -1057,14 +1091,14 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     })}\n`)
 
     // Run the registered command as claude in that pane would: `sh -c` with
-    // the workspace's PATH, HOME and the pane's tmux variables.
+    // the workspace's PATH, claude home and the pane's tmux variables.
     await new Promise<void>((resolve, reject) => {
       const child = execFile(
         'sh', ['-c', command ?? ''],
         {
           env: {
             ...process.env,
-            HOME: home,
+            CLAUDE_CONFIG_DIR: path.join(project, 'claude'),
             PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}`,
             TMUX: `${sockFor(workspaceId)},0,0`,
             TMUX_PANE: pane,
@@ -1074,7 +1108,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       )
       child.stdin?.end(JSON.stringify({
         session_id: 'e2e-conv',
-        transcript_path: path.join(home, '.claude', 'projects', '-e2e', 'e2e-conv.jsonl'),
+        transcript_path: path.join(project, 'claude', 'projects', '-e2e', 'e2e-conv.jsonl'),
       }))
     })
 
@@ -1133,15 +1167,19 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // actually gets, with bogus values in the server's env (`beforeAll`).
     const env = await paneEnv(workspaceId)
 
-    // Overrides with no replacement are removed, so tools fall back to the
-    // private HOME. So are the variables of a claude session that started
-    // the server.
+    // Overrides with no replacement are removed, as are the variables of a
+    // claude session that started the server.
     for (const key of [
-      'OPENCODE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME',
+      'OPENCODE_CONFIG_DIR',
       'CLAUDECODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'GIT_EDITOR',
     ]) {
       expect(env[key], `${key} reached the workspace`).toBeUndefined()
     }
+    // The user's own HOME and XDG layout are kept; only opencode's wrapper
+    // sets XDG dirs of its own.
+    expect(env.HOME).toBe(userHome())
+    expect(env.XDG_CONFIG_HOME).toBe('/nowhere/config')
+    expect(env.XDG_DATA_HOME).toBe('/nowhere/share')
     // Replaced ones point at the project's directories, not per-workspace
     // paths (claude keys its macOS Keychain item on this string).
     const projectDir = path.join(testEnv.dataDir, 'global', 'projects', projectId)
@@ -1153,7 +1191,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       .toBe(path.join(projectDir, 'history', workspaceId, 'pi'))
     expect(env.CODEX_SQLITE_HOME)
       .toBe(path.join(projectDir, 'history', workspaceId, 'codex-sqlite'))
-    // pnpm uses one store per project, not one per private HOME. It lives
+    // pnpm uses one store per project, not one per workspace. It lives
     // in `node-local/`, keyed by project id
     // (docs/containerless-driver.md, "Storage"). pnpm itself is asked, since
     // a misnamed variable would fail silently.
@@ -1168,7 +1206,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // Nothing else is node-local here; opencode opens its global data
     // directly.
     expect((await fs.readdir(nodeLocalProject)).sort()).toEqual(['.cached-packages'])
-    expect(await fs.realpath(path.join(env.HOME ?? '', '.local', 'share', 'opencode')))
+    const state = containerlessStateDir(projectId, workspaceId)
+    expect(await fs.realpath(path.join(state, 'opencode', 'data', 'opencode')))
       .toBe(await fs.realpath(path.join(projectDir, 'opencode-data', workspaceId)))
     const { stdout: storePath } = await execFileAsync('pnpm', ['store', 'path'], {
       env, cwd: path.join(projectDir, 'workspaces', workspaceId),
@@ -1183,9 +1222,87 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(seeded.hasCompletedOnboarding).toBe(true)
     expect(seeded.projects?.[path.join(projectDir, 'workspaces', workspaceId)])
       .toEqual({ hasTrustDialogAccepted: true })
-    // HOME is the workspace's own.
-    expect(env.HOME).toContain(workspaceId)
-    expect(env.HOME).not.toBe(process.env.HOME)
+    // gh never sees the user's own login.
+    expect(env.GH_CONFIG_DIR).toBe(path.join(state, 'gh'))
+  })
+
+  it('runs opencode through a wrapper on the project\'s dirs and the workspace\'s own state', async () => {
+    // opencode has no home variable, so its XDG dirs are set for it alone.
+    // An `opencode` typed in a pane finds the wrapper first, as yaac's own
+    // launch does.
+    const state = path.join(containerlessStateDir(projectId, workspaceId), 'opencode')
+    const child = spawn('opencode', [], { env: await paneEnv(workspaceId), stdio: 'ignore' })
+    try {
+      let reported: Record<string, string> = {}
+      await vi.waitFor(async () => {
+        reported = await processEnv(String(child.pid))
+        expect(reported.XDG_STATE_HOME).toBeDefined()
+      }, { timeout: 30_000, interval: 250 })
+      expect(reported).toMatchObject({
+        XDG_CONFIG_HOME: path.join(state, 'config'),
+        XDG_DATA_HOME: path.join(state, 'data'),
+        XDG_STATE_HOME: path.join(state, 'state'),
+        XDG_CACHE_HOME: path.join(state, 'cache'),
+      })
+      expect(await fs.realpath(path.join(reported.XDG_CONFIG_HOME ?? '', 'opencode')))
+        .toBe(await fs.realpath(path.join(testEnv.dataDir, 'global', 'projects', projectId, 'opencode-config')))
+    } finally {
+      child.kill()
+    }
+  })
+
+  it.skipIf(USER_SHELL === '')('runs launches, panes and init commands in the user\'s shell, under yaac\'s settings', async () => {
+    const project = path.join(testEnv.dataDir, 'global', 'projects', projectId)
+    const claude = path.join(project, 'claude')
+    // An agent launch runs in the user's shell (`zsh -c` reads .zshenv) with
+    // yaac's settings put back over the rc's (`writeUserRc`).
+    const agent = await paneEnv(workspaceId)
+    expect(agent).toMatchObject({ CLAUDE_CONFIG_DIR: claude, GH_TOKEN: GIT_TOKEN, SHELL: USER_SHELL })
+    expect(agent.PATH?.split(':')[0]).toBe(path.join(project, 'sessions', workspaceId, 'bin'))
+    // Only an interactive shell reads .zshrc.
+    expect(agent.YAAC_DATA_DIR).toBeUndefined()
+
+    // A new terminal, as the webapp opens one, gets the user's shell and rc,
+    // then yaac's settings over them, and names the checkout in its prompt.
+    const out = path.join(testEnv.scratchDir, 'rc-e2e')
+    await fs.mkdir(out, { recursive: true })
+    const checkout = path.join(project, 'workspaces', workspaceId)
+    const pane = (await tmux(workspaceId, 'new-window', '-d', '-n', 'rc-e2e', '-t', 'yaac', '-c', checkout, '-P', '-F', '#{pane_id}')).trim()
+    try {
+      await vi.waitFor(async () => {
+        expect(await tmux(workspaceId, 'capture-pane', '-p', '-t', pane)).toMatch(/~workspace ?[%$]/)
+      }, { timeout: 30_000, interval: 250 })
+      // A shell the pane starts reads the user's rc again, and yaac's
+      // settings again after it.
+      const show = 'printf \'%s\\n\' "$CLAUDE_CONFIG_DIR" "$GH_TOKEN" "$SHELL" "$YAAC_DATA_DIR" "$PATH"'
+      await tmux(workspaceId, 'send-keys', '-t', pane,
+        `{ ${show}; "$SHELL" -c '${show.replace(/'/g, '"')}' | head -2; } > ${out}/pane`, 'Enter')
+      await vi.waitFor(() => fs.access(path.join(out, 'pane')), { timeout: 30_000, interval: 250 })
+      const [config, ghToken, shell, dataDir, panePath = '', nestedConfig, nestedToken] =
+        (await fs.readFile(path.join(out, 'pane'), 'utf8')).split('\n')
+      expect(config).toBe(claude)
+      // The project's own GitHub token, not the user's personal one.
+      expect(ghToken).toBe(GIT_TOKEN)
+      expect([nestedConfig, nestedToken]).toEqual([claude, GIT_TOKEN])
+      // The user's shell, not the one tmux runs commands with.
+      expect(shell).toBe(USER_SHELL)
+      // What yaac does not depend on stays as the user's rc set it.
+      expect(dataDir).toBe('/from/user/rc/yaac')
+      // yaac's helpers and pinned agents first, the user's own dirs after.
+      expect(panePath.split(':')[0]).toBe(path.join(project, 'sessions', workspaceId, 'bin'))
+      expect(panePath).toContain('/from/user/rc/bin')
+    } finally {
+      await tmux(workspaceId, 'kill-pane', '-t', pane)
+    }
+
+    // An init command runs as `$SHELL -c` (`initWindowCommand`), which zsh
+    // starts through yaac's startup files too.
+    const shell = await workspaceEnvVar(workspaceId, 'SHELL')
+    expect(shell).toBe(USER_SHELL)
+    await tmux(workspaceId, 'new-window', '-d', '-n', 'init-e2e', '-t', 'yaac', shell, '-c', `printf '%s' "$CLAUDE_CONFIG_DIR" > ${out}/init`)
+    await vi.waitFor(async () => {
+      expect(await fs.readFile(path.join(out, 'init'), 'utf8')).toBe(claude)
+    }, { timeout: 30_000, interval: 250 })
   })
 
   it('lists this project’s workspaces from inside the workspace', async () => {
@@ -1502,10 +1619,10 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
   }, 240_000)
 
-  it('offers yaac\'s builtin skills where the agent\'s own HOME looks for them', async () => {
+  it('offers yaac\'s builtin skills where the agent\'s own home looks for them', async () => {
     // A pod mounts the skills; here they are symlinked into the project's
-    // shared tool roots. Read them the way the agent does, through the
-    // workspace HOME.
+    // shared tool roots. Read them the way the agent does, through its
+    // config dir.
     const entries = await fs.readdir(builtinSkillsDir(), { withFileTypes: true })
     const names: string[] = []
     for (const e of entries) {
@@ -1516,9 +1633,9 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
     expect(names.length).toBeGreaterThan(0)
 
-    const home = workspaceHome(projectId, workspaceId)
+    const home = (await paneEnv(workspaceId)).CLAUDE_CONFIG_DIR ?? ''
     for (const name of names) {
-      const viaHome = path.join(home, '.claude', 'skills', name, 'SKILL.md')
+      const viaHome = path.join(home, 'skills', name, 'SKILL.md')
       expect(await fs.readFile(viaHome, 'utf8')).toContain('---')
     }
     // Linked, not copied, so an upgrade reaches every workspace. The target
@@ -1715,7 +1832,6 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
         cwd: checkout(id),
         env: {
           ...process.env,
-          HOME: workspaceHome(hostedId, id),
           GIT_CONFIG_GLOBAL: await workspaceEnvVar(id, 'GIT_CONFIG_GLOBAL'),
           GIT_TERMINAL_PROMPT: '0',
         },
@@ -1790,16 +1906,12 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const yaacTmux = await agentEnv(pid)
     expect(yaacTmux?.split(',')[0]).toBe(sockFor(workspaceId))
 
-    const home = path.join(
-      testEnv.dataDir, 'global', 'projects', projectId, 'sessions', workspaceId, 'containerless', 'home',
-    )
-    const binDir = path.join(home, '.local', 'bin')
+    const binDir = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'sessions', workspaceId, 'bin')
     // Run the registered command through `sh -c`, as claude does.
     const prompt = (permissionMode: string, effort?: string): Promise<string> => new Promise((resolve, reject) => {
       const child = execFile('sh', ['-c', command ?? ''], {
         env: {
           ...process.env,
-          HOME: home,
           PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}`,
           TMUX: '',
           TMUX_PANE: pane,
@@ -2320,8 +2432,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     const id = await createWorkspaceWith('claude', '--mode', 'acp', '--permission-mode', 'accept-edits')
     const png = Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'), Buffer.from('e2e pixels')])
 
-    // A terminal paste returns a host path, also linked into the agent's
-    // HOME where a pod would mount it.
+    // A terminal paste returns a host path, which the agent reads as it is.
     const res = await fetch(`${origin()}/api/workspace/${id}/attachments`, {
       method: 'POST',
       headers: { 'Content-Type': 'image/png' },
@@ -2330,10 +2441,6 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     expect(res.status).toBe(200)
     const { path: pasted } = await res.json() as { path: string }
     expect(await fs.readFile(pasted)).toEqual(png)
-    const home = path.join(
-      testEnv.dataDir, 'global', 'projects', projectId, 'sessions', id, 'containerless', 'home',
-    )
-    expect(await fs.readFile(path.join(home, '.yaac-attachments', path.basename(pasted)))).toEqual(png)
 
     // A chat message carries its images inline to the agent, and they show
     // in the history a later attach receives. acpd keeps a large one out of

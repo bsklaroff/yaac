@@ -154,8 +154,10 @@ describe('runHostCheck', () => {
     // Workspaces drop these variables silently, so the check tells the user.
     const saved = { ...process.env }
     for (const key of TOOL_HOME_VARS) delete process.env[key]
-    process.env.XDG_CONFIG_HOME = '/home/someone/.config'
+    process.env.GH_CONFIG_DIR = '/home/someone/.config/gh'
     process.env.CODEX_HOME = '/home/someone/.codex'
+    // Workspaces keep the user's XDG layout, so it is no override.
+    process.env.XDG_CONFIG_HOME = '/home/someone/.config'
     let row
     try {
       row = byName(await runHostCheck(), 'tool home overrides')
@@ -163,11 +165,12 @@ describe('runHostCheck', () => {
       process.env = saved
     }
     expect(row?.status).toBe('warn')
-    expect(row?.detail).toContain('XDG_CONFIG_HOME')
+    expect(row?.detail).toContain('GH_CONFIG_DIR')
     expect(row?.detail).toContain('CODEX_HOME')
     // Each set variable is named individually.
-    expect(row?.detail).not.toContain('XDG_CACHE_HOME')
-    expect(row?.fix).toMatch(/private HOME/)
+    expect(row?.detail).not.toContain('CLAUDE_CONFIG_DIR')
+    expect(row?.detail).not.toContain('XDG_CONFIG_HOME')
+    expect(row?.fix).toMatch(/cleared rather than followed/)
   })
 
   it('passes the tool-home row on a host that sets none of them', async () => {

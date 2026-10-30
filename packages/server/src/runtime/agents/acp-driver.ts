@@ -572,7 +572,7 @@ export const acpDriver: AgentDriver = {
     return [
       ...adapter.env(spec),
       'YAAC_NO_PANE_REPORT=1',
-      `node ${spec.paths.acpdEntry}`,
+      `exec node ${spec.paths.acpdEntry}`,
       `--sock ${acpSockPath(spec.paths, spec.windowName)}`,
       `--log ${acpLogPath(spec.paths, spec.agentSessionId)}`,
       `--cwd ${spec.paths.workspaceDir}`,

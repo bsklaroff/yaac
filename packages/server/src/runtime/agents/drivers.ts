@@ -184,7 +184,12 @@ export function agentDriver(mode: AgentMode): AgentDriver {
 
 export interface AgentDriver {
   readonly mode: AgentMode
-  /** The shell command that runs one conversation in its tmux window. */
+  /**
+   * The shell command that runs one conversation in its tmux window. It
+   * `exec`s the program, since a /bin/sh like dash forks even a lone
+   * command, and the pane's pid must be the agent's (acpd's under acp): an
+   * ACP session counts only if the pane's current process minted it.
+   */
   launchCmd(spec: AgentLaunchSpec): string
   /** Open the observation stream. Never throws; a failed dial is reported
    *  as `down` so the caller's backoff handles it. */

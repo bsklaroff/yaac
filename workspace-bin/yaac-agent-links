@@ -75,12 +75,11 @@ if [ -n "$END" ]; then
   pane set-option -pu -t "$TMUX_PANE" @yaac-session-under >/dev/null
   exit 0
 fi
-# The home may be reached through a symlink — under containerless the tool
-# home in the workspace's private HOME is a link to the project's shared one —
-# and a tool that resolves its own paths then reports a transcript under the
-# physical directory instead. Try both. `pwd -P` rather than `readlink -f`,
-# which macOS lacked until recently and this driver runs there; it also
-# covers macOS's own /var -> /private/var aliasing of a data dir.
+# The home may be reached through a symlink (macOS's own /var ->
+# /private/var aliasing of a data dir), and a tool that resolves its own
+# paths then reports a transcript under the physical directory instead. Try
+# both. `pwd -P` rather than `readlink -f`, which macOS lacked until recently
+# and the containerless driver runs there.
 PHYS=$(cd "$HOME_DIR" 2>/dev/null && pwd -P)
 # A path outside this home has no project-relative form, and one the payload
 # omitted has none yet. Either way it is left empty — the conversation is

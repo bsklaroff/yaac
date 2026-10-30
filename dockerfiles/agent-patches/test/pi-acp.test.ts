@@ -36,7 +36,8 @@ const PI_ACP = path.dirname(require.resolve('pi-acp/package.json'))
  * Like pi, the `compact` command reports a manual compaction's start and
  * end before answering, and the prompt `auto` runs with an automatic
  * compaction inside it. It records the flags it was started with in
- * `argv.json` beside itself.
+ * `argv.json` beside itself, and names a session file, which pi-acp records
+ * in its session map.
  */
 const FAKE_PI = `#!/usr/bin/env node
 require('fs').writeFileSync(__dirname + '/argv.json', JSON.stringify(process.argv.slice(2)))
@@ -100,7 +101,7 @@ process.stdin.on('data', (c) => {
     else if (cmd.type === 'get_commands') reply({ commands: [] })
     else if (cmd.type === 'get_available_thinking_levels') reply({ levels: ['off'] })
     else if (cmd.type === 'get_messages') reply({ messages: [] })
-    else if (cmd.type === 'get_state') reply({ thinkingLevel: 'off' })
+    else if (cmd.type === 'get_state') reply({ thinkingLevel: 'off', sessionFile: __dirname + '/session.jsonl' })
     else reply({})
   }
 })
@@ -114,6 +115,8 @@ let agentText = ''
 let terminalOutput = ''
 let compactions: Array<Record<string, unknown>> = []
 const log: string[] = []
+/** pi's agent dir, apart from HOME, as yaac's launches set it. */
+const agentDir = (): string => path.join(dir, 'pi-home', 'agent')
 
 beforeAll(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-pi-acp-'))
@@ -124,6 +127,9 @@ beforeAll(() => {
   const source = fs.readFileSync(path.join(PI_ACP, 'dist', 'index.js'), 'utf8')
   fs.writeFileSync(path.join(dir, 'pi-acp', 'dist', 'index.js'), patchPiAcp(source))
   fs.writeFileSync(path.join(dir, 'pi'), FAKE_PI, { mode: 0o755 })
+  fs.mkdirSync(path.join(agentDir(), 'prompts'), { recursive: true })
+  fs.writeFileSync(path.join(agentDir(), 'prompts', 'project-prompt.md'), 'From the project.')
+  fs.mkdirSync(path.join(dir, 'home'))
 })
 
 afterAll(() => fs.rmSync(dir, { recursive: true, force: true }))
@@ -144,8 +150,7 @@ async function start(): Promise<string> {
   log.length = 0
   adapter = spawn(process.execPath, [path.join(dir, 'pi-acp', 'dist', 'index.js')], {
     cwd: dir,
-    // HOME too, so pi-acp's session map stays off the real home.
-    env: { ...process.env, PI_ACP_PI_COMMAND: path.join(dir, 'pi'), PI_CODING_AGENT_DIR: dir, HOME: dir },
+    env: { ...process.env, PI_ACP_PI_COMMAND: path.join(dir, 'pi'), PI_CODING_AGENT_DIR: agentDir(), HOME: path.join(dir, 'home') },
   })
   let buf = ''
   adapter.stdout!.on('data', (chunk: Buffer) => {
@@ -289,6 +294,18 @@ describe('patchPiAcp', () => {
     const argv = JSON.parse(fs.readFileSync(path.join(dir, 'argv.json'), 'utf8')) as string[]
     expect(argv.slice(0, 2)).toEqual(['--mode', 'rpc'])
     expect(argv).toContain('--approve')
+  })
+
+  it('keeps its session map and prompts with pi\'s agent dir, not under HOME', async () => {
+    const sessionId = await start()
+    // Under containerless HOME is the user's own, shared by every workspace.
+    const map = JSON.parse(fs.readFileSync(path.join(dir, 'pi-home', 'pi-acp', 'session-map.json'), 'utf8')) as { sessions: object }
+    expect(map.sessions).toHaveProperty([sessionId])
+    // pi-acp expands a prompt command itself before pi sees it.
+    expect((await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: '/project-prompt' }] })).result)
+      .toEqual({ stopReason: 'end_turn' })
+    expect(agentText).toBe('run:From the project.;')
+    expect(fs.existsSync(path.join(dir, 'home', '.pi'))).toBe(false)
   })
 
   it('is tested against the release the image installs', () => {

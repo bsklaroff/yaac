@@ -85,14 +85,14 @@ describe('initWindowCommand', () => {
   it('creates a visible window with remain-on-exit chained on', () => {
     const cmd = initWindowCommand({ name: 'init', cmd: 'pnpm install', hidePane: false }, PATHS)
     expect(cmd).toBe(
-      `${TMUX} new-window -d -t yaac -n init 'cd /workspace && pnpm install'`
+      `${TMUX} new-window -d -t yaac -n init "\${SHELL:-/bin/sh}" -c 'cd /workspace && pnpm install'`
       + ' \\; set-option -t yaac:init remain-on-exit on',
     )
   })
 
   it('omits remain-on-exit for hidden panes', () => {
     const cmd = initWindowCommand({ name: 'deps', cmd: 'pnpm install', hidePane: true }, PATHS)
-    expect(cmd).toBe(`${TMUX} new-window -d -t yaac -n deps 'cd /workspace && pnpm install'`)
+    expect(cmd).toBe(`${TMUX} new-window -d -t yaac -n deps "\${SHELL:-/bin/sh}" -c 'cd /workspace && pnpm install'`)
   })
 })
 

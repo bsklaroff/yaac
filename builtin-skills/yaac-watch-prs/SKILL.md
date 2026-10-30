@@ -109,13 +109,14 @@ with [`yaac-mama`](../yaac-mama/SKILL.md), whatever the task calls for.
   watcher runs on a containerless workspace whose host has no `jq` installed.
   The command fails fast if `gh` is missing. There are **no yaac-specific
   dependencies**.
-- **Seen state** persists in `$HOME/.yaac-watch-prs-seen` (override the path
-  via `YAAC_WATCH_PRS_STATE`), keyed per event so each comment/commit/PR
-  fires at most once. On the **first run** every current PR/comment/commit is
-  recorded as seen *without emitting* — only updates that land while the
-  watcher runs are surfaced. Delete a key from the file to re-emit it.
-- `$HOME` is per-session, so the seen state lives only as long as this
-  session — a fresh watcher re-baselines.
+- **Seen state** persists in `$YAAC_WATCH_PRS_STATE`, or
+  `$HOME/.yaac-watch-prs-seen` where that is unset, keyed per event so each
+  comment/commit/PR fires at most once. On the **first run** every current
+  PR/comment/commit is recorded as seen *without emitting* — only updates
+  that land while the watcher runs are surfaced. Delete a key from the file
+  to re-emit it.
+- The file is per workspace, so the seen state lives only as long as this
+  workspace — a fresh watcher re-baselines.
 - **A poll whose `gh` calls fail is skipped, not reported as "no events".**
   If GitHub is unreachable the watcher notes each failure on stderr and
   retries on the next poll rather than emitting anything. So silence on
