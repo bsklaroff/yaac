@@ -116,7 +116,8 @@ export function active(item: AcpSubagent | AcpTask): boolean {
  *   blocks the whole turn;
  * - a subagent's card goes in the thread that spawned it, in place of the
  *   call that spawned it when that is in the stream (claude's Agent call),
- *   and its final report, once it has finished, ends its own thread. Task
+ *   and again in place of each call that resumed it (claude's SendMessage);
+ *   its final report, once it has finished, ends its own thread. Task
  *   cards, compactions and turn outcomes go in the main conversation;
  * - a call's streamed output is appended to it, keeping the end;
  * - a call that started a task still running is not interrupted by its turn
@@ -200,14 +201,16 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
     if (e.type === 'subagent' && e.subagent.id === thread) self = e.subagent
     if (e.type === 'subagent') {
       if (e.subagent.parent !== thread) continue
-      const key = `s:${e.subagent.id}`
-      const call = toolIndex.get(e.subagent.id)
-      if (call !== undefined && !cardIndex.has(key)) {
-        toolIndex.delete(e.subagent.id)
-        absorbed.add(e.subagent.id)
-        cardIndex.set(key, call)
+      for (const id of [e.subagent.id, ...e.subagent.resumedBy ?? []]) {
+        const key = `s:${id}`
+        const call = toolIndex.get(id)
+        if (call !== undefined && !cardIndex.has(key)) {
+          toolIndex.delete(id)
+          absorbed.add(id)
+          cardIndex.set(key, call)
+        }
+        card(key, { kind: 'subagent', seq: e.seq, subagent: e.subagent })
       }
-      card(key, { kind: 'subagent', seq: e.seq, subagent: e.subagent })
       continue
     }
     if (e.type === 'task') {

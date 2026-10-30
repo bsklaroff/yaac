@@ -182,4 +182,26 @@ describe('groupEvents', () => {
 
     expect(groupEvents(events, 'sub-1').map((g) => g.kind)).toEqual(['agent', 'permission'])
   })
+
+  it('shows a resumed subagent again in place of the call that resumed it', () => {
+    const sub = { id: 'toolu_agent', name: 'Fix tests', task: 't' }
+    const events: AcpEvent[] = [
+      tool(0, 'toolu_agent', 'pending', 'Fix tests'),
+      { type: 'subagent', seq: 1, subagent: { ...sub, state: 'running' } },
+      { type: 'subagent', seq: 2, subagent: { ...sub, state: 'completed' } },
+      agent(3, 'it stopped early'),
+      tool(4, 'toolu_send', 'pending', 'SendMessage'),
+      { type: 'subagent', seq: 5, subagent: { ...sub, resumedBy: ['toolu_send'], state: 'running' } },
+      tool(6, 'toolu_send', 'completed', 'SendMessage'),
+      { type: 'agent', seq: 7, thread: 'toolu_agent', content: [{ type: 'text', text: 'carrying on' }] },
+    ]
+    const groups = groupEvents(events)
+    // Both cards open the same subagent, at its latest state.
+    expect(groups.map((g) => [g.kind, g.seq, g.kind === 'subagent' ? g.subagent.state : undefined])).toEqual([
+      ['subagent', 0, 'running'],
+      ['agent', 3, undefined],
+      ['subagent', 4, 'running'],
+    ])
+    expect(groupEvents(events, 'toolu_agent').map((g) => g.kind)).toEqual(['agent'])
+  })
 })

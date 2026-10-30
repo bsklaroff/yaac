@@ -54,7 +54,8 @@ that mapping cannot bring back.
   "Sent mid-turn" marker, and it ends the turn before it in the view.
 - **Subagents and background tasks.** claude reports these live through Agent
   SDK task messages its transcript does not keep. They are rebuilt from the
-  calls that launched them and from the `<task-notification>` messages that
+  calls that launched them, from the SendMessage results that name a
+  subagent they resumed, and from the `<task-notification>` messages that
   reported them (`AcpProjection.replayedLaunch`), so a task or subagent that
   reported nothing before the restart shows as ended: a subagent cancelled,
   a task stopped. A subagent's own messages come from its separate

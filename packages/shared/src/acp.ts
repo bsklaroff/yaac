@@ -143,6 +143,9 @@ export interface AcpSubagent {
   /** It began from a copy of its parent's conversation up to the call that
    *  launched it, rather than from its task alone (claude's fork). */
   fork?: true
+  /** The calls that sent it on after it stopped (claude's SendMessage), each
+   *  shown as another way into it where it was made. */
+  resumedBy?: string[]
   state: AcpSubagentState
   /** Its final report, when the adapter sends one apart from its messages
    *  (claude does). */

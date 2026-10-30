@@ -853,7 +853,11 @@ way, and the projection turns every answer into the same `subagent` and
   running/idle report). A subagent is keyed by the Agent call that spawned
   it, which is what its own updates name (`_meta.claudeCode.parentToolUseId`),
   so its card stands in for that call; its final report arrives in its
-  `task_notification` and ends its view. A fork (`subagent_type: "fork"`,
+  `task_notification` and ends its view. A SendMessage that resumes a
+  stopped subagent starts its task again under the SendMessage's id, but
+  the subagent keeps the Agent call's key, since its updates still name
+  that call; the SendMessage is listed in its `resumedBy`, and another card
+  for the same subagent stands in for it. A fork (`subagent_type: "fork"`,
   in its `task_started` or, in a replay, its Agent call's input) starts
   from a copy of the parent's conversation rather than from its task
   alone, so it is labeled Fork, with an icon and count of its own, and its

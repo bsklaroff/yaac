@@ -1197,6 +1197,67 @@ describe('replayAcpLog', () => {
     expect(forked.find((e) => e.type === 'subagent')).toMatchObject({ subagent: { id: 'toolu_fork', task: 'Reply FORKED', fork: true } })
   })
 
+  it('keeps a subagent claude resumes under its first id, naming each call that resumed it', () => {
+    // As claude-agent-acp 0.97.0 reports a SendMessage resuming a subagent
+    // that stopped: a second task_started for the same task under the
+    // SendMessage's id, while the subagent's own calls still name the
+    // Agent call.
+    const sdk = (message: Record<string, unknown>): string =>
+      line({ jsonrpc: '2.0', method: '_claude/sdkMessage', params: { sessionId: 'acp-1', message: { type: 'system', ...message } } })
+    const claudeUpdate = (u: Record<string, unknown>, claudeCode: Record<string, unknown>): string =>
+      update({ ...u, _meta: { claudeCode } })
+    const started = (toolUseId: string, prompt: string): string => sdk({
+      subtype: 'task_started', task_id: 'a1', tool_use_id: toolUseId, description: 'Fix tests',
+      subagent_type: 'fork', is_backgrounded: true, task_type: 'local_agent', prompt,
+    })
+    const events = replayAcpLog([
+      claudeUpdate({ sessionUpdate: 'tool_call', toolCallId: 'toolu_agent', title: 'Fix tests', kind: 'think', status: 'pending' }, { toolName: 'Agent' }),
+      started('toolu_agent', 'make them pass'),
+      sdk({ subtype: 'task_notification', task_id: 'a1', tool_use_id: 'toolu_agent', status: 'completed', summary: 'hit the turn limit' }),
+      claudeUpdate({ sessionUpdate: 'tool_call', toolCallId: 'toolu_send', title: 'SendMessage', kind: 'other', status: 'pending' }, { toolName: 'SendMessage' }),
+      started('toolu_send', 'carry on'),
+      claudeUpdate({ sessionUpdate: 'tool_call', toolCallId: 'toolu_ls', title: 'ls', kind: 'execute', status: 'pending' }, { toolName: 'Bash', parentToolUseId: 'toolu_agent' }),
+      sdk({ subtype: 'task_notification', task_id: 'a1', tool_use_id: 'toolu_send', status: 'completed', summary: 'all green' }),
+    ].join('\n'))
+    expect(events.flatMap((e) => (e.type === 'subagent' ? [e.subagent] : []))).toEqual([
+      { id: 'toolu_agent', name: 'Fix tests', task: 'make them pass', fork: true, state: 'running' },
+      { id: 'toolu_agent', name: 'Fix tests', task: 'make them pass', fork: true, state: 'completed', summary: 'hit the turn limit' },
+      { id: 'toolu_agent', name: 'Fix tests', task: 'make them pass', fork: true, resumedBy: ['toolu_send'], state: 'running' },
+      { id: 'toolu_agent', name: 'Fix tests', task: 'make them pass', fork: true, resumedBy: ['toolu_send'], state: 'completed', summary: 'all green' },
+    ])
+    expect(events.find((e) => e.type === 'tool' && e.call.toolCallId === 'toolu_ls')).toMatchObject({ thread: 'toolu_agent' })
+
+    // A session/load replay rebuilds the resume from the SendMessage's result.
+    const call = (id: string, toolName: string, rawInput: Record<string, unknown>): string => update({
+      sessionUpdate: 'tool_call', toolCallId: id, title: toolName, kind: 'other', status: 'pending', rawInput, _meta: { claudeCode: { toolName } },
+    })
+    const result = (id: string, text: string): string => update({
+      sessionUpdate: 'tool_call_update', toolCallId: id, status: 'completed', rawOutput: [{ type: 'text', text }],
+      content: [{ type: 'content', content: { type: 'text', text } }],
+    })
+    const replayed = replayAcpLog([
+      line({ jsonrpc: '2.0', id: 'l-1', method: 'session/load', params: { sessionId: 'acp-1' } }),
+      call('toolu_agent', 'Agent', { prompt: 'make them pass', subagent_type: 'fork' }),
+      result('toolu_agent', '[Subagent hand-back] The report follows:\n  hit the turn limit\nagentId: a1 (…)'),
+      call('toolu_send', 'SendMessage', { to: 'a1', message: 'carry on' }),
+      result('toolu_send', '{"success":true,"message":"Resuming agent a1","resumedAgentId":"a1"}'),
+      // The load's reply, then a live resume of the subagent this life knows
+      // only from the replay.
+      line({ jsonrpc: '2.0', id: 'l-1', result: {} }),
+      call('toolu_again', 'SendMessage', { to: 'a1', message: 'once more' }),
+      started('toolu_again', 'once more'),
+      claudeUpdate({ sessionUpdate: 'tool_call', toolCallId: 'toolu_pwd', title: 'pwd', kind: 'execute', status: 'pending' }, { toolName: 'Bash', parentToolUseId: 'toolu_agent' }),
+    ].join('\n'))
+    const rebuilt = replayed.flatMap((e) => (e.type === 'subagent' ? [e.subagent] : []))
+    // The replayed resume drops the first run's report, as a live one does.
+    expect(rebuilt.find((s) => s.resumedBy !== undefined)).toEqual({
+      id: 'toolu_agent', name: 'Agent', task: 'make them pass', fork: true, resumedBy: ['toolu_send'], state: 'running',
+    })
+    expect(new Set(rebuilt.map((s) => s.id))).toEqual(new Set(['toolu_agent']))
+    expect(rebuilt.at(-1)).toMatchObject({ resumedBy: ['toolu_send', 'toolu_again'], task: 'make them pass', state: 'running' })
+    expect(replayed.find((e) => e.type === 'tool' && e.call.toolCallId === 'toolu_pwd')).toMatchObject({ thread: 'toolu_agent' })
+  })
+
   it('files claude\'s ask about a subagent\'s call under its thread, and ends what an exit left running', () => {
     // claude sends the ask with the main session's id, naming only the call.
     const sdk = (message: Record<string, unknown>): string =>
