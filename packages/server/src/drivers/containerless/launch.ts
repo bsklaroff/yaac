@@ -2,8 +2,9 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ServerError } from '@yaac/shared/errors'
 import { gitConfigValue } from '@yaac/shared/git'
-import { agentBinDirs } from '@yaac/shared/tool-install'
+import { AGENT_PACKAGES, agentBinDirs, agentPackagePrefix } from '@yaac/shared/tool-install'
 import { serverLog } from '#lib/log'
+import { shellQuote } from '#lib/shell'
 import { realizeGitAuth } from './git-auth'
 import { findOnPath, killPids, runHost } from './host'
 import {
@@ -11,9 +12,9 @@ import {
   assertSocketPathsFit,
   containerlessJobName,
   containerlessWorkspacePaths,
+  hostShellDir,
   refFromJobName,
   tmuxSockDir,
-  workspaceHome,
   containerlessStateDir,
 } from './paths'
 import {
@@ -26,11 +27,12 @@ import {
 } from './registry'
 import { allocatedPorts } from './ports'
 import { TOOL_HOME_VARS, overriddenToolHomeVars } from './tool-homes'
-import type { RuntimeHandle, WorkspaceMount, WorkspaceSpec } from '#drivers/contract'
+import type { RuntimeHandle, WorkspaceMount, WorkspacePaths, WorkspaceSpec } from '#drivers/contract'
 
 /**
- * Starting a workspace on the host: its private HOME, mounts realized as
- * symlinks, and the tmux server that supervises it.
+ * Starting a workspace on the host: its environment (the user's own, with
+ * yaac's tool homes and git credentials), its mounts, and the tmux server
+ * that supervises it.
  *
  * The tmux server is the unit (the equivalent of the pod driver's Job): it
  * existing means the workspace is up, and it outlives a `yaac server
@@ -84,14 +86,61 @@ export function userEnvironment(): NodeJS.ProcessEnv {
 }
 
 /**
- * A workspace's environment: the user's (for their PATH and toolchain),
- * minus the deny lists above, plus the caller's entries and the private
- * HOME.
+ * A workspace's own files, in the driver's state dir so a stop removes them,
+ * and the variables naming them. Derived from the ids alone, so a restarted
+ * server rebuilds them for `workspaceRunEnvironment`. The prompt stash's
+ * script finds opencode's state through `YAAC_OPENCODE_STATE`.
+ */
+function stateEnv(projectId: string, workspaceId: string, paths: WorkspacePaths) {
+  const dir = containerlessStateDir(projectId, workspaceId)
+  return {
+    GIT_CONFIG_GLOBAL: path.join(dir, 'gitconfig'),
+    GH_CONFIG_DIR: path.join(dir, 'gh'),
+    YAAC_WATCH_PRS_STATE: path.join(dir, 'watch-prs-seen'),
+    YAAC_OPENCODE_STATE: path.join(opencodeHome(dir), 'state'),
+    YAAC_SHELL_ENV: path.join(dir, 'shell-env'),
+    // A non-interactive bash, `bash -lc` included, reads it after the
+    // user's files.
+    BASH_ENV: path.join(dir, 'shell-env'),
+    YAAC_WORKSPACE_DIR: paths.workspaceDir,
+  }
+}
+
+/** opencode's XDG dirs (`opencodeWrapper`): `config` and `data` hold links
+ *  to the project's dirs, `state` and `cache` are the workspace's own. */
+function opencodeHome(stateDir: string): string {
+  return path.join(stateDir, 'opencode')
+}
+
+/** The driver's own bin dir, holding the `opencode` wrapper. */
+function ownBinDir(stateDir: string): string {
+  return path.join(stateDir, 'bin')
+}
+
+/**
+ * What a workspace's PATH leads with: the helper scripts a pod has in
+ * `/usr/local/bin` (each mount's staged source dir), the driver's own bin
+ * dir, then the pinned agents ahead of any the user installed, since launch
+ * flags target the pinned versions.
+ */
+function pathPrefix(spec: Pick<WorkspaceSpec, 'projectId' | 'workspaceId' | 'mounts'>): string[] {
+  const staged = spec.mounts.flatMap(({ mountPath, source }) =>
+    source.kind === 'hostPath' && mountPath.startsWith('/usr/local/bin/') ? [path.dirname(source.path)] : [])
+  return [
+    ...new Set(staged),
+    ownBinDir(containerlessStateDir(spec.projectId, spec.workspaceId)),
+    ...agentBinDirs(),
+  ]
+}
+
+/**
+ * A workspace's environment: the user's (for their HOME, PATH and
+ * toolchain), minus the deny lists above, plus the caller's entries and the
+ * driver's own.
  */
 function workspaceEnvironment(
-  spec: Pick<WorkspaceSpec, 'env' | 'mounts'>,
-  home: string,
-  paths: { workspaceDir: string },
+  spec: Pick<WorkspaceSpec, 'projectId' | 'workspaceId' | 'env' | 'mounts'>,
+  paths: WorkspacePaths,
 ): NodeJS.ProcessEnv {
   const env = userEnvironment()
   // Without `true` a terminal's `git commit` aborts on an empty message.
@@ -100,21 +149,16 @@ function workspaceEnvironment(
   for (const entry of spec.env) {
     const eq = entry.indexOf('=')
     if (eq <= 0) continue
-    env[entry.slice(0, eq)] = remapMountedPath(entry.slice(eq + 1), spec.mounts, paths, home)
+    env[entry.slice(0, eq)] = remapMountedPath(entry.slice(eq + 1), spec.mounts)
   }
-  // After the caller's entries: the tool-home symlinks live in this HOME.
-  env.HOME = home
+  // After the caller's entries, so an inherited or project `GIT_CONFIG_GLOBAL`
+  // cannot make git silently ignore the config the launch writes.
+  Object.assign(env, stateEnv(spec.projectId, spec.workspaceId, paths))
   // The tmux server inherits this from its first client, so every pane has
   // it.
   env.COLORTERM = 'truecolor'
-  // The workspace's helper scripts, then the pinned agents ahead of any the
-  // user installed, since launch flags target the pinned versions.
-  env.PATH = [workspaceBinDir(home), ...agentBinDirs(), env.PATH ?? ''].join(path.delimiter)
+  env.PATH = [...pathPrefix(spec), env.PATH ?? ''].join(path.delimiter)
   return env
-}
-
-function gitconfigPathFor(home: string): string {
-  return path.join(home, '.gitconfig')
 }
 
 /**
@@ -125,17 +169,11 @@ function gitconfigPathFor(home: string): string {
  * commands need them).
  */
 export function workspaceRunEnvironment(jobName: string): NodeJS.ProcessEnv {
-  const { projectId, workspaceId } = refFromJobName(jobName)
-  const held = workspaceEnv(workspaceId)
+  const ref = refFromJobName(jobName)
+  const held = workspaceEnv(ref.workspaceId)
   if (held !== undefined) return held
-  const home = workspaceHome(projectId, workspaceId)
-  const env = workspaceEnvironment(
-    { env: [], mounts: [] },
-    home,
-    containerlessWorkspacePaths(jobName),
-  )
-  Object.assign(env, workspaceLaunchEnv(workspaceId))
-  env.GIT_CONFIG_GLOBAL = gitconfigPathFor(home)
+  const env = workspaceEnvironment({ ...ref, env: [], mounts: [] }, containerlessWorkspacePaths(jobName))
+  Object.assign(env, workspaceLaunchEnv(ref.workspaceId))
   return env
 }
 
@@ -144,12 +182,12 @@ export function workspaceRunEnvironment(jobName: string): NodeJS.ProcessEnv {
 function persistableLaunchEnv(
   env: NodeJS.ProcessEnv,
   spec: Pick<WorkspaceSpec, 'env' | 'secretEnvKeys'>,
-  gitAuthEnv: Record<string, string>,
+  added: Record<string, string>,
 ): Record<string, string> {
   const secret = new Set(spec.secretEnvKeys)
   const keys = [
     ...spec.env.map((e) => e.slice(0, Math.max(0, e.indexOf('=')))),
-    ...Object.keys(gitAuthEnv),
+    ...Object.keys(added),
   ]
   const out: Record<string, string> = {}
   for (const key of keys) {
@@ -159,133 +197,123 @@ function persistableLaunchEnv(
   return out
 }
 
-/** The workspace's bin dir, first on its PATH (the pod's `/usr/local/bin`). */
-function workspaceBinDir(home: string): string {
-  return path.join(home, '.local', 'bin')
-}
-
 /**
- * Translate an env value naming a path inside a declared mount (callers write
- * container paths) to the mount's host source directory, not this driver's
- * symlink to it. The string matters: claude names its macOS Keychain item
- * after a hash of its config dir, and a per-workspace path would let one
- * workspace take the credential from its siblings.
+ * Translate an env value naming a path inside a declared hostPath mount
+ * (callers write container paths) to the mount's host source directory. The
+ * string matters: claude names its macOS Keychain item after a hash of its
+ * config dir, so it must be the project's dir on every workspace.
  *
- * The longest matching mount wins. emptyDir mounts fall back to where the
- * driver put them. Only declared mounts are translated, never arbitrary
- * container-looking paths, since a user's own env values may be real host
- * paths (a dev host's home can be `/home/yaac`).
+ * The longest matching mount wins. Only declared mounts are translated, never
+ * arbitrary container-looking paths, since a user's own env values may be
+ * real host paths (a dev host's home can be `/home/yaac`).
  */
-function remapMountedPath(
-  value: string,
-  mounts: WorkspaceMount[],
-  paths: { workspaceDir: string },
-  home: string,
-): string {
-  const matches = mounts.filter(({ mountPath }) =>
-    value === mountPath || value.startsWith(`${mountPath}/`))
-  if (matches.length === 0) return value
-  const mount = matches.reduce((a, b) => b.mountPath.length > a.mountPath.length ? b : a)
-  if (mount.source.kind === 'hostPath') {
-    return path.join(mount.source.path, value.slice(mount.mountPath.length))
+function remapMountedPath(value: string, mounts: WorkspaceMount[]): string {
+  let best: { mountPath: string; source: string } | undefined
+  for (const { mountPath, source } of mounts) {
+    if (source.kind !== 'hostPath') continue
+    if (value !== mountPath && !value.startsWith(`${mountPath}/`)) continue
+    if (best === undefined || mountPath.length > best.mountPath.length) best = { mountPath, source: source.path }
   }
-  return destinationFor(value, paths, home) ?? value
+  return best === undefined ? value : path.join(best.source, value.slice(best.mountPath.length))
 }
 
-/**
- * Realize a declared mount as a symlink (a bind mount would need root).
- *
- * Symlinks cannot nest like mounts: a mount under another mount's path would
- * write through the outer symlink into the project's shared dir. Those are
- * skipped and reported (`MountOutcome`); callers deliver such paths as host
- * state instead (e.g. `reconcileSharedSkillRoots`).
- */
-type MountOutcome = 'realized' | 'nothing-to-do' | 'nested' | 'in-workspace'
-
-async function realizeMount(
-  mount: WorkspaceMount,
-  paths: { workspaceDir: string },
-  home: string,
-): Promise<MountOutcome> {
-  const { mountPath, source } = mount
-  // emptyDir: a plain directory on the host.
-  if (source.kind === 'emptyDir') return 'nothing-to-do'
-
-  // Already in place: the checkout, and the main clone at its own path.
-  if (mountPath === paths.workspaceDir || mountPath === '/workspace') return 'nothing-to-do'
-  if (mountPath === source.path) return 'nothing-to-do'
-
-  // Skip mounts into the checkout: git would see a symlink as an untracked
-  // file (and could commit it), and the scratch-dirs symlink guard
-  // would reject it. The checkout is on local disk, so a cache can simply
-  // live there.
-  if (mountPath.startsWith('/workspace/')
-    || mountPath.startsWith(`${paths.workspaceDir}/`)) return 'in-workspace'
-
-  const dest = destinationFor(mountPath, paths, home)
-  if (dest === null) {
-    // A config asking for something only a container can provide.
-    throw new ServerError(
-      'VALIDATION',
-      `containerless: no host equivalent for a mount at ${mountPath}`,
-    )
+/** Where a pod's opencode mount lands in the wrapper's XDG dirs, or null
+ *  for any other mount. */
+function opencodeDestination(mountPath: string, home: string): string | null {
+  for (const [prefix, dir] of [['/home/yaac/.config/', 'config'], ['/home/yaac/.local/share/', 'data']] as const) {
+    if (mountPath.startsWith(prefix)) return path.join(home, dir, mountPath.slice(prefix.length))
   }
-
-  // Would write through another mount's symlink into shared state.
-  if (await hasSymlinkedAncestor(dest, home)) return 'nested'
-
-  await fs.mkdir(path.dirname(dest), { recursive: true })
-  // Create a directory source so a first-run tool home is not a dangling
-  // link.
-  if (source.type === 'Directory' || source.type === 'DirectoryOrCreate' || !source.type) {
-    await fs.mkdir(source.path, { recursive: true }).catch(() => { /* exists, or a file */ })
-  }
-  // Replace whatever a previous launch left.
-  await fs.rm(dest, { recursive: true, force: true }).catch(() => { /* nothing there */ })
-  await fs.symlink(source.path, dest)
-  return 'realized'
-}
-
-/** Where a container mount path lands on this host, or null if it has no
- *  host equivalent. */
-function destinationFor(
-  mountPath: string,
-  paths: { workspaceDir: string },
-  home: string,
-): string | null {
-  const inHome = underPrefix(mountPath, '/home/yaac/') ?? underPrefix(mountPath, `${home}/`)
-  if (inHome !== null) return path.join(home, inHome)
-  // The pod's `/usr/local/bin` maps to the workspace's own bin dir.
-  const inBin = underPrefix(mountPath, '/usr/local/bin/')
-  if (inBin !== null) return path.join(workspaceBinDir(home), inBin)
-  const inWorkspace = underPrefix(mountPath, '/workspace/')
-  if (inWorkspace !== null) return path.join(paths.workspaceDir, inWorkspace)
-  if (underPrefix(mountPath, `${paths.workspaceDir}/`) !== null) return mountPath
   return null
 }
 
-/** Whether any directory between `dest` and `home` is a symlink. */
-async function hasSymlinkedAncestor(dest: string, home: string): Promise<boolean> {
-  let dir = path.dirname(dest)
-  while (dir.startsWith(home) && dir !== home) {
-    try {
-      if ((await fs.lstat(dir)).isSymbolicLink()) return true
-    } catch {
-      // Does not exist yet.
-    }
-    dir = path.dirname(dir)
+/**
+ * Realize a declared mount, which nothing here can bind (that would need
+ * root). Every mount a create declares already has a route: the checkout
+ * and the `WorkspacePaths` dirs are in place, staged helper scripts go on
+ * PATH, the tool homes and pnpm store are named by an env value the caller
+ * set (`remapMountedPath`), and opencode's dirs become links in its
+ * wrapper's XDG dirs. Anything else refuses the create, so a mount can
+ * never quietly write into the user's own home.
+ */
+async function realizeMount(
+  mount: WorkspaceMount,
+  env: readonly string[],
+  paths: WorkspacePaths,
+  opencode: string,
+): Promise<void> {
+  const { mountPath, source } = mount
+  if (source.kind === 'emptyDir') return
+  if (mountPath === '/workspace' || mountPath === paths.workspaceDir || mountPath === source.path
+    || source.path === paths.acpLogDir || source.path === paths.attachmentsDir
+    || mountPath.startsWith('/usr/local/bin/')) return
+  const link = opencodeDestination(mountPath, opencode)
+  const named = env.some((entry) => {
+    const value = entry.slice(entry.indexOf('=') + 1)
+    return value === mountPath || value.startsWith(`${mountPath}/`)
+  })
+  if (link === null && !named) {
+    throw new ServerError('VALIDATION', `containerless: no host equivalent for a mount at ${mountPath}`)
   }
-  return false
+  // So a first-run tool home is not a missing dir (or a dangling link).
+  if (source.type === 'Directory' || source.type === 'DirectoryOrCreate' || !source.type) {
+    await fs.mkdir(source.path, { recursive: true }).catch(() => { /* exists, or a file */ })
+  }
+  if (link === null) return
+  await fs.mkdir(path.dirname(link), { recursive: true })
+  // Replace whatever a previous launch left.
+  await fs.rm(link, { recursive: true, force: true }).catch(() => { /* nothing there */ })
+  await fs.symlink(source.path, link)
 }
 
-function underPrefix(value: string, prefix: string): string | null {
-  return value.startsWith(prefix) ? value.slice(prefix.length) : null
+/**
+ * The `opencode` the workspace finds first on PATH: the pinned binary on
+ * this workspace's XDG dirs. opencode has no home variable, and setting the
+ * XDG variables for the whole workspace would hide the user's own layout
+ * from every other tool. State is per workspace because a plain `opencode`
+ * joins a background service there, which keeps the environment of the
+ * first client that started it.
+ */
+function opencodeWrapper(home: string): string {
+  const pinned = AGENT_PACKAGES.opencode
+  if (pinned === undefined) throw new Error('containerless: opencode has no pinned package')
+  return [
+    '#!/bin/sh',
+    '# Written by yaac: the pinned opencode on this workspace\'s own dirs.',
+    ...(['config', 'data', 'state', 'cache'] as const).map((dir) =>
+      `export XDG_${dir.toUpperCase()}_HOME=${shellQuote(path.join(home, dir))}`),
+    `exec ${shellQuote(path.join(agentPackagePrefix(pinned), 'bin', 'opencode'))} "$@"`,
+    '',
+  ].join('\n')
+}
+
+/**
+ * The `YAAC_SHELL_ENV` file a shell sources after the user's rc files
+ * (`host-shell/`, and bash's `BASH_ENV`): every entry the launch set, the
+ * tool-home variables it cleared, and the PATH prefix, put back first
+ * unless it already leads. It holds the launch's credentials, so it is
+ * owner-only. `fish` selects fish syntax, for the file a fish pane sources
+ * through `-C`.
+ */
+function shellEnvScript(env: NodeJS.ProcessEnv, keys: string[], prefix: string[], fish = false): string {
+  const quote = fish ? (v: string): string => `'${v.replace(/[\\']/g, '\\$&')}'` : shellQuote
+  const lead = prefix.join(path.delimiter)
+  return [
+    '# Written by yaac: re-applied after your shell rc (host-shell/).',
+    ...[...new Set([...TOOL_HOME_VARS, ...keys])].map((key) => {
+      const value = env[key]
+      if (fish) return value === undefined ? `set -e ${key}` : `set -gx ${key} ${quote(value)}`
+      return value === undefined ? `unset ${key}` : `export ${key}=${quote(value)}`
+    }),
+    ...(fish
+      ? [`test "$PATH[1]" = ${quote(prefix[0] ?? '')}; or set -gx PATH ${prefix.map(quote).join(' ')} $PATH`]
+      : [`case ":$PATH:" in ${quote(`:${lead}:`)}*) ;; *) PATH=${quote(lead)}:$PATH ;; esac`, 'export PATH']),
+    '',
+  ].join('\n')
 }
 
 /**
  * The workspace's shell: `$SHELL`, else zsh, bash, then `/bin/sh`. Always an
- * absolute path to an executable, since tmux refuses any other
- * `default-shell`.
+ * absolute path to an executable.
  */
 async function resolveShell(): Promise<string> {
   // eslint-disable-next-line no-process-env -- the workspace's login shell is the host user's own preference, which only the environment states
@@ -299,47 +327,95 @@ async function resolveShell(): Promise<string> {
   return '/bin/sh'
 }
 
+/**
+ * The shells a workspace runs: tmux's `default-shell`, which runs every
+ * window command as `<shell> -c`, and how a pane's interactive shell starts
+ * (`default-command`), with what they need in the environment to read
+ * yaac's startup files around the user's own (`host-shell/`).
+ *
+ * zsh and bash run the launches too, as a pod's zsh does: `zsh -c` reads
+ * the startup files through `ZDOTDIR`, and `bash -c` its `BASH_ENV`, both
+ * re-applying yaac's settings after the user's rc. A pane's bash reads a
+ * `--rcfile` that does a login shell's reads. fish has no hook after
+ * `config.fish` but its `-C` flag, which a tmux command cannot pass, so its
+ * launches, like any other shell's, run under /bin/sh, which reads no rc; a
+ * fish pane re-applies through `-C`.
+ *
+ * Every zsh reads the startup files through `ZDOTDIR`, whatever the user's
+ * shell, since an agent may start a zsh of its own. `ZDOTDIR` is a dir in
+ * the state dir linking the shipped files, since zsh writes there while it
+ * points at them (Debian's global `compinit` dump, macOS's history default).
+ */
+async function workspaceShells(
+  shell: string,
+  host: NodeJS.ProcessEnv,
+  stateDir: string,
+): Promise<{ defaultShell: string; command: string; env: Record<string, string> }> {
+  const dir = hostShellDir()
+  const zdotdir = path.join(stateDir, 'zsh')
+  await fs.rm(zdotdir, { recursive: true, force: true })
+  await fs.mkdir(zdotdir, { recursive: true })
+  for (const name of await fs.readdir(path.join(dir, 'zsh'))) {
+    await fs.symlink(path.join(dir, 'zsh', name), path.join(zdotdir, name))
+  }
+  // Started from inside another workspace, ZDOTDIR may name that
+  // workspace's wrapper; the user's own dir is the one it recorded.
+  // eslint-disable-next-line no-process-env -- set only by an outer workspace, and dropped from `host` with the other YAAC_ variables
+  const outer = process.env.YAAC_USER_ZDOTDIR
+  const env = { ZDOTDIR: zdotdir, YAAC_USER_ZDOTDIR: outer ?? host.ZDOTDIR ?? host.HOME ?? '' }
+  const login = `exec ${shellQuote(shell)} -l`
+  switch (path.basename(shell)) {
+    case 'zsh':
+      return { defaultShell: shell, command: login, env }
+    case 'bash':
+      return {
+        defaultShell: shell,
+        command: `exec ${shellQuote(shell)} --rcfile ${shellQuote(path.join(dir, 'bash', 'rc'))}`,
+        env,
+      }
+    case 'fish':
+      return {
+        defaultShell: '/bin/sh',
+        command: `${login} -C ${shellQuote(`source ${shellQuote(fishEnvFile(stateDir))}`)}`,
+        env: { ...env, XDG_DATA_DIRS: [dir, host.XDG_DATA_DIRS || '/usr/local/share:/usr/share'].join(path.delimiter) },
+      }
+    default:
+      return { defaultShell: '/bin/sh', command: login, env }
+  }
+}
+
+/** The fish-syntax `YAAC_SHELL_ENV` a fish pane sources. */
+function fishEnvFile(stateDir: string): string {
+  return path.join(stateDir, 'shell-env.fish')
+}
+
 /** See `WorkspaceDriver.launch`. */
 export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandle> {
   const jobName = containerlessJobName(spec.projectId, spec.workspaceId)
   const paths = containerlessWorkspacePaths(jobName)
-  const home = workspaceHome(spec.projectId, spec.workspaceId)
+  const stateDir = containerlessStateDir(spec.projectId, spec.workspaceId)
+  const opencode = opencodeHome(stateDir)
+  const files = stateEnv(spec.projectId, spec.workspaceId, paths)
 
   // Before creating anything; both failures are otherwise obscure.
   assertSocketPathsFit(paths)
   assertShellSafePaths(paths)
 
   spec.onProgress?.('Preparing the workspace environment...')
-  await fs.mkdir(home, { recursive: true })
+  // The private HOME an older yaac gave this workspace, with its
+  // credential store (docs/legacy-compat-shims.md).
+  await fs.rm(path.join(stateDir, 'home'), { recursive: true, force: true })
   await fs.mkdir(paths.scratchDir, { recursive: true })
   await fs.mkdir(paths.acpLogDir, { recursive: true })
   await fs.mkdir(paths.acpSockDir, { recursive: true })
   // 0700: a tmux socket gives full control of its workspace.
   await fs.mkdir(tmuxSockDir(), { recursive: true, mode: 0o700 })
+  for (const dir of ['state', 'cache']) await fs.mkdir(path.join(opencode, dir), { recursive: true })
+  for (const mount of spec.mounts) await realizeMount(mount, spec.env, paths, opencode)
+  await fs.mkdir(ownBinDir(stateDir), { recursive: true })
+  await fs.writeFile(path.join(ownBinDir(stateDir), 'opencode'), opencodeWrapper(opencode), { mode: 0o755 })
 
-  await fs.mkdir(workspaceBinDir(home), { recursive: true })
-  let nested = 0
-  let inWorkspace = 0
-  for (const mount of spec.mounts) {
-    const outcome = await realizeMount(mount, paths, home)
-    if (outcome === 'nested') nested++
-    if (outcome === 'in-workspace') inWorkspace++
-  }
-  if (inWorkspace > 0) {
-    serverLog(
-      `[server] containerless ${spec.workspaceId}: left ${String(inWorkspace)} path(s) `
-      + 'in the checkout rather than redirecting them (cache volumes)',
-    )
-  }
-  if (nested > 0) {
-    // Unexpected: it means a caller expects mounts to nest.
-    serverLog(
-      `[server] containerless ${spec.workspaceId}: skipped ${String(nested)} mount(s) `
-      + 'that would nest inside another, writing through it into shared state',
-    )
-  }
-
-  const env = workspaceEnvironment(spec, home, paths)
+  const env = workspaceEnvironment(spec, paths)
   // Tell the user which host tool-home variables were dropped or replaced
   // (unless the project env set them to the same value), since ignoring
   // them is otherwise silent.
@@ -347,16 +423,16 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   const overridden = overriddenToolHomeVars().filter((key) => env[key] !== host[key])
   if (overridden.length > 0) {
     const message = `Ignoring ${overridden.join(', ')} from this host's environment `
-      + "— a workspace's agent reads this project's tool config, under its own HOME."
+      + '— a workspace uses this project\'s tool config instead.'
     spec.onProgress?.(message)
     serverLog(`[server] containerless ${spec.workspaceId}: ${message}`)
   }
 
-  // Git identity, trust and auth in the workspace's own HOME, as the pod's
-  // init script writes them (auth only here; see `git-auth`).
+  // Git identity, trust and auth, as the pod's init script writes them
+  // (auth only here; see `git-auth`).
   const priorAgentPid = sshAgentPidOf(spec.workspaceId)
   const gitAuth = await realizeGitAuth({
-    home,
+    dir: stateDir,
     credential: spec.gitCredential,
     knownHostsFile: spec.ssh?.knownHostsFile,
     agentSock: paths.sshAgentSock,
@@ -373,17 +449,28 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     ...gitAuth.gitconfig,
     '',
   ].join('\n')
-  const gitconfigPath = gitconfigPathFor(home)
   // Owner-only, since a hosted remote's token is in it.
-  await fs.writeFile(gitconfigPath, gitconfig, { mode: 0o600 })
-  await fs.chmod(gitconfigPath, 0o600)
+  await fs.writeFile(files.GIT_CONFIG_GLOBAL, gitconfig, { mode: 0o600 })
+  await fs.chmod(files.GIT_CONFIG_GLOBAL, 0o600)
   // After the caller's entries, so none can disable ssh host verification.
   Object.assign(env, gitAuth.env)
-  // Set explicitly and last, so an inherited `GIT_CONFIG_GLOBAL` cannot make
-  // git silently ignore the config written above.
-  env.GIT_CONFIG_GLOBAL = gitconfigPath
 
+  // The user's rc runs in their shells, so what yaac sets is put back
+  // after it (`workspaceShells`).
   const shell = await resolveShell()
+  const startup = await workspaceShells(shell, host, stateDir)
+  const added = { ...gitAuth.env, ...startup.env, SHELL: shell }
+  Object.assign(env, added)
+  const launchKeys = [
+    ...spec.env.map((e) => e.slice(0, Math.max(0, e.indexOf('=')))).filter(Boolean),
+    ...Object.keys(files),
+    ...Object.keys(added),
+  ]
+  for (const [file, fish] of [[files.YAAC_SHELL_ENV, false], [fishEnvFile(stateDir), true]] as const) {
+    await fs.writeFile(file, shellEnvScript(env, launchKeys, pathPrefix(spec), fish), { mode: 0o600 })
+    await fs.chmod(file, 0o600)
+  }
+
   spec.onProgress?.('Starting the workspace session...')
   // One tmux call, since each costs a process start. It starts on a
   // placeholder, as the pod's init script does; the agent is respawned in
@@ -394,23 +481,26 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   //
   // `update-environment` is emptied before any client attaches; otherwise
   // the liveness watch (attaching with the server's env) would give the
-  // panes the host's SSH_AUTH_SOCK. `history-limit` is set before the
-  // session, since tmux fixes a pane's limit when it is created and the
-  // agent keeps this first pane across respawns.
+  // panes the host's SSH_AUTH_SOCK. `history-limit` and the shells are set
+  // before the session, since tmux fixes a pane's limit and shell when it is
+  // created and the agent keeps this first pane across respawns.
   //
-  // Then the same UX options as the pod's init script, plus `default-shell`.
-  // tmux stops a command list at its first error, so these take `-q`: an
-  // option an older tmux lacks is skipped rather than failing the create.
+  // `-f /dev/null`, as in a pod: the user's `~/.tmux.conf` could set hooks,
+  // rename windows or end the session. Then the same UX options as the
+  // pod's init script. tmux stops a command list at its first error, so
+  // these take `-q`: an option an older tmux lacks is skipped rather than
+  // failing the create.
   // Last, the server's pid, the root of the port scan's process tree.
   const { stdout } = await runHost([
-    'tmux', '-S', paths.tmuxSock, '-u',
+    'tmux', '-S', paths.tmuxSock, '-f', '/dev/null', '-u',
     'start-server', ';',
     'set-option', '-g', 'history-limit', '200000', ';',
+    'set-option', '-g', 'default-shell', startup.defaultShell, ';',
+    'set-option', '-g', 'default-command', startup.command, ';',
     'new-session', '-d', '-s', 'yaac', '-n', spec.tool,
     '-x', '500', '-y', '200', '-c', paths.workspaceDir,
     'sleep 2147483647', ';',
     'set-option', '-g', 'update-environment', '', ';',
-    'set-option', '-gq', 'default-shell', shell, ';',
     'set-option', '-sq', 'escape-time', '10', ';',
     'set-option', '-gq', 'mouse', 'on', ';',
     'set-option', '-gq', 'focus-events', 'on', ';',
@@ -443,7 +533,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     ...(Number.isInteger(tmuxPid) && tmuxPid > 0 ? { tmuxPid } : {}),
     // So teardown can kill the ssh-agent.
     ...(gitAuth.agentPid !== undefined ? { sshAgentPid: gitAuth.agentPid } : {}),
-    launchEnv: persistableLaunchEnv(env, spec, gitAuth.env),
+    launchEnv: persistableLaunchEnv(env, spec, added),
   }
   const ports = allocatedPorts(spec.workspaceId)
   if (ports.length > 0) marker.ports = ports

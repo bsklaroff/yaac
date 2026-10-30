@@ -266,7 +266,7 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // Name the workspace with `-C`: a resume from a different cwd than the
     // one recorded stops on a "session or current directory?" screen.
     return [
-      'codex',
+      'exec codex',
       `-C ${spec.paths.workspaceDir}`,
       ...config.map((c) => `-c ${doubleQuoted(c)}`),
       '--dangerously-bypass-hook-trust',
@@ -298,11 +298,12 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // Filter stderr through sed to delete only the first such line. The
     // regex allows leading SGR color codes (pi colors it because stdout is a
     // TTY) and requires the full message tail, so real errors pass through.
-    // `sed -u` keeps other lines unbuffered. The pod's shell is zsh, so
-    // process substitution works, and the string has no single quotes so it
-    // survives the `respawn-window '<cmd>'` wrapper.
+    // `sed -u` keeps other lines unbuffered. Only stderr goes through the
+    // pipe (fd 3 carries the terminal to pi's stdout), in POSIX sh, since
+    // containerless runs launches under /bin/sh. The string has no single
+    // quotes so it survives the `respawn-window '<cmd>'` wrapper.
     const warn = 'Warning: No project session found with id .*creating a new session with that id\\.'
-    return `${pi} 2> >(sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*${warn}/{//d}" >&2)`
+    return `{ ${pi} 2>&1 1>&3 3>&- | sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*${warn}/{//d}" >&2 3>&-; } 3>&1`
   }
   if (tool === 'opencode') {
     // --standalone runs a private server as a child instead of a shared
@@ -312,7 +313,7 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     return [
       opencodeConfigArg(mode, model, effort),
       envJsonAssignment('OPENCODE_CLI_CONFIG_CONTENT', { keybinds: OPENCODE_TUI_KEYBINDS }),
-      'opencode --standalone',
+      'exec opencode --standalone',
       resume ? `--session ${workspaceId}` : '',
     ].filter(Boolean).join(' ')
   }
@@ -342,7 +343,7 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
   // checks `$TMUX` for that too; yaac does not depend on those panes), the
   // clipboard falls back to OSC 52, and a footer scrollback hint is lost.
   return [
-    `env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode ${posture}`,
+    `exec env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode ${posture}`,
     model ? `--model ${claudeModelArg(model)}` : '',
     // Outranks the effort a `/effort` in another workspace saved to the
     // shared settings.
@@ -694,7 +695,8 @@ function draftHandling(tool: Exclude<AgentTool, 'pi'>, TMUX: string, target: str
       if (i==start+1 && agent-start==3 && (t ~ /^Ask anything… "/ || t ~ /^Run a command… "/)) continue;
       exit 1 }
     exit 0 }'`,
-        prepare: 'sf="${XDG_STATE_HOME:-$HOME/.local/state}/opencode/prompt-stash.jsonl"; pushed=0',
+        // Containerless gives opencode its own state dir (YAAC_OPENCODE_STATE).
+        prepare: 'sf="${YAAC_OPENCODE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}}/opencode/prompt-stash.jsonl"; pushed=0',
         stash: 'sum=$(cat "$sf" 2>/dev/null | cksum); '
           + `keys ${OPENCODE_TUI_KEYBINDS['prompt.stash']} && wait_box 0 `
           + '&& [ "$(cat "$sf" 2>/dev/null | cksum)" != "$sum" ] && pushed=1 || fail 5 "opencode did not stash its user\'s draft"',
@@ -816,9 +818,13 @@ export async function verifyAgentWindowAlive(
  * setup and claim-time prep so both produce the same window. Without
  * remain-on-exit the window closes when its command finishes, and the
  * webapp's tabs follow the window list.
+ *
+ * The commands run in the workspace's `$SHELL` (zsh in a pod, the user's
+ * shell under containerless), since configs are written for it; tmux's own
+ * shell may be a plain /bin/sh. tmux runs a multi-argument command directly.
  */
 export function initWindowCommand(win: InitWindow, paths: WorkspacePaths): string {
   return `${tmuxCmd(paths)} new-window -d -t yaac -n ${win.name} `
-    + `'cd ${paths.workspaceDir} && ${win.cmd}'`
+    + `"\${SHELL:-/bin/sh}" -c 'cd ${paths.workspaceDir} && ${win.cmd}'`
     + (win.hidePane ? '' : ` \\; set-option -t yaac:${win.name} remain-on-exit on`)
 }

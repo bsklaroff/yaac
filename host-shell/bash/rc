@@ -1,0 +1,20 @@
+# yaac: bash startup in a containerless workspace (docs/containerless-driver.md
+# "Shell startup"). Panes start `bash --rcfile` this file, since a login
+# shell reads no rcfile: it reads what a login shell would, re-applies
+# yaac's environment ($YAAC_SHELL_ENV), which those files may have changed,
+# and shows the checkout as `~workspace` where the prompt has `\w`.
+[ -r /etc/profile ] && . /etc/profile
+if [ -r ~/.bash_profile ]; then . ~/.bash_profile
+elif [ -r ~/.bash_login ]; then . ~/.bash_login
+elif [ -r ~/.profile ]; then . ~/.profile
+fi
+. "$YAAC_SHELL_ENV"
+_yaac_prompt() {
+  case $PWD in
+    "$YAAC_WORKSPACE_DIR" | "$YAAC_WORKSPACE_DIR"/*) _yaac_pwd="~workspace${PWD#"$YAAC_WORKSPACE_DIR"}" ;;
+    "$HOME" | "$HOME"/*) _yaac_pwd="~${PWD#"$HOME"}" ;;
+    *) _yaac_pwd=$PWD ;;
+  esac
+}
+PROMPT_COMMAND="_yaac_prompt${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+PS1=${PS1//\\w/\$\{_yaac_pwd\}}

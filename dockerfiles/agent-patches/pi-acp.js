@@ -8,7 +8,7 @@
  * longer fit fails the install (`applyEdits`). Bump the patch's `revision`
  * in `@yaac/shared/tool-install` whenever its edits change.
  *
- * Five changes, each deletable on its own once a pi-acp release makes it
+ * Six changes, each deletable on its own once a pi-acp release makes it
  * unnecessary:
  *
  * 1. Steering. pi-acp gains the `_session/steering` extension claude's and
@@ -70,6 +70,14 @@
  *    `.agents/skills`, and in RPC mode, with no one to ask, it loads none
  *    of them, so the repo skills the Skills view lists for pi would be
  *    missing. Goes once pi-acp can pass pi flags through.
+ *
+ * 6. pi-acp's own files follow `PI_CODING_AGENT_DIR`, as pi's do: its
+ *    session map goes beside the agent dir rather than in `~/.pi/pi-acp`,
+ *    and its prompt commands come from the agent dir's `prompts`. Under
+ *    containerless `$HOME` is the user's own, so otherwise every workspace
+ *    and the user's own pi-acp would share one map, written without a
+ *    lock, and a workspace would list the user's prompts rather than the
+ *    project's. Goes once pi-acp reads its paths from pi's agent dir.
  */
 
 import { applyEdits, patchFileFromArgv } from './apply-edits.js'
@@ -319,6 +327,22 @@ const EDITS = [
 `,
     insert: 'replace',
     text: `    const args = ["--mode", "rpc", "--no-themes", "--approve"];
+`,
+  },
+  {
+    name: 'session map beside the agent dir',
+    anchor: `  return join(homedir(), ".pi", "pi-acp");
+`,
+    insert: 'replace',
+    text: `  return process.env.PI_CODING_AGENT_DIR ? join(process.env.PI_CODING_AGENT_DIR, "..", "pi-acp") : join(homedir(), ".pi", "pi-acp");
+`,
+  },
+  {
+    name: 'prompts from the agent dir',
+    anchor: `  const userDir = join2(homedir2(), ".pi", "agent", "prompts");
+`,
+    insert: 'replace',
+    text: `  const userDir = join2(process.env.PI_CODING_AGENT_DIR || join2(homedir2(), ".pi", "agent"), "prompts");
 `,
   },
   {

@@ -6,3 +6,7 @@ dist-test/
 packages/desktop/dist-app/
 .vitest-last-run.json
 coverage/
+# A containerless dev workspace's inner yaac (yaac-config.json).
+/.yaac-dev/
+/.yaac-dev-client/
+/.yaac-dev-npm/

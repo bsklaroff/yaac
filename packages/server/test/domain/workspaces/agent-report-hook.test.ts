@@ -180,8 +180,8 @@ describe('the agent reporters', () => {
     })
 
     it('makes the path project-relative through a symlinked tool home', async () => {
-      // A containerless workspace: the tool home in its private HOME links to
-      // the project's shared one, and the tool reports the physical path.
+      // A tool home reached through a link (as macOS's /var -> /private/var
+      // makes a data dir), whose tool reports the physical path.
       const real = path.join(tmpDir, 'project', 'claude')
       const linked = path.join(tmpDir, 'workspace-home', '.claude')
       await fs.mkdir(real, { recursive: true })

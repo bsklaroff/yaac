@@ -14,7 +14,7 @@ vi.mock('#drivers/containerless/host', async (importOriginal) => ({
   runHost: mockRunHost,
 }))
 import { execInWorkspace, runInStoppedCheckout } from '#drivers/containerless/exec'
-import { containerlessJobName, workspaceHome } from '#drivers/containerless/paths'
+import { containerlessJobName, containerlessStateDir } from '#drivers/containerless/paths'
 import {
   _resetRegistryForTests,
   readMarkers,
@@ -66,9 +66,9 @@ describe('execInWorkspace', () => {
 
     await execInWorkspace(JOB, 'opencode api --standalone session.list')
     const env = ranWith()
-    // `opencode api` reads its data under HOME; the host's would list the
-    // host user's sessions.
-    expect(env.HOME).toBe(workspaceHome('demo', UUID))
+    // `opencode` is the workspace's wrapper, first on PATH, so `opencode api`
+    // lists the workspace's sessions rather than the host user's.
+    expect(env.PATH?.split(path.delimiter)[0]).toBe(path.join(containerlessStateDir('demo', UUID), 'bin'))
     expect(env).toMatchObject({ CODEX_HOME: '/projects/demo/codex', PROJECT_SETTING: 'on' })
     expect(env.YAAC_SERVER_WIRING).toBeUndefined()
   })
@@ -80,14 +80,16 @@ describe('execInWorkspace', () => {
     vi.stubEnv('CODEX_HOME', '/home/server-user/.codex')
     await execInWorkspace(JOB, 'true')
     const env = ranWith()
-    const home = workspaceHome('demo', UUID)
-    expect(env.HOME).toBe(home)
-    expect(env.GIT_CONFIG_GLOBAL).toBe(path.join(home, '.gitconfig'))
+    const state = containerlessStateDir('demo', UUID)
+    // The user's own HOME, but the workspace's git config.
+    expect(env.HOME).toBe('/home/server-user')
+    expect(env.GIT_CONFIG_GLOBAL).toBe(path.join(state, 'gitconfig'))
     expect(env.YAAC_SERVER_WIRING).toBeUndefined()
     // A tool-home override would point the command at the host's config.
     expect(env.CODEX_HOME).toBeUndefined()
-    // The workspace still inherits the user's toolchain.
-    expect(env.PATH).toContain(path.join(home, '.local', 'bin'))
+    // The workspace still inherits the user's toolchain, behind its own.
+    expect(env.PATH).toContain(path.join(state, 'bin'))
+    expect(env.PATH).toContain(process.env.PATH ?? '')
   })
 
   it('passes a nonzero exit through as the verdict it is', async () => {

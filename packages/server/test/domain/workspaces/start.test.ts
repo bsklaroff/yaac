@@ -512,7 +512,7 @@ describe('prepareStart', () => {
         `YAAC_WORKSPACE_ID=${workspaceId}`, 'YAAC_TOOL=codex', 'YAAC_GIT_NAME=Ada', 'YAAC_GIT_EMAIL=ada@example.com',
         `YAAC_STATUS_RIGHT= ${workspaceId.slice(0, 8)} `,
       ]))
-      expect(execOf('respawn-window')).toMatch(/respawn-window -k -t yaac:codex 'codex .* --yolo --model gpt-6-sol'/)
+      expect(execOf('respawn-window')).toMatch(/respawn-window -k -t yaac:codex 'exec codex .* --yolo --model gpt-6-sol'/)
       // The workspace runs as the server's uid, so a chown would only corrupt
       // host-side ownership.
       expect(cmds().some((c) => c.includes('chown') || c.startsWith('sudo '))).toBe(false)
@@ -860,8 +860,8 @@ describe('prepareStart', () => {
       // Init windows and the agent respawn go in one exec. Only windows
       // without hidePane keep remain-on-exit.
       const windows = execOf('new-window')!
-      expect(windows).toContain("-n backend 'cd /workspace && pnpm dev:backend'")
-      expect(windows).toContain("-n frontend 'cd /workspace && pnpm install && echo '\\''hi'\\'''")
+      expect(windows).toContain("-n backend \"${SHELL:-/bin/sh}\" -c 'cd /workspace && pnpm dev:backend'")
+      expect(windows).toContain("-n frontend \"${SHELL:-/bin/sh}\" -c 'cd /workspace && pnpm install && echo '\\''hi'\\'''")
       expect(windows).toContain('set-option -t yaac:backend remain-on-exit on')
       expect(windows).not.toContain('yaac:frontend remain-on-exit on')
       expect(windows).toContain(`claude --permission-mode bypassPermissions --model claude-opus-4-5 --session-id ${result.workspaceId}`)
@@ -1182,7 +1182,7 @@ describe('prepareStart', () => {
       expect(ran).toContainEqual(expect.stringContaining('rename-window -t yaac:claude codex'))
       const respawns = ran.filter((c) => c.includes('respawn-window'))
       expect(respawns).toHaveLength(1)
-      expect(respawns[0]).toMatch(/respawn-window -k -t yaac:codex 'codex .*--sandbox read-only/)
+      expect(respawns[0]).toMatch(/respawn-window -k -t yaac:codex 'exec codex .*--sandbox read-only/)
       expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toMatchObject({
         baseBranch: 'dev', permissionMode: 'read-only', model: FALLBACK_MODELS.codex,
       })

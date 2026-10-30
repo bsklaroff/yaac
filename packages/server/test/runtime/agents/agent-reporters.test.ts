@@ -79,7 +79,14 @@ describe('ensureAgentReporters', () => {
     const settings = JSON.parse(await fs.readFile(claudeSettings, 'utf8')) as Record<string, unknown>
     await fs.writeFile(claudeSettings, JSON.stringify({
       ...settings,
-      hooks: { SessionStart: [{ matcher: '*', hooks: [{ type: 'command', command: 'mine.sh' }] }] },
+      hooks: {
+        SessionStart: [
+          { matcher: '*', hooks: [{ type: 'command', command: 'mine.sh' }] },
+          // What an older yaac installed, which would now name the user's
+          // own home under containerless.
+          { matcher: '*', hooks: [{ type: 'command', command: 'yaac-agent-links "$HOME/.claude" claude' }] },
+        ],
+      },
     }))
     // A malformed file is replaced.
     await fs.mkdir(homes.codexDir, { recursive: true })
@@ -87,11 +94,12 @@ describe('ensureAgentReporters', () => {
 
     await ensureAgentReporters(await roots())
 
-    // Bare command names and `$HOME`-relative paths, since the files are
-    // shared by all of a project's workspaces on either driver. The model
+    // Bare command names and paths through each tool's home variable, since
+    // the files are shared by all of a project's workspaces on either
+    // driver, and `$HOME` is the user's own under containerless. The model
     // reporter is guarded because claude hot-reloads the file and an older
     // workspace may lack the script.
-    const session = 'yaac-agent-links "$HOME/.claude" claude'
+    const session = 'yaac-agent-links "$CLAUDE_CONFIG_DIR" claude'
     const report = 'command -v yaac-agent-report >/dev/null && exec yaac-agent-report || true'
     expect(await hooksIn(claudeSettings)).toEqual({
       SessionStart: ['mine.sh', session, report],
@@ -169,7 +177,8 @@ describe('ensureAgentReporters', () => {
     ])).toEqual([
       // Mid-turn, the message waits for the turn.
       'sent ["Sent from w via yaac-mama:\\n\\nhi",{"deliverAs":"followUp"}]',
-      'yaac-agent-links /h/.pi|pi|pi-1|/h/.pi/agent/sessions/t_pi-1.jsonl',
+      // The pi home: the agent dir's parent, as the TUI reports it.
+      `yaac-agent-links ${dir}|pi|pi-1|/h/.pi/agent/sessions/t_pi-1.jsonl`,
       'yaac-agent-report openrouter/z-ai/glm-5||medium|',
       'yaac-agent-report openrouter/moonshot/kimi-k3||medium|',
       'yaac-agent-report ||high|',

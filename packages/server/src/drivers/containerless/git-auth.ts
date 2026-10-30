@@ -7,13 +7,13 @@ import type { WorkspaceGitCredential } from '#drivers/contract'
 
 /**
  * Git auth for a containerless workspace, which must hold the real
- * credential: there is no proxy to inject it, the checkout's `origin` URL
- * has no token, and the private HOME hides the user's own git and ssh config
- * (docs/containerless-driver.md).
+ * credential: there is no proxy to inject it, and the checkout's `origin` URL
+ * has no token (docs/containerless-driver.md). Its files live in the
+ * driver's state dir, which a stop removes.
  *
- * HTTPS uses git's credential store in the workspace HOME (the default
- * `$HOME/.git-credentials`), not a token in the remote URL, and is removed
- * with the workspace's state dir.
+ * HTTPS uses git's credential store, not a token in the remote URL, named
+ * with `--file`: by default `store` reads and writes the user's own
+ * `~/.git-credentials`.
  *
  * SSH gets a per-workspace ssh-agent. The private key is piped to `ssh-add`
  * and never written to disk; only the public key is, to pin the identity.
@@ -28,8 +28,8 @@ import type { WorkspaceGitCredential } from '#drivers/contract'
  * the workspace does is.
  */
 
-/** `git credential-store`'s default file, relative to HOME. */
-const CREDENTIALS_FILE = '.git-credentials'
+/** The credential store, in the driver's state dir. */
+export const CREDENTIALS_FILE = 'git-credentials'
 
 /** Username for a PAT; the same one the server and the k8s proxy use. */
 const HTTPS_USERNAME = 'x-access-token'
@@ -48,7 +48,8 @@ export interface WorkspaceGitAuth {
  * gitconfig and env the launch must add. Idempotent.
  */
 export async function realizeGitAuth(params: {
-  home: string
+  /** The driver's state dir for this workspace. */
+  dir: string
   credential: WorkspaceGitCredential | undefined
   knownHostsFile: string | undefined
   /** Where the ssh-agent binds, if one is needed. */
@@ -56,8 +57,8 @@ export async function realizeGitAuth(params: {
   /** A previous launch's ssh-agent, to kill. */
   priorAgentPid?: number
 }): Promise<WorkspaceGitAuth> {
-  const { home, credential, knownHostsFile } = params
-  const store = path.join(home, CREDENTIALS_FILE)
+  const { dir, credential, knownHostsFile } = params
+  const store = path.join(dir, CREDENTIALS_FILE)
 
   // Always recreate: the remote may have moved to SSH, the token may have
   // rotated, and `writeFile` sets the 0600 mode only on create.
@@ -82,7 +83,7 @@ export async function realizeGitAuth(params: {
     await fs.writeFile(store, `${credentialStoreLine(credential)}\n`, { mode: 0o600 })
     // The empty value clears inherited helpers (e.g. a system keychain) so
     // only this credential is used.
-    return { gitconfig: ['[credential]', '\thelper =', '\thelper = store'], env: {} }
+    return { gitconfig: ['[credential]', '\thelper =', `\thelper = store --file=${store}`], env: {} }
   }
 
   // A wiring bug; continuing would skip host key verification.
@@ -92,7 +93,7 @@ export async function realizeGitAuth(params: {
     )
   }
   const agent = await startWorkspaceSshAgent({
-    home,
+    dir,
     agentSock: params.agentSock,
     privateKey: credential.privateKey,
     ...(params.priorAgentPid !== undefined ? { priorAgentPid: params.priorAgentPid } : {}),
@@ -120,12 +121,12 @@ export async function realizeGitAuth(params: {
  * tmux) and load the key into it from stdin.
  */
 async function startWorkspaceSshAgent(params: {
-  home: string
+  dir: string
   agentSock: string
   privateKey: string
   priorAgentPid?: number
 }): Promise<{ sock: string; pid: number; publicKeyFile: string }> {
-  const { home, agentSock, privateKey } = params
+  const { dir, agentSock, privateKey } = params
   // Kill the old agent first; unlinking its socket alone would orphan it
   // with the key still loaded.
   if (params.priorAgentPid !== undefined) killPids([params.priorAgentPid], 'SIGTERM')
@@ -138,7 +139,7 @@ async function startWorkspaceSshAgent(params: {
   try {
     await runHost(['ssh-add', '-'], { env, timeoutMs: 15_000, input: privateKey })
     const { stdout } = await runHost(['ssh-add', '-L'], { env, timeoutMs: 10_000 })
-    const sshDir = path.join(home, '.ssh')
+    const sshDir = path.join(dir, 'ssh')
     await fs.mkdir(sshDir, { recursive: true, mode: 0o700 })
     const publicKeyFile = path.join(sshDir, 'id.pub')
     await fs.writeFile(publicKeyFile, stdout.trimEnd() + '\n', { mode: 0o644 })

@@ -4,9 +4,10 @@ import path from 'node:path'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { serverLog } from '#lib/log'
 import { runHostCheck, upgradeUsedAgents } from './check'
+import { CREDENTIALS_FILE } from './git-auth'
 import { isSshAgentFor, killPids } from './host'
 import { tmuxAnswers } from './exec'
-import { containerlessJobName, containerlessWorkspacePaths, workspaceHome } from './paths'
+import { containerlessJobName, containerlessStateDir, containerlessWorkspacePaths } from './paths'
 import {
   listWorkspaces,
   observeLiveness,
@@ -60,8 +61,13 @@ async function recoverWorkspaces(): Promise<void> {
 
 /**
  * Remove a dead workspace's credentials now rather than at stop: the git
- * credential store, and the ssh-agent (not tmux's child, so it survives
- * tmux dying) holding the private key. A restart recreates both.
+ * credential store, gh's config (where a `gh auth login` in a pane wrote
+ * its token), the shell-env files, and the ssh-agent (not tmux's child, so
+ * it survives tmux dying) holding the private key. A restart recreates what
+ * yaac put there.
+ *
+ * `home` is the private HOME a workspace launched by an older yaac kept its
+ * credential store in (docs/legacy-compat-shims.md).
  */
 async function sweepDeadWorkspaceSecrets(marker: WorkspaceMarker): Promise<void> {
   const paths = containerlessWorkspacePaths(
@@ -72,9 +78,11 @@ async function sweepDeadWorkspaceSecrets(marker: WorkspaceMarker): Promise<void>
     && await isSshAgentFor(marker.sshAgentPid, paths.sshAgentSock)) {
     killPids([marker.sshAgentPid], 'SIGTERM')
   }
-  const home = workspaceHome(marker.projectId, marker.workspaceId)
-  for (const file of [path.join(home, '.git-credentials'), paths.sshAgentSock]) {
-    await fs.rm(file, { force: true }).catch((err: unknown) => {
+  const state = containerlessStateDir(marker.projectId, marker.workspaceId)
+  const secrets = [CREDENTIALS_FILE, 'gh', 'shell-env', 'shell-env.fish', 'home']
+    .map((name) => path.join(state, name))
+  for (const file of [...secrets, paths.sshAgentSock]) {
+    await fs.rm(file, { recursive: true, force: true }).catch((err: unknown) => {
       serverLog(
         `[server] containerless: could not clear ${file} for a dead workspace: ${String(err)}`,
       )

@@ -22,7 +22,7 @@ import {
 } from '#runtime/agents/acp-registry'
 import { installFakeWorkspaceDriver, workspacePathsFixture } from '#test/support/fake-driver'
 import { execInWorkspace } from '#drivers/containerless/exec'
-import { containerlessJobName, containerlessWorkspacePaths, workspaceHome } from '#drivers/containerless/paths'
+import { containerlessJobName, containerlessStateDir, containerlessWorkspacePaths } from '#drivers/containerless/paths'
 import type { StreamChild, WorkspaceDriver } from '#drivers/contract'
 import { PromptNotRunError, type AcpConversation } from '#runtime/agents/acp-client'
 import type { AcpEventInit } from '@yaac/shared/acp'
@@ -337,9 +337,9 @@ describe('agentDriver', () => {
 
     // ACP: acpd supervising the adapter, its socket named for the window.
     const acp = agentDriver('acp').launchCmd(spec)
-    expect(acp).toContain('node /opt/yaac/acpd/main.js')
+    expect(acp).toContain('exec node /opt/yaac/acpd/main.js')
     // The protocol reports the conversation, so the pane reporters skip.
-    expect(acp).toMatch(/^YAAC_NO_PANE_REPORT=1 node /)
+    expect(acp).toMatch(/^YAAC_NO_PANE_REPORT=1 exec node /)
     expect(agentDriver('tui').launchCmd(spec)).not.toContain('YAAC_NO_PANE_REPORT')
     expect(acp).toContain('--sock /tmp/yaac-acp/claude-2.sock')
     expect(acp).toContain('-- claude-agent-acp')
@@ -359,11 +359,11 @@ describe('agentDriver', () => {
       .toContain('--cwd /workspace --wait-for /workspace/.git --')
     // The adapter takes no flags, so the model goes in an env var.
     const withModel = agentDriver('acp').launchCmd({ ...spec, model: 'claude-opus-5-5' })
-    expect(withModel).toMatch(/^ANTHROPIC_MODEL=claude-opus-5-5 YAAC_NO_PANE_REPORT=1 node /)
+    expect(withModel).toMatch(/^ANTHROPIC_MODEL=claude-opus-5-5 YAAC_NO_PANE_REPORT=1 exec node /)
     expect(withModel).not.toContain('--model')
     // A 1M-context model is quoted, since a bare `[1m]` is a shell glob.
     expect(agentDriver('acp').launchCmd({ ...spec, model: 'claude-opus-5-5[1m]' }))
-      .toMatch(/^ANTHROPIC_MODEL="claude-opus-5-5\[1m\]" YAAC_NO_PANE_REPORT=1 node /)
+      .toMatch(/^ANTHROPIC_MODEL="claude-opus-5-5\[1m\]" YAAC_NO_PANE_REPORT=1 exec node /)
     // A model reaches here from a request, a queued child's parent or a
     // restarted conversation's report, which anything in the workspace can
     // set; every launch refuses one it cannot carry.
@@ -412,7 +412,7 @@ describe('agentDriver', () => {
       JSON.parse(/CODEX_CONFIG="((?:[^"\\]|\\.)*)"/.exec(cmd)![1].replace(/\\(.)/g, '$1'))
     const codex = spec('codex')
     expect(codex).toContain('-- codex-acp')
-    expect(codex).toMatch(/NO_BROWSER=1 CODEX_PATH=codex CODEX_CONFIG=\S+ YAAC_NO_PANE_REPORT=1 node \/opt\/yaac\/acpd\/main\.js/)
+    expect(codex).toMatch(/NO_BROWSER=1 CODEX_PATH=codex CODEX_CONFIG=\S+ YAAC_NO_PANE_REPORT=1 exec node \/opt\/yaac\/acpd\/main\.js/)
     expect(codexConfig(codex))
       .toEqual({ approval_policy: 'never', approvals_reviewer: 'user', sandbox_mode: 'danger-full-access' })
     expect(codexConfig(spec('codex', { permissionMode: 'auto' })))
@@ -437,7 +437,7 @@ describe('agentDriver', () => {
     // pi-acp takes neither; its model is set after the handshake.
     const pi = spec('pi')
     expect(pi).toContain('-- pi-acp')
-    expect(pi.slice(0, pi.indexOf('node '))).toBe('YAAC_NO_PANE_REPORT=1 ')
+    expect(pi.slice(0, pi.indexOf('exec node '))).toBe('YAAC_NO_PANE_REPORT=1 ')
 
     // All are embedded in a single-quoted respawn-window.
     for (const cmd of [codex, opencode, pi]) expect(cmd).not.toContain("'")
@@ -2729,7 +2729,7 @@ describe('agentDriver', () => {
       const workspaceId = '4bfc59c6-1e83-4dd0-80f1-735294d5d2bb'
       const jobName = containerlessJobName('demo', workspaceId)
       const paths = containerlessWorkspacePaths(jobName)
-      const stubs = path.join(workspaceHome('demo', workspaceId), '.local', 'bin')
+      const stubs = path.join(containerlessStateDir('demo', workspaceId), 'bin')
       for (const dir of [paths.workspaceDir, paths.scratchDir, stubs]) mkdirSync(dir, { recursive: true })
       writeFileSync(path.join(stubs, 'sleep'), '#!/bin/sh\n', { mode: 0o755 })
       writeFileSync(path.join(stubs, 'tmux'), [
@@ -2973,12 +2973,12 @@ describe('agentDriver', () => {
 
       it('omits prompt arguments', () => {
         const cmd = tuiLaunchCmd({ tool: 'codex', workspaceId: 'sess-1', permissionMode: 'bypass' })
-        expect(bare(cmd)).toBe('codex -C /workspace --dangerously-bypass-hook-trust --yolo')
+        expect(bare(cmd)).toBe('exec codex -C /workspace --dangerously-bypass-hook-trust --yolo')
       })
 
       it('resumes the conversation it is given', () => {
         const cmd = tuiLaunchCmd({ tool: 'codex', workspaceId: 'sess-1', resume: true, permissionMode: 'bypass' })
-        expect(bare(cmd)).toBe('codex -C /workspace --dangerously-bypass-hook-trust --yolo resume sess-1')
+        expect(bare(cmd)).toBe('exec codex -C /workspace --dangerously-bypass-hook-trust --yolo resume sess-1')
       })
 
       it('runs codex in the workspace, trusts the repository, and opens no startup screen', () => {
@@ -2989,7 +2989,7 @@ describe('agentDriver', () => {
           permissionMode: 'accept-edits',
           paths: { workspaceDir: '/data/wt' },
         })
-        const argv = execFileSync('sh', ['-c', cmd.replace(/^codex /, `printf '%s\\n' `)], {
+        const argv = execFileSync('sh', ['-c', cmd.replace(/^exec codex /, `printf '%s\\n' `)], {
           env: { ...process.env, CODEX_HOME: '/must/not/expand' },
         }).toString().trimEnd().split('\n')
         expect(argv).toEqual([
@@ -3014,7 +3014,7 @@ describe('agentDriver', () => {
 
       it('inserts --model when a model override is given', () => {
         const cmd = tuiLaunchCmd({ tool: 'codex', workspaceId: 'sess-1', resume: false, model: 'gpt-5.2-codex', permissionMode: 'bypass' })
-        expect(bare(cmd)).toBe('codex -C /workspace --dangerously-bypass-hook-trust --yolo --model gpt-5.2-codex')
+        expect(bare(cmd)).toBe('exec codex -C /workspace --dangerously-bypass-hook-trust --yolo --model gpt-5.2-codex')
       })
 
       it('places --model after the resume subcommand (codex resume parses it)', () => {
@@ -3052,7 +3052,7 @@ describe('agentDriver', () => {
       // pi's stderr goes through sed to drop the first "Warning: No project
       // session found with id ..." line, including any leading color codes.
       const wrapped = (piCmd: string) =>
-        `${piCmd} 2> >(sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*Warning: No project session found with id .*creating a new session with that id\\./{//d}" >&2)`
+        `{ ${piCmd} 2>&1 1>&3 3>&- | sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*Warning: No project session found with id .*creating a new session with that id\\./{//d}" >&2 3>&-; } 3>&1`
 
       it('uses --approve, the default provider model, and --session-id when none is given', () => {
         const cmd = tuiLaunchCmd({ tool: 'pi', workspaceId: 'sess-1', permissionMode: 'bypass' })
@@ -3074,13 +3074,32 @@ describe('agentDriver', () => {
         expect(cmd).toBe(wrapped('pi --approve --tui-mode fullscreen --model openai/gpt-5.2 --session-id sess-1'))
       })
 
-      it('filters the fresh-run warning without single quotes (survives respawn wrapper)', () => {
+      it('filters the fresh-run warning in plain sh, without single quotes (survives respawn wrapper)', () => {
         const cmd = tuiLaunchCmd({ tool: 'pi', workspaceId: 'sess-1', permissionMode: 'bypass' })
         // No single quotes: the command is embedded in `respawn-window '<cmd>'`.
         expect(cmd).not.toContain("'")
-        // Anchored at line start, and only the first match is deleted.
-        expect(cmd).toContain('2> >(sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*Warning: ')
-        expect(cmd).toContain('creating a new session with that id\\./{//d}" >&2)')
+        // Run under /bin/sh, as a containerless launch is, against a pi that
+        // warns in color: only the first warning goes, stdout untouched.
+        const bin = mkdtempSync(path.join(os.tmpdir(), 'yaac-pi-'))
+        try {
+          const warn = 'Warning: No project session found with id sess-1; creating a new session with that id.'
+          writeFileSync(path.join(bin, 'pi'), [
+            '#!/bin/sh',
+            'echo drawn',
+            `printf '\\033[33m${warn}\\033[0m\\n' >&2`,
+            'echo "a real error" >&2',
+            `echo '${warn}' >&2`,
+            '',
+          ].join('\n'), { mode: 0o755 })
+          const run = spawnSync('/bin/sh', ['-c', cmd], {
+            env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` },
+            encoding: 'utf8',
+          })
+          expect(run.stdout).toBe('drawn\n')
+          expect(run.stderr).toBe(`a real error\n${warn}\n`)
+        } finally {
+          rmSync(bin, { recursive: true, force: true })
+        }
       })
     })
 
@@ -3089,22 +3108,22 @@ describe('agentDriver', () => {
       // is unset, so every claude launch below must include `env -u TMUX`.
       it('hides $TMUX so the title keeps animating, and omits prompt flags', () => {
         const cmd = tuiLaunchCmd({ tool: 'claude', workspaceId: 'sess-1', permissionMode: 'bypass' })
-        expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --session-id sess-1')
+        expect(cmd).toBe('exec env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --session-id sess-1')
       })
 
       it('swaps --session-id for --resume when resuming', () => {
         const cmd = tuiLaunchCmd({ tool: 'claude', workspaceId: 'sess-1', resume: true, permissionMode: 'bypass' })
-        expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --resume sess-1')
+        expect(cmd).toBe('exec env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --resume sess-1')
       })
 
       it('inserts --model when a model override is given', () => {
         const cmd = tuiLaunchCmd({ tool: 'claude', workspaceId: 'sess-1', resume: false, model: 'claude-opus-4-8', permissionMode: 'bypass' })
-        expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model claude-opus-4-8 --session-id sess-1')
+        expect(cmd).toBe('exec env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model claude-opus-4-8 --session-id sess-1')
       })
 
       it('combines a model override with resume', () => {
         const cmd = tuiLaunchCmd({ tool: 'claude', workspaceId: 'sess-1', resume: true, model: 'opus', permissionMode: 'bypass' })
-        expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model opus --resume sess-1')
+        expect(cmd).toBe('exec env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model opus --resume sess-1')
       })
     })
 

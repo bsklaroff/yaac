@@ -105,12 +105,6 @@ export function markerPath(projectId: string, workspaceId: string): string {
   return path.join(containerlessStateDir(projectId, workspaceId), 'workspace.json')
 }
 
-/** The workspace's private `$HOME`; mounts under `/home/yaac` become
- *  symlinks in it. */
-export function workspaceHome(projectId: string, workspaceId: string): string {
-  return path.join(containerlessStateDir(projectId, workspaceId), 'home')
-}
-
 /** See `WorkspaceDriver.workspacePaths`. */
 export function containerlessWorkspacePaths(jobName: string): WorkspacePaths {
   const { projectId, workspaceId } = refFromJobName(jobName)
@@ -137,4 +131,10 @@ export function containerlessWorkspacePaths(jobName: string): WorkspacePaths {
  */
 export function acpdEntry(): string {
   return path.join(PACKAGE_ROOT, 'dockerfiles', 'acpd', 'main.js')
+}
+
+/** The shell startup files shipped with yaac (`host-shell/`), which a
+ *  workspace's interactive shells read before and after the user's own. */
+export function hostShellDir(): string {
+  return path.join(PACKAGE_ROOT, 'host-shell')
 }

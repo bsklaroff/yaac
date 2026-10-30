@@ -49,8 +49,8 @@ const CLAUDE_REPORT_HOOK = 'command -v yaac-agent-report >/dev/null && exec yaac
 type Hooks = ReadonlyArray<readonly [event: string, command: string]>
 
 const CLAUDE_HOOKS: Hooks = [
-  ['SessionStart', sessionHook('$HOME/.claude', 'claude')],
-  ['SessionEnd', sessionHook('$HOME/.claude', 'claude')],
+  ['SessionStart', sessionHook('$CLAUDE_CONFIG_DIR', 'claude')],
+  ['SessionEnd', sessionHook('$CLAUDE_CONFIG_DIR', 'claude')],
   ['SessionStart', CLAUDE_REPORT_HOOK],
   ['PostModelSwitch', CLAUDE_REPORT_HOOK],
   ['UserPromptSubmit', CLAUDE_REPORT_HOOK],
@@ -83,6 +83,7 @@ const PI_EXTENSION = `// Written by yaac: reports the conversation, model and th
 // (see yaac-agent-links and yaac-agent-report), and submits messages that
 // other workspaces send it (see yaac-mama send).
 import { readFileSync, unlinkSync } from 'node:fs'
+import { dirname } from 'node:path'
 
 export default function (pi) {
   let reported = Promise.resolve()
@@ -96,7 +97,7 @@ export default function (pi) {
   let session = ''
   pi.on('session_start', (_event, ctx) => {
     session = ctx.sessionManager.getSessionId()
-    run('yaac-agent-links', [process.env.HOME + '/.pi', 'pi', session, ctx.sessionManager.getSessionFile() ?? ''])
+    run('yaac-agent-links', [dirname(process.env.PI_CODING_AGENT_DIR ?? ''), 'pi', session, ctx.sessionManager.getSessionFile() ?? ''])
     report(ctx.model)
   })
   pi.on('model_select', (event) => report(event.model))
@@ -217,9 +218,17 @@ interface HookMatcher {
 const MAX_SETTINGS_BYTES = 1024 * 1024
 
 /**
+ * yaac hooks no longer installed, which a merge removes. claude's session
+ * hook once named its home as `$HOME/.claude`, which under containerless is
+ * the user's own (docs/legacy-compat-shims.md).
+ */
+const RETIRED_HOOKS = new Set(['yaac-agent-links "$HOME/.claude" claude'])
+
+/**
  * Merge `wanted` into a settings file's `hooks` (claude's `settings.json`
- * and codex's `hooks.json` share the shape). Other keys and user hooks are
- * kept, and a file already containing every entry is left untouched. A
+ * and codex's `hooks.json` share the shape), dropping `RETIRED_HOOKS`. Other
+ * keys and user hooks are kept, and a file already in that shape is left
+ * untouched. A
  * malformed file, or anything that is not a regular file (e.g. a planted
  * link), is replaced; yaac re-seeds its entries on every create. Holds the
  * file's lock, since `seedClaudeSettings` updates the same file.
@@ -234,9 +243,14 @@ async function mergeHooks(home: ConfinedRoot, rel: string, wanted: Hooks): Promi
       // Invalid or oversized: start fresh.
     }
     const hooks = { ...settings.hooks }
+    let retired = false
+    for (const [event, matchers = []] of Object.entries(hooks)) {
+      const kept = matchers.filter((m) => !m.hooks?.some((h) => RETIRED_HOOKS.has(h.command ?? '')))
+      if (kept.length < matchers.length) [hooks[event], retired] = [kept, true]
+    }
     const missing = wanted.filter(([event, command]) =>
       !(hooks[event]?.some((m) => m.hooks?.some((h) => h.command === command)) ?? false))
-    if (missing.length === 0) return
+    if (missing.length === 0 && !retired) return
     for (const [event, command] of missing) {
       // 3s: codex clamps SessionEnd hooks to this and warns otherwise.
       hooks[event] = [...hooks[event] ?? [], { matcher: '*', hooks: [{ type: 'command', command, timeout: 3 }] }]
