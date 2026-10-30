@@ -38,11 +38,11 @@ const PLACEHOLDER_SESSION_ID = '00000000-0000-0000-0000-000000000000'
 
 /**
  * A conversation's history from claude's transcript, as read by the caller
- * (see `getAgentSessionTranscript`); `ended` when its agent life is over
+ * (see `getConversationTranscript`); `ended` when its agent life is over
  * (`AcpRecordWriter`).
  */
-export async function claudeTranscriptAsAcp(raw: string, agentSessionId: string, ended = false): Promise<AcpEvent[]> {
-  const replay = new ClaudeTranscriptReplay(agentSessionId)
+export async function claudeTranscriptAsAcp(raw: string, conversationId: string, ended = false): Promise<AcpEvent[]> {
+  const replay = new ClaudeTranscriptReplay(conversationId)
   await replay.append(raw)
   return replay.replay(ended)
 }
@@ -187,8 +187,8 @@ export class ClaudeTranscriptReplay {
   private rest = ''
   private readonly sessionId: string
 
-  constructor(agentSessionId: string, private readonly subagent = false) {
-    this.sessionId = isUuid(agentSessionId) ? agentSessionId : PLACEHOLDER_SESSION_ID
+  constructor(conversationId: string, private readonly subagent = false) {
+    this.sessionId = isUuid(conversationId) ? conversationId : PLACEHOLDER_SESSION_ID
   }
 
   /** The conversation so far. */

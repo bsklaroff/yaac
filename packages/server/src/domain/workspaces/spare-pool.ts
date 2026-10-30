@@ -30,7 +30,7 @@ function respawnAgentExec(
   const windowName = agentWindowName(agent.tool, 0)
   return `${tmuxCmd(paths)} respawn-window -k -t yaac:${windowName} '${agentDriver(agent.mode).launchCmd({
     tool: agent.tool,
-    agentSessionId: workspaceId,
+    conversationId: workspaceId,
     resume: false,
     windowName,
     paths,

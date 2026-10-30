@@ -11,7 +11,7 @@ import { ReadOnlyWorkspace, type ReadOnlySubject } from '#components/ReadOnlyWor
 import { useStoppedEntry } from '#lib/useStoppedWorkspaces'
 import { useUiStore } from '#lib/store'
 import {
-  agentEvent, agentSession, mockFetch, renderWithClient, serverError, TEST_USER_ID, TEST_WHOAMI, testQueryClient, userEvent, workspaceEntry,
+  agentEvent, conversation, mockFetch, renderWithClient, serverError, TEST_USER_ID, TEST_WHOAMI, testQueryClient, userEvent, workspaceEntry,
   type FetchCall, type FetchMock,
 } from './harness'
 
@@ -33,7 +33,7 @@ const stopped = (over: Partial<StoppedWorkspaceEntry> = {}): StoppedWorkspaceEnt
   title: 'OOMed run',
   prompt: 'fix the parser',
   deathSeenBy: [TEST_USER_ID],
-  agentSessions: [],
+  conversations: [],
   ...over,
 })
 
@@ -140,7 +140,7 @@ describe('ReadOnlyWorkspace', () => {
   })
 
   it('carries the chat pane\'s width and condensed toggles under the conversation', async () => {
-    server.route('GET /api/workspace/s1/agent-sessions/c1/transcript', {
+    server.route('GET /api/workspace/s1/conversations/c1/transcript', {
       page: 0,
       events: [
         userEvent(0, 'fix the parser'),
@@ -149,7 +149,7 @@ describe('ReadOnlyWorkspace', () => {
       ],
     })
     useUiStore.setState({ chatCondensed: true, chatFullWidth: false })
-    renderPane({ kind: 'stopped', entry: stopped({ agentSessions: [agentSession()] }) })
+    renderPane({ kind: 'stopped', entry: stopped({ conversations: [conversation()] }) })
     expect(await screen.findByText('fixed')).toBeTruthy()
     expect(screen.queryByText('grep parse')).toBeNull()
 

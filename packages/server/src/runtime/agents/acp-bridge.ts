@@ -95,7 +95,7 @@ export const ACP_ATTACH_WAIT_MS = 30_000
 export function attachAcp(
   projectId: string,
   workspaceId: string,
-  agentSessionId: string,
+  conversationId: string,
   sock: AcpSocket,
   origin: (life: AcpLife | undefined) => Promise<RecordOrigin> = () => Promise.resolve({ firstPage: 0, skipReplay: false }),
   { control = true }: { control?: boolean } = {},
@@ -103,10 +103,10 @@ export function attachAcp(
   // A pane that leaves while held ends the wait.
   const left = new AbortController()
   sock.onClose(() => left.abort())
-  void whenAcpSession(projectId, workspaceId, agentSessionId, ACP_ATTACH_WAIT_MS, left.signal).then((conversation) => {
+  void whenAcpSession(projectId, workspaceId, conversationId, ACP_ATTACH_WAIT_MS, left.signal).then((conversation) => {
     if (left.signal.aborted) return
     if (conversation !== undefined) {
-      bridgeAcp(conversation, { projectId, workspaceId, agentSessionId }, sock, origin, control)
+      bridgeAcp(conversation, { projectId, workspaceId, conversationId }, sock, origin, control)
       return
     }
     try {
@@ -121,7 +121,7 @@ export function attachAcp(
 /** Bridge `sock` to a live conversation until either side closes. */
 function bridgeAcp(
   conversation: AcpConversation,
-  { projectId, workspaceId, agentSessionId }: { projectId: string; workspaceId: string; agentSessionId: string },
+  { projectId, workspaceId, conversationId }: { projectId: string; workspaceId: string; conversationId: string },
   sock: AcpSocket,
   origin: (life: AcpLife | undefined) => Promise<RecordOrigin>,
   control: boolean,
@@ -150,7 +150,7 @@ function bridgeAcp(
    *  transcripts. */
   let subagents = new Set<string>()
   const tail = tailAcpLog(
-    { projectId, workspaceId, agentSessionId },
+    { projectId, workspaceId, conversationId },
     origin,
     (events, reset, page, life) => {
       // A read already in progress still reports after close.
@@ -171,7 +171,7 @@ function bridgeAcp(
         // before it on its own.
         send({
           type: 'hello',
-          agentSessionId,
+          conversationId,
           busy: conversation.isBusy,
           queued: control ? conversation.queuedPrompts : [],
           page,
@@ -267,7 +267,7 @@ function bridgeAcp(
       }
       // Only claude keeps a subagent's transcript apart; for another tool
       // the search finds nothing and the thread stays as the record has it.
-      sessionTranscriptPath(projectId, workspaceId, 'claude', agentSessionId)
+      sessionTranscriptPath(projectId, workspaceId, 'claude', conversationId)
         .then((session) => (session === undefined ? [] : claudeSubagentThreads(session, [subagentId])))
         .then(
           (events) => reply({ events }),
@@ -309,7 +309,7 @@ function bridgeAcp(
     }
     if (msg.type === 'stop-task' && typeof msg.taskId === 'string' && tasks.get(msg.taskId)?.canStop === true) {
       void conversation.stopTask(msg.taskId).catch((err: unknown) => {
-        serverLog(`[server] acp attach ${workspaceId}/${agentSessionId}: stopping task ${msg.taskId} failed: ${String(err)}`)
+        serverLog(`[server] acp attach ${workspaceId}/${conversationId}: stopping task ${msg.taskId} failed: ${String(err)}`)
       })
       return
     }
@@ -330,7 +330,7 @@ function bridgeAcp(
       if (text === '' && images.length === 0) return
       // Not awaited, so the socket stays responsive to a cancel.
       void conversation.prompt(text, images).catch((err: unknown) => {
-        serverLog(`[server] acp attach ${workspaceId}/${agentSessionId}: prompt failed: ${String(err)}`)
+        serverLog(`[server] acp attach ${workspaceId}/${conversationId}: prompt failed: ${String(err)}`)
       })
     }
   })

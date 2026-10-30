@@ -13,12 +13,12 @@
 import { Readable } from 'node:stream'
 import { ServerError } from '@yaac/shared/errors'
 import { ACP_RECORD_NAME, conversationFiles, openConversationFile, type ConversationFile } from '#runtime/agents'
-import type { AgentSessionLinkRow } from '#db'
+import type { ConversationLinkRow } from '#db'
 
 export const MAX_HISTORY_FILE_BYTES = 256 * 1024 * 1024
 
 export interface HistoryConversation {
-  row: AgentSessionLinkRow
+  row: ConversationLinkRow
   files: ConversationFile[]
 }
 
@@ -31,12 +31,12 @@ const UNLISTABLE = /[\x00-\x1f\x7f\\"]/
 export async function withFiles(
   projectId: string,
   workspaceId: string,
-  rows: AgentSessionLinkRow[],
+  rows: ConversationLinkRow[],
 ): Promise<HistoryConversation[]> {
   const files = await conversationFiles(projectId, workspaceId, rows)
   return rows.map((row) => ({
     row,
-    files: (files.get(row.agentSessionId) ?? []).filter((f) => !UNLISTABLE.test(f.name)),
+    files: (files.get(row.conversationId) ?? []).filter((f) => !UNLISTABLE.test(f.name)),
   }))
 }
 

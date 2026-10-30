@@ -19,7 +19,7 @@ const workspace: WorkspaceListEntry = {
   tool: 'claude',
   status: 'running',
   createdAt: '2026-08-10 00:00:00',
-  agentSessions: [],
+  conversations: [],
   blockedHosts: [],
   forwardedPorts: [],
   unforwardedPorts: [],

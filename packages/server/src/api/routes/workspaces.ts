@@ -4,7 +4,7 @@ import type { Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { jsonBodyLimit, optionalProjectRef, projectRef, zv } from '#routes/validator'
 import { z } from 'zod'
-import { allowWorkspaceHost, claimDraft, keepScratchDirsInCheckout, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getAgentSessionTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toAgentSessionEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand, type QueueStart, listQueuedWorkspaces, setWorkspaceTimeout } from '#domain/workspaces'
+import { allowWorkspaceHost, claimDraft, keepScratchDirsInCheckout, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getConversationTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toConversationEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand, type QueueStart, listQueuedWorkspaces, setWorkspaceTimeout } from '#domain/workspaces'
 import { createShellWindow, killWindowTerminal } from '#runtime/terminals'
 import {
   createWorkspaceGroup,
@@ -13,7 +13,7 @@ import {
   getQueuedWorkspaceRow,
   getRoutineRow,
   listDraftWorkspaceRows,
-  listWorkspaceAgentSessions,
+  listWorkspaceConversations,
   recordAllDeathsSeen,
   recordDeathSeen,
   renameWorkspaceGroup,
@@ -617,22 +617,22 @@ export const workspaceApp = new Hono<IdentityEnv>()
   )
   // A workspace's conversations, active first (`yaac workspace agents <id>`
   // and the webapp's history list).
-  .get('/:id/agent-sessions', async (c) => {
+  .get('/:id/conversations', async (c) => {
     // Resolved from the record, so a stopped workspace works too.
     const { projectId, workspaceId } = await resolveWorkspaceRecord(c.req.param('id'))
-    const links = await listWorkspaceAgentSessions(projectId, workspaceId)
-    return c.json(links.map((l) => toAgentSessionEntry(l)))
+    const links = await listWorkspaceConversations(projectId, workspaceId)
+    return c.json(links.map((l) => toConversationEntry(l)))
   })
   // One page of a conversation's history as chat-pane events: `page`, or
   // the last. Resolved from the record so the stopped-workspaces view can
   // read it.
   .get(
-    '/:id/agent-sessions/:sessionId/transcript',
+    '/:id/conversations/:sessionId/transcript',
     // An empty `page` is a missing one, not page 0.
     zv('query', z.object({ page: z.preprocess((v) => (v === '' ? undefined : v), z.coerce.number().int().nonnegative().optional()) })),
     async (c) => {
       const { projectId, workspaceId } = await resolveWorkspaceRecord(c.req.param('id'))
-      return c.json(await getAgentSessionTranscript(
+      return c.json(await getConversationTranscript(
         projectId, workspaceId, c.req.param('sessionId'), c.req.valid('query').page,
       ))
     },

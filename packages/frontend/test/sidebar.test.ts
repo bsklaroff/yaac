@@ -21,7 +21,7 @@ const entry = (
   tool: 'claude',
   status: 'running',
   createdAt: `2026-01-01 00:00:${String(at).padStart(2, '0')}`,
-  agentSessions: [],
+  conversations: [],
   blockedHosts: [],
   forwardedPorts: [],
   unforwardedPorts: [],

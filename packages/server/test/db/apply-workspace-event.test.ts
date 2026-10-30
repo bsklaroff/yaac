@@ -11,7 +11,7 @@ import {
 } from '#db/workspace-store'
 import { createWorkspaceGroup } from '#db/group-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
-import { listWorkspaceAgentSessions } from '#db/agent-session-store'
+import { listWorkspaceConversations } from '#db/conversation-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
@@ -177,20 +177,20 @@ describe('applyWorkspaceEvent', () => {
   // moment when the conversation list is complete and all of it is live.
   it('links launched conversations and marks them active, in launch order', async () => {
     await applyWorkspaceEvent({
-      type: 'sessions-launched',
+      type: 'conversations-launched',
       projectId: PROJ,
       workspaceId: 'wt-1',
       sessions: [
         {
-          tool: 'claude', agentSessionId: 'conv-a', mode: 'acp', paneId: 'claude', firstPrompt: 'do the thing',
+          tool: 'claude', conversationId: 'conv-a', mode: 'acp', paneId: 'claude', firstPrompt: 'do the thing',
           model: 'claude-opus-5-5',
         },
-        { tool: 'claude', agentSessionId: 'conv-b', mode: 'acp', paneId: 'claude-2' },
+        { tool: 'claude', conversationId: 'conv-b', mode: 'acp', paneId: 'claude-2' },
       ],
     })
 
-    const links = await listWorkspaceAgentSessions(PROJ, 'wt-1')
-    expect(links.map((l) => [l.agentSessionId, l.ordinal, l.active, l.paneId])).toEqual([
+    const links = await listWorkspaceConversations(PROJ, 'wt-1')
+    expect(links.map((l) => [l.conversationId, l.ordinal, l.active, l.paneId])).toEqual([
       ['conv-a', 0, true, 'claude'],
       ['conv-b', 1, true, 'claude-2'],
     ])
@@ -204,20 +204,20 @@ describe('applyWorkspaceEvent', () => {
   // conversation a pass has since recorded is left as the pass wrote it.
   it('fills a stopped conversation\'s activity once, keeping a captured prompt', async () => {
     await applyWorkspaceEvent({
-      type: 'sessions-discovered',
+      type: 'conversations-discovered',
       projectId: PROJ,
       workspaceId: 'wt-1',
       sessions: [
-        { tool: 'claude', agentSessionId: 'conv-a' },
-        { tool: 'claude', agentSessionId: 'conv-b', firstPrompt: 'the real ask' },
-        { tool: 'claude', agentSessionId: 'conv-c', lastActiveMs: Date.parse('2026-03-01') },
+        { tool: 'claude', conversationId: 'conv-a' },
+        { tool: 'claude', conversationId: 'conv-b', firstPrompt: 'the real ask' },
+        { tool: 'claude', conversationId: 'conv-c', lastActiveMs: Date.parse('2026-03-01') },
       ],
     })
-    const captured = (agentSessionId: string, lastActiveMs: number, firstPrompt?: string) => ({
-      tool: 'claude' as const, agentSessionId, lastActiveMs, ...(firstPrompt !== undefined ? { firstPrompt } : {}),
+    const captured = (conversationId: string, lastActiveMs: number, firstPrompt?: string) => ({
+      tool: 'claude' as const, conversationId, lastActiveMs, ...(firstPrompt !== undefined ? { firstPrompt } : {}),
     })
     await applyWorkspaceEvent({
-      type: 'sessions-captured',
+      type: 'conversations-captured',
       projectId: PROJ,
       workspaceId: 'wt-1',
       sessions: [
@@ -227,8 +227,8 @@ describe('applyWorkspaceEvent', () => {
       ],
     })
 
-    const links = await listWorkspaceAgentSessions(PROJ, 'wt-1')
-    expect(links.map((l) => [l.agentSessionId, l.firstPrompt, l.lastActiveAt?.toISOString()])).toEqual([
+    const links = await listWorkspaceConversations(PROJ, 'wt-1')
+    expect(links.map((l) => [l.conversationId, l.firstPrompt, l.lastActiveAt?.toISOString()])).toEqual([
       ['conv-a', 'from the transcript', '2026-01-02T00:00:00.000Z'],
       ['conv-b', 'the real ask', '2026-01-02T00:00:00.000Z'],
       ['conv-c', undefined, '2026-03-01T00:00:00.000Z'],
@@ -317,16 +317,16 @@ describe('applyWorkspaceEvent', () => {
   it('erases a failed fresh workspace, links and all', async () => {
     await created('wt-fresh')
     await applyWorkspaceEvent({
-      type: 'sessions-launched',
+      type: 'conversations-launched',
       projectId: PROJ,
       workspaceId: 'wt-fresh',
-      sessions: [{ tool: 'claude', agentSessionId: 'conv-x' }],
+      sessions: [{ tool: 'claude', conversationId: 'conv-x' }],
     })
 
     await failed('wt-fresh')
 
     expect(await rowOf('wt-fresh')).toBeUndefined()
-    expect(await listWorkspaceAgentSessions(PROJ, 'wt-fresh')).toEqual([])
+    expect(await listWorkspaceConversations(PROJ, 'wt-fresh')).toEqual([])
   })
 
   // The row keeps its stop until a restart succeeds, so a failed resume
@@ -350,10 +350,10 @@ describe('applyWorkspaceEvent', () => {
       type: 'base-branch-resolved', projectId: PROJ, workspaceId: 'wt-2', baseBranch: 'main',
     })
     await applyWorkspaceEvent({
-      type: 'sessions-discovered', projectId: PROJ, workspaceId: 'wt-2', sessions: [],
+      type: 'conversations-discovered', projectId: PROJ, workspaceId: 'wt-2', sessions: [],
     })
     await applyWorkspaceEvent({
-      type: 'sessions-active', projectId: PROJ, workspaceId: 'wt-2', active: [],
+      type: 'conversations-active', projectId: PROJ, workspaceId: 'wt-2', active: [],
     })
     await stopped('wt-2')
     expect(pushes - before).toBe(5)

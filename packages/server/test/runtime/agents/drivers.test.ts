@@ -73,7 +73,7 @@ function tuiLaunchCmd(o: {
 }): string {
   return agentDriver('tui').launchCmd({
     tool: o.tool,
-    agentSessionId: o.workspaceId,
+    conversationId: o.workspaceId,
     resume: o.resume ?? false,
     windowName: o.tool,
     paths: { ...workspacePathsFixture(), ...o.paths },
@@ -213,11 +213,11 @@ function collect(conversation: AcpConversation): AcpEventInit[] {
  * Write the log acpd would have left, which is how a reattaching connection
  * learns what the agent is doing.
  */
-async function record(agentSessionId: string, lines: unknown[]): Promise<void> {
+async function record(conversationId: string, lines: unknown[]): Promise<void> {
   const dir = acpLogDir(session.projectId, session.workspaceId)
   await fs.mkdir(dir, { recursive: true })
   await fs.writeFile(
-    path.join(dir, `${agentSessionId}.jsonl`),
+    path.join(dir, `${conversationId}.jsonl`),
     lines.map((l) => `${JSON.stringify(l)}\n`).join(''),
   )
 }
@@ -231,28 +231,28 @@ const lifeLine = {
 
 /** The log of a handshake that left the session in `modeId`, which is how a
  *  reattach learns the posture. */
-const recordMode = (agentSessionId: string, modeId: string): Promise<void> => record(agentSessionId, [
-  ...handshakeOnly(agentSessionId, 'default'),
-  { jsonrpc: '2.0', id: 'h-2', method: 'session/set_mode', params: { sessionId: agentSessionId, modeId } },
+const recordMode = (conversationId: string, modeId: string): Promise<void> => record(conversationId, [
+  ...handshakeOnly(conversationId, 'default'),
+  { jsonrpc: '2.0', id: 'h-2', method: 'session/set_mode', params: { sessionId: conversationId, modeId } },
   { jsonrpc: '2.0', id: 'h-2', result: {} },
 ])
 
 /** The log of a handshake cut off after `session/new` answered, in `modeId`,
  *  before its effort and posture calls. */
-const handshakeOnly = (agentSessionId: string, modeId: string): unknown[] => [
+const handshakeOnly = (conversationId: string, modeId: string): unknown[] => [
   lifeLine,
   { jsonrpc: '2.0', id: 'h-1', method: 'session/new', params: { cwd: '/workspace', mcpServers: [] } },
-  { jsonrpc: '2.0', id: 'h-1', result: { sessionId: agentSessionId, modes: {
+  { jsonrpc: '2.0', id: 'h-1', result: { sessionId: conversationId, modes: {
     currentModeId: modeId, availableModes: [{ id: 'default' }, { id: 'acceptEdits' }, { id: 'bypassPermissions' }],
   } } },
 ]
 
 /** A prompt as logged: the client's request, with the id its reply will use. */
-const promptLine = (agentSessionId: string, id: string, text: string): unknown => ({
+const promptLine = (conversationId: string, id: string, text: string): unknown => ({
   jsonrpc: '2.0',
   id,
   method: 'session/prompt',
-  params: { sessionId: agentSessionId, prompt: [{ type: 'text', text }] },
+  params: { sessionId: conversationId, prompt: [{ type: 'text', text }] },
 })
 
 const helloLine = (firstAttach: boolean): string =>
@@ -279,18 +279,18 @@ const permissionAsk = (id: number): string =>
 /** A connection reattached to a running conversation under a given posture. */
 async function attachedUnder(
   permissionMode: PermissionMode,
-  agentSessionId: string,
+  conversationId: string,
 ): Promise<{ stream: FakeStream; seen: AgentObservation[] }> {
   const stream = new FakeStream()
   tmuxWindows = 'claude\n'
   const seen: AgentObservation[] = []
   connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
     dial: acpDial(() => stream),
-    recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId }]),
+    recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId }]),
     permissionMode: () => Promise.resolve(permissionMode),
     log: () => {},
   }))
-  await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', agentSessionId)).toBeDefined())
+  await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', conversationId)).toBeDefined())
   stream.feed(helloLine(false))
   return { stream, seen }
 }
@@ -325,7 +325,7 @@ describe('agentDriver', () => {
   it('launches a tui conversation as the tool itself and an acp one under acpd', () => {
     const spec = {
       tool: 'claude' as const,
-      agentSessionId: 'conv-1',
+      conversationId: 'conv-1',
       resume: false,
       windowName: 'claude-2',
       paths: workspacePathsFixture(),
@@ -396,7 +396,7 @@ describe('agentDriver', () => {
     const spec = (tool: 'codex' | 'opencode' | 'pi', over: Record<string, unknown> = {}) =>
       agentDriver('acp').launchCmd({
         tool,
-        agentSessionId: 'conv-1',
+        conversationId: 'conv-1',
         resume: false,
         windowName: tool,
         paths: workspacePathsFixture(),
@@ -666,7 +666,7 @@ describe('agentDriver', () => {
     // conversation.
     expect(agentSets()).toEqual([{
       kind: 'live-agents',
-      agents: [{ handle: '%7', tool: 'claude', agentSessionId: 'conv-a', transcriptPath: 'claude/projects/-workspace/conv-a.jsonl' }],
+      agents: [{ handle: '%7', tool: 'claude', conversationId: 'conv-a', transcriptPath: 'claude/projects/-workspace/conv-a.jsonl' }],
     }])
 
     // codex started by hand in the shell also counts.
@@ -674,8 +674,8 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(latest()).toEqual({
       kind: 'live-agents',
       agents: [
-        { handle: '%7', tool: 'claude', agentSessionId: 'conv-a', transcriptPath: 'claude/projects/-workspace/conv-a.jsonl' },
-        { handle: '%9', tool: 'codex', agentSessionId: 'thread-1', transcriptPath: 'codex/sessions/rollout-thread-1.jsonl' },
+        { handle: '%7', tool: 'claude', conversationId: 'conv-a', transcriptPath: 'claude/projects/-workspace/conv-a.jsonl' },
+        { handle: '%9', tool: 'codex', conversationId: 'thread-1', transcriptPath: 'codex/sessions/rollout-thread-1.jsonl' },
       ],
     }))
 
@@ -686,7 +686,7 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(latest()).toEqual({ kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude' }] }))
     push('7', 'claude|conv-b|/etc/passwd')
     await vi.waitFor(() => expect(latest()).toEqual({
-      kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', agentSessionId: 'conv-b' }],
+      kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', conversationId: 'conv-b' }],
     }))
     push('7', 'claude|$(rm -rf ~)|')
     await vi.waitFor(() => expect(latest()).toEqual({ kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude' }] }))
@@ -721,7 +721,7 @@ describe('agentDriver', () => {
     await answer(stream, "refresh-client -B 'status-7:")
     await answer(stream, "refresh-client -B 'report-7:")
     await vi.waitFor(() => expect(agentSets()).toEqual([
-      { kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', agentSessionId: 'conv-a' }] },
+      { kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', conversationId: 'conv-a' }] },
     ]))
 
     // A pane's push wins over a later listing, which may be older.
@@ -731,7 +731,7 @@ describe('agentDriver', () => {
     stream.feed('%begin 1 103 1\n%7\tclaude\t0\tclaude|conv-a|\n%end 1 103 1\n')
     await vi.waitFor(() => expect(agentSets()).toHaveLength(3))
     expect(agentSets().at(-1)).toEqual(
-      { kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', agentSessionId: 'conv-b' }] })
+      { kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', conversationId: 'conv-b' }] })
   })
 
   it("follows a codex pane's model through its title, by the catalog codex keeps", async () => {
@@ -827,7 +827,7 @@ describe('agentDriver', () => {
     await new Promise((r) => setTimeout(r, 100))
     expect(acpConversation('demo', 'wt-1', '../x; rm -rf ~')).toBeUndefined()
     for (const o of seen) {
-      if (o.kind === 'live-agents') expect(o.agents.every((a) => a.agentSessionId === undefined)).toBe(true)
+      if (o.kind === 'live-agents') expect(o.agents.every((a) => a.conversationId === undefined)).toBe(true)
     }
   })
 
@@ -878,7 +878,7 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents',
-      agents: [{ handle: 'claude', tool: 'claude', agentSessionId: 'acp-1', model: 'opus[1m]', modelName: 'Opus 5.5' }],
+      agents: [{ handle: 'claude', tool: 'claude', conversationId: 'acp-1', model: 'opus[1m]', modelName: 'Opus 5.5' }],
     }))
 
     const events = collect(acpConversation('demo', 'wt-1', 'acp-1')!)
@@ -903,7 +903,7 @@ describe('agentDriver', () => {
     }))
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents',
-      agents: [{ handle: 'claude', tool: 'claude', agentSessionId: 'acp-1', model: 'sonnet', modelName: 'Sonnet 5' }],
+      agents: [{ handle: 'claude', tool: 'claude', conversationId: 'acp-1', model: 'sonnet', modelName: 'Sonnet 5' }],
     }))
 
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } })}\n`)
@@ -1002,7 +1002,7 @@ describe('agentDriver', () => {
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-live' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-live' }]),
       log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-live')).toBeDefined())
@@ -1039,7 +1039,7 @@ describe('agentDriver', () => {
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-bg' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-bg' }]),
       log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-bg')).toBeDefined())
@@ -1104,8 +1104,8 @@ describe('agentDriver', () => {
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       dial: acpDial((_s, argv) => streams.get([...streams.keys()].find((h) => argv.join(' ').includes(`/${h}.sock`))!)!),
       recordedSessions: () => Promise.resolve([
-        { handle: 'codex', agentSessionId: 'acp-codex' },
-        { handle: 'pi', agentSessionId: 'acp-pi' },
+        { handle: 'codex', conversationId: 'acp-codex' },
+        { handle: 'pi', conversationId: 'acp-pi' },
       ]),
       log: () => {},
     }))
@@ -1150,7 +1150,7 @@ describe('agentDriver', () => {
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-old' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-old' }]),
       log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
@@ -1169,7 +1169,7 @@ describe('agentDriver', () => {
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: load.id, result: { models: { currentModelId: 'claude-fable-5' } } })}\n`)
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents',
-      agents: [{ handle: 'claude', tool: 'claude', agentSessionId: 'acp-old', model: 'claude-fable-5' }],
+      agents: [{ handle: 'claude', tool: 'claude', conversationId: 'acp-old', model: 'claude-fable-5' }],
     }))
   })
 
@@ -1178,7 +1178,7 @@ describe('agentDriver', () => {
     tmuxWindows = 'claude\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-live' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-live' }]),
       log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
@@ -1250,7 +1250,7 @@ describe('agentDriver', () => {
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-live' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-live' }]),
       log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-live')).toBeDefined())
@@ -1292,7 +1292,7 @@ describe('agentDriver', () => {
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-done' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-done' }]),
       log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-done')).toBeDefined())
@@ -1314,7 +1314,7 @@ describe('agentDriver', () => {
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-dead' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-dead' }]),
       log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-dead')).toBeDefined())
@@ -1331,7 +1331,7 @@ describe('agentDriver', () => {
     tmuxWindows = 'claude\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-live' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-live' }]),
       log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-live')).toBeDefined())
@@ -1364,7 +1364,7 @@ describe('agentDriver', () => {
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-live' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-live' }]),
       log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-live')).toBeDefined())
@@ -1386,7 +1386,7 @@ describe('agentDriver', () => {
     connections.push(agentDriver('acp').connect(session, () => {}, {
       dial: acpDial(() => stream),
       // A reattach needs the recorded id (without one, see below).
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-1' }]),
       log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
@@ -1424,8 +1424,8 @@ describe('agentDriver', () => {
   })
 
   /** A `session/update` notification, as a wire line. */
-  const updateLine = (agentSessionId: string, update: Record<string, unknown>): string =>
-    `${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: agentSessionId, update } })}\n`
+  const updateLine = (conversationId: string, update: Record<string, unknown>): string =>
+    `${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: conversationId, update } })}\n`
 
   /** Every mode the connection published on its live set, in order. */
   const reportedModes = (seen: AgentObservation[]): string[] => seen.flatMap((o) =>
@@ -1543,7 +1543,7 @@ describe('agentDriver', () => {
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'codex', agentSessionId: 'acp-1' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'codex', conversationId: 'acp-1' }]),
       permissionMode: () => Promise.resolve('accept-edits'),
       log: () => {},
     }))
@@ -1576,8 +1576,8 @@ describe('agentDriver', () => {
     connections.push(agentDriver('acp').connect(session, () => {}, {
       dial: acpDial((_s, argv) => streams.get([...streams.keys()].find((h) => argv.join(' ').includes(`${h}.sock`))!)!),
       recordedSessions: () => Promise.resolve([
-        { handle: 'claude', agentSessionId: 'acp-a' },
-        { handle: 'claude-2', agentSessionId: 'acp-b' },
+        { handle: 'claude', conversationId: 'acp-a' },
+        { handle: 'claude-2', conversationId: 'acp-b' },
       ]),
       permissionMode: () => Promise.resolve('bypass'),
       log: () => {},
@@ -1667,7 +1667,7 @@ describe('agentDriver', () => {
     tmuxWindows = 'claude\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-held' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-held' }]),
       permissionMode: () => Promise.resolve('manual'),
       log: () => {},
     }))
@@ -1691,7 +1691,7 @@ describe('agentDriver', () => {
     tmuxWindows = 'claude\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-1' }]),
       permissionMode: () => Promise.reject(new Error('database is down')),
       log: () => {},
     }))
@@ -2031,7 +2031,7 @@ describe('agentDriver', () => {
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-1' }]),
       permissionMode: () => Promise.resolve('manual'),
       effort: () => Promise.resolve('low'),
       log: () => {},
@@ -2309,7 +2309,7 @@ describe('agentDriver', () => {
     connections.push(agentDriver('acp').connect(session, () => {}, {
       heartbeatIntervalMs: 60_000,
       log: () => {},
-      recordedSessions: () => Promise.resolve([{ handle: 'opencode', agentSessionId: 'acp-r' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'opencode', conversationId: 'acp-r' }]),
       dial: acpDial(() => stream),
     }))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-r')).toBeDefined())
@@ -2343,7 +2343,7 @@ describe('agentDriver', () => {
     connections.push(agentDriver('acp').connect(session, () => {}, {
       heartbeatIntervalMs: 60_000,
       log: () => {},
-      recordedSessions: () => Promise.resolve([{ handle: 'opencode', agentSessionId: 'acp-q' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'opencode', conversationId: 'acp-q' }]),
       dial: acpDial(() => {
         const stream = new FakeStream()
         streams.push(stream)
@@ -2383,7 +2383,7 @@ describe('agentDriver', () => {
       connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
         heartbeatIntervalMs: 100,
         log: () => {},
-        recordedSessions: () => Promise.resolve([{ handle: 'opencode', agentSessionId: 'acp-s' }]),
+        recordedSessions: () => Promise.resolve([{ handle: 'opencode', conversationId: 'acp-s' }]),
         dial: acpDial(() => stream),
       }))
     }
@@ -2522,7 +2522,7 @@ describe('agentDriver', () => {
     tmuxWindows = 'claude\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-1' }]),
       log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
@@ -2551,7 +2551,7 @@ describe('agentDriver', () => {
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-1' }]),
       log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
@@ -2577,7 +2577,7 @@ describe('agentDriver', () => {
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-1' }]),
       log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
@@ -2605,7 +2605,7 @@ describe('agentDriver', () => {
     tmuxWindows = 'claude\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-1' }]),
       log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
@@ -2842,7 +2842,7 @@ describe('agentDriver', () => {
       draft?: string; stash?: string; claude?: string | null; raise?: string; title?: string; dialog?: string
       enterDialog?: string; label?: string
     } = {}) {
-      await agentDriver('tui').deliverPrompt({ ...session, tool }, '%3', MESSAGE, { running: { agentSessionId: 'conv-1' } })
+      await agentDriver('tui').deliverPrompt({ ...session, tool }, '%3', MESSAGE, { running: { conversationId: 'conv-1' } })
       const [, cmd, execOpts] = podExec.mock.calls.at(-1)!
       expect(execOpts).toEqual({ maxAttempts: 1, timeout: 30_000, stdin: expect.any(String) as string })
       const file = (name: string): string => path.join(bin, name)

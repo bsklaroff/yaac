@@ -1,5 +1,5 @@
 import { TOOL_LABEL } from '#lib/icons'
-import type { AgentSessionEntry, AgentTool } from '@yaac/shared/types'
+import type { ConversationEntry, AgentTool } from '@yaac/shared/types'
 
 /**
  * The display name of a workspace's agent: the tool, plus the model when
@@ -56,9 +56,9 @@ export function agentLabel(
  * resume with.
  */
 export function workspaceModel(
-  workspace: { agentSessions: AgentSessionEntry[] },
-): AgentSessionEntry | undefined {
-  const byOrdinal = [...workspace.agentSessions].sort((a, b) => a.ordinal - b.ordinal)
-  const named = (s: AgentSessionEntry): boolean => s.model !== undefined
+  workspace: { conversations: ConversationEntry[] },
+): ConversationEntry | undefined {
+  const byOrdinal = [...workspace.conversations].sort((a, b) => a.ordinal - b.ordinal)
+  const named = (s: ConversationEntry): boolean => s.model !== undefined
   return byOrdinal.find((s) => s.active && named(s)) ?? byOrdinal.find(named)
 }

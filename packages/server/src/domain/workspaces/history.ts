@@ -15,14 +15,14 @@ import {
   projectDir,
   workspaceDir,
 } from '@yaac/shared/project-paths'
-import { agentSessionIdSchema } from '@yaac/shared/types'
+import { conversationIdSchema } from '@yaac/shared/types'
 import { openRoot, type ConfinedRoot } from '#lib/confined-fs'
 import {
   applyWorkspaceEvent,
-  getProjectAgentSessions,
+  getProjectConversations,
   listProjectWorkspaceIds,
-  listWorkspaceAgentSessions,
-  type AgentSessionLinkRow,
+  listWorkspaceConversations,
+  type ConversationLinkRow,
 } from '#db'
 import { serverLog } from '#lib/log'
 
@@ -60,7 +60,7 @@ export async function convergeAgentHistory(
     return
   }
 
-  const rows = await listWorkspaceAgentSessions(projectId, workspaceId)
+  const rows = await listWorkspaceConversations(projectId, workspaceId)
   const shared = await siblingConversations(projectId, workspaceId)
   const ids = await conversationIds(projectId, workspaceId, rows, shared)
   for (const step of [
@@ -72,7 +72,7 @@ export async function convergeAgentHistory(
       serverLog(`[agent-history] ${projectId}/${workspaceId}: ${String(err)}`)
     })
   }
-  await repointRows(projectId, workspaceId, rows.filter((r) => !shared.has(r.agentSessionId)))
+  await repointRows(projectId, workspaceId, rows.filter((r) => !shared.has(r.conversationId)))
 }
 
 /**
@@ -82,7 +82,7 @@ export async function convergeAgentHistory(
  * repaired next time. The shared home is checked `no-links`, since through
  * the links into the history every moved file would look unmoved.
  */
-async function repointRows(projectId: string, workspaceId: string, rows: AgentSessionLinkRow[]): Promise<void> {
+async function repointRows(projectId: string, workspaceId: string, rows: ConversationLinkRow[]): Promise<void> {
   const project = projectDir(projectId)
   const sessions = []
   for (const r of rows) {
@@ -93,10 +93,10 @@ async function repointRows(projectId: string, workspaceId: string, rows: AgentSe
     const home = await openRoot(path.join(project, tool), 'no-links').catch(() => null)
     if (home !== null && await home.stat(rel.join('/')) !== null) continue
     if (!await fs.lstat(path.join(project, to)).then(() => true, () => false)) continue
-    sessions.push({ tool: r.tool, agentSessionId: r.agentSessionId, transcriptPath: to })
+    sessions.push({ tool: r.tool, conversationId: r.conversationId, transcriptPath: to })
   }
   if (sessions.length > 0) {
-    await applyWorkspaceEvent({ type: 'sessions-discovered', projectId, workspaceId, sessions })
+    await applyWorkspaceEvent({ type: 'conversations-discovered', projectId, workspaceId, sessions })
   }
 }
 
@@ -130,7 +130,7 @@ export async function removeAgentHistory(projectId: string, workspaceId: string)
     .map((name) => name.slice(0, -'.jsonl'.length))
   const home = await openRoot(claudeDir(projectId), 'no-links').catch(() => null)
   for (const sid of new Set([workspaceId, ...conversations])) {
-    if (!agentSessionIdSchema.safeParse(sid).success) continue
+    if (!conversationIdSchema.safeParse(sid).success) continue
     await home?.removeTree(`session-env/${sid}`).catch((err: unknown) => {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
       serverLog(`[agent-history] ${projectId}/${workspaceId}: remove session-env/${sid}: ${String(err)}`)
@@ -184,8 +184,8 @@ async function moveIn(home: ConfinedRoot, rel: string, dest: string): Promise<vo
  */
 async function siblingConversations(projectId: string, workspaceId: string): Promise<Set<string>> {
   const siblings = (await listProjectWorkspaceIds(projectId)).filter((id) => id !== workspaceId)
-  const links = await getProjectAgentSessions(projectId, siblings)
-  return new Set([...links.values()].flat().map((r) => r.agentSessionId))
+  const links = await getProjectConversations(projectId, siblings)
+  return new Set([...links.values()].flat().map((r) => r.conversationId))
 }
 
 /**
@@ -197,17 +197,17 @@ async function siblingConversations(projectId: string, workspaceId: string): Pro
 async function conversationIds(
   projectId: string,
   workspaceId: string,
-  rows: AgentSessionLinkRow[],
+  rows: ConversationLinkRow[],
   shared: Set<string>,
 ): Promise<Set<string>> {
   const records = (await fs.readdir(acpLogDir(projectId, workspaceId)).catch(() => []))
     .filter((name) => name.endsWith('.jsonl'))
     .map((name) => name.slice(0, -'.jsonl'.length))
-  const ids = [workspaceId, ...rows.map((r) => r.agentSessionId), ...records]
+  const ids = [workspaceId, ...rows.map((r) => r.conversationId), ...records]
   for (const id of ids.filter((i) => shared.has(i))) {
     serverLog(`[agent-history] ${projectId}/${workspaceId}: ${id} is a sibling's conversation too; left shared`)
   }
-  return new Set(ids.filter((id) => !shared.has(id) && agentSessionIdSchema.safeParse(id).success))
+  return new Set(ids.filter((id) => !shared.has(id) && conversationIdSchema.safeParse(id).success))
 }
 
 /**
@@ -246,7 +246,7 @@ async function moveCodex(
   history: string,
   ids: Set<string>,
   shared: Set<string>,
-  rows: AgentSessionLinkRow[],
+  rows: ConversationLinkRow[],
 ): Promise<void> {
   const home = await openRoot(codexDir(projectId), 'no-links').catch(() => null)
   if (home === null) return
@@ -281,7 +281,7 @@ async function moveCodex(
   }
 
   const recorded = new Set(rows.flatMap((r) =>
-    r.tool === 'codex' && !shared.has(r.agentSessionId) && r.transcriptPath?.startsWith('codex/') === true
+    r.tool === 'codex' && !shared.has(r.conversationId) && r.transcriptPath?.startsWith('codex/') === true
       ? [r.transcriptPath.slice('codex/'.length)]
       : []))
   for (const r of rollouts) {

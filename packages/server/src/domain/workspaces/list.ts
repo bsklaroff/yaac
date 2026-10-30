@@ -1,15 +1,15 @@
 import {
-  getProjectAgentSessions,
+  getProjectConversations,
   getProjectRow,
   getProjectWorkspaceRows,
   conversationTitle,
   openingPrompt,
   routineRunWorkspaces,
-  type AgentSessionLinkRow,
+  type ConversationLinkRow,
   type WorkspaceRow,
 } from '#db'
-import { listedStatus, toAgentSessionEntry } from './agent-session-entry'
-import { HELD_PROMPT_GRACE_MS } from './agent-session-registry'
+import { listedStatus, toConversationEntry } from './conversation-entry'
+import { HELD_PROMPT_GRACE_MS } from './conversation-registry'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
@@ -106,9 +106,9 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
   }
   const agentsByProject = new Map(await Promise.all(
     rowProjectIds.map(async (projectId) =>
-      [projectId, await getProjectAgentSessions(projectId, idsByProject.get(projectId) ?? [])] as const),
+      [projectId, await getProjectConversations(projectId, idsByProject.get(projectId) ?? [])] as const),
   ))
-  const agentsFor = (w: WorkspaceRuntimeReport): AgentSessionLinkRow[] =>
+  const agentsFor = (w: WorkspaceRuntimeReport): ConversationLinkRow[] =>
     (w.projectId && w.workspaceId
       ? agentsByProject.get(w.projectId)?.get(w.workspaceId)
       : undefined) ?? []
@@ -137,7 +137,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
         ...base,
         status: 'running',
         stopping: true,
-        agentSessions: links.map((l) => toAgentSessionEntry(l)),
+        conversations: links.map((l) => toConversationEntry(l)),
         blockedHosts: [],
         forwardedPorts: [],
         unforwardedPorts: [],
@@ -155,9 +155,9 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       ...listedStatus(status.status),
       ...(status.waitingSinceMs !== undefined ? { waitingSinceMs: status.waitingSinceMs } : {}),
       ...(row !== undefined && row.waitingSeenBy.length > 0 ? { waitingSeenBy: row.waitingSeenBy } : {}),
-      agentSessions: links.map((l) => {
+      conversations: links.map((l) => {
         const live = liveStatus(w.agents, l)
-        return toAgentSessionEntry(l, live && shown(live))
+        return toConversationEntry(l, live && shown(live))
       }),
       ...(w.terminals !== undefined ? { terminals: w.terminals } : {}),
       blockedHosts: w.blockedHosts,
@@ -186,7 +186,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
  */
 function liveStatus(
   agents: AgentLiveness[],
-  l: AgentSessionLinkRow,
+  l: ConversationLinkRow,
 ): LiveStatus | undefined {
   if (!l.active || l.paneId === undefined) return undefined
   const agent = agents.find((a) => a.handle === l.paneId)

@@ -125,11 +125,11 @@ async function workspace(
     ...(over.baseBranch !== null ? { baseBranch: over.baseBranch ?? 'develop' } : {}),
   })
   await applyWorkspaceEvent({
-    type: 'sessions-launched',
+    type: 'conversations-launched',
     projectId: PROJ,
     workspaceId,
     sessions: [{
-      agentSessionId: workspaceId,
+      conversationId: workspaceId,
       tool: over.tool ?? 'claude',
       mode: over.mode ?? 'tui',
       model: over.model ?? 'claude-sonnet-5',

@@ -5,7 +5,7 @@ import {
   acpConversation,
   acpRecord,
   agentWindowName,
-  getAgentSessionFirstMessage,
+  getConversationFirstMessage,
   PromptNotRunError,
   getCodexRolloutSettings,
   locateTranscript,
@@ -19,17 +19,17 @@ import {
 import {
   applyWorkspaceEvent,
   getWorkspaceRow,
-  listUncapturedStoppedSessions,
+  listUncapturedStoppedConversations,
   holdPendingPrompt,
-  listWorkspaceAgentSessions,
+  listWorkspaceConversations,
   takePendingPrompt,
 } from '#db'
 import { captureFirstPrompt } from './prompt-capture'
 import { captureTitle } from './title-capture'
 import { claiming } from './prewarm'
-import { recordedTranscript } from './agent-session-paths'
+import { recordedTranscript } from './conversation-paths'
 import { serverLog } from '#lib/log'
-import type { AgentSessionLinkRow, CapturedSession, DiscoveredSession, WorkspaceRow } from '#db'
+import type { ConversationLinkRow, CapturedConversation, DiscoveredConversation, WorkspaceRow } from '#db'
 import type { AcpConversation, LiveAgent } from '#runtime/agents'
 import { EFFORT_RE, type AgentMode } from '@yaac/shared/types'
 
@@ -53,25 +53,25 @@ import { EFFORT_RE, type AgentMode } from '@yaac/shared/types'
  * registered until its stream is seen closing, so under acp the claim's
  * hand-over runs the first pass itself once the new conversation is named.
  */
-export async function reconcileAgentSessions(view: RuntimeSnapshot): Promise<void> {
+export async function reconcileConversations(view: RuntimeSnapshot): Promise<void> {
   const running = (await view.workspaces()).filter((p) => p.running && !p.prewarmed
     && !claiming.has(p.jobName) && !p.terminating && p.projectId && p.workspaceId
     && !isWorkspaceTerminating(p.workspaceId))
   await Promise.all(running.map(async (pod) => {
     try {
-      await reconcileWorkspaceAgentSessions(pod.projectId, pod.workspaceId, pod.mode, pod.jobName)
+      await reconcileWorkspaceConversations(pod.projectId, pod.workspaceId, pod.mode, pod.jobName)
     } catch (err) {
-      serverLog(`[server] agent-sessions ${pod.workspaceId}: ${String(err)}`)
+      serverLog(`[server] conversations ${pod.workspaceId}: ${String(err)}`)
     }
   }))
 }
 
 /**
- * One workspace's pass of `reconcileAgentSessions`. Also run by an acp
+ * One workspace's pass of `reconcileConversations`. Also run by an acp
  * claim's hand-over as soon as its conversation is named, since the sweep
  * skips a spare mid-claim.
  */
-export async function reconcileWorkspaceAgentSessions(
+export async function reconcileWorkspaceConversations(
   projectId: string,
   workspaceId: string,
   mode: AgentMode,
@@ -84,13 +84,13 @@ export async function reconcileWorkspaceAgentSessions(
   // Map each reported transcript path to where the file really is, or drop it.
   const observed = await Promise.all(reported.map(async (a): Promise<LiveAgent> => {
     const { transcriptPath, ...rest } = a
-    const located = a.agentSessionId === undefined
+    const located = a.conversationId === undefined
       ? undefined
-      : await locateTranscript(projectId, workspaceId, a.tool, a.agentSessionId, transcriptPath)
+      : await locateTranscript(projectId, workspaceId, a.tool, a.conversationId, transcriptPath)
     return located === undefined ? rest : { ...rest, transcriptPath: located }
   }))
   const row = await getWorkspaceRow(projectId, workspaceId)
-  const links = await listWorkspaceAgentSessions(projectId, workspaceId)
+  const links = await listWorkspaceConversations(projectId, workspaceId)
   if (row !== undefined) {
     const reports = await withRolloutReports(row, observed, links)
     await followReportedModes(projectId, workspaceId, mode, row, reports)
@@ -107,21 +107,21 @@ export async function reconcileWorkspaceAgentSessions(
   // conversation, ended by the claim's respawn, could be recorded as the
   // workspace's first if the hand-over gave up waiting.
   const live = await Promise.all(observed.flatMap((a) => {
-    const agentSessionId = a.agentSessionId
-    if (agentSessionId === undefined) return []
-    const recorded = links.find((l) => l.tool === a.tool && l.agentSessionId === agentSessionId)
+    const conversationId = a.conversationId
+    if (conversationId === undefined) return []
+    const recorded = links.find((l) => l.tool === a.tool && l.conversationId === conversationId)
     if (recorded === undefined && mode === 'acp'
-      && acpConversation(projectId, workspaceId, agentSessionId) === undefined) return []
-    return [describe(projectId, workspaceId, mode, jobName, a, agentSessionId, recorded)]
+      && acpConversation(projectId, workspaceId, conversationId) === undefined) return []
+    return [describe(projectId, workspaceId, mode, jobName, a, conversationId, recorded)]
   }))
   if (live.length > 0) {
-    await applyWorkspaceEvent({ type: 'sessions-discovered', projectId, workspaceId, sessions: live })
+    await applyWorkspaceEvent({ type: 'conversations-discovered', projectId, workspaceId, sessions: live })
   }
   await applyWorkspaceEvent({
-    type: 'sessions-active',
+    type: 'conversations-active',
     projectId,
     workspaceId,
-    active: live.map((c) => ({ tool: c.tool, agentSessionId: c.agentSessionId, paneId: c.paneId })),
+    active: live.map((c) => ({ tool: c.tool, conversationId: c.conversationId, paneId: c.paneId })),
   })
 
   // No user message can reach the conversation before the first delivery:
@@ -130,9 +130,9 @@ export async function reconcileWorkspaceAgentSessions(
   // (`deliverPendingPrompt`), so the user has had no failure to retry.
   if (row?.pendingPrompt !== undefined) {
     const first = observed.find((a) => a.handle === agentWindowName(a.tool, 0))
-    const conversation = first?.agentSessionId === undefined
+    const conversation = first?.conversationId === undefined
       ? undefined
-      : acpConversation(projectId, workspaceId, first.agentSessionId)
+      : acpConversation(projectId, workspaceId, first.conversationId)
     if (conversation !== undefined) void deliverPendingPrompt(projectId, workspaceId, conversation)
   }
 }
@@ -194,7 +194,7 @@ const PENDING_PROMPT_READY_MS = 120_000
  */
 export const HELD_PROMPT_GRACE_MS = ACP_CONVERSATION_WAIT_MS + PENDING_PROMPT_READY_MS
 
-/** How many conversations `reconcileStoppedAgentSessions` reads at a time,
+/** How many conversations `reconcileStoppedConversations` reads at a time,
  *  and for how long one pass keeps reading. A backlog (an upgraded install's
  *  stopped history) drains quickly without stalling the pass. */
 const STOPPED_CAPTURE_BATCH = 20
@@ -209,18 +209,18 @@ const STOPPED_CAPTURE_BUDGET_MS = 500
  * readable file gets its creation time, which marks it read. The stopped
  * listing reads only rows, so this is where those files are read for it.
  */
-export async function reconcileStoppedAgentSessions(): Promise<void> {
+export async function reconcileStoppedConversations(): Promise<void> {
   const deadline = Date.now() + STOPPED_CAPTURE_BUDGET_MS
   for (;;) {
-    const pending = await listUncapturedStoppedSessions(STOPPED_CAPTURE_BATCH)
+    const pending = await listUncapturedStoppedConversations(STOPPED_CAPTURE_BATCH)
     await captureStoppedBatch(pending)
     if (pending.length < STOPPED_CAPTURE_BATCH || Date.now() >= deadline) return
   }
 }
 
 /** Read one batch, recording each workspace's conversations in one event. */
-async function captureStoppedBatch(pending: AgentSessionLinkRow[]): Promise<void> {
-  const byWorkspace = new Map<string, AgentSessionLinkRow[]>()
+async function captureStoppedBatch(pending: ConversationLinkRow[]): Promise<void> {
+  const byWorkspace = new Map<string, ConversationLinkRow[]>()
   for (const l of pending) {
     const key = `${l.projectId}/${l.workspaceId}`
     byWorkspace.set(key, [...byWorkspace.get(key) ?? [], l])
@@ -228,13 +228,13 @@ async function captureStoppedBatch(pending: AgentSessionLinkRow[]): Promise<void
   for (const links of byWorkspace.values()) {
     const { projectId, workspaceId } = links[0]
     await applyWorkspaceEvent({
-      type: 'sessions-captured',
+      type: 'conversations-captured',
       projectId,
       workspaceId,
       // A file that cannot be read still marks the conversation read, so it
       // is not retried every pass.
-      sessions: await Promise.all(links.map((l) => captureStopped(l).catch((): CapturedSession =>
-        ({ tool: l.tool, agentSessionId: l.agentSessionId, lastActiveMs: l.createdAt.getTime() })))),
+      sessions: await Promise.all(links.map((l) => captureStopped(l).catch((): CapturedConversation =>
+        ({ tool: l.tool, conversationId: l.conversationId, lastActiveMs: l.createdAt.getTime() })))),
     })
   }
 }
@@ -242,17 +242,17 @@ async function captureStoppedBatch(pending: AgentSessionLinkRow[]): Promise<void
 /** One stopped conversation's files, read as `describe` reads a live one's.
  *  Without a recorded path the transcript is looked for where the tool
  *  writes it, since a conversation that died early never had one recorded. */
-async function captureStopped(l: AgentSessionLinkRow): Promise<CapturedSession> {
-  const record = { projectId: l.projectId, workspaceId: l.workspaceId, agentSessionId: l.agentSessionId }
+async function captureStopped(l: ConversationLinkRow): Promise<CapturedConversation> {
+  const record = { projectId: l.projectId, workspaceId: l.workspaceId, conversationId: l.conversationId }
   const activity = l.mode === 'acp' ? acpRecord(record)
-    : recordedTranscript(l) ?? await sessionTranscriptPath(l.projectId, l.workspaceId, l.tool, l.agentSessionId)
+    : recordedTranscript(l) ?? await sessionTranscriptPath(l.projectId, l.workspaceId, l.tool, l.conversationId)
   const firstPrompt = l.firstPrompt !== undefined ? undefined
     : l.mode === 'acp' ? await readAcpFirstPrompt(record)
-    : await getAgentSessionFirstMessage(l.tool, activity)
+    : await getConversationFirstMessage(l.tool, activity)
   const lastActiveMs = activity !== undefined ? await transcriptLastActiveMs(activity) : undefined
   return {
     tool: l.tool,
-    agentSessionId: l.agentSessionId,
+    conversationId: l.conversationId,
     lastActiveMs: lastActiveMs ?? l.createdAt.getTime(),
     ...(firstPrompt !== undefined ? { firstPrompt } : {}),
   }
@@ -275,24 +275,24 @@ async function describe(
   mode: AgentMode,
   jobName: string,
   agent: LiveAgent,
-  agentSessionId: string,
-  recorded: AgentSessionLinkRow | undefined,
-): Promise<DiscoveredSession & { paneId: string }> {
+  conversationId: string,
+  recorded: ConversationLinkRow | undefined,
+): Promise<DiscoveredConversation & { paneId: string }> {
   const { tool, transcriptPath } = agent
-  const record = { projectId, workspaceId, agentSessionId }
+  const record = { projectId, workspaceId, conversationId }
   const stored = transcriptPath ?? recorded?.transcriptPath
   const transcript = stored !== undefined ? resolveProjectPath(projectId, workspaceId, tool, stored) : undefined
   const firstPrompt = recorded?.firstPrompt !== undefined ? undefined
     : mode === 'acp' ? await readAcpFirstPrompt(record)
-    : await captureFirstPrompt(projectId, tool, agentSessionId, transcript)
+    : await captureFirstPrompt(projectId, tool, conversationId, transcript)
   const activity = mode === 'acp' ? acpRecord(record) : transcript
   const lastActiveMs = activity !== undefined ? await transcriptLastActiveMs(activity) : undefined
   const title = await captureTitle(
-    projectId, workspaceId, tool, agentSessionId, transcript, jobName, lastActiveMs, recorded?.title,
+    projectId, workspaceId, tool, conversationId, transcript, jobName, lastActiveMs, recorded?.title,
   )
   return {
     tool,
-    agentSessionId,
+    conversationId,
     paneId: agent.handle,
     mode,
     ...(transcriptPath !== undefined ? { transcriptPath } : {}),
@@ -396,11 +396,11 @@ async function followReportedEfforts(
 async function withRolloutReports(
   row: WorkspaceRow,
   observed: LiveAgent[],
-  links: AgentSessionLinkRow[],
+  links: ConversationLinkRow[],
 ): Promise<LiveAgent[]> {
   const life = row.lifeStartedAt?.getTime() ?? 0
   return Promise.all(observed.map(async (a) => {
-    const recorded = links.find((l) => l.tool === a.tool && l.agentSessionId === a.agentSessionId)
+    const recorded = links.find((l) => l.tool === a.tool && l.conversationId === a.conversationId)
     const transcript = a.transcriptPath ?? recorded?.transcriptPath
     const rollout = a.tool === 'codex' && transcript !== undefined
       ? resolveProjectPath(row.projectId, row.workspaceId, 'codex', transcript)

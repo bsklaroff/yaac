@@ -36,7 +36,7 @@ describe('pending-delete tracking', () => {
 describe('optimistic deleted tracking', () => {
   const entry = (workspaceId: string) => ({
     workspaceId, projectId: 'p', tool: 'claude' as const, createdAt: '2026-01-01 00:00:00',
-    stoppedAt: '2026-01-01 00:00:01', prompt: 'hi', deathSeenBy: [], agentSessions: [],
+    stoppedAt: '2026-01-01 00:00:01', prompt: 'hi', deathSeenBy: [], conversations: [],
   })
 
   it('addOptimisticStopped prepends, with no duplicates', () => {

@@ -21,10 +21,10 @@ export type WorkspaceEvent =
   | WorkspaceLifeStarted
   | BaseBranchResolved
   | TrackedScratchDirsFound
-  | SessionsLaunched
-  | SessionsDiscovered
-  | SessionsCaptured
-  | SessionsActive
+  | ConversationsLaunched
+  | ConversationsDiscovered
+  | ConversationsCaptured
+  | ConversationsActive
   | PermissionModeChanged
   | EffortChanged
   | WaitingEnded
@@ -120,15 +120,15 @@ export interface TrackedScratchDirsFound {
  * sessions exist and which are running. Discovery reports these separately,
  * since a sweep also finds sessions that ended long ago.
  */
-export interface SessionsLaunched {
-  type: 'sessions-launched'
+export interface ConversationsLaunched {
+  type: 'conversations-launched'
   projectId: string
   workspaceId: string
-  sessions: LaunchedSession[]
+  sessions: LaunchedConversation[]
 }
 
-export interface LaunchedSession {
-  agentSessionId: string
+export interface LaunchedConversation {
+  conversationId: string
   tool: AgentTool
   mode?: AgentMode
   /** The driver's handle for it, when known at launch. A `tui` pane id is
@@ -137,7 +137,7 @@ export interface LaunchedSession {
   /** The user's opening message, when they supplied one. */
   firstPrompt?: string
   /** The launch model, shown until the agent reports its own (see
-   *  `agent_sessions.model`). */
+   *  `conversations.model`). */
   model?: string
 }
 
@@ -148,15 +148,15 @@ export interface LaunchedSession {
  * can't rewrite an opening message, and a conversation replaced by `/clear`
  * stays recorded.
  */
-export interface SessionsDiscovered {
-  type: 'sessions-discovered'
+export interface ConversationsDiscovered {
+  type: 'conversations-discovered'
   projectId: string
   workspaceId: string
-  sessions: DiscoveredSession[]
+  sessions: DiscoveredConversation[]
 }
 
-export interface DiscoveredSession {
-  agentSessionId: string
+export interface DiscoveredConversation {
+  conversationId: string
   tool: AgentTool
   /** Recorded only on first sighting: a conversation can't change protocol,
    *  and a later wrong guess must not overwrite what the create reported. */
@@ -186,15 +186,15 @@ export interface DiscoveredSession {
  * conversations with no recorded last activity, and keeps a recorded first
  * message.
  */
-export interface SessionsCaptured {
-  type: 'sessions-captured'
+export interface ConversationsCaptured {
+  type: 'conversations-captured'
   projectId: string
   workspaceId: string
-  sessions: CapturedSession[]
+  sessions: CapturedConversation[]
 }
 
-export interface CapturedSession {
-  agentSessionId: string
+export interface CapturedConversation {
+  conversationId: string
   tool: AgentTool
   /** Always set, so the conversation is not read again. */
   lastActiveMs: number
@@ -209,15 +209,15 @@ export interface CapturedSession {
  * nothing, since a transient gap must not look like every agent exiting: the
  * last set is what a restart brings back up.
  */
-export interface SessionsActive {
-  type: 'sessions-active'
+export interface ConversationsActive {
+  type: 'conversations-active'
   projectId: string
   workspaceId: string
-  active: ActiveSession[]
+  active: ActiveConversation[]
 }
 
-export interface ActiveSession {
-  agentSessionId: string
+export interface ActiveConversation {
+  conversationId: string
   tool: AgentTool
   paneId?: string
 }

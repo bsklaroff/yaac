@@ -28,7 +28,7 @@ vi.mock('#db', async (importOriginal) => {
     ...actual,
     clearWorkspaceStopped: vi.fn(actual.clearWorkspaceStopped),
     findWorkspaceRow: vi.fn(actual.findWorkspaceRow),
-    listActiveAgentSessions: vi.fn(actual.listActiveAgentSessions),
+    listActiveConversations: vi.fn(actual.listActiveConversations),
   }
 })
 import { keepScratchDirsInCheckout, listProvisioning, prepareRestart, prepareStart, stopWorkspace } from '#domain/workspaces'
@@ -38,8 +38,8 @@ import {
   clearWorkspaceStopped,
   createWorkspaceGroup,
   findWorkspaceRow,
-  listActiveAgentSessions,
-  listWorkspaceAgentSessions,
+  listActiveConversations,
+  listWorkspaceConversations,
   getWorkspaceRow,
   setProjectScratchDirs,
   setWorkspaceGroup,
@@ -128,18 +128,18 @@ async function stoppedWorkspace(workspaceId: string, over: Parameters<typeof cre
 
 /** A conversation's history where its tool keeps it, recorded as the
  *  registry would once it saw the file. Returns the file. */
-async function history(workspaceId: string, tool: 'claude' | 'codex', agentSessionId: string): Promise<string> {
+async function history(workspaceId: string, tool: 'claude' | 'codex', conversationId: string): Promise<string> {
   const rel = tool === 'claude'
-    ? path.join('history', workspaceId, 'claude', CLAUDE_POD_CWD, `${agentSessionId}.jsonl`)
-    : path.join('history', workspaceId, 'codex', '2026', '10', '03', `rollout-2026-10-03T12-00-00-${agentSessionId}.jsonl`)
+    ? path.join('history', workspaceId, 'claude', CLAUDE_POD_CWD, `${conversationId}.jsonl`)
+    : path.join('history', workspaceId, 'codex', '2026', '10', '03', `rollout-2026-10-03T12-00-00-${conversationId}.jsonl`)
   const file = path.join(projectDir(DEMO_PROJECT_ID), rel)
   await fs.mkdir(path.dirname(file), { recursive: true })
   await fs.writeFile(file, '{}\n')
   await applyWorkspaceEvent({
-    type: 'sessions-discovered',
+    type: 'conversations-discovered',
     projectId: DEMO_PROJECT_ID,
     workspaceId,
-    sessions: [{ tool, agentSessionId, transcriptPath: rel }],
+    sessions: [{ tool, conversationId, transcriptPath: rel }],
   })
   return file
 }
@@ -178,10 +178,10 @@ describe('prepareRestart', () => {
   it('tears down the live unit while marked in flight, resumes every active conversation, and clears the stop', async () => {
     await stoppedWorkspace('wt-1', { tool: 'codex' })
     const sessions = [
-      { tool: 'codex' as const, agentSessionId: 'wt-1', mode: 'tui' as const },
-      { tool: 'claude' as const, agentSessionId: 'conv-2', mode: 'tui' as const },
+      { tool: 'codex' as const, conversationId: 'wt-1', mode: 'tui' as const },
+      { tool: 'claude' as const, conversationId: 'conv-2', mode: 'tui' as const },
     ]
-    await applyWorkspaceEvent({ type: 'sessions-launched', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1', sessions })
+    await applyWorkspaceEvent({ type: 'conversations-launched', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1', sessions })
     await history('wt-1', 'claude', 'conv-2')
     live = handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1', jobName: 'yaac-wt-1', tool: 'codex' })
     let rowAtTeardown: ReturnType<typeof listProvisioning>[number] | undefined
@@ -234,7 +234,7 @@ describe('prepareRestart', () => {
 
     // Nothing is recorded under the workspace-id placeholder, which the
     // agent connection would otherwise try to load.
-    expect(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-chat')).toEqual([])
+    expect(await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-chat')).toEqual([])
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-chat'))?.pendingPrompt).toBe('add shared projects')
   })
 
@@ -245,7 +245,7 @@ describe('prepareRestart', () => {
   it('resumes the first conversation when none was left active', async () => {
     await stoppedWorkspace('wt-empty')
     await history('wt-empty', 'claude', 'wt-empty')
-    await applyWorkspaceEvent({ type: 'sessions-active', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-empty', active: [] })
+    await applyWorkspaceEvent({ type: 'conversations-active', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-empty', active: [] })
 
     await restart('wt-empty')
 
@@ -264,10 +264,10 @@ describe('prepareRestart', () => {
       resume: false,
     })
     await applyWorkspaceEvent({
-      type: 'sessions-launched',
+      type: 'conversations-launched',
       projectId: DEMO_PROJECT_ID,
       workspaceId: 'wt-spare',
-      sessions: [{ tool: 'claude', agentSessionId: 'wt-spare', firstPrompt: 'fix the bug' }],
+      sessions: [{ tool: 'claude', conversationId: 'wt-spare', firstPrompt: 'fix the bug' }],
     })
     await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-spare' })
 
@@ -283,16 +283,16 @@ describe('prepareRestart', () => {
   it('replaces a never-prompted chat conversation with a fresh one, keeping the held prompt', async () => {
     await stoppedWorkspace('wt-quiet', { mode: 'acp', prompt: 'add shared projects' })
     await applyWorkspaceEvent({
-      type: 'sessions-launched',
+      type: 'conversations-launched',
       projectId: DEMO_PROJECT_ID,
       workspaceId: 'wt-quiet',
-      sessions: [{ tool: 'claude', agentSessionId: 'acp-quiet', mode: 'acp', paneId: 'claude' }],
+      sessions: [{ tool: 'claude', conversationId: 'acp-quiet', mode: 'acp', paneId: 'claude' }],
     })
 
     await restart('wt-quiet')
 
     // Its handle is not recorded, so the connection cannot try to load it.
-    const quiet = (await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-quiet')).find((l) => l.agentSessionId === 'acp-quiet')
+    const quiet = (await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-quiet')).find((l) => l.conversationId === 'acp-quiet')
     expect(quiet?.paneId).toBeUndefined()
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-quiet'))?.pendingPrompt).toBe('add shared projects')
   })
@@ -330,13 +330,13 @@ describe('prepareRestart', () => {
     // The first switched with `/model` to a 1M context; the third never
     // reported.
     await applyWorkspaceEvent({
-      type: 'sessions-launched',
+      type: 'conversations-launched',
       projectId: DEMO_PROJECT_ID,
       workspaceId: 'wt-6',
       sessions: [
-        { tool: 'claude', agentSessionId: 'wt-6', mode: 'tui', model: 'claude-opus-5-5[1m]' },
-        { tool: 'codex', agentSessionId: 'conv-2', mode: 'tui', model: 'gpt-5.5' },
-        { tool: 'claude', agentSessionId: 'conv-3', mode: 'tui' },
+        { tool: 'claude', conversationId: 'wt-6', mode: 'tui', model: 'claude-opus-5-5[1m]' },
+        { tool: 'codex', conversationId: 'conv-2', mode: 'tui', model: 'gpt-5.5' },
+        { tool: 'claude', conversationId: 'conv-3', mode: 'tui' },
       ],
     })
     for (const id of ['wt-6', 'conv-3']) await history('wt-6', 'claude', id)
@@ -359,11 +359,11 @@ describe('prepareRestart', () => {
     await stoppedWorkspace('wt-7', { model: 'claude-opus-4-7' })
     const hostile = ['--foo; touch /tmp/pwned', '-cx', 'a b', 'opus\n--x', 'x[1m][1m]']
     await applyWorkspaceEvent({
-      type: 'sessions-launched',
+      type: 'conversations-launched',
       projectId: DEMO_PROJECT_ID,
       workspaceId: 'wt-7',
       sessions: hostile.map((model, i) => ({
-        tool: 'claude' as const, agentSessionId: i === 0 ? 'wt-7' : `conv-${String(i)}`, mode: 'tui' as const, model,
+        tool: 'claude' as const, conversationId: i === 0 ? 'wt-7' : `conv-${String(i)}`, mode: 'tui' as const, model,
       })),
     })
 
@@ -384,12 +384,12 @@ describe('prepareRestart', () => {
   it("keeps the row's model and a first conversation on another tool apart", async () => {
     await stoppedWorkspace('wt-8', { model: 'claude-opus-4-7', effort: 'max' })
     await applyWorkspaceEvent({
-      type: 'sessions-launched',
+      type: 'conversations-launched',
       projectId: DEMO_PROJECT_ID,
       workspaceId: 'wt-8',
       sessions: [
-        { tool: 'codex', agentSessionId: 'conv-cx', mode: 'tui' },
-        { tool: 'codex', agentSessionId: 'conv-2', mode: 'tui', model: 'gpt-5.5' },
+        { tool: 'codex', conversationId: 'conv-cx', mode: 'tui' },
+        { tool: 'codex', conversationId: 'conv-2', mode: 'tui', model: 'gpt-5.5' },
       ],
     })
     for (const id of ['conv-cx', 'conv-2']) await history('wt-8', 'codex', id)
@@ -426,7 +426,7 @@ describe('prepareRestart', () => {
   // Starting fresh would drop every conversation the workspace had open.
   it('refuses rather than relaunch fresh when its conversations cannot be read', async () => {
     await stoppedWorkspace('wt-convs')
-    vi.mocked(listActiveAgentSessions).mockRejectedValueOnce(new Error('db read failed'))
+    vi.mocked(listActiveConversations).mockRejectedValueOnce(new Error('db read failed'))
 
     await expect(restart('wt-convs')).rejects.toThrow('db read failed')
 
@@ -440,10 +440,10 @@ describe('prepareRestart', () => {
   it("relaunches a row with no effort at its model's default", async () => {
     await stoppedWorkspace('wt-5', { model: 'claude-opus-4-5' })
     await applyWorkspaceEvent({
-      type: 'sessions-discovered',
+      type: 'conversations-discovered',
       projectId: DEMO_PROJECT_ID,
       workspaceId: 'wt-5',
-      sessions: [{ tool: 'claude', agentSessionId: 'wt-5', model: 'claude-opus-4-7' }],
+      sessions: [{ tool: 'claude', conversationId: 'wt-5', model: 'claude-opus-4-7' }],
     })
 
     await restart('wt-5')
@@ -552,14 +552,14 @@ describe('prepareRestart', () => {
   it('resumes what is on disk, starts a never-written conversation fresh, and refuses one that lost its history', async () => {
     await stoppedWorkspace('wt-lost')
     await applyWorkspaceEvent({
-      type: 'sessions-launched',
+      type: 'conversations-launched',
       projectId: DEMO_PROJECT_ID,
       workspaceId: 'wt-lost',
       sessions: [
-        { tool: 'claude', agentSessionId: 'wt-lost', mode: 'tui', firstPrompt: 'never delivered' },
-        { tool: 'codex', agentSessionId: 'conv-cx', mode: 'tui' },
-        { tool: 'claude', agentSessionId: 'conv-3', mode: 'tui' },
-        { tool: 'claude', agentSessionId: 'conv-4', mode: 'tui' },
+        { tool: 'claude', conversationId: 'wt-lost', mode: 'tui', firstPrompt: 'never delivered' },
+        { tool: 'codex', conversationId: 'conv-cx', mode: 'tui' },
+        { tool: 'claude', conversationId: 'conv-3', mode: 'tui' },
+        { tool: 'claude', conversationId: 'conv-4', mode: 'tui' },
       ],
     })
     const written = [await history('wt-lost', 'codex', 'conv-cx'), await history('wt-lost', 'claude', 'conv-3')]
@@ -588,10 +588,10 @@ describe('prepareRestart', () => {
     // written.
     await stoppedWorkspace('wt-acp')
     await applyWorkspaceEvent({
-      type: 'sessions-launched',
+      type: 'conversations-launched',
       projectId: DEMO_PROJECT_ID,
       workspaceId: 'wt-acp',
-      sessions: [{ tool: 'claude', agentSessionId: 'acp-1', mode: 'acp', firstPrompt: 'hello' }],
+      sessions: [{ tool: 'claude', conversationId: 'acp-1', mode: 'acp', firstPrompt: 'hello' }],
     })
     await expect(restart('wt-acp')).rejects.toThrow('history of Claude Code conversation acp-1 is gone')
   })

@@ -78,7 +78,7 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
           <ReadOnlyTranscript
             key={subject.entry.workspaceId}
             workspaceId={subject.entry.workspaceId}
-            sessions={subject.entry.agentSessions}
+            sessions={subject.entry.conversations}
             {...(subject.entry.prompt !== undefined ? { prompt: subject.entry.prompt } : {})}
             live={subject.kind === 'live'}
             {...(owner !== undefined ? { owner } : {})}

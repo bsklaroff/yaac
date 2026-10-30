@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { screen, cleanup, fireEvent, act } from '@testing-library/react'
 import type { AcpEvent } from '@yaac/shared/acp'
-import type { AgentSessionEntry } from '@yaac/shared/types'
+import type { ConversationEntry } from '@yaac/shared/types'
 import { ReadOnlyTranscript } from '#components/ReadOnlyTranscript'
 import { TuiTranscriptSearch } from '#components/TuiTranscriptSearch'
 import { IS_MAC } from '#lib/platform'
@@ -17,10 +17,10 @@ import { mockFetch, renderWithClient, testQueryClient } from './harness'
  * the rows a match opens.
  */
 
-const TRANSCRIPT = 'GET /api/workspace/w1/agent-sessions/c1/transcript'
+const TRANSCRIPT = 'GET /api/workspace/w1/conversations/c1/transcript'
 
-const session = (over: Partial<AgentSessionEntry> = {}): AgentSessionEntry => ({
-  agentSessionId: 'c1', tool: 'claude', mode: 'tui', ordinal: 0, active: true, ...over,
+const session = (over: Partial<ConversationEntry> = {}): ConversationEntry => ({
+  conversationId: 'c1', tool: 'claude', mode: 'tui', ordinal: 0, active: true, ...over,
 })
 
 /** One needle in each of: an agent message, a thought (hidden until opened),
@@ -127,7 +127,7 @@ describe('ReadOnlyTranscript', () => {
 
 describe('TuiTranscriptSearch', () => {
   it('lays the conversation over the focused terminal on Cmd/Ctrl-F, and Escape returns to it', async () => {
-    const sessions = [session(), session({ agentSessionId: 'a1', mode: 'acp', ordinal: 1 })]
+    const sessions = [session(), session({ conversationId: 'a1', mode: 'acp', ordinal: 1 })]
     const client = testQueryClient()
     const { rerender } = renderWithClient(<TuiTranscriptSearch workspaceId="w1" sessions={sessions} visible focused={false} />, client)
     pressFind()

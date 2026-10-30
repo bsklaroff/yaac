@@ -279,7 +279,7 @@ export function setLiveAgents(projectId: string, workspaceId: string, agents: Li
   const changed = previous === undefined
     || previous.length !== agents.length
     || agents.some((a) => !previous.some((p) =>
-      p.handle === a.handle && p.agentSessionId === a.agentSessionId && p.model === a.model
+      p.handle === a.handle && p.conversationId === a.conversationId && p.model === a.model
       && p.reportedMode === a.reportedMode && p.reportedEffort === a.reportedEffort
       && p.transcriptPath === a.transcriptPath))
   e.liveAgents = agents

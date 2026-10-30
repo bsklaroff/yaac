@@ -87,7 +87,7 @@ interface StartOption {
  *  The model is that session's current one, so a `/model` switch carries
  *  over to a child. */
 function workspaceSeed(w: WorkspaceListEntry): Seed {
-  const first = [...w.agentSessions].sort((a, b) => a.ordinal - b.ordinal)[0]
+  const first = [...w.conversations].sort((a, b) => a.ordinal - b.ordinal)[0]
   return {
     tool: first?.tool ?? w.tool,
     ...(first?.mode !== undefined ? { mode: first.mode } : {}),

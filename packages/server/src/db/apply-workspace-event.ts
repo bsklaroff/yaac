@@ -1,8 +1,8 @@
 import {
-  recordAgentSessionCaptures,
-  recordAgentSessions,
-  setActiveAgentSessions,
-} from './agent-session-store'
+  recordConversationCaptures,
+  recordConversations,
+  setActiveConversations,
+} from './conversation-store'
 import {
   recordWorkspaceCreated,
   recordWorkspaceLife,
@@ -49,20 +49,20 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
     case 'tracked-scratch-dirs-found':
       await setWorkspaceTrackedScratchDirs(event.projectId, event.workspaceId, event.paths)
       return
-    case 'sessions-launched': {
+    case 'conversations-launched': {
       const { projectId, workspaceId, sessions } = event
-      await recordAgentSessions(projectId, workspaceId, sessions)
-      await setActiveAgentSessions(projectId, workspaceId, sessions)
+      await recordConversations(projectId, workspaceId, sessions)
+      await setActiveConversations(projectId, workspaceId, sessions)
       return
     }
-    case 'sessions-discovered':
-      await recordAgentSessions(event.projectId, event.workspaceId, event.sessions)
+    case 'conversations-discovered':
+      await recordConversations(event.projectId, event.workspaceId, event.sessions)
       return
-    case 'sessions-captured':
-      await recordAgentSessionCaptures(event.projectId, event.sessions)
+    case 'conversations-captured':
+      await recordConversationCaptures(event.projectId, event.sessions)
       return
-    case 'sessions-active':
-      await setActiveAgentSessions(event.projectId, event.workspaceId, event.active)
+    case 'conversations-active':
+      await setActiveConversations(event.projectId, event.workspaceId, event.active)
       return
     case 'permission-mode-changed':
       await setWorkspacePermissionMode(event.projectId, event.workspaceId, event.permissionMode)

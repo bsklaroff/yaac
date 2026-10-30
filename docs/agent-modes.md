@@ -98,7 +98,7 @@ there and nowhere else.
 The status store keys a conversation's busy/idle state by its **handle**, the
 driver's address for it: a tmux pane id (`%3`) under `tui`, the acpd window
 name (`claude-2`) under `acp`. The store never knows which protocol produced a
-status. `workspace_agent_sessions.paneId` holds the same handle, which is how
+status. `workspace_conversations.paneId` holds the same handle, which is how
 a live status joins back to its conversation.
 
 ## Where history lives
@@ -163,7 +163,7 @@ NFS sends a held-open file's bytes only on close, sync or writeback
 
 ### Reading a stopped conversation
 
-`GET /workspace/:id/agent-sessions/:sessionId/transcript?page=` returns one
+`GET /workspace/:id/conversations/:sessionId/transcript?page=` returns one
 page of the same `AcpEvent[]` a pane renders (the last page without
 `page`), read from files rather than from a running workspace, so the
 read-only pane can show a stopped workspace's whole conversation.
@@ -645,7 +645,7 @@ and the first classification wins.
 
 ## State
 
-The conversation's row records its mode (`agent_sessions.mode`), because a
+The conversation's row records its mode (`conversations.mode`), because a
 restart must bring it back the same way and nothing else on disk says which.
 
 Recording is the same for both modes: the live agent set names each running

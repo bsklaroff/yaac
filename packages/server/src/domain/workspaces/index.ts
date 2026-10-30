@@ -12,8 +12,8 @@
 // Each name added here needs a unit test in
 // packages/server/test/domain/workspaces/.
 
-export { reconcileAgentSessions, reconcileStoppedAgentSessions } from './agent-session-registry'
-export { toAgentSessionEntry } from './agent-session-entry'
+export { reconcileConversations, reconcileStoppedConversations } from './conversation-registry'
+export { toConversationEntry } from './conversation-entry'
 export { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileIgnoredFileCleans } from './cleanup'
 export { keepScratchDirsInCheckout } from './tracked-scratch-dirs'
 export { deleteWorkspace } from './delete'
@@ -71,7 +71,7 @@ export {
 export { reconcileWorkspaceTimeouts, setWorkspaceTimeout } from './timeouts'
 export { markWaitingSeen } from './waiting-seen'
 export { listStoppedWorkspaces } from './stopped-list'
-export { getAcpStoredImage, getAgentSessionTranscript, recordOrigin } from './transcript'
+export { getAcpStoredImage, getConversationTranscript, recordOrigin } from './transcript'
 export { observeConversation } from './history-tail'
 export { saveWorkspaceAttachment } from './attachments'
 export {

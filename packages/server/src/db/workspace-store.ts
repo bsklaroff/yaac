@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
 import { and, count, desc, eq, exists, ilike, inArray, isNotNull, isNull, lt, lte, notInArray, or, sql, type SQL } from 'drizzle-orm'
 import { getDb } from './client'
-import { agentSessions, workspaceAgentSessions, workspaceGroups, workspaces } from './schema'
-import { deleteWorkspaceAgentSessions } from './agent-session-store'
+import { conversations, workspaceConversations, workspaceGroups, workspaces } from './schema'
+import { deleteWorkspaceConversations } from './conversation-store'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { normalizeTitle } from '@yaac/shared/titles'
 import { ServerError } from '@yaac/shared/errors'
@@ -167,11 +167,11 @@ export async function recordWorkspaceLife(
     await tx.update(workspaces)
       .set({ lifeStartedAt: new Date() })
       .where(key(projectId, workspaceId))
-    await tx.update(workspaceAgentSessions)
+    await tx.update(workspaceConversations)
       .set({ paneId: null })
       .where(and(
-        eq(workspaceAgentSessions.projectId, projectId),
-        eq(workspaceAgentSessions.workspaceId, workspaceId),
+        eq(workspaceConversations.projectId, projectId),
+        eq(workspaceConversations.workspaceId, workspaceId),
       ))
   })
 }
@@ -185,7 +185,7 @@ export async function recordWorkspaceLife(
  * current life began is overwritten: a restart whose clear of it was lost
  * would otherwise keep the old date, which retention ages the workspace by.
  *
- * Leaves `workspace_agent_sessions.active` alone: that last observed set is
+ * Leaves `workspace_conversations.active` alone: that last observed set is
  * what a restart brings back.
  */
 export async function recordWorkspaceStopped(
@@ -476,19 +476,19 @@ export async function listStoppedWorkspaceRows(
     conds.push(or(
       ilike(workspaces.title, pattern),
       ilike(workspaces.generatedTitle, pattern),
-      exists(db.select({ one: sql`1` }).from(workspaceAgentSessions)
-        .innerJoin(agentSessions, and(
-          eq(workspaceAgentSessions.projectId, agentSessions.projectId),
-          eq(workspaceAgentSessions.tool, agentSessions.tool),
-          eq(workspaceAgentSessions.agentSessionId, agentSessions.agentSessionId),
+      exists(db.select({ one: sql`1` }).from(workspaceConversations)
+        .innerJoin(conversations, and(
+          eq(workspaceConversations.projectId, conversations.projectId),
+          eq(workspaceConversations.tool, conversations.tool),
+          eq(workspaceConversations.conversationId, conversations.conversationId),
         ))
         .where(and(
-          eq(workspaceAgentSessions.projectId, workspaces.projectId),
-          eq(workspaceAgentSessions.workspaceId, workspaces.workspaceId),
+          eq(workspaceConversations.projectId, workspaces.projectId),
+          eq(workspaceConversations.workspaceId, workspaces.workspaceId),
           or(
-            ilike(agentSessions.firstPrompt, pattern),
-            ilike(agentSessions.title, pattern),
-            ilike(agentSessions.tool, pattern),
+            ilike(conversations.firstPrompt, pattern),
+            ilike(conversations.title, pattern),
+            ilike(conversations.tool, pattern),
           ),
         ))),
     ))
@@ -589,7 +589,7 @@ export async function removeWorkspaceRecords(
 ): Promise<void> {
   const db = await getDb()
   await db.delete(workspaces).where(key(projectId, workspaceId))
-  await deleteWorkspaceAgentSessions(projectId, workspaceId)
+  await deleteWorkspaceConversations(projectId, workspaceId)
 }
 
 /** Record the branch the workspace is based on, for a `yaac-mama set-base`. */
@@ -669,20 +669,20 @@ export async function listLiveWorkspaceRows(): Promise<Array<{
   // the agent; a prompt or transcript does, as does an id a self-naming tool
   // minted (opencode keeps neither a prompt nor a transcript yaac reads).
   const links = await db.select({
-    projectId: workspaceAgentSessions.projectId,
-    workspaceId: workspaceAgentSessions.workspaceId,
-    tool: workspaceAgentSessions.tool,
-    agentSessionId: workspaceAgentSessions.agentSessionId,
-    firstPrompt: agentSessions.firstPrompt,
-    transcriptPath: agentSessions.transcriptPath,
-  }).from(workspaceAgentSessions).innerJoin(agentSessions, and(
-    eq(workspaceAgentSessions.projectId, agentSessions.projectId),
-    eq(workspaceAgentSessions.tool, agentSessions.tool),
-    eq(workspaceAgentSessions.agentSessionId, agentSessions.agentSessionId),
+    projectId: workspaceConversations.projectId,
+    workspaceId: workspaceConversations.workspaceId,
+    tool: workspaceConversations.tool,
+    conversationId: workspaceConversations.conversationId,
+    firstPrompt: conversations.firstPrompt,
+    transcriptPath: conversations.transcriptPath,
+  }).from(workspaceConversations).innerJoin(conversations, and(
+    eq(workspaceConversations.projectId, conversations.projectId),
+    eq(workspaceConversations.tool, conversations.tool),
+    eq(workspaceConversations.conversationId, conversations.conversationId),
   ))
   const ran = new Set(links
     .filter((l) => l.firstPrompt !== null || l.transcriptPath !== null
-      || (SELF_NAMING_TOOLS.includes(l.tool) && l.agentSessionId !== l.workspaceId))
+      || (SELF_NAMING_TOOLS.includes(l.tool) && l.conversationId !== l.workspaceId))
     .map((l) => `${l.projectId}/${l.workspaceId}`))
   return rows.map((r) => ({
     projectId: r.projectId,
@@ -702,7 +702,7 @@ export async function listProjectWorkspaceIds(projectId: string): Promise<string
 
 /**
  * Delete a project's workspace rows, on project removal (which also deletes
- * the checkouts). The caller also runs `deleteProjectAgentSessions`.
+ * the checkouts). The caller also runs `deleteProjectConversations`.
  */
 export async function deleteProjectWorkspaces(projectId: string): Promise<void> {
   const db = await getDb()

@@ -229,10 +229,10 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/workspace/:id/keep-scratch-dirs', request: `${W}/keep-scratch-dirs`, body: { paths: ['target'] }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/title', request: `${W}/title`, body: { title: 't' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id', request: W, access: 'reader', k8s: [404, 503], containerless: MISSING },
-  { method: 'GET', path: '/api/workspace/:id/agent-sessions', request: `${W}/agent-sessions`, access: 'reader', k8s: MISSING, containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/conversations', request: `${W}/conversations`, access: 'reader', k8s: MISSING, containerless: MISSING },
   // Reads recorded state and host files, so both drivers agree. Its 501 is
   // for a tool (opencode) whose history lives in the container.
-  { method: 'GET', path: '/api/workspace/:id/agent-sessions/:sessionId/transcript', request: `${W}/agent-sessions/s1/transcript`, access: 'reader', k8s: MISSING, containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/conversations/:sessionId/transcript', request: `${W}/conversations/s1/transcript`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/acp-images/:hash', request: `${W}/acp-images/${'0'.repeat(64)}`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/changes', request: `${W}/changes`, access: 'reader', k8s: [404, 503], containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/changes/diff', request: `${W}/changes/diff`, body: { base: '0'.repeat(40), work: '0'.repeat(40), files: [{ path: 'a' }] }, access: 'reader', k8s: [404, 503], containerless: MISSING },

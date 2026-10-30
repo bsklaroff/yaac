@@ -102,7 +102,7 @@ function heldAsStopped(h: HeldWorkspaceEntry): StoppedWorkspaceEntry {
     stoppedAt: h.stoppedAt,
     ...(h.prompt !== undefined ? { prompt: h.prompt } : {}),
     ...(h.title !== undefined ? { title: h.title } : {}),
-    agentSessions: [],
+    conversations: [],
     ...(h.deathReason !== undefined ? { deathReason: h.deathReason } : {}),
     ...(h.deathDetail !== undefined ? { deathDetail: h.deathDetail } : {}),
     ...(h.timedOut ? { timedOut: true } : {}),

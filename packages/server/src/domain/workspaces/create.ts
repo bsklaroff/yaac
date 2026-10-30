@@ -89,8 +89,8 @@ import { deleteWorkspaceState } from './cleanup'
 import {
   ACP_CONVERSATION_WAIT_MS,
   deliverPendingPrompt,
-  reconcileWorkspaceAgentSessions,
-} from './agent-session-registry'
+  reconcileWorkspaceConversations,
+} from './conversation-registry'
 import {
   OPENCODE_CHECKPOINT_SCRIPT,
   WORKSPACE_INIT_SCRIPT,
@@ -250,7 +250,7 @@ export interface WorkspaceCreateOptions {
 /** One agent window to bring up: the conversation, its tool, the model and
  *  effort it launches on, and whether it resumes its history. */
 interface LaunchedAgent {
-  agentSessionId: string
+  conversationId: string
   tool: AgentTool
   model?: string
   effort?: string
@@ -398,10 +398,10 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
     const resume = a.resume === true
     return {
       tool: a.tool,
-      ...(resume ? { resumes: a.agentSessionId } : {}),
+      ...(resume ? { resumes: a.conversationId } : {}),
       cmd: driver.launchCmd({
         tool: a.tool,
-        agentSessionId: a.agentSessionId,
+        conversationId: a.conversationId,
         resume,
         // Under acp this also names the acpd socket.
         windowName: agentWindowName(a.tool, i),
@@ -533,7 +533,7 @@ export async function handOverAgent(input: {
     if (prompt !== undefined) serverLog(`[server] create ${workspaceId}: initial prompt held until a conversation is up`)
     return
   }
-  await reconcileWorkspaceAgentSessions(projectId, workspaceId, mode, jobName).catch((err: unknown) => {
+  await reconcileWorkspaceConversations(projectId, workspaceId, mode, jobName).catch((err: unknown) => {
     serverLog(`[server] create ${workspaceId}: recording the conversation failed: ${String(err)}`)
   })
   if (prompt !== undefined) emit('Sending initial prompt...')
@@ -907,12 +907,12 @@ export async function createWorkspace(
     options.resume !== undefined && options.resume.length > 0
       ? options.resume
       : [{
-        agentSessionId: workspaceId,
+        conversationId: workspaceId,
         tool,
         ...(options.model !== undefined ? { model: options.model } : {}),
         ...(options.effort !== undefined ? { effort: options.effort } : {}),
       }]
-  ).map((a) => (mode === 'acp' && a.resume !== true ? { ...a, agentSessionId: workspaceId } : a))
+  ).map((a) => (mode === 'acp' && a.resume !== true ? { ...a, conversationId: workspaceId } : a))
 
   // Record the row before provisioning anything, so no user workspace's pod
   // exists without one (a rowless pod is invisible to titles, groups and
@@ -978,12 +978,12 @@ export async function createWorkspace(
       // or the restart's acpd handshake starts a new conversation. A tui pane
       // id is unknown until the pane exists; the registry fills it in.
       await applyWorkspaceEvent({
-        type: 'sessions-launched',
+        type: 'conversations-launched',
         projectId,
         workspaceId,
         sessions: recorded.map(({ a, i }) => ({
           tool: a.tool,
-          agentSessionId: a.agentSessionId,
+          conversationId: a.conversationId,
           mode,
           ...(mode === 'acp' ? { paneId: agentWindowName(a.tool, i) } : {}),
           ...(i === 0 && options.initialPrompt !== undefined
@@ -997,7 +997,7 @@ export async function createWorkspace(
 
     // An acp create returns before its agent names the conversation, so its
     // prompt waits on the row. The sweep that records the conversation sends
-    // it (`reconcileWorkspaceAgentSessions`). Held before the agent starts,
+    // it (`reconcileWorkspaceConversations`). Held before the agent starts,
     // so no sweep can find the conversation before the prompt.
     if (mode === 'acp' && options.initialPrompt !== undefined) {
       await holdPendingPrompt(projectId, workspaceId, options.initialPrompt)

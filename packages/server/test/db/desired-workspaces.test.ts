@@ -6,7 +6,7 @@ import {
   recordWorkspaceCreated,
   recordWorkspaceStopped,
 } from '#db/workspace-store'
-import { recordAgentSessions } from '#db/agent-session-store'
+import { recordConversations } from '#db/conversation-store'
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
 
@@ -39,11 +39,11 @@ describe('desiredWorkspaces', () => {
     await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'wt-2' })
     // A link alone proves nothing — create writes one before the agent
     // launches. A captured opening message is the evidence.
-    await recordAgentSessions(PROJ, 'wt-1', [
-      { tool: 'claude', agentSessionId: 'conv-a', firstPrompt: 'do the thing' },
+    await recordConversations(PROJ, 'wt-1', [
+      { tool: 'claude', conversationId: 'conv-a', firstPrompt: 'do the thing' },
     ])
-    await recordAgentSessions(PROJ, 'wt-2', [
-      { tool: 'claude', agentSessionId: 'conv-b' },
+    await recordConversations(PROJ, 'wt-2', [
+      { tool: 'claude', conversationId: 'conv-b' },
     ])
 
     expect((await desiredWorkspaces()).live.map((w) => [w.workspaceId, w.ran]))

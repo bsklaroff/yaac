@@ -26,7 +26,7 @@ const stopped: StoppedWorkspaceEntry = {
   stoppedAt: '2026-08-10 01:00:00',
   title: 'Stopped run',
   deathSeenBy: [],
-  agentSessions: [],
+  conversations: [],
 }
 
 const BADGE = { name: /Containerless workspace/ }

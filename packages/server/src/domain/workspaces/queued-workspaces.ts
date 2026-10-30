@@ -37,7 +37,7 @@ import {
   failQueuedLaunch,
   findWorkspaceRow,
   finishQueuedLaunch,
-  firstAgentSession,
+  firstConversation,
   getProjectRow,
   getProjectWorkspaceRows,
   getQueuedWorkspaceRow,
@@ -347,7 +347,7 @@ export async function listHeldWorkspaces(): Promise<HeldWorkspaceEntry[]> {
   const held = (await Promise.all(projectIds.map((projectId) => listWorkspaceRows(projectId)))).flat()
     .filter((w) => w.stoppedAt !== undefined && parents.has(`${w.projectId}/${w.workspaceId}`))
   // Only the held entry's own fields: the snapshot carries every one.
-  return (await toStoppedEntries(held)).map(({ agentSessions: _, createdAt: __, lastActiveAt: ___, ...entry }) => entry)
+  return (await toStoppedEntries(held)).map(({ conversations: _, createdAt: __, lastActiveAt: ___, ...entry }) => entry)
 }
 
 /**
@@ -602,7 +602,7 @@ async function parentInfo(projectId: string, pointer: QueuedParent): Promise<Par
   const workspaceId = pointer.parentWorkspaceId
   const [row, first] = await Promise.all([
     getProjectWorkspaceRows(projectId).then((rows) => rows.get(workspaceId)),
-    firstAgentSession(projectId, workspaceId),
+    firstConversation(projectId, workspaceId),
   ])
   const creating = inFlightCreate(workspaceId)
   // The conversation's model is as its agent reported it, which anything in

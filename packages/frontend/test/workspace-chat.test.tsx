@@ -63,14 +63,14 @@ beforeEach(() => {
 let client: QueryClient
 
 /** The pane on screen, and the one the user is in unless `focused` is false. */
-const pane = (workspaceId = 'w1', agentSessionId = 'acp-1', focused = true): JSX.Element =>
-  <WorkspaceChat workspaceId={workspaceId} agentSessionId={agentSessionId} visible focused={focused} />
+const pane = (workspaceId = 'w1', conversationId = 'acp-1', focused = true): JSX.Element =>
+  <WorkspaceChat workspaceId={workspaceId} conversationId={conversationId} visible focused={focused} />
 
-function show(workspaceId?: string, agentSessionId?: string, focused?: boolean): ReturnType<typeof render> {
+function show(workspaceId?: string, conversationId?: string, focused?: boolean): ReturnType<typeof render> {
   client = testQueryClient()
   const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
-  return render(pane(workspaceId, agentSessionId, focused), { wrapper })
+  return render(pane(workspaceId, conversationId, focused), { wrapper })
 }
 
 describe('WorkspaceChat drafts', () => {
@@ -2123,7 +2123,7 @@ describe('WorkspaceChat pages', () => {
 
   it('reads the pages before the one it attached to above it, and still sends from the latest', async () => {
     const server = mockFetch({
-      'GET /api/workspace/w1/agent-sessions/acp-1/transcript': { page: 0, events: [user(0, 'the first ask')] },
+      'GET /api/workspace/w1/conversations/acp-1/transcript': { page: 0, events: [user(0, 'the first ask')] },
     })
     // Attached past a compaction: its `hello` is the conversation's last page.
     stream.page = 1
@@ -2135,7 +2135,7 @@ describe('WorkspaceChat pages', () => {
     // jsdom lays nothing out, so the reader sits at the top and the page
     // before loads above.
     expect(await screen.findByText('the first ask')).toBeTruthy()
-    expect(server.called('GET /api/workspace/w1/agent-sessions/acp-1/transcript').map((c) => c.query.get('page'))).toEqual(['0'])
+    expect(server.called('GET /api/workspace/w1/conversations/acp-1/transcript').map((c) => c.query.get('page'))).toEqual(['0'])
     const text = container.textContent ?? ''
     expect(text.indexOf('the first ask')).toBeLessThan(text.indexOf('Conversation compacted'))
     expect(text.indexOf('Conversation compacted')).toBeLessThan(text.indexOf('the latest answer'))
@@ -2153,7 +2153,7 @@ describe('WorkspaceChat pages', () => {
       L1: [[user(0, 'the first ask')]],
       L2: [[user(0, 'the first ask')], [user(ACP_PAGE_SPAN, 'the old life, read back')]],
     }
-    const route = 'GET /api/workspace/w1/agent-sessions/acp-1/transcript'
+    const route = 'GET /api/workspace/w1/conversations/acp-1/transcript'
     const server = mockFetch({
       [route]: (c: { query: URLSearchParams }) => ({ page: Number(c.query.get('page')), life, events: pages[life][Number(c.query.get('page'))] }),
     })

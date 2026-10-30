@@ -22,7 +22,7 @@ const snap = (entries: Array<Partial<WorkspaceListEntry>>): ServerSnapshot => ({
     blockedHosts: [],
     forwardedPorts: [],
     unforwardedPorts: [],
-    agentSessions: [],
+    conversations: [],
     ...s,
   })),
   stale: [],

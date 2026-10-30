@@ -70,7 +70,7 @@ import {
   deleteWorkspaceGroup,
   getWorkspaceRow,
   insertGitCredential,
-  listWorkspaceAgentSessions,
+  listWorkspaceConversations,
   listWorkspaceGroupRows,
   setGitIdentity,
   setProjectEgressAllowlist,
@@ -166,7 +166,7 @@ describe('prepareStart', () => {
         const window = /display-message -p -t yaac:(\S+) '#\{pane_pid\}'/.exec(cmd)?.[1]
         if (window !== undefined) {
           const workspaceId = jobName.slice('yaac-demo-'.length)
-          registerAcpConversation(DEMO_PROJECT_ID, workspaceId, { handle: window, agentSessionId: `acp-${workspaceId}`, panePid: '42' }, upConversation)
+          registerAcpConversation(DEMO_PROJECT_ID, workspaceId, { handle: window, conversationId: `acp-${workspaceId}`, panePid: '42' }, upConversation)
           return Promise.resolve({ stdout: '42\n', stderr: '' })
         }
         const stdout = cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : ''
@@ -459,8 +459,8 @@ describe('prepareStart', () => {
       expect(await getWorkspaceRow(DEMO_PROJECT_ID, workspaceId)).toMatchObject({
         baseBranch: 'dev', permissionMode: 'bypass', mode: 'tui', model: 'gpt-6-sol',
       })
-      expect(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, workspaceId)).toEqual([expect.objectContaining({
-        tool: 'codex', agentSessionId: workspaceId, firstPrompt: 'ship it', model: 'gpt-6-sol',
+      expect(await listWorkspaceConversations(DEMO_PROJECT_ID, workspaceId)).toEqual([expect.objectContaining({
+        tool: 'codex', conversationId: workspaceId, firstPrompt: 'ship it', model: 'gpt-6-sol',
       })])
       expect(progress).toEqual(expect.arrayContaining([
         'image ready', 'substrate ready', 'launching', 'Creating workspace from dev...', 'Starting Codex...',
@@ -766,7 +766,7 @@ describe('prepareStart', () => {
     // `session/new`, so a chat create returns without waiting for it and
     // leaves its prompt on the row, held before the agent starts so no sweep
     // can find the conversation first. The sweep that records the
-    // conversation sends it (agent-session-registry.test.ts).
+    // conversation sends it (conversation-registry.test.ts).
     it('holds a chat workspace\'s prompt from before its agent starts, and returns without waiting for it', async () => {
       let heldAtLaunch: string | undefined
       let released!: () => void
@@ -777,7 +777,7 @@ describe('prepareStart', () => {
           if (cmd.includes('respawn-window')) heldAtLaunch = (await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-chat'))?.pendingPrompt
           if (cmd.includes('#{pane_pid}')) {
             void agentUp.then(() => registerAcpConversation(
-              DEMO_PROJECT_ID, 'wt-chat', { handle: 'claude', agentSessionId: 'minted', panePid: '42' }, upConversation,
+              DEMO_PROJECT_ID, 'wt-chat', { handle: 'claude', conversationId: 'minted', panePid: '42' }, upConversation,
             ))
             return { stdout: '42\n', stderr: '' }
           }
@@ -1102,7 +1102,7 @@ describe('prepareStart', () => {
     it('warms a spare with no row or conversation, then hands it over as warmed, under its own id', async () => {
       const spare = await warm()
       expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toBeUndefined()
-      expect(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, spare.workspaceId)).toEqual([])
+      expect(await listWorkspaceConversations(DEMO_PROJECT_ID, spare.workspaceId)).toEqual([])
       expect(specs.at(-1)?.prewarm).toBe(true)
       registrations = []
 
@@ -1127,8 +1127,8 @@ describe('prepareStart', () => {
       expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toMatchObject({
         groupId: group.groupId, title: 'Bug fix', baseBranch: 'main', mode: 'tui', permissionMode: 'bypass',
       })
-      expect(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, spare.workspaceId)).toEqual([
-        expect.objectContaining({ tool: 'claude', agentSessionId: spare.workspaceId, firstPrompt: 'fix the bug' }),
+      expect(await listWorkspaceConversations(DEMO_PROJECT_ID, spare.workspaceId)).toEqual([
+        expect.objectContaining({ tool: 'claude', conversationId: spare.workspaceId, firstPrompt: 'fix the bug' }),
       ])
       // The prompt was pasted into the spare's agent.
       expect(ranIn(spare).some((c) => c.includes('.yaac-prompt.sh'))).toBe(true)
@@ -1205,7 +1205,7 @@ describe('prepareStart', () => {
           execs.push({ jobName, cmd })
           if (cmd.includes('respawn-window')) atRespawn = (await recordedLaunch(DEMO_PROJECT_ID, spare.workspaceId))?.effort
           if (cmd.includes('#{pane_pid}')) {
-            registerAcpConversation(DEMO_PROJECT_ID, spare.workspaceId, { handle: 'claude', agentSessionId: 'minted', panePid: '42' }, conversation)
+            registerAcpConversation(DEMO_PROJECT_ID, spare.workspaceId, { handle: 'claude', conversationId: 'minted', panePid: '42' }, conversation)
             return { stdout: '42\n', stderr: '' }
           }
           return { stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' }
@@ -1231,8 +1231,8 @@ describe('prepareStart', () => {
           execs.push({ jobName, cmd })
           if (cmd.includes('#{pane_pid}')) {
             setTimeout(() => {
-              registerAcpConversation(DEMO_PROJECT_ID, spare.workspaceId, { handle: 'claude', agentSessionId: 'stale', panePid: '41' }, conversation)
-              registerAcpConversation(DEMO_PROJECT_ID, spare.workspaceId, { handle: 'claude', agentSessionId: 'minted', panePid: '43' }, conversation)
+              registerAcpConversation(DEMO_PROJECT_ID, spare.workspaceId, { handle: 'claude', conversationId: 'stale', panePid: '41' }, conversation)
+              registerAcpConversation(DEMO_PROJECT_ID, spare.workspaceId, { handle: 'claude', conversationId: 'minted', panePid: '43' }, conversation)
             }, 20)
             return Promise.resolve({ stdout: '43\n', stderr: '' })
           }
@@ -1390,7 +1390,7 @@ describe('prepareStart', () => {
       expect(specs.filter((s) => !s.prewarm)).toEqual([])
       expect(claims).toEqual([])
       expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toBeUndefined()
-      expect(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, spare.workspaceId)).toEqual([])
+      expect(await listWorkspaceConversations(DEMO_PROJECT_ID, spare.workspaceId)).toEqual([])
       expect(listProvisioning()).toEqual([expect.objectContaining({ workspaceId: 'req', error: expect.stringContaining('ghost') as unknown })])
       // The next claim takes it.
       expect((await start({ claimSpare: true })).workspaceId).toBe(spare.workspaceId)

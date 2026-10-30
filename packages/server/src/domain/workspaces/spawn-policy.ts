@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import { prepareStart } from './start'
 import { prepareRestart } from './restart'
-import { firstAgentSession, getProjectRow, getWorkspaceRow, listActiveAgentSessions } from '#db'
+import { firstConversation, getProjectRow, getWorkspaceRow, listActiveConversations } from '#db'
 import type { Actor } from '#domain/access'
 import { loadToolAuthEntry } from '#domain/auth'
 import {
@@ -188,10 +188,10 @@ export async function decideRestart(request: RestartRequest): Promise<RestartDec
       + `this workspace's own ('${ceiling}'), so it cannot be restarted`)
   }
 
-  const active = await listActiveAgentSessions(projectId, workspaceId)
+  const active = await listActiveConversations(projectId, workspaceId)
   const tools = active.length > 0
     ? [...new Set(active.map((a) => a.tool))]
-    : [(await firstAgentSession(projectId, workspaceId))?.tool ?? 'claude']
+    : [(await firstConversation(projectId, workspaceId))?.tool ?? 'claude']
   const beyond = `more than this workspace's own ('${ceiling}'); only one at or below it can be restarted`
   for (const tool of tools) {
     const launched = launchablePermissionMode(tool, recorded)

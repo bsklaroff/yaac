@@ -99,9 +99,9 @@ function paneName(
   if (isChangesTarget(target)) return 'Changes'
   if (isFileTarget(target)) return fileLabels?.[fileTargetPath(target)] ?? fileTargetPath(target)
   if (target === 'agent' || isAcpTarget(target)) {
-    const sessions = workspace?.agentSessions ?? []
+    const sessions = workspace?.conversations ?? []
     const session = isAcpTarget(target)
-      ? sessions.find((a) => a.agentSessionId === acpTargetSession(target))
+      ? sessions.find((a) => a.conversationId === acpTargetSession(target))
       : [...sessions].sort((a, b) => a.ordinal - b.ordinal).find((a) => a.mode !== 'acp')
     return workspace === undefined ? 'Agent' : agentLabel(workspace.tool, session)
   }
@@ -729,7 +729,7 @@ export function WorkspaceView({
                 </div>
               ) : chat !== undefined ? (
                 <div className="h-full w-full overflow-hidden rounded-md">
-                  <WorkspaceChat workspaceId={id} agentSessionId={chat} visible={onScreen} focused={focused} />
+                  <WorkspaceChat workspaceId={id} conversationId={chat} visible={onScreen} focused={focused} />
                 </div>
               ) : file ? (
                 <div className="h-full w-full overflow-hidden rounded-md">
@@ -773,7 +773,7 @@ export function WorkspaceView({
                     {target === 'agent' && (
                       <TuiTranscriptSearch
                         workspaceId={id}
-                        sessions={workspaces.find((s) => s.workspaceId === id)?.agentSessions ?? []}
+                        sessions={workspaces.find((s) => s.workspaceId === id)?.conversations ?? []}
                         visible={onScreen}
                         focused={focused}
                       />

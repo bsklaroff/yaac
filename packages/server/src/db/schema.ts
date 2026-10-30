@@ -211,7 +211,7 @@ export const workspaces = snakeCase.table('workspaces', {
    *  prewarmed spare is its claim. */
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   /** The user's title. Without one the workspace shows its agent's own
-   *  (`agent_sessions.title`), then `generatedTitle` (docs/workspace-titles.md). */
+   *  (`conversations.title`), then `generatedTitle` (docs/workspace-titles.md). */
   title: text(),
   /** Generated from the opening message by the local title model, for a
    *  workspace whose agent titles nothing, or carried over from the draft or
@@ -230,7 +230,7 @@ export const workspaces = snakeCase.table('workspaces', {
   /**
    * When the current runtime (a "life") came up; null when none is running.
    * `recordWorkspaceLife` sets this and clears every
-   * `workspace_agent_sessions.paneId` in one transaction, since tmux pane
+   * `workspace_conversations.paneId` in one transaction, since tmux pane
    * ids restart at `%0` in a new runtime.
    */
   lifeStartedAt: timestamp({ withTimezone: true }),
@@ -344,10 +344,10 @@ export const workspaceGroups = snakeCase.table('workspace_groups', {
  * `session/new`. `transcriptPath` is null for opencode (no host transcript)
  * and once a transcript is removed.
  */
-export const agentSessions = snakeCase.table('agent_sessions', {
+export const conversations = snakeCase.table('conversations', {
   projectId: uuid().notNull(),
   tool: text().$type<AgentTool>().notNull(),
-  agentSessionId: text().notNull(),
+  conversationId: text().notNull(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   /**
    * Which protocol drives this conversation, 'tui' or 'acp'. A restart must
@@ -377,7 +377,7 @@ export const agentSessions = snakeCase.table('agent_sessions', {
    * known (see docs/workspace-storage.md for when each tool reports).
    */
   model: text(),
-}, (t) => [primaryKey({ columns: [t.projectId, t.tool, t.agentSessionId] })])
+}, (t) => [primaryKey({ columns: [t.projectId, t.tool, t.conversationId] })])
 
 /**
  * Which agent sessions belong to which workspace (many-to-many: a
@@ -389,18 +389,18 @@ export const agentSessions = snakeCase.table('agent_sessions', {
  * the restore (0 is the primary agent window, named `yaac:<tool>`); `paneId`
  * is where it was last seen.
  */
-export const workspaceAgentSessions = snakeCase.table('workspace_agent_sessions', {
+export const workspaceConversations = snakeCase.table('workspace_conversations', {
   projectId: uuid().notNull(),
   workspaceId: text().notNull(),
   tool: text().$type<AgentTool>().notNull(),
-  agentSessionId: text().notNull(),
+  conversationId: text().notNull(),
   active: boolean().notNull().default(true),
   ordinal: integer().notNull().default(0),
   paneId: text(),
   firstSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   lastSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 }, (t) => [primaryKey({
-  columns: [t.projectId, t.workspaceId, t.tool, t.agentSessionId],
+  columns: [t.projectId, t.workspaceId, t.tool, t.conversationId],
 })])
 
 /**

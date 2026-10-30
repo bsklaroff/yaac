@@ -121,8 +121,8 @@ export function persistSelection(projectId: string | null, workspaceId: string |
 
 /** A chat draft's key: one per conversation, since a workspace can have
  *  several chat panes. */
-export function chatDraftKey(workspaceId: string, agentSessionId: string): string {
-  return `${workspaceId}|${agentSessionId}`
+export function chatDraftKey(workspaceId: string, conversationId: string): string {
+  return `${workspaceId}|${conversationId}`
 }
 
 /**
@@ -592,10 +592,10 @@ interface UiState {
   chatDrafts: Record<string, ChatDraft>
   /** Set (or, with '', clear) a conversation's draft. Also drops any `sent`
    *  marker, since the text no longer matches what was sent. */
-  setChatDraft: (workspaceId: string, agentSessionId: string, text: string) => void
+  setChatDraft: (workspaceId: string, conversationId: string, text: string) => void
   /** Record the text just sent, or clear it (undefined) once the server
    *  echoes it. */
-  setChatSent: (workspaceId: string, agentSessionId: string, sent: string | undefined) => void
+  setChatSent: (workspaceId: string, conversationId: string, sent: string | undefined) => void
   /** Drop drafts of workspaces the snapshot no longer lists. Drafts of
    *  inactive sessions are kept, since a session can come back. */
   syncChatDrafts: (workspaceIds: string[]) => void
@@ -1194,8 +1194,8 @@ export const useUiStore = create<UiState>((set, get) => ({
       ...(layout !== cur ? { layouts: { ...s.layouts, [workspaceId]: layout } } : {}),
     }
   }),
-  setChatDraft: (workspaceId, agentSessionId, text) => set((s) => {
-    const key = chatDraftKey(workspaceId, agentSessionId)
+  setChatDraft: (workspaceId, conversationId, text) => set((s) => {
+    const key = chatDraftKey(workspaceId, conversationId)
     const cur = s.chatDrafts[key]
     if ((cur?.text ?? '') === text) return s
     // New text drops the `sent` marker.
@@ -1204,8 +1204,8 @@ export const useUiStore = create<UiState>((set, get) => ({
     else next[key] = { text }
     return { chatDrafts: next }
   }),
-  setChatSent: (workspaceId, agentSessionId, sent) => set((s) => {
-    const key = chatDraftKey(workspaceId, agentSessionId)
+  setChatSent: (workspaceId, conversationId, sent) => set((s) => {
+    const key = chatDraftKey(workspaceId, conversationId)
     const cur = s.chatDrafts[key]
     if ((cur?.sent) === sent) return s
     const next = { ...s.chatDrafts }

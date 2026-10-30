@@ -6,9 +6,9 @@ import { readGroupRoom, refuseFullGroup } from './group-limits'
 import {
   clearWorkspaceStopped,
   findWorkspaceRow,
-  firstAgentSession,
-  listActiveAgentSessions,
-  type AgentSessionLinkRow,
+  firstConversation,
+  listActiveConversations,
+  type ConversationLinkRow,
 } from '#db'
 import { authorizeProject, type Actor } from '#domain/access'
 import { workspaceDriver } from '#drivers/driver'
@@ -65,7 +65,7 @@ export async function prepareRestart(
   const jobName = unit?.jobName
   // The unit's tool, else the first conversation's; claude if none was
   // recorded (an `acp` launch whose handshake failed).
-  const tool = unit?.tool ?? (await firstAgentSession(projectId, workspaceId))?.tool ?? 'claude'
+  const tool = unit?.tool ?? (await firstConversation(projectId, workspaceId))?.tool ?? 'claude'
   // With nothing running or shutting down, nothing can still write history,
   // so a lost one is refused before the provisioning row exists: a plain
   // error rather than a failed row.
@@ -108,7 +108,7 @@ export async function prepareRestart(
       const model = reported ?? (i === 0 && a.tool === tool ? row.model : undefined)
       const effort = launchEffort(a.tool, model, row.effort, a.tool === tool)
       return {
-        agentSessionId: a.agentSessionId,
+        conversationId: a.conversationId,
         tool: a.tool,
         ...(model !== undefined ? { model } : {}),
         ...(effort !== undefined ? { effort } : {}),
@@ -162,20 +162,20 @@ async function resumePlan(
   tool: AgentTool,
   mode: AgentMode,
 ): Promise<{ active: Conversation[]; resumes: boolean[] }> {
-  const recorded = await listActiveAgentSessions(projectId, workspaceId)
-  const active: Conversation[] = recorded.length > 0 ? recorded : [{ tool, agentSessionId: workspaceId, mode }]
+  const recorded = await listActiveConversations(projectId, workspaceId)
+  const active: Conversation[] = recorded.length > 0 ? recorded : [{ tool, conversationId: workspaceId, mode }]
   const resumes = await Promise.all(active.map((a) => hasConversationHistory(projectId, workspaceId, a)))
   const lost = active.filter((a, i) => !resumes[i] && wroteHistory(a, workspaceId))
   if (lost.length > 0) {
     throw new ServerError('CONFLICT', `cannot restart: the history of ${lost.map((a) =>
-      `${TOOL_LABELS[a.tool]} conversation ${a.agentSessionId}`).join(', ')} is gone from `
+      `${TOOL_LABELS[a.tool]} conversation ${a.conversationId}`).join(', ')} is gone from `
       + `${projectDir(projectId)}. Restore it from a backup to resume the workspace.`)
   }
   return { active, resumes }
 }
 
 /** What a restart reads of a conversation it brings back. */
-type Conversation = Pick<AgentSessionLinkRow, 'tool' | 'agentSessionId' | 'mode' | 'model' | 'transcriptPath' | 'firstPrompt'>
+type Conversation = Pick<ConversationLinkRow, 'tool' | 'conversationId' | 'mode' | 'model' | 'transcriptPath' | 'firstPrompt'>
 
 /**
  * Whether the rows show a conversation's agent wrote it history: a
@@ -187,7 +187,7 @@ type Conversation = Pick<AgentSessionLinkRow, 'tool' | 'agentSessionId' | 'mode'
  */
 function wroteHistory(a: Conversation, workspaceId: string): boolean {
   if (a.mode === 'acp') return a.firstPrompt !== undefined
-  return a.transcriptPath !== undefined || (SELF_NAMING_TOOLS.includes(a.tool) && a.agentSessionId !== workspaceId)
+  return a.transcriptPath !== undefined || (SELF_NAMING_TOOLS.includes(a.tool) && a.conversationId !== workspaceId)
 }
 
 /**

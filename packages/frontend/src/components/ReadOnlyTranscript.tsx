@@ -12,7 +12,7 @@ import { api } from '#lib/api'
 import { useTranscriptPages } from '#lib/useTranscriptPages'
 import { ServerError } from '@yaac/shared/errors'
 import type { AcpEvent, AcpTranscriptPage } from '@yaac/shared/acp'
-import type { AgentSessionEntry } from '@yaac/shared/types'
+import type { ConversationEntry } from '@yaac/shared/types'
 
 /** One empty list for every render without a transcript, so the view's
  *  memos and effects keyed on the events do not rerun each render. */
@@ -61,7 +61,7 @@ interface ConversationProps {
 export function ReadOnlyTranscript({
   sessions,
   ...props
-}: ConversationProps & { sessions: AgentSessionEntry[] }): JSX.Element {
+}: ConversationProps & { sessions: ConversationEntry[] }): JSX.Element {
   const viewable = useMemo(
     () => [...sessions].sort((a, b) => a.ordinal - b.ordinal),
     [sessions],
@@ -69,7 +69,7 @@ export function ReadOnlyTranscript({
   const [picked, setPicked] = useState<string | null>(null)
   // The user's pick, else the last conversation, else the first. Derived
   // rather than stored so a pick from another workspace never sticks.
-  const selected = viewable.find((s) => s.agentSessionId === picked)
+  const selected = viewable.find((s) => s.conversationId === picked)
     ?? viewable.find((s) => s.active)
     ?? viewable[0]
 
@@ -77,13 +77,13 @@ export function ReadOnlyTranscript({
     <div className="flex shrink-0 flex-wrap gap-1 border-b border-hairline-soft px-3 py-1.5">
       {viewable.map((s, i) => (
         <button
-          key={s.agentSessionId}
+          key={s.conversationId}
           type="button"
-          onClick={() => setPicked(s.agentSessionId)}
+          onClick={() => setPicked(s.conversationId)}
           title={s.prompt ?? undefined}
           className={clsx(
             'flex max-w-52 items-center gap-1.5 rounded-md px-2 py-1 text-[11px] transition max-md:py-2',
-            s.agentSessionId === selected.agentSessionId
+            s.conversationId === selected.conversationId
               ? 'bg-surface-3 text-text'
               : 'text-text-faint hover:bg-surface-2 hover:text-text-dim',
           )}
@@ -102,7 +102,7 @@ export function ReadOnlyTranscript({
   )
 
   // Keyed, so a conversation's stream, pages and open view start afresh.
-  return <Conversation key={selected?.agentSessionId ?? ''} {...props} session={selected} tabs={tabs} />
+  return <Conversation key={selected?.conversationId ?? ''} {...props} session={selected} tabs={tabs} />
 }
 
 /** One conversation of `ReadOnlyTranscript`, under its tabs. */
@@ -115,10 +115,10 @@ function Conversation({
   find = { chord: true },
   footer,
   tabs,
-}: ConversationProps & { session: AgentSessionEntry | undefined; tabs: ReactNode }): JSX.Element {
+}: ConversationProps & { session: ConversationEntry | undefined; tabs: ReactNode }): JSX.Element {
   const column = useChatColumn()
-  const agentSessionId = session?.agentSessionId ?? ''
-  const stream = useAcpStream(workspaceId, agentSessionId, { observe: true, enabled: live && session !== undefined })
+  const conversationId = session?.conversationId ?? ''
+  const stream = useAcpStream(workspaceId, conversationId, { observe: true, enabled: live && session !== undefined })
   /** The stream has sent a page, so it is what is shown from then on, even
    *  while it reconnects. */
   const [streamed, setStreamed] = useState(false)
@@ -126,11 +126,11 @@ function Conversation({
 
   // `null` is a conversation the server has no record of (its 404).
   const { data, isPending, isError, error } = useQuery({
-    queryKey: ['transcript', workspaceId, session?.agentSessionId, live],
+    queryKey: ['transcript', workspaceId, session?.conversationId, live],
     queryFn: session === undefined ? skipToken : async (): Promise<AcpTranscriptPage | null> => {
       try {
-        return await api.workspace[':id']['agent-sessions'][':sessionId'].transcript.$get({
-          param: { id: workspaceId, sessionId: session.agentSessionId },
+        return await api.workspace[':id']['conversations'][':sessionId'].transcript.$get({
+          param: { id: workspaceId, sessionId: session.conversationId },
           query: {},
         })
       } catch (err) {
@@ -145,7 +145,7 @@ function Conversation({
   const scrollRef = useRef<HTMLDivElement>(null)
   const pages = useTranscriptPages({
     workspaceId,
-    agentSessionId,
+    conversationId,
     life: last.life,
     last: last.page,
     lastEvents: last.events,

@@ -60,8 +60,8 @@ const PARENT: WorkspaceListEntry = {
   status: 'running',
   createdAt: '2026-01-01 00:00:01',
   title: 'Parent work',
-  agentSessions: [{
-    agentSessionId: 'a1', tool: 'codex', mode: 'tui', ordinal: 0, active: true, model: 'gpt-5.5',
+  conversations: [{
+    conversationId: 'a1', tool: 'codex', mode: 'tui', ordinal: 0, active: true, model: 'gpt-5.5',
   }],
   blockedHosts: [],
   forwardedPorts: [],

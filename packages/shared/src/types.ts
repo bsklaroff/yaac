@@ -113,7 +113,7 @@ export function effortFor(efforts: ModelEfforts | undefined, wanted: string | un
  * (`--resume <id>`). It must start with a letter or digit so it can't be read
  * as a flag. Fits UUIDs (claude, codex, pi) and opencode's `ses_…` ids.
  */
-export const agentSessionIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/)
+export const conversationIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/)
 
 /**
  * How yaac drives a conversation, and so how the webapp renders it
@@ -905,9 +905,9 @@ export type ListedAgentStatus = Exclude<AgentStatus, 'asking'>
  * (a second terminal, or a `/clear` that left the old window open); the
  * rest are the workspace's history.
  */
-export interface AgentSessionEntry {
+export interface ConversationEntry {
   /** The tool's own conversation id, not yaac's. */
-  agentSessionId: string
+  conversationId: string
   tool: AgentTool
   /** Which protocol drives it, and so which pane renders it. Absent means
    *  `tui`. */
@@ -979,7 +979,7 @@ export interface WorkspaceListEntry {
    *  back to `prompt`. */
   title?: string
   /** Every conversation the workspace has hosted, in restore order. */
-  agentSessions: AgentSessionEntry[]
+  conversations: ConversationEntry[]
   /** Its tmux windows other than the agent's, which the webapp opens as
    *  terminal panes. Absent until the server first lists them (unknown, not
    *  none) and while the workspace is stopping. */
@@ -1322,7 +1322,7 @@ export interface StoppedWorkspaceEntry {
   title?: string
   /** Every conversation the workspace hosted, in restore order; a restart
    *  brings back the `active` ones. */
-  agentSessions: AgentSessionEntry[]
+  conversations: ConversationEntry[]
   /** Why the workspace died, when the reaper (not the user) stopped it. */
   deathReason?: WorkspaceDeathReason
   /** Evidence accompanying `deathReason` (exit code, eviction message, …). */

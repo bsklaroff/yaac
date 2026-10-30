@@ -471,7 +471,7 @@ export function buildMessageCmd(
   target: string,
   message: string,
   paths: WorkspacePaths,
-  conversation: { tool: AgentTool; agentSessionId: string },
+  conversation: { tool: AgentTool; conversationId: string },
 ): StdinScript {
   return {
     // A pod whose streamd predates exec stdin hands the command an empty one;
@@ -486,15 +486,15 @@ function messageScript(
   paneTarget: string,
   message: string,
   paths: WorkspacePaths,
-  { tool, agentSessionId }: { tool: AgentTool; agentSessionId: string },
+  { tool, conversationId }: { tool: AgentTool; conversationId: string },
 ): string {
-  if (!SAFE_SESSION_ID.test(agentSessionId)) return 'echo "unexpected conversation id" >&2; exit 3'
+  if (!SAFE_SESSION_ID.test(conversationId)) return 'echo "unexpected conversation id" >&2; exit 3'
   const TMUX = tmuxCmd(paths)
   const target = `-t ${paneTarget}`
   if (tool === 'pi') {
     // The extension takes the file, so its being gone is the delivery.
     const b64 = Buffer.from(stripControlChars(message), 'utf8').toString('base64')
-    return `f="$PI_CODING_AGENT_DIR/yaac-messages/${agentSessionId}.txt"; mkdir -p "\${f%/*}" || exit 1
+    return `f="$PI_CODING_AGENT_DIR/yaac-messages/${conversationId}.txt"; mkdir -p "\${f%/*}" || exit 1
 printf %s ${b64} | base64 -d > "$f.tmp" && mv "$f.tmp" "$f" || exit 1
 ${TMUX} send-keys ${target} ${PI_MESSAGE_KEY}
 i=0; while [ -e "$f" ]; do
@@ -505,7 +505,7 @@ done`
   const draft = draftHandling(tool, TMUX, target)
   const { paste, copies } = pasteParts(paneTarget, message, TMUX)
   return `tm() { ${TMUX} "$@"; }
-at_input() { ${atInputTest(tool, TMUX, target, agentSessionId)}; }
+at_input() { ${atInputTest(tool, TMUX, target, conversationId)}; }
 ${draft.defs ?? ''}
 box() { ${draft.box}; }
 wait_box() { i=0; until box; [ $? = "$1" ]; do [ $i -ge 20 ] && return 1; i=$((i+1)); sleep 0.25; done; }
@@ -568,11 +568,11 @@ export const PI_MESSAGE_KEY = 'f9'
  *    pane's first row ` ! ` under a permission prompt and ` ? ` under a
  *    question or form, where a paste fills the free-text answer.
  */
-function atInputTest(tool: AgentTool, TMUX: string, target: string, agentSessionId: string): string {
+function atInputTest(tool: AgentTool, TMUX: string, target: string, conversationId: string): string {
   switch (tool) {
     case 'claude':
       return 'f=$(ls -t "$CLAUDE_CONFIG_DIR"/sessions/*.json 2>/dev/null | while read -r x; do '
-        + `grep -qF "\\"sessionId\\":\\"${agentSessionId}\\"" "$x" && { echo "$x"; break; }; done); `
+        + `grep -qF "\\"sessionId\\":\\"${conversationId}\\"" "$x" && { echo "$x"; break; }; done); `
         + '[ -n "$f" ] || return 2; case "$(sed -n "s/.*\\"status\\":\\"\\([a-z]*\\)\\".*/\\1/p" "$f")" in '
         + 'idle|busy) true ;; *) false ;; esac'
     case 'codex':

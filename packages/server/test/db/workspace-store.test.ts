@@ -34,7 +34,7 @@ import {
   type StoppedRowCursor,
 } from '#db/workspace-store'
 import { createWorkspaceGroup, deleteWorkspaceGroup } from '#db/group-store'
-import { listWorkspaceAgentSessions, recordAgentSessions } from '#db/agent-session-store'
+import { listWorkspaceConversations, recordConversations } from '#db/conversation-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
@@ -230,11 +230,11 @@ describe('session store', () => {
     it('removes one workspace and its conversation links, leaving its siblings', async () => {
       await create('sid-1')
       await create('sid-2')
-      await recordAgentSessions(PROJ, 'sid-1', [{ tool: 'claude', agentSessionId: 'conv-1' }])
+      await recordConversations(PROJ, 'sid-1', [{ tool: 'claude', conversationId: 'conv-1' }])
       const before = pushes
       await deleteWorkspaceRecords(PROJ, 'sid-1')
       expect((await listWorkspaceRows(PROJ)).map((r) => r.workspaceId)).toEqual(['sid-2'])
-      expect(await listWorkspaceAgentSessions(PROJ, 'sid-1')).toEqual([])
+      expect(await listWorkspaceConversations(PROJ, 'sid-1')).toEqual([])
       expect(pushes - before).toBe(1)
     })
 
@@ -264,27 +264,27 @@ describe('session store', () => {
       // launches. `ran` needs a captured opening message, a transcript, or
       // an id opencode or codex minted for itself.
       await create('never-ran')
-      await recordAgentSessions(PROJ, 'never-ran', [
-        { tool: 'claude', agentSessionId: 'never-ran' },
+      await recordConversations(PROJ, 'never-ran', [
+        { tool: 'claude', conversationId: 'never-ran' },
       ])
       await create('has-prompt')
-      await recordAgentSessions(PROJ, 'has-prompt', [
-        { tool: 'claude', agentSessionId: 'conv-a', firstPrompt: 'hello' },
+      await recordConversations(PROJ, 'has-prompt', [
+        { tool: 'claude', conversationId: 'conv-a', firstPrompt: 'hello' },
       ])
       await create('has-transcript')
-      await recordAgentSessions(PROJ, 'has-transcript', [
+      await recordConversations(PROJ, 'has-transcript', [
         {
           tool: 'claude',
-          agentSessionId: 'conv-b',
+          conversationId: 'conv-b',
           // Inside the tool home: the column stores paths relative to it, so
           // one outside has no storable form and would record as null.
           transcriptPath: path.join(claudeDir(PROJ), 'projects', '-workspace', 'conv-b.jsonl'),
         },
       ])
       await create('opencode-pin')
-      await recordAgentSessions(PROJ, 'opencode-pin', [{ tool: 'opencode', agentSessionId: 'opencode-pin' }])
+      await recordConversations(PROJ, 'opencode-pin', [{ tool: 'opencode', conversationId: 'opencode-pin' }])
       await create('opencode-named')
-      await recordAgentSessions(PROJ, 'opencode-named', [{ tool: 'opencode', agentSessionId: 'ses_1' }])
+      await recordConversations(PROJ, 'opencode-named', [{ tool: 'opencode', conversationId: 'ses_1' }])
       await create('gone')
       await recordWorkspaceStopped(PROJ, 'gone')
 

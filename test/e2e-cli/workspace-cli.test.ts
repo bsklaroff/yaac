@@ -11,9 +11,9 @@ import {
   recordWorkspaceStopped,
 } from '@yaac/server/db/workspace-store'
 import {
-  recordAgentSessions,
-  setActiveAgentSessions,
-} from '@yaac/server/db/agent-session-store'
+  recordConversations,
+  setActiveConversations,
+} from '@yaac/server/db/conversation-store'
 import { setDataDir } from '@yaac/shared/paths'
 import { workspaceDir } from '@yaac/shared/project-paths'
 import fs from 'node:fs/promises'
@@ -295,8 +295,8 @@ describe('with seeded projects', () => {
     /** One recorded workspace that is stopped, with one claude conversation. */
     async function seedStopped(projectId: string, workspaceId: string, firstPrompt?: string): Promise<void> {
       await recordWorkspaceCreated({ projectId: projectId, workspaceId })
-      await recordAgentSessions(projectId, workspaceId, [
-        { tool: 'claude', agentSessionId: crypto.randomUUID(), ...(firstPrompt !== undefined ? { firstPrompt } : {}) },
+      await recordConversations(projectId, workspaceId, [
+        { tool: 'claude', conversationId: crypto.randomUUID(), ...(firstPrompt !== undefined ? { firstPrompt } : {}) },
       ])
       await recordWorkspaceStopped(projectId, workspaceId)
     }
@@ -666,12 +666,12 @@ describe('with seeded projects', () => {
       // A stopped workspace with two conversations: one open at stop, one
       // closed by a /clear.
       await recordWorkspaceCreated({ projectId, workspaceId: stoppedId })
-      await recordAgentSessions(projectId, stoppedId, [
-        { tool: 'claude', agentSessionId: convA, firstPrompt: 'the original ask' },
-        { tool: 'claude', agentSessionId: convB, firstPrompt: 'after the clear' },
+      await recordConversations(projectId, stoppedId, [
+        { tool: 'claude', conversationId: convA, firstPrompt: 'the original ask' },
+        { tool: 'claude', conversationId: convB, firstPrompt: 'after the clear' },
       ])
-      await setActiveAgentSessions(projectId, stoppedId, [
-        { tool: 'claude', agentSessionId: convB },
+      await setActiveConversations(projectId, stoppedId, [
+        { tool: 'claude', conversationId: convB },
       ])
       await recordWorkspaceStopped(projectId, stoppedId)
       // A workspace with no conversation, for the empty case.

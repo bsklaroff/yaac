@@ -2,7 +2,7 @@ import { useEffect, useState, type JSX } from 'react'
 import { useFindChord } from '#components/ConversationFind'
 import { ReadOnlyTranscript } from '#components/ReadOnlyTranscript'
 import { useUiStore } from '#lib/store'
-import type { AgentSessionEntry } from '@yaac/shared/types'
+import type { ConversationEntry } from '@yaac/shared/types'
 
 /**
  * Cmd/Ctrl-F in a `tui` agent's pane. The terminal holds only the screens
@@ -13,7 +13,7 @@ import type { AgentSessionEntry } from '@yaac/shared/types'
  */
 export function TuiTranscriptSearch({ workspaceId, sessions, visible, focused }: {
   workspaceId: string
-  sessions: AgentSessionEntry[]
+  sessions: ConversationEntry[]
   visible: boolean
   /** The pane the user is in, which Cmd/Ctrl-F searches. */
   focused: boolean

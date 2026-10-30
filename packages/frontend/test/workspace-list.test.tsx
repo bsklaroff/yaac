@@ -82,7 +82,7 @@ const stoppedEntry = (workspaceId: string, over: Partial<StoppedWorkspaceEntry> 
   stoppedAt: '2026-08-10 01:00:00',
   title: `Stopped ${workspaceId}`,
   deathSeenBy: [],
-  agentSessions: [],
+  conversations: [],
   ...over,
 })
 
@@ -126,7 +126,7 @@ const entry = (over: Partial<WorkspaceListEntry> = {}): WorkspaceListEntry => ({
   tool: 'claude',
   status: 'running',
   createdAt: '2026-08-10 00:00:00',
-  agentSessions: [],
+  conversations: [],
   blockedHosts: [],
   forwardedPorts: [],
   unforwardedPorts: [],
@@ -267,7 +267,7 @@ describe('WorkspaceList', () => {
       entry({
         workspaceId: 'a',
         title: 'Answered once',
-        agentSessions: [{ agentSessionId: 'c1', tool: 'claude', ordinal: 0, active: true, model: 'claude-opus-5' }],
+        conversations: [{ conversationId: 'c1', tool: 'claude', ordinal: 0, active: true, model: 'claude-opus-5' }],
       }),
       entry({ workspaceId: 'b', title: 'Not yet', tool: 'opencode' }),
     ])
@@ -1413,7 +1413,7 @@ describe('WorkspaceList', () => {
     useUiStore.setState({ viewedUserId: 'u-ada' })
     stoppedRows.push({
       workspaceId: 'ghost', projectId: 'proj', tool: 'claude', createdAt: '2026-08-09 00:00:00',
-      stoppedAt: '2026-08-09 01:00:00', title: 'Old run', deathSeenBy: [], agentSessions: [], groupId: 'g1',
+      stoppedAt: '2026-08-09 01:00:00', title: 'Old run', deathSeenBy: [], conversations: [], groupId: 'g1',
     })
     renderList([entry({ workspaceId: 'a', title: 'Their run' }), entry({ workspaceId: 'b', title: 'Filed', groupId: 'g1' })], {
       groups: [group({ stoppedCount: 1 })],

@@ -8,7 +8,7 @@ import type { XtermCore } from '#lib/xterm-internals'
 import type { Terminal } from '@xterm/xterm'
 import type { AcpEvent } from '@yaac/shared/acp'
 import type {
-  AgentSessionEntry, ProvisioningWorkspaceEntry, ServerSnapshot, Whoami, WorkspaceListEntry,
+  ConversationEntry, ProvisioningWorkspaceEntry, ServerSnapshot, Whoami, WorkspaceListEntry,
 } from '@yaac/shared/types'
 
 /**
@@ -134,7 +134,7 @@ export const workspaceEntry = (over: Partial<WorkspaceListEntry> = {}): Workspac
   tool: 'claude',
   status: 'running',
   createdAt: '2026-08-10 00:00:00',
-  agentSessions: [],
+  conversations: [],
   blockedHosts: [],
   forwardedPorts: [],
   unforwardedPorts: [],
@@ -153,8 +153,8 @@ export const provisioningEntry = (over: Partial<ProvisioningWorkspaceEntry> = {}
 })
 
 /** A workspace's first, active agent conversation. */
-export const agentSession = (over: Partial<AgentSessionEntry> = {}): AgentSessionEntry => ({
-  agentSessionId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true, ...over,
+export const conversation = (over: Partial<ConversationEntry> = {}): ConversationEntry => ({
+  conversationId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true, ...over,
 })
 
 /** A user prompt in a conversation (or a subagent's `thread`). */

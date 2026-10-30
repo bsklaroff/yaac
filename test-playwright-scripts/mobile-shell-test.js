@@ -40,7 +40,7 @@ const live = (await api('/workspace/list')).workspaces
 const rowText = (w) => w.title || w.prompt || 'New workspace'
 const only = process.env.PROJECT && (await resolveProject(process.env.PROJECT)).id
 const target = live.find((w) => (!only || w.projectId === only)
-  && w.agentSessions?.[0]?.mode === 'tui'
+  && w.conversations?.[0]?.mode === 'tui'
   && !live.some((o) => o !== w && o.projectId === w.projectId && o.tool === w.tool && rowText(o) === rowText(w)))
 if (!target) throw new Error('no live tui workspace with a distinguishable row — create or retitle one')
 /** The target's project, whose row on the projects screen shows its name. */
@@ -55,7 +55,7 @@ const USABLE = 48
 
 const stopped = (id, title, extra = {}) => ({
   workspaceId: id, projectId: target.projectId, tool: 'claude', title,
-  createdAt: '2026-08-01 09:00:00', stoppedAt: '2026-08-01 18:00:00', deathSeenBy: [], agentSessions: [], ...extra,
+  createdAt: '2026-08-01 09:00:00', stoppedAt: '2026-08-01 18:00:00', deathSeenBy: [], conversations: [], ...extra,
 })
 const STOPPED = [
   stopped('stub-1', 'Rework the mobile overlays so both panes fit', {

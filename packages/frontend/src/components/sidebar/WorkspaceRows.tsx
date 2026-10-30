@@ -151,7 +151,7 @@ function MarqueeTitle({ text, hovered }: { text: string; hovered: boolean }): JS
 /** How many of a workspace's agent sessions are active. Zero reads as the
  *  ordinary single-agent case. */
 function openAgentCount(workspace: WorkspaceListEntry): number {
-  return workspace.agentSessions.filter((a) => a.active).length
+  return workspace.conversations.filter((a) => a.active).length
 }
 
 export function WorkspaceRow({

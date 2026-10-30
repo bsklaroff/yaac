@@ -13,12 +13,12 @@ import {
 import { closeDb } from '#db/client'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 import { holdPendingPrompt, recordWorkspaceCreated, setWorkspaceTitle } from '#db/workspace-store'
-import { recordAgentSessions } from '#db/agent-session-store'
+import { recordConversations } from '#db/conversation-store'
 import {
   listActiveWorkspaces,
   _clearListActiveInflightForTests,
 } from '#domain/workspaces/list'
-import { HELD_PROMPT_GRACE_MS } from '#domain/workspaces/agent-session-registry'
+import { HELD_PROMPT_GRACE_MS } from '#domain/workspaces/conversation-registry'
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
 import { DEMO_PROJECT_ID, recordTestProject } from '@yaac/test-utils/project-fixture'
 
@@ -61,8 +61,8 @@ describe('listActiveWorkspaces', () => {
   it('renders a stopping pod as a non-interactive stopping row, not stale', async () => {
     await recordTestProject(DEMO_PROJECT_ID)
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'dying' })
-    await recordAgentSessions(DEMO_PROJECT_ID, 'dying', [
-      { tool: 'claude', agentSessionId: 'dying', model: 'claude-sonnet-5' },
+    await recordConversations(DEMO_PROJECT_ID, 'dying', [
+      { tool: 'claude', conversationId: 'dying', model: 'claude-sonnet-5' },
     ])
     running([live('dying', { running: false, terminating: true })])
     const result = await listActiveWorkspaces()
@@ -76,9 +76,9 @@ describe('listActiveWorkspaces', () => {
     expect(row.waitingSinceMs).toBeUndefined()
     // Its conversations stay listed, so the row keeps naming its model, but
     // carry no live status of their own.
-    expect(row.agentSessions).toHaveLength(1)
-    expect(row.agentSessions[0]).toMatchObject({ model: 'claude-sonnet-5' })
-    expect(row.agentSessions[0].status).toBeUndefined()
+    expect(row.conversations).toHaveLength(1)
+    expect(row.conversations[0]).toMatchObject({ model: 'claude-sonnet-5' })
+    expect(row.conversations[0].status).toBeUndefined()
   })
 
   it('prunes a stopping mark once its pod is gone', async () => {
@@ -105,13 +105,13 @@ describe('listActiveWorkspaces', () => {
   it("titles a workspace the user has not named with its agent's own title, else its generated one", async () => {
     await recordTestProject(DEMO_PROJECT_ID)
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'generated', generatedTitle: 'From the draft' })
-    await recordAgentSessions(DEMO_PROJECT_ID, 'generated', [
-      { tool: 'pi', agentSessionId: 'generated', firstPrompt: 'the parser drops tokens' },
+    await recordConversations(DEMO_PROJECT_ID, 'generated', [
+      { tool: 'pi', conversationId: 'generated', firstPrompt: 'the parser drops tokens' },
     ])
     for (const workspaceId of ['agent-titled', 'renamed']) {
       await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId, generatedTitle: 'From the draft' })
-      await recordAgentSessions(DEMO_PROJECT_ID, workspaceId, [
-        { tool: 'claude', agentSessionId: workspaceId, firstPrompt: 'the parser drops tokens', title: 'Parser token loss' },
+      await recordConversations(DEMO_PROJECT_ID, workspaceId, [
+        { tool: 'claude', conversationId: workspaceId, firstPrompt: 'the parser drops tokens', title: 'Parser token loss' },
       ])
     }
     await setWorkspaceTitle(DEMO_PROJECT_ID, 'renamed', 'Mine')
@@ -141,7 +141,7 @@ describe('listActiveWorkspaces', () => {
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'held', mode: 'acp' })
     await holdPendingPrompt(DEMO_PROJECT_ID, 'held', 'fix the lexer')
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'term', mode: 'tui' })
-    await recordAgentSessions(DEMO_PROJECT_ID, 'term', [{ tool: 'claude', agentSessionId: 'term', firstPrompt: 'port the parser' }])
+    await recordConversations(DEMO_PROJECT_ID, 'term', [{ tool: 'claude', conversationId: 'term', firstPrompt: 'port the parser' }])
     // A spare warmed now, its agent idle, and claimed once 'held' is up.
     setAgentStatus(DEMO_PROJECT_ID, 'claimed', 'claude-0', 'waiting')
     running([live('held', { createdAtMs: booted }), live('term'), live('claimed', { createdAtMs: created })])
@@ -152,7 +152,7 @@ describe('listActiveWorkspaces', () => {
       _clearListActiveInflightForTests()
       return (await listActiveWorkspaces(DEMO_PROJECT_ID)).workspaces.map((w) => [
         w.workspaceId, w.mode, w.prompt, w.status, w.waitingSinceMs, w.asking,
-        w.agentSessions.map((a) => [a.status, a.waitingSinceMs]),
+        w.conversations.map((a) => [a.status, a.waitingSinceMs]),
       ])
     }
     expect(await list()).toEqual(expect.arrayContaining([
@@ -179,8 +179,8 @@ describe('listActiveWorkspaces', () => {
     vi.setSystemTime(attached)
     setWorkspaceStreamHealth(DEMO_PROJECT_ID, 'held', true)
     expect(await list()).toContainEqual(['held', 'acp', 'fix the lexer', 'running', undefined, undefined, []])
-    await recordAgentSessions(DEMO_PROJECT_ID, 'held', [{ tool: 'claude', agentSessionId: 'conv', paneId: 'claude-0' }])
-    setLiveAgents(DEMO_PROJECT_ID, 'held', [{ handle: 'claude-0', tool: 'claude', agentSessionId: 'conv' }])
+    await recordConversations(DEMO_PROJECT_ID, 'held', [{ tool: 'claude', conversationId: 'conv', paneId: 'claude-0' }])
+    setLiveAgents(DEMO_PROJECT_ID, 'held', [{ handle: 'claude-0', tool: 'claude', conversationId: 'conv' }])
     setAgentStatus(DEMO_PROJECT_ID, 'held', 'claude-0', 'waiting')
     expect(await list()).toContainEqual(['held', 'acp', 'fix the lexer', 'running', undefined, undefined, [['running', undefined]]])
 

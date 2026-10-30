@@ -14,7 +14,7 @@ import {
   setWorkspaceTitle,
 } from '#db/workspace-store'
 import { createWorkspaceGroup } from '#db/group-store'
-import { recordAgentSessions } from '#db/agent-session-store'
+import { recordConversations } from '#db/conversation-store'
 import { closeDb } from '#db/client'
 import { BUILT_IN_USER_ID, holdPendingPrompt, recordProject, seeTailnetUser } from '#db'
 import { claudeDir } from '@yaac/shared/project-paths'
@@ -35,8 +35,8 @@ async function seedWorkspace(
   await recordWorkspaceCreated({ projectId: projectId, workspaceId })
   // A real create always records a conversation, which is where the tool
   // and first prompt are read from.
-  await recordAgentSessions(projectId, workspaceId, [
-    { tool: opts.tool ?? 'claude', agentSessionId: workspaceId },
+  await recordConversations(projectId, workspaceId, [
+    { tool: opts.tool ?? 'claude', conversationId: workspaceId },
   ])
   if (opts.deleted) await recordWorkspaceStopped(projectId, workspaceId)
 }
@@ -158,8 +158,8 @@ describe('listStoppedWorkspaces', () => {
 
   it("carries the title, the agent's own when the user gave none, and the sidebar group", async () => {
     await seedWorkspace(DEMO_PROJECT_ID, 'sid', { deleted: true })
-    await recordAgentSessions(DEMO_PROJECT_ID, 'sid', [
-      { tool: 'claude', agentSessionId: 'sid', firstPrompt: 'the parser drops tokens', title: 'Parser token loss' },
+    await recordConversations(DEMO_PROJECT_ID, 'sid', [
+      { tool: 'claude', conversationId: 'sid', firstPrompt: 'the parser drops tokens', title: 'Parser token loss' },
     ])
     expect((await entries())[0]).toMatchObject({ title: 'Parser token loss', prompt: 'the parser drops tokens' })
 
@@ -206,8 +206,8 @@ describe('listStoppedWorkspaces', () => {
     await seedWorkspace(DEMO_PROJECT_ID, 'titled', { deleted: true })
     await setWorkspaceTitle(DEMO_PROJECT_ID, 'titled', 'Fix the 100% parser')
     await seedWorkspace(DEMO_PROJECT_ID, 'prompted', { deleted: true })
-    await recordAgentSessions(DEMO_PROJECT_ID, 'prompted', [
-      { tool: 'claude', agentSessionId: 'prompted', firstPrompt: 'port the lexer', title: 'Tokenizer rewrite' },
+    await recordConversations(DEMO_PROJECT_ID, 'prompted', [
+      { tool: 'claude', conversationId: 'prompted', firstPrompt: 'port the lexer', title: 'Tokenizer rewrite' },
     ])
     await seedWorkspace(DEMO_PROJECT_ID, 'oc', { tool: 'opencode', deleted: true })
     await seedWorkspace(DEMO_PROJECT_ID, 'generated', { deleted: true })
@@ -241,9 +241,9 @@ describe('listStoppedWorkspaces', () => {
 
   it('reports the newest recorded activity across conversations, and creation time without one', async () => {
     await seedWorkspace(DEMO_PROJECT_ID, 'active', { deleted: true })
-    await recordAgentSessions(DEMO_PROJECT_ID, 'active', [
-      { tool: 'claude', agentSessionId: 'active', lastActiveMs: Date.parse('2026-01-02') },
-      { tool: 'claude', agentSessionId: 'cleared', lastActiveMs: Date.parse('2026-01-03') },
+    await recordConversations(DEMO_PROJECT_ID, 'active', [
+      { tool: 'claude', conversationId: 'active', lastActiveMs: Date.parse('2026-01-02') },
+      { tool: 'claude', conversationId: 'cleared', lastActiveMs: Date.parse('2026-01-03') },
     ])
     await seedWorkspace(DEMO_PROJECT_ID, 'idle', { deleted: true })
 
@@ -260,8 +260,8 @@ describe('listStoppedWorkspaces', () => {
     await fs.writeFile(path.join(workspacesDir, 'uncaptured.jsonl'), `${first}\n`)
     await seedWorkspace(DEMO_PROJECT_ID, 'uncaptured', { deleted: true })
     await seedWorkspace(DEMO_PROJECT_ID, 'captured', { deleted: true })
-    await recordAgentSessions(DEMO_PROJECT_ID, 'captured', [
-      { tool: 'claude', agentSessionId: 'captured', firstPrompt: 'port the lexer' },
+    await recordConversations(DEMO_PROJECT_ID, 'captured', [
+      { tool: 'claude', conversationId: 'captured', firstPrompt: 'port the lexer' },
     ])
 
     await seedWorkspace(DEMO_PROJECT_ID, 'held', { deleted: true })

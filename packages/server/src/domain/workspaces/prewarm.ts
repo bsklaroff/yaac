@@ -524,12 +524,12 @@ export async function tryClaimPrewarmed(
     // comes from the handshake and the registry records it.
     if (setup.mode === 'tui') {
       await applyWorkspaceEvent({
-        type: 'sessions-launched',
+        type: 'conversations-launched',
         projectId,
         workspaceId: claimedId,
         sessions: [{
           tool,
-          agentSessionId: claimedId,
+          conversationId: claimedId,
           ...(setup.model !== undefined ? { model: setup.model } : {}),
           ...(request.prompt !== undefined ? { firstPrompt: request.prompt } : {}),
         }],

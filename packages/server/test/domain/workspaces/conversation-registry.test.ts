@@ -8,10 +8,10 @@ import { closeDb } from '#db/client'
 import { acpLogDir, claudeDir, codexDir } from '@yaac/shared/project-paths'
 import {
   _resetReportedModesForTests,
-  reconcileAgentSessions,
-  reconcileStoppedAgentSessions,
-} from '#domain/workspaces/agent-session-registry'
-import { listWorkspaceAgentSessions, recordAgentSessions } from '#db/agent-session-store'
+  reconcileConversations,
+  reconcileStoppedConversations,
+} from '#domain/workspaces/conversation-registry'
+import { listWorkspaceConversations, recordConversations } from '#db/conversation-store'
 import { applyWorkspaceEvent } from '#db'
 import { _resetPromptCaptureForTests } from '#domain/workspaces/prompt-capture'
 import { _resetTitleCaptureForTests } from '#domain/workspaces/title-capture'
@@ -38,7 +38,7 @@ import {
  * tui driver and reporter script), and the real `applyWorkspaceEvent` writes
  * the rows the assertions read.
  */
-describe('reconcileAgentSessions', () => {
+describe('reconcileConversations', () => {
   let tmpDir: string
   const podExec = vi.fn<WorkspaceDriver['exec']>()
 
@@ -63,7 +63,7 @@ describe('reconcileAgentSessions', () => {
   })
 
   /** Run one pass over the workspace, running on a pod. */
-  const sweep = (pod: Partial<RuntimeHandle> = {}): Promise<void> => reconcileAgentSessions(snapshotFixture([
+  const sweep = (pod: Partial<RuntimeHandle> = {}): Promise<void> => reconcileConversations(snapshotFixture([
     handleFixture({ workspaceId: 'wt-1', projectId: DEMO_PROJECT_ID, jobName: 'yaac-demo-wt-1', ...pod }),
   ]))
 
@@ -74,8 +74,8 @@ describe('reconcileAgentSessions', () => {
   }
 
   /** Mark an acp conversation's stream as connected, as its driver does. */
-  const connected = (handle: string, agentSessionId: string): void => {
-    registerAcpConversation(DEMO_PROJECT_ID, 'wt-1', { handle, agentSessionId }, {} as AcpConversation)
+  const connected = (handle: string, conversationId: string): void => {
+    registerAcpConversation(DEMO_PROJECT_ID, 'wt-1', { handle, conversationId }, {} as AcpConversation)
   }
 
   /** Write a claude transcript opening with `firstMessage`; return a pane
@@ -87,13 +87,13 @@ describe('reconcileAgentSessions', () => {
     await fs.writeFile(file, firstMessage === undefined ? '{"type":"summary"}\n' : `${JSON.stringify({
       type: 'user', message: { role: 'user', content: firstMessage },
     })}\n`)
-    return { handle, tool: 'claude', agentSessionId: id, transcriptPath: rel }
+    return { handle, tool: 'claude', conversationId: id, transcriptPath: rel }
   }
 
   const rows = async (): Promise<Array<[string, boolean, string | undefined]>> =>
-    (await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-1')).map((l) => [l.agentSessionId, l.active, l.paneId])
+    (await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-1')).map((l) => [l.conversationId, l.active, l.paneId])
   const row = async (id: string) =>
-    (await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-1')).find((l) => l.agentSessionId === id)
+    (await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-1')).find((l) => l.conversationId === id)
   const posture = async (): Promise<string | undefined> =>
     (await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-1'))?.permissionMode
 
@@ -136,8 +136,8 @@ describe('reconcileAgentSessions', () => {
     live([await claudeOn('%0', 'conv-b')])
     await sweep()
     await sweep()
-    const links = await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-1')
-    expect(links.map((l) => [l.agentSessionId, l.active, l.ordinal, l.firstPrompt]))
+    const links = await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-1')
+    expect(links.map((l) => [l.conversationId, l.active, l.ordinal, l.firstPrompt]))
       .toEqual([['conv-a', false, 0, 'the original ask'], ['conv-b', true, 1, undefined]])
 
     // conv-b's first prompt is picked up once it exists.
@@ -147,8 +147,8 @@ describe('reconcileAgentSessions', () => {
   })
 
   it('cannot overwrite the create-time prompt with what the transcript now opens with', async () => {
-    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-1', [
-      { tool: 'claude', agentSessionId: 'conv-a', firstPrompt: 'already captured' },
+    await recordConversations(DEMO_PROJECT_ID, 'wt-1', [
+      { tool: 'claude', conversationId: 'conv-a', firstPrompt: 'already captured' },
     ])
     live([await claudeOn('%0', 'conv-a', 'a compacted first message')])
     await sweep()
@@ -156,7 +156,7 @@ describe('reconcileAgentSessions', () => {
   })
 
   it('leaves the rows alone until a live set arrives, and for a prewarmed spare', async () => {
-    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-1', [{ tool: 'claude', agentSessionId: 'conv-a' }])
+    await recordConversations(DEMO_PROJECT_ID, 'wt-1', [{ tool: 'claude', conversationId: 'conv-a' }])
     // A stream gap must never read as "every agent exited".
     await sweep()
     expect(await rows()).toEqual([['conv-a', true, undefined]])
@@ -195,7 +195,7 @@ describe('reconcileAgentSessions', () => {
     const at = (minutes: number) => vi.spyOn(Date, 'now').mockReturnValue(t0 + minutes * 60_000)
     const titled = (title: string) => ({ stdout: JSON.stringify({ data: { id: 'ses_1', title } }), stderr: '' })
     podExec.mockResolvedValue(titled('New session - 2026-10-20T11:22:33.456Z'))
-    live([{ handle: '%0', tool: 'opencode', agentSessionId: 'ses_1', model: 'opencode/big-pickle' }])
+    live([{ handle: '%0', tool: 'opencode', conversationId: 'ses_1', model: 'opencode/big-pickle' }])
     await sweep()
     expect(podExec.mock.calls[0]?.[0]).toBe('yaac-demo-wt-1')
     expect(podExec.mock.calls[0]?.[1]).toBe('opencode api --standalone session.get --param sessionID=ses_1')
@@ -231,27 +231,27 @@ describe('reconcileAgentSessions', () => {
     // second workspace) with neither. Neither tool actually uses that id.
     const launch = (workspaceId: string, session: { tool: 'codex' | 'opencode'; firstPrompt?: string; model?: string }) =>
       applyWorkspaceEvent({
-        type: 'sessions-launched',
+        type: 'conversations-launched',
         projectId: DEMO_PROJECT_ID,
         workspaceId,
-        sessions: [{ agentSessionId: workspaceId, mode: 'tui', ...session }],
+        sessions: [{ conversationId: workspaceId, mode: 'tui', ...session }],
       })
     await launch('wt-1', { tool: 'opencode', firstPrompt: 'build a thing', model: 'opencode/big-pickle' })
-    const [pin] = await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-1')
+    const [pin] = await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-1')
 
     // The session opencode created replaces the placeholder: first in window
     // order, with the user's prompt rather than opencode's title.
     podExec.mockResolvedValue({ stdout: JSON.stringify({ data: { id: 'ses_1', title: 'Thing builder' } }), stderr: '' })
-    live([{ handle: '%0', tool: 'opencode', agentSessionId: 'ses_1' }])
+    live([{ handle: '%0', tool: 'opencode', conversationId: 'ses_1' }])
     await sweep()
-    const summary = async (workspaceId: string) => (await listWorkspaceAgentSessions(DEMO_PROJECT_ID, workspaceId))
-      .map((l) => [l.agentSessionId, l.ordinal, l.active, l.firstPrompt, l.model])
+    const summary = async (workspaceId: string) => (await listWorkspaceConversations(DEMO_PROJECT_ID, workspaceId))
+      .map((l) => [l.conversationId, l.ordinal, l.active, l.firstPrompt, l.model])
     expect(await summary('wt-1')).toEqual([['ses_1', 0, true, 'build a thing', 'opencode/big-pickle']])
     expect((await row('ses_1'))?.title).toBe('Thing builder')
     expect((await row('ses_1'))?.createdAt).toEqual(pin?.createdAt)
 
     // Only the first; a later `/new` is a separate conversation.
-    live([{ handle: '%0', tool: 'opencode', agentSessionId: 'ses_2' }])
+    live([{ handle: '%0', tool: 'opencode', conversationId: 'ses_2' }])
     await sweep()
     expect(await summary('wt-1')).toEqual([
       ['ses_1', 0, false, 'build a thing', 'opencode/big-pickle'],
@@ -268,8 +268,8 @@ describe('reconcileAgentSessions', () => {
       type: 'event_msg', payload: { type: 'user_message', message: 'fix the login bug' },
     })}\n`)
     setWorkspaceStreamHealth(DEMO_PROJECT_ID, 'wt-2', true)
-    setLiveAgents(DEMO_PROJECT_ID, 'wt-2', [{ handle: '%0', tool: 'codex', agentSessionId: 'conv-c', transcriptPath: rel }])
-    await reconcileAgentSessions(snapshotFixture([
+    setLiveAgents(DEMO_PROJECT_ID, 'wt-2', [{ handle: '%0', tool: 'codex', conversationId: 'conv-c', transcriptPath: rel }])
+    await reconcileConversations(snapshotFixture([
       handleFixture({ workspaceId: 'wt-2', projectId: DEMO_PROJECT_ID, jobName: 'yaac-demo-wt-2' }),
     ]))
     expect(await summary('wt-2')).toEqual([['conv-c', 0, true, 'fix the login bug', undefined]])
@@ -277,18 +277,18 @@ describe('reconcileAgentSessions', () => {
 
   it('keeps claude\'s pin, which is the conversation it runs', async () => {
     await applyWorkspaceEvent({
-      type: 'sessions-launched',
+      type: 'conversations-launched',
       projectId: DEMO_PROJECT_ID,
       workspaceId: 'wt-1',
-      sessions: [{ tool: 'claude', agentSessionId: 'wt-1', mode: 'tui', firstPrompt: 'the original ask' }],
+      sessions: [{ tool: 'claude', conversationId: 'wt-1', mode: 'tui', firstPrompt: 'the original ask' }],
     })
     live([await claudeOn('%0', 'wt-1', 'the original ask')])
     await sweep()
     // A `/clear` names a new conversation, as for any other tool.
     live([await claudeOn('%0', 'conv-b')])
     await sweep()
-    const links = await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-1')
-    expect(links.map((l) => [l.agentSessionId, l.ordinal, l.active, l.firstPrompt]))
+    const links = await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-1')
+    expect(links.map((l) => [l.conversationId, l.ordinal, l.active, l.firstPrompt]))
       .toEqual([['wt-1', 0, false, 'the original ask'], ['conv-b', 1, true, undefined]])
   })
 
@@ -328,9 +328,9 @@ describe('reconcileAgentSessions', () => {
     // is still named though its stream is gone (a respawned spare's warm
     // conversation): neither is recorded.
     live([
-      { handle: 'claude', tool: 'claude', agentSessionId: 'acp-1', model: 'opus[1m]', modelName: 'Opus 5.5' },
+      { handle: 'claude', tool: 'claude', conversationId: 'acp-1', model: 'opus[1m]', modelName: 'Opus 5.5' },
       { handle: 'claude-2', tool: 'claude' },
-      { handle: 'claude-3', tool: 'claude', agentSessionId: 'acp-ended' },
+      { handle: 'claude-3', tool: 'claude', conversationId: 'acp-ended' },
     ])
     // Nor is acp-1 while its stream is down (a reconnect, or a server
     // restart before the reattach); it is recorded once the stream attaches.
@@ -357,9 +357,9 @@ describe('reconcileAgentSessions', () => {
   // agent's own window to come up gets it, once.
   it('sends a held create prompt to the first agent window\'s conversation, once', async () => {
     await holdPendingPrompt(DEMO_PROJECT_ID, 'wt-1', 'add shared projects')
-    const conversation = (handle: string, agentSessionId: string) => {
+    const conversation = (handle: string, conversationId: string) => {
       const prompt = vi.fn(() => Promise.resolve())
-      registerAcpConversation(DEMO_PROJECT_ID, 'wt-1', { handle, agentSessionId }, {
+      registerAcpConversation(DEMO_PROJECT_ID, 'wt-1', { handle, conversationId }, {
         whenReady: () => Promise.resolve(),
         prompt,
       } as unknown as AcpConversation)
@@ -367,15 +367,15 @@ describe('reconcileAgentSessions', () => {
     }
 
     // Only a second window is up; it is not the create's conversation.
-    live([{ handle: 'claude-2', tool: 'claude', agentSessionId: 'acp-side' }])
+    live([{ handle: 'claude-2', tool: 'claude', conversationId: 'acp-side' }])
     const side = conversation('claude-2', 'acp-side')
     await sweep({ mode: 'acp' })
     expect(side).not.toHaveBeenCalled()
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-1'))?.pendingPrompt).toBe('add shared projects')
 
     live([
-      { handle: 'claude', tool: 'claude', agentSessionId: 'acp-1' },
-      { handle: 'claude-2', tool: 'claude', agentSessionId: 'acp-side' },
+      { handle: 'claude', tool: 'claude', conversationId: 'acp-1' },
+      { handle: 'claude-2', tool: 'claude', conversationId: 'acp-side' },
     ])
     const first = conversation('claude', 'acp-1')
     await Promise.all([sweep({ mode: 'acp' }), sweep({ mode: 'acp' })])
@@ -391,10 +391,10 @@ describe('reconcileAgentSessions', () => {
   // by hand, so a reattach of that session must not send it again.
   it('holds again only a prompt that was never sent, never one the agent refused', async () => {
     const held = async (): Promise<string | undefined> => (await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-1'))?.pendingPrompt
-    const conversation = (agentSessionId: string, failure?: Error) => {
+    const conversation = (conversationId: string, failure?: Error) => {
       const prompt = vi.fn(() => (failure === undefined ? Promise.resolve() : Promise.reject(failure)))
-      live([{ handle: 'claude', tool: 'claude', agentSessionId }])
-      registerAcpConversation(DEMO_PROJECT_ID, 'wt-1', { handle: 'claude', agentSessionId }, {
+      live([{ handle: 'claude', tool: 'claude', conversationId }])
+      registerAcpConversation(DEMO_PROJECT_ID, 'wt-1', { handle: 'claude', conversationId }, {
         whenReady: () => Promise.resolve(),
         prompt,
       } as unknown as AcpConversation)
@@ -436,7 +436,7 @@ describe('reconcileAgentSessions', () => {
   // registered until its stream is seen closing. The hand-over records the
   // claimant's conversation itself.
   it('records nothing for a spare mid-claim', async () => {
-    live([{ handle: 'claude', tool: 'claude', agentSessionId: 'acp-warm' }])
+    live([{ handle: 'claude', tool: 'claude', conversationId: 'acp-warm' }])
     connected('claude', 'acp-warm')
     claiming.add('yaac-demo-wt-1')
     try {
@@ -449,7 +449,7 @@ describe('reconcileAgentSessions', () => {
 
   it('fails the step without reporting anything when the cluster is unreachable', async () => {
     const view = { ...snapshotFixture(), workspaces: () => Promise.reject(new Error('cluster down')) }
-    await expect(reconcileAgentSessions(view)).rejects.toThrow('cluster down')
+    await expect(reconcileConversations(view)).rejects.toThrow('cluster down')
     expect(await rows()).toEqual([])
   })
 
@@ -470,7 +470,7 @@ describe('reconcileAgentSessions', () => {
     await fs.writeFile(rollout, settings({ approval_policy: 'never', permission_profile: { type: 'disabled' } }))
     const panes = async (claudeMode?: string): Promise<void> => live([
       { ...await claudeOn('%0', 'conv-a'), ...(claudeMode !== undefined ? { reportedMode: claudeMode } : {}) },
-      { handle: '%1', tool: 'codex', agentSessionId: 'conv-x', transcriptPath: rel },
+      { handle: '%1', tool: 'codex', conversationId: 'conv-x', transcriptPath: rel },
     ])
 
     // codex's first reading is from this process, so it counts.
@@ -525,7 +525,7 @@ describe('reconcileAgentSessions', () => {
       type: 'turn_context',
       payload: { approval_policy: 'never', permission_profile: { type: 'disabled' }, effort: 'ultra' },
     })}\n`)
-    live([{ handle: '%1', tool: 'codex', agentSessionId: 'conv-e', transcriptPath: rel }])
+    live([{ handle: '%1', tool: 'codex', conversationId: 'conv-e', transcriptPath: rel }])
     await sweep()
     expect(await effort()).toBe('ultra')
   })
@@ -545,7 +545,7 @@ describe('reconcileAgentSessions', () => {
         permission_profile: { type: 'managed', file_system: { entries: [{ access: 'read' }] } },
       },
     })}\n`)
-    live([{ handle: '%0', tool: 'codex', agentSessionId: 'conv-y', transcriptPath: rel }])
+    live([{ handle: '%0', tool: 'codex', conversationId: 'conv-y', transcriptPath: rel }])
     await sweep()
     expect(await posture()).toBe('accept-edits')
   })
@@ -555,7 +555,7 @@ describe('reconcileAgentSessions', () => {
   it('follows a resumed codex pane through the rollout its row recorded', async () => {
     await setWorkspacePermissionMode(DEMO_PROJECT_ID, 'wt-1', 'accept-edits')
     const rel = path.join('codex', 'sessions', 'rollout-conv-z.jsonl')
-    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-1', [{ tool: 'codex', agentSessionId: 'conv-z', transcriptPath: rel }])
+    await recordConversations(DEMO_PROJECT_ID, 'wt-1', [{ tool: 'codex', conversationId: 'conv-z', transcriptPath: rel }])
     const rollout = path.join(codexDir(DEMO_PROJECT_ID), 'sessions', 'rollout-conv-z.jsonl')
     await fs.mkdir(path.dirname(rollout), { recursive: true })
     await fs.writeFile(rollout, `${JSON.stringify({
@@ -563,7 +563,7 @@ describe('reconcileAgentSessions', () => {
       type: 'event_msg',
       payload: { type: 'thread_settings_applied', thread_settings: { approval_policy: 'never', permission_profile: { type: 'disabled' } } },
     })}\n`)
-    live([{ handle: '%0', tool: 'codex', agentSessionId: 'conv-z' }])
+    live([{ handle: '%0', tool: 'codex', conversationId: 'conv-z' }])
     await sweep()
     expect(await posture()).toBe('bypass')
     expect((await row('conv-z'))?.transcriptPath).toBe(rel)
@@ -574,7 +574,7 @@ describe('reconcileAgentSessions', () => {
   it('records reported modes up or down, including one made while no server watched', async () => {
     await setWorkspacePermissionMode(DEMO_PROJECT_ID, 'wt-1', 'accept-edits')
     const acp = (reportedMode: string): void => live([
-      { handle: 'claude', tool: 'claude', agentSessionId: 'acp-1', reportedMode },
+      { handle: 'claude', tool: 'claude', conversationId: 'acp-1', reportedMode },
     ])
     acp('bypassPermissions')
     await sweep({ mode: 'acp' })
@@ -600,7 +600,7 @@ describe('reconcileAgentSessions', () => {
  * once from what they left on the host. The real `applyWorkspaceEvent`
  * writes the rows the assertions read.
  */
-describe('reconcileStoppedAgentSessions', () => {
+describe('reconcileStoppedConversations', () => {
   let tmpDir: string
 
   beforeEach(async () => {
@@ -618,11 +618,11 @@ describe('reconcileStoppedAgentSessions', () => {
   /** Record a workspace with one conversation, stopped unless `running`. */
   async function seed(
     workspaceId: string,
-    session: { tool: 'claude' | 'opencode'; agentSessionId: string; mode?: 'tui' | 'acp'; firstPrompt?: string },
+    session: { tool: 'claude' | 'opencode'; conversationId: string; mode?: 'tui' | 'acp'; firstPrompt?: string },
     opts: { running?: boolean } = {},
   ): Promise<void> {
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId })
-    await recordAgentSessions(DEMO_PROJECT_ID, workspaceId, [session])
+    await recordConversations(DEMO_PROJECT_ID, workspaceId, [session])
     if (!opts.running) await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId })
   }
 
@@ -633,27 +633,27 @@ describe('reconcileStoppedAgentSessions', () => {
     await fs.utimes(file, MTIME, MTIME)
   }
 
-  const link = async (workspaceId: string) => (await listWorkspaceAgentSessions(DEMO_PROJECT_ID, workspaceId))[0]
+  const link = async (workspaceId: string) => (await listWorkspaceConversations(DEMO_PROJECT_ID, workspaceId))[0]
 
   it('fills each stopped conversation once from its files, and leaves running ones to the live pass', async () => {
     // A tui conversation that died before any pass recorded its path: its
     // transcript is found where claude writes it.
-    await seed('wt-early', { tool: 'claude', agentSessionId: 'conv-early' })
+    await seed('wt-early', { tool: 'claude', conversationId: 'conv-early' })
     await writeAt(path.join(claudeDir(DEMO_PROJECT_ID), 'projects', '-workspace', 'conv-early.jsonl'),
       [{ type: 'user', message: { role: 'user', content: 'port the lexer' } }])
     // An acp conversation, read from acpd's record. Its captured prompt is
     // kept over the record's.
-    await seed('wt-acp', { tool: 'claude', agentSessionId: 'acp-1', mode: 'acp', firstPrompt: 'the real ask' })
+    await seed('wt-acp', { tool: 'claude', conversationId: 'acp-1', mode: 'acp', firstPrompt: 'the real ask' })
     await writeAt(path.join(acpLogDir(DEMO_PROJECT_ID, 'wt-acp'), 'acp-1.jsonl'), [
       { jsonrpc: '2.0', id: 7, method: 'session/prompt', params: { prompt: [{ type: 'text', text: 'later text' }] } },
     ])
     // opencode leaves no host file, so it gets its creation time.
-    await seed('wt-oc', { tool: 'opencode', agentSessionId: 'oc-1' })
-    await seed('wt-live', { tool: 'claude', agentSessionId: 'conv-live' }, { running: true })
+    await seed('wt-oc', { tool: 'opencode', conversationId: 'oc-1' })
+    await seed('wt-live', { tool: 'claude', conversationId: 'conv-live' }, { running: true })
     await writeAt(path.join(claudeDir(DEMO_PROJECT_ID), 'projects', '-workspace', 'conv-live.jsonl'),
       [{ type: 'user', message: { role: 'user', content: 'still going' } }])
 
-    await reconcileStoppedAgentSessions()
+    await reconcileStoppedConversations()
 
     expect(await link('wt-early')).toMatchObject({ firstPrompt: 'port the lexer', lastActiveAt: MTIME })
     expect(await link('wt-acp')).toMatchObject({ firstPrompt: 'the real ask', lastActiveAt: MTIME })
@@ -668,15 +668,15 @@ describe('reconcileStoppedAgentSessions', () => {
       [{ type: 'user', message: { role: 'user', content: 'rewritten' } }])
     await fs.utimes(path.join(claudeDir(DEMO_PROJECT_ID), 'projects', '-workspace', 'conv-early.jsonl'),
       new Date('2026-02-01'), new Date('2026-02-01'))
-    await reconcileStoppedAgentSessions()
+    await reconcileStoppedConversations()
     expect(await link('wt-early')).toMatchObject({ firstPrompt: 'port the lexer', lastActiveAt: MTIME })
   })
 
   it('drains a backlog larger than one batch in a single pass', async () => {
     const ids = Array.from({ length: 45 }, (_, i) => `wt-${i}`)
-    for (const id of ids) await seed(id, { tool: 'opencode', agentSessionId: `oc-${id}` })
+    for (const id of ids) await seed(id, { tool: 'opencode', conversationId: `oc-${id}` })
 
-    await reconcileStoppedAgentSessions()
+    await reconcileStoppedConversations()
 
     for (const id of ids) expect((await link(id))?.lastActiveAt).toBeInstanceOf(Date)
   })

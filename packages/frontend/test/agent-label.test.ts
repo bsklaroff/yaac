@@ -1,22 +1,22 @@
 import { describe, it, expect } from 'vitest'
 import { agentLabel, formatModel, workspaceModel } from '#lib/agentLabel'
-import type { AgentSessionEntry, WorkspaceListEntry } from '@yaac/shared/types'
+import type { ConversationEntry, WorkspaceListEntry } from '@yaac/shared/types'
 
-const session = (over: Partial<AgentSessionEntry> = {}): AgentSessionEntry => ({
-  agentSessionId: 'conv-a',
+const session = (over: Partial<ConversationEntry> = {}): ConversationEntry => ({
+  conversationId: 'conv-a',
   tool: 'claude',
   ordinal: 0,
   active: true,
   ...over,
 })
 
-const workspace = (agentSessions: AgentSessionEntry[]): WorkspaceListEntry => ({
+const workspace = (conversations: ConversationEntry[]): WorkspaceListEntry => ({
   workspaceId: 's1',
   projectId: 'proj',
   tool: 'claude',
   status: 'running',
   createdAt: '2026-08-10 00:00:00',
-  agentSessions,
+  conversations,
   blockedHosts: [],
   forwardedPorts: [],
   unforwardedPorts: [],
@@ -77,24 +77,24 @@ describe('workspaceModel', () => {
   it('prefers a live conversation over the workspace\'s history', () => {
     // A `/clear`ed conversation still names a model, but the live one wins.
     expect(workspaceModel(workspace([
-      session({ agentSessionId: 'old', ordinal: 0, active: false, model: 'claude-opus-4-8' }),
-      session({ agentSessionId: 'live', ordinal: 1, active: true, model: 'claude-opus-5' }),
+      session({ conversationId: 'old', ordinal: 0, active: false, model: 'claude-opus-4-8' }),
+      session({ conversationId: 'live', ordinal: 1, active: true, model: 'claude-opus-5' }),
     ]))?.model).toBe('claude-opus-5')
   })
 
   it('takes the primary agent when several are live', () => {
     // Ordinal 0 is the workspace's primary agent.
     expect(workspaceModel(workspace([
-      session({ agentSessionId: 'second', ordinal: 1, model: 'claude-fable-5' }),
-      session({ agentSessionId: 'primary', ordinal: 0, model: 'claude-opus-5' }),
+      session({ conversationId: 'second', ordinal: 1, model: 'claude-fable-5' }),
+      session({ conversationId: 'primary', ordinal: 0, model: 'claude-opus-5' }),
     ]))?.model).toBe('claude-opus-5')
   })
 
   it('falls back to history when no live conversation has reported one', () => {
     // With no live model yet, fall back to the recorded one.
     expect(workspaceModel(workspace([
-      session({ agentSessionId: 'old', ordinal: 0, active: false, model: 'claude-opus-5' }),
-      session({ agentSessionId: 'live', ordinal: 1, active: true }),
+      session({ conversationId: 'old', ordinal: 0, active: false, model: 'claude-opus-5' }),
+      session({ conversationId: 'live', ordinal: 1, active: true }),
     ]))?.model).toBe('claude-opus-5')
   })
 

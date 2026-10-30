@@ -20,20 +20,20 @@
 // packages/server/test/db/.
 
 export {
-  deleteProjectAgentSessions,
-  firstAgentSession,
-  getAgentSessionsFor,
-  getProjectAgentSessions,
-  listActiveAgentSessions,
-  listUncapturedStoppedSessions,
-  listWorkspaceAgentSessions,
+  deleteProjectConversations,
+  firstConversation,
+  getConversationsFor,
+  getProjectConversations,
+  listActiveConversations,
+  listUncapturedStoppedConversations,
+  listWorkspaceConversations,
   conversationTitle,
   openingPrompt,
   recordedConversationHandles,
-  type AgentSessionLinkRow,
-} from './agent-session-store'
+  type ConversationLinkRow,
+} from './conversation-store'
 export { applyWorkspaceEvent } from './apply-workspace-event'
-export type { CapturedSession, DiscoveredSession, WorkspaceEvent } from './events'
+export type { CapturedConversation, DiscoveredConversation, WorkspaceEvent } from './events'
 export { desiredWorkspaces } from './desired-workspaces'
 export {
   createWorkspaceGroup,

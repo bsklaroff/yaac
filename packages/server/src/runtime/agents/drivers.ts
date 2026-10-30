@@ -45,7 +45,7 @@ export interface LiveAgent {
    * the pane's reporter (`PANE_SESSION_FORMAT`) for `tui`. codex and opencode
    * panes report nothing before their first turn.
    */
-  agentSessionId?: string
+  conversationId?: string
   /** Its transcript, project-relative, when the pane named one (`tui`). */
   transcriptPath?: string
   /**
@@ -107,7 +107,7 @@ export interface AgentConnectDeps {
    * re-address a live agent after a reconnect (or `session/load` after a
    * restart); the agent mints the id and only the DB remembers it.
    */
-  recordedSessions?: () => Promise<Array<{ handle: string; agentSessionId: string }>>
+  recordedSessions?: () => Promise<Array<{ handle: string; conversationId: string }>>
   /**
    * The workspace's permission posture, read once at connect and then
    * followed through `setAcpPermissionMode`. `acp` sends it to the adapter
@@ -154,7 +154,7 @@ export interface AgentLaunchSpec {
    * tool's `--session-id`/resume flag. For `acp`, used only on resume; a new
    * conversation's id comes from `session/new`.
    */
-  agentSessionId: string
+  conversationId: string
   resume: boolean
   /** The tmux window it runs in; for `acp` also its acpd socket name, hence
    *  its handle. */
@@ -211,6 +211,6 @@ export interface AgentDriver {
     session: DrivenWorkspace,
     handle: string,
     text: string,
-    opts?: { running?: { agentSessionId: string } },
+    opts?: { running?: { conversationId: string } },
   ): Promise<void>
 }

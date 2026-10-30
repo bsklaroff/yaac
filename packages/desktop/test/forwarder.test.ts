@@ -20,7 +20,7 @@ function workspace(workspaceId: string, ports: Array<[number, number]>): Workspa
     status: 'running',
     createdAt: '2026-01-01T00:00:00.000Z',
     jobName: `yaac-proj-${workspaceId}`,
-    agentSessions: [],
+    conversations: [],
     blockedHosts: [],
     unforwardedPorts: [],
     forwardedPorts: ports.map(([containerPort, hostPort]) => ({ containerPort, hostPort })),

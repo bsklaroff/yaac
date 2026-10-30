@@ -25,7 +25,7 @@ import { ACP_ADAPTERS, AGENT_TOOLS, MAX_PROMPT_LENGTH } from '@yaac/shared/types
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { FALLBACK_MODELS, PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import type {
-  AgentSessionEntry, AgentTool, ResourceReport, RoutineEntry, ServerSnapshot, WorkspaceChanges, WorkspaceTerminalEntry,
+  ConversationEntry, AgentTool, ResourceReport, RoutineEntry, ServerSnapshot, WorkspaceChanges, WorkspaceTerminalEntry,
 } from '@yaac/shared/types'
 
 const execFileAsync = promisify(execFile)
@@ -292,7 +292,7 @@ interface ListedWorkspace {
   title?: string
   groupId?: string
   forwardedPorts: Array<{ containerPort: number; hostPort: number }>
-  agentSessions: AgentSessionEntry[]
+  conversations: ConversationEntry[]
   terminals?: WorkspaceTerminalEntry[]
 }
 
@@ -627,9 +627,9 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // yet); the fake agent reports nothing, so this comes from the launch.
     const res = await fetch(`${origin()}/api/workspace/list`)
     const { workspaces } = await res.json() as {
-      workspaces: Array<{ workspaceId: string; agentSessions: AgentSessionEntry[] }>
+      workspaces: Array<{ workspaceId: string; conversations: ConversationEntry[] }>
     }
-    expect(workspaces.find((w) => w.workspaceId === workspaceId)?.agentSessions[0])
+    expect(workspaces.find((w) => w.workspaceId === workspaceId)?.conversations[0])
       .toMatchObject({ model: FALLBACK_MODELS.claude, modelName: 'Opus 5.5' })
   }, 120_000)
 
@@ -1113,7 +1113,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     })
 
     const conv = async () => (await listWorkspaces())
-      .find((w) => w.workspaceId === workspaceId)?.agentSessions.find((s) => s.agentSessionId === 'e2e-conv')
+      .find((w) => w.workspaceId === workspaceId)?.conversations.find((s) => s.conversationId === 'e2e-conv')
     await vi.waitFor(async () => {
       expect(await conv()).toMatchObject({ tool: 'claude', active: true, prompt: 'asked from a shell' })
     }, { timeout: 30_000, interval: 250 })
@@ -2110,7 +2110,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       path.join(testEnv.dataDir, 'global', 'projects', projectId, 'codex', `launches-${id}`), 'utf8',
     ).catch(() => '')).split('\n').filter(Boolean)
     const codexSessions = async (id: string) => (await listWorkspaces())
-      .find((w) => w.workspaceId === id)?.agentSessions.filter((s) => s.tool === 'codex' && s.active) ?? []
+      .find((w) => w.workspaceId === id)?.conversations.filter((s) => s.tool === 'codex' && s.active) ?? []
     const restart = async (id: string): Promise<void> => {
       const { stdout, stderr, exitCode } = await runYaac(serverEnv, 'workspace', 'restart', id)
       expect(exitCode, `${stdout}\n${stderr}`).toBe(0)
@@ -2120,7 +2120,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // The first turn reports the conversation.
     let thread = ''
     await vi.waitFor(async () => {
-      thread = (await codexSessions(prompted)).find((s) => s.agentSessionId.startsWith('thread-'))?.agentSessionId ?? ''
+      thread = (await codexSessions(prompted)).find((s) => s.conversationId.startsWith('thread-'))?.conversationId ?? ''
       expect(thread).not.toBe('')
     }, { timeout: 30_000, interval: 250 })
 
@@ -2136,7 +2136,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
         expect((await launches(prompted))).toHaveLength(n)
         expect((await launches(prompted)).at(-1)).toMatch(new RegExp(` resume ${thread} --model ${model.replaceAll('.', '\\.')}$`))
         const active = await codexSessions(prompted)
-        expect(active.map((s) => s.agentSessionId)).toEqual([thread])
+        expect(active.map((s) => s.conversationId)).toEqual([thread])
         expect(active[0]?.status).toBeDefined()
       }, { timeout: 30_000, interval: 250 })
     }
@@ -2238,14 +2238,14 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
       await vi.waitFor(async () => {
         const res = await fetch(`${origin()}/api/workspace/list`)
         const { workspaces } = await res.json() as {
-          workspaces: Array<{ workspaceId: string; mode?: string; agentSessions: AgentSessionEntry[] }>
+          workspaces: Array<{ workspaceId: string; mode?: string; conversations: ConversationEntry[] }>
         }
         const row = workspaces.find((w) => w.workspaceId === id)
         expect(row?.mode).toBe('acp')
-        expect(row?.agentSessions.map((s) => s.agentSessionId)).toContain(`e2e-acp-${tool}`)
-        expect(row?.agentSessions[0]?.mode).toBe('acp')
+        expect(row?.conversations.map((s) => s.conversationId)).toContain(`e2e-acp-${tool}`)
+        expect(row?.conversations[0]?.mode).toBe('acp')
         // From the record; most tools leave no transcript to read.
-        expect(row?.agentSessions[0]?.model).toBe(model)
+        expect(row?.conversations[0]?.model).toBe(model)
       }, { timeout: 30_000, interval: 250 })
 
       // acpd records both directions, under the session id once
@@ -2773,8 +2773,8 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
         expect(latest().workspaces.find((w) => w.workspaceId === childWorkspace)?.title).toBe('Say hello')
       }, { timeout: 60_000, interval: 250 })
       await vi.waitFor(() => {
-        const sessions = latest().workspaces.find((w) => w.workspaceId === childWorkspace)?.agentSessions ?? []
-        expect(sessions.some((a) => /^thread-\d+$/.test(a.agentSessionId))).toBe(true)
+        const sessions = latest().workspaces.find((w) => w.workspaceId === childWorkspace)?.conversations ?? []
+        expect(sessions.some((a) => /^thread-\d+$/.test(a.conversationId))).toBe(true)
       }, { timeout: 30_000, interval: 250 })
       const launches = await fs.readFile(
         path.join(testEnv.dataDir, 'global', 'projects', projectId, 'codex', `launches-${childWorkspace}`), 'utf8',
@@ -3044,11 +3044,11 @@ describe.skipIf(!CAN_RUN)('two users on a tailnet install', () => {
       type: 'user', uuid: 'u-two-users', parentUuid: null, sessionId: workspaceId, cwd: '/workspace',
       timestamp: '2026-01-01T00:00:00Z', message: { role: 'user', content: 'for bob to read' },
     }) + '\n')
-    const sessions = await as(BOB, `/workspace/${workspaceId}/agent-sessions`)
+    const sessions = await as(BOB, `/workspace/${workspaceId}/conversations`)
     expect(sessions.status).toBe(200)
-    expect((await sessions.json() as Array<{ agentSessionId: string }>).map((s) => s.agentSessionId))
+    expect((await sessions.json() as Array<{ conversationId: string }>).map((s) => s.conversationId))
       .toContain(workspaceId)
-    const transcript = await as(BOB, `/workspace/${workspaceId}/agent-sessions/${workspaceId}/transcript`)
+    const transcript = await as(BOB, `/workspace/${workspaceId}/conversations/${workspaceId}/transcript`)
     expect(transcript.status).toBe(200)
     expect(JSON.stringify(await transcript.json())).toContain('for bob to read')
 

@@ -1893,7 +1893,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     const NAME = 'acped'
     let jobName = ''
     let workspaceId = ''
-    let agentSessionId = ''
+    let conversationId = ''
 
     // An ACP workspace has its own launch command and label, so it gets its
     // own pod, shared by the cases below. It uses `accept-edits` rather than
@@ -1909,17 +1909,17 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       workspaceId = (await findWorkspacePod(NAME)).workspaceId
 
       // The ACP handshake creates the conversation id, which gets recorded.
-      agentSessionId = await vi.waitFor(async () => {
+      conversationId = await vi.waitFor(async () => {
         const res = await fetch(`${base}/api/workspace/list?project=${NAME}`)
         const body = await res.json() as {
           workspaces: Array<{
             workspaceId: string
-            agentSessions: Array<{ agentSessionId: string; mode?: string }>
+            conversations: Array<{ conversationId: string; mode?: string }>
           }>
         }
         const id = body.workspaces
           .find((w) => w.workspaceId === workspaceId)
-          ?.agentSessions.find((a) => a.mode === 'acp')?.agentSessionId
+          ?.conversations.find((a) => a.mode === 'acp')?.conversationId
         if (!id) throw new Error('no acp conversation recorded yet')
         return id
       }, { timeout: 120_000, interval: 1000 })
@@ -1941,7 +1941,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         'sh', '-c', 'ls /tmp/yaac-acp/ 2>/dev/null || true',
       ])
       expect(socks).toContain('claude.sock')
-      expect(agentSessionId).not.toBe('')
+      expect(conversationId).not.toBe('')
     }, 120_000)
 
     it('records the conversation to a host-mounted file, named for the conversation', async () => {
@@ -1951,17 +1951,17 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       const { stdout: files } = await execInJob(jobName, [
         'sh', '-c', 'ls /home/yaac/.yaac-acp/ 2>/dev/null || true',
       ])
-      expect(files).toContain(`${agentSessionId}.jsonl`)
+      expect(files).toContain(`${conversationId}.jsonl`)
 
       const { stdout: recorded } = await execInJob(jobName, [
-        'sh', '-c', `cat /home/yaac/.yaac-acp/${agentSessionId}.jsonl`,
+        'sh', '-c', `cat /home/yaac/.yaac-acp/${conversationId}.jsonl`,
       ])
       // Both directions are recorded; replay needs the client's own lines to
       // show user turns.
       expect(recorded).toContain('_acpd/life')
       expect(recorded).toContain('"method":"initialize"')
       expect(recorded).toContain('"method":"session/new"')
-      expect(recorded).toContain(agentSessionId)
+      expect(recorded).toContain(conversationId)
     }, 120_000)
 
     it('carries a message from the pane through to the agent, and records it', async () => {
@@ -1969,7 +1969,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       // not depend on the agent's reply.
       const { ws, opened } = openWs(
         `ws://127.0.0.1:${server!.lock.port}/api/acp/attach`
-          + `?id=${workspaceId}&session=${encodeURIComponent(agentSessionId)}`,
+          + `?id=${workspaceId}&session=${encodeURIComponent(conversationId)}`,
       )
       await opened
       await sleep(1000)
@@ -1981,7 +1981,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       }))
 
       const recorded = await vi.waitFor(async () => {
-        const { stdout } = await execInJob(jobName, ['sh', '-c', `cat /home/yaac/.yaac-acp/${agentSessionId}.jsonl`])
+        const { stdout } = await execInJob(jobName, ['sh', '-c', `cat /home/yaac/.yaac-acp/${conversationId}.jsonl`])
         expect(stdout).toContain('e2e recorded prompt')
         return stdout
       }, { timeout: 120_000, interval: 1000 })
@@ -1995,7 +1995,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       // A new attach replays the record from the start.
       const { ws, text, opened } = openWs(
         `ws://127.0.0.1:${server!.lock.port}/api/acp/attach`
-          + `?id=${workspaceId}&session=${encodeURIComponent(agentSessionId)}`,
+          + `?id=${workspaceId}&session=${encodeURIComponent(conversationId)}`,
       )
       await opened
       await vi.waitFor(() => expect(text.some((l) => l.includes('e2e recorded prompt'))).toBe(true),
@@ -2028,7 +2028,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     it('serves the conversation over /acp/attach', async () => {
       const { ws, text, opened } = openWs(
         `ws://127.0.0.1:${server!.lock.port}/api/acp/attach`
-          + `?id=${workspaceId}&session=${encodeURIComponent(agentSessionId)}`,
+          + `?id=${workspaceId}&session=${encodeURIComponent(conversationId)}`,
       )
       await opened
       // `hello` carries the event log a chat pane renders on attach.
@@ -2036,11 +2036,11 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       ws.close()
       const hello = JSON.parse(text[0]) as {
         type: string
-        agentSessionId?: string
+        conversationId?: string
         events?: unknown[]
       }
       expect(hello.type).toBe('hello')
-      expect(hello.agentSessionId).toBe(agentSessionId)
+      expect(hello.conversationId).toBe(conversationId)
       expect(Array.isArray(hello.events)).toBe(true)
     }, 60_000)
 
@@ -2154,7 +2154,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
       // `accept-edits` is `acceptEdits` on the wire.
       const recorded = await vi.waitFor(async () => {
-        const { stdout } = await execInJob(jobName, ['sh', '-c', `cat /home/yaac/.yaac-acp/${agentSessionId}.jsonl`])
+        const { stdout } = await execInJob(jobName, ['sh', '-c', `cat /home/yaac/.yaac-acp/${conversationId}.jsonl`])
         expect(stdout).toContain('session/set_mode')
         return stdout
       }, { timeout: 120_000, interval: 1000 })
@@ -2220,14 +2220,14 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       // The new server lists the workspaces once it has re-adopted them.
       const acp = await vi.waitFor(async () => {
         const listed = await (await as(ALICE, `/workspace/list?project=${idOf('acped')}`)).json() as {
-          workspaces: Array<{ workspaceId: string; tool: string; agentSessions: Array<{ agentSessionId: string; mode?: string }> }>
+          workspaces: Array<{ workspaceId: string; tool: string; conversations: Array<{ conversationId: string; mode?: string }> }>
         }
-        const found = listed.workspaces.find((w) => w.tool === 'claude' && w.agentSessions.some((a) => a.mode === 'acp'))
+        const found = listed.workspaces.find((w) => w.tool === 'claude' && w.conversations.some((a) => a.mode === 'acp'))
         if (!found) throw new Error(`no running claude acp workspace: ${JSON.stringify(listed)}`)
         return found
       }, { timeout: 60_000, interval: 1000 })
       aliceWorkspace = acp.workspaceId
-      aliceSession = acp.agentSessions.find((a) => a.mode === 'acp')!.agentSessionId
+      aliceSession = acp.conversations.find((a) => a.mode === 'acp')!.conversationId
       aliceJob = (await listWorkspacePods(idOf('acped'))).find((p) => p.workspaceId === aliceWorkspace)!.jobName
 
       await skipClaudeOnboarding(await setupProject(BOB_PROJECT, { headers: BOB }))
@@ -2262,11 +2262,11 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     }, 120_000)
 
     it('lets bob read alice\'s transcript, but not attach to or write her workspace', async () => {
-      const sessions = await as(BOB, `/workspace/${aliceWorkspace}/agent-sessions`)
+      const sessions = await as(BOB, `/workspace/${aliceWorkspace}/conversations`)
       expect(sessions.status).toBe(200)
-      expect((await sessions.json() as Array<{ agentSessionId: string }>).map((s) => s.agentSessionId))
+      expect((await sessions.json() as Array<{ conversationId: string }>).map((s) => s.conversationId))
         .toContain(aliceSession)
-      const transcript = await as(BOB, `/workspace/${aliceWorkspace}/agent-sessions/${aliceSession}/transcript`)
+      const transcript = await as(BOB, `/workspace/${aliceWorkspace}/conversations/${aliceSession}/transcript`)
       expect(transcript.status).toBe(200)
       expect((await transcript.json() as { events: unknown[] }).events.length).toBeGreaterThan(0)
 

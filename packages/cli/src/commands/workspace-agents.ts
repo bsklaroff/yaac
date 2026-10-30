@@ -9,7 +9,7 @@ import { printTable } from '#commands/table'
  * tool's own conversation id, for resuming one by hand inside the workspace.
  */
 export async function workspaceAgents(idOrName: string): Promise<void> {
-  const agents = await api.workspace[':id']['agent-sessions'].$get({
+  const agents = await api.workspace[':id']['conversations'].$get({
     param: { id: idOrName },
   })
 
@@ -23,6 +23,6 @@ export async function workspaceAgents(idOrName: string): Promise<void> {
 
   printTable(
     [{ header: 'AGENT SESSION' }, { header: 'TOOL' }, { header: 'STATE' }, { header: 'FIRST MESSAGE' }],
-    sorted.map((a) => [a.agentSessionId, a.tool, a.active ? 'open' : 'closed', a.prompt ?? '']),
+    sorted.map((a) => [a.conversationId, a.tool, a.active ? 'open' : 'closed', a.prompt ?? '']),
   )
 }

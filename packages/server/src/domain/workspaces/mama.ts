@@ -50,9 +50,9 @@ import {
   getTimeZone,
   applyWorkspaceEvent,
   getWorkspaceRow,
-  listActiveAgentSessions,
+  listActiveConversations,
   listQueuedWorkspaceRows,
-  listWorkspaceAgentSessions,
+  listWorkspaceConversations,
   setWorkspaceTitle,
   type QueuedWorkspaceRow,
 } from '#db'
@@ -908,13 +908,13 @@ async function runSend(caller: MamaCaller, request: MamaRequestInput): Promise<M
     }
   }
 
-  const live = (await listActiveAgentSessions(caller.projectId, workspaceId))
+  const live = (await listActiveConversations(caller.projectId, workspaceId))
     .flatMap((r) => r.paneId === undefined ? [] : [{ ...r, handle: r.paneId }])
   const wanted = request.args.conversation?.trim() ?? ''
-  const exact = live.find((r) => r.agentSessionId === wanted)
+  const exact = live.find((r) => r.conversationId === wanted)
   const matches = wanted === '' ? live.slice(0, 1)
     : exact !== undefined ? [exact]
-    : live.filter((r) => r.agentSessionId.startsWith(wanted))
+    : live.filter((r) => r.conversationId.startsWith(wanted))
   if (matches.length !== 1) {
     return {
       ok: false,
@@ -924,7 +924,7 @@ async function runSend(caller: MamaCaller, request: MamaRequestInput): Promise<M
     }
   }
   const [conversation] = matches
-  const label = `${short}'s ${conversation.tool} conversation ${conversation.agentSessionId.slice(0, 8)}`
+  const label = `${short}'s ${conversation.tool} conversation ${conversation.conversationId.slice(0, 8)}`
 
   // A conversation that never reported a mode runs in the one it launched
   // in, which the row recorded.
@@ -960,7 +960,7 @@ async function runSend(caller: MamaCaller, request: MamaRequestInput): Promise<M
       { projectId: caller.projectId, workspaceId, jobName: running.jobName, tool: conversation.tool },
       conversation.handle,
       `Sent from ${caller.workspaceId} via yaac-mama:\n\n${body}`,
-      { running: { agentSessionId: conversation.agentSessionId } },
+      { running: { conversationId: conversation.conversationId } },
     )
   } catch (err) {
     return { ok: false, error: `not delivered to ${label}: ${err instanceof Error ? err.message : String(err)}` }
@@ -1317,12 +1317,12 @@ async function runHistory(caller: MamaCaller, request: MamaRequestInput): Promis
   if (workspace === '') return { ok: false, error: 'history needs a workspace id' }
   const workspaceId = await resolveProjectWorkspace(workspace, caller.projectId)
   // Pick the conversation before gathering files, which reads every one's.
-  let rows = await listWorkspaceAgentSessions(caller.projectId, workspaceId)
+  let rows = await listWorkspaceConversations(caller.projectId, workspaceId)
 
   const wanted = request.args.conversation?.trim() ?? ''
   if (wanted !== '') {
-    const exact = rows.find((r) => r.agentSessionId === wanted)
-    const matches = exact !== undefined ? [exact] : rows.filter((r) => r.agentSessionId.startsWith(wanted))
+    const exact = rows.find((r) => r.conversationId === wanted)
+    const matches = exact !== undefined ? [exact] : rows.filter((r) => r.conversationId.startsWith(wanted))
     if (matches.length !== 1) {
       return {
         ok: false,
@@ -1341,9 +1341,9 @@ async function runHistory(caller: MamaCaller, request: MamaRequestInput): Promis
     return {
       ok: true,
       output: conversations.flatMap((c) => c.files.map((f) => oversized(f)
-        ? `# skipped ${c.row.agentSessionId}/${f.name}: ${formatSize(f.size)}, past the `
+        ? `# skipped ${c.row.conversationId}/${f.name}: ${formatSize(f.size)}, past the `
           + `${formatSize(MAX_HISTORY_FILE_BYTES)} a file is handed out at`
-        : `${c.row.agentSessionId}/${f.name}`)).join('\n'),
+        : `${c.row.conversationId}/${f.name}`)).join('\n'),
     }
   }
   if (wanted === '') return { ok: true, output: renderHistory(workspaceId, conversations) }
@@ -1352,7 +1352,7 @@ async function runHistory(caller: MamaCaller, request: MamaRequestInput): Promis
   if (name !== undefined) {
     const file = files.find((f) => f.name === name)
     return file === undefined
-      ? { ok: false, error: `${row.agentSessionId} has no file '${name}'` }
+      ? { ok: false, error: `${row.conversationId} has no file '${name}'` }
       : { ok: true, body: historyFiles([file]), contentType: 'application/octet-stream', workspaceId }
   }
   // opencode's history is its database, which the script turns into JSONL.
@@ -1363,11 +1363,11 @@ async function runHistory(caller: MamaCaller, request: MamaRequestInput): Promis
       body: historyFiles([database]),
       contentType: 'application/vnd.sqlite3',
       workspaceId,
-      conversationId: row.agentSessionId,
+      conversationId: row.conversationId,
     }
   }
   if (!files.some((f) => f.name.endsWith('.jsonl'))) {
-    return { ok: false, error: `${row.agentSessionId} has no transcript on the host yet` }
+    return { ok: false, error: `${row.conversationId} has no transcript on the host yet` }
   }
   return { ok: true, body: historyTranscripts(files), contentType: 'application/x-ndjson', workspaceId }
 }
@@ -1378,7 +1378,7 @@ function renderHistory(workspaceId: string, conversations: HistoryConversation[]
   const rows = conversations.map(({ row, files }) => {
     const last = Math.max(0, row.lastActiveAt?.getTime() ?? 0, ...files.map((f) => f.mtimeMs))
     return [
-      row.agentSessionId,
+      row.conversationId,
       row.tool,
       row.mode,
       row.active ? 'yes' : 'no',

@@ -37,9 +37,9 @@ export function isAgentPane(target: string): boolean {
 
 /** The workspace's live conversations, as pane targets. */
 export function acpPaneTargets(workspace: WorkspaceListEntry | undefined): string[] {
-  return (workspace?.agentSessions ?? [])
+  return (workspace?.conversations ?? [])
     .filter((a) => a.mode === 'acp' && a.active)
-    .map((a) => acpTarget(a.agentSessionId))
+    .map((a) => acpTarget(a.conversationId))
 }
 
 /**

@@ -81,7 +81,7 @@ function renderRunning(
       projectNames.get(w.projectId) ?? w.projectId,
       w.tool,
       w.status,
-      String(w.agentSessions.filter((a) => a.active).length || 1),
+      String(w.conversations.filter((a) => a.active).length || 1),
       w.groupId !== undefined ? groupNames.get(w.groupId) ?? '' : '',
       w.deadline !== undefined ? formatInZone(new Date(w.deadline), zone) : '',
       w.title ?? '',

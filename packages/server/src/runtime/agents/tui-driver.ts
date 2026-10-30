@@ -187,7 +187,7 @@ class TuiConnection extends ControlModeConnection {
       agents.push({
         handle,
         tool,
-        ...(own !== undefined ? { agentSessionId: own.agentSessionId } : {}),
+        ...(own !== undefined ? { conversationId: own.conversationId } : {}),
         ...(own?.transcriptPath !== undefined ? { transcriptPath: own.transcriptPath } : {}),
         ...(model !== undefined ? { model } : {}),
         ...(reportedMode !== undefined ? { reportedMode } : {}),
@@ -287,7 +287,7 @@ export const tuiDriver: AgentDriver = {
     assertLaunchableModel(spec.tool, spec.model)
     return buildAgentCmd({
       tool: spec.tool,
-      workspaceId: spec.agentSessionId,
+      workspaceId: spec.conversationId,
       resume: spec.resume,
       permissionMode: spec.permissionMode,
       paths: spec.paths,
@@ -310,7 +310,7 @@ export const tuiDriver: AgentDriver = {
       await driver.exec(session.jobName, cmd, { maxAttempts: 1, timeout: 15_000, stdin })
       return
     }
-    const { cmd, stdin } = buildMessageCmd(handle, text, paths, { tool: session.tool, agentSessionId: opts.running.agentSessionId })
+    const { cmd, stdin } = buildMessageCmd(handle, text, paths, { tool: session.tool, conversationId: opts.running.conversationId })
     await driver.exec(session.jobName, cmd, {
       maxAttempts: 1,
       timeout: 30_000,

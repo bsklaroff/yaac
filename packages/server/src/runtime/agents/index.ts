@@ -35,8 +35,8 @@ export { acpConversation, dropAcpQueues, whenAcpConversation } from './acp-regis
 export {
   agentTitlesItself,
   agentWindowName,
-  getAgentSessionFirstMessage,
-  getAgentSessionTitle,
+  getConversationFirstMessage,
+  getConversationTitle,
   resolveAgentPermissionMode,
 } from './agent-tools'
 export {

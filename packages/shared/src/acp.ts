@@ -345,7 +345,7 @@ export type AcpServerMessage =
    */
   | {
     type: 'hello'
-    agentSessionId: string
+    conversationId: string
     busy: boolean
     queued: AcpQueuedPrompt[]
     page: number
@@ -419,8 +419,8 @@ export type AcpClientMessage =
 /** The `/pty/attach`-style pane target that addresses one ACP conversation. */
 export const ACP_TARGET_PREFIX = 'acp:'
 
-export function acpTarget(agentSessionId: string): string {
-  return `${ACP_TARGET_PREFIX}${agentSessionId}`
+export function acpTarget(conversationId: string): string {
+  return `${ACP_TARGET_PREFIX}${conversationId}`
 }
 
 export function isAcpTarget(target: string): boolean {

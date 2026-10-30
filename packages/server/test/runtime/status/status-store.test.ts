@@ -254,7 +254,7 @@ describe('onLiveAgentsChanged', () => {
     setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude' }])
     expect(listener).toHaveBeenCalledTimes(1)
     // Same handle, now with its session id.
-    setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude', agentSessionId: 'conv-a' }])
+    setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude', conversationId: 'conv-a' }])
     expect(listener).toHaveBeenCalledTimes(2)
     setLiveAgents('demo', 's1', [])
     expect(listener).toHaveBeenCalledTimes(3)
@@ -262,11 +262,11 @@ describe('onLiveAgentsChanged', () => {
 
   // Drivers republish the same set on every sweep; that must not fire.
   it('does not fire for a re-publish of the same set, or for a status flip', () => {
-    setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude', agentSessionId: 'conv-a' }])
+    setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude', conversationId: 'conv-a' }])
     const listener = vi.fn()
     onLiveAgentsChanged(listener)
     // Fresh objects, as drivers publish, so reference equality would fail.
-    setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude', agentSessionId: 'conv-a' }])
+    setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude', conversationId: 'conv-a' }])
     setAgentStatus('demo', 's1', 'claude-1', 'running')
     setAgentStatus('demo', 's1', 'claude-1', 'waiting')
     expect(listener).not.toHaveBeenCalled()

@@ -43,7 +43,7 @@ export function stopWorkspaceOptimistic(workspace: WorkspaceListEntry, rowIds: s
       title: workspace.title,
       // Unused for a user stop (no deathReason), but required by the type.
       deathSeenBy: [],
-      agentSessions: workspace.agentSessions,
+      conversations: workspace.conversations,
       groupId: workspace.groupId,
     })
   }

@@ -56,7 +56,7 @@ const CHANGES = {
 }
 const WORKSPACE = {
   workspaceId: WS, projectId: project.id, tool: 'claude', status: 'running', createdAt: '2026-08-10 00:00:00',
-  agentSessions: [], blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
+  conversations: [], blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
 }
 
 const { chromium } = requirePlaywright()

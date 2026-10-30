@@ -3,7 +3,7 @@ import { FILES_TARGET } from '#lib/files'
 import { acpPaneTargets, defaultPaneTarget, paneStillLive, syncPaneLayout } from '#lib/panes'
 import { addColumn, addTab, paneTargets, singleColumn } from '#lib/layout'
 import { previewTarget } from '#lib/preview'
-import type { AgentSessionEntry, WorkspaceListEntry } from '@yaac/shared/types'
+import type { ConversationEntry, WorkspaceListEntry } from '@yaac/shared/types'
 
 /**
  * Which panes a workspace has. Chat panes stay mounted while hidden, so
@@ -11,11 +11,11 @@ import type { AgentSessionEntry, WorkspaceListEntry } from '@yaac/shared/types'
  * it would keep retrying a socket the server refuses.
  */
 
-function session(over: Partial<AgentSessionEntry> = {}): AgentSessionEntry {
-  return { agentSessionId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true, ...over }
+function session(over: Partial<ConversationEntry> = {}): ConversationEntry {
+  return { conversationId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true, ...over }
 }
 
-function workspace(sessions: AgentSessionEntry[]): WorkspaceListEntry {
+function workspace(sessions: ConversationEntry[]): WorkspaceListEntry {
   return {
     workspaceId: 'w1',
     projectId: 'proj',
@@ -25,26 +25,26 @@ function workspace(sessions: AgentSessionEntry[]): WorkspaceListEntry {
     blockedHosts: [],
     forwardedPorts: [],
     unforwardedPorts: [],
-    agentSessions: sessions,
+    conversations: sessions,
   }
 }
 
 /** A `tui` workspace: one agent, no conversation of its own. */
 const tui = workspace([session({ mode: 'tui' })])
 /** An `acp` workspace mid-conversation. */
-const acp = workspace([session({ agentSessionId: 'conv-a' })])
+const acp = workspace([session({ conversationId: 'conv-a' })])
 /** An ACP workspace whose agent hasn't answered `session/new` yet. */
 const booting = workspace([])
 
 describe('acpPaneTargets', () => {
   it('names the live conversations and nothing else', () => {
     const mixed = workspace([
-      session({ agentSessionId: 'conv-a' }),
+      session({ conversationId: 'conv-a' }),
       // Ended: no agent is behind it now.
-      session({ agentSessionId: 'conv-b', active: false, ordinal: 1 }),
+      session({ conversationId: 'conv-b', active: false, ordinal: 1 }),
       // A TUI agent is a terminal, not a chat pane.
-      session({ agentSessionId: 'conv-c', mode: 'tui', ordinal: 2 }),
-      session({ agentSessionId: 'conv-d', mode: undefined, ordinal: 3 }),
+      session({ conversationId: 'conv-c', mode: 'tui', ordinal: 2 }),
+      session({ conversationId: 'conv-d', mode: undefined, ordinal: 3 }),
     ])
     expect(acpPaneTargets(mixed)).toEqual(['acp:conv-a'])
     expect(acpPaneTargets(tui)).toEqual([])
@@ -67,8 +67,8 @@ describe('defaultPaneTarget', () => {
 
   it('opens the first conversation when a workspace has several', () => {
     const many = workspace([
-      session({ agentSessionId: 'conv-a' }),
-      session({ agentSessionId: 'conv-b', ordinal: 1 }),
+      session({ conversationId: 'conv-a' }),
+      session({ conversationId: 'conv-b', ordinal: 1 }),
     ])
     expect(defaultPaneTarget(many)).toBe('acp:conv-a')
   })
@@ -78,7 +78,7 @@ describe('paneStillLive', () => {
   it('drops a conversation that has ended, and keeps the ones that have not', () => {
     expect(paneStillLive(acp, 'acp:conv-a')).toBe(true)
     // An ended conversation's pane is no longer live.
-    expect(paneStillLive(workspace([session({ agentSessionId: 'conv-a', active: false })]),
+    expect(paneStillLive(workspace([session({ conversationId: 'conv-a', active: false })]),
       'acp:conv-a')).toBe(false)
     // Nor is an unknown conversation's.
     expect(paneStillLive(acp, 'acp:conv-z')).toBe(false)

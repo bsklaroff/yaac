@@ -1,7 +1,7 @@
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import { modelDisplayName } from '#domain/auth'
-import type { AgentSessionLinkRow } from '#db'
-import type { AgentSessionEntry, AgentStatus, ListedAgentStatus } from '@yaac/shared/types'
+import type { ConversationLinkRow } from '#db'
+import type { ConversationEntry, AgentStatus, ListedAgentStatus } from '@yaac/shared/types'
 
 /** A status in wire form (`ListedAgentStatus`): an ask is `waiting` with a
  *  flag. */
@@ -19,13 +19,13 @@ export function listedStatus(status: AgentStatus): { status: ListedAgentStatus; 
  * what the runtime observed just now (docs/layered-server.md). The model goes
  * out with its catalog display name (e.g. "Opus 5.5").
  */
-export function toAgentSessionEntry(
-  l: AgentSessionLinkRow,
+export function toConversationEntry(
+  l: ConversationLinkRow,
   live?: { status: AgentStatus; waitingSinceMs?: number },
-): AgentSessionEntry {
+): ConversationEntry {
   const modelName = l.model !== undefined ? modelDisplayName(l.tool, l.model) : undefined
   return {
-    agentSessionId: l.agentSessionId,
+    conversationId: l.conversationId,
     tool: l.tool,
     mode: l.mode,
     ordinal: l.ordinal,

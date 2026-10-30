@@ -119,16 +119,16 @@ async function seed(...workspaces: Seeded[]): Promise<void> {
   for (const { projectId, workspaceId, prompt, title, tool = 'pi', agentTitle, generatedTitle, stopped, blankFirst } of workspaces) {
     await applyWorkspaceEvent({ type: 'workspace-created', projectId, workspaceId, ...(generatedTitle ? { generatedTitle } : {}) })
     await applyWorkspaceEvent({
-      type: 'sessions-launched', projectId, workspaceId,
+      type: 'conversations-launched', projectId, workspaceId,
       sessions: [
-        ...(blankFirst ? [{ agentSessionId: `${workspaceId}-blank`, tool }] : []),
-        { agentSessionId: `${workspaceId}-a`, tool, firstPrompt: prompt },
+        ...(blankFirst ? [{ conversationId: `${workspaceId}-blank`, tool }] : []),
+        { conversationId: `${workspaceId}-a`, tool, firstPrompt: prompt },
       ],
     })
     if (agentTitle !== undefined) {
       await applyWorkspaceEvent({
-        type: 'sessions-discovered', projectId, workspaceId,
-        sessions: [{ agentSessionId: `${workspaceId}-a`, tool, title: agentTitle }],
+        type: 'conversations-discovered', projectId, workspaceId,
+        sessions: [{ conversationId: `${workspaceId}-a`, tool, title: agentTitle }],
       })
     }
     if (title !== undefined) await real.setWorkspaceTitle(projectId, workspaceId, title)

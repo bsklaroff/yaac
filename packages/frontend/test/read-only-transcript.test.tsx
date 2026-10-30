@@ -6,7 +6,7 @@ import { ACP_PAGE_SPAN, type AcpEvent, type AcpServerMessage } from '@yaac/share
 import { ReadOnlyTranscript } from '#components/ReadOnlyTranscript'
 import { useUiStore } from '#lib/store'
 import {
-  agentEvent as said, agentSession, FakeSocket, mockFetch, renderWithClient, serverError, testQueryClient, userEvent as asked,
+  agentEvent as said, conversation, FakeSocket, mockFetch, renderWithClient, serverError, testQueryClient, userEvent as asked,
   type FetchMock,
 } from './harness'
 
@@ -19,9 +19,9 @@ import {
  * toggles in read-only-workspace.test.tsx.
  */
 
-const TRANSCRIPT = 'GET /api/workspace/w1/agent-sessions/c1/transcript'
+const TRANSCRIPT = 'GET /api/workspace/w1/conversations/c1/transcript'
 
-const session: typeof agentSession = (over) => agentSession({ mode: 'tui', ...over })
+const session: typeof conversation = (over) => conversation({ mode: 'tui', ...over })
 
 let server: FetchMock
 beforeEach(() => {
@@ -98,8 +98,8 @@ describe('ReadOnlyTranscript', () => {
     server.route(TRANSCRIPT.replace('c1', 'c2'), { page: 0, events: [said(0, 'the second answer')] })
     renderPane({
       sessions: [
-        session({ agentSessionId: 'c1', ordinal: 0, active: false, prompt: 'first ask' }),
-        session({ agentSessionId: 'c2', ordinal: 1, active: true, prompt: 'second ask' }),
+        session({ conversationId: 'c1', ordinal: 0, active: false, prompt: 'first ask' }),
+        session({ conversationId: 'c2', ordinal: 1, active: true, prompt: 'second ask' }),
       ],
     })
 
@@ -324,7 +324,7 @@ describe('ReadOnlyTranscript', () => {
       const sock = FakeSocket.latest()
       act(() => {
         sock.open()
-        sock.deliver({ type: 'hello', agentSessionId: 'c1', busy: false, queued: [], page: 0, events, ...over })
+        sock.deliver({ type: 'hello', conversationId: 'c1', busy: false, queued: [], page: 0, events, ...over })
       })
     }
     const pending = { type: 'tool', seq: 2, call: { toolCallId: 't1', title: 'npm test', kind: 'execute', status: 'pending' } } as const
@@ -386,7 +386,7 @@ describe('ReadOnlyTranscript', () => {
         owner: 'Ada',
         sessions: [
           session({ status: 'running', prompt: 'first' }),
-          session({ agentSessionId: 'c2', ordinal: 1, active: false, status: 'waiting', asking: true, prompt: 'second' }),
+          session({ conversationId: 'c2', ordinal: 1, active: false, status: 'waiting', asking: true, prompt: 'second' }),
         ],
       })
       expect(await screen.findByLabelText('Waiting for Ada\'s answer')).toBeTruthy()

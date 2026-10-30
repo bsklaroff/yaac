@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { recordWorkspaceCreated } from '#db/workspace-store'
-import { recordAgentSessions } from '#db/agent-session-store'
+import { recordConversations } from '#db/conversation-store'
 import { closeDb } from '#db/client'
 import { claudeDir } from '@yaac/shared/project-paths'
 import { observeConversation, stopHistoryTails } from '#domain/workspaces/history-tail'
@@ -29,9 +29,9 @@ beforeEach(async () => {
   installFakeWorkspaceDriver()
   tmpDir = await createTempDataDir()
   await recordWorkspaceCreated({ projectId: PROJECT, workspaceId: WORKSPACE })
-  await recordAgentSessions(PROJECT, WORKSPACE, [
-    { tool: 'claude', agentSessionId: TUI_SESSION, mode: 'tui' },
-    { tool: 'claude', agentSessionId: ACP_SESSION, mode: 'acp' },
+  await recordConversations(PROJECT, WORKSPACE, [
+    { tool: 'claude', conversationId: TUI_SESSION, mode: 'tui' },
+    { tool: 'claude', conversationId: ACP_SESSION, mode: 'acp' },
   ])
 })
 
@@ -102,7 +102,7 @@ describe('observeConversation', () => {
     await observeConversation(PROJECT, WORKSPACE, TUI_SESSION, b)
     for (const sock of [a, b]) {
       await waitFor(() => sock.hellos() === 1)
-      expect(sock.sent[0]).toMatchObject({ type: 'hello', history: true, busy: false, agentSessionId: TUI_SESSION })
+      expect(sock.sent[0]).toMatchObject({ type: 'hello', history: true, busy: false, conversationId: TUI_SESSION })
       expect(sock.said()).toEqual(['count the files'])
     }
 

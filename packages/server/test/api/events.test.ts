@@ -241,7 +241,7 @@ describe('buildSnapshot provisioning', () => {
     vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
       workspaces: [{
         workspaceId: 'prov-2', projectId: 'p', tool: 'claude',
-        status: 'waiting', createdAt: '2026-01-01 00:00:00', agentSessions: [],
+        status: 'waiting', createdAt: '2026-01-01 00:00:00', conversations: [],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
@@ -271,7 +271,7 @@ describe('buildSnapshot provisioning', () => {
     vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
       workspaces: [{
         workspaceId: 'spare-1', projectId: 'p', tool: 'claude',
-        status: 'waiting', createdAt: '2026-01-01 00:00:00', agentSessions: [],
+        status: 'waiting', createdAt: '2026-01-01 00:00:00', conversations: [],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
@@ -291,7 +291,7 @@ describe('buildSnapshot provisioning', () => {
     vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
       workspaces: [{
         workspaceId: 'spare-2', projectId: 'p', tool: 'claude',
-        status: 'waiting', createdAt: '2026-01-01 00:00:00', agentSessions: [],
+        status: 'waiting', createdAt: '2026-01-01 00:00:00', conversations: [],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
@@ -310,7 +310,7 @@ describe('buildSnapshot provisioning', () => {
     vi.mocked(listActiveWorkspaces).mockResolvedValue({
       workspaces: [{
         workspaceId: 'prov-3', projectId: 'p', tool: 'claude',
-        status: 'waiting', createdAt: '2026-01-01 00:00:00', agentSessions: [],
+        status: 'waiting', createdAt: '2026-01-01 00:00:00', conversations: [],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
@@ -341,7 +341,7 @@ describe('buildSnapshot prompts', () => {
       workspaces: [{
         workspaceId: 'w-1', projectId: 'p', tool: 'claude', prompt: long,
         status: 'running', createdAt: '2026-01-01 00:00:00',
-        agentSessions: [{ agentSessionId: 'a-1', tool: 'claude', ordinal: 0, active: true, prompt: conversationPrompt }],
+        conversations: [{ conversationId: 'a-1', tool: 'claude', ordinal: 0, active: true, prompt: conversationPrompt }],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
@@ -358,7 +358,7 @@ describe('buildSnapshot prompts', () => {
 
     const snap = await buildSnapshot()
     // Nothing searches a conversation's prompt, so it keeps less.
-    expect(snap.workspaces[0]?.agentSessions[0]?.prompt).toBe('x'.repeat(CONVERSATION_PROMPT_PREVIEW_LENGTH - 1))
+    expect(snap.workspaces[0]?.conversations[0]?.prompt).toBe('x'.repeat(CONVERSATION_PROMPT_PREVIEW_LENGTH - 1))
     expect([
       snap.workspaces[0]?.prompt,
       snap.heldWorkspaces[0]?.prompt,
@@ -388,7 +388,7 @@ describe('buildSnapshot stopped counts', () => {
     vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
       workspaces: [{
         workspaceId: 'stopping', projectId: PROJ, tool: 'claude', groupId,
-        status: 'running', stopping: true, createdAt: '2026-01-01 00:00:00', agentSessions: [],
+        status: 'running', stopping: true, createdAt: '2026-01-01 00:00:00', conversations: [],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],

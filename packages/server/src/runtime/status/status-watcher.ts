@@ -45,7 +45,7 @@ export interface StatusWatcherDeps {
    * driver needs them, but reading the DB here would make `#runtime/status`
    * depend on `#domain/workspaces`.
    */
-  recordedSessions?: (session: WatchedWorkspace) => Promise<Array<{ handle: string; agentSessionId: string }>>
+  recordedSessions?: (session: WatchedWorkspace) => Promise<Array<{ handle: string; conversationId: string }>>
   /**
    * The workspace's permission posture, injected like `recordedSessions`;
    * the ACP driver tells its adapter which posture to use.

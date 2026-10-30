@@ -35,7 +35,7 @@ import { recordProjectCreate } from '#db/project-store'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { agentHistoryDir, opencodeCheckpointDir, repoDir, workspaceDir } from '@yaac/shared/project-paths'
-import { recordAgentSessions, setActiveAgentSessions } from '#db/agent-session-store'
+import { recordConversations, setActiveConversations } from '#db/conversation-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
 import { applyWorkspaceEvent, deleteToolCredential, getWorkspaceRow, setTimeZone, setToolCredential, setWorkspaceGroup } from '#db'
 import { formatInZone } from '@yaac/shared/schedule'
@@ -222,8 +222,8 @@ describe('runMamaCommand', () => {
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace' })
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'unnamed-workspace' })
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-two' })
-      await recordAgentSessions(PROJ, 'sibling-workspace', [
-        { tool: 'claude', agentSessionId: 'conv', firstPrompt: long },
+      await recordConversations(PROJ, 'sibling-workspace', [
+        { tool: 'claude', conversationId: 'conv', firstPrompt: long },
       ])
       running = [
         podFor('caller-workspace'), podFor('sibling-workspace'), podFor('unnamed-workspace'), podFor('sibling-two'),
@@ -273,7 +273,7 @@ describe('runMamaCommand', () => {
         for (const [i, [id, prompt, cause]] of stops.entries()) {
           vi.setSystemTime(Date.UTC(2026, 9, 20 + i, 12))
           await recordWorkspaceCreated({ projectId: PROJ, workspaceId: id })
-          await recordAgentSessions(PROJ, id, [{ tool: 'claude', agentSessionId: `${id}-conv`, firstPrompt: prompt }])
+          await recordConversations(PROJ, id, [{ tool: 'claude', conversationId: `${id}-conv`, firstPrompt: prompt }])
           await recordWorkspaceStopped(PROJ, id, cause)
         }
       } finally {
@@ -1230,13 +1230,13 @@ describe('runMamaCommand', () => {
       await recordWorkspaceCreated({
         projectId: PROJ, workspaceId: 'sibling-workspace', permissionMode: 'manual', model: 'opus',
       })
-      await recordAgentSessions(PROJ, 'sibling-workspace', [
-        { tool: 'claude', agentSessionId: 'first-conv' },
-        { tool: 'claude', agentSessionId: 'second-conv' },
+      await recordConversations(PROJ, 'sibling-workspace', [
+        { tool: 'claude', conversationId: 'first-conv' },
+        { tool: 'claude', conversationId: 'second-conv' },
       ])
-      await setActiveAgentSessions(PROJ, 'sibling-workspace', [
-        { tool: 'claude', agentSessionId: 'first-conv', paneId: '%3' },
-        { tool: 'claude', agentSessionId: 'second-conv', paneId: '%7' },
+      await setActiveConversations(PROJ, 'sibling-workspace', [
+        { tool: 'claude', conversationId: 'first-conv', paneId: '%3' },
+        { tool: 'claude', conversationId: 'second-conv', paneId: '%7' },
       ])
       await recordWorkspaceStopped(PROJ, 'sibling-workspace')
       running = [podFor('caller-workspace')]
@@ -1265,7 +1265,7 @@ describe('runMamaCommand', () => {
       await recordWorkspaceCreated({
         projectId: PROJ, workspaceId: 'timed-sibling', permissionMode: 'manual', deadline: new Date(Date.now() + 30 * 60_000),
       })
-      await recordAgentSessions(PROJ, 'timed-sibling', [{ tool: 'claude', agentSessionId: 'timed-conv' }])
+      await recordConversations(PROJ, 'timed-sibling', [{ tool: 'claude', conversationId: 'timed-conv' }])
       await recordWorkspaceStopped(PROJ, 'timed-sibling')
       const cases: Array<[Record<string, string>, number | undefined]> = [
         [{ workspace: 'timed-sib' }, 30],
@@ -1317,7 +1317,7 @@ describe('runMamaCommand', () => {
         workspaceId: 'sibling-workspace',
         tool: 'claude',
         permissionMode: 'manual',
-        resume: [{ agentSessionId: 'first-conv', tool: 'claude' }, { agentSessionId: 'second-conv', tool: 'claude' }],
+        resume: [{ conversationId: 'first-conv', tool: 'claude' }, { conversationId: 'second-conv', tool: 'claude' }],
       }])
       await vi.waitFor(async () => {
         expect((await getWorkspaceRow(PROJ, 'sibling-workspace'))?.stoppedAt).toBeUndefined()
@@ -1330,7 +1330,7 @@ describe('runMamaCommand', () => {
       await recordWorkspaceStopped(PROJ, 'bypass-workspace')
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'running-workspace', permissionMode: 'manual' })
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'opencode-workspace', permissionMode: 'manual' })
-      await recordAgentSessions(PROJ, 'opencode-workspace', [{ tool: 'opencode', agentSessionId: 'ses_1' }])
+      await recordConversations(PROJ, 'opencode-workspace', [{ tool: 'opencode', conversationId: 'ses_1' }])
       await recordWorkspaceStopped(PROJ, 'opencode-workspace')
       // Its stop is recorded but its unit is back (a restart under way).
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'restarting-workspace', permissionMode: 'manual' })
@@ -1338,8 +1338,8 @@ describe('runMamaCommand', () => {
       // It wrote a transcript the host no longer has.
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'lost-workspace', permissionMode: 'manual' })
       await applyWorkspaceEvent({
-        type: 'sessions-launched', projectId: PROJ, workspaceId: 'lost-workspace',
-        sessions: [{ tool: 'claude', agentSessionId: 'lost-conv', mode: 'acp', firstPrompt: 'hello' }],
+        type: 'conversations-launched', projectId: PROJ, workspaceId: 'lost-workspace',
+        sessions: [{ tool: 'claude', conversationId: 'lost-conv', mode: 'acp', firstPrompt: 'hello' }],
       })
       await recordWorkspaceStopped(PROJ, 'lost-workspace')
       await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', permissionMode: 'manual' })
@@ -1347,13 +1347,13 @@ describe('runMamaCommand', () => {
       // Recorded as `manual`, but pi has only `bypass`, which its
       // conversation would come back in.
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'pi-workspace', permissionMode: 'manual' })
-      await recordAgentSessions(PROJ, 'pi-workspace', [
-        { tool: 'claude', agentSessionId: 'claude-conv' },
-        { tool: 'pi', agentSessionId: 'pi-conv' },
+      await recordConversations(PROJ, 'pi-workspace', [
+        { tool: 'claude', conversationId: 'claude-conv' },
+        { tool: 'pi', conversationId: 'pi-conv' },
       ])
-      await setActiveAgentSessions(PROJ, 'pi-workspace', [
-        { tool: 'claude', agentSessionId: 'claude-conv', paneId: '%1' },
-        { tool: 'pi', agentSessionId: 'pi-conv', paneId: '%2' },
+      await setActiveConversations(PROJ, 'pi-workspace', [
+        { tool: 'claude', conversationId: 'claude-conv', paneId: '%1' },
+        { tool: 'pi', conversationId: 'pi-conv', paneId: '%2' },
       ])
       await recordWorkspaceStopped(PROJ, 'pi-workspace')
       running = [podFor('caller-workspace'), podFor('running-workspace'), podFor('restarting-workspace')]
@@ -1399,13 +1399,13 @@ describe('runMamaCommand', () => {
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits' })
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace', permissionMode: 'manual' })
       running = [podFor('caller-workspace'), podFor('sibling-workspace')]
-      await recordAgentSessions(PROJ, 'sibling-workspace', [
-        { tool: 'claude', agentSessionId: 'first-conv' },
-        { tool: 'claude', agentSessionId: 'second-conv' },
+      await recordConversations(PROJ, 'sibling-workspace', [
+        { tool: 'claude', conversationId: 'first-conv' },
+        { tool: 'claude', conversationId: 'second-conv' },
       ])
-      await setActiveAgentSessions(PROJ, 'sibling-workspace', [
-        { tool: 'claude', agentSessionId: 'first-conv', paneId: '%3' },
-        { tool: 'claude', agentSessionId: 'second-conv', paneId: '%7' },
+      await setActiveConversations(PROJ, 'sibling-workspace', [
+        { tool: 'claude', conversationId: 'first-conv', paneId: '%3' },
+        { tool: 'claude', conversationId: 'second-conv', paneId: '%7' },
       ])
       exec.mockReset().mockResolvedValue({ stdout: '', stderr: '' })
       _resetWorkspaceStatusStoreForTests()
@@ -1445,8 +1445,8 @@ describe('runMamaCommand', () => {
 
     it('strips control characters before any tool sees them, pi\'s editor-free path included', async () => {
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'pi-workspace', permissionMode: 'manual' })
-      await recordAgentSessions(PROJ, 'pi-workspace', [{ tool: 'pi', agentSessionId: 'pi-conv' }])
-      await setActiveAgentSessions(PROJ, 'pi-workspace', [{ tool: 'pi', agentSessionId: 'pi-conv', paneId: '%5' }])
+      await recordConversations(PROJ, 'pi-workspace', [{ tool: 'pi', conversationId: 'pi-conv' }])
+      await setActiveConversations(PROJ, 'pi-workspace', [{ tool: 'pi', conversationId: 'pi-conv', paneId: '%5' }])
       running = [podFor('caller-workspace'), podFor('pi-workspace')]
 
       await output('send', 'look\x1b]52;c;cGF5bG9hZA==\x07 here\x1b[6n', { workspace: 'pi-workspace' })
@@ -1498,8 +1498,8 @@ describe('runMamaCommand', () => {
 
     it('refuses a target it must not or cannot message, sending nothing', async () => {
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'bypass-workspace', permissionMode: 'bypass' })
-      await recordAgentSessions(PROJ, 'bypass-workspace', [{ tool: 'claude', agentSessionId: 'bypass-conv' }])
-      await setActiveAgentSessions(PROJ, 'bypass-workspace', [{ tool: 'claude', agentSessionId: 'bypass-conv', paneId: '%1' }])
+      await recordConversations(PROJ, 'bypass-workspace', [{ tool: 'claude', conversationId: 'bypass-conv' }])
+      await setActiveConversations(PROJ, 'bypass-workspace', [{ tool: 'claude', conversationId: 'bypass-conv', paneId: '%1' }])
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'stopped-workspace', permissionMode: 'plan' })
       await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', permissionMode: 'plan' })
       running = [
@@ -1516,8 +1516,8 @@ describe('runMamaCommand', () => {
       // the row's, and the conversation's own when it reported one.
       expect(await refusal('go', { workspace: 'bypass' })).toContain('more than this workspace\'s own')
       setLiveAgents(PROJ, 'sibling-workspace', [
-        { handle: '%3', tool: 'claude', agentSessionId: 'first-conv', reportedMode: 'bypassPermissions' },
-        { handle: '%7', tool: 'claude', agentSessionId: 'second-conv', reportedMode: 'mystery' },
+        { handle: '%3', tool: 'claude', conversationId: 'first-conv', reportedMode: 'bypassPermissions' },
+        { handle: '%7', tool: 'claude', conversationId: 'second-conv', reportedMode: 'mystery' },
       ])
       expect(await refusal('go', { workspace: 'sibling' })).toContain('runs in permission mode \'bypass\'')
       expect(await refusal('go', { workspace: 'sibling', conversation: 'second' })).toContain('cannot tell which permission mode')
@@ -1531,7 +1531,7 @@ describe('runMamaCommand', () => {
       expect(await refusal('go', { workspace: 'foreign-workspace' })).toContain('no workspace')
       expect(await refusal('go', { workspace: 'sibling', conversation: 'nope' })).toContain('no running conversation')
       expect(await refusal('  ', { workspace: 'sibling' })).toContain('needs a message')
-      await setActiveAgentSessions(PROJ, 'sibling-workspace', [])
+      await setActiveConversations(PROJ, 'sibling-workspace', [])
       expect(await refusal('go', { workspace: 'sibling' })).toContain('has no running conversation yet')
       expect(exec).not.toHaveBeenCalled()
     })
@@ -1708,9 +1708,9 @@ describe('runMamaCommand', () => {
     it('lists a stopped sibling\'s conversations, prints one\'s transcripts, and hands out each file', async () => {
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace' })
       await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace' })
-      await recordAgentSessions(PROJ, 'sibling-workspace', [
-        { tool: 'claude', agentSessionId: 'claude-conv', firstPrompt: 'write the report' },
-        { tool: 'opencode', agentSessionId: 'opencode-conv' },
+      await recordConversations(PROJ, 'sibling-workspace', [
+        { tool: 'claude', conversationId: 'claude-conv', firstPrompt: 'write the report' },
+        { tool: 'opencode', conversationId: 'opencode-conv' },
       ])
       const conversations = path.join(agentHistoryDir(PROJ, 'sibling-workspace', 'claude'), '-workspace')
       await fs.mkdir(path.join(conversations, 'claude-conv', 'subagents'), { recursive: true })

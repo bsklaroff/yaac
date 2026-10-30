@@ -211,7 +211,7 @@ Key:
 | `terminal.rm` (`hc rm`) | a stopped workspace's finished record: hidden from this user's hc view (a per-user dismissal). The workspace itself stays restartable in the web app. `workspace delete` stays a deliberate yaac action. | N |
 | `terminal.keep` (`hc keep`) | stored and reported. yaac's windows live in tmux in a pod, so "lost, then restarted as a shell" corresponds to a workspace restart. `keep` on an agent window means "restart this workspace after a pod loss", and the adapter emits `lost` and `restarted` around it. | N |
 | `terminal.label` (`hc label`) | client labels stored per terminal; `yaac.*` keys are read-only (error kind `invalid`) | N |
-| `terminal.read` (`hc read`) | live: `capture-pane -p -J -S -<lines>` on the window. Finished: the transcript (`GET …/agent-sessions/:sid/transcript`) rendered as text. | N |
+| `terminal.read` (`hc read`) | live: `capture-pane -p -J -S -<lines>` on the window. Finished: the transcript (`GET …/conversations/:sid/transcript`) rendered as text. | N |
 | `terminal.attach` (`hc attach`, app panes) | a mirror viewer on the window (`window:@N` or `agent`), described below | Y+N |
 | `terminal.send` (`hc send`) | agent window: `agentDriver(mode).deliverPrompt` (the tmux paste for `tui`, `session/prompt` for `acp`), the same path as `yaac-mama send`; other windows: bracketed paste plus Enter through the mirror's input path. Honours `if` (state precondition), `wait` (send, then wait) and `force`. The "quiet for about 3 s" rule is the mirror's existing input serialization plus a server-side typing timer. | N |
 | `terminal.keys` (`hc keys`) | named keys become tmux `send-keys` key names, which tmux encodes for the app's current modes | N |

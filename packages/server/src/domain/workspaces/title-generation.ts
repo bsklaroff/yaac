@@ -17,7 +17,7 @@
  */
 import { createHash } from 'node:crypto'
 import {
-  getAgentSessionsFor,
+  getConversationsFor,
   listDraftWorkspaceRows,
   listQueuedWorkspaceRows,
   listWorkspaceRows,
@@ -45,7 +45,7 @@ export async function reconcileGeneratedTitles(): Promise<void> {
 
   const untitled = (await listWorkspaceRows())
     .filter((r) => r.stoppedAt === undefined && r.title === undefined && r.generatedTitle === undefined)
-  const sessions = await getAgentSessionsFor(untitled)
+  const sessions = await getConversationsFor(untitled)
   for (const { projectId, workspaceId } of untitled) {
     const key = `${projectId}/${workspaceId}`
     const links = sessions.get(key) ?? []

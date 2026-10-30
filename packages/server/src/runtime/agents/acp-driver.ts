@@ -60,7 +60,7 @@ import type {
   DrivenWorkspace,
   LiveAgent,
 } from './drivers'
-import { agentSessionIdSchema, type AgentTool, type PermissionMode } from '@yaac/shared/types'
+import { conversationIdSchema, type AgentTool, type PermissionMode } from '@yaac/shared/types'
 
 /**
  * One conversation's acpd socket inside the workspace, named for its tmux
@@ -154,7 +154,7 @@ interface Attached {
    *  `attach`). */
   conversation?: AcpConversation
   child: StreamChild
-  agentSessionId?: string
+  conversationId?: string
   model?: string
   modelName?: string
   modeId?: string
@@ -178,7 +178,7 @@ class AcpConnection extends ControlModeConnection {
   private readonly booting = new Set<string>()
   private syncing: Promise<void> | null = null
   private syncAgain = false
-  private readonly recordedSessions: () => Promise<Array<{ handle: string; agentSessionId: string }>>
+  private readonly recordedSessions: () => Promise<Array<{ handle: string; conversationId: string }>>
   private readonly readPermissionMode: () => Promise<PermissionMode | undefined>
   private readonly readLaunchModel: (tool: AgentTool) => Promise<string | undefined>
   private readonly readEffort: () => Promise<string | undefined>
@@ -303,7 +303,7 @@ class AcpConnection extends ControlModeConnection {
 
     const sessions = await this.recordedSessions().catch(() => undefined)
     if (this.done) return
-    const recorded = new Map((sessions ?? []).map((r) => [r.handle, r.agentSessionId]))
+    const recorded = new Map((sessions ?? []).map((r) => [r.handle, r.conversationId]))
     // A queue parked for a conversation whose window is gone has no taker.
     // Without the recorded sessions that cannot be told, so nothing is
     // dropped.
@@ -389,7 +389,7 @@ class AcpConnection extends ControlModeConnection {
       // already; its record is still under the name acpd was launched with.
       ...(resumeSessionId === undefined ? {
         recordedSessionNew: () => readRecordedSessionNew({
-          projectId: this.session.projectId, workspaceId: this.session.workspaceId, agentSessionId: this.session.workspaceId,
+          projectId: this.session.projectId, workspaceId: this.session.workspaceId, conversationId: this.session.workspaceId,
         }),
       } : {}),
       ...(resumeSessionId !== undefined ? {
@@ -397,25 +397,25 @@ class AcpConnection extends ControlModeConnection {
         // Only a recorded conversation can be mid-turn on attach, and only
         // it has a record to read.
         recover: () => readAcpRecovery({
-          projectId: this.session.projectId, workspaceId: this.session.workspaceId, agentSessionId: resumeSessionId,
+          projectId: this.session.projectId, workspaceId: this.session.workspaceId, conversationId: resumeSessionId,
         }),
       } : {}),
-      onSessionId: (agentSessionId) => {
+      onSessionId: (conversationId) => {
         // The agent mints the id, and it is later joined into paths and a
         // launch line, so a malformed one is not recorded.
-        if (!agentSessionIdSchema.safeParse(agentSessionId).success) {
-          this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: not recording malformed id ${JSON.stringify(agentSessionId.slice(0, 200))}`)
+        if (!conversationIdSchema.safeParse(conversationId).success) {
+          this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: not recording malformed id ${JSON.stringify(conversationId.slice(0, 200))}`)
           return
         }
-        entry.agentSessionId = agentSessionId
+        entry.conversationId = conversationId
         // acpd opened the record before the id existed; rename it.
-        void adoptLog(this.session, resumeSessionId, agentSessionId, this.log)
-        void this.send(`set-option -p -t ${pane.paneId} ${SESSION_PANE_OPTION} '${pane.pid}:${agentSessionId}'`)
+        void adoptLog(this.session, resumeSessionId, conversationId, this.log)
+        void this.send(`set-option -p -t ${pane.paneId} ${SESSION_PANE_OPTION} '${pane.pid}:${conversationId}'`)
           .catch((err: unknown) => {
             this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: could not note the session on its pane: ${String(err)}`)
           })
         if (entry.conversation) {
-          registerAcpConversation(this.session.projectId, this.session.workspaceId, { handle, agentSessionId, ...panePid }, entry.conversation)
+          registerAcpConversation(this.session.projectId, this.session.workspaceId, { handle, conversationId, ...panePid }, entry.conversation)
         }
         // The registry reconciler turns this into the conversation's row.
         this.publishAgents()
@@ -447,10 +447,10 @@ class AcpConnection extends ControlModeConnection {
     })
     // A synchronous failure above already detached; do not re-publish it.
     if (!this.attached.has(handle)) return
-    entry.agentSessionId = resumeSessionId
+    entry.conversationId = resumeSessionId
     registerAcpConversation(this.session.projectId, this.session.workspaceId, {
       handle,
-      ...(resumeSessionId !== undefined ? { agentSessionId: resumeSessionId } : {}),
+      ...(resumeSessionId !== undefined ? { conversationId: resumeSessionId } : {}),
       ...panePid,
     }, entry.conversation)
   }
@@ -467,10 +467,10 @@ class AcpConnection extends ControlModeConnection {
     this.attached.delete(entry.handle)
     unregisterAcpConversation(this.session.projectId, this.session.workspaceId, {
       handle: entry.handle,
-      ...(entry.agentSessionId !== undefined ? { agentSessionId: entry.agentSessionId } : {}),
+      ...(entry.conversationId !== undefined ? { conversationId: entry.conversationId } : {}),
     })
-    if (keepQueue && entry.conversation !== undefined && entry.agentSessionId !== undefined) {
-      parkAcpQueue(this.session.projectId, this.session.workspaceId, entry.agentSessionId, entry.conversation.takeQueue())
+    if (keepQueue && entry.conversation !== undefined && entry.conversationId !== undefined) {
+      parkAcpQueue(this.session.projectId, this.session.workspaceId, entry.conversationId, entry.conversation.takeQueue())
     }
     entry.conversation?.close()
     this.log(`[server] acp-driver ${this.session.workspaceId}/${entry.handle}: detached (${reason})`)
@@ -481,7 +481,7 @@ class AcpConnection extends ControlModeConnection {
     const agents: LiveAgent[] = [...this.attached.values()].map((e) => ({
       handle: e.handle,
       tool: e.tool,
-      ...(e.agentSessionId !== undefined ? { agentSessionId: e.agentSessionId } : {}),
+      ...(e.conversationId !== undefined ? { conversationId: e.conversationId } : {}),
       ...(e.model !== undefined ? { model: e.model } : {}),
       ...(e.modelName !== undefined ? { modelName: e.modelName } : {}),
       ...(e.modeId !== undefined ? { reportedMode: e.modeId } : {}),
@@ -519,17 +519,17 @@ class AcpConnection extends ControlModeConnection {
 async function adoptLog(
   session: DrivenWorkspace,
   launchedAs: string | undefined,
-  agentSessionId: string,
+  conversationId: string,
   log: (msg: string) => void,
 ): Promise<void> {
   const provisional = launchedAs ?? session.workspaceId
-  if (provisional === agentSessionId) return
+  if (provisional === conversationId) return
   const dir = acpLogDir(session.projectId, session.workspaceId)
   try {
-    await fs.rename(path.join(dir, `${provisional}.jsonl`), path.join(dir, `${agentSessionId}.jsonl`))
+    await fs.rename(path.join(dir, `${provisional}.jsonl`), path.join(dir, `${conversationId}.jsonl`))
   } catch (err) {
     // Only costs this conversation its history on the next attach.
-    log(`[server] acp-driver ${session.workspaceId}: could not adopt log for ${agentSessionId}: ${String(err)}`)
+    log(`[server] acp-driver ${session.workspaceId}: could not adopt log for ${conversationId}: ${String(err)}`)
   }
 }
 
@@ -574,7 +574,7 @@ export const acpDriver: AgentDriver = {
       'YAAC_NO_PANE_REPORT=1',
       `exec node ${spec.paths.acpdEntry}`,
       `--sock ${acpSockPath(spec.paths, spec.windowName)}`,
-      `--log ${acpLogPath(spec.paths, spec.agentSessionId)}`,
+      `--log ${acpLogPath(spec.paths, spec.conversationId)}`,
       `--cwd ${spec.paths.workspaceDir}`,
       ...(spec.beforeCheckout === true ? [`--wait-for ${spec.paths.workspaceDir}/.git`] : []),
       '--',

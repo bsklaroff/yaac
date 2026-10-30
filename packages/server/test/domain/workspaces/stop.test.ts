@@ -33,7 +33,7 @@ import {
 import { clearQueuedLaunchesForTests } from '#domain/workspaces/queued-workspaces'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { getQueuedWorkspaceRow } from '#db/queued-workspace-store'
-import { createWorkspaceGroup, getWorkspaceRow, listWorkspaceAgentSessions, setProjectKeptIgnoredPaths, setWorkspaceGroup, setWorkspaceGroupLimit } from '#db'
+import { createWorkspaceGroup, getWorkspaceRow, listWorkspaceConversations, setProjectKeptIgnoredPaths, setWorkspaceGroup, setWorkspaceGroupLimit } from '#db'
 import { clearWorkspaceStopped, recordWorkspaceCreated } from '#db/workspace-store'
 import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
@@ -91,7 +91,7 @@ afterEach(async () => {
 /** The workspace whose first conversation began with `prompt`. */
 async function launchedWith(prompt: string): Promise<string | undefined> {
   for (const id of launched) {
-    if ((await listWorkspaceAgentSessions(PROJ, id))[0]?.firstPrompt === prompt) return id
+    if ((await listWorkspaceConversations(PROJ, id))[0]?.firstPrompt === prompt) return id
   }
   return undefined
 }
