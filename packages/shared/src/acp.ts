@@ -185,6 +185,9 @@ export interface AcpTask {
   startedAt?: number
   /** The tool call that started it, when the adapter names one. */
   toolCallId?: string
+  /** The subagent whose thread started it; absent when the main
+   *  conversation did. */
+  parent?: string
   /** Where in the workspace its output is written; see `task-output`. */
   outputFile?: string
   /** The adapter's latest summary of what it did. */

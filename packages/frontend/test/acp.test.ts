@@ -183,6 +183,28 @@ describe('groupEvents', () => {
     expect(groupEvents(events, 'sub-1').map((g) => g.kind)).toEqual(['agent', 'permission'])
   })
 
+  it('shows a subagent\'s own subagents and tasks as cards in its thread, not the main one', () => {
+    const events: AcpEvent[] = [
+      { type: 'subagent', seq: 0, subagent: { id: 'sub-1', name: 'Explore', task: 't', state: 'running' } },
+      { type: 'tool', seq: 1, thread: 'sub-1', call: { toolCallId: 'sub-2', title: 'dig', kind: 'think', status: 'pending' } },
+      { type: 'subagent', seq: 2, subagent: { id: 'sub-2', parent: 'sub-1', name: 'Dig', task: 't', state: 'running' } },
+      { type: 'tool', seq: 3, thread: 'sub-1', call: { toolCallId: 'call-b', title: 'watch', kind: 'execute', status: 'completed' } },
+      { type: 'task', seq: 4, task: { id: 'b1', name: 'watch', kind: 'shell', description: '', state: 'running', toolCallId: 'call-b', parent: 'sub-1' } },
+    ]
+    expect(groupEvents(events).map((g) => g.kind)).toEqual(['subagent'])
+    // The nested subagent's card stands in for its call; the shell's
+    // call runs on in the background beside its card.
+    expect(groupEvents(events, 'sub-1')).toMatchObject([
+      { kind: 'subagent', seq: 1, subagent: { id: 'sub-2' } },
+      { kind: 'tool', call: { toolCallId: 'call-b' }, background: true },
+      { kind: 'task', task: { id: 'b1' } },
+    ])
+    // A page that holds them without their parent, which finished on an
+    // earlier one, shows them in the main conversation, where they can be
+    // opened.
+    expect(groupEvents(events.slice(1)).map((g) => g.kind)).toEqual(['subagent', 'task'])
+  })
+
   it('shows a resumed subagent again in place of the call that resumed it', () => {
     const sub = { id: 'toolu_agent', name: 'Fix tests', task: 't' }
     const events: AcpEvent[] = [

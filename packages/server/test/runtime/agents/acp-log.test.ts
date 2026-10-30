@@ -1201,6 +1201,17 @@ describe('replayAcpLog', () => {
         content: [{ type: 'content', content: { type: 'text', text: 'Command running in background with ID: b1. Output is being written to: /tmp/c/tasks/b1.output. You will be notified when it completes.' } }],
       }, { toolName: 'Bash' }),
       claudeUpdate({ sessionUpdate: 'tool_call', toolCallId: 'toolu_ls', title: 'ls', kind: 'execute', status: 'pending' }, { toolName: 'Bash', parentToolUseId: 'toolu_agent' }),
+      // A shell and a subagent the subagent started belong to its thread.
+      claudeUpdate({ sessionUpdate: 'tool_call', toolCallId: 'toolu_sub_bash', title: 'watch', kind: 'execute', status: 'pending' }, { toolName: 'Bash', parentToolUseId: 'toolu_agent' }),
+      sdk({
+        subtype: 'task_started', task_id: 'b2', tool_use_id: 'toolu_sub_bash', description: 'Watch',
+        is_backgrounded: true, task_type: 'local_bash', owned_by_subagent: true,
+      }),
+      claudeUpdate({ sessionUpdate: 'tool_call', toolCallId: 'toolu_sub_agent', title: 'dig', kind: 'think', status: 'pending' }, { toolName: 'Agent', parentToolUseId: 'toolu_agent' }),
+      sdk({
+        subtype: 'task_started', task_id: 'a3', tool_use_id: 'toolu_sub_agent', description: 'dig',
+        subagent_type: 'Explore', task_type: 'local_agent', prompt: 'Dig', owned_by_subagent: true,
+      }),
       sdk({ subtype: 'task_notification', task_id: 'a1', tool_use_id: 'toolu_agent', status: 'completed', summary: 'two files' }),
       sdk({ subtype: 'task_notification', task_id: 'b1', tool_use_id: 'toolu_bash', status: 'completed', output_file: '/tmp/c/tasks/b1.output' }),
     ].join('\n'))
@@ -1213,6 +1224,10 @@ describe('replayAcpLog', () => {
       ['tool', undefined],
       ['task', undefined],
       ['tool', 'toolu_agent'],
+      ['tool', 'toolu_agent'],
+      ['task', undefined],
+      ['tool', 'toolu_agent'],
+      ['subagent', undefined],
       ['subagent', undefined],
       ['task', undefined],
     ])
@@ -1225,8 +1240,11 @@ describe('replayAcpLog', () => {
     expect(events[3]).toMatchObject({ subagent: { id: 'toolu_agent', name: 'count files', task: 'Run ls', state: 'running' } })
     // The output file named in the call's result.
     expect(events[5]).toMatchObject({ task: { id: 'b1', outputFile: '/tmp/c/tasks/b1.output', state: 'running' } })
-    expect(events[7]).toMatchObject({ subagent: { id: 'toolu_agent', state: 'completed', summary: 'two files' } })
-    expect(events[8]).toMatchObject({ task: { id: 'b1', state: 'completed' } })
+    expect(events[8]).toMatchObject({ task: { id: 'b2', parent: 'toolu_agent' } })
+    expect(events[10]).toMatchObject({ subagent: { id: 'toolu_sub_agent', parent: 'toolu_agent' } })
+    expect(events[11]).toMatchObject({ subagent: { id: 'toolu_agent', state: 'completed', summary: 'two files' } })
+    expect(events[12]).toMatchObject({ task: { id: 'b1', state: 'completed' } })
+    expect(events[3]).not.toHaveProperty('subagent.parent')
     expect(events[3]).not.toHaveProperty('subagent.fork')
 
     // A fork, which began from its parent's conversation, says so.

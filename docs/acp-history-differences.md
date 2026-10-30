@@ -55,18 +55,19 @@ that mapping cannot bring back.
   "Sent mid-turn" marker, and it ends the turn before it in the view.
 - **Subagents and background tasks.** claude reports these live through Agent
   SDK task messages its transcript does not keep. They are rebuilt from the
-  calls that launched them, from the SendMessage results that name a
-  subagent they resumed, and from the `<task-notification>` messages that
-  reported them (`AcpProjection.replayedLaunch`), so a task or subagent that
-  reported nothing before the restart shows as ended: a subagent cancelled,
-  a task stopped. A subagent's own messages come from its separate
-  transcript. Past the transcript cap, the adapter's `session/load` replay
-  sends no notifications at all, so a task or background subagent it
-  rebuilds shows as ended even when it finished, and no run shows what woke
-  it. Each such run still starts its own reply, found where one message
-  follows another with nothing between them. The replay also leaves out a
-  `TaskGet` and a failed Task call, so a run that made one between two
-  messages shows as two runs.
+  calls that launched them, from the SendMessage results that name a subagent
+  they resumed, and from the `<task-notification>` messages that reported
+  them (`AcpProjection.replayedLaunch`), so a task or subagent that reported
+  nothing before the restart shows as ended: a subagent cancelled, a task
+  stopped. A subagent's own messages come from its separate transcript, but
+  not the subagents and background tasks it started, so its thread shows
+  their calls without their cards. Past the transcript cap, the adapter's
+  `session/load` replay sends no notifications at all, so a task or
+  background subagent it rebuilds shows as ended even when it finished, and
+  no run shows what woke it. Each such run still starts its own reply, found
+  where one message follows another with nothing between them. The replay
+  also leaves out a `TaskGet` and a failed Task call, so a run that made one
+  between two messages shows as two runs.
 - **Quoted notification markup.** A message whose text quotes a
   `<task-notification>` block after other text shows without the block,
   since the adapter's history reader strips that markup.

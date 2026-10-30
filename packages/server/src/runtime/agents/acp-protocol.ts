@@ -1243,7 +1243,11 @@ export class AcpProjection {
     return { type: 'subagent', subagent }
   }
 
-  private setTask(task: AcpTask): AcpEventInit {
+  /** Record a task's latest state. One started by a call a subagent made
+   *  belongs to that subagent's thread. */
+  private setTask(update: AcpTask): AcpEventInit {
+    const parent = update.parent ?? this.toolThreads.get(update.toolCallId ?? '')
+    const task = parent !== undefined ? { ...update, parent } : update
     this.tasks.set(task.id, task)
     const running = task.state === 'running'
     if (running && task.kind === 'monitor' && task.ambient === undefined) this.runningMonitors.set(task.id, task)
@@ -1351,6 +1355,7 @@ export class AcpProjection {
         const summary = asString(update.summary)
         // Progress and state updates name only what changed.
         const task: AcpTask = {
+          ...(thread !== undefined ? { parent: thread } : {}),
           ...known,
           id,
           name: asString(update.name) ?? known?.name ?? description ?? 'Background task',
