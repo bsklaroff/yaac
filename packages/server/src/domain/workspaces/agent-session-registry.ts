@@ -178,9 +178,21 @@ export async function deliverPendingPrompt(
   })
 }
 
+/** How long a launch's watch and a claim's hand-over wait for an acp
+ *  conversation to be named, and the hand-over for its handshake. */
+export const ACP_CONVERSATION_WAIT_MS = 60_000
+
 /** How long `deliverPendingPrompt` waits on a handshake, as a pane's send
  *  does (`AcpConversation.prompt`). */
 const PENDING_PROMPT_READY_MS = 120_000
+
+/**
+ * How long after its agent comes up a held prompt still counts as on its
+ * way: the hand-over's wait for a conversation plus `deliverPendingPrompt`'s
+ * wait for its handshake. Past it the start is stuck (an adapter that stays
+ * up but fails every handshake), and the workspace lists by its real status.
+ */
+export const HELD_PROMPT_GRACE_MS = ACP_CONVERSATION_WAIT_MS + PENDING_PROMPT_READY_MS
 
 /** How many conversations `reconcileStoppedAgentSessions` reads at a time,
  *  and for how long one pass keeps reading. A backlog (an upgraded install's

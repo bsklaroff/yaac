@@ -4,14 +4,21 @@ import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-dr
 // Only the runtime is faked; the listing joins real rows with real status
 // observation.
 import { markWorkspaceTerminating, isWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
-import { setAgentStatus, _resetWorkspaceStatusStoreForTests } from '#runtime/status/status-store'
+import {
+  setAgentStatus,
+  setLiveAgents,
+  setWorkspaceStreamHealth,
+  _resetWorkspaceStatusStoreForTests,
+} from '#runtime/status/status-store'
 import { closeDb } from '#db/client'
+import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 import { holdPendingPrompt, recordWorkspaceCreated, setWorkspaceTitle } from '#db/workspace-store'
 import { recordAgentSessions } from '#db/agent-session-store'
 import {
   listActiveWorkspaces,
   _clearListActiveInflightForTests,
 } from '#domain/workspaces/list'
+import { HELD_PROMPT_GRACE_MS } from '#domain/workspaces/agent-session-registry'
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
 import { DEMO_PROJECT_ID, recordTestProject } from '@yaac/test-utils/project-fixture'
 
@@ -118,16 +125,75 @@ describe('listActiveWorkspaces', () => {
   })
 
   // A chat create returns before its agent names a conversation, so until
-  // then the prompt it holds for that conversation stands in.
-  it("carries a workspace's agent mode, and a chat's held prompt until its conversation records one", async () => {
+  // then the prompt it holds for that conversation stands in. Its agent is
+  // starting on that prompt, so it lists as working rather than as an
+  // unread wait, booting or connected idle, until a start that has outlasted
+  // the hand-over's waits shows as the wait it is. That grace runs from the
+  // latest of the row's creation, the runtime's and the wait's start, so
+  // neither a slow build and boot nor a spare warmed long before its claim
+  // uses it up. An ask still shows.
+  it("carries a workspace's agent mode, and a chat's held prompt (as working while it starts)", async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+    const created = 1_000_000
+    const booted = created + 10 * HELD_PROMPT_GRACE_MS
+    vi.setSystemTime(created)
     await recordTestProject(DEMO_PROJECT_ID)
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'held', mode: 'acp' })
     await holdPendingPrompt(DEMO_PROJECT_ID, 'held', 'fix the lexer')
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'term', mode: 'tui' })
     await recordAgentSessions(DEMO_PROJECT_ID, 'term', [{ tool: 'claude', agentSessionId: 'term', firstPrompt: 'port the parser' }])
-    running([live('held'), live('term')])
-    const listed = (await listActiveWorkspaces(DEMO_PROJECT_ID)).workspaces.map((w) => [w.workspaceId, w.mode, w.prompt])
-    expect(listed).toEqual(expect.arrayContaining([['held', 'acp', 'fix the lexer'], ['term', 'tui', 'port the parser']]))
+    // A spare warmed now, its agent idle, and claimed once 'held' is up.
+    setAgentStatus(DEMO_PROJECT_ID, 'claimed', 'claude-0', 'waiting')
+    running([live('held', { createdAtMs: booted }), live('term'), live('claimed', { createdAtMs: created })])
+    vi.setSystemTime(booted)
+    await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'claimed', mode: 'acp' })
+    await holdPendingPrompt(DEMO_PROJECT_ID, 'claimed', 'tidy the docs')
+    const list = async (): Promise<unknown[][]> => {
+      _clearListActiveInflightForTests()
+      return (await listActiveWorkspaces(DEMO_PROJECT_ID)).workspaces.map((w) => [
+        w.workspaceId, w.mode, w.prompt, w.status, w.waitingSinceMs, w.asking,
+        w.agentSessions.map((a) => [a.status, a.waitingSinceMs]),
+      ])
+    }
+    expect(await list()).toEqual(expect.arrayContaining([
+      ['held', 'acp', 'fix the lexer', 'running', undefined, undefined, []],
+      ['claimed', 'acp', 'tidy the docs', 'running', undefined, undefined, []],
+      ['term', 'tui', 'port the parser', 'waiting', undefined, undefined, [[undefined, undefined]]],
+    ]))
+    // A start that changes nothing else is republished when its grace ends.
+    const republished = vi.fn()
+    onWorkspaceListChanged(republished)
+    vi.advanceTimersByTime(HELD_PROMPT_GRACE_MS - 1)
+    expect(republished).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(republished).toHaveBeenCalledOnce()
+    _resetWorkspaceListChangedForTests()
+    expect(await list()).toEqual(expect.arrayContaining([
+      ['held', 'acp', 'fix the lexer', 'waiting', undefined, undefined, []],
+      ['claimed', 'acp', 'tidy the docs', 'waiting', created, undefined, []],
+    ]))
+
+    // The agent attaches long after its runtime came up, then connects idle
+    // before the prompt is sent.
+    const attached = booted + 10 * HELD_PROMPT_GRACE_MS
+    vi.setSystemTime(attached)
+    setWorkspaceStreamHealth(DEMO_PROJECT_ID, 'held', true)
+    expect(await list()).toContainEqual(['held', 'acp', 'fix the lexer', 'running', undefined, undefined, []])
+    await recordAgentSessions(DEMO_PROJECT_ID, 'held', [{ tool: 'claude', agentSessionId: 'conv', paneId: 'claude-0' }])
+    setLiveAgents(DEMO_PROJECT_ID, 'held', [{ handle: 'claude-0', tool: 'claude', agentSessionId: 'conv' }])
+    setAgentStatus(DEMO_PROJECT_ID, 'held', 'claude-0', 'waiting')
+    expect(await list()).toContainEqual(['held', 'acp', 'fix the lexer', 'running', undefined, undefined, [['running', undefined]]])
+
+    vi.setSystemTime(attached + HELD_PROMPT_GRACE_MS)
+    expect(await list()).toContainEqual(
+      ['held', 'acp', 'fix the lexer', 'waiting', attached, undefined, [['waiting', attached]]],
+    )
+
+    vi.setSystemTime(attached)
+    setAgentStatus(DEMO_PROJECT_ID, 'held', 'claude-0', 'asking')
+    expect(await list()).toContainEqual(
+      ['held', 'acp', 'fix the lexer', 'waiting', attached, true, [['waiting', attached]]],
+    )
   })
 
   it('surfaces the base branch recorded at create time', async () => {
