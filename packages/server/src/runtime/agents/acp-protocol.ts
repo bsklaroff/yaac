@@ -812,15 +812,24 @@ export class AcpProjection {
       if (m.owned_by_subagent === true) this.subagentOwned.add(taskId)
       if (m.task_type === 'local_agent' || m.subagent_type !== undefined) {
         if (toolUseId === undefined) return []
-        this.subagentTasks.set(taskId, toolUseId)
+        // A subagent a SendMessage resumes starts again under that call's
+        // id, but its own updates still name the Agent call, so it keeps
+        // the id it first had: the one a live start or this life's replay
+        // gave it.
+        const id = this.subagentTasks.get(taskId) ?? this.replayedAgentIds.get(taskId) ?? toolUseId
+        this.subagentTasks.set(taskId, id)
         if (m.is_backgrounded === true) this.backgroundSubagents.add(taskId)
-        const known = this.subagents.get(toolUseId)
+        const known = this.subagents.get(id)
+        const resumed = known !== undefined && id !== toolUseId
+        const resumedBy = resumed ? [...new Set([...known.resumedBy ?? [], toolUseId])] : known?.resumedBy
         return [this.setSubagent({
-          id: toolUseId,
-          ...this.parentOf(toolUseId),
+          id,
+          ...this.parentOf(id),
           name: asString(m.description) ?? known?.name ?? 'Subagent',
-          task: asString(m.prompt) ?? known?.task ?? '',
+          // A resume's prompt is the message it was sent, not its task.
+          task: (resumed ? known.task : asString(m.prompt)) ?? known?.task ?? '',
           ...(m.subagent_type === 'fork' || known?.fork === true ? { fork: true as const } : {}),
+          ...(resumedBy !== undefined ? { resumedBy } : {}),
           state: 'running',
         })]
       }
@@ -907,8 +916,9 @@ export class AcpProjection {
    * claude's `session/load` replays history without the task messages that
    * report subagents and background tasks live (`applyClaudeSdk`), so they
    * are rebuilt from the calls that launched them: an Agent call is its
-   * subagent, and a background command's or monitor's result names its
-   * task. A TaskStop result names the task it stopped, which sends no
+   * subagent, a SendMessage result names the subagent it resumed, and a
+   * background command's or monitor's result names its task. A TaskStop
+   * result names the task it stopped, which sends no
    * notification. Only inside a replay (`openLoad`): live, the task messages report
    * them. A subagent's own messages are in a transcript of their own
    * (`claudeSubagentThreads`).
@@ -935,6 +945,14 @@ export class AcpProjection {
         state: ends ? call.status as 'completed' | 'failed' : 'running',
         ...(report !== undefined ? { summary: report } : {}),
       })]
+    }
+    if (tool === 'SendMessage') {
+      const agentId = /"resumedAgentId":"(\w+)"/.exec(output)?.[1]
+      const resumed = this.subagents.get(this.replayedAgentIds.get(agentId ?? '') ?? '')
+      if (resumed === undefined || resumed.resumedBy?.includes(id) === true) return []
+      // The first run's report no longer ends its thread, as live.
+      const { summary: _summary, ...rest } = resumed
+      return [this.setSubagent({ ...rest, resumedBy: [...resumed.resumedBy ?? [], id], state: 'running' })]
     }
     if (tool === 'TaskStop') {
       const taskId = /^\{"message":"Successfully stopped task: (\w+)/.exec(output)?.[1] ?? ''
