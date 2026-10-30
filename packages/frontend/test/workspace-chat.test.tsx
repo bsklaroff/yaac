@@ -1491,12 +1491,124 @@ describe('WorkspaceChat scroll follow', () => {
     expect(top()).toBe(790)
 
     // Back at the tail, a wheel up unpins before any scroll event arrives.
+    // Re-pinning there re-renders, which the unclamped stub reads as moving
+    // past the tail, so compare against where the wheel found the list.
     list.scrollTop = 800
     fireEvent.scroll(list)
+    const wheeled = top()
     fireEvent.wheel(list, { deltaY: -100 })
     stream.events = [...stream.events, agent(3, 'more')]
     rerender(pane())
+    expect(top()).toBe(wheeled)
+  })
+
+  it('unpins on a swipe down past a tap, but not on a sideways swipe or a pinch', () => {
+    const { container, rerender } = show()
+    const list = container.querySelector('.overflow-y-auto') as HTMLElement
+    const top = scroller(container, 200, 800)
+    fireEvent.scroll(list)
+    const touches = (...points: [number, number][]): { touches: { clientX: number; clientY: number }[] } =>
+      ({ touches: points.map(([clientX, clientY]) => ({ clientX, clientY })) })
+    let seq = 1
+    /** A streamed event; the stub's height is fixed, so a pinned pane reads
+     *  as 1000 after it and a left one stays where it was. */
+    const stream1 = (): void => {
+      list.scrollTop = 800
+      stream.events = [...stream.events, agent(seq++, 'more')]
+      rerender(pane())
+    }
+
+    // A tap's jitter, a sideways swipe drifting down, and a pinch whose
+    // first finger moves down all leave the pane following.
+    fireEvent.touchStart(list, touches([100, 100]))
+    fireEvent.touchMove(list, touches([101, 104]))
+    stream1()
+    expect(top()).toBe(1000)
+    fireEvent.touchStart(list, touches([200, 100]))
+    fireEvent.touchMove(list, touches([50, 108]))
+    fireEvent.touchMove(list, touches([40, 130]))
+    stream1()
+    expect(top()).toBe(1000)
+    fireEvent.touchStart(list, touches([100, 100]))
+    fireEvent.touchStart(list, touches([100, 100], [200, 200]))
+    fireEvent.touchMove(list, touches([100, 160], [200, 140]))
+    fireEvent.touchMove(list, touches([100, 200]))
+    stream1()
+    expect(top()).toBe(1000)
+
+    // A swipe down scrolls the list up, so it unpins before any scroll.
+    fireEvent.touchStart(list, touches([100, 100]))
+    fireEvent.touchMove(list, touches([102, 115]))
+    stream1()
     expect(top()).toBe(800)
+  })
+
+  it('re-pins a scroll that heads for the tail and lands near it, or End, but not one that stopped short', () => {
+    const { container, rerender } = show()
+    const list = container.querySelector('.overflow-y-auto') as HTMLElement
+    const top = scroller(container, 200, 760)
+    const more = (seq: number): void => {
+      stream.events = [...stream.events, agent(seq, 'more')]
+      rerender(pane())
+    }
+
+    // Stopped 40px short: a scroll that keeps that distance, as the
+    // browser's scroll anchoring does, leaves the reader there.
+    fireEvent.scroll(list)
+    fireEvent.scroll(list)
+    more(1)
+    expect(top()).toBe(760)
+
+    // A fling ending on the bottom it aimed at, the stream having grown
+    // past it, re-pins.
+    list.scrollTop = 600
+    fireEvent.scroll(list)
+    list.scrollTop = 760
+    fireEvent.scroll(list)
+    more(2)
+    expect(top()).toBe(1000)
+
+    // End follows the tail before its smooth scroll gets there, pressed
+    // with nothing focused after a click in the list, as a reader does.
+    list.scrollTop = 400
+    fireEvent.scroll(list)
+    fireEvent.pointerDown(list.firstElementChild ?? list)
+    fireEvent.keyDown(document.body, { key: 'End' })
+    more(3)
+    expect(top()).toBe(1000)
+  })
+
+  it('offers each end as soon as the reader leaves it, and marks what arrived at the tail since', () => {
+    const { container, rerender } = show()
+    const list = container.querySelector('.overflow-y-auto') as HTMLElement
+    scroller(container, 200, 0)
+    fireEvent.scroll(list)
+    expect(screen.queryByRole('button', { name: 'Jump to the start' })).toBeNull()
+    list.scrollTop = 10
+    fireEvent.scroll(list)
+    expect(screen.getByRole('button', { name: 'Jump to the start' })).toBeTruthy()
+
+    list.scrollTop = 800
+    fireEvent.scroll(list)
+    expect(screen.queryByRole('button', { name: /Jump to the latest/ })).toBeNull()
+
+    // A few pixels up is off the tail: the arrow shows, and what streams in
+    // leaves the reader where they are but dots the arrow.
+    list.scrollTop = 790
+    fireEvent.scroll(list)
+    expect(screen.getByRole('button', { name: 'Jump to the latest' })).toBeTruthy()
+    stream.events = [...stream.events, agent(1, 'streamed')]
+    rerender(pane())
+    expect(list.scrollTop).toBe(790)
+    fireEvent.click(screen.getByRole('button', { name: 'Jump to the latest (new activity)' }))
+
+    // Back at the tail, the pane follows again and the dot is gone.
+    list.scrollTop = 800
+    fireEvent.scroll(list)
+    expect(screen.queryByRole('button', { name: /Jump to the latest/ })).toBeNull()
+    list.scrollTop = 790
+    fireEvent.scroll(list)
+    expect(screen.getByRole('button', { name: 'Jump to the latest' })).toBeTruthy()
   })
 })
 

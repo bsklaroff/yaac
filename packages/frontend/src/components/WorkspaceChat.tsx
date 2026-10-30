@@ -142,7 +142,7 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
     visible,
   })
 
-  const { onScroll, keep, pin } = useFollowTail(scrollRef, pages, view)
+  const { onScroll, keep, pin, unseen } = useFollowTail(scrollRef, pages, view)
 
   // Grow the textarea to fit the draft, up to its CSS max-height. Reset to
   // `auto` first so scrollHeight measures the content. Growing shrinks the
@@ -324,7 +324,7 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
             </div>
           </FileLinksContext.Provider>
         </div>
-        {view === undefined && <JumpButtons pages={pages} />}
+        {view === undefined && <JumpButtons pages={pages} unseen={unseen} />}
       </div>
 
       <ChatBottomBar

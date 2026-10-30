@@ -168,7 +168,7 @@ function Conversation({
     scrollRef,
     find,
   })
-  const { onScroll } = useFollowTail(scrollRef, pages, view)
+  const { onScroll, unseen } = useFollowTail(scrollRef, pages, view)
 
   // Nothing readable: no conversation recorded yet (a just-stopped
   // workspace), one the server has no record of, or a history it found
@@ -208,7 +208,7 @@ function Conversation({
             </div>
           )}
         </div>
-        {!promptOnly && view === undefined && <JumpButtons pages={pages} />}
+        {!promptOnly && view === undefined && <JumpButtons pages={pages} unseen={unseen} />}
       </div>
       {bottom !== undefined && (
         <ChatBottomBar
