@@ -20,6 +20,7 @@ import {
   type MockGit,
 } from '#support/mock-remotes'
 import { collectSnapshots } from '@yaac/test-utils/events-ws'
+import type { SessionEntry } from '@yaac/shared/types'
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
@@ -428,14 +429,21 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
 
     const sub = collectSnapshots(server!.lock.port)
     await sub.opened
+    const sessions = (): SessionEntry[] =>
+      sub.latest()?.workspaces.find((w) => w.workspaceId === callerWorkspaceId)?.sessions ?? []
     let lead: string | undefined
     for (let i = 0; i < 150 && lead === undefined; i++) {
-      lead = sub.latest()?.workspaces.find((w) => w.workspaceId === callerWorkspaceId)?.sessions
-        .find((s) => s.sessionId !== sessionId)?.sessionId
+      lead = sessions().find((s) => s.sessionId !== sessionId)?.sessionId
       if (lead === undefined) await sleep(200)
     }
-    sub.ws.close()
     expect(lead).toBeDefined()
+    // Only a conversation its agent has reported can be resumed after a
+    // close, and claude can be slow to start under gVisor.
+    for (let i = 0; i < 600 && sessions().find((s) => s.sessionId === sessionId)?.conversationId === undefined; i++) {
+      await sleep(200)
+    }
+    sub.ws.close()
+    expect(sessions().find((s) => s.sessionId === sessionId)?.conversationId).toBe(sessionId)
 
     // A session never messages itself, but may message its sibling.
     const self = await runMama(`send --session ${sessionId} "$YAAC_WORKSPACE_ID" "hello me"`, sessionId)

@@ -1975,7 +1975,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
           expect(sent.some((body) => body.includes(JSON.stringify(brief(tag)).slice(1, -1)))).toBe(true)
         }
       }, { timeout: 120_000, interval: 1000 })
-      expect(outputs['brief-stdin']).toMatch(/attach with `yaac workspace attach [0-9a-f-]{36}`/)
+      expect(outputs['brief-stdin']).toMatch(/attach with `yaac workspace attach --session [0-9a-f-]{36} [0-9a-f-]{36}`/)
     }, 180_000)
 
     it('refuses a prompt given twice, or one that is empty or unreadable, before creating anything', async () => {
@@ -2045,7 +2045,8 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       const { stdout: socks } = await execInJob(jobName, [
         'sh', '-c', 'ls /tmp/yaac-acp/ 2>/dev/null || true',
       ])
-      expect(socks).toContain('claude.sock')
+      // Named for the session's window, `<tool>-<8 hex>`.
+      expect(socks).toMatch(/^claude-[0-9a-f]{8}\.sock$/m)
       expect(conversationId).not.toBe('')
     }, 120_000)
 
@@ -2325,9 +2326,14 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       // The new server lists the workspaces once it has re-adopted them.
       const acp = await vi.waitFor(async () => {
         const listed = await (await as(ALICE, `/workspace/list?project=${idOf('acped')}`)).json() as {
-          workspaces: Array<{ workspaceId: string; tool: string; conversations: Array<{ conversationId: string; mode?: string }> }>
+          workspaces: Array<{
+            workspaceId: string
+            sessions: Array<{ tool: string; mode: string }>
+            conversations: Array<{ conversationId: string; mode?: string }>
+          }>
         }
-        const found = listed.workspaces.find((w) => w.tool === 'claude' && w.conversations.some((a) => a.mode === 'acp'))
+        const found = listed.workspaces.find((w) => w.sessions.some((s) => s.tool === 'claude' && s.mode === 'acp')
+          && w.conversations.some((a) => a.mode === 'acp'))
         if (!found) throw new Error(`no running claude acp workspace: ${JSON.stringify(listed)}`)
         return found
       }, { timeout: 60_000, interval: 1000 })

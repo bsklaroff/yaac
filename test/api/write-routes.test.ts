@@ -14,6 +14,7 @@ import { seeTailnetUser } from '@yaac/server/db/user-store'
 import { buildAuthPayload } from '@yaac/shared/tool-auth-interactive'
 import { getProjectWorkspaceRows, recordWorkspaceCreated, recordWorkspaceStopped } from '@yaac/server/db/workspace-store'
 import { getProjectRow, recordProject } from '@yaac/server/db/project-store'
+import { insertSession } from '@yaac/server/db/session-store'
 import { listWorkspaceGroups } from '@yaac/server/domain/workspaces/groups'
 import { getQueuedWorkspaceRow, listQueuedWorkspaceRows } from '@yaac/server/db/queued-workspace-store'
 import { setDraftWorkspaceTitle } from '@yaac/server/db/draft-workspace-store'
@@ -1277,6 +1278,7 @@ describe('write routes', () => {
 
     beforeEach(async () => {
       await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'parent', baseBranch: 'main' })
+      await insertSession(DEMO, 'parent', { tool: 'claude', mode: 'tui', permissionMode: 'plan' })
     })
 
     it('queues, edits and runs one — once', async () => {
