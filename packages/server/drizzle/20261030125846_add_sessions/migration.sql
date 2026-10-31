@@ -66,19 +66,20 @@ UPDATE "workspace_conversations" SET "session_id" = NULL
 WHERE "session_id" IS NOT NULL AND "session_id" NOT IN (SELECT "id" FROM "sessions");--> statement-breakpoint
 -- A workspace left with no session (one that recorded no conversation, such
 -- as an acp agent that never finished its handshake, or whose conversation
--- row is gone) gets the one fresh agent its restart started, on its launch
--- tool.
+-- row is gone) gets the one fresh agent its restart started: on its first
+-- conversation's tool, else claude, as that restart did, which is the tool
+-- the row's model and effort were for.
 INSERT INTO "sessions" ("project_id", "workspace_id", "tool", "mode", "model", "permission_mode", "effort",
   "ordinal", "window", "launched_at", "first_prompt", "pending_prompt", "waiting_seen_by")
 SELECT "w"."project_id", "w"."workspace_id", "t"."tool", "w"."mode", "w"."model",
   "w"."permission_mode", "w"."effort", 0, "t"."tool",
   CASE WHEN "w"."stopped_at" IS NULL THEN "w"."life_started_at" END,
   "w"."pending_prompt", "w"."pending_prompt", "w"."waiting_seen_by"
-FROM "workspaces" "w" LEFT JOIN "projects" "p" ON "p"."id" = "w"."project_id"
+FROM "workspaces" "w"
 CROSS JOIN LATERAL (SELECT COALESCE(
   (SELECT "o"."tool" FROM "workspace_conversations" "o" WHERE "o"."workspace_id" = "w"."workspace_id"
     ORDER BY "o"."ordinal" LIMIT 1),
-  "p"."last_tool", 'claude') AS "tool") "t"
+  'claude') AS "tool") "t"
 WHERE NOT EXISTS (SELECT 1 FROM "sessions" "s" WHERE "s"."workspace_id" = "w"."workspace_id");--> statement-breakpoint
 -- Two of a workspace's sessions never share a window.
 UPDATE "sessions" "s" SET "window" = "s"."window" || '-' || substr("s"."id"::text, 1, 8)

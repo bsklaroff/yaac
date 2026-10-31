@@ -190,8 +190,8 @@ describe('openDb', () => {
       INSERT INTO workspaces (project_id, workspace_id, permission_mode, effort, model, mode, life_started_at, waiting_seen_by)
         VALUES ('${P}', 'running', 'plan', 'high', 'claude-opus-5', 'tui', '2026-10-01T00:00:00Z', '{${SEEN}}');
       INSERT INTO workspaces (project_id, workspace_id, mode, stopped_at) VALUES ('${P}', 'chat', 'acp', now());
-      INSERT INTO workspaces (project_id, workspace_id, mode, stopped_at, pending_prompt)
-        VALUES ('${P}', 'unnamed', 'acp', now(), 'queued ask');
+      INSERT INTO workspaces (project_id, workspace_id, mode, model, effort, stopped_at, pending_prompt)
+        VALUES ('${P}', 'unnamed', 'acp', 'claude-opus-5', 'max', now(), 'queued ask');
       INSERT INTO workspaces (project_id, workspace_id, mode, stopped_at) VALUES ('${P}', 'twins', 'acp', now());
       INSERT INTO workspaces (project_id, workspace_id, permission_mode, effort, model, mode, stopped_at)
         VALUES ('${P}', 'codexled', 'auto', 'max', 'claude-opus-5', 'tui', now());
@@ -243,8 +243,12 @@ describe('openDb', () => {
       expect(of('chat')).toEqual([expect.objectContaining({
         mode: 'acp', window: 'claude-2', model: 'claude-sonnet-5', conversation_id: 'conv-b', launched_at: null,
       })])
+      // With no conversation it comes back on claude, as its restart did,
+      // the tool the row's model and effort were for, whatever the project
+      // last used.
       expect(of('unnamed')).toEqual([expect.objectContaining({
-        tool: 'codex', mode: 'acp', window: 'codex', first_prompt: 'queued ask', pending_prompt: 'queued ask',
+        tool: 'claude', mode: 'acp', window: 'claude', model: 'claude-opus-5', effort: 'max',
+        first_prompt: 'queued ask', pending_prompt: 'queued ask',
       })])
       // Two sessions never share a window: one of the pair keeps it.
       const twins = of('twins').map((s) => s.window as string).sort()
