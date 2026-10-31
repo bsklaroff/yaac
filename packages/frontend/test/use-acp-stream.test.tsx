@@ -12,7 +12,7 @@ import { agentEvent as agent, FakeSocket } from './harness'
 
 const hello = (events: AcpEvent[], busy = false, queued: AcpQueuedPrompt[] = [], page = 0): AcpServerMessage => ({
   type: 'hello',
-  agentSessionId: 'acp-1',
+  conversationId: 'acp-1',
   busy,
   queued,
   page,

@@ -23,20 +23,20 @@ export {
   type AgentObservation,
   type DrivenWorkspace,
   type LiveAgent,
+  type WatchedSession,
 } from './drivers'
 export { attachAcp, type AcpSocket } from './acp-bridge'
 // The webapp's terminals hold their own control-mode client; the status
-// watcher lists them over its own.
-export { ControlModeClient, listTerminals, type ControlModeNotification } from './control-mode'
+// watcher lists the windows over its own.
+export { ControlModeClient, listWindows, type ControlModeNotification } from './control-mode'
 export { setAcpPermissionMode } from './acp-driver'
 export { acpLaunchModel } from './acp-adapters'
 // The status watcher discards a stopped workspace's queued messages.
 export { acpConversation, dropAcpQueues, whenAcpConversation } from './acp-registry'
 export {
   agentTitlesItself,
-  agentWindowName,
-  getAgentSessionFirstMessage,
-  getAgentSessionTitle,
+  getConversationFirstMessage,
+  getConversationTitle,
   resolveAgentPermissionMode,
 } from './agent-tools'
 export {
@@ -51,7 +51,7 @@ export {
 export { getCodexRolloutSettings } from './codex'
 export { ensureAgentReporters } from './agent-reporters'
 export { ensureToolApiKeyConfig } from './tool-api-keys'
-export { buildWindowsExec } from './setup-commands'
+export { buildRespawnExec, buildWindowsExec, finishSetupCommand, type SessionWindowSpec } from './setup-commands'
 export { PromptNotRunError, type AcpConversation } from './acp-client'
 export { acpPage, acpRecord, acpStoredImage, activityStarts, readAcpFirstPrompt, readAcpLife, readAcpPage, replayAcpLog, type AcpLife, type RecordOrigin } from './acp-log'
 export { ClaudeTranscriptReplay, claudeSubagentThreads, claudeTranscriptAsAcp } from './claude-acp-replay'

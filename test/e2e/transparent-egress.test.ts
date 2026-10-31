@@ -252,13 +252,12 @@ describe('node-level transparent egress (source-IP identity)', () => {
     registrationA = {
       rules: [],
       allowedHosts: [MITM_HOST, echoHost],
-      tool: 'claude',
       projectId: 'egress-a', owner: 'e2e',
       upstreamRedirects: { [MITM_HOST]: { host: echoHost, port: ECHO_PORT, tls: false } },
     }
     await applyProxyRegistration(workspaceA, registrationA)
     await applyProxyRegistration(workspaceB, {
-      rules: [], allowedHosts: [tlsHost], tool: 'claude', projectId: 'egress-b', owner: 'e2e',
+      rules: [], allowedHosts: [tlsHost], projectId: 'egress-b', owner: 'e2e',
     })
 
     await Promise.all([

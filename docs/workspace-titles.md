@@ -8,13 +8,17 @@ What a workspace is called, first match wins:
    always taken as the user's, so a title the local model wrote there on an
    older install stays until it is cleared.
 2. **The agent's own title** for the conversation that labels the workspace
-   (`agent_sessions.title`, picked by `conversationTitle` in `#db`): the
-   conversation `openingPrompt` reads, else the first conversation, in window
-   order, that has one.
+   (`conversations.title`, picked by `conversationTitle` in `#db`): the
+   conversation `openingPrompt` reads, else the first conversation, in the
+   order the workspace saw them, that has one.
 3. **A generated title** (`workspaces.generatedTitle`), from yaac's local
    title model (docs/workspace-title-model-eval.md), or carried over from the
    draft or queued entry the workspace was created from.
-4. The opening prompt, then "New workspace".
+4. The opening prompt (its first session's), then "New workspace".
+
+A session shows its user's name for it (a rename), else its current
+conversation's agent title, else the message it was opened with
+(docs/sessions.md).
 
 The listings resolve the wire `title` from 1 to 3; clients fall back to the
 prompt. Drafts and queued entries have no agent yet, so they show their own
@@ -34,7 +38,7 @@ title, which heads its provisioning row and shows until its agent gives one.
 
 Each agent titles its conversations with a small model from the provider it
 already runs on, and stores the title where yaac reads it the same way under
-`tui` and `acp` (`getAgentSessionTitle` in `#runtime/agents`):
+`tui` and `acp` (`getConversationTitle` in `#runtime/agents`):
 
 | Tool | Where | When it is written |
 |---|---|---|
@@ -50,9 +54,9 @@ are the one source that covers every tool in both modes.
 
 ## When titles are read
 
-The conversation sweep (`reconcileAgentSessions`) reads each live
+The conversation sweep (`reconcileConversations`) reads each live
 conversation's title (`captureTitle` in `#domain/workspaces`) and records it
-with the conversation's other observed facts (`sessions-discovered`), so the
+with the conversation's other observed facts (`conversations-discovered`), so the
 title follows the agent's: a rename inside the tool replaces it. A
 conversation is read again every 30 seconds while its transcript or ACP
 record is changing, and every 5 minutes otherwise, since codex names a thread

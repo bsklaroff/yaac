@@ -1,6 +1,6 @@
 ---
 name: yaac-mama
-description: Ask the yaac server running this workspace to list the project's workspaces (running, queued, or stopped — searchable), start a sibling workspace with a prompt (now, or queued to start when a workspace stops or a group with a workspace limit has room), edit or discard a queued workspace, make or manage a routine (a fresh workspace started on a cron schedule), send a message to a running workspace's agent, retitle a workspace, change this workspace's base branch, stop a workspace (a sibling, or this one), restart a stopped one, file workspaces into named groups, or fetch another workspace's branches into this checkout — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), queue a follow-up to run after this one (or change or drop one already queued), schedule a recurring task (nightly, weekly, every hour …) or pause, change or remove one, send/tell/nudge/steer a running workspace (or "session") with a message or follow-up instruction, farm a task out to a parallel one, see what else is running, rename/retitle a workspace, rebase this workspace's diff onto another branch (e.g. when stacking on another PR), stop/shut down/wind down a workspace or this one when its work is done, find an old or stopped workspace by what it was about, restart/revive/resume a stopped workspace, organize workspaces into groups, read what another workspace committed (its branches, log, diffs), or read another workspace's agent conversations (full session transcripts, subagents included), running or stopped.
+description: Ask the yaac server running this workspace to list the project's workspaces (running, queued, or stopped — searchable), start a sibling workspace with a prompt (now, or queued to start when a workspace stops or a group with a workspace limit has room), start another agent session in a running workspace (this one included, on the same checkout), edit or discard a queued workspace, make or manage a routine (a fresh workspace started on a cron schedule), send a message to a running workspace's agent (any of its sessions), retitle a workspace, change this workspace's base branch, stop a workspace (a sibling, or this one) or close just one agent session in it, restart a stopped one, file workspaces into named groups, or fetch another workspace's branches into this checkout — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), start another agent beside this one on the same checkout, queue a follow-up to run after this one (or change or drop one already queued), schedule a recurring task (nightly, weekly, every hour …) or pause, change or remove one, send/tell/nudge/steer a running workspace (or "session") with a message or follow-up instruction, farm a task out to a parallel one, see what else is running, rename/retitle a workspace, rebase this workspace's diff onto another branch (e.g. when stacking on another PR), stop/shut down/wind down a workspace or this one when its work is done, find an old or stopped workspace by what it was about, restart/revive/resume a stopped workspace, organize workspaces into groups, read what another workspace committed (its branches, log, diffs), or read another workspace's agent conversations (full session transcripts, subagents included), running or stopped.
 ---
 
 You are running **inside a yaac workspace**. The `yaac-mama` command (already on
@@ -14,6 +14,8 @@ yaac-mama list                                    # workspaces + groups here
 yaac-mama list <workspace>...                     # just those, with full prompts
 yaac-mama list --stopped [--search S] [--group G] [--limit N] [--cursor C]
 yaac-mama create [opts] "<prompt>"
+yaac-mama create --workspace W [session opts] ["<prompt>"]  # another session in a running workspace
+yaac-mama create --no-session [--branch B] [--group G] [--title T] [--timeout D]
 yaac-mama queue [--parent-workspace W] [opts] "<prompt>"
 yaac-mama queue (--start-at T | --start-in D) [opts] "<prompt>"
 yaac-mama edit-queued [--parent-workspace W | --no-parent | --start-at T | --start-in D] [opts] <queued> ["<prompt>"]
@@ -24,11 +26,12 @@ yaac-mama routine create --name N --cron C [--tz Z] [opts] "<prompt>"
 yaac-mama routine edit [--name N] [--cron C] [--tz Z] [opts] <routine> ["<prompt>"]
 yaac-mama routine pause|resume|run|delete <routine>
   # routine opts: create's, but not --title
-yaac-mama send [--conversation C] <workspace> "<message>"  # to its running agent
+yaac-mama send [--session S | --conversation C] <workspace> "<message>"  # to one of its agents
   # any "<prompt>" or "<message>": also - (stdin) or --prompt-file F before the arguments
 yaac-mama rename [<workspace>] "<title>"            # omit the workspace to rename yourself
 yaac-mama set-base <branch>                         # your base branch, on origin
 yaac-mama stop [<workspace>]                        # omit the workspace to stop yourself
+yaac-mama stop --session [<session>]                # close one session; omit it to close your own
 yaac-mama restart [--timeout D] <workspace>         # a stopped one, resumed
 yaac-mama group create "<name>"
 yaac-mama group move <workspace> ["<group>"]       # omit the group to ungroup
@@ -61,7 +64,10 @@ pass — the server resolves who is calling and answers for that project only.
 
 - **`list`** — every running workspace in this project, with the group each is
   filed under and the prompt it started from; your own row is marked
-  `(you)`. Then a line naming the project's groups, each with its workspace
+  `(you)`. Under them, a SESSIONS table lists each running workspace's
+  agent sessions (a workspace can run none, one or several), with the
+  session ids `send --session` and `stop --session` take; your own session
+  is marked `(you)`. Then a line naming the project's groups, each with its workspace
   limit if it has one (`Workers (limit 3)`). This is how you find a
   workspace id to pass to `group move`; ids print as their first 8 characters,
   and that prefix is what the other commands accept. A last line counts the
@@ -97,7 +103,21 @@ pass — the server resolves who is calling and answers for that project only.
     command for the next one (`--cursor`, plus the options you passed).
 
 - **`create "<prompt>"`** — start a **new sibling workspace** in this project
-  and deliver the prompt to its agent. Prints the new workspace's id on stdout
+  and deliver the prompt to its agent. Two variants:
+  - **`--workspace <id>`** starts the agent as a new **session in that running
+    workspace** instead, on its checkout: your own (`"$YAAC_WORKSPACE_ID"`)
+    for a helper beside you, or a sibling's. It takes the agent options
+    (`--tool`, `--model`, `--effort`, `--permission-mode`, `--ui-mode`, and
+    `--title` for the session) but not a workspace's (`--branch`, `--group`,
+    `--timeout`), and prints the new session's id. With
+    **`--resume <conversation>`** it opens on one of that workspace's
+    earlier conversations (see `history`), and the prompt is optional.
+    Two agents on one checkout share its files and git index, so give them
+    separate parts of the work.
+  - **`--no-session`** starts a workspace with **no agent**, which takes no
+    prompt and no agent options.
+
+  Prints the new workspace's id on stdout
   and exits 0, so `id=$(yaac-mama create "…")` works.
   - **`--prompt-file <path>`** in place of `"<prompt>"`: read the prompt from
     a file (relative to your working directory). **Hand over a long brief
@@ -107,7 +127,7 @@ pass — the server resolves who is calling and answers for that project only.
     prompt of `-` reads it from stdin instead. `queue`, `edit-queued` and
     `send` take both forms too. An empty or unreadable file is an error.
   - **`--tool`**: `claude`, `codex`, `opencode`, or `pi`. Omitted, it
-    defaults to this workspace's own tool, then the project default, then
+    defaults to your own session's tool, then the project default, then
     `claude`. **Run `yaac-mama models` before choosing** — a tool with no
     host credentials still spawns, and its agent then fails to authenticate.
   - **`--model`**: any model id the chosen tool accepts — an id or alias for
@@ -262,11 +282,13 @@ pass — the server resolves who is calling and answers for that project only.
   commands these take any routine in this project, so change one you did
   not make only when the user asked.
 
-- **`send <workspace> "<message>"`** — hand a message to another **running**
-  workspace's agent (a stopped one is refused; `restart` it first), exactly
-  as if the user had typed it into its terminal or chat pane. It goes to the
-  workspace's first running conversation, or the one **`--conversation`**
-  names (an id or unique prefix from `history`).
+- **`send <workspace> "<message>"`** — hand a message to an agent in a
+  **running** workspace (a stopped one is refused; `restart` it first),
+  exactly as if the user had typed it into its terminal or chat pane. It
+  goes to the workspace's first session, the one **`--session`** names (an
+  id or unique prefix from `list`), or the one holding the conversation
+  **`--conversation`** names (from `history`). Your own workspace counts: a
+  sibling session beside you can be messaged, but never your own session.
   - An agent mid-turn is not interrupted: a chat-pane (`acp`) agent folds it
     into the turn or queues it, and a terminal (`tui`) agent's own UI queues
     what is typed while it works. Anything its user left unsent in the input
@@ -281,8 +303,8 @@ pass — the server resolves who is calling and answers for that project only.
     (Ctrl+Y). Mention that to the user if you know they were typing.
   - The reply says the message was handed over, not that it was answered.
     Read the answer with `yaac-mama history <workspace> <conversation>`.
-  - The conversation may run in **at most your own permission mode**:
-    messaging a more permissive one is refused, as is messaging yourself. A
+  - The session may run in **at most your own permission mode**: messaging
+    a more permissive one is refused, as is messaging yourself. A
     terminal agent reports a mode its user changes only with its next
     prompt, so the check follows from then on.
   - One message at a time: while one of yours is being delivered, or one
@@ -324,10 +346,15 @@ pass — the server resolves who is calling and answers for that project only.
     reply is not an error and not something to retry. Commit and push
     anything worth keeping, and say whatever you need to say to the user,
     **before** you run it; nothing after it happens.
+  - **`--session [<session>]`** closes one agent session instead: its agent
+    stops, its conversation stays in the workspace's history, and the
+    workspace keeps running (with no agent once its last session closes).
+    Omit the session to close your own, the way a helper session started
+    beside another agent ends itself; then, too, nothing after it happens.
 
 - **`restart <workspace>`** — bring a **stopped** workspace back under the
   same id, as the webapp's Restart does: its checkout as it was left, and
-  the conversations that were open when it stopped, each resumed from its
+  the sessions that were open when it stopped, each resumed from its
   history in a window of its own. Its tool, model, effort and permission
   mode are the ones it had. Prints once the restart is under way; it then
   provisions in the background like a `create`, and shows as running in

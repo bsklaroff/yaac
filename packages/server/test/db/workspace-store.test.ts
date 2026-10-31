@@ -1,7 +1,5 @@
-import path from 'node:path'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { claudeDir } from '@yaac/shared/project-paths'
 import { sql } from 'drizzle-orm'
 import { closeDb, getDb } from '#db/client'
 import {
@@ -22,7 +20,6 @@ import {
   listProjectWorkspaceIds,
   listOverdueWorkspaceRows,
   recordDeathSeen,
-  recordWaitingSeen,
   recordWorkspaceCreated,
   recordWorkspaceLife,
   recordWorkspaceResumed,
@@ -34,7 +31,8 @@ import {
   type StoppedRowCursor,
 } from '#db/workspace-store'
 import { createWorkspaceGroup, deleteWorkspaceGroup } from '#db/group-store'
-import { listWorkspaceAgentSessions, recordAgentSessions } from '#db/agent-session-store'
+import { listWorkspaceConversations, recordConversations } from '#db/conversation-store'
+import { insertSession, markSessionsLaunched } from '#db/session-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
@@ -178,21 +176,6 @@ describe('session store', () => {
     })
   })
 
-  describe('recordWaitingSeen', () => {
-    it('marks the workspace read by each user once, and creates no row', async () => {
-      await create('sid-1')
-      const seen = async () => (await getProjectWorkspaceRows(PROJ)).get('sid-1')?.waitingSeenBy
-      expect(await seen()).toEqual([])
-      await recordWaitingSeen(PROJ, 'sid-1', BUILT_IN_USER_ID)
-      await recordWaitingSeen(PROJ, 'sid-1', TEAMMATE)
-      await recordWaitingSeen(PROJ, 'sid-1', BUILT_IN_USER_ID)
-      expect(await seen()).toEqual([BUILT_IN_USER_ID, TEAMMATE])
-
-      await recordWaitingSeen(PROJ, 'spare', BUILT_IN_USER_ID)
-      expect((await listWorkspaceRows()).map((r) => r.workspaceId)).toEqual(['sid-1'])
-    })
-  })
-
   describe('title', () => {
     it('normalizes on write and clears on a blank title', async () => {
       await create('sid-1')
@@ -230,11 +213,11 @@ describe('session store', () => {
     it('removes one workspace and its conversation links, leaving its siblings', async () => {
       await create('sid-1')
       await create('sid-2')
-      await recordAgentSessions(PROJ, 'sid-1', [{ tool: 'claude', agentSessionId: 'conv-1' }])
+      await recordConversations(PROJ, 'sid-1', [{ tool: 'claude', conversationId: 'conv-1' }])
       const before = pushes
       await deleteWorkspaceRecords(PROJ, 'sid-1')
       expect((await listWorkspaceRows(PROJ)).map((r) => r.workspaceId)).toEqual(['sid-2'])
-      expect(await listWorkspaceAgentSessions(PROJ, 'sid-1')).toEqual([])
+      expect(await listWorkspaceConversations(PROJ, 'sid-1')).toEqual([])
       expect(pushes - before).toBe(1)
     })
 
@@ -260,38 +243,21 @@ describe('session store', () => {
 
   describe('listLiveWorkspaceRows', () => {
     it('excludes stopped workspaces and reports whether each ever ran', async () => {
-      // A link alone proves nothing: create records one before the agent
-      // launches. `ran` needs a captured opening message, a transcript, or
-      // an id opencode or codex minted for itself.
+      // Only a live agent names a conversation, so any recorded one proves a
+      // start; so does a session whose window was launched.
       await create('never-ran')
-      await recordAgentSessions(PROJ, 'never-ran', [
-        { tool: 'claude', agentSessionId: 'never-ran' },
-      ])
-      await create('has-prompt')
-      await recordAgentSessions(PROJ, 'has-prompt', [
-        { tool: 'claude', agentSessionId: 'conv-a', firstPrompt: 'hello' },
-      ])
-      await create('has-transcript')
-      await recordAgentSessions(PROJ, 'has-transcript', [
-        {
-          tool: 'claude',
-          agentSessionId: 'conv-b',
-          // Inside the tool home: the column stores paths relative to it, so
-          // one outside has no storable form and would record as null.
-          transcriptPath: path.join(claudeDir(PROJ), 'projects', '-workspace', 'conv-b.jsonl'),
-        },
-      ])
-      await create('opencode-pin')
-      await recordAgentSessions(PROJ, 'opencode-pin', [{ tool: 'opencode', agentSessionId: 'opencode-pin' }])
-      await create('opencode-named')
-      await recordAgentSessions(PROJ, 'opencode-named', [{ tool: 'opencode', agentSessionId: 'ses_1' }])
+      await insertSession(PROJ, 'never-ran', { tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
+      await create('conversed')
+      await recordConversations(PROJ, 'conversed', [{ tool: 'opencode', conversationId: 'ses_1' }])
+      await create('launched')
+      const s = await insertSession(PROJ, 'launched', { tool: 'claude', mode: 'acp', permissionMode: 'bypass' })
+      await markSessionsLaunched([s.id])
       await create('gone')
       await recordWorkspaceStopped(PROJ, 'gone')
 
       const rows = await listLiveWorkspaceRows()
       expect(rows.map((r) => [r.workspaceId, r.ran]).sort()).toEqual([
-        ['has-prompt', true], ['has-transcript', true], ['never-ran', false],
-        ['opencode-named', true], ['opencode-pin', false],
+        ['conversed', true], ['launched', true], ['never-ran', false],
       ])
     })
   })

@@ -22,7 +22,6 @@ import {
   prepareStart,
   queueWorkspace,
   reconcilePrewarmPool,
-  recordedLaunch,
   saveDraftWorkspace,
   stopWorkspace,
 } from '#domain/workspaces'
@@ -70,8 +69,9 @@ import {
   deleteWorkspaceGroup,
   getWorkspaceRow,
   insertGitCredential,
-  listWorkspaceAgentSessions,
+  listWorkspaceConversations,
   listWorkspaceGroupRows,
+  listWorkspaceSessions,
   setGitIdentity,
   setProjectEgressAllowlist,
   setProjectGitCredential,
@@ -79,6 +79,7 @@ import {
   setWorkspaceGroupLimit,
   seeTailnetUser,
   setToolCredential,
+  type SessionRow,
   type WorkspaceRow,
 } from '#db'
 import { getProjectRow, recordProject, recordProjectCreate } from '#db/project-store'
@@ -87,6 +88,8 @@ import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 import { EFFORTS } from '@yaac/shared/tool-providers.generated'
 import { ServerError } from '@yaac/shared/errors'
 import {
+  KEEPER_STARTING,
+  KEEPER_WINDOW,
   WorkspaceExecError,
   type RuntimeHandle,
   type WorkspaceDriver,
@@ -126,7 +129,7 @@ describe('prepareStart', () => {
   let deregistered: string[]
   let registrations: WorkspaceRegistration[]
   let units: RuntimeHandle[]
-  let claims: Array<[string, AgentTool]>
+  let claims: string[]
   /** What `rev-parse HEAD` reads in a workspace; origin's main unless a case
    *  moves it. */
   let head: string
@@ -144,9 +147,6 @@ describe('prepareStart', () => {
           workspaceId: spec.workspaceId,
           projectId: spec.projectId,
           jobName: `yaac-demo-${spec.workspaceId}`,
-          tool: spec.tool,
-          declaredTool: spec.tool,
-          mode: spec.mode,
           prewarmed: spec.prewarm,
           createdAtMs: Date.now(),
         })
@@ -166,17 +166,17 @@ describe('prepareStart', () => {
         const window = /display-message -p -t yaac:(\S+) '#\{pane_pid\}'/.exec(cmd)?.[1]
         if (window !== undefined) {
           const workspaceId = jobName.slice('yaac-demo-'.length)
-          registerAcpConversation(DEMO_PROJECT_ID, workspaceId, { handle: window, agentSessionId: `acp-${workspaceId}`, panePid: '42' }, upConversation)
+          registerAcpConversation(DEMO_PROJECT_ID, workspaceId, { handle: window, conversationId: `acp-${workspaceId}`, panePid: '42' }, upConversation)
           return Promise.resolve({ stdout: '42\n', stderr: '' })
         }
         const stdout = cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : ''
         return Promise.resolve({ stdout, stderr: '' })
       },
       registerWorkspace: (registration) => { registrations.push(registration); return Promise.resolve() },
-      claimSpare: (id, tool) => {
-        claims.push([id, tool])
+      claimSpare: (id) => {
+        claims.push(id)
         const unit = units.find((u) => u.workspaceId === id)
-        if (unit) Object.assign(unit, { prewarmed: false, tool, declaredTool: tool })
+        if (unit) Object.assign(unit, { prewarmed: false })
         return Promise.resolve()
       },
       destroy: (target, opts) => {
@@ -214,6 +214,9 @@ describe('prepareStart', () => {
   const env = (): string[] => specs.at(-1)!.env
   const cmds = (): string[] => execs.map((e) => e.cmd)
   const execOf = (needle: string): string | undefined => cmds().find((c) => c.includes(needle))
+  /** The command that opened a session's window. */
+  const SESSION_WINDOW = / -n (claude|codex|opencode|pi)-[0-9a-f]{8} /
+  const sessionExec = (): string | undefined => cmds().find((c) => SESSION_WINDOW.test(c))
 
   async function writeConfig(config: YaacConfig): Promise<void> {
     await fs.mkdir(projectConfigDir(DEMO_PROJECT_ID), { recursive: true })
@@ -253,18 +256,21 @@ describe('prepareStart', () => {
    * falls back to the tool's default.
    */
   describe('settings', () => {
-    /** What a start resolved to, as its row records it. The create stops
-     *  at its first runtime call after writing the row. */
+    /** What a start resolved to, as its session records it. The create
+     *  stops at its first runtime call after opening the session. */
     const settled = async (
       over: Partial<StartWorkspaceRequest> = {},
       driver: Partial<WorkspaceDriver> = {},
-    ): Promise<WorkspaceRow & { tool: AgentTool }> => {
+    ): Promise<SessionRow> => {
       const workspaceId = randomUUID()
-      const stop = (): never => { throw new Error('stop here') }
+      let opened: SessionRow | undefined
+      const stop = async (): Promise<never> => {
+        opened = (await listWorkspaceSessions(workspaceId))[0]
+        throw new Error('stop here')
+      }
       installDriver({ ...driver, prepareImage: stop, prepareSubstrate: stop })
       await expect(start({ ...over, workspaceId })).rejects.toThrow('stop here')
-      const { tool } = listProvisioning().find((p) => p.workspaceId === workspaceId)!
-      return { ...(await getWorkspaceRow(DEMO_PROJECT_ID, workspaceId))!, tool }
+      return opened!
     }
 
     it('falls back per field when nothing is remembered, the posture from the driver', async () => {
@@ -444,24 +450,21 @@ describe('prepareStart', () => {
       })
       const { workspaceId } = result
 
-      expect(result).toEqual({
-        workspaceId, jobName: `yaac-demo-${workspaceId}`, tool: 'codex', mode: 'tui', forwardedPorts: [],
-      })
+      const [session] = await listWorkspaceSessions(workspaceId)
+      expect(result).toEqual({ workspaceId, jobName: `yaac-demo-${workspaceId}`, forwardedPorts: [], sessionId: session.id })
       // The row names what is coming up before any agent has answered, and
       // goes once the workspace is up.
       expect(row).toMatchObject({ workspaceId, kind: 'create', tool: 'codex', prompt: 'ship it', model: 'gpt-6-sol' })
       expect(listProvisioning()).toEqual([])
       expect(await git(workspaceDir(DEMO_PROJECT_ID, workspaceId), ['rev-parse', '--abbrev-ref', 'HEAD']))
         .toBe(`agent/${workspaceId}\n`)
-      // Stored so a restart relaunches with the user's choice and a spare
-      // claim can match on it, and up front: a workspace queued while this
-      // one boots defaults to its branch.
-      expect(await getWorkspaceRow(DEMO_PROJECT_ID, workspaceId)).toMatchObject({
-        baseBranch: 'dev', permissionMode: 'bypass', mode: 'tui', model: 'gpt-6-sol',
+      // Stored up front: a workspace queued while this one boots defaults to
+      // its branch. The session keeps the user's choices for a restart.
+      expect((await getWorkspaceRow(DEMO_PROJECT_ID, workspaceId))?.baseBranch).toBe('dev')
+      expect(session).toMatchObject({
+        tool: 'codex', mode: 'tui', permissionMode: 'bypass', model: 'gpt-6-sol', firstPrompt: 'ship it',
       })
-      expect(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, workspaceId)).toEqual([expect.objectContaining({
-        tool: 'codex', agentSessionId: workspaceId, firstPrompt: 'ship it', model: 'gpt-6-sol',
-      })])
+      expect((await listWorkspaceSessions(workspaceId))[0]?.launchedAt).toBeInstanceOf(Date)
       expect(progress).toEqual(expect.arrayContaining([
         'image ready', 'substrate ready', 'launching', 'Creating workspace from dev...', 'Starting Codex...',
         'Sending initial prompt...',
@@ -476,7 +479,7 @@ describe('prepareStart', () => {
       expect(await fs.readFile(path.join(workspaceDir(DEMO_PROJECT_ID, workspaceId), '.git', 'objects', 'info', 'alternates'), 'utf8'))
         .toBe(`${repoDir(DEMO_PROJECT_ID)}/.git/objects\n`)
       expect(execOf('objects/info/alternates')).toBeUndefined()
-      expect(execOf('respawn-window')).toContain('--no-optional-locks status')
+      expect(sessionExec()).toContain('--no-optional-locks status')
       const { mounts, postStartExec, preStopExec } = specs[0]
       expect(mounts).toContainEqual({
         source: { kind: 'hostPath', path: `${repoDir(DEMO_PROJECT_ID)}/.git` },
@@ -509,10 +512,10 @@ describe('prepareStart', () => {
       ]))
       expect(sources).not.toContain(cachedPackagesDir(DEMO_PROJECT_ID))
       expect(env()).toEqual(expect.arrayContaining([
-        `YAAC_WORKSPACE_ID=${workspaceId}`, 'YAAC_TOOL=codex', 'YAAC_GIT_NAME=Ada', 'YAAC_GIT_EMAIL=ada@example.com',
+        `YAAC_WORKSPACE_ID=${workspaceId}`, 'YAAC_GIT_NAME=Ada', 'YAAC_GIT_EMAIL=ada@example.com',
         `YAAC_STATUS_RIGHT= ${workspaceId.slice(0, 8)} `,
       ]))
-      expect(execOf('respawn-window')).toMatch(/respawn-window -k -t yaac:codex 'exec codex .* --yolo --model gpt-6-sol'/)
+      expect(sessionExec()).toMatch(/ -n codex-[0-9a-f]{8} [^']*'[^']*exec codex .* --yolo --model gpt-6-sol'/)
       // The workspace runs as the server's uid, so a chown would only corrupt
       // host-side ownership.
       expect(cmds().some((c) => c.includes('chown') || c.startsWith('sudo '))).toBe(false)
@@ -743,7 +746,7 @@ describe('prepareStart', () => {
             probed = true
             throw new WorkspaceExecError('probe', 1, '', 'codex')
           }
-          if (cmd.includes('.yaac-prompt.sh')) await held
+          if (cmd.includes('.yaac-prompt-')) await held
           return { stdout: '', stderr: '' }
         },
       })
@@ -758,7 +761,7 @@ describe('prepareStart', () => {
 
       await vi.waitFor(() => {
         expect(listProvisioning()).toMatchObject([{ workspaceId: 'wt-dead', kind: 'create' }])
-        expect(listProvisioning()[0]?.error).toMatch(/agent "codex" exited right after launch/)
+        expect(listProvisioning()[0]?.error).toMatch(/agent "codex-[0-9a-f]{8}" exited right after launch/)
       }, { timeout: 30_000 })
     })
 
@@ -766,7 +769,7 @@ describe('prepareStart', () => {
     // `session/new`, so a chat create returns without waiting for it and
     // leaves its prompt on the row, held before the agent starts so no sweep
     // can find the conversation first. The sweep that records the
-    // conversation sends it (agent-session-registry.test.ts).
+    // conversation sends it (conversation-registry.test.ts).
     it('holds a chat workspace\'s prompt from before its agent starts, and returns without waiting for it', async () => {
       let heldAtLaunch: string | undefined
       let released!: () => void
@@ -774,10 +777,11 @@ describe('prepareStart', () => {
       installDriver({
         exec: async (jobName, cmd) => {
           execs.push({ jobName, cmd })
-          if (cmd.includes('respawn-window')) heldAtLaunch = (await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-chat'))?.pendingPrompt
-          if (cmd.includes('#{pane_pid}')) {
+          if (SESSION_WINDOW.test(cmd)) heldAtLaunch = (await listWorkspaceSessions('wt-chat'))[0]?.pendingPrompt
+          const window = /display-message -p -t yaac:(\S+) '#\{pane_pid\}'/.exec(cmd)?.[1]
+          if (window !== undefined) {
             void agentUp.then(() => registerAcpConversation(
-              DEMO_PROJECT_ID, 'wt-chat', { handle: 'claude', agentSessionId: 'minted', panePid: '42' }, upConversation,
+              DEMO_PROJECT_ID, 'wt-chat', { handle: window, conversationId: 'minted', panePid: '42' }, upConversation,
             ))
             return { stdout: '42\n', stderr: '' }
           }
@@ -786,9 +790,9 @@ describe('prepareStart', () => {
       })
       const progress: string[] = []
       expect(await start({ workspaceId: 'wt-chat', mode: 'acp', prompt: 'go', onProgress: (m) => progress.push(m) }))
-        .toMatchObject({ workspaceId: 'wt-chat', mode: 'acp' })
+        .toMatchObject({ workspaceId: 'wt-chat' })
       expect(heldAtLaunch).toBe('go')
-      expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-chat'))?.pendingPrompt).toBe('go')
+      expect((await listWorkspaceSessions('wt-chat'))[0]?.pendingPrompt).toBe('go')
       expect(progress).not.toContain('Connecting to Claude Code...')
       released()
     })
@@ -810,7 +814,7 @@ describe('prepareStart', () => {
       expect(await start({ workspaceId: 'wt-acp-dead', mode: 'acp', prompt: 'go' })).toMatchObject({ workspaceId: 'wt-acp-dead' })
       await vi.waitFor(() => {
         expect(listProvisioning()).toMatchObject([{ workspaceId: 'wt-acp-dead', kind: 'create', prompt: 'go' }])
-        expect(listProvisioning()[0]?.error).toMatch(/acp agent "claude" exited .*before its handshake.*@agentclientprotocol\/claude-agent-acp@/)
+        expect(listProvisioning()[0]?.error).toMatch(/acp agent "claude-[0-9a-f]{8}" exited .*before its handshake.*@agentclientprotocol\/claude-agent-acp@/)
       }, { timeout: 30_000 })
     })
 
@@ -864,7 +868,7 @@ describe('prepareStart', () => {
       expect(windows).toContain("-n frontend \"${SHELL:-/bin/sh}\" -c 'cd /workspace && pnpm install && echo '\\''hi'\\'''")
       expect(windows).toContain('set-option -t yaac:backend remain-on-exit on')
       expect(windows).not.toContain('yaac:frontend remain-on-exit on')
-      expect(windows).toContain(`claude --permission-mode bypassPermissions --model claude-opus-4-5 --session-id ${result.workspaceId}`)
+      expect(windows).toContain(`claude --permission-mode bypassPermissions --model claude-opus-4-5 --session-id ${result.sessionId}`)
     })
 
     it('starts a containerless chat agent alongside its checkout, holding its conversation until the checkout lands', async () => {
@@ -875,17 +879,17 @@ describe('prepareStart', () => {
       // The agent's command goes first, on its own; acpd holds the
       // conversation until `.git` exists. The init windows read the
       // checkout, so they follow it.
-      const agents = execs.findIndex(({ cmd }) => cmd.includes('respawn-window'))
+      const agents = execs.findIndex(({ cmd }) => SESSION_WINDOW.test(cmd))
       const windows = execs.findIndex(({ cmd }) => cmd.includes('-n backend'))
       expect(execs[agents].cmd).toContain('--wait-for /workspace/.git --')
       expect(execs[agents].cmd).not.toContain('backend')
       expect(windows).toBeGreaterThan(agents)
-      expect(execs[windows].cmd).not.toContain('respawn-window')
+      expect(execs[windows].cmd).not.toMatch(SESSION_WINDOW)
 
       // A terminal agent reads the checkout as it starts, so it waits for it.
       execs.length = 0
       await start({ workspaceId: 'wt-tui', mode: 'tui' })
-      const tui = execs.find(({ cmd }) => cmd.includes('respawn-window'))!.cmd
+      const tui = sessionExec()!
       expect(tui).toContain('-n backend')
       expect(tui).not.toContain('--wait-for')
     })
@@ -1064,10 +1068,9 @@ describe('prepareStart', () => {
   })
 
   /**
-   * A spare is warmed by the pool (`reconcilePrewarmPool`) with the
-   * project's default create settings: here claude in `tui`. A claim hands
-   * it over under its own id, respawning its agent for another tool, model
-   * or posture, and moving its checkout to another branch or a newer tip.
+   * A spare is warmed by the pool (`reconcilePrewarmPool`) with no
+   * session. A claim hands it over under its own id, moving its checkout to
+   * another branch or a newer tip, and opens the create's session in it.
    * Anything that goes wrong falls back to a cold create under the
    * requested id.
    */
@@ -1076,12 +1079,16 @@ describe('prepareStart', () => {
      *  warm a spare for it. */
     const user = handleFixture({ workspaceId: 'user-ws', projectId: DEMO_PROJECT_ID, jobName: 'yaac-demo-user-ws' })
 
+    /** Whether `unit` finished its warm, which ends by renaming its keeper. */
+    const warmed = (unit: RuntimeHandle): boolean =>
+      execs.some((x) => x.jobName === unit.jobName && x.cmd.includes(`rename-window -t yaac:${KEEPER_STARTING} ${KEEPER_WINDOW}`))
+
     /** Warm one spare as the pool does, and wait until it is up. */
     async function warm(): Promise<RuntimeHandle> {
       await reconcilePrewarmPool(snapshotFixture([user, ...units]))
       let spare: RuntimeHandle | undefined
       await vi.waitFor(() => {
-        spare = units.find((u) => u.prewarmed && cmds().some((c) => c.includes('respawn-window') && c.includes(u.workspaceId)))
+        spare = units.find((u) => u.prewarmed && warmed(u))
         expect(spare).toBeDefined()
       }, { timeout: 30_000 })
       // The pool's spawn settles after its create returns.
@@ -1099,10 +1106,10 @@ describe('prepareStart', () => {
       await recordProjectCreate(DEMO_PROJECT_ID, 'claude', { mode: 'tui' })
     })
 
-    it('warms a spare with no row or conversation, then hands it over as warmed, under its own id', async () => {
+    it('warms a spare with no row or session, then hands it over under its own id, opening the create\'s session in it', async () => {
       const spare = await warm()
       expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toBeUndefined()
-      expect(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, spare.workspaceId)).toEqual([])
+      expect(await listWorkspaceSessions(spare.workspaceId, { all: true })).toEqual([])
       expect(specs.at(-1)?.prewarm).toBe(true)
       registrations = []
 
@@ -1111,27 +1118,26 @@ describe('prepareStart', () => {
         workspaceId: 'req', claimSpare: true, prompt: 'fix the bug', title: 'Bug fix', group: group.groupId,
       })
 
-      expect(result).toEqual({ workspaceId: spare.workspaceId, jobName: spare.jobName, tool: 'claude', mode: 'tui', forwardedPorts: [] })
-      expect(claims).toEqual([[spare.workspaceId, 'claude']])
-      // The agent matched, so nothing was respawned, and no new unit came up.
-      expect(ranIn(spare).some((c) => c.includes('respawn-window'))).toBe(false)
+      const [session] = await listWorkspaceSessions(spare.workspaceId)
+      expect(result).toEqual({ workspaceId: spare.workspaceId, jobName: spare.jobName, forwardedPorts: [], sessionId: session.id })
+      expect(claims).toEqual([spare.workspaceId])
       expect(specs.filter((s) => !s.prewarm)).toEqual([])
       // Re-registered from the project as it is now, and given the current
       // git identity.
       expect(registrations).toEqual([expect.objectContaining({
-        workspaceId: spare.workspaceId, projectId: DEMO_PROJECT_ID, owner: 'install', tool: 'claude',
+        workspaceId: spare.workspaceId, projectId: DEMO_PROJECT_ID, owner: 'install',
       })])
       expect(ranIn(spare)).toContain("git config --global user.name 'Ada' && git config --global user.email 'ada@example.com'")
-      // Recorded as a cold create records it: filed, titled, its first
-      // conversation holding the prompt.
+      // Recorded as a cold create records it: filed, titled, its session
+      // holding the prompt, which is pasted into the agent of the window it
+      // opens.
       expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toMatchObject({
-        groupId: group.groupId, title: 'Bug fix', baseBranch: 'main', mode: 'tui', permissionMode: 'bypass',
+        groupId: group.groupId, title: 'Bug fix', baseBranch: 'main',
       })
-      expect(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, spare.workspaceId)).toEqual([
-        expect.objectContaining({ tool: 'claude', agentSessionId: spare.workspaceId, firstPrompt: 'fix the bug' }),
-      ])
-      // The prompt was pasted into the spare's agent.
-      expect(ranIn(spare).some((c) => c.includes('.yaac-prompt.sh'))).toBe(true)
+      expect(session).toMatchObject({ tool: 'claude', mode: 'tui', permissionMode: 'bypass', firstPrompt: 'fix the bug' })
+      expect(session.launchedAt).toBeInstanceOf(Date)
+      expect(ranIn(spare)).toContainEqual(expect.stringContaining(`new-window -d -t yaac -n ${session.window} `))
+      expect(ranIn(spare).some((c) => c.includes(`.yaac-prompt-yaac_${session.window}.sh`))).toBe(true)
       expect(listProvisioning()).toEqual([])
     })
 
@@ -1163,116 +1169,44 @@ describe('prepareStart', () => {
       expect((await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId))?.stoppedAt).toBeUndefined()
     })
 
-    it('respawns the agent for another tool, model, posture or effort, and moves the checkout to another branch', async () => {
+    it('opens a session of any tool and posture in a spare, and moves its checkout to another branch', async () => {
       const spare = await warm()
       await saveToolAuth('codex', 'sk-oai')
 
       const result = await start({ claimSpare: true, tool: 'codex', permissionMode: 'read-only', branch: 'dev' })
 
-      expect(result).toMatchObject({ workspaceId: spare.workspaceId, tool: 'codex' })
-      expect(claims).toEqual([[spare.workspaceId, 'codex']])
+      expect(result).toMatchObject({ workspaceId: spare.workspaceId })
+      expect(claims).toEqual([spare.workspaceId])
       const ran = ranIn(spare)
       // The checkout is reset to dev's tip, keeping mount points, and the
       // branch becomes its upstream.
       const tip = (await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'origin/dev'])).trim()
       expect(ran).toContainEqual(expect.stringMatching(new RegExp(`reset --hard ${tip} && git -C /workspace clean -fd -e 'node_modules'`)))
       expect(ran).toContainEqual(expect.stringContaining("update-ref 'refs/remotes/origin/dev'"))
-      // The window is renamed for codex and its agent respawned once, by the
-      // retool, as a fresh conversation under the spare's id.
-      expect(ran).toContainEqual(expect.stringContaining('rename-window -t yaac:claude codex'))
-      const respawns = ran.filter((c) => c.includes('respawn-window'))
-      expect(respawns).toHaveLength(1)
-      expect(respawns[0]).toMatch(/respawn-window -k -t yaac:codex 'exec codex .*--sandbox read-only/)
-      expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toMatchObject({
-        baseBranch: 'dev', permissionMode: 'read-only', model: FALLBACK_MODELS.codex,
-      })
+      const [session] = await listWorkspaceSessions(spare.workspaceId)
+      expect(session).toMatchObject({ tool: 'codex', permissionMode: 'read-only', model: FALLBACK_MODELS.codex })
+      expect(ran.filter((c) => SESSION_WINDOW.test(c))).toEqual([
+        expect.stringMatching(new RegExp(`-n ${session.window} [^']*'[^']*exec codex .*--sandbox read-only`)),
+      ])
+      expect((await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId))?.baseBranch).toBe('dev')
     })
 
-    // An acp chat reads its effort (`recordedLaunch`) when its handshake
-    // starts, so the claim must record the claimed level before the respawn
-    // brings that chat up, or it handshakes at the warm one.
-    it('records the claimed effort before respawning an acp spare warmed at another', async () => {
-      const { levels, default: warmLevel } = EFFORTS.claude[FALLBACK_MODELS.claude]
-      const claimedLevel = levels.find((l) => l !== warmLevel)!
-      await recordProjectCreate(DEMO_PROJECT_ID, 'claude', { mode: 'acp' })
+    // A chat session's conversation has no id until its agent answers, so
+    // the claim leaves the prompt on the session for the sweep to send.
+    it('holds a claimed chat session\'s prompt for its conversation', async () => {
       const spare = await warm()
-      expect((await recordedLaunch(DEMO_PROJECT_ID, spare.workspaceId))?.effort).toBe(warmLevel)
-
-      let atRespawn: string | undefined
-      const conversation = { whenReady: () => Promise.resolve() } as unknown as AcpConversation
-      installDriver({
-        exec: async (jobName, cmd) => {
-          execs.push({ jobName, cmd })
-          if (cmd.includes('respawn-window')) atRespawn = (await recordedLaunch(DEMO_PROJECT_ID, spare.workspaceId))?.effort
-          if (cmd.includes('#{pane_pid}')) {
-            registerAcpConversation(DEMO_PROJECT_ID, spare.workspaceId, { handle: 'claude', agentSessionId: 'minted', panePid: '42' }, conversation)
-            return { stdout: '42\n', stderr: '' }
-          }
-          return { stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' }
-        },
-      })
-
-      expect(await start({ claimSpare: true, mode: 'acp', effort: claimedLevel })).toMatchObject({ workspaceId: spare.workspaceId })
-      expect(ranIn(spare).filter((c) => c.includes('respawn-window'))).toHaveLength(1)
-      expect(atRespawn).toBe(claimedLevel)
+      expect(await start({ claimSpare: true, mode: 'acp', prompt: 'go' })).toMatchObject({ workspaceId: spare.workspaceId })
+      const [session] = await listWorkspaceSessions(spare.workspaceId)
+      expect(session).toMatchObject({ mode: 'acp', pendingPrompt: 'go' })
+      expect(ranIn(spare).some((c) => c.includes('.yaac-prompt-'))).toBe(false)
     })
 
-    // A claimed chat spare's conversation may be one the claim just
-    // respawned, which the sweep skips mid-claim, so the claim waits for the
-    // conversation on the window's current process and sends the prompt
-    // itself. One whose agent dies first leaves the prompt held.
-    it('hands a claimed chat spare its prompt once its conversation is up, and holds it past an agent that dies first', async () => {
-      await recordProjectCreate(DEMO_PROJECT_ID, 'claude', { mode: 'acp' })
-      const spare = await warm()
-      const prompted = vi.fn(() => Promise.resolve())
-      const conversation = { whenReady: () => Promise.resolve(), prompt: prompted } as unknown as AcpConversation
-      installDriver({
-        exec: (jobName, cmd) => {
-          execs.push({ jobName, cmd })
-          if (cmd.includes('#{pane_pid}')) {
-            setTimeout(() => {
-              registerAcpConversation(DEMO_PROJECT_ID, spare.workspaceId, { handle: 'claude', agentSessionId: 'stale', panePid: '41' }, conversation)
-              registerAcpConversation(DEMO_PROJECT_ID, spare.workspaceId, { handle: 'claude', agentSessionId: 'minted', panePid: '43' }, conversation)
-            }, 20)
-            return Promise.resolve({ stdout: '43\n', stderr: '' })
-          }
-          return Promise.resolve({ stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' })
-        },
-      })
-      const progress: string[] = []
-      expect(await start({ claimSpare: true, mode: 'acp', prompt: 'go', onProgress: (m) => progress.push(m) }))
-        .toMatchObject({ workspaceId: spare.workspaceId })
-      expect(progress).toEqual(expect.arrayContaining(['Connecting to Claude Code...', 'Sending initial prompt...']))
-      await vi.waitFor(() => { expect(prompted).toHaveBeenCalledWith('go') })
-      expect((await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId))?.pendingPrompt).toBeUndefined()
-
-      installDriver()
-      const next = await warm()
-      installDriver({
-        exec: (jobName, cmd) => {
-          execs.push({ jobName, cmd })
-          // A respawned agent, on a process no conversation is on.
-          if (cmd.includes('#{pane_pid}')) return Promise.resolve({ stdout: '44\n', stderr: '' })
-          return cmd.includes('list-windows -t =yaac')
-            ? Promise.reject(new WorkspaceExecError('probe', 1, '', 'claude'))
-            : Promise.resolve({ stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' })
-        },
-      })
-      vi.mocked(serverLog).mockClear()
-      expect(await start({ claimSpare: true, mode: 'acp', prompt: 'go' })).toMatchObject({ workspaceId: next.workspaceId })
-      const logged = vi.mocked(serverLog).mock.calls.map(([m]) => m).join('\n')
-      expect(logged).toMatch(/acp agent "claude" exited .*before its handshake/)
-      expect(logged).toContain('initial prompt held')
-      expect(prompted).toHaveBeenCalledTimes(1)
-      expect((await getWorkspaceRow(DEMO_PROJECT_ID, next.workspaceId))?.pendingPrompt).toBe('go')
-    })
-
-    it('respawns a spare as pi on the owner\'s pi provider', async () => {
+    it('opens a pi session in a spare on the owner\'s pi provider', async () => {
       const spare = await warm()
       await saveToolAuth('pi', 'sk-or', 'openrouter')
 
-      expect(await start({ claimSpare: true, tool: 'pi' })).toMatchObject({ workspaceId: spare.workspaceId, tool: 'pi' })
-      expect(ranIn(spare).find((c) => c.includes('respawn-window'))).toMatch(/respawn-window -k -t yaac:pi '.*openrouter/)
+      expect(await start({ claimSpare: true, tool: 'pi' })).toMatchObject({ workspaceId: spare.workspaceId })
+      expect(ranIn(spare).find((c) => SESSION_WINDOW.test(c))).toMatch(/ -n pi-[0-9a-f]{8} [^']*'.*openrouter/)
     })
 
     /** Settle `claim` with fake time, which has to pass while the claim also
@@ -1331,7 +1265,7 @@ describe('prepareStart', () => {
       expect(claims).toEqual([])
     })
 
-    it('brings a spare whose branch moved on origin up to its tip, restarting its agent there', async () => {
+    it('brings a spare whose branch moved on origin up to its tip before opening the session there', async () => {
       const spare = await warm()
       head = 'an-older-commit'
       await writeConfig({ initCommands: [{ name: 'backend', commands: ['pnpm dev'] }] })
@@ -1342,10 +1276,10 @@ describe('prepareStart', () => {
       const reset = ran.findIndex((c) => c.includes('reset --hard'))
       expect(reset).toBeGreaterThanOrEqual(0)
       // Each init window is recreated in one exec with its kill, then the
-      // agent respawned last.
+      // session opened last.
       const after = ran.slice(reset)
       expect(after).toContainEqual(expect.stringMatching(/kill-window -t yaac:backend 2>\/dev\/null; .*new-window -d -t yaac -n backend/))
-      expect(after.findIndex((c) => c.includes('respawn-window')))
+      expect(after.findIndex((c) => SESSION_WINDOW.test(c)))
         .toBeGreaterThan(after.findIndex((c) => c.includes('kill-window -t yaac:backend')))
     })
 
@@ -1390,28 +1324,27 @@ describe('prepareStart', () => {
       expect(specs.filter((s) => !s.prewarm)).toEqual([])
       expect(claims).toEqual([])
       expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toBeUndefined()
-      expect(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, spare.workspaceId)).toEqual([])
+      expect(await listWorkspaceConversations(DEMO_PROJECT_ID, spare.workspaceId)).toEqual([])
       expect(listProvisioning()).toEqual([expect.objectContaining({ workspaceId: 'req', error: expect.stringContaining('ghost') as unknown })])
       // The next claim takes it.
       expect((await start({ claimSpare: true })).workspaceId).toBe(spare.workspaceId)
     })
 
-    it('reaps a spare a failed respawn or commit left half-changed, and creates cold instead', async () => {
+    it('reaps a spare a failed rebranch or commit left half-changed, and creates cold instead', async () => {
       const spare = await warm()
-      await saveToolAuth('codex', 'sk-oai')
       installDriver({
         exec: (jobName, cmd) => {
           execs.push({ jobName, cmd })
-          if (cmd.includes('respawn-window') && jobName === spare.jobName) {
-            return Promise.reject(new WorkspaceExecError('respawn', 1, '', 'no codex'))
+          if (cmd.includes('reset --hard') && jobName === spare.jobName) {
+            return Promise.reject(new WorkspaceExecError('reset', 1, '', 'disk full'))
           }
           return Promise.resolve({ stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' })
         },
       })
 
-      const result = await start({ workspaceId: 'req', claimSpare: true, tool: 'codex' })
+      const result = await start({ workspaceId: 'req', claimSpare: true, branch: 'dev' })
 
-      expect(result).toMatchObject({ workspaceId: 'req', tool: 'codex' })
+      expect(result).toMatchObject({ workspaceId: 'req' })
       expect(specs.filter((s) => !s.prewarm).map((s) => s.workspaceId)).toEqual(['req'])
       // Torn down whole: the claim's row, then the pod, checkout and Job.
       expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toBeUndefined()
@@ -1507,8 +1440,7 @@ describe('prepareStart', () => {
       vi.stubEnv('YAAC_PREWARM_POOL_SIZE', '2')
       await reconcilePrewarmPool(snapshotFixture([user]))
       await vi.waitFor(() => {
-        expect(units.filter((u) => u.prewarmed && cmds().some((c) => c.includes('respawn-window') && c.includes(u.workspaceId))))
-          .toHaveLength(2)
+        expect(units.filter((u) => u.prewarmed && warmed(u))).toHaveLength(2)
       }, { timeout: 30_000 })
       await new Promise((r) => setTimeout(r, 20))
       const [newest, older] = [...units].sort((a, b) => b.createdAtMs - a.createdAtMs)
@@ -1554,7 +1486,7 @@ describe('prepareStart', () => {
       const spare = await warm()
       const results = await Promise.all([start({ claimSpare: true }), start({ claimSpare: true })])
       expect(results.filter((r) => r.workspaceId === spare.workspaceId)).toHaveLength(1)
-      expect(claims).toEqual([[spare.workspaceId, 'claude']])
+      expect(claims).toEqual([spare.workspaceId])
     })
   })
 })

@@ -34,7 +34,6 @@ function pod(overrides: {
     podName: overrides.podName ?? `${overrides.jobName ?? 'yaac-proj-s1'}-abcde`,
     workspaceId: overrides.workspaceId ?? 's1',
     projectId: overrides.project ?? 'proj',
-    tool: 'claude',
     phase: overrides.phase ?? (running ? 'Running' : 'Failed'),
     running,
     terminating: overrides.terminating ?? false,

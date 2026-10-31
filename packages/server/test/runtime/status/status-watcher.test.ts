@@ -1,33 +1,52 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
-
+import { installFakeWorkspaceDriver, handleFixture } from '#test/support/fake-driver'
 import {
   WorkspaceStatusWatcher,
   StatusWatcherManager,
-  type WatchedWorkspace,
 } from '#runtime/status/status-watcher'
 import type { RuntimeHandle, StreamChild } from '#drivers/contract'
-import { handleFixture } from '#test/support/fake-driver'
-import type { AgentMode, AgentTool } from '@yaac/shared/types'
+import type { WatchedSession } from '#runtime/agents'
+import type { AgentTool } from '@yaac/shared/types'
 import {
+  liveAgents,
   readWorkspaceStatus,
-  readWorkspaceTerminals,
+  readWorkspaceWindows,
   isWorkspaceStreamHealthy,
   setAgentStatus,
-  setWorkspaceTerminals,
+  setWorkspaceWindows,
   _resetWorkspaceStatusStoreForTests,
 } from '#runtime/status/status-store'
 import { parkAcpQueue, takeAcpQueue } from '#runtime/agents/acp-registry'
 import type { QueuedTurn } from '#runtime/agents/acp-client'
 
+/** The workspace's tmux, as the fake streams answer for it. */
+interface FakeTmux {
+  panes: Array<{ paneId: string; window: string; dead?: boolean }>
+  windows: Array<{ id: string; name: string; dead?: boolean }>
+  /** Leave heartbeats unanswered. */
+  silent?: boolean
+}
+
+/**
+ * One dialed control-mode stream. With a `tmux` it answers each command the
+ * way tmux would, in order; without one a test feeds replies itself.
+ */
 class FakeAttachChild implements StreamChild {
   writes: string[] = []
   killed = false
   private stdoutCbs: Array<(chunk: Buffer | string) => void> = []
   private exitCbs: Array<(...args: unknown[]) => void> = []
+  constructor(private readonly tmux?: FakeTmux) {
+    if (tmux) setTimeout(() => this.feedBanner(), 0)
+  }
   stdin = {
     write: (data: string): void => {
       this.writes.push(data)
+      if (!this.tmux) return
+      for (const cmd of data.split('\n').filter((l) => l !== '')) {
+        const reply = answer(this.tmux, cmd)
+        if (reply !== null) setTimeout(() => this.feedReply(reply), 0)
+      }
     },
   }
   stdout = { on: (_e: 'data', cb: (chunk: Buffer | string) => void): void => { this.stdoutCbs.push(cb) } }
@@ -51,68 +70,77 @@ class FakeAttachChild implements StreamChild {
   emitExit(): void {
     for (const cb of this.exitCbs) cb(0)
   }
-  /** Number of commands written so far (one line each). */
-  get commandCount(): number {
-    return this.writes.join('').split('\n').filter((l) => l !== '').length
+  get sent(): string {
+    return this.writes.join('')
   }
 }
 
-function session(tool: WatchedWorkspace['tool']): WatchedWorkspace {
-  return { projectId: 'demo', workspaceId: 's1', jobName: 'yaac-demo-s1', tool, mode: 'tui' }
+/** What tmux answers to one command, or null for none. */
+function answer(tmux: FakeTmux, cmd: string): string | null {
+  if (cmd.startsWith('list-panes')) {
+    return tmux.panes.map((p) => `${p.paneId}\t${p.window}\t${p.dead === true ? 1 : 0}\t`).join('\n')
+  }
+  if (cmd.startsWith("list-windows -t yaac -F '#{window_id}")) {
+    return tmux.windows.map((w) => `${w.id}|${w.dead === true ? 1 : 0}|${w.name}`).join('\n')
+  }
+  if (cmd.startsWith('list-windows')) {
+    return tmux.windows.map((w) => `${w.name}\t%${w.id.slice(1)}\t${w.dead === true ? 1 : 0}\t100\t`).join('\n')
+  }
+  if (cmd.startsWith('display-message -p ok')) return tmux.silent === true ? null : 'ok'
+  return ''
 }
 
-function makeWatcher(tool: WatchedWorkspace['tool'], deps: {
+const WS = { projectId: 'demo', workspaceId: 's1', jobName: 'yaac-demo-s1' }
+
+/** A `tui` session in `window`. */
+function tuiSession(window: string, tool: AgentTool = 'claude'): WatchedSession {
+  return { window, tool, mode: 'tui', sessionId: `id-${window}`, permissionMode: 'bypass' }
+}
+
+function makeWatcher(opts: {
+  tmux?: FakeTmux
+  sessions?: WatchedSession[]
   heartbeatIntervalMs?: number
   commandTimeoutMs?: number
   respawnDelayMs?: number
 } = {}): { watcher: WorkspaceStatusWatcher; children: FakeAttachChild[]; revives: string[] } {
   const children: FakeAttachChild[] = []
   const revives: string[] = []
-  const watcher = new WorkspaceStatusWatcher(session(tool), {
+  const watcher = new WorkspaceStatusWatcher(WS, {
     dial: () => {
-      const child = new FakeAttachChild()
+      const child = new FakeAttachChild(opts.tmux)
       children.push(child)
       return child
     },
+    sessions: () => Promise.resolve(opts.sessions ?? []),
     // Injected so no test starts a real streamd.
     reviveStreamd: (jobName) => {
       revives.push(jobName)
       return Promise.resolve()
     },
-    heartbeatIntervalMs: deps.heartbeatIntervalMs ?? 60_000,
-    commandTimeoutMs: deps.commandTimeoutMs ?? 1_000,
-    respawnDelayMs: deps.respawnDelayMs ?? 5,
+    heartbeatIntervalMs: opts.heartbeatIntervalMs ?? 60_000,
+    commandTimeoutMs: opts.commandTimeoutMs ?? 1_000,
+    respawnDelayMs: opts.respawnDelayMs ?? 5,
     maxRespawnDelayMs: 20,
     log: () => { /* quiet */ },
   })
+  watchers.push(watcher)
   return { watcher, children, revives }
 }
 
-/**
- * Drive a watcher through the banner, the `list-panes` reply, the session,
- * status and model subscriptions for each agent window, and the window
- * listing that follows the stream coming up.
- */
-async function connectWatcher(
-  child: FakeAttachChild,
-  paneId = '%7',
-  tool = 'claude',
-  windows = `0|@0|${tool}`,
-): Promise<void> {
-  child.feedBanner()
-  await vi.waitFor(() => expect(child.commandCount).toBe(1)) // list-panes
-  child.feedReply(`${paneId}\t${tool}\t0\t`)
-  await vi.waitFor(() => expect(child.commandCount).toBe(2)) // refresh-client -B session
-  child.feedReply('')
-  await vi.waitFor(() => expect(child.commandCount).toBe(3)) // refresh-client -B status
-  child.feedReply('')
-  await vi.waitFor(() => expect(child.commandCount).toBe(4)) // refresh-client -B model
-  child.feedReply('')
+/** A claude `tui` session's agent on pane `%7`, beside the keeper. */
+function claudeTmux(): FakeTmux {
+  return {
+    panes: [{ paneId: '%0', window: '_yaac' }, { paneId: '%7', window: 'claude-aaaa' }],
+    windows: [{ id: '@0', name: '_yaac' }, { id: '@1', name: 'claude-aaaa' }],
+  }
+}
+
+/** Both streams up and the windows listed. */
+async function connected(): Promise<void> {
   await vi.waitFor(() => expect(isWorkspaceStreamHealthy('demo', 's1')).toBe(true))
-  // list-windows; a short heartbeat may already follow it.
-  await vi.waitFor(() => expect(child.commandCount).toBeGreaterThanOrEqual(5))
-  child.feedReply(windows)
-  await vi.waitFor(() => expect(readWorkspaceTerminals('demo', 's1')).toBeDefined())
+  await vi.waitFor(() => expect(readWorkspaceWindows('demo', 's1')).toBeDefined())
+  await vi.waitFor(() => expect(liveAgents('demo', 's1')).toBeDefined())
 }
 
 let watchers: WorkspaceStatusWatcher[] = []
@@ -128,246 +156,217 @@ afterEach(() => {
   watchers = []
 })
 
-describe('WorkspaceStatusWatcher (title tools)', () => {
-  it('enumerates agent panes, subscribes to their titles, and marks the stream healthy', async () => {
-    const { watcher, children } = makeWatcher('claude')
-    watchers.push(watcher)
+describe('WorkspaceStatusWatcher', () => {
+  it("dials one stream per mode, and subscribes a tui session's agent pane under its window", async () => {
+    const { watcher, children } = makeWatcher({ tmux: claudeTmux(), sessions: [tuiSession('claude-aaaa')] })
     watcher.start()
-    const child = children[0]
-    await connectWatcher(child)
-    const sent = child.writes.join('')
-    expect(sent).toContain("list-panes -s -F '#{pane_id}\t#{window_name}\t#{m/r:^\"?sleep (infinity|2147483647)\"?$,#{pane_start_command}}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
+    await connected()
+    expect(children).toHaveLength(2)
+    const tui = children[0].sent
+    expect(tui).toContain("list-panes -s -F '#{pane_id}\t#{window_name}\t#{pane_dead}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
     // Includes the pane id, since same-name subscriptions replace each other.
-    expect(sent).toContain("refresh-client -B 'status-7:%7:#{pane_title}'")
+    expect(tui).toContain("refresh-client -B 'status-7:%7:#{pane_title}'")
+    expect(tui).toContain("refresh-client -B 'dead-7:%7:#{pane_dead}'")
+    // The keeper runs no agent.
+    expect(tui).not.toContain('status-0')
+    expect(liveAgents('demo', 's1')).toEqual([{ handle: 'claude-aaaa', tool: 'claude' }])
     // No status yet reads as waiting.
     expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
   })
 
-  it('lists the terminals as the stream comes up and on each window event, and keeps them across a drop', async () => {
-    const { watcher, children } = makeWatcher('claude')
-    watchers.push(watcher)
+  it('classifies pushed title values under the session window, ignoring other panes and names', async () => {
+    const { watcher, children } = makeWatcher({ tmux: claudeTmux(), sessions: [tuiSession('claude-aaaa')] })
     watcher.start()
-    const child = children[0]
-    await connectWatcher(child, '%7', 'claude', '0|@0|claude\n1|@1|init')
-    // Every window but the agent's.
-    expect(readWorkspaceTerminals('demo', 's1')).toEqual([{ target: 'window:@1', name: 'init' }])
-    expect(child.writes.join('')).toContain("list-windows -t yaac -F '#{window_index}|#{window_id}|#{window_name}'")
+    await connected()
+    const tui = children[0]
 
-    // Each event re-lists the windows over the stream, then the driver
-    // re-lists its panes.
-    const windowEvent = async (line: string, windows: string): Promise<void> => {
-      const n = child.commandCount
-      child.feed(`${line}\n`)
-      await vi.waitFor(() => expect(child.commandCount).toBe(n + 2))
-      child.feedReply(windows)
-      child.feedReply('%7\tclaude\t0\t')
-    }
-    await windowEvent('%window-add @2', '0|@0|claude\n1|@1|init\n2|@2|shell')
-    await vi.waitFor(() => expect(readWorkspaceTerminals('demo', 's1')).toEqual([
-      { target: 'window:@1', name: 'init' },
-      { target: 'window:@2', name: 'shell' },
-    ]))
-    await windowEvent('%window-renamed @2 build', '0|@0|claude\n1|@1|init\n2|@2|build')
-    await vi.waitFor(() => expect(readWorkspaceTerminals('demo', 's1')?.[1]?.name).toBe('build'))
-    await windowEvent('%window-close @1', '0|@0|claude\n2|@2|build')
-    await vi.waitFor(() => expect(readWorkspaceTerminals('demo', 's1')).toEqual([
-      { target: 'window:@2', name: 'build' },
-    ]))
+    tui.feed('%subscription-changed status-7 $0 @0 0 %7 : ⠋ working\n')
+    expect(readWorkspaceStatus('demo', 's1')).toBe('running')
+    tui.feed('%subscription-changed status-7 $0 @0 0 %7 : ✳ done\n')
+    expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
+
+    tui.feed('%subscription-changed status-9 $0 @0 0 %9 : ⠋ other pane\n')
+    tui.feed('%subscription-changed other $0 @0 0 %7 : ⠋ other name\n')
+    expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
+  })
+
+  // An agent that exits keeps its pane (`remain-on-exit`); the death push
+  // re-lists, and the listing drops it from the live set.
+  it('drops an exited agent from the live set when its pane dies', async () => {
+    const tmux = claudeTmux()
+    const { watcher, children } = makeWatcher({ tmux, sessions: [tuiSession('claude-aaaa')] })
+    watcher.start()
+    await connected()
+    tmux.panes[1].dead = true
+    tmux.windows[1].dead = true
+    children[0].feed('%subscription-changed dead-7 $0 @0 0 %7 : 1\n')
+    await vi.waitFor(() => expect(liveAgents('demo', 's1')).toEqual([]))
+    await vi.waitFor(() => expect(readWorkspaceWindows('demo', 's1')?.[1]).toEqual({ id: '@1', name: 'claude-aaaa', dead: true }))
+  })
+
+  it('lists the windows as the streams come up and on each window event, and keeps them across a drop', async () => {
+    const tmux = claudeTmux()
+    const { watcher, children } = makeWatcher({ tmux, sessions: [tuiSession('claude-aaaa')] })
+    watcher.start()
+    await connected()
+    expect(readWorkspaceWindows('demo', 's1')).toEqual([
+      { id: '@0', name: '_yaac', dead: false },
+      { id: '@1', name: 'claude-aaaa', dead: false },
+    ])
+    expect(children[0].sent).toContain("list-windows -t yaac -F '#{window_id}|#{pane_dead}|#{window_name}'")
+
+    tmux.windows.push({ id: '@2', name: 'shell' })
+    children[0].feed('%window-add @2\n')
+    await vi.waitFor(() => expect(readWorkspaceWindows('demo', 's1')?.map((w) => w.name)).toEqual(['_yaac', 'claude-aaaa', 'shell']))
+    tmux.windows[2].name = 'build'
+    children[0].feed('%window-renamed @2 build\n')
+    await vi.waitFor(() => expect(readWorkspaceWindows('demo', 's1')?.[2]?.name).toBe('build'))
 
     // A dropped stream keeps the last listing.
-    child.emitExit()
-    expect(readWorkspaceTerminals('demo', 's1')).toEqual([{ target: 'window:@2', name: 'build' }])
+    children[0].emitExit()
+    expect(readWorkspaceWindows('demo', 's1')?.map((w) => w.name)).toEqual(['_yaac', 'claude-aaaa', 'build'])
   })
 
-  it('classifies pushed title values from the subscription', async () => {
-    const { watcher, children } = makeWatcher('claude')
-    watchers.push(watcher)
+  // The acp lane watches only acp sessions' windows; a tui one is the tui
+  // lane's, so the acp lane never dials its acpd socket.
+  it("leaves each mode's windows to its own stream", async () => {
+    const tmux = claudeTmux()
+    const { watcher, children } = makeWatcher({ tmux, sessions: [tuiSession('claude-aaaa')] })
     watcher.start()
-    const child = children[0]
-    await connectWatcher(child)
+    await connected()
+    expect(children).toHaveLength(2)
+    expect(children[1].sent).toContain("list-windows -t yaac -F '#{window_name}")
+    expect(children[1].sent).not.toContain('refresh-client -B')
+  })
 
-    child.feed('%subscription-changed status-7 $0 @0 0 %7 : ⠋ working\n')
+  it('keeps status sticky and flips health when a stream drops, then respawns that stream', async () => {
+    const { watcher, children } = makeWatcher({ tmux: claudeTmux(), sessions: [tuiSession('claude-aaaa')] })
+    watcher.start()
+    await connected()
+    children[0].feed('%subscription-changed status-7 $0 @0 0 %7 : ⠋ working\n')
     expect(readWorkspaceStatus('demo', 's1')).toBe('running')
 
-    child.feed('%subscription-changed status-7 $0 @0 0 %7 : ✳ done\n')
-    expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
-  })
-
-  it('ignores subscriptions for other panes or names', async () => {
-    const { watcher, children } = makeWatcher('claude')
-    watchers.push(watcher)
-    watcher.start()
-    const child = children[0]
-    await connectWatcher(child)
-
-    child.feed('%subscription-changed status-9 $0 @0 0 %9 : ⠋ other pane\n')
-    child.feed('%subscription-changed other $0 @0 0 %7 : ⠋ other name\n')
-    expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
-  })
-
-  it('keeps status sticky and flips health on stream exit, then respawns', async () => {
-    const { watcher, children } = makeWatcher('claude', { respawnDelayMs: 5 })
-    watchers.push(watcher)
-    watcher.start()
-    const child = children[0]
-    await connectWatcher(child)
-    child.feed('%subscription-changed status-7 $0 @0 0 %7 : ⠋ working\n')
-    expect(readWorkspaceStatus('demo', 's1')).toBe('running')
-
-    child.emitExit()
+    children[0].emitExit()
     expect(isWorkspaceStreamHealthy('demo', 's1')).toBe(false)
     expect(readWorkspaceStatus('demo', 's1')).toBe('running') // sticky
 
-    await vi.waitFor(() => expect(children.length).toBe(2))
-    const second = children[1]
-    second.feedBanner()
-    await vi.waitFor(() => expect(second.commandCount).toBe(1))
-    second.feedReply('%7\tclaude\t0\t')
-    for (const n of [2, 3, 4]) {
-      await vi.waitFor(() => expect(second.commandCount).toBe(n))
-      second.feedReply('')
-    }
+    // Only the dropped stream is dialed again.
+    await vi.waitFor(() => expect(children).toHaveLength(3))
     await vi.waitFor(() => expect(isWorkspaceStreamHealthy('demo', 's1')).toBe(true))
+    expect(children[1].killed).toBe(false)
   })
 
-  it('tears down and respawns when the heartbeat gets no reply', async () => {
-    // Long enough for init replies (~50ms apart), short for the heartbeat.
-    const { watcher, children } = makeWatcher('claude', {
-      heartbeatIntervalMs: 10,
-      commandTimeoutMs: 250,
-      respawnDelayMs: 5,
+  it('tears down and respawns a stream whose heartbeat gets no reply', async () => {
+    const tmux = { ...claudeTmux(), silent: true }
+    const { watcher, children } = makeWatcher({
+      tmux, sessions: [tuiSession('claude-aaaa')], heartbeatIntervalMs: 10, commandTimeoutMs: 250,
     })
-    watchers.push(watcher)
     watcher.start()
-    const child = children[0]
-    await connectWatcher(child)
-    // The unanswered heartbeat times out and the watcher respawns.
-    await vi.waitFor(() => expect(children.length).toBeGreaterThanOrEqual(2))
-    expect(child.killed).toBe(true)
-    expect(isWorkspaceStreamHealthy('demo', 's1')).toBe(false)
+    await vi.waitFor(() => expect(children.length).toBeGreaterThanOrEqual(3))
+    expect(children[0].killed || children[1].killed).toBe(true)
   })
 
-  it('answers heartbeats to stay connected', async () => {
-    const { watcher, children } = makeWatcher('claude', {
-      heartbeatIntervalMs: 15,
-      commandTimeoutMs: 200,
+  it('stays connected while heartbeats are answered', async () => {
+    const { watcher, children } = makeWatcher({
+      tmux: claudeTmux(), sessions: [tuiSession('claude-aaaa')], heartbeatIntervalMs: 15, commandTimeoutMs: 200,
     })
-    watchers.push(watcher)
     watcher.start()
-    const child = children[0]
-    await connectWatcher(child)
-    await vi.waitFor(() => expect(child.commandCount).toBeGreaterThanOrEqual(6)) // heartbeat sent
-    child.feedReply('ok')
-    await new Promise((r) => setTimeout(r, 30))
-    expect(children.length).toBe(1)
+    await connected()
+    await vi.waitFor(() => expect(children[0].sent).toContain('display-message -p ok'))
+    await new Promise((r) => setTimeout(r, 40))
+    expect(children).toHaveLength(2)
     expect(isWorkspaceStreamHealthy('demo', 's1')).toBe(true)
   })
 
-  it('respawns when init fails (tmux window not up yet)', async () => {
-    const { watcher, children } = makeWatcher('claude', { respawnDelayMs: 5 })
-    watchers.push(watcher)
+  it('respawns a stream whose first listing fails', async () => {
+    const { watcher, children } = makeWatcher()
     watcher.start()
-    const child = children[0]
-    child.feedBanner()
-    await vi.waitFor(() => expect(child.commandCount).toBe(1))
-    child.feed('%begin 1 101 1\ncan\'t find window\n%error 1 101 1\n')
-    await vi.waitFor(() => expect(children.length).toBe(2))
+    const tui = children[0]
+    tui.feedBanner()
+    await vi.waitFor(() => expect(tui.writes).toHaveLength(1))
+    tui.feed('%begin 1 101 1\ncan\'t find session\n%error 1 101 1\n')
+    await vi.waitFor(() => expect(children).toHaveLength(3))
   })
 
-  it('re-execs streamd (self-heal) every third consecutive stream failure', async () => {
-    const { watcher, children, revives } = makeWatcher('claude', { respawnDelayMs: 1 })
-    watchers.push(watcher)
+  it('re-execs streamd (self-heal) every third consecutive failure of a stream', async () => {
+    const { watcher, children, revives } = makeWatcher({ respawnDelayMs: 1 })
     watcher.start()
-    for (let i = 1; i <= 3; i++) {
-      await vi.waitFor(() => expect(children.length).toBe(i))
-      children[i - 1].emitExit()
+    // The tui stream is dialed first each time; the acp one stays pending.
+    let tui = children[0]
+    for (let i = 0; i < 3; i++) {
+      tui.emitExit()
+      const before = children.length
+      await vi.waitFor(() => expect(children.length).toBe(before + 1))
+      tui = children[children.length - 1]
     }
-    await vi.waitFor(() => expect(revives).toEqual(['yaac-demo-s1']))
-    // A successful connect resets the counter.
-    await vi.waitFor(() => expect(children.length).toBe(4))
-    await connectWatcher(children[3])
-    expect(revives).toHaveLength(1)
+    expect(revives).toEqual(['yaac-demo-s1'])
   })
 
-  it('stop() kills the child, prevents respawn, and discards chat messages parked for a reconnect', async () => {
-    const { watcher, children } = makeWatcher('claude', { respawnDelayMs: 1 })
-    watchers.push(watcher)
+  it('stop() kills the streams, prevents respawn, and discards chat messages parked for a reconnect', async () => {
+    const { watcher, children } = makeWatcher({ tmux: claudeTmux(), sessions: [tuiSession('claude-aaaa')], respawnDelayMs: 1 })
     watcher.start()
-    const child = children[0]
-    await connectWatcher(child)
+    await connected()
     // A chat's queue parked by a dropped connection would otherwise be sent
     // when the workspace is next resumed.
     const reject = vi.fn()
     const turn: QueuedTurn = { id: 'q1', text: 'stale', images: 0, blocks: [], resolve: () => {}, reject }
     parkAcpQueue('demo', 's1', 'acp-1', [turn])
     watcher.stop()
-    expect(child.killed).toBe(true)
+    expect(children.every((c) => c.killed)).toBe(true)
     expect(reject).toHaveBeenCalled()
     expect(takeAcpQueue('demo', 's1', 'acp-1')).toEqual([])
-    child.emitExit()
+    children[0].emitExit()
     await new Promise((r) => setTimeout(r, 20))
-    expect(children.length).toBe(1)
+    expect(children).toHaveLength(2)
   })
 })
 
 describe('WorkspaceStatusWatcher (pane tools)', () => {
+  const opencodeTmux = (): FakeTmux => ({
+    panes: [{ paneId: '%2', window: 'opencode-bbbb' }],
+    windows: [{ id: '@2', name: 'opencode-bbbb' }],
+  })
+
   it('subscribes opencode to its tmux-side busy format (no capture-pane, no %output)', async () => {
-    const { watcher, children } = makeWatcher('opencode')
-    watchers.push(watcher)
+    const { watcher, children } = makeWatcher({ tmux: opencodeTmux(), sessions: [tuiSession('opencode-bbbb', 'opencode')] })
     watcher.start()
-    const child = children[0]
-    await connectWatcher(child, '%2', 'opencode')
-    const sent = child.writes.join('')
-    expect(sent).toContain("list-panes -s -F '#{pane_id}\t#{window_name}\t#{m/r:^\"?sleep (infinity|2147483647)\"?$,#{pane_start_command}}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
+    await connected()
     // tmux itself searches the pane content; nothing is captured.
-    expect(sent).toContain("refresh-client -B 'status-2:%2:#{?#{||:#{C/ri:")
-    expect(sent).not.toContain('capture-pane')
+    await vi.waitFor(() => expect(children[0].sent).toContain("refresh-client -B 'status-2:%2:#{?#{||:#{C/ri:"))
+    expect(children[0].sent).not.toContain('capture-pane')
   })
 
   it('records the verdict pushed by the tmux-side subscription', async () => {
-    const { watcher, children } = makeWatcher('pi')
-    watchers.push(watcher)
+    const tmux: FakeTmux = { panes: [{ paneId: '%2', window: 'pi-cccc' }], windows: [{ id: '@2', name: 'pi-cccc' }] }
+    const { watcher, children } = makeWatcher({ tmux, sessions: [tuiSession('pi-cccc', 'pi')] })
     watcher.start()
-    const child = children[0]
-    await connectWatcher(child, '%2', 'pi')
-
+    await connected()
     // opencode/pi report the status word directly.
-    child.feed('%subscription-changed status-2 $0 @0 0 %2 : running\n')
+    children[0].feed('%subscription-changed status-2 $0 @0 0 %2 : running\n')
     expect(readWorkspaceStatus('demo', 's1')).toBe('running')
-    child.feed('%subscription-changed status-2 $0 @0 0 %2 : waiting\n')
+    children[0].feed('%subscription-changed status-2 $0 @0 0 %2 : waiting\n')
     expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
   })
 
   it('ignores stray %output (the watcher attaches no-output, so it never re-captures)', async () => {
-    const { watcher, children } = makeWatcher('opencode')
-    watchers.push(watcher)
+    const { watcher, children } = makeWatcher({ tmux: opencodeTmux(), sessions: [tuiSession('opencode-bbbb', 'opencode')] })
     watcher.start()
-    const child = children[0]
-    await connectWatcher(child, '%2', 'opencode')
-    child.feed('%output %2 leftover redraw bytes\n')
+    await connected()
+    const before = children[0].writes.length
+    children[0].feed('%output %2 leftover redraw bytes\n')
     await new Promise((r) => setTimeout(r, 25))
-    expect(child.commandCount).toBe(5) // no capture-pane issued
+    expect(children[0].writes.slice(before).join('')).not.toContain('capture-pane')
   })
 })
 
-function workspace(opts: {
-  workspaceId: string
-  projectId?: string
-  running?: boolean
-  prewarmed?: boolean
-  tool?: AgentTool
-  mode?: AgentMode
-}): RuntimeHandle {
-  const projectId = opts.projectId ?? 'demo'
+function workspace(opts: { workspaceId: string; running?: boolean; prewarmed?: boolean }): RuntimeHandle {
   return handleFixture({
     workspaceId: opts.workspaceId,
-    projectId: projectId,
-    jobName: `yaac-${projectId}-${opts.workspaceId}`,
-    tool: opts.tool ?? 'claude',
+    projectId: 'demo',
+    jobName: `yaac-demo-${opts.workspaceId}`,
     running: opts.running !== false,
     state: opts.running === false ? 'pending' : 'running',
     prewarmed: opts.prewarmed ?? false,
-    ...(opts.mode !== undefined ? { mode: opts.mode } : {}),
   })
 }
 
@@ -386,17 +385,16 @@ describe('StatusWatcherManager', () => {
     return { manager, children }
   }
 
-  // An acp spare is watched so its handshake runs before a claim needs it.
-  it('starts a watcher per running workspace, and per acp spare', () => {
+  // A spare runs no session, so there is nothing to watch until a claim.
+  it('starts a watcher per running workspace, and none for a spare', () => {
     const { manager, children } = makeManager()
     try {
       manager.sync([
         workspace({ workspaceId: 's1' }),
         workspace({ workspaceId: 's2', running: false }),
         workspace({ workspaceId: 's3', prewarmed: true }),
-        workspace({ workspaceId: 's4', prewarmed: true, mode: 'acp' }),
       ])
-      expect(manager.size).toBe(2)
+      expect(manager.size).toBe(1)
       expect(children).toHaveLength(2)
     } finally {
       manager.stopAll()
@@ -409,7 +407,7 @@ describe('StatusWatcherManager', () => {
       manager.sync([workspace({ workspaceId: 's1' })])
       manager.sync([workspace({ workspaceId: 's1' })])
       expect(manager.size).toBe(1)
-      expect(children).toHaveLength(1)
+      expect(children).toHaveLength(2)
     } finally {
       manager.stopAll()
     }
@@ -419,13 +417,13 @@ describe('StatusWatcherManager', () => {
     const { manager, children } = makeManager()
     try {
       manager.sync([workspace({ workspaceId: 's1' })])
-      setAgentStatus('demo', 's1', '%0', 'running')
-      setWorkspaceTerminals('demo', 's1', [{ target: 'window:@1', name: 'shell' }])
+      setAgentStatus('demo', 's1', 'claude-aaaa', 'running')
+      setWorkspaceWindows('demo', 's1', [{ id: '@1', name: 'shell', dead: false }])
       manager.sync([])
       expect(manager.size).toBe(0)
-      expect(children[0].killed).toBe(true)
+      expect(children.every((c) => c.killed)).toBe(true)
       expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
-      expect(readWorkspaceTerminals('demo', 's1')).toBeUndefined()
+      expect(readWorkspaceWindows('demo', 's1')).toBeUndefined()
     } finally {
       manager.stopAll()
     }
@@ -438,20 +436,6 @@ describe('StatusWatcherManager', () => {
       expect(manager.size).toBe(0)
       manager.sync([workspace({ workspaceId: 's1' })])
       expect(manager.size).toBe(1)
-    } finally {
-      manager.stopAll()
-    }
-  })
-
-  // Its conversation is the one the claim hands over, so it stays connected.
-  it("keeps an acp spare's watcher across its claim", () => {
-    const { manager, children } = makeManager()
-    try {
-      manager.sync([workspace({ workspaceId: 's1', prewarmed: true, mode: 'acp' })])
-      manager.sync([workspace({ workspaceId: 's1', mode: 'acp', tool: 'codex' })])
-      expect(manager.size).toBe(1)
-      expect(children).toHaveLength(1)
-      expect(children[0].killed).toBe(false)
     } finally {
       manager.stopAll()
     }

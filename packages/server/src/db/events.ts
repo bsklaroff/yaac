@@ -21,12 +21,10 @@ export type WorkspaceEvent =
   | WorkspaceLifeStarted
   | BaseBranchResolved
   | TrackedScratchDirsFound
-  | SessionsLaunched
-  | SessionsDiscovered
-  | SessionsCaptured
-  | SessionsActive
-  | PermissionModeChanged
-  | EffortChanged
+  | ConversationsDiscovered
+  | ConversationsCaptured
+  | ConversationsActive
+  | SessionReported
   | WaitingEnded
   | WorkspaceStopped
   | IgnoredFilesCleaned
@@ -52,14 +50,6 @@ export interface WorkspaceCreated {
   title?: string
   generatedTitle?: string
   groupId?: string
-  /** The permission mode its agents launch in, recorded so a restart reuses
-   *  it rather than today's default. */
-  permissionMode?: PermissionMode
-  /** The first agent's model and agent mode (see `workspaces.model`). */
-  model?: string
-  mode?: AgentMode
-  /** The effort its agents launch at, recorded so a restart reuses it. */
-  effort?: string
   /** The zone it launches with as `TZ` (see `workspaces.timeZone`). */
   timeZone?: string
   /** When the server stops it (see `workspaces.deadline`). A resume without
@@ -82,10 +72,9 @@ export interface WorkspaceCreateFailed {
 }
 
 /**
- * A new runtime life is starting for this workspace. Handling it clears every
- * recorded pane id in the same transaction, because tmux pane ids restart at
- * `%0` in a new runtime and an old handle would name the wrong pane. Emitted
- * after the row exists and before any handle is recorded.
+ * A new runtime life is starting for this workspace, so none of its sessions
+ * has a window in it yet. Emitted after the row exists and before any
+ * session is launched.
  */
 export interface WorkspaceLifeStarted {
   type: 'workspace-life-started'
@@ -112,57 +101,28 @@ export interface TrackedScratchDirsFound {
 }
 
 /**
- * The sessions a create started, in window order. Index 0 is the original
- * agent: a restart brings it up first, and its opening message is the
- * workspace's founding prompt.
- *
- * The list is complete and all live, so this one event records both which
- * sessions exist and which are running. Discovery reports these separately,
- * since a sweep also finds sessions that ended long ago.
- */
-export interface SessionsLaunched {
-  type: 'sessions-launched'
-  projectId: string
-  workspaceId: string
-  sessions: LaunchedSession[]
-}
-
-export interface LaunchedSession {
-  agentSessionId: string
-  tool: AgentTool
-  mode?: AgentMode
-  /** The driver's handle for it, when known at launch. A `tui` pane id is
-   *  not known until the pane exists. */
-  paneId?: string
-  /** The user's opening message, when they supplied one. */
-  firstPrompt?: string
-  /** The launch model, shown until the agent reports its own (see
-   *  `agent_sessions.model`). */
-  model?: string
-}
-
-/**
- * Sessions a discovery pass found in a workspace, each identified by its live
+ * Conversations a discovery pass found in a workspace, each named by its live
  * agent (a tui pane's reporter or an acp handshake). Only adds: the handler
  * fills in unknown fields and keeps known ones, so a compacted transcript
  * can't rewrite an opening message, and a conversation replaced by `/clear`
  * stays recorded.
  */
-export interface SessionsDiscovered {
-  type: 'sessions-discovered'
+export interface ConversationsDiscovered {
+  type: 'conversations-discovered'
   projectId: string
   workspaceId: string
-  sessions: DiscoveredSession[]
+  sessions: DiscoveredConversation[]
 }
 
-export interface DiscoveredSession {
-  agentSessionId: string
+export interface DiscoveredConversation {
+  conversationId: string
   tool: AgentTool
   /** Recorded only on first sighting: a conversation can't change protocol,
    *  and a later wrong guess must not overwrite what the create reported. */
   mode?: AgentMode
-  /** The driver's handle for it, when it is on one right now. */
-  paneId?: string
+  /** The session whose agent holds it; absent for an agent started by hand
+   *  in a terminal. */
+  sessionId?: string
   /** Its opening message, read out of the transcript or the ACP record. */
   firstPrompt?: string
   /** The title the agent gave it. Overwrites (the agent or a rename inside
@@ -186,15 +146,15 @@ export interface DiscoveredSession {
  * conversations with no recorded last activity, and keeps a recorded first
  * message.
  */
-export interface SessionsCaptured {
-  type: 'sessions-captured'
+export interface ConversationsCaptured {
+  type: 'conversations-captured'
   projectId: string
   workspaceId: string
-  sessions: CapturedSession[]
+  sessions: CapturedConversation[]
 }
 
-export interface CapturedSession {
-  agentSessionId: string
+export interface CapturedConversation {
+  conversationId: string
   tool: AgentTool
   /** Always set, so the conversation is not read again. */
   lastActiveMs: number
@@ -202,62 +162,54 @@ export interface CapturedSession {
 }
 
 /**
- * The complete set of a workspace's sessions running now; any linked session
+ * The complete set of a workspace's conversations live now; any linked one
  * not listed has stopped.
  *
  * No event is not an empty set. A watcher that can't see the agents sends
  * nothing, since a transient gap must not look like every agent exiting: the
  * last set is what a restart brings back up.
  */
-export interface SessionsActive {
-  type: 'sessions-active'
+export interface ConversationsActive {
+  type: 'conversations-active'
   projectId: string
   workspaceId: string
-  active: ActiveSession[]
+  active: ActiveConversation[]
 }
 
-export interface ActiveSession {
-  agentSessionId: string
+export interface ActiveConversation {
+  conversationId: string
   tool: AgentTool
-  paneId?: string
 }
 
 /**
- * The running agent's permission mode changed, by the user or by the agent
- * itself (entering plan mode, a plan-exit answer). The row follows in either
- * direction: a restart relaunches in it, and `yaac-mama create` caps a
- * sibling at it.
+ * A session's agent reported a change: the conversation it holds (a
+ * `/clear`), its model, its permission mode (Shift+Tab, entering plan mode, a
+ * plan-exit answer) or its effort (docs/effort-levels.md). The row follows,
+ * so a restart relaunches the same way and `yaac-mama` caps by the posture
+ * the agent is really in. Only the fields that changed are set.
  */
-export interface PermissionModeChanged {
-  type: 'permission-mode-changed'
+export interface SessionReported {
+  type: 'session-reported'
   projectId: string
   workspaceId: string
-  permissionMode: PermissionMode
+  sessionId: string
+  conversationId?: string
+  model?: string
+  permissionMode?: PermissionMode
+  effort?: string
 }
 
 /**
- * The running agent's effort level changed (`/effort`, a model switch that
- * re-seeds it, the chat pane's menu). The row follows, so a restart
- * relaunches at it (docs/effort-levels.md).
- */
-export interface EffortChanged {
-  type: 'effort-changed'
-  projectId: string
-  workspaceId: string
-  effort: string
-}
-
-/**
- * The workspace's waiting spell ended: it went back to work (including an
- * agent found mid-turn after a server restart), or the conversation whose
- * wait began the spell stopped waiting while another still waits. The
- * spell it waits in next is new to every user, so the row's
- * `waitingSeenBy` empties.
+ * The agent in a session's window stopped needing the user: it went back to
+ * work, including one found mid-turn after a server restart. The spell it
+ * waits in next is new to every user, so its `waitingSeenBy` empties.
  */
 export interface WaitingEnded {
   type: 'waiting-ended'
   projectId: string
   workspaceId: string
+  /** The session's window, which is the status store's handle. */
+  window: string
 }
 
 

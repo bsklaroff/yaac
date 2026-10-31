@@ -3,10 +3,8 @@ import type * as dbModule from '#db'
 
 vi.mock('#domain/workspaces/create', () => ({
   createWorkspace: vi.fn(),
-  resolveCreate: vi.fn(),
 }))
 vi.mock('#domain/workspaces/spare-pool', () => ({
-  retoolSpare: vi.fn(),
   rebranchSpare: vi.fn(),
 }))
 vi.mock('#domain/workspaces/cleanup', () => ({
@@ -48,7 +46,7 @@ import {
   installFakeWorkspaceDriver,
   snapshotFixture,
 } from '#test/support/fake-driver'
-import { createWorkspace, resolveCreate, type CreateSetup } from '#domain/workspaces/create'
+import { createWorkspace } from '#domain/workspaces/create'
 import { clearAllProvisioningForTests, failProvisioning, registerProvisioning } from '#domain/workspaces/provisioning'
 import { cleanupWorkspace, deleteWorkspaceState } from '#domain/workspaces/cleanup'
 import { findWorkspaceRow, getTimeZone, listProjectRows, type ProjectRow, type WorkspaceRow } from '#db'
@@ -60,11 +58,9 @@ const destroy = vi.fn(() => Promise.resolve(true))
 const mockCreate = vi.mocked(createWorkspace)
 const mockCleanup = vi.mocked(cleanupWorkspace)
 const mockDeleteState = vi.mocked(deleteWorkspaceState)
-const mockResolveCreate = vi.mocked(resolveCreate)
 
-/** The project's default create setup, which a spare is warmed with. */
-const SETUP: CreateSetup = { tool: 'claude', model: 'claude-opus-5-5', permissionMode: 'bypass', mode: 'tui' }
-const WARM = { ...SETUP, prewarm: true, workspaceId: expect.any(String) as string }
+/** A spare's create: it opens no session, so it takes no agent settings. */
+const WARM = { prewarm: true, workspaceId: expect.any(String) as string }
 
 /** The image the fake driver says the project builds now. */
 const IMAGE = 'registry.test/fake-image:latest'
@@ -86,14 +82,13 @@ async function pass(): Promise<void> {
 function pod(o: Partial<PodInfo> & { prewarmed?: boolean; warmed?: Partial<SpareSettings> | null } = {}): RuntimeHandle {
   const { prewarmed, warmed, ...rest } = o
   if (prewarmed === true && warmed !== null) {
-    spareSettings.set(o.workspaceId ?? 's1', { mode: 'tui', permissionMode: 'bypass', image: IMAGE, ...warmed })
+    spareSettings.set(o.workspaceId ?? 's1', { image: IMAGE, ...warmed })
   }
   return runtimeHandleFromPod({
     jobName: 'yaac-p-s1',
     podName: 'yaac-p-s1-x',
     workspaceId: 's1',
     projectId: 'p',
-    tool: 'claude',
     phase: 'Running',
     running: true,
     terminating: false,
@@ -109,13 +104,12 @@ describe('reconcilePrewarmPool', () => {
     clearPrewarmStateForTests()
     clearAllProvisioningForTests()
     mockWorkspaces.mockResolvedValue([])
-    mockResolveCreate.mockResolvedValue(SETUP)
     vi.mocked(listProjectRows).mockResolvedValue([])
     vi.mocked(getTimeZone).mockResolvedValue({ timeZone: null, pinned: false })
     vi.mocked(findWorkspaceRow).mockResolvedValue(undefined)
     installFakeWorkspaceDriver({ destroy })
     destroy.mockClear()
-    mockCreate.mockResolvedValue({ workspaceId: 's', jobName: 'yaac-p-s', forwardedPorts: [], tool: 'claude', mode: 'tui' as const })
+    mockCreate.mockResolvedValue({ workspaceId: 's', jobName: 'yaac-p-s', forwardedPorts: [] })
     // Default to success: each reap step waits on the previous one, so a
     // falsy default would silently skip the deletions under test.
     mockCleanup.mockResolvedValue(true)
@@ -262,7 +256,7 @@ describe('reconcilePrewarmPool', () => {
   it('forgets a spawn that throws', async () => {
     mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-real', workspaceId: 'r1' })])
     mockCreate.mockImplementation((_projectId, options) => {
-      spareSettings.set(options.workspaceId ?? '', { mode: 'tui', permissionMode: 'bypass' })
+      spareSettings.set(options.workspaceId ?? '', { })
       return Promise.reject(new Error('boom'))
     })
     await pass()
@@ -319,7 +313,7 @@ describe('reconcilePrewarmPool', () => {
   it('keeps a wrong-tool spare in the pool (retooled at claim time)', async () => {
     mockWorkspaces.mockResolvedValue([
       pod({ jobName: 'yaac-p-real', workspaceId: 'r1' }),
-      pod({ jobName: 'yaac-p-codex', workspaceId: 's2', tool: 'codex', prewarmed: true }),
+      pod({ jobName: 'yaac-p-codex', workspaceId: 's2', prewarmed: true }),
     ])
     await pass()
     expect(mockCreate).not.toHaveBeenCalled()
@@ -360,29 +354,6 @@ describe('reconcilePrewarmPool', () => {
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
-  it('warms a spare as the project\'s untouched create, remembered mode included', async () => {
-    mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-real', workspaceId: 'r1' })])
-    await pass()
-    expect(mockResolveCreate).toHaveBeenCalledWith('p', {})
-    expect(mockCreate).toHaveBeenCalledWith('p', WARM)
-  })
-
-  // A claim cannot switch a spare's mode (the pod spec differs), so a spare
-  // in an unused mode would never be taken. Other mismatches are fixed by a
-  // respawn at claim time.
-  it('replaces a spare warmed in another agent mode than the project now uses', async () => {
-    vi.mocked(listProjectRows).mockResolvedValue([
-      { id: 'p', lastTool: 'codex', createDefaults: { codex: { mode: 'acp' } } } as unknown as ProjectRow,
-    ])
-    mockWorkspaces.mockResolvedValue([
-      pod({ jobName: 'yaac-p-real', workspaceId: 'r1' }),
-      pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true }),
-    ])
-    await pass()
-    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2', keepRecord: true })
-    expect(mockCreate).toHaveBeenCalledWith('p', WARM)
-  })
-
   // `TZ` is fixed at launch too, so a spare warmed before the user's zone
   // changed (or was first reported) is replaced rather than left unclaimable.
   it('replaces a spare warmed in another zone than the user\'s current one', async () => {
@@ -408,7 +379,7 @@ describe('reconcilePrewarmPool', () => {
     installFakeWorkspaceDriver({ destroy, currentImage: () => Promise.resolve(`${IMAGE}-edited`) })
     mockWorkspaces.mockResolvedValue([
       pod({ jobName: 'yaac-p-real', workspaceId: 'r1' }),
-      pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true, warmed: { mode: 'acp' } }),
+      pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true, warmed: { } }),
     ])
     await pass()
     expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2', keepRecord: true })
@@ -422,7 +393,7 @@ describe('reconcilePrewarmPool', () => {
     vi.mocked(getTimeZone).mockResolvedValue({ timeZone: 'Asia/Tokyo', pinned: false })
     mockWorkspaces.mockResolvedValue([
       pod({ jobName: 'yaac-p-real', workspaceId: 'r1' }),
-      pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true, warmed: { mode: 'acp', timeZone: 'Asia/Tokyo' } }),
+      pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true, warmed: { timeZone: 'Asia/Tokyo' } }),
     ])
     await pass()
     expect(mockCleanup).not.toHaveBeenCalled()
@@ -435,7 +406,7 @@ describe('reconcilePrewarmPool', () => {
     let settleFirst = (): void => { /* replaced below */ }
     mockCreate
       .mockReturnValueOnce(new Promise((resolve) => {
-        settleFirst = () => resolve({ workspaceId: 's', jobName: 'yaac-p-s', forwardedPorts: [], tool: 'claude', mode: 'tui' as const })
+        settleFirst = () => resolve({ workspaceId: 's', jobName: 'yaac-p-s', forwardedPorts: [] })
       }))
       .mockReturnValue(new Promise<never>(() => { /* never resolves */ }))
 
@@ -500,7 +471,7 @@ describe('reconcilePrewarmPool', () => {
         jobName: 'yaac-p-spare',
         workspaceId: 's2',
         prewarmed: true,
-        warmed: { baseBranch: 'dev', permissionMode: 'plan', model: 'claude-opus-5-5' },
+        warmed: { baseBranch: 'dev' },
       }),
     ]
 
@@ -521,7 +492,6 @@ describe('reconcilePrewarmPool', () => {
       await flush()
       expect(mockRebranch).toHaveBeenCalledWith(
         expect.objectContaining({ workspaceId: 's2' }), 'dev', 'new',
-        { tool: 'claude', model: 'claude-opus-5-5', permissionMode: 'plan', mode: 'tui' },
       )
       // Already at that tip: no further exec, let alone a move.
       head = 'new'

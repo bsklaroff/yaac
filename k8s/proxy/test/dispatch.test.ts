@@ -53,7 +53,7 @@ beforeAll(async () => {
   const objects = new ProxyObjects({ loadSshKeys: () => Promise.resolve(), log: () => {} })
   const register = (ws: string, reg: Record<string, unknown>): void => objects.applyRegistration({
     metadata: { name: `yaac-proxy-reg-${ws}`, labels: { [LABEL_WORKSPACE_ID]: ws } },
-    data: { 'registration.json': JSON.stringify({ rules: [], tool: 'claude', projectId: 'demo', owner: 'o', ...reg }) },
+    data: { 'registration.json': JSON.stringify({ rules: [], projectId: 'demo', owner: 'o', ...reg }) },
   })
   register('star', {
     allowedHosts: ['*'],

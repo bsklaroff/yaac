@@ -3,60 +3,50 @@ import { workspaceDriver } from '#drivers/driver'
 import {
   agentDriver,
   dropAcpQueues,
-  listTerminals,
+  listWindows,
   type AgentConnectDeps,
   type AgentObservation,
   type DrivenWorkspace,
+  type LiveAgent,
+  type WatchedSession,
 } from '#runtime/agents'
 import {
   evictWorkspaceStatus,
   setAgentStatus,
   setLiveAgents,
   setWorkspaceStreamHealth,
-  setWorkspaceTerminals,
+  setWorkspaceWindows,
 } from './status-store'
 import { serverLog } from '#lib/log'
-import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
+import { AGENT_MODES, type AgentMode } from '@yaac/shared/types'
 
 /**
- * Per-workspace status watchers: one live agent-driver connection per
- * running workspace, which (with the substrate watch) replaces timer-driven
- * status probes.
+ * Per-workspace status watchers: live agent-driver connections per running
+ * workspace, which (with the substrate watch) replace timer-driven status
+ * probes.
  *
- * The watcher does not know how a connection observes an agent. It picks a
- * driver from the workspace's mode (`#runtime/agents`), feeds observations
- * into the status store, and owns what both modes share: respawn, backoff,
- * the stream self-heal, and the terminal listing, refreshed over the
- * driver's tmux command channel when the stream comes up and on every tmux
- * window add, close or rename.
+ * A workspace can run sessions of both modes, so its watcher holds one
+ * connection per mode (a "lane"), each of which watches only its own mode's
+ * sessions. The watcher does not know how a connection observes an agent:
+ * it merges what the lanes report into the status store, and owns what both
+ * modes share: respawn, backoff, the stream self-heal, and the window
+ * listing, refreshed over a lane's tmux command channel when the stream
+ * comes up, on every tmux window add, close or rename, and whenever the
+ * live agents change (an agent exiting).
  *
  * A dropped connection only flips the store's health bit: status stays
  * sticky, and nothing here feeds the stale reaper.
  */
 
-export interface WatchedWorkspace extends DrivenWorkspace {
-  /** Which driver observes this workspace (its recorded mode). */
-  mode: AgentMode
-}
+export type WatchedWorkspace = DrivenWorkspace
 
 export interface StatusWatcherDeps {
   /**
-   * The workspace's recorded conversations, injected from `main`: the ACP
-   * driver needs them, but reading the DB here would make `#runtime/status`
-   * depend on `#domain/workspaces`.
+   * The workspace's open sessions, injected from `main`: the drivers need
+   * them, but reading the DB here would make `#runtime/status` depend on
+   * `#db`.
    */
-  recordedSessions?: (session: WatchedWorkspace) => Promise<Array<{ handle: string; agentSessionId: string }>>
-  /**
-   * The workspace's permission posture, injected like `recordedSessions`;
-   * the ACP driver tells its adapter which posture to use.
-   */
-  permissionMode?: (session: WatchedWorkspace) => Promise<PermissionMode | undefined>
-  /** The workspace's launch model for a tool, injected like
-   *  `recordedSessions` (see `AgentConnectDeps.launchModel`). */
-  launchModel?: (session: WatchedWorkspace, tool: AgentTool) => Promise<string | undefined>
-  /** The workspace's effort level, injected like `recordedSessions` (see
-   *  `AgentConnectDeps.effort`). */
-  effort?: (session: WatchedWorkspace) => Promise<string | undefined>
+  sessions?: (workspace: WatchedWorkspace) => Promise<WatchedSession[]>
   /**
    * Test hook for the stream self-heal (see scheduleRespawn). Default: the
    * driver's `reviveStatusStream`.
@@ -74,19 +64,28 @@ export interface StatusWatcherDeps {
   log?: (msg: string) => void
 }
 
-export class WorkspaceStatusWatcher {
-  private connection: { close(): void } | null = null
-  /** The driver's tmux command channel while its stream is up. */
-  private send: ((cmd: string) => Promise<string>) | null = null
-  /** Bumped per terminal listing, so only the newest one is stored. */
-  private listing = 0
-  private stopped = false
+/** One mode's connection and its retry state. */
+interface Lane {
+  readonly mode: AgentMode
+  connection: { close(): void } | null
+  /** Its tmux command channel while its stream is up. */
+  send: ((cmd: string) => Promise<string>) | null
+  up: boolean
+  /** What it last reported running. */
+  agents: LiveAgent[] | undefined
   /** Bumped on each teardown so late observations from a dead connection
    *  are ignored. */
-  private generation = 0
-  private backoffMs: number
-  private respawnTimer: NodeJS.Timeout | null = null
-  private consecutiveFailures = 0
+  generation: number
+  backoffMs: number
+  respawnTimer: NodeJS.Timeout | null
+  consecutiveFailures: number
+}
+
+export class WorkspaceStatusWatcher {
+  private readonly lanes: Lane[]
+  /** Bumped per window listing, so only the newest one is stored. */
+  private listing = 0
+  private stopped = false
 
   private readonly reviveStreamd: (jobName: string) => Promise<void>
   private readonly heartbeatIntervalMs: number
@@ -102,12 +101,22 @@ export class WorkspaceStatusWatcher {
     this.respawnDelayMs = deps.respawnDelayMs ?? 1_000
     this.maxRespawnDelayMs = deps.maxRespawnDelayMs ?? 30_000
     this.log = deps.log ?? serverLog
-    this.backoffMs = this.respawnDelayMs
+    this.lanes = AGENT_MODES.map((mode) => ({
+      mode,
+      connection: null,
+      send: null,
+      up: false,
+      agents: undefined,
+      generation: 0,
+      backoffMs: this.respawnDelayMs,
+      respawnTimer: null,
+      consecutiveFailures: 0,
+    }))
   }
 
   start(): void {
     this.stopped = false
-    this.connect()
+    for (const lane of this.lanes) this.connect(lane)
   }
 
   /**
@@ -117,115 +126,122 @@ export class WorkspaceStatusWatcher {
    */
   stop(): void {
     this.stopped = true
-    if (this.respawnTimer) clearTimeout(this.respawnTimer)
-    this.respawnTimer = null
-    this.teardown()
+    for (const lane of this.lanes) {
+      if (lane.respawnTimer) clearTimeout(lane.respawnTimer)
+      lane.respawnTimer = null
+      this.teardown(lane)
+    }
     dropAcpQueues(this.session.projectId, this.session.workspaceId)
   }
 
-  private connect(): void {
+  private connect(lane: Lane): void {
     if (this.stopped) return
-    const generation = ++this.generation
-    const driver = agentDriver(this.session.mode)
-    this.connection = driver.connect(
+    const generation = ++lane.generation
+    const sessions = this.deps.sessions
+    lane.connection = agentDriver(lane.mode).connect(
       this.session,
-      (obs) => this.onObservation(generation, obs),
+      (obs) => this.onObservation(lane, generation, obs),
       {
         heartbeatIntervalMs: this.heartbeatIntervalMs,
         commandTimeoutMs: this.commandTimeoutMs,
         log: this.log,
         ...(this.deps.dial !== undefined ? { dial: this.deps.dial } : {}),
-        ...(this.deps.recordedSessions !== undefined
-          ? { recordedSessions: () => this.deps.recordedSessions!(this.session) }
-          : {}),
-        ...(this.deps.permissionMode !== undefined
-          ? { permissionMode: () => this.deps.permissionMode!(this.session) }
-          : {}),
-        ...(this.deps.launchModel !== undefined
-          ? { launchModel: (tool: AgentTool) => this.deps.launchModel!(this.session, tool) }
-          : {}),
-        ...(this.deps.effort !== undefined
-          ? { effort: () => this.deps.effort!(this.session) }
-          : {}),
+        ...(sessions !== undefined ? { sessions: () => sessions(this.session) } : {}),
       },
     )
   }
 
-  private onObservation(generation: number, obs: AgentObservation): void {
-    if (generation !== this.generation || this.stopped) return
+  private onObservation(lane: Lane, generation: number, obs: AgentObservation): void {
+    if (generation !== lane.generation || this.stopped) return
     const { projectId, workspaceId } = this.session
     switch (obs.kind) {
       case 'up':
-        setWorkspaceStreamHealth(projectId, workspaceId, true)
-        this.backoffMs = this.respawnDelayMs
-        this.consecutiveFailures = 0
+        lane.up = true
+        lane.backoffMs = this.respawnDelayMs
+        lane.consecutiveFailures = 0
+        this.publishHealth()
         return
       case 'status':
         setAgentStatus(projectId, workspaceId, obs.handle, obs.status)
         return
       case 'live-agents':
-        setLiveAgents(projectId, workspaceId, obs.agents)
+        lane.agents = obs.agents
+        this.publishAgents()
+        this.refreshWindows()
         return
       case 'command-channel':
-        this.send = obs.send
-        this.refreshTerminals()
+        lane.send = obs.send
+        this.refreshWindows()
         return
       case 'windows-changed':
-        this.refreshTerminals()
+        this.refreshWindows()
         return
       case 'down':
-        this.onConnectionDown(generation, obs.reason)
+        this.onConnectionDown(lane, generation, obs.reason)
         return
     }
   }
 
+  /** Both lanes' agents, once each has listed them: before that, a gap
+   *  would read as every agent of that mode exiting. */
+  private publishAgents(): void {
+    if (this.lanes.some((l) => l.agents === undefined)) return
+    setLiveAgents(this.session.projectId, this.session.workspaceId, this.lanes.flatMap((l) => l.agents ?? []))
+  }
+
+  /** Healthy while every lane is up. */
+  private publishHealth(): void {
+    setWorkspaceStreamHealth(this.session.projectId, this.session.workspaceId, this.lanes.every((l) => l.up))
+  }
+
   /** Best-effort: a failed listing keeps the last one, and the next window
    *  event or reconnect lists again. */
-  private refreshTerminals(): void {
-    const send = this.send
+  private refreshWindows(): void {
+    const send = this.lanes.find((l) => l.send !== null)?.send
     if (!send) return
     const listing = ++this.listing
     const { projectId, workspaceId } = this.session
-    void listTerminals(send).then((entries) => {
-      if (listing === this.listing && send === this.send) setWorkspaceTerminals(projectId, workspaceId, entries)
+    void listWindows(send).then((entries) => {
+      if (listing === this.listing) setWorkspaceWindows(projectId, workspaceId, entries)
     }, () => { /* see above */ })
   }
 
   /** Idempotent per generation; flips health, never status. */
-  private onConnectionDown(generation: number, reason: string): void {
-    if (generation !== this.generation) return
-    this.generation++
-    this.consecutiveFailures++
-    this.log(`[server] status-watcher ${this.session.workspaceId}: ${reason}`)
-    this.teardown()
-    setWorkspaceStreamHealth(this.session.projectId, this.session.workspaceId, false)
-    this.scheduleRespawn()
+  private onConnectionDown(lane: Lane, generation: number, reason: string): void {
+    if (generation !== lane.generation) return
+    lane.generation++
+    lane.consecutiveFailures++
+    this.log(`[server] status-watcher ${this.session.workspaceId} (${lane.mode}): ${reason}`)
+    this.teardown(lane)
+    this.publishHealth()
+    this.scheduleRespawn(lane)
   }
 
-  private teardown(): void {
-    this.send = null
-    this.connection?.close()
-    this.connection = null
+  private teardown(lane: Lane): void {
+    lane.send = null
+    lane.up = false
+    lane.connection?.close()
+    lane.connection = null
   }
 
-  private scheduleRespawn(): void {
-    if (this.stopped || this.respawnTimer) return
+  private scheduleRespawn(lane: Lane): void {
+    if (this.stopped || lane.respawnTimer) return
     // Self-heal: repeated deaths may mean the in-workspace stream daemon is
     // down, which no new connection can fix, so ask the driver to revive it
     // (`reviveStatusStream`). Only every 3rd consecutive failure, so a proxy
     // outage does not trigger a storm of revives. Best-effort; a really dead
     // workspace is the reaper's.
-    if (this.consecutiveFailures > 0 && this.consecutiveFailures % 3 === 0) {
+    if (lane.consecutiveFailures > 0 && lane.consecutiveFailures % 3 === 0) {
       this.log(`[server] status-watcher ${this.session.workspaceId}: re-execing streamd (self-heal)`)
       void this.reviveStreamd(this.session.jobName).catch((err: unknown) => {
         this.log(`[server] status-watcher ${this.session.workspaceId}: streamd revive failed: ${String(err)}`)
       })
     }
-    this.respawnTimer = setTimeout(() => {
-      this.respawnTimer = null
-      this.connect()
-    }, this.backoffMs)
-    this.backoffMs = Math.min(this.backoffMs * 2, this.maxRespawnDelayMs)
+    lane.respawnTimer = setTimeout(() => {
+      lane.respawnTimer = null
+      this.connect(lane)
+    }, lane.backoffMs)
+    lane.backoffMs = Math.min(lane.backoffMs * 2, this.maxRespawnDelayMs)
   }
 }
 
@@ -233,12 +249,7 @@ export class WorkspaceStatusWatcher {
  * Keeps one `WorkspaceStatusWatcher` per running workspace. `sync` is driven
  * by the driver's workspace set: a new workspace (or a newly claimed spare)
  * gets a watcher; a vanished one has its watcher stopped and its store entry
- * evicted.
- *
- * Of the prewarmed spares, only `acp` ones are watched: connecting runs the
- * ACP handshake, which boots the agent's conversation, so a claim finds it
- * ready. The watcher is kept across the claim. A `tui` agent boots without
- * a client, so its spares are left alone.
+ * evicted. Prewarmed spares run no agent, so they are not watched.
  */
 export class StatusWatcherManager {
   private readonly watchers = new Map<string, WorkspaceStatusWatcher>()
@@ -252,7 +263,7 @@ export class StatusWatcherManager {
   sync(workspaces: RuntimeHandle[]): void {
     const wanted = new Map<string, RuntimeHandle>()
     for (const p of workspaces) {
-      if (!p.running || !p.workspaceId || !p.projectId || (p.prewarmed && p.mode !== 'acp')) continue
+      if (!p.running || !p.workspaceId || !p.projectId || p.prewarmed) continue
       wanted.set(p.workspaceId, p)
     }
     for (const [workspaceId, watcher] of this.watchers) {
@@ -267,8 +278,6 @@ export class StatusWatcherManager {
         projectId: workspace.projectId,
         workspaceId,
         jobName: workspace.jobName,
-        tool: workspace.tool,
-        mode: workspace.mode,
       }, this.deps)
       watcher.start()
       this.watchers.set(workspaceId, watcher)

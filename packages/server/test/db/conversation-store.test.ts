@@ -3,16 +3,15 @@ import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { closeDb } from '#db/client'
 import { getDb } from '#db/client'
-import { agentSessions } from '#db/schema'
+import { conversations } from '#db/schema'
 import {
-  recordedConversationHandles,
-  deleteWorkspaceAgentSessions,
-  listUncapturedStoppedSessions,
-  listWorkspaceAgentSessions,
+  deleteWorkspaceConversations,
+  listUncapturedStoppedConversations,
+  listWorkspaceConversations,
   conversationTitle,
   openingPrompt,
-  recordAgentSessions,
-} from '#db/agent-session-store'
+  recordConversations,
+} from '#db/conversation-store'
 import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 
 /**
@@ -21,7 +20,7 @@ import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-st
  * about the many-to-many, because a wrong answer there is unrecoverable rather
  * than re-reconciled on the next tick.
  */
-describe('deleteWorkspaceAgentSessions', () => {
+describe('deleteWorkspaceConversations', () => {
   let tmpDir: string
 
   beforeEach(async () => {
@@ -35,9 +34,9 @@ describe('deleteWorkspaceAgentSessions', () => {
 
   /** The conversation rows themselves — read straight from the table, because
    *  the whole point of an orphan is that no listing would show it. */
-  const conversations = async (): Promise<string[]> => {
+  const conversationIds = async (): Promise<string[]> => {
     const db = await getDb()
-    return (await db.select({ id: agentSessions.agentSessionId }).from(agentSessions))
+    return (await db.select({ id: conversations.conversationId }).from(conversations))
       .map((r) => r.id).sort()
   }
 
@@ -48,27 +47,27 @@ describe('deleteWorkspaceAgentSessions', () => {
     // links is that workspace's history, and nothing would bring it back.
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-live' })
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-doomed' })
-    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-live', [
-      { tool: 'claude', agentSessionId: 'conv-shared' },
+    await recordConversations(DEMO_PROJECT_ID, 'wt-live', [
+      { tool: 'claude', conversationId: 'conv-shared' },
     ])
-    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-doomed', [
-      { tool: 'claude', agentSessionId: 'conv-shared' },
-      { tool: 'claude', agentSessionId: 'conv-own', firstPrompt: 'the ask nobody heard' },
+    await recordConversations(DEMO_PROJECT_ID, 'wt-doomed', [
+      { tool: 'claude', conversationId: 'conv-shared' },
+      { tool: 'claude', conversationId: 'conv-own', firstPrompt: 'the ask nobody heard' },
     ])
 
-    await deleteWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-doomed')
+    await deleteWorkspaceConversations(DEMO_PROJECT_ID, 'wt-doomed')
 
-    expect(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-doomed')).toEqual([])
-    expect(await conversations()).toEqual(['conv-shared'])
+    expect(await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-doomed')).toEqual([])
+    expect(await conversationIds()).toEqual(['conv-shared'])
     // The surviving workspace keeps its link to the shared one.
-    expect((await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-live')).map((l) => l.agentSessionId))
+    expect((await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-live')).map((l) => l.conversationId))
       .toEqual(['conv-shared'])
   })
 
   it('is a no-op for a workspace that linked nothing', async () => {
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-bare' })
-    await expect(deleteWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-bare')).resolves.toBeUndefined()
-    expect(await conversations()).toEqual([])
+    await expect(deleteWorkspaceConversations(DEMO_PROJECT_ID, 'wt-bare')).resolves.toBeUndefined()
+    expect(await conversationIds()).toEqual([])
   })
 })
 
@@ -77,7 +76,7 @@ describe('deleteWorkspaceAgentSessions', () => {
  * allowed to REPLACE. Every other write this makes is exercised through the
  * reconciler and the listings that read it back.
  */
-describe('recordAgentSessions', () => {
+describe('recordConversations', () => {
   let tmpDir: string
 
   beforeEach(async () => {
@@ -90,19 +89,19 @@ describe('recordAgentSessions', () => {
   })
 
   const conversation = async (id: string) =>
-    (await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-1')).find((l) => l.agentSessionId === id)
+    (await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-1')).find((l) => l.conversationId === id)
 
   it('follows a model switch and a retitle but keeps the opening message', async () => {
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1' })
-    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-1', [
-      { tool: 'claude', agentSessionId: 'conv-a', firstPrompt: 'ship it', model: 'claude-opus-5', title: 'Ship it' },
+    await recordConversations(DEMO_PROJECT_ID, 'wt-1', [
+      { tool: 'claude', conversationId: 'conv-a', firstPrompt: 'ship it', model: 'claude-opus-5', title: 'Ship it' },
     ])
     // The same conversation, seen again after a `/model` — and after a
     // compaction that left a different message at the head of its transcript.
-    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-1', [
+    await recordConversations(DEMO_PROJECT_ID, 'wt-1', [
       {
         tool: 'claude',
-        agentSessionId: 'conv-a',
+        conversationId: 'conv-a',
         firstPrompt: 'continue where we left off',
         model: 'claude-fable-5',
         title: 'Release checklist',
@@ -123,44 +122,23 @@ describe('recordAgentSessions', () => {
     // this tick, or a tool that never reports one. Treating it as "no model"
     // would blank the label on every such tick.
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1' })
-    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-1', [
-      { tool: 'claude', agentSessionId: 'conv-b', model: 'claude-opus-5', title: 'Lexer port' },
+    await recordConversations(DEMO_PROJECT_ID, 'wt-1', [
+      { tool: 'claude', conversationId: 'conv-b', model: 'claude-opus-5', title: 'Lexer port' },
     ])
-    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-1', [
-      { tool: 'claude', agentSessionId: 'conv-b', paneId: '%1' },
+    await recordConversations(DEMO_PROJECT_ID, 'wt-1', [
+      { tool: 'claude', conversationId: 'conv-b' },
     ])
 
     expect(await conversation('conv-b')).toMatchObject({ model: 'claude-opus-5', title: 'Lexer port' })
   })
-})
 
-describe('recordedConversationHandles', () => {
-  let tmpDir: string
-
-  beforeEach(async () => {
-    tmpDir = await createTempDataDir()
-  })
-
-  afterEach(async () => {
-    await closeDb()
-    await cleanupTempDir(tmpDir)
-  })
-
-  // Keyed by the driver's handle, and only conversations that are on one:
-  // the ACP driver re-addresses a live agent by handle, so a link with no
-  // pane id names nothing it could attach to.
-  it('reports only the recorded conversations that sit on a handle', async () => {
+  it('links a conversation to the session holding it, which a sighting naming none keeps', async () => {
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1' })
-    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-1', [
-      { tool: 'claude', agentSessionId: 'conv-a', paneId: '%0' },
-      { tool: 'claude', agentSessionId: 'conv-b' },
-      { tool: 'claude', agentSessionId: 'conv-c', paneId: '%2' },
-    ])
+    const sessionId = '11111111-2222-4333-8444-555555555555'
+    await recordConversations(DEMO_PROJECT_ID, 'wt-1', [{ tool: 'claude', conversationId: 'conv-c', sessionId }])
+    await recordConversations(DEMO_PROJECT_ID, 'wt-1', [{ tool: 'claude', conversationId: 'conv-c' }])
 
-    expect(await recordedConversationHandles(DEMO_PROJECT_ID, 'wt-1')).toEqual([
-      { handle: '%0', agentSessionId: 'conv-a' },
-      { handle: '%2', agentSessionId: 'conv-c' },
-    ])
+    expect(await conversation('conv-c')).toMatchObject({ sessionId })
   })
 })
 
@@ -180,13 +158,13 @@ describe('openingPrompt', () => {
   // claimed spare's warm-time conversation) must not hide a later one's.
   it('is the earliest message any conversation opened with', async () => {
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1' })
-    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-1', [
-      { tool: 'claude', agentSessionId: 'conv-blank' },
-      { tool: 'claude', agentSessionId: 'conv-a', firstPrompt: 'port the lexer' },
-      { tool: 'claude', agentSessionId: 'conv-b', firstPrompt: 'a side question' },
+    await recordConversations(DEMO_PROJECT_ID, 'wt-1', [
+      { tool: 'claude', conversationId: 'conv-blank' },
+      { tool: 'claude', conversationId: 'conv-a', firstPrompt: 'port the lexer' },
+      { tool: 'claude', conversationId: 'conv-b', firstPrompt: 'a side question' },
     ])
 
-    expect(openingPrompt(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-1'))).toBe('port the lexer')
+    expect(openingPrompt(await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-1'))).toBe('port the lexer')
     expect(openingPrompt([])).toBeUndefined()
   })
 })
@@ -207,27 +185,27 @@ describe('conversationTitle', () => {
   // when an earlier, unprompted one has a title of its own.
   it("is the opening conversation's title, else the first one any conversation has", async () => {
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1' })
-    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-1', [
-      { tool: 'claude', agentSessionId: 'conv-blank', title: 'Blank tab' },
-      { tool: 'claude', agentSessionId: 'conv-a', firstPrompt: 'port the lexer', title: 'Lexer port' },
-      { tool: 'claude', agentSessionId: 'conv-b', firstPrompt: 'a side question', title: 'Side question' },
+    await recordConversations(DEMO_PROJECT_ID, 'wt-1', [
+      { tool: 'claude', conversationId: 'conv-blank', title: 'Blank tab' },
+      { tool: 'claude', conversationId: 'conv-a', firstPrompt: 'port the lexer', title: 'Lexer port' },
+      { tool: 'claude', conversationId: 'conv-b', firstPrompt: 'a side question', title: 'Side question' },
     ])
-    expect(conversationTitle(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-1'))).toBe('Lexer port')
+    expect(conversationTitle(await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-1'))).toBe('Lexer port')
 
     // An opening conversation its agent has not titled yet falls back to
     // another's title; none at all is undefined.
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-2' })
-    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-2', [
-      { tool: 'claude', agentSessionId: 'conv-c', firstPrompt: 'port the parser' },
-      { tool: 'claude', agentSessionId: 'conv-d', title: 'Parser notes' },
+    await recordConversations(DEMO_PROJECT_ID, 'wt-2', [
+      { tool: 'claude', conversationId: 'conv-c', firstPrompt: 'port the parser' },
+      { tool: 'claude', conversationId: 'conv-d', title: 'Parser notes' },
     ])
-    const links = await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-2')
+    const links = await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-2')
     expect(conversationTitle(links)).toBe('Parser notes')
     expect(conversationTitle(links.slice(0, 1))).toBeUndefined()
   })
 })
 
-describe('listUncapturedStoppedSessions', () => {
+describe('listUncapturedStoppedConversations', () => {
   let tmpDir: string
 
   beforeEach(async () => {
@@ -245,22 +223,22 @@ describe('listUncapturedStoppedSessions', () => {
     for (const id of ['wt-old', 'wt-new', 'wt-done', 'wt-live']) {
       await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: id })
     }
-    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-old', [{ tool: 'claude', agentSessionId: 'conv-old' }])
-    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-new', [
-      { tool: 'claude', agentSessionId: 'conv-new' },
-      { tool: 'claude', agentSessionId: 'conv-cleared' },
+    await recordConversations(DEMO_PROJECT_ID, 'wt-old', [{ tool: 'claude', conversationId: 'conv-old' }])
+    await recordConversations(DEMO_PROJECT_ID, 'wt-new', [
+      { tool: 'claude', conversationId: 'conv-new' },
+      { tool: 'claude', conversationId: 'conv-cleared' },
     ])
-    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-done', [
-      { tool: 'claude', agentSessionId: 'conv-done', lastActiveMs: Date.parse('2026-01-02') },
+    await recordConversations(DEMO_PROJECT_ID, 'wt-done', [
+      { tool: 'claude', conversationId: 'conv-done', lastActiveMs: Date.parse('2026-01-02') },
     ])
-    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-live', [{ tool: 'claude', agentSessionId: 'conv-live' }])
+    await recordConversations(DEMO_PROJECT_ID, 'wt-live', [{ tool: 'claude', conversationId: 'conv-live' }])
     await recordWorkspaceStopped(DEMO_PROJECT_ID, 'wt-old')
     await tick()
     await recordWorkspaceStopped(DEMO_PROJECT_ID, 'wt-done')
     await recordWorkspaceStopped(DEMO_PROJECT_ID, 'wt-new')
 
-    expect((await listUncapturedStoppedSessions(10)).map((l) => [l.workspaceId, l.agentSessionId]))
+    expect((await listUncapturedStoppedConversations(10)).map((l) => [l.workspaceId, l.conversationId]))
       .toEqual([['wt-new', 'conv-new'], ['wt-new', 'conv-cleared'], ['wt-old', 'conv-old']])
-    expect(await listUncapturedStoppedSessions(1)).toHaveLength(1)
+    expect(await listUncapturedStoppedConversations(1)).toHaveLength(1)
   })
 })

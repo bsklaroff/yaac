@@ -4,8 +4,7 @@ import { isWorkspaceTerminating, liveAgents } from '#runtime/status'
 import {
   acpConversation,
   acpRecord,
-  agentWindowName,
-  getAgentSessionFirstMessage,
+  getConversationFirstMessage,
   PromptNotRunError,
   getCodexRolloutSettings,
   locateTranscript,
@@ -19,62 +18,55 @@ import {
 import {
   applyWorkspaceEvent,
   getWorkspaceRow,
-  listUncapturedStoppedSessions,
-  holdPendingPrompt,
-  listWorkspaceAgentSessions,
-  takePendingPrompt,
+  holdSessionPrompt,
+  listUncapturedStoppedConversations,
+  listWorkspaceConversations,
+  listWorkspaceSessions,
+  takeSessionPrompt,
 } from '#db'
 import { captureFirstPrompt } from './prompt-capture'
 import { captureTitle } from './title-capture'
 import { claiming } from './prewarm'
-import { recordedTranscript } from './agent-session-paths'
+import { recordedTranscript } from './conversation-paths'
 import { serverLog } from '#lib/log'
-import type { AgentSessionLinkRow, CapturedSession, DiscoveredSession, WorkspaceRow } from '#db'
+import type { ConversationLinkRow, CapturedConversation, DiscoveredConversation, SessionRow, WorkspaceRow } from '#db'
 import type { AcpConversation, LiveAgent } from '#runtime/agents'
 import { EFFORT_RE, type AgentMode } from '@yaac/shared/types'
 
 /**
- * Record agent conversations from what running workspaces report.
+ * Record agent conversations, and what each session's agent reports, from
+ * what running workspaces report.
  *
  * The source, for both modes, is the status watcher's live agent set
  * (`#runtime/status`), where each agent names its conversation. Under `acp`
  * the id comes from `session/new`; under `tui` the tool's reporter sets it on
  * its tmux pane (`PANE_SESSION_FORMAT`) on every start, `/clear`, `/new` or
- * resume. The conversations live agents name are exactly the active ones. A
- * new pod's tmux starts with no pane options, so an old pod's conversation
- * cannot look live.
+ * resume. A session's agent is matched to its row by its window; one started
+ * by hand in a terminal has no session, and its conversation is recorded
+ * against the workspace alone. A new pod's tmux starts with no pane options,
+ * so an old pod's conversation cannot look live.
  *
  * Runs on the reconciler tick so `workspace list` and restart see the record
- * even with no client watching. Stopped and stopping workspaces are skipped:
- * their active set is frozen, and it is what restart resumes. So are spares,
- * and spares mid-claim: a spare's warm-time agent is not the claimant's
- * conversation, and recording it would make a later restart resume the wrong
- * one. A claim that respawns the agent ends that conversation, which stays
- * registered until its stream is seen closing, so under acp the claim's
- * hand-over runs the first pass itself once the new conversation is named.
+ * even with no client watching. Stopped and stopping workspaces are skipped,
+ * and so are spares mid-claim, whose sessions the claim is still launching.
  */
-export async function reconcileAgentSessions(view: RuntimeSnapshot): Promise<void> {
+export async function reconcileConversations(view: RuntimeSnapshot): Promise<void> {
   const running = (await view.workspaces()).filter((p) => p.running && !p.prewarmed
     && !claiming.has(p.jobName) && !p.terminating && p.projectId && p.workspaceId
     && !isWorkspaceTerminating(p.workspaceId))
   await Promise.all(running.map(async (pod) => {
     try {
-      await reconcileWorkspaceAgentSessions(pod.projectId, pod.workspaceId, pod.mode, pod.jobName)
+      await reconcileWorkspaceConversations(pod.projectId, pod.workspaceId, pod.jobName)
     } catch (err) {
-      serverLog(`[server] agent-sessions ${pod.workspaceId}: ${String(err)}`)
+      serverLog(`[server] conversations ${pod.workspaceId}: ${String(err)}`)
     }
   }))
 }
 
-/**
- * One workspace's pass of `reconcileAgentSessions`. Also run by an acp
- * claim's hand-over as soon as its conversation is named, since the sweep
- * skips a spare mid-claim.
- */
-export async function reconcileWorkspaceAgentSessions(
+/** One workspace's pass of `reconcileConversations`. */
+export async function reconcileWorkspaceConversations(
   projectId: string,
   workspaceId: string,
-  mode: AgentMode,
   jobName: string,
 ): Promise<void> {
   // No live set yet (stream not attached): leave the rows alone so a gap
@@ -84,56 +76,57 @@ export async function reconcileWorkspaceAgentSessions(
   // Map each reported transcript path to where the file really is, or drop it.
   const observed = await Promise.all(reported.map(async (a): Promise<LiveAgent> => {
     const { transcriptPath, ...rest } = a
-    const located = a.agentSessionId === undefined
+    const located = a.conversationId === undefined
       ? undefined
-      : await locateTranscript(projectId, workspaceId, a.tool, a.agentSessionId, transcriptPath)
+      : await locateTranscript(projectId, workspaceId, a.tool, a.conversationId, transcriptPath)
     return located === undefined ? rest : { ...rest, transcriptPath: located }
   }))
   const row = await getWorkspaceRow(projectId, workspaceId)
-  const links = await listWorkspaceAgentSessions(projectId, workspaceId)
+  const sessions = new Map((await listWorkspaceSessions(workspaceId)).map((s) => [s.window, s]))
+  const links = await listWorkspaceConversations(projectId, workspaceId)
   if (row !== undefined) {
     const reports = await withRolloutReports(row, observed, links)
-    await followReportedModes(projectId, workspaceId, mode, row, reports)
-    await followReportedEfforts(projectId, workspaceId, row, reports)
+    await followSessionReports(projectId, workspaceId, sessions, reports)
   }
 
   // Skip agents that have not named their conversation yet (ACP handshake in
   // flight, codex/opencode before the first turn); recording them by handle
-  // would create a phantom row the real one could never replace.
-  //
-  // Also skip an unrecorded acp conversation whose stream is gone, until it
-  // reattaches. The live set keeps naming an ended one until the window's
-  // next agent attaches, so without this a claimed spare's warm-time
-  // conversation, ended by the claim's respawn, could be recorded as the
-  // workspace's first if the hand-over gave up waiting.
+  // would create a phantom row the real one could never replace. Also skip
+  // an unrecorded acp conversation whose stream is gone, until it
+  // reattaches: the live set keeps naming an ended one until the window's
+  // next agent attaches.
   const live = await Promise.all(observed.flatMap((a) => {
-    const agentSessionId = a.agentSessionId
-    if (agentSessionId === undefined) return []
-    const recorded = links.find((l) => l.tool === a.tool && l.agentSessionId === agentSessionId)
+    const conversationId = a.conversationId
+    if (conversationId === undefined) return []
+    const session = sessions.get(a.handle)
+    const mode = session?.mode ?? 'tui'
+    const recorded = links.find((l) => l.tool === a.tool && l.conversationId === conversationId)
     if (recorded === undefined && mode === 'acp'
-      && acpConversation(projectId, workspaceId, agentSessionId) === undefined) return []
-    return [describe(projectId, workspaceId, mode, jobName, a, agentSessionId, recorded)]
+      && acpConversation(projectId, workspaceId, conversationId) === undefined) return []
+    return [describe(projectId, workspaceId, mode, jobName, a, conversationId, recorded, session?.id)]
   }))
   if (live.length > 0) {
-    await applyWorkspaceEvent({ type: 'sessions-discovered', projectId, workspaceId, sessions: live })
+    await applyWorkspaceEvent({ type: 'conversations-discovered', projectId, workspaceId, sessions: live })
   }
   await applyWorkspaceEvent({
-    type: 'sessions-active',
+    type: 'conversations-active',
     projectId,
     workspaceId,
-    active: live.map((c) => ({ tool: c.tool, agentSessionId: c.agentSessionId, paneId: c.paneId })),
+    active: live.map((c) => ({ tool: c.tool, conversationId: c.conversationId })),
   })
 
-  // No user message can reach the conversation before the first delivery:
-  // the chat pane and `yaac-mama send` both need its row, recorded just
-  // above. A prompt is held again only after a send no pane saw fail
-  // (`deliverPendingPrompt`), so the user has had no failure to retry.
-  if (row?.pendingPrompt !== undefined) {
-    const first = observed.find((a) => a.handle === agentWindowName(a.tool, 0))
-    const conversation = first?.agentSessionId === undefined
+  // No user message can reach a conversation before the first delivery: the
+  // chat pane and `yaac-mama send` both need its session to name it,
+  // recorded just above. A prompt is held again only after a send no pane
+  // saw fail (`deliverPendingPrompt`), so the user has had no failure to
+  // retry.
+  for (const s of sessions.values()) {
+    if (s.mode !== 'acp' || s.pendingPrompt === undefined) continue
+    const conversationId = observed.find((a) => a.handle === s.window)?.conversationId
+    const conversation = conversationId === undefined
       ? undefined
-      : acpConversation(projectId, workspaceId, first.agentSessionId)
-    if (conversation !== undefined) void deliverPendingPrompt(projectId, workspaceId, conversation)
+      : acpConversation(projectId, workspaceId, conversationId)
+    if (conversation !== undefined) void deliverPendingPrompt(s.id, conversation)
   }
 }
 
@@ -141,10 +134,9 @@ export async function reconcileWorkspaceAgentSessions(
 const refusedPrompt = new WeakSet<AcpConversation>()
 
 /**
- * Send the workspace's held create prompt (`takePendingPrompt`) to
- * `conversation` once its handshake is done: from the create's hand-over,
- * or from a later pass when that hand-over found no conversation. One that
- * never finishes its handshake leaves the prompt held for the next.
+ * Send a session's held opening message (`takeSessionPrompt`) to
+ * `conversation` once its handshake is done. One that never finishes its
+ * handshake leaves the prompt held for the next.
  *
  * The prompt is taken before it is sent, so a crash between the two loses
  * it rather than running the task twice. Only a send that was never made
@@ -152,28 +144,24 @@ const refusedPrompt = new WeakSet<AcpConversation>()
  * conversation. A refusal the agent replies with is shown in the chat pane,
  * where the user may already have retried, so it is left for them.
  */
-export async function deliverPendingPrompt(
-  projectId: string,
-  workspaceId: string,
-  conversation: AcpConversation,
-): Promise<void> {
+export async function deliverPendingPrompt(sessionId: string, conversation: AcpConversation): Promise<void> {
   if (refusedPrompt.has(conversation)) return
   let prompt: string | undefined
   try {
     await conversation.whenReady(PENDING_PROMPT_READY_MS)
-    prompt = await takePendingPrompt(projectId, workspaceId)
+    prompt = await takeSessionPrompt(sessionId)
   } catch (err) {
-    serverLog(`[server] ${workspaceId}: initial prompt still held: ${String(err)}`)
+    serverLog(`[server] session ${sessionId}: opening message still held: ${String(err)}`)
     return
   }
   if (prompt === undefined) return
   // Resolves when the turn ends, which nothing here waits for.
   void conversation.prompt(prompt).catch(async (err: unknown) => {
-    serverLog(`[server] ${workspaceId}: initial prompt failed: ${String(err)}`)
+    serverLog(`[server] session ${sessionId}: opening message failed: ${String(err)}`)
     if (!(err instanceof PromptNotRunError)) return
     refusedPrompt.add(conversation)
-    await holdPendingPrompt(projectId, workspaceId, prompt).catch((holdErr: unknown) => {
-      serverLog(`[server] ${workspaceId}: initial prompt lost: ${String(holdErr)}`)
+    await holdSessionPrompt(sessionId, prompt).catch((holdErr: unknown) => {
+      serverLog(`[server] session ${sessionId}: opening message lost: ${String(holdErr)}`)
     })
   })
 }
@@ -194,7 +182,7 @@ const PENDING_PROMPT_READY_MS = 120_000
  */
 export const HELD_PROMPT_GRACE_MS = ACP_CONVERSATION_WAIT_MS + PENDING_PROMPT_READY_MS
 
-/** How many conversations `reconcileStoppedAgentSessions` reads at a time,
+/** How many conversations `reconcileStoppedConversations` reads at a time,
  *  and for how long one pass keeps reading. A backlog (an upgraded install's
  *  stopped history) drains quickly without stalling the pass. */
 const STOPPED_CAPTURE_BATCH = 20
@@ -209,18 +197,18 @@ const STOPPED_CAPTURE_BUDGET_MS = 500
  * readable file gets its creation time, which marks it read. The stopped
  * listing reads only rows, so this is where those files are read for it.
  */
-export async function reconcileStoppedAgentSessions(): Promise<void> {
+export async function reconcileStoppedConversations(): Promise<void> {
   const deadline = Date.now() + STOPPED_CAPTURE_BUDGET_MS
   for (;;) {
-    const pending = await listUncapturedStoppedSessions(STOPPED_CAPTURE_BATCH)
+    const pending = await listUncapturedStoppedConversations(STOPPED_CAPTURE_BATCH)
     await captureStoppedBatch(pending)
     if (pending.length < STOPPED_CAPTURE_BATCH || Date.now() >= deadline) return
   }
 }
 
 /** Read one batch, recording each workspace's conversations in one event. */
-async function captureStoppedBatch(pending: AgentSessionLinkRow[]): Promise<void> {
-  const byWorkspace = new Map<string, AgentSessionLinkRow[]>()
+async function captureStoppedBatch(pending: ConversationLinkRow[]): Promise<void> {
+  const byWorkspace = new Map<string, ConversationLinkRow[]>()
   for (const l of pending) {
     const key = `${l.projectId}/${l.workspaceId}`
     byWorkspace.set(key, [...byWorkspace.get(key) ?? [], l])
@@ -228,13 +216,13 @@ async function captureStoppedBatch(pending: AgentSessionLinkRow[]): Promise<void
   for (const links of byWorkspace.values()) {
     const { projectId, workspaceId } = links[0]
     await applyWorkspaceEvent({
-      type: 'sessions-captured',
+      type: 'conversations-captured',
       projectId,
       workspaceId,
       // A file that cannot be read still marks the conversation read, so it
       // is not retried every pass.
-      sessions: await Promise.all(links.map((l) => captureStopped(l).catch((): CapturedSession =>
-        ({ tool: l.tool, agentSessionId: l.agentSessionId, lastActiveMs: l.createdAt.getTime() })))),
+      sessions: await Promise.all(links.map((l) => captureStopped(l).catch((): CapturedConversation =>
+        ({ tool: l.tool, conversationId: l.conversationId, lastActiveMs: l.createdAt.getTime() })))),
     })
   }
 }
@@ -242,17 +230,17 @@ async function captureStoppedBatch(pending: AgentSessionLinkRow[]): Promise<void
 /** One stopped conversation's files, read as `describe` reads a live one's.
  *  Without a recorded path the transcript is looked for where the tool
  *  writes it, since a conversation that died early never had one recorded. */
-async function captureStopped(l: AgentSessionLinkRow): Promise<CapturedSession> {
-  const record = { projectId: l.projectId, workspaceId: l.workspaceId, agentSessionId: l.agentSessionId }
+async function captureStopped(l: ConversationLinkRow): Promise<CapturedConversation> {
+  const record = { projectId: l.projectId, workspaceId: l.workspaceId, conversationId: l.conversationId }
   const activity = l.mode === 'acp' ? acpRecord(record)
-    : recordedTranscript(l) ?? await sessionTranscriptPath(l.projectId, l.workspaceId, l.tool, l.agentSessionId)
+    : recordedTranscript(l) ?? await sessionTranscriptPath(l.projectId, l.workspaceId, l.tool, l.conversationId)
   const firstPrompt = l.firstPrompt !== undefined ? undefined
     : l.mode === 'acp' ? await readAcpFirstPrompt(record)
-    : await getAgentSessionFirstMessage(l.tool, activity)
+    : await getConversationFirstMessage(l.tool, activity)
   const lastActiveMs = activity !== undefined ? await transcriptLastActiveMs(activity) : undefined
   return {
     tool: l.tool,
-    agentSessionId: l.agentSessionId,
+    conversationId: l.conversationId,
     lastActiveMs: lastActiveMs ?? l.createdAt.getTime(),
     ...(firstPrompt !== undefined ? { firstPrompt } : {}),
   }
@@ -275,25 +263,26 @@ async function describe(
   mode: AgentMode,
   jobName: string,
   agent: LiveAgent,
-  agentSessionId: string,
-  recorded: AgentSessionLinkRow | undefined,
-): Promise<DiscoveredSession & { paneId: string }> {
+  conversationId: string,
+  recorded: ConversationLinkRow | undefined,
+  sessionId: string | undefined,
+): Promise<DiscoveredConversation> {
   const { tool, transcriptPath } = agent
-  const record = { projectId, workspaceId, agentSessionId }
+  const record = { projectId, workspaceId, conversationId }
   const stored = transcriptPath ?? recorded?.transcriptPath
   const transcript = stored !== undefined ? resolveProjectPath(projectId, workspaceId, tool, stored) : undefined
   const firstPrompt = recorded?.firstPrompt !== undefined ? undefined
     : mode === 'acp' ? await readAcpFirstPrompt(record)
-    : await captureFirstPrompt(projectId, tool, agentSessionId, transcript)
+    : await captureFirstPrompt(projectId, tool, conversationId, transcript)
   const activity = mode === 'acp' ? acpRecord(record) : transcript
   const lastActiveMs = activity !== undefined ? await transcriptLastActiveMs(activity) : undefined
   const title = await captureTitle(
-    projectId, workspaceId, tool, agentSessionId, transcript, jobName, lastActiveMs, recorded?.title,
+    projectId, workspaceId, tool, conversationId, transcript, jobName, lastActiveMs, recorded?.title,
   )
   return {
     tool,
-    agentSessionId,
-    paneId: agent.handle,
+    conversationId,
+    ...(sessionId !== undefined ? { sessionId } : {}),
     mode,
     ...(transcriptPath !== undefined ? { transcriptPath } : {}),
     ...(firstPrompt !== undefined ? { firstPrompt } : {}),
@@ -304,82 +293,49 @@ async function describe(
 }
 
 /**
- * Each live agent's last reported mode and effort, per workspace, keyed to
- * the pod life. Handles (`%0`, or the tool's name) repeat in a new pod, so
- * reports are only compared within one life.
- */
-type SeenReports = Map<string, { life: number; byHandle: Map<string, string> }>
-const reportedModes: SeenReports = new Map()
-const reportedEfforts: SeenReports = new Map()
-
-/** Test helper: forget every mode and effort seen so far. */
-export function _resetReportedModesForTests(): void {
-  reportedModes.clear()
-  reportedEfforts.clear()
-}
-
-/** This life's reports seen for a workspace, reset when a new life starts. */
-function seenThisLife(reports: SeenReports, key: string, row: WorkspaceRow): Map<string, string> {
-  const life = row.lifeStartedAt?.getTime() ?? 0
-  let seen = reports.get(key)
-  if (seen?.life !== life) {
-    seen = { life, byHandle: new Map() }
-    reports.set(key, seen)
-  }
-  return seen.byHandle
-}
-
-/**
- * Record permission-mode changes the live agents report (Shift+Tab, entering
- * plan mode, answering a plan exit).
+ * Record on each session what its agent reports: the conversation it holds
+ * (a `/clear` starts another), its model, its permission mode (Shift+Tab,
+ * entering plan mode, answering a plan exit) and its effort (`/effort`, a
+ * model switch that re-seeds it, the chat pane's menu). Each row follows
+ * only its own agent, so a restart relaunches each the way it was.
  *
- * Only a change in an agent's report is recorded, not a mere difference from
- * the row, because the row also follows the workspace's other agents. An
- * agent's first report counts as a change, which also picks up moves made
- * while no server was watching.
+ * Anything in the workspace can set a pane option, so an effort that is not
+ * one word, or not a level the agent's model has, is ignored. `default` is
+ * kept: claude's ACP adapter offers it beside the model's levels, and a
+ * restart maps it to the model's default. A mode that matches no posture is
+ * not recorded.
  */
-async function followReportedModes(
+async function followSessionReports(
   projectId: string,
   workspaceId: string,
-  mode: AgentMode,
-  row: WorkspaceRow,
+  sessions: Map<string, SessionRow>,
   observed: LiveAgent[],
 ): Promise<void> {
-  const seen = seenThisLife(reportedModes, `${projectId}/${workspaceId}`, row)
   for (const a of observed) {
-    if (a.reportedMode === undefined || seen.get(a.handle) === a.reportedMode) continue
-    seen.set(a.handle, a.reportedMode)
-    const posture = resolveAgentPermissionMode(mode, a.tool, a.reportedMode, row.permissionMode)
-    if (posture === undefined || posture === row.permissionMode) continue
-    await applyWorkspaceEvent({ type: 'permission-mode-changed', projectId, workspaceId, permissionMode: posture })
-    setAcpPermissionMode(projectId, workspaceId, posture)
-  }
-}
-
-/**
- * Record effort changes the live agents report (`/effort`, a model switch
- * that re-seeds it, the chat pane's menu), as `followReportedModes` does
- * modes. Anything in the workspace can set a pane option, so a report that
- * is not one word, or not a level the agent's model has, is ignored.
- * `default` is kept: claude's ACP adapter offers it beside the model's
- * levels, and a restart maps it to the model's default.
- */
-async function followReportedEfforts(
-  projectId: string,
-  workspaceId: string,
-  row: WorkspaceRow,
-  observed: LiveAgent[],
-): Promise<void> {
-  const seen = seenThisLife(reportedEfforts, `${projectId}/${workspaceId}`, row)
-  for (const a of observed) {
-    const effort = a.reportedEffort
-    if (effort === undefined || !EFFORT_RE.test(effort) || seen.get(a.handle) === effort) continue
-    seen.set(a.handle, effort)
-    const model = a.model !== undefined ? catalogModel(a.tool, a.model, a.modelName) : row.model
-    const levels = model !== undefined ? modelEfforts(a.tool, model)?.levels : undefined
-    if (levels !== undefined && effort !== 'default' && !levels.includes(effort)) continue
-    if (effort === row.effort) continue
-    await applyWorkspaceEvent({ type: 'effort-changed', projectId, workspaceId, effort })
+    const s = sessions.get(a.handle)
+    if (s === undefined || a.tool !== s.tool) continue
+    const model = a.model !== undefined ? catalogModel(a.tool, a.model, a.modelName) : undefined
+    const posture = a.reportedMode !== undefined
+      ? resolveAgentPermissionMode(s.mode, s.tool, a.reportedMode, s.permissionMode)
+      : undefined
+    const levels = modelEfforts(s.tool, model ?? s.model ?? '')?.levels
+    const effort = a.reportedEffort !== undefined && EFFORT_RE.test(a.reportedEffort)
+      && (levels === undefined || a.reportedEffort === 'default' || levels.includes(a.reportedEffort))
+      ? a.reportedEffort
+      : undefined
+    const report = {
+      ...(a.conversationId !== undefined && a.conversationId !== s.conversationId
+        ? { conversationId: a.conversationId }
+        : {}),
+      ...(model !== undefined && model !== s.model ? { model } : {}),
+      ...(posture !== undefined && posture !== s.permissionMode ? { permissionMode: posture } : {}),
+      ...(effort !== undefined && effort !== s.effort ? { effort } : {}),
+    }
+    if (Object.keys(report).length === 0) continue
+    await applyWorkspaceEvent({ type: 'session-reported', projectId, workspaceId, sessionId: s.id, ...report })
+    if (report.permissionMode !== undefined) {
+      setAcpPermissionMode(projectId, workspaceId, s.window, report.permissionMode)
+    }
   }
 }
 
@@ -396,11 +352,11 @@ async function followReportedEfforts(
 async function withRolloutReports(
   row: WorkspaceRow,
   observed: LiveAgent[],
-  links: AgentSessionLinkRow[],
+  links: ConversationLinkRow[],
 ): Promise<LiveAgent[]> {
   const life = row.lifeStartedAt?.getTime() ?? 0
   return Promise.all(observed.map(async (a) => {
-    const recorded = links.find((l) => l.tool === a.tool && l.agentSessionId === a.agentSessionId)
+    const recorded = links.find((l) => l.tool === a.tool && l.conversationId === a.conversationId)
     const transcript = a.transcriptPath ?? recorded?.transcriptPath
     const rollout = a.tool === 'codex' && transcript !== undefined
       ? resolveProjectPath(row.projectId, row.workspaceId, 'codex', transcript)

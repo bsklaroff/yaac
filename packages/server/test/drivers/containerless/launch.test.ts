@@ -11,7 +11,7 @@ import { hostedRemoteUrl } from '@yaac/shared/hosted-git'
 import { agentBinDirs } from '@yaac/shared/tool-install'
 import { substrateFixture } from '#test/support/fake-driver'
 import { hostShellDir } from '#drivers/containerless/paths'
-import type { WorkspaceMount, WorkspaceSpec } from '#drivers/contract'
+import { KEEPER_STARTING, type WorkspaceMount, type WorkspaceSpec } from '#drivers/contract'
 
 // Only host process calls are mocked, so the launch's mkdirs, symlinks,
 // marker and command text are real.
@@ -53,8 +53,6 @@ function spec(overrides: Partial<WorkspaceSpec> = {}): WorkspaceSpec {
   return {
     projectId: 'demo',
     workspaceId: UUID,
-    tool: 'claude',
-    mode: 'tui',
     prewarm: false,
     env: ['YAAC_GIT_NAME=Ada', 'YAAC_GIT_EMAIL=ada@example.com', 'YAAC_STATUS_RIGHT= demo 4bfc59c6 '],
     secretEnvKeys: [],
@@ -97,18 +95,16 @@ afterEach(() => {
 })
 
 describe('launchWorkspace', () => {
-  it('opens the session on the placeholder the stale reaper looks for', async () => {
+  it('opens the session on the keeper, named for its start', async () => {
     await launchWorkspace(spec())
     const newSession = tmuxCalls().find((a) => a.includes('new-session'))
     expect(newSession).toBeDefined()
-    // `probeAgentPaneState` reads the placeholder as "no agent yet".
-    // Starting the agent here would let a fast-failing tool end the session
-    // before setup finished.
+    // The keeper holds the tmux server open whatever the sessions do, and
+    // until the create renames it, `probeSetupState` reads the workspace as
+    // still being set up.
     expect(newSession).toContain('sleep 2147483647')
     expect(newSession).toContain('yaac')
-    // The window is named for the tool, the `yaac:<tool>` target later
-    // respawns and probes use.
-    expect(newSession).toContain('claude')
+    expect(newSession).toContain(KEEPER_STARTING)
     // Windows open in the checkout, not the server's cwd.
     expect(newSession).toContain(workspaceDir('demo', UUID))
   })
@@ -126,9 +122,8 @@ describe('launchWorkspace', () => {
     const marker = JSON.parse(await fsp.readFile(
       path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'workspace.json'),
       'utf8',
-    )) as { workspaceId: string; tool: string; tmuxPid: number; ports: unknown }
+    )) as { workspaceId: string; tmuxPid: number; ports: unknown }
     expect(marker.workspaceId).toBe(UUID)
-    expect(marker.tool).toBe('claude')
     // Read from tmux, as the root of the port scan's process tree.
     expect(marker.tmuxPid).toBe(4242)
     expect(marker.ports).toEqual(ports)

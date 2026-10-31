@@ -471,7 +471,7 @@ export function buildMessageCmd(
   target: string,
   message: string,
   paths: WorkspacePaths,
-  conversation: { tool: AgentTool; agentSessionId: string },
+  conversation: { tool: AgentTool; conversationId: string },
 ): StdinScript {
   return {
     // A pod whose streamd predates exec stdin hands the command an empty one;
@@ -486,15 +486,15 @@ function messageScript(
   paneTarget: string,
   message: string,
   paths: WorkspacePaths,
-  { tool, agentSessionId }: { tool: AgentTool; agentSessionId: string },
+  { tool, conversationId }: { tool: AgentTool; conversationId: string },
 ): string {
-  if (!SAFE_SESSION_ID.test(agentSessionId)) return 'echo "unexpected conversation id" >&2; exit 3'
+  if (!SAFE_SESSION_ID.test(conversationId)) return 'echo "unexpected conversation id" >&2; exit 3'
   const TMUX = tmuxCmd(paths)
   const target = `-t ${paneTarget}`
   if (tool === 'pi') {
     // The extension takes the file, so its being gone is the delivery.
     const b64 = Buffer.from(stripControlChars(message), 'utf8').toString('base64')
-    return `f="$PI_CODING_AGENT_DIR/yaac-messages/${agentSessionId}.txt"; mkdir -p "\${f%/*}" || exit 1
+    return `f="$PI_CODING_AGENT_DIR/yaac-messages/${conversationId}.txt"; mkdir -p "\${f%/*}" || exit 1
 printf %s ${b64} | base64 -d > "$f.tmp" && mv "$f.tmp" "$f" || exit 1
 ${TMUX} send-keys ${target} ${PI_MESSAGE_KEY}
 i=0; while [ -e "$f" ]; do
@@ -505,7 +505,7 @@ done`
   const draft = draftHandling(tool, TMUX, target)
   const { paste, copies } = pasteParts(paneTarget, message, TMUX)
   return `tm() { ${TMUX} "$@"; }
-at_input() { ${atInputTest(tool, TMUX, target, agentSessionId)}; }
+at_input() { ${atInputTest(tool, TMUX, target, conversationId)}; }
 ${draft.defs ?? ''}
 box() { ${draft.box}; }
 wait_box() { i=0; until box; [ $? = "$1" ]; do [ $i -ge 20 ] && return 1; i=$((i+1)); sleep 0.25; done; }
@@ -568,11 +568,11 @@ export const PI_MESSAGE_KEY = 'f9'
  *    pane's first row ` ! ` under a permission prompt and ` ? ` under a
  *    question or form, where a paste fills the free-text answer.
  */
-function atInputTest(tool: AgentTool, TMUX: string, target: string, agentSessionId: string): string {
+function atInputTest(tool: AgentTool, TMUX: string, target: string, conversationId: string): string {
   switch (tool) {
     case 'claude':
       return 'f=$(ls -t "$CLAUDE_CONFIG_DIR"/sessions/*.json 2>/dev/null | while read -r x; do '
-        + `grep -qF "\\"sessionId\\":\\"${agentSessionId}\\"" "$x" && { echo "$x"; break; }; done); `
+        + `grep -qF "\\"sessionId\\":\\"${conversationId}\\"" "$x" && { echo "$x"; break; }; done); `
         + '[ -n "$f" ] || return 2; case "$(sed -n "s/.*\\"status\\":\\"\\([a-z]*\\)\\".*/\\1/p" "$f")" in '
         + 'idle|busy) true ;; *) false ;; esac'
     case 'codex':
@@ -729,7 +729,7 @@ export interface StdinScript {
  * script from stdin to a workspace-local file and setsid it, so the exec
  * returns at once instead of waiting through the script's polling (5s+ on
  * a fresh agent). The script survives the exec stream closing and logs to
- * `yaac-prompt.log` in the scratch dir. macOS has no setsid, so a
+ * `yaac-prompt-<target>.log` in the scratch dir. macOS has no setsid, so a
  * containerless host there detaches it with nohup.
  */
 export function buildPromptPasteBgCmd(
@@ -737,8 +737,10 @@ export function buildPromptPasteBgCmd(
   prompt: string,
   paths: WorkspacePaths,
 ): StdinScript {
-  const script = `${paths.scratchDir}/.yaac-prompt.sh`
-  const log = `${paths.scratchDir}/yaac-prompt.log`
+  // Per target, since two sessions can be handed prompts at once.
+  const name = target.replace(/[^\w-]/g, '_')
+  const script = `${paths.scratchDir}/.yaac-prompt-${name}.sh`
+  const log = `${paths.scratchDir}/yaac-prompt-${name}.log`
   return {
     // `cat` stays out of the backgrounded list, whose stdin sh replaces with
     // /dev/null.
@@ -750,23 +752,21 @@ export function buildPromptPasteBgCmd(
 }
 
 /**
- * In-workspace probe that every agent window survived its respawn.
- * `respawn-window` succeeds even when the command dies at once (e.g. the
- * tool binary is missing), after which tmux closes the window and the pane
- * silently falls back to another window (see attachArgs). The sleep gives
- * such a command time to exit; slower crashes are not caught.
+ * In-workspace probe that every agent window is still running. Launching a
+ * window succeeds even when its command dies at once (e.g. the tool binary
+ * is missing), after which its pane stays dead (`remain-on-exit`). The sleep
+ * gives such a command time to exit; slower crashes are not caught.
  *
- * Takes a list because one launch can open several conversations
- * (`claude`, `claude-2`, `codex`). Each missing window is printed to stderr.
- * Window names are tool names with an optional `-N`, so they need no
- * escaping.
+ * Takes a list because one launch can open several sessions. Each window
+ * gone or dead is printed to stderr. Window names are a tool name and a
+ * suffix of letters and digits, so they need no escaping.
  */
 export function buildAgentWindowCheck(windowNames: string[], paths: WorkspacePaths): string {
   const probes = windowNames
-    .map((name) => `echo \\"\\$names\\" | grep -qxF ${name} || { echo ${name} >&2; rc=1; }`)
+    .map((name) => `echo \\"\\$names\\" | grep -qxF '${name} 0' || { echo ${name} >&2; rc=1; }`)
     .join('; ')
   return `sh -c "sleep 1; rc=0; names=\\$(${tmuxCmd(paths)} list-windows -t =yaac `
-    + `-F '#{window_name}') || exit 1; ${probes}; exit \\$rc"`
+    + `-F '#{window_name} #{pane_dead}') || exit 1; ${probes}; exit \\$rc"`
 }
 
 /**

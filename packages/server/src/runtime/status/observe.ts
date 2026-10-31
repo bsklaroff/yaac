@@ -5,18 +5,16 @@ import {
   liveAgents,
   readAgentStatus,
   readWorkspaceStatus,
-  readWorkspaceTerminals,
   readWorkspaceWaitingSince,
+  readWorkspaceWindows,
 } from './status-store'
 import { pruneTerminating } from './terminating'
-import type { AgentLiveness, RuntimeHandle } from '#drivers/contract'
+import type { AgentLiveness, RuntimeHandle, WorkspaceWindow } from '#drivers/contract'
 import type {
   AgentStatus,
-  AgentTool,
   GitAuthFailure,
   PortMapping,
   StaleWorkspaceInfo,
-  WorkspaceTerminalEntry,
 } from '@yaac/shared/types'
 
 /**
@@ -36,7 +34,6 @@ export interface RuntimeReport {
 export interface WorkspaceRuntimeReport {
   workspaceId: string
   projectId: string
-  tool: AgentTool
   /** A `terminating` workspace is a non-interactive placeholder; its agents
    *  are already evicted, so it reports none. */
   phase: 'running' | 'terminating'
@@ -46,12 +43,11 @@ export interface WorkspaceRuntimeReport {
   /** The workspace's aggregate over every live agent (`readWorkspaceStatus`). */
   status: AgentStatus
   waitingSinceMs?: number
-  /** Per-agent liveness, keyed by the driver's handle (tmux pane id under
-   *  `tui`, acpd window name under `acp`). The join attaches conversations by
-   *  the handle each was last seen on. */
+  /** Per-agent liveness, keyed by the driver's handle (a session's window
+   *  name). The join attaches sessions by their window. */
   agents: AgentLiveness[]
-  /** Its non-agent tmux windows; absent until the watcher first lists them. */
-  terminals?: WorkspaceTerminalEntry[]
+  /** Its tmux windows; absent until the watcher first lists them. */
+  windows?: WorkspaceWindow[]
   blockedHosts: string[]
   forwardedPorts: PortMapping[]
   unforwardedPorts: number[]
@@ -67,8 +63,8 @@ export interface WorkspaceRuntimeReport {
  * Driver-neutral: drivers supply only the raw facts. Runs on every
  * snapshot, so the listing uses `preferCache`.
  *
- * Agent liveness is keyed by handle, since which conversation is on a
- * handle is recorded by the server, not known here.
+ * Agent liveness is keyed by handle, since which session is on a handle is
+ * recorded by the server, not known here.
  */
 export async function observeWorkspaces(projectFilter?: string): Promise<RuntimeReport> {
   const driver = workspaceDriver()
@@ -108,14 +104,14 @@ async function observeRunning(w: RuntimeHandle): Promise<WorkspaceRuntimeReport>
   if (!w.workspaceId || !w.projectId) return base
   const driver = workspaceDriver()
   const waitingSinceMs = readWorkspaceWaitingSince(w.projectId, w.workspaceId)
-  const terminals = readWorkspaceTerminals(w.projectId, w.workspaceId)
+  const windows = readWorkspaceWindows(w.projectId, w.workspaceId)
   return {
     ...base,
     // Aggregate over the workspace's live agents (see status-store).
     status: readWorkspaceStatus(w.projectId, w.workspaceId),
     ...(waitingSinceMs !== undefined ? { waitingSinceMs } : {}),
     agents: agentLiveness(w.projectId, w.workspaceId),
-    ...(terminals !== undefined ? { terminals } : {}),
+    ...(windows !== undefined ? { windows } : {}),
     blockedHosts: await driver.blockedHosts(w.workspaceId),
     forwardedPorts: await driver.forwardedPorts(w.workspaceId),
     unforwardedPorts: await driver.unforwardedPorts(w.workspaceId),
@@ -126,7 +122,6 @@ function emptyReport(w: RuntimeHandle, phase: 'running' | 'terminating'): Worksp
   return {
     workspaceId: w.workspaceId,
     projectId: w.projectId,
-    tool: w.tool,
     phase,
     createdAtMs: w.createdAtMs,
     status: 'running',

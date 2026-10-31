@@ -1,7 +1,6 @@
 import {
   LABEL_NPM_CACHE,
   LABEL_PREWARMED,
-  LABEL_TOOL,
   findWorkspacePod,
   isPrewarmed,
   execFileAsync,
@@ -14,7 +13,6 @@ import {
 } from '#drivers/k8s/substrate'
 import { servingNpmCacheUrl } from '#drivers/k8s/cluster'
 import { registerWorkspaceEgress } from '#drivers/k8s/egress'
-import type { AgentTool } from '@yaac/shared/types'
 import type { WorkspaceRegistration } from '#drivers/contract'
 import { serverLog } from '#lib/log'
 import { npmCacheApplies } from './launch'
@@ -26,7 +24,7 @@ import { npmCacheApplies } from './launch'
  */
 
 /**
- * Claim the spare holding `workspaceId` for `tool`: unlabel its pod, then
+ * Claim the spare holding `workspaceId`: unlabel its pod, then
  * its Job, so neither reads as a spare again. The Job's label is what
  * identifies a spare whose pod is gone, and a reap deletes such a spare's
  * files.
@@ -42,14 +40,8 @@ import { npmCacheApplies } from './launch'
  * If a patch lands but its response is lost, a winning claim reports a
  * loss, so the caller reaps the spare rather than return it to the pool.
  *
- * The tool label is always written, even when unchanged, so afterwards every
- * handle reports `declaredTool === tool` (read by `yaac-mama create` from
- * the claimed workspace).
  */
-export async function claimSpareWorkspace(
-  workspaceId: string,
-  tool: AgentTool,
-): Promise<void> {
+export async function claimSpareWorkspace(workspaceId: string): Promise<void> {
   // One pod per workspace id. A second match would be a Job mid-replacement,
   // which the pool planner reaps.
   const pod = findWorkspacePod(await readWorkspacePods(), workspaceId, { spares: true })
@@ -66,7 +58,7 @@ export async function claimSpareWorkspace(
   if (live?.metadata.labels?.[LABEL_PREWARMED] !== 'true') {
     throw new Error(`spare ${podName} for ${workspaceId} was claimed by another caller`)
   }
-  const labels = { [LABEL_PREWARMED]: null, [LABEL_TOOL]: tool }
+  const labels = { [LABEL_PREWARMED]: null }
   await patchObject(ref, { metadata: { resourceVersion: live.metadata.resourceVersion, labels } })
   await patchObject(
     { apiVersion: 'batch/v1', kind: 'Job', name: pod.jobName, namespace: k8sNamespace() },

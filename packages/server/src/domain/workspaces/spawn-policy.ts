@@ -1,7 +1,9 @@
 import crypto from 'node:crypto'
 import { prepareStart } from './start'
 import { prepareRestart } from './restart'
-import { firstAgentSession, getProjectRow, getWorkspaceRow, listActiveAgentSessions } from '#db'
+import { openSession } from './sessions'
+import { resolveProjectWorkspace } from './resolve'
+import { getProjectRow, getWorkspaceRow, listWorkspaceSessions } from '#db'
 import type { Actor } from '#domain/access'
 import { loadToolAuthEntry } from '#domain/auth'
 import {
@@ -31,6 +33,14 @@ export interface SpawnRequest {
   callerPermissionMode: PermissionMode
   /** The caller's own agent mode; the default `uiMode`. */
   callerMode: AgentMode
+  /** A running workspace of the project to open the session in, by id or
+   *  prefix, rather than a new workspace. */
+  workspace?: string
+  /** Start a new workspace with no session, which takes no prompt or agent
+   *  settings. */
+  noSession?: boolean
+  /** An earlier conversation of the project to open the session on. */
+  resume?: string
   prompt: string
   tool?: AgentTool
   model?: string
@@ -52,9 +62,10 @@ export interface SpawnRequest {
   timeout?: number
 }
 
-/** What the server decided about one spawn request. */
+/** What the server decided about one spawn request: the workspace, and the
+ *  session it opened in an existing one. */
 export type SpawnDecision =
-  | { ok: true; workspaceId: string }
+  | { ok: true; workspaceId: string; sessionId?: string }
   | { ok: false; error: string }
 
 /** Most workspaces one caller may have provisioning at once, counting
@@ -84,15 +95,21 @@ const TOO_MANY_LAUNCHES = `too many workspaces starting at once (max ${SPAWN_MAX
 
 /**
  * Validate a `yaac-mama create`, pick its tool and permission mode, and start
- * it detached. Returns the new id once its settings have checked out; a
- * create that fails after that leaves a dismissable failed row.
+ * it: a session in the running workspace `workspace` names, at once, else a
+ * new workspace, detached. Returns the new workspace's id once its settings
+ * have checked out; a create that fails after that leaves a dismissable
+ * failed row.
  */
 export async function decideSpawn(request: SpawnRequest): Promise<SpawnDecision> {
   const fail = (error: string): SpawnDecision => ({ ok: false, error })
 
   // Settings were checked by `createSettings`, and the prompt's length by
   // the route.
-  if (request.prompt.trim().length === 0) return fail('prompt must not be empty')
+  if (request.noSession !== true && request.resume === undefined && request.prompt.trim().length === 0) {
+    return fail('prompt must not be empty')
+  }
+  if (request.workspace !== undefined) return await spawnSession(request, request.workspace)
+  if (request.resume !== undefined) return fail('--resume needs --workspace: a conversation resumes in the workspace that holds it')
 
   const caller = request.callerWorkspaceId
   // A refusal below gives the slot back; a launch, once it settles.
@@ -102,8 +119,8 @@ export async function decideSpawn(request: SpawnRequest): Promise<SpawnDecision>
   const projectId = request.callerProjectId
   let run: Awaited<ReturnType<typeof prepareStart>>
   try {
-    const admitted = await admit(request)
-    if (!admitted.ok) {
+    const admitted = request.noSession === true ? undefined : await admit(request)
+    if (admitted !== undefined && !admitted.ok) {
       release()
       return admitted
     }
@@ -112,12 +129,14 @@ export async function decideSpawn(request: SpawnRequest): Promise<SpawnDecision>
     run = await prepareStart(request.principal, {
       projectId,
       workspaceId,
-      tool: admitted.tool,
-      mode: request.uiMode ?? request.callerMode,
-      // Not the project's remembered mode, which could strand the agent at a
-      // prompt nobody answers.
-      permissionMode: admitted.permissionMode,
-      prompt: request.prompt,
+      ...(admitted === undefined ? { noSession: true } : {
+        tool: admitted.tool,
+        mode: request.uiMode ?? request.callerMode,
+        // Not the project's remembered mode, which could strand the agent at
+        // a prompt nobody answers.
+        permissionMode: admitted.permissionMode,
+        prompt: request.prompt,
+      }),
       ...(request.model !== undefined ? { model: request.model } : {}),
       ...(request.effort !== undefined ? { effort: request.effort } : {}),
       ...(request.branch !== undefined ? { branch: request.branch } : {}),
@@ -157,17 +176,17 @@ export interface RestartRequest {
   timeout?: number | null
 }
 
-/** What the server decided about one restart request: how many
- *  conversations it brings back, or why it is refused. */
+/** What the server decided about one restart request, or why it is
+ *  refused. */
 export type RestartDecision =
-  | { ok: true; conversations: number }
+  | { ok: true; sessions: number }
   | { ok: false; error: string }
 
 /**
  * Admit a `yaac-mama restart` and run it detached. Only a stopped workspace
  * is restarted, since tearing down a running one would end whatever turn its
- * agent is in. Each conversation relaunches in the recorded permission mode,
- * or the nearest its tool has (`launchablePermissionMode`, which for pi is
+ * agent is in. Each session relaunches in its recorded permission mode, or
+ * the nearest its tool has (`launchablePermissionMode`, which for pi is
  * always `bypass`), so one that would come back more permissive than the
  * caller is refused, as a create asking for that mode would be. So is one
  * whose tools the project owner is no longer signed in to. A restart counts
@@ -182,25 +201,21 @@ export async function decideRestart(request: RestartRequest): Promise<RestartDec
   if (row?.stoppedAt === undefined) return fail(`workspace ${short} is not stopped`)
 
   const ceiling = request.callerPermissionMode
-  const recorded = row.permissionMode
-  if (!isRankedPermissionMode(ceiling) || !isRankedPermissionMode(recorded)) {
-    return fail(`cannot tell whether ${short}'s permission mode '${recorded}' is within `
-      + `this workspace's own ('${ceiling}'), so it cannot be restarted`)
-  }
-
-  const active = await listActiveAgentSessions(projectId, workspaceId)
-  const tools = active.length > 0
-    ? [...new Set(active.map((a) => a.tool))]
-    : [(await firstAgentSession(projectId, workspaceId))?.tool ?? 'claude']
+  const sessions = await listWorkspaceSessions(workspaceId)
   const beyond = `more than this workspace's own ('${ceiling}'); only one at or below it can be restarted`
-  for (const tool of tools) {
-    const launched = launchablePermissionMode(tool, recorded)
+  for (const s of sessions) {
+    if (!isRankedPermissionMode(ceiling) || !isRankedPermissionMode(s.permissionMode)) {
+      return fail(`cannot tell whether ${short}'s permission mode '${s.permissionMode}' is within `
+        + `this workspace's own ('${ceiling}'), so it cannot be restarted`)
+    }
+    const launched = launchablePermissionMode(s.tool, s.permissionMode)
     if (!morePermissive(launched, ceiling)) continue
-    return fail(launched === recorded
-      ? `${short} runs in permission mode '${recorded}', ${beyond}`
-      : `${short}'s ${tool} conversation would come back in permission mode '${launched}', the nearest `
-        + `${tool} has to '${recorded}', ${beyond}`)
+    return fail(launched === s.permissionMode
+      ? `${short}'s ${s.tool} session runs in permission mode '${s.permissionMode}', ${beyond}`
+      : `${short}'s ${s.tool} session would come back in permission mode '${launched}', the nearest `
+        + `${s.tool} has to '${s.permissionMode}', ${beyond}`)
   }
+  const tools = [...new Set(sessions.map((s) => s.tool))]
   const owner = (await getProjectRow(projectId))?.owner
   for (const tool of tools) {
     if (owner === undefined || !await loadToolAuthEntry(owner, tool)) {
@@ -229,13 +244,42 @@ export async function decideRestart(request: RestartRequest): Promise<RestartDec
     () => serverLog(`[spawn] ${caller.slice(0, 8)}... restarted workspace ${short}... in ${projectId}`),
     (err: unknown) => serverLog(`[spawn] restart of ${short}... for ${caller.slice(0, 8)}... failed: ${String(err)}`),
   ).finally(release)
-  return { ok: true, conversations: Math.max(1, active.length) }
+  return { ok: true, sessions: sessions.length }
 }
 
 /** What `admit` decided: the spawn's tool and posture, or why it is refused. */
 type Admission =
   | { ok: true; tool: AgentTool; permissionMode: PermissionMode }
   | { ok: false; error: string }
+
+/**
+ * Open a session in a running workspace of the caller's project, settled as
+ * a new workspace's would be (`admit`). The caller's own workspace counts,
+ * for an agent beside it on the same checkout.
+ */
+async function spawnSession(request: SpawnRequest, target: string): Promise<SpawnDecision> {
+  const admitted = await admit(request)
+  if (!admitted.ok) return admitted
+  try {
+    const workspaceId = await resolveProjectWorkspace(target, request.callerProjectId)
+    const session = await openSession(request.principal, workspaceId, {
+      tool: admitted.tool,
+      mode: request.uiMode ?? request.callerMode,
+      permissionMode: admitted.permissionMode,
+      ...(request.prompt.trim() !== '' ? { prompt: request.prompt } : {}),
+      ...(request.model !== undefined ? { model: request.model } : {}),
+      ...(request.effort !== undefined ? { effort: request.effort } : {}),
+      ...(request.resume !== undefined ? { resume: request.resume } : {}),
+      ...(request.title !== undefined ? { title: request.title } : {}),
+    })
+    return { ok: true, workspaceId, sessionId: session.id }
+  } catch (err) {
+    if (err instanceof ServerError && ['VALIDATION', 'NOT_FOUND', 'CONFLICT'].includes(err.code)) {
+      return { ok: false, error: err.message }
+    }
+    throw err
+  }
+}
 
 /**
  * Pick a spawn's tool, refuse one the project owner has not signed in to

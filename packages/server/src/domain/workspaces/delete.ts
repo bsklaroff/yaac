@@ -6,10 +6,10 @@ import { authorizeProject, type Actor } from '#domain/access'
 import {
   deleteWorkspaceRecords,
   findWorkspaceRow,
-  getProjectAgentSessions,
+  getProjectConversations,
   listProjectWorkspaceIds,
   listQueuedWorkspaceRows,
-  listWorkspaceAgentSessions,
+  listWorkspaceConversations,
 } from '#db'
 import { ServerError } from '@yaac/shared/errors'
 
@@ -53,13 +53,13 @@ export async function deleteWorkspace(principal: Actor, idOrPrefix: string): Pro
     }
     // Only a conversation that started here, which this workspace linked
     // before any sibling did; one it merely resumed lives elsewhere.
-    const own = new Map((await listWorkspaceAgentSessions(projectId, workspaceId))
-      .map((l) => [l.agentSessionId, l.firstSeenAt.getTime()]))
+    const own = new Map((await listWorkspaceConversations(projectId, workspaceId))
+      .map((l) => [l.conversationId, l.firstSeenAt.getTime()]))
     const siblings = (await listProjectWorkspaceIds(projectId)).filter((w) => w !== workspaceId)
-    const sharer = [...(await getProjectAgentSessions(projectId, siblings)).values()].flat()
-      .find((l) => (own.get(l.agentSessionId) ?? Infinity) <= l.firstSeenAt.getTime())
+    const sharer = [...(await getProjectConversations(projectId, siblings)).values()].flat()
+      .find((l) => (own.get(l.conversationId) ?? Infinity) <= l.firstSeenAt.getTime())
     if (sharer) {
-      throw new ServerError('CONFLICT', `workspace ${short}'s conversation ${sharer.agentSessionId} is resumed in `
+      throw new ServerError('CONFLICT', `workspace ${short}'s conversation ${sharer.conversationId} is resumed in `
         + `workspace ${sharer.workspaceId.slice(0, 8)}, and its transcript would go with this one`)
     }
 

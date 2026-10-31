@@ -1,6 +1,8 @@
 # Agent modes: `tui` and `acp`
 
-A workspace runs a coding agent. How the server talks to it is its **mode**:
+A workspace runs coding agents, each in a session of its own
+(docs/sessions.md). How the server talks to a session's agent is its
+**mode**, and one workspace can run sessions of both:
 
 | | `tui` | `acp` |
 |---|---|---|
@@ -56,8 +58,8 @@ tmux window                                   server
 ```
 
 So acpd is to JSON-RPC what tmux is to a PTY. Everything built on "a
-conversation is a tmux window" works unchanged for both modes: launch,
-restart, window-close teardown, and workspace GC.
+session is a tmux window" works unchanged for both modes: launch, restart,
+window-close teardown, and workspace GC.
 
 acpd works the same under both drivers. The launch command passes everything
 that differs: the socket path, the record path, and `--cwd`, the checkout to
@@ -65,8 +67,8 @@ run the agent in (`/workspace` in a pod, a path under the data dir on a
 host). A missing cwd fails the spawn with `ENOENT`, the same error as a
 missing binary, so the path must be right.
 
-A containerless create starts an `acp` agent before its checkout is
-written, since the adapter reads nothing from it until a conversation opens,
+A containerless create whose sessions are all `acp` starts them before its
+checkout is written, since the adapter reads nothing from it until a conversation opens,
 and its boot then overlaps the checkout. `--wait-for <checkout>/.git` makes
 acpd accept a client at once but hold it, sending no `_acpd/hello`, until the
 checkout's `.git` is renamed in; the client's handshake starts at the hello,
@@ -79,11 +81,13 @@ checkout as a `tui` agent always does.
 `agentDriver(mode)` in `#runtime/agents` returns an `AgentDriver` with
 `launchCmd(spec)` and `connect(workspace, sink, deps)`. `connect` produces a
 stream of `AgentObservation`s (`up`, `down`, `live-agents`, `status`,
-`command-channel`, `windows-changed`). `WorkspaceStatusWatcher` consumes it
-and owns what both modes need: respawn, backoff, the streamd self-heal, and
-the workspace's terminal listing, which it re-reads over the command channel
-whenever tmux adds, closes or renames a window, so the snapshot carries it.
-There is one retry loop for both.
+`command-channel`, `windows-changed`) for that mode's sessions, which it
+reads from `deps.sessions` on every listing of the windows.
+`WorkspaceStatusWatcher` connects both modes per workspace and owns what
+they need: respawn, backoff, the streamd self-heal, merging their live
+agents, and the workspace's window listing, which it re-reads over a
+command channel whenever tmux adds, closes or renames a window or the live
+agents change, so the snapshot carries it.
 
 Content is not part of the interface. PTY bytes and ACP events have nothing
 in common, and the webapp already picks a renderer from a pane's target
@@ -95,11 +99,11 @@ there and nowhere else.
 
 ## Handles
 
-The status store keys a conversation's busy/idle state by its **handle**, the
-driver's address for it: a tmux pane id (`%3`) under `tui`, the acpd window
-name (`claude-2`) under `acp`. The store never knows which protocol produced a
-status. `workspace_agent_sessions.paneId` holds the same handle, which is how
-a live status joins back to its conversation.
+The status store keys an agent's busy/idle state by its **handle**: its
+session's window name, in both modes, which under `acp` also names its acpd
+socket. The store never knows which protocol produced a status. The
+session row holds the same window, which is how a live status joins back to
+its session.
 
 ## Where history lives
 
@@ -163,7 +167,7 @@ NFS sends a held-open file's bytes only on close, sync or writeback
 
 ### Reading a stopped conversation
 
-`GET /workspace/:id/agent-sessions/:sessionId/transcript?page=` returns one
+`GET /workspace/:id/conversations/:sessionId/transcript?page=` returns one
 page of the same `AcpEvent[]` a pane renders (the last page without
 `page`), read from files rather than from a running workspace, so the
 read-only pane can show a stopped workspace's whole conversation.
@@ -242,11 +246,10 @@ which is the workspace's to choose, so a record past 1 GB
 nothing to show rather than an empty conversation, and one following a
 record as it crosses the cap says the pane stops there.
 
-The record is named for the conversation, not the window. Window names are
-slots, and a restart that drops an earlier conversation shifts later ones
-down, which would overwrite one conversation's history with another's. On a
-resume the id is known at launch; on a fresh create the file starts under the
-workspace id and is renamed once `session/new` answers.
+The record is named for the conversation, not the window, since a session
+holds several conversations over its life. On a resume the id is known at
+launch; a fresh conversation's file starts under its session's id and is
+renamed once `session/new` answers.
 
 ### What the pane keeps
 
@@ -645,7 +648,7 @@ and the first classification wins.
 
 ## State
 
-The conversation's row records its mode (`agent_sessions.mode`), because a
+The conversation's row records its mode (`conversations.mode`), because a
 restart must bring it back the same way and nothing else on disk says which.
 
 Recording is the same for both modes: the live agent set names each running
@@ -667,19 +670,19 @@ while no connection was attached. It is published on the live agent
 set and stored as the catalog's id, matched by display name when the adapter
 uses its own id (claude's adapter may answer with a picker alias such as
 `opus`), so the sidebar label matches the create form. Mode changes
-travel the same way and become the workspace's posture
+travel the same way and become the session's posture
 (docs/permission-modes.md, "Following the agent"), as do effort changes,
 through the adapter's `thought_level` option (docs/effort-levels.md).
 
 The row is written by the reconciler's conversation sweep, so the id
 appearing in the live agent set is itself a reconcile trigger (`live-agents`,
-docs/event-driven-reconcile.md). A fresh ACP create does not wait for it: it
-holds its prompt on the workspace row (`pendingPrompt`) before the agent
-starts and returns once the agent's window is launched, as a `tui` create
-does, so the adapter's start-up (about two seconds for claude) is not part of
-the create. The sweep that records the conversation sends the held prompt to
-the first agent window's conversation once its handshake is done, even after
-a server or workspace restart. A server that went down mid-handshake finds
+docs/event-driven-reconcile.md). A fresh ACP session does not wait for it:
+its opening message waits on its session row (`pendingPrompt`) from before
+the agent starts, and the create or open returns once the agent's window is
+launched, as a `tui` one does, so the adapter's start-up (about two seconds
+for claude) is not part of it. The sweep that records the conversation
+sends the held prompt to that session's conversation once its handshake is
+done, even after a server or workspace restart. A server that went down mid-handshake finds
 an agent that has answered `initialize` but whose conversation nothing names
 (acpd says the agent is not fresh, and `initialize` is not repeated on a live
 process). Its next connection adopts the session acpd's record shows the
@@ -695,66 +698,44 @@ conversation is ready, so a held prompt runs in the posture, and reports the
 session's mode and effort only after them, so the row never follows the
 adapter's defaults. Those calls read the row, which follows the user's own
 changes, so they never undo one. For the same reason a handshake reports the
-session's effort only once its own effort call has run. The create also
-watches each agent window until its conversation is named: an adapter can
-die before that (claude's fails at `session/new` on a bad login), and one
-that does is reported as a failed create naming the adapter, as a `tui`
-agent that dies at launch is, with the prompt beside it. A window taken down
-by the user's stop is not reported: the stop is on the workspace row, with no
-death cause.
+session's effort only once its own effort call has run. A create also
+watches each session's window until its conversation is named: an adapter
+can die before that (claude's fails at `session/new` on a bad login), and
+one that does is reported as a failed create naming the adapter, as a `tui`
+agent that dies at launch is, with the prompt beside it.
 
-Until the row exists an ACP workspace has no chat pane, only its `agent`
-window, which runs acpd. The webapp draws that pane as the agent starting
-(`AcpStartingPane`), with acpd's log a click away for an agent that never
-comes up. The provisioning pane before it and the chat pane after it look the
-same: the prompt, then the working spinner (captioned with the create's
-progress while provisioning), and the chat pane keeps showing them
-(`launches` in the webapp's store) until the agent echoes the prompt, so the
+Until its conversation is named, an ACP session's pane is drawn as the
+agent starting (`SessionPane`), with acpd's log a click away for an agent
+that never comes up. The provisioning pane before it and the chat pane
+after it look the same: the prompt, then the working spinner (captioned
+with the create's progress while provisioning), and the chat pane keeps
+showing the session's opening message until the agent echoes it, so the
 hand-over shows no gap. A `tui` create's provisioning pane is the same, and
 the terminal replaces it once the prompt is typed in.
 
-A prewarmed `acp` spare is watched like a running workspace, so its handshake
-runs while it warms and a claim usually finds the conversation already named.
-A respawn (a claim switching tool, model or posture, or a spare moved to a
-new base tip) replaces the agent, and its old conversation stays registered
-until its stream is seen closing, or until a re-list finds the window's
-process changed, for a stream that died without a close. So a claim's
-hand-over waits for the conversation itself (`whenAcpConversation`), only one
-attached to the window's current process (its pane pid), runs that
-workspace's sweep, and sends the prompt, holding it on the row for the length
-of that wait. If no conversation comes up in time, the claim still succeeds
-and the prompt stays held for the sweep. A restart of a workspace that never
-recorded a conversation starts a fresh one, since there is none to load.
-The prompt is taken off the row before it is sent, so a crash between the
-two loses it rather than running the task twice. Only a send that was never
-made and never shown failing (the conversation closed before routing it)
-puts it back, for the next conversation; a refusal the agent replies with
-shows in the chat pane, where the user retries. The sweep
-skips a spare mid-claim, leaving that first pass to the hand-over, and
+The prompt is taken off the session row before it is sent, so a crash
+between the two loses it rather than running the task twice. Only a send
+that was never made and never shown failing (the conversation closed before
+routing it) puts it back, for the next conversation; a refusal the agent
+replies with shows in the chat pane, where the user retries. The sweep
 records a new acp conversation only while its stream is connected: the live
 set keeps naming an ended conversation until the window's next agent
-attaches, and recording it would put a never-prompted conversation first.
-A conversation skipped for a dropped stream is recorded once it reattaches.
-Either way the placeholder hides the spare so it is never listed twice. A spare's
-conversation has no row until it is claimed, so a reattach after a server
-restart takes its id from the pane option `@yaac-acp-session`, which the
-connection sets to `<pane pid>:<id>` when `session/new` answers; the pid
-check discards the value once a respawn replaces the process. An adapter
-told its model over the protocol gets the workspace row's model (a spare's
-warm-time one, held in memory until a claim records the row), read once
-`session/new` answers, so a restart before the handshake loses nothing.
+attaches. A conversation skipped for a dropped stream is recorded once it
+reattaches. A conversation whose session row has not recorded it yet (a
+server restart right after `session/new`) is found again on a reattach from
+the pane option `@yaac-acp-session`, which the connection sets to
+`<pane pid>:<id>` when `session/new` answers; the pid check discards the
+value once a new process replaces the agent. An adapter told its model over
+the protocol gets its session row's model, read once `session/new` answers,
+so a restart before the handshake loses nothing.
 
-The connection finds conversations through a tmux control-mode client of its
-own, as the `tui` driver does: tmux pushes a window add or close, and a
-subscription on an agent window still running create's placeholder fires
-when acpd replaces it. Listing windows over that stream is the heartbeat.
-acpd binds its socket a moment after it starts, so a dial that finds nothing
-is retried every second, a bounded number of times, before it waits for the
+The connection finds its sessions' windows through a tmux control-mode
+client of its own, as the `tui` driver does: tmux pushes a window add or
+close, and a subscription on each session pane's `#{pane_dead}` pushes an
+agent's exit. Listing windows over that stream is the heartbeat. acpd binds
+its socket a moment after it starts, so a dial that finds nothing is
+retried every second, a bounded number of times, before it waits for the
 heartbeat.
-
-Under k8s an `acp` pod carries the label `yaac.mode=acp`, so the status
-watcher can pick a driver from an informer event without a database read. A
-pod without it is `tui`.
 
 ## Where status can mislead
 
@@ -930,7 +911,7 @@ what constrains the agent; under containerless there is no such boundary
 (docs/containerless-driver.md).
 
 `session/request_permission` is the one request yaac serves, and its answer
-depends on the workspace's posture (docs/permission-modes.md). Under `bypass`
+depends on the session's posture (docs/permission-modes.md). Under `bypass`
 it is granted immediately. Under every other posture it is held open and
 forwarded to the chat pane for the user to answer. The adapter is also told
 the posture over `session/set_mode`, so it only asks about what that mode

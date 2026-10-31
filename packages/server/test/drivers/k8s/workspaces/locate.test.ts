@@ -28,7 +28,6 @@ function pod(over: Partial<PodInfo> = {}): PodInfo {
     jobName: 'yaac-proj-abc123',
     workspaceId: 'abc123def456',
     projectId: 'proj',
-    tool: 'claude',
     phase: 'Running',
     running: true,
     terminating: false,
@@ -61,15 +60,11 @@ afterEach(async () => {
 
 describe('findWorkspace', () => {
   it('describes a match in the server’s vocabulary, not the substrate’s', async () => {
-    mockList.mockResolvedValue([pod({ tool: 'Claude', labels: { 'yaac.nested': 'true' } })])
+    mockList.mockResolvedValue([pod({ labels: { 'yaac.nested': 'true' } })])
     expect(await findWorkspace('abc123def456')).toEqual({
       workspaceId: 'abc123def456',
       projectId: 'proj',
       jobName: 'yaac-proj-abc123',
-      // 'Claude' is not a known tool name, so it runs as claude but sets no
-      // `declaredTool` for spawned workspaces to inherit.
-      tool: 'claude',
-      mode: 'tui',
       running: true,
       state: 'running',
       labels: { 'yaac.nested': 'true' },

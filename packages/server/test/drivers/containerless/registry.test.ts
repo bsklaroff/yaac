@@ -28,7 +28,7 @@ let dataDir: string
 
 function marker(workspaceId: string, over: Partial<WorkspaceMarker> = {}): WorkspaceMarker {
   return {
-    projectId: 'demo', workspaceId, tool: 'claude', mode: 'tui',
+    projectId: 'demo', workspaceId,
     createdAtMs: 1_000, launchEnv: {}, ...over,
   }
 }
@@ -85,11 +85,11 @@ describe('listWorkspaces', () => {
     // An install that has never had a project.
     expect(listWorkspaces()).toEqual([])
 
-    await writeMarker(marker(A, { tmuxPid: 4242, sshAgentPid: 777, tool: 'codex' }))
+    await writeMarker(marker(A, { tmuxPid: 4242, sshAgentPid: 777 }))
     await writeMarker(marker(B, { projectId: 'other' }))
     await restart()
     expect(listWorkspaces().map((w) => w.workspaceId).sort()).toEqual([B, A].sort())
-    expect(findWorkspace(A)?.declaredTool).toBe('codex')
+    expect(findWorkspace(A)?.projectId).toBe('demo')
     // The processes teardown must kill survive the reread.
     expect(tmuxPidOf(A)).toBe(4242)
     expect(sshAgentPidOf(A)).toBe(777)

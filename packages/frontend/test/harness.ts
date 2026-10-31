@@ -8,7 +8,7 @@ import type { XtermCore } from '#lib/xterm-internals'
 import type { Terminal } from '@xterm/xterm'
 import type { AcpEvent } from '@yaac/shared/acp'
 import type {
-  AgentSessionEntry, ProvisioningWorkspaceEntry, ServerSnapshot, Whoami, WorkspaceListEntry,
+  ConversationEntry, ProvisioningWorkspaceEntry, ServerSnapshot, SessionEntry, Whoami, WorkspaceListEntry,
 } from '@yaac/shared/types'
 
 /**
@@ -127,14 +127,14 @@ export function renderWithClient(ui: ReactElement, client = testQueryClient()): 
  * whatever a case is about.
  */
 
-/** A running workspace with no agents, ports or blocked hosts. */
+/** A running workspace with no sessions, ports or blocked hosts. */
 export const workspaceEntry = (over: Partial<WorkspaceListEntry> = {}): WorkspaceListEntry => ({
   workspaceId: 's1',
   projectId: 'proj',
-  tool: 'claude',
   status: 'running',
   createdAt: '2026-08-10 00:00:00',
-  agentSessions: [],
+  sessions: [],
+  conversations: [],
   blockedHosts: [],
   forwardedPorts: [],
   unforwardedPorts: [],
@@ -152,9 +152,14 @@ export const provisioningEntry = (over: Partial<ProvisioningWorkspaceEntry> = {}
   ...over,
 })
 
+/** An open session: a claude chat agent, not yet holding a conversation. */
+export const sessionEntry = (over: Partial<SessionEntry> = {}): SessionEntry => ({
+  sessionId: 'sess-1', tool: 'claude', mode: 'acp', window: 'claude-sess1', permissionMode: 'bypass', ordinal: 0, ...over,
+})
+
 /** A workspace's first, active agent conversation. */
-export const agentSession = (over: Partial<AgentSessionEntry> = {}): AgentSessionEntry => ({
-  agentSessionId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true, ...over,
+export const conversation = (over: Partial<ConversationEntry> = {}): ConversationEntry => ({
+  conversationId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true, ...over,
 })
 
 /** A user prompt in a conversation (or a subagent's `thread`). */

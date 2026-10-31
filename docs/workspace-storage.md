@@ -33,14 +33,14 @@ Guessing "garbage" from disk alone is how a sweep deletes the only copy of
 someone's work. The code paths that delete a row therefore delete its files
 too.
 
-Agents inside a workspace are separate rows. `agent_sessions` has one row per
+Agents inside a workspace are separate rows. `conversations` has one row per
 tool-native conversation (a claude, codex, pi or opencode session, keyed by the
-id the tool chose). `workspace_agent_sessions` links the two, so a workspace
+id the tool chose). `workspace_conversations` links the two, so a workspace
 can accumulate conversations and one conversation can be resumed into a second
 workspace. See "Agent workspaces" below.
 
 `db/workspace-store.ts` owns the `workspaces` table and
-`db/agent-session-store.ts` the other two. They are the only writers.
+`db/conversation-store.ts` the other two. They are the only writers.
 
 ## Write discipline
 
@@ -160,7 +160,7 @@ checkout runs concurrently with the pod boot, and making the row wait would
 serialize them.
 
 `listActiveWorkspaces` joins live pods to one `getProjectWorkspaceRows` and one
-`getProjectAgentSessions` query per project. `listStoppedWorkspaces` pages
+`getProjectConversations` query per project. `listStoppedWorkspaces` pages
 the rows with a recorded stop, minus live pod ids, newest stop first. Paging
 is by keyset on `(stoppedAt, workspaceId)`, so a stop landing between two
 pages neither repeats nor skips a row, and the search, group filters and
@@ -182,12 +182,16 @@ provisioning registry.
 
 ## Agent workspaces
 
-Agent sessions are reported by the agents, not written by create. Every running
-agent names the conversation it holds. The status watcher carries that in its
-live agent set, and the registry turns the set into `sessions-discovered` /
-`sessions-active` events, which `applyWorkspaceEvent` writes
-(docs/layered-server.md). Both agent modes use this path; they differ only in
-where the conversation id comes from.
+A workspace's agents run in its sessions (docs/sessions.md), whose rows
+yaac writes when it opens them. The conversations they hold are reported by
+the agents, not written by create. Every running agent names the
+conversation it holds. The status watcher carries that in its live agent
+set, and the registry turns the set into `conversations-discovered` /
+`conversations-active` events, plus a `session-reported` event for each
+session whose agent moved to another conversation, model, posture or
+effort, which `applyWorkspaceEvent` writes (docs/layered-server.md). Both
+agent modes use this path; they differ only in where the conversation id
+comes from.
 
 Under `acp` the server is the ACP client, so `session/new` returns the id.
 Its launch sets `YAAC_NO_PANE_REPORT`, so the reporter hooks the tool shares
@@ -243,29 +247,16 @@ against claude 2.1.310, codex-cli 0.164.0, pi 1.4.0 and @opencode/cli 2.1.4.)
 A conversation is **active** exactly when a live agent names it. A pane option
 dies with its pane, and a new pod's tmux starts with none, so a previous pod's
 conversation can never look live. A new conversation changes the live set,
-which dirties the reconcile tick. Two cases leave the active set untouched:
-
-- The watcher has not enumerated panes yet, so a stream gap never reads as
-  "every agent exited".
-- The keepalive a session starts with (`PLACEHOLDER_FORMAT`), in the window its
-  agent is respawned into, is not an agent pane, so a restart does not mark its
-  conversations inactive before its agents are running.
+which dirties the reconcile tick. The active set is left untouched until the
+watcher has enumerated panes, so a stream gap never reads as "every agent
+exited".
 
 Discovery only adds rows: a `/clear` leaves the old conversation recorded,
-inactive, beside the new one.
-
-The one row discovery replaces is the **pin**: the conversation a `tui` create
-records under the workspace id, so the workspace has a tool and a founding ask
-before any agent speaks. claude and pi are launched with that id, so the pin is
-their real conversation. codex and opencode choose their own ids
-(`SELF_NAMING_TOOLS`), so for them the pin is a placeholder. The first
-conversation of that tool a pane names takes it over (`recordAgentSessions`):
-the link keeps ordinal 0, and the conversation inherits what create recorded on
-the pin (the `--prompt` ask, the launch model, the birth time). Everything that
-reads "the first conversation" (prompt, title, restart) then finds the one the
-agent is running. A workspace stopped before any pane named one still holds the
-pin, and its restart starts the tool fresh instead of resuming an id the tool
-never knew.
+inactive, beside the new one, both linked to the session that held them.
+Nothing stands in for a conversation before its agent names one: the
+session row already records the tool, the launch model and the message it
+was opened with, and a claude or pi session is launched with its session id
+as the conversation id.
 
 Limits of pane options:
 
@@ -293,21 +284,20 @@ conversation by its recorded handle. The life also separates a permission mode
 reported by this pod from one a previous pod left.
 
 `active` is frozen at teardown and not recomputed while a workspace is stopped.
-A restart brings back exactly the conversations that were live at stop, each in
-its own tmux window, in the order they were first recorded (`agentWindowName`;
-the first keeps the bare tool name so `yaac:<tool>` targets still resolve). A
-conversation started in a shell comes back in an agent window.
+A restart brings back exactly the sessions open at stop, each in its own
+window, and gives each conversation an agent started by hand in a terminal,
+still live at stop, a session of its own to come back in.
 
-A restart resumes each conversation whose history is where its tool keeps it
-(`hasConversationHistory` in `#runtime/agents`): claude's transcript, codex's
-rollout, pi's log, opencode's database. One whose history is not there starts
-as a create's would, unless the rows show its agent wrote some: a transcript
-the registry found, an id a self-naming tool chose rather than the pin, or
-under `acp` a first message. Then a crash or an incomplete restore lost it,
-and the restart fails naming each such conversation, rather than resume an id
-the tool cannot find (which kills the agent) or quietly start the work over.
-Only a missing file counts as gone; any other read error fails the restart as
-itself.
+A restart resumes each session's conversation whose history is where its tool
+keeps it (`hasConversationHistory` in `#runtime/agents`): claude's transcript,
+codex's rollout, pi's log, opencode's database. One whose history is not
+there starts as a fresh session's would, unless the rows show its agent
+wrote some: a transcript the registry found, an id a self-naming tool chose,
+or under `acp` a first message. Then a crash or an incomplete restore lost
+it, and the restart fails naming each such conversation
+(`planSessionResumes`), rather than resume an id the tool cannot find (which
+kills the agent) or quietly start the work over. Only a missing file counts
+as gone; any other read error fails the restart as itself.
 
 ### Opening message and model
 
@@ -322,11 +312,11 @@ parse a transcript: its opening message and its **model**.
 A missing report leaves the stored value alone on both. The model is null only
 for a conversation launched without one that has never reported.
 
-A restart relaunches each conversation on its stored model, since a launch
-naming none takes whatever the project's shared tool home holds. A first
-conversation on the workspace's launch tool that never reported falls back to
-the workspace's launch model. A queued child of a running workspace inherits
-its first conversation's model the same way.
+A session's row holds the model too: its launch model, then each one its
+agent reports. A restart relaunches each session on it, since a launch
+naming none takes whatever the project's shared tool home holds. A queued
+child of a running workspace inherits its first session's model the same
+way.
 
 Anything in the workspace can set the pane option a model arrives through, so
 a stored model is used only in the form `launchableModel` gives it: matching
@@ -406,7 +396,7 @@ copy, and none of this runs.
 ## Transcript paths
 
 Every transcript path is stored **relative to the project directory**: in the
-pane option, in the event, and in `agent_sessions.transcriptPath`.
+pane option, in the event, and in `conversations.transcriptPath`.
 
 An absolute path would include the data dir, so moving the data dir (a restored
 backup, a changed `YAAC_DATA_DIR`) would silently break every row. Relative to
@@ -432,7 +422,7 @@ a path under it); events carry project-relative paths; server-side reads decode
 through `toLinkRow`.
 
 `@yaac-session` is the one input yaac does not write, so it is validated.
-`parsePaneSession` holds the id to `agentSessionIdSchema` (a shell-safe
+`parsePaneSession` holds the id to `conversationIdSchema` (a shell-safe
 charset) and drops absolute or escaping paths. `resolveProjectPath` resolves a
 path only under the recording tool's shared home or that tool's part of the
 reading workspace's own history, so a pane naming `known_hosts`,
@@ -545,7 +535,7 @@ containerless, where a host run writes into the shared homes, it moves every
 conversation the workspace has held out of them into its history. That set
 is every id its rows name (active or not), every ACP record in `acp/<id>/` (an
 ACP conversation fires no hook, but claude still writes a transcript), and the
-workspace id itself (used by the pin before any row names it).
+workspace id itself.
 
 A conversation that a sibling workspace's rows also name is excluded. It has no
 single owner, and moving it would orphan it in the other workspace. It stays in
@@ -560,7 +550,7 @@ names a thread already in the set, unless a sibling's rows name that thread
 
 Moves are `rename`s under the project dir through a `no-links` root. They never
 overwrite and leave links alone. A row whose file is gone from the shared home
-and present in the history is repointed with a `sessions-discovered` event.
+and present in the history is repointed with a `conversations-discovered` event.
 This is decided from the disk, not from the moves just made, so a converge
 interrupted between a rename and the row write is repaired by the next one.
 Create then plants the links above, first emptying a real
@@ -607,7 +597,7 @@ file plus rename, and deletes by walking descriptors.
   remover, which takes only plain entry names of a directory strictly inside
   the global root and reached through no link.
 
-An ACP agent's `sessionId` is checked against `agentSessionIdSchema` too before
+An ACP agent's `sessionId` is checked against `conversationIdSchema` too before
 it is recorded or used in a path.
 
 ## First messages
@@ -622,7 +612,7 @@ only the row.
 
 A conversation no sweep finished with (its workspace stopped before a pass
 ran, or its row predates the sweep recording `tui` activity) is read once
-after the stop by the `stopped-agent-sessions` reconcile step: the first
+after the stop by the `stopped-conversations` reconcile step: the first
 message if the row lacks one, and the last activity. That step marks the
 conversation read by writing `lastActiveAt` (its creation time when no file is
 readable), so it never reads one twice. It reads in batches for up to half a

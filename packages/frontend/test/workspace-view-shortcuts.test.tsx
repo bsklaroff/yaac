@@ -13,13 +13,16 @@ import { isPreviewTarget, previewTarget } from '#lib/preview'
 import { mockFetch, renderWithClient, type FetchMock } from './harness'
 
 
+/** The workspace's one session, a terminal agent. */
+const AGENT = 'session:sess-1'
+
 const workspace: WorkspaceListEntry = {
   workspaceId: 's1',
   projectId: 'proj',
-  tool: 'claude',
   status: 'running',
+  sessions: [{ sessionId: 'sess-1', tool: 'claude', mode: 'tui', window: 'claude-sess1', permissionMode: 'bypass', ordinal: 0 }],
   createdAt: '2026-08-10 00:00:00',
-  agentSessions: [],
+  conversations: [],
   blockedHosts: [],
   forwardedPorts: [],
   unforwardedPorts: [],
@@ -63,10 +66,10 @@ describe('WorkspaceView: open-files', () => {
   })
 
   it('surfaces an explorer that is already open as a hidden tab', () => {
-    useUiStore.setState({ layouts: { s1: [{ tabs: ['agent', 'files'], active: 'agent' }] } })
+    useUiStore.setState({ layouts: { s1: [{ tabs: [AGENT, 'files'], active: AGENT }] } })
     renderView()
     altE()
-    expect(useUiStore.getState().layouts.s1).toEqual([{ tabs: ['agent', 'files'], active: 'files' }])
+    expect(useUiStore.getState().layouts.s1).toEqual([{ tabs: [AGENT, 'files'], active: 'files' }])
     expect(useUiStore.getState().findPending).toBe('files')
   })
 
@@ -88,12 +91,12 @@ describe('WorkspaceView: open-changes', () => {
     altE()
     await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Filter files')))
     fireEvent.keyDown(window, { code: 'KeyG', key: 'g', altKey: true })
-    expect(tabsOf()).toEqual(['agent', 'files', 'changes'])
+    expect(tabsOf()).toEqual([AGENT, 'files', 'changes'])
     expect(useUiStore.getState().activeTabs.s1).toBe('changes')
     const filter = await screen.findByLabelText('Filter changed files')
     await waitFor(() => expect(document.activeElement).toBe(filter))
 
-    act(() => useUiStore.getState().focusTerminal('s1', 'agent'))
+    act(() => useUiStore.getState().focusTerminal('s1', AGENT))
     fireEvent.click(screen.getByRole('button', { name: 'Show changes' }))
     expect(useUiStore.getState().activeTabs.s1).toBe('changes')
   })
@@ -211,7 +214,7 @@ describe('WorkspaceView: open-preview', () => {
     // Electron rewrites `src` as the page navigates.
     wv?.setAttribute('src', `${home}settings`)
 
-    act(() => useUiStore.getState().focusTerminal('s1', 'agent'))
+    act(() => useUiStore.getState().focusTerminal('s1', AGENT))
     expect(document.querySelector('webview')).toBe(wv)
     // s2 forwards the same container port at another host port, which the
     // hidden s1 preview must not navigate to.
@@ -255,9 +258,9 @@ describe('WorkspaceView: preview outside the desktop app', () => {
   })
 
   it('drops a preview pane a saved layout restores, which could never load here', () => {
-    useUiStore.setState({ layouts: { s1: [{ tabs: ['agent', previewTarget(3000)], active: previewTarget(3000) }] } })
+    useUiStore.setState({ layouts: { s1: [{ tabs: [AGENT, previewTarget(3000)], active: previewTarget(3000) }] } })
     renderView(ports)
-    expect(tabsOf()).toEqual(['agent'])
+    expect(tabsOf()).toEqual([AGENT])
   })
 
   it('in a browser on the server\'s machine, opens the port\'s hostname in a new tab', () => {

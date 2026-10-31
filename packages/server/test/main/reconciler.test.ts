@@ -12,9 +12,9 @@ import type * as teardownModule from '#domain/workspaces/project-teardown'
 // they do. The real driver is installed only to read its step list.
 vi.mock('#domain/workspaces/stale-workspaces', () => ({ reconcileStaleWorkspaces: vi.fn() }))
 vi.mock('#domain/workspaces/prewarm-reconcile', () => ({ reconcilePrewarmPool: vi.fn() }))
-vi.mock('#domain/workspaces/agent-session-registry', () => ({
-  reconcileAgentSessions: vi.fn(),
-  reconcileStoppedAgentSessions: vi.fn(),
+vi.mock('#domain/workspaces/conversation-registry', () => ({
+  reconcileConversations: vi.fn(),
+  reconcileStoppedConversations: vi.fn(),
 }))
 vi.mock('#domain/workspaces/cleanup', async (importOriginal) => ({
   ...(await importOriginal<typeof cleanupModule>()),
@@ -39,7 +39,7 @@ import { defaultReconcileSteps } from '#main/reconcile-steps'
 import type { PassContext, ReconcileStep, ReconcileTrigger } from '#drivers/contract'
 import { reconcileStaleWorkspaces } from '#domain/workspaces/stale-workspaces'
 import { reconcilePrewarmPool } from '#domain/workspaces/prewarm-reconcile'
-import { reconcileAgentSessions } from '#domain/workspaces/agent-session-registry'
+import { reconcileConversations } from '#domain/workspaces/conversation-registry'
 import { gcOrphanScratchDirs, reapOrphanNodeLocal } from '#domain/workspaces/cleanup'
 import { adoptRefreshedToolCredentials } from '#domain/auth/runtime-push'
 import { reconcileGeneratedTitles } from '#domain/workspaces/title-generation'
@@ -52,7 +52,7 @@ const runtimeMaintenance = vi.fn<(ctx: PassContext) => Promise<void>>()
 const ALL_STEP_FNS = [
   reconcileStaleWorkspaces, reconcileRevokedShares,
   runtimePrePool, reconcilePrewarmPool,
-  reconcileAgentSessions,
+  reconcileConversations,
   runtimeMaintenance,
   gcOrphanScratchDirs, reapOrphanNodeLocal, adoptRefreshedToolCredentials,
   reconcileGeneratedTitles,
@@ -322,7 +322,7 @@ describe('defaultReconcileSteps', () => {
   it('generates titles on whatever dirties the conversation sweep', () => {
     const steps = defaultReconcileSteps()
     const titles = steps.find((s) => s.name === 'generated-titles')!
-    const sweep = steps.find((s) => s.name === 'agent-sessions')!
+    const sweep = steps.find((s) => s.name === 'conversations')!
     expect([...titles.triggers].sort()).toEqual([...sweep.triggers].sort())
     expect([...titles.triggers].sort()).toEqual(['live-agents', 'workspaces'])
   })
@@ -349,11 +349,11 @@ describe('defaultReconcileSteps', () => {
   // this trigger its row would wait for the next resync.
   it('runs only the conversation sweep and titles when the live agent set changes', async () => {
     await runPass(['live-agents'])
-    expect(reconcileAgentSessions).toHaveBeenCalledTimes(1)
+    expect(reconcileConversations).toHaveBeenCalledTimes(1)
     expect(reconcileGeneratedTitles).toHaveBeenCalledTimes(1)
     // No other step, since a live-set change says nothing about pods.
     for (const fn of ALL_STEP_FNS) {
-      if (fn === reconcileAgentSessions || fn === reconcileGeneratedTitles) continue
+      if (fn === reconcileConversations || fn === reconcileGeneratedTitles) continue
       expect(fn).not.toHaveBeenCalled()
     }
   })

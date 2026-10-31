@@ -20,20 +20,33 @@
 // packages/server/test/db/.
 
 export {
-  deleteProjectAgentSessions,
-  firstAgentSession,
-  getAgentSessionsFor,
-  getProjectAgentSessions,
-  listActiveAgentSessions,
-  listUncapturedStoppedSessions,
-  listWorkspaceAgentSessions,
+  deleteProjectConversations,
+  getConversationsFor,
+  getProjectConversations,
+  listActiveConversations,
+  listUncapturedStoppedConversations,
+  listWorkspaceConversations,
   conversationTitle,
   openingPrompt,
-  recordedConversationHandles,
-  type AgentSessionLinkRow,
-} from './agent-session-store'
+  type ConversationLinkRow,
+} from './conversation-store'
+export {
+  closeSessionRow,
+  getSessionRow,
+  holdSessionPrompt,
+  insertSession,
+  listOpenSessionsFor,
+  listWorkspaceSessions,
+  markSessionsLaunched,
+  recordSessionWaitingSeen,
+  sessionWindowName,
+  setSessionTitle,
+  takeSessionPrompt,
+  type SessionLaunchSettings,
+  type SessionRow,
+} from './session-store'
 export { applyWorkspaceEvent } from './apply-workspace-event'
-export type { CapturedSession, DiscoveredSession, WorkspaceEvent } from './events'
+export type { CapturedConversation, DiscoveredConversation, WorkspaceEvent } from './events'
 export { desiredWorkspaces } from './desired-workspaces'
 export {
   createWorkspaceGroup,
@@ -154,7 +167,6 @@ export {
   findWorkspaceRow,
   getProjectWorkspaceRows,
   getWorkspaceRow,
-  holdPendingPrompt,
   listProjectWorkspaceIds,
   listStoppedWorkspaceRows,
   listUncleanedStoppedWorkspaces,
@@ -162,14 +174,12 @@ export {
   listWorkspaceRows,
   recordAllDeathsSeen,
   recordDeathSeen,
-  recordWaitingSeen,
   findWorkspaceByMamaToken,
   setWorkspaceMamaTokenHash,
   setWorkspaceDeadline,
   markDeadlineIsNextRun,
   setWorkspaceGeneratedTitle,
   setWorkspaceTitle,
-  takePendingPrompt,
   type StoppedCount,
   type StoppedRowCursor,
   type WorkspaceRow,

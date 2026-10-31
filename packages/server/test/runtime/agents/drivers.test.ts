@@ -73,7 +73,7 @@ function tuiLaunchCmd(o: {
 }): string {
   return agentDriver('tui').launchCmd({
     tool: o.tool,
-    agentSessionId: o.workspaceId,
+    conversationId: o.workspaceId,
     resume: o.resume ?? false,
     windowName: o.tool,
     paths: { ...workspacePathsFixture(), ...o.paths },
@@ -125,8 +125,8 @@ async function answer(stream: FakeStream, cmd: string): Promise<void> {
 
 /** The windows an acp connection's tmux client lists, one name per line. */
 let tmuxWindows = ''
-/** Listed windows still running create's placeholder. */
-const placeholders = new Set<string>()
+/** Listed windows whose agent exited, leaving its pane dead. */
+const deadPanes = new Set<string>()
 /** The last tmux client an acp connection dialed. */
 let lastTmux: FakeTmux | undefined
 /** Every `list-windows` answers with an error while set. */
@@ -139,8 +139,8 @@ const paneOptions = new Map<string, string>()
 
 /**
  * The workspace's tmux server as an acp connection's control-mode client
- * sees it: it lists `tmuxWindows`, the ones in `placeholders` as still
- * running the placeholder, and accepts every other command.
+ * sees it: it lists `tmuxWindows`, the ones in `deadPanes` with a dead
+ * pane, and accepts every other command.
  */
 class FakeTmux extends FakeStream {
   private bannerSent = false
@@ -152,7 +152,7 @@ class FakeTmux extends FakeStream {
       const relist = data.startsWith('list-windows')
       const body = relist
         ? tmuxWindows.split('\n').filter((w) => w !== '')
-          .map((w, i) => `${w}\t%${String(i)}\t${placeholders.has(w) ? '1' : '0'}`
+          .map((w, i) => `${w}\t%${String(i)}\t${deadPanes.has(w) ? '1' : '0'}`
             + `\t${panePids.get(w) ?? '100'}\t${paneOptions.get(`%${String(i)}`) ?? ''}\n`).join('')
         : ''
       const banner = this.bannerSent ? '' : '%begin 0 0 0\n%end 0 0 0\n'
@@ -167,8 +167,8 @@ class FakeTmux extends FakeStream {
 
 /**
  * The workspace's tmux server as a tui connection's control-mode client sees
- * it: it lists `panes` (`<pane id>\t<window name>`, none a placeholder or
- * naming a conversation) and accepts every other command.
+ * it: it lists `panes` (`<pane id>\t<window name>`, none dead or naming a
+ * conversation) and accepts every other command.
  */
 class FakeTuiTmux extends FakeStream {
   private bannerSent = false
@@ -193,11 +193,65 @@ function acpDial(acpd: (s: DrivenWorkspace, argv: string[]) => StreamChild): Non
   return (s, argv) => (argv[0] === 'tmux' ? (lastTmux = new FakeTmux()) : acpd(s, argv))
 }
 
+/**
+ * The deps a test connects with: the driver's own, plus the session
+ * accessors the server reads from a workspace's rows, which `withSessions`
+ * turns into its open sessions (`AgentConnectDeps.sessions`).
+ */
+type TestDeps = Omit<AgentConnectDeps, 'sessions'> & {
+  /** The conversation each window's agent holds, by window. */
+  recordedSessions?: () => Promise<Array<{ handle: string; conversationId: string }>>
+  /** Every session's posture; `bypass` when omitted. */
+  permissionMode?: () => Promise<PermissionMode>
+  effort?: () => Promise<string | undefined>
+  launchModel?: (tool: AgentTool) => Promise<string | undefined>
+}
+
+/** The windows a session runs in, named for its tool as these tests name
+ *  them: the bare tool, or the tool and a number. */
+const SESSION_WINDOW = new RegExp(`^(${AGENT_TOOLS.join('|')})(-\\d+)?$`)
+
+/**
+ * Connect deps whose sessions are every listed window named for a tool
+ * (`SESSION_WINDOW`), in `mode`: the acp tmux's `tmuxWindows`, or for tui
+ * whatever the stream lists, since the tui driver keeps only the windows it
+ * sees. A fresh acp session's record is named for the workspace, as these
+ * tests write it.
+ */
+function withSessions(mode: 'acp' | 'tui', deps: TestDeps): AgentConnectDeps {
+  const { recordedSessions, permissionMode, effort, launchModel, ...rest } = deps
+  return {
+    ...rest,
+    sessions: async () => {
+      const recorded = await recordedSessions?.() ?? []
+      const posture = await permissionMode?.() ?? 'bypass'
+      const level = await effort?.()
+      const windows = mode === 'acp'
+        ? tmuxWindows.split('\n').filter((w) => w !== '')
+        : AGENT_TOOLS.flatMap((tool) => [tool, ...Array.from({ length: 10 }, (_, n) => `${tool}-${String(n + 2)}`)])
+      return await Promise.all(windows.filter((w) => SESSION_WINDOW.test(w)).map(async (window) => {
+        const tool = SESSION_WINDOW.exec(window)![1] as AgentTool
+        const model = await launchModel?.(tool)
+        const conversationId = recorded.find((r) => r.handle === window)?.conversationId
+        return {
+          window,
+          tool,
+          mode,
+          sessionId: session.workspaceId,
+          permissionMode: posture,
+          ...(conversationId !== undefined ? { conversationId } : {}),
+          ...(level !== undefined ? { effort: level } : {}),
+          ...(model !== undefined ? { model } : {}),
+        }
+      }))
+    },
+  }
+}
+
 const session: DrivenWorkspace = {
   projectId: 'demo',
   workspaceId: 'wt-1',
   jobName: 'yaac-demo-wt-1',
-  tool: 'claude',
 }
 
 const connections: Array<{ close(): void }> = []
@@ -213,11 +267,11 @@ function collect(conversation: AcpConversation): AcpEventInit[] {
  * Write the log acpd would have left, which is how a reattaching connection
  * learns what the agent is doing.
  */
-async function record(agentSessionId: string, lines: unknown[]): Promise<void> {
+async function record(conversationId: string, lines: unknown[]): Promise<void> {
   const dir = acpLogDir(session.projectId, session.workspaceId)
   await fs.mkdir(dir, { recursive: true })
   await fs.writeFile(
-    path.join(dir, `${agentSessionId}.jsonl`),
+    path.join(dir, `${conversationId}.jsonl`),
     lines.map((l) => `${JSON.stringify(l)}\n`).join(''),
   )
 }
@@ -231,28 +285,28 @@ const lifeLine = {
 
 /** The log of a handshake that left the session in `modeId`, which is how a
  *  reattach learns the posture. */
-const recordMode = (agentSessionId: string, modeId: string): Promise<void> => record(agentSessionId, [
-  ...handshakeOnly(agentSessionId, 'default'),
-  { jsonrpc: '2.0', id: 'h-2', method: 'session/set_mode', params: { sessionId: agentSessionId, modeId } },
+const recordMode = (conversationId: string, modeId: string): Promise<void> => record(conversationId, [
+  ...handshakeOnly(conversationId, 'default'),
+  { jsonrpc: '2.0', id: 'h-2', method: 'session/set_mode', params: { sessionId: conversationId, modeId } },
   { jsonrpc: '2.0', id: 'h-2', result: {} },
 ])
 
 /** The log of a handshake cut off after `session/new` answered, in `modeId`,
  *  before its effort and posture calls. */
-const handshakeOnly = (agentSessionId: string, modeId: string): unknown[] => [
+const handshakeOnly = (conversationId: string, modeId: string): unknown[] => [
   lifeLine,
   { jsonrpc: '2.0', id: 'h-1', method: 'session/new', params: { cwd: '/workspace', mcpServers: [] } },
-  { jsonrpc: '2.0', id: 'h-1', result: { sessionId: agentSessionId, modes: {
+  { jsonrpc: '2.0', id: 'h-1', result: { sessionId: conversationId, modes: {
     currentModeId: modeId, availableModes: [{ id: 'default' }, { id: 'acceptEdits' }, { id: 'bypassPermissions' }],
   } } },
 ]
 
 /** A prompt as logged: the client's request, with the id its reply will use. */
-const promptLine = (agentSessionId: string, id: string, text: string): unknown => ({
+const promptLine = (conversationId: string, id: string, text: string): unknown => ({
   jsonrpc: '2.0',
   id,
   method: 'session/prompt',
-  params: { sessionId: agentSessionId, prompt: [{ type: 'text', text }] },
+  params: { sessionId: conversationId, prompt: [{ type: 'text', text }] },
 })
 
 const helloLine = (firstAttach: boolean): string =>
@@ -279,18 +333,18 @@ const permissionAsk = (id: number): string =>
 /** A connection reattached to a running conversation under a given posture. */
 async function attachedUnder(
   permissionMode: PermissionMode,
-  agentSessionId: string,
+  conversationId: string,
 ): Promise<{ stream: FakeStream; seen: AgentObservation[] }> {
   const stream = new FakeStream()
   tmuxWindows = 'claude\n'
   const seen: AgentObservation[] = []
-  connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+  connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), withSessions('acp', {
     dial: acpDial(() => stream),
-    recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId }]),
+    recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId }]),
     permissionMode: () => Promise.resolve(permissionMode),
     log: () => {},
-  }))
-  await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', agentSessionId)).toBeDefined())
+  })))
+  await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', conversationId)).toBeDefined())
   stream.feed(helloLine(false))
   return { stream, seen }
 }
@@ -305,7 +359,7 @@ beforeEach(async () => {
   podExec.mockResolvedValue({ stdout: '', stderr: '' })
   tmuxWindows = ''
   failRelist = false
-  placeholders.clear()
+  deadPanes.clear()
   panePids.clear()
   paneOptions.clear()
   installFakeWorkspaceDriver({ exec: podExec })
@@ -325,7 +379,7 @@ describe('agentDriver', () => {
   it('launches a tui conversation as the tool itself and an acp one under acpd', () => {
     const spec = {
       tool: 'claude' as const,
-      agentSessionId: 'conv-1',
+      conversationId: 'conv-1',
       resume: false,
       windowName: 'claude-2',
       paths: workspacePathsFixture(),
@@ -396,7 +450,7 @@ describe('agentDriver', () => {
     const spec = (tool: 'codex' | 'opencode' | 'pi', over: Record<string, unknown> = {}) =>
       agentDriver('acp').launchCmd({
         tool,
-        agentSessionId: 'conv-1',
+        conversationId: 'conv-1',
         resume: false,
         windowName: tool,
         paths: workspacePathsFixture(),
@@ -488,19 +542,18 @@ describe('agentDriver', () => {
     },
   } as const
 
-  // Each pane is watched in its own window's tool's terms, whatever the
-  // workspace's tool (otherwise a restart would forget a codex conversation
-  // in a claude workspace), and windows no agent runs in, init commands and
-  // scratch shells, get no status subscription.
+  // Each session's agent pane is watched in its own tool's terms, and windows
+  // no session runs in, init commands and scratch shells, get no status
+  // subscription.
   it.each(Object.entries(STATUS_CASES))('watches a %s pane by its own format and classifies what it pushes', async (tool, { format, running, waiting }) => {
     const windows = [tool, `${tool}-2`, `${tool}-10`, 'shell', 'dev', `${tool}-ish`, `my${tool}`, `${tool}-`]
     const stream = new FakeTuiTmux(windows.map((w, i) => `%${String(i)}\t${w}`))
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('tui').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('tui').connect(session, (o) => seen.push(o), withSessions('tui', {
       dial: () => stream,
       heartbeatIntervalMs: 60_000,
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
 
     const subscriptions = stream.writes.flatMap((w) => {
@@ -513,25 +566,28 @@ describe('agentDriver', () => {
       stream.feed(`%subscription-changed status-1 $0 @0 0 %1 : ${value}\n`)
       return seen.at(-1)
     }
-    for (const t of running) expect(classified(t), t).toEqual({ kind: 'status', handle: '%1', status: 'running' })
-    for (const t of waiting) expect(classified(t), t).toEqual({ kind: 'status', handle: '%1', status: 'waiting' })
+    // Under its session's window, not its pane.
+    for (const t of running) expect(classified(t), t).toEqual({ kind: 'status', handle: `${tool}-2`, status: 'running' })
+    for (const t of waiting) expect(classified(t), t).toEqual({ kind: 'status', handle: `${tool}-2`, status: 'waiting' })
   })
 
   it('observes a tui conversation through tmux control mode', async () => {
     const stream = new FakeStream()
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('tui').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('tui').connect(session, (o) => seen.push(o), withSessions('tui', {
       dial: () => stream,
       heartbeatIntervalMs: 60_000,
       commandTimeoutMs: 1_000,
       log: () => { /* quiet */ },
-    }))
+    })))
 
     // tmux's attach banner, then the pane listing reply.
     stream.feed('%begin 1 100 0\n%end 1 100 0\n%session-changed $0 yaac\n')
     await vi.waitFor(() => expect(stream.writes.join('')).toContain('list-panes'))
     stream.feed('%begin 1 101 1\n%7\tclaude\t0\t\n%end 1 101 1\n')
     await answer(stream, "refresh-client -B 'session-7:%7:#{=1024;s/[^ -~]//:@yaac-session}'")
+    // A session's pane is watched for its agent exiting.
+    await answer(stream, "refresh-client -B 'dead-7:%7:#{pane_dead}'")
     await answer(stream, "refresh-client -B 'status-7:%7:#{pane_title}'")
     // Each agent pane also subscribes to the model and permission mode its
     // tool's hooks report. tmux filters and bounds the values, since the
@@ -541,15 +597,15 @@ describe('agentDriver', () => {
       + "|#{=32;s/[^a-z]//:@yaac-effort}'")
 
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
-    // The handle is the pane id; no conversation id yet.
-    expect(seen).toContainEqual({ kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude' }] })
+    // The handle is the session's window; no conversation id yet.
+    expect(seen).toContainEqual({ kind: 'live-agents', agents: [{ handle: 'claude', tool: 'claude' }] })
     expect(seen.some((o) => o.kind === 'command-channel' && o.send !== null)).toBe(true)
 
     // Classified by the pane's own tool.
     stream.feed('%subscription-changed status-7 $0 @0 0 %7 : ⠋ working\n')
-    expect(seen).toContainEqual({ kind: 'status', handle: '%7', status: 'running' })
+    expect(seen).toContainEqual({ kind: 'status', handle: 'claude', status: 'running' })
     stream.feed('%subscription-changed status-7 $0 @0 0 %7 : ✳ done\n')
-    expect(seen).toContainEqual({ kind: 'status', handle: '%7', status: 'waiting' })
+    expect(seen).toContainEqual({ kind: 'status', handle: 'claude', status: 'waiting' })
 
     // A report, and then a switch, each republish the live set.
     const agentSets = (): unknown[] => seen.filter((o) => o.kind === 'live-agents')
@@ -557,11 +613,11 @@ describe('agentDriver', () => {
     stream.feed('%subscription-changed report-7 $0 @0 0 %7 : ||\n')
     stream.feed('%subscription-changed report-7 $0 @0 0 %7 : claude-opus-5-5[1m]||\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
-      kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', model: 'claude-opus-5-5[1m]' }],
+      kind: 'live-agents', agents: [{ handle: 'claude', tool: 'claude', model: 'claude-opus-5-5[1m]' }],
     }))
     stream.feed('%subscription-changed report-7 $0 @0 0 %7 : claude-sonnet-5||\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
-      kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', model: 'claude-sonnet-5' }],
+      kind: 'live-agents', agents: [{ handle: 'claude', tool: 'claude', model: 'claude-sonnet-5' }],
     }))
     expect(agentSets().length).toBe(before + 2)
 
@@ -571,7 +627,7 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents',
       agents: [{
-        handle: '%7', tool: 'claude', model: 'claude-sonnet-5', reportedMode: 'acceptEdits', reportedEffort: 'xhigh',
+        handle: 'claude', tool: 'claude', model: 'claude-sonnet-5', reportedMode: 'acceptEdits', reportedEffort: 'xhigh',
       }],
     }))
     // An unchanged push is ignored; an empty part keeps the last value.
@@ -585,7 +641,7 @@ describe('agentDriver', () => {
 
     // CRLF line endings are read like LF.
     stream.feed('%subscription-changed status-7 $0 @0 0 %7 : ⠋ again\r\n')
-    expect(seen.at(-1)).toEqual({ kind: 'status', handle: '%7', status: 'running' })
+    expect(seen.at(-1)).toEqual({ kind: 'status', handle: 'claude', status: 'running' })
 
     // tmux detaching the client ends the stream; the command channel the
     // connection published then refuses.
@@ -601,9 +657,9 @@ describe('agentDriver', () => {
   it('reads control mode however tmux frames it', async () => {
     const stream = new FakeStream()
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('tui').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('tui').connect(session, (o) => seen.push(o), withSessions('tui', {
       dial: () => stream, heartbeatIntervalMs: 60_000, commandTimeoutMs: 1_000, log: () => {},
-    }))
+    })))
 
     // The listing goes out before the attach banner arrives; the banner is
     // not its reply. The reply then lands split mid-line.
@@ -612,15 +668,16 @@ describe('agentDriver', () => {
     stream.feed('%begin 1 1')
     stream.feed('01 1\n%7\tclaude\t0\t\n%end 1 101 1\n')
     await answer(stream, "refresh-client -B 'session-7:")
+    await answer(stream, "refresh-client -B 'dead-7:")
     await answer(stream, "refresh-client -B 'status-7:")
     await answer(stream, "refresh-client -B 'report-7:")
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
-    expect(seen).toContainEqual({ kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude' }] })
+    expect(seen).toContainEqual({ kind: 'live-agents', agents: [{ handle: 'claude', tool: 'claude' }] })
 
     // Colons inside a value are the value's.
     stream.feed('%subscription-changed report-7 $0 @0 0 %7 : fix: parse a : b\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
-      kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', model: 'fix: parse a : b' }],
+      kind: 'live-agents', agents: [{ handle: 'claude', tool: 'claude', model: 'fix: parse a : b' }],
     }))
 
     // An %error reply rejects with its body.
@@ -640,9 +697,9 @@ describe('agentDriver', () => {
   it('follows the conversation each pane names, in an agent window or a shell', async () => {
     const stream = new FakeStream()
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('tui').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('tui').connect(session, (o) => seen.push(o), withSessions('tui', {
       dial: () => stream, heartbeatIntervalMs: 60_000, commandTimeoutMs: 1_000, log: () => {},
-    }))
+    })))
     stream.feed('%begin 1 100 0\n%end 1 100 0\n')
     await vi.waitFor(() => expect(stream.writes.join('')).toContain('list-panes'))
     // An agent window and a scratch shell; the shell gets only the session
@@ -650,8 +707,9 @@ describe('agentDriver', () => {
     stream.feed('%begin 1 101 1\n%7\tclaude\t0\tclaude|conv-a|claude/projects/-workspace/conv-a.jsonl\n'
       + '%9\tNew Shell\t0\t\n%end 1 101 1\n')
     expect(stream.writes.join('')).toContain(
-      "list-panes -s -F '#{pane_id}\t#{window_name}\t#{m/r:^\"?sleep (infinity|2147483647)\"?$,#{pane_start_command}}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
+      "list-panes -s -F '#{pane_id}\t#{window_name}\t#{pane_dead}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
     await answer(stream, "refresh-client -B 'session-7:")
+    await answer(stream, "refresh-client -B 'dead-7:")
     await answer(stream, "refresh-client -B 'status-7:")
     await answer(stream, "refresh-client -B 'report-7:")
     await answer(stream, "refresh-client -B 'session-9:%9:")
@@ -666,7 +724,7 @@ describe('agentDriver', () => {
     // conversation.
     expect(agentSets()).toEqual([{
       kind: 'live-agents',
-      agents: [{ handle: '%7', tool: 'claude', agentSessionId: 'conv-a', transcriptPath: 'claude/projects/-workspace/conv-a.jsonl' }],
+      agents: [{ handle: 'claude', tool: 'claude', conversationId: 'conv-a', transcriptPath: 'claude/projects/-workspace/conv-a.jsonl' }],
     }])
 
     // codex started by hand in the shell also counts.
@@ -674,8 +732,8 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(latest()).toEqual({
       kind: 'live-agents',
       agents: [
-        { handle: '%7', tool: 'claude', agentSessionId: 'conv-a', transcriptPath: 'claude/projects/-workspace/conv-a.jsonl' },
-        { handle: '%9', tool: 'codex', agentSessionId: 'thread-1', transcriptPath: 'codex/sessions/rollout-thread-1.jsonl' },
+        { handle: 'claude', tool: 'claude', conversationId: 'conv-a', transcriptPath: 'claude/projects/-workspace/conv-a.jsonl' },
+        { handle: '%9', tool: 'codex', conversationId: 'thread-1', transcriptPath: 'codex/sessions/rollout-thread-1.jsonl' },
       ],
     }))
 
@@ -683,55 +741,54 @@ describe('agentDriver', () => {
     // conversation, and malformed values count as none.
     push('9', '')
     push('7', 'pi|pi-1|')
-    await vi.waitFor(() => expect(latest()).toEqual({ kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude' }] }))
+    await vi.waitFor(() => expect(latest()).toEqual({ kind: 'live-agents', agents: [{ handle: 'claude', tool: 'claude' }] }))
     push('7', 'claude|conv-b|/etc/passwd')
     await vi.waitFor(() => expect(latest()).toEqual({
-      kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', agentSessionId: 'conv-b' }],
+      kind: 'live-agents', agents: [{ handle: 'claude', tool: 'claude', conversationId: 'conv-b' }],
     }))
     push('7', 'claude|$(rm -rf ~)|')
-    await vi.waitFor(() => expect(latest()).toEqual({ kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude' }] }))
+    await vi.waitFor(() => expect(latest()).toEqual({ kind: 'live-agents', agents: [{ handle: 'claude', tool: 'claude' }] }))
     // Ids go on a launch command line, where a leading dash is a flag.
     push('7', 'claude|conv-c|')
     push('7', 'claude|--dangerously-skip-permissions|')
-    await vi.waitFor(() => expect(latest()).toEqual({ kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude' }] }))
+    await vi.waitFor(() => expect(latest()).toEqual({ kind: 'live-agents', agents: [{ handle: 'claude', tool: 'claude' }] }))
   })
 
-  it('waits out the placeholder a session opens on, then trusts pushes over listings', async () => {
+  it('watches an exited agent for nothing but its pane, then trusts pushes over listings once one runs', async () => {
     const stream = new FakeStream()
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('tui').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('tui').connect(session, (o) => seen.push(o), withSessions('tui', {
       dial: () => stream, heartbeatIntervalMs: 60_000, commandTimeoutMs: 1_000, log: () => {},
-    }))
+    })))
     const listings = (): number => stream.writes.join('').split('list-panes').length - 1
     const agentSets = (): unknown[] => seen.filter((o) => o.kind === 'live-agents')
     stream.feed('%begin 1 100 0\n%end 1 100 0\n')
 
-    // The placeholder in the agent window before launch is not an agent.
+    // A session window whose agent exited keeps its pane, which runs no agent.
     await vi.waitFor(() => expect(listings()).toBe(1))
     stream.feed('%begin 1 101 1\n%7\tclaude\t1\t\n%end 1 101 1\n')
-    await answer(stream, "refresh-client -B 'boot-7:%7:#{m/r:^\"?sleep (infinity|2147483647)\"?$,#{pane_start_command}}'")
+    await answer(stream, "refresh-client -B 'session-7:")
+    await answer(stream, "refresh-client -B 'dead-7:%7:#{pane_dead}'")
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
-    expect(agentSets()).toEqual([])
+    expect(agentSets()).toEqual([{ kind: 'live-agents', agents: [] }])
+    expect(stream.writes.join('')).not.toContain("'status-7:")
 
-    // After the respawn signal the agent pane is listed again.
-    stream.feed('%subscription-changed boot-7 $0 @0 0 %7 : 0\n')
+    // A resume replaces it, and the window is listed again.
+    stream.feed('%window-add @1\n')
     await vi.waitFor(() => expect(listings()).toBe(2))
     stream.feed('%begin 1 102 1\n%7\tclaude\t0\tclaude|conv-a|\n%end 1 102 1\n')
-    await answer(stream, "refresh-client -B 'session-7:")
     await answer(stream, "refresh-client -B 'status-7:")
     await answer(stream, "refresh-client -B 'report-7:")
-    await vi.waitFor(() => expect(agentSets()).toEqual([
-      { kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', agentSessionId: 'conv-a' }] },
-    ]))
+    await vi.waitFor(() => expect(agentSets().at(-1)).toEqual(
+      { kind: 'live-agents', agents: [{ handle: 'claude', tool: 'claude' }] }))
 
     // A pane's push wins over a later listing, which may be older.
     stream.feed('%subscription-changed session-7 $0 @0 0 %7 : claude|conv-b|\n')
-    stream.feed('%window-add @1\n')
+    stream.feed('%window-add @2\n')
     await vi.waitFor(() => expect(listings()).toBe(3))
     stream.feed('%begin 1 103 1\n%7\tclaude\t0\tclaude|conv-a|\n%end 1 103 1\n')
-    await vi.waitFor(() => expect(agentSets()).toHaveLength(3))
-    expect(agentSets().at(-1)).toEqual(
-      { kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', agentSessionId: 'conv-b' }] })
+    await vi.waitFor(() => expect(agentSets().at(-1)).toEqual(
+      { kind: 'live-agents', agents: [{ handle: 'claude', tool: 'claude', conversationId: 'conv-b' }] }))
   })
 
   it("follows a codex pane's model through its title, by the catalog codex keeps", async () => {
@@ -740,13 +797,14 @@ describe('agentDriver', () => {
     // codex's cached catalog.
     const stream = new FakeStream()
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('tui').connect({ ...session, tool: 'codex' }, (o) => seen.push(o), {
+    connections.push(agentDriver('tui').connect({ ...session }, (o) => seen.push(o), withSessions('tui', {
       dial: () => stream, heartbeatIntervalMs: 60_000, commandTimeoutMs: 1_000, log: () => {},
-    }))
+    })))
     stream.feed('%begin 1 100 0\n%end 1 100 0\n')
     await vi.waitFor(() => expect(stream.writes.join('')).toContain('list-panes'))
     stream.feed('%begin 1 101 1\n%2\tcodex\t0\t\n%end 1 101 1\n')
     await answer(stream, "refresh-client -B 'session-2:")
+    await answer(stream, "refresh-client -B 'dead-2:")
     await answer(stream, "refresh-client -B 'status-2:")
     await answer(stream, "refresh-client -B 'report-2:%2:#{?#{m/r: [|] ,")
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
@@ -754,7 +812,7 @@ describe('agentDriver', () => {
     // Without a cached catalog, the catalog naming rule is applied in reverse.
     stream.feed('%subscription-changed report-2 $0 @0 0 %2 : GPT-6-Astra\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
-      kind: 'live-agents', agents: [{ handle: '%2', tool: 'codex', model: 'gpt-6-astra' }],
+      kind: 'live-agents', agents: [{ handle: 'codex', tool: 'codex', model: 'gpt-6-astra' }],
     }))
 
     // With a cache, it is checked first.
@@ -767,25 +825,25 @@ describe('agentDriver', () => {
     }))
     stream.feed('%subscription-changed report-2 $0 @0 0 %2 : GPT-5.6-Sol\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
-      kind: 'live-agents', agents: [{ handle: '%2', tool: 'codex', model: 'gpt-5.6-sol' }],
+      kind: 'live-agents', agents: [{ handle: 'codex', tool: 'codex', model: 'gpt-5.6-sol' }],
     }))
     stream.feed('%subscription-changed report-2 $0 @0 0 %2 : Odd Name\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
-      kind: 'live-agents', agents: [{ handle: '%2', tool: 'codex', model: 'odd-slug' }],
+      kind: 'live-agents', agents: [{ handle: 'codex', tool: 'codex', model: 'odd-slug' }],
     }))
     // An unlisted model is already titled by its slug.
     stream.feed('%subscription-changed report-2 $0 @0 0 %2 : my-made-up-model\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
-      kind: 'live-agents', agents: [{ handle: '%2', tool: 'codex', model: 'my-made-up-model' }],
+      kind: 'live-agents', agents: [{ handle: 'codex', tool: 'codex', model: 'my-made-up-model' }],
     }))
   })
 
   it('reports a dropped tui stream as down, and retracts the command channel', async () => {
     const stream = new FakeStream()
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('tui').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('tui').connect(session, (o) => seen.push(o), withSessions('tui', {
       dial: () => stream, heartbeatIntervalMs: 60_000, commandTimeoutMs: 1_000, log: () => {},
-    }))
+    })))
     stream.feed('%begin 1 100 0\n%end 1 100 0\n')
     await vi.waitFor(() => expect(stream.writes.join('')).toContain('list-panes'))
 
@@ -798,9 +856,9 @@ describe('agentDriver', () => {
     const broken = new FakeStream()
     broken.stdin = { write: () => { throw new Error('EPIPE') } }
     const brokenSeen: AgentObservation[] = []
-    connections.push(agentDriver('tui').connect(session, (o) => brokenSeen.push(o), {
+    connections.push(agentDriver('tui').connect(session, (o) => brokenSeen.push(o), withSessions('tui', {
       dial: () => broken, heartbeatIntervalMs: 60_000, commandTimeoutMs: 1_000, log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(brokenSeen).toContainEqual(
       { kind: 'down', reason: expect.stringContaining('EPIPE') as string },
     ))
@@ -812,9 +870,9 @@ describe('agentDriver', () => {
     tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
     const driver = agentDriver('acp')
-    connections.push(driver.connect(session, (o) => seen.push(o), {
+    connections.push(driver.connect(session, (o) => seen.push(o), withSessions(driver.mode, {
       dial: acpDial(() => stream), commandTimeoutMs: 1_000, log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: true } })}\n`)
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
@@ -827,7 +885,7 @@ describe('agentDriver', () => {
     await new Promise((r) => setTimeout(r, 100))
     expect(acpConversation('demo', 'wt-1', '../x; rm -rf ~')).toBeUndefined()
     for (const o of seen) {
-      if (o.kind === 'live-agents') expect(o.agents.every((a) => a.agentSessionId === undefined)).toBe(true)
+      if (o.kind === 'live-agents') expect(o.agents.every((a) => a.conversationId === undefined)).toBe(true)
     }
   })
 
@@ -842,9 +900,9 @@ describe('agentDriver', () => {
     tmuxWindows = 'claude\ninit\n'
     const seen: AgentObservation[] = []
     const driver = agentDriver('acp')
-    connections.push(driver.connect(session, (o) => seen.push(o), {
+    connections.push(driver.connect(session, (o) => seen.push(o), withSessions(driver.mode, {
       dial: acpDial(() => stream), commandTimeoutMs: 1_000, log: () => {},
-    }))
+    })))
 
     // Only agent windows count (`init` runs init commands).
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
@@ -878,7 +936,7 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents',
-      agents: [{ handle: 'claude', tool: 'claude', agentSessionId: 'acp-1', model: 'opus[1m]', modelName: 'Opus 5.5' }],
+      agents: [{ handle: 'claude', tool: 'claude', conversationId: 'acp-1', model: 'opus[1m]', modelName: 'Opus 5.5' }],
     }))
 
     const events = collect(acpConversation('demo', 'wt-1', 'acp-1')!)
@@ -903,7 +961,7 @@ describe('agentDriver', () => {
     }))
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents',
-      agents: [{ handle: 'claude', tool: 'claude', agentSessionId: 'acp-1', model: 'sonnet', modelName: 'Sonnet 5' }],
+      agents: [{ handle: 'claude', tool: 'claude', conversationId: 'acp-1', model: 'sonnet', modelName: 'Sonnet 5' }],
     }))
 
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } })}\n`)
@@ -917,7 +975,7 @@ describe('agentDriver', () => {
     tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
     const driver = agentDriver('acp')
-    connections.push(driver.connect(session, (o) => seen.push(o), { dial: acpDial(() => stream), log: () => {} }))
+    connections.push(driver.connect(session, (o) => seen.push(o), withSessions(driver.mode, { dial: acpDial(() => stream), log: () => {} })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
     stream.feed(helloLine(true))
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
@@ -1000,11 +1058,11 @@ describe('agentDriver', () => {
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), withSessions('acp', {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-live' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-live' }]),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-live')).toBeDefined())
     const events = collect(acpConversation('demo', 'wt-1', 'acp-live')!)
     stream.feed(helloLine(false))
@@ -1037,11 +1095,11 @@ describe('agentDriver', () => {
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), withSessions('acp', {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-bg' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-bg' }]),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-bg')).toBeDefined())
     stream.feed(helloLine(false))
     await vi.waitFor(() => expect(statuses(seen)).toEqual(['background']))
@@ -1076,10 +1134,10 @@ describe('agentDriver', () => {
   it('declares each adapter its own opt-ins for reporting subagents and background work', async () => {
     const streams = new Map([['codex', new FakeStream()], ['opencode', new FakeStream()]])
     tmuxWindows = 'codex\nopencode\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       dial: acpDial((_s, argv) => streams.get([...streams.keys()].find((h) => argv.join(' ').includes(`/${h}.sock`))!)!),
       log: () => {},
-    }))
+    })))
     const capabilities = async (handle: string): Promise<unknown> => {
       const stream = streams.get(handle)!
       await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', handle)).toBeDefined())
@@ -1101,14 +1159,14 @@ describe('agentDriver', () => {
     const streams = new Map([['codex', new FakeStream()], ['pi', new FakeStream()]])
     tmuxWindows = 'codex\npi\n'
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), withSessions('acp', {
       dial: acpDial((_s, argv) => streams.get([...streams.keys()].find((h) => argv.join(' ').includes(`/${h}.sock`))!)!),
       recordedSessions: () => Promise.resolve([
-        { handle: 'codex', agentSessionId: 'acp-codex' },
-        { handle: 'pi', agentSessionId: 'acp-pi' },
+        { handle: 'codex', conversationId: 'acp-codex' },
+        { handle: 'pi', conversationId: 'acp-pi' },
       ]),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-pi')).toBeDefined())
     const of = (handle: string): string[] =>
       seen.flatMap((o) => (o.kind === 'status' && o.handle === handle ? [o.status] : []))
@@ -1148,11 +1206,11 @@ describe('agentDriver', () => {
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), withSessions('acp', {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-old' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-old' }]),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
 
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: true } })}\n`)
@@ -1169,18 +1227,18 @@ describe('agentDriver', () => {
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: load.id, result: { models: { currentModelId: 'claude-fable-5' } } })}\n`)
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents',
-      agents: [{ handle: 'claude', tool: 'claude', agentSessionId: 'acp-old', model: 'claude-fable-5' }],
+      agents: [{ handle: 'claude', tool: 'claude', conversationId: 'acp-old', model: 'claude-fable-5' }],
     }))
   })
 
   it('skips the handshake when reattaching to an agent that is already running', async () => {
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-live' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-live' }]),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
 
     // Already initialized, so `initialize` is not sent again.
@@ -1248,11 +1306,11 @@ describe('agentDriver', () => {
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), withSessions('acp', {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-live' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-live' }]),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-live')).toBeDefined())
     const conversation = acpConversation('demo', 'wt-1', 'acp-live')!
     // Subscribed before hello, like a pane that stayed open across the drop.
@@ -1290,11 +1348,11 @@ describe('agentDriver', () => {
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), withSessions('acp', {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-done' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-done' }]),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-done')).toBeDefined())
     stream.feed(helloLine(false))
 
@@ -1312,11 +1370,11 @@ describe('agentDriver', () => {
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), withSessions('acp', {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-dead' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-dead' }]),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-dead')).toBeDefined())
     stream.feed(helloLine(false))
 
@@ -1329,11 +1387,11 @@ describe('agentDriver', () => {
     await record('acp-live', [lifeLine, promptLine('acp-live', 'old-1', 'the running turn')])
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-live' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-live' }]),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-live')).toBeDefined())
     const conversation = acpConversation('demo', 'wt-1', 'acp-live')!
     stream.feed(helloLine(false))
@@ -1362,11 +1420,11 @@ describe('agentDriver', () => {
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), withSessions('acp', {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-live' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-live' }]),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-live')).toBeDefined())
 
     stream.feed(helloLine(false))
@@ -1383,12 +1441,12 @@ describe('agentDriver', () => {
     await recordMode('acp-1', 'bypassPermissions')
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       dial: acpDial(() => stream),
       // A reattach needs the recorded id (without one, see below).
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-1' }]),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: false } })}\n`)
 
@@ -1424,8 +1482,8 @@ describe('agentDriver', () => {
   })
 
   /** A `session/update` notification, as a wire line. */
-  const updateLine = (agentSessionId: string, update: Record<string, unknown>): string =>
-    `${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: agentSessionId, update } })}\n`
+  const updateLine = (conversationId: string, update: Record<string, unknown>): string =>
+    `${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: conversationId, update } })}\n`
 
   /** Every mode the connection published on its live set, in order. */
   const reportedModes = (seen: AgentObservation[]): string[] => seen.flatMap((o) =>
@@ -1507,15 +1565,15 @@ describe('agentDriver', () => {
   })
 
   // opencode's modes are agents, not postures, so it keeps the posture it
-  // launched with, even if another conversation later changes the row.
+  // launched with, and another session's posture moving leaves it alone.
   it('answers by the posture it launched in where its mode names none', async () => {
     const stream = new FakeStream()
     tmuxWindows = 'opencode\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('accept-edits'),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'opencode')).toBeDefined())
     stream.feed(helloLine(true))
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
@@ -1530,8 +1588,8 @@ describe('agentDriver', () => {
     })}\n`)
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-oc')?.status).toBe('waiting'))
 
-    // Another conversation raises the workspace's posture.
-    setAcpPermissionMode('demo', 'wt-1', 'bypass')
+    // Another session's posture rises.
+    setAcpPermissionMode('demo', 'wt-1', 'claude', 'bypass')
     stream.feed(permissionAsk(4))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-oc')!.isAwaitingPermission).toBe(true))
     expect(stream.sent().some((m) => m.id === 4)).toBe(false)
@@ -1541,12 +1599,12 @@ describe('agentDriver', () => {
     const stream = new FakeStream()
     tmuxWindows = 'codex\n'
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), withSessions('acp', {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'codex', agentSessionId: 'acp-1' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'codex', conversationId: 'acp-1' }]),
       permissionMode: () => Promise.resolve('accept-edits'),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
     stream.feed(helloLine(false))
     // A subagent's model, reported on the subagent's own session.
@@ -1573,15 +1631,15 @@ describe('agentDriver', () => {
     await recordMode('acp-b', 'bypassPermissions')
     const streams = new Map([['claude', new FakeStream()], ['claude-2', new FakeStream()]])
     tmuxWindows = 'claude\nclaude-2\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       dial: acpDial((_s, argv) => streams.get([...streams.keys()].find((h) => argv.join(' ').includes(`${h}.sock`))!)!),
       recordedSessions: () => Promise.resolve([
-        { handle: 'claude', agentSessionId: 'acp-a' },
-        { handle: 'claude-2', agentSessionId: 'acp-b' },
+        { handle: 'claude', conversationId: 'acp-a' },
+        { handle: 'claude-2', conversationId: 'acp-b' },
       ]),
       permissionMode: () => Promise.resolve('bypass'),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-b')).toBeDefined())
     const a = streams.get('claude')!
     const b = streams.get('claude-2')!
@@ -1665,12 +1723,12 @@ describe('agentDriver', () => {
     ])
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-held' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-held' }]),
       permissionMode: () => Promise.resolve('manual'),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-held')).toBeDefined())
     const conversation = acpConversation('demo', 'wt-1', 'acp-held')!
 
@@ -1684,35 +1742,40 @@ describe('agentDriver', () => {
     expect(conversation.isAwaitingPermission).toBe(false)
   })
 
-  it('forwards an ask when the posture could not be read, rather than granting it', async () => {
-    // A needless prompt costs a click; a wrong approval cannot be undone. So
-    // an unknown posture never auto-answers.
+  // A session's posture comes with its row, so a connection that cannot
+  // read the rows attaches nothing it could answer an ask for, until a read
+  // succeeds.
+  it('attaches no conversation while the sessions cannot be read', async () => {
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    let readable = false
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
-      permissionMode: () => Promise.reject(new Error('database is down')),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-1' }]),
+      permissionMode: () => (readable ? Promise.resolve('manual') : Promise.reject(new Error('database is down'))),
+      heartbeatIntervalMs: 20,
       log: () => {},
-    }))
+    })))
+    await new Promise((r) => setTimeout(r, 60))
+    expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeUndefined()
+
+    readable = true
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
     const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
     stream.feed(helloLine(false))
-
     stream.feed(permissionAsk(99))
     await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
-    await new Promise((r) => setTimeout(r, 20))
     expect(stream.sent().some((m) => m.id === 99)).toBe(false)
   })
 
   it('tells the adapter its posture on a first attach, and leaves a live one alone', async () => {
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('plan'),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
     stream.feed(helloLine(true))
 
@@ -1745,11 +1808,11 @@ describe('agentDriver', () => {
     // workspace in `build`, able to edit.
     const stream = new FakeStream()
     tmuxWindows = 'opencode\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('plan'),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'opencode')).toBeDefined())
     stream.feed(helloLine(true))
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
@@ -1782,11 +1845,11 @@ describe('agentDriver', () => {
     // A missing `session/set_mode` then does not mean a posture was dropped.
     const stream = new FakeStream()
     tmuxWindows = 'opencode\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('plan'),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'opencode')).toBeDefined())
     stream.feed(helloLine(true))
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
@@ -1818,7 +1881,7 @@ describe('agentDriver', () => {
     // The workspace's recorded model, read for the tool once the session
     // is new.
     const asked: string[] = []
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('bypass'),
       launchModel: (tool) => {
@@ -1826,7 +1889,7 @@ describe('agentDriver', () => {
         return Promise.resolve(acpLaunchModel({ tool }))
       },
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'pi')).toBeDefined())
     stream.feed(helloLine(true))
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
@@ -1864,12 +1927,12 @@ describe('agentDriver', () => {
     const stream = new FakeStream()
     tmuxWindows = 'opencode\n'
     const target = 'openrouter/deepseek/deepseek-v4.1-flash'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('bypass'),
       launchModel: () => Promise.resolve(target),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'opencode')).toBeDefined())
     stream.feed(helloLine(true))
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
@@ -1900,12 +1963,12 @@ describe('agentDriver', () => {
     const stream = new FakeStream()
     tmuxWindows = 'opencode\n'
     const target = 'openrouter/retired/model'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('bypass'),
       launchModel: () => Promise.resolve(target),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'opencode')).toBeDefined())
     const events: AcpEventInit[] = []
     acpConversationByHandle('demo', 'wt-1', 'opencode')!.subscribe((e) => events.push(e))
@@ -1962,19 +2025,17 @@ describe('agentDriver', () => {
   // connect (a spare's claim) is the one used. Every level the conversation
   // then reports goes upward for the row to follow, and the pane is offered
   // the adapter's own list.
-  it("puts a conversation at the workspace's effort and follows each level it reports", async () => {
+  it("puts a conversation at its session's effort and follows each level it reports", async () => {
     const stream = new FakeStream()
     tmuxWindows = 'pi\n'
     const seen: AgentObservation[] = []
-    let effort = 'low'
-    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), withSessions('acp', {
       dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('bypass'),
-      effort: () => Promise.resolve(effort),
+      effort: () => Promise.resolve('high'),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'pi')).toBeDefined())
-    effort = 'high'
     stream.feed(helloLine(true))
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
     const init = stream.sent().find((m) => m.method === 'initialize')!
@@ -2029,13 +2090,13 @@ describe('agentDriver', () => {
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), withSessions('acp', {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-1' }]),
       permissionMode: () => Promise.resolve('manual'),
       effort: () => Promise.resolve('low'),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
     stream.feed(helloLine(false))
     const conversation = acpConversationByHandle('demo', 'wt-1', 'claude')!
@@ -2054,11 +2115,11 @@ describe('agentDriver', () => {
     // questions the user must answer.
     const stream = new FakeStream()
     tmuxWindows = 'pi\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('bypass'),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'pi')).toBeDefined())
     stream.feed(helloLine(true))
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
@@ -2089,11 +2150,11 @@ describe('agentDriver', () => {
     const events: AcpEventInit[] = []
     const seen: AgentObservation[] = []
     tmuxWindows = 'claude\n'
-    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), withSessions('acp', {
       dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('bypass'),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
     // Subscribe before the handshake, which makes the report.
     acpConversationByHandle('demo', 'wt-1', 'claude')!.subscribe((e) => events.push(e))
@@ -2135,11 +2196,11 @@ describe('agentDriver', () => {
     const stream = new FakeStream()
     const events: AcpEventInit[] = []
     tmuxWindows = 'codex\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('accept-edits'),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'codex')).toBeDefined())
     acpConversationByHandle('demo', 'wt-1', 'codex')!.subscribe((e) => events.push(e))
     stream.feed(helloLine(true))
@@ -2188,7 +2249,7 @@ describe('agentDriver', () => {
   it('finishes a handshake a dropped connection began, from session/new', async () => {
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, { dial: acpDial(() => stream), log: () => {} }))
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', { dial: acpDial(() => stream), log: () => {} })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
 
     stream.feed(helloLine(false))
@@ -2214,7 +2275,7 @@ describe('agentDriver', () => {
     await record('wt-1', sent)
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, { dial: acpDial(() => stream), log: () => {} }))
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', { dial: acpDial(() => stream), log: () => {} })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
     stream.feed(helloLine(false))
     await new Promise((resolve) => setTimeout(resolve, 400))
@@ -2232,7 +2293,7 @@ describe('agentDriver', () => {
   // only its pane can name it.
   it('reattaches by the session its pane notes, but not one a respawn replaced', async () => {
     const connectFresh = (stream: FakeStream): void => {
-      connections.push(agentDriver('acp').connect(session, () => {}, { dial: acpDial(() => stream), log: () => {} }))
+      connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', { dial: acpDial(() => stream), log: () => {} })))
     }
     tmuxWindows = 'claude\n'
     const first = new FakeStream()
@@ -2278,7 +2339,7 @@ describe('agentDriver', () => {
   it('dials a respawned agent at the next re-list though the old stream never closed', async () => {
     const streams: FakeStream[] = []
     tmuxWindows = 'claude\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       heartbeatIntervalMs: 50,
       log: () => {},
       dial: acpDial(() => {
@@ -2286,7 +2347,7 @@ describe('agentDriver', () => {
         streams.push(stream)
         return stream
       }),
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
     const stale = acpConversationByHandle('demo', 'wt-1', 'claude')
 
@@ -2306,12 +2367,12 @@ describe('agentDriver', () => {
     await record('acp-r', [lifeLine])
     const stream = new FakeStream()
     tmuxWindows = 'opencode\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       heartbeatIntervalMs: 60_000,
       log: () => {},
-      recordedSessions: () => Promise.resolve([{ handle: 'opencode', agentSessionId: 'acp-r' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'opencode', conversationId: 'acp-r' }]),
       dial: acpDial(() => stream),
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-r')).toBeDefined())
     const conversation = acpConversation('demo', 'wt-1', 'acp-r')!
     stream.feed(helloLine(false))
@@ -2340,16 +2401,16 @@ describe('agentDriver', () => {
     await record('acp-q', [lifeLine])
     const streams: FakeStream[] = []
     tmuxWindows = 'opencode\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       heartbeatIntervalMs: 60_000,
       log: () => {},
-      recordedSessions: () => Promise.resolve([{ handle: 'opencode', agentSessionId: 'acp-q' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'opencode', conversationId: 'acp-q' }]),
       dial: acpDial(() => {
         const stream = new FakeStream()
         streams.push(stream)
         return stream
       }),
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-q')).toBeDefined())
     const first = acpConversation('demo', 'wt-1', 'acp-q')!
     streams[0].feed(helloLine(false))
@@ -2380,12 +2441,12 @@ describe('agentDriver', () => {
     tmuxWindows = 'opencode\n'
     const seen: AgentObservation[] = []
     const connectWith = (stream: FakeStream): void => {
-      connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+      connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), withSessions('acp', {
         heartbeatIntervalMs: 100,
         log: () => {},
-        recordedSessions: () => Promise.resolve([{ handle: 'opencode', agentSessionId: 'acp-s' }]),
+        recordedSessions: () => Promise.resolve([{ handle: 'opencode', conversationId: 'acp-s' }]),
         dial: acpDial(() => stream),
-      }))
+      })))
     }
     const before = new FakeStream()
     connectWith(before)
@@ -2415,9 +2476,9 @@ describe('agentDriver', () => {
   it('goes down when a heartbeat re-list fails though tmux answers', async () => {
     tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), withSessions('acp', {
       heartbeatIntervalMs: 50, commandTimeoutMs: 1_000, log: () => {}, dial: acpDial(() => new FakeStream()),
-    }))
+    })))
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
     failRelist = true
     await vi.waitFor(() => expect(seen.find((o) => o.kind === 'down')).toMatchObject({
@@ -2429,7 +2490,7 @@ describe('agentDriver', () => {
     const streams: FakeStream[] = []
     const dials: string[][] = []
     tmuxWindows = 'claude\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       // A long settled interval, so only the fast retry after a drop can make
       // the second dial happen in time.
       heartbeatIntervalMs: 60_000,
@@ -2442,7 +2503,7 @@ describe('agentDriver', () => {
         if (streams.length === 1) setTimeout(() => stream.emitExit(), 0)
         return stream
       }),
-    }))
+    })))
 
     await vi.waitFor(() => expect(streams.length).toBe(2), { timeout: 5_000 })
     // socat retries the connect itself, so a dial landing just before acpd
@@ -2451,27 +2512,27 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
   })
 
-  // tmux pushes window adds, and a respawn into the placeholder fires its
-  // boot subscription, so neither waits for the heartbeat or costs an exec.
-  it('dials a new window and a respawned placeholder as tmux announces them', async () => {
+  // tmux pushes window adds, so a new session waits for no heartbeat and
+  // costs no exec. An exited agent keeps its window, watched for nothing but
+  // its pane, and a resume opens it again as a new window.
+  it('dials a session window as tmux announces it, and never one whose agent exited', async () => {
     const dialed: string[] = []
     const seen: AgentObservation[] = []
     tmuxWindows = 'claude\n'
-    placeholders.add('claude')
-    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+    deadPanes.add('claude')
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), withSessions('acp', {
       heartbeatIntervalMs: 600_000,
       log: () => {},
       dial: acpDial((_s, argv) => {
         dialed.push(argv.join(' '))
         return new FakeStream()
       }),
-    }))
-    // Still the placeholder: watched, not dialed.
-    await vi.waitFor(() => expect(lastTmux?.writes.join('')).toContain("refresh-client -B 'boot-0:%0:"))
+    })))
+    await vi.waitFor(() => expect(lastTmux?.writes.join('')).toContain("refresh-client -B 'dead-0:%0:#{pane_dead}'"))
     expect(dialed).toEqual([])
 
-    placeholders.delete('claude')
-    lastTmux!.feed('%subscription-changed boot-0 $0 @0 0 %0 : 0\n')
+    deadPanes.delete('claude')
+    lastTmux!.feed('%window-add @0\n')
     await vi.waitFor(() => expect(dialed).toHaveLength(1))
     expect(dialed[0]).toContain('claude.sock')
 
@@ -2479,7 +2540,7 @@ describe('agentDriver', () => {
     lastTmux!.feed('%window-add @1\n')
     await vi.waitFor(() => expect(dialed).toHaveLength(2))
     expect(dialed[1]).toContain('claude-2.sock')
-    // Passed up too, for the status watcher's terminal listing.
+    // Passed up too, for the status watcher's window listing.
     expect(seen).toContainEqual({ kind: 'windows-changed' })
     expect(podExec).not.toHaveBeenCalled()
   })
@@ -2489,7 +2550,7 @@ describe('agentDriver', () => {
     tmuxWindows = 'claude\n'
     vi.useFakeTimers()
     try {
-      connections.push(agentDriver('acp').connect(session, () => {}, {
+      connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
         // Far apart, so the two intervals are distinguishable.
         heartbeatIntervalMs: 600_000,
         log: () => {},
@@ -2500,7 +2561,7 @@ describe('agentDriver', () => {
           setTimeout(() => stream.emitExit(), 0)
           return stream
         }),
-      }))
+      })))
 
       // Fast retries stop after the limit.
       await vi.advanceTimersByTimeAsync(60_000)
@@ -2520,11 +2581,11 @@ describe('agentDriver', () => {
     // which would silently corrupt a JSON string.
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-1' }]),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: false } })}\n`)
 
@@ -2549,11 +2610,11 @@ describe('agentDriver', () => {
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), withSessions('acp', {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-1' }]),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: false } })}\n`)
 
@@ -2575,11 +2636,11 @@ describe('agentDriver', () => {
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
     const seen: AgentObservation[] = []
-    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), withSessions('acp', {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-1' }]),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: false } })}\n`)
 
@@ -2603,11 +2664,11 @@ describe('agentDriver', () => {
     await recordMode('acp-1', 'bypassPermissions')
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-1' }]),
       log: () => {},
-    }))
+    })))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
 
     // Non-JSON output on stdout must not break the conversation.
@@ -2663,11 +2724,13 @@ describe('agentDriver', () => {
       expect(jobName).toBe(session.jobName)
       // One attempt: a retried paste would submit the prompt twice.
       expect(opts).toEqual({ maxAttempts: 1, timeout: 15_000, stdin: expect.any(String) as string })
-      // The script arrives on stdin, so the command line stays small.
-      expect(cmd).toMatch(/^cat > \/tmp\/\.yaac-prompt\.sh \|\| exit 1; /)
+      // The script arrives on stdin, so the command line stays small, and
+      // is named for its target, since two sessions can be handed prompts at
+      // once.
+      expect(cmd).toMatch(/^cat > \/tmp\/\.yaac-prompt-_3\.sh \|\| exit 1; /)
       // Detached, by setsid where the host has it and nohup on macOS.
-      expect(cmd).toContain('then setsid sh /tmp/.yaac-prompt.sh; else nohup sh /tmp/.yaac-prompt.sh; fi; }'
-        + ' >/tmp/yaac-prompt.log 2>&1 </dev/null &')
+      expect(cmd).toContain('then setsid sh /tmp/.yaac-prompt-_3.sh; else nohup sh /tmp/.yaac-prompt-_3.sh; fi; }'
+        + ' >/tmp/yaac-prompt-_3.log 2>&1 </dev/null &')
       return opts!.stdin!
     }
 
@@ -2842,7 +2905,7 @@ describe('agentDriver', () => {
       draft?: string; stash?: string; claude?: string | null; raise?: string; title?: string; dialog?: string
       enterDialog?: string; label?: string
     } = {}) {
-      await agentDriver('tui').deliverPrompt({ ...session, tool }, '%3', MESSAGE, { running: { agentSessionId: 'conv-1' } })
+      await agentDriver('tui').deliverPrompt({ ...session }, '%3', MESSAGE, { running: { tool, conversationId: 'conv-1' } })
       const [, cmd, execOpts] = podExec.mock.calls.at(-1)!
       expect(execOpts).toEqual({ maxAttempts: 1, timeout: 30_000, stdin: expect.any(String) as string })
       const file = (name: string): string => path.join(bin, name)

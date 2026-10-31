@@ -9,7 +9,7 @@ import { useEvents } from './lib/useEvents'
 import { useSnapshot } from './lib/useSnapshot'
 import { ownedBy, useReadOnly, useTeammateView, useViewedUserId, useWhoami, whoamiQuery } from './lib/viewer'
 import {
-  isUnreadWaiting, mergeProvisioning, persistSelection, resolveVacantSelection,
+  mergeProvisioning, persistSelection, resolveVacantSelection,
   unreadWaitingByProject, useUiStore,
 } from './lib/store'
 import { ProjectRail } from './components/ProjectRail'
@@ -23,7 +23,7 @@ import { ProjectsScreen } from './components/mobile/ProjectsScreen'
 import { WorkspacesScreen } from './components/mobile/WorkspacesScreen'
 import { goBackScreen, useMobileHistory } from './lib/mobileHistory'
 import { useIsMobile, useVisualViewportHeight } from './lib/viewport'
-import { newlyWaiting, waitingKey, waitingKeys } from '@yaac/shared/waiting'
+import { newlyWaiting, waitingKeys } from '@yaac/shared/waiting'
 import { playChime } from './lib/sound'
 import { isElectron } from './lib/platform'
 import { LeaveNewWorkspaceDialog } from './components/NewWorkspacePane'
@@ -125,7 +125,6 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   const lastWorkspaceOf = useUiStore((s) => s.lastWorkspaceOf)
   const sidebarOpen = useUiStore((s) => s.sidebarOpen)
   const mobileScreen = useUiStore((s) => s.mobileScreen)
-  const markWaitingSeen = useUiStore((s) => s.markWaitingSeen)
   const syncChatDrafts = useUiStore((s) => s.syncChatDrafts)
   const projectOps = useUiStore((s) => s.projectOps)
   const settleProjectOps = useUiStore((s) => s.settleProjectOps)
@@ -303,28 +302,6 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
     if (selectedWorkspaceId !== null && claims[selectedWorkspaceId] === pick) forgetClaim(selectedWorkspaceId)
     autoSelectWorkspace(pick)
   }, [activeProjectId, rowIds, stoppedEntry, stoppedSelection.pending, selectedWorkspaceId, claims, inFlightProvisions, lastWorkspaceOf, forgetClaim, autoSelectWorkspace])
-  // Viewing a waiting workspace marks its spell read by the caller on the
-  // server, whether it was selected while waiting or started waiting while
-  // open. A teammate's workspace is marked too, since each user has their
-  // own dot. A spell whose mark failed or was refused (it had already
-  // ended) is not sent again this page load, so a write whose next snapshot
-  // shows it unread cannot loop; one the server accepted may be re-marked.
-  const markingSpells = useRef(new Set<string>())
-  useEffect(() => {
-    if (!selectedWorkspaceId || me === undefined) return
-    const open = workspaces.find((s) => s.workspaceId === selectedWorkspaceId)
-    if (!open || !isUnreadWaiting(open, me)) return
-    const spell = waitingKey(open)
-    if (markingSpells.current.has(spell)) return
-    markingSpells.current.add(spell)
-    markWaitingSeen(open.workspaceId, me)
-    void api.workspace['mark-waiting-seen'].$post({
-      json: { projectId: open.projectId, workspaceId: open.workspaceId, waitingSinceMs: open.waitingSinceMs ?? 0 },
-    }).then(({ marked }) => {
-      if (marked) markingSpells.current.delete(spell)
-    }).catch(() => {})
-  }, [selectedWorkspaceId, me, workspaces, markWaitingSeen])
-
   // Drop chat drafts for workspaces that no longer exist (same first-snapshot
   // guard as above). Provisioning ids count as live because a restarting
   // workspace leaves the workspace list and returns with the same id.

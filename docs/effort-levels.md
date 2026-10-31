@@ -1,11 +1,12 @@
 # Effort levels
 
-Effort is how hard a workspace's model thinks. It is a create setting beside
+Effort is how hard a session's model thinks. It is a session setting beside
 model and permission mode: the effort menu in the new-workspace pane's
-composer (beside its permission mode, as in a chat), `yaac workspace create --effort`, and `yaac-mama create | queue
-| edit-queued --effort`. It is remembered per (project, agent) like the
-others, carried by drafts, queued entries and spares, passed at every launch
-in both agent modes, and followed when the agent changes it. The chat pane
+composer (beside its permission mode, as in a chat), `yaac workspace create
+--effort`, and `yaac-mama create | queue | edit-queued --effort`. It is
+remembered per (project, agent) like the others, carried by drafts and
+queued entries, passed at every launch in both agent modes, and followed
+when the agent changes it. The chat pane
 shows it beside the permission posture and can switch it. Nothing else
 shows it: not the sidebar, and not a running `tui` workspace, whose agent
 shows its own.
@@ -113,11 +114,9 @@ exist on the child's model; a named level the model lacks is refused before
 the detached create starts. `yaac-mama models` lists each model's levels and
 stars its default.
 
-A restart relaunches each conversation at the workspace row's effort, checked
-against the model that conversation relaunches on, so a level that model lacks
-becomes its default, as does a row with none (one created before effort
-existed). A conversation on another tool than the workspace's, whose model's
-levels are unknown, gets no level, since the row's is in another tool's words. A spare warmed at another effort is respawned at the claimed one.
+A restart relaunches each session at its own row's effort, checked against
+the model it relaunches on, so a level that model lacks becomes its
+default, as does a row with none.
 
 ## Storage
 
@@ -162,5 +161,5 @@ same filtered subscription as `@yaac-model` and `@yaac-permission-mode`
 
 Anything in the workspace can set a pane option, so a reported level that
 is not one word, or not one the agent's model has, is dropped (`default` is
-kept: claude's ACP adapter offers it). The registry records a change as
-`effort-changed` on the workspace row, which a restart relaunches at.
+kept: claude's ACP adapter offers it). The registry records a change on the
+session's row (`session-reported`), which a restart relaunches at.

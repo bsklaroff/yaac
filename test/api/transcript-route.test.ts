@@ -5,7 +5,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { asTailnet, makeTestApiClient } from '@yaac/test-utils/api'
 import { buildApp } from '@yaac/server/main/server'
 import { recordWorkspaceCreated } from '@yaac/server/db/workspace-store'
-import { recordAgentSessions } from '@yaac/server/db/agent-session-store'
+import { recordConversations } from '@yaac/server/db/conversation-store'
 import { closeDb } from '@yaac/server/db/client'
 import { acpLogDir, claudeDir } from '@yaac/shared/project-paths'
 import { DEMO_PROJECT_ID, recordTestProject } from '@yaac/test-utils/project-fixture'
@@ -40,9 +40,9 @@ afterEach(async () => {
 const client = (): ReturnType<typeof makeTestApiClient> =>
   makeTestApiClient(buildApp({ buildId: 'test' }))
 
-async function get(sessionId: string, page?: string): Promise<{ status: number; events?: AcpEvent[] }> {
-  const res = await client().workspace[':id']['agent-sessions'][':sessionId'].transcript.$get({
-    param: { id: WORKSPACE, sessionId },
+async function get(conversationId: string, page?: string): Promise<{ status: number; events?: AcpEvent[] }> {
+  const res = await client().workspace[':id'].conversations[':conversationId'].transcript.$get({
+    param: { id: WORKSPACE, conversationId },
     query: page === undefined ? {} : { page },
   })
   if (res.status !== 200) return { status: res.status }
@@ -51,8 +51,8 @@ async function get(sessionId: string, page?: string): Promise<{ status: number; 
 
 /** A recorded acp conversation: one prompt and its answer, as acpd logs it. */
 async function recordAcpConversation(): Promise<void> {
-  await recordAgentSessions(DEMO_PROJECT_ID, WORKSPACE, [
-    { tool: 'claude', agentSessionId: ACP_SESSION, mode: 'acp' },
+  await recordConversations(DEMO_PROJECT_ID, WORKSPACE, [
+    { tool: 'claude', conversationId: ACP_SESSION, mode: 'acp' },
   ])
   const dir = acpLogDir(DEMO_PROJECT_ID, WORKSPACE)
   await fs.mkdir(dir, { recursive: true })
@@ -72,7 +72,7 @@ async function recordAcpConversation(): Promise<void> {
   ].map((l) => JSON.stringify(l)).join('\n') + '\n')
 }
 
-describe('GET /workspace/:id/agent-sessions/:sessionId/transcript', () => {
+describe('GET /workspace/:id/conversations/:conversationId/transcript', () => {
   it('serves an acp conversation from the record acpd wrote', async () => {
     await recordAcpConversation()
 
@@ -90,7 +90,7 @@ describe('GET /workspace/:id/agent-sessions/:sessionId/transcript', () => {
 
     const tailnetApp = buildApp({ buildId: 'test', access: () => 'tailnet' })
     const res = await tailnetApp.request(
-      `/api/workspace/${WORKSPACE}/agent-sessions/${ACP_SESSION}/transcript`,
+      `/api/workspace/${WORKSPACE}/conversations/${ACP_SESSION}/transcript`,
       { headers: asTailnet('teammate@example.com', 'srv.tailnet.ts.net') },
     )
 
@@ -101,8 +101,8 @@ describe('GET /workspace/:id/agent-sessions/:sessionId/transcript', () => {
   it('serves a tui claude conversation from claude\'s own transcript', async () => {
     // yaac records no events for a TUI conversation; claude's transcript
     // is replayed through the ACP adapter's translation.
-    await recordAgentSessions(DEMO_PROJECT_ID, WORKSPACE, [
-      { tool: 'claude', agentSessionId: TUI_SESSION, mode: 'tui' },
+    await recordConversations(DEMO_PROJECT_ID, WORKSPACE, [
+      { tool: 'claude', conversationId: TUI_SESSION, mode: 'tui' },
     ])
     const file = path.join(claudeDir(DEMO_PROJECT_ID), 'projects', '-workspace', `${TUI_SESSION}.jsonl`)
     await fs.mkdir(path.dirname(file), { recursive: true })
@@ -145,20 +145,20 @@ describe('GET /workspace/:id/agent-sessions/:sessionId/transcript', () => {
   })
 
   it('answers 404 for a conversation the workspace never had', async () => {
-    await recordAgentSessions(DEMO_PROJECT_ID, WORKSPACE, [
-      { tool: 'claude', agentSessionId: TUI_SESSION, mode: 'tui' },
+    await recordConversations(DEMO_PROJECT_ID, WORKSPACE, [
+      { tool: 'claude', conversationId: TUI_SESSION, mode: 'tui' },
     ])
     expect((await get('never-happened')).status).toBe(404)
   })
 
   it('answers with an empty conversation when the agent never wrote one, whatever its tool', async () => {
     const sessions = [
-      { tool: 'claude', agentSessionId: TUI_SESSION },
-      { tool: 'codex', agentSessionId: '01a1111c-de75-7ce3-8999-3257b2615db0' },
-      { tool: 'pi', agentSessionId: '01a1110b-f851-758d-ba08-45c4ee75613f' },
-      { tool: 'opencode', agentSessionId: 'ses_eeef51727ffedBWQdWdy0dzOE2' },
+      { tool: 'claude', conversationId: TUI_SESSION },
+      { tool: 'codex', conversationId: '01a1111c-de75-7ce3-8999-3257b2615db0' },
+      { tool: 'pi', conversationId: '01a1110b-f851-758d-ba08-45c4ee75613f' },
+      { tool: 'opencode', conversationId: 'ses_eeef51727ffedBWQdWdy0dzOE2' },
     ] as const
-    await recordAgentSessions(DEMO_PROJECT_ID, WORKSPACE, sessions.map((s) => ({ ...s, mode: 'tui' as const })))
-    for (const s of sessions) expect(await get(s.agentSessionId), s.tool).toEqual({ status: 200, events: [] })
+    await recordConversations(DEMO_PROJECT_ID, WORKSPACE, sessions.map((s) => ({ ...s, mode: 'tui' as const })))
+    for (const s of sessions) expect(await get(s.conversationId), s.tool).toEqual({ status: 200, events: [] })
   })
 })

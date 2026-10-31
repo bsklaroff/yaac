@@ -58,7 +58,7 @@ describe('resolveProjectId', () => {
 
 describe('workspaceList', () => {
   const running = (workspaceId: string, projectId: string, forwardedPorts: object[] = []): object => ({
-    workspaceId, projectId, tool: 'claude', status: 'running', agentSessions: [], blockedHosts: [], createdAt: '', forwardedPorts,
+    workspaceId, projectId, status: 'running', conversations: [], sessions: [], blockedHosts: [], createdAt: '', forwardedPorts,
   })
 
   it("lists the workspaces of the projects in scope, and asks for the scoped user's stopped ones", async () => {

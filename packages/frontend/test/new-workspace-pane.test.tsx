@@ -56,18 +56,20 @@ function project(memory: Record<string, unknown> = {}, driver = 'k8s', extra: Re
 const PARENT: WorkspaceListEntry = {
   workspaceId: 'w-parent',
   projectId: 'proj',
-  tool: 'codex',
   status: 'running',
   createdAt: '2026-01-01 00:00:01',
   title: 'Parent work',
-  agentSessions: [{
-    agentSessionId: 'a1', tool: 'codex', mode: 'tui', ordinal: 0, active: true, model: 'gpt-5.5',
+  sessions: [{
+    sessionId: 'sp', tool: 'codex', mode: 'tui', window: 'codex-sp', ordinal: 0, model: 'gpt-5.5',
+    permissionMode: 'accept-edits', effort: 'high',
+  }],
+  conversations: [{
+    conversationId: 'a1', tool: 'codex', mode: 'tui', ordinal: 0, active: true, model: 'gpt-5.5', sessionId: 'sp',
   }],
   blockedHosts: [],
   forwardedPorts: [],
   unforwardedPorts: [],
   baseBranch: 'dev',
-  permissionMode: 'accept-edits',
 }
 
 const GROUPS = [
@@ -269,8 +271,9 @@ describe('NewWorkspacePane', () => {
       prompt: 'tidy the parser',
     })
     expect(state.selectedWorkspaceId).toBe(row.workspaceId)
-    // Its chat pane shows the prompt until the agent echoes it; the form is spent.
-    expect(state.launches).toEqual({ [row.workspaceId]: { prompt: 'tidy the parser' } })
+    // Its session's chat shows the prompt until the agent echoes it; nothing
+    // is held for it here, and the form is spent.
+    expect(state.launches).toEqual({})
     expect(state.newWorkspace).toBeNull()
     await waitFor(() => expect(useUiStore.getState().inFlightProvisions).toEqual([]))
   })
@@ -483,13 +486,13 @@ describe('NewWorkspacePane', () => {
     const first = useUiStore.getState().optimisticProvisioning[0].workspaceId
     expect(useUiStore.getState().launches).toEqual({ [first]: { pane: 'files' } })
 
-    // A typed prompt rides along, and the chat holds it as well.
+    // A typed prompt rides along.
     forget()
     typePrompt('look around')
     fireEvent.click(barButton('New Shell'))
     expect(sent(CREATE)).toEqual([expect.objectContaining({ mode: 'acp', prompt: 'look around' })])
     const second = useUiStore.getState().optimisticProvisioning[1].workspaceId
-    expect(useUiStore.getState().launches[second]).toEqual({ prompt: 'look around', pane: 'shell' })
+    expect(useUiStore.getState().launches[second]).toEqual({ pane: 'shell' })
 
     // What blocks a create blocks them too.
     forget()
@@ -907,7 +910,7 @@ describe('NewWorkspacePane', () => {
     it('offers a held parent it already waits on, and "Now" saves then runs', async () => {
       setSnapshot(project({}, 'k8s', {
         queuedWorkspaces: [entry('q1', { parentWorkspaceId: 'w-held' })],
-        heldWorkspaces: [{ workspaceId: 'w-held', projectId: 'proj', tool: 'claude', title: 'Died', stoppedAt: '' }],
+        heldWorkspaces: [{ workspaceId: 'w-held', projectId: 'proj', sessions: [], title: 'Died', stoppedAt: '' }],
       }))
       await openWith({ editId: 'q1' })
       expect(option('Start', 'After “Died” stops')).toBeTruthy()
@@ -1353,5 +1356,59 @@ describe('NewWorkspacePane', () => {
       act(() => useUiStore.getState().openNewWorkspace({ projectId: 'proj', draftId: 'd2' }))
       expect(select('Start').value).toBe('')
     })
+  })
+})
+
+// Where the agent runs (docs/sessions.md): a new workspace, or another
+// session in a running one, which takes only an agent's settings. And an
+// agent of None, for a workspace that runs none.
+describe('NewWorkspacePane sessions', () => {
+  const OPEN = 'POST /api/workspace/w-parent/sessions'
+  const startSession = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>('button', { name: 'Start session' })
+
+  it('opens a session in a running workspace, with only the agent\'s settings, and shows it there', async () => {
+    setSnapshot(project({}, 'k8s', { workspaces: [PARENT] }))
+    server.route(OPEN, { sessionId: 'sn', workspaceId: 'w-parent' })
+    await openReady()
+    expect([...select('Where').options].map((o) => o.textContent)).toEqual(['New workspace', 'In “Parent work”'])
+    fireEvent.change(select('Where'), { target: { value: 'w-parent' } })
+
+    expect(heading()).toBe('New session in “Parent work”')
+    for (const label of ['Start', 'Group', 'Timeout', 'Base branch']) expect(screen.queryByLabelText(label)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Save draft' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'New Shell' })).toBeNull()
+
+    typePrompt('review the parser')
+    fireEvent.click(startSession())
+    await waitFor(() => expect(sent(OPEN)).toHaveLength(1))
+    expect(sent(OPEN)[0]).toMatchObject({ tool: 'claude', prompt: 'review the parser' })
+    expect(sent(CREATE)).toEqual([])
+    await waitFor(() => expect(useUiStore.getState().selectedWorkspaceId).toBe('w-parent'))
+    expect(useUiStore.getState().activeTabs['w-parent']).toBe('session:sn')
+    expect(useUiStore.getState().newWorkspace).toBeNull()
+  })
+
+  it('opens aimed at a workspace from its New session', async () => {
+    setSnapshot(project({}, 'k8s', { workspaces: [PARENT] }))
+    act(() => useUiStore.getState().openNewWorkspace({ projectId: 'proj', inWorkspace: 'w-parent' }))
+    mount()
+    await waitFor(() => expect(startSession().title).not.toMatch(/^Loading/))
+    expect(select('Where').value).toBe('w-parent')
+    expect(heading()).toBe('New session in “Parent work”')
+  })
+
+  it('creates a workspace with no agent, which takes no prompt or agent settings', async () => {
+    await openReady()
+    fireEvent.change(select('Agent'), { target: { value: '' } })
+    expect(promptInput().readOnly).toBe(true)
+    for (const label of ['Model', 'UI', 'Start']) expect(screen.queryByLabelText(label)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Permission mode' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Start without a prompt' })).toBeNull()
+
+    expect(sendButton().disabled).toBe(false)
+    fireEvent.click(sendButton())
+    await waitFor(() => expect(sent(CREATE)).toHaveLength(1))
+    expect(sent(CREATE)[0]).toMatchObject({ project: 'proj', noSession: true })
+    for (const key of ['tool', 'mode', 'permissionMode', 'prompt']) expect(sent(CREATE)[0]).not.toHaveProperty(key)
   })
 })

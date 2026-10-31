@@ -48,17 +48,6 @@ export interface RuntimeHandle {
   projectId: string
   /** The runtime's name for the unit; what an exec addresses. */
   jobName: string
-  /** The tool to run; falls back to the default if the declared one is
-   *  unknown. */
-  tool: AgentTool
-  /**
-   * The declared tool, only if this build knows it. Unlike `tool` it has no
-   * fallback, so a fallback guess never overrides the server's default for
-   * workspaces spawned from this one.
-   */
-  declaredTool?: AgentTool
-  /** How the agents are driven, as recorded at launch. */
-  mode: AgentMode
   running: boolean
   /** Lowercased runtime phase — `running`, `pending`, `failed`, … */
   state: string
@@ -80,6 +69,26 @@ export interface AgentLiveness {
   handle: string
   status: AgentStatus
   waitingSinceMs?: number
+}
+
+/**
+ * The window that keeps a workspace's tmux server running whatever its
+ * sessions do: the first one `new-session` opens, running a keepalive. Each
+ * driver opens it as `KEEPER_STARTING`, and the create that launched the
+ * workspace renames it once its setup is done, so a workspace whose create
+ * died partway through can be told from one with no sessions
+ * (`probeSetupState` in `#runtime/status`).
+ */
+export const KEEPER_WINDOW = '_yaac'
+export const KEEPER_STARTING = '_yaac-starting'
+
+/** One tmux window of a workspace, as its status watcher last listed it. */
+export interface WorkspaceWindow {
+  /** tmux's id for it (`@3`). */
+  id: string
+  name: string
+  /** Its process exited and its pane is kept (`remain-on-exit`). */
+  dead: boolean
 }
 
 /**
@@ -137,7 +146,6 @@ export interface WorkspaceRegistration {
   /** The credential owner whose bundle the workspace spends (see
    *  `syncCredentials`). */
   owner: string
-  tool: AgentTool
   config: YaacConfig
   allowlist: EgressAllowlist
   /** The project's `origin` remote, as the workspace will see it. */
@@ -227,7 +235,6 @@ export interface SubstrateIntent {
   /** The credential owner whose bundle the workspace spends (see
    *  `syncCredentials`). */
   owner: string
-  tool: AgentTool
   config: YaacConfig
   allowlist: EgressAllowlist
   /** The project's `origin` remote, as the workspace will see it. */
@@ -278,8 +285,6 @@ export interface ScratchDirMount {
 export interface WorkspaceSpec {
   projectId: string
   workspaceId: string
-  tool: AgentTool
-  mode: AgentMode
   /** A warmed spare: hidden from user-facing views until it is claimed. */
   prewarm: boolean
   /** The image from `prepareImage`. Absent for a driver that runs no
@@ -686,13 +691,12 @@ export interface WorkspaceDriver {
   reviveStatusStream(jobName: string): Promise<void>
 
   /**
-   * Claim a spare as the caller's workspace, running `tool`: afterwards
-   * nothing in the runtime marks it a spare. Compare-and-swap: of
-   * concurrent claims exactly one resolves; the others (and a claim on a
-   * vanished spare) reject, and the caller creates a fresh workspace
-   * instead. Afterwards the handle reports `declaredTool === tool`.
+   * Claim a spare as the caller's workspace: afterwards nothing in the
+   * runtime marks it a spare. Compare-and-swap: of concurrent claims exactly
+   * one resolves; the others (and a claim on a vanished spare) reject, and
+   * the caller creates a fresh workspace instead.
    */
-  claimSpare(workspaceId: string, tool: AgentTool): Promise<void>
+  claimSpare(workspaceId: string): Promise<void>
 
   /**
    * Check this driver can run the tool in this mode, installing what it
@@ -789,7 +793,7 @@ export interface WorkspaceDriver {
   dialPort(workspaceId: string, containerPort: number): Promise<Duplex>
 
   /** Tell the egress path what a running workspace may reach. Idempotent;
-   *  a claimed spare re-registers under its claimed tool. */
+   *  a claimed spare re-registers with the project's current settings. */
   registerWorkspace(reg: WorkspaceRegistration): Promise<void>
   /**
    * Drop a workspace's port forwards and egress registration. Best-effort.

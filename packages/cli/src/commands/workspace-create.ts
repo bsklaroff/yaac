@@ -5,7 +5,7 @@ import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { testEnv } from '@yaac/shared/env'
 import { reportDeviceTimeZone } from '@yaac/shared/time-zone-report'
 import { formatInZone, parseDuration } from '@yaac/shared/schedule'
-import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
+import type { AgentMode, AgentTool, PermissionMode, SessionEntry } from '@yaac/shared/types'
 
 export interface WorkspaceCreateOptions {
   tool?: AgentTool
@@ -45,17 +45,44 @@ export interface WorkspaceCreateOptions {
   startAt?: string
   /** Queue it to start after this long, like `30m`. */
   startIn?: string
+  /** A running workspace to open the session in, instead of a new one. */
+  workspace?: string
+  /** With `workspace`: one of its earlier conversations to resume. */
+  resume?: string
+  /** Start a workspace with no session (commander's `--no-session`). */
+  session?: boolean
 }
 
 /**
- * `yaac workspace create`: ask the server to create the workspace, then
- * attach the terminal to its tmux session, or for an `acp` workspace point
- * at the web app.
+ * `yaac workspace create`: ask the server to create the workspace, or with
+ * `--workspace` to open a session in a running one (docs/sessions.md), then
+ * attach the terminal to its session's window, or for an `acp` session
+ * point at the web app. `--no-session` starts a workspace with no agent.
  *
  * Options left unset are omitted so the server fills them from what the
  * project last used, matching the web app's form and the prewarmed spare.
  */
-export async function workspaceCreate(project: string, options: WorkspaceCreateOptions): Promise<void> {
+export async function workspaceCreate(project: string | undefined, options: WorkspaceCreateOptions): Promise<void> {
+  const noSession = options.session === false
+  if (options.workspace !== undefined) {
+    if (project !== undefined) throw new Error('Give a project or --workspace, not both: the workspace names its project.')
+    for (const [flag, set] of [['--branch', options.branch], ['--group', options.group], ['--timeout', options.timeout],
+      ['--start-at', options.startAt], ['--start-in', options.startIn]] as const) {
+      if (set !== undefined) throw new Error(`${flag} is a workspace's setting, which --workspace (a session in a running one) does not take.`)
+    }
+    if (noSession) throw new Error('--no-session starts a new workspace; it does not take --workspace.')
+    await openSession(options.workspace, options)
+    return
+  }
+  if (project === undefined) throw new Error('Name the project to create the workspace in, or --workspace to open a session in a running one.')
+  if (options.resume !== undefined) throw new Error('--resume needs --workspace: a conversation resumes in the workspace that holds it.')
+  if (noSession) {
+    for (const [flag, set] of [['--tool', options.tool], ['--model', options.model], ['--effort', options.effort],
+      ['--mode', options.mode], ['--permission-mode', options.permissionMode], ['--prompt', options.prompt],
+      ['--prompt-file', options.promptFile], ['--start-at', options.startAt], ['--start-in', options.startIn]] as const) {
+      if (set !== undefined) throw new Error(`--no-session does not take ${flag}: a workspace with no session runs no agent.`)
+    }
+  }
   const timeout = options.timeout !== undefined ? durationOption('--timeout', options.timeout) : undefined
   const startIn = options.startIn !== undefined ? durationOption('--start-in', options.startIn) : undefined
   if (options.startAt !== undefined && startIn !== undefined) {
@@ -90,9 +117,29 @@ export async function workspaceCreate(project: string, options: WorkspaceCreateO
     console.log('Discard it with: yaac workspace delete ' + entry.id.slice(0, 8))
     return
   }
-  const res = await api.workspace.create.$post({ json: { ...settings, prompt } })
+  const res = await api.workspace.create.$post({ json: { ...settings, prompt, ...(noSession ? { noSession: true } : {}) } })
   // Stdin carried the prompt and has ended, so it cannot drive a terminal.
   await attachStarted(res, { attach: source !== '-' })
+}
+
+/** `--workspace`: open a session in a running workspace and attach to it. */
+async function openSession(workspace: string, options: WorkspaceCreateOptions): Promise<void> {
+  const resolved = await api.workspace[':id'].$get({ param: { id: workspace } })
+  const source = promptSource(options)
+  const prompt = source !== undefined ? await readPrompt(source) : options.prompt
+  const { sessionId } = await api.workspace[':id'].sessions.$post({
+    param: { id: resolved.workspaceId },
+    json: {
+      tool: options.tool,
+      model: options.model,
+      effort: options.effort,
+      mode: options.mode,
+      permissionMode: options.permissionMode,
+      prompt,
+      resume: options.resume,
+    },
+  })
+  await attachSession(resolved.workspaceId, sessionId, { attach: source !== '-' })
 }
 
 /** A duration option in whole minutes, refusing anything else. */
@@ -136,17 +183,38 @@ async function readStdin(): Promise<string> {
 
 /**
  * Read a create or restart NDJSON stream, then attach the terminal to the
- * workspace it started. An ACP workspace's conversation is in the web app's
- * chat pane (its tmux window only shows the acpd supervisor's log), and e2e
- * runs have no TTY to attach.
+ * session it opened, if any.
  */
 export async function attachStarted(res: Response, { attach = true } = {}): Promise<void> {
-  const { workspaceId, mode } = await consumeNdjsonStream<{ workspaceId: string; mode: AgentMode }>(res)
-  if (mode === 'acp') {
-    console.log(`Workspace ${workspaceId} is running in ACP mode — open it in the web app to chat with the agent.`)
-  } else if (!attach) {
+  const { workspaceId, sessionId } = await consumeNdjsonStream<{ workspaceId: string; sessionId?: string }>(res)
+  if (sessionId === undefined) {
     console.log(`Workspace ${workspaceId} is running — attach with \`yaac workspace attach ${workspaceId}\`.`)
-  } else if (!testEnv.e2eNoAttach) {
-    await attachWorkspacePty(workspaceId, 'native')
+    return
   }
+  await attachSession(workspaceId, sessionId, { attach })
+}
+
+/**
+ * Attach the terminal to a session's window. An `acp` session's
+ * conversation is in the web app's chat pane (its tmux window only shows the
+ * acpd supervisor's log), and e2e runs have no TTY to attach.
+ */
+async function attachSession(workspaceId: string, sessionId: string, { attach }: { attach: boolean }): Promise<void> {
+  const session = await findSession(workspaceId, sessionId)
+  if (session?.mode === 'acp') {
+    console.log(`Workspace ${workspaceId} is running in ACP mode — open it in the web app to chat with the agent `
+      + `(session ${sessionId}).`)
+  } else if (!attach || session === undefined) {
+    console.log(`Workspace ${workspaceId} is running — attach with `
+      + `\`yaac workspace attach --session ${sessionId} ${workspaceId}\`.`)
+  } else if (!testEnv.e2eNoAttach) {
+    await attachWorkspacePty(workspaceId, `native:${session.window}`)
+  }
+}
+
+/** A running workspace's open session. */
+export async function findSession(workspaceId: string, sessionId: string): Promise<SessionEntry | undefined> {
+  const { workspaces } = await api.workspace.list.$get({ query: {} })
+  return workspaces.find((w) => w.workspaceId === workspaceId)?.sessions
+    .find((s) => s.sessionId === sessionId || s.sessionId.startsWith(sessionId))
 }

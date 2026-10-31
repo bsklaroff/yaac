@@ -50,7 +50,7 @@ export function TrackedScratchDirsBadge({ workspace, project, className }: {
         provision({
           workspaceId: workspace.workspaceId,
           projectId: workspace.projectId,
-          tool: workspace.tool,
+          ...(workspace.sessions[0] !== undefined ? { tool: workspace.sessions[0].tool } : {}),
           kind: 'restart',
           ...(workspace.groupId !== undefined ? { groupId: workspace.groupId } : {}),
         }, (onProgress) => restartWorkspace(workspace.workspaceId, onProgress))

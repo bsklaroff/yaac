@@ -110,11 +110,13 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
 
   /**
    * Run yaac-mama in workspace A and return its exit code and output
-   * (execInJob would throw and retry on a non-zero exit).
+   * (execInJob would throw and retry on a non-zero exit). An exec runs in
+   * no session; `asSession` speaks as one, as its agent's commands do.
    */
-  async function runMama(args: string): Promise<{ exitCode: number; output: string }> {
+  async function runMama(args: string, asSession?: string): Promise<{ exitCode: number; output: string }> {
+    const env = asSession !== undefined ? `YAAC_SESSION_ID=${asSession} ` : ''
     const { stdout } = await execInJob(jobA, [
-      'sh', '-c', `yaac-mama ${args} 2>&1; echo "EXIT:$?"`,
+      'sh', '-c', `${env}yaac-mama ${args} 2>&1; echo "EXIT:$?"`,
     ], { timeout: 120_000 })
     const m = /\nEXIT:(\d+)\s*$/.exec(stdout) ?? /^EXIT:(\d+)\s*$/.exec(stdout)
     if (!m) throw new Error(`no exit marker in output:\n${stdout}`)
@@ -188,8 +190,13 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     }
     expect(spawned?.running).toBe(true)
     expect(spawned?.projectId).toBe(PROJECT_ID)
-    // No --tool, so it inherits the caller's (claude).
-    expect(spawned?.tool).toBe('claude')
+    // No --tool, so its session inherits the caller's (claude).
+    let tool: string | undefined
+    for (let i = 0; i < 150 && tool === undefined; i++) {
+      tool = sub.latest()?.workspaces.find((w) => w.workspaceId === newWorkspaceId)?.sessions[0]?.tool
+      if (tool === undefined) await sleep(200)
+    }
+    expect(tool).toBe('claude')
 
     // The row is replaced by the workspace, never both at once
     // (buildSnapshot hides the workspace while its row exists).
@@ -395,6 +402,91 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     }
   }, 300_000)
 
+  /** Retry `attempt` while its refusal says the agent is not up yet. */
+  async function onceUp(attempt: () => Promise<{ exitCode: number; output: string }>, notYet: string) {
+    let result = await attempt()
+    for (let i = 0; i < 60 && result.exitCode !== 0 && result.output.includes(notYet); i++) {
+      await sleep(1000)
+      result = await attempt()
+    }
+    return result
+  }
+
+  // Sessions (docs/sessions.md): agents beside the caller's own, in its
+  // workspace, and a workspace with none.
+  it('opens, messages, closes and resumes sessions of its own workspace, never messaging its own', async () => {
+    const opened = await runMama('create --workspace "$YAAC_WORKSPACE_ID" --tool claude --ui-mode tui "review the README"')
+    expect(opened.exitCode, opened.output).toBe(0)
+    const sessionId = opened.output.trim()
+    expect(sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+
+    const listed = await runMama('list')
+    expect(listed.output).toMatch(/WORKSPACE\s+SESSION\s+AGENT\s+STATUS\s+TITLE/)
+    expect(listed.output).toContain(sessionId.slice(0, 8))
+    // As that session, it is marked as the caller.
+    expect((await runMama('list', sessionId)).output).toContain(`${sessionId.slice(0, 8)} (you)`)
+
+    const sub = collectSnapshots(server!.lock.port)
+    await sub.opened
+    let lead: string | undefined
+    for (let i = 0; i < 150 && lead === undefined; i++) {
+      lead = sub.latest()?.workspaces.find((w) => w.workspaceId === callerWorkspaceId)?.sessions
+        .find((s) => s.sessionId !== sessionId)?.sessionId
+      if (lead === undefined) await sleep(200)
+    }
+    sub.ws.close()
+    expect(lead).toBeDefined()
+
+    // A session never messages itself, but may message its sibling.
+    const self = await runMama(`send --session ${sessionId} "$YAAC_WORKSPACE_ID" "hello me"`, sessionId)
+    expect(self.exitCode).toBe(1)
+    expect(self.output).toContain(`no open session '${sessionId}'`)
+    const sent = await onceUp(
+      () => runMama(`send --session ${lead!.slice(0, 8)} "$YAAC_WORKSPACE_ID" "from your sibling"`, sessionId),
+      'has no conversation yet',
+    )
+    expect(sent.exitCode, sent.output).toBe(0)
+    expect(sent.output).toContain(`Sent to ${callerWorkspaceId.slice(0, 8)}'s claude session ${lead!.slice(0, 8)}`)
+
+    // Bare, stop --session closes the asking session; the workspace runs on.
+    const closed = await runMama('stop --session', sessionId)
+    expect(closed.exitCode, closed.output).toBe(0)
+    expect(closed.output).toContain(`Closed session ${sessionId.slice(0, 8)}; its conversations stay in `)
+    expect(closed.output).toContain('keeps running.')
+    expect((await listWorkspacePods(PROJECT_ID)).find((p) => p.jobName === jobA)?.running).toBe(true)
+
+    // claude's conversation is its session's id, so it comes back by that.
+    const resumed = await onceUp(
+      () => runMama(`create --workspace "$YAAC_WORKSPACE_ID" --resume ${sessionId}`),
+      'has no conversation',
+    )
+    expect(resumed.exitCode, resumed.output).toBe(0)
+    expect(resumed.output.trim()).not.toBe(sessionId)
+    const refused = await runMama(`create --resume ${sessionId}`)
+    expect(refused.exitCode).toBe(1)
+    expect(refused.output).toContain('--resume needs --workspace')
+  }, 300_000)
+
+  it('starts a workspace with no session, which takes no prompt', async () => {
+    const refused = await runMama('create --no-session "do something"')
+    expect(refused.exitCode).toBe(1)
+    expect(refused.output).toContain('--no-session takes no prompt')
+
+    const created = await runMama('create --no-session --title "No agent"')
+    expect(created.exitCode, created.output).toBe(0)
+    const workspaceId = created.output.trim()
+    let pod: PodInfo | undefined
+    for (let i = 0; i < 180 && !pod?.running; i++) {
+      pod = (await listWorkspacePods(PROJECT_ID)).find((p) => p.workspaceId === workspaceId)
+      if (!pod?.running) await sleep(1000)
+    }
+    expect(pod?.running).toBe(true)
+    const shown = await runMama(`list ${workspaceId.slice(0, 8)}`)
+    expect(shown.output).toMatch(new RegExp(`^${workspaceId.slice(0, 8)}\\s+-\\s`, 'm'))
+    const stopped = await runMama(`stop ${workspaceId.slice(0, 8)}`)
+    expect(stopped.exitCode, stopped.output).toBe(0)
+  }, 300_000)
+
   // The destructive cases run last.
 
   it('stops the sibling it spawned, and the stop is a stop and not a delete', async () => {
@@ -456,11 +548,11 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
       if (!back?.running) await sleep(1000)
     }
     expect(back?.running).toBe(true)
-    // It comes back in the posture it had.
+    // Its session comes back in the posture it had.
     let startCmd = ''
     for (let i = 0; i < 60 && !startCmd.includes('--permission-mode'); i++) {
       startCmd = await execInJob(back!.jobName, ['sh', '-c',
-        `tmux -S ${CONTAINER_TMUX_SOCK} display -p -t yaac:claude "#{pane_start_command}" 2>&1`,
+        `tmux -S ${CONTAINER_TMUX_SOCK} list-panes -s -t yaac -F "#{window_name} #{pane_start_command}" 2>&1 | grep '^claude-'`,
       ], { timeout: 10_000 }).then((r) => r.stdout, () => '')
       if (!startCmd.includes('--permission-mode')) await sleep(1000)
     }

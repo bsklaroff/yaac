@@ -15,7 +15,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
 }))
 
 import { claimSpareWorkspace, registerWorkspace, unmarkClaimedJobs } from '#drivers/k8s/workspaces/claim'
-import { LABEL_INSTALL_ID, LABEL_PREWARMED, LABEL_TOOL, installId, k8sNamespace } from '#drivers/k8s/substrate'
+import { LABEL_INSTALL_ID, LABEL_PREWARMED, installId, k8sNamespace } from '#drivers/k8s/substrate'
 import { LABEL_NPM_CACHE, NPM_CACHE_APP_NAME } from '#drivers/k8s/substrate/proxy-constants'
 import type { WorkspaceRegistration } from '#drivers/contract'
 
@@ -33,7 +33,6 @@ function pod(workspaceId: string, labels: Record<string, string> = {}): Paramete
         'batch.kubernetes.io/job-name': `yaac-proj-${workspaceId}`,
         'yaac.workspace-id': workspaceId,
         'yaac.project-id': '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
-        'yaac.tool': 'claude',
         ...labels,
       },
       creationTimestamp: '2026-06-01T00:00:00Z',
@@ -53,7 +52,6 @@ function job(workspaceId: string): Parameters<typeof fakeCluster.seed>[0] {
       labels: {
         [LABEL_INSTALL_ID]: installId(),
         [LABEL_PREWARMED]: 'true',
-        [LABEL_TOOL]: 'claude',
         'yaac.workspace-id': workspaceId,
         'yaac.project-id': '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
       },
@@ -97,28 +95,21 @@ beforeEach(() => {
 describe('claimSpareWorkspace', () => {
   // The Job's mark outlives a dead pod, and a spare reap deletes the files
   // of a unit it finds marked, so the Job must lose it too.
-  it('finds the spare by workspace id, drops its prewarmed mark from pod and Job and stamps the tool', async () => {
-    await claimSpareWorkspace('s1', 'codex')
+  it('finds the spare by workspace id and drops its prewarmed mark from pod and Job', async () => {
+    await claimSpareWorkspace('s1')
     for (const kind of ['Pod', 'Job'] as const) {
       expect(labelsOf('s1', kind)).not.toHaveProperty(LABEL_PREWARMED)
-      expect(labelsOf('s1', kind)?.[LABEL_TOOL]).toBe('codex')
       // The other spare is untouched.
       expect(labelsOf('other', kind)?.[LABEL_PREWARMED]).toBe('true')
     }
   })
 
-  // Always stamped, since workspaces spawned from this one read it.
-  it('stamps the tool even when it already matches', async () => {
-    await claimSpareWorkspace('s1', 'claude')
-    expect(podPatches()[0].body).toMatchObject({ metadata: { labels: { [LABEL_TOOL]: 'claude' } } })
-  })
-
   it('refuses when no spare is left to claim, rather than reporting a claim', async () => {
     fakeCluster.reset()
-    await expect(claimSpareWorkspace('s1', 'codex')).rejects.toThrow(/no prewarmed spare/)
+    await expect(claimSpareWorkspace('s1')).rejects.toThrow(/no prewarmed spare/)
     // A pod that is no longer a spare is not one to claim either.
     fakeCluster.seed(pod('s1'))
-    await expect(claimSpareWorkspace('s1', 'codex')).rejects.toThrow(/no prewarmed spare/)
+    await expect(claimSpareWorkspace('s1')).rejects.toThrow(/no prewarmed spare/)
     expect(podPatches()).toEqual([])
   })
 
@@ -126,10 +117,10 @@ describe('claimSpareWorkspace', () => {
   // The fresh read and its resourceVersion make the API server reject the
   // second.
   it('writes under a compare-and-swap on the spare still being one', async () => {
-    await claimSpareWorkspace('s1', 'codex')
+    await claimSpareWorkspace('s1')
     expect(podPatches()).toEqual([{
       name: 'yaac-proj-s1-abcde',
-      body: { metadata: { resourceVersion: '7', labels: { [LABEL_PREWARMED]: null, [LABEL_TOOL]: 'codex' } } },
+      body: { metadata: { resourceVersion: '7', labels: { [LABEL_PREWARMED]: null } } },
     }])
   })
 
@@ -139,17 +130,17 @@ describe('claimSpareWorkspace', () => {
     fakeCluster.intercept((c) => {
       if (c.verb === 'read') fakeCluster.seed(pod('s1'))
     })
-    await expect(claimSpareWorkspace('s1', 'codex')).rejects.toThrow(/claimed by another caller/)
+    await expect(claimSpareWorkspace('s1')).rejects.toThrow(/claimed by another caller/)
 
     fakeCluster.reset()
     fakeCluster.seed(pod('s1', { [LABEL_PREWARMED]: 'true' }), job('s1'))
     fakeCluster.intercept((c) => { if (c.verb === 'patch') throw apiError(409, 'the object has been modified') })
-    await expect(claimSpareWorkspace('s1', 'codex')).rejects.toThrow(/409/)
+    await expect(claimSpareWorkspace('s1')).rejects.toThrow(/409/)
   })
 
   it('propagates a failed lookup', async () => {
     fakeCluster.intercept(() => { throw apiError(503, 'apiserver down') })
-    await expect(claimSpareWorkspace('s1', 'codex')).rejects.toThrow('apiserver down')
+    await expect(claimSpareWorkspace('s1')).rejects.toThrow('apiserver down')
   })
 })
 
@@ -163,7 +154,6 @@ describe('unmarkClaimedJobs', () => {
     await unmarkClaimedJobs()
 
     expect(labelsOf('claimed', 'Job')).not.toHaveProperty(LABEL_PREWARMED)
-    expect(labelsOf('claimed', 'Job')?.[LABEL_TOOL]).toBe('claude')
     for (const id of ['s1', 'other', 'podless']) expect(labelsOf(id, 'Job')?.[LABEL_PREWARMED]).toBe('true')
     await unmarkClaimedJobs()
     expect(fakeCluster.callsOf('patch', 'Job')).toHaveLength(1)
@@ -185,7 +175,7 @@ describe('claimSpareWorkspace and the npm cache', () => {
   // The cache may have gone down since the spare was warmed.
   it('re-decides a spare\'s registry against the cache as it is at claim time', async () => {
     stage({ admitted: true, serving: false })
-    await claimSpareWorkspace('s1', 'codex')
+    await claimSpareWorkspace('s1')
     // In the background, off the claim's path.
     await vi.waitFor(() => expect(execArgv()).toBeDefined())
     const down = execArgv()!
@@ -195,19 +185,19 @@ describe('claimSpareWorkspace and the npm cache', () => {
     expect(down.join(' ')).toContain('registry=http://yaac-npm-cache')
 
     stage({ admitted: true, serving: true })
-    await claimSpareWorkspace('s1', 'codex')
+    await claimSpareWorkspace('s1')
     await vi.waitFor(() => expect(execArgv()!.at(-1)).toMatch(/^http:\/\/yaac-npm-cache\..*:4873\/$/))
   })
 
   it('leaves a spare the cache does not admit alone, and never fails a claim over it', async () => {
     stage({ admitted: false, serving: true })
-    await claimSpareWorkspace('s1', 'codex')
+    await claimSpareWorkspace('s1')
     await new Promise((r) => setTimeout(r, 20))
     expect(execArgv()).toBeUndefined()
 
     stage({ admitted: true, serving: true })
     execFailure.error = new Error('container not running')
-    await expect(claimSpareWorkspace('s1', 'codex')).resolves.toBeUndefined()
+    await expect(claimSpareWorkspace('s1')).resolves.toBeUndefined()
   })
 })
 
@@ -216,7 +206,6 @@ describe('registerWorkspace', () => {
     workspaceId: 's1',
     projectId: 'proj',
     owner: 'o',
-    tool: 'codex',
     config: {},
     allowlist: { hosts: [], defaults: true },
     remoteUrl: 'https://github.com/example/repo.git',

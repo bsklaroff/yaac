@@ -5,7 +5,7 @@ import { hostedRepoDir } from '@yaac/shared/project-paths'
 import { getProjectsDir } from '@yaac/shared/paths'
 import { cleanupWorkspaceDetached, removeEntries } from './cleanup'
 import {
-  deleteProjectAgentSessions,
+  deleteProjectConversations,
   deleteProjectDraftWorkspaces,
   deleteProjectEnvVars,
   deleteProjectQueuedWorkspaces,
@@ -114,7 +114,7 @@ async function deleteProject(projectId: string): Promise<void> {
   dropProjectClaudeKeychainItem(projectId)
 
   await deleteProjectWorkspaces(projectId)
-  await deleteProjectAgentSessions(projectId)
+  await deleteProjectConversations(projectId)
   await deleteProjectWorkspaceGroups(projectId)
   // Entries first: a run's entry references its routine.
   await deleteProjectQueuedWorkspaces(projectId)

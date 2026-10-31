@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { describe, it, expect } from 'vitest'
-import { buildWindowsExec } from '#runtime/agents/setup-commands'
+import { buildWindowsExec, finishSetupCommand } from '#runtime/agents/setup-commands'
+import { KEEPER_STARTING, KEEPER_WINDOW } from '#drivers/contract'
 import { resolveInitWindows } from '#runtime/agents/agent-command'
 import { WORKSPACE_INIT_SCRIPT, workspaceBinDir } from '#domain/workspaces/workspace-bin'
 import { PROXY_CA_BUNDLE_PATH } from '#drivers/k8s/egress/proxy-client'
@@ -13,54 +14,57 @@ const PATHS = workspacePathsFixture()
 const TMUX = `tmux -S ${PATHS.tmuxSock}`
 
 describe('buildWindowsExec', () => {
-  it('with no init windows, only respawns the agent into the keepalive window', () => {
-    const cmd = buildWindowsExec([], 'claude', [{ tool: 'claude', cmd: 'claude --session-id x' }], PATHS)
-    expect(cmd).toBe(`${TMUX} respawn-window -k -t yaac:claude 'claude --session-id x'`)
+  const claude = { tool: 'claude' as const, window: 'claude-aaaa', cmd: 'claude --session-id x' }
+
+  // A session's window keeps its pane when the agent exits, for a resume.
+  it('opens each session in a window of its own, in the workspace, keeping its pane on exit', () => {
+    expect(buildWindowsExec([], [claude], PATHS)).toBe(
+      `${TMUX} new-window -d -t yaac -n claude-aaaa -c ${PATHS.workspaceDir} 'claude --session-id x'`
+      + ' \\; set-option -t yaac:claude-aaaa remain-on-exit on',
+    )
   })
 
-  it('chains each init window before the agent respawn', () => {
+  it('chains each init window before the sessions', () => {
     const wins = resolveInitWindows({ initCommands: ['pnpm install', 'pnpm dev'] })
-    const cmd = buildWindowsExec(wins, 'codex', [{ tool: 'codex', cmd: 'codex --yolo' }], PATHS)
-    const [initPart, respawnPart] = cmd.split(' && tmux -S ')
+    const cmd = buildWindowsExec(wins, [claude], PATHS)
+    const [initPart, sessionPart] = cmd.split(' && tmux -S ')
     expect(initPart).toContain('new-window -d -t yaac -n init')
     expect(initPart).toContain('pnpm install && pnpm dev')
-    expect(`tmux -S ${respawnPart}`).toBe(
-      `${TMUX} respawn-window -k -t yaac:codex 'codex --yolo'`,
-    )
+    expect(sessionPart).toContain('-n claude-aaaa')
   })
 
-  it('opens only the init windows when the agents were started apart', () => {
+  it('opens only the init windows when the sessions were started apart', () => {
     const wins = resolveInitWindows({ initCommands: ['pnpm dev'] })
-    const cmd = buildWindowsExec(wins, 'claude', [], PATHS)
+    const cmd = buildWindowsExec(wins, [], PATHS)
     expect(cmd).toContain('pnpm dev')
-    expect(cmd).not.toContain('respawn-window')
-    expect(buildWindowsExec([], 'claude', [], PATHS)).toBe('')
+    expect(cmd).not.toContain('claude')
+    expect(buildWindowsExec([], [], PATHS)).toBe('')
   })
 
-  it('opens every agent past the first in its own window, in the workspace', () => {
-    const cmd = buildWindowsExec([], 'claude', [
-      { tool: 'claude', cmd: 'claude --resume a' },
-      { tool: 'codex', cmd: 'codex --yolo' },
-    ], PATHS)
-    expect(cmd).toBe(
-      `${TMUX} respawn-window -k -t yaac:claude 'claude --resume a'`
-      + ` \\; new-window -d -t yaac -n codex-2 -c ${PATHS.workspaceDir} 'codex --yolo'`,
-    )
-  })
-
-  it('starts every agent in one tmux command, each naming what it resumes', () => {
+  it('starts every session in one tmux command, each naming what it resumes', () => {
     // One command, so no pane listing sees a window before it names what it
     // resumes (codex reports that only at its next turn).
-    const cmd = buildWindowsExec([], 'codex', [
-      { tool: 'codex', cmd: 'codex resume t-1', resumes: 't-1' },
-      { tool: 'opencode', cmd: 'opencode --standalone --session ses_2', resumes: 'ses_2' },
+    const cmd = buildWindowsExec([], [
+      { tool: 'codex', window: 'codex-bbbb', cmd: 'codex resume t-1', resumes: 't-1' },
+      { tool: 'opencode', window: 'opencode-cccc', cmd: 'opencode --standalone --session ses_2', resumes: 'ses_2' },
     ], PATHS)
     expect(cmd).toBe(
-      `${TMUX} respawn-window -k -t yaac:codex 'codex resume t-1'`
-      + " \\; set-option -p -t yaac:codex @yaac-session 'codex|t-1|'"
-      + ` \\; new-window -d -t yaac -n opencode-2 -c ${PATHS.workspaceDir} 'opencode --standalone --session ses_2'`
-      + " \\; set-option -p -t yaac:opencode-2 @yaac-session 'opencode|ses_2|'",
+      `${TMUX} new-window -d -t yaac -n codex-bbbb -c ${PATHS.workspaceDir} 'codex resume t-1'`
+      + ' \\; set-option -t yaac:codex-bbbb remain-on-exit on'
+      + " \\; set-option -p -t yaac:codex-bbbb @yaac-session 'codex|t-1|'"
+      + ` \\; new-window -d -t yaac -n opencode-cccc -c ${PATHS.workspaceDir} 'opencode --standalone --session ses_2'`
+      + ' \\; set-option -t yaac:opencode-cccc remain-on-exit on'
+      + " \\; set-option -p -t yaac:opencode-cccc @yaac-session 'opencode|ses_2|'",
     )
+  })
+})
+
+describe('finishSetupCommand', () => {
+  // The reaper reads a keeper still named for its start as a create that
+  // died partway (`probeSetupState`), so setup ends by renaming it, and a
+  // workspace with no keeper (one started before keepers) is not an error.
+  it('renames the keeper, tolerating a workspace without one', () => {
+    expect(finishSetupCommand(PATHS)).toBe(`${TMUX} rename-window -t yaac:${KEEPER_STARTING} ${KEEPER_WINDOW} 2>/dev/null || true`)
   })
 })
 
@@ -81,10 +85,15 @@ describe('yaac-workspace-init script', () => {
     expect(body).toContain(`tmux -S ${PATHS.tmuxSock}`)
   })
 
+  it('opens the session on the keeper, named for its start', async () => {
+    const body = await fs.readFile(scriptPath, 'utf8')
+    expect(body).toMatch(new RegExp(`new-session -d -s yaac -n ${KEEPER_STARTING} `))
+  })
+
   it('consumes exactly the env session-create injects', async () => {
     const body = await fs.readFile(scriptPath, 'utf8')
     for (const name of [
-      'YAAC_TOOL', 'YAAC_GIT_NAME', 'YAAC_GIT_EMAIL', 'YAAC_STATUS_RIGHT',
+      'YAAC_GIT_NAME', 'YAAC_GIT_EMAIL', 'YAAC_STATUS_RIGHT',
       'YAAC_NESTED_ENGINE', 'YAAC_REGISTRY_CONF_B64',
     ]) {
       // Both plain `$NAME` and defaulted `${NAME:-}` expansions count.

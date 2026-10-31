@@ -1,4 +1,4 @@
-import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileAgentSessions, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileRevokedShares, reconcileStoppedAgentSessions, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, startScheduledWorkspaces } from '#domain/workspaces'
+import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileConversations, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileRevokedShares, reconcileSessions, reconcileStoppedConversations, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, startScheduledWorkspaces } from '#domain/workspaces'
 import { refreshProjectOrigins } from '#domain/projects'
 import { adoptRefreshedToolCredentials, syncToolCredentials } from '#domain/auth'
 import { workspaceDriver } from '#drivers/driver'
@@ -65,17 +65,22 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // freed first.
     ...runtime.prePool,
     ...pool,
-    // Record each workspace's agent sessions, which are live, and their
-    // opening messages, from the watcher's live agent set. The only step
-    // that reads that set, so `live-agents` makes a new conversation a row
-    // within a debounce rather than a resync.
-    { name: 'agent-sessions', triggers: ['workspaces', 'live-agents'],
-      run: (ctx) => reconcileAgentSessions(ctx.snapshot()) },
+    // Give every open session of a running workspace a window: one opened
+    // while it was stopped, or one a server restart cut off mid-launch.
+    { name: 'sessions', triggers: ['workspaces', 'live-agents'],
+      run: (ctx) => reconcileSessions(ctx.snapshot()) },
+    // Record each workspace's conversations, which are live, and their
+    // opening messages, and what each session's agent reports, from the
+    // watcher's live agent set. The step that reads that set, so
+    // `live-agents` makes a new conversation a row within a debounce rather
+    // than a resync.
+    { name: 'conversations', triggers: ['workspaces', 'live-agents'],
+      run: (ctx) => reconcileConversations(ctx.snapshot()) },
     // What stopped workspaces' conversations left on disk, read once each
     // for the stopped listing, which reads only rows. A stop changes
     // `workspaces`; a backlog drains a batch per pass.
-    { name: 'stopped-agent-sessions', triggers: ['workspaces'],
-      run: () => reconcileStoppedAgentSessions() },
+    { name: 'stopped-conversations', triggers: ['workspaces'],
+      run: () => reconcileStoppedConversations() },
     // Runtime upkeep (substrate GCs, datapath repairs), after the sweeps
     // above so a just-reaped workspace's leftovers are collected the same
     // pass.

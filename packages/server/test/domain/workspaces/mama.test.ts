@@ -28,16 +28,28 @@ import { recordProject } from '#db/project-store'
 import { listQueuedWorkspaceRows } from '#db/queued-workspace-store'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { _clearListActiveInflightForTests } from '#domain/workspaces/list'
-import { createRoutine, listProvisioning, listRoutines, queueWorkspace, runMamaCommand, setRoutinePaused } from '#domain/workspaces'
+import { createRoutine, listProvisioning, listRoutines, mamaCaller, queueWorkspace, runMamaCommand, setRoutinePaused } from '#domain/workspaces'
 import type { MamaCaller } from '#domain/workspaces/mama'
 import { SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE } from '#domain/workspaces/spawn-policy'
 import { recordProjectCreate } from '#db/project-store'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { agentHistoryDir, opencodeCheckpointDir, repoDir, workspaceDir } from '@yaac/shared/project-paths'
-import { recordAgentSessions, setActiveAgentSessions } from '#db/agent-session-store'
+import { recordConversations } from '#db/conversation-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
-import { applyWorkspaceEvent, deleteToolCredential, getWorkspaceRow, setTimeZone, setToolCredential, setWorkspaceGroup } from '#db'
+import {
+  closeSessionRow,
+  deleteToolCredential,
+  getSessionRow,
+  getWorkspaceRow,
+  insertSession,
+  listWorkspaceSessions,
+  setTimeZone,
+  setToolCredential,
+  setWorkspaceGroup,
+  type SessionLaunchSettings,
+  type SessionRow,
+} from '#db'
 import { formatInZone } from '@yaac/shared/schedule'
 import { cloneRepo } from '#domain/git'
 import { _resetWorkspaceStatusStoreForTests, setLiveAgents } from '#runtime/status/status-store'
@@ -55,18 +67,28 @@ const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 const CALLER = { workspaceId: 'caller-workspace', projectId: PROJ, tool: 'codex' } as const
 
 /** A caller as the transport resolves it: its posture and agent mode from
- *  its row. */
+ *  its first session. */
 async function callerFor(over: Partial<MamaCaller> = {}): Promise<MamaCaller> {
   const workspaceId = over.workspaceId ?? CALLER.workspaceId
-  const row = await getWorkspaceRow(PROJ, workspaceId)
+  const [session] = await listWorkspaceSessions(workspaceId)
   return {
     ...CALLER,
     workspaceId,
     principal: { kind: 'workspace', workspaceId, userId: BUILT_IN_USER_ID },
-    permissionMode: row?.permissionMode ?? 'bypass',
-    mode: row?.mode ?? 'tui',
+    permissionMode: session?.permissionMode ?? 'bypass',
+    mode: session?.mode ?? 'tui',
     ...over,
   }
+}
+
+/** A workspace as a create leaves it: its row, and a session (claude in a
+ *  terminal unless named) in `session`'s posture. */
+async function created(
+  input: Parameters<typeof recordWorkspaceCreated>[0],
+  session: Partial<SessionLaunchSettings> & Pick<SessionLaunchSettings, 'permissionMode'>,
+): Promise<SessionRow> {
+  await recordWorkspaceCreated(input)
+  return await insertSession(input.projectId, input.workspaceId, { tool: 'claude', mode: 'tui', ...session })
 }
 
 let tmpDir: string
@@ -99,7 +121,7 @@ beforeEach(async () => {
   _clearListActiveInflightForTests()
   vi.mocked(cleanupWorkspaceDetached).mockReset().mockResolvedValue()
   vi.mocked(createWorkspace).mockReset().mockResolvedValue({
-    workspaceId: 'spawned', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
+    workspaceId: 'spawned', jobName: 'j', forwardedPorts: [],
   })
 })
 
@@ -124,6 +146,46 @@ const output = async (
   if (!('output' in outcome)) throw new Error('expected text, got a file')
   return outcome.output
 }
+
+describe('mamaCaller', () => {
+  const at = { workspaceId: 'caller-workspace', projectId: PROJ }
+
+  // A session's agent says which session it runs in; anything else in the
+  // workspace (a user's shell, an agent claiming a session it is not) is
+  // held to the strictest of the workspace's open sessions.
+  it("holds a session's agent to its own session's posture, and anyone else to the strictest open one", async () => {
+    const loose = await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { tool: 'codex', mode: 'acp', permissionMode: 'bypass' })
+    await insertSession(PROJ, 'caller-workspace', { tool: 'claude', mode: 'tui', permissionMode: 'plan' })
+    await insertSession(PROJ, 'caller-workspace', { tool: 'claude', mode: 'acp', permissionMode: 'accept-edits' })
+    const elsewhere = await created({ projectId: PROJ, workspaceId: 'other-workspace' }, { permissionMode: 'bypass' })
+
+    expect(await mamaCaller(at, loose.id)).toEqual({
+      ...at,
+      principal: { kind: 'workspace', workspaceId: 'caller-workspace', userId: BUILT_IN_USER_ID },
+      sessionId: loose.id,
+      tool: 'codex',
+      permissionMode: 'bypass',
+      mode: 'acp',
+    })
+    const strictest = { tool: 'claude', permissionMode: 'plan', mode: 'tui' }
+    for (const claimed of [undefined, 'not-a-session', elsewhere.id]) {
+      const caller = await mamaCaller(at, claimed)
+      expect(caller, String(claimed)).toMatchObject(strictest)
+      expect(caller).not.toHaveProperty('sessionId')
+    }
+    // A closed session no longer counts as the caller's.
+    await closeSessionRow(loose.id)
+    expect(await mamaCaller(at, loose.id)).not.toHaveProperty('sessionId')
+  })
+
+  it('falls back to what a create would resolve for a workspace with no session', async () => {
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace' })
+    await recordProjectCreate(PROJ, 'codex', { permissionMode: 'read-only', mode: 'acp' })
+    const caller = await mamaCaller(at, undefined)
+    expect(caller).toMatchObject({ tool: 'codex', permissionMode: 'read-only', mode: 'acp' })
+    expect(caller).not.toHaveProperty('sessionId')
+  })
+})
 
 describe('runMamaCommand', () => {
   it('refuses a command outside the allowlist, naming what is allowed', async () => {
@@ -194,7 +256,7 @@ describe('runMamaCommand', () => {
       await setTimeZone(BUILT_IN_USER_ID, 'Asia/Tokyo', true)
       const soon = new Date(Date.now() + 38 * 60_000 + 30_000)
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', deadline: soon })
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'timed-out', deadline: new Date(Date.now() - 60_000) })
+      await created({ projectId: PROJ, workspaceId: 'timed-out', deadline: new Date(Date.now() - 60_000) }, { permissionMode: 'bypass' })
       await recordWorkspaceStopped(PROJ, 'timed-out')
       running = [podFor('caller-workspace')]
       const queued = await output('queue', 'nightly sweep', { 'start-in': '2h', timeout: '1h30m', tool: 'claude', branch: 'main' })
@@ -208,6 +270,19 @@ describe('runMamaCommand', () => {
       expect(all).toMatch(/\nat .+ \(in 2h\):\n  [0-9a-f]{8}  claude  queued  stops after 1h 30m  nightly sweep/)
     })
 
+    it("lists each running workspace's open sessions, marking the caller's own", async () => {
+      const mine = await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { permissionMode: 'bypass', title: 'Lead' })
+      const theirs = await created({ projectId: PROJ, workspaceId: 'other-workspace' }, { tool: 'codex', permissionMode: 'bypass', prompt: 'port the lexer' })
+      running = [podFor('caller-workspace'), podFor('other-workspace')]
+
+      const outcome = await runMamaCommand(await callerFor({ sessionId: mine.id }), { command: 'list', args: {}, body: '' })
+      if (!outcome.ok || !('output' in outcome)) throw new Error('expected a listing')
+
+      expect(outcome.output).toMatch(/WORKSPACE\s+SESSION\s+AGENT\s+STATUS\s+TITLE/)
+      expect(outcome.output).toMatch(new RegExp(`caller-w\\s+${mine.id.slice(0, 8)} \\(you\\)\\s+claude\\b.*Lead`))
+      expect(outcome.output).toMatch(new RegExp(`other-wo\\s+${theirs.id.slice(0, 8)}\\s+codex\\b.*port the lexer`))
+    })
+
     it('says so plainly when there is nothing to report', async () => {
       const text = await output('list')
       expect(text).toContain('No running workspaces in this project')
@@ -216,14 +291,12 @@ describe('runMamaCommand', () => {
 
     it('narrows to the named running and queued workspaces, with full prompts', async () => {
       const long = `fix the flaky test\n\nthen ${'and more '.repeat(20)}end`
-      await recordWorkspaceCreated({
-        projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
-      })
+      await created({ projectId: PROJ, workspaceId: 'caller-workspace', baseBranch: 'main' }, { permissionMode: 'accept-edits' })
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace' })
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'unnamed-workspace' })
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-two' })
-      await recordAgentSessions(PROJ, 'sibling-workspace', [
-        { tool: 'claude', agentSessionId: 'conv', firstPrompt: long },
+      await recordConversations(PROJ, 'sibling-workspace', [
+        { tool: 'claude', conversationId: 'conv', firstPrompt: long },
       ])
       running = [
         podFor('caller-workspace'), podFor('sibling-workspace'), podFor('unnamed-workspace'), podFor('sibling-two'),
@@ -273,7 +346,8 @@ describe('runMamaCommand', () => {
         for (const [i, [id, prompt, cause]] of stops.entries()) {
           vi.setSystemTime(Date.UTC(2026, 9, 20 + i, 12))
           await recordWorkspaceCreated({ projectId: PROJ, workspaceId: id })
-          await recordAgentSessions(PROJ, id, [{ tool: 'claude', agentSessionId: `${id}-conv`, firstPrompt: prompt }])
+          await recordConversations(PROJ, id, [{ tool: 'claude', conversationId: `${id}-conv`, firstPrompt: prompt }])
+          await insertSession(PROJ, id, { tool: 'claude', mode: 'tui', permissionMode: 'bypass', conversationId: `${id}-conv` })
           await recordWorkspaceStopped(PROJ, id, cause)
         }
       } finally {
@@ -355,9 +429,7 @@ describe('runMamaCommand', () => {
    */
   describe('create', () => {
     beforeEach(async () => {
-      await recordWorkspaceCreated({
-        projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'auto', mode: 'tui',
-      })
+      await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { permissionMode: 'auto', mode: 'tui' })
     })
 
     /** What the detached creates were asked for, once `n` of them have been. */
@@ -366,16 +438,18 @@ describe('runMamaCommand', () => {
       return vi.mocked(createWorkspace).mock.calls.map((c) => c[1])
     }
 
-    /** Spawn as a caller with the given posture (its row's), returning the
-     *  decision or the create it started. */
+    /** Spawn as a caller with the given posture (its session's), returning
+     *  the decision or the create it started, its session's settings
+     *  beside the workspace's. */
     const spawn = async (
       args: Record<string, string>,
       caller: Partial<MamaCaller> = {},
-    ): Promise<{ ok: false; error: string } | Parameters<typeof createWorkspace>[1]> => {
+    ): Promise<{ ok: false; error: string } | (Parameters<typeof createWorkspace>[1] & Partial<SessionLaunchSettings>)> => {
       vi.mocked(createWorkspace).mockClear()
       const outcome = await runMamaCommand(await callerFor(caller), { command: 'create', args, body: 'do it' })
       if (!outcome.ok) return outcome
-      return (await createdWith())[0]
+      const [opts] = await createdWith()
+      return { ...opts, ...opts.session }
     }
 
     it('gives the workspace a timeout from now, and refuses one under a minute', async () => {
@@ -398,7 +472,7 @@ describe('runMamaCommand', () => {
         opts.onProgress?.('Creating job...')
         rowDuringCreate = listProvisioning()[0]
         await gate
-        return { workspaceId: opts.workspaceId, jobName: 'j', forwardedPorts: [], tool: 'codex', mode: 'tui' }
+        return { workspaceId: opts.workspaceId, jobName: 'j', forwardedPorts: [] }
       })
 
       const output = await run('create', 'write the report')
@@ -413,8 +487,8 @@ describe('runMamaCommand', () => {
       // The caller's tool, permission mode and UI mode, unless others are
       // requested.
       expect(opts).toMatchObject({
-        workspaceId: output.output, initialPrompt: 'write the report', tool: 'codex', permissionMode: 'auto', mode: 'tui',
-        model: FALLBACK_MODELS.codex,
+        workspaceId: output.output,
+        session: { prompt: 'write the report', tool: 'codex', permissionMode: 'auto', mode: 'tui', model: FALLBACK_MODELS.codex },
       })
       expect(rowDuringCreate).toMatchObject({ workspaceId: output.output, kind: 'create', message: 'Creating job...' })
       release()
@@ -577,7 +651,7 @@ describe('runMamaCommand', () => {
       const gate = new Promise<void>((resolve) => { release = resolve })
       vi.mocked(createWorkspace).mockImplementation(async (_projectId, opts) => {
         await gate
-        return { workspaceId: opts.workspaceId, jobName: 'j', forwardedPorts: [], tool: 'codex', mode: 'tui' }
+        return { workspaceId: opts.workspaceId, jobName: 'j', forwardedPorts: [] }
       })
       // A refusal after the cap check (no sign-in for opencode) gives its
       // slot back.
@@ -591,17 +665,69 @@ describe('runMamaCommand', () => {
       release()
       await vi.waitFor(async () => { expect((await run('create', 'x')).ok).toBe(true) })
     })
+
+    // `--workspace` opens a session beside the others in a running
+    // workspace, the caller's own included, rather than starting one.
+    it('opens a session in a running workspace with --workspace, answering with its id', async () => {
+      exec.mockResolvedValue({ stdout: '', stderr: '' })
+      running = [podFor('caller-workspace')]
+
+      const id = await output('create', 'review the diff', { workspace: 'caller', tool: 'claude' })
+
+      const opened = (await listWorkspaceSessions('caller-workspace')).at(-1)!
+      expect(opened).toMatchObject({ id, tool: 'claude', mode: 'tui', permissionMode: 'auto', firstPrompt: 'review the diff' })
+      expect(exec.mock.calls.some(([, cmd]) => cmd.includes(`new-window -d -t yaac -n ${opened.window} `))).toBe(true)
+      expect(vi.mocked(createWorkspace)).not.toHaveBeenCalled()
+      expect(listProvisioning()).toEqual([])
+
+      // Still held to the caller's posture, and to a workspace that runs.
+      expect(await run('create', 'x', { workspace: 'caller', 'permission-mode': 'bypass' }))
+        .toMatchObject({ ok: false, error: expect.stringContaining("more permissive than this workspace's own") as unknown })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'stopped-workspace' })
+      expect(await run('create', 'x', { workspace: 'stopped' })).toMatchObject({ ok: false })
+      // A workspace's own settings are not a session's.
+      for (const [arg, value] of [['branch', 'main'], ['group', 'g'], ['timeout', '1h']]) {
+        expect(await run('create', 'x', { workspace: 'caller', [arg]: value })).toEqual({
+          ok: false, error: `--${arg} is a workspace's setting, which --workspace (a session in a running one) does not take`,
+        })
+      }
+    })
+
+    it('opens a session on an earlier conversation of a running workspace with --resume, which needs --workspace', async () => {
+      exec.mockResolvedValue({ stdout: '', stderr: '' })
+      running = [podFor('caller-workspace')]
+      await recordConversations(PROJ, 'caller-workspace', [{ tool: 'claude', conversationId: 'old-conv', mode: 'acp' }])
+
+      expect(await run('create', '', { resume: 'old-conv' })).toEqual({
+        ok: false, error: '--resume needs --workspace: a conversation resumes in the workspace that holds it',
+      })
+      // It takes no prompt, and the conversation keeps its own tool and mode.
+      const id = await output('create', '', { workspace: 'caller', resume: 'old-conv' })
+      expect(await getSessionRow(id)).toMatchObject({ tool: 'claude', mode: 'acp', conversationId: 'old-conv' })
+      expect(await run('create', '', { workspace: 'caller', resume: 'nope' }))
+        .toMatchObject({ ok: false, error: expect.stringContaining('has no conversation nope') as unknown })
+    })
+
+    it('starts a workspace with no session with --no-session, which takes no prompt or agent setting', async () => {
+      const id = await output('create', '', { 'no-session': '' })
+      const [opts] = await createdWith()
+      expect(opts).toMatchObject({ workspaceId: id })
+      expect(opts).not.toHaveProperty('session')
+
+      expect(await run('create', 'x', { 'no-session': '' })).toEqual({
+        ok: false, error: '--no-session takes no prompt: a workspace with no session runs no agent',
+      })
+      for (const [arg, value] of [['tool', 'claude'], ['permission-mode', 'plan'], ['workspace', 'caller'], ['resume', 'conv']]) {
+        expect(await run('create', '', { 'no-session': '', [arg]: value })).toEqual({ ok: false, error: `--no-session does not take --${arg}` })
+      }
+    })
   })
 
   it('creates a named group only for a request that goes through', async () => {
     // A refused request (mode limit, unknown parent, a user's entry above the
     // caller) must not change the user's sidebar.
-    await recordWorkspaceCreated({
-      projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
-    })
-    await recordWorkspaceCreated({
-      projectId: PROJ, workspaceId: 'loose-sibling', permissionMode: 'bypass', baseBranch: 'main',
-    })
+    await created({ projectId: PROJ, workspaceId: 'caller-workspace', baseBranch: 'main' }, { permissionMode: 'accept-edits' })
+    await created({ projectId: PROJ, workspaceId: 'loose-sibling', baseBranch: 'main' }, { permissionMode: 'bypass' })
     const entry = await queueWorkspace(local, PROJ, {
       parent: 'loose-sibling', prompt: 'user wrote this', tool: 'claude', permissionMode: 'bypass',
     }, 'user')
@@ -618,12 +744,8 @@ describe('runMamaCommand', () => {
 
   describe('queue', () => {
     beforeEach(async () => {
-      await recordWorkspaceCreated({
-        projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
-      })
-      await recordWorkspaceCreated({
-        projectId: PROJ, workspaceId: 'loose-sibling', permissionMode: 'bypass', baseBranch: 'main',
-      })
+      await created({ projectId: PROJ, workspaceId: 'caller-workspace', baseBranch: 'main' }, { permissionMode: 'accept-edits' })
+      await created({ projectId: PROJ, workspaceId: 'loose-sibling', baseBranch: 'main' }, { permissionMode: 'bypass' })
     })
 
     const ME = { 'parent-workspace': 'caller-workspace' }
@@ -754,12 +876,8 @@ describe('runMamaCommand', () => {
 
   describe('edit-queued', () => {
     beforeEach(async () => {
-      await recordWorkspaceCreated({
-        projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
-      })
-      await recordWorkspaceCreated({
-        projectId: PROJ, workspaceId: 'loose-sibling', permissionMode: 'bypass', baseBranch: 'main',
-      })
+      await created({ projectId: PROJ, workspaceId: 'caller-workspace', baseBranch: 'main' }, { permissionMode: 'accept-edits' })
+      await created({ projectId: PROJ, workspaceId: 'loose-sibling', baseBranch: 'main' }, { permissionMode: 'bypass' })
       await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', baseBranch: 'main' })
     })
 
@@ -832,9 +950,7 @@ describe('runMamaCommand', () => {
   // docs/workspace-groups.md
   describe('edit-queued --no-parent', () => {
     beforeEach(async () => {
-      await recordWorkspaceCreated({
-        projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
-      })
+      await created({ projectId: PROJ, workspaceId: 'caller-workspace', baseBranch: 'main' }, { permissionMode: 'accept-edits' })
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'busy', baseBranch: 'main' })
     })
 
@@ -858,9 +974,7 @@ describe('runMamaCommand', () => {
 
   describe('run-queued', () => {
     beforeEach(async () => {
-      await recordWorkspaceCreated({
-        projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
-      })
+      await created({ projectId: PROJ, workspaceId: 'caller-workspace', baseBranch: 'main' }, { permissionMode: 'accept-edits' })
     })
 
     it('starts one now by short id, refusing it above the caller\'s posture or into a full group', async () => {
@@ -884,15 +998,13 @@ describe('runMamaCommand', () => {
       await setWorkspaceGroupLimit(PROJ, workers.groupId, null)
       expect(await output('run-queued', '', { queued: id.slice(0, 8) })).toMatch(new RegExp(`^Started queued workspace ${id.slice(0, 8)} as `))
       await vi.waitFor(() => { expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1) })
-      expect(vi.mocked(createWorkspace).mock.calls[0][1]).toMatchObject({ initialPrompt: 'step 2', groupId: workers.groupId })
+      expect(vi.mocked(createWorkspace).mock.calls[0][1]).toMatchObject({ session: { prompt: 'step 2' }, groupId: workers.groupId })
     })
   })
 
   describe('delete-queued', () => {
     beforeEach(async () => {
-      await recordWorkspaceCreated({
-        projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
-      })
+      await created({ projectId: PROJ, workspaceId: 'caller-workspace', baseBranch: 'main' }, { permissionMode: 'accept-edits' })
       await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', baseBranch: 'main' })
     })
 
@@ -922,9 +1034,7 @@ describe('runMamaCommand', () => {
   // docs/routines.md
   describe('routine-*', () => {
     beforeEach(async () => {
-      await recordWorkspaceCreated({
-        projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
-      })
+      await created({ projectId: PROJ, workspaceId: 'caller-workspace', baseBranch: 'main' }, { permissionMode: 'accept-edits' })
       await setTimeZone(BUILT_IN_USER_ID, 'America/New_York', true)
     })
 
@@ -1004,7 +1114,7 @@ describe('runMamaCommand', () => {
 
       expect(await output('routine-run', '', { routine: short })).toMatch(new RegExp(`^Started routine ${short} \\("Weekly"\\) as `))
       await vi.waitFor(() => { expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1) })
-      expect(vi.mocked(createWorkspace).mock.calls[0][1]).toMatchObject({ initialPrompt: 'agent wrote this' })
+      expect(vi.mocked(createWorkspace).mock.calls[0][1]).toMatchObject({ session: { prompt: 'agent wrote this' } })
 
       await setRoutinePaused(local, theirs.id, true)
       expect(await output('routine-delete', '', { routine: short }))
@@ -1097,9 +1207,7 @@ describe('runMamaCommand', () => {
       await git(origin, ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', 'init'])
       await recordProject({ id: PROJ, name: 'demo', remoteUrl: origin, addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
       await cloneRepo(origin, repoDir(PROJ), null)
-      await recordWorkspaceCreated({
-        projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
-      })
+      await created({ projectId: PROJ, workspaceId: 'caller-workspace', baseBranch: 'main' }, { permissionMode: 'accept-edits' })
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace', baseBranch: 'main' })
     })
 
@@ -1217,6 +1325,41 @@ describe('runMamaCommand', () => {
       if (!outcome.ok) expect(outcome.error).toContain('use a longer prefix')
       expect(vi.mocked(cleanupWorkspaceDetached)).not.toHaveBeenCalled()
     })
+
+    it("closes one session with --session, by default the caller's own, leaving its workspace running", async () => {
+      exec.mockResolvedValue({ stdout: '', stderr: '' })
+      const claude = { tool: 'claude', mode: 'tui', permissionMode: 'bypass' } as const
+      const mine = await insertSession(PROJ, 'caller-workspace', claude)
+      const target = await insertSession(PROJ, 'sibling-workspace', claude)
+      await insertSession(PROJ, 'sibling-workspace', claude)
+
+      expect(await output('stop', '', { session: target.id.slice(0, 8) })).toBe(
+        `Closed session ${target.id.slice(0, 8)}; its conversations stay in sibling-'s history. sibling- keeps running.`,
+      )
+      expect((await getSessionRow(target.id))?.closedAt).toBeInstanceOf(Date)
+      expect(exec.mock.calls.some(([job, cmd]) => job === 'yaac-sibling-workspace' && cmd.includes(`kill-window -t yaac:${target.window}`))).toBe(true)
+
+      // Bare, it closes the session whose agent asks.
+      const own = await runMamaCommand(await callerFor({ sessionId: mine.id }), { command: 'stop', args: { session: '' }, body: '' })
+      expect(own).toEqual({
+        ok: true,
+        output: `Closed session ${mine.id.slice(0, 8)}; its conversations stay in caller-w's history. `
+          + 'caller-w keeps running with no agent; stop it with yaac-mama stop caller-w.',
+      })
+      expect(vi.mocked(cleanupWorkspaceDetached)).not.toHaveBeenCalled()
+
+      expect(await run('stop', '', { session: '' })).toEqual({
+        ok: false, error: "stop --session needs a session id when not run by a session's agent (see: yaac-mama list)",
+      })
+      expect(await run('stop', '', { session: target.id })).toEqual({
+        ok: false, error: `no open session '${target.id}' in this project (see: yaac-mama list)`,
+      })
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace' })
+      const foreign = await insertSession(OTHER, 'foreign-workspace', claude)
+      running.push(podFor('foreign-workspace', OTHER))
+      expect(await run('stop', '', { session: foreign.id })).toMatchObject({ ok: false })
+      expect((await getSessionRow(foreign.id))?.closedAt).toBeUndefined()
+    })
   })
 
   /**
@@ -1226,18 +1369,13 @@ describe('runMamaCommand', () => {
    */
   describe('restart', () => {
     beforeEach(async () => {
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits' })
-      await recordWorkspaceCreated({
-        projectId: PROJ, workspaceId: 'sibling-workspace', permissionMode: 'manual', model: 'opus',
-      })
-      await recordAgentSessions(PROJ, 'sibling-workspace', [
-        { tool: 'claude', agentSessionId: 'first-conv' },
-        { tool: 'claude', agentSessionId: 'second-conv' },
+      await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { permissionMode: 'accept-edits' })
+      await recordConversations(PROJ, 'sibling-workspace', [
+        { tool: 'claude', conversationId: 'first-conv' },
+        { tool: 'claude', conversationId: 'second-conv' },
       ])
-      await setActiveAgentSessions(PROJ, 'sibling-workspace', [
-        { tool: 'claude', agentSessionId: 'first-conv', paneId: '%3' },
-        { tool: 'claude', agentSessionId: 'second-conv', paneId: '%7' },
-      ])
+      await created({ projectId: PROJ, workspaceId: 'sibling-workspace' }, { permissionMode: 'manual', model: 'opus', conversationId: 'first-conv' })
+      await insertSession(PROJ, 'sibling-workspace', { tool: 'claude', mode: 'tui', permissionMode: 'manual', conversationId: 'second-conv' })
       await recordWorkspaceStopped(PROJ, 'sibling-workspace')
       running = [podFor('caller-workspace')]
     })
@@ -1262,10 +1400,7 @@ describe('runMamaCommand', () => {
 
       // A workspace the user's 30-minute timeout stopped comes back with 30
       // minutes unless the agent names a longer one, or none.
-      await recordWorkspaceCreated({
-        projectId: PROJ, workspaceId: 'timed-sibling', permissionMode: 'manual', deadline: new Date(Date.now() + 30 * 60_000),
-      })
-      await recordAgentSessions(PROJ, 'timed-sibling', [{ tool: 'claude', agentSessionId: 'timed-conv' }])
+      await created({ projectId: PROJ, workspaceId: 'timed-sibling', deadline: new Date(Date.now() + 30 * 60_000) }, { permissionMode: 'manual' })
       await recordWorkspaceStopped(PROJ, 'timed-sibling')
       const cases: Array<[Record<string, string>, number | undefined]> = [
         [{ workspace: 'timed-sib' }, 30],
@@ -1292,20 +1427,20 @@ describe('runMamaCommand', () => {
         .toMatchObject({ ok: false, error: expect.stringContaining('invalid timeout') as string })
     })
 
-    it('relaunches a stopped sibling under its id, resuming its conversations in its recorded posture', async () => {
+    it('relaunches a stopped sibling under its id, bringing back each of its sessions', async () => {
       let release!: () => void
       const gate = new Promise<void>((resolve) => { release = resolve })
       vi.mocked(createWorkspace).mockImplementation(async (_projectId, opts) => {
         await gate
-        return { workspaceId: opts.workspaceId, jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' }
+        return { workspaceId: opts.workspaceId, jobName: 'j', forwardedPorts: [] }
       })
       expect(await output('list')).toContain('1 stopped workspace: yaac-mama list --stopped')
 
       const text = await output('restart', '', { workspace: 'sibling' })
 
-      expect(text).toContain('Restarting sibling-, resuming its 2 conversations.')
+      expect(text).toContain('Restarting sibling-, resuming its 2 sessions.')
       // Registered before the reply, so the sidebar shows it at once.
-      expect(listProvisioning()).toMatchObject([{ workspaceId: 'sibling-workspace', kind: 'restart' }])
+      expect(listProvisioning()).toMatchObject([{ workspaceId: 'sibling-workspace', kind: 'restart', tool: 'claude' }])
       await vi.waitFor(() => { expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1) })
       // It keeps its stop until the relaunch succeeds, but is no longer
       // listed as stopped, so an agent watching does not restart it again.
@@ -1313,12 +1448,7 @@ describe('runMamaCommand', () => {
       expect(await output('list', '', { stopped: '1' })).toBe('No stopped workspaces in this project.')
       expect(await output('list')).not.toContain('stopped workspace')
       release()
-      expect(vi.mocked(createWorkspace).mock.calls[0]).toMatchObject([PROJ, {
-        workspaceId: 'sibling-workspace',
-        tool: 'claude',
-        permissionMode: 'manual',
-        resume: [{ agentSessionId: 'first-conv', tool: 'claude' }, { agentSessionId: 'second-conv', tool: 'claude' }],
-      }])
+      expect(vi.mocked(createWorkspace).mock.calls[0]).toMatchObject([PROJ, { workspaceId: 'sibling-workspace', resume: true }])
       await vi.waitFor(async () => {
         expect((await getWorkspaceRow(PROJ, 'sibling-workspace'))?.stoppedAt).toBeUndefined()
       })
@@ -1326,35 +1456,25 @@ describe('runMamaCommand', () => {
     })
 
     it('refuses what it must not restart, starting nothing', async () => {
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'bypass-workspace', permissionMode: 'bypass' })
+      await created({ projectId: PROJ, workspaceId: 'bypass-workspace' }, { permissionMode: 'bypass' })
       await recordWorkspaceStopped(PROJ, 'bypass-workspace')
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'running-workspace', permissionMode: 'manual' })
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'opencode-workspace', permissionMode: 'manual' })
-      await recordAgentSessions(PROJ, 'opencode-workspace', [{ tool: 'opencode', agentSessionId: 'ses_1' }])
+      await created({ projectId: PROJ, workspaceId: 'running-workspace' }, { permissionMode: 'manual' })
+      await created({ projectId: PROJ, workspaceId: 'opencode-workspace' }, { tool: 'opencode', permissionMode: 'manual' })
       await recordWorkspaceStopped(PROJ, 'opencode-workspace')
       // Its stop is recorded but its unit is back (a restart under way).
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'restarting-workspace', permissionMode: 'manual' })
+      await created({ projectId: PROJ, workspaceId: 'restarting-workspace' }, { permissionMode: 'manual' })
       await recordWorkspaceStopped(PROJ, 'restarting-workspace')
-      // It wrote a transcript the host no longer has.
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'lost-workspace', permissionMode: 'manual' })
-      await applyWorkspaceEvent({
-        type: 'sessions-launched', projectId: PROJ, workspaceId: 'lost-workspace',
-        sessions: [{ tool: 'claude', agentSessionId: 'lost-conv', mode: 'acp', firstPrompt: 'hello' }],
-      })
+      // Its chat conversation was sent a message, so it wrote a transcript,
+      // which the host no longer has.
+      await recordConversations(PROJ, 'lost-workspace', [{ tool: 'claude', conversationId: 'lost-conv', mode: 'acp', firstPrompt: 'hello' }])
+      await created({ projectId: PROJ, workspaceId: 'lost-workspace' }, { mode: 'acp', permissionMode: 'manual', conversationId: 'lost-conv' })
       await recordWorkspaceStopped(PROJ, 'lost-workspace')
-      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', permissionMode: 'manual' })
+      await created({ projectId: OTHER, workspaceId: 'foreign-workspace' }, { permissionMode: 'manual' })
       await recordWorkspaceStopped(OTHER, 'foreign-workspace')
-      // Recorded as `manual`, but pi has only `bypass`, which its
-      // conversation would come back in.
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'pi-workspace', permissionMode: 'manual' })
-      await recordAgentSessions(PROJ, 'pi-workspace', [
-        { tool: 'claude', agentSessionId: 'claude-conv' },
-        { tool: 'pi', agentSessionId: 'pi-conv' },
-      ])
-      await setActiveAgentSessions(PROJ, 'pi-workspace', [
-        { tool: 'claude', agentSessionId: 'claude-conv', paneId: '%1' },
-        { tool: 'pi', agentSessionId: 'pi-conv', paneId: '%2' },
-      ])
+      // Recorded as `manual`, but pi has only `bypass`, which its session
+      // would come back in.
+      await created({ projectId: PROJ, workspaceId: 'pi-workspace' }, { permissionMode: 'manual' })
+      await insertSession(PROJ, 'pi-workspace', { tool: 'pi', mode: 'tui', permissionMode: 'manual' })
       await recordWorkspaceStopped(PROJ, 'pi-workspace')
       running = [podFor('caller-workspace'), podFor('running-workspace'), podFor('restarting-workspace')]
       const refusal = async (workspace: string): Promise<string> => {
@@ -1366,9 +1486,9 @@ describe('runMamaCommand', () => {
       expect(await refusal('caller')).toBe('restart cannot restart this workspace itself')
       expect(await refusal('running')).toBe('workspace running- is not stopped')
       expect(await refusal('restarting')).toBe('workspace restarti is running; only a stopped one can be restarted')
-      expect(await refusal('bypass')).toBe("bypass-w runs in permission mode 'bypass', more than this workspace's own "
-        + "('accept-edits'); only one at or below it can be restarted")
-      expect(await refusal('pi-work')).toBe("pi-works's pi conversation would come back in permission mode 'bypass', "
+      expect(await refusal('bypass')).toBe("bypass-w's claude session runs in permission mode 'bypass', more than this "
+        + "workspace's own ('accept-edits'); only one at or below it can be restarted")
+      expect(await refusal('pi-work')).toBe("pi-works's pi session would come back in permission mode 'bypass', "
         + "the nearest pi has to 'manual', more than this workspace's own ('accept-edits'); only one at or below it "
         + 'can be restarted')
       expect(await refusal('opencode')).toContain('opencode is not signed in for this project\'s owner')
@@ -1384,7 +1504,7 @@ describe('runMamaCommand', () => {
       const gate = new Promise<void>((resolve) => { release = resolve })
       vi.mocked(createWorkspace).mockImplementation(async (_projectId, opts) => {
         await gate
-        return { workspaceId: opts.workspaceId, jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' }
+        return { workspaceId: opts.workspaceId, jobName: 'j', forwardedPorts: [] }
       })
       for (let i = 1; i < SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE; i++) expect(await run('create', 'x')).toMatchObject({ ok: true })
       expect((await run('restart', '', { workspace: 'sibling' })).ok).toBe(true)
@@ -1395,58 +1515,71 @@ describe('runMamaCommand', () => {
   })
 
   describe('send', () => {
+    let first: SessionRow
+    let second: SessionRow
+
     beforeEach(async () => {
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits' })
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace', permissionMode: 'manual' })
+      await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { permissionMode: 'accept-edits' })
+      await recordConversations(PROJ, 'sibling-workspace', [
+        { tool: 'claude', conversationId: 'first-conv' },
+        { tool: 'claude', conversationId: 'second-conv' },
+      ])
+      first = await created({ projectId: PROJ, workspaceId: 'sibling-workspace' }, { permissionMode: 'manual', conversationId: 'first-conv' })
+      second = await insertSession(PROJ, 'sibling-workspace', { tool: 'claude', mode: 'tui', permissionMode: 'manual', conversationId: 'second-conv' })
       running = [podFor('caller-workspace'), podFor('sibling-workspace')]
-      await recordAgentSessions(PROJ, 'sibling-workspace', [
-        { tool: 'claude', agentSessionId: 'first-conv' },
-        { tool: 'claude', agentSessionId: 'second-conv' },
-      ])
-      await setActiveAgentSessions(PROJ, 'sibling-workspace', [
-        { tool: 'claude', agentSessionId: 'first-conv', paneId: '%3' },
-        { tool: 'claude', agentSessionId: 'second-conv', paneId: '%7' },
-      ])
       exec.mockReset().mockResolvedValue({ stdout: '', stderr: '' })
       _resetWorkspaceStatusStoreForTests()
     })
 
-    /** The pane the paste script targets, and whether it carries the
+    /** The window the paste script targets, and whether it carries the
      *  message. It runs in the foreground, so the reply can say whether the
      *  message landed. */
-    const delivered = (message: string): { jobName: string; pane?: string; carries: boolean } => {
+    const delivered = (message: string): { jobName: string; window?: string; carries: boolean } => {
       // The delivery script travels on the exec's stdin.
       const [jobName, , opts] = exec.mock.calls.at(-1)!
       const script = opts?.stdin ?? ''
       return {
         jobName,
-        pane: / -t (%\d+)/.exec(script)?.[1],
+        window: / -t yaac:([\w-]+)/.exec(script)?.[1],
         carries: script.includes(Buffer.from(message, 'utf8').toString('base64')),
       }
     }
 
-    it('pastes into a sibling\'s first live conversation, or the one named', async () => {
+    it('pastes into a sibling\'s first open session, or the one named by session or conversation', async () => {
       const text = await output('send', 'rebase onto main\nthen push', { workspace: 'sibling' })
 
       // Headed with the sender, so the agent knows who is asking.
       expect(delivered('Sent from caller-workspace via yaac-mama:\n\nrebase onto main\nthen push')).toEqual({
-        jobName: 'yaac-sibling-workspace', pane: '%3', carries: true,
+        jobName: 'yaac-sibling-workspace', window: first.window, carries: true,
       })
-      expect(text).toContain('Sent to sibling-')
-      expect(text).toContain('first-co')
-
+      expect(text).toContain(`Sent to sibling-'s claude session ${first.id.slice(0, 8)}`)
       // Each delivery checks its own conversation for a dialog first.
       expect(exec.mock.calls.at(-1)![2]?.stdin).toContain('first-conv')
 
       await output('send', 'and you', { workspace: 'sibling', conversation: 'second' })
-      expect(delivered('Sent from caller-workspace via yaac-mama:\n\nand you').pane).toBe('%7')
+      expect(delivered('Sent from caller-workspace via yaac-mama:\n\nand you').window).toBe(second.window)
       expect(exec.mock.calls.at(-1)![2]?.stdin).toContain('second-conv')
+      await output('send', 'and you again', { workspace: 'sibling', session: second.id.slice(0, 6) })
+      expect(delivered('Sent from caller-workspace via yaac-mama:\n\nand you again').window).toBe(second.window)
+    })
+
+    // A session may message a sibling session of its own workspace, but
+    // never itself: the paste would land in its own running turn.
+    it('sends to a sibling session in the caller\'s own workspace, never to the caller\'s own session', async () => {
+      const own = await callerFor({ workspaceId: 'sibling-workspace', sessionId: first.id, permissionMode: 'manual' })
+      const sent = await runMamaCommand(own, { command: 'send', args: { workspace: 'sibling' }, body: 'review this' })
+      expect(sent.ok).toBe(true)
+      expect(delivered('Sent from sibling-workspace via yaac-mama:\n\nreview this').window).toBe(second.window)
+
+      exec.mockClear()
+      const self = await runMamaCommand(own, { command: 'send', args: { workspace: 'sibling', session: first.id }, body: 'hi' })
+      expect(self).toEqual({ ok: false, error: `no open session '${first.id}' in sibling- (see: yaac-mama list)` })
+      expect(exec).not.toHaveBeenCalled()
     })
 
     it('strips control characters before any tool sees them, pi\'s editor-free path included', async () => {
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'pi-workspace', permissionMode: 'manual' })
-      await recordAgentSessions(PROJ, 'pi-workspace', [{ tool: 'pi', agentSessionId: 'pi-conv' }])
-      await setActiveAgentSessions(PROJ, 'pi-workspace', [{ tool: 'pi', agentSessionId: 'pi-conv', paneId: '%5' }])
+      await recordConversations(PROJ, 'pi-workspace', [{ tool: 'pi', conversationId: 'pi-conv' }])
+      const pi = await created({ projectId: PROJ, workspaceId: 'pi-workspace' }, { tool: 'pi', permissionMode: 'manual', conversationId: 'pi-conv' })
       running = [podFor('caller-workspace'), podFor('pi-workspace')]
 
       await output('send', 'look\x1b]52;c;cGF5bG9hZA==\x07 here\x1b[6n', { workspace: 'pi-workspace' })
@@ -1454,7 +1587,7 @@ describe('runMamaCommand', () => {
       // An OSC clipboard write and a cursor query, rendered by pi's TUI,
       // would reach the terminal; only their printable remains arrive.
       expect(delivered('Sent from caller-workspace via yaac-mama:\n\nlook]52;c;cGF5bG9hZA== here[6n'))
-        .toMatchObject({ pane: '%5', carries: true })
+        .toMatchObject({ window: pi.window, carries: true })
     })
 
     it('reports a message the agent could not take as not delivered', async () => {
@@ -1463,7 +1596,9 @@ describe('runMamaCommand', () => {
       const outcome = await run('send', 'go', { workspace: 'sibling' })
 
       expect(outcome.ok).toBe(false)
-      if (!outcome.ok) expect(outcome.error).toMatch(/^not delivered to sibling-'s claude conversation first-co: .*nothing was submitted/)
+      if (!outcome.ok) {
+        expect(outcome.error).toMatch(new RegExp(`^not delivered to sibling-'s claude session ${first.id.slice(0, 8)}: .*nothing was submitted`))
+      }
 
       // The paste script found a dialog up, so it typed nothing.
       exec.mockRejectedValue(new WorkspaceExecError('paste', 3, '', 'showing a prompt'))
@@ -1471,18 +1606,18 @@ describe('runMamaCommand', () => {
       expect(asking.ok === false && asking.error).toContain('nothing was typed: showing a prompt')
     })
 
-    it('delivers one message at a time per sender and per conversation', async () => {
+    it('delivers one message at a time per sender and per session', async () => {
       let release!: () => void
       exec.mockReturnValueOnce(new Promise((resolve) => {
         release = () => resolve({ stdout: '', stderr: '' })
       }))
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'third-workspace', permissionMode: 'manual' })
+      await created({ projectId: PROJ, workspaceId: 'third-workspace' }, { permissionMode: 'manual' })
       running = [
         podFor('caller-workspace'), podFor('sibling-workspace'), podFor('third-workspace'),
       ]
       const third = await callerFor({ workspaceId: 'third-workspace' })
 
-      const first = run('send', 'one', { workspace: 'sibling' })
+      const pending = run('send', 'one', { workspace: 'sibling' })
       await vi.waitFor(() => { expect(exec).toHaveBeenCalledTimes(1) })
       const again = await run('send', 'two', { workspace: 'sibling', conversation: 'second' })
       const other = await runMamaCommand(third, { command: 'send', args: { workspace: 'sibling' }, body: 'three' })
@@ -1490,20 +1625,20 @@ describe('runMamaCommand', () => {
 
       expect(again.ok === false && again.error).toContain('previous send is still being delivered')
       expect(other.ok === false && other.error).toContain('another message to sibling-')
-      expect((await first).ok).toBe(true)
+      expect((await pending).ok).toBe(true)
       expect(exec).toHaveBeenCalledTimes(1)
       // Both free again once it lands.
       expect((await run('send', 'two', { workspace: 'sibling' })).ok).toBe(true)
     })
 
     it('refuses a target it must not or cannot message, sending nothing', async () => {
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'bypass-workspace', permissionMode: 'bypass' })
-      await recordAgentSessions(PROJ, 'bypass-workspace', [{ tool: 'claude', agentSessionId: 'bypass-conv' }])
-      await setActiveAgentSessions(PROJ, 'bypass-workspace', [{ tool: 'claude', agentSessionId: 'bypass-conv', paneId: '%1' }])
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'stopped-workspace', permissionMode: 'plan' })
-      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', permissionMode: 'plan' })
+      await recordConversations(PROJ, 'bypass-workspace', [{ tool: 'claude', conversationId: 'bypass-conv' }])
+      await created({ projectId: PROJ, workspaceId: 'bypass-workspace' }, { permissionMode: 'bypass', conversationId: 'bypass-conv' })
+      await created({ projectId: PROJ, workspaceId: 'stopped-workspace' }, { permissionMode: 'plan' })
+      await created({ projectId: PROJ, workspaceId: 'quiet-workspace' }, { permissionMode: 'plan' })
+      await created({ projectId: OTHER, workspaceId: 'foreign-workspace' }, { permissionMode: 'plan' })
       running = [
-        podFor('caller-workspace'), podFor('sibling-workspace'), podFor('bypass-workspace'),
+        podFor('caller-workspace'), podFor('sibling-workspace'), podFor('bypass-workspace'), podFor('quiet-workspace'),
         podFor('foreign-workspace', OTHER),
       ]
       const refusal = async (body: string, args: Record<string, string>): Promise<string> => {
@@ -1513,26 +1648,30 @@ describe('runMamaCommand', () => {
       }
 
       // A message is as good as a prompt, so the caller's posture caps it:
-      // the row's, and the conversation's own when it reported one.
-      expect(await refusal('go', { workspace: 'bypass' })).toContain('more than this workspace\'s own')
+      // the session's, and its agent's latest report.
+      expect(await refusal('go', { workspace: 'bypass' })).toContain('more than the caller\'s own')
       setLiveAgents(PROJ, 'sibling-workspace', [
-        { handle: '%3', tool: 'claude', agentSessionId: 'first-conv', reportedMode: 'bypassPermissions' },
-        { handle: '%7', tool: 'claude', agentSessionId: 'second-conv', reportedMode: 'mystery' },
+        { handle: first.window, tool: 'claude', conversationId: 'first-conv', reportedMode: 'bypassPermissions' },
+        { handle: second.window, tool: 'claude', conversationId: 'second-conv', reportedMode: 'mystery' },
       ])
       expect(await refusal('go', { workspace: 'sibling' })).toContain('runs in permission mode \'bypass\'')
       expect(await refusal('go', { workspace: 'sibling', conversation: 'second' })).toContain('cannot tell which permission mode')
       _resetWorkspaceStatusStoreForTests()
 
-      expect(await refusal('go', { workspace: 'caller-workspace' })).toContain('itself')
       expect(await refusal('go', { workspace: 'stopped' })).toBe('workspace stopped- is not running')
       await recordWorkspaceStopped(PROJ, 'stopped-workspace')
       expect(await refusal('go', { workspace: 'stopped' }))
         .toBe('workspace stopped- is stopped; restart it with yaac-mama restart stopped-, then send once it is running')
       expect(await refusal('go', { workspace: 'foreign-workspace' })).toContain('no workspace')
-      expect(await refusal('go', { workspace: 'sibling', conversation: 'nope' })).toContain('no running conversation')
+      expect(await refusal('go', { workspace: 'sibling', conversation: 'nope' })).toBe("no open conversation 'nope' in sibling- (see: yaac-mama list)")
+      expect(await refusal('go', { workspace: 'sibling', session: 'nope' })).toBe("no open session 'nope' in sibling- (see: yaac-mama list)")
       expect(await refusal('  ', { workspace: 'sibling' })).toContain('needs a message')
-      await setActiveAgentSessions(PROJ, 'sibling-workspace', [])
-      expect(await refusal('go', { workspace: 'sibling' })).toContain('has no running conversation yet')
+      // Its agent has not named a conversation yet.
+      expect(await refusal('go', { workspace: 'quiet' })).toMatch(/^quiet-wo's claude session [0-9a-f]{8} has no conversation yet/)
+      // The caller's own session is never a target.
+      const [mine] = await listWorkspaceSessions('caller-workspace')
+      expect(await runMamaCommand(await callerFor({ sessionId: mine.id }), { command: 'send', args: { workspace: 'caller-workspace' }, body: 'go' }))
+        .toEqual({ ok: false, error: 'caller-w has no other session to send to' })
       expect(exec).not.toHaveBeenCalled()
     })
   })
@@ -1708,9 +1847,9 @@ describe('runMamaCommand', () => {
     it('lists a stopped sibling\'s conversations, prints one\'s transcripts, and hands out each file', async () => {
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace' })
       await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace' })
-      await recordAgentSessions(PROJ, 'sibling-workspace', [
-        { tool: 'claude', agentSessionId: 'claude-conv', firstPrompt: 'write the report' },
-        { tool: 'opencode', agentSessionId: 'opencode-conv' },
+      await recordConversations(PROJ, 'sibling-workspace', [
+        { tool: 'claude', conversationId: 'claude-conv', firstPrompt: 'write the report' },
+        { tool: 'opencode', conversationId: 'opencode-conv' },
       ])
       const conversations = path.join(agentHistoryDir(PROJ, 'sibling-workspace', 'claude'), '-workspace')
       await fs.mkdir(path.join(conversations, 'claude-conv', 'subagents'), { recursive: true })
@@ -1790,7 +1929,6 @@ function podFor(workspaceId: string, projectId = PROJ): RuntimeHandle {
     jobName: `yaac-${workspaceId}`,
     workspaceId,
     projectId,
-    tool: 'claude',
     createdAtMs: 1_760_000_000_000,
   })
 }

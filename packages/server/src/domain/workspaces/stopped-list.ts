@@ -1,15 +1,16 @@
 import { workspaceDriver } from '#drivers/driver'
 import {
-  getAgentSessionsFor,
+  getConversationsFor,
+  listOpenSessionsFor,
   listProjectRows,
   listStoppedWorkspaceRows,
   conversationTitle,
   openingPrompt,
-  type AgentSessionLinkRow,
+  type ConversationLinkRow,
   type StoppedRowCursor,
   type WorkspaceRow,
 } from '#db'
-import { toAgentSessionEntry } from './agent-session-entry'
+import { toConversationEntry, toSessionEntry } from './conversation-entry'
 import { ensureProjectExists } from './list'
 import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
@@ -79,21 +80,23 @@ export async function listStoppedWorkspaces(query: StoppedListQuery = {}): Promi
 
 /** Stopped rows in wire form, with their conversations. */
 export async function toStoppedEntries(rows: WorkspaceRow[]): Promise<StoppedWorkspaceEntry[]> {
-  const linksByWorkspace = await getAgentSessionsFor(rows)
+  const [linksByWorkspace, sessionsByWorkspace] = await Promise.all([
+    getConversationsFor(rows),
+    listOpenSessionsFor(rows.map((r) => r.workspaceId)),
+  ])
   return rows.map((r) => {
     const links = linksByWorkspace.get(`${r.projectId}/${r.workspaceId}`) ?? []
-    const first = links[0]
-    const prompt = openingPrompt(links) ?? r.pendingPrompt
+    const sessions = sessionsByWorkspace.get(r.workspaceId) ?? []
+    const prompt = openingPrompt(links) ?? sessions[0]?.firstPrompt
     const title = r.title ?? conversationTitle(links) ?? r.generatedTitle
     return {
       workspaceId: r.workspaceId,
       projectId: r.projectId,
-      // From the first conversation; claude if none, as restart assumes.
-      tool: first?.tool ?? 'claude',
       createdAt: formatUtcTimestamp(r.createdAt.getTime()),
       lastActiveAt: formatUtcTimestamp(lastActiveMs(links) ?? r.createdAt.getTime()),
       stoppedAt: formatUtcTimestamp(stoppedAtOf(r).getTime()),
-      agentSessions: links.map((l) => toAgentSessionEntry(l)),
+      sessions: sessions.map((s) => toSessionEntry(s, links)),
+      conversations: links.map(toConversationEntry),
       deathSeenBy: r.deathSeenBy,
       ...(prompt !== undefined ? { prompt } : {}),
       ...(title !== undefined ? { title } : {}),
@@ -138,7 +141,7 @@ function parseCursor(cursor: string): StoppedRowCursor {
 
 /** The newest recorded activity across the workspace's conversations, so a
  *  `/clear` counts. Undefined when none was recorded. */
-function lastActiveMs(links: AgentSessionLinkRow[]): number | undefined {
+function lastActiveMs(links: ConversationLinkRow[]): number | undefined {
   const known = links.flatMap((l) => l.lastActiveAt === undefined ? [] : [l.lastActiveAt.getTime()])
   return known.length > 0 ? Math.max(...known) : undefined
 }

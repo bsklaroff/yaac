@@ -263,9 +263,10 @@ class WorkspaceMirror {
 
   /** Resolve the target to its pane, size its window, and seed. */
   private async open(viewer: MirrorViewer): Promise<void> {
-    // The agent is the lowest-index window (`^`), as in the terminals
-    // listing.
-    const window = viewer.target === 'agent' ? 'yaac:^' : viewer.target.slice('window:'.length)
+    // A session's window by its exact name, any other by its id.
+    const window = viewer.target.startsWith('session:')
+      ? `=yaac:=${viewer.target.slice('session:'.length)}`
+      : viewer.target.slice('window:'.length)
     const [paneId, windowId] = (await this.client.send(`display -p -t '${window}' '#{pane_id} #{window_id}'`)).split(' ')
     if (!paneId?.startsWith('%') || !windowId?.startsWith('@')) throw new Error(`no pane for ${viewer.target}`)
     if (viewer.closed) return

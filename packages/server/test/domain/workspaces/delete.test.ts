@@ -3,9 +3,9 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { deleteWorkspace, listProvisioning, prepareRestart, queueWorkspace } from '#domain/workspaces'
 import { clearAllProvisioningForTests, failProvisioning, registerProvisioning } from '#domain/workspaces/provisioning'
-import { getWorkspaceRow, listWorkspaceAgentSessions, BUILT_IN_USER_ID } from '#db'
+import { getWorkspaceRow, listWorkspaceConversations, BUILT_IN_USER_ID } from '#db'
 import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
-import { recordAgentSessions } from '#db/agent-session-store'
+import { recordConversations } from '#db/conversation-store'
 import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
@@ -52,7 +52,7 @@ afterEach(async () => {
 /** A stopped workspace with a conversation and files in each of its dirs. */
 async function stoppedWorkspace(id: string): Promise<string[]> {
   await recordWorkspaceCreated({ projectId: PROJ, workspaceId: id })
-  await recordAgentSessions(PROJ, id, [{ tool: 'claude', agentSessionId: `conv-${id}`, firstPrompt: 'hi' }])
+  await recordConversations(PROJ, id, [{ tool: 'claude', conversationId: `conv-${id}`, firstPrompt: 'hi' }])
   await recordWorkspaceStopped(PROJ, id)
   const dirs = [workspaceDir(PROJ, id), agentHistoryDir(PROJ, id), acpLogDir(PROJ, id)]
   for (const dir of dirs) {
@@ -76,7 +76,7 @@ describe('deleteWorkspace', () => {
 
     for (const dir of dirs) expect(await exists(dir), dir).toBe(false)
     expect(await getWorkspaceRow(PROJ, 'wt-doomed')).toBeUndefined()
-    expect(await listWorkspaceAgentSessions(PROJ, 'wt-doomed')).toEqual([])
+    expect(await listWorkspaceConversations(PROJ, 'wt-doomed')).toEqual([])
     expect(listProvisioning()).toEqual([])
     for (const dir of siblingDirs) expect(await exists(dir), dir).toBe(true)
     expect(await getWorkspaceRow(PROJ, 'wt-kept')).toBeDefined()
@@ -148,7 +148,7 @@ describe('deleteWorkspace', () => {
     await stoppedWorkspace('wt-a')
     vi.setSystemTime(Date.now() + 60_000)
     await stoppedWorkspace('wt-b')
-    await recordAgentSessions(PROJ, 'wt-b', [{ tool: 'claude', agentSessionId: 'conv-wt-a' }])
+    await recordConversations(PROJ, 'wt-b', [{ tool: 'claude', conversationId: 'conv-wt-a' }])
     await expect(deleteWorkspace(local, 'wt-a')).rejects.toMatchObject({ code: 'CONFLICT', message: /resumed in workspace wt-b/ })
     expect(await exists(agentHistoryDir(PROJ, 'wt-a'))).toBe(true)
 

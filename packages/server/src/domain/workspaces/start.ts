@@ -32,6 +32,8 @@ export interface StartWorkspaceRequest {
   /** Reference branch on `origin`; unnamed is the project's default. */
   branch?: string
   prompt?: string
+  /** Start it with no session, which leaves the agent fields unused. */
+  noSession?: boolean
   /** The user's title; given, the workspace is not auto-titled. */
   title?: string
   /** The title generated for the draft or queued entry it is started from,
@@ -59,8 +61,8 @@ export interface StartWorkspaceRequest {
 }
 
 /**
- * Check a start and resolve its settings, then register its provisioning
- * row and return the run that claims a spare or creates cold. A bad setting,
+ * Check a start and resolve its first session's settings, then register its
+ * provisioning row and return the run that claims a spare or creates cold. A bad setting,
  * or a group at its workspace limit, is refused here, before anything shows. Used by the create route,
  * `yaac-mama create` and queued launches.
  *
@@ -74,14 +76,14 @@ export async function prepareStart(
 ): Promise<ProvisionRun<WorkspaceCreateResult>> {
   const { projectId, workspaceId, prompt, title, generatedTitle, branch } = request
   await authorizeProject(principal, projectId)
-  const setup = await resolveCreate(projectId, {
+  const setup = request.noSession === true ? undefined : await resolveCreate(projectId, {
     ...(request.tool !== undefined ? { tool: request.tool } : {}),
     ...(request.model !== undefined ? { model: request.model } : {}),
     ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
     ...(request.effort !== undefined ? { effort: request.effort } : {}),
     ...(request.mode !== undefined ? { mode: request.mode } : {}),
   })
-  const { tool } = setup
+  const session = setup === undefined ? undefined : { ...setup, ...(prompt !== undefined ? { prompt } : {}) }
   // Before the group and defaults below, so a create refused as a duplicate
   // leaves neither behind.
   refuseLiveProvision(workspaceId)
@@ -92,9 +94,9 @@ export async function prepareStart(
   // provisioning row takes the slot (docs/workspace-groups.md).
   const room = await readGroupRoom(projectId, groupId)
   refuseFullGroup(room, workspaceId)
-  if (request.rememberDefaults) {
+  if (request.rememberDefaults && setup !== undefined) {
     // Only the named fields, so a resolved default never overwrites a pick.
-    await recordProjectCreate(projectId, tool, {
+    await recordProjectCreate(projectId, setup.tool, {
       ...(request.model !== undefined ? { model: request.model } : {}),
       ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
       ...(request.effort !== undefined ? { effort: request.effort } : {}),
@@ -102,17 +104,17 @@ export async function prepareStart(
     }, branch)
   }
 
-  const modelName = setup.model !== undefined ? modelDisplayName(tool, setup.model) : undefined
+  const modelName = setup?.model !== undefined ? modelDisplayName(setup.tool, setup.model) : undefined
   refuseFullGroup(room, workspaceId)
   return provision({
     workspaceId,
     projectId,
-    tool,
+    ...(setup !== undefined ? { tool: setup.tool } : {}),
     kind: 'create',
     ...(groupId !== undefined ? { groupId } : {}),
     ...((title ?? generatedTitle) !== undefined ? { title: title ?? generatedTitle } : {}),
-    ...(prompt !== undefined ? { prompt } : {}),
-    ...(setup.model !== undefined ? { model: setup.model } : {}),
+    ...(session?.prompt !== undefined ? { prompt: session.prompt } : {}),
+    ...(setup?.model !== undefined ? { model: setup.model } : {}),
     ...(modelName !== undefined ? { modelName } : {}),
     ...(branch !== undefined ? { branch } : {}),
   }, async (onProgress) => {
@@ -120,9 +122,8 @@ export async function prepareStart(
       throwIfProvisionStopped(workspaceId)
       // Containerless keeps no spare pool (`defaultReconcileSteps`).
       if (request.claimSpare && workspaceDriver().kind !== 'containerless') {
-        const claimed = await tryClaimPrewarmed(projectId, workspaceId, setup, onProgress, {
+        const claimed = await tryClaimPrewarmed(projectId, workspaceId, session, onProgress, {
           ...(branch !== undefined ? { branch } : {}),
-          ...(prompt !== undefined ? { prompt } : {}),
           ...(title !== undefined ? { title } : {}),
           ...(generatedTitle !== undefined ? { generatedTitle } : {}),
           ...(groupId !== undefined ? { groupId } : {}),
@@ -134,13 +135,8 @@ export async function prepareStart(
       return await createWorkspace(projectId, {
         workspaceId,
         onProgress,
-        tool,
-        mode: setup.mode,
-        permissionMode: setup.permissionMode,
-        ...(setup.model !== undefined ? { model: setup.model } : {}),
-        ...(setup.effort !== undefined ? { effort: setup.effort } : {}),
+        ...(session !== undefined ? { session } : {}),
         ...(branch !== undefined ? { branch } : {}),
-        ...(prompt !== undefined ? { initialPrompt: prompt } : {}),
         ...(title !== undefined ? { title } : {}),
         ...(generatedTitle !== undefined ? { generatedTitle } : {}),
         ...(groupId !== undefined ? { groupId } : {}),
@@ -148,11 +144,11 @@ export async function prepareStart(
       })
     } catch (err) {
       const { draft } = request
-      if (draft === undefined || prompt === undefined) throw err
+      if (draft === undefined || prompt === undefined || setup === undefined) throw err
       if (!(err instanceof ProvisionStoppedError) && draft.onFailure !== true) throw err
       const settings = {
         prompt,
-        tool,
+        tool: setup.tool,
         mode: setup.mode,
         permissionMode: setup.permissionMode,
         ...(setup.model !== undefined ? { model: setup.model } : {}),

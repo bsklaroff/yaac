@@ -33,7 +33,7 @@ import {
 import { clearQueuedLaunchesForTests } from '#domain/workspaces/queued-workspaces'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { getQueuedWorkspaceRow } from '#db/queued-workspace-store'
-import { createWorkspaceGroup, getWorkspaceRow, listWorkspaceAgentSessions, setProjectKeptIgnoredPaths, setWorkspaceGroup, setWorkspaceGroupLimit } from '#db'
+import { createWorkspaceGroup, getWorkspaceRow, insertSession, listWorkspaceSessions, setProjectKeptIgnoredPaths, setWorkspaceGroup, setWorkspaceGroupLimit } from '#db'
 import { clearWorkspaceStopped, recordWorkspaceCreated } from '#db/workspace-store'
 import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
@@ -78,7 +78,8 @@ beforeEach(async () => {
       return Promise.resolve(handleFixture({ workspaceId: spec.workspaceId, projectId: PROJ }))
     },
   })
-  await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'parent', baseBranch: 'dev', permissionMode: 'auto', mode: 'tui' })
+  await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'parent', baseBranch: 'dev' })
+  await insertSession(PROJ, 'parent', { tool: 'claude', mode: 'tui', permissionMode: 'auto' })
 })
 
 afterEach(async () => {
@@ -91,7 +92,7 @@ afterEach(async () => {
 /** The workspace whose first conversation began with `prompt`. */
 async function launchedWith(prompt: string): Promise<string | undefined> {
   for (const id of launched) {
-    if ((await listWorkspaceAgentSessions(PROJ, id))[0]?.firstPrompt === prompt) return id
+    if ((await listWorkspaceSessions(id))[0]?.firstPrompt === prompt) return id
   }
   return undefined
 }
@@ -132,7 +133,9 @@ describe('stopWorkspace', () => {
     expect(launched).toHaveLength(2)
     const becameId = await launchedWith('child')
     expect(await launchedWith('sibling')).toBeDefined()
-    expect(await getWorkspaceRow(PROJ, becameId!)).toMatchObject({ baseBranch: 'dev', permissionMode: 'auto', mode: 'tui' })
+    // On the parent's base, its session in the parent's posture.
+    expect(await getWorkspaceRow(PROJ, becameId!)).toMatchObject({ baseBranch: 'dev' })
+    expect((await listWorkspaceSessions(becameId!))[0]).toMatchObject({ permissionMode: 'auto', mode: 'tui' })
     // The grandchild now waits for the child's new workspace to stop.
     const waiting = await getQueuedWorkspaceRow(grandchild.id)
     expect(waiting).toMatchObject({ parentWorkspaceId: becameId })
@@ -505,7 +508,7 @@ describe('stopWorkspace', () => {
             probed()
             throw new WorkspaceExecError('probe', 1, '', 'no server running')
           }
-          if (!cmd.includes('respawn-window')) return
+          if (!/ -n claude-[0-9a-f]{8} /.test(cmd)) return
           before = deregistered.length
           agentStarting()
           await released

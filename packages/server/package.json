@@ -46,7 +46,8 @@
     "./domain/*": "./src/domain/*.js",
     "./drivers/*": "./src/drivers/*.js",
     "./lib/*": "./src/lib/*.js",
-    "./main/*": "./src/main/*.js"
+    "./main/*": "./src/main/*.js",
+    "./runtime/*": "./src/runtime/*.js"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "catalog:",

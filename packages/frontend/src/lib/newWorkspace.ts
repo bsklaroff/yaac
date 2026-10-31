@@ -24,6 +24,11 @@ export const SCHEDULE = '\u0000schedule'
  */
 export interface NewWorkspaceForm {
   projectId: string
+  /** A running workspace to open the session in, rather than a new one
+   *  (docs/sessions.md). The workspace-only fields are then unused. */
+  inWorkspace?: string
+  /** Start a workspace with no session: no agent, so no prompt. */
+  noAgent?: true
   prompt: string
   title: string
   /** '' starts now, `START_WHEN_ROOM` once its group has room; `START_AT`,
@@ -73,11 +78,13 @@ export function entryStart(entry: QueuedWorkspaceEntry): string {
 }
 
 /** What opens the pane on something other than a blank form: `parent` sets
- *  Start to after that workspace or queued entry stops, `draftId` reopens a
- *  draft, `editId` edits a queued entry and `routineId` a routine. */
+ *  Start to after that workspace or queued entry stops, `inWorkspace` aims
+ *  it at a running workspace, `draftId` reopens a draft, `editId` edits a
+ *  queued entry and `routineId` a routine. */
 export interface NewWorkspaceOpts {
   projectId: string
   parent?: string
+  inWorkspace?: string
   draftId?: string
   editId?: string
   routineId?: string
@@ -106,7 +113,13 @@ export function isNewWorkspaceForm(v: unknown): v is NewWorkspaceForm {
  * opens empty, for the pane to say so.
  */
 export function seedNewWorkspace(opts: NewWorkspaceOpts, snapshot: ServerSnapshot | undefined): NewWorkspaceForm {
-  const blank: NewWorkspaceForm = { projectId: opts.projectId, prompt: '', title: '', start: opts.parent ?? '' }
+  const blank: NewWorkspaceForm = {
+    projectId: opts.projectId,
+    prompt: '',
+    title: '',
+    start: opts.parent ?? '',
+    ...(opts.inWorkspace !== undefined ? { inWorkspace: opts.inWorkspace } : {}),
+  }
   const queued = snapshot?.queuedWorkspaces ?? []
   const entry = opts.editId !== undefined ? queued.find((e) => e.id === opts.editId) : undefined
   const routine = opts.routineId !== undefined ? snapshot?.routines.find((r) => r.id === opts.routineId) : undefined

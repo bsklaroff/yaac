@@ -38,9 +38,9 @@ since a child has its own checkout and runtime. All of a parent's direct
 children launch together, as far as their groups have room. A released
 child whose group is full waits for room from then on, like an entry with
 no parent: it keeps its release, and launches when any slot in its group
-frees, not at its parent's next stop. An agent exiting (`/exit`) counts as a death, since
-the reaper records `agent-exited` and can't tell it from a crash, so an agent
-that is done should call `yaac-mama stop`.
+frees, not at its parent's next stop. An agent exiting (`/exit`) stops
+nothing: its session is left exited and the workspace keeps running
+(docs/sessions.md), so an agent that is done should call `yaac-mama stop`.
 
 A stop that lands while the parent is still being created or restarted is
 not a natural stop and releases nothing, since the parent's agent never ran
@@ -84,9 +84,9 @@ defaults come from where a create's would: the project's remembered create
 settings (and for `yaac-mama queue`, the caller's tool and agent mode, as
 `yaac-mama create` takes them). Otherwise they come from the parent:
 
-- A **workspace** parent supplies its first conversation's tool, mode and
-  *current* model (which follows a `/model` switch), its permission mode and
-  group, and its **reference branch** (`workspaces.baseBranch`, the branch it
+- A **workspace** parent supplies its first session's tool, mode, *current*
+  model (which follows a `/model` switch) and permission mode, its group,
+  and its **reference branch** (`workspaces.baseBranch`, the branch it
   forked from or a later `yaac-mama set-base` named, not its own `agent/<id>`). A parent still provisioning has no
   conversation yet, so its provisioning row supplies the tool and group.
 - An **entry** parent supplies its stored settings.

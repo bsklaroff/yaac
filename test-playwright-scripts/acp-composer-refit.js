@@ -16,7 +16,7 @@ import path from 'node:path'
 import { SHOTS, api, check, finish, origin, requirePlaywright } from './lib.js'
 
 const { workspaces } = await api('/workspace/list')
-const workspace = workspaces.find((w) => w.agentSessions.some((a) => a.mode === 'acp' && a.active)
+const workspace = workspaces.find((w) => w.conversations.some((a) => a.mode === 'acp' && a.active)
   && w.workspaceId.startsWith(process.env.WORKSPACE_ID ?? ''))
 if (!workspace) throw new Error('no live acp workspace — yaac workspace create <project> --mode acp')
 

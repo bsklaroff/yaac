@@ -254,7 +254,7 @@ describe('onLiveAgentsChanged', () => {
     setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude' }])
     expect(listener).toHaveBeenCalledTimes(1)
     // Same handle, now with its session id.
-    setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude', agentSessionId: 'conv-a' }])
+    setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude', conversationId: 'conv-a' }])
     expect(listener).toHaveBeenCalledTimes(2)
     setLiveAgents('demo', 's1', [])
     expect(listener).toHaveBeenCalledTimes(3)
@@ -262,11 +262,11 @@ describe('onLiveAgentsChanged', () => {
 
   // Drivers republish the same set on every sweep; that must not fire.
   it('does not fire for a re-publish of the same set, or for a status flip', () => {
-    setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude', agentSessionId: 'conv-a' }])
+    setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude', conversationId: 'conv-a' }])
     const listener = vi.fn()
     onLiveAgentsChanged(listener)
     // Fresh objects, as drivers publish, so reference equality would fail.
-    setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude', agentSessionId: 'conv-a' }])
+    setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude', conversationId: 'conv-a' }])
     setAgentStatus('demo', 's1', 'claude-1', 'running')
     setAgentStatus('demo', 's1', 'claude-1', 'waiting')
     expect(listener).not.toHaveBeenCalled()
@@ -274,53 +274,45 @@ describe('onLiveAgentsChanged', () => {
 })
 
 describe('onWaitingEnded', () => {
-  // Clears the row's `waitingSeenBy`. A workspace with no entry reads as
-  // waiting, so an agent first classified mid-turn (after a server restart)
-  // fires, and one first classified idle does not.
-  it('fires when the workspace goes from needing the user to work', () => {
+  // Clears that session's `waitingSeenBy`. An agent with no status yet
+  // reads as waiting, so one first classified mid-turn (after a server
+  // restart) fires, and one first classified idle does not.
+  it('fires for an agent going from needing the user to work, naming it', () => {
     const listener = vi.fn()
     onWaitingEnded(listener)
-    setAgentStatus('demo', 's1', '%0', 'waiting')
+    setAgentStatus('demo', 's1', 'claude-1', 'waiting')
     expect(listener).not.toHaveBeenCalled()
-    setAgentStatus('demo', 's1', '%0', 'running')
-    setAgentStatus('demo', 's1', '%0', 'running')
+    setAgentStatus('demo', 's1', 'claude-1', 'running')
+    setAgentStatus('demo', 's1', 'claude-1', 'running')
     expect(listener).toHaveBeenCalledTimes(1)
-    expect(listener).toHaveBeenCalledWith('demo', 's1')
-    setAgentStatus('demo', 's1', '%0', 'background')
-    setAgentStatus('demo', 's1', '%0', 'waiting')
+    expect(listener).toHaveBeenCalledWith('demo', 's1', 'claude-1')
+    setAgentStatus('demo', 's1', 'claude-1', 'background')
+    setAgentStatus('demo', 's1', 'claude-1', 'waiting')
     expect(listener).toHaveBeenCalledTimes(1)
-    setAgentStatus('demo', 's2', '%0', 'running')
-    expect(listener).toHaveBeenLastCalledWith('demo', 's2')
+    setAgentStatus('demo', 's2', 'codex-2', 'running')
+    expect(listener).toHaveBeenLastCalledWith('demo', 's2', 'codex-2')
   })
 
-  // The workspace's spell goes on while one conversation still waits, so a
-  // second conversation's turn must not make it unread.
-  it('does not fire for one conversation working while another waits', () => {
+  // Each session has a spell of its own, so one agent's turn never makes
+  // another's reply read or unread.
+  it('fires for the agent that went to work, not for one still waiting beside it', () => {
     const listener = vi.fn()
     onWaitingEnded(listener)
-    setAgentStatus('demo', 's1', '%0', 'waiting')
-    setAgentStatus('demo', 's1', '%1', 'waiting')
-    setAgentStatus('demo', 's1', '%1', 'running')
-    expect(listener).not.toHaveBeenCalled()
-    setAgentStatus('demo', 's1', '%0', 'running')
+    setAgentStatus('demo', 's1', 'claude-1', 'waiting')
+    setAgentStatus('demo', 's1', 'codex-2', 'waiting')
+    setAgentStatus('demo', 's1', 'codex-2', 'running')
     expect(listener).toHaveBeenCalledTimes(1)
+    expect(listener).toHaveBeenCalledWith('demo', 's1', 'codex-2')
   })
 
-  // The seen conversation closing after another has finished leaves the
-  // workspace waiting, but on the other's reply, which nobody has seen.
-  it('fires when the spell\'s conversation closes while a later one waits', () => {
-    vi.useFakeTimers({ now: 1_000 })
+  // A closed agent's session goes with it; nothing is left to mark unread.
+  it('does not fire when a waiting agent closes', () => {
     const listener = vi.fn()
     onWaitingEnded(listener)
-    setLiveAgents('demo', 's1', [{ handle: '%0', tool: 'claude' }, { handle: '%1', tool: 'claude' }])
-    setAgentStatus('demo', 's1', '%0', 'waiting')
-    setAgentStatus('demo', 's1', '%1', 'running')
-    vi.setSystemTime(2_000)
-    setAgentStatus('demo', 's1', '%1', 'waiting')
+    setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude' }, { handle: 'codex-2', tool: 'codex' }])
+    setAgentStatus('demo', 's1', 'claude-1', 'waiting')
+    setLiveAgents('demo', 's1', [{ handle: 'codex-2', tool: 'codex' }])
     expect(listener).not.toHaveBeenCalled()
-    setLiveAgents('demo', 's1', [{ handle: '%1', tool: 'claude' }])
-    expect(listener).toHaveBeenCalledTimes(1)
-    vi.useRealTimers()
   })
 
   // A first classification replaces the attach-time stamp, which is not a
@@ -331,21 +323,8 @@ describe('onWaitingEnded', () => {
     onWaitingEnded(listener)
     setWorkspaceStreamHealth('demo', 's1', true)
     vi.setSystemTime(2_000)
-    setAgentStatus('demo', 's1', '%0', 'waiting')
+    setAgentStatus('demo', 's1', 'claude-1', 'waiting')
     expect(listener).not.toHaveBeenCalled()
     vi.useRealTimers()
-  })
-
-  // The seen conversation closing while another works ends the spell too.
-  it('fires when the waiting conversation closes while another works', () => {
-    const listener = vi.fn()
-    onWaitingEnded(listener)
-    setLiveAgents('demo', 's1', [{ handle: '%0', tool: 'claude' }, { handle: '%1', tool: 'claude' }])
-    setAgentStatus('demo', 's1', '%0', 'waiting')
-    setAgentStatus('demo', 's1', '%1', 'running')
-    expect(listener).not.toHaveBeenCalled()
-    setLiveAgents('demo', 's1', [{ handle: '%1', tool: 'claude' }])
-    expect(listener).toHaveBeenCalledTimes(1)
-    expect(listener).toHaveBeenCalledWith('demo', 's1')
   })
 })

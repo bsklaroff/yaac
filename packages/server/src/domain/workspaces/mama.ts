@@ -16,9 +16,10 @@
  * run history it lists, but no run's workspace. Deleting a workspace and
  * reconfiguring stay the user's.
  *
- * The caller's identity comes from the transport (pod IP under k8s, a
+ * The caller's workspace comes from the transport (pod IP under k8s, a
  * per-workspace token under containerless), never the request, and every
- * command is scoped to the caller's project.
+ * command is scoped to the caller's project. Which of its sessions is asking
+ * is the agent's word (`mamaCaller`).
  */
 import { decideRestart, decideSpawn, type SpawnRequest } from './spawn-policy'
 import { listStoppedWorkspaces, toStoppedEntries } from './stopped-list'
@@ -44,15 +45,16 @@ import {
   updateRoutine,
 } from './routines'
 import { stopWorkspace } from './stop'
+import { closeSession } from './sessions'
 import {
   getProjectRow,
   getProjectWorkspaceRows,
   getTimeZone,
   applyWorkspaceEvent,
   getWorkspaceRow,
-  listActiveAgentSessions,
   listQueuedWorkspaceRows,
-  listWorkspaceAgentSessions,
+  listWorkspaceConversations,
+  listWorkspaceSessions,
   setWorkspaceTitle,
   type QueuedWorkspaceRow,
 } from '#db'
@@ -96,12 +98,16 @@ import {
   withFiles,
   type HistoryConversation,
 } from './history-export'
-import type { Actor } from '#domain/access'
+import { workspacePrincipal, type Actor } from '#domain/access'
+import type { SessionRow } from '#db'
+import { resolveCreate } from './create'
 
-/** Who is asking — resolved by the transport, never taken from the request. */
+/** Who is asking — resolved by the transport and `mamaCaller`. */
 export interface MamaCaller {
   /** The calling workspace. */
   workspaceId: string
+  /** The calling session, when the call came from one's agent. */
+  sessionId?: string
   /** Who its writes act for (`workspacePrincipal`). */
   principal: Actor
   /** Its project. Every command is scoped to this and nothing else. */
@@ -109,11 +115,43 @@ export interface MamaCaller {
   /** The tool it runs, if known; used in the spawned workspace's tool
    *  precedence. */
   tool?: AgentTool
-  /** Its recorded permission mode, the most anything it starts or messages
-   *  may run in. */
+  /** Its permission mode, the most anything it starts or messages may run
+   *  in. */
   permissionMode: PermissionMode
   /** Its agent mode, the default for a workspace it starts. */
   mode: AgentMode
+}
+
+/**
+ * The caller of a `yaac-mama` command, from the workspace the transport
+ * identified and the session its agent says it runs in (`YAAC_SESSION_ID`,
+ * which every session's launch sets). The session counts only as one of that
+ * workspace's open sessions, and then the ceiling is its own posture. A call
+ * from outside any session, such as a user's shell, gets the strictest
+ * posture among the workspace's open sessions, or with none the one a
+ * create would resolve. Anything in the workspace could claim any of its
+ * sessions, so this is a guardrail, not a boundary
+ * (docs/permission-modes.md).
+ */
+export async function mamaCaller(
+  workspace: { workspaceId: string; projectId: string },
+  claimedSessionId: string | undefined,
+): Promise<MamaCaller> {
+  const { workspaceId, projectId } = workspace
+  const sessions = await listWorkspaceSessions(workspaceId)
+  const own = sessions.find((s) => s.id === claimedSessionId)
+  const strictest: SessionRow | undefined = [...sessions].sort((a, b) =>
+    (morePermissive(a.permissionMode, b.permissionMode) ? 1 : 0) - (morePermissive(b.permissionMode, a.permissionMode) ? 1 : 0))[0]
+  const lead = own ?? strictest ?? await resolveCreate(projectId, {})
+  return {
+    workspaceId,
+    projectId,
+    principal: await workspacePrincipal(workspaceId, projectId),
+    ...(own !== undefined ? { sessionId: own.id } : {}),
+    tool: lead.tool,
+    permissionMode: lead.permissionMode,
+    mode: lead.mode,
+  }
 }
 
 /** One command as received, not yet validated. */
@@ -163,10 +201,10 @@ const ROUTINE_ARGS = ['name', 'cron', 'tz', ...CREATE_ARGS.filter((a) => a !== '
  */
 const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   list: ['stopped', ...STOPPED_ARGS],
-  create: CREATE_ARGS,
+  create: [...CREATE_ARGS, 'workspace', 'no-session', 'resume'],
   rename: ['workspace'],
   'set-base': [],
-  stop: ['workspace'],
+  stop: ['workspace', 'session'],
   restart: ['workspace', 'timeout'],
   'group-create': [],
   'group-move': ['workspace'],
@@ -184,7 +222,7 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   'routine-delete': ['routine'],
   fetch: ['workspace'],
   history: ['workspace', 'conversation', 'files', 'file'],
-  send: ['workspace', 'conversation'],
+  send: ['workspace', 'session', 'conversation'],
 }
 
 /**
@@ -309,6 +347,9 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
   } else {
     lines.push('Running workspaces in this project:', '')
     lines.push(...renderWorkspaces(workspaces, names, caller.workspaceId, clock))
+    if (workspaces.some((w) => w.sessions.length > 0)) {
+      lines.push('', ...renderSessions(workspaces, caller.sessionId))
+    }
   }
   if (stopped.length > 0) {
     if (lines.length > 0) lines.push('')
@@ -421,7 +462,7 @@ function renderWorkspaces(
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .map((w) => ({
       id: `${w.workspaceId.slice(0, 8)}${w.workspaceId === callerId ? ' (you)' : ''}`,
-      tool: w.tool,
+      tool: [...new Set(w.sessions.map((s) => s.tool))].join(',') || '-',
       status: w.status,
       group: w.groupId !== undefined ? groupNames.get(w.groupId) ?? '' : '',
       stops: w.deadline !== undefined ? when(w.deadline, clock) : '',
@@ -439,6 +480,23 @@ function renderWorkspaces(
 }
 
 /**
+ * Each running workspace's open sessions, for `send --session` and
+ * `stop --session` to name.
+ */
+function renderSessions(workspaces: WorkspaceListEntry[], callerSessionId: string | undefined): string[] {
+  const rows = [...workspaces]
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .flatMap((w) => w.sessions.map((s) => [
+      w.workspaceId.slice(0, 8),
+      `${s.sessionId.slice(0, 8)}${s.sessionId === callerSessionId ? ' (you)' : ''}`,
+      s.modelName !== undefined ? `${s.tool} · ${s.modelName}` : s.tool,
+      s.exited === true ? 'exited' : s.status ?? 'starting',
+      flatten(s.title ?? s.prompt ?? '', 60),
+    ]))
+  return table(['WORKSPACE', 'SESSION', 'AGENT', 'STATUS', 'TITLE'], rows)
+}
+
+/**
  * Stopped workspaces as listed: HOW is `stopped` for a stop, or the cause
  * the reaper recorded for a death (`oom`, `crashed`, …), which tells a
  * restart that resumes from one that recovers.
@@ -446,7 +504,7 @@ function renderWorkspaces(
 function renderStopped(entries: StoppedWorkspaceEntry[], groupNames: Map<string, string>): string[] {
   const rows = entries.map((e) => ({
     id: e.workspaceId.slice(0, 8),
-    tool: e.tool,
+    tool: [...new Set(e.sessions.map((s) => s.tool))].join(',') || '-',
     stopped: e.stoppedAt.slice(0, 16),
     how: e.endedAtNextRun === true ? 'ended at next run'
       : e.timedOut === true ? 'timed out'
@@ -564,10 +622,28 @@ function flatten(text: string, max: number): string {
   return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`
 }
 
-/** Start a sibling workspace in the caller's project (`decideSpawn`). */
+/**
+ * Start an agent (`decideSpawn`): a session in a new workspace of the
+ * caller's project, or with `--workspace` in that running one (the caller's
+ * own included). `--no-session` starts a workspace with no agent.
+ */
 async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const settings = createSettings(request.args)
   if (!settings.ok) return settings
+  const { workspace, resume } = request.args
+  const noSession = request.args['no-session'] !== undefined
+  const sessionArgs = ['tool', 'model', 'effort', 'permission-mode', 'ui-mode', 'resume']
+  if (noSession) {
+    const stray = [...sessionArgs, 'workspace'].find((a) => request.args[a] !== undefined)
+    if (stray !== undefined) return { ok: false, error: `--no-session does not take --${stray}` }
+    if (request.body.trim() !== '') return { ok: false, error: '--no-session takes no prompt: a workspace with no session runs no agent' }
+  }
+  if (workspace !== undefined) {
+    const stray = ['branch', 'group', 'timeout'].find((a) => request.args[a] !== undefined)
+    if (stray !== undefined) {
+      return { ok: false, error: `--${stray} is a workspace's setting, which --workspace (a session in a running one) does not take` }
+    }
+  }
 
   const decision = await decideSpawn({
     principal: caller.principal,
@@ -577,11 +653,15 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
     callerPermissionMode: caller.permissionMode,
     callerMode: caller.mode,
     prompt: request.body,
+    ...(workspace !== undefined ? { workspace } : {}),
+    ...(resume !== undefined ? { resume } : {}),
+    ...(noSession ? { noSession: true } : {}),
     ...settings.settings,
   })
   return decision.ok
-    // The id alone, so `id=$(yaac-mama create "…")` works.
-    ? { ok: true, output: decision.workspaceId }
+    // The id alone, so `id=$(yaac-mama create "…")` works: the session's for
+    // one opened in a running workspace, else the new workspace's.
+    ? { ok: true, output: decision.sessionId ?? decision.workspaceId }
     : { ok: false, error: decision.error }
 }
 
@@ -886,11 +966,10 @@ async function runSend(caller: MamaCaller, request: MamaRequestInput): Promise<M
   if (body.trim() === '') return { ok: false, error: 'send needs a message' }
   const workspaceId = await resolveProjectWorkspace(workspace, caller.projectId)
   const short = workspaceId.slice(0, 8)
-  if (workspaceId === caller.workspaceId) return { ok: false, error: 'send cannot message this workspace itself' }
 
   const ceiling = caller.permissionMode
   if (!isRankedPermissionMode(ceiling)) {
-    return { ok: false, error: `this workspace's recorded permission mode '${ceiling}' is not one this server knows` }
+    return { ok: false, error: `this caller's permission mode '${ceiling}' is not one this server knows` }
   }
   const targetRow = await getWorkspaceRow(caller.projectId, workspaceId)
 
@@ -908,34 +987,40 @@ async function runSend(caller: MamaCaller, request: MamaRequestInput): Promise<M
     }
   }
 
-  const live = (await listActiveAgentSessions(caller.projectId, workspaceId))
-    .flatMap((r) => r.paneId === undefined ? [] : [{ ...r, handle: r.paneId }])
-  const wanted = request.args.conversation?.trim() ?? ''
-  const exact = live.find((r) => r.agentSessionId === wanted)
-  const matches = wanted === '' ? live.slice(0, 1)
-    : exact !== undefined ? [exact]
-    : live.filter((r) => r.agentSessionId.startsWith(wanted))
+  // The caller's own session is never a target: the paste would land in its
+  // own running turn.
+  const sessions = (await listWorkspaceSessions(workspaceId)).filter((s) => s.id !== caller.sessionId)
+  const bySession = request.args.session?.trim() ?? ''
+  const byConversation = request.args.conversation?.trim() ?? ''
+  const pick = (wanted: string, key: (s: SessionRow) => string | undefined): SessionRow[] => {
+    const exact = sessions.find((s) => key(s) === wanted)
+    return exact !== undefined ? [exact] : sessions.filter((s) => key(s)?.startsWith(wanted) === true)
+  }
+  const matches = bySession !== '' ? pick(bySession, (s) => s.id)
+    : byConversation !== '' ? pick(byConversation, (s) => s.conversationId)
+    : sessions.slice(0, 1)
   if (matches.length !== 1) {
+    const named = bySession !== '' ? `session '${bySession}'` : `conversation '${byConversation}'`
     return {
       ok: false,
-      error: wanted === '' ? `${short} has no running conversation yet`
-        : matches.length === 0 ? `no running conversation '${wanted}' in ${short} (see: yaac-mama history ${short})`
-        : `'${wanted}' matches more than one running conversation in ${short} — use a longer prefix`,
+      error: bySession === '' && byConversation === '' ? `${short} has no other session to send to`
+        : matches.length === 0 ? `no open ${named} in ${short} (see: yaac-mama list)`
+        : `${named} matches more than one session in ${short} — use a longer prefix`,
     }
   }
-  const [conversation] = matches
-  const label = `${short}'s ${conversation.tool} conversation ${conversation.agentSessionId.slice(0, 8)}`
+  const [session] = matches
+  const conversationId = session.conversationId
+  const label = `${short}'s ${session.tool} session ${session.id.slice(0, 8)}`
+  if (conversationId === undefined) return { ok: false, error: `${label} has no conversation yet; try again once its agent is up` }
 
-  // A conversation that never reported a mode runs in the one it launched
-  // in, which the row recorded.
-  const recorded = targetRow?.permissionMode
-  const reported = liveAgents(caller.projectId, workspaceId)
-    ?.find((a) => a.handle === conversation.handle)?.reportedMode
+  // The row follows what the agent reports; its latest report is checked
+  // too, in case it moved since the last pass recorded it.
+  const reported = liveAgents(caller.projectId, workspaceId)?.find((a) => a.handle === session.window)?.reportedMode
   const postures = [
-    recorded,
-    reported === undefined || recorded === undefined
-      ? recorded
-      : resolveAgentPermissionMode(conversation.mode, conversation.tool, reported, recorded),
+    session.permissionMode,
+    reported === undefined
+      ? session.permissionMode
+      : resolveAgentPermissionMode(session.mode, session.tool, reported, session.permissionMode),
   ]
   for (const posture of postures) {
     if (posture === undefined || !isRankedPermissionMode(posture)) {
@@ -944,23 +1029,23 @@ async function runSend(caller: MamaCaller, request: MamaRequestInput): Promise<M
     if (morePermissive(posture, ceiling)) {
       return {
         ok: false,
-        error: `${label} runs in permission mode '${posture}', more than this workspace's own `
+        error: `${label} runs in permission mode '${posture}', more than the caller's own `
           + `('${ceiling}'); only one at or below it can be sent a message`,
       }
     }
   }
 
-  const from = `from:${caller.workspaceId}`
-  const to = `to:${workspaceId}/${conversation.handle}`
+  const from = `from:${caller.sessionId ?? caller.workspaceId}`
+  const to = `to:${session.id}`
   if (sending.has(from)) return { ok: false, error: 'your previous send is still being delivered; send again once it returns' }
   if (sending.has(to)) return { ok: false, error: `another message to ${label} is still being delivered; try again shortly` }
   sending.add(from).add(to)
   try {
-    await agentDriver(conversation.mode).deliverPrompt(
-      { projectId: caller.projectId, workspaceId, jobName: running.jobName, tool: conversation.tool },
-      conversation.handle,
+    await agentDriver(session.mode).deliverPrompt(
+      { projectId: caller.projectId, workspaceId, jobName: running.jobName },
+      session.window,
       `Sent from ${caller.workspaceId} via yaac-mama:\n\n${body}`,
-      { running: { agentSessionId: conversation.agentSessionId } },
+      { running: { tool: session.tool, conversationId } },
     )
   } catch (err) {
     return { ok: false, error: `not delivered to ${label}: ${err instanceof Error ? err.message : String(err)}` }
@@ -1170,8 +1255,12 @@ async function resolveTargetWorkspace(
  * Stop a workspace, by default the caller (an agent winding itself down
  * after its work). The checkout is kept for restart. A self-stop's reply is
  * best-effort, since the teardown removes the transport it travels on.
+ *
+ * With `--session` only that session closes, by default the caller's own,
+ * and its workspace keeps running.
  */
 async function runStop(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  if (request.args.session !== undefined) return await closeOneSession(caller, request.args.session.trim())
   // A sibling still being created may have no row yet.
   const workspaceId = await resolveTargetWorkspace(caller, request.args.workspace, { provisioning: true })
 
@@ -1197,6 +1286,34 @@ async function runStop(caller: MamaCaller, request: MamaRequestInput): Promise<M
   }
 }
 
+/** `stop --session`: close one session of the caller's project. */
+async function closeOneSession(caller: MamaCaller, wanted: string): Promise<MamaOutcome> {
+  if (wanted === '' && caller.sessionId === undefined) {
+    return { ok: false, error: 'stop --session needs a session id when not run by a session\'s agent (see: yaac-mama list)' }
+  }
+  const target = wanted === '' ? caller.sessionId! : wanted
+  const open = (await listActiveWorkspaces(caller.projectId)).workspaces.flatMap((w) => w.sessions)
+  const exact = open.find((s) => s.sessionId === target)
+  const matches = exact !== undefined ? [exact] : open.filter((s) => s.sessionId.startsWith(target))
+  if (matches.length !== 1) {
+    return {
+      ok: false,
+      error: matches.length === 0 ? `no open session '${target}' in this project (see: yaac-mama list)`
+        : `'${target}' matches more than one session — use a longer prefix`,
+    }
+  }
+  const closed = await closeSession(caller.principal, matches[0].sessionId)
+  const rest = (await listWorkspaceSessions(closed.workspaceId)).length
+  const short = closed.workspaceId.slice(0, 8)
+  return {
+    ok: true,
+    output: `Closed session ${closed.id.slice(0, 8)}; its conversations stay in ${short}'s history. `
+      + (rest === 0
+        ? `${short} keeps running with no agent; stop it with yaac-mama stop ${short}.`
+        : `${short} keeps running.`),
+  }
+}
+
 /**
  * Restart a stopped sibling, resuming the conversations it had, as the
  * webapp's Restart does (`decideRestart`). It runs detached, so the reply
@@ -1219,10 +1336,10 @@ async function runRestart(caller: MamaCaller, request: MamaRequestInput): Promis
   })
   if (!decision.ok) return decision
   const short = workspaceId.slice(0, 8)
-  const n = decision.conversations
+  const n = decision.sessions
   return {
     ok: true,
-    output: `Restarting ${short}, resuming ${n === 1 ? 'its conversation' : `its ${n} conversations`}. `
+    output: `Restarting ${short}, resuming ${n === 0 ? 'with no session' : n === 1 ? 'its session' : `its ${n} sessions`}. `
       + 'It shows as running in yaac-mama list once it is up; if the launch fails after this, '
       + 'the user sees why in the yaac webapp.',
   }
@@ -1317,12 +1434,12 @@ async function runHistory(caller: MamaCaller, request: MamaRequestInput): Promis
   if (workspace === '') return { ok: false, error: 'history needs a workspace id' }
   const workspaceId = await resolveProjectWorkspace(workspace, caller.projectId)
   // Pick the conversation before gathering files, which reads every one's.
-  let rows = await listWorkspaceAgentSessions(caller.projectId, workspaceId)
+  let rows = await listWorkspaceConversations(caller.projectId, workspaceId)
 
   const wanted = request.args.conversation?.trim() ?? ''
   if (wanted !== '') {
-    const exact = rows.find((r) => r.agentSessionId === wanted)
-    const matches = exact !== undefined ? [exact] : rows.filter((r) => r.agentSessionId.startsWith(wanted))
+    const exact = rows.find((r) => r.conversationId === wanted)
+    const matches = exact !== undefined ? [exact] : rows.filter((r) => r.conversationId.startsWith(wanted))
     if (matches.length !== 1) {
       return {
         ok: false,
@@ -1341,9 +1458,9 @@ async function runHistory(caller: MamaCaller, request: MamaRequestInput): Promis
     return {
       ok: true,
       output: conversations.flatMap((c) => c.files.map((f) => oversized(f)
-        ? `# skipped ${c.row.agentSessionId}/${f.name}: ${formatSize(f.size)}, past the `
+        ? `# skipped ${c.row.conversationId}/${f.name}: ${formatSize(f.size)}, past the `
           + `${formatSize(MAX_HISTORY_FILE_BYTES)} a file is handed out at`
-        : `${c.row.agentSessionId}/${f.name}`)).join('\n'),
+        : `${c.row.conversationId}/${f.name}`)).join('\n'),
     }
   }
   if (wanted === '') return { ok: true, output: renderHistory(workspaceId, conversations) }
@@ -1352,7 +1469,7 @@ async function runHistory(caller: MamaCaller, request: MamaRequestInput): Promis
   if (name !== undefined) {
     const file = files.find((f) => f.name === name)
     return file === undefined
-      ? { ok: false, error: `${row.agentSessionId} has no file '${name}'` }
+      ? { ok: false, error: `${row.conversationId} has no file '${name}'` }
       : { ok: true, body: historyFiles([file]), contentType: 'application/octet-stream', workspaceId }
   }
   // opencode's history is its database, which the script turns into JSONL.
@@ -1363,11 +1480,11 @@ async function runHistory(caller: MamaCaller, request: MamaRequestInput): Promis
       body: historyFiles([database]),
       contentType: 'application/vnd.sqlite3',
       workspaceId,
-      conversationId: row.agentSessionId,
+      conversationId: row.conversationId,
     }
   }
   if (!files.some((f) => f.name.endsWith('.jsonl'))) {
-    return { ok: false, error: `${row.agentSessionId} has no transcript on the host yet` }
+    return { ok: false, error: `${row.conversationId} has no transcript on the host yet` }
   }
   return { ok: true, body: historyTranscripts(files), contentType: 'application/x-ndjson', workspaceId }
 }
@@ -1378,7 +1495,7 @@ function renderHistory(workspaceId: string, conversations: HistoryConversation[]
   const rows = conversations.map(({ row, files }) => {
     const last = Math.max(0, row.lastActiveAt?.getTime() ?? 0, ...files.map((f) => f.mtimeMs))
     return [
-      row.agentSessionId,
+      row.conversationId,
       row.tool,
       row.mode,
       row.active ? 'yes' : 'no',

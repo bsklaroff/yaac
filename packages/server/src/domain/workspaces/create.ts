@@ -63,15 +63,20 @@ import {
 } from '#domain/git'
 import { serverLog } from '#lib/log'
 import type { AcpConversation } from '#runtime/agents'
-import { agentDriver, AgentLaunchDeadError, agentWindowName, buildWindowsExec, ensureAgentReporters, ensureToolApiKeyConfig, resolveInitWindows, tmuxCmd, verifyAgentWindowAlive, whenAcpConversation, type InitWindow, openSandboxDir } from '#runtime/agents'
+import { AgentLaunchDeadError, buildWindowsExec, ensureAgentReporters, ensureToolApiKeyConfig, finishSetupCommand, resolveInitWindows, verifyAgentWindowAlive, whenAcpConversation, type InitWindow, openSandboxDir } from '#runtime/agents'
 import {
   applyWorkspaceEvent,
   getGitIdentity,
   getProjectRow,
   getTimeZone,
-  holdPendingPrompt,
+  insertSession,
+  listWorkspaceSessions,
+  markSessionsLaunched,
   setWorkspaceMamaTokenHash,
+  type SessionLaunchSettings,
+  type SessionRow,
 } from '#db'
+import { deliverTuiPrompt, sessionLaunches, type SessionLaunch } from './session-launch'
 import { reportAgentLaunchFailure, throwIfProvisionStopped } from './provisioning'
 import { recordTrackedScratchDirs } from './tracked-scratch-dirs'
 import { spareSettings } from './prewarm'
@@ -86,11 +91,7 @@ import {
 } from '#domain/skills'
 import { convergeAgentHistory } from './history'
 import { deleteWorkspaceState } from './cleanup'
-import {
-  ACP_CONVERSATION_WAIT_MS,
-  deliverPendingPrompt,
-  reconcileWorkspaceAgentSessions,
-} from './agent-session-registry'
+import { ACP_CONVERSATION_WAIT_MS } from './conversation-registry'
 import {
   OPENCODE_CHECKPOINT_SCRIPT,
   WORKSPACE_INIT_SCRIPT,
@@ -122,7 +123,6 @@ import {
   opencodeProviderInfo,
   piProviderInfo,
   toolApiKeyEnvVar,
-  type PiProvider,
 } from '@yaac/shared/tool-providers'
 
 /** In-pod claude home, where `claudeDir` is mounted. `CLAUDE_CONFIG_DIR`
@@ -171,13 +171,12 @@ function emit(message: string, options: WorkspaceCreateOptions): void {
 
 export interface WorkspaceCreateOptions {
   workspaceId: string
-  /** The agent tool of the first window. */
-  tool: AgentTool
   /**
-   * Which protocol drives the agent. `acp` runs the tool's ACP adapter under
-   * acpd and the webapp renders a chat pane instead of a terminal.
+   * The session a fresh create opens, its settings resolved and checked;
+   * absent for a workspace that runs no agent, and for a resume, which
+   * brings back the sessions it had.
    */
-  mode: AgentMode
+  session?: SessionLaunchSettings
   /**
    * Reference branch for the fresh workspace (a branch on `origin`, no
    * `origin/` prefix); unset → the remote's default branch. A resume passes
@@ -186,31 +185,15 @@ export interface WorkspaceCreateOptions {
   branch?: string
   /**
    * Resume an existing workspace (a restart): reuse its checkout if present,
-   * and bring back these conversations, in window order, each in its own
-   * tmux window (`agentWindowName`), on its own model and effort where it
-   * names them. One marked `resume` loads its prior history; the restart
-   * has checked it is there. Empty starts one conversation as a create
-   * would, on `model` and `effort`.
+   * and relaunch each of its open sessions in its own window, resuming its
+   * conversation (`sessionLaunches`).
    */
-  resume?: LaunchedAgent[]
+  resume?: boolean
   /**
    * Provision a prewarmed spare, hidden from user-facing views until a later
    * `workspace create` claims it. Set only by the prewarm reconciler.
    */
   prewarm?: boolean
-  /**
-   * Prompt pasted and submitted into the agent once its window is up (not
-   * passed on the command line). From `yaac-mama create` and
-   * `workspace create --prompt`.
-   */
-  initialPrompt?: string
-  /**
-   * Model override for the agent launch: a model id or alias for
-   * claude/codex, `provider/model` for opencode and pi. The create route
-   * validates it. Recorded on the workspace row. A resume names each
-   * conversation's in `resume` instead.
-   */
-  model?: string
   /**
    * Sidebar group id (already resolved, not a name). Applied as soon as the
    * row exists, so the workspace never shows outside its group.
@@ -223,20 +206,6 @@ export interface WorkspaceCreateOptions {
   title?: string
   /** The title generated for the draft or queued entry it is created from. */
   generatedTitle?: string
-  /**
-   * The permission mode the agents launch in. Absent means the project's
-   * last-used mode, else the driver's default. An explicit value is a user
-   * choice, so the project also remembers it. Restart passes the workspace's
-   * recorded mode.
-   */
-  permissionMode?: PermissionMode
-  /**
-   * The effort level the agent launches at, in the tool's words, already
-   * checked against the model, and recorded on the workspace row. Absent
-   * launches with none. A resume names each conversation's in `resume`
-   * instead.
-   */
-  effort?: string
   /** When the server stops it (`workspaces.deadline`). A resume without one
    *  clears the deadline the workspace had. */
   deadline?: Date
@@ -245,16 +214,6 @@ export interface WorkspaceCreateOptions {
    * them to the CLI as NDJSON events.
    */
   onProgress?: (message: string) => void
-}
-
-/** One agent window to bring up: the conversation, its tool, the model and
- *  effort it launches on, and whether it resumes its history. */
-interface LaunchedAgent {
-  agentSessionId: string
-  tool: AgentTool
-  model?: string
-  effort?: string
-  resume?: boolean
 }
 
 /** Refuse a resume's checkout over `dir` if it holds the user's files. */
@@ -284,10 +243,8 @@ export interface WorkspaceCreateResult {
   workspaceId: string
   jobName: string
   forwardedPorts: PortMapping[]
-  tool: AgentTool
-  /** Callers that would attach a PTY need this: an `acp` workspace's window
-   *  runs acpd, not a shell. */
-  mode: AgentMode
+  /** The session a fresh create opened. */
+  sessionId?: string
 }
 
 /**
@@ -319,16 +276,10 @@ interface WorkspaceSetupParams {
   spec: WorkspaceSpec
   projectId: string
   workspaceId: string
-  tool: AgentTool
-  mode: AgentMode
-  /** Conversations to bring up, in window order. The same list the rows were
-   *  written from, so the DB never names one the agent did not open. */
-  launching: LaunchedAgent[]
+  /** The sessions to bring up, in order. */
+  sessions: SessionRow[]
   /** The project's init windows, resolved in createWorkspace. */
   initWindows: InitWindow[]
-  /** pi only — provider whose default model drives `pi --model`. */
-  piProvider?: PiProvider
-  permissionMode: PermissionMode
   /**
    * Called as soon as the runtime has launched, before setup that can fail,
    * so the caller holds the handle needed to tear down a half-started
@@ -348,14 +299,14 @@ interface WorkspaceSetupParams {
 }
 
 /**
- * Launch the workspace's runtime and run the in-workspace setup. On failure
- * the caller tears down what was launched. Everything here goes through the
- * driver contract.
+ * Launch the workspace's runtime and run the in-workspace setup, which opens
+ * its sessions' windows. On failure the caller tears down what was launched.
+ * Everything here goes through the driver contract. Resolves with the
+ * runtime and how each session was launched.
  */
-async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHandle> {
+async function launchWithSetup(params: WorkspaceSetupParams): Promise<{ handle: RuntimeHandle; launches: SessionLaunch[] }> {
   const {
-    spec, projectId, workspaceId, tool, mode, launching, initWindows, piProvider,
-    permissionMode, onLaunched, options, workspace, reusedCheckout,
+    spec, projectId, workspaceId, sessions, initWindows, onLaunched, options, workspace, reusedCheckout,
   } = params
   const runtime = workspaceDriver()
 
@@ -383,44 +334,22 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   transportReady.catch(() => { /* observed via race */ })
   await Promise.race([transportReady, workspaceFailure])
 
-  // The commands that replace the placeholder window with the agents
-  // (buildWindowsExec).
-  //
   // An acp agent reads nothing from the checkout until its conversation
   // opens, so one going into a checkout this create is writing starts now,
   // and acpd holds the conversation until the checkout's `.git` lands. The
   // adapter's boot then overlaps the checkout. Containerless only: there
   // acpd ships with this server, while a pod's comes from its image, which
   // may predate `--wait-for`.
-  const early = mode === 'acp' && runtime.kind === 'containerless' && !reusedCheckout
-  const driver = agentDriver(mode)
-  const agentCmds = launching.map((a, i) => {
-    const resume = a.resume === true
-    return {
-      tool: a.tool,
-      ...(resume ? { resumes: a.agentSessionId } : {}),
-      cmd: driver.launchCmd({
-        tool: a.tool,
-        agentSessionId: a.agentSessionId,
-        resume,
-        // Under acp this also names the acpd socket.
-        windowName: agentWindowName(a.tool, i),
-        paths,
-        permissionMode,
-        ...(piProvider !== undefined ? { piProvider } : {}),
-        ...(a.model !== undefined ? { model: a.model } : {}),
-        ...(a.effort !== undefined ? { effort: a.effort } : {}),
-        ...(early ? { beforeCheckout: true } : {}),
-      }),
-    }
-  })
+  const early = runtime.kind === 'containerless' && !reusedCheckout && sessions.every((s) => s.mode === 'acp')
+  const launches = await sessionLaunches(projectId, workspaceId, sessions, paths, { beforeCheckout: early })
+  const tools = [...new Set(launches.map((l) => TOOL_LABELS[l.tool]))]
   const announceAgents = (): void => {
     throwIfProvisionStopped(workspaceId)
-    emit(`Starting ${TOOL_LABELS[tool]}...`, options)
+    if (tools.length > 0) emit(`Starting ${tools.join(', ')}...`, options)
   }
-  if (early) {
+  if (early && launches.length > 0) {
     announceAgents()
-    await runtime.exec(jobName, buildWindowsExec([], tool, agentCmds, paths))
+    await runtime.exec(jobName, buildWindowsExec([], launches, paths))
   }
 
   // Everything below reads the checkout, so join it now.
@@ -442,152 +371,76 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
     }
   }
 
-  // Then the init windows, and the agents if they did not start early, in one
-  // command with the checkout's own setup to save round trips. A checkout
-  // this create made already borrows from the main clone and holds its
-  // current refs; a reused one is relinked so the agent starts current. A
-  // pod's file cache is warmed, which a host's needs no help with.
+  // Then the init windows, and the sessions if they did not start early, in
+  // one command with the checkout's own setup to save round trips, ending
+  // with the mark that setup is done. A checkout this create made already
+  // borrows from the main clone and holds its current refs; a reused one is
+  // relinked so the agent starts current. A pod's file cache is warmed,
+  // which a host's needs no help with.
   const setup = [
     ...(reusedCheckout ? [buildCloneLinkExec(path.join(repoDir(projectId), '.git'), paths.workspaceDir)] : []),
     ...(runtime.kind === 'containerless' ? [] : [buildStatusWarmupExec(paths.workspaceDir)]),
-    buildWindowsExec(initWindows, tool, early ? [] : agentCmds, paths),
+    buildWindowsExec(initWindows, early ? [] : launches, paths),
+    finishSetupCommand(paths),
   ].filter((cmd) => cmd !== '')
   if (!early) announceAgents()
-  if (setup.length > 0) await runtime.exec(jobName, setup.join(' && '))
+  await runtime.exec(jobName, setup.join(' && '))
+  await markSessionsLaunched(launches.map((l) => l.session.id))
 
-  // Check the agents actually started: `respawn-window` succeeds even when
+  // Check the agents actually started: opening a window succeeds even when
   // its command dies instantly. Not awaited, since the probe must wait for a
   // doomed command to exit; a failure lands later as a failed provisioning
   // row (reportAgentLaunchFailure). A `tui` agent is probed once, a moment
   // after launch. An acp adapter can also die later, before its handshake
   // ends (claude's fails at `session/new` on a bad login), so its windows
   // are watched until their conversations come up.
-  const windows = launching.map((a, i) => agentWindowName(a.tool, i))
-  const launched = mode === 'tui'
-    ? verifyAgentWindowAlive(jobName, windows)
-    : Promise.all(windows.map((w) => whenAcpAgentUp(projectId, workspaceId, jobName, w)))
-  const installed = mode === 'tui'
-    ? { binary: tool, package: AGENT_CLIS[tool].package, version: AGENT_CLIS[tool].version }
-    : { binary: ACP_ADAPTERS[tool].binary, package: ACP_ADAPTERS[tool].package, version: ACP_ADAPTERS[tool].verified }
-  void launched.catch((err: unknown) => {
-    const message = err instanceof Error ? err.message : String(err)
-    serverLog(`[server] create ${workspaceId}: ${message}`)
-    // Report only a confirmed dead agent. A failed provisioning row hides
-    // the workspace, so a probe that got no answer must not report one.
-    if (!(err instanceof AgentLaunchDeadError)) return
-    // A spare has no row; the claim runs this probe again.
-    if (options.prewarm === true) return
-    void reportAgentLaunchFailure({
-      workspaceId,
-      projectId,
-      tool,
-      kind: options.resume !== undefined ? 'restart' : 'create',
-      ...(options.initialPrompt !== undefined ? { prompt: options.initialPrompt } : {}),
-      error: runtime.kind === 'containerless'
-        ? `${message}. Check that "${installed.binary}" runs on this host `
-          + `(yaac runs its own install of ${installed.package}@${installed.version}).`
-        : message,
-    })
-  })
-
-  return handle
-}
-
-/**
- * The last step of a claim, and of a cold `tui` create: hand the agent over.
- *
- * A `tui` prompt is pasted into the pane. A claimed acp spare's conversation
- * may be one the claim just respawned, which the sweep skips while the claim
- * runs, so the claim holds its prompt on the row, waits for the agent to
- * answer `session/new`, records the row itself, and sends the held prompt
- * (`deliverPendingPrompt`). A conversation that does not come up in time
- * leaves the prompt held for the sweep to send to whichever one does. A
- * prompt that cannot be held fails the claim, so the caller still has it;
- * delivery failures are only logged, since the workspace is usable either
- * way.
- */
-export async function handOverAgent(input: {
-  projectId: string
-  workspaceId: string
-  jobName: string
-  tool: AgentTool
-  mode: AgentMode
-  prompt?: string
-  emit: (message: string) => void
-}): Promise<void> {
-  const { projectId, workspaceId, jobName, tool, mode, prompt, emit } = input
-  const window = agentWindowName(tool, 0)
-  if (mode === 'tui') {
-    if (prompt === undefined) return
-    emit('Sending initial prompt...')
-    await agentDriver(mode).deliverPrompt({ projectId, workspaceId, jobName, tool }, window, prompt)
-      .catch((err: unknown) => {
-        serverLog(`[server] create ${workspaceId}: initial prompt failed: ${String(err)}`)
+  for (const l of launches) {
+    const { session } = l
+    const launched = session.mode === 'tui'
+      ? verifyAgentWindowAlive(jobName, [l.window])
+      : whenAcpAgentUp(projectId, workspaceId, jobName, l.window)
+    const installed = session.mode === 'tui'
+      ? { binary: l.tool, package: AGENT_CLIS[l.tool].package, version: AGENT_CLIS[l.tool].version }
+      : { binary: ACP_ADAPTERS[l.tool].binary, package: ACP_ADAPTERS[l.tool].package, version: ACP_ADAPTERS[l.tool].verified }
+    void launched.catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err)
+      serverLog(`[server] create ${workspaceId}: ${message}`)
+      // Report only a confirmed dead agent of a fresh create's session. A
+      // failed provisioning row hides the workspace, so a probe that got no
+      // answer must not report one, and a restart's agent that dies is left
+      // as an exited session.
+      if (!(err instanceof AgentLaunchDeadError) || options.session === undefined) return
+      void reportAgentLaunchFailure({
+        workspaceId,
+        projectId,
+        tool: l.tool,
+        kind: 'create',
+        ...(session.firstPrompt !== undefined ? { prompt: session.firstPrompt } : {}),
+        error: runtime.kind === 'containerless'
+          ? `${message}. Check that "${installed.binary}" runs on this host `
+            + `(yaac runs its own install of ${installed.package}@${installed.version}).`
+          : message,
       })
-    return
+    })
   }
-  if (prompt !== undefined) await holdPendingPrompt(projectId, workspaceId, prompt)
-  emit(`Connecting to ${TOOL_LABELS[tool]}...`)
-  const conversation = await awaitConversation(projectId, workspaceId, jobName, window)
-  if (conversation === undefined) {
-    if (prompt !== undefined) serverLog(`[server] create ${workspaceId}: initial prompt held until a conversation is up`)
-    return
-  }
-  await reconcileWorkspaceAgentSessions(projectId, workspaceId, mode, jobName).catch((err: unknown) => {
-    serverLog(`[server] create ${workspaceId}: recording the conversation failed: ${String(err)}`)
-  })
-  if (prompt !== undefined) emit('Sending initial prompt...')
-  void deliverPendingPrompt(projectId, workspaceId, conversation)
+
+  return { handle, launches }
 }
 
 /**
- * Wait for the agent's conversation to complete its handshake, including
- * the launch model and mode that follow `session/new`, so the row recorded
- * next shows them; resolves with it, or undefined if it never did.
+ * Wait for an acp session's conversation to be named (`session/new`
+ * answered). Rejects with `AgentLaunchDeadError` if its window's agent
+ * exits first, which the window probe (an exec) checks every two seconds,
+ * and resolves with undefined at the deadline.
  */
-async function awaitConversation(
+export async function whenAcpAgentUp(
   projectId: string,
   workspaceId: string,
   jobName: string,
   window: string,
 ): Promise<AcpConversation | undefined> {
-  const outcome = await whenAcpAgentUp(projectId, workspaceId, jobName, window).catch((err: unknown) => {
-    if (!(err instanceof AgentLaunchDeadError)) throw err
-    serverLog(`[server] create ${workspaceId}: ${err.message}`)
-    return undefined
-  })
-  return outcome?.whenReady(ACP_CONVERSATION_WAIT_MS).then(() => outcome, (err: unknown) => {
-    serverLog(`[server] create ${workspaceId}: acp handshake did not finish: ${String(err)}`)
-    return undefined
-  })
-}
-
-/**
- * Wait for an acp agent window's conversation to be named (`session/new`
- * answered). Rejects with `AgentLaunchDeadError` if the window exits first,
- * which the window probe (an exec) checks every two seconds, and resolves
- * with undefined at the deadline.
- *
- * Only a conversation with the window's current process counts. A claimed
- * spare's agent may have just been respawned (by the claim or a background
- * refresh), and the conversation that ended stays registered until its
- * stream is seen closing.
- */
-async function whenAcpAgentUp(
-  projectId: string,
-  workspaceId: string,
-  jobName: string,
-  window: string,
-): Promise<AcpConversation | undefined> {
-  const runtime = workspaceDriver()
-  // Unreadable: any conversation on the window will do.
-  const panePid = await runtime.exec(
-    jobName,
-    `${tmuxCmd(runtime.workspacePaths(jobName))} display-message -p -t yaac:${window} '#{pane_pid}'`,
-    { maxAttempts: 1 },
-  ).then(({ stdout }) => stdout.trim() || undefined, () => undefined)
   let settled = false
-  const conversation = whenAcpConversation(projectId, workspaceId, window, ACP_CONVERSATION_WAIT_MS, panePid)
+  const conversation = whenAcpConversation(projectId, workspaceId, window, ACP_CONVERSATION_WAIT_MS)
     .finally(() => { settled = true })
   const windowGone = waitFor(async () => settled || await verifyAgentWindowAlive(jobName, [window])
     .then(() => false, (err: unknown) => err instanceof AgentLaunchDeadError),
@@ -768,7 +621,7 @@ export async function createWorkspace(
   projectId: string,
   options: WorkspaceCreateOptions,
 ): Promise<WorkspaceCreateResult> {
-  const { workspaceId, tool } = options
+  const { workspaceId } = options
   const runtime = workspaceDriver()
   // Sandboxed, the workspace holds only placeholder credentials that the
   // proxy swaps, and per-workspace mounts sit over the shared tool homes.
@@ -854,28 +707,24 @@ export async function createWorkspace(
 
   const initWindows = resolveInitWindows(config)
 
-  const { mode } = options
-  // Check this runtime can run the tool in this mode (a host installs the
+  // The sessions this create brings up: a fresh create's one, or the ones a
+  // resume had open.
+  const resumed = options.resume === true ? await listWorkspaceSessions(workspaceId) : []
+  const planned: Array<Pick<SessionRow, 'tool' | 'mode' | 'permissionMode'>> = options.session !== undefined
+    ? [options.session]
+    : resumed
+  // Check this runtime can run each tool in its mode (a host installs the
   // pinned version on first use). Otherwise the workspace would die seconds
   // after reporting success. A fresh create's base branch is read alongside.
   const [, refBranch] = await Promise.all([
-    runtime.assertCanLaunch({
-      tool,
-      mode,
-      onProgress: (message) => { emit(message, options) },
-    }),
-    options.resume !== undefined ? undefined : options.branch ?? getDefaultBranch(repo),
+    Promise.all([...new Map(planned.map((s) => [`${s.tool}|${s.mode}`, s])).values()].map((s) =>
+      runtime.assertCanLaunch({ tool: s.tool, mode: s.mode, onProgress: (message) => { emit(message, options) } }))),
+    options.resume === true ? undefined : options.branch ?? getDefaultBranch(repo),
   ])
 
-  const permissionMode = launchPermissionMode({
-    tool,
-    driver: runtime.kind,
-    resume: options.resume !== undefined,
-    ...(options.permissionMode !== undefined ? { requested: options.permissionMode } : {}),
-  })
   // Warn: containerless has no sandbox, so bypass acts as the user on this
   // machine.
-  if (permissionMode === 'bypass' && runtime.kind === 'containerless') {
+  if (planned.some((s) => s.permissionMode === 'bypass') && runtime.kind === 'containerless') {
     options.onProgress?.(
       'Note: this workspace runs with bypass permissions, and this server has '
       + 'no sandbox — the agent acts as you, on this machine.',
@@ -887,33 +736,14 @@ export async function createWorkspace(
   // would overwrite every tracked file with the base branch. Only a missing
   // `.git` counts as lost, so a read error fails the restart instead.
   const wtDir = workspaceDir(projectId, workspaceId)
-  const reuseCheckout = options.resume !== undefined && await fs.access(path.join(wtDir, '.git')).then(
+  const reuseCheckout = options.resume === true && await fs.access(path.join(wtDir, '.git')).then(
     () => true,
     (err: unknown) => {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false
       throw err
     },
   )
-  if (options.resume !== undefined && !reuseCheckout) await refuseCheckingOutOver(wtDir)
-  // Decided here so they are recorded with the workspace row. The tool and
-  // first prompt are read from the first conversation, so a workspace with
-  // none could not be restarted; discovery only adds to this list.
-  //
-  // A conversation the restart does not resume (its agent never wrote
-  // anything) launches as a create's would. Under acp that means its record
-  // starts under the workspace id and it goes unrecorded, so its handshake
-  // runs `session/new`.
-  const launching: LaunchedAgent[] = (
-    options.resume !== undefined && options.resume.length > 0
-      ? options.resume
-      : [{
-        agentSessionId: workspaceId,
-        tool,
-        ...(options.model !== undefined ? { model: options.model } : {}),
-        ...(options.effort !== undefined ? { effort: options.effort } : {}),
-      }]
-  ).map((a) => (mode === 'acp' && a.resume !== true ? { ...a, agentSessionId: workspaceId } : a))
-
+  if (options.resume === true && !reuseCheckout) await refuseCheckingOutOver(wtDir)
   // Record the row before provisioning anything, so no user workspace's pod
   // exists without one (a rowless pod is invisible to titles, groups and
   // restart). The insert also claims the id: a fresh create reusing a taken
@@ -930,10 +760,6 @@ export async function createWorkspace(
   const { timeZone } = await getTimeZone(owner)
   const launch = {
     ...(refBranch !== undefined ? { baseBranch: refBranch } : {}),
-    permissionMode,
-    mode,
-    ...(options.model !== undefined ? { model: options.model } : {}),
-    ...(options.effort !== undefined ? { effort: options.effort } : {}),
     ...(timeZone !== null ? { timeZone } : {}),
     scratchDirs: projectRow.scratchDirs.dirs.map((d) => d.path),
   }
@@ -948,7 +774,7 @@ export async function createWorkspace(
       ...(options.generatedTitle !== undefined ? { generatedTitle: options.generatedTitle } : {}),
       ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
       ...(options.deadline !== undefined ? { deadline: options.deadline } : {}),
-      resume: options.resume !== undefined,
+      resume: options.resume === true,
     })
   }
 
@@ -960,48 +786,16 @@ export async function createWorkspace(
   // with the non-empty destination.
   const scratchDirs = await prepareScratchDirs(wtDir, projectRow.scratchDirs.dirs)
 
-  if (!options.prewarm) {
-    // Start a new life after the row exists and before any handle is
-    // recorded; this clears the previous life's handles.
-    await applyWorkspaceEvent({
-      type: 'workspace-life-started',
-      projectId,
-      workspaceId,
-    })
-
-    // Record the conversations now rather than leave them to discovery. A
-    // new acp conversation cannot: the agent mints the id in `session/new`,
-    // and the registry records it then. A resumed one already has its id.
-    const recorded = launching.flatMap((a, i) => (mode === 'tui' || a.resume === true ? [{ a, i }] : []))
-    if (recorded.length > 0) {
-      // Under acp the handle (window name) is known now and must be recorded,
-      // or the restart's acpd handshake starts a new conversation. A tui pane
-      // id is unknown until the pane exists; the registry fills it in.
-      await applyWorkspaceEvent({
-        type: 'sessions-launched',
-        projectId,
-        workspaceId,
-        sessions: recorded.map(({ a, i }) => ({
-          tool: a.tool,
-          agentSessionId: a.agentSessionId,
-          mode,
-          ...(mode === 'acp' ? { paneId: agentWindowName(a.tool, i) } : {}),
-          ...(i === 0 && options.initialPrompt !== undefined
-            ? { firstPrompt: options.initialPrompt }
-            : {}),
-          // Lets the pane show the model before the agent reports one.
-          ...(options.resume === undefined && a.model !== undefined ? { model: a.model } : {}),
-        })),
-      })
-    }
-
-    // An acp create returns before its agent names the conversation, so its
-    // prompt waits on the row. The sweep that records the conversation sends
-    // it (`reconcileWorkspaceAgentSessions`). Held before the agent starts,
-    // so no sweep can find the conversation before the prompt.
-    if (mode === 'acp' && options.initialPrompt !== undefined) {
-      await holdPendingPrompt(projectId, workspaceId, options.initialPrompt)
-    }
+  // A new life starts once the row exists, before any session is launched
+  // in it. A fresh create's session is recorded with its prompt; an `acp`
+  // one's waits on the row for its conversation, which the registry's sweep
+  // sends it (`reconcileWorkspaceConversations`). A spare has neither.
+  let sessions: SessionRow[] = []
+  if (options.prewarm !== true) {
+    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId, workspaceId })
+    sessions = options.session !== undefined
+      ? [await insertSession(projectId, workspaceId, options.session)]
+      : resumed
   }
 
   // ── Concurrent provisioning ─────────────────────────────────────────
@@ -1069,7 +863,6 @@ export async function createWorkspace(
     projectId,
     workspaceId: workspaceId,
     owner: credentialOwnerKey(owner),
-    tool,
     config,
     allowlist,
     remoteUrl,
@@ -1091,8 +884,8 @@ export async function createWorkspace(
     const cachedPackages = cachedPackagesDir(projectId)
     // acpd's conversation records. Kept under the project dir (which
     // teardown does not prune) so the server can read them after the pod is
-    // gone. Only `acp` workspaces get the dir and mount.
-    const acpLogs = mode === 'acp' ? acpLogDir(projectId, workspaceId) : undefined
+    // gone.
+    const acpLogs = acpLogDir(projectId, workspaceId)
     // Pasted images (`saveWorkspaceAttachment`); must exist for its mount.
     const attachments = workspaceAttachmentsDir(projectId, workspaceId)
     // A pod's own claude `sessions/`, where claude keeps a presence file per
@@ -1134,7 +927,7 @@ export async function createWorkspace(
       loadToolAuthEntry(owner, 'pi'),
       ...[
         claude, codex, opencodeConfig, opencodeCheckpoint, pi, attachments,
-        ...(acpLogs !== undefined ? [acpLogs] : []),
+        acpLogs,
         ...(sandboxed ? [claudeSessions] : []),
         ...cacheVolumeEntries.map(([key]) => cacheVolumeDir(projectId, key)),
       ].map((dir) => fs.mkdir(dir, { recursive: true })),
@@ -1381,7 +1174,6 @@ export async function createWorkspace(
   })
 
   // Inputs for yaac-workspace-init.
-  env.push(`YAAC_TOOL=${tool}`)
   env.push(`YAAC_GIT_NAME=${gitUser.name}`)
   env.push(`YAAC_GIT_EMAIL=${gitUser.email}`)
   env.push(`YAAC_STATUS_RIGHT=${buildStatusRight(workspaceId, forwardedPorts)}`)
@@ -1409,9 +1201,7 @@ export async function createWorkspace(
     // names this path (docs/server-git.md).
     { source: { kind: 'hostPath', path: `${repo}/.git` }, mountPath: `${repo}/.git`, readOnly: true },
     { source: { kind: 'hostPath', path: claude }, mountPath: '/home/yaac/.claude' },
-    ...(acpLogs !== undefined
-      ? [{ source: { kind: 'hostPath' as const, path: acpLogs }, mountPath: CONTAINER_ACP_LOG_DIR }]
-      : []),
+    { source: { kind: 'hostPath', path: acpLogs }, mountPath: CONTAINER_ACP_LOG_DIR },
     { source: { kind: 'hostPath', path: attachments }, mountPath: CONTAINER_ATTACHMENTS_DIR, readOnly: true },
     ...codexHomeMounts(runtime.kind, codex),
     ...opencodeMounts,
@@ -1470,8 +1260,6 @@ export async function createWorkspace(
   const spec: WorkspaceSpec = {
     projectId,
     workspaceId: workspaceId,
-    tool,
-    mode,
     prewarm: options.prewarm === true,
     ...(imageRef !== undefined ? { image: imageRef } : {}),
     env,
@@ -1496,15 +1284,14 @@ export async function createWorkspace(
 
   // What a teardown must address, once the runtime has launched.
   let target: TeardownTarget | undefined
-  let handle: RuntimeHandle
+  let launched: { handle: RuntimeHandle; launches: SessionLaunch[] }
   try {
     mergeEnvEntries(env, (name) => projectSets(name)
       ? `the project's environment variable ${name} conflicts with the value yaac sets for it; rename or remove it`
       : `environment variable ${name} is set to two different values`)
     throwIfProvisionStopped(workspaceId)
-    handle = await launchWithSetup({
-      spec, projectId, workspaceId, tool, mode, launching, initWindows, permissionMode,
-      piProvider: toolAuthByTool.pi?.piProvider,
+    launched = await launchWithSetup({
+      spec, projectId, workspaceId, sessions, initWindows,
       onLaunched: (h) => {
         target = { projectId, workspaceId: workspaceId, unitName: h.jobName }
       },
@@ -1557,25 +1344,18 @@ export async function createWorkspace(
     throw err
   }
 
-  // A spare's agent is handed over when it is claimed, and an acp prompt is
-  // already held.
-  if (options.prewarm !== true && mode === 'tui') {
-    await handOverAgent({
-      projectId,
-      workspaceId,
-      jobName: handle.jobName,
-      tool,
-      mode,
-      ...(options.initialPrompt !== undefined ? { prompt: options.initialPrompt } : {}),
-      emit: (message) => emit(message, options),
-    })
+  // A new `tui` session's opening message is typed in; an `acp` one's is
+  // already held for its conversation.
+  const { handle, launches } = launched
+  if (launches.some((l) => l.session.mode === 'tui' && l.session.firstPrompt !== undefined)) {
+    emit('Sending initial prompt...', options)
   }
+  await Promise.all(launches.map((l) => deliverTuiPrompt({ projectId, workspaceId, jobName: handle.jobName }, l)))
 
   return {
     workspaceId,
     jobName: handle.jobName,
     forwardedPorts,
-    tool,
-    mode,
+    ...(options.session !== undefined && sessions[0] !== undefined ? { sessionId: sessions[0].id } : {}),
   }
 }

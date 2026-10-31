@@ -113,7 +113,7 @@ export function effortFor(efforts: ModelEfforts | undefined, wanted: string | un
  * (`--resume <id>`). It must start with a letter or digit so it can't be read
  * as a flag. Fits UUIDs (claude, codex, pi) and opencode's `ses_…` ids.
  */
-export const agentSessionIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/)
+export const conversationIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/)
 
 /**
  * How yaac drives a conversation, and so how the webapp renders it
@@ -901,29 +901,24 @@ export type AgentStatus = 'running' | 'background' | 'waiting' | 'asking'
 export type ListedAgentStatus = Exclude<AgentStatus, 'asking'>
 
 /**
- * One agent conversation inside a workspace. Several can be live at once
- * (a second terminal, or a `/clear` that left the old window open); the
- * rest are the workspace's history.
+ * One agent conversation a workspace hosted, keyed by the tool's own id. A
+ * session holds one at a time and gathers more over its life (each
+ * `/clear`); an agent started by hand in a terminal holds one with no
+ * session.
  */
-export interface AgentSessionEntry {
+export interface ConversationEntry {
   /** The tool's own conversation id, not yaac's. */
-  agentSessionId: string
+  conversationId: string
   tool: AgentTool
   /** Which protocol drives it, and so which pane renders it. Absent means
    *  `tui`. */
   mode?: AgentMode
-  /** Restore order; 0 is the workspace's original agent. */
+  /** The order the workspace first saw it in. */
   ordinal: number
-  /** Had a live agent process when the workspace was last seen running, so
-   *  a restart brings it back. */
+  /** Had a live agent when the workspace was last seen running. */
   active: boolean
-  /** Live only: this conversation's own status, from its pane. */
-  status?: ListedAgentStatus
-  /** Live only: stopped on an ask the user must answer (`status` is then
-   *  `waiting`). */
-  asking?: true
-  /** Live only: epoch ms when this conversation's waiting spell began. */
-  waitingSinceMs?: number
+  /** The session that held it; absent for one started in a terminal. */
+  sessionId?: string
   /** This conversation's first user message (differs from the workspace's
    *  founding prompt after a `/clear`). */
   prompt?: string
@@ -941,20 +936,65 @@ export interface AgentSessionEntry {
   modelName?: string
 }
 
+/**
+ * One agent session in a workspace (docs/sessions.md): an agent process in a
+ * tmux window of its own, launched with these settings, which follow what
+ * the agent reports. An open session comes back on a restart; closing one
+ * stops its agent and keeps its conversations as history.
+ */
+export interface SessionEntry {
+  /** yaac's id for it, which names its pane (`session:<id>`). */
+  sessionId: string
+  tool: AgentTool
+  /** How its agent is driven, and so which pane renders it. */
+  mode: AgentMode
+  /** The tmux window it runs in. */
+  window: string
+  permissionMode: PermissionMode
+  /** Its effort level, in the tool's words; absent when its model has none. */
+  effort?: string
+  /** The model it runs, in the tool's spelling, and its display name. */
+  model?: string
+  modelName?: string
+  /** The user's name for it, else its conversation's own title. */
+  title?: string
+  /** The message it was opened with, else its conversation's first. */
+  prompt?: string
+  /** The conversation it holds now; absent until its agent names one. */
+  conversationId?: string
+  /** Display order within the workspace. */
+  ordinal: number
+  /** Live only: what its agent is doing. Absent while it starts, and once
+   *  it has exited. */
+  status?: ListedAgentStatus
+  /** Live only: stopped on an ask the user must answer (`status` is then
+   *  `waiting`). */
+  asking?: true
+  /** Live only: epoch ms when its waiting spell began. */
+  waitingSinceMs?: number
+  /** The users who viewed its current waiting spell. */
+  waitingSeenBy?: string[]
+  /** Its agent exited and its window is kept, for the user to resume or
+   *  close it. */
+  exited?: true
+}
+
+/**
+ * A workspace's status in a listing: its most pressing session's, or `idle`
+ * when no session is running.
+ */
+export type WorkspaceStatus = ListedAgentStatus | 'idle'
+
 export interface WorkspaceListEntry {
   workspaceId: string
   projectId: string
-  tool: AgentTool
-  /** How its agents are driven. Absent only before the workspace has a row
-   *  (a create mid-way through recording it). */
-  mode?: AgentMode
   /**
-   * The most pressing of its agent sessions' statuses: `waiting` (including
-   * an ask), then `running`, then `background`.
+   * The most pressing of its sessions' statuses: `waiting` (including an
+   * ask), then `running`, then `background`; `idle` with none running.
    */
-  status: ListedAgentStatus
-  /** Some agent session is stopped on an ask the user must answer (`status`
-   *  is then `waiting`). */
+  status: WorkspaceStatus
+  /** Some session is stopped on an ask the user must answer (`status` is
+   *  then `waiting`). */
   asking?: true
   /** The workspace is being torn down (its pod has a deletion timestamp,
    *  or a stop was just issued). Render a non-interactive "stopping…"
@@ -963,24 +1003,21 @@ export interface WorkspaceListEntry {
   /** Pod created time as 'YYYY-MM-DD HH:MM:SS' (UTC). */
   createdAt: string
   /** Epoch ms when the current waiting spell began; set only while
-   *  `waiting`. The earliest waiting agent's time wins. Kept in server
+   *  `waiting`. The earliest waiting session's time wins. Kept in server
    *  memory, so a server restart starts a new spell. */
   waitingSinceMs?: number
-  /** The ids of the users who viewed its current waiting spell, owner and
-   *  teammates alike: a `waiting` status is read for them. Stored on the
-   *  workspace row, so each user's unread dot is the same on every client. */
-  waitingSeenBy?: string[]
-  /** The first user message of the workspace's first agent session;
-   *  survives a `/clear`. Before an acp conversation is up, the create's
-   *  prompt waiting to be sent to it. */
+  /** The message its first session was opened with; survives a `/clear`. */
   prompt?: string
   /** The user's title, else the agent's own for its opening conversation,
    *  else one generated from `prompt` (docs/workspace-titles.md). UIs fall
    *  back to `prompt`. */
   title?: string
-  /** Every conversation the workspace has hosted, in restore order. */
-  agentSessions: AgentSessionEntry[]
-  /** Its tmux windows other than the agent's, which the webapp opens as
+  /** Its open sessions, in order. */
+  sessions: SessionEntry[]
+  /** Every conversation the workspace has hosted, in the order it first saw
+   *  them. */
+  conversations: ConversationEntry[]
+  /** Its tmux windows other than its sessions', which the webapp opens as
    *  terminal panes. Absent until the server first lists them (unknown, not
    *  none) and while the workspace is stopping. */
   terminals?: WorkspaceTerminalEntry[]
@@ -1002,12 +1039,6 @@ export interface WorkspaceListEntry {
    *  `WorkspaceGroupSummary`); absent means ungrouped. Kept through stop and
    *  restart. */
   groupId?: string
-  /** The permission posture its agents run in; a workspace queued after
-   *  this one defaults to it. Absent until its row is written. */
-  permissionMode?: PermissionMode
-  /** The effort its agents run at, in the tool's words; a workspace queued
-   *  after this one defaults to it. Absent when it runs at none. */
-  effort?: string
   /** When the server stops it (ISO), absent with no timeout
    *  (docs/routines.md "Timeouts"). */
   deadline?: string
@@ -1305,7 +1336,6 @@ export interface ActiveWorkspacesResult {
 export interface StoppedWorkspaceEntry {
   workspaceId: string
   projectId: string
-  tool: AgentTool
   /** 'YYYY-MM-DD HH:MM:SS' (UTC). Workspace birth time. */
   createdAt: string
   /** Last activity as 'YYYY-MM-DD HH:MM:SS' (UTC): the newest recorded
@@ -1315,14 +1345,14 @@ export interface StoppedWorkspaceEntry {
   /** When it was stopped, 'YYYY-MM-DD HH:MM:SS' (UTC); the sort key, newest
    *  first. */
   stoppedAt: string
-  /** The first conversation's first user message, else the create's prompt
-   *  still waiting for an acp conversation. */
+  /** The message its first session was opened with. */
   prompt?: string
   /** Resolved as for a live workspace (`WorkspaceListEntry.title`). */
   title?: string
-  /** Every conversation the workspace hosted, in restore order; a restart
-   *  brings back the `active` ones. */
-  agentSessions: AgentSessionEntry[]
+  /** The sessions open when it stopped, which a restart brings back. */
+  sessions: SessionEntry[]
+  /** Every conversation the workspace hosted. */
+  conversations: ConversationEntry[]
   /** Why the workspace died, when the reaper (not the user) stopped it. */
   deathReason?: WorkspaceDeathReason
   /** Evidence accompanying `deathReason` (exit code, eviction message, …). */
@@ -1351,8 +1381,8 @@ export interface StoppedWorkspacePage {
   nextCursor?: string
 }
 
-/** A non-agent tmux window in a workspace the webapp can attach to: an
- *  initCommands window or a scratch shell. */
+/** A tmux window in a workspace that runs no session, which the webapp can
+ *  attach to: an initCommands window or a scratch shell. */
 export interface WorkspaceTerminalEntry {
   /** /pty/attach target: 'window:@<id>'. */
   target: string
@@ -1443,7 +1473,8 @@ export const DEFAULT_SCRATCH_DIR_GIB = 16
 export interface ProvisioningWorkspaceEntry {
   workspaceId: string
   projectId: string
-  tool: AgentTool
+  /** The agent its first session runs; absent for a workspace with none. */
+  tool?: AgentTool
   kind: 'create' | 'restart'
   /** The title a create was given, or the one its draft or queued entry was
    *  shown under. Absent on a restart. */
@@ -1699,7 +1730,8 @@ export interface DraftWorkspaceEntry extends DraftWorkspaceSettings {
 export interface HeldWorkspaceEntry {
   workspaceId: string
   projectId: string
-  tool: AgentTool
+  /** The sessions it had open when it stopped. */
+  sessions: SessionEntry[]
   title?: string
   prompt?: string
   groupId?: string

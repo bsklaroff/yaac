@@ -1,7 +1,7 @@
 import {
   conversationTitle,
   findWorkspaceRow,
-  getProjectAgentSessions,
+  getProjectConversations,
   listProjectRows,
   listUsers,
   type WorkspaceRow,
@@ -36,7 +36,7 @@ export async function serverUsageReport(): Promise<ResourceReport> {
   const titles = new Map<string, string>()
   for (const projectId of new Set(rows.map((r) => r.projectId))) {
     const ofProject = rows.filter((r) => r.projectId === projectId)
-    const links = await getProjectAgentSessions(projectId, ofProject.map((r) => r.workspaceId))
+    const links = await getProjectConversations(projectId, ofProject.map((r) => r.workspaceId))
     for (const r of ofProject) {
       const title = r.title ?? conversationTitle(links.get(r.workspaceId) ?? []) ?? r.generatedTitle
       if (title !== undefined) titles.set(r.workspaceId, title)

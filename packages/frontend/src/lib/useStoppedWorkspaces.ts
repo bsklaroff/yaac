@@ -236,7 +236,7 @@ export function useRestartStopped(): (entry: StoppedWorkspaceEntry) => void {
     provision({
       workspaceId: entry.workspaceId,
       projectId: entry.projectId,
-      tool: entry.tool,
+      ...(entry.sessions[0] !== undefined ? { tool: entry.sessions[0].tool } : {}),
       kind: 'restart',
       ...(entry.groupId !== undefined ? { groupId: entry.groupId } : {}),
     }, (onProgress) => restartWorkspace(entry.workspaceId, onProgress))

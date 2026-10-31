@@ -97,7 +97,7 @@ const updateLine = (u: unknown): unknown => ({
  */
 function liveConversation(profile?: AcpAdapterProfile, extra: Partial<AcpConversationDeps> = {}): AcpConversation {
   transport = new FakeTransport()
-  const record = { projectId: 'demo', workspaceId: 'wt-1', agentSessionId: 'acp-1' }
+  const record = { projectId: 'demo', workspaceId: 'wt-1', conversationId: 'acp-1' }
   const c = new AcpConversation({
     transport,
     cwd: '/workspace',
@@ -118,7 +118,7 @@ function liveConversation(profile?: AcpAdapterProfile, extra: Partial<AcpConvers
 function reattach(profile?: AcpAdapterProfile, extra: Partial<AcpConversationDeps> = {}): void {
   conversation.close()
   conversation = liveConversation(profile, extra)
-  registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, conversation)
+  registerAcpConversation('demo', 'wt-1', { handle: 'claude', conversationId: 'acp-1' }, conversation)
 }
 
 
@@ -127,7 +127,7 @@ beforeEach(async () => {
   setDataDir(dataDir)
   _resetAcpRegistryForTests()
   conversation = liveConversation()
-  registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, conversation)
+  registerAcpConversation('demo', 'wt-1', { handle: 'claude', conversationId: 'acp-1' }, conversation)
 })
 
 afterEach(async () => {
@@ -172,7 +172,7 @@ describe('attachAcp', () => {
     const hello = sock.sent.find((m) => m.type === 'hello')
     expect(hello?.type).toBe('hello')
     if (hello?.type !== 'hello') throw new Error('unreachable')
-    expect(hello.agentSessionId).toBe('acp-1')
+    expect(hello.conversationId).toBe('acp-1')
     // The user turn comes from the client's `session/prompt` line.
     expect(hello.events.map((e) => e.type)).toEqual(['user', 'agent'])
     expect(hello.events.map((e) => e.seq)).toEqual([0, 1])
@@ -517,7 +517,7 @@ describe('attachAcp', () => {
       { jsonrpc: '2.0', id: 's1', method: '_session/steering', params: { sessionId: 'acp-1', prompt: [{ type: 'text', text: 'x' }] } },
       { jsonrpc: '2.0', id: 's1', result: { outcome: 'startedNewTurn' } },
     ]
-    const ref = { projectId: 'demo', workspaceId: 'wt-1', agentSessionId: 'acp-1' }
+    const ref = { projectId: 'demo', workspaceId: 'wt-1', conversationId: 'acp-1' }
     await record(life)
     expect((await readAcpRecovery(ref)).inFlight).toEqual({ prompt: false, agentRunning: true })
     await record([...life, JSON.parse(threadStatus('idle')) as unknown])
@@ -776,7 +776,7 @@ describe('attachAcp', () => {
       onDown: () => {},
       log: () => {},
     })
-    registerAcpConversation('demo', 'wt-1', { handle: 'codex', agentSessionId: 'acp-1' }, conversation)
+    registerAcpConversation('demo', 'wt-1', { handle: 'codex', conversationId: 'acp-1' }, conversation)
     // Only used to know when the report has happened, so the attach below
     // cannot catch it through the live subscription.
     const reportedLive: string[] = []
@@ -966,7 +966,7 @@ describe('attachAcp', () => {
       permissionMode: () => 'accept-edits',
       onSessionId: () => {}, onStatus: () => {}, onDown: () => {}, log: () => {},
     })
-    registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, conversation)
+    registerAcpConversation('demo', 'wt-1', { handle: 'claude', conversationId: 'acp-1' }, conversation)
     transport.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: true } })}\n`)
     await waitFor(() => requests('initialize').length > 0)
     reply(requests('initialize')[0].id, { protocolVersion: 1, agentCapabilities: {} })
@@ -1005,7 +1005,7 @@ describe('attachAcp', () => {
     // A pane that leaves while waiting is never attached.
     left.clientClose()
 
-    registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, conversation)
+    registerAcpConversation('demo', 'wt-1', { handle: 'claude', conversationId: 'acp-1' }, conversation)
     await waitForHello(early)
     await new Promise((r) => setTimeout(r, 20))
     expect(left.sent).toEqual([])
@@ -1051,7 +1051,7 @@ describe('attachAcp', () => {
 
     const abandoned = transport
     conversation = liveConversation()
-    registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, conversation)
+    registerAcpConversation('demo', 'wt-1', { handle: 'claude', conversationId: 'acp-1' }, conversation)
 
     const next = new FakeSocket()
     attachAcp('demo', 'wt-1', 'acp-1', next)
