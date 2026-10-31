@@ -193,20 +193,28 @@ describe('openDb', () => {
       INSERT INTO workspaces (project_id, workspace_id, mode, stopped_at, pending_prompt)
         VALUES ('${P}', 'unnamed', 'acp', now(), 'queued ask');
       INSERT INTO workspaces (project_id, workspace_id, mode, stopped_at) VALUES ('${P}', 'twins', 'acp', now());
+      INSERT INTO workspaces (project_id, workspace_id, permission_mode, effort, model, mode, stopped_at)
+        VALUES ('${P}', 'codexled', 'auto', 'max', 'claude-opus-5', 'tui', now());
+      INSERT INTO workspaces (project_id, workspace_id, mode, stopped_at) VALUES ('${P}', 'dangling', 'tui', now());
       INSERT INTO conversations (project_id, tool, conversation_id, mode, first_prompt, model) VALUES
         ('${P}', 'claude', 'conv-1', 'tui', 'hello', NULL),
         ('${P}', 'codex', 'running', 'tui', NULL, NULL),
         ('${P}', 'claude', 'conv-old', 'tui', NULL, NULL),
         ('${P}', 'claude', 'conv-b', 'acp', NULL, 'claude-sonnet-5'),
         ('${P}', 'claude', 'conv-t1', 'acp', NULL, NULL),
-        ('${P}', 'claude', 'conv-t2', 'acp', NULL, NULL);
+        ('${P}', 'claude', 'conv-t2', 'acp', NULL, NULL),
+        ('${P}', 'claude', 'conv-c1', 'tui', NULL, NULL),
+        ('${P}', 'codex', 'conv-c2', 'tui', NULL, NULL);
       INSERT INTO workspace_conversations (project_id, workspace_id, tool, conversation_id, active, ordinal, pane_id) VALUES
         ('${P}', 'running', 'claude', 'conv-1', true, 0, '%3'),
         ('${P}', 'running', 'codex', 'running', true, 1, NULL),
         ('${P}', 'running', 'claude', 'conv-old', false, 2, NULL),
         ('${P}', 'chat', 'claude', 'conv-b', true, 0, 'claude-2'),
         ('${P}', 'twins', 'claude', 'conv-t1', true, 0, 'claude'),
-        ('${P}', 'twins', 'claude', 'conv-t2', true, 1, 'claude');
+        ('${P}', 'twins', 'claude', 'conv-t2', true, 1, 'claude'),
+        ('${P}', 'codexled', 'claude', 'conv-c1', false, 0, NULL),
+        ('${P}', 'codexled', 'codex', 'conv-c2', true, 1, NULL),
+        ('${P}', 'dangling', 'opencode', 'conv-gone', false, 0, NULL);
     `)
     try {
       const sessions = (await db.$client.query<Record<string, unknown>>(
@@ -223,7 +231,15 @@ describe('openDb', () => {
       expect(first.launched_at).toEqual(new Date('2026-10-01T00:00:00Z'))
       // codex names its own conversations, so one under the workspace id
       // never had a real one.
-      expect(pin).toMatchObject({ tool: 'codex', window: 'codex-2', conversation_id: null, model: null })
+      // The row's model and effort were its launch tool's (the first
+      // conversation's), so another tool's session takes neither.
+      expect(pin).toMatchObject({ tool: 'codex', window: 'codex-2', conversation_id: null, model: null, effort: null })
+      expect(of('codexled')).toEqual([expect.objectContaining({
+        tool: 'codex', model: null, effort: null, permission_mode: 'auto', conversation_id: 'conv-c2',
+      })])
+      // A workspace whose only conversation row is gone still gets the fresh
+      // agent its restart started, on that conversation's tool.
+      expect(of('dangling')).toEqual([expect.objectContaining({ tool: 'opencode', window: 'opencode', conversation_id: null })])
       expect(of('chat')).toEqual([expect.objectContaining({
         mode: 'acp', window: 'claude-2', model: 'claude-sonnet-5', conversation_id: 'conv-b', launched_at: null,
       })])

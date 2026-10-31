@@ -7,6 +7,7 @@ import { closeDb } from '#db/client'
 import {
   readAgentStatus,
   setAgentStatus,
+  setWorkspaceWindows,
   _resetWorkspaceStatusStoreForTests,
 } from '#runtime/status/status-store'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
@@ -62,6 +63,19 @@ describe('markWaitingSeen', () => {
     vi.setSystemTime(2_000)
     setAgentStatus(PROJ, 'w1', session.window, 'waiting')
     expect(await markWaitingSeen(local, session.id, spell)).toBe(false)
+  })
+
+  // An exited agent waits on the user to resume or close its session, in a
+  // spell that began when its pane was first listed dead.
+  it("records a viewer of an exited session's spell", async () => {
+    vi.useFakeTimers({ now: 5_000 })
+    setAgentStatus(PROJ, 'w1', other.window, 'running')
+    setWorkspaceWindows(PROJ, 'w1', [{ id: '@1', name: other.window, dead: true }])
+    vi.setSystemTime(9_000)
+    setWorkspaceWindows(PROJ, 'w1', [{ id: '@1', name: other.window, dead: true }])
+    expect(await markWaitingSeen(local, other.id, 9_000)).toBe(false)
+    expect(await markWaitingSeen(local, other.id, 5_000)).toBe(true)
+    expect(await seen(other)).toEqual([BUILT_IN_USER_ID])
   })
 
   it('marks nothing for a session whose agent has no status yet', async () => {

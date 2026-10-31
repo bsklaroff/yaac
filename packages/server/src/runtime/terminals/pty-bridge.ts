@@ -26,8 +26,12 @@ const DEFAULT_ROWS = 24
 type PtyTarget = string
 
 const WINDOW_ID = /^@[0-9]{1,6}$/
-/** A session's window name (`sessionWindowName`, or a migrated one). */
-const SESSION_WINDOW = /^[a-z]+(-[0-9a-z]{1,8})?$/
+/**
+ * A session's window name: `sessionWindowName`'s `<tool>-<8 hex>`, or one
+ * the `add_sessions` migration carried over (`<tool>`, `<tool>-<n>`, either
+ * with an `-<8 hex>` suffix where two collided; docs/legacy-compat-shims.md).
+ */
+const SESSION_WINDOW = /^[a-z]+(-[0-9]{1,3})?(-[0-9a-f]{8})?$/
 
 /** Coerce a client-supplied target (a WS query param) to a PtyTarget;
  *  anything unrecognized means the CLI's native attach. */

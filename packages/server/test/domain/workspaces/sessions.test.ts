@@ -15,7 +15,7 @@ import {
   listWorkspaceSessions,
   markSessionsLaunched,
 } from '#db'
-import { recordWorkspaceCreated } from '#db/workspace-store'
+import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { recordConversations } from '#db/conversation-store'
 import { closeDb } from '#db/client'
 import { setWorkspaceWindows, _resetWorkspaceStatusStoreForTests } from '#runtime/status/status-store'
@@ -119,7 +119,7 @@ describe('closeSession', () => {
   it('closes the session and kills its window, leaving the workspace running', async () => {
     const session = await openSession(local, WS, { tool: 'claude', mode: 'tui' })
     await closeSession(local, session.id)
-    expect(execs.at(-1)).toContain(`kill-window -t yaac:${session.window}`)
+    expect(execs.at(-1)).toContain(`kill-window -t =yaac:=${session.window}`)
     expect((await getSessionRow(session.id))?.closedAt).toBeInstanceOf(Date)
     expect(execs.some((c) => c.includes('kill-server') || c.includes('kill-session'))).toBe(false)
     await expect(closeSession(local, session.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
@@ -134,7 +134,7 @@ describe('resumeSession', () => {
     listed(KEEPER_WINDOW, session.window)
     execs = []
     await resumeSession(local, session.id)
-    expect(execs.join('\n')).toContain(`respawn-window -k -t yaac:${session.window}`)
+    expect(execs.join('\n')).toContain(`respawn-window -k -t =yaac:=${session.window}`)
 
     listed(KEEPER_WINDOW)
     execs = []
@@ -178,6 +178,33 @@ describe('reconcileSessions', () => {
     await reconcileSessions(view)
     expect((await getSessionRow(session.id))?.closedAt).toBeInstanceOf(Date)
     expect(opened()).toEqual([])
+  })
+
+  // A runtime started before sessions has no keeper, and an agent that
+  // quits there takes its window with it, which is no close by the user.
+  it('leaves alone a runtime with no keeper', async () => {
+    const session = await insertSession(DEMO_PROJECT_ID, WS, claude)
+    listed(session.window, 'shell')
+    await reconcileSessions(view)
+    listed('shell')
+    await reconcileSessions(view)
+    expect((await getSessionRow(session.id))?.closedAt).toBeUndefined()
+    expect(opened()).toEqual([])
+  })
+
+  // A restart that could not clear the stop record leaves it older than the
+  // life; one newer than the life is a stop.
+  it('reconciles a workspace whose stop record predates its life, and not one stopped since', async () => {
+    const session = await insertSession(DEMO_PROJECT_ID, WS, claude)
+    listed(KEEPER_WINDOW)
+    await recordWorkspaceStopped(DEMO_PROJECT_ID, WS)
+    await reconcileSessions(view)
+    expect(opened()).toEqual([])
+    // Past the stop's millisecond, so the life is strictly newer.
+    await new Promise((resolve) => setTimeout(resolve, 2))
+    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS })
+    await reconcileSessions(view)
+    expect(opened()).toEqual([session.window])
   })
 
   it('waits while the workspace is still being set up, or its windows are not listed yet', async () => {

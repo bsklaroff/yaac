@@ -76,7 +76,7 @@ import {
   type SessionLaunchSettings,
   type SessionRow,
 } from '#db'
-import { deliverTuiPrompt, sessionLaunches, type SessionLaunch } from './session-launch'
+import { deliverTuiPrompt, sessionLaunches, typesOpeningMessage, type SessionLaunch } from './session-launch'
 import { reportAgentLaunchFailure, throwIfProvisionStopped } from './provisioning'
 import { recordTrackedScratchDirs } from './tracked-scratch-dirs'
 import { spareSettings } from './prewarm'
@@ -1347,9 +1347,7 @@ export async function createWorkspace(
   // A new `tui` session's opening message is typed in; an `acp` one's is
   // already held for its conversation.
   const { handle, launches } = launched
-  if (launches.some((l) => l.session.mode === 'tui' && l.session.firstPrompt !== undefined)) {
-    emit('Sending initial prompt...', options)
-  }
+  if (launches.some(typesOpeningMessage)) emit('Sending initial prompt...', options)
   await Promise.all(launches.map((l) => deliverTuiPrompt({ projectId, workspaceId, jobName: handle.jobName }, l)))
 
   return {

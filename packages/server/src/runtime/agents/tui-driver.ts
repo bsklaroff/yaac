@@ -36,7 +36,7 @@ import {
   splitAgentReport,
   type PaneSession,
 } from './agent-tools'
-import { assertLaunchableModel, buildAgentCmd, buildMessageCmd, buildPromptPasteBgCmd } from './agent-command'
+import { assertLaunchableModel, buildAgentCmd, buildMessageCmd, buildPromptPasteBgCmd, windowTarget } from './agent-command'
 import { workspaceDriver } from '#drivers/driver'
 import type {
   AgentConnectDeps,
@@ -323,7 +323,7 @@ export const tuiDriver: AgentDriver = {
   async deliverPrompt(session: DrivenWorkspace, handle: string, text: string, opts = {}): Promise<void> {
     // A session's handle is its window, which pastes into the window's
     // active pane; a terminal's agent is addressed by its pane id.
-    const target = handle.startsWith('%') ? handle : `yaac:${handle}`
+    const target = handle.startsWith('%') ? handle : windowTarget(handle)
     const driver = workspaceDriver()
     const paths = driver.workspacePaths(session.jobName)
     if (opts.running === undefined) {

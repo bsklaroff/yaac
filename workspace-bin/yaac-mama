@@ -100,7 +100,7 @@ Usage:
   yaac-mama routine edit [opts] <routine> ["<prompt>"]
                                                    # change a routine
   yaac-mama routine pause|resume|run|delete <routine>
-  yaac-mama send [--session <s>] <workspace> "<message>"
+  yaac-mama send [--session <s> | --conversation <c>] <workspace> "<message>"
                                                    # message one of its agents
   Any "<prompt>" or "<message>" can instead be - (read from stdin) or
   --prompt-file <path>, given before the other arguments.
@@ -139,9 +139,11 @@ but --title):
                    how much the new agent may do before it asks: bypass, auto,
                    accept-edits, manual, then plan or read-only (codex's
                    strictest), most permissive first.
-                   Omitted, it inherits this workspace's own. It can never be
-                   more permissive than this workspace's: asking for more is an
-                   error. Not every tool has every mode (pi has only bypass).
+                   Omitted, it inherits your own: your session's (the one
+                   $YAAC_SESSION_ID names), or outside one the strictest of
+                   this workspace's open sessions. It can never be more
+                   permissive than your own: asking for more is an error.
+                   Not every tool has every mode (pi has only bypass).
   --ui-mode <mode> how the agent is driven: tui (its terminal UI, the default)
                    or acp (a chat pane in the yaac webapp).
   --branch <name>  reference branch on origin for the new workspace. Omitted,
@@ -182,7 +184,7 @@ queue also takes at most one of:
                    project ("$YAAC_WORKSPACE_ID" for this one), or a queued
                    workspace's id (to chain after it). Options it omits
                    default to that parent's settings; the permission mode is
-                   still never more permissive than this workspace's own.
+                   still never more permissive than your own.
                    Required unless --group names an existing group with a
                    workspace limit (see group set-limit; `yaac-mama list`
                    shows it): then the queued workspace waits for room
@@ -203,22 +205,21 @@ zone; omitted, the user's yaac time zone). Each run stops at the next tick
 unless --timeout gives it a length of its own, and is filed in a group named
 after the routine unless --group names one. It takes create's options but
 --title, defaulting as a queue --start-at does, its permission mode capped at
-this workspace's own. It prints the routine's id, then its next runs on
-stderr. routine edit takes the same options plus a new prompt; like
-edit-queued it refuses a routine more permissive than this workspace until
-the edit lowers it. --timeout next clears its timeout, so each run stops at
-the next tick again. routine run starts a run now and routine resume
-restarts the schedule, both refused for a routine more permissive than this
-workspace. routine pause stops the schedule, and routine delete removes the
+your own. It prints the routine's id, then its next runs on stderr. routine
+edit takes the same options plus a new prompt; like edit-queued it refuses a
+routine more permissive than you until the edit lowers it. --timeout next
+clears its timeout, so each run stops at the next tick again. routine run
+starts a run now and routine resume restarts the schedule, both refused for
+a routine more permissive than you. routine pause stops the schedule, and routine delete removes the
 routine and its run history; runs already started keep going either way,
 and every run's workspace stays. list shows the project's routines.
 
 edit-queued changes the queued workspace <queued> names: each option given
 replaces its setting (--parent-workspace re-parents it; --no-parent has it
 wait for room in its --group, which needs a workspace limit), and a prompt
-given replaces its prompt. A queued workspace more permissive than this one is
-refused until the edit names a permission mode at or below this workspace's,
-or a new --tool (whose permission mode is then resolved at or below it).
+given replaces its prompt. A queued workspace more permissive than you is
+refused until the edit names a permission mode at or below your own, or a
+new --tool (whose permission mode is then resolved at or below it).
 
 run-queued starts a queued workspace now, whatever it waits on. It is
 refused while its group is at its workspace limit, and for one more
@@ -287,12 +288,14 @@ this script turns into the same JSONL shape with python3: one line per
 message, the conversation first and then the sessions its subagents ran,
 under subagents/ with -o.
 
-send hands a message to another running workspace's agent, as if the user
+send hands a message to one of a running workspace's agents, as if the user
 typed it, headed "Sent from <this workspace's id> via yaac-mama:": its first
-conversation, or the one --conversation names (an id or
-unique prefix from `yaac-mama history <workspace>`). An agent mid-turn takes
-it when its turn allows, or queues it. Read its answer with `yaac-mama
-history`. The workspace may not run in a more permissive mode than this one.
+open session's, or the session --session names (an id or unique prefix from
+`yaac-mama list`), or the one holding the conversation --conversation names
+(from `yaac-mama history <workspace>`). This workspace's other sessions can
+be sent to; your own cannot. An agent mid-turn takes it when its turn
+allows, or queues it. Read its answer with `yaac-mama history`. The session
+may not run in a more permissive mode than you.
 send takes --prompt-file <path> or - for the message, as create does.
 
 set-base makes <branch>, a branch on origin, this workspace's base: what
@@ -307,10 +310,11 @@ tears down what this command's own reply travels over, so the confirmation
 may never print — the workspace ending is the confirmation. Do everything that
 must outlive the workspace (commit, push, report) before you run it.
 
-restart brings a stopped workspace back under its id, resuming the
-conversations it had, in its recorded permission mode — so one more
-permissive than this workspace is refused, as is a running one (restarting
-it would end its agent's turn). One that had a timeout gets the same length
+restart brings a stopped workspace back under its id, resuming each of its
+sessions in its recorded permission mode, and each agent it ran by hand in a
+terminal as a session of its own — so one where any would come back more
+permissive than you is refused, as is a running one (restarting it would end
+its agents' turns). One that had a timeout gets the same length
 again unless --timeout names another, or none to have no timeout. It prints
 once the restart is under way; watch `yaac-mama list` for it to run, then
 `send` it what to do next.

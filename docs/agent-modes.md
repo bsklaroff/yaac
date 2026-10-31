@@ -732,7 +732,7 @@ so a restart before the handshake loses nothing.
 The connection finds its sessions' windows through a tmux control-mode
 client of its own, as the `tui` driver does: tmux pushes a window add or
 close, and a subscription on each session pane's `#{pane_dead}` pushes an
-agent's exit. Listing windows over that stream is the heartbeat. acpd binds
+agent's exit and a resume that brings the pane back. Listing windows over that stream is the heartbeat. acpd binds
 its socket a moment after it starts, so a dial that finds nothing is
 retried every second, a bounded number of times, before it waits for the
 heartbeat.

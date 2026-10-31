@@ -239,8 +239,10 @@ export class ControlModeClient {
 }
 
 /** Per session pane: whether its agent has exited (`#{pane_dead}`; session
- *  windows keep their pane with `remain-on-exit`), so an exit re-lists at
- *  once rather than at the next heartbeat. */
+ *  windows keep their pane with `remain-on-exit`), so an exit, and a resume
+ *  that brings the pane back (`respawn-window -k` keeps its id and sends no
+ *  window notification), re-list at once rather than at the next
+ *  heartbeat. */
 const DEAD_SUBSCRIPTION_PREFIX = 'dead-'
 
 /**
@@ -263,8 +265,9 @@ export abstract class ControlModeConnection implements AgentConnection {
   private client: ControlModeClient | null = null
   private heartbeatTimer: NodeJS.Timeout | null = null
   private heartbeatInFlight = false
-  /** Panes with a death subscription (`watchPaneDeath`). */
-  private readonly deathWatched = new Set<string>()
+  /** Panes with a death subscription (`watchPaneDeath`), with the last
+   *  value it reported. */
+  private readonly deathWatched = new Map<string, string | undefined>()
   private readonly heartbeatIntervalMs: number
   protected readonly commandTimeoutMs: number
 
@@ -295,7 +298,7 @@ export abstract class ControlModeConnection implements AgentConnection {
   /** Subscribe to a session pane's death, once per pane. */
   protected async watchPaneDeath(paneId: string): Promise<void> {
     if (this.deathWatched.has(paneId)) return
-    this.deathWatched.add(paneId)
+    this.deathWatched.set(paneId, undefined)
     await this.send(`refresh-client -B '${DEAD_SUBSCRIPTION_PREFIX}${paneId.replace('%', '')}:${paneId}:#{pane_dead}'`)
   }
 
@@ -381,10 +384,18 @@ export abstract class ControlModeConnection implements AgentConnection {
       void this.resync()
     } else if (n.kind === 'subscription') {
       if (!n.name.startsWith(DEAD_SUBSCRIPTION_PREFIX)) this.onSubscription(n)
-      else if (n.value === '1') void this.resync()
+      else this.onPaneDeathValue(`%${n.name.slice(DEAD_SUBSCRIPTION_PREFIX.length)}`, n.value)
     }
     // `exit`: tmux is detaching us, and the child exit that follows tears
     // down. `%output` never arrives, since connections attach no-output.
+  }
+
+  /** A dead pane re-lists, and so does one whose state changed since it
+   *  last reported; the first report of a live pane is its subscribing. */
+  private onPaneDeathValue(paneId: string, value: string): void {
+    const last = this.deathWatched.get(paneId)
+    this.deathWatched.set(paneId, value)
+    if (value === '1' || (last !== undefined && last !== value)) void this.resync()
   }
 
   protected down(reason: string): void {
@@ -413,9 +424,11 @@ export abstract class ControlModeConnection implements AgentConnection {
   }
 }
 
-/** The name stays last — it may contain pipes. */
-const LIST_WINDOWS = "list-windows -t yaac -F '#{window_id}|#{pane_dead}|#{window_name}'"
-const WINDOW_LINE = /^(@\d+)\|([01])\|(.*)$/
+/** Every pane, so a window's `dead` is its first pane's, the one its
+ *  agent runs in, whichever pane is active. The name stays last — it may
+ *  contain pipes. */
+const LIST_PANES = "list-panes -s -t yaac -F '#{window_id}|#{pane_dead}|#{window_name}'"
+const PANE_LINE = /^(@\d+)\|([01])\|(.*)$/
 
 /**
  * List a workspace's tmux windows: its sessions', its terminals and the
@@ -426,8 +439,10 @@ const WINDOW_LINE = /^(@\d+)\|([01])\|(.*)$/
 export async function listWindows(
   tmux: (tmuxArgs: string) => Promise<string>,
 ): Promise<WorkspaceWindow[]> {
-  return (await tmux(LIST_WINDOWS)).split('\n').flatMap((line) => {
-    const m = WINDOW_LINE.exec(line.trim())
-    return m ? [{ id: m[1], name: m[3], dead: m[2] === '1' }] : []
-  })
+  const windows = new Map<string, WorkspaceWindow>()
+  for (const line of (await tmux(LIST_PANES)).split('\n')) {
+    const m = PANE_LINE.exec(line.trim())
+    if (m && !windows.has(m[1])) windows.set(m[1], { id: m[1], name: m[3], dead: m[2] === '1' })
+  }
+  return [...windows.values()]
 }

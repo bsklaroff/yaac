@@ -166,7 +166,7 @@ it reaches back only that many days.
 
 **Agents make routines on the queue's terms.** `yaac-mama routine
 create|edit|pause|resume|run|delete` reach the same functions as the
-routes, with the calling workspace's permission mode as the ceiling
+routes, with the calling session's permission mode as the ceiling
 (`QueueSource`), as for a queue write: a routine an agent makes or edits
 launches at most as permissively as that agent, one already above it is
 refused until the edit lowers it, and resume and run (which set runs off)

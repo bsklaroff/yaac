@@ -202,7 +202,8 @@ names in `YAAC_SESSION_ID` and `yaac-mama` sends; the server takes it only
 as one of the calling workspace's open sessions, and reads its posture
 from its row, never from the request (`mamaCaller`). A call from outside
 any session gets the strictest posture among the workspace's open
-sessions. Anything in the workspace could name another of its sessions,
+sessions, or with none open among those closed during its current life.
+Anything in the workspace could name another of its sessions,
 so this is a guardrail rather than a boundary (docs/sessions.md). The same
 ceiling applies to a session `yaac-mama create --workspace` opens in a
 running workspace.
@@ -234,9 +235,11 @@ maps to no posture is refused.
 `yaac-mama restart`, which brings a stopped sibling back, holds the
 target's postures to the ceiling too. Every session relaunches in its own
 posture, or the nearest its tool has (`launchablePermissionMode`, which
-gives pi `bypass` whatever the row says), so an agent may restart only a
-workspace whose every session would come back at or below its own
-(`decideRestart` in `#domain/workspaces`).
+gives pi `bypass` whatever the row says), and so does each agent someone
+started by hand in one of its terminals, which the restart brings back as a
+session in the first session's posture (else the driver's default for its
+tool). An agent may restart only a workspace where every one of these would
+come back at or below its own (`decideRestart` in `#domain/workspaces`).
 
 The check sees a mode as the agent reported it, and a `tui` agent reports a
 change late: claude on its next prompt or stop, codex in its next turn's

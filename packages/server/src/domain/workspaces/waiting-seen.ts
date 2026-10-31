@@ -1,10 +1,11 @@
 /**
- * A user viewing a waiting session, which clears that user's unread dot on
- * every client until the session next stops needing its owner. Any user may
+ * A user viewing a waiting session, or one whose agent exited, which clears
+ * that user's unread dot on every client until the session next stops
+ * needing its owner. Any user may
  * mark: each has their own dot, owner and teammates alike.
  */
 import { getSessionRow, recordSessionWaitingSeen } from '#db'
-import { readAgentStatus } from '#runtime/status'
+import { readAgentStatus, readWorkspaceWindows } from '#runtime/status'
 import { ServerError } from '@yaac/shared/errors'
 import type { Principal } from '@yaac/shared/types'
 
@@ -22,9 +23,13 @@ export async function markWaitingSeen(
 ): Promise<boolean> {
   const session = await getSessionRow(sessionId)
   if (session === undefined) throw new ServerError('NOT_FOUND', `no session ${sessionId}`)
+  const window = readWorkspaceWindows(session.projectId, session.workspaceId)?.find((w) => w.name === session.window)
   const agent = readAgentStatus(session.projectId, session.workspaceId, session.window)
-  if (agent === undefined || (agent.status !== 'waiting' && agent.status !== 'asking')) return false
-  if ((agent.waitingSinceMs ?? 0) !== waitingSinceMs) return false
+  // An exited agent's spell began when it was first seen dead.
+  const spell = window?.dead === true
+    ? window.deadSinceMs
+    : agent !== undefined && (agent.status === 'waiting' || agent.status === 'asking') ? agent.waitingSinceMs ?? 0 : undefined
+  if (spell === undefined || spell !== waitingSinceMs) return false
   await recordSessionWaitingSeen(sessionId, principal.userId)
   return true
 }

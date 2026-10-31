@@ -61,7 +61,6 @@ function seedPod(labels: Record<string, string>): void {
         [LABEL_INSTALL_ID]: installId(),
         'batch.kubernetes.io/job-name': 'yaac-proj-s1',
         'yaac.workspace-id': 's1',
-        'yaac.tool': 'claude',
         ...labels,
       },
       creationTimestamp: '2026-09-29T00:00:00Z',

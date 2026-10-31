@@ -203,6 +203,40 @@ describe('session waiting read-marks', () => {
   })
 })
 
+// A session id is taken only under its own workspace's path, so a request
+// never acts on a session it did not name the workspace of.
+describe('session routes', () => {
+  it("closes and names a workspace's own session, and answers 404 for another's or a malformed id", async () => {
+    await recordWorkspaceCreated({ projectId: ONE, workspaceId: 'mine-workspace' })
+    await recordWorkspaceCreated({ projectId: ONE, workspaceId: 'theirs-workspace' })
+    const mine = await insertSession(ONE, 'mine-workspace', { tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
+    const theirs = await insertSession(ONE, 'theirs-workspace', { tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
+    const app = buildApp({ buildId: 'test' })
+    const post = async (path: string, body?: unknown): Promise<number> => (await app.request(`/api/workspace/${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    })).status
+
+    for (const verb of ['close', 'resume']) {
+      expect(await post(`mine-workspace/sessions/${theirs.id}/${verb}`), verb).toBe(404)
+      expect(await post(`mine-workspace/sessions/not-a-uuid/${verb}`), verb).toBe(404)
+    }
+    expect(await post(`mine-workspace/sessions/${theirs.id}/title`, { title: 'Hijacked' })).toBe(404)
+    const untouched = await getSessionRow(theirs.id)
+    expect([untouched?.title, untouched?.closedAt]).toEqual([undefined, undefined])
+
+    expect(await post(`mine-workspace/sessions/${mine.id}/title`, { title: 'Reviewer' })).toBe(204)
+    expect((await getSessionRow(mine.id))?.title).toBe('Reviewer')
+    expect(await post(`mine-workspace/sessions/${mine.id}/title`, { title: '' })).toBe(204)
+    expect((await getSessionRow(mine.id))?.title).toBeUndefined()
+    expect(await post(`mine-workspace/sessions/${mine.id}/close`)).toBe(204)
+    expect((await getSessionRow(mine.id))?.closedAt).toBeInstanceOf(Date)
+    // A closed session is no longer open to act on.
+    expect(await post(`mine-workspace/sessions/${mine.id}/close`)).toBe(404)
+  })
+})
+
 /**
  * A teammate's marks on the owner's workspaces, through a tailnet server.
  * The id recorded is the caller's, never one the body names, so a teammate

@@ -10,7 +10,6 @@ function labels(workspaceId: string): Record<string, string> {
   return {
     'yaac.workspace-id': workspaceId,
     'yaac.project-id': PROJECT,
-    'yaac.tool': 'claude',
     'yaac.install-id': installId(),
   }
 }

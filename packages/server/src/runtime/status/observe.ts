@@ -7,9 +7,10 @@ import {
   readWorkspaceStatus,
   readWorkspaceWaitingSince,
   readWorkspaceWindows,
+  type ObservedWindow,
 } from './status-store'
 import { pruneTerminating } from './terminating'
-import type { AgentLiveness, RuntimeHandle, WorkspaceWindow } from '#drivers/contract'
+import type { AgentLiveness, RuntimeHandle } from '#drivers/contract'
 import type {
   AgentStatus,
   GitAuthFailure,
@@ -47,7 +48,7 @@ export interface WorkspaceRuntimeReport {
    *  name). The join attaches sessions by their window. */
   agents: AgentLiveness[]
   /** Its tmux windows; absent until the watcher first lists them. */
-  windows?: WorkspaceWindow[]
+  windows?: ObservedWindow[]
   blockedHosts: string[]
   forwardedPorts: PortMapping[]
   unforwardedPorts: number[]

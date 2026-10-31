@@ -26,7 +26,7 @@ function obj(apiVersion: string, kind: string, name: string, labels: Record<stri
 
 /** A workspace's Job and pod as an install from before install ids left them. */
 function legacyWorkspace(id: string, hash = HASH) {
-  const labels = { ...workspaceIdLabels(id), [LABEL_PROJECT_ID]: 'demo', 'yaac.tool': 'claude', 'yaac.data-dir-hash': hash }
+  const labels = { ...workspaceIdLabels(id), [LABEL_PROJECT_ID]: 'demo', 'yaac.data-dir-hash': hash }
   return [
     obj('batch/v1', 'Job', `yaac-${id}`, labels),
     obj('v1', 'Pod', `yaac-${id}-x1`, { ...labels, [JOB_NAME_LABEL]: `yaac-${id}` }),

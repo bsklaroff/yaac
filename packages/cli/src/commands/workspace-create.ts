@@ -212,9 +212,8 @@ async function attachSession(workspaceId: string, sessionId: string, { attach }:
   }
 }
 
-/** A running workspace's open session. */
-export async function findSession(workspaceId: string, sessionId: string): Promise<SessionEntry | undefined> {
+/** A running workspace's open session, by its full id. */
+async function findSession(workspaceId: string, sessionId: string): Promise<SessionEntry | undefined> {
   const { workspaces } = await api.workspace.list.$get({ query: {} })
-  return workspaces.find((w) => w.workspaceId === workspaceId)?.sessions
-    .find((s) => s.sessionId === sessionId || s.sessionId.startsWith(sessionId))
+  return workspaces.find((w) => w.workspaceId === workspaceId)?.sessions.find((s) => s.sessionId === sessionId)
 }

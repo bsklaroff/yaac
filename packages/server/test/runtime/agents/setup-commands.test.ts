@@ -20,7 +20,7 @@ describe('buildWindowsExec', () => {
   it('opens each session in a window of its own, in the workspace, keeping its pane on exit', () => {
     expect(buildWindowsExec([], [claude], PATHS)).toBe(
       `${TMUX} new-window -d -t yaac -n claude-aaaa -c ${PATHS.workspaceDir} 'claude --session-id x'`
-      + ' \\; set-option -t yaac:claude-aaaa remain-on-exit on',
+      + ' \\; set-option -t =yaac:=claude-aaaa remain-on-exit on',
     )
   })
 
@@ -50,11 +50,11 @@ describe('buildWindowsExec', () => {
     ], PATHS)
     expect(cmd).toBe(
       `${TMUX} new-window -d -t yaac -n codex-bbbb -c ${PATHS.workspaceDir} 'codex resume t-1'`
-      + ' \\; set-option -t yaac:codex-bbbb remain-on-exit on'
-      + " \\; set-option -p -t yaac:codex-bbbb @yaac-session 'codex|t-1|'"
+      + ' \\; set-option -t =yaac:=codex-bbbb remain-on-exit on'
+      + " \\; set-option -p -t =yaac:=codex-bbbb @yaac-session 'codex|t-1|'"
       + ` \\; new-window -d -t yaac -n opencode-cccc -c ${PATHS.workspaceDir} 'opencode --standalone --session ses_2'`
-      + ' \\; set-option -t yaac:opencode-cccc remain-on-exit on'
-      + " \\; set-option -p -t yaac:opencode-cccc @yaac-session 'opencode|ses_2|'",
+      + ' \\; set-option -t =yaac:=opencode-cccc remain-on-exit on'
+      + " \\; set-option -p -t =yaac:=opencode-cccc @yaac-session 'opencode|ses_2|'",
     )
   })
 })
@@ -64,7 +64,7 @@ describe('finishSetupCommand', () => {
   // died partway (`probeSetupState`), so setup ends by renaming it, and a
   // workspace with no keeper (one started before keepers) is not an error.
   it('renames the keeper, tolerating a workspace without one', () => {
-    expect(finishSetupCommand(PATHS)).toBe(`${TMUX} rename-window -t yaac:${KEEPER_STARTING} ${KEEPER_WINDOW} 2>/dev/null || true`)
+    expect(finishSetupCommand(PATHS)).toBe(`${TMUX} rename-window -t =yaac:=${KEEPER_STARTING} ${KEEPER_WINDOW} 2>/dev/null || true`)
   })
 })
 

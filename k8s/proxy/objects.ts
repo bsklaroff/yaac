@@ -409,8 +409,8 @@ function decodeRedirects(raw: unknown): Record<string, UpstreamRedirect> | undef
 
 /**
  * A registration ConfigMap: the workspace id from its label and the payload
- * from `registration.json`. A registration missing `tool`, `projectId` or a
- * well-formed `owner` is dropped, so that workspace fails closed.
+ * from `registration.json`. A registration missing `projectId` or a well-formed
+ * `owner` is dropped, so that workspace fails closed.
  */
 export function decodeRegistration(
   cm: RawObject,

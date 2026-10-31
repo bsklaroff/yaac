@@ -1,7 +1,8 @@
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import { modelDisplayName } from '#domain/auth'
 import type { ConversationLinkRow, SessionRow } from '#db'
-import type { AgentLiveness, WorkspaceWindow } from '#drivers/contract'
+import type { AgentLiveness } from '#drivers/contract'
+import type { ObservedWindow } from '#runtime/status'
 import type { ConversationEntry, AgentStatus, ListedAgentStatus, SessionEntry } from '@yaac/shared/types'
 
 /** A status in wire form (`ListedAgentStatus`): an ask is `waiting` with a
@@ -39,13 +40,15 @@ export function toConversationEntry(l: ConversationLinkRow): ConversationEntry {
  * One session in wire form, for every surface that lists one. It lives in
  * domain, not `#db`, because it joins the stored row with what the runtime
  * observed just now (docs/layered-server.md): its agent's status, by its
- * window, and whether that window's agent has exited. Its title and prompt
- * fall back to its conversation's own.
+ * window, and whether that window's agent has exited. An exited session
+ * waits on the user to resume or close it, in a spell that began when its
+ * agent was first seen dead. Its title and prompt fall back to its
+ * conversation's own.
  */
 export function toSessionEntry(
   s: SessionRow,
   links: ConversationLinkRow[],
-  live?: { agents: AgentLiveness[]; windows?: WorkspaceWindow[] },
+  live?: { agents: AgentLiveness[]; windows?: ObservedWindow[] },
 ): SessionEntry {
   const conversation = s.conversationId === undefined
     ? undefined
@@ -54,8 +57,11 @@ export function toSessionEntry(
   const modelName = model !== undefined ? modelDisplayName(s.tool, model) : undefined
   const title = s.title ?? conversation?.title
   const prompt = s.firstPrompt ?? conversation?.firstPrompt
-  const exited = live?.windows?.find((w) => w.name === s.window)?.dead === true
-  const agent = exited ? undefined : live?.agents.find((a) => a.handle === s.window)
+  const window = live?.windows?.find((w) => w.name === s.window)
+  const exited = window?.dead === true
+  const agent = exited
+    ? { status: 'waiting' as const, waitingSinceMs: window.deadSinceMs }
+    : live?.agents.find((a) => a.handle === s.window)
   return {
     sessionId: s.id,
     tool: s.tool,

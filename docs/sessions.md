@@ -87,17 +87,23 @@ A workspace's status watcher holds one connection per mode, each watching
 only that mode's sessions (the drivers read the open sessions on every
 window listing). The `tui` connection subscribes the first pane of each
 `tui` session's window; the `acp` one dials each `acp` session's acpd
-socket. Both subscribe to each session pane's death, so an exit is seen at
-once, and both publish their live agents after every listing, empty
-included, so a session whose agent exited loses its status. The watcher
-also lists the workspace's windows; the listing decides which windows are
-terminals (all but the keeper and the sessions') and which sessions have
-exited.
+socket. Both subscribe to each session pane's death, so an exit, and a
+resume that brings the pane back, is seen at once, and both publish their
+live agents after every listing, empty included, so a session whose agent
+exited loses its agent's status. The watcher also lists the workspace's
+windows; the listing decides which windows are terminals (all but the
+keeper and the sessions') and which sessions have exited, by each window's
+first pane, where its agent runs.
 
-The workspace's status is its most pressing session's, as before. Unread
-state is per session (`sessions.waitingSeenBy`): the webapp marks a
-session seen when its pane is on screen, and a workspace shows the unread
-dot while any of its sessions is unread.
+An exited session waits on the user to resume or close it, so it lists as
+`waiting` (with `exited`), in a spell that began when its pane was first
+listed dead. The workspace's status is its most pressing session's. Unread
+state is per session (`sessions.waitingSeenBy`): the webapp marks a session
+seen when its pane is on screen, a resume ends an exited session's spell,
+and a workspace shows the unread dot while any of its sessions is unread.
+The chime and the desktop app's notifications key each session's spell
+(`packages/shared/src/waiting.ts`), so a session that starts waiting alerts
+even while a sibling already waits.
 
 ## Opening, closing and resuming
 
@@ -125,8 +131,10 @@ with each request. The server takes it only as one of the calling
 workspace's open sessions (`mamaCaller`). The caller's ceiling (what it may
 start or message, docs/permission-modes.md) is then that session's
 posture. A call from outside any session, such as a user's shell, gets the
-strictest posture among the workspace's open sessions, or with none what a
-create would resolve. Anything in the workspace can set the variable or
+strictest posture among the workspace's open sessions; with none open,
+among those closed during its current life, since an agent's detached
+child can outlive its session; and with neither, what a create would
+resolve. A posture this build does not rank counts as the strictest. Anything in the workspace can set the variable or
 type into another session's window, so this is a guardrail, not a
 boundary. `send` reaches any session but the caller's own, in another
 workspace or beside it in its own.

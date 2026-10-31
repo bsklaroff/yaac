@@ -13,7 +13,7 @@ import {
   setWorkspaceBaseBranch,
   setWorkspaceTrackedScratchDirs,
 } from './workspace-store'
-import { recordSessionReport, recordSessionWaitingUnseen } from './session-store'
+import { closeSessionRow, recordSessionReport, recordSessionWaitingUnseen } from './session-store'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import type { WorkspaceEvent, WorkspaceCreateFailed, WorkspaceCreated } from './events'
 
@@ -58,6 +58,9 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
       return
     case 'session-reported':
       await recordSessionReport(event.sessionId, event)
+      return
+    case 'session-window-gone':
+      await closeSessionRow(event.sessionId)
       return
     case 'waiting-ended':
       await recordSessionWaitingUnseen(event.workspaceId, event.window)

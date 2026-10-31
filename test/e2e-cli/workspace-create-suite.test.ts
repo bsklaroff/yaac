@@ -499,7 +499,6 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       const pod = await findWorkspacePod('kitchen')
       expect(pod.running).toBe(true)
       expect(pod.labels['yaac.project-id']).toBe(idOf('kitchen'))
-      expect(pod.labels['yaac.tool']).toBe('claude')
 
       await execInJob(jobName, ['test', '-d', '/home/yaac/.claude'])
       await execInJob(jobName, ['test', '-f', '/home/yaac/.claude.json'])
@@ -1571,8 +1570,6 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     afterAll(() => stopWorkspace(workspaceId))
 
     it('mounts shared Claude and Codex state', async () => {
-      const pod = await findWorkspacePod('codex-demo')
-      expect(pod.labels['yaac.tool']).toBe('codex')
       await execInJob(jobName, ['test', '-d', '/home/yaac/.claude'])
       await execInJob(jobName, ['test', '-f', '/home/yaac/.claude.json'])
       await execInJob(jobName, ['test', '-d', '/home/yaac/.codex'])

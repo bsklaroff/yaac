@@ -10,6 +10,7 @@ import {
   insertSession,
   listActiveConversations,
   listWorkspaceSessions,
+  type SessionLaunchSettings,
 } from '#db'
 import { authorizeProject, type Actor } from '#domain/access'
 import { workspaceDriver } from '#drivers/driver'
@@ -80,7 +81,9 @@ export async function prepareRestart(
     // Always: it also clears a leftover terminating mark.
     await teardownForRestart({ jobName: jobName ?? null, projectId, workspaceId })
 
-    await adoptTerminalConversations(projectId, workspaceId)
+    for (const settings of await terminalConversationSessions(projectId, workspaceId)) {
+      await insertSession(projectId, workspaceId, settings)
+    }
     const sessions = await listWorkspaceSessions(workspaceId)
     if (sessions.length > 1) onProgress(`Restoring ${sessions.length} sessions...`)
 
@@ -102,22 +105,23 @@ export async function prepareRestart(
 }
 
 /**
- * Give each conversation an agent ran in a terminal, live when the
- * workspace stopped, a session of its own to come back in, in the posture
- * of the workspace's first session (else the driver's default for its
- * tool). Its agent was started by hand, so nothing else would bring it back.
+ * The session a restart gives each conversation an agent ran in a terminal,
+ * live when the workspace stopped: its agent was started by hand, so
+ * nothing else would bring it back. It takes the posture of the workspace's
+ * first session, else the driver's default for its tool.
  */
-async function adoptTerminalConversations(projectId: string, workspaceId: string): Promise<void> {
+export async function terminalConversationSessions(
+  projectId: string,
+  workspaceId: string,
+): Promise<SessionLaunchSettings[]> {
   const loose = (await listActiveConversations(projectId, workspaceId)).filter((l) => l.sessionId === undefined)
-  if (loose.length === 0) return
+  if (loose.length === 0) return []
   const first = (await listWorkspaceSessions(workspaceId))[0]
-  for (const l of loose) {
-    await insertSession(projectId, workspaceId, {
-      tool: l.tool,
-      mode: l.mode,
-      permissionMode: first?.permissionMode ?? defaultPermissionMode(workspaceDriver().kind, l.tool),
-      conversationId: l.conversationId,
-      ...(l.model !== undefined ? { model: l.model } : {}),
-    })
-  }
+  return loose.map((l) => ({
+    tool: l.tool,
+    mode: l.mode,
+    permissionMode: first?.permissionMode ?? defaultPermissionMode(workspaceDriver().kind, l.tool),
+    conversationId: l.conversationId,
+    ...(l.model !== undefined ? { model: l.model } : {}),
+  }))
 }

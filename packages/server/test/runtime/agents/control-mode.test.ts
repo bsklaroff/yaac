@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { ControlModeClient, listWindows, type ControlModeNotification } from '#runtime/agents'
 
-const LIST_FORMAT = "list-windows -t yaac -F '#{window_id}|#{pane_dead}|#{window_name}'"
+const LIST_FORMAT = "list-panes -s -t yaac -F '#{window_id}|#{pane_dead}|#{window_name}'"
 
 /** A client wired to capture writes and notifications, past the reply
  *  block tmux sends for the attach itself. */
@@ -104,12 +104,16 @@ describe('ControlModeClient', () => {
 })
 
 describe('listWindows', () => {
-  it('maps every window with whether its pane is dead, pipes in names and all', async () => {
-    const tmux = vi.fn((_args: string) => Promise.resolve('@0|0|_yaac\n@3|1|claude-1a2b3c4d\n@5|0|a|b|c\n'))
+  // A window is as dead as its first pane, where its agent runs, whatever
+  // a split beside it does.
+  it('maps every window with whether its first pane is dead, pipes in names and all', async () => {
+    const tmux = vi.fn((_args: string) => Promise.resolve(
+      '@0|0|_yaac\n@3|1|claude-1a2b3c4d\n@5|0|a|b|c\n@6|0|codex-9f8e7d6c\n@6|1|codex-9f8e7d6c\n'))
     expect(await listWindows(tmux)).toEqual([
       { id: '@0', name: '_yaac', dead: false },
       { id: '@3', name: 'claude-1a2b3c4d', dead: true },
       { id: '@5', name: 'a|b|c', dead: false },
+      { id: '@6', name: 'codex-9f8e7d6c', dead: false },
     ])
     expect(tmux).toHaveBeenCalledWith(LIST_FORMAT)
   })

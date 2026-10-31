@@ -340,14 +340,14 @@ export function agentPermissionMode(
   // A row from another build may hold an unknown mode, which cannot be
   // compared safely.
   if (!isRankedPermissionMode(ceiling)) {
-    return { ok: false, error: `this workspace's recorded permission mode '${ceiling}' is not one this server knows` }
+    return { ok: false, error: `the caller's ceiling '${ceiling}' is not a permission mode this server knows` }
   }
   if (requested !== undefined) {
     // Otherwise an agent in `plan` could escape it via a sibling.
     if (morePermissive(requested, ceiling)) {
       return {
         ok: false,
-        error: `permission mode '${requested}' is more permissive than this workspace's own `
+        error: `permission mode '${requested}' is more permissive than the caller's ceiling `
           + `('${ceiling}'); a workspace it starts may be granted at most that `
           + `(${PERMISSION_HIERARCHY})`,
       }
@@ -362,7 +362,7 @@ export function agentPermissionMode(
     ? { ok: true, permissionMode: stepped }
     : {
       ok: false,
-      error: `${tool} has no permission mode at or below this workspace's own ('${ceiling}')`,
+      error: `${tool} has no permission mode at or below the caller's ceiling ('${ceiling}')`,
     }
 }
 

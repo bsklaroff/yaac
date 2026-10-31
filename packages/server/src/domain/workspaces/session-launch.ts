@@ -185,17 +185,21 @@ export async function respawnSession(
   await markSessionsLaunched([session.id])
 }
 
-/**
- * Type a new `tui` session's opening message into its agent, once: only on
- * its first launch, never on a resume.
- */
+/** Whether this launch types its session's opening message in: a `tui`
+ *  session's first launch, never a resume. */
+export function typesOpeningMessage(launch: SessionLaunch): boolean {
+  const { session } = launch
+  return session.mode === 'tui' && session.firstPrompt !== undefined && !launch.resume && session.launchedAt === undefined
+}
+
+/** Type a session's opening message into its agent when this launch does
+ *  (`typesOpeningMessage`). */
 export async function deliverTuiPrompt(
   workspace: { projectId: string; workspaceId: string; jobName: string },
   launch: SessionLaunch,
 ): Promise<void> {
   const { session } = launch
-  if (session.mode !== 'tui' || session.firstPrompt === undefined || launch.resume
-    || session.launchedAt !== undefined) return
+  if (!typesOpeningMessage(launch) || session.firstPrompt === undefined) return
   await agentDriver('tui').deliverPrompt(workspace, session.window, session.firstPrompt).catch((err: unknown) => {
     serverLog(`[server] session ${session.id}: opening message failed: ${String(err)}`)
   })

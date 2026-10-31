@@ -7,7 +7,7 @@
  * `workspace-bin/yaac-workspace-init`; only steps needing host coordination
  * are here.
  */
-import { initWindowCommand, tmuxCmd, type InitWindow } from './agent-command'
+import { initWindowCommand, tmuxCmd, windowTarget, type InitWindow } from './agent-command'
 import { nameSessionCommand } from './agent-tools'
 import { KEEPER_STARTING, KEEPER_WINDOW, type WorkspacePaths } from '#drivers/contract'
 import type { AgentTool } from '@yaac/shared/types'
@@ -28,7 +28,15 @@ export interface SessionWindowSpec {
 
 /** The tmux command that marks the workspace's setup finished. */
 export function finishSetupCommand(paths: WorkspacePaths): string {
-  return `${tmuxCmd(paths)} rename-window -t yaac:${KEEPER_STARTING} ${KEEPER_WINDOW} 2>/dev/null || true`
+  return `${tmuxCmd(paths)} rename-window -t ${windowTarget(KEEPER_STARTING)} ${KEEPER_WINDOW} 2>/dev/null || true`
+}
+
+/** Replace a session's window's process with `spec`'s, keeping the window
+ *  and its options: how an exited session is resumed. */
+export function buildRespawnExec(spec: SessionWindowSpec, paths: WorkspacePaths): string {
+  const target = windowTarget(spec.window)
+  return `${tmuxCmd(paths)} respawn-window -k -t ${target} -c ${paths.workspaceDir} '${spec.cmd}'`
+    + (spec.resumes !== undefined ? ` \\; ${nameSessionCommand(target, spec.tool, spec.resumes)}` : '')
 }
 
 /**
@@ -44,14 +52,6 @@ export function finishSetupCommand(paths: WorkspacePaths): string {
  * Init windows and sessions may be built apart: with no sessions this opens
  * only the init windows, and with neither it is the empty string.
  */
-/** Replace a session's window's process with `spec`'s, keeping the window
- *  and its options: how an exited session is resumed. */
-export function buildRespawnExec(spec: SessionWindowSpec, paths: WorkspacePaths): string {
-  const target = `yaac:${spec.window}`
-  return `${tmuxCmd(paths)} respawn-window -k -t ${target} -c ${paths.workspaceDir} '${spec.cmd}'`
-    + (spec.resumes !== undefined ? ` \\; ${nameSessionCommand(target, spec.tool, spec.resumes)}` : '')
-}
-
 export function buildWindowsExec(
   windows: InitWindow[],
   sessions: SessionWindowSpec[],
@@ -62,7 +62,7 @@ export function buildWindowsExec(
   // One tmux invocation for all session windows: tmux runs a client's
   // command group to completion, so the watcher sees all of them or none.
   const sessionCmds = sessions.map((spec) => {
-    const target = `yaac:${spec.window}`
+    const target = windowTarget(spec.window)
     return `new-window -d -t yaac -n ${spec.window} -c ${paths.workspaceDir} '${spec.cmd}'`
       + ` \\; set-option -t ${target} remain-on-exit on`
       + (spec.resumes !== undefined ? ` \\; ${nameSessionCommand(target, spec.tool, spec.resumes)}` : '')

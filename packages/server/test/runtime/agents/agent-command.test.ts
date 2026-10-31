@@ -88,7 +88,7 @@ describe('initWindowCommand', () => {
     const cmd = initWindowCommand({ name: 'init', cmd: 'pnpm install', hidePane: false }, PATHS)
     expect(cmd).toBe(
       `${TMUX} new-window -d -t yaac -n init "\${SHELL:-/bin/sh}" -c 'cd /workspace && pnpm install'`
-      + ' \\; set-option -t yaac:init remain-on-exit on',
+      + ' \\; set-option -t =yaac:=init remain-on-exit on',
     )
   })
 

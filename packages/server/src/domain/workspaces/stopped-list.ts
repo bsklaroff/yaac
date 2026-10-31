@@ -44,7 +44,7 @@ export interface StoppedListQuery {
  * keeps its stop until it succeeds), one page at a time, newest stop first.
  * Built from rows alone: the sidebar asks for this on every search and every
  * stop, so it never touches a transcript. The prompt and last activity are
- * what the agent-session registry captured while the workspace ran.
+ * what the conversation registry captured while the workspace ran.
  */
 export async function listStoppedWorkspaces(query: StoppedListQuery = {}): Promise<StoppedWorkspacePage> {
   if (query.project) await ensureProjectExists(query.project)

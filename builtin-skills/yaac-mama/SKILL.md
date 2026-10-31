@@ -142,14 +142,14 @@ pass — the server resolves who is calling and answers for that project only.
     it, else the model's default.
   - **`--permission-mode`**: how much the new agent may do before it asks —
     `bypass`, `auto`, `accept-edits`, `manual` or `plan`, most permissive
-    first. Omitted, it **inherits this workspace's own** (or, when the tool
+    first. Omitted, it **inherits your own**, your session's (or, when the tool
     lacks that one, the most permissive it has below it). You can grant a
     sibling **at most your own permission mode**: asking for a more
     permissive one is refused with an error, never quietly lowered. So is
     one the tool lacks (pi has only `bypass`; codex under `--ui-mode acp` has no
     `manual` or `plan`).
   - **`--ui-mode`**: `acp` (a chat pane in the yaac webapp) or `tui` (the
-    agent's own terminal UI). Omitted, it is this workspace's own.
+    agent's own terminal UI). Omitted, it is your session's own.
   - **`--branch`**: the branch on origin the new workspace starts from.
     Omitted, origin's default branch. Push a branch first to hand a
     sibling work from here. A branch that is not on origin is not caught
@@ -355,16 +355,17 @@ pass — the server resolves who is calling and answers for that project only.
 - **`restart <workspace>`** — bring a **stopped** workspace back under the
   same id, as the webapp's Restart does: its checkout as it was left, and
   the sessions that were open when it stopped, each resumed from its
-  history in a window of its own. Its tool, model, effort and permission
-  mode are the ones it had. Prints once the restart is under way; it then
+  history in a window of its own, and each agent someone ran by hand in one
+  of its terminals as a session of its own. Each session's tool, model,
+  effort and permission mode are the ones it had. Prints once the restart is under way; it then
   provisions in the background like a `create`, and shows as running in
   `list` once it is up. Its agent resumes idle — `send` it what to do next.
   One that had a timeout gets the same length again, counted from the
   restart, unless `--timeout` gives another length or `none`. One with none
   gets whatever `--timeout` you give it.
   - Refused for a workspace that is running (restarting it would end its
-    agent's turn), for yourself, for one whose permission mode is **more
-    permissive than yours** (counting a tool that lacks its mode, which comes
+    agents' turns), for yourself, for one where any session would come back
+    **more permissive than yours** (counting a tool that lacks its mode, which comes
     back in the nearest one it has: pi only has `bypass`), for one whose tool
     the project's owner is no longer signed in to, and for one whose
     conversation history is gone from the host (the user must restore it). A

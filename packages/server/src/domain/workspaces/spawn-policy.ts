@@ -1,9 +1,9 @@
 import crypto from 'node:crypto'
 import { prepareStart } from './start'
-import { prepareRestart } from './restart'
+import { prepareRestart, terminalConversationSessions } from './restart'
 import { openSession } from './sessions'
 import { resolveProjectWorkspace } from './resolve'
-import { getProjectRow, getWorkspaceRow, listWorkspaceSessions } from '#db'
+import { getProjectRow, getWorkspaceRow, listWorkspaceConversations, listWorkspaceSessions } from '#db'
 import type { Actor } from '#domain/access'
 import { loadToolAuthEntry } from '#domain/auth'
 import {
@@ -187,9 +187,12 @@ export type RestartDecision =
  * is restarted, since tearing down a running one would end whatever turn its
  * agent is in. Each session relaunches in its recorded permission mode, or
  * the nearest its tool has (`launchablePermissionMode`, which for pi is
- * always `bypass`), so one that would come back more permissive than the
- * caller is refused, as a create asking for that mode would be. So is one
- * whose tools the project owner is no longer signed in to. A restart counts
+ * always `bypass`), and so does each conversation an agent ran by hand in a
+ * terminal, in the posture the restart gives it
+ * (`terminalConversationSessions`). A restart where any of them would come
+ * back more permissive than the caller is refused, as a create asking for
+ * that mode would be. So is one whose tools the project owner is no longer
+ * signed in to. A restart counts
  * against the caller's in-flight cap like a create.
  */
 export async function decideRestart(request: RestartRequest): Promise<RestartDecision> {
@@ -201,12 +204,15 @@ export async function decideRestart(request: RestartRequest): Promise<RestartDec
   if (row?.stoppedAt === undefined) return fail(`workspace ${short} is not stopped`)
 
   const ceiling = request.callerPermissionMode
-  const sessions = await listWorkspaceSessions(workspaceId)
-  const beyond = `more than this workspace's own ('${ceiling}'); only one at or below it can be restarted`
+  const sessions: Array<{ tool: AgentTool; permissionMode: PermissionMode }> = [
+    ...await listWorkspaceSessions(workspaceId),
+    ...await terminalConversationSessions(projectId, workspaceId),
+  ]
+  const beyond = `more than the caller's ceiling ('${ceiling}'); only one at or below it can be restarted`
   for (const s of sessions) {
     if (!isRankedPermissionMode(ceiling) || !isRankedPermissionMode(s.permissionMode)) {
       return fail(`cannot tell whether ${short}'s permission mode '${s.permissionMode}' is within `
-        + `this workspace's own ('${ceiling}'), so it cannot be restarted`)
+        + `the caller's ceiling ('${ceiling}'), so it cannot be restarted`)
     }
     const launched = launchablePermissionMode(s.tool, s.permissionMode)
     if (!morePermissive(launched, ceiling)) continue
@@ -258,10 +264,14 @@ type Admission =
  * for an agent beside it on the same checkout.
  */
 async function spawnSession(request: SpawnRequest, target: string): Promise<SpawnDecision> {
-  const admitted = await admit(request)
-  if (!admitted.ok) return admitted
   try {
     const workspaceId = await resolveProjectWorkspace(target, request.callerProjectId)
+    // A resumed conversation runs its own tool, so that is the one admitted.
+    const resumed = request.resume === undefined
+      ? undefined
+      : (await listWorkspaceConversations(request.callerProjectId, workspaceId)).find((l) => l.conversationId === request.resume)
+    const admitted = await admit(resumed !== undefined ? { ...request, tool: resumed.tool } : request)
+    if (!admitted.ok) return admitted
     const session = await openSession(request.principal, workspaceId, {
       tool: admitted.tool,
       mode: request.uiMode ?? request.callerMode,

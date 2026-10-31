@@ -6,6 +6,7 @@
 import { workspaceDriver } from '#drivers/driver'
 import { authorizeProject, type Actor } from '#domain/access'
 import {
+  applyWorkspaceEvent,
   closeSessionRow,
   findWorkspaceRow,
   getSessionRow,
@@ -16,9 +17,9 @@ import {
   setSessionTitle,
   type SessionRow,
 } from '#db'
-import { KEEPER_STARTING, type RuntimeSnapshot } from '#drivers/contract'
+import { KEEPER_WINDOW, type RuntimeSnapshot } from '#drivers/contract'
 import { isWorkspaceTerminating, readWorkspaceWindows } from '#runtime/status'
-import { tmuxCmd } from '#runtime/agents'
+import { tmuxCmd, windowTarget } from '#runtime/agents'
 import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
 import { resolveCreate } from './create'
@@ -119,7 +120,7 @@ export async function closeSession(principal: Actor, sessionId: string): Promise
     const runtime = workspaceDriver()
     await runtime.exec(
       unit.jobName,
-      `${tmuxCmd(runtime.workspacePaths(unit.jobName))} kill-window -t yaac:${session.window} 2>/dev/null || true`,
+      `${tmuxCmd(runtime.workspacePaths(unit.jobName))} kill-window -t ${windowTarget(session.window)} 2>/dev/null || true`,
       { maxAttempts: 1 },
     ).catch((err: unknown) => serverLog(`[server] closing session ${session.id}'s window failed: ${String(err)}`))
   }
@@ -128,7 +129,8 @@ export async function closeSession(principal: Actor, sessionId: string): Promise
 
 /**
  * Relaunch a session whose agent exited, on its conversation, in the window
- * it kept; one whose window is gone gets a new one.
+ * it kept; one whose window is gone gets a new one. That ends the spell the
+ * exit left it waiting in, so the next one is unread again.
  */
 export async function resumeSession(principal: Actor, sessionId: string): Promise<SessionRow> {
   const session = await ownedSession(principal, sessionId)
@@ -136,6 +138,7 @@ export async function resumeSession(principal: Actor, sessionId: string): Promis
   const workspace = { projectId: session.projectId, workspaceId: session.workspaceId, jobName }
   const kept = readWorkspaceWindows(session.projectId, session.workspaceId)?.some((w) => w.name === session.window)
   await (kept === true ? respawnSession(workspace, session) : launchSessions(workspace, [session]))
+  await applyWorkspaceEvent({ type: 'waiting-ended', projectId: session.projectId, workspaceId: session.workspaceId, window: session.window })
   return session
 }
 
@@ -164,7 +167,10 @@ const seen = new Map<string, { life: number; windows: Set<string> }>()
  * relaunched here; only a resume or a restart does that.
  *
  * Skips workspaces still provisioning or being claimed, whose create
- * launches their sessions itself, and any whose setup has not finished.
+ * launches their sessions itself, and any whose setup has not finished
+ * (its keeper is not yet `KEEPER_WINDOW`). A workspace whose stop record
+ * predates its life is running: a restart that could not clear the record
+ * leaves it behind.
  */
 export async function reconcileSessions(view: RuntimeSnapshot): Promise<void> {
   const busy = new Set(inFlightWorkspaceIds(Date.now()))
@@ -183,9 +189,12 @@ export async function reconcileSessions(view: RuntimeSnapshot): Promise<void> {
 
 async function reconcileWorkspaceSessions(p: { projectId: string; workspaceId: string; jobName: string }): Promise<void> {
   const windows = readWorkspaceWindows(p.projectId, p.workspaceId)
-  if (windows === undefined || windows.some((w) => w.name === KEEPER_STARTING)) return
+  // A runtime with no keeper predates sessions (docs/legacy-compat-shims.md).
+  if (windows?.some((w) => w.name === KEEPER_WINDOW) !== true) return
   const row = await findWorkspaceRow(p.workspaceId)
-  if (row?.lifeStartedAt === undefined || row.stoppedAt !== undefined) return
+  if (row?.lifeStartedAt === undefined) return
+  // A stop record older than the life is one a restart failed to clear.
+  if (row.stoppedAt !== undefined && row.stoppedAt >= row.lifeStartedAt) return
   const life = row.lifeStartedAt.getTime()
   let mark = seen.get(p.workspaceId)
   if (mark?.life !== life) {
@@ -201,7 +210,7 @@ async function reconcileWorkspaceSessions(p: { projectId: string; workspaceId: s
       continue
     }
     if (mark.windows.has(s.window)) {
-      await closeSessionRow(s.id)
+      await applyWorkspaceEvent({ type: 'session-window-gone', projectId: p.projectId, workspaceId: p.workspaceId, sessionId: s.id })
       continue
     }
     const launched = s.launchedAt?.getTime()

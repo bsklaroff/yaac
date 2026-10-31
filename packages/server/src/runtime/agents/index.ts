@@ -44,6 +44,7 @@ export {
   resolveInitWindows,
   tmuxCmd,
   verifyAgentWindowAlive,
+  windowTarget,
   AgentLaunchDeadError,
   type InitWindow,
 } from './agent-command'

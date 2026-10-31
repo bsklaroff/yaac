@@ -11,8 +11,8 @@ import type { WorkspaceDeathCause } from '@yaac/shared/types'
 
 /**
  * One row per workspace yaac has created. The runtime is authoritative for
- * whether a workspace is running; the agent-session store holds its
- * conversations.
+ * whether a workspace is running; the conversation store holds its
+ * conversations, and the session store its agents.
  *
  * Write rules:
  *  - `recordWorkspaceCreated` is the only INSERT and never upserts: an id is

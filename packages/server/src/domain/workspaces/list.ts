@@ -153,7 +153,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       if (until === undefined) return entry
       starting.add(s.id)
       republishAt(until)
-      if (entry.status !== 'waiting' || entry.asking === true) return entry
+      if (entry.status !== 'waiting' || entry.asking === true || entry.exited === true) return entry
       const { waitingSinceMs: _, ...rest } = entry
       return { ...rest, status: 'running' as const }
     })
@@ -182,19 +182,25 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
 
 /**
  * The workspace's status from its sessions': the runtime's aggregate while
- * any is running, `idle` with none.
+ * any is running, `idle` with none. A session whose agent exited waits on
+ * the user, so it makes the workspace `waiting` unless an ask is open, in a
+ * spell that began at the earliest such wait.
  */
 function workspaceStatus(
   sessions: SessionEntry[],
   w: WorkspaceRuntimeReport,
   starting: boolean,
 ): Pick<WorkspaceListEntry, 'status' | 'asking' | 'waitingSinceMs'> {
-  if (!sessions.some((s) => s.exited !== true)) return { status: 'idle' }
-  if (starting && w.status === 'waiting' && !sessions.some((s) => s.status === 'waiting')) return { status: 'running' }
-  return {
-    ...listedStatus(w.status),
-    ...(w.waitingSinceMs !== undefined ? { waitingSinceMs: w.waitingSinceMs } : {}),
-  }
+  if (sessions.length === 0) return { status: 'idle' }
+  const live = sessions.filter((s) => s.exited !== true)
+  const runtime = live.length === 0
+    ? undefined
+    : starting && w.status === 'waiting' && !live.some((s) => s.status === 'waiting')
+      ? { status: 'running' as const }
+      : { ...listedStatus(w.status), ...(w.waitingSinceMs !== undefined ? { waitingSinceMs: w.waitingSinceMs } : {}) }
+  if (runtime !== undefined && (live.length === sessions.length || runtime.asking === true)) return runtime
+  const spells = sessions.flatMap((s) => (s.status === 'waiting' && s.waitingSinceMs !== undefined ? [s.waitingSinceMs] : []))
+  return { status: 'waiting', ...(spells.length > 0 ? { waitingSinceMs: Math.min(...spells) } : {}) }
 }
 
 /** The windows the webapp opens as terminals: all but the keeper and the

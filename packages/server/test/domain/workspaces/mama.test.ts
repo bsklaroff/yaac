@@ -35,9 +35,10 @@ import { recordProjectCreate } from '#db/project-store'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { agentHistoryDir, opencodeCheckpointDir, repoDir, workspaceDir } from '@yaac/shared/project-paths'
-import { recordConversations } from '#db/conversation-store'
+import { recordConversations, setActiveConversations } from '#db/conversation-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
 import {
+  applyWorkspaceEvent,
   closeSessionRow,
   deleteToolCredential,
   getSessionRow,
@@ -51,6 +52,7 @@ import {
   type SessionRow,
 } from '#db'
 import { formatInZone } from '@yaac/shared/schedule'
+import type { PermissionMode } from '@yaac/shared/types'
 import { cloneRepo } from '#domain/git'
 import { _resetWorkspaceStatusStoreForTests, setLiveAgents } from '#runtime/status/status-store'
 import { WorkspaceExecError, type RuntimeHandle, type WorkspaceDriver } from '#drivers/contract'
@@ -155,8 +157,9 @@ describe('mamaCaller', () => {
   // held to the strictest of the workspace's open sessions.
   it("holds a session's agent to its own session's posture, and anyone else to the strictest open one", async () => {
     const loose = await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { tool: 'codex', mode: 'acp', permissionMode: 'bypass' })
-    await insertSession(PROJ, 'caller-workspace', { tool: 'claude', mode: 'tui', permissionMode: 'plan' })
-    await insertSession(PROJ, 'caller-workspace', { tool: 'claude', mode: 'acp', permissionMode: 'accept-edits' })
+    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: PROJ, workspaceId: 'caller-workspace' })
+    const plan = await insertSession(PROJ, 'caller-workspace', { tool: 'claude', mode: 'tui', permissionMode: 'plan' })
+    const edits = await insertSession(PROJ, 'caller-workspace', { tool: 'claude', mode: 'acp', permissionMode: 'accept-edits' })
     const elsewhere = await created({ projectId: PROJ, workspaceId: 'other-workspace' }, { permissionMode: 'bypass' })
 
     expect(await mamaCaller(at, loose.id)).toEqual({
@@ -176,6 +179,22 @@ describe('mamaCaller', () => {
     // A closed session no longer counts as the caller's.
     await closeSessionRow(loose.id)
     expect(await mamaCaller(at, loose.id)).not.toHaveProperty('sessionId')
+
+    // With none open, the strictest closed in this life still holds, so an
+    // agent's detached child keeps its ceiling after the agent is gone.
+    await closeSessionRow(edits.id)
+    await closeSessionRow(plan.id)
+    expect(await mamaCaller(at, undefined)).toMatchObject(strictest)
+
+    // A posture this build does not rank counts as the strictest, wherever
+    // it falls among the others.
+    await insertSession(PROJ, 'caller-workspace', { tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
+    const unranked = await insertSession(PROJ, 'caller-workspace', {
+      tool: 'claude', mode: 'tui', permissionMode: 'dontAsk' as PermissionMode,
+    })
+    await insertSession(PROJ, 'caller-workspace', { tool: 'claude', mode: 'tui', permissionMode: 'plan' })
+    expect((await mamaCaller(at, undefined)).permissionMode).toBe('dontAsk')
+    expect((await mamaCaller(at, unranked.id)).sessionId).toBe(unranked.id)
   })
 
   it('falls back to what a create would resolve for a workspace with no session', async () => {
@@ -562,7 +581,7 @@ describe('runMamaCommand', () => {
       // Never steps up: pi has nothing below `bypass`, so it is refused.
       expect(await posture('plan', { tool: 'pi' })).toEqual({
         ok: false,
-        error: "pi has no permission mode at or below this workspace's own ('plan')",
+        error: "pi has no permission mode at or below the caller's ceiling ('plan')",
       })
     })
 
@@ -583,7 +602,7 @@ describe('runMamaCommand', () => {
       // clamped.
       expect(await at('accept-edits', 'auto')).toEqual({
         ok: false,
-        error: "permission mode 'auto' is more permissive than this workspace's own ('accept-edits'); "
+        error: "permission mode 'auto' is more permissive than the caller's ceiling ('accept-edits'); "
           + 'a workspace it starts may be granted at most that '
           + '(bypass > auto > accept-edits > manual > plan = read-only)',
       })
@@ -598,7 +617,7 @@ describe('runMamaCommand', () => {
       const unknown = 'dontAsk' as MamaCaller['permissionMode']
       for (const args of [{ tool: 'claude', 'permission-mode': 'bypass' }, { tool: 'claude' }] as Array<Record<string, string>>) {
         expect(await spawn(args, { permissionMode: unknown })).toEqual({
-          ok: false, error: "this workspace's recorded permission mode 'dontAsk' is not one this server knows",
+          ok: false, error: "the caller's ceiling 'dontAsk' is not a permission mode this server knows",
         })
       }
     })
@@ -682,7 +701,7 @@ describe('runMamaCommand', () => {
 
       // Still held to the caller's posture, and to a workspace that runs.
       expect(await run('create', 'x', { workspace: 'caller', 'permission-mode': 'bypass' }))
-        .toMatchObject({ ok: false, error: expect.stringContaining("more permissive than this workspace's own") as unknown })
+        .toMatchObject({ ok: false, error: expect.stringContaining("more permissive than the caller's ceiling") as unknown })
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'stopped-workspace' })
       expect(await run('create', 'x', { workspace: 'stopped' })).toMatchObject({ ok: false })
       // A workspace's own settings are not a session's.
@@ -706,6 +725,10 @@ describe('runMamaCommand', () => {
       expect(await getSessionRow(id)).toMatchObject({ tool: 'claude', mode: 'acp', conversationId: 'old-conv' })
       expect(await run('create', '', { workspace: 'caller', resume: 'nope' }))
         .toMatchObject({ ok: false, error: expect.stringContaining('has no conversation nope') as unknown })
+      // Admitted on the tool it resumes, not the caller's.
+      await recordConversations(PROJ, 'caller-workspace', [{ tool: 'pi', conversationId: 'pi-conv', mode: 'tui' }])
+      expect(await run('create', '', { workspace: 'caller', resume: 'pi-conv' }))
+        .toMatchObject({ ok: false, error: expect.stringMatching(/^pi /) as unknown })
     })
 
     it('starts a workspace with no session with --no-session, which takes no prompt or agent setting', async () => {
@@ -916,7 +939,7 @@ describe('runMamaCommand', () => {
       }, 'user')
       const refused = await run('edit-queued', 'agent wrote this', { queued: entry.id })
       expect(refused.ok).toBe(false)
-      if (!refused.ok) expect(refused.error).toContain('more permissive than this workspace')
+      if (!refused.ok) expect(refused.error).toContain("more permissive than the caller's ceiling")
       expect(await rowOf(entry.id)).toMatchObject({ prompt: 'user wrote this', permissionMode: 'bypass' })
 
       // Naming a mode at or below the caller's allows the edit.
@@ -983,7 +1006,7 @@ describe('runMamaCommand', () => {
         parent: 'caller-workspace', prompt: 'user wrote this', tool: 'claude', permissionMode: 'bypass',
       }, 'user')
       expect(await run('run-queued', '', { queued: above.id })).toEqual({
-        ok: false, error: expect.stringContaining("runs in permission mode 'bypass', more than this workspace's own") as string,
+        ok: false, error: expect.stringContaining("runs in permission mode 'bypass', more than the caller's ceiling") as string,
       })
 
       const workers = await createWorkspaceGroup(PROJ, 'Workers', null)
@@ -1082,7 +1105,7 @@ describe('runMamaCommand', () => {
         branch: 'main', timeout: 60,
       }, 'user')
       const short = theirs.id.slice(0, 8)
-      const above = "runs in permission mode 'bypass', more than this workspace's own"
+      const above = "runs in permission mode 'bypass', more than the caller's ceiling"
       for (const command of ['routine-run', 'routine-resume']) {
         expect(await run(command, '', { routine: short })).toEqual({
           ok: false, error: expect.stringContaining(above) as string,
@@ -1337,7 +1360,7 @@ describe('runMamaCommand', () => {
         `Closed session ${target.id.slice(0, 8)}; its conversations stay in sibling-'s history. sibling- keeps running.`,
       )
       expect((await getSessionRow(target.id))?.closedAt).toBeInstanceOf(Date)
-      expect(exec.mock.calls.some(([job, cmd]) => job === 'yaac-sibling-workspace' && cmd.includes(`kill-window -t yaac:${target.window}`))).toBe(true)
+      expect(exec.mock.calls.some(([job, cmd]) => job === 'yaac-sibling-workspace' && cmd.includes(`kill-window -t =yaac:=${target.window}`))).toBe(true)
 
       // Bare, it closes the session whose agent asks.
       const own = await runMamaCommand(await callerFor({ sessionId: mine.id }), { command: 'stop', args: { session: '' }, body: '' })
@@ -1476,6 +1499,18 @@ describe('runMamaCommand', () => {
       await created({ projectId: PROJ, workspaceId: 'pi-workspace' }, { permissionMode: 'manual' })
       await insertSession(PROJ, 'pi-workspace', { tool: 'pi', mode: 'tui', permissionMode: 'manual' })
       await recordWorkspaceStopped(PROJ, 'pi-workspace')
+      // An agent run by hand in a terminal comes back as a session of its
+      // own, in the first session's posture (the nearest pi has, `bypass`),
+      // or with no session in the driver's default (`bypass` under k8s).
+      const handStarted = async (workspaceId: string, tool: 'pi' | 'claude'): Promise<void> => {
+        await recordConversations(PROJ, workspaceId, [{ tool, conversationId: `${workspaceId}-conv` }])
+        await setActiveConversations(PROJ, workspaceId, [{ tool, conversationId: `${workspaceId}-conv` }])
+        await recordWorkspaceStopped(PROJ, workspaceId)
+      }
+      await created({ projectId: PROJ, workspaceId: 'handpi-workspace' }, { permissionMode: 'manual' })
+      await handStarted('handpi-workspace', 'pi')
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'bare-workspace' })
+      await handStarted('bare-workspace', 'claude')
       running = [podFor('caller-workspace'), podFor('running-workspace'), podFor('restarting-workspace')]
       const refusal = async (workspace: string): Promise<string> => {
         const outcome = await run('restart', '', { workspace })
@@ -1486,11 +1521,16 @@ describe('runMamaCommand', () => {
       expect(await refusal('caller')).toBe('restart cannot restart this workspace itself')
       expect(await refusal('running')).toBe('workspace running- is not stopped')
       expect(await refusal('restarting')).toBe('workspace restarti is running; only a stopped one can be restarted')
-      expect(await refusal('bypass')).toBe("bypass-w's claude session runs in permission mode 'bypass', more than this "
-        + "workspace's own ('accept-edits'); only one at or below it can be restarted")
+      expect(await refusal('bypass')).toBe("bypass-w's claude session runs in permission mode 'bypass', more than the "
+        + "caller's ceiling ('accept-edits'); only one at or below it can be restarted")
       expect(await refusal('pi-work')).toBe("pi-works's pi session would come back in permission mode 'bypass', "
-        + "the nearest pi has to 'manual', more than this workspace's own ('accept-edits'); only one at or below it "
+        + "the nearest pi has to 'manual', more than the caller's ceiling ('accept-edits'); only one at or below it "
         + 'can be restarted')
+      expect(await refusal('handpi')).toBe("handpi-w's pi session would come back in permission mode 'bypass', "
+        + "the nearest pi has to 'manual', more than the caller's ceiling ('accept-edits'); only one at or below it "
+        + 'can be restarted')
+      expect(await refusal('bare')).toBe("bare-wor's claude session runs in permission mode 'bypass', more than the "
+        + "caller's ceiling ('accept-edits'); only one at or below it can be restarted")
       expect(await refusal('opencode')).toContain('opencode is not signed in for this project\'s owner')
       expect(await refusal('lost')).toContain('the history of Claude Code conversation lost-conv is gone')
       expect(await refusal('foreign-workspace')).toBe(`no workspace 'foreign-workspace' in ${PROJ}`)
@@ -1540,7 +1580,7 @@ describe('runMamaCommand', () => {
       const script = opts?.stdin ?? ''
       return {
         jobName,
-        window: / -t yaac:([\w-]+)/.exec(script)?.[1],
+        window: / -t =yaac:=([\w-]+)/.exec(script)?.[1],
         carries: script.includes(Buffer.from(message, 'utf8').toString('base64')),
       }
     }

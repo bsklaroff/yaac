@@ -748,11 +748,13 @@ describe('with seeded projects', () => {
         expect(exitCode, args.join(' ')).not.toBe(0)
         expect(stderr, args.join(' ')).toContain(message)
       }
-      for (const [flag, ...value] of [['--prompt', 'go'], ['--tool', 'claude'], ['--mode', 'acp'], ['--permission-mode', 'plan']]) {
+      for (const [flag, ...value] of [['--prompt', 'go'], ['--tool', 'claude'], ['--mode', 'acp'], ['--permission-mode', 'plan'],
+        ['--model', 'opus'], ['--effort', 'high'], ['--prompt-file', 'brief.md'], ['--start-at', '10:00'], ['--start-in', '5m']]) {
         await refused(['some-project', '--no-session', flag, ...value], `--no-session does not take ${flag}: a workspace with no session runs no agent.`)
       }
+      await refused([], 'Name the project to create the workspace in, or --workspace to open a session in a running one.')
       await refused(['some-project', '--workspace', 'abc123'], 'Give a project or --workspace, not both')
-      for (const [flag, value] of [['--branch', 'main'], ['--group', 'g'], ['--timeout', '1h']]) {
+      for (const [flag, value] of [['--branch', 'main'], ['--group', 'g'], ['--timeout', '1h'], ['--start-at', '10:00'], ['--start-in', '5m']]) {
         await refused(['--workspace', 'abc123', flag, value], `${flag} is a workspace's setting, which --workspace (a session in a running one) does not take.`)
       }
       await refused(['--workspace', 'abc123', '--no-session'], '--no-session starts a new workspace; it does not take --workspace.')

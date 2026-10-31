@@ -22,6 +22,7 @@ import {
 } from '#domain/workspaces/list'
 import { HELD_PROMPT_GRACE_MS } from '#domain/workspaces/conversation-registry'
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
+import type { WorkspaceListEntry } from '@yaac/shared/types'
 import { DEMO_PROJECT_ID, recordTestProject } from '@yaac/test-utils/project-fixture'
 
 const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
@@ -197,9 +198,11 @@ describe('listActiveWorkspaces', () => {
     )
   })
 
-  // Status comes from each session's window; a dead pane is an exited
-  // session, and a workspace with no session running is idle. Terminals are
-  // the windows that are neither a session's nor the keeper.
+  // Status comes from each session's window. A dead pane is an exited
+  // session, waiting on the user to resume or close it since its agent was
+  // first seen dead, which makes its workspace wait too; a workspace with no
+  // session is idle. Terminals are the windows that are neither a session's
+  // nor the keeper.
   it("joins each session's status by its window, and lists the other windows as terminals", async () => {
     await recordTestProject(DEMO_PROJECT_ID)
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'w1' })
@@ -215,12 +218,29 @@ describe('listActiveWorkspaces', () => {
       { id: '@3', name: 'shell', dead: false },
     ])
     running([live('w1'), live('empty')])
-    const byId = new Map((await listActiveWorkspaces(DEMO_PROJECT_ID)).workspaces.map((w) => [w.workspaceId, w]))
+    const list = async (): Promise<Map<string, WorkspaceListEntry>> => {
+      _clearListActiveInflightForTests()
+      return new Map((await listActiveWorkspaces(DEMO_PROJECT_ID)).workspaces.map((w) => [w.workspaceId, w]))
+    }
+    const byId = await list()
     const w1 = byId.get('w1')!
-    expect(w1.status).toBe('running')
-    expect(w1.sessions.map((s) => [s.sessionId, s.status, s.exited])).toEqual([[a.id, 'running', undefined], [b.id, undefined, true]])
+    const died = w1.sessions[1].waitingSinceMs
+    expect(died).toEqual(expect.any(Number))
+    expect(w1).toMatchObject({ status: 'waiting', waitingSinceMs: died })
+    expect(w1.sessions.map((s) => [s.sessionId, s.status, s.exited])).toEqual([[a.id, 'running', undefined], [b.id, 'waiting', true]])
     expect(w1.terminals).toEqual([{ target: 'window:@3', name: 'shell' }])
     expect(byId.get('empty')?.status).toBe('idle')
+
+    // An open ask outranks the exit; a resumed agent is live again.
+    setAgentStatus(DEMO_PROJECT_ID, 'w1', a.window, 'asking')
+    expect((await list()).get('w1')).toMatchObject({ status: 'waiting', asking: true })
+    setAgentStatus(DEMO_PROJECT_ID, 'w1', a.window, 'running')
+    setWorkspaceWindows(DEMO_PROJECT_ID, 'w1', [
+      { id: '@0', name: '_yaac', dead: false },
+      { id: '@1', name: a.window, dead: false },
+      { id: '@2', name: b.window, dead: false },
+    ])
+    expect((await list()).get('w1')).toMatchObject({ status: 'running' })
   })
 
   it('surfaces the base branch recorded at create time', async () => {

@@ -35,6 +35,7 @@ export {
   readWorkspaceStatus,
   readWorkspaceWaitingSince,
   readWorkspaceWindows,
+  type ObservedWindow,
 } from './status-store'
 export {
   StatusWatcherManager,

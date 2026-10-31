@@ -307,9 +307,8 @@ export function hostNeedsDynamicMitm(
   if (hostname === OPENAI_API_HOST) return true
   if (hostname === OPENAI_TOKEN_URL_HOST) return true
   if (hostname === CHATGPT_HOST) return true
-  // opencode / pi: the provider host each credential points at, whatever
-  // the workspace's tool. Every workspace carries both placeholders, so an
-  // opencode run inside a claude workspace (yaac-in-yaac) needs the swap.
+  // opencode / pi: the provider host each credential points at. Every
+  // workspace carries both placeholders, whichever agents it runs.
   const creds = workspaceCredentials(objects, workspaceId)
   if (hostname === creds.opencode?.apiHost || hostname === creds.pi?.apiHost) return true
   if (workspaceHasHttpsCredentialForHost(objects, workspaceId, hostname)) return true

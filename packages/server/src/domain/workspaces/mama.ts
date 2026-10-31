@@ -128,21 +128,24 @@ export interface MamaCaller {
  * which every session's launch sets). The session counts only as one of that
  * workspace's open sessions, and then the ceiling is its own posture. A call
  * from outside any session, such as a user's shell, gets the strictest
- * posture among the workspace's open sessions, or with none the one a
- * create would resolve. Anything in the workspace could claim any of its
- * sessions, so this is a guardrail, not a boundary
- * (docs/permission-modes.md).
+ * posture among the workspace's open sessions; with none open, among those
+ * closed during its current life, since an agent's detached child can
+ * outlive its session; and with neither, the one a create would resolve.
+ * Anything in the workspace could claim any of its sessions, so this is a
+ * guardrail, not a boundary (docs/permission-modes.md).
  */
 export async function mamaCaller(
   workspace: { workspaceId: string; projectId: string },
   claimedSessionId: string | undefined,
 ): Promise<MamaCaller> {
   const { workspaceId, projectId } = workspace
-  const sessions = await listWorkspaceSessions(workspaceId)
-  const own = sessions.find((s) => s.id === claimedSessionId)
-  const strictest: SessionRow | undefined = [...sessions].sort((a, b) =>
-    (morePermissive(a.permissionMode, b.permissionMode) ? 1 : 0) - (morePermissive(b.permissionMode, a.permissionMode) ? 1 : 0))[0]
-  const lead = own ?? strictest ?? await resolveCreate(projectId, {})
+  const sessions = await listWorkspaceSessions(workspaceId, { all: true })
+  const open = sessions.filter((s) => s.closedAt === undefined)
+  const own = open.find((s) => s.id === claimedSessionId)
+  const lifeStarted = (await getWorkspaceRow(projectId, workspaceId))?.lifeStartedAt
+  const closedThisLife = sessions.filter((s) =>
+    s.closedAt !== undefined && lifeStarted !== undefined && s.closedAt >= lifeStarted)
+  const lead = own ?? strictest(open) ?? strictest(closedThisLife) ?? await resolveCreate(projectId, {})
   return {
     workspaceId,
     projectId,
@@ -152,6 +155,15 @@ export async function mamaCaller(
     permissionMode: lead.permissionMode,
     mode: lead.mode,
   }
+}
+
+/** The session in the strictest posture; a posture this build does not
+ *  rank counts as stricter than any it does. */
+function strictest(sessions: SessionRow[]): SessionRow | undefined {
+  const stricter = (a: PermissionMode, b: PermissionMode): boolean =>
+    !isRankedPermissionMode(a) || (isRankedPermissionMode(b) && morePermissive(b, a))
+  return sessions.reduce<SessionRow | undefined>(
+    (best, s) => (best === undefined || stricter(s.permissionMode, best.permissionMode) ? s : best), undefined)
 }
 
 /** One command as received, not yet validated. */
@@ -797,7 +809,7 @@ function aboveCaller(
     && !morePermissive(permissionMode, caller.permissionMode)) return undefined
   return {
     ok: false,
-    error: `${short} runs in permission mode '${permissionMode}', more than this workspace's own `
+    error: `${short} runs in permission mode '${permissionMode}', more than the caller's ceiling `
       + `('${caller.permissionMode}'); lower it with ${edit} --permission-mode first`,
   }
 }

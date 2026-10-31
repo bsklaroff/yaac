@@ -958,7 +958,16 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     })
     expect(attach.exitCode, attach.stderr).toBe(0)
     expect(attach.stderr).not.toMatch(/not found|error/i)
-  }, 60_000)
+
+    // --session lands on that session's window, whichever window tmux has
+    // current: the status line marks it current (`*`) before the detach.
+    const session = await firstSession(workspaceId)
+    await tmux(workspaceId, 'select-window', '-t', '=yaac:=_yaac')
+    const onSession = await runYaac(serverEnv, 'workspace', 'attach', '--session', session.sessionId.slice(0, 8), prefix, {
+      stdinOnPrompt: [{ when: new RegExp(`${session.window}\\*`), send: '\x02d' }],
+    })
+    expect(onSession.exitCode, onSession.stderr).toBe(0)
+  }, 90_000)
 
   it.skipIf(!CAN_RUN_PORTS)('tunnels a connection onto a port the workspace is listening on', async () => {
     // A loopback dev server under the workspace's tmux server (the process
@@ -1417,7 +1426,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // The caller has the containerless default, which caps its siblings.
     const above = await runMama('create', '--permission-mode', 'bypass', 'x')
     expect(above.code).toBe(1)
-    expect(above.out).toContain("more permissive than this workspace's own ('accept-edits')")
+    expect(above.out).toContain("more permissive than the caller's ceiling ('accept-edits')")
 
     const { stdout: branch } = await execFileAsync('git', ['-C', repoPath, 'rev-parse', '--abbrev-ref', 'HEAD'])
     // An effort the model lacks is refused before anything starts.
@@ -1458,7 +1467,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   it('makes and manages a routine through the script, never above its own posture', async () => {
     const above = await runMama('routine', 'create', '--name', 'r', '--cron', '@daily', '--permission-mode', 'bypass', 'x')
     expect(above.code).toBe(1)
-    expect(above.out).toContain("more permissive than this workspace's own ('accept-edits')")
+    expect(above.out).toContain("more permissive than the caller's ceiling ('accept-edits')")
     expect((await runMama('routine', 'frobnicate', 'x')).code).toBe(2)
     expect((await runMama('routine', 'pause')).code).toBe(2)
 
@@ -1966,14 +1975,14 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect((await tmux(workspaceId, 'show-options', '-p', '-t', pane, '-v', '@yaac-permission-mode')).trim())
       .toBe('plan')
     await vi.waitFor(async () => {
-      expect(await ceiling()).toContain("more permissive than this workspace's own ('plan')")
+      expect(await ceiling()).toContain("more permissive than the caller's ceiling ('plan')")
     }, { timeout: 30_000, interval: 500 })
 
     // A move above the created posture is recorded too, and left for the
     // restart case, as is an `/effort` reported with the same prompt.
     await prompt('auto', 'max')
     await vi.waitFor(async () => {
-      expect(await ceiling()).toContain("more permissive than this workspace's own ('auto')")
+      expect(await ceiling()).toContain("more permissive than the caller's ceiling ('auto')")
     }, { timeout: 30_000, interval: 500 })
     expect((await tmux(workspaceId, 'show-options', '-p', '-t', pane, '-v', '@yaac-effort')).trim()).toBe('max')
     await vi.waitFor(async () => {
@@ -2743,7 +2752,7 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
       // and it is the ceiling checked below.
       const parent = await createWorkspace('--permission-mode', 'accept-edits')
       await expect(mamaAs(parent, 'queue', '--parent-workspace', parent, '--tool', 'codex', '--permission-mode', 'bypass', 'x'))
-        .rejects.toThrow(/more permissive than this workspace's own \('accept-edits'\)/)
+        .rejects.toThrow(/more permissive than the caller's ceiling \('accept-edits'\)/)
       // The parent is implied by nothing: with no group to wait in, it is
       // refused.
       await expect(mamaAs(parent, 'queue', 'x')).rejects.toThrow(/needs a group with a workspace limit/)

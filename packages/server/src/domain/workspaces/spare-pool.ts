@@ -2,7 +2,7 @@ import { workspaceDriver } from '#drivers/driver'
 import { resolveProjectConfig } from '#domain/projects'
 import { getProjectRow } from '#db'
 import { shellEscape } from '#lib/shell'
-import { resolveInitWindows, initWindowCommand, tmuxCmd } from '#runtime/agents'
+import { resolveInitWindows, initWindowCommand, tmuxCmd, windowTarget } from '#runtime/agents'
 import type { YaacConfig } from '@yaac/shared/types'
 
 /**
@@ -56,6 +56,6 @@ export async function rebranchSpare(
     // Kill and recreate in one exec, so a retry is idempotent. tmux allows
     // duplicate names, so separate execs could leave two copies running.
     // The kill tolerates a missing window (hidePane windows exit).
-    await runtime.exec(spare.jobName, `${TMUX} kill-window -t yaac:${win.name} 2>/dev/null; ${initWindowCommand(win, paths)}`)
+    await runtime.exec(spare.jobName, `${TMUX} kill-window -t ${windowTarget(win.name)} 2>/dev/null; ${initWindowCommand(win, paths)}`)
   }
 }

@@ -60,9 +60,15 @@ export interface WorkspaceStatusEntry {
 }
 
 const store = new Map<string, WorkspaceStatusEntry>()
+/** A window as the watcher listed it, with when its agent was first seen
+ *  dead, which starts the spell its exited session waits on the user in. */
+export interface ObservedWindow extends WorkspaceWindow {
+  deadSinceMs?: number
+}
+
 /** Each workspace's tmux windows, as its watcher last listed them. Kept
  *  apart from `store`, whose entry creation marks an attach. */
-const windows = new Map<string, WorkspaceWindow[]>()
+const windows = new Map<string, ObservedWindow[]>()
 
 let liveAgentsListener: (() => void) | null = null
 let streamHealthLostListener: (() => void) | null = null
@@ -163,7 +169,7 @@ export function readWorkspaceWaitingSince(projectId: string, workspaceId: string
   return classifiedSpell(e) ?? (e.agents.size === 0 ? e.attachedWaitingSinceMs : undefined)
 }
 
-/** One conversation's status, for the per-agent dot on its tab. */
+/** One session's agent's status, by its window, for its dot. */
 export function readAgentStatus(
   projectId: string,
   workspaceId: string,
@@ -290,21 +296,27 @@ export function setWorkspaceStreamHealth(projectId: string, workspaceId: string,
   if (!healthy) streamHealthLostListener?.()
 }
 
-/** Record the workspace's windows, notifying only on a change. */
+/** Record the workspace's windows, notifying only on a change. A dead
+ *  window keeps the stamp it was first listed dead with. */
 export function setWorkspaceWindows(
   projectId: string,
   workspaceId: string,
   entries: WorkspaceWindow[],
 ): void {
   const k = key(projectId, workspaceId)
-  if (JSON.stringify(windows.get(k)) === JSON.stringify(entries)) return
-  windows.set(k, entries)
+  const prev = windows.get(k)
+  const next = entries.map((w): ObservedWindow => {
+    if (!w.dead) return w
+    return { ...w, deadSinceMs: prev?.find((p) => p.id === w.id)?.deadSinceMs ?? Date.now() }
+  })
+  if (JSON.stringify(prev) === JSON.stringify(next)) return
+  windows.set(k, next)
   notifyWorkspaceListChanged()
 }
 
 /** The workspace's windows, or undefined before its watcher first listed
  *  them (unknown, not none). */
-export function readWorkspaceWindows(projectId: string, workspaceId: string): WorkspaceWindow[] | undefined {
+export function readWorkspaceWindows(projectId: string, workspaceId: string): ObservedWindow[] | undefined {
   return windows.get(key(projectId, workspaceId))
 }
 

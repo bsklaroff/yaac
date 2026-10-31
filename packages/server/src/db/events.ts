@@ -25,6 +25,7 @@ export type WorkspaceEvent =
   | ConversationsCaptured
   | ConversationsActive
   | SessionReported
+  | SessionWindowGone
   | WaitingEnded
   | WorkspaceStopped
   | IgnoredFilesCleaned
@@ -197,6 +198,18 @@ export interface SessionReported {
   model?: string
   permissionMode?: PermissionMode
   effort?: string
+}
+
+/**
+ * A session's window, seen earlier in this life, is gone from the
+ * workspace's listing: the user killed it in tmux. The session closes, so
+ * nothing relaunches it.
+ */
+export interface SessionWindowGone {
+  type: 'session-window-gone'
+  projectId: string
+  workspaceId: string
+  sessionId: string
 }
 
 /**

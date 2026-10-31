@@ -866,8 +866,8 @@ describe('prepareStart', () => {
       const windows = execOf('new-window')!
       expect(windows).toContain("-n backend \"${SHELL:-/bin/sh}\" -c 'cd /workspace && pnpm dev:backend'")
       expect(windows).toContain("-n frontend \"${SHELL:-/bin/sh}\" -c 'cd /workspace && pnpm install && echo '\\''hi'\\'''")
-      expect(windows).toContain('set-option -t yaac:backend remain-on-exit on')
-      expect(windows).not.toContain('yaac:frontend remain-on-exit on')
+      expect(windows).toContain('set-option -t =yaac:=backend remain-on-exit on')
+      expect(windows).not.toContain('=yaac:=frontend remain-on-exit on')
       expect(windows).toContain(`claude --permission-mode bypassPermissions --model claude-opus-4-5 --session-id ${result.sessionId}`)
     })
 
@@ -1081,7 +1081,7 @@ describe('prepareStart', () => {
 
     /** Whether `unit` finished its warm, which ends by renaming its keeper. */
     const warmed = (unit: RuntimeHandle): boolean =>
-      execs.some((x) => x.jobName === unit.jobName && x.cmd.includes(`rename-window -t yaac:${KEEPER_STARTING} ${KEEPER_WINDOW}`))
+      execs.some((x) => x.jobName === unit.jobName && x.cmd.includes(`rename-window -t =yaac:=${KEEPER_STARTING} ${KEEPER_WINDOW}`))
 
     /** Warm one spare as the pool does, and wait until it is up. */
     async function warm(): Promise<RuntimeHandle> {
@@ -1137,7 +1137,7 @@ describe('prepareStart', () => {
       expect(session).toMatchObject({ tool: 'claude', mode: 'tui', permissionMode: 'bypass', firstPrompt: 'fix the bug' })
       expect(session.launchedAt).toBeInstanceOf(Date)
       expect(ranIn(spare)).toContainEqual(expect.stringContaining(`new-window -d -t yaac -n ${session.window} `))
-      expect(ranIn(spare).some((c) => c.includes(`.yaac-prompt-yaac_${session.window}.sh`))).toBe(true)
+      expect(ranIn(spare).some((c) => c.includes(`.yaac-prompt-_yaac__${session.window}.sh`))).toBe(true)
       expect(listProvisioning()).toEqual([])
     })
 
@@ -1278,9 +1278,9 @@ describe('prepareStart', () => {
       // Each init window is recreated in one exec with its kill, then the
       // session opened last.
       const after = ran.slice(reset)
-      expect(after).toContainEqual(expect.stringMatching(/kill-window -t yaac:backend 2>\/dev\/null; .*new-window -d -t yaac -n backend/))
+      expect(after).toContainEqual(expect.stringMatching(/kill-window -t =yaac:=backend 2>\/dev\/null; .*new-window -d -t yaac -n backend/))
       expect(after.findIndex((c) => SESSION_WINDOW.test(c)))
-        .toBeGreaterThan(after.findIndex((c) => c.includes('kill-window -t yaac:backend')))
+        .toBeGreaterThan(after.findIndex((c) => c.includes('kill-window -t =yaac:=backend')))
     })
 
     it('waits out a background refresh, then claims the refreshed spare', async () => {

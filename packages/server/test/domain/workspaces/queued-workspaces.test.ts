@@ -290,7 +290,7 @@ describe('queueWorkspace', () => {
       .toBe('accept-edits')
     // Asking for more is refused.
     await expect(queueWorkspace(local, PROJ, { parent: 'sibling', prompt: 'x', permissionMode: 'bypass' }, ceiling))
-      .rejects.toThrow(/more permissive than this workspace's own/)
+      .rejects.toThrow(/more permissive than the caller's ceiling/)
     // A tool with no mode at or below it is refused.
     await expect(queueWorkspace(local, PROJ, { parent: 'sibling', prompt: 'x', tool: 'pi' }, ceiling))
       .rejects.toThrow(/pi has no permission mode/)

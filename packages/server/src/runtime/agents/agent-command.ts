@@ -32,6 +32,15 @@ export function tmuxCmd(paths: Pick<WorkspacePaths, 'tmuxSock'>): string {
   return `tmux -S ${paths.tmuxSock}`
 }
 
+/**
+ * The tmux target for the yaac session's window `name`, matched exactly.
+ * A bare `yaac:<name>` falls back to a prefix match, so it would hit
+ * `claude-c09f7077` when a window named `claude` is gone.
+ */
+export function windowTarget(name: string): string {
+  return `=yaac:=${name}`
+}
+
 export interface InitWindow {
   name: string
   /** Already shell-escaped and joined with `&&`. */
@@ -826,5 +835,5 @@ export async function verifyAgentWindowAlive(
 export function initWindowCommand(win: InitWindow, paths: WorkspacePaths): string {
   return `${tmuxCmd(paths)} new-window -d -t yaac -n ${win.name} `
     + `"\${SHELL:-/bin/sh}" -c 'cd ${paths.workspaceDir} && ${win.cmd}'`
-    + (win.hidePane ? '' : ` \\; set-option -t yaac:${win.name} remain-on-exit on`)
+    + (win.hidePane ? '' : ` \\; set-option -t ${windowTarget(win.name)} remain-on-exit on`)
 }

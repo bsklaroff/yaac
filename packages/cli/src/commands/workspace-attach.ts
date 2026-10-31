@@ -23,10 +23,16 @@ export async function workspaceAttach(
   const { workspaces } = await api.workspace.list.$get({ query: {} })
   const sessions = workspaces.find((w) => w.workspaceId === resolved.workspaceId)?.sessions ?? []
   const wanted = options.session
-  const session = wanted === undefined ? sessions[0]
-    : sessions.find((s) => s.sessionId === wanted) ?? sessions.find((s) => s.sessionId.startsWith(wanted))
-  if (wanted !== undefined && session === undefined) {
-    throw new Error(`Workspace ${resolved.workspaceId} has no open session "${wanted}".`)
+  let session = sessions[0]
+  if (wanted !== undefined) {
+    const exact = sessions.filter((s) => s.sessionId === wanted)
+    const matches = exact.length > 0 ? exact : sessions.filter((s) => s.sessionId.startsWith(wanted))
+    if (matches.length !== 1) {
+      throw new Error(matches.length === 0
+        ? `Workspace ${resolved.workspaceId} has no open session "${wanted}".`
+        : `"${wanted}" matches more than one session of workspace ${resolved.workspaceId}; use a longer prefix.`)
+    }
+    session = matches[0]
   }
   await attachWorkspacePty(resolved.workspaceId, session !== undefined ? `native:${session.window}` : 'native')
 }

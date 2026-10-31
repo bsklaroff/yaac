@@ -77,11 +77,11 @@ class FakeAttachChild implements StreamChild {
 
 /** What tmux answers to one command, or null for none. */
 function answer(tmux: FakeTmux, cmd: string): string | null {
+  if (cmd.startsWith("list-panes -s -t yaac -F '#{window_id}")) {
+    return tmux.windows.map((w) => `${w.id}|${w.dead === true ? 1 : 0}|${w.name}`).join('\n')
+  }
   if (cmd.startsWith('list-panes')) {
     return tmux.panes.map((p) => `${p.paneId}\t${p.window}\t${p.dead === true ? 1 : 0}\t`).join('\n')
-  }
-  if (cmd.startsWith("list-windows -t yaac -F '#{window_id}")) {
-    return tmux.windows.map((w) => `${w.id}|${w.dead === true ? 1 : 0}|${w.name}`).join('\n')
   }
   if (cmd.startsWith('list-windows')) {
     return tmux.windows.map((w) => `${w.name}\t%${w.id.slice(1)}\t${w.dead === true ? 1 : 0}\t100\t`).join('\n')
@@ -191,17 +191,28 @@ describe('WorkspaceStatusWatcher', () => {
   })
 
   // An agent that exits keeps its pane (`remain-on-exit`); the death push
-  // re-lists, and the listing drops it from the live set.
-  it('drops an exited agent from the live set when its pane dies', async () => {
+  // re-lists, and the listing drops it from the live set. A resume respawns
+  // the same pane, which sends no window event, so its push back to alive
+  // re-lists too.
+  it('drops an exited agent from the live set when its pane dies, and brings it back when it is resumed', async () => {
     const tmux = claudeTmux()
     const { watcher, children } = makeWatcher({ tmux, sessions: [tuiSession('claude-aaaa')] })
     watcher.start()
     await connected()
+    children[0].feed('%subscription-changed dead-7 $0 @0 0 %7 : 0\n')
     tmux.panes[1].dead = true
     tmux.windows[1].dead = true
     children[0].feed('%subscription-changed dead-7 $0 @0 0 %7 : 1\n')
     await vi.waitFor(() => expect(liveAgents('demo', 's1')).toEqual([]))
-    await vi.waitFor(() => expect(readWorkspaceWindows('demo', 's1')?.[1]).toEqual({ id: '@1', name: 'claude-aaaa', dead: true }))
+    await vi.waitFor(() => expect(readWorkspaceWindows('demo', 's1')?.[1]).toEqual({
+      id: '@1', name: 'claude-aaaa', dead: true, deadSinceMs: expect.any(Number) as number,
+    }))
+
+    tmux.panes[1].dead = false
+    tmux.windows[1].dead = false
+    children[0].feed('%subscription-changed dead-7 $0 @0 0 %7 : 0\n')
+    await vi.waitFor(() => expect(liveAgents('demo', 's1')).toEqual([{ handle: 'claude-aaaa', tool: 'claude' }]))
+    await vi.waitFor(() => expect(readWorkspaceWindows('demo', 's1')?.[1]).toEqual({ id: '@1', name: 'claude-aaaa', dead: false }))
   })
 
   it('lists the windows as the streams come up and on each window event, and keeps them across a drop', async () => {
@@ -213,7 +224,7 @@ describe('WorkspaceStatusWatcher', () => {
       { id: '@0', name: '_yaac', dead: false },
       { id: '@1', name: 'claude-aaaa', dead: false },
     ])
-    expect(children[0].sent).toContain("list-windows -t yaac -F '#{window_id}|#{pane_dead}|#{window_name}'")
+    expect(children[0].sent).toContain("list-panes -s -t yaac -F '#{window_id}|#{pane_dead}|#{window_name}'")
 
     tmux.windows.push({ id: '@2', name: 'shell' })
     children[0].feed('%window-add @2\n')
