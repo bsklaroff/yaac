@@ -450,3 +450,40 @@ command (`RETIRED_HOOKS`) whenever a create merges the file.
 - **When it is safe to remove.** Once every project's claude settings have
   been merged by a create since the change, that is, every project has
   started a workspace since.
+
+## Session windows the `add_sessions` migration named
+
+A session's window is `<tool>-<8 hex>` (`sessionWindowName`). The
+`add_sessions` migration gave each session it made the window its agent
+already ran in: `<tool>` for a workspace's first agent, `<tool>-<n>` for
+the rest, or an acp handle of either form, with `-<8 hex>` appended where
+two of a workspace's sessions collided. Those names stay with the session
+for as long as it is open, across restarts. `SESSION_WINDOW` in
+`packages/server/src/runtime/terminals/pty-bridge.ts` accepts them.
+
+- **What it reads.** The `session:<window>` and `native:<window>` targets
+  a client sends to the terminal socket.
+- **What breaks silently if it goes too early.** A migrated session's pane
+  stops attaching to its window and falls back to the native attach, which
+  shows whichever window is current.
+- **When it is safe to remove.** Once no open session has a migrated name:
+  `SELECT count(*) FROM sessions WHERE closed_at IS NULL AND "window" !~ '^[a-z]+-[0-9a-f]{8}$'`
+  is zero.
+
+## A workspace runtime started before sessions
+
+A runtime started before sessions has no keeper window (`_yaac`), and its
+agent windows lack `remain-on-exit`, so an agent that quits takes its window
+with it. `reconcileWorkspaceSessions` in
+`packages/server/src/domain/workspaces/sessions.ts` skips a workspace with
+no keeper, so such a vanished window is not read as the user killing the
+session, and the session comes back on the next restart.
+
+- **What it reads.** The window listing of each running workspace.
+- **What breaks silently if it goes too early.** An agent that quits in a
+  workspace running across the upgrade, while another window keeps tmux
+  alive, closes its session, and the workspace's next restart comes back
+  with no agent.
+- **When it is safe to remove.** Once every workspace running at the upgrade
+  has stopped or restarted, which a restart does: no running workspace's
+  `life_started_at` is older than the upgrade.

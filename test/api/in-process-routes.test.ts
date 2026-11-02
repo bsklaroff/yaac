@@ -5,12 +5,13 @@ import { asTailnet, makeTestApiClient } from '@yaac/test-utils/api'
 import { closeDb } from '@yaac/server/db/client'
 import {
   recordDeathSeen,
-  recordWaitingSeen,
   recordWorkspaceCreated,
   recordWorkspaceStopped,
   listWorkspaceRows,
 } from '@yaac/server/db/workspace-store'
 import { BUILT_IN_USER_ID, seeTailnetUser } from '@yaac/server/db/user-store'
+import { getSessionRow, insertSession, recordSessionWaitingSeen } from '@yaac/server/db/session-store'
+import { readAgentStatus, setAgentStatus } from '@yaac/server/runtime/status/status-store'
 import { getProjectRow } from '@yaac/server/db/project-store'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
 
@@ -177,25 +178,62 @@ describe('workspace death read-marks', () => {
   })
 })
 
-describe('workspace waiting read-marks', () => {
-  // Nothing watches this workspace, so it reads as waiting in a spell with
-  // no stamp, which a mark names as 0.
-  it('marks the spell the request names, and 404s a workspace with no row', async () => {
-    await recordWorkspaceCreated({ projectId: ONE, workspaceId: 'waiting-1' })
-    const waitingSinceMs = 0
+/** A session of `workspaceId` whose agent waits now, and its spell's start. */
+async function waitingSession(projectId: string, workspaceId: string): Promise<{ id: string; waitingSinceMs: number }> {
+  await recordWorkspaceCreated({ projectId, workspaceId })
+  const session = await insertSession(projectId, workspaceId, { tool: 'claude', mode: 'acp', permissionMode: 'bypass' })
+  setAgentStatus(projectId, workspaceId, session.window, 'waiting')
+  return { id: session.id, waitingSinceMs: readAgentStatus(projectId, workspaceId, session.window)!.waitingSinceMs! }
+}
+
+describe('session waiting read-marks', () => {
+  it('marks the spell the request names, and 404s a session with no row', async () => {
+    const { id, waitingSinceMs } = await waitingSession(ONE, 'waiting-1')
 
     const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-    const res = await client.workspace['mark-waiting-seen'].$post({
-      json: { projectId: ONE, workspaceId: 'waiting-1', waitingSinceMs },
-    })
+    const res = await client.workspace['mark-waiting-seen'].$post({ json: { sessionId: id, waitingSinceMs } })
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ marked: true })
-    expect((await listWorkspaceRows(ONE)).find((r) => r.workspaceId === 'waiting-1')?.waitingSeenBy).toEqual([BUILT_IN_USER_ID])
+    expect((await getSessionRow(id))?.waitingSeenBy).toEqual([BUILT_IN_USER_ID])
 
     const ghost = await client.workspace['mark-waiting-seen'].$post({
-      json: { projectId: ONE, workspaceId: 'ghost', waitingSinceMs },
+      json: { sessionId: '0a0a0a0a-0000-4000-8000-0000000000ff', waitingSinceMs },
     })
     expect(ghost.status).toBe(404)
+  })
+})
+
+// A session id is taken only under its own workspace's path, so a request
+// never acts on a session it did not name the workspace of.
+describe('session routes', () => {
+  it("closes and names a workspace's own session, and answers 404 for another's or a malformed id", async () => {
+    await recordWorkspaceCreated({ projectId: ONE, workspaceId: 'mine-workspace' })
+    await recordWorkspaceCreated({ projectId: ONE, workspaceId: 'theirs-workspace' })
+    const mine = await insertSession(ONE, 'mine-workspace', { tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
+    const theirs = await insertSession(ONE, 'theirs-workspace', { tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
+    const app = buildApp({ buildId: 'test' })
+    const post = async (path: string, body?: unknown): Promise<number> => (await app.request(`/api/workspace/${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    })).status
+
+    for (const verb of ['close', 'resume']) {
+      expect(await post(`mine-workspace/sessions/${theirs.id}/${verb}`), verb).toBe(404)
+      expect(await post(`mine-workspace/sessions/not-a-uuid/${verb}`), verb).toBe(404)
+    }
+    expect(await post(`mine-workspace/sessions/${theirs.id}/title`, { title: 'Hijacked' })).toBe(404)
+    const untouched = await getSessionRow(theirs.id)
+    expect([untouched?.title, untouched?.closedAt]).toEqual([undefined, undefined])
+
+    expect(await post(`mine-workspace/sessions/${mine.id}/title`, { title: 'Reviewer' })).toBe(204)
+    expect((await getSessionRow(mine.id))?.title).toBe('Reviewer')
+    expect(await post(`mine-workspace/sessions/${mine.id}/title`, { title: '' })).toBe(204)
+    expect((await getSessionRow(mine.id))?.title).toBeUndefined()
+    expect(await post(`mine-workspace/sessions/${mine.id}/close`)).toBe(204)
+    expect((await getSessionRow(mine.id))?.closedAt).toBeInstanceOf(Date)
+    // A closed session is no longer open to act on.
+    expect(await post(`mine-workspace/sessions/${mine.id}/close`)).toBe(404)
   })
 })
 
@@ -209,18 +247,20 @@ describe('read-marks as a teammate', () => {
   const HOST = 'srv.tailnet.ts.net'
   const app = (): ReturnType<typeof buildApp> => buildApp({ buildId: 'test', access: () => 'tailnet' })
   let teammate: string
+  let waiting: { id: string; waitingSinceMs: number }
 
   beforeAll(async () => {
     vi.stubEnv('YAAC_ALLOWED_HOSTS', HOST)
     teammate = await seeTailnetUser('bob@example.com', 'bob')
     await recordTestProject(TEAM, { name: 'team' })
-    for (const id of ['team-dead', 'team-dead-2', 'team-waiting']) {
+    for (const id of ['team-dead', 'team-dead-2']) {
       await recordWorkspaceCreated({ projectId: TEAM, workspaceId: id })
     }
+    waiting = await waitingSession(TEAM, 'team-waiting')
     await recordWorkspaceStopped(TEAM, 'team-dead', { reason: 'oom' })
     await recordWorkspaceStopped(TEAM, 'team-dead-2', { reason: 'evicted' })
     await recordDeathSeen(TEAM, 'team-dead', BUILT_IN_USER_ID)
-    await recordWaitingSeen(TEAM, 'team-waiting', BUILT_IN_USER_ID)
+    await recordSessionWaitingSeen(waiting.id, BUILT_IN_USER_ID)
   })
   afterAll(() => {
     vi.unstubAllEnvs()
@@ -242,9 +282,8 @@ describe('read-marks as a teammate', () => {
     expect((await row('team-dead'))?.deathSeenBy).toEqual([BUILT_IN_USER_ID, teammate])
     expect((await row('team-dead-2'))?.deathSeenBy).toEqual([teammate])
 
-    // Nothing watches it, so it waits in a spell with no stamp (0).
-    const waiting = await post('mark-waiting-seen', { projectId: TEAM, workspaceId: 'team-waiting', waitingSinceMs: 0 })
-    expect(await waiting.json()).toEqual({ marked: true })
-    expect((await row('team-waiting'))?.waitingSeenBy).toEqual([BUILT_IN_USER_ID, teammate])
+    const marked = await post('mark-waiting-seen', { sessionId: waiting.id, waitingSinceMs: waiting.waitingSinceMs })
+    expect(await marked.json()).toEqual({ marked: true })
+    expect((await getSessionRow(waiting.id))?.waitingSeenBy).toEqual([BUILT_IN_USER_ID, teammate])
   })
 })

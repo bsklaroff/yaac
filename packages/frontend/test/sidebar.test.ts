@@ -18,10 +18,10 @@ const entry = (
 ): WorkspaceListEntry => ({
   workspaceId,
   projectId: 'p',
-  tool: 'claude',
   status: 'running',
+  sessions: [],
   createdAt: `2026-01-01 00:00:${String(at).padStart(2, '0')}`,
-  agentSessions: [],
+  conversations: [],
   blockedHosts: [],
   forwardedPorts: [],
   unforwardedPorts: [],

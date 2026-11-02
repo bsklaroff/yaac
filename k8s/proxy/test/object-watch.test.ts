@@ -36,7 +36,7 @@ function registrationObject(workspaceId: string, reg: Partial<ProxyRegistration>
   return {
     metadata: { name: `yaac-proxy-reg-${workspaceId}`, labels: { [LABEL_WORKSPACE_ID]: workspaceId } },
     data: { 'registration.json': JSON.stringify({
-      rules: [], allowedHosts: ['api.example.com'], tool: 'claude', projectId: 'demo', owner: 'o', ...reg,
+      rules: [], allowedHosts: ['api.example.com'], projectId: 'demo', owner: 'o', ...reg,
     }) },
   }
 }

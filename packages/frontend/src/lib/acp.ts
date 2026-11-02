@@ -71,7 +71,7 @@ export interface SubagentTranscript { events?: AcpEventInit[]; error?: string }
  */
 export function useAcpStream(
   workspaceId: string,
-  agentSessionId: string,
+  conversationId: string,
   { observe = false, enabled = true }: { observe?: boolean; enabled?: boolean } = {},
 ): AcpStream {
   const [page, setPage] = useState(0)
@@ -90,7 +90,7 @@ export function useAcpStream(
 
   useEffect(() => {
     if (!enabled) return
-    const params = new URLSearchParams({ id: workspaceId, session: agentSessionId })
+    const params = new URLSearchParams({ id: workspaceId, session: conversationId })
     /** Whether the current socket has been greeted. */
     let greeted = false
     const sock = reconnectingSocket(() => `/api/acp/${observe ? 'observe' : 'attach'}?${params}`, {
@@ -158,7 +158,7 @@ export function useAcpStream(
       sock.close()
       socketRef.current = null
     }
-  }, [workspaceId, agentSessionId, observe, enabled])
+  }, [workspaceId, conversationId, observe, enabled])
 
   return {
     page,

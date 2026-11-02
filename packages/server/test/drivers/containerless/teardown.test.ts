@@ -51,7 +51,7 @@ let dataDir: string
  *  ssh-agent pid for a project with an SSH remote. */
 function registered(extra: { sshAgentPid?: number } = {}): void {
   rememberWorkspace({
-    projectId: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
+    projectId: 'demo', workspaceId: UUID,
     createdAtMs: 1_000, launchEnv: {}, tmuxPid: 4242, ...extra,
   })
 }
@@ -186,7 +186,7 @@ describe('destroyWorkspace ssh-agent', () => {
     // workspace running; otherwise a workspace whose tmux died would leave
     // the agent holding its key until reboot.
     restoreWorkspace({
-      projectId: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
+      projectId: 'demo', workspaceId: UUID,
       createdAtMs: 1_000, launchEnv: {}, tmuxPid: 4242, sshAgentPid: 777,
     }, false, { reason: 'agent-exited' })
 

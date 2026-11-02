@@ -29,8 +29,6 @@ function handle(over: Partial<RuntimeHandle> = {}): RuntimeHandle {
     workspaceId: 'abc123def456',
     projectId: PROJ,
     jobName: 'yaac-proj-abc123',
-    tool: 'claude',
-    mode: 'tui',
     running: true,
     state: 'running',
     labels: {},
@@ -144,15 +142,14 @@ describe('resolveWorkspaceRecord', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  // Callers that read from inside the container need the job and tool,
-  // which only a live match has.
+  // Callers that read from inside the container need the job, which only
+  // a live match has.
   it('carries the running workspace through when there is one', async () => {
     find.mockResolvedValue(handle())
     expect(await resolveWorkspaceRecord('abc123')).toEqual({
       workspaceId: 'abc123def456',
       projectId: PROJ,
       jobName: 'yaac-proj-abc123',
-      tool: 'claude',
     })
   })
 

@@ -65,11 +65,11 @@ beforeEach(() => {
       4242: [1, 10, 1], 5150: [4242, 200, 25], 5151: [5150, 50, 3], 9000: [1, 5, 0], 7777: [1, 500, 80],
     }))
   rememberWorkspace({
-    projectId: 'demo', workspaceId: LIVE, tool: 'claude', mode: 'tui',
+    projectId: 'demo', workspaceId: LIVE,
     createdAtMs: 1_000, launchEnv: {}, tmuxPid: 4242, sshAgentPid: 9000,
   })
   rememberWorkspace({
-    projectId: 'demo', workspaceId: DEAD, tool: 'claude', mode: 'tui',
+    projectId: 'demo', workspaceId: DEAD,
     createdAtMs: 1_000, launchEnv: {}, tmuxPid: 7777,
   })
   observeLiveness(DEAD, false, { reason: 'agent-exited' })

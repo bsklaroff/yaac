@@ -34,7 +34,6 @@ function params(overrides: Partial<PodJobParams> = {}): PodJobParams {
       'yaac.project-id': 'demo',
       'yaac.workspace-id': 'abcd',
       'yaac.install-id': 'test-install',
-      'yaac.tool': 'claude',
     },
     image: 'localhost:5000/yaac-tools:abc',
     env: ['YAAC_SESSION_ID=abcd', 'X=a=b'],

@@ -61,16 +61,16 @@ export interface TranscriptPages {
 /** One page's query: pages before the last never change within a life. A
  *  page the server numbered for another life fails, to be read again once
  *  the pane has caught up with it. */
-function pageQuery(workspaceId: string, agentSessionId: string, life: string | undefined, page: number): {
+function pageQuery(workspaceId: string, conversationId: string, life: string | undefined, page: number): {
   queryKey: readonly unknown[]
   queryFn: () => Promise<AcpEvent[]>
   staleTime: number
 } {
   return {
-    queryKey: ['transcript-page', workspaceId, agentSessionId, life, page],
+    queryKey: ['transcript-page', workspaceId, conversationId, life, page],
     queryFn: async () => {
-      const read = await api.workspace[':id']['agent-sessions'][':sessionId'].transcript.$get({
-        param: { id: workspaceId, sessionId: agentSessionId },
+      const read = await api.workspace[':id'].conversations[':conversationId'].transcript.$get({
+        param: { id: workspaceId, conversationId },
         query: { page: String(page) },
       })
       if (read.life !== life) throw new Error('the conversation restarted')
@@ -84,9 +84,9 @@ function pageQuery(workspaceId: string, agentSessionId: string, life: string | u
  *  identity until a page changes. */
 const pagesData = (results: QueryObserverResult<AcpEvent[]>[]): (AcpEvent[] | undefined)[] => results.map((r) => r.data)
 
-export function useTranscriptPages({ workspaceId, agentSessionId, life, last, lastEvents, scrollRef }: {
+export function useTranscriptPages({ workspaceId, conversationId, life, last, lastEvents, scrollRef }: {
   workspaceId: string
-  agentSessionId: string
+  conversationId: string
   /** The agent life the last page is numbered for. */
   life: string | undefined
   /** The last page's number, and its events and any after it. */
@@ -96,13 +96,13 @@ export function useTranscriptPages({ workspaceId, agentSessionId, life, last, la
 }): TranscriptPages {
   const queryClient = useQueryClient()
   const [stored, setSpan] = useState<Span>()
-  const view = JSON.stringify([agentSessionId, life])
+  const view = JSON.stringify([conversationId, life])
   const span: Span = stored?.view === view ? stored : { view, from: 'last', to: 'end' }
   const from = span.from === 'last' ? last : Math.min(span.from, last)
   const atEnd = span.to === 'end' || span.to >= last
   const to = atEnd ? last : span.to as number
   const numbers = Array.from({ length: (atEnd ? last : to + 1) - from }, (_, i) => from + i)
-  const pages = useQueries({ queries: numbers.map((p) => pageQuery(workspaceId, agentSessionId, life, p)), combine: pagesData })
+  const pages = useQueries({ queries: numbers.map((p) => pageQuery(workspaceId, conversationId, life, p)), combine: pagesData })
   const events = useMemo(
     () => [...pages.flatMap((p) => p ?? []), ...(atEnd ? lastEvents : [])],
     [pages, atEnd, lastEvents],
@@ -119,7 +119,7 @@ export function useTranscriptPages({ workspaceId, agentSessionId, life, last, la
     if (busy.current) return
     busy.current = true
     setLoading(direction)
-    queryClient.fetchQuery(pageQuery(workspaceId, agentSessionId, life, page))
+    queryClient.fetchQuery(pageQuery(workspaceId, conversationId, life, page))
       .then(() => {
         placement.current = place?.()
         setSpan(next)

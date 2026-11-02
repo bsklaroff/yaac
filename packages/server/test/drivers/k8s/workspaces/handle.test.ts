@@ -10,7 +10,6 @@ function pod(overrides: Partial<PodInfo> = {}): PodInfo {
     podName: 'yaac-proj-s1-abcde',
     workspaceId: 's1',
     projectId: '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
-    tool: 'claude',
     phase: 'Running',
     running: true,
     terminating: false,
@@ -26,9 +25,6 @@ describe('runtimeHandleFromPod', () => {
       workspaceId: 's1',
       projectId: '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
       jobName: 'yaac-proj-s1',
-      tool: 'claude',
-      declaredTool: 'claude',
-      mode: 'tui',
       running: true,
       state: 'running',
       labels: {},
@@ -43,22 +39,6 @@ describe('runtimeHandleFromPod', () => {
     const h = runtimeHandleFromPod(pod({ running: false, phase: 'Failed' }))
     expect(h.state).toBe('failed')
     expect(h.running).toBe(false)
-  })
-
-  it('normalizes the tool and mode labels, so nothing above reads raw strings', () => {
-    expect(runtimeHandleFromPod(pod({ mode: 'acp' })).mode).toBe('acp')
-    // Anything that isn't `acp` is the tmux-driven default, including absent.
-    expect(runtimeHandleFromPod(pod({ mode: 'nonsense' })).mode).toBe('tui')
-    expect(runtimeHandleFromPod(pod({ mode: undefined })).mode).toBe('tui')
-    expect(runtimeHandleFromPod(pod({ tool: 'not-a-tool' })).tool).toBe('claude')
-  })
-
-  // A guessed tool would override the server's default for workspaces
-  // spawned from this one, so an unknown label yields no tool.
-  it('declares no tool when the pod is stamped with one this build does not know', () => {
-    const h = runtimeHandleFromPod(pod({ tool: 'not-a-tool' }))
-    expect(h.tool).toBe('claude')
-    expect(h.declaredTool).toBeUndefined()
   })
 
   it('reads the prewarm label, so a spare is one by its own account', () => {

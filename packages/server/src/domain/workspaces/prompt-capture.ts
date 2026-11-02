@@ -1,4 +1,4 @@
-import { getAgentSessionFirstMessage } from '#runtime/agents'
+import { getConversationFirstMessage } from '#runtime/agents'
 import type { SandboxFile } from '#runtime/agents'
 import { MAX_PROMPT_LENGTH } from '@yaac/shared/types'
 import type { AgentTool } from '@yaac/shared/types'
@@ -15,13 +15,13 @@ const known = new Map<string, string>()
 export async function captureFirstPrompt(
   projectId: string,
   tool: AgentTool,
-  agentSessionId: string,
+  conversationId: string,
   transcript: SandboxFile | undefined,
 ): Promise<string | undefined> {
-  const key = `${projectId}/${tool}/${agentSessionId}`
+  const key = `${projectId}/${tool}/${conversationId}`
   const cached = known.get(key)
   if (cached !== undefined) return cached
-  const prompt = await getAgentSessionFirstMessage(tool, transcript).catch(() => undefined)
+  const prompt = await getConversationFirstMessage(tool, transcript).catch(() => undefined)
   if (prompt === undefined) return undefined
   // Cap to the recorded length so the cache and the row agree.
   const capped = prompt.slice(0, MAX_PROMPT_LENGTH)

@@ -8,7 +8,7 @@ import { insertQueuedWorkspace } from '#db/queued-workspace-store'
 import { insertDraftWorkspace } from '#db/draft-workspace-store'
 import { closeDb } from '#db/client'
 import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
-import { recordAgentSessions } from '#db/agent-session-store'
+import { recordConversations } from '#db/conversation-store'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import {
@@ -101,13 +101,13 @@ describe('GET /list-stopped', () => {
     installFakeWorkspaceDriver()
     const workspaceId = '6f2a1d3b-8c4e-4f9a-8b7d-1e2f3a4b5c6d'
     await recordWorkspaceCreated({ projectId: PROJ, workspaceId })
-    await recordAgentSessions(PROJ, workspaceId, [{ tool: 'claude', agentSessionId: workspaceId, firstPrompt: LONG }])
+    await recordConversations(PROJ, workspaceId, [{ tool: 'claude', conversationId: workspaceId, firstPrompt: LONG }])
     await recordWorkspaceStopped(PROJ, workspaceId)
 
     const res = await app.request(`/list-stopped?project=${PROJ}`)
     expect(res.status).toBe(200)
     const [entry] = ((await res.json()) as StoppedWorkspacePage).entries
-    const prompts = [entry?.prompt ?? '', entry?.agentSessions[0]?.prompt ?? '']
+    const prompts = [entry?.prompt ?? '', entry?.conversations[0]?.prompt ?? '']
     expect(prompts.map((p) => p.length)).toEqual([PROMPT_PREVIEW_LENGTH, CONVERSATION_PROMPT_PREVIEW_LENGTH])
     expect(prompts.every((p) => LONG.startsWith(p))).toBe(true)
   })

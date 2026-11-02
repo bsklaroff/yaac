@@ -254,8 +254,8 @@ read rows.
 
 Re-reporting must be safe, which the event types (`db/events.ts`) ensure:
 
-- **Whole sets, never deltas.** `sessions-discovered` carries a
-  workspace's full known history. `sessions-active` carries the complete
+- **Whole sets, never deltas.** `conversations-discovered` carries a
+  workspace's full known history. `conversations-active` carries the complete
   live set, and a missing event does not mean an empty set: a watcher that
   cannot see says nothing.
 - **Fill-only capture.** An opening message is only ever added, so

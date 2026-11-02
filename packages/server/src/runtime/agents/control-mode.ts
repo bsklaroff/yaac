@@ -31,7 +31,7 @@ import type { StreamChild, WorkspacePaths } from '#drivers/contract'
 import { workspaceDriver } from '#drivers/driver'
 import { serverLog } from '#lib/log'
 import type { AgentConnectDeps, AgentConnection, AgentObservation, DrivenWorkspace } from './drivers'
-import type { WorkspaceTerminalEntry } from '@yaac/shared/types'
+import type { WorkspaceWindow } from '#drivers/contract'
 
 /**
  * The in-workspace control-mode attach argv, dialed as a ctrl stream. Flags:
@@ -47,15 +47,6 @@ function controlModeAttachArgv(paths: WorkspacePaths): string[] {
     '-f', 'ignore-size,no-output',
   ]
 }
-
-/**
- * `1` while a pane still runs the session's keepalive: a pod's `sleep
- * infinity`, or containerless's `sleep 2147483647`, since macOS's sleep has
- * no `infinity` (some tmux versions quote the start command). An agent
- * respawned into the pane announces nothing, so a driver subscribes to this
- * to learn when the agent has replaced it.
- */
-export const PLACEHOLDER_FORMAT = '#{m/r:^"?sleep (infinity|2147483647)"?$,#{pane_start_command}}'
 
 /** Reject `promise` if it has not settled within `ms`. */
 function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
@@ -247,17 +238,21 @@ export class ControlModeClient {
   }
 }
 
-/** For a pane still running create's placeholder, until an agent is
- *  respawned into it (`PLACEHOLDER_FORMAT`). */
-export const BOOT_SUBSCRIPTION_PREFIX = 'boot-'
+/** Per session pane: whether its agent has exited (`#{pane_dead}`; session
+ *  windows keep their pane with `remain-on-exit`), so an exit, and a resume
+ *  that brings the pane back (`respawn-window -k` keeps its id and sends no
+ *  window notification), re-list at once rather than at the next
+ *  heartbeat. */
+const DEAD_SUBSCRIPTION_PREFIX = 'dead-'
 
 /**
  * What the `tui` and `acp` connections share: one persistent control-mode
  * client per workspace, dialed as a ctrl stream, which carries both the
  * driver's tmux commands and tmux's pushes. Owns the dial, decoding, the
  * command timeout, the heartbeat that detects a wedged stream, the window
- * and boot notifications that trigger a re-list, and teardown. A subclass
- * says what a re-list does (`sync`) and what else a heartbeat checks.
+ * and pane-death notifications that trigger a re-list, and teardown. A
+ * subclass says what a re-list does (`sync`) and what else a heartbeat
+ * checks.
  *
  * A subclass calls `start()` at the end of its constructor, once its own
  * fields exist, since a failed dial tears down synchronously.
@@ -270,6 +265,9 @@ export abstract class ControlModeConnection implements AgentConnection {
   private client: ControlModeClient | null = null
   private heartbeatTimer: NodeJS.Timeout | null = null
   private heartbeatInFlight = false
+  /** Panes with a death subscription (`watchPaneDeath`), with the last
+   *  value it reported. */
+  private readonly deathWatched = new Map<string, string | undefined>()
   private readonly heartbeatIntervalMs: number
   protected readonly commandTimeoutMs: number
 
@@ -286,9 +284,9 @@ export abstract class ControlModeConnection implements AgentConnection {
   }
 
   /** Reconcile with the workspace's windows; run at attach, on every
-   *  heartbeat and on each window or boot notification. */
+   *  heartbeat and on each window or pane-death notification. */
   protected abstract sync(): Promise<void>
-  /** A subscription push other than a boot one. */
+  /** A subscription push other than a death one. */
   protected abstract onSubscription(n: Extract<ControlModeNotification, { kind: 'subscription' }>): void
   /** Release what the subclass holds; the stream is already gone. */
   protected abstract cleanup(): void
@@ -297,8 +295,12 @@ export abstract class ControlModeConnection implements AgentConnection {
     return Promise.resolve()
   }
 
-  /** A placeholder pane's agent replaced it. */
-  protected onBooted(_paneId: string): void {}
+  /** Subscribe to a session pane's death, once per pane. */
+  protected async watchPaneDeath(paneId: string): Promise<void> {
+    if (this.deathWatched.has(paneId)) return
+    this.deathWatched.set(paneId, undefined)
+    await this.send(`refresh-client -B '${DEAD_SUBSCRIPTION_PREFIX}${paneId.replace('%', '')}:${paneId}:#{pane_dead}'`)
+  }
 
   /** Extra work on each heartbeat, before the re-list. */
   protected beforeHeartbeat(): void {}
@@ -381,14 +383,19 @@ export abstract class ControlModeConnection implements AgentConnection {
       this.sink({ kind: 'windows-changed' })
       void this.resync()
     } else if (n.kind === 'subscription') {
-      if (!n.name.startsWith(BOOT_SUBSCRIPTION_PREFIX)) this.onSubscription(n)
-      else if (n.value === '0') {
-        this.onBooted(n.paneId)
-        void this.resync()
-      }
+      if (!n.name.startsWith(DEAD_SUBSCRIPTION_PREFIX)) this.onSubscription(n)
+      else this.onPaneDeathValue(`%${n.name.slice(DEAD_SUBSCRIPTION_PREFIX.length)}`, n.value)
     }
     // `exit`: tmux is detaching us, and the child exit that follows tears
     // down. `%output` never arrives, since connections attach no-output.
+  }
+
+  /** A dead pane re-lists, and so does one whose state changed since it
+   *  last reported; the first report of a live pane is its subscribing. */
+  private onPaneDeathValue(paneId: string, value: string): void {
+    const last = this.deathWatched.get(paneId)
+    this.deathWatched.set(paneId, value)
+    if (value === '1' || (last !== undefined && last !== value)) void this.resync()
   }
 
   protected down(reason: string): void {
@@ -404,6 +411,7 @@ export abstract class ControlModeConnection implements AgentConnection {
     this.sink({ kind: 'command-channel', send: null })
     this.client?.fail(new Error('stream torn down'))
     this.client = null
+    this.deathWatched.clear()
     this.child?.kill('SIGTERM')
     this.child = null
     this.cleanup()
@@ -416,26 +424,25 @@ export abstract class ControlModeConnection implements AgentConnection {
   }
 }
 
-/** The name stays last — it may contain pipes. */
-const LIST_WINDOWS = "list-windows -t yaac -F '#{window_index}|#{window_id}|#{window_name}'"
-const WINDOW_LINE = /^(\d+)\|(@\d+)\|(.*)$/
+/** Every pane, so a window's `dead` is its first pane's, the one its
+ *  agent runs in, whichever pane is active. The name stays last — it may
+ *  contain pipes. */
+const LIST_PANES = "list-panes -s -t yaac -F '#{window_id}|#{pane_dead}|#{window_name}'"
+const PANE_LINE = /^(@\d+)\|([01])\|(.*)$/
 
 /**
- * List a workspace's webapp-attachable terminals: every window of its
- * `yaac` session except the agent's (the lowest index). `tmux` runs one
- * read-only tmux command and returns its output: the status watcher passes
- * its control-mode stream, which costs no exec.
+ * List a workspace's tmux windows: its sessions', its terminals and the
+ * keeper that holds the tmux server open. `tmux` runs one read-only tmux
+ * command and returns its output: the status watcher passes its
+ * control-mode stream, which costs no exec.
  */
-export async function listTerminals(
+export async function listWindows(
   tmux: (tmuxArgs: string) => Promise<string>,
-): Promise<WorkspaceTerminalEntry[]> {
-  const rows = (await tmux(LIST_WINDOWS)).split('\n').flatMap((line) => {
-    const m = WINDOW_LINE.exec(line.trim())
-    return m ? [{ index: Number(m[1]), id: m[2], name: m[3] }] : []
-  })
-  if (rows.length === 0) return []
-  const agentIndex = Math.min(...rows.map((r) => r.index))
-  return rows
-    .filter((r) => r.index !== agentIndex)
-    .map((r) => ({ target: `window:${r.id}`, name: r.name }))
+): Promise<WorkspaceWindow[]> {
+  const windows = new Map<string, WorkspaceWindow>()
+  for (const line of (await tmux(LIST_PANES)).split('\n')) {
+    const m = PANE_LINE.exec(line.trim())
+    if (m && !windows.has(m[1])) windows.set(m[1], { id: m[1], name: m[3], dead: m[2] === '1' })
+  }
+  return [...windows.values()]
 }

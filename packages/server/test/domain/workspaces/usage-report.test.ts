@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { recordWorkspaceCreated, recordWorkspaceStopped, setWorkspaceTitle } from '#db/workspace-store'
-import { recordAgentSessions } from '#db/agent-session-store'
+import { recordConversations } from '#db/conversation-store'
 import { closeDb } from '#db/client'
 import { listUsers } from '#db'
 import { serverUsageReport } from '#domain/workspaces/usage-report'
@@ -51,7 +51,7 @@ describe('serverUsageReport', () => {
       await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: id })
     }
     await setWorkspaceTitle(DEMO_PROJECT_ID, LIVE, 'the live one')
-    await recordAgentSessions(DEMO_PROJECT_ID, DEAD, [{ tool: 'claude', agentSessionId: DEAD }])
+    await recordConversations(DEMO_PROJECT_ID, DEAD, [{ tool: 'claude', conversationId: DEAD }])
   })
 
   afterEach(async () => {

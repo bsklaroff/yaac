@@ -80,16 +80,17 @@ describe('createShellWindow', () => {
 })
 
 describe('killWindowTerminal', () => {
-  it('kills a non-agent window in one exec', async () => {
-    windows = '@0 claude\n@1 shell'
+  it('kills a window other than the keeper in one exec', async () => {
+    windows = '@0 _yaac\n@1 shell'
     await killWindowTerminal('yaac-demo', 'window:@1')
     expect(ran).toEqual(['kill-window -t @1'])
     expect(exec).toHaveBeenCalledOnce()
   })
 
-  it('refuses the agent window, non-window targets, and blind kills', async () => {
-    windows = '@0 claude\n@1 shell'
-    await expect(killWindowTerminal('yaac-demo', 'window:@0')).rejects.toThrow('agent window')
+  // The keeper holds the tmux server open whatever the sessions do.
+  it('refuses the keeper window, non-window targets, and blind kills', async () => {
+    windows = '@0 _yaac\n@1 shell'
+    await expect(killWindowTerminal('yaac-demo', 'window:@0')).rejects.toThrow('refusing to kill the keeper window')
 
     await expect(killWindowTerminal('yaac-demo', 'shell:shell')).rejects.toThrow('not a window target')
     await expect(killWindowTerminal('yaac-demo', "window:@1' \\; kill-server")).rejects.toThrow('not a window target')

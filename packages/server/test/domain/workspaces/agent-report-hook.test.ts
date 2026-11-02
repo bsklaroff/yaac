@@ -162,12 +162,12 @@ describe('the agent reporters', () => {
       expect(stdout).toBe('')
       expect(await option('@yaac-session')).toBe('claude|conv-a|claude/projects/-workspace/conv-a.jsonl')
       expect(await named()).toEqual({
-        tool: 'claude', agentSessionId: 'conv-a', transcriptPath: 'claude/projects/-workspace/conv-a.jsonl',
+        tool: 'claude', conversationId: 'conv-a', transcriptPath: 'claude/projects/-workspace/conv-a.jsonl',
       })
       // A transcript outside the home has no relative form, so only the
       // conversation id is recorded.
       await hook(claudeHome(), 'claude', { session_id: 'conv-b', transcript_path: '/somewhere/else.jsonl' })
-      expect(await named()).toEqual({ tool: 'claude', agentSessionId: 'conv-b' })
+      expect(await named()).toEqual({ tool: 'claude', conversationId: 'conv-b' })
     })
 
     it('names no conversation whose id could climb out of a path it is joined into', () => {
@@ -176,7 +176,7 @@ describe('the agent reporters', () => {
       for (const id of ['../../etc/passwd', 'a/b', '-flag', 'x'.repeat(129), 'a.b']) {
         expect(parsePaneSession(`claude|${id}|claude/t.jsonl`)).toBeUndefined()
       }
-      expect(parsePaneSession('claude|ok-id_1|claude/t.jsonl')?.agentSessionId).toBe('ok-id_1')
+      expect(parsePaneSession('claude|ok-id_1|claude/t.jsonl')?.conversationId).toBe('ok-id_1')
     })
 
     it('makes the path project-relative through a symlinked tool home', async () => {
@@ -197,21 +197,21 @@ describe('the agent reporters', () => {
       await hook(claudeHome(), 'claude', { session_id: 'parent', transcript_path: `${claudeHome()}/p.jsonl` })
       // A `claude -p` from the parent's Bash tool inherits the pane.
       await hook(claudeHome(), 'claude', { session_id: 'child', transcript_path: `${claudeHome()}/c.jsonl` })
-      expect((await named())?.agentSessionId).toBe('child')
+      expect((await named())?.conversationId).toBe('child')
       await hook(claudeHome(), 'claude', {
         session_id: 'child', hook_event_name: 'SessionEnd', transcript_path: `${claudeHome()}/c.jsonl`,
       })
-      expect(await named()).toEqual({ tool: 'claude', agentSessionId: 'parent', transcriptPath: 'claude/p.jsonl' })
+      expect(await named()).toEqual({ tool: 'claude', conversationId: 'parent', transcriptPath: 'claude/p.jsonl' })
       expect(await option('@yaac-session-under')).toBe('')
 
       // An end for a conversation the pane does not name changes nothing.
       await hook(claudeHome(), 'claude', { session_id: 'stranger', hook_event_name: 'SessionEnd' })
-      expect((await named())?.agentSessionId).toBe('parent')
+      expect((await named())?.conversationId).toBe('parent')
 
       // A `/clear`: the old conversation ends, then the new one starts.
       await hook(claudeHome(), 'claude', { session_id: 'parent', hook_event_name: 'SessionEnd' })
       await hook(claudeHome(), 'claude', { session_id: 'next', transcript_path: `${claudeHome()}/n.jsonl` })
-      expect((await named())?.agentSessionId).toBe('next')
+      expect((await named())?.conversationId).toBe('next')
       expect(await option('@yaac-session-under')).toBe('')
       // The agent quits, and the pane no longer names a conversation.
       await hook(claudeHome(), 'claude', { session_id: 'next', hook_event_name: 'SessionEnd' })
@@ -239,7 +239,7 @@ describe('the agent reporters', () => {
       const home = path.join(tmpDir, 'home', '.pi')
       await links('', [home, 'pi', 'pi-1', `${home}/agent/sessions/2026_pi-1.jsonl`], env)
       expect(await named('%2'))
-        .toEqual({ tool: 'pi', agentSessionId: 'pi-1', transcriptPath: 'pi/agent/sessions/2026_pi-1.jsonl' })
+        .toEqual({ tool: 'pi', conversationId: 'pi-1', transcriptPath: 'pi/agent/sessions/2026_pi-1.jsonl' })
       // A resume launch names the conversation the tool will report again,
       // which is not nesting.
       await links('', ['', 'pi', 'pi-1'], env)

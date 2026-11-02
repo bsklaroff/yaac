@@ -18,7 +18,7 @@
 import type { FileHandle } from 'node:fs/promises'
 import { StringDecoder } from 'node:string_decoder'
 import { acpLogDir } from '@yaac/shared/project-paths'
-import { agentSessionIdSchema } from '@yaac/shared/types'
+import { conversationIdSchema } from '@yaac/shared/types'
 import {
   ACP, ACPD, AcpProjection, CLAUDE_SDK_MESSAGE, agentRunningReport, backgroundWorkReport, fromOtherSession,
   sessionEffort, sessionModeId, sessionModel, sessionModels, sessionStateModeId, toContentList,
@@ -29,23 +29,23 @@ import { openSandboxFile, type SandboxFile } from './sandbox-fs'
 import { serverLog } from '#lib/log'
 import { ACP_PAGE_SPAN, acpPageOf, type AcpEvent, type AcpEventInit, type AcpTranscriptPage } from '@yaac/shared/acp'
 
-/** Which conversation's record; acpd names each `<agentSessionId>.jsonl`
+/** Which conversation's record; acpd names each `<conversationId>.jsonl`
  *  in its workspace's record dir. */
 export interface AcpRecordRef {
   projectId: string
   workspaceId: string
-  agentSessionId: string
+  conversationId: string
 }
 
 /**
  * A conversation's record as a file confined to its record dir, which the
  * workspace can write (`SandboxFile`). Undefined for an invalid id: the id
  * comes from the agent and is joined into the path, so it must pass
- * `agentSessionIdSchema`.
+ * `conversationIdSchema`.
  */
 export function acpRecord(ref: AcpRecordRef): SandboxFile | undefined {
-  if (!agentSessionIdSchema.safeParse(ref.agentSessionId).success) return undefined
-  return { projectId: ref.projectId, dir: acpLogDir(ref.projectId, ref.workspaceId), rel: `${ref.agentSessionId}.jsonl` }
+  if (!conversationIdSchema.safeParse(ref.conversationId).success) return undefined
+  return { projectId: ref.projectId, dir: acpLogDir(ref.projectId, ref.workspaceId), rel: `${ref.conversationId}.jsonl` }
 }
 
 /**
@@ -53,7 +53,7 @@ export function acpRecord(ref: AcpRecordRef): SandboxFile | undefined {
  * a file confined to the record dir. Undefined for anything but a SHA-256
  * hex digest, since the hash is joined into the path.
  */
-export function acpStoredImage(ref: Omit<AcpRecordRef, 'agentSessionId'>, hash: string): SandboxFile | undefined {
+export function acpStoredImage(ref: Omit<AcpRecordRef, 'conversationId'>, hash: string): SandboxFile | undefined {
   if (!/^[0-9a-f]{64}$/.test(hash)) return undefined
   return { projectId: ref.projectId, dir: acpLogDir(ref.projectId, ref.workspaceId), rel: `images/${hash}` }
 }
@@ -387,7 +387,7 @@ export function tailAcpLog(
       if ((size === pos && !reset) || tooLarge) return
       // Stop at the cap: the pane says so rather than going quiet.
       if (size > MAX_ACP_SCAN_BYTES) {
-        serverLog(`[server] acp log for ${record.agentSessionId}: past ${String(MAX_ACP_SCAN_BYTES)} bytes, no longer followed`)
+        serverLog(`[server] acp log for ${record.conversationId}: past ${String(MAX_ACP_SCAN_BYTES)} bytes, no longer followed`)
         tooLarge = true
         const first = reset
         reset = false

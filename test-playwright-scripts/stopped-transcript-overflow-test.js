@@ -93,7 +93,7 @@ const STOPPED = [{
   prompt: 'why is the build cache missing?',
   title: 'build cache probe',
   deathSeenBy: [],
-  agentSessions: [{ agentSessionId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true }],
+  conversations: [{ conversationId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true }],
 }]
 
 const { chromium } = requirePlaywright()
@@ -104,7 +104,7 @@ try {
 
   await page.route('**/api/workspace/list-stopped*', (route) =>
     route.fulfill({ contentType: 'application/json', body: JSON.stringify({ entries: STOPPED, total: STOPPED.length }) }))
-  await page.route('**/api/workspace/*/agent-sessions/*/transcript*', (route) =>
+  await page.route('**/api/workspace/*/conversations/*/transcript*', (route) =>
     route.fulfill({ contentType: 'application/json', body: JSON.stringify({ events: EVENTS }) }))
 
   // Selected by the URL; the stopped workspace opens in the main pane.

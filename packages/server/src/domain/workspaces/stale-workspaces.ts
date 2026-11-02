@@ -2,7 +2,7 @@ import type { RuntimeSnapshot } from '#drivers/contract'
 import {
   classifyWorkspaces,
   isWorkspaceTerminating,
-  probeAgentPaneState,
+  probeSetupState,
   probeTmuxLiveness,
 } from '#runtime/status'
 import { cleanupWorkspaceDetached } from './cleanup'
@@ -67,17 +67,17 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<v
     )
   }
 
-  // A create interrupted after tmux started but before the agent replaced
-  // the placeholder window leaves a pod tmux reports as healthy forever.
-  // Past the grace window, reap only on a conclusive `placeholder` verdict.
-  const placeholderStale: StaleWorkspaceInfo[] = []
+  // A create interrupted after tmux started but before its setup finished
+  // leaves a pod tmux reports as healthy forever. Past the grace window,
+  // reap only on a conclusive `starting` verdict.
+  const unfinishedSetup: StaleWorkspaceInfo[] = []
   await Promise.all(running.map(async (p) => {
     if (!p.projectId || !p.workspaceId) return
     if (provisioningIds.has(p.workspaceId)) return
     const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
     if (ageMs < graceMs) return
-    if (await probeAgentPaneState(p) !== 'placeholder') return
-    placeholderStale.push({
+    if (await probeSetupState(p) !== 'starting') return
+    unfinishedSetup.push({
       jobName: p.jobName, projectId: p.projectId, workspaceId: p.workspaceId, zombie: true,
     })
   }))
@@ -170,12 +170,12 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<v
         : `pod stopped: ${s.deathCause?.reason ?? 'unknown'}`
           + (s.deathCause?.detail ? ` (${s.deathCause.detail})` : ''),
     })),
-    ...placeholderStale.map((s) => ({
+    ...unfinishedSetup.map((s) => ({
       jobName: s.jobName,
       projectId: s.projectId,
       workspaceId: s.workspaceId,
       cause: { reason: 'never-started' as const },
-      why: 'agent never started; placeholder pane past grace',
+      why: 'setup never finished; past grace',
     })),
     ...orphanTargets.map((o) => ({
       ...o, cause: { reason: 'orphaned' as const }, why: 'orphan Job, no backing pod',

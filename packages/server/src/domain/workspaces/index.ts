@@ -12,8 +12,9 @@
 // Each name added here needs a unit test in
 // packages/server/test/domain/workspaces/.
 
-export { reconcileAgentSessions, reconcileStoppedAgentSessions } from './agent-session-registry'
-export { toAgentSessionEntry } from './agent-session-entry'
+export { reconcileConversations, reconcileStoppedConversations } from './conversation-registry'
+export { closeSession, openSession, reconcileSessions, renameSession, resumeSession, type OpenSessionRequest } from './sessions'
+export { toConversationEntry } from './conversation-entry'
 export { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileIgnoredFileCleans } from './cleanup'
 export { keepScratchDirsInCheckout } from './tracked-scratch-dirs'
 export { deleteWorkspace } from './delete'
@@ -33,7 +34,6 @@ export {
   saveDraftWorkspace,
 } from './drafts'
 export { reconcileRevokedShares, removeProject, unshareProject } from './project-teardown'
-export { recordedLaunch } from './prewarm'
 export { reconcilePrewarmPool } from './prewarm-reconcile'
 export { dismissProvisioning, listProvisioning } from './provisioning'
 export {
@@ -71,7 +71,7 @@ export {
 export { reconcileWorkspaceTimeouts, setWorkspaceTimeout } from './timeouts'
 export { markWaitingSeen } from './waiting-seen'
 export { listStoppedWorkspaces } from './stopped-list'
-export { getAcpStoredImage, getAgentSessionTranscript, recordOrigin } from './transcript'
+export { getAcpStoredImage, getConversationTranscript, recordOrigin } from './transcript'
 export { observeConversation } from './history-tail'
 export { saveWorkspaceAttachment } from './attachments'
 export {
@@ -87,7 +87,7 @@ export {
   uploadWorkspaceFile,
   writeWorkspaceFile,
 } from './files'
-export { runMamaCommand } from './mama'
+export { mamaCaller, runMamaCommand } from './mama'
 export { convergeAgentHistory, removeAgentHistory } from './history'
 export { reconcileGeneratedTitles } from './title-generation'
 export { serverUsageReport } from './usage-report'

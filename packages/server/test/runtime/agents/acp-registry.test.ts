@@ -32,7 +32,7 @@ describe('whenAcpConversation', () => {
     await Promise.resolve()
     expect(settled).toBe(false)
 
-    registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, c)
+    registerAcpConversation('demo', 'wt-1', { handle: 'claude', conversationId: 'acp-1' }, c)
     await expect(waited).resolves.toBe(c)
     // Already named: answered at once, and scoped per workspace.
     await expect(whenAcpConversation('demo', 'wt-1', 'claude', 0)).resolves.toBe(c)
@@ -42,21 +42,21 @@ describe('whenAcpConversation', () => {
   // A respawned agent's old conversation stays named until its stream is
   // seen closing; a hand-over must reach the one on the current process.
   it('waits for a conversation on the given pane process, past one a respawn replaced', async () => {
-    registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-old', panePid: '10' }, fake('old'))
+    registerAcpConversation('demo', 'wt-1', { handle: 'claude', conversationId: 'acp-old', panePid: '10' }, fake('old'))
     const waited = whenAcpConversation('demo', 'wt-1', 'claude', 60_000, '11')
     // Named before its old pid is gone, as a late close allows.
     const next = fake('next')
     registerAcpConversation('demo', 'wt-1', { handle: 'claude', panePid: '11' }, next)
-    registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-new', panePid: '11' }, next)
+    registerAcpConversation('demo', 'wt-1', { handle: 'claude', conversationId: 'acp-new', panePid: '11' }, next)
     await expect(waited).resolves.toBe(next)
     await expect(whenAcpConversation('demo', 'wt-1', 'claude', 0, '10')).resolves.toBeUndefined()
   })
 
   it('is scoped per project, and hands out no conversation once it is unregistered', async () => {
-    registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, fake('a'))
+    registerAcpConversation('demo', 'wt-1', { handle: 'claude', conversationId: 'acp-1' }, fake('a'))
     await expect(whenAcpConversation('other', 'wt-1', 'claude', 0)).resolves.toBeUndefined()
 
-    unregisterAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' })
+    unregisterAcpConversation('demo', 'wt-1', { handle: 'claude', conversationId: 'acp-1' })
     await expect(whenAcpConversation('demo', 'wt-1', 'claude', 0)).resolves.toBeUndefined()
   })
 

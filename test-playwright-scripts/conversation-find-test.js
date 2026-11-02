@@ -56,7 +56,7 @@ const STOPPED = [{
   prompt: 'where is the bug?',
   title: 'find probe',
   deathSeenBy: [],
-  agentSessions: [{ agentSessionId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true }],
+  conversations: [{ conversationId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true }],
 }]
 
 /** How many ranges each find highlight holds. */
@@ -89,7 +89,7 @@ try {
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
   await page.route('**/api/workspace/list-stopped*', (route) =>
     route.fulfill({ contentType: 'application/json', body: JSON.stringify({ entries: STOPPED, total: STOPPED.length }) }))
-  await page.route('**/api/workspace/*/agent-sessions/*/transcript*', (route) =>
+  await page.route('**/api/workspace/*/conversations/*/transcript*', (route) =>
     route.fulfill({ contentType: 'application/json', body: JSON.stringify({ events: EVENTS }) }))
 
   await page.goto(`${origin}/?project=${project.id}&workspace=${STOPPED[0].workspaceId}`)

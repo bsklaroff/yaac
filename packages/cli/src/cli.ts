@@ -19,7 +19,7 @@ import { workspaceTimeout } from '#commands/workspace-timeout'
 import { routineCreate, routineDelete, routineEdit, routineList, routinePause, routineResume, routineRun, type RoutineOptions } from '#commands/routine'
 import { workspaceAttach } from '#commands/workspace-attach'
 import { forward } from '#commands/forward'
-import { workspaceAgents } from '#commands/workspace-agents'
+import { workspaceConversations } from '#commands/workspace-conversations'
 import { authUpdate } from '#commands/auth-update'
 import { authClear } from '#commands/auth-clear'
 import { authList } from '#commands/auth-list'
@@ -336,12 +336,15 @@ group
 
 const workspace = program
   .command('workspace')
-  .description('Manage workspaces — a git clone plus the container and agents running in it')
+  .description('Manage workspaces — a git clone plus the container and the agent sessions running in it')
 
 workspace
   .command('create')
-  .description('Create a new workspace for a project')
-  .argument('<project>', 'Project name, id, or id prefix')
+  .description('Create a new workspace for a project, with an agent session in it; or with --workspace, open another session in a running workspace')
+  .argument('[project]', 'Project name, id, or id prefix (omit with --workspace)')
+  .option('-w, --workspace <workspace-id>', 'Open the session in this running workspace (id or unique prefix) instead of a new one. Takes the agent options, but not --branch, --group, --timeout, --start-at or --start-in')
+  .option('--resume <conversation>', 'With --workspace: open the session on one of that workspace\'s conversations (see `yaac workspace conversations`) instead of a new one')
+  .option('--no-session', 'Create the workspace with no agent session; it takes no prompt or agent options')
   .option('-t, --tool <tool>', 'Agent tool to use (claude, codex, opencode, or pi). Defaults to the agent this project was last created with, else claude')
   .option('-b, --branch <branch>', 'Reference branch for the workspace (defaults to the remote default branch)')
   .option('-p, --prompt <text>', 'Initial prompt typed into the agent once the workspace is up; - reads it from stdin')
@@ -374,8 +377,9 @@ workspace
 
 workspace
   .command('stop')
-  .description('Stop a workspace: tear down its container, keep its checkout and diff (less its gitignored files)')
-  .argument('<workspace-id>', 'Workspace ID or unique prefix')
+  .description('Stop a workspace: tear down its container, keep its checkout and diff (less its gitignored files). With --session, close one session instead; the workspace keeps running')
+  .argument('<id>', 'Workspace ID or unique prefix; with --session, a session ID or unique prefix')
+  .option('--session', 'Close the session <id> names: stop its agent and keep its conversations, leaving the workspace running')
   .action(workspaceStop)
 
 workspace
@@ -387,7 +391,7 @@ workspace
 
 workspace
   .command('restart')
-  .description('Restart a workspace: kill its container, reuse its checkout, resume the agents that were running')
+  .description('Restart a workspace: kill its container, reuse its checkout, resume the sessions it had open')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
   .option('--timeout <duration>', 'Stop it this long after the restart, like 2h; without one the restart clears any timeout it had')
   .action(workspaceRestart)
@@ -400,17 +404,18 @@ workspace
   .action(workspaceTimeout)
 
 workspace
-  .command('agents')
-  .description('List the agent sessions a workspace holds (open ones first)')
+  .command('conversations')
+  .description('List the agent conversations a workspace has held (live ones first)')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
-  .action(workspaceAgents)
+  .action(workspaceConversations)
 
 workspace
   .command('attach')
-  .description('Attach to the workspace\'s tmux session')
+  .description('Attach to the workspace\'s tmux session, on a session\'s window (its first, unless --session names one)')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
+  .option('-s, --session <session-id>', 'Open on this session\'s window (id or unique prefix)')
   .addHelpText('after', '\nTmux shortcuts:\n  Ctrl-B C  Open a new shell\n  Ctrl-B N  Switch to the next window\n  Ctrl-B P  Switch to the previous window')
-  .action((workspaceId: string) => workspaceAttach(workspaceId, 'native'))
+  .action((workspaceId: string, opts: { session?: string }) => workspaceAttach(workspaceId, 'native', opts))
 
 workspace
   .command('shell')

@@ -16,11 +16,12 @@ import { StopWorkspaceDialog } from '#components/StopWorkspaceDialog'
 import { RowMenu } from '#components/sidebar/RowMenu'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { Modal } from '#components/ui/Modal'
-import { agentLabel, workspaceModel } from '#lib/agentLabel'
+import { agentLabel, workspaceAgentLabel } from '#lib/agentLabel'
 import { api } from '#lib/api'
 import { dismissProvisioning } from '#lib/createWorkspace'
 import { stopProvisioning, stopWorkspaceOptimistic } from '#lib/stopWorkspaceFlow'
-import { useUiStore, isUnreadWaiting, isUnseenDeath } from '#lib/store'
+import { useUiStore, isSessionUnread, isUnreadWaiting, isUnseenDeath } from '#lib/store'
+import { sessionTarget } from '#lib/panes'
 import { relativeAge, timeUntil, useNow } from '#lib/time'
 import { useInlineRename } from '#lib/useInlineRename'
 import { useReadOnly, useTeammateName, useWhoami } from '#lib/viewer'
@@ -30,6 +31,7 @@ import { describeWorkspaceDeathReason } from '@yaac/shared/death-reason'
 // The server refuses longer group names, so the name fields stop here.
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import type {
+  SessionEntry,
   StoppedWorkspaceEntry,
   ProvisioningWorkspaceEntry,
   WorkspaceGroupSummary,
@@ -148,12 +150,6 @@ function MarqueeTitle({ text, hovered }: { text: string; hovered: boolean }): JS
   )
 }
 
-/** How many of a workspace's agent sessions are active. Zero reads as the
- *  ordinary single-agent case. */
-function openAgentCount(workspace: WorkspaceListEntry): number {
-  return workspace.agentSessions.filter((a) => a.active).length
-}
-
 export function WorkspaceRow({
   workspace,
   shownGroups,
@@ -211,7 +207,7 @@ export function WorkspaceRow({
           </span>
           <span className="flex items-center gap-2 text-xs text-text-faint">
             <span className="truncate">stopping…</span>
-            <span className="ml-auto shrink-0">{agentLabel(workspace.tool, workspaceModel(workspace))}</span>
+            <span className="ml-auto shrink-0">{workspaceAgentLabel(workspace)}</span>
           </span>
         </div>
       </div>
@@ -229,19 +225,12 @@ export function WorkspaceRow({
           <TimeoutIcon size={11} />
         </span>
       )}
-      {/* Only shown for more than one active agent. */}
-      {openAgentCount(workspace) > 1 && (
-        <span
-          className="shrink-0"
-          title={`${openAgentCount(workspace)} agent workspaces open in this workspace`}
-        >
-          {openAgentCount(workspace)} agents
-        </span>
-      )}
-      {/* Tool and model; hidden when the blocked-hosts badge takes the spot. */}
+      {/* Several sessions are counted here and listed under the row; one is
+          named by its agent. Hidden when the blocked-hosts badge takes the
+          spot. */}
       {workspace.blockedHosts.length === 0 && (
         <span className="ml-auto shrink-0">
-          {agentLabel(workspace.tool, workspaceModel(workspace))}
+          {workspace.sessions.length > 1 ? `${String(workspace.sessions.length)} sessions` : workspaceAgentLabel(workspace)}
         </span>
       )}
     </span>
@@ -317,9 +306,21 @@ export function WorkspaceRow({
 
           {/* A sibling of the row button, inert until hover so it doesn't
               take clicks meant for the row. Always shown on mobile. */}
+          {workspace.sessions.length > 1 && (
+            <div className="flex flex-col pb-1 pl-5">
+              {workspace.sessions.map((s) => (
+                <SessionRow key={s.sessionId} workspace={workspace} session={s} />
+              ))}
+            </div>
+          )}
+
           <RowMenu
             label="Workspace actions"
             items={[
+              {
+                label: 'New session…',
+                onSelect: () => openNewWorkspace({ projectId: workspace.projectId, inWorkspace: workspace.workspaceId }),
+              },
               { label: 'Rename', onSelect: startRename },
               { label: 'Move to group…', onSelect: () => setGrouping(true) },
               {
@@ -345,6 +346,42 @@ export function WorkspaceRow({
         onConfirm={onConfirmDelete}
       />
     </div>
+  )
+}
+
+/**
+ * One of a workspace's sessions, listed under its row when it has several:
+ * its own status and unread dot, its title or opening message, and its
+ * agent. Clicking it opens the workspace on that session's pane.
+ */
+function SessionRow({ workspace, session }: { workspace: WorkspaceListEntry; session: SessionEntry }): JSX.Element {
+  const me = useWhoami()?.userId
+  const teammate = useTeammateName()
+  const selectWorkspace = useUiStore((s) => s.selectWorkspace)
+  const focusTerminal = useUiStore((s) => s.focusTerminal)
+  const open = (): void => {
+    selectWorkspace(workspace.workspaceId)
+    focusTerminal(workspace.workspaceId, sessionTarget(session.sessionId))
+  }
+  const name = session.title ?? session.prompt?.split('\n')[0] ?? agentLabel(session.tool, session)
+  return (
+    <button
+      type="button"
+      onClick={open}
+      className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition hover:bg-surface-2/60
+        max-md:py-1.5"
+    >
+      <StatusMark
+        status={session.exited === true ? undefined : session.status}
+        asking={session.asking === true}
+        unread={isSessionUnread(session, me)}
+        {...(teammate !== undefined ? { owner: teammate } : {})}
+      />
+      <span className="min-w-0 flex-1 truncate text-text-dim">{name}</span>
+      <span className="shrink-0 text-text-faint">
+        {session.exited === true ? 'exited' : agentLabel(session.tool, session)}
+      </span>
+    </button>
   )
 }
 
@@ -499,7 +536,7 @@ export function StoppedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
         </span>
         <span className="flex items-center gap-2 text-xs text-text-faint">
           <span className="truncate">{stopLine}</span>
-          <span className="ml-auto shrink-0">{agentLabel(entry.tool, workspaceModel(entry))}</span>
+          <span className="ml-auto shrink-0">{workspaceAgentLabel(entry)}</span>
         </span>
       </button>
 

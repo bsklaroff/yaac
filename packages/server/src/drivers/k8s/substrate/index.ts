@@ -96,8 +96,6 @@ export {
   LABEL_PREWARMED,
   LABEL_PROJECT_ID,
   LABEL_WORKSPACE_ID,
-  LABEL_MODE,
-  LABEL_TOOL,
   findWorkspacePod,
   isNested,
   isPrewarmed,

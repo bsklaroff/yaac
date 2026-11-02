@@ -34,7 +34,6 @@ function pod(workspaceId: string, over: Partial<PodInfo> = {}): PodInfo {
     podName: `yaac-p-${workspaceId}-x1`,
     workspaceId,
     projectId: PROJECT_ID,
-    tool: 'claude',
     phase: 'Running',
     running: true,
     terminating: false,

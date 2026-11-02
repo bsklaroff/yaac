@@ -47,13 +47,13 @@ const OPENCODE_PLACEHOLDER_TITLE = /^(New session|Child session) - \d{4}-\d{2}-\
  */
 export async function getOpencodeSessionTitle(
   jobName: string,
-  agentSessionId: string,
+  conversationId: string,
 ): Promise<string | undefined> {
-  if (!OPENCODE_SESSION_ID.test(agentSessionId)) return undefined
+  if (!OPENCODE_SESSION_ID.test(conversationId)) return undefined
   try {
     const { stdout } = await workspaceDriver().exec(
       jobName,
-      `opencode api --standalone session.get --param sessionID=${agentSessionId}`,
+      `opencode api --standalone session.get --param sessionID=${conversationId}`,
       { maxAttempts: 2, timeout: PROBE_TIMEOUT_MS },
     )
     const { data } = JSON.parse(stdout.trim()) as { data?: { title?: unknown } }

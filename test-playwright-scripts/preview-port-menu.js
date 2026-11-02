@@ -27,7 +27,7 @@ const PROJECT = (await resolveProject(process.env.PROJECT)).id
 const { workspaces } = await api(`/workspace/list?project=${PROJECT}`)
 const ws = workspaces.find((w) => process.env.WORKSPACE
   ? w.workspaceId.startsWith(process.env.WORKSPACE)
-  : w.forwardedPorts.length > 1 && w.agentSessions?.[0]?.mode === 'tui')
+  : w.forwardedPorts.length > 1 && w.conversations?.[0]?.mode === 'tui')
 if (!ws) throw new Error(`no running tui workspace in ${PROJECT} forwarding two or more ports`)
 const [first, second] = ws.forwardedPorts
 /* A port as the SPA labels it in the desktop app (`portLabel` in #lib/preview). */

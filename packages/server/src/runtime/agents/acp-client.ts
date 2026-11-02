@@ -149,7 +149,7 @@ export interface AcpConversationDeps {
   onEvent?: (event: AcpEventInit) => void
   /** Fired when the session id is first known, so the caller can record it.
    *  Not fired on a resume. */
-  onSessionId: (agentSessionId: string) => void
+  onSessionId: (conversationId: string) => void
   /**
    * `status` changed, including its first resolution out of undefined.
    * Read the getter: a turn parked on a permission ask is working but
@@ -377,7 +377,7 @@ export class AcpConversation {
   }
 
   /** The ACP session id, once the handshake has produced one. */
-  get agentSessionId(): string | undefined {
+  get conversationId(): string | undefined {
     return this.sessionId
   }
 

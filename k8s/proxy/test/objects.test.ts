@@ -195,7 +195,6 @@ describe('decodeRegistration', () => {
       ] }],
       allowedHosts: ['api.example.com', 7],
       repoUrl: 'https://github.com/acme/repo',
-      tool: 'claude',
       projectId: 'demo',
       owner: 'alice',
       upstreamRedirects: {
@@ -210,16 +209,14 @@ describe('decodeRegistration', () => {
       ] }],
       allowedHosts: ['api.example.com'],
       repoUrl: 'https://github.com/acme/repo',
-      tool: 'claude',
       projectId: 'demo',
       owner: 'alice',
       upstreamRedirects: { 'api.anthropic.com': { host: 'mock', port: 8080, tls: false } },
     })
   })
 
-  it('drops a registration without a tool, a project, an owner, its lists, or its label', () => {
-    const base = { rules: [], allowedHosts: [], tool: 'claude', projectId: 'demo', owner: 'o' }
-    expect(decodeRegistration(cm({ ...base, tool: '' }))).toBeNull()
+  it('drops a registration without a project, an owner, its lists, or its label', () => {
+    const base = { rules: [], allowedHosts: [], projectId: 'demo', owner: 'o' }
     expect(decodeRegistration(cm({ ...base, projectId: undefined }))).toBeNull()
     expect(decodeRegistration(cm({ ...base, rules: 'x' }))).toBeNull()
     expect(decodeRegistration(cm({ ...base, allowedHosts: undefined }))).toBeNull()

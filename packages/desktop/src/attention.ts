@@ -34,6 +34,6 @@ export class AttentionMonitor {
     const toNotify = this.seeded ? newlyWaiting(this.prevKeys, snapshot.workspaces) : []
     this.prevKeys = waitingKeys(snapshot.workspaces)
     this.seeded = true
-    return { waitingCount: this.prevKeys.size, toNotify }
+    return { waitingCount: snapshot.workspaces.filter((w) => w.status === 'waiting').length, toNotify }
   }
 }

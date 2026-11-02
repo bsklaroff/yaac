@@ -4,13 +4,9 @@
  * delegates to that tool's module, keeping tool-specific formats (claude's
  * spinner titles, opencode's busy markers, codex's rollout files) out of
  * callers.
- *
- * Window naming is here too: setup names an agent's window
- * (`agentWindowName`) and the status watcher parses it back
- * (`agentWindowTool`), so the two must stay in sync.
  */
 import path from 'node:path'
-import { AGENT_TOOLS, MAX_MODEL_LENGTH, PERMISSION_MODES, agentSessionIdSchema } from '@yaac/shared/types'
+import { AGENT_TOOLS, MAX_MODEL_LENGTH, PERMISSION_MODES, conversationIdSchema } from '@yaac/shared/types'
 import type { AgentMode, AgentStatus, AgentTool, PermissionMode } from '@yaac/shared/types'
 import { acpPermissionModeFor } from './acp-client'
 import { acpAdapterFor } from './acp-adapters'
@@ -36,7 +32,7 @@ import type { SandboxFile } from './sandbox-fs'
  * choose, and codex's rollout filename is not derivable from any id.
  * opencode has no host transcript, so it has none.
  */
-export async function getAgentSessionFirstMessage(
+export async function getConversationFirstMessage(
   tool: AgentTool,
   transcript: SandboxFile | undefined,
 ): Promise<string | undefined> {
@@ -46,10 +42,10 @@ export async function getAgentSessionFirstMessage(
   return getFirstUserMessage(transcript)
 }
 
-/** What `getAgentSessionTitle` reads a conversation's title from. */
+/** What `getConversationTitle` reads a conversation's title from. */
 export interface AgentTitleSource {
   projectId: string
-  agentSessionId: string
+  conversationId: string
   /** claude's transcript, under either mode. */
   transcript?: SandboxFile
   /** The running workspace, which opencode's lookup runs in. */
@@ -64,16 +60,16 @@ export interface AgentTitleSource {
  * titles are not used: codex-acp sends the raw opening message before its
  * generated title, and opencode's server sends none.
  */
-export async function getAgentSessionTitle(tool: AgentTool, src: AgentTitleSource): Promise<string | undefined> {
+export async function getConversationTitle(tool: AgentTool, src: AgentTitleSource): Promise<string | undefined> {
   switch (tool) {
     case 'claude': return src.transcript !== undefined ? getClaudeSessionTitle(src.transcript) : undefined
-    case 'codex': return getCodexThreadName(src.projectId, src.agentSessionId)
-    case 'opencode': return getOpencodeSessionTitle(src.jobName, src.agentSessionId)
+    case 'codex': return getCodexThreadName(src.projectId, src.conversationId)
+    case 'opencode': return getOpencodeSessionTitle(src.jobName, src.conversationId)
     case 'pi': return undefined
   }
 }
 
-/** Whether a tool titles its own conversations (`getAgentSessionTitle`), so
+/** Whether a tool titles its own conversations (`getConversationTitle`), so
  *  yaac has no title to generate for them. */
 export function agentTitlesItself(tool: AgentTool): boolean {
   return tool !== 'pi'
@@ -155,8 +151,8 @@ const SESSION_PANE_OPTION = '@yaac-session'
  * The tmux command naming a conversation on `target`'s pane, as the tool's
  * reporter would, minus the transcript only the tool knows.
  */
-export function nameSessionCommand(target: string, tool: AgentTool, agentSessionId: string): string {
-  return `set-option -p -t ${target} ${SESSION_PANE_OPTION} '${tool}|${agentSessionId}|'`
+export function nameSessionCommand(target: string, tool: AgentTool, conversationId: string): string {
+  return `set-option -p -t ${target} ${SESSION_PANE_OPTION} '${tool}|${conversationId}|'`
 }
 
 /**
@@ -168,7 +164,7 @@ export const PANE_SESSION_FORMAT = `#{=1024;s/[^ -~]//:${SESSION_PANE_OPTION}}`
 /** A conversation as a pane names it (`PANE_SESSION_FORMAT`). */
 export interface PaneSession {
   tool: AgentTool
-  agentSessionId: string
+  conversationId: string
   /** Project-relative, as the column stores it. */
   transcriptPath?: string
 }
@@ -179,7 +175,7 @@ export interface PaneSession {
  *
  * This is where the untrusted value is validated: the id is later recorded,
  * interpolated into a launch command (`--resume <id>`), and used in path
- * lookups. So the id must match `agentSessionIdSchema` (a bounded charset,
+ * lookups. So the id must match `conversationIdSchema` (a bounded charset,
  * never a flag such as `--dangerously-bypass-approvals-and-sandbox`), and an
  * absolute or project-escaping path is dropped. Reads of a recorded path are
  * further confined to the tool's home (`resolveProjectPath`).
@@ -187,11 +183,11 @@ export interface PaneSession {
 export function parsePaneSession(value: string): PaneSession | undefined {
   const [tool, id, ...rest] = value.trim().split('|')
   const rel = rest.join('|')
-  if (!AGENT_TOOLS.includes(tool as AgentTool) || !agentSessionIdSchema.safeParse(id).success) return undefined
+  if (!AGENT_TOOLS.includes(tool as AgentTool) || !conversationIdSchema.safeParse(id).success) return undefined
   const safe = rel !== '' && !path.isAbsolute(rel) && !rel.split(/[\\/]/).includes('..')
   return {
     tool: tool as AgentTool,
-    agentSessionId: id,
+    conversationId: id,
     ...(safe ? { transcriptPath: rel } : {}),
   }
 }
@@ -272,27 +268,3 @@ export function classifyAgentObservation(tool: AgentTool, observed: string): Age
   return classifyClaudeTitle(observed)
 }
 
-/**
- * The tmux window name for a workspace's Nth agent: the bare tool name for
- * the first (so `yaac:<tool>` targets keep working), then `<tool>-2`,
- * `<tool>-3`, …
- */
-export function agentWindowName(tool: AgentTool, index: number): string {
-  return index === 0 ? tool : `${tool}-${index + 1}`
-}
-
-/**
- * The agent tool a tmux window runs, or undefined for non-agent windows;
- * the inverse of `agentWindowName`.
- *
- * Any tool matches, not just the workspace's, since a workspace can hold a
- * codex conversation beside claude ones; dropping it would make the next
- * restart forget it.
- *
- * Init windows and scratch shells are excluded. An agent started by hand in
- * a scratch window is still linked (its hook fires) but gets no status;
- * naming the window after the tool opts it in.
- */
-export function agentWindowTool(windowName: string): AgentTool | undefined {
-  return AGENT_TOOLS.find((t) => windowName === t || new RegExp(`^${t}-\\d+$`).test(windowName))
-}

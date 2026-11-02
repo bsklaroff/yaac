@@ -55,7 +55,7 @@ export function WorkspaceTerminal({
   focusKey,
 }: {
   workspaceId: string
-  /** /pty/attach target: 'agent', 'shell:<name>', or 'window:@<id>'. */
+  /** /pty/attach target: 'session:<window name>' or 'window:@<id>'. */
   target: string
   /** Whether this pane is on-screen. Hidden panes drop their WebGL context
    *  (see createWebglController). */

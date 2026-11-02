@@ -6,8 +6,10 @@ const DEATH_REASON_COPY: Record<WorkspaceDeathReason, string> = {
   'evicted': 'evicted by the node',
   'crashed': 'crashed',
   'pod-stopped': 'container stopped',
-  'agent-exited': 'agent exited',
-  'never-started': 'agent never started',
+  // Its tmux server exited. A session's agent exiting never ends its
+  // workspace (docs/sessions.md); the key predates that.
+  'agent-exited': 'its tmux server exited',
+  'never-started': 'its setup never finished',
   'orphaned': 'removed outside yaac',
 }
 

@@ -230,10 +230,10 @@ install-wide fields (image builds, plan usage, driver) pass through.
 - **Settings.** A teammate's project pages show read-only, env var names
   with secret values masked. Personal settings (credentials, git identity,
   shortcuts, `Dockerfile.user`) always show the caller's own.
-- **Unread dots are the viewer's.** A workspace's row lists the users who
+- **Unread dots are the viewer's.** A session's row lists the users who
   have viewed its current waiting spell (`waitingSeenBy`, emptied when it
-  goes back to work) and its death (`deathSeenBy`, emptied when it stops
-  again). The snapshot carries those lists, and for a project or group its
+  goes back to work), and a workspace's row those who viewed its death
+  (`deathSeenBy`, emptied when it stops again). The snapshot carries those lists, and for a project or group its
   deaths with how many each user has seen (`deaths`, `deathsSeenBy`), so
   the sidebar's dots and the rail's count say whether the caller has seen
   them, on a teammate's workspaces as on their own. Opening one, or "Mark

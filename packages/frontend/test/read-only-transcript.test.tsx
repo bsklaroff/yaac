@@ -6,8 +6,8 @@ import { ACP_PAGE_SPAN, type AcpEvent, type AcpServerMessage } from '@yaac/share
 import { ReadOnlyTranscript } from '#components/ReadOnlyTranscript'
 import { useUiStore } from '#lib/store'
 import {
-  agentEvent as said, agentSession, FakeSocket, mockFetch, renderWithClient, serverError, testQueryClient, userEvent as asked,
-  type FetchMock,
+  agentEvent as said, conversation, FakeSocket, mockFetch, renderWithClient, serverError, sessionEntry, testQueryClient,
+  userEvent as asked, type FetchMock,
 } from './harness'
 
 /**
@@ -19,9 +19,16 @@ import {
  * toggles in read-only-workspace.test.tsx.
  */
 
-const TRANSCRIPT = 'GET /api/workspace/w1/agent-sessions/c1/transcript'
+const TRANSCRIPT = 'GET /api/workspace/w1/conversations/c1/transcript'
 
-const session: typeof agentSession = (over) => agentSession({ mode: 'tui', ...over })
+const session: typeof conversation = (over) => conversation({ mode: 'tui', ...over })
+
+/** A live pane's one conversation, held by a session in `status`. */
+const holding = (status: 'running' | 'waiting', asking?: true): Partial<Parameters<typeof ReadOnlyTranscript>[0]> => ({
+  live: true,
+  conversations: [session({ sessionId: 's1' })],
+  liveSessions: [sessionEntry({ sessionId: 's1', conversationId: 'c1', mode: 'tui', status, ...(asking ? { asking } : {}) })],
+})
 
 let server: FetchMock
 beforeEach(() => {
@@ -36,7 +43,7 @@ function renderPane(props: Partial<Parameters<typeof ReadOnlyTranscript>[0]> = {
   renderWithClient(
     <ReadOnlyTranscript
       workspaceId="w1"
-      sessions={[session()]}
+      conversations={[session()]}
       prompt="what changed?"
       {...props}
     />,
@@ -97,9 +104,9 @@ describe('ReadOnlyTranscript', () => {
     transcript([said(0, 'the first answer')])
     server.route(TRANSCRIPT.replace('c1', 'c2'), { page: 0, events: [said(0, 'the second answer')] })
     renderPane({
-      sessions: [
-        session({ agentSessionId: 'c1', ordinal: 0, active: false, prompt: 'first ask' }),
-        session({ agentSessionId: 'c2', ordinal: 1, active: true, prompt: 'second ask' }),
+      conversations: [
+        session({ conversationId: 'c1', ordinal: 0, active: false, prompt: 'first ask' }),
+        session({ conversationId: 'c2', ordinal: 1, active: true, prompt: 'second ask' }),
       ],
     })
 
@@ -111,14 +118,14 @@ describe('ReadOnlyTranscript', () => {
 
   it('reads a tui conversation of any tool', async () => {
     // The server translates each tool's own history, so none is skipped.
-    renderPane({ sessions: [session({ tool: 'opencode' })] })
+    renderPane({ conversations: [session({ tool: 'opencode' })] })
     expect(await screen.findByText('the router')).toBeTruthy()
   })
 
   it('falls back to the founding ask when there is no conversation to read', async () => {
     // A workspace stopped a moment ago has none listed yet; a conversation
     // the server has no record of answers 404.
-    renderPane({ sessions: [], prompt: 'what changed?' })
+    renderPane({ conversations: [], prompt: 'what changed?' })
     expect(screen.getByText('what changed?')).toBeTruthy()
     cleanup()
 
@@ -324,7 +331,7 @@ describe('ReadOnlyTranscript', () => {
       const sock = FakeSocket.latest()
       act(() => {
         sock.open()
-        sock.deliver({ type: 'hello', agentSessionId: 'c1', busy: false, queued: [], page: 0, events, ...over })
+        sock.deliver({ type: 'hello', conversationId: 'c1', busy: false, queued: [], page: 0, events, ...over })
       })
     }
     const pending = { type: 'tool', seq: 2, call: { toolCallId: 't1', title: 'npm test', kind: 'execute', status: 'pending' } } as const
@@ -332,7 +339,7 @@ describe('ReadOnlyTranscript', () => {
     it('follows it as it happens, with what runs shown running while the agent works', async () => {
       // A tui conversation, followed through its tool's history: the
       // stream reports no turns, so the snapshot's status says it works.
-      renderPane({ live: true, sessions: [session({ status: 'running' })] })
+      renderPane(holding('running'))
       expect(await screen.findByText('the router')).toBeTruthy()
       expect(FakeSocket.latest().url).toMatch(/\/api\/acp\/observe\?.*session=c1/)
       greet([asked(0, 'what changed?'), said(1, 'the router'), pending], { history: true })
@@ -347,7 +354,7 @@ describe('ReadOnlyTranscript', () => {
     })
 
     it('shows an open ask as waiting on the teammate, with nothing to answer it', async () => {
-      renderPane({ live: true, owner: 'Ada', sessions: [session({ status: 'waiting', asking: true })] })
+      renderPane({ ...holding('waiting', true), owner: 'Ada' })
       greet([asked(0, 'clean up'), {
         type: 'permission-request', seq: 1, requestId: '7',
         toolCall: { toolCallId: 'c1', title: 'rm -rf build', kind: 'execute', status: 'pending' },
@@ -359,7 +366,7 @@ describe('ReadOnlyTranscript', () => {
     })
 
     it('asks for a subagent\'s transcript each time it is opened, since the server follows only the last asked for', async () => {
-      renderPane({ live: true, sessions: [session({ status: 'running' })] })
+      renderPane(holding('running'))
       greet([
         { type: 'subagent', seq: 0, subagent: { id: 'sa', name: 'Explore', task: 'find the router', state: 'running' } },
         { type: 'subagent', seq: 1, subagent: { id: 'sb', name: 'Review', task: 'check the diff', state: 'running' } },
@@ -380,17 +387,24 @@ describe('ReadOnlyTranscript', () => {
       expect(asked()).toEqual(['sa', 'sb', 'sa'])
     })
 
-    it('marks each conversation\'s tab with its own status', async () => {
+    it('marks each conversation\'s tab with the status of the session holding it', async () => {
       renderPane({
         live: true,
         owner: 'Ada',
-        sessions: [
-          session({ status: 'running', prompt: 'first' }),
-          session({ agentSessionId: 'c2', ordinal: 1, active: false, status: 'waiting', asking: true, prompt: 'second' }),
+        conversations: [
+          session({ sessionId: 'sa', prompt: 'first' }),
+          session({ conversationId: 'c2', sessionId: 'sb', ordinal: 1, prompt: 'second' }),
+          // One its session held before a `/clear` has no status of its own.
+          session({ conversationId: 'c0', sessionId: 'sb', ordinal: 2, active: false, prompt: 'older' }),
+        ],
+        liveSessions: [
+          sessionEntry({ sessionId: 'sa', conversationId: 'c1', status: 'running' }),
+          sessionEntry({ sessionId: 'sb', conversationId: 'c2', status: 'waiting', asking: true }),
         ],
       })
       expect(await screen.findByLabelText('Waiting for Ada\'s answer')).toBeTruthy()
       expect(screen.getByRole('button', { name: /first/ }).querySelector('.braille-spinner')).toBeTruthy()
+      expect(screen.getByRole('button', { name: /older/ }).querySelector('span[aria-label], .braille-spinner')).toBeNull()
     })
   })
 
@@ -399,7 +413,7 @@ describe('ReadOnlyTranscript', () => {
     // over; once it stops, the stopped view must fetch its final record
     // rather than reuse that read.
     const client = testQueryClient()
-    const pane = (live: boolean): JSX.Element => <ReadOnlyTranscript workspaceId="w1" sessions={[session()]} live={live} />
+    const pane = (live: boolean): JSX.Element => <ReadOnlyTranscript workspaceId="w1" conversations={[session()]} live={live} />
     const view = renderWithClient(pane(true), client)
     expect(await screen.findByText('the router')).toBeTruthy()
     transcript([asked(0, 'what changed?'), said(1, 'the router'), said(2, 'and the final turn')])

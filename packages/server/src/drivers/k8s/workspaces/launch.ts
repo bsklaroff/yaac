@@ -1,11 +1,9 @@
 import {
   LABEL_INSTALL_ID,
-  LABEL_MODE,
   LABEL_NESTED,
   LABEL_NPM_CACHE,
   LABEL_PREWARMED,
   LABEL_PROJECT_ID,
-  LABEL_TOOL,
   installId,
   k8sNamespace,
   k8sWorkspacePaths,
@@ -149,7 +147,6 @@ export async function prepareWorkspaceSubstrate(
     config,
     allowlist: intent.allowlist,
     remoteUrl: intent.remoteUrl,
-    tool: intent.tool,
     projectId,
     owner: intent.owner,
     secretRules: intent.proxySecretRules,
@@ -258,10 +255,6 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     [LABEL_PROJECT_ID]: spec.projectId,
     ...workspaceIdLabels(spec.workspaceId),
     [LABEL_INSTALL_ID]: installId(),
-    [LABEL_TOOL]: spec.tool,
-    // Only acp pods are labelled; the status watcher reads a missing label
-    // as tui.
-    ...(spec.mode === 'acp' ? { [LABEL_MODE]: spec.mode } : {}),
     // Removed on claim, turning the spare into a normal workspace.
     ...(spec.prewarm ? { [LABEL_PREWARMED]: 'true' } : {}),
     // Lets image salvage tell from the pod alone whether there is anything
@@ -310,9 +303,6 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     workspaceId: spec.workspaceId,
     projectId: spec.projectId,
     jobName,
-    tool: spec.tool,
-    declaredTool: spec.tool,
-    mode: spec.mode,
     // The caller's next step, `awaitReady`, waits for the pod.
     running: false,
     state: 'pending',
