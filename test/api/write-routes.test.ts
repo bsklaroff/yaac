@@ -709,7 +709,8 @@ describe('write routes', () => {
       expect((await getProjectRow(DEMO))?.createDefaults.pi).toEqual({ permissionMode: 'bypass' })
     })
 
-    it('names the launch model on the provisioning row', async () => {
+    // And the session the webapp minted the id of, which the create opens.
+    it('names the launch model and the session on the provisioning row', async () => {
       let rowModel: unknown
       mockCreateWorkspace.mockImplementation((_projectId, opts) => {
         rowModel = listProvisioning().find((p) => p.workspaceId === opts.workspaceId)
@@ -717,10 +718,11 @@ describe('write routes', () => {
       })
       const app = buildApp({ buildId: 'test' })
       const res = await app.request('/api/workspace/create', rawInit({
-        method: 'POST', body: JSON.stringify({ project: DEMO, tool: 'claude', model: 'claude-opus-5-5' }),
+        method: 'POST', body: JSON.stringify({ project: DEMO, tool: 'claude', model: 'claude-opus-5-5', sessionId: SESSION }),
       }))
       await res.text()
-      expect(rowModel).toMatchObject({ model: 'claude-opus-5-5', modelName: 'Opus 5.5' })
+      expect(rowModel).toMatchObject({ model: 'claude-opus-5-5', modelName: 'Opus 5.5', sessionId: SESSION })
+      expect(mockCreateWorkspace.mock.calls.at(-1)?.[1]).toMatchObject({ session: { id: SESSION } })
     })
 
     it('streams progress and a terminal result event from createWorkspace', async () => {

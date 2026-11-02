@@ -6,8 +6,11 @@ import { WorkspaceChat } from '#components/WorkspaceChat'
 import { WorkspaceTerminal } from '#components/WorkspaceTerminal'
 import { agentLabel } from '#lib/agentLabel'
 import { closeSession, resumeSession } from '#lib/createWorkspace'
+import { useOpening, type Opening } from '#lib/opening'
 import { useReadOnly } from '#lib/viewer'
-import { TOOL_LABELS, type SessionEntry, type WorkspaceListEntry } from '@yaac/shared/types'
+import {
+  CONVERSATION_PROMPT_PREVIEW_LENGTH, TOOL_LABELS, type SessionEntry, type WorkspaceListEntry,
+} from '@yaac/shared/types'
 
 /** A session pane's pty target: its window, by name (`session:<name>`). */
 export function sessionPtyTarget(session: Pick<SessionEntry, 'window'>): string {
@@ -36,6 +39,12 @@ export function SessionPane({ workspace, session, paneTarget, visible, focused, 
   const { workspaceId } = workspace
   const [showLog, setShowLog] = useState(false)
   const conversations = workspace.conversations.filter((c) => c.sessionId === session.sessionId)
+  // Only a chat session's first conversation opened with its message.
+  const opening = useOpening(
+    session.sessionId,
+    session.mode === 'acp' && conversations.length <= 1 ? session.prompt : undefined,
+    CONVERSATION_PROMPT_PREVIEW_LENGTH,
+  )
   const terminal = (
     <div className="relative h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
       {/* Its own boundary: a terminal that fails to mount (an xterm
@@ -67,14 +76,13 @@ export function SessionPane({ workspace, session, paneTarget, visible, focused, 
           key={session.conversationId}
           workspaceId={workspaceId}
           conversationId={session.conversationId}
-          // Only the session's first conversation opened with its message.
-          {...(session.prompt !== undefined && conversations.length <= 1 ? { launchPrompt: session.prompt } : {})}
+          {...(opening !== undefined ? { opening } : {})}
           visible={visible}
           focused={focused}
         />
       </div>
     )
-    : <AcpStarting session={session} onShowLog={() => setShowLog(true)} />
+    : <AcpStarting session={session} opening={opening} onShowLog={() => setShowLog(true)} />
   return (
     <div className="flex h-full w-full flex-col">
       <div className="min-h-0 flex-1">{body}</div>
@@ -89,14 +97,18 @@ export function SessionPane({ workspace, session, paneTarget, visible, focused, 
  * window runs acpd, whose log is a click away for an agent that never comes
  * up.
  */
-function AcpStarting({ session, onShowLog }: { session: SessionEntry; onShowLog: () => void }): JSX.Element {
+function AcpStarting({ session, opening, onShowLog }: {
+  session: SessionEntry
+  opening: Opening | undefined
+  onShowLog: () => void
+}): JSX.Element {
   const column = useChatColumn()
   return (
     <div className="flex h-full w-full flex-col overflow-hidden rounded-md bg-bg">
       <div className="flex-1 overflow-y-auto px-4 py-4">
         <div className={column}>
           <Launching
-            {...(session.prompt !== undefined ? { prompt: session.prompt } : {})}
+            {...opening}
             {...(session.exited === true ? {} : { caption: `Starting ${TOOL_LABELS[session.tool]}…` })}
           />
         </div>

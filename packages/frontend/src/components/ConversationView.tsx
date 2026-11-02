@@ -11,6 +11,7 @@ import {
 } from '#components/AcpActivity'
 import { useConversationFind, type FindOptions } from '#components/ConversationFind'
 import type { AcpStream } from '#lib/acp'
+import type { Opening } from '#lib/opening'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { CondenseIcon, JumpBottomIcon, JumpTopIcon, LoadingIcon, NarrowIcon, UncondenseIcon, WidenIcon } from '#lib/icons'
 import { TAIL_SLACK_PX, type TranscriptPages } from '#lib/useTranscriptPages'
@@ -388,13 +389,15 @@ export function JumpButtons({ pages, unseen }: { pages: TranscriptPages; unseen:
   )
 }
 
-/** A create's opening prompt and its progress, drawn as the conversation it
- *  becomes: the user's message, then the spinner. */
-export function Launching({ prompt, caption }: { prompt?: string; caption?: string }): JSX.Element {
+/** A chat that is not up yet, drawn as the conversation it becomes: the
+ *  message it opens with, then the spinner. While that message loads the
+ *  spinner says the pane is connecting. */
+export function Launching({ prompt, loading, caption }: Opening & { caption?: string }): JSX.Element {
+  const shown = loading === true ? 'connecting' : caption
   return (
     <div className="flex flex-col items-start break-words text-sm">
       {prompt !== undefined && <div className={USER_BUBBLE}>{prompt}</div>}
-      <Working {...(caption !== undefined ? { caption } : {})} />
+      <Working {...(shown !== undefined ? { caption: shown } : {})} />
     </div>
   )
 }

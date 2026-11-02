@@ -261,7 +261,7 @@ describe('NewWorkspacePane', () => {
     // Every field is sent, so every field becomes the next default.
     expect(sent(CREATE)).toEqual([{
       project: 'proj', tool: 'codex', workspaceId: expect.any(String) as string, prompt: 'tidy the parser',
-      branch: 'dev', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'acp', draftOnFailure: true,
+      sessionId: expect.any(String) as string, branch: 'dev', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'acp', draftOnFailure: true,
     }])
     // The create opens at once, its row naming the model and prompt.
     const state = useUiStore.getState()
@@ -1091,7 +1091,7 @@ describe('NewWorkspacePane', () => {
       fireEvent.click(sendButton())
       // The server deletes the draft only once the create succeeds.
       expect(sent(CREATE)).toEqual([{
-        project: 'proj', tool: 'codex', workspaceId: expect.any(String) as string,
+        project: 'proj', tool: 'codex', workspaceId: expect.any(String) as string, sessionId: expect.any(String) as string,
         branch: 'dev', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'tui', prompt: 'half an idea',
         title: 'Named', group: 'g-other', draftId: 'd1', draftOnFailure: true,
       }])

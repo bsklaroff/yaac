@@ -32,7 +32,8 @@ interface ProvisioningEntry {
   /** Sidebar group, so the row shows in its section while provisioning. */
   groupId?: string
   title?: string
-  /** The prompt a create opens with, shown with its failure. */
+  /** The session a create opens, and the prompt it opens with. */
+  sessionId?: string
   prompt?: string
   /** The launch model and its display name. */
   model?: string
@@ -68,6 +69,7 @@ interface ProvisioningInput {
   message?: string
   groupId?: string
   title?: string
+  sessionId?: string
   prompt?: string
   model?: string
   modelName?: string
@@ -129,6 +131,7 @@ export function registerProvisioning(input: ProvisioningInput): void {
     message: input.message ?? 'Starting…',
     ...(input.groupId !== undefined ? { groupId: input.groupId } : {}),
     ...(input.title !== undefined ? { title: input.title } : {}),
+    ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
     ...(input.prompt !== undefined ? { prompt: input.prompt } : {}),
     ...(input.model !== undefined ? { model: input.model } : {}),
     ...(input.modelName !== undefined ? { modelName: input.modelName } : {}),
@@ -395,6 +398,7 @@ export function listProvisioning(): ProvisioningWorkspaceEntry[] {
       ...(e.error !== undefined ? { error: e.error } : {}),
       ...(e.groupId !== undefined ? { groupId: e.groupId } : {}),
       ...(e.title !== undefined ? { title: e.title } : {}),
+      ...(e.sessionId !== undefined ? { sessionId: e.sessionId } : {}),
       ...(e.prompt !== undefined ? { prompt: e.prompt } : {}),
       ...(e.model !== undefined ? { model: e.model } : {}),
       ...(e.modelName !== undefined ? { modelName: e.modelName } : {}),

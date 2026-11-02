@@ -770,14 +770,19 @@ describe('prepareStart', () => {
     // leaves its prompt on the row, held before the agent starts so no sweep
     // can find the conversation first. The sweep that records the
     // conversation sends it (conversation-registry.test.ts).
+    // Under the session id the client minted, which its provisioning row
+    // names from the start.
     it('holds a chat workspace\'s prompt from before its agent starts, and returns without waiting for it', async () => {
+      const sessionId = randomUUID()
       let heldAtLaunch: string | undefined
+      let rows: ReturnType<typeof listProvisioning> | undefined
       let released!: () => void
       const agentUp = new Promise<void>((resolve) => { released = resolve })
       installDriver({
         exec: async (jobName, cmd) => {
           execs.push({ jobName, cmd })
           if (SESSION_WINDOW.test(cmd)) heldAtLaunch = (await listWorkspaceSessions('wt-chat'))[0]?.pendingPrompt
+          rows ??= listProvisioning()
           const window = /display-message -p -t yaac:(\S+) '#\{pane_pid\}'/.exec(cmd)?.[1]
           if (window !== undefined) {
             void agentUp.then(() => registerAcpConversation(
@@ -789,10 +794,11 @@ describe('prepareStart', () => {
         },
       })
       const progress: string[] = []
-      expect(await start({ workspaceId: 'wt-chat', mode: 'acp', prompt: 'go', onProgress: (m) => progress.push(m) }))
-        .toMatchObject({ workspaceId: 'wt-chat' })
+      expect(await start({ workspaceId: 'wt-chat', sessionId, mode: 'acp', prompt: 'go', onProgress: (m) => progress.push(m) }))
+        .toMatchObject({ workspaceId: 'wt-chat', sessionId })
+      expect(rows).toEqual([expect.objectContaining({ workspaceId: 'wt-chat', sessionId, prompt: 'go' })])
       expect(heldAtLaunch).toBe('go')
-      expect((await listWorkspaceSessions('wt-chat'))[0]?.pendingPrompt).toBe('go')
+      expect((await listWorkspaceSessions('wt-chat'))[0]).toMatchObject({ id: sessionId, pendingPrompt: 'go' })
       expect(progress).not.toContain('Connecting to Claude Code...')
       released()
     })

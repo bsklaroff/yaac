@@ -5,9 +5,10 @@ import { ChatBottomBar, Launching, ROUND_BUTTON, useChatColumn } from '#componen
 import { agentLabel } from '#lib/agentLabel'
 import { useProjectName } from '#lib/projectIdentity'
 import { dismissProvisioning } from '#lib/createWorkspace'
+import { useOpening } from '#lib/opening'
 import { useUiStore, type LaunchPane } from '#lib/store'
 import { stopProvisioning } from '#lib/stopWorkspaceFlow'
-import type { ProvisioningWorkspaceEntry } from '@yaac/shared/types'
+import { PROMPT_PREVIEW_LENGTH, type ProvisioningWorkspaceEntry } from '@yaac/shared/types'
 
 const PANE_NAME: Record<LaunchPane, string> = { shell: 'a shell', files: 'Files', changes: 'Changes' }
 
@@ -26,7 +27,7 @@ export function CreatingPane({ creating }: { creating: ProvisioningWorkspaceEntr
   const projectName = useProjectName()
   const column = useChatColumn()
   const pane = useUiStore((s) => s.launches[creating.workspaceId]?.pane)
-  const prompt = creating.prompt ? { prompt: creating.prompt } : {}
+  const opening = useOpening(creating.sessionId, creating.prompt, PROMPT_PREVIEW_LENGTH)
 
   const dismiss = (): void => {
     void dismissProvisioning(creating.workspaceId).catch(() => { /* best-effort */ })
@@ -39,10 +40,10 @@ export function CreatingPane({ creating }: { creating: ProvisioningWorkspaceEntr
       <div className="flex-1 overflow-y-auto px-4 py-4">
         <div className={column}>
           {creating.error === undefined ? (
-            <Launching {...prompt} caption={creating.stopping === true ? 'Stopping…' : creating.message} />
+            <Launching {...opening} caption={creating.stopping === true ? 'Stopping…' : creating.message} />
           ) : (
             <div className="flex flex-col items-start gap-3 break-words text-sm">
-              {creating.prompt && <div className={USER_BUBBLE}>{creating.prompt}</div>}
+              {opening?.prompt !== undefined && <div className={USER_BUBBLE}>{opening.prompt}</div>}
               <p className="text-xs text-danger">
                 Couldn&apos;t {creating.kind === 'restart' ? 'restart' : 'create'} the workspace: {creating.error}
               </p>

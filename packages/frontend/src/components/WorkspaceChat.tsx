@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useAcpStream } from '#lib/acp'
+import type { Opening } from '#lib/opening'
 import { ActivityBar } from '#components/AcpActivity'
 import { useComposerMenu } from '#components/ComposerMenu'
 import { tokenCount } from '#components/AcpTranscript'
@@ -52,13 +53,12 @@ function echoKey(text: string, images: number): string {
   return `${text}\u0000${String(images)}`
 }
 
-export function WorkspaceChat({ workspaceId, conversationId, launchPrompt, visible, focused }: {
+export function WorkspaceChat({ workspaceId, conversationId, opening, visible, focused }: {
   workspaceId: string
   conversationId: string
-  /** The message its session was opened with, shown with the working
-   *  spinner until the agent echoes it, so the session's start shows no
-   *  gap. Only for its session's first conversation. */
-  launchPrompt?: string
+  /** The message its session was opened with, when this is that session's
+   *  first conversation. */
+  opening?: Opening
   visible: boolean
   /** The pane the user is in, which Cmd/Ctrl-F searches. */
   focused: boolean
@@ -187,10 +187,17 @@ export function WorkspaceChat({ workspaceId, conversationId, launchPrompt, visib
     setChatDraft(workspaceId, conversationId, draft)
   }, [draft, workspaceId, conversationId, setChatDraft])
 
-  /** The session's opening message stands in for the conversation until
-   *  the agent echoes it (or fails), so its spinner carries on unbroken. */
+  /**
+   * What stands in for the conversation, with the session's opening message
+   * if it has one: a spinner saying the pane is connecting until there is
+   * something to show, then one saying the agent is working until it echoes
+   * that message (or fails), so the session's start shows no gap.
+   */
   const started = events.some((e) => (e.type === 'user' && e.thread === undefined) || e.type === 'error')
-  const launching = launchPrompt !== undefined && !started
+  const standIn = view !== undefined ? undefined
+    : !connected && groups.length === 0 ? { caption: 'connecting' }
+    : opening !== undefined && !started ? {}
+    : undefined
 
   /**
    * On first connect, settle a message a previous mount sent but never saw
@@ -306,15 +313,15 @@ export function WorkspaceChat({ workspaceId, conversationId, launchPrompt, visib
           onScroll={onScroll}
           className="flex-1 overflow-y-auto px-4 py-4"
         >
-          {view === undefined && groups.length === 0 && pages.loading === undefined && !launching && (
+          {view === undefined && groups.length === 0 && pages.loading === undefined && standIn === undefined && (
             <div className="flex h-full items-center justify-center text-xs text-text-faint">
-              {connected ? 'No messages yet — say something.' : 'Connecting to the agent…'}
+              No messages yet — say something.
             </div>
           )}
           <FileLinksContext.Provider value={fileLinks}>
             <div className={column}>
               {pages.loading === 'earlier' && <PageLoading />}
-              {view === undefined && launching && <Launching prompt={launchPrompt} />}
+              {standIn !== undefined && <Launching {...opening} {...standIn} />}
               {body}
               {pages.loading === 'later' && <PageLoading />}
               {view === undefined && pages.atEnd && queued.map((q) => (

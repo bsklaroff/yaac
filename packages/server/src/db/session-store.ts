@@ -4,6 +4,7 @@ import { getDb } from './client'
 import { sessions, workspaceConversations } from './schema'
 import { appendUser, lacksUser } from './workspace-store'
 import { notifyWorkspaceListChanged } from '#lib/notify'
+import { isUuid } from '#lib/uuid'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
 import { normalizeTitle } from '@yaac/shared/titles'
 import { MAX_MODEL_LENGTH, MAX_PROMPT_LENGTH } from '@yaac/shared/types'
@@ -20,6 +21,8 @@ export type SessionRow = NullsToUndefined<typeof sessions.$inferSelect>
 
 /** What a session is opened with. */
 export interface SessionLaunchSettings {
+  /** Its id, when the caller minted one; otherwise one is minted here. */
+  id?: string
   tool: AgentTool
   mode: AgentMode
   permissionMode: PermissionMode
@@ -55,7 +58,7 @@ export async function insertSession(
   settings: SessionLaunchSettings,
 ): Promise<SessionRow> {
   const db = await getDb()
-  const id = randomUUID()
+  const id = settings.id ?? randomUUID()
   const prompt = settings.prompt?.slice(0, MAX_PROMPT_LENGTH)
   const title = settings.title === undefined ? '' : normalizeTitle(settings.title)
   const [row] = await db.insert(sessions).values({
@@ -113,6 +116,7 @@ export async function listOpenSessionsFor(workspaceIds: string[]): Promise<Map<s
 }
 
 export async function getSessionRow(sessionId: string): Promise<SessionRow | undefined> {
+  if (!isUuid(sessionId)) return undefined
   const db = await getDb()
   const [row] = await db.select().from(sessions).where(eq(sessions.id, sessionId))
   return row === undefined ? undefined : nullsToUndefined(row)

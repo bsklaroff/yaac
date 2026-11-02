@@ -144,7 +144,8 @@ workspace or beside it in its own.
 - **Panes.** Each open session is a pane, `session:<id>`, rendered by its
   mode (`SessionPane`): a chat for `acp`, the agent's terminal for `tui`.
   An `acp` session whose agent has not named a conversation shows its
-  opening message and a spinner, with acpd's log a click away. Every pane
+  opening message and a spinner, with acpd's log a click away
+  (docs/agent-modes.md describes the stand-ins up to its first reply). Every pane
   has a ×; closing a session asks first only while its agent is mid-turn.
   A workspace with no pane open shows what it can start and the
   conversations it held, each resumable (`EmptyWorkspace`).
