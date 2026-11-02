@@ -17,8 +17,8 @@ import { TAILSCALE_OPERATOR_NAMESPACE } from '@yaac/server/drivers/k8s/substrate
  *
  * The happy paths are not covered here: a green `check` needs a wired
  * cluster, `install` builds every image, and `delete` destroys the host's
- * cluster. `install --byo`'s happy path runs in `byo-install-suite`, and
- * the gates' refusal logic is unit-tested in
+ * cluster. `install --byo`'s happy path and the gates' refusal logic are
+ * unit-tested in
  * packages/server/test/drivers/k8s/install/install.test.ts.
  *
  * One test env serves the file; no test writes into its data dir, and a

@@ -20,12 +20,13 @@ import {
   ensureServerImage,
   resolveServerImageTag,
 } from '@yaac/server/drivers/k8s/install/server-deploy'
+import { ensureStorageClaims } from '@yaac/server/drivers/k8s/install/storage'
 import { readLock } from '@yaac/shared/lock'
+import { globalRoot, nodeLocalRoot, serverLocalRoot } from '@yaac/shared/paths'
 import { recordInstall } from '@yaac/shared/install-record'
 import { registerServer } from '@yaac/shared/server-config'
 import type { ServerLock } from '@yaac/shared/server-lock-file'
 import { startKubectlForward, type KubectlForward } from '@yaac/test-utils/kubectl-forward'
-import { ensureTestStorageClaims } from '#support/storage-claims'
 import { testTmpBase } from '@yaac/test-utils/tmp'
 import { TEST_CLI_DIR } from '#support/cli-bundle'
 import { TEST_IMAGE_PREFIX } from '@yaac/test-utils/setup'
@@ -45,8 +46,8 @@ const execFileAsync = promisify(execFile)
  *    returned lock reports its local port, not the pod's.
  *  - **RBAC.** A ServiceAccount and a ClusterRoleBinding named per
  *    namespace, so files don't share one.
- *  - **Storage.** The install's claim pair, bound to the file's own data
- *    dir (`#storage-claims`), plus one extra mount of the scratch base
+ *  - **Storage.** The install's claims, as hostPath volumes into the
+ *    file's own data dir's tiers, plus one extra mount of the scratch base
  *    (`testTmpBase()`) at its own path, since test repos and mock-remote
  *    stores live beside the data dir rather than in a tier.
  */
@@ -86,7 +87,14 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
   const imageRef = await requirePrebuiltServerImage()
 
   await ensureNamespace()
-  await ensureTestStorageClaims(imageRef)
+  await ensureStorageClaims({
+    shape: {
+      kind: 'static',
+      globalHostPath: globalRoot(),
+      serverLocalHostPath: serverLocalRoot(),
+      nodeLocalHostPath: nodeLocalRoot(),
+    },
+  })
   await applyObject(buildServerServiceAccountManifest())
   await applyObject(buildServerClusterRoleManifest())
   await applyObject(buildServerClusterRoleBindingManifest())

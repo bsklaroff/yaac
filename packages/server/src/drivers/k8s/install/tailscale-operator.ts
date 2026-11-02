@@ -32,15 +32,15 @@ import { ClusterInstallError } from './arg-guards'
 import { ensurePinnedManifest } from './pinned-manifest'
 import type { ClusterInstallDeps } from './install'
 
-export const TAILSCALE_OPERATOR_VERSION = 'v1.102.4'
+const TAILSCALE_OPERATOR_VERSION = 'v1.102.4'
 
-export function tailscaleOperatorManifestUrl(): string {
+function tailscaleOperatorManifestUrl(): string {
   return `https://raw.githubusercontent.com/tailscale/tailscale/${TAILSCALE_OPERATOR_VERSION}`
     + '/cmd/k8s-operator/deploy/manifests/operator.yaml'
 }
 
 /** The committed checksum of that manifest. */
-export const TAILSCALE_OPERATOR_PIN_FILE = path.join(TAILSCALE_OPERATOR_DIR, 'operator.yaml.sha256')
+const TAILSCALE_OPERATOR_PIN_FILE = path.join(TAILSCALE_OPERATOR_DIR, 'operator.yaml.sha256')
 
 /** Each image the manifest names, mapped to this version's digest. */
 const TAILSCALE_OPERATOR_IMAGES: Record<string, string> = {
@@ -77,7 +77,7 @@ interface OperatorDeployment {
  * dropped, since a server-side apply reads a null as a field to remove.
  * Throws if an image has no digest in `TAILSCALE_OPERATOR_IMAGES`.
  */
-export function tailscaleOperatorObjects(raw: string, hostname: string): ManifestObject[] {
+function tailscaleOperatorObjects(raw: string, hostname: string): ManifestObject[] {
   return parseAllDocuments(raw)
     .map((d) => d.toJS() as ManifestObject | null)
     .filter((d): d is ManifestObject => d !== null && typeof d === 'object')
@@ -107,7 +107,7 @@ function pinnedImage(ref: string | undefined): string {
 }
 
 /** The operator's OAuth Secret, from the client `TS_OAUTH_CLIENT_*` names. */
-export function tailscaleOperatorOauthSecret(client: { id: string; secret: string }): ManifestObject {
+function tailscaleOperatorOauthSecret(client: { id: string; secret: string }): ManifestObject {
   return {
     apiVersion: 'v1',
     kind: 'Secret',
