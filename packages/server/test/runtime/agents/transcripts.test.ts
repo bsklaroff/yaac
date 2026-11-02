@@ -164,8 +164,8 @@ describe('transcripts', () => {
     // shared home or the workspace's history, codex's rollout by thread,
     // pi's log by id, opencode's database.
     it('answers whether each tool would find the conversation it resumes', async () => {
-      const resumable = (tool: 'claude' | 'codex' | 'opencode' | 'pi', agentSessionId: string): Promise<boolean> =>
-        hasConversationHistory(projectId, wt, { tool, agentSessionId })
+      const resumable = (tool: 'claude' | 'codex' | 'opencode' | 'pi', conversationId: string): Promise<boolean> =>
+        hasConversationHistory(projectId, wt, { tool, conversationId })
       await write(claudeLog('c-home'))
       await write(path.join(agentHistoryDir(projectId, wt, 'claude'), '-elsewhere', 'c-hist.jsonl'))
       await write(path.join(agentHistoryDir(projectId, wt, 'codex'), '2026', '10', '03', 'rollout-2026-10-03T12-00-00-cx.jsonl'))
@@ -179,8 +179,6 @@ describe('transcripts', () => {
 
       await write(path.join(opencodeCheckpointDir(projectId, wt), 'opencode.db'))
       expect(await resumable('opencode', 'ses_1')).toBe(true)
-      // The pin a self-naming tool never ran under.
-      expect(await resumable('opencode', wt)).toBe(false)
       await write(path.join(agentHistoryDir(projectId, wt, 'pi'), '20261003T120000_p-1.jsonl'))
       expect(await resumable('pi', 'p-1')).toBe(true)
     })
@@ -193,8 +191,8 @@ describe('transcripts', () => {
       await fs.mkdir(locked[1], { recursive: true })
       for (const dir of locked) await fs.chmod(dir, 0)
       try {
-        await expect(hasConversationHistory(projectId, wt, { tool: 'claude', agentSessionId: 'c-1' })).rejects.toThrow('EACCES')
-        await expect(hasConversationHistory(projectId, wt, { tool: 'codex', agentSessionId: 'cx' })).rejects.toThrow('EACCES')
+        await expect(hasConversationHistory(projectId, wt, { tool: 'claude', conversationId: 'c-1' })).rejects.toThrow('EACCES')
+        await expect(hasConversationHistory(projectId, wt, { tool: 'codex', conversationId: 'cx' })).rejects.toThrow('EACCES')
       } finally {
         for (const dir of locked) await fs.chmod(dir, 0o700)
       }
@@ -249,11 +247,11 @@ describe('transcripts', () => {
       await write(path.join(opencodeCheckpointDir(projectId, wt), '.tmp-12.db'))
 
       const files = await conversationFiles(projectId, wt, [
-        { tool: 'claude', mode: 'acp', agentSessionId: 'cl', transcriptPath: 'claude/projects/-home-x/cl.jsonl' },
-        { tool: 'codex', mode: 'tui', agentSessionId: 'cx' },
-        { tool: 'pi', mode: 'tui', agentSessionId: 'pi' },
-        { tool: 'opencode', mode: 'acp', agentSessionId: 'oc' },
-        { tool: 'opencode', mode: 'tui', agentSessionId: 'oc-tui' },
+        { tool: 'claude', mode: 'acp', conversationId: 'cl', transcriptPath: 'claude/projects/-home-x/cl.jsonl' },
+        { tool: 'codex', mode: 'tui', conversationId: 'cx' },
+        { tool: 'pi', mode: 'tui', conversationId: 'pi' },
+        { tool: 'opencode', mode: 'acp', conversationId: 'oc' },
+        { tool: 'opencode', mode: 'tui', conversationId: 'oc-tui' },
       ])
       const names = (id: string): string[] => (files.get(id) ?? []).map((f) => f.name)
 
@@ -293,8 +291,8 @@ describe('transcripts', () => {
         await fs.symlink(sibling, path.join(conversations, 'cl2', 'subagents'))
 
         const files = await conversationFiles(projectId, wt, [
-          { tool: 'claude', mode: 'tui', agentSessionId: 'cl' },
-          { tool: 'claude', mode: 'tui', agentSessionId: 'cl2' },
+          { tool: 'claude', mode: 'tui', conversationId: 'cl' },
+          { tool: 'claude', mode: 'tui', conversationId: 'cl2' },
         ])
         expect(files.get('cl')?.map((f) => f.name)).toEqual(['cl.jsonl'])
         expect(files.get('cl2')?.map((f) => f.name)).toEqual(['cl2.jsonl'])

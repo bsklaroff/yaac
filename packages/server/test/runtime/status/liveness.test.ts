@@ -4,11 +4,11 @@ import os from 'node:os'
 import path from 'node:path'
 
 import {
-  _clearAgentStartedCacheForTests,
+  _clearSetupDoneCacheForTests,
   _clearTmuxAliveCacheForTests,
   forgetLiveness,
   isTmuxSessionAlive,
-  probeAgentPaneState,
+  probeSetupState,
   probeTmuxLiveness,
 } from '#runtime/status/liveness'
 import {
@@ -113,14 +113,14 @@ describe('isTmuxSessionAlive', () => {
     expect(await isTmuxSessionAlive(target('p', 's-evict'))).toBe(false)
   })
 })
-describe('probeAgentPaneState', () => {
+describe('probeSetupState', () => {
   let dataDir: string
 
   beforeEach(async () => {
-    _clearAgentStartedCacheForTests()
+    _clearSetupDoneCacheForTests()
     execMock.mockReset()
     installFakeWorkspaceDriver({ exec: execMock })
-    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-agentpane-'))
+    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-setup-'))
     setDataDir(dataDir)
   })
 
@@ -140,45 +140,48 @@ describe('probeAgentPaneState', () => {
     })
   }
 
-  it('reports the sleep keepalive as placeholder, targeting the first window', async () => {
-    setPaneCommand('p', 's-half', 'sleep')
-    await expect(probeAgentPaneState(target('p', 's-half'))).resolves.toBe('placeholder')
+  it('reports a keeper still named for its start as starting, reading the first window', async () => {
+    setPaneCommand('p', 's-half', '_yaac-starting')
+    await expect(probeSetupState(target('p', 's-half'))).resolves.toBe('starting')
     expect(execMock).toHaveBeenCalledWith(
       'yaac-p-s-half',
-      "tmux -S /tmp/yaac-tmux/server display-message -p -t 'yaac:^' '#{pane_current_command}'",
+      "tmux -S /tmp/yaac-tmux/server display-message -p -t 'yaac:^' '#{window_name}'",
       expect.objectContaining({ timeout: expect.any(Number) as number }),
     )
   })
 
-  it('reports any other pane command as started', async () => {
-    setPaneCommand('p', 's-live', 'claude')
-    await expect(probeAgentPaneState(target('p', 's-live'))).resolves.toBe('started')
+  // A workspace from before keepers runs its agent in its first window.
+  it('reports the renamed keeper, or any other first window, as done', async () => {
+    setPaneCommand('p', 's-live', '_yaac')
+    await expect(probeSetupState(target('p', 's-live'))).resolves.toBe('done')
+    setPaneCommand('p', 's-old', 'claude')
+    await expect(probeSetupState(target('p', 's-old'))).resolves.toBe('done')
   })
 
-  it('memoizes a started verdict and never re-probes it', async () => {
-    setPaneCommand('p', 's-memo', 'claude')
-    await expect(probeAgentPaneState(target('p', 's-memo'))).resolves.toBe('started')
-    // `started` is final: no further exec, even if the pane looks idle.
-    setPaneCommand('p', 's-memo', 'sleep')
-    await expect(probeAgentPaneState(target('p', 's-memo'))).resolves.toBe('started')
+  it('memoizes a done verdict and never re-probes it', async () => {
+    setPaneCommand('p', 's-memo', '_yaac')
+    await expect(probeSetupState(target('p', 's-memo'))).resolves.toBe('done')
+    // `done` is final: no further exec.
+    setPaneCommand('p', 's-memo', '_yaac-starting')
+    await expect(probeSetupState(target('p', 's-memo'))).resolves.toBe('done')
     expect(execMock).toHaveBeenCalledTimes(1)
   })
 
   it('reports unknown on a probe failure, and keeps re-probing', async () => {
     setPaneCommand('p', 's-blip', new Error('exec timed out'))
-    await expect(probeAgentPaneState(target('p', 's-blip'))).resolves.toBe('unknown')
-    setPaneCommand('p', 's-blip', 'sleep')
-    await expect(probeAgentPaneState(target('p', 's-blip'))).resolves.toBe('placeholder')
+    await expect(probeSetupState(target('p', 's-blip'))).resolves.toBe('unknown')
+    setPaneCommand('p', 's-blip', '_yaac-starting')
+    await expect(probeSetupState(target('p', 's-blip'))).resolves.toBe('starting')
   })
 
   it('forgetLiveness drops the memoized verdict for that session', async () => {
-    setPaneCommand('p', 's-evict2', 'claude')
-    await expect(probeAgentPaneState(target('p', 's-evict2'))).resolves.toBe('started')
+    setPaneCommand('p', 's-evict2', '_yaac')
+    await expect(probeSetupState(target('p', 's-evict2'))).resolves.toBe('done')
 
     forgetLiveness('p', 's-evict2')
 
-    setPaneCommand('p', 's-evict2', 'sleep')
-    await expect(probeAgentPaneState(target('p', 's-evict2'))).resolves.toBe('placeholder')
+    setPaneCommand('p', 's-evict2', '_yaac-starting')
+    await expect(probeSetupState(target('p', 's-evict2'))).resolves.toBe('starting')
   })
 })
 describe('probeTmuxLiveness', () => {

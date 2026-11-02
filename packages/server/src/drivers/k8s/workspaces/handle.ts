@@ -1,5 +1,4 @@
 import { isPrewarmed, type PodInfo } from '#drivers/k8s/substrate'
-import { AGENT_TOOLS, normalizeTool } from '@yaac/shared/types'
 import type { RuntimeHandle } from '#drivers/contract'
 import type { WorkspaceDeathCause } from '@yaac/shared/types'
 
@@ -13,11 +12,6 @@ export function runtimeHandleFromPod(pod: PodInfo): RuntimeHandle {
     workspaceId: pod.workspaceId,
     projectId: pod.projectId,
     jobName: pod.jobName,
-    tool: normalizeTool(pod.tool),
-    ...((AGENT_TOOLS as readonly string[]).includes(pod.tool)
-      ? { declaredTool: normalizeTool(pod.tool) }
-      : {}),
-    mode: pod.mode === 'acp' ? 'acp' : 'tui',
     running: pod.running,
     state: pod.running ? 'running' : pod.phase.toLowerCase(),
     labels: pod.labels,

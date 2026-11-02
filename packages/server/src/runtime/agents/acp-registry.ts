@@ -22,8 +22,8 @@ const panePids = new Map<string, string>()
  *  given pane pid. */
 const waiters = new Map<string, Set<{ panePid?: string; wake: (conversation: AcpConversation) => void }>>()
 
-function sessionKey(projectId: string, workspaceId: string, agentSessionId: string): string {
-  return `${projectId}/${workspaceId}/id:${agentSessionId}`
+function sessionKey(projectId: string, workspaceId: string, conversationId: string): string {
+  return `${projectId}/${workspaceId}/id:${conversationId}`
 }
 
 function handleKey(projectId: string, workspaceId: string, handle: string): string {
@@ -38,15 +38,15 @@ function handleKey(projectId: string, workspaceId: string, handle: string): stri
 export function registerAcpConversation(
   projectId: string,
   workspaceId: string,
-  names: { handle: string; agentSessionId?: string; panePid?: string },
+  names: { handle: string; conversationId?: string; panePid?: string },
   conversation: AcpConversation,
 ): void {
   const handle = handleKey(projectId, workspaceId, names.handle)
   byName.set(handle, conversation)
   if (names.panePid !== undefined) panePids.set(handle, names.panePid)
   else panePids.delete(handle)
-  if (names.agentSessionId === undefined) return
-  const session = sessionKey(projectId, workspaceId, names.agentSessionId)
+  if (names.conversationId === undefined) return
+  const session = sessionKey(projectId, workspaceId, names.conversationId)
   byName.set(session, conversation)
   named.add(handle)
   for (const key of [handle, session]) {
@@ -59,13 +59,13 @@ export function registerAcpConversation(
 export function unregisterAcpConversation(
   projectId: string,
   workspaceId: string,
-  names: { handle: string; agentSessionId?: string },
+  names: { handle: string; conversationId?: string },
 ): void {
   byName.delete(handleKey(projectId, workspaceId, names.handle))
   named.delete(handleKey(projectId, workspaceId, names.handle))
   panePids.delete(handleKey(projectId, workspaceId, names.handle))
-  if (names.agentSessionId !== undefined) {
-    byName.delete(sessionKey(projectId, workspaceId, names.agentSessionId))
+  if (names.conversationId !== undefined) {
+    byName.delete(sessionKey(projectId, workspaceId, names.conversationId))
   }
 }
 
@@ -74,9 +74,9 @@ export function unregisterAcpConversation(
 export function acpConversation(
   projectId: string,
   workspaceId: string,
-  agentSessionId: string,
+  conversationId: string,
 ): AcpConversation | undefined {
-  return byName.get(sessionKey(projectId, workspaceId, agentSessionId))
+  return byName.get(sessionKey(projectId, workspaceId, conversationId))
 }
 
 /** The live conversation by the driver's handle, which a fresh one has
@@ -122,11 +122,11 @@ export function whenAcpConversation(
 export function whenAcpSession(
   projectId: string,
   workspaceId: string,
-  agentSessionId: string,
+  conversationId: string,
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<AcpConversation | undefined> {
-  const key = sessionKey(projectId, workspaceId, agentSessionId)
+  const key = sessionKey(projectId, workspaceId, conversationId)
   const found = byName.get(key)
   return found !== undefined ? Promise.resolve(found) : nextRegistered(key, timeoutMs, { signal })
 }
@@ -177,9 +177,9 @@ export function _resetAcpRegistryForTests(): void {
  */
 const parkedQueues = new Map<string, QueuedTurn[]>()
 
-export function parkAcpQueue(projectId: string, workspaceId: string, agentSessionId: string, queue: QueuedTurn[]): void {
+export function parkAcpQueue(projectId: string, workspaceId: string, conversationId: string, queue: QueuedTurn[]): void {
   if (queue.length === 0) return
-  const key = sessionKey(projectId, workspaceId, agentSessionId)
+  const key = sessionKey(projectId, workspaceId, conversationId)
   parkedQueues.set(key, [...(parkedQueues.get(key) ?? []), ...queue])
 }
 
@@ -196,8 +196,8 @@ export function dropAcpQueues(projectId: string, workspaceId: string, keep: Read
   }
 }
 
-export function takeAcpQueue(projectId: string, workspaceId: string, agentSessionId: string): QueuedTurn[] {
-  const key = sessionKey(projectId, workspaceId, agentSessionId)
+export function takeAcpQueue(projectId: string, workspaceId: string, conversationId: string): QueuedTurn[] {
+  const key = sessionKey(projectId, workspaceId, conversationId)
   const queue = parkedQueues.get(key) ?? []
   parkedQueues.delete(key)
   return queue

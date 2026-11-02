@@ -62,15 +62,27 @@ beforeEach(() => {
  *  listing a test seeds. */
 let client: QueryClient
 
-/** The pane on screen, and the one the user is in unless `focused` is false. */
-const pane = (workspaceId = 'w1', agentSessionId = 'acp-1', focused = true): JSX.Element =>
-  <WorkspaceChat workspaceId={workspaceId} agentSessionId={agentSessionId} visible focused={focused} />
+/** The pane on screen, and the one the user is in unless `focused` is false;
+ *  `launchPrompt` is the message its session opened with. */
+const pane = (workspaceId = 'w1', conversationId = 'acp-1', focused = true, launchPrompt?: string): JSX.Element =>
+  <WorkspaceChat
+    workspaceId={workspaceId}
+    conversationId={conversationId}
+    {...(launchPrompt !== undefined ? { launchPrompt } : {})}
+    visible
+    focused={focused}
+  />
 
-function show(workspaceId?: string, agentSessionId?: string, focused?: boolean): ReturnType<typeof render> {
+function show(
+  workspaceId?: string,
+  conversationId?: string,
+  focused?: boolean,
+  launchPrompt?: string,
+): ReturnType<typeof render> {
   client = testQueryClient()
   const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
-  return render(pane(workspaceId, agentSessionId, focused), { wrapper })
+  return render(pane(workspaceId, conversationId, focused, launchPrompt), { wrapper })
 }
 
 describe('WorkspaceChat drafts', () => {
@@ -281,14 +293,14 @@ describe('WorkspaceChat mid-turn', () => {
   })
 })
 
-// A chat create's prompt stands in for the conversation until the agent
-// echoes it, so the create's spinner carries straight on into the chat.
-describe('WorkspaceChat right after its create', () => {
+// A session's opening message stands in for the conversation until the
+// agent echoes it, so the create's spinner carries straight on into the chat.
+describe('WorkspaceChat right after its session opens', () => {
   beforeEach(() => {
     stream.events = []
     stream.busy = false
     stream.connected = true
-    useUiStore.setState({ chatDrafts: {}, launches: { w1: { prompt: 'build it' } } })
+    useUiStore.setState({ chatDrafts: {} })
   })
 
   afterEach(() => {
@@ -296,29 +308,27 @@ describe('WorkspaceChat right after its create', () => {
     cleanup()
   })
 
-  it('shows the prompt working until the echo, then the conversation itself', async () => {
-    const { rerender } = show()
+  it('shows the prompt working until the echo, then the conversation itself', () => {
+    const { rerender } = show('w1', 'acp-1', true, 'build it')
     expect(screen.getByText('build it')).toBeTruthy()
     expect(screen.getByText('working')).toBeTruthy()
     expect(screen.queryByText(/No messages yet/)).toBeNull()
 
     stream.events = [user(0, 'build it')]
     stream.busy = true
-    rerender(pane())
-    await waitFor(() => expect(useUiStore.getState().launches).toEqual({}))
+    rerender(pane('w1', 'acp-1', true, 'build it'))
     expect(screen.getAllByText('build it')).toHaveLength(1)
     expect(screen.getByText('working')).toBeTruthy()
   })
 
-  it('leaves another workspace, and a failed start, to their own view', async () => {
-    show('w2')
+  it('leaves a session opened with no message, and a failed start, to their own view', () => {
+    show()
     expect(screen.getByText(/No messages yet/)).toBeTruthy()
     cleanup()
 
     stream.events = [{ type: 'error', seq: 0, message: 'the agent refused' }]
-    show()
+    show('w1', 'acp-1', true, 'build it')
     expect(screen.getByText('the agent refused')).toBeTruthy()
-    await waitFor(() => expect(useUiStore.getState().launches).toEqual({}))
     expect(screen.queryByText('build it')).toBeNull()
   })
 })
@@ -2123,7 +2133,7 @@ describe('WorkspaceChat pages', () => {
 
   it('reads the pages before the one it attached to above it, and still sends from the latest', async () => {
     const server = mockFetch({
-      'GET /api/workspace/w1/agent-sessions/acp-1/transcript': { page: 0, events: [user(0, 'the first ask')] },
+      'GET /api/workspace/w1/conversations/acp-1/transcript': { page: 0, events: [user(0, 'the first ask')] },
     })
     // Attached past a compaction: its `hello` is the conversation's last page.
     stream.page = 1
@@ -2135,7 +2145,7 @@ describe('WorkspaceChat pages', () => {
     // jsdom lays nothing out, so the reader sits at the top and the page
     // before loads above.
     expect(await screen.findByText('the first ask')).toBeTruthy()
-    expect(server.called('GET /api/workspace/w1/agent-sessions/acp-1/transcript').map((c) => c.query.get('page'))).toEqual(['0'])
+    expect(server.called('GET /api/workspace/w1/conversations/acp-1/transcript').map((c) => c.query.get('page'))).toEqual(['0'])
     const text = container.textContent ?? ''
     expect(text.indexOf('the first ask')).toBeLessThan(text.indexOf('Conversation compacted'))
     expect(text.indexOf('Conversation compacted')).toBeLessThan(text.indexOf('the latest answer'))
@@ -2153,7 +2163,7 @@ describe('WorkspaceChat pages', () => {
       L1: [[user(0, 'the first ask')]],
       L2: [[user(0, 'the first ask')], [user(ACP_PAGE_SPAN, 'the old life, read back')]],
     }
-    const route = 'GET /api/workspace/w1/agent-sessions/acp-1/transcript'
+    const route = 'GET /api/workspace/w1/conversations/acp-1/transcript'
     const server = mockFetch({
       [route]: (c: { query: URLSearchParams }) => ({ page: Number(c.query.get('page')), life, events: pages[life][Number(c.query.get('page'))] }),
     })

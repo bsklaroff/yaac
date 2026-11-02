@@ -75,17 +75,17 @@ const SESSION_ID = /^ses_[A-Za-z0-9]+$/
  */
 type Row = Record<string, unknown>
 
-/** A conversation's history, as read by `getAgentSessionTranscript`. */
+/** A conversation's history, as read by `getConversationTranscript`. */
 export async function opencodeTranscriptAsAcp(
   projectId: string,
   workspaceId: string,
-  agentSessionId: string,
+  conversationId: string,
 ): Promise<AcpEvent[]> {
-  if (!SESSION_ID.test(agentSessionId)) return []
+  if (!SESSION_ID.test(conversationId)) return []
   const rows = workspacesSandboxed()
-    ? await exportRows(projectId, workspaceId, agentSessionId)
-    : await databaseRows(projectId, workspaceId, agentSessionId)
-  return synthesizeAcpRecord(rows, agentSessionId).replay()
+    ? await exportRows(projectId, workspaceId, conversationId)
+    : await databaseRows(projectId, workspaceId, conversationId)
+  return synthesizeAcpRecord(rows, conversationId).replay()
 }
 
 /** The export's rows, or none before the checkpoint has written one. */
@@ -109,7 +109,7 @@ async function exportRows(projectId: string, workspaceId: string, root: string):
  * even a lock file) is written beside it.
  */
 async function databaseRows(projectId: string, workspaceId: string, root: string): Promise<Row[]> {
-  const [listed] = (await conversationFiles(projectId, workspaceId, [{ tool: 'opencode', mode: 'tui', agentSessionId: root }]))
+  const [listed] = (await conversationFiles(projectId, workspaceId, [{ tool: 'opencode', mode: 'tui', conversationId: root }]))
     .get(root) ?? []
   if (listed === undefined) return []
   const file = path.join(listed.file.dir, listed.file.rel)

@@ -39,17 +39,17 @@ up, exited means gone. It outlives the yaac server, so `yaac server restart`
 never stops an agent.
 
 Each workspace has its own tmux server and socket; with one shared socket,
-`has-session -t yaac` and `respawn-window -t yaac:<tool>` would answer for
-whichever workspace came first. Sockets live under the OS temp dir because
+`has-session -t yaac` and `new-window -t yaac` would answer for whichever
+workspace came first. Sockets live under the OS temp dir because
 `sockaddr_un.sun_path` is about 104 bytes on macOS and data-dir paths are
 longer. The temp dir name is keyed by the data dir, so two servers on one
 host never collide.
 
-The session has the same shape as the one `workspace-bin/yaac-workspace-init`
-creates in a pod (the placeholder the stale reaper looks for, `sleep
-2147483647` here because macOS's sleep has no `infinity`; the `yaac:<tool>`
-window names the status watcher parses; the tmux options the webapp terminal
-needs), because that machinery is shared by both drivers.
+The tmux session has the same shape as the one
+`workspace-bin/yaac-workspace-init` creates in a pod (the keeper window the
+stale reaper looks at, `sleep 2147483647` here because macOS's sleep has no
+`infinity`, docs/sessions.md; the tmux options the webapp terminal needs),
+because that machinery is shared by both drivers.
 
 ## Paths
 
@@ -468,8 +468,8 @@ ask. This applies to chat (ACP) workspaces too. pi has no permission system
 
 The default is the last fallback: a create uses the mode the request names,
 else the one this project last chose for that agent, else the default (see
-docs/permission-modes.md). The result is stored in
-`workspaces.permissionMode` so a restart relaunches agents the same way.
+docs/permission-modes.md). The result is stored on the session
+(`sessions.permissionMode`) so a restart relaunches its agent the same way.
 `bypass` can still be requested; here it means the agent acts as the user on
 the user's machine and credentials, and the create says so in its progress
 output.

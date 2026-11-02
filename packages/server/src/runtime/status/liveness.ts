@@ -6,7 +6,7 @@
  * reaper acts on the verdict, and a cluster blip read as death would
  * destroy a healthy workspace. So both return a tri-state with `unknown`.
  */
-import { WorkspaceExecError, type RuntimeHandle } from '#drivers/contract'
+import { KEEPER_STARTING, WorkspaceExecError, type RuntimeHandle } from '#drivers/contract'
 import { workspaceDriver } from '#drivers/driver'
 import { tmuxCmd } from '#runtime/agents'
 import { isWorkspaceStreamHealthy } from './status-store'
@@ -133,49 +133,47 @@ export async function isTmuxSessionAlive(target: ProbeTarget): Promise<boolean> 
 }
 
 /**
- * Outcome of an agent-pane probe.
- * - `placeholder`: the first pane still runs create's
- *                  keepalive; setup died before `respawn-window` (e.g. a
- *                  server restart mid-create), so no agent will start.
- * - `started`:     the agent was respawned. Final: `respawn-window -k`
- *                  killed the placeholder.
- * - `unknown`:     no verdict; must not be treated as `placeholder`.
+ * Outcome of a setup probe.
+ * - `starting`: the keeper window still has its starting name, so the
+ *               create that launched the workspace never finished its setup
+ *               (e.g. a server restart mid-create).
+ * - `done`:     setup finished. Final: the keeper is never renamed back.
+ * - `unknown`:  no verdict; must not be treated as `starting`.
  */
-export type AgentPaneState = 'placeholder' | 'started' | 'unknown'
+export type SetupState = 'starting' | 'done' | 'unknown'
 
-/** Workspaces whose agent was seen started; `started` is final, so they are
- *  not probed again. */
-const agentStartedCache = new Set<string>()
+/** Workspaces whose setup was seen done; `done` is final, so they are not
+ *  probed again. */
+const setupDoneCache = new Set<string>()
 
 /**
- * Probe whether the first window still runs create's placeholder. Targets
- * `yaac:^` (the lowest-index window, opened by `new-session`) rather than
- * the tool-named window, so a retooled spare's rename cannot hide it. The
- * placeholder's `pane_current_command` is `sleep`.
+ * Probe whether the workspace's setup finished, by the name of its first
+ * window (`yaac:^`, the keeper `new-session` opened), which setup renames
+ * when it is done (`finishSetupCommand`).
  */
-export async function probeAgentPaneState(target: ProbeTarget): Promise<AgentPaneState> {
+export async function probeSetupState(target: ProbeTarget): Promise<SetupState> {
   const key = tmuxAliveKey(target.projectId, target.workspaceId)
-  if (agentStartedCache.has(key)) return 'started'
+  if (setupDoneCache.has(key)) return 'done'
   try {
     const driver = workspaceDriver()
     const { stdout } = await driver.exec(
       target.jobName,
       `${tmuxCmd(driver.workspacePaths(target.jobName))} `
-      + "display-message -p -t 'yaac:^' '#{pane_current_command}'",
+      + "display-message -p -t 'yaac:^' '#{window_name}'",
       { timeout: TMUX_PROBE_TIMEOUT_MS, maxAttempts: 1 },
     )
-    if (stdout.trim() === 'sleep') return 'placeholder'
-    agentStartedCache.add(key)
-    return 'started'
+    if (stdout.trim() === KEEPER_STARTING) return 'starting'
+    setupDoneCache.add(key)
+    return 'done'
   } catch {
     // Includes a dead tmux; the liveness probe decides that.
     return 'unknown'
   }
 }
 
-/** Test helper: drop all memoized agent-started verdicts. */
-export function _clearAgentStartedCacheForTests(): void {
-  agentStartedCache.clear()
+/** Test helper: drop all memoized setup-done verdicts. */
+export function _clearSetupDoneCacheForTests(): void {
+  setupDoneCache.clear()
 }
 
 /**
@@ -185,5 +183,5 @@ export function _clearAgentStartedCacheForTests(): void {
 export function forgetLiveness(projectId: string, workspaceId: string): void {
   const key = tmuxAliveKey(projectId, workspaceId)
   tmuxAliveCache.delete(key)
-  agentStartedCache.delete(key)
+  setupDoneCache.delete(key)
 }

@@ -9,6 +9,7 @@ const LABELS: Record<SidebarStatus, string> = {
   waiting: 'Waiting',
   running: 'Running',
   background: 'Monitoring',
+  idle: 'No agent',
   stopped: 'Stopped',
 }
 

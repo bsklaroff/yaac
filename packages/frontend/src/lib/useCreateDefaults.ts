@@ -85,9 +85,8 @@ export function useCreateDefaults(projectId: string | null): CreateDefaults {
 /**
  * Start a create through the shared provisioning flow (see
  * `useProvisionWorkspace`). The id is generated here so the row is
- * selectable and survives a reload. What the workspace must show once it is
- * up is held as its `launches` entry: a chat create's prompt, which its chat
- * pane shows until the conversation echoes it, and the pane to open.
+ * selectable and survives a reload. The pane to open once the workspace is
+ * up is held as its `launches` entry.
  */
 export function useCreateWorkspace(): (c: WorkspaceCreate) => void {
   const provision = useProvisionWorkspace()
@@ -95,17 +94,11 @@ export function useCreateWorkspace(): (c: WorkspaceCreate) => void {
   return useCallback((c) => {
     const workspaceId = randomUUID()
     const label = c.title || c.shownTitle
-    const prompt = c.mode === 'acp' && c.prompt ? c.prompt : undefined
-    if (prompt !== undefined || c.pane !== undefined) {
-      setLaunch(workspaceId, {
-        ...(prompt !== undefined ? { prompt } : {}),
-        ...(c.pane !== undefined ? { pane: c.pane } : {}),
-      })
-    }
+    if (c.pane !== undefined) setLaunch(workspaceId, { pane: c.pane })
     provision({
       workspaceId,
       projectId: c.projectId,
-      tool: c.tool,
+      ...(c.tool !== undefined ? { tool: c.tool } : {}),
       kind: 'create',
       ...(c.groupId !== undefined ? { groupId: c.groupId } : {}),
       ...(label ? { title: label } : {}),

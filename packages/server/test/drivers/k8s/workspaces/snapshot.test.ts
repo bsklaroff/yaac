@@ -10,7 +10,6 @@ function labels(workspaceId: string): Record<string, string> {
   return {
     'yaac.workspace-id': workspaceId,
     'yaac.project-id': PROJECT,
-    'yaac.tool': 'claude',
     'yaac.install-id': installId(),
   }
 }
@@ -38,7 +37,7 @@ function healthyCache(): ClusterCache {
   return {
     healthy: () => true,
     workspacePods: (): PodInfo[] => [{
-      podName: 'cached', workspaceId: 'cached', jobName: 'yaac-demo-cached', projectId: PROJECT, tool: 'claude',
+      podName: 'cached', workspaceId: 'cached', jobName: 'yaac-demo-cached', projectId: PROJECT,
       phase: 'Running', running: true, terminating: false, createdAtMs: 1, labels: {},
     }],
     workspaceJobs: () => [],

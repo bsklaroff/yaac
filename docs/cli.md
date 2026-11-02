@@ -54,7 +54,12 @@ yaac project
   clone <project> [dir]         Clone a hosted project's remote to this machine
 
 yaac workspace
-  create <project>              Create a workspace and attach to its agent
+  create [project]              Create a workspace and attach to its session
+    -w, --workspace <id>        Open the session in this running workspace
+                                instead (no project, and none of the workspace
+                                options: --branch, --group, --timeout, --start-*)
+    --resume <conversation>     With --workspace: on one of its conversations
+    --no-session                A workspace with no agent session
     -t, --tool <tool>           claude, codex, opencode or pi (default: the
                                 project's last, else claude)
     -b, --branch <branch>       Base branch (default: the remote's default)
@@ -78,16 +83,18 @@ yaac workspace
     -a, --all                   With -s, show all
   rename <workspace-id> <title>
   stop <workspace-id>           Tear down the runtime; keep the checkout and diff
+    --session                   <id> names a session: close only it (sessions.md)
   delete <workspace-id>         Delete a stopped workspace's checkout and history,
                                 or discard a queued one
     -y, --yes                   Without the confirmation prompt
-  restart <workspace-id>        Restart, resuming the agents that were running
+  restart <workspace-id>        Restart, resuming the sessions it had open
     --timeout <duration>        Stop it this long after the restart (a restart
                                 otherwise clears its timeout)
   timeout <workspace-id> <duration|none>
                                 Stop a running workspace this long from now, or never
-  agents <workspace-id>         List the workspace's agent sessions
+  conversations <workspace-id>  List the conversations the workspace has held
   attach <workspace-id>         Attach to the workspace's tmux session
+    -s, --session <id>          On this session's window (default: its first)
   shell <workspace-id>          Open a shell in the workspace
 
 yaac routine                    Workspaces started on a cron schedule (routines.md)

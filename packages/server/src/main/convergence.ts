@@ -4,18 +4,17 @@ import { acpLaunchModel } from '#runtime/agents'
 import { startUsageSampler, stopUsageSampler } from '#runtime/usage'
 import { loadToolAuthEntry } from '#domain/auth'
 import { restoreAllWorkspaceForwarders } from '#main/restore-forwarders'
-import { applyWorkspaceEvent, getProjectRow, recordedConversationHandles } from '#db'
+import { applyWorkspaceEvent, getProjectRow, listWorkspaceSessions } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
-import { recordedLaunch } from '#domain/workspaces'
 import { errorText, serverLog } from '#lib/log'
 import type { ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
 
 /**
  * Wires the driver's observations into the driver-neutral machinery. The
- * status watchers (`#runtime/status`) need recorded conversations and
- * permission modes from `#db`, and the forwarder restore needs project
- * config from `#domain`, neither of which a driver may import, so the
- * composition root supplies them.
+ * status watchers (`#runtime/status`) need each workspace's open sessions
+ * from `#db`, and the forwarder restore needs project config from
+ * `#domain`, neither of which a driver may import, so the composition root
+ * supplies them.
  *
  * Two reconcile triggers are raised here rather than by the driver, since
  * no substrate watch can see them: a conversation appearing, and a driver
@@ -42,28 +41,33 @@ function fireChange(source: ReconcileTrigger): void {
 export async function attachConvergence(opts: {
   onAttached: () => void
 }): Promise<void> {
-  // The ACP driver needs a workspace's recorded conversations to
-  // re-address a live agent or `session/load` after a restart.
+  // The drivers need a workspace's sessions to know which windows to watch
+  // and how; the ACP driver also to re-address a live agent or
+  // `session/load` after a restart, and to tell an adapter its posture,
+  // effort and, where it takes it no other way, its model.
   const manager = new StatusWatcherManager({
-    recordedSessions: (session) =>
-      recordedConversationHandles(session.projectId, session.workspaceId),
-    // For `acp` the permission mode is sent over the protocol, so the
-    // connection needs it. A missing record yields `undefined`, not a
-    // default: assuming an unrestricted mode could auto-answer asks the user
-    // should have seen. Spares count: an `acp` spare handshakes while it
-    // warms, and only its first handshake sets the session's mode.
-    permissionMode: async (session) =>
-      (await recordedLaunch(session.projectId, session.workspaceId))?.permissionMode,
-    effort: async (session) =>
-      (await recordedLaunch(session.projectId, session.workspaceId))?.effort,
-    launchModel: async (session, tool) => {
-      const model = (await recordedLaunch(session.projectId, session.workspaceId))?.model
-      const owner = tool === 'pi' ? (await getProjectRow(session.projectId))?.owner : undefined
+    sessions: async (workspace) => {
+      const sessions = await listWorkspaceSessions(workspace.workspaceId)
+      const owner = sessions.some((s) => s.tool === 'pi')
+        ? (await getProjectRow(workspace.projectId))?.owner
+        : undefined
       const piProvider = owner !== undefined ? (await loadToolAuthEntry(owner, 'pi'))?.piProvider : undefined
-      return acpLaunchModel({
-        tool,
-        ...(model !== undefined ? { model } : {}),
-        ...(piProvider !== undefined ? { piProvider } : {}),
+      return sessions.map((s) => {
+        const model = acpLaunchModel({
+          tool: s.tool,
+          ...(s.model !== undefined ? { model: s.model } : {}),
+          ...(piProvider !== undefined ? { piProvider } : {}),
+        })
+        return {
+          window: s.window,
+          tool: s.tool,
+          mode: s.mode,
+          sessionId: s.id,
+          permissionMode: s.permissionMode,
+          ...(s.conversationId !== undefined ? { conversationId: s.conversationId } : {}),
+          ...(s.effort !== undefined ? { effort: s.effort } : {}),
+          ...(model !== undefined ? { model } : {}),
+        }
       })
     },
   })
@@ -77,9 +81,9 @@ export async function attachConvergence(opts: {
   // Once a driver connection drops, a healthy stream no longer implies
   // tmux is alive, so wake the stale reaper to run its own probes.
   onStreamHealthLost(() => fireChange('status-streams'))
-  // A workspace going back to work makes its next waiting spell unread.
-  onWaitingEnded((projectId, workspaceId) => {
-    applyWorkspaceEvent({ type: 'waiting-ended', projectId, workspaceId })
+  // A session going back to work makes its next waiting spell unread.
+  onWaitingEnded((projectId, workspaceId, window) => {
+    applyWorkspaceEvent({ type: 'waiting-ended', projectId, workspaceId, window })
       .catch((err: unknown) => serverLog(`[server] record waiting end failed: ${errorText(err)}`))
   })
 

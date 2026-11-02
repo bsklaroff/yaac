@@ -3,6 +3,7 @@ import { stopWorkspaceOptimistic, successorRow } from '#lib/stopWorkspaceFlow'
 import { stopWorkspace } from '#lib/createWorkspace'
 import { useUiStore } from '#lib/store'
 import type { WorkspaceListEntry } from '@yaac/shared/types'
+import { sessionEntry } from './harness'
 
 vi.mock('#lib/createWorkspace', () => ({
   stopWorkspace: vi.fn(() => Promise.resolve()),
@@ -18,13 +19,13 @@ beforeEach(() => {
 const session = (over: Partial<WorkspaceListEntry> = {}): WorkspaceListEntry => ({
   workspaceId: 'sid-1',
   projectId: 'proj',
-  tool: 'claude',
   status: 'waiting',
+  sessions: [],
   createdAt: '2026-07-02 10:00:00',
   blockedHosts: [],
   forwardedPorts: [],
   unforwardedPorts: [],
-  agentSessions: [],
+  conversations: [],
   ...over,
 })
 
@@ -81,9 +82,11 @@ describe('stopWorkspaceOptimistic', () => {
   })
 
   it('shows the session in the Deleted group only when it has history', () => {
-    stopWorkspaceOptimistic(session({ prompt: 'do a thing', title: 'Thing' }), [])
+    const sessions = [sessionEntry()]
+    stopWorkspaceOptimistic(session({ prompt: 'do a thing', title: 'Thing', sessions }), [])
+    // Its sessions show as what a restart brings back.
     expect(useUiStore.getState().optimisticStopped).toMatchObject([
-      { workspaceId: 'sid-1', projectId: 'proj', tool: 'claude', prompt: 'do a thing', title: 'Thing' },
+      { workspaceId: 'sid-1', projectId: 'proj', sessions, prompt: 'do a thing', title: 'Thing' },
     ])
 
     // An opencode TUI workspace records no prompt, but its agent's title

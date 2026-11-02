@@ -87,8 +87,6 @@ function specOf(
   return {
     projectId: PROJECT_ID,
     workspaceId: 's1',
-    tool: 'claude',
-    mode: 'tui',
     prewarm: false,
     image: 'localhost:5000/img:tag',
     env: ['CALLER_SAID=yes'],
@@ -188,7 +186,6 @@ describe('prepareWorkspaceSubstrate', () => {
       app: 'yaac-proxy', 'yaac.proxy-input': 'registration', 'yaac.workspace-id': 's1', 'yaac.project-id': PROJECT_ID,
     })
     expect(reg?.payload).toMatchObject({
-      tool: 'claude',
       projectId: PROJECT_ID,
       repoUrl: 'https://github.com/example/repo.git',
     })
@@ -248,29 +245,22 @@ describe('launchWorkspace', () => {
       'yaac.project-id': PROJECT_ID,
       'yaac.workspace-id': 's1',
       'yaac.install-id': installId(),
-      'yaac.tool': 'claude',
     })
-    // Absent means tui.
-    expect(job.metadata.labels['yaac.mode']).toBeUndefined()
     expect(job.metadata.labels['yaac.prewarmed']).toBeUndefined()
     // Absent means no nested engine, so salvage skips the pod.
     expect(job.metadata.labels['yaac.nested']).toBeUndefined()
 
     expect(handle).toMatchObject({
       workspaceId: 's1', projectId: PROJECT_ID, jobName: 'yaac-s1',
-      tool: 'claude', declaredTool: 'claude', mode: 'tui',
       running: false, prewarmed: false, terminating: false,
     })
   })
 
-  it('marks an acp workspace and a prewarmed spare with their own labels', async () => {
+  it('marks a prewarmed spare with its own label', async () => {
     const substrate = await prepareWorkspaceSubstrate(INTENT)
-    await launchWorkspace(specOf(substrate, { mode: 'acp', prewarm: true }))
+    await launchWorkspace(specOf(substrate, { prewarm: true }))
 
-    expect(appliedJob().metadata.labels).toMatchObject({
-      'yaac.mode': 'acp',
-      'yaac.prewarmed': 'true',
-    })
+    expect(appliedJob().metadata.labels).toMatchObject({ 'yaac.prewarmed': 'true' })
   })
 
   it('adds the transport token and CA trust the caller could not have named', async () => {

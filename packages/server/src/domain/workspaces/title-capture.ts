@@ -1,11 +1,11 @@
-import { getAgentSessionTitle, sessionTranscriptPath } from '#runtime/agents'
+import { getConversationTitle, sessionTranscriptPath } from '#runtime/agents'
 import type { SandboxFile } from '#runtime/agents'
 import { normalizeTitle } from '@yaac/shared/titles'
 import type { AgentTool } from '@yaac/shared/types'
 
 /**
  * Conversation titles as each agent writes them for itself
- * (`getAgentSessionTitle`). A workspace the user has not renamed is labelled
+ * (`getConversationTitle`). A workspace the user has not renamed is labelled
  * with its opening conversation's title (`conversationTitle` in `#db`), so
  * the label follows the agent's: generated after the first turn, and
  * replaced by a rename made inside the tool.
@@ -46,13 +46,13 @@ export async function captureTitle(
   projectId: string,
   workspaceId: string,
   tool: AgentTool,
-  agentSessionId: string,
+  conversationId: string,
   transcript: SandboxFile | undefined,
   jobName: string,
   activityMs: number | undefined,
   recorded: string | undefined,
 ): Promise<string | undefined> {
-  const key = `${projectId}/${tool}/${agentSessionId}`
+  const key = `${projectId}/${tool}/${conversationId}`
   const last = reads.get(key)
   const known = last?.title ?? recorded
   const now = Date.now()
@@ -66,10 +66,10 @@ export async function captureTitle(
   // An acp conversation has no recorded transcript, but claude's is named
   // for it.
   const file = transcript
-    ?? (tool === 'claude' ? await sessionTranscriptPath(projectId, workspaceId, tool, agentSessionId) : undefined)
-  const found = await getAgentSessionTitle(tool, {
+    ?? (tool === 'claude' ? await sessionTranscriptPath(projectId, workspaceId, tool, conversationId) : undefined)
+  const found = await getConversationTitle(tool, {
     projectId,
-    agentSessionId,
+    conversationId,
     jobName,
     ...(file !== undefined ? { transcript: file } : {}),
   }).catch(() => undefined)

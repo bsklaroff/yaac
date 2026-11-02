@@ -52,14 +52,18 @@ function echoKey(text: string, images: number): string {
   return `${text}\u0000${String(images)}`
 }
 
-export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }: {
+export function WorkspaceChat({ workspaceId, conversationId, launchPrompt, visible, focused }: {
   workspaceId: string
-  agentSessionId: string
+  conversationId: string
+  /** The message its session was opened with, shown with the working
+   *  spinner until the agent echoes it, so the session's start shows no
+   *  gap. Only for its session's first conversation. */
+  launchPrompt?: string
   visible: boolean
   /** The pane the user is in, which Cmd/Ctrl-F searches. */
   focused: boolean
 }): JSX.Element {
-  const stream = useAcpStream(workspaceId, agentSessionId)
+  const stream = useAcpStream(workspaceId, conversationId)
   const { events, busy, queued, connected, refused, send, permissionModes, efforts } = stream
   /**
    * Whether to say the pane is disconnected: only once an attach it had, or
@@ -82,8 +86,6 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
     return () => clearTimeout(timer)
   }, [connected, refused])
   const setChatDraft = useUiStore((s) => s.setChatDraft)
-  const launchPrompt = useUiStore((s) => s.launches[workspaceId]?.prompt)
-  const endLaunch = useUiStore((s) => s.endLaunch)
   const setChatSent = useUiStore((s) => s.setChatSent)
   const column = useChatColumn()
   /**
@@ -92,7 +94,7 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
    * mount is enough.
    */
   const [draft, setDraft] = useState(
-    () => useUiStore.getState().chatDrafts[chatDraftKey(workspaceId, agentSessionId)]?.text ?? '',
+    () => useUiStore.getState().chatDrafts[chatDraftKey(workspaceId, conversationId)]?.text ?? '',
   )
   /**
    * A message sent on the socket but not yet echoed back as a `user` event.
@@ -114,7 +116,7 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
    *  they have been checked against the replayed history yet. */
   const restoredRef = useRef(draft)
   const restoredSentRef = useRef(
-    useUiStore.getState().chatDrafts[chatDraftKey(workspaceId, agentSessionId)]?.sent,
+    useUiStore.getState().chatDrafts[chatDraftKey(workspaceId, conversationId)]?.sent,
   )
   const reconciledRef = useRef(false)
   const listing = useWorkspaceFiles(workspaceId)
@@ -130,7 +132,7 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
   const usage = useMemo(() => contextUsage(events), [events])
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
-  const pages = useTranscriptPages({ workspaceId, agentSessionId, life: stream.life, last: stream.page, lastEvents: events, scrollRef })
+  const pages = useTranscriptPages({ workspaceId, conversationId, life: stream.life, last: stream.page, lastEvents: events, scrollRef })
   const { view, open, activity, groups, findBar, body, titleBar } = useConversationView({
     workspaceId,
     events: pages.events,
@@ -182,16 +184,13 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
   }, [visible, view])
 
   useEffect(() => {
-    setChatDraft(workspaceId, agentSessionId, draft)
-  }, [draft, workspaceId, agentSessionId, setChatDraft])
+    setChatDraft(workspaceId, conversationId, draft)
+  }, [draft, workspaceId, conversationId, setChatDraft])
 
-  /** The create's prompt stands in for the conversation until the agent
-   *  echoes it (or fails), so the create's spinner carries on unbroken. */
+  /** The session's opening message stands in for the conversation until
+   *  the agent echoes it (or fails), so its spinner carries on unbroken. */
   const started = events.some((e) => (e.type === 'user' && e.thread === undefined) || e.type === 'error')
   const launching = launchPrompt !== undefined && !started
-  useEffect(() => {
-    if (started && launchPrompt !== undefined) endLaunch(workspaceId, 'prompt')
-  }, [started, launchPrompt, workspaceId, endLaunch])
 
   /**
    * On first connect, settle a message a previous mount sent but never saw
@@ -205,14 +204,14 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
     reconciledRef.current = true
     const sent = restoredSentRef.current
     if (sent === undefined) return
-    setChatSent(workspaceId, agentSessionId, undefined)
+    setChatSent(workspaceId, conversationId, undefined)
     if (restoredRef.current.trim() !== sent) return
     let lastUser: string | undefined
     for (const e of events) if (e.type === 'user' && e.thread === undefined) lastUser = promptText(e.content)
     if (lastUser !== sent && !queued.some((q) => q.text === sent)) return
     // Keep anything typed while connecting.
     setDraft((cur) => (cur === restoredRef.current ? '' : cur))
-  }, [connected, events, queued, workspaceId, agentSessionId, setChatSent])
+  }, [connected, events, queued, workspaceId, conversationId, setChatSent])
 
   // The server's `user` echo confirms a send and clears the box, as does the
   // message showing up in the queue.
@@ -225,9 +224,9 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
       setDraft('')
       setImages([])
       setAwaitingEcho(null)
-      setChatSent(workspaceId, agentSessionId, undefined)
+      setChatSent(workspaceId, conversationId, undefined)
     }
-  }, [events, queued, awaitingEcho, workspaceId, agentSessionId, setChatSent])
+  }, [events, queued, awaitingEcho, workspaceId, conversationId, setChatSent])
 
   // A drop before the echo means the message may not have arrived; unlock
   // the box with the text still in it.
@@ -253,7 +252,7 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
       if (override !== undefined) setDraft(text)
       setAwaitingEcho(echoKey(text, images.length))
       // Stored so a remount before the echo knows this text was in flight.
-      setChatSent(workspaceId, agentSessionId, text)
+      setChatSent(workspaceId, conversationId, text)
       pin()
     }
   }

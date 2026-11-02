@@ -49,7 +49,7 @@ const STOPPED = [{
   prompt: 'run the tests in the background and survey the packages',
   title: 'woken caption probe',
   deathSeenBy: [],
-  agentSessions: [{ agentSessionId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true }],
+  conversations: [{ conversationId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true }],
 }]
 
 const project = await resolveProject(process.env.PROJECT ?? 'yaac')
@@ -61,7 +61,7 @@ try {
     page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
     await page.route('**/api/workspace/list-stopped*', (route) =>
       route.fulfill({ contentType: 'application/json', body: JSON.stringify({ entries: STOPPED, total: STOPPED.length }) }))
-    await page.route('**/api/workspace/*/agent-sessions/*/transcript*', (route) =>
+    await page.route('**/api/workspace/*/conversations/*/transcript*', (route) =>
       route.fulfill({ contentType: 'application/json', body: JSON.stringify({ events: EVENTS }) }))
     await page.goto(`${origin}/?project=${project.id}&workspace=${STOPPED[0].workspaceId}`)
     await page.locator('text=Both finished.').first().waitFor({ timeout: 15_000 })

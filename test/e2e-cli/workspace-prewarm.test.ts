@@ -139,23 +139,21 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     const proj = (await listProjects()).find((p) => p.id === PROJECT_ID)
     expect(proj?.workspaceCount).toBe(1)
 
-    // 4. Spares work for any tool and branch: a codex create on `dev`
-    //    claims the claude/main spare, switching its branch and tool. This
-    //    also covers the plain same-tool, same-branch claim.
+    // 4. Spares run no session, so they serve any tool, and any branch: a
+    //    codex create on `dev` claims the main spare, switching its branch
+    //    and opening a codex session in it.
     const third = await runYaac(
       serverEnv, 'workspace', 'create', 'repo-demo', '--tool', 'codex', '--mode', 'tui', '--branch', 'dev',
     )
     if (third.exitCode !== 0) console.error(third.stdout, third.stderr)
     expect(third.exitCode).toBe(0)
     expect(third.stdout).toContain('Switching prewarmed session to branch dev...')
-    expect(third.stdout).toContain('Switching prewarmed session to codex...')
     expect(third.stdout).toContain('Using prewarmed session...')
 
-    // The spare's own pod, no longer marked prewarmed and retooled.
+    // The spare's own pod, no longer marked prewarmed.
     const retooled = (await listWorkspacePods(PROJECT_ID)).find((p) => p.jobName === spareJob)
     expect(retooled).toBeDefined()
     expect(isPrewarmed(retooled!)).toBe(false)
-    expect(retooled!.tool).toBe('codex')
 
     // The checkout tracks origin/dev and the row records the new base.
     const { stdout: upstream } = await execInJob(retooled!.jobName, [
@@ -166,17 +164,19 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     expect(devFile).toBe('dev content\n')
     // Read through the server; this process's DB handle cannot see its write.
     const listed = await (await fetch(`http://127.0.0.1:${server.lock.port}/api/workspace/list?project=repo-demo`))
-      .json() as { workspaces: Array<{ workspaceId: string; baseBranch?: string }> }
-    expect(listed.workspaces.find((w) => w.workspaceId === retooled!.workspaceId)?.baseBranch).toBe('dev')
+      .json() as { workspaces: Array<{ workspaceId: string; baseBranch?: string; sessions: Array<{ tool: string }> }> }
+    const claimed = listed.workspaces.find((w) => w.workspaceId === retooled!.workspaceId)
+    expect(claimed?.baseBranch).toBe('dev')
+    expect(claimed?.sessions.map((s) => s.tool)).toEqual(['codex'])
 
-    // 5. A replacement spare is warmed with the project's last-used tool
-    //    (codex). Nothing claims it, so running is enough.
+    // 5. A replacement spare is warmed. Nothing claims it, so running is
+    //    enough.
     const refilled = await vi.waitFor(async () => {
       const pods = await listWorkspacePods(PROJECT_ID)
       const s = pods.find((p) => isPrewarmed(p) && p.running && p.jobName !== spareJob)
       if (!s) throw new Error('no replacement spare yet')
       return s
     }, { timeout: 150_000, interval: 2_000 })
-    expect(refilled.tool).toBe('codex')
+    expect(refilled.running).toBe(true)
   }, 420_000)
 })

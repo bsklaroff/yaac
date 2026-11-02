@@ -282,7 +282,6 @@ describe('proxy credentials suite (objects in, objects out)', () => {
       rules: [],
       allowedHosts: [MITM_HOST, MCP_PROXY_HOST, TOKEN_HOST, GIT_HOST],
       repoUrl: `https://${GIT_HOST}/acme/app.git`,
-      tool: 'claude',
       projectId: 'creds-suite',
       owner: OWNER,
       upstreamRedirects: {

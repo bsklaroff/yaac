@@ -75,7 +75,7 @@ function pngSize(file) {
 
 const { workspaces } = await api('/workspace/list')
 const live = (mode) => {
-  const w = workspaces.find((w) => w.agentSessions.some((a) => a.mode === mode && a.active && a.tool === 'claude'))
+  const w = workspaces.find((w) => w.conversations.some((a) => a.mode === mode && a.active && a.tool === 'claude'))
   if (!w) throw new Error(`no live claude ${mode} workspace`)
   return w
 }

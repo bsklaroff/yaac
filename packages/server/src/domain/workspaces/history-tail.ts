@@ -1,5 +1,5 @@
 import { acpPage, attachAcp, claudeSubagentThreads, type AcpSocket, type SandboxFile } from '#runtime/agents'
-import type { AgentSessionLinkRow } from '#db'
+import type { ConversationLinkRow } from '#db'
 import { errorText, serverLog } from '#lib/log'
 import {
   claudeTranscript, conversation, followHistory, historyFiles, historyStamp, recordOrigin, type FollowedHistory,
@@ -22,7 +22,7 @@ import type { AcpClientMessage, AcpEvent, AcpServerMessage } from '@yaac/shared/
 export async function observeConversation(
   projectId: string,
   workspaceId: string,
-  agentSessionId: string,
+  conversationId: string,
   sock: AcpSocket,
 ): Promise<void> {
   // A socket that closes during the lookup is never put on a tail.
@@ -30,7 +30,7 @@ export async function observeConversation(
   sock.onClose(() => {
     closed = true
   })
-  const session = await conversation(projectId, workspaceId, agentSessionId)
+  const session = await conversation(projectId, workspaceId, conversationId)
   if (closed) return
   if (session === undefined) {
     send(sock, { type: 'health', connected: false })
@@ -38,11 +38,11 @@ export async function observeConversation(
     return
   }
   if (session.mode === 'acp') {
-    attachAcp(projectId, workspaceId, agentSessionId, sock,
-      (life) => recordOrigin(projectId, workspaceId, agentSessionId, life), { control: false })
+    attachAcp(projectId, workspaceId, conversationId, sock,
+      (life) => recordOrigin(projectId, workspaceId, conversationId, life), { control: false })
     return
   }
-  const key = JSON.stringify([projectId, workspaceId, agentSessionId])
+  const key = JSON.stringify([projectId, workspaceId, conversationId])
   let tail = tails.get(key)
   if (tail === undefined) {
     const created: HistoryTail = new HistoryTail(projectId, workspaceId, session, () => {
@@ -115,7 +115,7 @@ class HistoryTail {
   constructor(
     private readonly projectId: string,
     private readonly workspaceId: string,
-    private readonly session: AgentSessionLinkRow,
+    private readonly session: ConversationLinkRow,
     private readonly onStop: () => void,
   ) {
     this.timer = setInterval(() => void this.pass(), TAIL_INTERVAL_MS)
@@ -173,7 +173,7 @@ class HistoryTail {
       await this.translateThreads()
       this.notBefore = Date.now() + Math.max(TAIL_INTERVAL_MS, first ? 0 : 4 * (Date.now() - started))
     } catch (err) {
-      serverLog(`[server] history tail ${this.workspaceId}/${this.session.agentSessionId}: ${errorText(err)}`)
+      serverLog(`[server] history tail ${this.workspaceId}/${this.session.conversationId}: ${errorText(err)}`)
       this.notBefore = Date.now() + RELIST_MS
     } finally {
       this.running = false
@@ -216,7 +216,7 @@ class HistoryTail {
     reader.greeted = true
     const { page, events } = acpPage(this.history?.events ?? [])
     send(reader.sock, {
-      type: 'hello', agentSessionId: this.session.agentSessionId, busy: false, queued: [], history: true, page, events,
+      type: 'hello', conversationId: this.session.conversationId, busy: false, queued: [], history: true, page, events,
     })
   }
 

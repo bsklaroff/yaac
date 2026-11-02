@@ -122,7 +122,7 @@ try {
     before.includes(shown(current[0]?.label)) && text.split(shown(target.label)).length >= 3
       && !text.includes(shown(current[0]?.label)))
   const listed = (await api('/workspace/list')).workspaces.find((w) => w.workspaceId === workspace.workspaceId)
-  console.log('  workspace model fields:', JSON.stringify({ model: listed?.model, sessions: listed?.agentSessions?.map((a) => a.model) }))
+  console.log('  workspace model fields:', JSON.stringify({ model: listed?.model, sessions: listed?.conversations?.map((a) => a.model) }))
 
   // ---- 4. Escape hides the menu ----
   await box.fill('/co')

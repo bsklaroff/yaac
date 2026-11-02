@@ -202,8 +202,8 @@ export function withActive(ws: PaneLayout, target: string): PaneLayout {
  * The pane to focus when a workspace is selected or a shortcut switches
  * panes. `activeTab` is the stored last-active pane and may be stale. Tabs
  * mode uses the active tab, else the first pane; tiles mode prefers the
- * active pane, then the agent, then the first pane. Null when there are no
- * panes.
+ * active pane, then the first session's, then the first pane. Null when
+ * there are no panes.
  */
 export function focusPaneTarget(
   targets: string[],
@@ -213,8 +213,7 @@ export function focusPaneTarget(
   const active = activeTab && targets.includes(activeTab) ? activeTab : undefined
   if (!tiled) return active ?? targets[0] ?? null
   if (active) return active
-  if (targets.includes('agent')) return 'agent'
-  return targets[0] ?? null
+  return targets.find((t) => t.startsWith('session:')) ?? targets[0] ?? null
 }
 
 /** Partition `rect` into equal-width columns, leaving `gap` px between them. */

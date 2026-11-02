@@ -345,7 +345,7 @@ export type AcpServerMessage =
    */
   | {
     type: 'hello'
-    agentSessionId: string
+    conversationId: string
     busy: boolean
     queued: AcpQueuedPrompt[]
     page: number
@@ -416,19 +416,3 @@ export type AcpClientMessage =
    *  shows without it (a `session/load` replay leaves it out). */
   | { type: 'subagent-transcript'; subagentId: string }
 
-/** The `/pty/attach`-style pane target that addresses one ACP conversation. */
-export const ACP_TARGET_PREFIX = 'acp:'
-
-export function acpTarget(agentSessionId: string): string {
-  return `${ACP_TARGET_PREFIX}${agentSessionId}`
-}
-
-export function isAcpTarget(target: string): boolean {
-  return target.startsWith(ACP_TARGET_PREFIX)
-}
-
-/** The conversation a pane target names, or undefined if it names something
- *  else. */
-export function acpTargetSession(target: string): string | undefined {
-  return isAcpTarget(target) ? target.slice(ACP_TARGET_PREFIX.length) : undefined
-}

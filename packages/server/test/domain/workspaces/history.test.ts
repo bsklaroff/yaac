@@ -3,9 +3,9 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { recordWorkspaceCreated } from '#db/workspace-store'
-import { recordAgentSessions } from '#db/agent-session-store'
+import { recordConversations } from '#db/conversation-store'
 import { closeDb } from '#db/client'
-import { listWorkspaceAgentSessions } from '#db'
+import { listWorkspaceConversations } from '#db'
 import {
   acpLogDir,
   agentHistoryDir,
@@ -67,10 +67,10 @@ describe('convergeAgentHistory', () => {
     const projects = shared('claude', 'projects', '-workspace')
     // Rows: an active claude conversation with its path, an inactive one
     // without, and a codex thread.
-    await recordAgentSessions(SLUG, WT, [
-      { tool: 'claude', agentSessionId: 'c1', transcriptPath: 'claude/projects/-workspace/c1.jsonl' },
-      { tool: 'claude', agentSessionId: 'c2' },
-      { tool: 'codex', agentSessionId: 't1', transcriptPath: `codex/sessions/${ROLLOUT_REL('t1')}` },
+    await recordConversations(SLUG, WT, [
+      { tool: 'claude', conversationId: 'c1', transcriptPath: 'claude/projects/-workspace/c1.jsonl' },
+      { tool: 'claude', conversationId: 'c2' },
+      { tool: 'codex', conversationId: 't1', transcriptPath: `codex/sessions/${ROLLOUT_REL('t1')}` },
     ])
     await write(path.join(projects, 'c1.jsonl'))
     await write(path.join(projects, 'c1', 'subagents', 'agent-x.jsonl'))
@@ -93,16 +93,16 @@ describe('convergeAgentHistory', () => {
     await write(path.join(projects, 's1.jsonl'))
     await write(path.join(projects, 'x1.jsonl'))
     await rollout(shared('codex', 'sessions'), 'tx')
-    await recordAgentSessions(SLUG, WT, [
-      { tool: 'claude', agentSessionId: 'x1' },
-      { tool: 'codex', agentSessionId: 'tx', transcriptPath: `codex/sessions/${ROLLOUT_REL('tx')}` },
+    await recordConversations(SLUG, WT, [
+      { tool: 'claude', conversationId: 'x1' },
+      { tool: 'codex', conversationId: 'tx', transcriptPath: `codex/sessions/${ROLLOUT_REL('tx')}` },
     ])
     await rollout(shared('codex', 'sessions'), 'tf', undefined, 't1')
-    await recordAgentSessions(SLUG, SIBLING, [
-      { tool: 'claude', agentSessionId: 's1' },
-      { tool: 'claude', agentSessionId: 'x1', transcriptPath: 'claude/projects/-workspace/x1.jsonl' },
-      { tool: 'codex', agentSessionId: 'tx', transcriptPath: `codex/sessions/${ROLLOUT_REL('tx')}` },
-      { tool: 'codex', agentSessionId: 'tf' },
+    await recordConversations(SLUG, SIBLING, [
+      { tool: 'claude', conversationId: 's1' },
+      { tool: 'claude', conversationId: 'x1', transcriptPath: 'claude/projects/-workspace/x1.jsonl' },
+      { tool: 'codex', conversationId: 'tx', transcriptPath: `codex/sessions/${ROLLOUT_REL('tx')}` },
+      { tool: 'codex', conversationId: 'tf' },
     ])
     const elsewhere = await write(path.join(tmpDir, 'elsewhere.jsonl'))
     await fs.symlink(elsewhere, path.join(projects, 'c2.jsonl'))
@@ -134,12 +134,12 @@ describe('convergeAgentHistory', () => {
     expect(await exists(path.join(projects, 'c1.jsonl'))).toBe(false)
 
     // The rows follow the files.
-    const rows = await listWorkspaceAgentSessions(SLUG, WT)
-    expect(rows.find((r) => r.agentSessionId === 'c1')?.transcriptPath)
+    const rows = await listWorkspaceConversations(SLUG, WT)
+    expect(rows.find((r) => r.conversationId === 'c1')?.transcriptPath)
       .toBe(path.join('history', WT, 'claude', '-workspace', 'c1.jsonl'))
-    expect(rows.find((r) => r.agentSessionId === 't1')?.transcriptPath)
+    expect(rows.find((r) => r.conversationId === 't1')?.transcriptPath)
       .toBe(path.join('history', WT, 'codex', ROLLOUT_REL('t1')))
-    expect(rows.find((r) => r.agentSessionId === 'tx')?.transcriptPath)
+    expect(rows.find((r) => r.conversationId === 'tx')?.transcriptPath)
       .toBe(`codex/sessions/${ROLLOUT_REL('tx')}`)
 
     // A second pass finds nothing left to do.
@@ -168,14 +168,14 @@ describe('convergeAgentHistory', () => {
   it('repoints a row whose file an interrupted pass already moved', async () => {
     // The rename landed, the row write did not: the file is in the history
     // and the row still names the shared home.
-    await recordAgentSessions(SLUG, WT, [
-      { tool: 'claude', agentSessionId: 'y1', transcriptPath: 'claude/projects/-workspace/y1.jsonl' },
+    await recordConversations(SLUG, WT, [
+      { tool: 'claude', conversationId: 'y1', transcriptPath: 'claude/projects/-workspace/y1.jsonl' },
     ])
     await write(history('claude', '-workspace', 'y1.jsonl'))
 
     await convergeAgentHistory(SLUG, WT, { layers: false })
 
-    const rows = await listWorkspaceAgentSessions(SLUG, WT)
+    const rows = await listWorkspaceConversations(SLUG, WT)
     expect(rows.map((r) => r.transcriptPath)).toEqual([
       path.join('history', WT, 'claude', '-workspace', 'y1.jsonl'),
     ])
@@ -190,8 +190,8 @@ describe('convergeAgentHistory', () => {
     await rollout(history('codex'), 'kt')
     // What an earlier host run left in a real folder for this checkout.
     await write(path.join(checkout, 'h1.jsonl'))
-    await recordAgentSessions(SLUG, WT, [
-      { tool: 'claude', agentSessionId: 'h1', transcriptPath: path.relative(projectDir(SLUG), path.join(checkout, 'h1.jsonl')) },
+    await recordConversations(SLUG, WT, [
+      { tool: 'claude', conversationId: 'h1', transcriptPath: path.relative(projectDir(SLUG), path.join(checkout, 'h1.jsonl')) },
     ])
     // The project's shared memory.
     await write(path.join(projects, '-repo', 'memory', 'MEMORY.md'), 'remember\n')
@@ -202,7 +202,7 @@ describe('convergeAgentHistory', () => {
     expect((await fs.lstat(checkout)).isSymbolicLink()).toBe(true)
     expect(await fs.realpath(path.join(checkout, 'k1.jsonl'))).toBe(await fs.realpath(history('claude', '-workspace', 'k1.jsonl')))
     expect(await exists(history('claude', '-workspace', 'h1.jsonl'))).toBe(true)
-    expect((await listWorkspaceAgentSessions(SLUG, WT))[0]?.transcriptPath)
+    expect((await listWorkspaceConversations(SLUG, WT))[0]?.transcriptPath)
       .toBe(path.join('history', WT, 'claude', '-workspace', 'h1.jsonl'))
     // Memory is the project's shared one, reached from the checkout's own
     // memory folder, which is where claude looks for it (the checkout is
@@ -224,15 +224,15 @@ describe('convergeAgentHistory', () => {
     const stored = path.relative(projectDir(SLUG), path.join(checkout, 'x1.jsonl'))
     await write(path.join(checkout, 'x1.jsonl'))
     await write(path.join(checkout, 'own.jsonl'))
-    await recordAgentSessions(SLUG, WT, [{ tool: 'claude', agentSessionId: 'x1', transcriptPath: stored }])
-    await recordAgentSessions(SLUG, SIBLING, [{ tool: 'claude', agentSessionId: 'x1', transcriptPath: stored }])
+    await recordConversations(SLUG, WT, [{ tool: 'claude', conversationId: 'x1', transcriptPath: stored }])
+    await recordConversations(SLUG, SIBLING, [{ tool: 'claude', conversationId: 'x1', transcriptPath: stored }])
 
     await convergeAgentHistory(SLUG, WT, { layers: false })
 
     expect((await fs.lstat(checkout)).isDirectory()).toBe(true)
     expect(await exists(path.join(checkout, 'x1.jsonl'))).toBe(true)
     expect(await exists(history('claude', '-workspace', 'own.jsonl'))).toBe(true)
-    expect((await listWorkspaceAgentSessions(SLUG, WT))[0]?.transcriptPath).toBe(stored)
+    expect((await listWorkspaceConversations(SLUG, WT))[0]?.transcriptPath).toBe(stored)
   })
 })
 

@@ -5,13 +5,13 @@ import { applyWorkspaceEvent } from '#db/apply-workspace-event'
 import {
   clearWorkspaceStopped,
   getProjectWorkspaceRows,
-  recordWaitingSeen,
   recordWorkspaceCreated,
   setWorkspaceTitle,
 } from '#db/workspace-store'
+import { getSessionRow, insertSession, listWorkspaceSessions, recordSessionWaitingSeen } from '#db/session-store'
 import { createWorkspaceGroup } from '#db/group-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
-import { listWorkspaceAgentSessions } from '#db/agent-session-store'
+import { listWorkspaceConversations } from '#db/conversation-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
@@ -62,58 +62,44 @@ describe('applyWorkspaceEvent', () => {
     })
   })
 
-  // What its first agent launched with, which a restart relaunches.
-  it('records the launch it was created with', async () => {
-    await created('wt-launch', { permissionMode: 'plan', model: 'claude-opus-5-5', mode: 'acp' })
+  // What its runtime launched with, which a restart replaces.
+  it('records the zone and scratch dirs it was created with', async () => {
+    await created('wt-launch', { timeZone: 'Europe/Paris', scratchDirs: ['node_modules'] })
 
-    expect(await rowOf('wt-launch')).toMatchObject({
-      permissionMode: 'plan', model: 'claude-opus-5-5', mode: 'acp',
+    expect(await rowOf('wt-launch')).toMatchObject({ timeZone: 'Europe/Paris', scratchDirs: ['node_modules'] })
+  })
+
+  // A session's row is what its agent is doing: each reported move lands,
+  // up or down, on that session alone, and an unnamed field is left alone.
+  it("follows what a session's agent reports, on that session alone", async () => {
+    await created('wt-p')
+    const a = await insertSession(PROJ, 'wt-p', { tool: 'claude', mode: 'tui', permissionMode: 'accept-edits', effort: 'high' })
+    const b = await insertSession(PROJ, 'wt-p', { tool: 'claude', mode: 'acp', permissionMode: 'accept-edits' })
+    const reported = (fields: object): Promise<void> => applyWorkspaceEvent({
+      type: 'session-reported', projectId: PROJ, workspaceId: 'wt-p', sessionId: a.id, ...fields,
     })
-  })
 
-  // The row is the posture the running agent is in: every reported move
-  // lands, up or down, and a restart records what it relaunched in.
-  it('follows a posture the agent moved to, either way', async () => {
-    const moved = (permissionMode: 'bypass' | 'plan'): Promise<void> => applyWorkspaceEvent({
-      type: 'permission-mode-changed', projectId: PROJ, workspaceId: 'wt-p', permissionMode,
+    await reported({ permissionMode: 'plan' })
+    expect(await getSessionRow(a.id)).toMatchObject({ permissionMode: 'plan', effort: 'high' })
+    await reported({ permissionMode: 'bypass', effort: 'low', model: 'claude-opus-5-5', conversationId: 'conv-2' })
+    expect(await getSessionRow(a.id)).toMatchObject({
+      permissionMode: 'bypass', effort: 'low', model: 'claude-opus-5-5', conversationId: 'conv-2',
     })
-    const posture = async (): Promise<string | undefined> => (await rowOf('wt-p'))?.permissionMode
-    await created('wt-p', { permissionMode: 'accept-edits', model: 'claude-opus-5-5', mode: 'tui' })
-
-    await moved('plan')
-    expect(await posture()).toBe('plan')
-    await moved('bypass')
-    expect(await posture()).toBe('bypass')
-
-    // A restart relaunching in another posture (the row's, where this tool
-    // lacks it) records the one it launched.
-    await created('wt-p', { resume: true, permissionMode: 'plan' })
-    expect(await posture()).toBe('plan')
-    expect(await rowOf('wt-p')).toMatchObject({ model: 'claude-opus-5-5', mode: 'tui' })
+    expect((await getSessionRow(b.id))?.permissionMode).toBe('accept-edits')
   })
 
-  // The effort is followed the same way (docs/effort-levels.md), and a
-  // restart that names none keeps what the agent last moved to.
-  it('follows the effort the agent moved to, and keeps it over a restart that names none', async () => {
-    const effort = async (): Promise<string | undefined> => (await rowOf('wt-e'))?.effort
-    await created('wt-e', { permissionMode: 'bypass', effort: 'high' })
-    expect(await effort()).toBe('high')
-    await applyWorkspaceEvent({ type: 'effort-changed', projectId: PROJ, workspaceId: 'wt-e', effort: 'low' })
-    expect(await effort()).toBe('low')
-    await created('wt-e', { resume: true, permissionMode: 'bypass' })
-    expect(await effort()).toBe('low')
-  })
-
-  // The sidebar's unread dot: going back to work makes the next waiting
-  // spell unread, and a workspace restart does not.
-  it('clears waitingSeenBy when waiting ends, and keeps it over a resume', async () => {
-    const seen = async (): Promise<string[] | undefined> => (await rowOf('wt-w'))?.waitingSeenBy
+  // The sidebar's unread dot: a session going back to work makes its next
+  // waiting spell unread, and a workspace restart does not.
+  it("clears a session's waitingSeenBy when its waiting ends, and keeps it over a resume", async () => {
     await created('wt-w')
-    await recordWaitingSeen(PROJ, 'wt-w', BUILT_IN_USER_ID)
+    const a = await insertSession(PROJ, 'wt-w', { tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
+    const b = await insertSession(PROJ, 'wt-w', { tool: 'codex', mode: 'tui', permissionMode: 'bypass' })
+    for (const s of [a, b]) await recordSessionWaitingSeen(s.id, BUILT_IN_USER_ID)
     await created('wt-w', { resume: true })
-    expect(await seen()).toEqual([BUILT_IN_USER_ID])
-    await applyWorkspaceEvent({ type: 'waiting-ended', projectId: PROJ, workspaceId: 'wt-w' })
-    expect(await seen()).toEqual([])
+    expect((await getSessionRow(a.id))?.waitingSeenBy).toEqual([BUILT_IN_USER_ID])
+    await applyWorkspaceEvent({ type: 'waiting-ended', projectId: PROJ, workspaceId: 'wt-w', window: a.window })
+    expect((await getSessionRow(a.id))?.waitingSeenBy).toEqual([])
+    expect((await getSessionRow(b.id))?.waitingSeenBy).toEqual([BUILT_IN_USER_ID])
   })
 
   // A workspace id is claimed once across all projects: otherwise a create
@@ -140,14 +126,14 @@ describe('applyWorkspaceEvent', () => {
     await stopped('wt-1', { cause: { reason: 'oom', detail: 'exit code 137' } })
     const before = await rowOf('wt-1')
 
-    await created('wt-1', { resume: true, permissionMode: 'plan' })
+    await created('wt-1', { resume: true, timeZone: 'Asia/Tokyo' })
 
     expect(await rowOf('wt-1')).toMatchObject({
       createdAt: before?.createdAt,
       title: 'my workspace',
       groupId: group.groupId,
       baseBranch: 'main',
-      permissionMode: 'plan',
+      timeZone: 'Asia/Tokyo',
       // The stop stays until the restart succeeds (`clearWorkspaceStopped`).
       stoppedAt: before?.stoppedAt,
       deathReason: 'oom',
@@ -173,51 +159,50 @@ describe('applyWorkspaceEvent', () => {
     expect((await rowOf('wt-1'))?.baseBranch).toBe('develop')
   })
 
-  // One event carries both halves of the record, because a launch is the one
-  // moment when the conversation list is complete and all of it is live.
-  it('links launched conversations and marks them active, in launch order', async () => {
+  // Discovery only adds, in the order the workspace first saw each
+  // conversation; the active set is reported apart, since a pass also finds
+  // conversations that ended long ago.
+  it('links discovered conversations to their sessions, and marks the live ones active', async () => {
+    const session = await insertSession(PROJ, 'wt-1', { tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
     await applyWorkspaceEvent({
-      type: 'sessions-launched',
+      type: 'conversations-discovered',
       projectId: PROJ,
       workspaceId: 'wt-1',
       sessions: [
-        {
-          tool: 'claude', agentSessionId: 'conv-a', mode: 'acp', paneId: 'claude', firstPrompt: 'do the thing',
-          model: 'claude-opus-5-5',
-        },
-        { tool: 'claude', agentSessionId: 'conv-b', mode: 'acp', paneId: 'claude-2' },
+        { tool: 'claude', conversationId: 'conv-a', sessionId: session.id, firstPrompt: 'do the thing', model: 'claude-opus-5-5' },
+        { tool: 'codex', conversationId: 'conv-b' },
       ],
     })
+    await applyWorkspaceEvent({
+      type: 'conversations-active', projectId: PROJ, workspaceId: 'wt-1', active: [{ tool: 'codex', conversationId: 'conv-b' }],
+    })
 
-    const links = await listWorkspaceAgentSessions(PROJ, 'wt-1')
-    expect(links.map((l) => [l.agentSessionId, l.ordinal, l.active, l.paneId])).toEqual([
-      ['conv-a', 0, true, 'claude'],
-      ['conv-b', 1, true, 'claude-2'],
+    const links = await listWorkspaceConversations(PROJ, 'wt-1')
+    expect(links.map((l) => [l.conversationId, l.ordinal, l.active, l.sessionId])).toEqual([
+      ['conv-a', 0, false, session.id],
+      ['conv-b', 1, true, undefined],
     ])
-    expect(links[0].firstPrompt).toBe('do the thing')
-    // Named from the launch, before the agent has answered.
-    expect(links[0].model).toBe('claude-opus-5-5')
-    expect(links[1].model).toBeUndefined()
+    expect(links[0]).toMatchObject({ firstPrompt: 'do the thing', model: 'claude-opus-5-5' })
   })
 
   // A capture fills what no discovery pass recorded, and nothing else: a
   // conversation a pass has since recorded is left as the pass wrote it.
   it('fills a stopped conversation\'s activity once, keeping a captured prompt', async () => {
     await applyWorkspaceEvent({
-      type: 'sessions-discovered',
+      type: 'conversations-discovered',
       projectId: PROJ,
       workspaceId: 'wt-1',
       sessions: [
-        { tool: 'claude', agentSessionId: 'conv-a' },
-        { tool: 'claude', agentSessionId: 'conv-b', firstPrompt: 'the real ask' },
-        { tool: 'claude', agentSessionId: 'conv-c', lastActiveMs: Date.parse('2026-03-01') },
+        { tool: 'claude', conversationId: 'conv-a' },
+        { tool: 'claude', conversationId: 'conv-b', firstPrompt: 'the real ask' },
+        { tool: 'claude', conversationId: 'conv-c', lastActiveMs: Date.parse('2026-03-01') },
       ],
     })
-    const captured = (agentSessionId: string, lastActiveMs: number, firstPrompt?: string) => ({
-      tool: 'claude' as const, agentSessionId, lastActiveMs, ...(firstPrompt !== undefined ? { firstPrompt } : {}),
+    const captured = (conversationId: string, lastActiveMs: number, firstPrompt?: string) => ({
+      tool: 'claude' as const, conversationId, lastActiveMs, ...(firstPrompt !== undefined ? { firstPrompt } : {}),
     })
     await applyWorkspaceEvent({
-      type: 'sessions-captured',
+      type: 'conversations-captured',
       projectId: PROJ,
       workspaceId: 'wt-1',
       sessions: [
@@ -227,8 +212,8 @@ describe('applyWorkspaceEvent', () => {
       ],
     })
 
-    const links = await listWorkspaceAgentSessions(PROJ, 'wt-1')
-    expect(links.map((l) => [l.agentSessionId, l.firstPrompt, l.lastActiveAt?.toISOString()])).toEqual([
+    const links = await listWorkspaceConversations(PROJ, 'wt-1')
+    expect(links.map((l) => [l.conversationId, l.firstPrompt, l.lastActiveAt?.toISOString()])).toEqual([
       ['conv-a', 'from the transcript', '2026-01-02T00:00:00.000Z'],
       ['conv-b', 'the real ask', '2026-01-02T00:00:00.000Z'],
       ['conv-c', undefined, '2026-03-01T00:00:00.000Z'],
@@ -314,19 +299,21 @@ describe('applyWorkspaceEvent', () => {
     await expect(stopped('nonexistent')).resolves.toBeUndefined()
   })
 
-  it('erases a failed fresh workspace, links and all', async () => {
+  it('erases a failed fresh workspace, sessions, links and all', async () => {
     await created('wt-fresh')
+    await insertSession(PROJ, 'wt-fresh', { tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
     await applyWorkspaceEvent({
-      type: 'sessions-launched',
+      type: 'conversations-discovered',
       projectId: PROJ,
       workspaceId: 'wt-fresh',
-      sessions: [{ tool: 'claude', agentSessionId: 'conv-x' }],
+      sessions: [{ tool: 'claude', conversationId: 'conv-x' }],
     })
 
     await failed('wt-fresh')
 
     expect(await rowOf('wt-fresh')).toBeUndefined()
-    expect(await listWorkspaceAgentSessions(PROJ, 'wt-fresh')).toEqual([])
+    expect(await listWorkspaceSessions('wt-fresh', { all: true })).toEqual([])
+    expect(await listWorkspaceConversations(PROJ, 'wt-fresh')).toEqual([])
   })
 
   // The row keeps its stop until a restart succeeds, so a failed resume
@@ -350,10 +337,10 @@ describe('applyWorkspaceEvent', () => {
       type: 'base-branch-resolved', projectId: PROJ, workspaceId: 'wt-2', baseBranch: 'main',
     })
     await applyWorkspaceEvent({
-      type: 'sessions-discovered', projectId: PROJ, workspaceId: 'wt-2', sessions: [],
+      type: 'conversations-discovered', projectId: PROJ, workspaceId: 'wt-2', sessions: [],
     })
     await applyWorkspaceEvent({
-      type: 'sessions-active', projectId: PROJ, workspaceId: 'wt-2', active: [],
+      type: 'conversations-active', projectId: PROJ, workspaceId: 'wt-2', active: [],
     })
     await stopped('wt-2')
     expect(pushes - before).toBe(5)

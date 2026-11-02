@@ -1,9 +1,9 @@
 import { resolveProjectPath } from '#runtime/agents'
 import type { SandboxFile } from '#runtime/agents'
-import type { AgentSessionLinkRow } from '#db'
+import type { ConversationLinkRow } from '#db'
 
 /** The row fields needed to resolve a stored transcript path. */
-type RecordedTranscript = Pick<AgentSessionLinkRow, 'projectId' | 'workspaceId' | 'tool' | 'transcriptPath'>
+type RecordedTranscript = Pick<ConversationLinkRow, 'projectId' | 'workspaceId' | 'tool' | 'transcriptPath'>
 
 /**
  * The transcript file a recorded conversation names, or undefined when it

@@ -3,12 +3,7 @@ import path from 'node:path'
 import { getProjectsDir } from '@yaac/shared/paths'
 import { serverLog } from '#lib/log'
 import { containerlessJobName, markerPath, containerlessStateDir } from './paths'
-import type {
-  AgentMode,
-  AgentTool,
-  PortMapping,
-  WorkspaceDeathCause,
-} from '@yaac/shared/types'
+import type { PortMapping, WorkspaceDeathCause } from '@yaac/shared/types'
 import type { RuntimeHandle, RuntimeSnapshot, StrayUnit, TeardownTarget } from '#drivers/contract'
 
 /**
@@ -22,8 +17,6 @@ import type { RuntimeHandle, RuntimeSnapshot, StrayUnit, TeardownTarget } from '
 export interface WorkspaceMarker {
   projectId: string
   workspaceId: string
-  tool: AgentTool
-  mode: AgentMode
   createdAtMs: number
   /** The tmux server's pid, for the port scan. Pids are recycled, so it is
    *  only used alongside a socket liveness check. */
@@ -116,9 +109,6 @@ function toHandle(entry: Entry): RuntimeHandle {
     workspaceId: marker.workspaceId,
     projectId: marker.projectId,
     jobName: containerlessJobName(marker.projectId, marker.workspaceId),
-    tool: marker.tool,
-    declaredTool: marker.tool,
-    mode: marker.mode,
     running: entry.running,
     state: entry.running ? 'running' : 'failed',
     // Host processes have no labels.

@@ -24,7 +24,8 @@ export type ProvisioningKind = 'create' | 'restart'
 interface ProvisioningEntry {
   workspaceId: string
   projectId: string
-  tool: AgentTool
+  /** Its first session's agent; absent for a workspace with none. */
+  tool?: AgentTool
   kind: ProvisioningKind
   message: string
   error?: string
@@ -62,7 +63,7 @@ const stoppedIds = new Set<string>()
 interface ProvisioningInput {
   workspaceId: string
   projectId: string
-  tool: AgentTool
+  tool?: AgentTool
   kind: ProvisioningKind
   message?: string
   groupId?: string
@@ -123,7 +124,7 @@ export function registerProvisioning(input: ProvisioningInput): void {
   entries.set(input.workspaceId, {
     workspaceId: input.workspaceId,
     projectId: input.projectId,
-    tool: input.tool,
+    ...(input.tool !== undefined ? { tool: input.tool } : {}),
     kind: input.kind,
     message: input.message ?? 'Starting…',
     ...(input.groupId !== undefined ? { groupId: input.groupId } : {}),
@@ -363,7 +364,7 @@ export function provision<T extends { workspaceId: string }>(
  */
 export function inFlightCreate(workspaceId: string): {
   projectId: string
-  tool: AgentTool
+  tool?: AgentTool
   model?: string
   branch?: string
   groupId?: string
@@ -374,7 +375,7 @@ export function inFlightCreate(workspaceId: string): {
   }
   return {
     projectId: e.projectId,
-    tool: e.tool,
+    ...(e.tool !== undefined ? { tool: e.tool } : {}),
     ...(e.model !== undefined ? { model: e.model } : {}),
     ...(e.branch !== undefined ? { branch: e.branch } : {}),
     ...(e.groupId !== undefined ? { groupId: e.groupId } : {}),
@@ -388,7 +389,7 @@ export function listProvisioning(): ProvisioningWorkspaceEntry[] {
     .map((e) => ({
       workspaceId: e.workspaceId,
       projectId: e.projectId,
-      tool: e.tool,
+      ...(e.tool !== undefined ? { tool: e.tool } : {}),
       kind: e.kind,
       message: e.message,
       ...(e.error !== undefined ? { error: e.error } : {}),

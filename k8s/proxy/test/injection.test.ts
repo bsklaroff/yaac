@@ -43,7 +43,7 @@ async function load(
     objects.applyRegistration({
       metadata: { name: `yaac-proxy-reg-${workspaceId}`, labels: { [LABEL_WORKSPACE_ID]: workspaceId } },
       data: { 'registration.json': JSON.stringify({
-        rules: [], allowedHosts: ['*'], tool: 'claude', projectId: 'demo', owner: 'o', ...reg,
+        rules: [], allowedHosts: ['*'], projectId: 'demo', owner: 'o', ...reg,
       }) },
     })
   }
@@ -179,7 +179,7 @@ describe('buildDynamicRules', () => {
         'opencode.json': { kind: 'api-key', apiKey: 'sk-or-oc', apiHost: 'openrouter.ai' },
         'pi.json': { kind: 'api-key', apiKey: 'sk-or-pi', apiHost: 'openrouter.ai' },
       },
-      { oc: { tool: 'opencode' }, pi: { tool: 'pi' } },
+      { oc: {}, pi: {} },
     )
     // Both tools on one host with different keys: the placeholder picks the
     // key, whichever tool the workspace was created for.
@@ -203,7 +203,7 @@ describe('buildDynamicRules', () => {
         'claude.json': { kind: 'api-key', apiKey: 'sk-ant-claude' },
         'pi.json': { kind: 'api-key', apiKey: 'sk-ant-pi', apiHost: 'api.anthropic.com' },
       },
-      { pi: { tool: 'pi' } },
+      { pi: {} },
     )
     expect(send(objects, 'api.anthropic.com', { 'x-api-key': PH_KEY }, 'pi')['x-api-key']).toBe('sk-ant-claude')
     expect(send(objects, 'api.anthropic.com', { 'x-api-key': PH_PI }, 'pi')['x-api-key']).toBe('sk-ant-pi')
@@ -220,7 +220,7 @@ describe('buildDynamicRules', () => {
         bob: { owner: 'bob', projectId: 'bobs', repoUrl: 'https://github.com/acme/repo.git' },
         // Naming another owner's project does not reach into that owner's pool.
         intruder: { owner: 'bob', projectId: 'demo', repoUrl: 'https://github.com/acme/repo.git' },
-        nobody: { owner: 'carol', tool: 'opencode' },
+        nobody: { owner: 'carol' },
       },
       { bob: {
         'claude.json': claudeOauth('bob-access'),
@@ -256,7 +256,7 @@ describe('buildDynamicRules', () => {
   })
 
   it('swaps nothing for a tool with no credential configured', async () => {
-    const none = await load({}, { ws: {}, oc: { tool: 'opencode' }, pi: { tool: 'pi' } })
+    const none = await load({}, { ws: {}, oc: {}, pi: {} })
     for (const ws of ['ws', 'oc', 'pi']) expect(hostNeedsDynamicMitm(none, ws, 'openrouter.ai', 443)).toBe(false)
     expect(send(none, 'api.anthropic.com', { 'x-api-key': PH_KEY })['x-api-key']).toBe(PH_KEY)
     expect(send(none, 'api.anthropic.com', { authorization: `Bearer ${PH_ACCESS}` }).authorization)
@@ -277,7 +277,7 @@ describe('hostNeedsDynamicMitm', () => {
         'pi.json': { kind: 'api-key', apiKey: 'sk-groq', apiHost: 'api.groq.com' },
         'git-tokens.json': [{ token: 'ghp', projects: ['demo'] }],
       },
-      { oc: { tool: 'opencode', repoUrl: 'https://github.com/acme/r' }, pi: { tool: 'pi' }, cl: {} },
+      { oc: { repoUrl: 'https://github.com/acme/r' }, pi: {}, cl: {} },
     )
     for (const host of ['api.anthropic.com', 'platform.claude.com', 'api.openai.com', 'auth.openai.com', 'chatgpt.com']) {
       expect(hostNeedsDynamicMitm(objects, 'cl', host, 443)).toBe(true)

@@ -23,8 +23,9 @@ const project = (ignoredTracked: string[] = []): ProjectSummary => ({
 })
 
 const workspace = {
-  workspaceId: 'ws-1', projectId: 'p-1', tool: 'claude', groupId: 'g-1', trackedScratchDirs: ['target'],
-} as WorkspaceListEntry
+  workspaceId: 'ws-1', projectId: 'p-1', groupId: 'g-1', trackedScratchDirs: ['target'],
+  sessions: [{ sessionId: 'se-1', tool: 'claude', mode: 'tui', window: 'claude-se1', permissionMode: 'bypass', ordinal: 0 }],
+} as unknown as WorkspaceListEntry
 
 let server: FetchMock
 beforeEach(() => {

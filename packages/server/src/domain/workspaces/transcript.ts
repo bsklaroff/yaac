@@ -4,9 +4,9 @@ import { ServerError } from '@yaac/shared/errors'
 import { ConfinedPathError } from '#lib/confined-fs'
 import { sniffImage } from '@yaac/shared/attachments'
 import { ACP_RECORD_NAME, ClaudeTranscriptReplay, acpPage, activityStarts, acpStoredImage, openSandboxDir, openSandboxFile, readAcpLife, readAcpPage, claudeSubagentThreads, claudeTranscriptAsAcp, codexTranscriptAsAcp, conversationFiles, opencodeTranscriptAsAcp, piTranscriptAsAcp, sessionTranscriptPath, readSandboxFile, type AcpLife, type RecordOrigin, type SandboxFile } from '#runtime/agents'
-import { listWorkspaceAgentSessions, type AgentSessionLinkRow } from '#db'
+import { listWorkspaceConversations, type ConversationLinkRow } from '#db'
 import { serverLog } from '#lib/log'
-import { recordedTranscript } from './agent-session-paths'
+import { recordedTranscript } from './conversation-paths'
 import { ACP_PAGE_SPAN, acpPageOf, type AcpEvent, type AcpTranscriptPage } from '@yaac/shared/acp'
 
 /**
@@ -25,25 +25,25 @@ import { ACP_PAGE_SPAN, acpPageOf, type AcpEvent, type AcpTranscriptPage } from 
  * A missing file, or one that is not a plain file (the sandbox can plant a
  * link), gives an empty history.
  */
-export async function getAgentSessionTranscript(
+export async function getConversationTranscript(
   projectId: string,
   workspaceId: string,
-  agentSessionId: string,
+  conversationId: string,
   page?: number,
 ): Promise<AcpTranscriptPage> {
-  const session = await conversation(projectId, workspaceId, agentSessionId)
+  const session = await conversation(projectId, workspaceId, conversationId)
   if (session === undefined) {
-    throw new ServerError('NOT_FOUND', `conversation ${agentSessionId} not found`)
+    throw new ServerError('NOT_FOUND', `conversation ${conversationId} not found`)
   }
   const claudeFile = await claudeTranscript(projectId, workspaceId, session)
   if (session.mode === 'tui') {
     const own = await ownHistory(projectId, workspaceId, session, claudeFile)
     return withSubagentThreads(acpPage(own.events, page), claudeFile, own.budget)
   }
-  const ref = { projectId, workspaceId, agentSessionId }
+  const ref = { projectId, workspaceId, conversationId }
   const life = await readAcpLife(ref)
   if (life === undefined) return withSubagentThreads(await readAcpPage(ref, page), claudeFile, MAX_TRANSCRIPT_BYTES)
-  const origin = await recordOrigin(projectId, workspaceId, agentSessionId, life)
+  const origin = await recordOrigin(projectId, workspaceId, conversationId, life)
   const own = page !== undefined && page < origin.firstPage
     ? await historyBefore(projectId, workspaceId, session, claudeFile, life)
     : undefined
@@ -64,12 +64,12 @@ export async function getAgentSessionTranscript(
 export function recordOrigin(
   projectId: string,
   workspaceId: string,
-  agentSessionId: string,
+  conversationId: string,
   life: AcpLife | undefined,
 ): Promise<RecordOrigin> {
   if (life === undefined) return Promise.resolve(NO_HISTORY)
-  return cached(origins, MAX_ORIGINS, lifeKey(projectId, workspaceId, agentSessionId, life), async () => {
-    const session = await conversation(projectId, workspaceId, agentSessionId)
+  return cached(origins, MAX_ORIGINS, lifeKey(projectId, workspaceId, conversationId, life), async () => {
+    const session = await conversation(projectId, workspaceId, conversationId)
     if (session === undefined) return NO_HISTORY
     const own = await historyBefore(projectId, workspaceId, session, await claudeTranscript(projectId, workspaceId, session), life)
     const last = own?.events.at(-1)
@@ -87,8 +87,8 @@ const MAX_ORIGINS = 256
 const histories = new Map<string, Promise<OwnHistory | undefined>>()
 const MAX_HISTORIES = 4
 
-function lifeKey(projectId: string, workspaceId: string, agentSessionId: string, life: AcpLife): string {
-  return JSON.stringify([projectId, workspaceId, agentSessionId, life.id])
+function lifeKey(projectId: string, workspaceId: string, conversationId: string, life: AcpLife): string {
+  return JSON.stringify([projectId, workspaceId, conversationId, life.id])
 }
 
 /** `key`'s value in `map`, made once; a failure is made again next time.
@@ -104,15 +104,15 @@ function cached<T>(map: Map<string, Promise<T>>, max: number, key: string, make:
   return value
 }
 
-export async function conversation(projectId: string, workspaceId: string, agentSessionId: string): Promise<AgentSessionLinkRow | undefined> {
-  return (await listWorkspaceAgentSessions(projectId, workspaceId)).find((l) => l.agentSessionId === agentSessionId)
+export async function conversation(projectId: string, workspaceId: string, conversationId: string): Promise<ConversationLinkRow | undefined> {
+  return (await listWorkspaceConversations(projectId, workspaceId)).find((l) => l.conversationId === conversationId)
 }
 
 /** claude's own transcript of a conversation, at its recorded path or else
  *  the conventional one. */
-export async function claudeTranscript(projectId: string, workspaceId: string, session: AgentSessionLinkRow): Promise<SandboxFile | undefined> {
+export async function claudeTranscript(projectId: string, workspaceId: string, session: ConversationLinkRow): Promise<SandboxFile | undefined> {
   return session.tool !== 'claude' ? undefined
-    : recordedTranscript(session) ?? await sessionTranscriptPath(projectId, workspaceId, session.tool, session.agentSessionId)
+    : recordedTranscript(session) ?? await sessionTranscriptPath(projectId, workspaceId, session.tool, session.conversationId)
 }
 
 /**
@@ -126,11 +126,11 @@ export async function claudeTranscript(projectId: string, workspaceId: string, s
 function historyBefore(
   projectId: string,
   workspaceId: string,
-  session: AgentSessionLinkRow,
+  session: ConversationLinkRow,
   claudeFile: SandboxFile | undefined,
   life: AcpLife,
 ): Promise<OwnHistory | undefined> {
-  return cached(histories, MAX_HISTORIES, lifeKey(projectId, workspaceId, session.agentSessionId, life), async () => {
+  return cached(histories, MAX_HISTORIES, lifeKey(projectId, workspaceId, session.conversationId, life), async () => {
     const before = Date.parse(life.startedAt)
     if (session.tool === 'opencode' || Number.isNaN(before)) return undefined
     const own = await ownHistory(projectId, workspaceId, session, claudeFile, before).catch((err: unknown) => {
@@ -172,12 +172,12 @@ export interface FollowedHistory {
 export function followHistory(
   projectId: string,
   workspaceId: string,
-  session: AgentSessionLinkRow,
+  session: ConversationLinkRow,
   claudeFile: SandboxFile | undefined,
   prev?: FollowedHistory,
 ): Promise<FollowedHistory> {
   return session.tool === 'claude'
-    ? readClaudeHistory(claudeFile, session.agentSessionId, prev)
+    ? readClaudeHistory(claudeFile, session.conversationId, prev)
     : readOtherHistory(projectId, workspaceId, session, prev)
 }
 
@@ -186,7 +186,7 @@ export function followHistory(
 async function readOtherHistory(
   projectId: string,
   workspaceId: string,
-  session: AgentSessionLinkRow,
+  session: ConversationLinkRow,
   prev: FollowedHistory | undefined,
 ): Promise<FollowedHistory> {
   const stamp = await historyStamp((await historyFiles(projectId, workspaceId, session)).map((f) => f.file))
@@ -198,7 +198,7 @@ async function readOtherHistory(
  *  replay can follow it, else read in full. */
 async function readClaudeHistory(
   file: SandboxFile | undefined,
-  agentSessionId: string,
+  conversationId: string,
   prev: FollowedHistory | undefined,
 ): Promise<FollowedHistory> {
   const handle = file === undefined ? null : await openSandboxFile(file)
@@ -216,7 +216,7 @@ async function readClaudeHistory(
       state.offset += bytes.length
       if (await state.replay.append(state.decoder.write(bytes))) return answer(state, prev.lineage)
     }
-    const fresh = { replay: new ClaudeTranscriptReplay(agentSessionId), decoder: new StringDecoder('utf8'), offset: 0, ino }
+    const fresh = { replay: new ClaudeTranscriptReplay(conversationId), decoder: new StringDecoder('utf8'), offset: 0, ino }
     const bytes = await readRange(handle, 0, size)
     fresh.offset = bytes.length
     await fresh.replay.append(fresh.decoder.write(bytes))
@@ -247,9 +247,9 @@ async function readRange(handle: FileHandle, from: number, to: number): Promise<
 export async function historyFiles(
   projectId: string,
   workspaceId: string,
-  session: AgentSessionLinkRow,
+  session: ConversationLinkRow,
 ): Promise<Array<{ file: SandboxFile; thread: boolean }>> {
-  const files = (await conversationFiles(projectId, workspaceId, [session])).get(session.agentSessionId) ?? []
+  const files = (await conversationFiles(projectId, workspaceId, [session])).get(session.conversationId) ?? []
   return files.flatMap(({ name, file }, i): Array<{ file: SandboxFile; thread: boolean }> => {
     if (name === ACP_RECORD_NAME) return []
     if (session.tool === 'opencode') return [{ file, thread: false }, { file: { ...file, rel: `${file.rel}-wal` }, thread: false }]
@@ -281,11 +281,11 @@ export async function historyStamp(files: SandboxFile[]): Promise<string> {
 async function ownHistory(
   projectId: string,
   workspaceId: string,
-  session: AgentSessionLinkRow,
+  session: ConversationLinkRow,
   claudeFile: SandboxFile | undefined,
   before = Infinity,
 ): Promise<OwnHistory> {
-  const id = session.agentSessionId
+  const id = session.conversationId
   const ended = before !== Infinity
   switch (session.tool) {
     case 'claude': {

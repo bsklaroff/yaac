@@ -241,9 +241,9 @@ describe('focusPaneTarget', () => {
     expect(focusPaneTarget(['agent', 'shell:a'], undefined, false)).toBe('agent')
   })
 
-  it('tiles mode prefers the last-active pane, else the agent, else the first', () => {
-    expect(focusPaneTarget(['shell:a', 'agent'], 'shell:a', true)).toBe('shell:a')
-    expect(focusPaneTarget(['shell:a', 'agent'], undefined, true)).toBe('agent')
+  it('tiles mode prefers the last-active pane, else the first session\'s, else the first', () => {
+    expect(focusPaneTarget(['shell:a', 'session:s1'], 'shell:a', true)).toBe('shell:a')
+    expect(focusPaneTarget(['shell:a', 'session:s1', 'session:s2'], undefined, true)).toBe('session:s1')
     expect(focusPaneTarget(['shell:a', 'shell:b'], undefined, true)).toBe('shell:a')
   })
 

@@ -9,7 +9,7 @@ import { findWorkspaceRow } from '#db'
 import { attachPty, type SocketLike, TUNNEL_DIAL_FAILED, attachPortTunnel } from '#runtime/terminals'
 import { attachAcp } from '#runtime/agents'
 import { errorText, serverLog } from '#lib/log'
-import { agentSessionIdSchema } from '@yaac/shared/types'
+import { conversationIdSchema } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
 
 /**
@@ -91,7 +91,7 @@ function attachRoute(
   const checkQuery: MiddlewareHandler<IdentityEnv> = async (c, next) => {
     const id = c.req.query('id')
     if (!id) throw new ServerError('VALIDATION', 'a workspace id is required')
-    if (opts.session && !agentSessionIdSchema.safeParse(c.req.query('session')).success) {
+    if (opts.session && !conversationIdSchema.safeParse(c.req.query('session')).success) {
       throw new ServerError('VALIDATION', 'a valid conversation id is required')
     }
     const row = await findWorkspaceRow(id)
@@ -233,11 +233,11 @@ export function registerWebSocketRoutes(app: Hono<IdentityEnv>, hub: EventHub): 
   // events.
   attachRoute(app, '/api/acp/attach', { session: true, access: 'owner' }, (c) => {
     const id = c.req.query('id') ?? ''
-    const agentSessionId = c.req.query('session') ?? ''
+    const conversationId = c.req.query('session') ?? ''
     return {
       open: ({ projectId }, socket) => {
-        attachAcp(projectId, id, agentSessionId, socket, (life) => recordOrigin(projectId, id, agentSessionId, life))
-        serverLog(`[server] acp attach: session=${id} conversation=${agentSessionId}`)
+        attachAcp(projectId, id, conversationId, socket, (life) => recordOrigin(projectId, id, conversationId, life))
+        serverLog(`[server] acp attach: session=${id} conversation=${conversationId}`)
       },
       refuse: (socket) => {
         const message = 'session not found or not running'
@@ -252,14 +252,14 @@ export function registerWebSocketRoutes(app: Hono<IdentityEnv>, hub: EventHub): 
   // its tool's history (`observeConversation`).
   attachRoute(app, '/api/acp/observe', { session: true, access: 'reader' }, (c) => {
     const id = c.req.query('id') ?? ''
-    const agentSessionId = c.req.query('session') ?? ''
+    const conversationId = c.req.query('session') ?? ''
     return {
       open: ({ projectId }, socket) => {
-        void observeConversation(projectId, id, agentSessionId, socket).catch((err: unknown) => {
-          serverLog(`[server] acp observe ${id}/${agentSessionId}: ${errorText(err)}`)
+        void observeConversation(projectId, id, conversationId, socket).catch((err: unknown) => {
+          serverLog(`[server] acp observe ${id}/${conversationId}: ${errorText(err)}`)
           socket.close(1011, 'observe failed')
         })
-        serverLog(`[server] acp observe: session=${id} conversation=${agentSessionId}`)
+        serverLog(`[server] acp observe: session=${id} conversation=${conversationId}`)
       },
       refuse: (socket) => {
         trySend(socket, { type: 'health', connected: false })

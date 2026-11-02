@@ -35,12 +35,7 @@ import { shellQuote } from '#lib/shell'
 import { AcpConversation } from './acp-client'
 import { readAcpRecovery, readRecordedSessionNew } from './acp-log'
 import { type JsonRpcTransport } from './acp-jsonrpc'
-import {
-  BOOT_SUBSCRIPTION_PREFIX,
-  ControlModeConnection,
-  PLACEHOLDER_FORMAT,
-} from './control-mode'
-import { agentWindowTool } from './agent-tools'
+import { ControlModeConnection } from './control-mode'
 import {
   dropAcpQueues,
   parkAcpQueue,
@@ -59,13 +54,13 @@ import type {
   AgentObservation,
   DrivenWorkspace,
   LiveAgent,
+  WatchedSession,
 } from './drivers'
-import { agentSessionIdSchema, type AgentTool, type PermissionMode } from '@yaac/shared/types'
+import { conversationIdSchema, type AgentTool, type PermissionMode } from '@yaac/shared/types'
 
 /**
- * One conversation's acpd socket inside the workspace, named for its tmux
- * window (`claude`, `claude-2`) so a reattach can find it from the window
- * list. The directory comes from the driver (`WorkspacePaths.acpSockDir`)
+ * One session's acpd socket inside the workspace, named for its tmux window
+ * so a reattach can find it from the window list. The directory comes from the driver (`WorkspacePaths.acpSockDir`)
  * because one fixed path is safe per pod but not shared by host processes.
  */
 function acpSockPath(paths: Pick<WorkspacePaths, 'acpSockDir'>, handle: string): string {
@@ -117,8 +112,8 @@ const PROMPT_ATTACH_TIMEOUT_MS = 60_000
  */
 const SESSION_PANE_OPTION = '@yaac-acp-session'
 
-/** Every open connection, so a recorded posture change reaches the ones
- *  driving that workspace. */
+/** Every open connection, so a recorded posture change reaches the one
+ *  driving that session. */
 const openConnections = new Set<AcpConnection>()
 
 /**
@@ -148,13 +143,20 @@ function ctrlTransport(child: StreamChild): JsonRpcTransport {
 interface Attached {
   handle: string
   tool: AgentTool
+  /** Its session as last read. */
+  session: WatchedSession
+  /**
+   * Its posture: the session's, then followed through
+   * `setAcpPermissionMode`. Read synchronously when an ask arrives.
+   */
+  posture: PermissionMode
   /** The window's process when attached; a respawn replaces it. */
   panePid: string
   /** Undefined only briefly, between registration and construction (see
    *  `attach`). */
   conversation?: AcpConversation
   child: StreamChild
-  agentSessionId?: string
+  conversationId?: string
   model?: string
   modelName?: string
   modeId?: string
@@ -162,10 +164,9 @@ interface Attached {
 }
 
 /**
- * One workspace's conversations, tracked through a tmux control-mode client
- * of its own (`ControlModeConnection`): a window added or closed is pushed
- * as a notification, and an agent window still running create's
- * placeholder is watched through a subscription until acpd replaces it.
+ * One workspace's `acp` sessions, tracked through a tmux control-mode client
+ * of its own (`ControlModeConnection`): a window added or closed, or an
+ * agent exiting, is pushed as a notification.
  */
 class AcpConnection extends ControlModeConnection {
   private readonly attached = new Map<string, Attached>()
@@ -174,67 +175,32 @@ class AcpConnection extends ControlModeConnection {
   /** Consecutive attaches per handle that did not survive until the next
    *  re-list; see `MAX_FAST_ATTACH_ATTEMPTS`. */
   private readonly attachFailures = new Map<string, number>()
-  /** Placeholder panes with a boot subscription. */
-  private readonly booting = new Set<string>()
   private syncing: Promise<void> | null = null
   private syncAgain = false
-  private readonly recordedSessions: () => Promise<Array<{ handle: string; agentSessionId: string }>>
-  private readonly readPermissionMode: () => Promise<PermissionMode | undefined>
-  private readonly readLaunchModel: (tool: AgentTool) => Promise<string | undefined>
-  private readonly readEffort: () => Promise<string | undefined>
-  /**
-   * The posture, read at connect (and on each heartbeat until a read
-   * succeeds) and then followed through `setAcpPermissionMode`. Cached
-   * because a conversation needs it synchronously when an ask arrives.
-   *
-   * Starts unknown, not `bypass`: otherwise a failed read could lock a
-   * `manual` workspace into auto-answering at the handshake.
-   */
-  permissionMode: PermissionMode | undefined
+  private readonly readSessions: () => Promise<WatchedSession[]>
+  /** The `acp` sessions by window, as last read. */
+  private sessions = new Map<string, WatchedSession>()
 
   constructor(session: DrivenWorkspace, sink: (obs: AgentObservation) => void, deps: AgentConnectDeps) {
     super(session, sink, deps, 'acp-driver')
-    this.recordedSessions = deps.recordedSessions ?? (() => Promise.resolve([]))
-    this.readPermissionMode = deps.permissionMode ?? (() => Promise.resolve('bypass'))
-    this.readLaunchModel = deps.launchModel ?? (() => Promise.resolve(undefined))
-    this.readEffort = deps.effort ?? (() => Promise.resolve(undefined))
+    this.readSessions = deps.sessions ?? (() => Promise.resolve([]))
     openConnections.add(this)
     this.start()
   }
 
-  /** Before any attach, so new conversations handshake with the posture. */
-  protected async init(): Promise<void> {
-    await this.loadPermissionMode()
-  }
-
-  /** Until a read succeeds; see `permissionMode`. */
-  protected beforeHeartbeat(): void {
-    if (this.permissionMode === undefined) void this.loadPermissionMode()
-  }
-
-  /** A failed read leaves the posture unknown, so every ask is forwarded,
-   *  and the next heartbeat reads again. */
-  private async loadPermissionMode(): Promise<void> {
-    try {
-      this.permissionMode ??= await this.readPermissionMode()
-    } catch (err) {
-      this.log(`[server] acp-driver ${this.session.workspaceId}: could not read the`
-        + ` permission posture: ${String(err)}`)
-    }
-  }
-
-  /** acpd replaced the placeholder. */
-  protected onBooted(paneId: string): void {
-    this.booting.delete(paneId)
-  }
-
-  /** acp panes carry only boot subscriptions. */
+  /** acp panes carry only death subscriptions. */
   protected onSubscription(): void {}
 
+  /** Follow a session's recorded posture (`setAcpPermissionMode`). */
+  setPosture(window: string, posture: PermissionMode): void {
+    const entry = this.attached.get(window)
+    if (entry !== undefined) entry.posture = posture
+  }
+
   /**
-   * Reconcile held conversations against the workspace's agent windows,
-   * which are authoritative (the launch creates them, a restart recreates
-   * them): attach new windows and drop conversations whose window is gone.
+   * Reconcile held conversations against the workspace's `acp` session
+   * windows: attach new ones and drop those whose window is gone or whose
+   * agent exited.
    *
    * Serialized: overlapping passes would dial a window twice, and acpd
    * would displace whichever client held the live handshake. A call during
@@ -259,19 +225,25 @@ class AcpConnection extends ControlModeConnection {
   }
 
   private async syncOnce(): Promise<void> {
-    const listed = await this.send(`list-windows -t yaac -F '#{window_name}\t#{pane_id}\t${PLACEHOLDER_FORMAT}`
-      + `\t#{pane_pid}\t#{${SESSION_PANE_OPTION}}'`)
+    const [listed, sessions] = await Promise.all([
+      this.send(`list-windows -t yaac -F '#{window_name}\t#{pane_id}\t#{pane_dead}`
+        + `\t#{pane_pid}\t#{${SESSION_PANE_OPTION}}'`),
+      this.readSessions().catch(() => undefined),
+    ])
     if (this.done) return
+    if (sessions !== undefined) {
+      this.sessions = new Map(sessions.filter((s) => s.mode === 'acp').map((s) => [s.window, s]))
+    }
     const windows = listed.split('\n').flatMap((line) => {
-      const [handle = '', paneId = '', placeholder, pid = '', session = ''] = line.split('\t')
-      const tool = agentWindowTool(handle)
-      // Only agent windows run acpd; init windows and scratch shells do not.
-      if (tool === undefined) return []
-      // Only a session minted by the pane's current process; a respawn keeps
-      // the option but replaces the process.
-      const sessionPid = session.slice(0, session.indexOf(':'))
-      const liveSession = sessionPid !== '' && sessionPid === pid ? session.slice(sessionPid.length + 1) : undefined
-      return [{ handle, tool, paneId, pid, placeholder: placeholder === '1', liveSession }]
+      const [handle = '', paneId = '', dead, pid = '', live = ''] = line.split('\t')
+      const session = this.sessions.get(handle)
+      // Only session windows run acpd; terminals do not.
+      if (session === undefined) return []
+      // Only a conversation minted by the pane's current process; a respawn
+      // keeps the option but replaces the process.
+      const livePid = live.slice(0, live.indexOf(':'))
+      const liveSession = livePid !== '' && livePid === pid ? live.slice(livePid.length + 1) : undefined
+      return [{ handle, session, paneId, pid, dead: dead === '1', liveSession }]
     })
 
     // Still attached at a re-list means the attach held, not a dial that
@@ -281,10 +253,12 @@ class AcpConnection extends ControlModeConnection {
     for (const [handle, entry] of [...this.attached]) {
       const w = live.get(handle)
       if (w === undefined) this.detach(entry, 'window closed')
+      else if (w.dead) this.detach(entry, 'agent exited')
       // A respawned agent's old stream normally closes and says so, but one
       // that died silently would hold the window's name forever, so the new
       // acpd would never be dialed. Handled like that close.
       else if (w.pid !== entry.panePid) this.detach(entry, 'agent respawned', { keepQueue: true })
+      else entry.session = w.session
     }
     // A new window with a vanished one's name is a new conversation.
     for (const handle of [...this.attachFailures.keys()]) {
@@ -295,32 +269,21 @@ class AcpConnection extends ControlModeConnection {
     }
 
     for (const w of windows) {
-      if (!w.placeholder || this.booting.has(w.paneId)) continue
-      this.booting.add(w.paneId)
-      await this.send(`refresh-client -B '${BOOT_SUBSCRIPTION_PREFIX}${w.paneId.replace('%', '')}:${w.paneId}:${PLACEHOLDER_FORMAT}'`)
+      await this.watchPaneDeath(w.paneId)
       if (this.done) return
     }
 
-    const sessions = await this.recordedSessions().catch(() => undefined)
-    if (this.done) return
-    const recorded = new Map((sessions ?? []).map((r) => [r.handle, r.agentSessionId]))
     // A queue parked for a conversation whose window is gone has no taker.
-    // Without the recorded sessions that cannot be told, so nothing is
-    // dropped.
+    // Without the sessions that cannot be told, so nothing is dropped.
     if (sessions !== undefined) {
       dropAcpQueues(this.session.projectId, this.session.workspaceId, new Set(
-        windows.flatMap((w) => {
-          const id = recorded.get(w.handle)
-          return id === undefined ? [] : [id]
-        }),
+        windows.flatMap((w) => (w.session.conversationId === undefined ? [] : [w.session.conversationId])),
       ))
     }
     for (const w of windows) {
-      if (w.placeholder || this.attached.has(w.handle) || this.retries.has(w.handle)) continue
-      this.attach(w.handle, w.tool, recorded.get(w.handle) ?? w.liveSession, { paneId: w.paneId, pid: w.pid })
+      if (w.dead || this.attached.has(w.handle) || this.retries.has(w.handle)) continue
+      this.attach(w.handle, w.session, w.session.conversationId ?? w.liveSession, { paneId: w.paneId, pid: w.pid })
     }
-    // As in the TUI driver: never publish an empty set, which would read as
-    // "every agent exited" before the agent has even started.
     this.publishAgents()
   }
 
@@ -338,10 +301,11 @@ class AcpConnection extends ControlModeConnection {
 
   private attach(
     handle: string,
-    tool: AgentTool,
+    session: WatchedSession,
     resumeSessionId: string | undefined,
     pane: { paneId: string; pid: string },
   ): void {
+    const { tool } = session
     let child: StreamChild
     try {
       // socat over `ctrl` gives a raw duplex to the socket. The endpoint is a
@@ -359,7 +323,7 @@ class AcpConnection extends ControlModeConnection {
     // Register the entry before constructing the conversation: a transport
     // failing during construction calls `onDown` synchronously, and `detach`
     // must find the entry.
-    const entry: Attached = { handle, tool, panePid: pane.pid, child }
+    const entry: Attached = { handle, tool, session, posture: session.permissionMode, panePid: pane.pid, child }
     const panePid = pane.pid !== '' ? { panePid: pane.pid } : {}
     this.attached.set(handle, entry)
     const profile = acpAdapterFor(tool)
@@ -376,20 +340,18 @@ class AcpConnection extends ControlModeConnection {
         `tail -c ${String(bytes)} -- ${shellQuote(file)}`,
         { maxAttempts: 1, timeout: this.commandTimeoutMs },
       )).stdout,
-      permissionMode: () => this.permissionMode,
-      // Read at each handshake rather than at connect, so a spare's claim,
-      // which records its effort before respawning the agent, is followed.
-      // An unreadable effort leaves the adapter's own.
-      effort: () => this.readEffort().catch(() => undefined),
+      permissionMode: () => entry.posture,
+      // Read at each handshake, from the session as last listed.
+      effort: () => Promise.resolve(entry.session.effort),
       profile,
       // Without one the adapter runs its own default, for pi possibly a
       // provider whose key the proxy does not swap.
-      ...(acpModelIsProtocol(profile) ? { launchModel: () => this.readLaunchModel(tool) } : {}),
+      ...(acpModelIsProtocol(profile) ? { launchModel: () => Promise.resolve(entry.session.model) } : {}),
       // A handshake an earlier connection began may have opened the session
       // already; its record is still under the name acpd was launched with.
       ...(resumeSessionId === undefined ? {
         recordedSessionNew: () => readRecordedSessionNew({
-          projectId: this.session.projectId, workspaceId: this.session.workspaceId, agentSessionId: this.session.workspaceId,
+          projectId: this.session.projectId, workspaceId: this.session.workspaceId, conversationId: session.sessionId,
         }),
       } : {}),
       ...(resumeSessionId !== undefined ? {
@@ -397,25 +359,25 @@ class AcpConnection extends ControlModeConnection {
         // Only a recorded conversation can be mid-turn on attach, and only
         // it has a record to read.
         recover: () => readAcpRecovery({
-          projectId: this.session.projectId, workspaceId: this.session.workspaceId, agentSessionId: resumeSessionId,
+          projectId: this.session.projectId, workspaceId: this.session.workspaceId, conversationId: resumeSessionId,
         }),
       } : {}),
-      onSessionId: (agentSessionId) => {
+      onSessionId: (conversationId) => {
         // The agent mints the id, and it is later joined into paths and a
         // launch line, so a malformed one is not recorded.
-        if (!agentSessionIdSchema.safeParse(agentSessionId).success) {
-          this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: not recording malformed id ${JSON.stringify(agentSessionId.slice(0, 200))}`)
+        if (!conversationIdSchema.safeParse(conversationId).success) {
+          this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: not recording malformed id ${JSON.stringify(conversationId.slice(0, 200))}`)
           return
         }
-        entry.agentSessionId = agentSessionId
+        entry.conversationId = conversationId
         // acpd opened the record before the id existed; rename it.
-        void adoptLog(this.session, resumeSessionId, agentSessionId, this.log)
-        void this.send(`set-option -p -t ${pane.paneId} ${SESSION_PANE_OPTION} '${pane.pid}:${agentSessionId}'`)
+        void adoptLog(this.session, resumeSessionId ?? session.sessionId, conversationId, this.log)
+        void this.send(`set-option -p -t ${pane.paneId} ${SESSION_PANE_OPTION} '${pane.pid}:${conversationId}'`)
           .catch((err: unknown) => {
             this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: could not note the session on its pane: ${String(err)}`)
           })
         if (entry.conversation) {
-          registerAcpConversation(this.session.projectId, this.session.workspaceId, { handle, agentSessionId, ...panePid }, entry.conversation)
+          registerAcpConversation(this.session.projectId, this.session.workspaceId, { handle, conversationId, ...panePid }, entry.conversation)
         }
         // The registry reconciler turns this into the conversation's row.
         this.publishAgents()
@@ -447,10 +409,10 @@ class AcpConnection extends ControlModeConnection {
     })
     // A synchronous failure above already detached; do not re-publish it.
     if (!this.attached.has(handle)) return
-    entry.agentSessionId = resumeSessionId
+    entry.conversationId = resumeSessionId
     registerAcpConversation(this.session.projectId, this.session.workspaceId, {
       handle,
-      ...(resumeSessionId !== undefined ? { agentSessionId: resumeSessionId } : {}),
+      ...(resumeSessionId !== undefined ? { conversationId: resumeSessionId } : {}),
       ...panePid,
     }, entry.conversation)
   }
@@ -467,21 +429,21 @@ class AcpConnection extends ControlModeConnection {
     this.attached.delete(entry.handle)
     unregisterAcpConversation(this.session.projectId, this.session.workspaceId, {
       handle: entry.handle,
-      ...(entry.agentSessionId !== undefined ? { agentSessionId: entry.agentSessionId } : {}),
+      ...(entry.conversationId !== undefined ? { conversationId: entry.conversationId } : {}),
     })
-    if (keepQueue && entry.conversation !== undefined && entry.agentSessionId !== undefined) {
-      parkAcpQueue(this.session.projectId, this.session.workspaceId, entry.agentSessionId, entry.conversation.takeQueue())
+    if (keepQueue && entry.conversation !== undefined && entry.conversationId !== undefined) {
+      parkAcpQueue(this.session.projectId, this.session.workspaceId, entry.conversationId, entry.conversation.takeQueue())
     }
     entry.conversation?.close()
     this.log(`[server] acp-driver ${this.session.workspaceId}/${entry.handle}: detached (${reason})`)
   }
 
   private publishAgents(): void {
-    if (this.done || this.attached.size === 0) return
+    if (this.done) return
     const agents: LiveAgent[] = [...this.attached.values()].map((e) => ({
       handle: e.handle,
       tool: e.tool,
-      ...(e.agentSessionId !== undefined ? { agentSessionId: e.agentSessionId } : {}),
+      ...(e.conversationId !== undefined ? { conversationId: e.conversationId } : {}),
       ...(e.model !== undefined ? { model: e.model } : {}),
       ...(e.modelName !== undefined ? { modelName: e.modelName } : {}),
       ...(e.modeId !== undefined ? { reportedMode: e.modeId } : {}),
@@ -510,36 +472,40 @@ class AcpConnection extends ControlModeConnection {
 }
 
 /**
- * Rename a fresh conversation's record from its launch name to the id the
- * agent minted. A rename keeps acpd's open descriptor writing to the same
- * file; a no-op on a resume. The id was validated by `onSessionId`, and
- * `rename` never follows its last segment, so a planted link is moved or
- * replaced, never written through.
+ * Rename a fresh conversation's record from its launch name (its session's
+ * id) to the id the agent minted. A rename keeps acpd's open descriptor
+ * writing to the same file; a no-op on a resume. The id was validated by
+ * `onSessionId`, and `rename` never follows its last segment, so a planted
+ * link is moved or replaced, never written through.
  */
 async function adoptLog(
   session: DrivenWorkspace,
-  launchedAs: string | undefined,
-  agentSessionId: string,
+  provisional: string,
+  conversationId: string,
   log: (msg: string) => void,
 ): Promise<void> {
-  const provisional = launchedAs ?? session.workspaceId
-  if (provisional === agentSessionId) return
+  if (provisional === conversationId) return
   const dir = acpLogDir(session.projectId, session.workspaceId)
   try {
-    await fs.rename(path.join(dir, `${provisional}.jsonl`), path.join(dir, `${agentSessionId}.jsonl`))
+    await fs.rename(path.join(dir, `${provisional}.jsonl`), path.join(dir, `${conversationId}.jsonl`))
   } catch (err) {
     // Only costs this conversation its history on the next attach.
-    log(`[server] acp-driver ${session.workspaceId}: could not adopt log for ${agentSessionId}: ${String(err)}`)
+    log(`[server] acp-driver ${session.workspaceId}: could not adopt log for ${conversationId}: ${String(err)}`)
   }
 }
 
 /**
- * Follow a workspace's recorded posture change (`permission-mode-changed`)
- * in its open connections, which decide from it who answers an ask.
+ * Follow a session's recorded posture change (`session-reported`) in the
+ * connection driving it, which decides from it who answers an ask.
  */
-export function setAcpPermissionMode(projectId: string, workspaceId: string, permissionMode: PermissionMode): void {
+export function setAcpPermissionMode(
+  projectId: string,
+  workspaceId: string,
+  window: string,
+  permissionMode: PermissionMode,
+): void {
   for (const c of openConnections) {
-    if (c.session.projectId === projectId && c.session.workspaceId === workspaceId) c.permissionMode = permissionMode
+    if (c.session.projectId === projectId && c.session.workspaceId === workspaceId) c.setPosture(window, permissionMode)
   }
 }
 
@@ -561,10 +527,10 @@ export const acpDriver: AgentDriver = {
   launchCmd(spec: AgentLaunchSpec): string {
     assertLaunchableModel(spec.tool, spec.model)
     const adapter = acpAdapterFor(spec.tool)
-    // Name the record for the conversation, not the window: window names are
-    // slots that shift when a restart drops an earlier conversation, which
-    // would mix histories. A fresh create starts under the workspace id and
-    // is renamed once `session/new` answers (see `adoptLog`). `--cwd` is
+    // Name the record for the conversation, not the window, since a session
+    // holds several conversations over its life. A fresh one starts under its
+    // session's id and is renamed once `session/new` answers (see
+    // `adoptLog`). `--cwd` is
     // passed because acpd cannot know the checkout path. The conversation,
     // model and posture come over the protocol, so the pane reporters the
     // tool's hooks run are told to skip (`YAAC_NO_PANE_REPORT`), since claude
@@ -574,7 +540,7 @@ export const acpDriver: AgentDriver = {
       'YAAC_NO_PANE_REPORT=1',
       `exec node ${spec.paths.acpdEntry}`,
       `--sock ${acpSockPath(spec.paths, spec.windowName)}`,
-      `--log ${acpLogPath(spec.paths, spec.agentSessionId)}`,
+      `--log ${acpLogPath(spec.paths, spec.conversationId)}`,
       `--cwd ${spec.paths.workspaceDir}`,
       ...(spec.beforeCheckout === true ? [`--wait-for ${spec.paths.workspaceDir}/.git`] : []),
       '--',

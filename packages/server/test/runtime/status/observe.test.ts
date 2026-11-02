@@ -9,7 +9,7 @@ import {
   setAgentStatus,
   setLiveAgents,
   setWorkspaceStreamHealth,
-  setWorkspaceTerminals,
+  setWorkspaceWindows,
   _resetWorkspaceStatusStoreForTests,
 } from '#runtime/status/status-store'
 import {
@@ -59,14 +59,14 @@ describe('observeWorkspaces', () => {
     })
 
     // Unlisted windows are unknown, not none.
-    expect((await observeWorkspaces()).workspaces[0]).not.toHaveProperty('terminals')
-    setWorkspaceTerminals('proj', 'w1', [{ target: 'window:@1', name: 'shell' }])
+    expect((await observeWorkspaces()).workspaces[0]).not.toHaveProperty('windows')
+    setWorkspaceWindows('proj', 'w1', [{ id: '@1', name: 'shell', dead: false }])
 
     const report = await observeWorkspaces()
 
     expect(report.workspaces).toHaveLength(1)
     expect(report.workspaces[0]).toMatchObject({
-      terminals: [{ target: 'window:@1', name: 'shell' }],
+      windows: [{ id: '@1', name: 'shell', dead: false }],
       workspaceId: 'w1',
       projectId: 'proj',
       phase: 'running',
