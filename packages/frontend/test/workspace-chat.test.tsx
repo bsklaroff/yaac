@@ -33,6 +33,7 @@ const snapshot = vi.fn((): { driver: string } | undefined => undefined)
 vi.mock('#lib/useSnapshot', () => ({ useSnapshot: () => snapshot() }))
 
 import { WorkspaceChat } from '#components/WorkspaceChat'
+import type { Opening } from '#lib/opening'
 import { chatDraftKey, flushTypedText, useUiStore } from '#lib/store'
 import { IS_MAC } from '#lib/platform'
 import { DISCONNECT_NOTICE_DELAY_MS } from '#lib/reconnect'
@@ -63,12 +64,12 @@ beforeEach(() => {
 let client: QueryClient
 
 /** The pane on screen, and the one the user is in unless `focused` is false;
- *  `launchPrompt` is the message its session opened with. */
-const pane = (workspaceId = 'w1', conversationId = 'acp-1', focused = true, launchPrompt?: string): JSX.Element =>
+ *  `opening` is the message its session opened with. */
+const pane = (workspaceId = 'w1', conversationId = 'acp-1', focused = true, opening?: Opening): JSX.Element =>
   <WorkspaceChat
     workspaceId={workspaceId}
     conversationId={conversationId}
-    {...(launchPrompt !== undefined ? { launchPrompt } : {})}
+    {...(opening !== undefined ? { opening } : {})}
     visible
     focused={focused}
   />
@@ -77,12 +78,12 @@ function show(
   workspaceId?: string,
   conversationId?: string,
   focused?: boolean,
-  launchPrompt?: string,
+  opening?: Opening,
 ): ReturnType<typeof render> {
   client = testQueryClient()
   const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
-  return render(pane(workspaceId, conversationId, focused, launchPrompt), { wrapper })
+  return render(pane(workspaceId, conversationId, focused, opening), { wrapper })
 }
 
 describe('WorkspaceChat drafts', () => {
@@ -294,7 +295,10 @@ describe('WorkspaceChat mid-turn', () => {
 })
 
 // A session's opening message stands in for the conversation until the
-// agent echoes it, so the create's spinner carries straight on into the chat.
+// agent echoes it, so the create's spinner carries straight on into the chat:
+// connecting until the server greets the pane, then working. A message still
+// loading, or one that could not be fetched, shows as nothing, never as the
+// snapshot's cut copy, and the stand-in stays.
 describe('WorkspaceChat right after its session opens', () => {
   beforeEach(() => {
     stream.events = []
@@ -308,26 +312,44 @@ describe('WorkspaceChat right after its session opens', () => {
     cleanup()
   })
 
-  it('shows the prompt working until the echo, then the conversation itself', () => {
-    const { rerender } = show('w1', 'acp-1', true, 'build it')
+  it('shows the prompt connecting, then working until the echo, then the conversation itself', () => {
+    stream.connected = false
+    const { rerender } = show('w1', 'acp-1', true, { loading: true })
+    expect(screen.getByText('connecting')).toBeTruthy()
+    expect(screen.queryByText('build it')).toBeNull()
+    rerender(pane('w1', 'acp-1', true, { prompt: 'build it' }))
+    expect(screen.getByText('build it')).toBeTruthy()
+    expect(screen.getByText('connecting')).toBeTruthy()
+
+    stream.connected = true
+    rerender(pane('w1', 'acp-1', true, { prompt: 'build it' }))
     expect(screen.getByText('build it')).toBeTruthy()
     expect(screen.getByText('working')).toBeTruthy()
     expect(screen.queryByText(/No messages yet/)).toBeNull()
+    rerender(pane('w1', 'acp-1', true, {}))
+    expect(screen.queryByText('build it')).toBeNull()
+    expect(screen.getByText('working')).toBeTruthy()
+    expect(screen.queryByText(/No messages yet/)).toBeNull()
+    rerender(pane('w1', 'acp-1', true, { prompt: 'build it' }))
 
     stream.events = [user(0, 'build it')]
     stream.busy = true
-    rerender(pane('w1', 'acp-1', true, 'build it'))
+    rerender(pane('w1', 'acp-1', true, { prompt: 'build it' }))
     expect(screen.getAllByText('build it')).toHaveLength(1)
     expect(screen.getByText('working')).toBeTruthy()
   })
 
   it('leaves a session opened with no message, and a failed start, to their own view', () => {
-    show()
+    stream.connected = false
+    const { rerender } = show()
+    expect(screen.getByText('connecting')).toBeTruthy()
+    stream.connected = true
+    rerender(pane())
     expect(screen.getByText(/No messages yet/)).toBeTruthy()
     cleanup()
 
     stream.events = [{ type: 'error', seq: 0, message: 'the agent refused' }]
-    show('w1', 'acp-1', true, 'build it')
+    show('w1', 'acp-1', true, { prompt: 'build it' })
     expect(screen.getByText('the agent refused')).toBeTruthy()
     expect(screen.queryByText('build it')).toBeNull()
   })

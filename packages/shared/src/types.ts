@@ -1483,7 +1483,9 @@ export interface ProvisioningWorkspaceEntry {
    *  restart. */
   model?: string
   modelName?: string
-  /** The prompt a create opens with. Absent on a restart. */
+  /** The session a create opens, and the prompt it opens with. Absent on a
+   *  restart. */
+  sessionId?: string
   prompt?: string
   /** Latest progress line (e.g. 'Pulling image…'). */
   message: string
@@ -1577,8 +1579,8 @@ export const promptText = z.string().refine((s) => s.length <= MAX_PROMPT_LENGTH
  * characters, which the sidebar's search matches against; a conversation's
  * first prompt, which nothing searches, keeps only enough for its tab label
  * and tooltip. A client needing the whole text fetches it:
- * `GET /workspace/prompt` for a queued entry or draft; `yaac-mama list`
- * prints any workspace's whole.
+ * `GET /workspace/prompt` for a queued entry, draft, routine or session;
+ * `yaac-mama list` prints any workspace's whole.
  */
 export const PROMPT_PREVIEW_LENGTH = 10_000
 export const CONVERSATION_PROMPT_PREVIEW_LENGTH = 300

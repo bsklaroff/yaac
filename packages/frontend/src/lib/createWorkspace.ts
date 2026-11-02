@@ -1,6 +1,8 @@
 import { api } from './api'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
+import { rememberOpening } from '#lib/opening'
 import type { LaunchPane } from '#lib/store'
+import { randomUUID } from '#lib/uuid'
 import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 
 export interface CreateWorkspaceResult {
@@ -80,10 +82,16 @@ export async function createWorkspace(
   onProgress: (message: string) => void,
 ): Promise<CreateWorkspaceResult> {
   const group = c.groupId ?? c.newGroup
+  // Minted here, like the workspace's, so the panes standing in for the
+  // session's chat show the whole message this tab sent (`useOpening`).
+  const sessionId = c.noSession === true ? undefined : randomUUID()
+  if (sessionId !== undefined && c.prompt) rememberOpening(sessionId, c.prompt)
   const body = {
     project: c.projectId,
     workspaceId,
-    ...(c.noSession === true ? { noSession: true } : { tool: c.tool, mode: c.mode, permissionMode: c.permissionMode }),
+    ...(sessionId === undefined
+      ? { noSession: true }
+      : { sessionId, tool: c.tool, mode: c.mode, permissionMode: c.permissionMode }),
     ...(c.model ? { model: c.model } : {}),
     ...(c.effort !== undefined ? { effort: c.effort } : {}),
     ...(c.prompt ? { prompt: c.prompt } : {}),

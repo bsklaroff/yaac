@@ -9,6 +9,8 @@ import { insertDraftWorkspace } from '#db/draft-workspace-store'
 import { closeDb } from '#db/client'
 import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { recordConversations } from '#db/conversation-store'
+import { insertSession } from '#db/session-store'
+import { clearAllProvisioningForTests, registerProvisioning } from '#domain/workspaces/provisioning'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import {
@@ -82,17 +84,49 @@ describe('POST /mama', () => {
 })
 
 describe('GET /prompt', () => {
-  it('returns a queued entry\'s or draft\'s whole prompt', async () => {
+  afterEach(() => { clearAllProvisioningForTests() })
+
+  // A session's comes from its create's provisioning row until the create
+  // records the session. One opened on a conversation has that
+  // conversation's, as the snapshot shows it.
+  it('returns a queued entry\'s, draft\'s or session\'s whole prompt', async () => {
     const queued = await insertQueuedWorkspace(PROJ, { parentWorkspaceId: 'w-1' }, {
       prompt: LONG, tool: 'claude', model: 'opus', mode: 'tui', permissionMode: 'manual', branch: 'main',
     })
     const draft = await insertDraftWorkspace(PROJ, { prompt: `${LONG.slice(1)}!`, tool: 'claude', mode: 'tui', permissionMode: 'manual' })
-    for (const [id, prompt] of [[queued.id, LONG], [draft.id, `${LONG.slice(1)}!`]]) {
+    const workspaceId = '6f2a1d3b-8c4e-4f9a-8b7d-1e2f3a4b5c6d'
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId })
+    const session = await insertSession(PROJ, workspaceId, {
+      tool: 'claude', mode: 'acp', permissionMode: 'manual', prompt: `${LONG.slice(2)}?`,
+    })
+    await recordConversations(PROJ, workspaceId, [{ tool: 'claude', conversationId: 'conv-1', firstPrompt: `${LONG.slice(4)};` }])
+    const resumed = await insertSession(PROJ, workspaceId, {
+      tool: 'claude', mode: 'acp', permissionMode: 'manual', conversationId: 'conv-1',
+    })
+    const creating = '0b6a1f4e-2c3d-4e5f-8a9b-1c2d3e4f5a6b'
+    registerProvisioning({ workspaceId: 'w-2', projectId: PROJ, kind: 'create', sessionId: creating, prompt: `${LONG.slice(3)}.` })
+    for (const [id, prompt] of [
+      [queued.id, LONG], [draft.id, `${LONG.slice(1)}!`], [session.id, `${LONG.slice(2)}?`], [creating, `${LONG.slice(3)}.`],
+      [resumed.id, `${LONG.slice(4)};`],
+    ]) {
       const res = await app.request(`/prompt?id=${id}`)
       expect(res.status).toBe(200)
       expect(((await res.json()) as { prompt: string }).prompt === prompt).toBe(true)
     }
-    expect((await app.request('/prompt?id=7a3b2e4c-9d5f-4a0b-8c8e-2f3a4b5c6d7e')).status).toBe(404)
+    for (const id of ['7a3b2e4c-9d5f-4a0b-8c8e-2f3a4b5c6d7e', 'not-a-uuid']) {
+      expect((await app.request(`/prompt?id=${id}`)).status).toBe(404)
+    }
+
+    // A create naming a session id already taken, by a session or by a
+    // create still provisioning, is refused before it starts.
+    for (const id of [session.id, creating]) {
+      const res = await app.request('/create', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ project: PROJ, tool: 'claude', sessionId: id }),
+      })
+      expect(res.status).toBe(409)
+      expect(await res.json()).toMatchObject({ error: { message: `session id ${id} is already in use` } })
+    }
   })
 })
 

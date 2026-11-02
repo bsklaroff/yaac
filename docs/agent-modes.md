@@ -265,7 +265,7 @@ earlier one.)
 An off-screen pane stays mounted and keeps its socket, like a terminal, so
 switching tabs or workspaces costs no network. Attaching is the slow part (a
 handshake, then the conversation's last page in one `hello` frame): that is
-the "Connecting to the agent…" wait. The warm-up that pre-attaches terminals
+the wait its spinner calls "connecting". The warm-up that pre-attaches terminals
 after a page load covers chat panes too.
 
 ### File links
@@ -707,11 +707,22 @@ agent that dies at launch is, with the prompt beside it.
 Until its conversation is named, an ACP session's pane is drawn as the
 agent starting (`SessionPane`), with acpd's log a click away for an agent
 that never comes up. The provisioning pane before it and the chat pane
-after it look the same: the prompt, then the working spinner (captioned
-with the create's progress while provisioning), and the chat pane keeps
-showing the session's opening message until the agent echoes it, so the
-hand-over shows no gap. A `tui` create's provisioning pane is the same, and
-the terminal replaces it once the prompt is typed in.
+after it look the same: the prompt, then a spinner captioned with the
+create's progress, then "Starting <agent>…", then "connecting" until the
+conversation's history arrives, and "working" until the agent echoes the
+prompt, so the hand-over shows no gap. A chat pane opened later on a
+session's first conversation shows the same prompt while it connects. A
+`tui` create's provisioning pane is the same, and the terminal replaces it
+once the prompt is typed in.
+
+The snapshot cuts prompts short, so these panes show the opening message
+whole (`useOpening`): the text the tab sent, when it created the workspace,
+since the webapp mints the session's id with the workspace's; or the text a
+provisioning row carried uncut, since it keeps more than a session does;
+otherwise fetched once by session id (`GET /workspace/prompt`, which reads
+the provisioning row until the session is recorded). Until it arrives the
+spinner says "connecting" and no message shows, rather than a cut one; a
+fetch that fails leaves the spinner without the message.
 
 The prompt is taken off the session row before it is sent, so a crash
 between the two loses it rather than running the task twice. Only a send

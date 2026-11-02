@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { workspaceDriver } from '#drivers/driver'
 import { createWorkspace, resolveCreate, type WorkspaceCreateResult } from './create'
 import { saveDraftWorkspace } from './drafts'
@@ -32,6 +33,9 @@ export interface StartWorkspaceRequest {
   /** Reference branch on `origin`; unnamed is the project's default. */
   branch?: string
   prompt?: string
+  /** Its session's id, when the client minted one so it can find what it
+   *  opened (`GET /workspace/prompt`) before the snapshot names it. */
+  sessionId?: string
   /** Start it with no session, which leaves the agent fields unused. */
   noSession?: boolean
   /** The user's title; given, the workspace is not auto-titled. */
@@ -83,7 +87,9 @@ export async function prepareStart(
     ...(request.effort !== undefined ? { effort: request.effort } : {}),
     ...(request.mode !== undefined ? { mode: request.mode } : {}),
   })
-  const session = setup === undefined ? undefined : { ...setup, ...(prompt !== undefined ? { prompt } : {}) }
+  const session = setup === undefined
+    ? undefined
+    : { ...setup, id: request.sessionId ?? randomUUID(), ...(prompt !== undefined ? { prompt } : {}) }
   // Before the group and defaults below, so a create refused as a duplicate
   // leaves neither behind.
   refuseLiveProvision(workspaceId)
@@ -113,6 +119,7 @@ export async function prepareStart(
     kind: 'create',
     ...(groupId !== undefined ? { groupId } : {}),
     ...((title ?? generatedTitle) !== undefined ? { title: title ?? generatedTitle } : {}),
+    ...(session !== undefined ? { sessionId: session.id } : {}),
     ...(session?.prompt !== undefined ? { prompt: session.prompt } : {}),
     ...(setup?.model !== undefined ? { model: setup.model } : {}),
     ...(modelName !== undefined ? { modelName } : {}),
