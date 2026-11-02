@@ -1500,7 +1500,7 @@ describe('runClusterCheck', () => {
   })
 
   it('tells a provisioned hostPath volume (local-path) from kind\'s static one by its class', async () => {
-    // local-path (k3s, kind-byo) provisions hostPath volumes at its own path,
+    // local-path (k3s) provisions hostPath volumes at its own path,
     // which the static-pair checks would wrongly flag.
     await recordInstall({ driver: 'k8s', installId: 'test-install', byo: true })
     const labelled = (claim: string, id: string): Record<string, string> =>
@@ -1605,8 +1605,8 @@ describe('runClusterCheck', () => {
   })
 
   it('leaves the kind node fixups alone on a byo install, whose nodes are the pool\'s', async () => {
-    // kind-byo's nodes are podman containers with node names, so checking
-    // podman alone would probe a cluster install never touched.
+    // A byo cluster built on kind has podman containers with node names,
+    // so checking podman alone would probe a cluster install never touched.
     await recordInstall({ driver: 'k8s', byo: true })
     const deps = stage()
     const { results } = await check()

@@ -3,7 +3,7 @@ import { promisify } from 'node:util'
 import { afterAll, beforeAll } from 'vitest'
 import { TEST_NAMESPACE } from '@yaac/test-utils/setup'
 import { deleteTestServerClusterRbac } from '#support/deployed-server'
-import { deleteTestStorage } from '#support/storage-claims'
+import { deleteStorageVolumes } from '@yaac/server/drivers/k8s/install/storage'
 import { setWorkspaceDriver } from '@yaac/server/drivers/driver'
 import { createK8sDriver } from '@yaac/server/drivers/k8s'
 
@@ -42,7 +42,7 @@ afterAll(async () => {
   // Cluster-scoped objects don't go with the namespace, so delete the
   // server's ClusterRole/Binding and the storage PVs explicitly.
   await deleteTestServerClusterRbac(TEST_NAMESPACE)
-  await deleteTestStorage(TEST_NAMESPACE)
+  await deleteStorageVolumes(TEST_NAMESPACE)
   try {
     await execFileAsync(
       'kubectl',

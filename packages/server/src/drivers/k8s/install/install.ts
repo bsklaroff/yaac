@@ -104,9 +104,9 @@ import { env } from '@yaac/shared/env'
  */
 export const CALICO_VERSION = '3.32.1'
 
-/** Upstream release manifest (the KDD/iptables install) for a version tag. */
-export function calicoManifestUrl(version: string = CALICO_VERSION): string {
-  return `https://raw.githubusercontent.com/projectcalico/calico/v${version}/manifests/calico.yaml`
+/** Upstream release manifest (the KDD/iptables install). */
+function calicoManifestUrl(): string {
+  return `https://raw.githubusercontent.com/projectcalico/calico/v${CALICO_VERSION}/manifests/calico.yaml`
 }
 
 export interface ClusterInstallOptions {
@@ -1068,7 +1068,7 @@ async function verifyKindContext(deps: ClusterInstallDeps, cluster: string): Pro
 }
 
 /** Image references in the Calico manifest. */
-export function calicoImageRefs(manifestYaml: string): string[] {
+function calicoImageRefs(manifestYaml: string): string[] {
   const refs = manifestYaml.match(/^\s*image:\s*(\S+)\s*$/gm) ?? []
   return [...new Set(refs.map((line) => line.replace(/^\s*image:\s*/, '').trim()))].sort()
 }

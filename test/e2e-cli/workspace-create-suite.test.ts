@@ -1736,8 +1736,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         provider: { openrouter: { env: ['YAAC_OPENCODE_KEY_OPENROUTER', 'OPENROUTER_API_KEY'] } },
       })
 
-      // A host write shows up in the pod, allowing for NFS attribute
-      // caching (up to a second on the e2e-byo tier).
+      // A host write shows up in the pod.
       await fs.writeFile(
         path.join(hostOcConfigDir, 'opencode.json'),
         JSON.stringify({ model: 'anthropic/claude-sonnet-4-5' }),

@@ -263,6 +263,16 @@ describe('clusterStatus', () => {
     const [json] = await printed(() => clusterStatus({ json: true }))
     expect(JSON.parse(json)).toMatchObject({ running: true, refused: null, reachable: false })
   })
+
+  it('answers unknown for a byo install, whose lock is on the cluster, even beside a live local one', async () => {
+    await recordInstall({ driver: 'k8s', byo: true })
+    await podLock()
+
+    expect(await printed(() => clusterStatus({})))
+      .toEqual(['unknown: a --byo install keeps its server lock on the cluster'])
+    const [json] = await printed(() => clusterStatus({ json: true }))
+    expect(JSON.parse(json)).toMatchObject({ running: null, driver: 'k8s', serverBuildId: null, reachable: null })
+  })
 })
 
 describe('serverLogs', () => {

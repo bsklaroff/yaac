@@ -1,5 +1,4 @@
 import { execFile } from 'node:child_process'
-import type { TestProject } from 'vitest/node'
 import { promisify } from 'node:util'
 import path from 'node:path'
 import { contextHash, resolveTrustedLayers } from '@yaac/server/drivers/k8s/cluster/image-tags'
@@ -18,8 +17,6 @@ import { testContainerOwnerLabel } from '@yaac/test-utils/setup'
 import { testTmpBase } from '@yaac/test-utils/tmp'
 import { env } from '@yaac/shared/env'
 import { gcTestImages } from '#support/test-images'
-import { requireKindByo } from '#support/kind-byo'
-import { testBackend } from '#support/kind-byo-layout'
 
 const execFileAsync = promisify(execFile)
 
@@ -68,11 +65,11 @@ async function cleanupLeakedTestNamespaces(): Promise<void> {
       )
     }
   } catch { /* kubectl or cluster absent — nothing to sweep */ }
-  // ClusterRoles/Bindings, PVs and StorageClasses. Filter on the install
+  // ClusterRoles/Bindings and PVs. Filter on the install
   // namespace label so the developer's real install is left alone.
   try {
     const { stdout } = await execFileAsync('kubectl', [
-      'get', 'clusterrole,clusterrolebinding,pv,storageclass', '-l', 'app=yaac-server',
+      'get', 'clusterrole,clusterrolebinding,pv', '-l', 'app=yaac-server',
       '-o', "jsonpath={range .items[*]}{.kind}/{.metadata.name}{'\\t'}{.metadata.labels.yaac\\.install-namespace}{'\\n'}{end}",
     ], { timeout: 10_000 })
     const leaked = stdout
@@ -112,19 +109,10 @@ async function requireNodeVisibleScratch(): Promise<void> {
  * the local registry so cluster pods can pull them. Each tag is a content
  * hash of its sources (e.g. yaac-test-base:<hash>), which tests compute the
  * same way to find the expected tag.
- *
- * vitest runs this in its main process, which never sees a project's `env`,
- * so e2e-byo's env (kind-byo's kubeconfig and data dir) is applied by hand.
  */
-export async function setup(project: TestProject): Promise<void> {
-  if (project.name.startsWith('e2e-byo')) Object.assign(process.env, project.config.env)
-  if (testBackend() === 'byo') await requireKindByo()
-
+export async function setup(): Promise<void> {
   // Before the podman check: every suite needs the CLI.
   await buildCliBundle()
-  // byo-install-suite's install builds its own images, so the prebuilts
-  // would only waste kind-byo registry disk.
-  if (project.name === 'e2e-byo-install') return
 
   // Use the rootful engine the kind node pulls from. Without podman, skip;
   // tests that need it fail on their own.
@@ -136,7 +124,7 @@ export async function setup(project: TestProject): Promise<void> {
   } catch { /* not installed or not running */ }
   if (!podmanAvailable) return
 
-  if (testBackend() === 'kind') await requireNodeVisibleScratch()
+  await requireNodeVisibleScratch()
   // Leaked containers with dead conmons hang podman under build load.
   await pruneTestContainers()
 

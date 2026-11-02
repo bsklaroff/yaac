@@ -1,6 +1,4 @@
 import { configDefaults, defineConfig } from 'vitest/config'
-// A file path, like the setupFiles below.
-import { kindByoLayout } from './test/support/kind-byo-layout.js'
 
 // Every project is inline (`extends: true`) so shared test policy
 // (timeouts, setupFiles, ordering) lives in this one file. Separate
@@ -54,32 +52,8 @@ const DRIVER_NEUTRAL_CLI = [
   'test/e2e-cli/workspace-cli.test.ts',
 ]
 
-/** The k8s e2e files, run against the kind rig (`e2e`) and kind-byo (`e2e-byo`). */
+/** The k8s e2e files, run against the kind rig. */
 const E2E_FILES = ['test/e2e/**/*.test.ts', 'test/e2e-cli/**/*.test.ts']
-/**
- * The installed kind-byo server itself. A project of its own: its last case
- * deletes the install namespace, registry included, which would take every
- * other file's prebuilt images with it.
- */
-const BYO_INSTALL = ['test/e2e-cli/byo-install-suite.test.ts']
-/** The env that points a project at kind-byo; see the e2e-byo project. */
-const BYO_ENV = {
-  YAAC_TEST_BACKEND: 'byo',
-  KUBECONFIG: kindByoLayout().kubeconfig,
-  YAAC_DATA_DIR: kindByoLayout().dataDir,
-  // kind-byo's tailnet origin carries a Let's Encrypt staging certificate;
-  // every CLI a file spawns trusts its roots (a worker, started before this
-  // env lands, trusts them in-process — see byo-install-suite).
-  NODE_EXTRA_CA_CERTS: kindByoLayout().stagingCa,
-}
-
-/**
- * Whether this run names a kind-byo project (`--project e2e-byo`). Only
- * then are they defined: their global setup refuses without `pnpm kind-byo
- * up`, so a bare `vitest run`, or a path filter like `vitest run
- * test/e2e-cli`, must not pick them up.
- */
-const BYO_SELECTED = process.argv.some((arg) => arg.includes('e2e-byo'))
 
 /** JSON record of the last run; `pnpm test:failures`
  *  (scripts/test-failures.ts) prints the failures from it. */
@@ -221,7 +195,6 @@ export default defineConfig({
         test: {
           name: 'e2e',
           include: E2E_FILES,
-          exclude: [...configDefaults.exclude, ...BYO_INSTALL],
           setupFiles: CLUSTER_SETUP,
           globalSetup: ['test/global-setup.ts'],
           // The server mutex already serializes server-backed work, so more
@@ -231,38 +204,6 @@ export default defineConfig({
           sequence: { groupOrder: 1 },
         },
       },
-      // The same files against kind-byo, a local stand-in for a cloud
-      // cluster (docs/server-in-cluster.md, "The e2e tiers run against
-      // this"). Its data dir is the ambient one, so all test scratch sits
-      // inside the NFS export. Run `pnpm kind-byo up` first; the global
-      // setup refuses without it.
-      ...(BYO_SELECTED ? [
-        {
-          extends: true,
-          test: {
-            name: 'e2e-byo',
-            include: E2E_FILES,
-            exclude: [...configDefaults.exclude, ...BYO_INSTALL],
-            setupFiles: CLUSTER_SETUP,
-            globalSetup: ['test/global-setup.ts'],
-            env: BYO_ENV,
-            maxWorkers: 1,
-            sequence: { groupOrder: 1 },
-          },
-        },
-        {
-          extends: true,
-          test: {
-            name: 'e2e-byo-install',
-            include: BYO_INSTALL,
-            setupFiles: CLUSTER_SETUP,
-            globalSetup: ['test/global-setup.ts'],
-            env: BYO_ENV,
-            maxWorkers: 1,
-            sequence: { groupOrder: 2 },
-          },
-        },
-      ] : []),
     ],
   },
 })

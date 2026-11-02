@@ -488,22 +488,6 @@ Things to know when reading a failure there:
   the proxy's control API, since those are Service dials that only work from
   inside the install namespace. A file that needs the control API hands
   `ProxyClient` a forwarded origin.
-- The same files run against kind-byo (docs/cluster-setup.md "Running byo
-  locally: kind-byo") as the `e2e-byo` project (`YAAC_TEST_BACKEND=byo`,
-  kind-byo's kubeconfig and data dir, so all scratch is inside the NFS
-  export). Only storage differs: each file gets its own pair of storage
-  classes pointing at its own `global/` and `server-local/`, and its claims
-  go through the same class path as an install. The harness writes the
-  `.yaac-install` marker itself, since the file writes to those roots before
-  its binder runs. The global setup refuses to run without kind-byo, with a
-  stale ganesha image, or on a host whose uid is not 1000.
-  Both byo projects exist only in a run that names them (`pnpm
-  test:e2e-byo`, `pnpm test:e2e-byo-install`), so a bare `pnpm test` or a
-  path filter never picks them up.
-- `e2e-byo-install` has one file, `byo-install-suite`, which tests the
-  installed kind-byo server itself, including re-adoption after a namespace
-  delete. That delete removes the registry, so the project runs alone and
-  pushes no prebuilt images.
 
 ## Storage claims
 

@@ -242,7 +242,7 @@ the VM helpers and the patched, source-built libkrun that Homebrew already
 assembles.
 
 Dev and test hosts keep their own `kind` and `kubectl` on PATH, because the
-test harness (`test/global-setup.ts`, `test/support/kind-byo.ts`) calls them
+test harness (`test/global-setup.ts`) calls them
 directly. The CLI under test still runs its pinned copies.
 
 ## The `yaac-desktop` package

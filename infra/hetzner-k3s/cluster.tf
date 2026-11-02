@@ -170,8 +170,8 @@ locals {
         stringData = { token = var.hcloud_token, network = hcloud_network.main.name }
       },
       # The shared claim's class, over the control node's export
-      # (node.sh.tftpl). Written as plainly as kind-byo's: install makes
-      # the volumes Retain and mounts them with actimeo=1 itself.
+      # (node.sh.tftpl). Written plainly, since install makes the volumes
+      # Retain and mounts them with actimeo=1 itself.
       {
         apiVersion        = "storage.k8s.io/v1"
         kind              = "StorageClass"
