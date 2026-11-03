@@ -364,6 +364,13 @@ function labelMatches(label: string, pattern: string): boolean {
   return true
 }
 
+/** Whether a project's allowlist lets its workspaces reach `host` through
+ *  an egress proxy. */
+export function allowlistAllows(allowlist: EgressAllowlist, host: string): boolean {
+  const allowed = resolveAllowedHosts(allowlist)
+  return allowed[0] === '*' || allowed.some((pattern) => hostMatchesPattern(host, pattern))
+}
+
 const CRITICAL_HOSTS = [
   { host: 'api.anthropic.com', label: 'Anthropic API' },
   { host: 'github.com', label: 'GitHub' },

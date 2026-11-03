@@ -33,7 +33,14 @@ export {
   listDraftWorkspaces,
   saveDraftWorkspace,
 } from './drafts'
-export { reconcileRevokedShares, removeProject, unshareProject } from './project-teardown'
+export {
+  moveProjectToRemote,
+  previewProjectMove,
+  reconcileRevokedShares,
+  removeProject,
+  unshareProject,
+  type ProjectMovePreview,
+} from './project-teardown'
 export { reconcilePrewarmPool } from './prewarm-reconcile'
 export { dismissProvisioning, listProvisioning } from './provisioning'
 export {

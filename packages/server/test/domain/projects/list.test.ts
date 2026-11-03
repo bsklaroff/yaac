@@ -6,7 +6,8 @@ import { getProjectsDir } from '@yaac/shared/project-paths'
 
 import { listProjects } from '#domain/projects'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
-import { BUILT_IN_USER_ID, recordProject, setProjectDefaultBranchGuard, setProjectShareRevoked } from '#db'
+import { BUILT_IN_USER_ID, recordProject, setProjectDefaultBranchGuard, setProjectRemote, setProjectShareRevoked } from '#db'
+import { insertGitCredential } from '#db/git-credential-store'
 import { recordDeathSeen, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { createWorkspaceGroup, setWorkspaceGroup } from '#db/group-store'
 
@@ -96,5 +97,15 @@ describe('listProjects', () => {
     const byId = new Map((await listProjects()).map((p) => [p.id, p]))
     expect(byId.get(FOO)?.sharedFrom).toBeUndefined()
     expect(byId.get(BAR)).toMatchObject({ sharedFrom: { projectId: FOO, revoked: true }, guardDefaultBranch: false })
+  })
+
+  it('says when yaac still keeps the repository of a project that moved off it', async () => {
+    await recordProject({ id: FOO, name: 'demo', remoteUrl: 'http://yaac.internal/foo.git', addedAt: '', hosted: true }, BUILT_IN_USER_ID)
+    await recordTestProject(BAR)
+    const cred = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'gh', kind: 'https', secret: 'ghp_x' })
+    await setProjectRemote(FOO, 'https://github.com/acme/foo.git', { id: cred.id, knownHostsEntry: null })
+    const byId = new Map((await listProjects()).map((p) => [p.id, p]))
+    expect(byId.get(FOO)).toMatchObject({ hosted: false, keepsHostedRepo: true })
+    expect(byId.get(BAR)?.keepsHostedRepo).toBeUndefined()
   })
 })

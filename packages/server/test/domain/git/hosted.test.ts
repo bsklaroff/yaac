@@ -6,7 +6,7 @@ import type { AddressInfo } from 'node:net'
 import { createAdaptorServer, type ServerType } from '@hono/node-server'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { git } from '@yaac/test-utils/git'
-import { initHostedRepo, serveGitHttp } from '#domain/git'
+import { checkMoveTarget, initHostedRepo, pushHostedRepo, serveGitHttp } from '#domain/git'
 
 const ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t' }
 const run = (dir: string, args: string[]): Promise<string> => git(dir, args, { env: ENV })
@@ -37,6 +37,102 @@ describe('initHostedRepo', () => {
     ]) {
       expect((await run(repo, ['config', '--file', path.join(repo, 'config'), key])).trim()).toBe(value)
     }
+  })
+})
+
+describe('checkMoveTarget', () => {
+  it('takes an empty remote, or one only a push from here has filled, and refuses any other or none', async () => {
+    const source = path.join(tmp, 'check-source.git')
+    const target = path.join(tmp, 'check-target.git')
+    await initHostedRepo(source)
+    await run(tmp, ['init', '-q', '--bare', target])
+    await checkMoveTarget(source, target, { kind: 'hosted' })
+    await expect(checkMoveTarget(source, path.join(tmp, 'nowhere.git'), { kind: 'hosted' })).rejects.toThrow()
+
+    const work = path.join(tmp, 'check-work')
+    await run(tmp, ['clone', '-q', source, work])
+    await run(work, ['commit', '-q', '--allow-empty', '-m', 'one'])
+    await run(work, ['tag', '-a', '-m', 'v1', 'v1'])
+    await run(work, ['push', '-q', 'origin', 'HEAD:main', 'v1'])
+    // As a push that stopped after the default branch leaves it, and then
+    // the project's main moved on before the retry.
+    await run(work, ['push', '-q', target, 'HEAD:main'])
+    await checkMoveTarget(source, target, { kind: 'hosted' })
+    await run(work, ['commit', '-q', '--allow-empty', '-m', 'two'])
+    await run(work, ['push', '-q', 'origin', 'HEAD:main'])
+    await checkMoveTarget(source, target, { kind: 'hosted' })
+
+    // A host's first commit, such as a README, is not the project's, on a
+    // branch the project lacks or on one it has.
+    const readme = path.join(tmp, 'check-readme')
+    await run(tmp, ['init', '-q', '-b', 'main', readme])
+    await run(readme, ['commit', '-q', '--allow-empty', '-m', 'README'])
+    await run(readme, ['push', '-q', target, 'HEAD:readme'])
+    await expect(checkMoveTarget(source, target, { kind: 'hosted' })).rejects.toThrow(/already has refs\/heads\/readme, which this project does not/)
+    const fresh = path.join(tmp, 'check-fresh.git')
+    await run(tmp, ['init', '-q', '--bare', fresh])
+    await run(readme, ['push', '-q', fresh, 'HEAD:main'])
+    await expect(checkMoveTarget(source, fresh, { kind: 'hosted' })).rejects.toThrow(/its refs\/heads\/main has commits this project's does not/)
+  })
+})
+
+describe('checkMoveTarget against a remote that refuses pushes', () => {
+  it('refuses a remote it can read but not push to, before pushing anything, empty project or not', async () => {
+    // What a read-only credential sees: reads served, pushes refused.
+    const readOnly = path.join(tmp, 'read-only.git')
+    await run(tmp, ['init', '-q', '--bare', readOnly])
+    const server = createAdaptorServer({
+      fetch: (request) => serveGitHttp(readOnly, request, new URL(request.url).pathname.replace(/^\/repo/, ''), {
+        allowPush: false, guardDefaultBranch: false,
+      }),
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const url = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/repo`
+    try {
+      const source = path.join(tmp, 'read-only-source.git')
+      await initHostedRepo(source)
+      expect(await run(tmp, ['ls-remote', url])).toBe('')
+      await expect(checkMoveTarget(source, url, { kind: 'hosted' })).rejects.toThrow(/403/)
+
+      const work = path.join(tmp, 'read-only-work')
+      await run(tmp, ['clone', '-q', source, work])
+      await run(work, ['commit', '-q', '--allow-empty', '-m', 'one'])
+      await run(work, ['push', '-q', 'origin', 'HEAD:main'])
+      await expect(checkMoveTarget(source, url, { kind: 'hosted' })).rejects.toThrow(/403/)
+      expect(await run(readOnly, ['for-each-ref'])).toBe('')
+    } finally {
+      await new Promise((resolve) => server.close(resolve))
+    }
+  })
+})
+
+describe('pushHostedRepo', () => {
+  it('pushes every branch and tag, never forcing, and nothing at all from an empty repository', async () => {
+    const source = path.join(tmp, 'push-source.git')
+    const target = path.join(tmp, 'push-target.git')
+    await initHostedRepo(source)
+    await run(tmp, ['init', '-q', '--bare', target])
+    await pushHostedRepo(source, target, { kind: 'hosted' })
+    expect(await run(target, ['for-each-ref'])).toBe('')
+
+    const work = path.join(tmp, 'push-work')
+    await run(tmp, ['clone', '-q', source, work])
+    await run(work, ['commit', '-q', '--allow-empty', '-m', 'one'])
+    await run(work, ['tag', 'v1'])
+    await run(work, ['push', '-q', 'origin', 'HEAD:main', 'HEAD:feature', 'v1'])
+    await pushHostedRepo(source, target, { kind: 'hosted' })
+    expect(await run(target, ['for-each-ref', '--format=%(refname)'])).toBe('refs/heads/feature\nrefs/heads/main\nrefs/tags/v1\n')
+
+    // Nothing is forced: a remote branch that moved on is left alone.
+    const other = path.join(tmp, 'push-other')
+    await run(tmp, ['clone', '-q', '-b', 'main', target, other])
+    await run(other, ['commit', '-q', '--allow-empty', '-m', 'elsewhere'])
+    await run(other, ['push', '-q', 'origin', 'HEAD:main'])
+    const tip = (await run(target, ['rev-parse', 'main'])).trim()
+    await run(work, ['commit', '-q', '--allow-empty', '-m', 'two'])
+    await run(work, ['push', '-q', 'origin', 'HEAD:main'])
+    await expect(pushHostedRepo(source, target, { kind: 'hosted' })).rejects.toThrow(/rejected/)
+    expect((await run(target, ['rev-parse', 'main'])).trim()).toBe(tip)
   })
 })
 

@@ -7,6 +7,8 @@ import { EgressAllowlist } from '#components/settings/EgressAllowlist'
 import { ScratchDirs } from '#components/settings/ScratchDirs'
 import { HostedRemote } from '#components/settings/HostedRemote'
 import { ProjectSharing } from '#components/settings/ProjectSharing'
+import { MoveToRemote } from '#components/settings/MoveToRemote'
+import { KeptHostedRepo } from '#components/settings/KeptHostedRepo'
 import { WorkspaceAutoDelete } from '#components/settings/WorkspaceAutoDelete'
 import { KeptIgnoredPaths } from '#components/settings/KeptIgnoredPaths'
 import { Volumes } from '#components/settings/Volumes'
@@ -105,6 +107,14 @@ export function ProjectSettings(): JSX.Element {
 
           {selected.hosted && !sharedFrom && <div className="mt-6">
             <ProjectSharing key={`sharing:${projectId}`} projectId={projectId} owner={selected.owner} readOnly={readOnly} />
+          </div>}
+
+          {selected.hosted && !sharedFrom && !readOnly && <div className="mt-6">
+            <MoveToRemote key={`move:${projectId}`} projectId={projectId} name={selected.name} />
+          </div>}
+
+          {selected.keepsHostedRepo && <div className="mt-6">
+            <KeptHostedRepo key={`kept:${projectId}`} projectId={projectId} remoteUrl={selected.remoteUrl} readOnly={readOnly} />
           </div>}
 
           {!mediatedEgress && (

@@ -163,7 +163,8 @@ default-branch guard is the source's; a share cannot change it.
 
 A share is never shared on, and only a project the server hosts can be
 shared. A project hosted elsewhere already has a remote each user can add
-under their own credential.
+under their own credential, which is what a share becomes when its source
+moves to another git host (see "Moving to a git host").
 
 **Removing a share** (`DELETE /api/project/<id>/shares/<user id>`,
 `unshareProject`) sets `shareRevoked` on the share's row and stops its
@@ -191,6 +192,90 @@ all, since the repository they use goes with it.
 A share has the source's name. The CLI resolves a name among the caller's
 own projects (docs/cli.md "Whose projects"), so `yaac project clone <name>`
 picks each user's own copy.
+
+## Moving to a git host
+
+The owner can move a hosted project to an empty repository elsewhere, such
+as a new one on GitHub, with one of their git credentials (`yaac project
+move <project> <remote-url> <credential>`, `POST /api/project/<id>/move`,
+or "Move to a git host" in Project settings). Its shares move with it.
+Afterwards each is an ordinary project of that remote. yaac keeps its
+repository, read-only, until the owner removes it (see below).
+
+The move stops other users' workspaces, so clients warn first.
+`GET /api/project/<id>/move` (`previewProjectMove`) says how many
+workspaces would stop and whom the project is shared with. The webapp shows
+that above the form, and the CLI asks to continue, on a terminal only.
+
+Behind an egress proxy, the remote's host must already be in the
+project's egress allowlist, or the move is refused before anything else
+happens: every workspace restarted after it would be refused, as a create
+is. A share keeps its own allowlist, so its owner may need to allow a host
+that is not among the defaults.
+
+`moveProjectToRemote` holds the project and every active share of it for
+the whole move (`withProjectsHeld` in `#domain/access`). It holds the
+project first and only then reads its shares: sharing and unsharing
+authorize against the project, so none can change under the move.
+`authorizeProject`
+refuses every write to a held project as CONFLICT, the server's own
+included, so nothing starts in it (creates, restarts, "Run now", routines)
+and nothing is pushed to its repository. Queued workspaces that become
+ready meanwhile, such as those released by the stops below, wait rather
+than fail, and start once the hold lifts, on the new remote. Then:
+
+1. **Check the remote** (`checkMoveTarget`). The credential must be able
+   to push there. Reading the remote cannot show that, and a public one
+   may not ask for the credential at all, so a dry-run push asks the
+   remote's push endpoint and sends nothing. It dry-runs deleting a branch
+   that does not exist, which needs no commits, so an empty project is
+   checked the same way. The remote must also be empty, or hold only what
+   a push from here left there:
+   each branch contained in the project's branch of that name, each tag
+   the same. That is what a push that failed partway leaves, even if the
+   project's branches moved on before the retry, so a retry finishes the
+   move, and the push only ever fast-forwards. A host's starter commit,
+   such as a README, is refused. The move's git calls give up on a remote
+   that stops answering, so a stalled remote cannot hold the project for
+   long.
+2. **Stop every workspace** of the project and its shares, whoever owns
+   it, keeping its checkout, and reap their spares. A create or restart
+   already past its last checkpoint is waited for, then stopped with the
+   rest. They were launched to
+   push to yaac, and a k8s workspace's egress registration is fixed at
+   launch.
+3. **Push** every branch and tag (`pushHostedRepo`), nothing forced. The
+   default branch goes first, because a host that takes its default branch
+   from the first push (GitHub does) then agrees with the main clone's
+   `origin/HEAD`. Nothing else moves: other refs (such as `refs/notes/*`)
+   and the reflog, which can recover a forced push or a deleted branch,
+   stay only in yaac's copy.
+4. **Switch.** In one transaction, the project takes the remote, the
+   credential and its host key, and its shares take the remote with no
+   credential. An active share stops being a share: it is now its owner's
+   own project of that remote, and adds their own credential before it can
+   start a workspace (docs/git-credentials.md). A removed share stays
+   removed, and so read-only.
+5. **Fetch and hand over the credential.** The main clone fetches from
+   the new remote, and the runtime is handed the credential set again
+   (`pushCredentialsToRuntime`), since an egress proxy injects only what it
+   was last handed. If that fails, the move reports it: the project has
+   moved, but its workspaces cannot push until the next credential change
+   or server restart.
+
+A failure before step 4 leaves everything on yaac. The workspaces stopped
+by then stay stopped. A stopped workspace's checkout still names yaac as
+`origin`, and restarting it points `origin` at the project's remote
+(docs/server-git.md), so its unpushed commits go there on its next push.
+
+**yaac's old repository.** The bare repository stays where it was after
+the move, and the row's `keepsHostedRepo` says so. The user route keeps
+serving it for clones and fetches, so the owner can compare it with the
+new remote (Project settings shows `git ls-remote` for both, which also
+lists the refs a move does not push). Every push is refused. Once the owner
+has checked the remote has everything, they remove it from Project
+settings (`DELETE /api/project/<id>/hosted-repo`,
+`removeKeptHostedRepo`). Removing the project removes it too.
 
 ## Removing a hosted project
 

@@ -45,6 +45,7 @@ export async function listProjects(
     createDefaults: meta.createDefaults,
     gitCredential: credentials.get(meta.id) ?? null,
     hosted: meta.hosted,
+    ...(meta.keepsHostedRepo ? { keepsHostedRepo: true } : {}),
     // A share pushes under the guard of the project it was shared from.
     guardDefaultBranch: (rows.find((r) => r.id === meta.sharedFrom) ?? meta).guardDefaultBranch,
     ...(meta.sharedFrom !== undefined ? { sharedFrom: { projectId: meta.sharedFrom, revoked: meta.shareRevoked } } : {}),

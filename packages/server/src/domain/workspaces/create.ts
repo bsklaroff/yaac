@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto, { createHash } from 'node:crypto'
-import { hostMatchesPattern, resolveAllowedHosts } from '#lib/allowed-hosts'
+import { allowlistAllows } from '#lib/allowed-hosts'
 import { buildStatusRight } from '#lib/status-right'
 import { mergeEnvEntries } from '#lib/env-entries'
 import { testEnv } from '@yaac/shared/env'
@@ -299,8 +299,9 @@ interface WorkspaceSetupParams {
    */
   workspace: Promise<void>
   /** The checkout predates this launch, so it must be relinked to the main
-   *  clone and its `origin/*` brought up to date. */
+   *  clone and `remoteUrl`, and its `origin/*` brought up to date. */
   reusedCheckout: boolean
+  remoteUrl: string
 }
 
 /**
@@ -311,7 +312,7 @@ interface WorkspaceSetupParams {
  */
 async function launchWithSetup(params: WorkspaceSetupParams): Promise<{ handle: RuntimeHandle; launches: SessionLaunch[] }> {
   const {
-    spec, projectId, workspaceId, sessions, initWindows, onLaunched, options, workspace, reusedCheckout,
+    spec, projectId, workspaceId, sessions, initWindows, onLaunched, options, workspace, reusedCheckout, remoteUrl,
   } = params
   const runtime = workspaceDriver()
 
@@ -383,7 +384,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<{ handle: 
   // relinked so the agent starts current. A pod's file cache is warmed,
   // which a host's needs no help with.
   const setup = [
-    ...(reusedCheckout ? [buildCloneLinkExec(path.join(repoDir(projectId), '.git'), paths.workspaceDir)] : []),
+    ...(reusedCheckout ? [buildCloneLinkExec(path.join(repoDir(projectId), '.git'), paths.workspaceDir, remoteUrl)] : []),
     ...(runtime.kind === 'containerless' ? [] : [buildStatusWarmupExec(paths.workspaceDir)]),
     buildWindowsExec(initWindows, early ? [] : launches, paths),
     finishSetupCommand(paths),
@@ -690,9 +691,7 @@ export async function createWorkspace(
   // Containerless has no proxy, so nothing to check, and the proxy relays
   // a hosted remote before it reads the allowlist.
   const allowlist = projectRow.egressAllowlist
-  const allowedHosts = resolveAllowedHosts(allowlist)
-  if (runtime.kind !== 'containerless' && remoteHost !== null && allowedHosts[0] !== '*'
-    && !allowedHosts.some((pattern) => hostMatchesPattern(remoteHost, pattern))) {
+  if (runtime.kind !== 'containerless' && remoteHost !== null && !allowlistAllows(allowlist, remoteHost)) {
     throw new ServerError(
       'VALIDATION',
       `Project remote host "${remoteHost}" is not in the egress allowlist. `
@@ -1307,7 +1306,7 @@ export async function createWorkspace(
       onLaunched: (h) => {
         target = { projectId, workspaceId: workspaceId, unitName: h.jobName }
       },
-      options, workspace: workspaceTask, reusedCheckout: reuseCheckout,
+      options, workspace: workspaceTask, reusedCheckout: reuseCheckout, remoteUrl,
     })
   } catch (err) {
     // Tear down the half-started unit, or it would list as a bogus

@@ -1429,6 +1429,10 @@ export interface ProjectSummary {
   /** For a hosted project, whether pushes may not delete or rewind the
    *  default branch. */
   guardDefaultBranch: boolean
+  /** Set when the project moved off yaac to another git host and yaac
+   *  still keeps the repository it hosted, for the owner to compare with
+   *  the new remote before removing it. */
+  keepsHostedRepo?: true
   /** For a project shared with its owner (docs/hosted-projects.md
    *  "Sharing"): the hosted project it was shared from, and whether that
    *  project's owner has since removed the share. */

@@ -318,8 +318,10 @@ describe('prepareRestart', () => {
 
     expect(calls.some((c) => c.startsWith('destroy'))).toBe(false)
     // The checkout predates this launch, so the command that starts the
-    // agent first relinks it to the main clone and brings `origin/*` up.
-    expect(windowsExec()).toMatch(/^printf .*\/\.git\/objects\/info\/alternates && \{ git -C \S+ fetch /)
+    // agent first relinks it to the main clone, and to the project's remote
+    // if it still names yaac's, and brings `origin/*` up.
+    expect(windowsExec()).toMatch(
+      /^printf .*\/\.git\/objects\/info\/alternates && case .* esac && \{ git -C \S+ fetch /)
     expect(windowsExec()).toContain('--permission-mode plan')
     expect(windowsExec()).toContain('--effort low')
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-2'))?.stoppedAt).toBeUndefined()

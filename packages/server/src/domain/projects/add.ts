@@ -4,8 +4,7 @@ import crypto from 'node:crypto'
 import { ensureDataDir, projectDir, repoDir, claudeDir, hostedRepoDir } from '@yaac/shared/project-paths'
 import { hostedRemoteUrl } from '@yaac/shared/hosted-git'
 import { cloneRepo, initHostedRepo, isGitAuthError } from '#domain/git'
-import { parseGitRemote } from '@yaac/shared/git-remote'
-import { resolveCredentialForRemote } from './credentials'
+import { resolveCredentialForRemote, validateGitRemoteUrl } from './credentials'
 import { getProjectRow, getToolCredential, listProjectRows, listUsers, recordProject, setProjectShareRevoked } from '#db'
 import { authorizeProject, type Actor } from '#domain/access'
 import {
@@ -15,24 +14,6 @@ import {
 import { ServerError } from '@yaac/shared/errors'
 import type { ProjectMeta } from '@yaac/shared/types'
 import { projectNameFor } from '@yaac/shared/project-name'
-
-/**
- * Validate a git remote URL and return it parsed. Accepts the two
- * `parseGitRemote` forms:
- *   - https://<host>/<path>[.git]
- *   - SCP-style: git@<host>:<path>[.git]
- * Rejects http://, ssh://, custom ports, and unparseable input.
- */
-export function validateGitRemoteUrl(url: string): ReturnType<typeof parseGitRemote> {
-  try {
-    return parseGitRemote(url)
-  } catch (err) {
-    throw new ServerError(
-      'VALIDATION',
-      err instanceof Error ? err.message : `Invalid git remote URL: "${url}"`,
-    )
-  }
-}
 
 export interface AddProjectResult {
   project: ProjectMeta

@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "keeps_hosted_repo" boolean DEFAULT false NOT NULL;

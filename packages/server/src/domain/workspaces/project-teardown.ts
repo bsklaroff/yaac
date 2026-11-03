@@ -17,15 +17,23 @@ import {
   getProjectRow,
   listProjectRows,
   listProjectVolumes,
+  listUsers,
+  setProjectRemote,
   setProjectShareRevoked,
   type ProjectRow,
 } from '#db'
-import { harvestToolCredentials } from '#domain/auth'
+import { harvestToolCredentials, pushCredentialsToRuntime } from '#domain/auth'
+import { checkMoveTarget, isGitAuthError, pushHostedRepo } from '#domain/git'
+import { fetchProjectOrigin, resolveCredentialForRemote } from '#domain/projects'
+import { startWaitingWorkspaces } from './queued-workspaces'
 import { serverLog } from '#lib/log'
+import { allowlistAllows } from '#lib/allowed-hosts'
+import { parseGitRemote } from '@yaac/shared/git-remote'
 import { listProvisioning, stopProvisioning } from './provisioning'
+import { reapSpare } from './prewarm'
 import { ServerError } from '@yaac/shared/errors'
 import { dropProjectClaudeKeychainItem } from '@yaac/shared/tool-auth'
-import { authorizeProject, type Actor } from '#domain/access'
+import { authorizeProject, withProjectsHeld, type Actor } from '#domain/access'
 
 /**
  * Remove a project: its workspaces and bytes (`purgeProjectBytes`), then its
@@ -87,25 +95,161 @@ export async function reconcileRevokedShares(snapshot: RuntimeSnapshot): Promise
 }
 
 /**
- * Tear down a removed share's workspaces among `handles`, keeping their
- * checkouts, after adopting any token their agents refreshed, as a stop
- * does. Spares are left to the prewarm pool, which reaps them once the
- * project has no running workspace. Throws RUNTIME_UNAVAILABLE naming the
- * ones that could not be stopped.
+ * Tear down a removed share's workspaces among `handles`
+ * (`stopProjectWorkspaces`). Spares are left to the prewarm pool, which
+ * reaps them once the project has no running workspace. Throws
+ * RUNTIME_UNAVAILABLE naming the ones that could not be stopped.
  */
 async function stopInRevokedShare(share: ProjectRow, handles: RuntimeHandle[]): Promise<void> {
-  const own = handles.filter((h) => !h.prewarmed)
-  if (own.length === 0) return
-  await harvestToolCredentials(share.owner, { projectId: share.id })
-    .catch((err: unknown) => serverLog(`[server] credential harvest for removed share ${share.id} failed: ${String(err)}`))
-  const failed: string[] = []
-  for (const h of own) {
-    await cleanupWorkspaceDetached({ jobName: h.jobName, projectId: share.id, workspaceId: h.workspaceId })
-      .catch((err: unknown) => { failed.push(`${h.workspaceId.slice(0, 8)}: ${String(err)}`) })
-  }
+  const failed = await stopProjectWorkspaces(share, handles)
   if (failed.length > 0) {
     throw new ServerError('RUNTIME_UNAVAILABLE', 'The share was removed, but some of its workspaces could not be '
       + `stopped yet (${failed.join('; ')}); the server keeps trying.`)
+  }
+}
+
+/**
+ * Stop a project's workspaces among `handles`, spares aside, keeping their
+ * checkouts, after adopting any token their agents refreshed, as a stop
+ * does. Answers the ones that could not be stopped, each with why.
+ */
+async function stopProjectWorkspaces(project: ProjectRow, handles: RuntimeHandle[]): Promise<string[]> {
+  const own = handles.filter((h) => !h.prewarmed)
+  if (own.length === 0) return []
+  await harvestToolCredentials(project.owner, { projectId: project.id })
+    .catch((err: unknown) => serverLog(`[server] credential harvest for ${project.id} failed: ${String(err)}`))
+  const failed: string[] = []
+  for (const h of own) {
+    await cleanupWorkspaceDetached({ jobName: h.jobName, projectId: project.id, workspaceId: h.workspaceId })
+      .catch((err: unknown) => { failed.push(`${h.workspaceId.slice(0, 8)}: ${String(err)}`) })
+  }
+  return failed
+}
+
+/** What moving a project off yaac stops and hands over, for the warning a
+ *  client shows before it confirms (`moveProjectToRemote`). */
+export interface ProjectMovePreview {
+  /** Running workspaces of the project and its shares, every user's. */
+  runningWorkspaces: number
+  /** The users it is shared with, who each need a credential of their
+   *  own for the new remote. */
+  sharedWith: string[]
+}
+
+/** The project a move is asked for, once its owner is checked and it can
+ *  move: it is hosted by yaac and not itself a share. */
+async function movableProject(principal: Actor, projectId: string): Promise<ProjectRow> {
+  const row = await getProjectRow(projectId)
+  if (!row) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
+  await authorizeProject(principal, projectId)
+  if (!row.hosted) throw new ServerError('VALIDATION', `"${row.name}" is not hosted by yaac; its remote is ${row.remoteUrl}.`)
+  if (row.sharedFrom !== undefined) {
+    throw new ServerError('VALIDATION', `"${row.name}" was shared with you; only its owner can move it.`)
+  }
+  return row
+}
+
+/** A project's shares that were not removed: the ones that move with it. */
+async function activeShares(projectId: string): Promise<ProjectRow[]> {
+  return (await listProjectRows()).filter((r) => r.sharedFrom === projectId && !r.shareRevoked)
+}
+
+/** What `moveProjectToRemote` would stop and hand over, right now. */
+export async function previewProjectMove(principal: Actor, projectId: string): Promise<ProjectMovePreview> {
+  await movableProject(principal, projectId)
+  const shares = await activeShares(projectId)
+  const ids = new Set([projectId, ...shares.map((r) => r.id)])
+  const running = (await workspaceDriver().list()).filter((h) => ids.has(h.projectId) && !h.prewarmed && !h.terminating)
+  const users = new Map((await listUsers()).map((u) => [u.id, u.login ?? u.name]))
+  return {
+    runningWorkspaces: running.length,
+    sharedWith: shares.map((r) => users.get(r.owner) ?? r.owner),
+  }
+}
+
+/**
+ * Move a project the server hosts to an empty repository elsewhere, such as
+ * on GitHub, reached with one of its owner's git credentials
+ * (docs/hosted-projects.md "Moving to a git host"). While it runs, the
+ * project and every share of it are held (`withProjectsHeld`): nothing
+ * starts in them and nothing is pushed to their repository. Once the
+ * remote is known to fit, every workspace on the repository stops, whoever
+ * owns it, keeping its checkout. Then every branch and tag is pushed, and
+ * only once that lands do the project and its shares switch to the remote.
+ * Anything that fails before then leaves them on yaac, and a retry picks up
+ * where it stopped. yaac keeps its repository, read-only, until the owner
+ * has checked the remote and removes it (`removeKeptHostedRepo`). Only the
+ * owner moves a project. Answers the host key trusted for an ssh
+ * credential.
+ */
+export async function moveProjectToRemote(
+  principal: Actor,
+  projectId: string,
+  remoteUrl: string,
+  credentialId: string,
+): Promise<{ knownHostsEntry: string | null }> {
+  const row = await movableProject(principal, projectId)
+  const { credential, knownHostsEntry } = await resolveCredentialForRemote(row.owner, credentialId, remoteUrl)
+  const runtime = workspaceDriver()
+  // Behind an egress proxy a workspace reaches only allowed hosts, so every
+  // workspace restarted after the move would be refused, as create is.
+  const { host } = parseGitRemote(remoteUrl)
+  if (runtime.kind !== 'containerless' && !allowlistAllows(row.egressAllowlist, host)) {
+    throw new ServerError('VALIDATION', `"${host}" is not in the egress allowlist of "${row.name}", so its `
+      + 'workspaces could not reach the new remote. Add it in Settings → Project Config, then move.')
+  }
+  await runtime.ensureRuntimeReachable()
+  const hosted = hostedRepoDir(projectId)
+  const git = async (step: () => Promise<void>): Promise<void> => step().catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err)
+    throw new ServerError('VALIDATION', `"${row.name}" did not move: ${isGitAuthError(message)
+      ? 'git authentication failed; the credential was rejected, or cannot push there'
+      : `${remoteUrl} could not take it: ${message}`}. It stays on yaac.`)
+  })
+  const reason = `"${row.name}" is moving to ${remoteUrl}; try again once it has.`
+  let onRepo = [row]
+  try {
+    // The project first: sharing and unsharing it authorize against it, so
+    // once it is held its shares are settled, and are held in turn.
+    return await withProjectsHeld([projectId], reason, async () => {
+      const shares = await activeShares(projectId)
+      onRepo = [row, ...shares]
+      return withProjectsHeld(shares.map((r) => r.id), reason, async () => {
+        await git(() => checkMoveTarget(hosted, remoteUrl, credential))
+        const failed: string[] = []
+        for (const project of onRepo) {
+          // A create or restart past its last checkpoint still comes up, so
+          // it is waited for and then listed with the rest.
+          await Promise.all(listProvisioning().filter((e) => e.projectId === project.id)
+            .map((p) => stopProvisioning(p.workspaceId)?.ranAs.catch(() => undefined) ?? Promise.resolve(undefined)))
+          const handles = (await runtime.list(project.id)).filter((h) => !h.terminating)
+          for (const h of handles.filter((s) => s.prewarmed)) reapSpare({ jobName: h.jobName, projectId: project.id, workspaceId: h.workspaceId })
+          failed.push(...await stopProjectWorkspaces(project, handles))
+        }
+        if (failed.length > 0) {
+          throw new ServerError('RUNTIME_UNAVAILABLE', `"${row.name}" did not move: some of its workspaces could not be `
+            + `stopped (${failed.join('; ')}). It stays on yaac; try again.`)
+        }
+        await git(() => pushHostedRepo(hosted, remoteUrl, credential))
+        await setProjectRemote(projectId, remoteUrl, { id: credentialId, knownHostsEntry })
+        fetchProjectOrigin(projectId).catch((err: unknown) => {
+          serverLog(`[git] fetching ${projectId} from its new remote: ${(err as Error).message}`)
+        })
+        // An egress proxy injects only the credentials it was last handed,
+        // so a restarted workspace could not push without this.
+        const failure = await pushCredentialsToRuntime()
+        if (failure) {
+          throw new ServerError('RUNTIME_UNAVAILABLE', `"${row.name}" moved to ${remoteUrl}, but the egress proxy `
+            + `could not be given its credential (${failure.message}), so its workspaces cannot push there until it is: `
+            + 'any credential change or a server restart does it.')
+        }
+        return { knownHostsEntry }
+      })
+    })
+  } finally {
+    // Queued workspaces wait out the hold rather than fail on it, and start
+    // now, on whichever remote the project has.
+    for (const r of onRepo) void startWaitingWorkspaces(r.id)
   }
 }
 

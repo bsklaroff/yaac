@@ -1,9 +1,10 @@
+import fs from 'node:fs/promises'
 import { ServerError } from '@yaac/shared/errors'
 import { hostedRepoDir, repoDir } from '@yaac/shared/project-paths'
-import { getProjectRow, listProjectRows, setProjectDefaultBranchGuard } from '#db'
+import { clearProjectKeepsHostedRepo, getProjectRow, listProjectRows, setProjectDefaultBranchGuard } from '#db'
 import { serveGitHttp, setOriginHead } from '#domain/git'
 import { isUuid } from '#lib/uuid'
-import { authorizeProject, type Actor } from '#domain/access'
+import { authorizeProject, systemPrincipal, type Actor } from '#domain/access'
 import { serverLog } from '#lib/log'
 import { fetchProjectOrigin } from './origin'
 
@@ -24,8 +25,10 @@ type HostedRepoCaller =
  * Answer one smart-HTTP request for a hosted project's remote. A workspace
  * may read and push its own project's remote and no other. Any user may
  * read, as with every other resource (docs/multi-user.md); only the owner
- * may push. A share reaches the repository of the project it was shared
- * from, and a removed share reaches nothing. A push that lands is fetched
+ * may push. Nobody pushes to a held project (`withProjectsHeld`), such as
+ * one moving to another git host, and once it has moved, the repository
+ * yaac kept is read-only. A share reaches the repository of the project it
+ * was shared from, and a removed share reaches nothing. A push that lands is fetched
  * into the main clone of every project on the repository at once, which
  * also refreshes `origin/*` in their running workspaces, and the remote's
  * default branch becomes each main clone's `origin/HEAD`.
@@ -44,8 +47,11 @@ export async function serveHostedRepo(
   if (row.shareRevoked) throw new ServerError('FORBIDDEN', `${row.name} is no longer shared with its owner`)
   const push = pathInfo === '/git-receive-pack'
     || new URL(request.url).searchParams.get('service') === 'git-receive-pack'
-  if (push && caller.kind === 'user') await authorizeProject(caller.principal, projectId)
-  if (!row.hosted) throw new ServerError('NOT_FOUND', `project ${row.name} is not hosted by yaac`)
+  if (push) await authorizeProject(caller.kind === 'user' ? caller.principal : systemPrincipal, projectId)
+  if (!row.hosted && !row.keepsHostedRepo) throw new ServerError('NOT_FOUND', `project ${row.name} is not hosted by yaac`)
+  if (!row.hosted && push) {
+    throw new ServerError('FORBIDDEN', `${row.name} moved to ${row.remoteUrl}; yaac's copy of its repository is read-only`)
+  }
   const source = row.sharedFrom ?? projectId
   const sourceRow = row.sharedFrom === undefined ? row : await getProjectRow(source)
   return serveGitHttp(hostedRepoDir(source), request, pathInfo, {
@@ -81,4 +87,19 @@ export async function setDefaultBranchGuard(principal: Actor, projectId: string,
     throw new ServerError('VALIDATION', `"${row.name}" was shared with you; only its owner sets its default-branch guard.`)
   }
   await setProjectDefaultBranchGuard(projectId, enabled)
+}
+
+/**
+ * Delete the repository yaac kept when the project moved to another git
+ * host (docs/hosted-projects.md "Moving to a git host"), once its owner has
+ * checked the new remote has everything. The repository goes before the
+ * flag, so a failed delete can be retried.
+ */
+export async function removeKeptHostedRepo(principal: Actor, projectId: string): Promise<void> {
+  const row = isUuid(projectId) ? await getProjectRow(projectId) : undefined
+  if (!row) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
+  await authorizeProject(principal, projectId)
+  if (!row.keepsHostedRepo) throw new ServerError('VALIDATION', `yaac keeps no old repository for "${row.name}".`)
+  await fs.rm(hostedRepoDir(projectId), { recursive: true, force: true })
+  await clearProjectKeepsHostedRepo(projectId)
 }

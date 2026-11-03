@@ -6,6 +6,7 @@ import { serverLocalPath } from '@yaac/shared/paths'
 import { serverLog } from '#lib/log'
 import { NEVER_PRUNE_GC, NEVER_PRUNE_KEYS } from './repo'
 import { runGit, spawnGit } from './run'
+import { gitEnvForCredential, type ResolvedGitCredential } from './transport'
 
 /**
  * A yaac-hosted remote (docs/hosted-projects.md): a bare repository the
@@ -106,6 +107,90 @@ export async function initHostedRepo(repoPath: string): Promise<void> {
   for (const [key, value] of [['core.logAllRefUpdates', 'always'], ...NEVER_PRUNE_KEYS.map((k) => [k, 'never'])]) {
     await runGit({ kind: 'none' }, ['config', '--file', config, key, value])
   }
+}
+
+/**
+ * Refuse unless `remoteUrl` can take the bare repository at `repoPath` as a
+ * project moves off yaac (docs/hosted-projects.md "Moving to a git host"):
+ * `credential` must be able to push there, and the remote must be empty,
+ * or hold only what a push from here left there, which the repository may
+ * have moved past since (a move that failed partway, then more pushes). So
+ * each remote branch must be contained in the repository's branch of that
+ * name, and each tag must match. A move then only ever fast-forwards, and a
+ * retry finishes what a failed one started.
+ *
+ * Reading the remote proves nothing about pushing, and a public remote may
+ * not even ask for the credential to be read. So a dry-run push asks the
+ * remote's push endpoint, which checks the credential may push, and sends
+ * nothing. It dry-runs deleting a branch that does not exist, which needs
+ * no commits, so an empty project can ask too.
+ */
+export async function checkMoveTarget(
+  repoPath: string,
+  remoteUrl: string,
+  credential: ResolvedGitCredential,
+): Promise<void> {
+  const target = { kind: 'private' as const, gitDir: repoPath }
+  const local = new Map((await localRefs(repoPath)).map((line) => {
+    const [sha, ref] = line.split('\t')
+    return [ref, sha]
+  }))
+  const { args, env } = await moveGit(credential, remoteUrl)
+  for (const line of (await runGit(target, [...args, 'ls-remote', '--refs', remoteUrl], { env, remoteUrl })).split('\n')) {
+    const [sha, ref] = line.split('\t')
+    if (!ref || local.get(ref) === sha) continue
+    const mine = local.get(ref)
+    if (mine === undefined) throw new Error(`it already has ${ref}, which this project does not; ${EMPTY_REPO}`)
+    const contained = ref.startsWith('refs/heads/')
+      && await runGit(target, ['merge-base', '--is-ancestor', sha, mine]).then(() => true, () => false)
+    if (!contained) throw new Error(`its ${ref} has commits this project's does not; ${EMPTY_REPO}`)
+  }
+  await runGit(target, [...args, 'push', '--dry-run', '--quiet', remoteUrl, ':refs/heads/yaac-push-check'], { env, remoteUrl })
+}
+
+const EMPTY_REPO = 'move to an empty repository (created with no README, license or .gitignore)'
+
+/**
+ * Push every branch and tag of the bare repository at `repoPath` to a
+ * remote `checkMoveTarget` accepted. Nothing is forced. The default branch
+ * goes first, since a host that picks its default branch from the first
+ * push (GitHub does) then agrees.
+ */
+export async function pushHostedRepo(
+  repoPath: string,
+  remoteUrl: string,
+  credential: ResolvedGitCredential,
+): Promise<void> {
+  if ((await localRefs(repoPath)).length === 0) return
+  const target = { kind: 'private' as const, gitDir: repoPath }
+  const { args, env } = await moveGit(credential, remoteUrl)
+  const push = (...refspecs: string[]): Promise<string> =>
+    runGit(target, [...args, 'push', '--quiet', remoteUrl, ...refspecs], { env, remoteUrl })
+  const head = await defaultBranch(repoPath)
+  if (head !== null) await push(`refs/heads/${head}:refs/heads/${head}`)
+  await push('refs/heads/*:refs/heads/*', 'refs/tags/*:refs/tags/*')
+}
+
+/**
+ * The config and env for a move's calls to the remote. A move holds the
+ * project, so a remote that stops answering must fail it within minutes
+ * rather than hold it for as long as git would wait: a low-speed limit for
+ * https, and a connect timeout and keepalives for ssh.
+ */
+async function moveGit(credential: ResolvedGitCredential, remoteUrl: string): Promise<{ args: string[]; env: NodeJS.ProcessEnv | undefined }> {
+  const env = await gitEnvForCredential(credential, remoteUrl)
+  if (env?.GIT_SSH_COMMAND !== undefined) {
+    env.GIT_SSH_COMMAND += ' -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4'
+  }
+  return { args: ['-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=60'], env }
+}
+
+/** The repository's branches and tags, each as `<sha>\t<ref>` as
+ *  `ls-remote --refs` prints them. */
+async function localRefs(repoPath: string): Promise<string[]> {
+  const out = await runGit({ kind: 'private', gitDir: repoPath },
+    ['for-each-ref', '--format=%(objectname)%09%(refname)', 'refs/heads', 'refs/tags'])
+  return out.split('\n').filter((l) => l !== '')
 }
 
 /**

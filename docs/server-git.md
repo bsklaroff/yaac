@@ -51,7 +51,11 @@ mounts the main clone at that same path
 (`/yaac/global/projects/<project id>/repo/.git` under the in-cluster server), so the
 line is valid everywhere. A launch that reuses a checkout rewrites it
 (`buildCloneLinkExec`), which repairs a checkout last launched by a server
-that saw the data dir at another path. A checkout the launch made has it
+that saw the data dir at another path. The same command sets an `origin`
+that still names yaac's hosted remote to the project row's URL, so a
+checkout of a project that moved to another git host
+(docs/hosted-projects.md) pushes there once restarted. An `origin` the
+user pointed elsewhere is left alone. A checkout the launch made has both
 already.
 
 Workspaces share no git state: branches, tags, stash, hooks and config are

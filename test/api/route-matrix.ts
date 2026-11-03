@@ -116,6 +116,9 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'PUT', path: '/api/project/:projectId/workspace-auto-delete', request: `${P}/workspace-auto-delete`, body: { days: 30 }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/kept-ignored-paths', request: `${P}/kept-ignored-paths`, body: { paths: ['.env'] }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/scratch-dirs', request: `${P}/scratch-dirs`, body: { dirs: [] }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'GET', path: '/api/project/:projectId/move', request: `${P}/move`, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/project/:projectId/move', request: `${P}/move`, body: { remoteUrl: 'https://github.com/acme/widgets.git', gitCredentialId: ID.credential }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'DELETE', path: '/api/project/:projectId/hosted-repo', request: `${P}/hosted-repo`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/default-branch-guard', request: `${P}/default-branch-guard`, body: { enabled: false }, access: 'owner', k8s: MISSING, containerless: MISSING },
   // A hosted project's remote, for the user's own git; a push is the
   // owner's.

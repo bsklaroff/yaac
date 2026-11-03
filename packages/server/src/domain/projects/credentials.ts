@@ -19,20 +19,50 @@ import { authorizeProject, type Actor } from '#domain/access'
  */
 
 /**
- * Check one of `owner`'s credentials fits `remoteUrl` and resolve it for
- * git (another user's reads as missing): its kind must
- * match the remote's scheme and its secret must decrypt. For an ssh key, the
- * remote's host key is fetched (trust on first use) and returned so the
- * caller can store and show it.
+ * Validate a git remote URL and return it parsed. Accepts the two
+ * `parseGitRemote` forms:
+ *   - https://<host>/<path>[.git]
+ *   - SCP-style: git@<host>:<path>[.git]
+ * Rejects http://, ssh://, custom ports, and unparseable input. Also
+ * rejects an https URL carrying a user or token: the URL is stored on the
+ * row, shown to every user and written into checkouts, so a secret belongs
+ * in a git credential instead.
+ */
+export function validateGitRemoteUrl(url: string): ReturnType<typeof parseGitRemote> {
+  let parsed: ReturnType<typeof parseGitRemote>
+  try {
+    parsed = parseGitRemote(url)
+  } catch (err) {
+    throw new ServerError(
+      'VALIDATION',
+      err instanceof Error ? err.message : `Invalid git remote URL: "${url}"`,
+    )
+  }
+  if (parsed.scheme === 'https') {
+    const { username, password } = new URL(url)
+    if (username !== '' || password !== '') {
+      throw new ServerError('VALIDATION', 'A remote URL must not carry a user or token; '
+        + 'leave it out of the URL and add it as a git credential instead.')
+    }
+  }
+  return parsed
+}
+
+/**
+ * Check `remoteUrl` parses and one of `owner`'s credentials fits it, and
+ * resolve that credential for git (another user's reads as missing): its
+ * kind must match the remote's scheme and its secret must decrypt. For an
+ * ssh key, the remote's host key is fetched (trust on first use) and
+ * returned so the caller can store and show it.
  */
 export async function resolveCredentialForRemote(
   owner: string,
   credentialId: string,
   remoteUrl: string,
 ): Promise<{ credential: ResolvedGitCredential; knownHostsEntry: string | null }> {
+  const { scheme, host } = validateGitRemoteUrl(remoteUrl)
   const cred = await getGitCredential(credentialId)
   if (cred?.owner !== owner) throw new ServerError('NOT_FOUND', 'No such git credential.')
-  const { scheme, host } = parseGitRemote(remoteUrl)
   if (cred.kind !== scheme) {
     throw new ServerError(
       'VALIDATION',
