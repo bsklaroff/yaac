@@ -2958,6 +2958,10 @@ describe('agentDriver', () => {
       expect(await send('claude')).toMatchObject({
         status: 0, calls: ['paste', 'send-keys Enter'], submitted: delivered, input: '',
       })
+      // claude reports `shell` at its input while background shells run.
+      expect(await send('claude', { claude: 'shell' })).toMatchObject({
+        status: 0, calls: ['paste', 'send-keys Enter'], submitted: delivered, input: '',
+      })
       // claude stashes the draft and restores it itself on the submit.
       expect(await send('claude', { draft })).toMatchObject({
         status: 0, calls: ['send-keys C-s', 'paste', 'send-keys Enter'], submitted: delivered, input: draft,
