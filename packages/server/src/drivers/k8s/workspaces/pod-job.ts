@@ -151,7 +151,7 @@ export interface PodJobParams {
    * The workspace's scratch dirs, each its own disk-backed sentry tmpfs
    * capped at its `sizeBytes`, so pnpm's file traffic stays inside the
    * sandbox instead of crossing the gofer, and a store inside the root dir
-   * can hardlink. Lost with the pod; init commands reinstall.
+   * can hardlink. Lost with the pod; init steps reinstall.
    */
   scratchDirs?: ScratchDirMount[]
   /**

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { StepGraph, StepsOutcome, WorkspaceStep } from './steps'
 import {
   parseOpencodeProvider,
   parsePiProvider,
@@ -662,21 +663,6 @@ export interface SecretProxyRule {
 }
 
 /**
- * Object form of an `initCommands` entry. Each spec gets its own tmux window,
- * so several long-running processes can run side by side.
- */
-export interface InitCommandSpec {
-  /** tmux window name. Must be unique, kebab-ish, and must not collide
-   *  with the agent window name (claude/codex/opencode/pi). */
-  name: string
-  /** Commands chained with `&&` inside this window. */
-  commands: string[]
-  /** Per-window override for `hideInitPane`. Defaults to the top-level
-   *  `hideInitPane`, which itself defaults to false. */
-  hidePane?: boolean
-}
-
-/**
  * A project's config overlay (`config/yaac-config.json`), edited through the
  * server so a client needs no shell on its host. Env vars and secrets are
  * rows (`ProjectEnvVar`) and the egress allowlist is `EgressAllowlist`, not
@@ -696,12 +682,7 @@ export interface YaacConfig {
    * through the egress proxy. Unset → true.
    */
   npmCache?: boolean
-  /** Either a flat string list (collapsed into a single `init` window) or
-   *  a list of `InitCommandSpec` objects (one tmux window per entry).
-   *  Mixing the two forms is rejected by the config parser. */
-  initCommands?: string[] | InitCommandSpec[]
   portForward?: PortForwardConfig[]
-  hideInitPane?: boolean
 }
 
 /**
@@ -1018,10 +999,17 @@ export interface WorkspaceListEntry {
   /** Every conversation the workspace has hosted, in the order it first saw
    *  them. */
   conversations: ConversationEntry[]
-  /** Its tmux windows other than its sessions', which the webapp opens as
-   *  terminal panes. Absent until the server first lists them (unknown, not
-   *  none) and while the workspace is stopping. */
+  /** Its tmux windows other than its sessions' and its steps', which the
+   *  webapp opens as terminal panes. Absent until the server first lists
+   *  them (unknown, not none) and while the workspace is stopping. */
   terminals?: WorkspaceTerminalEntry[]
+  /** Its current life's steps (docs/workspace-steps.md), each with the
+   *  window it runs in while it has one. */
+  steps?: Array<WorkspaceStep & { target?: string }>
+  /** It runs one graph untouched and stops when it settles. */
+  nonInteractive?: true
+  /** The commit its checkout was created at. */
+  startCommit?: string
   blockedHosts: string[]
   /** Live host→container forwards. Briefly empty after a server restart,
    *  until the restore pass runs. */
@@ -1371,6 +1359,18 @@ export interface StoppedWorkspaceEntry {
   /** The sidebar group it is filed under; a stopped member shows as a ghost
    *  row there. */
   groupId?: string
+  /** It ran one graph untouched (docs/workspace-steps.md), how that ended
+   *  if it did, and the non-interactive workspace it reran. */
+  nonInteractive?: true
+  stepsOutcome?: StepsOutcome
+  rerunOf?: string
+}
+
+/** One life's logs (docs/workspace-steps.md "Logs"): its dir name, and each
+ *  file with its size in bytes. */
+export interface WorkspaceLogLife {
+  life: string
+  files: Array<{ name: string; size: number }>
 }
 
 /** One page of `GET /workspace/list-stopped`, newest stop first. */
@@ -1382,8 +1382,8 @@ export interface StoppedWorkspacePage {
   nextCursor?: string
 }
 
-/** A tmux window in a workspace that runs no session, which the webapp can
- *  attach to: an initCommands window or a scratch shell. */
+/** A tmux window in a workspace that runs no session or step, which the
+ *  webapp can attach to: a scratch shell, or one opened by hand. */
 export interface WorkspaceTerminalEntry {
   /** /pty/attach target: 'window:@<id>'. */
   target: string
@@ -1444,6 +1444,9 @@ export interface ProjectSummary {
    *  removes the rest; absent when there are none. */
   keptIgnoredPaths?: string[]
   scratchDirs: ScratchDirSettings
+  /** The steps every workspace runs at start unless its create brings its
+   *  own (docs/workspace-steps.md). */
+  initSteps: StepGraph
 }
 
 /**
@@ -1531,7 +1534,8 @@ export interface QueuedWorkspaceEntry {
   timeoutMinutes?: number
   /** The routine it is a run of. */
   routineId?: string
-  prompt: string
+  /** Absent for a non-interactive entry, which opens no session. */
+  prompt?: string
   tool: AgentTool
   model: string
   /** `model`'s display name, when the catalog has one. */
@@ -1540,8 +1544,14 @@ export interface QueuedWorkspaceEntry {
   permissionMode: PermissionMode
   /** The effort it launches at; absent when its model has none. */
   effort?: string
-  /** The reference branch it forks from, fetched fresh at launch. */
-  branch: string
+  /** The reference branch it forks from, fetched fresh at launch, or the
+   *  full commit it starts at instead (docs/workspace-steps.md). */
+  branch?: string
+  commit?: string
+  /** The step graph it starts with in place of the project's init steps
+   *  (`{}` for none), and whether it runs it non-interactive. */
+  steps?: StepGraph
+  nonInteractive?: true
   /** The user's title for the workspace; suppresses auto-titling. */
   title?: string
   /** Generated from the prompt for an untitled entry; the launched
@@ -1606,6 +1616,13 @@ export const timeoutMinutesSchema = z.number().int().min(1).max(525_600)
  */
 export const queuedWorkspaceSettingsSchema = z.object({
   prompt: promptText.min(1),
+  /** A full commit to start at, in place of `branch`. */
+  commit: z.string().min(1).max(64).optional(),
+  /** The step graph to start with, checked by the server; null for none
+   *  (docs/workspace-steps.md). */
+  steps: z.unknown().optional(),
+  /** Run `steps` untouched, with no prompt or session. */
+  nonInteractive: z.boolean().optional(),
   tool: z.enum(AGENT_TOOLS).optional(),
   model: z.string().regex(MODEL_RE).max(100).optional(),
   mode: z.enum(AGENT_MODES).optional(),
@@ -1631,7 +1648,11 @@ export const routineSettingsSchema = z.object({
   cron: z.string().trim().min(1).max(100),
   /** IANA zone the cron is read in; absent is the user's. */
   timeZone: z.string().min(1).max(64).optional(),
-  prompt: promptText.min(1),
+  /** Absent only for a non-interactive routine. */
+  prompt: promptText.min(1).optional(),
+  commit: z.string().min(1).max(64).optional(),
+  steps: z.unknown().optional(),
+  nonInteractive: z.boolean().optional(),
   tool: z.enum(AGENT_TOOLS).optional(),
   model: z.string().regex(MODEL_RE).max(100).optional(),
   mode: z.enum(AGENT_MODES).optional(),
@@ -1667,14 +1688,20 @@ export interface RoutineEntry {
   name: string
   cron: string
   timeZone: string
-  prompt: string
+  /** Absent for a non-interactive routine, whose runs open no session. */
+  prompt?: string
   tool: AgentTool
   model: string
   modelName?: string
   mode: AgentMode
   permissionMode: PermissionMode
   effort?: string
-  branch: string
+  /** Its runs start at this branch's tip, or at this full commit. */
+  branch?: string
+  commit?: string
+  /** As on a queued entry (`QueuedWorkspaceEntry.steps`). */
+  steps?: StepGraph
+  nonInteractive?: true
   groupId?: string
   /** Each run's timeout; absent stops each run at the next tick. */
   timeoutMinutes?: number
@@ -1720,7 +1747,7 @@ export interface RoutineRunPage {
  * hadn't resolved them; `startAfter` is the parent workspace or queued entry
  * id, absent for "Now"; `title` is absent if left blank.
  */
-export const draftWorkspaceSettingsSchema = queuedWorkspaceSettingsSchema.extend({
+export const draftWorkspaceSettingsSchema = queuedWorkspaceSettingsSchema.omit({ commit: true, steps: true, nonInteractive: true }).extend({
   tool: z.enum(AGENT_TOOLS),
   mode: z.enum(AGENT_MODES),
   permissionMode: z.enum(PERMISSION_MODES),
@@ -2173,6 +2200,8 @@ export const MAMA_COMMANDS = [
   'set-base',
   'stop',
   'restart',
+  'rerun',
+  'status',
   'group-create',
   'group-move',
   'group-set-limit',

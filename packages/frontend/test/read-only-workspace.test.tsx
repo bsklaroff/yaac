@@ -6,6 +6,10 @@ import type { StoppedWorkspaceEntry } from '@yaac/shared/types'
 
 const provision = vi.hoisted(() => vi.fn())
 vi.mock('#lib/useProvisionWorkspace', () => ({ useProvisionWorkspace: () => provision }))
+// No xterm: a log is a stub naming the file it shows.
+vi.mock('#components/StepLog', () => ({
+  StepLog: ({ life, file }: { life: string; file: string }) => <div data-testid="log">{`${life}/${file}`}</div>,
+}))
 
 import { ReadOnlyWorkspace, type ReadOnlySubject } from '#components/ReadOnlyWorkspace'
 import { useStoppedEntry } from '#lib/useStoppedWorkspaces'
@@ -72,6 +76,29 @@ const renderPane = (subject: ReadOnlySubject): ReturnType<typeof renderWithClien
   renderWithClient(<ReadOnlyWorkspace subject={subject} />)
 
 describe('ReadOnlyWorkspace', () => {
+  it('shows a stopped non-interactive workspace\'s outcome and logs, and reruns it, or interactively', async () => {
+    server.route('GET /api/workspace/s1/logs', [{ life: 'L2', files: [
+      { name: 'build.events', size: 9 }, { name: 'build.log', size: 3 }, { name: 'test.log', size: 1 },
+    ] }, { life: 'L1', files: [{ name: 'old.log', size: 1 }] }])
+    const entry = stopped({ nonInteractive: true, stepsOutcome: 'failed', prompt: undefined, title: 'CI' })
+    renderPane({ kind: 'stopped', entry })
+
+    expect(screen.getByText('Steps').nextElementSibling?.textContent).toBe('failed')
+    // The last run's logs, the first one shown.
+    expect((await screen.findByTestId('log')).textContent).toBe('L2/build.log')
+    fireEvent.click(screen.getByRole('button', { name: 'test' }))
+    expect(screen.getByTestId('log').textContent).toBe('L2/test.log')
+    expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rerun' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Rerun interactively' }))
+    expect(provision.mock.calls.map((call) => {
+      const row = call[0] as { kind: string; title?: string }
+      return [row.kind, row.title]
+    }))
+      .toEqual([['create', 'CI'], ['create', 'CI']])
+  })
+
   it('shows a stopped workspace\'s facts and conversation, and restarts it in place', async () => {
     const entry = stopped({ deathReason: 'oom', deathDetail: 'exit code 137', sessions: [sessionEntry({ mode: 'tui' })] })
     renderPane({ kind: 'stopped', entry })

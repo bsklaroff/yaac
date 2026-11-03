@@ -52,7 +52,7 @@ describe('reconcileConversations', () => {
     _resetCodexRolloutReadsForTests()
     _resetAcpRegistryForTests()
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1' })
-    await recordWorkspaceLife(DEMO_PROJECT_ID, 'wt-1')
+    await recordWorkspaceLife(DEMO_PROJECT_ID, 'wt-1', new Date())
   })
 
   afterEach(async () => {

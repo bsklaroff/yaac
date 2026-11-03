@@ -40,13 +40,10 @@ export {
   resolveAgentPermissionMode,
 } from './agent-tools'
 export {
-  initWindowCommand,
-  resolveInitWindows,
   tmuxCmd,
   verifyAgentWindowAlive,
   windowTarget,
   AgentLaunchDeadError,
-  type InitWindow,
 } from './agent-command'
 // codex's posture is read from its rollout rather than pushed on its pane.
 export { getCodexRolloutSettings } from './codex'

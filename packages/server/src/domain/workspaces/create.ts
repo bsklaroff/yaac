@@ -17,6 +17,7 @@ import type {
 import {
   repoDir,
   acpLogDir,
+  terminalLogDir,
   agentHistoryDir,
   type AgentHistoryPart,
   CLAUDE_POD_CWD,
@@ -37,13 +38,14 @@ import {
 import {
   CONTAINER_ACP_LOG_DIR,
   CONTAINER_ATTACHMENTS_DIR,
+  CONTAINER_TERMINAL_LOG_DIR,
   CONTAINER_OPENCODE_CHECKPOINT,
   CONTAINER_OPENCODE_DATA,
   CONTAINER_TMUX_DIR,
 } from '@yaac/shared/paths'
 import { buildCloneLinkExec, buildStatusWarmupExec } from '@yaac/shared/git'
 import { parseGitRemote } from '@yaac/shared/git-remote'
-import { fetchProjectOrigin, missingCredentialError, resolveProjectConfig, resolveProjectCredential, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
+import { fetchProjectCommit, fetchProjectOrigin, missingCredentialError, resolveProjectConfig, resolveProjectCredential, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { readLock } from '@yaac/shared/lock'
 import {
@@ -63,12 +65,13 @@ import {
 } from '#domain/git'
 import { serverLog } from '#lib/log'
 import type { AcpConversation } from '#runtime/agents'
-import { AgentLaunchDeadError, buildWindowsExec, ensureAgentReporters, ensureToolApiKeyConfig, finishSetupCommand, resolveInitWindows, verifyAgentWindowAlive, whenAcpConversation, type InitWindow, openSandboxDir } from '#runtime/agents'
+import { AgentLaunchDeadError, buildWindowsExec, ensureAgentReporters, ensureToolApiKeyConfig, finishSetupCommand, verifyAgentWindowAlive, whenAcpConversation, openSandboxDir } from '#runtime/agents'
 import {
   applyWorkspaceEvent,
   getGitIdentity,
   getProjectRow,
   getTimeZone,
+  getWorkspaceRow,
   insertSession,
   listWorkspaceSessions,
   markSessionsLaunched,
@@ -93,6 +96,8 @@ import {
 import { convergeAgentHistory } from './history'
 import { deleteWorkspaceState } from './cleanup'
 import { attachVolume } from './volumes'
+import { lifeHooksExec, recordLife, startStepsOf } from './life'
+import type { StepGraph } from '@yaac/shared/steps'
 import { ACP_CONVERSATION_WAIT_MS } from './conversation-registry'
 import {
   OPENCODE_CHECKPOINT_SCRIPT,
@@ -185,6 +190,22 @@ export interface WorkspaceCreateOptions {
    * the row's base branch, used only if its checkout is gone.
    */
   branch?: string
+  /**
+   * A full commit to create the checkout at, in place of a branch's tip;
+   * the workspace then has no base branch. A resume of a workspace with no
+   * base branch passes its start commit, used only if its checkout is gone.
+   */
+  commit?: string
+  /**
+   * A fresh create's start graph (docs/workspace-steps.md): absent runs the
+   * project's init steps, null none. A resume starts the graph its row
+   * names.
+   */
+  steps?: StepGraph | null
+  /** Run `steps` untouched and stop when they settle. */
+  nonInteractive?: boolean
+  /** The non-interactive workspace this one reruns. */
+  rerunOf?: string
   /**
    * Resume an existing workspace (a restart): reuse its checkout if present,
    * and relaunch each of its open sessions in its own window, resuming its
@@ -283,8 +304,9 @@ interface WorkspaceSetupParams {
   workspaceId: string
   /** The sessions to bring up, in order. */
   sessions: SessionRow[]
-  /** The project's init windows, resolved in createWorkspace. */
-  initWindows: InitWindow[]
+  /** The life this launch starts, absent for a prewarmed spare, which
+   *  starts one when it is claimed. */
+  life: Date | undefined
   /**
    * Called as soon as the runtime has launched, before setup that can fail,
    * so the caller holds the handle needed to tear down a half-started
@@ -312,7 +334,7 @@ interface WorkspaceSetupParams {
  */
 async function launchWithSetup(params: WorkspaceSetupParams): Promise<{ handle: RuntimeHandle; launches: SessionLaunch[] }> {
   const {
-    spec, projectId, workspaceId, sessions, initWindows, onLaunched, options, workspace, reusedCheckout, remoteUrl,
+    spec, projectId, workspaceId, sessions, life, onLaunched, options, workspace, reusedCheckout, remoteUrl,
   } = params
   const runtime = workspaceDriver()
 
@@ -355,7 +377,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<{ handle: 
   }
   if (early && launches.length > 0) {
     announceAgents()
-    await runtime.exec(jobName, buildWindowsExec([], launches, paths))
+    await runtime.exec(jobName, buildWindowsExec(launches, paths))
   }
 
   // Everything below reads the checkout, so join it now.
@@ -377,16 +399,18 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<{ handle: 
     }
   }
 
-  // Then the init windows, and the sessions if they did not start early, in
-  // one command with the checkout's own setup to save round trips, ending
-  // with the mark that setup is done. A checkout this create made already
+  // Then the life's log hooks, and the sessions if they did not start
+  // early, in one command with the checkout's own setup to save round
+  // trips, ending with the mark that setup is done, which lets the step
+  // reconcile open the life's steps. A checkout this create made already
   // borrows from the main clone and holds its current refs; a reused one is
   // relinked so the agent starts current. A pod's file cache is warmed,
   // which a host's needs no help with.
   const setup = [
     ...(reusedCheckout ? [buildCloneLinkExec(path.join(repoDir(projectId), '.git'), paths.workspaceDir, remoteUrl)] : []),
     ...(runtime.kind === 'containerless' ? [] : [buildStatusWarmupExec(paths.workspaceDir)]),
-    buildWindowsExec(initWindows, early ? [] : launches, paths),
+    ...(life !== undefined ? [await lifeHooksExec(projectId, workspaceId, life, paths)] : []),
+    buildWindowsExec(early ? [] : launches, paths),
     finishSetupCommand(paths),
   ].filter((cmd) => cmd !== '')
   if (!early) announceAgents()
@@ -709,8 +733,6 @@ export async function createWorkspace(
     )
   }
 
-  const initWindows = resolveInitWindows(config)
-
   // The sessions this create brings up: a fresh create's one, or the ones a
   // resume had open.
   const resumed = options.resume === true ? await listWorkspaceSessions(workspaceId) : []
@@ -723,7 +745,7 @@ export async function createWorkspace(
   const [, refBranch] = await Promise.all([
     Promise.all([...new Map(planned.map((s) => [`${s.tool}|${s.mode}`, s])).values()].map((s) =>
       runtime.assertCanLaunch({ tool: s.tool, mode: s.mode, onProgress: (message) => { emit(message, options) } }))),
-    options.resume === true ? undefined : options.branch ?? getDefaultBranch(repo),
+    options.resume === true || options.commit !== undefined ? undefined : options.branch ?? getDefaultBranch(repo),
   ])
 
   // Warn: containerless has no sandbox, so bypass acts as the user on this
@@ -778,6 +800,9 @@ export async function createWorkspace(
       ...(options.generatedTitle !== undefined ? { generatedTitle: options.generatedTitle } : {}),
       ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
       ...(options.deadline !== undefined ? { deadline: options.deadline } : {}),
+      ...(options.steps !== undefined ? { startSteps: options.steps ?? {} } : {}),
+      ...(options.nonInteractive === true ? { nonInteractive: true } : {}),
+      ...(options.rerunOf !== undefined ? { rerunOf: options.rerunOf } : {}),
       resume: options.resume === true,
     })
   }
@@ -795,8 +820,11 @@ export async function createWorkspace(
   // one's waits on the row for its conversation, which the registry's sweep
   // sends it (`reconcileWorkspaceConversations`). A spare has neither.
   let sessions: SessionRow[] = []
+  let life: Date | undefined
   if (options.prewarm !== true) {
-    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId, workspaceId })
+    life = await recordLife(projectId, workspaceId, options.resume === true
+      ? await startStepsOf(projectId, await getWorkspaceRow(projectId, workspaceId))
+      : options.steps === undefined ? projectRow.initSteps : options.steps ?? {})
     sessions = options.session !== undefined
       ? [await insertSession(projectId, workspaceId, options.session)]
       : resumed
@@ -817,13 +845,23 @@ export async function createWorkspace(
     })
   imageTask.catch(() => { /* awaited at the join */ })
 
-  const workspaceTask = (async (): Promise<void> => {
+  const workspaceTask = (async (): Promise<string | null | undefined> => {
     if (reuseCheckout) {
       await fetched
       emit(`Reusing existing workspace at ${wtDir}`, options)
-      return
+      return undefined
     }
     const branch = `agent/${workspaceId}`
+    const commit = options.commit
+    if (commit !== undefined && (options.resume !== true || options.branch === undefined)) {
+      await fetched
+      await fetchProjectCommit(projectId, commit).catch((err: unknown) => {
+        throw new ServerError('VALIDATION', err instanceof Error ? err.message : String(err))
+      })
+      if (options.resume === true) await refuseCheckingOutOver(wtDir)
+      emit(`Creating workspace at ${commit.slice(0, 12)}...`, options)
+      return await createCheckout(repo, wtDir, { branch, commit, remoteUrl })
+    }
     if (refBranch !== undefined) {
       // A fresh create checks out from what the main clone has while the
       // fetch runs, and checks the named branch once it lands. An empty repo
@@ -831,7 +869,7 @@ export async function createWorkspace(
       // may name while it is missing.
       emit(`Creating workspace from ${refBranch}...`, options)
       const named = options.branch
-      await createCheckout(repo, wtDir, {
+      return await createCheckout(repo, wtDir, {
         branch,
         baseBranch: refBranch,
         remoteUrl,
@@ -841,7 +879,6 @@ export async function createWorkspace(
           throw new ServerError('VALIDATION', `branch "${named}" not found on origin.`)
         }),
       })
-      return
     }
     // A resume whose checkout is gone recreates it from its recorded base
     // branch, or from the default if origin no longer has that.
@@ -853,12 +890,15 @@ export async function createWorkspace(
     // dirs made since are empty, so they do not count.
     await refuseCheckingOutOver(wtDir)
     emit(`Creating workspace from ${base}...`, options)
-    await createCheckout(repo, wtDir, { branch, baseBranch: base, remoteUrl })
-  })().then(async () => {
+    return await createCheckout(repo, wtDir, { branch, baseBranch: base, remoteUrl })
+  })().then(async (startCommit) => {
     // A spare's are read when it is claimed, against the branch it is
     // claimed for.
     if (options.prewarm === true) return
-    await recordTrackedScratchDirs(projectId, workspaceId, refBranch ?? options.branch, launch.scratchDirs)
+    if (startCommit !== undefined && startCommit !== null) {
+      await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId, workspaceId, startCommit })
+    }
+    await recordTrackedScratchDirs(projectId, workspaceId, refBranch ?? options.branch ?? options.commit, launch.scratchDirs)
   })
   workspaceTask.catch(() => { /* awaited later */ })
 
@@ -890,6 +930,8 @@ export async function createWorkspace(
     // teardown does not prune) so the server can read them after the pod is
     // gone.
     const acpLogs = acpLogDir(projectId, workspaceId)
+    // Terminal logs and step scripts, kept for the same reason.
+    const terminalLogs = terminalLogDir(projectId, workspaceId)
     // Pasted images (`saveWorkspaceAttachment`); must exist for its mount.
     const attachments = workspaceAttachmentsDir(projectId, workspaceId)
     // A pod's own claude `sessions/`, where claude keeps a presence file per
@@ -931,7 +973,7 @@ export async function createWorkspace(
       loadToolAuthEntry(owner, 'pi'),
       ...[
         claude, codex, opencodeConfig, opencodeCheckpoint, pi, attachments,
-        acpLogs,
+        acpLogs, terminalLogs,
         ...(sandboxed ? [claudeSessions] : []),
         ...cacheVolumeEntries.map(([key]) => cacheVolumeDir(projectId, key)),
       ].map((dir) => fs.mkdir(dir, { recursive: true })),
@@ -1014,7 +1056,7 @@ export async function createWorkspace(
       toolAuthByTool, keyProviders, opencodeConfigFile, sshKnownHostsFile, cacheVolumeEntries,
       builtinSkillsStaging, builtinSkillNames, workspaceBinStaging, workspaceBinNames,
       claude, codex, opencodeData, opencodeCheckpoint, opencodeConfig, pi,
-      cachedPackages, acpLogs, attachments, claudeSessions,
+      cachedPackages, acpLogs, terminalLogs, attachments, claudeSessions,
     }
   })()
 
@@ -1027,7 +1069,7 @@ export async function createWorkspace(
     toolAuthByTool, keyProviders, opencodeConfigFile, sshKnownHostsFile, cacheVolumeEntries,
     builtinSkillsStaging, builtinSkillNames, workspaceBinStaging, workspaceBinNames,
     claude, codex, opencodeData, opencodeCheckpoint, opencodeConfig, pi,
-    cachedPackages, acpLogs, attachments, claudeSessions,
+    cachedPackages, acpLogs, terminalLogs, attachments, claudeSessions,
   } = prep
 
   const env: string[] = []
@@ -1206,6 +1248,7 @@ export async function createWorkspace(
     { source: { kind: 'hostPath', path: `${repo}/.git` }, mountPath: `${repo}/.git`, readOnly: true },
     { source: { kind: 'hostPath', path: claude }, mountPath: '/home/yaac/.claude' },
     { source: { kind: 'hostPath', path: acpLogs }, mountPath: CONTAINER_ACP_LOG_DIR },
+    { source: { kind: 'hostPath', path: terminalLogs }, mountPath: CONTAINER_TERMINAL_LOG_DIR },
     { source: { kind: 'hostPath', path: attachments }, mountPath: CONTAINER_ATTACHMENTS_DIR, readOnly: true },
     ...codexHomeMounts(runtime.kind, codex),
     ...opencodeMounts,
@@ -1302,7 +1345,7 @@ export async function createWorkspace(
       : `environment variable ${name} is set to two different values`)
     throwIfProvisionStopped(workspaceId)
     launched = await launchWithSetup({
-      spec, projectId, workspaceId, sessions, initWindows,
+      spec, projectId, workspaceId, sessions, life,
       onLaunched: (h) => {
         target = { projectId, workspaceId: workspaceId, unitName: h.jobName }
       },

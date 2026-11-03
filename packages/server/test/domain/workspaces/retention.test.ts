@@ -47,7 +47,7 @@ beforeEach(async () => {
   await stopped(OTHER, 'wt-other-old')
   await queueWorkspace(local, PROJ, { parent: 'wt-old-parent', prompt: 'next', tool: 'claude' }, 'user')
   vi.setSystemTime(Date.now() + 1)
-  await recordWorkspaceLife(PROJ, 'wt-ran-since')
+  await recordWorkspaceLife(PROJ, 'wt-ran-since', new Date())
   vi.setSystemTime(now - 2 * DAY_MS)
   await stopped(PROJ, 'wt-recent')
   await recordWorkspaceStopped(PROJ, 'wt-ran-since')

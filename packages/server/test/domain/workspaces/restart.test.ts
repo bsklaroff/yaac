@@ -31,7 +31,7 @@ vi.mock('#db', async (importOriginal) => {
     listActiveConversations: vi.fn(actual.listActiveConversations),
   }
 })
-import { createVolume, keepScratchDirsInCheckout, listProvisioning, prepareRestart, prepareStart, stopWorkspace } from '#domain/workspaces'
+import { createVolume, keepScratchDirsInCheckout, listProvisioning, prepareRerun, prepareRestart, prepareStart, stopWorkspace } from '#domain/workspaces'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import {
   applyWorkspaceEvent,
@@ -875,5 +875,42 @@ describe('prepareRestart', () => {
     installDriver({ find: () => Promise.reject(new Error('connection refused')) })
     await expect(prepareRestart(local, 'wt-x')).rejects.toThrow('connection refused')
     expect(listProvisioning()).toEqual([])
+  })
+})
+
+/** A non-interactive workspace that ran its graph at the project's head. */
+async function finishedRun(workspaceId: string): Promise<string> {
+  const head = (await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'origin/main'])).trim()
+  const run = await prepareStart(local, {
+    projectId: DEMO_PROJECT_ID, workspaceId, noSession: true, nonInteractive: true, commit: head,
+    steps: { test: { run: 'pnpm test' } }, rememberDefaults: false, claimSpare: false,
+  })
+  await run()
+  await applyWorkspaceEvent({ type: 'steps-settled', projectId: DEMO_PROJECT_ID, workspaceId, outcome: 'failed' })
+  await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId })
+  return head
+}
+
+describe('prepareRerun', () => {
+  // A restart would reuse the checkout the run may have changed, so a
+  // non-interactive workspace runs again in a new one.
+  it('runs a non-interactive workspace\'s graph again in a new one at its start commit, which a restart refuses', async () => {
+    const head = await finishedRun('ci-1')
+    await expect(prepareRestart(local, 'ci-1')).rejects.toMatchObject({ code: 'CONFLICT' })
+
+    await (await prepareRerun(local, 'ci-1', { workspaceId: 'ci-2' }))()
+    expect(await getWorkspaceRow(DEMO_PROJECT_ID, 'ci-2')).toMatchObject({
+      nonInteractive: true, rerunOf: 'ci-1', startCommit: head, startSteps: { test: { run: ['pnpm test'] } },
+    })
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'ci-2'))?.baseBranch).toBeUndefined()
+
+    // Interactively: the same graph and commit, in a workspace that stays up.
+    await (await prepareRerun(local, 'ci-1', { workspaceId: 'ci-debug', interactive: true }))()
+    const debug = await getWorkspaceRow(DEMO_PROJECT_ID, 'ci-debug')
+    expect(debug).toMatchObject({ nonInteractive: false, startCommit: head, startSteps: { test: { run: ['pnpm test'] } } })
+    expect(debug?.rerunOf).toBeUndefined()
+
+    // Only a non-interactive workspace is rerun.
+    await expect(prepareRerun(local, 'ci-debug', { workspaceId: 'ci-3' })).rejects.toMatchObject({ code: 'CONFLICT' })
   })
 })

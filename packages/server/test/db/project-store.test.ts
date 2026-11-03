@@ -15,6 +15,7 @@ import {
   setProjectEgressAllowlist,
   setProjectScratchDirs,
   setProjectGitCredential,
+  setProjectInitSteps,
   setProjectRemote,
   setProjectShareRevoked,
 } from '#db/project-store'
@@ -61,6 +62,7 @@ describe('recordProject', () => {
       shareRevoked: false,
       keptIgnoredPaths: [],
       scratchDirs: { dirs: [{ path: 'node_modules' }, { path: 'target' }], ignoredTracked: [] },
+      initSteps: {},
     })
   })
 
@@ -156,6 +158,7 @@ describe('listProjectRows', () => {
         shareRevoked: false,
         keptIgnoredPaths: [],
         scratchDirs: { dirs: [{ path: 'node_modules' }, { path: 'target' }], ignoredTracked: [] },
+        initSteps: {},
       },
     ])
   })
@@ -435,5 +438,26 @@ describe('setProjectKeptIgnoredPaths', () => {
     expect(await setProjectKeptIgnoredPaths(APP, [])).toBe(true)
     expect((await getProjectRow(APP))?.keptIgnoredPaths).toEqual([])
     expect(await setProjectKeptIgnoredPaths('0a0a0a0a-0000-4000-8000-0000000000ff', [])).toBe(false)
+  })
+})
+
+describe('setProjectInitSteps', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+  })
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  it('starts a project with none, replaces them, and reports an unknown projectId', async () => {
+    await recordProject({ id: P, name: 'p', remoteUrl: 'https://github.com/o/p.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    expect((await getProjectRow(P))?.initSteps).toEqual({})
+    const graph = { install: { run: ['pnpm install'] }, dev: { run: ['pnpm dev'], service: true, needs: ['install'] } }
+    expect(await setProjectInitSteps(P, graph)).toBe(true)
+    expect((await getProjectRow(P))?.initSteps).toEqual(graph)
+    expect(await setProjectInitSteps('0a0a0a0a-0000-4000-8000-0000000000ff', {})).toBe(false)
   })
 })

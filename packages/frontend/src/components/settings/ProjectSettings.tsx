@@ -29,6 +29,17 @@ async function loadConfig(projectId: string): Promise<string> {
   return content === '' ? '{}\n' : content
 }
 
+
+async function saveInitSteps(projectId: string, text: string): Promise<void> {
+  let steps: unknown
+  try {
+    steps = JSON.parse(text)
+  } catch (e) {
+    throw new Error(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  await project['init-steps'].$put({ param: { projectId }, json: { steps } })
+}
+
 async function saveConfig(projectId: string, text: string): Promise<void> {
   let config: unknown
   try {
@@ -173,6 +184,26 @@ export function ProjectSettings(): JSX.Element {
               paths={selected.keptIgnoredPaths ?? []}
               readOnly={readOnly}
             />
+          </div>
+
+          <div className="mt-6">
+            <div className="text-xs font-medium text-text">Init steps</div>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
+              What every workspace runs when it starts, unless its create brings its own steps: steps by name,
+              each{' '}<code className="text-text-dim">{'{"run": "<cmd>" or ["<cmd>", …], "needs": [...]}'}</code>,
+              with <code className="text-text-dim">{'"service": true'}</code> and an optional{' '}
+              <code className="text-text-dim">ready</code> check for one that keeps running.
+            </p>
+            <div className="mt-2">
+              <FileEditor
+                key={`init-steps:${projectId}`}
+                title={`${selected.name} · init steps`}
+                language="json"
+                queryKey={['project-init-steps', projectId]}
+                load={() => Promise.resolve(`${JSON.stringify(selected.initSteps, null, 2)}\n`)}
+                {...(readOnly ? {} : { save: (text: string) => saveInitSteps(projectId, text) })}
+              />
+            </div>
           </div>
 
           <div className="mt-6">

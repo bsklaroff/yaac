@@ -133,7 +133,7 @@ describe('session store', () => {
       try {
         vi.setSystemTime(1_000_000)
         await create('sid-1')
-        await recordWorkspaceLife(PROJ, 'sid-1')
+        await recordWorkspaceLife(PROJ, 'sid-1', new Date())
         vi.setSystemTime(2_000_000)
         await recordWorkspaceStopped(PROJ, 'sid-1')
         // A second stop in the same life (a reaper probing a user stop).
@@ -143,7 +143,7 @@ describe('session store', () => {
 
         // A restart whose clear of the stop was lost, then a stop much later.
         vi.setSystemTime(4_000_000)
-        await recordWorkspaceLife(PROJ, 'sid-1')
+        await recordWorkspaceLife(PROJ, 'sid-1', new Date())
         vi.setSystemTime(9_000_000)
         await recordWorkspaceStopped(PROJ, 'sid-1')
         expect(await stoppedAt()).toBe(9_000_000)

@@ -248,6 +248,11 @@ raises is enforced from the target's next prompt on, and the first message
 sent before then runs under it. The raise is that user's own grant, which is
 why this is accepted.
 
+Commands an agent hands a workspace to run (`--steps` on a create, queue
+or routine, and `create --workspace … --run`) act as whatever the workspace
+runs as, so they need a ceiling of `bypass` (docs/workspace-steps.md
+"Permissions").
+
 The ceiling applies only to agents; the webapp and `/workspace/queue/*`
 routes are the user's. It is the calling session's current row value, which
 follows the running agent: a caller that moved into plan mode caps siblings

@@ -26,7 +26,7 @@ import {
 } from './provisioning'
 import { resolveWorkspace } from './resolve'
 import { workspaceDriver } from '#drivers/driver'
-import { prepareStart } from './start'
+import { checkStartSteps, prepareStart } from './start'
 import { toStoppedEntries } from './stopped-list'
 import { modelDisplayName, modelEfforts } from '#domain/auth'
 import { authorizeProject, isProjectHeld, systemPrincipal, type Actor } from '#domain/access'
@@ -92,7 +92,8 @@ export interface QueueRequest {
   /** Minutes until the launched workspace is stopped, counted from its start
    *  time if it has one; null (on an edit) clears it. */
   timeout?: number | null
-  prompt: string
+  /** Absent only for a non-interactive entry, which opens no session. */
+  prompt?: string
   tool?: AgentTool
   model?: string
   mode?: AgentMode
@@ -100,7 +101,14 @@ export interface QueueRequest {
   /** Refused if the model lacks it; unnamed is the project's remembered
    *  effort where the model has it, else the model's default. */
   effort?: string
+  /** At most one of a branch and a full commit; neither inherits. */
   branch?: string
+  commit?: string
+  /** The step graph it starts with, unparsed; null for none, absent for the
+   *  project's init steps (docs/workspace-steps.md). */
+  steps?: unknown
+  /** Launch `steps` untouched, with no session. */
+  nonInteractive?: boolean
   /** The launched workspace's title; blank leaves it to be auto-titled. */
   title?: string
   /** A group id or name — a name matching none is created; null is the
@@ -124,6 +132,9 @@ interface ParentInfo {
   model?: string
   permissionMode?: PermissionMode
   branch?: string
+  /** A parent with no base branch: the commit it was created at, which a
+   *  child starts at in its place. */
+  commit?: string
   groupId?: string
 }
 
@@ -143,7 +154,6 @@ export async function queueWorkspace(
   generatedTitle?: string,
 ): Promise<QueuedWorkspaceEntry> {
   await authorizeProject(principal, projectId)
-  checkPrompt(request.prompt)
   if (request.parent != null && request.start !== undefined) {
     throw new ServerError('VALIDATION', 'a queued workspace waits on a parent or starts at a time, not both')
   }
@@ -194,7 +204,6 @@ export async function updateQueuedWorkspace(
   source: QueueSource,
 ): Promise<QueuedWorkspaceEntry> {
   const row = await editableRow(principal, id)
-  if (patch.prompt !== undefined) checkPrompt(patch.prompt)
   if (patch.parent !== undefined && patch.start !== undefined) {
     throw new ServerError('VALIDATION', 'a queued workspace waits on a parent or starts at a time, not both')
   }
@@ -210,11 +219,19 @@ export async function updateQueuedWorkspace(
         : await parentInfo(row.projectId, pointerOf(row))
   const retooled = patch.tool !== undefined && patch.tool !== row.tool
   const keptEffort = patch.effort ?? (retooled ? undefined : keepableEffort(row, patch.model))
+  const nonInteractive = patch.nonInteractive ?? row.nonInteractive
+  const prompt = nonInteractive ? undefined : patch.prompt ?? row.prompt
+  const commit = patch.branch !== undefined ? undefined : patch.commit ?? row.commit
+  const branch = commit !== undefined ? undefined : patch.branch ?? row.branch
+  const steps = patch.steps !== undefined ? patch.steps : row.steps
   const settings = await resolveSettings(row.projectId, parent, {
-    prompt: patch.prompt ?? row.prompt,
+    ...(prompt !== undefined ? { prompt } : {}),
     tool: patch.tool ?? row.tool,
     mode: patch.mode ?? row.mode,
-    branch: patch.branch ?? row.branch,
+    ...(branch !== undefined ? { branch } : {}),
+    ...(commit !== undefined ? { commit } : {}),
+    ...(steps !== undefined ? { steps } : {}),
+    ...(nonInteractive ? { nonInteractive } : {}),
     title: patch.title ?? row.title ?? '',
     group: parent.pointer === null && parent.groupId !== undefined ? parent.groupId
       : patch.group !== undefined ? patch.group : row.groupId ?? null,
@@ -437,8 +454,11 @@ async function launch(row: QueuedWorkspaceRow, timeoutFrom: Date): Promise<{ wor
         mode: row.mode,
         permissionMode: row.permissionMode,
         ...(row.effort !== undefined ? { effort: row.effort } : {}),
-        branch: row.branch,
-        prompt: row.prompt,
+        ...(row.branch !== undefined ? { branch: row.branch } : {}),
+        ...(row.commit !== undefined ? { commit: row.commit } : {}),
+        ...(row.steps !== undefined ? { steps: row.steps } : {}),
+        ...(row.nonInteractive ? { nonInteractive: true } : {}),
+        ...(row.prompt !== undefined ? { prompt: row.prompt } : { noSession: true }),
         ...(row.title !== undefined ? { title: row.title } : {}),
         ...(row.title === undefined && row.generatedTitle !== undefined ? { generatedTitle: row.generatedTitle } : {}),
         ...(row.groupId !== undefined ? { groupId: row.groupId } : {}),
@@ -501,8 +521,9 @@ function launchingConflict(): ServerError {
   return new ServerError('CONFLICT', 'that queued workspace is launching')
 }
 
-function checkPrompt(prompt: string): void {
-  if (prompt.trim() === '') {
+function checkPrompt(prompt: string | undefined, nonInteractive: boolean | undefined): void {
+  if (nonInteractive === true) return
+  if (prompt === undefined || prompt.trim() === '') {
     throw new ServerError('VALIDATION', 'a queued workspace needs a prompt — nobody is watching it start')
   }
   if (prompt.length > MAX_PROMPT_LENGTH) {
@@ -613,6 +634,7 @@ async function parentInfo(projectId: string, pointer: QueuedParent): Promise<Par
   const mode = first?.mode
   const tool = first?.tool ?? creating?.tool
   const branch = row?.baseBranch ?? creating?.branch
+  const commit = branch === undefined ? row?.startCommit : undefined
   const groupId = row !== undefined ? row.groupId : creating?.groupId
   return {
     pointer,
@@ -621,6 +643,7 @@ async function parentInfo(projectId: string, pointer: QueuedParent): Promise<Par
     ...(model !== undefined ? { model } : {}),
     ...(first !== undefined ? { permissionMode: first.permissionMode } : {}),
     ...(branch !== undefined ? { branch } : {}),
+    ...(commit !== undefined ? { commit } : {}),
     ...(groupId !== undefined ? { groupId } : {}),
   }
 }
@@ -631,7 +654,8 @@ function settingsOf(entry: QueuedWorkspaceRow): Omit<ParentInfo, 'pointer'> {
     mode: entry.mode,
     model: entry.model,
     permissionMode: entry.permissionMode,
-    branch: entry.branch,
+    ...(entry.branch !== undefined ? { branch: entry.branch } : {}),
+    ...(entry.commit !== undefined ? { commit: entry.commit } : {}),
     ...(entry.groupId !== undefined ? { groupId: entry.groupId } : {}),
   }
 }
@@ -690,14 +714,20 @@ async function resolveSettings(
   const groupId = request.group === undefined ? parent.groupId
     : request.group === null ? undefined
     : (await resolveGroup(projectId, request.group, { create: true })).groupId
+  checkPrompt(request.prompt, request.nonInteractive)
+  const steps = checkStartSteps({ ...request, noSession: request.prompt === undefined })
   return {
-    prompt: request.prompt,
+    ...(request.prompt !== undefined ? { prompt: request.prompt } : {}),
     tool: setup.tool,
     model: setup.model,
     mode: setup.mode,
     permissionMode: setup.permissionMode,
     ...(setup.effort !== undefined ? { effort: setup.effort } : {}),
-    branch: request.branch ?? parent.branch ?? await getDefaultBranch(repoDir(projectId)),
+    ...(request.commit !== undefined ? { commit: request.commit }
+      : request.branch === undefined && parent.branch === undefined && parent.commit !== undefined ? { commit: parent.commit }
+      : { branch: request.branch ?? parent.branch ?? await getDefaultBranch(repoDir(projectId)) }),
+    ...(steps !== undefined ? { steps: steps ?? {} } : {}),
+    ...(request.nonInteractive === true ? { nonInteractive: true } : {}),
     ...(title !== '' ? { title } : {}),
     ...(groupId !== undefined ? { groupId } : {}),
     ...(request.timeout != null ? { timeoutMinutes: request.timeout } : {}),
@@ -735,14 +765,17 @@ async function toEntries(rows: QueuedWorkspaceRow[]): Promise<QueuedWorkspaceEnt
       ...(r.startAt !== undefined ? { startAt: r.startAt.toISOString() } : {}),
       ...(r.timeoutMinutes !== undefined ? { timeoutMinutes: r.timeoutMinutes } : {}),
       ...(r.routineId !== undefined ? { routineId: r.routineId } : {}),
-      prompt: r.prompt,
+      ...(r.prompt !== undefined ? { prompt: r.prompt } : {}),
       tool: r.tool,
       model: r.model,
       ...(modelName !== undefined ? { modelName } : {}),
       mode: r.mode,
       permissionMode: r.permissionMode,
       ...(r.effort !== undefined ? { effort: r.effort } : {}),
-      branch: r.branch,
+      ...(r.branch !== undefined ? { branch: r.branch } : {}),
+      ...(r.commit !== undefined ? { commit: r.commit } : {}),
+      ...(r.steps !== undefined ? { steps: r.steps } : {}),
+      ...(r.nonInteractive ? { nonInteractive: true as const } : {}),
       ...(r.title !== undefined ? { title: r.title } : {}),
       ...(r.generatedTitle !== undefined ? { generatedTitle: r.generatedTitle } : {}),
       ...(r.groupId !== undefined ? { groupId: r.groupId } : {}),

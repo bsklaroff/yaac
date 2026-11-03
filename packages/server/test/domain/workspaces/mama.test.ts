@@ -158,7 +158,7 @@ describe('mamaCaller', () => {
   // held to the strictest of the workspace's open sessions.
   it("holds a session's agent to its own session's posture, and anyone else to the strictest open one", async () => {
     const loose = await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { tool: 'codex', mode: 'acp', permissionMode: 'bypass' })
-    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: PROJ, workspaceId: 'caller-workspace' })
+    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: PROJ, workspaceId: 'caller-workspace', at: new Date(), startSteps: {} })
     const plan = await insertSession(PROJ, 'caller-workspace', { tool: 'claude', mode: 'tui', permissionMode: 'plan' })
     const edits = await insertSession(PROJ, 'caller-workspace', { tool: 'claude', mode: 'acp', permissionMode: 'accept-edits' })
     const elsewhere = await created({ projectId: PROJ, workspaceId: 'other-workspace' }, { permissionMode: 'bypass' })
@@ -1391,6 +1391,83 @@ describe('runMamaCommand', () => {
    * provisioning row, the stop record and the history check are the real
    * ones.
    */
+  /**
+   * Steps (docs/workspace-steps.md): commands handed to a workspace act as
+   * it does, so only a caller at bypass may hand them over.
+   */
+  describe('steps', () => {
+    const STEPS = JSON.stringify({ test: { run: ['pnpm test'] } })
+
+    it('starts a non-interactive workspace on its own steps at a commit, only for a caller at bypass', async () => {
+      await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { permissionMode: 'accept-edits' })
+      expect(await run('create', '', { 'non-interactive': '1', steps: STEPS })).toEqual({
+        ok: false, error: expect.stringContaining('only a caller at bypass may ask for') as string,
+      })
+      expect(await run('create', '', { 'no-steps': '1', 'no-session': '1' })).toMatchObject({ ok: true })
+
+      const bypass = await callerFor({ permissionMode: 'bypass' })
+      const sha = 'a'.repeat(40)
+      const made = await runMamaCommand(bypass, { command: 'create', body: '', args: { 'non-interactive': '1', steps: STEPS, commit: sha } })
+      expect(made).toMatchObject({ ok: true })
+      await vi.waitFor(() => { expect(vi.mocked(createWorkspace).mock.calls.length).toBeGreaterThanOrEqual(2) })
+      expect(vi.mocked(createWorkspace).mock.calls.at(-1)?.[1]).toMatchObject({
+        nonInteractive: true, commit: sha, steps: { test: { run: ['pnpm test'] } },
+      })
+      expect(vi.mocked(createWorkspace).mock.calls.at(-1)?.[1].session).toBeUndefined()
+
+      // Refused shapes: a prompt, an agent option, a bad graph, both a
+      // branch and a commit.
+      for (const [body, args] of [
+        ['go', { 'non-interactive': '1', steps: STEPS }],
+        ['', { 'non-interactive': '1', steps: STEPS, tool: 'claude' }],
+        ['', { 'non-interactive': '1', steps: '{"t":{"run":[]}}' }],
+        ['', { 'non-interactive': '1', steps: 'not json' }],
+        ['', { 'no-session': '1', branch: 'main', commit: sha }],
+      ] as const) {
+        expect(await runMamaCommand(bypass, { command: 'create', body, args }), JSON.stringify(args)).toMatchObject({ ok: false })
+      }
+      await settle()
+    })
+
+    it('adds a step to a running workspace with --run, and reads where it stands', async () => {
+      await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { permissionMode: 'bypass' })
+      await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: PROJ, workspaceId: 'caller-workspace', at: new Date(), startSteps: {} })
+      running = [podFor('caller-workspace')]
+      const name = await output('create', '', { workspace: 'caller-workspace', run: '["pnpm build","pnpm test"]', needs: '' , name: 'ci' })
+      expect(name).toBe('ci')
+      expect(await output('status', '', { workspace: 'caller-workspace', step: 'ci' })).toBe('pending')
+      expect(await output('status', '', { workspace: 'caller-workspace' })).toBe('running')
+      expect(await run('status', '', { workspace: 'caller-workspace', step: 'nope' })).toMatchObject({ ok: false })
+      // A generated name, and refusals: no workspace, a prompt, a stray
+      // option, a caller below bypass.
+      expect(await output('create', '', { workspace: 'caller-workspace', run: '["true"]' })).toMatch(/^run-[0-9a-f]{8}$/)
+      expect(await run('create', '', { run: '["true"]' })).toMatchObject({ ok: false, error: expect.stringContaining('needs --workspace') as string })
+      expect(await run('create', 'go', { workspace: 'caller-workspace', run: '["true"]' })).toMatchObject({ ok: false })
+      expect(await run('create', '', { workspace: 'caller-workspace', run: '["true"]', tool: 'claude' })).toMatchObject({ ok: false })
+      expect(await run('create', '', { workspace: 'caller-workspace', name: 'x' })).toMatchObject({
+        ok: false, error: '--name goes with --workspace and --run',
+      })
+      const strict = await callerFor({ permissionMode: 'plan' })
+      expect(await runMamaCommand(strict, { command: 'create', body: '', args: { workspace: 'caller-workspace', run: '["true"]' } }))
+        .toMatchObject({ ok: false, error: expect.stringContaining('only a caller at bypass') as string })
+    })
+
+    it('reruns a non-interactive workspace at its start commit, refusing any other', async () => {
+      await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { permissionMode: 'accept-edits' })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'ci-run', nonInteractive: true, startSteps: { test: { run: ['pnpm test'] } } })
+      await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId: PROJ, workspaceId: 'ci-run', startCommit: 'b'.repeat(40) })
+      const id = await output('rerun', '', { workspace: 'ci-run' })
+      await vi.waitFor(() => { expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1) })
+      expect(vi.mocked(createWorkspace).mock.calls[0]?.[1]).toMatchObject({
+        workspaceId: id, nonInteractive: true, rerunOf: 'ci-run', commit: 'b'.repeat(40), steps: { test: { run: ['pnpm test'] } },
+      })
+      expect(await run('rerun', '', { workspace: 'caller-workspace' })).toMatchObject({
+        ok: false, error: expect.stringContaining('not a non-interactive workspace') as string,
+      })
+      await settle()
+    })
+  })
+
   describe('restart', () => {
     beforeEach(async () => {
       await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { permissionMode: 'accept-edits' })

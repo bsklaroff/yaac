@@ -78,7 +78,7 @@ class FakeAttachChild implements StreamChild {
 /** What tmux answers to one command, or null for none. */
 function answer(tmux: FakeTmux, cmd: string): string | null {
   if (cmd.startsWith("list-panes -s -t yaac -F '#{window_id}")) {
-    return tmux.windows.map((w) => `${w.id}|${w.dead === true ? 1 : 0}|${w.name}`).join('\n')
+    return tmux.windows.map((w) => `${w.id}|${w.dead === true ? '1|0' : '0|'}||${w.name}`).join('\n')
   }
   if (cmd.startsWith('list-panes')) {
     return tmux.panes.map((p) => `${p.paneId}\t${p.window}\t${p.dead === true ? 1 : 0}\t`).join('\n')
@@ -205,7 +205,7 @@ describe('WorkspaceStatusWatcher', () => {
     children[0].feed('%subscription-changed dead-7 $0 @0 0 %7 : 1\n')
     await vi.waitFor(() => expect(liveAgents('demo', 's1')).toEqual([]))
     await vi.waitFor(() => expect(readWorkspaceWindows('demo', 's1')?.[1]).toEqual({
-      id: '@1', name: 'claude-aaaa', dead: true, deadSinceMs: expect.any(Number) as number,
+      id: '@1', name: 'claude-aaaa', dead: true, exitStatus: 0, deadSinceMs: expect.any(Number) as number,
     }))
 
     tmux.panes[1].dead = false
@@ -224,7 +224,7 @@ describe('WorkspaceStatusWatcher', () => {
       { id: '@0', name: '_yaac', dead: false },
       { id: '@1', name: 'claude-aaaa', dead: false },
     ])
-    expect(children[0].sent).toContain("list-panes -s -t yaac -F '#{window_id}|#{pane_dead}|#{window_name}'")
+    expect(children[0].sent).toContain("list-panes -s -t yaac -F '#{window_id}|#{pane_dead}|#{pane_dead_status}|#{@yaac-step-ready}|#{window_name}'")
 
     tmux.windows.push({ id: '@2', name: 'shell' })
     children[0].feed('%window-add @2\n')

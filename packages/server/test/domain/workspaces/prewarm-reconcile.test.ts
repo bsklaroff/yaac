@@ -486,7 +486,7 @@ describe('reconcilePrewarmPool', () => {
     })
 
     // So a claim finds it current instead of resetting it, rerunning the
-    // init windows and restarting the agent while the user waits.
+    // its steps and restarting the agent while the user waits.
     it('moves a spare to its base\'s new tip in the background, as warmed, once per tip', async () => {
       await pass()
       await flush()

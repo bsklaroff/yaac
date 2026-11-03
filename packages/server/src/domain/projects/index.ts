@@ -18,7 +18,7 @@ export {
   setProjectAllowlist,
 } from './allowlist'
 export { getProjectBranches } from './branches'
-export { fetchProjectOrigin, refreshProjectOrigins } from './origin'
+export { fetchProjectCommit, fetchProjectOrigin, refreshProjectOrigins } from './origin'
 export {
   deleteBuildFile,
   listBuildFiles,
@@ -34,6 +34,7 @@ export {
 } from './scratch-dirs'
 export { dismissImageBuild, retryImageBuild } from './images'
 export { setKeptIgnoredPaths } from './kept-paths'
+export { importInitStepsFromConfig, setInitSteps } from './init-steps'
 export {
   listProjectEnv,
   parseSecretProxyRule,

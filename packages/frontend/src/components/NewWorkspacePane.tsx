@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type JSX, type KeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import clsx from 'clsx'
+import { FULL_COMMIT_PATTERN } from '@yaac/shared/steps'
+import { startPoint } from '#lib/steps'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChatIcon, CloseIcon, RenameIcon, SendIcon, TerminalIcon, TOOL_LABEL } from '#lib/icons'
 import { BranchPicker } from '#components/BranchPicker'
@@ -111,7 +113,7 @@ function entrySeed(e: QueuedWorkspaceEntry): Seed {
     mode: e.mode,
     permissionMode: e.permissionMode,
     ...(e.effort !== undefined ? { effort: e.effort } : {}),
-    branch: e.branch,
+    ...((e.branch ?? e.commit) !== undefined ? { branch: e.branch ?? e.commit } : {}),
     ...(e.groupId !== undefined ? { groupId: e.groupId } : {}),
   }
 }
@@ -385,7 +387,11 @@ export function NewWorkspacePane({ projectId, bar }: {
     && (branchData === undefined || branchData.branches.includes(defaults.lastBranch))
     ? defaults.lastBranch
     : undefined
-  const branchValue = form.branch ?? seed?.branch ?? lastBranch ?? defaultBranch ?? ''
+  // A full commit id typed in the field is a start point of its own, which
+  // the branch list never has (docs/workspace-steps.md).
+  const typedCommit = branchQuery !== null && FULL_COMMIT_PATTERN.test(branchQuery.trim())
+    ? branchQuery.trim() : undefined
+  const branchValue = typedCommit ?? form.branch ?? seed?.branch ?? lastBranch ?? defaultBranch ?? ''
   const branchUnverified = branchData === undefined && lastBranch !== undefined
     && form.branch === undefined && seed?.branch === undefined
 
@@ -432,7 +438,7 @@ export function NewWorkspacePane({ projectId, bar }: {
     : needsGitAuth && !inWorkspace ? 'Add git authentication first'
     : !noAgent && !signedIn ? `Sign in to ${TOOL_LABEL[tool]} first`
     : !noAgent && modelQuery !== null ? 'Pick a model from the list'
-    : !inWorkspace && branchQuery !== null ? 'Pick a branch from the list'
+    : !inWorkspace && branchQuery !== null && typedCommit === undefined ? 'Pick a branch from the list, or give a full commit id'
     : !inWorkspace && branchUnverified ? 'Loading branches…'
     : !noAgent && !toolSupportsPermissionMode(tool, permissionMode) ? 'Pick a permission mode this agent offers'
     : storesEntry && model === '' ? 'Pick a model'
@@ -502,7 +508,7 @@ export function NewWorkspacePane({ projectId, bar }: {
       }),
       ...(titleText !== '' ? { title: titleText } : {}),
       ...(generatedTitle !== undefined ? { shownTitle: generatedTitle } : {}),
-      ...(branchValue !== '' ? { branch: branchValue } : {}),
+      ...startPoint(branchValue),
       ...group,
       ...(draft !== undefined && text !== '' ? { draftId: draft.id } : {}),
       ...(timeout !== undefined ? { timeout } : {}),
@@ -524,7 +530,7 @@ export function NewWorkspacePane({ projectId, bar }: {
       mode,
       permissionMode,
       ...(effort !== undefined ? { effort } : {}),
-      branch: branchValue,
+      ...startPoint(branchValue),
     }
     const group = newGroup !== null ? newGroupName : groupId
     const show = (id: string): void => {
@@ -569,7 +575,7 @@ export function NewWorkspacePane({ projectId, bar }: {
       mode,
       permissionMode,
       ...(effort !== undefined ? { effort } : {}),
-      branch: branchValue,
+      ...startPoint(branchValue),
       title: titleText,
       group: newGroup !== null ? newGroupName : groupId,
     }
@@ -828,7 +834,10 @@ export function NewWorkspacePane({ projectId, bar }: {
                 placeholder={branchData ? '' : branchesFailed ? 'origin\'s default branch' : 'loading branches…'}
                 ariaLabel="Base branch"
                 autoHighlight
-                onBlur={() => setBranchQuery(null)}
+                onBlur={() => {
+                  if (typedCommit !== undefined) update({ branch: typedCommit })
+                  setBranchQuery(null)
+                }}
                 onDismiss={() => setBranchQuery(null)}
               />
             </div>

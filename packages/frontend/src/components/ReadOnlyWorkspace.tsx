@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
+import clsx from 'clsx'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ContainerlessBadge } from '#components/ContainerlessBadge'
 import { ChatViewToggles } from '#components/ConversationView'
@@ -12,11 +13,16 @@ import { workspaceAgentLabel } from '#lib/agentLabel'
 import { RestartIcon, TerminalIcon } from '#lib/icons'
 import { isUnseenDeath } from '#lib/store'
 import { relativeAge } from '#lib/time'
-import { patchStopped, refetchStopped, useRestartStopped } from '#lib/useStoppedWorkspaces'
+import { patchStopped, refetchStopped, useRerunStopped, useRestartStopped } from '#lib/useStoppedWorkspaces'
+import { WorkspaceLogs } from '#components/WorkspaceLogs'
 import { useReadOnly, useTeammateName, useWhoami } from '#lib/viewer'
 import { useIsMobile } from '#lib/viewport'
 import { describeWorkspaceDeathReason } from '@yaac/shared/death-reason'
 import type { StoppedWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
+
+const PRIMARY = 'flex h-8 items-center gap-1.5 rounded-full bg-text px-3.5 text-xs font-medium text-bg hover:opacity-90'
+const SECONDARY = 'flex h-8 items-center rounded-full border border-border px-3.5 text-xs text-text-dim '
+  + 'hover:bg-surface-2 hover:text-text'
 
 /** What the read-only pane shows: a teammate's running workspace, or any
  *  stopped one (the user's own or a teammate's). */
@@ -32,7 +38,9 @@ export type ReadOnlySubject =
  * control (docs/multi-user.md "Authorization"). A bar where the live pane's
  * composer sits carries its width and condensed toggles.
  *
- * The user's own stopped workspace also gets a Restart action. Opening any
+ * The user's own stopped workspace also gets a Restart action, or for a
+ * non-interactive one, whose terminal logs show in place of conversations
+ * it never had, Rerun actions (docs/workspace-steps.md). Opening any
  * stopped one that died unseen marks it seen by the caller, a teammate's
  * included, since each user has their own dot. The mark is sent at most
  * once per id per page load, so a failing write (whose refetch brings the
@@ -43,10 +51,12 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
   const readOnly = useReadOnly()
   const owner = useTeammateName()
   const restart = useRestartStopped()
+  const rerun = useRerunStopped()
   const [confirmRestart, setConfirmRestart] = useState(false)
   const entry = subject?.entry
   const title = entry ? entry.title || entry.prompt || 'New workspace' : ''
   const stopped = subject?.kind === 'stopped' ? subject.entry : undefined
+  const reruns = stopped?.nonInteractive === true
 
   const queryClient = useQueryClient()
   const me = useWhoami()?.userId
@@ -72,7 +82,23 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
         <span className="titlebar-drag min-w-0 flex-1 truncate font-medium text-text-dim">{title}</span>
         {subject && <ContainerlessBadge />}
       </header>
-      {subject ? (
+      {subject && reruns && stopped ? (
+        <>
+          <Facts subject={subject} {...(owner !== undefined ? { owner } : {})} />
+          <WorkspaceLogs key={stopped.workspaceId} workspaceId={stopped.workspaceId} />
+          {!readOnly && (
+            <div className="flex shrink-0 items-center justify-end gap-2 p-2">
+              <button type="button" onClick={() => rerun(stopped, true)} className={SECONDARY}>
+                Rerun interactively
+              </button>
+              <button type="button" onClick={() => rerun(stopped, false)} className={PRIMARY}>
+                <RestartIcon size={12} />
+                Rerun
+              </button>
+            </div>
+          )}
+        </>
+      ) : subject ? (
         <>
           <Facts subject={subject} {...(owner !== undefined ? { owner } : {})} />
           <ReadOnlyTranscript
@@ -90,8 +116,7 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
                   <button
                     type="button"
                     onClick={() => setConfirmRestart(true)}
-                    className="ml-auto flex h-8 items-center gap-1.5 rounded-full bg-text px-3.5 text-xs
-                      font-medium text-bg hover:opacity-90"
+                    className={clsx('ml-auto', PRIMARY)}
                   >
                     <RestartIcon size={12} />
                     Restart
@@ -148,6 +173,7 @@ function Facts({ subject, owner }: { subject: ReadOnlySubject; owner?: string })
     facts.push([e.deathReason ? 'Died' : e.endedAtNextRun ? 'Ended at next run' : e.timedOut ? 'Timed out' : 'Stopped',
       relativeAge(e.stoppedAt) || '—'])
     if (e.deathReason) facts.push(['Cause', describeWorkspaceDeathReason(e.deathReason, e.deathDetail)])
+    if (e.stepsOutcome) facts.push(['Steps', e.stepsOutcome])
   }
   return (
     <dl className="flex shrink-0 flex-wrap gap-x-4 gap-y-1 border-b border-hairline-soft px-2 pb-2 pt-1 text-xs">

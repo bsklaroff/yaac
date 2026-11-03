@@ -111,7 +111,11 @@ deadline with `stopWorkspace`, as the system:
 A routine (`routines`) stores a name, a 5-field cron (or `@daily`-style
 nickname, via croner), the IANA zone it is read in, the settings each run
 launches with (resolved when saved, as a queued entry's are), an optional
-`timeoutMinutes`, `paused`, and `nextRunAt`.
+`timeoutMinutes`, `paused`, and `nextRunAt`. Its runs may start at a
+branch's tip or at a fixed commit, and may bring their own step graph and be
+non-interactive, which makes a routine a nightly CI run
+(docs/workspace-steps.md). It keeps the graph it was given; only
+`routine edit --steps` changes it.
 
 **Firing.** The `routines` step takes each unpaused routine whose
 `nextRunAt` has passed, skipping one in a removed share. In one transaction

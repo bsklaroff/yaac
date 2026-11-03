@@ -1,42 +1,44 @@
 ---
 name: yaac-autoconfig
-description: Generate a yaac-config.json template for the current repo — a config that installs, builds, and starts the project's dev server and forwards its ports — for the user to apply to their project's yaac config. Use when the user asks to auto-configure yaac for this project, get the app running in new workspaces, or expose a running dev server / preview from a yaac workspace.
+description: Generate yaac config templates for the current repo — init steps that install, build, and start the project's dev server, and a yaac-config.json that forwards its ports — for the user to apply to their project's yaac config. Use when the user asks to auto-configure yaac for this project, get the app running in new workspaces, or expose a running dev server / preview from a yaac workspace.
 ---
 
 You are running **inside a yaac workspace** — a sandboxed container holding a
-checkout of some project. This skill writes a `yaac-config.json` to that repo's
-root that, **once the user applies it to their project config**, makes *future*
-sessions boot with the app already built, running, and reachable from the host
-browser.
+checkout of some project. This skill writes two templates to that repo's root,
+`yaac-init-steps.json` and `yaac-config.json`, that, **once the user applies
+them to their project**, make *future* sessions boot with the app already
+built, running, and reachable from the host browser.
 
 The job has three parts:
 
 1. **Prove it in this sandbox now.** Figure out how the project installs,
    builds, and serves, run those commands here, and confirm the server comes up
    on a known port. Discovery is empirical — don't guess the commands, run them.
-2. **Write the template.** Write a `yaac-config.json` to the repo root whose
-   `initCommands` reproduce that install→build→serve sequence and whose
-   `portForward` exposes the port you confirmed.
-3. **Hand off the apply step.** The repo-root file is a template — yaac does not
-   read it automatically (see below). Tell the user how to copy it into their
-   project config so it takes effect.
+2. **Write the templates.** Write a `yaac-init-steps.json` to the repo root
+   whose steps reproduce that install→build→serve sequence, and a
+   `yaac-config.json` whose `portForward` exposes the port you confirmed.
+3. **Hand off the apply step.** The repo-root files are templates — yaac does
+   not read them automatically (see below). Tell the user how to apply them to
+   their project so they take effect.
 
-## How yaac-config.json actually behaves (read this first)
+## How the project config actually behaves (read this first)
 
-- **The repo-root file is a template, not the live config.** yaac reads each
-  project's config from `~/.yaac/projects/<project id>/config/yaac-config.json` on the
-  host, which is populated **only** via `yaac config edit <project>` or the web
-  app's project config editor. The `yaac-config.json` you write at the repo root
-  is **never read automatically** by session create — it's a convenient,
-  version-controlled starting point the user copies into that project config.
-  Nothing you write takes effect until it's applied there.
+- **The repo-root files are templates, not the live config.** yaac keeps each
+  project's init steps on the server, set **only** with
+  `yaac config init-steps <project> --file <file>` or the web app's Settings →
+  Project Config → Init steps, and its `yaac-config.json` in the server's
+  project config dir, set **only** with `yaac config edit <project>` or the web
+  app's project config editor. The files you write at the repo root are
+  **never read automatically** by session create — they're convenient,
+  version-controlled starting points the user applies. Nothing you write takes
+  effect until it's applied there.
 - **Applying it is a host-side step you can't do from in here.** This session is
   a sandbox; the host's `~/.yaac` and the `yaac` CLI/daemon aren't reachable
   from inside it. So you produce the template and hand the apply step to the
   user (part 3 / step 5). You also can't "test port forwarding" from inside this
   session — validate the *commands and port* here; forwarding takes effect once
   the config is applied and a new session boots.
-- **`initCommands` run on every session, not just the first.** Keep them
+- **Init steps run on every start and restart, not just the first.** Keep them
   idempotent and cache-friendly (`npm ci` / `pnpm install` against the warm
   shared package cache is fine; a destructive one-time migration is not).
 - **Port forwarding dials `localhost` inside the pod.** yaac forwards a
@@ -83,9 +85,9 @@ keep probing:
   the user adds it to the project's egress allowlist (not the config file).
 - **Missing system tooling**: if the build needs a compiler, runtime, or system
   package the image lacks, that belongs in the project's **`Dockerfile.yaac`**
-  (`yaac config edit-dockerfile <project>`), **not** `initCommands` — sessions
-  aren't root and `initCommands` shouldn't try to `apt-get`. Call this out to
-  the user; it's a separate step from writing the config.
+  (`yaac config edit-dockerfile <project>`), **not** an init step — sessions
+  aren't root and init steps shouldn't try to `apt-get`. Call this out to
+  the user; it's a separate step from writing the templates.
 
 ### 3. Verify the server is up and pin the port
 
@@ -99,27 +101,28 @@ Confirm which port actually serves the app and that it's on a loopback or
 start command to bind `0.0.0.0` (e.g. `vite --host`, `next dev -H 0.0.0.0`,
 `rails s -b 0.0.0.0`, `uvicorn --host 0.0.0.0`).
 
-### 4. Write `./yaac-config.json`
+### 4. Write `./yaac-init-steps.json` and `./yaac-config.json`
 
-Keep it minimal — only the options this project needs.
+Keep them minimal — only what this project needs.
 
-- **`initCommands`**: the install→build→serve sequence.
-  - *Single server* → **string form** (chained with `&&` in one `init` tmux
-    window; the last, long-running command is the server):
-    ```json
-    "initCommands": ["pnpm install", "pnpm build", "pnpm start"]
-    ```
-  - *Multiple long-running servers* (e.g. an API and a web frontend) →
-    **object form**, one tmux window each so they run in parallel and can be
-    inspected independently. Windows are independent, so repeat shared setup
-    (install) in each:
-    ```json
-    "initCommands": [
-      { "name": "api", "commands": ["pnpm install", "pnpm dev:api"] },
-      { "name": "web", "commands": ["pnpm install", "pnpm dev:web"] }
-    ]
-    ```
-- **`portForward`**: only the ports the user actually opens from the host —
+- **`yaac-init-steps.json`**: the install→build→serve sequence as steps by
+  name (docs/workspace-steps.md). Each step runs in a tmux window of its own,
+  its `run` commands in order in one shell, stopping at the first failure. A
+  step starts once every step its `needs` lists has succeeded, so shared
+  setup runs once and the rest wait on it. A long-running server is a
+  `service`: its last command keeps running, and the steps that need it wait
+  for its `ready` check (any command that exits 0 once it serves):
+  ```json
+  {
+    "install": { "run": "pnpm install" },
+    "build": { "run": "pnpm build", "needs": ["install"] },
+    "web": { "run": "pnpm start", "service": true, "needs": ["build"],
+             "ready": "curl -sf localhost:3000/" }
+  }
+  ```
+  Several servers are several services, which run side by side and can be
+  inspected independently.
+- **`yaac-config.json` `portForward`**: only the ports the user actually opens from the host —
   usually just the web/UI you validate in the preview. Internal services the app
   reaches in-container (an API the frontend calls, a database) don't need
   forwarding unless the user wants to hit them directly. Mirror the container
@@ -132,9 +135,11 @@ Keep it minimal — only the options this project needs.
 
 Tell the user:
 - what you wrote and why (the detected stack + commands),
-- **how to apply it** — the repo-root file is a template and does nothing until
-  copied into the project config. On the host, run `yaac config edit <project>`
-  and paste the file's contents (or use the web app's project config editor).
+- **how to apply them** — the repo-root files are templates and do nothing
+  until applied. On the host, run
+  `yaac config init-steps <project> --file yaac-init-steps.json` and
+  `yaac config edit <project>`, pasting `yaac-config.json`'s contents (or use
+  the web app's Settings → Project Config: Init steps and the config editor).
 - that it then takes effect on the **next** session created for this project
   (not the current one),
 - how they'll reach the app: the Preview button in the desktop or iPhone app
@@ -154,14 +159,21 @@ what the user opens to validate the app; the SPA reaches the API over
 `localhost:8080` inside the pod (e.g. through Vite's dev-server proxy), so the
 API needs no host forward:
 
+`yaac-init-steps.json`:
+
 ```json
 {
-  "initCommands": [
-    { "name": "api", "commands": ["pnpm install", "pnpm --filter api dev"] },
-    { "name": "web", "commands": ["pnpm install", "pnpm --filter web dev -- --host"] }
-  ],
-  "portForward": [{ "containerPort": 5173, "hostPortStart": 5173 }]
+  "install": { "run": "pnpm install" },
+  "api": { "run": "pnpm --filter api dev", "service": true, "needs": ["install"],
+           "ready": "curl -sf localhost:8080/health" },
+  "web": { "run": "pnpm --filter web dev -- --host", "service": true, "needs": ["install"] }
 }
+```
+
+`yaac-config.json`:
+
+```json
+{ "portForward": [{ "containerPort": 5173, "hostPortStart": 5173 }] }
 ```
 
 Forward the API too only if the user needs to reach it directly from the host —
@@ -170,13 +182,19 @@ an in-container proxy.
 
 ## Full config reference
 
-Every option is optional. Include only what the project needs.
+A step in `yaac-init-steps.json` takes `run` (a command or a list), `needs`
+(step names), `service` (`true` for a long-running one) and `ready` (a
+service's readiness check). Its name must not be an agent tool's (`claude`,
+`codex`, `opencode`, `pi`, or one of those followed by `-`), `yaac`, or
+`shell`/`shell-<n>`. Every step's output is kept in its log
+(`yaac workspace logs <workspace> <step>`).
+
+Every `yaac-config.json` option is optional. Include only what the project
+needs.
 
 | Option | Type | Purpose |
 |---|---|---|
-| `initCommands` | `string[]` \| `{name, commands[], hidePane?}[]` | Commands run in every session after the container starts. String form: chained with `&&` in one `init` tmux window. Object form: one window per entry (parallel), `name` must not be a reserved window name (`claude`/`codex`/`opencode`/`pi`/`init`/`yaac`). |
 | `portForward` | `{containerPort, hostPortStart}[]` | Forward an in-container port to the host. `hostPortStart` is the preferred host port; yaac scans upward if it's busy. |
-| `hideInitPane` | `boolean` (default `false`) | When `true`, close the init tmux pane after commands finish/error instead of keeping it (with `remain-on-exit`) for inspection. Per-window override via each object entry's `hidePane`. |
 | `cacheVolumes` | `Record<string,string>` | Per-project persistent caches that survive across sessions. Key = cache name, value = absolute container path. (pnpm's store is already shared at `~/.cached-packages` — no entry needed.) |
 | `nestedContainers` | `boolean` | Run an in-pod podman so `docker build`/`run`/`compose up` work inside the session (the `docker` CLI talks to podman's socket). Needed for docker-compose-based projects. |
 
@@ -186,13 +204,13 @@ key: Settings → Project Config, or `yaac config scratch-dirs`.
 
 ## Gotchas
 
-- **The repo-root file is a template — yaac never auto-loads it.** It only takes
-  effect once copied into the project config (`yaac config edit <project>` or the
-  web editor). Even then it applies to the *next* session, not the current one —
+- **The repo-root files are templates — yaac never auto-loads them.** They only
+  take effect once applied (`yaac config init-steps`, `yaac config edit`, or the
+  web app). Even then they apply to the *next* session, not the current one —
   validate commands/port here; forwarding happens at the next boot.
-- **`initCommands` run every session** — make them idempotent.
-- **String-form chains stop on the first non-zero exit.** Put the long-running
-  server last; anything after it never runs (it doesn't exit).
+- **Init steps run on every start** — make them idempotent.
+- **A step's commands stop at the first non-zero exit.** Put a service's
+  long-running command last; anything after it never runs (it doesn't exit).
 - **Bind matters only for non-loopback servers.** The relay dials `localhost`
   inside the pod, so `127.0.0.1`/`::1`/`0.0.0.0` are all fine; a private-only
   bind needs `--host 0.0.0.0`.

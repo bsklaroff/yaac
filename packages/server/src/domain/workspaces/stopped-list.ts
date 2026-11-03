@@ -104,6 +104,9 @@ export async function toStoppedEntries(rows: WorkspaceRow[]): Promise<StoppedWor
       ...(timedOut(r) ? { timedOut: true as const, ...(r.deadlineIsNextRun ? { endedAtNextRun: true as const } : {}) } : {}),
       ...(r.deathDetail !== undefined ? { deathDetail: r.deathDetail } : {}),
       ...(r.groupId !== undefined ? { groupId: r.groupId } : {}),
+      ...(r.nonInteractive ? { nonInteractive: true as const } : {}),
+      ...(r.stepsOutcome !== undefined ? { stepsOutcome: r.stepsOutcome } : {}),
+      ...(r.rerunOf !== undefined ? { rerunOf: r.rerunOf } : {}),
     }
   })
 }

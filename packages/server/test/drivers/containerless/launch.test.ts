@@ -589,7 +589,7 @@ describe('launchWorkspace', () => {
     for (const name of ['.zshenv', '.zprofile', '.zshrc', '.zlogin']) {
       expect(await fsp.readlink(path.join(stateDir(), 'zsh', name))).toBe(path.join(hostShellDir(), 'zsh', name))
     }
-    // Recorded, so a restarted server's commands start init windows in it.
+    // Recorded, so a restarted server's commands start step windows in it.
     const marker = JSON.parse(await fsp.readFile(path.join(stateDir(), 'workspace.json'), 'utf8')) as
       { launchEnv: Record<string, string> }
     expect(marker.launchEnv.SHELL).toBe(path.join(bin, 'zsh'))

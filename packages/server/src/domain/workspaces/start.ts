@@ -17,6 +17,7 @@ import { modelDisplayName } from '#domain/auth'
 import { authorizeProject, type Actor } from '#domain/access'
 import { recordProjectCreate } from '#db'
 import { ServerError } from '@yaac/shared/errors'
+import { FULL_COMMIT_PATTERN, graphHasTask, parseStepGraph, type StepGraph } from '@yaac/shared/steps'
 import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 
 /** A request to start a workspace. */
@@ -33,6 +34,16 @@ export interface StartWorkspaceRequest {
   mode?: AgentMode
   /** Reference branch on `origin`; unnamed is the project's default. */
   branch?: string
+  /** A full commit to start at instead of a branch's tip, which leaves the
+   *  workspace with no base branch. Not with `branch`. */
+  commit?: string
+  /** The step graph it starts with in place of the project's init steps,
+   *  unparsed; null for none (docs/workspace-steps.md). */
+  steps?: unknown
+  /** Run `steps` untouched, with no session, and stop when they settle. */
+  nonInteractive?: boolean
+  /** The non-interactive workspace this one reruns. */
+  rerunOf?: string
   prompt?: string
   /** Its session's id, when the client minted one so it can find what it
    *  opened (`GET /workspace/prompt`) before the snapshot names it. */
@@ -81,8 +92,9 @@ export async function prepareStart(
   principal: Actor,
   request: StartWorkspaceRequest,
 ): Promise<ProvisionRun<WorkspaceCreateResult>> {
-  const { projectId, workspaceId, prompt, title, generatedTitle, branch } = request
+  const { projectId, workspaceId, prompt, title, generatedTitle, branch, commit } = request
   await authorizeProject(principal, projectId)
+  const steps = checkStartSteps(request)
   const setup = request.noSession === true ? undefined : await resolveCreate(projectId, {
     ...(request.tool !== undefined ? { tool: request.tool } : {}),
     ...(request.model !== undefined ? { model: request.model } : {}),
@@ -133,9 +145,11 @@ export async function prepareStart(
   }, async (onProgress) => {
     try {
       throwIfProvisionStopped(workspaceId)
-      // Containerless keeps no spare pool (`defaultReconcileSteps`), and a
-      // spare's mounts, fixed at launch, have no volume.
-      if (request.claimSpare && workspaceDriver().kind !== 'containerless' && volume === undefined) {
+      // Containerless keeps no spare pool (`defaultReconcileSteps`), a
+      // spare's mounts, fixed at launch, have no volume, and a spare starts
+      // the project's init steps at a branch.
+      if (request.claimSpare && workspaceDriver().kind !== 'containerless' && volume === undefined
+        && steps === undefined && commit === undefined) {
         const claimed = await tryClaimPrewarmed(projectId, workspaceId, session, onProgress, {
           ...(branch !== undefined ? { branch } : {}),
           ...(title !== undefined ? { title } : {}),
@@ -151,6 +165,10 @@ export async function prepareStart(
         onProgress,
         ...(session !== undefined ? { session } : {}),
         ...(branch !== undefined ? { branch } : {}),
+        ...(commit !== undefined ? { commit } : {}),
+        ...(steps !== undefined ? { steps } : {}),
+        ...(request.nonInteractive === true ? { nonInteractive: true } : {}),
+        ...(request.rerunOf !== undefined ? { rerunOf: request.rerunOf } : {}),
         ...(title !== undefined ? { title } : {}),
         ...(generatedTitle !== undefined ? { generatedTitle } : {}),
         ...(groupId !== undefined ? { groupId } : {}),
@@ -187,4 +205,34 @@ export async function prepareStart(
       throw err instanceof ServerError ? new ServerError(err.code, message) : new Error(message, { cause: err })
     }
   })
+}
+
+/**
+ * Check a start's commit, steps and non-interactive flag, answering its
+ * parsed graph: absent runs the project's init steps, null none. A
+ * non-interactive workspace brings its own graph, with a step that is not a
+ * service (it ends when those settle), and opens no session
+ * (docs/workspace-steps.md "Non-interactive workspaces").
+ */
+export function checkStartSteps(
+  request: Pick<StartWorkspaceRequest, 'branch' | 'commit' | 'steps' | 'nonInteractive' | 'noSession'>,
+): StepGraph | null | undefined {
+  if (request.commit !== undefined && request.branch !== undefined) {
+    throw new ServerError('VALIDATION', 'name a branch or a commit, not both')
+  }
+  if (request.commit !== undefined && !FULL_COMMIT_PATTERN.test(request.commit)) {
+    throw new ServerError('VALIDATION', `"${request.commit}" is not a full commit id (40 or 64 hex digits)`)
+  }
+  let steps: StepGraph | null | undefined
+  try {
+    steps = request.steps === undefined || request.steps === null ? request.steps : parseStepGraph(request.steps)
+  } catch (err) {
+    throw new ServerError('VALIDATION', (err as Error).message)
+  }
+  if (request.nonInteractive !== true) return steps
+  if (steps === undefined || steps === null || !graphHasTask(steps)) {
+    throw new ServerError('VALIDATION', 'a non-interactive workspace needs its own steps, at least one of them not a service')
+  }
+  if (request.noSession !== true) throw new ServerError('VALIDATION', 'a non-interactive workspace opens no session')
+  return steps
 }

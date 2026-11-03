@@ -92,7 +92,7 @@ resume that brings the pane back, is seen at once, and both publish their
 live agents after every listing, empty included, so a session whose agent
 exited loses its agent's status. The watcher also lists the workspace's
 windows; the listing decides which windows are terminals (all but the
-keeper and the sessions') and which sessions have exited, by each window's
+keeper, the sessions' and the steps', docs/workspace-steps.md) and which sessions have exited, by each window's
 first pane, where its agent runs.
 
 An exited session waits on the user to resume or close it, so it lists as
@@ -120,8 +120,9 @@ even while a sibling already waits.
 With `--workspace`, only a session's settings are taken (tool, model,
 effort, posture, UI mode, its title); a workspace's (branch, group,
 timeout, a later start) are refused. A conversation resumes only in the
-workspace that holds it. Queued entries, routines and drafts always start a
-new workspace with a session. `yaac workspace list` and `yaac-mama list`
+workspace that holds it. Queued entries, routines and drafts start a new
+workspace with a session, but for a non-interactive one, which runs steps
+alone (docs/workspace-steps.md). `yaac workspace list` and `yaac-mama list`
 show each running workspace's open sessions under it.
 
 ## `yaac-mama` and the calling session

@@ -261,7 +261,9 @@ export async function getWorkspaceChanges(
 ): Promise<WorkspaceChanges> {
   const { jobName, projectId, workspaceId } = await runningWorkspace(idOrName)
   const row = await getWorkspaceRow(projectId, workspaceId)
-  const forkBranch = row?.baseBranch
+  // A workspace created at a commit has no base branch until one is set,
+  // and its changes are what it did since that commit.
+  const forkBranch = row?.baseBranch ?? row?.startCommit
   // The runtime treats a blank `base` as unset.
   const named = base?.trim()
   let reading: ChangesReading

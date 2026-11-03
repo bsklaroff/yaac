@@ -685,6 +685,20 @@ describe('NewWorkspacePane', () => {
     expect(sent(CREATE).at(-1)).toMatchObject({ project: 'proj', tool: 'claude', branch: 'release/2.x' })
   })
 
+  it('takes a full commit id in the branch field, and starts the workspace at that commit', async () => {
+    await openReady()
+    await waitFor(() => expect(branchInput().value).toBe('main'))
+    const sha = '0123456789abcdef0123456789abcdef01234567'
+    typeInto(branchInput(), sha)
+    fireEvent.blur(branchInput())
+    expect(branchInput().value).toBe(sha)
+
+    typePrompt('bisect it')
+    fireEvent.click(sendButton())
+    expect(sent(CREATE).at(-1)).toMatchObject({ project: 'proj', commit: sha })
+    expect(sent(CREATE).at(-1)).not.toHaveProperty('branch')
+  })
+
   // A reload brings the form back; leaving drops it.
   it('keeps the form across a reload until it is left', async () => {
     await openReady()

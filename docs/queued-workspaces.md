@@ -87,8 +87,15 @@ settings (and for `yaac-mama queue`, the caller's tool and agent mode, as
 - A **workspace** parent supplies its first session's tool, mode, *current*
   model (which follows a `/model` switch) and permission mode, its group,
   and its **reference branch** (`workspaces.baseBranch`, the branch it
-  forked from or a later `yaac-mama set-base` named, not its own `agent/<id>`). A parent still provisioning has no
+  forked from or a later `yaac-mama set-base` named, not its own `agent/<id>`),
+  or, for a parent created at a commit with no base branch, that commit. A
+  parent still provisioning has no
   conversation yet, so its provisioning row supplies the tool and group.
+
+An entry may also start at a full commit instead of a branch, bring its own
+step graph (`steps`, `{}` for none) in place of the project's init steps, and
+be non-interactive, which takes no prompt and opens no session
+(docs/workspace-steps.md).
 - An **entry** parent supplies its stored settings.
 
 Choosing a different tool than the parent's takes that tool's create

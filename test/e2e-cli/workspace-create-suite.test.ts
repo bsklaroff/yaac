@@ -43,7 +43,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  *
  * One server and one mock-LLM/mock-Git pair serve the whole file, and one
  * claude workspace carries every independent per-workspace feature (env
- * vars and secrets, cacheVolumes, initCommands, portForward, the
+ * vars and secrets, cacheVolumes, init steps and their logs, portForward, the
  * node_modules redirect) to avoid a pod per feature.
  *
  * Within a describe, tests run in declaration order and some depend on it:
@@ -438,9 +438,6 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         yaacConfig: {
           // Stored under the project dir, so removed with the temp data dir.
           cacheVolumes: { 'test-cache': '/tmp/test-cache' },
-          // `sleep` keeps the init window alive long enough for the server
-          // to set remain-on-exit on it.
-          initCommands: ['touch /tmp/init-ran && sleep 30'],
           portForward: PORT_FORWARD,
         },
       })
@@ -466,6 +463,12 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       }
 
       await skipClaudeOnboarding(projectPath)
+
+      // Init steps are a project setting the CLI sets (docs/workspace-steps.md).
+      const initSteps = path.join(testEnv.scratchDir, 'kitchen-init-steps.json')
+      await fs.writeFile(initSteps, JSON.stringify({ init: { run: ['echo init-ran', 'touch /tmp/init-ran'] } }))
+      const set = await runYaac(serverEnv, 'config', 'init-steps', 'kitchen', '--file', initSteps)
+      expect(set.exitCode, set.stderr).toBe(0)
 
       // An install provides the npm cache; this namespace needs its own for
       // the pnpm install in the last test.
@@ -597,9 +600,12 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       expect(stdout.trim()).toBe('hello')
     }, 60_000)
 
-    it('runs initCommands at session start', async () => {
-      // Init commands run in a background tmux window, so poll.
+    it('runs the project\'s init steps at session start, logging their output', async () => {
+      // Init steps run in a background tmux window, so poll.
       await vi.waitFor(() => execInJob(jobName, ['test', '-f', '/tmp/init-ran']), { timeout: 30_000, interval: 250 })
+      const logs = await runYaac(serverEnv, 'workspace', 'logs', workspaceId, 'init')
+      expect(logs.exitCode, logs.stderr).toBe(0)
+      expect(logs.stdout).toContain('init-ran')
     }, 60_000)
 
     it('surfaces forwarded host ports in the tmux status bar', async () => {
@@ -1558,6 +1564,150 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
   // session, so no agent runs. kind's volumes are directories of the
   // `yaac-volumes` claim; a byo cluster's own claims are covered by the
   // unit and apiserver tiers.
+  /**
+   * A workspace's steps (docs/workspace-steps.md) on one interactive
+   * workspace started at a commit with its own graph, then the
+   * non-interactive runs, each a workspace of its own. The steps that end a
+   * workspace run last.
+   */
+  describe('steps', () => {
+    const NAME = 'steps'
+    let workspaceId = ''
+    let jobName = ''
+    let sha = ''
+
+    const yaac = async (...args: string[]): Promise<string> => {
+      const { stdout, stderr, exitCode } = await runYaac(serverEnv, ...args)
+      if (exitCode !== 0) throw new Error(`yaac ${args.join(' ')} failed (exit ${exitCode}):\n${stderr}`)
+      return stdout
+    }
+
+    /** A step's state as the listing has it. */
+    const stateOf = async (id: string, name: string): Promise<string | undefined> => {
+      const res = await fetch(`${base}/api/workspace/list?project=${NAME}`)
+      const { workspaces } = await res.json() as { workspaces: Array<{ workspaceId: string; steps?: Array<{ name: string; state: string }> }> }
+      return workspaces.find((w) => w.workspaceId === id)?.steps?.find((s) => s.name === name)?.state
+    }
+    const waitForState = (id: string, name: string, state: string): Promise<void> =>
+      vi.waitFor(async () => { expect(await stateOf(id, name)).toBe(state) }, { timeout: 60_000, interval: 500 })
+
+    /** A steps file in the scratch dir. */
+    const stepsFile = async (file: string, graph: object): Promise<string> => {
+      const at = path.join(testEnv.scratchDir, file)
+      await fs.writeFile(at, JSON.stringify(graph))
+      return at
+    }
+
+    beforeAll(async () => {
+      const projectPath = await setupProject(NAME, { files: { 'version.txt': 'one\n' } })
+      sha = (await git(path.join(projectPath, 'repo'), ['rev-parse', 'HEAD'])).trim()
+      const graph = await stepsFile('steps.json', {
+        install: { run: ['echo installed', 'touch /tmp/installed'] },
+        web: { run: 'sleep 600', service: true, needs: ['install'], ready: 'test -f /tmp/installed' },
+        after: { run: 'echo after-web', needs: ['web'] },
+      })
+      const stdout = await yaac('workspace', 'create', NAME, '--no-session', '--steps', graph, '--commit', sha)
+      workspaceId = /Workspace (\S+) is running/.exec(stdout)?.[1] ?? ''
+      expect(workspaceId).not.toBe('')
+      jobName = (await findWorkspacePod(NAME)).jobName
+    }, 240_000)
+
+    afterAll(() => stopWorkspace(workspaceId))
+
+    it('runs --steps in order of their needs, at the --commit it names', async () => {
+      await waitForState(workspaceId, 'install', 'succeeded')
+      await waitForState(workspaceId, 'web', 'ready')
+      await waitForState(workspaceId, 'after', 'succeeded')
+      const head = (await execInJob(jobName, ['git', '-C', '/workspace', 'rev-parse', 'HEAD'])).stdout.trim()
+      expect(head).toBe(sha)
+    }, 120_000)
+
+    it('adds a step with step add, run in one shell after what it needs, and prints its log', async () => {
+      const name = (await yaac('workspace', 'step', 'add', workspaceId, '--run', 'export WORD=two', '--run', 'echo one $WORD',
+        '--name', 'extra', '--needs', 'install')).trim()
+      expect(name).toBe('extra')
+      await waitForState(workspaceId, 'extra', 'succeeded')
+      expect(await yaac('workspace', 'logs', workspaceId, 'extra')).toContain('one two')
+      expect(await yaac('workspace', 'logs', workspaceId, 'extra', '--raw', '--life', '1')).toContain('one two')
+      const listed = await yaac('workspace', 'logs', workspaceId)
+      for (const file of ['install.log', 'extra.log', 'extra.events']) expect(listed).toContain(file)
+      // A default name, printed for whoever reruns or cancels it.
+      const unnamed = (await yaac('workspace', 'step', 'add', workspaceId, '--run', 'true')).trim()
+      expect(unnamed).toMatch(/^run-[0-9a-f]{8}$/)
+      await waitForState(workspaceId, unnamed, 'succeeded')
+    }, 120_000)
+
+    it('adds a --service gated on --ready, cancels it, and reruns a finished step', async () => {
+      await yaac('workspace', 'step', 'add', workspaceId, '--run', 'sleep 600', '--service', '--ready', 'true', '--name', 'svc')
+      await waitForState(workspaceId, 'svc', 'ready')
+      expect(await yaac('workspace', 'step', 'cancel', workspaceId, 'svc')).toContain('Cancelled')
+      await waitForState(workspaceId, 'svc', 'cancelled')
+      expect(await yaac('workspace', 'step', 'rerun', workspaceId, 'extra')).toContain('Rerunning')
+      await waitForState(workspaceId, 'extra', 'succeeded')
+      const ready = await runYaac(serverEnv, 'workspace', 'step', 'add', workspaceId, '--run', 'true', '--ready', 'true')
+      expect(ready.exitCode).not.toBe(0)
+      expect(ready.stderr).toContain('--ready goes with --service')
+    }, 120_000)
+
+    it('starts a workspace with --no-steps in place of the project\'s init steps', async () => {
+      const init = await stepsFile('steps-init.json', { marker: { run: 'touch /tmp/init-marker' } })
+      await yaac('config', 'init-steps', NAME, '--file', init)
+      const stdout = await yaac('workspace', 'create', NAME, '--no-session', '--no-steps')
+      const bare = /Workspace (\S+) is running/.exec(stdout)?.[1] ?? ''
+      try {
+        const pod = await findWorkspacePod(NAME, new Set([workspaceId]))
+        // Nothing but the keeper, and no step ever listed.
+        await new Promise((resolve) => setTimeout(resolve, 3_000))
+        const windows = (await execInJob(pod.jobName, ['tmux', '-S', CONTAINER_TMUX_SOCK, 'list-windows', '-t', 'yaac',
+          '-F', '#{window_name}'])).stdout.trim().split('\n')
+        expect(windows).toEqual([KEEPER_WINDOW])
+        expect(await stateOf(bare, 'marker')).toBeUndefined()
+      } finally {
+        await stopWorkspace(bare)
+        await yaac('config', 'init-steps', NAME, '--none')
+      }
+    }, 240_000)
+
+    it('runs --non-interactive --steps untouched, refusing changes, and --wait exits as the steps ended', async () => {
+      const ok = await stepsFile('ci-ok.json', { check: { run: 'echo ci-ok' } })
+      const passed = await runYaac(serverEnv, 'workspace', 'create', NAME, '--non-interactive', '--steps', ok, '--wait')
+      expect(passed.exitCode, passed.stderr).toBe(0)
+      expect(passed.stdout).toContain('Its steps succeeded.')
+      const ranId = /Non-interactive workspace (\S+) is running/.exec(passed.stdout)?.[1] ?? ''
+      // Its logs outlive it.
+      expect(await yaac('workspace', 'logs', ranId, 'check')).toContain('ci-ok')
+      // Rerun, never restart.
+      const restart = await runYaac(serverEnv, 'workspace', 'restart', ranId)
+      expect(restart.exitCode).not.toBe(0)
+      expect(restart.stderr).toContain('rerun')
+      const rerun = await runYaac(serverEnv, 'workspace', 'rerun', ranId, '--wait')
+      expect(rerun.exitCode, rerun.stderr).toBe(0)
+      expect(rerun.stdout).toContain('Its steps succeeded.')
+      const debug = await runYaac(serverEnv, 'workspace', 'rerun', ranId, '--interactive')
+      expect(debug.exitCode, debug.stderr).toBe(0)
+      await stopWorkspace(/Workspace (\S+) is running/.exec(debug.stdout)?.[1] ?? '')
+
+      const bad = await stepsFile('ci-bad.json', { check: { run: 'exit 3' } })
+      const failed = await runYaac(serverEnv, 'workspace', 'create', NAME, '--non-interactive', '--steps', bad, '--wait')
+      expect(failed.exitCode).not.toBe(0)
+      expect(failed.stdout).toContain('Its steps failed')
+
+      const slow = await stepsFile('ci-slow.json', { check: { run: 'sleep 600' } })
+      const running = await yaac('workspace', 'create', NAME, '--non-interactive', '--steps', slow)
+      const runningId = /Non-interactive workspace (\S+) is running/.exec(running)?.[1] ?? ''
+      try {
+        await waitForState(runningId, 'check', 'running')
+        const added = await runYaac(serverEnv, 'workspace', 'step', 'add', runningId, '--run', 'true')
+        expect(added.exitCode).not.toBe(0)
+        expect(added.stderr).toContain('non-interactive')
+        const cancelled = await runYaac(serverEnv, 'workspace', 'step', 'cancel', runningId, 'check')
+        expect(cancelled.exitCode).not.toBe(0)
+      } finally {
+        await stopWorkspace(runningId)
+      }
+    }, 600_000)
+  })
+
   describe('volumes', () => {
     const NAME = 'volume-demo'
     let first = ''

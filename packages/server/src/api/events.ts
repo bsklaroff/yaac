@@ -49,7 +49,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
   const imageBuilds = workspaceDriver().listImageBuilds()
   // A workspace with a provisioning entry is mid-create or mid-restart (or
   // failed, awaiting dismissal), so clients render the provisioning row
-  // instead. The workspace lists as running before its agent and init windows
+  // instead. The workspace lists as running before its agent and steps
   // exist; hiding it until the route drops the entry swaps the row for a ready
   // workspace in one snapshot, and no id appears in both lists. A spare
   // claimed by a create is hidden the same way, and so is a held row for a

@@ -44,7 +44,7 @@ spec:
   branch: {base: main, agent: agent/<id>}
   nestedContainers: true
   prewarm: false
-  initCommands: [...]
+  steps: {...}
   memory: {requestBytes: ..., limitBytes: ...}
 status:
   phase: Provisioning | Running | Waiting | Dead

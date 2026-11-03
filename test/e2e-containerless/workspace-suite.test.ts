@@ -1055,12 +1055,15 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const put = await fetch(`${origin()}/api/project/${portsProject}/config`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ config: {
-        portForward: [{ containerPort: base, hostPortStart: base }],
-        initCommands: [`'${process.execPath}' '${script}'`],
-      } }),
+      body: JSON.stringify({ config: { portForward: [{ containerPort: base, hostPortStart: base }] } }),
     })
     expect(put.status, await put.text()).toBe(200)
+    const steps = await fetch(`${origin()}/api/project/${portsProject}/init-steps`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ steps: { dev: { run: `'${process.execPath}' '${script}'`, service: true } } }),
+    })
+    expect(steps.status, await steps.text()).toBe(200)
 
     const ids: string[] = []
     for (let i = 0; i < 2; i++) {

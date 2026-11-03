@@ -2,7 +2,6 @@ import { workspaceDriver } from '#drivers/driver'
 import { resolveProjectConfig } from '#domain/projects'
 import { getProjectRow } from '#db'
 import { shellEscape } from '#lib/shell'
-import { resolveInitWindows, initWindowCommand, tmuxCmd, windowTarget } from '#runtime/agents'
 import type { YaacConfig } from '@yaac/shared/types'
 
 /**
@@ -37,7 +36,6 @@ export async function rebranchSpare(
   const config: YaacConfig = await resolveProjectConfig(spare.projectId) ?? {}
   const runtime = workspaceDriver()
   const paths = runtime.workspacePaths(spare.jobName)
-  const TMUX = tmuxCmd(paths)
   const wd = paths.workspaceDir
   // Move `agent/<id>` to the SHA and remove untracked files. `clean -fd` not
   // `-x`, which would empty mounted module and cache dirs. reset+clean walks
@@ -52,10 +50,4 @@ export async function rebranchSpare(
   // older) and make it `agent/<id>`'s upstream.
   await runtime.exec(spare.jobName, `git -C ${wd} update-ref 'refs/remotes/origin/${shellEscape(branch)}' ${sha}`
     + ` && git -C ${wd} branch --set-upstream-to 'origin/${shellEscape(branch)}'`)
-  for (const win of resolveInitWindows(config)) {
-    // Kill and recreate in one exec, so a retry is idempotent. tmux allows
-    // duplicate names, so separate execs could leave two copies running.
-    // The kill tolerates a missing window (hidePane windows exit).
-    await runtime.exec(spare.jobName, `${TMUX} kill-window -t ${windowTarget(win.name)} 2>/dev/null; ${initWindowCommand(win, paths)}`)
-  }
 }

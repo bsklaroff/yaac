@@ -2,8 +2,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   verifyAgentWindowAlive,
   AgentLaunchDeadError,
-  initWindowCommand,
-  resolveInitWindows,
 } from '#runtime/agents/agent-command'
 import { installFakeWorkspaceDriver, workspacePathsFixture } from '#test/support/fake-driver'
 import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
@@ -80,46 +78,5 @@ describe('verifyAgentWindowAlive', () => {
     podExec.mockImplementation(() => Promise.reject(new Error('stream relay dial: timeout')))
     const transport = await verifyAgentWindowAlive('yaac-job-1', ['codex']).catch((e: unknown) => e)
     expect(transport).not.toBeInstanceOf(AgentLaunchDeadError)
-  })
-})
-
-describe('initWindowCommand', () => {
-  it('creates a visible window with remain-on-exit chained on', () => {
-    const cmd = initWindowCommand({ name: 'init', cmd: 'pnpm install', hidePane: false }, PATHS)
-    expect(cmd).toBe(
-      `${TMUX} new-window -d -t yaac -n init "\${SHELL:-/bin/sh}" -c 'cd /workspace && pnpm install'`
-      + ' \\; set-option -t =yaac:=init remain-on-exit on',
-    )
-  })
-
-  it('omits remain-on-exit for hidden panes', () => {
-    const cmd = initWindowCommand({ name: 'deps', cmd: 'pnpm install', hidePane: true }, PATHS)
-    expect(cmd).toBe(`${TMUX} new-window -d -t yaac -n deps "\${SHELL:-/bin/sh}" -c 'cd /workspace && pnpm install'`)
-  })
-})
-
-describe('resolveInitWindows', () => {
-  it('has no init window when the config names no commands', () => {
-    expect(resolveInitWindows({})).toEqual([])
-    expect(resolveInitWindows({ initCommands: [] })).toEqual([])
-  })
-
-  it('collapses a string list into one `init` window, shell-escaped, under hideInitPane', () => {
-    expect(resolveInitWindows({ initCommands: ['pnpm install', "echo 'hi'"], hideInitPane: true })).toEqual([
-      { name: 'init', cmd: "pnpm install && echo '\\''hi'\\''", hidePane: true },
-    ])
-  })
-
-  it('opens a window per object entry, each overriding hideInitPane on its own', () => {
-    expect(resolveInitWindows({
-      initCommands: [
-        { name: 'backend', commands: ['pnpm dev:backend'] },
-        { name: 'frontend', commands: ['pnpm install', 'pnpm dev:frontend'], hidePane: true },
-      ],
-      hideInitPane: false,
-    })).toEqual([
-      { name: 'backend', cmd: 'pnpm dev:backend', hidePane: false },
-      { name: 'frontend', cmd: 'pnpm install && pnpm dev:frontend', hidePane: true },
-    ])
   })
 })

@@ -311,27 +311,27 @@ const CHECKOUT_WORKERS = 8
  */
 export async function createCheckout(repoPath: string, workspacePath: string, params: {
   branch: string
-  baseBranch: string
   remoteUrl: string
   fetched?: Promise<void>
-}): Promise<void> {
+} & ({ baseBranch: string; commit?: undefined } | { commit: string; baseBranch?: undefined })): Promise<string | null> {
   // Awaited after the checkout; until then nothing would observe a rejection.
   params.fetched?.catch(() => { /* observed below */ })
   if (await fs.lstat(path.join(repoPath, '.git', 'shallow')).then(() => true, () => false)) {
     throw new Error(`${repoPath} is a shallow clone, which a workspace cannot borrow from`)
   }
-  const { branch, baseBranch } = params
+  const { branch, baseBranch, commit } = params
   let fetched = params.fetched
   let main = await mainRefs(repoPath)
-  // A branch the fetch has yet to bring in cannot be checked out early.
-  if (fetched !== undefined && remoteSha(main, baseBranch) === undefined) {
+  // A branch the fetch has yet to bring in cannot be checked out early, and
+  // a commit is checked out as it is.
+  if (fetched !== undefined && (baseBranch === undefined || remoteSha(main, baseBranch) === undefined)) {
     await fetched
     fetched = undefined
     main = await mainRefs(repoPath)
   }
-  const startSha = remoteSha(main, baseBranch) ?? null
+  let startSha = commit ?? remoteSha(main, baseBranch ?? '') ?? null
   if (startSha === null && main.refs.some(([, ref]) => ref.startsWith('refs/remotes/origin/'))) {
-    throw new Error(`origin/${baseBranch} does not exist in ${repoPath}`)
+    throw new Error(`origin/${baseBranch ?? ''} does not exist in ${repoPath}`)
   }
   // Assembled beside the checkout, where no workspace mounts it.
   const staging = path.join(path.dirname(workspacePath), `.staging-${path.basename(workspacePath)}`)
@@ -355,13 +355,14 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
       '-c', 'init.defaultRefFormat=files',
       'init', '--quiet', '--template=', `--object-format=${format}`,
     ])
+    // A checkout at a commit tracks no branch.
     await fs.appendFile(path.join(gitDir, 'config'), [
       '[remote "origin"]',
       `\turl = ${gitConfigValue(params.remoteUrl)}`,
       '\tfetch = +refs/heads/*:refs/remotes/origin/*',
-      `[branch ${gitConfigValue(branch)}]`,
-      '\tremote = origin',
-      `\tmerge = ${gitConfigValue(`refs/heads/${baseBranch}`)}`,
+      ...(baseBranch !== undefined
+        ? [`[branch ${gitConfigValue(branch)}]`, '\tremote = origin', `\tmerge = ${gitConfigValue(`refs/heads/${baseBranch}`)}`]
+        : []),
       '',
     ].join('\n'))
     await fs.writeFile(path.join(gitDir, 'HEAD'), `ref: refs/heads/${branch}\n`)
@@ -383,16 +384,41 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
       await fetched
       const after = await mainRefs(repoPath)
       if (JSON.stringify(after) !== JSON.stringify(main)) {
-        const sha = remoteSha(after, baseBranch)
-        if (sha === undefined) throw new Error(`origin/${baseBranch} was deleted on origin`)
+        const sha = remoteSha(after, baseBranch ?? '')
+        if (sha === undefined) throw new Error(`origin/${baseBranch ?? ''} was deleted on origin`)
         await writeCheckoutRefs(gitDir, after)
         // The index still holds the old tree, so only changed files are
         // written, and files the new tree drops are deleted.
         if (sha !== startSha) await checkOut(sha)
+        startSha = sha
       }
     }
     await fs.rename(gitDir, path.join(workspacePath, '.git'))
   } finally {
     await fs.rm(staging, { recursive: true, force: true })
   }
+  return startSha
+}
+
+/**
+ * Make sure the main clone has `sha`, a full commit id, fetching it from
+ * origin by id if it does not: GitHub serves any commit reachable from one
+ * of its refs, a fork's PR head included. Refuses one origin cannot serve.
+ * The fetched commit is kept, unreferenced, like everything the main clone
+ * ever had (`maintainRepo` never prunes).
+ */
+export async function fetchCommit(
+  repoPath: string,
+  remoteUrl: string,
+  credential: ResolvedGitCredential | null,
+  sha: string,
+): Promise<void> {
+  const has = (): Promise<boolean> => runGit(repo(repoPath), ['cat-file', '-e', `${sha}^{commit}`]).then(() => true, () => false)
+  if (await has()) return
+  await fetchOriginMutex(repoPath, async () => {
+    await runGit(repo(repoPath), ['fetch', '--no-tags', remoteUrl, sha], {
+      env: await gitEnvForCredential(credential, remoteUrl), remoteUrl,
+    }).catch(() => { /* reported below */ })
+  })
+  if (!await has()) throw new Error(`origin has no commit ${sha}`)
 }

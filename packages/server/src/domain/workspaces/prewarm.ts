@@ -20,6 +20,7 @@ import { workspaceDriver } from '#drivers/driver'
 import { cleanupWorkspace, deleteWorkspaceState } from './cleanup'
 import { claimProvisioning, spawningSpares } from './provisioning'
 import { rebranchSpare } from './spare-pool'
+import { lifeHooksExec, recordLife, startStepsOf } from './life'
 import { recordTrackedScratchDirs } from './tracked-scratch-dirs'
 import { launchSessions } from './session-launch'
 import {
@@ -478,7 +479,9 @@ export async function tryClaimPrewarmed(
       ...(warmed?.scratchDirs !== undefined ? { scratchDirs: warmed.scratchDirs } : {}),
     })
     inserted = true
-    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId, workspaceId: claimedId })
+    // A spare runs only the project's init steps, so a create bringing its
+    // own graph never claims one.
+    const life = await recordLife(projectId, claimedId, await startStepsOf(projectId, undefined))
     // Recorded now, so a server that dies before the launch below leaves it
     // for `reconcileSessions` to launch.
     const opened = session !== undefined ? await insertSession(projectId, claimedId, session) : undefined
@@ -565,6 +568,14 @@ export async function tryClaimPrewarmed(
     await runtime.claimSpare(claimedId)
     claimed = true
     spareSettings.delete(claimedId)
+
+    // The life's log hooks, before any window of it opens, and the commit
+    // the checkout now starts at.
+    const paths = runtime.workspacePaths(chosen.jobName)
+    const { stdout } = await runtime.exec(chosen.jobName, `${await lifeHooksExec(projectId, claimedId, life, paths)}`
+      + ` && git -C ${paths.workspaceDir} rev-parse -q --verify HEAD || true`)
+    const startCommit = stdout.trim()
+    if (startCommit !== '') await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId, workspaceId: claimedId, startCommit })
 
     emit('Using prewarmed session...')
     if (opened !== undefined) await launchSessions({ projectId, workspaceId: claimedId, jobName: chosen.jobName }, [opened])

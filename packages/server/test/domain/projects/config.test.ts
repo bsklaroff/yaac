@@ -42,7 +42,7 @@ describe('resolveProjectConfig', () => {
     // Only the per-project config dir is a config source.
     await fs.writeFile(
       path.join(dataDir, 'global', 'projects', projectId, 'repo', 'yaac-config.json'),
-      JSON.stringify({ initCommands: ['pnpm install'] }),
+      JSON.stringify({ npmCache: false }),
     )
     expect(await resolveProjectConfig(projectId)).toBeNull()
   })
@@ -57,13 +57,16 @@ describe('resolveProjectConfig', () => {
   })
 
   it('rejects an unknown field, naming it and the fields there are', async () => {
-    await expect(roundTrip({ initCommands: ['pnpm install'], unknownField: true }))
-      .rejects.toThrow('yaac-config.json: unknown field "unknownField"; the fields are cacheVolumes, initCommands,')
+    await expect(roundTrip({ npmCache: true, unknownField: true }))
+      .rejects.toThrow('yaac-config.json: unknown field "unknownField"; the fields are cacheVolumes, portForward,')
     // A name every object inherits is still unknown here.
     await expect(roundTrip({ toString: 1 })).rejects.toThrow('unknown field "toString"')
     // A retired one says where its setting went.
     await expect(roundTrip({ ephemeralModulesPaths: ['node_modules'] }))
       .rejects.toThrow('"ephemeralModulesPaths" is now the project\'s scratch directories')
+    await expect(roundTrip({ initCommands: ['pnpm install'] }))
+      .rejects.toThrow('"initCommands" is now the project\'s init steps')
+    await expect(roundTrip({ hideInitPane: true })).rejects.toThrow('"hideInitPane" is gone')
   })
 
   describe('cacheVolumes', () => {
@@ -98,68 +101,6 @@ describe('resolveProjectConfig', () => {
       }
       const ok = { cacheVolumes: { 'pnpm.store_v3-x': '/a', ['x'.repeat(64)]: '/b' } }
       expect(await roundTrip(ok)).toEqual(ok)
-    })
-  })
-
-  describe('initCommands', () => {
-    it('round-trips the string form and the one-window-per-entry object form', async () => {
-      expect(await roundTrip({ initCommands: ['pnpm install', 'pnpm build'] }))
-        .toEqual({ initCommands: ['pnpm install', 'pnpm build'] })
-      expect(await roundTrip({ initCommands: [] })).toEqual({ initCommands: [] })
-
-      const objectForm = {
-        initCommands: [
-          { name: 'backend', commands: ['pnpm dev:backend'] },
-          { name: 'frontend', commands: ['pnpm dev:frontend'], hidePane: true },
-        ],
-      }
-      expect(await roundTrip(objectForm)).toEqual(objectForm)
-    })
-
-    it('drops an omitted hidePane rather than defaulting it', async () => {
-      expect(await roundTrip({
-        initCommands: [
-          { name: 'backend', commands: ['pnpm dev:backend'] },
-          { name: 'frontend', commands: ['pnpm dev:frontend'], hidePane: false },
-        ],
-      })).toEqual({
-        initCommands: [
-          { name: 'backend', commands: ['pnpm dev:backend'] },
-          { name: 'frontend', commands: ['pnpm dev:frontend'], hidePane: false },
-        ],
-      })
-    })
-
-    it('rejects a non-array or a mix of the two forms', async () => {
-      await expect(roundTrip({ initCommands: 'not-an-array' }))
-        .rejects.toThrow('initCommands must be an array')
-      await expect(roundTrip({ initCommands: ['pnpm install', { name: 'be', commands: ['x'] }] }))
-        .rejects.toThrow('cannot be mixed')
-    })
-
-    it('rejects window names that could clobber an agent pane or a tmux target', async () => {
-      await expect(roundTrip({ initCommands: [{ commands: ['x'] }] }))
-        .rejects.toThrow(/initCommands\[0\]\.name/)
-      for (const reserved of ['claude', 'codex', 'opencode', 'pi', 'init', 'yaac']) {
-        await expect(roundTrip({ initCommands: [{ name: reserved, commands: ['x'] }] }))
-          .rejects.toThrow(`"${reserved}" is reserved`)
-      }
-      for (const bad of ['be:1', 'be.1', 'with space', '-lead']) {
-        await expect(roundTrip({ initCommands: [{ name: bad, commands: ['x'] }] }))
-          .rejects.toThrow(/must match/)
-      }
-      await expect(roundTrip({
-        initCommands: [{ name: 'be', commands: ['a'] }, { name: 'be', commands: ['b'] }],
-      })).rejects.toThrow('"be" is duplicated')
-    })
-
-    it('rejects an empty or non-string commands list and a non-boolean hidePane', async () => {
-      await expect(roundTrip({ initCommands: [{ name: 'be', commands: [] }] }))
-        .rejects.toThrow(/commands must be a non-empty array/)
-      await expect(roundTrip({ initCommands: [{ name: 'be', commands: ['ok', 42] }] }))
-        .rejects.toThrow(/commands must be a non-empty array/)
-      await expect(roundTrip({ initCommands: [{ name: 'be', commands: ['x'], hidePane: 'yes' }] }))
-        .rejects.toThrow(/hidePane must be a boolean/)
     })
   })
 
@@ -220,12 +161,6 @@ describe('resolveProjectConfig', () => {
     it('rejects non-boolean values', async () => {
       await expect(roundTrip({ nestedContainers: 'yes' }))
         .rejects.toThrow('nestedContainers must be a boolean')
-      await expect(roundTrip({ hideInitPane: 'yes' }))
-        .rejects.toThrow('hideInitPane must be a boolean')
-    })
-
-    it('round-trips hideInitPane', async () => {
-      expect(await roundTrip({ hideInitPane: true })).toEqual({ hideInitPane: true })
     })
   })
 })

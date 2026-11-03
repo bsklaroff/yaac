@@ -3,7 +3,6 @@ import path from 'node:path'
 import { describe, it, expect } from 'vitest'
 import { buildWindowsExec, finishSetupCommand } from '#runtime/agents/setup-commands'
 import { KEEPER_STARTING, KEEPER_WINDOW } from '#drivers/contract'
-import { resolveInitWindows } from '#runtime/agents/agent-command'
 import { WORKSPACE_INIT_SCRIPT, workspaceBinDir } from '#domain/workspaces/workspace-bin'
 import { PROXY_CA_BUNDLE_PATH } from '#drivers/k8s/egress/proxy-client'
 
@@ -18,33 +17,20 @@ describe('buildWindowsExec', () => {
 
   // A session's window keeps its pane when the agent exits, for a resume.
   it('opens each session in a window of its own, in the workspace, keeping its pane on exit', () => {
-    expect(buildWindowsExec([], [claude], PATHS)).toBe(
+    expect(buildWindowsExec([claude], PATHS)).toBe(
       `${TMUX} new-window -d -t yaac -n claude-aaaa -c ${PATHS.workspaceDir} 'claude --session-id x'`
       + ' \\; set-option -t =yaac:=claude-aaaa remain-on-exit on',
     )
   })
 
-  it('chains each init window before the sessions', () => {
-    const wins = resolveInitWindows({ initCommands: ['pnpm install', 'pnpm dev'] })
-    const cmd = buildWindowsExec(wins, [claude], PATHS)
-    const [initPart, sessionPart] = cmd.split(' && tmux -S ')
-    expect(initPart).toContain('new-window -d -t yaac -n init')
-    expect(initPart).toContain('pnpm install && pnpm dev')
-    expect(sessionPart).toContain('-n claude-aaaa')
-  })
-
-  it('opens only the init windows when the sessions were started apart', () => {
-    const wins = resolveInitWindows({ initCommands: ['pnpm dev'] })
-    const cmd = buildWindowsExec(wins, [], PATHS)
-    expect(cmd).toContain('pnpm dev')
-    expect(cmd).not.toContain('claude')
-    expect(buildWindowsExec([], [], PATHS)).toBe('')
+  it('opens nothing for no sessions', () => {
+    expect(buildWindowsExec([], PATHS)).toBe('')
   })
 
   it('starts every session in one tmux command, each naming what it resumes', () => {
     // One command, so no pane listing sees a window before it names what it
     // resumes (codex reports that only at its next turn).
-    const cmd = buildWindowsExec([], [
+    const cmd = buildWindowsExec([
       { tool: 'codex', window: 'codex-bbbb', cmd: 'codex resume t-1', resumes: 't-1' },
       { tool: 'opencode', window: 'opencode-cccc', cmd: 'opencode --standalone --session ses_2', resumes: 'ses_2' },
     ], PATHS)

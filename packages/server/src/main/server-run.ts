@@ -24,7 +24,7 @@ import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-po
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { startReconciler } from '#main/reconciler'
 import { setWorkspaceDriver, workspaceDriver, workspacesSandboxed } from '#drivers/driver'
-import { importScratchDirsFromConfig, pushProjectSecrets } from '#domain/projects'
+import { importInitStepsFromConfig, importScratchDirsFromConfig, pushProjectSecrets } from '#domain/projects'
 import { resumeQueuedWorkspaces } from '#domain/workspaces'
 import { createK8sDriver } from '#drivers/k8s'
 import { createContainerlessDriver } from '#drivers/containerless'
@@ -240,6 +240,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   await startGitSshAgent()
   // Before any create reads the setting (docs/legacy-compat-shims.md).
   await importScratchDirsFromConfig()
+  await importInitStepsFromConfig()
 
   // Set synchronously so it is true before any queued request runs.
   ready = true

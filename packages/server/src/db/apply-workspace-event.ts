@@ -11,8 +11,11 @@ import {
   recordWorkspaceStopped,
   removeWorkspaceRecords,
   setWorkspaceBaseBranch,
+  setWorkspaceStartCommit,
+  setWorkspaceStepsOutcome,
   setWorkspaceTrackedScratchDirs,
 } from './workspace-store'
+import { recordStepChange, startLifeSteps } from './step-store'
 import { closeSessionRow, recordSessionReport, recordSessionWaitingUnseen } from './session-store'
 import { markVolumesPinned, releaseVolume } from './volume-store'
 import { notifyWorkspaceListChanged } from '#lib/notify'
@@ -40,7 +43,20 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
       await applyCreateFailed(event)
       return
     case 'workspace-life-started':
-      await recordWorkspaceLife(event.projectId, event.workspaceId)
+      await recordWorkspaceLife(event.projectId, event.workspaceId, event.at)
+      await startLifeSteps(event.projectId, event.workspaceId, event.at, event.startSteps)
+      return
+    case 'start-commit-resolved':
+      await setWorkspaceStartCommit(event.projectId, event.workspaceId, event.startCommit)
+      return
+    case 'step-changed':
+      await recordStepChange(event.workspaceId, event.life, event.name, {
+        state: event.state,
+        ...(event.exitCode !== undefined ? { exitCode: event.exitCode } : {}),
+      })
+      return
+    case 'steps-settled':
+      await setWorkspaceStepsOutcome(event.projectId, event.workspaceId, event.outcome)
       return
     case 'base-branch-resolved':
       await setWorkspaceBaseBranch(event.projectId, event.workspaceId, event.baseBranch)
@@ -82,7 +98,10 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
 }
 
 async function applyCreated(event: WorkspaceCreated): Promise<void> {
-  const { projectId, workspaceId, baseBranch, title, generatedTitle, groupId, resume, timeZone, deadline, scratchDirs } = event
+  const {
+    projectId, workspaceId, baseBranch, title, generatedTitle, groupId, resume, timeZone, deadline, scratchDirs,
+    startSteps, nonInteractive, rerunOf,
+  } = event
   const launch = {
     ...(deadline !== undefined ? { deadline } : {}),
     ...(scratchDirs !== undefined ? { scratchDirs } : {}),
@@ -101,6 +120,9 @@ async function applyCreated(event: WorkspaceCreated): Promise<void> {
     ...(title !== undefined ? { title } : {}),
     ...(generatedTitle !== undefined ? { generatedTitle } : {}),
     ...(groupId !== undefined ? { groupId } : {}),
+    ...(startSteps !== undefined ? { startSteps } : {}),
+    ...(nonInteractive === true ? { nonInteractive } : {}),
+    ...(rerunOf !== undefined ? { rerunOf } : {}),
     ...launch,
   })
 }

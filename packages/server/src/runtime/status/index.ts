@@ -29,6 +29,7 @@ export {
   evictWorkspaceStatus,
   liveAgents,
   onLiveAgentsChanged,
+  onWindowsChanged,
   onStreamHealthLost,
   onWaitingEnded,
   readAgentStatus,

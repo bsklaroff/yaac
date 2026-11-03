@@ -157,7 +157,7 @@ export async function launchSessions(
     }
     launches = await sessionLaunches(projectId, workspaceId, mine, paths)
     if (launches.length === 0) return
-    await runtime.exec(jobName, buildWindowsExec([], launches, paths))
+    await runtime.exec(jobName, buildWindowsExec(launches, paths))
     await markSessionsLaunched(launches.map((l) => l.session.id))
   } finally {
     for (const id of ids) launching.delete(id)

@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { Hono } from 'hono'
-import type { Context } from 'hono'
+import type { Context, MiddlewareHandler } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { jsonBodyLimit, optionalProjectRef, projectRef, zv } from '#routes/validator'
 import { z } from 'zod'
-import { allowWorkspaceHost, claimDraft, keepScratchDirsInCheckout, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getConversationTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listProvisioning, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toConversationEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand, mamaCaller, openSession, closeSession, resumeSession, renameSession, type QueueStart, listQueuedWorkspaces, setWorkspaceTimeout } from '#domain/workspaces'
+import { allowWorkspaceHost, claimDraft, keepScratchDirsInCheckout, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getConversationTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listProvisioning, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toConversationEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand, mamaCaller, openSession, assertInteractive, addSteps, rerunStep, cancelStep, prepareRerun, listWorkspaceLogs, readWorkspaceLog, closeSession, resumeSession, renameSession, type QueueStart, listQueuedWorkspaces, setWorkspaceTimeout } from '#domain/workspaces'
 import { createShellWindow, killWindowTerminal } from '#runtime/terminals'
 import {
   createWorkspaceGroup,
@@ -45,6 +45,13 @@ import {
 } from '@yaac/shared/types'
 
 const queuedSettings = queuedWorkspaceSettingsSchema.shape
+
+/** Refuse a request that would change a running non-interactive workspace,
+ *  which only a stop may touch (docs/workspace-steps.md). */
+const interactiveOnly: MiddlewareHandler<IdentityEnv> = async (c, next) => {
+  await assertInteractive(await resolveWorkspaceId(c.req.param('id') ?? ''))
+  await next()
+}
 
 // The group a queued workspace launches into, by id or name (an unknown name
 // creates the group); null means ungrouped. If omitted, a queue takes its
@@ -263,7 +270,9 @@ export const workspaceApp = new Hono<IdentityEnv>()
     })),
     async (c) => {
       const body = c.req.valid('json')
-      if (body.noSession === true && (['tool', 'model', 'permissionMode', 'effort', 'mode', 'prompt'] as const)
+      // A non-interactive workspace opens no session (docs/workspace-steps.md).
+      const noSession = body.noSession === true || body.nonInteractive === true
+      if (noSession && (['tool', 'model', 'permissionMode', 'effort', 'mode', 'prompt'] as const)
         .some((k) => body[k] !== undefined)) {
         throw new ServerError('VALIDATION', 'a workspace with no session takes no prompt or agent settings')
       }
@@ -294,13 +303,16 @@ export const workspaceApp = new Hono<IdentityEnv>()
         ...(body.effort !== undefined ? { effort: body.effort } : {}),
         ...(body.mode !== undefined ? { mode: body.mode } : {}),
         ...(body.branch !== undefined ? { branch: body.branch } : {}),
+        ...(body.commit !== undefined ? { commit: body.commit } : {}),
+        ...(body.steps !== undefined ? { steps: body.steps } : {}),
+        ...(body.nonInteractive === true ? { nonInteractive: true } : {}),
         ...(body.prompt !== undefined ? { prompt: body.prompt } : {}),
         ...(body.sessionId !== undefined ? { sessionId: body.sessionId } : {}),
         ...(title ? { title } : {}),
         ...(generatedTitle !== undefined ? { generatedTitle } : {}),
         ...(body.group !== undefined ? { group: body.group } : {}),
         ...(body.timeout !== undefined ? { deadline: minutesFromNow(body.timeout) } : {}),
-        ...(body.noSession === true ? { noSession: true } : {}),
+        ...(noSession ? { noSession: true } : {}),
         ...(body.volume !== undefined ? { volume: body.volume } : {}),
         // A user request, so its settings become the project's defaults.
         rememberDefaults: true,
@@ -314,6 +326,28 @@ export const workspaceApp = new Hono<IdentityEnv>()
         throw err
       })
       return streamProvisioned(c, (onProgress) => draft.run(() => run(onProgress)))
+    },
+  )
+  // Rerun a non-interactive workspace: a new one with its graph at its
+  // start commit, or with `interactive` an interactive one to debug in.
+  // `rerunId`, the new one's id, is pre-generated by the webapp as a
+  // create's is, so its provisioning row is the one the run fills.
+  .post(
+    '/rerun',
+    zv('json', z.object({
+      workspaceId: z.string().min(1),
+      interactive: z.boolean().optional(),
+      rerunId: z.uuid().optional(),
+    })),
+    async (c) => {
+      const { workspaceId, interactive, rerunId } = c.req.valid('json')
+      if (rerunId !== undefined && await findWorkspaceRow(rerunId)) {
+        throw new ServerError('CONFLICT', `workspace id ${rerunId} is already in use`)
+      }
+      return streamProvisioned(c, await prepareRerun(c.get('principal'), workspaceId, {
+        workspaceId: rerunId ?? randomUUID(),
+        ...(interactive === true ? { interactive } : {}),
+      }))
     },
   )
   .post(
@@ -425,6 +459,8 @@ export const workspaceApp = new Hono<IdentityEnv>()
       parent: z.string().min(1).optional(),
       ...queueStart,
       ...queuedSettings,
+      // Absent only for a non-interactive entry.
+      prompt: queuedSettings.prompt.optional(),
       group: queuedGroup,
       draftId,
     })),
@@ -662,6 +698,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
   // next defaults. Answers once its window is launched.
   .post(
     '/:id/sessions',
+    interactiveOnly,
     zv('json', z.object({
       tool: queuedSettings.tool,
       model: queuedSettings.model,
@@ -831,6 +868,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
   // editor saves against next.
   .put(
     '/:id/file',
+    interactiveOnly,
     // Refuse oversized bodies before buffering. Twice the editable size
     // allows for JSON escaping; the domain enforces the exact limit.
     jsonBodyLimit(2 * MAX_TEXT_FILE_BYTES + 64 * 1024, 'the file is over the editable size'),
@@ -855,6 +893,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
   // streamed to disk. `replace=1` overwrites a file already there.
   .put(
     '/:id/upload',
+    interactiveOnly,
     zv('query', z.object({ path: z.string().min(1), replace: z.enum(['0', '1']).optional() })),
     async (c) => {
       const { path, replace } = c.req.valid('query')
@@ -867,6 +906,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
   // to paste instead.
   .post(
     '/:id/attachments',
+    interactiveOnly,
     bodyLimit({
       maxSize: MAX_ATTACHMENT_BYTES,
       onError: () => { throw new ServerError('TOO_LARGE', 'the image is over the 5 MB limit') },
@@ -877,6 +917,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
   )
   .delete(
     '/:id/file',
+    interactiveOnly,
     zv('query', z.object({ path: z.string().min(1) })),
     async (c) => {
       await deleteWorkspaceEntry(c.get('principal'), c.req.param('id'), c.req.valid('query').path)
@@ -885,11 +926,13 @@ export const workspaceApp = new Hono<IdentityEnv>()
   )
   .post(
     '/:id/folder',
+    interactiveOnly,
     zv('json', z.object({ path: z.string().min(1) })),
     async (c) => c.json(await createWorkspaceFolder(c.get('principal'), c.req.param('id'), c.req.valid('json').path)),
   )
   .post(
     '/:id/rename',
+    interactiveOnly,
     zv('json', z.object({ from: z.string().min(1), to: z.string().min(1) })),
     async (c) => {
       const { from, to } = c.req.valid('json')
@@ -900,12 +943,13 @@ export const workspaceApp = new Hono<IdentityEnv>()
   // returning its entry so the client can focus the pane the snapshot
   // brings. Both terminal routes act inside the workspace, so only its owner
   // may call them.
-  .post('/:id/terminals', async (c) => {
+  .post('/:id/terminals', interactiveOnly, async (c) => {
     const { jobName } = await resolveWorkspaceContainer(c.req.param('id'), { requireRunning: true, owner: c.get('principal') })
     return c.json(await createShellWindow(jobName))
   })
   .post(
     '/:id/terminals/close',
+    interactiveOnly,
     zv('json', z.object({ target: z.string().min(1) })),
     async (c) => {
       const { jobName } = await resolveWorkspaceContainer(c.req.param('id'), { requireRunning: true, owner: c.get('principal') })
@@ -929,6 +973,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
   // it from its blocked set, which clears the badge in the next snapshot.
   .post(
     '/:id/allow-host',
+    interactiveOnly,
     zv('json', z.object({
       // A bare hostname or wildcard pattern as hostMatchesPattern
       // (#lib/allowed-hosts) understands it; no scheme, path or port.
@@ -947,6 +992,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
   // arbitrary port.
   .post(
     '/:id/forward-port',
+    interactiveOnly,
     zv('json', z.object({
       containerPort: z.number().int().min(1).max(65535),
       persist: z.boolean().optional(),
@@ -980,5 +1026,36 @@ export const workspaceApp = new Hono<IdentityEnv>()
       requireDriverFeature('portRelay')
       await dismissWorkspacePort(c.get('principal'), c.req.param('id'), c.req.valid('json').containerPort)
       return c.body(null, 204)
+    },
+  )
+  // Steps added to a running workspace (docs/workspace-steps.md); their
+  // `needs` may name its steps. A non-interactive one refuses.
+  .post(
+    '/:id/steps',
+    zv('json', z.object({ steps: z.unknown() })),
+    async (c) => c.json(await addSteps(c.get('principal'), c.req.param('id'), c.req.valid('json').steps)),
+  )
+  .post('/:id/steps/:name/rerun', async (c) =>
+    c.json(await rerunStep(c.get('principal'), c.req.param('id'), c.req.param('name'))))
+  .post('/:id/steps/:name/cancel', async (c) => {
+    await cancelStep(c.get('principal'), c.req.param('id'), c.req.param('name'))
+    return c.body(null, 204)
+  })
+  // Each life's terminal logs, newest first; then one file's bytes from
+  // `offset`, with where to ask from next, so a client follows a log still
+  // being written. Kept after a stop, so a stopped workspace answers too.
+  .get('/:id/logs', async (c) => c.json(await listWorkspaceLogs(c.get('principal'), c.req.param('id'))))
+  .get(
+    '/:id/logs/:life/:file',
+    zv('query', z.object({ offset: z.coerce.number().int().min(0).optional() })),
+    async (c) => {
+      const { data, next, size } = await readWorkspaceLog(
+        c.get('principal'), c.req.param('id'), c.req.param('life'), c.req.param('file'), c.req.valid('query').offset,
+      )
+      return c.body(new Uint8Array(data), 200, {
+        'content-type': 'application/octet-stream',
+        'x-log-next': String(next),
+        'x-log-size': String(size),
+      })
     },
   )

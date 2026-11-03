@@ -261,7 +261,7 @@ outlives it. Here the create declares none: a tool on the host keeps its
 cache where it always does, in the user's home or the checkout.
 
 **Scratch directories** (the project setting) stay in the checkout; a stop
-deletes them and a restart's init commands rebuild them.
+deletes them and a restart's init steps rebuild them.
 
 The rebuild is a relink, not a download, because every workspace uses the
 project's shared `.cached-packages/pnpm-store`: the create sets

@@ -31,7 +31,7 @@ import { clearPrewarmStateForTests, refreshing } from '#domain/workspaces/prewar
 import { setWorkspaceBinDir } from '#domain/workspaces/workspace-bin'
 import type { StartWorkspaceRequest } from '#domain/workspaces/start'
 import type { WorkspaceCreateResult } from '#domain/workspaces/create'
-import { setScratchDirs, setProjectEnvVar } from '#domain/projects'
+import { setInitSteps, setScratchDirs, setProjectEnvVar } from '#domain/projects'
 import { _clearTmuxAliveCacheForTests } from '#runtime/status/liveness'
 import { _resetAcpRegistryForTests, registerAcpConversation } from '#runtime/agents/acp-registry'
 import type { AcpConversation } from '#runtime/agents'
@@ -84,6 +84,7 @@ import {
 } from '#db'
 import { getProjectRow, recordProject, recordProjectCreate } from '#db/project-store'
 import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
+import { listWorkspaceSteps } from '#db/step-store'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 import { EFFORTS } from '@yaac/shared/tool-providers.generated'
 import { ServerError } from '@yaac/shared/errors'
@@ -853,13 +854,11 @@ describe('prepareStart', () => {
       expect(listProvisioning()).toEqual([])
     })
 
-    it('opens the init windows and declares the forwards before the agent starts', async () => {
-      await writeConfig({
-        initCommands: [
-          { name: 'backend', commands: ['pnpm dev:backend'] },
-          { name: 'frontend', commands: ['pnpm install', "echo 'hi'"], hidePane: true },
-        ],
-        portForward: [{ containerPort: 3000, hostPortStart: 3000 }],
+    it('starts its life with the project\'s init steps and log hooks, and declares the forwards, before the agent', async () => {
+      await writeConfig({ portForward: [{ containerPort: 3000, hostPortStart: 3000 }] })
+      await setInitSteps(local, DEMO_PROJECT_ID, {
+        install: { run: 'pnpm install' },
+        dev: { run: 'pnpm dev', service: true, needs: ['install'] },
       })
 
       const result = await start({ tool: 'claude', model: 'claude-opus-4-5' })
@@ -867,47 +866,63 @@ describe('prepareStart', () => {
       // Clients bind the ports (docs/port-forward-tunnel.md); the create only
       // declares them.
       expect(result.forwardedPorts).toEqual([{ containerPort: 3000, hostPort: 3000 }])
-      // Init windows and the agent respawn go in one exec. Only windows
-      // without hidePane keep remain-on-exit.
-      const windows = execOf('new-window')!
-      expect(windows).toContain("-n backend \"${SHELL:-/bin/sh}\" -c 'cd /workspace && pnpm dev:backend'")
-      expect(windows).toContain("-n frontend \"${SHELL:-/bin/sh}\" -c 'cd /workspace && pnpm install && echo '\\''hi'\\'''")
-      expect(windows).toContain('set-option -t =yaac:=backend remain-on-exit on')
-      expect(windows).not.toContain('=yaac:=frontend remain-on-exit on')
-      expect(windows).toContain(`claude --permission-mode bypassPermissions --model claude-opus-4-5 --session-id ${result.sessionId}`)
+      // The life's hooks are sourced in the setup exec, before the agent's
+      // window opens; its steps wait, pending, for the step reconcile.
+      const setup = execOf('new-window')!
+      expect(setup).toMatch(/source-file '\/home\/yaac\/\.yaac-logs\/[\dT.-]+Z\/hooks\.conf' && .*new-window/)
+      expect(setup).toContain(`claude --permission-mode bypassPermissions --model claude-opus-4-5 --session-id ${result.sessionId}`)
+      const steps = await listWorkspaceSteps(result.workspaceId)
+      expect(steps.map((s) => [s.name, s.origin, s.state])).toEqual([['install', 'start', 'pending'], ['dev', 'start', 'pending']])
+      // A create bringing its own graph replaces them; one with none, none.
+      const own = await start({ noSession: true, steps: { lint: { run: ['pnpm lint', 'pnpm test'] } } })
+      expect((await listWorkspaceSteps(own.workspaceId)).map((s) => [s.name, s.spec.run])).toEqual([['lint', ['pnpm lint', 'pnpm test']]])
+      const none = await start({ noSession: true, steps: null })
+      expect(await listWorkspaceSteps(none.workspaceId)).toEqual([])
     })
 
     it('starts a containerless chat agent alongside its checkout, holding its conversation until the checkout lands', async () => {
-      await writeConfig({ initCommands: [{ name: 'backend', commands: ['pnpm dev:backend'] }] })
       installDriver({ kind: 'containerless' })
       await start({ workspaceId: 'wt-early', mode: 'acp' })
 
       // The agent's command goes first, on its own; acpd holds the
-      // conversation until `.git` exists. The init windows read the
-      // checkout, so they follow it.
+      // conversation until `.git` exists. The setup that reads the checkout
+      // follows it.
       const agents = execs.findIndex(({ cmd }) => SESSION_WINDOW.test(cmd))
-      const windows = execs.findIndex(({ cmd }) => cmd.includes('-n backend'))
+      const setup = execs.findIndex(({ cmd }) => cmd.includes('hooks.conf'))
       expect(execs[agents].cmd).toContain('--wait-for /workspace/.git --')
-      expect(execs[agents].cmd).not.toContain('backend')
-      expect(windows).toBeGreaterThan(agents)
-      expect(execs[windows].cmd).not.toMatch(SESSION_WINDOW)
+      expect(setup).toBeGreaterThan(agents)
+      expect(execs[setup].cmd).not.toMatch(SESSION_WINDOW)
 
       // A terminal agent reads the checkout as it starts, so it waits for it.
       execs.length = 0
       await start({ workspaceId: 'wt-tui', mode: 'tui' })
       const tui = sessionExec()!
-      expect(tui).toContain('-n backend')
+      expect(tui).toContain('hooks.conf')
       expect(tui).not.toContain('--wait-for')
     })
 
-    it('refuses an init window named after any agent tool, before provisioning', async () => {
-      // A retooled spare renames the agent window, so every tool name is
-      // taken, not just the one launching.
-      for (const name of ['claude', 'codex']) {
-        await writeConfig({ initCommands: [{ name, commands: ['echo hi'] }] })
-        await expect(start({ tool: 'claude' })).rejects.toThrow(`"${name}" is reserved`)
-      }
+    it('refuses a bad start, before provisioning', async () => {
+      await expect(start({ noSession: true, steps: { claude: { run: 'echo hi' } } })).rejects.toThrow('"claude": the name is reserved')
+      await expect(start({ branch: 'main', commit: 'a'.repeat(40) })).rejects.toThrow('not both')
+      await expect(start({ commit: 'abc123' })).rejects.toThrow('not a full commit id')
+      // A non-interactive workspace brings a graph that ends, and no session.
+      await expect(start({ nonInteractive: true, noSession: true })).rejects.toThrow('needs its own steps')
+      await expect(start({ nonInteractive: true, noSession: true, steps: { db: { run: 'pg', service: true } } }))
+        .rejects.toThrow('needs its own steps')
+      await expect(start({ nonInteractive: true, steps: { t: { run: 'pnpm test' } } })).rejects.toThrow('opens no session')
       expect(specs).toEqual([])
+    })
+
+    it('creates at a commit, with no base branch, recording the commit it started at', async () => {
+      const result = await start({ noSession: true, commit: head })
+      const row = await getWorkspaceRow(DEMO_PROJECT_ID, result.workspaceId)
+      expect(row?.baseBranch).toBeUndefined()
+      expect(row?.startCommit).toBe(head)
+      // A branch create records its tip too.
+      const branched = await start({ noSession: true })
+      expect((await getWorkspaceRow(DEMO_PROJECT_ID, branched.workspaceId))?.startCommit).toBe(head)
+      // A commit origin cannot serve is refused.
+      await expect(start({ noSession: true, commit: 'f'.repeat(40) })).rejects.toThrow(/origin has no commit/)
     })
 
     it('fails fast, rolling the row back, when origin cannot be fetched', async () => {
@@ -1274,19 +1289,20 @@ describe('prepareStart', () => {
     it('brings a spare whose branch moved on origin up to its tip before opening the session there', async () => {
       const spare = await warm()
       head = 'an-older-commit'
-      await writeConfig({ initCommands: [{ name: 'backend', commands: ['pnpm dev'] }] })
+      await setInitSteps(local, DEMO_PROJECT_ID, { install: { run: 'pnpm install' } })
 
       expect((await start({ claimSpare: true })).workspaceId).toBe(spare.workspaceId)
 
       const ran = ranIn(spare)
       const reset = ran.findIndex((c) => c.includes('reset --hard'))
       expect(reset).toBeGreaterThanOrEqual(0)
-      // Each init window is recreated in one exec with its kill, then the
-      // session opened last.
+      // The claim starts its life after the reset, with the project's init
+      // steps, and sources its log hooks before the session opens.
       const after = ran.slice(reset)
-      expect(after).toContainEqual(expect.stringMatching(/kill-window -t =yaac:=backend 2>\/dev\/null; .*new-window -d -t yaac -n backend/))
-      expect(after.findIndex((c) => SESSION_WINDOW.test(c)))
-        .toBeGreaterThan(after.findIndex((c) => c.includes('kill-window -t =yaac:=backend')))
+      const hooks = after.findIndex((c) => c.includes('hooks.conf'))
+      expect(hooks).toBeGreaterThan(0)
+      expect(after.findIndex((c) => SESSION_WINDOW.test(c))).toBeGreaterThan(hooks)
+      expect((await listWorkspaceSteps(spare.workspaceId)).map((s) => s.name)).toEqual(['install'])
     })
 
     it('waits out a background refresh, then claims the refreshed spare', async () => {

@@ -89,6 +89,10 @@ export interface WorkspaceWindow {
   name: string
   /** Its process exited and its pane is kept (`remain-on-exit`). */
   dead: boolean
+  /** The exit status of a dead pane. */
+  exitStatus?: number
+  /** A step's ready check passed (docs/workspace-steps.md). */
+  ready?: true
 }
 
 /**
@@ -318,7 +322,7 @@ export interface WorkspaceSpec {
   /**
    * Package and build-output dirs inside the checkout (e.g. `node_modules`),
    * as the workspace sees them, each with the most it may hold. Disposable
-   * and rebuilt by init commands; the caller has created them. The driver
+   * and rebuilt by init steps; the caller has created them. The driver
    * decides how to back them, whether it enforces the caps, and where the
    * package store goes, since it must share their filesystem to hardlink.
    */
@@ -394,7 +398,7 @@ export interface StreamPty {
 /**
  * An event source that can mark a reconcile pass dirty. The named ones are
  * workspace/unit changes on the substrate, a change in a workspace's live
- * conversations, and an unhealthy agent connection (liveness must then be
+ * conversations or its window listing, and an unhealthy agent connection (liveness must then be
  * probed). Any other string is a driver's own source (e.g. a credential
  * rotation the egress proxy captured). There is no polling; the periodic resync covers a
  * missed event.
@@ -403,6 +407,7 @@ export const MEDIATOR_TRIGGERS = [
   'workspaces',
   'units',
   'live-agents',
+  'windows',
   'status-streams',
 ] as const
 
@@ -532,6 +537,8 @@ export interface WorkspacePaths {
   sshAgentSock: string
   /** Where an ACP conversation's JSONL log is written. */
   acpLogDir: string
+  /** Where terminal logs and step scripts are written, one dir per life. */
+  terminalLogDir: string
   /** Where pasted images are, as the agent sees them. */
   attachmentsDir: string
   /** acpd's entry module, used in the acp launch command. */

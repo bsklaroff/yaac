@@ -47,9 +47,9 @@ async function seedOverlay(raw: string): Promise<void> {
 
 describe('writeProjectConfig', () => {
   it('writes the parsed config to disk and returns it', async () => {
-    const saved = await writeProjectConfig(local, projectId, { initCommands: ['pnpm install'] })
-    expect(saved).toEqual({ initCommands: ['pnpm install'] })
-    expect(await readOverlay()).toEqual({ initCommands: ['pnpm install'] })
+    const saved = await writeProjectConfig(local, projectId, { npmCache: false })
+    expect(saved).toEqual({ npmCache: false })
+    expect(await readOverlay()).toEqual({ npmCache: false })
   })
 
   it('throws NOT_FOUND when the project does not exist', async () => {
@@ -57,7 +57,7 @@ describe('writeProjectConfig', () => {
   })
 
   it('throws VALIDATION for malformed config', async () => {
-    await expect(writeProjectConfig(local, projectId, { initCommands: 'not-array' }))
+    await expect(writeProjectConfig(local, projectId, { npmCache: 'no' }))
       .rejects.toMatchObject({ code: 'VALIDATION' })
   })
 })
@@ -83,7 +83,7 @@ describe('removeProjectConfig', () => {
   })
 
   it('removes only yaac-config.json, keeping the rest of the config dir', async () => {
-    await writeProjectConfig(local, projectId, { initCommands: ['pnpm build'] })
+    await writeProjectConfig(local, projectId, { npmCache: false })
     const dockerfile = path.join(projectConfigDir(projectId), 'build', 'Dockerfile.yaac')
     await fs.mkdir(path.dirname(dockerfile), { recursive: true })
     await fs.writeFile(dockerfile, 'FROM ubuntu\n')
@@ -114,12 +114,12 @@ describe('addPortForwardToProjectConfig', () => {
 
   it('preserves an existing overlay, its hand-picked host ports, and its other fields', async () => {
     await seedOverlay(JSON.stringify({
-      hideInitPane: true,
+      npmCache: false,
       portForward: [{ containerPort: 3000, hostPortStart: 20000 }],
     }))
     await addPortForwardToProjectConfig(local, projectId, 8090)
     expect(await readOverlay()).toEqual({
-      hideInitPane: true,
+      npmCache: false,
       portForward: [
         { containerPort: 3000, hostPortStart: 20000 },
         { containerPort: 8090, hostPortStart: 8090 },

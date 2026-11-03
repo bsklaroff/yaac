@@ -92,7 +92,10 @@ There are two access levels:
   grant execution or reach: `/pty/attach`, `/acp/attach` (whose frames
   prompt, cancel and answer permission asks) and `/forward/attach` (a
   tunnel into the workspace's listeners, and so into a nested yaac's full
-  API). The attaches are classed by what they grant, not by their method.
+  API), and a workspace's terminal logs (`/workspace/:id/logs…`), which
+  hold whatever its shells printed, credentials included
+  (docs/workspace-steps.md "Logs"). The attaches are classed by what they
+  grant, not by their method.
   A push to a project's hosted remote is a write, so it is the owner's; a
   clone or fetch of it is a read (docs/hosted-projects.md).
 

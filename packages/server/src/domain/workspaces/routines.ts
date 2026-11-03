@@ -73,14 +73,22 @@ export async function updateRoutine(
 ): Promise<RoutineEntry> {
   const row = await routineFor(principal, id)
   const retooled = patch.tool !== undefined && patch.tool !== row.tool
+  const nonInteractive = patch.nonInteractive ?? row.nonInteractive
+  const prompt = nonInteractive ? undefined : patch.prompt ?? row.prompt
+  const commit = patch.branch !== undefined ? undefined : patch.commit ?? row.commit
+  const branch = commit !== undefined ? undefined : patch.branch ?? row.branch
+  const steps = patch.steps !== undefined ? patch.steps : row.steps
   const fields = await resolveRoutine(row.projectId, {
     name: patch.name ?? row.name,
     cron: patch.cron ?? row.cron,
     timeZone: patch.timeZone ?? row.timeZone,
-    prompt: patch.prompt ?? row.prompt,
+    ...(prompt !== undefined ? { prompt } : {}),
     tool: patch.tool ?? row.tool,
     mode: patch.mode ?? row.mode,
-    branch: patch.branch ?? row.branch,
+    ...(branch !== undefined ? { branch } : {}),
+    ...(commit !== undefined ? { commit } : {}),
+    ...(steps !== undefined ? { steps } : {}),
+    ...(nonInteractive ? { nonInteractive } : {}),
     group: patch.group !== undefined ? patch.group : row.groupId ?? null,
     timeout: patch.timeout !== undefined ? patch.timeout : row.timeoutMinutes ?? null,
     ...(patch.model !== undefined ? { model: patch.model } : retooled ? {} : { model: row.model }),
@@ -201,13 +209,16 @@ async function insertRun(
   const timeoutMinutes = row.timeoutMinutes
     ?? (following !== null ? Math.max(1, Math.floor((following.getTime() - slot.getTime()) / 60_000)) : undefined)
   return await insertRoutineRun(row.id, row.projectId, slot, {
-    prompt: row.prompt,
+    ...(row.prompt !== undefined ? { prompt: row.prompt } : {}),
     tool: row.tool,
     model: row.model,
     mode: row.mode,
     permissionMode: row.permissionMode,
     ...(row.effort !== undefined ? { effort: row.effort } : {}),
-    branch: row.branch,
+    ...(row.branch !== undefined ? { branch: row.branch } : {}),
+    ...(row.commit !== undefined ? { commit: row.commit } : {}),
+    ...(row.steps !== undefined ? { steps: row.steps } : {}),
+    ...(row.nonInteractive ? { nonInteractive: true } : {}),
     title: `${row.name} · ${formatInZone(slot, row.timeZone)}`,
     ...(row.groupId !== undefined ? { groupId: row.groupId } : {}),
     ...(timeoutMinutes !== undefined ? { timeoutMinutes } : {}),
@@ -247,7 +258,10 @@ async function resolveRoutine(projectId: string, request: RoutineSettings, sourc
   if (!isTimeZone(timeZone)) throw new ServerError('VALIDATION', `'${timeZone}' is not an IANA time zone`)
   const name = request.name.trim()
   const settings = await resolveParentlessSettings(projectId, {
-    prompt: request.prompt,
+    ...(request.prompt !== undefined ? { prompt: request.prompt } : {}),
+    ...(request.commit !== undefined ? { commit: request.commit } : {}),
+    ...(request.steps !== undefined ? { steps: request.steps } : {}),
+    ...(request.nonInteractive === true ? { nonInteractive: true } : {}),
     ...(request.tool !== undefined ? { tool: request.tool } : {}),
     ...(request.model !== undefined ? { model: request.model } : {}),
     ...(request.mode !== undefined ? { mode: request.mode } : {}),
@@ -260,13 +274,16 @@ async function resolveRoutine(projectId: string, request: RoutineSettings, sourc
     name,
     cron,
     timeZone,
-    prompt: settings.prompt,
+    ...(settings.prompt !== undefined ? { prompt: settings.prompt } : {}),
     tool: settings.tool,
     model: settings.model,
     mode: settings.mode,
     permissionMode: settings.permissionMode,
     ...(settings.effort !== undefined ? { effort: settings.effort } : {}),
-    branch: settings.branch,
+    ...(settings.branch !== undefined ? { branch: settings.branch } : {}),
+    ...(settings.commit !== undefined ? { commit: settings.commit } : {}),
+    ...(settings.steps !== undefined ? { steps: settings.steps } : {}),
+    ...(settings.nonInteractive === true ? { nonInteractive: true } : {}),
     ...(settings.groupId !== undefined ? { groupId: settings.groupId } : {}),
     ...(request.timeout != null ? { timeoutMinutes: request.timeout } : {}),
   }
@@ -321,14 +338,17 @@ async function toEntries(rows: RoutineRow[]): Promise<RoutineEntry[]> {
       name: r.name,
       cron: r.cron,
       timeZone: r.timeZone,
-      prompt: r.prompt,
+      ...(r.prompt !== undefined ? { prompt: r.prompt } : {}),
       tool: r.tool,
       model: r.model,
       ...(modelName !== undefined ? { modelName } : {}),
       mode: r.mode,
       permissionMode: r.permissionMode,
       ...(r.effort !== undefined ? { effort: r.effort } : {}),
-      branch: r.branch,
+      ...(r.branch !== undefined ? { branch: r.branch } : {}),
+      ...(r.commit !== undefined ? { commit: r.commit } : {}),
+      ...(r.steps !== undefined ? { steps: r.steps } : {}),
+      ...(r.nonInteractive ? { nonInteractive: true as const } : {}),
       ...(r.groupId !== undefined ? { groupId: r.groupId } : {}),
       ...(r.timeoutMinutes !== undefined ? { timeoutMinutes: r.timeoutMinutes } : {}),
       paused: r.paused,

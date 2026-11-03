@@ -11,12 +11,10 @@ import {
   launchableModel,
   launchablePermissionMode,
   type AgentTool,
-  type InitCommandSpec,
   type PermissionMode,
-  type YaacConfig,
 } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
-import { doubleQuoted, envJsonAssignment, shellEscape } from '#lib/shell'
+import { doubleQuoted, envJsonAssignment } from '#lib/shell'
 import { CODEX_TITLE_ITEMS, codexLaunchConfig } from './codex'
 
 /**
@@ -39,38 +37,6 @@ export function tmuxCmd(paths: Pick<WorkspacePaths, 'tmuxSock'>): string {
  */
 export function windowTarget(name: string): string {
   return `=yaac:=${name}`
-}
-
-export interface InitWindow {
-  name: string
-  /** Already shell-escaped and joined with `&&`. */
-  cmd: string
-  /** When false, the window is set `remain-on-exit on` so the user can
-   *  inspect output after the commands finish or error. */
-  hidePane: boolean
-}
-
-/**
- * Resolve `config.initCommands` into the tmux windows to spawn:
- *
- *   - string[]            → one `init` window with the commands chained `&&`
- *   - InitCommandSpec[]   → one window per spec, named by spec.name
- *   - undefined / []      → no windows
- */
-export function resolveInitWindows(config: YaacConfig): InitWindow[] {
-  const entries = config.initCommands
-  if (!entries || entries.length === 0) return []
-
-  const topHide = config.hideInitPane ?? false
-  if (typeof entries[0] === 'string') {
-    const cmd = (entries as string[]).map(shellEscape).join(' && ')
-    return [{ name: 'init', cmd, hidePane: topHide }]
-  }
-  return (entries as InitCommandSpec[]).map((e) => ({
-    name: e.name,
-    cmd: e.commands.map(shellEscape).join(' && '),
-    hidePane: e.hidePane ?? topHide,
-  }))
 }
 
 /** What one agent's launch command is built from. */
@@ -822,18 +788,3 @@ export async function verifyAgentWindowAlive(
   }
 }
 
-/**
- * The tmux command that creates one init-command window, shared by fresh
- * setup and claim-time prep so both produce the same window. Without
- * remain-on-exit the window closes when its command finishes, and the
- * webapp's tabs follow the window list.
- *
- * The commands run in the workspace's `$SHELL` (zsh in a pod, the user's
- * shell under containerless), since configs are written for it; tmux's own
- * shell may be a plain /bin/sh. tmux runs a multi-argument command directly.
- */
-export function initWindowCommand(win: InitWindow, paths: WorkspacePaths): string {
-  return `${tmuxCmd(paths)} new-window -d -t yaac -n ${win.name} `
-    + `"\${SHELL:-/bin/sh}" -c 'cd ${paths.workspaceDir} && ${win.cmd}'`
-    + (win.hidePane ? '' : ` \\; set-option -t ${windowTarget(win.name)} remain-on-exit on`)
-}

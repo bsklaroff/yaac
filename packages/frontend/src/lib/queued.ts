@@ -76,7 +76,7 @@ export function queuedInTreeOrder(entries: QueuedWorkspaceEntry[]): QueuedWorksp
 /** An entry's (or a draft's) label: the title it was given, else its
  *  generated one, else the first non-blank line of its prompt. */
 export function queuedTitle(entry: Pick<QueuedWorkspaceEntry, 'prompt' | 'title' | 'generatedTitle'>): string {
-  return entry.title ?? entry.generatedTitle ?? entry.prompt.split('\n').map((l) => l.trim()).find((l) => l !== '') ?? 'Queued workspace'
+  return entry.title ?? entry.generatedTitle ?? (entry.prompt ?? '(non-interactive)').split('\n').map((l) => l.trim()).find((l) => l !== '') ?? 'Queued workspace'
 }
 
 /** Clip a label for dialog and dropdown copy. */

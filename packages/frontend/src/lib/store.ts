@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { replaceEqualDeep } from '@tanstack/react-query'
 import { addColumn, isPaneLayout, removeTarget, renameTargets, singleColumn, withActive, type PaneLayout } from '#lib/layout'
 import { previewTarget } from '#lib/preview'
+import { stepTarget } from '#lib/steps'
 import { CHANGES_TARGET, FILES_TARGET, fileKey, fileTarget, placeFile } from '#lib/files'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '#lib/shortcuts'
 import { applyThemeAttribute, type ThemePref } from '#lib/theme'
@@ -526,6 +527,8 @@ interface UiState {
   openChanges: (workspaceId: string) => void
   /** Open or focus a workspace's file explorer. */
   openFiles: (workspaceId: string) => void
+  /** Open or focus one step's pane (docs/workspace-steps.md). */
+  openStep: (workspaceId: string, name: string) => void
   /** Open or focus one file's editor pane (see `placeFile`), with the
    *  cursor on `line` when given. */
   openFile: (workspaceId: string, path: string, line?: number) => void
@@ -1118,6 +1121,7 @@ export const useUiStore = create<UiState>((set, get) => ({
     }
   }),
   openFiles: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, FILES_TARGET)),
+  openStep: (workspaceId, name) => set((s) => openSpecialPane(s, workspaceId, stepTarget(name))),
   openFile: (workspaceId, path, line) => set((s) => {
     const target = fileTarget(path)
     const placed = placeFile(layoutOf(s.layouts, workspaceId), target, s.activeTabs[workspaceId])

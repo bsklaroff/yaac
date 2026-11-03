@@ -66,7 +66,7 @@ beforeEach(async () => {
   })
   await seedProject()
   await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: WS })
-  await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS })
+  await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS, at: new Date(), startSteps: {} })
 })
 
 afterEach(async () => {
@@ -202,7 +202,7 @@ describe('reconcileSessions', () => {
     expect(opened()).toEqual([])
     // Past the stop's millisecond, so the life is strictly newer.
     await new Promise((resolve) => setTimeout(resolve, 2))
-    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS })
+    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS, at: new Date(), startSteps: {} })
     await reconcileSessions(view)
     expect(opened()).toEqual([session.window])
   })

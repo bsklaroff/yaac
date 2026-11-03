@@ -222,15 +222,50 @@ describe('yaac config (real CLI + real server)', () => {
   it('config edit round-trips yaac-config.json through the server (validated), named by project name', async () => {
     const id = await seedProject('demo-edit')
 
-    const editor = await writeStubEditor('config', '{ "initCommands": ["echo MARKER"] }')
+    const editor = await writeStubEditor('config', '{ "cacheVolumes": { "marker": "/tmp/marker" } }')
     const { exitCode, stderr } = await runYaac(
       { ...testEnv.env, EDITOR: editor },
       'config', 'edit', 'demo-edit',
     )
     expect(exitCode, stderr).toBe(0)
 
-    const saved = JSON.parse(await fs.readFile(configFile(id, 'yaac-config.json'), 'utf8')) as { initCommands?: string[] }
-    expect(saved.initCommands).toEqual(['echo MARKER'])
+    const saved = JSON.parse(await fs.readFile(configFile(id, 'yaac-config.json'), 'utf8')) as { cacheVolumes?: object }
+    expect(saved.cacheVolumes).toEqual({ marker: '/tmp/marker' })
+  })
+
+  it('config init-steps prints, replaces from a file, refuses a bad graph, and clears a project\'s init steps', async () => {
+    await seedProject('demo-steps')
+    const show = async (): Promise<unknown> => {
+      const { stdout, exitCode, stderr } = await runYaac(testEnv.env, 'config', 'init-steps', 'demo-steps')
+      expect(exitCode, stderr).toBe(0)
+      return JSON.parse(stdout)
+    }
+    expect(await show()).toEqual({})
+
+    const file = path.join(testEnv.scratchDir, 'init-steps.json')
+    await fs.writeFile(file, JSON.stringify({
+      install: { run: 'pnpm install' },
+      server: { run: ['pnpm build', 'pnpm start'], needs: ['install'], service: true, ready: 'curl -sf localhost:3000' },
+    }))
+    const set = await runYaac(testEnv.env, 'config', 'init-steps', 'demo-steps', '--file', file)
+    expect(set.exitCode, set.stderr).toBe(0)
+    expect(set.stdout).toContain('install, server')
+    expect(await show()).toEqual({
+      install: { run: ['pnpm install'] },
+      server: { run: ['pnpm build', 'pnpm start'], needs: ['install'], service: true, ready: 'curl -sf localhost:3000' },
+    })
+
+    await fs.writeFile(file, JSON.stringify({ a: { run: 'x', needs: ['b'] }, b: { run: 'y', needs: ['a'] } }))
+    const cyclic = await runYaac(testEnv.env, 'config', 'init-steps', 'demo-steps', '--file', file)
+    expect(cyclic.exitCode).not.toBe(0)
+    expect(cyclic.stderr).toContain('cycle')
+    // The refused graph left the stored one alone.
+    expect(Object.keys(await show() as object)).toEqual(['install', 'server'])
+
+    const cleared = await runYaac(testEnv.env, 'config', 'init-steps', 'demo-steps', '--none')
+    expect(cleared.exitCode, cleared.stderr).toBe(0)
+    expect(cleared.stdout).toContain('are now: none')
+    expect(await show()).toEqual({})
   })
 
   it('config edit rejects invalid JSON, keeps the edits, and leaves the server file alone', async () => {
@@ -285,14 +320,14 @@ describe('yaac config (real CLI + real server)', () => {
     await fs.mkdir(path.dirname(target), { recursive: true })
     await fs.writeFile(target, '{ this is not valid json')
 
-    const editor = await writeStubEditor('repair', '{ "initCommands": ["echo REPAIRED"] }')
+    const editor = await writeStubEditor('repair', '{ "cacheVolumes": { "repaired": "/tmp/repaired" } }')
     const { exitCode, stderr } = await runYaac(
       { ...testEnv.env, EDITOR: editor },
       'config', 'edit', id,
     )
     expect(exitCode, stderr).toBe(0)
-    const saved = JSON.parse(await fs.readFile(target, 'utf8')) as { initCommands?: string[] }
-    expect(saved.initCommands).toEqual(['echo REPAIRED'])
+    const saved = JSON.parse(await fs.readFile(target, 'utf8')) as { cacheVolumes?: object }
+    expect(saved.cacheVolumes).toEqual({ repaired: '/tmp/repaired' })
   })
 
   it('accepts the nestedContainers key through the config-write route', async () => {

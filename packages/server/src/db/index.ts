@@ -45,6 +45,13 @@ export {
   type SessionLaunchSettings,
   type SessionRow,
 } from './session-store'
+export {
+  insertAddedSteps,
+  listStepsFor,
+  listWorkspaceSteps,
+  resetSteps,
+  type StepRow,
+} from './step-store'
 export { applyWorkspaceEvent } from './apply-workspace-event'
 export {
   claimVolume,
@@ -159,6 +166,7 @@ export {
   setProjectEgressAllowlist,
   setProjectScratchDirs,
   setProjectGitCredential,
+  setProjectInitSteps,
   setProjectKeptIgnoredPaths,
   setProjectRemote,
   setProjectShareRevoked,

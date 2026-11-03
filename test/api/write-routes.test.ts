@@ -252,15 +252,15 @@ describe('write routes', () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.project[':projectId'].config.$put({
         param: { projectId: DEMO },
-        json: { config: { initCommands: ['pnpm install'] } },
+        json: { config: { npmCache: false } },
       })
       expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ config: { initCommands: ['pnpm install'] } })
+      expect(await res.json()).toEqual({ config: { npmCache: false } })
       const raw = await fs.readFile(
         path.join(projectConfigDir(DEMO), 'yaac-config.json'),
         'utf8',
       )
-      expect(JSON.parse(raw)).toEqual({ initCommands: ['pnpm install'] })
+      expect(JSON.parse(raw)).toEqual({ npmCache: false })
     })
   })
 

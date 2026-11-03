@@ -245,7 +245,8 @@ async function realizeMount(
   if (source.kind === 'emptyDir') return
   if (source.kind === 'volume') throw new ServerError('NOT_SUPPORTED', 'volumes need a cluster')
   if (mountPath === '/workspace' || mountPath === paths.workspaceDir || mountPath === source.path
-    || source.path === paths.acpLogDir || source.path === paths.attachmentsDir
+    || source.path === paths.acpLogDir || source.path === paths.terminalLogDir
+    || source.path === paths.attachmentsDir
     || mountPath.startsWith('/usr/local/bin/')) return
   const link = opencodeDestination(mountPath, opencode)
   const named = env.some((entry) => {
@@ -408,6 +409,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   await fs.rm(path.join(stateDir, 'home'), { recursive: true, force: true })
   await fs.mkdir(paths.scratchDir, { recursive: true })
   await fs.mkdir(paths.acpLogDir, { recursive: true })
+  await fs.mkdir(paths.terminalLogDir, { recursive: true })
   await fs.mkdir(paths.acpSockDir, { recursive: true })
   // 0700: a tmux socket gives full control of its workspace.
   await fs.mkdir(tmuxSockDir(), { recursive: true, mode: 0o700 })

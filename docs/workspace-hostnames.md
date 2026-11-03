@@ -12,13 +12,11 @@ workspace (docs/port-forward-tunnel.md).
 A `portForward` entry `{ "containerPort": 3000, "hostPortStart": 3000 }`
 (docs/project-config.md) says the workspace serves something on 3000. Every
 workspace gets `YAAC_PORT_<containerPort>` holding the port to bind for that
-entry, so a config passes it on:
+entry, so the init step that starts the dev server passes it on
+(docs/workspace-steps.md):
 
 ```json
-{
-  "initCommands": ["pnpm dev --port $YAAC_PORT_3000"],
-  "portForward": [{ "containerPort": 3000, "hostPortStart": 3000 }]
-}
+{ "dev": { "run": "pnpm dev --port $YAAC_PORT_3000", "service": true } }
 ```
 
 Under `k8s` the variable is always the entry's own port

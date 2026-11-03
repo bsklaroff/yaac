@@ -60,6 +60,8 @@ export interface WorkspaceCreate {
   shownTitle?: string
   /** Unset forks from origin's default branch. */
   branch?: string
+  /** A full commit to start at instead of a branch (not with `branch`). */
+  commit?: string
   /** The sidebar group to file it under, by id. */
   groupId?: string
   /** A group to create and file it under, by name. */
@@ -95,6 +97,7 @@ export async function createWorkspace(
     ...(c.prompt ? { prompt: c.prompt } : {}),
     ...(c.title ? { title: c.title } : {}),
     ...(c.branch ? { branch: c.branch } : {}),
+    ...(c.commit ? { commit: c.commit } : {}),
     ...(group !== undefined ? { group } : {}),
     ...(c.draftId !== undefined ? { draftId: c.draftId } : {}),
     ...(c.timeout !== undefined ? { timeout: c.timeout } : {}),
@@ -114,6 +117,19 @@ export async function restartWorkspace(
 ): Promise<{ workspaceId: string }> {
   const body = { workspaceId, ...(volume !== undefined ? { volume } : {}) }
   return await streamWorkspaceOp('/api/workspace/restart', body, onProgress) as { workspaceId: string }
+}
+
+/** Rerun a non-interactive workspace (docs/workspace-steps.md): a new one,
+ *  under `rerunId`, with its steps at the commit it ran at, or with
+ *  `interactive` an interactive one there. */
+export async function rerunWorkspace(
+  workspaceId: string,
+  rerunId: string,
+  interactive: boolean,
+  onProgress: (message: string) => void,
+): Promise<{ workspaceId: string }> {
+  const body = { workspaceId, rerunId, ...(interactive ? { interactive: true } : {}) }
+  return await streamWorkspaceOp('/api/workspace/rerun', body, onProgress) as { workspaceId: string }
 }
 
 /** Dismiss a failed create/restart's provisioning row. Idempotent. */

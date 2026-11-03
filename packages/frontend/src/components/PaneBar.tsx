@@ -70,12 +70,16 @@ export function PaneBarLeading(): JSX.Element | null {
  *  (`onNewSession`). */
 interface PaneActions {
   onNewSession?: () => void
-  onNewShell: () => void
+  onNewShell?: () => void
   onOpenFiles: () => void
   onOpenChanges: () => void
   disabled?: string
   titles?: { shell: string; files: string; changes: string }
 }
+
+/** A new shell's tooltip: what it prints is kept (docs/workspace-steps.md
+ *  "Logs"), which a user typing a credential should know. */
+export const NEW_SHELL_TITLE = 'New shell. What it prints is kept in the workspace\'s logs until the workspace is deleted.'
 
 /** The desktop bar's view toggle and pane buttons. */
 export function PaneBarActions({
@@ -101,10 +105,12 @@ export function PaneBarActions({
           <span className="max-lg:sr-only">New Session</span>
         </button>
       )}
-      <button onClick={onNewShell} disabled={off} title={disabled ?? titles?.shell ?? 'New shell'} className={BAR_BUTTON}>
-        <AddIcon size={13} />
-        <span className="max-lg:sr-only">New Shell</span>
-      </button>
+      {onNewShell !== undefined && (
+        <button onClick={onNewShell} disabled={off} title={disabled ?? titles?.shell ?? NEW_SHELL_TITLE} className={BAR_BUTTON}>
+          <AddIcon size={13} />
+          <span className="max-lg:sr-only">New Shell</span>
+        </button>
+      )}
       <button
         onClick={onOpenFiles}
         disabled={off}
@@ -169,10 +175,12 @@ export function PaneOverflowMenu({
             New session
           </Menu.Item>
         )}
-        <Menu.Item className={ITEM} disabled={off} onClick={onNewShell}>
-          <AddIcon size={14} />
-          New shell
-        </Menu.Item>
+        {onNewShell !== undefined && (
+          <Menu.Item className={ITEM} disabled={off} onClick={onNewShell}>
+            <AddIcon size={14} />
+            New shell
+          </Menu.Item>
+        )}
         <Menu.Item className={ITEM} disabled={off} onClick={onOpenChanges}>
           <ChangesIcon size={14} />
           Review changes

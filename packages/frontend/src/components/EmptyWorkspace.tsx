@@ -2,6 +2,7 @@ import { useState, type JSX } from 'react'
 import { agentLabel } from '#lib/agentLabel'
 import { openSession } from '#lib/createWorkspace'
 import { AddIcon, ChatIcon } from '#lib/icons'
+import { NEW_SHELL_TITLE } from '#components/PaneBar'
 import { relativeAge } from '#lib/time'
 import { useReadOnly } from '#lib/viewer'
 import type { WorkspaceListEntry } from '@yaac/shared/types'
@@ -13,12 +14,14 @@ const BUTTON = 'flex items-center justify-center gap-1.5 rounded-md border borde
  * A running workspace with no pane open: no session runs in it, and no
  * terminal is shown. It offers what can start here, and the conversations
  * it has held, any of which can be resumed in a new session
- * (docs/sessions.md).
+ * (docs/sessions.md). A non-interactive one offers nothing: it runs its
+ * steps untouched (docs/workspace-steps.md).
  */
 export function EmptyWorkspace({ workspace, onNewSession, onNewShell }: {
   workspace: WorkspaceListEntry
-  onNewSession: () => void
-  onNewShell: () => void
+  /** Absent where nothing may start (a non-interactive workspace). */
+  onNewSession?: () => void
+  onNewShell?: () => void
 }): JSX.Element {
   const readOnly = useReadOnly()
   const [error, setError] = useState<string | null>(null)
@@ -31,6 +34,18 @@ export function EmptyWorkspace({ workspace, onNewSession, onNewShell }: {
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setResuming(null))
   }
+  if (workspace.nonInteractive === true) {
+    return (
+      <div className="flex h-full w-full items-center justify-center bg-bg px-4 text-center">
+        <div>
+          <p className="text-sm font-medium text-text-dim">This workspace runs its steps untouched</p>
+          <p className="mt-1 text-xs text-text-faint">
+            Pick a step in the bar to follow its log. It stops once its steps finish, and can only be stopped before.
+          </p>
+        </div>
+      </div>
+    )
+  }
   return (
     <div className="flex h-full w-full overflow-y-auto bg-bg px-4 py-6">
       <div className="m-auto flex w-full max-w-md flex-col gap-4">
@@ -40,13 +55,13 @@ export function EmptyWorkspace({ workspace, onNewSession, onNewShell }: {
             The workspace keeps its checkout and ports until it is stopped.
           </p>
         </div>
-        {!readOnly && (
+        {!readOnly && onNewSession !== undefined && onNewShell !== undefined && (
           <div className="flex justify-center gap-2">
             <button type="button" onClick={onNewSession} className={BUTTON}>
               <ChatIcon size={12} />
               New session
             </button>
-            <button type="button" onClick={onNewShell} className={BUTTON}>
+            <button type="button" onClick={onNewShell} title={NEW_SHELL_TITLE} className={BUTTON}>
               <AddIcon size={12} />
               New shell
             </button>
