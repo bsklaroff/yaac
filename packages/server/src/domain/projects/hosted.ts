@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises'
 import { ServerError } from '@yaac/shared/errors'
 import { hostedRepoDir, repoDir } from '@yaac/shared/project-paths'
-import { clearProjectKeepsHostedRepo, getProjectRow, listProjectRows, setProjectDefaultBranchGuard } from '#db'
-import { serveGitHttp, setOriginHead } from '#domain/git'
+import { clearProjectKeepsHostedRepo, getProjectRow, listProjectRows, setProjectDefaultBranchGuard, type ProjectRow } from '#db'
+import { hostedDefaultBranch, serveGitHttp, setHostedDefaultBranch, setOriginHead } from '#domain/git'
 import { isUuid } from '#lib/uuid'
 import { authorizeProject, systemPrincipal, type Actor } from '#domain/access'
 import { serverLog } from '#lib/log'
@@ -10,7 +10,8 @@ import { fetchProjectOrigin } from './origin'
 
 /**
  * The remote of a project the server hosts itself (docs/hosted-projects.md):
- * who may read and push it, and the default-branch guard.
+ * who may read and push it, its default branch, and the default-branch
+ * guard.
  */
 
 /**
@@ -57,17 +58,71 @@ export async function serveHostedRepo(
   return serveGitHttp(hostedRepoDir(source), request, pathInfo, {
     allowPush: push,
     guardDefaultBranch: sourceRow?.guardDefaultBranch ?? true,
-    onPushed: (defaultBranch) => {
-      listProjectRows().then((rows) => Promise.all(rows
-        .filter((r) => r.id === source || (r.sharedFrom === source && !r.shareRevoked))
-        .map(async (r) => {
-          await fetchProjectOrigin(r.id)
-          if (defaultBranch !== null) await setOriginHead(repoDir(r.id), defaultBranch)
-        }))).catch((err: unknown) => {
+    onPushed: () => {
+      fetchIntoMainClones(source).catch((err: unknown) => {
         serverLog(`[git] fetching ${source} after a push: ${(err as Error).message}`)
       })
     },
   })
+}
+
+/**
+ * Fetch the repository of hosted project `source` into the main clone of
+ * every project on it (the source and its active shares), which also
+ * refreshes `origin/*` in their running workspaces, then make the
+ * repository's default branch that clone's `origin/HEAD`, which creates
+ * fork from. The default is read after each fetch, so a change of default
+ * that lands meanwhile is not overwritten with the old one. A clone that
+ * cannot take it is logged and left behind until the next push or change
+ * of default, so one stuck share never fails a change the repository has
+ * already made.
+ */
+async function fetchIntoMainClones(source: string): Promise<void> {
+  const rows = await listProjectRows()
+  await Promise.all(rows
+    .filter((r) => r.id === source || (r.sharedFrom === source && !r.shareRevoked))
+    .map(async (r) => {
+      try {
+        await fetchProjectOrigin(r.id)
+        const head = await hostedDefaultBranch(hostedRepoDir(source))
+        if (head !== null) await setOriginHead(repoDir(r.id), head)
+      } catch (err) {
+        serverLog(`[git] fetching ${source} into the main clone of ${r.id}: ${(err as Error).message}`)
+      }
+    }))
+}
+
+/**
+ * The row of a hosted project whose repository settings (`what`) the
+ * principal may change: its owner's, and not a share, whose repository
+ * belongs to the project it was shared from.
+ */
+async function ownHostedRepoRow(principal: Actor, projectId: string, what: string): Promise<ProjectRow> {
+  const row = isUuid(projectId) ? await getProjectRow(projectId) : undefined
+  if (!row) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
+  await authorizeProject(principal, projectId)
+  if (!row.hosted) {
+    throw new ServerError('VALIDATION', `"${row.name}" is not hosted by yaac; set its ${what} at its git host.`)
+  }
+  if (row.sharedFrom !== undefined) {
+    throw new ServerError('VALIDATION', `"${row.name}" was shared with you; only its owner sets its ${what}.`)
+  }
+  return row
+}
+
+/**
+ * Make `branch`, which must exist, a hosted project's default branch: the
+ * one a clone checks out, creates fork from, and the guard protects. Every
+ * main clone on the repository follows before this answers, so the next
+ * create in the project or a share of it forks from `branch`; one that
+ * cannot is logged rather than failing the change (`fetchIntoMainClones`).
+ */
+export async function setDefaultBranch(principal: Actor, projectId: string, branch: string): Promise<void> {
+  const row = await ownHostedRepoRow(principal, projectId, 'default branch')
+  if (!await setHostedDefaultBranch(hostedRepoDir(projectId), branch)) {
+    throw new ServerError('VALIDATION', `"${row.name}" has no branch "${branch}".`)
+  }
+  await fetchIntoMainClones(projectId)
 }
 
 /**
@@ -77,15 +132,7 @@ export async function serveHostedRepo(
  * and a share by the owner of the project it was shared from.
  */
 export async function setDefaultBranchGuard(principal: Actor, projectId: string, enabled: boolean): Promise<void> {
-  const row = isUuid(projectId) ? await getProjectRow(projectId) : undefined
-  if (!row) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
-  await authorizeProject(principal, projectId)
-  if (!row.hosted) {
-    throw new ServerError('VALIDATION', `"${row.name}" is not hosted by yaac; protect its branches at its git host.`)
-  }
-  if (row.sharedFrom !== undefined) {
-    throw new ServerError('VALIDATION', `"${row.name}" was shared with you; only its owner sets its default-branch guard.`)
-  }
+  await ownHostedRepoRow(principal, projectId, 'default-branch guard')
   await setProjectDefaultBranchGuard(projectId, enabled)
 }
 

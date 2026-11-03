@@ -121,6 +121,24 @@ push completes, so a clone right after the push sees it. The server then
 copies it into the main clone's `origin/HEAD` (`setOriginHead`), which a
 clone of an empty remote could not learn, so creates fork from it.
 
+The owner can point `HEAD` at any existing branch in Project settings
+(`PUT /api/project/<id>/default-branch`, `setDefaultBranch`). The main
+clone of the project and of each active share takes it as `origin/HEAD`
+before the request answers, so the next create forks from it, and the
+guard below moves to it. A main clone that cannot take it (a stale lock
+file, say) is logged rather than failing the change, and follows at the
+next push or change of default; setting the same branch again is that
+retry. Each clone reads the default from the repository after its fetch,
+so a push landing during a change cannot put the old default back. A
+share's default branch is the source's, and only the source's owner
+changes it.
+
+What has already chosen a branch keeps it: a running or stopped workspace
+stays on the base branch it was created on. What resolves the default
+only when it launches takes the new one: a queued workspace or routine
+that names no branch, and a prewarmed spare, which is rebranched to the
+current default when claimed.
+
 **The `pre-receive` hook** refuses a branch named `HEAD`, which every clone
 would find ambiguous. While a project's default-branch guard is on
 (`projects.guardDefaultBranch`, on by default), it also refuses a push

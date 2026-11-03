@@ -11,7 +11,7 @@
 // packages/server/test/domain/projects/.
 
 export { addProject, createHostedProject, registerStagedProject, shareProject } from './add'
-export { removeKeptHostedRepo, serveHostedRepo, setDefaultBranchGuard } from './hosted'
+export { removeKeptHostedRepo, serveHostedRepo, setDefaultBranch, setDefaultBranchGuard } from './hosted'
 export {
   addAllowedHostToProject,
   getProjectAllowlist,

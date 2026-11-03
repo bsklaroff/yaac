@@ -6,7 +6,7 @@ import type { AddressInfo } from 'node:net'
 import { createAdaptorServer, type ServerType } from '@hono/node-server'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { git } from '@yaac/test-utils/git'
-import { checkMoveTarget, initHostedRepo, pushHostedRepo, serveGitHttp } from '#domain/git'
+import { checkMoveTarget, hostedDefaultBranch, initHostedRepo, pushHostedRepo, serveGitHttp, setHostedDefaultBranch } from '#domain/git'
 
 const ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t' }
 const run = (dir: string, args: string[]): Promise<string> => git(dir, args, { env: ENV })
@@ -133,6 +133,41 @@ describe('pushHostedRepo', () => {
     await run(work, ['push', '-q', 'origin', 'HEAD:main'])
     await expect(pushHostedRepo(source, target, { kind: 'hosted' })).rejects.toThrow(/rejected/)
     expect((await run(target, ['rev-parse', 'main'])).trim()).toBe(tip)
+  })
+})
+
+describe('hostedDefaultBranch', () => {
+  it('names the branch HEAD names, and null while that branch does not exist', async () => {
+    const source = path.join(tmp, 'default-source.git')
+    await initHostedRepo(source)
+    expect(await hostedDefaultBranch(source)).toBeNull()
+
+    const work = path.join(tmp, 'default-work')
+    await run(tmp, ['clone', '-q', source, work])
+    await run(work, ['commit', '-q', '--allow-empty', '-m', 'one'])
+    await run(work, ['push', '-q', 'origin', 'HEAD:main'])
+    expect(await hostedDefaultBranch(source)).toBe('main')
+    await run(source, ['update-ref', '-d', 'refs/heads/main'])
+    expect(await hostedDefaultBranch(source)).toBeNull()
+  })
+})
+
+describe('setHostedDefaultBranch', () => {
+  it('points HEAD at a branch the repository has, and refuses any other', async () => {
+    const source = path.join(tmp, 'head-source.git')
+    await initHostedRepo(source)
+    expect(await setHostedDefaultBranch(source, 'main')).toBe(false)
+
+    const work = path.join(tmp, 'head-work')
+    await run(tmp, ['clone', '-q', source, work])
+    await run(work, ['commit', '-q', '--allow-empty', '-m', 'one'])
+    await run(work, ['push', '-q', 'origin', 'HEAD:main', 'HEAD:release'])
+    expect(await setHostedDefaultBranch(source, 'release')).toBe(true)
+    expect((await run(source, ['symbolic-ref', 'HEAD'])).trim()).toBe('refs/heads/release')
+    for (const bad of ['gone', '../release', 'refs/heads/main']) {
+      expect(await setHostedDefaultBranch(source, bad)).toBe(false)
+    }
+    expect((await run(source, ['symbolic-ref', 'HEAD'])).trim()).toBe('refs/heads/release')
   })
 })
 

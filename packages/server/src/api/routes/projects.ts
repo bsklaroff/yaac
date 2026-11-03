@@ -24,6 +24,7 @@ import {
   pushProjectSecrets,
   resolveProjectId,
   serveHostedRepo,
+  setDefaultBranch,
   setDefaultBranchGuard,
   setInitSteps,
   setKeptIgnoredPaths,
@@ -114,6 +115,15 @@ export const projectApp = new Hono<IdentityEnv>()
       const result = await assignProjectCredential(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.valid('json').credentialId)
       await pushCredentialsToRuntime()
       return c.json(result)
+    },
+  )
+  // A hosted project's default branch (docs/hosted-projects.md).
+  .put(
+    '/:projectId/default-branch',
+    zv('json', z.object({ branch: z.string().min(1) })),
+    async (c) => {
+      await setDefaultBranch(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.valid('json').branch)
+      return c.body(null, 204)
     },
   )
   // A hosted project's default-branch guard (docs/hosted-projects.md).
