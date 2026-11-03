@@ -280,10 +280,13 @@ export function WorkspaceView({
     else openShell()
   }, [sid, launchPane])
 
-  // The pane's × or the kill shortcut asks before killing a tmux window, or
-  // before closing a session whose agent is mid-turn.
+  // The pane's × or the kill shortcut asks before killing a tmux window or
+  // closing a session.
   const [confirmKill, setConfirmKill] = useState<{ target: string; name: string } | null>(null)
   const [confirmClose, setConfirmClose] = useState<{ sessionId: string; name: string } | null>(null)
+  /** The session being asked about, read live so the wording follows a turn
+   *  that starts or ends while the dialog is up. */
+  const closing = confirmClose ? workspace?.sessions.find((s) => s.sessionId === confirmClose.sessionId) : undefined
   // A file pane whose unsaved text could not be saved on close.
   const [confirmDiscard, setConfirmDiscard] = useState<{ target: string; name: string } | null>(null)
 
@@ -303,13 +306,12 @@ export function WorkspaceView({
     dropPane(sid, sessionTarget(sessionId))
     void closeSession(sid, sessionId).catch((e: unknown) => console.error('close session failed', e))
   }
-  /** A session pane's ×: ask first only if its agent is busy. */
+  /** A session pane's ×: ask first, unless its agent has already exited. */
   const askCloseSession = (target: string): void => {
     const session = paneSession(workspace, target)
     if (!session) return
-    if (session.status === 'running' || session.asking === true) {
-      setConfirmClose({ sessionId: session.sessionId, name: paneName(target, terminals, undefined, workspace) })
-    } else closeSessionPane(session.sessionId)
+    if (session.exited === true) closeSessionPane(session.sessionId)
+    else setConfirmClose({ sessionId: session.sessionId, name: paneName(target, terminals, undefined, workspace) })
   }
   /** Open a session here: the new-workspace pane, aimed at this one. */
   const newSession = (): void => {
@@ -906,7 +908,9 @@ export function WorkspaceView({
         open={!!confirmClose}
         onOpenChange={(next) => { if (!next) setConfirmClose(null) }}
         title={`Close “${confirmClose?.name ?? ''}”?`}
-        description="Its agent stops mid-turn. The conversation stays in this workspace's history, to read or resume."
+        description={`Its agent stops${closing?.status === 'running' || closing?.asking === true ? ' mid-turn' : ''}.`
+          + (closing?.conversationId === undefined ? ''
+            : ' The conversation stays in this workspace\'s history, to read or resume.')}
         confirmLabel="Close"
         onConfirm={() => {
           if (confirmClose) closeSessionPane(confirmClose.sessionId)

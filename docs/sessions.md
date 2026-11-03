@@ -146,7 +146,8 @@ workspace or beside it in its own.
   An `acp` session whose agent has not named a conversation shows its
   opening message and a spinner, with acpd's log a click away
   (docs/agent-modes.md describes the stand-ins up to its first reply). Every pane
-  has a ×; closing a session asks first only while its agent is mid-turn.
+  has a ×; closing a session asks first, as killing a terminal does, unless
+  its agent has already exited.
   A workspace with no pane open shows what it can start and the
   conversations it held, each resumable (`EmptyWorkspace`).
 - **Sidebar.** A workspace with no session reads "No agent" with a hollow
