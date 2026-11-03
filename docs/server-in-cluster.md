@@ -558,6 +558,16 @@ node directory, a planted `sh` could poison every project's node-local data.
 Like every pod that runs the builder image, it pulls it by the digest install
 recorded for the mirror, not by its tag (docs/trust-split-builds.md).
 
+**Workspace volumes** are stored apart from the tiers
+(docs/workspace-volumes.md). On kind, install makes a fourth static claim,
+`yaac-volumes`, a `Retain` hostPath PV to `<dataDir>/volumes`, which the
+server mounts at `/yaac/volumes` (`YAAC_VOLUMES_ROOT`) and a workspace pod
+mounts one subPath of. On byo each volume is a claim of its own from the RWO
+class, named to the server as `YAAC_VOLUME_STORAGE_CLASS`; the server keeps
+its PV `Retain` and re-binds it after a namespace delete, which is the only
+reason a byo server has PersistentVolume access (`get`, `list`, `patch`;
+docs/workspace-volumes.md says how far that reaches).
+
 **`yaac-checkouts`** is a second volume over the same `global/` directory,
 which workspace pods mount their checkout through. It exists for its mount
 options: a checkout's mount caches file attributes for up to a minute and

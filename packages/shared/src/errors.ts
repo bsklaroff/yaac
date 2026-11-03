@@ -13,6 +13,7 @@ export type ErrorCode =
   | 'BAD_HOST'
   | 'NOT_SUPPORTED'
   | 'MISSING_TOOL'
+  | 'VOLUME_HELD'
   | 'TOO_LARGE'
   | 'INTERNAL'
 
@@ -50,6 +51,9 @@ export function defaultStatus(code: ErrorCode): number {
     case 'NOT_SUPPORTED': return 501
     // A tool this host has not installed; the webapp offers to install it.
     case 'MISSING_TOOL': return 400
+    // A launch's volume is attached to another running workspace; the
+    // webapp offers to start without it.
+    case 'VOLUME_HELD': return 409
     // Refused rather than silently truncated.
     case 'TOO_LARGE': return 413
     case 'INTERNAL': return 500

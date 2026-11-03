@@ -26,10 +26,20 @@
 export const GLOBAL_CLAIM_NAME = 'yaac-global'
 export const SERVER_LOCAL_CLAIM_NAME = 'yaac-server-local'
 export const CHECKOUTS_CLAIM_NAME = 'yaac-checkouts'
+/** Workspace volumes on kind: one directory per volume, keyed by id
+ *  (docs/workspace-volumes.md). A byo install has no such claim; each
+ *  volume is a claim of its own (`volumeClaimName`). */
+export const VOLUMES_CLAIM_NAME = 'yaac-volumes'
+
+/** A byo volume's own claim. */
+export function volumeClaimName(volumeId: string): string {
+  return `yaac-volume-${volumeId}`
+}
 
 export const POD_GLOBAL_ROOT = '/yaac/global'
 export const POD_SERVER_LOCAL_ROOT = '/yaac/server-local'
 export const POD_NODE_LOCAL_ROOT = '/yaac/node-local'
+export const POD_VOLUMES_ROOT = '/yaac/volumes'
 
 /** Parent of every install's node-local tree on a node; see `nodeLocalNodePath`. */
 export const NODE_LOCAL_NODE_ROOT = '/var/lib/yaac/node'
@@ -55,3 +65,5 @@ export const LABEL_CLAIM = 'yaac.claim'
  * kind of object carries it.
  */
 export const LABEL_INSTALL_ID = 'yaac.install-id'
+/** Label naming the volume a byo volume's claim and PV belong to. */
+export const LABEL_VOLUME_ID = 'yaac.volume-id'

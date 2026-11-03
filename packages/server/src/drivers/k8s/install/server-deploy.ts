@@ -21,10 +21,12 @@ import {
   LABEL_INSTALL_NAMESPACE,
   POD_GLOBAL_ROOT,
   POD_NODE_LOCAL_ROOT,
+  POD_VOLUMES_ROOT,
   POD_SERVER_LOCAL_ROOT,
   PRIORITY_CLASS_INFRA,
   SERVER_APP_NAME,
   SERVER_LOCAL_CLAIM_NAME,
+  VOLUMES_CLAIM_NAME,
   SERVER_POD_PORT,
   SERVER_SA_NAME,
   applyObject,
@@ -58,7 +60,7 @@ import {
 import { liveFronting, type RemoteHosting, type ServerFronting } from './server-fronting'
 import { ensureImageByTag, pushImageToRegistry } from './host-images'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
-import { globalRoot, nodeLocalRoot, serverLocalRoot, serverLogPath } from '@yaac/shared/paths'
+import { globalRoot, nodeLocalRoot, serverLocalRoot, serverLogPath, volumesRoot } from '@yaac/shared/paths'
 import {
   IdentityRejectedError,
   probeServer,
@@ -158,9 +160,10 @@ function serverClusterScopedLabels(): Record<string, string> {
  * The server's permissions. Cluster-scoped because per-project registries
  * live in namespaces the server creates at runtime, and because it applies
  * the cluster-scoped builder-role admission guard. Full access to what it
- * owns, read-only on what it only observes.
+ * owns, read-only on what it only observes. `byoVolumes` adds what a byo
+ * install's volumes need of their PVs (docs/workspace-volumes.md).
  */
-export function buildServerClusterRoleManifest(): Record<string, unknown> {
+export function buildServerClusterRoleManifest(opts: { byoVolumes?: boolean } = {}): Record<string, unknown> {
   return {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'ClusterRole',
@@ -197,6 +200,14 @@ export function buildServerClusterRoleManifest(): Record<string, unknown> {
         resources: ['validatingadmissionpolicies', 'validatingadmissionpolicybindings'],
         verbs: ['*'],
       },
+      // A byo volume's PV, which its class's provisioner makes: the server
+      // keeps it (`Retain`), re-binds it and hands it back for deletion. A
+      // patch of the reclaim policy or `claimRef` reaches as far as delete
+      // and adopt would, on any PV; this role's cluster-wide pods and
+      // secrets already reach further.
+      ...(opts.byoVolumes === true
+        ? [{ apiGroups: [''], resources: ['persistentvolumes'], verbs: ['get', 'list', 'patch'] }]
+        : []),
       {
         apiGroups: ['storage.k8s.io'],
         resources: ['storageclasses'],
@@ -233,6 +244,10 @@ interface ServerEnvOptions {
   torHostAddr?: string
   /** The access mode and allowed hosts the fronting requires. */
   remoteHosting?: RemoteHosting
+  /** On byo, the class each workspace volume's claim is provisioned from;
+   *  absent on kind, whose volumes are directories of `yaac-volumes`
+   *  (docs/workspace-volumes.md). */
+  volumeStorageClass?: string
   /** `--owner`: the tailnet login that claims a `local` install's data when
    *  it switches to `tailnet` (docs/remote-hosting.md "Access modes"). */
   owner?: string
@@ -259,6 +274,9 @@ function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: string; valu
     { name: 'YAAC_GLOBAL_ROOT', value: POD_GLOBAL_ROOT },
     { name: 'YAAC_SERVER_LOCAL_ROOT', value: POD_SERVER_LOCAL_ROOT },
     { name: 'YAAC_NODE_LOCAL_ROOT', value: POD_NODE_LOCAL_ROOT },
+    opts.volumeStorageClass !== undefined
+      ? { name: 'YAAC_VOLUME_STORAGE_CLASS', value: opts.volumeStorageClass }
+      : { name: 'YAAC_VOLUMES_ROOT', value: POD_VOLUMES_ROOT },
   ]
   const passThrough: Array<[string, string | undefined]> = [
     ['YAAC_K8S_NAMESPACE', testEnv.k8sNamespace],
@@ -320,6 +338,7 @@ export function buildServerDeploymentManifest(
   identity: InstallIdentity,
   envOpts: ServerEnvOptions = {},
 ): Record<string, unknown> {
+  const kindVolumes = envOpts.volumeStorageClass === undefined
   return {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -376,14 +395,17 @@ export function buildServerDeploymentManifest(
                 { name: 'global', mountPath: POD_GLOBAL_ROOT },
                 { name: 'server-local', mountPath: POD_SERVER_LOCAL_ROOT },
                 { name: 'node-local', mountPath: POD_NODE_LOCAL_ROOT },
+                ...(kindVolumes ? [{ name: 'volumes', mountPath: POD_VOLUMES_ROOT }] : []),
               ],
             },
           ],
-          // The three storage tiers (storage.ts).
+          // The three storage tiers (storage.ts), and on kind the workspace
+          // volumes' directories.
           volumes: [
             { name: 'global', persistentVolumeClaim: { claimName: GLOBAL_CLAIM_NAME } },
             { name: 'server-local', persistentVolumeClaim: { claimName: SERVER_LOCAL_CLAIM_NAME } },
             { name: 'node-local', hostPath: { path: nodeLocalNodePath(), type: 'DirectoryOrCreate' } },
+            ...(kindVolumes ? [{ name: 'volumes', persistentVolumeClaim: { claimName: VOLUMES_CLAIM_NAME } }] : []),
           ],
         },
       },
@@ -404,7 +426,7 @@ async function ensureServerDeployment(
   envOpts: ServerEnvOptions = {},
 ): Promise<string> {
   await applyObject(buildServerServiceAccountManifest())
-  await applyObject(buildServerClusterRoleManifest())
+  await applyObject(buildServerClusterRoleManifest({ byoVolumes: envOpts.volumeStorageClass !== undefined }))
   await applyObject(buildServerClusterRoleBindingManifest())
   await applyObject(buildServerIngressNpManifest(await nodeIpBlocks()))
   await applyObject(buildServerFrontIngressNpManifest(fronting.ingressPeers()))
@@ -514,13 +536,17 @@ export async function deployServerWorkload(
       globalHostPath: globalRoot(),
       serverLocalHostPath: serverLocalRoot(),
       nodeLocalHostPath: nodeLocalRoot(),
+      volumesHostPath: volumesRoot(),
     }
     : { ...opts.storage, identity: opts.identity, binderImage: imageRef }
   await ensureStorageClaims({ shape, log: opts.log })
   opts.log(`Deploying the yaac server (${imageRef})...`)
   // Pass opts whole: every `ServerEnvOptions` field is optional, so a
   // copied field list could silently drop a new one.
-  const origin = await ensureServerDeployment(imageRef, opts.fronting, opts.identity, opts)
+  const origin = await ensureServerDeployment(imageRef, opts.fronting, opts.identity, {
+    ...opts,
+    ...(opts.storage.kind === 'classes' ? { volumeStorageClass: opts.storage.rwo } : {}),
+  })
   await waitForPublishedServer(origin, opts.fronting)
   // Point this machine's clients at the origin and record the data dir as
   // k8s, so a host `yaac server start` on it is refused

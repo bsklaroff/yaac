@@ -15,6 +15,7 @@ import { workspaceRename } from '#commands/workspace-rename'
 import { workspaceStop } from '#commands/workspace-stop'
 import { workspaceDelete } from '#commands/workspace-delete'
 import { workspaceRestart } from '#commands/workspace-restart'
+import { volumeCreate, volumeDelete, volumeList, volumeResize } from '#commands/volume'
 import { workspaceTimeout } from '#commands/workspace-timeout'
 import { routineCreate, routineDelete, routineEdit, routineList, routinePause, routineResume, routineRun, type RoutineOptions } from '#commands/routine'
 import { workspaceAttach } from '#commands/workspace-attach'
@@ -357,6 +358,7 @@ workspace
   .option('--timeout <duration>', 'Stop the workspace this long after it starts, like 45m, 2h or 1h30m (whole minutes; the server checks every minute)')
   .option('--start-at <time>', 'Queue it to start at this time instead of now: HH:MM (its next occurrence), YYYY-MM-DD HH:MM, or ISO 8601, read in your yaac time zone. Needs --prompt')
   .option('--start-in <duration>', 'Queue it to start this long from now, like 30m or 2h. Needs --prompt')
+  .option('--volume <name>', 'Mount this project\'s volume at $YAAC_VOLUME_DIR (see `yaac volume`); refused while another running workspace has it')
   .action(workspaceCreate)
 
 workspace
@@ -394,6 +396,8 @@ workspace
   .description('Restart a workspace: kill its container, reuse its checkout, resume the sessions it had open')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
   .option('--timeout <duration>', 'Stop it this long after the restart, like 2h; without one the restart clears any timeout it had')
+  .option('--volume <name>', 'Attach this volume instead of the one it last held')
+  .option('--no-volume', 'Restart without the volume it last held, and forget it')
   .action(workspaceRestart)
 
 workspace
@@ -487,6 +491,40 @@ routine
   .description('Delete a routine; runs already started keep going until their stop time')
   .argument('<routine-id>', 'Routine ID or unique prefix')
   .action(routineDelete)
+
+const volume = program
+  .command('volume')
+  .description('Manage a project\'s volumes: named storage that one running workspace at a time mounts, kept across its stops and restarts (cluster servers only)')
+
+volume
+  .command('create')
+  .description('Create a volume in a project')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<name>', 'Volume name: 1-40 of a-z, 0-9 and -')
+  .option('--size <size>', 'Size, like 10Gi (the default) or 500Mi; enforced where the cluster gives each volume its own disk')
+  .action(volumeCreate)
+
+volume
+  .command('list')
+  .description('List a project\'s volumes, and the workspace each is attached to')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .action(volumeList)
+
+volume
+  .command('resize')
+  .description('Grow a volume; a volume never shrinks')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<name>', 'Volume name')
+  .argument('<size>', 'New size, like 20Gi')
+  .action(volumeResize)
+
+volume
+  .command('delete')
+  .description('Delete a volume and its data; refused while a running workspace has it')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<name>', 'Volume name')
+  .option('-y, --yes', 'Skip the confirmation prompt')
+  .action(volumeDelete)
 
 const config = program
   .command('config')

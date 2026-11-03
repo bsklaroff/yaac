@@ -42,6 +42,11 @@ workspace. See "Agent workspaces" below.
 `db/workspace-store.ts` owns the `workspaces` table and
 `db/conversation-store.ts` the other two. They are the only writers.
 
+State a workspace must keep across its stops, and hand to the next
+workspace that runs the same job, belongs in a volume
+(docs/workspace-volumes.md): named storage outside the checkout that one
+running workspace at a time mounts, on a cluster.
+
 ## Write discipline
 
 - **A workspace id is unique across all projects.** It is the `workspaces`

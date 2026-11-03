@@ -36,7 +36,7 @@ import { GVISOR_NODE_LABEL, WORKSPACE_POOL_KEY, buildPriorityClassManifests } fr
 import { buildRuntimeClassManifests } from '#drivers/k8s/install/gvisor-runtime'
 import type { NodeTaint } from '#drivers/k8s/substrate'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { globalRoot, serverLocalRoot } from '@yaac/shared/paths'
+import { globalRoot, serverLocalRoot, volumesRoot } from '@yaac/shared/paths'
 import { recordInstall } from '@yaac/shared/install-record'
 
 const NS = 'test-ns'
@@ -274,7 +274,10 @@ function seedCluster(): void {
       metadata: { name: volumeName, ...volumes[volumeName]?.metadata },
       spec: volumes[volumeName]?.spec ?? {
         persistentVolumeReclaimPolicy: 'Retain',
-        hostPath: { path: volumeName.startsWith('yaac-server-local') ? serverLocalRoot() : globalRoot() },
+        hostPath: {
+          path: volumeName.startsWith('yaac-server-local') ? serverLocalRoot()
+            : volumeName.startsWith('yaac-volumes') ? volumesRoot() : globalRoot(),
+        },
       },
     })).filter((pv) => pv.metadata.name),
     ...(storageClassProvisioner
@@ -458,6 +461,7 @@ describe('runClusterCheck', () => {
       'yaac-global': { spec: { volumeName: 'yaac-global-vol' }, status: { phase: 'Bound' } },
       'yaac-server-local': { spec: { volumeName: 'yaac-server-local-vol' }, status: { phase: 'Bound' } },
       'yaac-checkouts': { spec: { volumeName: 'yaac-checkouts-vol' }, status: { phase: 'Bound' } },
+      'yaac-volumes': { spec: { volumeName: 'yaac-volumes-vol' }, status: { phase: 'Bound' } },
     }
     volumes = {}
     storageClassProvisioner = null

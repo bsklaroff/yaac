@@ -142,6 +142,16 @@ export function nodeLocalRoot(): string {
   return env.nodeLocalRootOverride ?? path.join(getDataDir(), 'node-local')
 }
 
+/**
+ * Root of workspace volumes (docs/workspace-volumes.md): app data, kept
+ * apart from the tiers so nothing that sweeps or backs up GLOBAL takes it.
+ * `<dataDir>/volumes` on a host; the claim `yaac-volumes` on a kind
+ * cluster. A byo cluster gives each volume a claim of its own instead.
+ */
+export function volumesRoot(): string {
+  return env.volumesRootOverride ?? path.join(getDataDir(), 'volumes')
+}
+
 /** Root of the SERVER-LOCAL tier — see the tier legend above. */
 export function serverLocalRoot(): string {
   return env.serverLocalRootOverride ?? path.join(getDataDir(), 'server-local')

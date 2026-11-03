@@ -139,6 +139,7 @@ describe('ensureStorageClaims', () => {
     globalHostPath: path.join(tmpDir, 'global'),
     serverLocalHostPath: path.join(tmpDir, 'server-local'),
     nodeLocalHostPath: path.join(tmpDir, 'node-local'),
+    volumesHostPath: path.join(tmpDir, 'volumes'),
   })
   const classShape: StorageShape = {
     kind: 'classes',
@@ -152,7 +153,7 @@ describe('ensureStorageClaims', () => {
     const log = vi.fn()
     await ensureStorageClaims({ shape: staticShape(), log })
 
-    for (const dir of ['global', 'server-local', 'node-local']) {
+    for (const dir of ['global', 'server-local', 'node-local', 'volumes']) {
       expect((await fs.stat(path.join(tmpDir, dir))).isDirectory()).toBe(true)
     }
     expect(applied().map((m) => `${m.kind}/${m.metadata.name}`)).toEqual([
@@ -162,8 +163,10 @@ describe('ensureStorageClaims', () => {
       'PersistentVolumeClaim/yaac-server-local',
       'PersistentVolume/yaac-checkouts-test-install',
       'PersistentVolumeClaim/yaac-checkouts',
+      'PersistentVolume/yaac-volumes-test-install',
+      'PersistentVolumeClaim/yaac-volumes',
     ])
-    const [globalPv, globalPvc, localPv, , checkoutsPv] = applied()
+    const [globalPv, globalPvc, localPv, , checkoutsPv, , volumesPv] = applied()
     expect(globalPv.metadata.labels).toEqual({
       app: 'yaac-server', 'yaac.install-namespace': 'test-ns',
       'yaac.install-id': 'test-install', 'yaac.claim': 'yaac-global',
@@ -188,6 +191,13 @@ describe('ensureStorageClaims', () => {
       accessModes: ['ReadWriteMany'],
       hostPath: { path: path.join(tmpDir, 'global'), type: 'Directory' },
       claimRef: { namespace: 'test-ns', name: 'yaac-checkouts' },
+    })
+    // Workspace volumes get a directory of their own, beside the tiers.
+    expect(volumesPv.spec).toMatchObject({
+      accessModes: ['ReadWriteMany'],
+      persistentVolumeReclaimPolicy: 'Retain',
+      hostPath: { path: path.join(tmpDir, 'volumes'), type: 'Directory' },
+      claimRef: { namespace: 'test-ns', name: 'yaac-volumes' },
     })
     expect(globalPvc.metadata).toMatchObject({ name: 'yaac-global', namespace: 'test-ns' })
     expect(globalPvc.spec).toMatchObject({ storageClassName: '', volumeName: 'yaac-global-test-install' })
@@ -229,6 +239,7 @@ describe('ensureStorageClaims', () => {
     boundClaim('yaac-global', 'yaac-global-test-install')
     boundClaim('yaac-server-local', 'yaac-server-local-test-install')
     boundClaim('yaac-checkouts', 'yaac-checkouts-test-install')
+    boundClaim('yaac-volumes', 'yaac-volumes-test-install')
     await ensureStorageClaims({ shape: staticShape() })
     expect(applied()).toEqual([])
     expect(volume('yaac-global-test-install')?.metadata.labels).toMatchObject({

@@ -32,6 +32,7 @@ import { ChevronIcon, CloseIcon, PreviewIcon } from '#lib/icons'
 import { PaneBarActions, PaneBarLeading, PaneOverflowMenu, paneBarClass } from '#components/PaneBar'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { ContainerlessBadge } from '#components/ContainerlessBadge'
+import { VolumeBadge } from '#components/VolumeBadge'
 import { UnforwardedPortsBadge } from '#components/UnforwardedPortsBadge'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
 import { TrackedScratchDirsBadge } from '#components/TrackedScratchDirsBadge'
@@ -577,6 +578,7 @@ export function WorkspaceView({
             workspaceId={workspace.workspaceId}
             {...(workspace.deadline !== undefined ? { deadline: workspace.deadline } : {})}
           />
+          <VolumeBadge projectId={workspace.projectId} workspaceId={workspace.workspaceId} />
           <ContainerlessBadge />
           {!isMobile && (
             <>

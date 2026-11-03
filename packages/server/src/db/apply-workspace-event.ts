@@ -14,6 +14,7 @@ import {
   setWorkspaceTrackedScratchDirs,
 } from './workspace-store'
 import { closeSessionRow, recordSessionReport, recordSessionWaitingUnseen } from './session-store'
+import { markVolumesPinned, releaseVolume } from './volume-store'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import type { WorkspaceEvent, WorkspaceCreateFailed, WorkspaceCreated } from './events'
 
@@ -70,6 +71,12 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
       return
     case 'ignored-files-cleaned':
       await recordIgnoredFilesCleaned(event.projectId, event.workspaceId, event.at)
+      return
+    case 'volume-released':
+      await releaseVolume(event.volumeId, event.lease)
+      return
+    case 'volumes-pinned':
+      await markVolumesPinned(event.volumeIds)
       return
   }
 }

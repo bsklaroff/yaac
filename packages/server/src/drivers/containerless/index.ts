@@ -28,6 +28,11 @@ import {
 } from './teardown'
 import type { WorkspaceDriver } from '#drivers/contract'
 
+/** Volumes are cluster storage (docs/workspace-volumes.md). */
+function noVolumes(): ServerError {
+  return new ServerError('NOT_SUPPORTED', 'volumes need a cluster; this server runs workspaces on the host')
+}
+
 /**
  * The containerless driver (docs/containerless-driver.md): one tmux server
  * per workspace on the host, in its checkout. No image, cluster, egress
@@ -129,6 +134,11 @@ export function createContainerlessDriver(): WorkspaceDriver {
     destroy: (target, opts) => destroyWorkspace(target, opts),
     detachedTeardownCommand: (target) => detachedTeardownCommand(target),
     destroyProjectSubstrate: (project) => destroyProjectSubstrate(project),
+    ensureVolume: () => Promise.reject(noVolumes()),
+    resizeVolume: () => Promise.reject(noVolumes()),
+    deleteVolume: () => Promise.reject(noVolumes()),
+    pinVolumes: () => Promise.resolve([]),
+    volumeStorage: () => Promise.resolve([]),
     reapNodeLocal: (live) => reapNodeLocal(live),
     // A workspace writes as the server's own user, so nothing it leaves
     // needs more than that user to remove.

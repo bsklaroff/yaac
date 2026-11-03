@@ -26,6 +26,7 @@ import { listStoppedWorkspaces, toStoppedEntries } from './stopped-list'
 import { listActiveWorkspaces } from './list'
 import { inFlightWorkspaceIds } from './provisioning'
 import { listWorkspaceGroups, resolveGroup } from './groups'
+import { listVolumes } from './volumes'
 import { moveWorkspaceToGroup, setGroupWorkspaceLimit } from './group-edits'
 import {
   discardQueuedWorkspace,
@@ -213,11 +214,11 @@ const ROUTINE_ARGS = ['name', 'cron', 'tz', ...CREATE_ARGS.filter((a) => a !== '
  */
 const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   list: ['stopped', ...STOPPED_ARGS],
-  create: [...CREATE_ARGS, 'workspace', 'no-session', 'resume'],
+  create: [...CREATE_ARGS, 'workspace', 'no-session', 'resume', 'volume'],
   rename: ['workspace'],
   'set-base': [],
   stop: ['workspace', 'session'],
-  restart: ['workspace', 'timeout'],
+  restart: ['workspace', 'timeout', 'no-volume'],
   'group-create': [],
   'group-move': ['workspace'],
   'group-set-limit': ['limit'],
@@ -235,6 +236,7 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   fetch: ['workspace'],
   history: ['workspace', 'conversation', 'files', 'file'],
   send: ['workspace', 'session', 'conversation'],
+  volumes: [],
 }
 
 /**
@@ -289,6 +291,7 @@ export async function runMamaCommand(
       case 'fetch': return await runFetch(caller, request)
       case 'history': return await runHistory(caller, request)
       case 'send': return await runSend(caller, request)
+      case 'volumes': return await runVolumes(caller)
     }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -651,7 +654,7 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
     if (request.body.trim() !== '') return { ok: false, error: '--no-session takes no prompt: a workspace with no session runs no agent' }
   }
   if (workspace !== undefined) {
-    const stray = ['branch', 'group', 'timeout'].find((a) => request.args[a] !== undefined)
+    const stray = ['branch', 'group', 'timeout', 'volume'].find((a) => request.args[a] !== undefined)
     if (stray !== undefined) {
       return { ok: false, error: `--${stray} is a workspace's setting, which --workspace (a session in a running one) does not take` }
     }
@@ -668,6 +671,7 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
     ...(workspace !== undefined ? { workspace } : {}),
     ...(resume !== undefined ? { resume } : {}),
     ...(noSession ? { noSession: true } : {}),
+    ...(request.args.volume !== undefined ? { volume: request.args.volume } : {}),
     ...settings.settings,
   })
   return decision.ok
@@ -1345,6 +1349,7 @@ async function runRestart(caller: MamaCaller, request: MamaRequestInput): Promis
     callerPermissionMode: caller.permissionMode,
     workspaceId,
     ...(timeout !== undefined ? { timeout } : {}),
+    ...(request.args['no-volume'] !== undefined ? { noVolume: true } : {}),
   })
   if (!decision.ok) return decision
   const short = workspaceId.slice(0, 8)
@@ -1563,5 +1568,21 @@ async function runModels(caller: MamaCaller): Promise<MamaOutcome> {
     if (models.length > 0) lines.push(`          models: ${models.join(', ')}`)
   }
   lines.push('', 'Pass one with: yaac-mama create --tool <tool> --model <model> [--effort <level>] "<prompt>"')
+  return { ok: true, output: lines.join('\n') }
+}
+
+/**
+ * The project's volumes (docs/workspace-volumes.md), and which workspace
+ * holds each, so an app can see whether the one it wants is free.
+ */
+async function runVolumes(caller: MamaCaller): Promise<MamaOutcome> {
+  const volumes = await listVolumes(caller.projectId)
+  if (volumes.length === 0) return { ok: true, output: 'This project has no volumes.' }
+  const lines = volumes.map((v) => {
+    const holder = v.holder !== undefined
+      ? `attached to ${v.holder.workspaceId.slice(0, 8)}${v.holder.title !== undefined ? ` (${v.holder.title})` : ''}`
+      : 'free'
+    return `${v.name.padEnd(20)} ${v.size.padEnd(8)} ${holder}`
+  })
   return { ok: true, output: lines.join('\n') }
 }

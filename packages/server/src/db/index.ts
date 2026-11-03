@@ -46,6 +46,25 @@ export {
   type SessionRow,
 } from './session-store'
 export { applyWorkspaceEvent } from './apply-workspace-event'
+export {
+  claimVolume,
+  deleteProjectVolumeRows,
+  deleteVolumeRow,
+  findVolumeByName,
+  getVolumeRow,
+  insertVolume,
+  leaseOf,
+  listHeldVolumes,
+  listProjectVolumes,
+  listUnpinnedVolumes,
+  listDeletedVolumeIds,
+  forgetDeletedVolume,
+  listVolumeWorkspaces,
+  setVolumeSize,
+  setWorkspaceVolume,
+  type VolumeLease,
+  type VolumeRow,
+} from './volume-store'
 export type { CapturedConversation, DiscoveredConversation, WorkspaceEvent } from './events'
 export { desiredWorkspaces } from './desired-workspaces'
 export {

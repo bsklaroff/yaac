@@ -9,11 +9,13 @@ import { HostedRemote } from '#components/settings/HostedRemote'
 import { ProjectSharing } from '#components/settings/ProjectSharing'
 import { WorkspaceAutoDelete } from '#components/settings/WorkspaceAutoDelete'
 import { KeptIgnoredPaths } from '#components/settings/KeptIgnoredPaths'
+import { Volumes } from '#components/settings/Volumes'
 import { ProjectSelect, useSettingsProject } from '#components/settings/ProjectPicker'
 import { api } from '#lib/api'
 import { WarningIcon } from '#lib/icons'
 import { projectBuildFilesApi } from '#lib/buildFilesApi'
 import { useSnapshot } from '#lib/useSnapshot'
+import { useHasVolumes } from '#lib/volumes'
 import { useTeammateView, useWhoami } from '#lib/viewer'
 
 const project = api.project[':projectId']
@@ -61,6 +63,7 @@ export function ProjectSettings(): JSX.Element {
   // Only with an egress proxy can a secret's value stay out of the
   // workspace, or an allowlist apply.
   const mediatedEgress = useSnapshot()?.driver !== 'containerless'
+  const hasVolumes = useHasVolumes()
 
   return (
     <section>
@@ -138,6 +141,10 @@ export function ProjectSettings(): JSX.Element {
               readOnly={readOnly}
             />
           </div>
+
+          {hasVolumes && <div className="mt-6">
+            <Volumes key={`volumes:${projectId}`} projectId={projectId} readOnly={readOnly} />
+          </div>}
 
           <div className="mt-6">
             <WorkspaceAutoDelete

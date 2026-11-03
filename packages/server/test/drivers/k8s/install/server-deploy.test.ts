@@ -300,8 +300,8 @@ describe('deployServerWorkload', () => {
       `reg.local:5000/yaac-server:${stringHash('bundlehash')}`,
     )
 
-    // Three mounts: the two bound claims and the node-local tree. Nothing
-    // from the data dir by hostPath.
+    // The two bound claims, the node-local tree and, on kind, the workspace
+    // volumes' claim. Nothing from the data dir by hostPath.
     const mountOf = (name: string): string | undefined =>
       pod.containers[0].volumeMounts.find((m) => m.name === name)?.mountPath
     expect(pod.volumes.find((v) => v.name === 'global')?.persistentVolumeClaim).toEqual({ claimName: 'yaac-global' })
@@ -311,11 +311,14 @@ describe('deployServerWorkload', () => {
     expect(pod.volumes.find((v) => v.name === 'node-local')?.hostPath)
       .toEqual({ path: '/var/lib/yaac/node/test-install', type: 'DirectoryOrCreate' })
     expect(mountOf('node-local')).toBe('/yaac/node-local')
+    expect(pod.volumes.find((v) => v.name === 'volumes')?.persistentVolumeClaim).toEqual({ claimName: 'yaac-volumes' })
+    expect(mountOf('volumes')).toBe('/yaac/volumes')
     expect(pod.volumes.some((v) => v.hostPath?.path.startsWith(tmpDir))).toBe(false)
     // The claims (PV then PVC per tier) are applied before the Deployment.
     const pvs = applied('PersistentVolume') as unknown as Array<{ spec: { hostPath: { path: string } } }>
     expect(pvs.map((p) => p.spec.hostPath.path)).toEqual([
       path.join(tmpDir, 'global'), path.join(tmpDir, 'server-local'), path.join(tmpDir, 'global'),
+      path.join(tmpDir, 'volumes'),
     ])
     expect(order('PersistentVolume')).toBeLessThan(order('PersistentVolumeClaim'))
     expect(order('PersistentVolumeClaim')).toBeLessThan(order('Deployment'))
@@ -355,6 +358,10 @@ describe('deployServerWorkload', () => {
     expect(env.YAAC_GLOBAL_ROOT).toBe('/yaac/global')
     expect(env.YAAC_SERVER_LOCAL_ROOT).toBe('/yaac/server-local')
     expect(env.YAAC_NODE_LOCAL_ROOT).toBe('/yaac/node-local')
+    // kind's volumes are directories of the claim it mounts; there is no
+    // class to make claims from.
+    expect(env.YAAC_VOLUMES_ROOT).toBe('/yaac/volumes')
+    expect(env.YAAC_VOLUME_STORAGE_CLASS).toBeUndefined()
     // IN_CLUSTER makes the registry client dial Service DNS.
     expect(env.YAAC_IN_CLUSTER).toBe('1')
   })
@@ -547,6 +554,8 @@ describe('deployServerWorkload', () => {
     expect(nodes?.verbs).toEqual(['get', 'list', 'watch'])
     // Resources are listed explicitly, with no wildcard.
     expect(rules.every((r) => !r.resources.includes('*'))).toBe(true)
+    // kind's volumes are directories; only a byo install's touch a PV.
+    expect(rules.some((r) => r.resources.includes('persistentvolumes'))).toBe(false)
   })
 
   it('warns, having registered, when the server will not identify this machine', async () => {

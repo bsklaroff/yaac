@@ -5,7 +5,7 @@ import { requirePodman } from '#support/cluster'
 import { resolveTrustedLayers } from '@yaac/server/drivers/k8s/cluster/image-tags'
 import { ensureNamespace } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { registryRef, registryTagState } from '@yaac/server/drivers/k8s/cluster/registry'
-import { k8sWorkspacePaths } from '@yaac/server/drivers/k8s/substrate'
+import { k8sWorkspacePaths, type PodMount } from '@yaac/server/drivers/k8s/substrate'
 import { buildPodJobManifest } from '@yaac/server/drivers/k8s/workspaces'
 import { CODEX_CONTAINER_HOME, codexHomeMounts } from '@yaac/server/domain/workspaces/codex-home'
 import { e2eMkdtemp } from '@yaac/test-utils/tmp'
@@ -98,7 +98,8 @@ async function workspacePod(pod: string, nested: boolean): Promise<Record<string
     env: [`CODEX_HOME=${CODEX_CONTAINER_HOME}`],
     mounts: [
       { source: { kind: 'emptyDir' }, mountPath: WORKSPACE },
-      ...codexHomeMounts('k8s', codexDir),
+      // All hostPath, which a pod mount takes as is.
+      ...codexHomeMounts('k8s', codexDir) as PodMount[],
     ],
     memoryRequestBytes: 256 * 1024 ** 2,
     memoryLimitBytes: 2 * 1024 ** 3,

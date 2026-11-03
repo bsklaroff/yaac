@@ -31,7 +31,7 @@ vi.mock('#db', async (importOriginal) => {
     listActiveConversations: vi.fn(actual.listActiveConversations),
   }
 })
-import { keepScratchDirsInCheckout, listProvisioning, prepareRestart, prepareStart, stopWorkspace } from '#domain/workspaces'
+import { createVolume, keepScratchDirsInCheckout, listProvisioning, prepareRestart, prepareStart, stopWorkspace } from '#domain/workspaces'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import {
   applyWorkspaceEvent,
@@ -44,6 +44,7 @@ import {
   listWorkspaceConversations,
   listWorkspaceSessions,
   getWorkspaceRow,
+  findVolumeByName,
   type SessionRow,
   setProjectScratchDirs,
   setWorkspaceGroup,
@@ -63,6 +64,7 @@ import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#runtime/status
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
 import { _resetAcpRegistryForTests } from '#runtime/agents/acp-registry'
 import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
+import type { ServerError } from '@yaac/shared/errors'
 import { BUILT_IN_USER_ID } from '#db'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 
@@ -113,7 +115,7 @@ async function created(
   workspaceId: string,
   over: {
     tool?: AgentTool; permissionMode?: PermissionMode; model?: string; effort?: string; mode?: AgentMode
-    prompt?: string; branch?: string
+    prompt?: string; branch?: string; volume?: string
   } = {},
 ): Promise<void> {
   const run = await prepareStart(local, {
@@ -771,6 +773,62 @@ describe('prepareRestart', () => {
   // A stop returns while its detached script still runs, and under
   // containerless the runtime has already forgotten the workspace. A quick
   // restart would relaunch into a checkout the script is still cleaning.
+  it('attaches the volume it last held, refuses one a running workspace holds, and restarts without it on request', async () => {
+    const mounted = new Map<string, string | undefined>()
+    installDriver({
+      launch: (spec) => {
+        calls.push(`launch ${spec.workspaceId}`)
+        const volume = spec.mounts.find((m) => m.mountPath === '/home/yaac/volume')
+        mounted.set(spec.workspaceId, volume?.source.kind === 'volume'
+          ? spec.env.find((e) => e.startsWith('YAAC_VOLUME_NAME='))
+          : undefined)
+        return Promise.resolve(handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: spec.workspaceId, jobName: `yaac-${spec.workspaceId}` }))
+      },
+    })
+    await createVolume(local, DEMO_PROJECT_ID, 'queue')
+    await stoppedWorkspace('wt-1', { volume: 'queue' })
+    expect(mounted.get('wt-1')).toBe('YAAC_VOLUME_NAME=queue')
+
+    // wt-1's unit is gone, so a new workspace takes the volume over.
+    await created('wt-2', { volume: 'queue' })
+    expect(mounted.get('wt-2')).toBe('YAAC_VOLUME_NAME=queue')
+    live = handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-2', jobName: 'yaac-wt-2' })
+    calls = []
+
+    const refusal = await restart('wt-1').catch((err: unknown) => err as ServerError)
+    expect((refusal as ServerError).code).toBe('VOLUME_HELD')
+    expect((refusal as ServerError).message).toContain('wt-2')
+    // Refused before anything was torn down or launched.
+    expect(calls.filter((c) => c.startsWith('destroy') || c.startsWith('launch'))).toEqual([])
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-1'))?.stoppedAt).toBeDefined()
+
+    await (await prepareRestart(local, 'wt-1', { volume: null }))()
+    expect(calls).toContain('launch wt-1')
+    expect(mounted.get('wt-1')).toBeUndefined()
+    expect((await findWorkspaceRow('wt-1'))?.volumeId).toBeUndefined()
+  })
+
+  it('ends the lease a running workspace\'s old pod held when its restart drops the volume or takes another', async () => {
+    await createVolume(local, DEMO_PROJECT_ID, 'queue')
+    await createVolume(local, DEMO_PROJECT_ID, 'db')
+    await created('wt-1', { volume: 'queue' })
+    const holder = async (name: string): Promise<string | undefined> =>
+      (await findVolumeByName(DEMO_PROJECT_ID, name))?.holderWorkspaceId
+    expect(await holder('queue')).toBe('wt-1')
+
+    live = handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1', jobName: 'yaac-wt-1' })
+    await (await prepareRestart(local, 'wt-1', { volume: 'db' }))()
+    expect(await holder('queue')).toBeUndefined()
+    expect(await holder('db')).toBe('wt-1')
+
+    live = handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1', jobName: 'yaac-wt-1' })
+    await (await prepareRestart(local, 'wt-1', { volume: null }))()
+    expect(await holder('db')).toBeUndefined()
+    // Free for another workspace at once, not only once wt-1 stops.
+    await created('wt-2', { volume: 'db' })
+    expect(await holder('db')).toBe('wt-2')
+  })
+
   it('waits for a stop\'s detached teardown to exit, and clears its stopping mark', async () => {
     await created('wt-race')
     live = handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-race', jobName: 'yaac-wt-race' })

@@ -258,6 +258,8 @@ export const workspaceApp = new Hono<IdentityEnv>()
       // Start it with no session; the agent settings and prompt are refused
       // beside it.
       noSession: z.boolean().optional(),
+      // A volume of the project to mount, by name (docs/workspace-volumes.md).
+      volume: z.string().min(1).optional(),
     })),
     async (c) => {
       const body = c.req.valid('json')
@@ -299,6 +301,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
         ...(body.group !== undefined ? { group: body.group } : {}),
         ...(body.timeout !== undefined ? { deadline: minutesFromNow(body.timeout) } : {}),
         ...(body.noSession === true ? { noSession: true } : {}),
+        ...(body.volume !== undefined ? { volume: body.volume } : {}),
         // A user request, so its settings become the project's defaults.
         rememberDefaults: true,
         claimSpare: true,
@@ -323,13 +326,17 @@ export const workspaceApp = new Hono<IdentityEnv>()
       // Minutes from the restart until the server stops it; without one the
       // restart clears any timeout it had.
       timeout: timeoutMinutesSchema.optional(),
+      // A volume to attach by name, or null to restart without the one it
+      // had; absent attaches the one it last held (docs/workspace-volumes.md).
+      volume: z.string().min(1).nullable().optional(),
     })),
-    // Checked and registered before streaming, so an unknown workspace or
-    // one already provisioning is a plain 404 or 409.
+    // Checked and registered before streaming, so an unknown workspace, one
+    // already provisioning, or a volume another holds is a plain error.
     async (c) => {
-      const { workspaceId, timeout } = c.req.valid('json')
+      const { workspaceId, timeout, volume } = c.req.valid('json')
       return streamProvisioned(c, await prepareRestart(c.get('principal'), workspaceId, {
         ...(timeout !== undefined ? { deadline: minutesFromNow(timeout) } : {}),
+        ...(volume !== undefined ? { volume } : {}),
       }))
     },
   )

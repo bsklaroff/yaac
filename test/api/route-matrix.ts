@@ -207,6 +207,11 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/workspace/queue/discard', body: { id: ID.queued }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/queue/run', body: { id: ID.queued }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/prompt', request: `/api/workspace/prompt?id=${ID.queued}`, access: 'reader', k8s: MISSING, containerless: MISSING },
+  // ── volumes (docs/workspace-volumes.md) ──────────────────────────────
+  { method: 'GET', path: '/api/volume/list', request: `/api/volume/list?project=${ID.project}`, access: 'reader', why: 'volumes are cluster storage', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/volume/create', body: { project: ID.project, name: 'v' }, access: 'owner', why: 'volumes are cluster storage', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/volume/resize', body: { project: ID.project, name: 'v', size: '20Gi' }, access: 'owner', why: 'volumes are cluster storage', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/volume/delete', body: { project: ID.project, name: 'v' }, access: 'owner', why: 'volumes are cluster storage', k8s: MISSING, containerless: UNSUPPORTED },
   // ── routines (docs/routines.md) ───────────────────────────────────────
   { method: 'GET', path: '/api/routine/list', access: 'reader', k8s: 200, containerless: 200 },
   { method: 'GET', path: '/api/routine/runs', request: `/api/routine/runs?id=${ID.routine}`, access: 'reader', k8s: MISSING, containerless: MISSING },

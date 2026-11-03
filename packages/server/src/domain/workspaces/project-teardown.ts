@@ -11,10 +11,12 @@ import {
   deleteProjectQueuedWorkspaces,
   deleteProjectRoutines,
   deleteProjectRow,
+  deleteProjectVolumeRows,
   deleteProjectWorkspaceGroups,
   deleteProjectWorkspaces,
   getProjectRow,
   listProjectRows,
+  listProjectVolumes,
   setProjectShareRevoked,
   type ProjectRow,
 } from '#db'
@@ -121,13 +123,14 @@ async function deleteProject(projectId: string): Promise<void> {
   await deleteProjectRoutines(projectId)
   await deleteProjectDraftWorkspaces(projectId)
   await deleteProjectEnvVars(projectId)
+  await deleteProjectVolumeRows(projectId)
   await deleteProjectRow(projectId)
 }
 
 /**
  * Delete everything a project has on disk and on the substrate: live
- * workspaces, driver-held state (push registry, node-local trees), the
- * global tree, and a hosted project's remote. Best-effort throughout; the
+ * workspaces, volumes, driver-held state (push registry, node-local trees),
+ * the global tree, and a hosted project's remote. Best-effort throughout; the
  * driver's id-keyed sweeps collect whatever a failure leaves.
  */
 async function purgeProjectBytes(projectId: string): Promise<void> {
@@ -147,6 +150,16 @@ async function purgeProjectBytes(projectId: string): Promise<void> {
       })
     } catch {
       // Best-effort; continue with the next workspace.
+    }
+  }
+
+  // A volume outlives every workspace, but not its project. A pod still
+  // shutting down may keep one mounted; `collectDeletedVolumes` removes what
+  // this leaves, from the tombstones the rows' delete writes.
+  if (workspaceDriver().kind === 'k8s') {
+    for (const v of await listProjectVolumes(projectId).catch(() => [])) {
+      await workspaceDriver().deleteVolume(v.id)
+        .catch((err: unknown) => serverLog(`[server] deleting volume ${v.name} of project ${projectId}: ${String(err)}`))
     }
   }
 

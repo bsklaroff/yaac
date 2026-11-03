@@ -1553,6 +1553,96 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     }, 120_000)
   })
 
+  // `yaac volume`, `workspace create --volume` and `workspace restart
+  // --volume/--no-volume` (docs/workspace-volumes.md), on workspaces with no
+  // session, so no agent runs. kind's volumes are directories of the
+  // `yaac-volumes` claim; a byo cluster's own claims are covered by the
+  // unit and apiserver tiers.
+  describe('volumes', () => {
+    const NAME = 'volume-demo'
+    let first = ''
+    let second = ''
+
+    const yaac = async (...args: string[]): Promise<string> => {
+      const { stdout, stderr, exitCode } = await runYaac(serverEnv, ...args)
+      if (exitCode !== 0) throw new Error(`yaac ${args.join(' ')} failed (exit ${exitCode}):\n${stderr}`)
+      return stdout
+    }
+    const refused = async (...args: string[]): Promise<string> => {
+      const { stderr, exitCode } = await runYaac(serverEnv, ...args)
+      expect(exitCode).not.toBe(0)
+      return stderr
+    }
+    const started = (stdout: string): string => /Workspace (\S+) is running/.exec(stdout)?.[1] ?? ''
+    const readState = async (workspaceId: string): Promise<string> => {
+      const pod = (await listWorkspacePods(idOf(NAME))).find((p) => p.workspaceId === workspaceId)
+      if (!pod) throw new Error(`no pod for ${workspaceId}`)
+      return (await execInJob(pod.jobName, ['sh', '-c', 'cat "$YAAC_VOLUME_DIR/state" 2>/dev/null || echo none'])).stdout.trim()
+    }
+    /** The lease ends once the holder's pod is gone. */
+    const freed = async (): Promise<void> => {
+      await vi.waitFor(async () => {
+        expect(await yaac('volume', 'list', NAME)).toMatch(/queue\s+1Gi\s+-/)
+      }, { timeout: 120_000, interval: 1_000 })
+    }
+
+    beforeAll(async () => {
+      await setupProject(NAME)
+      expect(await yaac('volume', 'create', NAME, 'queue', '--size', '1Gi')).toContain('Created volume "queue"')
+    }, 120_000)
+
+    afterAll(async () => {
+      await stopWorkspace(first).catch(() => undefined)
+      await stopWorkspace(second).catch(() => undefined)
+    })
+
+    it('lists a new volume as free, and refuses a bad name or an unknown --volume', async () => {
+      expect(await yaac('volume', 'list', NAME)).toMatch(/NAME\s+SIZE\s+ATTACHED TO[\s\S]*queue\s+1Gi\s+-/)
+      expect(await refused('volume', 'create', NAME, 'Not Valid')).toContain('is not a volume name')
+      expect(await refused('workspace', 'create', NAME, '--no-session', '--volume', 'nope')).toContain('no volume named "nope"')
+    })
+
+    it('mounts it at $YAAC_VOLUME_DIR, and refuses it to a second workspace while the first runs', async () => {
+      first = started(await yaac('workspace', 'create', NAME, '--no-session', '--volume', 'queue'))
+      const pod = await findWorkspacePod(NAME)
+      await execInJob(pod.jobName, ['sh', '-c', 'echo kept > "$YAAC_VOLUME_DIR/state" && echo "$YAAC_VOLUME_NAME"'])
+      expect(await readState(first)).toBe('kept')
+      expect(await yaac('volume', 'list', NAME)).toMatch(new RegExp(`queue\\s+1Gi\\s+${first.slice(0, 8)}`))
+      expect(await refused('workspace', 'create', NAME, '--no-session', '--volume', 'queue'))
+        .toContain(`attached to running workspace ${first.slice(0, 8)}`)
+    }, 240_000)
+
+    it('moves to another workspace once the first stops, and the first restarts only with --no-volume', async () => {
+      await stopWorkspace(first)
+      await freed()
+      second = started(await yaac('workspace', 'create', NAME, '--no-session', '--volume', 'queue'))
+      expect(await readState(second)).toBe('kept')
+
+      const held = await refused('workspace', 'restart', first)
+      expect(held).toContain(`attached to running workspace ${second.slice(0, 8)}`)
+      expect(held).toContain(`yaac workspace restart --no-volume ${first}`)
+      await yaac('workspace', 'restart', '--no-volume', first)
+      expect(await readState(first)).toBe('none')
+      await stopWorkspace(first)
+    }, 360_000)
+
+    it('refuses to resize on kind or delete while held, and restarts --volume onto it once free', async () => {
+      expect(await refused('volume', 'resize', NAME, 'queue', '2Gi')).toContain('no size to grow')
+      expect(await refused('volume', 'delete', '--yes', NAME, 'queue')).toContain('attached to running workspace')
+      await stopWorkspace(second)
+      await freed()
+      // `--no-volume` forgot it, so it comes back only when named.
+      await yaac('workspace', 'restart', '--volume', 'queue', first)
+      expect(await readState(first)).toBe('kept')
+      await stopWorkspace(first)
+      await freed()
+
+      expect(await yaac('volume', 'delete', '--yes', NAME, 'queue')).toContain('Deleted volume "queue"')
+      expect(await yaac('volume', 'list', NAME)).toContain(`No volumes in ${NAME}`)
+      expect(await fs.readdir(path.join(testEnv.dataDir, 'volumes'))).toEqual([])
+    }, 480_000)
+  })
+
   describe('codex session', () => {
     let jobName = ''
     let workspaceId = ''

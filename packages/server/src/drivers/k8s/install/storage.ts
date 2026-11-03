@@ -5,7 +5,9 @@
  * subPaths. `yaac-server-local` (RWO) is the server's alone.
  * `yaac-checkouts` is a second volume over the global tier's directory,
  * through which workspace pods mount their checkout with longer attribute
- * caching (docs/nfs-checkout-performance.md).
+ * caching (docs/nfs-checkout-performance.md). `yaac-volumes` (static only)
+ * holds workspace volumes' directories; on byo each volume is a claim the
+ * server makes (docs/workspace-volumes.md).
  *
  * The storage shape decides what backs them:
  *  - `static` (kind): a hostPath PV per claim into the host's data dir, so
@@ -29,6 +31,7 @@ import {
   LABEL_INSTALL_NAMESPACE,
   SERVER_APP_NAME,
   SERVER_LOCAL_CLAIM_NAME,
+  VOLUMES_CLAIM_NAME,
   applyObject,
   deleteObjects,
   installId,
@@ -59,6 +62,7 @@ interface ClaimShape {
 const GLOBAL: ClaimShape = { claimName: GLOBAL_CLAIM_NAME, accessMode: 'ReadWriteMany' }
 const SERVER_LOCAL: ClaimShape = { claimName: SERVER_LOCAL_CLAIM_NAME, accessMode: 'ReadWriteOnce' }
 const CHECKOUTS: ClaimShape = { claimName: CHECKOUTS_CLAIM_NAME, accessMode: 'ReadWriteMany' }
+const VOLUMES: ClaimShape = { claimName: VOLUMES_CLAIM_NAME, accessMode: 'ReadWriteMany' }
 
 /** What backs the claims: see the module comment. */
 export type StorageShape =
@@ -67,6 +71,8 @@ export type StorageShape =
     globalHostPath: string
     serverLocalHostPath: string
     nodeLocalHostPath: string
+    /** Workspace volumes' directories (docs/workspace-volumes.md). */
+    volumesHostPath: string
   }
   | {
     kind: 'classes'
@@ -186,7 +192,7 @@ async function ensureStaticClaims(
   shape: Extract<StorageShape, { kind: 'static' }>,
   log: (message: string) => void,
 ): Promise<void> {
-  for (const dir of [shape.globalHostPath, shape.serverLocalHostPath, shape.nodeLocalHostPath]) {
+  for (const dir of [shape.globalHostPath, shape.serverLocalHostPath, shape.nodeLocalHostPath, shape.volumesHostPath]) {
     await fs.mkdir(dir, { recursive: true })
   }
   // The checkouts volume needs no mount options here: a hostPath mount
@@ -195,6 +201,7 @@ async function ensureStaticClaims(
     [GLOBAL, shape.globalHostPath],
     [SERVER_LOCAL, shape.serverLocalHostPath],
     [CHECKOUTS, shape.globalHostPath],
+    [VOLUMES, shape.volumesHostPath],
   ]
   for (const [claim, hostPath] of pairs) {
     const existing = await readClaim(claim.claimName)
@@ -219,7 +226,7 @@ async function ensureStaticClaims(
       storageClassName: '', volumeName: wanted, storage: NOMINAL_CAPACITY,
     }))
   }
-  await waitForBound([GLOBAL, SERVER_LOCAL, CHECKOUTS], log)
+  await waitForBound([GLOBAL, SERVER_LOCAL, CHECKOUTS, VOLUMES], log)
 }
 
 /**

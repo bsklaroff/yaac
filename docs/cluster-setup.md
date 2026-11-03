@@ -539,7 +539,8 @@ yaac's. It prints the uninstall steps instead: the install's namespaces (the
 registry signing key has its own) and the cluster-scoped objects labelled
 with them, then the runtime objects and `yaac.gvisor` node labels, which
 every install on the cluster shares. The `Retain` volumes survive on
-purpose; it says how to remove them by install id.
+purpose, workspace volumes' disks among them (docs/workspace-volumes.md); it
+says how to remove them by install id.
 
 **A node that joins a running install is synced by the server.** Each
 node needs the main registry's `hosts.toml` (or it cannot pull any yaac

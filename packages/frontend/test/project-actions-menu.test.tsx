@@ -91,4 +91,19 @@ describe('ProjectActionsMenu', () => {
     expect(server.called(REMOVE)).toHaveLength(0)
     expect(useUiStore.getState().activeProjectId).toBe(ID)
   })
+
+  it('names the volumes whose data goes with the project, on a cluster', async () => {
+    server.route('GET /api/volume/list', () => [
+      { name: 'queue', size: '1Gi', createdAt: '', stoppedWorkspaces: [] },
+      { name: 'db', size: '5Gi', createdAt: '', stoppedWorkspaces: [] },
+    ])
+    useUiStore.setState({ snapshot: { driver: 'k8s', projects: [PROJECT] } as ServerSnapshot })
+    renderWithClient(<Harness />)
+    fireEvent.click(screen.getByRole('button', { name: 'widgets' }))
+    fireEvent.click(await screen.findByText('Remove project'))
+    expect(await screen.findByText(
+      'Removes "widgets" and all its workspaces. Its 2 volumes (queue, db) and all their data go too. '
+      + 'This can\'t be undone.',
+    )).toBeTruthy()
+  })
 })

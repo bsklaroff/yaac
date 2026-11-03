@@ -201,6 +201,22 @@ type HostPathKind = 'Directory' | 'DirectoryOrCreate' | 'File' | 'FileOrCreate' 
 type MountSource =
   | { kind: 'hostPath'; path: string; type?: HostPathKind }
   | { kind: 'emptyDir' }
+  /** A volume `ensureVolume` made ready; only a driver with volumes is
+   *  handed one. */
+  | { kind: 'volume'; volumeId: string }
+
+/**
+ * A volume as a driver acts on it (docs/workspace-volumes.md). The lease
+ * that says which workspace may mount it is the caller's.
+ */
+export interface VolumeRef {
+  id: string
+  /** The size asked for, as a Kubernetes quantity. */
+  size: string
+  /** Its disk was bound and kept once, so a missing one must never be
+   *  replaced by an empty one. */
+  pinned: boolean
+}
 
 /** One path made visible inside a workspace, and where it comes from. */
 export interface WorkspaceMount {
@@ -837,6 +853,31 @@ export interface WorkspaceDriver {
    *  node. The caller tears down workspaces first and removes the global
    *  tree after. Best-effort per part. */
   destroyProjectSubstrate(projectId: string): Promise<void>
+  /**
+   * Make a volume's storage exist before a launch mounts it, re-binding a
+   * kept disk whose claim was lost. Throws `NOT_FOUND` for a pinned volume
+   * whose disk cannot be found, and `NOT_SUPPORTED` under a driver without
+   * volumes (containerless).
+   */
+  ensureVolume(volume: VolumeRef): Promise<void>
+  /** Grow a volume. `NOT_SUPPORTED` where its storage has no size to grow,
+   *  or cannot expand. */
+  resizeVolume(volume: VolumeRef, size: string): Promise<void>
+  /** Delete a volume's storage and its bytes. Its lease is already free.
+   *  `NOT_SUPPORTED` under a driver without volumes. */
+  deleteVolume(volumeId: string): Promise<void>
+  /**
+   * Keep each of these volumes' disks once one is bound (`Retain`, so it
+   * outlives its claim). Only a disk provisioned for the volume's claim, or
+   * already labelled as this volume's, is kept. Resolves with the ids now
+   * kept; empty where volumes have no disks of their own.
+   */
+  pinVolumes(volumeIds: string[]): Promise<string[]>
+  /**
+   * Every volume whose storage exists, and whether a pod mounts it, for the
+   * sweep that finishes deletes. Empty where volumes do not exist.
+   */
+  volumeStorage(): Promise<Array<{ volumeId: string; mounted: boolean }>>
   /**
    * Delete node-local leftovers on every node: project trees not in
    * `live.projectIds` and workspace working copies not in

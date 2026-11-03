@@ -243,6 +243,7 @@ async function realizeMount(
 ): Promise<void> {
   const { mountPath, source } = mount
   if (source.kind === 'emptyDir') return
+  if (source.kind === 'volume') throw new ServerError('NOT_SUPPORTED', 'volumes need a cluster')
   if (mountPath === '/workspace' || mountPath === paths.workspaceDir || mountPath === source.path
     || source.path === paths.acpLogDir || source.path === paths.attachmentsDir
     || mountPath.startsWith('/usr/local/bin/')) return

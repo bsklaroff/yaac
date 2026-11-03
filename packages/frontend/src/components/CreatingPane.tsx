@@ -4,9 +4,10 @@ import { USER_BUBBLE } from '#components/AcpTranscript'
 import { ChatBottomBar, Launching, ROUND_BUTTON, useChatColumn } from '#components/ConversationView'
 import { agentLabel } from '#lib/agentLabel'
 import { useProjectName } from '#lib/projectIdentity'
-import { dismissProvisioning } from '#lib/createWorkspace'
+import { dismissProvisioning, restartWorkspace } from '#lib/createWorkspace'
 import { useOpening } from '#lib/opening'
 import { useUiStore, type LaunchPane } from '#lib/store'
+import { useProvisionWorkspace } from '#lib/useProvisionWorkspace'
 import { stopProvisioning } from '#lib/stopWorkspaceFlow'
 import { PROMPT_PREVIEW_LENGTH, type ProvisioningWorkspaceEntry } from '@yaac/shared/types'
 
@@ -19,7 +20,9 @@ const PANE_NAME: Record<LaunchPane, string> = { shell: 'a shell', files: 'Files'
  * place. Once the workspace is listed its session's pane takes over (a chat
  * pane carries the prompt and spinner on), and a pane the create was
  * started from the bar for (`launches` in the store) opens beside it. A failure shows its error, beside the prompt so it
- * can be reused, with Dismiss.
+ * can be reused, with Dismiss. A restart refused because another running
+ * workspace holds its volume (`VOLUME_HELD`) also offers to restart
+ * without the volume.
  */
 export function CreatingPane({ creating }: { creating: ProvisioningWorkspaceEntry }): JSX.Element {
   const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
@@ -28,11 +31,29 @@ export function CreatingPane({ creating }: { creating: ProvisioningWorkspaceEntr
   const column = useChatColumn()
   const pane = useUiStore((s) => s.launches[creating.workspaceId]?.pane)
   const opening = useOpening(creating.sessionId, creating.prompt, PROMPT_PREVIEW_LENGTH)
+  const provision = useProvisionWorkspace()
+  // A restart refused before it started has no server row, so its code is
+  // only on this tab's own.
+  const ownCode = useUiStore((s) =>
+    s.optimisticProvisioning.find((e) => e.workspaceId === creating.workspaceId)?.errorCode)
+  const errorCode = creating.errorCode ?? ownCode
+  const volumeHeld = creating.kind === 'restart' && errorCode === 'VOLUME_HELD'
 
   const dismiss = (): void => {
     void dismissProvisioning(creating.workspaceId).catch(() => { /* best-effort */ })
     removeOptimisticProvisioning(creating.workspaceId)
     selectWorkspace(null)
+  }
+
+  const restartWithoutVolume = (): void => {
+    removeOptimisticProvisioning(creating.workspaceId)
+    provision({
+      workspaceId: creating.workspaceId,
+      projectId: creating.projectId,
+      kind: 'restart',
+      ...(creating.tool !== undefined ? { tool: creating.tool } : {}),
+      ...(creating.groupId !== undefined ? { groupId: creating.groupId } : {}),
+    }, (onProgress) => restartWorkspace(creating.workspaceId, onProgress, null))
   }
 
   return (
@@ -61,6 +82,15 @@ export function CreatingPane({ creating }: { creating: ProvisioningWorkspaceEntr
                 + `workspace in ${projectName(creating.projectId)}`
                 + (pane !== undefined ? `, then opening ${PANE_NAME[pane]}` : '')}
           </span>
+          {volumeHeld && (
+            <button
+              type="button"
+              onClick={restartWithoutVolume}
+              className="rounded-md bg-surface-3 px-3 py-1.5 text-xs text-text transition hover:bg-border-strong"
+            >
+              Restart without volume
+            </button>
+          )}
           {creating.error !== undefined ? (
             <button
               type="button"

@@ -36,6 +36,7 @@ import {
   SERVER_INGRESS_NP_NAME,
   PROXY_EGRESS_NP_NAME,
   SERVER_LOCAL_CLAIM_NAME,
+  VOLUMES_CLAIM_NAME,
   SERVER_POD_PORT,
   RUNTIME_CLASS_GVISOR,
   RUNTIME_CLASS_GVISOR_NESTED,
@@ -75,7 +76,7 @@ import {
 } from './byo-gates'
 import { readInstallRecord } from '@yaac/shared/install-record'
 import { pushImageToRegistry } from './host-images'
-import { PACKAGE_ROOT, globalRoot, serverLocalRoot } from '@yaac/shared/paths'
+import { PACKAGE_ROOT, globalRoot, serverLocalRoot, volumesRoot } from '@yaac/shared/paths'
 import type { CheckResult } from '@yaac/shared/types'
 
 /** Probe image used for the end-to-end registry-pull + hostPath check. */
@@ -517,7 +518,8 @@ interface RawPvRead {
  *
  * - No class (kind's static volumes): a hostPath into this data dir's own
  *   tier folder. (Checked by class, not source, because local-path also
- *   provisions hostPath volumes.)
+ *   provisions hostPath volumes.) Such an install also has `yaac-volumes`,
+ *   checked the same way (docs/workspace-volumes.md).
  * - Provisioned (byo): carries this install's labels, which re-install
  *   uses to find it. The global volume must also be NFS-family and mounted
  *   with `actimeo<=1`, the cross-pod visibility delay the shared tier
@@ -528,13 +530,15 @@ async function runStorageCheck(): Promise<CheckResult> {
   const expectedHostPath: Record<string, string> = {
     [GLOBAL_CLAIM_NAME]: globalRoot(),
     [SERVER_LOCAL_CLAIM_NAME]: serverLocalRoot(),
+    [VOLUMES_CLAIM_NAME]: volumesRoot(),
   }
   try {
     const problems: string[] = []
     const bound: string[] = []
     const ours = (name: string, labels: Record<string, string>): boolean =>
       labels[LABEL_INSTALL_ID] === installId() && labels[LABEL_CLAIM] === name
-    for (const name of [GLOBAL_CLAIM_NAME, SERVER_LOCAL_CLAIM_NAME, CHECKOUTS_CLAIM_NAME]) {
+    const claims = [GLOBAL_CLAIM_NAME, SERVER_LOCAL_CLAIM_NAME, CHECKOUTS_CLAIM_NAME]
+    for (const name of claims) {
       const pvc = await readObject<RawPvcRead>({ apiVersion: 'v1', kind: 'PersistentVolumeClaim', name, namespace: ns })
       if (!pvc) {
         problems.push(`${name}: no such claim in "${ns}"`)
@@ -557,6 +561,8 @@ async function runStorageCheck(): Promise<CheckResult> {
         continue
       }
       if (!pv?.spec?.storageClassName) {
+        // A static global volume means kind, which has the volumes claim too.
+        if (name === GLOBAL_CLAIM_NAME) claims.push(VOLUMES_CLAIM_NAME)
         const hostPath = pv?.spec?.hostPath?.path
         if (hostPath !== expectedHostPath[name]) {
           problems.push(`${name}: volume ${volumeName} is ${hostPath ?? 'not a hostPath volume'}, `

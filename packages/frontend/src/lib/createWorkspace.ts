@@ -1,6 +1,7 @@
 import { api } from './api'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { rememberOpening } from '#lib/opening'
+import { throwingFetch } from '@yaac/shared/api-core'
 import type { LaunchPane } from '#lib/store'
 import { randomUUID } from '#lib/uuid'
 import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
@@ -15,25 +16,20 @@ export interface CreateWorkspaceResult {
 /**
  * POST a workspace create or restart and read its NDJSON progress stream.
  * Calls `onProgress` per step, then resolves with the result or throws the
- * server's error message.
+ * server's error as a `ServerError`, whether it refused before streaming or
+ * failed in the stream.
  */
 async function streamWorkspaceOp(
   path: string,
   body: unknown,
   onProgress: (message: string) => void,
 ): Promise<unknown> {
-  const res = await fetch(path, {
+  const res = await throwingFetch(fetch)(path, {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  if (!res.ok) {
-    // A refusal before the stream starts has the same `{error: {message}}`
-    // shape as the stream's error event.
-    const body = await res.json().catch(() => null) as { error?: { message?: string } } | null
-    throw new Error(body?.error?.message ?? `request failed (HTTP ${res.status})`)
-  }
   return await consumeNdjsonStream<unknown>(res, onProgress)
 }
 
@@ -74,6 +70,8 @@ export interface WorkspaceCreate {
   timeout?: number
   /** A pane to open once the workspace is up. */
   pane?: LaunchPane
+  /** The project volume to attach, by name. */
+  volume?: string
 }
 
 export async function createWorkspace(
@@ -100,17 +98,22 @@ export async function createWorkspace(
     ...(group !== undefined ? { group } : {}),
     ...(c.draftId !== undefined ? { draftId: c.draftId } : {}),
     ...(c.timeout !== undefined ? { timeout: c.timeout } : {}),
+    ...(c.volume !== undefined ? { volume: c.volume } : {}),
     // A failed create's prompt lands in the sidebar as a draft to retry from.
     draftOnFailure: true,
   }
   return await streamWorkspaceOp('/api/workspace/create', body, onProgress) as CreateWorkspaceResult
 }
 
+/** Restart a stopped workspace. `volume` names a volume to attach, null
+ *  starts it without one, and absent attaches the one it last held. */
 export async function restartWorkspace(
   workspaceId: string,
   onProgress: (message: string) => void,
+  volume?: string | null,
 ): Promise<{ workspaceId: string }> {
-  return await streamWorkspaceOp('/api/workspace/restart', { workspaceId }, onProgress) as { workspaceId: string }
+  const body = { workspaceId, ...(volume !== undefined ? { volume } : {}) }
+  return await streamWorkspaceOp('/api/workspace/restart', body, onProgress) as { workspaceId: string }
 }
 
 /** Dismiss a failed create/restart's provisioning row. Idempotent. */

@@ -60,6 +60,8 @@ export interface SpawnRequest {
   /** Minutes until the server stops it. No ceiling: a timeout only
    *  restrains. */
   timeout?: number
+  /** A volume of the project to mount, by name (docs/workspace-volumes.md). */
+  volume?: string
 }
 
 /** What the server decided about one spawn request: the workspace, and the
@@ -143,6 +145,7 @@ export async function decideSpawn(request: SpawnRequest): Promise<SpawnDecision>
       ...(request.group !== undefined ? { group: request.group } : {}),
       ...(request.title !== undefined ? { title: request.title } : {}),
       ...(request.timeout !== undefined ? { deadline: new Date(Date.now() + request.timeout * 60_000) } : {}),
+      ...(request.volume !== undefined ? { volume: request.volume } : {}),
       rememberDefaults: false,
       // The caller gets this id; a spare has its own.
       claimSpare: false,
@@ -150,7 +153,9 @@ export async function decideSpawn(request: SpawnRequest): Promise<SpawnDecision>
     })
   } catch (err) {
     release()
-    if (err instanceof ServerError && err.code === 'VALIDATION') return fail(err.message)
+    if (err instanceof ServerError && ['VALIDATION', 'NOT_FOUND', 'VOLUME_HELD', 'NOT_SUPPORTED'].includes(err.code)) {
+      return fail(err.message)
+    }
     throw err
   }
   void run().then(
@@ -174,6 +179,8 @@ export interface RestartRequest {
   /** Minutes from the restart until the server stops it, or null for no
    *  timeout. Omitted, a workspace that had a timeout keeps its length. */
   timeout?: number | null
+  /** Restart without the volume it last held, forgetting it. */
+  noVolume?: boolean
 }
 
 /** What the server decided about one restart request, or why it is
@@ -240,10 +247,11 @@ export async function decideRestart(request: RestartRequest): Promise<RestartDec
     run = await prepareRestart(request.principal, workspaceId, {
       stoppedOnly: true,
       ...(timeout != null ? { deadline: new Date(Date.now() + timeout * 60_000) } : {}),
+      ...(request.noVolume === true ? { volume: null } : {}),
     })
   } catch (err) {
     release()
-    if (err instanceof ServerError && (err.code === 'CONFLICT' || err.code === 'VALIDATION')) return fail(err.message)
+    if (err instanceof ServerError && ['CONFLICT', 'VALIDATION', 'VOLUME_HELD'].includes(err.code)) return fail(err.message)
     throw err
   }
   void run().then(

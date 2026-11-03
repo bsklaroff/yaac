@@ -87,6 +87,14 @@ describe('resolveMountSource', () => {
     expect(resolveMountSource(pvc)).toBe(pvc)
   })
 
+  it('mounts a volume from the yaac-volumes claim on kind, and from its own claim on byo', () => {
+    const m = { source: { kind: 'volume' as const, volumeId: 'v1' }, mountPath: '/home/yaac/volume' }
+    expect(resolveMountSource(m).source).toEqual({ kind: 'pvc', claimName: 'yaac-volumes', subPath: 'v1' })
+    vi.stubEnv('YAAC_VOLUME_STORAGE_CLASS', 'hcloud-volumes')
+    expect(resolveMountSource(m)).toEqual({ ...m, source: { kind: 'pvc', claimName: 'yaac-volume-v1' } })
+    vi.unstubAllEnvs()
+  })
+
   it('refuses a server-local path: no workspace pod may mount the server\'s claim', () => {
     setDataDir('/data/yaac')
     const m: PodMount = { source: { kind: 'hostPath', path: secretKeyPath() }, mountPath: '/x' }

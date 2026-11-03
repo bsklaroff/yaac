@@ -12,6 +12,7 @@ import type {
   AgentTool, ProjectSummary, ProvisioningWorkspaceEntry, ServerSnapshot, SessionEntry, StoppedWorkspaceEntry,
   WorkspaceListEntry,
 } from '@yaac/shared/types'
+import type { ErrorCode } from '@yaac/shared/errors'
 
 /** Desktop sidebar width in px: the default and the drag bounds. */
 export const DEFAULT_SIDEBAR_WIDTH = 256
@@ -730,7 +731,7 @@ interface UiState {
   /** Update an optimistic row's message or error, if it exists. */
   updateOptimisticProvisioning: (
     workspaceId: string,
-    patch: { message?: string; error?: string },
+    patch: { message?: string; error?: string; errorCode?: ErrorCode },
   ) => void
   /** Drop an optimistic row, e.g. on dismiss. */
   removeOptimisticProvisioning: (workspaceId: string) => void

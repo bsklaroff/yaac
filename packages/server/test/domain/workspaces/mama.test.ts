@@ -28,7 +28,7 @@ import { recordProject } from '#db/project-store'
 import { listQueuedWorkspaceRows } from '#db/queued-workspace-store'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { _clearListActiveInflightForTests } from '#domain/workspaces/list'
-import { createRoutine, listProvisioning, listRoutines, mamaCaller, queueWorkspace, runMamaCommand, setRoutinePaused } from '#domain/workspaces'
+import { createRoutine, createVolume, listProvisioning, listRoutines, mamaCaller, queueWorkspace, runMamaCommand, setRoutinePaused } from '#domain/workspaces'
 import type { MamaCaller } from '#domain/workspaces/mama'
 import { SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE } from '#domain/workspaces/spawn-policy'
 import { recordProjectCreate } from '#db/project-store'
@@ -37,6 +37,7 @@ import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { agentHistoryDir, opencodeCheckpointDir, repoDir, workspaceDir } from '@yaac/shared/project-paths'
 import { recordConversations, setActiveConversations } from '#db/conversation-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
+import { findVolumeByName } from '#db/volume-store'
 import {
   applyWorkspaceEvent,
   closeSessionRow,
@@ -1713,6 +1714,25 @@ describe('runMamaCommand', () => {
       expect(await runMamaCommand(await callerFor({ sessionId: mine.id }), { command: 'send', args: { workspace: 'caller-workspace' }, body: 'go' }))
         .toEqual({ ok: false, error: 'caller-w has no other session to send to' })
       expect(exec).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('volumes', () => {
+    it('lists the project\'s volumes and holders, and create --volume mounts one by name', async () => {
+      expect(await output('volumes')).toBe('This project has no volumes.')
+      await createVolume(local, PROJ, 'queue')
+      expect(await output('volumes')).toMatch(/^queue\s+10Gi\s+free$/)
+
+      await output('create', 'run the queue', { volume: 'queue' })
+      await settle()
+      const queue = await findVolumeByName(PROJ, 'queue')
+      expect(vi.mocked(createWorkspace).mock.calls.at(-1)?.[1].volumeId).toBe(queue?.id)
+
+      const missing = await run('create', 'x', { volume: 'nope' })
+      expect(missing.ok ? '' : missing.error).toContain('no volume named "nope"')
+      // A session in a running workspace mounts nothing new.
+      const beside = await run('create', 'x', { volume: 'queue', workspace: 'w' })
+      expect(beside.ok ? '' : beside.error).toContain('--volume')
     })
   })
 

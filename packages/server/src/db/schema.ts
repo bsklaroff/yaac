@@ -263,7 +263,45 @@ export const workspaces = snakeCase.table('workspaces', {
    *  branch (or its own pushed branch), found when it last started. Their
    *  tracked files show as deleted inside it, which the webapp warns about. */
   trackedScratchDirs: text().array().notNull().default([]),
+  /** The volume it was last launched with (docs/workspace-volumes.md). Kept
+   *  while it is stopped, so a restart attaches it again. No foreign key;
+   *  deleting a volume clears it here (volume-store.ts). */
+  volumeId: uuid(),
 }, (t) => [index().on(t.projectId)])
+
+/**
+ * Named volumes: app data one running workspace at a time mounts
+ * (docs/workspace-volumes.md). `holderWorkspaceId` is the lease; the
+ * substrate's directory or claim is keyed by `id`.
+ */
+export const volumes = snakeCase.table('volumes', {
+  id: uuid().primaryKey().defaultRandom(),
+  projectId: uuid().notNull(),
+  name: text().notNull(),
+  /** The size asked for, as a Kubernetes quantity (`10Gi`). Enforced only
+   *  where the volume is its own claim. */
+  size: text().notNull(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  /** The workspace whose runtime has it mounted, until that runtime is
+   *  gone. Unique: a workspace mounts at most one volume. */
+  holderWorkspaceId: text().unique(),
+  attachedAt: timestamp({ withTimezone: true }),
+  /** When its first disk was bound and kept (`Retain`). Once set, a missing
+   *  disk refuses a launch instead of provisioning an empty one. */
+  pinnedAt: timestamp({ withTimezone: true }),
+}, (t) => [uniqueIndex().on(t.projectId, t.name)])
+
+/**
+ * Volumes deleted whose storage may still exist, written in the same
+ * transaction as the row's delete. The orphan sweep removes only these, so
+ * storage a database does not know about (a reset or restored one under the
+ * same install) is never taken for garbage. A tombstone goes once its
+ * storage is gone.
+ */
+export const deletedVolumes = snakeCase.table('deleted_volumes', {
+  id: uuid().primaryKey(),
+  deletedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+})
 
 /**
  * A named sidebar group, one row per (project, group id); membership is

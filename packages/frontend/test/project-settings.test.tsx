@@ -68,6 +68,12 @@ describe('ProjectSettings', () => {
     expect(screen.getByText('git@gitlab.com:o/beta.git').previousElementSibling?.textContent).toBe('SSH')
   })
 
+  it('has no Volumes section on a containerless server, nor asks for volumes', () => {
+    const server = renderAlpha()
+    expect(screen.queryByText('Volumes')).toBeNull()
+    expect(server.calls.filter((c) => c.path.startsWith('/api/volume'))).toEqual([])
+  })
+
   it('shows a hosted project\'s clone command instead of a remote, and turns its default-branch guard off', async () => {
     useUiStore.setState({ activeProjectId: 'id-gamma' })
     const snapshot = serverSnapshot({

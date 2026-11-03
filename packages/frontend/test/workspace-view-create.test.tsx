@@ -1,14 +1,16 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClientProvider } from '@tanstack/react-query'
-import { PROMPT_PREVIEW_LENGTH, type ProvisioningWorkspaceEntry, type ServerSnapshot } from '@yaac/shared/types'
+import type { JSX } from 'react'
+import { PROMPT_PREVIEW_LENGTH, type ProvisioningWorkspaceEntry, type ServerSnapshot, type StoppedWorkspaceEntry } from '@yaac/shared/types'
 
 // No xterm, no PTY: the terminal pane is a stub.
 vi.mock('#components/WorkspaceTerminal', () => ({ WorkspaceTerminal: () => <textarea data-testid="terminal" /> }))
 
 import { WorkspaceView } from '#components/WorkspaceView'
 import { rememberOpening } from '#lib/opening'
-import { layoutOf, useUiStore } from '#lib/store'
+import { layoutOf, mergeProvisioning, useUiStore } from '#lib/store'
+import { useRestartStopped } from '#lib/useStoppedWorkspaces'
 import {
   mockFetch, renderWithClient, serverError, sessionEntry, testQueryClient, workspaceEntry, type FetchCall, type FetchMock,
 } from './harness'
@@ -107,9 +109,50 @@ describe('WorkspaceView around a create', () => {
     show([creating({ error: 'a tool is missing', sessionId: 'sess-sent', prompt: whole.slice(0, PROMPT_PREVIEW_LENGTH) })])
     expect(screen.getByText(/a tool is missing/)).toBeTruthy()
     expect(screen.getByText(whole)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Restart without volume' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
     await waitFor(() => expect(server.called('POST /api/workspace/provisioning/w1/dismiss')).toHaveLength(1))
     expect(useUiStore.getState().selectedWorkspaceId).toBeNull()
+  })
+
+  // The server refuses a restart whose volume another running workspace
+  // holds before it streams anything, so the row exists only in this tab.
+  it('offers to restart without the volume when another workspace holds it', async () => {
+    const stopped: StoppedWorkspaceEntry = {
+      workspaceId: 'w1', projectId: 'proj', createdAt: '', stoppedAt: '', deathSeenBy: [],
+      sessions: [sessionEntry()], conversations: [], groupId: 'g1',
+    }
+    server.route('POST /api/workspace/restart', ({ body }: FetchCall) => (body as { volume?: null }).volume === null
+      ? { type: 'result', result: { workspaceId: 'w1' } }
+      : serverError('VOLUME_HELD', 'volume "db" is attached to running workspace abcd1234', 409))
+    function Restarting({ entry }: { entry: StoppedWorkspaceEntry }): JSX.Element {
+      const restart = useRestartStopped()
+      const optimistic = useUiStore((s) => s.optimisticProvisioning)
+      return (
+        <>
+          <button type="button" onClick={() => restart(entry)}>Restart</button>
+          <WorkspaceView snapshot={snapshot} provisioning={mergeProvisioning([], optimistic)} />
+        </>
+      )
+    }
+    useUiStore.setState({ activeProjectId: 'proj', snapshot })
+    renderWithClient(<Restarting entry={stopped} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restart' }))
+    expect(await screen.findByText(/attached to running workspace abcd1234/)).toBeTruthy()
+    expect(server.called('POST /api/workspace/restart').map((c) => c.body)).toEqual([{ workspaceId: 'w1' }])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restart without volume' }))
+    await waitFor(() => expect(useUiStore.getState().inFlightProvisions).toEqual([]))
+    expect(server.called('POST /api/workspace/restart').map((c) => c.body).at(-1))
+      .toEqual({ workspaceId: 'w1', volume: null })
+    // The retry is a fresh row in the same place, no longer failed.
+    expect(useUiStore.getState().optimisticProvisioning).toEqual([
+      expect.objectContaining({ workspaceId: 'w1', kind: 'restart', tool: 'claude', groupId: 'g1' }),
+    ])
+    expect(useUiStore.getState().optimisticProvisioning[0]).not.toHaveProperty('error')
+    expect(screen.queryByRole('button', { name: 'Restart without volume' })).toBeNull()
+    expect(useUiStore.getState().selectedWorkspaceId).toBe('w1')
   })
 
   // Started from the new-workspace pane's bar for a pane, it opens that pane
