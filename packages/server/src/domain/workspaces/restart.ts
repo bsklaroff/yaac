@@ -4,12 +4,14 @@ import { resolveWorkspaceId } from './resolve'
 import { provision, type ProvisionRun } from './provisioning'
 import { readGroupRoom, refuseFullGroup } from './group-limits'
 import { planSessionResumes } from './session-launch'
+import { releaseWorkspaceVolumes, volumeForLaunch } from './volumes'
 import {
   clearWorkspaceStopped,
   findWorkspaceRow,
   insertSession,
   listActiveConversations,
   listWorkspaceSessions,
+  setWorkspaceVolume,
   type SessionLaunchSettings,
 } from '#db'
 import { authorizeProject, type Actor } from '#domain/access'
@@ -30,14 +32,17 @@ import { defaultPermissionMode } from '@yaac/shared/types'
  * resuming its conversation, and refuses if one has lost its history
  * (`planSessionResumes`). A conversation an agent started by hand in a
  * terminal, live when the workspace stopped, comes back as a session of its
- * own. Config comes fresh from the project.
+ * own. Config comes fresh from the project. It attaches the volume it last
+ * held, refusing with `VOLUME_HELD` if a running workspace has it now.
  */
 export async function prepareRestart(
   principal: Actor,
   idOrPrefix: string,
   /** `deadline`: when the server stops it, which a restart otherwise
-   *  clears. */
-  opts: { stoppedOnly?: boolean; deadline?: Date } = {},
+   *  clears. `volume`: a volume to attach by name, `null` for none (which
+   *  forgets the one it had), absent for the one it last held
+   *  (docs/workspace-volumes.md). */
+  opts: { stoppedOnly?: boolean; deadline?: Date; volume?: string | null } = {},
 ): Promise<ProvisionRun<WorkspaceCreateResult>> {
   // The runtime is asked directly, never skipped when unreachable: a unit
   // this missed would keep running beside the relaunch.
@@ -65,6 +70,8 @@ export async function prepareRestart(
   // A stopped workspace takes a slot in its group again; a running one
   // already holds its own.
   refuseFullGroup(await readGroupRoom(projectId, row.groupId), workspaceId)
+  // Before anything is torn down, so a held volume leaves it running.
+  const volume = await volumeForLaunch(projectId, workspaceId, opts.volume)
 
   // The row also keeps `inFlightWorkspaceIds` reporting the workspace, which
   // stops the stale reaper deleting the dirs the new launch is about to
@@ -80,6 +87,10 @@ export async function prepareRestart(
     if (jobName) onProgress(`Stopping session job ${jobName}...`)
     // Always: it also clears a leftover terminating mark.
     await teardownForRestart({ jobName: jobName ?? null, projectId, workspaceId })
+    // The old pod is gone, so a volume it held that this launch does not
+    // attach is free; `--no-volume` also forgets it for later restarts.
+    await releaseWorkspaceVolumes(workspaceId, volume?.id)
+    if (opts.volume === null) await setWorkspaceVolume(workspaceId, null)
 
     for (const settings of await terminalConversationSessions(projectId, workspaceId)) {
       await insertSession(projectId, workspaceId, settings)
@@ -92,6 +103,7 @@ export async function prepareRestart(
       resume: true,
       ...(row.baseBranch !== undefined ? { branch: row.baseBranch } : {}),
       ...(opts.deadline !== undefined ? { deadline: opts.deadline } : {}),
+      ...(volume !== undefined ? { volumeId: volume.id } : {}),
       onProgress,
     })
 

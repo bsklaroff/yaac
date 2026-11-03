@@ -12,6 +12,7 @@ import {
   installSecurityContext,
   runtimeClassSpec,
   sentryTmpfsAnnotations,
+  volumeClaimName,
   type MountSource,
   type PodMount,
 } from '#drivers/k8s/substrate'
@@ -247,6 +248,14 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
     initContainers.push(nodeDirsInitContainer(p.nodeDirsImage, p.nodeLocalRoot, p.nodeLocalDirs))
   }
 
+  // A byo volume's claim is a fresh filesystem whose root belongs to root.
+  const volumeRoots = p.mounts.flatMap((m, i) =>
+    m.source.kind === 'pvc' && m.source.claimName.startsWith(volumeClaimName('')) ? [`pv-${String(i)}`] : [])
+  if (volumeRoots.length > 0) {
+    if (!p.nodeDirsImage) throw new Error('a volume claim mounted without nodeDirsImage')
+    initContainers.push(volumeRootInitContainer(p.nodeDirsImage, volumeRoots))
+  }
+
   if (p.nested) {
     // See NESTED_GRAPHROOT_PATH. Root-owned; the engine runs as root.
     volumes.push({
@@ -371,6 +380,34 @@ const NODE_ROOT_MOUNT = '/node'
  * pod's file-mount sources (workspaces/teardown.ts).
  */
 export const PRE_STOP_GRACE_SECONDS = 60
+
+/**
+ * The `volume-root` init container, run as root: hands each byo volume's
+ * root to the pod's identity, once (docs/workspace-volumes.md). Not
+ * recursive, and not `fsGroup`, which kubelet would apply to every volume
+ * in the pod, the shared tier included. Runs the pinned builder image, as
+ * `node-dirs` does.
+ */
+function volumeRootInitContainer(image: string, volumes: string[]): Record<string, unknown> {
+  const { runAsUser, runAsGroup } = installSecurityContext()
+  const owner = `${String(runAsUser)}:${String(runAsGroup)}`
+  return {
+    name: 'volume-root',
+    image,
+    imagePullPolicy: 'IfNotPresent',
+    securityContext: { runAsUser: 0, runAsGroup: 0 },
+    resources: {
+      requests: { cpu: '10m', memory: '16Mi' },
+      limits: { cpu: '100m', memory: '64Mi' },
+    },
+    command: [
+      'sh', '-c',
+      `for d in "$@"; do [ "$(stat -c %u:%g "$d")" = ${owner} ] || chown ${owner} "$d"; done`,
+      '--', ...volumes.map((v) => `/volumes/${v}`),
+    ],
+    volumeMounts: volumes.map((v) => ({ name: v, mountPath: `/volumes/${v}` })),
+  }
+}
 
 /**
  * The `node-dirs` init container, run as root. For each node-local

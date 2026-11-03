@@ -1,12 +1,13 @@
 import { useCallback } from 'react'
 import { useUiStore } from '#lib/store'
 import { formatUtcTimestamp } from '@yaac/shared/time'
+import { ServerError } from '@yaac/shared/errors'
 import type { ProvisioningWorkspaceEntry } from '@yaac/shared/types'
 
 /**
  * Run a workspace create or restart optimistically: add its provisioning
  * `row` right away, open it so progress shows in the main pane, and stream
- * `op`'s progress or error into it until the snapshot lists the workspace
+ * `op`'s progress, or its error and the error's code, into it until the snapshot lists the workspace
  * (the store then drops the optimistic row). A create that claims a
  * prewarmed spare is listed under the spare's id: its row stays until the
  * spare is listed, so the pane is never left empty, and the selection then
@@ -39,7 +40,10 @@ export function useProvisionWorkspace(): (
         if (res.workspaceId !== workspaceId) recordClaim(workspaceId, res.workspaceId)
       })
       .catch((e: unknown) => {
-        updateOptimisticProvisioning(workspaceId, { error: e instanceof Error ? e.message : 'failed' })
+        updateOptimisticProvisioning(workspaceId, {
+          error: e instanceof Error ? e.message : 'failed',
+          ...(e instanceof ServerError ? { errorCode: e.code } : {}),
+        })
       })
       // After recording the claim, so a waiting selection knows where to go.
       .finally(() => setProvisionInFlight(workspaceId, false))

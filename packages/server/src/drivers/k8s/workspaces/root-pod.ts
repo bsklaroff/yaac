@@ -31,6 +31,7 @@ import {
   LABEL_INSTALL_ID,
   PRIORITY_CLASS_INFRA,
   RUNTIME_CLASS_GVISOR,
+  VOLUMES_CLAIM_NAME,
   deleteObjects,
   installId,
   k8sNamespace,
@@ -39,7 +40,7 @@ import {
 } from '#drivers/k8s/substrate'
 import { ensureBuilderImage, registryRef, resolveTrustedLayers } from '#drivers/k8s/cluster'
 import { isEntryName } from '#lib/confined-fs'
-import { globalRoot } from '@yaac/shared/paths'
+import { globalRoot, volumesRoot } from '@yaac/shared/paths'
 import { workspaceDir } from '@yaac/shared/project-paths'
 
 /** Where the root remover mounts the directory whose entries it removes. */
@@ -58,6 +59,9 @@ const ROOT_REMOVE_SCRIPT = `cd ${TARGET_POD_PATH} && rm -rf -- "$@"`
  * pod's last words unless it succeeds.
  */
 async function runRootPod(dir: string, pod: {
+  /** The claim `dir` is in, and where the server mounts it: the GLOBAL
+   *  tier unless given. */
+  claim?: { name: string; root: string }
   /** The `app` label of every pod for this purpose, and each one's name
    *  prefix and container name. */
   app: string
@@ -71,11 +75,12 @@ async function runRootPod(dir: string, pod: {
   command: string[]
   timeoutMs: number
 }): Promise<void> {
-  const rel = path.relative(globalRoot(), path.resolve(dir))
+  const claim = pod.claim ?? { name: GLOBAL_CLAIM_NAME, root: globalRoot() }
+  const rel = path.relative(claim.root, path.resolve(dir))
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
-    throw new Error(`refusing to run as root under ${dir}: not inside ${globalRoot()}`)
+    throw new Error(`refusing to run as root under ${dir}: not inside ${claim.root}`)
   }
-  const realRel = path.relative(await fs.realpath(globalRoot()), await fs.realpath(dir))
+  const realRel = path.relative(await fs.realpath(claim.root), await fs.realpath(dir))
   if (realRel !== rel) throw new Error(`refusing to run as root under ${dir}: it is reached through a link`)
 
   // Each call has its own pod, since calls on one `dir` (every workspace
@@ -109,7 +114,7 @@ async function runRootPod(dir: string, pod: {
         // kubelet resolves a subPath without leaving the volume.
         volumeMounts: [{ name: 'global', mountPath: pod.mountPath, subPath: rel }],
       }],
-      volumes: [{ name: 'global', persistentVolumeClaim: { claimName: GLOBAL_CLAIM_NAME } }],
+      volumes: [{ name: 'global', persistentVolumeClaim: { claimName: claim.name } }],
     },
   }, { timeoutMs: pod.timeoutMs })
   if (phase !== 'Succeeded') {
@@ -134,6 +139,26 @@ export async function removeAsRoot(dir: string, names: string[]): Promise<boolea
     timeoutMs: ROOT_REMOVE_TIMEOUT_MS,
   })
   return true
+}
+
+/**
+ * Remove a kind volume's directory, `<volumes root>/<id>`, when the server's
+ * own removal is refused: an agent's `sudo` writes land as real root, as on
+ * the global tier. The pod mounts the volumes root, which no workspace
+ * mounts, so no link can be swapped in above the entry.
+ */
+export async function removeVolumeDirAsRoot(volumeId: string): Promise<void> {
+  if (!isEntryName(volumeId)) throw new Error(`refusing to remove volume ${JSON.stringify(volumeId)} as root`)
+  await runRootPod(path.join(volumesRoot(), volumeId), {
+    claim: { name: VOLUMES_CLAIM_NAME, root: volumesRoot() },
+    app: 'yaac-root-remove',
+    prefix: 'yaac-root-rm',
+    container: 'rm',
+    image: await ensureBuilderImage(),
+    mountPath: TARGET_POD_PATH,
+    command: ['sh', '-c', `cd ${TARGET_POD_PATH} && find . -mindepth 1 -delete`],
+    timeoutMs: ROOT_REMOVE_TIMEOUT_MS,
+  })
 }
 
 /**

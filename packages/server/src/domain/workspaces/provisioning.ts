@@ -16,7 +16,7 @@ import { isWorkspaceTerminating } from '#runtime/status'
 import { getWorkspaceRow } from '#db'
 import { authorizeProject, type Actor } from '#domain/access'
 import { formatUtcTimestamp } from '@yaac/shared/time'
-import { ServerError } from '@yaac/shared/errors'
+import { ServerError, type ErrorCode } from '@yaac/shared/errors'
 import type { AgentTool, ProvisioningWorkspaceEntry } from '@yaac/shared/types'
 
 export type ProvisioningKind = 'create' | 'restart'
@@ -29,6 +29,7 @@ interface ProvisioningEntry {
   kind: ProvisioningKind
   message: string
   error?: string
+  errorCode?: ErrorCode
   /** Sidebar group, so the row shows in its section while provisioning. */
   groupId?: string
   title?: string
@@ -167,7 +168,7 @@ export function claimProvisioning(workspaceId: string, claimedId: string | undef
 /** Mark an entry failed; kept until dismissed. Releases any claimed spare
  *  so the lingering row does not hide it. A stopped entry is dropped
  *  instead, since the user asked for it to go. No-op if absent. */
-export function failProvisioning(workspaceId: string, error: string): void {
+export function failProvisioning(workspaceId: string, error: string, errorCode?: ErrorCode): void {
   const e = entries.get(workspaceId)
   if (!e) return
   if (e.stopping === true) {
@@ -175,6 +176,7 @@ export function failProvisioning(workspaceId: string, error: string): void {
     return
   }
   e.error = error
+  if (errorCode !== undefined) e.errorCode = errorCode
   delete e.claimedId
   notifyWorkspaceListChanged()
 }
@@ -349,7 +351,8 @@ export function provision<T extends { workspaceId: string }>(
       notifyWorkspaceListChanged()
       return result
     } catch (err) {
-      failProvisioning(workspaceId, err instanceof Error ? err.message : String(err))
+      failProvisioning(workspaceId, err instanceof Error ? err.message : String(err),
+        err instanceof ServerError ? err.code : undefined)
       if (input.groupId !== undefined) provisionFailed(input.projectId)
       throw err
     } finally {
@@ -396,6 +399,7 @@ export function listProvisioning(): ProvisioningWorkspaceEntry[] {
       kind: e.kind,
       message: e.message,
       ...(e.error !== undefined ? { error: e.error } : {}),
+      ...(e.errorCode !== undefined ? { errorCode: e.errorCode } : {}),
       ...(e.groupId !== undefined ? { groupId: e.groupId } : {}),
       ...(e.title !== undefined ? { title: e.title } : {}),
       ...(e.sessionId !== undefined ? { sessionId: e.sessionId } : {}),

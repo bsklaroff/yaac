@@ -1,4 +1,4 @@
-import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileConversations, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileRevokedShares, reconcileSessions, reconcileStoppedConversations, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, startScheduledWorkspaces } from '#domain/workspaces'
+import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileConversations, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileRevokedShares, reconcileSessions, reconcileStoppedConversations, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, reconcileVolumeLeases, collectDeletedVolumes, startScheduledWorkspaces } from '#domain/workspaces'
 import { refreshProjectOrigins } from '#domain/projects'
 import { adoptRefreshedToolCredentials, syncToolCredentials } from '#domain/auth'
 import { workspaceDriver } from '#drivers/driver'
@@ -34,6 +34,14 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // is 0.
     { name: 'prewarm-pool', triggers: ['workspaces'],
       run: (ctx) => reconcilePrewarmPool(ctx.snapshot()) },
+  ]
+  // Volumes are cluster storage (docs/workspace-volumes.md). A lease ends
+  // once its holder's runtime is gone, which a change of the workspace set
+  // reports. Storage a failed delete left is finished every ten minutes,
+  // since under k8s the sweep lists every pod.
+  const volumes: ReconcileStep[] = driver.kind === 'containerless' ? [] : [
+    { name: 'volume-leases', triggers: ['workspaces'], run: (ctx) => reconcileVolumeLeases(ctx.snapshot()) },
+    { name: 'volume-gc', triggers: [], every: 10 * 60_000, run: () => collectDeletedVolumes() },
   ]
   return [
     // The stale reaper runs first, so the prewarm pool sees counts after
@@ -103,6 +111,7 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     { name: 'workspace-retention', triggers: [], every: 60 * 60_000,
       run: (ctx) => reconcileWorkspaceRetention(ctx.signal) },
     ...credentialSync,
+    ...volumes,
     // Keep running workspaces' `origin/*` within minutes of origin
     // (docs/server-git.md); nothing else fetches a project with no new
     // creates. Throttled per project and detached.

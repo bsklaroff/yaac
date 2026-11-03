@@ -6,6 +6,7 @@ import {
   type PiProvider,
 } from '#tool-providers'
 import type { ModelEfforts } from '#tool-providers.generated'
+import type { ErrorCode } from '#errors'
 
 export type { ModelEfforts }
 
@@ -1491,6 +1492,9 @@ export interface ProvisioningWorkspaceEntry {
   message: string
   /** Set when provisioning failed; the row stays until dismissed. */
   error?: string
+  /** The failure's code, when it had one the webapp acts on (a
+   *  `VOLUME_HELD` restart offers to go without the volume). */
+  errorCode?: ErrorCode
   /** The sidebar group it is filed under, so the row shows there while it
    *  provisions. Absent means ungrouped. */
   groupId?: string
@@ -1635,6 +1639,22 @@ export const routineSettingsSchema = z.object({
 })
 
 export type RoutineSettings = z.infer<typeof routineSettingsSchema>
+
+/**
+ * A volume as `GET /api/volume/list` lists it (docs/workspace-volumes.md): app
+ * data one running workspace at a time mounts.
+ */
+export interface VolumeEntry {
+  name: string
+  /** The size asked for, as a Kubernetes quantity (`10Gi`); enforced only
+   *  on a cluster that gives each volume its own claim. */
+  size: string
+  createdAt: string
+  /** The workspace that has it mounted now. */
+  holder?: { workspaceId: string; title?: string; attachedAt: string }
+  /** Stopped workspaces that attach it again when they restart. */
+  stoppedWorkspaces: Array<{ workspaceId: string; title?: string }>
+}
 
 /** A routine as the snapshot carries it. */
 export interface RoutineEntry {
@@ -2166,5 +2186,6 @@ export const MAMA_COMMANDS = [
   'fetch',
   'history',
   'send',
+  'volumes',
 ] as const
 export type MamaCommand = (typeof MAMA_COMMANDS)[number]

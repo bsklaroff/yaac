@@ -12,6 +12,7 @@ import {
   type ProvisionRun,
 } from './provisioning'
 import { tryClaimPrewarmed } from './prewarm'
+import { volumeForLaunch } from './volumes'
 import { modelDisplayName } from '#domain/auth'
 import { authorizeProject, type Actor } from '#domain/access'
 import { recordProjectCreate } from '#db'
@@ -51,6 +52,8 @@ export interface StartWorkspaceRequest {
   groupId?: string
   /** When the server stops it (docs/routines.md "Timeouts"). */
   deadline?: Date
+  /** A volume to mount, by name (docs/workspace-volumes.md). */
+  volume?: string
   /** Remember the named settings as project defaults (user creates only). */
   rememberDefaults: boolean
   /** Try a prewarmed spare first. A spare has its own id, so callers that
@@ -100,6 +103,9 @@ export async function prepareStart(
   // provisioning row takes the slot (docs/workspace-groups.md).
   const room = await readGroupRoom(projectId, groupId)
   refuseFullGroup(room, workspaceId)
+  const volume = request.volume !== undefined
+    ? await volumeForLaunch(projectId, workspaceId, request.volume)
+    : undefined
   if (request.rememberDefaults && setup !== undefined) {
     // Only the named fields, so a resolved default never overwrites a pick.
     await recordProjectCreate(projectId, setup.tool, {
@@ -127,8 +133,9 @@ export async function prepareStart(
   }, async (onProgress) => {
     try {
       throwIfProvisionStopped(workspaceId)
-      // Containerless keeps no spare pool (`defaultReconcileSteps`).
-      if (request.claimSpare && workspaceDriver().kind !== 'containerless') {
+      // Containerless keeps no spare pool (`defaultReconcileSteps`), and a
+      // spare's mounts, fixed at launch, have no volume.
+      if (request.claimSpare && workspaceDriver().kind !== 'containerless' && volume === undefined) {
         const claimed = await tryClaimPrewarmed(projectId, workspaceId, session, onProgress, {
           ...(branch !== undefined ? { branch } : {}),
           ...(title !== undefined ? { title } : {}),
@@ -148,6 +155,7 @@ export async function prepareStart(
         ...(generatedTitle !== undefined ? { generatedTitle } : {}),
         ...(groupId !== undefined ? { groupId } : {}),
         ...(request.deadline !== undefined ? { deadline: request.deadline } : {}),
+        ...(volume !== undefined ? { volumeId: volume.id } : {}),
       })
     } catch (err) {
       const { draft } = request

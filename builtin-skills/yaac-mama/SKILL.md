@@ -14,6 +14,7 @@ yaac-mama list                                    # workspaces + groups here
 yaac-mama list <workspace>...                     # just those, with full prompts
 yaac-mama list --stopped [--search S] [--group G] [--limit N] [--cursor C]
 yaac-mama create [opts] "<prompt>"
+yaac-mama create --volume V [opts] "<prompt>"         # mounting one of the project's volumes
 yaac-mama create --workspace W [session opts] ["<prompt>"]  # another session in a running workspace
 yaac-mama create --no-session [--branch B] [--group G] [--title T] [--timeout D]
 yaac-mama queue [--parent-workspace W] [opts] "<prompt>"
@@ -33,10 +34,12 @@ yaac-mama set-base <branch>                         # your base branch, on origi
 yaac-mama stop [<workspace>]                        # omit the workspace to stop yourself
 yaac-mama stop --session [<session>]                # close one session; omit it to close your own
 yaac-mama restart [--timeout D] <workspace>         # a stopped one, resumed
+yaac-mama restart --no-volume [--timeout D] <workspace>  # resumed without the volume it held
 yaac-mama group create "<name>"
 yaac-mama group move <workspace> ["<group>"]       # omit the group to ungroup
 yaac-mama group set-limit "<group>" <limit|none>   # cap how many run at once
 yaac-mama models                                  # tools/models available
+yaac-mama volumes                                 # this project's volumes, and who holds each
 yaac-mama fetch <workspace>                       # its branches, into your git
 yaac-mama history <workspace>                     # its conversations
 yaac-mama history <workspace> <conversation>      # one's transcripts, to stdout
@@ -368,8 +371,9 @@ pass — the server resolves who is calling and answers for that project only.
     **more permissive than yours** (counting a tool that lacks its mode, which comes
     back in the nearest one it has: pi only has `bypass`), for one whose tool
     the project's owner is no longer signed in to, and for one whose
-    conversation history is gone from the host (the user must restore it). A
-    launch that fails after the reply is shown to the user in the webapp, not
+    conversation history is gone from the host (the user must restore it), and
+    for one whose volume another running workspace holds (`--no-volume`
+    restarts it without). A launch that fails after the reply is shown to the user in the webapp, not
     to you; if `list` never shows it running, tell the user.
 
 - **`group create "<name>"`** — make an empty group. Idempotent: naming one
@@ -387,6 +391,18 @@ pass — the server resolves who is calling and answers for that project only.
   exist (`group create` first). Lowering it stops nothing. While the group
   is full, `create`, `restart` and `group move` into it are refused, and
   what is queued into it with no parent starts as room frees, oldest first.
+
+- **`volumes`** — this project's volumes: named storage that survives a
+  workspace's stops and restarts, which one running workspace at a time may
+  mount. Each line names a volume, its size, and the workspace it is
+  attached to, or `free`. `create --volume <name>` mounts one at
+  `$YAAC_VOLUME_DIR` (`$YAAC_VOLUME_NAME` names it), refused while another
+  running workspace has it; a restarted workspace takes back the volume it
+  had, and `restart --no-volume` starts it without (forgetting it). Keep
+  state there that a long-running workspace must not lose: the checkout's
+  ignored files are cleaned at every stop. Volumes are made and deleted by
+  the user (`yaac volume`, or the webapp's project settings), and exist
+  only on a cluster.
 
 - **`models`** — which agent tools have host credentials (with kind and
   provider) and each one's accepted model ids. The workspace cannot see host

@@ -88,7 +88,11 @@ export {
   POD_GLOBAL_ROOT,
   POD_NODE_LOCAL_ROOT,
   POD_SERVER_LOCAL_ROOT,
+  POD_VOLUMES_ROOT,
   SERVER_LOCAL_CLAIM_NAME,
+  LABEL_VOLUME_ID,
+  VOLUMES_CLAIM_NAME,
+  volumeClaimName,
 } from './storage-constants'
 export {
   LABEL_NESTED,

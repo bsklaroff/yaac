@@ -23,11 +23,12 @@
 #   yaac-mama set-base <branch>
 #   yaac-mama stop [<workspace>]
 #   yaac-mama stop --session [<session>]
-#   yaac-mama restart [--timeout D] <workspace>
+#   yaac-mama restart [--timeout D] [--no-volume] <workspace>
 #   yaac-mama group create "<name>"
 #   yaac-mama group move <workspace> ["<group>"]
 #   yaac-mama group set-limit "<group>" <limit|none>
 #   yaac-mama models
+#   yaac-mama volumes
 #   yaac-mama fetch <workspace>
 #   yaac-mama history <workspace> [<conversation>] [-o <dir>]
 #
@@ -110,11 +111,13 @@ Usage:
   yaac-mama stop --session [<session>]             # close one agent's session
                                                    # (default: yours); its
                                                    # workspace keeps running
-  yaac-mama restart [--timeout <d>] <workspace>    # restart a stopped one
+  yaac-mama restart [--timeout <d>] [--no-volume] <workspace>
+                                                   # restart a stopped one
   yaac-mama group create "<name>"                  # make an empty group
   yaac-mama group move <workspace> ["<group>"]      # omit the group to ungroup
   yaac-mama group set-limit "<group>" <n|none>     # cap how many run at once
   yaac-mama models                                 # tools/models available
+  yaac-mama volumes                                # volumes, and who holds each
   yaac-mama fetch <workspace>                      # read its branches into git
   yaac-mama history <workspace>                    # list its conversations
   yaac-mama history <workspace> <conversation>     # print one's transcripts
@@ -177,6 +180,10 @@ create also takes:
                    instead of a new one; the prompt is then optional.
   --no-session     start a workspace with no agent. It takes no prompt and
                    no agent options.
+  --volume <name>  mount this project's volume at $YAAC_VOLUME_DIR: storage
+                   kept across stops and restarts, which one running
+                   workspace at a time may mount (see `yaac-mama volumes`).
+                   Refused while another running workspace has it.
 
 queue also takes at most one of:
   --parent-workspace <id>
@@ -584,6 +591,8 @@ case "$1" in
 
   models) run models '' ;;
 
+  volumes) run volumes '' ;;
+
   fetch)
     shift
     if [ $# -ne 1 ] || [ -z "$1" ]; then
@@ -657,12 +666,12 @@ EOF
   create|queue|edit-queued|routine-create|routine-edit)
     cmd=$1; shift
     tool=""; model=""; effort=""; perm=""; ui_mode=""; branch=""; group=""; title=""; parent=""; no_parent=""; prompt_file=""
-    timeout=""; start_at=""; start_in=""; routine_name=""; cron=""; tz=""; target=""; resume=""; no_session=""
+    timeout=""; start_at=""; start_in=""; routine_name=""; cron=""; tz=""; target=""; resume=""; no_session=""; volume=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --no-parent) no_parent=1; shift; continue ;;
         --no-session) no_session=1; shift; continue ;;
-        --tool|--model|--effort|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace|--prompt-file|--timeout|--start-at|--start-in|--name|--cron|--tz|--workspace|--resume)
+        --tool|--model|--effort|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace|--prompt-file|--timeout|--start-at|--start-in|--name|--cron|--tz|--workspace|--resume|--volume)
           [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a value" >&2; exit 2; } ;;
         *) break ;;
       esac
@@ -685,11 +694,12 @@ EOF
         --start-in) start_in=$2 ;;
         --workspace) target=$2 ;;
         --resume) resume=$2 ;;
+        --volume) volume=$2 ;;
       esac
       shift 2
     done
-    if [ "$cmd" != create ] && { [ -n "$target" ] || [ -n "$resume" ] || [ -n "$no_session" ]; }; then
-      echo "yaac-mama: --workspace, --resume and --no-session are create's" >&2
+    if [ "$cmd" != create ] && { [ -n "$target" ] || [ -n "$resume" ] || [ -n "$no_session" ] || [ -n "$volume" ]; }; then
+      echo "yaac-mama: --workspace, --resume, --no-session and --volume are create's" >&2
       exit 2
     fi
     opts='[--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T] [--timeout D]'
@@ -739,7 +749,8 @@ EOF
     set -- "$cmd" "$prompt" queued "$queued" routine "$routine" parent-workspace "$parent" no-parent "$no_parent" \
       tool "$tool" model "$model" effort "$effort" permission-mode "$perm" ui-mode "$ui_mode" branch "$branch" \
       group "$group" title "$title" timeout "$timeout" start-at "$start_at" start-in "$start_in" \
-      name "$routine_name" cron "$cron" tz "$tz" workspace "$target" resume "$resume" no-session "$no_session"
+      name "$routine_name" cron "$cron" tz "$tz" workspace "$target" resume "$resume" no-session "$no_session" \
+      volume "$volume"
     case "$cmd" in queue|routine-create) ;; *) run "$@" ;; esac
     # The new id alone on stdout, for `id=$(yaac-mama queue …)`; any note
     # the server adds after it goes to stderr.
@@ -831,16 +842,21 @@ EOF
 
   restart)
     shift
-    timeout=""
-    if [ "${1:-}" = --timeout ]; then
-      [ $# -ge 2 ] && [ -n "$2" ] || { echo 'yaac-mama: --timeout needs a value' >&2; exit 2; }
-      timeout=$2; shift 2
-    fi
+    timeout=""; no_volume=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --timeout)
+          [ $# -ge 2 ] && [ -n "$2" ] || { echo 'yaac-mama: --timeout needs a value' >&2; exit 2; }
+          timeout=$2; shift 2 ;;
+        --no-volume) no_volume=1; shift ;;
+        *) break ;;
+      esac
+    done
     if [ $# -ne 1 ] || [ -z "$1" ]; then
-      echo 'usage: yaac-mama restart [--timeout D] <workspace>' >&2
+      echo 'usage: yaac-mama restart [--timeout D] [--no-volume] <workspace>' >&2
       exit 2
     fi
-    run restart '' workspace "$1" timeout "$timeout"
+    run restart '' workspace "$1" timeout "$timeout" no-volume "$no_volume"
     ;;
 
   run-queued|delete-queued|routine-pause|routine-resume|routine-run|routine-delete)
@@ -890,7 +906,7 @@ EOF
     ;;
 
   *)
-    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, run-queued, delete-queued, routine, send, rename, stop, restart, group, models, fetch, history)" >&2
+    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, run-queued, delete-queued, routine, send, rename, stop, restart, group, models, volumes, fetch, history)" >&2
     echo 'run "yaac-mama --help" for usage' >&2
     exit 2
     ;;

@@ -123,6 +123,7 @@ export {
   Shrink as CompactionIcon,
   ArrowUpToLine as JumpTopIcon,
   ArrowDownToLine as JumpBottomIcon,
+  HardDrive as VolumeIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool. */

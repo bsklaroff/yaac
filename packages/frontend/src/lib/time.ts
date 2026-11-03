@@ -4,10 +4,10 @@ import { api } from '#lib/api'
 import { formatDuration, minutesUntil, resolveStartAt } from '@yaac/shared/schedule'
 
 /** A relative age ("5m ago") from a server timestamp (UTC
- *  'YYYY-MM-DD HH:MM:SS'); '' if unset or unparseable. */
+ *  'YYYY-MM-DD HH:MM:SS', or an ISO instant); '' if unset or unparseable. */
 export function relativeAge(utc: string | undefined): string {
   if (!utc) return ''
-  const t = Date.parse(utc.replace(' ', 'T') + 'Z')
+  const t = Date.parse(utc.includes('T') ? utc : utc.replace(' ', 'T') + 'Z')
   if (Number.isNaN(t)) return ''
   const s = Math.max(0, Math.floor((Date.now() - t) / 1000))
   if (s < 60) return `${s}s ago`

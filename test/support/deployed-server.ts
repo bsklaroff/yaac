@@ -22,7 +22,7 @@ import {
 } from '@yaac/server/drivers/k8s/install/server-deploy'
 import { ensureStorageClaims } from '@yaac/server/drivers/k8s/install/storage'
 import { readLock } from '@yaac/shared/lock'
-import { globalRoot, nodeLocalRoot, serverLocalRoot } from '@yaac/shared/paths'
+import { globalRoot, nodeLocalRoot, serverLocalRoot, volumesRoot } from '@yaac/shared/paths'
 import { recordInstall } from '@yaac/shared/install-record'
 import { registerServer } from '@yaac/shared/server-config'
 import type { ServerLock } from '@yaac/shared/server-lock-file'
@@ -93,6 +93,7 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
       globalHostPath: globalRoot(),
       serverLocalHostPath: serverLocalRoot(),
       nodeLocalHostPath: nodeLocalRoot(),
+      volumesHostPath: volumesRoot(),
     },
   })
   await applyObject(buildServerServiceAccountManifest())

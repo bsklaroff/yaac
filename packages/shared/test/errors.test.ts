@@ -15,6 +15,7 @@ describe('shared errors', () => {
         BAD_HOST: 403,
         NOT_SUPPORTED: 501,
         MISSING_TOOL: 400,
+        VOLUME_HELD: 409,
         TOO_LARGE: 413,
         INTERNAL: 500,
       }

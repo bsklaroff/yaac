@@ -439,6 +439,25 @@ describe('buildPodJobManifest', () => {
     })).toThrow(/inside another/)
   })
 
+  it('hands a byo volume\'s fresh root to the pod\'s identity in an init container of its own, and nothing else', () => {
+    const spec = build({
+      mounts: [
+        { source: { kind: 'pvc', claimName: 'yaac-global', subPath: 'projects/demo/cache' }, mountPath: '/cache' },
+        { source: { kind: 'pvc', claimName: 'yaac-volume-v1' }, mountPath: '/home/yaac/volume' },
+      ],
+    }).spec.template.spec
+    const { runAsUser, runAsGroup } = installSecurityContext()
+    expect(spec.initContainers).toEqual([expect.objectContaining({
+      name: 'volume-root',
+      image: 'registry.local/podman-stable:v5.5',
+      securityContext: { runAsUser: 0, runAsGroup: 0 },
+      command: ['sh', '-c', expect.stringContaining(`chown ${String(runAsUser)}:${String(runAsGroup)}`), '--', '/volumes/pv-1'],
+      volumeMounts: [{ name: 'pv-1', mountPath: '/volumes/pv-1' }],
+    })])
+    // Never fsGroup, which kubelet would apply to the shared tier too.
+    expect(spec.securityContext.fsGroup).toBeUndefined()
+  })
+
   it('emits no lifecycle block without postStartExec', () => {
     expect(build().spec.template.spec.containers[0].lifecycle).toBeUndefined()
   })

@@ -1,3 +1,4 @@
+import type { VolumeLease } from './volume-store'
 import type {
   AgentMode,
   AgentTool,
@@ -29,6 +30,8 @@ export type WorkspaceEvent =
   | WaitingEnded
   | WorkspaceStopped
   | IgnoredFilesCleaned
+  | VolumeReleased
+  | VolumesPinned
 
 /**
  * Provisioning has begun, emitted before anything is built so every user
@@ -248,4 +251,22 @@ export interface IgnoredFilesCleaned {
   projectId: string
   workspaceId: string
   at: Date
+}
+
+/**
+ * A volume's holder was confirmed gone (no unit, not merely stopping), so
+ * that lease ends, unless it was renewed since it was read
+ * (docs/workspace-volumes.md).
+ */
+export interface VolumeReleased {
+  type: 'volume-released'
+  volumeId: string
+  lease: VolumeLease
+}
+
+/** These volumes' first disks were bound and kept, so losing one later is
+ *  an error rather than a fresh start. */
+export interface VolumesPinned {
+  type: 'volumes-pinned'
+  volumeIds: string[]
 }

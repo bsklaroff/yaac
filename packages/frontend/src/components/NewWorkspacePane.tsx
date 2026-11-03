@@ -25,6 +25,7 @@ import { AUTH_LIST_KEY } from '#lib/useAuthList'
 import { useCreateDefaults, useCreateWorkspace } from '#lib/useCreateDefaults'
 import { useInlineEdit } from '#lib/useInlineRename'
 import { useSnapshot } from '#lib/useSnapshot'
+import { useVolumes } from '#lib/volumes'
 import { guardNewWorkspace, useUiStore, type LaunchPane } from '#lib/store'
 import { focusRaisesKeyboard, useIsMobile } from '#lib/viewport'
 import {
@@ -352,6 +353,11 @@ export function NewWorkspacePane({ projectId, bar }: {
 
   const { data: branchData, isError: branchesFailed } = useProjectBranches(projectId)
 
+  // Only a create now attaches a volume. A choice since deleted, or since
+  // attached to another workspace, falls back to none.
+  const volumes = useVolumes(projectId)
+  const volume = volumes?.find((v) => v.name === form.volume && v.holder === undefined)?.name
+
   // On open, refetch credentials; they may have changed via the CLI.
   useEffect(() => {
     void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
@@ -501,6 +507,7 @@ export function NewWorkspacePane({ projectId, bar }: {
       ...(draft !== undefined && text !== '' ? { draftId: draft.id } : {}),
       ...(timeout !== undefined ? { timeout } : {}),
       ...(pane !== undefined ? { pane } : {}),
+      ...(volume !== undefined ? { volume } : {}),
     })
   }
 
@@ -827,6 +834,26 @@ export function NewWorkspacePane({ projectId, bar }: {
             </div>
           </Row>
           {queued && <div className={NOTE}>latest from origin when it starts</div>}
+
+          {!storesEntry && volumes !== undefined && volumes.length > 0 && (
+            <Row label="Volume" title="Project storage to attach, which one running workspace at a time can have">
+              <select
+                aria-label="Volume"
+                value={volume ?? ''}
+                onChange={(e) => update({ volume: e.target.value || undefined })}
+                className={SELECT}
+              >
+                <option value="">None</option>
+                {volumes.map((v) => (
+                  <option key={v.name} value={v.name} disabled={v.holder !== undefined}>
+                    {v.name}{v.holder !== undefined
+                      ? ` (attached to “${clip(v.holder.title || v.holder.workspaceId.slice(0, 8), 40)}”)`
+                      : ''}
+                  </option>
+                ))}
+              </select>
+            </Row>
+          )}
           </>}
 
           <Row label="Agent">

@@ -54,6 +54,8 @@ export interface NewWorkspaceForm {
   branch?: string
   /** null is no group. */
   groupId?: string | null
+  /** The project volume a create now attaches (docs/workspace-volumes.md). */
+  volume?: string
   /** The saved draft it was opened on. */
   draftId?: string
   /** The queued entry it edits. */

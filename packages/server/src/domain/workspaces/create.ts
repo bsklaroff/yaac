@@ -75,6 +75,7 @@ import {
   setWorkspaceMamaTokenHash,
   type SessionLaunchSettings,
   type SessionRow,
+  type VolumeLease,
 } from '#db'
 import { deliverTuiPrompt, sessionLaunches, typesOpeningMessage, type SessionLaunch } from './session-launch'
 import { reportAgentLaunchFailure, throwIfProvisionStopped } from './provisioning'
@@ -91,6 +92,7 @@ import {
 } from '#domain/skills'
 import { convergeAgentHistory } from './history'
 import { deleteWorkspaceState } from './cleanup'
+import { attachVolume } from './volumes'
 import { ACP_CONVERSATION_WAIT_MS } from './conversation-registry'
 import {
   OPENCODE_CHECKPOINT_SCRIPT,
@@ -209,6 +211,9 @@ export interface WorkspaceCreateOptions {
   /** When the server stops it (`workspaces.deadline`). A resume without one
    *  clears the deadline the workspace had. */
   deadline?: Date
+  /** The volume it mounts, already checked by `volumeForLaunch`; its
+   *  lease is taken just before launch (docs/workspace-volumes.md). */
+  volumeId?: string
   /**
    * Called with each user-visible progress message. The HTTP route streams
    * them to the CLI as NDJSON events.
@@ -1285,7 +1290,14 @@ export async function createWorkspace(
   // What a teardown must address, once the runtime has launched.
   let target: TeardownTarget | undefined
   let launched: { handle: RuntimeHandle; launches: SessionLaunch[] }
+  let attached: { volumeId: string; lease: VolumeLease } | undefined
   try {
+    if (options.volumeId !== undefined) {
+      const volume = await attachVolume(workspaceId, options.volumeId)
+      attached = { volumeId: options.volumeId, lease: volume.lease }
+      mounts.push(volume.mount)
+      env.push(...volume.env)
+    }
     mergeEnvEntries(env, (name) => projectSets(name)
       ? `the project's environment variable ${name} conflicts with the value yaac sets for it; rename or remove it`
       : `environment variable ${name} is set to two different values`)
@@ -1322,6 +1334,11 @@ export async function createWorkspace(
     // Free the declared host ports for the next create.
     await workspaceDriver().deregisterWorkspace(workspaceId)
       .catch(() => { /* best-effort; the reaper covers what this misses */ })
+    // A unit that may still run keeps its volume; the lease sweep frees it.
+    if (attached !== undefined && podGone) {
+      await applyWorkspaceEvent({ type: 'volume-released', ...attached })
+        .catch(() => { /* the lease sweep frees it */ })
+    }
     // A fresh create or warm deletes its own checkout (see
     // failedCreateCollectsCheckout); no sweep would find it once the row,
     // or the spare's unit, is gone. Chained after the checkout leg, which

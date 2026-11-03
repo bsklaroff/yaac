@@ -51,6 +51,8 @@ export interface WorkspaceCreateOptions {
   resume?: string
   /** Start a workspace with no session (commander's `--no-session`). */
   session?: boolean
+  /** A volume of the project to mount (docs/workspace-volumes.md). */
+  volume?: string
 }
 
 /**
@@ -67,7 +69,7 @@ export async function workspaceCreate(project: string | undefined, options: Work
   if (options.workspace !== undefined) {
     if (project !== undefined) throw new Error('Give a project or --workspace, not both: the workspace names its project.')
     for (const [flag, set] of [['--branch', options.branch], ['--group', options.group], ['--timeout', options.timeout],
-      ['--start-at', options.startAt], ['--start-in', options.startIn]] as const) {
+      ['--start-at', options.startAt], ['--start-in', options.startIn], ['--volume', options.volume]] as const) {
       if (set !== undefined) throw new Error(`${flag} is a workspace's setting, which --workspace (a session in a running one) does not take.`)
     }
     if (noSession) throw new Error('--no-session starts a new workspace; it does not take --workspace.')
@@ -108,6 +110,7 @@ export async function workspaceCreate(project: string | undefined, options: Work
 
   if (options.startAt !== undefined || startIn !== undefined) {
     if (prompt === undefined) throw new Error('A scheduled workspace needs a prompt: nobody is watching it start.')
+    if (options.volume !== undefined) throw new Error('--volume starts a workspace now; a scheduled one cannot take it.')
     const entry = await api.workspace.queue.create.$post({
       json: { ...settings, prompt, startAt: options.startAt, startIn },
     })
@@ -117,7 +120,12 @@ export async function workspaceCreate(project: string | undefined, options: Work
     console.log('Discard it with: yaac workspace delete ' + entry.id.slice(0, 8))
     return
   }
-  const res = await api.workspace.create.$post({ json: { ...settings, prompt, ...(noSession ? { noSession: true } : {}) } })
+  const res = await api.workspace.create.$post({ json: {
+    ...settings,
+    prompt,
+    ...(noSession ? { noSession: true } : {}),
+    ...(options.volume !== undefined ? { volume: options.volume } : {}),
+  } })
   // Stdin carried the prompt and has ended, so it cannot drive a terminal.
   await attachStarted(res, { attach: source !== '-' })
 }

@@ -59,6 +59,14 @@ export { prepareStart } from './start'
 export { reconcileStaleWorkspaces } from './stale-workspaces'
 export { stopWorkspace } from './stop'
 export {
+  collectDeletedVolumes,
+  createVolume,
+  deleteVolume,
+  listVolumes,
+  reconcileVolumeLeases,
+  resizeVolume,
+} from './volumes'
+export {
   createRoutine,
   deleteRoutine,
   listRoutineRunPage,

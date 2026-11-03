@@ -596,6 +596,39 @@ describe('NewWorkspacePane', () => {
     expect(useUiStore.getState().optimisticProvisioning[1]).not.toHaveProperty('groupId')
   })
 
+  it('offers the project\'s free volumes to a create now, and sends the one picked', async () => {
+    server.route('GET /api/volume/list', [
+      { name: 'app-data', size: '10Gi', createdAt: '', stoppedWorkspaces: [] },
+      {
+        name: 'db', size: '5Gi', createdAt: '', stoppedWorkspaces: [],
+        holder: { workspaceId: 'w-parent', title: 'Parent work', attachedAt: '' },
+      },
+    ])
+    await openReady()
+    await waitFor(() => expect(screen.getByLabelText('Volume')).toBeTruthy())
+    expect(server.called('GET /api/volume/list')[0].query.get('project')).toBe('proj')
+    // A held volume is listed but cannot be picked.
+    expect([...select('Volume').options].map((o) => [o.textContent, o.disabled])).toEqual([
+      ['None', false], ['app-data', false], ['db (attached to “Parent work”)', true],
+    ])
+    fireEvent.change(select('Volume'), { target: { value: 'app-data' } })
+    typePrompt('serve the app')
+    fireEvent.click(sendButton())
+    expect(sent(CREATE).at(-1)).toMatchObject({ project: 'proj', volume: 'app-data' })
+
+    // A queued start attaches none, so the picker goes.
+    act(() => useUiStore.getState().openNewWorkspace({ projectId: 'proj' }))
+    fireEvent.change(select('Start'), { target: { value: START_IN } })
+    expect(screen.queryByLabelText('Volume')).toBeNull()
+  })
+
+  it('shows no volume picker on a containerless server, nor asks for volumes', async () => {
+    setSnapshot(project({}, 'containerless'))
+    await openReady()
+    expect(screen.queryByLabelText('Volume')).toBeNull()
+    expect(server.called('GET /api/volume/list')).toEqual([])
+  })
+
   // The remembered branch (see the first test) falls back to origin's
   // default when origin no longer has it.
   it('opens on origin\'s default when origin lost the branch last created from', async () => {

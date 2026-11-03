@@ -44,6 +44,24 @@ export const env = {
   },
 
   /**
+   * `YAAC_VOLUMES_ROOT` — where a kind install's volume directories are
+   * mounted inside the server pod (the `yaac-volumes` claim). Unset on a
+   * host, where they are `<dataDir>/volumes`.
+   */
+  get volumesRootOverride(): string | undefined {
+    return nonEmpty(process.env.YAAC_VOLUMES_ROOT)
+  },
+
+  /**
+   * `YAAC_VOLUME_STORAGE_CLASS` — on a byo install, the class each volume's
+   * own claim is provisioned from (docs/workspace-volumes.md). Unset on
+   * kind, where volumes are directories of the `yaac-volumes` claim.
+   */
+  get volumeStorageClass(): string | undefined {
+    return nonEmpty(process.env.YAAC_VOLUME_STORAGE_CLASS)
+  },
+
+  /**
    * `YAAC_USE_TOR` with permissive truthy semantics: unset, empty, "0", and
    * "false" (case-insensitive) are off; everything else is on.
    */

@@ -37,6 +37,7 @@ import type { SecretProxyRule, YaacConfig } from '@yaac/shared/types'
 import type {
   RuntimeHandle,
   SubstrateIntent,
+  WorkspaceMount,
   WorkspaceSpec,
   WorkspaceSubstrate,
 } from '#drivers/contract'
@@ -239,7 +240,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     env.push(`YAAC_REGISTRY_CONF_B64=${conf}`)
   }
 
-  const declared: PodMount[] = [...spec.mounts]
+  const declared: Array<PodMount | WorkspaceMount> = [...spec.mounts]
   // Read-only node-local image store.
   declared.push(...substrate.storeMounts)
   if (spec.ssh) {

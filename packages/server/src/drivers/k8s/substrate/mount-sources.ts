@@ -1,8 +1,16 @@
 import path from 'node:path'
+import { env } from '@yaac/shared/env'
 import { globalRoot, nodeLocalRoot, serverLocalRoot } from '@yaac/shared/paths'
 import { installNameKey } from './install-id'
 import type { PodMount } from './pod-spec'
-import { CHECKOUTS_CLAIM_NAME, GLOBAL_CLAIM_NAME, NODE_LOCAL_NODE_ROOT } from './storage-constants'
+import type { WorkspaceMount } from '#drivers/contract'
+import {
+  CHECKOUTS_CLAIM_NAME,
+  GLOBAL_CLAIM_NAME,
+  NODE_LOCAL_NODE_ROOT,
+  VOLUMES_CLAIM_NAME,
+  volumeClaimName,
+} from './storage-constants'
 
 /**
  * This install's node-local directory on a node:
@@ -29,14 +37,26 @@ export function nodeLocalNodePath(): string {
  *   attribute caching (docs/nfs-checkout-performance.md).
  * - Node-local root: the matching path under this install's node directory.
  * - Server-local root, or no root at all: an error.
+ * - A volume: its own claim on byo (`YAAC_VOLUME_STORAGE_CLASS` set), else
+ *   its directory in the `yaac-volumes` claim (docs/workspace-volumes.md).
  * - `emptyDir` and `pvc` sources pass through unchanged.
  *
  * kubelet creates a missing subPath as a root-owned directory, so every
- * global file a pod mounts must exist before its Job is applied.
+ * global file a pod mounts, and a kind volume's directory, must exist
+ * before its Job is applied.
  */
-export function resolveMountSource(m: PodMount): PodMount {
+export function resolveMountSource(m: PodMount | WorkspaceMount): PodMount {
   const { source } = m
-  if (source.kind !== 'hostPath') return m
+  if (source.kind === 'volume') {
+    return {
+      ...m,
+      source: env.volumeStorageClass !== undefined
+        ? { kind: 'pvc', claimName: volumeClaimName(source.volumeId) }
+        : { kind: 'pvc', claimName: VOLUMES_CLAIM_NAME, subPath: source.volumeId },
+    }
+  }
+  // emptyDir and pvc sources are the same shape in both types.
+  if (source.kind !== 'hostPath') return m as PodMount
   const global = under(source.path, globalRoot())
   if (global !== null) {
     const claimName = CHECKOUT_SUBPATH.test(global) ? CHECKOUTS_CLAIM_NAME : GLOBAL_CLAIM_NAME
