@@ -21,7 +21,7 @@
 import { buildRegistryRetentionScript, mainRegistryExec, resolveImageChain } from '#drivers/k8s/cluster'
 import { listObjects } from '#drivers/k8s/substrate'
 import { testEnv } from '@yaac/shared/env'
-import type { ProjectReaders } from '#drivers/contract'
+import type { PassContext, ProjectReaders } from '#drivers/contract'
 import { serverLog } from '#lib/log'
 import { BUILD_CACHE_TTL } from './builder-pod'
 import { forgetVerifiedTags, imageWorkInFlight } from './build-coordinator'
@@ -169,6 +169,9 @@ async function registryBusy(): Promise<boolean> {
   return stdout.includes('BUSY')
 }
 
+/** What the pass reads above the driver. */
+type GcReaders = ProjectReaders & Pick<PassContext, 'pinnedImages'>
+
 /** What the retention pass must not retire, gathered before it runs. */
 interface LiveImages {
   /** Every live project's id — what the orphan repo sweep keeps. */
@@ -223,17 +226,21 @@ async function readInUse(): Promise<Set<string>> {
 }
 
 /**
- * Read the live set: images in use, plus every project's current chain
- * (a project with no running workspace still needs its image). If any
+ * Read the live set: images in use or pinned, plus every project's current
+ * chain (a project with no running workspace still needs its image). If any
  * chain cannot be resolved, `wanted` is null and no generations are
  * retired this pass; the usual cause, a broken `Dockerfile.user`, breaks
  * every chain at once.
  */
 async function readLiveImages(
   projectIds: string[],
-  projects: ProjectReaders,
+  projects: GcReaders,
 ): Promise<LiveImages> {
   const inUse = await readInUse()
+  for (const image of await projects.pinnedImages()) {
+    const generation = registryGeneration(image)
+    if (generation) inUse.add(generation)
+  }
   let wanted: Set<string> | null = new Set<string>()
   for (const projectId of projectIds) {
     try {
@@ -316,7 +323,7 @@ export function _mainRegistryGcSettledForTests(): Promise<void> {
  */
 export function reconcileMainRegistryGc(
   projectIds: string[],
-  projects: ProjectReaders,
+  projects: GcReaders,
 ): Promise<void> {
   if (testEnv.k8sNamespace !== 'yaac' || inFlightPass) return Promise.resolve()
   inFlightPass = (async () => {

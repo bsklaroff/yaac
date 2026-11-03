@@ -18,12 +18,16 @@ import {
   leaseOf,
   listHeldVolumes,
   listProjectVolumes,
+  listStagedVolumes,
+  listVolumeSites,
+  unstageVolume,
   listUnpinnedVolumes,
   listVolumeWorkspaces,
   setVolumeSize,
   forgetDeletedVolume,
   listDeletedVolumeIds,
   setWorkspaceVolume,
+  stageVolume as stageVolumeRow,
   type VolumeLease,
   type VolumeRow,
 } from '#db'
@@ -150,6 +154,11 @@ export async function deleteVolume(principal: Actor, projectId: string, name: st
   requireVolumes()
   await authorizeProject(principal, projectId)
   const row = await requireVolume(projectId, name)
+  const users = await listVolumeSites(row.id)
+  if (users.length > 0) {
+    throw new ServerError('CONFLICT', `volume "${name}" holds site ${users.map((u) => `"${u.name}"`).join(', ')}'s data; `
+      + 'remove it from the site first')
+  }
   const lease = leaseOf(row)
   if (lease !== undefined) {
     if (!await holderGone(lease.holderWorkspaceId)) throw await heldError(row, lease.holderWorkspaceId)
@@ -186,6 +195,11 @@ export async function volumeForLaunch(
   if (row && holder !== undefined && holder !== workspaceId && !await holderGone(holder)) {
     throw await heldError(row, holder)
   }
+  // Staged for a site's release mid-deploy, which takes it next.
+  const next = row?.nextHolderWorkspaceId
+  if (row && next !== undefined && next !== workspaceId && !await holderGone(next)) {
+    throw await heldError(row, next)
+  }
   return row
 }
 
@@ -220,6 +234,24 @@ export async function attachVolume(
 }
 
 /**
+ * Mount a volume in a site release as its next holder, while the release
+ * serving the site may still hold it (docs/public-sites.md "Volumes: a
+ * staged handoff"). The release writes nothing there until its deploy
+ * passes it the lease, and the steps before then are not told where it is.
+ * Resolves with the mount. Refused while another release is staged.
+ */
+export async function stageVolume(workspaceId: string, volumeId: string): Promise<WorkspaceMount> {
+  const row = await getVolumeRow(volumeId)
+  if (!row) throw new ServerError('NOT_FOUND', 'the volume was deleted')
+  if (!await stageVolumeRow(row.id, workspaceId)) {
+    throw new ServerError('VOLUME_HELD', `volume "${row.name}" is already being handed to another release`)
+  }
+  await setWorkspaceVolume(workspaceId, row.id)
+  await workspaceDriver().ensureVolume(ref(row))
+  return { source: { kind: 'volume', volumeId: row.id }, mountPath: VOLUME_MOUNT_PATH }
+}
+
+/**
  * End every lease `workspaceId` holds but `keep`, once its runtime is
  * confirmed gone: a restart of a running workspace relaunches it without
  * the volume its old pod held, or with another.
@@ -233,8 +265,9 @@ export async function releaseWorkspaceVolumes(workspaceId: string, keep?: string
 }
 
 /**
- * End the leases whose holders' runtimes are gone, then keep the disks
- * that have been bound since the last pass (`pinVolumes`). The lease is
+ * End the leases whose holders' runtimes are gone, and forget next holders
+ * whose releases are gone, then keep the disks that have been bound since
+ * the last pass (`pinVolumes`). The lease is
  * otherwise taken over lazily by the next launch, so this keeps the list
  * honest and catches a crash mid-teardown.
  *
@@ -245,19 +278,17 @@ export async function releaseWorkspaceVolumes(workspaceId: string, keep?: string
  */
 export async function reconcileVolumeLeases(snapshot: RuntimeSnapshot): Promise<void> {
   const held = await listHeldVolumes()
-  const live = new Set([
-    ...(await snapshot.workspaces()).map((h) => h.workspaceId),
-    ...(await snapshot.strayUnits()).map((u) => u.workspaceId),
-  ])
-  // The snapshot's time, not now: a launch that settled after the runtime
-  // was listed is missing from it, and must still count.
-  const inFlight = new Set(inFlightWorkspaceIds(snapshot.takenAtMs))
+  const staged = await listStagedVolumes()
+  const alive = await workspacesAlive(snapshot)
   for (const row of held) {
     const lease = leaseOf(row)
-    if (lease === undefined) continue
-    const holder = lease.holderWorkspaceId
-    if (live.has(holder) || inFlight.has(holder) || tearingDown(holder)) continue
+    if (lease === undefined || alive(lease.holderWorkspaceId)) continue
     await applyWorkspaceEvent({ type: 'volume-released', volumeId: row.id, lease })
+  }
+  for (const row of staged) {
+    const next = row.nextHolderWorkspaceId
+    if (next === undefined || alive(next)) continue
+    await unstageVolume(row.id, next)
   }
   const unpinned = await listUnpinnedVolumes()
   if (unpinned.length === 0) return
@@ -267,6 +298,22 @@ export async function reconcileVolumeLeases(snapshot: RuntimeSnapshot): Promise<
       return []
     })
   if (pinned.length > 0) await applyWorkspaceEvent({ type: 'volumes-pinned', volumeIds: pinned })
+}
+
+/**
+ * Which workspaces' runtimes may still be up as of `snapshot`: listed (a
+ * unit with no pod yet, such as a Job a server restart found mid-create,
+ * included), being created or restarted, or being torn down.
+ */
+export async function workspacesAlive(snapshot: RuntimeSnapshot): Promise<(workspaceId: string) => boolean> {
+  const listed = new Set([
+    ...(await snapshot.workspaces()).map((h) => h.workspaceId),
+    ...(await snapshot.strayUnits()).map((u) => u.workspaceId),
+  ])
+  // The snapshot's time, not now: a launch that settled after the runtime
+  // was listed is missing from it, and must still count.
+  const inFlight = new Set(inFlightWorkspaceIds(snapshot.takenAtMs))
+  return (id) => listed.has(id) || inFlight.has(id) || tearingDown(id)
 }
 
 /**

@@ -133,7 +133,15 @@ attaches one explicitly. A running pod's mounts cannot change, so moving a
 volume means stopping its holder and starting or restarting the target with
 it.
 
-**Delete** is refused while a running workspace holds the volume. It deletes
+**A site's deploy** is the one launch that mounts a volume another
+workspace holds: its new release is staged as the volume's next holder
+(`nextHolderWorkspaceId`) and writes nothing there until the deploy passes
+it the lease, once the old release's pod is gone (docs/public-sites.md
+"Volumes: a staged handoff"). The lease sweep forgets a next holder whose
+runtime is gone.
+
+**Delete** is refused while a running workspace holds the volume, or while
+a public site names it. It deletes
 the row first, so no launch can claim a volume being deleted, then the
 storage, and forgets the volume on every workspace that named it. Deleting a
 project deletes its volumes, and the webapp's remove dialog names them.

@@ -290,6 +290,7 @@ async function runPass(
     projectIds: () => Promise.resolve([]),
     projectConfig: () => Promise.resolve(undefined),
     projectOwner: () => Promise.resolve('owner'),
+    pinnedImages: () => Promise.resolve([]),
         terminating: () => false,
   }
   for (const step of defaultReconcileSteps()) {

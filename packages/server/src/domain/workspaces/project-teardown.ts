@@ -11,6 +11,7 @@ import {
   deleteProjectQueuedWorkspaces,
   deleteProjectRoutines,
   deleteProjectRow,
+  deleteProjectSiteRows,
   deleteProjectVolumeRows,
   deleteProjectWorkspaceGroups,
   deleteProjectWorkspaces,
@@ -254,6 +255,9 @@ export async function moveProjectToRemote(
 }
 
 async function deleteProject(projectId: string): Promise<void> {
+  // First, so the sites step neither replaces a release the purge stops nor
+  // advances a deploy into the project (docs/public-sites.md).
+  await deleteProjectSiteRows(projectId)
   await purgeProjectBytes(projectId)
   // The macOS Keychain item containerless claude keys on the tool home path.
   // No-op elsewhere.

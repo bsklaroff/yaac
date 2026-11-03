@@ -1,9 +1,19 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { addSteps, assertInteractive, cancelStep, reconcileSteps, rerunStep } from '#domain/workspaces/steps'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
-import { BUILT_IN_USER_ID, applyWorkspaceEvent, getWorkspaceRow, listWorkspaceSteps } from '#db'
+import {
+  BUILT_IN_USER_ID,
+  applyWorkspaceEvent,
+  claimVolume,
+  getWorkspaceRow,
+  insertSite,
+  insertVolume,
+  listWorkspaceSteps,
+  setWorkspaceVolume,
+  updateSite,
+} from '#db'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { closeDb } from '#db/client'
 import { setWorkspaceWindows, _resetWorkspaceStatusStoreForTests } from '#runtime/status/status-store'
@@ -43,8 +53,8 @@ const opened = (): string[] => execs.flatMap((c) => [...c.matchAll(/new-window -
 const states = async (): Promise<Record<string, string>> =>
   Object.fromEntries((await listWorkspaceSteps(WS)).map((s) => [s.name, s.exitCode !== undefined ? `${s.state} ${String(s.exitCode)}` : s.state]))
 
-async function startLife(raw: Record<string, unknown>, row: { nonInteractive?: boolean } = {}): Promise<void> {
-  const graph = parseStepGraph(raw)
+async function startLife(raw: Record<string, unknown>, row: { nonInteractive?: boolean; siteId?: string } = {}): Promise<void> {
+  const graph = parseStepGraph(raw, new Set(row.siteId !== undefined ? ['volume'] : []))
   await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: WS, startSteps: graph, ...row })
   life = new Date()
   await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS, at: life, startSteps: graph })
@@ -69,9 +79,26 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  vi.useRealTimers()
   await closeDb()
   await cleanupTempDir(tmpDir)
 })
+
+/** A release of a site with a volume, staged as its next holder. */
+async function release(): Promise<{ siteId: string; volumeId: string }> {
+  const volume = await insertVolume(DEMO_PROJECT_ID, 'data', '10Gi')
+  const site = await insertSite({
+    projectId: DEMO_PROJECT_ID, name: 'shop', hostname: 'shop.example.com', port: 3000,
+    steps: {}, volumeId: volume.id,
+  })
+  await startLife({
+    build: { run: 'pnpm build' },
+    db: { run: 'postgres -D "$YAAC_VOLUME_DIR/pg"', service: true, needs: ['volume'] },
+    app: { run: 'pnpm start', service: true, needs: ['build', 'db'] },
+  }, { siteId: site.id })
+  await setWorkspaceVolume(WS, volume.id)
+  return { siteId: site.id, volumeId: volume.id }
+}
 
 describe('reconcileSteps', () => {
   it('runs the graph: opens steps as their needs are met, records how each ends, and skips what a failure blocks', async () => {
@@ -149,6 +176,57 @@ describe('reconcileSteps', () => {
     // Settled, it is no longer locked.
     await expect(assertInteractive(WS)).resolves.toBeUndefined()
   })
+
+  it('holds the steps that need the volume until it holds the lease, telling only them where it is', async () => {
+    const { volumeId } = await release()
+    listed()
+    await reconcileSteps(view)
+    expect(opened()).toEqual(['build'])
+    expect(await states()).toMatchObject({ build: 'running', db: 'pending', app: 'pending' })
+
+    await claimVolume(volumeId, WS)
+    listed({ name: 'build', dead: true, exitStatus: 0 })
+    await reconcileSteps(view)
+    expect(opened()).toEqual(['build', 'db'])
+    const dir = path.join(terminalLogDir(DEMO_PROJECT_ID, WS), lifeDirName(life))
+    expect(await fs.readFile(path.join(dir, 'db.sh'), 'utf8')).toContain("export YAAC_VOLUME_DIR='/home/yaac/volume'")
+    expect(await fs.readFile(path.join(dir, 'build.sh'), 'utf8')).not.toContain('YAAC_VOLUME_DIR')
+  })
+
+  it('restarts the serving release\'s service that exits, after a backoff and keeping its log, and fails a deploy\'s', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const { siteId, volumeId } = await release()
+    await claimVolume(volumeId, WS)
+    await updateSite(siteId, { liveWorkspaceId: WS })
+    listed()
+    await reconcileSteps(view)
+    listed({ name: 'build', dead: true, exitStatus: 0 }, { name: 'db', dead: false, ready: true })
+    await reconcileSteps(view)
+    listed({ name: 'build', dead: true, exitStatus: 0 }, { name: 'db', dead: false, ready: true }, { name: 'app', dead: false, ready: true })
+    await reconcileSteps(view)
+    expect(await states()).toMatchObject({ db: 'ready', app: 'ready' })
+    const dir = path.join(terminalLogDir(DEMO_PROJECT_ID, WS), lifeDirName(life))
+    await fs.writeFile(path.join(dir, 'db.log'), 'the crash\n')
+    execs = []
+
+    // Serving: it goes back to pending, its dependents untouched, and opens
+    // again once the backoff is over, with its log kept.
+    listed({ name: 'build', dead: true, exitStatus: 0 }, { name: 'db', dead: true, exitStatus: 1 }, { name: 'app', dead: false, ready: true })
+    await reconcileSteps(view)
+    expect(await states()).toMatchObject({ db: 'pending', app: 'ready' })
+    expect(opened()).toEqual([])
+    vi.setSystemTime(Date.now() + 1500)
+    listed({ name: 'build', dead: true, exitStatus: 0 }, { name: 'app', dead: false, ready: true })
+    await reconcileSteps(view)
+    expect(opened()).toEqual(['db'])
+    expect(await fs.readFile(path.join(dir, 'db.log'), 'utf8')).toBe('the crash\n')
+
+    // Not serving (a deploy's new release): a service that exits fails.
+    await updateSite(siteId, { liveWorkspaceId: 'another' })
+    listed({ name: 'build', dead: true, exitStatus: 0 }, { name: 'db', dead: true, exitStatus: 1 }, { name: 'app', dead: false, ready: true })
+    await reconcileSteps(view)
+    expect(await states()).toMatchObject({ db: 'failed 1' })
+  })
 })
 
 describe('addSteps', () => {
@@ -218,5 +296,10 @@ describe('assertInteractive', () => {
   it('passes an interactive workspace', async () => {
     await startLife({})
     await expect(assertInteractive(WS)).resolves.toBeUndefined()
+  })
+
+  it('refuses a site\'s release while it runs, which only its site manages', async () => {
+    await release()
+    await expect(assertInteractive(WS)).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('yaac site') as unknown })
   })
 })

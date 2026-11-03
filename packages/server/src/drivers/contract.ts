@@ -347,6 +347,19 @@ export interface WorkspaceSpec {
   gitCredential?: WorkspaceGitCredential
   /** The receipt from this workspace's `prepareSubstrate`. */
   substrate: WorkspaceSubstrate
+  /**
+   * Set for a release of a public site (docs/public-sites.md): the site's
+   * id, which marks the workspace as serving the internet. The driver
+   * admits the site's router to it, keeps it from calling the server, and
+   * ranks it above dev workspaces under node pressure.
+   */
+  siteId?: string
+  /**
+   * A running workspace this one must share a node with, because both
+   * mount one volume during a deploy's handoff and the volume's storage
+   * may be attachable on one node only. Ignored where storage is not.
+   */
+  colocateWith?: string
   onProgress?: (message: string) => void
 }
 
@@ -398,8 +411,8 @@ export interface StreamPty {
 /**
  * An event source that can mark a reconcile pass dirty. The named ones are
  * workspace/unit changes on the substrate, a change in a workspace's live
- * conversations or its window listing, and an unhealthy agent connection (liveness must then be
- * probed). Any other string is a driver's own source (e.g. a credential
+ * conversations or its window listing, an unhealthy agent connection (liveness must then be
+ * probed), and a public site's drain or backoff coming due. Any other string is a driver's own source (e.g. a credential
  * rotation the egress proxy captured). There is no polling; the periodic resync covers a
  * missed event.
  */
@@ -409,6 +422,7 @@ export const MEDIATOR_TRIGGERS = [
   'live-agents',
   'windows',
   'status-streams',
+  'sites',
 ] as const
 
 /** Typed so a renamed trigger breaks compilation at its raise sites. */
@@ -450,6 +464,9 @@ export interface PassContext {
   /** One project's owner, whose `Dockerfile.user` tops its image chain.
    *  Rejects for a project that no longer exists. */
   projectOwner: (projectId: string) => Promise<string>
+  /** Images a launch may still need though nothing runs them: what a public
+   *  site's replacement or restart launches again (docs/public-sites.md). */
+  pinnedImages: () => Promise<string[]>
   /**
    * Whether a teardown was issued for this workspace but is not yet visible
    * in the substrate. The marks live in `#runtime`, which drivers cannot
@@ -921,12 +938,33 @@ export interface WorkspaceDriver {
   ): Promise<void>
 
   /**
+   * Converge the substrate's objects for the install's public sites
+   * (docs/public-sites.md) to exactly `sites`: per site, what routes its
+   * hostname to the release it names (none while no release is live), and
+   * nothing for a site not listed. Resolves as a no-op under a driver
+   * without sites (containerless), whose site routes refuse first.
+   */
+  syncSites(sites: SiteRoute[]): Promise<void>
+  /** Whether the install's public edge holds a connection to the internet;
+   *  `absent` where it has none (no tunnel installed, or containerless). */
+  siteTunnelStatus(): Promise<'connected' | 'disconnected' | 'absent'>
+  /**
    * Where a sandboxed workspace's `yaac-mama` calls arrive, or null when
    * workspaces call the API themselves (containerless). Under k8s the egress
    * proxy relays them to a listener of their own on `port`, naming the
    * calling workspace and presenting a bearer `authenticate` checks.
    */
   mamaRelay: MamaRelay | null
+}
+
+/** One public site as the driver routes it. */
+export interface SiteRoute {
+  siteId: string
+  hostname: string
+  /** The port its releases serve on. */
+  port: number
+  /** The release its hostname reaches; absent while none is live. */
+  liveWorkspaceId?: string
 }
 
 /** See `WorkspaceDriver.mamaRelay`. */

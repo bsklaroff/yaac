@@ -396,6 +396,22 @@ describe('deployServerWorkload', () => {
     expect(names).not.toContain('YAAC_ALLOWED_HOSTS')
   })
 
+  it('hands the pod its site domains, which a re-install without --site-domain keeps', async () => {
+    const liveDomains = (): string | undefined => fakeCluster
+      .get<{ spec: { template: { spec: PodSpec } } }>('Deployment', SERVER_APP_NAME, 'test-ns')
+      ?.spec.template.spec.containers[0].env.find((e) => e.name === 'YAAC_SITE_DOMAINS')?.value
+
+    await deploy({ log: vi.fn() })
+    expect(liveDomains()).toBeUndefined()
+    await deploy({ siteDomains: ['example.com', 'sites.example.org'], log: vi.fn() })
+    expect(liveDomains()).toBe('example.com,sites.example.org')
+    await deploy({ log: vi.fn() })
+    expect(liveDomains()).toBe('example.com,sites.example.org')
+    // Given, the flags replace them, even with none.
+    await deploy({ siteDomains: [], log: vi.fn() })
+    expect(liveDomains()).toBeUndefined()
+  })
+
   it('rewrites an IPv6-loopback Tor SOCKS URL to the host, brackets and all', async () => {
     // Tor listens on the host, so loopback addresses are rewritten to the
     // host's kind-network address. `new URL(...).hostname` returns `[::1]`

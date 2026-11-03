@@ -238,7 +238,8 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
           ctx.newWorkspace()
           return
         case 'delete-workspace':
-          if (!ctx.selectedWorkspace) return
+          // A site's release is stopped only through its site.
+          if (!ctx.selectedWorkspace || ctx.selectedWorkspace.site !== undefined) return
           claimChord(e)
           setConfirmDelete(ctx.selectedWorkspace)
           return

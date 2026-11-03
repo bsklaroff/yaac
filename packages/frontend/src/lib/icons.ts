@@ -124,6 +124,7 @@ export {
   ArrowUpToLine as JumpTopIcon,
   ArrowDownToLine as JumpBottomIcon,
   HardDrive as VolumeIcon,
+  Earth as SiteIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool. */

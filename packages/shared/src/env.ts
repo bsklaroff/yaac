@@ -340,6 +340,27 @@ export const env = {
   },
 
   /**
+   * `YAAC_SITE_DOMAINS` — comma-separated domains a public site's hostname
+   * must sit under (docs/public-sites.md). Set on the k8s Deployment by
+   * `yaac cluster install --site-domain`. Trimmed, lowercased, empties
+   * dropped.
+   */
+  get siteDomains(): string[] {
+    const raw = process.env.YAAC_SITE_DOMAINS
+    if (!raw) return []
+    return raw.split(',').map((d) => d.trim().toLowerCase()).filter((d) => d.length > 0)
+  },
+
+  /**
+   * `CF_TUNNEL_TOKEN` — the Cloudflare Tunnel token `yaac cluster install`
+   * gives the install's public-site edge. Undefined when unset or empty.
+   */
+  get siteTunnelToken(): string | undefined {
+    const raw = process.env.CF_TUNNEL_TOKEN?.trim()
+    return raw === undefined || raw === '' ? undefined : raw
+  },
+
+  /**
    * `YAAC_BUNDLED` — set to `'true'` by tsup in the shipped bundle (a build
    * define, not a runtime var). In the bundle static assets live in `dist/`;
    * in dev/test it is unset.

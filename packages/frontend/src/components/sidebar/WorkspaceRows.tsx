@@ -22,6 +22,7 @@ import { dismissProvisioning } from '#lib/createWorkspace'
 import { stopProvisioning, stopWorkspaceOptimistic } from '#lib/stopWorkspaceFlow'
 import { useUiStore, isSessionUnread, isUnreadWaiting, isUnseenDeath } from '#lib/store'
 import { sessionTarget } from '#lib/panes'
+import { isLocked } from '#lib/steps'
 import { relativeAge, timeUntil, useNow } from '#lib/time'
 import { useInlineRename } from '#lib/useInlineRename'
 import { useReadOnly, useTeammateName, useWhoami } from '#lib/viewer'
@@ -317,18 +318,18 @@ export function WorkspaceRow({
           <RowMenu
             label="Workspace actions"
             items={[
-              {
+              ...isLocked(workspace) ? [] : [{
                 label: 'New session…',
                 onSelect: () => openNewWorkspace({ projectId: workspace.projectId, inWorkspace: workspace.workspaceId }),
-              },
+              }],
               { label: 'Rename', onSelect: startRename },
               { label: 'Move to group…', onSelect: () => setGrouping(true) },
               {
                 label: 'Queue workspace after this…',
                 onSelect: () => openNewWorkspace({ projectId: workspace.projectId, parent: workspace.workspaceId }),
               },
-              'separator',
-              { label: 'Stop…', onSelect: () => setConfirmDelete(true) },
+              // A site's release is stopped only through its site.
+              ...workspace.site !== undefined ? [] : ['separator' as const, { label: 'Stop…', onSelect: () => setConfirmDelete(true) }],
             ]}
           />
         </>
@@ -511,7 +512,8 @@ export function StoppedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
   const me = useWhoami()?.userId
   const unseen = isUnseenDeath(entry, me)
   // A non-interactive workspace is rerun in a new one, never restarted
-  // (docs/workspace-steps.md).
+  // (docs/workspace-steps.md), and a site's release is neither: only its
+  // site starts another (docs/public-sites.md).
   const reruns = entry.nonInteractive === true
 
   const stopLine = entry.deathReason
@@ -545,7 +547,7 @@ export function StoppedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
         </span>
       </button>
 
-      {!readOnly && <button
+      {!readOnly && entry.site === undefined && <button
         onClick={() => setConfirmRestart(true)}
         title={reruns ? 'Rerun its steps in a new workspace' : 'Restart workspace'}
         aria-label={reruns ? 'Rerun workspace' : 'Restart workspace'}

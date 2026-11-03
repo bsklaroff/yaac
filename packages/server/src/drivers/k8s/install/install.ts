@@ -4,6 +4,7 @@ import {
   ensureMainRegistry,
   ensureNetd,
   ensureNpmCache,
+  ensureSiteEdge,
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,
   registryHost,
@@ -43,7 +44,13 @@ import {
 } from '#drivers/k8s/substrate'
 import { GVISOR_INSTALLER_APP_NAME, ensureGvisorRuntime } from './gvisor-installer'
 import { buildBuiltinImages } from './builtin-images'
-import { ClusterInstallError, YAAC_CLUSTER_INSTALL, resolveNodeCount, tailnetServeHost } from './arg-guards'
+import {
+  ClusterInstallError,
+  YAAC_CLUSTER_INSTALL,
+  resolveNodeCount,
+  siteDomainsArg,
+  tailnetServeHost,
+} from './arg-guards'
 import { assessCniAdoption, gatherCniFacts } from './cni-adopt'
 import { ensurePinnedManifest } from './pinned-manifest'
 import { readInstallRecord, recordInstall, type InstallRecord } from '@yaac/shared/install-record'
@@ -90,8 +97,8 @@ import { env } from '@yaac/shared/env'
  * classes, install identity), then applies the same in-cluster layers and
  * deploys the server behind the tailnet, without exec'ing into a node.
  *
- * Every run re-applies the kind node fixup (the node container's pids
- * limit, which no in-cluster agent can set) and the in-cluster layers
+ * Every run re-applies the kind node fixups (the node container's pids
+ * limit and restart policy, which no in-cluster agent can set) and the in-cluster layers
  * (gVisor runtime, PriorityClasses, netd, images), which is how an existing
  * cluster picks up an upgrade. Node sysctls are applied by the gVisor installer DaemonSet
  * instead (node-tuning.ts).
@@ -140,6 +147,13 @@ export interface ClusterInstallOptions {
    * accepted so the error can quote the raw `--nodes` text.
    */
   nodes?: number | string
+  /**
+   * `--site-domain`, repeatable: the domains a public site's hostname must
+   * sit under (docs/server-in-cluster.md "The site edge"), handed to the
+   * server as `YAAC_SITE_DOMAINS`. Given, they replace the server's;
+   * absent, the server keeps the ones it has.
+   */
+  siteDomains?: string[]
 }
 
 export interface ClusterInstallDeps {
@@ -279,7 +293,7 @@ export async function runClusterInstall(
       // traffic as internet egress.
       resetClusterCidrCache()
       await installCalico(deps, cluster)
-      for (const node of await kindNodes(deps, cluster)) await applyKindNodeFixups(deps, node)
+      await applyKindNodeFixups(deps, await kindNodes(deps, cluster))
     } else {
       if (opts.nodes !== undefined) {
         deps.log(
@@ -292,11 +306,12 @@ export async function runClusterInstall(
       // A podman machine restart may have moved the node's address, so
       // drop cached CIDRs. Fixups are re-applied every run.
       resetClusterCidrCache()
-      for (const node of await kindNodes(deps, cluster)) {
+      const nodes = await kindNodes(deps, cluster)
+      for (const node of nodes) {
         await startStoppedKindNode(deps, node)
         await requireDataDirMount(deps, cluster, node)
-        await applyKindNodeFixups(deps, node)
       }
+      await applyKindNodeFixups(deps, nodes)
       await waitForApiServer(deps, cluster)
     }
     // Layers go to the kubeconfig's current context, so it must be this
@@ -341,6 +356,7 @@ export async function runClusterInstall(
   deps.log('Deploying the netd egress redirect (DaemonSet)...')
   await ensureNetd()
   await deployNpmCache(deps)
+  await deploySiteEdge(deps)
   // Last: the server depends on every layer above.
   await deployServer(deps, opts, byoStorage)
   if (opts.byo && legacy.hash && !legacy.names) await retireLegacyNames(deps, legacy.hash)
@@ -598,8 +614,9 @@ async function kindNodes(deps: ClusterInstallDeps, cluster: string): Promise<str
 }
 
 /**
- * Start a stopped kind node container. kind nodes have no restart policy,
- * so they are Exited after a host reboot but still listed.
+ * Start a stopped kind node container. kind creates nodes with no restart
+ * policy, and the one `applyKindNodeFixups` sets needs the engine's restart
+ * service, so a node may be Exited after a host reboot but still listed.
  */
 async function startStoppedKindNode(deps: ClusterInstallDeps, node: string): Promise<void> {
   const { stdout } = await deps.run('podman', ['inspect', '--format', '{{.State.Running}}', node])
@@ -1122,12 +1139,37 @@ async function sideloadCalicoImages(
 }
 
 /**
- * The kind node container's pids limit, which only podman can raise and so
- * the installer DaemonSet cannot apply.
+ * The kind node containers' podman settings, which no in-cluster agent can
+ * apply: the pids limit, and a restart policy so the cluster, the server
+ * and the sites it serves come back after a host reboot. The policy is
+ * best effort, since only newer podman can update it on an existing
+ * container, and on Linux it takes effect at boot only through
+ * `podman-restart.service`.
  */
-async function applyKindNodeFixups(deps: ClusterInstallDeps, node: string): Promise<void> {
-  deps.log(`Applying kind node fixups to ${node}...`)
-  await deps.run('podman', ['update', '--pids-limit', String(NODE_PIDS_LIMIT), node])
+async function applyKindNodeFixups(deps: ClusterInstallDeps, nodes: string[]): Promise<void> {
+  let restartPolicy = true
+  for (const node of nodes) {
+    deps.log(`Applying kind node fixups to ${node}...`)
+    await deps.run('podman', ['update', '--pids-limit', String(NODE_PIDS_LIMIT), node])
+    restartPolicy = await deps.run('podman', ['update', '--restart', 'always', node])
+      .then(() => restartPolicy, () => false)
+  }
+  if (!restartPolicy) {
+    deps.log(
+      'note: this podman cannot give the kind node containers a restart policy '
+      + '(`podman update --restart` needs a newer podman), so after a host reboot run '
+      + '`yaac cluster install` to start the cluster again.',
+    )
+  } else if (deps.platform === 'linux') {
+    const enabled = await deps.run('systemctl', ['is-enabled', 'podman-restart.service'])
+      .then(({ stdout }) => stdout.trim() === 'enabled', () => false)
+    if (!enabled) {
+      deps.log(
+        'note: the kind node containers restart after a host reboot only once podman\'s '
+        + 'restart service is enabled:\n  sudo systemctl enable podman-restart.service',
+      )
+    }
+  }
 }
 
 
@@ -1146,6 +1188,7 @@ async function deployServer(
       fronting: tailnetFronting({ hostname: TAILNET_HOSTNAME }),
       identity: BYO_INSTALL_IDENTITY,
       owner: opts.owner,
+      siteDomains: siteDomainsArg(opts),
       storage: { kind: 'classes', ...byoStorage },
       log: deps.log,
     })
@@ -1169,7 +1212,8 @@ async function deployServer(
   // machine's data dir (docs/server-in-cluster.md).
   const identity = processIdentity()
   const origin = await deployServerWorkload({
-    fronting, identity, storage: { kind: 'static' }, torHostAddr, owner: opts.owner, log: deps.log,
+    fronting, identity, storage: { kind: 'static' }, torHostAddr, owner: opts.owner,
+    siteDomains: siteDomainsArg(opts), log: deps.log,
   })
   deps.log(`The yaac server is serving at ${origin}`)
 }
@@ -1187,6 +1231,24 @@ async function hostAddrOnKindNetwork(deps: ClusterInstallDeps): Promise<string |
     return stdout.trim().split(/\s+/).find(isIPv4)
   } catch {
     return undefined
+  }
+}
+
+/**
+ * Deploy the public-site edge, with the tunnel when `CF_TUNNEL_TOKEN` is
+ * set or an earlier install left its Secret. Failure only logs: nothing
+ * but public sites depends on it, and `cluster check` reports it.
+ */
+async function deploySiteEdge(deps: ClusterInstallDeps): Promise<void> {
+  deps.log('Deploying the public-site edge (router, and tunnel when configured)...')
+  try {
+    await ensureSiteEdge({ tunnelToken: env.siteTunnelToken })
+  } catch (err) {
+    deps.log(
+      'note: could not deploy the public-site edge '
+      + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}) — `
+      + 'public sites are unreachable until a re-run of `yaac cluster install` succeeds.',
+    )
   }
 }
 

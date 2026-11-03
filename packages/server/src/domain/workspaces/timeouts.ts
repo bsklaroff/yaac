@@ -50,6 +50,10 @@ export async function setWorkspaceTimeout(
   const row = await findWorkspaceRow(workspaceId)
   if (!row) throw new ServerError('NOT_FOUND', `workspace ${workspaceId.slice(0, 8)} has no record`)
   await authorizeProject(principal, row.projectId)
+  // A timeout's stop is the server's, which a release lets through.
+  if (row.siteId !== undefined) {
+    throw new ServerError('CONFLICT', `workspace ${workspaceId.slice(0, 8)} is a site's release, which runs until its site stops it`)
+  }
   const deadline = timeoutMinutes === null ? null : new Date(Date.now() + timeoutMinutes * 60_000)
   if (!await setWorkspaceDeadline(row.projectId, workspaceId, deadline)) {
     throw new ServerError('CONFLICT', `workspace ${workspaceId.slice(0, 8)} is stopped; restart it with a timeout instead`)

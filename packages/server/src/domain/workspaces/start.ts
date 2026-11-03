@@ -13,6 +13,7 @@ import {
 } from './provisioning'
 import { tryClaimPrewarmed } from './prewarm'
 import { volumeForLaunch } from './volumes'
+import { VOLUME_NEED } from './steps'
 import { modelDisplayName } from '#domain/auth'
 import { authorizeProject, type Actor } from '#domain/access'
 import { recordProjectCreate } from '#db'
@@ -65,6 +66,12 @@ export interface StartWorkspaceRequest {
   deadline?: Date
   /** A volume to mount, by name (docs/workspace-volumes.md). */
   volume?: string
+  /** A public site's release: see `WorkspaceCreateOptions`. Its `steps`
+   *  may need the `volume` step when it stages one. */
+  siteId?: string
+  image?: string
+  stageVolumeId?: string
+  colocateWith?: string
   /** Remember the named settings as project defaults (user creates only). */
   rememberDefaults: boolean
   /** Try a prewarmed spare first. A spare has its own id, so callers that
@@ -174,6 +181,10 @@ export async function prepareStart(
         ...(groupId !== undefined ? { groupId } : {}),
         ...(request.deadline !== undefined ? { deadline: request.deadline } : {}),
         ...(volume !== undefined ? { volumeId: volume.id } : {}),
+        ...(request.siteId !== undefined ? { siteId: request.siteId } : {}),
+        ...(request.image !== undefined ? { image: request.image } : {}),
+        ...(request.stageVolumeId !== undefined ? { stageVolumeId: request.stageVolumeId } : {}),
+        ...(request.colocateWith !== undefined ? { colocateWith: request.colocateWith } : {}),
       })
     } catch (err) {
       const { draft } = request
@@ -215,7 +226,7 @@ export async function prepareStart(
  * (docs/workspace-steps.md "Non-interactive workspaces").
  */
 export function checkStartSteps(
-  request: Pick<StartWorkspaceRequest, 'branch' | 'commit' | 'steps' | 'nonInteractive' | 'noSession'>,
+  request: Pick<StartWorkspaceRequest, 'branch' | 'commit' | 'steps' | 'nonInteractive' | 'noSession' | 'stageVolumeId'>,
 ): StepGraph | null | undefined {
   if (request.commit !== undefined && request.branch !== undefined) {
     throw new ServerError('VALIDATION', 'name a branch or a commit, not both')
@@ -225,7 +236,9 @@ export function checkStartSteps(
   }
   let steps: StepGraph | null | undefined
   try {
-    steps = request.steps === undefined || request.steps === null ? request.steps : parseStepGraph(request.steps)
+    steps = request.steps === undefined || request.steps === null
+      ? request.steps
+      : parseStepGraph(request.steps, new Set(request.stageVolumeId !== undefined ? [VOLUME_NEED] : []))
   } catch (err) {
     throw new ServerError('VALIDATION', (err as Error).message)
   }

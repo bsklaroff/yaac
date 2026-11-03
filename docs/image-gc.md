@@ -32,7 +32,9 @@ started by one of them could delete a blob another run is pushing. One pass:
    because `kubectl rollout undo` restores an older template. The live set
    also includes every layer of every project's current image chain (as the
    prewarm sweep resolves it): a project with no running workspace still
-   has a current image, and losing it would cost a rebuild.
+   has a current image, and losing it would cost a rebuild. And it includes
+   each public site's release image, which a stopped site's start and a
+   dead release's replacement launch again (docs/public-sites.md).
 
    Both reads are strict. If the workload list cannot be read, the pass
    stops. If any project's chain cannot be resolved, step 5 is skipped for

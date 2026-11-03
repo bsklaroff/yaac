@@ -23,6 +23,8 @@ export interface ClusterInstallArgs {
   tailnet?: boolean | string
   owner?: string
   nodes?: number | string
+  /** `--site-domain`, repeatable. */
+  siteDomains?: string[]
 }
 
 /**
@@ -75,8 +77,32 @@ export function tailnetServeHost(opts: ClusterInstallArgs): string | undefined {
   return host
 }
 
+/** A lowercase DNS name of two or more labels. */
+const SITE_DOMAIN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/
+
 /**
- * Validate `--nodes` (and the `--byo`, `--tailnet` and `--owner` flags) and
+ * The `--site-domain` values, trimmed and lowercased, or undefined when
+ * none was given (install then keeps the domains the server already has).
+ * Each must be a bare domain: every hostname under it is allowed, so it
+ * takes no wildcard, and it names no scheme or port.
+ */
+export function siteDomainsArg(opts: ClusterInstallArgs): string[] | undefined {
+  if (opts.siteDomains === undefined) return undefined
+  return opts.siteDomains.map((raw) => {
+    const domain = raw.trim().toLowerCase()
+    if (!SITE_DOMAIN.test(domain)) {
+      throw new ClusterInstallError(
+        '--site-domain takes a bare domain that public sites\' hostnames sit under, such as '
+        + `example.com: no wildcard, scheme, port or path (got "${raw}").`,
+      )
+    }
+    return domain
+  })
+}
+
+/**
+ * Validate `--nodes` (and the `--byo`, `--tailnet`, `--owner` and
+ * `--site-domain` flags) and
  * return the node count to build. The count applies only to a cluster this
  * run creates; install never recreates one, so an existing cluster ignores
  * it with a note.
@@ -84,6 +110,7 @@ export function tailnetServeHost(opts: ClusterInstallArgs): string | undefined {
 export function resolveNodeCount(opts: ClusterInstallArgs): number {
   checkByoFlags(opts)
   tailnetServeHost(opts)
+  siteDomainsArg(opts)
   if (opts.owner !== undefined && !opts.tailnet && !opts.byo) {
     throw new ClusterInstallError(
       '--owner names the tailnet login that claims this install as it switches to tailnet '

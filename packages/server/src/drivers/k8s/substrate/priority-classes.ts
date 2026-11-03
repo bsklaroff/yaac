@@ -16,6 +16,9 @@ export const PRIORITY_CLASS_INFRA = 'yaac-infra'
  * never preempt one to start.
  */
 export const PRIORITY_CLASS_BUILDER = 'yaac-builder'
+/** Release pods of public sites (docs/public-sites.md): workspaces that
+ *  serve the internet, so node pressure evicts dev workspaces first. */
+export const PRIORITY_CLASS_RELEASE = 'yaac-release'
 /** Workspace pods, evicted first. */
 export const PRIORITY_CLASS_WORKSPACE = 'yaac-workspace'
 
@@ -26,6 +29,7 @@ export const PRIORITY_CLASS_WORKSPACE = 'yaac-workspace'
  */
 const PRIORITY_VALUE_INFRA = 1_000_000
 const PRIORITY_VALUE_BUILDER = 100_000
+const PRIORITY_VALUE_RELEASE = 10_000
 const PRIORITY_VALUE_WORKSPACE = 1_000
 
 /**
@@ -33,7 +37,7 @@ const PRIORITY_VALUE_WORKSPACE = 1_000
  * every install on the cluster (including e2e namespaces), so they carry no
  * install labels and teardown never deletes them.
  *
- * Workspaces and builders use `preemptionPolicy: Never`. For workspaces
+ * Workspaces, releases and builders use `preemptionPolicy: Never`. For workspaces
  * this stops a pending one from preempting unrelated priority-0 pods. For
  * builders it stops a routine build from preempting running workspaces,
  * which are then gone for good (`backoffLimit: 0`) with a misleading
@@ -52,6 +56,12 @@ export function buildPriorityClassManifests(): Array<Record<string, unknown>> {
       value: PRIORITY_VALUE_BUILDER,
       preemptionPolicy: 'Never',
       description: 'yaac image builders — outrank workspaces, never displace one.',
+    },
+    {
+      name: PRIORITY_CLASS_RELEASE,
+      value: PRIORITY_VALUE_RELEASE,
+      preemptionPolicy: 'Never',
+      description: 'yaac site releases — outrank workspaces, never displace one.',
     },
     {
       name: PRIORITY_CLASS_WORKSPACE,

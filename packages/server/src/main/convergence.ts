@@ -6,6 +6,7 @@ import { loadToolAuthEntry } from '#domain/auth'
 import { restoreAllWorkspaceForwarders } from '#main/restore-forwarders'
 import { applyWorkspaceEvent, getProjectRow, listWorkspaceSessions } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
+import { onSiteTimer } from '#domain/sites'
 import { errorText, serverLog } from '#lib/log'
 import type { ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
 
@@ -84,6 +85,9 @@ export async function attachConvergence(opts: {
   // Once a driver connection drops, a healthy stream no longer implies
   // tmux is alive, so wake the stale reaper to run its own probes.
   onStreamHealthLost(() => fireChange('status-streams'))
+  // A site's drain or replacement backoff ending is a time, which no watch
+  // sees.
+  onSiteTimer(() => fireChange('sites'))
   // A session going back to work makes its next waiting spell unread.
   onWaitingEnded((projectId, workspaceId, window) => {
     applyWorkspaceEvent({ type: 'waiting-ended', projectId, workspaceId, window })

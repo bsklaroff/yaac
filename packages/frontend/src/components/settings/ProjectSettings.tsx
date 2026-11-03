@@ -12,6 +12,7 @@ import { KeptHostedRepo } from '#components/settings/KeptHostedRepo'
 import { WorkspaceAutoDelete } from '#components/settings/WorkspaceAutoDelete'
 import { KeptIgnoredPaths } from '#components/settings/KeptIgnoredPaths'
 import { Volumes } from '#components/settings/Volumes'
+import { Sites } from '#components/settings/Sites'
 import { ProjectSelect, useSettingsProject } from '#components/settings/ProjectPicker'
 import { api } from '#lib/api'
 import { WarningIcon } from '#lib/icons'
@@ -76,6 +77,7 @@ export function ProjectSettings(): JSX.Element {
   // Only with an egress proxy can a secret's value stay out of the
   // workspace, or an allowlist apply.
   const mediatedEgress = useSnapshot()?.driver !== 'containerless'
+  // Volumes and sites are both cluster-only.
   const hasVolumes = useHasVolumes()
 
   return (
@@ -165,6 +167,10 @@ export function ProjectSettings(): JSX.Element {
 
           {hasVolumes && <div className="mt-6">
             <Volumes key={`volumes:${projectId}`} projectId={projectId} readOnly={readOnly} />
+          </div>}
+
+          {hasVolumes && <div className="mt-6">
+            <Sites key={`sites:${projectId}`} projectId={projectId} readOnly={readOnly} />
           </div>}
 
           <div className="mt-6">

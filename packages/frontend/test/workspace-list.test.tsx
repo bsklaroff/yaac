@@ -838,6 +838,19 @@ describe('WorkspaceList', () => {
     expect(useUiStore.getState().newWorkspace).toMatchObject({ projectId: 'proj', inWorkspace: 'a' })
   })
 
+  it('offers a site\'s release no session or stop, nor a restart once stopped', async () => {
+    stoppedRows.push(stoppedEntry('old', { site: 'web' }))
+    useUiStore.setState({ stoppedExpanded: true })
+    renderList([entry({ workspaceId: 'a', title: 'Serve web', site: 'web' })], {
+      project: { stoppedCount: 1, deaths: 0, deathsSeenBy: {} },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Workspace actions' }))
+    expect((await screen.findAllByRole('menuitem')).map((i) => i.textContent))
+      .toEqual(['Rename', 'Move to group…', 'Queue workspace after this…'])
+    expect(await screen.findByText('Stopped old')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Restart workspace' })).toBeNull()
+  })
+
   it('confirms a stop, naming what it will start', async () => {
     renderList([entry({ workspaceId: 'a', title: 'Fix parser' })], {
       snapshot: serverSnapshot({ queuedWorkspaces: [queuedEntry('q1'), queuedEntry('q2', {

@@ -22,7 +22,8 @@ import { mockFetch, renderWithClient, serverSnapshot, workspaceEntry, type Fetch
  * A workspace's steps in its bar and panes (docs/workspace-steps.md): the
  * ones still running or that failed listed, the finished ones folded, a
  * step's pane only when picked, live while it runs and its log after, and
- * a non-interactive workspace offering nothing that would change it.
+ * a non-interactive workspace, or a site's release, offering nothing that
+ * would change it.
  */
 
 const LIFE = '2026-11-03T01:00:00.000Z'
@@ -93,5 +94,19 @@ describe('WorkspaceView steps', () => {
     expect((await screen.findByTestId('log')).textContent).toBe('2026-11-03T01-00-00.000Z/server.log following')
     expect(screen.queryByTestId('terminal')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull()
+  })
+
+  it('labels a site\'s release, which offers nothing its site does not manage, and opens the site from the label', async () => {
+    show({ steps: STEPS, site: 'web' })
+    expect(screen.queryByRole('button', { name: /New Shell/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /New Session/ })).toBeNull()
+    expect(screen.getByText('This workspace serves the site “web”')).toBeTruthy()
+
+    fireEvent.click(within(screen.getByLabelText('Steps')).getByRole('button', { name: 'server' }))
+    expect((await screen.findByTestId('log')).textContent).toBe('2026-11-03T01-00-00.000Z/server.log following')
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'release of web' }))
+    expect(useUiStore.getState()).toMatchObject({ settingsOpen: true, settingsSection: 'project' })
   })
 })

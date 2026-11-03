@@ -117,4 +117,11 @@ describe('setWorkspaceTimeout', () => {
     await expect(setWorkspaceTimeout({ kind: 'local', userId: '5b1c9d3e-2f0a-4e6b-9c7d-8a1e2f3b4c5d' }, 'ws-running', 30))
       .rejects.toMatchObject({ code: expect.stringMatching(/FORBIDDEN|NOT_FOUND/) as string })
   })
+
+  // Its stop would be the server's, which a release lets through.
+  it('refuses a site\'s release, which runs until its site stops it', async () => {
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'rel-1', siteId: '0b3a8d3c-1c1e-4d65-9a43-6f0f1e7b2c11' })
+    await expect(setWorkspaceTimeout(local, 'rel-1', 1)).rejects.toMatchObject({ code: 'CONFLICT' })
+    expect((await getWorkspaceRow(PROJ, 'rel-1'))?.deadline).toBeUndefined()
+  })
 })

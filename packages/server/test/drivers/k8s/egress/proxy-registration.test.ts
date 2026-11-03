@@ -350,6 +350,7 @@ describe('reconcileRegistrationGc', () => {
       projectIds: () => Promise.resolve([]),
       projectConfig: () => Promise.resolve(undefined),
       projectOwner: () => Promise.resolve('owner'),
+      pinnedImages: () => Promise.resolve([]),
       terminating: (id) => terminating.includes(id),
     }
   }

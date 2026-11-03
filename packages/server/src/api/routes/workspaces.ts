@@ -144,6 +144,9 @@ function mamaRoute(identifyCaller: IdentifyCaller) {
     const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? ''
     const caller = await identifyCaller(bearer, (name) => c.req.header(name))
     if (!caller) throw new ServerError('UNAUTHENTICATED', 'unknown or revoked yaac-mama credential')
+    // A site's release runs code that faces the internet, so it may not act
+    // on yaac at all (docs/public-sites.md); the proxy refuses it too.
+    if (caller.siteId !== undefined) throw new ServerError('FORBIDDEN', 'a public site\'s release may not call yaac')
     return caller
   }
   const hostedGit = (pathInfo: string) => async (c: Context): Promise<Response> => {

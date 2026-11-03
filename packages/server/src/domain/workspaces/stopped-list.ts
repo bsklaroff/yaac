@@ -6,6 +6,7 @@ import {
   listStoppedWorkspaceRows,
   conversationTitle,
   openingPrompt,
+  siteNames,
   type ConversationLinkRow,
   type StoppedRowCursor,
   type WorkspaceRow,
@@ -80,9 +81,10 @@ export async function listStoppedWorkspaces(query: StoppedListQuery = {}): Promi
 
 /** Stopped rows in wire form, with their conversations. */
 export async function toStoppedEntries(rows: WorkspaceRow[]): Promise<StoppedWorkspaceEntry[]> {
-  const [linksByWorkspace, sessionsByWorkspace] = await Promise.all([
+  const [linksByWorkspace, sessionsByWorkspace, sitesById] = await Promise.all([
     getConversationsFor(rows),
     listOpenSessionsFor(rows.map((r) => r.workspaceId)),
+    siteNames([...new Set(rows.flatMap((r) => r.siteId ?? []))]),
   ])
   return rows.map((r) => {
     const links = linksByWorkspace.get(`${r.projectId}/${r.workspaceId}`) ?? []
@@ -107,6 +109,7 @@ export async function toStoppedEntries(rows: WorkspaceRow[]): Promise<StoppedWor
       ...(r.nonInteractive ? { nonInteractive: true as const } : {}),
       ...(r.stepsOutcome !== undefined ? { stepsOutcome: r.stepsOutcome } : {}),
       ...(r.rerunOf !== undefined ? { rerunOf: r.rerunOf } : {}),
+      ...(r.siteId !== undefined && sitesById.has(r.siteId) ? { site: sitesById.get(r.siteId) } : {}),
     }
   })
 }

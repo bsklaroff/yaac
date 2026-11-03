@@ -31,6 +31,7 @@ describe('createK8sDriver', () => {
       projectIds: () => Promise.resolve([]),
       projectConfig: () => Promise.resolve(undefined),
       projectOwner: () => Promise.reject(new Error('no projects')),
+      pinnedImages: () => Promise.resolve([]),
       terminating: () => false,
     }
     const { prePool, maintenance } = createK8sDriver().reconcileSteps()

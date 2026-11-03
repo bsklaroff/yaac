@@ -33,9 +33,11 @@ import {
 import { clearQueuedLaunchesForTests } from '#domain/workspaces/queued-workspaces'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { getQueuedWorkspaceRow } from '#db/queued-workspace-store'
-import { createWorkspaceGroup, getWorkspaceRow, insertSession, listWorkspaceSessions, setProjectKeptIgnoredPaths, setWorkspaceGroup, setWorkspaceGroupLimit } from '#db'
+import { createWorkspaceGroup, getWorkspaceRow, insertSession, insertSite, updateSite, listWorkspaceSessions, setProjectKeptIgnoredPaths, setWorkspaceGroup, setWorkspaceGroupLimit } from '#db'
 import { clearWorkspaceStopped, recordWorkspaceCreated } from '#db/workspace-store'
-import { closeDb } from '#db/client'
+import { closeDb, getDb } from '#db/client'
+import { workspaces } from '#db/schema'
+import { eq } from 'drizzle-orm'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver, workspacePathsFixture } from '#test/support/fake-driver'
 import { seedProject } from '@yaac/test-utils/project-fixture'
@@ -533,5 +535,19 @@ describe('stopWorkspace', () => {
 
   it('refuses a workspace with nothing running', async () => {
     await expect(stopWorkspace(local, 'nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+
+  // A person or an agent cannot take a site down by stopping its release;
+  // only its site (the system) stops one. A release its site no longer
+  // tracks is the owner's to stop, so a leak always has a way out.
+  it('refuses a site\'s tracked release unless the server stops it, and lets an untracked one go', async () => {
+    const site = await insertSite({ projectId: PROJ, name: 'shop', hostname: 'shop.example.com', port: 3000, steps: {} })
+    await updateSite(site.id, { liveWorkspaceId: 'parent' })
+    await (await getDb()).update(workspaces).set({ siteId: site.id }).where(eq(workspaces.workspaceId, 'parent'))
+    await expect(stopWorkspace(local, 'parent')).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('yaac site stop') as unknown })
+    expect(teardowns.spawned).toEqual([])
+    await updateSite(site.id, { liveWorkspaceId: null })
+    await stopWorkspace(local, 'parent')
+    await expect.poll(() => teardowns.spawned.length).toBe(1)
   })
 })

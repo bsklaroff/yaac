@@ -12,6 +12,7 @@ import {
   registryHost,
   registryReachable,
   servingNpmCacheUrl,
+  siteTunnelStatus,
   vapAvailable,
 } from '#drivers/k8s/cluster'
 import crypto from 'node:crypto'
@@ -25,13 +26,19 @@ import {
   LABEL_CLAIM,
   LABEL_INSTALL_ID,
   LABEL_NPM_CACHE,
+  LABEL_SITE_ID,
+  LABEL_WORKSPACE_ID,
   NESTED_ENGINE_CAPS,
   NETD_APP_NAME,
   NFS_PORT,
   NPM_CACHE_APP_NAME,
   NPM_CACHE_PORT,
+  POD_STREAM_PORT,
   PROXY_APP_NAME,
+  PROXY_PORT,
   SERVER_APP_NAME,
+  SITE_ROUTER_APP_NAME,
+  SITE_TUNNEL_APP_NAME,
   SERVER_FRONT_INGRESS_NP_NAME,
   SERVER_INGRESS_NP_NAME,
   PROXY_EGRESS_NP_NAME,
@@ -135,8 +142,9 @@ export const NODE_PIDS_LIMIT = 32768
  *   are in place.
  * - Pod probes, run concurrently: the end-to-end probe (registry pull and
  *   the global claim shared with a peer pod), egress enforcement, the npm
- *   cache, a pod on every node of a multi-node cluster (warn),
- *   nested-mount (warn), and storage semantics.
+ *   cache, the site edge's wall (and, with a tunnel, its connection), a pod
+ *   on every node of a multi-node cluster (warn), nested-mount (warn), and
+ *   storage semantics.
  * - datapath: Calico and netd Ready; veth-source: netd's pod-to-veth
  *   mapping resolves on every node.
  * - vap: ValidatingAdmissionPolicy available (builds need it).
@@ -239,7 +247,7 @@ export async function runClusterCheck(
   add(await runPriorityClassCheck())
 
   const PROBE_GATES = [
-    'node-fixups', 'gvisor', 'gvisor-installer', 'probe', 'egress', 'npm-cache',
+    'node-fixups', 'gvisor', 'gvisor-installer', 'probe', 'egress', 'npm-cache', 'sites',
     'datapath', 'veth-source', 'per-node', 'nested-mount', 'storage-semantics', 'vap',
   ] as const
   const skipFrom = (from: (typeof PROBE_GATES)[number], detail: string): void => {
@@ -266,7 +274,9 @@ export async function runClusterCheck(
   }
   let sandboxResults: CheckResult[]
   if (idlePool) {
-    sandboxResults = ['probe', 'egress', 'npm-cache', 'nested-mount', 'per-node', 'storage-semantics'].map(idleSkip)
+    sandboxResults = [
+      'probe', 'egress', 'npm-cache', 'sites', 'nested-mount', 'per-node', 'storage-semantics',
+    ].map(idleSkip)
   } else {
     // Probe pods run as the workspace uid/gid recorded on the server
     // Deployment, not this machine's. If it cannot be read, fail here rather
@@ -289,17 +299,19 @@ export async function runClusterCheck(
       runEndToEndProbe(identity),
       runNetworkPolicyProbe(),
       runNpmCacheProbe(),
+      runSitesProbe(),
       runNestedMountProbe(),
       runPerNodeProbe(nodes, gvisorScheduling, identity),
       runStorageSemanticsProbe(identity),
     ])
   }
   const [
-    probeResult, egressResult, npmCacheResult, nestedMountResult, perNodeResult, semanticsResult,
+    probeResult, egressResult, npmCacheResult, sitesResult, nestedMountResult, perNodeResult, semanticsResult,
   ] = sandboxResults
   add(probeResult)
   add(egressResult)
   add(npmCacheResult)
+  add(sitesResult)
 
   add(await runDatapathCheck())
   // netd reports Ready even with no pod-to-veth mappings, so a wrong veth
@@ -1758,6 +1770,89 @@ async function runNpmCacheProbe(): Promise<CheckResult> {
       detail: `npm cache probe errored (${k8sErrorSummary(err)})`,
       fix: npmCacheFix(),
     }
+  }
+}
+
+const SITES_PROBE_POD_NAME = 'yaac-cluster-check-sites'
+
+/**
+ * The sites gate: public traffic flows through the tunnel and the router,
+ * so neither may reach the server (which treats a loopback `Host` as its
+ * owner), the proxy's control port, or a workspace that is not a release
+ * (docs/server-in-cluster.md "The site edge"). A probe pod labelled as
+ * each, held to its policies, must fail to dial all three. With a tunnel
+ * installed, a tunnel holding no connection to Cloudflare is a warn.
+ *
+ * The workspace dialed is a real one (carrying the install id, which the
+ * other probes' pods lack), on streamd's port, which always listens.
+ */
+async function runSitesProbe(): Promise<CheckResult> {
+  const ns = k8sNamespace()
+  const fix = 'The edge\'s NetworkPolicies must admit nothing but Cloudflare, DNS, the router '
+    + 'and release pods. Re-run `yaac cluster install`, which re-applies them.'
+  try {
+    const workspace = (await listObjects<{ status?: { podIP?: string } }>('v1', 'Pod', {
+      namespace: ns,
+      labelSelector: `${LABEL_WORKSPACE_ID},${LABEL_INSTALL_ID}=${installId()},!${LABEL_SITE_ID}`,
+      fieldSelector: 'status.phase=Running',
+    })).find((p) => p.status?.podIP)?.status?.podIP ?? null
+    const targets = [
+      { key: 'SERVER', ip: await serviceIp(SERVER_APP_NAME, ns), port: SERVER_POD_PORT, what: 'the yaac server' },
+      { key: 'PROXY', ip: await serviceIp(PROXY_APP_NAME, ns), port: PROXY_PORT, what: 'the proxy\'s control port' },
+      { key: 'WORKSPACE', ip: workspace, port: POD_STREAM_PORT, what: 'a workspace that is not a release' },
+    ].filter((t): t is typeof t & { ip: string } => t.ip !== null)
+    if (targets.length === 0) {
+      return {
+        name: 'sites', status: 'warn',
+        detail: 'no server, proxy or workspace is running to dial — the site edge\'s wall is unverified',
+      }
+    }
+    const script = targets.map((t) => `nc -w 4 ${t.ip} ${String(t.port)} </dev/null >/dev/null 2>&1`
+      + ` && echo SITE_${t.key}_OPEN || echo SITE_${t.key}_LOCKED; `).join('') + 'echo SITES_DONE'
+    const image = await ensureProbeImage()
+    const runs = await Promise.all([SITE_TUNNEL_APP_NAME, SITE_ROUTER_APP_NAME].map(async (app) => ({
+      app,
+      ...await runProbePod(`${SITES_PROBE_POD_NAME}-${app === SITE_TUNNEL_APP_NAME ? 'tunnel' : 'router'}`, {
+        timeoutMs: 60_000,
+        // Runs on runc, as the edge does, and never matches its Services.
+        labels: { app },
+        container: { image, command: ['sh', '-c', script] },
+      }),
+    })))
+    const stalled = runs.find((r) => r.phase !== 'Succeeded' || !r.logs.includes('SITES_DONE'))
+    if (stalled) {
+      return {
+        name: 'sites', status: 'fail',
+        detail: `the ${stalled.app} probe pod produced no verdict (phase ${stalled.phase})`,
+        fix: KIND_SETUP_FIX,
+      }
+    }
+    const open = runs.flatMap((r) => targets
+      .filter((t) => r.logs.includes(`SITE_${t.key}_OPEN`))
+      .map((t) => `a pod labelled as ${r.app} reached ${t.what}`))
+    if (open.length > 0) {
+      return {
+        name: 'sites', status: 'fail',
+        detail: `${open.join('; ')} — public traffic passes through these pods`,
+        fix,
+      }
+    }
+    const detail = `the site tunnel and router cannot dial ${targets.map((t) => t.what).join(', nor ')}`
+    const tunnel = await siteTunnelStatus()
+    if (tunnel === 'disconnected') {
+      return {
+        name: 'sites', status: 'warn',
+        detail: `${detail}, but the tunnel holds no connection to Cloudflare, so no site is reachable`,
+        fix: 'Check the tunnel token (re-run `yaac cluster install` with CF_TUNNEL_TOKEN) and that this '
+          + `network lets out TCP and UDP 7844. Inspect with \`kubectl -n ${ns} logs deploy/${SITE_TUNNEL_APP_NAME}\`.`,
+      }
+    }
+    return {
+      name: 'sites', status: 'pass',
+      detail: tunnel === 'connected' ? `${detail}; the tunnel is connected to Cloudflare` : detail,
+    }
+  } catch (err) {
+    return { name: 'sites', status: 'fail', detail: `sites probe errored (${k8sErrorSummary(err)})`, fix }
   }
 }
 

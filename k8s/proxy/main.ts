@@ -471,6 +471,13 @@ function relayMamaRequest(
   res: http.ServerResponse,
   workspaceId: string,
 ): void {
+  // A public site's release faces the internet, so it never reaches the
+  // server at all (docs/public-sites.md); the server refuses it too.
+  if (podIndex.isRelease(workspaceId)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain' })
+    res.end('a public site\'s release may not call yaac')
+    return
+  }
   const target = relayTarget(req.url ?? '/', MAMA_RELAY_URL!)
   if (target === null) {
     res.writeHead(404, { 'Content-Type': 'text/plain' })

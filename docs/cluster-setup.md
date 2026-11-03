@@ -20,7 +20,8 @@ Install is idempotent and safe to re-run at any time. In order, it:
    converged instead: stopped nodes are started and the fixups re-applied.
 3. Applies the PriorityClasses and the in-cluster image registry.
 4. Builds and pushes every image yaac ships (see "Images are built here").
-5. Applies the gVisor runtime installer, netd and the npm cache.
+5. Applies the gVisor runtime installer, netd, the npm cache and the
+   public-site edge (docs/server-in-cluster.md "The site edge").
 6. Deploys the yaac server itself (docs/server-in-cluster.md), publishes it
    at a fixed host loopback origin, and writes the `server.json` that every
    client on this machine resolves the server through.
@@ -52,6 +53,13 @@ Other flags:
   `TS_OAUTH_CLIENT_SECRET`. The server then identifies every caller by
   tailnet user (docs/server-in-cluster.md "Reachability",
   docs/remote-hosting.md). `--byo` implies the operator form.
+- `--site-domain <domain>` (repeatable) names a domain public sites'
+  hostnames may sit under, a bare name such as `example.com`. Given, the
+  flags replace the server's domains; a later install without them keeps
+  them. `CF_TUNNEL_TOKEN=<token>` gives install a Cloudflare Tunnel token,
+  which it keeps in a Secret and runs cloudflared with; later installs
+  reuse it. Without a token only the router is applied, and no site is
+  public.
 
 ## Images are built here, and only here
 
@@ -308,10 +316,10 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
    and histories, and the node's own etcd with every Secret. The node is a
    rootful privileged container, so this narrows what such a process sees,
    not what an escape from the container can reach.
-3. **The kind node fixup**: a raised pids limit on the node container
+3. **The kind node fixups**: a raised pids limit on the node container
    (32768), applied through podman because a real node does not need it.
    Podman's default of 2048 is hit by subagent fan-out as `fork: resource
-   temporarily unavailable`.
+   temporarily unavailable`. And a restart policy (see "After a restart").
 4. **The gVisor runtime and node tuning**, via the `yaac-gvisor-install`
    DaemonSet. On every node, a privileged pod installs a pinned `runsc`,
    `containerd-shim-runsc-v1` and the `gvisor-bin/` sidecar binaries runsc
@@ -600,7 +608,7 @@ the check's `per-node` probe reports a pool node where one is missing.
 `yaac cluster check` reports infrastructure-only nodes as skipped. When no
 Ready node takes workspaces and at least one is infrastructure-only, as
 with an autoscaled pool at zero, the `nodes` gate warns and the gates that
-run a sandboxed pod (`gvisor`, `probe`, `egress`, `npm-cache`,
+run a sandboxed pod (`gvisor`, `probe`, `egress`, `npm-cache`, `sites`,
 `nested-mount`, `per-node`, `storage-semantics`) skip rather than fail.
 Re-run the check while a workspace node is up to cover them.
 
@@ -692,19 +700,24 @@ DaemonSet's pod restarts with the node and its first pass puts them back.
 A node the `gvisor-installer` gate keeps reporting as not Ready is
 diagnosed from the installer's log (`kubectl -n yaac logs -l app=yaac-gvisor-install`).
 
-**The kind node fixup** is podman state. It survives a node container
-restart and is lost only when the container is, on a cluster re-create.
-Install re-applies it on every run, and the check's `node-fixups` gate
-points at `yaac cluster install` when it is missing.
+**The kind node fixups** are podman state. They survive a node container
+restart and are lost only when the container is, on a cluster re-create.
+Install re-applies them on every run, and the check's `node-fixups` gate
+points at `yaac cluster install` when the pids limit is missing.
 
 **The gVisor runtime** reinstalls itself on any new node, and install
 re-applies the DaemonSet, which is how a runsc version bump reaches an
 existing cluster.
 
-**A host reboot leaves the kind node containers stopped** (kind creates
-them with no restart policy), which the check reports as an unreachable API
-server. Run `yaac cluster install`: it starts every stopped node, applies
-the fixups, waits for the API server, and converges as usual. Until
+**A host reboot** restarts the kind node containers, and with them the
+cluster, the server and its sites, only if they have a restart policy. kind
+creates them with none, so install's fixups set `--restart always` on each,
+and on Linux note that the policy takes effect at boot only once
+`podman-restart.service` is enabled (`sudo systemctl enable
+podman-restart.service`). A podman too old for `podman update --restart`
+gets a note instead. Where the nodes stay stopped, the check reports an
+unreachable API server. Run `yaac cluster install`: it starts every stopped
+node, applies the fixups, waits for the API server, and converges as usual. Until
 calico-node is back, pod statuses still show their pre-reboot values, so
 the registry step waits on a real connection rather than on the rollout
 status.
@@ -880,6 +893,11 @@ order:
 - `npm-cache`: a workspace-labelled pod fetches a package through the
   cache. Warns when there is no ready cache pod; fails when a ready one
   does not serve.
+- `sites`: pods labelled as the site tunnel and router cannot dial the
+  server, the proxy's control port or a running workspace that is not a
+  release (docs/server-in-cluster.md "The site edge"). Warns when none of
+  those is running to dial, or when an installed tunnel holds no connection
+  to Cloudflare.
 - `datapath`: calico-node and netd are Ready, meaning policy is enforced
   and a redirect exists.
 - `veth-source`: runs in each netd pod against that node's routing table

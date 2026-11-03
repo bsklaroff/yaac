@@ -57,6 +57,7 @@ import { clientLocalPath } from '@yaac/shared/paths'
 import { buildBuiltinImages } from '#drivers/k8s/install'
 import {
   BUILDER_MIRROR_TAG,
+  CLOUDFLARED_MIRROR_TAG,
   ENVOY_MIRROR_TAG,
   NGINX_MIRROR_TAG,
   REGISTRY_MIRROR_TAG,
@@ -114,7 +115,7 @@ function holdsEverything(): void {
   fakeRegistry.holdsAll = true
   fakeRegistry.mirror(
     REGISTRY_MIRROR_TAG, ENVOY_MIRROR_TAG, BUILDER_MIRROR_TAG,
-    GVISOR_INSTALLER_MIRROR_TAG, VERDACCIO_MIRROR_TAG, NGINX_MIRROR_TAG,
+    GVISOR_INSTALLER_MIRROR_TAG, VERDACCIO_MIRROR_TAG, NGINX_MIRROR_TAG, CLOUDFLARED_MIRROR_TAG,
   )
 }
 

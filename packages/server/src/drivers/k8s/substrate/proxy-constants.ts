@@ -208,3 +208,37 @@ export function proxyServiceHost(namespace: string, port: number): string {
 
 /** Name of the builder-role admission guard (policy + binding). */
 export const BUILDER_ROLE_GUARD_NAME = 'yaac-builder-role-guard'
+
+/**
+ * The public-site edge (docs/public-sites.md). Internet traffic reaches a
+ * site's release through these two Deployments and never through the
+ * server: cloudflared dials out to Cloudflare, and hands each request to
+ * the router, an Envoy that picks the site by `Host`.
+ */
+export const SITE_TUNNEL_APP_NAME = 'yaac-site-tunnel'
+export const SITE_ROUTER_APP_NAME = 'yaac-site-router'
+/** The Secret holding the tunnel's token, key `token`. */
+export const SITE_TUNNEL_SECRET_NAME = 'yaac-site-tunnel'
+/** cloudflared's metrics listener, whose `/ready` answers 200 while the
+ *  tunnel holds a connection to Cloudflare. */
+export const SITE_TUNNEL_METRICS_PORT = 2000
+/** The router's listener (container and Service port), the origin every
+ *  public hostname points at in the Cloudflare dashboard. */
+export const SITE_ROUTER_PORT = 8080
+/** The router's Envoy admin listener, for its readiness probe. */
+export const SITE_ROUTER_ADMIN_PORT = 9901
+/** The ConfigMap of the router's route table, which the server writes. */
+export const SITE_ROUTES_CONFIGMAP_NAME = 'yaac-site-routes'
+/**
+ * Label every release pod of a site carries from launch, naming the site.
+ * The site's ingress policy admits the router to pods with it, the router
+ * may dial only pods with it, and the proxy refuses `yaac.internal` to
+ * them (k8s/proxy/pod-watch.ts reads the same name).
+ */
+export const LABEL_SITE_ID = 'yaac.site-id'
+
+/** A site's headless Service (and its ingress policy), selecting its live
+ *  release. */
+export function siteServiceName(siteId: string): string {
+  return `yaac-site-${siteId}`
+}

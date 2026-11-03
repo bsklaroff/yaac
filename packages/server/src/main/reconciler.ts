@@ -6,7 +6,7 @@ import type {
   RuntimeSnapshot,
 } from '#drivers/contract'
 import { defaultReconcileSteps } from '#main/reconcile-steps'
-import { listProjectRows } from '#db'
+import { listProjectRows, listSites } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
 import { isWorkspaceTerminating } from '#runtime/status'
 import { onConvergenceChange, type ChangeSource } from '#main/convergence'
@@ -113,6 +113,8 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
           if (!row) throw new Error(`project ${projectId} no longer exists`)
           return row.owner
         },
+        pinnedImages: async () => (await listSites())
+          .flatMap((r) => [r.releaseImage, r.deployImage].filter((i): i is string => i !== undefined)),
         // Not memoized: a stop that lands mid-pass must be seen at once.
         terminating: (workspaceId) => isWorkspaceTerminating(workspaceId),
       }

@@ -876,6 +876,17 @@ describe('prepareRestart', () => {
     await expect(prepareRestart(local, 'wt-x')).rejects.toThrow('connection refused')
     expect(listProvisioning()).toEqual([])
   })
+
+  // A site replaces its release in a fresh checkout rather than restarting
+  // it (docs/public-sites.md).
+  it('refuses a site\'s release, naming the site command', async () => {
+    await applyWorkspaceEvent({
+      type: 'workspace-created', projectId: DEMO_PROJECT_ID, workspaceId: 'rel-1', siteId: '0b3a8d3c-1c1e-4d65-9a43-6f0f1e7b2c11',
+    })
+    await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'rel-1' })
+    await expect(prepareRestart(local, 'rel-1')).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('yaac site start') as unknown })
+    expect(listProvisioning()).toEqual([])
+  })
 })
 
 /** A non-interactive workspace that ran its graph at the project's head. */
