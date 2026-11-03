@@ -17,6 +17,10 @@ import {
   listVolumeWorkspaces,
   setVolumeSize,
   setWorkspaceVolume,
+  stageVolume,
+  handOverVolume,
+  listStagedVolumes,
+  unstageVolume,
   type VolumeLease,
 } from '#db/volume-store'
 import { applyWorkspaceEvent } from '#db/apply-workspace-event'
@@ -225,5 +229,62 @@ describe('deleteProjectVolumeRows', () => {
     await deleteProjectVolumeRows(PROJ)
     expect(await listProjectVolumes(PROJ)).toEqual([])
     expect(await listProjectVolumes(OTHER)).toHaveLength(1)
+  })
+})
+
+describe('stageVolume', () => {
+  it('records one next holder at a time, while another workspace holds the lease', async () => {
+    const v = await insertVolume(PROJ, 'data', '1Gi')
+    await claimVolume(v.id, 'old')
+    expect(await stageVolume(v.id, 'new')).toBe(true)
+    expect(await stageVolume(v.id, 'new')).toBe(true)
+    expect(await stageVolume(v.id, 'other')).toBe(false)
+    expect(await getVolumeRow(v.id)).toMatchObject({ holderWorkspaceId: 'old', nextHolderWorkspaceId: 'new' })
+  })
+})
+
+describe('claimVolume while staged', () => {
+  it('refuses every claim but the staged holder\'s, which only a handover passes it', async () => {
+    const v = await insertVolume(PROJ, 'data', '1Gi')
+    await stageVolume(v.id, 'release')
+    expect(await claimVolume(v.id, 'dev')).toBeUndefined()
+    expect((await getVolumeRow(v.id))?.holderWorkspaceId).toBeUndefined()
+    await unstageVolume(v.id, 'release')
+    expect(await claimVolume(v.id, 'dev')).toBeDefined()
+  })
+})
+
+describe('handOverVolume', () => {
+  it('passes the lease to the staged holder once it is free or exactly the lease found gone', async () => {
+    const v = await insertVolume(PROJ, 'data', '1Gi')
+    const old = await claimVolume(v.id, 'old')
+    await stageVolume(v.id, 'new')
+    // Not staged for this one, and the old holder still holds it.
+    expect(await handOverVolume(v.id, 'other')).toBeUndefined()
+    expect(await handOverVolume(v.id, 'new')).toBeUndefined()
+    const lease = await handOverVolume(v.id, 'new', old)
+    expect(lease?.holderWorkspaceId).toBe('new')
+    expect(await getVolumeRow(v.id)).toMatchObject({ holderWorkspaceId: 'new' })
+    expect((await getVolumeRow(v.id))?.nextHolderWorkspaceId).toBeUndefined()
+  })
+})
+
+describe('listStagedVolumes', () => {
+  it('lists only volumes with a next holder', async () => {
+    const a = await insertVolume(PROJ, 'a', '1Gi')
+    await insertVolume(PROJ, 'b', '1Gi')
+    await stageVolume(a.id, 'new')
+    expect((await listStagedVolumes()).map((v) => v.name)).toEqual(['a'])
+  })
+})
+
+describe('unstageVolume', () => {
+  it('forgets the next holder it names, and no other', async () => {
+    const v = await insertVolume(PROJ, 'data', '1Gi')
+    await stageVolume(v.id, 'new')
+    await unstageVolume(v.id, 'other')
+    expect((await getVolumeRow(v.id))?.nextHolderWorkspaceId).toBe('new')
+    await unstageVolume(v.id, 'new')
+    expect((await getVolumeRow(v.id))?.nextHolderWorkspaceId).toBeUndefined()
   })
 })

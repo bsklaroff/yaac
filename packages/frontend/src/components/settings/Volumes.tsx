@@ -10,7 +10,7 @@ import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
 import type { VolumeEntry } from '@yaac/shared/types'
 
-const INPUT = 'rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text outline-none '
+export const INPUT = 'rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text outline-none '
   + 'placeholder:text-text-faint focus:border-border-strong'
 
 /**
@@ -196,7 +196,7 @@ function VolumeRow({ projectId, volume, readOnly, resizing, onResizing, onResize
 }
 
 /** A workspace's title (or short id), opening it in place of settings. */
-function WorkspaceLink({ projectId, workspaceId, title }: {
+export function WorkspaceLink({ projectId, workspaceId, title }: {
   projectId: string
   workspaceId: string
   title?: string

@@ -48,7 +48,8 @@ one mounts two (see "Storage claims").
    (`YAAC_ACCESS_MODE`, `tailnet` under `--tailnet [<host>]`, with `--owner` as
    `YAAC_ACCESS_OWNER`) and hostname (`YAAC_ALLOWED_HOSTS`), which the server
    checks against the mode it recorded (docs/remote-hosting.md "Access
-   modes").
+   modes"). `--site-domain` becomes `YAAC_SITE_DOMAINS`; an install without
+   the flag keeps the domains the live Deployment has.
 
 Install then waits for the published origin to report ready and registers
 the server: `server.json` selects that origin and the data dir's
@@ -288,6 +289,35 @@ directly. It does not route its own traffic through the egress proxy, which
 exists to mediate untrusted code. The kind forwarder, being host-networked,
 is selected by no policy (like netd); it only dials one ClusterIP.
 
+## The site edge
+
+Public sites (docs/public-sites.md) reach the internet through objects
+that never pass through the server, all in `cluster/site-edge.ts`:
+
+| Object | Applied by |
+|---|---|
+| Deployment and Service `yaac-site-router` (stock Envoy, 2 replicas), its bootstrap ConfigMap | install, always |
+| Secret and Deployment `yaac-site-tunnel` (cloudflared, 2 replicas) | install, while it has a token (`CF_TUNNEL_TOKEN`, kept in the Secret) |
+| the tunnel's and router's four NetworkPolicies | install, and the server whenever the node set changes |
+| ConfigMap `yaac-site-routes`, the router's route table | install creates it empty; the server writes it |
+| per site, headless Service and NetworkPolicy `yaac-site-<id>` | the server (`syncSites`) |
+
+The router's listener is static and reads its routes and clusters from the
+routes ConfigMap's files, so a site change never drains another site's
+connections. Each site's cluster resolves its headless Service, so Envoy
+dials the live release's pod IP and a deploy's selector change moves new
+requests as soon as DNS shows it.
+
+The wall stands as it is: no edge policy adds a peer to the server's
+ingress, and the edge pods' egress (under the namespace's world-deny) reaches
+only Cloudflare on 7844 and DNS (the tunnel), the router (the tunnel), and
+pods labelled `yaac.site-id` (the router). `yaac cluster check`'s `sites`
+gate runs a probe pod labelled as each and fails if either reaches the
+server's API, the proxy's control port or a workspace that is not a
+release. The probes carry only the `app` label the policies select on;
+the edge's Deployments and the router Service also select a replica label,
+so a probe never receives public traffic.
+
 ## In-cluster dials go by Service
 
 The server talks to three things in the cluster: the image registry, the
@@ -468,7 +498,10 @@ The harness provides what a pod cannot provide for itself:
 - the claim pair, with static volumes into the file's own data dir;
 - one extra mount: the file's scratch base at its own absolute path, because
   the source repos and mock-remote stores tests use sit beside the data dir,
-  not inside a tier.
+  not inside a tier;
+- the site router, applied as install applies it but with no tunnel, so a
+  test reaches a site through a port-forward to `yaac-site-router` with the
+  site's `Host`.
 
 Things to know when reading a failure there:
 

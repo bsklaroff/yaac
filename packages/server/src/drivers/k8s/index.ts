@@ -36,7 +36,7 @@ import {
   readAllGitAuthFailures,
   refreshedCredentials,
 } from '#drivers/k8s/egress'
-import { syncProjectSecrets, syncProxyCredentials } from '#drivers/k8s/cluster'
+import { siteTunnelStatus, syncProjectSecrets, syncProxyCredentials, syncSiteObjects } from '#drivers/k8s/cluster'
 import {
   currentWorkspaceImage,
   dismissImageBuild,
@@ -143,6 +143,8 @@ export function createK8sDriver(): WorkspaceDriver {
     reapNodeLocal: (live) => reapNodeLocal(live),
     removeAsRoot: (dir, names) => removeAsRoot(dir, names),
     runInStoppedCheckout: (target, script, args, opts) => runInStoppedCheckout(target, script, args, opts),
+    syncSites: (sites) => syncSiteObjects(sites),
+    siteTunnelStatus: () => siteTunnelStatus(),
 
     mamaRelay: { port: SERVER_MAMA_PORT, authenticate: (bearer) => isProxyAuthSecret(bearer) },
   }

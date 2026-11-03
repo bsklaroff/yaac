@@ -28,6 +28,13 @@ import {
  * server code).
  */
 export const LABEL_WORKSPACE_ID = 'yaac.workspace-id'
+/**
+ * Must match LABEL_SITE_ID in
+ * packages/server/src/drivers/k8s/substrate/proxy-constants.ts: the label a
+ * public site's release pods carry, whose calls to `yaac.internal` the relay
+ * refuses (docs/public-sites.md).
+ */
+export const LABEL_SITE_ID = 'yaac.site-id'
 
 /** The shape we read out of a Pod object (only the fields we need). */
 export interface WatchedPod {
@@ -51,13 +58,14 @@ export function podWorkspaceId(pod: WatchedPod): string | null {
 
 /**
  * In-memory `podIP → workspaceId` index, plus the reverse map the relay
- * listener uses. A DELETED event removes the reverse entry only if it still
- * points at that pod's IP, so a replacement pod's entry survives the old
- * pod's late deletion event.
+ * listener uses and the workspaces that are site releases. A DELETED event
+ * removes the reverse entry only if it still points at that pod's IP, so a
+ * replacement pod's entry survives the old pod's late deletion event.
  */
 export class PodWorkspaceIndex {
   private byIp = new Map<string, string>()
   private byId = new Map<string, string>()
+  private releases = new Set<string>()
 
   /** Apply one watch event. ADDED/MODIFIED upsert; DELETED (or a pod that
    * lost its IP/label) evicts. */
@@ -68,23 +76,34 @@ export class PodWorkspaceIndex {
     if (ev.type === 'DELETED' || sid === null) {
       const evicted = this.byIp.get(ip)
       this.byIp.delete(ip)
-      if (evicted !== undefined && this.byId.get(evicted) === ip) this.byId.delete(evicted)
+      if (evicted !== undefined && this.byId.get(evicted) === ip) {
+        this.byId.delete(evicted)
+        this.releases.delete(evicted)
+      }
       return
     }
     this.byIp.set(ip, sid)
     this.byId.set(sid, ip)
+    if (ev.object.metadata?.labels?.[LABEL_SITE_ID] !== undefined) this.releases.add(sid)
   }
 
   /** Rebuild the whole index from a pod list. */
   replaceAll(pods: WatchedPod[]): void {
     this.byIp.clear()
     this.byId.clear()
+    this.releases.clear()
     for (const object of pods) this.apply({ type: 'ADDED', object })
   }
 
   /** The workspace for a pod IP. */
   resolve(ip: string): string | undefined {
     return this.byIp.get(ip)
+  }
+
+  /** Whether a workspace's pod is a public site's release. A pod's labels
+   *  are fixed at launch, so this never changes for a workspace. */
+  isRelease(workspaceId: string): boolean {
+    return this.releases.has(workspaceId)
   }
 
   /** Reverse lookup for the relay listener: the workspace's pod IP. */
@@ -251,7 +270,7 @@ export async function fetchWorkspaceByPodIp(
   for (const pod of list.items) {
     const sid = podWorkspaceId(pod)
     if (sid && pod.status?.podIP === ip) {
-      index.set(ip, sid)
+      index.apply({ type: 'ADDED', object: pod })
       return sid
     }
   }

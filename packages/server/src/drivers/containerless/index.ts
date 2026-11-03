@@ -144,6 +144,9 @@ export function createContainerlessDriver(): WorkspaceDriver {
     // needs more than that user to remove.
     removeAsRoot: () => Promise.resolve(false),
     runInStoppedCheckout: (target, script, args, opts) => runInStoppedCheckout(target, script, args, opts),
+    // No public sites here: the site routes refuse before reaching these.
+    syncSites: () => Promise.resolve(),
+    siteTunnelStatus: () => Promise.resolve('absent'),
 
     // yaac-mama posts directly to `/workspace/mama` here.
     mamaRelay: null,

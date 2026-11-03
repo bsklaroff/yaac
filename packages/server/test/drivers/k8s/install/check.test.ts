@@ -227,6 +227,8 @@ let calicoNamespace = 'kube-system'
 let netdContainerStatuses: unknown[] = []
 /** Pod name -> what its log says, over the healthy defaults; a case edits. */
 let podLogs: Record<string, string> = {}
+/** Further objects the cluster holds; a case edits. */
+let extraObjects: FakeObject[] = []
 
 /** Healthy probe logs; the end-to-end probe echoes back its peer's nonce. */
 function logsFor(name: string): string {
@@ -240,6 +242,9 @@ function logsFor(name: string): string {
     case 'yaac-cluster-check-fsprobe': return FSPROBE_ALL_PASS
     case 'yaac-cluster-check-egress': return 'NP_BLOCKED\n'
     case 'yaac-cluster-check-npm-cache': return 'NPM_CACHE_OK\n'
+    case 'yaac-cluster-check-sites-tunnel':
+    case 'yaac-cluster-check-sites-router':
+      return 'SITES_DONE\n'
     case 'yaac-cluster-check-nested': return 'NESTED_MOUNT_OK\n'
     case 'yaac-cluster-check': {
       const [, nonce] = appliedPodArgs('yaac-cluster-check-peer')
@@ -323,6 +328,7 @@ function seedCluster(): void {
         numberReady: ready, desiredNumberScheduled: desired,
       })]
     }),
+    ...extraObjects,
     {
       apiVersion: 'v1',
       kind: 'Pod',
@@ -473,6 +479,7 @@ describe('runClusterCheck', () => {
     calicoNamespace = 'kube-system'
     netdContainerStatuses = []
     podLogs = {}
+    extraObjects = []
     vi.spyOn(fakeCluster.podLogs, 'get').mockImplementation(logsFor)
     // The registry's write gate refuses an anonymous upload.
     gateStatus = 401
@@ -511,6 +518,8 @@ describe('runClusterCheck', () => {
       ['probe', 'pass'],
       ['egress', 'pass'],
       ['npm-cache', 'pass'],
+      // Nothing deployed to dial (see the sites case).
+      ['sites', 'warn'],
       ['datapath', 'pass'],
       // Checked on every run: netd can be Ready with zero pod-to-veth
       // mappings, so nothing else would notice a wrong prefix.
@@ -889,7 +898,7 @@ describe('runClusterCheck', () => {
     expect(byName(results, 'nodes')).toMatchObject({ status: 'warn' })
     expect(byName(results, 'nodes')?.detail).toContain('1 node(s), none taking workspaces')
     expect(byName(results, 'nodes')?.detail).toContain('the gates that run a sandboxed pod are skipped')
-    for (const gate of ['gvisor', 'probe', 'egress', 'npm-cache', 'nested-mount', 'per-node', 'storage-semantics']) {
+    for (const gate of ['gvisor', 'probe', 'egress', 'npm-cache', 'sites', 'nested-mount', 'per-node', 'storage-semantics']) {
       expect(byName(results, gate)).toMatchObject({ status: 'skip' })
       expect(byName(results, gate)?.detail).toContain('no Ready node takes workspaces')
     }
@@ -1138,6 +1147,66 @@ describe('runClusterCheck', () => {
     expect(egress).toMatchObject({ status: 'fail' })
     expect(egress?.detail).toContain('yaac-proxy-egress')
     expect(egress?.fix).toContain('yaac cluster restart')
+  })
+
+  // Public traffic flows through the tunnel and router, so pods labelled as
+  // either must not reach the server, the proxy's API or a dev workspace.
+  it('dials the server, the proxy and a dev workspace from pods labelled as the site edge', async () => {
+    serviceIps['yaac-server'] = '10.96.7.1'
+    serviceIps['yaac-proxy'] = '10.96.7.2'
+    const pod = (name: string, ip: string, labels: Record<string, string>): FakeObject => ({
+      apiVersion: 'v1', kind: 'Pod', metadata: { name, namespace: NS, labels }, status: { phase: 'Running', podIP: ip },
+    })
+    stage()
+    // A release, and another probe's workspace-labelled pod, are not what
+    // the wall is about; a running dev workspace is.
+    extraObjects.push(
+      pod('release', '10.244.0.8', { 'yaac.workspace-id': 'r', 'yaac.install-id': 'test-install', 'yaac.site-id': 's' }),
+      pod('egress-probe', '10.244.0.7', { 'yaac.workspace-id': 'cluster-check-egress-probe' }),
+      pod('dev', '10.244.0.9', { 'yaac.workspace-id': 'w', 'yaac.install-id': 'test-install' }),
+    )
+    let { results } = await check()
+    expect(byName(results, 'sites')).toMatchObject({
+      status: 'pass',
+      detail: 'the site tunnel and router cannot dial the yaac server, nor the proxy\'s control port, '
+        + 'nor a workspace that is not a release',
+    })
+    for (const role of ['tunnel', 'router']) {
+      const probe = applied().map((c) => c[0] as {
+        metadata?: { name?: string; labels?: Record<string, string> }
+        spec?: { runtimeClassName?: string; containers?: Array<{ command: string[] }> }
+      }).find((m) => m.metadata?.name === `yaac-cluster-check-sites-${role}`)
+      // Held to the edge's policies, on runc like the edge.
+      expect(probe?.metadata?.labels).toEqual({ app: `yaac-site-${role}` })
+      expect(probe?.spec?.runtimeClassName).toBeUndefined()
+      const script = probe?.spec?.containers?.[0].command[2] ?? ''
+      expect(script).toContain('nc -w 4 10.96.7.1 8787 ')
+      expect(script).toContain('nc -w 4 10.244.0.9 ')
+      expect(script).not.toMatch(/10\.244\.0\.[78]/)
+    }
+
+    podLogs['yaac-cluster-check-sites-router'] = 'SITE_SERVER_OPEN\nSITES_DONE\n'
+    ;({ results } = await check())
+    expect(byName(results, 'sites')).toMatchObject({ status: 'fail' })
+    expect(byName(results, 'sites')?.detail).toContain('a pod labelled as yaac-site-router reached the yaac server')
+
+    // With a tunnel, whether it holds a connection to Cloudflare.
+    delete podLogs['yaac-cluster-check-sites-router']
+    const tunnel = (readyReplicas: number): void => {
+      extraObjects = extraObjects.filter((o) => o.kind !== 'Deployment')
+      extraObjects.push({
+        apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: 'yaac-site-tunnel', namespace: NS },
+        status: { readyReplicas },
+      })
+    }
+    tunnel(0)
+    ;({ results } = await check())
+    expect(byName(results, 'sites')).toMatchObject({ status: 'warn' })
+    expect(byName(results, 'sites')?.detail).toContain('no connection to Cloudflare')
+    tunnel(2)
+    ;({ results } = await check())
+    expect(byName(results, 'sites')).toMatchObject({ status: 'pass' })
+    expect(byName(results, 'sites')?.detail).toContain('the tunnel is connected to Cloudflare')
   })
 
   // A workspace pod fetching through the Service checks the egress rule,

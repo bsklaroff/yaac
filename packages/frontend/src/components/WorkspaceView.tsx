@@ -27,11 +27,11 @@ import { NewWorkspacePane } from '#components/NewWorkspacePane'
 import { RoutinePane } from '#components/RoutinePane'
 import { StepPane } from '#components/StepPane'
 import { StepsBar } from '#components/StepsBar'
-import { isStepTarget, stepTargetName } from '#lib/steps'
+import { isLocked, isStepTarget, stepTargetName } from '#lib/steps'
 import { DeadlineChip } from '#components/DeadlineChip'
 import { TerminalKeyBar } from '#components/TerminalKeyBar'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { ChevronIcon, CloseIcon, PreviewIcon } from '#lib/icons'
+import { ChevronIcon, CloseIcon, PreviewIcon, SiteIcon } from '#lib/icons'
 import { PaneBarActions, PaneBarLeading, PaneOverflowMenu, paneBarClass } from '#components/PaneBar'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { ContainerlessBadge } from '#components/ContainerlessBadge'
@@ -263,7 +263,7 @@ export function WorkspaceView({
    *  snapshot lists the window, which may be before or after this answer;
    *  focusing a target with no pane would leave focus on another one. */
   const openShell = (): void => {
-    if (!sid || workspace?.nonInteractive === true) return
+    if (!sid || (workspace && isLocked(workspace))) return
     void api.workspace[':id'].terminals.$post({ param: { id: sid } })
       .then((entry) => {
         const st = useUiStore.getState()
@@ -542,9 +542,9 @@ export function WorkspaceView({
   }
 
   const leading: ReactNode = isMobile || !sidebarOpen ? <PaneBarLeading /> : null
-  // A non-interactive workspace can only be stopped: no session or shell
-  // opens in it (docs/workspace-steps.md).
-  const interactive = workspace?.nonInteractive !== true
+  // No session or shell opens in a locked workspace (docs/workspace-steps.md,
+  // docs/public-sites.md).
+  const interactive = workspace !== undefined && !isLocked(workspace)
   const headerClass = paneBarClass(isMobile)
 
   // The mobile key bar, only over a terminal pane: a terminal's, or a `tui`
@@ -584,11 +584,26 @@ export function WorkspaceView({
             )}
           />
           <StepsBar workspace={workspace} />
-          <DeadlineChip
-            workspaceId={workspace.workspaceId}
-            {...(workspace.deadline !== undefined ? { deadline: workspace.deadline } : {})}
-          />
+          {/* A release runs until its site stops it, so it takes no timeout. */}
+          {workspace.site === undefined && (
+            <DeadlineChip
+              workspaceId={workspace.workspaceId}
+              {...(workspace.deadline !== undefined ? { deadline: workspace.deadline } : {})}
+            />
+          )}
           <VolumeBadge projectId={workspace.projectId} workspaceId={workspace.workspaceId} />
+          {workspace.site !== undefined && (
+            <button
+              type="button"
+              onClick={() => useUiStore.getState().openSettings('project')}
+              title={`A release of the public site “${workspace.site}”, managed from Project Config → Sites`}
+              className="no-drag flex h-6 min-w-0 shrink items-center gap-1 rounded px-1.5 text-[11px] text-text-dim
+                hover:bg-surface-2 hover:text-text"
+            >
+              <SiteIcon size={11} className="shrink-0" />
+              <span className="truncate">release of <span className="font-mono">{workspace.site}</span></span>
+            </button>
+          )}
           <ContainerlessBadge />
           {!isMobile && (
             <>
@@ -651,7 +666,8 @@ export function WorkspaceView({
               className="hover:bg-danger/25"
             />
           )}
-          {project && workspace.trackedScratchDirs && (
+          {/* Its fix restarts the workspace, which a site's release refuses. */}
+          {project && workspace.trackedScratchDirs && workspace.site === undefined && (
             <TrackedScratchDirsBadge workspace={workspace} project={project} className="hover:bg-warning/25" />
           )}
           {stopError?.id === workspace.workspaceId && (

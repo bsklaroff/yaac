@@ -63,6 +63,12 @@ export async function listHeldVolumes(): Promise<VolumeRow[]> {
   return (await db.select().from(volumes).where(isNotNull(volumes.holderWorkspaceId))).map(toRow)
 }
 
+/** Every volume staged for a next holder, for the lease sweep. */
+export async function listStagedVolumes(): Promise<VolumeRow[]> {
+  const db = await getDb()
+  return (await db.select().from(volumes).where(isNotNull(volumes.nextHolderWorkspaceId))).map(toRow)
+}
+
 /** Every volume whose disk is not pinned yet, for the pin sweep. */
 export async function listUnpinnedVolumes(): Promise<VolumeRow[]> {
   const db = await getDb()
@@ -86,8 +92,9 @@ export async function getVolumeRow(id: string): Promise<VolumeRow | undefined> {
 /**
  * Take the lease for `workspaceId`: when nobody holds it, when the workspace
  * already does (a restart), or when it is still exactly `replacing` (a
- * lease whose holder was found gone). Two claims never both win. Resolves
- * with the new lease, or undefined if this claim lost.
+ * lease whose holder was found gone). Two claims never both win, and none
+ * wins a volume staged for another workspace, which only `handOverVolume`
+ * passes it. Resolves with the new lease, or undefined if this claim lost.
  */
 export async function claimVolume(
   id: string,
@@ -103,7 +110,7 @@ export async function claimVolume(
       isNull(holder),
       eq(holder, workspaceId),
       ...(replacing !== undefined ? [isLease(replacing)] : []),
-    )))
+    ), or(isNull(volumes.nextHolderWorkspaceId), eq(volumes.nextHolderWorkspaceId, workspaceId))))
     .returning({ id: volumes.id })
   return rows.length > 0 ? { holderWorkspaceId: workspaceId, attachedAt } : undefined
 }
@@ -118,6 +125,52 @@ export async function releaseVolume(id: string, lease: VolumeLease): Promise<voi
   const db = await getDb()
   await db.update(volumes).set({ holderWorkspaceId: null, attachedAt: null })
     .where(and(eq(volumes.id, id), isLease(lease)))
+}
+
+/**
+ * Mount a volume in a site release while another workspace may still hold
+ * it, for a deploy's handoff (docs/public-sites.md "Volumes: a staged
+ * handoff"): records `workspaceId` as the next holder, unless another
+ * release already is. Resolves whether it did.
+ */
+export async function stageVolume(id: string, workspaceId: string): Promise<boolean> {
+  const db = await getDb()
+  const next = volumes.nextHolderWorkspaceId
+  const rows = await db.update(volumes).set({ nextHolderWorkspaceId: workspaceId })
+    .where(and(eq(volumes.id, id), or(isNull(next), eq(next, workspaceId))))
+    .returning({ id: volumes.id })
+  return rows.length > 0
+}
+
+/**
+ * Pass a staged volume's lease to its next holder: when nobody holds it,
+ * or still exactly `replacing` (a holder found gone). Resolves with the new
+ * lease, or undefined if the volume was not staged for `workspaceId` or the
+ * lease moved meanwhile.
+ */
+export async function handOverVolume(
+  id: string,
+  workspaceId: string,
+  replacing?: VolumeLease,
+): Promise<VolumeLease | undefined> {
+  const db = await getDb()
+  const attachedAt = new Date()
+  const rows = await db.update(volumes)
+    .set({ holderWorkspaceId: workspaceId, attachedAt, nextHolderWorkspaceId: null })
+    .where(and(eq(volumes.id, id), eq(volumes.nextHolderWorkspaceId, workspaceId), or(
+      isNull(volumes.holderWorkspaceId),
+      eq(volumes.holderWorkspaceId, workspaceId),
+      ...(replacing !== undefined ? [isLease(replacing)] : []),
+    )))
+    .returning({ id: volumes.id })
+  return rows.length > 0 ? { holderWorkspaceId: workspaceId, attachedAt } : undefined
+}
+
+/** Forget a staged next holder, once its release is gone. */
+export async function unstageVolume(id: string, workspaceId: string): Promise<void> {
+  const db = await getDb()
+  await db.update(volumes).set({ nextHolderWorkspaceId: null })
+    .where(and(eq(volumes.id, id), eq(volumes.nextHolderWorkspaceId, workspaceId)))
 }
 
 /** A volume's lease, if it has one. */

@@ -10,6 +10,8 @@ import { authorizeProject, systemPrincipal, type Actor } from '#domain/access'
 import {
   applyWorkspaceEvent,
   findWorkspaceRow,
+  getSiteRow,
+  getVolumeRow,
   insertAddedSteps,
   listWorkspaceSteps,
   resetSteps,
@@ -34,21 +36,45 @@ import { openTerminalLogs } from './life'
 import { claiming } from './prewarm'
 import { resolveWorkspaceContainer } from './resolve'
 import { stopWorkspace } from './stop'
+import { VOLUME_MOUNT_PATH } from './volumes'
 
 /** How long an opened step window may go unlisted before it counts as
  *  killed. */
 const LAUNCH_GRACE_MS = 60_000
 
 /**
- * Refuse a change to a non-interactive workspace while its graph runs
- * (docs/workspace-steps.md "Non-interactive workspaces"): nobody, a person
- * or an agent, may touch it, only stop it.
+ * The step a site release's graph names in `needs` for the site's volume
+ * (docs/public-sites.md "Volumes: a staged handoff"). It is no step of its
+ * own: it counts as succeeded once the release holds the volume's lease.
+ */
+export const VOLUME_NEED = 'volume'
+
+/** How soon a release's service that exited is opened again: doubling from
+ *  the first, up to the last, and back to the first once it ran a while. */
+const SERVICE_RESTART_FIRST_MS = 1000
+const SERVICE_RESTART_MAX_MS = 5 * 60_000
+const SERVICE_RESTART_RESET_MS = 10 * 60_000
+
+/** Each release service's restarts in a row and the earliest it may open
+ *  again, by workspace and step. In memory: a server restart only resets
+ *  the backoff. */
+const serviceRestarts = new Map<string, { count: number; notBefore: number }>()
+
+/**
+ * Refuse a change to a workspace nobody may touch while it runs, only stop:
+ * a non-interactive one (docs/workspace-steps.md "Non-interactive
+ * workspaces"), and a public site's release (docs/public-sites.md), which
+ * only its site's routes manage.
  */
 export async function assertInteractive(workspaceId: string): Promise<void> {
   const row = await findWorkspaceRow(workspaceId)
   if (row?.nonInteractive === true && row.stepsOutcome === undefined && row.stoppedAt === undefined) {
     throw new ServerError('CONFLICT', `workspace ${workspaceId.slice(0, 8)} is non-interactive: `
       + 'nothing can change it while it runs, but it can be stopped')
+  }
+  if (row?.siteId !== undefined && row.stoppedAt === undefined) {
+    throw new ServerError('CONFLICT', `workspace ${workspaceId.slice(0, 8)} is a site's release: `
+      + 'nothing can change it while it runs; manage it with `yaac site`')
   }
 }
 
@@ -183,7 +209,12 @@ function changeStep(live: LiveWorkspace, name: string, state: StepState, exitCod
  */
 export async function reconcileSteps(view: RuntimeSnapshot): Promise<void> {
   const busy = new Set(inFlightWorkspaceIds(Date.now()))
-  const running = (await view.workspaces()).filter((p) => p.running && !p.prewarmed && !p.terminating
+  const listed = await view.workspaces()
+  const present = new Set(listed.map((p) => p.workspaceId))
+  for (const key of serviceRestarts.keys()) {
+    if (!present.has(key.slice(0, key.indexOf('/')))) serviceRestarts.delete(key)
+  }
+  const running = listed.filter((p) => p.running && !p.prewarmed && !p.terminating
     && !claiming.has(p.jobName) && !busy.has(p.workspaceId) && !isWorkspaceTerminating(p.workspaceId))
   await Promise.all(running.map(async (p) => {
     try {
@@ -227,11 +258,34 @@ async function reconcilePass(p: { projectId: string; workspaceId: string; jobNam
   const states = new Map(live.steps.map((s) => [s.name, s.state]))
   const listed = new Map(windows.map((w) => [w.name, w]))
   const now = Date.now()
+  const release = live.row.siteId !== undefined
+  // Only the release serving its site restarts its services; in a deploy's
+  // new one, a service that exits fails the deploy at once.
+  const serving = release && (await getSiteRow(live.row.siteId ?? ''))?.liveWorkspaceId === live.workspaceId
+  const volume = release && live.row.volumeId !== undefined ? await getVolumeRow(live.row.volumeId) : undefined
+  if (volume !== undefined) states.set(VOLUME_NEED, volume.holderWorkspaceId === live.workspaceId ? 'succeeded' : 'pending')
+  const restarted = new Set<string>()
 
   for (const s of live.steps) {
     if (s.state !== 'running' && s.state !== 'ready') continue
     const w = listed.get(s.name)
     let next: StepState | undefined
+    // A serving release keeps serving: its service that exits opens again
+    // after a backoff, with its log kept, rather than failing.
+    if (w?.dead === true && serving && s.spec.service === true) {
+      const key = `${live.workspaceId}/${s.name}`
+      const ranMs = s.startedAt !== undefined ? now - s.startedAt.getTime() : 0
+      const count = ranMs > SERVICE_RESTART_RESET_MS ? 0 : (serviceRestarts.get(key)?.count ?? 0)
+      const delay = Math.min(SERVICE_RESTART_MAX_MS, SERVICE_RESTART_FIRST_MS * 2 ** count)
+      serviceRestarts.set(key, { count: count + 1, notBefore: now + delay })
+      serverLog(`[server] steps ${live.workspaceId}: service "${s.name}" exited (${String(w.exitStatus)}); `
+        + `restarting in ${String(Math.round(delay / 1000))}s`)
+      await resetSteps(live.workspaceId, live.life, [s.name])
+      states.set(s.name, 'pending')
+      restarted.add(s.name)
+      setTimeout(() => { void reconcileOne(live).catch(() => {}) }, delay).unref()
+      continue
+    }
     if (w?.dead === true) next = s.spec.service !== true && w.exitStatus === 0 ? 'succeeded' : 'failed'
     else if (w !== undefined && w.ready === true && s.state === 'running' && s.spec.service === true) next = 'ready'
     else if (w === undefined && (s.startedAt === undefined || now - s.startedAt.getTime() > LAUNCH_GRACE_MS)) next = 'cancelled'
@@ -257,21 +311,30 @@ async function reconcilePass(p: { projectId: string; workspaceId: string; jobNam
   }
 
   const ready = live.steps.filter((s) => states.get(s.name) === 'pending'
-    && (s.spec.needs ?? []).every((n) => stepSatisfiesNeeds(states.get(n) ?? 'pending')))
+    && (s.spec.needs ?? []).every((n) => stepSatisfiesNeeds(states.get(n) ?? 'pending'))
+    && (serviceRestarts.get(`${live.workspaceId}/${s.name}`)?.notBefore ?? 0) <= now)
   if (ready.length > 0) {
     const runtime = workspaceDriver()
     const paths = runtime.workspacePaths(live.jobName)
     const dir = lifeDirName(live.life)
     const logs = await openTerminalLogs(live.projectId, live.workspaceId)
+    // Only the steps that wait on the volume are told where it is, so the
+    // ones before the handoff leave it to the release still holding it.
+    const usesVolume = volume !== undefined ? volumeUsers(live.steps) : new Set<string>()
     for (const s of ready) {
       const inside = `${paths.terminalLogDir}/${dir}/${s.name}`
+      const env = usesVolume.has(s.name) && volume !== undefined
+        ? [`YAAC_VOLUME_DIR=${VOLUME_MOUNT_PATH}`, `YAAC_VOLUME_NAME=${volume.name}`]
+        : []
       try {
-        for (const ext of ['log', 'log.1', 'events']) {
+        // A restarted service appends to its log, so its crash stays above.
+        const restart = serviceRestarts.has(`${live.workspaceId}/${s.name}`) && !restarted.has(s.name)
+        for (const ext of restart ? [] : ['log', 'log.1', 'events']) {
           await logs.removeTree(`${dir}/${s.name}.${ext}`).catch((err: unknown) => {
             if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
           })
         }
-        await logs.writeAtomic(`${dir}/${s.name}.sh`, stepScript(s.name, s.spec, paths, `${inside}.events`))
+        await logs.writeAtomic(`${dir}/${s.name}.sh`, stepScript(s.name, s.spec, paths, `${inside}.events`, env))
         await runtime.exec(live.jobName, stepWindowExec(s.name, paths, `${inside}.sh`), { maxAttempts: 1 })
       } catch (err) {
         serverLog(`[server] steps ${live.workspaceId}: opening "${s.name}" failed: ${String(err)}`)
@@ -297,6 +360,20 @@ async function reconcilePass(p: { projectId: string; workspaceId: string; jobNam
         .catch((err: unknown) => serverLog(`[server] stopping settled ${live.workspaceId}: ${String(err)}`))
     }
   }
+}
+
+/** The steps that need the volume, directly or through another step. */
+export function volumeUsers(steps: Array<Pick<StepRow, 'name' | 'spec'>>): Set<string> {
+  const users = new Set<string>()
+  for (let grew = true; grew;) {
+    grew = false
+    for (const s of steps) {
+      if (users.has(s.name) || !(s.spec.needs ?? []).some((n) => n === VOLUME_NEED || users.has(n))) continue
+      users.add(s.name)
+      grew = true
+    }
+  }
+  return users
 }
 
 /** Authorize a request about a workspace's recorded steps. */

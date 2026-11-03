@@ -54,8 +54,11 @@ export interface WorkspaceCreatedInput {
   /** The graph it brought in place of the project's init steps. */
   startSteps?: StepGraph
   nonInteractive?: boolean
-  /** The non-interactive workspace it reruns. */
+  /** The workspace it reruns: a non-interactive one, or a site's release
+   *  that died. */
   rerunOf?: string
+  /** The public site it is a release of. */
+  siteId?: string
 }
 
 type Row = typeof workspaces.$inferSelect
@@ -106,6 +109,7 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
       ...(input.startSteps !== undefined ? { startSteps: input.startSteps } : {}),
       ...(input.nonInteractive === true ? { nonInteractive: true } : {}),
       ...(input.rerunOf !== undefined ? { rerunOf: input.rerunOf } : {}),
+      ...(input.siteId !== undefined ? { siteId: input.siteId } : {}),
     })
     .onConflictDoNothing({ target: workspaces.workspaceId })
     .returning({ workspaceId: workspaces.workspaceId })

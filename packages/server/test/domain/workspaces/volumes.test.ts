@@ -5,8 +5,8 @@
  * asked; leases are taken by real creates in restart.test.ts.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { collectDeletedVolumes, createVolume, deleteVolume, listVolumes, reconcileVolumeLeases, resizeVolume } from '#domain/workspaces'
-import { BUILT_IN_USER_ID, claimVolume, findVolumeByName, listDeletedVolumeIds, setWorkspaceVolume } from '#db'
+import { collectDeletedVolumes, createVolume, deleteVolume, listVolumes, reconcileVolumeLeases, resizeVolume, workspacesAlive } from '#domain/workspaces'
+import { BUILT_IN_USER_ID, claimVolume, findVolumeByName, insertSite, listDeletedVolumeIds, setWorkspaceVolume, stageVolume, updateSite } from '#db'
 import { closeDb } from '#db/client'
 import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { clearAllProvisioningForTests, provision } from '#domain/workspaces/provisioning'
@@ -115,6 +115,15 @@ describe('resizeVolume', () => {
 })
 
 describe('deleteVolume', () => {
+  it('refuses while a site keeps its data there', async () => {
+    await createVolume(local, DEMO_PROJECT_ID, 'data')
+    const v = (await findVolumeByName(DEMO_PROJECT_ID, 'data'))!
+    const site = await insertSite({ projectId: DEMO_PROJECT_ID, name: 'shop', hostname: 'shop.example.com', port: 3000, steps: {}, volumeId: v.id })
+    await expect(deleteVolume(local, DEMO_PROJECT_ID, 'data')).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('"shop"') as unknown })
+    await updateSite(site.id, { volumeId: null })
+    await deleteVolume(local, DEMO_PROJECT_ID, 'data')
+  })
+
   it('refuses while a running workspace holds it, and deletes it once that runtime is gone', async () => {
     await createVolume(local, DEMO_PROJECT_ID, 'queue')
     await holding('ws-run', 'queue')
@@ -160,6 +169,27 @@ describe('reconcileVolumeLeases', () => {
     const dead = await findVolumeByName(DEMO_PROJECT_ID, 'dead')
     expect(dead?.holderWorkspaceId).toBeUndefined()
     expect(dead?.pinnedAt).toBeUndefined()
+  })
+
+  it('forgets a site release staged as next holder once its runtime is gone', async () => {
+    await createVolume(local, DEMO_PROJECT_ID, 'data')
+    await holding('ws-live', 'data')
+    const v = (await findVolumeByName(DEMO_PROJECT_ID, 'data'))!
+    await stageVolume(v.id, 'rel-new')
+    await reconcileVolumeLeases(snapshotFixture([held('ws-live'), held('rel-new')]))
+    expect((await findVolumeByName(DEMO_PROJECT_ID, 'data'))?.nextHolderWorkspaceId).toBe('rel-new')
+    await reconcileVolumeLeases(snapshotFixture([held('ws-live')]))
+    expect(await findVolumeByName(DEMO_PROJECT_ID, 'data')).toMatchObject({ holderWorkspaceId: 'ws-live' })
+    expect((await findVolumeByName(DEMO_PROJECT_ID, 'data'))?.nextHolderWorkspaceId).toBeUndefined()
+  })
+})
+
+describe('workspacesAlive', () => {
+  it('counts a listed unit, a Job with no pod yet and a launch in flight, and nothing else', async () => {
+    const alive = await workspacesAlive(snapshotFixture([held('ws-pod')], [
+      { workspaceId: 'ws-job', unitName: 'ws-job', projectId: DEMO_PROJECT_ID, createdAtMs: Date.now(), prewarmed: false },
+    ]))
+    expect(['ws-pod', 'ws-job', 'ws-gone'].map(alive)).toEqual([true, true, false])
   })
 })
 

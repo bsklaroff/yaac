@@ -263,6 +263,46 @@ describe('launchWorkspace', () => {
     expect(appliedJob().metadata.labels).toMatchObject({ 'yaac.prewarmed': 'true' })
   })
 
+  // docs/public-sites.md: the router may reach it, the proxy refuses its
+  // calls to the server, and node pressure evicts dev workspaces first.
+  it('labels a site release, ranks it above workspaces, and pins it beside the holder of a volume claim', async () => {
+    const substrate = await prepareWorkspaceSubstrate(INTENT)
+    await launchWorkspace(specOf(substrate, { siteId: 'site-1', colocateWith: 'old' }))
+    let job = appliedJob() as JobManifest & { spec: { template: { spec: { priorityClassName?: string; affinity?: unknown } } } }
+    expect(job.spec.template.metadata.labels).toMatchObject({ 'yaac.site-id': 'site-1' })
+    expect(job.spec.template.spec.priorityClassName).toBe('yaac-release')
+    // On kind every volume is a subPath of one claim, so no node is named.
+    expect(job.spec.template.spec.affinity).toBeUndefined()
+
+    vi.stubEnv('YAAC_VOLUME_STORAGE_CLASS', 'hcloud-volumes')
+    fakeCluster.reset()
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Pod',
+      metadata: { name: 'yaac-old-x', namespace: 'yaac', labels: { 'yaac.workspace-id': 'old' } },
+      spec: { nodeName: 'node-b' },
+    })
+    await launchWorkspace(specOf(substrate, {
+      siteId: 'site-1', colocateWith: 'old',
+      mounts: [{ source: { kind: 'volume', volumeId: 'v1' }, mountPath: '/home/yaac/volume' }],
+    }))
+    job = appliedJob()
+    expect(JSON.stringify(job.spec.template.spec.affinity)).toContain('"key":"metadata.name","operator":"In","values":["node-b"]')
+
+    // A holder not on a node yet could land anywhere, so nothing launches.
+    fakeCluster.reset()
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Pod',
+      metadata: { name: 'yaac-old-x', namespace: 'yaac', labels: { 'yaac.workspace-id': 'old' } },
+      spec: {},
+    })
+    await expect(launchWorkspace(specOf(substrate, {
+      siteId: 'site-1', colocateWith: 'old',
+      mounts: [{ source: { kind: 'volume', volumeId: 'v1' }, mountPath: '/home/yaac/volume' }],
+    }))).rejects.toThrow('not on a node yet')
+    expect(applied().some((m) => m.kind === 'Job')).toBe(false)
+    vi.unstubAllEnvs()
+  })
+
   it('adds the transport token and CA trust the caller could not have named', async () => {
     const substrate = await prepareWorkspaceSubstrate(INTENT)
     await launchWorkspace(specOf(substrate))

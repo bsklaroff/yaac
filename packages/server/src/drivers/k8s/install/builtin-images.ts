@@ -6,6 +6,8 @@ import { gcHostImages } from './image-gc'
 import {
   BUILDER_MIRROR_TAG,
   BUILDER_UPSTREAM_IMAGE,
+  CLOUDFLARED_MIRROR_TAG,
+  CLOUDFLARED_UPSTREAM_IMAGE,
   ENVOY_MIRROR_TAG,
   ENVOY_UPSTREAM_IMAGE,
   NGINX_MIRROR_TAG,
@@ -102,8 +104,9 @@ async function mirrorPinnedImage(upstream: string, mirrorTag: string): Promise<v
 
 /**
  * Mirror every digest-pinned upstream yaac runs: `registry:2`, Envoy, the
- * builder pods' podman, the gVisor installer's curl, and the npm cache's
- * Verdaccio and nginx. The e2e global setup also calls this.
+ * builder pods' podman, the gVisor installer's curl, the npm cache's
+ * Verdaccio and nginx, and the site tunnel's cloudflared. The e2e global
+ * setup also calls this.
  */
 export async function mirrorPinnedUpstreams(): Promise<void> {
   await mirrorPinnedImage(REGISTRY_UPSTREAM_IMAGE, REGISTRY_MIRROR_TAG)
@@ -112,6 +115,7 @@ export async function mirrorPinnedUpstreams(): Promise<void> {
   await mirrorPinnedImage(GVISOR_INSTALLER_UPSTREAM_IMAGE, GVISOR_INSTALLER_MIRROR_TAG)
   await mirrorPinnedImage(VERDACCIO_UPSTREAM_IMAGE, VERDACCIO_MIRROR_TAG)
   await mirrorPinnedImage(NGINX_UPSTREAM_IMAGE, NGINX_MIRROR_TAG)
+  await mirrorPinnedImage(CLOUDFLARED_UPSTREAM_IMAGE, CLOUDFLARED_MIRROR_TAG)
 }
 
 /**

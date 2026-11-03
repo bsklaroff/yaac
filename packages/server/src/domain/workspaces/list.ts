@@ -7,6 +7,7 @@ import {
   listStepsFor,
   openingPrompt,
   routineRunWorkspaces,
+  siteNames,
   type ConversationLinkRow,
   type SessionRow,
   type WorkspaceRow,
@@ -103,6 +104,8 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
   const rowFor = (w: WorkspaceRuntimeReport): WorkspaceRow | undefined =>
     w.projectId && w.workspaceId ? rowsByProject.get(w.projectId)?.get(w.workspaceId) : undefined
   const routineRuns = report.workspaces.length > 0 ? await routineRunWorkspaces() : new Map<string, string>()
+  const siteIds = [...new Set(report.workspaces.flatMap((w) => rowFor(w)?.siteId ?? []))]
+  const sitesById = await siteNames(siteIds)
 
   const idsByProject = new Map<string, string[]>()
   for (const w of report.workspaces) {
@@ -138,6 +141,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       ...(row?.deadline !== undefined ? { deadline: row.deadline.toISOString() } : {}),
       ...(routineRuns.has(w.workspaceId) ? { routineId: routineRuns.get(w.workspaceId) } : {}),
       ...(row?.nonInteractive === true ? { nonInteractive: true as const } : {}),
+      ...(row?.siteId !== undefined && sitesById.has(row.siteId) ? { site: sitesById.get(row.siteId) } : {}),
       ...(row?.startCommit !== undefined ? { startCommit: row.startCommit } : {}),
     }
     if (w.phase === 'terminating') {

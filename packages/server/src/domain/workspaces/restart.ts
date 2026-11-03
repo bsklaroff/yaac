@@ -66,6 +66,12 @@ export async function prepareRestart(
     throw new ServerError('CONFLICT', `workspace ${workspaceId.slice(0, 8)} is non-interactive, so it is rerun `
       + 'in a new workspace rather than restarted: `yaac workspace rerun`')
   }
+  // Its site replaces a release rather than restarting it, for the same
+  // reason (docs/public-sites.md "Sites and releases").
+  if (row.siteId !== undefined) {
+    throw new ServerError('CONFLICT', `workspace ${workspaceId.slice(0, 8)} is a site's release; `
+      + 'start the site with `yaac site start`')
+  }
   if (unit && opts.stoppedOnly === true) {
     throw new ServerError('CONFLICT', `workspace ${workspaceId.slice(0, 8)} is running; only a stopped one can be restarted`)
   }

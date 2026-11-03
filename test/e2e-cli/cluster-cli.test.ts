@@ -9,7 +9,8 @@ import { TAILSCALE_OPERATOR_NAMESPACE } from '@yaac/server/drivers/k8s/substrate
 
 /**
  * The `yaac cluster` commands: `check`, `install` (with `--nodes`, `--byo`,
- * `--rwx-storage-class`, `--rwo-storage-class`, `--tailnet [host]`, `--owner`) and `delete`
+ * `--rwx-storage-class`, `--rwo-storage-class`, `--tailnet [host]`, `--owner`,
+ * `--site-domain`) and `delete`
  * (with `-y/--yes`). They are host-side commands that never talk to the
  * server, so no server is spawned and no cluster is needed: each case breaks
  * the environment (PATH stripping, a bogus KUBECONFIG, a kubectl shim) and
@@ -91,6 +92,15 @@ describe('yaac cluster install (real CLI)', () => {
     expect(stderr).toMatch(/podman/)
     expect(stderr).toMatch(/kind/)
     expect(stderr).toMatch(/Install/)
+  }, 30_000)
+
+  it('accepts a repeated --site-domain, getting as far as the tool preflight', async () => {
+    const { stderr, exitCode } = await runYaac(
+      { ...testEnv.env, PATH: stripFromPath('podman', 'kind') },
+      'cluster', 'install', '--site-domain', 'example.com', '--site-domain', 'example.org',
+    )
+    expect(exitCode).toBe(1)
+    expect(stderr).toMatch(/Missing required tools/)
   }, 30_000)
 
   // The option check runs before the binary preflight, so these need no

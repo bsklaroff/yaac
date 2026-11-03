@@ -318,6 +318,11 @@ hosts, at `http://yaac.internal/api/workspace/git/<project id>.git`
 with the headers git needs (`yaac-relay.ts`). The server checks that the
 named workspace belongs to that project.
 
+A public site's release reaches neither. The proxy answers 403 to any
+`yaac.internal` request from a pod labelled `yaac.site-id`, and the server
+refuses a relayed call naming a release, so code facing the internet never
+acts on yaac (docs/public-sites.md).
+
 ## One host per MITM'd connection
 
 A MITM'd connection is admitted, and has its credentials chosen, for one

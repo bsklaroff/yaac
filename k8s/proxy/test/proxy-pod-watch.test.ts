@@ -93,6 +93,20 @@ describe('PodWorkspaceIndex', () => {
     expect(idx.resolveIp('sess-a')).toBe('10.0.0.2')
   })
 
+  it('marks a site release by its pod label, forgetting it when its pod goes', () => {
+    const idx = new PodWorkspaceIndex()
+    const release: WatchedPod = {
+      metadata: { labels: { 'yaac.workspace-id': 'rel-a', 'yaac.site-id': 'site-1' } },
+      status: { podIP: '10.0.0.7' },
+    }
+    idx.apply({ type: 'ADDED', object: release })
+    idx.apply({ type: 'ADDED', object: pod('10.0.0.8', 'dev-b') })
+    expect(idx.isRelease('rel-a')).toBe(true)
+    expect(idx.isRelease('dev-b')).toBe(false)
+    idx.apply({ type: 'DELETED', object: release })
+    expect(idx.isRelease('rel-a')).toBe(false)
+  })
+
   it('replaceAll rebuilds the reverse index too', () => {
     const idx = new PodWorkspaceIndex()
     idx.apply({ type: 'ADDED', object: pod('10.0.0.1', 'sess-a') })

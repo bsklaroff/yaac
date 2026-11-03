@@ -71,6 +71,8 @@ export interface WorkspaceCreated {
   startSteps?: StepGraph
   nonInteractive?: boolean
   rerunOf?: string
+  /** The public site it is a release of. */
+  siteId?: string
 }
 
 /**

@@ -218,6 +218,16 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/volume/create', body: { project: ID.project, name: 'v' }, access: 'owner', why: 'volumes are cluster storage', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/volume/resize', body: { project: ID.project, name: 'v', size: '20Gi' }, access: 'owner', why: 'volumes are cluster storage', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/volume/delete', body: { project: ID.project, name: 'v' }, access: 'owner', why: 'volumes are cluster storage', k8s: MISSING, containerless: UNSUPPORTED },
+  // ── public sites (docs/public-sites.md) ───────────────────────────────
+  { method: 'GET', path: '/api/site/edge', access: 'reader', why: 'sites need a sandbox between the internet and the host', k8s: 200, containerless: UNSUPPORTED },
+  { method: 'GET', path: '/api/site/list', request: `/api/site/list?project=${ID.project}`, access: 'reader', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'GET', path: '/api/site/show', request: `/api/site/show?project=${ID.project}&name=s`, access: 'reader', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/site/create', body: { project: ID.project, name: 's', hostname: 's.example.com', port: 3000, steps: {} }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/site/edit', body: { project: ID.project, name: 's', port: 3001 }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/site/delete', body: { project: ID.project, name: 's' }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/site/deploy', body: { project: ID.project, name: 's' }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/site/stop', body: { project: ID.project, name: 's' }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/site/start', body: { project: ID.project, name: 's' }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
   // ── routines (docs/routines.md) ───────────────────────────────────────
   { method: 'GET', path: '/api/routine/list', access: 'reader', k8s: 200, containerless: 200 },
   { method: 'GET', path: '/api/routine/runs', request: `/api/routine/runs?id=${ID.routine}`, access: 'reader', k8s: MISSING, containerless: MISSING },

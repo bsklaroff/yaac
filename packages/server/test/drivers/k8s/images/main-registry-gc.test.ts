@@ -162,8 +162,10 @@ function stage(f: Fixture = {}): void {
 }
 
 /** Drive one reconcile and wait out the detached pass it starts. */
-async function runPass(): Promise<void> {
-  await reconcileMainRegistryGc([DEMO], { projectConfig: () => Promise.resolve({}), projectOwner: () => Promise.resolve(OWNER) })
+async function runPass(pinned: string[] = []): Promise<void> {
+  await reconcileMainRegistryGc([DEMO], {
+    projectConfig: () => Promise.resolve({}), projectOwner: () => Promise.resolve(OWNER), pinnedImages: () => Promise.resolve(pinned),
+  })
   await _mainRegistryGcSettledForTests()
 }
 
@@ -237,6 +239,18 @@ describe('reconcileMainRegistryGc', () => {
     // stop it.
     expect(execs.find((a) => a.includes('garbage-collect'))?.[0]).toBe('timeout')
     expect(logged('retired 4 stale tag(s) and collected their blobs')).toBe(true)
+  })
+
+  // A stopped site starts again, and a dead release is replaced, at the
+  // image its last release ran (docs/public-sites.md).
+  it('keeps a pinned image though nothing runs it', async () => {
+    for (const [tag, age] of [
+      [`${USER}:${hex('1')}`, 40], [`${USER}:${hex('2')}`, 30], [`${USER}:${hex('3')}`, 20], [`${USER}:${hex('4')}`, 10],
+    ] as const) await pushTag(tag, age)
+    stage({ pods: [] })
+    await runPass([ref(`${USER}:${hex('1')}`)])
+    expect(await survivors()).toEqual(expect.arrayContaining([`${USER}:${hex('1')}`]))
+    expect(await survivors()).not.toContain(`${USER}:${hex('2')}`)
   })
 
   it('untags whole project repos no live project holds, unless a workload still names one', async () => {
@@ -412,10 +426,10 @@ describe('reconcileMainRegistryGc', () => {
 
     // Reconcile steps run in sequence, so this returns while the collect
     // runs, and a tick meanwhile does not start a second pass.
-    await reconcileMainRegistryGc([DEMO], { projectConfig: () => Promise.resolve({}), projectOwner: () => Promise.resolve(OWNER) })
+    await reconcileMainRegistryGc([DEMO], { projectConfig: () => Promise.resolve({}), projectOwner: () => Promise.resolve(OWNER), pinnedImages: () => Promise.resolve([]) })
     await reachedCollect
     const before = execs.length
-    await reconcileMainRegistryGc([DEMO], { projectConfig: () => Promise.resolve({}), projectOwner: () => Promise.resolve(OWNER) })
+    await reconcileMainRegistryGc([DEMO], { projectConfig: () => Promise.resolve({}), projectOwner: () => Promise.resolve(OWNER), pinnedImages: () => Promise.resolve([]) })
     expect(execs).toHaveLength(before)
 
     release()

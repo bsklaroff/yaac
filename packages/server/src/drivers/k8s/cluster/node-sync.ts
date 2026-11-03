@@ -10,6 +10,7 @@ import {
   buildWorkspaceEgressNpManifest,
 } from './policy-manifests'
 import { applyProjectRegistryIngress } from './project-registry'
+import { syncSiteEdgeNodes } from './site-edge'
 
 /**
  * Keeps per-node state current as nodes join, as they do when an autoscaler
@@ -57,6 +58,7 @@ export async function reconcileNodeSet(projectIds: string[]): Promise<void> {
       buildProxyEgressNpManifest(nodeCidrs, dnsCidrs, apiserver),
     ]) await applyObject(manifest)
     await syncNpmCacheNodes(nodeCidrs)
+    await syncSiteEdgeNodes(nodeCidrs, dnsCidrs)
     await applyMainRegistryIngress(nodeCidrs)
     for (const projectId of projectIds) await applyProjectRegistryIngress(projectId, nodeCidrs)
     renderedAddresses = addresses

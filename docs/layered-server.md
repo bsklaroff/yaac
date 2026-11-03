@@ -148,6 +148,8 @@ happens a layer up, in `recordedTranscript`.
   layers, which git credential it uses, Dockerfiles and build files), `git/`
   (domain's one process boundary onto git; docs/server-git.md),
   `auth/` (each user's tool sign-ins and git credentials), `skills/`,
+  `sites/` (public sites' settings, deploys and the replacement of a
+  release that died, over `workspaces/`; docs/public-sites.md),
   `access/` (who may act on what: the verbs that make a user-caused write
   take the caller and `authorize` it).
 

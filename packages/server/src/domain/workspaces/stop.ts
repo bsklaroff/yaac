@@ -4,7 +4,7 @@ import { resolveWorkspaceId } from './resolve'
 import { startQueuedChildren, startWaitingWorkspaces } from './queued-workspaces'
 import { listProvisioning, stopProvisioning } from './provisioning'
 import { authorizeProject, type Actor } from '#domain/access'
-import { findWorkspaceRow } from '#db'
+import { findWorkspaceRow, getSiteRow } from '#db'
 import { harvestToolCredentials } from '#domain/auth'
 import { getProjectRow } from '#db'
 import { serverLog } from '#lib/log'
@@ -34,9 +34,17 @@ export async function stopWorkspace(principal: Actor, idOrPrefix: string): Promi
   const workspaceId = await resolveWorkspaceId(idOrPrefix, { provisioning: true })
   // Checked against what the server recorded before the substrate is
   // asked, so a non-owner is refused whatever state the workspace is in.
-  const recorded = listProvisioning().find((p) => p.workspaceId === workspaceId)
-    ?? await findWorkspaceRow(workspaceId)
+  const row = await findWorkspaceRow(workspaceId)
+  const recorded = listProvisioning().find((p) => p.workspaceId === workspaceId) ?? row
   if (recorded) await authorizeProject(principal, recorded.projectId)
+  // A site's release is stopped only by its site (docs/public-sites.md),
+  // so neither a person nor an agent can take a site down by accident. One
+  // its site no longer tracks (a stop that failed, a deleted site) is the
+  // owner's to stop.
+  if (row?.siteId !== undefined && principal.kind !== 'system' && await siteTracks(row.siteId, workspaceId)) {
+    throw new ServerError('CONFLICT', `workspace ${workspaceId.slice(0, 8)} is a site's release; `
+      + 'stop the site with `yaac site stop`')
+  }
   const provisioning = stopProvisioning(workspaceId)
   if (provisioning !== undefined) {
     // A rolled-back create or restart frees its slot in its group.
@@ -49,6 +57,13 @@ export async function stopWorkspace(principal: Actor, idOrPrefix: string): Promi
     return { workspaceId, projectId: provisioning.projectId, provisioning: true }
   }
   return await stopRunning(principal, workspaceId, idOrPrefix)
+}
+
+/** Whether a site still names this release as live, deploying or draining. */
+async function siteTracks(siteId: string, workspaceId: string): Promise<boolean> {
+  const site = await getSiteRow(siteId)
+  return site !== undefined
+    && [site.liveWorkspaceId, site.deployWorkspaceId, site.drainWorkspaceId].includes(workspaceId)
 }
 
 async function stopRunning(principal: Actor, workspaceId: string, idOrPrefix: string): Promise<StoppedWorkspaceInfo> {

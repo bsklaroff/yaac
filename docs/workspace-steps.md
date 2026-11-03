@@ -161,6 +161,21 @@ unless it succeeded. `yaac-mama create --workspace … --run … --wait` waits
 on the step it adds instead, until it settles (a service until ready),
 exiting with its code; `yaac workspace step add` has no `--wait`.
 
+## Site releases
+
+A public site's release (docs/public-sites.md) runs its site's graph and is
+locked by `assertInteractive` the same way, but serves until its site stops
+it. Two things differ in its steps:
+
+- **`volume` in `needs`** names no step: it counts as succeeded once the
+  release holds its volume's lease, which a deploy hands it after the old
+  release is gone. Only the steps that wait on it, directly or through
+  another step, get `YAAC_VOLUME_DIR`.
+- **A service of the release serving its site that exits opens again**,
+  after a backoff from 1 s to 5 min that resets once it ran 10 minutes, its
+  dependents left running and its log appended to. Any other release's
+  service that exits fails, which fails its deploy.
+
 ## Permissions
 
 A command a caller hands a workspace runs as whatever the workspace runs as,

@@ -1,5 +1,6 @@
 import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileConversations, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileRevokedShares, reconcileSessions, reconcileSteps, reconcileStoppedConversations, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, reconcileVolumeLeases, collectDeletedVolumes, startScheduledWorkspaces } from '#domain/workspaces'
 import { refreshProjectOrigins } from '#domain/projects'
+import { reconcileSites } from '#domain/sites'
 import { adoptRefreshedToolCredentials, syncToolCredentials } from '#domain/auth'
 import { workspaceDriver } from '#drivers/driver'
 import type { ReconcileStep } from '#drivers/contract'
@@ -39,6 +40,15 @@ export function defaultReconcileSteps(): ReconcileStep[] {
   // once its holder's runtime is gone, which a change of the workspace set
   // reports. Storage a failed delete left is finished every ten minutes,
   // since under k8s the sweep lists every pod.
+  // Public sites (docs/public-sites.md): deploys advance and a release that
+  // died is replaced as soon as the workspace set or a step's window
+  // changes, and when a drain or a backoff is due (`sites`). Before
+  // `steps`, so a volume handed over opens the steps waiting on it in the
+  // same pass.
+  const sites: ReconcileStep[] = driver.kind === 'containerless' ? [] : [
+    { name: 'sites', triggers: ['workspaces', 'windows', 'sites'],
+      run: (ctx) => reconcileSites(ctx.snapshot(), ctx.resync) },
+  ]
   const volumes: ReconcileStep[] = driver.kind === 'containerless' ? [] : [
     { name: 'volume-leases', triggers: ['workspaces'], run: (ctx) => reconcileVolumeLeases(ctx.snapshot()) },
     { name: 'volume-gc', triggers: [], every: 10 * 60_000, run: () => collectDeletedVolumes() },
@@ -77,6 +87,7 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // while it was stopped, or one a server restart cut off mid-launch.
     { name: 'sessions', triggers: ['workspaces', 'live-agents'],
       run: (ctx) => reconcileSessions(ctx.snapshot()) },
+    ...sites,
     // Run each running workspace's steps (docs/workspace-steps.md): record
     // the ones that exited, became ready or were killed, and open those
     // whose needs are met. A step's exit shows only in the window listing,

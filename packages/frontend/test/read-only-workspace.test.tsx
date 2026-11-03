@@ -99,6 +99,13 @@ describe('ReadOnlyWorkspace', () => {
       .toEqual([['create', 'CI'], ['create', 'CI']])
   })
 
+  it('shows a stopped site release\'s logs, with no way to start it again but its site', async () => {
+    server.route('GET /api/workspace/s1/logs', [{ life: 'L1', files: [{ name: 'server.log', size: 3 }] }])
+    renderPane({ kind: 'stopped', entry: stopped({ site: 'web', prompt: undefined, title: 'web release' }) })
+    expect((await screen.findByTestId('log')).textContent).toBe('L1/server.log')
+    for (const name of ['Restart', 'Rerun', 'Rerun interactively']) expect(screen.queryByRole('button', { name })).toBeNull()
+  })
+
   it('shows a stopped workspace\'s facts and conversation, and restarts it in place', async () => {
     const entry = stopped({ deathReason: 'oom', deathDetail: 'exit code 137', sessions: [sessionEntry({ mode: 'tui' })] })
     renderPane({ kind: 'stopped', entry })

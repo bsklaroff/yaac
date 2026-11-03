@@ -13,6 +13,7 @@ import { shortcutsApp } from '#routes/shortcuts'
 import { configApp } from '#routes/config'
 import { routineApp } from '#routes/routines'
 import { volumeApp } from '#routes/volumes'
+import { siteApp } from '#routes/sites'
 import { imageApp } from '#routes/images'
 import { serverApp } from '#routes/server'
 import { workspaceDriver } from '#drivers/driver'
@@ -143,6 +144,7 @@ function apiRoutes(
     .route('/config', configApp)
     .route('/routine', routineApp)
     .route('/volume', volumeApp)
+    .route('/site', siteApp)
     .route('/image', imageApp)
     .route('/server', serverApp)
 }

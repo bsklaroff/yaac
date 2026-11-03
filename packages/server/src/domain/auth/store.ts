@@ -31,6 +31,14 @@ import {
  */
 const BUILT_IN_OWNER_KEY = 'install'
 
+/**
+ * The owner key a public site's release registers under
+ * (docs/public-sites.md): no user's credentials are pushed under it, so the
+ * proxy swaps no tool, git or ssh credential into a workspace that serves
+ * the internet. A user's key is a uuid or `BUILT_IN_OWNER_KEY`, never this.
+ */
+export const NO_CREDENTIALS_OWNER_KEY = 'none'
+
 /** The key a user's credentials are pushed under and their workspaces'
  *  egress registrations name. */
 export function credentialOwnerKey(userId: string): string {

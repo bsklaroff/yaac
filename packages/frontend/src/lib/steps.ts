@@ -38,6 +38,16 @@ export function stepLive(step: Pick<WorkspaceStep, 'state'>): boolean {
   return !stepSettled(step.state)
 }
 
+/**
+ * Whether nothing in a workspace may be changed by hand: one that runs its
+ * graph untouched, or a public site's release (docs/public-sites.md), which
+ * only its site's deploys manage. The server refuses sessions, shells and
+ * step actions in either.
+ */
+export function isLocked(w: { nonInteractive?: true; site?: string }): boolean {
+  return w.nonInteractive === true || w.site !== undefined
+}
+
 /** A step's log file: its life's dir and the file in it. */
 export function stepLogFile(step: Pick<WorkspaceStep, 'name' | 'life'>): { life: string; file: string } {
   return { life: lifeDirName(step.life), file: `${step.name}.log` }

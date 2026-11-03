@@ -71,7 +71,7 @@ describe('clusterCheck', () => {
 
 describe('clusterInstall', () => {
   it('passes the flags through as typed, then verifies with a passing check', async () => {
-    const options = { byo: true, rwxStorageClass: 'nfs', rwoStorageClass: 'ssd', tailnet: true }
+    const options = { byo: true, rwxStorageClass: 'nfs', rwoStorageClass: 'ssd', tailnet: true, siteDomains: ['example.com'] }
     await clusterInstall(options)
     expect(mockRun).toHaveBeenCalledWith(options)
     expect(mockCheck.mock.invocationCallOrder[0]).toBeGreaterThan(mockRun.mock.invocationCallOrder[0])

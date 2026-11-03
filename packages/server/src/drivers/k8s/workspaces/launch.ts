@@ -4,14 +4,19 @@ import {
   LABEL_NPM_CACHE,
   LABEL_PREWARMED,
   LABEL_PROJECT_ID,
+  LABEL_SITE_ID,
+  LABEL_WORKSPACE_ID,
+  PRIORITY_CLASS_RELEASE,
   installId,
   k8sNamespace,
   k8sWorkspacePaths,
   applyObject,
+  listObjects,
   nodeLocalDirsOf,
   nodeLocalNodePath,
   podStreamToken,
   resolveMountSource,
+  volumeClaimName,
   workspaceIdLabels,
   workspaceJobName,
   type PodMount,
@@ -78,6 +83,14 @@ interface K8sWorkspaceSubstrate extends WorkspaceSubstrate {
    *  Job, so a prepare overlapping a long image build never leaves a
    *  registration with no pod behind it. */
   registration: ProxyRegistration
+}
+
+/** The node a workspace's pod was scheduled on, if it has one. */
+async function workspaceNode(workspaceId: string): Promise<string | undefined> {
+  const pods = await listObjects<{ spec?: { nodeName?: string } }>('v1', 'Pod', {
+    namespace: k8sNamespace(), labelSelector: `${LABEL_WORKSPACE_ID}=${workspaceId}`,
+  })
+  return pods.find((p) => p.spec?.nodeName !== undefined)?.spec?.nodeName
 }
 
 function narrow(substrate: WorkspaceSubstrate): K8sWorkspaceSubstrate {
@@ -263,6 +276,21 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     ...(spec.nestedContainers ? { [LABEL_NESTED]: 'true' } : {}),
     // Both of the npm cache's workspace policies select on this.
     ...(substrate.npmCacheAllowed ? { [LABEL_NPM_CACHE]: 'true' } : {}),
+    // A site's release: its ingress policy admits the router, the router
+    // may dial it, and the proxy refuses its calls to the server.
+    ...(spec.siteId !== undefined ? { [LABEL_SITE_ID]: spec.siteId } : {}),
+  }
+  // A claim (byo) may attach on one node only, and during a deploy's
+  // handoff both releases mount it (docs/public-sites.md).
+  // A holder not scheduled yet could still land elsewhere, so the launch is
+  // refused rather than left to hang on the attach.
+  let nodeName: string | undefined
+  if (spec.colocateWith !== undefined
+    && mounts.some((m) => m.source.kind === 'pvc' && m.source.claimName.startsWith(volumeClaimName('')))) {
+    nodeName = await workspaceNode(spec.colocateWith)
+    if (nodeName === undefined) {
+      throw new Error(`workspace ${spec.colocateWith.slice(0, 8)}, which holds the volume, is not on a node yet; deploy again once it is`)
+    }
   }
 
   const manifest = buildPodJobManifest({
@@ -292,6 +320,8 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     nodeLocalDirs: nodeLocalDirsOf(mounts),
     nodeLocalRoot: nodeLocalNodePath(),
     nodeDirsImage: await ensureBuilderImage(),
+    ...(spec.siteId !== undefined ? { priorityClassName: PRIORITY_CLASS_RELEASE } : {}),
+    ...(nodeName !== undefined ? { nodeName } : {}),
   })
 
   spec.onProgress?.(`Creating session job ${jobName}...`)

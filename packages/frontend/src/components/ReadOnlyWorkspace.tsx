@@ -11,6 +11,7 @@ import { EmptyState } from '#components/ui/EmptyState'
 import { api } from '#lib/api'
 import { workspaceAgentLabel } from '#lib/agentLabel'
 import { RestartIcon, TerminalIcon } from '#lib/icons'
+import { isLocked } from '#lib/steps'
 import { isUnseenDeath } from '#lib/store'
 import { relativeAge } from '#lib/time'
 import { patchStopped, refetchStopped, useRerunStopped, useRestartStopped } from '#lib/useStoppedWorkspaces'
@@ -40,7 +41,9 @@ export type ReadOnlySubject =
  *
  * The user's own stopped workspace also gets a Restart action, or for a
  * non-interactive one, whose terminal logs show in place of conversations
- * it never had, Rerun actions (docs/workspace-steps.md). Opening any
+ * it never had, Rerun actions (docs/workspace-steps.md). A site's release
+ * shows its logs too, with neither, since only its site starts another
+ * (docs/public-sites.md). Opening any
  * stopped one that died unseen marks it seen by the caller, a teammate's
  * included, since each user has their own dot. The mark is sent at most
  * once per id per page load, so a failing write (whose refetch brings the
@@ -56,7 +59,7 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
   const entry = subject?.entry
   const title = entry ? entry.title || entry.prompt || 'New workspace' : ''
   const stopped = subject?.kind === 'stopped' ? subject.entry : undefined
-  const reruns = stopped?.nonInteractive === true
+  const showsLogs = stopped !== undefined && isLocked(stopped)
 
   const queryClient = useQueryClient()
   const me = useWhoami()?.userId
@@ -82,11 +85,11 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
         <span className="titlebar-drag min-w-0 flex-1 truncate font-medium text-text-dim">{title}</span>
         {subject && <ContainerlessBadge />}
       </header>
-      {subject && reruns && stopped ? (
+      {subject && showsLogs && stopped ? (
         <>
           <Facts subject={subject} {...(owner !== undefined ? { owner } : {})} />
           <WorkspaceLogs key={stopped.workspaceId} workspaceId={stopped.workspaceId} />
-          {!readOnly && (
+          {!readOnly && stopped.site === undefined && (
             <div className="flex shrink-0 items-center justify-end gap-2 p-2">
               <button type="button" onClick={() => rerun(stopped, true)} className={SECONDARY}>
                 Rerun interactively

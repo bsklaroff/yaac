@@ -2,7 +2,7 @@
 // SEALED_FOLDERS).
 //
 // This feature owns the in-cluster datapath (egress proxy, netd, the main
-// and per-project registries, the npm cache), the main registry's client
+// and per-project registries, the npm cache, the public-site edge), the main registry's client
 // and write grants, and the tag or digest of every image yaac ships.
 // Building and pushing those images is `#drivers/k8s/install`'s job.
 //
@@ -112,3 +112,10 @@ export {
   ensureNpmCache,
   servingNpmCacheUrl,
 } from './npm-cache'
+export {
+  CLOUDFLARED_MIRROR_TAG,
+  CLOUDFLARED_UPSTREAM_IMAGE,
+  ensureSiteEdge,
+  siteTunnelStatus,
+  syncSiteObjects,
+} from './site-edge'

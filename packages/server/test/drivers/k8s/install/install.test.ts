@@ -19,7 +19,7 @@ import type * as substrateBarrel from '#drivers/k8s/substrate'
 type Step =
   | 'ensurePriorityClasses' | 'ensureMainRegistry' | 'ensureBuilderRoleGuard'
   | 'buildBuiltinImages' | 'ensureGvisorRuntime' | 'ensureNetd'
-  | 'ensureNpmCache' | 'deployServerWorkload'
+  | 'ensureNpmCache' | 'ensureSiteEdge' | 'deployServerWorkload'
 const { events, failing, reach, fakeStep } = vi.hoisted(() => {
   const events: Step[] = []
   /** Steps a case fails, with the error each throws. */
@@ -46,6 +46,7 @@ vi.mock('#drivers/k8s/cluster', async (importOriginal) => ({
   ensureBuilderRoleGuard: fakeStep('ensureBuilderRoleGuard'),
   ensureNetd: fakeStep('ensureNetd'),
   ensureNpmCache: fakeStep('ensureNpmCache'),
+  ensureSiteEdge: fakeStep('ensureSiteEdge'),
   registryTagState: vi.fn().mockResolvedValue('present'),
   mirrorMatchesRecord: vi.fn().mockResolvedValue(true),
   registryRef: (tag: string) => `reg.local:5000/${tag}`,
@@ -243,6 +244,7 @@ beforeEach(() => {
 })
 
 import { ClusterInstallError, runClusterInstall } from '#drivers/k8s/install'
+import { ensureSiteEdge } from '#drivers/k8s/cluster'
 // Setup value and the deps type runClusterInstall takes.
 import { CALICO_VERSION, type ClusterInstallDeps } from '#drivers/k8s/install/install'
 import { nodeIpBlocks, resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
@@ -661,14 +663,56 @@ function calicoReads(rest: (p: string) => string | null) {
 }
 
 describe('runClusterInstall', () => {
-  // Workspaces fall back to npmjs, so a failed cache is only a note.
-  it('finishes the install when the npm cache cannot be deployed', async () => {
+  // Workspaces fall back to npmjs, and only public sites need the edge, so
+  // either failing is only a note.
+  it('finishes the install when the npm cache or the site edge cannot be deployed', async () => {
     const log = vi.fn()
     failing.set('ensureNpmCache', 'claim Pending')
+    failing.set('ensureSiteEdge', 'rollout timed out')
     const deps = makeDeps({ run: freshRun(), log })
     await expect(runClusterInstall({}, deps)).resolves.toBeUndefined()
     expect(ran('deployServerWorkload')).toBe(1)
     expect(log).toHaveBeenCalledWith(expect.stringContaining('could not deploy the npm cache (claim Pending)'))
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('could not deploy the public-site edge (rollout timed out)'))
+  })
+
+  it('--site-domain reaches the server, and CF_TUNNEL_TOKEN the site edge', async () => {
+    vi.stubEnv('CF_TUNNEL_TOKEN', 'tunnel-token')
+    await runClusterInstall({ siteDomains: [' Example.com', 'sites.example.org'] }, makeDeps())
+    expect(serverPod().containers[0].env).toContainEqual({ name: 'YAAC_SITE_DOMAINS', value: 'example.com,sites.example.org' })
+    expect(ensureSiteEdge).toHaveBeenCalledWith({ tunnelToken: 'tunnel-token' })
+    expect(order('ensureSiteEdge')).toBeLessThan(order('deployServerWorkload'))
+
+    for (const bad of ['*.example.com', 'https://example.com', 'example.com:443', 'localhost']) {
+      const d = makeDeps()
+      const err = await runClusterInstall({ siteDomains: [bad] }, d).catch((e: unknown) => e)
+      expect((err as Error).message, bad).toMatch(/--site-domain takes a bare domain/)
+      expect(d.run).not.toHaveBeenCalled()
+    }
+  })
+
+  // A restart policy brings the cluster back after a host reboot. Only a
+  // newer podman can set one on an existing container, and on Linux it
+  // takes effect through podman's restart service.
+  it('gives the kind nodes a restart policy, or says how to restart them', async () => {
+    const policyNote = /only once podman's restart service is enabled/
+    const deps = makeDeps()
+    await runClusterInstall({}, deps)
+    expect(deps.run.mock.calls.filter(([f, a]) => f === 'podman' && a.join(' ') === 'update --restart always yaac-control-plane'))
+      .toHaveLength(1)
+    expect(logged(deps)).toMatch(policyNote)
+
+    const enabled = makeDeps({ run: vi.fn((file: string, args: string[]) => (
+      file === 'systemctl' ? Promise.resolve({ stdout: 'enabled\n', stderr: '' }) : happyRun(file, args)
+    )) })
+    await runClusterInstall({}, enabled)
+    expect(logged(enabled)).not.toMatch(policyNote)
+
+    const old = makeDeps({ run: vi.fn((file: string, args: string[]) => (
+      file === 'podman' && args.includes('--restart') ? Promise.reject(new Error('unknown flag: --restart')) : happyRun(file, args)
+    )) })
+    await expect(runClusterInstall({}, old)).resolves.toBeUndefined()
+    expect(logged(old)).toContain('cannot give the kind node containers a restart policy')
   })
 
   it('creates the cluster and installs everything on a host that has none', async () => {

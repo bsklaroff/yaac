@@ -54,7 +54,7 @@ import {
   PLACEHOLDER_OPENCODE_API_KEY,
   PLACEHOLDER_PI_API_KEY,
 } from '@yaac/shared/tool-auth'
-import { credentialOwnerKey, defaultModelFor, isCatalogModel, loadToolAuthEntry, modelEfforts, seedProjectToolHome } from '#domain/auth'
+import { NO_CREDENTIALS_OWNER_KEY, credentialOwnerKey, defaultModelFor, isCatalogModel, loadToolAuthEntry, modelEfforts, seedProjectToolHome } from '#domain/auth'
 import {
   createCheckout,
   getDefaultBranch,
@@ -76,6 +76,7 @@ import {
   listWorkspaceSessions,
   markSessionsLaunched,
   setWorkspaceMamaTokenHash,
+  unstageVolume,
   type SessionLaunchSettings,
   type SessionRow,
   type VolumeLease,
@@ -95,7 +96,7 @@ import {
 } from '#domain/skills'
 import { convergeAgentHistory } from './history'
 import { deleteWorkspaceState } from './cleanup'
-import { attachVolume } from './volumes'
+import { attachVolume, stageVolume } from './volumes'
 import { lifeHooksExec, recordLife, startStepsOf } from './life'
 import type { StepGraph } from '@yaac/shared/steps'
 import { ACP_CONVERSATION_WAIT_MS } from './conversation-registry'
@@ -236,6 +237,17 @@ export interface WorkspaceCreateOptions {
    *  lease is taken just before launch (docs/workspace-volumes.md). */
   volumeId?: string
   /**
+   * A public site's release (docs/public-sites.md): the site's id, the
+   * image to launch in place of the project's current one (a replacement
+   * runs its predecessor's), the volume it mounts as next holder while
+   * another release may still hold it, and the release whose node it must
+   * share while both mount that volume.
+   */
+  siteId?: string
+  image?: string
+  stageVolumeId?: string
+  colocateWith?: string
+  /**
    * Called with each user-visible progress message. The HTTP route streams
    * them to the CLI as NDJSON events.
    */
@@ -271,6 +283,8 @@ export interface WorkspaceCreateResult {
   forwardedPorts: PortMapping[]
   /** The session a fresh create opened. */
   sessionId?: string
+  /** The image it launched, where the driver runs images. */
+  image?: string
 }
 
 /**
@@ -686,10 +700,12 @@ export async function createWorkspace(
   const projectEnv = await resolveProjectEnv(projectId)
 
   // Without a git credential the agent could neither fetch nor push. A
-  // hosted remote is the server itself, so it has no host to check.
+  // hosted remote is the server itself, so it has no host to check. A site's
+  // release runs no git of its own (the server makes its checkout), so it is
+  // given none and needs none.
   const remoteHost = projectRow.hosted ? null : parseGitRemote(remoteUrl).host
-  const credential = await resolveProjectCredential(projectId)
-  if (!credential) throw missingCredentialError(projectRow.name)
+  const credential = options.siteId === undefined ? await resolveProjectCredential(projectId) : undefined
+  if (!credential && options.siteId === undefined) throw missingCredentialError(projectRow.name)
 
   // Started before anything else, since the network is the slowest leg. The
   // checkout runs alongside it (`createCheckout`'s `fetched`). e2e fixtures
@@ -803,6 +819,7 @@ export async function createWorkspace(
       ...(options.steps !== undefined ? { startSteps: options.steps ?? {} } : {}),
       ...(options.nonInteractive === true ? { nonInteractive: true } : {}),
       ...(options.rerunOf !== undefined ? { rerunOf: options.rerunOf } : {}),
+      ...(options.siteId !== undefined ? { siteId: options.siteId } : {}),
       resume: options.resume === true,
     })
   }
@@ -835,8 +852,8 @@ export async function createWorkspace(
   // checkout leg is joined later, inside launchWithSetup, so it also
   // overlaps pod boot.
 
-  const imageTask: Promise<string | undefined> = runtime.kind === 'containerless'
-    ? Promise.resolve(undefined)
+  const imageTask: Promise<string | undefined> = runtime.kind === 'containerless' || options.image !== undefined
+    ? Promise.resolve(options.image)
     : runtime.prepareImage({
       projectId,
       owner,
@@ -906,7 +923,7 @@ export async function createWorkspace(
   const substrateTask = runtime.prepareSubstrate({
     projectId,
     workspaceId: workspaceId,
-    owner: credentialOwnerKey(owner),
+    owner: options.siteId !== undefined ? NO_CREDENTIALS_OWNER_KEY : credentialOwnerKey(owner),
     config,
     allowlist,
     remoteUrl,
@@ -995,7 +1012,7 @@ export async function createWorkspace(
     // SSH remotes need a known_hosts file, written from the host key the
     // credential was assigned with. How it reaches the workspace is the
     // driver's concern.
-    const sshKnownHostsFile = credential.kind === 'ssh' ? path.join(projectDir(projectId), 'known_hosts') : undefined
+    const sshKnownHostsFile = credential?.kind === 'ssh' ? path.join(projectDir(projectId), 'known_hosts') : undefined
     const [opencodeConfigFile, builtinSkillNames, workspaceBinNames] = await Promise.all([
       (async () => {
         // Seed every tool's config (a retooled spare needs it too). Claude
@@ -1037,7 +1054,7 @@ export async function createWorkspace(
       // (docs/containerless-driver.md), merged so a token a running
       // workspace refreshed is not overwritten (#domain/auth).
       seedProjectToolHome(projectId, owner),
-      ...(credential.kind === 'ssh' && sshKnownHostsFile !== undefined
+      ...(credential?.kind === 'ssh' && sshKnownHostsFile !== undefined
         ? [writeKnownHostsFile([credential.knownHostsEntry], sshKnownHostsFile)]
         : []),
     ])
@@ -1165,7 +1182,7 @@ export async function createWorkspace(
   const userWiresGithubToken = env.some((e) => e.startsWith('GH_TOKEN='))
     || projectEnv.secrets.GH_TOKEN !== undefined
     || projectEnv.secrets.GITHUB_TOKEN !== undefined
-  if (credential.kind === 'https' && remoteHost !== null
+  if (credential?.kind === 'https' && remoteHost !== null
     && ghApiHostForGitHost(remoteHost) !== null
     && !userWiresGithubToken) {
     env.push(`GH_TOKEN=${sandboxed ? PLACEHOLDER_GH_TOKEN : credential.token}`)
@@ -1241,7 +1258,8 @@ export async function createWorkspace(
       { source: { kind: 'hostPath', path: opencodeCheckpoint }, mountPath: CONTAINER_OPENCODE_CHECKPOINT },
     ]
   const history = (part: AgentHistoryPart): string => agentHistoryDir(projectId, workspaceId, part)
-  const mounts: WorkspaceMount[] = [
+  const binMounts = workspaceBinMounts(workspaceBinStaging, workspaceBinNames)
+  const allMounts: WorkspaceMount[] = [
     { source: { kind: 'hostPath', path: wtDir }, mountPath: '/workspace' },
     // Read-only, at the server's own path: the checkout's alternates file
     // names this path (docs/server-git.md).
@@ -1288,18 +1306,26 @@ export async function createWorkspace(
     // Server-staged skills and helper commands. Without layering the skills
     // are already linked in.
     ...(sandboxed ? builtinSkillMounts(builtinSkillsStaging, builtinSkillNames) : []),
-    ...workspaceBinMounts(workspaceBinStaging, workspaceBinNames),
+    ...binMounts,
   ]
+  // A public site's release runs no agent and faces the internet, so it
+  // mounts only what is its own or read-only: nothing other workspaces of
+  // the project read, such as a tool home, its memory or a cache volume, is
+  // there for it to poison (docs/public-sites.md).
+  const releaseMountPaths = new Set(['/workspace', `${repo}/.git`, CONTAINER_TERMINAL_LOG_DIR, CONTAINER_TMUX_DIR])
+  const mounts = options.siteId === undefined
+    ? allMounts
+    : allMounts.filter((m) => releaseMountPaths.has(m.mountPath) || binMounts.includes(m))
 
   // Without a proxy to inject auth, the workspace's git needs the real
   // credential: the checkout's `origin` URL carries no token.
   let gitCredential: WorkspaceGitCredential | undefined
   if (!sandboxed) {
-    if (credential.kind === 'https' && remoteHost !== null) {
+    if (credential?.kind === 'https' && remoteHost !== null) {
       gitCredential = { kind: 'https', host: remoteHost, token: credential.token }
-    } else if (credential.kind === 'ssh') {
+    } else if (credential?.kind === 'ssh') {
       gitCredential = { kind: 'ssh', privateKey: await sshKeyMaterial(credential.id) }
-    } else if (credential.kind === 'hosted' && mama?.origin !== undefined) {
+    } else if (credential?.kind === 'hosted' && mama?.origin !== undefined) {
       gitCredential = { kind: 'hosted', origin: mama.origin, token: mama.token }
     }
   }
@@ -1323,9 +1349,11 @@ export async function createWorkspace(
       ? {}
       : { preStopExec: [`/usr/local/bin/${OPENCODE_CHECKPOINT_SCRIPT}`, 'stop'] }),
     nestedContainers,
-    ...(sshKnownHostsFile !== undefined ? { ssh: { knownHostsFile: sshKnownHostsFile } } : {}),
+    ...(sshKnownHostsFile !== undefined && options.siteId === undefined ? { ssh: { knownHostsFile: sshKnownHostsFile } } : {}),
     ...(gitCredential !== undefined ? { gitCredential } : {}),
     substrate,
+    ...(options.siteId !== undefined ? { siteId: options.siteId } : {}),
+    ...(options.colocateWith !== undefined ? { colocateWith: options.colocateWith } : {}),
     onProgress: (m) => emit(m, options),
   }
 
@@ -1333,12 +1361,17 @@ export async function createWorkspace(
   let target: TeardownTarget | undefined
   let launched: { handle: RuntimeHandle; launches: SessionLaunch[] }
   let attached: { volumeId: string; lease: VolumeLease } | undefined
+  let staged: string | undefined
   try {
     if (options.volumeId !== undefined) {
       const volume = await attachVolume(workspaceId, options.volumeId)
       attached = { volumeId: options.volumeId, lease: volume.lease }
       mounts.push(volume.mount)
       env.push(...volume.env)
+    }
+    if (options.stageVolumeId !== undefined) {
+      mounts.push(await stageVolume(workspaceId, options.stageVolumeId))
+      staged = options.stageVolumeId
     }
     mergeEnvEntries(env, (name) => projectSets(name)
       ? `the project's environment variable ${name} conflicts with the value yaac sets for it; rename or remove it`
@@ -1381,6 +1414,9 @@ export async function createWorkspace(
       await applyWorkspaceEvent({ type: 'volume-released', ...attached })
         .catch(() => { /* the lease sweep frees it */ })
     }
+    if (staged !== undefined && podGone) {
+      await unstageVolume(staged, workspaceId).catch(() => { /* the site's deploy clears it */ })
+    }
     // A fresh create or warm deletes its own checkout (see
     // failedCreateCollectsCheckout); no sweep would find it once the row,
     // or the spare's unit, is gone. Chained after the checkout leg, which
@@ -1414,5 +1450,6 @@ export async function createWorkspace(
     jobName: handle.jobName,
     forwardedPorts,
     ...(options.session !== undefined && sessions[0] !== undefined ? { sessionId: sessions[0].id } : {}),
+    ...(imageRef !== undefined ? { image: imageRef } : {}),
   }
 }

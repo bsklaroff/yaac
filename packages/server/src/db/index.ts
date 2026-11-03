@@ -69,9 +69,29 @@ export {
   listVolumeWorkspaces,
   setVolumeSize,
   setWorkspaceVolume,
+  stageVolume,
+  handOverVolume,
+  listStagedVolumes,
+  unstageVolume,
   type VolumeLease,
   type VolumeRow,
 } from './volume-store'
+export {
+  beginSiteDeploy,
+  deleteProjectSiteRows,
+  deleteSiteRow,
+  findSiteByName,
+  getSiteRow,
+  insertSite,
+  listProjectSites,
+  listSiteReleases,
+  listSites,
+  listVolumeSites,
+  siteNames,
+  updateSite,
+  type SitePatch,
+  type SiteRow,
+} from './site-store'
 export type { CapturedConversation, DiscoveredConversation, WorkspaceEvent } from './events'
 export { desiredWorkspaces } from './desired-workspaces'
 export {

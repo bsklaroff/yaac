@@ -452,7 +452,7 @@ describe('prepareStart', () => {
       const { workspaceId } = result
 
       const [session] = await listWorkspaceSessions(workspaceId)
-      expect(result).toEqual({ workspaceId, jobName: `yaac-demo-${workspaceId}`, forwardedPorts: [], sessionId: session.id })
+      expect(result).toEqual({ workspaceId, jobName: `yaac-demo-${workspaceId}`, forwardedPorts: [], sessionId: session.id, image: 'img' })
       // The row names what is coming up before any agent has answered, and
       // goes once the workspace is up.
       expect(row).toMatchObject({ workspaceId, kind: 'create', tool: 'codex', prompt: 'ship it', model: 'gpt-6-sol' })

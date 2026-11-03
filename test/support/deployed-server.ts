@@ -10,7 +10,12 @@ import {
   processIdentity,
   waitForRollout,
 } from '@yaac/server/drivers/k8s/substrate'
-import { buildServerIngressNpManifest, ensureNamespace, nodeIpBlocks } from '@yaac/server/drivers/k8s/cluster'
+import {
+  buildServerIngressNpManifest,
+  ensureNamespace,
+  ensureSiteEdge,
+  nodeIpBlocks,
+} from '@yaac/server/drivers/k8s/cluster'
 import { registryRef, registryTagState } from '@yaac/server/drivers/k8s/cluster'
 import {
   buildServerClusterRoleBindingManifest,
@@ -50,6 +55,9 @@ const execFileAsync = promisify(execFile)
  *    file's own data dir's tiers, plus one extra mount of the scratch base
  *    (`testTmpBase()`) at its own path, since test repos and mock-remote
  *    stores live beside the data dir rather than in a tier.
+ *  - **The site router**, as install applies it but with no tunnel, so a
+ *    test reaches a site through a port-forward to the router's Service
+ *    with the site's `Host`.
  */
 
 /**
@@ -103,16 +111,19 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
   // probe. `kubectl port-forward` bypasses network policy.
   await applyObject(buildServerIngressNpManifest(await nodeIpBlocks()))
   await applyObject(testServerDeploymentManifest(imageRef, opts.env))
-  try {
-    await waitForRollout({ workload: `deployment/${SERVER_APP_NAME}`, namespace: k8sNamespace(), timeoutMs: 300_000 })
-  } catch (err) {
-    // A timed-out rollout says nothing about why, and the namespace is
-    // swept when the file ends, so collect the evidence now.
-    throw new Error(
-      `the test server Deployment never rolled out.\n${await describeServerPods()}`,
-      { cause: err },
-    )
-  }
+  // The router rolls out while the server does.
+  await Promise.all([
+    waitForRollout({ workload: `deployment/${SERVER_APP_NAME}`, namespace: k8sNamespace(), timeoutMs: 300_000 })
+      .catch(async (err: unknown) => {
+        // A timed-out rollout says nothing about why, and the namespace is
+        // swept when the file ends, so collect the evidence now.
+        throw new Error(
+          `the test server Deployment never rolled out.\n${await describeServerPods()}`,
+          { cause: err },
+        )
+      }),
+    ensureSiteEdge({}),
+  ])
 
   const forward = await startForward(opts.env)
   const logs = opts.env.YAAC_TEST_DEBUG_SERVER === '1' ? streamPodLogs() : null

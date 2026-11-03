@@ -31,6 +31,8 @@ const app = new Hono()
   // A relay whose proxy never authenticates: a request that reaches it got
   // past the body limit and validation, and is refused as 401.
   .route('/relay', mamaRelayApp(() => Promise.resolve(false)))
+  // A relay whose proxy authenticates, naming the caller it was given.
+  .route('/proxied', mamaRelayApp(() => Promise.resolve(true)))
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
 /** A prompt of the maximum length, multibyte throughout. */
@@ -80,6 +82,17 @@ describe('POST /mama', () => {
       })
     }
     expect((await post(JSON.stringify({ command: 'queue', body: ' '.repeat(MAMA_BODY_LIMIT) }))).status).toBe(413)
+  })
+
+  // A site's release faces the internet, so it may not act on yaac, nor
+  // reach a hosted remote (docs/public-sites.md).
+  it('refuses a public site\'s release, for yaac-mama and hosted git alike', async () => {
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'rel-1', siteId: '0b3a8d3c-1c1e-4d65-9a43-6f0f1e7b2c11' })
+    const headers = { 'content-type': 'application/json', authorization: 'Bearer x', 'x-yaac-workspace-id': 'rel-1' }
+    const mama = await app.request('/proxied/mama', { method: 'POST', headers, body: JSON.stringify({ command: 'list' }) })
+    expect(mama.status).toBe(403)
+    expect(await mama.json()).toMatchObject({ error: { message: expect.stringContaining('may not call yaac') as unknown } })
+    expect((await app.request(`/proxied/git/${PROJ}.git/info/refs?service=git-upload-pack`, { headers })).status).toBe(403)
   })
 })
 

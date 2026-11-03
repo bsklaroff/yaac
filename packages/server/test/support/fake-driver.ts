@@ -204,6 +204,8 @@ function defaultRuntime(): WorkspaceDriver {
     volumeStorage: () => Promise.resolve([]),
     reapNodeLocal: () => Promise.resolve(),
     removeAsRoot: () => Promise.resolve(false),
+    syncSites: () => Promise.resolve(),
+    siteTunnelStatus: () => Promise.resolve('absent'),
     mamaRelay: null,
   }
 }

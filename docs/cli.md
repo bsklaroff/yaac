@@ -40,6 +40,9 @@ yaac cluster                    The Kubernetes cluster (k8s driver only)
                                 shared claim
     --rwo-storage-class <name>  With --byo: class for the server's own claim
                                 (default: the cluster's default class)
+    --site-domain <domain>      A domain public sites' hostnames may use
+                                (repeatable); the Cloudflare tunnel's token
+                                comes from CF_TUNNEL_TOKEN (public-sites.md)
   delete [-y]                   Delete the kind cluster and its registry; keeps
                                 workspaces' checkouts. Refused on a --byo install
 
@@ -150,6 +153,39 @@ yaac routine                    Workspaces started on a cron schedule (routines.
   pause | resume <routine-id>   Resuming does not catch up missed ticks
   run <routine-id>              Start a run now, stopped at the next tick
   delete <routine-id>           Running runs keep going until their stop time
+
+yaac site                       A project's public sites, each served by a
+                                locked workspace, its release (cluster servers
+                                only; public-sites.md)
+  create <project> <name>       --hostname, --port and --steps required; prints
+                                what to add to the Cloudflare tunnel
+    --hostname <host>           Public hostname, under a --site-domain
+    --port <n>                  Port its releases serve on
+    --steps <file>              JSON file of the steps each release runs
+    --volume <name>             Volume each release mounts (see `yaac volume`)
+  edit <project> <name>         The same options; the next deploy uses them
+    --no-volume                 Mount no volume
+  list <project>                Sites with their live release and last deploy
+  show <project> <name>         A site and its recent releases
+  deploy <project> <name>       Start a release; once ready the hostname moves
+                                to it and the old one stops
+    --ref <branch|sha>          What to deploy (default: the default branch)
+    --timeout <duration>        Fail unless ready this long after it starts
+                                (default 15m)
+    --wait                      Wait for it, exiting non-zero unless it succeeded
+  stop <project> <name>         Stop the live release; the hostname answers 503
+  start <project> <name>        Start a replacement of the last release
+  delete <project> <name>       Delete the site and stop its release
+
+yaac volume                     A project's volumes, one running workspace at a
+                                time (cluster servers only; workspace-volumes.md)
+  create <project> <name>
+    --size <size>               Like 10Gi (the default) or 500Mi
+  list <project>                Volumes and the workspace each is attached to
+  resize <project> <name> <size>
+                                Grow a volume; it never shrinks
+  delete <project> <name>       Delete it and its data; refused while attached
+    -y, --yes                   Without the confirmation prompt
 
 yaac group                      Named sidebar groups of workspaces
   create <project> <name>

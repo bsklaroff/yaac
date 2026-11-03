@@ -169,7 +169,7 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
  * IPv4 metadata service. The proxy refuses the same set itself
  * (k8s/proxy/upstream.ts).
  */
-const NON_PUBLIC_V4 = [
+export const NON_PUBLIC_V4 = [
   '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16',
   '172.16.0.0/12', '192.0.0.0/24', '192.0.2.0/24', '192.88.99.0/24', '192.168.0.0/16',
   '198.18.0.0/15', '198.51.100.0/24', '203.0.113.0/24', '224.0.0.0/3', '168.63.129.16/32',
@@ -180,7 +180,7 @@ const NON_PUBLIC_V4 = [
  * else falls outside it, ULA (where AWS and GCE serve IPv6 metadata) and
  * link-local included.
  */
-const PUBLIC_V6 = { cidr: '2000::/3', except: ['2001::/23', '2001:db8::/32', '2002::/16', '3fff::/20'] }
+export const PUBLIC_V6 = { cidr: '2000::/3', except: ['2001::/23', '2001:db8::/32', '2002::/16', '3fff::/20'] }
 
 /** Where NodeLocal DNSCache listens in IPVS mode (typically 169.254.20.10). */
 const LINK_LOCAL_V4 = '169.254.0.0/16'
@@ -198,12 +198,28 @@ function portsExcept(protocol: 'TCP' | 'UDP', excluded: number[]): Array<Record<
 }
 
 /**
+ * Egress to the cluster's resolver: by selector, and port 53 on its Service
+ * addresses (`dnsCidrs`) and on link-local, where NodeLocal DNSCache answers
+ * in its two modes.
+ */
+export function dnsEgress(dnsCidrs: string[]): Record<string, unknown> {
+  return {
+    to: [
+      {
+        namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } },
+        podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } },
+      },
+      ...ipBlocks([...dnsCidrs, LINK_LOCAL_V4]),
+    ],
+    ports: [udp(53), tcp(53)],
+  }
+}
+
+/**
  * Egress for pods that may dial the internet: builder pods (running
  * agent-editable Dockerfiles) and the proxy. Public addresses are open;
  * non-public ones are not, except:
- *  - DNS: the cluster's resolver by selector, and port 53 on its Service
- *    addresses (`dnsCidrs`) and on link-local, where NodeLocal DNSCache
- *    answers in its two modes;
+ *  - DNS (`dnsEgress`);
  *  - the nodes, on every port but two. The kind fronting's node port is
  *    cut, because that forwarder's dial into the server comes from the
  *    node, which the server's ingress admits, and a loopback-`Host`
@@ -226,16 +242,7 @@ export function wideEgress(nodeCidrs: string[], dnsCidrs: string[]): Array<Recor
         { ipBlock: PUBLIC_V6 },
       ],
     },
-    {
-      to: [
-        {
-          namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } },
-          podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } },
-        },
-        ...ipBlocks([...dnsCidrs, LINK_LOCAL_V4]),
-      ],
-      ports: [udp(53), tcp(53)],
-    },
+    dnsEgress(dnsCidrs),
     {
       to: ipBlocks(nodeCidrs),
       ports: [...portsExcept('TCP', [NFS_PORT, SERVER_FRONT_PORT]), ...portsExcept('UDP', [NFS_PORT])],

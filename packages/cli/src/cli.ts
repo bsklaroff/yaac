@@ -19,6 +19,7 @@ import { workspaceRerun, workspaceRestart } from '#commands/workspace-restart'
 import { stepAdd, stepCancel, stepRerun, type StepAddOptions } from '#commands/workspace-steps'
 import { workspaceLogs } from '#commands/workspace-logs'
 import { volumeCreate, volumeDelete, volumeList, volumeResize } from '#commands/volume'
+import { siteCreate, siteDelete, siteDeploy, siteEdit, siteList, siteShow, siteStart, siteStop } from '#commands/site'
 import { workspaceTimeout } from '#commands/workspace-timeout'
 import { routineCreate, routineDelete, routineEdit, routineList, routinePause, routineResume, routineRun, type RoutineOptions } from '#commands/routine'
 import { workspaceAttach } from '#commands/workspace-attach'
@@ -197,11 +198,13 @@ cluster
   .option('--rwo-storage-class <name>', 'With --byo: the StorageClass the server\'s own yaac-server-local claim is provisioned from (default: the cluster\'s default class)')
   .option('--tailnet [host]', 'Publish the server on your Tailscale tailnet instead of at 127.0.0.1, at an https origin whose callers are identified by their tailnet user. With <host> (this machine\'s MagicDNS name), through this machine\'s own `tailscale serve`; without, through the Tailscale Kubernetes operator, which install sets up from TS_OAUTH_CLIENT_ID / TS_OAUTH_CLIENT_SECRET when the cluster lacks it')
   .option('--owner <login>', 'With --tailnet (or --byo): switch a local install to tailnet mode, giving its projects and settings to this tailnet login. One-way; not needed for a fresh install')
+  .option('--site-domain <domain>', 'A domain public sites\' hostnames may sit under (repeatable; see `yaac site`). Give the Cloudflare tunnel\'s token in CF_TUNNEL_TOKEN', collect, [])
   // `--nodes` stays a string so the install reports what the user typed
   // rather than `NaN`. A failed finishing check exits 1.
-  .action(async (options: ClusterInstallArgs) => {
+  // Without `--site-domain`, install keeps the domains the cluster has.
+  .action(async ({ siteDomain, ...options }: ClusterInstallArgs & { siteDomain: string[] }) => {
     const { clusterInstall } = await import('#commands/cluster')
-    await clusterInstall(options)
+    await clusterInstall({ ...options, ...(siteDomain.length > 0 ? { siteDomains: siteDomain } : {}) })
   })
 
 cluster
@@ -592,6 +595,79 @@ volume
   .argument('<name>', 'Volume name')
   .option('-y, --yes', 'Skip the confirmation prompt')
   .action(volumeDelete)
+
+const site = program
+  .command('site')
+  .description('Manage a project\'s public sites: an app served on the internet at a hostname by a locked workspace, its release, through the install\'s Cloudflare tunnel (cluster servers only)')
+
+/** The options `site create` and `site edit` share. */
+function siteOptions(cmd: Command, required: boolean): Command {
+  const option = (flags: string, description: string): Command =>
+    required ? cmd.requiredOption(flags, description) : cmd.option(flags, description)
+  option('--hostname <host>', 'The public hostname it serves, under one of the install\'s --site-domain domains')
+  option('--port <n>', 'The port its releases serve on')
+  option('--steps <file>', 'A JSON file of the steps each release runs; one must be a service')
+  return cmd.option('--volume <name>', 'A project volume each release mounts at $YAAC_VOLUME_DIR (see `yaac volume`)')
+}
+
+siteOptions(site
+  .command('create')
+  .description('Create a site, and print what to add to the Cloudflare tunnel; `site deploy` publishes it')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<name>', 'Site name, unique in the project'), true)
+  .action(siteCreate)
+
+siteOptions(site
+  .command('edit')
+  .description('Change a site; the next deploy uses the new settings')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<name>', 'Site name'), false)
+  .option('--no-volume', 'Mount no volume')
+  .action(siteEdit)
+
+site
+  .command('list')
+  .description('List a project\'s sites, with each one\'s live release and deploy')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .action(siteList)
+
+site
+  .command('show')
+  .description('Show a site and its recent releases')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<name>', 'Site name')
+  .action(siteShow)
+
+site
+  .command('deploy')
+  .description('Start a release at a commit; once it is ready the hostname moves to it and the old release stops')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<name>', 'Site name')
+  .option('--ref <ref>', 'A branch or commit to deploy (default: the project\'s default branch)')
+  .option('--timeout <duration>', 'Fail the deploy if its release is not ready this long after it starts, like 30m (default 15m)')
+  .option('--wait', 'Wait for the deploy to finish, exiting non-zero unless it succeeded')
+  .action(siteDeploy)
+
+site
+  .command('stop')
+  .description('Stop the live release; the hostname answers 503 until a start or deploy')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<name>', 'Site name')
+  .action(siteStop)
+
+site
+  .command('start')
+  .description('Start a replacement of the last release, at its commit')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<name>', 'Site name')
+  .action(siteStart)
+
+site
+  .command('delete')
+  .description('Delete a site, stopping its release; its releases keep their logs')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<name>', 'Site name')
+  .action(siteDelete)
 
 const config = program
   .command('config')

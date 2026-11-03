@@ -15,7 +15,9 @@ The tailnet is the trust boundary. Users are teammates who trust each other
 and the host admin, so per-user separation is organizational (own data, own
 credentials, own workspaces), not a defense against a hostile teammate. The
 defense against hostile code is the gVisor and egress sandbox around
-workspace pods.
+workspace pods. Public sites' hostnames are shared the same way: one a
+site lets go is any user's to claim (docs/public-sites.md "Sites and
+releases").
 
 **Separation is a `k8s` property.** Under `k8s` a workspace holds sentinel
 credentials and the egress proxy swaps in its owner's real ones, so a

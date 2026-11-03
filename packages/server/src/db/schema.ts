@@ -5,6 +5,7 @@ import type {
   EgressAllowlist,
   PermissionMode,
   ScratchDirSettings,
+  SiteDeployPhase,
   WorkspaceDeathReason,
 } from '@yaac/shared/types'
 import type { StepGraph, StepOrigin, StepSpec, StepState, StepsOutcome } from '@yaac/shared/steps'
@@ -293,6 +294,9 @@ export const workspaces = snakeCase.table('workspaces', {
    *  while it is stopped, so a restart attaches it again. No foreign key;
    *  deleting a volume clears it here (volume-store.ts). */
   volumeId: uuid(),
+  /** The public site it is a release of (docs/public-sites.md), which makes
+   *  it read-only. No foreign key; a deleted site's releases keep it. */
+  siteId: uuid(),
 }, (t) => [index().on(t.projectId)])
 
 /**
@@ -312,9 +316,75 @@ export const volumes = snakeCase.table('volumes', {
    *  gone. Unique: a workspace mounts at most one volume. */
   holderWorkspaceId: text().unique(),
   attachedAt: timestamp({ withTimezone: true }),
+  /** A site release that already has it mounted while `holderWorkspaceId`
+   *  still holds it, during a deploy's handoff (docs/public-sites.md
+   *  "Volumes: a staged handoff"). It writes nothing there until the lease
+   *  passes to it. */
+  nextHolderWorkspaceId: text(),
   /** When its first disk was bound and kept (`Retain`). Once set, a missing
    *  disk refuses a launch instead of provisioning an empty one. */
   pinnedAt: timestamp({ withTimezone: true }),
+}, (t) => [uniqueIndex().on(t.projectId, t.name)])
+
+/**
+ * Public sites (docs/public-sites.md): a project's app served at a hostname
+ * by one release workspace at a time. A deploy is a state on the row,
+ * advanced by the `sites` reconcile step, so a server restart resumes it.
+ */
+export const sites = snakeCase.table('sites', {
+  id: uuid().primaryKey().defaultRandom(),
+  projectId: uuid().notNull(),
+  name: text().notNull(),
+  /** Unique in the install: the router picks the site by it. */
+  hostname: text().notNull().unique(),
+  /** The port its releases serve on. */
+  port: integer().notNull(),
+  /** The graph each release runs; its `needs` may name `volume`. */
+  steps: json().$type<StepGraph>().notNull(),
+  /** No foreign key; deleting a volume a site names is refused. */
+  volumeId: uuid(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  /** The release the hostname points at, while one is meant to serve; null
+   *  once the site is stopped. A live release whose runtime is gone is
+   *  replaced. */
+  liveWorkspaceId: text(),
+  /** When the live release took the hostname, and the port it serves on,
+   *  which the router dials until the next deploy takes the hostname. */
+  liveSince: timestamp({ withTimezone: true }),
+  livePort: integer(),
+  /** The live release, or the last one, with its commit and image: a
+   *  replacement and `site start` launch that commit and image again with
+   *  the graph and volume that release ran. */
+  releaseWorkspaceId: text(),
+  releaseCommit: text(),
+  releaseImage: text(),
+  /** The deploy in progress: its release, commit, image once known, the
+   *  port it was started for, where it is, its start and deadline, and
+   *  whether it replaces a release that died. */
+  deployWorkspaceId: text(),
+  deployCommit: text(),
+  deployImage: text(),
+  deployPort: integer(),
+  deployPhase: text().$type<SiteDeployPhase>(),
+  deployStartedAt: timestamp({ withTimezone: true }),
+  deployDeadline: timestamp({ withTimezone: true }),
+  deployReplacing: boolean().notNull().default(false),
+  /** The release the deploy stopped to hand over the volume, which a
+   *  failure brings back. */
+  deployHandoffFrom: text(),
+  /** The old release after a flip, stopped at `drainUntil`. */
+  drainWorkspaceId: text(),
+  drainUntil: timestamp({ withTimezone: true }),
+  /** How the last deploy that finished ended. */
+  lastDeployWorkspaceId: text(),
+  lastDeployCommit: text(),
+  lastDeployOutcome: text().$type<'succeeded' | 'failed'>(),
+  lastDeployError: text(),
+  lastDeployFinishedAt: timestamp({ withTimezone: true }),
+  /** Live releases that died soon after taking the hostname in a row, and
+   *  the earliest the next replacement may start, for backoff. */
+  replaceFailures: integer().notNull().default(0),
+  replaceAfter: timestamp({ withTimezone: true }),
 }, (t) => [uniqueIndex().on(t.projectId, t.name)])
 
 /**

@@ -55,13 +55,15 @@ export function sourceHooksCommand(paths: WorkspacePaths, configPath: string): s
  * too, so a command that exits the script still closes its own. A service
  * starts its ready check in the background just before its last command,
  * and the check sets `STEP_READY_OPTION` on the window and renames it to
- * itself so the watcher re-lists.
+ * itself so the watcher re-lists. `env` holds `NAME=VALUE` entries
+ * exported for this step alone.
  */
 export function stepScript(
   name: string,
   spec: StepSpec,
   paths: WorkspacePaths,
   eventsPath: string,
+  env: string[] = [],
 ): string {
   const relist = `tmux rename-window -t "$TMUX_PANE" ${shellQuote(name)}`
   const ready = `tmux set-option -w -t "$TMUX_PANE" ${STEP_READY_OPTION} 1; ${relist}`
@@ -74,6 +76,10 @@ export function stepScript(
     '  ! command -v bash >/dev/null 2>&1 || exec bash "$0"',
     'fi',
     'unset YAAC_STEP_SHELL',
+    ...env.map((entry) => {
+      const at = entry.indexOf('=')
+      return `export ${entry.slice(0, at)}=${shellQuote(entry.slice(at + 1))}`
+    }),
     `cd ${shellQuote(paths.workspaceDir)} || exit 1`,
     `yaac_mark() { printf '%s %s\\n' "$*" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ${shellQuote(eventsPath)}; }`,
     'yaac_i=; yaac_probe=',

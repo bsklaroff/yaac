@@ -16,6 +16,7 @@ import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib
 import { recordWorkspaceCreated, setWorkspaceTitle } from '#db/workspace-store'
 import { insertSession } from '#db/session-store'
 import { recordConversations } from '#db/conversation-store'
+import { insertSite } from '#db/site-store'
 import {
   listActiveWorkspaces,
   _clearListActiveInflightForTests,
@@ -255,6 +256,17 @@ describe('listActiveWorkspaces', () => {
     const bySession = new Map(result.workspaces.map((s) => [s.workspaceId, s]))
     expect(bySession.get('tracked')?.baseBranch).toBe('release/2.x')
     expect(bySession.get('norecord')?.baseBranch).toBeUndefined()
+  })
+
+  it('names the site a running release serves, which makes the webapp show it read-only', async () => {
+    await recordTestProject(DEMO_PROJECT_ID)
+    const site = await insertSite({ projectId: DEMO_PROJECT_ID, name: 'shop', hostname: 'shop.example.com', port: 3000, steps: {} })
+    await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'rel-1', siteId: site.id })
+    await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'dev' })
+    running([live('rel-1'), live('dev')])
+    const bySession = new Map((await listActiveWorkspaces(DEMO_PROJECT_ID)).workspaces.map((s) => [s.workspaceId, s]))
+    expect(bySession.get('rel-1')?.site).toBe('shop')
+    expect(bySession.get('dev')?.site).toBeUndefined()
   })
 
   it('carries each workspace\'s forwarded ports', async () => {

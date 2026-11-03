@@ -4,6 +4,7 @@ import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 import {
   PRIORITY_CLASS_BUILDER,
   PRIORITY_CLASS_INFRA,
+  PRIORITY_CLASS_RELEASE,
   buildPriorityClassManifests,
   ensurePriorityClasses,
 } from '#drivers/k8s/substrate'
@@ -34,7 +35,7 @@ describe('buildPriorityClassManifests', () => {
   it('emits scheduling.k8s.io/v1 PriorityClasses, none of them the global default', () => {
     const all = classes()
     expect(all.map((c) => c.metadata.name))
-      .toEqual([PRIORITY_CLASS_INFRA, PRIORITY_CLASS_BUILDER, PRIORITY_CLASS_WORKSPACE])
+      .toEqual([PRIORITY_CLASS_INFRA, PRIORITY_CLASS_BUILDER, PRIORITY_CLASS_RELEASE, PRIORITY_CLASS_WORKSPACE])
     for (const c of all) {
       expect(c.apiVersion).toBe('scheduling.k8s.io/v1')
       expect(c.kind).toBe('PriorityClass')
@@ -44,10 +45,12 @@ describe('buildPriorityClassManifests', () => {
     }
   })
 
-  it('ranks infra > builders > sessions, all below the reserved system range', () => {
+  it('ranks infra > builders > site releases > sessions, all below the reserved system range', () => {
     expect(byName(PRIORITY_CLASS_INFRA).value)
       .toBeGreaterThan(byName(PRIORITY_CLASS_BUILDER).value)
     expect(byName(PRIORITY_CLASS_BUILDER).value)
+      .toBeGreaterThan(byName(PRIORITY_CLASS_RELEASE).value)
+    expect(byName(PRIORITY_CLASS_RELEASE).value)
       .toBeGreaterThan(byName(PRIORITY_CLASS_WORKSPACE).value)
     // Values above 1e9 are reserved for system classes.
     expect(byName(PRIORITY_CLASS_INFRA).value).toBeLessThanOrEqual(1_000_000_000)
@@ -60,6 +63,7 @@ describe('buildPriorityClassManifests', () => {
     // preempt. Builders outrank workspaces but wait for room.
     expect(byName(PRIORITY_CLASS_WORKSPACE).preemptionPolicy).toBe('Never')
     expect(byName(PRIORITY_CLASS_BUILDER).preemptionPolicy).toBe('Never')
+    expect(byName(PRIORITY_CLASS_RELEASE).preemptionPolicy).toBe('Never')
     // Infra must leave it unset: in nested installs the syncer copies
     // preemptionPolicy to the host without the class, and the host would
     // reject the pod.

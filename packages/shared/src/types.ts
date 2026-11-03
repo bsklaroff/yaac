@@ -1008,6 +1008,9 @@ export interface WorkspaceListEntry {
   steps?: Array<WorkspaceStep & { target?: string }>
   /** It runs one graph untouched and stops when it settles. */
   nonInteractive?: true
+  /** The name of the public site it is a release of (docs/public-sites.md),
+   *  which makes it read-only. */
+  site?: string
   /** The commit its checkout was created at. */
   startCommit?: string
   blockedHosts: string[]
@@ -1364,6 +1367,8 @@ export interface StoppedWorkspaceEntry {
   nonInteractive?: true
   stepsOutcome?: StepsOutcome
   rerunOf?: string
+  /** The public site it was a release of. */
+  site?: string
 }
 
 /** One life's logs (docs/workspace-steps.md "Logs"): its dir name, and each
@@ -1679,6 +1684,48 @@ export interface VolumeEntry {
   holder?: { workspaceId: string; title?: string; attachedAt: string }
   /** Stopped workspaces that attach it again when they restart. */
   stoppedWorkspaces: Array<{ workspaceId: string; title?: string }>
+}
+
+/**
+ * Where a deploy is (docs/public-sites.md "Deploys"): its release is being
+ * created, then runs the steps that do not need the site's volume, waits
+ * for the old release to let the volume go, starts what needs it, and once
+ * ready takes the hostname while the old release drains.
+ */
+export type SiteDeployPhase = 'launching' | 'building' | 'handoff' | 'starting'
+
+/** A public site as `GET /site/list` answers it. */
+export interface SiteEntry {
+  name: string
+  hostname: string
+  /** The port its releases serve on. */
+  port: number
+  /** The graph each release runs. */
+  steps: StepGraph
+  /** Its volume's name. */
+  volume?: string
+  createdAt: string
+  /** The release the hostname points at, while one is meant to serve.
+   *  `running` is false while a crashed one is being replaced. */
+  live?: { workspaceId: string; commit: string; since: string; running: boolean }
+  /** A deploy in progress. `replacing`: it replaces a release that died,
+   *  at that release's commit. */
+  deploy?: { workspaceId: string; commit: string; startedAt: string; phase: SiteDeployPhase; replacing?: true }
+  /** How the last deploy that finished ended. */
+  lastDeploy?: { workspaceId: string; commit: string; outcome: 'succeeded' | 'failed'; error?: string; finishedAt: string }
+}
+
+/** A site with its recent releases, newest first, for `GET /site/show`. */
+export interface SiteDetail extends SiteEntry {
+  releases: Array<{ workspaceId: string; commit?: string; createdAt: string; stoppedAt?: string; rerunOf?: string }>
+}
+
+/** What `GET /site/edge` answers: the domains a site's hostname may sit
+ *  under, and whether the install's tunnel holds a connection to
+ *  Cloudflare (`absent`: install was given no tunnel token). */
+export interface SiteEdgeStatus {
+  domains: string[]
+  tunnel: 'connected' | 'disconnected' | 'absent'
 }
 
 /** A routine as the snapshot carries it. */

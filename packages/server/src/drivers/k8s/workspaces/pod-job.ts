@@ -181,6 +181,10 @@ export interface PodJobParams {
   nodeDirsImage?: string
   /** Defaults to 5 seconds. */
   terminationGracePeriodSeconds?: number
+  /** Defaults to the workspace tier. */
+  priorityClassName?: string
+  /** A node the pod must run on, by name. */
+  nodeName?: string
 }
 
 /**
@@ -299,8 +303,21 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
         spec: {
           restartPolicy: 'Never',
           terminationGracePeriodSeconds: p.terminationGracePeriodSeconds ?? 5,
-          priorityClassName: PRIORITY_CLASS_WORKSPACE,
+          priorityClassName: p.priorityClassName ?? PRIORITY_CLASS_WORKSPACE,
           ...workspaceSpreadSpec(p.labels),
+          ...(p.nodeName !== undefined
+            ? {
+              affinity: {
+                nodeAffinity: {
+                  requiredDuringSchedulingIgnoredDuringExecution: {
+                    nodeSelectorTerms: [{
+                      matchFields: [{ key: 'metadata.name', operator: 'In', values: [p.nodeName] }],
+                    }],
+                  },
+                },
+              },
+            }
+            : {}),
           // Untrusted workloads: no API credentials or service env vars.
           automountServiceAccountToken: false,
           enableServiceLinks: false,
