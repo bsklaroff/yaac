@@ -526,8 +526,9 @@ export const PI_MESSAGE_KEY = 'f9'
  *
  *  - claude keeps a presence file per process in
  *    `$CLAUDE_CONFIG_DIR/sessions/`, naming its conversation and a
- *    `status` of `idle` or `busy` at its input, and `waiting` under any
- *    dialog (`waitingFor` says which). The file is named by pid, and each
+ *    `status` of `idle`, `busy` or `shell` (idle with background shells or
+ *    monitors running) at its input, and `waiting` under any dialog
+ *    (`waitingFor` says which). The file is named by pid, and each
  *    pod numbers its processes from 1, so claudes in different pods often
  *    get the same pid; a pod therefore has a `sessions/` of its own
  *    (docs/workspace-storage.md). The newest naming the conversation
@@ -549,7 +550,7 @@ function atInputTest(tool: AgentTool, TMUX: string, target: string, conversation
       return 'f=$(ls -t "$CLAUDE_CONFIG_DIR"/sessions/*.json 2>/dev/null | while read -r x; do '
         + `grep -qF "\\"sessionId\\":\\"${conversationId}\\"" "$x" && { echo "$x"; break; }; done); `
         + '[ -n "$f" ] || return 2; case "$(sed -n "s/.*\\"status\\":\\"\\([a-z]*\\)\\".*/\\1/p" "$f")" in '
-        + 'idle|busy) true ;; *) false ;; esac'
+        + 'idle|busy|shell) true ;; *) false ;; esac'
     case 'codex':
       return `case "$(${TMUX} display -p ${target} "#{pane_title}")" in *"Action Required"*) false ;; *) `
         + `[ "$(${TMUX} display -p ${target} "#{cursor_flag}")" = 1 ] ;; esac`
