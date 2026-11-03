@@ -83,7 +83,9 @@ describe('yaac-mama skill', () => {
     expect(body).toContain('yaac-mama routine pause|resume|run|delete <routine>')
     expect(body).toContain('yaac-mama group set-limit "<group>" <limit|none>')
     expect(body).toContain(
-      '# opts: [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T] [--timeout D]')
+      '# opts: [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B | --commit C] [--group G] [--title T] [--timeout D]')
+    expect(body).toContain('yaac-mama create --non-interactive --steps F [--commit C] [--wait]')
+    expect(body).toContain('yaac-mama rerun [--interactive] [--wait] <workspace>')
     expect(body).toContain('yaac-mama list')
     expect(body).toContain('yaac-mama group create "<name>"')
     expect(body).toContain('yaac-mama set-base <branch>')

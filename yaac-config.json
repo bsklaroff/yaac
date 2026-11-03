@@ -1,15 +1,5 @@
 {
   "portForward": [
     { "containerPort": 8787, "hostPortStart": 9787 }
-  ],
-  "initCommands": [
-    "{ [ -z \"${YAAC_SHELL_ENV:-}\" ] || export YAAC_DATA_DIR=\"$PWD/.yaac-dev\" NPM_CONFIG_PREFIX=\"$PWD/.yaac-dev-npm\" npm_config_prefix=\"$PWD/.yaac-dev-npm\" PATH=\"$PWD/.yaac-dev-npm/bin:$PATH\"; }",
-    "pnpm install",
-    "pnpm build",
-    "npm install -g .",
-    "yaac server start",
-    "yaac config git-identity --name 'Yaac Test' --email test@example.com",
-    "yaac auth fake claude-oauth opencode-openrouter pi-openrouter github",
-    "yaac project add https://github.com/bsklaroff/yaac.git fake-github"
   ]
 }

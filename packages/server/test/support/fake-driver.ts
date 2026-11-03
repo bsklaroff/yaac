@@ -42,6 +42,7 @@ export function workspacePathsFixture(
     acpSockDir: '/tmp/yaac-acp',
     sshAgentSock: '/tmp/yaac-ssh-agent.sock',
     acpLogDir: '/home/yaac/.yaac-acp',
+    terminalLogDir: '/home/yaac/.yaac-logs',
     attachmentsDir: '/home/yaac/.yaac-attachments',
     acpdEntry: '/opt/yaac/acpd/main.js',
     ...overrides,

@@ -53,23 +53,38 @@ export interface WorkspaceCreateOptions {
   session?: boolean
   /** A volume of the project to mount (docs/workspace-volumes.md). */
   volume?: string
+  /** A full commit to start at instead of a branch's tip. */
+  commit?: string
+  /** A JSON file of the steps to start with in place of the project's init
+   *  steps; false (`--no-steps`) for none (docs/workspace-steps.md). */
+  steps?: string | false
+  /** Run `steps` untouched, with no session, and stop when they settle. */
+  nonInteractive?: boolean
+  /** With `nonInteractive`: wait for the outcome, exiting non-zero unless
+   *  it succeeded. */
+  wait?: boolean
 }
 
 /**
  * `yaac workspace create`: ask the server to create the workspace, or with
  * `--workspace` to open a session in a running one (docs/sessions.md), then
  * attach the terminal to its session's window, or for an `acp` session
- * point at the web app. `--no-session` starts a workspace with no agent.
+ * point at the web app. `--no-session` starts a workspace with no agent, and
+ * `--non-interactive` one that runs `--steps` untouched and stops
+ * (docs/workspace-steps.md), which `--wait` waits out.
  *
  * Options left unset are omitted so the server fills them from what the
  * project last used, matching the web app's form and the prewarmed spare.
  */
 export async function workspaceCreate(project: string | undefined, options: WorkspaceCreateOptions): Promise<void> {
   const noSession = options.session === false
+  const nonInteractive = options.nonInteractive === true
   if (options.workspace !== undefined) {
     if (project !== undefined) throw new Error('Give a project or --workspace, not both: the workspace names its project.')
     for (const [flag, set] of [['--branch', options.branch], ['--group', options.group], ['--timeout', options.timeout],
-      ['--start-at', options.startAt], ['--start-in', options.startIn], ['--volume', options.volume]] as const) {
+      ['--start-at', options.startAt], ['--start-in', options.startIn], ['--volume', options.volume],
+      ['--commit', options.commit], [options.steps === false ? '--no-steps' : '--steps', options.steps],
+      ['--non-interactive', options.nonInteractive], ['--wait', options.wait]] as const) {
       if (set !== undefined) throw new Error(`${flag} is a workspace's setting, which --workspace (a session in a running one) does not take.`)
     }
     if (noSession) throw new Error('--no-session starts a new workspace; it does not take --workspace.')
@@ -78,12 +93,25 @@ export async function workspaceCreate(project: string | undefined, options: Work
   }
   if (project === undefined) throw new Error('Name the project to create the workspace in, or --workspace to open a session in a running one.')
   if (options.resume !== undefined) throw new Error('--resume needs --workspace: a conversation resumes in the workspace that holds it.')
-  if (noSession) {
-    for (const [flag, set] of [['--tool', options.tool], ['--model', options.model], ['--effort', options.effort],
-      ['--mode', options.mode], ['--permission-mode', options.permissionMode], ['--prompt', options.prompt],
-      ['--prompt-file', options.promptFile], ['--start-at', options.startAt], ['--start-in', options.startIn]] as const) {
-      if (set !== undefined) throw new Error(`--no-session does not take ${flag}: a workspace with no session runs no agent.`)
+  if (options.commit !== undefined && options.branch !== undefined) throw new Error('Give --branch or --commit, not both.')
+  if (noSession && nonInteractive) throw new Error('--non-interactive already starts no session; drop --no-session.')
+  if (noSession || nonInteractive) {
+    const flag = noSession ? '--no-session' : '--non-interactive'
+    const agentOptions: Array<[string, unknown]> = [['--tool', options.tool], ['--model', options.model],
+      ['--effort', options.effort], ['--mode', options.mode], ['--permission-mode', options.permissionMode],
+      ['--prompt', options.prompt], ['--prompt-file', options.promptFile]]
+    // A non-interactive workspace may be scheduled: it needs no prompt.
+    if (noSession) agentOptions.push(['--start-at', options.startAt], ['--start-in', options.startIn])
+    for (const [name, set] of agentOptions) {
+      if (set !== undefined) throw new Error(`${flag} does not take ${name}: a workspace with no session runs no agent.`)
     }
+  }
+  if (nonInteractive && typeof options.steps !== 'string') {
+    throw new Error('--non-interactive runs the steps --steps <file> names; it never runs the project\'s init steps.')
+  }
+  if (options.wait === true && !nonInteractive) throw new Error('--wait goes with --non-interactive: only it ends by itself.')
+  if (options.wait === true && (options.startAt !== undefined || options.startIn !== undefined)) {
+    throw new Error('--wait waits for a workspace started now; a scheduled one starts later.')
   }
   const timeout = options.timeout !== undefined ? durationOption('--timeout', options.timeout) : undefined
   const startIn = options.startIn !== undefined ? durationOption('--start-in', options.startIn) : undefined
@@ -93,23 +121,27 @@ export async function workspaceCreate(project: string | undefined, options: Work
   // Best-effort, so a CLI-only user's workspaces get their zone too, and a
   // `--start-at` is read in it.
   await reportDeviceTimeZone().catch(() => {})
+  const steps = options.steps === undefined ? undefined : options.steps === false ? null : await readSteps(options.steps)
   const settings = {
     project: await resolveProjectId(project),
     tool: options.tool,
     branch: options.branch,
+    commit: options.commit,
     model: options.model,
     effort: options.effort,
     mode: options.mode,
     permissionMode: options.permissionMode,
     group: options.group,
     timeout,
+    ...(steps !== undefined ? { steps } : {}),
+    ...(nonInteractive ? { nonInteractive: true } : {}),
   }
 
   const source = promptSource(options)
   const prompt = source !== undefined ? await readPrompt(source) : options.prompt
 
   if (options.startAt !== undefined || startIn !== undefined) {
-    if (prompt === undefined) throw new Error('A scheduled workspace needs a prompt: nobody is watching it start.')
+    if (prompt === undefined && !nonInteractive) throw new Error('A scheduled workspace needs a prompt: nobody is watching it start.')
     if (options.volume !== undefined) throw new Error('--volume starts a workspace now; a scheduled one cannot take it.')
     const entry = await api.workspace.queue.create.$post({
       json: { ...settings, prompt, startAt: options.startAt, startIn },
@@ -126,8 +158,60 @@ export async function workspaceCreate(project: string | undefined, options: Work
     ...(noSession ? { noSession: true } : {}),
     ...(options.volume !== undefined ? { volume: options.volume } : {}),
   } })
+  if (nonInteractive) {
+    await followNonInteractive(res, { wait: options.wait === true })
+    return
+  }
   // Stdin carried the prompt and has ended, so it cannot drive a terminal.
   await attachStarted(res, { attach: source !== '-' })
+}
+
+/** A `--steps` file's graph, parsed as JSON; the server checks its shape. */
+export async function readSteps(file: string): Promise<unknown> {
+  let text: string
+  try {
+    text = await fs.readFile(file, 'utf8')
+  } catch (err) {
+    throw new Error(`Cannot read the steps from ${file}: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  try {
+    return JSON.parse(text) as unknown
+  } catch (err) {
+    throw new Error(`The steps in ${file} are not JSON: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+/**
+ * Read a non-interactive create's (or rerun's) NDJSON stream, then say how
+ * to follow it, or with `wait` wait for its outcome: it has none to attach
+ * to (docs/workspace-steps.md "Non-interactive workspaces").
+ */
+export async function followNonInteractive(res: Response, { wait }: { wait: boolean }): Promise<void> {
+  const { workspaceId } = await consumeNdjsonStream<{ workspaceId: string }>(res)
+  if (!wait) {
+    console.log(`Non-interactive workspace ${workspaceId} is running its steps — follow them with `
+      + `\`yaac workspace logs ${workspaceId} <step>\`; it stops when they finish.`)
+    return
+  }
+  console.log(`Non-interactive workspace ${workspaceId} is running its steps; waiting for them to finish...`)
+  const outcome = await waitForOutcome(workspaceId)
+  console.log(outcome === 'succeeded' ? 'Its steps succeeded.'
+    : outcome === 'failed' ? `Its steps failed; see \`yaac workspace logs ${workspaceId}\`.`
+    : 'It was stopped before its steps finished.')
+  if (outcome !== 'succeeded') process.exitCode = 1
+}
+
+/** How often `--wait` asks whether a workspace has stopped. */
+const WAIT_POLL_MS = 3_000
+
+/** Once a workspace has stopped, how its steps ended: its outcome, or
+ *  undefined for one stopped before they settled. */
+async function waitForOutcome(workspaceId: string): Promise<string | undefined> {
+  for (;;) {
+    const { entries } = await api.workspace['list-stopped'].$get({ query: { workspace: workspaceId } })
+    if (entries[0] !== undefined) return entries[0].stepsOutcome
+    await new Promise((resolve) => setTimeout(resolve, WAIT_POLL_MS))
+  }
 }
 
 /** `--workspace`: open a session in a running workspace and attach to it. */

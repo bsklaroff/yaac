@@ -381,6 +381,34 @@ says where the setting went. Delete that hint along with the import.
   `grep -l ephemeralModulesPaths ~/.yaac*/global/projects/*/config/yaac-config.json`
   confirms for a given data dir.
 
+## `initCommands` in a project's yaac-config.json
+
+A project's init steps are a column on its row (`projects.initSteps`,
+docs/workspace-steps.md). They used to be the yaac-config.json keys
+`initCommands` and `hideInitPane`, which the config parser now refuses
+(`RETIRED_FIELDS` in `domain/projects/config.ts`, whose message says where
+the setting went). At start, before anything reads the config, the server
+runs `importInitStepsFromConfig` (`#domain/projects`): for each project whose
+file still has either key, it converts `initCommands` to the steps it ran as
+(the string form one `init` step running the list, the object form one step
+per entry with no needs, a name a step may not take renamed `init-<name>`),
+stores them unless the project already has init steps, and rewrites the
+file without both keys. A file that is not JSON, or a value that does not
+convert (an entry with no commands, say), is logged and left for the user
+to fix. The imported steps run in the workspace's `$SHELL` when it is a
+POSIX-family one, as `initCommands` did; a fish user's now run in bash. Delete the `RETIRED_FIELDS` messages
+along with the import.
+
+- **What it reads.** Every project's `yaac-config.json` under its config dir.
+- **What breaks if it goes too early.** Not silent: every create in a
+  project whose file still has the key fails with `unknown field
+  "initCommands"` until someone edits it out, and the commands it held are
+  lost unless they are re-entered as init steps.
+- **When it is safe to remove.** Once every install has started a server
+  with the import at least once. No config file then has either key, which
+  `grep -lE 'initCommands|hideInitPane' ~/.yaac*/global/projects/*/config/yaac-config.json`
+  confirms for a given data dir.
+
 ## A workspace row with no `scratchDirs`
 
 A stop removes the scratch dirs a workspace was started with, recorded on its
@@ -409,7 +437,7 @@ pieces cover it, and both go together:
   stopped:
   `SELECT count(*) FROM workspaces WHERE scratch_dirs IS NULL AND stopped_at IS NULL`
   is zero. A stopped one restarted later without the fallback only keeps its
-  old `node_modules` contents, which its init commands install over.
+  old `node_modules` contents, which its init steps install over.
 
 ## A dead containerless workspace's private HOME
 

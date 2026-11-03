@@ -4,10 +4,12 @@ import { authorizeProject, type Actor } from '#domain/access'
 import { ServerError } from '@yaac/shared/errors'
 import { getDefaultBranch, listTrackedPaths } from '#domain/git'
 import { errorText, serverLog } from '#lib/log'
+import { FULL_COMMIT_PATTERN } from '@yaac/shared/steps'
 
 /**
  * Record which of a starting workspace's scratch dirs git tracks, at its
- * base branch or at its own branch once pushed, as the main clone has them
+ * base branch (or the commit it was created at) or at its own branch once
+ * pushed, as the main clone has them
  * after the start's fetch. Those paths' tracked files show as deleted in the
  * workspace, which the webapp warns about. The server never runs git on the
  * checkout itself, so the workspace's unpushed commits are not seen.
@@ -17,14 +19,16 @@ import { errorText, serverLog } from '#lib/log'
 export async function recordTrackedScratchDirs(
   projectId: string,
   workspaceId: string,
-  baseBranch: string | undefined,
+  base: string | undefined,
   paths: string[],
 ): Promise<void> {
   try {
     const repo = repoDir(projectId)
-    const base = baseBranch ?? await getDefaultBranch(repo)
+    const ref = base !== undefined && FULL_COMMIT_PATTERN.test(base)
+      ? base
+      : `refs/remotes/origin/${base ?? await getDefaultBranch(repo)}`
     const found = new Set([
-      ...await listTrackedPaths(repo, `refs/remotes/origin/${base}`, paths),
+      ...await listTrackedPaths(repo, ref, paths),
       // Absent until the workspace pushes its branch.
       ...await listTrackedPaths(repo, `refs/remotes/origin/agent/${workspaceId}`, paths).catch(() => []),
     ])

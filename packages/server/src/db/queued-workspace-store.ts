@@ -1,3 +1,4 @@
+import type { StepGraph } from '@yaac/shared/steps'
 import { and, asc, eq, inArray, isNull, lte, sql } from 'drizzle-orm'
 import { getDb } from './client'
 import { queuedWorkspaces, routines } from './schema'
@@ -31,13 +32,19 @@ export type QueuedParent = { parentWorkspaceId: string } | { parentQueuedId: str
 /** An entry's settings: what an insert takes and an update replaces. An
  *  absent title, group or effort is stored as null. */
 export interface QueuedWorkspaceSettings {
-  prompt: string
+  /** Absent for a non-interactive entry, which opens no session. */
+  prompt?: string
   tool: AgentTool
   model: string
   mode: AgentMode
   permissionMode: PermissionMode
   effort?: string
-  branch: string
+  /** Exactly one of a branch and a full commit. */
+  branch?: string
+  commit?: string
+  /** Absent runs the project's init steps; `{}` runs none. */
+  steps?: StepGraph
+  nonInteractive?: boolean
   title?: string
   groupId?: string
   /** The launched workspace's timeout (`queued_workspaces.timeoutMinutes`). */
@@ -69,6 +76,11 @@ function parentColumns(parent: QueuedParent): {
 function settingsColumns(s: QueuedWorkspaceSettings): Omit<typeof queuedWorkspaces.$inferInsert, 'projectId'> {
   return {
     ...s,
+    prompt: s.prompt ?? null,
+    branch: s.branch ?? null,
+    commit: s.commit ?? null,
+    steps: s.steps ?? null,
+    nonInteractive: s.nonInteractive === true,
     title: s.title ?? null,
     groupId: s.groupId ?? null,
     effort: s.effort ?? null,
@@ -135,7 +147,7 @@ export async function updateQueuedWorkspace(
       .set({
         ...settingsColumns(settings),
         ...(parent !== undefined ? parentColumns(parent) : {}),
-        ...(self.prompt !== settings.prompt ? { generatedTitle: null } : {}),
+        ...(self.prompt !== (settings.prompt ?? null) ? { generatedTitle: null } : {}),
         // A new start time is a new attempt, so its old failure goes.
         ...(parent != null && 'startAt' in parent ? { launchError: null } : {}),
       })

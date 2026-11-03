@@ -1,4 +1,5 @@
 import { tearingDown, teardownForRestart } from './cleanup'
+import { prepareStart } from './start'
 import { createWorkspace, type WorkspaceCreateResult } from './create'
 import { resolveWorkspaceId } from './resolve'
 import { provision, type ProvisionRun } from './provisioning'
@@ -32,7 +33,9 @@ import { defaultPermissionMode } from '@yaac/shared/types'
  * resuming its conversation, and refuses if one has lost its history
  * (`planSessionResumes`). A conversation an agent started by hand in a
  * terminal, live when the workspace stopped, comes back as a session of its
- * own. Config comes fresh from the project. It attaches the volume it last
+ * own. A checkout that is gone is recreated from its base branch, or with
+ * none, at the commit it was created at. Config comes fresh from the
+ * project. It attaches the volume it last
  * held, refusing with `VOLUME_HELD` if a running workspace has it now.
  */
 export async function prepareRestart(
@@ -57,6 +60,12 @@ export async function prepareRestart(
   }
   const { projectId, workspaceId } = row
   await authorizeProject(principal, projectId)
+  // A restart would reuse a checkout its run may have changed
+  // (docs/workspace-steps.md "Non-interactive workspaces").
+  if (row.nonInteractive) {
+    throw new ServerError('CONFLICT', `workspace ${workspaceId.slice(0, 8)} is non-interactive, so it is rerun `
+      + 'in a new workspace rather than restarted: `yaac workspace rerun`')
+  }
   if (unit && opts.stoppedOnly === true) {
     throw new ServerError('CONFLICT', `workspace ${workspaceId.slice(0, 8)} is running; only a stopped one can be restarted`)
   }
@@ -102,6 +111,7 @@ export async function prepareRestart(
       workspaceId,
       resume: true,
       ...(row.baseBranch !== undefined ? { branch: row.baseBranch } : {}),
+      ...(row.baseBranch === undefined && row.startCommit !== undefined ? { commit: row.startCommit } : {}),
       ...(opts.deadline !== undefined ? { deadline: opts.deadline } : {}),
       ...(volume !== undefined ? { volumeId: volume.id } : {}),
       onProgress,
@@ -136,4 +146,36 @@ export async function terminalConversationSessions(
     conversationId: l.conversationId,
     ...(l.model !== undefined ? { model: l.model } : {}),
   }))
+}
+
+/**
+ * Rerun a non-interactive workspace (docs/workspace-steps.md): a new one
+ * with the same graph at the commit it was created at, linked to it, in its
+ * group. With `interactive`, an interactive workspace there instead, its
+ * graph as the start steps, for reproducing a failure by hand.
+ */
+export async function prepareRerun(
+  principal: Actor,
+  idOrPrefix: string,
+  opts: { workspaceId: string; interactive?: boolean },
+): Promise<ProvisionRun<WorkspaceCreateResult>> {
+  const row = await findWorkspaceRow(await resolveWorkspaceId(idOrPrefix))
+  if (!row) throw new ServerError('NOT_FOUND', `No workspace found matching "${idOrPrefix}"`)
+  await authorizeProject(principal, row.projectId)
+  if (!row.nonInteractive || row.startCommit === undefined) {
+    throw new ServerError('CONFLICT', `workspace ${row.workspaceId.slice(0, 8)} is not a non-interactive workspace to rerun`)
+  }
+  const interactive = opts.interactive === true
+  return await prepareStart(principal, {
+    projectId: row.projectId,
+    workspaceId: opts.workspaceId,
+    commit: row.startCommit,
+    steps: row.startSteps ?? {},
+    noSession: true,
+    ...(interactive ? {} : { nonInteractive: true, rerunOf: row.workspaceId }),
+    ...(row.title !== undefined ? { title: row.title } : {}),
+    ...(row.groupId !== undefined ? { groupId: row.groupId } : {}),
+    rememberDefaults: false,
+    claimSpare: false,
+  })
 }

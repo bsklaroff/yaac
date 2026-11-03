@@ -7,12 +7,15 @@
 #   yaac-mama create [opts] "<prompt>"
 #   yaac-mama create --workspace W [session opts] ["<prompt>"]
 #   yaac-mama create --no-session [--branch B] [--group G] [--title T] [--timeout D]
+#   yaac-mama create --non-interactive --steps F [--branch B | --commit C] [--wait] [opts]
+#   yaac-mama create --workspace W --run CMD [--run CMD]... [--name N] [--needs A,B] [--service [--ready CMD]] [--wait]
 #   yaac-mama queue [--parent-workspace W | --start-at T | --start-in D] [opts] "<prompt>"
 #   yaac-mama edit-queued [--parent-workspace W | --no-parent | --start-at T | --start-in D] [opts] <queued> ["<prompt>"]
 #   yaac-mama run-queued <queued>
 #   yaac-mama delete-queued <queued>
 #     where opts: [--tool T] [--model M] [--effort E] [--permission-mode P]
-#                 [--ui-mode U] [--branch B] [--group G] [--title T] [--timeout D]
+#                 [--ui-mode U] [--branch B | --commit C] [--group G] [--title T] [--timeout D]
+#                 [--steps F | --no-steps] [--non-interactive]
 #   yaac-mama routine create --name N --cron C [--tz Z] [opts] "<prompt>"
 #   yaac-mama routine edit [--name N] [--cron C] [--tz Z] [opts] <routine> ["<prompt>"]
 #   yaac-mama routine pause|resume|run|delete <routine>
@@ -24,6 +27,8 @@
 #   yaac-mama stop [<workspace>]
 #   yaac-mama stop --session [<session>]
 #   yaac-mama restart [--timeout D] [--no-volume] <workspace>
+#   yaac-mama rerun [--interactive] [--wait] <workspace>
+#   yaac-mama status <workspace> [<step>]
 #   yaac-mama group create "<name>"
 #   yaac-mama group move <workspace> ["<group>"]
 #   yaac-mama group set-limit "<group>" <limit|none>
@@ -83,6 +88,12 @@ Usage:
                                                    # running workspace (yours:
                                                    # "$YAAC_WORKSPACE_ID")
   yaac-mama create --no-session [opts]             # a workspace with no agent
+  yaac-mama create --non-interactive --steps <file> [--wait] [opts]
+                                                   # run a step graph untouched
+                                                   # and stop (a CI run)
+  yaac-mama create --workspace <id> --run "<cmd>" [--run "<cmd>"]... [--wait]
+                                                   # run commands as a step in
+                                                   # a running workspace
   yaac-mama queue --parent-workspace <id> [opts] "<prompt>"
                                                    # start one when <id> stops
   yaac-mama queue --group <name> [opts] "<prompt>"
@@ -113,6 +124,9 @@ Usage:
                                                    # workspace keeps running
   yaac-mama restart [--timeout <d>] [--no-volume] <workspace>
                                                    # restart a stopped one
+  yaac-mama rerun [--interactive] [--wait] <workspace>
+                                                   # rerun a non-interactive one
+  yaac-mama status <workspace> [<step>]            # how it, or a step, stands
   yaac-mama group create "<name>"                  # make an empty group
   yaac-mama group move <workspace> ["<group>"]      # omit the group to ungroup
   yaac-mama group set-limit "<group>" <n|none>     # cap how many run at once
@@ -151,6 +165,19 @@ but --title):
                    or acp (a chat pane in the yaac webapp).
   --branch <name>  reference branch on origin for the new workspace. Omitted,
                    the project's default branch.
+  --commit <sha>   start at this full commit (40 hex digits) instead of a
+                   branch's tip; not with --branch. The workspace then has no
+                   base branch until `yaac-mama set-base` gives it one.
+  --steps <file>   a JSON file of the steps to start with, in place of the
+                   project's init steps (docs/workspace-steps.md): steps by
+                   name, each {"run": "<cmd>" or ["<cmd>", ...], "needs":
+                   [...], "service": true, "ready": "<cmd>"}. Only a caller
+                   at bypass may: the commands run as the workspace does.
+  --no-steps       start with no steps at all.
+  --non-interactive
+                   run --steps untouched, with no session or prompt, then
+                   stop: a CI run. Nothing can change it while it runs; it can
+                   only be stopped, and is rerun rather than restarted.
   --group <name>   file the new workspace in this group, creating it if needed.
   --title <title>  the sidebar title; omitted, it is titled from its prompt.
   --prompt-file <path>
@@ -180,6 +207,15 @@ create also takes:
                    instead of a new one; the prompt is then optional.
   --no-session     start a workspace with no agent. It takes no prompt and
                    no agent options.
+  --run <cmd>      with --workspace: add a step running <cmd> (repeat it for
+                   more, run in order in one shell) to that running workspace
+                   instead of a session, with --name <name> (else a fresh
+                   run-… name, printed), --needs <a,b> (its steps that must
+                   succeed first), and --service [--ready <cmd>] for one that
+                   keeps running. Only a caller at bypass may.
+  --wait           with --non-interactive, wait for the outcome and exit
+                   non-zero unless it succeeded; with --run, wait for the step
+                   (a service until ready) and exit with its exit code.
   --volume <name>  mount this project's volume at $YAAC_VOLUME_DIR: storage
                    kept across stops and restarts, which one running
                    workspace at a time may mount (see `yaac-mama volumes`).
@@ -316,6 +352,15 @@ title, group and conversation, so it can be restarted. Stopping YOURSELF
 tears down what this command's own reply travels over, so the confirmation
 may never print — the workspace ending is the confirmation. Do everything that
 must outlive the workspace (commit, push, report) before you run it.
+
+rerun starts a new workspace running a non-interactive one's steps again at
+the commit it ran at, linked to it; --interactive instead starts an
+interactive workspace there with those steps, to reproduce a failure in.
+It prints the new workspace's id; --wait as create's.
+
+status prints how a workspace stands (running, stopped, or a non-interactive
+one's outcome: succeeded or failed) or, naming a step, the step's state and
+then, once it exited, its exit code.
 
 restart brings a stopped workspace back under its id, resuming each of its
 sessions in its recorded permission mode, and each agent it ran by hand in a
@@ -465,6 +510,23 @@ run() {
   ask "$@"
   printf '%s\n' "$text"
   exit 0
+}
+
+# Poll `status` until the workspace or step $2 of workspace $1 settles (a
+# service until it is ready), print where it ended on stderr, and exit as it
+# did: a step with its exit code, a workspace 0 only if it succeeded.
+wait_status() {
+  while :; do
+    ask status '' workspace "$1" step "$2"
+    state=$(printf '%s\n' "$text" | head -n 1)
+    case "$state" in running|pending) sleep 5 ;; *) break ;; esac
+  done
+  printf '%s\n' "$state" >&2
+  case "$state" in
+    succeeded|ready) exit 0 ;;
+    failed) code=$(printf '%s\n' "$text" | sed -n 2p); [ "${code:-0}" != 0 ] || code=1; exit "$code" ;;
+    *) exit 1 ;;
+  esac
 }
 
 # Run one command whose answer is a file, into $tmp/body, with the id of the
@@ -667,16 +729,28 @@ EOF
     cmd=$1; shift
     tool=""; model=""; effort=""; perm=""; ui_mode=""; branch=""; group=""; title=""; parent=""; no_parent=""; prompt_file=""
     timeout=""; start_at=""; start_in=""; routine_name=""; cron=""; tz=""; target=""; resume=""; no_session=""; volume=""
+    commit=""; steps=""; no_steps=""; non_interactive=""; wait=""; run_json=""; step_name=""; needs=""; service=""; ready=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --no-parent) no_parent=1; shift; continue ;;
         --no-session) no_session=1; shift; continue ;;
-        --tool|--model|--effort|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace|--prompt-file|--timeout|--start-at|--start-in|--name|--cron|--tz|--workspace|--resume|--volume)
+        --no-steps) no_steps=1; shift; continue ;;
+        --non-interactive) non_interactive=1; shift; continue ;;
+        --wait) wait=1; shift; continue ;;
+        --service) service=1; shift; continue ;;
+        --tool|--model|--effort|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace|--prompt-file|--timeout|--start-at|--start-in|--name|--cron|--tz|--workspace|--resume|--volume|--commit|--steps|--run|--needs|--ready)
           [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a value" >&2; exit 2; } ;;
         *) break ;;
       esac
       case "$1" in
-        --name) routine_name=$2 ;;
+        --commit) commit=$2 ;;
+        --steps)
+          [ -r "$2" ] || { echo "yaac-mama: cannot read the steps from $2" >&2; exit 2; }
+          steps=$(cat -- "$2") ;;
+        --run) run_json="${run_json:+$run_json,}$(printf '%s' "$2" | json_string)" ;;
+        --needs) needs=$2 ;;
+        --ready) ready=$2 ;;
+        --name) routine_name=$2; step_name=$2 ;;
         --cron) cron=$2 ;;
         --tz) tz=$2 ;;
         --prompt-file) prompt_file=$2 ;;
@@ -698,8 +772,22 @@ EOF
       esac
       shift 2
     done
-    if [ "$cmd" != create ] && { [ -n "$target" ] || [ -n "$resume" ] || [ -n "$no_session" ] || [ -n "$volume" ]; }; then
-      echo "yaac-mama: --workspace, --resume, --no-session and --volume are create's" >&2
+    if [ "$cmd" != create ] && { [ -n "$target" ] || [ -n "$resume" ] || [ -n "$no_session" ] || [ -n "$volume" ] \
+      || [ -n "$wait" ] || [ -n "$run_json" ]; }; then
+      echo "yaac-mama: --workspace, --resume, --no-session, --volume, --run and --wait are create's" >&2
+      exit 2
+    fi
+    if [ -n "$run_json" ]; then
+      # A step in a running workspace: the commands go as one JSON list.
+      [ -n "$target" ] || { echo 'yaac-mama: --run needs --workspace' >&2; exit 2; }
+      [ $# -eq 0 ] || { echo 'yaac-mama: --run takes no prompt' >&2; exit 2; }
+      ask create '' workspace "$target" run "[$run_json]" name "$step_name" needs "$needs" service "$service" ready "$ready"
+      printf '%s\n' "$text"
+      [ -z "$wait" ] || wait_status "$target" "$text"
+      exit 0
+    fi
+    if [ -n "$wait" ] && [ -z "$non_interactive" ]; then
+      echo 'yaac-mama: --wait goes with --non-interactive or --run' >&2
       exit 2
     fi
     opts='[--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T] [--timeout D]'
@@ -737,7 +825,7 @@ EOF
         # A workspace with no session takes no prompt, and a resumed
         # conversation needs none.
         if [ -n "$prompt_file" ] && [ $# -eq 0 ]; then :
-        elif { [ -n "$no_session" ] || [ -n "$resume" ]; } && [ $# -eq 0 ]; then :
+        elif { [ -n "$no_session" ] || [ -n "$non_interactive" ] || [ -n "$resume" ]; } && [ $# -eq 0 ]; then :
         elif [ $# -ne 1 ] || [ -z "$1" ]; then
           echo "usage: yaac-mama $use \"<prompt>\" | - | --prompt-file F" >&2
           exit 2
@@ -750,7 +838,12 @@ EOF
       tool "$tool" model "$model" effort "$effort" permission-mode "$perm" ui-mode "$ui_mode" branch "$branch" \
       group "$group" title "$title" timeout "$timeout" start-at "$start_at" start-in "$start_in" \
       name "$routine_name" cron "$cron" tz "$tz" workspace "$target" resume "$resume" no-session "$no_session" \
-      volume "$volume"
+      volume "$volume" commit "$commit" steps "$steps" no-steps "$no_steps" non-interactive "$non_interactive"
+    if [ -n "$wait" ]; then
+      ask "$@"
+      printf '%s\n' "$text"
+      wait_status "$text" ''
+    fi
     case "$cmd" in queue|routine-create) ;; *) run "$@" ;; esac
     # The new id alone on stdout, for `id=$(yaac-mama queue …)`; any note
     # the server adds after it goes to stderr.
@@ -859,6 +952,36 @@ EOF
     run restart '' workspace "$1" timeout "$timeout" no-volume "$no_volume"
     ;;
 
+  rerun)
+    shift
+    interactive=""; wait=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --interactive) interactive=1; shift ;;
+        --wait) wait=1; shift ;;
+        *) break ;;
+      esac
+    done
+    if [ $# -ne 1 ] || [ -z "$1" ]; then
+      echo 'usage: yaac-mama rerun [--interactive] [--wait] <workspace>' >&2
+      exit 2
+    fi
+    [ -z "$wait" ] || [ -z "$interactive" ] || { echo 'yaac-mama: --wait goes with a non-interactive rerun' >&2; exit 2; }
+    ask rerun '' workspace "$1" interactive "$interactive"
+    printf '%s\n' "$text"
+    [ -z "$wait" ] || wait_status "$text" ''
+    exit 0
+    ;;
+
+  status)
+    shift
+    if [ $# -lt 1 ] || [ $# -gt 2 ] || [ -z "$1" ]; then
+      echo 'usage: yaac-mama status <workspace> [<step>]' >&2
+      exit 2
+    fi
+    run status '' workspace "$1" step "${2:-}"
+    ;;
+
   run-queued|delete-queued|routine-pause|routine-resume|routine-run|routine-delete)
     cmd=$1; shift
     case "$cmd" in routine-*) noun=routine ;; *) noun=queued ;; esac
@@ -906,7 +1029,7 @@ EOF
     ;;
 
   *)
-    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, run-queued, delete-queued, routine, send, rename, stop, restart, group, models, volumes, fetch, history)" >&2
+    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, run-queued, delete-queued, routine, send, rename, stop, restart, rerun, status, group, models, volumes, fetch, history)" >&2
     echo 'run "yaac-mama --help" for usage' >&2
     exit 2
     ;;

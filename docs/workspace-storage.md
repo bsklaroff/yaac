@@ -134,6 +134,17 @@ current life began (`lifeStartedAt`) is overwritten, so a restart whose
 clear of it was lost does not leave the old date for retention to age the
 workspace by.
 
+### Terminal logs
+
+A workspace's terminal logs, `logs/<workspaceId>/` under its project dir,
+hold what every window but a session's printed, one dir per life
+(docs/workspace-steps.md "Logs"). They are kept for every life until the
+workspace is deleted, and nothing else bounds them: rotation caps each
+window of each life, but not how many lives or windows there are. Deleting
+the workspace, or the retention below, is the only cleanup. A shell's log
+holds whatever it printed, which under containerless can be the user's real
+credentials.
+
 ### Retention
 
 A project's owner can have its stopped workspaces deleted once they have
@@ -578,14 +589,14 @@ never prunes it.
 
 Under k8s every pod of a project mounts read-write its tool homes (`claude/`,
 `codex/`, `pi/`, `opencode-config/`), its conversation records
-(`acp/<workspaceId>/`), its history (`history/<workspaceId>/…`) and the
-checkout. Anything below a mount root may be a link or a FIFO the pod planted.
+(`acp/<workspaceId>/`), its terminal logs (`logs/<workspaceId>/`), its history
+(`history/<workspaceId>/…`) and the checkout. Anything below a mount root may be a link or a FIFO the pod planted.
 The server never touches these trees with plain path I/O. It opens them as a
 confined root (`#lib/confined-fs`), which checks each path step on an open
 descriptor, opens leaves non-blocking, caps reads, writes through a random temp
 file plus rename, and deletes by walking descriptors.
 
-- **Tool homes and records** are opened with `openAgentDir`
+- **Tool homes, records and terminal logs** are opened with `openAgentDir`
   (`#lib/confined-fs`). Under a sandboxing runtime this is `no-links`, rooted at
   the dir itself (a mount root the pod cannot replace): a link or FIFO in place
   of a file reads as missing, and a write replaces it instead of following it.
@@ -678,7 +689,7 @@ on every backend:
 
 A stop removes the checkout's gitignored files, so a stopped workspace does
 not hold build output and caches (`target/`, `.next/`, `dist/`) until it is
-deleted. The restart's init commands rebuild them. Untracked files that are
+deleted. The restart's init steps rebuild them. Untracked files that are
 not ignored stay, as does everything tracked. The rules are the repository's
 own: every `.gitignore` in the tree and `.git/info/exclude`, applied by
 `git clean -fdX`. A global excludes file does not count.
@@ -778,7 +789,7 @@ live and die with its runtime, not in the shared checkout. `prepareScratchDirs`
 creates each one in the checkout and passes them to the driver as the spec's
 `scratchDirs`. A stop removes the ones the workspace started with from the
 checkout, files git tracks in them included (docs/project-config.md "Scratch
-directories"), and a restart's init commands rebuild them.
+directories"), and a restart's init steps rebuild them.
 
 ### Under k8s
 

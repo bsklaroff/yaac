@@ -2,6 +2,7 @@ import {
   CONTAINER_ACP_DIR,
   CONTAINER_ACP_LOG_DIR,
   CONTAINER_ATTACHMENTS_DIR,
+  CONTAINER_TERMINAL_LOG_DIR,
   CONTAINER_TMUX_SOCK,
 } from '@yaac/shared/paths'
 import type { WorkspacePaths } from '#drivers/contract'
@@ -24,6 +25,7 @@ export function k8sWorkspacePaths(): WorkspacePaths {
     // from the egress proxy's forwarded agent.
     sshAgentSock: '/run/yaac/ssh-agent.sock',
     acpLogDir: CONTAINER_ACP_LOG_DIR,
+    terminalLogDir: CONTAINER_TERMINAL_LOG_DIR,
     attachmentsDir: CONTAINER_ATTACHMENTS_DIR,
     acpdEntry: '/opt/yaac/acpd/main.js',
   }

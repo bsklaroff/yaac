@@ -12,7 +12,7 @@ const DEFAULT_ROWS = 24
 /**
  * What a terminal attaches to inside the workspace:
  *  - 'session:<name>' a `tui` session's window, by its name, and
- *  - 'window:@<id>'   any other window (an initCommands dev server, a
+ *  - 'window:@<id>'   any other window (a step's dev server, a
  *    scratch shell, …): the webapp's terminals, served by the pane mirror
  *    (`pane-mirror.ts`).
  *  - 'native'         the CLI's full attach: a per-client grouped session

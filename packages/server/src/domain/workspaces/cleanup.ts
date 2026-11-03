@@ -16,6 +16,7 @@ import {
 } from '#runtime/status'
 import {
   acpLogDir,
+  terminalLogDir,
   getProjectsDir,
   globalProjectPath,
   opencodeCheckpointDir,
@@ -80,7 +81,7 @@ export function tearingDown(workspaceId: string): boolean {
  * runtime was started with, never the project's list as it is now. Under
  * containerless they hold the real contents; under a pod they are mount
  * points, holding whatever git checked out beneath them. Files git tracks
- * go too: they stay in its history. The restart's init commands rebuild
+ * go too: they stay in its history. The restart's init steps rebuild
  * the rest.
  *
  * Symlinks, and paths reached through a symlink leading out of the
@@ -243,6 +244,7 @@ export async function deleteWorkspaceState(
   const outcomes = await Promise.all([
     fs.rm(opencodeCheckpointDir(projectId, workspaceId), { recursive: true, force: true }),
     fs.rm(acpLogDir(projectId, workspaceId), { recursive: true, force: true }),
+    fs.rm(terminalLogDir(projectId, workspaceId), { recursive: true, force: true }),
     removeAgentHistory(projectId, workspaceId),
   ].map(removed))
   return outcomes.every(Boolean)

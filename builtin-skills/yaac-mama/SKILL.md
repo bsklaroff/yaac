@@ -17,12 +17,15 @@ yaac-mama create [opts] "<prompt>"
 yaac-mama create --volume V [opts] "<prompt>"         # mounting one of the project's volumes
 yaac-mama create --workspace W [session opts] ["<prompt>"]  # another session in a running workspace
 yaac-mama create --no-session [--branch B] [--group G] [--title T] [--timeout D]
+yaac-mama create --non-interactive --steps F [--commit C] [--wait]  # a CI run: steps alone, then stop
+yaac-mama create --workspace W --run CMD [--run CMD]... [--name N] [--needs A,B] [--service [--ready CMD]] [--wait]
 yaac-mama queue [--parent-workspace W] [opts] "<prompt>"
 yaac-mama queue (--start-at T | --start-in D) [opts] "<prompt>"
 yaac-mama edit-queued [--parent-workspace W | --no-parent | --start-at T | --start-in D] [opts] <queued> ["<prompt>"]
 yaac-mama run-queued <queued>                       # start a queued one now
 yaac-mama delete-queued <queued>                    # discard a queued one
-  # opts: [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T] [--timeout D]
+  # opts: [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B | --commit C] [--group G] [--title T] [--timeout D]
+  #       [--steps F | --no-steps] [--non-interactive]
 yaac-mama routine create --name N --cron C [--tz Z] [opts] "<prompt>"
 yaac-mama routine edit [--name N] [--cron C] [--tz Z] [opts] <routine> ["<prompt>"]
 yaac-mama routine pause|resume|run|delete <routine>
@@ -35,6 +38,8 @@ yaac-mama stop [<workspace>]                        # omit the workspace to stop
 yaac-mama stop --session [<session>]                # close one session; omit it to close your own
 yaac-mama restart [--timeout D] <workspace>         # a stopped one, resumed
 yaac-mama restart --no-volume [--timeout D] <workspace>  # resumed without the volume it held
+yaac-mama rerun [--interactive] [--wait] <workspace>  # a non-interactive one, again at its commit
+yaac-mama status <workspace> [<step>]               # how it, or one of its steps, stands
 yaac-mama group create "<name>"
 yaac-mama group move <workspace> ["<group>"]       # omit the group to ungroup
 yaac-mama group set-limit "<group>" <limit|none>   # cap how many run at once
@@ -119,6 +124,29 @@ pass — the server resolves who is calling and answers for that project only.
     separate parts of the work.
   - **`--no-session`** starts a workspace with **no agent**, which takes no
     prompt and no agent options.
+  - **`--steps <file>`** starts it with the steps that JSON file names in
+    place of the project's init steps (docs/workspace-steps.md): steps by
+    name, each `{"run": "<cmd>" or [...], "needs": [...], "service": true,
+    "ready": "<cmd>"}`; **`--no-steps`** with none. **`--commit <sha>`**
+    starts it at that full commit instead of a branch's tip, with no base
+    branch until `set-base` gives it one.
+  - **`--non-interactive --steps <file>`** is a CI run: it runs the steps
+    untouched, with no session or prompt, records whether they all
+    succeeded, and stops. Nothing can change it while it runs (no session,
+    step, terminal or file write), only stop it; it is rerun, never
+    restarted (**`rerun <workspace>`**, or **`rerun --interactive`** for a
+    workspace to reproduce a failure in). **`--wait`** blocks until it ends
+    and exits non-zero unless it succeeded.
+  - **`--workspace <id> --run "<cmd>"`** (repeat `--run` for more commands,
+    run in order in one shell) adds a **step** to that running workspace, your
+    own included, instead of a session: its output is logged, and the
+    webapp shows it. `--needs a,b` waits for those steps; `--service`
+    `[--ready <cmd>]` makes it a long-running one. It prints the step's name
+    (`--name`, else `run-…`); **`--wait`** blocks until it ends (a service
+    until ready) and exits with its exit code. `status <workspace> <step>`
+    reads where one stands.
+  - Commands you hand a workspace this way (`--steps`, `--run`) run as the
+    workspace does, so they need you to be at `bypass`.
 
   Prints the new workspace's id on stdout
   and exits 0, so `id=$(yaac-mama create "…")` works.

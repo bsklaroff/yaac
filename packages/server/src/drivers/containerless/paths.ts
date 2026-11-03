@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { PACKAGE_ROOT, installTmpDir } from '@yaac/shared/paths'
 import {
   acpLogDir,
+  terminalLogDir,
   workspaceAttachmentsDir,
   workspaceDir,
   workspaceStateDir,
@@ -119,6 +120,7 @@ export function containerlessWorkspacePaths(jobName: string): WorkspacePaths {
     // The shared project location the layers above read, which also
     // survives stop.
     acpLogDir: acpLogDir(projectId, workspaceId),
+    terminalLogDir: terminalLogDir(projectId, workspaceId),
     attachmentsDir: workspaceAttachmentsDir(projectId, workspaceId),
     acpdEntry: acpdEntry(),
   }

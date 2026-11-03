@@ -7,7 +7,7 @@
  * `workspace-bin/yaac-workspace-init`; only steps needing host coordination
  * are here.
  */
-import { initWindowCommand, tmuxCmd, windowTarget, type InitWindow } from './agent-command'
+import { tmuxCmd, windowTarget } from './agent-command'
 import { nameSessionCommand } from './agent-tools'
 import { KEEPER_STARTING, KEEPER_WINDOW, type WorkspacePaths } from '#drivers/contract'
 import type { AgentTool } from '@yaac/shared/types'
@@ -40,7 +40,7 @@ export function buildRespawnExec(spec: SessionWindowSpec, paths: WorkspacePaths)
 }
 
 /**
- * Create the init-command windows and the sessions' windows, in one exec.
+ * Create the sessions' windows, in one exec; the empty string for none.
  *
  * Each session's window keeps its pane when the agent exits
  * (`remain-on-exit`), so an agent that quits or crashes leaves its session
@@ -48,17 +48,12 @@ export function buildRespawnExec(spec: SessionWindowSpec, paths: WorkspacePaths)
  * is current, and `-c` matters because a new window otherwise starts in this
  * exec's cwd (`/` in a pod), and an agent resumed from the wrong directory
  * looks up the wrong project.
- *
- * Init windows and sessions may be built apart: with no sessions this opens
- * only the init windows, and with neither it is the empty string.
  */
 export function buildWindowsExec(
-  windows: InitWindow[],
   sessions: SessionWindowSpec[],
   paths: WorkspacePaths,
 ): string {
-  const windowCmds = windows.map((win) => initWindowCommand(win, paths))
-  if (sessions.length === 0) return windowCmds.join(' && ')
+  if (sessions.length === 0) return ''
   // One tmux invocation for all session windows: tmux runs a client's
   // command group to completion, so the watcher sees all of them or none.
   const sessionCmds = sessions.map((spec) => {
@@ -67,5 +62,5 @@ export function buildWindowsExec(
       + ` \\; set-option -t ${target} remain-on-exit on`
       + (spec.resumes !== undefined ? ` \\; ${nameSessionCommand(target, spec.tool, spec.resumes)}` : '')
   })
-  return [...windowCmds, `${tmuxCmd(paths)} ${sessionCmds.join(' \\; ')}`].join(' && ')
+  return `${tmuxCmd(paths)} ${sessionCmds.join(' \\; ')}`
 }

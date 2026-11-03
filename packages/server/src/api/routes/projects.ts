@@ -25,6 +25,7 @@ import {
   resolveProjectId,
   serveHostedRepo,
   setDefaultBranchGuard,
+  setInitSteps,
   setKeptIgnoredPaths,
   setScratchDirs,
   scratchDirSettingsPatchSchema,
@@ -133,6 +134,16 @@ export const projectApp = new Hono<IdentityEnv>()
       const paths = await setKeptIgnoredPaths(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.valid('json').paths)
       return c.json({ paths })
     },
+  )
+  // The steps every workspace runs at start unless its create brings its
+  // own (docs/workspace-steps.md). The current graph is in the project
+  // summary.
+  .put(
+    '/:projectId/init-steps',
+    zv('json', z.object({ steps: z.unknown() })),
+    async (c) => c.json({
+      steps: await setInitSteps(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.valid('json').steps),
+    }),
   )
   // Which dirs live with a workspace's runtime rather than its checkout, with
   // their caps, and which of them git tracks without the user wanting a

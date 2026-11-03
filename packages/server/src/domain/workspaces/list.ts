@@ -4,6 +4,7 @@ import {
   getProjectWorkspaceRows,
   conversationTitle,
   listOpenSessionsFor,
+  listStepsFor,
   openingPrompt,
   routineRunWorkspaces,
   type ConversationLinkRow,
@@ -12,6 +13,7 @@ import {
 } from '#db'
 import { listedStatus, toConversationEntry, toSessionEntry } from './conversation-entry'
 import { HELD_PROMPT_GRACE_MS } from './conversation-registry'
+import { toStepEntry } from './steps'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
@@ -115,12 +117,15 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
     (w.projectId && w.workspaceId
       ? agentsByProject.get(w.projectId)?.get(w.workspaceId)
       : undefined) ?? []
-  const sessionsByWorkspace = await listOpenSessionsFor(report.workspaces.map((w) => w.workspaceId).filter((v) => !!v))
+  const ids = report.workspaces.map((w) => w.workspaceId).filter((v) => !!v)
+  const [sessionsByWorkspace, stepsByWorkspace] = await Promise.all([listOpenSessionsFor(ids), listStepsFor(ids)])
 
   const workspaces = report.workspaces.map((w): WorkspaceListEntry => {
     const row = rowFor(w)
     const links = agentsFor(w)
     const sessions = sessionsByWorkspace.get(w.workspaceId) ?? []
+    const life = row?.lifeStartedAt?.getTime()
+    const steps = (stepsByWorkspace.get(w.workspaceId) ?? []).filter((s) => s.life.getTime() === life)
     const base = {
       workspaceId: w.workspaceId,
       projectId: w.projectId,
@@ -132,6 +137,8 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       conversations: links.map(toConversationEntry),
       ...(row?.deadline !== undefined ? { deadline: row.deadline.toISOString() } : {}),
       ...(routineRuns.has(w.workspaceId) ? { routineId: routineRuns.get(w.workspaceId) } : {}),
+      ...(row?.nonInteractive === true ? { nonInteractive: true as const } : {}),
+      ...(row?.startCommit !== undefined ? { startCommit: row.startCommit } : {}),
     }
     if (w.phase === 'terminating') {
       // Non-interactive placeholder: no ports, and `running` so no attention
@@ -161,7 +168,8 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       ...base,
       ...workspaceStatus(entries, w, starting.size > 0),
       sessions: entries,
-      ...(w.windows !== undefined ? { terminals: terminalsOf(w.windows, sessions) } : {}),
+      ...(w.windows !== undefined ? { terminals: terminalsOf(w.windows, sessions, steps.map((s) => s.name)) } : {}),
+      ...(steps.length > 0 ? { steps: steps.map((s) => toStepEntry(s, w.windows)) } : {}),
       blockedHosts: w.blockedHosts,
       forwardedPorts: w.forwardedPorts,
       unforwardedPorts: w.unforwardedPorts,
@@ -203,10 +211,10 @@ function workspaceStatus(
   return { status: 'waiting', ...(spells.length > 0 ? { waitingSinceMs: Math.min(...spells) } : {}) }
 }
 
-/** The windows the webapp opens as terminals: all but the keeper and the
- *  sessions'. */
-function terminalsOf(windows: WorkspaceWindow[], sessions: SessionRow[]): WorkspaceTerminalEntry[] {
-  const taken = new Set([KEEPER_WINDOW, KEEPER_STARTING, ...sessions.map((s) => s.window)])
+/** The windows the webapp opens as terminals: all but the keeper, the
+ *  sessions' and the steps', which the webapp lists apart. */
+function terminalsOf(windows: WorkspaceWindow[], sessions: SessionRow[], steps: string[]): WorkspaceTerminalEntry[] {
+  const taken = new Set([KEEPER_WINDOW, KEEPER_STARTING, ...sessions.map((s) => s.window), ...steps])
   return windows.filter((w) => !taken.has(w.name)).map((w) => ({ target: `window:${w.id}`, name: w.name }))
 }
 

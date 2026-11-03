@@ -10,22 +10,10 @@ Both are stored on the server, so this works against a remote server too.
 ```json
 {
   "cacheVolumes": { "pip-cache": "/home/yaac/.cache/pip" },
-  "initCommands": ["pnpm install"],
-  "portForward": [{ "containerPort": 3000, "hostPortStart": 3000 }],
-  "hideInitPane": false
+  "portForward": [{ "containerPort": 3000, "hostPortStart": 3000 }]
 }
 ```
 
-- **initCommands:** commands run in every workspace after it starts. Two forms,
-  which can't be mixed:
-  - A list of strings, chained with `&&` in one tmux window named `init`.
-  - A list of `{ "name", "commands", "hidePane"? }` objects, each in its own
-    tmux window, so several long-running processes (a backend and a frontend
-    dev server, say) run side by side. Windows run independently, so repeat
-    shared setup such as `pnpm install` in each. Names must not be an agent
-    tool's name, `init` or `yaac`.
-- **hideInitPane:** close init windows when their commands finish (default
-  `false`, which keeps them open to inspect the output).
 - **portForward:** ports to forward from every workspace. Each entry maps a
   `containerPort` to a host port chosen from `hostPortStart` up. The ports are
   bound on a client, by the desktop app or `yaac forward`
@@ -54,6 +42,16 @@ every create while it is there, rather than ignoring a misspelt key.
 There is no way to mount a host directory into a workspace, since a client on
 another machine can't name a path on the server. Use `cacheVolumes`, or bake
 the files into the image.
+
+## Init steps
+
+What every workspace runs when it starts (install, build, start the dev
+server) is the project's init steps: a graph of named steps, each a list of
+commands run in a tmux window of its own after the steps it `needs`, with
+long-running ones as services. They are a project setting stored on the
+server rather than a `yaac-config.json` key: edit them under Settings →
+Project Config → Init steps, or with `yaac config init-steps <project>
+--file <path>`. See [workspace-steps.md](workspace-steps.md).
 
 ## Scratch directories
 

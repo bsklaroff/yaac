@@ -12,6 +12,7 @@ import type { SessionEntry, WorkspaceListEntry } from '@yaac/shared/types'
 import { isChangesTarget, isFilesTarget, isFileTarget } from './files'
 import { addColumn, paneTargets, removeTarget, type PaneLayout } from './layout'
 import { isPreviewTarget } from './preview'
+import { isStepTarget } from './steps'
 
 const SESSION_PREFIX = 'session:'
 
@@ -38,10 +39,13 @@ export function paneSession(workspace: WorkspaceListEntry | undefined, target: s
 
 /**
  * Panes the webapp keeps on its own: left out of the window sync and closed
- * without asking (a file pane saves first, and asks only if that fails).
+ * without asking (a file pane saves first, and asks only if that fails). A
+ * step's pane is one: it opens only when the user picks the step, and stays
+ * when the step finishes, showing its log.
  */
 export function isSpecialPane(target: string): boolean {
   return isPreviewTarget(target) || isFilesTarget(target) || isChangesTarget(target) || isFileTarget(target)
+    || isStepTarget(target)
 }
 
 /** The workspace's open sessions, as pane targets. */
@@ -70,7 +74,7 @@ export function paneStillLive(workspace: WorkspaceListEntry, target: string): bo
 
 /**
  * Keep one pane per open session and live tmux window: new ones (a session
- * another client opened, init commands, scratch shells) are appended as
+ * another client opened, scratch shells) are appended as
  * columns, and gone ones are removed, including closes and kills by
  * another client and stale targets restored from localStorage. The webapp's
  * own panes and the user's arrangement are kept.

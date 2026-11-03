@@ -1,4 +1,4 @@
-import { fetchOrigin, maintainRepo } from '#domain/git'
+import { fetchCommit, fetchOrigin, maintainRepo } from '#domain/git'
 import { workspaceDriver } from '#drivers/driver'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { serverLog } from '#lib/log'
@@ -57,6 +57,12 @@ export async function fetchProjectOrigin(projectId: string, opts: { unlessWithin
     }, () => { /* the caller sees it */ })
   }
   await fetched
+}
+
+/** Make sure a project's main clone has a commit, fetching it from origin
+ *  by id if it does not (`fetchCommit`). */
+export async function fetchProjectCommit(projectId: string, sha: string): Promise<void> {
+  await fetchCommit(repoDir(projectId), await projectFetchUrl(projectId), await resolveProjectCredential(projectId), sha)
 }
 
 /**

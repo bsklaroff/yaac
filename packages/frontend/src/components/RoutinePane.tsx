@@ -90,16 +90,18 @@ export function RoutinePane({ routine, bar }: {
             <Fact label="UI">{routine.mode === 'acp' ? 'Chat' : 'Terminal'}</Fact>
             <Fact label="Permissions">{PERMISSION_MODE_COPY[routine.permissionMode]}</Fact>
             {routine.effort !== undefined && <Fact label="Effort">{effortLabel(routine.effort)}</Fact>}
-            <Fact label="Base branch">{routine.branch}</Fact>
+            {routine.commit !== undefined
+              ? <Fact label="Commit"><span className="font-mono">{routine.commit.slice(0, 12)}</span></Fact>
+              : <Fact label="Base branch">{routine.branch}</Fact>}
             <Fact label="Group">{group?.name ?? 'None'}</Fact>
             <Fact label="Stops">
               {routine.timeoutMinutes !== undefined ? `after ${formatDuration(routine.timeoutMinutes)}` : 'at the next run'}
             </Fact>
           </dl>
           <p className={clsx('mt-2 whitespace-pre-wrap break-words text-text-dim', !promptOpen && 'line-clamp-4')}>
-            {routine.prompt}
+            {routine.prompt ?? '(non-interactive)'}
           </p>
-          {routine.prompt.split('\n').length > 4 || routine.prompt.length > 300 ? (
+          {(routine.prompt ?? '').split('\n').length > 4 || (routine.prompt ?? '').length > 300 ? (
             <button type="button" onClick={() => setPromptOpen(!promptOpen)} className="self-start text-text-faint underline hover:text-text-dim">
               {promptOpen ? 'Show less' : 'Show all'}
             </button>

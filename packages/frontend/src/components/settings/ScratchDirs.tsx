@@ -76,7 +76,7 @@ export function ScratchDirs({ projectId, settings, readOnly }: {
       <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
         Directories of installed packages and build output, relative to the checkout. Each
         workspace keeps its own, off the shared checkout, and they are emptied when it stops;
-        its init commands rebuild them. Under k8s each holds at most its cap, {DEFAULT_SCRATCH_DIR_GIB} GiB
+        its init steps rebuild them. Under k8s each holds at most its cap, {DEFAULT_SCRATCH_DIR_GIB} GiB
         unless set, and a write past it fails. Applies to workspaces started after saving.
       </p>
 

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 /**
  * Runs in-workspace `yaac-mama` commands. Both ways in (the k8s proxy relay
  * and the containerless route) end here, so `MAMA_COMMANDS` is enforced for
@@ -46,6 +47,9 @@ import {
   updateRoutine,
 } from './routines'
 import { stopWorkspace } from './stop'
+import { prepareRerun } from './restart'
+import { serverLog } from '#lib/log'
+import { addSteps } from './steps'
 import { closeSession } from './sessions'
 import {
   getProjectRow,
@@ -56,6 +60,7 @@ import {
   listQueuedWorkspaceRows,
   listWorkspaceConversations,
   listWorkspaceSessions,
+  listWorkspaceSteps,
   setWorkspaceTitle,
   type QueuedWorkspaceRow,
 } from '#db'
@@ -202,7 +207,13 @@ const STOPPED_PAGE_DEFAULT = 25
 const STOPPED_PAGE_MAX = 200
 
 /** The options every command that makes a workspace takes. */
-const CREATE_ARGS = ['tool', 'model', 'effort', 'permission-mode', 'ui-mode', 'branch', 'group', 'title', 'timeout'] as const
+const CREATE_ARGS = [
+  'tool', 'model', 'effort', 'permission-mode', 'ui-mode', 'branch', 'commit', 'group', 'title', 'timeout',
+  'steps', 'no-steps', 'non-interactive',
+] as const
+
+/** What `create --workspace` takes to add a step rather than a session. */
+const STEP_ARGS = ['run', 'name', 'needs', 'service', 'ready'] as const
 
 /** The options a routine write takes. Its runs are titled from its name. */
 const ROUTINE_ARGS = ['name', 'cron', 'tz', ...CREATE_ARGS.filter((a) => a !== 'title')]
@@ -214,7 +225,9 @@ const ROUTINE_ARGS = ['name', 'cron', 'tz', ...CREATE_ARGS.filter((a) => a !== '
  */
 const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   list: ['stopped', ...STOPPED_ARGS],
-  create: [...CREATE_ARGS, 'workspace', 'no-session', 'resume', 'volume'],
+  create: [...CREATE_ARGS, ...STEP_ARGS, 'workspace', 'no-session', 'resume', 'volume'],
+  rerun: ['workspace', 'interactive'],
+  status: ['workspace', 'step'],
   rename: ['workspace'],
   'set-base': [],
   stop: ['workspace', 'session'],
@@ -270,6 +283,8 @@ export async function runMamaCommand(
     switch (command) {
       case 'list': return await runList(caller, request)
       case 'create': return await runCreate(caller, request)
+      case 'rerun': return await runRerun(caller, request)
+      case 'status': return await runStatus(caller, request)
       case 'rename': return await runRename(caller, request)
       case 'set-base': return await runSetBase(caller, request)
       case 'stop': return await runStop(caller, request)
@@ -560,7 +575,7 @@ function renderRoutines(routines: RoutineEntry[], clock: ListClock): string[] {
       r.paused ? 'paused' : r.nextRuns[0] !== undefined ? when(r.nextRuns[0], clock) : 'never',
       r.timeoutMinutes !== undefined ? `after ${formatDuration(r.timeoutMinutes)}` : 'at next run',
       ...(hasErrors ? [flatten(r.lastError ?? '', 40)] : []),
-      flatten(r.prompt, 60),
+      flatten(r.prompt ?? '(non-interactive)', 60),
     ]),
   )
 }
@@ -594,7 +609,7 @@ function renderQueued(
         ? 'waiting for room'
         : 'queued'
     const stops = r.timeoutMinutes !== undefined ? `  stops after ${formatDuration(r.timeoutMinutes)}` : ''
-    return `${r.id.slice(0, 8)}  ${r.tool}  ${status}${stops}  ${flatten(r.prompt, 60)}`
+    return `${r.id.slice(0, 8)}  ${r.tool}  ${status}${stops}  ${flatten(r.prompt ?? '(non-interactive)', 60)}`
   }
   const walk = (parent: string, depth: number): void => {
     for (const r of children.get(parent) ?? []) {
@@ -643,18 +658,27 @@ function flatten(text: string, max: number): string {
  * own included). `--no-session` starts a workspace with no agent.
  */
 async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  if (request.args.run !== undefined) return await runAddStep(caller, request)
+  const stray = STEP_ARGS.find((a) => request.args[a] !== undefined)
+  if (stray !== undefined) return { ok: false, error: `--${stray} goes with --workspace and --run` }
   const settings = createSettings(request.args)
   if (!settings.ok) return settings
+  if (settings.settings.steps != null) {
+    const refused = refuseCommands(caller, '--steps')
+    if (refused !== undefined) return refused
+  }
   const { workspace, resume } = request.args
-  const noSession = request.args['no-session'] !== undefined
+  const noSession = request.args['no-session'] !== undefined || settings.settings.nonInteractive === true
   const sessionArgs = ['tool', 'model', 'effort', 'permission-mode', 'ui-mode', 'resume']
   if (noSession) {
+    const flag = request.args['no-session'] !== undefined ? '--no-session' : '--non-interactive'
     const stray = [...sessionArgs, 'workspace'].find((a) => request.args[a] !== undefined)
-    if (stray !== undefined) return { ok: false, error: `--no-session does not take --${stray}` }
-    if (request.body.trim() !== '') return { ok: false, error: '--no-session takes no prompt: a workspace with no session runs no agent' }
+    if (stray !== undefined) return { ok: false, error: `${flag} does not take --${stray}` }
+    if (request.body.trim() !== '') return { ok: false, error: `${flag} takes no prompt: a workspace with no session runs no agent` }
   }
   if (workspace !== undefined) {
-    const stray = ['branch', 'group', 'timeout', 'volume'].find((a) => request.args[a] !== undefined)
+    const stray = ['branch', 'commit', 'group', 'timeout', 'volume', 'steps', 'no-steps', 'non-interactive']
+      .find((a) => request.args[a] !== undefined)
     if (stray !== undefined) {
       return { ok: false, error: `--${stray} is a workspace's setting, which --workspace (a session in a running one) does not take` }
     }
@@ -689,6 +713,81 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
  * parent, or with none as `create`'s do; the permission mode is capped at
  * the caller's own.
  */
+/**
+ * Add a step to a running workspace of the project, the caller's own
+ * included (docs/workspace-steps.md): `--run`, a JSON list of its commands
+ * the script builds, under `--name` (else a fresh `run-…` name), after the
+ * steps `--needs` lists. Prints the step's name.
+ */
+async function runAddStep(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const { args } = request
+  const target = args.workspace?.trim() ?? ''
+  if (target === '') return { ok: false, error: '--run needs --workspace: a step runs in a running workspace' }
+  const stray = Object.keys(args).find((a) => a !== 'workspace' && !(STEP_ARGS as readonly string[]).includes(a))
+  if (stray !== undefined) return { ok: false, error: `--run does not take --${stray}` }
+  if (request.body.trim() !== '') return { ok: false, error: '--run takes no prompt' }
+  const refused = refuseCommands(caller, '--run')
+  if (refused !== undefined) return refused
+  let run: unknown
+  try {
+    run = JSON.parse(args.run ?? '')
+  } catch {
+    return { ok: false, error: '--run is not a JSON list of commands' }
+  }
+  const name = args.name?.trim() || `run-${crypto.randomUUID().slice(0, 8)}`
+  const needs = args.needs?.split(',').map((n) => n.trim()).filter((n) => n !== '')
+  const workspaceId = await resolveProjectWorkspace(target, caller.projectId)
+  await addSteps(caller.principal, workspaceId, {
+    [name]: {
+      run,
+      ...(needs !== undefined && needs.length > 0 ? { needs } : {}),
+      ...(args.service !== undefined ? { service: true } : {}),
+      ...(args.ready !== undefined ? { ready: args.ready } : {}),
+    },
+  })
+  return { ok: true, output: name }
+}
+
+/**
+ * Rerun a non-interactive workspace of the project, detached: a new one with
+ * its graph at its start commit, or with `--interactive` an interactive one
+ * there. Prints the new workspace's id.
+ */
+async function runRerun(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const target = request.args.workspace?.trim() ?? ''
+  if (target === '') return { ok: false, error: 'rerun needs a workspace id' }
+  const workspaceId = crypto.randomUUID()
+  const run = await prepareRerun(caller.principal, await resolveProjectWorkspace(target, caller.projectId), {
+    workspaceId,
+    ...(request.args.interactive !== undefined ? { interactive: true } : {}),
+  })
+  void run().catch((err: unknown) => serverLog(`[mama] rerun of ${target} failed: ${String(err)}`))
+  return { ok: true, output: workspaceId }
+}
+
+/**
+ * Where a workspace of the project, or one of its steps, stands, for
+ * `--wait`: a first line of `running` or a settled state (a non-interactive
+ * workspace's outcome, else `stopped`; a step's state), and for a settled
+ * step its exit code on a second.
+ */
+async function runStatus(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const target = request.args.workspace?.trim() ?? ''
+  if (target === '') return { ok: false, error: 'status needs a workspace id' }
+  const workspaceId = await resolveProjectWorkspace(target, caller.projectId)
+  const row = await getWorkspaceRow(caller.projectId, workspaceId)
+  if (row === undefined) return { ok: true, output: inFlightWorkspaceIds(Date.now()).includes(workspaceId) ? 'running' : 'gone' }
+  const step = request.args.step?.trim()
+  if (step === undefined || step === '') {
+    if (row.stepsOutcome !== undefined) return { ok: true, output: row.stepsOutcome }
+    return { ok: true, output: row.stoppedAt !== undefined && (row.lifeStartedAt === undefined || row.stoppedAt >= row.lifeStartedAt) ? 'stopped' : 'running' }
+  }
+  const found = (await listWorkspaceSteps(workspaceId))
+    .find((s) => s.name === step && s.life.getTime() === row.lifeStartedAt?.getTime())
+  if (found === undefined) return { ok: false, error: `workspace ${workspaceId.slice(0, 8)} has no step "${step}"` }
+  return { ok: true, output: found.exitCode !== undefined ? `${found.state}\n${found.exitCode}` : found.state }
+}
+
 async function runQueue(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const parent = request.args['parent-workspace']?.trim() ?? ''
   const start = startArgs(request.args)
@@ -698,9 +797,13 @@ async function runQueue(caller: MamaCaller, request: MamaRequestInput): Promise<
   }
   const settings = createSettings(request.args)
   if (!settings.ok) return settings
+  if (settings.settings.steps != null) {
+    const refused = refuseCommands(caller, '--steps')
+    if (refused !== undefined) return refused
+  }
   const entry = await queueWorkspace(caller.principal, caller.projectId, {
     ...(start.start !== undefined ? { start: start.start } : {}),
-    prompt: request.body,
+    ...(request.body !== '' ? { prompt: request.body } : {}),
     ...(parent !== ''
       ? { parent }
       : { ...(caller.tool !== undefined ? { tool: caller.tool } : {}), mode: caller.mode }),
@@ -738,6 +841,10 @@ async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Pro
   const { args, cleared } = takeCleared(request.args, 'none')
   const settings = createSettings(args, 'none')
   if (!settings.ok) return settings
+  if (settings.settings.steps != null) {
+    const refused = refuseCommands(caller, '--steps')
+    if (refused !== undefined) return refused
+  }
   const parent = request.args['parent-workspace']?.trim()
   const noParent = request.args['no-parent'] !== undefined
   const start = startArgs(request.args)
@@ -760,7 +867,7 @@ async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Pro
   return {
     ok: true,
     output: `Updated queued workspace ${entry.id.slice(0, 8)}: ${entry.tool} ${entry.model}, `
-      + `${entry.permissionMode} — ${flatten(entry.prompt, 60)}`,
+      + `${entry.permissionMode} — ${flatten(entry.prompt ?? '(non-interactive)', 60)}`,
   }
 }
 
@@ -876,9 +983,13 @@ function nextRuns(routine: RoutineEntry): string {
 async function runRoutineCreate(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const parsed = routineFields(request)
   if (!parsed.ok) return parsed
-  const { name, cron, prompt } = parsed.fields
-  if (name === undefined || cron === undefined || prompt === undefined) {
-    return { ok: false, error: 'routine-create needs --name, --cron and a prompt' }
+  if (parsed.fields.steps != null) {
+    const refused = refuseCommands(caller, '--steps')
+    if (refused !== undefined) return refused
+  }
+  const { name, cron, prompt, nonInteractive } = parsed.fields
+  if (name === undefined || cron === undefined || (prompt === undefined && nonInteractive !== true)) {
+    return { ok: false, error: 'routine-create needs --name, --cron and a prompt (or --non-interactive)' }
   }
   const routine = await createRoutine(caller.principal, caller.projectId, {
     ...(caller.tool !== undefined ? { tool: caller.tool } : {}),
@@ -886,7 +997,6 @@ async function runRoutineCreate(caller: MamaCaller, request: MamaRequestInput): 
     ...parsed.fields,
     name,
     cron,
-    prompt,
   }, { ceiling: caller.permissionMode })
   return { ok: true, output: `${routine.id}
 note: ${nextRuns(routine)}` }
@@ -902,6 +1012,10 @@ async function runRoutineEdit(caller: MamaCaller, request: MamaRequestInput): Pr
   if (!picked.ok) return picked
   const parsed = routineFields(request)
   if (!parsed.ok) return parsed
+  if (parsed.fields.steps != null) {
+    const refused = refuseCommands(caller, '--steps')
+    if (refused !== undefined) return refused
+  }
   if (Object.keys(parsed.fields).length === 0) {
     return { ok: false, error: 'routine-edit needs a new prompt or an option to change' }
   }
@@ -1079,7 +1193,8 @@ async function runSend(caller: MamaCaller, request: MamaRequestInput): Promise<M
 /** Settings shared by `create`, `queue` and `edit-queued`. */
 type CreateSettings = Pick<
   SpawnRequest,
-  'tool' | 'model' | 'permissionMode' | 'effort' | 'uiMode' | 'branch' | 'group' | 'title' | 'timeout'
+  'tool' | 'model' | 'permissionMode' | 'effort' | 'uiMode' | 'branch' | 'commit' | 'group' | 'title' | 'timeout'
+  | 'steps' | 'nonInteractive'
 >
 
 /**
@@ -1114,6 +1229,13 @@ function createSettings(
     return { ok: false, error: `invalid ui mode '${uiMode}' (expected one of: ${AGENT_MODES.join(', ')})` }
   }
   if (branch !== undefined && branch.trim() === '') return { ok: false, error: 'branch must not be empty' }
+  if (args.steps !== undefined && args['no-steps'] !== undefined) return { ok: false, error: 'give --steps or --no-steps, not both' }
+  let steps: unknown
+  try {
+    steps = args['no-steps'] !== undefined ? null : args.steps !== undefined ? JSON.parse(args.steps) : undefined
+  } catch {
+    return { ok: false, error: '--steps is not JSON' }
+  }
   const title = args.title !== undefined ? normalizeTitle(args.title) : undefined
   if (title === '') return { ok: false, error: 'title must not be empty' }
   const timeout = parseTimeout(args.timeout)
@@ -1127,11 +1249,26 @@ function createSettings(
       ...(effort !== undefined ? { effort } : {}),
       ...(uiMode !== undefined ? { uiMode: uiMode as AgentMode } : {}),
       ...(branch !== undefined ? { branch: branch.trim() } : {}),
+      ...(args.commit !== undefined ? { commit: args.commit.trim() } : {}),
+      ...(steps !== undefined ? { steps } : {}),
+      ...(args['non-interactive'] !== undefined ? { nonInteractive: true } : {}),
       ...(group !== undefined ? { group } : {}),
       ...(title !== undefined ? { title } : {}),
       ...(timeout !== undefined ? { timeout } : {}),
     },
   }
+}
+
+/**
+ * Commands a caller hands a workspace to run act as whatever the workspace
+ * runs as, so only a caller at `bypass` may (docs/workspace-steps.md
+ * "Permissions"); otherwise an agent in `plan` could run anything by asking
+ * for a step.
+ */
+function refuseCommands(caller: MamaCaller, what: string): MamaOutcome | undefined {
+  if (caller.permissionMode === 'bypass') return undefined
+  return { ok: false, error: `${what} runs commands as the workspace does, which only a caller at bypass may ask for `
+    + `(this one is at ${caller.permissionMode})` }
 }
 
 /** `--start-at` (read by the queue in the owner's zone) or `--start-in`;

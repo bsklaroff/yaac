@@ -61,7 +61,9 @@ export {
   resolveWorkspaceRecord,
 } from './resolve'
 export { previewWorkspaceRetention, reconcileWorkspaceRetention, setWorkspaceRetention } from './retention'
-export { prepareRestart } from './restart'
+export { prepareRerun, prepareRestart } from './restart'
+export { addSteps, assertInteractive, cancelStep, reconcileSteps, rerunStep } from './steps'
+export { listWorkspaceLogs, readWorkspaceLog } from './logs'
 export { prepareStart } from './start'
 export { reconcileStaleWorkspaces } from './stale-workspaces'
 export { stopWorkspace } from './stop'

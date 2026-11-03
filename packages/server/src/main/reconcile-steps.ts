@@ -1,4 +1,4 @@
-import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileConversations, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileRevokedShares, reconcileSessions, reconcileStoppedConversations, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, reconcileVolumeLeases, collectDeletedVolumes, startScheduledWorkspaces } from '#domain/workspaces'
+import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileConversations, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileRevokedShares, reconcileSessions, reconcileSteps, reconcileStoppedConversations, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, reconcileVolumeLeases, collectDeletedVolumes, startScheduledWorkspaces } from '#domain/workspaces'
 import { refreshProjectOrigins } from '#domain/projects'
 import { adoptRefreshedToolCredentials, syncToolCredentials } from '#domain/auth'
 import { workspaceDriver } from '#drivers/driver'
@@ -77,6 +77,13 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // while it was stopped, or one a server restart cut off mid-launch.
     { name: 'sessions', triggers: ['workspaces', 'live-agents'],
       run: (ctx) => reconcileSessions(ctx.snapshot()) },
+    // Run each running workspace's steps (docs/workspace-steps.md): record
+    // the ones that exited, became ready or were killed, and open those
+    // whose needs are met. A step's exit shows only in the window listing,
+    // which `windows` reports; a create's setup finishing renames its keeper,
+    // which is a listing change too.
+    { name: 'steps', triggers: ['workspaces', 'windows'],
+      run: (ctx) => reconcileSteps(ctx.snapshot()) },
     // Record each workspace's conversations, which are live, and their
     // opening messages, and what each session's agent reports, from the
     // watcher's live agent set. The step that reads that set, so

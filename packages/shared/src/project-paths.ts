@@ -156,6 +156,17 @@ export function acpLogDir(projectId: string, workspaceId: string): string {
 }
 
 /**
+ * GLOBAL. One workspace's terminal logs: what every window but an agent's
+ * printed, one dir per life (docs/workspace-steps.md "Logs"), with each
+ * step's script and events beside its log; mounted at `/home/yaac/.yaac-logs`.
+ * Outside {@link workspaceStateDir} for the same reason as
+ * {@link acpLogDir}.
+ */
+export function terminalLogDir(projectId: string, workspaceId: string): string {
+  return globalProjectPath(projectId, 'logs', workspaceId)
+}
+
+/**
  * NODE-LOCAL. The project's package-manager caches, mounted at
  * `/home/yaac/.cached-packages`. Node-local because a network filesystem
  * makes every link and stat a round trip. On a host it also holds the

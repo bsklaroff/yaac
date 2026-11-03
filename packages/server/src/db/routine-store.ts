@@ -1,3 +1,4 @@
+import type { StepGraph } from '@yaac/shared/steps'
 import { and, asc, desc, eq, isNotNull, isNull, lt, or } from 'drizzle-orm'
 import { getDb } from './client'
 import { queuedWorkspaces, routines, workspaces } from './schema'
@@ -20,13 +21,19 @@ export interface RoutineFields {
   name: string
   cron: string
   timeZone: string
-  prompt: string
+  /** Absent for a non-interactive routine. */
+  prompt?: string
   tool: AgentTool
   model: string
   mode: AgentMode
   permissionMode: PermissionMode
   effort?: string
-  branch: string
+  /** Exactly one of a branch and a full commit. */
+  branch?: string
+  commit?: string
+  /** Absent runs the project's init steps; `{}` runs none. */
+  steps?: StepGraph
+  nonInteractive?: boolean
   groupId?: string
   timeoutMinutes?: number
 }
@@ -39,7 +46,17 @@ export type RoutineRow = NullsToUndefined<Row>
 const toRow = (r: Row): RoutineRow => nullsToUndefined(r)
 
 function columns(f: RoutineFields): Omit<typeof routines.$inferInsert, 'projectId'> {
-  return { ...f, effort: f.effort ?? null, groupId: f.groupId ?? null, timeoutMinutes: f.timeoutMinutes ?? null }
+  return {
+    ...f,
+    prompt: f.prompt ?? null,
+    branch: f.branch ?? null,
+    commit: f.commit ?? null,
+    steps: f.steps ?? null,
+    nonInteractive: f.nonInteractive === true,
+    effort: f.effort ?? null,
+    groupId: f.groupId ?? null,
+    timeoutMinutes: f.timeoutMinutes ?? null,
+  }
 }
 
 export async function insertRoutine(projectId: string, fields: RoutineFields, nextRunAt: Date | null): Promise<RoutineRow> {

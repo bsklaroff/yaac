@@ -12,7 +12,7 @@ vi.mock('#components/ui/CodeEditor', () => ({
 import { ProjectSettings } from '#components/settings/ProjectSettings'
 import { useUiStore } from '#lib/store'
 import {
-  mockFetch, renderWithClient, serverSnapshot, testQueryClient, TEST_USER_ID, type FetchCall, type FetchMock,
+  mockFetch, renderWithClient, serverError, serverSnapshot, testQueryClient, TEST_USER_ID, type FetchCall, type FetchMock,
 } from './harness'
 
 afterEach(() => {
@@ -23,7 +23,7 @@ afterEach(() => {
 /** A project keyed by `id-<name>`, so a test can tell the key from the
  *  displayed name. */
 const project = (name: string, remoteUrl: string): ProjectSummary =>
-  ({ id: `id-${name}`, name, remoteUrl, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true, scratchDirs: { dirs: [], ignoredTracked: [] } })
+  ({ id: `id-${name}`, name, remoteUrl, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true, scratchDirs: { dirs: [], ignoredTracked: [] }, initSteps: {} })
 
 /** Show settings for `alpha` (and `beta`) on a containerless server, whose
  *  env routes keep `vars` in memory. */
@@ -96,6 +96,42 @@ describe('ProjectSettings', () => {
     fireEvent.click(guard)
     await waitFor(() => expect(server.called('PUT /api/project/id-gamma/default-branch-guard').map((c) => c.body))
       .toEqual([{ enabled: false }]))
+  })
+
+  it('edits the init steps, showing the server\'s refusal of a bad graph', async () => {
+    useUiStore.setState({ activeProjectId: 'id-alpha' })
+    const snapshot = serverSnapshot({
+      driver: 'containerless',
+      projects: [{ ...project('alpha', 'https://github.com/o/alpha.git'), initSteps: { install: { run: ['pnpm install'] } } }],
+    })
+    const server = mockFetch({
+      'GET /api/project/id-alpha/env': { vars: [] },
+      'GET /api/project/id-alpha/config/raw': { content: '' },
+      'PUT /api/project/id-alpha/init-steps': ({ body }: FetchCall) => {
+        const { steps } = body as { steps: Record<string, unknown> }
+        return 'cycle' in steps
+          ? serverError('VALIDATION', 'init steps: steps form a cycle: cycle -> cycle', 400)
+          : { steps }
+      },
+    })
+    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
+
+    // The first editor is the init steps', opened on the snapshot's graph.
+    const editor = await waitFor(() => {
+      const [first] = screen.getAllByLabelText<HTMLTextAreaElement>('editor')
+      expect(first.value).toContain('pnpm install')
+      return first
+    })
+    const save = (text: string): void => {
+      fireEvent.change(editor, { target: { value: text } })
+      const box = editor.closest('.flex-col') as HTMLElement
+      fireEvent.click(within(box).getByRole('button', { name: 'Save' }))
+    }
+    save('{"build": {"run": "pnpm build"}}')
+    await waitFor(() => expect(server.called('PUT /api/project/id-alpha/init-steps').map((c) => c.body))
+      .toEqual([{ steps: { build: { run: 'pnpm build' } } }]))
+    save('{"cycle": {"run": "x", "needs": ["cycle"]}}')
+    await screen.findByText('init steps: steps form a cycle: cycle -> cycle')
   })
 
   it('adds a kept ignored path to the snapshot\'s list, and removes one', async () => {
@@ -400,10 +436,11 @@ describe('ProjectSettings', () => {
     expect(screen.queryByPlaceholderText('NAME')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
 
-    // Config, Dockerfile and a build file read, with nothing to save or upload.
-    await waitFor(() => expect(screen.getAllByLabelText('editor')).toHaveLength(2))
-    fireEvent.click(await screen.findByRole('button', { name: 'init.lua' }))
+    // Init steps, config, Dockerfile and a build file read, with nothing to
+    // save or upload.
     await waitFor(() => expect(screen.getAllByLabelText('editor')).toHaveLength(3))
+    fireEvent.click(await screen.findByRole('button', { name: 'init.lua' }))
+    await waitFor(() => expect(screen.getAllByLabelText('editor')).toHaveLength(4))
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Upload files' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Rename init.lua' })).toBeNull()

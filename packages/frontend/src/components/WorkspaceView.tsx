@@ -25,6 +25,9 @@ import { EmptyWorkspace } from '#components/EmptyWorkspace'
 import { SessionPane, sessionPtyTarget } from '#components/SessionPane'
 import { NewWorkspacePane } from '#components/NewWorkspacePane'
 import { RoutinePane } from '#components/RoutinePane'
+import { StepPane } from '#components/StepPane'
+import { StepsBar } from '#components/StepsBar'
+import { isStepTarget, stepTargetName } from '#lib/steps'
 import { DeadlineChip } from '#components/DeadlineChip'
 import { TerminalKeyBar } from '#components/TerminalKeyBar'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
@@ -100,6 +103,7 @@ function paneName(
   if (isFilesTarget(target)) return 'Files'
   if (isChangesTarget(target)) return 'Changes'
   if (isFileTarget(target)) return fileLabels?.[fileTargetPath(target)] ?? fileTargetPath(target)
+  if (isStepTarget(target)) return stepTargetName(target)
   if (isSessionTarget(target)) {
     const session = paneSession(workspace, target)
     return session === undefined ? 'Agent' : session.title ?? agentLabel(session.tool, session)
@@ -259,7 +263,7 @@ export function WorkspaceView({
    *  snapshot lists the window, which may be before or after this answer;
    *  focusing a target with no pane would leave focus on another one. */
   const openShell = (): void => {
-    if (!sid) return
+    if (!sid || workspace?.nonInteractive === true) return
     void api.workspace[':id'].terminals.$post({ param: { id: sid } })
       .then((entry) => {
         const st = useUiStore.getState()
@@ -538,6 +542,9 @@ export function WorkspaceView({
   }
 
   const leading: ReactNode = isMobile || !sidebarOpen ? <PaneBarLeading /> : null
+  // A non-interactive workspace can only be stopped: no session or shell
+  // opens in it (docs/workspace-steps.md).
+  const interactive = workspace?.nonInteractive !== true
   const headerClass = paneBarClass(isMobile)
 
   // The mobile key bar, only over a terminal pane: a terminal's, or a `tui`
@@ -576,6 +583,7 @@ export function WorkspaceView({
               </button>
             )}
           />
+          <StepsBar workspace={workspace} />
           <DeadlineChip
             workspaceId={workspace.workspaceId}
             {...(workspace.deadline !== undefined ? { deadline: workspace.deadline } : {})}
@@ -585,8 +593,7 @@ export function WorkspaceView({
           {!isMobile && (
             <>
               <PaneBarActions
-                onNewSession={newSession}
-                onNewShell={openShell}
+                {...(interactive ? { onNewSession: newSession, onNewShell: openShell } : {})}
                 onOpenFiles={() => openFiles(workspace.workspaceId)}
                 onOpenChanges={() => openChanges(workspace.workspaceId)}
               />
@@ -665,8 +672,7 @@ export function WorkspaceView({
             <PaneOverflowMenu
               label={workspaceAgentLabel(workspace)}
               previewPorts={previewPorts}
-              onNewSession={newSession}
-              onNewShell={openShell}
+              {...(interactive ? { onNewSession: newSession, onNewShell: openShell } : {})}
               onOpenChanges={() => openChanges(workspace.workspaceId)}
               onOpenFiles={() => openFiles(workspace.workspaceId)}
               onOpenPreview={(p) => showPreview(workspace.workspaceId, p)}
@@ -722,7 +728,10 @@ export function WorkspaceView({
         {/* A workspace with no pane open: what it can start. */}
         {workspace && targets.length === 0 && (
           <PaneCard headerH={headerH}>
-            <EmptyWorkspace workspace={workspace} onNewSession={newSession} onNewShell={openShell} />
+            <EmptyWorkspace
+              workspace={workspace}
+              {...(interactive ? { onNewSession: newSession, onNewShell: openShell } : {})}
+            />
           </PaneCard>
         )}
 
@@ -818,7 +827,16 @@ export function WorkspaceView({
                   {...(id === sid && target === focusTarget ? { focusKey: focusNonce } : {})}
                   nonce={terminalNonces[id] ?? 0}
                 />
-              ) : isSessionTarget(target) ? null : file ? (
+              ) : isSessionTarget(target) ? null : isStepTarget(target) ? (
+                owner !== undefined && (
+                  <StepPane
+                    workspace={owner}
+                    name={stepTargetName(target)}
+                    visible={onScreen}
+                    {...(id === sid && target === focusTarget ? { focusKey: focusNonce } : {})}
+                  />
+                )
+              ) : file ? (
                 <div className="h-full w-full overflow-hidden rounded-md">
                   <WorkspaceFile
                     workspaceId={id}

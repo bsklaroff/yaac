@@ -7,8 +7,9 @@ import type {
   ScratchDirSettings,
   WorkspaceDeathReason,
 } from '@yaac/shared/types'
+import type { StepGraph, StepOrigin, StepSpec, StepState, StepsOutcome } from '@yaac/shared/steps'
 import { sql } from 'drizzle-orm'
-import { boolean, index, integer, jsonb, primaryKey, snakeCase, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core'
+import { boolean, index, integer, json, jsonb, primaryKey, snakeCase, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core'
 
 /**
  * Drizzle schema for the server's PGlite database, opened only by the server
@@ -163,6 +164,11 @@ export const projects = snakeCase.table('projects', {
     dirs: [{ path: 'node_modules' }, { path: 'target' }],
     ignoredTracked: [],
   }),
+  /** The steps every workspace runs at start unless its create brings its
+   *  own graph (docs/workspace-steps.md). Parsed before it is written.
+   *  `json`, not `jsonb`, as every step graph here is: a graph's key order
+   *  is its steps' display order, which `jsonb` would re-sort. */
+  initSteps: json().$type<StepGraph>().notNull().default({}),
 }, (t) => [uniqueIndex().on(t.sharedFrom, t.owner)])
 
 /**
@@ -216,8 +222,24 @@ export const workspaces = snakeCase.table('workspaces', {
    *  workspace whose agent titles nothing, or carried over from the draft or
    *  queued entry it was created from. */
   generatedTitle: text(),
-  /** Branch the workspace forked from (no `origin/` prefix). */
+  /** The branch its work is measured against (no `origin/` prefix): the
+   *  branch it was created from, or the one `yaac-mama set-base` named.
+   *  Null for a workspace created at a commit until it is given one
+   *  (docs/workspace-steps.md "Start point and base branch"). */
   baseBranch: text(),
+  /** The commit its checkout was created at. Null for a workspace created
+   *  before this was recorded, which always has a base branch. */
+  startCommit: text(),
+  /** The step graph each of its lives starts with when its create brought
+   *  its own; null runs the project's current init steps. */
+  startSteps: json().$type<StepGraph>(),
+  /** Runs one graph untouched and stops when it settles
+   *  (docs/workspace-steps.md "Non-interactive workspaces"). */
+  nonInteractive: boolean().notNull().default(false),
+  /** How a non-interactive workspace's graph ended; null until it did. */
+  stepsOutcome: text().$type<StepsOutcome>(),
+  /** The non-interactive workspace this one reruns. */
+  rerunOf: text(),
   /** The sidebar group it is filed under; null means ungrouped. Survives a
    *  stop and restart. */
   groupId: text(),
@@ -394,6 +416,31 @@ export const sessions = snakeCase.table('sessions', {
 ])
 
 /**
+ * A workspace's steps (docs/workspace-steps.md): each runs in the tmux
+ * window named after it. A start step's row is replaced at every start of
+ * its workspace; an added one runs once. Rows change only through
+ * `applyWorkspaceEvent`, from what the step reconcile observes.
+ */
+export const workspaceSteps = snakeCase.table('workspace_steps', {
+  workspaceId: text().notNull().references(() => workspaces.workspaceId, { onDelete: 'cascade' }),
+  name: text().notNull(),
+  projectId: uuid().notNull(),
+  origin: text().$type<StepOrigin>().notNull(),
+  spec: jsonb().$type<StepSpec>().notNull(),
+  state: text().$type<StepState>().notNull(),
+  /** Its window's exit status, once it exited. */
+  exitCode: integer(),
+  /** The life (`workspaces.lifeStartedAt`) it belongs to, which names its
+   *  log dir. */
+  life: timestamp({ withTimezone: true }).notNull(),
+  /** Display order within its workspace. */
+  ordinal: integer().notNull(),
+  startedAt: timestamp({ withTimezone: true }),
+  readyAt: timestamp({ withTimezone: true }),
+  finishedAt: timestamp({ withTimezone: true }),
+}, (t) => [primaryKey({ columns: [t.workspaceId, t.name] })])
+
+/**
  * One row per agent conversation, keyed by the tool's own session id. A
  * workspace accumulates many (every `/clear`, `/resume`, `/compact`, or a
  * second `claude` in another terminal).
@@ -567,7 +614,9 @@ export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
    *  a routine's entries are its run history. */
   routineId: uuid().references((): AnyPgColumn => routines.id, { onDelete: 'set null' }),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
-  prompt: text().notNull(),
+  /** The launched workspace's session's opening message; null for a
+   *  non-interactive one, which opens no session. */
+  prompt: text(),
   tool: text().$type<AgentTool>().notNull(),
   model: text().notNull(),
   mode: text().$type<AgentMode>().notNull(),
@@ -575,8 +624,15 @@ export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
   /** Null when its model has no effort setting. */
   effort: text(),
   /** The branch to fork from (no `origin/` prefix), fetched at launch so the
-   *  child starts from its latest tip. */
-  branch: text().notNull(),
+   *  child starts from its latest tip; null when it starts at `commit`. */
+  branch: text(),
+  /** A full commit to start at instead of a branch's tip. */
+  commit: text(),
+  /** The step graph it starts with in place of the project's init steps,
+   *  `{}` for none; null runs the project's (docs/workspace-steps.md). */
+  steps: json().$type<StepGraph>(),
+  /** It launches non-interactive: `steps`, untouched, with no session. */
+  nonInteractive: boolean().notNull().default(false),
   /** The user's title for the launched workspace; wins over
    *  `generatedTitle`. */
   title: text(),
@@ -617,13 +673,19 @@ export const routines = snakeCase.table('routines', {
   cron: text().notNull(),
   /** The IANA zone the cron is read in. */
   timeZone: text().notNull(),
-  prompt: text().notNull(),
+  /** Null for a non-interactive routine, whose runs open no session. */
+  prompt: text(),
   tool: text().$type<AgentTool>().notNull(),
   model: text().notNull(),
   mode: text().$type<AgentMode>().notNull(),
   permissionMode: text().$type<PermissionMode>().notNull(),
   effort: text(),
-  branch: text().notNull(),
+  /** Null when its runs start at `commit`. */
+  branch: text(),
+  commit: text(),
+  /** As on a queued entry (`queuedWorkspaces.steps`). */
+  steps: json().$type<StepGraph>(),
+  nonInteractive: boolean().notNull().default(false),
   /** Null is the default list; cleared when the group is deleted. */
   groupId: text(),
   /** Each run's timeout; null means "until the next tick". */

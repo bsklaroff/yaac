@@ -68,7 +68,8 @@ export const CHANGES_BUSY = 7
  */
 export interface ChangesRequest {
   base?: string
-  /** The branch the workspace forked from, used when `base` is unset. */
+  /** The branch the workspace forked from, or the commit it was created at
+   *  when it has none, used when `base` is unset. */
   defaultBase?: string
   /** Include the unified diff body. */
   diff: boolean

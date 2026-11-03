@@ -543,7 +543,7 @@ describe('agentDriver', () => {
   } as const
 
   // Each session's agent pane is watched in its own tool's terms, and windows
-  // no session runs in, init commands and scratch shells, get no status
+  // no session runs in, steps and scratch shells, get no status
   // subscription.
   it.each(Object.entries(STATUS_CASES))('watches a %s pane by its own format and classifies what it pushes', async (tool, { format, running, waiting }) => {
     const windows = [tool, `${tool}-2`, `${tool}-10`, 'shell', 'dev', `${tool}-ish`, `my${tool}`, `${tool}-`]
@@ -904,7 +904,7 @@ describe('agentDriver', () => {
       dial: acpDial(() => stream), commandTimeoutMs: 1_000, log: () => {},
     })))
 
-    // Only agent windows count (`init` runs init commands).
+    // Only agent windows count (`init` runs a step).
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
     // Registered under its handle, since no id exists yet.
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())

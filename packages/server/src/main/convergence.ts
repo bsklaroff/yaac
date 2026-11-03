@@ -1,5 +1,5 @@
 import { workspaceDriver } from '#drivers/driver'
-import { StatusWatcherManager, onLiveAgentsChanged, onStreamHealthLost, onWaitingEnded } from '#runtime/status'
+import { StatusWatcherManager, onLiveAgentsChanged, onStreamHealthLost, onWaitingEnded, onWindowsChanged } from '#runtime/status'
 import { acpLaunchModel } from '#runtime/agents'
 import { startUsageSampler, stopUsageSampler } from '#runtime/usage'
 import { loadToolAuthEntry } from '#domain/auth'
@@ -16,9 +16,9 @@ import type { ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
  * `#domain`, neither of which a driver may import, so the composition root
  * supplies them.
  *
- * Two reconcile triggers are raised here rather than by the driver, since
- * no substrate watch can see them: a conversation appearing, and a driver
- * connection dropping.
+ * Three reconcile triggers are raised here rather than by the driver, since
+ * no substrate watch can see them: a conversation appearing, a window
+ * listing changing, and a driver connection dropping.
  */
 
 export type ChangeSource = ReconcileTrigger
@@ -78,6 +78,9 @@ export async function attachConvergence(opts: {
   // in-pod handshake). Without this, conversation rows and the chat pane
   // would wait for the 60s resync.
   onLiveAgentsChanged(() => fireChange('live-agents'))
+  // A step's window exiting or becoming ready is seen only in the window
+  // listing, which starts the steps that need it.
+  onWindowsChanged(() => fireChange('windows'))
   // Once a driver connection drops, a healthy stream no longer implies
   // tmux is alive, so wake the stale reaper to run its own probes.
   onStreamHealthLost(() => fireChange('status-streams'))

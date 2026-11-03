@@ -62,6 +62,12 @@ export interface SpawnRequest {
   timeout?: number
   /** A volume of the project to mount, by name (docs/workspace-volumes.md). */
   volume?: string
+  /** A full commit to start at instead of `branch`'s tip. */
+  commit?: string
+  /** Its start graph, unparsed; null for none (docs/workspace-steps.md). */
+  steps?: unknown
+  /** Run `steps` untouched, with no session. */
+  nonInteractive?: boolean
 }
 
 /** What the server decided about one spawn request: the workspace, and the
@@ -142,6 +148,9 @@ export async function decideSpawn(request: SpawnRequest): Promise<SpawnDecision>
       ...(request.model !== undefined ? { model: request.model } : {}),
       ...(request.effort !== undefined ? { effort: request.effort } : {}),
       ...(request.branch !== undefined ? { branch: request.branch } : {}),
+      ...(request.commit !== undefined ? { commit: request.commit } : {}),
+      ...(request.steps !== undefined ? { steps: request.steps } : {}),
+      ...(request.nonInteractive === true ? { nonInteractive: true } : {}),
       ...(request.group !== undefined ? { group: request.group } : {}),
       ...(request.title !== undefined ? { title: request.title } : {}),
       ...(request.timeout !== undefined ? { deadline: new Date(Date.now() + request.timeout * 60_000) } : {}),

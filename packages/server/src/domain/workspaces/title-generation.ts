@@ -61,7 +61,7 @@ export async function reconcileGeneratedTitles(): Promise<void> {
     void generateOnce(promptKey('draft', id, prompt), `draft ${id}`, prompt, (t) => setDraftWorkspaceTitle(id, prompt, t))
   }
   for (const { id, prompt, title, generatedTitle, launchWorkspaceId } of await listQueuedWorkspaceRows()) {
-    if (title !== undefined || generatedTitle !== undefined || launchWorkspaceId !== undefined) continue
+    if (title !== undefined || generatedTitle !== undefined || launchWorkspaceId !== undefined || prompt === undefined) continue
     void generateOnce(promptKey('queued', id, prompt), `queued ${id}`, prompt, (t) => setQueuedWorkspaceTitle(id, prompt, t))
   }
 }

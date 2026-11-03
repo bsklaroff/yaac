@@ -1,69 +1,16 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { z } from 'zod'
-import { AGENT_TOOLS } from '@yaac/shared/types'
-import type { InitCommandSpec, YaacConfig } from '@yaac/shared/types'
+import type { YaacConfig } from '@yaac/shared/types'
 import { projectConfigDir } from '@yaac/shared/project-paths'
 import { isInfraPort } from '#lib/port-policy'
 
 const CACHE_VOLUME_KEY_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/
 
-/** tmux window names an `initCommands` entry may not use, so it can't
- *  clobber an agent or yaac window. */
-const RESERVED_INIT_WINDOW_NAMES: ReadonlySet<string> = new Set(
-  [...AGENT_TOOLS, 'init', 'yaac'],
-)
-
-const INIT_WINDOW_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
-
 const isPlainObject = (v: unknown): boolean => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 const BOOLEAN = z.boolean({ error: 'must be a boolean' }).optional()
 const PORT = z.number({ error: 'must be an integer between 1 and 65535' }).int().min(1).max(65535)
-
-const initCommandSpecSchema = z.object({
-  name: z.string({ error: 'must be a non-empty string' }).min(1)
-    .regex(INIT_WINDOW_NAME_PATTERN, {
-      error: (iss) => `"${String(iss.input)}" must match ${INIT_WINDOW_NAME_PATTERN.source} `
-        + '(kebab/snake, no shell or tmux target chars)',
-    })
-    .refine((name) => !RESERVED_INIT_WINDOW_NAMES.has(name), { error: (iss) => `"${String(iss.input)}" is reserved` }),
-  commands: z.custom<string[]>(
-    (c) => Array.isArray(c) && c.length > 0 && c.every((cmd) => typeof cmd === 'string' && cmd.length > 0),
-    { error: 'must be a non-empty array of non-empty strings' },
-  ),
-  hidePane: BOOLEAN,
-})
-
-const initCommandSpecsSchema = z.array(initCommandSpecSchema).superRefine((specs, ctx) => {
-  const seen = new Set<string>()
-  specs.forEach(({ name }, i) => {
-    if (seen.has(name)) ctx.addIssue({ code: 'custom', path: [i, 'name'], message: `"${name}" is duplicated` })
-    seen.add(name)
-  })
-})
-
-/**
- * The `initCommands` field, in one of two shapes, never mixed so each
- * workspace has a predictable window layout:
- *   - string[]              → collapses into a single `init` tmux window
- *   - InitCommandSpec[]     → one tmux window per entry (parallel execution)
- */
-const initCommandsSchema = z.array(z.unknown(), { error: 'must be an array' })
-  .transform((raw, ctx): string[] | InitCommandSpec[] => {
-    if (raw.every((v) => typeof v === 'string')) return raw
-    if (!raw.every(isPlainObject)) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'must be either a string array or an array of {name, commands} objects — the two forms cannot be mixed',
-      })
-      return z.NEVER
-    }
-    const specs = initCommandSpecsSchema.safeParse(raw)
-    if (specs.success) return specs.data
-    for (const issue of specs.error.issues) ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message })
-    return z.NEVER
-  })
 
 /** A path relative to the checkout (/workspace), with any surrounding
  *  slashes stripped: a scratch dir (`./scratch-dirs`), or a kept ignored
@@ -92,8 +39,6 @@ const projectConfigSchema = z.object({
       }
     }
   }).transform((volumes) => volumes as Record<string, string>).optional(),
-  initCommands: initCommandsSchema.optional(),
-  hideInitPane: BOOLEAN,
   portForward: z.array(
     z.object({
       containerPort: PORT.refine((port) => !isInfraPort(port), {
@@ -107,7 +52,7 @@ const projectConfigSchema = z.object({
   npmCache: BOOLEAN,
 })
 
-/** Where an issue is, as a config key path: `initCommands[0].name`. */
+/** Where an issue is, as a config key path: `portForward[0].containerPort`. */
 function issuePath(at: PropertyKey[]): string {
   return at.map((k, i) => typeof k === 'number' ? `[${k}]` : `${i === 0 ? '' : '.'}${String(k)}`).join('')
 }
@@ -117,6 +62,9 @@ function issuePath(at: PropertyKey[]): string {
 const RETIRED_FIELDS: Record<string, string> = {
   ephemeralModulesPaths: 'is now the project\'s scratch directories, set under Settings → Project Config '
     + 'or with `yaac config scratch-dirs`',
+  initCommands: 'is now the project\'s init steps, set under Settings → Project Config → Init steps '
+    + 'or with `yaac config init-steps`',
+  hideInitPane: 'is gone: every step\'s output is kept in its log, so a finished step\'s window stays',
 }
 
 /**

@@ -53,5 +53,6 @@ export async function listProjects(
       ? { stoppedWorkspaceRetentionDays: meta.stoppedWorkspaceRetentionDays } : {}),
     ...(meta.keptIgnoredPaths.length > 0 ? { keptIgnoredPaths: meta.keptIgnoredPaths } : {}),
     scratchDirs: meta.scratchDirs,
+    initSteps: meta.initSteps,
   }))
 }

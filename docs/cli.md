@@ -60,9 +60,20 @@ yaac workspace
                                 options: --branch, --group, --timeout, --start-*)
     --resume <conversation>     With --workspace: on one of its conversations
     --no-session                A workspace with no agent session
+    --non-interactive           Run --steps untouched, with no session, and
+                                stop when they finish: a CI run. Only stop
+                                touches it; rerun, never restart
+                                (workspace-steps.md)
+    --wait                      With --non-interactive: wait for its steps,
+                                exiting non-zero unless they all succeeded
+    --steps <file>              JSON file of the steps to start with, in
+                                place of the project's init steps
+    --no-steps                  Start with no steps
     -t, --tool <tool>           claude, codex, opencode or pi (default: the
                                 project's last, else claude)
     -b, --branch <branch>       Base branch (default: the remote's default)
+    --commit <sha>              Start at this full commit instead; no base
+                                branch then (not with --branch)
     -p, --prompt <text>         Initial prompt for the agent
     -m, --model <model>         Model id or alias (provider/model for opencode, pi)
     -e, --effort <level>        Effort level the model offers (effort-levels.md)
@@ -90,6 +101,27 @@ yaac workspace
   restart <workspace-id>        Restart, resuming the sessions it had open
     --timeout <duration>        Stop it this long after the restart (a restart
                                 otherwise clears its timeout)
+  rerun <workspace-id>          Run a non-interactive workspace's steps again in
+                                a new one, at the commit it ran at
+    --interactive               An interactive workspace there instead, to
+                                reproduce a failure in
+    --wait                      As for workspace create
+  step add <workspace-id>       Add a step to a running workspace; prints its name
+    --run <command>             A command (repeatable; run in order in one shell)
+    --name <name>               Its name (default: run-<8 hex>)
+    --needs <a,b>               Steps that must succeed (or be ready) first
+    --service [--ready <cmd>]   It keeps running; steps needing it wait for the
+                                ready check, if any
+  step rerun <workspace-id> <name>
+                                Run a finished step again, with the steps it
+                                caused to be skipped
+  step cancel <workspace-id> <name>
+                                Stop an unfinished step; its dependents are skipped
+  logs <workspace-id> [window]  List a life's terminal logs, or print one
+                                window's (a step's name, or `shell`, …), running
+                                or stopped (workspace-steps.md "Logs")
+    --life <n|name>             Which life: 1 (the default) is the newest
+    --raw                       Keep the terminal escape codes
   timeout <workspace-id> <duration|none>
                                 Stop a running workspace this long from now, or never
   conversations <workspace-id>  List the conversations the workspace has held
@@ -98,7 +130,8 @@ yaac workspace
   shell <workspace-id>          Open a shell in the workspace
 
 yaac routine                    Workspaces started on a cron schedule (routines.md)
-  create <project>              --name, --cron and --prompt required
+  create <project>              --name, --cron and --prompt (or
+                                --non-interactive with --steps) required
     --name <name>               Heads each run's title; names its default group
     --cron <expr>               5-field cron or a nickname like @daily
     -p, --prompt <text>         Each run's prompt; - reads it from stdin
@@ -106,8 +139,8 @@ yaac routine                    Workspaces started on a cron schedule (routines.
     --tz <zone>                 Zone the cron is read in (default: yours)
     --timeout <duration|next>   Stop each run this long after it starts;
                                 next (the default) stops it at the next tick
-    -t/-m/-e/-b, --mode, --permission-mode
-                                As for workspace create
+    -t/-m/-e/-b, --mode, --permission-mode, --commit, --steps, --no-steps,
+    --non-interactive           As for workspace create
     -g, --group <group>         Group runs are filed under (default: one named
                                 after the routine)
     --no-group                  File runs in the default list
@@ -150,6 +183,10 @@ yaac config
                                 off its checkout, each `path` or `path:GiB`
                                 (docs/project-config.md)
     --none                      Keep every dir in the checkout
+  init-steps <project>          Print the steps every workspace runs at start,
+                                as JSON (docs/workspace-steps.md)
+    --file <path>               Replace them with a JSON file's
+    --none                      Remove them
 
 yaac auth
   list                          List credentials (masked; git credentials by name)

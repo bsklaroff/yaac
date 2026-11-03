@@ -425,10 +425,11 @@ export abstract class ControlModeConnection implements AgentConnection {
 }
 
 /** Every pane, so a window's `dead` is its first pane's, the one its
- *  agent runs in, whichever pane is active. The name stays last — it may
+ *  agent runs in, whichever pane is active, with a dead one's exit status
+ *  and whether a step's ready check passed. The name stays last — it may
  *  contain pipes. */
-const LIST_PANES = "list-panes -s -t yaac -F '#{window_id}|#{pane_dead}|#{window_name}'"
-const PANE_LINE = /^(@\d+)\|([01])\|(.*)$/
+const LIST_PANES = "list-panes -s -t yaac -F '#{window_id}|#{pane_dead}|#{pane_dead_status}|#{@yaac-step-ready}|#{window_name}'"
+const PANE_LINE = /^(@\d+)\|([01])\|(\d*)\|([^|]*)\|(.*)$/
 
 /**
  * List a workspace's tmux windows: its sessions', its terminals and the
@@ -442,7 +443,14 @@ export async function listWindows(
   const windows = new Map<string, WorkspaceWindow>()
   for (const line of (await tmux(LIST_PANES)).split('\n')) {
     const m = PANE_LINE.exec(line.trim())
-    if (m && !windows.has(m[1])) windows.set(m[1], { id: m[1], name: m[3], dead: m[2] === '1' })
+    if (!m || windows.has(m[1])) continue
+    windows.set(m[1], {
+      id: m[1],
+      name: m[5],
+      dead: m[2] === '1',
+      ...(m[2] === '1' && m[3] !== '' ? { exitStatus: Number(m[3]) } : {}),
+      ...(m[4] === '1' ? { ready: true as const } : {}),
+    })
   }
   return [...windows.values()]
 }

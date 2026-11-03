@@ -5,6 +5,7 @@ import type {
   PermissionMode,
   WorkspaceDeathCause,
 } from '@yaac/shared/types'
+import type { StepGraph, StepState, StepsOutcome } from '@yaac/shared/steps'
 
 /**
  * Facts that substrate- and disk-observing code reports to db, applied by
@@ -21,6 +22,9 @@ export type WorkspaceEvent =
   | WorkspaceCreateFailed
   | WorkspaceLifeStarted
   | BaseBranchResolved
+  | StartCommitResolved
+  | StepChanged
+  | StepsSettled
   | TrackedScratchDirsFound
   | ConversationsDiscovered
   | ConversationsCaptured
@@ -61,6 +65,12 @@ export interface WorkspaceCreated {
   deadline?: Date
   /** The scratch dirs it is started with (see `workspaces.scratchDirs`). */
   scratchDirs?: string[]
+  /** On a fresh create: the graph it brought in place of the project's
+   *  init steps, whether it is non-interactive, and the non-interactive
+   *  workspace it reruns. */
+  startSteps?: StepGraph
+  nonInteractive?: boolean
+  rerunOf?: string
 }
 
 /**
@@ -84,6 +94,41 @@ export interface WorkspaceLifeStarted {
   type: 'workspace-life-started'
   projectId: string
   workspaceId: string
+  /** When it started, which names its log dir and its steps' life. */
+  at: Date
+  /** The graph this life starts, replacing the last life's start steps. */
+  startSteps: StepGraph
+}
+
+/** The commit a workspace's checkout was created at. */
+export interface StartCommitResolved {
+  type: 'start-commit-resolved'
+  projectId: string
+  workspaceId: string
+  startCommit: string
+}
+
+/**
+ * A step's window was opened, became ready, exited or was killed, or the
+ * step was skipped because a step it needs did not succeed. Applies only to
+ * the life it was observed in.
+ */
+export interface StepChanged {
+  type: 'step-changed'
+  projectId: string
+  workspaceId: string
+  life: Date
+  name: string
+  state: StepState
+  exitCode?: number
+}
+
+/** A non-interactive workspace's graph settled. */
+export interface StepsSettled {
+  type: 'steps-settled'
+  projectId: string
+  workspaceId: string
+  outcome: StepsOutcome
 }
 
 /** The branch a workspace forks from changed: its agent ran

@@ -258,6 +258,9 @@ export const CONTAINER_OPENCODE_CHECKPOINT = '/home/yaac/.yaac/opencode-checkpoi
  */
 export const CONTAINER_ACP_LOG_DIR = '/home/yaac/.yaac-acp'
 
+/** Where a workspace's terminal logs (`terminalLogDir()`) are mounted. */
+export const CONTAINER_TERMINAL_LOG_DIR = '/home/yaac/.yaac-logs'
+
 /** Read-only mount of pasted images (`workspaceAttachmentsDir()`). */
 export const CONTAINER_ATTACHMENTS_DIR = '/home/yaac/.yaac-attachments'
 

@@ -71,6 +71,7 @@ export interface ObservedWindow extends WorkspaceWindow {
 const windows = new Map<string, ObservedWindow[]>()
 
 let liveAgentsListener: (() => void) | null = null
+let windowsListener: (() => void) | null = null
 let streamHealthLostListener: (() => void) | null = null
 let waitingEndedListener: ((projectId: string, workspaceId: string, handle: string) => void) | null = null
 
@@ -101,6 +102,16 @@ export function onStreamHealthLost(fn: () => void): void {
  */
 export function onLiveAgentsChanged(fn: () => void): void {
   liveAgentsListener = fn
+}
+
+/**
+ * Register the handler fired when a workspace's window listing changes: a
+ * window opened, closed or renamed, a pane died, or a step's ready check
+ * passed. Triggers the step reconcile, since no substrate watch sees a step
+ * exit. Single listener.
+ */
+export function onWindowsChanged(fn: () => void): void {
+  windowsListener = fn
 }
 
 /**
@@ -312,6 +323,7 @@ export function setWorkspaceWindows(
   if (JSON.stringify(prev) === JSON.stringify(next)) return
   windows.set(k, next)
   notifyWorkspaceListChanged()
+  windowsListener?.()
 }
 
 /** The workspace's windows, or undefined before its watcher first listed
@@ -336,6 +348,7 @@ export function _resetWorkspaceStatusStoreForTests(): void {
   store.clear()
   windows.clear()
   liveAgentsListener = null
+  windowsListener = null
   streamHealthLostListener = null
   waitingEndedListener = null
 }

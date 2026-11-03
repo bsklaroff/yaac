@@ -1,0 +1,20 @@
+#!/bin/sh
+# Append what a tmux pane prints to a log file, set up by the hook each
+# life sources (docs/workspace-steps.md "Logs"). At 64 MiB the file moves to
+# `<file>.1`, replacing the one before, so a window that runs for days holds
+# at most twice that.
+#
+# Usage: yaac-log-writer <file>
+f=$1
+cap=67108864
+size=0
+[ ! -f "$f" ] || size=$(wc -c < "$f")
+while :; do
+  if [ "$size" -ge "$cap" ]; then
+    mv -f "$f" "$f.1"
+    size=0
+  fi
+  n=$(head -c $((cap - size)) | tee -a "$f" | wc -c)
+  [ "$n" -gt 0 ] || exit 0
+  size=$((size + n))
+done

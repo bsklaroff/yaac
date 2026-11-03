@@ -27,6 +27,7 @@ import { launchSessions, launching, respawnSession } from './session-launch'
 import { inFlightWorkspaceIds } from './provisioning'
 import { claiming } from './prewarm'
 import { resolveWorkspaceContainer } from './resolve'
+import { assertInteractive } from './steps'
 import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 
 /** What a session is opened with; unnamed settings resolve as a create's. */
@@ -58,6 +59,7 @@ export async function openSession(
 ): Promise<SessionRow> {
   const workspace = await resolveWorkspaceContainer(workspaceIdOrPrefix, { requireRunning: true, owner: principal })
   const { projectId, workspaceId, jobName } = workspace
+  await assertInteractive(workspaceId)
   const resumed = request.resume === undefined
     ? undefined
     : (await listWorkspaceConversations(projectId, workspaceId)).find((l) => l.conversationId === request.resume)

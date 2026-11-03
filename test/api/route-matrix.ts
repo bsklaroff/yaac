@@ -115,6 +115,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'GET', path: '/api/project/:projectId/workspace-auto-delete', request: `${P}/workspace-auto-delete?days=30`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/workspace-auto-delete', request: `${P}/workspace-auto-delete`, body: { days: 30 }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/kept-ignored-paths', request: `${P}/kept-ignored-paths`, body: { paths: ['.env'] }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'PUT', path: '/api/project/:projectId/init-steps', request: `${P}/init-steps`, body: { steps: {} }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/scratch-dirs', request: `${P}/scratch-dirs`, body: { dirs: [] }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/project/:projectId/move', request: `${P}/move`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/project/:projectId/move', request: `${P}/move`, body: { remoteUrl: 'https://github.com/acme/widgets.git', gitCredentialId: ID.credential }, access: 'owner', k8s: MISSING, containerless: MISSING },
@@ -184,6 +185,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   // An unknown workspace is a plain 404; later failures travel in the
   // NDJSON stream.
   { method: 'POST', path: '/api/workspace/restart', body: { workspaceId: ID.workspace }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/rerun', body: { workspaceId: ID.workspace }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/timeout', body: { workspaceId: ID.workspace, timeout: 30 }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/stop', body: { workspaceId: ID.workspace }, access: 'owner', k8s: [404, 503], containerless: MISSING },
   { method: 'POST', path: '/api/workspace/delete', body: { workspaceId: ID.workspace }, access: 'owner', k8s: MISSING, containerless: MISSING },
@@ -268,6 +270,13 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/workspace/:id/attachments', request: `${W}/attachments`, access: 'owner', k8s: [404, 503], containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/terminals', request: `${W}/terminals`, access: 'owner', k8s: [404, 409, 503], containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/terminals/close', request: `${W}/terminals/close`, body: { target: 'window:@1' }, access: 'owner', k8s: [404, 409, 503], containerless: MISSING },
+  // Steps (docs/workspace-steps.md) run under both drivers, so both answer
+  // alike; the steps routes need a running workspace, the logs only a row.
+  { method: 'POST', path: '/api/workspace/:id/steps', request: `${W}/steps`, body: { steps: { a: { run: 'true' } } }, access: 'owner', k8s: [404, 409, 503], containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/:id/steps/:name/rerun', request: `${W}/steps/a/rerun`, access: 'owner', k8s: [404, 409, 503], containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/:id/steps/:name/cancel', request: `${W}/steps/a/cancel`, access: 'owner', k8s: [404, 409, 503], containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/logs', request: `${W}/logs`, access: 'owner', k8s: [404, 503], containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/logs/:life/:file', request: `${W}/logs/2026-11-03T01-00-00.000Z/a.log`, access: 'owner', k8s: [404, 503], containerless: MISSING },
 
   // ── workspaces: egress and the port relay ──────────────────────────────
   // The feature guard runs before the id lookup, so the refusal doesn't

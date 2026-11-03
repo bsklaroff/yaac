@@ -160,7 +160,7 @@ export function seedNewWorkspace(opts: NewWorkspaceOpts, snapshot: ServerSnapsho
   const timeZone = routine?.timeZone ?? draft?.timeZone
   return {
     projectId: opts.projectId,
-    prompt: from.prompt,
+    prompt: from.prompt ?? '',
     title: routine?.name ?? (entry ?? draft)?.title ?? '',
     start,
     ...(startAt !== undefined ? { startAt } : {}),
@@ -177,7 +177,10 @@ export function seedNewWorkspace(opts: NewWorkspaceOpts, snapshot: ServerSnapsho
         ...(from.effort !== undefined ? { effort: from.effort } : {}),
       },
     },
-    ...(from.branch !== undefined ? { branch: from.branch } : {}),
+    // A start at a commit shows in the Base branch field, which sends a full
+    // commit id as one.
+    ...(from.branch !== undefined ? { branch: from.branch }
+      : 'commit' in from && from.commit !== undefined ? { branch: from.commit } : {}),
     ...(groupId !== undefined ? { groupId } : {}),
     ...(entry !== undefined ? { editId: entry.id } : routine !== undefined ? { editRoutineId: routine.id } : { draftId: from.id }),
   }

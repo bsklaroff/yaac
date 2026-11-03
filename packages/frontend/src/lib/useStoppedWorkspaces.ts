@@ -9,7 +9,8 @@ import {
 import { api } from '#lib/api'
 import { useUiStore } from '#lib/store'
 import { useProvisionWorkspace } from '#lib/useProvisionWorkspace'
-import { restartWorkspace } from '#lib/createWorkspace'
+import { rerunWorkspace, restartWorkspace } from '#lib/createWorkspace'
+import { randomUUID } from '#lib/uuid'
 import type {
   StoppedWorkspaceEntry,
   StoppedWorkspacePage,
@@ -240,5 +241,24 @@ export function useRestartStopped(): (entry: StoppedWorkspaceEntry) => void {
       kind: 'restart',
       ...(entry.groupId !== undefined ? { groupId: entry.groupId } : {}),
     }, (onProgress) => restartWorkspace(entry.workspaceId, onProgress))
+  }
+}
+
+/**
+ * Rerun a stopped non-interactive workspace (docs/workspace-steps.md): a
+ * new workspace, shown as provisioning in the stopped one's group until it
+ * is listed, under the id minted here, which the server creates it under.
+ */
+export function useRerunStopped(): (entry: StoppedWorkspaceEntry, interactive: boolean) => void {
+  const provision = useProvisionWorkspace()
+  return (entry, interactive) => {
+    const rerunId = randomUUID()
+    provision({
+      workspaceId: rerunId,
+      projectId: entry.projectId,
+      kind: 'create',
+      ...(entry.title !== undefined ? { title: entry.title } : {}),
+      ...(entry.groupId !== undefined ? { groupId: entry.groupId } : {}),
+    }, (onProgress) => rerunWorkspace(entry.workspaceId, rerunId, interactive, onProgress))
   }
 }

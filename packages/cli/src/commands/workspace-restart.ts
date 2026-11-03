@@ -1,5 +1,5 @@
 import { api } from '#commands/api'
-import { attachStarted, durationOption } from '#commands/workspace-create'
+import { attachStarted, durationOption, followNonInteractive } from '#commands/workspace-create'
 import { ServerError } from '@yaac/shared/errors'
 
 /**
@@ -25,4 +25,22 @@ export async function workspaceRestart(
     }
     throw err
   }
+}
+
+/**
+ * `yaac workspace rerun <id>`: start a new non-interactive workspace running
+ * the steps of the one `<id>` names, at the commit it ran at
+ * (docs/workspace-steps.md), and say how to follow it, or with `--wait`
+ * wait for its outcome. `--interactive` starts an interactive workspace
+ * there instead, with those steps as its start steps, to reproduce a
+ * failure in.
+ */
+export async function workspaceRerun(
+  workspaceId: string,
+  opts: { interactive?: boolean; wait?: boolean } = {},
+): Promise<void> {
+  if (opts.interactive === true && opts.wait === true) throw new Error('--wait goes with a non-interactive rerun: an interactive one runs until stopped.')
+  const res = await api.workspace.rerun.$post({ json: { workspaceId, ...(opts.interactive === true ? { interactive: true } : {}) } })
+  if (opts.interactive === true) await attachStarted(res)
+  else await followNonInteractive(res, { wait: opts.wait === true })
 }

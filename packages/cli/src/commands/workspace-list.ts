@@ -151,7 +151,7 @@ function renderScheduled(entries: QueuedWorkspaceEntry[], projectNames: Map<stri
       formatInZone(new Date(e.startAt ?? ''), zone),
       e.timeoutMinutes !== undefined ? formatDuration(e.timeoutMinutes) : '',
       e.launchError ?? '',
-      e.title ?? e.generatedTitle ?? e.prompt.split('\n')[0],
+      e.title ?? e.generatedTitle ?? (e.prompt ?? '(non-interactive)').split('\n')[0],
     ]),
   )
 }

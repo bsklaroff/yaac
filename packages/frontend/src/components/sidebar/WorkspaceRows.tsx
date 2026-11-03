@@ -25,7 +25,7 @@ import { sessionTarget } from '#lib/panes'
 import { relativeAge, timeUntil, useNow } from '#lib/time'
 import { useInlineRename } from '#lib/useInlineRename'
 import { useReadOnly, useTeammateName, useWhoami } from '#lib/viewer'
-import { useRestartStopped } from '#lib/useStoppedWorkspaces'
+import { useRerunStopped, useRestartStopped } from '#lib/useStoppedWorkspaces'
 import { useIsMobile } from '#lib/viewport'
 import { describeWorkspaceDeathReason } from '@yaac/shared/death-reason'
 // The server refuses longer group names, so the name fields stop here.
@@ -505,14 +505,19 @@ export function StoppedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
   const selected = useUiStore((s) => s.selectedWorkspaceId === entry.workspaceId)
   const selectWorkspace = useUiStore((s) => s.selectWorkspace)
   const restart = useRestartStopped()
+  const rerun = useRerunStopped()
   const [confirmRestart, setConfirmRestart] = useState(false)
   const readOnly = useReadOnly()
   const me = useWhoami()?.userId
   const unseen = isUnseenDeath(entry, me)
+  // A non-interactive workspace is rerun in a new one, never restarted
+  // (docs/workspace-steps.md).
+  const reruns = entry.nonInteractive === true
 
   const stopLine = entry.deathReason
     ? `died ${relativeAge(entry.stoppedAt)} — ${describeWorkspaceDeathReason(entry.deathReason)}`
-    : `${entry.endedAtNextRun ? 'ended at next run' : entry.timedOut ? 'timed out' : 'stopped'} ${relativeAge(entry.stoppedAt)}`
+    : `${entry.stepsOutcome ?? (entry.endedAtNextRun ? 'ended at next run' : entry.timedOut ? 'timed out' : 'stopped')} `
+      + relativeAge(entry.stoppedAt)
 
   return (
     <div className="group relative mx-2">
@@ -535,15 +540,15 @@ export function StoppedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
           </span>
         </span>
         <span className="flex items-center gap-2 text-xs text-text-faint">
-          <span className="truncate">{stopLine}</span>
+          <span className={clsx('truncate', entry.stepsOutcome === 'failed' && 'text-danger')}>{stopLine}</span>
           <span className="ml-auto shrink-0">{workspaceAgentLabel(entry)}</span>
         </span>
       </button>
 
       {!readOnly && <button
         onClick={() => setConfirmRestart(true)}
-        title="Restart workspace"
-        aria-label="Restart workspace"
+        title={reruns ? 'Rerun its steps in a new workspace' : 'Restart workspace'}
+        aria-label={reruns ? 'Rerun workspace' : 'Restart workspace'}
         className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
           opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
           group-hover:pointer-events-auto group-hover:opacity-100
@@ -556,12 +561,15 @@ export function StoppedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
         open={confirmRestart}
         onOpenChange={setConfirmRestart}
         destructive={false}
-        title="Restart this workspace?"
-        description={entry.title || entry.prompt || 'New workspace'}
-        confirmLabel="Restart"
+        title={reruns ? 'Rerun this workspace’s steps?' : 'Restart this workspace?'}
+        description={reruns
+          ? 'A new non-interactive workspace runs them again at the commit this one ran at.'
+          : entry.title || entry.prompt || 'New workspace'}
+        confirmLabel={reruns ? 'Rerun' : 'Restart'}
         onConfirm={() => {
           setConfirmRestart(false)
-          restart(entry)
+          if (reruns) rerun(entry, false)
+          else restart(entry)
         }}
       />
     </div>

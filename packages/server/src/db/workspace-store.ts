@@ -8,6 +8,7 @@ import { normalizeTitle } from '@yaac/shared/titles'
 import { ServerError } from '@yaac/shared/errors'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
 import type { WorkspaceDeathCause } from '@yaac/shared/types'
+import type { StepGraph, StepsOutcome } from '@yaac/shared/steps'
 
 /**
  * One row per workspace yaac has created. The runtime is authoritative for
@@ -50,6 +51,11 @@ export interface WorkspaceCreatedInput {
   deadline?: Date
   /** The scratch dirs it is started with (see `workspaces.scratchDirs`). */
   scratchDirs?: string[]
+  /** The graph it brought in place of the project's init steps. */
+  startSteps?: StepGraph
+  nonInteractive?: boolean
+  /** The non-interactive workspace it reruns. */
+  rerunOf?: string
 }
 
 type Row = typeof workspaces.$inferSelect
@@ -97,6 +103,9 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
       ...(input.timeZone !== undefined ? { timeZone: input.timeZone } : {}),
       ...(input.deadline !== undefined ? timeoutColumns(input.deadline) : {}),
       ...(input.scratchDirs !== undefined ? { scratchDirs: input.scratchDirs } : {}),
+      ...(input.startSteps !== undefined ? { startSteps: input.startSteps } : {}),
+      ...(input.nonInteractive === true ? { nonInteractive: true } : {}),
+      ...(input.rerunOf !== undefined ? { rerunOf: input.rerunOf } : {}),
     })
     .onConflictDoNothing({ target: workspaces.workspaceId })
     .returning({ workspaceId: workspaces.workspaceId })
@@ -134,16 +143,31 @@ export async function recordWorkspaceResumed(
   }
 }
 
-/** Record that a new runtime (a "life") has come up, so none of the
- *  workspace's sessions has a window in it yet. */
+/** Record that a new runtime (a "life") has come up at `at`, so none of
+ *  the workspace's sessions has a window in it yet. */
 export async function recordWorkspaceLife(
   projectId: string,
   workspaceId: string,
+  at: Date,
 ): Promise<void> {
   const db = await getDb()
   await db.update(workspaces)
-    .set({ lifeStartedAt: new Date() })
+    .set({ lifeStartedAt: at })
     .where(key(projectId, workspaceId))
+}
+
+/** Record the commit a workspace's checkout was created at. */
+export async function setWorkspaceStartCommit(projectId: string, workspaceId: string, startCommit: string): Promise<void> {
+  const db = await getDb()
+  await db.update(workspaces).set({ startCommit }).where(key(projectId, workspaceId))
+}
+
+/** Record how a non-interactive workspace's graph ended; the first one
+ *  recorded stands. */
+export async function setWorkspaceStepsOutcome(projectId: string, workspaceId: string, outcome: StepsOutcome): Promise<void> {
+  const db = await getDb()
+  await db.update(workspaces).set({ stepsOutcome: outcome })
+    .where(and(key(projectId, workspaceId), isNull(workspaces.stepsOutcome)))
 }
 
 /**

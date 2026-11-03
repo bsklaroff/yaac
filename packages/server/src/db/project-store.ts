@@ -1,3 +1,4 @@
+import type { StepGraph } from '@yaac/shared/steps'
 import { eq, sql } from 'drizzle-orm'
 import { getDb } from './client'
 import { projects, projectToolDefaults } from './schema'
@@ -128,6 +129,8 @@ export interface ProjectRow extends ProjectMeta {
   /** Gitignored checkout paths a stop keeps. */
   keptIgnoredPaths: string[]
   scratchDirs: ScratchDirSettings
+  /** The steps every workspace runs at start (docs/workspace-steps.md). */
+  initSteps: StepGraph
 }
 
 function toProjectRow(
@@ -173,6 +176,16 @@ export async function setProjectDefaultBranchGuard(projectId: string, enabled: b
 export async function setProjectWorkspaceRetention(projectId: string, days: number | null): Promise<boolean> {
   const db = await getDb()
   const rows = await db.update(projects).set({ stoppedWorkspaceRetentionDays: days })
+    .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
+  notifyWorkspaceListChanged()
+  return rows.length > 0
+}
+
+/** Replace the project's init steps, already parsed. False when there is
+ *  no such project. */
+export async function setProjectInitSteps(projectId: string, initSteps: StepGraph): Promise<boolean> {
+  const db = await getDb()
+  const rows = await db.update(projects).set({ initSteps })
     .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
   notifyWorkspaceListChanged()
   return rows.length > 0

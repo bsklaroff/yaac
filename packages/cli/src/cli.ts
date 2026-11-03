@@ -15,7 +15,9 @@ import { workspaceList } from '#commands/workspace-list'
 import { workspaceRename } from '#commands/workspace-rename'
 import { workspaceStop } from '#commands/workspace-stop'
 import { workspaceDelete } from '#commands/workspace-delete'
-import { workspaceRestart } from '#commands/workspace-restart'
+import { workspaceRerun, workspaceRestart } from '#commands/workspace-restart'
+import { stepAdd, stepCancel, stepRerun, type StepAddOptions } from '#commands/workspace-steps'
+import { workspaceLogs } from '#commands/workspace-logs'
 import { volumeCreate, volumeDelete, volumeList, volumeResize } from '#commands/volume'
 import { workspaceTimeout } from '#commands/workspace-timeout'
 import { routineCreate, routineDelete, routineEdit, routineList, routinePause, routineResume, routineRun, type RoutineOptions } from '#commands/routine'
@@ -29,6 +31,7 @@ import { configEditProject, configEditDockerfile, configEditUserDockerfile } fro
 import { configGitIdentity } from '#commands/config-git-identity'
 import { configWorkspaceAutoDelete } from '#commands/config-workspace-auto-delete'
 import { configScratchDirs } from '#commands/config-scratch-dirs'
+import { configInitSteps } from '#commands/config-init-steps'
 import { authFake } from '#commands/auth-fake'
 import { remoteAdd, remoteConnect, remoteDisconnect, remoteList, remoteRemove } from '#commands/remote'
 import {
@@ -357,6 +360,11 @@ workspace
   .option('--no-session', 'Create the workspace with no agent session; it takes no prompt or agent options')
   .option('-t, --tool <tool>', 'Agent tool to use (claude, codex, opencode, or pi). Defaults to the agent this project was last created with, else claude')
   .option('-b, --branch <branch>', 'Reference branch for the workspace (defaults to the remote default branch)')
+  .option('--commit <sha>', 'Start at this full commit (40 hex digits) instead of a branch\'s tip; the workspace then has no base branch. Not with --branch')
+  .option('--steps <file>', 'A JSON file of the steps to start with, in place of the project\'s init steps (docs/workspace-steps.md)')
+  .option('--no-steps', 'Start with no steps at all, not even the project\'s init steps')
+  .option('--non-interactive', 'Run --steps untouched, with no session, and stop when they finish: a CI run. Nothing can change it while it runs; it can only be stopped, and is rerun rather than restarted')
+  .option('--wait', 'With --non-interactive: wait for its steps to finish, exiting non-zero unless they all succeeded')
   .option('-p, --prompt <text>', 'Initial prompt typed into the agent once the workspace is up; - reads it from stdin')
   .option('--prompt-file <path>', 'Read the initial prompt from this file, in place of --prompt. The way to hand over a long brief: one argument holds at most 128 KiB, and a prompt can be up to 200,000 characters')
   .option('-m, --model <model>', 'Model for the agent: an id or alias for claude/codex (e.g. opus), provider/model for opencode and pi. Defaults to the model this project last used for the tool, else a per-tool default')
@@ -410,6 +418,52 @@ workspace
   .action(workspaceRestart)
 
 workspace
+  .command('rerun')
+  .description('Start a new non-interactive workspace running a non-interactive one\'s steps again, at the commit it ran at; a non-interactive workspace is rerun, never restarted')
+  .argument('<workspace-id>', 'Workspace ID or unique prefix')
+  .option('--interactive', 'Start an interactive workspace there instead, with those steps as its start steps, to reproduce a failure in')
+  .option('--wait', 'Wait for its steps to finish, exiting non-zero unless they all succeeded')
+  .action(workspaceRerun)
+
+const step = workspace
+  .command('step')
+  .description('Manage a running workspace\'s steps: named commands run in tmux windows of their own (docs/workspace-steps.md)')
+
+step
+  .command('add')
+  .description('Add a step to a running workspace; it starts once the steps it needs have succeeded. Prints its name')
+  .argument('<workspace-id>', 'Workspace ID or unique prefix')
+  .option('--run <command>', 'A command to run (repeatable: they run in order in one shell, stopping at the first that fails)', collect, [])
+  .option('--name <name>', 'Its name (default: run-<8 hex>)')
+  .option('--needs <steps>', 'Comma-separated steps of the workspace that must succeed (a service: be ready) first')
+  .option('--service', 'It keeps running: its last command is the process, and it never finishes')
+  .option('--ready <command>', 'With --service: a check run every two seconds; steps that need it start once it passes')
+  .action((workspaceId: string, opts: StepAddOptions) => stepAdd(workspaceId, opts))
+
+step
+  .command('rerun')
+  .description('Run a finished step again, with the steps it caused to be skipped')
+  .argument('<workspace-id>', 'Workspace ID or unique prefix')
+  .argument('<name>', 'Step name')
+  .action(stepRerun)
+
+step
+  .command('cancel')
+  .description('Stop a step that has not finished; the steps that need it are skipped')
+  .argument('<workspace-id>', 'Workspace ID or unique prefix')
+  .argument('<name>', 'Step name')
+  .action(stepCancel)
+
+workspace
+  .command('logs')
+  .description('Print a workspace\'s terminal logs, kept for each of its lives until it is deleted, running or stopped')
+  .argument('<workspace-id>', 'Workspace ID or unique prefix')
+  .argument('[window]', 'A step\'s name, or any logged window\'s (shell, …); omit it to list the life\'s logs')
+  .option('--life <n>', 'Which life: 1 (the default) is the newest, 2 the one before; or a life\'s name as the listing prints it')
+  .option('--raw', 'Print the log as written, terminal escape codes and all')
+  .action((workspaceId: string, window: string | undefined, opts: { life?: string; raw?: boolean }) => workspaceLogs(workspaceId, window, opts))
+
+workspace
   .command('timeout')
   .description('Stop a running workspace this long from now, or never')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
@@ -455,6 +509,10 @@ function routineOptions(cmd: Command): Command {
     .addOption(new Option('--mode <mode>', 'How the agent is driven (tui or acp)').choices([...AGENT_MODES]))
     .addOption(new Option('--permission-mode <mode>', 'How much each run may do before it asks; a run that asks waits until it is stopped').choices([...PERMISSION_MODES]))
     .option('-b, --branch <branch>', 'Reference branch each run forks from')
+    .option('--commit <sha>', 'A full commit every run starts at instead of a branch\'s tip. Not with --branch')
+    .option('--steps <file>', 'A JSON file of the steps each run starts with, in place of the project\'s init steps')
+    .option('--no-steps', 'Each run starts with no steps')
+    .option('--non-interactive', 'Each run runs --steps untouched, with no prompt or session, and stops when they finish')
     .option('-g, --group <group>', 'Sidebar group runs are filed under (by name or id; created if it does not exist). Defaults to a group named after the routine')
     .option('--no-group', 'File runs in the default list instead of a group')
 }
@@ -577,6 +635,14 @@ config
   .argument('[dirs...]', 'Directories relative to the checkout, each optionally with its cap in GiB, e.g. node_modules target:32; one without a cap gets the default, 16')
   .option('--none', 'Keep every directory in the checkout')
   .action(configScratchDirs)
+
+config
+  .command('init-steps')
+  .description('Print a project\'s init steps as JSON, the steps every workspace runs at start unless its create brings its own; or replace them')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .option('--file <path>', 'Replace them with the steps in this JSON file (docs/workspace-steps.md)')
+  .option('--none', 'Remove them all')
+  .action(configInitSteps)
 
 // Top-level, not under `workspace`: with no workspace named it forwards all
 // running ones, as the desktop app does from its tray.

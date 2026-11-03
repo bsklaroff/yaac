@@ -75,7 +75,7 @@ export async function reconcilePrewarmPool(view: RuntimeSnapshot): Promise<void>
 
 /**
  * Move each spare whose base branch has a new tip up to it, in the
- * background (`rebranchSpare`: reset and init windows), so a
+ * background (`rebranchSpare`), so a
  * claim finds it current instead of doing that work while the user waits.
  * The tip is read from the server's clone, which `origin-refresh` and every
  * create keep fetched. A spare left half-moved by a failure is reaped.

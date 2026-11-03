@@ -3,6 +3,7 @@ import type net from 'node:net'
 import { answerAndClose, readRequestHead } from '@yaac/shared/port-tunnel'
 import { parseWorkspaceHost } from '@yaac/shared/workspace-hosts'
 import { workspaceDriver } from '#drivers/driver'
+import { assertInteractive } from '#domain/workspaces'
 import { cameThroughServe } from '#api/http/web-auth'
 import type { AccessMode } from '@yaac/shared/types'
 
@@ -62,6 +63,8 @@ async function splice(
   }
   let upstream
   try {
+    // Requests to a non-interactive workspace's servers could sway its run.
+    await assertInteractive(matches[0].workspaceId)
     upstream = await driver.dialPort(matches[0].workspaceId, port)
   } catch (err) {
     answerAndClose(socket, 502, `workspace ${idPrefix} port ${String(port)}: ${err instanceof Error ? err.message : String(err)}`)

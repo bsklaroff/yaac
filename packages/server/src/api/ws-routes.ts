@@ -4,7 +4,7 @@ import type { IdentityEnv } from '#api/http/web-auth'
 import type { EventHub, WsLike } from '#api/events'
 import { authorizeProject } from '#domain/access'
 import { authAgentHub } from '#domain/auth'
-import { observeConversation, recordOrigin, resolveWorkspaceContainer } from '#domain/workspaces'
+import { assertInteractive, observeConversation, recordOrigin, resolveWorkspaceContainer } from '#domain/workspaces'
 import { findWorkspaceRow } from '#db'
 import { attachPty, type SocketLike, TUNNEL_DIAL_FAILED, attachPortTunnel } from '#runtime/terminals'
 import { attachAcp } from '#runtime/agents'
@@ -82,7 +82,9 @@ type AttachTarget = Awaited<ReturnType<typeof resolveWorkspaceContainer>>
 function attachRoute(
   app: Hono<IdentityEnv>,
   path: string,
-  opts: { session?: boolean; access: 'owner' | 'reader' },
+  /** `interactiveOnly`: refused on a running non-interactive workspace
+   *  (docs/workspace-steps.md). */
+  opts: { session?: boolean; access: 'owner' | 'reader'; interactiveOnly?: boolean },
   setup: (c: Context<IdentityEnv>) => {
     open: (target: AttachTarget, socket: SocketLike) => void
     refuse: (socket: SocketLike, err: unknown) => void
@@ -109,6 +111,10 @@ function attachRoute(
         void resolveWorkspaceContainer(id, {
           requireRunning: true, exact: true, ...(opts.access === 'owner' ? { owner: principal } : {}),
         })
+          .then(async (target) => {
+            if (opts.interactiveOnly === true) await assertInteractive(target.workspaceId)
+            return target
+          })
           .then((target) => open(target, socket), (err: unknown) => refuse(socket, err))
       },
     }
@@ -193,7 +199,7 @@ export function registerWebSocketRoutes(app: Hono<IdentityEnv>, hub: EventHub): 
   // tmux. Not under /workspace/ to avoid colliding with GET /workspace/:id.
   // attachPty validates the query and spawns the PTY at the browser's size,
   // so tmux and the client grid match from the first frame.
-  attachRoute(app, '/api/pty/attach', { access: 'owner' }, (c) => {
+  attachRoute(app, '/api/pty/attach', { access: 'owner', interactiveOnly: true }, (c) => {
     const id = c.req.query('id') ?? ''
     const query = { target: c.req.query('target'), cols: c.req.query('cols'), rows: c.req.query('rows') }
     return {
@@ -212,7 +218,7 @@ export function registerWebSocketRoutes(app: Hono<IdentityEnv>, hub: EventHub): 
   // server binds no host port on either driver; `yaac forward` or the
   // desktop app listens on the user's machine and opens one of these per
   // connection (docs/port-forward-tunnel.md).
-  attachRoute(app, '/api/forward/attach', { access: 'owner' }, (c) => {
+  attachRoute(app, '/api/forward/attach', { access: 'owner', interactiveOnly: true }, (c) => {
     const id = c.req.query('id') ?? ''
     const port = Number(c.req.query('port'))
     return {

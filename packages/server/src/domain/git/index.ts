@@ -26,6 +26,7 @@ export { startGitSshAgent, stopGitSshAgent } from './agent'
 export {
   cloneRepo,
   createCheckout,
+  fetchCommit,
   fetchOrigin,
   getDefaultBranch,
   lastFetchedAtMs,

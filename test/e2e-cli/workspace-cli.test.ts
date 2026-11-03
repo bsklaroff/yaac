@@ -14,6 +14,7 @@ import {
   recordConversations,
   setActiveConversations,
 } from '@yaac/server/db/conversation-store'
+import { git } from '@yaac/test-utils/git'
 import { setDataDir } from '@yaac/shared/paths'
 import { workspaceDir } from '@yaac/shared/project-paths'
 import fs from 'node:fs/promises'
@@ -938,6 +939,73 @@ describe('with seeded projects', () => {
       const gone = await runYaac(testEnv.env, 'routine', 'run', id)
       expect(gone.exitCode).not.toBe(0)
       expect(gone.stderr).toContain('No routine')
+    })
+
+    it('schedules and routinely runs --non-interactive --steps at a --commit, and refuses options that cannot mix', async () => {
+      const sha = (await git(path.join(testEnv.scratchDir, NAME), ['rev-parse', 'HEAD'])).trim()
+      const stepsFile = path.join(testEnv.scratchDir, 'ci-steps.json')
+      await fs.writeFile(stepsFile, JSON.stringify({ check: { run: 'true' } }))
+      const otherSteps = path.join(testEnv.scratchDir, 'ci-steps-2.json')
+      await fs.writeFile(otherSteps, JSON.stringify({ lint: { run: ['echo a', 'echo b'] } }))
+
+      const refusals: Array<[string[], RegExp]> = [
+        [['--commit', sha, '--branch', 'master', '--prompt', 'x'], /--branch or --commit, not both/],
+        [['--non-interactive'], /--steps <file>/],
+        [['--non-interactive', '--no-steps'], /--steps <file>/],
+        [['--wait', '--prompt', 'x'], /--wait goes with --non-interactive/],
+        [['--non-interactive', '--steps', stepsFile, '--prompt', 'x'], /does not take --prompt/],
+        [['--non-interactive', '--steps', stepsFile, '--wait', '--start-in', '1h'], /--wait waits for a workspace started now/],
+        [['--steps', path.join(testEnv.scratchDir, 'missing.json'), '--prompt', 'x'], /Cannot read the steps/],
+      ]
+      for (const [args, error] of refusals) {
+        const { stderr, exitCode } = await runYaac(testEnv.env, 'workspace', 'create', NAME, ...args)
+        expect(exitCode, args.join(' ')).not.toBe(0)
+        expect(stderr, args.join(' ')).toMatch(error)
+      }
+
+      // A scheduled non-interactive workspace needs no prompt.
+      const queued = await runYaac(testEnv.env, 'workspace', 'create', NAME, '--non-interactive',
+        '--steps', stepsFile, '--commit', sha, '--start-in', '2h')
+      expect(queued.exitCode, queued.stderr).toBe(0)
+      const queuedId = /Queued workspace ([0-9a-f-]{36})/.exec(queued.stdout)?.[1] ?? ''
+      const entries = await (await fetch(`http://127.0.0.1:${server.lock.port}/api/workspace/queue/list`)).json() as Array<{
+        id: string; prompt?: string; commit?: string; branch?: string; nonInteractive?: boolean; steps?: unknown
+      }>
+      expect(entries.find((e) => e.id === queuedId)).toMatchObject({
+        commit: sha, nonInteractive: true, steps: { check: { run: ['true'] } },
+      })
+      expect(entries.find((e) => e.id === queuedId)?.prompt).toBeUndefined()
+      expect((await runYaac(testEnv.env, 'workspace', 'delete', queuedId)).exitCode).toBe(0)
+
+      type Listed = { id: string; prompt?: string; commit?: string; branch?: string; nonInteractive?: boolean; steps?: unknown }
+      const routines = async (): Promise<Listed[]> =>
+        await (await fetch(`http://127.0.0.1:${server.lock.port}/api/routine/list`)).json() as Listed[]
+      const created = await runYaac(testEnv.env, 'routine', 'create', NAME, '--name', 'CI', '--cron', '@daily',
+        '--non-interactive', '--steps', stepsFile, '--commit', sha)
+      expect(created.exitCode, created.stderr).toBe(0)
+      const id = /Created routine ([0-9a-f-]{36})/.exec(created.stdout)?.[1] ?? ''
+      expect((await routines()).find((r) => r.id === id)).toMatchObject({
+        commit: sha, nonInteractive: true, steps: { check: { run: ['true'] } },
+      })
+      const prompted = await runYaac(testEnv.env, 'routine', 'create', NAME, '--name', 'CI', '--cron', '@daily',
+        '--non-interactive', '--steps', stepsFile, '--prompt', 'x')
+      expect(prompted.exitCode).not.toBe(0)
+      expect(prompted.stderr).toContain('take no prompt')
+
+      // An edit swaps its steps and moves it from the commit to a branch.
+      const edited = await runYaac(testEnv.env, 'routine', 'edit', id, '--steps', otherSteps, '--branch', 'master')
+      expect(edited.exitCode, edited.stderr).toBe(0)
+      const after = (await routines()).find((r) => r.id === id)
+      expect(after).toMatchObject({ branch: 'master', steps: { lint: { run: ['echo a', 'echo b'] } } })
+      expect(after?.commit).toBeUndefined()
+
+      // An agent routine may start with no steps at all.
+      const bare = await runYaac(testEnv.env, 'routine', 'create', NAME, '--name', 'Bare', '--cron', '@daily',
+        '--prompt', 'p', '--no-steps')
+      expect(bare.exitCode, bare.stderr).toBe(0)
+      const bareId = /Created routine ([0-9a-f-]{36})/.exec(bare.stdout)?.[1] ?? ''
+      expect((await routines()).find((r) => r.id === bareId)?.steps).toEqual({})
+      for (const r of [id, bareId]) await runYaac(testEnv.env, 'routine', 'delete', r)
     })
   })
 
