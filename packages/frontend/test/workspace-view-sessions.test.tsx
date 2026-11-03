@@ -67,22 +67,25 @@ describe('WorkspaceView sessions', () => {
     expect(screen.getByRole('button', { name: 'Close session Codex' })).toBeTruthy()
   })
 
-  it('closes an idle session at once, and asks first about one mid-turn', async () => {
-    show({ sessions: [sessionEntry({ sessionId: 'sa', mode: 'tui', status: 'waiting' })] })
+  it('asks before closing a session, warning about one mid-turn', async () => {
+    show({ sessions: [sessionEntry({ sessionId: 'sa', mode: 'tui', status: 'waiting', conversationId: 'conv-a' })] })
     fireEvent.click(screen.getByRole('button', { name: 'Close session Claude' }))
+    expect(await screen.findByText(/^Its agent stops\. The conversation stays/)).toBeTruthy()
+    expect(server.called(CLOSE)).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
     await waitFor(() => expect(server.called(CLOSE)).toHaveLength(1))
 
     cleanup()
     useUiStore.setState({ layouts: {} })
     show({ sessions: [sessionEntry({ sessionId: 'sa', mode: 'tui', status: 'running' })] })
     fireEvent.click(screen.getByRole('button', { name: 'Close session Claude' }))
-    expect(await screen.findByText(/Its agent stops mid-turn/)).toBeTruthy()
+    expect(await screen.findByText('Its agent stops mid-turn.')).toBeTruthy()
     expect(server.called(CLOSE)).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: 'Close' }))
     await waitFor(() => expect(server.called(CLOSE)).toHaveLength(2))
   })
 
-  it('keeps an exited session\'s pane, to resume or close it', async () => {
+  it('keeps an exited session\'s pane, to resume or close it, by its bar or its tab without asking', async () => {
     show({ sessions: [sessionEntry({ sessionId: 'sa', mode: 'tui', exited: true })] })
     expect(screen.getByText('Claude exited.')).toBeTruthy()
     expect(screen.getByTestId('terminal')).toBeTruthy()
@@ -90,6 +93,9 @@ describe('WorkspaceView sessions', () => {
     await waitFor(() => expect(server.called(RESUME)).toHaveLength(1))
     fireEvent.click(screen.getByRole('button', { name: 'Close' }))
     await waitFor(() => expect(server.called(CLOSE)).toHaveLength(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Close session Claude' }))
+    await waitFor(() => expect(server.called(CLOSE)).toHaveLength(2))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
   })
 
   it('shows a workspace with no session what it can start, and resumes an earlier conversation', async () => {
