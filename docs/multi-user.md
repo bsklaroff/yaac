@@ -99,7 +99,9 @@ There are two access levels:
 `authorizeProject(actor, projectId)` is the check verbs make: every
 workspace-scoped verb resolves its workspace's project and asks it. A
 project that does not exist is `NOT_FOUND`, never open. A refusal is
-`FORBIDDEN` (403).
+`FORBIDDEN` (403). A project held by a verb that writes must not race,
+such as a move to another git host (`withProjectsHeld`), refuses every
+write as `CONFLICT` (409), the server's own included.
 
 - Domain verbs authorize before their first side effect, and their
   internal sub-steps pass the actor along rather than checking again.

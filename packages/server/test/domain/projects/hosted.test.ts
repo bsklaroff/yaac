@@ -8,10 +8,13 @@ import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/
 import { git } from '@yaac/test-utils/git'
 import { hostedRepoDir, repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
-import { BUILT_IN_USER_ID, closeDb, getProjectRow, seeTailnetUser, setProjectShareRevoked } from '#db'
+import { BUILT_IN_USER_ID, closeDb, getProjectRow, seeTailnetUser, setProjectRemote, setProjectShareRevoked } from '#db'
+import { addHttpsCredential } from '#domain/auth'
 import { getDefaultBranch } from '#domain/git'
+import { withProjectsHeld } from '#domain/access'
 import {
   createHostedProject,
+  removeKeptHostedRepo,
   serveHostedRepo,
   setDefaultBranchGuard,
   shareProject,
@@ -54,12 +57,25 @@ async function handle(request: Request): Promise<Response> {
     return await serveHostedRepo(rest[0], request, `/${rest.slice(1).join('/')}`, caller)
   } catch (err) {
     const code = err instanceof ServerError ? err.code : 'INTERNAL'
-    return new Response(code, { status: code === 'FORBIDDEN' ? 403 : code === 'NOT_FOUND' ? 404 : 500 })
+    return new Response(code, { status: err instanceof ServerError ? err.httpStatus : 500 })
   }
 }
 
 /** Wait for the post-push fetch to bring the main clone's `origin/<branch>`
  *  to `sha`. */
+/** A hosted project with `main` pushed to it, then moved to another git
+ *  host as `moveProjectToRemote` leaves it. Answers its id and `main`. */
+async function movedProject(name: string): Promise<{ id: string; tip: string }> {
+  const { id } = await createHostedProject(name, BUILT_IN_USER_ID)
+  const work = path.join(tmp, `${name}-work`)
+  await run(tmp, ['clone', '-q', `${origin}/owner/${id}`, work])
+  await run(work, ['commit', '-q', '--allow-empty', '-m', 'before the move'])
+  await run(work, ['push', '-q', 'origin', 'HEAD:main'])
+  const cred = await addHttpsCredential(BUILT_IN_USER_ID, { name: `${name}-gh`, token: 'ghp_x' })
+  await setProjectRemote(id, `https://github.com/acme/${name}.git`, { id: cred.id, knownHostsEntry: null })
+  return { id, tip: (await run(work, ['rev-parse', 'HEAD'])).trim() }
+}
+
 async function mainCloneSees(branch: string, sha: string, project = projectId): Promise<void> {
   for (let i = 0; i < 100; i += 1) {
     const at = await run(repoDir(project), ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`]).catch(() => '')
@@ -106,6 +122,13 @@ describe('serveHostedRepo', () => {
     await mainCloneSees('agent/one', (await run(work, ['rev-parse', 'HEAD'])).trim())
 
     await expect(run(tmp, ['ls-remote', `${origin}/ws/${OTHER_PROJECT}/${projectId}`])).rejects.toThrow(/403/)
+
+    // Nobody pushes while the project is held, as a move holds it; reads go on.
+    await run(work, ['commit', '-q', '--allow-empty', '-m', 'while held'])
+    await withProjectsHeld([projectId], 'moving', async () => {
+      await expect(run(work, ['push', '-q', 'origin', 'HEAD:agent/one'])).rejects.toThrow(/409/)
+      await run(work, ['fetch', '-q', 'origin'])
+    })
   })
 
   it('lets any user read but only the owner push', async () => {
@@ -203,6 +226,32 @@ describe('serveHostedRepo', () => {
     await setProjectShareRevoked(share, true)
     await expect(run(work, ['push', '-q', 'origin', 'HEAD:ada/two'])).rejects.toThrow(/403/)
     await expect(run(tmp, ['ls-remote', `${origin}/ws/${share}/${share}`])).rejects.toThrow(/403/)
+  })
+
+  it("serves a moved project's old repository read-only, to compare with its new remote", async () => {
+    const { id, tip } = await movedProject('moved')
+    expect(await run(tmp, ['ls-remote', `${origin}/owner/${id}`, 'refs/heads/main'])).toBe(`${tip}\trefs/heads/main\n`)
+    const work = path.join(tmp, 'moved-clone')
+    await run(tmp, ['clone', '-q', `${origin}/owner/${id}`, work])
+    await run(work, ['commit', '-q', '--allow-empty', '-m', 'after the move'])
+    await expect(run(work, ['push', '-q', 'origin', 'HEAD:main'])).rejects.toThrow(/403/)
+    await expect(run(work, ['push', '-q', `${origin}/ws/${id}/${id}`, 'HEAD:main'])).rejects.toThrow(/403/)
+  })
+})
+
+describe('removeKeptHostedRepo', () => {
+  it("deletes a moved project's old repository for its owner, and refuses anyone else or any other project", async () => {
+    const { id } = await movedProject('removed')
+    const owner = { kind: 'local' as const, userId: BUILT_IN_USER_ID }
+    await expect(removeKeptHostedRepo({ kind: 'local', userId: STRANGER }, id)).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    await expect(removeKeptHostedRepo(owner, projectId)).rejects.toThrow(/keeps no old repository/)
+    await expect(removeKeptHostedRepo(owner, OTHER_PROJECT)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+
+    await removeKeptHostedRepo(owner, id)
+    await expect(fs.access(hostedRepoDir(id))).rejects.toThrow()
+    expect(await getProjectRow(id)).toMatchObject({ keepsHostedRepo: false })
+    await expect(run(tmp, ['ls-remote', `${origin}/owner/${id}`])).rejects.toThrow(/not found/i)
+    await expect(removeKeptHostedRepo(owner, id)).rejects.toThrow(/keeps no old repository/)
   })
 })
 

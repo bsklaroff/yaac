@@ -7,6 +7,7 @@ import { projectAdd } from '#commands/project-add'
 import { projectList } from '#commands/project-list'
 import { projectCreate } from '#commands/project-create'
 import { projectClone } from '#commands/project-clone'
+import { projectMove } from '#commands/project-move'
 import { groupCreate, groupDelete, groupList, groupMove, groupSetLimit } from '#commands/group'
 import { workspaceCreate } from '#commands/workspace-create'
 import { scopeToUser } from '#commands/api'
@@ -292,6 +293,14 @@ project
   .argument('<project>', 'Project name or id')
   .argument('[dir]', 'Directory to clone into (default: the project name)')
   .action(projectClone)
+
+project
+  .command('move')
+  .description('Move a yaac-hosted project, and every share of it, to an empty git remote elsewhere: stop every workspace on it (other users\' too), push every branch and tag there, and use the remote from then on. yaac keeps its copy, read-only, until removed in Project settings. Asks for confirmation, so it needs a terminal')
+  .argument('<project>', 'Project name or id')
+  .argument('<remote-url>', 'Git remote URL to push to: an empty repository, e.g. a new GitHub one with no README')
+  .argument('<credential>', 'Name of the git credential that can push there, assigned to the project (see `yaac auth list`)')
+  .action(projectMove)
 
 const group = program
   .command('group')

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { closeDb } from '#db/client'
 import {
+  clearProjectKeepsHostedRepo,
   deleteProjectRow,
   getProjectRow,
   listProjectRows,
@@ -14,10 +15,11 @@ import {
   setProjectEgressAllowlist,
   setProjectScratchDirs,
   setProjectGitCredential,
+  setProjectRemote,
   setProjectShareRevoked,
 } from '#db/project-store'
 import { insertGitCredential } from '#db/git-credential-store'
-import { BUILT_IN_USER_ID } from '#db/user-store'
+import { BUILT_IN_USER_ID, seeTailnetUser } from '#db/user-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
 const APP = '0a0a0a0a-0000-4000-8000-000000000001'
@@ -55,6 +57,7 @@ describe('recordProject', () => {
       egressAllowlist: { hosts: [], defaults: true },
       hosted: false,
       guardDefaultBranch: true,
+      keepsHostedRepo: false,
       shareRevoked: false,
       keptIgnoredPaths: [],
       scratchDirs: { dirs: [{ path: 'node_modules' }, { path: 'target' }], ignoredTracked: [] },
@@ -149,6 +152,7 @@ describe('listProjectRows', () => {
         egressAllowlist: { hosts: [], defaults: true },
         hosted: false,
         guardDefaultBranch: true,
+        keepsHostedRepo: false,
         shareRevoked: false,
         keptIgnoredPaths: [],
         scratchDirs: { dirs: [{ path: 'node_modules' }, { path: 'target' }], ignoredTracked: [] },
@@ -258,6 +262,67 @@ describe('setProjectGitCredential', () => {
     expect(await setProjectGitCredential(APP, b.id, 'x ssh-ed25519 TWO')).toBe(true)
     expect(await getProjectRow(APP)).toMatchObject({ gitCredentialId: b.id, knownHostsEntry: 'x ssh-ed25519 TWO' })
     expect(await setProjectGitCredential('0a0a0a0a-0000-4000-8000-0000000000ff', a.id, null)).toBe(false)
+  })
+})
+
+describe('setProjectRemote', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+  })
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  it('points a hosted project and its shares at a remote, the credential its alone, and reports an unknown projectId', async () => {
+    const cred = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'gh', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 AAAA yaac gh' })
+    const hosted = (id: string): string => `http://yaac.internal/api/workspace/git/${id}.git`
+    await recordProject({ id: APP, name: 'app', remoteUrl: hosted(APP), addedAt: '2026-01-01', hosted: true }, BUILT_IN_USER_ID)
+    const [ada, bob] = await Promise.all([seeTailnetUser('ada@example.com', 'Ada'), seeTailnetUser('bob@example.com', 'Bob')])
+    await recordProject({ id: P, name: 'app', remoteUrl: hosted(P), addedAt: '2026-01-01', hosted: true, sharedFrom: APP }, ada)
+    await recordProject({ id: Q, name: 'app', remoteUrl: hosted(Q), addedAt: '2026-01-01', hosted: true, sharedFrom: APP }, bob)
+    await setProjectShareRevoked(Q, true)
+    const seen: number[] = []
+    _resetWorkspaceListChangedForTests()
+    onWorkspaceListChanged(() => seen.push(1))
+
+    const remote = 'git@github.com:acme/app.git'
+    expect(await setProjectRemote(APP, remote, { id: cred.id, knownHostsEntry: 'github.com ssh-ed25519 KEY' })).toBe(true)
+    expect(await getProjectRow(APP)).toMatchObject({
+      remoteUrl: remote, hosted: false, keepsHostedRepo: true, gitCredentialId: cred.id, knownHostsEntry: 'github.com ssh-ed25519 KEY',
+    })
+    // An active share becomes a project of its own; a removed one stays
+    // removed, and so read-only. Neither has a repository of its own.
+    const share = await getProjectRow(P)
+    expect(share).toMatchObject({ remoteUrl: remote, hosted: false, keepsHostedRepo: false, gitCredentialId: null, knownHostsEntry: null })
+    expect(share?.sharedFrom).toBeUndefined()
+    expect(await getProjectRow(Q)).toMatchObject({ remoteUrl: remote, hosted: false, sharedFrom: APP, shareRevoked: true })
+    expect(seen.length).toBeGreaterThan(0)
+    expect(await setProjectRemote('0a0a0a0a-0000-4000-8000-0000000000ff', remote, { id: cred.id, knownHostsEntry: null })).toBe(false)
+  })
+})
+
+describe('clearProjectKeepsHostedRepo', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+  })
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  it('records that a moved project keeps no old repository, and reports an unknown projectId', async () => {
+    const cred = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'gh', kind: 'https', secret: 'ghp_x' })
+    await recordProject({ id: APP, name: 'app', remoteUrl: `http://yaac.internal/api/workspace/git/${APP}.git`, addedAt: '2026-01-01', hosted: true }, BUILT_IN_USER_ID)
+    await setProjectRemote(APP, 'https://github.com/acme/app.git', { id: cred.id, knownHostsEntry: null })
+
+    expect(await clearProjectKeepsHostedRepo(APP)).toBe(true)
+    expect(await getProjectRow(APP)).toMatchObject({ keepsHostedRepo: false, remoteUrl: 'https://github.com/acme/app.git' })
+    expect(await clearProjectKeepsHostedRepo('0a0a0a0a-0000-4000-8000-0000000000ff')).toBe(false)
   })
 })
 

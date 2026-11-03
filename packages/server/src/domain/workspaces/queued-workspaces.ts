@@ -29,7 +29,7 @@ import { workspaceDriver } from '#drivers/driver'
 import { prepareStart } from './start'
 import { toStoppedEntries } from './stopped-list'
 import { modelDisplayName, modelEfforts } from '#domain/auth'
-import { authorizeProject, systemPrincipal, type Actor } from '#domain/access'
+import { authorizeProject, isProjectHeld, systemPrincipal, type Actor } from '#domain/access'
 import { getDefaultBranch } from '#domain/git'
 import {
   claimQueuedLaunch,
@@ -298,7 +298,8 @@ export async function startScheduledWorkspaces(): Promise<void> {
  * once at boot (`resumeQueuedWorkspaces`).
  * A launch takes its slot before it claims the entry, so concurrent calls
  * cannot over-launch. One that failed waits for the user, as any failed
- * launch does. Never throws, since its callers' own writes have succeeded:
+ * launch does. A held project's entries (`withProjectsHeld`) wait for the
+ * verb that held it to call this again. Never throws, since its callers' own writes have succeeded:
  * an entry it could not launch waits for the next slot that frees.
  */
 export async function startWaitingWorkspaces(projectId?: string): Promise<void> {
@@ -310,7 +311,7 @@ export async function startWaitingWorkspaces(projectId?: string): Promise<void> 
   const full = new Set<string>()
   for (const row of rows.filter(waitsForRoom)) {
     const key = `${row.projectId}/${row.groupId ?? ''}`
-    if (full.has(key)) continue
+    if (full.has(key) || isProjectHeld(row.projectId)) continue
     try {
       // A scheduled entry's timeout counts from its start time, so one that
       // waited may find its window already gone.

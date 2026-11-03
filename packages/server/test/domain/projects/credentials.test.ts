@@ -9,6 +9,7 @@ import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/
 import {
   assignProjectCredential,
   missingCredentialError,
+  resolveCredentialForRemote,
   resolveProjectCredential,
   sshKeyMaterial,
 } from '#domain/projects'
@@ -93,6 +94,34 @@ describe('assignProjectCredential', () => {
     // A remote yaac hosts takes no credential.
     await recordProject({ id: API, name: 'api', remoteUrl: hostedRemoteUrl(API), addedAt: '2026-01-01', hosted: true }, BUILT_IN_USER_ID)
     await expect(assignProjectCredential(local, API, token.id)).rejects.toThrow(/needs no git credential/)
+  })
+})
+
+describe('resolveCredentialForRemote', () => {
+  it("resolves one of the owner's credentials that fits a remote, and refuses a remote or credential that does not", async () => {
+    const token = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_abcd1234' })
+    const key = await generateSshCredential(BUILT_IN_USER_ID, { name: 'deploy' })
+
+    expect(await resolveCredentialForRemote(BUILT_IN_USER_ID, token.id, 'https://github.com/acme/web.git'))
+      .toEqual({ credential: { kind: 'https', token: 'ghp_abcd1234' }, knownHostsEntry: null })
+    expect(await resolveCredentialForRemote(BUILT_IN_USER_ID, key.id, 'git@git.example.com:acme/svc.git')).toEqual({
+      credential: { kind: 'ssh', id: key.id, publicKey: key.publicKey, knownHostsEntry: HOST_KEY },
+      knownHostsEntry: HOST_KEY,
+    })
+
+    await expect(resolveCredentialForRemote(BUILT_IN_USER_ID, token.id, 'http://github.com/acme/web.git'))
+      .rejects.toMatchObject({ code: 'VALIDATION', message: expect.stringMatching(/Only HTTPS/) as string })
+    // A token in the URL would be stored, listed to every user and written
+    // into checkouts.
+    for (const url of ['https://x-access-token:ghp_secret@github.com/acme/web.git', 'https://ghp_secret@github.com/acme/web.git']) {
+      await expect(resolveCredentialForRemote(BUILT_IN_USER_ID, token.id, url))
+        .rejects.toMatchObject({ code: 'VALIDATION', message: expect.stringMatching(/must not carry a user or token/) as string })
+    }
+    await expect(resolveCredentialForRemote(BUILT_IN_USER_ID, token.id, 'git@git.example.com:acme/svc.git'))
+      .rejects.toThrow(/needs an SSH key, not a token/)
+    const bob = await seeTailnetUser('bob@example.com', 'Bob')
+    await expect(resolveCredentialForRemote(bob, token.id, 'https://github.com/acme/web.git'))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 })
 

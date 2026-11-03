@@ -255,6 +255,56 @@ describe('ProjectSettings', () => {
     await waitFor(() => expect(server.called('DELETE /api/project/id-gamma/shares/u-ada')).toHaveLength(1))
   })
 
+  it('warns what a move stops and hands over, then moves the project with the chosen credential', async () => {
+    useUiStore.setState({ activeProjectId: 'id-gamma' })
+    const snapshot = serverSnapshot({
+      driver: 'containerless',
+      projects: [{ ...project('gamma', 'http://yaac.internal/api/workspace/git/id-gamma.git'), hosted: true }],
+    })
+    const token = { id: 'c-token', name: 'gh', kind: 'https', preview: '***abcd', projects: [] } as const
+    const server = mockFetch({
+      'GET /api/project/id-gamma/env': { vars: [] },
+      'GET /api/project/id-gamma/config/raw': { content: '' },
+      'GET /api/auth/list': { gitCredentials: [token], toolAuth: [] },
+      'GET /api/project/id-gamma/move': { runningWorkspaces: 2, sharedWith: ['ada@x.com'] },
+      'POST /api/project/id-gamma/move': { knownHostsEntry: null },
+    })
+    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Move…' }))
+    const warning = await screen.findByRole('note', { name: 'What moving does' })
+    await waitFor(() => expect(warning.textContent).toContain('2 running workspaces on this project stop first, whoever owns them'))
+    expect(warning.textContent).toContain('It is shared with ada@x.com')
+    expect(warning.textContent).toContain('yaac keeps its own copy')
+    fireEvent.change(screen.getByRole('textbox', { name: 'Repository URL' }), { target: { value: 'https://github.com/o/gamma.git' } })
+    fireEvent.change(await screen.findByRole('combobox', { name: 'Git credential' }), { target: { value: 'c-token' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Stop 2 workspaces and move' }))
+    await waitFor(() => expect(server.called('POST /api/project/id-gamma/move').map((c) => c.body))
+      .toEqual([{ remoteUrl: 'https://github.com/o/gamma.git', gitCredentialId: 'c-token' }]))
+  })
+
+  it("shows how to compare a moved project's old repository with its remote, and removes it once confirmed", async () => {
+    useUiStore.setState({ activeProjectId: 'id-gamma' })
+    const snapshot = serverSnapshot({
+      driver: 'containerless',
+      projects: [{ ...project('gamma', 'https://github.com/o/gamma.git'), keepsHostedRepo: true }],
+    })
+    const server = mockFetch({
+      'GET /api/project/id-gamma/env': { vars: [] },
+      'GET /api/project/id-gamma/config/raw': { content: '' },
+      'DELETE /api/project/id-gamma/hosted-repo': () => undefined,
+    })
+    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
+
+    expect(screen.queryByRole('button', { name: 'Move…' })).toBeNull()
+    screen.getByText(`git ls-remote ${window.location.origin}/api/project/id-gamma/git`)
+    screen.getByText('git ls-remote https://github.com/o/gamma.git')
+    fireEvent.click(screen.getByRole('button', { name: 'Remove yaac\'s copy…' }))
+    expect(server.called('DELETE /api/project/id-gamma/hosted-repo')).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(server.called('DELETE /api/project/id-gamma/hosted-repo')).toHaveLength(1))
+  })
+
   it("shows a share as its sharer's, with the guard left to them and no sharing of its own", () => {
     useUiStore.setState({ activeProjectId: 'id-mine' })
     const whoami: Whoami = {

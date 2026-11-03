@@ -8,7 +8,9 @@
 
 export {
   authorizeProject,
+  isProjectHeld,
   systemPrincipal,
+  withProjectsHeld,
   workspacePrincipal,
   type AccessLevel,
   type Actor,

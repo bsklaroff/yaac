@@ -58,6 +58,7 @@ import {
   setQueuedWorkspaceTitle,
 } from '#db/queued-workspace-store'
 import { recordProject, recordProjectCreate } from '#db/project-store'
+import { withProjectsHeld } from '#domain/access'
 import { insertRoutine } from '#db/routine-store'
 import { getProjectWorkspaceRows, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { closeDb } from '#db/client'
@@ -675,6 +676,23 @@ describe('resumeQueuedWorkspaces', () => {
     await launched(1)
     expect(mockCreate.mock.calls[0][1]).toMatchObject({ session: { prompt: 'waiting' }, groupId })
     await settled(waiting.id, true)
+  })
+
+  // A move off yaac holds the project while it stops its workspaces,
+  // which releases what was queued under them.
+  it("leaves a held project's released entries waiting out the hold, not failed on it", async () => {
+    await workspace(P)
+    const child = await queueWorkspace(local, PROJ, { parent: P, prompt: 'after P' }, 'user')
+    await releaseQueuedWorkspace(child.id)
+
+    // Not even claimed: a claimed launch would fail on the hold.
+    await withProjectsHeld([PROJ], 'demo is moving', () => resumeQueuedWorkspaces())
+    const row = await getQueuedWorkspaceRow(child.id)
+    expect([row?.launchWorkspaceId, row?.launchError]).toEqual([undefined, undefined])
+
+    await resumeQueuedWorkspaces()
+    await launched(1)
+    await settled(child.id, true)
   })
 
   // Requests are served before it runs, so a Run now can beat it.

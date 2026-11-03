@@ -4,7 +4,9 @@ import type { ServerError } from '@yaac/shared/errors'
 import { BUILT_IN_USER_ID, closeDb, recordProject, seeTailnetUser, setProjectShareRevoked } from '#db'
 import {
   authorizeProject,
+  isProjectHeld,
   systemPrincipal,
+  withProjectsHeld,
   workspacePrincipal,
   type Actor,
 } from '#domain/access'
@@ -61,6 +63,39 @@ describe('authorizeProject', () => {
     expect(await codeOf(authorizeProject(user(recipient), SHARE))).toBe('FORBIDDEN')
     expect(await codeOf(authorizeProject(systemPrincipal, SHARE))).toBe('FORBIDDEN')
     expect(await codeOf(authorizeProject(user(owner), SHARE))).toBe('FORBIDDEN')
+  })
+})
+
+describe('withProjectsHeld', () => {
+  it('refuses every write to the held projects, the server too, until it settles, and one hold at a time', async () => {
+    const reason = 'demo is moving; try again once it has.'
+    let release = (): void => {}
+    const held = withProjectsHeld([PROJ], reason, () => new Promise<string>((resolve) => { release = () => resolve('done') }))
+
+    for (const actor of [user(owner), systemPrincipal]) {
+      await expect(authorizeProject(actor, PROJ)).rejects.toMatchObject({ code: 'CONFLICT', message: reason })
+    }
+    await expect(withProjectsHeld([MISSING, PROJ], 'again', () => Promise.resolve())).rejects.toMatchObject({ code: 'CONFLICT', message: reason })
+    // A refused hold takes none of its projects.
+    expect(isProjectHeld(MISSING)).toBe(false)
+
+    release()
+    expect(await held).toBe('done')
+    await expect(authorizeProject(user(owner), PROJ)).resolves.toBeUndefined()
+    // A failure lifts the hold too.
+    await expect(withProjectsHeld([PROJ], reason, () => Promise.reject(new Error('boom')))).rejects.toThrow('boom')
+    await expect(authorizeProject(user(owner), PROJ)).resolves.toBeUndefined()
+  })
+})
+
+describe('isProjectHeld', () => {
+  it('answers whether a hold is on the project', async () => {
+    expect(isProjectHeld(PROJ)).toBe(false)
+    await withProjectsHeld([PROJ], 'held', () => {
+      expect(isProjectHeld(PROJ)).toBe(true)
+      return Promise.resolve()
+    })
+    expect(isProjectHeld(PROJ)).toBe(false)
   })
 })
 

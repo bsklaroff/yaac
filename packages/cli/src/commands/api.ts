@@ -67,3 +67,11 @@ export async function resolveProjectId(project: string, scope?: ProjectScope): P
       : `${userRef} has no project ${project.trim()}.`)
   }
 }
+
+/** The id of the caller's git credential named `name`. */
+export async function resolveGitCredentialId(name: string): Promise<string> {
+  const { gitCredentials } = await api.auth.list.$get()
+  const id = gitCredentials.find((c) => c.name === name)?.id
+  if (id === undefined) throw new Error(`No git credential named "${name}". Run \`yaac auth list\` to see them.`)
+  return id
+}

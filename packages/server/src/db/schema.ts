@@ -130,6 +130,10 @@ export const projects = snakeCase.table('projects', {
   /** For a hosted project: refuse pushes that delete or rewind the default
    *  branch. */
   guardDefaultBranch: boolean().notNull().default(true),
+  /** For a project that moved off yaac to another git host: yaac still
+   *  keeps the repository it hosted, read-only, until the owner removes it
+   *  (docs/hosted-projects.md "Moving to a git host"). */
+  keepsHostedRepo: boolean().notNull().default(false),
   /**
    * For a project shared with its owner (docs/hosted-projects.md "Sharing"):
    * the hosted project it was shared from, whose repository it reads and

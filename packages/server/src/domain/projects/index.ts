@@ -11,7 +11,7 @@
 // packages/server/test/domain/projects/.
 
 export { addProject, createHostedProject, registerStagedProject, shareProject } from './add'
-export { serveHostedRepo, setDefaultBranchGuard } from './hosted'
+export { removeKeptHostedRepo, serveHostedRepo, setDefaultBranchGuard } from './hosted'
 export {
   addAllowedHostToProject,
   getProjectAllowlist,
@@ -45,6 +45,7 @@ export {
 export {
   assignProjectCredential,
   missingCredentialError,
+  resolveCredentialForRemote,
   resolveProjectCredential,
   sshKeyMaterial,
 } from './credentials'

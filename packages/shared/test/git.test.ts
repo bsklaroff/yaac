@@ -116,15 +116,28 @@ describe('clone refresh commands', () => {
   describe('buildCloneLinkExec', () => {
     it('rewrites the alternates line to the main clone as the server sees it', async () => {
       await fs.writeFile(path.join(wt, '.git', 'objects', 'info', 'alternates'), '/yaac/global/elsewhere/.git/objects\n')
-      const cmd = buildCloneLinkExec(path.join(main, '.git'), wt)
+      const cmd = buildCloneLinkExec(path.join(main, '.git'), wt, source)
       await run(cmd)
       expect(await fs.readFile(path.join(wt, '.git', 'objects', 'info', 'alternates'), 'utf8'))
         .toBe(`${path.join(main, '.git', 'objects')}\n`)
       expect((await git(wt, ['status', '--porcelain'])).trim()).toBe('')
     })
 
+    it("points an origin still at yaac's hosted remote at the project's remote, and leaves one the user set", async () => {
+      const moved = "https://github.com/acme/it's.git"
+      await git(wt, ['config', 'remote.origin.url', 'http://yaac.internal/api/workspace/git/p.git'])
+      await run(buildCloneLinkExec(path.join(main, '.git'), wt, moved))
+      expect((await git(wt, ['config', 'remote.origin.url'])).trim()).toBe(moved)
+      expect((await git(wt, ['config', 'branch.agent/x.remote'])).trim()).toBe('origin')
+
+      await git(wt, ['config', 'remote.origin.url', 'git@github.com:me/fork.git'])
+      await run(buildCloneLinkExec(path.join(main, '.git'), wt, moved))
+      expect((await git(wt, ['config', 'remote.origin.url'])).trim()).toBe('git@github.com:me/fork.git')
+      await git(wt, ['config', 'remote.origin.url', source])
+    })
+
     it('fails when the alternates line cannot be written', async () => {
-      const cmd = buildCloneLinkExec(path.join(main, '.git'), path.join(tmp, 'missing'))
+      const cmd = buildCloneLinkExec(path.join(main, '.git'), path.join(tmp, 'missing'), 'https://github.com/acme/x.git')
       await expect(run(cmd)).rejects.toThrow()
     })
   })

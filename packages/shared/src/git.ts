@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { env } from '#env'
+import { HOSTED_REMOTE_PREFIX } from '#hosted-git'
 
 const execFileAsync = promisify(execFile)
 
@@ -39,19 +40,24 @@ function singleQuoted(s: string): string {
 }
 
 /**
- * Point a checkout at the main clone's objects, then bring its `origin/*` up
- * to date from the main clone: one shell command, run in the workspace when
- * a launch reuses a checkout. `workspaceDir` is where the workspace sees its
- * checkout, and must be shell-safe (driver paths are). A checkout the launch
- * just created already has both.
+ * Point a checkout at the main clone's objects, then bring its `origin/*`
+ * up to date from the main clone: one shell command, run in the workspace
+ * when a launch reuses a checkout. `workspaceDir` is where the workspace
+ * sees its checkout, and must be shell-safe (driver paths are). A checkout
+ * the launch just created already has both.
  *
  * The alternates line is the checkout's only path-dependent git state
  * (docs/server-git.md). It is always the main clone's objects dir as the
  * server sees it; pods mount the main clone at that same path. Rewriting it
- * on every reuse heals a checkout whose data dir moved.
+ * on every reuse heals a checkout whose data dir moved. An `origin` that
+ * still names yaac's hosted remote is set to `remoteUrl`, which heals a
+ * checkout whose project moved to another git host; one the user pointed
+ * elsewhere is left alone.
  */
-export function buildCloneLinkExec(repoGitDir: string, workspaceDir: string): string {
+export function buildCloneLinkExec(repoGitDir: string, workspaceDir: string, remoteUrl: string): string {
   return `printf '%s\\n' ${singleQuoted(`${repoGitDir}/objects`)} > ${workspaceDir}/.git/objects/info/alternates`
+    + ` && case "$(git -C ${workspaceDir} config remote.origin.url)" in ${singleQuoted(HOSTED_REMOTE_PREFIX)}*)`
+    + ` git -C ${workspaceDir} config remote.origin.url ${singleQuoted(remoteUrl)};; esac`
     + ` && { ${buildOriginRefreshExec(repoGitDir, workspaceDir)}; }`
 }
 

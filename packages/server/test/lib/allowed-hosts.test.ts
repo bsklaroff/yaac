@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   DEFAULT_ALLOWED_HOSTS,
   NESTED_PULL_HOSTS,
+  allowlistAllows,
   hostMatchesPattern,
   resolveAllowedHosts,
 } from '#lib/allowed-hosts'
@@ -114,6 +115,16 @@ describe('hostMatchesPattern', () => {
       'docker-images-prod.a.b.r2.cloudflarestorage.com',
       'docker-images-prod.*.r2.cloudflarestorage.com',
     )).toBe(false)
+  })
+})
+
+describe('allowlistAllows', () => {
+  it('allows a host the defaults, an added pattern or a wildcard covers, and no other', () => {
+    expect(allowlistAllows({ hosts: [], defaults: true }, 'github.com')).toBe(true)
+    expect(allowlistAllows({ hosts: [], defaults: false }, 'github.com')).toBe(false)
+    expect(allowlistAllows({ hosts: ['*.example.test'], defaults: false }, 'git.example.test')).toBe(true)
+    expect(allowlistAllows({ hosts: ['*'], defaults: false }, 'anything.test')).toBe(true)
+    expect(allowlistAllows({ hosts: ['other.test'], defaults: true }, 'git.example.test')).toBe(false)
   })
 })
 

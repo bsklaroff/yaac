@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { createYaacTestEnv, spawnYaacServer, runYaac, type YaacTestEnv } from '#support/cli'
+import { createYaacTestEnv, spawnYaacServer, runYaac, type RunYaacOptions, type YaacTestEnv } from '#support/cli'
 import { makeServerApiClient, type SpawnedServer } from '@yaac/test-utils/api'
 import { createTestRepo } from '@yaac/test-utils/setup'
 import { addTestProject } from '#support/cluster'
@@ -9,7 +9,7 @@ import { BUILT_IN_USER_ID } from '@yaac/server/db/user-store'
 import { git } from '@yaac/test-utils/git'
 
 /**
- * e2e coverage for `yaac project` (list/add/create/clone) and `yaac
+ * e2e coverage for `yaac project` (list/add/create/clone/move) and `yaac
  * config`, sharing one test env and server across the file.
  *
  * Tests run in declaration order over one data dir, so order matters:
@@ -148,6 +148,47 @@ describe('yaac project (real CLI + real server)', () => {
     expect(bad.stderr).toContain('not a usable project name')
 
     const notHosted = await runYaac(testEnv.env, 'project', 'clone', 'repo-alpha', path.join(testEnv.scratchDir, 'nope'))
+    expect(notHosted.exitCode).not.toBe(0)
+    expect(notHosted.stderr).toContain('is not hosted by yaac')
+  })
+
+  // A move that lands needs a git host to push to, so unit tests cover it
+  // (moveProjectToRemote); here every argument reaches the server.
+  it('project move warns what it stops, moves only once confirmed on a terminal, and changes nothing when it cannot', async () => {
+    const move = (...args: Array<string | RunYaacOptions>): ReturnType<typeof runYaac> => runYaac(testEnv.env, 'project', 'move', ...args)
+    const answer = (send: string): RunYaacOptions => ({ tty: true, stdinOnPrompt: [{ when: /Continue\? \[y\/N\]/, send }] })
+    const target = 'https://gitlab.example.com/foo/bar'
+    const stillHosted = async (): Promise<void> => {
+      expect((await runYaac(testEnv.env, 'project', 'list')).stdout).toMatch(/hosted-demo\s+\S+\s+\(hosted by yaac\)/)
+    }
+
+    // With no terminal to confirm on it refuses; on one, Enter means no.
+    const unconfirmed = await move('hosted-demo', target, 'fake-github')
+    expect(unconfirmed.exitCode).toBe(1)
+    expect(unconfirmed.stderr).toContain('only moved from a terminal')
+    const declined = await move('hosted-demo', target, 'fake-github', answer('\r'))
+    expect(declined.stdout).toContain(`This moves hosted-demo to ${target}, which must be empty. It first stops 0 running workspace(s)`)
+    expect(declined.stdout).toContain('Aborted — nothing was stopped or moved.')
+    await stillHosted()
+
+    // Before anything stops, the move fails: behind the egress proxy on the
+    // allowlist, and on the host because it does not exist.
+    const unreachable = await move('hosted-demo', target, 'fake-github', answer('y\r'))
+    expect(unreachable.exitCode).not.toBe(0)
+    expect(unreachable.stdout).toContain(`Moving hosted-demo to ${target}...`)
+    expect(unreachable.stdout).toMatch(buildsImages
+      ? /"gitlab.example.com" is not in the egress allowlist of "hosted-demo"/
+      : /did not move: .*It stays on yaac/s)
+    await stillHosted()
+
+    const sshWithToken = await move('hosted-demo', 'git@github.com:org/repo.git', 'fake-github', answer('y\r'))
+    expect(sshWithToken.stdout).toMatch(/needs an SSH key, not a token/)
+    const missing = await move('hosted-demo', 'https://github.com/org/repo')
+    expect(missing.stderr).toMatch(/missing required argument 'credential'/)
+    const unknown = await move('hosted-demo', 'https://github.com/org/repo', 'nope')
+    expect(unknown.stderr).toContain('No git credential named "nope"')
+    // Refused before it asks.
+    const notHosted = await move('repo-alpha', 'https://github.com/org/repo', 'fake-github')
     expect(notHosted.exitCode).not.toBe(0)
     expect(notHosted.stderr).toContain('is not hosted by yaac')
   })

@@ -3,14 +3,34 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver, snapshotFixture } from '#test/support/fake-driver'
-import type { RuntimeHandle } from '#drivers/contract'
+import type { CredentialBundle, RuntimeHandle } from '#drivers/contract'
 
-import { reconcileRevokedShares, removeProject, unshareProject } from '#domain/workspaces'
+// git is the process boundary. A move's check and push run for real,
+// redirected to a local bare repository, and the fetch from the new remote
+// is only recorded.
+vi.mock('#domain/git', async (importOriginal) => {
+  const actual = await importOriginal<typeof gitModule>()
+  return {
+    ...actual,
+    checkMoveTarget: vi.fn(actual.checkMoveTarget),
+    pushHostedRepo: vi.fn(actual.pushHostedRepo),
+    fetchOrigin: vi.fn(() => Promise.resolve()),
+  }
+})
+
+import { checkMoveTarget, fetchOrigin, pushHostedRepo } from '#domain/git'
+import type * as gitModule from '#domain/git'
+import { authorizeProject, isProjectHeld, systemPrincipal } from '#domain/access'
+import { moveProjectToRemote, previewProjectMove, reconcileRevokedShares, removeProject, unshareProject } from '#domain/workspaces'
+import { createHostedProject, resolveProjectCredential, shareProject } from '#domain/projects'
+import { addHttpsCredential, credentialOwnerKey } from '#domain/auth'
 import { listWorkspaceRows, recordWorkspaceCreated } from '#db/workspace-store'
+import { clearAllProvisioningForTests, listProvisioning, provision } from '#domain/workspaces/provisioning'
 import { getProjectRow, listProjectRows, recordProject, setProjectShareRevoked } from '#db/project-store'
 import { listProjectEnvVars, upsertProjectEnvVar } from '#db/project-env-store'
 import { closeDb } from '#db/client'
-import { nodeLocalProjectPath, projectDir } from '@yaac/shared/project-paths'
+import { hostedRepoDir, nodeLocalProjectPath, projectDir, repoDir } from '@yaac/shared/project-paths'
+import { git } from '@yaac/test-utils/git'
 import { getProjectsDir } from '@yaac/shared/paths'
 import { DEMO_PROJECT_ID, recordTestProject } from '@yaac/test-utils/project-fixture'
 import { BUILT_IN_USER_ID, seeTailnetUser } from '#db'
@@ -44,6 +64,10 @@ let rowsAtPurge: string[] = []
 /** The project's running workspaces, and the ones torn down. */
 const mockList = vi.fn<(projectId?: string) => Promise<RuntimeHandle[]>>()
 const mockDeregister = vi.fn<(workspaceId: string) => Promise<void>>()
+/** The workspaces destroyed outright: reaped spares. */
+const mockDestroy = vi.fn<(target: { workspaceId: string }) => Promise<boolean>>()
+/** What the runtime was last handed to inject, by owner key. */
+const mockSync = vi.fn<(bundles: Record<string, CredentialBundle>) => Promise<void>>()
 
 let tmpDir: string
 
@@ -51,6 +75,8 @@ function installDriver(destroySubstrate?: () => Promise<void>): void {
   installFakeWorkspaceDriver({
     list: mockList,
     deregisterWorkspace: mockDeregister,
+    destroy: mockDestroy,
+    syncCredentials: mockSync,
     destroyProjectSubstrate: async (project) => {
       purged.push(project)
       rowsAtPurge = (await listWorkspaceRows()).map((r) => r.workspaceId)
@@ -65,6 +91,8 @@ beforeEach(async () => {
   rowsAtPurge = []
   mockList.mockReset().mockResolvedValue([])
   mockDeregister.mockReset().mockResolvedValue(undefined)
+  mockDestroy.mockReset().mockResolvedValue(true)
+  mockSync.mockReset().mockResolvedValue(undefined)
   installDriver()
 })
 
@@ -253,5 +281,194 @@ describe('reconcileRevokedShares', () => {
 
     await reconcileRevokedShares(snapshotFixture([running(SHARE, 'stuck'), running(other, 'next')]))
     expect(mockDeregister.mock.calls.map(([id]) => id).sort()).toEqual(['next', 'stuck'])
+  })
+})
+
+describe('moveProjectToRemote', () => {
+  const GITHUB = 'https://github.com/acme/widgets.git'
+  const ENV = { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t' }
+  const actual = vi.importActual<typeof gitModule>('#domain/git')
+  let remote: string
+  let work: string
+  let token: string
+  /** What the move did, in order: git steps and workspace stops. */
+  let events: string[]
+
+  /** A hosted project with `main`, `feature` and tag `v1` pushed to it. */
+  async function hostedWithHistory(): Promise<string> {
+    const { id } = await createHostedProject('widgets', BUILT_IN_USER_ID)
+    await git(tmpDir, ['clone', '-q', hostedRepoDir(id), work])
+    await git(work, ['commit', '-q', '--allow-empty', '-m', 'one'], { env: ENV })
+    await git(work, ['tag', 'v1'])
+    await git(work, ['push', '-q', 'origin', 'HEAD:main', 'HEAD:feature', 'v1'])
+    return id
+  }
+
+  /** Workspaces the driver lists, each only under its own project. */
+  function listing(handles: RuntimeHandle[]): void {
+    mockList.mockImplementation((projectId) => Promise.resolve(handles.filter((h) => projectId === undefined || h.projectId === projectId)))
+  }
+
+  beforeEach(async () => {
+    remote = path.join(tmpDir, 'github.git')
+    work = path.join(tmpDir, 'work')
+    events = []
+    await git(tmpDir, ['init', '-q', '--bare', remote])
+    token = (await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_move' })).id
+    vi.mocked(checkMoveTarget).mockReset().mockImplementation(async (repo) => {
+      events.push('check')
+      await (await actual).checkMoveTarget(repo, remote, { kind: 'hosted' })
+    })
+    vi.mocked(pushHostedRepo).mockReset().mockImplementation(async (repo) => {
+      events.push('push')
+      await (await actual).pushHostedRepo(repo, remote, { kind: 'hosted' })
+    })
+    vi.mocked(fetchOrigin).mockClear()
+    clearAllProvisioningForTests()
+    mockDeregister.mockImplementation((id) => { events.push(`stop ${id}`); return Promise.resolve() })
+  })
+
+  it('stops every workspace on the repository, every user\'s, then pushes, and moves the project and its shares there, keeping yaac\'s copy', async () => {
+    const id = await hostedWithHistory()
+    const ada = await seeTailnetUser('ada@example.com', 'Ada')
+    const bob = await seeTailnetUser('bob@example.com', 'Bob')
+    const share = await shareProject(local, id, ada)
+    const removed = await shareProject(local, id, bob)
+    await setProjectShareRevoked(removed.id, true)
+    await recordWorkspaceCreated({ projectId: id, workspaceId: 'a' })
+    await recordWorkspaceCreated({ projectId: share.id, workspaceId: 'b' })
+    const handles = [running(id, 'a'), running(share.id, 'b'), { ...running(id, 'spare'), prewarmed: true }]
+    listing(handles)
+    // A create in Ada's copy, past its last checkpoint, that comes up only
+    // once the move has stopped it.
+    const late = provision({ workspaceId: 'late', projectId: share.id, tool: 'claude', kind: 'create' }, async () => {
+      await vi.waitFor(() => expect(listProvisioning().find((e) => e.workspaceId === 'late')?.message).toBe('Stopping…'))
+      await recordWorkspaceCreated({ projectId: share.id, workspaceId: 'late' })
+      handles.push(running(share.id, 'late'))
+      return { workspaceId: 'late' }
+    })()
+    // Held while it pushes: nothing starts in either, the server's own
+    // launches included.
+    vi.mocked(pushHostedRepo).mockImplementationOnce(async (repo) => {
+      events.push('push')
+      expect([isProjectHeld(id), isProjectHeld(share.id)]).toEqual([true, true])
+      await expect(authorizeProject(systemPrincipal, share.id)).rejects.toMatchObject({ code: 'CONFLICT' })
+      await (await actual).pushHostedRepo(repo, remote, { kind: 'hosted' })
+    })
+
+    expect(await moveProjectToRemote(local, id, GITHUB, token)).toEqual({ knownHostsEntry: null })
+
+    await late
+    expect(events).toEqual(['check', 'stop a', 'stop b', 'stop late', 'push'])
+    expect(await git(remote, ['for-each-ref', '--format=%(refname)'])).toBe('refs/heads/feature\nrefs/heads/main\nrefs/tags/v1\n')
+    const credential = { kind: 'https', token: 'ghp_move' }
+    expect(vi.mocked(pushHostedRepo).mock.calls).toEqual([[hostedRepoDir(id), GITHUB, credential]])
+    expect(await getProjectRow(id)).toMatchObject({ remoteUrl: GITHUB, hosted: false, gitCredentialId: token })
+    expect(await resolveProjectCredential(id)).toEqual(credential)
+    // The egress proxy is handed the project's credential, so a restarted
+    // workspace can push.
+    expect(mockSync.mock.calls.at(-1)?.[0][credentialOwnerKey(BUILT_IN_USER_ID)].git).toEqual([{ token: 'ghp_move', projects: [id] }])
+    // Ada's copy is hers alone now, and needs her own credential.
+    expect(await getProjectRow(share.id)).toMatchObject({ remoteUrl: GITHUB, hosted: false, gitCredentialId: null })
+    expect((await getProjectRow(share.id))?.sharedFrom).toBeUndefined()
+    expect(await resolveProjectCredential(share.id)).toBeNull()
+    expect(await getProjectRow(removed.id)).toMatchObject({ remoteUrl: GITHUB, sharedFrom: id, shareRevoked: true })
+    // yaac keeps its repository until the owner has checked the remote.
+    expect(await getProjectRow(id)).toMatchObject({ keepsHostedRepo: true })
+    await expect(fs.access(hostedRepoDir(id))).resolves.toBeUndefined()
+    await vi.waitFor(() => expect(fetchOrigin).toHaveBeenCalledWith(repoDir(id), GITHUB, credential))
+    expect(vi.mocked(fetchOrigin).mock.calls.map(([repo]) => repo)).toEqual([repoDir(id)])
+    // The workspaces stop with their checkouts kept; the spare is reaped.
+    await vi.waitFor(async () => expect((await listWorkspaceRows()).filter((r) => r.stoppedAt !== undefined).map((r) => r.workspaceId).sort())
+      .toEqual(['a', 'b', 'late']))
+    await vi.waitFor(() => expect([...new Set(mockDestroy.mock.calls.map(([t]) => t.workspaceId))]).toEqual(['spare']))
+    // The hold is lifted, and it has moved.
+    await expect(authorizeProject(local, id)).resolves.toBeUndefined()
+    await expect(moveProjectToRemote(local, id, GITHUB, token)).rejects.toThrow(/is not hosted by yaac/)
+  })
+
+  it("is the owner's alone, and stays on yaac, stopping nothing, unless the remote is empty, until everything is pushed", async () => {
+    const id = await hostedWithHistory()
+    const ada = await seeTailnetUser('ada@example.com', 'Ada')
+    const adaActor = { kind: 'tailnet', userId: ada, login: 'ada@example.com', name: 'Ada' } as const
+    await expect(moveProjectToRemote(adaActor, id, GITHUB, token)).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    await expect(moveProjectToRemote(local, id, 'git@github.com:acme/widgets.git', token))
+      .rejects.toThrow(/needs an SSH key, not a token/)
+    await recordTestProject(KEEPER)
+    await expect(moveProjectToRemote(local, KEEPER, GITHUB, token)).rejects.toThrow(/is not hosted by yaac/)
+    const share = await shareProject(local, id, ada)
+    await expect(moveProjectToRemote(adaActor, share.id, GITHUB, token)).rejects.toThrow(/only its owner can move it/)
+    listing([running(id, 'a')])
+    const stillHosted = async (): Promise<void> => {
+      expect(await getProjectRow(id)).toMatchObject({ hosted: true })
+      await expect(fs.access(hostedRepoDir(id))).resolves.toBeUndefined()
+      await expect(authorizeProject(local, id)).resolves.toBeUndefined()
+    }
+
+    // A host the project's workspaces may not reach, until it is allowed.
+    await expect(moveProjectToRemote(local, id, 'https://git.example.test/acme/widgets.git', token))
+      .rejects.toThrow(/"git.example.test" is not in the egress allowlist of "widgets"/)
+    expect(events).toEqual([])
+    await stillHosted()
+
+    // A repository the host started with a README: refused before
+    // anything stops.
+    const readme = path.join(tmpDir, 'readme')
+    await git(tmpDir, ['init', '-q', '-b', 'main', readme])
+    await git(readme, ['commit', '-q', '--allow-empty', '-m', 'README'], { env: ENV })
+    await git(readme, ['push', '-q', remote, 'HEAD:main'])
+    await expect(moveProjectToRemote(local, id, GITHUB, token)).rejects.toThrow(/did not move: .*its refs\/heads\/main has commits this project's does not/)
+    expect(events).toEqual(['check'])
+    await stillHosted()
+    await git(remote, ['update-ref', '-d', 'refs/heads/main'])
+
+    // A workspace that will not stop: nothing is pushed.
+    events = []
+    mockDeregister.mockRejectedValueOnce(new Error('exec failed'))
+    await expect(moveProjectToRemote(local, id, GITHUB, token)).rejects.toMatchObject({ code: 'RUNTIME_UNAVAILABLE' })
+    expect(events).toEqual(['check'])
+    await stillHosted()
+
+    // A push that fails partway: still on yaac, and a retry finishes it.
+    events = []
+    vi.mocked(pushHostedRepo).mockImplementationOnce(async (repo) => {
+      events.push('push')
+      await git(repo, ['push', '-q', remote, 'refs/heads/main:refs/heads/main'])
+      throw new Error('remote: Permission to acme/widgets.git denied to bot.')
+    })
+    await expect(moveProjectToRemote(local, id, GITHUB, token)).rejects.toThrow(/did not move: git authentication failed/)
+    expect(events).toEqual(['check', 'stop a', 'push'])
+    await stillHosted()
+    // Work goes on before the retry.
+    await git(work, ['commit', '-q', '--allow-empty', '-m', 'two'], { env: ENV })
+    await git(work, ['push', '-q', 'origin', 'HEAD:main'])
+    await moveProjectToRemote(local, id, GITHUB, token)
+    expect((await git(remote, ['rev-parse', 'main'])).trim()).toBe((await git(work, ['rev-parse', 'HEAD'])).trim())
+    expect(await git(remote, ['for-each-ref', '--format=%(refname)'])).toBe('refs/heads/feature\nrefs/heads/main\nrefs/tags/v1\n')
+    expect(await getProjectRow(id)).toMatchObject({ hosted: false, remoteUrl: GITHUB })
+  })
+})
+
+describe('previewProjectMove', () => {
+  it('counts the running workspaces on the project and its shares, and names whom it is shared with, for its owner', async () => {
+    const { id } = await createHostedProject('widgets', BUILT_IN_USER_ID)
+    const ada = await seeTailnetUser('ada@example.com', 'Ada')
+    const bob = await seeTailnetUser('bob@example.com', 'Bob')
+    const share = await shareProject(local, id, ada)
+    const removed = await shareProject(local, id, bob)
+    await setProjectShareRevoked(removed.id, true)
+    await recordTestProject(KEEPER)
+    mockList.mockResolvedValue([
+      running(id, 'a'),
+      running(share.id, 'b'),
+      { ...running(id, 'spare'), prewarmed: true },
+      { ...running(id, 'going'), terminating: true },
+      running(KEEPER, 'other'),
+    ])
+
+    expect(await previewProjectMove(local, id)).toEqual({ runningWorkspaces: 2, sharedWith: ['ada@example.com'] })
+    const adaActor = { kind: 'tailnet', userId: ada, login: 'ada@example.com', name: 'Ada' } as const
+    await expect(previewProjectMove(adaActor, id)).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    await expect(previewProjectMove(local, KEEPER)).rejects.toThrow(/is not hosted by yaac/)
   })
 })

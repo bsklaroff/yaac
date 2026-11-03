@@ -149,6 +149,7 @@ export {
   type ProjectEnvVarRow,
 } from './project-env-store'
 export {
+  clearProjectKeepsHostedRepo,
   deleteProjectRow,
   getProjectRow,
   listProjectRows,
@@ -159,6 +160,7 @@ export {
   setProjectScratchDirs,
   setProjectGitCredential,
   setProjectKeptIgnoredPaths,
+  setProjectRemote,
   setProjectShareRevoked,
   setProjectWorkspaceRetention,
   type ProjectRow,

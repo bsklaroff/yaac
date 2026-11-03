@@ -14,6 +14,7 @@ import {
   readProjectConfigRaw,
   readProjectDockerfile,
   registerStagedProject,
+  removeKeptHostedRepo,
   removeProjectConfig,
   removeProjectEnvVar,
   setProjectAllowlist,
@@ -29,7 +30,7 @@ import {
   scratchDirSettingsPatchSchema,
   shareProject,
 } from '#domain/projects'
-import { previewWorkspaceRetention, removeProject, setWorkspaceRetention, unshareProject } from '#domain/workspaces'
+import { moveProjectToRemote, previewProjectMove, previewWorkspaceRetention, removeProject, setWorkspaceRetention, unshareProject } from '#domain/workspaces'
 import { pushCredentialsToRuntime } from '#domain/auth'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { projectBuildDir } from '#lib/build-dirs'
@@ -180,6 +181,26 @@ export const projectApp = new Hono<IdentityEnv>()
   )
   .delete('/:projectId/shares/:userId', async (c) => {
     await unshareProject(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.param('userId'))
+    return c.body(null, 204)
+  })
+  // Move a hosted project, and its shares, to an empty remote elsewhere
+  // (docs/hosted-projects.md "Moving to a git host"). The GET says what the
+  // move would stop and hand over, which clients warn with before the POST.
+  .get('/:projectId/move', async (c) =>
+    c.json(await previewProjectMove(c.get('principal'), await resolveProjectId(c.req.param('projectId')))))
+  .post(
+    '/:projectId/move',
+    zv('json', z.object({ remoteUrl: z.string().min(1), gitCredentialId: z.uuid() })),
+    async (c) => {
+      const { remoteUrl, gitCredentialId } = c.req.valid('json')
+      const projectId = await resolveProjectId(c.req.param('projectId'))
+      return c.json(await moveProjectToRemote(c.get('principal'), projectId, remoteUrl, gitCredentialId))
+    },
+  )
+  // The repository yaac kept when the project moved, removed once its owner
+  // has checked the new remote.
+  .delete('/:projectId/hosted-repo', async (c) => {
+    await removeKeptHostedRepo(c.get('principal'), await resolveProjectId(c.req.param('projectId')))
     return c.body(null, 204)
   })
   .delete('/:projectId', async (c) => {

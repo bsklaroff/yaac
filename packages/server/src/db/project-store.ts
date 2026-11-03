@@ -54,6 +54,51 @@ export async function setProjectGitCredential(
 }
 
 /**
+ * Point a project the server hosts, and every share of it, at a remote
+ * elsewhere (docs/hosted-projects.md "Moving to a git host"), in one
+ * transaction. The project takes `gitCredential`, and is recorded as still
+ * keeping the repository it was hosted in (`clearProjectKeepsHostedRepo`).
+ * Each share needs its own owner's credential, so it starts with none, and
+ * stops being a share unless it was removed, which keeps it read-only.
+ * False when there is no such project.
+ */
+export async function setProjectRemote(
+  projectId: string,
+  remoteUrl: string,
+  gitCredential: { id: string; knownHostsEntry: string | null },
+): Promise<boolean> {
+  const db = await getDb()
+  const rows = await db.transaction(async (tx) => {
+    await tx.update(projects).set({
+      remoteUrl,
+      hosted: false,
+      gitCredentialId: null,
+      knownHostsEntry: null,
+      sharedFrom: sql`case when ${projects.shareRevoked} then ${projects.sharedFrom} end`,
+    }).where(eq(projects.sharedFrom, projectId))
+    return tx.update(projects).set({
+      remoteUrl,
+      hosted: false,
+      keepsHostedRepo: true,
+      gitCredentialId: gitCredential.id,
+      knownHostsEntry: gitCredential.knownHostsEntry,
+    }).where(eq(projects.id, projectId)).returning({ projectId: projects.id })
+  })
+  notifyWorkspaceListChanged()
+  return rows.length > 0
+}
+
+/** Record that yaac no longer keeps the repository of a project that
+ *  moved off it. False when there is no such project. */
+export async function clearProjectKeepsHostedRepo(projectId: string): Promise<boolean> {
+  const db = await getDb()
+  const rows = await db.update(projects).set({ keepsHostedRepo: false })
+    .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
+  notifyWorkspaceListChanged()
+  return rows.length > 0
+}
+
+/**
  * A project row: the wire `ProjectMeta` plus server-only state (remembered
  * create-form defaults and the git credential).
  */
@@ -71,6 +116,9 @@ export interface ProjectRow extends ProjectMeta {
   /** Whether the server hosts the remote (docs/hosted-projects.md). */
   hosted: boolean
   guardDefaultBranch: boolean
+  /** Whether yaac still keeps the repository it hosted before the project
+   *  moved to another git host. */
+  keepsHostedRepo: boolean
   /** The project this one was shared from (docs/hosted-projects.md
    *  "Sharing"). */
   sharedFrom?: string
