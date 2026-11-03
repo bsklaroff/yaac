@@ -1090,6 +1090,18 @@ describe('write routes', () => {
       expect((await guard.$put({ param: { projectId: DEMO }, json: { enabled: false } })).status).toBe(400)
     })
 
+    it('sets the default branch to one the repository has, for a hosted project only', async () => {
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+      const project = await (await client.project.create.$post({ json: { name: 'retarget' } })).json()
+      const branch = client.project[':projectId']['default-branch']
+
+      // An empty repository has no branch to name.
+      const refused = await branch.$put({ param: { projectId: project.id }, json: { branch: 'main' } })
+      expect(refused.status).toBe(400)
+      expect(((await refused.json()) as { error: { message: string } }).error.message).toMatch(/has no branch "main"/)
+      expect((await branch.$put({ param: { projectId: DEMO }, json: { branch: 'main' } })).status).toBe(400)
+    })
+
     it('replaces the gitignored paths a stop keeps, refusing one outside the checkout', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const kept = client.project[':projectId']['kept-ignored-paths']

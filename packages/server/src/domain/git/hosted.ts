@@ -87,13 +87,28 @@ function hooksDir(): Promise<string> {
   return hooks
 }
 
+/** Whether the repository has `ref`, a full ref name. */
+function hasRef(repoPath: string, ref: string): Promise<boolean> {
+  return runGit({ kind: 'private', gitDir: repoPath }, ['show-ref', '--verify', '-q', ref]).then(() => true, () => false)
+}
+
 /** The branch the remote's HEAD names, or null while it names none that
  *  exists. */
-async function defaultBranch(repoPath: string): Promise<string | null> {
-  const target = { kind: 'private' as const, gitDir: repoPath }
-  const head = (await runGit(target, ['symbolic-ref', 'HEAD'])).trim()
-  const exists = await runGit(target, ['show-ref', '--verify', '-q', head]).then(() => true, () => false)
-  return exists ? head.slice('refs/heads/'.length) : null
+export async function hostedDefaultBranch(repoPath: string): Promise<string | null> {
+  const head = (await runGit({ kind: 'private', gitDir: repoPath }, ['symbolic-ref', 'HEAD'])).trim()
+  return await hasRef(repoPath, head) ? head.slice('refs/heads/'.length) : null
+}
+
+/**
+ * Point the remote's HEAD, its default branch, at `branch`. Answers false,
+ * changing nothing, when it has no such branch. The `pre-receive` guard
+ * protects whichever branch HEAD names, so it follows.
+ */
+export async function setHostedDefaultBranch(repoPath: string, branch: string): Promise<boolean> {
+  const ref = `refs/heads/${branch}`
+  if (!await hasRef(repoPath, ref)) return false
+  await runGit({ kind: 'private', gitDir: repoPath }, ['symbolic-ref', 'HEAD', ref])
+  return true
 }
 
 /**
@@ -166,7 +181,7 @@ export async function pushHostedRepo(
   const { args, env } = await moveGit(credential, remoteUrl)
   const push = (...refspecs: string[]): Promise<string> =>
     runGit(target, [...args, 'push', '--quiet', remoteUrl, ...refspecs], { env, remoteUrl })
-  const head = await defaultBranch(repoPath)
+  const head = await hostedDefaultBranch(repoPath)
   if (head !== null) await push(`refs/heads/${head}:refs/heads/${head}`)
   await push('refs/heads/*:refs/heads/*', 'refs/tags/*:refs/tags/*')
 }
@@ -199,13 +214,13 @@ async function localRefs(repoPath: string): Promise<string[]> {
  * Pushes are fsck'd, capped at `MAX_PUSH_BYTES`, and refused outright
  * unless `allowPush`, and yaac's hooks always run (`PRE_RECEIVE`,
  * `POST_RECEIVE`). After a push that git accepted, the repository is gc'd
- * without pruning and `onPushed` gets its default branch.
+ * without pruning and `onPushed` runs.
  */
 export async function serveGitHttp(
   repoPath: string,
   request: Request,
   pathInfo: string,
-  opts: { allowPush: boolean; guardDefaultBranch: boolean; onPushed?: (defaultBranch: string | null) => void },
+  opts: { allowPush: boolean; guardDefaultBranch: boolean; onPushed?: () => void },
 ): Promise<Response> {
   if (!SMART_PATHS.has(pathInfo)) return new Response('not found\n', { status: 404 })
   const url = new URL(request.url)
@@ -260,9 +275,7 @@ export async function serveGitHttp(
     runGit({ kind: 'private', gitDir: repoPath }, NEVER_PRUNE_GC).catch((err: unknown) => {
       serverLog(`[git] gc of ${path.basename(repoPath)}: ${(err as Error).message}`)
     })
-    defaultBranch(repoPath).then((head) => opts.onPushed?.(head), (err: unknown) => {
-      serverLog(`[git] default branch of ${path.basename(repoPath)}: ${(err as Error).message}`)
-    })
+    opts.onPushed?.()
   })
   return cgiResponse(child.stdout, () => child.kill())
 }

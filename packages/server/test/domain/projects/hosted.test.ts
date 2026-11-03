@@ -16,6 +16,7 @@ import {
   createHostedProject,
   removeKeptHostedRepo,
   serveHostedRepo,
+  setDefaultBranch,
   setDefaultBranchGuard,
   shareProject,
 } from '#domain/projects'
@@ -270,5 +271,50 @@ describe('setDefaultBranchGuard', () => {
     const share = (await shareProject(owner, projectId, await seeTailnetUser('bo@example.com', 'Bo'))).id
     const bo = (await getProjectRow(share))?.owner ?? ''
     await expect(setDefaultBranchGuard({ kind: 'local', userId: bo }, share, false)).rejects.toMatchObject({ code: 'VALIDATION' })
+  })
+})
+
+describe('setDefaultBranch', () => {
+  it("points the repository and every main clone on it at a branch it has, so creates and the guard follow, for the source's owner only", async () => {
+    const owner = { kind: 'local' as const, userId: BUILT_IN_USER_ID }
+    const id = (await createHostedProject('retargeted', BUILT_IN_USER_ID)).id
+    const share = (await shareProject(owner, id, await seeTailnetUser('cy@example.com', 'Cy'))).id
+    await expect(setDefaultBranch(owner, id, 'main')).rejects.toThrow(/has no branch "main"/)
+
+    const work = path.join(tmp, 'retargeted-clone')
+    await run(tmp, ['clone', '-q', `${origin}/owner/${id}`, work])
+    await run(work, ['commit', '-q', '--allow-empty', '-m', 'first'])
+    await run(work, ['push', '-q', 'origin', 'HEAD:main', 'HEAD:develop'])
+    await vi.waitFor(async () => expect(await getDefaultBranch(repoDir(id))).toBe('main'), { timeout: 20_000, interval: 100 })
+
+    await setDefaultBranch(owner, id, 'develop')
+    expect(await run(tmp, ['ls-remote', '--symref', `${origin}/owner/${id}`, 'HEAD'])).toContain('ref: refs/heads/develop\tHEAD')
+    expect(await getDefaultBranch(repoDir(id))).toBe('develop')
+    expect(await getDefaultBranch(repoDir(share))).toBe('develop')
+    // The guard protects the new default, and no longer the old one.
+    await run(work, ['commit', '-q', '--amend', '--allow-empty', '-m', 'rewritten'])
+    await expect(run(work, ['push', '-q', '--force', 'origin', 'HEAD:develop'])).rejects.toThrow(/cannot be force-pushed/)
+    await run(work, ['push', '-q', '--force', 'origin', 'HEAD:main'])
+
+    await expect(setDefaultBranch(owner, id, 'gone')).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(setDefaultBranch({ kind: 'local', userId: STRANGER }, id, 'main')).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    await expect(setDefaultBranch(owner, OTHER_PROJECT, 'main')).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    const cy = (await getProjectRow(share))?.owner ?? ''
+    await expect(setDefaultBranch({ kind: 'local', userId: cy }, share, 'main')).rejects.toThrow(/only its owner sets its default branch/)
+    const { id: moved } = await movedProject('moved-default')
+    await expect(setDefaultBranch(owner, moved, 'main')).rejects.toThrow(/not hosted by yaac/)
+    expect(await getDefaultBranch(repoDir(id))).toBe('develop')
+
+    // A share whose main clone cannot take the change does not fail it: the
+    // repository and the source move, and a retry brings the share along.
+    const lock = path.join(repoDir(share), '.git', 'refs', 'remotes', 'origin', 'HEAD.lock')
+    await fs.writeFile(lock, '')
+    await setDefaultBranch(owner, id, 'main')
+    expect((await run(hostedRepoDir(id), ['symbolic-ref', 'HEAD'])).trim()).toBe('refs/heads/main')
+    expect(await getDefaultBranch(repoDir(id))).toBe('main')
+    expect(await getDefaultBranch(repoDir(share))).toBe('develop')
+    await fs.rm(lock)
+    await setDefaultBranch(owner, id, 'main')
+    expect(await getDefaultBranch(repoDir(share))).toBe('main')
   })
 })

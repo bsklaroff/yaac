@@ -74,8 +74,9 @@ describe('ProjectSettings', () => {
     expect(server.calls.filter((c) => c.path.startsWith('/api/volume'))).toEqual([])
   })
 
-  it('shows a hosted project\'s clone command instead of a remote, and turns its default-branch guard off', async () => {
+  it('shows a hosted project\'s clone command instead of a remote, changes its default branch, and turns its guard off', async () => {
     useUiStore.setState({ activeProjectId: 'id-gamma' })
+    let defaultBranch = 'main'
     const snapshot = serverSnapshot({
       driver: 'containerless',
       projects: [{ ...project('gamma', 'http://yaac.internal/api/workspace/git/id-gamma.git'), hosted: true }],
@@ -84,12 +85,24 @@ describe('ProjectSettings', () => {
       'GET /api/project/id-gamma/env': { vars: [] },
       'GET /api/project/id-gamma/config/raw': { content: '' },
       'PUT /api/project/id-gamma/default-branch-guard': () => undefined,
+      'GET /api/project/id-gamma/branches': () => ({ branches: ['agent/x', 'main'], defaultBranch }),
+      'PUT /api/project/id-gamma/default-branch': ({ body }: FetchCall) => {
+        defaultBranch = (body as { branch: string }).branch
+        return undefined
+      },
     })
     renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
 
     expect(screen.getByText('HOSTED BY YAAC')).toBeTruthy()
     expect(screen.queryByText('http://yaac.internal/api/workspace/git/id-gamma.git')).toBeNull()
     expect(screen.getByText(`git clone ${window.location.origin}/api/project/id-gamma/git gamma`)).toBeTruthy()
+
+    const branch = await screen.findByRole<HTMLSelectElement>('combobox', { name: 'Default branch' })
+    await waitFor(() => expect(branch.value).toBe('main'))
+    expect([...branch.options].map((o) => o.value)).toEqual(['agent/x', 'main'])
+    fireEvent.change(branch, { target: { value: 'agent/x' } })
+    await waitFor(() => expect(branch.value).toBe('agent/x'))
+    expect(server.called('PUT /api/project/id-gamma/default-branch').map((c) => c.body)).toEqual([{ branch: 'agent/x' }])
 
     const guard = screen.getByRole<HTMLInputElement>('checkbox', { name: /Protect the default branch/ })
     expect(guard.checked).toBe(true)
