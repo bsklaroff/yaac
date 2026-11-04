@@ -11,7 +11,7 @@ import { useProvisionWorkspace } from '#lib/useProvisionWorkspace'
 import { stopProvisioning } from '#lib/stopWorkspaceFlow'
 import { PROMPT_PREVIEW_LENGTH, type ProvisioningWorkspaceEntry } from '@yaac/shared/types'
 
-const PANE_NAME: Record<LaunchPane, string> = { shell: 'a shell', files: 'Files', changes: 'Changes' }
+const PANE_NAME: Record<LaunchPane, string> = { shell: 'a shell', files: 'Files', changes: 'Changes', commits: 'Commits' }
 
 /**
  * The selected workspace's pane while it is created or restarted, drawn as

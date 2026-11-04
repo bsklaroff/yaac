@@ -5,6 +5,7 @@ import { previewTarget } from '#lib/preview'
 import { stepTarget } from '#lib/steps'
 import { CHANGES_TARGET, FILES_TARGET, fileKey, fileTarget, placeFile } from '#lib/files'
 import { HISTORY_TARGET } from '#lib/panes'
+import { COMMITS_TARGET } from '#lib/commits'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '#lib/shortcuts'
 import { applyThemeAttribute, type ThemePref } from '#lib/theme'
 import {
@@ -526,6 +527,7 @@ interface UiState {
   /** Open or focus a workspace's Changes pane, its filter cleared and
    *  focused, so what it totals is every change (as the status bar does). */
   openChanges: (workspaceId: string) => void
+  openCommits: (workspaceId: string) => void
   /** Open or focus a workspace's file explorer. */
   openFiles: (workspaceId: string) => void
   /** Open or focus a workspace's History pane. */
@@ -821,7 +823,7 @@ export function guardNewWorkspace(read: () => PendingDraft | null): () => void {
 }
 
 /** A pane a create asked to open once its workspace is up. */
-export type LaunchPane = 'shell' | 'files' | 'changes'
+export type LaunchPane = 'shell' | 'files' | 'changes' | 'commits'
 
 /**
  * What a create still has to show once its workspace is listed: the pane
@@ -1125,6 +1127,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   }),
   openFiles: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, FILES_TARGET)),
   openHistory: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, HISTORY_TARGET)),
+  openCommits: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, COMMITS_TARGET)),
   openStep: (workspaceId, name) => set((s) => openSpecialPane(s, workspaceId, stepTarget(name))),
   openFile: (workspaceId, path, line) => set((s) => {
     const target = fileTarget(path)

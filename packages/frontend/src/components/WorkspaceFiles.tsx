@@ -13,6 +13,7 @@ import { Tooltip } from '@base-ui/react/tooltip'
 import type { SymlinkTarget, WorkspaceChange, WorkspaceChanges } from '@yaac/shared/types'
 import { DEFAULT_FONT_SIZE, layoutOf, paneViewKey, useUiStore } from '#lib/store'
 import { BranchPicker } from '#components/BranchPicker'
+import { branchName } from '#lib/commits'
 import { DiffView } from '#components/DiffView'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { PaneFindBar, useFindQuery } from '#components/ui/FindPanel'
@@ -1301,7 +1302,7 @@ function ChangesStrip({ workspaceId, projectId, baseBranch, data, files }: {
     setPickerOpen(false)
     setPickerQuery('')
   }
-  const baseLabel = base ?? baseBranch ?? (data?.base ? data.base.slice(0, 7) : 'base')
+  const baseLabel = base ? branchName(base) : baseBranch ?? (data?.base ? data.base.slice(0, 7) : 'base')
   const byStage = stageTotals(files)
   return (
     <div className="flex h-7 shrink-0 items-center gap-2 border-b border-hairline px-1.5 text-[11px] text-text-dim">

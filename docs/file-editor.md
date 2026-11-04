@@ -1,6 +1,6 @@
 # File editor
 
-The webapp browses, edits and reviews a workspace's files through three
+The webapp browses, edits and reviews a workspace's files through four
 kinds of pane, all ordinary layout leaves next to terminals:
 
 - **`files`**: the explorer, one per workspace. A tree, a filter that doubles
@@ -9,6 +9,9 @@ kinds of pane, all ordinary layout leaves next to terminals:
 - **`changes`**: the Changes pane, one per workspace: the workspace's review
   diff. It is the same component as the explorer (`WorkspaceFiles` with
   `changedOnly`), listing only the changed files, each with its diff.
+- **`commits`**: the Commits pane, one per workspace (`WorkspaceCommits`):
+  the history of HEAD and of the branch it is compared against, as a graph
+  beside a commit list.
 - **`file:<path>`**: one editor pane per open file (`<path>` is relative to
   the workspace root). Side-by-side files, tabs, drag, Alt-W, tab cycling and
   persistence across reloads all come from the layout, so there is no second
@@ -226,8 +229,8 @@ never changes and the client caches it for good.
 ### Git status bar
 
 `GitStatusBar`, above a workspace's panes, shows the reference branch and how
-far HEAD is ahead of and behind it, then the total changed lines
-(`+52 −3`), which open the Changes pane. Both come from the
+far HEAD is ahead of and behind it, which opens the Commits pane, then the
+total changed lines (`+52 −3`), which open the Changes pane. Both come from the
 changes answer (`branch`, `comparison`, `files`), polled every 10 seconds
 while the workspace is on screen. The bar also asks for `listing=paths`, so
 the explorer's tree and the terminal's and chat pane's file links are ready
@@ -242,6 +245,38 @@ bar shows `fetchedAt`, the newest mtime among:
 - the checkout's `FETCH_HEAD`, for a fetch the agent ran;
 - the branch reflogs in the main clone and the checkout, for a fetch that
   moved the branch.
+
+### Commits
+
+`GET /workspace/:id/commits` runs `git log --date-order` inside the workspace
+over HEAD and the compared branch (`checkoutLog`), so the newest `limit`
+commits (200 by default, `MAX_LOG_COMMITS` = 2,000 at most) come back
+children before parents, each with its parents, author, time, subject and
+decorations, plus HEAD's commit and whether older ones were left out. The
+branch is picked by `RESOLVE_BASE_SH`, the same shell the changes script
+runs: `base`, else the fork branch, else `@{upstream}`, each name tried as
+`origin/<name>` before itself and accepted only if it shares history with
+HEAD. So the pane, the Changes pane and the git status bar always name the
+same ref, and a branch one of them refuses the others refuse too.
+`branches=1` adds the checkout's branches for the pane's picker: local ones as
+`refs/heads/<name>`, which no origin branch can shadow, and origin's as
+`origin/<name>`. The picker asks for them only while it is open, since a repo
+with hundreds of branches would otherwise send them with every poll.
+
+The client lays out the graph itself (`layoutGraph` in `#lib/commits`). Each
+lane waits for one commit; a commit takes the lane waiting for it, its first
+parent continues that lane and a merge's other parents join or open one, so a
+branch keeps one column and color from tip to fork point and lanes never
+shift sideways. A layout depends only on the commits before a row, so "load
+older" leaves the rows already shown in place. Rows are a fixed height, and
+each draws its half-row edges as SVG paths. Commits not reachable from HEAD's
+commit (those it is behind by) are dimmed. "Load older" stops at the cap,
+which the pane then names.
+
+The compared branch is the Changes pane's `changesBase` pick, so choosing it
+in either pane moves both and the git status bar. The pane polls every 10
+seconds while on screen, as the bar does, and unmounts off it as the explorer
+does.
 
 ### Confinement
 

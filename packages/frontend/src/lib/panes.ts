@@ -9,6 +9,7 @@
  */
 
 import type { ConversationEntry, SessionEntry, WorkspaceListEntry } from '@yaac/shared/types'
+import { isCommitsTarget } from './commits'
 import { isChangesTarget, isFilesTarget, isFileTarget } from './files'
 import { addColumn, paneTargets, removeTarget, type PaneLayout } from './layout'
 import { isPreviewTarget } from './preview'
@@ -60,8 +61,8 @@ export function paneSession(workspace: WorkspaceListEntry | undefined, target: s
  * when the step finishes, showing its log.
  */
 export function isSpecialPane(target: string): boolean {
-  return isPreviewTarget(target) || isFilesTarget(target) || isChangesTarget(target) || isFileTarget(target)
-    || isStepTarget(target) || isHistoryTarget(target)
+  return isPreviewTarget(target) || isFilesTarget(target) || isChangesTarget(target) || isCommitsTarget(target)
+    || isFileTarget(target) || isStepTarget(target) || isHistoryTarget(target)
 }
 
 /** The workspace's open sessions, as pane targets. */

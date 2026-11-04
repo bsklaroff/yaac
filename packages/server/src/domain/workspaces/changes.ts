@@ -188,6 +188,25 @@ const FORCE_ADD = 'for p; do shift; { [ -e "$p" ] || [ -L "$p" ]; } && set -- "$
   + '[ $# -eq 0 ] || exec git --literal-pathspecs add -f -- "$@"'
 
 /**
+ * Shell that picks the branch HEAD is compared against, for the changes
+ * script and the Commits pane's log (`checkoutLog`) alike: `$1`, a branch
+ * the user picked, else `$2`, the fork branch, else `@{upstream}`, each
+ * named branch tried as `origin/<name>` and then as itself (see
+ * `changesScript` for why). A candidate counts only if it shares history
+ * with HEAD. Sets `ref` to the one found, `@{upstream}` written out as the
+ * branch it stands for, and `base` to its merge base with HEAD; with none,
+ * `ref` is empty, and a picked `$1` exits CHANGES_BASE_UNRESOLVED.
+ */
+export const RESOLVE_BASE_SH = 'ref=; '
+  + 'if [ -n "$1" ]; then '
+  + 'for r in "origin/$1" "$1"; do base=$(git merge-base "$r" HEAD 2>/dev/null) && { ref=$r; break; }; done; '
+  + `[ -n "$ref" ] || exit ${CHANGES_BASE_UNRESOLVED}; `
+  + 'elif [ -n "$2" ]; then '
+  + 'for r in "origin/$2" "$2" "@{upstream}"; do base=$(git merge-base "$r" HEAD 2>/dev/null) && { ref=$r; break; }; done; '
+  + 'else base=$(git merge-base @{upstream} HEAD 2>/dev/null) && ref=@{upstream}; fi; '
+  + '[ "$ref" != "@{upstream}" ] || ref=$(git rev-parse --abbrev-ref "@{upstream}"); '
+
+/**
  * The script body. Resolves the diff base, stages the working tree into the
  * private index, and prints a numstat per stage, the untracked files, then
  * numstat, name-status and the unified diff, each after a marker (see the
@@ -294,21 +313,12 @@ function changesScript(loc: ChangesLocation): string {
   + `rm -f ${i}.out.* ${i}.lock ${i}.seed.*; o=${i}.out.$$; ( `
   // An unborn HEAD (an empty repo's checkout) reads as the empty tree.
   + 'e=$(git hash-object -t tree /dev/null) || exit 6; head=$(git rev-parse -q --verify HEAD) || head=$e; '
-  + 'ref=; fork=1; '
+  + 'fork=1; '
   + 'unforked() { if git merge-base "$head" $(git for-each-ref --format="%(objectname)" refs/remotes/origin) '
   + '>/dev/null 2>&1; then base=$head; fork=0; else base=$e; fi; }; '
-  + 'if [ -n "$1" ]; then '
-  + 'for r in "origin/$1" "$1"; do base=$(git merge-base "$r" HEAD 2>/dev/null) && { ref=$r; break; }; done; '
-  + `[ -n "$ref" ] || exit ${CHANGES_BASE_UNRESOLVED}; `
-  + 'elif [ -n "$2" ]; then '
-  + 'for r in "origin/$2" "$2" "@{upstream}"; do base=$(git merge-base "$r" HEAD 2>/dev/null) && { ref=$r; break; }; done; '
-  + '[ -n "$ref" ] || unforked; '
-  + 'else '
-  + 'base=$(git merge-base @{upstream} HEAD 2>/dev/null) && ref=@{upstream} || unforked; '
-  + 'fi; '
+  + `${RESOLVE_BASE_SH}[ -n "$ref" ] || unforked; `
   + 'printf "BASE %s\\n" "$base"; '
   + 'printf "FORK %s\\n" "$fork"; '
-  + '[ "$ref" != "@{upstream}" ] || ref=$(git rev-parse --abbrev-ref "@{upstream}"); '
   + '[ -z "$ref" ] || { n=$(git rev-list --left-right --count "$ref...HEAD" --) && printf "REF %s %s\\n" "$ref" "$n"; }; '
   // `cached <file> <key> <command...>`: the command's output, kept in the
   // file under the key line and the settings. Written through a `.tmp` of

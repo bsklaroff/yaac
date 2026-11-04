@@ -685,6 +685,7 @@ export function NewWorkspacePane({ projectId, bar }: {
               onNewShell={() => startNow('shell')}
               onOpenFiles={() => startNow('files')}
               onOpenChanges={() => startNow('changes')}
+              onOpenCommits={() => startNow('commits')}
               {...(startBlocked !== null ? { disabled: startBlocked } : {})}
             />
           ) : (
@@ -692,11 +693,13 @@ export function NewWorkspacePane({ projectId, bar }: {
               onNewShell={() => startNow('shell')}
               onOpenFiles={() => startNow('files')}
               onOpenChanges={() => startNow('changes')}
+              onOpenCommits={() => startNow('commits')}
               {...(startBlocked !== null ? { disabled: startBlocked } : {})}
               titles={{
                 shell: 'Start the workspace and open a shell',
                 files: 'Start the workspace and browse its files',
                 changes: 'Start the workspace and show its changes',
+                commits: 'Start the workspace and show its commits',
               }}
             />
           )}

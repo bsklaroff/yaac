@@ -16,6 +16,7 @@ import type {
   WorkspaceFileSaved,
   BranchComparison,
   WorkspaceChanges,
+  WorkspaceGitLog,
 } from '@yaac/shared/types'
 import { workspaceDriver } from '#drivers/driver'
 import { WorkspaceExecError } from '#drivers/contract'
@@ -30,15 +31,16 @@ import { shellQuote } from '#lib/shell'
 import { serverLog } from '#lib/log'
 import { MAX_TEXT_FILE_BYTES, isBinaryContent } from '#lib/text-file'
 import { getWorkspaceRow } from '#db'
-import { checkoutBlobAt } from './checkout-git'
+import { checkoutBlobAt, checkoutLog } from './checkout-git'
 import { resolveWorkspaceContainer, resolveWorkspaceRecord } from './resolve'
 
 /**
  * The webapp file editor's access to a workspace checkout
  * (docs/file-editor.md). Reads and writes use plain `fs` on the server's view
  * of the checkout, so they work for stopped workspaces too. The changes,
- * the ahead/behind count and the listing need the checkout's git, which
- * runs inside the workspace, so they require it to be running.
+ * the ahead/behind count, the listing and the commit log need the
+ * checkout's git, which runs inside the workspace, so they require it to be
+ * running.
  *
  * The checkout is agent-controlled, so every access goes through a confined
  * root (`#lib/confined-fs`) that follows symlinks only while they stay
@@ -320,6 +322,31 @@ export async function getWorkspaceChangeDiffs(
   } catch (err) {
     if (err instanceof WorkspaceExecError && err.code === CHANGES_READING_GONE) {
       throw new ServerError('NOT_FOUND', 'that reading of the changes is gone; read them again')
+    }
+    throw err
+  }
+}
+
+/**
+ * The Commits pane's history: HEAD's commits and those of the branch it is
+ * compared against, `base` or else the fork branch, as the changes read
+ * picks it, and with `branches` the branches to pick from. A `base` that
+ * does not resolve is a VALIDATION error.
+ */
+export async function getWorkspaceGitLog(
+  idOrName: string, base: string | undefined, opts: { limit: number; branches: boolean },
+): Promise<WorkspaceGitLog> {
+  const named = base?.trim()
+  // The script hands it to git as a revision, where a leading dash would
+  // read as an option.
+  if (named?.startsWith('-')) throw new ServerError('VALIDATION', `"${named}" is not a branch name`)
+  const { jobName, projectId, workspaceId } = await runningWorkspace(idOrName)
+  const row = await getWorkspaceRow(projectId, workspaceId)
+  try {
+    return await checkoutLog(jobName, { base: named, defaultBase: row?.baseBranch ?? row?.startCommit, ...opts })
+  } catch (err) {
+    if (named && err instanceof WorkspaceExecError && err.code === CHANGES_BASE_UNRESOLVED) {
+      throw new ServerError('VALIDATION', `no branch "${named}" that shares history with HEAD in this workspace`)
     }
     throw err
   }

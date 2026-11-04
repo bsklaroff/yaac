@@ -1159,6 +1159,42 @@ export interface BranchComparison {
   fetchedAt?: string
 }
 
+/**
+ * A workspace's commit history for the Commits pane: the newest `limit`
+ * commits reachable from HEAD or the compared branch, children before
+ * parents and otherwise newest first (`git log --date-order`), so the
+ * client can draw the graph from `parents` alone.
+ */
+export interface WorkspaceGitLog {
+  /** The ref the compared branch resolved to (`origin/main`); null when
+   *  no branch was named or the default one does not resolve. */
+  ref: string | null
+  /** The commit HEAD is at; null in an empty repo. */
+  head: string | null
+  /** When asked for, the checkout's branches for the compare picker: local
+   *  ones as `refs/heads/<name>` (so a same-named origin branch cannot
+   *  shadow them) and origin's as `origin/<name>`. */
+  branches?: string[]
+  commits: GitLogCommit[]
+  /** True when older commits were left out by `limit`. */
+  more: boolean
+}
+
+/** The most commits one `WorkspaceGitLog` holds. */
+export const MAX_LOG_COMMITS = 2000
+
+export interface GitLogCommit {
+  sha: string
+  parents: string[]
+  author: string
+  /** Author time, in Unix seconds. */
+  time: number
+  subject: string
+  /** The refs pointing at it, as `git log --decorate` names them
+   *  (`HEAD -> agent/x`, `origin/main`, `tag: v1`). */
+  refs: string[]
+}
+
 /** Where a symlink in a workspace leads: its resolved path relative to the
  *  workspace, or null when it is broken or leads outside the workspace. */
 export interface SymlinkTarget {

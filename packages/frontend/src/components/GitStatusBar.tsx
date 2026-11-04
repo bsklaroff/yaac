@@ -4,6 +4,7 @@ import { ServerError } from '@yaac/shared/errors'
 import { useUiStore } from '#lib/store'
 import { BranchIcon } from '#lib/icons'
 import { relativeAge } from '#lib/time'
+import { branchName } from '#lib/commits'
 import { lineTotals } from '#lib/gitStatus'
 import { useWorkspaceChanges } from '#lib/useWorkspaceChanges'
 import { LineCountsLabel } from '#components/ui/LineCountsLabel'
@@ -20,8 +21,9 @@ const BAR = 'flex h-5 shrink-0 items-start px-2 text-[11px] leading-4 md:-mt-1.5
 /**
  * Strip above a workspace's panes saying how far HEAD is ahead of and behind
  * its base branch, and how many lines differ from it in all. The base is the
- * Changes pane's pick, else the branch the workspace forked from. The line
- * counts open the Changes pane, which breaks them down.
+ * Changes pane's pick, else the branch the workspace forked from. The
+ * comparison opens the Commits pane, which draws it, and the line counts the
+ * Changes pane, which breaks them down.
  *
  * The strip always takes its height, even when empty: a row appearing later
  * would resize the panes below and send a SIGWINCH to the agent's TUI.
@@ -36,6 +38,7 @@ export function GitStatusBar({ workspaceId }: { workspaceId: string }): JSX.Elem
     workspaceId, { listing: 'paths', poll: 10_000 },
   )
   const openChanges = useUiStore((s) => s.openChanges)
+  const openCommits = useUiStore((s) => s.openCommits)
   const files = data?.files ?? []
   // A failed poll leaves the last answer in `data`; show why instead of it.
   // A stopped workspace has nothing to say.
@@ -51,12 +54,16 @@ export function GitStatusBar({ workspaceId }: { workspaceId: string }): JSX.Elem
   return (
     <div className={clsx(BAR, 'gap-2 text-text-dim')}>
       {data?.branch && (
-        <span className="min-w-0 truncate">
+        <button
+          onClick={() => openCommits(workspaceId)}
+          title="Review commits"
+          className="min-w-0 truncate rounded px-1 text-left transition hover:bg-surface-2"
+        >
           {describe(data.branch, data.comparison)}
           {data.comparison?.fetchedAt && (
             <span className="text-text-faint"> · fetched {relativeAge(data.comparison.fetchedAt)}</span>
           )}
-        </span>
+        </button>
       )}
       {files.length > 0 && (
         <button
@@ -80,7 +87,7 @@ function refLabel(ref: string): JSX.Element {
   return (
     <span className="inline-flex items-baseline gap-1 font-mono text-text">
       <BranchIcon size={11} className="shrink-0 self-center" />
-      {ref}
+      {branchName(ref)}
     </span>
   )
 }
