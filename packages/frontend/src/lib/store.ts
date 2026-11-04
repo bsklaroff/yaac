@@ -4,6 +4,7 @@ import { addColumn, isPaneLayout, removeTarget, renameTargets, singleColumn, wit
 import { previewTarget } from '#lib/preview'
 import { stepTarget } from '#lib/steps'
 import { CHANGES_TARGET, FILES_TARGET, fileKey, fileTarget, placeFile } from '#lib/files'
+import { HISTORY_TARGET } from '#lib/panes'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '#lib/shortcuts'
 import { applyThemeAttribute, type ThemePref } from '#lib/theme'
 import {
@@ -527,6 +528,8 @@ interface UiState {
   openChanges: (workspaceId: string) => void
   /** Open or focus a workspace's file explorer. */
   openFiles: (workspaceId: string) => void
+  /** Open or focus a workspace's History pane. */
+  openHistory: (workspaceId: string) => void
   /** Open or focus one step's pane (docs/workspace-steps.md). */
   openStep: (workspaceId: string, name: string) => void
   /** Open or focus one file's editor pane (see `placeFile`), with the
@@ -1121,6 +1124,7 @@ export const useUiStore = create<UiState>((set, get) => ({
     }
   }),
   openFiles: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, FILES_TARGET)),
+  openHistory: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, HISTORY_TARGET)),
   openStep: (workspaceId, name) => set((s) => openSpecialPane(s, workspaceId, stepTarget(name))),
   openFile: (workspaceId, path, line) => set((s) => {
     const target = fileTarget(path)

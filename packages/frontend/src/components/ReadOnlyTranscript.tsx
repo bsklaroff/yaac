@@ -31,15 +31,16 @@ interface ConversationProps {
    *  teammate's. */
   owner?: string
   find?: FindOptions
-  footer?: ReactNode
+  /** The bottom bar's content, or a function of the conversation shown. */
+  footer?: ReactNode | ((conversation: ConversationEntry | undefined) => ReactNode)
 }
 
 /**
  * A workspace's conversations, read-only, rendered with the same
  * `AcpTranscript` as the live chat pane and in the same column, honoring
  * its saved width and condensed toggles. A `footer` (`ReadOnlyWorkspace`'s
- * toggles and Restart) fills the bottom bar where the live pane's composer
- * sits. Conversations survive the container: an `acp` one as acpd's
+ * toggles and Restart, `HistoryPane`'s Resume) fills the bottom bar where
+ * the live pane's composer sits. Conversations survive the container: an `acp` one as acpd's
  * record, a `tui` one as the tool's own history, translated server-side.
  *
  * A workspace can have several (`/clear`, or more than one session); they
@@ -49,8 +50,9 @@ interface ConversationProps {
  * it load as the reader scrolls up or jumps to the start
  * (`useTranscriptPages`).
  *
- * A stopped conversation's last page is fetched once and cached forever,
- * since it cannot change. A `live` one (a teammate's running workspace) is
+ * A stopped conversation's last page is fetched once and cached until its
+ * transcript is written again (its `lastActiveAt`), which only a resume
+ * does. A `live` one (a teammate's running workspace) is
  * followed as it happens over `/acp/observe`, which the server answers for
  * an `acp` conversation as its live pane sees it and for a `tui` one as its
  * tool writes its history; only the selected conversation is followed. Its
@@ -71,11 +73,11 @@ export function ReadOnlyTranscript({
     [conversations],
   )
   const [picked, setPicked] = useState<string | null>(null)
-  // The user's pick, else the last conversation, else the first. Derived
+  // The user's pick, else the one an agent holds, else the newest. Derived
   // rather than stored so a pick from another workspace never sticks.
   const selected = viewable.find((s) => s.conversationId === picked)
     ?? viewable.find((s) => s.active)
-    ?? viewable[0]
+    ?? viewable.at(-1)
 
   const tabs = selected !== undefined && viewable.length > 1 && (
     <div className="flex shrink-0 flex-wrap gap-1 border-b border-hairline-soft px-3 py-1.5">
@@ -136,7 +138,7 @@ function Conversation({
 
   // `null` is a conversation the server has no record of (its 404).
   const { data, isPending, isError, error } = useQuery({
-    queryKey: ['transcript', workspaceId, session?.conversationId, live],
+    queryKey: ['transcript', workspaceId, session?.conversationId, live, live ? undefined : session?.lastActiveAt],
     queryFn: session === undefined ? skipToken : async (): Promise<AcpTranscriptPage | null> => {
       try {
         return await api.workspace[':id'].conversations[':conversationId'].transcript.$get({
@@ -189,7 +191,7 @@ function Conversation({
   const promptOnly = session === undefined || read === null
     || (read !== undefined && read.page === 0 && read.events.length === 0 && !!prompt)
   const loaded = streamed || (!isPending && !isError)
-  const bottom = titleBar ?? footer
+  const bottom = titleBar ?? (typeof footer === 'function' ? footer(session) : footer)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">

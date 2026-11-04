@@ -3,7 +3,8 @@ import clsx from 'clsx'
 import { Menu } from '@base-ui/react/menu'
 import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import {
-  AddIcon, ChangesIcon, ChatIcon, FilesIcon, MoreIcon, NavBackIcon, PreviewIcon, SidebarIcon, TabsIcon, TilesIcon,
+  AddIcon, ChangesIcon, ChatIcon, FilesIcon, HistoryIcon, MoreIcon, NavBackIcon, PreviewIcon, SidebarIcon, TabsIcon,
+  TilesIcon,
 } from '#lib/icons'
 import { goBackScreen } from '#lib/mobileHistory'
 import { previewLabel } from '#lib/preview'
@@ -67,12 +68,14 @@ export function PaneBarLeading(): JSX.Element | null {
 
 /** What the pane actions do; `disabled` says why they can't, and `titles`
  *  overrides their hover text. A running workspace can also open a session
- *  (`onNewSession`). */
+ *  (`onNewSession`), and one with earlier conversations its History pane
+ *  (`onOpenHistory`). */
 interface PaneActions {
   onNewSession?: () => void
   onNewShell?: () => void
   onOpenFiles: () => void
   onOpenChanges: () => void
+  onOpenHistory?: () => void
   disabled?: string
   titles?: { shell: string; files: string; changes: string }
 }
@@ -83,7 +86,7 @@ export const NEW_SHELL_TITLE = 'New shell. What it prints is kept in the workspa
 
 /** The desktop bar's view toggle and pane buttons. */
 export function PaneBarActions({
-  onNewSession, onNewShell, onOpenFiles, onOpenChanges, disabled, titles,
+  onNewSession, onNewShell, onOpenFiles, onOpenChanges, onOpenHistory, disabled, titles,
 }: PaneActions): JSX.Element {
   const viewMode = useUiStore((s) => s.viewMode)
   const setViewMode = useUiStore((s) => s.setViewMode)
@@ -131,6 +134,12 @@ export function PaneBarActions({
         <ChangesIcon size={13} />
         Changes
       </button>
+      {onOpenHistory !== undefined && (
+        <button onClick={onOpenHistory} title="Read or resume closed sessions' conversations" className={BAR_BUTTON}>
+          <HistoryIcon size={13} />
+          <span className="max-lg:sr-only">History</span>
+        </button>
+      )}
     </>
   )
 }
@@ -147,6 +156,7 @@ export function PaneOverflowMenu({
   onNewShell,
   onOpenChanges,
   onOpenFiles,
+  onOpenHistory,
   disabled,
 }: PaneActions & {
   /** The menu's footnote: the workspace's agent. */
@@ -189,6 +199,12 @@ export function PaneOverflowMenu({
           <FilesIcon size={14} />
           Browse files
         </Menu.Item>
+        {onOpenHistory !== undefined && (
+          <Menu.Item className={ITEM} onClick={onOpenHistory}>
+            <HistoryIcon size={14} />
+            Conversation history
+          </Menu.Item>
+        )}
         {previewPorts.map((p) => (
           <Menu.Item key={p.containerPort} className={ITEM} onClick={() => onOpenPreview?.(p.containerPort)}>
             <PreviewIcon size={14} />

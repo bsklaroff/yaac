@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { screen, cleanup, waitFor, fireEvent } from '@testing-library/react'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { screen, cleanup, waitFor, fireEvent, type RenderResult } from '@testing-library/react'
 import type { WorkspaceListEntry } from '@yaac/shared/types'
 
 // No xterm, no sockets: the terminal and chat panes are stubs naming what
@@ -14,12 +15,14 @@ vi.mock('#components/WorkspaceChat', () => ({
 import { WorkspaceView } from '#components/WorkspaceView'
 import { useUiStore } from '#lib/store'
 import {
-  conversation, mockFetch, renderWithClient, serverSnapshot, sessionEntry, TEST_USER_ID, workspaceEntry, type FetchMock,
+  agentEvent, conversation, mockFetch, renderWithClient, serverError, serverSnapshot, sessionEntry, TEST_USER_ID,
+  testQueryClient, workspaceEntry, type FetchMock,
 } from './harness'
 
 /*
  * A workspace's sessions as panes (docs/sessions.md): each in its mode's
- * renderer, each closable on its own, an exited one resumable, and a
+ * renderer, each closable on its own, an exited one resumable, a closed
+ * one's conversation read and resumed from the History pane, and a
  * workspace with none showing what it can start.
  */
 
@@ -27,10 +30,13 @@ const CLOSE = 'POST /api/workspace/s1/sessions/sa/close'
 const RESUME = 'POST /api/workspace/s1/sessions/sa/resume'
 const OPEN = 'POST /api/workspace/s1/sessions'
 const SEEN = 'POST /api/workspace/mark-waiting-seen'
+const OLD_TRANSCRIPT = 'GET /api/workspace/s1/conversations/old/transcript'
 
 const initial = useUiStore.getState()
 let server: FetchMock
+let client = testQueryClient()
 beforeEach(() => {
+  client = testQueryClient()
   useUiStore.setState({ ...initial, selectedWorkspaceId: 's1', layouts: {}, activeTabs: {}, viewMode: 'tabs' })
   server = mockFetch({
     'GET /api/workspace/s1/changes': {
@@ -41,17 +47,29 @@ beforeEach(() => {
     [RESUME]: undefined,
     [OPEN]: { sessionId: 'sn', workspaceId: 's1' },
     [SEEN]: { marked: true },
+    [OLD_TRANSCRIPT]: { page: 0, events: [agentEvent(0, 'the parser is fixed')] },
+    [OLD_TRANSCRIPT.replace('old', 'older')]: { page: 0, events: [agentEvent(0, 'the docs are tidy')] },
   })
 })
 afterEach(() => {
   cleanup()
 })
 
-function show(over: Partial<WorkspaceListEntry>): void {
+/** Render the workspace as `over` describes; called again with the same
+ *  `view`, it rerenders the mounted view on the new snapshot. */
+function show(over: Partial<WorkspaceListEntry>, view?: RenderResult): RenderResult {
   const snapshot = serverSnapshot({ workspaces: [workspaceEntry({ terminals: [], ...over })] })
   useUiStore.setState({ snapshot })
-  renderWithClient(<WorkspaceView snapshot={snapshot} provisioning={[]} />)
+  const ui = <WorkspaceView snapshot={snapshot} provisioning={[]} />
+  if (view === undefined) return renderWithClient(ui, client)
+  view.rerender(<QueryClientProvider client={client}>{ui}</QueryClientProvider>)
+  return view
 }
+
+/** Conversations closed sessions left, and one an open session holds. */
+const closed = conversation({ conversationId: 'old', sessionId: 'sx', prompt: 'fix the parser', active: false })
+const older = conversation({ conversationId: 'older', sessionId: 'sy', prompt: 'tidy the docs', active: false, ordinal: -1 })
+const held = conversation({ conversationId: 'conv-a', sessionId: 'sa', ordinal: 1 })
 
 describe('WorkspaceView sessions', () => {
   it('draws each session in its mode\'s pane, a chat on its conversation and a terminal on its window', () => {
@@ -98,18 +116,50 @@ describe('WorkspaceView sessions', () => {
     expect(screen.queryByRole('alertdialog')).toBeNull()
   })
 
-  it('shows a workspace with no session what it can start, and resumes an earlier conversation', async () => {
-    show({ conversations: [conversation({ conversationId: 'old', prompt: 'fix the parser', active: false })] })
+  it('shows a workspace with no session what it can start, its history included', async () => {
+    show({ conversations: [closed] })
     expect(screen.getByText('No agent is running here')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'New session' })).toBeTruthy()
-    expect(screen.getByText('fix the parser')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Resume' }))
-    await waitFor(() => expect(server.called(OPEN)).toHaveLength(1))
-    expect(server.called(OPEN)[0].body).toEqual({ resume: 'old' })
+    fireEvent.click(screen.getByRole('button', { name: 'Earlier conversations' }))
+    expect(await screen.findByText('the parser is fixed')).toBeTruthy()
 
     // New session opens the create form aimed at this workspace.
+    cleanup()
+    useUiStore.setState({ layouts: {} })
+    show({})
+    expect(screen.queryByRole('button', { name: 'Earlier conversations' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'New session' }))
     expect(useUiStore.getState().newWorkspace).toMatchObject({ projectId: 'proj', inWorkspace: 's1' })
+  })
+
+  it('reads closed sessions\' conversations beside an open one, and resumes one into a focused pane', async () => {
+    const open = sessionEntry({ sessionId: 'sa', conversationId: 'conv-a' })
+    const view = show({ sessions: [open], conversations: [older, closed, held] })
+    fireEvent.click(screen.getByRole('button', { name: 'History' }))
+    expect(await screen.findByText('the parser is fixed')).toBeTruthy()
+    expect(useUiStore.getState().activeTabs.s1).toBe('history')
+
+    // A refusal shows whole under the conversation it was for, and only there.
+    const refusal = 'cannot launch: the history of old is gone from the checkout'
+    server.route(OPEN, serverError('CONFLICT', refusal, 409))
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }))
+    expect(await screen.findByText(refusal)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'tidy the docs' }))
+    expect(await screen.findByText('the docs are tidy')).toBeTruthy()
+    expect(screen.queryByText(refusal)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'fix the parser' }))
+    expect(await screen.findByText(refusal)).toBeTruthy()
+
+    server.route(OPEN, { sessionId: 'sn', workspaceId: 's1' })
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }))
+    await waitFor(() => expect(server.called(OPEN)).toHaveLength(2))
+    expect(server.called(OPEN).map((c) => c.body)).toEqual([{ resume: 'old' }, { resume: 'old' }])
+
+    // Its new session holds it now, so it leaves the history and its pane
+    // takes focus as soon as the snapshot lists it.
+    const resumed = sessionEntry({ sessionId: 'sn', conversationId: 'old', ordinal: 1 })
+    show({ sessions: [open, resumed], conversations: [older, { ...closed, active: true, sessionId: 'sn' }, held] }, view)
+    await waitFor(() => expect(useUiStore.getState().activeTabs.s1).toBe('session:sn'))
+    expect(screen.queryByRole('button', { name: 'fix the parser' })).toBeNull()
   })
 
   it('marks a waiting session read once its pane is shown, and only that one', async () => {
