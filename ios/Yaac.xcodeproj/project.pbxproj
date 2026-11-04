@@ -19,6 +19,7 @@
 /* Begin PBXFileReference section */
 		A1C0DE000000000000000004 /* Yaac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Yaac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1C0DE000000000000000005 /* YaacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = YaacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1C0DE00000000000000001B /* Yaac.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Yaac.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -55,6 +56,7 @@
 		A1C0DE000000000000000008 = {
 			isa = PBXGroup;
 			children = (
+				A1C0DE00000000000000001B /* Yaac.xcconfig */,
 				A1C0DE000000000000000006 /* Yaac */,
 				A1C0DE000000000000000007 /* YaacTests */,
 				A1C0DE000000000000000009 /* Products */,
@@ -319,6 +321,7 @@
 		};
 		A1C0DE000000000000000017 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A1C0DE00000000000000001B /* Yaac.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
@@ -353,6 +356,7 @@
 		};
 		A1C0DE000000000000000018 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A1C0DE00000000000000001B /* Yaac.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";

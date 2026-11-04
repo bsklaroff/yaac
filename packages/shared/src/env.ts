@@ -295,6 +295,14 @@ export const env = {
   },
 
   /**
+   * `YAAC_FEEDBACK_URL` — the endpoint the server forwards a user's
+   * feedback to (docs/feedback.md). Unset, the server refuses feedback.
+   */
+  get feedbackUrl(): string | undefined {
+    return nonEmpty(process.env.YAAC_FEEDBACK_URL)
+  },
+
+  /**
    * `YAAC_ACCESS_MODE` — the access mode the server is asked to run in
    * (`local` unless `tailnet`). Plumbing only: `yaac server start` sets it
    * from `--tailnet`, and `yaac cluster install` on the Deployment. The
@@ -367,6 +375,18 @@ export const env = {
    */
   get bundled(): boolean {
     return Boolean(process.env.YAAC_BUNDLED)
+  },
+
+  /**
+   * `YAAC_VERSION` and `YAAC_GIT_COMMIT` — the release and commit the
+   * bundle was built from (`buildStamp`), set by tsup like `YAAC_BUNDLED`.
+   * Unset when running from source.
+   */
+  get version(): string | undefined {
+    return nonEmpty(process.env.YAAC_VERSION)
+  },
+  get gitCommit(): string | undefined {
+    return nonEmpty(process.env.YAAC_GIT_COMMIT)
   },
 
   /**

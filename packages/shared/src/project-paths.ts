@@ -81,6 +81,15 @@ export function secretKeyPath(): string {
 }
 
 /**
+ * SERVER-LOCAL. The Ed25519 key the server signs feedback with
+ * (docs/feedback.md), generated on first use. Losing it only gives the
+ * install a new identity at the feedback endpoint.
+ */
+export function feedbackKeyPath(): string {
+  return serverLocalPath('feedback.key')
+}
+
+/**
  * GLOBAL: the project's state tree, holding everything a workspace pod
  * mounts plus the project's metadata.
  */

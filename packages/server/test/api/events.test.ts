@@ -40,6 +40,7 @@ import {
 function emptySnapshot(): ServerSnapshot {
   return {
     driver: 'k8s',
+    feedbackHost: null,
     workspaces: [], workspaceGroups: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {},
     queuedWorkspaces: [], heldWorkspaces: [], draftWorkspaces: [], routines: [],
     imageBuilds: [],
@@ -202,6 +203,16 @@ describe('buildSnapshot', () => {
     expect(Array.isArray(snap.imageBuilds)).toBe(true)
     expect(snap.planUsage).toEqual({})
     expect(snap.codexPlanUsage).toEqual({})
+  })
+
+  it('names the feedback endpoint\'s host only when the server has one', async () => {
+    expect((await buildSnapshot()).feedbackHost).toBeNull()
+    vi.stubEnv('YAAC_FEEDBACK_URL', 'https://feedback.example.test/v1')
+    try {
+      expect((await buildSnapshot()).feedbackHost).toBe('feedback.example.test')
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })
 

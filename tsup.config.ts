@@ -1,4 +1,7 @@
 import { defineConfig } from 'tsup'
+import { buildStamp } from '@yaac/shared/build-info'
+
+const stamp = buildStamp(import.meta.dirname)
 
 export default defineConfig({
   entry: { cli: 'packages/cli/src/cli.ts' },
@@ -12,6 +15,8 @@ export default defineConfig({
   banner: { js: '#!/usr/bin/env node' },
   env: {
     YAAC_BUNDLED: 'true',
+    YAAC_VERSION: stamp.version,
+    YAAC_GIT_COMMIT: stamp.gitCommit,
   },
   // Bundle the @yaac/* workspace packages; npm deps stay external and
   // resolve from the published package's dependencies. The CLI's dynamic

@@ -11,7 +11,8 @@ import {
 } from '#components/ConversationView'
 import { FileLinksContext, type FileLinks } from '#components/Markdown'
 import { EffortSelect, PermissionModeSelect } from '#components/ComposerSelect'
-import { imageBytes, imageFiles, prepareImage, toAcpImage, useImageSrc } from '#lib/attachments'
+import { imageFiles, useDraftImages } from '#lib/attachments'
+import { DraftImage } from '#components/ui/DraftImage'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { focusRaisesKeyboard } from '#lib/viewport'
 import { DISCONNECT_NOTICE_DELAY_MS } from '#lib/reconnect'
@@ -19,8 +20,7 @@ import { AttachImageIcon, CloseIcon, SendIcon, StopIcon } from '#lib/icons'
 import { chatDraftKey, useUiStore } from '#lib/store'
 import { useTranscriptPages } from '#lib/useTranscriptPages'
 import { useWorkspaceFiles } from '#lib/useWorkspaceChanges'
-import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
-import type { AcpContent, AcpEvent, AcpImage, AcpQueuedPrompt } from '@yaac/shared/acp'
+import type { AcpContent, AcpEvent, AcpQueuedPrompt } from '@yaac/shared/acp'
 
 /**
  * The chat pane for an `acp` conversation; `WorkspaceTerminal` fills the
@@ -102,15 +102,8 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, visible, f
    * leaves it there to send again.
    */
   const [awaitingEcho, setAwaitingEcho] = useState<string | null>(null)
-  /**
-   * Images attached to the draft (docs/agent-modes.md, "Images"). Too large
-   * to persist in the store, so a reload drops them.
-   */
-  const [images, setImages] = useState<AcpImage[]>([])
-  /** The attached images as of this render, for an attach finishing later. */
-  const imagesRef = useRef(images)
-  imagesRef.current = images
-  const [imageError, setImageError] = useState<string | null>(null)
+  /** Images attached to the draft (docs/agent-modes.md, "Images"). */
+  const { images, setImages, error: imageError, attach } = useDraftImages()
   const fileInputRef = useRef<HTMLInputElement>(null)
   /** The draft and in-flight message this pane mounted with, and whether
    *  they have been checked against the replayed history yet. */
@@ -264,25 +257,6 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, visible, f
     }
   }
 
-  /** Attach pasted, dropped or picked images to the draft, shrunk to what the
-   *  model reads. */
-  const attach = (files: File[]): void => {
-    setImageError(null)
-    void Promise.all(files.map(async (f) => toAcpImage(await prepareImage(f))))
-      .then((added) => {
-        // The server enforces the same limit; check it before sending.
-        const next = [...imagesRef.current, ...added]
-        if (next.reduce((n, image) => n + imageBytes(image), 0) > MAX_ATTACHMENT_BYTES) {
-          setImageError('a message\'s images may total 5 MB')
-          return
-        }
-        // Update now so a concurrent attach builds on this one.
-        imagesRef.current = next
-        setImages(next)
-      })
-      .catch((err: unknown) => setImageError(err instanceof Error ? err.message : String(err)))
-  }
-
   const { menu, inputProps: menuInputProps, onKeyDown: menuKeyDown } = useComposerMenu({
     inputRef,
     draft,
@@ -365,7 +339,6 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, visible, f
                   <DraftImage
                     key={i}
                     image={image}
-                    workspaceId={workspaceId}
                     {...(awaitingEcho === null
                       ? { onRemove: () => setImages((cur) => cur.filter((_, j) => j !== i)) }
                       : {})}
@@ -551,30 +524,6 @@ function QueuedMessage({ prompt, onRemove }: { prompt: AcpQueuedPrompt; onRemove
       >
         <CloseIcon size={12} />
       </button>
-    </div>
-  )
-}
-
-/** An image attached to the draft, removable until the message is sent. */
-function DraftImage({ image, workspaceId, onRemove }: {
-  image: AcpImage
-  workspaceId: string
-  onRemove?: () => void
-}): JSX.Element {
-  return (
-    <div className="relative">
-      <img src={useImageSrc(image, workspaceId)} alt="" className="h-14 rounded-lg border border-hairline" />
-      {onRemove && (
-        <button
-          type="button"
-          aria-label="Remove image"
-          onClick={onRemove}
-          className="absolute -top-1.5 -right-1.5 rounded-full border border-hairline bg-surface-2
-            p-0.5 text-text-dim hover:text-text"
-        >
-          <CloseIcon size={10} />
-        </button>
-      )}
     </div>
   )
 }

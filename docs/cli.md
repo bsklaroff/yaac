@@ -204,6 +204,11 @@ yaac forward [workspace-id]     Bind a workspace's forwarded ports here (all
   -p, --port <container[:host]> Forward this port instead (repeatable)
   -b, --bind <address>          Address to bind (default 127.0.0.1)
 
+yaac feedback <message>         Send feedback to the yaac maintainers through
+                                the server, as the webapp's form does
+                                (docs/feedback.md)
+  --image <file>                Attach a screenshot (repeatable)
+
 yaac config
   edit <project>                Edit the project's yaac-config.json in $EDITOR
   edit-dockerfile <project>     Edit the project's Dockerfile.yaac

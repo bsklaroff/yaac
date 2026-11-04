@@ -1,0 +1,6 @@
+// The app target's base configuration. It takes YAAC_GIT_COMMIT from
+// BuildCommit.xcconfig, which the scheme's "Stamp git commit" pre-action
+// writes before each build (ios/README.md), and Info.plist expands it as
+// YaacGitCommit. The include is optional, so a build without the file
+// reports no commit.
+#include? "BuildCommit.xcconfig"

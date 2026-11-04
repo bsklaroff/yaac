@@ -334,6 +334,7 @@ describe('deployServerWorkload', () => {
   })
 
   it('hands the pod what it can no longer read off a host, and no host-side shim', async () => {
+    vi.stubEnv('YAAC_FEEDBACK_URL', 'https://feedback.example.test/v1')
     await deploy({
       log: vi.fn(),
       torHostAddr: '10.89.0.1',
@@ -364,6 +365,8 @@ describe('deployServerWorkload', () => {
     expect(env.YAAC_VOLUME_STORAGE_CLASS).toBeUndefined()
     // IN_CLUSTER makes the registry client dial Service DNS.
     expect(env.YAAC_IN_CLUSTER).toBe('1')
+    // The install shell's feedback endpoint, which the pod cannot inherit.
+    expect(env.YAAC_FEEDBACK_URL).toBe('https://feedback.example.test/v1')
   })
 
   it('stamps the identity install decided, not the uid of the machine running it', async () => {

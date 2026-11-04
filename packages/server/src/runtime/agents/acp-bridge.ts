@@ -25,9 +25,9 @@ import { tailAcpLog, type AcpLife, type RecordOrigin } from './acp-log'
 import { claudeSubagentThreads } from './claude-acp-replay'
 import { sessionTranscriptPath } from './transcripts'
 import { serverLog } from '#lib/log'
-import { MAX_ATTACHMENT_BYTES, sniffImage } from '@yaac/shared/attachments'
+import { inlineImages } from '#lib/images'
 import { MAX_PROMPT_LENGTH, PROMPT_TOO_LONG } from '@yaac/shared/types'
-import type { AcpClientMessage, AcpEventInit, AcpImage, AcpServerMessage, AcpTask } from '@yaac/shared/acp'
+import type { AcpClientMessage, AcpEventInit, AcpServerMessage, AcpTask } from '@yaac/shared/acp'
 
 /** The socket this bridge needs; same shape as the PTY bridge's, kept
  *  separate so the features stay decoupled. */
@@ -41,30 +41,6 @@ export interface AcpSocket {
 function toText(data: string | Buffer | ArrayBuffer): string {
   if (typeof data === 'string') return data
   return Buffer.isBuffer(data) ? data.toString('utf8') : Buffer.from(data).toString('utf8')
-}
-
-/**
- * Validate a prompt's images like the terminal upload route does: by
- * sniffing the bytes, not the declared type, with the size cap applied to
- * the whole message. Returns the first refusal as a string, and the message
- * is then dropped rather than sent without the image. The re-encoded bytes
- * are forwarded, since base64 decoding skips invalid characters.
- */
-function promptImages(raw: unknown): AcpImage[] | string {
-  if (raw === undefined) return []
-  if (!Array.isArray(raw)) return 'malformed images'
-  const images: AcpImage[] = []
-  let total = 0
-  for (const entry of raw as Array<Partial<AcpImage> | null>) {
-    if (typeof entry?.data !== 'string') return 'malformed image'
-    const bytes = Buffer.from(entry.data, 'base64')
-    total += bytes.byteLength
-    if (total > MAX_ATTACHMENT_BYTES) return 'its images are over the 5 MB limit'
-    const kind = sniffImage(bytes)
-    if (!kind) return 'an image is not a PNG, JPEG, GIF or WebP'
-    images.push({ type: 'image', mimeType: kind.mimeType, data: bytes.toString('base64') })
-  }
-  return images
 }
 
 /**
@@ -321,7 +297,7 @@ function bridgeAcp(
         refuse(PROMPT_TOO_LONG)
         return
       }
-      const images = promptImages(msg.images)
+      const images = inlineImages(msg.images)
       if (typeof images === 'string') {
         refuse(images)
         return

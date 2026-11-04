@@ -101,6 +101,7 @@ export function testQueryClient(whoami: Whoami | null = TEST_WHOAMI, snapshot?: 
 /** A snapshot with nothing in it; `over` fills what a case is about. */
 export const serverSnapshot = (over: Partial<ServerSnapshot> = {}): ServerSnapshot => ({
   driver: 'k8s',
+  feedbackHost: null,
   workspaces: [],
   workspaceGroups: [],
   stale: [],

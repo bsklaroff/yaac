@@ -303,6 +303,7 @@ function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: string; valu
       ? undefined
       : env.secrets.map((s) => `${String(s.version)}:${s.value}`).join(',')],
     ['YAAC_SECRET', env.secret],
+    ['YAAC_FEEDBACK_URL', env.feedbackUrl],
   ]
   for (const [name, value] of passThrough) {
     if (value !== undefined && value !== '') vars.push({ name, value })

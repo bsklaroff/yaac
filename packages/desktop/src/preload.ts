@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import { env } from '@yaac/shared/env'
 
 /**
  * The IPC surface the renderer gets. The native traffic lights are hidden, so
@@ -6,6 +7,8 @@ import { contextBridge, ipcRenderer } from 'electron'
  * contextIsolation keeps ipcRenderer itself out of the renderer.
  */
 contextBridge.exposeInMainWorld('yaacWindow', {
+  // This app's build, which the SPA sends with feedback (docs/feedback.md).
+  app: { kind: 'desktop', version: env.version, gitCommit: env.gitCommit },
   minimize: () => ipcRenderer.send('window:minimize'),
   // altKey selects the macOS Option-click zoom (maximize) instead of full screen.
   toggleMaximize: (altKey?: boolean) => ipcRenderer.send('window:toggle-maximize', altKey === true),

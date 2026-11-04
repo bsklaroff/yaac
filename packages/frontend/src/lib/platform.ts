@@ -9,6 +9,14 @@ export function isElectron(): boolean {
  *  iPadOS Safari reports "Macintosh", which is the right treatment. */
 export const IS_MAC = /Mac|iPhone|iPad/.test(navigator.userAgent)
 
+/** A native shell's description of its own build. */
+export interface ShellApp {
+  kind: string
+  version?: string
+  build?: string
+  gitCommit?: string
+}
+
 /**
  * The bridge a native shell exposes on `window`: the Electron preload
  * (packages/desktop/src/preload.ts), or the iPhone app
@@ -16,6 +24,10 @@ export const IS_MAC = /Mac|iPhone|iPad/.test(navigator.userAgent)
  * and provides only `showServers`, `openExternal` and `openPreview`.
  */
 interface YaacWindow {
+  /** The shell's own build, which feedback reports carry (docs/feedback.md):
+   *  the desktop app's version and commit, the iPhone app's version and
+   *  build number. */
+  app?: ShellApp
   minimize?: () => void
   /** altKey selects the macOS Option-click zoom (maximize) instead of full screen. */
   toggleMaximize?: (altKey?: boolean) => void

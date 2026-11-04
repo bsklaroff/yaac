@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { IMAGE_MIME_TYPES, MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
 import type { AcpImage, AcpStoredImage } from '@yaac/shared/acp'
 import { api } from '#lib/api'
@@ -117,4 +117,40 @@ export function useImageSrc(image: AcpImage | AcpStoredImage, workspaceId: strin
 /** How many bytes an image block decodes to. */
 export function imageBytes(image: AcpImage): number {
   return Math.floor(image.data.length * 3 / 4) - (image.data.match(/=*$/)?.[0].length ?? 0)
+}
+
+/**
+ * Images attached to a draft (a chat message, a feedback report): pasted,
+ * dropped or picked files, shrunk with `prepareImage`. `attach` refuses a
+ * batch that would take them past `MAX_ATTACHMENT_BYTES` together, the cap
+ * the server enforces on a request's images. Too large to persist, so a
+ * reload drops them.
+ */
+export function useDraftImages(): {
+  images: AcpImage[]
+  setImages: (images: AcpImage[] | ((cur: AcpImage[]) => AcpImage[])) => void
+  error: string | null
+  attach: (files: File[]) => void
+} {
+  const [images, setImages] = useState<AcpImage[]>([])
+  /** The attached images as of this render, for an attach finishing later. */
+  const imagesRef = useRef(images)
+  imagesRef.current = images
+  const [error, setError] = useState<string | null>(null)
+  const attach = (files: File[]): void => {
+    setError(null)
+    void Promise.all(files.map(async (f) => toAcpImage(await prepareImage(f))))
+      .then((added) => {
+        const next = [...imagesRef.current, ...added]
+        if (next.reduce((n, image) => n + imageBytes(image), 0) > MAX_ATTACHMENT_BYTES) {
+          setError('images may total 5 MB')
+          return
+        }
+        // Update now so a concurrent attach builds on this one.
+        imagesRef.current = next
+        setImages(next)
+      })
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+  }
+  return { images, setImages, error, attach }
 }
