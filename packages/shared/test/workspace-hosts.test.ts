@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseWorkspaceHost, workspaceHostUrl, workspaceHostname } from '#workspace-hosts'
+import { namesWorkspace, parseWorkspaceHost, workspaceHostUrl, workspaceHostname } from '#workspace-hosts'
 
 const ID = '4bfc59c6-1e83-4dd0-80f1-735294d5d2bb'
 
@@ -28,5 +28,20 @@ describe('parseWorkspaceHost', () => {
       'web.4bfc59c6.localhost', '3000.4bfc59c.localhost', '0.4bfc59c6.localhost',
       '70000.4bfc59c6.localhost', '3000.4bfc59c6.localhost.evil.com', '',
     ]) expect(parseWorkspaceHost(host), host).toBeNull()
+  })
+})
+
+describe('namesWorkspace', () => {
+  it('matches a name for the given workspace, in any case, with or without a port', () => {
+    expect(namesWorkspace('3000.4bfc59c6.localhost', ID)).toBe(true)
+    expect(namesWorkspace('8787.4BFC59C6.localhost:8786', ID.toUpperCase())).toBe(true)
+  })
+
+  it('refuses another workspace, no workspace, a non-name and the trailing-dot form', () => {
+    expect(namesWorkspace('3000.00000000.localhost', ID)).toBe(false)
+    expect(namesWorkspace('3000.4bfc59c6.localhost', undefined)).toBe(false)
+    expect(namesWorkspace('localhost:8787', ID)).toBe(false)
+    expect(namesWorkspace('3000.4bfc59c6.localhost.', ID)).toBe(false)
+    expect(namesWorkspace('3000.4bfc59c6.localhost.:8787', ID)).toBe(false)
   })
 })

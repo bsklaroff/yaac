@@ -1,6 +1,7 @@
 import type { MiddlewareHandler } from 'hono'
 import { env } from '@yaac/shared/env'
 import type { AccessMode, Principal } from '@yaac/shared/types'
+import { namesWorkspace } from '@yaac/shared/workspace-hosts'
 import { BUILT_IN_USER_ID, seeTailnetUser } from '#db'
 
 /** What `identify()` stores on the context for the routes after it. */
@@ -190,7 +191,11 @@ export function identify(
  * Allow only a loopback `Host`, or a hostname listed in `YAAC_ALLOWED_HOSTS`
  * (the tailnet name `tailscale serve` forwards). This defeats DNS rebinding,
  * where an attacker domain resolves to 127.0.0.1 but the browser still sends
- * the attacker's hostname. Loopback is always allowed.
+ * the attacker's hostname. Loopback is always allowed. So is a server's own
+ * workspace hostname when it runs inside that workspace (`namesWorkspace`),
+ * which the browsers yaac targets resolve to loopback themselves; what a
+ * rebind of that name would take elsewhere is in docs/remote-hosting.md
+ * "Security model".
  *
  * Only the hostname is checked: a port-forward can legitimately remap the
  * port, and a rebind request must hit the real port anyway.
@@ -205,7 +210,8 @@ export function isAllowedHost(host: string, allowed: readonly string[] = []): bo
 export function hostHeaderCheck(): MiddlewareHandler {
   return async (c, next) => {
     // Read per request so tests see the current allowlist.
-    if (isAllowedHost(requestHost(c.req.header('host'), c.req.url), env.allowedHosts)) return next()
+    const host = requestHost(c.req.header('host'), c.req.url)
+    if (isAllowedHost(host, env.allowedHosts) || namesWorkspace(host, env.workspaceId)) return next()
     return c.json(
       { error: { code: 'BAD_HOST', message: 'host not allowed' } },
       403,

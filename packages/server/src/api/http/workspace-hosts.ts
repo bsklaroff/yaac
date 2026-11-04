@@ -1,7 +1,8 @@
 import type { Server } from 'node:http'
 import type net from 'node:net'
 import { answerAndClose, readRequestHead } from '@yaac/shared/port-tunnel'
-import { parseWorkspaceHost } from '@yaac/shared/workspace-hosts'
+import { env } from '@yaac/shared/env'
+import { namesWorkspace, parseWorkspaceHost } from '@yaac/shared/workspace-hosts'
 import { workspaceDriver } from '#drivers/driver'
 import { assertInteractive } from '#domain/workspaces'
 import { cameThroughServe } from '#api/http/web-auth'
@@ -21,6 +22,10 @@ import type { AccessMode } from '@yaac/shared/types'
  * listeners under containerless, a forwarder under k8s). Anyone else needs
  * the identified tunnel (`/forward/attach`), which a remote client's
  * forwarder routes these names into.
+ *
+ * A server inside a workspace passes a name for that same workspace on to
+ * its HTTP server: such a request is the workspace's preview of this
+ * server, routed here by the outer install with `Host` intact.
  */
 export function routeWorkspaceHosts(
   server: Server,
@@ -31,8 +36,9 @@ export function routeWorkspaceHosts(
   server.on('connection', (socket: net.Socket) => {
     void readRequestHead(socket).then((header) => {
       if (!header) return
-      const name = parseWorkspaceHost(header('host') ?? '')
-      if (name) {
+      const host = header('host') ?? ''
+      const name = parseWorkspaceHost(host)
+      if (name && !namesWorkspace(host, env.workspaceId)) {
         void splice(socket, name, access() === 'local' && !cameThroughServe(header))
         return
       }

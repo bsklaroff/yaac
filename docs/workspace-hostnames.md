@@ -78,6 +78,14 @@ owns every workspace and could reach the ports anyway. This covers a browser
 or the desktop app on the server's machine, for either driver (under `k8s`,
 with no forwarder running), and an `ssh -L` tunnel to the server's port.
 
+One name is the server's own. A server running inside a workspace (a yaac
+dev workspace's inner server, `YAAC_WORKSPACE_ID` set) is what that
+workspace's names reach when its dev server is yaac itself. The outer
+install has already routed the name, so the inner server hands a name for
+its own workspace (`namesWorkspace`) to its HTTP server, and its Host check
+admits it. A name for any other workspace is still routed or refused as
+above.
+
 **On a remote client's forwarder.** When `yaac forward` or the desktop app
 forwards for a server whose origin is not loopback, its forward set
 (`createForwardSet`'s `hostsPort`) also binds a router at
