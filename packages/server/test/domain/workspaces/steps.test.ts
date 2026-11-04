@@ -298,8 +298,15 @@ describe('assertInteractive', () => {
     await expect(assertInteractive(WS)).resolves.toBeUndefined()
   })
 
-  it('refuses a site\'s release while it runs, which only its site manages', async () => {
+  it('refuses a site\'s release while it runs, which only its site manages, but for a forward', async () => {
     await release()
     await expect(assertInteractive(WS)).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('yaac site') as unknown })
+    // The one port a release offers is its site's admin port.
+    await expect(assertInteractive(WS, { forward: true })).resolves.toBeUndefined()
+  })
+
+  it('refuses a running non-interactive workspace, forwards included', async () => {
+    await startLife({ test: { run: 'pnpm test' } }, { nonInteractive: true })
+    await expect(assertInteractive(WS, { forward: true })).rejects.toMatchObject({ code: 'CONFLICT' })
   })
 })

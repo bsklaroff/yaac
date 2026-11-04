@@ -339,6 +339,9 @@ export const sites = snakeCase.table('sites', {
   hostname: text().notNull().unique(),
   /** The port its releases serve on. */
   port: integer().notNull(),
+  /** The one port of its releases its owner may forward, for an admin view
+   *  that the router never serves. */
+  adminPort: integer(),
   /** The graph each release runs; its `needs` may name `volume`. */
   steps: json().$type<StepGraph>().notNull(),
   /** No foreign key; deleting a volume a site names is refused. */

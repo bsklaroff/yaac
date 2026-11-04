@@ -48,6 +48,7 @@ export const siteApp = new Hono<IdentityEnv>()
     zv('json', siteRef.extend({
       hostname: z.string().min(1),
       port,
+      adminPort: port.optional(),
       steps: z.unknown(),
       volume: z.string().min(1).optional(),
     })),
@@ -62,6 +63,7 @@ export const siteApp = new Hono<IdentityEnv>()
     zv('json', siteRef.extend({
       hostname: z.string().min(1).optional(),
       port: port.optional(),
+      adminPort: port.nullable().optional(),
       steps: z.unknown().optional(),
       volume: z.string().min(1).nullable().optional(),
     })),

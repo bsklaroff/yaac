@@ -2,7 +2,8 @@ import { workspaceDriver } from '#drivers/driver'
 import { isTmuxSessionAlive } from '#runtime/status'
 import { buildStatusRight, setStatusRightCmd } from '#lib/status-right'
 import { serverLog } from '#lib/log'
-import type { PortForwardConfig, PortMapping, YaacConfig } from '@yaac/shared/types'
+import type { RuntimeHandle } from '#drivers/contract'
+import type { PortForwardConfig, PortMapping } from '@yaac/shared/types'
 
 /**
  * Overwrite a running workspace's tmux `status-right`, so the displayed port
@@ -31,11 +32,11 @@ async function setWorkspaceStatusRight(
  * Skips (never retries) workspaces that are not running, already have
  * forwarders, or whose tmux is gone (the reaper's job).
  *
- * The caller supplies the project-config reader, since this runs once at
+ * The caller supplies what each workspace offers, since this runs once at
  * attach with no `PassContext` to use.
  */
 export async function restoreAllWorkspaceForwarders(
-  projectConfig: (projectId: string) => Promise<YaacConfig | undefined>,
+  offered: (workspace: RuntimeHandle) => Promise<PortForwardConfig[]>,
 ): Promise<void> {
   const runtime = workspaceDriver()
   let workspaces
@@ -56,8 +57,7 @@ export async function restoreAllWorkspaceForwarders(
 
   await Promise.allSettled(candidates.map(async (w) => {
     try {
-      const config = await projectConfig(w.projectId) ?? {}
-      await provisionForwarders(w.workspaceId, w.jobName, config.portForward)
+      await provisionForwarders(w.workspaceId, w.jobName, await offered(w))
     } catch (err) {
       serverLog(
         `[server] restore forwarders for ${w.workspaceId.slice(0, 8)}: `
@@ -75,9 +75,9 @@ export async function restoreAllWorkspaceForwarders(
 async function provisionForwarders(
   workspaceId: string,
   jobName: string,
-  portForward: PortForwardConfig[] | undefined,
+  portForward: PortForwardConfig[],
 ): Promise<void> {
-  const declared = await workspaceDriver().declareForwards(workspaceId, portForward ?? [])
+  const declared = await workspaceDriver().declareForwards(workspaceId, portForward)
 
   // Always refresh, to clear stale port info even when there are no
   // forwards.

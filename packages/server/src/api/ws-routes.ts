@@ -83,8 +83,9 @@ function attachRoute(
   app: Hono<IdentityEnv>,
   path: string,
   /** `interactiveOnly`: refused on a running non-interactive workspace
-   *  (docs/workspace-steps.md). */
-  opts: { session?: boolean; access: 'owner' | 'reader'; interactiveOnly?: boolean },
+   *  (docs/workspace-steps.md), and on a site's release unless it is
+   *  `'forward'` (see `assertInteractive`). */
+  opts: { session?: boolean; access: 'owner' | 'reader'; interactiveOnly?: true | 'forward' },
   setup: (c: Context<IdentityEnv>) => {
     open: (target: AttachTarget, socket: SocketLike) => void
     refuse: (socket: SocketLike, err: unknown) => void
@@ -112,7 +113,9 @@ function attachRoute(
           requireRunning: true, exact: true, ...(opts.access === 'owner' ? { owner: principal } : {}),
         })
           .then(async (target) => {
-            if (opts.interactiveOnly === true) await assertInteractive(target.workspaceId)
+            if (opts.interactiveOnly !== undefined) {
+              await assertInteractive(target.workspaceId, { forward: opts.interactiveOnly === 'forward' })
+            }
             return target
           })
           .then((target) => open(target, socket), (err: unknown) => refuse(socket, err))
@@ -218,7 +221,7 @@ export function registerWebSocketRoutes(app: Hono<IdentityEnv>, hub: EventHub): 
   // server binds no host port on either driver; `yaac forward` or the
   // desktop app listens on the user's machine and opens one of these per
   // connection (docs/port-forward-tunnel.md).
-  attachRoute(app, '/api/forward/attach', { access: 'owner', interactiveOnly: true }, (c) => {
+  attachRoute(app, '/api/forward/attach', { access: 'owner', interactiveOnly: 'forward' }, (c) => {
     const id = c.req.query('id') ?? ''
     const port = Number(c.req.query('port'))
     return {

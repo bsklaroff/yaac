@@ -70,7 +70,7 @@ async function splice(
   let upstream
   try {
     // Requests to a non-interactive workspace's servers could sway its run.
-    await assertInteractive(matches[0].workspaceId)
+    await assertInteractive(matches[0].workspaceId, { forward: true })
     upstream = await driver.dialPort(matches[0].workspaceId, port)
   } catch (err) {
     answerAndClose(socket, 502, `workspace ${idPrefix} port ${String(port)}: ${err instanceof Error ? err.message : String(err)}`)

@@ -161,8 +161,12 @@ yaac site                       A project's public sites, each served by a
     --hostname <host>           Public hostname the tunnel routes
     --port <n>                  Port its releases serve on
     --steps <file>              JSON file of the steps each release runs
+    --admin-port <n>            Port of each release only its owner reaches,
+                                by `yaac forward` or a preview
     --volume <name>             Volume each release mounts (see `yaac volume`)
-  edit <project> <name>         The same options; the next deploy uses them
+  edit <project> <name>         The same options; the next deploy uses them,
+                                but the hostname and admin port move at once
+    --no-admin-port             Offer no admin port
     --no-volume                 Mount no volume
   list <project>                Sites with their live release and last deploy
   show <project> <name>         A site and its recent releases

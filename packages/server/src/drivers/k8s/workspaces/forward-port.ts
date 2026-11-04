@@ -1,4 +1,4 @@
-import { isPrewarmed, readWorkspacePods, relayDial } from '#drivers/k8s/substrate'
+import { LABEL_SITE_ID, isPrewarmed, readWorkspacePods, relayDial } from '#drivers/k8s/substrate'
 import { addWorkspaceForwarder, getWorkspacePorts } from './port-forwarders'
 import { getUnforwardedPorts } from './port-detector'
 import { ServerError } from '@yaac/shared/errors'
@@ -14,7 +14,8 @@ import type { PortMapping } from '@yaac/shared/types'
  * The forward lives only in this server's in-memory registry. Persisting it
  * is the caller's job (`#domain/workspaces` writes the project config, then
  * asks for `fanOutToProject`). The fan-out to the project's other running
- * workspaces is best-effort; a failure on the target itself is thrown.
+ * workspaces is best-effort, and skips a site's release, which offers only
+ * its site's admin port; a failure on the target itself is thrown.
  */
 export async function forwardWorkspacePort(
   target: { workspaceId: string; projectId: string; jobName: string },
@@ -34,7 +35,8 @@ export async function forwardWorkspacePort(
     const pods = await readWorkspacePods(target.projectId)
     await Promise.all(
       pods
-        .filter((p) => p.running && p.workspaceId && p.workspaceId !== target.workspaceId && !isPrewarmed(p))
+        .filter((p) => p.running && p.workspaceId && p.workspaceId !== target.workspaceId && !isPrewarmed(p)
+          && p.labels[LABEL_SITE_ID] === undefined)
         .map((p) =>
           addWorkspaceForwarder(p.workspaceId, p.jobName, containerPort)
             .catch((err: unknown) => {

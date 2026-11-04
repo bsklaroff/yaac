@@ -606,7 +606,9 @@ function siteOptions(cmd: Command, required: boolean): Command {
   option('--hostname <host>', 'The public hostname it serves, which the install\'s Cloudflare tunnel must route')
   option('--port <n>', 'The port its releases serve on')
   option('--steps <file>', 'A JSON file of the steps each release runs; one must be a service')
-  return cmd.option('--volume <name>', 'A project volume each release mounts at $YAAC_VOLUME_DIR (see `yaac volume`)')
+  return cmd
+    .option('--admin-port <n>', 'A port of each release that only you can reach, by `yaac forward` or a preview, never the internet')
+    .option('--volume <name>', 'A project volume each release mounts at $YAAC_VOLUME_DIR (see `yaac volume`)')
 }
 
 siteOptions(site
@@ -621,6 +623,7 @@ siteOptions(site
   .description('Change a site; the next deploy uses the new settings')
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('<name>', 'Site name'), false)
+  .option('--no-admin-port', 'Offer no admin port')
   .option('--no-volume', 'Mount no volume')
   .action(siteEdit)
 

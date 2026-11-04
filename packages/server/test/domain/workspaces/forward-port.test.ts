@@ -6,10 +6,10 @@ vi.mock('#domain/projects/local-config', () => ({
 
 import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { addPortForwardToProjectConfig } from '#domain/projects/local-config'
-import { dismissWorkspacePort, forwardWorkspacePort, unforwardWorkspacePort } from '#domain/workspaces/forward-port'
+import { dismissWorkspacePort, forwardWorkspacePort, offeredForwards, unforwardWorkspacePort } from '#domain/workspaces/forward-port'
 import { ServerError } from '@yaac/shared/errors'
 import type { PortMapping } from '@yaac/shared/types'
-import { BUILT_IN_USER_ID, recordProject } from '#db'
+import { BUILT_IN_USER_ID, insertSite, recordProject, updateSite } from '#db'
 import { DEMO_PROJECT_ID as PROJ } from '@yaac/test-utils/project-fixture'
 
 /** The caller of every user-caused write here. */
@@ -193,5 +193,20 @@ describe('dismissWorkspacePort', () => {
     await dismissWorkspacePort(local, 'sid-1', 8090)
 
     expect(mockPersist).not.toHaveBeenCalled()
+  })
+})
+
+describe('offeredForwards', () => {
+  it('offers the project\'s ports, and a release only its site\'s admin port', async () => {
+    const config = { portForward: [{ containerPort: 3000, hostPortStart: 3000 }] }
+    expect(await offeredForwards(config, undefined)).toEqual(config.portForward)
+    expect(await offeredForwards({}, undefined)).toEqual([])
+
+    const site = await insertSite({
+      projectId: PROJ, name: 'shop', hostname: 'shop.example.com', port: 3000, adminPort: 3001, steps: {},
+    })
+    expect(await offeredForwards(config, site.id)).toEqual([{ containerPort: 3001, hostPortStart: 3001 }])
+    await updateSite(site.id, { adminPort: null })
+    expect(await offeredForwards(config, site.id)).toEqual([])
   })
 })
