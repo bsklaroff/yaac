@@ -36,3 +36,19 @@ export function parseWorkspaceHost(host: string): { port: number; idPrefix: stri
   const port = Number(match[1])
   return port >= 1 && port <= 65535 ? { port, idPrefix: match[2] } : null
 }
+
+/**
+ * Whether `host` names a port of workspace `workspaceId`. A yaac server
+ * running inside that workspace is what such a name reaches when the
+ * workspace's dev server is yaac itself, so that server takes the name as
+ * addressed to it (docs/workspace-hostnames.md). Its Host check admits the
+ * name on the strength of browsers resolving it to loopback themselves, so
+ * the absolute form with a trailing dot, the one a browser is most likely
+ * to hand to the system resolver, is not this workspace's name
+ * (docs/remote-hosting.md "Security model").
+ */
+export function namesWorkspace(host: string, workspaceId: string | undefined): boolean {
+  return workspaceId !== undefined
+    && !host.split(':')[0].endsWith('.')
+    && parseWorkspaceHost(host)?.idPrefix === workspaceId.slice(0, ID_PREFIX_LENGTH).toLowerCase()
+}

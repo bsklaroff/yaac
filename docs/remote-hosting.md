@@ -308,7 +308,17 @@ Things to keep in mind:
   the tailnet. Three guards protect it from malicious sites, on every
   request including WebSocket upgrades. The browser sets these headers and
   page JavaScript cannot forge them:
-  - `Host` must be loopback or an allowed name (stops DNS rebinding).
+  - `Host` must be loopback or an allowed name (stops DNS rebinding). A
+    server inside a workspace also admits that workspace's own hostnames
+    (`<port>.<id8>.localhost`, docs/workspace-hostnames.md), which is how the
+    workspace previews it. Chromium (so the desktop app) and Firefox resolve
+    `.localhost` names to loopback themselves, so a page there cannot rebind
+    one. Safari and WKWebView on macOS before 26 ask the network's DNS
+    instead; there a rebind needs an attacker who controls the victim's
+    resolver and knows the workspace's id8, the same exposure every
+    workspace dev server already has under these names. The absolute form
+    with a trailing dot is not admitted, since it is the form most likely to
+    reach the system resolver.
   - `Origin` must exactly match the origin the request was sent to: scheme,
     host and port.
   - `Sec-Fetch-Site` must not be `cross-site`.

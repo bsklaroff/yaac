@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest'
 import http from 'node:http'
 import net from 'node:net'
 import { routeWorkspaceHosts } from '#api/http/workspace-hosts'
@@ -109,6 +109,19 @@ describe('routeWorkspaceHosts', () => {
     await until('ping')
     socket.destroy()
     expect(dialed).toHaveLength(1)
+  })
+
+  it('inside a workspace, hands a name for that workspace to its own server', async () => {
+    // A yaac dev workspace's preview of its inner server: the outer install
+    // routed the name here with Host intact.
+    vi.stubEnv('YAAC_WORKSPACE_ID', '0f9e8d7c-1111-4000-8000-000000000000')
+    try {
+      expect(await get('8787.0f9e8d7c.localhost:8786')).toEqual({ status: 200, body: 'api' })
+      expect(await get('3000.ab12cd34.localhost')).toEqual({ status: 200, body: 'dev 3000.ab12cd34.localhost /page' })
+    } finally {
+      vi.unstubAllEnvs()
+    }
+    expect(dialed).toEqual([[ID, 3000]])
   })
 
   it('answers a name it cannot serve itself, never handing it to the API', async () => {

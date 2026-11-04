@@ -209,6 +209,18 @@ describe('hostHeaderCheck', () => {
     expect(body.error.code).toBe('BAD_HOST')
   })
 
+  it('inside a workspace, admits that workspace\'s hostnames and no other', async () => {
+    const app = appWithHostCheck()
+    vi.stubEnv('YAAC_WORKSPACE_ID', 'AB12cd34-1e83-4dd0-80f1-735294d5d2bb')
+    try {
+      expect((await app.request('/x', { headers: { host: '8787.ab12cd34.localhost:8786' } })).status).toBe(200)
+      expect((await app.request('/x', { headers: { host: '8787.00000000.localhost:8786' } })).status).toBe(403)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+    expect((await app.request('/x', { headers: { host: '8787.ab12cd34.localhost:8786' } })).status).toBe(403)
+  })
+
   it('admits a host from YAAC_ALLOWED_HOSTS, any case or port, read per request', async () => {
     const app = appWithHostCheck()
     vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
