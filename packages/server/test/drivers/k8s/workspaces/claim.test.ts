@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { PROJECT_CONFIG_DEFAULTS } from '@yaac/test-utils/project-fixture'
 import type * as childProcessModule from 'node:child_process'
 import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 
@@ -206,7 +207,7 @@ describe('registerWorkspace', () => {
     workspaceId: 's1',
     projectId: 'proj',
     owner: 'o',
-    config: {},
+    config: PROJECT_CONFIG_DEFAULTS,
     allowlist: { hosts: [], defaults: true },
     remoteUrl: 'https://github.com/example/repo.git',
     proxySecretRules: {},

@@ -13,7 +13,7 @@ import { workspaceDriver } from '#drivers/driver'
 
 /** The features a route can require, in product vocabulary rather than
  *  substrate vocabulary. */
-export type DriverFeature = 'images' | 'egress' | 'portRelay' | 'volumes' | 'sites'
+export type DriverFeature = 'images' | 'egress' | 'portRelay' | 'volumes' | 'sites' | 'cacheVolumes' | 'nestedContainers' | 'npmCache'
 
 const WHY: Record<DriverFeature, string> = {
   images: 'builds no images — its workspaces run on this host, from the checkout itself',
@@ -22,6 +22,9 @@ const WHY: Record<DriverFeature, string> = {
     + 'already reachable at their own port',
   volumes: 'keeps no volumes — they are cluster storage, and its workspaces run on this host',
   sites: 'serves no public sites — it has no sandbox to put between the internet and this host',
+  cacheVolumes: 'keeps no cache volumes — a workspace\'s tools keep their caches where they always do on this host',
+  nestedContainers: 'runs no container engine in a workspace — its workspaces run on this host, so use the host\'s own',
+  npmCache: 'runs no npm cache — its workspaces fetch packages the way this host does',
 }
 
 /**

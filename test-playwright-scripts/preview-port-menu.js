@@ -13,10 +13,8 @@
  *     terminal.
  *
  * Needs a running tui workspace in PROJECT whose config forwards at least two
- * ports, e.g. `"portForward": [{ "containerPort": 5173, "hostPortStart":
- * 15173 }, { "containerPort": 3000, "hostPortStart": 13000 }]` set with
- * `yaac config edit <project>` before `yaac workspace create <project> --mode
- * tui`. The first such workspace is used; set WORKSPACE=<id> to pick another.
+ * ports, e.g. set with `yaac config port-forwards <project> 5173:15173
+ * 3000:13000` before `yaac workspace create <project> --mode tui`. The first such workspace is used; set WORKSPACE=<id> to pick another.
  *
  * Run: YAAC_DATA_DIR=<data dir> PROJECT=<name or id> node test-playwright-scripts/preview-port-menu.js
  */

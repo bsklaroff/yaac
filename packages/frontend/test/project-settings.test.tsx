@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
 import type { ProjectEnvVar, ProjectSummary, Whoami } from '@yaac/shared/types'
 
-// CodeMirror doesn't run under jsdom; the config editor gets a textarea.
+// CodeMirror doesn't run under jsdom; each file editor gets a textarea.
 vi.mock('#components/ui/CodeEditor', () => ({
   CodeEditor: ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
     <textarea aria-label="editor" value={value} onChange={(e) => onChange(e.target.value)} />
@@ -23,7 +23,7 @@ afterEach(() => {
 /** A project keyed by `id-<name>`, so a test can tell the key from the
  *  displayed name. */
 const project = (name: string, remoteUrl: string): ProjectSummary =>
-  ({ id: `id-${name}`, name, remoteUrl, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true, scratchDirs: { dirs: [], ignoredTracked: [] }, initSteps: {} })
+  ({ id: `id-${name}`, name, remoteUrl, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true, scratchDirs: { dirs: [], ignoredTracked: [] }, initSteps: {}, portForwards: [], cacheVolumes: {}, nestedContainers: false, npmCache: true })
 
 /** Show settings for `alpha` (and `beta`) on a containerless server, whose
  *  env routes keep `vars` in memory. */
@@ -45,9 +45,7 @@ function renderAlpha(vars: ProjectEnvVar[] = []): FetchMock {
       vars = vars.filter((v) => v.id !== 'v1')
       return undefined
     },
-    'GET /api/project/id-alpha/config/raw': { content: '{"a": 1}' },
     'GET /api/project/id-beta/env': { vars: [] },
-    'GET /api/project/id-beta/config/raw': { content: '' },
   })
   renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
   return server
@@ -84,7 +82,6 @@ describe('ProjectSettings', () => {
     })
     const server = mockFetch({
       'GET /api/project/id-gamma/env': { vars: [] },
-      'GET /api/project/id-gamma/config/raw': { content: '' },
       'PUT /api/project/id-gamma/default-branch-guard': () => undefined,
       'GET /api/project/id-gamma/branches': () => ({ branches: ['agent/x', 'main'], defaultBranch }),
       'PUT /api/project/id-gamma/default-branch': ({ body }: FetchCall) => {
@@ -120,7 +117,6 @@ describe('ProjectSettings', () => {
     })
     const server = mockFetch({
       'GET /api/project/id-alpha/env': { vars: [] },
-      'GET /api/project/id-alpha/config/raw': { content: '' },
       'PUT /api/project/id-alpha/init-steps': ({ body }: FetchCall) => {
         const { steps } = body as { steps: Record<string, unknown> }
         return 'cycle' in steps
@@ -156,7 +152,6 @@ describe('ProjectSettings', () => {
     })
     const server = mockFetch({
       'GET /api/project/id-alpha/env': { vars: [] },
-      'GET /api/project/id-alpha/config/raw': { content: '' },
       'PUT /api/project/id-alpha/kept-ignored-paths': ({ body }: FetchCall) => body,
     })
     renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
@@ -182,7 +177,6 @@ describe('ProjectSettings', () => {
     })
     const server = mockFetch({
       'GET /api/project/id-delta/env': { vars: [] },
-      'GET /api/project/id-delta/config/raw': { content: '' },
       'PUT /api/project/id-delta/scratch-dirs': { dirs: [], ignoredTracked: [] },
     })
     renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
@@ -218,6 +212,65 @@ describe('ProjectSettings', () => {
     await waitFor(() => expect(puts().slice(4)).toEqual([{ ignoredTracked: [] }]))
   })
 
+  it('edits forwarded ports, cache volumes and the container options, the last two only under k8s', async () => {
+    useUiStore.setState({ activeProjectId: 'id-alpha' })
+    const alpha = {
+      ...project('alpha', 'https://github.com/o/alpha.git'),
+      portForwards: [{ containerPort: 3000, hostPortStart: 3000 }],
+      cacheVolumes: { pip: '/home/yaac/.cache/pip' },
+    }
+    const server = mockFetch({
+      'GET /api/project/id-alpha/env': { vars: [] },
+      'GET /api/project/id-alpha/allowlist': { allowlist: { hosts: [], defaults: true }, defaultHosts: [] },
+      'GET /api/project/id-alpha/dockerfile': { content: '' },
+      'GET /api/project/id-alpha/build-files': { files: [] },
+      'PUT /api/project/id-alpha/port-forwards': {},
+      'PUT /api/project/id-alpha/cache-volumes': {},
+      'PUT /api/project/id-alpha/nested-containers': {},
+      'PUT /api/project/id-alpha/npm-cache': {},
+    })
+    renderWithClient(<ProjectSettings />, testQueryClient(undefined, serverSnapshot({ driver: 'k8s', projects: [alpha] })))
+    const bodies = (route: string): unknown[] => server.called(`PUT /api/project/id-alpha/${route}`).map((c) => c.body)
+
+    // A host port left empty is the container port.
+    fireEvent.change(screen.getByLabelText('Container port'), { target: { value: '5173' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add forwarded port' }))
+    await waitFor(() => expect(bodies('port-forwards')).toEqual([{ ports: [
+      { containerPort: 3000, hostPortStart: 3000 }, { containerPort: 5173, hostPortStart: 5173 },
+    ] }]))
+    fireEvent.change(screen.getByLabelText('Container port'), { target: { value: '8080' } })
+    fireEvent.change(screen.getByLabelText('Host port'), { target: { value: '9000' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add forwarded port' }))
+    await waitFor(() => expect(bodies('port-forwards')[1]).toEqual({ ports: [
+      { containerPort: 3000, hostPortStart: 3000 }, { containerPort: 8080, hostPortStart: 9000 },
+    ] }))
+    await waitFor(() => expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Remove port 3000' }).disabled).toBe(false))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove port 3000' }))
+    await waitFor(() => expect(bodies('port-forwards')[2]).toEqual({ ports: [] }))
+
+    fireEvent.change(screen.getByLabelText('Cache volume name'), { target: { value: 'cargo' } })
+    fireEvent.change(screen.getByLabelText('Cache volume path'), { target: { value: '/home/yaac/.cargo' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add cache volume' }))
+    await waitFor(() => expect(bodies('cache-volumes')).toEqual([
+      { volumes: { pip: '/home/yaac/.cache/pip', cargo: '/home/yaac/.cargo' } },
+    ]))
+    await waitFor(() => expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Remove pip' }).disabled).toBe(false))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove pip' }))
+    await waitFor(() => expect(bodies('cache-volumes')[1]).toEqual({ volumes: {} }))
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Nested containers/ }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /npm cache/ }))
+    await waitFor(() => expect([bodies('nested-containers'), bodies('npm-cache')])
+      .toEqual([[{ enabled: true }], [{ enabled: false }]]))
+
+    // A containerless server has no pods to give either.
+    cleanup()
+    renderAlpha()
+    expect(screen.getByRole('button', { name: 'Add forwarded port' })).toBeTruthy()
+    expect(screen.queryByText('Cache volumes')).toBeNull()
+    expect(screen.queryByRole('checkbox', { name: /Nested containers/ })).toBeNull()
+  })
+
   it('confirms a stopped-workspace auto-delete with the count it deletes at once, and turns it off without asking', async () => {
     const server = renderAlpha()
     const before = '2026-10-16T12:00:00.000Z'
@@ -250,7 +303,6 @@ describe('ProjectSettings', () => {
     useUiStore.setState({ activeProjectId: 'id-alpha' })
     const kept = mockFetch({
       'GET /api/project/id-alpha/env': { vars: [] },
-      'GET /api/project/id-alpha/config/raw': { content: '' },
       'GET /api/project/id-alpha/workspace-auto-delete': { expired: 0, before: '2026-08-24T12:00:00.000Z' },
       'PUT /api/project/id-alpha/workspace-auto-delete': { deleted: 0, kept: [] },
     })
@@ -287,7 +339,6 @@ describe('ProjectSettings', () => {
     })
     const server = mockFetch({
       'GET /api/project/id-gamma/env': { vars: [] },
-      'GET /api/project/id-gamma/config/raw': { content: '' },
       'POST /api/project/id-gamma/shares': { id: 'id-bo-gamma', name: 'gamma', remoteUrl: '', addedAt: '' },
       'DELETE /api/project/id-gamma/shares/u-ada': () => undefined,
     })
@@ -314,7 +365,6 @@ describe('ProjectSettings', () => {
     const token = { id: 'c-token', name: 'gh', kind: 'https', preview: '***abcd', projects: [] } as const
     const server = mockFetch({
       'GET /api/project/id-gamma/env': { vars: [] },
-      'GET /api/project/id-gamma/config/raw': { content: '' },
       'GET /api/auth/list': { gitCredentials: [token], toolAuth: [] },
       'GET /api/project/id-gamma/move': { runningWorkspaces: 2, sharedWith: ['ada@x.com'] },
       'POST /api/project/id-gamma/move': { knownHostsEntry: null },
@@ -341,7 +391,6 @@ describe('ProjectSettings', () => {
     })
     const server = mockFetch({
       'GET /api/project/id-gamma/env': { vars: [] },
-      'GET /api/project/id-gamma/config/raw': { content: '' },
       'DELETE /api/project/id-gamma/hosted-repo': () => undefined,
     })
     renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
@@ -369,7 +418,7 @@ describe('ProjectSettings', () => {
         { ...hosted, id: 'id-mine', sharedFrom: { projectId: 'id-gamma', revoked: false } },
       ],
     })
-    mockFetch({ 'GET /api/project/id-mine/env': { vars: [] }, 'GET /api/project/id-mine/config/raw': { content: '' } })
+    mockFetch({ 'GET /api/project/id-mine/env': { vars: [] } })
     renderWithClient(<ProjectSettings />, testQueryClient(whoami, snapshot))
 
     screen.getByText('Shared by Ada')
@@ -384,7 +433,7 @@ describe('ProjectSettings', () => {
       driver: 'containerless',
       projects: [{ ...hosted, id: 'id-mine', sharedFrom: { projectId: 'id-gamma', revoked: true } }],
     })
-    mockFetch({ 'GET /api/project/id-mine/env': { vars: [] }, 'GET /api/project/id-mine/config/raw': { content: '' } })
+    mockFetch({ 'GET /api/project/id-mine/env': { vars: [] } })
     renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
 
     screen.getByText('Sharing removed')
@@ -434,7 +483,6 @@ describe('ProjectSettings', () => {
         { id: 'v1', name: 'PLAIN', secret: false, value: 'visible-elsewhere', hasValue: true },
         { id: 'v2', name: 'TOKEN', secret: true, hasValue: true, rule: { hosts: ['api.example.com'] } },
       ] },
-      'GET /api/project/id-hers/config/raw': { content: '{"a": 1}' },
       'GET /api/project/id-hers/dockerfile': { content: 'FROM scratch\n' },
       'GET /api/project/id-hers/build-files': { files: [{ path: 'init.lua', size: 3, binary: false }] },
       'GET /api/project/id-hers/build-files/file': { path: 'init.lua', size: 3, binary: false, content: 'x=1' },
@@ -450,11 +498,14 @@ describe('ProjectSettings', () => {
     expect(screen.queryByPlaceholderText('NAME')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
 
-    // Init steps, config, Dockerfile and a build file read, with nothing to
-    // save or upload.
-    await waitFor(() => expect(screen.getAllByLabelText('editor')).toHaveLength(3))
+    // Init steps, Dockerfile and a build file read, with nothing to save or
+    // upload, and the launch settings shown but not editable.
+    await waitFor(() => expect(screen.getAllByLabelText('editor')).toHaveLength(2))
     fireEvent.click(await screen.findByRole('button', { name: 'init.lua' }))
-    await waitFor(() => expect(screen.getAllByLabelText('editor')).toHaveLength(4))
+    await waitFor(() => expect(screen.getAllByLabelText('editor')).toHaveLength(3))
+    expect(screen.queryByRole('button', { name: 'Add forwarded port' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Add cache volume' })).toBeNull()
+    expect(screen.getAllByRole<HTMLInputElement>('checkbox').every((c) => c.disabled)).toBe(true)
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Upload files' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Rename init.lua' })).toBeNull()

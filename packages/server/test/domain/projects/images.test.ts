@@ -1,12 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import fs from 'node:fs/promises'
-import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
-import { DEMO_PROJECT_ID, recordTestProject } from '@yaac/test-utils/project-fixture'
+import { DEMO_PROJECT_ID, PROJECT_CONFIG_DEFAULTS, recordTestProject } from '@yaac/test-utils/project-fixture'
 import { dismissImageBuild, retryImageBuild } from '#domain/projects'
-import { BUILT_IN_USER_ID, closeDb } from '#db'
-import { projectConfigDir } from '@yaac/shared/project-paths'
+import { BUILT_IN_USER_ID, closeDb, setProjectConfig } from '#db'
 import type { ImageBuildEntry, ImageLayerName } from '@yaac/shared/types'
 import type { ProjectReaders } from '#drivers/contract'
 
@@ -49,15 +46,13 @@ describe('retryImageBuild', () => {
   // the owner would top the chain with the wrong Dockerfile.user.
   it('hands the runtime each project’s config and owner', async () => {
     feedWith('project')
-    const dir = projectConfigDir(DEMO_PROJECT_ID)
-    await fs.mkdir(dir, { recursive: true })
-    await fs.writeFile(path.join(dir, 'yaac-config.json'), JSON.stringify({ nestedContainers: true }))
+    await setProjectConfig(DEMO_PROJECT_ID, { nestedContainers: true })
 
     expect(await retryImageBuild(owner, 'b1')).toBe(true)
 
     const readers = mockRetry.mock.calls[0][1]
-    await expect(readers.projectConfig(DEMO_PROJECT_ID)).resolves.toEqual({ nestedContainers: true })
-    await expect(readers.projectConfig('unconfigured')).resolves.toBeUndefined()
+    await expect(readers.projectConfig(DEMO_PROJECT_ID)).resolves.toEqual({ ...PROJECT_CONFIG_DEFAULTS, nestedContainers: true })
+    await expect(readers.projectConfig('00000000-0000-4000-8000-00000000dead')).resolves.toBeUndefined()
     await expect(readers.projectOwner(DEMO_PROJECT_ID)).resolves.toBe(BUILT_IN_USER_ID)
     await expect(readers.projectOwner('00000000-0000-4000-8000-00000000dead')).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })

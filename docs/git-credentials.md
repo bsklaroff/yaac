@@ -19,6 +19,7 @@ Credentials are managed in the webapp (Settings → Git credentials, and the Add
 Project form). From the CLI, `yaac auth update` adds one, `yaac auth list`
 lists them by name, and `yaac project add <url> <credential>` clones with the
 named credential and assigns it; a project is always added with one.
+`yaac config git-credential <project> <credential>` assigns another.
 `yaac auth fake github` seeds `fake-github`, a placeholder token that a parent
 yaac's proxy swaps for its real one (for yaac running inside a yaac workspace).
 

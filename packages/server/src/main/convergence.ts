@@ -5,7 +5,6 @@ import { startUsageSampler, stopUsageSampler } from '#runtime/usage'
 import { loadToolAuthEntry } from '#domain/auth'
 import { restoreAllWorkspaceForwarders } from '#main/restore-forwarders'
 import { applyWorkspaceEvent, findWorkspaceRow, getProjectRow, listWorkspaceSessions } from '#db'
-import { resolveProjectConfig } from '#domain/projects'
 import { offeredForwards } from '#domain/workspaces'
 import { onSiteTimer } from '#domain/sites'
 import { errorText, serverLog } from '#lib/log'
@@ -104,7 +103,7 @@ export async function attachConvergence(opts: {
     recover: async () => {
       try {
         await restoreAllWorkspaceForwarders(async (w) => await offeredForwards(
-          await resolveProjectConfig(w.projectId) ?? {},
+          (await getProjectRow(w.projectId))?.portForwards ?? [],
           (await findWorkspaceRow(w.workspaceId))?.siteId,
         ))
       } catch (err) {

@@ -16,7 +16,7 @@ import { NESTED_PULL_HOSTS, resolveAllowedHosts } from '#lib/allowed-hosts'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
-import type { EgressAllowlist, SecretProxyRule, YaacConfig } from '@yaac/shared/types'
+import type { EgressAllowlist, SecretProxyRule, ProjectConfig } from '@yaac/shared/types'
 import type { PassContext, WorkspaceRegistration } from '#drivers/contract'
 
 /**
@@ -150,7 +150,7 @@ export function parseUpstreamRedirectsEnv(
  * e2e upstream redirects.
  */
 export function buildProxyRegistration(input: {
-  config: YaacConfig
+  config: ProjectConfig
   allowlist: EgressAllowlist
   remoteUrl: string
   projectId: string

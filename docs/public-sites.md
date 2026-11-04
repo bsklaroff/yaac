@@ -222,7 +222,7 @@ come back without a command. On macOS the podman machine is not covered.
 A site may name an **admin port**, for an admin view of the live app that
 needs no login of its own. It is the one port a release offers
 (`offeredForwards`), declared at launch and again when a server restart
-declares forwards anew; the project's `portForward` and a persisted
+declares forwards anew; the project's forwarded ports and a persisted
 "forward this port" fan-out skip releases. So the site's owner reaches it
 the way they reach any workspace's port, as the release's Preview in the
 webapp or with `yaac forward`, and the yaac server's own owner check

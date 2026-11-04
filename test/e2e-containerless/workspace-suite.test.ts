@@ -1052,10 +1052,10 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       require('http').createServer((req, res) => res.end(process.env.YAAC_WORKSPACE_ID + ' ' + req.headers.host))
         .listen(port, '127.0.0.1')
     `)
-    const put = await fetch(`${origin()}/api/project/${portsProject}/config`, {
+    const put = await fetch(`${origin()}/api/project/${portsProject}/port-forwards`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ config: { portForward: [{ containerPort: base, hostPortStart: base }] } }),
+      body: JSON.stringify({ ports: [{ containerPort: base, hostPortStart: base }] }),
     })
     expect(put.status, await put.text()).toBe(200)
     const steps = await fetch(`${origin()}/api/project/${portsProject}/init-steps`, {

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import type { YaacConfig } from '@yaac/shared/types'
+import { PROJECT_CONFIG_DEFAULTS } from '@yaac/test-utils/project-fixture'
+import type { ProjectConfig } from '@yaac/shared/types'
 import type * as imageTagsModule from '#drivers/k8s/cluster/image-tags'
 
 vi.mock('#drivers/k8s/cluster/image-tags', async (importOriginal) => ({
@@ -31,7 +32,7 @@ import { _resetWorkspaceListChangedForTests } from '#lib/notify'
 import { serverLog } from '#lib/log'
 
 // The config reader the reconcile step is given in production.
-const mockResolveConfig = vi.fn<(projectId: string) => Promise<YaacConfig | undefined>>()
+const mockResolveConfig = vi.fn<(projectId: string) => Promise<ProjectConfig | undefined>>()
 // Each project's owner, whose Dockerfile.user tops its chain.
 const OWNER = 'a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d'
 const projects = { projectConfig: mockResolveConfig, projectOwner: () => Promise.resolve(OWNER) }
@@ -81,7 +82,7 @@ describe('reconcileImagePrewarm', () => {
 
   it('ensures every project, threading nestedContainers from config', async () => {
     mockResolveConfig.mockImplementation((projectId) =>
-      Promise.resolve(projectId === NESTED ? { nestedContainers: true } : undefined))
+      Promise.resolve(projectId === NESTED ? { ...PROJECT_CONFIG_DEFAULTS, nestedContainers: true } : undefined))
     mockResolveChain.mockImplementation((projectId) =>
       Promise.resolve({ layers: [], finalTag: `final-${projectId}:x` }))
     mockEnsureImage.mockImplementation((projectId) => Promise.resolve(`final-${projectId}:x`))
@@ -113,10 +114,9 @@ describe('reconcileImagePrewarm', () => {
   })
 
   it('builds NOTHING for a project whose config cannot be read', async () => {
-    // An unparseable config skips the project rather than using defaults,
-    // which could build a nestedContainers project without its nestable
-    // layer.
-    mockResolveConfig.mockRejectedValueOnce(new Error('yaac-config.json: invalid nestedContainers'))
+    // A failed read skips the project rather than using defaults, which
+    // could build a nestedContainers project without its nestable layer.
+    mockResolveConfig.mockRejectedValueOnce(new Error('project row unreadable'))
 
     reconcileImagePrewarm([P], projects)
     await flush()

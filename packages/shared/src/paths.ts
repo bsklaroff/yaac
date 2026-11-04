@@ -264,10 +264,8 @@ export const CONTAINER_TERMINAL_LOG_DIR = '/home/yaac/.yaac-logs'
 /** Read-only mount of pasted images (`workspaceAttachmentsDir()`). */
 export const CONTAINER_ATTACHMENTS_DIR = '/home/yaac/.yaac-attachments'
 
-/**
- * GLOBAL: per-project config (yaac-config.json, the project Dockerfile and
- * its build context).
- */
+/** GLOBAL: per-project config (the project Dockerfile and its build
+ *  context). */
 export function projectConfigDir(projectId: string): string {
   return globalProjectPath(projectId, 'config')
 }

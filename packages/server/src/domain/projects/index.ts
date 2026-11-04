@@ -1,7 +1,7 @@
 // Public interface of the sealed projects folder (`#domain/projects`): a
 // project's rows and its files on disk. That covers the clone and its
-// branches, the remote of a project the server hosts, both config layers,
-// the egress allowlist, the ignored paths a stop keeps, the Dockerfile and build-dir files, which of its
+// branches, the remote of a project the server hosts, the settings its
+// workspaces launch with, the egress allowlist, the ignored paths a stop keeps, the Dockerfile and build-dir files, which of its
 // owner's git credentials it uses, and the project lifecycle verbs.
 // Nothing below this layer reads project state; a driver that needs a
 // project's config is handed it (`PassContext.projectConfig`, a launch
@@ -26,15 +26,18 @@ export {
   renameBuildFile,
   writeBuildFile,
 } from './build-files'
-export { resolveProjectConfig } from './config'
 export {
-  importScratchDirsFromConfig,
-  scratchDirSettingsPatchSchema,
-  setScratchDirs,
-} from './scratch-dirs'
+  addPortForward,
+  cacheVolumesSchema,
+  portForwardsSchema,
+  resolveProjectConfig,
+  updateProjectConfig,
+} from './config'
+export { importProjectConfigFiles } from './config-import'
+export { scratchDirSettingsPatchSchema, setScratchDirs } from './scratch-dirs'
 export { dismissImageBuild, retryImageBuild } from './images'
 export { setKeptIgnoredPaths } from './kept-paths'
-export { importInitStepsFromConfig, setInitSteps } from './init-steps'
+export { setInitSteps } from './init-steps'
 export {
   listProjectEnv,
   parseSecretProxyRule,
@@ -63,9 +66,3 @@ export {
   writeUserDockerfile,
 } from './dockerfile'
 export { listProjects } from './list'
-export {
-  addPortForwardToProjectConfig,
-  readProjectConfigRaw,
-  removeProjectConfig,
-  writeProjectConfig,
-} from './local-config'

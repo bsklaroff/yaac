@@ -28,13 +28,10 @@ async function authorizedImageBuild(principal: Actor, id: string): Promise<Image
   return build
 }
 
-/**
- * What a rebuild reads about each project, which the runtime may not read
- * itself. (`null` from the store and `undefined` for the contract both mean
- * "no config".)
- */
+/** What a rebuild reads about each project, which the runtime may not read
+ *  itself. */
 const projectReaders: ProjectReaders = {
-  projectConfig: (projectId) => resolveProjectConfig(projectId).then((cfg) => cfg ?? undefined),
+  projectConfig: resolveProjectConfig,
   projectOwner: async (projectId) => {
     const row = await getProjectRow(projectId)
     if (!row) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)

@@ -11,7 +11,7 @@ import { resolveProjectConfig } from '#domain/projects'
 import { isWorkspaceTerminating } from '#runtime/status'
 import { onConvergenceChange, type ChangeSource } from '#main/convergence'
 import { errorText, serverLog } from '#lib/log'
-import type { YaacConfig } from '@yaac/shared/types'
+import type { ProjectConfig } from '@yaac/shared/types'
 
 /**
  * Event-driven reconciler. Two sources mark work dirty for one serialized
@@ -84,7 +84,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
       let snapshot: RuntimeSnapshot | null = null
       let projectRows: ReturnType<typeof listProjectRows> | null = null
       const rows = (): ReturnType<typeof listProjectRows> => (projectRows ??= listProjectRows())
-      const projectConfigs = new Map<string, Promise<YaacConfig | undefined>>()
+      const projectConfigs = new Map<string, Promise<ProjectConfig | undefined>>()
       const ctx: PassContext = {
         triggers,
         resync,
@@ -94,16 +94,14 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         // rejects rather than returning empty, because the orphan
         // collectors would treat an empty list as "collect everything".
         projectIds: () => rows().then((all) => all.map((r) => r.id)),
-        // Memoized per project. No catch: a missing config resolves
-        // `undefined` (all defaults), but an unreadable one (malformed,
-        // invalid, mid-save) must reject. Returning `{}` instead would let
-        // a step build and push the wrong image (e.g. a nestedContainers
+        // Memoized per project. No catch: a failed read must reject, or a
+        // step could build and push the wrong image (a nestedContainers
         // chain without its nestable layer). The step skips this pass and
         // the next pass retries.
         projectConfig: (projectId) => {
           let pending = projectConfigs.get(projectId)
           if (!pending) {
-            pending = resolveProjectConfig(projectId).then((c) => c ?? undefined)
+            pending = resolveProjectConfig(projectId)
             projectConfigs.set(projectId, pending)
           }
           return pending

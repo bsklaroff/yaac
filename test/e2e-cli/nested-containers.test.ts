@@ -22,7 +22,7 @@ import { nodeLocalHostPath } from '@yaac/server/drivers/k8s/substrate/mount-sour
 import { imageStoreDir } from '@yaac/shared/project-paths'
 import { serverLogPath } from '@yaac/shared/paths'
 import { createYaacTestEnv, spawnYaacServer, setTestGitIdentity, runYaac, type YaacTestEnv } from '#support/cli'
-import { assignTestGitCredential, makeServerApiClient, registerTestProject, signInTestTool, type SpawnedServer } from '@yaac/test-utils/api'
+import { assignTestGitCredential, makeServerApiClient, registerTestProject, setTestProjectConfig, signInTestTool, type SpawnedServer } from '@yaac/test-utils/api'
 import { requireCluster, testContainerOwnerLabel } from '@yaac/test-utils/setup'
 import { requirePodman, execInJob, cleanupWorkspaceJobs, openToProxy } from '#support/cluster'
 import {
@@ -164,12 +164,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     await assignTestGitCredential(
       server!, projectId, 'fake-ghp-token', opts.seeded ? `${name} token (re-add)` : `${name} token`,
     )
-    const configDir = path.join(projectPath, 'config')
-    await fs.mkdir(configDir, { recursive: true })
-    await fs.writeFile(
-      path.join(configDir, 'yaac-config.json'),
-      JSON.stringify({ nestedContainers: true }, null, 2) + '\n',
-    )
+    await setTestProjectConfig(server!, projectId, { nestedContainers: true })
     return projectId
   }
 

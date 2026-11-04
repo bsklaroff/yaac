@@ -3,13 +3,13 @@
 Under `containerless` a workspace binds host ports itself, so two
 workspaces of one project that start the same dev server would both ask for
 the same port. So each containerless workspace gets its own port for every
-`portForward` entry. Every workspace port, on either driver, also gets a
+forwarded port. Every workspace port, on either driver, also gets a
 hostname, `<port>.<id8>.localhost`, served without binding a host port per
 workspace (docs/port-forward-tunnel.md).
 
 ## Allocation
 
-A `portForward` entry `{ "containerPort": 3000, "hostPortStart": 3000 }`
+A forwarded port `{ containerPort: 3000, hostPortStart: 3000 }`
 (docs/project-config.md) says the workspace serves something on 3000. Every
 workspace gets `YAAC_PORT_<containerPort>` holding the port to bind for that
 entry, so the init step that starts the dev server passes it on

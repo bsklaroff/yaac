@@ -17,8 +17,8 @@ host port) and the server end of each connection.
 
 ## The server declares, a client binds
 
-**The server declares.** `WorkspaceDriver.declareForwards` takes a config's
-`portForward` entries and returns the host port each is offered at, kept for
+**The server declares.** `WorkspaceDriver.declareForwards` takes a project's
+forwarded ports and returns the host port each is offered at, kept for
 the workspace's lifetime and dropped by `deregisterWorkspace`. It runs before
 launch because the result is shown in the workspace's tmux status bar. The
 "forward this port" action (docs/auto-forward-ports.md) adds to the same

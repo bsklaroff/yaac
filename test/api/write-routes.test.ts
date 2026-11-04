@@ -238,43 +238,27 @@ describe('write routes', () => {
     })
   })
 
-  describe('PUT /project/:projectId/config', () => {
-    it('rejects requests with no config field', async () => {
-      const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/api/project/demo/config', rawInit({
-        method: 'PUT',
-        body: JSON.stringify({}),
-      }))
-      expect(res.status).toBe(400)
-    })
-
-    it('writes the config and returns it', async () => {
+  describe('project config routes', () => {
+    it('sets each launch setting on its own route, answering them all, and refuses a bad value', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':projectId'].config.$put({
-        param: { projectId: DEMO },
-        json: { config: { npmCache: false } },
+      const project = client.project[':projectId']
+      const param = { projectId: DEMO }
+      const ports = [{ containerPort: 3000, hostPortStart: 13000 }]
+
+      expect(await (await project['port-forwards'].$put({ param, json: { ports } })).json())
+        .toEqual({ portForwards: ports, cacheVolumes: {}, nestedContainers: false, npmCache: true })
+      await project['cache-volumes'].$put({ param, json: { volumes: { pip: '/home/yaac/.cache/pip' } } })
+      await project['nested-containers'].$put({ param, json: { enabled: true } })
+      expect(await (await project['npm-cache'].$put({ param, json: { enabled: false } })).json()).toEqual({
+        portForwards: ports, cacheVolumes: { pip: '/home/yaac/.cache/pip' }, nestedContainers: true, npmCache: false,
       })
-      expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ config: { npmCache: false } })
-      const raw = await fs.readFile(
-        path.join(projectConfigDir(DEMO), 'yaac-config.json'),
-        'utf8',
-      )
-      expect(JSON.parse(raw)).toEqual({ npmCache: false })
-    })
-  })
+      expect(await getProjectRow(DEMO)).toMatchObject({ portForwards: ports, nestedContainers: true, npmCache: false })
 
-  describe('DELETE /project/:projectId/config', () => {
-    it('returns 204 when the project exists', async () => {
-      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':projectId'].config.$delete({ param: { projectId: DEMO } })
-      expect(res.status).toBe(204)
-    })
-
-    it('returns 404 for an unknown project', async () => {
-      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':projectId'].config.$delete({ param: { projectId: 'nope' } })
-      expect(res.status).toBe(404)
+      const bad = await project['port-forwards'].$put({ param, json: { ports: [{ containerPort: 10300, hostPortStart: 1 }] } })
+      expect(bad.status).toBe(400)
+      expect(((await bad.json()) as unknown as { error: { message: string } }).error.message).toMatch(/10300 is reserved/)
+      expect((await project['cache-volumes'].$put({ param, json: { volumes: { '..': '/x' } } })).status).toBe(400)
+      expect((await getProjectRow(DEMO))?.portForwards).toEqual(ports)
     })
   })
 
@@ -341,7 +325,10 @@ describe('write routes', () => {
         param: { projectId: DEMO },
         json: { hosts: ['*.CDN.example.com'], defaults: false },
       })
-      expect((await put.json()).allowlist).toEqual({ hosts: ['*.cdn.example.com'], defaults: false })
+      expect(await put.json()).toEqual({
+        allowlist: { hosts: ['*.cdn.example.com'], defaults: false },
+        leavesOut: [{ host: 'api.anthropic.com', label: 'Anthropic API' }, { host: 'github.com', label: 'GitHub' }],
+      })
 
       const got = await (await client.project[':projectId'].allowlist.$get({ param: { projectId: DEMO } })).json()
       expect(got.allowlist).toEqual({ hosts: ['*.cdn.example.com'], defaults: false })

@@ -45,7 +45,7 @@ import {
 } from '@yaac/shared/paths'
 import { buildCloneLinkExec, buildStatusWarmupExec } from '@yaac/shared/git'
 import { parseGitRemote } from '@yaac/shared/git-remote'
-import { fetchProjectCommit, fetchProjectOrigin, missingCredentialError, resolveProjectConfig, resolveProjectCredential, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
+import { fetchProjectCommit, fetchProjectOrigin, missingCredentialError, resolveProjectCredential, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { readLock } from '@yaac/shared/lock'
 import {
@@ -126,7 +126,6 @@ import {
   type DriverKind,
   type PermissionMode,
   type PortMapping,
-  type YaacConfig,
 } from '@yaac/shared/types'
 import {
   opencodeProviderInfo,
@@ -693,7 +692,7 @@ export async function createWorkspace(
 
   const repo = repoDir(projectId)
 
-  const config: YaacConfig = await resolveProjectConfig(projectId) ?? {}
+  const { portForwards, cacheVolumes, nestedContainers, npmCache } = projectRow
 
   // Plain variables plus the secrets the egress path injects. Stored as rows,
   // since a remote client cannot set the server's own environment
@@ -737,16 +736,6 @@ export async function createWorkspace(
       'VALIDATION',
       `Project remote host "${remoteHost}" is not in the egress allowlist. `
       + 'Add it in Settings \u2192 Project Config.',
-    )
-  }
-
-  const nestedContainers = config.nestedContainers === true
-
-  // Refuse rather than silently launch a workspace with no container engine.
-  if (runtime.kind === 'containerless' && nestedContainers) {
-    throw new ServerError(
-      'VALIDATION',
-      'nestedContainers needs a container runtime; this server runs workspaces on the host.',
     )
   }
 
@@ -930,7 +919,7 @@ export async function createWorkspace(
     projectId,
     workspaceId: workspaceId,
     owner: options.siteId !== undefined ? NO_CREDENTIALS_OWNER_KEY : credentialOwnerKey(owner),
-    config,
+    config: { portForwards, cacheVolumes, nestedContainers, npmCache },
     allowlist,
     remoteUrl,
     nestedContainers,
@@ -966,14 +955,9 @@ export async function createWorkspace(
     // shared one.
     const claudeSessions = path.join(workspaceStateDir(projectId, workspaceId), 'claude-sessions')
     // Pre-created so they are server-owned (and so writable in-pod) rather
-    // than root-owned. None may overlap the main clone's mount. Containerless
-    // mounts none: a tool on the host keeps its cache where it always does,
-    // in the checkout or the user's home.
-    const cacheVolumeEntries = runtime.kind === 'containerless' ? [] : Object.entries(config.cacheVolumes ?? {})
-    if (runtime.kind === 'containerless' && Object.keys(config.cacheVolumes ?? {}).length > 0) {
-      emit('Not mounting this config\'s cacheVolumes: on this host, tools keep their caches where they '
-        + 'always do.', options)
-    }
+    // than root-owned. None may overlap the main clone's mount. A
+    // containerless project has none (docs/project-config.md).
+    const cacheVolumeEntries = Object.entries(cacheVolumes)
     const repoMount = `${repo}/.git`
     for (const [key, p] of cacheVolumeEntries) {
       if (p === repoMount || p.startsWith(`${repoMount}/`) || repoMount.startsWith(`${p}/`)) {
@@ -1232,13 +1216,13 @@ export async function createWorkspace(
   // Decide each forwarded port before launch, since the status bar shows
   // them. Only a declaration: clients hold the listeners
   // (docs/port-forward-tunnel.md). `YAAC_PORT_<n>` tells the dev server
-  // which port to bind for config entry `n`: its own under k8s, and one
+  // which port to bind for forward `n`: its own under k8s, and one
   // allocated for this workspace under containerless, where workspaces
   // share the host's ports (docs/workspace-hostnames.md).
-  const portForward = await offeredForwards(config, options.siteId)
-  const forwardedPorts = await runtime.declareForwards(workspaceId, portForward)
+  const offered = await offeredForwards(portForwards, options.siteId)
+  const forwardedPorts = await runtime.declareForwards(workspaceId, offered)
   forwardedPorts.forEach(({ containerPort, hostPort }, i) => {
-    env.push(`YAAC_PORT_${portForward[i].containerPort}=${containerPort}`)
+    env.push(`YAAC_PORT_${offered[i].containerPort}=${containerPort}`)
     emit(`Offering host port ${hostPort} -> container port ${containerPort}`, options)
   })
 

@@ -2,7 +2,7 @@
 
 ## Problem
 
-A `portForward` entry in yaac-config.json names a `containerPort` and a
+A project's forwarded port (`portForwards`, docs/project-config.md) names a `containerPort` and a
 `hostPortStart`. Under `k8s` the server does not bind anything; it
 declares which host port each container port is offered at, and a client
 forwarder (`yaac forward` or the desktop app) binds that port
@@ -25,7 +25,7 @@ the port a client reaches it at, which differs only under `k8s`.
 
 ## Design
 
-Add an optional `envVar` to each `portForward` entry. The server sets that
+Add an optional `envVar` to each `portForwards` entry. The server sets that
 variable inside the workspace to the declared host port. Dev-server code
 builds its own URLs, e.g. `http://localhost:${process.env.PUBLIC_PORT}/oauth/callback`.
 
@@ -66,7 +66,7 @@ writes `{containerPort, hostPortStart}` only.
 1. **`PortForwardConfig`** (`packages/shared/src/types.ts`): add
    `envVar?: string`.
 2. **Config validation** (`packages/server/src/domain/projects/config.ts`,
-   the `portForward` loop): if present, `envVar` must be a string matching
+   the `portForwards` loop): if present, `envVar` must be a string matching
    `ENV_NAME_PATTERN` (export it from `domain/projects/env.ts` rather than
    restating the regex), and must not start with `YAAC_`. Copy it onto the
    pushed entry. The pattern is what makes the `tmux set-environment`
@@ -104,7 +104,7 @@ writes `{containerPort, hostPortStart}` only.
   there and assert `printenv <var>` in the workspace equals the host port
   from the create output. Reuse the file's shared workspace; do not add a
   new one. `test/e2e-containerless/workspace-suite.test.ts` already has a
-  `portForward` case (two workspaces of `cl-ports`); add an `envVar` to
+  `portForwards` case (two workspaces of `cl-ports`); add an `envVar` to
   its entry and assert the value equals that workspace's
   `YAAC_PORT_<n>`.
 

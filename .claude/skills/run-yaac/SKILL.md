@@ -138,7 +138,7 @@ A containerless workspace runs on the host, as the host's user, with the
 host's own `$HOME`. So a bare `yaac` drives the **host's own install**, the
 server running this workspace: `yaac server stop` would stop it, and `yaac
 auth fake` would replace the user's real sign-ins. This repo's
-`yaac-config.json` starts the workspace's own server with
+init steps (`.yaac/init-steps.json`) start the workspace's own server with
 `YAAC_DATA_DIR=$PWD/.yaac-dev`, and installs the branch's `yaac` under
 `$PWD/.yaac-dev-npm` rather than over the host's global one (all
 gitignored), so export the same first in every shell that runs `yaac`:
@@ -157,8 +157,8 @@ With it exported, the server is yours to mutate freely, as in a pod.
 When `/etc/yaac/certs` exists you are in a k8s workspace pod (directly, or in a
 workspace of a containerless server inside one). That changes three things:
 
-- **You are already isolated.** The server this repo's `yaac-config.json`
-  starts is yours — check `curl -s http://127.0.0.1:8787/api/health`, run
+- **You are already isolated.** The server this repo's init steps start is
+  yours — check `curl -s http://127.0.0.1:8787/api/health`, run
   `yaac server start` if it is down, and mutate it freely. No second
   instance is needed.
 - **Only containerless works.** There is no cluster and no `kubectl`, so

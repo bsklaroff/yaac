@@ -38,7 +38,7 @@ import {
 } from '#drivers/k8s/egress'
 import { ensureNodeImageStore, nodeImageStoreMount } from '#drivers/k8s/images'
 import { hostMatchesPattern } from '#lib/allowed-hosts'
-import type { SecretProxyRule, YaacConfig } from '@yaac/shared/types'
+import type { SecretProxyRule, ProjectConfig } from '@yaac/shared/types'
 import type {
   RuntimeHandle,
   SubstrateIntent,
@@ -195,7 +195,7 @@ const NPMJS_HOST = 'registry.npmjs.org'
  * own `.npmrc` is the project's concern (docs/workspace-storage.md).
  */
 export function npmCacheApplies(
-  config: YaacConfig,
+  config: ProjectConfig,
   allowedHosts: string[],
   secretRules: Record<string, SecretProxyRule>,
 ): boolean {

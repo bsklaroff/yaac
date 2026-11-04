@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { PROJECT_CONFIG_DEFAULTS } from '@yaac/test-utils/project-fixture'
 import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 // The cluster is the fake behind client-node. The manifest builders in
@@ -75,7 +76,7 @@ const DEFAULTS = { hosts: [], defaults: true }
 describe('buildProxyRegistration', () => {
   it('builds secret-free, project-scoped reference rules from the secrets', () => {
     const reg = buildProxyRegistration({
-      config: {},
+      config: PROJECT_CONFIG_DEFAULTS,
       allowlist: DEFAULTS,
       remoteUrl: 'https://github.com/acme/repo',
       projectId: 'acme-repo',
@@ -133,7 +134,7 @@ describe('buildProxyRegistration', () => {
 
   it('resolves the default allowlist when config has no overrides', () => {
     const reg = buildProxyRegistration({
-      config: {},
+      config: PROJECT_CONFIG_DEFAULTS,
       allowlist: DEFAULTS,
       remoteUrl: 'https://github.com/acme/repo',
       projectId: 'acme-repo',
@@ -147,18 +148,18 @@ describe('buildProxyRegistration', () => {
 
   it('honors the project allowlist, with or without the defaults', () => {
     expect(buildProxyRegistration({
-      config: {}, allowlist: { hosts: ['only.example.com'], defaults: false },
+      config: PROJECT_CONFIG_DEFAULTS, allowlist: { hosts: ['only.example.com'], defaults: false },
       remoteUrl: 'u', projectId: 'p', owner: 'o', secretRules: {}, env: {},
     }).allowedHosts).toEqual(['only.example.com'])
     expect(buildProxyRegistration({
-      config: {}, allowlist: { hosts: ['extra.example.com'], defaults: true },
+      config: PROJECT_CONFIG_DEFAULTS, allowlist: { hosts: ['extra.example.com'], defaults: true },
       remoteUrl: 'u', projectId: 'p', owner: 'o', secretRules: {}, env: {},
     }).allowedHosts).toContain('extra.example.com')
   })
 
   it('auto-appends the registry/CDN pull hosts for nestedContainers sessions', () => {
     const reg = buildProxyRegistration({
-      config: { nestedContainers: true }, allowlist: DEFAULTS,
+      config: { ...PROJECT_CONFIG_DEFAULTS, nestedContainers: true }, allowlist: DEFAULTS,
       remoteUrl: 'u', projectId: 'p', owner: 'o', secretRules: {}, env: {},
     })
     for (const host of NESTED_PULL_HOSTS) {
@@ -174,7 +175,7 @@ describe('buildProxyRegistration', () => {
 
   it('still appends the pull hosts on top of added hosts', () => {
     const reg = buildProxyRegistration({
-      config: { nestedContainers: true }, allowlist: { hosts: ['extra.example.com'], defaults: true },
+      config: { ...PROJECT_CONFIG_DEFAULTS, nestedContainers: true }, allowlist: { hosts: ['extra.example.com'], defaults: true },
       remoteUrl: 'u', projectId: 'p', owner: 'o', secretRules: {}, env: {},
     })
     expect(reg.allowedHosts).toContain('extra.example.com')
@@ -183,7 +184,7 @@ describe('buildProxyRegistration', () => {
 
   it('does NOT append the pull hosts with the defaults off (exact list)', () => {
     const reg = buildProxyRegistration({
-      config: { nestedContainers: true }, allowlist: { hosts: ['only.example.com'], defaults: false },
+      config: { ...PROJECT_CONFIG_DEFAULTS, nestedContainers: true }, allowlist: { hosts: ['only.example.com'], defaults: false },
       remoteUrl: 'u', projectId: 'p', owner: 'o', secretRules: {}, env: {},
     })
     expect(reg.allowedHosts).toEqual(['only.example.com'])
@@ -191,7 +192,7 @@ describe('buildProxyRegistration', () => {
 
   it('leaves the allowlist untouched when nestedContainers is off', () => {
     const reg = buildProxyRegistration({
-      config: {},
+      config: PROJECT_CONFIG_DEFAULTS,
       allowlist: DEFAULTS,
       remoteUrl: 'u', projectId: 'p', owner: 'o', secretRules: {}, env: {},
     })
@@ -202,7 +203,7 @@ describe('buildProxyRegistration', () => {
 
   it('parses upstream redirects from the e2e env hook', () => {
     const reg = buildProxyRegistration({
-      config: {},
+      config: PROJECT_CONFIG_DEFAULTS,
       allowlist: DEFAULTS,
       remoteUrl: 'u',
       projectId: 'p',
@@ -241,7 +242,7 @@ describe('registerWorkspaceEgress', () => {
       workspaceId: 'w1',
       projectId: 'demo',
       owner: 'o',
-      config: {},
+      config: PROJECT_CONFIG_DEFAULTS,
       allowlist: { hosts: ['api.example.com'], defaults: true },
       remoteUrl: 'https://github.com/example/repo.git',
       proxySecretRules: {},
@@ -269,7 +270,7 @@ describe('registerWorkspaceEgress', () => {
       workspaceId: 'w1',
       projectId: 'demo',
       owner: 'o',
-      config: {},
+      config: PROJECT_CONFIG_DEFAULTS,
       allowlist: DEFAULTS,
       remoteUrl: '',
       proxySecretRules: {},

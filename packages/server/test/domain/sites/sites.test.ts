@@ -110,7 +110,7 @@ describe('editSite', () => {
     // The live release offers the new admin port in place of the old, as a
     // server restart would.
     expect(offered.get('rel-1')).toEqual([4001])
-    expect((await offeredForwards({}, row.id)).map((f) => f.containerPort)).toEqual([4001])
+    expect((await offeredForwards([], row.id)).map((f) => f.containerPort)).toEqual([4001])
 
     // Equal to the port the internet reaches, whichever side moves.
     await expect(editSite(local, DEMO_PROJECT_ID, 'shop', { adminPort: 4000 })).rejects.toMatchObject({ code: 'VALIDATION' })
@@ -122,7 +122,7 @@ describe('editSite', () => {
     await editSite(local, DEMO_PROJECT_ID, 'shop', { adminPort: null })
     expect((await findSiteByName(DEMO_PROJECT_ID, 'shop'))?.adminPort).toBeUndefined()
     expect(offered.get('rel-1')).toEqual([])
-    expect(await offeredForwards({}, row.id)).toEqual([])
+    expect(await offeredForwards([], row.id)).toEqual([])
 
     // Its graph needs the volume, so the volume cannot go without a graph
     // that does not.

@@ -207,9 +207,8 @@ against a local or remote server:
 
 - **Workspaces**: create, list, attach, shell, restart, stop. The terminal
   uses the server's PTY WebSocket (`C-b d` detaches).
-- **Config editing**: `yaac config edit` and its siblings fetch the file
-  from the server, open your local `$EDITOR`, and save back through the
-  server's validation.
+- **Settings**: each `yaac config` command reads and writes its setting
+  through the server, a Dockerfile from a local file or stdin.
 - **Tool credentials**: `yaac auth update` runs the Claude/Codex browser
   sign-in on your machine, then sends the result to the server. The
   webapp's sign-in cards relay the same sign-in to the desktop app's auth

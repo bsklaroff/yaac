@@ -1,21 +1,18 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
-vi.mock('#domain/projects/local-config', () => ({
-  addPortForwardToProjectConfig: vi.fn(() => Promise.resolve({})),
-}))
-
 import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-driver'
-import { addPortForwardToProjectConfig } from '#domain/projects/local-config'
 import { dismissWorkspacePort, forwardWorkspacePort, offeredForwards, unforwardWorkspacePort } from '#domain/workspaces/forward-port'
 import { ServerError } from '@yaac/shared/errors'
 import type { PortMapping } from '@yaac/shared/types'
-import { BUILT_IN_USER_ID, insertSite, recordProject, updateSite } from '#db'
+import { BUILT_IN_USER_ID, getProjectRow, insertSite, recordProject, setProjectConfig, updateSite } from '#db'
 import { DEMO_PROJECT_ID as PROJ } from '@yaac/test-utils/project-fixture'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 
-const mockPersist = vi.mocked(addPortForwardToProjectConfig)
+/** The project's forwarded ports, as stored. */
+const persisted = async (): Promise<number[]> =>
+  (await getProjectRow(PROJ))?.portForwards.map((p) => p.containerPort) ?? []
 const mockUnforwarded = vi.fn<(workspaceId: string) => Promise<number[]>>()
 const mockForwardPort = vi.fn<
   (
@@ -32,7 +29,7 @@ const HANDLE = handleFixture({
 beforeEach(async () => {
   vi.clearAllMocks()
   await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://github.com/o/r', addedAt: 'now' }, BUILT_IN_USER_ID)
-  mockPersist.mockResolvedValue({})
+  await setProjectConfig(PROJ, { portForwards: [] })
   mockUnforwarded.mockResolvedValue([8090])
   mockForwardPort.mockResolvedValue({ containerPort: 8090, hostPort: 8090 })
   installFakeWorkspaceDriver({
@@ -43,11 +40,11 @@ beforeEach(async () => {
 })
 
 describe('forwardWorkspacePort', () => {
-  it('forwards live only, writing no config, when persist is false', async () => {
+  it('forwards live only, storing nothing, when persist is false', async () => {
     const mapping = await forwardWorkspacePort(local, 'sid-1', 8090, { persist: false })
 
     expect(mapping).toEqual({ containerPort: 8090, hostPort: 8090 })
-    expect(mockPersist).not.toHaveBeenCalled()
+    expect(await persisted()).toEqual([])
     expect(mockForwardPort).toHaveBeenCalledExactlyOnceWith(
       { workspaceId: 'sid-1', projectId: PROJ, jobName: 'yaac-proj-sid-1' },
       8090,
@@ -55,36 +52,34 @@ describe('forwardWorkspacePort', () => {
     )
   })
 
-  it('persists before forwarding, and a persisted port implies the fan-out', async () => {
-    const order: string[] = []
-    mockPersist.mockImplementation(() => {
-      order.push('config')
-      return Promise.resolve({})
-    })
-    mockForwardPort.mockImplementation(() => {
-      order.push('runtime')
-      return Promise.resolve({ containerPort: 8090, hostPort: 8090 })
+  it('persists before forwarding, once however often, and a persisted port implies the fan-out', async () => {
+    let storedFirst: number[] = []
+    mockForwardPort.mockImplementation(async () => {
+      storedFirst = await persisted()
+      return { containerPort: 8090, hostPort: 8090 }
     })
 
     await forwardWorkspacePort(local, 'sid-1', 8090, { persist: true })
 
-    expect(order).toEqual(['config', 'runtime'])
-    expect(mockPersist).toHaveBeenCalledExactlyOnceWith(local, PROJ, 8090)
+    expect(storedFirst).toEqual([8090])
+    expect((await getProjectRow(PROJ))?.portForwards).toEqual([{ containerPort: 8090, hostPortStart: 8090 }])
     expect(mockForwardPort).toHaveBeenCalledExactlyOnceWith(
       { workspaceId: 'sid-1', projectId: PROJ, jobName: 'yaac-proj-sid-1' },
       8090,
       { fanOutToProject: true },
     )
+    await forwardWorkspacePort(local, 'sid-1', 8090, { persist: true })
+    expect(await persisted()).toEqual([8090])
   })
 
   it('refuses an ineligible port BEFORE writing any config', async () => {
-    // A refused forward must not leave the port in the project config, where
-    // every future workspace would inherit it.
+    // A refused forward must not leave the port in the project's settings,
+    // where every future workspace would inherit it.
     mockUnforwarded.mockResolvedValue([3000])
 
     await expect(forwardWorkspacePort(local, 'sid-1', 8090, { persist: true }))
       .rejects.toMatchObject({ code: 'CONFLICT' })
-    expect(mockPersist).not.toHaveBeenCalled()
+    expect(await persisted()).toEqual([])
     expect(mockForwardPort).not.toHaveBeenCalled()
   })
 
@@ -96,10 +91,9 @@ describe('forwardWorkspacePort', () => {
     expect(mockForwardPort).not.toHaveBeenCalled()
   })
 
-  it('forwards nothing when the config write fails', async () => {
-    mockPersist.mockRejectedValue(new ServerError('VALIDATION', 'bad config'))
-
-    await expect(forwardWorkspacePort(local, 'sid-1', 8090, { persist: true })).rejects.toThrow('bad config')
+  it('forwards nothing when the project write is refused', async () => {
+    await expect(forwardWorkspacePort({ kind: 'local', userId: 'someone-else' }, 'sid-1', 8090, { persist: true }))
+      .rejects.toThrow()
     expect(mockForwardPort).not.toHaveBeenCalled()
   })
 
@@ -123,14 +117,14 @@ describe('unforwardWorkspacePort', () => {
     })
   })
 
-  it('stops the resolved workspace’s forward, leaving the project config alone', async () => {
+  it('stops the resolved workspace’s forward, leaving the project\'s ports alone', async () => {
     await unforwardWorkspacePort(local, 'sid-1', 3000)
 
     expect(mockUnforward).toHaveBeenCalledExactlyOnceWith(
       { workspaceId: 'sid-1', jobName: 'yaac-proj-sid-1' },
       3000,
     )
-    expect(mockPersist).not.toHaveBeenCalled()
+    expect(await persisted()).toEqual([])
   })
 
   it('refuses a port the workspace is not forwarding', async () => {
@@ -192,21 +186,21 @@ describe('dismissWorkspacePort', () => {
   it('writes no project config — dismissal is in-memory only', async () => {
     await dismissWorkspacePort(local, 'sid-1', 8090)
 
-    expect(mockPersist).not.toHaveBeenCalled()
+    expect(await persisted()).toEqual([])
   })
 })
 
 describe('offeredForwards', () => {
   it('offers the project\'s ports, and a release only its site\'s admin port', async () => {
-    const config = { portForward: [{ containerPort: 3000, hostPortStart: 3000 }] }
-    expect(await offeredForwards(config, undefined)).toEqual(config.portForward)
-    expect(await offeredForwards({}, undefined)).toEqual([])
+    const ports = [{ containerPort: 3000, hostPortStart: 3000 }]
+    expect(await offeredForwards(ports, undefined)).toEqual(ports)
+    expect(await offeredForwards([], undefined)).toEqual([])
 
     const site = await insertSite({
       projectId: PROJ, name: 'shop', hostname: 'shop.example.com', port: 3000, adminPort: 3001, steps: {},
     })
-    expect(await offeredForwards(config, site.id)).toEqual([{ containerPort: 3001, hostPortStart: 3001 }])
+    expect(await offeredForwards(ports, site.id)).toEqual([{ containerPort: 3001, hostPortStart: 3001 }])
     await updateSite(site.id, { adminPort: null })
-    expect(await offeredForwards(config, site.id)).toEqual([])
+    expect(await offeredForwards(ports, site.id)).toEqual([])
   })
 })

@@ -4,7 +4,7 @@ import { getDb } from './client'
 import { projects, projectToolDefaults } from './schema'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { nullsToUndefined } from '#lib/nulls'
-import type { AgentTool, EgressAllowlist, ProjectMeta, ScratchDirSettings, ToolCreateDefaults } from '@yaac/shared/types'
+import type { AgentTool, EgressAllowlist, ProjectConfig, ProjectMeta, ScratchDirSettings, ToolCreateDefaults } from '@yaac/shared/types'
 
 /*
  * Which projects exist, as the server records them. The clone, config and
@@ -103,7 +103,7 @@ export async function clearProjectKeepsHostedRepo(projectId: string): Promise<bo
  * A project row: the wire `ProjectMeta` plus server-only state (remembered
  * create-form defaults and the git credential).
  */
-export interface ProjectRow extends ProjectMeta {
+export interface ProjectRow extends ProjectMeta, ProjectConfig {
   /** The owning user's id. */
   owner: string
   lastTool?: AgentTool
@@ -215,6 +215,26 @@ export async function setProjectScratchDirs(
     .returning({ scratchDirs: projects.scratchDirs })
   notifyWorkspaceListChanged()
   return row?.scratchDirs
+}
+
+/** Replace some of the settings a workspace launches with, the rest left
+ *  as they are. Answers all of them as stored, or undefined when there is
+ *  no such project. */
+export async function setProjectConfig(
+  projectId: string,
+  set: Partial<ProjectConfig>,
+): Promise<ProjectConfig | undefined> {
+  const db = await getDb()
+  const [row] = await db.update(projects).set(set)
+    .where(eq(projects.id, projectId))
+    .returning({
+      portForwards: projects.portForwards,
+      cacheVolumes: projects.cacheVolumes,
+      nestedContainers: projects.nestedContainers,
+      npmCache: projects.npmCache,
+    })
+  notifyWorkspaceListChanged()
+  return row
 }
 
 /** Remove a share from its owner, or give it back. False when there is no

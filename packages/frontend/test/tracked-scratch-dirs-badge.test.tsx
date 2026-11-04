@@ -21,6 +21,10 @@ const project = (ignoredTracked: string[] = []): ProjectSummary => ({
   deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true,
   scratchDirs: { dirs: [{ path: 'node_modules', sizeGiB: 8 }, { path: 'target', sizeGiB: 32 }], ignoredTracked },
   initSteps: {},
+  portForwards: [],
+  cacheVolumes: {},
+  nestedContainers: false,
+  npmCache: true,
 })
 
 const workspace = {

@@ -1,6 +1,6 @@
 # Auto-detected port forwarding
 
-Config-declared forwards (`portForward` in yaac-config.json) are set up at
+A project's forwarded ports (docs/project-config.md) are set up at
 workspace create and server restart. This feature adds a second path: when
 something starts listening on a loopback port inside a running workspace
 pod, the webapp offers to forward it, for that workspace only or for the
@@ -60,8 +60,8 @@ anything is written. `forwardWorkspacePort` then:
   declares the forward; a client binds it. It lasts until the workspace is
   recreated.
 - **persist: true**: first adds `{containerPort, hostPortStart:
-  containerPort}` to the project's yaac-config.json
-  (`addPortForwardToProjectConfig`, de-duplicated) so future workspaces
+  containerPort}` to the project's forwarded ports
+  (`addPortForward`, de-duplicated) so future workspaces
   inherit it, then forwards it on this workspace and, best-effort, on the
   project's other running workspaces.
 

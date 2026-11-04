@@ -5,21 +5,20 @@ import { z } from 'zod'
 import {
   addProject,
   assignProjectCredential,
+  cacheVolumesSchema,
   createHostedProject,
   getProjectAllowlist,
   getProjectBranches,
   getProjectDetail,
   listProjectEnv,
   listProjects,
-  readProjectConfigRaw,
+  portForwardsSchema,
   readProjectDockerfile,
   registerStagedProject,
   removeKeptHostedRepo,
-  removeProjectConfig,
   removeProjectEnvVar,
   setProjectAllowlist,
   setProjectEnvVar,
-  writeProjectConfig,
   writeProjectDockerfile,
   pushProjectSecrets,
   resolveProjectId,
@@ -31,12 +30,13 @@ import {
   setScratchDirs,
   scratchDirSettingsPatchSchema,
   shareProject,
+  updateProjectConfig,
 } from '#domain/projects'
 import { moveProjectToRemote, previewProjectMove, previewWorkspaceRetention, removeProject, setWorkspaceRetention, unshareProject } from '#domain/workspaces'
 import { pushCredentialsToRuntime } from '#domain/auth'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { projectBuildDir } from '#lib/build-dirs'
-import { DEFAULT_ALLOWED_HOSTS } from '#lib/allowed-hosts'
+import { DEFAULT_ALLOWED_HOSTS, missingCriticalHosts } from '#lib/allowed-hosts'
 import { ServerError } from '@yaac/shared/errors'
 import { buildFilesApp } from '#routes/build-files'
 import { authorizeProject } from '#domain/access'
@@ -228,26 +228,46 @@ export const projectApp = new Hono<IdentityEnv>()
     await removeProject(c.get('principal'), await resolveProjectId(c.req.param('projectId')))
     return c.body(null, 204)
   })
-  // Raw text, not parsed, so a malformed or invalid file still opens in an
-  // editor to be repaired.
-  .get('/:projectId/config/raw', async (c) =>
-    c.json({ content: await readProjectConfigRaw(await resolveProjectId(c.req.param('projectId'))) }))
+  // The settings workspaces launch with besides their checkout
+  // (docs/project-config.md), one route each. Each answers them all as
+  // stored; the current values are in the project summary.
   .put(
-    '/:projectId/config',
-    zv('json', z.object({ config: z.unknown() }).refine(
-      (b) => b.config !== undefined,
-      { message: 'Expected { config } body.', path: ['config'] },
+    '/:projectId/port-forwards',
+    zv('json', z.object({ ports: portForwardsSchema })),
+    async (c) => c.json(await updateProjectConfig(
+      c.get('principal'), await resolveProjectId(c.req.param('projectId')), { portForwards: c.req.valid('json').ports },
     )),
+  )
+  .put(
+    '/:projectId/cache-volumes',
+    zv('json', z.object({ volumes: cacheVolumesSchema })),
     async (c) => {
-      const { config } = c.req.valid('json')
-      const saved = await writeProjectConfig(c.get('principal'), await resolveProjectId(c.req.param('projectId')), config)
-      return c.json({ config: saved })
+      requireDriverFeature('cacheVolumes')
+      return c.json(await updateProjectConfig(
+        c.get('principal'), await resolveProjectId(c.req.param('projectId')), { cacheVolumes: c.req.valid('json').volumes },
+      ))
     },
   )
-  .delete('/:projectId/config', async (c) => {
-    await removeProjectConfig(c.get('principal'), await resolveProjectId(c.req.param('projectId')))
-    return c.body(null, 204)
-  })
+  .put(
+    '/:projectId/nested-containers',
+    zv('json', z.object({ enabled: z.boolean() })),
+    async (c) => {
+      requireDriverFeature('nestedContainers')
+      return c.json(await updateProjectConfig(
+        c.get('principal'), await resolveProjectId(c.req.param('projectId')), { nestedContainers: c.req.valid('json').enabled },
+      ))
+    },
+  )
+  .put(
+    '/:projectId/npm-cache',
+    zv('json', z.object({ enabled: z.boolean() })),
+    async (c) => {
+      requireDriverFeature('npmCache')
+      return c.json(await updateProjectConfig(
+        c.get('principal'), await resolveProjectId(c.req.param('projectId')), { npmCache: c.req.valid('json').enabled },
+      ))
+    },
+  )
   // The project's environment: variables its workspaces launch with, and
   // secrets the egress proxy injects. Secret values are write-only: set by
   // PUT, never returned by GET.
@@ -276,7 +296,9 @@ export const projectApp = new Hono<IdentityEnv>()
     return c.body(null, 204)
   })
   // The project's egress allowlist, with the install's defaults so a client
-  // can list them. Applies to workspaces created afterwards.
+  // can list them. Applies to workspaces created afterwards. The PUT also
+  // answers which hosts agents need that the new list leaves out, for the
+  // client to warn about.
   .get('/:projectId/allowlist', async (c) => {
     requireDriverFeature('egress')
     const allowlist = await getProjectAllowlist(await resolveProjectId(c.req.param('projectId')))
@@ -288,7 +310,8 @@ export const projectApp = new Hono<IdentityEnv>()
     async (c) => {
       requireDriverFeature('egress')
       const projectId = await resolveProjectId(c.req.param('projectId'))
-      return c.json({ allowlist: await setProjectAllowlist(c.get('principal'), projectId, c.req.valid('json')) })
+      const allowlist = await setProjectAllowlist(c.get('principal'), projectId, c.req.valid('json'))
+      return c.json({ allowlist, leavesOut: missingCriticalHosts(allowlist) })
     },
   )
   // Branch data for the new-workspace picker: local remote-tracking refs

@@ -1,4 +1,4 @@
-import { api, projectScope, resolveProjectId } from '#commands/api'
+import { api, resolveProject } from '#commands/api'
 import { DEFAULT_SCRATCH_DIR_GIB, type ScratchDir } from '@yaac/shared/types'
 
 /**
@@ -9,16 +9,14 @@ import { DEFAULT_SCRATCH_DIR_GIB, type ScratchDir } from '@yaac/shared/types'
  * Each dir is `path`, capped at the default, or `path:GiB`.
  */
 export async function configScratchDirs(project: string, dirs: string[], opts: { none?: boolean }): Promise<void> {
-  const scope = await projectScope()
-  const projectId = await resolveProjectId(project, scope)
-  const summary = scope.all.find((p) => p.id === projectId)
-  const name = summary?.name ?? projectId
+  const summary = await resolveProject(project)
+  const { id: projectId, name } = summary
   const list = (all: ScratchDir[]): string => (all.length === 0 ? 'none' : all.map((d) =>
     `${d.path} (${d.sizeGiB !== undefined ? `${d.sizeGiB} GiB` : `${DEFAULT_SCRATCH_DIR_GIB} GiB, the default`})`).join(', '))
 
   if (dirs.length === 0 && opts.none !== true) {
-    console.log(`Scratch directories in ${name}: ${list(summary?.scratchDirs.dirs ?? [])}`)
-    const ignored = summary?.scratchDirs.ignoredTracked ?? []
+    console.log(`Scratch directories in ${name}: ${list(summary.scratchDirs.dirs)}`)
+    const ignored = summary.scratchDirs.ignoredTracked ?? []
     if (ignored.length > 0) console.log(`Not warned about when tracked in git: ${ignored.join(', ')}`)
     return
   }
