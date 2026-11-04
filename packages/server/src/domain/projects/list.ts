@@ -54,5 +54,9 @@ export async function listProjects(
     ...(meta.keptIgnoredPaths.length > 0 ? { keptIgnoredPaths: meta.keptIgnoredPaths } : {}),
     scratchDirs: meta.scratchDirs,
     initSteps: meta.initSteps,
+    portForwards: meta.portForwards,
+    cacheVolumes: meta.cacheVolumes,
+    nestedContainers: meta.nestedContainers,
+    npmCache: meta.npmCache,
   }))
 }

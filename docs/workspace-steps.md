@@ -58,7 +58,7 @@ whose window a step's launch would kill. `parseStepGraph` in
 ## Init steps
 
 A project's init steps are a column of its row (`projects.initSteps`), like
-its scratch dirs, not a yaac-config.json key. Set them with
+its scratch dirs. Set them with
 `PUT /project/:projectId/init-steps`, `yaac config init-steps <project>
 [--file <path> | --none]`, or Settings → Project Config → Init steps.
 

@@ -121,8 +121,8 @@ push completes, so a clone right after the push sees it. The server then
 copies it into the main clone's `origin/HEAD` (`setOriginHead`), which a
 clone of an empty remote could not learn, so creates fork from it.
 
-The owner can point `HEAD` at any existing branch in Project settings
-(`PUT /api/project/<id>/default-branch`, `setDefaultBranch`). The main
+The owner can point `HEAD` at any existing branch in Project settings or
+with `yaac config default-branch <project> <branch>` (`PUT /api/project/<id>/default-branch`, `setDefaultBranch`). The main
 clone of the project and of each active share takes it as `origin/HEAD`
 before the request answers, so the next create forks from it, and the
 guard below moves to it. A main clone that cannot take it (a stale lock
@@ -144,8 +144,8 @@ would find ambiguous. While a project's default-branch guard is on
 (`projects.guardDefaultBranch`, on by default), it also refuses a push
 that deletes the default branch, or moves it to a commit that does not
 contain its old tip. Agents can still rewrite every other branch. The owner
-turns the guard off and on in Project settings
-(`PUT /api/project/<id>/default-branch-guard`). The hook runs after the
+turns the guard off and on in Project settings or with `yaac config
+default-branch-guard <project> on|off` (`PUT /api/project/<id>/default-branch-guard`). The hook runs after the
 pack is received, so it can check ancestry against the pushed commits. A
 pre-check in the handler could only see ref names.
 

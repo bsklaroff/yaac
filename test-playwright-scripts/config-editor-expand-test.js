@@ -1,6 +1,6 @@
 /*
  * Verifies the expand button on the settings file editors (FileEditor),
- * using Settings → Project Config's yaac-config.json. Expanding opens a
+ * using Settings → Project Config's init steps. Expanding opens a
  * near-fullscreen overlay (inset 16px) where the editor fills the height with
  * Save below; Escape closes only the overlay, keeping the settings dialog and
  * the unsaved edit. Nothing is saved. SCREENSHOT_DIR gets
@@ -42,7 +42,7 @@ check('the editor fills most of the overlay height', editorBox.height > box.heig
 const save = pop.getByRole('button', { name: /^(Save|Saving…)$/ })
 const saveBox = await save.boundingBox()
 check('Save sits below the editor', saveBox !== null && saveBox.y > editorBox.y + editorBox.height)
-check('the overlay is titled with the config file', await pop.getByText('yaac-config.json').count() === 1)
+check('the overlay is titled with the init steps', await pop.getByText(/· init steps$/).count() === 1)
 check('Save starts disabled', await save.isDisabled())
 
 await pop.locator('.cm-content').click()

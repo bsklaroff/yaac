@@ -179,7 +179,7 @@ async function main() {
   // 4. Their project settings, read-only.
   await bob.getByTitle('Settings').click()
   await bob.getByRole('button', { name: 'Project Config' }).click()
-  await bob.getByText('yaac-config.json').waitFor()
+  await bob.getByText('Forwarded ports').waitFor()
   check('the project picker offers Ada\'s project', await bob.locator('select option').allTextContents()
     .then((names) => names.join() === 'ada-demo'))
   check('project settings have no Save', await bob.getByRole('button', { name: 'Save' }).count() === 0)

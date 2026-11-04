@@ -5,6 +5,9 @@ import { BuildFiles } from '#components/settings/BuildFiles'
 import { ProjectEnv } from '#components/settings/ProjectEnv'
 import { EgressAllowlist } from '#components/settings/EgressAllowlist'
 import { ScratchDirs } from '#components/settings/ScratchDirs'
+import { PortForwards } from '#components/settings/PortForwards'
+import { CacheVolumes } from '#components/settings/CacheVolumes'
+import { ContainerOptions } from '#components/settings/ContainerOptions'
 import { HostedRemote } from '#components/settings/HostedRemote'
 import { ProjectSharing } from '#components/settings/ProjectSharing'
 import { MoveToRemote } from '#components/settings/MoveToRemote'
@@ -23,14 +26,6 @@ import { useTeammateView, useWhoami } from '#lib/viewer'
 
 const project = api.project[':projectId']
 
-/** The stored file as written, so one the server cannot parse still opens
- *  to be fixed rather than as an empty editor whose save would replace it. */
-async function loadConfig(projectId: string): Promise<string> {
-  const { content } = await project.config.raw.$get({ param: { projectId } })
-  return content === '' ? '{}\n' : content
-}
-
-
 async function saveInitSteps(projectId: string, text: string): Promise<void> {
   let steps: unknown
   try {
@@ -41,20 +36,9 @@ async function saveInitSteps(projectId: string, text: string): Promise<void> {
   await project['init-steps'].$put({ param: { projectId }, json: { steps } })
 }
 
-async function saveConfig(projectId: string, text: string): Promise<void> {
-  let config: unknown
-  try {
-    config = JSON.parse(text)
-  } catch (e) {
-    throw new Error(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
-  }
-  await project.config.$put({ param: { projectId }, json: { config } })
-}
-
 /**
- * Settings section for a project's overlay files: `yaac-config.json` and
- * `Dockerfile.yaac`, for the project `useSettingsProject` picks; a teammate's
- * show read-only.
+ * Settings section for a project's settings and its `Dockerfile.yaac`, for
+ * the project `useSettingsProject` picks; a teammate's show read-only.
  */
 export function ProjectSettings(): JSX.Element {
   const teammateView = useTeammateView()
@@ -71,8 +55,8 @@ export function ProjectSettings(): JSX.Element {
 
   const filesApi = useMemo(() => (projectId ? projectBuildFilesApi(projectId) : null), [projectId])
 
-  // A containerless server builds no images, so the Dockerfile editors are
-  // hidden.
+  // A containerless server builds no images and runs no pods, so the
+  // Dockerfile editors and the pod-only settings are hidden.
   const buildsImages = useSnapshot()?.driver !== 'containerless'
   // Only with an egress proxy can a secret's value stay out of the
   // workspace, or an allowlist apply.
@@ -157,6 +141,15 @@ export function ProjectSettings(): JSX.Element {
           </div>}
 
           <div className="mt-6">
+            <PortForwards
+              key={`ports:${projectId}`}
+              projectId={projectId}
+              ports={selected.portForwards}
+              readOnly={readOnly}
+            />
+          </div>
+
+          <div className="mt-6">
             <ScratchDirs
               key={`scratch:${projectId}`}
               projectId={projectId}
@@ -164,6 +157,25 @@ export function ProjectSettings(): JSX.Element {
               readOnly={readOnly}
             />
           </div>
+
+          {buildsImages && <div className="mt-6">
+            <CacheVolumes
+              key={`cache-volumes:${projectId}`}
+              projectId={projectId}
+              volumes={selected.cacheVolumes}
+              readOnly={readOnly}
+            />
+          </div>}
+
+          {buildsImages && <div className="mt-6">
+            <ContainerOptions
+              key={`containers:${projectId}`}
+              projectId={projectId}
+              nestedContainers={selected.nestedContainers}
+              npmCache={selected.npmCache}
+              readOnly={readOnly}
+            />
+          </div>}
 
           {hasVolumes && <div className="mt-6">
             <Volumes key={`volumes:${projectId}`} projectId={projectId} readOnly={readOnly} />
@@ -208,23 +220,6 @@ export function ProjectSettings(): JSX.Element {
                 queryKey={['project-init-steps', projectId]}
                 load={() => Promise.resolve(`${JSON.stringify(selected.initSteps, null, 2)}\n`)}
                 {...(readOnly ? {} : { save: (text: string) => saveInitSteps(projectId, text) })}
-              />
-            </div>
-          </div>
-
-          <div className="mt-6">
-            <div className="text-xs font-medium text-text">yaac-config.json</div>
-            <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
-              This machine&apos;s config overlay for the project.
-            </p>
-            <div className="mt-2">
-              <FileEditor
-                key={`config:${projectId}`}
-                title={`${selected.name} · yaac-config.json`}
-                language="json"
-                queryKey={['project-config', projectId]}
-                load={() => loadConfig(projectId)}
-                {...(readOnly ? {} : { save: (text: string) => saveConfig(projectId, text) })}
               />
             </div>
           </div>

@@ -20,10 +20,7 @@ async function loadProjectMeta(projectId: string): Promise<ProjectMeta & { hoste
   return meta
 }
 
-/**
- * Existence check that doesn't parse `yaac-config.json`, so a malformed
- * config can still be opened for editing.
- */
+/** Throw NOT_FOUND unless the project exists. */
 export async function assertProjectExists(projectId: string): Promise<void> {
   await loadProjectMeta(projectId)
 }
@@ -53,11 +50,7 @@ export async function projectFetchUrl(projectId: string): Promise<string> {
   return meta.hosted ? hostedRepoDir(meta.sharedFrom ?? projectId) : meta.remoteUrl
 }
 
-/**
- * The project's row and live workspace count. Leaves its config out, so a
- * malformed one never stops a client resolving the project, e.g. to repair
- * that config.
- */
+/** The project's row and live workspace count. */
 export async function getProjectDetail(projectId: string): Promise<ProjectDetail> {
   const meta = await loadProjectMeta(projectId)
   const workspaceCount = await workspaceDriver().count()

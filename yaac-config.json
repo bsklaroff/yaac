@@ -1,5 +1,0 @@
-{
-  "portForward": [
-    { "containerPort": 8787, "hostPortStart": 9787 }
-  ]
-}

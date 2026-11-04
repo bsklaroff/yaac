@@ -1,57 +1,53 @@
 # Project configuration
 
-Each project has a `yaac-config.json` and, under k8s, an optional
-`Dockerfile.yaac`. Edit them in the app under Settings → Project Config, or
-with `yaac config edit <project>` and `yaac config edit-dockerfile <project>`.
-Both are stored on the server, so this works against a remote server too.
+A project's settings are stored on the server, so a client on another
+machine edits them as well as one beside it. Each is a section under Settings
+→ Project Config and a `yaac config <setting> <project>` command, which
+prints the setting given no value and replaces it given one (docs/cli.md);
+`yaac config show <project>` prints them all. They apply to workspaces
+created afterwards unless a section says otherwise.
 
-## yaac-config.json
+## Forwarded ports
 
-```json
-{
-  "cacheVolumes": { "pip-cache": "/home/yaac/.cache/pip" },
-  "portForward": [{ "containerPort": 3000, "hostPortStart": 3000 }]
-}
-```
+`yaac config port-forwards <project> [ports...]`, each port `3000` or
+`3000:8080` (container port, then the host port to start from). Each port is
+offered at a host port from its start up, bound on a client by the desktop
+app or `yaac forward` ([port-forward-tunnel.md](port-forward-tunnel.md)). The
+app also offers to forward ports it sees a workspace listening on
+([auto-forward-ports.md](auto-forward-ports.md)). Each workspace gets
+`YAAC_PORT_<port>`, the port its dev server should bind: the container port
+under k8s, and under containerless a port of its own from the host start up,
+since workspaces there share the host's ports. So start the dev server with
+it (`pnpm dev --port $YAAC_PORT_3000`). Each port is also served at
+`http://<port>.<workspace id prefix>.localhost:<port>/`
+([workspace-hostnames.md](workspace-hostnames.md)). yaac's own in-workspace
+ports, 10250-10350, are refused.
 
-- **portForward:** ports to forward from every workspace. Each entry maps a
-  `containerPort` to a host port chosen from `hostPortStart` up. The ports are
-  bound on a client, by the desktop app or `yaac forward`
-  ([port-forward-tunnel.md](port-forward-tunnel.md)). The app also offers to
-  forward ports it sees a workspace listening on
-  ([auto-forward-ports.md](auto-forward-ports.md)). Each workspace gets
-  `YAAC_PORT_<containerPort>`, the port its dev server should bind:
-  `containerPort` under k8s, and under containerless a port of its own from
-  `hostPortStart` up, since workspaces there share the host's ports. So start
-  the dev server with it (`pnpm dev --port $YAAC_PORT_3000`). Each port is
-  also served at `http://<port>.<workspace id prefix>.localhost:<port>/`
-  ([workspace-hostnames.md](workspace-hostnames.md)).
-- **cacheVolumes:** named directories that persist across workspaces. Keys
-  are names (stored at `global/projects/<project id>/cache-volumes/<name>`),
-  values are absolute paths in the workspace. k8s only: a containerless
-  workspace's tools keep their caches where they always do on the host.
-- **nestedContainers:** run a container engine inside the workspace so
-  `docker build`, `docker run` and `docker compose` work. k8s only; see
+## Pod settings (k8s)
+
+A containerless server refuses these, since its workspaces run on the host.
+
+- **Cache volumes:** `yaac config cache-volumes <project> [name=/path...]`.
+  Named directories that persist across workspaces, stored at
+  `global/projects/<project id>/cache-volumes/<name>` and mounted at the
+  absolute path given. There is no way to mount a host directory into a
+  workspace, since a client on another machine can't name a path on the
+  server: use a cache volume, or bake the files into the image.
+- **Nested containers:** `yaac config nested-containers <project> [on|off]`.
+  Runs a container engine inside the workspace so `docker build`, `docker
+  run` and `docker compose` work; see
   [nested-containers.md](nested-containers.md).
-- **npmCache:** whether workspaces use the install's npm cache (k8s only;
-  default `true`). With `false`, pnpm goes to npmjs through the proxy. A
-  project's own `.npmrc` `registry=` wins either way.
-A field not listed here is an error: saving the file refuses it, and so does
-every create while it is there, rather than ignoring a misspelt key.
-
-There is no way to mount a host directory into a workspace, since a client on
-another machine can't name a path on the server. Use `cacheVolumes`, or bake
-the files into the image.
+- **npm cache:** `yaac config npm-cache <project> [on|off]`, on by default.
+  Off, pnpm goes to npmjs through the proxy. A project's own `.npmrc`
+  `registry=` wins either way.
 
 ## Init steps
 
 What every workspace runs when it starts (install, build, start the dev
 server) is the project's init steps: a graph of named steps, each a list of
 commands run in a tmux window of its own after the steps it `needs`, with
-long-running ones as services. They are a project setting stored on the
-server rather than a `yaac-config.json` key: edit them under Settings →
-Project Config → Init steps, or with `yaac config init-steps <project>
---file <path>`. See [workspace-steps.md](workspace-steps.md).
+long-running ones as services. Edit them under Settings → Project Config →
+Init steps, or with `yaac config init-steps <project> --file <path>`. See [workspace-steps.md](workspace-steps.md).
 
 ## Scratch directories
 
@@ -61,9 +57,8 @@ checkout and empties when it stops
 ([workspace-storage.md](workspace-storage.md) "Package installs"). Each has a
 cap: under k8s a write past it fails, and under containerless it is not
 enforced. A dir names its own cap or gets the default, 16 GiB, which a large
-cargo build can pass. The default dirs are `node_modules` and `target`. They
-are a project setting stored on the server rather than a `yaac-config.json`
-key: edit them under Settings → Project Config, or with
+cargo build can pass. The default dirs are `node_modules` and `target`. Edit
+them under Settings → Project Config, or with
 `yaac config scratch-dirs <project> [dirs...]`, each dir `path` or `path:GiB`
 (`--none` for none). The webapp's file explorer hides them like ignored
 folders unless one holds a file git would list ([file-editor.md](file-editor.md)).
@@ -85,8 +80,9 @@ warned about again.
 
 ## Environment variables and secrets
 
-These are not in `yaac-config.json`. Set them under Settings → Project Config →
-Environment. A plain variable is placed in every workspace's environment. A
+Set them under Settings → Project Config →
+Environment, or with `yaac config env <project>` (`NAME=value` for a variable,
+`--secret NAME` with its rule as options and its value on stdin). A plain variable is placed in every workspace's environment. A
 secret is stored encrypted. Under k8s its value never enters the workspace:
 the workspace gets a placeholder, and the proxy swaps in the real value on
 requests matching the rule you give (hosts, an optional path glob, and where
@@ -100,24 +96,26 @@ you don't need a `GITHUB_TOKEN` secret.
 Stopping a workspace deletes every file the repository's `.gitignore`
 matches, not only build output: `.env` files, local databases, editor and
 agent settings, and any new file in an ignored folder. Files git lists as
-untracked stay. Also not in `yaac-config.json`: under Settings
-→ Project Config → Kept ignored files, list paths relative to the
+untracked stay. Under Settings
+→ Project Config → Kept ignored files, or with `yaac config
+kept-ignored-paths <project> [paths...]`, list paths relative to the
 repository root to keep anyway, each a file or a folder and everything in
 it (`.env`, `data/dev.db`). Changes apply from the next stop. See
 [workspace-storage.md](workspace-storage.md) "Ignored files at stop".
 
 ## Egress allowlist (k8s)
 
-Also not in `yaac-config.json`: set it under Settings → Project Config →
-Egress allowlist, or allow a blocked host for the whole project from a
+Set it under Settings → Project Config →
+Egress allowlist, with `yaac config egress-allowlist <project> [hosts...]
+[--defaults on|off]`, or allow a blocked host for the whole project from a
 workspace's blocked-hosts badge. A workspace may reach the proxy's default
 hosts (`DEFAULT_ALLOWED_HOSTS` in `packages/server/src/lib/allowed-hosts.ts`)
 plus the hosts you add: exact names (`api.example.com`) or wildcards
 (`*.example.com`, or `*` inside a label as in `store*.example.com`, which
 matches letters, digits, `-` and `_` within that one label); `*` allows
 everything. Turning the defaults off leaves only your hosts, so an empty list
-blocks all external access; yaac warns if that leaves out `api.anthropic.com`
-or `github.com`. Changes apply to workspaces created afterwards.
+blocks all external access; `yaac config egress-allowlist` warns if that leaves out
+`api.anthropic.com` or `github.com`. Changes apply to workspaces created afterwards.
 See [workspace-egress.md](workspace-egress.md).
 
 ## Custom images (k8s)
@@ -126,7 +124,8 @@ The default workspace image is Ubuntu 26.04 with Node.js, gh, tmux, the agent
 CLIs, and pnpm 12 through corepack (a project's own `packageManager` pin wins).
 Two files customize it:
 
-- **`Dockerfile.yaac`** (per project).
+- **`Dockerfile.yaac`** (per project: Settings → Project Config → Dockerfile,
+  or `yaac config dockerfile <project> --file <path>`, `-` for stdin).
   - **Layered (recommended):** built on top of the default image. It must
     start with:
     ```dockerfile
@@ -139,12 +138,12 @@ Two files customize it:
     is its own: a GNU tar that extracts through `openat2` (Ubuntu's from
     26.04) cannot unpack nested paths in a pod, since gVisor lacks that call.
 - **`Dockerfile.user`** (yours, Settings → User Dockerfile or
-  `yaac config edit-user-dockerfile`): applied last, on top of the image of
+  `yaac config user-dockerfile --file <path>`): applied last, on top of the image of
   every project you own, for things like editor or shell config. It must use the
   same `ARG BASE_IMAGE` / `FROM ${BASE_IMAGE}` header.
 
 Build order: default, then the agent CLI layer (`Dockerfile.tools`), then
-`Dockerfile.nestable` (only with `nestedContainers`), then a layered
+`Dockerfile.nestable` (only with nested containers on), then a layered
 `Dockerfile.yaac`, then `Dockerfile.user`. A standalone `Dockerfile.yaac`
 replaces the first three.
 

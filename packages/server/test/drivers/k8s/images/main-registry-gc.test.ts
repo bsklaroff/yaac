@@ -5,6 +5,7 @@
  * the tests assert which tags survive.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { PROJECT_CONFIG_DEFAULTS } from '@yaac/test-utils/project-fixture'
 import type * as childProcessModule from 'node:child_process'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -164,7 +165,7 @@ function stage(f: Fixture = {}): void {
 /** Drive one reconcile and wait out the detached pass it starts. */
 async function runPass(pinned: string[] = []): Promise<void> {
   await reconcileMainRegistryGc([DEMO], {
-    projectConfig: () => Promise.resolve({}), projectOwner: () => Promise.resolve(OWNER), pinnedImages: () => Promise.resolve(pinned),
+    projectConfig: () => Promise.resolve(PROJECT_CONFIG_DEFAULTS), projectOwner: () => Promise.resolve(OWNER), pinnedImages: () => Promise.resolve(pinned),
   })
   await _mainRegistryGcSettledForTests()
 }
@@ -426,10 +427,10 @@ describe('reconcileMainRegistryGc', () => {
 
     // Reconcile steps run in sequence, so this returns while the collect
     // runs, and a tick meanwhile does not start a second pass.
-    await reconcileMainRegistryGc([DEMO], { projectConfig: () => Promise.resolve({}), projectOwner: () => Promise.resolve(OWNER), pinnedImages: () => Promise.resolve([]) })
+    await reconcileMainRegistryGc([DEMO], { projectConfig: () => Promise.resolve(PROJECT_CONFIG_DEFAULTS), projectOwner: () => Promise.resolve(OWNER), pinnedImages: () => Promise.resolve([]) })
     await reachedCollect
     const before = execs.length
-    await reconcileMainRegistryGc([DEMO], { projectConfig: () => Promise.resolve({}), projectOwner: () => Promise.resolve(OWNER), pinnedImages: () => Promise.resolve([]) })
+    await reconcileMainRegistryGc([DEMO], { projectConfig: () => Promise.resolve(PROJECT_CONFIG_DEFAULTS), projectOwner: () => Promise.resolve(OWNER), pinnedImages: () => Promise.resolve([]) })
     expect(execs).toHaveLength(before)
 
     release()

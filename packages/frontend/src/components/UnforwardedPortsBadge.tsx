@@ -7,7 +7,7 @@ import { ActionsBadge } from '#components/ui/ActionsBadge'
 /**
  * Badge for ports listening inside the workspace that are not forwarded. Its
  * popover lists them; each can be forwarded for this workspace, forwarded
- * for the project (saved to yaac-config.json, and forwarded in the project's
+ * for the project (added to its forwarded ports, and forwarded in its
  * other running workspaces), or dismissed until the server restarts.
  * Forwarding makes the server offer the port; a client holds the listener
  * (docs/port-forward-tunnel.md).

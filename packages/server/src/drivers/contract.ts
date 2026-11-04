@@ -17,7 +17,7 @@ import type {
   UsageTotals,
   WorkspaceDeathCause,
   WorkspaceResourceUse,
-  YaacConfig,
+  ProjectConfig,
 } from '@yaac/shared/types'
 
 /**
@@ -150,7 +150,7 @@ export interface WorkspaceRegistration {
   /** The credential owner whose bundle the workspace spends (see
    *  `syncCredentials`). */
   owner: string
-  config: YaacConfig
+  config: ProjectConfig
   allowlist: EgressAllowlist
   /** The project's `origin` remote, as the workspace will see it. */
   remoteUrl: string
@@ -255,7 +255,7 @@ export interface SubstrateIntent {
   /** The credential owner whose bundle the workspace spends (see
    *  `syncCredentials`). */
   owner: string
-  config: YaacConfig
+  config: ProjectConfig
   allowlist: EgressAllowlist
   /** The project's `origin` remote, as the workspace will see it. */
   remoteUrl: string
@@ -457,10 +457,10 @@ export interface PassContext {
   projectIds: () => Promise<string[]>
   /**
    * One project's resolved config, memoized per project for the pass.
-   * Passed down so driver steps never read project files themselves.
-   * `undefined` means no config (all defaults), not a failure.
+   * Passed down so driver steps never read project rows themselves.
+   * `undefined` means the project no longer exists.
    */
-  projectConfig: (projectId: string) => Promise<YaacConfig | undefined>
+  projectConfig: (projectId: string) => Promise<ProjectConfig | undefined>
   /** One project's owner, whose `Dockerfile.user` tops its image chain.
    *  Rejects for a project that no longer exists. */
   projectOwner: (projectId: string) => Promise<string>

@@ -75,9 +75,8 @@ function Caption({ label, className, children }: { label: string; className?: st
 }
 
 /**
- * A project's environment variables and proxied secrets. They are stored on
- * the server (secrets encrypted) rather than in `yaac-config.json`, so a
- * client on another machine can set them. A secret's value is write-only:
+ * A project's environment variables and proxied secrets, stored on the
+ * server (secrets encrypted). A secret's value is write-only:
  * leaving it blank in an edit keeps the stored value. `readOnly` (a
  * teammate's project) only lists them.
  */

@@ -9,6 +9,7 @@ import {
   listProjectRows,
   recordProject,
   recordProjectCreate,
+  setProjectConfig,
   setProjectDefaultBranchGuard,
   setProjectKeptIgnoredPaths,
   setProjectWorkspaceRetention,
@@ -63,6 +64,10 @@ describe('recordProject', () => {
       keptIgnoredPaths: [],
       scratchDirs: { dirs: [{ path: 'node_modules' }, { path: 'target' }], ignoredTracked: [] },
       initSteps: {},
+      portForwards: [],
+      cacheVolumes: {},
+      nestedContainers: false,
+      npmCache: true,
     })
   })
 
@@ -159,6 +164,10 @@ describe('listProjectRows', () => {
         keptIgnoredPaths: [],
         scratchDirs: { dirs: [{ path: 'node_modules' }, { path: 'target' }], ignoredTracked: [] },
         initSteps: {},
+        portForwards: [],
+        cacheVolumes: {},
+        nestedContainers: false,
+        npmCache: true,
       },
     ])
   })
@@ -459,5 +468,28 @@ describe('setProjectInitSteps', () => {
     expect(await setProjectInitSteps(P, graph)).toBe(true)
     expect((await getProjectRow(P))?.initSteps).toEqual(graph)
     expect(await setProjectInitSteps('0a0a0a0a-0000-4000-8000-0000000000ff', {})).toBe(false)
+  })
+})
+
+describe('setProjectConfig', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+  })
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  it('replaces the settings it names, keeps the rest, and answers undefined for an unknown projectId', async () => {
+    await recordProject({ id: P, name: 'p', remoteUrl: 'https://github.com/o/p.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    const ports = [{ containerPort: 3000, hostPortStart: 3000 }]
+    expect(await setProjectConfig(P, { portForwards: ports, npmCache: false }))
+      .toEqual({ portForwards: ports, cacheVolumes: {}, nestedContainers: false, npmCache: false })
+    expect(await setProjectConfig(P, { cacheVolumes: { pip: '/p' } }))
+      .toEqual({ portForwards: ports, cacheVolumes: { pip: '/p' }, nestedContainers: false, npmCache: false })
+    expect(await getProjectRow(P)).toMatchObject({ portForwards: ports, cacheVolumes: { pip: '/p' }, npmCache: false })
+    expect(await setProjectConfig('0a0a0a0a-0000-4000-8000-0000000000ff', { npmCache: true })).toBeUndefined()
   })
 })

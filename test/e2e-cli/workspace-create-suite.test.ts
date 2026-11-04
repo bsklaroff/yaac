@@ -15,14 +15,14 @@ import { ensureNpmCache } from '@yaac/server/drivers/k8s/cluster'
 import { reapNodeLocal } from '@yaac/server/drivers/k8s/workspaces'
 import { listWorkspacePods, type PodInfo } from '@yaac/server/drivers/k8s/substrate/pods'
 import { createYaacTestEnv, spawnYaacServer, setTestGitIdentity, runYaac, TEST_CLI_ENTRY, type YaacTestEnv } from '#support/cli'
-import { asTailnet, assignTestGitCredential, registerTestProject, signInTestTool, type SpawnedServer } from '@yaac/test-utils/api'
+import { asTailnet, assignTestGitCredential, registerTestProject, setTestProjectConfig, signInTestTool, type SpawnedServer } from '@yaac/test-utils/api'
 import { requireCluster } from '@yaac/test-utils/setup'
 import { requirePodman, execInJob, cleanupWorkspaceJobs } from '#support/cluster'
 import { k8sNamespace, readObject } from '@yaac/server/drivers/k8s/substrate/api'
 import { nodeLocalNodePath } from '@yaac/server/drivers/k8s/substrate/mount-sources'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import { AGENT_CLIS } from '@yaac/shared/types'
-import type { ResourceReport, SessionEntry } from '@yaac/shared/types'
+import type { ProjectConfig, ProjectSummary, ResourceReport, SessionEntry } from '@yaac/shared/types'
 import { KEEPER_WINDOW } from '@yaac/server/drivers/contract'
 import {
   startMockLLM,
@@ -43,7 +43,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  *
  * One server and one mock-LLM/mock-Git pair serve the whole file, and one
  * claude workspace carries every independent per-workspace feature (env
- * vars and secrets, cacheVolumes, init steps and their logs, portForward, the
+ * vars and secrets, cache volumes, init steps and their logs, forwarded ports, the
  * node_modules redirect) to avoid a pod per feature.
  *
  * Within a describe, tests run in declaration order and some depend on it:
@@ -225,7 +225,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
   async function setupProject(
     name: string,
     opts: {
-      yaacConfig?: Record<string, unknown>
+      config?: Partial<ProjectConfig>
       scratchDirs?: string[]
       files?: Record<string, string>
       extraBranches?: Record<string, Record<string, string>>
@@ -257,14 +257,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       })
       expect(res.status).toBe(200)
     }
-    if (opts.yaacConfig) {
-      const configDir = path.join(projectPath, 'config')
-      await fs.mkdir(configDir, { recursive: true })
-      await fs.writeFile(
-        path.join(configDir, 'yaac-config.json'),
-        JSON.stringify(opts.yaacConfig, null, 2) + '\n',
-      )
-    }
+    if (opts.config) await setTestProjectConfig(server!, projectId, opts.config, opts.headers)
     return projectPath
   }
 
@@ -435,10 +428,10 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         files: { '.gitignore': 'node_modules\n', 'frontends/app.txt': 'app\n' },
         // A root path and a nested one under a tracked dir.
         scratchDirs: ['node_modules', 'frontends/node_modules'],
-        yaacConfig: {
+        config: {
           // Stored under the project dir, so removed with the temp data dir.
           cacheVolumes: { 'test-cache': '/tmp/test-cache' },
-          portForward: PORT_FORWARD,
+          portForwards: PORT_FORWARD,
         },
       })
 
@@ -477,7 +470,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       const created = await createWorkspace('kitchen', '--tool', 'claude')
       jobName = created.jobName
 
-      // One "Offering host port" line per portForward entry. Nothing is
+      // One "Offering host port" line per forwarded port. Nothing is
       // bound until the forwarder below starts.
       for (const line of created.stdout.split('\n')) {
         const m = line.match(/Offering host port (\d+) -> container port (\d+)/)
@@ -637,7 +630,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       expect(res.body).toBe('hello ipv6')
     }, 30_000)
 
-    it('forwards multiple portForward entries to the same container independently', async () => {
+    it('forwards several project ports to the same container independently', async () => {
       await startHttpServerInContainer(jobName, 8082, '127.0.0.1', 'first server')
       await startHttpServerInContainer(jobName, 8083, '127.0.0.1', 'second server')
 
@@ -982,17 +975,10 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       const page = await httpGet(`http://127.0.0.1:${mapping.hostPort}/`)
       expect(page.body).toBe('persisted server')
 
-      // The project config gained the entry, keeping the existing ones.
-      const configRaw = await fs.readFile(
-        path.join(projectPath, 'config', 'yaac-config.json'), 'utf8',
-      )
-      const config = JSON.parse(configRaw) as {
-        portForward: Array<{ containerPort: number; hostPortStart: number }>
-      }
-      expect(config.portForward).toContainEqual({ containerPort: persistedPort, hostPortStart: persistedPort })
-      for (const entry of PORT_FORWARD) {
-        expect(config.portForward).toContainEqual(entry)
-      }
+      // The project's forwarded ports gained the entry, keeping the others.
+      const { portForwards } = (await (await fetch(`${base}/api/project/list`)).json() as ProjectSummary[])
+        .find((p) => p.id === idOf('kitchen'))!
+      expect(portForwards).toEqual([...PORT_FORWARD, { containerPort: persistedPort, hostPortStart: persistedPort }])
     }, 90_000)
 
     it('dismisses a detected port so it stops being offered', async () => {
@@ -1398,7 +1384,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       await ensureNpmCache()
       await setupProject('no-scratch', {
         scratchDirs: [],
-        yaacConfig: { npmCache: false },
+        config: { npmCache: false },
       })
       const workspaceId = randomUUID()
       onTestFinished(() => stopWorkspace(workspaceId))

@@ -136,7 +136,7 @@ async function staleSpares(pods: RuntimeHandle[]): Promise<Set<string>> {
   const projects = (await listProjectRows()).filter((p) => spares.some((s) => s.projectId === p.id))
   const wanted = new Map(await Promise.all(projects.map(async (p) => [p.id, {
     timeZone: (await getTimeZone(p.owner)).timeZone ?? undefined,
-    image: await currentSpareImage(p.id, p.owner).then((ref) => ({ ref }), (err: unknown) => {
+    image: await currentSpareImage(p).then((ref) => ({ ref }), (err: unknown) => {
       serverLog(`[prewarm] resolving ${p.id}'s image failed: ${String(err)}`)
       return undefined
     }),

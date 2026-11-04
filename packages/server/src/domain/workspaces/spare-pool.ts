@@ -1,21 +1,19 @@
 import { workspaceDriver } from '#drivers/driver'
-import { resolveProjectConfig } from '#domain/projects'
 import { getProjectRow } from '#db'
 import { shellEscape } from '#lib/shell'
-import type { YaacConfig } from '@yaac/shared/types'
 
 /**
  * Checkout-relative mount points (scratch dirs and cache volumes under
  * the checkout). `git clean` must skip them: removing a mount point fails
  * with EBUSY.
  */
-function workspaceMountPaths(config: YaacConfig, modules: string[], workspaceDir: string): string[] {
+function workspaceMountPaths(cacheVolumes: Record<string, string>, modules: string[], workspaceDir: string): string[] {
   const prefix = `${workspaceDir}/`
   const underWorkspace = (p: string): string | null =>
     p.startsWith(prefix) ? p.slice(prefix.length) : null
   return [
     ...modules,
-    ...Object.values(config.cacheVolumes ?? {}).map(underWorkspace),
+    ...Object.values(cacheVolumes).map(underWorkspace),
   ].filter((p): p is string => p !== null && p.length > 0)
 }
 
@@ -33,15 +31,15 @@ export async function rebranchSpare(
   branch: string,
   sha: string,
 ): Promise<void> {
-  const config: YaacConfig = await resolveProjectConfig(spare.projectId) ?? {}
   const runtime = workspaceDriver()
   const paths = runtime.workspacePaths(spare.jobName)
   const wd = paths.workspaceDir
   // Move `agent/<id>` to the SHA and remove untracked files. `clean -fd` not
   // `-x`, which would empty mounted module and cache dirs. reset+clean walks
   // the whole checkout, so allow longer than the default.
-  const modules = (await getProjectRow(spare.projectId))?.scratchDirs.dirs.map((d) => d.path) ?? []
-  const cleanExcludes = workspaceMountPaths(config, modules, wd)
+  const row = await getProjectRow(spare.projectId)
+  const modules = row?.scratchDirs.dirs.map((d) => d.path) ?? []
+  const cleanExcludes = workspaceMountPaths(row?.cacheVolumes ?? {}, modules, wd)
     .map((p) => ` -e '${shellEscape(p)}'`)
     .join('')
   await runtime.exec(spare.jobName, `sh -c "git -C ${wd} reset --hard ${sha} `

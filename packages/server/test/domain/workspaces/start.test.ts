@@ -58,7 +58,7 @@ import {
   workspaceDir,
   workspaceStateDir,
 } from '@yaac/shared/project-paths'
-import { CONTAINER_TMUX_DIR, projectConfigDir } from '@yaac/shared/paths'
+import { CONTAINER_TMUX_DIR } from '@yaac/shared/paths'
 import {
   PLACEHOLDER_API_KEY, PLACEHOLDER_GH_TOKEN, PLACEHOLDER_OPENCODE_API_KEY, PLACEHOLDER_PI_API_KEY,
 } from '@yaac/shared/tool-auth'
@@ -82,7 +82,7 @@ import {
   type SessionRow,
   type WorkspaceRow,
 } from '#db'
-import { getProjectRow, recordProject, recordProjectCreate } from '#db/project-store'
+import { getProjectRow, recordProject, recordProjectCreate, setProjectConfig } from '#db/project-store'
 import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { listWorkspaceSteps } from '#db/step-store'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
@@ -97,7 +97,7 @@ import {
   type WorkspaceRegistration,
   type WorkspaceSpec,
 } from '#drivers/contract'
-import type { AgentTool, YaacConfig } from '@yaac/shared/types'
+import type { AgentTool } from '@yaac/shared/types'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -218,11 +218,6 @@ describe('prepareStart', () => {
   /** The command that opened a session's window. */
   const SESSION_WINDOW = / -n (claude|codex|opencode|pi)-[0-9a-f]{8} /
   const sessionExec = (): string | undefined => cmds().find((c) => SESSION_WINDOW.test(c))
-
-  async function writeConfig(config: YaacConfig): Promise<void> {
-    await fs.mkdir(projectConfigDir(DEMO_PROJECT_ID), { recursive: true })
-    await fs.writeFile(path.join(projectConfigDir(DEMO_PROJECT_ID), 'yaac-config.json'), JSON.stringify(config))
-  }
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
@@ -855,7 +850,7 @@ describe('prepareStart', () => {
     })
 
     it('starts its life with the project\'s init steps and log hooks, and declares the forwards, before the agent', async () => {
-      await writeConfig({ portForward: [{ containerPort: 3000, hostPortStart: 3000 }] })
+      await setProjectConfig(DEMO_PROJECT_ID, { portForwards: [{ containerPort: 3000, hostPortStart: 3000 }] })
       await setInitSteps(local, DEMO_PROJECT_ID, {
         install: { run: 'pnpm install' },
         dev: { run: 'pnpm dev', service: true, needs: ['install'] },

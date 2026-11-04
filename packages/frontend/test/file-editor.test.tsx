@@ -67,11 +67,11 @@ describe('FileEditor', () => {
 
   it('expands into a titled overlay and saves from there', async () => {
     const save = vi.fn().mockResolvedValue(undefined)
-    renderWithClient(<FileEditor queryKey={['file']} title="proj · yaac-config.json" language="json" load={() => Promise.resolve('{}')} save={save} />)
+    renderWithClient(<FileEditor queryKey={['file']} title="proj · init steps" language="json" load={() => Promise.resolve('{}')} save={save} />)
 
     await screen.findByLabelText('editor')
     fireEvent.click(screen.getByRole('button', { name: 'Expand editor' }))
-    await screen.findByText('proj · yaac-config.json')
+    await screen.findByText('proj · init steps')
 
     // The overlay hosts a second editor over the same buffer; edit and save there.
     const editors = screen.getAllByLabelText<HTMLTextAreaElement>('editor')

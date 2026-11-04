@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { PROJECT_CONFIG_DEFAULTS } from '@yaac/test-utils/project-fixture'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 import { installId } from '#drivers/k8s/substrate'
 // A setup value, not a unit under test.
@@ -73,7 +74,7 @@ const INTENT = {
   workspaceId: 's1',
   owner: 'o',
   tool: 'claude' as const,
-  config: {},
+  config: PROJECT_CONFIG_DEFAULTS,
   allowlist: { hosts: [], defaults: true },
   remoteUrl: 'https://github.com/example/repo.git',
   nestedContainers: false,
@@ -374,7 +375,7 @@ describe('launchWorkspace', () => {
     //  - the allowlist excludes npmjs (the cache bypasses the proxy);
     //  - a proxied npmjs secret (the cache fetches anonymously).
     for (const intent of [
-      { ...INTENT, config: { npmCache: false } },
+      { ...INTENT, config: { ...PROJECT_CONFIG_DEFAULTS, npmCache: false } },
       { ...INTENT, allowlist: { hosts: ['github.com', 'api.anthropic.com'], defaults: false } },
       {
         ...INTENT,

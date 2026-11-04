@@ -3,8 +3,8 @@
 How in-pod podman, the combined CA bundle and the per-project push
 registries work on yaac's Kubernetes backend.
 
-`nestedContainers` is an opt-in setting in `yaac-config.json` (there is no
-CLI flag). It gives a workspace a rootful podman engine inside its gVisor
+Nested containers is an opt-in project setting (Settings → Project Config,
+or `yaac config nested-containers <project> on`). It gives a workspace a rootful podman engine inside its gVisor
 sandbox, so `docker build`, `docker run` and `docker compose up --build`
 work as a project README expects. The `docker` CLI talks to podman's
 Docker-API socket. Workspaces without the setting are unchanged.

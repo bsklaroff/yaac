@@ -1,4 +1,4 @@
-import { api, projectScope, resolveProjectId } from '#commands/api'
+import { api, resolveProject } from '#commands/api'
 import { confirmDefault } from '@yaac/shared/confirm'
 
 /**
@@ -12,14 +12,12 @@ import { confirmDefault } from '@yaac/shared/confirm'
  * `off` deletes nothing, so it does not ask.
  */
 export async function configWorkspaceAutoDelete(project: string, value: string | undefined): Promise<void> {
-  const scope = await projectScope()
-  const projectId = await resolveProjectId(project, scope)
-  const summary = scope.all.find((p) => p.id === projectId)
-  const name = summary?.name ?? projectId
+  const summary = await resolveProject(project)
+  const { id: projectId, name } = summary
   const autoDelete = api.project[':projectId']['workspace-auto-delete']
 
   if (value === undefined) {
-    const days = summary?.stoppedWorkspaceRetentionDays
+    const days = summary.stoppedWorkspaceRetentionDays
     console.log(days === undefined
       ? `${name} keeps stopped workspaces until you delete them.`
       : `${name} deletes a workspace once it has been stopped ${days} days.`)

@@ -517,7 +517,7 @@ Here the workspace's processes bind host ports directly, so a listener is
 already reachable on this machine and the mapping is the identity. Ports
 appear as `forwardedPorts`; `unforwardedPorts` is always empty, and there is
 no "forward this" action. Workspaces share the host's ports, so each
-`portForward` entry gets a port of its own per workspace, passed to the dev
+forwarded port gets a port of its own per workspace, passed to the dev
 server as `YAAC_PORT_<n>`, and every port has a `<port>.<id8>.localhost`
 name that the server routes on its own port
 (docs/workspace-hostnames.md).
@@ -552,8 +552,8 @@ The webapp reads `snapshot.driver` and hides these features.
   set `ALL_PROXY` or an ssh ProxyCommand, which undici, raw sockets and the
   agent's shell would bypass. Silently leaking traffic is worse than a
   stated gap.
-- **Nested containers.** A project config with `nestedContainers` is
-  rejected at create.
+- **Nested containers, cache volumes and the npm cache.** Their routes
+  refuse with `NOT_SUPPORTED`, so a project here never has them.
 - **Prewarmed spare workspaces.** A tmux server in an existing checkout has
   no image pull or pod boot to save.
 - **Per-workspace module caching.** See "Mounts that are not realized".

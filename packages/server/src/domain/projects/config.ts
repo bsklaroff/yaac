@@ -1,15 +1,20 @@
-import fs from 'node:fs/promises'
+/**
+ * The project settings a workspace launches with besides its checkout
+ * (`ProjectConfig`, docs/project-config.md): forwarded ports, cache
+ * volumes, nested containers and the npm cache. Each is a column of the
+ * project's row, set on a route of its own.
+ */
 import path from 'node:path'
 import { z } from 'zod'
-import type { YaacConfig } from '@yaac/shared/types'
-import { projectConfigDir } from '@yaac/shared/project-paths'
+import { ServerError } from '@yaac/shared/errors'
+import type { ProjectConfig } from '@yaac/shared/types'
+import { getProjectRow, setProjectConfig } from '#db'
+import { authorizeProject, type Actor } from '#domain/access'
 import { isInfraPort } from '#lib/port-policy'
+import { assertProjectExists } from './detail'
 
 const CACHE_VOLUME_KEY_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/
 
-const isPlainObject = (v: unknown): boolean => typeof v === 'object' && v !== null && !Array.isArray(v)
-
-const BOOLEAN = z.boolean({ error: 'must be a boolean' }).optional()
 const PORT = z.number({ error: 'must be an integer between 1 and 65535' }).int().min(1).max(65535)
 
 /** A path relative to the checkout (/workspace), with any surrounding
@@ -21,86 +26,66 @@ export const checkoutPathSchema = z.string({ error: 'must be a string' })
   .refine((p) => p.length > 0, 'must not be empty')
   .refine((p) => !p.split('/').some((seg) => seg === '..' || seg === '.'), 'must not contain "." or ".." segments')
 
-const projectConfigSchema = z.object({
-  cacheVolumes: z.record(z.string(), z.unknown(), { error: 'must be an object' }).superRefine((volumes, ctx) => {
-    for (const [key, val] of Object.entries(volumes)) {
-      // The key names a host dir under `cache-volumes/`, mounted read-write.
-      // A single plain segment prevents `..` (mounting another server dir)
-      // and `a/b` (a mount inside one the pod could swap for a link).
-      if (!CACHE_VOLUME_KEY_RE.test(key)) {
-        ctx.addIssue({
-          code: 'custom',
-          message: `key "${key}" must be 1-64 letters, digits, "_", "-" or "." and not start with "."`,
-        })
-      } else if (typeof val !== 'string') {
-        ctx.addIssue({ code: 'custom', path: [key], message: 'must be a string (absolute container path)' })
-      } else if (!val.startsWith('/') || val === '/' || path.posix.normalize(val) !== val) {
-        ctx.addIssue({ code: 'custom', path: [key], message: 'must be a normalized absolute path other than /' })
-      }
+/** A project's forwarded ports. A container port listed twice keeps its
+ *  first entry. */
+export const portForwardsSchema = z.array(
+  z.object({
+    containerPort: PORT.refine((port) => !isInfraPort(port), {
+      error: (iss) => `${String(iss.input)} is reserved for yaac's own in-workspace services (10250-10350)`,
+    }),
+    hostPortStart: PORT,
+  }, { error: 'must be an object with containerPort and hostPortStart' }),
+  { error: 'must be an array of {containerPort, hostPortStart} objects' },
+).transform((ports) => ports.filter((p, i) => ports.findIndex((q) => q.containerPort === p.containerPort) === i))
+
+/** A project's cache volumes: name to absolute mount path. */
+export const cacheVolumesSchema = z.record(z.string(), z.unknown(), { error: 'must be an object' }).superRefine((volumes, ctx) => {
+  for (const [key, val] of Object.entries(volumes)) {
+    // The key names a host dir under `cache-volumes/`, mounted read-write.
+    // A single plain segment prevents `..` (mounting another server dir)
+    // and `a/b` (a mount inside one the pod could swap for a link).
+    if (!CACHE_VOLUME_KEY_RE.test(key)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `name "${key}" must be 1-64 letters, digits, "_", "-" or "." and not start with "."`,
+      })
+    } else if (typeof val !== 'string') {
+      ctx.addIssue({ code: 'custom', path: [key], message: 'must be a string (absolute container path)' })
+    } else if (!val.startsWith('/') || val === '/' || path.posix.normalize(val) !== val) {
+      ctx.addIssue({ code: 'custom', path: [key], message: 'must be a normalized absolute path other than /' })
     }
-  }).transform((volumes) => volumes as Record<string, string>).optional(),
-  portForward: z.array(
-    z.object({
-      containerPort: PORT.refine((port) => !isInfraPort(port), {
-        error: (iss) => `${String(iss.input)} is reserved for yaac's own in-workspace services (10250-10350)`,
-      }),
-      hostPortStart: PORT,
-    }, { error: 'must be an object with containerPort and hostPortStart' }),
-    { error: 'must be an array of {containerPort, hostPortStart} objects' },
-  ).optional(),
-  nestedContainers: BOOLEAN,
-  npmCache: BOOLEAN,
-})
+  }
+}).transform((volumes) => volumes as Record<string, string>)
 
-/** Where an issue is, as a config key path: `portForward[0].containerPort`. */
-function issuePath(at: PropertyKey[]): string {
-  return at.map((k, i) => typeof k === 'number' ? `[${k}]` : `${i === 0 ? '' : '.'}${String(k)}`).join('')
+/** The project's settings, or undefined when there is no such project. */
+export async function resolveProjectConfig(projectId: string): Promise<ProjectConfig | undefined> {
+  const row = await getProjectRow(projectId)
+  if (row === undefined) return undefined
+  const { portForwards, cacheVolumes, nestedContainers, npmCache } = row
+  return { portForwards, cacheVolumes, nestedContainers, npmCache }
 }
 
-/** Where a retired field went, for the error that refuses it
- *  (docs/legacy-compat-shims.md). */
-const RETIRED_FIELDS: Record<string, string> = {
-  ephemeralModulesPaths: 'is now the project\'s scratch directories, set under Settings → Project Config '
-    + 'or with `yaac config scratch-dirs`',
-  initCommands: 'is now the project\'s init steps, set under Settings → Project Config → Init steps '
-    + 'or with `yaac config init-steps`',
-  hideInitPane: 'is gone: every step\'s output is kept in its log, so a finished step\'s window stays',
+/** Replace the settings `set` names, already validated, and answer them all
+ *  as stored. They apply to workspaces created afterwards. */
+export async function updateProjectConfig(
+  principal: Actor,
+  projectId: string,
+  set: Partial<ProjectConfig>,
+): Promise<ProjectConfig> {
+  await assertProjectExists(projectId)
+  await authorizeProject(principal, projectId)
+  const stored = await setProjectConfig(projectId, set)
+  if (!stored) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
+  return stored
 }
 
-/**
- * Parse a yaac-config.json. Anything invalid throws, naming the first bad
- * field; an unknown field is invalid, so a misspelt or retired key fails
- * loudly instead of being ignored.
- */
-export function parseProjectConfig(raw: string): YaacConfig {
-  const parsed: unknown = JSON.parse(raw)
-  if (!isPlainObject(parsed)) throw new Error('yaac-config.json must be a JSON object')
-  const unknown = Object.keys(parsed as object).find((key) => !Object.hasOwn(projectConfigSchema.shape, key))
-  if (unknown !== undefined && Object.hasOwn(RETIRED_FIELDS, unknown)) {
-    throw new Error(`yaac-config.json: "${unknown}" ${RETIRED_FIELDS[unknown]}; remove it from this file`)
-  }
-  if (unknown !== undefined) {
-    throw new Error(`yaac-config.json: unknown field "${unknown}"; the fields are ${Object.keys(projectConfigSchema.shape).join(', ')}`)
-  }
-  const result = projectConfigSchema.safeParse(parsed)
-  if (!result.success) {
-    const [issue] = result.error.issues
-    throw new Error(`yaac-config.json: ${issuePath(issue.path)} ${issue.message}`)
-  }
-  return result.data
-}
-
-export async function loadProjectConfig(repoPath: string): Promise<YaacConfig | null> {
-  const configPath = path.join(repoPath, 'yaac-config.json')
-  let raw: string
-  try {
-    raw = await fs.readFile(configPath, 'utf8')
-  } catch {
-    return null
-  }
-  return parseProjectConfig(raw)
-}
-
-export async function resolveProjectConfig(projectId: string): Promise<YaacConfig | null> {
-  return loadProjectConfig(projectConfigDir(projectId))
+/** Add a forward of `containerPort` at the same host port, unless the
+ *  project forwards it already (the webapp's "forward this port" with
+ *  `persist: true`). */
+export async function addPortForward(principal: Actor, projectId: string, containerPort: number): Promise<ProjectConfig> {
+  const current = await resolveProjectConfig(projectId)
+  if (!current) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
+  if (current.portForwards.some((p) => p.containerPort === containerPort)) return current
+  const portForwards = [...current.portForwards, { containerPort, hostPortStart: containerPort }]
+  return updateProjectConfig(principal, projectId, { portForwards })
 }

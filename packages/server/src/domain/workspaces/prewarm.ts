@@ -30,6 +30,7 @@ import {
   getTimeZone,
   getProjectRow,
   insertSession,
+  type ProjectRow,
   type SessionLaunchSettings,
 } from '#db'
 import type { WorkspaceCreateResult } from './create'
@@ -128,11 +129,10 @@ export function freeSpare(spare: Pick<RuntimeHandle, 'jobName' | 'workspaceId'>)
  * changes it, and a pod's image is fixed. Undefined for a driver that runs
  * none.
  */
-export async function currentSpareImage(projectId: string, owner: string): Promise<string | undefined> {
+export async function currentSpareImage(project: Pick<ProjectRow, 'id' | 'owner' | 'nestedContainers'>): Promise<string | undefined> {
   const runtime = workspaceDriver()
   if (runtime.kind === 'containerless') return undefined
-  const nestedContainers = (await resolveProjectConfig(projectId))?.nestedContainers === true
-  return await runtime.currentImage({ projectId, owner, nestedContainers })
+  return await runtime.currentImage({ projectId: project.id, owner: project.owner, nestedContainers: project.nestedContainers })
 }
 
 /**
@@ -403,11 +403,12 @@ export async function tryClaimPrewarmed(
     }))
     const spares = workspaces.filter((p) => launched.has(p.jobName))
     if (spares.length === 0) return undefined
-    const owner = (await getProjectRow(projectId))?.owner
-    if (owner === undefined) return undefined
+    const row = await getProjectRow(projectId)
+    if (row === undefined) return undefined
+    const { owner } = row
     const [timeZone, image] = await Promise.all([
       getTimeZone(owner).then((z) => z.timeZone ?? undefined),
-      currentSpareImage(projectId, owner),
+      currentSpareImage(row),
     ])
     const candidates = spares
       // Neither the zone nor the image can be converted: the pod spec is
@@ -521,11 +522,12 @@ export async function tryClaimPrewarmed(
       projectRemoteUrl(projectId),
       resolveProjectEnv(projectId),
     ])
+    if (!config) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
     const registration = {
       workspaceId: claimedId,
       projectId,
       owner: credentialOwnerKey(owner),
-      config: config ?? {},
+      config,
       allowlist,
       remoteUrl,
       proxySecretRules: Object.fromEntries(

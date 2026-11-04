@@ -9,7 +9,7 @@
  *
  * This changes the named project's Dockerfile.yaac. The script restores it
  * on exit, including on Ctrl-C, and reports loudly if that fails. If killed
- * outright, restore it with `yaac config edit-dockerfile <project>`, or new
+ * outright, restore it with `yaac config dockerfile <project> --file <path>`, or new
  * workspaces keep using the junk image. The default target is the
  * `hello-world` scratch project; name a real one with --project.
  *
@@ -44,7 +44,7 @@ const writeDockerfile = (content) => api(dockerfileRoute, { method: 'PUT', body:
 function warnManualRestore() {
   console.error(`\n!! ${PROJECT}'s Dockerfile.yaac is STILL the cache-busting stub.`)
   console.error('!! Its project layer is repriced, so every workspace created from now on')
-  console.error(`!! builds and runs the junk image. Restore it: yaac config edit-dockerfile ${PROJECT}`)
+  console.error(`!! builds and runs the junk image. Restore it: yaac config dockerfile ${PROJECT} --file <path>`)
 }
 
 /**

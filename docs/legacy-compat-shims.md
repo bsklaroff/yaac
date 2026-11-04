@@ -357,57 +357,44 @@ restarted is stale and never claimed.
   upgrade has stopped or restarted since. Containerless workspaces never
   needed it.
 
-## `ephemeralModulesPaths` in a project's yaac-config.json
+## A project's yaac-config.json
 
-A project's scratch dirs are a column on its row
-(`projects.scratchDirs`, docs/project-config.md). They used to be a
-`yaac-config.json` key, which the config parser now refuses as unknown. At
-start, before anything reads the config, the server runs
-`importScratchDirsFromConfig` (`#domain/projects`): for each project
-whose config file still has the key, it copies the value onto the row, each
-dir with no cap of its own, and rewrites the file without it. A file that is not JSON, or a value that does
-not validate, is logged and left for the user to fix, and until then the
-parser's error for the key (`RETIRED_FIELDS` in `domain/projects/config.ts`)
-says where the setting went. Delete that hint along with the import.
+Every setting a project's `global/projects/<id>/config/yaac-config.json`
+held is a column of its row now (docs/project-config.md), and nothing reads
+the file. At start, before any create, the server runs
+`importProjectConfigFiles` (`#domain/projects`, `config-import.ts`): for
+each project that still has the file, it stores each key on the row. The
+keys are `portForward`, `cacheVolumes`, `nestedContainers` and `npmCache`,
+plus three that older files carry: `ephemeralModulesPaths` (the scratch
+dirs, each with no cap of its own, also filling the project's running
+workspace rows, see the next entry), and `initCommands` and `hideInitPane`
+(converted to the init steps they ran as, unless the project has init steps
+of its own). The converted steps run in the workspace's `$SHELL` when it is
+a POSIX-family one, as `initCommands` did, so a fish user's now run in bash.
+Under containerless the three pod settings are dropped, as they never
+applied there and the routes refuse them.
 
-- **What it reads.** Every project's `yaac-config.json` under its config dir.
-- **What breaks if it goes too early.** Not silent: every create in a
-  project whose file still has the key fails with `unknown field
-  "ephemeralModulesPaths"` until someone edits it out, and the list they had
-  set, `[]` or extra nested `node_modules`, is lost unless they re-enter it
-  as the project setting.
-- **When it is safe to remove.** Once every install has started a server
-  with the import at least once. No config file then has the key, which
-  `grep -l ephemeralModulesPaths ~/.yaac*/global/projects/*/config/yaac-config.json`
-  confirms for a given data dir.
-
-## `initCommands` in a project's yaac-config.json
-
-A project's init steps are a column on its row (`projects.initSteps`,
-docs/workspace-steps.md). They used to be the yaac-config.json keys
-`initCommands` and `hideInitPane`, which the config parser now refuses
-(`RETIRED_FIELDS` in `domain/projects/config.ts`, whose message says where
-the setting went). At start, before anything reads the config, the server
-runs `importInitStepsFromConfig` (`#domain/projects`): for each project whose
-file still has either key, it converts `initCommands` to the steps it ran as
-(the string form one `init` step running the list, the object form one step
-per entry with no needs, a name a step may not take renamed `init-<name>`),
-stores them unless the project already has init steps, and rewrites the
-file without both keys. A file that is not JSON, or a value that does not
-convert (an entry with no commands, say), is logged and left for the user
-to fix. The imported steps run in the workspace's `$SHELL` when it is a
-POSIX-family one, as `initCommands` did; a fish user's now run in bash. Delete the `RETIRED_FIELDS` messages
-along with the import.
+A file that wholly imports is deleted. One with a value that does not
+validate or an unknown key, or that is not a JSON object, is renamed
+`yaac-config.json.unimported` beside it, for the user to recover from; the
+log names only the keys and why, since a value can hold a secret (an
+`initCommands` line exporting a token). A failed write leaves the file in
+place, and the next start imports it again, which is safe since each write
+sets the same values.
 
 - **What it reads.** Every project's `yaac-config.json` under its config dir.
-- **What breaks if it goes too early.** Not silent: every create in a
-  project whose file still has the key fails with `unknown field
-  "initCommands"` until someone edits it out, and the commands it held are
-  lost unless they are re-entered as init steps.
+- **What breaks silently if it goes too early.** An install upgraded past
+  the import without running it loses its forwarded ports, cache volumes,
+  nested containers and npm-cache choice, and, for an older file, its
+  scratch dirs and init steps: workspaces then start on the defaults with
+  no error anywhere.
 - **When it is safe to remove.** Once every install has started a server
-  with the import at least once. No config file then has either key, which
-  `grep -lE 'initCommands|hideInitPane' ~/.yaac*/global/projects/*/config/yaac-config.json`
-  confirms for a given data dir.
+  with the import at least once, and no start has failed to write it since.
+  No project config dir then has a `yaac-config.json`, which
+  `ls ~/.yaac*/global/projects/*/config/yaac-config.json` confirms for a
+  given data dir. A `yaac-config.json.unimported` left beside it is the
+  user's to read and delete; nothing reads it, so it does not hold the shim
+  back.
 
 ## A workspace row with no `scratchDirs`
 
@@ -416,7 +403,7 @@ row (`workspaces.scratchDirs`) by the create, restart or spare claim. A
 workspace whose runtime started before that column existed has it null. Two
 pieces cover it, and both go together:
 
-- `importScratchDirsFromConfig` (see the entry above), when it moves a
+- `importProjectConfigFiles` (see the entry above), when it moves a
   project's `ephemeralModulesPaths`, also fills that project's null rows with
   the moved list (`backfillWorkspaceScratchDirs` in `#db`), since every null
   row then is a workspace started with it.

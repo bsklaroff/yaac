@@ -182,6 +182,7 @@ export {
   listProjectRows,
   recordProject,
   recordProjectCreate,
+  setProjectConfig,
   setProjectDefaultBranchGuard,
   setProjectEgressAllowlist,
   setProjectScratchDirs,

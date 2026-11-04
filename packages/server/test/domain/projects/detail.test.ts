@@ -4,7 +4,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-import { projectConfigDir, repoDir } from '@yaac/shared/project-paths'
+import { repoDir } from '@yaac/shared/project-paths'
 import { getProjectDetail, assertProjectExists, projectRemoteUrl, resolveProjectId } from '#domain/projects'
 import { ServerError } from '@yaac/shared/errors'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
@@ -35,15 +35,11 @@ describe('getProjectDetail', () => {
     await expect(getProjectDetail(MISSING)).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 
-  // A malformed config must not stop a client resolving the project, which
-  // `yaac config edit` does before opening that config for repair.
-  it('returns the metadata and the live session count, whatever the config holds', async () => {
+  it('returns the metadata and the live session count', async () => {
     await recordTestProject(FOO, {
       remoteUrl: 'https://example.com/foo',
       addedAt: '2026-01-01T00:00:00.000Z',
     })
-    await fs.mkdir(projectConfigDir(FOO), { recursive: true })
-    await fs.writeFile(path.join(projectConfigDir(FOO), 'yaac-config.json'), '{ this is not valid json')
     count.mockResolvedValue({ [FOO]: 2, bar: 1 })
 
     expect(await getProjectDetail(FOO)).toEqual({
@@ -76,13 +72,6 @@ describe('assertProjectExists', () => {
 
   it('resolves for a registered project', async () => {
     await recordTestProject(FOO, { remoteUrl: 'x', addedAt: '2026-01-01T00:00:00.000Z' })
-    await expect(assertProjectExists(FOO)).resolves.toBeUndefined()
-  })
-
-  it('resolves even when yaac-config.json is malformed', async () => {
-    await recordTestProject(FOO, { remoteUrl: 'x', addedAt: '2026-01-01T00:00:00.000Z' })
-    await fs.mkdir(projectConfigDir(FOO), { recursive: true })
-    await fs.writeFile(path.join(projectConfigDir(FOO), 'yaac-config.json'), '{ not json')
     await expect(assertProjectExists(FOO)).resolves.toBeUndefined()
   })
 })

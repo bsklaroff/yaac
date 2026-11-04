@@ -663,26 +663,23 @@ export interface SecretProxyRule {
 }
 
 /**
- * A project's config overlay (`config/yaac-config.json`), edited through the
- * server so a client needs no shell on its host. Env vars and secrets are
- * rows (`ProjectEnvVar`) and the egress allowlist is `EgressAllowlist`, not
- * keys here, and there are no host-directory mounts: those would need a shell
- * on the server machine to set up.
+ * The project settings a workspace launches with besides its checkout
+ * (docs/project-config.md), each a column of the project's row. The last
+ * three apply under k8s only: a containerless server refuses to set them.
  */
-export interface YaacConfig {
-  cacheVolumes?: Record<string, string>
-  /**
-   * Run an in-pod rootful podman so `docker` commands work inside
-   * workspaces (docs/nested-containers.md).
-   */
-  nestedContainers?: boolean
-  /**
-   * Whether the project's workspaces may use the install's npm cache (k8s
-   * only). When false, a workspace can't reach it and fetches from npmjs
-   * through the egress proxy. Unset → true.
-   */
-  npmCache?: boolean
-  portForward?: PortForwardConfig[]
+export interface ProjectConfig {
+  /** Ports forwarded from every workspace, each offered at a host port from
+   *  `hostPortStart` up. */
+  portForwards: PortForwardConfig[]
+  /** Named directories that persist across workspaces, by name: the
+   *  absolute path each is mounted at. */
+  cacheVolumes: Record<string, string>
+  /** Run an in-pod rootful podman so `docker` commands work inside
+   *  workspaces (docs/nested-containers.md). */
+  nestedContainers: boolean
+  /** Whether workspaces may use the install's npm cache. When false, one
+   *  fetches from npmjs through the egress proxy. */
+  npmCache: boolean
 }
 
 /**
@@ -1437,7 +1434,7 @@ export interface WorkspaceTerminalEntry {
 // ---------------------------------------------------------------------------
 
 /** Project row in the snapshot, and what `listProjects` answers. */
-export interface ProjectSummary {
+export interface ProjectSummary extends ProjectConfig {
   id: string
   name: string
   remoteUrl: string

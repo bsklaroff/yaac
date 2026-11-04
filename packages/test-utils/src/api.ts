@@ -1,7 +1,7 @@
 import { createRawApiClient } from '@yaac/shared/api-core'
 import type { buildApp } from '@yaac/server/main/server'
 import type { ServerLock } from '@yaac/shared/server-lock-file'
-import type { AgentTool, ToolAuthPayload } from '@yaac/shared/types'
+import type { AgentTool, ProjectConfig, ToolAuthPayload } from '@yaac/shared/types'
 
 type ServerApp = ReturnType<typeof buildApp>
 
@@ -78,6 +78,30 @@ export async function assignTestGitCredential(
     param: { projectId: project }, json: { credentialId: id },
   })
   if (!assigned.ok) throw new Error(`assigning the git credential failed: ${await assigned.text()}`)
+}
+
+/**
+ * Set some of a project's launch settings as `yaac config` does, each on its
+ * own route. Throws on any non-2xx.
+ */
+export async function setTestProjectConfig(
+  server: SpawnedServer,
+  projectId: string,
+  config: Partial<ProjectConfig>,
+  headers: Record<string, string> = {},
+): Promise<void> {
+  const project = makeServerApiClient(server, headers).project[':projectId']
+  const param = { projectId }
+  const puts = [
+    config.portForwards && project['port-forwards'].$put({ param, json: { ports: config.portForwards } }),
+    config.cacheVolumes && project['cache-volumes'].$put({ param, json: { volumes: config.cacheVolumes } }),
+    config.nestedContainers !== undefined && project['nested-containers'].$put({ param, json: { enabled: config.nestedContainers } }),
+    config.npmCache !== undefined && project['npm-cache'].$put({ param, json: { enabled: config.npmCache } }),
+  ]
+  for (const put of puts) {
+    const res = await put
+    if (res && !res.ok) throw new Error(`setting the project config failed: ${await res.text()}`)
+  }
 }
 
 /**

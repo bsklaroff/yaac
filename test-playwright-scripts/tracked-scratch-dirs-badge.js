@@ -10,23 +10,20 @@
  *   3. Settings → Project Config's scratch directories section adds a dir,
  *      refuses one outside the checkout with the server's message, and
  *      removes it.
- *   4. The yaac-config.json editor opens a stored file the server's parser
- *      refuses (an unknown key) verbatim, not as `{}`.
- *   5. "Keep in the checkout and restart" takes the dir off the project's
+ *   4. "Keep in the checkout and restart" takes the dir off the project's
  *      list and the badge goes once the workspace is back.
  * SCREENSHOT_DIR gets tracked-badge-popover.png and scratch-settings.png.
  *
  * Needs a server with a project whose repo tracks `target/` and a running
- * workspace in it, and a second project whose stored yaac-config.json holds
- * an unknown key. Run:
- *   TRACKED_PROJECT=<id> TRACKED_WORKSPACE=<id> CONFIG_PROJECT=<id> \
+ * workspace in it. Run:
+ *   TRACKED_PROJECT=<id> TRACKED_WORKSPACE=<id> \
  *     APP_URL=http://127.0.0.1:<port> node test-playwright-scripts/tracked-scratch-dirs-badge.js
  */
 import path from 'node:path'
 import { requirePlaywright, origin, api, check, finish, SHOTS } from './lib.js'
 
 const { chromium } = requirePlaywright()
-const { TRACKED_PROJECT, TRACKED_WORKSPACE, CONFIG_PROJECT } = process.env
+const { TRACKED_PROJECT, TRACKED_WORKSPACE } = process.env
 
 const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
@@ -80,15 +77,7 @@ check('a removed dir goes', await gone(page.getByText('web/node_modules/', { exa
 await page.screenshot({ path: path.join(SHOTS, 'scratch-settings.png') })
 await closeSettings()
 
-// 4. The raw editor opens an unparseable stored config as written.
-await page.goto(`${origin}/?project=${CONFIG_PROJECT}`)
-await openSettings()
-await page.locator('.cm-editor').first().waitFor()
-const text = await page.locator('.cm-content').first().innerText()
-check('the editor shows the stored file verbatim', text.includes('ephemeralModulesPaths') && text.includes('npmCache'), text)
-await closeSettings()
-
-// 5. Keep in the checkout and restart.
+// 4. Keep in the checkout and restart.
 await page.goto(`${origin}/?project=${TRACKED_PROJECT}&workspace=${TRACKED_WORKSPACE}`)
 await badge.click()
 await page.getByRole('button', { name: 'Keep in the checkout and restart' }).click()

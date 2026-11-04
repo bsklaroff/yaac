@@ -4,6 +4,7 @@ import type {
   AgentTool,
   EgressAllowlist,
   PermissionMode,
+  PortForwardConfig,
   ScratchDirSettings,
   SiteDeployPhase,
   WorkspaceDeathReason,
@@ -170,6 +171,12 @@ export const projects = snakeCase.table('projects', {
    *  `json`, not `jsonb`, as every step graph here is: a graph's key order
    *  is its steps' display order, which `jsonb` would re-sort. */
   initSteps: json().$type<StepGraph>().notNull().default({}),
+  /** What workspaces launch with besides their checkout (`ProjectConfig`,
+   *  docs/project-config.md). */
+  portForwards: jsonb().$type<PortForwardConfig[]>().notNull().default([]),
+  cacheVolumes: jsonb().$type<Record<string, string>>().notNull().default({}),
+  nestedContainers: boolean().notNull().default(false),
+  npmCache: boolean().notNull().default(true),
 }, (t) => [uniqueIndex().on(t.sharedFrom, t.owner)])
 
 /**

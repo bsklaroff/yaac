@@ -37,6 +37,15 @@ export async function projectScope(): Promise<ProjectScope> {
   return { userId, projects: all.filter((p) => p.owner === userId), all }
 }
 
+/** The project a user named (see `resolveProjectId`), with its summary. */
+export async function resolveProject(project: string): Promise<ProjectSummary> {
+  const scope = await projectScope()
+  const id = await resolveProjectId(project, scope)
+  const summary = scope.all.find((p) => p.id === id)
+  if (!summary) throw new Error(`No project ${project.trim()}.`)
+  return summary
+}
+
 function findUser(users: User[], ref: string): string {
   const wanted = ref.trim().toLowerCase()
   const matches = users.filter((u) => u.id === wanted || u.login?.toLowerCase() === wanted || u.name.toLowerCase() === wanted)

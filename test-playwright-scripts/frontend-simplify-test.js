@@ -5,7 +5,7 @@
  *
  *  1. The app boots through the whoami query and lists the project.
  *  2. Settings loads its server-backed fields (git identity, time zone, the
- *     credential list, a project's env and yaac-config.json) without errors.
+ *     credential list, a project's env and init steps) without errors.
  *  3. A preference (Sounds) is saved under its existing localStorage key and
  *     survives a reload.
  *  4. Settings opens full-screen, its Skills section is headed by the

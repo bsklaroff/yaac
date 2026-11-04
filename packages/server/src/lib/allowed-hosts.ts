@@ -383,15 +383,20 @@ export function resolveAllowedHosts(allowlist: EgressAllowlist): string[] {
     : [...allowlist.hosts]
   if (resolved.includes('*')) return ['*']
 
-  for (const { host, label } of CRITICAL_HOSTS) {
-    const isAllowed = resolved.some((pattern) => hostMatchesPattern(host, pattern))
-    if (!isAllowed) {
-      console.warn(
-        `Warning: ${label} (${host}) is not in the allowed URL list. ` +
-        'Sessions may not function correctly without access to this host.',
-      )
-    }
+  for (const { host, label } of missingCriticalHosts(allowlist)) {
+    console.warn(
+      `Warning: ${label} (${host}) is not in the allowed URL list. ` +
+      'Sessions may not function correctly without access to this host.',
+    )
   }
 
   return resolved
+}
+
+/** The hosts an agent session needs that a project's allowlist leaves
+ *  out. */
+export function missingCriticalHosts(allowlist: EgressAllowlist): typeof CRITICAL_HOSTS {
+  const allowed = [...(allowlist.defaults ? DEFAULT_ALLOWED_HOSTS : []), ...allowlist.hosts]
+  if (allowed.includes('*')) return []
+  return CRITICAL_HOSTS.filter(({ host }) => !allowed.some((pattern) => hostMatchesPattern(host, pattern)))
 }
