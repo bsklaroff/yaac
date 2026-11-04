@@ -1,15 +1,16 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs/promises'
 import http from 'node:http'
 import path from 'node:path'
 import { git } from '@yaac/test-utils/git'
 import { cloneRepo } from '@yaac/server/domain/git'
-import { createYaacTestEnv, spawnYaacServer, setTestGitIdentity, runYaac, type YaacTestEnv } from '#support/cli'
+import { createYaacTestEnv, spawnYaacServer, setTestGitIdentity, runYaac, TEST_CLI_ENTRY, type YaacTestEnv } from '#support/cli'
 import { assignTestGitCredential, makeServerApiClient, registerTestProject, type SpawnedServer } from '@yaac/test-utils/api'
 import { requireCluster } from '@yaac/test-utils/setup'
 import { requirePodman, cleanupWorkspaceJobs, execInJob } from '#support/cluster'
-import { startKubectlForward } from '@yaac/test-utils/kubectl-forward'
+import { freeLocalPort, startKubectlForward } from '@yaac/test-utils/kubectl-forward'
 import { k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
 import { startMockGit, seedMockGitRepo, cleanupMocks, type MockGit } from '#support/mock-remotes'
 
@@ -53,10 +54,10 @@ function servingVolume(port: number, text: string): object {
   }
 }
 
-/** A graph whose one service answers `text` on `port`. */
-function serving(port: number, text: string): object {
+/** A graph whose one service, `step`, answers `text` on `port`. */
+function serving(port: number, text: string, step = 'server'): object {
   const script = `require('http').createServer((q, s) => s.end('${text}')).listen(${port})`
-  return { server: { run: `node -e "${script}"`, service: true, ready: `curl -sf localhost:${port}` } }
+  return { [step]: { run: `node -e "${script}"`, service: true, ready: `curl -sf localhost:${port}` } }
 }
 
 describe('yaac site (real CLI + real server)', () => {
@@ -76,6 +77,30 @@ describe('yaac site (real CLI + real server)', () => {
     const { stderr, exitCode } = await runYaac(serverEnv, ...args)
     expect(exitCode, args.join(' ')).not.toBe(0)
     return stderr
+  }
+  /** `yaac forward` of one port of a release onto a free local port, once
+   *  it is bound. */
+  const forwardRelease = async (release: string, port: number): Promise<{
+    origin: string
+    output: () => string
+    stop: () => void
+  }> => {
+    const local = await freeLocalPort()
+    const child = spawn(process.execPath, [TEST_CLI_ENTRY, 'forward', release, '--port', `${String(port)}:${String(local)}`], {
+      env: serverEnv, stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let out = ''
+    child.stdout.on('data', (c: Buffer) => { out += c.toString('utf8') })
+    child.stderr.on('data', (c: Buffer) => { out += c.toString('utf8') })
+    try {
+      await vi.waitFor(() => {
+        if (!out.includes('forwarding ')) throw new Error(`yaac forward never bound ${String(port)}:\n${out}`)
+      }, { timeout: 30_000, interval: 200 })
+    } catch (err) {
+      child.kill('SIGTERM')
+      throw err
+    }
+    return { origin: `http://127.0.0.1:${String(local)}`, output: () => out, stop: () => child.kill('SIGTERM') }
   }
   const stepsFile = async (file: string, graph: object): Promise<string> => {
     const at = path.join(testEnv.scratchDir, file)
@@ -120,39 +145,44 @@ describe('yaac site (real CLI + real server)', () => {
     await testEnv.cleanup()
   })
 
-  it('create needs --hostname, --port and --steps, refuses a malformed hostname, and prints the tunnel\'s settings', async () => {
+  it('create needs --hostname, --port and --steps, refuses a malformed hostname or port, and prints the tunnel\'s settings', async () => {
     const steps = await stepsFile('v1.json', serving(3000, 'v1'))
     expect(await refused('site', 'create', NAME, 'web', '--port', '3000', '--steps', steps))
       .toContain('--hostname <host>')
     expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', 'http', '--steps', steps))
       .toContain('--port takes a port number')
+    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--admin-port', 'x', '--steps', steps))
+      .toContain('--admin-port takes a port number')
     expect(await refused('site', 'create', NAME, 'web', '--hostname', `https://app.${DOMAIN}`, '--port', '3000', '--steps', steps))
       .toContain('is not a hostname')
     expect(await yaac('site', 'list', NAME)).toContain(`No sites in ${NAME}`)
 
     const created = await yaac('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000',
-      '--steps', steps, '--volume', 'data')
+      '--admin-port', '3002', '--steps', steps, '--volume', 'data')
     expect(created).toContain('Created site "web"')
     expect(created).toContain(`hostname  app.${DOMAIN}`)
     expect(created).toContain('service   http://yaac-site-router:8080')
     expect(created).toContain('no tunnel yet')
   })
 
-  it('list and show name its hostname, port, steps and volume before any deploy', async () => {
+  it('list and show name its hostname, ports, steps and volume before any deploy', async () => {
     expect(await yaac('site', 'list', NAME))
       .toMatch(/NAME\s+HOSTNAME\s+PORT\s+LIVE[\s\S]*web\s+app\.example\.test\s+3000\s+-/)
     const shown = await yaac('site', 'show', NAME, 'web')
     expect(shown).toContain(`https://app.${DOMAIN} -> port 3000`)
+    expect(shown).toMatch(/admin port\s+3002/)
     expect(shown).toMatch(/steps\s+server/)
     expect(shown).toMatch(/volume\s+data/)
   })
 
-  it('edit changes --hostname, --port, --steps and --volume, and --no-volume drops it', async () => {
+  it('edit changes --hostname, --port, --steps and --volume, and --no-admin-port and --no-volume drop theirs', async () => {
     expect(await refused('site', 'edit', NAME, 'web')).toContain('Nothing to change')
     const failing = await stepsFile('failing.json', { build: { run: 'exit 3' }, ...serving(3001, 'v2') })
-    await yaac('site', 'edit', NAME, 'web', '--hostname', `www.${DOMAIN}`, '--port', '3001', '--steps', failing, '--no-volume')
+    await yaac('site', 'edit', NAME, 'web', '--hostname', `www.${DOMAIN}`, '--port', '3001', '--steps', failing,
+      '--no-admin-port', '--no-volume')
     let shown = await yaac('site', 'show', NAME, 'web')
     expect(shown).toContain(`https://www.${DOMAIN} -> port 3001`)
+    expect(shown).toMatch(/admin port\s+-/)
     expect(shown).toMatch(/steps\s+build, server/)
     expect(shown).toMatch(/volume\s+-/)
     await yaac('site', 'edit', NAME, 'web', '--volume', 'data')
@@ -162,13 +192,14 @@ describe('yaac site (real CLI + real server)', () => {
     expect(shown).toMatch(/volume\s+-/)
   })
 
-  it('deploy --wait exits non-zero when the release fails, and 0 once it serves --ref', async () => {
+  it('deploy --wait exits non-zero when the release fails, and 0 once it serves --ref, its admin port to its owner alone', async () => {
     const failed = await runYaac(serverEnv, 'site', 'deploy', NAME, 'web', '--wait')
     expect(failed.exitCode).not.toBe(0)
     expect(failed.stdout).toContain('The deploy failed')
     expect(await yaac('site', 'list', NAME)).toMatch(/web\s+www\.example\.test\s+3001\s+-\s+failed/)
 
-    await yaac('site', 'edit', NAME, 'web', '--steps', await stepsFile('v2.json', serving(3001, 'v2')))
+    const withAdmin = { ...serving(3001, 'v2'), ...serving(3002, 'admin', 'admin') }
+    await yaac('site', 'edit', NAME, 'web', '--admin-port', '3002', '--steps', await stepsFile('v2.json', withAdmin))
     const deployed = await runYaac(serverEnv, 'site', 'deploy', NAME, 'web', '--ref', sha, '--timeout', '10m', '--wait')
     expect(deployed.exitCode, deployed.stderr).toBe(0)
     expect(deployed.stdout).toContain(`Deploying ${sha.slice(0, 7)} to site "web"`)
@@ -198,6 +229,31 @@ describe('yaac site (real CLI + real server)', () => {
       '-d', '{"command":"list"}', 'http://yaac.internal/api/workspace/mama',
     ])
     expect(stdout).toBe('403')
+
+    // The admin port is the one port the release offers, and its owner
+    // reaches it as any workspace's forward.
+    const api = makeServerApiClient(server!)
+    const { workspaces } = await (await api.workspace.list.$get({ query: { project: projectId } })).json()
+    expect(workspaces.find((w) => w.workspaceId === release)?.forwardedPorts.map((p) => p.containerPort)).toEqual([3002])
+    const admin = await forwardRelease(release!, 3002)
+    try {
+      await vi.waitFor(async () => {
+        expect(await viaRouter(admin.origin, 'localhost')).toEqual({ status: 200, body: 'admin' })
+      }, { timeout: 30_000, interval: 500 })
+    } finally {
+      admin.stop()
+    }
+    // Nothing else of the release is: not the port the internet reaches,
+    // nor streamd, though both listen.
+    for (const port of [3001, 10300]) {
+      const stray = await forwardRelease(release!, port)
+      try {
+        await expect(viaRouter(stray.origin, 'localhost')).rejects.toThrow()
+        expect(stray.output()).toMatch(/dial failed/)
+      } finally {
+        stray.stop()
+      }
+    }
   }, 600_000)
 
   it('stop takes the live release down, and start brings one back at its commit', async () => {

@@ -215,7 +215,8 @@ function SiteRow({ projectId, site, readOnly, onAction, onEdit }: {
           {site.hostname}
         </a>
         <span className="shrink-0 font-mono text-[11px] text-text-faint">
-          :{site.port}{site.volume !== undefined && ` · ${site.volume}`}
+          :{site.port}{site.adminPort !== undefined && ` · admin :${site.adminPort}`}
+          {site.volume !== undefined && ` · ${site.volume}`}
         </span>
         {!readOnly && (
           <>
@@ -285,14 +286,21 @@ function SiteForm({ projectId, site, onDone, onCancel }: {
   const [name, setName] = useState('')
   const [hostname, setHostname] = useState(site?.hostname ?? '')
   const [port, setPort] = useState(site !== undefined ? String(site.port) : '')
+  const [adminPort, setAdminPort] = useState(site?.adminPort !== undefined ? String(site.adminPort) : '')
   const [volume, setVolume] = useState(site?.volume ?? '')
   const [steps, setSteps] = useState(site !== undefined ? `${JSON.stringify(site.steps, null, 2)}\n` : '')
 
   const save = useMutation({
     mutationFn: async () => {
       const body = { project: projectId, hostname: hostname.trim(), port: Number(port), steps: parseSteps(steps) }
-      if (site !== undefined) await api.site.edit.$post({ json: { ...body, name: site.name, volume: volume === '' ? null : volume } })
-      else await api.site.create.$post({ json: { ...body, name: name.trim(), ...(volume !== '' ? { volume } : {}) } })
+      const admin = adminPort.trim() === '' ? null : Number(adminPort)
+      if (site !== undefined) {
+        await api.site.edit.$post({ json: { ...body, name: site.name, adminPort: admin, volume: volume === '' ? null : volume } })
+      } else {
+        await api.site.create.$post({ json: {
+          ...body, name: name.trim(), ...(admin !== null ? { adminPort: admin } : {}), ...(volume !== '' ? { volume } : {}),
+        } })
+      }
     },
     onSuccess: () => onDone(site === undefined ? hostname.trim() : undefined),
   })
@@ -329,6 +337,15 @@ function SiteForm({ projectId, site, onDone, onCancel }: {
           inputMode="numeric"
           className={`${INPUT} w-16`}
         />
+        <input
+          aria-label="Admin port"
+          value={adminPort}
+          onChange={(e) => setAdminPort(e.target.value)}
+          placeholder="admin"
+          title="A port of each release that only you can reach, as a preview or with yaac forward"
+          inputMode="numeric"
+          className={`${INPUT} w-16`}
+        />
         <select
           aria-label="Volume"
           value={volume}
@@ -352,6 +369,7 @@ function SiteForm({ projectId, site, onDone, onCancel }: {
         The steps each release runs, like init steps; one must be a{' '}
         <code className="text-text-dim">{'"service": true'}</code> serving the port. Steps that use the volume
         need <code className="text-text-dim">{'"volume"'}</code>, and run only once the old release has let it go.
+        An admin port is one only you can open, as the release&apos;s preview; the internet never reaches it.
       </p>
       {save.error && <p className="text-xs text-red-400">{save.error.message}</p>}
       <div className="flex justify-end gap-2">

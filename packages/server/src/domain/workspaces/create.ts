@@ -98,6 +98,7 @@ import { convergeAgentHistory } from './history'
 import { deleteWorkspaceState } from './cleanup'
 import { attachVolume, stageVolume } from './volumes'
 import { lifeHooksExec, recordLife, startStepsOf } from './life'
+import { offeredForwards } from './forward-port'
 import type { StepGraph } from '@yaac/shared/steps'
 import { ACP_CONVERSATION_WAIT_MS } from './conversation-registry'
 import {
@@ -1234,7 +1235,7 @@ export async function createWorkspace(
   // which port to bind for config entry `n`: its own under k8s, and one
   // allocated for this workspace under containerless, where workspaces
   // share the host's ports (docs/workspace-hostnames.md).
-  const portForward = config.portForward ?? []
+  const portForward = await offeredForwards(config, options.siteId)
   const forwardedPorts = await runtime.declareForwards(workspaceId, portForward)
   forwardedPorts.forEach(({ containerPort, hostPort }, i) => {
     env.push(`YAAC_PORT_${portForward[i].containerPort}=${containerPort}`)

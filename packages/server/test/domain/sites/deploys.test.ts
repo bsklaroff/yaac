@@ -150,7 +150,9 @@ const lastRoute = (): SiteRoute | undefined => routed.at(-1)?.[0]
 describe('deploySite', () => {
   it('starts a release at the commit, builds it, hands it the volume, and points the hostname at it once ready', async () => {
     await createVolume(local, DEMO_PROJECT_ID, 'data')
-    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, steps: STEPS, volume: 'data' })
+    await createSite(local, DEMO_PROJECT_ID, {
+      name: 'shop', hostname: 'shop.example.com', port: 3000, adminPort: 3001, steps: STEPS, volume: 'data',
+    })
     const head = (await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'origin/main'])).trim()
     await expect(deploySite(stranger, DEMO_PROJECT_ID, 'shop')).rejects.toMatchObject({ code: 'FORBIDDEN' })
 
@@ -163,6 +165,8 @@ describe('deploySite', () => {
     const spec = launched.at(-1)!
     expect(spec).toMatchObject({ siteId: (await site()).id, image: 'registry.test/proj:1' })
     expect(spec.env.some((e) => e.startsWith('YAAC_VOLUME_DIR='))).toBe(false)
+    // The one port it offers is the site's admin port.
+    expect(spec.env.filter((e) => e.startsWith('YAAC_PORT_'))).toEqual(['YAAC_PORT_3001=3001'])
     // No user's credentials are swapped into a workspace that serves the
     // internet, and it mounts nothing the project's other workspaces read.
     expect(owners).toEqual(['none'])

@@ -4,8 +4,9 @@ import { acpLaunchModel } from '#runtime/agents'
 import { startUsageSampler, stopUsageSampler } from '#runtime/usage'
 import { loadToolAuthEntry } from '#domain/auth'
 import { restoreAllWorkspaceForwarders } from '#main/restore-forwarders'
-import { applyWorkspaceEvent, getProjectRow, listWorkspaceSessions } from '#db'
+import { applyWorkspaceEvent, findWorkspaceRow, getProjectRow, listWorkspaceSessions } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
+import { offeredForwards } from '#domain/workspaces'
 import { onSiteTimer } from '#domain/sites'
 import { errorText, serverLog } from '#lib/log'
 import type { ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
@@ -102,9 +103,10 @@ export async function attachConvergence(opts: {
     // Rebuild forwarders before anything watches.
     recover: async () => {
       try {
-        await restoreAllWorkspaceForwarders(
-          (projectId: string) => resolveProjectConfig(projectId).then((c) => c ?? undefined),
-        )
+        await restoreAllWorkspaceForwarders(async (w) => await offeredForwards(
+          await resolveProjectConfig(w.projectId) ?? {},
+          (await findWorkspaceRow(w.workspaceId))?.siteId,
+        ))
       } catch (err) {
         serverLog(`[server] restore forwarders failed: ${errorText(err)}`)
       }

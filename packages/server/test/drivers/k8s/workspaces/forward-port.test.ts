@@ -74,18 +74,20 @@ describe('forwardWorkspacePort', () => {
     expect(mockList).not.toHaveBeenCalled()
   })
 
-  it('fans out to running, non-prewarmed siblings', async () => {
+  it('fans out to running, non-prewarmed siblings that are no site\'s release', async () => {
     mockList.mockResolvedValue([
       pod('sess-1'),
       pod('sess-2'),
       pod('sess-3', { running: false }),
       pod('sess-4', { labels: { 'yaac.prewarmed': 'true' } }),
+      pod('rel-1', { labels: { 'yaac.site-id': 'site-1' } }),
     ])
 
     await forwardWorkspacePort(target, 8090, { fanOutToProject: true })
 
     expect(mockList).toHaveBeenCalledWith('proj')
-    // Target plus the one running, non-prewarmed sibling.
+    // Target plus the one running, non-prewarmed sibling: a release offers
+    // only its site's admin port.
     expect(mockAdd.mock.calls.map((c) => c[0]).sort()).toEqual(['sess-1', 'sess-2'])
   })
 

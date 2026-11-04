@@ -75,6 +75,32 @@ function checkPort(port: number): void {
   }
 }
 
+/** A site's ports: the admin port, which no login guards, must not be the
+ *  one the router serves to the internet. */
+function checkPorts(port: number, adminPort: number | undefined): void {
+  checkPort(port)
+  if (adminPort === undefined) return
+  checkPort(adminPort)
+  if (adminPort === port) throw new ServerError('VALIDATION', 'a site\'s admin port must differ from the port the internet reaches')
+}
+
+/**
+ * Offer a site's running releases its new admin port in place of the old
+ * one, so a removed admin port closes at once, and a server restart, which
+ * offers what the site names (`offeredForwards`), finds nothing to change.
+ * Only a release started since listens on a new one.
+ */
+async function reofferAdminPort(row: SiteRow, adminPort: number | undefined): Promise<void> {
+  if (adminPort === row.adminPort) return
+  const driver = workspaceDriver()
+  for (const id of new Set([row.liveWorkspaceId, row.drainWorkspaceId].filter((w) => w !== undefined))) {
+    const handle = await driver.find(id)
+    if (handle?.running !== true) continue
+    if (row.adminPort !== undefined) await driver.unforwardPort({ workspaceId: id, jobName: handle.jobName }, row.adminPort)
+    if (adminPort !== undefined) await driver.declareForwards(id, [{ containerPort: adminPort, hostPortStart: adminPort }])
+  }
+}
+
 /** A release's graph: it needs a service, and may need `volume` only when
  *  the site has one. */
 function checkSteps(raw: unknown, hasVolume: boolean): StepGraph {
@@ -103,6 +129,7 @@ export async function createSite(principal: Actor, projectId: string, input: {
   name: string
   hostname: string
   port: number
+  adminPort?: number
   steps: unknown
   volume?: string
 }): Promise<void> {
@@ -110,12 +137,13 @@ export async function createSite(principal: Actor, projectId: string, input: {
   if (!SITE_NAME.test(input.name)) {
     throw new ServerError('VALIDATION', `"${input.name}" is not a site name: use 1-40 of a-z, 0-9 and -`)
   }
-  checkPort(input.port)
+  checkPorts(input.port, input.adminPort)
   await insertSite({
     projectId,
     name: input.name,
     hostname: checkHostname(input.hostname),
     port: input.port,
+    ...(input.adminPort !== undefined ? { adminPort: input.adminPort } : {}),
     steps: checkSteps(input.steps, input.volume !== undefined),
     ...(input.volume !== undefined ? { volumeId: await volumeId(projectId, input.volume) } : {}),
   })
@@ -123,13 +151,15 @@ export async function createSite(principal: Actor, projectId: string, input: {
 }
 
 /**
- * Change a site. The hostname moves at once; the port, steps and volume
- * apply from the next deploy, so the live release keeps serving as it was
- * started. Refused while a deploy runs, which was started with the old ones.
+ * Change a site. The hostname and admin port move at once; the port, steps
+ * and volume apply from the next deploy, so the live release keeps serving
+ * as it was started. Refused while a deploy runs, which was started with
+ * the old ones.
  */
 export async function editSite(principal: Actor, projectId: string, name: string, input: {
   hostname?: string
   port?: number
+  adminPort?: number | null
   steps?: unknown
   volume?: string | null
 }): Promise<void> {
@@ -143,16 +173,17 @@ export async function editSite(principal: Actor, projectId: string, name: string
     }
     const patch: SitePatch = {}
     if (input.hostname !== undefined) patch.hostname = checkHostname(input.hostname)
-    if (input.port !== undefined) {
-      checkPort(input.port)
-      patch.port = input.port
-    }
+    const adminPort = input.adminPort === undefined ? row.adminPort : input.adminPort ?? undefined
+    checkPorts(input.port ?? row.port, adminPort)
+    if (input.port !== undefined) patch.port = input.port
+    if (input.adminPort !== undefined) patch.adminPort = input.adminPort
     if (input.volume !== undefined) patch.volumeId = input.volume === null ? null : await volumeId(projectId, input.volume, id)
     const hasVolume = input.volume !== undefined ? input.volume !== null : row.volumeId !== undefined
     // The graph is checked against the volume it will run with, so dropping
     // the volume of a graph that needs it is refused.
     patch.steps = checkSteps(input.steps ?? row.steps, hasVolume)
     await updateSite(id, patch)
+    await reofferAdminPort(row, adminPort)
   })
   await syncSiteRoutes()
 }
@@ -201,6 +232,7 @@ async function toSiteEntry(row: SiteRow): Promise<SiteEntry> {
     name: row.name,
     hostname: row.hostname,
     port: row.port,
+    ...(row.adminPort !== undefined ? { adminPort: row.adminPort } : {}),
     steps: row.steps,
     ...(volume !== undefined ? { volume: volume.name } : {}),
     createdAt: row.createdAt.toISOString(),

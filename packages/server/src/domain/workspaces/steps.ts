@@ -64,15 +64,17 @@ const serviceRestarts = new Map<string, { count: number; notBefore: number }>()
  * Refuse a change to a workspace nobody may touch while it runs, only stop:
  * a non-interactive one (docs/workspace-steps.md "Non-interactive
  * workspaces"), and a public site's release (docs/public-sites.md), which
- * only its site's routes manage.
+ * only its site's routes manage. A `forward` into a release is let through,
+ * since the one port a release offers is its site's admin port
+ * (`offeredForwards`).
  */
-export async function assertInteractive(workspaceId: string): Promise<void> {
+export async function assertInteractive(workspaceId: string, opts: { forward?: boolean } = {}): Promise<void> {
   const row = await findWorkspaceRow(workspaceId)
   if (row?.nonInteractive === true && row.stepsOutcome === undefined && row.stoppedAt === undefined) {
     throw new ServerError('CONFLICT', `workspace ${workspaceId.slice(0, 8)} is non-interactive: `
       + 'nothing can change it while it runs, but it can be stopped')
   }
-  if (row?.siteId !== undefined && row.stoppedAt === undefined) {
+  if (row?.siteId !== undefined && row.stoppedAt === undefined && opts.forward !== true) {
     throw new ServerError('CONFLICT', `workspace ${workspaceId.slice(0, 8)} is a site's release: `
       + 'nothing can change it while it runs; manage it with `yaac site`')
   }

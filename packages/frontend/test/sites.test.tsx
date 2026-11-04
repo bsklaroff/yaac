@@ -26,7 +26,7 @@ beforeEach(() => {
   edge = { tunnel: 'connected' }
   sites = [
     {
-      name: 'web', hostname: 'app.example.com', port: 3000, steps: SERVE, volume: 'db', createdAt: ago(60),
+      name: 'web', hostname: 'app.example.com', port: 3000, adminPort: 3001, steps: SERVE, volume: 'db', createdAt: ago(60),
       live: { workspaceId: 'w-live0001', commit: 'abcdef1234567', since: ago(5), running: true },
       lastDeploy: {
         workspaceId: 'w-fail0001', commit: '9876543210', outcome: 'failed', error: 'step "build" failed (exit 2)',
@@ -91,7 +91,7 @@ describe('Sites settings', () => {
     expect(server.called(LIST)[0].query.get('project')).toBe('proj')
     expect(await screen.findByText('Cloudflare tunnel connected')).toBeTruthy()
     expect(screen.getByText('app.example.com').getAttribute('href')).toBe('https://app.example.com')
-    expect(row('app.example.com')).toBe('webapp.example.com:3000 · dbDeployStopEdit'
+    expect(row('app.example.com')).toBe('webapp.example.com:3000 · admin :3001 · dbDeployStopEdit'
       + 'Live abcdef1 · running, deployed 5m ago'
       + 'Last deploy 9876543 failed 2m ago: step "build" failed (exit 2)')
     expect(row('docs.example.com')).toBe('docsdocs.example.com:8080DeployStartEdit'
@@ -131,6 +131,7 @@ describe('Sites settings', () => {
     fireEvent.change(screen.getByLabelText('Site name'), { target: { value: 'api' } })
     fireEvent.change(screen.getByLabelText('Hostname'), { target: { value: 'api.example.com' } })
     fireEvent.change(screen.getByLabelText('Port'), { target: { value: '4000' } })
+    fireEvent.change(screen.getByLabelText('Admin port'), { target: { value: '4001' } })
     await screen.findByRole('option', { name: 'db' })
     fireEvent.change(screen.getByLabelText('Volume'), { target: { value: 'db' } })
 
@@ -150,24 +151,26 @@ describe('Sites settings', () => {
     fireEvent.click(create)
     expect(await screen.findByRole('link', { name: 'api.example.com' })).toBeTruthy()
     expect(server.called('POST /api/site/create').at(-1)?.body).toEqual({
-      project: 'proj', name: 'api', hostname: 'api.example.com', port: 4000, steps: SERVE, volume: 'db',
+      project: 'proj', name: 'api', hostname: 'api.example.com', port: 4000, adminPort: 4001, steps: SERVE, volume: 'db',
     })
     expect(screen.queryByLabelText('Site name')).toBeNull()
     expect(screen.getByRole('note').textContent).toContain('add a public hostname api.example.com')
     expect(screen.getByRole('note').textContent).toContain('the router (yaac-site-router, port 8080)')
   })
 
-  it('edits a site, dropping its volume', async () => {
+  it('edits a site, dropping its admin port and volume', async () => {
     renderWithClient(<Sites projectId="proj" readOnly={false} />, client())
     fireEvent.click((await screen.findAllByRole('button', { name: 'Edit' }))[0])
     expect(screen.queryByLabelText('Site name')).toBeNull()
     expect(screen.getByLabelText<HTMLTextAreaElement>('Steps').value).toBe(`${JSON.stringify(SERVE, null, 2)}\n`)
     fireEvent.change(screen.getByLabelText('Hostname'), { target: { value: 'www.example.com' } })
+    expect(screen.getByLabelText<HTMLInputElement>('Admin port').value).toBe('3001')
+    fireEvent.change(screen.getByLabelText('Admin port'), { target: { value: '' } })
     fireEvent.change(screen.getByLabelText('Volume'), { target: { value: '' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(screen.queryByLabelText('Hostname')).toBeNull())
     expect(server.called('POST /api/site/edit')[0].body).toEqual({
-      project: 'proj', name: 'web', hostname: 'www.example.com', port: 3000, steps: SERVE, volume: null,
+      project: 'proj', name: 'web', hostname: 'www.example.com', port: 3000, adminPort: null, steps: SERVE, volume: null,
     })
     expect(screen.queryByRole('note')).toBeNull()
   })

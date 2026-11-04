@@ -19,6 +19,8 @@ const ROUTER_URL = 'http://yaac-site-router:8080'
 export interface SiteOptions {
   hostname?: string
   port?: string
+  /** False (`--no-admin-port`) for none. */
+  adminPort?: string | false
   /** A JSON file of the graph each release runs. */
   steps?: string
   /** A volume name; false (`--no-volume`) for none. */
@@ -34,7 +36,8 @@ export async function siteCreate(
     project: await resolveProjectId(project),
     name,
     hostname: opts.hostname,
-    port: portOption(opts.port),
+    port: portOption('--port', opts.port),
+    ...(typeof opts.adminPort === 'string' ? { adminPort: portOption('--admin-port', opts.adminPort) } : {}),
     steps: await readSteps(opts.steps),
     ...(typeof opts.volume === 'string' ? { volume: opts.volume } : {}),
   } })
@@ -53,13 +56,16 @@ export async function siteCreate(
 export async function siteEdit(project: string, name: string, opts: SiteOptions): Promise<void> {
   const patch = {
     ...(opts.hostname !== undefined ? { hostname: opts.hostname } : {}),
-    ...(opts.port !== undefined ? { port: portOption(opts.port) } : {}),
+    ...(opts.port !== undefined ? { port: portOption('--port', opts.port) } : {}),
+    ...(opts.adminPort !== undefined
+      ? { adminPort: opts.adminPort === false ? null : portOption('--admin-port', opts.adminPort) }
+      : {}),
     ...(opts.steps !== undefined ? { steps: await readSteps(opts.steps) } : {}),
     ...(opts.volume !== undefined ? { volume: opts.volume === false ? null : opts.volume } : {}),
   }
   if (Object.keys(patch).length === 0) throw new Error('Nothing to change: give an option to edit.')
   await api.site.edit.$post({ json: { project: await resolveProjectId(project), name, ...patch } })
-  const later = Object.keys(patch).some((k) => k !== 'hostname')
+  const later = Object.keys(patch).some((k) => k !== 'hostname' && k !== 'adminPort')
   console.log(`Updated site "${name}"`
     + (opts.hostname !== undefined ? `; it answers at ${opts.hostname} now` : '')
     + (later ? `${opts.hostname !== undefined ? ', and' : ';'} its next deploy uses the rest` : '') + '.')
@@ -83,6 +89,7 @@ export async function siteList(project: string): Promise<void> {
 export async function siteShow(project: string, name: string): Promise<void> {
   const site = await api.site.show.$get({ query: { project: await resolveProjectId(project), name } })
   console.log(`Site "${site.name}": https://${site.hostname} -> port ${site.port}`)
+  console.log(`  admin port   ${site.adminPort ?? '-'}`)
   console.log(`  steps        ${Object.keys(site.steps).join(', ')}`)
   console.log(`  volume       ${site.volume ?? '-'}`)
   console.log(`  live         ${liveOf(site)}${site.live !== undefined ? ` in ${site.live.workspaceId}, since ${site.live.since}` : ''}`)
@@ -155,10 +162,10 @@ export async function siteDelete(project: string, name: string): Promise<void> {
   console.log(`Deleted site "${name}". Remove its public hostname from the Cloudflare tunnel too.`)
 }
 
-/** A `--port` value, refusing anything but a TCP port number. */
-function portOption(text: string): number {
+/** A port option's value, refusing anything but a TCP port number. */
+function portOption(flag: string, text: string): number {
   const port = Number(text)
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`--port takes a port number, 1-65535 (got "${text}").`)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`${flag} takes a port number, 1-65535 (got "${text}").`)
   return port
 }
 

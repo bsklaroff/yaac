@@ -12,12 +12,12 @@ import {
   listProjectSiteEntries,
   showSite,
 } from '#domain/sites'
-import { createVolume } from '#domain/workspaces'
+import { createVolume, offeredForwards } from '#domain/workspaces'
 import { BUILT_IN_USER_ID, findSiteByName, setProjectShareRevoked, updateSite } from '#db'
 import { closeDb } from '#db/client'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
-import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
+import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
 import { DEMO_PROJECT_ID, seedProject } from '@yaac/test-utils/project-fixture'
 import type { SiteRoute } from '#drivers/contract'
 
@@ -27,14 +27,26 @@ const APP = { app: { run: 'pnpm start', service: true } }
 
 let tmpDir: string
 let routed: SiteRoute[][]
+/** What each running release offers, as the driver records it. */
+let offered: Map<string, number[]>
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
   await seedProject()
   routed = []
+  offered = new Map([['rel-1', [3001]]])
   installFakeWorkspaceDriver({
     syncSites: (sites) => { routed.push(sites); return Promise.resolve() },
     siteTunnelStatus: () => Promise.resolve('connected'),
+    find: (id) => Promise.resolve(offered.has(id) ? handleFixture({ workspaceId: id, jobName: `yaac-${id}` }) : undefined),
+    unforwardPort: ({ workspaceId }, port) => {
+      offered.set(workspaceId, (offered.get(workspaceId) ?? []).filter((p) => p !== port))
+      return Promise.resolve(true)
+    },
+    declareForwards: (workspaceId, forwards) => {
+      offered.set(workspaceId, [...offered.get(workspaceId) ?? [], ...forwards.map((f) => f.containerPort)])
+      return Promise.resolve(forwards.map(({ containerPort }) => ({ containerPort, hostPort: containerPort })))
+    },
   })
 })
 
@@ -59,6 +71,10 @@ describe('createSite', () => {
     await expect(create({ name: 'Bad Name', hostname: 'a.example.com' })).rejects.toMatchObject({ code: 'VALIDATION' })
     await expect(create({ name: 'a', hostname: 'https://a.example.com' })).rejects.toMatchObject({ code: 'VALIDATION' })
     await expect(create({ name: 'a', hostname: 'a.example.com', port: 0 })).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(create({ name: 'a', hostname: 'a.example.com', adminPort: 70000 })).rejects.toMatchObject({ code: 'VALIDATION' })
+    // The router serves the site's port to the internet, which the admin
+    // port must never be.
+    await expect(create({ name: 'a', hostname: 'a.example.com', adminPort: 3000 })).rejects.toMatchObject({ code: 'VALIDATION' })
     await expect(create({ name: 'a', hostname: 'a.example.com', steps: { build: { run: 'make' } } }))
       .rejects.toMatchObject({ code: 'VALIDATION', message: expect.stringContaining('service') as unknown })
     // Only a site with a volume may wait on it.
@@ -82,15 +98,31 @@ describe('createSite', () => {
 })
 
 describe('editSite', () => {
-  it('moves the hostname at once and keeps the rest for the next deploy, refusing during a deploy', async () => {
+  it('moves the hostname and admin port at once and keeps the rest for the next deploy, refusing during a deploy', async () => {
     await createVolume(local, DEMO_PROJECT_ID, 'data')
-    await create({ volume: 'data', steps: { app: { run: 'x', service: true, needs: ['volume'] } } })
+    await create({ adminPort: 3001, volume: 'data', steps: { app: { run: 'x', service: true, needs: ['volume'] } } })
     const row = (await findSiteByName(DEMO_PROJECT_ID, 'shop'))!
     await updateSite(row.id, { liveWorkspaceId: 'rel-1', livePort: 3000 })
 
-    await editSite(local, DEMO_PROJECT_ID, 'shop', { hostname: 'www.example.com', port: 4000 })
+    await editSite(local, DEMO_PROJECT_ID, 'shop', { hostname: 'www.example.com', port: 4000, adminPort: 4001 })
     expect(routed.at(-1)).toEqual([{ siteId: row.id, hostname: 'www.example.com', port: 3000, liveWorkspaceId: 'rel-1' }])
-    expect((await findSiteByName(DEMO_PROJECT_ID, 'shop'))?.port).toBe(4000)
+    expect(await findSiteByName(DEMO_PROJECT_ID, 'shop')).toMatchObject({ port: 4000, adminPort: 4001 })
+    // The live release offers the new admin port in place of the old, as a
+    // server restart would.
+    expect(offered.get('rel-1')).toEqual([4001])
+    expect((await offeredForwards({}, row.id)).map((f) => f.containerPort)).toEqual([4001])
+
+    // Equal to the port the internet reaches, whichever side moves.
+    await expect(editSite(local, DEMO_PROJECT_ID, 'shop', { adminPort: 4000 })).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(editSite(local, DEMO_PROJECT_ID, 'shop', { port: 4001 })).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(editSite(local, DEMO_PROJECT_ID, 'shop', { adminPort: 0 })).rejects.toMatchObject({ code: 'VALIDATION' })
+    expect(offered.get('rel-1')).toEqual([4001])
+
+    // Removing it closes it on the live release at once.
+    await editSite(local, DEMO_PROJECT_ID, 'shop', { adminPort: null })
+    expect((await findSiteByName(DEMO_PROJECT_ID, 'shop'))?.adminPort).toBeUndefined()
+    expect(offered.get('rel-1')).toEqual([])
+    expect(await offeredForwards({}, row.id)).toEqual([])
 
     // Its graph needs the volume, so the volume cannot go without a graph
     // that does not.
@@ -127,7 +159,7 @@ describe('deleteSite', () => {
 describe('listProjectSiteEntries', () => {
   it('answers each site with its live release and the deploy under way', async () => {
     await createVolume(local, DEMO_PROJECT_ID, 'data')
-    await create({ volume: 'data' })
+    await create({ volume: 'data', adminPort: 3001 })
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'rel-1' })
     const row = (await findSiteByName(DEMO_PROJECT_ID, 'shop'))!
     const since = new Date('2026-11-03T10:00:00Z')
@@ -138,6 +170,7 @@ describe('listProjectSiteEntries', () => {
     expect(await listProjectSiteEntries(DEMO_PROJECT_ID)).toEqual([expect.objectContaining({
       name: 'shop',
       hostname: 'shop.example.com',
+      adminPort: 3001,
       volume: 'data',
       live: { workspaceId: 'rel-1', commit: 'a'.repeat(40), since: since.toISOString(), running: true },
       deploy: { workspaceId: 'rel-2', commit: 'b'.repeat(40), startedAt: since.toISOString(), phase: 'building', replacing: true },

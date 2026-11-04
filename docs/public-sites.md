@@ -163,7 +163,8 @@ A **release** is a workspace with `workspaces.siteId` set, started by a
 deploy at one commit. It differs from an ordinary workspace in these ways:
 
 - **Locked.** `assertInteractive` refuses it: no sessions, terminals, added
-  steps, file writes, port-forward attaches or allow-host. Workspace stop,
+  steps, file writes or allow-host, and no forward but to its admin port
+  (see "Admin port"). Workspace stop,
   restart and timeout refuse it with `CONFLICT` naming `yaac site`; only
   the server stops one, unless its site no longer names it (a stop that
   failed, a site deleted under it), when its owner may. `yaac-mama` has no
@@ -215,6 +216,34 @@ deploy at one commit. It differs from an ordinary workspace in these ways:
 policy where this podman supports one and asks for the engine's restart
 service on Linux, so the cluster, then the server, then the replacements
 come back without a command. On macOS the podman machine is not covered.
+
+## Admin port
+
+A site may name an **admin port**, for an admin view of the live app that
+needs no login of its own. It is the one port a release offers
+(`offeredForwards`), declared at launch and again when a server restart
+declares forwards anew; the project's `portForward` and a persisted
+"forward this port" fan-out skip releases. So the site's owner reaches it
+the way they reach any workspace's port, as the release's Preview in the
+webapp or with `yaac forward`, and the yaac server's own owner check
+(`/forward/attach`) is its whole access control. `assertInteractive` lets
+forwards into a release through on that ground: the driver's `dialPort`
+dials no port a workspace does not offer.
+
+The router never serves it, and the per-site policy admits the router only
+on the site's port, so the internet cannot reach it. An admin port equal to
+the site's port is refused. The admin server runs
+as another service step of the release, in the same pod, so it can share
+the volume. It cannot open an embedded database another process holds
+(PGlite, SQLite without WAL); serve the admin routes from the app's own
+process on a second listener, or keep the data in a Postgres service step.
+
+An edit moves the admin port at once: the running releases stop offering
+the old one, so new connections to it are refused, and offer the new one.
+A restart then declares what the site names, which is what the edit
+already offered. Only a release started since listens on a new port. Each
+deploy is a new workspace, so the Preview to open is the live release's,
+which the site's row in project settings links to.
 
 ## Deploys
 

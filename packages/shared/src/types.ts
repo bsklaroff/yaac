@@ -1736,6 +1736,9 @@ export interface SiteEntry {
   hostname: string
   /** The port its releases serve on. */
   port: number
+  /** The port of its releases that its owner may forward or preview, for
+   *  an admin view the internet never reaches. */
+  adminPort?: number
   /** The graph each release runs. */
   steps: StepGraph
   /** Its volume's name. */

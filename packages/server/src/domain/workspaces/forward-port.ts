@@ -1,9 +1,24 @@
 import { workspaceDriver } from '#drivers/driver'
+import { getSiteRow } from '#db'
 import { addPortForwardToProjectConfig } from '#domain/projects'
 import { resolveWorkspaceContainer } from './resolve'
 import { ServerError } from '@yaac/shared/errors'
-import type { PortMapping } from '@yaac/shared/types'
+import type { PortForwardConfig, PortMapping, YaacConfig } from '@yaac/shared/types'
 import type { Actor } from '#domain/access'
+
+/**
+ * The ports a workspace offers, at launch and again when a server restart
+ * declares them anew: its project's `portForward`, or for a public site's
+ * release only its site's admin port, if it has one. A release faces the
+ * internet only through the router, and `dialPort` reaches no port a
+ * workspace does not offer, so this is all of a release that a forward or
+ * preview can reach (docs/public-sites.md "Admin port").
+ */
+export async function offeredForwards(config: YaacConfig, siteId: string | undefined): Promise<PortForwardConfig[]> {
+  if (siteId === undefined) return config.portForward ?? []
+  const adminPort = (await getSiteRow(siteId))?.adminPort
+  return adminPort !== undefined ? [{ containerPort: adminPort, hostPortStart: adminPort }] : []
+}
 
 /**
  * Forward a port a workspace is listening on but that is not yet forwarded

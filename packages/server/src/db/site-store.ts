@@ -29,6 +29,7 @@ export async function insertSite(values: {
   name: string
   hostname: string
   port: number
+  adminPort?: number
   steps: StepGraph
   volumeId?: string
 }): Promise<SiteRow> {
