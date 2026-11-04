@@ -341,7 +341,10 @@ describe('write routes', () => {
         param: { projectId: DEMO },
         json: { hosts: ['*.CDN.example.com'], defaults: false },
       })
-      expect((await put.json()).allowlist).toEqual({ hosts: ['*.cdn.example.com'], defaults: false })
+      expect(await put.json()).toEqual({
+        allowlist: { hosts: ['*.cdn.example.com'], defaults: false },
+        leavesOut: [{ host: 'api.anthropic.com', label: 'Anthropic API' }, { host: 'github.com', label: 'GitHub' }],
+      })
 
       const got = await (await client.project[':projectId'].allowlist.$get({ param: { projectId: DEMO } })).json()
       expect(got.allowlist).toEqual({ hosts: ['*.cdn.example.com'], defaults: false })

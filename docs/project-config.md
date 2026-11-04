@@ -86,7 +86,8 @@ warned about again.
 ## Environment variables and secrets
 
 These are not in `yaac-config.json`. Set them under Settings → Project Config →
-Environment. A plain variable is placed in every workspace's environment. A
+Environment, or with `yaac config env <project>` (`NAME=value` for a variable,
+`--secret NAME` with its rule as options and its value on stdin). A plain variable is placed in every workspace's environment. A
 secret is stored encrypted. Under k8s its value never enters the workspace:
 the workspace gets a placeholder, and the proxy swaps in the real value on
 requests matching the rule you give (hosts, an optional path glob, and where
@@ -101,7 +102,8 @@ Stopping a workspace deletes every file the repository's `.gitignore`
 matches, not only build output: `.env` files, local databases, editor and
 agent settings, and any new file in an ignored folder. Files git lists as
 untracked stay. Also not in `yaac-config.json`: under Settings
-→ Project Config → Kept ignored files, list paths relative to the
+→ Project Config → Kept ignored files, or with `yaac config
+kept-ignored-paths <project> [paths...]`, list paths relative to the
 repository root to keep anyway, each a file or a folder and everything in
 it (`.env`, `data/dev.db`). Changes apply from the next stop. See
 [workspace-storage.md](workspace-storage.md) "Ignored files at stop".
@@ -109,15 +111,16 @@ it (`.env`, `data/dev.db`). Changes apply from the next stop. See
 ## Egress allowlist (k8s)
 
 Also not in `yaac-config.json`: set it under Settings → Project Config →
-Egress allowlist, or allow a blocked host for the whole project from a
+Egress allowlist, with `yaac config egress-allowlist <project> [hosts...]
+[--defaults on|off]`, or allow a blocked host for the whole project from a
 workspace's blocked-hosts badge. A workspace may reach the proxy's default
 hosts (`DEFAULT_ALLOWED_HOSTS` in `packages/server/src/lib/allowed-hosts.ts`)
 plus the hosts you add: exact names (`api.example.com`) or wildcards
 (`*.example.com`, or `*` inside a label as in `store*.example.com`, which
 matches letters, digits, `-` and `_` within that one label); `*` allows
 everything. Turning the defaults off leaves only your hosts, so an empty list
-blocks all external access; yaac warns if that leaves out `api.anthropic.com`
-or `github.com`. Changes apply to workspaces created afterwards.
+blocks all external access; `yaac config egress-allowlist` warns if that leaves out
+`api.anthropic.com` or `github.com`. Changes apply to workspaces created afterwards.
 See [workspace-egress.md](workspace-egress.md).
 
 ## Custom images (k8s)

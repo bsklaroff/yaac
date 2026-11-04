@@ -4,6 +4,7 @@ import {
   NESTED_PULL_HOSTS,
   allowlistAllows,
   hostMatchesPattern,
+  missingCriticalHosts,
   resolveAllowedHosts,
 } from '#lib/allowed-hosts'
 
@@ -193,5 +194,14 @@ describe('resolveAllowedHosts', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     resolveAllowedHosts({ hosts: [], defaults: true })
     expect(warnSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('missingCriticalHosts', () => {
+  it('names the agent hosts a list leaves out, counting the defaults, patterns and *', () => {
+    expect(missingCriticalHosts({ hosts: [], defaults: true })).toEqual([])
+    expect(missingCriticalHosts({ hosts: ['*'], defaults: false })).toEqual([])
+    expect(missingCriticalHosts({ hosts: ['*.anthropic.com', 'api.github.com'], defaults: false }))
+      .toEqual([{ host: 'github.com', label: 'GitHub' }])
   })
 })

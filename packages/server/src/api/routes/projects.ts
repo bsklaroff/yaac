@@ -36,7 +36,7 @@ import { moveProjectToRemote, previewProjectMove, previewWorkspaceRetention, rem
 import { pushCredentialsToRuntime } from '#domain/auth'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { projectBuildDir } from '#lib/build-dirs'
-import { DEFAULT_ALLOWED_HOSTS } from '#lib/allowed-hosts'
+import { DEFAULT_ALLOWED_HOSTS, missingCriticalHosts } from '#lib/allowed-hosts'
 import { ServerError } from '@yaac/shared/errors'
 import { buildFilesApp } from '#routes/build-files'
 import { authorizeProject } from '#domain/access'
@@ -276,7 +276,9 @@ export const projectApp = new Hono<IdentityEnv>()
     return c.body(null, 204)
   })
   // The project's egress allowlist, with the install's defaults so a client
-  // can list them. Applies to workspaces created afterwards.
+  // can list them. Applies to workspaces created afterwards. The PUT also
+  // answers which hosts agents need that the new list leaves out, for the
+  // client to warn about.
   .get('/:projectId/allowlist', async (c) => {
     requireDriverFeature('egress')
     const allowlist = await getProjectAllowlist(await resolveProjectId(c.req.param('projectId')))
@@ -288,7 +290,8 @@ export const projectApp = new Hono<IdentityEnv>()
     async (c) => {
       requireDriverFeature('egress')
       const projectId = await resolveProjectId(c.req.param('projectId'))
-      return c.json({ allowlist: await setProjectAllowlist(c.get('principal'), projectId, c.req.valid('json')) })
+      const allowlist = await setProjectAllowlist(c.get('principal'), projectId, c.req.valid('json'))
+      return c.json({ allowlist, leavesOut: missingCriticalHosts(allowlist) })
     },
   )
   // Branch data for the new-workspace picker: local remote-tracking refs

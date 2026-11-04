@@ -34,6 +34,13 @@ import { feedback } from '#commands/feedback'
 import { configWorkspaceAutoDelete } from '#commands/config-workspace-auto-delete'
 import { configScratchDirs } from '#commands/config-scratch-dirs'
 import { configInitSteps } from '#commands/config-init-steps'
+import { configEnv } from '#commands/config-env'
+import { configEgressAllowlist } from '#commands/config-egress-allowlist'
+import { configKeptIgnoredPaths } from '#commands/config-kept-ignored-paths'
+import { configDefaultBranch } from '#commands/config-default-branch'
+import { configDefaultBranchGuard } from '#commands/config-default-branch-guard'
+import { configGitCredential } from '#commands/config-git-credential'
+import { configTimeZone } from '#commands/config-time-zone'
 import { authFake } from '#commands/auth-fake'
 import { remoteAdd, remoteConnect, remoteDisconnect, remoteList, remoteRemove } from '#commands/remote'
 import {
@@ -720,6 +727,65 @@ config
   .option('--file <path>', 'Replace them with the steps in this JSON file (docs/workspace-steps.md)')
   .option('--none', 'Remove them all')
   .action(configInitSteps)
+
+config
+  .command('env')
+  .description('List a project\'s environment variables and secrets (secrets masked, with where the egress proxy injects them), set them, or remove one. Applies to workspaces created afterwards')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('[vars...]', 'Plain variables to set, each NAME=value; with --secret, the one secret\'s NAME')
+  .option('--secret', 'Set the secret NAME, reading its value from stdin (asked for without echo on a terminal; blank keeps the stored value to change only its rule). Under k8s the workspace gets a placeholder the proxy swaps for the value on matching requests; under containerless it gets the value itself')
+  .option('--host <host>', 'A host the secret is injected on, exact or a wildcard like *.example.com (repeatable; at least one)', collect, [])
+  .option('--path <glob>', 'Only on request paths matching this glob (default /*)')
+  .option('--header <name>', 'Inject it into this header (default authorization)')
+  .option('--prefix <prefix>', 'Put this before the value in the header (default "Bearer " with the default header, none with --header)')
+  .option('--body-param <name>', 'Inject it into this form or JSON body field instead of a header')
+  .option('--unset <name>', 'Remove this variable or secret')
+  .action(configEnv)
+
+config
+  .command('egress-allowlist')
+  .description('Show the hosts a project\'s workspaces may reach through the egress proxy, or replace the project\'s own and turn the defaults on or off (k8s servers only). Applies to workspaces created afterwards')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('[hosts...]', 'Hosts to allow besides the defaults: exact names, or wildcards like *.example.com; * allows everything')
+  .option('--none', 'Allow none besides the defaults')
+  .addOption(new Option('--defaults <on|off>', 'Whether the install\'s default hosts (agent APIs, GitHub, package registries) are allowed too').choices(['on', 'off']))
+  .action(configEgressAllowlist)
+
+config
+  .command('kept-ignored-paths')
+  .description('Show or replace the gitignored paths a project\'s workspaces keep when they stop, which deletes every other file .gitignore matches. Applies from the next stop')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('[paths...]', 'Paths relative to the repository root, each a file or a folder and everything in it, e.g. .env data/dev.db')
+  .option('--none', 'Keep no ignored files')
+  .action(configKeptIgnoredPaths)
+
+config
+  .command('default-branch')
+  .description('Show a project\'s default branch, or set a project yaac hosts to another existing branch')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('[branch]', 'The branch clones check out and new workspaces fork from')
+  .action(configDefaultBranch)
+
+config
+  .command('default-branch-guard')
+  .description('Show or set whether a project yaac hosts refuses pushes that delete its default branch or rewrite its history')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .addArgument(new Argument('[on|off]', 'on refuses such pushes, off accepts them').choices(['on', 'off']))
+  .action(configDefaultBranchGuard)
+
+config
+  .command('git-credential')
+  .description('Show which git credential a project uses, or assign it one')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('[credential]', 'Git credential name, as `yaac auth list` prints it')
+  .action(configGitCredential)
+
+config
+  .command('time-zone')
+  .description('Show the time zone new workspaces launch in and chats show times in, or pin it; unpinned, it follows whichever device last connected')
+  .argument('[zone]', 'IANA time zone to pin, e.g. Europe/Berlin')
+  .option('--follow-device', 'Unpin it, starting from this machine\'s zone')
+  .action(configTimeZone)
 
 // Top-level, not under `workspace`: with no workspace named it forwards all
 // running ones, as the desktop app does from its tray.

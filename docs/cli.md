@@ -228,6 +228,39 @@ yaac config
                                 as JSON (docs/workspace-steps.md)
     --file <path>               Replace them with a JSON file's
     --none                      Remove them
+  env <project> [NAME=value...] List the project's variables and secrets
+                                (secrets masked, with their proxy rule), or
+                                set plain variables
+    --secret                    Set the secret NAME instead, its value read
+                                from stdin (never argv)
+    --host <host>               A host it is injected on (repeatable; required)
+    --path <glob>               Only on matching paths (default /*)
+    --header <name>             Into this header (default authorization)
+    --prefix <prefix>           Before the value (default "Bearer " with the
+                                default header)
+    --body-param <name>         Into this form/JSON body field instead
+    --unset <name>              Remove a variable or secret
+  egress-allowlist <project> [hosts...]
+                                Show or replace the hosts workspaces may reach
+                                besides the defaults (k8s servers only)
+    --none                      None besides the defaults
+    --defaults <on|off>         Whether the default hosts are allowed too
+  kept-ignored-paths <project> [paths...]
+                                Show or replace the gitignored paths a stop
+                                keeps
+    --none                      Keep none
+  default-branch <project> [branch]
+                                Show the default branch, or set a hosted
+                                project's (docs/hosted-projects.md)
+  default-branch-guard <project> [on|off]
+                                Show or set whether a hosted project refuses
+                                pushes that delete or rewind it
+  git-credential <project> [credential]
+                                Show or assign the project's git credential,
+                                by its `yaac auth list` name
+  time-zone [zone]              Show the time zone workspaces launch in, or
+                                pin it to an IANA zone
+    --follow-device             Unpin it, following the last device to connect
 
 yaac auth
   list                          List credentials (masked; git credentials by name)

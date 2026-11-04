@@ -19,6 +19,8 @@ import { git } from '@yaac/test-utils/git'
  *    `fake-github` credential beforeAll seeds.
  *  - Seeded project names are unique across the file (repo-alpha/repo-beta,
  *    demo-*) except where a case makes two projects share one on purpose.
+ *  - The config settings cases use the hosted-demo project `project create`
+ *    left behind as their hosted project that takes no git credential.
  */
 
 let testEnv: YaacTestEnv
@@ -366,5 +368,150 @@ describe('yaac config (real CLI + real server)', () => {
       expect(stderr, command).toContain(first)
       expect(stderr, command).toContain(second)
     }
+  })
+})
+
+describe('yaac config project and user settings (real CLI + real server)', () => {
+  const config = (...args: Array<string | RunYaacOptions>): ReturnType<typeof runYaac> => runYaac(testEnv.env, 'config', ...args)
+
+  beforeAll(async () => {
+    const repo = path.join(testEnv.scratchDir, 'demo-settings')
+    await createTestRepo(repo)
+    await addTestProject(server, repo)
+  })
+
+  it('config env sets plain variables and secrets with their rules, lists them masked, and unsets them', async () => {
+    expect((await config('env', 'demo-settings')).stdout).toContain('demo-settings has no environment variables or secrets.')
+
+    const plain = await config('env', 'demo-settings', 'FOO=bar', 'EMPTY=')
+    expect(plain.exitCode, plain.stderr).toBe(0)
+    expect(plain.stdout).toContain('Set FOO, EMPTY in demo-settings. Applies to workspaces created from now on.')
+    expect((await config('env', 'demo-settings', 'NOVALUE')).stderr).toContain('NOVALUE is not NAME=value')
+    expect((await config('env', 'demo-settings', '1BAD=x')).stderr).toContain('is not a valid environment variable name')
+
+    // The value comes from stdin and never reaches the listing.
+    const header = await config('env', 'demo-settings', 'API_TOKEN', '--secret', '--host', 'api.example.com',
+      '--host', '*.example.org', '--path', '/v1/*', { stdin: 'tok-secret-value\n' })
+    expect(header.exitCode, header.stderr).toBe(0)
+    expect(header.stdout).toContain('Secret API_TOKEN in demo-settings is stored, for api.example.com, *.example.org /v1/* · header authorization "Bearer "')
+    const custom = await config('env', 'demo-settings', 'KEY_HEADER', '--secret', '--host', 'a.example.com',
+      '--header', 'x-api-key', { stdin: 'k' })
+    expect(custom.stdout).toContain('for a.example.com · header x-api-key.')
+    const prefixed = await config('env', 'demo-settings', 'KEY_HEADER', '--secret', '--host', 'a.example.com',
+      '--header', 'x-api-key', '--prefix', 'Token ', { stdin: '' })
+    expect(prefixed.stdout, prefixed.stderr).toContain('header x-api-key "Token "')
+    const body = await config('env', 'demo-settings', 'CLIENT_SECRET', '--secret', '--host', 'auth.example.com',
+      '--body-param', 'client_secret', { stdin: 'cs' })
+    expect(body.stdout).toContain('for auth.example.com · body client_secret.')
+    // On a terminal it is asked for, without echo.
+    const typed = await config('env', 'demo-settings', 'CLIENT_SECRET', '--secret', '--host', 'auth.example.com',
+      '--body-param', 'client_secret', { tty: true, stdinOnPrompt: [{ when: /Value of CLIENT_SECRET \(not shown/, send: 'typed-value\r' }] })
+    expect(typed.stdout).toContain('Secret CLIENT_SECRET in demo-settings is stored')
+    expect(typed.stdout).not.toContain('typed-value')
+
+    const list = await config('env', 'demo-settings')
+    expect(list.stdout).toContain('Variables in demo-settings:\n  EMPTY=\n  FOO=bar\n')
+    expect(list.stdout).toMatch(/API_TOKEN {2}\*{8} {2}api\.example\.com, \*\.example\.org \/v1\/\* · header authorization "Bearer "/)
+    expect(list.stdout).not.toContain('tok-secret-value')
+    // The rule-only edit, its stdin blank, kept the stored value.
+    expect(list.stdout).toContain('KEY_HEADER  ********  a.example.com · header x-api-key "Token "')
+
+    // Refused before anything is sent.
+    expect((await config('env', 'demo-settings', 'NEW_SECRET', '--secret', '--host', 'x.example.com', { stdin: '' })).stderr)
+      .toContain('a value is required for a new secret')
+    expect((await config('env', 'demo-settings', 'S', '--secret', { stdin: 'v' })).stderr).toContain('at least one --host')
+    expect((await config('env', 'demo-settings', 'S=v', '--secret', '--host', 'x.example.com')).stderr).toContain('one NAME without a value')
+    expect((await config('env', 'demo-settings', 'S', '--secret', '--host', 'x.example.com', '--header', 'h', '--body-param', 'b')).stderr)
+      .toContain('--header (and --prefix) or --body-param, not both')
+    expect((await config('env', 'demo-settings', 'FOO=x', '--host', 'x.example.com')).stderr).toContain('pass --secret too')
+    expect((await config('env', 'demo-settings', 'FOO=x', '--unset', 'FOO')).stderr).toContain('--unset on its own')
+
+    const unset = await config('env', 'demo-settings', '--unset', 'API_TOKEN')
+    expect(unset.stdout).toContain('Removed API_TOKEN from demo-settings.')
+    expect((await config('env', 'demo-settings', '--unset', 'API_TOKEN')).stderr).toContain('demo-settings has no variable or secret API_TOKEN')
+    expect((await config('env', 'demo-settings')).stdout).not.toContain('API_TOKEN')
+  })
+
+  it('config egress-allowlist shows and replaces the hosts and defaults, warning when agents lose access; k8s only', async () => {
+    if (!buildsImages) {
+      const refused = await config('egress-allowlist', 'demo-settings', 'api.example.com')
+      expect(refused.exitCode).not.toBe(0)
+      expect(refused.stderr).toContain('This server mediates no egress')
+      return
+    }
+    expect((await config('egress-allowlist', 'demo-settings')).stdout).toMatch(/demo-settings's workspaces may reach the \d+ default hosts\./)
+    const set = await config('egress-allowlist', 'demo-settings', 'api.example.com', '*.example.org')
+    expect(set.exitCode, set.stderr).toBe(0)
+    expect(set.stdout).toMatch(/may now reach the \d+ default hosts, plus api\.example\.com, \*\.example\.org\. Applies to workspaces created from now on\./)
+    expect(set.stderr).not.toContain('Warning')
+
+    const noDefaults = await config('egress-allowlist', 'demo-settings', '--defaults', 'off')
+    expect(noDefaults.stdout).toContain('may now reach only api.example.com, *.example.org.')
+    expect(noDefaults.stderr).toContain('leaves out Anthropic API (api.anthropic.com)')
+    expect(noDefaults.stderr).toContain('leaves out GitHub (github.com)')
+    expect((await config('egress-allowlist', 'demo-settings', '--none')).stdout).toContain('nothing; all egress is blocked')
+    expect((await config('egress-allowlist', 'demo-settings', 'a.com', '--none')).stderr).toContain('hosts or --none, not both')
+    expect((await config('egress-allowlist', 'demo-settings', '--defaults', 'maybe')).stderr).toContain('Allowed choices are on, off')
+    expect((await config('egress-allowlist', 'demo-settings', '--defaults', 'on')).stdout).toMatch(/may now reach the \d+ default hosts\./)
+  })
+
+  it('config kept-ignored-paths shows, replaces, refuses a path outside the checkout, and clears', async () => {
+    expect((await config('kept-ignored-paths', 'demo-settings')).stdout).toContain('Ignored paths demo-settings keeps at stop: none')
+    const set = await config('kept-ignored-paths', 'demo-settings', '.env', 'data/dev.db')
+    expect(set.exitCode, set.stderr).toBe(0)
+    expect(set.stdout).toContain('are now: .env, data/dev.db. Applies from each workspace\'s next stop.')
+    expect((await config('kept-ignored-paths', 'demo-settings')).stdout).toContain('keeps at stop: .env, data/dev.db')
+    expect((await config('kept-ignored-paths', 'demo-settings', '../outside')).exitCode).not.toBe(0)
+    expect((await config('kept-ignored-paths', 'demo-settings', '.env', '--none')).stderr).toContain('paths or --none, not both')
+    expect((await config('kept-ignored-paths', 'demo-settings', '--none')).stdout).toContain('are now: none.')
+  })
+
+  it('config git-credential shows and assigns a credential by name, and refuses one for a hosted project', async () => {
+    expect((await config('git-credential', 'demo-settings')).stdout).toContain('demo-settings has no git credential')
+    const set = await config('git-credential', 'demo-settings', 'fake-github')
+    expect(set.exitCode, set.stderr).toBe(0)
+    expect(set.stdout).toContain('demo-settings now uses the git credential fake-github')
+    expect((await config('git-credential', 'demo-settings')).stdout).toContain('demo-settings uses the git credential fake-github.')
+    expect((await config('git-credential', 'demo-settings', 'nope')).stderr).toContain('No git credential named "nope"')
+    expect((await config('git-credential', 'hosted-demo')).stdout).toContain('hosted-demo is hosted by yaac, so it needs no git credential.')
+    expect((await config('git-credential', 'hosted-demo', 'fake-github')).stderr).toContain('is hosted by yaac, so it needs no git credential')
+  })
+
+  it('config default-branch and default-branch-guard show and set a hosted project\'s, and refuse other projects', async () => {
+    expect((await runYaac(testEnv.env, 'project', 'create', 'Branchy')).exitCode).toBe(0)
+    const dir = path.join(testEnv.scratchDir, 'branchy')
+    expect((await runYaac(testEnv.env, 'project', 'clone', 'branchy', dir)).exitCode).toBe(0)
+    await git(dir, ['-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'first'])
+    await git(dir, ['push', '-q', 'origin', 'HEAD:main', 'HEAD:release'])
+
+    expect((await config('default-branch', 'branchy')).stdout).toContain('branchy\'s default branch is main.')
+    const set = await config('default-branch', 'branchy', 'release')
+    expect(set.exitCode, set.stderr).toBe(0)
+    expect(set.stdout).toContain('branchy\'s default branch is now release.')
+    expect((await config('default-branch', 'branchy')).stdout).toContain('branchy\'s default branch is release.')
+    expect((await config('default-branch', 'branchy', 'nope')).stderr).toContain('"branchy" has no branch "nope"')
+    expect((await config('default-branch', 'demo-settings')).stdout).toMatch(/demo-settings's default branch is \S+, set at its git host\./)
+    expect((await config('default-branch', 'demo-settings', 'main')).stderr).toContain('is not hosted by yaac; set its default branch at its git host')
+
+    expect((await config('default-branch-guard', 'branchy')).stdout).toContain('branchy refuses pushes that delete its default branch')
+    expect((await config('default-branch-guard', 'branchy', 'off')).stdout).toContain('branchy now accepts pushes')
+    expect((await config('default-branch-guard', 'branchy')).stdout).toContain('branchy accepts pushes')
+    expect((await config('default-branch-guard', 'branchy', 'on')).stdout).toContain('branchy now refuses pushes')
+    expect((await config('default-branch-guard', 'branchy', 'maybe')).stderr).toContain('Allowed choices are on, off')
+    expect((await config('default-branch-guard', 'demo-settings')).stdout).toContain('is not hosted by yaac; its git host protects its branches')
+    expect((await config('default-branch-guard', 'demo-settings', 'on')).stderr).toContain('is not hosted by yaac; set its default-branch guard at its git host')
+  })
+
+  it('config time-zone shows, pins a zone, refuses a bad one, and follows the device again', async () => {
+    expect((await config('time-zone')).stdout).toMatch(/^Time zone: /)
+    const pinned = await config('time-zone', 'Europe/Berlin')
+    expect(pinned.exitCode, pinned.stderr).toBe(0)
+    expect(pinned.stdout).toContain('Time zone is now Europe/Berlin. Workspaces started from now on launch in it.')
+    expect((await config('time-zone')).stdout).toContain('Time zone: Europe/Berlin\n')
+    expect((await config('time-zone', 'Mars/Olympus')).stderr).toContain('not an IANA time zone')
+    expect((await config('time-zone', 'UTC', '--follow-device')).stderr).toContain('a zone or --follow-device, not both')
+    const follow = await config('time-zone', '--follow-device')
+    expect(follow.stdout).toContain(', following your devices.')
+    expect((await config('time-zone')).stdout).toContain(', following your devices')
   })
 })
