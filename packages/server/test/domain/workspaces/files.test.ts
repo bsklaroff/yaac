@@ -10,7 +10,7 @@ import { closeDb } from '#db/client'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { createCheckout } from '#domain/git'
 import { execFileAsync } from '#lib/shell'
-import { createWorkspaceFolder, deleteWorkspaceEntry, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, uploadWorkspaceFile, writeWorkspaceFile } from '#domain/workspaces'
+import { createWorkspaceFolder, deleteWorkspaceEntry, getWorkspaceChanges, getWorkspaceGitLog, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, uploadWorkspaceFile, writeWorkspaceFile } from '#domain/workspaces'
 import { git } from '@yaac/test-utils/git'
 import { CHANGES_BASE_UNRESOLVED, CHANGES_BUSY, forgetWorkspaceChanges } from '#domain/workspaces/changes'
 import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
@@ -453,6 +453,85 @@ describe('readWorkspaceFileAtRev', () => {
     expect((await refusal(readWorkspaceFileAtRev('at', 'a.txt', `--output=/tmp/x${'0'.repeat(31)}`))).code).toBe('VALIDATION')
     expect((await refusal(readWorkspaceFileAtRev('at', '../x', base))).code).toBe('VALIDATION')
     expect((await refusal(readWorkspaceFileAtRev('stopped', 'a.txt', base))).code).toBe('CONFLICT')
+  })
+})
+
+describe('getWorkspaceGitLog', () => {
+  const commit = async (run: (args: string[]) => Promise<string>, message: string): Promise<string> => {
+    await run(['-c', 'user.email=t@t', '-c', 'user.name=Tess', 'commit', '-q', '--allow-empty', '-m', message])
+    return (await run(['rev-parse', 'HEAD'])).trim()
+  }
+  let fork: string
+  let ours: string[]
+  let theirs: string
+  beforeAll(async () => {
+    await makeCheckout('log')
+    await recordWorkspaceCreated({ projectId: PROJECT, workspaceId: 'log', baseBranch: 'main' })
+    const run = wtGit('log')
+    fork = (await run(['rev-parse', 'HEAD'])).trim()
+    ours = [await commit(run, 'first of ours'), await commit(run, 'second of ours')]
+    // origin's main moves on after the fork, as a fetch would show it.
+    await run(['checkout', '-q', '-b', 'side', fork])
+    theirs = await commit(run, 'landed on main')
+    await run(['update-ref', 'refs/remotes/origin/main', theirs])
+    await run(['tag', 'v1', theirs])
+    await run(['checkout', '-q', 'agent/log'])
+  })
+
+  // By default both sides of the fork against origin's copy of the fork
+  // branch, children before parents, each named by the refs at it.
+  it('reads HEAD and the fork branch, with the branches to pick from', async () => {
+    expect((await getWorkspaceGitLog('log', undefined, { limit: 50, branches: false })).branches).toBeUndefined()
+    const log = await getWorkspaceGitLog('log', undefined, { limit: 50, branches: true })
+    expect(log.ref).toBe('origin/main')
+    expect(log.head).toBe(ours[1])
+    expect(log.more).toBe(false)
+    expect(log.branches).toEqual(expect.arrayContaining(['refs/heads/agent/log', 'refs/heads/side', 'origin/main']))
+    expect(log.branches).not.toContain('origin/HEAD')
+    // The fork's own history, which other cases add to, follows it.
+    const order = log.commits.map((c) => c.sha)
+    expect(new Set(order.slice(0, 4))).toEqual(new Set([...ours, theirs, fork]))
+    expect(order.indexOf(ours[1])).toBeLessThan(order.indexOf(ours[0]))
+    expect(order[3]).toBe(fork)
+    const head = log.commits.find((c) => c.sha === ours[1])!
+    expect(head).toMatchObject({ parents: [ours[0]], author: 'Tess', subject: 'second of ours', refs: ['HEAD -> agent/log'] })
+    expect(head.time).toBeGreaterThan(0)
+    expect(log.commits.find((c) => c.sha === theirs)!.refs).toEqual(['tag: v1', 'origin/main', 'side'])
+  })
+
+  // A local branch is named in full so origin's copy cannot shadow it, and
+  // `limit` cuts the oldest off.
+  it('compares against a picked branch, newest `limit` first', async () => {
+    await wtGit('log')(['branch', '-f', 'main', ours[0]])
+    const log = await getWorkspaceGitLog('log', 'refs/heads/main', { limit: 2, branches: false })
+    expect(log.ref).toBe('refs/heads/main')
+    expect(log.commits.map((c) => c.sha)).toEqual([ours[1], ours[0]])
+    expect(log.more).toBe(true)
+  })
+
+  it('refuses a branch it cannot find, an option, and a stopped workspace', async () => {
+    const opts = { limit: 10, branches: false }
+    expect((await refusal(getWorkspaceGitLog('log', 'nope', opts))).code).toBe('VALIDATION')
+    expect((await refusal(getWorkspaceGitLog('log', '--output=x', opts))).code).toBe('VALIDATION')
+    expect((await refusal(getWorkspaceGitLog('stopped', undefined, opts))).code).toBe('CONFLICT')
+  })
+
+  // A branch sharing no history with HEAD is passed over as the changes
+  // read passes it over, picked or by default, so the pane and the strip
+  // never disagree about the ref. Last, since it repoints origin's main.
+  it('passes over a branch with no history in common, as the changes read does', async () => {
+    const run = wtGit('log')
+    await run(['checkout', '-q', '--orphan', 'orphan'])
+    const lone = await commit(run, 'unrelated')
+    await run(['checkout', '-q', '-f', 'agent/log'])
+    const opts = { limit: 10, branches: false }
+    expect((await refusal(getWorkspaceGitLog('log', 'orphan', opts))).code).toBe('VALIDATION')
+    expect((await refusal(getWorkspaceChanges('log', 'orphan', { diff: false }))).code).toBe('VALIDATION')
+
+    await run(['update-ref', 'refs/remotes/origin/main', lone])
+    const log = await getWorkspaceGitLog('log', undefined, opts)
+    expect(log.ref).toBe('main')
+    expect((await getWorkspaceChanges('log', undefined, { diff: false })).comparison?.ref).toBe(log.ref)
   })
 })
 

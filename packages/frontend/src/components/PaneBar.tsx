@@ -3,8 +3,8 @@ import clsx from 'clsx'
 import { Menu } from '@base-ui/react/menu'
 import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import {
-  AddIcon, ChangesIcon, ChatIcon, FilesIcon, HistoryIcon, MoreIcon, NavBackIcon, PreviewIcon, SidebarIcon, TabsIcon,
-  TilesIcon,
+  AddIcon, ChangesIcon, ChatIcon, CommitsIcon, FilesIcon, HistoryIcon, MoreIcon, NavBackIcon, PreviewIcon, SidebarIcon,
+  TabsIcon, TilesIcon,
 } from '#lib/icons'
 import { goBackScreen } from '#lib/mobileHistory'
 import { previewLabel } from '#lib/preview'
@@ -17,7 +17,7 @@ import type { PortMapping } from '@yaac/shared/types'
  * new-workspace pane's, so both offer the same controls in the same place.
  */
 
-/** The bar's labeled buttons: view mode, new shell, files, changes. */
+/** The bar's labeled buttons: view mode, new shell, files, changes, commits. */
 export const BAR_BUTTON = 'flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] '
   + 'text-text-dim transition hover:bg-surface-2 hover:text-text disabled:opacity-50 '
   + 'disabled:hover:bg-transparent disabled:hover:text-text-dim'
@@ -75,9 +75,10 @@ interface PaneActions {
   onNewShell?: () => void
   onOpenFiles: () => void
   onOpenChanges: () => void
+  onOpenCommits: () => void
   onOpenHistory?: () => void
   disabled?: string
-  titles?: { shell: string; files: string; changes: string }
+  titles?: { shell: string; files: string; changes: string; commits: string }
 }
 
 /** A new shell's tooltip: what it prints is kept (docs/workspace-steps.md
@@ -86,7 +87,7 @@ export const NEW_SHELL_TITLE = 'New shell. What it prints is kept in the workspa
 
 /** The desktop bar's view toggle and pane buttons. */
 export function PaneBarActions({
-  onNewSession, onNewShell, onOpenFiles, onOpenChanges, onOpenHistory, disabled, titles,
+  onNewSession, onNewShell, onOpenFiles, onOpenChanges, onOpenCommits, onOpenHistory, disabled, titles,
 }: PaneActions): JSX.Element {
   const viewMode = useUiStore((s) => s.viewMode)
   const setViewMode = useUiStore((s) => s.setViewMode)
@@ -134,6 +135,16 @@ export function PaneBarActions({
         <ChangesIcon size={13} />
         Changes
       </button>
+      <button
+        onClick={onOpenCommits}
+        disabled={off}
+        title={disabled ?? titles?.commits ?? 'Show commits'}
+        aria-label="Show commits"
+        className={BAR_BUTTON}
+      >
+        <CommitsIcon size={13} />
+        Commits
+      </button>
       {onOpenHistory !== undefined && (
         <button onClick={onOpenHistory} title="Read or resume closed sessions' conversations" className={BAR_BUTTON}>
           <HistoryIcon size={13} />
@@ -155,6 +166,7 @@ export function PaneOverflowMenu({
   onNewSession,
   onNewShell,
   onOpenChanges,
+  onOpenCommits,
   onOpenFiles,
   onOpenHistory,
   disabled,
@@ -194,6 +206,10 @@ export function PaneOverflowMenu({
         <Menu.Item className={ITEM} disabled={off} onClick={onOpenChanges}>
           <ChangesIcon size={14} />
           Review changes
+        </Menu.Item>
+        <Menu.Item className={ITEM} disabled={off} onClick={onOpenCommits}>
+          <CommitsIcon size={14} />
+          Commits
         </Menu.Item>
         <Menu.Item className={ITEM} disabled={off} onClick={onOpenFiles}>
           <FilesIcon size={14} />

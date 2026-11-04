@@ -8,6 +8,7 @@ import { ErrorBoundary } from '#components/ErrorBoundary'
 import { WorkspacePreview } from '#components/WorkspacePreview'
 import { useHostsPort } from '#lib/useHostsPort'
 import { workspaceHostUrl } from '@yaac/shared/workspace-hosts'
+import { WorkspaceCommits } from '#components/WorkspaceCommits'
 import { WorkspaceFiles } from '#components/WorkspaceFiles'
 import { WorkspaceFile } from '#components/WorkspaceFile'
 import { isPreviewTarget, portLabel, previewLabel, previewTarget, previewTargetPort } from '#lib/preview'
@@ -15,6 +16,7 @@ import {
   discardFileSavers, fileKey, fileTabLabels, fileTargetPath, flushFileSavers, isChangesTarget, isFileTarget,
   isFilesTarget,
 } from '#lib/files'
+import { isCommitsTarget } from '#lib/commits'
 import {
   defaultPaneTarget, isHistoryTarget, isSessionTarget, isSpecialPane, paneSession, pastConversations, sessionTarget,
   syncPaneLayout,
@@ -107,6 +109,7 @@ function paneName(
   if (isFilesTarget(target)) return 'Files'
   if (isChangesTarget(target)) return 'Changes'
   if (isHistoryTarget(target)) return 'History'
+  if (isCommitsTarget(target)) return 'Commits'
   if (isFileTarget(target)) return fileLabels?.[fileTargetPath(target)] ?? fileTargetPath(target)
   if (isStepTarget(target)) return stepTargetName(target)
   if (isSessionTarget(target)) {
@@ -139,6 +142,7 @@ export function WorkspaceView({
   const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
   const openPreview = useUiStore((s) => s.openPreview)
   const openChanges = useUiStore((s) => s.openChanges)
+  const openCommits = useUiStore((s) => s.openCommits)
   const openFiles = useUiStore((s) => s.openFiles)
   const openHistory = useUiStore((s) => s.openHistory)
   const dirtyFiles = useUiStore((s) => s.dirtyFiles)
@@ -291,6 +295,7 @@ export function WorkspaceView({
     useUiStore.getState().endLaunch(sid, 'pane')
     if (launchPane === 'files') openFiles(sid)
     else if (launchPane === 'changes') openChanges(sid)
+    else if (launchPane === 'commits') openCommits(sid)
     else openShell()
   }, [sid, launchPane])
 
@@ -623,6 +628,7 @@ export function WorkspaceView({
                 {...(interactive ? { onNewSession: newSession, onNewShell: openShell } : {})}
                 onOpenFiles={() => openFiles(workspace.workspaceId)}
                 onOpenChanges={() => openChanges(workspace.workspaceId)}
+                onOpenCommits={() => openCommits(workspace.workspaceId)}
                 {...onOpenHistory}
               />
               {pickPreviewPort ? (
@@ -703,6 +709,7 @@ export function WorkspaceView({
               previewPorts={previewPorts}
               {...(interactive ? { onNewSession: newSession, onNewShell: openShell } : {})}
               onOpenChanges={() => openChanges(workspace.workspaceId)}
+              onOpenCommits={() => openCommits(workspace.workspaceId)}
               onOpenFiles={() => openFiles(workspace.workspaceId)}
               {...onOpenHistory}
               onOpenPreview={(p) => showPreview(workspace.workspaceId, p)}
@@ -792,15 +799,16 @@ export function WorkspaceView({
           const target = key.slice(sep + 1)
           const preview = isPreviewTarget(target)
           const explorer = isFilesTarget(target) || isChangesTarget(target)
+          const commits = isCommitsTarget(target)
           const file = isFileTarget(target)
           const owner = workspaces.find((s) => s.workspaceId === id)
           const session = paneSession(owner, target)
-          // Explorer panes unmount when off-screen, since they poll the
-          // workspace. Chat panes stay mounted (re-attaching replays the
+          // Explorer and Commits panes unmount when off-screen, since they
+          // poll the workspace. Chat panes stay mounted (re-attaching replays the
           // conversation), as do file panes (unmounting loses undo history,
           // cursor and unsaved text) and previews (unmounting reloads the
           // page from scratch).
-          const ephemeral = explorer
+          const ephemeral = explorer || commits
           // In tiles mode, a column's active tab is on-screen in its body.
           const colRect = id === sid && tiled ? activePaneRect.get(target) : undefined
           // Hidden panes never change size, since a resize round-trips to
@@ -883,6 +891,10 @@ export function WorkspaceView({
                     visible={onScreen}
                     onClose={() => dropPane(id, target)}
                   />
+                </div>
+              ) : commits ? (
+                <div className="h-full w-full overflow-hidden rounded-md">
+                  <WorkspaceCommits workspaceId={id} baseBranch={owner?.baseBranch} />
                 </div>
               ) : explorer ? (
                 <div className="h-full w-full overflow-hidden rounded-md">

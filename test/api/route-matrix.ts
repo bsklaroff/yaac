@@ -266,6 +266,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/workspace/:id/changes/diff', request: `${W}/changes/diff`, body: { base: '0'.repeat(40), work: '0'.repeat(40), files: [{ path: 'a' }] }, access: 'reader', k8s: [404, 503], containerless: MISSING },
   // Run git inside the running workspace: 409 when stopped, 404 when
   // unknown.
+  { method: 'GET', path: '/api/workspace/:id/commits', request: `${W}/commits`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/file-at', request: `${W}/file-at?path=a&rev=${'0'.repeat(40)}`, access: 'reader', k8s: MISSING, containerless: MISSING },
   // The rest of the file editor reads the checkout on the server's disk, so
   // it needs no running workspace.

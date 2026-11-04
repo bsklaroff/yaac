@@ -97,6 +97,7 @@ export {
   deleteWorkspaceEntry,
   getWorkspaceChangeDiffs,
   getWorkspaceChanges,
+  getWorkspaceGitLog,
   listWorkspaceDir,
   readWorkspaceFile,
   readWorkspaceFileAtRev,

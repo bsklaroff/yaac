@@ -63,6 +63,7 @@ export {
   Tablet as TabletIcon,
   Monitor as DesktopIcon,
   FileDiff as ChangesIcon,
+  GitCommitHorizontal as CommitsIcon,
   List as FlatListIcon,
   ListTree as TreeListIcon,
   Search as SearchIcon,
