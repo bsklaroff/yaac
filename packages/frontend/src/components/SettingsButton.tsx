@@ -128,88 +128,93 @@ export function SettingsButton(
           ))}
         </div>
 
-        {/* Skills fills the pane with its own scrolling list and detail; the
+        {/* The close button sits outside the scroller so it stays put, and
+            above it so content scrolled beneath (which may paint in its own
+            layer, like a faded disabled button) cannot swallow its clicks.
+            Skills fills the pane with its own scrolling list and detail; the
             other sections scroll as one column of readable width. */}
-        <div className={clsx(
-          'relative flex min-h-0 min-w-0 flex-1 flex-col p-6 max-md:p-4 max-md:pt-10',
-          section !== 'skills' && 'overflow-y-auto',
-        )}>
-          <Dialog.Close className="absolute right-3 top-3 flex h-6 w-6 items-center justify-center rounded
-            text-text-faint transition hover:bg-surface-2 hover:text-text max-md:h-9 max-md:w-9"
+        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+          <Dialog.Close className="absolute right-3 top-3 z-10 flex h-6 w-6 items-center justify-center rounded
+            bg-surface text-text-faint transition hover:bg-surface-2 hover:text-text max-md:h-9 max-md:w-9"
             aria-label="Close settings">
             <CloseIcon size={14} />
           </Dialog.Close>
 
-          {section === 'skills' && <SkillsSettings />}
+          <div className={clsx(
+            'flex min-h-0 flex-1 flex-col p-6 max-md:p-4 max-md:pt-10',
+            section !== 'skills' && 'overflow-y-auto',
+          )}>
+            {section === 'skills' && <SkillsSettings />}
 
-          {section !== 'skills' && <div className="mx-auto w-full max-w-3xl">
-            {section === 'general' && (
-              <section>
-                <h2 className="text-sm font-semibold">General</h2>
-                <Field
-                  label="Theme"
-                  hint="Follows your system appearance unless you pick one."
-                >
-                  <RadioGroup
-                    value={themePref}
-                    onValueChange={(value) => setThemePref(value)}
-                    className="flex flex-col gap-1"
+            {section !== 'skills' && <div className="mx-auto w-full max-w-3xl">
+              {section === 'general' && (
+                <section>
+                  <h2 className="text-sm font-semibold">General</h2>
+                  <Field
+                    label="Theme"
+                    hint="Follows your system appearance unless you pick one."
                   >
-                    {THEMES.map((t) => (
-                      <label
-                        key={t.value}
-                        className="flex w-fit cursor-default items-center gap-2.5 rounded-md py-1 pr-2 text-xs
-                          text-text-dim transition hover:text-text"
-                      >
-                        <Radio.Root
-                          value={t.value}
-                          className="flex h-4 w-4 items-center justify-center rounded-full border border-border-strong
-                            transition data-[checked]:border-accent data-[checked]:bg-accent"
+                    <RadioGroup
+                      value={themePref}
+                      onValueChange={(value) => setThemePref(value)}
+                      className="flex flex-col gap-1"
+                    >
+                      {THEMES.map((t) => (
+                        <label
+                          key={t.value}
+                          className="flex w-fit cursor-default items-center gap-2.5 rounded-md py-1 pr-2 text-xs
+                            text-text-dim transition hover:text-text"
                         >
-                          <Radio.Indicator className="h-1.5 w-1.5 rounded-full bg-surface data-[unchecked]:hidden" />
-                        </Radio.Root>
-                        {t.label}
-                      </label>
-                    ))}
-                  </RadioGroup>
-                </Field>
-                <Field
-                  label="Sounds"
-                  hint="Play a chime when a workspace needs your input."
-                >
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={soundEnabled}
-                    aria-label="Sounds"
-                    onClick={() => setSoundEnabled(!soundEnabled)}
-                    className={clsx(
-                      'relative flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-                      soundEnabled ? 'bg-accent' : 'bg-surface-3',
-                    )}
+                          <Radio.Root
+                            value={t.value}
+                            className="flex h-4 w-4 items-center justify-center rounded-full border border-border-strong
+                              transition data-[checked]:border-accent data-[checked]:bg-accent"
+                          >
+                            <Radio.Indicator className="h-1.5 w-1.5 rounded-full bg-surface data-[unchecked]:hidden" />
+                          </Radio.Root>
+                          {t.label}
+                        </label>
+                      ))}
+                    </RadioGroup>
+                  </Field>
+                  <Field
+                    label="Sounds"
+                    hint="Play a chime when a workspace needs your input."
                   >
-                    <span
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={soundEnabled}
+                      aria-label="Sounds"
+                      onClick={() => setSoundEnabled(!soundEnabled)}
                       className={clsx(
-                        'h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
-                        soundEnabled ? 'translate-x-[18px]' : 'translate-x-0.5',
+                        'relative flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
+                        soundEnabled ? 'bg-accent' : 'bg-surface-3',
                       )}
-                    />
-                  </button>
-                </Field>
-                <GitIdentityField />
-                <TimeZoneField />
-                <PhoneLinkField />
-              </section>
-            )}
+                    >
+                      <span
+                        className={clsx(
+                          'h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
+                          soundEnabled ? 'translate-x-[18px]' : 'translate-x-0.5',
+                        )}
+                      />
+                    </button>
+                  </Field>
+                  <GitIdentityField />
+                  <TimeZoneField />
+                  <PhoneLinkField />
+                </section>
+              )}
 
-            {section === 'shortcuts' && <ShortcutsPane />}
+              {section === 'shortcuts' && <ShortcutsPane />}
 
-            {section === 'credentials' && <CredentialsPane />}
+              {section === 'credentials' && <CredentialsPane />}
 
-            {section === 'project' && <ProjectSettings />}
+              {section === 'project' && <ProjectSettings />}
 
-            {section === 'userDockerfile' && <UserDockerfilePane />}
-          </div>}
+              {section === 'userDockerfile' && <UserDockerfilePane />}
+            </div>}
+          </div>
         </div>
       </Modal>
     </>
