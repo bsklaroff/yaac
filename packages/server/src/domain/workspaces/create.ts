@@ -898,11 +898,16 @@ export async function createWorkspace(
       })
     }
     // A resume whose checkout is gone recreates it from its recorded base
-    // branch, or from the default if origin no longer has that.
+    // branch, or from the default if origin no longer has that. The default
+    // is then recorded as its base branch, since the webapp compares HEAD
+    // against origin's copy of whatever the row names.
     await fetched
     const base = options.branch !== undefined && !(await remoteBranchExists(repo, options.branch))
       ? await getDefaultBranch(repo)
       : options.branch ?? await getDefaultBranch(repo)
+    if (base !== options.branch) {
+      await applyWorkspaceEvent({ type: 'base-branch-resolved', projectId, workspaceId, baseBranch: base })
+    }
     // Again, since files may have landed while the fetch ran; the module
     // dirs made since are empty, so they do not count.
     await refuseCheckingOutOver(wtDir)

@@ -9,6 +9,7 @@
  * waiting for them or open a new one. Lanes never shift sideways, so every
  * line runs straight except where a branch forks or merges.
  */
+import { FULL_COMMIT_PATTERN } from '@yaac/shared/steps'
 import type { GitLogCommit } from '@yaac/shared/types'
 
 /** The one layout target of a workspace's Commits pane. */
@@ -71,8 +72,20 @@ export function layoutGraph(commits: Pick<GitLogCommit, 'sha' | 'parents'>[]): {
   return { rows, width }
 }
 
-/** A compare-picker value as the strip shows it: a local branch without
- *  its `refs/heads/`. */
-export function branchName(ref: string): string {
+/** Whether a compared ref is a commit, as a workspace created at one is
+ *  compared against by default. */
+export const isCommit = (ref: string): boolean => FULL_COMMIT_PATTERN.test(ref)
+
+/** A compared ref as the strips show it: a local branch without its
+ *  `refs/heads/`, and a commit by its short sha. */
+export function refName(ref: string): string {
+  if (isCommit(ref)) return ref.slice(0, 7)
   return ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref
+}
+
+/** What a pane compares against with no branch picked, for its "Compare
+ *  with" reset: the fork branch, or the commit a workspace without one was
+ *  created at. */
+export function defaultBaseLabel(baseBranch?: string, startCommit?: string): string {
+  return baseBranch ?? (startCommit ? `the start commit (${refName(startCommit)})` : 'the fork branch')
 }

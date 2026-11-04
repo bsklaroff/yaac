@@ -134,7 +134,8 @@ export interface StepsSettled {
 }
 
 /** The branch a workspace forks from changed: its agent ran
- *  `yaac-mama set-base`. */
+ *  `yaac-mama set-base`, or a restart rebuilt its lost checkout from the
+ *  default branch because origin no longer has the old one. */
 export interface BaseBranchResolved {
   type: 'base-branch-resolved'
   projectId: string

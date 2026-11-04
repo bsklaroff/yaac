@@ -7,7 +7,7 @@ import { repoDir, setDataDir, workspaceDir } from '@yaac/shared/project-paths'
 import { testTmpBase } from '@yaac/test-utils/tmp'
 import { handleFixture, installFakeWorkspaceDriver, workspacePathsFixture } from '#test/support/fake-driver'
 import { closeDb } from '#db/client'
-import { recordWorkspaceCreated } from '#db/workspace-store'
+import { recordWorkspaceCreated, setWorkspaceStartCommit } from '#db/workspace-store'
 import { createCheckout } from '#domain/git'
 import { execFileAsync } from '#lib/shell'
 import { createWorkspaceFolder, deleteWorkspaceEntry, getWorkspaceChanges, getWorkspaceGitLog, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, uploadWorkspaceFile, writeWorkspaceFile } from '#domain/workspaces'
@@ -371,8 +371,8 @@ describe('getWorkspaceChanges', () => {
     })
     expect((await getWorkspaceChanges('gs', 'agent/gs', { diff: false })).comparison).not.toHaveProperty('fetchedAt')
     // A picked base that resolves nowhere, or is not a branch, is the
-    // caller's mistake.
-    for (const bad of ['gone', 'main..HEAD']) {
+    // caller's mistake; one git would read as an option is too.
+    for (const bad of ['gone', 'main..HEAD', '--octopus']) {
       const err = await refusal(getWorkspaceChanges('gs', bad))
       expect(err.code).toBe('VALIDATION')
       expect(err.message).toContain(bad)
@@ -387,10 +387,9 @@ describe('getWorkspaceChanges', () => {
     expect((await refusal(getWorkspaceChanges('nope'))).code).toBe('NOT_FOUND')
   })
 
-  // Once the agent pushes its branch, @{upstream} is the branch itself and
-  // the runtime's default base shows an empty diff. Diffing against the fork
-  // branch keeps committed work visible until it merges.
-  it('offers the recorded fork branch as the default base, and lets a picked one win', async () => {
+  // Origin's copy of the recorded fork branch, never a local one nothing
+  // keeps current; a workspace created at a commit is compared against it.
+  it('offers origin\'s fork branch as the default base, and lets a picked one win', async () => {
     // The script's last line names its base, default base, diff and
     // listing (`yaac-changes <base> <default> diff|nodiff <listing> ...`).
     const asked = async (...args: Parameters<typeof getWorkspaceChanges>): Promise<string | undefined> => {
@@ -398,10 +397,12 @@ describe('getWorkspaceChanges', () => {
       await getWorkspaceChanges(...args)
       return /yaac-changes '[^']*' '[^']*' \S+ \S+/.exec(execs[0]?.cmd ?? '')?.[0]
     }
-    expect(await asked('gs', undefined, { diff: false, listing: 'paths' })).toBe("yaac-changes '' 'main' nodiff paths")
-    expect(await asked('gs', 'agent/gs')).toBe("yaac-changes 'agent/gs' 'main' diff ''")
-    // Nothing records a fork branch for this one.
+    expect(await asked('gs', undefined, { diff: false, listing: 'paths' })).toBe("yaac-changes '' 'origin/main' nodiff paths")
+    expect(await asked('gs', 'agent/gs')).toBe("yaac-changes 'agent/gs' 'origin/main' diff ''")
+    // Nothing records a fork branch or a start commit for this one.
     expect(await asked('list', undefined, { diff: false })).toBe("yaac-changes '' '' nodiff ''")
+    await setWorkspaceStartCommit(PROJECT, 'scratch', 'c0ffee')
+    expect(await asked('scratch', undefined, { diff: false })).toBe("yaac-changes '' 'c0ffee' nodiff ''")
   })
 
   // With no explicit base, the recorded fork branch failed to resolve. That
@@ -517,8 +518,10 @@ describe('getWorkspaceGitLog', () => {
   })
 
   // A branch sharing no history with HEAD is passed over as the changes
-  // read passes it over, picked or by default, so the pane and the strip
-  // never disagree about the ref. Last, since it repoints origin's main.
+  // read passes it over, so the pane and the strip never disagree about the
+  // ref: a picked one is refused, and an unusable fork branch leaves HEAD
+  // alone rather than falling back to a local copy nothing keeps current.
+  // Last, since it repoints origin's main.
   it('passes over a branch with no history in common, as the changes read does', async () => {
     const run = wtGit('log')
     await run(['checkout', '-q', '--orphan', 'orphan'])
@@ -530,8 +533,8 @@ describe('getWorkspaceGitLog', () => {
 
     await run(['update-ref', 'refs/remotes/origin/main', lone])
     const log = await getWorkspaceGitLog('log', undefined, opts)
-    expect(log.ref).toBe('main')
-    expect((await getWorkspaceChanges('log', undefined, { diff: false })).comparison?.ref).toBe(log.ref)
+    expect(log.ref).toBeNull()
+    expect((await getWorkspaceChanges('log', undefined, { diff: false })).comparison).toBeNull()
   })
 })
 

@@ -2,9 +2,9 @@ import type { JSX } from 'react'
 import clsx from 'clsx'
 import { ServerError } from '@yaac/shared/errors'
 import { useUiStore } from '#lib/store'
-import { BranchIcon } from '#lib/icons'
+import { BranchIcon, CommitsIcon } from '#lib/icons'
 import { relativeAge } from '#lib/time'
-import { branchName } from '#lib/commits'
+import { isCommit, refName } from '#lib/commits'
 import { lineTotals } from '#lib/gitStatus'
 import { useWorkspaceChanges } from '#lib/useWorkspaceChanges'
 import { LineCountsLabel } from '#components/ui/LineCountsLabel'
@@ -82,12 +82,13 @@ function commits(n: number): string {
   return `${n} commit${n === 1 ? '' : 's'}`
 }
 
-/** A branch icon and the ref name. */
+/** A branch or commit icon and the ref name. */
 function refLabel(ref: string): JSX.Element {
+  const Icon = isCommit(ref) ? CommitsIcon : BranchIcon
   return (
     <span className="inline-flex items-baseline gap-1 font-mono text-text">
-      <BranchIcon size={11} className="shrink-0 self-center" />
-      {branchName(ref)}
+      <Icon size={11} className="shrink-0 self-center" />
+      {refName(ref)}
     </span>
   )
 }

@@ -276,20 +276,19 @@ describe('parseChangesOutput', () => {
 describe('buildChangesScript', () => {
   it('builds the default (no-base) script with two empty positionals', () => {
     const s = buildChangesScript()
-    expect(s).toContain('@{upstream}')       // last-resort default fork base
+    expect(s).not.toContain('upstream')      // a pushed branch's upstream is itself
     expect(s).toContain('"origin/$1"')       // explicit-base branch present but unused
-    expect(s).toContain('"origin/$2"')       // default fork-branch present but unused
     expect(s).toContain('add -A --ignore-errors')
     expect(s).toContain('GIT_INDEX_FILE')
     expect(s.endsWith("yaac-changes '' '' diff '' '' '' '' '' '' '' ''")).toBe(true)
   })
 
-  // An unpushed branch has no origin/<b>; falling through to HEAD would
-  // hide every committed change.
-  it('falls back to the local ref when the branch has no origin/ counterpart', () => {
+  // A picked branch may be unpushed, so it falls back to the local ref; the
+  // default is a full ref already.
+  it('tries a picked branch on origin then locally, and takes the default as given', () => {
     const s = buildChangesScript()
     expect(s).toContain('for r in "origin/$1" "$1"; do')
-    expect(s).toContain('for r in "origin/$2" "$2" "@{upstream}"; do')
+    expect(s).toContain('base=$(git merge-base "$2" HEAD 2>/dev/null) && ref=$2;')
   })
 
   it('reuses one stable index across polls so add -A can be incremental', () => {
@@ -326,11 +325,9 @@ describe('buildChangesScript', () => {
     expect(s).not.toContain('origin/dev')    // the branch name is never spliced into the script body
   })
 
-  it('passes the fork branch as the $2 default positional (graceful origin/$2 path)', () => {
-    const s = buildChangesScript(undefined, 'main')
-    expect(s).toContain('"origin/$2"')       // the default ref is derived from $2, never interpolated
-    expect(s.endsWith("yaac-changes '' 'main' diff '' '' '' '' '' '' '' ''")).toBe(true)
-    expect(s).not.toContain('origin/main')   // the branch name is never spliced into the script body
+  it('passes the default ref as the $2 positional', () => {
+    const s = buildChangesScript(undefined, 'origin/main')
+    expect(s.endsWith("yaac-changes '' 'origin/main' diff '' '' '' '' '' '' '' ''")).toBe(true)
   })
 
   it('leaves the diff body out when asked, keeping the file list', () => {
@@ -366,17 +363,17 @@ describe('buildChangesScript', () => {
     expect(buildChangesScript('  dev  ', '  main  ').endsWith("yaac-changes 'dev' 'main' diff '' '' '' '' '' '' '' ''")).toBe(true)
   })
 
-  // Falling through to HEAD would hide every commit.
-  it('resolves a fork branch that exists only locally, keeping committed work visible', () => {
+  // A workspace created at a commit is compared against that commit.
+  it('compares against a default given as a commit, keeping committed work visible', () => {
     const { repo, idx } = scratchRepo()
+    const start = git(repo, 'rev-parse', 'HEAD').trim()
     git(repo, 'checkout', '-q', '-b', 'agent/x')
     fs.writeFileSync(path.join(repo, 'committed.txt'), 'committed\n')
     git(repo, 'add', '-A')
     git(repo, 'commit', '-qm', 'work')
     fs.writeFileSync(path.join(repo, 'untracked.txt'), 'working\n')
 
-    // `main` exists locally; `origin/main` does not.
-    const { stdout, code } = runPodScript(repo, idx, undefined, 'main')
+    const { stdout, code } = runPodScript(repo, idx, undefined, start)
     expect(code).toBe(0)
     const out = parse(stdout)
     expect(out.baseResolved).toBe(true)
@@ -527,8 +524,7 @@ describe('buildChangesScript', () => {
     git(repo, 'commit', '-qm', 'work')
     fs.writeFileSync(path.join(repo, 'dirty.txt'), 'dirty\n')
 
-    // No remote, upstream or local branch of that name.
-    const { stdout, code } = runPodScript(repo, idx, undefined, 'nowhere')
+    const { stdout, code } = runPodScript(repo, idx, undefined, 'origin/nowhere')
     expect(code).toBe(0)
     const out = parse(stdout)
     expect(out.baseResolved).toBe(false)
@@ -544,11 +540,9 @@ describe('buildChangesScript', () => {
     const repo = path.join(root, 'workspace')
     fs.mkdirSync(repo)
     git(repo, 'init', '-q', '-b', 'agent/x')
-    git(repo, 'config', 'branch.agent/x.remote', 'origin')
-    git(repo, 'config', 'branch.agent/x.merge', 'refs/heads/main')
     const idx = path.join(root, 'scratch.idx')
     const added = (): Record<string, unknown> => {
-      const { stdout, code } = runPodScript(repo, idx, undefined, 'main')
+      const { stdout, code } = runPodScript(repo, idx, undefined, 'origin/main')
       expect(code).toBe(0)
       const out = parse(stdout)
       expect(out.baseResolved).toBe(true)
@@ -588,7 +582,7 @@ describe('buildChangesScript', () => {
     fs.mkdirSync(path.join(repo, 'empty'))
     fs.symlinkSync('mine.txt', path.join(repo, 'link'))
 
-    const full = runPodScript(repo, idx, undefined, 'main', false, 'full')
+    const full = runPodScript(repo, idx, undefined, 'origin/main', false, 'full')
     expect(full.code).toBe(0)
     const read = parseChangesOutput(full.stdout)
     expect(read.ref).toEqual({ name: 'origin/main', ahead: 1, behind: 1 })

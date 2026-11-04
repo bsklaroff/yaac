@@ -7,8 +7,8 @@ import { MAX_LOG_COMMITS, type GitLogCommit, type WorkspaceGitLog } from '@yaac/
 import { BranchPicker } from '#components/BranchPicker'
 import { PopoverPopup } from '#components/ui/menu'
 import { api } from '#lib/api'
-import { branchName, layoutGraph, type GraphEdge, type GraphRow } from '#lib/commits'
-import { BranchIcon, ChevronIcon, LoadingIcon, WarningIcon } from '#lib/icons'
+import { defaultBaseLabel, isCommit, layoutGraph, refName, type GraphEdge, type GraphRow } from '#lib/commits'
+import { BranchIcon, ChevronIcon, CommitsIcon, LoadingIcon, WarningIcon } from '#lib/icons'
 import { useUiStore } from '#lib/store'
 import { relativeAge } from '#lib/time'
 
@@ -28,13 +28,17 @@ const paint = (color: number): string => PALETTE[color % PALETTE.length]
  * against, as a graph beside a GitHub-style commit list. The branch is the
  * one the Changes pane and the git status strip compare against, so picking
  * one here picks it there too. Commits only the compared branch has (the
- * ones HEAD is behind by) are dimmed. Polls as often as the strip does
+ * ones HEAD is behind by) are dimmed. Of the refs at each commit only HEAD,
+ * tags, origin's fork branch and the compared branch are marked, since a
+ * checkout full of agent branches would bury the subjects in pills. Polls as often as the strip does
  * while on screen, and is unmounted off it.
  */
-export function WorkspaceCommits({ workspaceId, baseBranch }: {
+export function WorkspaceCommits({ workspaceId, baseBranch, startCommit }: {
   workspaceId: string
   /** The branch the workspace forked from: the compared branch by default. */
   baseBranch?: string
+  /** The commit it was created at, compared against when it has no branch. */
+  startCommit?: string
 }): JSX.Element {
   const base = useUiStore((s) => s.changesBase[workspaceId])
   const setChangesBase = useUiStore((s) => s.setChangesBase)
@@ -51,26 +55,16 @@ export function WorkspaceCommits({ workspaceId, baseBranch }: {
   const data = log.data
   const { rows, width } = useMemo(() => layoutGraph(data?.commits ?? []), [data?.commits])
   const ours = useMemo(() => reachable(data?.commits ?? [], data?.head ?? null), [data?.commits, data?.head])
+  const pinned = new Set([baseBranch && `origin/${baseBranch}`, data?.ref && refName(data.ref)])
+  const marked = (ref: string): boolean => isHead(ref) || ref.startsWith('tag: ') || pinned.has(ref)
 
-  if (log.isError && !data) {
-    const stopped = log.error instanceof ServerError && log.error.code === 'CONFLICT'
+  // A stopped workspace has no checkout to list branches from either, so
+  // the strip goes too; any other failure keeps it, since picking another
+  // branch is often the way out (one sharing no history with HEAD).
+  if (log.isError && !data && log.error instanceof ServerError && log.error.code === 'CONFLICT') {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 bg-surface text-xs text-text-dim">
-        {stopped ? <span>Start the workspace to see its commits.</span> : (
-          <>
-            <WarningIcon size={18} className="text-text-faint" />
-            <span>Couldn’t load commits.</span>
-            <span className="max-w-full truncate px-4 text-[11px] text-text-faint">{log.error.message}</span>
-            {base !== undefined && (
-              <button
-                onClick={() => setChangesBase(workspaceId, undefined)}
-                className="rounded bg-surface-2 px-2 py-1 text-[11px] text-text-dim transition hover:text-text"
-              >
-                Compare with {baseBranch ?? 'the fork branch'}
-              </button>
-            )}
-          </>
-        )}
+      <div className="flex h-full items-center justify-center bg-surface text-xs text-text-dim">
+        Start the workspace to see its commits.
       </div>
     )
   }
@@ -79,10 +73,25 @@ export function WorkspaceCommits({ workspaceId, baseBranch }: {
       <CommitsStrip
         workspaceId={workspaceId}
         baseBranch={baseBranch}
+        startCommit={startCommit}
         data={data}
-        error={log.isError ? log.error.message : undefined}
+        error={log.isError && data ? log.error.message : undefined}
       />
-      {!data ? (
+      {log.isError && !data ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 text-xs text-text-dim">
+          <WarningIcon size={18} className="text-text-faint" />
+          <span>Couldn’t load commits.</span>
+          <span className="max-w-full truncate px-4 text-[11px] text-text-faint">{log.error.message}</span>
+          {base !== undefined && (
+            <button
+              onClick={() => setChangesBase(workspaceId, undefined)}
+              className="rounded bg-surface-2 px-2 py-1 text-[11px] text-text-dim transition hover:text-text"
+            >
+              Compare with {defaultBaseLabel(baseBranch, startCommit)}
+            </button>
+          )}
+        </div>
+      ) : !data ? (
         <div className="flex flex-1 items-center justify-center text-text-dim">
           <LoadingIcon size={18} className="animate-spin" />
         </div>
@@ -91,7 +100,14 @@ export function WorkspaceCommits({ workspaceId, baseBranch }: {
       ) : (
         <div className="min-h-0 flex-1 overflow-auto">
           {data.commits.map((c, i) => (
-            <CommitRow key={c.sha} commit={c} row={rows[i]} width={width} theirs={!ours.has(c.sha)} />
+            <CommitRow
+              key={c.sha}
+              commit={c}
+              refs={c.refs.filter(marked)}
+              row={rows[i]}
+              width={width}
+              theirs={!ours.has(c.sha)}
+            />
           ))}
           {data.more && (limit < MAX_LOG_COMMITS ? (
             <button
@@ -115,9 +131,10 @@ export function WorkspaceCommits({ workspaceId, baseBranch }: {
 
 /** The strip under the pane's top edge: which branch HEAD is compared
  *  against, with a picker over the checkout's branches. */
-function CommitsStrip({ workspaceId, baseBranch, data, error }: {
+function CommitsStrip({ workspaceId, baseBranch, startCommit, data, error }: {
   workspaceId: string
   baseBranch?: string
+  startCommit?: string
   data: WorkspaceGitLog | undefined
   /** Why the latest poll failed, shown over the last answer. */
   error?: string
@@ -135,11 +152,11 @@ function CommitsStrip({ workspaceId, baseBranch, data, error }: {
     })).branches ?? [],
     enabled: open,
   })
-  const label = branchName(data?.ref ?? base ?? baseBranch ?? 'HEAD only')
+  const compared = data ? data.ref : base ?? baseBranch ?? startCommit ?? null
   // Origin's copy of the fork branch leads, since the list shows only its
   // first few until a filter is typed.
   const fork = baseBranch && `origin/${baseBranch}`
-  const names = (listed.data ?? []).map(branchName)
+  const names = (listed.data ?? []).map(refName)
   const branches = names.includes(fork ?? '') ? [fork!, ...names.filter((n) => n !== fork)] : names
   return (
     <div className="flex h-8 shrink-0 items-center gap-2 border-b border-hairline px-1.5 text-[11px] text-text-dim">
@@ -150,8 +167,10 @@ function CommitsStrip({ workspaceId, baseBranch, data, error }: {
           className="flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 outline-none transition
             hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2 data-[popup-open]:text-text"
         >
-          <BranchIcon size={11} className="shrink-0 text-text-faint" />
-          <span className="max-w-[220px] truncate font-mono">{label}</span>
+          {compared !== null && isCommit(compared)
+            ? <CommitsIcon size={11} className="shrink-0 text-text-faint" />
+            : <BranchIcon size={11} className="shrink-0 text-text-faint" />}
+          <span className="max-w-[220px] truncate font-mono">{compared === null ? 'HEAD only' : refName(compared)}</span>
           <ChevronIcon size={10} className="shrink-0 rotate-90 text-text-faint" />
         </Popover.Trigger>
         <PopoverPopup side="bottom" align="start" sideOffset={6} className="w-[260px]">
@@ -164,7 +183,7 @@ function CommitsStrip({ workspaceId, baseBranch, data, error }: {
             onSelect={(name) => {
               // Local branches go by their full name, so an origin branch
               // of the same name cannot shadow them.
-              setChangesBase(workspaceId, listed.data?.find((b) => branchName(b) === name) ?? name)
+              setChangesBase(workspaceId, listed.data?.find((b) => refName(b) === name) ?? name)
               setOpen(false)
               setQuery('')
             }}
@@ -182,8 +201,10 @@ function CommitsStrip({ workspaceId, baseBranch, data, error }: {
   )
 }
 
-function CommitRow({ commit, row, width, theirs }: {
+function CommitRow({ commit, refs, row, width, theirs }: {
   commit: GitLogCommit
+  /** The commit's refs worth a pill. */
+  refs: string[]
   row: GraphRow
   width: number
   /** Only on the compared branch, not in HEAD's history. */
@@ -197,7 +218,7 @@ function CommitRow({ commit, row, width, theirs }: {
     >
       <GraphCell row={row} width={width} merge={commit.parents.length > 1} />
       <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
-        {commit.refs.map((r) => <RefPill key={r} name={r} />)}
+        {refs.map((r) => <RefPill key={r} name={r} />)}
         <span className="min-w-16 truncate" title={commit.subject}>{commit.subject}</span>
       </span>
       <span className="shrink-0 truncate text-text-dim max-md:hidden" style={{ maxWidth: 140 }}>{commit.author}</span>
@@ -211,11 +232,12 @@ function CommitRow({ commit, row, width, theirs }: {
   )
 }
 
-/** A ref at a commit: `HEAD -> branch` as the branch, marked, and tags and
- *  remote branches in their own tints. */
+/** A ref at a commit: `HEAD -> branch` as plain HEAD, since the branch a
+ *  workspace's agent works on is a generated name, and tags and remote
+ *  branches in their own tints. */
 function RefPill({ name }: { name: string }): JSX.Element {
-  const head = name.startsWith('HEAD')
-  const label = name.replace(/^HEAD -> /, '').replace(/^tag: /, '')
+  const head = isHead(name)
+  const label = head ? 'HEAD' : name.replace(/^tag: /, '')
   const tone = head
     ? 'border-accent/60 text-accent'
     : name.startsWith('tag: ') ? 'border-warning/50 text-warning' : 'border-link/40 text-link'
@@ -258,6 +280,12 @@ function GraphCell({ row, width, merge }: { row: GraphRow; width: number; merge:
       </svg>
     </div>
   )
+}
+
+/** Whether a decoration is HEAD: `HEAD` when detached, else `HEAD -> <branch>`.
+ *  A branch named `HEAD-fix` is neither. */
+function isHead(ref: string): boolean {
+  return ref === 'HEAD' || ref.startsWith('HEAD -> ')
 }
 
 /** The commits HEAD's history holds, walking parents from `head`. */

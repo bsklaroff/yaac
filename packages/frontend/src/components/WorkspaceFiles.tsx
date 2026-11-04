@@ -13,7 +13,7 @@ import { Tooltip } from '@base-ui/react/tooltip'
 import type { SymlinkTarget, WorkspaceChange, WorkspaceChanges } from '@yaac/shared/types'
 import { DEFAULT_FONT_SIZE, layoutOf, paneViewKey, useUiStore } from '#lib/store'
 import { BranchPicker } from '#components/BranchPicker'
-import { branchName } from '#lib/commits'
+import { defaultBaseLabel, isCommit, refName } from '#lib/commits'
 import { DiffView } from '#components/DiffView'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { PaneFindBar, useFindQuery } from '#components/ui/FindPanel'
@@ -55,7 +55,7 @@ import {
   type TreeNode,
 } from '#lib/files'
 import {
-  BranchIcon, ChevronIcon, CollapseAllIcon, ExpandAllIcon, FileCodeIcon, FileConfigIcon, FileIcon,
+  BranchIcon, ChevronIcon, CollapseAllIcon, CommitsIcon, ExpandAllIcon, FileCodeIcon, FileConfigIcon, FileIcon,
   FileImageIcon, FileJsonIcon, FileShellIcon, FileTextIcon, FlatListIcon, FolderIcon, FolderOpenIcon, HideIcon,
   LoadingIcon, MoreIcon, NewFileIcon, NewFolderIcon, SearchIcon, ShowIcon, SymlinkIcon, TreeListIcon,
   UploadFilesIcon, UploadFolderIcon, WarningIcon,
@@ -147,11 +147,13 @@ function isStopped(err: unknown): boolean {
  * pinch over the list set it. A pinch anywhere else in the pane zooms the
  * page.
  */
-export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly = false }: {
+export function WorkspaceFiles({ workspaceId, projectId, baseBranch, startCommit, changedOnly = false }: {
   workspaceId: string
   projectId: string
   /** The branch the workspace forked from: the diff base picker's default. */
   baseBranch?: string
+  /** The commit it was created at, the default base when it has no branch. */
+  startCommit?: string
   changedOnly?: boolean
 }): JSX.Element {
   const queryClient = useQueryClient()
@@ -198,14 +200,14 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
     diff: changedOnly, listing: changedOnly ? 'paths' : 'full', poll: CHANGES_POLL_MS,
   })
   // A picked base whose branch went away fails every poll; this goes back
-  // to the fork branch.
+  // to the default.
   const pick = useUiStore((s) => s.changesBase[workspaceId])
   const resetPick = pick !== undefined && (
     <button
       onClick={() => useUiStore.getState().setChangesBase(workspaceId, undefined)}
       className="shrink-0 rounded bg-surface-2 px-2 py-0.5 text-[11px] text-text-dim transition hover:text-text"
     >
-      Compare with {baseBranch ?? 'the fork branch'}
+      Compare with {defaultBaseLabel(baseBranch, startCommit)}
     </button>
   )
   const changed = useMemo(() => changes.data?.files ?? [], [changes.data?.files])
@@ -825,6 +827,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
           workspaceId={workspaceId}
           projectId={projectId}
           baseBranch={baseBranch}
+          startCommit={startCommit}
           data={changes.data}
           files={visibleChanged}
         />
@@ -1281,10 +1284,11 @@ function NearScreen({ content, estimate, force = false, children }: {
  * for it), the shown files' line totals, overall and per stage, and what
  * the diff leaves out.
  */
-function ChangesStrip({ workspaceId, projectId, baseBranch, data, files }: {
+function ChangesStrip({ workspaceId, projectId, baseBranch, startCommit, data, files }: {
   workspaceId: string
   projectId: string
   baseBranch?: string
+  startCommit?: string
   data: WorkspaceChanges | undefined
   /** The changed files shown, whose lines are totalled. */
   files: WorkspaceChange[]
@@ -1294,15 +1298,12 @@ function ChangesStrip({ workspaceId, projectId, baseBranch, data, files }: {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerQuery, setPickerQuery] = useState('')
   const { data: branchData } = useProjectBranches(projectId, pickerOpen)
-  // Always send an explicit base, even the workspace's own fork branch. The
-  // server default reads the workspace's git config, which `git push -u`
-  // repoints at the agent's own branch, making the diff empty.
   const pickBase = (branch: string): void => {
     setChangesBase(workspaceId, branch)
     setPickerOpen(false)
     setPickerQuery('')
   }
-  const baseLabel = base ? branchName(base) : baseBranch ?? (data?.base ? data.base.slice(0, 7) : 'base')
+  const compared = base ?? baseBranch ?? startCommit
   const byStage = stageTotals(files)
   return (
     <div className="flex h-7 shrink-0 items-center gap-2 border-b border-hairline px-1.5 text-[11px] text-text-dim">
@@ -1312,8 +1313,10 @@ function ChangesStrip({ workspaceId, projectId, baseBranch, data, files }: {
           className="flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 outline-none transition
             hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2 data-[popup-open]:text-text"
         >
-          <BranchIcon size={11} className="shrink-0 text-text-faint" />
-          <span className="max-w-[180px] truncate font-mono text-text-dim">{baseLabel}</span>
+          {compared !== undefined && isCommit(compared)
+            ? <CommitsIcon size={11} className="shrink-0 text-text-faint" />
+            : <BranchIcon size={11} className="shrink-0 text-text-faint" />}
+          <span className="max-w-[180px] truncate font-mono text-text-dim">{compared ? refName(compared) : 'base'}</span>
           <ChevronIcon size={10} className="shrink-0 rotate-90 text-text-faint" />
         </Popover.Trigger>
         <PopoverPopup side="bottom" align="start" sideOffset={6} className="w-[240px]">

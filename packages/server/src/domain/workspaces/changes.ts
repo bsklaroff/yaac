@@ -68,8 +68,7 @@ export const CHANGES_BUSY = 7
  */
 export interface ChangesRequest {
   base?: string
-  /** The branch the workspace forked from, or the commit it was created at
-   *  when it has none, used when `base` is unset. */
+  /** The ref compared against when `base` is unset (`forkBase`). */
   defaultBase?: string
   /** Include the unified diff body. */
   diff: boolean
@@ -188,23 +187,21 @@ const FORCE_ADD = 'for p; do shift; { [ -e "$p" ] || [ -L "$p" ]; } && set -- "$
   + '[ $# -eq 0 ] || exec git --literal-pathspecs add -f -- "$@"'
 
 /**
- * Shell that picks the branch HEAD is compared against, for the changes
- * script and the Commits pane's log (`checkoutLog`) alike: `$1`, a branch
- * the user picked, else `$2`, the fork branch, else `@{upstream}`, each
- * named branch tried as `origin/<name>` and then as itself (see
- * `changesScript` for why). A candidate counts only if it shares history
- * with HEAD. Sets `ref` to the one found, `@{upstream}` written out as the
- * branch it stands for, and `base` to its merge base with HEAD; with none,
- * `ref` is empty, and a picked `$1` exits CHANGES_BASE_UNRESOLVED.
+ * Shell that picks the ref HEAD is compared against, for the changes script
+ * and the Commits pane's log (`checkoutLog`) alike: `$1`, a branch the user
+ * picked, tried as `origin/<name>` and then as itself, else `$2`, the
+ * default ref as given. A candidate counts only if it shares history with
+ * HEAD. Sets `ref` to the one found and `base` to its merge base with HEAD;
+ * with none, `ref` is empty, and a picked `$1` exits
+ * CHANGES_BASE_UNRESOLVED. So does a picked `$1` with a leading dash, which
+ * git would read as an option.
  */
 export const RESOLVE_BASE_SH = 'ref=; '
+  + `case $1 in -*) exit ${CHANGES_BASE_UNRESOLVED};; esac; `
   + 'if [ -n "$1" ]; then '
   + 'for r in "origin/$1" "$1"; do base=$(git merge-base "$r" HEAD 2>/dev/null) && { ref=$r; break; }; done; '
   + `[ -n "$ref" ] || exit ${CHANGES_BASE_UNRESOLVED}; `
-  + 'elif [ -n "$2" ]; then '
-  + 'for r in "origin/$2" "$2" "@{upstream}"; do base=$(git merge-base "$r" HEAD 2>/dev/null) && { ref=$r; break; }; done; '
-  + 'else base=$(git merge-base @{upstream} HEAD 2>/dev/null) && ref=@{upstream}; fi; '
-  + '[ "$ref" != "@{upstream}" ] || ref=$(git rev-parse --abbrev-ref "@{upstream}"); '
+  + 'elif [ -n "$2" ]; then base=$(git merge-base "$2" HEAD 2>/dev/null) && ref=$2; fi; '
 
 /**
  * The script body. Resolves the diff base, stages the working tree into the
@@ -216,9 +213,8 @@ export const RESOLVE_BASE_SH = 'ref=; '
  *  - `$1`: a base branch the user picked. Tries `origin/<$1>`, then local
  *    `<$1>`. If neither resolves, exits `CHANGES_BASE_UNRESOLVED` rather than
  *    diffing against the wrong base.
- *  - `$2`: the branch the workspace forked from (e.g. `main`), the default
- *    when `$1` is empty. Tries `origin/<$2>`, local `<$2>`, then
- *    `@{upstream}`.
+ *  - `$2`: the ref compared against when `$1` is empty (`forkBase`), used
+ *    as given.
  *  - `$3`: `diff`, or `nodiff` to skip the diff body, so a caller that
  *    wants only the file list and counts does not pay to ship every line;
  *    or `patch`, no body either, but the changed paths' body on a delta, to
@@ -232,10 +228,6 @@ export const RESOLVE_BASE_SH = 'ref=; '
  *    of, and the hash of its ignored entries and untracked folders, or
  *    empty.
  *
- * `$2` is needed because after the agent renames and pushes its branch,
- * `@{upstream}` is that branch's own remote, so the merge base collapses to
- * HEAD and all commits disappear. Local `<$2>` covers a fork branch that
- * was never pushed.
  *
  * `REF` names the ref the base was found on and how far HEAD is behind and
  * ahead of it, for the status bar. `TREES` names HEAD, the agent's tree and
@@ -446,9 +438,9 @@ function shSingleQuote(s: string): string {
  * Build the `exec` command tail: `sh -c <script> yaac-changes <base>
  * <defaultBase> <diff|nodiff|patch> <listing> <held trees, settings and
  * listing keys>`. Both
- * branch names are passed as positionals, never interpolated into the
- * script, so any value reaches git as one literal ref (and a bogus one
- * simply fails to resolve). Both empty selects the `@{upstream}` default.
+ * refs are passed as positionals, never interpolated into the script, so
+ * any value reaches git as one literal ref (and a bogus one simply fails to
+ * resolve). Both empty compares HEAD with nothing.
  */
 export function buildChangesScript(loc: ChangesLocation, request: ChangesRequest, held?: HeldReading): string {
   return `sh -c ${shSingleQuote(changesScript(loc))} yaac-changes `
