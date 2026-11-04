@@ -1,5 +1,6 @@
 import type { CSSProperties, JSX } from 'react'
 import clsx from 'clsx'
+import { FeedbackButton } from '#components/FeedbackButton'
 import { NewProjectButton } from '#components/NewProjectButton'
 import { ServersButton } from '#components/ServerBadge'
 import { ServerHealthButton } from '#components/ServerHealthOverlay'
@@ -116,6 +117,7 @@ export function ProjectRail({
       <NewProjectButton />
 
       <div className="flex-1" />
+      <FeedbackButton />
       <ServerHealthButton />
       <ServersButton />
       <SettingsButton />

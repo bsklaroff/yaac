@@ -6,6 +6,7 @@ import tailwindcss from '@tailwindcss/vite'
 // resolver reads the shared package's `#…` imports map; the default `bundle`
 // loader hands bare imports to raw Node, which cannot resolve them.
 import { resolveServerTarget } from '@yaac/shared/server-api'
+import { buildStamp } from '@yaac/shared/build-info'
 
 interface OutgoingLike { setHeader(name: string, value: string): void }
 interface IncomingLike { headers: Record<string, string | string[] | undefined> }
@@ -37,9 +38,16 @@ async function serverProxy() {
   return { '/api': { ...sameOrigin, ws: true } }
 }
 
+const stamp = buildStamp(path.resolve(import.meta.dirname, '../..'))
+
 export default defineConfig(async ({ command }) => ({
   root: 'src',
   plugins: [react(), tailwindcss()],
+  // What this webapp build is, for feedback reports (docs/feedback.md).
+  define: {
+    'import.meta.env.YAAC_VERSION': JSON.stringify(stamp.version),
+    'import.meta.env.YAAC_GIT_COMMIT': JSON.stringify(stamp.gitCommit),
+  },
   server: {
     port: 1420,
     strictPort: true,

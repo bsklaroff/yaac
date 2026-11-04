@@ -90,6 +90,9 @@ There are two access levels:
   but only for a full hex object id and a confined path, under the
   owner's own git config, so a reader gains no execution and, under
   `k8s`, nothing secret the workspace's files do not already show.
+  `/feedback` is open to every user too. Every report is signed with the
+  one install key, so an endpoint that limits per key (docs/feedback.md)
+  throttles every user of the install together when one of them floods it.
 - **`owner`**: the resource's owner only. Every write, and the reads that
   grant execution or reach: `/pty/attach`, `/acp/attach` (whose frames
   prompt, cancel and answer permission asks) and `/forward/attach` (a

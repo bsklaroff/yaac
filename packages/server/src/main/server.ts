@@ -16,10 +16,14 @@ import { volumeApp } from '#routes/volumes'
 import { siteApp } from '#routes/sites'
 import { imageApp } from '#routes/images'
 import { serverApp } from '#routes/server'
+import { jsonBodyLimit, zv } from '#routes/validator'
+import { submitFeedback } from '#domain/feedback'
 import { workspaceDriver } from '#drivers/driver'
 import { PACKAGE_ROOT } from '@yaac/shared/paths'
+import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
 import type { AccessMode, Whoami } from '@yaac/shared/types'
 import { listUsers } from '#db'
+import { z } from 'zod'
 import { errorText, serverLog } from '#lib/log'
 
 export interface ServerAppDeps {
@@ -104,6 +108,9 @@ export function buildMamaRelayApp(authenticate: (bearer: string) => Promise<bool
   return app
 }
 
+/** A feedback body: its images base64-encoded, plus room for the words. */
+const FEEDBACK_BODY_LIMIT = Math.ceil(MAX_ATTACHMENT_BYTES * 4 / 3) + 64 * 1024
+
 /**
  * Every HTTP route, mounted under `/api` (like the WebSocket routes,
  * `#api/ws-routes`) so none collide with SPA paths. `AppType` is this sub-app;
@@ -137,6 +144,30 @@ function apiRoutes(
       const users = (await listUsers()).filter((u) => access() === 'local' || u.login !== null)
       return c.json({ ...c.get('principal'), users } satisfies Whoami)
     })
+    .post(
+      '/feedback',
+      jsonBodyLimit(FEEDBACK_BODY_LIMIT, 'the feedback\'s images are over the 5 MB limit'),
+      zv('json', z.object({
+        message: z.string().trim().min(1).max(10_000),
+        images: z.array(z.object({ mimeType: z.string(), data: z.string() })).optional(),
+        client: z.object({
+          version: z.string().max(100).optional(),
+          gitCommit: z.string().max(100).optional(),
+          userAgent: z.string().max(1000),
+          // A string rather than an enum, so a shell kind this server
+          // predates still gets its report through.
+          app: z.object({
+            kind: z.string().max(20),
+            version: z.string().max(100).optional(),
+            build: z.string().max(100).optional(),
+            gitCommit: z.string().max(100).optional(),
+          }).optional(),
+        }).optional(),
+      })),
+      async (c) => {
+        return c.json(await submitFeedback(c.get('principal'), c.req.valid('json')))
+      },
+    )
     .route('/project', projectApp)
     .route('/workspace', workspaceApp)
     .route('/auth', authApp)

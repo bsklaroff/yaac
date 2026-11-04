@@ -10,3 +10,6 @@ coverage/
 /.yaac-dev/
 /.yaac-dev-client/
 /.yaac-dev-npm/
+
+# Written by the iPhone app scheme's pre-action (ios/README.md).
+/ios/BuildCommit.xcconfig

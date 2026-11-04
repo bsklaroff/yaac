@@ -101,6 +101,9 @@ const ROUTE_MATRIX: RouteCase[] = [
   // ── health and identity ───────────────────────────────────────────────
   { method: 'GET', path: '/api/health', access: 'public', k8s: 200, containerless: 200 },
   { method: 'GET', path: '/api/whoami', access: 'reader', k8s: 200, containerless: 200 },
+  // Off unless YAAC_FEEDBACK_URL names an endpoint (docs/feedback.md),
+  // which the matrix's server has none of.
+  { method: 'POST', path: '/api/feedback', body: { message: 'x' }, access: 'reader', k8s: UNSUPPORTED, containerless: UNSUPPORTED },
 
   // ── projects ──────────────────────────────────────────────────────────
   { method: 'GET', path: '/api/project/list', access: 'reader', k8s: 200, containerless: 200 },

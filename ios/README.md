@@ -26,6 +26,7 @@ workspace; nothing in `pnpm build`, `pnpm lint` or vitest touches it.
 | `Yaac/PreviewView.swift` | a forwarded port's preview, full screen over the webapp |
 | `Yaac/PortForward.swift` | the loopback listener and tunnel a preview loads through |
 | `Info.plist` | the keys build settings cannot generate: the `yaac://` scheme, plain http for previews, and export compliance (only the system's HTTPS, so exempt) |
+| `Yaac.xcconfig` | the app target's base configuration, which takes the build's commit from the scheme pre-action's `BuildCommit.xcconfig` (see "The web view") |
 
 The project uses Xcode 16 synchronized folders, so a file added under
 `Yaac/` or `YaacTests/` is in its target with no project edit.
@@ -110,7 +111,17 @@ with everything typed into it.
   entries only when `openPreview` does, and its window controls only under
   Electron;
   `test-playwright-scripts/ios-shell-bridge.js` checks both at a phone
-  viewport. A message is accepted only from the top frame
+  viewport. The bridge also carries `app`, which the SPA sends with feedback
+  (docs/feedback.md): the Info.plist's version (`MARKETING_VERSION`), build
+  number (`CURRENT_PROJECT_VERSION`) and `YaacGitCommit`, the commit the
+  app was built from. The shared scheme's "Stamp git commit" pre-action
+  writes `git rev-parse HEAD`, plus `-dirty` when tracked files have
+  uncommitted changes, into the gitignored `BuildCommit.xcconfig`.
+  `Yaac.xcconfig`, the target's base configuration, includes that file,
+  and `Info.plist` expands its `YAAC_GIT_COMMIT`. A scheme pre-action runs
+  before the build and outside the user-script sandbox, so the target keeps
+  sandboxing on. A build that skips the scheme (`xcodebuild -target`)
+  reports no commit. A message is accepted only from the top frame
   of the connected origin. As with the desktop shell, the page can show the
   list but never change the selection, so a server cannot move the app onto
   one it chooses.

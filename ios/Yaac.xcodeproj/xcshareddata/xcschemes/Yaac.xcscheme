@@ -5,6 +5,25 @@
    <BuildAction
       parallelizeBuildables = "YES"
       buildImplicitDependencies = "YES">
+      <PreActions>
+         <ExecutionAction
+            ActionType = "Xcode.IDEStandardExecutionActionsCore.ExecutionActionType.ShellScriptAction">
+            <ActionContent
+               title = "Stamp git commit"
+               scriptText = '# Write the commit this build is from where Yaac.xcconfig includes it&#10;# (ios/README.md). A scheme pre-action rather than a build phase, so it can&#10;# read the repository with user-script sandboxing on. Rewritten only when it&#10;# changes, so an unchanged commit triggers no rebuild.&#10;out="$PROJECT_DIR/BuildCommit.xcconfig"&#10;commit=$(git -C "$PROJECT_DIR" rev-parse HEAD 2&gt;/dev/null) || commit=&#10;if [ -n "$commit" ] &amp;&amp; [ -n "$(git -C "$PROJECT_DIR" status --porcelain --untracked-files=no)" ]; then commit="$commit-dirty"; fi&#10;line="YAAC_GIT_COMMIT = $commit"&#10;[ "$(cat "$out" 2&gt;/dev/null)" = "$line" ] || echo "$line" &gt; "$out"&#10;'
+               shellToInvoke = "/bin/sh">
+               <EnvironmentBuildable>
+                  <BuildableReference
+                     BuildableIdentifier = "primary"
+                     BlueprintIdentifier = "A1C0DE000000000000000002"
+                     BuildableName = "Yaac.app"
+                     BlueprintName = "Yaac"
+                     ReferencedContainer = "container:Yaac.xcodeproj">
+                  </BuildableReference>
+               </EnvironmentBuildable>
+            </ActionContent>
+         </ExecutionAction>
+      </PreActions>
       <BuildActionEntries>
          <BuildActionEntry
             buildForTesting = "YES"

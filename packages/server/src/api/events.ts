@@ -11,6 +11,7 @@ import { countStoppedWorkspaces } from '#db'
 import { listProjects } from '#domain/projects'
 import { workspaceDriver } from '#drivers/driver'
 import { planUsageForSnapshot } from '#domain/auth'
+import { feedbackHost } from '#domain/feedback'
 import { errorText, serverLog } from '#lib/log'
 import { previewed, withPreviews } from '#api/prompt-previews'
 import type { ServerEvent, ServerSnapshot } from '@yaac/shared/types'
@@ -57,6 +58,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
   const hidden = new Set(provisioning.flatMap((p) => [p.workspaceId, p.claimedId]))
   return {
     driver: workspaceDriver().kind,
+    feedbackHost: feedbackHost(),
     workspaces: active.workspaces.filter((w) => !hidden.has(w.workspaceId)).map(withPreviews),
     workspaceGroups,
     stale: active.stale,

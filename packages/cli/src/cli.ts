@@ -30,6 +30,7 @@ import { authClear } from '#commands/auth-clear'
 import { authList } from '#commands/auth-list'
 import { configEditProject, configEditDockerfile, configEditUserDockerfile } from '#commands/config-edit'
 import { configGitIdentity } from '#commands/config-git-identity'
+import { feedback } from '#commands/feedback'
 import { configWorkspaceAutoDelete } from '#commands/config-workspace-auto-delete'
 import { configScratchDirs } from '#commands/config-scratch-dirs'
 import { configInitSteps } from '#commands/config-init-steps'
@@ -730,6 +731,13 @@ program
   .option('-b, --bind <address>', 'Address to bind (default 127.0.0.1)')
   .addHelpText('after', '\nThe server cannot bind ports on your machine — under the k8s driver it runs\nas a pod, and under containerless they are bound on the server\'s own machine —\nso this holds the listener and tunnels each connection to it. Against a\ncontainerless server on this machine there is nothing to tunnel and it refuses;\nan explicit --bind is taken as "I know what I am binding" and proceeds.\nRuns until interrupted.')
   .action(forward)
+
+program
+  .command('feedback')
+  .description('Send feedback through the selected server to the feedback endpoint its operator set, with your name and email, the server\'s version and driver, and this CLI\'s version, Node version and OS')
+  .argument('<message>', 'What to tell them')
+  .option('--image <file>', 'Attach a screenshot: PNG, JPEG, GIF or WebP, 5 MB in all (repeatable)', collect, [])
+  .action(feedback)
 
 const remote = program
   .command('remote')

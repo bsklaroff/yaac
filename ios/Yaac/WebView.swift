@@ -10,16 +10,35 @@ import WebKit
  * makes of a native shell (`windowApi()` in
  * packages/frontend/src/lib/platform.ts): show the server
  * list, open a link in Safari, and preview a workspace's forwarded port
- * (`PreviewView`). Like the desktop shell's, it cannot change
- * which server the app is on, so a server cannot move the app to one it
- * chooses. Navigation away from the origin opens in Safari instead.
+ * (`PreviewView`). It also carries `app`, this app's version, build number
+ * and commit, which the SPA sends with feedback (docs/feedback.md). Like
+ * the desktop shell's, it cannot change which server the app is on, so a
+ * server cannot move the app to one it chooses. Navigation away from the origin opens in Safari instead.
  */
 struct WebView: UIViewRepresentable {
   let origin: String
   let store: ServerStore
 
+  /**
+   * `app` as a JSON object: the Info.plist's version and build number, and
+   * the commit the scheme's "Stamp git commit" pre-action puts there
+   * (ios/README.md). A key the plist lacks, or leaves empty, is left out.
+   */
+  private static let appInfo: String = {
+    let info = Bundle.main.infoDictionary ?? [:]
+    let fields = [
+      "kind": "ios",
+      "version": info["CFBundleShortVersionString"] as? String ?? "",
+      "build": info["CFBundleVersion"] as? String ?? "",
+      "gitCommit": info["YaacGitCommit"] as? String ?? "",
+    ].filter { !$0.value.isEmpty }
+    guard let data = try? JSONSerialization.data(withJSONObject: fields) else { return "undefined" }
+    return String(decoding: data, as: UTF8.self)
+  }()
+
   private static let bridge = """
     window.yaacWindow = {
+      app: \(appInfo),
       showServers: () => window.webkit.messageHandlers.yaac.postMessage({ op: 'showServers' }),
       openExternal: (url) => window.webkit.messageHandlers.yaac.postMessage({ op: 'openExternal', url: String(url) }),
       openPreview: (workspaceId, port) => window.webkit.messageHandlers.yaac.postMessage({
