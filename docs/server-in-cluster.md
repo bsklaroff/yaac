@@ -48,8 +48,7 @@ one mounts two (see "Storage claims").
    (`YAAC_ACCESS_MODE`, `tailnet` under `--tailnet [<host>]`, with `--owner` as
    `YAAC_ACCESS_OWNER`) and hostname (`YAAC_ALLOWED_HOSTS`), which the server
    checks against the mode it recorded (docs/remote-hosting.md "Access
-   modes"). `--site-domain` becomes `YAAC_SITE_DOMAINS`; an install without
-   the flag keeps the domains the live Deployment has.
+   modes").
 
 Install then waits for the published origin to report ready and registers
 the server: `server.json` selects that origin and the data dir's

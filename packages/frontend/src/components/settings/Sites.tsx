@@ -171,8 +171,7 @@ function confirmText(confirm: { action: Action; site: string } | null): {
   }
 }
 
-/** The install's edge: the domains a hostname may sit under, and whether
- *  its tunnel to Cloudflare is connected. */
+/** Whether the install's tunnel to Cloudflare is connected. */
 function EdgeStatus(): JSX.Element | null {
   const { data: edge } = useQuery({ queryKey: ['site-edge'], queryFn: () => api.site.edge.$get() })
   if (edge === undefined) return null
@@ -180,18 +179,13 @@ function EdgeStatus(): JSX.Element | null {
     return (
       <p className="mt-2 text-[11px] leading-relaxed text-warning">
         This install has no tunnel, so no site is reachable from the internet. Set one up with{' '}
-        <code className="text-text-dim">CF_TUNNEL_TOKEN=… yaac cluster install --site-domain &lt;domain&gt;</code>.
+        <code className="text-text-dim">CF_TUNNEL_TOKEN=… yaac cluster install</code>.
       </p>
     )
   }
   return (
-    <p className="mt-2 text-[11px] text-text-faint">
-      Hostnames may sit under{' '}
-      {edge.domains.map((d, i) => <span key={d}>{i > 0 && ', '}<code className="text-text-dim">{d}</code></span>)}
-      {' · '}
-      <span className={edge.tunnel === 'connected' ? 'text-text-dim' : 'text-danger'}>
-        tunnel {edge.tunnel}
-      </span>
+    <p className={`mt-2 text-[11px] ${edge.tunnel === 'connected' ? 'text-text-faint' : 'text-danger'}`}>
+      Cloudflare tunnel {edge.tunnel}
     </p>
   )
 }

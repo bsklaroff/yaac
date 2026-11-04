@@ -23,7 +23,7 @@ let edge: SiteEdgeStatus
 let server: FetchMock
 const site = (name: string): SiteEntry => sites.find((s) => s.name === name) as SiteEntry
 beforeEach(() => {
-  edge = { domains: ['example.com', 'example.org'], tunnel: 'connected' }
+  edge = { tunnel: 'connected' }
   sites = [
     {
       name: 'web', hostname: 'app.example.com', port: 3000, steps: SERVE, volume: 'db', createdAt: ago(60),
@@ -89,8 +89,7 @@ describe('Sites settings', () => {
     renderWithClient(<Sites projectId="proj" readOnly={false} />, client())
     expect(await screen.findByText('app.example.com')).toBeTruthy()
     expect(server.called(LIST)[0].query.get('project')).toBe('proj')
-    expect((await screen.findByText(/^Hostnames may sit under/)).textContent)
-      .toBe('Hostnames may sit under example.com, example.org · tunnel connected')
+    expect(await screen.findByText('Cloudflare tunnel connected')).toBeTruthy()
     expect(screen.getByText('app.example.com').getAttribute('href')).toBe('https://app.example.com')
     expect(row('app.example.com')).toBe('webapp.example.com:3000 · dbDeployStopEdit'
       + 'Live abcdef1 · running, deployed 5m ago'
@@ -174,10 +173,10 @@ describe('Sites settings', () => {
   })
 
   it('says how to set up a tunnel on an install without one, and only lists sites for a teammate', async () => {
-    edge = { domains: [], tunnel: 'absent' }
+    edge = { tunnel: 'absent' }
     renderWithClient(<Sites projectId="proj" readOnly />, client())
     expect((await screen.findByText(/^This install has no tunnel/)).textContent)
-      .toContain('CF_TUNNEL_TOKEN=… yaac cluster install --site-domain <domain>')
+      .toContain('CF_TUNNEL_TOKEN=… yaac cluster install.')
     expect(await screen.findByText('app.example.com')).toBeTruthy()
     for (const name of ['Deploy', 'Stop', 'Start', 'Edit', 'New site', 'Delete site web']) {
       expect(screen.queryByRole('button', { name })).toBeNull()

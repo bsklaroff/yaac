@@ -28,7 +28,6 @@ import {
 import { authorizeProject, type Actor } from '#domain/access'
 import { VOLUME_NEED } from '#domain/workspaces'
 import { isInfraPort } from '#lib/port-policy'
-import { env } from '@yaac/shared/env'
 import { ServerError } from '@yaac/shared/errors'
 import { parseStepGraph, type StepGraph } from '@yaac/shared/steps'
 import type { SiteDetail, SiteEdgeStatus, SiteEntry } from '@yaac/shared/types'
@@ -59,22 +58,14 @@ export async function requireSite(projectId: string, name: string): Promise<Site
   return row
 }
 
-const underSiteDomain = (hostname: string): boolean =>
-  env.siteDomains.some((d) => hostname === d || hostname.endsWith(`.${d}`))
-
-/** A hostname under one of the install's site domains, lowercased. */
+/**
+ * A hostname, lowercased. Any name is accepted: it only receives traffic
+ * once the install's Cloudflare tunnel routes it, which is decided in the
+ * Cloudflare account (docs/public-sites.md "The edge").
+ */
 function checkHostname(raw: string): string {
   const hostname = raw.trim().toLowerCase()
   if (!DNS_NAME.test(hostname)) throw new ServerError('VALIDATION', `"${raw}" is not a hostname like shop.example.com`)
-  const domains = env.siteDomains
-  if (domains.length === 0) {
-    throw new ServerError('VALIDATION', 'this install serves no site domains; '
-      + 'reinstall with `yaac cluster install --site-domain <domain>`')
-  }
-  if (!underSiteDomain(hostname)) {
-    throw new ServerError('VALIDATION', `${hostname} is under none of this install's site domains `
-      + `(${domains.join(', ')})`)
-  }
   return hostname
 }
 
@@ -198,9 +189,9 @@ export async function showSite(projectId: string, name: string): Promise<SiteDet
   }
 }
 
-/** The install's site domains and whether its tunnel is connected. */
+/** Whether the install's tunnel is connected. */
 export async function getSiteEdge(): Promise<SiteEdgeStatus> {
-  return { domains: env.siteDomains, tunnel: await workspaceDriver().siteTunnelStatus() }
+  return { tunnel: await workspaceDriver().siteTunnelStatus() }
 }
 
 async function toSiteEntry(row: SiteRow): Promise<SiteEntry> {
@@ -252,13 +243,12 @@ async function toSiteEntry(row: SiteRow): Promise<SiteEntry> {
 /**
  * Hand the driver every site's route: its hostname, the port its live
  * release serves on, and that release, which is absent while none is
- * meant to serve. A site the install no longer serves is left out, so its
- * hostname answers 404: one under none of `YAAC_SITE_DOMAINS` (the domains
- * changed since it was made) or of a revoked share.
+ * meant to serve. A revoked share's sites are left out, so their
+ * hostnames answer 404.
  */
 export async function syncSiteRoutes(): Promise<void> {
   const revoked = new Set((await listProjectRows()).filter((p) => p.shareRevoked).map((p) => p.id))
-  const served = (await listSites()).filter((row) => !revoked.has(row.projectId) && underSiteDomain(row.hostname))
+  const served = (await listSites()).filter((row) => !revoked.has(row.projectId))
   const routes: SiteRoute[] = served.map((row) => ({
     siteId: row.id,
     hostname: row.hostname,

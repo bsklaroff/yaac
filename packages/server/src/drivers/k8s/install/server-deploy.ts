@@ -251,9 +251,6 @@ interface ServerEnvOptions {
   /** `--owner`: the tailnet login that claims a `local` install's data when
    *  it switches to `tailnet` (docs/remote-hosting.md "Access modes"). */
   owner?: string
-  /** `--site-domain`: the domains a public site's hostname may sit under.
-   *  `deployServerWorkload` keeps the live Deployment's when absent. */
-  siteDomains?: string[]
 }
 
 /**
@@ -290,7 +287,6 @@ function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: string; valu
     ['YAAC_ACCESS_MODE', hosting.accessMode],
     ['YAAC_ACCESS_OWNER', opts.owner],
     ['YAAC_ALLOWED_HOSTS', hosting.allowedHosts.join(',')],
-    ['YAAC_SITE_DOMAINS', opts.siteDomains?.join(',')],
     ['YAAC_USE_TOR', env.useTor ? '1' : undefined],
     ['YAAC_HOST_TOR_SOCKS_URL', env.useTor ? torSocksUrlForPod(opts.torHostAddr) : undefined],
     // Datapath settings the server applies on every start.
@@ -504,14 +500,6 @@ export async function deployedInstallIdentity(byo: boolean): Promise<InstallIden
   return byo ? BYO_INSTALL_IDENTITY : processIdentity()
 }
 
-/** The site domains the live server Deployment was given, or [] without one. */
-async function deployedSiteDomains(): Promise<string[]> {
-  const dep = await readObject<RawServerDeployment>(serverDeploymentRef())
-  const value = dep?.spec?.template?.spec?.containers?.find((c) => c.name === 'server')?.env
-    ?.find((e) => e.name === 'YAAC_SITE_DOMAINS')?.value
-  return value ? value.split(',') : []
-}
-
 /** Whether the cluster carries a server Deployment at all. */
 export async function serverDeploymentExists(): Promise<boolean> {
   return await readObject(serverDeploymentRef()) !== null
@@ -536,8 +524,6 @@ export async function deployServerWorkload(
     log: (message: string) => void
   },
 ): Promise<string> {
-  // A re-install without `--site-domain` keeps the domains sites were made under.
-  const siteDomains = opts.siteDomains ?? await deployedSiteDomains()
   // Built before the storage step too: the binder pod runs it.
   opts.log('Building the server image (from the bundle)...')
   const imageRef = await ensureServerImage()
@@ -560,7 +546,6 @@ export async function deployServerWorkload(
   // copied field list could silently drop a new one.
   const origin = await ensureServerDeployment(imageRef, opts.fronting, opts.identity, {
     ...opts,
-    siteDomains,
     ...(opts.storage.kind === 'classes' ? { volumeStorageClass: opts.storage.rwo } : {}),
   })
   await waitForPublishedServer(origin, opts.fronting)

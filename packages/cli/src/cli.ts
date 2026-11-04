@@ -199,13 +199,11 @@ cluster
   .option('--rwo-storage-class <name>', 'With --byo: the StorageClass the server\'s own yaac-server-local claim is provisioned from (default: the cluster\'s default class)')
   .option('--tailnet [host]', 'Publish the server on your Tailscale tailnet instead of at 127.0.0.1, at an https origin whose callers are identified by their tailnet user. With <host> (this machine\'s MagicDNS name), through this machine\'s own `tailscale serve`; without, through the Tailscale Kubernetes operator, which install sets up from TS_OAUTH_CLIENT_ID / TS_OAUTH_CLIENT_SECRET when the cluster lacks it')
   .option('--owner <login>', 'With --tailnet (or --byo): switch a local install to tailnet mode, giving its projects and settings to this tailnet login. One-way; not needed for a fresh install')
-  .option('--site-domain <domain>', 'A domain public sites\' hostnames may sit under (repeatable; see `yaac site`). Give the Cloudflare tunnel\'s token in CF_TUNNEL_TOKEN', collect, [])
   // `--nodes` stays a string so the install reports what the user typed
   // rather than `NaN`. A failed finishing check exits 1.
-  // Without `--site-domain`, install keeps the domains the cluster has.
-  .action(async ({ siteDomain, ...options }: ClusterInstallArgs & { siteDomain: string[] }) => {
+  .action(async (options: ClusterInstallArgs) => {
     const { clusterInstall } = await import('#commands/cluster')
-    await clusterInstall({ ...options, ...(siteDomain.length > 0 ? { siteDomains: siteDomain } : {}) })
+    await clusterInstall(options)
   })
 
 cluster
@@ -605,7 +603,7 @@ const site = program
 function siteOptions(cmd: Command, required: boolean): Command {
   const option = (flags: string, description: string): Command =>
     required ? cmd.requiredOption(flags, description) : cmd.option(flags, description)
-  option('--hostname <host>', 'The public hostname it serves, under one of the install\'s --site-domain domains')
+  option('--hostname <host>', 'The public hostname it serves, which the install\'s Cloudflare tunnel must route')
   option('--port <n>', 'The port its releases serve on')
   option('--steps <file>', 'A JSON file of the steps each release runs; one must be a service')
   return cmd.option('--volume <name>', 'A project volume each release mounts at $YAAC_VOLUME_DIR (see `yaac volume`)')

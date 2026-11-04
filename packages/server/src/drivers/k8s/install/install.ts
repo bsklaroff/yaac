@@ -48,7 +48,6 @@ import {
   ClusterInstallError,
   YAAC_CLUSTER_INSTALL,
   resolveNodeCount,
-  siteDomainsArg,
   tailnetServeHost,
 } from './arg-guards'
 import { assessCniAdoption, gatherCniFacts } from './cni-adopt'
@@ -147,13 +146,6 @@ export interface ClusterInstallOptions {
    * accepted so the error can quote the raw `--nodes` text.
    */
   nodes?: number | string
-  /**
-   * `--site-domain`, repeatable: the domains a public site's hostname must
-   * sit under (docs/server-in-cluster.md "The site edge"), handed to the
-   * server as `YAAC_SITE_DOMAINS`. Given, they replace the server's;
-   * absent, the server keeps the ones it has.
-   */
-  siteDomains?: string[]
 }
 
 export interface ClusterInstallDeps {
@@ -1188,7 +1180,6 @@ async function deployServer(
       fronting: tailnetFronting({ hostname: TAILNET_HOSTNAME }),
       identity: BYO_INSTALL_IDENTITY,
       owner: opts.owner,
-      siteDomains: siteDomainsArg(opts),
       storage: { kind: 'classes', ...byoStorage },
       log: deps.log,
     })
@@ -1212,8 +1203,7 @@ async function deployServer(
   // machine's data dir (docs/server-in-cluster.md).
   const identity = processIdentity()
   const origin = await deployServerWorkload({
-    fronting, identity, storage: { kind: 'static' }, torHostAddr, owner: opts.owner,
-    siteDomains: siteDomainsArg(opts), log: deps.log,
+    fronting, identity, storage: { kind: 'static' }, torHostAddr, owner: opts.owner, log: deps.log,
   })
   deps.log(`The yaac server is serving at ${origin}`)
 }

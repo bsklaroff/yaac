@@ -53,13 +53,10 @@ Other flags:
   `TS_OAUTH_CLIENT_SECRET`. The server then identifies every caller by
   tailnet user (docs/server-in-cluster.md "Reachability",
   docs/remote-hosting.md). `--byo` implies the operator form.
-- `--site-domain <domain>` (repeatable) names a domain public sites'
-  hostnames may sit under, a bare name such as `example.com`. Given, the
-  flags replace the server's domains; a later install without them keeps
-  them. `CF_TUNNEL_TOKEN=<token>` gives install a Cloudflare Tunnel token,
-  which it keeps in a Secret and runs cloudflared with; later installs
-  reuse it. Without a token only the router is applied, and no site is
-  public.
+- `CF_TUNNEL_TOKEN=<token>` gives install a Cloudflare Tunnel token for
+  public sites (docs/public-sites.md), which it keeps in a Secret and runs
+  cloudflared with; later installs reuse it. Without a token only the
+  router is applied, and no site is public.
 
 ## Images are built here, and only here
 

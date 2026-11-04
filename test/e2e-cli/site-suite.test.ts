@@ -91,7 +91,6 @@ describe('yaac site (real CLI + real server)', () => {
     const gitTarget = { host: mockGit.host, port: mockGit.port, tls: false }
     serverEnv = {
       ...testEnv.env,
-      YAAC_SITE_DOMAINS: DOMAIN,
       YAAC_E2E_UPSTREAM_REDIRECTS: JSON.stringify({ 'github.com': gitTarget, 'api.github.com': gitTarget }),
       YAAC_E2E_SKIP_FETCH: '1',
     }
@@ -121,13 +120,14 @@ describe('yaac site (real CLI + real server)', () => {
     await testEnv.cleanup()
   })
 
-  it('create needs --hostname, --port and --steps, refuses a hostname outside the site domains, and prints the tunnel\'s settings', async () => {
+  it('create needs --hostname, --port and --steps, refuses a malformed hostname, and prints the tunnel\'s settings', async () => {
     const steps = await stepsFile('v1.json', serving(3000, 'v1'))
     expect(await refused('site', 'create', NAME, 'web', '--port', '3000', '--steps', steps))
       .toContain('--hostname <host>')
     expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', 'http', '--steps', steps))
       .toContain('--port takes a port number')
-    await refused('site', 'create', NAME, 'web', '--hostname', 'app.elsewhere.test', '--port', '3000', '--steps', steps)
+    expect(await refused('site', 'create', NAME, 'web', '--hostname', `https://app.${DOMAIN}`, '--port', '3000', '--steps', steps))
+      .toContain('is not a hostname')
     expect(await yaac('site', 'list', NAME)).toContain(`No sites in ${NAME}`)
 
     const created = await yaac('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000',
