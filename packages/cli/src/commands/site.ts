@@ -43,7 +43,7 @@ export async function siteCreate(
   console.log(`  hostname  ${opts.hostname}`)
   console.log(`  service   ${ROUTER_URL}`)
   if (tunnel === 'absent') {
-    console.log('This install has no tunnel yet: run `CF_TUNNEL_TOKEN=<token> yaac cluster install --site-domain <domain>`.')
+    console.log('This install has no tunnel yet: run `CF_TUNNEL_TOKEN=<token> yaac cluster install`.')
   } else if (tunnel === 'disconnected') {
     console.log('The tunnel holds no connection to Cloudflare; check its token and the yaac-site-tunnel pods.')
   }

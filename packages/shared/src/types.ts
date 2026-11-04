@@ -1756,11 +1756,9 @@ export interface SiteDetail extends SiteEntry {
   releases: Array<{ workspaceId: string; commit?: string; createdAt: string; stoppedAt?: string; rerunOf?: string }>
 }
 
-/** What `GET /site/edge` answers: the domains a site's hostname may sit
- *  under, and whether the install's tunnel holds a connection to
- *  Cloudflare (`absent`: install was given no tunnel token). */
+/** What `GET /site/edge` answers: whether the install's tunnel holds a
+ *  connection to Cloudflare (`absent`: install was given no tunnel token). */
 export interface SiteEdgeStatus {
-  domains: string[]
   tunnel: 'connected' | 'disconnected' | 'absent'
 }
 

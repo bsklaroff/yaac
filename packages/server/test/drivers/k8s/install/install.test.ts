@@ -676,19 +676,11 @@ describe('runClusterInstall', () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining('could not deploy the public-site edge (rollout timed out)'))
   })
 
-  it('--site-domain reaches the server, and CF_TUNNEL_TOKEN the site edge', async () => {
+  it('hands CF_TUNNEL_TOKEN to the site edge before the server deploys', async () => {
     vi.stubEnv('CF_TUNNEL_TOKEN', 'tunnel-token')
-    await runClusterInstall({ siteDomains: [' Example.com', 'sites.example.org'] }, makeDeps())
-    expect(serverPod().containers[0].env).toContainEqual({ name: 'YAAC_SITE_DOMAINS', value: 'example.com,sites.example.org' })
+    await runClusterInstall({}, makeDeps())
     expect(ensureSiteEdge).toHaveBeenCalledWith({ tunnelToken: 'tunnel-token' })
     expect(order('ensureSiteEdge')).toBeLessThan(order('deployServerWorkload'))
-
-    for (const bad of ['*.example.com', 'https://example.com', 'example.com:443', 'localhost']) {
-      const d = makeDeps()
-      const err = await runClusterInstall({ siteDomains: [bad] }, d).catch((e: unknown) => e)
-      expect((err as Error).message, bad).toMatch(/--site-domain takes a bare domain/)
-      expect(d.run).not.toHaveBeenCalled()
-    }
   })
 
   // A restart policy brings the cluster back after a host reboot. Only a

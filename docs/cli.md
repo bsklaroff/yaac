@@ -29,7 +29,9 @@ yaac server                     The yaac server the CLI and web app talk to
 yaac cluster                    The Kubernetes cluster (k8s driver only)
   check                         Verify prerequisites and wiring
   install                       Create or converge the cluster, images and server.
-                                Safe to re-run; never destructive
+                                Safe to re-run; never destructive. CF_TUNNEL_TOKEN
+                                gives public sites a Cloudflare tunnel
+                                (public-sites.md)
     --nodes <count>             kind nodes to create (default 1, max 5;
                                 ignored if the cluster exists)
     --tailnet                   Publish the server on your tailnet via the
@@ -40,9 +42,6 @@ yaac cluster                    The Kubernetes cluster (k8s driver only)
                                 shared claim
     --rwo-storage-class <name>  With --byo: class for the server's own claim
                                 (default: the cluster's default class)
-    --site-domain <domain>      A domain public sites' hostnames may use
-                                (repeatable); the Cloudflare tunnel's token
-                                comes from CF_TUNNEL_TOKEN (public-sites.md)
   delete [-y]                   Delete the kind cluster and its registry; keeps
                                 workspaces' checkouts. Refused on a --byo install
 
@@ -159,7 +158,7 @@ yaac site                       A project's public sites, each served by a
                                 only; public-sites.md)
   create <project> <name>       --hostname, --port and --steps required; prints
                                 what to add to the Cloudflare tunnel
-    --hostname <host>           Public hostname, under a --site-domain
+    --hostname <host>           Public hostname the tunnel routes
     --port <n>                  Port its releases serve on
     --steps <file>              JSON file of the steps each release runs
     --volume <name>             Volume each release mounts (see `yaac volume`)

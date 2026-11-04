@@ -80,7 +80,6 @@ function snapshot(): RuntimeSnapshot {
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  vi.stubEnv('YAAC_SITE_DOMAINS', 'example.com')
   await seedProject()
   clearAllProvisioningForTests()
   _clearTerminatingForTests()
@@ -113,7 +112,6 @@ function installDriver(): void {
 
 afterEach(async () => {
   vi.useRealTimers()
-  vi.unstubAllEnvs()
   clearAllProvisioningForTests()
   resetWorkspaceDriver()
   await closeDb()

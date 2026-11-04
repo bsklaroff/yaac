@@ -3,7 +3,7 @@
  * (docs/public-sites.md). The driver is the fake, recording the routes it
  * is handed; deploys are deploys.test.ts.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   createSite,
   deleteSite,
@@ -30,7 +30,6 @@ let routed: SiteRoute[][]
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  vi.stubEnv('YAAC_SITE_DOMAINS', 'example.com,Shop.Test')
   await seedProject()
   routed = []
   installFakeWorkspaceDriver({
@@ -40,7 +39,6 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
-  vi.unstubAllEnvs()
   resetWorkspaceDriver()
   await closeDb()
   await cleanupTempDir(tmpDir)
@@ -54,12 +52,11 @@ describe('createSite', () => {
     await create()
     const row = await findSiteByName(DEMO_PROJECT_ID, 'shop')
     expect(routed.at(-1)).toEqual([{ siteId: row!.id, hostname: 'shop.example.com', port: 3000 }])
-    // The apex of a domain is a hostname too, lowercased.
+    // A domain's apex is a hostname too, lowercased.
     await create({ name: 'apex', hostname: 'SHOP.test' })
     expect((await findSiteByName(DEMO_PROJECT_ID, 'apex'))?.hostname).toBe('shop.test')
 
     await expect(create({ name: 'Bad Name', hostname: 'a.example.com' })).rejects.toMatchObject({ code: 'VALIDATION' })
-    await expect(create({ name: 'a', hostname: 'a.elsewhere.com' })).rejects.toMatchObject({ code: 'VALIDATION', message: expect.stringContaining('example.com') as unknown })
     await expect(create({ name: 'a', hostname: 'https://a.example.com' })).rejects.toMatchObject({ code: 'VALIDATION' })
     await expect(create({ name: 'a', hostname: 'a.example.com', port: 0 })).rejects.toMatchObject({ code: 'VALIDATION' })
     await expect(create({ name: 'a', hostname: 'a.example.com', steps: { build: { run: 'make' } } }))
@@ -78,13 +75,9 @@ describe('createSite', () => {
     await create({ name: 'v1', hostname: 'v1.example.com', volume: 'data' })
     await expect(create({ name: 'v2', hostname: 'v2.example.com', volume: 'data' })).rejects.toMatchObject({ code: 'CONFLICT' })
 
-    // A site under a domain the install no longer serves stops routing.
-    vi.stubEnv('YAAC_SITE_DOMAINS', 'example.com')
-    await create({ name: 'blog', hostname: 'blog.example.com' })
-    expect(routed.at(-1)?.map((r) => r.hostname).sort()).toEqual(['blog.example.com', 'shop.example.com', 'v1.example.com'])
-
-    vi.stubEnv('YAAC_SITE_DOMAINS', '')
-    await expect(create({ name: 'b', hostname: 'b.example.com' })).rejects.toMatchObject({ code: 'VALIDATION', message: expect.stringContaining('--site-domain') as unknown })
+    // Any domain is taken, since the tunnel decides what is public.
+    await create({ name: 'blog', hostname: ' Blog.Elsewhere.org ' })
+    expect(routed.at(-1)?.map((r) => r.hostname).sort()).toEqual(['blog.elsewhere.org', 'shop.example.com', 'shop.test', 'v1.example.com'])
   })
 })
 
@@ -167,7 +160,7 @@ describe('showSite', () => {
 })
 
 describe('getSiteEdge', () => {
-  it('answers the install\'s domains and its tunnel\'s state', async () => {
-    expect(await getSiteEdge()).toEqual({ domains: ['example.com', 'shop.test'], tunnel: 'connected' })
+  it('answers the install\'s tunnel\'s state', async () => {
+    expect(await getSiteEdge()).toEqual({ tunnel: 'connected' })
   })
 })

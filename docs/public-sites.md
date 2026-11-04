@@ -56,13 +56,22 @@ anywhere but the router.
 **Setup.**
 
 1. In Cloudflare, create a tunnel and copy its token.
-2. `CF_TUNNEL_TOKEN=… yaac cluster install --site-domain example.com`
-   (`--site-domain` repeats). Install keeps the token in a Secret, applies
-   the tunnel and router, and passes the domains to the server Deployment
-   as `YAAC_SITE_DOMAINS`. A later install without `--site-domain` keeps the
-   domains the Deployment has, and one without the token keeps the Secret.
+2. `CF_TUNNEL_TOKEN=… yaac cluster install`. Install keeps the token in a
+   Secret and applies the tunnel and router. A later install without the
+   token keeps the Secret.
 3. For each site's hostname, add a public hostname to the tunnel with the
    router as its service. `yaac site create` prints what to enter.
+
+**The tunnel's routes are the boundary.** yaac accepts any well-formed
+hostname for a site, and the name is public as soon as a tunnel route
+covers it. With one public hostname per site, a name goes live only once
+the Cloudflare admin adds it, so the admin reviews each one. A wildcard
+public hostname (`*.example.com`) or a catch-all rule pointing at the
+router instead makes every name under it public the moment any user of
+the install creates a site on it, including names such as
+`www.example.com` or `login.example.com` meant for something else. So on
+a shared install (docs/multi-user.md), route one public hostname per site,
+never a wildcard or catch-all.
 
 **Objects.** The edge is install's, like the server fronting; what changes
 with sites is the server's, under the `yaac` field manager
@@ -129,19 +138,20 @@ connected.
 
 A site belongs to a project, so its owner alone creates, edits, deploys,
 stops and deletes it, and every user may list and view it
-(docs/multi-user.md "Authorization"). A hostname is unique in the install
-and must sit under one of `YAAC_SITE_DOMAINS`. Which hostnames are actually
-public is decided in the Cloudflare account, by whoever administers it.
-Within the install a hostname is first come, first served: once a site
+(docs/multi-user.md "Authorization"). A hostname is unique in the install,
+and may be any name: only names the tunnel routes ever reach the router,
+so which are public is decided in the Cloudflare account, by whoever
+administers it (see "The edge" for why that means one route per site).
+yaac holds no Cloudflare API token, so it cannot check that a site's
+hostname is routed. Within the install a hostname is first come, first
+served: once a site
 lets one go (deleted, or edited to another), any user may create a site
 on it, and the tunnel already routes it, so teammates who share an install
 share its hostnames too.
 
-A site whose hostname is under none of `YAAC_SITE_DOMAINS` is not routed,
-so removing a domain at install stops its sites answering. A share whose
-source's owner removed it (docs/hosted-projects.md "Sharing") runs nothing:
-its sites are not routed or supervised, and its owner may still stop or
-delete them to free their hostnames.
+A share whose source's owner removed it (docs/hosted-projects.md
+"Sharing") runs nothing: its sites are not routed or supervised, and its
+owner may still stop or delete them to free their hostnames.
 
 A site names its hostname, the port its releases serve on, the step graph
 each release runs (stored on the site, like a routine's), and optionally a
@@ -296,9 +306,9 @@ never overlap, so migrations never race. A rollback does not undo a schema.
 - **API**: `/api/site/edge`, `/list`, `/show` (readers) and `/create`,
   `/edit`, `/delete`, `/deploy`, `/stop`, `/start` (the project's owner).
 - **CLI**: `yaac site create|edit|list|show|deploy|stop|start|delete`, the
-  project first, and `yaac cluster install --site-domain` (docs/cli.md).
-- **Webapp**: a Sites section in project settings, with the install's
-  domains and the tunnel's state at its top; a release's workspace view is
+  project first, and `yaac cluster install` for the tunnel (docs/cli.md).
+- **Webapp**: a Sites section in project settings, with the tunnel's state
+  at its top; a release's workspace view is
   read-only, with "release of `<site>`" on its header.
 - **Modules**: `#domain/sites` (settings, deploys, supervision),
   `cluster/site-edge.ts` (every edge object), the `sites` reconcile step.
@@ -306,10 +316,10 @@ never overlap, so migrations never race. A rollback does not undo a schema.
 ## Not yet
 
 - **One-time hostname setup.** Each site's hostname is added to the tunnel
-  by hand. Cloudflare's docs do not say whether a remotely-managed tunnel
-  takes a wildcard (`*.example.com`) that would cover them all.
+  by hand. A wildcard (`*.example.com`) would cover them all, if a
+  remotely-managed tunnel takes one (Cloudflare's docs do not say), but
+  it would also let every user of the install publish any name under the
+  zone, so it suits only an install with one user.
 - **A release's own egress allowlist.** A release uses its project's.
-- **Clearing the site domains.** `yaac cluster install --site-domain`
-  replaces the list, but nothing empties it.
 - **A stateful deploy with no gap**, which needs the state in a long-lived
   workspace that releases reach over the network.
