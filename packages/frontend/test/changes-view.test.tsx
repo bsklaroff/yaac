@@ -251,6 +251,20 @@ describe('WorkspaceFiles changes', () => {
     // The picker stays reachable with nothing to list.
     expect(screen.getByTitle(BASE_TRIGGER)).toBeTruthy()
   })
+  // A workspace created at a commit has no fork branch: its base is that
+  // commit, named by its short sha, and a failed pick goes back to it.
+  it('names a commit base by its short sha, and offers it back from a failed pick', async () => {
+    const start = 'c0ffee'.padEnd(40, '0')
+    server.route(CHANGES, (call: { query: URLSearchParams }) => (
+      call.query.get('base') === 'gone' ? serverError('VALIDATION', 'no diff base', 400) : reply(PAYLOAD)(call)
+    ))
+    renderWithClient(<WorkspaceFiles workspaceId="s1" projectId="proj" startCommit={start} changedOnly />)
+    await waitFor(() => expect(screen.getByTitle(BASE_TRIGGER).textContent).toBe('c0ffee0'))
+    act(() => useUiStore.getState().setChangesBase('s1', 'gone'))
+    fireEvent.click(await screen.findByText('Compare with the start commit (c0ffee0)'))
+    expect(useUiStore.getState().changesBase.s1).toBeUndefined()
+  })
+
   // The list below the header scales as a whole, diffs included, so its
   // rows and indents grow with the text; the header keeps its size.
   it('sizes the list from its menu, the text-size keys and a two-finger pinch', async () => {

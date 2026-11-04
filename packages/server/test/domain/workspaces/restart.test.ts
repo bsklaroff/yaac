@@ -448,6 +448,8 @@ describe('prepareRestart', () => {
   })
 
   // The empty scratch dir an earlier attempt left is not the user's work.
+  // The default it falls back to becomes the base branch, so the webapp
+  // compares against a branch the new checkout has.
   it('recreates a missing checkout from its base branch, or the default once origin lost that', async () => {
     const repo = repoDir(DEMO_PROJECT_ID)
     const ref = async (name: string): Promise<string> => (await git(repo, ['rev-parse', name])).trim()
@@ -467,6 +469,7 @@ describe('prepareRestart', () => {
     // A checkout the launch made is linked and current already.
     expect(windowsExec()).not.toContain('objects/info/alternates')
     expect((await git(checkout, ['rev-parse', 'HEAD'])).trim()).toBe(dev)
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-gone'))?.baseBranch).toBe('dev')
 
     await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-gone' })
     await lose()
@@ -474,6 +477,7 @@ describe('prepareRestart', () => {
     await restart('wt-gone')
 
     expect((await git(checkout, ['rev-parse', 'HEAD'])).trim()).toBe(await ref('origin/main'))
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-gone'))?.baseBranch).toBe('main')
   })
 
   // A crash or partial restore can lose `.git` but keep the work. Checking

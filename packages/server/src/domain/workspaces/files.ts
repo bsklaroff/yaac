@@ -241,14 +241,23 @@ async function findEmptyDirs(
 }
 
 /**
+ * The ref a workspace is compared against unless one is picked: origin's
+ * copy of the branch it forked from, which every way of setting that branch
+ * checks exists there. A workspace created at a commit has no such branch,
+ * and is compared against that commit. A local copy of the fork branch is
+ * never used, since nothing keeps it current.
+ */
+function forkBase(row: { baseBranch?: string; startCommit?: string } | undefined): string | undefined {
+  return row?.baseBranch !== undefined ? `origin/${row.baseBranch}` : row?.startCommit
+}
+
+/**
  * Everything the webapp polls about a running workspace's checkout: the
  * diff against its base, how far HEAD is from the base branch, and, when
  * `listing` is asked for, every path for the explorer's tree.
  *
- * An explicit `base` wins; otherwise the default is the branch the row
- * records it forked from, else `@{upstream}`. The row comes first because
- * the upstream moves to the pushed branch after `git push -u`, which would
- * show no changes. `diff: false` leaves the diff body out.
+ * An explicit `base` wins; otherwise it is compared against `forkBase`.
+ * `diff: false` leaves the diff body out.
  *
  * The listing is left out when `known` is its current version, so a poll
  * whose tree has not moved costs no transfer. An unresolvable explicit
@@ -263,15 +272,12 @@ export async function getWorkspaceChanges(
 ): Promise<WorkspaceChanges> {
   const { jobName, projectId, workspaceId } = await runningWorkspace(idOrName)
   const row = await getWorkspaceRow(projectId, workspaceId)
-  // A workspace created at a commit has no base branch until one is set,
-  // and its changes are what it did since that commit.
-  const forkBranch = row?.baseBranch ?? row?.startCommit
   // The runtime treats a blank `base` as unset.
   const named = base?.trim()
   let reading: ChangesReading
   try {
     reading = await readWorkspaceChanges(jobName, {
-      base, defaultBase: forkBranch, diff: opts.diff ?? true, listing: opts.listing,
+      base, defaultBase: forkBase(row), diff: opts.diff ?? true, listing: opts.listing,
     }, opts.signal)
   } catch (err) {
     if (named && err instanceof WorkspaceExecError && err.code === CHANGES_BASE_UNRESOLVED) {
@@ -300,7 +306,7 @@ export async function getWorkspaceChanges(
   )
   return {
     ...reading.changes,
-    branch: named || forkBranch || null,
+    branch: named || row?.baseBranch || row?.startCommit || null,
     comparison,
     ...(listing && listing.version !== opts.known ? { listing } : {}),
     readMs: reading.readMs,
@@ -337,13 +343,10 @@ export async function getWorkspaceGitLog(
   idOrName: string, base: string | undefined, opts: { limit: number; branches: boolean },
 ): Promise<WorkspaceGitLog> {
   const named = base?.trim()
-  // The script hands it to git as a revision, where a leading dash would
-  // read as an option.
-  if (named?.startsWith('-')) throw new ServerError('VALIDATION', `"${named}" is not a branch name`)
   const { jobName, projectId, workspaceId } = await runningWorkspace(idOrName)
   const row = await getWorkspaceRow(projectId, workspaceId)
   try {
-    return await checkoutLog(jobName, { base: named, defaultBase: row?.baseBranch ?? row?.startCommit, ...opts })
+    return await checkoutLog(jobName, { base: named, defaultBase: forkBase(row), ...opts })
   } catch (err) {
     if (named && err instanceof WorkspaceExecError && err.code === CHANGES_BASE_UNRESOLVED) {
       throw new ServerError('VALIDATION', `no branch "${named}" that shares history with HEAD in this workspace`)
