@@ -8,13 +8,29 @@
  * in; `WorkspaceView` picks its renderer.
  */
 
-import type { SessionEntry, WorkspaceListEntry } from '@yaac/shared/types'
+import type { ConversationEntry, SessionEntry, WorkspaceListEntry } from '@yaac/shared/types'
 import { isChangesTarget, isFilesTarget, isFileTarget } from './files'
 import { addColumn, paneTargets, removeTarget, type PaneLayout } from './layout'
 import { isPreviewTarget } from './preview'
 import { isStepTarget } from './steps'
 
 const SESSION_PREFIX = 'session:'
+
+/** The one layout target of a workspace's History pane: the conversations
+ *  no agent holds, to read and resume (`HistoryPane`). */
+export const HISTORY_TARGET = 'history'
+
+export function isHistoryTarget(target: string): boolean {
+  return target === HISTORY_TARGET
+}
+
+/** A workspace's conversations with no live agent and no open session
+ *  holding them: a closed session's, or one an open session left with
+ *  `/clear`. Each can be resumed in a new session. */
+export function pastConversations(workspace: WorkspaceListEntry | undefined): ConversationEntry[] {
+  return (workspace?.conversations ?? []).filter((c) => !c.active
+    && !workspace?.sessions.some((s) => s.conversationId === c.conversationId))
+}
 
 /** A session's pane target. */
 export function sessionTarget(sessionId: string): string {
@@ -45,7 +61,7 @@ export function paneSession(workspace: WorkspaceListEntry | undefined, target: s
  */
 export function isSpecialPane(target: string): boolean {
   return isPreviewTarget(target) || isFilesTarget(target) || isChangesTarget(target) || isFileTarget(target)
-    || isStepTarget(target)
+    || isStepTarget(target) || isHistoryTarget(target)
 }
 
 /** The workspace's open sessions, as pane targets. */

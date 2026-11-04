@@ -149,8 +149,12 @@ workspace or beside it in its own.
   (docs/agent-modes.md describes the stand-ins up to its first reply). Every pane
   has a ×; closing a session asks first, as killing a terminal does, unless
   its agent has already exited.
-  A workspace with no pane open shows what it can start and the
-  conversations it held, each resumable (`EmptyWorkspace`).
+  A workspace with no pane open shows what it can start (`EmptyWorkspace`).
+- **History.** Once a workspace holds a conversation no agent does (a
+  closed session's, or one an open session left with `/clear`), its bar
+  offers History: a pane, `history`, that reads those conversations as a
+  stopped workspace's are read, newest first, and resumes the one shown in
+  a new session, whose pane takes focus (`HistoryPane`).
 - **Sidebar.** A workspace with no session reads "No agent" with a hollow
   ring; with one, its agent; with several, "N sessions" and a row per
   session under it, each with its own status and unread dot, which opens

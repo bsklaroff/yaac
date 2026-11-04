@@ -21,6 +21,7 @@ export {
   FolderPlus as GroupAddIcon,
   FolderMinus as GroupRemoveIcon,
   RotateCw as RestartIcon,
+  History as HistoryIcon,
   Trash2 as DeleteIcon,
   Ban as BlockedIcon,
   Check as CheckIcon,

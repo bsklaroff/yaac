@@ -15,13 +15,17 @@ import {
   discardFileSavers, fileKey, fileTabLabels, fileTargetPath, flushFileSavers, isChangesTarget, isFileTarget,
   isFilesTarget,
 } from '#lib/files'
-import { defaultPaneTarget, isSessionTarget, isSpecialPane, paneSession, sessionTarget, syncPaneLayout } from '#lib/panes'
+import {
+  defaultPaneTarget, isHistoryTarget, isSessionTarget, isSpecialPane, paneSession, pastConversations, sessionTarget,
+  syncPaneLayout,
+} from '#lib/panes'
 import { agentLabel, workspaceAgentLabel } from '#lib/agentLabel'
 import { isElectron, windowApi } from '#lib/platform'
 import { useIsMobile } from '#lib/viewport'
 import { WorkspaceTitle } from '#components/WorkspaceTitle'
 import { CreatingPane } from '#components/CreatingPane'
 import { EmptyWorkspace } from '#components/EmptyWorkspace'
+import { HistoryPane } from '#components/HistoryPane'
 import { SessionPane, sessionPtyTarget } from '#components/SessionPane'
 import { NewWorkspacePane } from '#components/NewWorkspacePane'
 import { RoutinePane } from '#components/RoutinePane'
@@ -102,6 +106,7 @@ function paneName(
   }
   if (isFilesTarget(target)) return 'Files'
   if (isChangesTarget(target)) return 'Changes'
+  if (isHistoryTarget(target)) return 'History'
   if (isFileTarget(target)) return fileLabels?.[fileTargetPath(target)] ?? fileTargetPath(target)
   if (isStepTarget(target)) return stepTargetName(target)
   if (isSessionTarget(target)) {
@@ -135,6 +140,7 @@ export function WorkspaceView({
   const openPreview = useUiStore((s) => s.openPreview)
   const openChanges = useUiStore((s) => s.openChanges)
   const openFiles = useUiStore((s) => s.openFiles)
+  const openHistory = useUiStore((s) => s.openHistory)
   const dirtyFiles = useUiStore((s) => s.dirtyFiles)
   // On a phone this pane is its own screen, with a back button, an overflow
   // menu and no tiles mode (docs/mobile-layout.md).
@@ -187,7 +193,8 @@ export function WorkspaceView({
   const lastTerminals = useRef<Record<string, WorkspaceTerminalEntry[]>>({})
   if (sid && workspace?.terminals) lastTerminals.current[sid] = workspace.terminals
   const terminals = sid ? lastTerminals.current[sid] : undefined
-  // A shell just created, focused once the window sync has opened its pane.
+  // A shell or session just created, focused once the window sync has
+  // opened its pane.
   const pendingFocus = useRef<{ sid: string; target: string } | null>(null)
 
   // Pane area size; columns are absolutely positioned from it.
@@ -259,17 +266,20 @@ export function WorkspaceView({
       : null,
   })
 
-  /** Create a scratch-shell window and focus it. Its pane opens when the
-   *  snapshot lists the window, which may be before or after this answer;
-   *  focusing a target with no pane would leave focus on another one. */
+  /** Focus a pane just created. It opens when the snapshot lists it, which
+   *  may be before or after the create's answer; focusing a target with no
+   *  pane would leave focus on another one. */
+  const focusWhenOpen = (id: string, target: string): void => {
+    const st = useUiStore.getState()
+    if (paneTargets(layoutOf(st.layouts, id)).includes(target)) st.focusTerminal(id, target)
+    else pendingFocus.current = { sid: id, target }
+  }
+
+  /** Create a scratch-shell window and focus it. */
   const openShell = (): void => {
     if (!sid || (workspace && isLocked(workspace))) return
     void api.workspace[':id'].terminals.$post({ param: { id: sid } })
-      .then((entry) => {
-        const st = useUiStore.getState()
-        if (paneTargets(layoutOf(st.layouts, sid)).includes(entry.target)) st.focusTerminal(sid, entry.target)
-        else pendingFocus.current = { sid, target: entry.target }
-      })
+      .then((entry) => focusWhenOpen(sid, entry.target))
       .catch((e: unknown) => console.error('new shell failed', e))
   }
 
@@ -545,6 +555,8 @@ export function WorkspaceView({
   // No session or shell opens in a locked workspace (docs/workspace-steps.md,
   // docs/public-sites.md).
   const interactive = workspace !== undefined && !isLocked(workspace)
+  const hasHistory = interactive && pastConversations(workspace).length > 0
+  const onOpenHistory = sid && hasHistory ? { onOpenHistory: () => openHistory(sid) } : {}
   const headerClass = paneBarClass(isMobile)
 
   // The mobile key bar, only over a terminal pane: a terminal's, or a `tui`
@@ -611,6 +623,7 @@ export function WorkspaceView({
                 {...(interactive ? { onNewSession: newSession, onNewShell: openShell } : {})}
                 onOpenFiles={() => openFiles(workspace.workspaceId)}
                 onOpenChanges={() => openChanges(workspace.workspaceId)}
+                {...onOpenHistory}
               />
               {pickPreviewPort ? (
                 <PreviewPortMenu
@@ -691,6 +704,7 @@ export function WorkspaceView({
               {...(interactive ? { onNewSession: newSession, onNewShell: openShell } : {})}
               onOpenChanges={() => openChanges(workspace.workspaceId)}
               onOpenFiles={() => openFiles(workspace.workspaceId)}
+              {...onOpenHistory}
               onOpenPreview={(p) => showPreview(workspace.workspaceId, p)}
             />
           )}
@@ -747,6 +761,7 @@ export function WorkspaceView({
             <EmptyWorkspace
               workspace={workspace}
               {...(interactive ? { onNewSession: newSession, onNewShell: openShell } : {})}
+              {...onOpenHistory}
             />
           </PaneCard>
         )}
@@ -843,7 +858,15 @@ export function WorkspaceView({
                   {...(id === sid && target === focusTarget ? { focusKey: focusNonce } : {})}
                   nonce={terminalNonces[id] ?? 0}
                 />
-              ) : isSessionTarget(target) ? null : isStepTarget(target) ? (
+              ) : isSessionTarget(target) ? null : isHistoryTarget(target) ? (
+                owner !== undefined && (
+                  <HistoryPane
+                    workspace={owner}
+                    focused={focused}
+                    onResumed={(sessionId) => focusWhenOpen(id, sessionTarget(sessionId))}
+                  />
+                )
+              ) : isStepTarget(target) ? (
                 owner !== undefined && (
                   <StepPane
                     workspace={owner}

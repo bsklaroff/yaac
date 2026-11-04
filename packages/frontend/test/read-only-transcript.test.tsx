@@ -421,4 +421,17 @@ describe('ReadOnlyTranscript', () => {
     expect(await screen.findByText(/and the final turn/)).toBeTruthy()
     expect(server.called(TRANSCRIPT)).toHaveLength(2)
   })
+
+  it('reads a stopped conversation again once its transcript is written again', async () => {
+    // A History pane's conversation, resumed and closed again within one
+    // page load, has a new last write and so a new record.
+    const client = testQueryClient()
+    const pane = (lastActiveAt: string): JSX.Element =>
+      <ReadOnlyTranscript workspaceId="w1" conversations={[session({ active: false, lastActiveAt })]} />
+    const view = renderWithClient(pane('2026-11-03 10:00:00'), client)
+    expect(await screen.findByText('the router')).toBeTruthy()
+    transcript([said(0, 'after the resume')])
+    view.rerender(<QueryClientProvider client={client}>{pane('2026-11-03 11:00:00')}</QueryClientProvider>)
+    expect(await screen.findByText('after the resume')).toBeTruthy()
+  })
 })
