@@ -853,6 +853,7 @@ export function WorkspaceView({
                     containerPort={previewTargetPort(target)}
                     url={previewPaneUrl(id, previewTargetPort(target))}
                     visible={onScreen}
+                    focused={focused}
                     onStopForwarding={canUnforward ? (p) => stopForwarding(id, p) : undefined}
                   />
                 </div>

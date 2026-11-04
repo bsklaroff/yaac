@@ -56,6 +56,12 @@ interface YaacWindow {
    *  user did in it (docs/preview-lifecycle.md). */
   canDiscardPreview?: (webContentsId: number) => Promise<boolean>
   /**
+   * Be called with a preview's webContents id when Cmd/Ctrl-F is pressed
+   * in its page and the page leaves it unhandled; the pane's own DOM never
+   * sees the key. Returns an unsubscribe.
+   */
+  onPreviewFind?: (cb: (webContentsId: number) => void) => () => void
+  /**
    * Be called whenever the desktop app finds critical memory pressure. The
    * app checks only while subscribed. Returns an unsubscribe.
    */

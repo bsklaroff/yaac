@@ -686,6 +686,13 @@ ipcMain.handle('preview:set-frozen', (e, id: unknown, frozen: unknown) => {
   const guest = previewGuestOf(e.sender, id)
   return guest ? setPreviewFrozen(guest, frozen === true) : false
 })
+// Edit > Find, reached when the focused page leaves Cmd/Ctrl-F unhandled
+// (menu.ts): a preview's page opens that pane's find bar.
+function findInFocusedPreview(): void {
+  const focused = webContents.getFocusedWebContents()
+  if (!win || !focused || !previewGuestOf(win.webContents, focused.id)) return
+  win.webContents.send('preview:find', focused.id)
+}
 ipcMain.handle('preview:can-discard', (e, id: unknown) => {
   const guest = previewGuestOf(e.sender, id)
   return guest ? canDiscardPreview(guest) : false
@@ -719,7 +726,7 @@ async function boot(): Promise<void> {
   // A connection held across a sleep is often dead without either end being
   // told, so reconnect on wake rather than waiting out the heartbeat.
   powerMonitor.on('resume', () => events?.reconnect())
-  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate()))
+  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(findInFocusedPreview)))
   // A failed boot still shows the Servers page, so the shell keeps running.
   await openWindow()
   createTray()
