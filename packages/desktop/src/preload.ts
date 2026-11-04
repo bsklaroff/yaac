@@ -30,6 +30,14 @@ contextBridge.exposeInMainWorld('yaacWindow', {
   // webContents id (preview-lifecycle.ts).
   setPreviewFrozen: (id: number, frozen: boolean) => ipcRenderer.invoke('preview:set-frozen', id, frozen),
   canDiscardPreview: (id: number) => ipcRenderer.invoke('preview:can-discard', id),
+  // Called with a preview guest's webContents id when Cmd/Ctrl-F is pressed
+  // in its page and the page leaves it unhandled (menu.ts). Returns an
+  // unsubscribe.
+  onPreviewFind: (cb: (id: number) => void) => {
+    const listener = (_e: unknown, id: number): void => cb(id)
+    ipcRenderer.on('preview:find', listener)
+    return () => { ipcRenderer.removeListener('preview:find', listener) }
+  },
   // Called on each check that finds critical memory pressure, which the main
   // process makes only while subscribed. Returns an unsubscribe.
   onMemoryPressure: (cb: () => void) => {

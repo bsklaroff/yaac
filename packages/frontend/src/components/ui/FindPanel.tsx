@@ -317,15 +317,17 @@ export function useFindQuery(defaultOpen = false): FindQuery {
 /**
  * The bar `useFindQuery` drives, across the top of its pane. Enter and
  * Shift+Enter step; Escape closes without reaching the pane, where it may
- * mean leaving the view.
+ * mean leaving the view. `caseOnly` drops the whole-word and regex toggles,
+ * for a search that has only case to offer (a preview's page).
  */
-export function PaneFindBar({ find, matches, current, onStep, onClose }: {
+export function PaneFindBar({ find, matches, current, onStep, onClose, caseOnly = false }: {
   find: FindQuery
   matches: Matches
   /** Index of the current match, or -1. */
   current: number
   onStep: (dir: 1 | -1) => void
   onClose: () => void
+  caseOnly?: boolean
 }): JSX.Element {
   const inputRef = useRef<HTMLInputElement>(null)
   useEffect(() => {
@@ -359,6 +361,7 @@ export function PaneFindBar({ find, matches, current, onStep, onClose }: {
           onPrev={() => onStep(-1)}
           onNext={() => onStep(1)}
           onClose={onClose}
+          caseOnly={caseOnly}
         />
       </div>
     </Tooltip.Provider>
@@ -375,7 +378,7 @@ type FindFlags = Pick<SearchQuery, 'caseSensitive' | 'wholeWord' | 'regexp'>
  * Changes pane's.
  */
 export function FindControls({
-  inputRef, text, onText, query, onToggle, matches, current, onPrev, onNext, onClose,
+  inputRef, text, onText, query, onToggle, matches, current, onPrev, onNext, onClose, caseOnly = false,
 }: {
   inputRef: RefObject<HTMLInputElement | null>
   text: string
@@ -388,6 +391,7 @@ export function FindControls({
   onPrev: () => void
   onNext: () => void
   onClose: () => void
+  caseOnly?: boolean
 }): JSX.Element {
   const count = matches.froms.length
   const total = `${count}${matches.capped ? '+' : ''}`
@@ -422,22 +426,26 @@ export function FindControls({
         >
           <MatchCaseIcon size={14} />
         </Toggle>
-        <Toggle
-          label="Whole word"
-          tip={<Tip title="Match whole word" hint="Skip matches inside longer words" />}
-          on={query.wholeWord}
-          onClick={() => onToggle({ wholeWord: !query.wholeWord })}
-        >
-          <WholeWordIcon size={14} />
-        </Toggle>
-        <Toggle
-          label="Regular expression"
-          tip={<Tip title="Use regular expression" hint="Search for a pattern, like foo.*bar" />}
-          on={query.regexp}
-          onClick={() => onToggle({ regexp: !query.regexp })}
-        >
-          <RegexIcon size={13} />
-        </Toggle>
+        {!caseOnly && (
+          <>
+            <Toggle
+              label="Whole word"
+              tip={<Tip title="Match whole word" hint="Skip matches inside longer words" />}
+              on={query.wholeWord}
+              onClick={() => onToggle({ wholeWord: !query.wholeWord })}
+            >
+              <WholeWordIcon size={14} />
+            </Toggle>
+            <Toggle
+              label="Regular expression"
+              tip={<Tip title="Use regular expression" hint="Search for a pattern, like foo.*bar" />}
+              on={query.regexp}
+              onClick={() => onToggle({ regexp: !query.regexp })}
+            >
+              <RegexIcon size={13} />
+            </Toggle>
+          </>
+        )}
       </Field>
       <div className="flex items-center">
         <IconButton

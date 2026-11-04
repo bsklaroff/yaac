@@ -263,6 +263,10 @@ Also check in the desktop app:
 - holding k in vim in a terminal pane repeats the key with no accent popup,
   from the first launch;
 - the preview pane's "Open in browser" opens the system browser;
+- Cmd-F in the preview pane, with focus in the page or on its toolbar,
+  opens its find bar, and typing highlights and counts matches in the page;
+  following a link with the bar open searches the new page; a previewed page
+  with its own Cmd-F (yaac's conversation find) keeps it;
 - close hides to the tray, and a tray click (which also opens the menu) or
   the Dock icon brings the window back;
 - a waiting workspace badges the dock and notifies once, and clicking the

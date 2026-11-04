@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, beforeEach, vi, type Mock } from 'vite
 import type { JSX } from 'react'
 import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
 import { WorkspacePreview } from '#components/WorkspacePreview'
+import { IS_MAC } from '#lib/platform'
 afterEach(() => {
   vi.useRealTimers()
   cleanup()
@@ -80,6 +81,59 @@ describe('WorkspacePreview', () => {
     fireEvent.click(pill)
     expect(host.style.width).toBe('100%')
     expect(screen.queryByRole('button', { name: 'Reset width' })).toBeNull()
+  })
+
+  it('finds in the page from Cmd/Ctrl-F in the pane or inside its page', () => {
+    let pageFind: ((id: number) => void) | undefined
+    ;(window as unknown as { yaacWindow?: unknown }).yaacWindow = {
+      openExternal() {}, showServers() {},
+      onPreviewFind: (cb: (id: number) => void) => { pageFind = cb; return () => { pageFind = undefined } },
+    }
+    const { container, rerender } = render(
+      <WorkspacePreview workspaceId="abc" visible containerPort={5173} url="http://127.0.0.1:15173/" />,
+    )
+    const wv = container.querySelector('webview') as HTMLElement
+    const findInPage = vi.fn()
+    const stopFindInPage = vi.fn()
+    Object.assign(wv, { getWebContentsId: () => 3, findInPage, stopFindInPage })
+    const chord = (): boolean => fireEvent.keyDown(document.body, { code: 'KeyF', key: 'f', ctrlKey: !IS_MAC, metaKey: IS_MAC })
+    const found = (matches: number, activeMatchOrdinal: number): void => {
+      act(() => { wv.dispatchEvent(Object.assign(new Event('found-in-page'), { result: { matches, activeMatchOrdinal } })) })
+    }
+
+    // Unfocused, the pane leaves the chord alone; another page's chord is
+    // not for it.
+    expect(chord()).toBe(true)
+    act(() => pageFind?.(4))
+    expect(screen.queryByLabelText('Find')).toBeNull()
+
+    act(() => pageFind?.(3))
+    const input = screen.getByLabelText<HTMLInputElement>('Find')
+    // The page's search matches only by case.
+    expect(screen.queryByLabelText('Regular expression')).toBeNull()
+    fireEvent.change(input, { target: { value: 'Sign in' } })
+    expect(findInPage).toHaveBeenLastCalledWith('Sign in', { findNext: true, matchCase: false })
+    found(4, 1)
+    expect(screen.getByRole('status').textContent).toBe('1 of 4')
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })
+    expect(findInPage).toHaveBeenLastCalledWith('Sign in', { forward: false, matchCase: false })
+    found(4, 4)
+    expect(screen.getByRole('status').textContent).toBe('4 of 4')
+    fireEvent.click(screen.getByLabelText('Match case'))
+    expect(findInPage).toHaveBeenLastCalledWith('Sign in', { findNext: true, matchCase: true })
+    // A new document in the page is searched afresh.
+    findInPage.mockClear()
+    act(() => { wv.dispatchEvent(new Event('did-finish-load')) })
+    expect(findInPage).toHaveBeenCalledExactlyOnceWith('Sign in', { findNext: true, matchCase: true })
+
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(stopFindInPage).toHaveBeenLastCalledWith('keepSelection')
+    expect(screen.queryByLabelText('Find')).toBeNull()
+
+    // Focused, the chord in the pane's own DOM opens it, keeping the query.
+    rerender(<WorkspacePreview workspaceId="abc" visible focused containerPort={5173} url="http://127.0.0.1:15173/" />)
+    expect(chord()).toBe(false)
+    expect(screen.getByLabelText<HTMLInputElement>('Find').value).toBe('Sign in')
   })
 
   describe('while hidden', () => {

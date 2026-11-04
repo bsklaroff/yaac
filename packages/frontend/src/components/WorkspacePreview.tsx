@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { Menu } from '@base-ui/react/menu'
+import { useFindChord } from '#components/ConversationFind'
+import { PaneFindBar, useFindQuery } from '#components/ui/FindPanel'
 import { windowApi } from '#lib/platform'
 import { normalizePreviewNav } from '#lib/preview'
 import {
@@ -26,7 +28,14 @@ interface PreviewWebview extends HTMLElement {
   loadURL(url: string): Promise<void>
   openDevTools(): void
   getWebContentsId(): number
+  findInPage(text: string, options: { forward?: boolean; findNext?: boolean; matchCase?: boolean }): number
+  stopFindInPage(action: 'clearSelection' | 'keepSelection'): void
 }
+
+/** A page search's latest result: how many matches, and which (1-based) is
+ *  selected, 0 for none. */
+interface PageFound { matches: number; active: number }
+const NOT_FOUND: PageFound = { matches: 0, active: 0 }
 
 /*
  * A hidden preview follows Chrome's background-tab lifecycle
@@ -71,6 +80,29 @@ function listHidden(p: HiddenPreview): () => void {
   }
 }
 
+/** A mounted preview's find bar opener, and how to read its guest's id. */
+interface FindTarget { guestId: () => number | undefined; open: () => void }
+
+/*
+ * Every mounted preview, so that one subscription routes the find chord the
+ * desktop app forwards from inside a page to the pane showing that page.
+ */
+const findTargets = new Set<FindTarget>()
+let stopFindWatch: (() => void) | undefined
+
+function listFindTarget(t: FindTarget): () => void {
+  findTargets.add(t)
+  stopFindWatch ??= windowApi()?.onPreviewFind?.((id) => {
+    for (const f of findTargets) if (f.guestId() === id) f.open()
+  })
+  return () => {
+    findTargets.delete(t)
+    if (findTargets.size > 0) return
+    stopFindWatch?.()
+    stopFindWatch = undefined
+  }
+}
+
 /** Viewport-width presets for the responsive control. `null` = fill the pane. */
 const DEVICE_PRESETS: { label: string; width: number | null; Icon: typeof DesktopIcon }[] = [
   { label: 'Full', width: null, Icon: DesktopIcon },
@@ -81,8 +113,11 @@ const DEVICE_PRESETS: { label: string; width: number | null; Icon: typeof Deskto
 /**
  * An embedded browser pane showing a dev server in the workspace through
  * one forwarded port, with navigation controls, an address
- * bar and a menu (home, copy URL, responsive widths, hard reload, devtools,
- * stop forwarding).
+ * bar, a menu (home, copy URL, responsive widths, hard reload, devtools,
+ * stop forwarding) and Cmd/Ctrl-F find, which is Chromium's own find in
+ * the page. A chord pressed inside the page reaches the pane through the
+ * desktop app, and only when the page has no use for it
+ * (packages/desktop/src/menu.ts).
  *
  * The <webview> is managed imperatively through a ref, because letting React
  * reconcile it would reload the page on every parent render. While the pane
@@ -95,6 +130,7 @@ export function WorkspacePreview({
   containerPort,
   url,
   visible,
+  focused = false,
   onStopForwarding,
 }: {
   workspaceId: string
@@ -105,6 +141,8 @@ export function WorkspacePreview({
   url: string | undefined
   /** Whether the pane is on screen. */
   visible: boolean
+  /** Whether it is the pane the user is in, so Cmd/Ctrl-F opens its find. */
+  focused?: boolean
   /** Stop forwarding the shown port; omitted where there is no forward to
    *  stop. */
   onStopForwarding?: (containerPort: number) => void
@@ -120,6 +158,18 @@ export function WorkspacePreview({
   // Constrain the webview to a device width to check responsive layouts.
   const [deviceWidth, setDeviceWidth] = useState<number | null>(null)
   const [discarded, setDiscarded] = useState(false)
+  const find = useFindQuery()
+  const [found, setFound] = useState(NOT_FOUND)
+  // Bumped by each document load, so an open find bar searches the new page.
+  const [pageLoads, setPageLoads] = useState(0)
+
+  const guestId = (): number | undefined => {
+    try {
+      return wvRef.current?.getWebContentsId()
+    } catch {
+      return undefined // not attached yet
+    }
+  }
 
   // Create the webview once per pane, and again after a discard; wire its
   // navigation events.
@@ -144,6 +194,11 @@ export function WorkspacePreview({
     }
     const onStart = (): void => { setLoading(true); setFailed(false) }
     const onStop = (): void => { setLoading(false); syncNav() }
+    const onFound = (e: Event): void => {
+      const { result } = e as unknown as { result: { matches: number; activeMatchOrdinal: number } }
+      setFound({ matches: result.matches, active: result.activeMatchOrdinal })
+    }
+    const onLoad = (): void => setPageLoads((n) => n + 1)
     const onFail = (e: Event): void => {
       // -3 (ABORTED) fires on ordinary redirects and reloads.
       const code = (e as unknown as { errorCode?: number }).errorCode
@@ -154,6 +209,8 @@ export function WorkspacePreview({
     wv.addEventListener('did-navigate', syncNav)
     wv.addEventListener('did-navigate-in-page', syncNav)
     wv.addEventListener('did-fail-load', onFail)
+    wv.addEventListener('found-in-page', onFound)
+    wv.addEventListener('did-finish-load', onLoad)
     host.appendChild(wv)
     wvRef.current = wv
 
@@ -163,6 +220,8 @@ export function WorkspacePreview({
       wv.removeEventListener('did-navigate', syncNav)
       wv.removeEventListener('did-navigate-in-page', syncNav)
       wv.removeEventListener('did-fail-load', onFail)
+      wv.removeEventListener('found-in-page', onFound)
+      wv.removeEventListener('did-finish-load', onLoad)
       wv.remove()
       wvRef.current = null
     }
@@ -195,13 +254,6 @@ export function WorkspacePreview({
   const wasHidden = useRef(false)
   useEffect(() => {
     const bridge = windowApi()
-    const guestId = (): number | undefined => {
-      try {
-        return wvRef.current?.getWebContentsId()
-      } catch {
-        return undefined // not attached yet
-      }
-    }
     if (visible) {
       if (wasHidden.current) revisits.current++
       wasHidden.current = false
@@ -240,6 +292,38 @@ export function WorkspacePreview({
     const unlist = listHidden({ since: Date.now(), discard })
     return () => { clearTimeout(freeze); clearTimeout(discardTimer); unlist() }
   }, [visible])
+
+  // Find: the chord from the pane's own DOM, or from inside its page, which
+  // the desktop app forwards with the page's id.
+  useFindChord(focused, find.open)
+  // find.open only sets state, so the first render's lasts the pane's life.
+  useEffect(() => listFindTarget({ guestId, open: find.open }), [])
+  const { isOpen: findOpen, spec } = find
+  useEffect(() => {
+    if (!findOpen) return
+    try {
+      if (spec.search === '') wvRef.current?.stopFindInPage?.('clearSelection')
+      else wvRef.current?.findInPage?.(spec.search, { findNext: true, matchCase: spec.caseSensitive })
+    } catch {
+      // Throws before the guest attaches.
+    }
+    if (spec.search === '') setFound(NOT_FOUND)
+  }, [findOpen, spec.search, spec.caseSensitive, pageLoads])
+  const stepFind = (dir: 1 | -1): void => {
+    if (spec.search !== '') wvRef.current?.findInPage?.(spec.search, { forward: dir === 1, matchCase: spec.caseSensitive })
+  }
+  const closeFind = (): void => {
+    try {
+      wvRef.current?.stopFindInPage?.('keepSelection')
+    } catch {
+      // Not attached: nothing to clear.
+    }
+    find.close()
+    setFound(NOT_FOUND)
+    wvRef.current?.focus()
+  }
+  // The page reports only how many matches it has; the bar reads no more.
+  const pageMatches = { froms: Array<number>(found.matches).fill(0), tos: [], capped: false }
 
   const reload = (): void => wvRef.current?.reload?.()
   const hardReload = (): void => wvRef.current?.reloadIgnoringCache?.()
@@ -343,6 +427,16 @@ export function WorkspacePreview({
         </Menu.Root>
       </div>
 
+      {findOpen && (
+        <PaneFindBar
+          find={find}
+          matches={pageMatches}
+          current={found.active - 1}
+          onStep={stepFind}
+          onClose={closeFind}
+          caseOnly
+        />
+      )}
       <div className="relative min-h-0 flex-1 bg-bg">
         {/* Center the device frame; bg-bg shows on the sides when narrowed. */}
         <div className="absolute inset-0 flex justify-center overflow-hidden">
