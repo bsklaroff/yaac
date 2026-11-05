@@ -97,7 +97,12 @@ owner and nothing else.
   replaces the admins through the admin socket. When that revokes anyone
   the CLI says who and asks, or without a terminal refuses unless
   `--yes`; the write names the admins it was confirmed against and is
-  refused if they changed meanwhile. The CLI then lists the admins,
+  refused if they changed meanwhile. `yaac cluster install` asks the
+  running server's socket before it touches the server, so a refusal
+  leaves the old server running; with no server pod, or one whose socket
+  is missing (from before roles), refuses (`local`) or does not answer in
+  time, it asks the new server after the rollout instead. A confirmed answer is not asked again unless
+  the admins changed in between. The CLI then lists the admins,
   marking any who have not signed in, which shows a mistyped login. This
   is also the way back for an install whose admins have all left.
 - **The admin socket** is `admin.sock` in the install's tmp dir

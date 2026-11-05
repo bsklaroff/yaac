@@ -62,7 +62,8 @@ import { liveFronting, type RemoteHosting, type ServerFronting } from './server-
 import { ensureImageByTag, pushImageToRegistry } from './host-images'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
 import { globalRoot, nodeLocalRoot, serverLocalRoot, serverLogPath, volumesRoot } from '@yaac/shared/paths'
-import { applyAdmins, type AdminSocketRequest } from '@yaac/shared/admin-socket'
+import { applyAdmins, confirmRevocations, readAdmins, type AdminSocketRequest } from '@yaac/shared/admin-socket'
+import type { AdminEntry } from '@yaac/shared/types'
 import {
   IdentityRejectedError,
   probeServer,
@@ -530,7 +531,8 @@ export async function serverDeploymentExists(): Promise<boolean> {
  *
  * The build runs while the old pod still serves, so the outage is only the
  * rollout. The stop then comes before the storage step because byo's binder
- * pod mounts the server's attach-once claim.
+ * pod mounts the server's attach-once claim. Whom `--admin` revokes is
+ * asked before any of it, so a refusal leaves the server untouched.
  */
 export async function deployServerWorkload(
   opts: ServerEnvOptions & {
@@ -545,14 +547,34 @@ export async function deployServerWorkload(
     log: (message: string) => void
   },
 ): Promise<string> {
+  const confirmed = opts.admin?.length ? await confirmAdminsEarly(opts.admin, opts.yes) : undefined
   try {
-    return await deployServer(opts)
+    return await deployServer(opts, confirmed)
   } finally {
     await deleteObject(bootstrapRef())
   }
 }
 
-async function deployServer(opts: Parameters<typeof deployServerWorkload>[0]): Promise<string> {
+/**
+ * Check `--admin`'s revocations against the admins the running server
+ * reports, and return them. With no running pod, or one whose admin socket
+ * is missing (a server from before roles), refuses (a `local` install) or
+ * does not answer in time, there is nothing to read yet: it returns
+ * `undefined`, and the check waits for the new server.
+ */
+async function confirmAdminsEarly(
+  logins: readonly string[],
+  yes: boolean | undefined,
+): Promise<AdminEntry[] | undefined> {
+  const current = await podAdminSocket().then(readAdmins).catch(() => undefined)
+  if (current) await confirmRevocations(current, logins, yes)
+  return current
+}
+
+async function deployServer(
+  opts: Parameters<typeof deployServerWorkload>[0],
+  confirmed: readonly AdminEntry[] | undefined,
+): Promise<string> {
   if (opts.admin?.length) {
     await applyObject({
       apiVersion: 'v1',
@@ -602,7 +624,9 @@ async function deployServer(opts: Parameters<typeof deployServerWorkload>[0]): P
         + '    logged in to the tailnet as a user (docs/remote-hosting.md).')
     }
   })
-  if (opts.admin?.length) await applyAdmins(await podAdminSocket(), opts.admin, { yes: opts.yes, log: opts.log })
+  if (opts.admin?.length) await applyAdmins(await podAdminSocket(), opts.admin, {
+    yes: opts.yes, log: opts.log, confirmed,
+  })
   return origin
 }
 
@@ -610,7 +634,9 @@ async function deployServer(opts: Parameters<typeof deployServerWorkload>[0]): P
  * The server pod's admin socket, reached by running curl in the pod through
  * `kubectl exec`, which only someone who controls the cluster can. The
  * socket is in the install's tmp dir, keyed by a data dir only the pod
- * knows; the pod's /tmp holds that one install's, so a glob finds it.
+ * knows; the pod's /tmp holds that one install's, so a glob finds it. Each
+ * request is bounded, since install may be replacing a server that is stuck
+ * and would never answer.
  */
 async function podAdminSocket(): Promise<AdminSocketRequest> {
   const pod = (await serverPods()).find((p) => p.status?.containerStatuses
@@ -623,7 +649,7 @@ async function podAdminSocket(): Promise<AdminSocketRequest> {
       '-X', method, '-H', 'content-type: application/json',
       ...(body === undefined ? [] : ['--data', JSON.stringify(body)]),
       '-w', '\n%{http_code}', 'http://admin/admins',
-    ])
+    ], { timeout: 30_000 })
     const cut = stdout.lastIndexOf('\n')
     return { status: Number(stdout.slice(cut + 1)), body: JSON.parse(stdout.slice(0, cut)) as unknown }
   }

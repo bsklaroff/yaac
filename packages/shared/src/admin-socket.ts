@@ -39,27 +39,51 @@ export const hostAdminSocket: AdminSocketRequest = async (method, body) => {
 
 const shown = (a: AdminEntry): string => a.login ?? a.name
 
+/** The install's admins, as the socket answers them. */
+export async function readAdmins(request: AdminSocketRequest): Promise<AdminEntry[]> {
+  return expectOk<AdminEntry[]>(await request('GET'))
+}
+
 /**
- * Make exactly `logins` the install's admins. When that revokes anyone it
- * says who and asks first; with no terminal to ask on it refuses unless
- * `yes`. The write names the admins it was confirmed against, so if they
+ * Check making exactly `logins` the admins in place of `current`. When that
+ * revokes anyone it says who and asks first; with no terminal to ask on it
+ * refuses unless `yes`. A refusal throws.
+ */
+export async function confirmRevocations(
+  current: readonly AdminEntry[],
+  logins: readonly string[],
+  yes: boolean | undefined,
+): Promise<void> {
+  const revoked = current.filter((a) => a.login === null || !logins.includes(a.login)).map(shown)
+  if (revoked.length === 0 || yes) return
+  const who = revoked.join(', ')
+  if (!process.stdin.isTTY) throw new Error(`--admin would revoke admin from ${who}; re-run with --yes to accept that.`)
+  if (!await confirmDefault(`This revokes admin from: ${who}. Continue?`)) throw new Error('Left the admins unchanged.')
+}
+
+const loginsOf = (admins: readonly AdminEntry[]): string[] => admins.map((a) => a.login ?? '')
+const sameAdmins = (a: readonly AdminEntry[], b: readonly AdminEntry[]): boolean =>
+  loginsOf(a).sort().join('\n') === loginsOf(b).sort().join('\n')
+
+/**
+ * Make exactly `logins` the install's admins, first checking whom that
+ * revokes with `confirmRevocations`. A caller that already checked, against
+ * the admins in `confirmed`, is not asked again while the admins are still
+ * those. The write names the admins it was confirmed against, so if they
  * changed meanwhile it reads them and asks again. Logs the admins it leaves,
  * marking any not yet signed in, which shows a mistyped login.
  */
 export async function applyAdmins(
   request: AdminSocketRequest,
   logins: readonly string[],
-  opts: { yes?: boolean; log: (line: string) => void },
+  opts: { yes?: boolean; log: (line: string) => void; confirmed?: readonly AdminEntry[] },
 ): Promise<void> {
+  let confirmed = opts.confirmed
   for (;;) {
-    const current = expectOk<AdminEntry[]>(await request('GET'))
-    const revoked = current.filter((a) => a.login === null || !logins.includes(a.login)).map(shown)
-    if (revoked.length > 0 && !opts.yes) {
-      const who = revoked.join(', ')
-      if (!process.stdin.isTTY) throw new Error(`--admin would revoke admin from ${who}; re-run with --yes to accept that.`)
-      if (!await confirmDefault(`This revokes admin from: ${who}. Continue?`)) throw new Error('Left the admins unchanged.')
-    }
-    const res = await request('PUT', { logins, expected: current.map((a) => a.login ?? '') })
+    const current = await readAdmins(request)
+    if (!confirmed || !sameAdmins(confirmed, current)) await confirmRevocations(current, logins, opts.yes)
+    confirmed = current
+    const res = await request('PUT', { logins, expected: loginsOf(current) })
     if (res.status === 409) {
       opts.log('the admins changed since they were read; reading them again')
       continue

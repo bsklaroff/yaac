@@ -43,17 +43,32 @@ export async function setUserRole(actor: Actor, userId: string, role: UserRole):
 }
 
 /**
+ * Only a `tailnet` install has admins to read or replace over the admin
+ * socket: a `local` one's only user is the login-less built-in user, which
+ * a replace would demote with no way back. The read refuses too, so
+ * `--admin` switching a `local` install to `tailnet` finds no admins to
+ * revoke before the switch.
+ */
+async function requireTailnetInstall(): Promise<void> {
+  if (await readAccessMode() !== 'tailnet') {
+    throw new ServerError('VALIDATION', 'only a tailnet install takes admins: a local install\'s one user is its admin already')
+  }
+}
+
+/** The admins, for the admin socket. */
+export async function listInstallAdmins(): Promise<AdminEntry[]> {
+  await requireTailnetInstall()
+  return listAdmins()
+}
+
+/**
  * Make exactly `logins` the admins, for the admin socket (`--admin` on an
- * install that has admins). Only a `tailnet` install takes admins: a
- * `local` one's only user is the login-less built-in user, which this would
- * demote with no way back. `expected` is the admins' logins the caller
+ * install that has admins). `expected` is the admins' logins the caller
  * confirmed revoking against; if they changed since, this is CONFLICT and
  * nothing is written. Answers the admins it left.
  */
 export async function replaceAdmins(logins: string[], expected: string[]): Promise<AdminEntry[]> {
-  if (await readAccessMode() !== 'tailnet') {
-    throw new ServerError('VALIDATION', 'only a tailnet install takes admins: a local install\'s one user is its admin already')
-  }
+  await requireTailnetInstall()
   if (logins.length === 0) throw new ServerError('VALIDATION', 'name at least one admin')
   if (await writeAdmins(logins, expected) === 'stale') {
     throw new ServerError('CONFLICT', 'the admins changed since they were read; read them again')

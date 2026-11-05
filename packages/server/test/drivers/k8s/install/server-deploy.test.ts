@@ -17,6 +17,7 @@ import type * as apiModule from '#drivers/k8s/substrate/api'
 import type * as registryModule from '#drivers/k8s/cluster/registry'
 import type * as imageTagsModule from '#drivers/k8s/cluster/image-tags'
 import type * as childProcessModule from 'node:child_process'
+import type { AdminEntry } from '@yaac/shared/types'
 
 
 // `server logs` streams through a spawned `kubectl exec`.
@@ -33,12 +34,18 @@ const mockPodmanPort = vi.hoisted(() => vi.fn<(args: string[]) => Promise<{ stdo
 vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
   ...(await importOriginal<typeof apiModule>()),
   k8sNamespace: () => 'test-ns',
-  execFileAsync: (file: string, args: string[]) => {
-    if (file !== 'podman') return mockKubectl(file, args) as Promise<unknown>
+  execFileAsync: (file: string, args: string[], opts?: { timeout?: number }) => {
+    if (file !== 'podman') return mockKubectl(file, args, opts) as Promise<unknown>
     return args[0] === 'port'
       ? mockPodmanPort(args)
       : Promise.reject(new Error(`unexpected host process: ${file} ${args.join(' ')}`))
   },
+}))
+
+// The terminal `--admin` asks its revoke question on.
+const mockQuestion = vi.hoisted(() => vi.fn<(q: string) => Promise<string>>())
+vi.mock('node:readline/promises', () => ({
+  default: { createInterface: () => ({ question: mockQuestion, close: () => undefined }) },
 }))
 
 // The bundle is a build artifact, so hashing it for real would require
@@ -177,6 +184,64 @@ function liveDeployment(uid = 1000, env: Array<{ name: string; value: string }> 
   })
 }
 
+/**
+ * The server pods `--admin` reaches over `kubectl exec`, and the admins
+ * their socket holds: a GET answers them, a PUT replaces them and is
+ * recorded in `writes`. `previous` leaves a Deployment and a pod from an
+ * earlier install running until the scale to zero, whose socket answers,
+ * is `missing` (a server from before roles), refuses as a `local` install
+ * does, or is `stuck` until the exec's timeout kills it. The rollout brings
+ * up a new pod whose socket answers.
+ */
+function adminSocketPods(logins: string[], previous?: 'answers' | 'missing' | 'local' | 'stuck'): {
+  writes: unknown[]
+  setAdmins: (logins: string[]) => void
+} {
+  let admins: AdminEntry[] = []
+  const setAdmins = (next: string[]): void => {
+    admins = next.map((login) => ({ login, name: login, signedIn: false }))
+  }
+  setAdmins(logins)
+  const writes: unknown[] = []
+  let pod = previous ? 'yaac-server-old' : null
+  if (previous) liveDeployment()
+  fakeCluster.intercept((c) => {
+    if (c.verb === 'patch' && c.kind === 'Deployment' && JSON.stringify(c.body).includes('"replicas":0')) pod = null
+    if (c.verb === 'apply' && c.kind === 'Deployment' && c.name === SERVER_APP_NAME) pod = 'yaac-server-new'
+    if (c.verb !== 'list' || c.kind !== 'Pod' || c.labelSelector !== `app=${SERVER_APP_NAME}`) return
+    return { apiVersion: 'v1', kind: 'PodList', metadata: {}, items: pod === null ? [] : [{
+      metadata: { name: pod, namespace: 'test-ns', labels: { app: SERVER_APP_NAME } },
+      status: { containerStatuses: [{ name: 'server', state: { running: {} } }] },
+    }] }
+  })
+  mockKubectl.mockImplementation((_file: string, args: string[], opts?: { timeout?: number }) => {
+    actions.push(`kubectl ${args.join(' ')}`)
+    if (args[0] !== 'exec') return Promise.resolve({ stdout: '', stderr: '' })
+    if (args[1] === 'yaac-server-old' && previous === 'missing') {
+      return Promise.reject(new Error('curl: (7) Couldn\'t connect to server'))
+    }
+    if (args[1] === 'yaac-server-old' && previous === 'local') {
+      return Promise.resolve({ stdout: `${JSON.stringify({ error: { message: 'only a tailnet install takes admins' } })}\n400`, stderr: '' })
+    }
+    if (args[1] === 'yaac-server-old' && previous === 'stuck') {
+      return opts?.timeout ? Promise.reject(new Error('Command failed: killed (SIGTERM)')) : new Promise(() => undefined)
+    }
+    const data = args.indexOf('--data')
+    if (data !== -1) {
+      const body = JSON.parse(args[data + 1]) as { logins: string[] }
+      writes.push(body)
+      setAdmins(body.logins)
+    }
+    return Promise.resolve({ stdout: `${JSON.stringify(admins)}\n200`, stderr: '' })
+  })
+  return { writes, setAdmins }
+}
+
+/** Whether `stdin` is a terminal, for `--admin`'s revoke question. */
+function terminal(isTTY: boolean): void {
+  Object.defineProperty(process.stdin, 'isTTY', { value: isTTY, configurable: true })
+}
+
 /** Deploy with the kind fronting unless another is given. */
 function deploy(
   opts: Partial<Parameters<typeof deployServerWorkload>[0]> & { log: (m: string) => void },
@@ -235,6 +300,7 @@ beforeEach(async () => {
   // The image is already in the registry, so nothing is built.
   mockContextHash.mockResolvedValue('bundlehash')
   mockRegistryTagState.mockResolvedValue('present')
+  terminal(false)
   vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(
     new Response(JSON.stringify({ ok: true, ready: true }), { status: 200 }),
   )))
@@ -510,22 +576,9 @@ describe('deployServerWorkload', () => {
 
   it('hands --admin to the server in a ConfigMap, sets them over its admin socket, then deletes the ConfigMap', async () => {
     publishIngress('yaac.tail1234.ts.net', 1)
-    fakeCluster.seed({
-      apiVersion: 'v1', kind: 'Pod',
-      metadata: { name: 'yaac-server-abc', namespace: 'test-ns', labels: { app: SERVER_APP_NAME } },
-      status: { containerStatuses: [{ name: 'server', state: { running: {} } }] },
-    })
-    // The pod's admin socket, answering curl: the start took alice from the
-    // ConfigMap, so the write changes nothing.
-    const writes: unknown[] = []
-    mockKubectl.mockImplementation((_file: string, args: string[]) => {
-      actions.push(`kubectl ${args.join(' ')}`)
-      if (args[0] !== 'exec') return Promise.resolve({ stdout: '', stderr: '' })
-      const data = args.indexOf('--data')
-      if (data !== -1) writes.push(JSON.parse(args[data + 1]))
-      const admins = [{ login: 'alice@example.com', name: 'alice@example.com', signedIn: false }]
-      return Promise.resolve({ stdout: `${JSON.stringify(admins)}\n200`, stderr: '' })
-    })
+    // A fresh install: no pod to ask before the rollout. The start took
+    // alice from the ConfigMap, so the write changes nothing.
+    const { writes } = adminSocketPods(['alice@example.com'])
     const log = vi.fn()
 
     await deploy({ fronting: tailnetFronting({ hostname: 'yaac' }), admin: ['alice@example.com'], log })
@@ -538,10 +591,70 @@ describe('deployServerWorkload', () => {
       valueFrom: { configMapKeyRef: { name: 'yaac-server-bootstrap', key: 'admins', optional: true } },
     })
     expect(actions).toContainEqual(expect.stringContaining(
-      'kubectl exec yaac-server-abc -n test-ns -c server -- sh -c exec curl -sS --unix-socket /tmp/yaac-*/admin.sock',
+      'kubectl exec yaac-server-new -n test-ns -c server -- sh -c exec curl -sS --unix-socket /tmp/yaac-*/admin.sock',
     ))
     expect(writes).toEqual([{ logins: ['alice@example.com'], expected: ['alice@example.com'] }])
     expect(log).toHaveBeenCalledWith('admin: alice@example.com (has not signed in yet)')
+    expect(fakeCluster.get('ConfigMap', 'yaac-server-bootstrap', 'test-ns')).toBeUndefined()
+  })
+
+  it('refuses a revoke while the old server still runs, so nothing is stopped or applied', async () => {
+    adminSocketPods(['alice@example.com', 'bob@example.com'], 'answers')
+    const admin = ['alice@example.com']
+
+    await expect(deploy({ admin, log: vi.fn() }))
+      .rejects.toThrow('--admin would revoke admin from bob@example.com; re-run with --yes to accept that.')
+    terminal(true)
+    mockQuestion.mockResolvedValue('n')
+    await expect(deploy({ admin, log: vi.fn() })).rejects.toThrow('Left the admins unchanged.')
+
+    expect(mockQuestion.mock.calls).toEqual([['This revokes admin from: bob@example.com. Continue? [y/N] ']])
+    // Only the reads that found the old pod and asked its socket.
+    expect(actions.filter((a) => !a.startsWith('list Pod ') && !a.startsWith('kubectl exec yaac-server-old ')))
+      .toEqual([])
+  })
+
+  it('asks once for a revoke confirmed before the stop, and again if the admins change during the rollout', async () => {
+    const { writes, setAdmins } = adminSocketPods(['alice@example.com', 'bob@example.com'], 'answers')
+    terminal(true)
+    mockQuestion.mockResolvedValue('y')
+
+    await deploy({ admin: ['alice@example.com'], log: vi.fn() })
+
+    expect(mockQuestion).toHaveBeenCalledOnce()
+    const stopAt = actions.indexOf(`patch Deployment ${SERVER_APP_NAME} {"spec":{"replicas":0}}`)
+    expect(actions.findIndex((a) => a.startsWith('kubectl exec yaac-server-old '))).toBeLessThan(stopAt)
+    expect(writes).toEqual([{ logins: ['alice@example.com'], expected: ['alice@example.com', 'bob@example.com'] }])
+
+    // Someone makes carol an admin while the new pod rolls out, so the
+    // write is checked against the admins as they now are.
+    mockQuestion.mockClear()
+    writes.length = 0
+    setAdmins(['alice@example.com', 'bob@example.com'])
+    fakeCluster.intercept((c) => {
+      if (c.verb === 'apply' && c.kind === 'Deployment') setAdmins(['alice@example.com', 'bob@example.com', 'carol@example.com'])
+    })
+
+    await deploy({ admin: ['alice@example.com'], log: vi.fn() })
+
+    expect(mockQuestion.mock.calls).toEqual([
+      ['This revokes admin from: bob@example.com. Continue? [y/N] '],
+      ['This revokes admin from: bob@example.com, carol@example.com. Continue? [y/N] '],
+    ])
+    expect(writes).toEqual([{
+      logins: ['alice@example.com'], expected: ['alice@example.com', 'bob@example.com', 'carol@example.com'],
+    }])
+  })
+
+  it.each(['missing', 'local', 'stuck'] as const)('checks a revoke after the rollout when the old server\'s admin socket is %s', async (socket) => {
+    const { writes } = adminSocketPods(['alice@example.com', 'bob@example.com'], socket)
+
+    await expect(deploy({ admin: ['alice@example.com'], log: vi.fn() }))
+      .rejects.toThrow('--admin would revoke admin from bob@example.com')
+
+    expect(actions).toContain(`patch Deployment ${SERVER_APP_NAME} {"spec":{"replicas":0}}`)
+    expect(applied('Deployment').map((m) => (m.metadata as { name: string }).name)).toContain(SERVER_APP_NAME)
+    expect(writes).toEqual([])
     expect(fakeCluster.get('ConfigMap', 'yaac-server-bootstrap', 'test-ns')).toBeUndefined()
   })
 

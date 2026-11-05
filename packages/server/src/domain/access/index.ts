@@ -16,4 +16,4 @@ export {
   type AccessLevel,
   type Actor,
 } from './authorize'
-export { replaceAdmins, requireAdmin, setUserRole } from './roles'
+export { listInstallAdmins, replaceAdmins, requireAdmin, setUserRole } from './roles'
