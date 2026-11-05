@@ -1,37 +1,41 @@
 import http from 'node:http'
 import { confirmDefault } from '#confirm'
-import { adminSocketPath } from '#paths'
+import { adminSocketPath, ensureInstallTmpDir } from '#paths'
 import type { AdminEntry } from '#types'
 
 /**
  * The client side of the server's admin socket (docs/multi-user.md
  * "Roles"), through which `--admin` replaces an install's admins: over the
- * socket in the data dir for a host server, and through `kubectl exec`
+ * socket in the install tmp dir for a host server, and through `kubectl exec`
  * into the pod for a cluster's.
  */
 
 /** One request to the admin socket's `/admins`, however it is reached. */
 export type AdminSocketRequest = (method: 'GET' | 'PUT', body?: unknown) => Promise<{ status: number; body: unknown }>
 
-/** The host server's admin socket, in this data dir. */
-export const hostAdminSocket: AdminSocketRequest = (method, body) => new Promise((resolve, reject) => {
-  const req = http.request(
-    { socketPath: adminSocketPath(), path: '/admins', method, headers: { 'content-type': 'application/json' } },
-    (res) => {
-      let raw = ''
-      res.on('data', (chunk: Buffer) => { raw += chunk.toString() })
-      res.on('end', () => {
-        try {
-          resolve({ status: res.statusCode ?? 0, body: JSON.parse(raw) as unknown })
-        } catch (err) {
-          reject(err)
-        }
-      })
-    },
-  )
-  req.on('error', (err) => reject(new Error(`the server's admin socket did not answer (${err.message}); see its log`)))
-  req.end(body === undefined ? undefined : JSON.stringify(body))
-})
+/** The host server's admin socket, refused unless its dir is private, since
+ *  another user's socket there would see and answer `--admin`. */
+export const hostAdminSocket: AdminSocketRequest = async (method, body) => {
+  await ensureInstallTmpDir()
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { socketPath: adminSocketPath(), path: '/admins', method, headers: { 'content-type': 'application/json' } },
+      (res) => {
+        let raw = ''
+        res.on('data', (chunk: Buffer) => { raw += chunk.toString() })
+        res.on('end', () => {
+          try {
+            resolve({ status: res.statusCode ?? 0, body: JSON.parse(raw) as unknown })
+          } catch (err) {
+            reject(err)
+          }
+        })
+      },
+    )
+    req.on('error', (err) => reject(new Error(`the server's admin socket did not answer (${err.message}); see its log`)))
+    req.end(body === undefined ? undefined : JSON.stringify(body))
+  })
+}
 
 const shown = (a: AdminEntry): string => a.login ?? a.name
 

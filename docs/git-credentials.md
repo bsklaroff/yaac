@@ -106,7 +106,13 @@ Ed25519.
   git neither offers their login nor erases it when the token is rejected.
   For a key it signs through an ssh-agent the server
   runs in-process (`domain/git/agent.ts`): a UNIX socket in the install-keyed
-  temp dir that answers only two requests, list identities and sign.
+  temp dir that answers only two requests, list identities and sign. That
+  dir's name is predictable, so another OS user who created it first could
+  swap in an agent of their own. `ensureInstallTmpDir` creates it 0700,
+  tightens one of the server user's own that is open to others (removing
+  anything others put in it), and refuses a symlink, a dir another user
+  owns, or a temp dir others can write that has no sticky bit. A refusal
+  refuses the server's start, and `yaac server start` prints why.
   Identities come from the public column, and a seed is decrypted only inside
   the sign handler, for the one key requested. `GIT_SSH_COMMAND` names the
   socket as `IdentityAgent` and the project's public key file as `-i` with

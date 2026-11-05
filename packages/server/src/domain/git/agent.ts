@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import net from 'node:net'
 import path from 'node:path'
-import { installTmpDir } from '@yaac/shared/paths'
+import { ensureInstallTmpDir, installTmpDir } from '@yaac/shared/paths'
 import { listGitCredentials } from '#db'
 import { sshPublicKeyBlobFromLine, sshSign, sshString, sshUint32 } from '#lib/ssh-key'
 import { serverLog } from '#lib/log'
@@ -47,8 +47,8 @@ export function gitSshAgentSock(): string {
  *  `listen` can't bind over one. */
 export async function startGitSshAgent(): Promise<void> {
   if (server) return
+  await ensureInstallTmpDir()
   const sock = gitSshAgentSock()
-  await fs.mkdir(path.dirname(sock), { recursive: true, mode: 0o700 })
   await fs.rm(sock, { force: true })
   const listener = net.createServer((socket) => {
     socket.on('error', () => socket.destroy())

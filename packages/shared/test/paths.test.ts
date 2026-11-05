@@ -2,6 +2,8 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import crypto from 'node:crypto'
+import net from 'node:net'
 import {
   setDataDir,
   getDataDir,
@@ -40,7 +42,7 @@ import {
   cacheVolumeDir,
   imageStoreDir,
 } from '#project-paths'
-import { installTmpDir, serverLogPath, expandTilde, findRepoRoot, hostDataDir, resetHostDataDir } from '#paths'
+import { ensureInstallTmpDir, installTmpDir, serverLogPath, expandTilde, findRepoRoot, hostDataDir, resetHostDataDir } from '#paths'
 
 /** A project id, as the node-local tier is keyed by. */
 const PROJECT_ID = '0b6c1f4e-8a2d-4c3b-9e7f-5d1a2b3c4d5e'
@@ -303,5 +305,84 @@ describe('hostDataDir', () => {
     expect(hostDataDir()).toBe('/tmp/named')
     setDataDir('/tmp/hook')
     expect(hostDataDir()).toBe('/tmp/hook')
+  })
+})
+
+describe('ensureInstallTmpDir', () => {
+  // A data dir of its own per test, so each gets its own tmp dir name.
+  const dataDir = (): string => `/data-${crypto.randomUUID()}`
+  const made: string[] = []
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    vi.unstubAllEnvs()
+    for (const dir of made.splice(0)) await fs.rm(dir, { recursive: true, force: true })
+  })
+
+  it('creates a missing dir 0700, and tightens one of ours left open, keeping only our entries', async () => {
+    const fresh = dataDir()
+    made.push(installTmpDir(fresh))
+    expect(await ensureInstallTmpDir(fresh)).toBe(installTmpDir(fresh))
+    expect((await fs.lstat(installTmpDir(fresh))).mode & 0o777).toBe(0o700)
+
+    // 0755: nobody else could write into it, so its sockets stay.
+    const readable = dataDir()
+    const dir = installTmpDir(readable)
+    made.push(dir)
+    await fs.mkdir(dir)
+    await fs.chmod(dir, 0o755)
+    await fs.writeFile(path.join(dir, 'ws.sock'), '')
+    await ensureInstallTmpDir(readable)
+    expect((await fs.lstat(dir)).mode & 0o777).toBe(0o700)
+    expect(await fs.readdir(dir)).toEqual(['ws.sock'])
+
+    // 0777: what another user could have put there goes, ours stays.
+    await fs.chmod(dir, 0o777)
+    await fs.mkdir(path.join(dir, 'planted'))
+    const me = process.getuid!()
+    const lstat = fs.lstat.bind(fs)
+    vi.spyOn(fs, 'lstat').mockImplementation(async (p) => {
+      const st = await lstat(p)
+      return String(p).endsWith('planted') ? Object.assign(st, { uid: me + 1 }) : st
+    })
+    await ensureInstallTmpDir(readable)
+    expect((await fs.stat(dir)).mode & 0o777).toBe(0o700)
+    expect(await fs.readdir(dir)).toEqual(['ws.sock'])
+  })
+
+  it('refuses a dir another user made, or a temp dir they could rename it out of', async () => {
+    const linked = dataDir()
+    const target = installTmpDir(dataDir())
+    await fs.mkdir(target, { mode: 0o700 })
+    await fs.symlink(target, installTmpDir(linked))
+    const foreign = dataDir()
+    await fs.mkdir(installTmpDir(foreign), { mode: 0o755 })
+    // Unreadable, so the open fails before any owner check.
+    const unreadable = dataDir()
+    await fs.mkdir(installTmpDir(unreadable), { mode: 0o300 })
+    const socket = dataDir()
+    const listener = net.createServer()
+    await new Promise<void>((resolve) => listener.listen(installTmpDir(socket), resolve))
+    made.push(installTmpDir(linked), target, installTmpDir(foreign), installTmpDir(unreadable))
+
+    await expect(ensureInstallTmpDir(socket)).rejects.toThrow(`${installTmpDir(socket)}: it is not a directory`)
+    await new Promise((resolve) => listener.close(resolve))
+
+    await expect(ensureInstallTmpDir(linked)).rejects.toThrow(`${installTmpDir(linked)}: it is a symlink, so another user made it`)
+    const me = process.getuid!()
+    vi.spyOn(process, 'getuid').mockReturnValue(me + 1)
+    await expect(ensureInstallTmpDir(foreign)).rejects.toThrow(
+      `${installTmpDir(foreign)}: it is owned by uid ${String(me)}, not this user's (uid ${String(me + 1)})`,
+    )
+    expect((await fs.lstat(installTmpDir(foreign))).mode & 0o777).toBe(0o755)
+    await expect(ensureInstallTmpDir(unreadable)).rejects.toThrow(`${installTmpDir(unreadable)}: it is owned by uid ${String(me)}`)
+    vi.restoreAllMocks()
+
+    const shared = await fs.mkdtemp(path.join(os.tmpdir(), 'shared-'))
+    made.push(shared)
+    await fs.chmod(shared, 0o777)
+    vi.stubEnv('TMPDIR', shared)
+    await expect(ensureInstallTmpDir(dataDir())).rejects.toThrow(`${shared} is writable by other users and has no sticky bit`)
+    await fs.chmod(shared, 0o1777)
+    expect(await ensureInstallTmpDir(dataDir())).toMatch(new RegExp(`^${shared}/yaac-`))
   })
 })

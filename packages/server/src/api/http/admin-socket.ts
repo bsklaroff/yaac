@@ -1,5 +1,4 @@
 import fs from 'node:fs/promises'
-import path from 'node:path'
 import { createAdaptorServer, type ServerType } from '@hono/node-server'
 import { Hono } from 'hono'
 import { z } from 'zod'
@@ -7,11 +6,11 @@ import { listAdmins } from '#db'
 import { replaceAdmins } from '#domain/access'
 import { toErrorBody } from '#api/http/errors'
 import { zv } from '#routes/validator'
-import { adminSocketPath } from '@yaac/shared/paths'
+import { adminSocketPath, ensureInstallTmpDir } from '@yaac/shared/paths'
 
 /**
  * The admin socket (docs/multi-user.md "Roles"): a Unix socket in the
- * install's 0700 tmp dir, through which `--admin` reads and replaces the
+ * install's private tmp dir, through which `--admin` reads and replaces the
  * install's admins. The HTTP API cannot carry this, since a `tailnet` server
  * admits only callers through `tailscale serve`. Reaching the socket takes
  * the server's OS user, or `kubectl exec` into its pod, so it checks no
@@ -36,8 +35,8 @@ function adminSocketApp() {
 
 /** Listen on the admin socket, replacing one a dead server left. */
 export async function listenAdminSocket(): Promise<ServerType> {
+  await ensureInstallTmpDir()
   const socket = adminSocketPath()
-  await fs.mkdir(path.dirname(socket), { recursive: true, mode: 0o700 })
   await fs.rm(socket, { force: true })
   const server = createAdaptorServer({ fetch: adminSocketApp().fetch })
   await new Promise<void>((resolve, reject) => {

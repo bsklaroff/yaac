@@ -2,7 +2,7 @@ import path from 'node:path'
 import os from 'node:os'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
-import { existsSync, readFileSync } from 'node:fs'
+import { constants as fsConstants, existsSync, readFileSync, type Stats } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { env } from '#env'
 
@@ -197,8 +197,67 @@ export function installTmpDir(dataDir = getDataDir()): string {
   return path.join(os.tmpdir(), `yaac-${key}`)
 }
 
+/** Why {@link ensureInstallTmpDir} will not use the install tmp dir. */
+export class TmpDirRefusal extends Error {}
+
+/**
+ * The install tmp dir, private to this user; call it before putting a
+ * socket in the dir or connecting to one there. Its name is predictable, so
+ * another OS user could create it first and swap our sockets for their own:
+ * a symlink or a dir someone else owns is refused. One of ours that an
+ * older yaac left open (docs/legacy-compat-shims.md) is set to 0700, and if
+ * others could write into it, what they put there is removed. From then on
+ * only we can change it, as long as nobody can rename it away, so a temp dir
+ * others can write without the sticky bit is refused too.
+ */
+export async function ensureInstallTmpDir(dataDir = getDataDir()): Promise<string> {
+  const dir = installTmpDir(dataDir)
+  const parent = await fs.stat(path.dirname(dir))
+  if ((parent.mode & 0o022) !== 0 && (parent.mode & 0o1000) === 0) {
+    throw new TmpDirRefusal(`${path.dirname(dir)} is writable by other users and has no sticky bit, so they could `
+      + "replace yaac's sockets in it. Point TMPDIR at a private directory, for the server and the CLI alike.")
+  }
+  await fs.mkdir(dir, { mode: 0o700 }).catch((err: NodeJS.ErrnoException) => {
+    if (err.code !== 'EEXIST') throw err
+  })
+  const uid = process.getuid?.()
+  // Null for a real dir of ours. Applied to the open handle, or to the path
+  // when the open fails (a dir we cannot read, a socket bound there).
+  const madeByOther = (st: Stats): TmpDirRefusal | null => {
+    const why = st.isSymbolicLink() ? 'it is a symlink'
+      : !st.isDirectory() ? 'it is not a directory'
+      : st.uid !== uid ? `it is owned by uid ${String(st.uid)}, not this user's (uid ${String(uid)})`
+      : null
+    return why === null ? null : new TmpDirRefusal(
+      `refusing to keep yaac's sockets in ${dir}: ${why}, so another user made it. Ask an administrator to remove it.`,
+    )
+  }
+  // O_NONBLOCK so a FIFO planted here cannot hang the open.
+  const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fsConstants
+  const handle = await fs.open(dir, O_RDONLY | O_NOFOLLOW | O_NONBLOCK).catch(async (err: unknown) => {
+    throw madeByOther(await fs.lstat(dir)) ?? err
+  })
+  try {
+    const st = await handle.stat()
+    const refusal = madeByOther(st)
+    if (refusal) throw refusal
+    if ((st.mode & 0o077) !== 0) await handle.chmod(0o700)
+    if ((st.mode & 0o022) === 0) return dir
+    for (const name of await fs.readdir(dir)) {
+      const entry = path.join(dir, name)
+      if ((await fs.lstat(entry)).uid === uid) continue
+      await fs.rm(entry, { recursive: true, force: true }).catch(() => {
+        throw new TmpDirRefusal(`${entry} belongs to another user, and yaac cannot remove it. Ask an administrator to.`)
+      })
+    }
+    return dir
+  } finally {
+    await handle.close()
+  }
+}
+
 /** The Unix socket `--admin` replaces the install's admins through
- *  (docs/multi-user.md "Roles"), in the install's 0700 tmp dir. */
+ *  (docs/multi-user.md "Roles"), in {@link ensureInstallTmpDir}'s dir. */
 export function adminSocketPath(dataDir = getDataDir()): string {
   return path.join(installTmpDir(dataDir), 'admin.sock')
 }
