@@ -183,8 +183,8 @@ in-memory copy went idle, loads the file before scanning. Entries are
 immutable, so an append never conflicts with what is already there, and a
 line cut short by a crash is skipped on load. When the file grows past
 8 MB, the next fill rewrites it with only the entries the workspace's
-cached raws still name. Teardown deletes it, and a server start deletes any whose
-workspace no longer exists.
+cached raws still name. Teardown deletes it, and a server start deletes
+any whose workspace no longer exists.
 
 The raw lines are not stored: the first scan after a restart prints every
 pair again (0.1–0.75s on these fixtures). So a restart costs one scan and
