@@ -431,9 +431,5 @@ new pane never runs on the one-slot caches.
    on the server-local tier.
 3. **An unignored build directory must not be expensive**, hence the
    scratch objects and the folder limit, and the `EXTRAS` hash stays.
-
-## Open
-
-- **The folder limit.** 2,000 files keeps staging under about 5s at
-  scratch speed. A higher one lets a large generated folder show its diffs,
-  at a slower first poll.
+4. **The folder limit is 2,000 files**, which keeps staging under about 5s
+   at scratch speed.
