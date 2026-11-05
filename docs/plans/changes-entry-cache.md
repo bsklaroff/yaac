@@ -9,7 +9,10 @@ layer has one slot per workspace, so a second base polling beside the
 default evicts the first on every alternate poll. This plan replaces the
 first two layers with one cache, keyed by what each file's diff is a
 function of. It handles any number of bases, covers edits the delta
-misses, and needs less code.
+misses, survives a server restart, and needs less code. Two smaller
+changes stop a large untracked folder, such as a build directory nobody
+ignored, from stalling the read: staging writes its objects to pod-local
+scratch, and a folder over a size limit is not staged at all.
 
 ## What a read costs, and what each layer buys
 
@@ -94,6 +97,40 @@ What that says about each layer:
   probes the object store through the alternates: 3.0s against 0.37s.
   Anything below uses `--no-abbrev`.
 
+### A build directory nobody ignored
+
+The same fixture with an untracked `build/` of 5,000 small files (40 lines
+each, in 50 folders), as a build would leave it if `.gitignore` missed it:
+
+| Poll (yaac + `build/`) | Today |
+|---|---|
+| First poll after the folder appears | 314s |
+| Idle | 1.1–1.8s |
+| Edit to a file the base has (`delta`) | 2.2s |
+| Edit to a file the agent added | 34s |
+| First poll after a rebuild rewrites every file | 310s |
+
+In production the first and last rows never finish. Both exec timeouts
+(20s warm, 120s cold) cut the read off, and a killed `add -A` saves
+nothing, so every later poll starts over and the status bar shows "Git
+status unavailable" for as long as the folder is there. `EXTRAS` plays no
+part here: an ignored folder is one collapsed entry, but an unignored one
+is staged, listed and diffed file by file.
+
+Most of the cost is staging. `add -A` writes every new file as a loose
+object into the checkout's object store, one file create on NFS each, and
+the reads that follow come back from those loose objects. Staging 1,000 new
+files, alternating the two setups twice:
+
+| 1,000 new files | `add -A` | `write-tree` | numstat of them |
+|---|---|---|---|
+| Objects into the checkout's store (today) | 9.5–11.3s | 0.7–0.9s | 1.7–2.1s |
+| Objects into pod-local scratch | 1.8–2.4s | 0.4–0.5s | 0.8–1.2s |
+
+So staging costs about 10ms per new file today, and about 2ms when its
+objects go to scratch. Finding the untracked folders git collapses costs
+0.17s (`ls-files -o --directory` against the agent's index).
+
 ## Design
 
 ### Every file's diff is a function of its raw line
@@ -117,8 +154,9 @@ working tree, `--no-renames`) and the base diff (base → the working tree).
 It skips any pair the server says it already holds. A raw diff never
 changes for a given pair of trees, so the server names the pairs it holds
 (`A..B`) as arguments, and the script prints only the others. An idle poll
-prints none, as `same` does today. The listing works as it does today, less
-the `EXTRAS` hash. The output is paged as today.
+prints none, as `same` does today. The listing and the output's paging work
+as they do today. Staging changes in two ways, covered below: its objects
+go to scratch, and an untracked folder over the size limit is left out.
 
 ### Entry cache: in the server, keyed by content
 
@@ -129,11 +167,29 @@ Per workspace, the server keeps two maps:
 - **entries**: `SETTINGS` plus raw line → the file's counts and, once read,
   its body part (cut at the per-file cap, as today).
 
-Neither is tied to a base or a reading. One LRU byte budget covers all
-workspaces, with no idle expiry, and teardown drops a workspace's share
-(`forgetWorkspaceChanges`). The base diff's entries are at most the 2 MB
-in-workspace body cap plus their counts, so a 64 MB budget holds dozens of
-workspaces.
+Neither is tied to a base or a reading. The entries are also kept on the
+server's own disk (next section), so the in-memory copy can go after five
+idle minutes, as the held reading does today, and come back from disk on
+the next read. Teardown drops both maps and the file
+(`forgetWorkspaceChanges`).
+
+### Surviving a server restart
+
+Each fill appends the entries it read to `changes/<job>.ndjson` under the
+server-local tier: one JSON line per entry, holding its key, counts and
+part. No workspace pod mounts that tier, so an agent cannot plant entries
+there. The first read of a workspace after a restart, or after its
+in-memory copy went idle, loads the file before scanning. Entries are
+immutable, so an append never conflicts with what is already there, and a
+line cut short by a crash is skipped on load. When the file grows past
+8 MB, the next fill rewrites it with only the entries the workspace's
+cached raws still name. Teardown deletes it, and a server start deletes any whose
+workspace no longer exists.
+
+The raw lines are not stored: the first scan after a restart prints every
+pair again (0.1–0.75s on these fixtures). So a restart costs one scan and
+fills only what changed while the server was down. Today it costs 2.0s
+when the trees have not moved, and a full read (8.8s) when they have.
 
 ### Fill: a second exec, only for lines the cache lacks
 
@@ -176,7 +232,7 @@ measured the way the bench measures today's script:
 | Edit to a file the base has | 2.7–3.0s | 2.5–2.7s scan + 0.35s fill |
 | Edit to an added file, or a new file | 9.5–10.6s | 2.5–2.7s scan + 0.35s fill |
 | Two bases, switching back | 10.0s | idle cost: both bases' pairs and entries are cached |
-| First read after a server restart | 1.9–2.1s | the warm-index full read, 8.7–9.0s |
+| First read after a server restart | 1.9–2.1s; 8.8s if the trees moved | a scan, plus a fill for what moved |
 
 | Poll (synthetic) | Today | Proposed |
 |---|---|---|
@@ -203,6 +259,47 @@ shares an entry. So the two-ref Changes pane needs no slot logic. The one
 remaining per-base cost is that `runChangesRead` joins only reads against
 the same base. A later change could let one scan list several bases' pairs,
 so two bases share one `add -A`.
+
+### Staging into scratch objects
+
+The scan runs git with `GIT_OBJECT_DIRECTORY` set to a directory beside
+the private index, and the checkout's own object store in
+`GIT_ALTERNATE_OBJECT_DIRECTORIES`. Reads find every object in either
+place. Writes, meaning the blobs `add -A` hashes and the trees `write-tree`
+makes for the agent's index and the working tree, land in pod-local
+scratch instead of on NFS. A blob the checkout already has is never
+written. The fill and `readChangeDiffs` set the same two variables, since
+the trees they diff live there. That makes new files about 5× cheaper to
+stage, and it stops polls leaving loose objects in the checkout, which
+they do today on every edit until git prunes them.
+
+A pod's scratch is held in the sandbox's memory, so the directory is
+capped. When it passes 256 MB, the scan deletes it together with the
+private index and seeds the index again. That costs one cold staging, now
+done at scratch speed. The cached entries stay valid, since a blob id names
+the same content wherever the blob is stored. A pod restart clears
+scratch too, so a reading's trees can be gone, which `POST changes/diff`
+already answers with 404 and the client follows with a new poll.
+
+### An untracked folder too large to stage
+
+At 2ms a file, a 30,000-file build output would still take a minute to
+stage, and put 30,000 lines in every listing and raw diff. So before
+staging, the scan lists the untracked folders git collapses (`ls-files -o
+--directory` against the agent's index, 0.17s) and counts each one's files
+with `find | head -n 2001`, which stops at 2,001 however large the folder
+is. A folder holding more than 2,000 files is left out of `add -A` with a
+literal `:(exclude)` pathspec, removed from the private index in case an
+earlier poll staged it, and named in `skipped` on the answer. The Changes
+pane shows it as one untracked row, "over 2,000 files, not diffed". The
+explorer shows it as a folder whose children are read on expand, the way it
+shows an ignored folder. Nothing is lost: the agent's own `git status`
+still sees every file, and once the folder is ignored or deleted it leaves
+the read.
+
+A folder git does not collapse, because it holds a tracked file, is not
+counted, and is staged as today. The limit is a constant beside the others
+in `changes.ts`.
 
 ## Alternatives weighed
 
@@ -233,15 +330,10 @@ each other. It keeps `MODES`, the splice and the delta's gap on added and
 new files, and it adds a sweep. It is worth doing only if this plan is not.
 
 **Leaving the body out of the poll.** The Changes pane would load every part
-through `POST changes/diff`, as it already does past the cap. The entry
-cache would then hold only counts, and the poll's body handling would go:
-`capped` in the poll, the `diff` reader in `useWorkspaceChanges`, and
-`useChangeDiffs`' merging of the polled body with loaded parts. The
-pane's first diffs would arrive one batch after the file list, which on a
-large changeset beats today's first open of the pane: that open reads the
-whole body unless a reading is held with one. The cost is that Cmd/Ctrl-F
-searches only the parts loaded so far, where it now searches the first
-megabyte at once. This is a product choice, listed under Decisions.
+through `POST changes/diff`, as it already does past the cap, and the entry
+cache would hold only counts. Cmd/Ctrl-F would then search only the parts
+loaded so far, where it now searches the first megabyte at once, so the
+body stays in the poll.
 
 **One exec, the cached keys sent on stdin.** `exec` takes stdin, so the
 server could send the lines it holds and the script could fill in the same
@@ -249,36 +341,40 @@ run, saving the fill's start-up (about 0.1s). That costs the payload on
 every poll and puts the set logic in awk. Not worth it unless the second
 exec shows up in measurements over a slower network.
 
-## What gets deleted
+**Dropping the `EXTRAS` hash.** It saves 390 bytes per explorer poll on
+this checkout, but an ignore pattern matching files beside sources (`*.o`
+next to every `.c`) lists each one, and only the hash stops that list being
+sent on every poll. It is a few lines, so it stays.
+
+## What gets deleted, and what is added
+
+Deleted:
 
 - The section files and their helpers: `.committed`, `.staged`,
-  `.unstaged`, `.lists`, `.body`, `.delta`, `.paths`, `.dbody`, `.extras`,
-  and `cached`, `hit` and `pd`.
-- `MODES` and everything that decides it: the delta probe, `bdelta`,
-  `CHANGED`, the `patch` run, the blank base the server sends when its body
-  does not cover a run, and the stage and base-diff markers. A single raw
-  marker replaces those.
+  `.unstaged`, `.lists`, `.body`, `.delta`, `.paths`, `.dbody`, and
+  `cached`, `hit` and `pd`.
+- `MODES` for the diff and everything that decides it: the delta probe,
+  `bdelta`, `CHANGED`, the `patch` run, the blank base the server sends
+  when its body does not cover a run, and the stage and base-diff markers.
+  A single raw marker replaces those. The listing keeps its two words.
 - `HeldReading`, `BaseDiff`, `splice`, `patched` and the `MODES` half of
   `readRun`. `chunksOf` and `joinChunks` stay for the fill and assembly, and
   `pathBytes` stays for `readChangeDiffs`.
-- The `EXTRAS` hash and the listing's held extras.
-- `HELD_IDLE_MS`, since the LRU budget replaces it.
 - In `changes.test.ts`, the `MODES` assertions and the section-file test.
   Two tests replace them: one reads after each kind of change and compares
   against an uncached read, and one shows a fill reading only the lines the
   cache lacks.
 
-The estimate is 150–200 fewer lines in `changes.ts`, about a sixth, and
-more in its tests and in file-editor.md's "Changes". The script loses about
-35 of its 148 lines. Leaving the body out of the poll would take another
-80 or so from the server and 40 from `useChangeDiffs`.
+Added: the raw parser, the entry cache and its file, the fill, the scratch
+object directory (two variables and the cap), and the folder limit with its
+`skipped` row in the Changes pane and the explorer.
+
+The estimate is 100–150 fewer lines in `changes.ts`, and more in its tests
+and in file-editor.md's "Changes". The script loses about 30 of its 148
+lines, net of the folder check.
 
 ## Risks
 
-- **A server restart costs one full read per polled workspace** (8.8s on
-  the yaac fixture). Today the section files make it 2.0s when the trees have
-  not moved. The cold-read timeout (`READ_TIMEOUT_MS.cold`) still covers
-  that first read.
 - **Every edit poll rescans the base diff's trees.** That is 0.37s on the
   yaac fixture (0.75s with renames to pair) and 0.1s on the synthetic one,
   where today's delta probe takes 0.07–0.09s. Rename pairing reads every
@@ -286,13 +382,20 @@ more in its tests and in file-editor.md's "Changes". The script loses about
   poll. If a changeset with hundreds of both makes that slow, the pairing
   can be cached by the set of added and deleted lines.
 - **Raw lines cost about 145 bytes per file** (100 KB for this fixture's
-  base diff). A changeset of more than about 15,000 files passes the 2 MiB
-  page and pages on every edit poll. Idle polls print none.
+  base diff). A committed changeset of more than about 15,000 files passes
+  the 2 MiB page and pages on every edit poll; the folder limit keeps
+  untracked output out of it. If that case matters, the scan can print only
+  the lines that differ from the pair the server holds for the same base,
+  which is a set difference of lines.
 - **Pathspec fills depend on rename pairing being local.** The fill checks
   its rows against the lines it asked for and falls back to the whole pair
   on a mismatch, so a divergence costs time, not correctness.
 - **A second exec on every poll that changed something** adds its
   start-up, about 0.07s plus the exec's own round trip.
+- **Scratch objects use sandbox memory**, up to the 256 MB cap.
+- **A folder over the limit shows no diff,** including one the agent means
+  to commit. Its row says why, and the agent's own `git status` and commits
+  are unaffected.
 
 Nothing needs a legacy-compat shim. The old section files sit in scratch
 until the workspace is torn down, and no code reads them.
@@ -300,31 +403,37 @@ until the workspace is torn down, and no code reads them.
 ## Migration order
 
 1. **Land the bench** as a test skipped unless `BENCH_REPO` is set, with
-   the two fixture builders, so every later step is measured the same way.
-   Also run it where the NFS server is across a real network (EFS, a
-   Hetzner volume), where each uncached read costs more than it does here.
-2. **Replace the poll's caching** (scan, entry cache, fill, assembly) in
-   one change. `MODES` spans every part, so it cannot be retired a part at
-   a time. Merge `readChangeDiffs` into the fill. Rewrite file-editor.md
-   "Changes" in the same change.
-3. **Drop the `EXTRAS` hash.**
-4. **Build the two-ref Changes pane** on top. It needs nothing from the
+   the fixture builders (the two above, and the untracked `build/`), so
+   every later step is measured the same way. Also run it where the NFS
+   server is across a real network (EFS, a Hetzner volume), where each
+   uncached read costs more than it does here.
+2. **Stage into scratch objects.** It is independent of the cache and
+   speeds up today's script as it is: the variables in the script and in
+   `readChangeDiffs`, and the cap.
+3. **Limit untracked folders.** Also independent, and it ends today's
+   never-finishing reads on an unignored build directory. It adds
+   `skipped` to `WorkspaceDiff` and its row in the webapp.
+4. **Replace the poll's caching** (scan, entry cache and its file, fill,
+   assembly) in one change. `MODES` spans every part of the diff, so it
+   cannot be retired a part at a time. Merge `readChangeDiffs` into the
+   fill. Rewrite file-editor.md "Changes" in the same change.
+5. **Build the two-ref Changes pane** on top. It needs nothing from the
    cache.
-5. If chosen, **leave the body out of the poll**, and **let one scan serve
-   several bases**.
+6. Later, if wanted: **let one scan serve several bases**.
 
-Step 2 should come before step 4, so the new pane never runs on the
-one-slot caches.
+Steps 2 and 3 are the urgent ones; step 4 should come before step 5, so the
+new pane never runs on the one-slot caches.
 
-## Decisions
+## Decided
 
-1. **The body in the poll, or on demand?** Recommended: keep it in the poll
-   for now (as in the design above), since find across diffs depends on it,
-   and revisit once the entry cache has landed.
-2. **Is a full read per workspace after a server restart acceptable?**
-   Recommended: yes. If not, the fill could also write what it read to a
-   scratch file for the server to load on its first poll, which gives back
-   some of the code saved.
-3. **Drop the `EXTRAS` hash?** Recommended: yes. A checkout with thousands
-   of ignored files outside ignored folders would then send that list on
-   every explorer poll.
+1. **The body stays in the poll**, since find across diffs searches it.
+2. **A server restart must not cost a full read**, hence the entry file
+   on the server-local tier.
+3. **An unignored build directory must not be expensive**, hence the
+   scratch objects and the folder limit, and the `EXTRAS` hash stays.
+
+## Open
+
+- **The folder limit.** 2,000 files keeps staging under about 5s at
+  scratch speed. A higher one lets a large generated folder show its diffs,
+  at a slower first poll.
