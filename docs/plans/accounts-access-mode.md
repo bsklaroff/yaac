@@ -1,7 +1,7 @@
 # Accounts: invited users with email and password
 
 Today a remote yaac server admits only tailnet users (docs/remote-hosting.md).
-This plan adds an `accounts` access mode. In it, the install's owner can
+This plan adds an `accounts` access mode. In it, the install's admins can
 invite people by email. They sign in with an email and password, from a
 browser, the CLI, the desktop app or the iOS app, and need no Tailscale.
 Tailnet users keep working exactly as they do now.
@@ -29,13 +29,14 @@ Goals:
   chat, forwards and the auth relay.
   - Browser, desktop app and iOS app: sign in on the server's own login page.
   - CLI: sign in with a device code.
-- Only the install's owner can invite, list and remove account users.
+- Only admins (docs/multi-user.md "Roles") can invite, list and remove
+  account users.
 - Accepting an invite proves the email address. Password reset and email
   change are verified by email too.
 - Passwords follow NIST SP 800-63B-4 (see "Password policy"): at least 8
   characters, no composition rules, and screened against common and easily
   guessed passwords offline. Screening against known breaches
-  (`haveIBeenPwned`) is on by default, and the owner can turn it off.
+  (`haveIBeenPwned`) is on by default, and an admin can turn it off.
 - Mail goes out through any SMTP server. Gmail with an app password is the
   documented easy path.
 - Everything is on 443 at the server's existing origin, so tailnet users'
@@ -81,14 +82,14 @@ public clients.
   callers exactly as `tailnet` does, and adds account users.
 - `yaac server start --tailnet <host> --accounts` and `yaac cluster install
   --tailnet --accounts` ask for it. `--accounts` without `--tailnet` is
-  refused, because the owner and the origin both come from the tailnet.
-- **The owner** is the built-in user (`BUILT_IN_USER_ID`), the row `--owner
-  <login>` gives a tailnet login (`recordAccessMode`). The mode needs that
-  row to have a login, since otherwise nobody could invite.
+  refused, because the admins and the origin both come from the tailnet.
+- **The admins** are the install's (docs/multi-user.md "Roles"), tailnet
+  logins named by `--admin`, so the mode always has someone who can invite.
 - Transitions, in `settleAccessMode` (`#main/access-mode`):
-  - `local` → `accounts` needs `--owner`, as `local` → `tailnet` does.
-  - `tailnet` → `accounts` needs `--owner` only if the built-in user has no
-    login yet.
+  - `local` → `accounts` needs exactly one `--admin`, as `local` → `tailnet`
+    does.
+  - `tailnet` → `accounts` needs nothing more, since a `tailnet` install
+    always has an admin.
   - `accounts` → `tailnet` is allowed, since it only narrows who gets in.
     Account rows and data stay, and their sign-in is refused until the mode
     returns.
@@ -151,7 +152,7 @@ answers `NOT_SUPPORTED`.
 | `rateLimit` | `enabled: true` (its default is production only), `storage: 'database'`, tighter `customRules` for sign-in, reset requests and device-token polling | the login form is public under `funnel`; limits survive restarts |
 | `advanced.ipAddress.ipAddressHeaders` | `['x-forwarded-for']` | `serve` writes it, so it is the client's real address |
 | `advanced.useSecureCookies` | `true` | `__Secure-` cookies, `HttpOnly`, `SameSite=Lax` |
-| plugins | yaac's `passwordPolicy()`, `haveIBeenPwned({ enabled })`, `bearer()`, `deviceAuthorization({ verificationUri: '/device', validateClient: (id) => id === 'yaac-cli' })` | password screening; the breach check (on unless the owner turns it off); CLI tokens; CLI sign-in (its `/device/token` returns the session token as `access_token`, which `bearer()` accepts) |
+| plugins | yaac's `passwordPolicy()`, `haveIBeenPwned({ enabled })`, `bearer()`, `deviceAuthorization({ verificationUri: '/device', validateClient: (id) => id === 'yaac-cli' })` | password screening; the breach check (on unless an admin turns it off); CLI tokens; CLI sign-in (its `/device/token` returns the session token as `access_token`, which `bearer()` accepts) |
 
 Details:
 
@@ -199,11 +200,11 @@ password policies cite:
   characters of the password's SHA-1 hash to `api.pwnedpasswords.com`.
   - **It fails closed:** while that API cannot be reached, no password can
     be set or reset.
-  - **The owner can turn it off,** in Settings → Users ("Also check new
+  - **An admin can turn it off,** in Settings → Users ("Also check new
     passwords against known breaches"), for an install whose server has no
     outbound internet.
   - **The refusal names the cause:** "couldn't reach the breach-check
-    service; try again, or ask the owner to turn the check off".
+    service; try again, or ask an admin to turn the check off".
   - **The setting is read live.** The plugin reads its `enabled` option on
     each call, so yaac passes a getter over the setting and the instance
     need not be rebuilt.
@@ -263,8 +264,8 @@ better-auth has no lockout for password sign-in, so it is part of
   every check holds unchanged.
 - **Links are made when a side first appears, never by merging two rows.**
   - **An invite is accepted:** if a row has that address as its `login` and
-    no `authUserId`, the new account attaches to it. This includes the
-    owner's own row, so the owner can invite themself to sign in from off
+    no `authUserId`, the new account attaches to it. This includes an
+    admin's own row, so an admin can invite themself to sign in from off
     the tailnet with a password.
   - **A tailnet login is seen for the first time:** `seeTailnetUser` looks
     for a row with no `login` whose account email matches, and attaches the
@@ -314,11 +315,11 @@ exist (`requireEmailVerification`). Loopback without serve is refused, as in
 Invites are yaac routes rather than a better-auth plugin, so they go through
 `identify()` and the route matrix like any other.
 
-- **`POST /api/invites { email }`** (owner only).
+- **`POST /api/invites { email }`** (admins only).
   - It stores a token in better-auth's verification table, through its
     internal adapter, with a 7-day expiry. Only the token's hash is kept.
   - It emails `https://<host>/invite/<token>`.
-  - On a `containerless` install the owner's invite dialog says, before it
+  - On a `containerless` install the admin's invite dialog says, before it
     sends, that the invitee will be able to reach everything the host
     account can, including every other user's data and credentials. It
     reuses the containerless wording in `@yaac/shared/setup-copy`. The
@@ -329,7 +330,7 @@ Invites are yaac routes rather than a better-auth plugin, so they go through
 
   Invites are only ever delivered by email, never shown for copying. That
   is what makes accepting one proof of the address.
-- **`GET /api/invites`** and **`DELETE /api/invites/:id`** (owner only).
+- **`GET /api/invites`** and **`DELETE /api/invites/:id`** (admins only).
   These list pending invites and revoke one.
 - **`POST /api/invites/accept { token, name, password }`** (public,
   rate-limited).
@@ -339,7 +340,7 @@ Invites are yaac routes rather than a better-auth plugin, so they go through
     credential account (password hashed by better-auth's hasher), and spends
     the token.
   - The SPA then signs in through `/api/auth/sign-in/email` as normal.
-- **`GET /api/accounts`** and **`DELETE /api/accounts/:id`** (owner only).
+- **`GET /api/accounts`** and **`DELETE /api/accounts/:id`** (admins only).
   These list account users and remove one's access. Removing deletes the
   better-auth user's sessions and credential account, so every client is
   refused on its next request. It keeps the yaac user row, so their
@@ -350,7 +351,7 @@ Invites are yaac routes rather than a better-auth plugin, so they go through
 - One `smtp_settings` row: host, port, TLS mode (`tls` or `starttls`),
   username, password and From address. The password is sealed with
   `symmetricEncrypt` and the install key, as git and tool credentials are.
-- Routes (owner only): `GET` returns the settings with the password
+- Routes (admins only): `GET` returns the settings with the password
   omitted, `PUT` saves them, `DELETE` clears them, and `POST
   /api/settings/smtp/test` sends a test message to an address.
 - Sending uses nodemailer, a new dependency. It is pinned once in the
@@ -370,7 +371,7 @@ Invites are yaac routes rather than a better-auth plugin, so they go through
   with `NOT_SUPPORTED`, so a client asking directly learns this install has
   none.
 - **Route matrix.** Every new route gets a row in `test/api/route-matrix.ts`
-  with its access level (`public` or a new owner-only level) and the same
+  with its access level (`public` or `admin`) and the same
   answer under both drivers. This includes the `/api/auth/*` catch-all.
 
 ## Clients
@@ -390,8 +391,8 @@ New SPA pages:
   `deviceAuthorization` plugin's approve endpoint.
 - **Settings → Account** (account users): change password, change email,
   sign out.
-- **Settings → Users** (owner): invites and accounts.
-- **Settings → Email** (owner): SMTP settings and test.
+- **Settings → Users** (admins): invites and accounts, beside the roles.
+- **Settings → Email** (admins): SMTP settings and test.
 
 Any 401 with `signIn: true` sends the page to `/login?next=<path>`. Settings
 → General → "Open on your phone" keeps working, since the origin does not
@@ -462,27 +463,25 @@ funnel`":
 - **Sign-in endpoints** are rate-limited per client IP, from the
   `X-Forwarded-For` that `serve` writes. Passwords are at least 8
   characters, screened by zxcvbn, and checked against known breaches unless
-  the owner turns that off.
+  an admin turns that off.
 - **Passwords can be phished,** unlike passkeys. Two-factor or passkeys are
   the planned follow-ups.
 - **Clients now hold credentials:** a session cookie in the browser, the
   desktop app and the iOS app, and a bearer token in
   `~/.yaac-client/sessions.json` for the CLI. Removing an account deletes
   its sessions, so every client is refused on its next request.
-- **The owner is the first role** that is not shared by all users. Only they
-  invite, remove accounts and set mail. `docs/multi-user.md` "There is no
-  admin role" changes accordingly.
+- **Only admins** invite, remove accounts and set mail.
 - **Account users share the trust model of tailnet users.** Under
   `containerless` that means any user can act as any other, and as the host
   account. The docs say plainly that inviting someone to a containerless
-  install gives them the machine. So do both ends of an invite: the owner's
+  install gives them the machine. So do both ends of an invite: the admin's
   invite dialog and email, and the invitee's accept page (see "Webapp").
 - **The SMTP password** is sealed with the install key, like other
   credentials.
 
 Other docs to update in the same change:
 
-- `docs/multi-user.md`: account users; the owner role.
+- `docs/multi-user.md`: account users.
 - `docs/server-selection.md`: the sessions file.
 - `docs/cli.md`: the new commands and flags.
 - `packages/desktop/README.md` and `ios/README.md`: sign-in and probes.
@@ -492,13 +491,13 @@ Other docs to update in the same change:
 ### Host server
 
 ```
-yaac server start --tailnet srv.<tailnet>.ts.net --accounts [--owner <login>]
+yaac server start --tailnet srv.<tailnet>.ts.net --accounts [--admin <login>]
 tailscale serve --bg http://127.0.0.1:8787      # tailnet only
 tailscale funnel --bg http://127.0.0.1:8787     # or: also the public internet
 ```
 
 There are no extra processes. Funnel needs the `funnel` node attribute in
-the tailnet policy. Then the owner opens Settings → Email, saves the SMTP
+the tailnet policy. Then an admin opens Settings → Email, saves the SMTP
 settings, sends a test, and invites people from Settings → Users.
 
 ### Cluster install
@@ -536,7 +535,7 @@ kind with host `serve` fronting (`serveFronting`) works as on a host:
     refused when the API is unreachable, and skipped while the setting is
     off;
   - removing an account refusing its cookie and bearer immediately;
-  - non-owners refused by every owner route;
+  - members refused by every admin route;
   - rate limits holding across a restart;
   - the per-account lockout:
     - it engages after 10 failures from different addresses;
@@ -550,13 +549,13 @@ kind with host `serve` fronting (`serveFronting`) works as on a host:
   run for an account user against tailnet users' data.
 - **`test/e2e-containerless/`.** One file, `accounts-suite`, with one
   server:
-  - the owner (tailnet headers on loopback, which containerless admits as
+  - an admin (tailnet headers on loopback, which containerless admits as
     serve) configures SMTP and invites;
   - the fake SMTP listener captures the link;
   - the invitee accepts, signs in and uses the API and a WebSocket;
-  - the owner removes them, and their next request fails.
+  - the admin removes them, and their next request fails.
 
-  The suite turns breach screening off through the owner setting, so it
+  The suite turns breach screening off through the admin setting, so it
   makes no outbound call, and the setting's route is exercised end to end.
   The check's behavior is covered by the unit tests.
 - **`test/e2e-cli/`.** `remote add` and `remote login` through the device

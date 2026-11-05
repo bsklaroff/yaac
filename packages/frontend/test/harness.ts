@@ -80,7 +80,7 @@ export function mockFetch(routes: Record<string, Reply> = {}): FetchMock {
  *  owns every fixture project (`owner: TEST_USER_ID`). */
 export const TEST_USER_ID = 'u-me'
 export const TEST_WHOAMI: Whoami = {
-  kind: 'local', userId: TEST_USER_ID, users: [{ id: TEST_USER_ID, login: null, name: 'Me' }],
+  kind: 'local', userId: TEST_USER_ID, users: [{ id: TEST_USER_ID, login: null, name: 'Me', role: 'admin' }],
 }
 
 /** A query client configured like the app's (main.tsx): no retries, and no

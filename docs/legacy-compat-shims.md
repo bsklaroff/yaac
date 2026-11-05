@@ -502,3 +502,27 @@ session, and the session comes back on the next restart.
 - **When it is safe to remove.** Once every workspace running at the upgrade
   has stopped or restarted, which a restart does: no running workspace's
   `life_started_at` is older than the upgrade.
+
+## A `tailnet` install from before roles, with no admin
+
+The `add_user_roles` migration makes the built-in user an admin unless the
+install is `tailnet` and the built-in user has no login, which is how a
+fresh `tailnet` install from before roles was left: nobody can sign in as
+it, so such an install comes out of the migration with no admin.
+`settleAccessMode` in `packages/server/src/main/access-mode.ts` therefore
+treats a recorded `tailnet` mode with no admin like a fresh `tailnet`
+install: it takes admins from `--admin` or refuses, naming the flag. Since
+roles, nothing else leaves a `tailnet` install with no admin: a fresh start
+needs `--admin`, the admin socket refuses an empty list and the last admin
+cannot be demoted.
+
+- **What it reads.** The recorded access mode and whether any `users` row
+  has `role = 'admin'` (`listAdmins`), on every start.
+- **What breaks silently if it goes too early.** An upgraded install starts
+  without complaint with nobody able to publish sites or set roles, and
+  nothing points at `--admin`.
+- **When it is safe to remove.** Once every `tailnet` install has started on
+  a build with roles and been given admins. Only the
+  `listAdmins().length === 0` half of that condition goes; the
+  `recorded === undefined` half is the fresh install's. The migration's
+  promotion `UPDATE` stays, as migrations do.

@@ -60,7 +60,7 @@ async function wipeSharedDb(db: Db): Promise<void> {
   if (rows.length === 0) return
   const list = rows.map((r) => `"${r.tablename}"`).join(', ')
   await db.$client.exec(`TRUNCATE ${list} RESTART IDENTITY CASCADE`)
-  await db.$client.query('INSERT INTO users (id, name) VALUES ($1, $2)', [BUILT_IN_USER_ID, 'local'])
+  await db.$client.query('INSERT INTO users (id, name, role) VALUES ($1, $2, $3)', [BUILT_IN_USER_ID, 'local', 'admin'])
 }
 
 function getSharedDb(dir: string): Promise<Db> {

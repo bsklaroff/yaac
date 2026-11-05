@@ -23,6 +23,12 @@ yaac --user <user> <command>    Mean this user's projects rather than your own
 
 yaac server                     The yaac server the CLI and web app talk to
   start | stop | restart        Under k8s these scale or roll the in-cluster server
+    --tailnet <host>            (start, restart) Serve tailnet users through
+                                `tailscale serve` at this MagicDNS name
+    --admin <login>             (start, restart; repeatable) With --tailnet: make
+                                exactly these logins the admins (multi-user.md
+                                "Roles"); asks before revoking anyone else's
+    -y, --yes                   Revoke without asking
   run [-p <port>]               Run in the foreground (what `start` runs)
   logs [-f] [-n <lines>]        Print the server log
 
@@ -36,6 +42,10 @@ yaac cluster                    The Kubernetes cluster (k8s driver only)
                                 ignored if the cluster exists)
     --tailnet                   Publish the server on your tailnet via the
                                 Tailscale Kubernetes operator
+    --admin <login>             With --tailnet or --byo (repeatable): make
+                                exactly these logins the admins; asks before
+                                revoking anyone else's
+    -y, --yes                   Revoke without asking
     --byo                       Install into the cluster your kubeconfig points
                                 at instead of creating one (published on the tailnet)
     --rwx-storage-class <name>  With --byo (required): NFS-family class for the
@@ -46,6 +56,11 @@ yaac cluster                    The Kubernetes cluster (k8s driver only)
                                 workspaces' checkouts. Refused on a --byo install
 
 yaac host check                 Verify this machine can run containerless workspaces
+
+yaac user                       The install's users (multi-user.md "Roles")
+  list                          Users and their roles
+  role <user> <admin|member>    Set a user's role (admins only; never the last
+                                admin's)
 
 yaac project
   list                          Your projects (or --user's)
@@ -155,7 +170,8 @@ yaac routine                    Workspaces started on a cron schedule (routines.
 
 yaac site                       A project's public sites, each served by a
                                 locked workspace, its release (cluster servers
-                                only; public-sites.md)
+                                only; public-sites.md). Only an admin creates,
+                                edits, deploys or starts one
   create <project> <name>       --hostname, --port and --steps required; prints
                                 what to add to the Cloudflare tunnel
     --hostname <host>           Public hostname the tunnel routes

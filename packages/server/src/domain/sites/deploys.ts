@@ -24,7 +24,7 @@ import {
   type SiteRow,
   type StepRow,
 } from '#db'
-import { authorizeProject, systemPrincipal, type Actor } from '#domain/access'
+import { systemPrincipal, type Actor } from '#domain/access'
 import { fetchProjectOrigin } from '#domain/projects'
 import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
 import {
@@ -41,7 +41,7 @@ import { testEnv } from '@yaac/shared/env'
 import { ServerError } from '@yaac/shared/errors'
 import { repoDir } from '@yaac/shared/project-paths'
 import { FULL_COMMIT_PATTERN, type StepGraph } from '@yaac/shared/steps'
-import { authorizeSiteEnd, requireSite, syncSiteRoutes } from './sites'
+import { authorizeSiteEnd, authorizeSitePublish, requireSite, syncSiteRoutes } from './sites'
 
 /** How long a deploy may take to be ready, unless it names its own. */
 const DEFAULT_DEPLOY_TIMEOUT_MS = 15 * 60_000
@@ -136,7 +136,7 @@ export async function deploySite(
   name: string,
   opts: { ref?: string; timeoutMinutes?: number } = {},
 ): Promise<{ workspaceId: string; commit: string }> {
-  await authorizeProject(principal, projectId)
+  await authorizeSitePublish(principal, projectId)
   const { id } = await requireSite(projectId, name)
   const commit = await resolveDeployCommit(projectId, opts.ref)
   const timeoutMs = opts.timeoutMinutes !== undefined ? opts.timeoutMinutes * 60_000 : DEFAULT_DEPLOY_TIMEOUT_MS
@@ -149,7 +149,7 @@ export async function deploySite(
 /** Serve a stopped site again: a deploy of the release it last ran, at
  *  its commit and image, with its graph and volume. */
 export async function startSite(principal: Actor, projectId: string, name: string): Promise<{ workspaceId: string; commit: string }> {
-  await authorizeProject(principal, projectId)
+  await authorizeSitePublish(principal, projectId)
   const { id } = await requireSite(projectId, name)
   return await withSiteLock(id, async () => {
     const site = await lockedSite(id, name)

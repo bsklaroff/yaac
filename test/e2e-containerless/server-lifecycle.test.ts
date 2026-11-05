@@ -214,11 +214,11 @@ describe('yaac server start / stop / restart (real CLI)', () => {
 
 })
 
-describe('yaac server start|restart --tailnet/--owner (access modes)', () => {
+describe('yaac server start|restart --tailnet/--admin/--yes, and yaac user (access modes and roles)', () => {
   // One data dir walked through the whole one-way sequence: fresh tailnet
-  // needs no --owner, a mode the running server is not in is refused, and
-  // tailnet never goes back to local. A second data dir covers the switch
-  // from local, which does need --owner.
+  // needs an --admin, a mode the running server is not in is refused, and
+  // tailnet never goes back to local. Others cover replacing the admins and
+  // the switch from local, which takes exactly one --admin.
   const HOST = 'srv.tailnet.ts.net'
   let testEnv: YaacTestEnv
 
@@ -245,9 +245,21 @@ describe('yaac server start|restart --tailnet/--owner (access modes)', () => {
     })
   }
 
-  it('records a fresh install\'s mode, registers its tailnet origin, and never switches back', async () => {
-    const started = await runYaac(testEnv.env, 'server', 'start', '--tailnet', HOST.toUpperCase())
+  /** The roles /whoami lists, by login. */
+  async function roles(): Promise<Record<string, string>> {
+    const { users } = (await whoami(asTailnet('alice@example.com', HOST))).body as { users: Array<{ login: string; role: string }> }
+    return Object.fromEntries(users.map((u) => [u.login, u.role]))
+  }
+
+  it('records a fresh install\'s mode and admins, registers its tailnet origin, and never switches back', async () => {
+    const adminless = await runYaac(testEnv.env, 'server', 'start', '--tailnet', HOST)
+    expect(adminless.exitCode).toBe(1)
+    expect(adminless.stderr).toMatch(/has no admin[\s\S]*--admin <login>/)
+    expect(await readLock()).toBeNull()
+
+    const started = await runYaac(testEnv.env, 'server', 'start', '--tailnet', HOST.toUpperCase(), '--admin', 'alice@example.com')
     expect(started.exitCode).toBe(0)
+    expect(started.stderr).toContain('admin: alice@example.com (has not signed in yet)')
     expect(await readServerConfig()).toMatchObject({ url: `https://${HOST}` })
     expect(await readInstallRecord()).toEqual({ driver: 'containerless', origin: `https://${HOST}` })
     expect((await whoami(asTailnet('alice@example.com', HOST))).body).toMatchObject({ kind: 'tailnet', login: 'alice@example.com' })
@@ -287,24 +299,54 @@ describe('yaac server start|restart --tailnet/--owner (access modes)', () => {
     expect((await whoami(asTailnet('alice@example.com', HOST))).status).toBe(200)
   })
 
-  it('switches a local install to tailnet only with --owner, who then owns its data', async () => {
+  it('replaces the admins of a running server, revoking anyone only once accepted', async () => {
+    const started = await runYaac(testEnv.env, 'server', 'start', '--tailnet', HOST, '--admin', 'alice@example.com', '--admin', 'bob@example.com')
+    expect(started.exitCode).toBe(0)
+    expect(await roles()).toMatchObject({ 'alice@example.com': 'admin', 'bob@example.com': 'admin' })
+    // Bob signs in, so revoking him keeps him as a member.
+    await whoami(asTailnet('bob@example.com', HOST))
+
+    // No terminal to ask on, so revoking bob needs --yes.
+    const asked = await runYaac(testEnv.env, 'server', 'start', '--tailnet', HOST, '--admin', 'alice@example.com')
+    expect(asked.exitCode).toBe(1)
+    expect(asked.stderr).toMatch(/would revoke admin from bob@example\.com; re-run with --yes/)
+    expect(await roles()).toMatchObject({ 'bob@example.com': 'admin' })
+
+    const accepted = await runYaac(testEnv.env, 'server', 'restart', '--tailnet', HOST, '--admin', 'alice@example.com', '--yes')
+    expect(accepted.exitCode).toBe(0)
+    expect(await roles()).toMatchObject({ 'alice@example.com': 'admin', 'bob@example.com': 'member' })
+  })
+
+  it('lists users and sets roles with `yaac user`, then switches local to tailnet with exactly one --admin, who owns its data', async () => {
     expect((await runYaac(testEnv.env, 'server', 'start')).exitCode).toBe(0)
     expect(await whoami({ host: '127.0.0.1' })).toMatchObject({ status: 200, body: { kind: 'local' } })
     const builtIn = (await whoami({ host: '127.0.0.1' })).body.userId
 
+    // A local install's one user is its admin, and its last.
+    expect((await runYaac(testEnv.env, 'user', 'list')).stdout).toMatch(/local\s+admin\s+local \(you\)/)
+    expect((await runYaac(testEnv.env, 'user', 'role', 'local', 'admin')).stdout).toContain('local is now an admin.')
+    const demoted = await runYaac(testEnv.env, 'user', 'role', 'local', 'member')
+    expect(demoted.exitCode).toBe(1)
+    expect(demoted.stderr).toMatch(/last admin/)
+    expect((await runYaac(testEnv.env, 'user', 'role', 'nobody', 'admin')).stderr).toMatch(/No user "nobody"/)
+    expect((await runYaac(testEnv.env, 'user', 'role', 'local', 'owner')).stderr).toMatch(/Allowed choices are admin, member/)
+
     const unowned = await runYaac(testEnv.env, 'server', 'restart', '--tailnet', HOST)
     expect(unowned.exitCode).toBe(1)
-    expect(unowned.stderr).toMatch(/runs in local mode[\s\S]*--owner <login>/)
+    expect(unowned.stderr).toMatch(/runs in local mode[\s\S]*exactly one admin[\s\S]*--admin <login>/)
     expect(await readLock()).toBeNull()
+    const two = await runYaac(testEnv.env, 'server', 'start', '--tailnet', HOST, '--admin', 'alice@example.com', '--admin', 'bob@example.com')
+    expect(two.stderr).toMatch(/exactly one admin/)
 
-    const owned = await runYaac(testEnv.env, 'server', 'start', '--tailnet', HOST, '--owner', 'alice@example.com')
+    const owned = await runYaac(testEnv.env, 'server', 'start', '--tailnet', HOST, '--admin', 'alice@example.com')
     expect(owned.exitCode).toBe(0)
     expect((await whoami(asTailnet('alice@example.com', HOST))).body).toMatchObject({ userId: builtIn })
+    expect(await roles()).toEqual({ 'alice@example.com': 'admin' })
   })
 
   it('refuses bad flags before starting anything, and --tailnet inside a workspace', async () => {
     for (const [args, message] of [
-      [['--owner', 'alice@example.com'], /--owner .* needs --tailnet <host>/],
+      [['--admin', 'alice@example.com'], /--admin .* needs --tailnet <host>/],
       [['--tailnet', 'https://srv.tailnet.ts.net'], /--tailnet takes the bare MagicDNS name/],
     ] as const) {
       const { exitCode, stderr } = await runYaac(testEnv.env, 'server', 'start', ...args)

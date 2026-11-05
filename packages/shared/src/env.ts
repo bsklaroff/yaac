@@ -313,13 +313,12 @@ export const env = {
   },
 
   /**
-   * `YAAC_ACCESS_OWNER` — the tailnet login that claims a `local` install's
-   * data when it is switched to `tailnet` (`--owner`). Plumbing like
-   * `YAAC_ACCESS_MODE`.
+   * `YAAC_ACCESS_ADMINS` — comma-separated tailnet logins (`--admin`) a
+   * `tailnet` start with no admin takes as its admins (docs/multi-user.md
+   * "Roles"). Plumbing like `YAAC_ACCESS_MODE`; empty when unset.
    */
-  get accessOwner(): string | undefined {
-    const raw = process.env.YAAC_ACCESS_OWNER?.trim()
-    return raw === undefined || raw === '' ? undefined : raw
+  get accessAdmins(): string[] {
+    return (process.env.YAAC_ACCESS_ADMINS ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '')
   },
 
   /**

@@ -20,6 +20,12 @@ export function useWhoami(): Whoami | undefined {
   return useQuery(whoamiQuery).data
 }
 
+/** Whether the caller is an admin of the install (docs/multi-user.md "Roles"). */
+export function useIsAdmin(): boolean {
+  const whoami = useWhoami()
+  return whoami?.users.find((u) => u.id === whoami.userId)?.role === 'admin'
+}
+
 /** The user whose projects are shown: the switcher's pick, else the caller. */
 export function useViewedUserId(): string | undefined {
   const viewed = useUiStore((s) => s.viewedUserId)

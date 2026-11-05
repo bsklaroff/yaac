@@ -25,7 +25,7 @@ import {
   type SitePatch,
   type SiteRow,
 } from '#db'
-import { authorizeProject, type Actor } from '#domain/access'
+import { authorizeProject, isProjectHeld, requireAdmin, type Actor } from '#domain/access'
 import { VOLUME_NEED } from '#domain/workspaces'
 import { isInfraPort } from '#lib/port-policy'
 import { ServerError } from '@yaac/shared/errors'
@@ -40,12 +40,24 @@ const DNS_NAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z
 const SHOWN_RELEASES = 20
 
 /**
- * Authorize stopping or deleting a site: its project's owner, even once the
- * project is a share its source's owner removed, so the share's hostname
- * can still be freed.
+ * Authorize publishing a site (create, edit, deploy, start): its project's
+ * owner, who must also be an admin of the install (docs/public-sites.md
+ * "Sites and releases").
+ */
+export async function authorizeSitePublish(principal: Actor, projectId: string): Promise<void> {
+  await authorizeProject(principal, projectId)
+  await requireAdmin(principal, 'publish sites')
+}
+
+/**
+ * Authorize stopping or deleting a site: any admin, or its project's owner
+ * even once they are not one, or the project is a share its source's owner
+ * removed, so a site can always be taken down and its hostname freed.
  */
 export async function authorizeSiteEnd(principal: Actor, projectId: string): Promise<void> {
   const project = await getProjectRow(projectId)
+  const admin = await requireAdmin(principal).then(() => true, () => false)
+  if (project && admin && !isProjectHeld(projectId)) return
   if (project?.shareRevoked !== true) return await authorizeProject(principal, projectId)
   if (principal.kind !== 'system' && principal.userId !== project.owner) {
     throw new ServerError('FORBIDDEN', 'only the owner of this project may do that')
@@ -133,7 +145,7 @@ export async function createSite(principal: Actor, projectId: string, input: {
   steps: unknown
   volume?: string
 }): Promise<void> {
-  await authorizeProject(principal, projectId)
+  await authorizeSitePublish(principal, projectId)
   if (!SITE_NAME.test(input.name)) {
     throw new ServerError('VALIDATION', `"${input.name}" is not a site name: use 1-40 of a-z, 0-9 and -`)
   }
@@ -163,7 +175,7 @@ export async function editSite(principal: Actor, projectId: string, name: string
   steps?: unknown
   volume?: string | null
 }): Promise<void> {
-  await authorizeProject(principal, projectId)
+  await authorizeSitePublish(principal, projectId)
   const { id } = await requireSite(projectId, name)
   await withSiteLock(id, async () => {
     const row = await getSiteRow(id)

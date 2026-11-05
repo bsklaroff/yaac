@@ -46,7 +46,8 @@ export async function resolveProject(project: string): Promise<ProjectSummary> {
   return summary
 }
 
-function findUser(users: User[], ref: string): string {
+/** The id of the user `ref` names by id, login or display name. */
+export function findUser(users: User[], ref: string): string {
   const wanted = ref.trim().toLowerCase()
   const matches = users.filter((u) => u.id === wanted || u.login?.toLowerCase() === wanted || u.name.toLowerCase() === wanted)
   if (matches.length === 1) return matches[0].id

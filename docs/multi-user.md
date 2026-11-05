@@ -16,7 +16,7 @@ and the host admin, so per-user separation is organizational (own data, own
 credentials, own workspaces), not a defense against a hostile teammate. The
 defense against hostile code is the gVisor and egress sandbox around
 workspace pods. Public sites' hostnames are shared the same way: one a
-site lets go is any user's to claim (docs/public-sites.md "Sites and
+site lets go is any admin's to claim (docs/public-sites.md "Sites and
 releases").
 
 **Separation is a `k8s` property.** Under `k8s` a workspace holds sentinel
@@ -39,9 +39,9 @@ pods cannot reach the server.
   `identify()` on first sight (`seeTailnetUser`, at most hourly after), plus
   the built-in user with the fixed id `BUILT_IN_USER_ID` (the nil uuid).
   A `local` install's caller is always the built-in user, which has no
-  login until a switch to `tailnet` with `--owner` gives it one. `GET
-  /whoami` answers the caller and the install's users; a `tailnet` install
-  leaves a login-less built-in user out of the list.
+  login until a switch to `tailnet` with `--admin` gives it one. `GET
+  /whoami` answers the caller and the install's users with their roles; a
+  `tailnet` install leaves a login-less built-in user out of the list.
 - **One server, one principal per request.** Users partition the data, not
   the process. The request's `Principal` (with its `userId`) is passed down
   as an argument; the event union, the driver contract, `src/runtime` and
@@ -65,6 +65,68 @@ pods cannot reach the server.
   and do no authorization: routes pass the caller's id, and code acting for
   a project passes `projects.owner`.
 
+## Roles
+
+Every user is an **admin** or a **member** (`users.role`). Admins alone
+publish public sites (docs/public-sites.md "Sites and releases") and set
+roles; members have every other access a user has. "Owner" is a project's
+owner and nothing else.
+
+- **Admins are peers.** Any admin may promote or demote anyone, themself
+  included, through `PUT /users/:userId/role`, Settings → Users or `yaac
+  user role`. The last admin cannot be demoted (`CONFLICT`).
+- **In a `tailnet` install every admin has a login.** A login-less user is
+  not listed and cannot be given a role, so "no admin" is a plain count.
+  A `local` install's one user, the built-in user, is its admin.
+- **Admins come from the host.** Whoever runs the server already controls
+  everything, so `yaac server start|restart` and `yaac cluster install`
+  take a repeatable `--admin <login>` (docs/remote-hosting.md "Access
+  modes"):
+
+  | Start | no `--admin` | one | several |
+  |---|---|---|---|
+  | fresh `tailnet` | refused | sets the admins | sets the admins |
+  | `local` → `tailnet` | refused | takes over the local data and is the admin | refused |
+  | `tailnet` with no admin (from before roles) | refused | sets the admins | sets the admins |
+  | `tailnet` with an admin | no change | replaces the admins | replaces the admins |
+  | `local` | no change | refused | refused |
+
+  A start with no admin takes them from `YAAC_ACCESS_ADMINS` in
+  `settleAccessMode`, in one transaction with the mode, giving each new
+  login a row its first visit finds. Afterwards the list `--admin` gives
+  replaces the admins through the admin socket. When that revokes anyone
+  the CLI says who and asks, or without a terminal refuses unless
+  `--yes`; the write names the admins it was confirmed against and is
+  refused if they changed meanwhile. The CLI then lists the admins,
+  marking any who have not signed in, which shows a mistyped login. This
+  is also the way back for an install whose admins have all left.
+- **The admin socket** is `admin.sock` in the install's 0700 tmp dir
+  (`installTmpDir`, short enough for the socket path limit), answering only
+  `GET` and `PUT /admins`, and refusing a `local` install, whose one user
+  is its admin. The HTTP API cannot carry this, since a `tailnet` server
+  admits only callers through `tailscale serve`. Opening the socket takes
+  the server's OS user, or `kubectl exec` into its pod (where install runs
+  `curl --unix-socket`), so it checks no caller. Under `k8s` both already
+  grant everything. Under `containerless` the server's OS user is also
+  every workspace's, a member's included, so any workspace can open the
+  socket and choose the admins, just as it can forge a tailnet login (see
+  "Trust model").
+- **The bootstrap value is not kept.** A host server gets
+  `YAAC_ACCESS_ADMINS` only in the environment of the process `yaac
+  server start` spawns. The cluster's pod spec always names the optional
+  `yaac-server-bootstrap` ConfigMap for it, which install creates for a
+  run with `--admin` and deletes at the end of every run, so neither step
+  rolls the pod.
+- `requireAdmin(actor)` in `#domain/access` reads the role on every
+  check, so a demotion holds from the next request. The server passes; a
+  workspace's `yaac-mama` call never does, so under `k8s` an admin's agent
+  does not act with the role.
+- A login `--admin` named that never signed in owns nothing, so revoking
+  it deletes its row rather than keeping a member, unless a project was
+  shared to it.
+- Under `containerless` roles organize rather than protect, as ownership
+  does (see "Trust model").
+
 ## Authorization
 
 The sealed `#domain/access` folder owns the check. A verb's caller is an
@@ -76,7 +138,7 @@ owner. A spawned workspace therefore belongs to its caller's owner and
 uses that owner's credentials; the cap on spawns in flight stays per
 calling workspace, not per user.
 
-There are two access levels:
+There are three access levels:
 
 - **`reader`**: any user, any resource. Workspace lists and details,
   transcripts, diffs, project pages, build files, the file explorer's
@@ -103,6 +165,10 @@ There are two access levels:
   grant, not by their method.
   A push to a project's hosted remote is a write, so it is the owner's; a
   clone or fetch of it is a read (docs/hosted-projects.md).
+- **`admin`**: an admin of the install (see "Roles"), who must also own
+  what the route names, if anything: setting roles, and publishing a site
+  (create, edit, deploy, start). Stopping and deleting a site stay at
+  `owner`, open to any admin too.
 
 `authorizeProject(actor, projectId)` is the check verbs make: every
 workspace-scoped verb resolves its workspace's project and asks it. A
@@ -134,14 +200,15 @@ write as `CONFLICT` (409), the server's own included.
   credential (`resolveCredentialForRemote`).
 - `/project/add` and `/project/register` create a project the caller then
   owns.
-- There is no admin role. The only writes open to every user are retrying
-  and dismissing builds of the shared images (base, tools, nestable, proxy,
-  netd). Install administration (upgrades, restarts, server env) happens
+- The only writes open to every user are retrying and dismissing builds
+  of the shared images (base, tools, nestable, proxy, netd). Install
+  administration (upgrades, restarts, server env, `--admin`) happens
   through host or cluster access, outside the API.
 
 Every route's row in `test/api/route-matrix.ts` states its `access`
-(`public`, `reader` or `owner`). The matrix drives every `owner` row that is
-not marked `callerScoped` as a second tailnet user against a server holding
+(`public`, `reader`, `owner` or `admin`). The matrix drives every `owner`
+and `admin` row that is not marked `callerScoped` as a second tailnet
+user, a member, against a server holding
 the built-in user's project, workspace, queued workspace, draft,
 provisioning entry and build, and expects 403 (or the
 substrate's 501); every `reader` row must admit that user. The attaches are

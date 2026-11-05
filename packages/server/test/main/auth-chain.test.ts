@@ -23,7 +23,7 @@ describe('auth middleware chain (buildApp)', () => {
       const res = await app().request('/api/whoami')
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({
-        kind: 'local', userId: BUILT_IN_USER_ID, users: [{ id: BUILT_IN_USER_ID, login: null, name: 'local' }],
+        kind: 'local', userId: BUILT_IN_USER_ID, users: [{ id: BUILT_IN_USER_ID, login: null, name: 'local', role: 'admin' }],
       })
     })
 
@@ -55,7 +55,7 @@ describe('auth middleware chain (buildApp)', () => {
       const res = await tailnetApp().request('/api/whoami', { headers: asTailnet('alice@example.com', HOST) })
       const body = await res.json() as { userId: string; users: unknown[] }
       expect(body).toMatchObject({ kind: 'tailnet', login: 'alice@example.com' })
-      expect(body.users).toEqual([{ id: body.userId, login: 'alice@example.com', name: 'alice' }])
+      expect(body.users).toEqual([{ id: body.userId, login: 'alice@example.com', name: 'alice', role: 'member' }])
     })
 
     it('refuses the name reached without serve, and serve with no user', async () => {

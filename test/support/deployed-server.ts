@@ -180,7 +180,9 @@ async function requirePrebuiltServerImage(): Promise<string> {
  * scratch tree, and a smaller resource request. The access mode is the
  * builder's own option, since its answer wins over a passed-through one: a
  * file asks for `tailnet` with `YAAC_ACCESS_MODE`, `YAAC_ALLOWED_HOSTS` and
- * `YAAC_ACCESS_OWNER`, as `yaac cluster install --tailnet --owner` would.
+ * `YAAC_ACCESS_ADMINS`, as `yaac cluster install --tailnet --admin` would.
+ * The admins are passed as a value rather than through the bootstrap
+ * ConfigMap the production manifest names.
  */
 function testServerDeploymentManifest(
   imageRef: string,
@@ -191,7 +193,7 @@ function testServerDeploymentManifest(
     : undefined
   // This machine's uid, as on a kind install.
   const manifest = buildServerDeploymentManifest(imageRef, processIdentity(), {
-    remoteHosting, owner: env.YAAC_ACCESS_OWNER,
+    remoteHosting,
   }) as {
     spec: { template: { spec: {
       containers: Array<{
@@ -204,7 +206,7 @@ function testServerDeploymentManifest(
   }
   const podSpec = manifest.spec.template.spec
   const container = podSpec.containers[0]
-  container.env = mergeEnv(testPassThrough(env), container.env)
+  container.env = mergeEnv(testPassThrough(env), container.env.filter((e) => e.name !== 'YAAC_ACCESS_ADMINS'))
   // Several files' namespaces can be alive at once on one node, so a
   // production-sized request would exhaust the scheduler. The limit is
   // unchanged.

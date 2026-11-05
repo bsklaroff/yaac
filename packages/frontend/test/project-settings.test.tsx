@@ -330,7 +330,7 @@ describe('ProjectSettings', () => {
     useUiStore.setState({ activeProjectId: 'id-gamma' })
     const whoami: Whoami = {
       kind: 'tailnet', userId: TEST_USER_ID, login: 'me@x.com', name: 'Me',
-      users: [{ id: TEST_USER_ID, login: 'me@x.com', name: 'Me' }, { id: 'u-ada', login: 'ada@x.com', name: 'Ada' }, { id: 'u-bo', login: 'bo@x.com', name: 'Bo' }],
+      users: [{ id: TEST_USER_ID, login: 'me@x.com', name: 'Me', role: 'admin' }, { id: 'u-ada', login: 'ada@x.com', name: 'Ada', role: 'member' }, { id: 'u-bo', login: 'bo@x.com', name: 'Bo', role: 'member' }],
     }
     const gamma = { ...project('gamma', 'http://yaac.internal/api/workspace/git/id-gamma.git'), hosted: true }
     const snapshot = serverSnapshot({
@@ -408,7 +408,7 @@ describe('ProjectSettings', () => {
     useUiStore.setState({ activeProjectId: 'id-mine' })
     const whoami: Whoami = {
       kind: 'tailnet', userId: TEST_USER_ID, login: 'me@x.com', name: 'Me',
-      users: [{ id: TEST_USER_ID, login: 'me@x.com', name: 'Me' }, { id: 'u-ada', login: 'ada@x.com', name: 'Ada' }],
+      users: [{ id: TEST_USER_ID, login: 'me@x.com', name: 'Me', role: 'admin' }, { id: 'u-ada', login: 'ada@x.com', name: 'Ada', role: 'member' }],
     }
     const hosted = { ...project('gamma', 'http://yaac.internal/api/workspace/git/x.git'), hosted: true }
     const snapshot = serverSnapshot({

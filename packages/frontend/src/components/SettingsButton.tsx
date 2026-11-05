@@ -14,6 +14,7 @@ import {
   ProjectConfigIcon,
   SettingsIcon,
   SkillsIcon,
+  UsersIcon,
 } from '#lib/icons'
 import { api } from '#lib/api'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
@@ -26,12 +27,14 @@ import { Field } from '#components/settings/Field'
 import { PhoneLinkField } from '#components/settings/PhoneLink'
 import { ProjectSettings } from '#components/settings/ProjectSettings'
 import { SkillsSettings } from '#components/settings/Skills'
+import { UsersPane } from '#components/settings/Users'
 import { FileEditor } from '#components/settings/FileEditor'
 import { BuildFiles } from '#components/settings/BuildFiles'
 import { userBuildFilesApi } from '#lib/buildFilesApi'
 import { useUiStore, type SettingsSection } from '#lib/store'
 import type { ThemePref } from '#lib/theme'
 import { useSnapshot } from '#lib/useSnapshot'
+import { useWhoami } from '#lib/viewer'
 import { IS_MAC } from '#lib/platform'
 
 const THEMES: { value: ThemePref; label: string }[] = [
@@ -47,11 +50,13 @@ const SECTIONS: { key: SettingsSection; label: string; Icon: typeof GeneralIcon 
   { key: 'project', label: 'Project Config', Icon: ProjectConfigIcon },
   { key: 'skills', label: 'Skills', Icon: SkillsIcon },
   { key: 'userDockerfile', label: 'User Dockerfile', Icon: DockerIcon },
+  { key: 'users', label: 'Users', Icon: UsersIcon },
 ]
 
-/** The nav sections this server can use: the user Dockerfile needs one that builds images. */
-function visibleSections(buildsImages: boolean): typeof SECTIONS {
-  return SECTIONS.filter((s) => s.key !== 'userDockerfile' || buildsImages)
+/** The nav sections this server can use: the user Dockerfile needs one that
+ *  builds images, and Users one with more than one user (`tailnet`). */
+function visibleSections(buildsImages: boolean, multiUser: boolean): typeof SECTIONS {
+  return SECTIONS.filter((s) => (s.key !== 'userDockerfile' || buildsImages) && (s.key !== 'users' || multiUser))
 }
 
 /**
@@ -75,6 +80,7 @@ export function SettingsButton(
   const setSoundEnabled = useUiStore((s) => s.setSoundEnabled)
   const queryClient = useQueryClient()
   const buildsImages = useSnapshot()?.driver !== 'containerless'
+  const multiUser = useWhoami()?.kind === 'tailnet'
 
   // Refetch credentials on open; the CLI may have changed them.
   useEffect(() => {
@@ -110,7 +116,7 @@ export function SettingsButton(
           <Dialog.Title className="px-2 pb-2 pt-1 text-xs font-semibold text-text-dim max-md:hidden">
             Settings
           </Dialog.Title>
-          {visibleSections(buildsImages).map(({ key, label, Icon }) => (
+          {visibleSections(buildsImages, multiUser).map(({ key, label, Icon }) => (
             <button
               key={key}
               onClick={() => setSection(key)}
@@ -213,6 +219,8 @@ export function SettingsButton(
               {section === 'project' && <ProjectSettings />}
 
               {section === 'userDockerfile' && <UserDockerfilePane />}
+
+              {section === 'users' && <UsersPane />}
             </div>}
           </div>
         </div>

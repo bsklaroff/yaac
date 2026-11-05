@@ -22,7 +22,7 @@
  *   node dist/cli.js project add <url> <cred>
  *   node dist/cli.js server stop
  *   env -u YAAC_WORKSPACE_ID node dist/cli.js server start \
- *     --tailnet srv.tailnet.ts.net --owner alice@example.com
+ *     --tailnet srv.tailnet.ts.net --admin alice@example.com
  *
  * Run:
  *   APP_URL=http://127.0.0.1:8890 PROJECT=<project id> [MODES=acp,tui] \

@@ -26,6 +26,7 @@ import { waitFor } from '@yaac/shared/wait-for'
 import { preflightHostTor, torCoverageWarning } from '@yaac/shared/host-tor'
 import { env } from '@yaac/shared/env'
 import { registerServer } from '@yaac/shared/server-config'
+import { applyAdmins, hostAdminSocket } from '@yaac/shared/admin-socket'
 import { readInstallRecord, recordedDriver } from '@yaac/shared/install-record'
 import { legacyHostDataDirHint, moveLegacyHostDataDir } from '@yaac/shared/legacy-data-dir'
 import type { AccessMode, LocalServerStatus } from '@yaac/shared/types'
@@ -33,12 +34,13 @@ import type { AccessMode, LocalServerStatus } from '@yaac/shared/types'
 /**
  * The access flags of `yaac server start|restart` (docs/remote-hosting.md
  * "Access modes"): `tailnet` is the MagicDNS name `tailscale serve` fronts
- * the server at, and `owner` the login a switch from local gives the
- * install to.
+ * the server at, `admin` the logins that are to be the install's admins
+ * (docs/multi-user.md "Roles"), and `yes` accepts revoking anyone else's.
  */
 export interface ServerAccessOptions {
   tailnet?: string
-  owner?: string
+  admin?: string[]
+  yes?: boolean
 }
 
 export interface ServerLogsOptions {
@@ -150,7 +152,7 @@ async function startServer(opts: ServerAccessOptions, keepSelection: boolean): P
     if (existing.buildId === cliBuildId && running === 'local' && mode === 'tailnet') {
       throw new Error(
         `yaac server is running in local mode. Switch it with: yaac server restart --tailnet ${tailnet} `
-        + '--owner <login> (the tailnet login that will own its projects and settings)',
+        + '--admin <login> (the tailnet login that will own its projects and settings)',
       )
     }
     if (existing.buildId === cliBuildId) {
@@ -158,6 +160,7 @@ async function startServer(opts: ServerAccessOptions, keepSelection: boolean): P
       // Register anyway: the running server may be a foreground
       // `yaac server run`, which registers nothing.
       await registerLocalServer(origin(existing.port), keepSelection)
+      await setAdmins(opts)
       return
     }
     throw new Error(
@@ -173,7 +176,7 @@ async function startServer(opts: ServerAccessOptions, keepSelection: boolean): P
 
   await spawnServerDetached({
     YAAC_ACCESS_MODE: mode,
-    YAAC_ACCESS_OWNER: opts.owner,
+    YAAC_ACCESS_ADMINS: opts.admin?.join(','),
     // A local server keeps whatever the shell sets: a nested server needs
     // the outer forward's name, and a local install refuses serve anyway.
     // eslint-disable-next-line no-process-env -- the child's env, not a setting read here
@@ -195,6 +198,17 @@ async function startServer(opts: ServerAccessOptions, keepSelection: boolean): P
   // the warning here, since the child only wrote it to its log file.
   const torGap = torCoverageWarning('containerless')
   if (torGap !== undefined) console.error(`[yaac] WARNING: ${torGap}`)
+  await setAdmins(opts)
+}
+
+/**
+ * Apply `--admin` through the server's admin socket. A start that had no
+ * admin has already taken them from its environment, so this then changes
+ * nothing and only lists them.
+ */
+async function setAdmins(opts: ServerAccessOptions): Promise<void> {
+  if (!opts.admin?.length) return
+  await applyAdmins(hostAdminSocket, opts.admin, { yes: opts.yes, log: (line) => console.error(`[yaac] ${line}`) })
 }
 
 /**
@@ -329,10 +343,10 @@ function printServerStatus(status: LocalServerStatus, json: boolean | undefined)
 
 /** Check the access flags; returns the lowercased tailnet name. */
 function tailnetHost(opts: ServerAccessOptions): string | undefined {
-  if (opts.owner !== undefined && opts.tailnet === undefined) {
+  if (opts.admin?.length && opts.tailnet === undefined) {
     throw new Error(
-      '--owner names the tailnet login that claims this install as it switches to tailnet '
-      + 'mode, so it needs --tailnet <host> (docs/remote-hosting.md "Access modes").',
+      '--admin names tailnet logins, so it needs --tailnet <host>: a local install\'s one user '
+      + 'is its admin already (docs/multi-user.md "Roles").',
     )
   }
   if (opts.tailnet === undefined) return undefined

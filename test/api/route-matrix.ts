@@ -41,9 +41,11 @@ type Expected = number | number[]
 /**
  * Who may call a route (docs/multi-user.md "Authorization"). `public`
  * never consults the caller; `reader` is any user; `owner` is the owner of
- * what the route names, refused to anyone else with 403.
+ * what the route names, refused to anyone else with 403; `admin` is an
+ * admin of the install (and the owner of what the route names, if
+ * anything), refused to a member with 403.
  */
-type Access = 'public' | 'reader' | 'owner'
+type Access = 'public' | 'reader' | 'owner' | 'admin'
 
 interface RouteCase {
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
@@ -222,16 +224,19 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/volume/create', body: { project: ID.project, name: 'v' }, access: 'owner', why: 'volumes are cluster storage', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/volume/resize', body: { project: ID.project, name: 'v', size: '20Gi' }, access: 'owner', why: 'volumes are cluster storage', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/volume/delete', body: { project: ID.project, name: 'v' }, access: 'owner', why: 'volumes are cluster storage', k8s: MISSING, containerless: UNSUPPORTED },
+  // ── users (docs/multi-user.md "Roles") ──────────────────────────────────
+  { method: 'PUT', path: '/api/users/:userId/role', request: `/api/users/${ID.user}/role`, body: { role: 'admin' }, access: 'admin', k8s: MISSING, containerless: MISSING },
+
   // ── public sites (docs/public-sites.md) ───────────────────────────────
   { method: 'GET', path: '/api/site/edge', access: 'reader', why: 'sites need a sandbox between the internet and the host', k8s: 200, containerless: UNSUPPORTED },
   { method: 'GET', path: '/api/site/list', request: `/api/site/list?project=${ID.project}`, access: 'reader', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'GET', path: '/api/site/show', request: `/api/site/show?project=${ID.project}&name=s`, access: 'reader', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
-  { method: 'POST', path: '/api/site/create', body: { project: ID.project, name: 's', hostname: 's.example.com', port: 3000, steps: {} }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
-  { method: 'POST', path: '/api/site/edit', body: { project: ID.project, name: 's', port: 3001 }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/site/create', body: { project: ID.project, name: 's', hostname: 's.example.com', port: 3000, steps: {} }, access: 'admin', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/site/edit', body: { project: ID.project, name: 's', port: 3001 }, access: 'admin', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/site/delete', body: { project: ID.project, name: 's' }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
-  { method: 'POST', path: '/api/site/deploy', body: { project: ID.project, name: 's' }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/site/deploy', body: { project: ID.project, name: 's' }, access: 'admin', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/site/stop', body: { project: ID.project, name: 's' }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
-  { method: 'POST', path: '/api/site/start', body: { project: ID.project, name: 's' }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/site/start', body: { project: ID.project, name: 's' }, access: 'admin', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
   // ── routines (docs/routines.md) ───────────────────────────────────────
   { method: 'GET', path: '/api/routine/list', access: 'reader', k8s: 200, containerless: 200 },
   { method: 'GET', path: '/api/routine/runs', request: `/api/routine/runs?id=${ID.routine}`, access: 'reader', k8s: MISSING, containerless: MISSING },
@@ -414,8 +419,9 @@ async function seedOwnedFixtures(): Promise<void> {
 }
 
 /**
- * Every route as a teammate, against a server holding another user's
- * project (`seedOwnedFixtures`): an `owner` route refuses with 403, unless
+ * Every route as a teammate, a member, against a server holding another
+ * user's project (`seedOwnedFixtures`): an `owner` or `admin` route refuses
+ * with 403, unless
  * this substrate refuses the feature first, and a `reader` route admits
  * them. Caller-scoped routes act on the caller's own data, so they are
  * skipped, except that another user's git credential must read as missing.
@@ -439,7 +445,7 @@ function describeNonOwner(kind: DriverKind): void {
       await cleanupTempDir(tmpDir)
     })
 
-    for (const route of ROUTE_MATRIX.filter((r) => r.access === 'owner' && !r.callerScoped)) {
+    for (const route of ROUTE_MATRIX.filter((r) => (r.access === 'owner' || r.access === 'admin') && !r.callerScoped)) {
       const want = (kind === 'k8s' ? route.k8s : route.containerless) === UNSUPPORTED ? UNSUPPORTED : 403
       it(`${label(route)} refuses another user's (${String(want)})`, async () => {
         const res = await requestRoute(app(), route, asTeammate())

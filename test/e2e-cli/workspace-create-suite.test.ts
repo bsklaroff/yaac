@@ -2543,7 +2543,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       server = await spawnYaacServer({
         ...serverEnv,
         YAAC_ACCESS_MODE: 'tailnet',
-        YAAC_ACCESS_OWNER: 'alice@example.com',
+        YAAC_ACCESS_ADMINS: 'alice@example.com',
         YAAC_ALLOWED_HOSTS: HOST,
       })
       base = `http://127.0.0.1:${server.lock.port}`

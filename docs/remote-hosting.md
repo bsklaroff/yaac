@@ -50,11 +50,14 @@ var cannot change who the server admits.
   for another mode is refused with the command that fixes it, and a refusing
   server stops (host) or keeps answering `/health` with the reason, which
   `yaac cluster install` and `yaac cluster status` print (k8s).
-- **`local` → `tailnet` is one-way and needs `--owner <login>`** on that
-  start. It gives the built-in user that tailnet login, so the owner keeps
-  every project, credential and setting the install had. A fresh `tailnet`
-  install has nothing to claim and needs no `--owner`; once an install is
-  `tailnet`, `--owner` is ignored.
+- **A `tailnet` install needs an admin.** A start that finds none (a fresh
+  install, or one from before roles) is refused unless it names one or
+  more with `--admin <login>`, and those logins become the admins
+  (docs/multi-user.md "Roles").
+- **`local` → `tailnet` is one-way and needs exactly one `--admin <login>`**
+  on that start. It gives the built-in user that tailnet login, so the
+  admin keeps every project, credential and setting the install had.
+  More admins can be named once it has switched.
 - **`tailnet` → `local` is refused.**
 - **A yaac server nested in a workspace is always `local`**: it is reached
   through its outer workspace's forward, which only that workspace's owner
@@ -74,9 +77,8 @@ A **containerless** server is a host process behind the machine's own
 ```sh
 tailscale up
 tailscale serve --bg http://127.0.0.1:8787            # `serve`, never `funnel`
-yaac server start --tailnet srv.<tailnet>.ts.net       # a fresh install
-yaac server restart --tailnet srv.<tailnet>.ts.net \
-  --owner you@example.com                              # a local install with data
+yaac server start --tailnet srv.<tailnet>.ts.net \
+  --admin you@example.com                              # a fresh install, or a local one switching
 ```
 
 `tailscale serve --bg <target>` serves `https://<this machine's MagicDNS
@@ -93,7 +95,7 @@ A **kind** server can be published the same way, by the machine's own
 ```sh
 tailscale serve --bg http://127.0.0.1:8790            # the kind install's port
 yaac cluster install --tailnet srv.<tailnet>.ts.net \
-  --owner you@example.com                              # --owner for a local install with data
+  --admin you@example.com                              # --admin for a fresh or local install
 ```
 
 Install runs the server in `tailnet` mode admitting that name, waits for
@@ -110,15 +112,17 @@ Kubernetes operator, at its own tailnet device:
 
 ```sh
 TS_OAUTH_CLIENT_ID=… TS_OAUTH_CLIENT_SECRET=… \
-  yaac cluster install --tailnet && yaac cluster check   # this machine's kind cluster
+  yaac cluster install --tailnet --admin you@example.com \
+  && yaac cluster check                                  # this machine's kind cluster
 yaac cluster install --byo --rwx-storage-class <nfs-class> \
-  && yaac cluster check                                  # a cluster you bring
+  --admin you@example.com && yaac cluster check          # a cluster you bring
 ```
 
 `--tailnet` publishes the server through a `tailscale`-class Ingress
 (docs/server-in-cluster.md "Reachability"), runs it in `tailnet` mode, and
-registers `https://yaac.<tailnet>.ts.net` as the server's origin. Switching
-an existing `local` install needs `--owner <login>` as above. On kind this
+registers `https://yaac.<tailnet>.ts.net` as the server's origin. A fresh
+install, or an existing `local` one switching, needs `--admin <login>` as
+above. On kind this
 replaces `127.0.0.1`, so every client, including this machine's CLI, uses
 the tailnet name and must be logged in as a tailnet user (install warns when
 it is not). `--byo` (docs/cluster-setup.md "Bring your own cluster") always
@@ -178,7 +182,7 @@ changes.
 Without a tailnet, one user can reach a `local` install through an SSH
 port-forward. sshd connects to the server's loopback port, and the client
 addresses it as `127.0.0.1`, so the server sees an ordinary local request
-and admits the caller as the install's owner:
+and admits the caller as the built-in user, the install's admin:
 
 ```sh
 ssh -N -L 9787:127.0.0.1:8787 you@srv     # 8790 for a kind install
@@ -192,7 +196,7 @@ desktop app use the same origin. Terminals, workspace forwards
 (docs/port-forward-tunnel.md) and tool sign-ins all travel over the one
 tunnel, so it needs no other `-L`.
 
-- **It is one user.** Everyone who tunnels in is the built-in owner, which
+- **It is one user.** Everyone who tunnels in is the built-in user, which
   is no more than SSH access to the machine already grants. Shared setups
   use the tailnet.
 - **A `tailnet` install refuses it**, since that mode admits only requests

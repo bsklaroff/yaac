@@ -21,7 +21,10 @@ export interface ClusterInstallArgs {
   rwoStorageClass?: string
   /** `--tailnet`, or `--tailnet <host>` for this machine's `tailscale serve`. */
   tailnet?: boolean | string
-  owner?: string
+  /** `--admin`: the logins that are to be the install's admins. */
+  admin?: readonly string[]
+  /** `--yes`: revoke admin from the logins `--admin` leaves out without asking. */
+  yes?: boolean
   nodes?: number | string
 }
 
@@ -76,7 +79,7 @@ export function tailnetServeHost(opts: ClusterInstallArgs): string | undefined {
 }
 
 /**
- * Validate `--nodes` (and the `--byo`, `--tailnet` and `--owner` flags)
+ * Validate `--nodes` (and the `--byo`, `--tailnet` and `--admin` flags)
  * and return the node count to build. The count applies only to a cluster this
  * run creates; install never recreates one, so an existing cluster ignores
  * it with a note.
@@ -84,10 +87,10 @@ export function tailnetServeHost(opts: ClusterInstallArgs): string | undefined {
 export function resolveNodeCount(opts: ClusterInstallArgs): number {
   checkByoFlags(opts)
   tailnetServeHost(opts)
-  if (opts.owner !== undefined && !opts.tailnet && !opts.byo) {
+  if (opts.admin?.length && !opts.tailnet && !opts.byo) {
     throw new ClusterInstallError(
-      '--owner names the tailnet login that claims this install as it switches to tailnet '
-      + 'mode, so it needs --tailnet (docs/remote-hosting.md "Access modes").',
+      '--admin names tailnet logins, so it needs --tailnet: a local install\'s one user is '
+      + 'its admin already (docs/multi-user.md "Roles").',
     )
   }
   if (opts.nodes === undefined) return 1

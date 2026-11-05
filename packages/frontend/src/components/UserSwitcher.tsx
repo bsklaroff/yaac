@@ -63,7 +63,9 @@ export function UserSwitcher({ variant = 'rail' }: { variant?: 'rail' | 'row' })
             <Avatar user={u} />
             <span className="flex min-w-0 flex-1 flex-col">
               <span className="truncate text-text">{u.id === me ? `${u.name} (you)` : u.name}</span>
-              {u.login !== null && <span className="truncate text-[11px] text-text-faint">{u.login}</span>}
+              {u.login !== null && (
+                <span className="truncate text-[11px] text-text-faint">{u.login}{u.role === 'admin' && ' · admin'}</span>
+              )}
             </span>
             {active.get(u.id)
               ? (

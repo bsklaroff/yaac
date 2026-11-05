@@ -4,6 +4,7 @@ import { api } from '#lib/api'
 import { DeleteIcon } from '#lib/icons'
 import { relativeAge } from '#lib/time'
 import { useVolumes } from '#lib/volumes'
+import { useIsAdmin } from '#lib/viewer'
 import { SectionLabel } from '#components/settings/Field'
 import { INPUT, WorkspaceLink } from '#components/settings/Volumes'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
@@ -29,10 +30,14 @@ const short = (commit: string): string => commit.slice(0, 7)
  * each site's hostname, port, live release, deploy in progress and how the
  * last one ended, with deploy, stop, start, edit and delete. Only shown on
  * a cluster. The list is refetched every few seconds while a deploy runs;
- * `readOnly` (a teammate's project) only lists them.
+ * `readOnly` (a teammate's project) only lists them, unless the caller is an
+ * admin, who may stop and delete any site; a member may only stop and delete
+ * their own.
  */
 export function Sites({ projectId, readOnly }: { projectId: string; readOnly: boolean }): JSX.Element {
   const queryClient = useQueryClient()
+  const admin = useIsAdmin()
+  const canPublish = admin && !readOnly
   const key = ['sites', projectId]
   const { data: sites } = useQuery({
     queryKey: key,
@@ -82,7 +87,8 @@ export function Sites({ projectId, readOnly }: { projectId: string; readOnly: bo
               key={s.name}
               projectId={projectId}
               site={s}
-              readOnly={readOnly}
+              canEnd={admin || !readOnly}
+              canPublish={canPublish}
               onAction={(action) => (action === 'start' ? act.mutate({ action, site: s.name }) : ask(action, s.name))}
               onEdit={() => setForm(s)}
             />
@@ -103,7 +109,12 @@ export function Sites({ projectId, readOnly }: { projectId: string; readOnly: bo
         </div>
       )}
 
-      {!readOnly && (form === null ? (
+      {!readOnly && !canPublish && (
+        <p className="mt-3 text-[11px] leading-relaxed text-text-faint">
+          Only an admin of this yaac install can publish sites. You can still stop and delete this project&apos;s.
+        </p>
+      )}
+      {canPublish && (form === null ? (
         <button type="button" onClick={() => setForm('new')} className={`${BUTTON} mt-3`}>New site</button>
       ) : (
         <SiteForm
@@ -191,10 +202,11 @@ function EdgeStatus(): JSX.Element | null {
 }
 
 /** One site: its address and actions, then its release lines. */
-function SiteRow({ projectId, site, readOnly, onAction, onEdit }: {
+function SiteRow({ projectId, site, canEnd, canPublish, onAction, onEdit }: {
   projectId: string
   site: SiteEntry
-  readOnly: boolean
+  canEnd: boolean
+  canPublish: boolean
   onAction: (action: Action) => void
   onEdit: () => void
 }): JSX.Element {
@@ -218,14 +230,15 @@ function SiteRow({ projectId, site, readOnly, onAction, onEdit }: {
           :{site.port}{site.adminPort !== undefined && ` · admin :${site.adminPort}`}
           {site.volume !== undefined && ` · ${site.volume}`}
         </span>
-        {!readOnly && (
+        {canEnd && (
           <>
-            {deploy === undefined && <button type="button" onClick={() => onAction('deploy')} className={TEXT_BUTTON}>Deploy</button>}
+            {canPublish && deploy === undefined
+              && <button type="button" onClick={() => onAction('deploy')} className={TEXT_BUTTON}>Deploy</button>}
             {live !== undefined
               ? <button type="button" onClick={() => onAction('stop')} className={TEXT_BUTTON}>Stop</button>
-              : deploy === undefined && lastDeploy !== undefined
+              : canPublish && deploy === undefined && lastDeploy !== undefined
                 && <button type="button" onClick={() => onAction('start')} className={TEXT_BUTTON}>Start</button>}
-            <button type="button" onClick={onEdit} className={TEXT_BUTTON}>Edit</button>
+            {canPublish && <button type="button" onClick={onEdit} className={TEXT_BUTTON}>Edit</button>}
             <button
               type="button"
               onClick={() => onAction('delete')}

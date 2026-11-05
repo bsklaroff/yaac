@@ -31,6 +31,7 @@ import {
   SERVER_SA_NAME,
   applyObject,
   deleteObject,
+  execFileAsync,
   k8sNamespace,
   listObjects,
   patchObject,
@@ -61,6 +62,7 @@ import { liveFronting, type RemoteHosting, type ServerFronting } from './server-
 import { ensureImageByTag, pushImageToRegistry } from './host-images'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
 import { globalRoot, nodeLocalRoot, serverLocalRoot, serverLogPath, volumesRoot } from '@yaac/shared/paths'
+import { applyAdmins, type AdminSocketRequest } from '@yaac/shared/admin-socket'
 import {
   IdentityRejectedError,
   probeServer,
@@ -248,10 +250,23 @@ interface ServerEnvOptions {
    *  absent on kind, whose volumes are directories of `yaac-volumes`
    *  (docs/workspace-volumes.md). */
   volumeStorageClass?: string
-  /** `--owner`: the tailnet login that claims a `local` install's data when
-   *  it switches to `tailnet` (docs/remote-hosting.md "Access modes"). */
-  owner?: string
 }
+
+/**
+ * The ConfigMap a run with `--admin` hands its logins to the server pod in,
+ * which only a `tailnet` start with no admin reads (docs/multi-user.md
+ * "Roles"). The pod spec always names it, optionally, so creating it and
+ * deleting it after the run never rolls the pod.
+ */
+const BOOTSTRAP_CONFIGMAP = 'yaac-server-bootstrap'
+
+function bootstrapRef(): ObjectRef {
+  return { apiVersion: 'v1', kind: 'ConfigMap', name: BOOTSTRAP_CONFIGMAP, namespace: k8sNamespace() }
+}
+
+type ServerEnvVar =
+  | { name: string; value: string }
+  | { name: string; valueFrom: { configMapKeyRef: { name: string; key: string; optional: boolean } } }
 
 /**
  * The server pod's environment. `YAAC_INSTALL_ID` is the install's
@@ -263,9 +278,9 @@ interface ServerEnvOptions {
  * Pass-through settings are copied from the environment that ran
  * `yaac cluster install`, since a pod has no shell to set them in later.
  */
-function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: string; value: string }> {
+function buildServerEnv(opts: ServerEnvOptions = {}): ServerEnvVar[] {
   const hosting = opts.remoteHosting ?? { accessMode: 'local', allowedHosts: [] }
-  const vars: Array<{ name: string; value: string }> = [
+  const vars: ServerEnvVar[] = [
     { name: 'YAAC_IN_CLUSTER', value: '1' },
     // The ingress NetworkPolicy restricts access instead of a loopback bind.
     { name: 'YAAC_BIND_ADDR', value: '0.0.0.0' },
@@ -277,6 +292,10 @@ function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: string; valu
     opts.volumeStorageClass !== undefined
       ? { name: 'YAAC_VOLUME_STORAGE_CLASS', value: opts.volumeStorageClass }
       : { name: 'YAAC_VOLUMES_ROOT', value: POD_VOLUMES_ROOT },
+    {
+      name: 'YAAC_ACCESS_ADMINS',
+      valueFrom: { configMapKeyRef: { name: BOOTSTRAP_CONFIGMAP, key: 'admins', optional: true } },
+    },
   ]
   const passThrough: Array<[string, string | undefined]> = [
     ['YAAC_K8S_NAMESPACE', testEnv.k8sNamespace],
@@ -285,7 +304,6 @@ function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: string; valu
     ['YAAC_LEGACY_NAMES', legacyNameKey() ? '1' : undefined],
     // The access mode the server checks against the one it recorded.
     ['YAAC_ACCESS_MODE', hosting.accessMode],
-    ['YAAC_ACCESS_OWNER', opts.owner],
     ['YAAC_ALLOWED_HOSTS', hosting.allowedHosts.join(',')],
     ['YAAC_USE_TOR', env.useTor ? '1' : undefined],
     ['YAAC_HOST_TOR_SOCKS_URL', env.useTor ? torSocksUrlForPod(opts.torHostAddr) : undefined],
@@ -521,9 +539,28 @@ export async function deployServerWorkload(
     identity: InstallIdentity
     /** Static volumes (kind) or storage classes (byo) for the claims. */
     storage: { kind: 'static' } | { kind: 'classes'; rwx: string; rwo: string }
+    /** `--admin`, and `--yes` to revoke whoever it leaves out unasked. */
+    admin?: readonly string[]
+    yes?: boolean
     log: (message: string) => void
   },
 ): Promise<string> {
+  try {
+    return await deployServer(opts)
+  } finally {
+    await deleteObject(bootstrapRef())
+  }
+}
+
+async function deployServer(opts: Parameters<typeof deployServerWorkload>[0]): Promise<string> {
+  if (opts.admin?.length) {
+    await applyObject({
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata: { name: BOOTSTRAP_CONFIGMAP, namespace: k8sNamespace() },
+      data: { admins: opts.admin.join(',') },
+    })
+  }
   // Built before the storage step too: the binder pod runs it.
   opts.log('Building the server image (from the bundle)...')
   const imageRef = await ensureServerImage()
@@ -562,7 +599,31 @@ export async function deployServerWorkload(
         + 'until it runs as a tailnet user (docs/remote-hosting.md).')
     }
   })
+  if (opts.admin?.length) await applyAdmins(await podAdminSocket(), opts.admin, { yes: opts.yes, log: opts.log })
   return origin
+}
+
+/**
+ * The server pod's admin socket, reached by running curl in the pod through
+ * `kubectl exec`, which only someone who controls the cluster can. The
+ * socket is in the install's tmp dir, keyed by a data dir only the pod
+ * knows; the pod's /tmp holds that one install's, so a glob finds it.
+ */
+async function podAdminSocket(): Promise<AdminSocketRequest> {
+  const pod = (await serverPods()).find((p) => p.status?.containerStatuses
+    ?.some((c) => c.name === 'server' && c.state?.running))?.metadata?.name
+  if (!pod) throw new Error('no running server pod to set the admins through')
+  return async (method, body) => {
+    const { stdout } = await execFileAsync('kubectl', [
+      'exec', pod, '-n', k8sNamespace(), '-c', 'server', '--',
+      'sh', '-c', 'exec curl -sS --unix-socket /tmp/yaac-*/admin.sock "$@"', 'sh',
+      '-X', method, '-H', 'content-type: application/json',
+      ...(body === undefined ? [] : ['--data', JSON.stringify(body)]),
+      '-w', '\n%{http_code}', 'http://admin/admins',
+    ])
+    const cut = stdout.lastIndexOf('\n')
+    return { status: Number(stdout.slice(cut + 1)), body: JSON.parse(stdout.slice(0, cut)) as unknown }
+  }
 }
 
 /**

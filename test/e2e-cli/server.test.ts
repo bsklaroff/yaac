@@ -124,7 +124,7 @@ describe('yaac cluster start|stop|restart|logs|status against the in-cluster Dep
 
   it('a host `server start|restart` refuses the cluster install\'s data dir, leaving the pod alone', async () => {
     const before = await serverPods()
-    for (const args of [['start'], ['restart', '--tailnet', 'srv.tailnet.ts.net', '--owner', 'a@b.c']]) {
+    for (const args of [['start'], ['restart', '--tailnet', 'srv.tailnet.ts.net', '--admin', 'a@b.c']]) {
       const res = await runYaac(testEnv.env, 'server', ...args)
       expect(res.exitCode).toBe(1)
       expect(res.stderr).toMatch(new RegExp(`is a cluster install[\\s\\S]*yaac cluster ${args[0]}`))

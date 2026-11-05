@@ -3025,7 +3025,7 @@ describe.skipIf(!CAN_RUN)('two users on a tailnet install', () => {
     server = await spawnYaacServer({
       ...serverEnv,
       YAAC_ACCESS_MODE: 'tailnet',
-      YAAC_ACCESS_OWNER: 'alice@example.com',
+      YAAC_ACCESS_ADMINS: 'alice@example.com',
       YAAC_ALLOWED_HOSTS: HOST,
     })
 

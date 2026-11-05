@@ -197,6 +197,12 @@ export function installTmpDir(dataDir = getDataDir()): string {
   return path.join(os.tmpdir(), `yaac-${key}`)
 }
 
+/** The Unix socket `--admin` replaces the install's admins through
+ *  (docs/multi-user.md "Roles"), in the install's 0700 tmp dir. */
+export function adminSocketPath(dataDir = getDataDir()): string {
+  return path.join(installTmpDir(dataDir), 'admin.sock')
+}
+
 /**
  * Root of the CLIENT-LOCAL tier: `<clientDataDir>-client` (e.g.
  * `~/.yaac-client`). Deriving it from the data dir means each test's data
@@ -274,6 +280,7 @@ export function projectConfigDir(projectId: string): string {
 export function serverLogPath(): string {
   return serverLocalPath('server.log')
 }
+
 
 /**
  * Create the global project tree and the server-local root. The node-local
