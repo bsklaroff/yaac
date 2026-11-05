@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import type { ServerError } from '@yaac/shared/errors'
 import { BUILT_IN_USER_ID, closeDb, getUser, listAdmins, recordAccessMode, seeTailnetUser } from '#db'
-import { replaceAdmins, requireAdmin, setUserRole, systemPrincipal, type Actor } from '#domain/access'
+import { listInstallAdmins, replaceAdmins, requireAdmin, setUserRole, systemPrincipal, type Actor } from '#domain/access'
 
 function user(userId: string): Actor {
   return { kind: 'tailnet', userId, login: `${userId}@example.com`, name: userId }
@@ -60,6 +60,15 @@ describe('setUserRole', () => {
   it('finds no unknown user, nor the login-less built-in user of a tailnet install', async () => {
     expect(await codeOf(setUserRole(user(admin), '4101bef8-794f-4d98-8e95-dfb54850c68b', 'admin'))).toBe('NOT_FOUND')
     expect(await codeOf(setUserRole(user(admin), BUILT_IN_USER_ID, 'admin'))).toBe('NOT_FOUND')
+  })
+})
+
+describe('listInstallAdmins', () => {
+  it('lists a tailnet install\'s admins, and refuses a local one, so --admin finds none to revoke there', async () => {
+    expect(await listInstallAdmins()).toEqual([{ login: 'admin@example.com', name: 'Admin', signedIn: true }])
+    await recordAccessMode('local')
+    expect(await codeOf(listInstallAdmins())).toBe('VALIDATION')
+    await recordAccessMode('tailnet')
   })
 })
 

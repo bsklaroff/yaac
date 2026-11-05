@@ -2,8 +2,7 @@ import fs from 'node:fs/promises'
 import { createAdaptorServer, type ServerType } from '@hono/node-server'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { listAdmins } from '#db'
-import { replaceAdmins } from '#domain/access'
+import { listInstallAdmins, replaceAdmins } from '#domain/access'
 import { toErrorBody } from '#api/http/errors'
 import { zv } from '#routes/validator'
 import { adminSocketPath, ensureInstallTmpDir } from '@yaac/shared/paths'
@@ -18,7 +17,7 @@ import { adminSocketPath, ensureInstallTmpDir } from '@yaac/shared/paths'
  */
 function adminSocketApp() {
   return new Hono()
-    .get('/admins', async (c) => c.json(await listAdmins()))
+    .get('/admins', async (c) => c.json(await listInstallAdmins()))
     .put(
       '/admins',
       zv('json', z.object({ logins: z.array(z.string().trim().min(1)), expected: z.array(z.string()) })),

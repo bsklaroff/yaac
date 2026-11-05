@@ -50,6 +50,19 @@ const local = { host: '127.0.0.1' }
 const PROJECT_ID = '5e1f0c2a-7b3d-4e8f-9a6c-0d1e2f3a4b5c'
 const WORKSPACE_ID = '6f2a1d3b-8c4e-4f9a-8b7d-1e2f3a4b5c6d'
 
+/** A request to the admin socket's `/admins`. */
+function adminSocket(socketPath: string, method: string, body?: unknown): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ socketPath, path: '/admins', method, headers: { 'content-type': 'application/json' } }, (res) => {
+      let raw = ''
+      res.on('data', (c: Buffer) => { raw += c.toString() })
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: JSON.parse(raw) as unknown }))
+    })
+    req.on('error', reject)
+    req.end(body === undefined ? undefined : JSON.stringify(body))
+  })
+}
+
 describe('identity flow in tailnet mode (real server)', () => {
   let testEnv: YaacTestEnv
   let server: SpawnedServer
@@ -158,15 +171,7 @@ describe('identity flow in tailnet mode (real server)', () => {
   it('lists and replaces the admins over the admin socket, which only the server\'s user may open', async () => {
     const socketPath = adminSocketPath(testEnv.dataDir)
     expect((await fs.stat(path.dirname(socketPath))).mode & 0o777).toBe(0o700)
-    const admins = (method: string, body?: unknown): Promise<{ status: number; body: unknown }> => new Promise((resolve, reject) => {
-      const req = http.request({ socketPath, path: '/admins', method, headers: { 'content-type': 'application/json' } }, (res) => {
-        let raw = ''
-        res.on('data', (c: Buffer) => { raw += c.toString() })
-        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: JSON.parse(raw) as unknown }))
-      })
-      req.on('error', reject)
-      req.end(body === undefined ? undefined : JSON.stringify(body))
-    })
+    const admins = (method: string, body?: unknown) => adminSocket(socketPath, method, body)
     expect(await admins('GET')).toMatchObject({ status: 200, body: [{ login: 'admin@example.com', signedIn: true }] })
     // A list read before someone else changed it is refused.
     expect((await admins('PUT', { logins: ['bob@example.com'], expected: [] })).status).toBe(409)
@@ -216,6 +221,11 @@ describe('local mode, and switching it to tailnet (real server)', () => {
       expect(await request(localServer.lock.port, asTailnet('alice@example.com', TAILNET_HOST))).toMatchObject({
         status: 401, body: { error: { message: expect.stringMatching(/runs in local mode.*--tailnet/s) as unknown } },
       })
+      // A local install has no admins to read or replace, so a switch's
+      // `--admin` finds none to revoke before it.
+      const socketPath = adminSocketPath(testEnv.dataDir)
+      expect((await adminSocket(socketPath, 'GET')).status).toBe(400)
+      expect((await adminSocket(socketPath, 'PUT', { logins: ['alice@example.com'], expected: [] })).status).toBe(400)
     } finally {
       await localServer.stop()
     }
