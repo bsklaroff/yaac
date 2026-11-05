@@ -5,13 +5,13 @@ beforeEach(() => { vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns') })
 
 
 import {
+  buildBuilderEgressNpManifest,
   buildEgressWorldDenyNpManifest,
   buildProxyEgressNpManifest,
   buildProxyIngressNpManifest,
   buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
   buildWorkspaceEgressNpManifest,
-  builderEgress,
 } from '#drivers/k8s/cluster'
 import {
   EGRESS_WORLD_DENY_NAME,
@@ -164,28 +164,48 @@ describe('buildServerFrontIngressNpManifest', () => {
   })
 })
 
-describe('builderEgress', () => {
-  // A builder RUN step or proxy upstream reaching the kind fronting's node
-  // port would reach the server as if it were the node, and one reaching a
-  // node-hosted NFS export, a metadata service or any other internal
-  // address could read what only the cluster may. Only public addresses,
-  // DNS and the nodes stay open; the operator opens anything else.
-  const rules = builderEgress(['10.89.0.2/32', '192.168.1.1/32'], ['10.96.0.10/32']) as Array<{
+describe('buildBuilderEgressNpManifest', () => {
+  // A builder RUN step reaching a node, a metadata service or any other
+  // internal address could read what only the cluster may. Only public
+  // addresses, DNS and the main registry stay open; the operator opens
+  // anything else. The nodes are a byo node's: a private InternalIP, public
+  // v4 and v6 ExternalIPs, and a ULA.
+  const manifest = buildBuilderEgressNpManifest(
+    ['10.0.1.5/32', '5.75.1.9/32', '2a01:4f8:1c1c::1/128', 'fd00::5/128'], ['10.96.0.10/32'],
+  ) as unknown as { metadata: { name: string }; spec: Spec }
+  const rules = manifest.spec.egress as Array<{
     to: Array<{ ipBlock?: { cidr: string; except?: string[] } }>
     ports?: Array<{ protocol: string; port: number; endPort: number }>
   }>
 
-  it('reaches public addresses on every port, and no special-purpose range', () => {
+  it('applies to every builder pod', () => {
+    expect(manifest.metadata.name).toBe('yaac-builder-egress')
+    expect(manifest.spec.podSelector).toEqual({ matchLabels: { [LABEL_ROLE]: 'builder' } })
+    expect(manifest.spec.policyTypes).toEqual(['Egress'])
+  })
+
+  it('reaches public addresses on every port, and no special-purpose range or node', () => {
     const [world] = rules
     expect(world.ports).toBeUndefined()
     const [v4, v6] = world.to.map((p) => p.ipBlock!)
     expect(v4.cidr).toBe('0.0.0.0/0')
     for (const cidr of [
-      '10.89.0.2/32', '192.168.1.1/32', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16',
+      '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16',
       '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '168.63.129.16/32', '224.0.0.0/3',
     ]) expect(v4.except).toContain(cidr)
-    // ULA (fd00:ec2::254, fd20:ce::254) and link-local lie outside it.
-    expect(v6).toEqual({ cidr: '2000::/3', except: ['2001::/23', '2001:db8::/32', '2002::/16', '3fff::/20'] })
+    // A public ExternalIP lies in no special-purpose range, so only its own
+    // except entry keeps a RUN step off its node. The private InternalIP is
+    // cut as well, though 10/8 already covers it.
+    expect(v4.except).toContain('5.75.1.9/32')
+    expect(v4.except).toContain('10.0.1.5/32')
+    // Each family's addresses go in its own block, since the apiserver
+    // rejects an except outside the cidr. The ULA (and the ULA metadata
+    // services, fd00:ec2::254 and fd20:ce::254) lie outside 2000::/3.
+    expect(v4.except!.some((c) => c.includes(':'))).toBe(false)
+    expect(v6).toEqual({
+      cidr: '2000::/3',
+      except: ['2001::/23', '2001:db8::/32', '2002::/16', '3fff::/20', '2a01:4f8:1c1c::1/128'],
+    })
   })
 
   // NodeLocal DNSCache answers on the DNS Service's own ClusterIP (no DNAT
@@ -204,22 +224,16 @@ describe('builderEgress', () => {
     })
   })
 
-  it('reaches the nodes on every port but the fronting\'s and NFS', () => {
-    const [, , nodes] = rules
-    expect(nodes.to.map((p) => p.ipBlock?.cidr)).toEqual(['10.89.0.2/32', '192.168.1.1/32'])
-    const covers = (protocol: string, port: number): boolean => (nodes.ports ?? [])
-      .some((p) => p.protocol === protocol && p.port <= port && port <= p.endPort)
-    for (const [protocol, port] of [['TCP', SERVER_FRONT_PORT], ['TCP', 2049], ['UDP', 2049]] as const) {
-      expect(covers(protocol, port), `${protocol} ${port}`).toBe(false)
+  it('names no node address as a destination, on any port', () => {
+    for (const rule of rules) {
+      for (const cidr of ['10.0.1.5/32', '5.75.1.9/32', '2a01:4f8:1c1c::1/128', 'fd00::5/128']) {
+        expect(rule.to.map((p) => p.ipBlock?.cidr)).not.toContain(cidr)
+      }
     }
-    for (const port of [1, 22, 2048, 2050, 10250, SERVER_FRONT_PORT - 1, SERVER_FRONT_PORT + 1, 65535]) {
-      expect(covers('TCP', port), String(port)).toBe(true)
-    }
-    for (const port of [1, 53, 2048, 2050, 65535]) expect(covers('UDP', port), String(port)).toBe(true)
   })
 
   it('reaches the main registry by selector, in its own namespace', () => {
-    expect(rules[3]).toEqual({
+    expect(rules[2]).toEqual({
       to: [{
         namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'yaac' } },
         podSelector: { matchLabels: { app: 'yaac-main-registry' } },
@@ -236,7 +250,8 @@ describe('buildProxyEgressNpManifest', () => {
   it('adds the proxy\'s in-cluster peers to the builders\' floor, by selector', () => {
     const egress = egressOf({ cidrs: [], ports: [] })
     // The same floor, less the builders' registry rule.
-    expect(egress.slice(0, 3)).toEqual(builderEgress(['10.89.0.2/32'], []).slice(0, 3))
+    const builders = buildBuilderEgressNpManifest(['10.89.0.2/32'], []) as unknown as { spec: Spec }
+    expect(egress.slice(0, 2)).toEqual(builders.spec.egress!.slice(0, 2))
     expect(egress.slice(3)).toEqual([
       { to: [{ podSelector: { matchLabels: { app: SERVER_APP_NAME } } }], ports: [{ protocol: 'TCP', port: SERVER_MAMA_PORT }] },
       {
@@ -244,6 +259,26 @@ describe('buildProxyEgressNpManifest', () => {
         ports: [{ protocol: 'TCP', port: POD_STREAM_PORT }],
       },
     ])
+  })
+
+  // An exact allowlist entry may name a node, but a CONNECT reaching the
+  // kind fronting's node port would reach the server as if it were the
+  // node, and one reaching a node-hosted NFS export could read every project.
+  it('reaches the nodes on every port but the fronting\'s and NFS', () => {
+    const nodes = egressOf({ cidrs: [], ports: [] })[2] as {
+      to: Array<{ ipBlock?: { cidr: string } }>
+      ports: Array<{ protocol: string; port: number; endPort: number }>
+    }
+    expect(nodes.to.map((p) => p.ipBlock?.cidr)).toEqual(['10.89.0.2/32'])
+    const covers = (protocol: string, port: number): boolean => nodes.ports
+      .some((p) => p.protocol === protocol && p.port <= port && port <= p.endPort)
+    for (const [protocol, port] of [['TCP', SERVER_FRONT_PORT], ['TCP', 2049], ['UDP', 2049]] as const) {
+      expect(covers(protocol, port), `${protocol} ${port}`).toBe(false)
+    }
+    for (const port of [1, 22, 2048, 2050, 10250, SERVER_FRONT_PORT - 1, SERVER_FRONT_PORT + 1, 65535]) {
+      expect(covers('TCP', port), String(port)).toBe(true)
+    }
+    for (const port of [1, 53, 2048, 2050, 65535]) expect(covers('UDP', port), String(port)).toBe(true)
   })
 
   it('reaches the apiserver at its real endpoints when they are published', () => {

@@ -258,16 +258,13 @@ on a node port, which no pod policy covers, and its dial into the server
 comes from the node. A pod that reached `<node>:<that port>` would therefore
 reach the server as the node and, with a loopback `Host`, be its owner.
 Workspace pods cannot: their egress reaches node addresses only on the netd
-listener range. The two kinds of pod that may dial node addresses carry
-egress policies that allow every node port except that one and NFS, and
-public addresses but no other internal ones (`wideEgress`,
-docs/workspace-egress.md "Non-public destinations"):
-
-- builder pods, which run `RUN` steps from agent-editable Dockerfiles, get
-  it with each build;
-- the egress proxy, whose upstream is whatever a workspace's allowlist names,
-  gets it with the proxy and again on every server start (a proxy that is
-  already current is never redeployed).
+listener range. Builder pods, which run `RUN` steps from agent-editable
+Dockerfiles, reach no node address at all. The egress proxy, whose upstream
+is whatever a workspace's allowlist names, is the one pod that may dial
+node addresses, and its egress policy allows every node port except that
+one and NFS (docs/workspace-egress.md "Non-public destinations"). It gets
+that policy with the proxy and again on every server start (a proxy that is
+already current is never redeployed).
 
 Every other pod in the namespace is under the world-egress default-deny.
 

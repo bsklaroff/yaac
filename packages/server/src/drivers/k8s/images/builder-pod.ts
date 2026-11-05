@@ -49,12 +49,12 @@ import {
   runStreamingProcess,
 } from '#drivers/k8s/substrate'
 import {
-  builderEgress,
+  buildBuilderEgressNpManifest,
   clusterDnsCidrs,
   ensureBuilderImage,
   ensureBuilderRoleGuard,
   ensureMainRegistry,
-  nodeIpBlocks,
+  nodeAddressBlocks,
   registryAuthFile,
   registryHost,
   stringHash,
@@ -410,27 +410,10 @@ async function streamContextToPod(
   }
 }
 
-/** The NetworkPolicy applying `builderEgress` to every builder pod. */
-function buildBuilderEgressNetworkPolicyManifest(nodeCidrs: string[], dnsCidrs: string[]): Record<string, unknown> {
-  return {
-    apiVersion: 'networking.k8s.io/v1',
-    kind: 'NetworkPolicy',
-    metadata: {
-      name: 'yaac-builder-egress',
-      namespace: k8sNamespace(),
-    },
-    spec: {
-      podSelector: { matchLabels: { [LABEL_ROLE]: ROLE_BUILDER } },
-      policyTypes: ['Egress'],
-      egress: builderEgress(nodeCidrs, dnsCidrs),
-    },
-  }
-}
-
 /** Apply the builder-role admission guard and egress policy. */
 async function ensureBuilderNetworkPolicies(): Promise<void> {
   await ensureBuilderRoleGuard()
-  await applyObject(buildBuilderEgressNetworkPolicyManifest(await nodeIpBlocks(), await clusterDnsCidrs()))
+  await applyObject(buildBuilderEgressNpManifest(await nodeAddressBlocks(), await clusterDnsCidrs()))
 }
 
 /**

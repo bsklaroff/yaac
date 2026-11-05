@@ -13,16 +13,17 @@
 // and ports (`#drivers/k8s/substrate`).
 
 export {
+  buildBuilderEgressNpManifest,
   buildEgressWorldDenyNpManifest,
   buildProxyEgressNpManifest,
   buildProxyIngressNpManifest,
   buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
   buildWorkspaceEgressNpManifest,
-  builderEgress,
 } from './policy-manifests'
 export {
   clusterDnsCidrs,
+  nodeAddressBlocks,
   nodeIpBlocks,
   podCidrSources,
   resetClusterCidrCache,

@@ -127,6 +127,7 @@ vi.mock('#drivers/k8s/cluster/image-tags', async (importOriginal) => ({
 
 vi.mock('#drivers/k8s/cluster/cluster-cidrs', () => ({
   nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
+  nodeAddressBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32', '5.75.1.7/32']),
   clusterDnsCidrs: vi.fn().mockResolvedValue(['10.96.0.10/32']),
   resetClusterCidrCache: vi.fn(),
 }))
@@ -560,7 +561,7 @@ describe('ensureImage', () => {
     expect(np.spec.policyTypes).toEqual(['Egress'])
     // A RUN step comes from an agent-editable Dockerfile, so it gets the
     // public-only floor plus the main registry (policy-manifests.test.ts).
-    expect(np.spec.egress).toEqual(builderEgress(['10.89.0.7/32'], ['10.96.0.10/32']))
+    expect(np.spec.egress).toEqual(builderEgress(['10.89.0.7/32', '5.75.1.7/32'], ['10.96.0.10/32']))
 
     // storage.conf bootstrap, parent pull, extract, grant, build, push — in order.
     const remote = remoteCommands()

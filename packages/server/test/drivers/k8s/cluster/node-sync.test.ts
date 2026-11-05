@@ -18,12 +18,12 @@ interface Applied {
   spec?: {
     nodeName?: string
     ingress?: Array<{ from?: Array<{ ipBlock?: { cidr: string } }> }>
-    egress?: Array<{ to?: Array<{ ipBlock?: { cidr: string } }>; ports?: Array<{ port: number }> }>
+    egress?: Array<{ to?: Array<{ ipBlock?: { cidr: string; except?: string[] } }>; ports?: Array<{ port: number }> }>
     volumes?: Array<{ hostPath?: { path: string } }>
   }
 }
 
-interface FakeNode { ip: string; uid: string; ready: boolean }
+interface FakeNode { ip: string; externalIp?: string; uid: string; ready: boolean }
 
 const PROJECTS = ['p1', 'p2']
 
@@ -75,6 +75,12 @@ function proxyPeers(port: number): string[] {
     .flatMap((r) => r.to ?? []).flatMap((t) => (t.ipBlock ? [t.ipBlock.cidr] : []))
 }
 
+/** What the builders' public IPv4 block cuts, in the last apply of their policy. */
+function builderExcepts(): string[] {
+  const np = applied().filter((m) => m.kind === 'NetworkPolicy' && m.metadata.name === 'yaac-builder-egress').pop()
+  return np?.spec?.egress?.[0].to?.[0].ipBlock?.except ?? []
+}
+
 /** (Re)seed the Node objects from `nodes`, replacing any removed one. */
 function seedNodes(): void {
   for (const node of fakeCluster.objects<{ metadata: { name: string } }>('Node')) {
@@ -84,7 +90,10 @@ function seedNodes(): void {
     apiVersion: 'v1', kind: 'Node',
     metadata: { name, uid: n.uid },
     status: {
-      addresses: [{ type: 'InternalIP', address: n.ip }],
+      addresses: [
+        { type: 'InternalIP', address: n.ip },
+        ...(n.externalIp ? [{ type: 'ExternalIP', address: n.externalIp }] : []),
+      ],
       conditions: [{ type: 'Ready', status: n.ready ? 'True' : 'False' }],
     },
   })))
@@ -160,11 +169,14 @@ describe('reconcileNodeSet', () => {
     expect(applied()).toEqual([])
 
     // An autoscaled node registers: the policies admit it straight away, but
-    // its writer pods wait until it is Ready.
-    nodes['node-b'] = { ip: '10.0.2.9', uid: 'u-b', ready: false }
+    // its writer pods wait until it is Ready. A builder that waited for it
+    // must not reach it through its public address, so the builders' policy
+    // cuts that too, though only InternalIPs are admitted.
+    nodes['node-b'] = { ip: '10.0.2.9', externalIp: '5.75.1.9', uid: 'u-b', ready: false }
     await pass()
     expect(admittedNodes('yaac-registry-ingress')).toEqual(['10.0.1.5/32', '10.0.2.9/32'])
     expect(admittedNodes('yaac-server-ingress')).toEqual(['10.0.1.5/32', '10.0.2.9/32'])
+    expect(builderExcepts()).toEqual(expect.arrayContaining(['5.75.1.9/32', '10.0.2.9/32']))
     expect(hostsWrites()).toEqual([])
 
     // Ready: only the new node gets a writer pod.

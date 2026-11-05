@@ -383,15 +383,21 @@ public addresses only: 0.0.0.0/0 less the same special-purpose ranges and
 168.63.129.16, and IPv6 global unicast (2000::/3) less its special-purpose
 blocks. That leaves out ULA, where AWS (fd00:ec2::254, and EKS Pod Identity
 at fd00:ec2::23) and GCE (fd20:ce::254) serve IPv6 metadata, and
-link-local. It allows back only what yaac needs:
+link-local. Every address a node answers on is cut as well, each from its
+own family's block: its InternalIP, Calico tunnel address and ExternalIPs
+(`nodeAddressBlocks`). A cloud node's ExternalIP is public, and a pod
+dialing its own node's is delivered locally, past any cloud firewall. The
+policies are re-rendered as nodes join (node-sync). The floor allows back
+only what yaac needs:
 
 - DNS on port 53: the cluster resolver by selector (`k8s-app: kube-dns` in
   `kube-system`), that Service's own ClusterIP, and 169.254.0.0/16. The last
   two are for NodeLocal DNSCache. In kube-proxy-iptables mode it answers on
   the ClusterIP and skips kube-proxy's DNAT, so no selector matches; in IPVS
   mode it answers on a link-local address;
-- the nodes, on every port but NFS and the kind fronting's
-  (docs/server-in-cluster.md "The ingress policy is the wall");
+- for the proxy, the nodes, on every port but NFS and the kind fronting's
+  (docs/server-in-cluster.md "The ingress policy is the wall"), so that an
+  allowlist entry may name one. Builders reach no node address;
 - for the proxy, the server's mama listener and workspace pods' streamd by
   selector, and the apiserver its watches read, at the real endpoints the
   `kubernetes` Service's EndpointSlices list (re-read by node-sync, so a
@@ -404,8 +410,8 @@ the destination after kube-proxy's DNAT. The gateway Calico gives every pod
 (169.254.1.1, and an fe80:: address on IPv6) is a next hop, not a
 destination, so the floor does not affect it.
 
-The two allowances above that are not selectors are where "takes both" does
-not hold. An exact allowlist entry naming a node address reaches it, on any
+The proxy's two allowances above that are not selectors are where "takes
+both" does not hold. An exact allowlist entry naming a node address reaches it, on any
 port but NFS and the fronting's, with no operator opening; a CONNECT on the
 SSH tunnel listener chooses its port, so that includes the kubelet and, on
 kind and k3s, the apiserver. An exact entry naming a DNS address reaches

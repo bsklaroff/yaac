@@ -1,9 +1,10 @@
 import { applyObject, listObjects } from '#drivers/k8s/substrate'
 import { serverLog } from '#lib/log'
-import { apiserverEndpoints, clusterDnsCidrs, nodeIpBlocks } from './cluster-cidrs'
+import { apiserverEndpoints, clusterDnsCidrs, nodeAddressBlocks, nodeIpBlocks } from './cluster-cidrs'
 import { applyMainRegistryIngress, writeMainRegistryHosts } from './main-registry'
 import { syncNpmCacheNodes } from './npm-cache'
 import {
+  buildBuilderEgressNpManifest,
   buildProxyEgressNpManifest,
   buildProxyIngressNpManifest,
   buildServerIngressNpManifest,
@@ -17,9 +18,10 @@ import { syncSiteEdgeNodes } from './site-edge'
  * adds one (docs/cluster-setup.md "Bring your own cluster"). Install and the
  * registries' ensures cover only the nodes that exist when they run, so a
  * later node would lack two things:
- *  - its address in every NetworkPolicy that admits nodes (kubelet probes,
- *    containerd pulls, netd's Envoy). These are re-applied whenever the
- *    address set changes, which takes no pod.
+ *  - its addresses in every NetworkPolicy that names nodes: those admitting
+ *    them (kubelet probes, containerd pulls, netd's Envoy) and the egress
+ *    that cuts them from the public block. These are re-applied whenever
+ *    the address set changes, which takes no pod.
  *  - its containerd hosts.toml for the main registry, without which it
  *    cannot pull any yaac image (the gVisor installer's included). It is
  *    written once per node, keyed by name and uid so a replacement
@@ -47,15 +49,17 @@ interface RawNode {
  */
 export async function reconcileNodeSet(projectIds: string[]): Promise<void> {
   const nodeCidrs = await nodeIpBlocks({ fresh: true })
+  const nodeAddrs = await nodeAddressBlocks()
   const dnsCidrs = await clusterDnsCidrs()
   const apiserver = await apiserverEndpoints()
-  const addresses = JSON.stringify([nodeCidrs, dnsCidrs, apiserver])
+  const addresses = JSON.stringify([nodeAddrs, dnsCidrs, apiserver])
   if (addresses !== renderedAddresses) {
     for (const manifest of [
       buildServerIngressNpManifest(nodeCidrs),
       buildWorkspaceEgressNpManifest(nodeCidrs),
       buildProxyIngressNpManifest(nodeCidrs),
-      buildProxyEgressNpManifest(nodeCidrs, dnsCidrs, apiserver),
+      buildProxyEgressNpManifest(nodeAddrs, dnsCidrs, apiserver),
+      buildBuilderEgressNpManifest(nodeAddrs, dnsCidrs),
     ]) await applyObject(manifest)
     await syncNpmCacheNodes(nodeCidrs)
     await syncSiteEdgeNodes(nodeCidrs, dnsCidrs)
