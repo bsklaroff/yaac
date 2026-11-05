@@ -182,6 +182,8 @@ export const NON_PUBLIC_V4 = [
  */
 export const PUBLIC_V6 = { cidr: '2000::/3', except: ['2001::/23', '2001:db8::/32', '2002::/16', '3fff::/20'] }
 
+const BUILDER_EGRESS_NP_NAME = 'yaac-builder-egress'
+
 /** Where NodeLocal DNSCache listens in IPVS mode (typically 169.254.20.10). */
 const LINK_LOCAL_V4 = '169.254.0.0/16'
 
@@ -215,38 +217,34 @@ export function dnsEgress(dnsCidrs: string[]): Record<string, unknown> {
   }
 }
 
+/** Whether a host CIDR lies in `PUBLIC_V6`'s 2000::/3. */
+function inPublicV6(cidr: string): boolean {
+  const first = parseInt(cidr.split(':')[0] || '0', 16)
+  return first >= 0x2000 && first <= 0x3fff
+}
+
 /**
  * Egress for pods that may dial the internet: builder pods (running
- * agent-editable Dockerfiles) and the proxy. Public addresses are open;
- * non-public ones are not, except:
- *  - DNS (`dnsEgress`);
- *  - the nodes, on every port but two. The kind fronting's node port is
- *    cut, because that forwarder's dial into the server comes from the
- *    node, which the server's ingress admits, and a loopback-`Host`
- *    request arriving there is treated as the owner
- *    (docs/remote-hosting.md). NFS is cut for a shared tier served from a
- *    node (infra/hetzner-k3s): traffic to another node is SNATed to the
- *    sending node's address, so the server's export list cannot tell such a
- *    pod from a node's kernel mount.
- * Each caller adds selector rules for the in-cluster peers it needs.
- * Selectors match a Service dial too, as policy sees the destination after
- * kube-proxy's DNAT. Anything else internal is opened only by the network
- * operator's own policy (docs/workspace-egress.md "Opening an internal
- * destination").
+ * agent-editable Dockerfiles) and the proxy. Public addresses and DNS
+ * (`dnsEgress`) are open. Every node address (`nodeAddressBlocks`) is cut
+ * from the public block, as a cloud node's ExternalIP is public. Each is
+ * cut from its own family's block, because the apiserver rejects an
+ * `except` outside its block's `cidr`. Each caller adds rules for the
+ * in-cluster peers it needs. Selectors match a Service dial too, as policy
+ * sees the destination after kube-proxy's DNAT. Anything else internal is
+ * opened only by the network operator's own policy (docs/workspace-egress.md
+ * "Opening an internal destination").
  */
-export function wideEgress(nodeCidrs: string[], dnsCidrs: string[]): Array<Record<string, unknown>> {
+export function wideEgress(nodeAddrs: string[], dnsCidrs: string[]): Array<Record<string, unknown>> {
+  const v6 = nodeAddrs.filter((c) => c.includes(':'))
   return [
     {
       to: [
-        { ipBlock: { cidr: '0.0.0.0/0', except: [...nodeCidrs, ...NON_PUBLIC_V4] } },
-        { ipBlock: PUBLIC_V6 },
+        { ipBlock: { cidr: '0.0.0.0/0', except: [...nodeAddrs.filter((c) => !c.includes(':')), ...NON_PUBLIC_V4] } },
+        { ipBlock: { cidr: PUBLIC_V6.cidr, except: [...PUBLIC_V6.except, ...v6.filter(inPublicV6)] } },
       ],
     },
     dnsEgress(dnsCidrs),
-    {
-      to: ipBlocks(nodeCidrs),
-      ports: [...portsExcept('TCP', [NFS_PORT, SERVER_FRONT_PORT]), ...portsExcept('UDP', [NFS_PORT])],
-    },
   ]
 }
 
@@ -254,11 +252,20 @@ export function wideEgress(nodeCidrs: string[], dnsCidrs: string[]): Array<Recor
  * Proxy EGRESS: its upstream dials, anywhere `wideEgress` allows, plus its
  * in-cluster peers: the server's mama listener, workspace pods' streamd
  * (the stream relay), and the apiserver its watches read, at its real
- * endpoints (`apiserverEndpoints`). On kind and k3s those are node
- * addresses, which `wideEgress` already admits.
+ * endpoints (`apiserverEndpoints`).
+ *
+ * It also reaches every node address, since a project's allowlist may name
+ * one exactly and the proxy dials it for the workspace. Two ports are cut.
+ * The kind fronting's node port, because that forwarder's dial into the
+ * server comes from the node, which the server's ingress admits, and a
+ * loopback-`Host` request arriving there is treated as the owner
+ * (docs/remote-hosting.md). NFS, for a shared tier served from a node
+ * (infra/hetzner-k3s): traffic to another node is SNATed to the sending
+ * node's address, so the server's export list cannot tell such a pod from
+ * a node's kernel mount.
  */
 export function buildProxyEgressNpManifest(
-  nodeCidrs: string[],
+  nodeAddrs: string[],
   dnsCidrs: string[],
   apiserver: { cidrs: string[]; ports: number[] },
 ): Record<string, unknown> {
@@ -266,7 +273,11 @@ export function buildProxyEgressNpManifest(
     podSelector: { matchLabels: { app: PROXY_APP_NAME } },
     policyTypes: ['Egress'],
     egress: [
-      ...wideEgress(nodeCidrs, dnsCidrs),
+      ...wideEgress(nodeAddrs, dnsCidrs),
+      {
+        to: ipBlocks(nodeAddrs),
+        ports: [...portsExcept('TCP', [NFS_PORT, SERVER_FRONT_PORT]), ...portsExcept('UDP', [NFS_PORT])],
+      },
       { to: [{ podSelector: { matchLabels: { app: SERVER_APP_NAME } } }], ports: [tcp(SERVER_MAMA_PORT)] },
       { to: [{ podSelector: workspacePodSelector }], ports: [tcp(POD_STREAM_PORT)] },
       ...(apiserver.cidrs.length > 0 ? [{ to: ipBlocks(apiserver.cidrs), ports: apiserver.ports.map(tcp) }] : []),
@@ -276,12 +287,13 @@ export function buildProxyEgressNpManifest(
 
 /**
  * Builder egress: anywhere `wideEgress` allows, plus the main registry its
- * builds pull parents from and push layers to. The world-deny policy
- * excludes builders, so this is the policy that applies to them.
+ * builds pull parents from and push layers to. No node address is open: no
+ * build needs one, and from a `RUN` step it would reach the kubelet, every
+ * NodePort, and on a byo cluster the machines' own daemons.
  */
-export function builderEgress(nodeCidrs: string[], dnsCidrs: string[]): Array<Record<string, unknown>> {
+export function builderEgress(nodeAddrs: string[], dnsCidrs: string[]): Array<Record<string, unknown>> {
   return [
-    ...wideEgress(nodeCidrs, dnsCidrs),
+    ...wideEgress(nodeAddrs, dnsCidrs),
     {
       to: [{
         namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': REGISTRY_NAMESPACE } },
@@ -293,14 +305,28 @@ export function builderEgress(nodeCidrs: string[], dnsCidrs: string[]): Array<Re
 }
 
 /**
+ * `builderEgress` on every builder pod. The world-deny policy excludes
+ * builders, so this is the policy that applies to them. Applied before each
+ * build and by `reconcileNodeSet` as nodes join, so a builder that waited
+ * for a new node is not left reaching it.
+ */
+export function buildBuilderEgressNpManifest(nodeAddrs: string[], dnsCidrs: string[]): Record<string, unknown> {
+  return np(BUILDER_EGRESS_NP_NAME, k8sNamespace(), {
+    podSelector: { matchLabels: { [LABEL_ROLE]: ROLE_BUILDER } },
+    policyTypes: ['Egress'],
+    egress: builderEgress(nodeAddrs, dnsCidrs),
+  }, {})
+}
+
+/**
  * Server-pod ingress, node half: the API from node addresses (kubelet probe,
  * and on kind the fronting forwarder), plus the mama-only listener from the
  * egress proxy.
  *
  * Essential for security: the server binds `0.0.0.0` and treats a
  * loopback-Host request as its owner (docs/remote-hosting.md), so these
- * policies, with the workspace egress policy and `wideEgress`,
- * keep untrusted pods out. `yaac cluster check` verifies this. The proxy is
+ * policies, with the workspace, proxy and builder egress policies, keep
+ * untrusted pods out. `yaac cluster check` verifies this. The proxy is
  * admitted only to SERVER_MAMA_PORT, never to the API: it forwards workspace
  * traffic, so a workspace could otherwise reach the API through it.
  *

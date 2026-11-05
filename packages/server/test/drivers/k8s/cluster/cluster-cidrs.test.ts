@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
-import { nodeIpBlocks, podCidrSources, resetClusterCidrCache } from '#drivers/k8s/cluster'
+import { nodeAddressBlocks, nodeIpBlocks, podCidrSources, resetClusterCidrCache } from '#drivers/k8s/cluster'
 
 const node = (ip: string, annotations?: Record<string, string>) => ({
   apiVersion: 'v1',
@@ -66,6 +66,31 @@ describe('nodeIpBlocks', () => {
     await expect(nodeIpBlocks()).resolves.toEqual(['10.89.0.7/32'])
     resetClusterCidrCache()
     await expect(nodeIpBlocks()).resolves.toEqual(['10.89.0.9/32'])
+  })
+})
+
+describe('nodeAddressBlocks', () => {
+  it('adds every node\'s ExternalIPs, of either family, to the addresses nodeIpBlocks admits', async () => {
+    // A byo node's public address is its ExternalIP. A builder dialing its
+    // own node's is delivered locally, so the egress excepts must name it.
+    fakeCluster.seed({
+      ...node('10.0.1.5', { 'projectcalico.org/IPv4VXLANTunnelAddr': '10.244.86.128' }),
+      status: {
+        addresses: [
+          { type: 'InternalIP', address: '10.0.1.5' },
+          { type: 'ExternalIP', address: '5.75.1.9' },
+          { type: 'ExternalIP', address: '2a01:4f8:1c1c::1' },
+          { type: 'Hostname', address: 'node-a' },
+        ],
+      },
+    })
+
+    await expect(nodeAddressBlocks()).resolves.toEqual([
+      '10.0.1.5/32', '10.244.86.128/32', '2a01:4f8:1c1c::1/128', '5.75.1.9/32',
+    ])
+    // The admitted set stays the InternalIP and tunnel address.
+    await expect(nodeIpBlocks()).resolves.toEqual(['10.0.1.5/32', '10.244.86.128/32'])
+    expect(fakeCluster.callsOf('list', 'Node')).toHaveLength(1)
   })
 })
 

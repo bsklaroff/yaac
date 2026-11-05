@@ -6,8 +6,8 @@ import { serverLog } from '#lib/log'
  * CIDR literals for the network policies and netd. NetworkPolicy can only
  * name the node's network namespace (where netd's Envoy delivers from) by
  * `ipBlock`, so node addresses are resolved here, in one place. Node
- * addresses are `/32`s: a wider block would admit everything on the subnet,
- * including the registry container on the local podman network.
+ * addresses are single hosts: a wider block would admit everything on the
+ * subnet, including the registry container on the local podman network.
  */
 
 interface RawNode {
@@ -39,43 +39,67 @@ interface RawIpPool {
  * cache for every other caller.
  */
 let nodeCidrCache: string[] | null = null
+let nodeAddressCache: string[] | null = null
 let podCidrCache: string[] | null = null
 
 /** Drop the caches (tests, and after a cluster rebuild). */
 export function resetClusterCidrCache(): void {
   nodeCidrCache = null
+  nodeAddressCache = null
   podCidrCache = null
 }
 
-/**
- * Every node's InternalIP (and Calico tunnel address) as a `/32`: how the
- * policies admit traffic from the host netns (netd's Envoy, kubelet probes,
- * containerd pulls). Throws if none resolve, since an empty set would
- * silently cut off all workspace egress. Cached; `fresh` re-reads the
- * nodes, which `reconcileNodeSet` does to notice a node joining.
- */
-export async function nodeIpBlocks(opts: { fresh?: boolean } = {}): Promise<string[]> {
-  if (nodeCidrCache && !opts.fresh) return nodeCidrCache
+/** An address as a single-host CIDR, `/128` for IPv6. */
+function hostCidr(address: string): string {
+  return `${address}/${address.includes(':') ? 128 : 32}`
+}
+
+/** Read the nodes once and fill both node caches. */
+async function readNodeAddresses(): Promise<void> {
   const items = await listObjects<RawNode>('v1', 'Node')
-  const cidrs = items
+  const ofType = (type: string): string[] => items
     .flatMap((n) => n.status?.addresses ?? [])
-    .filter((a) => a.type === 'InternalIP' && a.address)
-    .map((a) => `${a.address!}/32`)
+    .filter((a) => a.type === type && a.address)
+    .map((a) => hostCidr(a.address!))
   // Tunnel addresses matter only on multi-node clusters.
   const tunnels = items.flatMap((n) =>
     CALICO_TUNNEL_ANNOTATIONS
       .map((key) => n.metadata?.annotations?.[key])
       .filter((addr): addr is string => !!addr)
-      .map((addr) => `${addr}/32`))
-  const unique = [...new Set([...cidrs, ...tunnels])].sort()
-  if (unique.length === 0) {
+      .map(hostCidr))
+  const sources = [...new Set([...ofType('InternalIP'), ...tunnels])].sort()
+  if (sources.length === 0) {
     throw new Error(
       'could not resolve any node InternalIP — the egress policies need it '
       + 'to admit netd\'s redirect delivery and the kubelet probes',
     )
   }
-  nodeCidrCache = unique
-  return unique
+  nodeCidrCache = sources
+  nodeAddressCache = [...new Set([...sources, ...ofType('ExternalIP')])].sort()
+}
+
+/**
+ * Every node's InternalIP (and Calico tunnel address) as a host CIDR: how
+ * the policies admit traffic from the host netns (netd's Envoy, kubelet
+ * probes, containerd pulls). Throws if none resolve, since an empty set
+ * would silently cut off all workspace egress. Cached; `fresh` re-reads the
+ * nodes, which `reconcileNodeSet` does to notice a node joining.
+ */
+export async function nodeIpBlocks(opts: { fresh?: boolean } = {}): Promise<string[]> {
+  if (!nodeCidrCache || opts.fresh) await readNodeAddresses()
+  return nodeCidrCache!
+}
+
+/**
+ * Every address a node answers on, as host CIDRs: `nodeIpBlocks` plus each
+ * ExternalIP. Egress policies cut these from the public block. A cloud
+ * node's ExternalIP is public, and a pod dialing its own node's is
+ * delivered locally, past any cloud firewall, to the kubelet, every
+ * NodePort and the machine's own daemons. Shares `nodeIpBlocks`' cache.
+ */
+export async function nodeAddressBlocks(opts: { fresh?: boolean } = {}): Promise<string[]> {
+  if (!nodeAddressCache || opts.fresh) await readNodeAddresses()
+  return nodeAddressCache!
 }
 
 /**
@@ -91,7 +115,7 @@ export async function clusterDnsCidrs(): Promise<string[]> {
   })
   return (svc?.spec?.clusterIPs ?? [])
     .filter((ip) => ip !== 'None')
-    .map((ip) => `${ip}/${ip.includes(':') ? 128 : 32}`)
+    .map(hostCidr)
 }
 
 interface RawEndpointSlice {
