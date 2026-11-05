@@ -36,7 +36,9 @@ import {
   getSiteRow,
   listWorkspaceSteps,
   findSiteByName,
+  seeTailnetUser,
   setProjectShareRevoked,
+  setUserRole,
 } from '#db'
 import { closeDb, getDb } from '#db/client'
 import { projects } from '#db/schema'
@@ -50,7 +52,7 @@ import { _clearTerminatingForTests } from '#runtime/status/terminating'
 import type { RuntimeHandle, RuntimeSnapshot, SiteRoute, WorkspaceSpec } from '#drivers/contract'
 
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
-const stranger = { kind: 'local', userId: 'someone-else' } as const
+const stranger = { kind: 'local', userId: '4101bef8-794f-4d98-8e95-dfb54850c68b' } as const
 
 const STEPS = {
   build: { run: 'pnpm build' },
@@ -155,6 +157,12 @@ describe('deploySite', () => {
     })
     const head = (await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'origin/main'])).trim()
     await expect(deploySite(stranger, DEMO_PROJECT_ID, 'shop')).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    // Deploying publishes, so its owner must also be an admin.
+    await setUserRole(await seeTailnetUser('admin@example.com', 'Admin'), 'admin')
+    await setUserRole(BUILT_IN_USER_ID, 'member')
+    await expect(deploySite(local, DEMO_PROJECT_ID, 'shop'))
+      .rejects.toMatchObject({ code: 'FORBIDDEN', message: expect.stringContaining('publish sites') as unknown })
+    await setUserRole(BUILT_IN_USER_ID, 'admin')
 
     // First deploy: nothing holds the volume, so it passes once the steps
     // before it are done.

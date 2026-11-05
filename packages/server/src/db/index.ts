@@ -202,10 +202,14 @@ export {
 } from './tool-credential-store'
 export {
   BUILT_IN_USER_ID,
+  getUser,
+  listAdmins,
   listUsers,
   readAccessMode,
   recordAccessMode,
+  replaceAdmins,
   seeTailnetUser,
+  setUserRole,
 } from './user-store'
 export {
   backfillWorkspaceScratchDirs,

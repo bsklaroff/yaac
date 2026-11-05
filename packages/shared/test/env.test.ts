@@ -240,12 +240,12 @@ describe('env (configuration)', () => {
     })
   })
 
-  describe('accessOwner', () => {
-    it('is the trimmed login, or undefined when blank', () => {
-      vi.stubEnv('YAAC_ACCESS_OWNER', ' ')
-      expect(env.accessOwner).toBeUndefined()
-      vi.stubEnv('YAAC_ACCESS_OWNER', ' alice@example.com ')
-      expect(env.accessOwner).toBe('alice@example.com')
+  describe('accessAdmins', () => {
+    it('is the trimmed logins, empty when blank', () => {
+      vi.stubEnv('YAAC_ACCESS_ADMINS', ' ')
+      expect(env.accessAdmins).toEqual([])
+      vi.stubEnv('YAAC_ACCESS_ADMINS', ' alice@example.com, ,bob@example.com ')
+      expect(env.accessAdmins).toEqual(['alice@example.com', 'bob@example.com'])
     })
   })
 

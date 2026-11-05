@@ -1607,13 +1607,12 @@ describe('runClusterInstall', () => {
   // --tailnet: fronting the server on the tailnet through the operator
   // -------------------------------------------------------------------
 
-  it('--tailnet hands the tailnet fronting and --owner to the server deploy', async () => {
+  it('--tailnet hands the tailnet fronting to the server deploy', async () => {
     const deps = makeDeps({ run: tailnetRun('present') })
-    await expect(runClusterInstall({ tailnet: true, owner: 'alice@example.com' }, deps)).resolves.toBeUndefined()
+    await expect(runClusterInstall({ tailnet: true }, deps)).resolves.toBeUndefined()
     expect(appliedOf('Ingress')).toHaveLength(1)
     const env = serverPod().containers[0].env
     expect(env).toContainEqual({ name: 'YAAC_ACCESS_MODE', value: 'tailnet' })
-    expect(env).toContainEqual({ name: 'YAAC_ACCESS_OWNER', value: 'alice@example.com' })
     expect(await readServerConfig()).toMatchObject({ url: 'https://yaac.tail.ts.net' })
     expect(logged(deps)).toContain('Tailscale operator present')
     // An operator installed some other way (helm) is its installer's to
@@ -1717,7 +1716,7 @@ describe('runClusterInstall', () => {
 
   it('--tailnet <host> publishes through this machine\'s tailscale serve, needing no operator', async () => {
     const deps = makeDeps({ run: tailnetRun('absent') })
-    await expect(runClusterInstall({ tailnet: 'Srv.Tail.ts.net', owner: 'alice@example.com' }, deps))
+    await expect(runClusterInstall({ tailnet: 'Srv.Tail.ts.net' }, deps))
       .resolves.toBeUndefined()
     // The kind forwarder serve points at, and no Ingress.
     expect(appliedOf('Ingress')).toEqual([])
@@ -1725,7 +1724,6 @@ describe('runClusterInstall', () => {
     const env = serverPod().containers[0].env
     expect(env).toContainEqual({ name: 'YAAC_ACCESS_MODE', value: 'tailnet' })
     expect(env).toContainEqual({ name: 'YAAC_ALLOWED_HOSTS', value: 'srv.tail.ts.net' })
-    expect(env).toContainEqual({ name: 'YAAC_ACCESS_OWNER', value: 'alice@example.com' })
     expect(vi.mocked(globalThis.fetch).mock.calls.map(([u]) => u))
       .toContain('https://srv.tail.ts.net/api/health')
     expect(await readServerConfig()).toMatchObject({ url: 'https://srv.tail.ts.net' })
@@ -1912,8 +1910,8 @@ describe('runClusterInstall', () => {
       [{ byo: true }, /--byo needs --rwx-storage-class/],
       [{ rwxStorageClass: 'byo-nfs' }, /--rwx-storage-class is for --byo only/],
       [{ rwoStorageClass: 'fast' }, /--rwo-storage-class is for --byo only/],
-      // --owner only means anything on the switch to tailnet.
-      [{ owner: 'alice@example.com' }, /--owner .* needs --tailnet/],
+      // --admin names tailnet logins.
+      [{ admin: ['alice@example.com'] }, /--admin .* needs --tailnet/],
       // A byo cluster has no loopback port for this machine's serve.
       [{ ...BYO, tailnet: 'srv.tail.ts.net' }, /--byo install is published through the Tailscale operator/],
       [{ tailnet: 'https://srv.tail.ts.net' }, /--tailnet takes the bare MagicDNS name/],

@@ -135,11 +135,12 @@ export interface ClusterInstallOptions {
    */
   tailnet?: boolean | string
   /**
-   * With the tailnet fronting: the tailnet login that claims a `local`
-   * install's projects and settings as it switches to `tailnet`
-   * (docs/remote-hosting.md "Access modes").
+   * With the tailnet fronting: the logins that are to be the install's
+   * admins, and whether to revoke whoever they leave out unasked
+   * (docs/multi-user.md "Roles").
    */
-  owner?: string
+  admin?: readonly string[]
+  yes?: boolean
   /**
    * kind nodes to create: one control-plane plus `nodes - 1` workers
    * (default one). Only applies when creating a cluster. A string is
@@ -1179,7 +1180,8 @@ async function deployServer(
     const origin = await deployServerWorkload({
       fronting: tailnetFronting({ hostname: TAILNET_HOSTNAME }),
       identity: BYO_INSTALL_IDENTITY,
-      owner: opts.owner,
+      admin: opts.admin,
+      yes: opts.yes,
       storage: { kind: 'classes', ...byoStorage },
       log: deps.log,
     })
@@ -1203,7 +1205,7 @@ async function deployServer(
   // machine's data dir (docs/server-in-cluster.md).
   const identity = processIdentity()
   const origin = await deployServerWorkload({
-    fronting, identity, storage: { kind: 'static' }, torHostAddr, owner: opts.owner, log: deps.log,
+    fronting, identity, storage: { kind: 'static' }, torHostAddr, admin: opts.admin, yes: opts.yes, log: deps.log,
   })
   deps.log(`The yaac server is serving at ${origin}`)
 }

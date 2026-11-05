@@ -21,7 +21,7 @@ const project = (id: string, owner: string): ProjectSummary =>
 
 const ME: Whoami = {
   kind: 'tailnet', userId: 'u-me', login: 'me@x.com', name: 'Me',
-  users: [{ id: 'u-ada', login: 'ada@x.com', name: 'Ada' }, { id: 'u-me', login: 'me@x.com', name: 'Me' }],
+  users: [{ id: 'u-ada', login: 'ada@x.com', name: 'Ada', role: 'admin' }, { id: 'u-me', login: 'me@x.com', name: 'Me', role: 'member' }],
 }
 
 function renderSwitcher(driver: ServerSnapshot['driver'], whoami: Whoami = ME): void {
@@ -73,7 +73,7 @@ describe('UserSwitcher', () => {
     renderSwitcher('k8s')
     fireEvent.click(screen.getByRole('button', { name: 'Switch user (Your projects)' }))
     const items = await screen.findAllByRole('menuitem')
-    expect(items.map((i) => i.textContent)).toEqual(['MMe (you)me@x.comidle', 'AAdaada@x.com3 active'])
+    expect(items.map((i) => i.textContent)).toEqual(['MMe (you)me@x.comidle', 'AAdaada@x.com · admin3 active'])
     expect(screen.queryByText(/does not separate users/)).toBeNull()
 
     fireEvent.click(items[1])

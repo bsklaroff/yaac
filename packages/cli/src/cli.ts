@@ -4,6 +4,7 @@ import pkg from '../../../package.json' with { type: 'json' }
 import { exitOnApiError } from '@yaac/shared/server-api'
 import { AGENT_MODES, PERMISSION_MODES } from '@yaac/shared/types'
 import { projectAdd } from '#commands/project-add'
+import { userList, userRole } from '#commands/user'
 import { projectList } from '#commands/project-list'
 import { projectCreate } from '#commands/project-create'
 import { projectClone } from '#commands/project-clone'
@@ -135,7 +136,7 @@ const program = new Command()
   .hook('preAction', () => scopeToUser(program.opts<{ user?: string }>().user))
 
 const TAILNET_HELP = 'Serve tailnet users through `tailscale serve` at this MagicDNS name (e.g. srv.<tailnet>.ts.net) instead of only this machine. The install records the mode, and every later start must name it again'
-const OWNER_HELP = 'With --tailnet: switch a local install to tailnet mode, giving its projects and settings to this tailnet login. One-way; not needed for a fresh install'
+const ADMIN_HELP = 'With --tailnet: make exactly these tailnet logins (repeat the flag for several) the install\'s admins, who alone publish sites and set roles. A fresh install needs at least one; switching a local install to tailnet takes exactly one, who gets its projects and settings. Asks before revoking anyone else\'s'
 
 const server = program
   .command('server')
@@ -154,7 +155,8 @@ server
   .command('start')
   .description('Start the server in the background')
   .option('--tailnet <host>', TAILNET_HELP)
-  .option('--owner <login>', OWNER_HELP)
+  .option('--admin <login>', ADMIN_HELP, collect, [])
+  .option('-y, --yes', 'Revoke admin from logins --admin leaves out without asking')
   .action((options: ServerAccessOptions) => serverStart(options))
 
 server
@@ -166,7 +168,8 @@ server
   .command('restart')
   .description('Restart the server (stop, then start)')
   .option('--tailnet <host>', TAILNET_HELP)
-  .option('--owner <login>', OWNER_HELP)
+  .option('--admin <login>', ADMIN_HELP, collect, [])
+  .option('-y, --yes', 'Revoke admin from logins --admin leaves out without asking')
   .action((options: ServerAccessOptions) => serverRestart(options))
 
 server
@@ -207,7 +210,8 @@ cluster
   .option('--rwx-storage-class <name>', 'With --byo (required): the NFS-family StorageClass the shared yaac-global claim is provisioned from')
   .option('--rwo-storage-class <name>', 'With --byo: the StorageClass the server\'s own yaac-server-local claim is provisioned from (default: the cluster\'s default class)')
   .option('--tailnet [host]', 'Publish the server on your Tailscale tailnet instead of at 127.0.0.1, at an https origin whose callers are identified by their tailnet user. With <host> (this machine\'s MagicDNS name), through this machine\'s own `tailscale serve`; without, through the Tailscale Kubernetes operator, which install sets up from TS_OAUTH_CLIENT_ID / TS_OAUTH_CLIENT_SECRET when the cluster lacks it')
-  .option('--owner <login>', 'With --tailnet (or --byo): switch a local install to tailnet mode, giving its projects and settings to this tailnet login. One-way; not needed for a fresh install')
+  .option('--admin <login>', 'With --tailnet (or --byo): make exactly these tailnet logins (repeat the flag for several) the install\'s admins, who alone publish sites and set roles. A fresh install needs at least one; switching a local install to tailnet takes exactly one, who gets its projects and settings. Asks before revoking anyone else\'s', collect, [])
+  .option('-y, --yes', 'Revoke admin from logins --admin leaves out without asking')
   // `--nodes` stays a string so the install reports what the user typed
   // rather than `NaN`. A failed finishing check exits 1.
   .action(async (options: ClusterInstallArgs) => {
@@ -278,6 +282,22 @@ host
     const { hostCheck } = await import('#commands/host-check')
     await hostCheck()
   })
+
+const user = program
+  .command('user')
+  .description('See the install\'s users, and set their roles')
+
+user
+  .command('list')
+  .description('List the install\'s users and their roles: an admin publishes sites and sets roles, a member does neither')
+  .action(userList)
+
+user
+  .command('role')
+  .description('Set a user\'s role (admins only). The install\'s last admin cannot be made a member')
+  .argument('<user>', 'The user: a login, name or id (see `yaac user list`)')
+  .addArgument(new Argument('<role>', 'The role').choices(['admin', 'member']))
+  .action(userRole)
 
 const project = program
   .command('project')

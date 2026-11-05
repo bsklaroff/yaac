@@ -201,7 +201,7 @@ describe('ReadOnlyWorkspace', () => {
   it('shows a teammate\'s running workspace with its status and no actions', () => {
     const codex = sessionEntry({ tool: 'codex', mode: 'tui' })
     useUiStore.setState({ viewedUserId: 'u-ada' })
-    const client = testQueryClient({ ...TEST_WHOAMI, users: [...TEST_WHOAMI.users, { id: 'u-ada', login: 'ada@example.com', name: 'Ada' }] })
+    const client = testQueryClient({ ...TEST_WHOAMI, users: [...TEST_WHOAMI.users, { id: 'u-ada', login: 'ada@example.com', name: 'Ada', role: 'member' }] })
     const view = renderWithClient(
       <ReadOnlyWorkspace subject={{ kind: 'live', entry: workspaceEntry({ workspaceId: 'w1', sessions: [codex], title: 'Their run' }) }} />,
       client,

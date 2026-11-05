@@ -16,6 +16,7 @@ import { volumeApp } from '#routes/volumes'
 import { siteApp } from '#routes/sites'
 import { imageApp } from '#routes/images'
 import { serverApp } from '#routes/server'
+import { usersApp } from '#routes/users'
 import { jsonBodyLimit, zv } from '#routes/validator'
 import { submitFeedback } from '#domain/feedback'
 import { workspaceDriver } from '#drivers/driver'
@@ -178,6 +179,7 @@ function apiRoutes(
     .route('/site', siteApp)
     .route('/image', imageApp)
     .route('/server', serverApp)
+    .route('/users', usersApp)
 }
 
 export type AppType = ReturnType<typeof apiRoutes>

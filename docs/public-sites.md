@@ -67,11 +67,12 @@ hostname for a site, and the name is public as soon as a tunnel route
 covers it. With one public hostname per site, a name goes live only once
 the Cloudflare admin adds it, so the admin reviews each one. A wildcard
 public hostname (`*.example.com`) or a catch-all rule pointing at the
-router instead makes every name under it public the moment any user of
+router instead makes every name under it public the moment any admin of
 the install creates a site on it, including names such as
-`www.example.com` or `login.example.com` meant for something else. So on
-a shared install (docs/multi-user.md), route one public hostname per site,
-never a wildcard or catch-all.
+`www.example.com` or `login.example.com` meant for something else. Only
+admins publish sites (docs/multi-user.md "Roles"), so a wildcard is as
+safe as the trust put in every admin; otherwise route one public hostname
+per site.
 
 **Objects.** The edge is install's, like the server fronting; what changes
 with sites is the server's, under the `yaac` field manager
@@ -136,17 +137,21 @@ connected.
 
 ## Sites and releases
 
-A site belongs to a project, so its owner alone creates, edits, deploys,
-stops and deletes it, and every user may list and view it
-(docs/multi-user.md "Authorization"). A hostname is unique in the install,
+A site belongs to a project. Its owner creates, edits, deploys and starts
+it only while an admin of the install (docs/multi-user.md "Roles"); its
+owner, admin or not, and any admin may stop and delete it, so a site can
+always be taken down; and every user may list and view it
+(docs/multi-user.md "Authorization"). Demoting an owner stops nothing:
+their live releases keep serving and are still supervised, but they
+cannot deploy again. A hostname is unique in the install,
 and may be any name: only names the tunnel routes ever reach the router,
 so which are public is decided in the Cloudflare account, by whoever
 administers it (see "The edge" for why that means one route per site).
 yaac holds no Cloudflare API token, so it cannot check that a site's
 hostname is routed. Within the install a hostname is first come, first
 served: once a site
-lets one go (deleted, or edited to another), any user may create a site
-on it, and the tunnel already routes it, so teammates who share an install
+lets one go (deleted, or edited to another), any admin may create a site
+on it, and the tunnel already routes it, so admins who share an install
 share its hostnames too.
 
 A share whose source's owner removed it (docs/hosted-projects.md
@@ -332,8 +337,9 @@ never overlap, so migrations never race. A rollback does not undo a schema.
 
 ## Surfaces
 
-- **API**: `/api/site/edge`, `/list`, `/show` (readers) and `/create`,
-  `/edit`, `/delete`, `/deploy`, `/stop`, `/start` (the project's owner).
+- **API**: `/api/site/edge`, `/list`, `/show` (readers), `/create`,
+  `/edit`, `/deploy`, `/start` (the project's owner, while an admin) and
+  `/stop`, `/delete` (the project's owner, or any admin).
 - **CLI**: `yaac site create|edit|list|show|deploy|stop|start|delete`, the
   project first, and `yaac cluster install` for the tunnel (docs/cli.md).
 - **Webapp**: a Sites section in project settings, with the tunnel's state
@@ -347,8 +353,8 @@ never overlap, so migrations never race. A rollback does not undo a schema.
 - **One-time hostname setup.** Each site's hostname is added to the tunnel
   by hand. A wildcard (`*.example.com`) would cover them all, if a
   remotely-managed tunnel takes one (Cloudflare's docs do not say), but
-  it would also let every user of the install publish any name under the
-  zone, so it suits only an install with one user.
+  it would also let every admin of the install publish any name under the
+  zone.
 - **A release's own egress allowlist.** A release uses its project's.
 - **A stateful deploy with no gap**, which needs the state in a long-lived
   workspace that releases reach over the network.

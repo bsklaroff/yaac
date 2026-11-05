@@ -13,7 +13,7 @@ import {
   showSite,
 } from '#domain/sites'
 import { createVolume, offeredForwards } from '#domain/workspaces'
-import { BUILT_IN_USER_ID, findSiteByName, setProjectShareRevoked, updateSite } from '#db'
+import { BUILT_IN_USER_ID, findSiteByName, seeTailnetUser, setProjectShareRevoked, setUserRole, updateSite } from '#db'
 import { closeDb } from '#db/client'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
@@ -22,7 +22,7 @@ import { DEMO_PROJECT_ID, seedProject } from '@yaac/test-utils/project-fixture'
 import type { SiteRoute } from '#drivers/contract'
 
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
-const stranger = { kind: 'local', userId: 'someone-else' } as const
+const stranger = { kind: 'local', userId: '4101bef8-794f-4d98-8e95-dfb54850c68b' } as const
 const APP = { app: { run: 'pnpm start', service: true } }
 
 let tmpDir: string
@@ -55,6 +55,15 @@ afterEach(async () => {
   await closeDb()
   await cleanupTempDir(tmpDir)
 })
+
+/** Make another user the install's admin and the project's owner a
+ *  member, answering the admin. */
+async function demoteOwner(): Promise<{ kind: 'tailnet'; userId: string; login: string; name: string }> {
+  const userId = await seeTailnetUser('admin@example.com', 'Admin')
+  await setUserRole(userId, 'admin')
+  await setUserRole(BUILT_IN_USER_ID, 'member')
+  return { kind: 'tailnet', userId, login: 'admin@example.com', name: 'Admin' }
+}
 
 const create = (over: Partial<Parameters<typeof createSite>[2]> = {}): Promise<void> =>
   createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, steps: APP, ...over })
@@ -94,6 +103,11 @@ describe('createSite', () => {
     // Any domain is taken, since the tunnel decides what is public.
     await create({ name: 'blog', hostname: ' Blog.Elsewhere.org ' })
     expect(routed.at(-1)?.map((r) => r.hostname).sort()).toEqual(['blog.elsewhere.org', 'shop.example.com', 'shop.test', 'v1.example.com'])
+
+    // Publishing takes an admin, even on the caller's own project.
+    await demoteOwner()
+    await expect(create({ name: 'mine', hostname: 'mine.example.com' }))
+      .rejects.toMatchObject({ code: 'FORBIDDEN', message: expect.stringContaining('publish sites') as unknown })
   })
 })
 
@@ -152,6 +166,15 @@ describe('deleteSite', () => {
     await expect(deleteSite(stranger, DEMO_PROJECT_ID, 'blog')).rejects.toMatchObject({ code: 'FORBIDDEN' })
     await deleteSite(local, DEMO_PROJECT_ID, 'blog')
     expect(await findSiteByName(DEMO_PROJECT_ID, 'blog')).toBeUndefined()
+    expect(routed.at(-1)).toEqual([])
+  })
+
+  it('lets any admin take a site down, and its owner once demoted', async () => {
+    await create()
+    await create({ name: 'blog', hostname: 'blog.example.com' })
+    const admin = await demoteOwner()
+    await deleteSite(admin, DEMO_PROJECT_ID, 'shop')
+    await deleteSite(local, DEMO_PROJECT_ID, 'blog')
     expect(routed.at(-1)).toEqual([])
   })
 })

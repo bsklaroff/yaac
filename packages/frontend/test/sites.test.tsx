@@ -3,7 +3,7 @@ import { act, screen, fireEvent, cleanup, waitFor, within } from '@testing-libra
 import type { SiteEdgeStatus, SiteEntry, VolumeEntry } from '@yaac/shared/types'
 import { Sites } from '#components/settings/Sites'
 import {
-  mockFetch, renderWithClient, serverError, serverSnapshot, testQueryClient, type FetchCall, type FetchMock,
+  TEST_WHOAMI, mockFetch, renderWithClient, serverError, serverSnapshot, testQueryClient, type FetchCall, type FetchMock,
 } from './harness'
 
 /*
@@ -81,6 +81,8 @@ afterEach(() => {
 })
 
 const client = () => testQueryClient(undefined, serverSnapshot({ driver: 'k8s' }))
+/** The caller as a member: `TEST_WHOAMI` is an admin. */
+const MEMBER = { ...TEST_WHOAMI, users: [{ ...TEST_WHOAMI.users[0], role: 'member' as const }] }
 const row = (hostname: string): string | null | undefined => screen.getByText(hostname).closest('.rounded-md')?.textContent
 const dialog = () => within(screen.getByRole('alertdialog'))
 
@@ -175,13 +177,34 @@ describe('Sites settings', () => {
     expect(screen.queryByRole('note')).toBeNull()
   })
 
-  it('says how to set up a tunnel on an install without one, and only lists sites for a teammate', async () => {
+  it('says how to set up a tunnel on an install without one, and only lists a teammate\'s sites to a member', async () => {
     edge = { tunnel: 'absent' }
-    renderWithClient(<Sites projectId="proj" readOnly />, client())
+    renderWithClient(<Sites projectId="proj" readOnly />, testQueryClient(MEMBER, serverSnapshot({ driver: 'k8s' })))
     expect((await screen.findByText(/^This install has no tunnel/)).textContent)
       .toContain('CF_TUNNEL_TOKEN=… yaac cluster install.')
     expect(await screen.findByText('app.example.com')).toBeTruthy()
     for (const name of ['Deploy', 'Stop', 'Start', 'Edit', 'New site', 'Delete site web']) {
+      expect(screen.queryByRole('button', { name })).toBeNull()
+    }
+  })
+
+  it('lets an admin stop and delete a teammate\'s site, but not publish it', async () => {
+    renderWithClient(<Sites projectId="proj" readOnly />, client())
+    expect(await screen.findByText('app.example.com')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Delete site web' })).toBeTruthy()
+    for (const name of ['Deploy', 'Start', 'Edit', 'New site']) {
+      expect(screen.queryByRole('button', { name })).toBeNull()
+    }
+  })
+
+  it('lets an owner who is no admin only stop and delete', async () => {
+    renderWithClient(<Sites projectId="proj" readOnly={false} />, testQueryClient(MEMBER, serverSnapshot({ driver: 'k8s' })))
+    expect(await screen.findByText('app.example.com')).toBeTruthy()
+    expect(screen.getByText(/^Only an admin of this yaac install can publish sites/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Delete site web' })).toBeTruthy()
+    for (const name of ['Deploy', 'Start', 'Edit', 'New site']) {
       expect(screen.queryByRole('button', { name })).toBeNull()
     }
   })

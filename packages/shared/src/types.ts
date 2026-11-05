@@ -2061,12 +2061,26 @@ export type Principal =
   | { kind: 'local'; userId: string }
   | { kind: 'tailnet'; userId: string; login: string; name: string }
 
+/** A user's install-wide role (docs/multi-user.md "Roles"): an `admin`
+ *  publishes sites and sets roles; a `member` does neither. */
+export type UserRole = 'admin' | 'member'
+
 /** A user of the install. `login` is null only for the built-in user of a
  *  `local` install. */
 export interface User {
   id: string
   login: string | null
   name: string
+  role: UserRole
+}
+
+/** An admin, as the server's admin socket lists them to `--admin`'s
+ *  revoke check: `signedIn` is false for a login a start named that has
+ *  not reached the server yet. */
+export interface AdminEntry {
+  login: string | null
+  name: string
+  signedIn: boolean
 }
 
 /** `GET /whoami`: the caller, and every user of the install. */

@@ -508,17 +508,53 @@ describe('deployServerWorkload', () => {
     expect(await readServerConfig()).toMatchObject({ url: origin })
   })
 
-  it('hands --owner to the server, and fails on the reason a server refusing its access mode gives', async () => {
+  it('hands --admin to the server in a ConfigMap, sets them over its admin socket, then deletes the ConfigMap', async () => {
+    publishIngress('yaac.tail1234.ts.net', 1)
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Pod',
+      metadata: { name: 'yaac-server-abc', namespace: 'test-ns', labels: { app: SERVER_APP_NAME } },
+      status: { containerStatuses: [{ name: 'server', state: { running: {} } }] },
+    })
+    // The pod's admin socket, answering curl: the start took alice from the
+    // ConfigMap, so the write changes nothing.
+    const writes: unknown[] = []
+    mockKubectl.mockImplementation((_file: string, args: string[]) => {
+      actions.push(`kubectl ${args.join(' ')}`)
+      if (args[0] !== 'exec') return Promise.resolve({ stdout: '', stderr: '' })
+      const data = args.indexOf('--data')
+      if (data !== -1) writes.push(JSON.parse(args[data + 1]))
+      const admins = [{ login: 'alice@example.com', name: 'alice@example.com', signedIn: false }]
+      return Promise.resolve({ stdout: `${JSON.stringify(admins)}\n200`, stderr: '' })
+    })
+    const log = vi.fn()
+
+    await deploy({ fronting: tailnetFronting({ hostname: 'yaac' }), admin: ['alice@example.com'], log })
+
+    expect(applied('ConfigMap')).toContainEqual(expect.objectContaining({
+      metadata: { name: 'yaac-server-bootstrap', namespace: 'test-ns' }, data: { admins: 'alice@example.com' },
+    }))
+    expect(deployedPodSpec().containers[0].env).toContainEqual({
+      name: 'YAAC_ACCESS_ADMINS',
+      valueFrom: { configMapKeyRef: { name: 'yaac-server-bootstrap', key: 'admins', optional: true } },
+    })
+    expect(actions).toContainEqual(expect.stringContaining(
+      'kubectl exec yaac-server-abc -n test-ns -c server -- sh -c exec curl -sS --unix-socket /tmp/yaac-*/admin.sock',
+    ))
+    expect(writes).toEqual([{ logins: ['alice@example.com'], expected: ['alice@example.com'] }])
+    expect(log).toHaveBeenCalledWith('admin: alice@example.com (has not signed in yet)')
+    expect(fakeCluster.get('ConfigMap', 'yaac-server-bootstrap', 'test-ns')).toBeUndefined()
+  })
+
+  it('fails on the reason a server refusing its access mode gives, still deleting the ConfigMap', async () => {
     publishIngress('yaac.tail1234.ts.net')
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({
       ok: true, ready: false, access: null, refused: 'this install runs in local mode',
     })))))
 
-    await expect(deploy({ fronting: tailnetFronting({ hostname: 'yaac' }), owner: 'alice@example.com', log: vi.fn() }))
+    await expect(deploy({ fronting: tailnetFronting({ hostname: 'yaac' }), admin: ['alice@example.com', 'bob@example.com'], log: vi.fn() }))
       .rejects.toThrow('the server refused to start: this install runs in local mode')
-
-    const env = Object.fromEntries(deployedPodSpec().containers[0].env.map((e) => [e.name, e.value]))
-    expect(env.YAAC_ACCESS_OWNER).toBe('alice@example.com')
+    expect(applied('ConfigMap')).toContainEqual(expect.objectContaining({ data: { admins: 'alice@example.com,bob@example.com' } }))
+    expect(fakeCluster.get('ConfigMap', 'yaac-server-bootstrap', 'test-ns')).toBeUndefined()
   })
 
   it('refuses when the operator never publishes a hostname, before the Deployment', async () => {

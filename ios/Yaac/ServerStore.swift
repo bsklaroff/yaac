@@ -3,7 +3,7 @@ import Observation
 
 /// What the last probe of a saved server found.
 enum Health: Equatable {
-  /// It identified this phone, as `login` (nil for a `local` install's owner).
+  /// It identified this phone, as `login` (nil for a `local` install's built-in user).
   case ok(login: String?)
   /// No answer, or not a yaac server.
   case stopped(String)

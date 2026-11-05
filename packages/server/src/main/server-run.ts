@@ -8,6 +8,7 @@ import { startGitSshAgent, stopGitSshAgent } from '#domain/git'
 import { EventHub } from '#api/events'
 import { registerWebSocketRoutes } from '#api/ws-routes'
 import { routeWorkspaceHosts } from '#api/http/workspace-hosts'
+import { listenAdminSocket } from '#api/http/admin-socket'
 import { attachConvergence, releaseConvergence, stopConvergence } from '#main/convergence'
 import { coalesceCalls, onWorkspaceListChanged } from '#lib/notify'
 import { readBuildId } from '@yaac/shared/build-id'
@@ -254,6 +255,11 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     serverOptions: LONG_UPLOADS,
   })
   relayServer?.on('error', (err: Error) => serverLog(`[server] yaac-mama relay listener failed: ${errorText(err)}`))
+  // Failing it fails only `--admin` on an install that has admins.
+  const adminServer = await listenAdminSocket().catch((err: unknown) => {
+    serverLog(`[server] admin socket failed: ${errorText(err)}`)
+    return undefined
+  })
 
   const torPrefix = env.useTor ? '(using tor) ' : ''
   serverLog(`[server] ${torPrefix}listening on ${env.bindAddr}:${port} lock=${serverLockPath()}`)
@@ -322,7 +328,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     // close() drains in-flight requests. Bounded to 3s so a wedged request
     // cannot delay lock removal, which the CLI waits on.
     await Promise.race([
-      Promise.all([server, relayServer].map((s) => new Promise<void>((resolve) => {
+      Promise.all([server, relayServer, adminServer].map((s) => new Promise<void>((resolve) => {
         if (s) s.close(() => resolve())
         else resolve()
       }))),

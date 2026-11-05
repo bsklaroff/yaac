@@ -45,10 +45,12 @@ one mounts two (see "Storage claims").
    priority, plain runc, `runAsUser` set to the install uid (see "The uid
    everything runs as"), three mounts (`yaac-global`, `yaac-server-local` and the node's
    node-local directory), and the fronting's access mode
-   (`YAAC_ACCESS_MODE`, `tailnet` under `--tailnet [<host>]`, with `--owner` as
-   `YAAC_ACCESS_OWNER`) and hostname (`YAAC_ALLOWED_HOSTS`), which the server
-   checks against the mode it recorded (docs/remote-hosting.md "Access
-   modes").
+   (`YAAC_ACCESS_MODE`, `tailnet` under `--tailnet [<host>]`) and hostname
+   (`YAAC_ALLOWED_HOSTS`), which the server checks against the mode it
+   recorded (docs/remote-hosting.md "Access modes"). `YAAC_ACCESS_ADMINS`
+   comes from the optional `yaac-server-bootstrap` ConfigMap, which a run
+   with `--admin` creates and deletes again once the admins are set
+   (docs/multi-user.md "Roles").
 
 Install then waits for the published origin to report ready and registers
 the server: `server.json` selects that origin and the data dir's

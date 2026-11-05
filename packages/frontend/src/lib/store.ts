@@ -451,7 +451,7 @@ export function resolveVacantSelection(args: {
 
 /** Sections of the settings modal (left-nav entries). */
 export type SettingsSection =
-  | 'general' | 'shortcuts' | 'credentials' | 'project' | 'skills' | 'userDockerfile'
+  | 'general' | 'shortcuts' | 'credentials' | 'project' | 'skills' | 'userDockerfile' | 'users'
 
 /**
  * A project add or remove this tab started, shown in the rail and in place

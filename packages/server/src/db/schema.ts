@@ -7,6 +7,7 @@ import type {
   PortForwardConfig,
   ScratchDirSettings,
   SiteDeployPhase,
+  UserRole,
   WorkspaceDeathReason,
 } from '@yaac/shared/types'
 import type { StepGraph, StepOrigin, StepSpec, StepState, StepsOutcome } from '@yaac/shared/steps'
@@ -31,20 +32,23 @@ import { boolean, index, integer, json, jsonb, primaryKey, snakeCase, text, time
  * Everyone who uses the install (docs/remote-hosting.md "Access modes").
  * One built-in user (`BUILT_IN_USER_ID`, inserted by the migration) is the
  * caller of a `local` install and owns what it creates; switching the
- * install to `tailnet` gives it the owner's login. Every other user is a
- * tailnet login, created the first time it reaches the server.
+ * install to `tailnet` gives it the first admin's login. Every other user is
+ * a tailnet login, created the first time it reaches the server or when a
+ * start names it an admin (docs/multi-user.md "Roles").
  */
 export const users = snakeCase.table('users', {
   id: uuid().primaryKey().defaultRandom(),
-  /** The `Tailscale-User-Login`; null only for the built-in user of a
-   *  `local` install. */
+  /** The `Tailscale-User-Login`; null only for the built-in user while it
+   *  has none. */
   login: text().unique(),
-  /** The display name serve last sent. */
+  /** The display name serve last sent, or the login until it first does. */
   name: text().notNull(),
+  /** In a `tailnet` install only a user with a login is ever an admin. */
+  role: text().$type<UserRole>().notNull().default('member'),
   firstSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   /** Refreshed at most hourly, so identifying a caller is not a write per
-   *  request. */
-  lastSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+   *  request. Null for an admin a start named who has not signed in. */
+  lastSeenAt: timestamp({ withTimezone: true }).defaultNow(),
 })
 
 /**
