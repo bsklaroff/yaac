@@ -254,7 +254,8 @@ describe('yaac server start|restart --tailnet/--admin/--yes, and yaac user (acce
   it('records a fresh install\'s mode and admins, registers its tailnet origin, and never switches back', async () => {
     const adminless = await runYaac(testEnv.env, 'server', 'start', '--tailnet', HOST)
     expect(adminless.exitCode).toBe(1)
-    expect(adminless.stderr).toMatch(/has no admin[\s\S]*--admin <login>/)
+    expect(adminless.stderr).toMatch(/has no admin/)
+    expect(adminless.stderr).toContain(`\`yaac server start --tailnet ${HOST} --admin <login>\``)
     expect(await readLock()).toBeNull()
 
     const started = await runYaac(testEnv.env, 'server', 'start', '--tailnet', HOST.toUpperCase(), '--admin', 'alice@example.com')
@@ -268,12 +269,13 @@ describe('yaac server start|restart --tailnet/--admin/--yes, and yaac user (acce
     // The running server is in another mode than asked for.
     const mismatch = await runYaac(testEnv.env, 'server', 'start')
     expect(mismatch.exitCode).toBe(1)
-    expect(mismatch.stderr).toMatch(/running in tailnet mode, which cannot switch back to local[\s\S]*yaac server start --tailnet <host>/)
+    expect(mismatch.stderr).toMatch(/running in tailnet mode, which cannot switch back to local[\s\S]*yaac server start --tailnet srv\.tailnet\.ts\.net/)
 
     // Back to local is refused, and the refusing server is not left running.
     const back = await runYaac(testEnv.env, 'server', 'restart')
     expect(back.exitCode).toBe(1)
-    expect(back.stderr).toMatch(/refused to start: this install runs in tailnet mode[\s\S]*--tailnet <host>/)
+    expect(back.stderr).toMatch(/refused to start: this install runs in tailnet mode/)
+    expect(back.stderr).toContain(`Start it with \`yaac server start --tailnet ${HOST}\`.`)
     expect(await readLock()).toBeNull()
 
     // A foreground `server run` is not stopped on refusal: it stays up
@@ -333,7 +335,8 @@ describe('yaac server start|restart --tailnet/--admin/--yes, and yaac user (acce
 
     const unowned = await runYaac(testEnv.env, 'server', 'restart', '--tailnet', HOST)
     expect(unowned.exitCode).toBe(1)
-    expect(unowned.stderr).toMatch(/runs in local mode[\s\S]*exactly one admin[\s\S]*--admin <login>/)
+    expect(unowned.stderr).toMatch(/runs in local mode[\s\S]*exactly one admin/)
+    expect(unowned.stderr).toContain(`\`yaac server start --tailnet ${HOST} --admin <login>\``)
     expect(await readLock()).toBeNull()
     const two = await runYaac(testEnv.env, 'server', 'start', '--tailnet', HOST, '--admin', 'alice@example.com', '--admin', 'bob@example.com')
     expect(two.stderr).toMatch(/exactly one admin/)

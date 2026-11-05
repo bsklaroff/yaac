@@ -140,6 +140,16 @@ export async function recordedDriver(): Promise<DriverKind | undefined> {
 }
 
 /**
+ * The `--tailnet <host>` a host server was last started with: the name in
+ * its registered `https://` origin, the only kind a tailnet start
+ * registers. Refusals use it to name a start that works when copied.
+ */
+export async function recordedTailnetHost(): Promise<string | undefined> {
+  const origin = (await readInstallRecord())?.origin
+  return origin?.startsWith('https://') ? new URL(origin).hostname : undefined
+}
+
+/**
  * The kind cluster a kind install is in: the one its recorded `kind-<name>`
  * context names, which need not be the one `YAAC_KIND_CLUSTER` names now.
  * A record with no kind context falls back to `YAAC_KIND_CLUSTER`.

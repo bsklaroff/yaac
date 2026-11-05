@@ -1,4 +1,5 @@
 import { env } from '@yaac/shared/env'
+import { recordedTailnetHost } from '@yaac/shared/install-record'
 import type { AccessMode } from '@yaac/shared/types'
 import { listAdmins, readAccessMode, recordAccessMode } from '#db'
 
@@ -21,14 +22,27 @@ export class AccessModeRefusal extends Error {}
  *   Once it has one, `--admin` is the admin socket's to apply.
  * - `tailnet` → `local` is refused, and so is `tailnet` for a server nested
  *   in a workspace, which is reached only through its outer workspace.
+ *
+ * A refusal names a command that works when copied. An in-cluster start
+ * asking for `tailnet` was deployed by a `yaac cluster install` the user
+ * just ran, whose flags (`--byo`, `--tailnet [<host>]`) only they know, so
+ * it says to run that again. A host server names the host it was started
+ * with: the one it was handed (`YAAC_ALLOWED_HOSTS`), else the one its
+ * install record holds.
  */
 export async function settleAccessMode(): Promise<AccessMode> {
   const requested = env.accessMode
   const recorded = await readAccessMode()
   const admins = env.accessAdmins
   const how = env.inCluster
-    ? { local: 'yaac cluster install', tailnet: 'yaac cluster install --tailnet' }
-    : { local: 'yaac server start', tailnet: 'yaac server start --tailnet <host>' }
+    ? {
+        local: 'yaac cluster install',
+        addAdmin: (count: string) => `run the \`yaac cluster install\` you ran again with ${count}\`--admin <login>\``,
+      }
+    : {
+        local: 'yaac server start',
+        addAdmin: () => `\`yaac server start --tailnet ${env.allowedHosts[0] ?? '<host>'} --admin <login>\``,
+      }
   if (requested === 'tailnet' && env.workspaceId !== undefined) {
     throw new AccessModeRefusal(
       'a yaac server inside a workspace is always local: it is reached through its '
@@ -37,15 +51,22 @@ export async function settleAccessMode(): Promise<AccessMode> {
     )
   }
   if (recorded === 'tailnet' && requested === 'local') {
+    const host = env.inCluster ? undefined : await recordedTailnetHost()
+    const restart = env.inCluster
+      ? '`yaac cluster install --tailnet <host>` if this machine\'s `tailscale serve` publishes it '
+        + 'at <host>, or a bare `yaac cluster install --tailnet` if the Tailscale operator does'
+      : host === undefined
+        ? '`yaac server start --tailnet <host>`, where <host> is this machine\'s MagicDNS name'
+        : `\`yaac server start --tailnet ${host}\``
     throw new AccessModeRefusal(
-      `this install runs in tailnet mode, and switching it back to local is refused. Start it with \`${how.tailnet}\`.`,
+      `this install runs in tailnet mode, and switching it back to local is refused. Start it with ${restart}.`,
     )
   }
   if (recorded === 'local' && requested === 'tailnet') {
     if (admins.length !== 1) {
       throw new AccessModeRefusal(
         'this install runs in local mode, and switching it to tailnet needs exactly one admin: the '
-        + `tailnet login that will own its projects and settings, \`${how.tailnet} --admin <login>\`. `
+        + `tailnet login that will own its projects and settings. Name it: ${how.addAdmin('exactly one ')}. `
         + `Add more admins once it has switched. To keep it local, use \`${how.local}\`.`,
       )
     }
@@ -56,7 +77,7 @@ export async function settleAccessMode(): Promise<AccessMode> {
     if (admins.length === 0) {
       throw new AccessModeRefusal(
         'this tailnet install has no admin, who alone may publish sites and choose other admins. '
-        + `Name one or more by their tailnet login: \`${how.tailnet} --admin <login>\`.`,
+        + `Name one or more by their tailnet login: ${how.addAdmin('')}.`,
       )
     }
     await recordAccessMode('tailnet', { admins })

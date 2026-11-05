@@ -27,7 +27,7 @@ import { preflightHostTor, torCoverageWarning } from '@yaac/shared/host-tor'
 import { env } from '@yaac/shared/env'
 import { registerServer } from '@yaac/shared/server-config'
 import { applyAdmins, hostAdminSocket } from '@yaac/shared/admin-socket'
-import { readInstallRecord, recordedDriver } from '@yaac/shared/install-record'
+import { readInstallRecord, recordedDriver, recordedTailnetHost } from '@yaac/shared/install-record'
 import { legacyHostDataDirHint, moveLegacyHostDataDir } from '@yaac/shared/legacy-data-dir'
 import type { AccessMode, LocalServerStatus } from '@yaac/shared/types'
 
@@ -144,9 +144,11 @@ async function startServer(opts: ServerAccessOptions, keepSelection: boolean): P
   if (existing && await isLockLive(existing)) {
     const running = (await health(`http://127.0.0.1:${existing.port}`))?.access
     if (existing.buildId === cliBuildId && running === 'tailnet' && mode === 'local') {
+      const host = await recordedTailnetHost()
       throw new Error(
         'yaac server is running in tailnet mode, which cannot switch back to local. '
-        + 'Start it with: yaac server start --tailnet <host>',
+        + `Start it with: yaac server start --tailnet ${host ?? '<host>'}`
+        + (host === undefined ? ', where <host> is this machine\'s MagicDNS name' : ''),
       )
     }
     if (existing.buildId === cliBuildId && running === 'local' && mode === 'tailnet') {
