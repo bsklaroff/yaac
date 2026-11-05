@@ -526,3 +526,24 @@ cannot be demoted.
   `listAdmins().length === 0` half of that condition goes; the
   `recorded === undefined` half is the fresh install's. The migration's
   promotion `UPDATE` stays, as migrations do.
+
+## An install tmp dir left open to other users
+
+The install tmp dir (`installTmpDir`) holds the server's sockets and must be
+0700. Older servers created it with `mkdir({ recursive: true })`, which never
+tightens an existing dir, and a containerless launch could create it at the
+umask default first. So a host whose temp dir has not been cleared since
+then can still hold one at 0755 (or 0775 under umask 002), with live
+workspaces' tmux sockets in it. `ensureInstallTmpDir` in
+`packages/shared/src/paths.ts` chmods such a dir to 0700 when this user owns
+it, and if it was writable by others, removes the entries they own.
+
+- **What it reads.** The mode of the install tmp dir, and the owner of each
+  entry in it.
+- **What breaks if it goes too early.** A server started against such a dir
+  refuses to start, and the obvious way out, removing the dir, orphans
+  every running containerless workspace, whose tmux socket goes with it.
+- **When it is safe to remove.** Once no host can still hold a tmp dir an
+  older server created, which is after every one has rebooted (or had its
+  temp dir cleared) since running a yaac with this function. The refusals
+  of a symlink and a foreign owner stay.

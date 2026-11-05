@@ -23,6 +23,7 @@ import {
 import { LEASE_HEARTBEAT_MS, isLockLive } from '@yaac/shared/server-lock-file'
 import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-port'
 import { ensureDataDir } from '@yaac/shared/project-paths'
+import { TmpDirRefusal } from '@yaac/shared/paths'
 import { startReconciler } from '#main/reconciler'
 import { setWorkspaceDriver, workspaceDriver, workspacesSandboxed } from '#drivers/driver'
 import { importProjectConfigFiles, pushProjectSecrets } from '#domain/projects'
@@ -238,7 +239,13 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   serverLog(`[server] access mode: ${access}`)
   // The ssh agent the server's git signs with (docs/git-credentials.md);
   // needs the DB.
-  await startGitSshAgent()
+  try {
+    await startGitSshAgent()
+  } catch (err) {
+    if (!(err instanceof TmpDirRefusal)) throw err
+    refuse(err.message)
+    return
+  }
   // Before any create reads the setting (docs/legacy-compat-shims.md).
   await importProjectConfigFiles()
 

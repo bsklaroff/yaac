@@ -2,6 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ServerError } from '@yaac/shared/errors'
 import { gitConfigValue } from '@yaac/shared/git'
+import { ensureInstallTmpDir } from '@yaac/shared/paths'
 import { AGENT_PACKAGES, agentBinDirs, agentPackagePrefix } from '@yaac/shared/tool-install'
 import { serverLog } from '#lib/log'
 import { shellQuote } from '#lib/shell'
@@ -14,7 +15,6 @@ import {
   containerlessWorkspacePaths,
   hostShellDir,
   refFromJobName,
-  tmuxSockDir,
   containerlessStateDir,
 } from './paths'
 import {
@@ -410,9 +410,9 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   await fs.mkdir(paths.scratchDir, { recursive: true })
   await fs.mkdir(paths.acpLogDir, { recursive: true })
   await fs.mkdir(paths.terminalLogDir, { recursive: true })
+  // Private, since a tmux socket gives full control of its workspace.
+  await ensureInstallTmpDir()
   await fs.mkdir(paths.acpSockDir, { recursive: true })
-  // 0700: a tmux socket gives full control of its workspace.
-  await fs.mkdir(tmuxSockDir(), { recursive: true, mode: 0o700 })
   for (const dir of ['state', 'cache']) await fs.mkdir(path.join(opencode, dir), { recursive: true })
   for (const mount of spec.mounts) await realizeMount(mount, spec.env, paths, opencode)
   await fs.mkdir(ownBinDir(stateDir), { recursive: true })

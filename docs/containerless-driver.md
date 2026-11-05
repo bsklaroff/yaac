@@ -43,7 +43,9 @@ Each workspace has its own tmux server and socket; with one shared socket,
 workspace came first. Sockets live under the OS temp dir because
 `sockaddr_un.sun_path` is about 104 bytes on macOS and data-dir paths are
 longer. The temp dir name is keyed by the data dir, so two servers on one
-host never collide.
+host never collide. A tmux socket gives full control of its workspace, so a
+launch first makes sure the temp dir is private (`ensureInstallTmpDir`,
+docs/git-credentials.md) and fails rather than use one another OS user made.
 
 The tmux session has the same shape as the one
 `workspace-bin/yaac-workspace-init` creates in a pod (the keeper window the

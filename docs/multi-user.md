@@ -100,8 +100,13 @@ owner and nothing else.
   refused if they changed meanwhile. The CLI then lists the admins,
   marking any who have not signed in, which shows a mistyped login. This
   is also the way back for an install whose admins have all left.
-- **The admin socket** is `admin.sock` in the install's 0700 tmp dir
-  (`installTmpDir`, short enough for the socket path limit), answering only
+- **The admin socket** is `admin.sock` in the install's tmp dir
+  (`installTmpDir`, short enough for the socket path limit). That name is
+  predictable, so another OS user could create the dir first and plant a
+  socket that sees and answers `--admin`. Both sides therefore call
+  `ensureInstallTmpDir`, which keeps the dir 0700 and refuses one another
+  user made (docs/git-credentials.md): the server's start is refused with
+  the reason, and the CLI's `--admin` fails. The socket answers only
   `GET` and `PUT /admins`, and refusing a `local` install, whose one user
   is its admin. The HTTP API cannot carry this, since a `tailnet` server
   admits only callers through `tailscale serve`. Opening the socket takes
