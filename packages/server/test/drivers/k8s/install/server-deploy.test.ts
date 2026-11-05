@@ -609,8 +609,10 @@ describe('deployServerWorkload', () => {
 
     const origin = await deploy({ log })
 
-    expect(log.mock.calls.flat().join('\n'))
+    const logged = log.mock.calls.flat().join('\n')
+    expect(logged)
       .toMatch(/WARNING: .*refused to identify this device: tailscale serve sent no user identity/)
+    expect(logged).toContain('expected for a --tailnet install on a tagged device')
     expect(await readServerConfig()).toMatchObject({ url: origin })
   })
 

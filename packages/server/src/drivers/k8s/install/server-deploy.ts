@@ -595,8 +595,11 @@ async function deployServer(opts: Parameters<typeof deployServerWorkload>[0]): P
   // warn now if it cannot.
   await probeServer(origin).catch((err: unknown) => {
     if (err instanceof IdentityRejectedError) {
-      opts.log(`WARNING: ${err.message}\n    The CLI on this machine cannot use this server `
-        + 'until it runs as a tailnet user (docs/remote-hosting.md).')
+      opts.log(`WARNING: ${err.message}\n`
+        + '    This is expected for a --tailnet install on a tagged device: the server is\n'
+        + '    installed and serves tailnet users, but tailscale serve gives this machine\n'
+        + '    no user identity, so its CLI cannot use the server until the machine is\n'
+        + '    logged in to the tailnet as a user (docs/remote-hosting.md).')
     }
   })
   if (opts.admin?.length) await applyAdmins(await podAdminSocket(), opts.admin, { yes: opts.yes, log: opts.log })
