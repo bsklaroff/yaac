@@ -287,6 +287,17 @@ describe('getWorkspaceChanges', () => {
     expect(cheap).toMatchObject({ ignored: [], emptyDirs: [] })
   })
 
+  // A folder too large to stage is one entry the explorer reads on expand,
+  // so neither its files nor its folders are listed.
+  it('lists an untracked folder too large to diff as one entry, walking none of its folders', async () => {
+    const dir = await makeCheckout('gen')
+    await Promise.all(Array.from({ length: 2002 }, (_, k) => write(dir, `gen/m${k % 2}/o${k}.js`)))
+    await fs.mkdir(path.join(dir, 'gen/m0/empty'))
+    const { listing: files, skipped, files: changed } = await getWorkspaceChanges('gen', undefined, { diff: false, listing: 'full' })
+    expect([skipped, files?.skipped]).toEqual([['gen'], ['gen']])
+    expect([...files!.paths, ...files!.emptyDirs, ...changed.map((f) => f.path)].filter((p) => p.startsWith('gen'))).toEqual([])
+  })
+
   it('reports merge conflicts without writing the index', async () => {
     await makeCheckout('status')
     const inWt = wtGit('status')
@@ -340,8 +351,9 @@ describe('getWorkspaceChanges', () => {
 
   it('caps the listing and says so', async () => {
     const wt = await makeCheckout('big')
-    const names = Array.from({ length: 50_001 }, (_, i) => `many/f${i}`)
-    await fs.mkdir(path.join(wt, 'many'))
+    // In folders small enough to stage.
+    const names = Array.from({ length: 50_001 }, (_, i) => `many${i % 26}/f${i}`)
+    for (let i = 0; i < 26; i++) await fs.mkdir(path.join(wt, `many${i}`))
     for (let i = 0; i < names.length; i += 1000) {
       await Promise.all(names.slice(i, i + 1000).map((n) => fs.writeFile(path.join(wt, n), '')))
     }

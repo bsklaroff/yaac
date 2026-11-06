@@ -271,8 +271,8 @@ export interface TreeNode {
   /** Folders only, folders first then by name. */
   children: TreeNode[]
   ignored?: boolean
-  /** An ignored folder listed as one entry; its children are fetched from
-   *  the folder route when it is expanded. */
+  /** An ignored or skipped folder listed as one entry; its children are
+   *  fetched from the folder route when it is expanded. */
   lazy?: boolean
   symlink?: SymlinkTarget
 }
@@ -332,6 +332,8 @@ export function buildTree(files: WorkspaceFiles, showIgnored = false): FileTree 
       }
     }
   }
+  // Last, since a tracked file inside one would make it a plain folder.
+  for (const path of files.skipped ?? []) folder(path).lazy = true
   const settle = (node: TreeNode): void => {
     node.children.sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1))
     for (const child of node.children) settle(child)

@@ -776,7 +776,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, startCommit
         <div className={clsx(center, 'text-text-dim')}><LoadingIcon size={18} className="animate-spin" /></div>
       )
     }
-    if (changed.length === 0) {
+    if (changed.length === 0 && !changes.data.skipped) {
       if (range) return <div className={center}><p className="text-xs text-text-dim">No differences</p></div>
       // An unresolved base means the diff ran against HEAD and misses
       // committed work, so say that rather than "no changes".
@@ -795,7 +795,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, startCommit
         </div>
       )
     }
-    if (visibleChanged.length === 0) {
+    if (visibleChanged.length === 0 && find) {
       return <div className={center}><p className="text-xs text-text-dim">No changes match “{find}”</p></div>
     }
     return null
@@ -927,6 +927,13 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, startCommit
             className="min-h-0 flex-1 touch-pan-x touch-pan-y overflow-y-auto py-0.5"
           >
             {renderRows(flat ? flatRows() : tree.root.children.map((c) => rowOf(c, c.name, false)), 0, '')}
+            {changedOnly && changes.data?.skipped?.map((dir) => (
+              <div key={dir} className="flex items-center gap-1.5 px-2 py-0.5 text-xs">
+                <FolderIcon size={13} className="shrink-0 text-accent/80" />
+                <span className={clsx('shrink-0', ROW_STATUS.added)}>{dir}/</span>
+                <span className="min-w-0 flex-1 truncate text-[11px] text-text-faint">over 2,000 files, not diffed</span>
+              </div>
+            ))}
           </ContextMenu.Trigger>
           <ContextMenu.Portal>
             <ContextMenu.Positioner>

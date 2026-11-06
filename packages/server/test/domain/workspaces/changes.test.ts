@@ -7,6 +7,7 @@ import {
   CHANGES_BASE_UNRESOLVED,
   CHANGES_READING_GONE,
   OUTPUT_PAGE_BYTES,
+  MAX_UNTRACKED_FOLDER_FILES,
   SCRATCH_OBJECTS_CAP_KB,
   parseChangesOutput,
   buildChangesScript as buildScript,
@@ -1225,6 +1226,51 @@ describe('readWorkspaceChanges', () => {
     await expect(readWorkspaceChanges('big', request, caller.signal)).rejects.toThrow()
     await readWorkspaceChanges('big', request)
     expect(timeouts()).toEqual([120_000, 20_000, 20_000, 120_000, 20_000, 20_000])
+  })
+
+  // An untracked folder too large to stage is left out, so an unignored
+  // build output cannot stall every read. It counts only files no ignore
+  // pattern covers, less those of a folder already left out below it, and
+  // its tracked files are still diffed.
+  it('leaves out an untracked folder over the size limit, still diffing its tracked files', async () => {
+    const { repo, idx } = scratchRepo()
+    const write = (dir: string, n: number): void => {
+      fs.mkdirSync(path.join(repo, dir), { recursive: true })
+      for (let k = 0; k < n; k++) fs.writeFileSync(path.join(repo, dir, `f${k}.js`), `${dir} ${k}\n`)
+    }
+    fs.writeFileSync(path.join(repo, '.gitignore'), 'node_modules/\n')
+    write('build', 1)
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'build')
+    git(repo, 'checkout', '-q', '-b', 'agent/x')
+    realWorkspace(repo, path.dirname(idx), undefined, (cmd) => cmd.replaceAll(`>${MAX_UNTRACKED_FOLDER_FILES}`, '>5'))
+    const read = async (): Promise<ChangesReading> => readWorkspaceChanges('big', { defaultBase: 'main', diff: true, listing: 'paths' })
+    const changed = (r: ChangesReading): string[] => r.changes.files.map((f) => f.path)
+
+    write('build/m0', 4)
+    const under = await read()
+    expect(under.changes.skipped).toBeUndefined()
+    expect(changed(under)).toEqual(['build/m0/f0.js', 'build/m0/f1.js', 'build/m0/f2.js', 'build/m0/f3.js'])
+
+    write('build/m1', 4)
+    write('out/big', 7)
+    write('out', 1)
+    write('newpkg', 3)
+    write('newpkg/node_modules/dep', 10)
+    fs.appendFileSync(path.join(repo, 'build/f0.js'), 'edited\n')
+    const over = await read()
+    expect(over.changes.skipped?.sort()).toEqual(['build', 'out/big'])
+    expect(changed(over)).toEqual(['build/f0.js', 'newpkg/f0.js', 'newpkg/f1.js', 'newpkg/f2.js', 'out/f0.js'])
+    expect(over.changes.files[0].stages).toEqual({ modified: { additions: 1, deletions: 0 } })
+    expect(over.listing?.paths.filter((p) => p.startsWith('build/') || p.startsWith('out/big/'))).toEqual(['build/f0.js'])
+    expect(git(repo, 'status', '--porcelain', '--', 'build')).toBe(' M build/f0.js\n?? build/m0/\n?? build/m1/\n')
+
+    fs.rmSync(path.join(repo, 'build/m1'), { recursive: true })
+    const back = await read()
+    expect(back.changes.skipped).toEqual(['out/big'])
+    expect(changed(back).filter((p) => p.startsWith('build/'))).toEqual([
+      'build/f0.js', 'build/m0/f0.js', 'build/m0/f1.js', 'build/m0/f2.js', 'build/m0/f3.js',
+    ])
   })
 
   // Staging writes its objects to scratch, reading the checkout's store

@@ -1119,6 +1119,10 @@ export interface WorkspaceDiff {
   diff?: string
   /** True when the diff body was capped for size; `files` stays complete. */
   truncated: boolean
+  /** Folders left out of the diff for holding over 2,000 untracked files
+   *  that nothing ignores, such as a build's output: staging them would
+   *  stall every read. Their tracked files are still diffed. */
+  skipped?: string[]
 }
 
 /** The working tree as the newer end of a compared range: what the Changes
@@ -1248,6 +1252,9 @@ export interface WorkspaceFiles {
   ignored: string[]
   /** Folders holding no path of `paths`, which the list alone cannot show. */
   emptyDirs: string[]
+  /** The diff's `skipped` folders, whose untracked files `paths` leaves
+   *  out; the explorer reads their children on expand. */
+  skipped?: string[]
   /** Files with an unresolved merge conflict. */
   conflicted: string[]
   /** True when `paths` was capped. */

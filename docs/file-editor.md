@@ -104,6 +104,24 @@ of the agent's, so a workspace's first poll reuses its stat data rather than
 hashing every file, and `add -A` compares only mtime and size, since the
 server writes a new checkout's index and a pod sees other inode numbers.
 
+An untracked folder too large to stage is left out. Before staging, the
+script lists the untracked files no ignore pattern covers (`ls-files -o
+--exclude-standard` against a copy of the agent's index, which does not
+walk into ignored folders) and counts them under every folder that holds
+them. Taking folders deepest first, one holding more than 2,000, less what
+folders already skipped below it hold, is **skipped**: `add -A` excludes it,
+its entries in the private index go back to the agent's tree (dropping
+anything an earlier poll staged there), and only its tracked files' edits
+are staged. The answer names it in `skipped`; the Changes pane shows it as
+one untracked row, "over 2,000 files, not diffed", and the explorer as one
+folder whose children are read on expand, like an ignored one. So a build
+directory nobody ignored costs one more walk of the working tree per poll
+instead of minutes of failed staging, while the agent's own `git status`
+still sees every file, and the folder leaves the limit once it is ignored,
+deleted or committed. At 2–4ms a file into the scratch objects, the
+limit keeps staging a folder just under it within the 20-second warm
+timeout.
+
 Each run takes a lock file holding its pid, since a run whose exec timed
 out or was abandoned can still be exiting when the next starts (both
 drivers kill its process group, gently first): a later run waits for a live

@@ -158,6 +158,8 @@ const M_PATHS = '@@PATHS@@'
 const M_CONFLICTED = '@@CONFLICTED@@'
 const M_IGNORED = '@@IGNORED@@'
 const M_DIRS = '@@DIRS@@'
+/** The folders too large to stage, NUL-separated like the listing's. */
+const M_SKIPPED = '@@SKIPPED@@'
 const END = '@@END@@'
 /** `END` framed by NULs, as a printf format. */
 const nulEnd = `\\000${END}\\000`
@@ -179,6 +181,34 @@ const MAX_DELTA_PATHS = 300
 /** Body flags that keep one `diff --git` header per file, whatever the
  *  user's config, so the body splits into per-file chunks. */
 const BODY_FLAGS = '--no-ext-diff --submodule=short'
+
+/** An untracked folder holding more files than this, that no ignore
+ *  pattern covers, is not staged (see `SKIP_COUNT`). */
+export const MAX_UNTRACKED_FOLDER_FILES = 2000
+
+/**
+ * awk over `ls-files -o` paths, one a line, that finds the folders too
+ * large to stage. The first program counts the paths under every folder
+ * that holds them, at every depth, printing those over the limit as
+ * `<depth> <count> <folder>/`. Sorted deepest first, the second takes each
+ * folder whose count, less what folders already skipped below it hold, is
+ * still over the limit, and prints it.
+ */
+const SKIP_COUNT = `LC_ALL=C awk -F/ '{p=""; for(k=1;k<NF;k++){p=p $k "/"; c[p]++}} `
+  + `END{for(d in c) if(c[d]>${MAX_UNTRACKED_FOLDER_FILES}){x=d; print gsub("/","",x), c[d], d}}' | sort -k1,1nr `
+  + `| LC_ALL=C awk '{d=$0; sub(/^[0-9]+ [0-9]+ /,"",d); e=$2-s[d]; if(e>${MAX_UNTRACKED_FOLDER_FILES}){`
+  + `print substr(d,1,length(d)-1); p=d; while(sub("[^/]*/$","",p)&&p!="")s[p]+=e}}'`
+
+/**
+ * Stages the working tree but the folders it is given as the agent's tree
+ * (`$1`) has them: their entries in the private index go back to that
+ * tree, dropping any untracked file an earlier run staged, and only their
+ * tracked files' edits are staged.
+ */
+const ADD_SKIPPING = 'a=$1; shift; git --literal-pathspecs reset -q "$a" -- "$@" '
+  + '&& git --literal-pathspecs -c core.checkStat=minimal diff-files -z --name-only -- "$@" | git update-index -z --remove --stdin '
+  + '&& for d; do shift; set -- "$@" ":(exclude,literal)$d"; done '
+  + '&& { git -c core.checkStat=minimal add -A --ignore-errors -- . "$@" || [ $? -eq 1 ]; }'
 
 /** Past this many KiB, the scratch object directory starts over: a pod's
  *  scratch is held in its memory. */
@@ -362,6 +392,11 @@ function changesScript(loc: ChangesLocation): string {
   // and a pod sees other inode numbers, so under the default check every
   // seeded entry would look changed.
   + `seed() { [ -f ${i} ] || { cp ${i}.agent ${i}.seed.$$ && mv ${i}.seed.$$ ${i}; } 2>/dev/null; }; seed; `
+  // The folders too large to stage, from the untracked files that no
+  // ignore pattern covers. Counted against the agent's index, since the
+  // private index holds what earlier runs staged.
+  + `{ [ ! -f ${i}.agent ] || GIT_INDEX_FILE=${i}.agent git ls-files -z -o --exclude-standard; } | tr '\\0' '\\n' `
+  + `| ${SKIP_COUNT} | tr '\\n' '\\0' > ${i}.skip || exit 6; `
   // `stage` writes the working tree into the private index. `--ignore-errors`
   // adds what it can past an entry git cannot index (a nested repo with no
   // commit), exiting 1, so one such entry costs the diff and the listing
@@ -372,7 +407,8 @@ function changesScript(loc: ChangesLocation): string {
   // it, as a branch switch does to many, and leaves the index as it was.
   // So staging is retried with the index kept, each retry costing only
   // what changed, and only an index git cannot read is seeded afresh.
-  + 'stage() { { git -c core.checkStat=minimal add -A --ignore-errors || [ $? -eq 1 ]; } '
+  + `stage() { if [ -s ${i}.skip ]; then xargs -0 sh -c ${shSingleQuote(ADD_SKIPPING)} yaac-add "$agent" < ${i}.skip; `
+  + 'else git -c core.checkStat=minimal add -A --ignore-errors || [ $? -eq 1 ]; fi '
   + `&& { [ ! -f ${i}.agent ] || GIT_INDEX_FILE=${i}.agent git ls-files -z -c -i --exclude-standard `
   + `| xargs -0 sh -c ${shSingleQuote(FORCE_ADD)} yaac-force-add; }; }; `
   + `until stage; do git ls-files -s >/dev/null 2>&1 || { rm -f ${i}; seed; }; `
@@ -444,6 +480,7 @@ function changesScript(loc: ChangesLocation): string {
   + `[ -z "$4" ] || { printf "${M_CONFLICTED}\\n"; { [ ! -f ${i}.agent ] `
   + `|| GIT_INDEX_FILE=${i}.agent git ls-files -z -u; } || exit 6; printf '${nulEnd}'; }; `
   + `[ $xm != full ] || cat ${i}.extras || exit 6; `
+  + `printf "${M_SKIPPED}\\n"; cat ${i}.skip || exit 6; printf '${nulEnd}'; `
   + `printf "${M_OK}\\n"; `
   + `case $m in delta) [ "$3" = nodiff ] || { capped pd diff ${BODY_FLAGS} --no-renames "$base" "$work" -- > ${i}.dbody `
   + `&& { printf "${M_DIFF}\\n"; cat ${i}.dbody; } || printf "${M_NODIFF}\\n"; };; `
@@ -785,6 +822,10 @@ function readRun(
   const truncated = body !== undefined && (!body.whole || Buffer.byteLength(body.text) > maxDiffBytes)
   const shown = body && cutDiff(body.text, maxDiffBytes)
 
+  // A folder inside another is named by the outer one alone.
+  const tooLarge = nulSection(head, M_SKIPPED) ?? []
+  const skipped = tooLarge.filter((d) => !tooLarge.some((o) => d.startsWith(`${o}/`)))
+
   // `REF <ref> <behind>\t<ahead>`: rev-list counts the left side first.
   const refMatch = /^REF (\S+) (\d+)\s+(\d+)$/m.exec(head)
   const ref = refMatch ? { name: refMatch[1], behind: Number(refMatch[2]), ahead: Number(refMatch[3]) } : null
@@ -819,7 +860,10 @@ function readRun(
 
   return {
     reading: {
-      changes: { base, work, baseResolved, files, ...(shown !== undefined ? { diff: shown } : {}), truncated },
+      changes: {
+        base, work, baseResolved, files, ...(shown !== undefined ? { diff: shown } : {}), truncated,
+        ...(skipped.length ? { skipped } : {}),
+      },
       ref,
       ...(listing ? { listing } : {}),
     },
