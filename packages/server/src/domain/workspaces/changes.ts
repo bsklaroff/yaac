@@ -858,6 +858,7 @@ function changeOf(l: RawLine, { additions, deletions, binary }: Counts, stages: 
  */
 function bodyOf(lines: RawLine[], entry: (l: RawLine) => Entry | undefined, failed: boolean): { diff: string; truncated: boolean } {
   let text = ''
+  let bytes = 0
   let whole = !failed
   for (const [n, l] of (failed ? [] : lines).entries()) {
     const part = entry(l)?.part
@@ -866,13 +867,14 @@ function bodyOf(lines: RawLine[], entry: (l: RawLine) => Entry | undefined, fail
       break
     }
     text += part
+    bytes += Buffer.byteLength(part)
     if (part.endsWith(`\n${DIFF_CUT_LINE}\n`)) whole = false
-    if (Buffer.byteLength(text) > MAX_DIFF_BYTES && n < lines.length - 1) {
+    if (bytes > MAX_DIFF_BYTES && n < lines.length - 1) {
       whole = false
       break
     }
   }
-  return { diff: cutDiff(text, MAX_DIFF_BYTES), truncated: !whole || Buffer.byteLength(text) > MAX_DIFF_BYTES }
+  return { diff: cutDiff(text, MAX_DIFF_BYTES), truncated: !whole || bytes > MAX_DIFF_BYTES }
 }
 
 /**
