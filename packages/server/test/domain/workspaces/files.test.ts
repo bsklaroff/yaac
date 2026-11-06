@@ -105,7 +105,7 @@ beforeEach(() => {
     workspacePaths: hostPaths,
     exec: async (jobName, cmd, opts) => {
       execs.push({ cmd, opts })
-      return hostExec(jobName, cmd)
+      return hostExec(jobName, cmd, opts?.stdin)
     },
   })
 })
@@ -119,8 +119,10 @@ function hostPaths(jobName: string): ReturnType<WorkspaceDriver['workspacePaths'
 }
 
 /** A command run in a host shell, failing as a driver's exec does. */
-async function hostExec(_jobName: string, cmd: string): Promise<{ stdout: string; stderr: string }> {
-  return execFileAsync('sh', ['-c', cmd], { maxBuffer: 64 << 20 }).catch((err: unknown) => {
+async function hostExec(_jobName: string, cmd: string, stdin = ''): Promise<{ stdout: string; stderr: string }> {
+  const run = execFileAsync('sh', ['-c', cmd], { maxBuffer: 64 << 20 })
+  run.child.stdin?.end(stdin)
+  return run.catch((err: unknown) => {
     const { code } = err as { code?: number }
     throw typeof code === 'number' ? new WorkspaceExecError(`exited ${code}`, code, '', '') : err
   })
@@ -403,19 +405,19 @@ describe('getWorkspaceChanges', () => {
   // Origin's copy of the recorded fork branch, never a local one nothing
   // keeps current; a workspace created at a commit is compared against it.
   it('offers origin\'s fork branch as the default base, and lets a picked one win', async () => {
-    // The script's last line names its base, default base, diff and
-    // listing (`yaac-changes <base> <default> diff|nodiff <listing> ...`).
+    // The scan's arguments start with its base, default base and listing
+    // (`yaac-changes <base> <default> <listing> ...`).
     const asked = async (...args: Parameters<typeof getWorkspaceChanges>): Promise<string | undefined> => {
       execs = []
       await getWorkspaceChanges(...args)
-      return /yaac-changes '[^']*' '[^']*' \S+ \S+/.exec(execs[0]?.cmd ?? '')?.[0]
+      return /yaac-changes '[^']*' '[^']*' '[^']*'/.exec(execs[0]?.cmd ?? '')?.[0]
     }
-    expect(await asked('gs', undefined, { diff: false, listing: 'paths' })).toBe("yaac-changes '' 'origin/main' nodiff paths")
-    expect(await asked('gs', 'agent/gs')).toBe("yaac-changes 'agent/gs' 'origin/main' diff ''")
+    expect(await asked('gs', undefined, { diff: false, listing: 'paths' })).toBe("yaac-changes '' 'origin/main' 'paths'")
+    expect(await asked('gs', 'agent/gs')).toBe("yaac-changes 'agent/gs' 'origin/main' ''")
     // Nothing records a fork branch or a start commit for this one.
-    expect(await asked('list', undefined, { diff: false })).toBe("yaac-changes '' '' nodiff ''")
+    expect(await asked('list', undefined, { diff: false })).toBe("yaac-changes '' '' ''")
     await setWorkspaceStartCommit(PROJECT, 'scratch', 'c0ffee')
-    expect(await asked('scratch', undefined, { diff: false })).toBe("yaac-changes '' 'c0ffee' nodiff ''")
+    expect(await asked('scratch', undefined, { diff: false })).toBe("yaac-changes '' 'c0ffee' ''")
   })
 
   // With no explicit base, the recorded fork branch failed to resolve. That

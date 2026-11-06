@@ -93,10 +93,8 @@ function writeBuild(dir: string, n: number, tag: string): void {
 it.skipIf(!repo)('benchmarks the changes read', async () => {
   if (!fs.existsSync(repo)) buildFixture(repo)
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-bench-'))
-  /** The caches the read keeps in the workspace, besides the private index. */
-  const dropFiles = (): void => {
-    for (const k of ['committed', 'staged', 'unstaged', 'lists', 'body']) fs.rmSync(`${scratch}/yaac-changes.idx.${k}`, { force: true })
-  }
+  /** The entry file the read keeps in the workspace beside its private index. */
+  const dropFiles = (): void => { fs.rmSync(`${scratch}/yaac-changes.idx.entries`, { force: true }) }
   const forget = (): void => { forgetWorkspaceChanges('bench') }
   let last = { bytes: 0, execs: 0 }
   installFakeWorkspaceDriver({

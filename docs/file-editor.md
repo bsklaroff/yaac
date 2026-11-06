@@ -78,9 +78,10 @@ copy is never kept current), else, for a workspace created at a commit with
 no base branch, that commit (`workspaces.startCommit`,
 docs/workspace-steps.md). The base branch is the one the workspace forked
 from until the Commits pane's picker or `yaac-mama set-base` moves it
-(`setWorkspaceBase`). One script (`changes.ts` in `#domain/workspaces`)
-runs inside the workspace through the driver's `exec`, under either driver. It
-runs `git add -A` into a private index at a stable scratch path, so the
+(`setWorkspaceBase`). A read is two scripts (`changes.ts` in
+`#domain/workspaces`) run inside the workspace through the driver's `exec`,
+under either driver. The first, the **scan**, runs `git add -A` into a
+private index at a stable scratch path, so the
 whole working tree is diffed without touching the agent's index, and git's
 stat cache keeps each poll incremental. The objects it writes (each new
 file's blob, and the trees of the agent's index and the working tree) go to
@@ -157,63 +158,88 @@ merge conflict it has no tree, and its changes count as `modified`.
 Each stage is its own diff, so their counts need not sum to the file's
 totals.
 
-On a large changeset over a network filesystem, reading git objects is what
-a run costs; the walks are cheap. Everything after `add -A` is a function
-of four trees (base, HEAD, the agent's tree, the working tree), so each
-section is cached in the scratch dir under the trees it was read from:
-`committed` by base and HEAD, `staged` by HEAD and the agent's tree,
-`modified` and `untracked` by the agent's tree and the working tree, and the
-base diff (numstat and name-status, and separately the body, which only a
-run asking for it fills) by base and working tree. Every key also carries
-a hash of the other inputs to git's diff output, `diff.*` config and every
-attributes source, since one attribute can make another file binary; when
-it moves, nothing cached or held counts. The server also holds
-what each workspace's last read came from and passes those trees to the
-next run, which says per part (`MODES <staged> <unstaged> <base>`) whether
-the server's copy still applies (`same`), was read only at the paths that
-differ between the held working tree and this one (`delta`, spliced in by
-the server), or was read in full. So one edited file costs one file's diff
-however large the changeset. `staged` never needs a delta, since editing a
-file does not move it. `modified` and `untracked` are read without rename
-pairing, so any changed path can be read on its own. The base diff pairs
-renames, which needs both sides of a rename in one diff, so it takes a
-delta only when every changed path is an edit to a file the base has too;
-an added, deleted or retyped path, or `diff.renames=copies`, reads it in
-full. More than 300 changed paths reads every part in full. A poll that
-wants no body still has a delta print its paths' body when the server holds
-one, so the body stays current for the next poll that does. The body is
-capped by whole lines at 250 KB per file and 2 MB in all in the workspace,
-and at 1 MB in the answer; a file's part the cap cuts short ends in a
+Reading git objects is what a read costs on a large changeset over a
+network filesystem; walking the working tree and reading trees are cheap.
+So after staging, the scan prints only each pair's raw diff (`git diff
+--raw --no-abbrev`, which reads trees alone): `committed`, `staged`, the
+unstaged pair (the agent's tree → the working tree, without rename pairing)
+and the base diff (base → the working tree). A file's numstat row and body
+part are a function of its raw line (both modes, both blob ids, the status
+with a rename's score, and the paths) and of the diff settings: `diff.*`
+and `submodule.*` config, `core.bigFileThreshold`, `.gitmodules` and every
+attributes source, hashed together, since one attribute can make another
+file binary. So the server keeps, per workspace, each pair's raw lines
+under its two trees and the settings, and each file's counts and part
+under the settings and its raw line (an **entry**), and the scan prints only
+the pairs the server lacks: an idle poll prints none. The second script,
+the **fill**, then reads what the entries lack, outside the run lock since
+it reads only trees that never change: `git diff --raw --numstat` and the
+capped body at those lines' paths (both paths of a rename, so git pairs it
+again), or the whole pair past 300 lines. git pairs renames among the paths
+it is given alone, so the fill's lines are checked against those it asked
+for, and on a mismatch (a `diff.renameLimit` the whole pair passed, say)
+the whole pair is read instead. The answer is assembled from what is held:
+`files` are the base diff's lines in git's order, each stage is looked up
+in its own pair, untracked files are the unstaged pair's added lines, and
+the body is the parts in order up to the cap. So an edit costs a scan and a
+fill of that one file however large the changeset, whatever kind of file it
+is, and staging or committing it costs no fill at all, since the staged
+line is the unstaged one it replaces and the committed one the base diff's.
+A poll that wants no body fills only counts, and the next that wants one
+fills the parts it lacks.
+
+Nothing held belongs to a base. Raw diffs are kept for the four pairs of
+each base's latest reading, and entries while a held raw line names them,
+so an agent rewriting one file leaves one entry for it, and a workspace
+holds at most its bases' changesets. All of it goes after five minutes
+unread, and on teardown. Entries are never shared between workspaces: each
+is the output of a script the workspace's agent can shape.
+
+The body is capped by whole lines at 250 KB per file and 2 MB in all in the
+fill, and at 1 MB in the answer; a file's part the cap cuts short ends in a
 `DIFF_CUT_LINE` line, so one huge file cannot leave every file after it
-with no diff. Each answer names its reading by the base and the working
-tree's git tree (`work`), which `add -A` wrote into the scratch objects,
-and `POST changes/diff` reads more of that reading: the parts of
-files the cap left out, under the same caps, or a page of up to 1 MB of
-one file's part past the lines the caller holds. A page that starts on a
-line over 1 MB shows that line's first megabyte, cut at a byte, and goes on
-from the next line. Both are `git diff`
-between the two trees at those paths (a rename's old path too, so it pairs
-again), so they match the poll's parts whatever the checkout has done
-since. A `git diff`
-that fails before the body's cap (a textconv program that is missing) is
-neither cached nor held: the answer keeps its file list and shows the body
-as truncated to nothing. A held reading
-is dropped after five minutes unread and on teardown; the scratch-dir files
-carry a workspace across a server restart. Each answer says how long its
-read took (`readMs`), and the webapp waits at least that long after an
-answer before polling again, but no more than 10 seconds. The read's
-costs are measured by `changes-bench.test.ts` beside the changes tests,
-skipped unless `BENCH_REPO` names a checkout to read; its header says how
-to build the fixtures it was tuned on.
+with no diff. A part the fill's total cap cut is not kept, nor any after
+it, all of which lie past the answer's cap. Each answer names its reading
+by the base and the working tree's git tree (`work`), which `add -A` wrote
+into the scratch objects, and `POST changes/diff` reads more of that
+reading: the parts of files the cap left out, under the same caps, or a
+page of up to 1 MB of one file's part past the lines the caller holds. A
+page that starts on a line over 1 MB shows that line's first megabyte, cut
+at a byte, and goes on from the next line. Both are the fill's body between
+the two trees at those paths (a rename's old path too, so it pairs again),
+so they match the poll's parts whatever the checkout has done since. A `git
+diff` that fails before the body's cap (a textconv program that is missing)
+keeps no part: the answer keeps its file list and shows the body as
+truncated to nothing. A fill that finds a blob gone (the agent pruned one
+the private index names) leaves a mark that has the next scan seed afresh,
+and the read runs once more.
+
+The entries also live in the workspace's scratch, in
+`yaac-changes.idx.entries` beside the private index, one JSON line each,
+so a server restart costs a scan and the file read back rather than a fill
+of every file. The server writes the file through the next scan's stdin,
+appending the entries filled since the last scan, or replacing it with the
+live entries once it would pass twice their size; the first scan after a
+restart prints it back. A line cut short by a killed write is dropped and
+the file replaced, so no append lands on the end of it. Kept in the
+workspace, the agent's uncommitted content stays inside its sandbox, and
+the file dies with the pod like the private index beside it.
+
+Each answer says how long its read took (`readMs`), and the webapp waits at
+least that long after an answer before polling again, but no more than 10
+seconds. The read's costs are measured by `changes-bench.test.ts` beside
+the changes tests, skipped unless `BENCH_REPO` names a checkout to read;
+its header says how to build the fixtures it was tuned on.
 
 An exec's output is capped (streamd cuts one at 4 MiB, and `podExec`
 rejects a cut one rather than pass it on), and a big checkout's first
-read, with every file in its listing and every change in its lists, can
-pass that. So the script writes its output to a scratch file and prints it
-only up to 2 MiB; past that it prints the file's name and size, and the
-server fetches it in base64 pages of that size, one exec each. The next
-run clears the file. Only the last 4 KiB of the script's stderr is passed
-on, since a warning per file could pass the cap too.
+read, with every file in its listing and every change's raw lines, can
+pass that, and so can a fill of a whole large pair. So both scripts write
+their output to a scratch file and print it only up to 2 MiB; past that
+they print the file's name and size, and the server fetches it in base64
+pages of that size, one exec each. The next scan clears the file. Only the
+last 4 KiB of stderr is passed on, since a warning per file could pass the
+cap too.
 
 The same run says how far HEAD is from the branch the base was found on
 (`rev-list --left-right --count <ref>...HEAD`), so the status bar follows
@@ -247,9 +273,8 @@ the agent across a branch rename, and, when asked, lists the checkout:
 
 The listing's sections are NUL-separated, since a path can hold a newline,
 and print before the completion marker, so a run that died partway cannot
-look like an empty checkout. The server holds the last listing beside the
-rest of the reading, so a poll prints only the parts that moved, as two
-more words of `MODES`. `paths` is printed again only when a path was added,
+look like an empty checkout. The server holds the last listing, so a poll
+prints only the parts that moved. `paths` is printed again only when a path was added,
 deleted or retyped since the working tree it was read at (`git diff-tree
 --diff-filter=ADT`, which reads trees, not files), so an edit leaves it as
 held; `ignored` and the untracked folders are walked every `full` poll but
@@ -281,12 +306,13 @@ commit, against the empty tree, and the answer carries the commit's message,
 author and parents for the pane's header.
 
 A range ending at the working tree is the `changes` read with `base` set to
-`from`, polled as a query of its own; the script's caches and the server's
-held reading are one per workspace, so while such a pane is on screen
-beside the workspace's own readers each poll reads the base-dependent
-sections in full. Any other range is `compare`, a separate script
-(`readComparison`) that reads no working tree, so it touches none of those
-caches. Its body is capped as the poll's is, and its `base` and `work` are
+`from`, polled as a query of its own. Nothing the server holds belongs to a
+base, so beside the workspace's own readers it costs its own fills once,
+and its polls after that cost what an idle one does; a file whose blobs are
+the same under both bases shares one entry. Only the private index is one
+per workspace, so reads against different bases take turns. Any other
+range is `compare`, a separate script (`readComparison`) that reads no
+working tree, so it touches none of what the server holds. Its body is capped as the poll's is, and its `base` and `work` are
 the merge base and `to`'s commit, so `/changes/diff` pages the rest
 unchanged. A range between two full commit ids never changes and is read
 once; one naming a branch or HEAD is read again every 30 seconds while on

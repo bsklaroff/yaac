@@ -6,16 +6,13 @@ import path from 'node:path'
 import {
   CHANGES_BASE_UNRESOLVED,
   CHANGES_READING_GONE,
-  OUTPUT_PAGE_BYTES,
   MAX_UNTRACKED_FOLDER_FILES,
+  OUTPUT_PAGE_BYTES,
   SCRATCH_OBJECTS_CAP_KB,
-  parseChangesOutput,
-  buildChangesScript as buildScript,
-  readChangeDiffs,
   forgetWorkspaceChanges,
+  readChangeDiffs,
   readWorkspaceChanges,
   runChangesRead,
-  type ChangesLocation,
   type ChangesReading,
   type ChangesRequest,
 } from '#domain/workspaces/changes'
@@ -23,27 +20,13 @@ import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
 import { installFakeWorkspaceDriver, workspacePathsFixture } from '#test/support/fake-driver'
 import type { WorkspaceChange } from '@yaac/shared/types'
 
-// In-pod paths; a containerless workspace has its own.
-const LOC: ChangesLocation = {
-  workspaceDir: '/workspace',
-  indexFile: '/tmp/yaac-changes.idx',
-}
-
-/** The script as a driver builds it, with `LOC` applied. */
-const buildChangesScript = (
-  base?: string, defaultBase?: string, diff = true, listing?: 'paths' | 'full',
-): string => buildScript(LOC, { base, defaultBase, diff, listing })
-
-/** The diff part of a parsed run. */
-const parse = (raw: string, maxDiffBytes?: number): ReturnType<typeof parseChangesOutput>['changes'] =>
-  parseChangesOutput(raw, maxDiffBytes).changes
-
-// The script tests run the exact script with `sh -c` against scratch repos,
-// as streamd does, to catch shell bugs that string assertions miss. Only
-// the two in-pod paths are redirected.
+// The reads run the exact scripts with `sh -c` against scratch repos, as
+// streamd does, to catch shell bugs that string assertions miss.
 
 const tmpDirs: string[] = []
 afterEach(() => {
+  exec.mockReset()
+  for (const job of ['ws', 'fresh', 'yaac-proj-abc']) forgetWorkspaceChanges(job)
   while (tmpDirs.length) fs.rmSync(tmpDirs.pop()!, { recursive: true, force: true })
 })
 
@@ -54,359 +37,135 @@ const GIT_ENV = {
 const git = (repo: string, ...args: string[]): string =>
   execFileSync('git', args, { cwd: repo, encoding: 'utf8', maxBuffer: 64 << 20, env: { ...process.env, ...GIT_ENV } })
 
+const exec = vi.fn<WorkspaceDriver['exec']>()
+
+/** A scratch repo as a running workspace, and ways to read its changes. */
+interface Workspace {
+  repo: string
+  /** A job's scratch dir, which holds its private index; each job has its
+   *  own, so two jobs over one checkout read it independently. */
+  scratch: (job?: string) => string
+  /** Every exec's command and output, in order. */
+  runs: { cmd: string; out: string }[]
+  /** Edit each command before it runs. */
+  rewrite: (edit: (cmd: string) => string) => void
+  /** Read the changes as job `ws`, against `main` unless asked otherwise. */
+  read: (r?: Partial<ChangesRequest>, job?: string) => Promise<ChangesReading>
+  /** Read them as a server holding nothing would, as another job. */
+  fresh: (r?: Partial<ChangesRequest>) => Promise<ChangesReading>
+}
+
 /**
- * A repo on `main` with one commit, plus an index path outside it (as in
- * the pod), so `git add -A` does not stage the index itself.
+ * A repo on `main` with one commit (on an unborn `agent/x` when `empty`),
+ * through a driver whose workspace it is, running each exec for real. With
+ * `pageBytes`, the scan pages at that size, and an output over twice it
+ * fails, as one over streamd's cap does.
  */
-function scratchRepo(): { repo: string; idx: string } {
+function workspace({ pageBytes, empty }: { pageBytes?: number; empty?: boolean } = {}): Workspace {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-changes-'))
   tmpDirs.push(root)
   const repo = path.join(root, 'workspace')
   fs.mkdirSync(repo)
-  git(repo, 'init', '-q', '-b', 'main')
-  fs.writeFileSync(path.join(repo, 'base.txt'), 'base\n')
-  git(repo, 'add', '-A')
-  git(repo, 'commit', '-qm', 'base')
-  return { repo, idx: path.join(root, 'scratch.idx') }
-}
-
-function runPodScript(
-  repo: string, idx: string, base?: string, defaultBase?: string, diff = true, listing?: 'paths' | 'full',
-  env: NodeJS.ProcessEnv = {},
-): { stdout: string; code: number } {
-  const cmd = buildChangesScript(base, defaultBase, diff, listing)
-    .replace('cd /workspace ', `cd ${repo} `)
-    .replaceAll('/tmp/yaac-changes.idx', idx)
-  try {
-    return {
-      stdout: execFileSync('sh', ['-c', cmd], {
-        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...GIT_ENV, ...env },
-      }),
-      code: 0,
+  if (empty) {
+    git(repo, 'init', '-q', '-b', 'agent/x')
+  } else {
+    git(repo, 'init', '-q', '-b', 'main')
+    fs.writeFileSync(path.join(repo, 'base.txt'), 'base\n')
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'base')
+  }
+  const scratch = (job = 'ws'): string => {
+    const dir = path.join(root, `scratch-${job}`)
+    fs.mkdirSync(dir, { recursive: true })
+    return dir
+  }
+  const runs: Workspace['runs'] = []
+  let rewrite = (cmd: string): string => cmd
+  installFakeWorkspaceDriver({
+    exec,
+    workspacePaths: (job) => workspacePathsFixture({ workspaceDir: repo, scratchDir: scratch(job) }),
+  })
+  exec.mockImplementation((_job, cmd, opts) => {
+    const run = rewrite(pageBytes ? cmd.replaceAll(String(OUTPUT_PAGE_BYTES), String(pageBytes)) : cmd)
+    let out: string
+    try {
+      out = execFileSync('sh', ['-c', run], {
+        input: opts?.stdin ?? '', encoding: 'utf8', maxBuffer: 64 << 20, env: { ...process.env, ...GIT_ENV },
+      })
+    } catch (err) {
+      const e = err as { status: number; stdout: string; stderr: string }
+      return Promise.reject(new WorkspaceExecError(`command exited ${e.status}`, e.status, e.stdout, e.stderr))
     }
-  } catch (err) {
-    const e = err as { status?: number; stdout?: string }
-    return { stdout: e.stdout ?? '', code: e.status ?? 1 }
+    runs.push({ cmd, out })
+    if (pageBytes && Buffer.byteLength(out) > 2 * pageBytes) return Promise.reject(new Error('output over the cap'))
+    return Promise.resolve({ stdout: out, stderr: '' })
+  })
+  const read = (r: Partial<ChangesRequest> = {}, job = 'ws'): Promise<ChangesReading> =>
+    readWorkspaceChanges(job, { defaultBase: 'main', diff: true, ...r })
+  return {
+    repo, scratch, runs, read,
+    rewrite: (edit) => { rewrite = edit },
+    fresh: (r) => {
+      forgetWorkspaceChanges('fresh')
+      fs.rmSync(path.join(scratch('fresh'), 'yaac-changes.idx.entries'), { force: true })
+      return read(r, 'fresh')
+    },
   }
 }
 
-describe('parseChangesOutput', () => {
-  const raw = [
-    'BASE abc123def',
-    'FORK 1',
-    '@@NUMSTAT@@',
-    '10\t2\tsrc/app.ts',
-    '5\t0\tsrc/new.ts',
-    '@@NAMESTATUS@@',
-    'M\tsrc/app.ts',
-    'A\tsrc/new.ts',
-    '@@LISTING@@', '@@OK@@',
-    '@@DIFF@@',
-    'diff --git a/src/app.ts b/src/app.ts',
-    '@@ -1 +1,2 @@',
-    ' existing',
-    '+added line',
-    'diff --git a/src/new.ts b/src/new.ts',
-  ].join('\n')
+/** The paths of the lines the fills among `runs` read. */
+const filled = (runs: Workspace['runs']): string[] => [...new Set(runs.filter((r) => r.out.startsWith('@@PAIR@@'))
+  .flatMap((r) => r.out.split('\n').filter((l) => l.startsWith(':')).map((l) => l.split('\t').at(-1)!)))].sort()
 
-  it('merges name-status + numstat into files and captures base + diff', () => {
-    const out = parse(raw)
-    expect(out.base).toBe('abc123def')
-    expect(out.baseResolved).toBe(true)
-    expect(out.files).toEqual([
-      { path: 'src/app.ts', status: 'modified', additions: 10, deletions: 2, binary: false, stages: {} },
-      { path: 'src/new.ts', status: 'added', additions: 5, deletions: 0, binary: false, stages: {} },
-    ])
-    expect(out.diff).toContain('diff --git a/src/app.ts')
-    expect(out.diff).toContain('+added line')
-    expect(out.truncated).toBe(false)
-  })
-
-  // Every name-status letter, both rename notations numstat uses, a copy,
-  // and a binary file (numstat's `-` counts).
-  it('reads every status, keys counts by destination path, and flags binaries', () => {
-    const out = parse([
-      'BASE abc', 'FORK 1', '@@NUMSTAT@@',
-      '12\t3\tsrc/a.ts', '0\t9\tsrc/gone.ts', '-\t-\timg/logo.png', '2\t2\told.ts => renamed.ts',
-      '1\t0\tlib/{a.ts => b.ts}', '0\t0\tlink', '4\t4\todd.ts',
-      '@@NAMESTATUS@@',
-      'A\tsrc/a.ts', 'D\tsrc/gone.ts', 'M\timg/logo.png', 'R100\told.ts\trenamed.ts',
-      'C075\tlib/a.ts\tlib/b.ts', 'T\tlink', 'X\todd.ts',
-      '@@LISTING@@', '@@OK@@', '@@DIFF@@',
-    ].join('\n'))
-    expect(out.files).toEqual([
-      { path: 'src/a.ts', status: 'added', additions: 12, deletions: 3, binary: false, stages: {} },
-      { path: 'src/gone.ts', status: 'deleted', additions: 0, deletions: 9, binary: false, stages: {} },
-      { path: 'img/logo.png', status: 'modified', additions: 0, deletions: 0, binary: true, stages: {} },
-      { path: 'renamed.ts', status: 'renamed', additions: 2, deletions: 2, binary: false, stages: {}, oldPath: 'old.ts' },
-      { path: 'lib/b.ts', status: 'copied', additions: 1, deletions: 0, binary: false, stages: {}, oldPath: 'lib/a.ts' },
-      { path: 'link', status: 'typechange', additions: 0, deletions: 0, binary: false, stages: {} },
-      // An unknown letter reads as modified.
-      { path: 'odd.ts', status: 'modified', additions: 4, deletions: 4, binary: false, stages: {} },
-    ])
-  })
-
-  // Cut on a line boundary, the cut file's part ending in the cut line.
-  it('flags truncation when the diff exceeds the cap', () => {
-    const out = parse(raw, 60)
-    expect(out.truncated).toBe(true)
-    expect(out.diff).toBe('diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1,2 @@\n@@CUT@@\n')
-    expect(out.files).toHaveLength(2)
-  })
-
-  // The script's caps are in bytes, so the server's must be too, or a cut
-  // multi-byte diff would not be flagged as truncated.
-  it('measures the diff cap in bytes, not UTF-16 code units', () => {
-    // 30 lines of 10 CJK chars: 379 code units but 979 bytes.
-    const lines = Array<string>(30).fill(`+${'交'.repeat(10)}`)
-    const wide = [
-      'BASE abc', 'FORK 1', '@@NUMSTAT@@', '@@NAMESTATUS@@', 'A\tw', '@@LISTING@@', '@@OK@@', '@@DIFF@@',
-      'diff --git a/w b/w', ...lines,
-    ].join('\n')
-    const out = parse(wide, 500)
-    expect(out.truncated).toBe(true)
-    expect(out.diff).toBe(['diff --git a/w b/w', ...lines.slice(0, 15), '@@CUT@@', ''].join('\n'))
-    const small = parse(wide, 5000)
-    expect(small.truncated).toBe(false)
-    expect(small.diff).toBe(['diff --git a/w b/w', ...lines].join('\n'))
-  })
-
-  // Each stage section is its own numstat; an untracked file carries its
-  // totals, since git has no diff for it outside the private index.
-  it('attaches each file\'s per-stage counts', () => {
-    const out = parse([
-      'BASE abc', 'FORK 1',
-      '@@COMMITTED@@', '4\t1\tsrc/a.ts', '2\t0\t{old => src}/moved.ts',
-      '@@STAGED@@', '1\t1\tsrc/a.ts',
-      '@@MODIFIED@@', '0\t3\tsrc/a.ts',
-      '@@UNTRACKED@@', 'notes.md',
-      '@@NUMSTAT@@', '5\t2\tsrc/a.ts', '7\t0\tnotes.md', '2\t0\tsrc/moved.ts',
-      '@@NAMESTATUS@@', 'M\tsrc/a.ts', 'A\tnotes.md', 'R090\told/moved.ts\tsrc/moved.ts',
-      '@@LISTING@@', '@@OK@@', '@@DIFF@@',
-    ].join('\n'))
-    expect(out.files.map((f) => [f.path, f.stages])).toEqual([
-      ['src/a.ts', {
-        committed: { additions: 4, deletions: 1 },
-        staged: { additions: 1, deletions: 1 },
-        modified: { additions: 0, deletions: 3 },
-      }],
-      ['notes.md', { untracked: { additions: 7, deletions: 0 } }],
-      ['src/moved.ts', { committed: { additions: 2, deletions: 0 } }],
-    ])
-  })
-
-  it('carries a rename through with its old path and counts', () => {
-    const renamed = [
-      'BASE abc123def',
-      'FORK 1',
-      '@@NUMSTAT@@',
-      '3\t1\tsrc/{old => new}/x.ts',
-      '@@NAMESTATUS@@',
-      'R096\tsrc/old/x.ts\tsrc/new/x.ts',
-      '@@LISTING@@', '@@OK@@',
-      '@@DIFF@@',
-    ].join('\n')
-    const out = parse(renamed)
-    expect(out.files).toEqual([
-      { path: 'src/new/x.ts', status: 'renamed', additions: 3, deletions: 1, binary: false, stages: {}, oldPath: 'src/old/x.ts' },
-    ])
-  })
-
-  it('is empty-safe when nothing changed', () => {
-    const out = parse('BASE deadbeef\nFORK 1\n@@NUMSTAT@@\n@@NAMESTATUS@@\n@@LISTING@@\n@@OK@@\n@@DIFF@@\n')
-    expect(out.base).toBe('deadbeef')
-    expect(out.baseResolved).toBe(true)
-    expect(out.files).toEqual([])
-    expect(out.diff).toBe('')
-  })
-
-  // Without the completion marker the run died partway; reporting an empty
-  // changeset would wrongly say "No changes".
-  it('rejects output with no completion marker rather than reporting no changes', () => {
-    const partial = 'BASE deadbeef\nFORK 1\n@@NUMSTAT@@\n@@NAMESTATUS@@\n'
-    expect(() => parse(partial)).toThrow(/completion marker/)
-    expect(() => parse('')).toThrow(/completion marker/)
-    const truncatedRun = [
-      'BASE abc123def', 'FORK 1', '@@NUMSTAT@@', '10\t2\tsrc/app.ts', '@@NAMESTATUS@@', 'M\tsrc/app.ts',
-    ].join('\n')
-    expect(() => parse(truncatedRun)).toThrow(/completion marker/)
-  })
-
-  // FORK 0: the fork point was unresolved and the diff ran against HEAD, so
-  // committed work is missing. The UI then says "nothing uncommitted".
-  it('reports an unresolved fork point so an empty result is not read as no changes', () => {
-    const fellBack = [
-      'BASE headsha', 'FORK 0', '@@NUMSTAT@@', '@@NAMESTATUS@@', '@@LISTING@@', '@@OK@@', '@@DIFF@@',
-    ].join('\n')
-    const out = parse(fellBack)
-    expect(out.baseResolved).toBe(false)
-    expect(out.files).toEqual([])
-  })
-
-  // A diff of this module contains the markers. Sections split on each
-  // marker's first occurrence, which precedes the diff body.
-  it('is not confused by markers appearing inside the diff body', () => {
-    const selfReferential = [
-      'BASE abc123def',
-      'FORK 1',
-      '@@NUMSTAT@@',
-      '1\t0\tchanges.ts',
-      '@@NAMESTATUS@@',
-      'M\tchanges.ts',
-      '@@LISTING@@', '@@OK@@',
-      '@@DIFF@@',
-      'diff --git a/changes.ts b/changes.ts',
-      "+const M_NUMSTAT = '@@NUMSTAT@@'",
-      "+const M_OK = '@@OK@@'",
-      "+const M_DIFF = '@@DIFF@@'",
-      '@@PATHS@@',
-      '+evil',
-      'REF origin/x 1 2',
-    ].join('\n')
-    // Nor is a listing or a ref read out of the body when none was printed.
-    const read = parseChangesOutput(selfReferential)
-    expect(read.listing).toBeUndefined()
-    expect(read.ref).toBeNull()
-    const out = parse(selfReferential)
-    expect(out.files).toEqual([
-      { path: 'changes.ts', status: 'modified', additions: 1, deletions: 0, binary: false, stages: {} },
-    ])
-    expect(out.diff).toContain("+const M_OK = '@@OK@@'")
-  })
+/** The environment that reads a workspace's scratch objects as reads of
+ *  the changes do. */
+const scratchObjectsEnv = (repo: string, scratchDir: string): NodeJS.ProcessEnv => ({
+  GIT_OBJECT_DIRECTORY: path.join(scratchDir, 'yaac-changes.idx.objects'),
+  GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(repo, '.git/objects'),
 })
 
-describe('buildChangesScript', () => {
-  it('builds the default (no-base) script with two empty positionals', () => {
-    const s = buildChangesScript()
-    expect(s).not.toContain('upstream')      // a pushed branch's upstream is itself
-    expect(s).toContain('"origin/$1"')       // explicit-base branch present but unused
-    expect(s).toContain('add -A --ignore-errors')
-    expect(s).toContain('GIT_INDEX_FILE')
-    expect(s.endsWith("yaac-changes '' '' diff '' '' '' '' '' '' '' ''")).toBe(true)
-  })
+/** A unified diff's parts by destination path. */
+const partsOf = (diff = ''): Map<string, string> => new Map(diff.split(/(?=^diff --git )/m)
+  .filter(Boolean).map((p) => [/^diff --git a\/\S+ b\/(\S+)/.exec(p)![1], p]))
 
-  // A picked branch may be unpushed, so it falls back to the local ref; the
-  // default is a full ref already.
-  it('tries a picked branch on origin then locally, and takes the default as given', () => {
-    const s = buildChangesScript()
-    expect(s).toContain('for r in "origin/$1" "$1"; do')
-    expect(s).toContain('base=$(git merge-base "$2" HEAD 2>/dev/null) && ref=$2;')
-  })
+describe('readWorkspaceChanges', () => {
+  // A workspace created at a commit is compared against that commit, and
+  // the agent's own index and HEAD are left as they were.
+  it('compares against a default given as a commit, keeping committed work visible', async () => {
+    const w = workspace()
+    const start = git(w.repo, 'rev-parse', 'HEAD').trim()
+    git(w.repo, 'checkout', '-q', '-b', 'agent/x')
+    fs.writeFileSync(path.join(w.repo, 'committed.txt'), 'committed\n')
+    git(w.repo, 'add', '-A')
+    git(w.repo, 'commit', '-qm', 'work')
+    fs.writeFileSync(path.join(w.repo, 'untracked.txt'), 'working\n')
 
-  it('reuses one stable index across polls so add -A can be incremental', () => {
-    const s = buildChangesScript()
-    expect(s).toContain('export GIT_INDEX_FILE=/tmp/yaac-changes.idx')
-    expect(s).not.toMatch(/GIT_INDEX_FILE=\S*\$\$/) // no per-run index: that discards git's stat cache
-    // An orphaned lock must not fail every later poll, and staging is
-    // retried only until the run's deadline.
-    expect(s).toContain('rm -f /tmp/yaac-changes.idx.out.* /tmp/yaac-changes.idx.lock ')
-    expect(s).toContain('until stage; do git ls-files -s >/dev/null 2>&1 || { rm -f /tmp/yaac-changes.idx; seed; }; '
-      + '[ $(date +%s) -lt $d ] || exit 5; sleep 0.2; done')
-  })
-
-  // The completion marker prints only after every file-list command passed.
-  it('checks each file-list command and marks completion', () => {
-    const s = buildChangesScript()
-    expect(s).toContain('cached /tmp/yaac-changes.idx.lists "$base $work" lists || exit 6')
-    expect(s).toContain('cached /tmp/yaac-changes.idx.unstaged "$agent $work" unstaged || exit 6')
-    expect(s.indexOf('@@OK@@')).toBeGreaterThan(s.indexOf('lists || exit 6'))
-    expect(s.lastIndexOf('@@OK@@')).toBeLessThan(s.lastIndexOf('@@DIFF@@'))
-  })
-
-  it('reports whether a fork point was found and bounds the diff pod-side', () => {
-    const s = buildChangesScript()
-    expect(s).toContain('printf "FORK %s\\n" "$fork"')
-    expect(s).toContain('fork=0')
-    expect(s).toContain('s=0; p=250000; t=2000000;')   // per file, and 2× the response cap
-  })
-
-  it('passes an explicit base as the pod sh $1 positional (diffed against origin/$1)', () => {
-    const s = buildChangesScript('dev')
-    expect(s).toContain('"origin/$1"')       // the ref is derived from $1, never interpolated
-    expect(s.endsWith("yaac-changes 'dev' '' diff '' '' '' '' '' '' '' ''")).toBe(true)
-    expect(s).not.toContain('origin/dev')    // the branch name is never spliced into the script body
-  })
-
-  it('passes the default ref as the $2 positional', () => {
-    const s = buildChangesScript(undefined, 'origin/main')
-    expect(s.endsWith("yaac-changes '' 'origin/main' diff '' '' '' '' '' '' '' ''")).toBe(true)
-  })
-
-  it('leaves the diff body out when asked, keeping the file list', () => {
-    const s = buildChangesScript('dev', 'main', false)
-    expect(s.endsWith("yaac-changes 'dev' 'main' nodiff '' '' '' '' '' '' '' ''")).toBe(true)
-    expect(s).toContain('[ "$3" != diff ] || { cached')
-  })
-
-  it('carries both an explicit base ($1) and a fork-branch default ($2)', () => {
-    const s = buildChangesScript('dev', 'main')
-    expect(s.endsWith("yaac-changes 'dev' 'main' diff '' '' '' '' '' '' '' ''")).toBe(true)
-  })
-
-  it('single-quotes both branches so shell metacharacters cannot break out of the token', () => {
-    for (const evil of ['x; rm -rf /', '$(touch pwn)', '`id`', 'a && b', '| tee x']) {
-      expect(buildChangesScript(evil).endsWith("yaac-changes '" + evil + "' '' diff '' '' '' '' '' '' '' ''")).toBe(true)
-      expect(buildChangesScript(undefined, evil).endsWith("yaac-changes '' '" + evil + "' diff '' '' '' '' '' '' '' ''")).toBe(true)
-    }
-  })
-
-  it('escapes embedded single quotes in either branch', () => {
-    expect(buildChangesScript("a'b").endsWith("yaac-changes 'a'\\''b' '' diff '' '' '' '' '' '' '' ''")).toBe(true)
-    expect(buildChangesScript(undefined, "a'b").endsWith("yaac-changes '' 'a'\\''b' diff '' '' '' '' '' '' '' ''")).toBe(true)
-  })
-
-  it('keeps the script body byte-identical regardless of the branches', () => {
-    const body = (s: string): string => s.slice(0, s.lastIndexOf('yaac-changes'))
-    expect(body(buildChangesScript('dev'))).toBe(body(buildChangesScript()))
-    expect(body(buildChangesScript('x; rm -rf /', 'main'))).toBe(body(buildChangesScript()))
-  })
-
-  it('trims surrounding whitespace from both branches', () => {
-    expect(buildChangesScript('  dev  ', '  main  ').endsWith("yaac-changes 'dev' 'main' diff '' '' '' '' '' '' '' ''")).toBe(true)
-  })
-
-  // A workspace created at a commit is compared against that commit.
-  it('compares against a default given as a commit, keeping committed work visible', () => {
-    const { repo, idx } = scratchRepo()
-    const start = git(repo, 'rev-parse', 'HEAD').trim()
-    git(repo, 'checkout', '-q', '-b', 'agent/x')
-    fs.writeFileSync(path.join(repo, 'committed.txt'), 'committed\n')
-    git(repo, 'add', '-A')
-    git(repo, 'commit', '-qm', 'work')
-    fs.writeFileSync(path.join(repo, 'untracked.txt'), 'working\n')
-
-    const { stdout, code } = runPodScript(repo, idx, undefined, start)
-    expect(code).toBe(0)
-    const out = parse(stdout)
-    expect(out.baseResolved).toBe(true)
-    expect(out.files.map((f) => f.path).sort()).toEqual(['committed.txt', 'untracked.txt'])
-    expect(out.diff).toContain('+committed')
-    expect(out.diff).toContain('+working')
-
-    // The agent's own index and HEAD are untouched.
-    expect(git(repo, 'status', '--porcelain')).toBe('?? untracked.txt\n')
+    const { changes } = await w.read({ defaultBase: start })
+    expect(changes.baseResolved).toBe(true)
+    expect(changes.files.map((f) => f.path)).toEqual(['committed.txt', 'untracked.txt'])
+    expect(changes.diff).toContain('+committed')
+    expect(changes.diff).toContain('+working')
+    expect(git(w.repo, 'status', '--porcelain')).toBe('?? untracked.txt\n')
   })
 
   // Read from the agent's real index without writing it, so a file staged
   // and then edited again shows in both stages.
-  it('splits each file\'s changes into committed, staged, modified and untracked', () => {
-    const { repo, idx } = scratchRepo()
-    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'one\n')
-    git(repo, 'add', '-A')
-    git(repo, 'commit', '-qm', 'tracked')
-    git(repo, 'branch', '-q', 'fork')
-    git(repo, 'checkout', '-q', '-b', 'agent/x')
-    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'one\ntwo\n')
-    git(repo, 'commit', '-qam', 'two')
-    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'one\ntwo\nthree\n')
-    git(repo, 'add', 'tracked.txt')
-    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'one\nTWO\nthree\n')
-    fs.writeFileSync(path.join(repo, 'new.txt'), 'a\nb\n')
-    const before = git(repo, 'status', '--porcelain')
+  it('splits each file\'s changes into committed, staged, modified and untracked', async () => {
+    const w = workspace()
+    fs.writeFileSync(path.join(w.repo, 'tracked.txt'), 'one\n')
+    git(w.repo, 'add', '-A')
+    git(w.repo, 'commit', '-qm', 'tracked')
+    git(w.repo, 'branch', '-q', 'fork')
+    git(w.repo, 'checkout', '-q', '-b', 'agent/x')
+    fs.writeFileSync(path.join(w.repo, 'tracked.txt'), 'one\ntwo\n')
+    git(w.repo, 'commit', '-qam', 'two')
+    fs.writeFileSync(path.join(w.repo, 'tracked.txt'), 'one\ntwo\nthree\n')
+    git(w.repo, 'add', 'tracked.txt')
+    fs.writeFileSync(path.join(w.repo, 'tracked.txt'), 'one\nTWO\nthree\n')
+    fs.writeFileSync(path.join(w.repo, 'new.txt'), 'a\nb\n')
+    const before = git(w.repo, 'status', '--porcelain')
 
-    const { stdout, code } = runPodScript(repo, idx, 'fork')
-    expect(code).toBe(0)
-    const byPath = Object.fromEntries(parse(stdout).files.map((f) => [f.path, f]))
+    const byPath = Object.fromEntries((await w.read({ base: 'fork' })).changes.files.map((f) => [f.path, f]))
     expect(byPath['tracked.txt']).toMatchObject({
       additions: 2,
       deletions: 0,
@@ -417,178 +176,137 @@ describe('buildChangesScript', () => {
       },
     })
     expect(byPath['new.txt'].stages).toEqual({ untracked: { additions: 2, deletions: 0 } })
-    expect(git(repo, 'status', '--porcelain')).toBe(before)
+    expect(git(w.repo, 'status', '--porcelain')).toBe(before)
 
-    const bare = runPodScript(repo, idx, 'fork', undefined, false)
-    expect(bare.code).toBe(0)
-    const listed = parse(bare.stdout)
-    expect(listed).not.toHaveProperty('diff')
-    expect(listed.files.map((f) => f.path).sort()).toEqual(['new.txt', 'tracked.txt'])
-  })
-
-  // The committed numstat is cached by base and HEAD; a new commit moves
-  // HEAD and refreshes it. The agent's index is only ever copied, so even
-  // a held lock is left alone.
-  it('caches the committed stage until HEAD moves, never writing the agent\'s index', () => {
-    const { repo, idx } = scratchRepo()
-    git(repo, 'checkout', '-q', '-b', 'agent/x')
-    fs.writeFileSync(path.join(repo, 'one.txt'), 'one\n')
-    git(repo, 'add', '-A')
-    git(repo, 'commit', '-qm', 'one')
-    const stagesOf = (): Record<string, unknown> => Object.fromEntries(
-      parse(runPodScript(repo, idx, 'main').stdout).files.map((f) => [f.path, f.stages]))
-
-    expect(stagesOf()).toEqual({ 'one.txt': { committed: { additions: 1, deletions: 0 } } })
-    const cached = fs.readFileSync(`${idx}.committed`, 'utf8')
-    expect(cached.split('\n')[0]).toMatch(new RegExp(`^${git(repo, 'merge-base', 'main', 'HEAD').trim()} ${git(repo, 'rev-parse', 'HEAD').trim()} `))
-
-    fs.writeFileSync(path.join(repo, 'one.txt'), 'one\ntwo\n')
-    git(repo, 'commit', '-qam', 'two')
-    const agentIndex = path.join(repo, '.git', 'index')
-    fs.writeFileSync(`${agentIndex}.lock`, '')
-    const before = fs.statSync(agentIndex)
-    expect(stagesOf()).toEqual({ 'one.txt': { committed: { additions: 2, deletions: 0 } } })
-    const after = fs.statSync(agentIndex)
-    expect([after.ino, after.mtimeMs, after.size]).toEqual([before.ino, before.mtimeMs, before.size])
-    expect(fs.existsSync(`${agentIndex}.lock`)).toBe(true)
+    const bare = (await w.read({ base: 'fork', diff: false })).changes
+    expect(bare).not.toHaveProperty('diff')
+    expect(bare.files.map((f) => f.path)).toEqual(['new.txt', 'tracked.txt'])
   })
 
   // `add -A` skips a tracked file that matches .gitignore, so without the
   // force-add it would read as deleted while it sits untouched on disk.
-  it('keeps a force-added ignored file, reporting only its real changes', () => {
-    const { repo, idx } = scratchRepo()
-    fs.writeFileSync(path.join(repo, '.gitignore'), 'build/\n')
-    fs.mkdirSync(path.join(repo, 'build'))
-    fs.writeFileSync(path.join(repo, 'build', 'kept.txt'), 'kept\n')
-    git(repo, 'add', '.gitignore')
-    git(repo, 'add', '-f', 'build/kept.txt')
-    git(repo, 'commit', '-qm', 'vendored')
-    git(repo, 'checkout', '-q', '-b', 'agent/x')
-    const kept = (): WorkspaceChange | undefined => parse(runPodScript(repo, idx, 'agent/x').stdout)
-      .files.find((f) => f.path === 'build/kept.txt')
+  it('keeps a force-added ignored file, reporting only its real changes', async () => {
+    const w = workspace()
+    fs.writeFileSync(path.join(w.repo, '.gitignore'), 'build/\n')
+    fs.mkdirSync(path.join(w.repo, 'build'))
+    fs.writeFileSync(path.join(w.repo, 'build', 'kept.txt'), 'kept\n')
+    git(w.repo, 'add', '.gitignore')
+    git(w.repo, 'add', '-f', 'build/kept.txt')
+    git(w.repo, 'commit', '-qm', 'vendored')
+    git(w.repo, 'checkout', '-q', '-b', 'agent/x')
+    const kept = async (): Promise<WorkspaceChange | undefined> => (await w.read({ base: 'agent/x' }))
+      .changes.files.find((f) => f.path === 'build/kept.txt')
 
-    expect(kept()).toBeUndefined()
-    fs.writeFileSync(path.join(repo, 'build', 'kept.txt'), 'kept\nedited\n')
-    expect(kept()).toMatchObject({ status: 'modified', stages: { modified: { additions: 1, deletions: 0 } } })
-    fs.rmSync(path.join(repo, 'build', 'kept.txt'))
-    expect(kept()).toMatchObject({ status: 'deleted', stages: { modified: { additions: 0, deletions: 1 } } })
+    expect(await kept()).toBeUndefined()
+    fs.writeFileSync(path.join(w.repo, 'build', 'kept.txt'), 'kept\nedited\n')
+    expect(await kept()).toMatchObject({ status: 'modified', stages: { modified: { additions: 1, deletions: 0 } } })
+    fs.rmSync(path.join(w.repo, 'build', 'kept.txt'))
+    expect(await kept()).toMatchObject({ status: 'deleted', stages: { modified: { additions: 0, deletions: 1 } } })
   })
 
   // The force-added names come from the agent's index. Read as pathspecs,
   // a file named `:(glob)**` or `*` would force-add every ignored file,
   // credentials included.
-  it('force-adds tracked ignored files by their literal names only', () => {
-    const { repo, idx } = scratchRepo()
-    fs.writeFileSync(path.join(repo, '.gitignore'), '*.log\nnode_modules/\n:(glob)**\n\\*\n')
-    for (const name of [':(glob)**', '*']) fs.writeFileSync(path.join(repo, name), 'decoy\n')
-    git(repo, 'add', '.gitignore')
-    git(repo, 'add', '-f', '--', ':(literal):(glob)**', ':(literal)*')
-    git(repo, 'commit', '-qm', 'decoys')
-    git(repo, 'checkout', '-q', '-b', 'agent/x')
-    fs.writeFileSync(path.join(repo, 'secret.log'), 'token\n')
-    fs.mkdirSync(path.join(repo, 'node_modules', 'pkg'), { recursive: true })
-    fs.writeFileSync(path.join(repo, 'node_modules', 'pkg', 'i.js'), 'x\n')
-    const paths = (): string[] => parse(runPodScript(repo, idx, 'agent/x').stdout).files.map((f) => f.path)
+  it('force-adds tracked ignored files by their literal names only', async () => {
+    const w = workspace()
+    fs.writeFileSync(path.join(w.repo, '.gitignore'), '*.log\nnode_modules/\n:(glob)**\n\\*\n')
+    for (const name of [':(glob)**', '*']) fs.writeFileSync(path.join(w.repo, name), 'decoy\n')
+    git(w.repo, 'add', '.gitignore')
+    git(w.repo, 'add', '-f', '--', ':(literal):(glob)**', ':(literal)*')
+    git(w.repo, 'commit', '-qm', 'decoys')
+    git(w.repo, 'checkout', '-q', '-b', 'agent/x')
+    fs.writeFileSync(path.join(w.repo, 'secret.log'), 'token\n')
+    fs.mkdirSync(path.join(w.repo, 'node_modules', 'pkg'), { recursive: true })
+    fs.writeFileSync(path.join(w.repo, 'node_modules', 'pkg', 'i.js'), 'x\n')
+    const paths = async (): Promise<string[]> => (await w.read({ base: 'agent/x' })).changes.files.map((f) => f.path)
 
-    expect(paths()).toEqual([])
-    fs.writeFileSync(path.join(repo, ':(glob)**'), 'decoy\nedited\n')
+    expect(await paths()).toEqual([])
+    fs.writeFileSync(path.join(w.repo, ':(glob)**'), 'decoy\nedited\n')
     // A second run, too: the private index keeps what it was given.
-    expect(paths()).toEqual([':(glob)**'])
-    expect(paths()).toEqual([':(glob)**'])
+    expect(await paths()).toEqual([':(glob)**'])
+    expect(await paths()).toEqual([':(glob)**'])
   })
 
   // A conflicted index has no tree; the run still answers, counting the
   // uncommitted work as modified.
-  it('answers through a merge conflict in the agent\'s index', () => {
-    const { repo, idx } = scratchRepo()
-    git(repo, 'checkout', '-q', '-b', 'agent/x')
-    fs.writeFileSync(path.join(repo, 'base.txt'), 'ours\n')
-    git(repo, 'commit', '-qam', 'ours')
-    git(repo, 'checkout', '-q', 'main')
-    fs.writeFileSync(path.join(repo, 'base.txt'), 'theirs\n')
-    git(repo, 'commit', '-qam', 'theirs')
-    git(repo, 'checkout', '-q', 'agent/x')
-    try { git(repo, 'merge', '-q', 'main') } catch { /* conflicts, as intended */ }
+  it('answers through a merge conflict in the agent\'s index', async () => {
+    const w = workspace()
+    git(w.repo, 'checkout', '-q', '-b', 'agent/x')
+    fs.writeFileSync(path.join(w.repo, 'base.txt'), 'ours\n')
+    git(w.repo, 'commit', '-qam', 'ours')
+    git(w.repo, 'checkout', '-q', 'main')
+    fs.writeFileSync(path.join(w.repo, 'base.txt'), 'theirs\n')
+    git(w.repo, 'commit', '-qam', 'theirs')
+    git(w.repo, 'checkout', '-q', 'agent/x')
+    try { git(w.repo, 'merge', '-q', 'main') } catch { /* conflicts, as intended */ }
 
-    const { stdout, code } = runPodScript(repo, idx, 'main')
-    expect(code).toBe(0)
-    const file = parse(stdout).files.find((f) => f.path === 'base.txt')
+    const file = (await w.read()).changes.files.find((f) => f.path === 'base.txt')
     expect(file?.stages.modified).toBeDefined()
     expect(file?.stages.staged).toBeUndefined()
   })
 
-  it('reports FORK 0 and only uncommitted work when no fork point resolves', () => {
-    const { repo, idx } = scratchRepo()
+  // FORK 0: no fork point resolved, so the diff ran against HEAD and misses
+  // committed work, hence `baseResolved: false`.
+  it('reports FORK 0 and only uncommitted work when no fork point resolves', async () => {
+    const w = workspace()
     // Origin shares history, under another name: a deleted fork branch.
-    git(repo, 'update-ref', 'refs/remotes/origin/other', 'HEAD')
-    fs.writeFileSync(path.join(repo, 'committed.txt'), 'committed\n')
-    git(repo, 'add', '-A')
-    git(repo, 'commit', '-qm', 'work')
-    fs.writeFileSync(path.join(repo, 'dirty.txt'), 'dirty\n')
+    git(w.repo, 'update-ref', 'refs/remotes/origin/other', 'HEAD')
+    fs.writeFileSync(path.join(w.repo, 'committed.txt'), 'committed\n')
+    git(w.repo, 'add', '-A')
+    git(w.repo, 'commit', '-qm', 'work')
+    fs.writeFileSync(path.join(w.repo, 'dirty.txt'), 'dirty\n')
 
-    const { stdout, code } = runPodScript(repo, idx, undefined, 'origin/nowhere')
-    expect(code).toBe(0)
-    const out = parse(stdout)
-    expect(out.baseResolved).toBe(false)
-    // Committed work is absent, hence `baseResolved: false`.
-    expect(out.files.map((f) => f.path)).toEqual(['dirty.txt'])
+    const { changes } = await w.read({ defaultBase: 'origin/nowhere' })
+    expect(changes.baseResolved).toBe(false)
+    expect(changes.files.map((f) => f.path)).toEqual(['dirty.txt'])
   })
 
   // An empty repo's checkout starts unborn, and its first commits share no
   // history with origin, even once another workspace pushes there first.
-  it('diffs a checkout that shares no history with origin against the empty tree', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-changes-'))
-    tmpDirs.push(root)
-    const repo = path.join(root, 'workspace')
-    fs.mkdirSync(repo)
-    git(repo, 'init', '-q', '-b', 'agent/x')
-    const idx = path.join(root, 'scratch.idx')
-    const added = (): Record<string, unknown> => {
-      const { stdout, code } = runPodScript(repo, idx, undefined, 'origin/main')
-      expect(code).toBe(0)
-      const out = parse(stdout)
-      expect(out.baseResolved).toBe(true)
-      return Object.fromEntries(out.files.map((f) => [f.path, [f.status, f.stages]]))
+  it('diffs a checkout that shares no history with origin against the empty tree', async () => {
+    const w = workspace({ empty: true })
+    const added = async (): Promise<Record<string, unknown>> => {
+      const { changes } = await w.read({ defaultBase: 'origin/main' })
+      expect(changes.baseResolved).toBe(true)
+      return Object.fromEntries(changes.files.map((f) => [f.path, [f.status, f.stages]]))
     }
 
-    fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n')
-    expect(added()).toEqual({ 'a.txt': ['added', { untracked: { additions: 1, deletions: 0 } }] })
+    fs.writeFileSync(path.join(w.repo, 'a.txt'), 'a\n')
+    expect(await added()).toEqual({ 'a.txt': ['added', { untracked: { additions: 1, deletions: 0 } }] })
 
-    git(repo, 'add', '-A')
-    git(repo, 'commit', '-qm', 'first')
-    git(repo, 'checkout', '-q', '--orphan', 'theirs')
-    git(repo, 'commit', '-q', '--allow-empty', '-m', 'pushed elsewhere')
-    git(repo, 'update-ref', 'refs/remotes/origin/main', 'theirs')
-    git(repo, 'checkout', '-q', 'agent/x')
-    expect(added()).toEqual({ 'a.txt': ['added', { committed: { additions: 1, deletions: 0 } }] })
+    git(w.repo, 'add', '-A')
+    git(w.repo, 'commit', '-qm', 'first')
+    git(w.repo, 'checkout', '-q', '--orphan', 'theirs')
+    git(w.repo, 'commit', '-q', '--allow-empty', '-m', 'pushed elsewhere')
+    git(w.repo, 'update-ref', 'refs/remotes/origin/main', 'theirs')
+    git(w.repo, 'checkout', '-q', 'agent/x')
+    expect(await added()).toEqual({ 'a.txt': ['added', { committed: { additions: 1, deletions: 0 } }] })
   })
 
   // The status bar's ahead/behind and the explorer's tree ride on the same
   // run: the ref the base came from, and paths read from the private index.
-  it('reports the base ref with HEAD\'s distance from it, and lists the checkout when asked', () => {
-    const { repo, idx } = scratchRepo()
-    git(repo, 'checkout', '-q', '-b', 'agent/x')
-    fs.writeFileSync(path.join(repo, '.gitignore'), 'out/\n*.log\n')
-    fs.writeFileSync(path.join(repo, 'mine.txt'), 'mine\n')
-    git(repo, 'add', '-A')
-    git(repo, 'commit', '-qm', 'agent work')
-    git(repo, 'checkout', '-q', 'main')
-    git(repo, 'commit', '-q', '--allow-empty', '-m', 'landed')
-    git(repo, 'update-ref', 'refs/remotes/origin/main', 'main')
-    git(repo, 'checkout', '-q', 'agent/x')
-    fs.rmSync(path.join(repo, 'base.txt'))
-    fs.writeFileSync(path.join(repo, 'new\nline.txt'), 'n\n')
-    fs.writeFileSync(path.join(repo, 'debug.log'), 'ignored\n')
-    fs.mkdirSync(path.join(repo, 'out'))
-    fs.writeFileSync(path.join(repo, 'out/a.js'), 'ignored\n')
-    fs.mkdirSync(path.join(repo, 'empty'))
-    fs.symlinkSync('mine.txt', path.join(repo, 'link'))
+  it('reports the base ref with HEAD\'s distance from it, and lists the checkout when asked', async () => {
+    const w = workspace()
+    git(w.repo, 'checkout', '-q', '-b', 'agent/x')
+    fs.writeFileSync(path.join(w.repo, '.gitignore'), 'out/\n*.log\n')
+    fs.writeFileSync(path.join(w.repo, 'mine.txt'), 'mine\n')
+    git(w.repo, 'add', '-A')
+    git(w.repo, 'commit', '-qm', 'agent work')
+    git(w.repo, 'checkout', '-q', 'main')
+    git(w.repo, 'commit', '-q', '--allow-empty', '-m', 'landed')
+    git(w.repo, 'update-ref', 'refs/remotes/origin/main', 'main')
+    git(w.repo, 'checkout', '-q', 'agent/x')
+    fs.rmSync(path.join(w.repo, 'base.txt'))
+    fs.writeFileSync(path.join(w.repo, 'new\nline.txt'), 'n\n')
+    fs.writeFileSync(path.join(w.repo, 'debug.log'), 'ignored\n')
+    fs.mkdirSync(path.join(w.repo, 'out'))
+    fs.writeFileSync(path.join(w.repo, 'out/a.js'), 'ignored\n')
+    fs.mkdirSync(path.join(w.repo, 'empty'))
+    fs.symlinkSync('mine.txt', path.join(w.repo, 'link'))
 
-    const full = runPodScript(repo, idx, undefined, 'origin/main', false, 'full')
-    expect(full.code).toBe(0)
-    const read = parseChangesOutput(full.stdout)
-    expect(read.ref).toEqual({ name: 'origin/main', ahead: 1, behind: 1 })
-    expect(read.listing).toEqual({
+    const full = await w.read({ defaultBase: 'origin/main', diff: false, listing: 'full' })
+    expect(full.ref).toEqual({ name: 'origin/main', ahead: 1, behind: 1 })
+    expect(full.listing).toEqual({
       paths: ['.gitignore', 'link', 'mine.txt', 'new\nline.txt'],
       links: ['link'],
       conflicted: [],
@@ -598,44 +316,48 @@ describe('buildChangesScript', () => {
 
     // `paths` skips the walks; no listing at all prints none. A local base
     // is compared as itself.
-    const paths = parseChangesOutput(runPodScript(repo, idx, 'agent/x', undefined, false, 'paths').stdout)
+    const paths = await w.read({ base: 'agent/x', diff: false, listing: 'paths' })
     expect(paths.ref).toEqual({ name: 'agent/x', ahead: 0, behind: 0 })
-    expect(paths.listing).toEqual({ paths: read.listing!.paths, links: ['link'], conflicted: [] })
-    expect(parseChangesOutput(runPodScript(repo, idx, undefined, 'main', false).stdout).listing).toBeUndefined()
+    expect(paths.listing).toEqual({ paths: full.listing!.paths, links: ['link'], conflicted: [] })
+    expect((await w.read({ diff: false })).listing).toBeUndefined()
   })
 
-  // Never diffs against the wrong base; the exit code is the contract's, so
+  // Never diffs against the wrong base, and a ref reaches git as one
+  // literal argument, never as shell; the exit code is the contract's, so
   // callers can answer 400.
-  it('hard-fails on an explicit base that resolves nowhere', () => {
-    const { repo, idx } = scratchRepo()
-    const { code } = runPodScript(repo, idx, 'no-such-branch', 'main')
-    expect(code).toBe(CHANGES_BASE_UNRESOLVED)
+  it('hard-fails on an explicit base that resolves nowhere, shell included', async () => {
+    const w = workspace()
+    for (const base of ['no-such-branch', '-x', 'x; touch pwn', '$(touch pwn)', '`touch pwn`', "a'b"]) {
+      await expect(w.read({ base })).rejects.toMatchObject({ code: CHANGES_BASE_UNRESOLVED })
+    }
+    expect(fs.existsSync(path.join(w.repo, 'pwn'))).toBe(false)
+    expect((await w.read({ base: '  main  ' })).ref?.name).toBe('main')
   })
 
   // A run whose exec timed out keeps going in the workspace. The next one
   // waits for it rather than clearing a lock it still holds; a lock whose
   // run is gone, or one too old to trust its pid, is cleared.
-  it('waits for a live earlier run and clears a dead one\'s lock', () => {
-    const { repo, idx } = scratchRepo()
-    fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n')
+  it('waits for a live earlier run and clears a dead one\'s lock', async () => {
+    const w = workspace()
+    const lock = path.join(w.scratch(), 'yaac-changes.idx.run')
+    fs.writeFileSync(path.join(w.repo, 'a.txt'), 'a\n')
     // Not this process's child, which would linger as a zombie (still
     // "alive" to `kill -0`) while the synchronous run blocks the loop.
     const holder = Number(execFileSync('sh', ['-c', 'sleep 1 >/dev/null 2>&1 & echo $!'], { encoding: 'utf8' }))
-    fs.writeFileSync(`${idx}.run`, `${holder}\n`)
+    fs.writeFileSync(lock, `${holder}\n`)
     const started = Date.now()
-    const waited = runPodScript(repo, idx, undefined, 'main')
-    expect(waited.code).toBe(0)
+    await w.read()
     expect(Date.now() - started).toBeGreaterThan(500)
-    expect(fs.existsSync(`${idx}.run`)).toBe(false)
+    expect(fs.existsSync(lock)).toBe(false)
 
     // The holder has exited, so its pid is dead; and an old lock is not
     // trusted even with a live pid (this test runner's own).
     for (const [pid, ageMs] of [[holder, 0], [process.pid, 3 * 60_000]] as const) {
-      fs.writeFileSync(`${idx}.run`, `${pid}\n`)
+      fs.writeFileSync(lock, `${pid}\n`)
       const when = new Date(Date.now() - ageMs)
-      fs.utimesSync(`${idx}.run`, when, when)
+      fs.utimesSync(lock, when, when)
       const quick = Date.now()
-      expect(runPodScript(repo, idx, undefined, 'main').code).toBe(0)
+      await w.read()
       expect(Date.now() - quick).toBeLessThan(5_000)
     }
   })
@@ -643,13 +365,13 @@ describe('buildChangesScript', () => {
   // An abandoned read is killed by process group, possibly while it waits
   // out another run's lock; the pid file it would have linked in must go.
   it('leaves no pid file when killed while waiting for the lock', async () => {
-    const { repo, idx } = scratchRepo()
+    const w = workspace()
+    await w.read()
+    const scan = w.runs[0].cmd
+    const lock = path.join(w.scratch(), 'yaac-changes.idx.run')
     const holder = Number(execFileSync('sh', ['-c', 'sleep 30 >/dev/null 2>&1 & echo $!'], { encoding: 'utf8' }))
-    fs.writeFileSync(`${idx}.run`, `${holder}\n`)
-    const cmd = buildChangesScript(undefined, 'main')
-      .replace('cd /workspace ', `cd ${repo} `)
-      .replaceAll('/tmp/yaac-changes.idx', idx)
-    const run = spawn('sh', ['-c', cmd], { detached: true, stdio: 'ignore', env: { ...process.env, ...GIT_ENV } })
+    fs.writeFileSync(lock, `${holder}\n`)
+    const run = spawn('sh', ['-c', scan], { detached: true, stdio: 'ignore', env: { ...process.env, ...GIT_ENV } })
     const group = -(run.pid as number)
     await new Promise((r) => setTimeout(r, 700))
     process.kill(group, 'SIGTERM')
@@ -657,28 +379,26 @@ describe('buildChangesScript', () => {
     const alive = (): boolean => { try { process.kill(group, 0); return true } catch { return false } }
     for (let i = 0; i < 100 && alive(); i++) await new Promise((r) => setTimeout(r, 50))
     process.kill(holder)
-    expect(fs.readdirSync(path.dirname(idx)).filter((f) => f.startsWith(`${path.basename(idx)}.run.`))).toEqual([])
-    expect(fs.readFileSync(`${idx}.run`, 'utf8')).toBe(`${holder}\n`)
+    expect(fs.readdirSync(w.scratch()).filter((f) => f.startsWith('yaac-changes.idx.run.'))).toEqual([])
+    expect(fs.readFileSync(lock, 'utf8')).toBe(`${holder}\n`)
   })
 
-  it('reuses the index across runs, past a killed run\'s lock and files deleted mid-stage', () => {
-    const { repo, idx } = scratchRepo()
-    git(repo, 'checkout', '-q', '-b', 'agent/x')
-    fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n')
-    expect(parse(runPodScript(repo, idx, undefined, 'main').stdout)
-      .files.map((f) => f.path)).toEqual(['a.txt'])
+  it('reuses the index across runs, past a killed run\'s lock and files deleted mid-stage', async () => {
+    const w = workspace()
+    const idx = path.join(w.scratch(), 'yaac-changes.idx')
+    const paths = async (): Promise<string[]> => (await w.read()).changes.files.map((f) => f.path)
+    git(w.repo, 'checkout', '-q', '-b', 'agent/x')
+    fs.writeFileSync(path.join(w.repo, 'a.txt'), 'a\n')
+    expect(await paths()).toEqual(['a.txt'])
     expect(fs.existsSync(idx)).toBe(true) // the index persists for the next poll
 
     // A second run over the reused index sees an edit and a deletion.
-    fs.rmSync(path.join(repo, 'a.txt'))
-    fs.writeFileSync(path.join(repo, 'b.txt'), 'b\n')
-    expect(parse(runPodScript(repo, idx, undefined, 'main').stdout)
-      .files.map((f) => f.path)).toEqual(['b.txt'])
+    fs.rmSync(path.join(w.repo, 'a.txt'))
+    fs.writeFileSync(path.join(w.repo, 'b.txt'), 'b\n')
+    expect(await paths()).toEqual(['b.txt'])
 
     fs.writeFileSync(`${idx}.lock`, '')
-    const recovered = runPodScript(repo, idx, undefined, 'main')
-    expect(recovered.code).toBe(0)
-    expect(parse(recovered.stdout).files.map((f) => f.path)).toEqual(['b.txt'])
+    expect(await paths()).toEqual(['b.txt'])
     expect(fs.existsSync(`${idx}.lock`)).toBe(false)
 
     // A git whose first two stagings die the way a branch switch kills
@@ -694,100 +414,459 @@ describe('buildChangesScript', () => {
       'esac',
       `exec ${realGit} "$@"`,
     ].join('\n'), { mode: 0o755 })
-    fs.writeFileSync(path.join(repo, 'c.txt'), 'c\n')
-    const retried = runPodScript(repo, idx, undefined, 'main', true, undefined, { PATH: `${bin}:${process.env.PATH}` })
-    expect(retried.code).toBe(0)
-    expect(parse(retried.stdout).files.map((f) => f.path)).toEqual(['b.txt', 'c.txt'])
+    fs.writeFileSync(path.join(w.repo, 'c.txt'), 'c\n')
+    w.rewrite((cmd) => `PATH=${bin}:$PATH; export PATH; ${cmd}`)
+    expect(await paths()).toEqual(['b.txt', 'c.txt'])
     expect(fs.readFileSync(path.join(bin, 'n'), 'utf8').trim()).toBe('3')
+    w.rewrite((cmd) => cmd)
 
     // An index git cannot read is seeded afresh within the run.
     fs.writeFileSync(idx, 'not an index')
-    const healed = runPodScript(repo, idx, undefined, 'main')
-    expect(healed.code).toBe(0)
-    expect(parse(healed.stdout).files.map((f) => f.path)).toEqual(['b.txt', 'c.txt'])
+    fs.writeFileSync(path.join(w.repo, 'd.txt'), 'd\n')
+    expect(await paths()).toEqual(['b.txt', 'c.txt', 'd.txt'])
   })
 
   // A name that looks like a marker stays a name, and a diff git could not
-  // finish is neither read nor cached as whole, while the list still stands.
-  it('reads marker-like names and fails a body git could not finish', () => {
-    const { repo, idx } = scratchRepo()
-    fs.writeFileSync(path.join(repo, '@@notes.md'), 'n\n')
-    fs.writeFileSync(path.join(repo, 'b.txt'), 'b\n')
-    const { stdout, code } = runPodScript(repo, idx, 'main')
-    expect(code).toBe(0)
-    expect(parse(stdout).files.map((f) => [f.path, Object.keys(f.stages)])).toEqual([
-      ['@@notes.md', ['untracked']], ['b.txt', ['untracked']],
+  // finish is shown cut to nothing while the list still stands, and is not
+  // kept: once git can finish it, it is read whole.
+  it('reads marker-like names and fails a body git could not finish', async () => {
+    const w = workspace()
+    for (const name of ['@@notes.md', '@@PATHS@@', 'b.txt']) fs.writeFileSync(path.join(w.repo, name), 'n\n')
+    expect((await w.read()).changes.files.map((f) => [f.path, Object.keys(f.stages)])).toEqual([
+      ['@@PATHS@@', ['untracked']], ['@@notes.md', ['untracked']], ['b.txt', ['untracked']],
     ])
 
-    const body = fs.readFileSync(`${idx}.body`, 'utf8')
-    fs.writeFileSync(path.join(repo, '.gitattributes'), 'b.txt diff=broken\n')
-    git(repo, 'config', 'diff.broken.textconv', 'false')
-    const failed = runPodScript(repo, idx, 'main')
-    expect(failed.code).toBe(0)
-    expect(parse(failed.stdout)).toMatchObject({ diff: '', truncated: true })
-    expect(parse(failed.stdout).files.map((f) => f.path)).toEqual(['.gitattributes', '@@notes.md', 'b.txt'])
-    expect(fs.readFileSync(`${idx}.body`, 'utf8')).toBe(body)
+    fs.writeFileSync(path.join(w.repo, '.gitattributes'), 'b.txt diff=broken\n')
+    git(w.repo, 'config', 'diff.broken.textconv', 'false')
+    const failed = (await w.read()).changes
+    expect(failed).toMatchObject({ diff: '', truncated: true })
+    expect(failed.files.map((f) => f.path)).toEqual(['.gitattributes', '@@PATHS@@', '@@notes.md', 'b.txt'])
+    git(w.repo, 'config', 'diff.broken.textconv', 'cat')
+    const fixed = (await w.read()).changes
+    expect(fixed.truncated).toBe(false)
+    expect(fixed).toEqual((await w.fresh()).changes)
   })
 
-  // Each section is kept under the trees it was read from, so a poll where
-  // nothing moved reads files, and each kind of change misses only the
-  // entries that depend on what it moved.
-  it('caches each section under the trees it was read from', () => {
-    const { repo, idx } = scratchRepo()
-    git(repo, 'checkout', '-q', '-b', 'agent/x')
-    fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n')
+  // A file's numstat row and body part are a function of its raw line and
+  // the diff settings, so every answer, whatever the server holds, must
+  // match a read from nothing: after each kind of change, including
+  // settings that change every file's diff mid-session. An edit costs the
+  // fill that file alone, whatever kind of file it is, and a second base,
+  // as a range pane ending at the working tree polls beside the
+  // workspace's own, costs nothing once both are held.
+  it('answers from what it holds as a read from nothing would, filling only what changed', async () => {
+    const w = workspace()
+    const { repo } = w
+    const file = (n: number): string => path.join(repo, `src/f${String(n).padStart(2, '0')}.txt`)
+    fs.mkdirSync(path.join(repo, 'src'))
+    for (let n = 0; n < 40; n++) fs.writeFileSync(file(n), `line ${n}\n`.repeat(20))
     git(repo, 'add', '-A')
-    git(repo, 'commit', '-qm', 'a')
-    fs.writeFileSync(path.join(repo, 'b.txt'), 'b\n')
-    const keys = (): Record<string, string | undefined> => Object.fromEntries(
-      ['committed', 'staged', 'unstaged', 'lists', 'body'].map((k) => [k, fs.existsSync(`${idx}.${k}`)
-        ? fs.readFileSync(`${idx}.${k}`, 'utf8').split('\n')[0] : undefined]))
-    const run = (base = 'main', diff = true): string => {
-      const { stdout, code } = runPodScript(repo, idx, base, undefined, diff)
-      expect(code).toBe(0)
-      return stdout
+    git(repo, 'commit', '-qm', 'files')
+    git(repo, 'checkout', '-q', '-b', 'agent/x')
+    for (let n = 0; n < 20; n++) fs.appendFileSync(file(n), `edit ${n}\n`)
+    git(repo, 'mv', 'src/f39.txt', 'moved.txt')
+    fs.writeFileSync(path.join(repo, 'added.txt'), 'new\n')
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'work')
+    // Uncommitted work on top: edits, and files the agent never added.
+    for (let n = 20; n < 30; n++) fs.appendFileSync(file(n), `edit ${n}\n`)
+    for (let n = 0; n < 5; n++) fs.writeFileSync(path.join(repo, `new${n}.txt`), `n${n}\n`)
+    /** Read, check it against a read from nothing, and return the paths
+     *  its fill read. */
+    const expectRead = async (r: Partial<ChangesRequest> = {}): Promise<string[]> => {
+      const before = w.runs.length
+      const got = await w.read(r)
+      const fills = filled(w.runs.slice(before))
+      expect(got.changes).toEqual((await w.fresh(r)).changes)
+      return fills
     }
 
-    // A nodiff run leaves the body for a run that asks for one.
-    const bare = run('main', false)
-    expect(keys().body).toBeUndefined()
-    const first = run()
-    expect(first).not.toBe(bare)
-    const k1 = keys()
-    expect(Object.values(k1).every(Boolean)).toBe(true)
-    expect(run()).toBe(first)
+    expect(await expectRead()).toHaveLength(37)
+    const idle = w.runs.length
+    expect(await expectRead()).toEqual([])
+    expect(w.runs[idle].out).not.toContain('@@RAW@@')
 
-    // A run killed mid-write leaves only its `.tmp`; a key that does not
-    // match is a miss, never read as the entry.
-    fs.writeFileSync(`${idx}.lists.tmp`, 'half')
-    fs.writeFileSync(`${idx}.body`, 'stale key\nstale body')
-    expect(run()).toBe(first)
+    // An edit to a file the base has, one to a file the agent added, a new
+    // file, a file put back as the base had it, and a mode change.
+    for (const [change, paths] of [
+      [() => fs.appendFileSync(file(3), 'more\n'), ['src/f03.txt']],
+      [() => fs.appendFileSync(path.join(repo, 'added.txt'), 'more\n'), ['added.txt']],
+      [() => fs.writeFileSync(path.join(repo, 'untracked.txt'), 'u\n'), ['untracked.txt']],
+      [() => fs.writeFileSync(file(7), 'line 7\n'.repeat(20)), ['src/f07.txt']],
+      [() => fs.chmodSync(file(2), 0o755), ['src/f02.txt']],
+      [() => fs.rmSync(path.join(repo, 'new3.txt')), []],
+    ] as const) {
+      change()
+      expect(await expectRead()).toEqual(paths)
+    }
 
-    fs.writeFileSync(path.join(repo, 'b.txt'), 'b\nb2\n')
-    expect(parse(run()).diff).toContain('+b2')
-    const k2 = keys()
-    expect([k2.committed, k2.staged]).toEqual([k1.committed, k1.staged])
-    expect([k2.unstaged, k2.lists, k2.body].some((k, n) => k === [k1.unstaged, k1.lists, k1.body][n])).toBe(false)
+    // A typechange prints two body parts for its one row, and a quoted
+    // name sorts by its bytes.
+    fs.rmSync(file(10))
+    fs.symlinkSync('../moved.txt', file(10))
+    fs.writeFileSync(path.join(repo, 'src/café.txt'), 'c\n')
+    expect(await expectRead()).toEqual(['"src/caf\\303\\251.txt"', 'src/f10.txt'])
 
-    // Staging moves only the agent's tree; committing what was staged
-    // moves only HEAD. The working tree, and so the base diff, stays put.
-    git(repo, 'add', 'b.txt')
-    const staged = parse(run()).files.find((f) => f.path === 'b.txt')
-    expect(staged?.stages).toEqual({ staged: { additions: 2, deletions: 0 } })
-    const k3 = keys()
-    expect([k3.staged, k3.unstaged].some((k, n) => k === [k2.staged, k2.unstaged][n])).toBe(false)
-    expect([k3.committed, k3.lists, k3.body]).toEqual([k2.committed, k2.lists, k2.body])
-    git(repo, 'commit', '-qm', 'b')
-    expect(parse(run()).files.find((f) => f.path === 'b.txt')?.stages).toEqual({ committed: { additions: 2, deletions: 0 } })
-    const k4 = keys()
-    expect([k4.committed, k4.staged].some((k, n) => k === [k3.committed, k3.staged][n])).toBe(false)
-    expect([k4.unstaged, k4.lists, k4.body]).toEqual([k3.unstaged, k3.lists, k3.body])
+    // A read with no body fills only the counts, and the next with one
+    // the parts.
+    fs.appendFileSync(file(4), 'more\n')
+    expect(await expectRead({ diff: false })).toEqual(['src/f04.txt'])
+    expect(await expectRead()).toEqual(['src/f04.txt'])
 
-    // Another base misses everything read against the base.
-    expect(parse(run('agent/x')).files).toEqual([])
-    const k5 = keys()
-    expect([k5.staged, k5.unstaged]).toEqual([k4.staged, k4.unstaged])
-    expect([k5.committed, k5.lists, k5.body].some((k, n) => k === [k4.committed, k4.lists, k4.body][n])).toBe(false)
+    // Staging an edit and committing it read nothing: the staged line is
+    // the unstaged one it replaces, and the committed one the base diff's.
+    fs.appendFileSync(file(5), 'more\n')
+    expect(await expectRead()).toEqual(['src/f05.txt'])
+    git(repo, 'add', 'src/f05.txt')
+    expect(await expectRead()).toEqual([])
+    git(repo, 'commit', '-qm', 'f05')
+    expect(await expectRead()).toEqual([])
+
+    // Another base: once both are held, switching prints no pair.
+    expect(await expectRead({ base: 'agent/x' })).not.toEqual([])
+    for (const base of [undefined, 'agent/x', undefined]) {
+      const at = w.runs.length
+      expect(await expectRead({ base })).toEqual([])
+      expect(w.runs[at].out).not.toContain('@@RAW@@')
+    }
+
+    // An attribute can turn another file binary, and rename pairing can be
+    // turned off; either changes every file's key.
+    fs.writeFileSync(path.join(repo, '.gitattributes'), 'src/f01.txt -diff\n')
+    expect(await expectRead()).toEqual(expect.arrayContaining((await w.fresh()).changes.files.map((f) => f.path)))
+    expect((await w.read()).changes.files.find((f) => f.path === 'src/f01.txt')?.binary).toBe(true)
+    git(repo, 'config', 'diff.renames', 'false')
+    expect(await expectRead()).not.toEqual([])
+    expect((await w.read()).changes.files.find((f) => f.path === 'moved.txt')?.status).toBe('added')
+  })
+
+  // A fill reads the lines it lacks by path, and git pairs renames among
+  // the paths it is given alone. Where that differs from the whole pair (a
+  // rename limit the whole pair passed), the fill's lines say so and the
+  // whole pair is read instead; past 300 lines it is read whole anyway.
+  it('fills by path, reading the whole pair when the paths pair differently or are too many', async () => {
+    const w = workspace()
+    const { repo } = w
+    const body = (n: number): string => Array.from({ length: 20 }, (_, l) => `${n} line ${l}\n`).join('')
+    for (let n = 0; n < 3; n++) fs.writeFileSync(path.join(repo, `old${n}.txt`), body(n))
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'old')
+    git(repo, 'checkout', '-q', '-b', 'agent/x')
+    git(repo, 'config', 'diff.renameLimit', '2')
+    const fills = (from: number): string[] => w.runs.slice(from).filter((r) => r.out.startsWith('@@PAIR@@')).map((r) => r.cmd)
+
+    // Two files replaced by unlike ones, then one moved with a line changed:
+    // three added and three deleted is past the limit, so the whole pair
+    // pairs none, while the moved file's two paths alone would pair.
+    for (let n = 1; n < 3; n++) {
+      fs.rmSync(path.join(repo, `old${n}.txt`))
+      fs.writeFileSync(path.join(repo, `new${n}.txt`), 'unlike\n'.repeat(n))
+    }
+    await w.read()
+    fs.rmSync(path.join(repo, 'old0.txt'))
+    fs.writeFileSync(path.join(repo, 'new0.txt'), `${body(0)}changed\n`)
+    const before = w.runs.length
+    const moved = (await w.read()).changes
+    const [byPath, whole] = fills(before)
+    expect(byPath).toContain("'--' 'new0.txt'")
+    expect(whole).not.toContain("'--'")
+    expect(moved).toEqual((await w.fresh()).changes)
+    expect(moved.files.filter((f) => f.path.endsWith('0.txt')).map((f) => f.status)).toEqual(['added', 'deleted'])
+
+    for (let n = 0; n < 301; n++) fs.writeFileSync(path.join(repo, `many${n}.txt`), `${n}\n`)
+    const many = w.runs.length
+    const read = (await w.read()).changes
+    expect(fills(many)).toHaveLength(1)
+    expect(fills(many)[0]).not.toContain("'--'")
+    expect(read).toEqual((await w.fresh()).changes)
+  })
+
+  // What the fills read is kept in a file in the workspace's scratch,
+  // written through the next scan's stdin, so a server restart costs a scan
+  // and the file read back rather than a fill. A line cut short by a killed
+  // write is dropped and the file replaced, as it is once it passes twice
+  // the size of what is live.
+  it('carries what it filled across a server restart in a file in scratch', async () => {
+    const w = workspace()
+    const entries = path.join(w.scratch(), 'yaac-changes.idx.entries')
+    const lines = (): string[] => fs.readFileSync(entries, 'utf8').split('\n').filter(Boolean)
+    for (let n = 0; n < 5; n++) fs.writeFileSync(path.join(w.repo, `f${n}.txt`), `${n}\n`)
+    git(w.repo, 'add', '-A')
+    git(w.repo, 'commit', '-qm', 'files')
+    git(w.repo, 'checkout', '-q', '-b', 'agent/x')
+    for (let n = 0; n < 5; n++) fs.appendFileSync(path.join(w.repo, `f${n}.txt`), 'edit\n')
+    const restarted = async (): Promise<{ changes: ChangesReading['changes']; execs: number }> => {
+      forgetWorkspaceChanges('ws')
+      const before = w.runs.length
+      const { changes } = await w.read()
+      return { changes, execs: w.runs.length - before }
+    }
+
+    const first = (await w.read()).changes
+    await w.read()
+    // Each file's line, the same in the base diff and the unstaged one.
+    expect(lines()).toHaveLength(5)
+    expect(await restarted()).toEqual({ changes: first, execs: 1 })
+
+    fs.appendFileSync(entries, '{"k":"cut sho')
+    expect(await restarted()).toEqual({ changes: first, execs: 1 })
+    await w.read()
+    expect(lines().map((l) => (JSON.parse(l) as { k: string }).k)).toHaveLength(5)
+
+    for (let k = 0; k < 12; k++) {
+      fs.appendFileSync(path.join(w.repo, 'f0.txt'), `edit ${k}\n`)
+      await w.read()
+    }
+    expect(lines().length).toBeLessThanOrEqual(12)
+    expect((await restarted()).changes).toEqual((await w.fresh()).changes)
+  })
+
+  // One huge file is cut at its own cap rather than using up the body, so
+  // the files after it keep their parts, and an edit after it reads only
+  // that file's part.
+  it('cuts a huge file\'s diff short, keeping the parts of the files after it', async () => {
+    const w = workspace()
+    const file = (name: string): string => path.join(w.repo, name)
+    for (const name of ['edit.txt', 'gone.txt', 'mode.sh', 'old.txt']) fs.writeFileSync(file(name), `${name}\n`.repeat(20))
+    git(w.repo, 'add', '-A')
+    git(w.repo, 'commit', '-qm', 'files')
+    fs.writeFileSync(file('big.txt'), `${'x'.repeat(60)}\n`.repeat(20_000))
+    fs.appendFileSync(file('edit.txt'), 'more\n')
+    fs.rmSync(file('gone.txt'))
+    fs.chmodSync(file('mode.sh'), 0o755)
+    fs.renameSync(file('old.txt'), file('renamed.txt'))
+
+    const first = (await w.read()).changes
+    expect(first.truncated).toBe(true)
+    const got = partsOf(first.diff)
+    expect([...got.keys()]).toEqual(['big.txt', 'edit.txt', 'gone.txt', 'mode.sh', 'renamed.txt'])
+    expect(got.get('big.txt')).toMatch(/\n\+x+\n@@CUT@@\n$/)
+    expect(Buffer.byteLength(got.get('big.txt')!)).toBeLessThan(260_000)
+    expect(got.get('edit.txt')).toContain('\n+more\n')
+    expect(got.get('gone.txt')).toContain('\n-gone.txt\n')
+    expect(got.get('mode.sh')).toContain('\nnew mode 100755\n')
+    expect(got.get('renamed.txt')).toContain('\nrename from old.txt\n')
+
+    fs.appendFileSync(file('edit.txt'), 'again\n')
+    const before = w.runs.length
+    const edited = (await w.read()).changes
+    expect(filled(w.runs.slice(before))).toEqual(['edit.txt'])
+    expect(partsOf(edited.diff).get('edit.txt')).toContain('\n+again\n')
+    expect(edited).toEqual((await w.fresh()).changes)
+  })
+
+  // A big checkout's first read, and any whose listing moved, prints more
+  // than an exec can carry, so it is fetched in pages. The listing is held
+  // and printed again only when a path or an ignored entry came or went.
+  it('pages an output over the exec cap, and prints the listing only when it moved', async () => {
+    const pageBytes = 4096
+    const w = workspace({ pageBytes })
+    const dir = path.join(w.repo, 'a-folder-with-a-rather-long-name/and-another-one')
+    fs.mkdirSync(dir, { recursive: true })
+    for (let n = 0; n < 300; n++) fs.writeFileSync(path.join(dir, `file-${n}-also-named-at-length.txt`), `${n}\n`)
+    fs.writeFileSync(path.join(w.repo, '.gitignore'), '*.log\n')
+    // A submodule whose changes git is told to ignore.
+    const sm = path.join(w.repo, 'sm')
+    fs.mkdirSync(sm)
+    git(sm, 'init', '-q')
+    git(sm, 'commit', '-q', '--allow-empty', '-m', 'sm')
+    fs.writeFileSync(path.join(w.repo, '.gitmodules'), '[submodule "sm"]\n\tpath = sm\n\turl = ./sm\n\tignore = all\n')
+    git(w.repo, 'add', '-A')
+    git(w.repo, 'commit', '-qm', 'files')
+    git(w.repo, 'checkout', '-q', '-b', 'agent/x')
+    for (let n = 0; n < 100; n++) fs.appendFileSync(path.join(dir, `file-${n}-also-named-at-length.txt`), 'edit\n')
+    fs.writeFileSync(path.join(w.repo, 'link'), '')
+    const request: Partial<ChangesRequest> = { listing: 'full' }
+    /** A read, whether its scan was paged, and which listing parts it printed. */
+    const read = async (r = request): Promise<{ reading: ChangesReading; printed: string; paged: boolean }> => {
+      const before = w.runs.length
+      const reading = await w.read(r)
+      const [scan, ...rest] = w.runs.slice(before)
+      const paged = scan.out.startsWith('PAGED ')
+      const out = paged
+        ? Buffer.concat(rest.filter((p) => p.cmd.startsWith('tail -c')).map((p) => Buffer.from(p.out, 'base64'))).toString()
+        : scan.out
+      const printed = [out.includes('\n@@PATHS@@\n') && 'paths', out.includes('\n@@IGNORED@@\n') && 'extras'].filter(Boolean).join(' ')
+      return { reading, printed, paged }
+    }
+    const leftovers = (): string[] => fs.readdirSync(w.scratch()).filter((f) => f.includes('.out.'))
+    const same = async (r = request): Promise<ChangesReading> => {
+      const { readMs: _ms, ...fresh } = await w.fresh(r)
+      return { ...fresh, readMs: expect.any(Number) as number }
+    }
+
+    const first = await read()
+    expect(first).toMatchObject({ printed: 'paths extras', paged: true })
+    expect(first.reading.changes.files).toHaveLength(101)
+    expect(first.reading.changes.diff).toContain('+edit')
+    expect(first.reading.listing?.paths).toHaveLength(305)
+    expect(first.reading.listing?.ignored).toEqual([])
+    // The scan's output and the fill's.
+    expect(leftovers()).toHaveLength(2)
+
+    // Nothing moved: no listing, no pair, and the next run clears the file.
+    const idle = await read()
+    expect(idle).toMatchObject({ printed: '', paged: false })
+    expect(idle.reading).toEqual({ ...first.reading, readMs: idle.reading.readMs })
+    expect(leftovers()).toEqual([])
+
+    // An edit leaves the paths as held; an ignored file reprints only
+    // those; a retyped path reprints the paths.
+    fs.appendFileSync(path.join(dir, 'file-200-also-named-at-length.txt'), 'edit\n')
+    expect((await read()).printed).toBe('')
+    fs.writeFileSync(path.join(w.repo, 'debug.log'), '')
+    const ignored = await read()
+    expect(ignored).toMatchObject({ printed: 'extras', paged: false })
+    expect(ignored.reading.listing?.ignored).toEqual(['debug.log'])
+    fs.rmSync(path.join(w.repo, 'link'))
+    fs.symlinkSync('.gitignore', path.join(w.repo, 'link'))
+    const retyped = await read()
+    expect(retyped.printed).toBe('paths')
+    expect(retyped.reading.listing?.links).toEqual(['link'])
+    expect(retyped.reading).toEqual(await same())
+
+    // A paths listing leaves the held extras out, and keeps them.
+    const paths = await read({ listing: 'paths' })
+    expect(paths.printed).toBe('')
+    expect(paths.reading.listing).toEqual({ paths: retyped.reading.listing!.paths, links: ['link'], conflicted: [] })
+    expect((await read()).printed).toBe('')
+
+    // `ls-files` lists a gitlink whatever `.gitmodules` says, so deleting
+    // one reprints the paths.
+    fs.rmSync(sm, { recursive: true })
+    const unlinked = await read()
+    expect(unlinked.printed).toBe('paths')
+    expect(unlinked.reading.listing?.paths).not.toContain('sm')
+    expect(unlinked.reading).toEqual(await same())
+  })
+
+  // Callers map the exit code (a bad base is a 400), and a transport failure
+  // says nothing about the base, so both arrive as the driver raised them.
+  it('passes a failed run and a transport failure through untranslated', async () => {
+    installFakeWorkspaceDriver({ exec })
+    const badBase = new WorkspaceExecError('command exited 4', CHANGES_BASE_UNRESOLVED, '', '')
+    exec.mockRejectedValueOnce(badBase)
+    await expect(readWorkspaceChanges('yaac-proj-abc', { base: 'nope', diff: true })).rejects.toBe(badBase)
+    const dial = new Error('connection refused')
+    exec.mockRejectedValueOnce(dial)
+    await expect(readWorkspaceChanges('yaac-proj-abc', { base: 'dev', diff: true })).rejects.toBe(dial)
+  })
+
+  // A run cut off mid-staging saves no index, so until a read succeeds each
+  // gets the longer timeout, long enough for a cold index to be staged. An
+  // abandoned read leaves the index as warm as it was.
+  it('gives a read the longer timeout until one succeeds, and again after one fails', async () => {
+    const w = workspace()
+    const timeouts = (): (number | undefined)[] => exec.mock.calls.filter((c) => c[1].includes('yaac-changes')).map((c) => c[2]?.timeout)
+
+    await w.read()
+    await w.read()
+    exec.mockRejectedValueOnce(new Error('stream read timeout'))
+    await expect(w.read()).rejects.toThrow('stream read timeout')
+    await w.read()
+    const caller = new AbortController()
+    exec.mockImplementationOnce((_job, _cmd, opts) => new Promise((_, reject) => {
+      opts!.signal!.addEventListener('abort', () => { reject(opts!.signal!.reason as Error) })
+      caller.abort()
+    }))
+    await expect(readWorkspaceChanges('ws', { defaultBase: 'main', diff: true }, caller.signal)).rejects.toThrow()
+    await w.read()
+    expect(timeouts()).toEqual([120_000, 20_000, 20_000, 120_000, 20_000, 20_000])
+  })
+
+  // An untracked folder too large to stage is left out, so an unignored
+  // build output cannot stall every read. It counts only files no ignore
+  // pattern covers, less those of a folder already left out below it, and
+  // its tracked files are still diffed.
+  it('leaves out an untracked folder over the size limit, still diffing its tracked files', async () => {
+    const w = workspace()
+    const write = (dir: string, n: number): void => {
+      fs.mkdirSync(path.join(w.repo, dir), { recursive: true })
+      for (let k = 0; k < n; k++) fs.writeFileSync(path.join(w.repo, dir, `f${k}.js`), `${dir} ${k}\n`)
+    }
+    fs.writeFileSync(path.join(w.repo, '.gitignore'), 'node_modules/\n')
+    write('build', 1)
+    git(w.repo, 'add', '-A')
+    git(w.repo, 'commit', '-qm', 'build')
+    git(w.repo, 'checkout', '-q', '-b', 'agent/x')
+    w.rewrite((cmd) => cmd.replaceAll(`>${MAX_UNTRACKED_FOLDER_FILES}`, '>5'))
+    const read = (): Promise<ChangesReading> => w.read({ listing: 'paths' })
+    const changed = (r: ChangesReading): string[] => r.changes.files.map((f) => f.path)
+
+    write('build/m0', 4)
+    const under = await read()
+    expect(under.changes.skipped).toBeUndefined()
+    expect(changed(under)).toEqual(['build/m0/f0.js', 'build/m0/f1.js', 'build/m0/f2.js', 'build/m0/f3.js'])
+
+    write('build/m1', 4)
+    write('out/big', 7)
+    write('out', 1)
+    write('newpkg', 3)
+    write('newpkg/node_modules/dep', 10)
+    fs.appendFileSync(path.join(w.repo, 'build/f0.js'), 'edited\n')
+    const over = await read()
+    expect(over.changes.skipped?.sort()).toEqual(['build', 'out/big'])
+    expect(changed(over)).toEqual(['build/f0.js', 'newpkg/f0.js', 'newpkg/f1.js', 'newpkg/f2.js', 'out/f0.js'])
+    expect(over.changes.files[0].stages).toEqual({ modified: { additions: 1, deletions: 0 } })
+    expect(over.listing?.paths.filter((p) => p.startsWith('build/') || p.startsWith('out/big/'))).toEqual(['build/f0.js'])
+    expect(git(w.repo, 'status', '--porcelain', '--', 'build')).toBe(' M build/f0.js\n?? build/m0/\n?? build/m1/\n')
+
+    fs.rmSync(path.join(w.repo, 'build/m1'), { recursive: true })
+    const back = await read()
+    expect(back.changes.skipped).toEqual(['out/big'])
+    expect(changed(back).filter((p) => p.startsWith('build/'))).toEqual([
+      'build/f0.js', 'build/m0/f0.js', 'build/m0/f1.js', 'build/m0/f2.js', 'build/m0/f3.js',
+    ])
+  })
+
+  // Staging writes its objects to scratch, reading the checkout's store
+  // through an alternate, so polls leave nothing in the checkout. Scratch
+  // starts over past its cap, and when a blob the private index names has
+  // gone from the checkout (the agent added a file, reset it and pruned).
+  it('stages into scratch objects, starting over past the cap or on a missing blob', async () => {
+    const w = workspace()
+    const objects = path.join(w.scratch(), 'yaac-changes.idx.objects')
+    git(w.repo, 'checkout', '-q', '-b', 'agent/x')
+    fs.writeFileSync(path.join(w.repo, 'new.txt'), 'new\n')
+    let cap = String(SCRATCH_OBJECTS_CAP_KB)
+    w.rewrite((cmd) => cmd.replaceAll(String(SCRATCH_OBJECTS_CAP_KB), cap))
+    const read = async (): Promise<ChangesReading['changes']> => {
+      forgetWorkspaceChanges('ws')
+      fs.rmSync(path.join(w.scratch(), 'yaac-changes.idx.entries'), { force: true })
+      return (await w.read()).changes
+    }
+    const has = (id: string, env: NodeJS.ProcessEnv = {}): boolean => {
+      try {
+        execFileSync('git', ['cat-file', '-e', id], { cwd: w.repo, stdio: 'ignore', env: { ...process.env, ...env } })
+        return true
+      } catch {
+        return false
+      }
+    }
+    const inScratch = scratchObjectsEnv(w.repo, w.scratch())
+    const loose = git(w.repo, 'count-objects')
+
+    const first = await read()
+    expect(first.diff).toContain('+new')
+    const blob = git(w.repo, 'hash-object', 'new.txt').trim()
+    expect([has(blob), has(blob, inScratch), has(first.work), has(first.work, inScratch)]).toEqual([false, true, false, true])
+    expect(git(w.repo, 'count-objects')).toBe(loose)
+
+    // Older than the index, so git trusts its stat data rather than hashing
+    // the racily clean file again.
+    const dropped = path.join(w.repo, 'dropped.txt')
+    fs.writeFileSync(dropped, 'dropped\n')
+    fs.utimesSync(dropped, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000))
+    git(w.repo, 'add', 'dropped.txt')
+    await read()
+    git(w.repo, 'reset', '-q', 'dropped.txt')
+    git(w.repo, 'prune', '--expire=now')
+    expect((await read()).diff).toContain('+dropped')
+
+    fs.writeFileSync(path.join(objects, 'junk'), 'x'.repeat(4096))
+    cap = '1'
+    expect((await read()).files.map((f) => f.path)).toEqual(['dropped.txt', 'new.txt'])
+    expect(fs.existsSync(path.join(objects, 'junk'))).toBe(false)
   })
 })
 
@@ -911,433 +990,14 @@ describe('runChangesRead', () => {
   })
 })
 
-const exec = vi.fn<WorkspaceDriver['exec']>()
-
-/** A driver whose workspace is `repo`, running the script for real; each
- *  run's output is kept in `outputs`. With `pageBytes`, the script pages
- *  at that size, and an output over twice it fails, as one over streamd's
- *  cap does. `rewrite` edits each command before it runs. */
-function realWorkspace(
-  repo: string, scratchDir: string, pageBytes?: number, rewrite = (cmd: string): string => cmd,
-): string[] {
-  const outputs: string[] = []
-  installFakeWorkspaceDriver({
-    exec,
-    workspacePaths: () => workspacePathsFixture({ workspaceDir: repo, scratchDir }),
-  })
-  exec.mockImplementation((_job, cmd) => {
-    const run = rewrite(pageBytes ? cmd.replaceAll(String(OUTPUT_PAGE_BYTES), String(pageBytes)) : cmd)
-    let stdout: string
-    try {
-      stdout = execFileSync('sh', ['-c', run], {
-        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20, env: { ...process.env, ...GIT_ENV },
-      })
-    } catch (err) {
-      const e = err as { status: number; stdout: string; stderr: string }
-      return Promise.reject(new WorkspaceExecError(`command exited ${e.status}`, e.status, e.stdout, e.stderr))
-    }
-    outputs.push(stdout)
-    if (pageBytes && Buffer.byteLength(stdout) > 2 * pageBytes) return Promise.reject(new Error('output over the cap'))
-    return Promise.resolve({ stdout, stderr: '' })
-  })
-  return outputs
-}
-
-/** The environment that reads a workspace's scratch objects as reads of
- *  the changes do. */
-const scratchObjectsEnv = (repo: string, scratchDir: string): NodeJS.ProcessEnv => ({
-  GIT_OBJECT_DIRECTORY: path.join(scratchDir, 'yaac-changes.idx.objects'),
-  GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(repo, '.git/objects'),
-})
-
-/** A unified diff's parts by destination path. */
-const partsOf = (diff = ''): Map<string, string> => new Map(diff.split(/(?=^diff --git )/m)
-  .filter(Boolean).map((p) => [/^diff --git a\/\S+ b\/(\S+)/.exec(p)![1], p]))
-
-describe('readWorkspaceChanges', () => {
-  afterEach(() => {
-    exec.mockReset()
-    for (const name of ['yaac-proj-abc', 'big']) forgetWorkspaceChanges(name)
-  })
-
-  // The server holds what each read came from, so a poll where nothing
-  // moved reads none of it, and an edit to a few files reads just those.
-  // `MODES` says how the staged, unstaged and base parts were read. Each
-  // answer must match what a read from scratch gives; anything that could
-  // change rename pairing, or a new base, reads the base diff again.
-  it('reads only what changed since the reading it holds, answering as a full read would', async () => {
-    const { repo, idx } = scratchRepo()
-    const file = (n: number): string => path.join(repo, `src/f${String(n).padStart(2, '0')}.txt`)
-    fs.mkdirSync(path.join(repo, 'src'))
-    for (let n = 0; n < 40; n++) fs.writeFileSync(file(n), `line ${n}\n`.repeat(20))
-    git(repo, 'add', '-A')
-    git(repo, 'commit', '-qm', 'files')
-    git(repo, 'checkout', '-q', '-b', 'agent/x')
-    for (let n = 0; n < 20; n++) fs.appendFileSync(file(n), `edit ${n}\n`)
-    git(repo, 'mv', 'src/f39.txt', 'moved.txt')
-    fs.writeFileSync(path.join(repo, 'added.txt'), 'new\n')
-    git(repo, 'add', '-A')
-    git(repo, 'commit', '-qm', 'work')
-    // Uncommitted work on top: edits, and files the agent never added.
-    for (let n = 20; n < 30; n++) fs.appendFileSync(file(n), `edit ${n}\n`)
-    for (let n = 0; n < 5; n++) fs.writeFileSync(path.join(repo, `new${n}.txt`), `n${n}\n`)
-    const outputs = realWorkspace(repo, path.dirname(idx))
-    const request: ChangesRequest = { defaultBase: 'main', diff: true }
-    const read = async (r = request): Promise<{ reading: ChangesReading; modes: string }> => {
-      const reading = await readWorkspaceChanges('big', r)
-      return { reading, modes: /^MODES (\S+ \S+ \S+)/m.exec(outputs.at(-1)!)![1] }
-    }
-    /** What a server holding nothing reads, its in-workspace caches cleared. */
-    const fresh = async (r = request): Promise<ChangesReading['changes']> => {
-      forgetWorkspaceChanges('big')
-      for (const k of ['staged', 'unstaged', 'lists', 'body']) fs.rmSync(`${idx}.${k}`, { force: true })
-      return (await read(r)).reading.changes
-    }
-    /** Read, expecting `modes`, then check against a read from scratch. */
-    const expectRead = async (modes: string, r = request): Promise<ChangesReading> => {
-      const got = await read(r)
-      expect(got.modes).toBe(modes)
-      expect(got.reading.changes).toEqual(await fresh(r))
-      return got.reading
-    }
-
-    const first = await read()
-    expect(first.modes).toBe('full full full')
-    expect(first.reading.changes.files).toHaveLength(37)
-    expect(first.reading.readMs).toBeGreaterThanOrEqual(0)
-    const same = await read()
-    expect(same.modes).toBe('same same same')
-    expect(outputs.at(-1)).not.toContain('@@DIFF@@')
-    expect(same.reading.changes).toEqual(first.reading.changes)
-
-    // An edit, a file the base diff did not have, and one put back as the
-    // base had it: each part reads only those three.
-    fs.appendFileSync(file(3), 'more\n')
-    fs.appendFileSync(file(35), 'now changed\n')
-    fs.writeFileSync(file(7), 'line 7\n'.repeat(20))
-    await read()
-    expect(outputs.at(-1)!.match(/^diff --git/gm)).toHaveLength(2)
-    fs.appendFileSync(file(3), 'again\n')
-    const delta = await expectRead('same delta delta')
-    const paths = delta.changes.files.map((f) => f.path)
-    expect(paths).toContain('src/f35.txt')
-    expect(paths).not.toContain('src/f07.txt')
-
-    // A nodiff delta still patches the held body, so the next read wanting
-    // one need not read it in full.
-    await read()
-    fs.appendFileSync(file(4), 'more\n')
-    expect((await read({ ...request, diff: false })).modes).toBe('same delta delta')
-    fs.appendFileSync(file(5), 'more\n')
-    await expectRead('same delta delta')
-
-    // An added file's edit could pair it with a deleted one, and so could
-    // a new or deleted file; the uncommitted parts read them as a delta all
-    // the same, having no rename pairing.
-    for (const change of [
-      () => fs.appendFileSync(path.join(repo, 'added.txt'), 'more\n'),
-      () => fs.writeFileSync(path.join(repo, 'untracked.txt'), 'u\n'),
-      () => fs.appendFileSync(path.join(repo, 'new2.txt'), 'more\n'),
-      () => fs.rmSync(path.join(repo, 'new3.txt')),
-    ]) {
-      await read()
-      change()
-      await expectRead('same delta full')
-    }
-
-    // A typechange prints two body parts for its one row, and a quoted
-    // name sorts by its bytes; an edit elsewhere must keep both in place.
-    // A mode change is an edit like any other.
-    await read()
-    fs.rmSync(file(10))
-    fs.symlinkSync('../moved.txt', file(10))
-    fs.writeFileSync(path.join(repo, 'src/café.txt'), 'c\n')
-    await expectRead('same delta full')
-    fs.appendFileSync(file(1), 'more\n')
-    await expectRead('same delta delta')
-    fs.chmodSync(file(2), 0o755)
-    await expectRead('same delta delta')
-
-    // An attribute can turn another file binary, which no path-by-path
-    // read would see.
-    await read()
-    fs.writeFileSync(path.join(repo, '.gitattributes'), 'src/f01.txt -diff\n')
-    const attributed = await expectRead('full full full')
-    expect(attributed.changes.files.find((f) => f.path === 'src/f01.txt')?.binary).toBe(true)
-
-    // Staging moves the agent's tree, so both uncommitted parts read in
-    // full; the working tree, and so the base diff, has not moved.
-    await read()
-    git(repo, 'add', 'src/f21.txt')
-    await expectRead('full full same')
-    await read()
-    expect((await read({ ...request, base: 'agent/x' })).modes).toBe('same same full')
-  })
-
-  // One huge file is cut at its own cap rather than using up the body, so
-  // the files after it keep their parts, and a delta read splices past it.
-  it('cuts a huge file\'s diff short, keeping the parts of the files after it', async () => {
-    const { repo, idx } = scratchRepo()
-    const file = (name: string): string => path.join(repo, name)
-    for (const name of ['edit.txt', 'gone.txt', 'mode.sh', 'old.txt']) fs.writeFileSync(file(name), `${name}\n`.repeat(20))
-    git(repo, 'add', '-A')
-    git(repo, 'commit', '-qm', 'files')
-    fs.writeFileSync(file('big.txt'), `${'x'.repeat(60)}\n`.repeat(20_000))
-    fs.appendFileSync(file('edit.txt'), 'more\n')
-    fs.rmSync(file('gone.txt'))
-    fs.chmodSync(file('mode.sh'), 0o755)
-    fs.renameSync(file('old.txt'), file('renamed.txt'))
-    realWorkspace(repo, path.dirname(idx))
-    const request: ChangesRequest = { defaultBase: 'main', diff: true }
-    const parts = partsOf
-
-    const first = (await readWorkspaceChanges('big', request)).changes
-    expect(first.truncated).toBe(true)
-    const got = parts(first.diff)
-    expect([...got.keys()]).toEqual(['big.txt', 'edit.txt', 'gone.txt', 'mode.sh', 'renamed.txt'])
-    expect(got.get('big.txt')).toMatch(/\n\+x+\n@@CUT@@\n$/)
-    expect(Buffer.byteLength(got.get('big.txt')!)).toBeLessThan(260_000)
-    expect(got.get('edit.txt')).toContain('\n+more\n')
-    expect(got.get('gone.txt')).toContain('\n-gone.txt\n')
-    expect(got.get('mode.sh')).toContain('\nnew mode 100755\n')
-    expect(got.get('renamed.txt')).toContain('\nrename from old.txt\n')
-
-    fs.appendFileSync(file('edit.txt'), 'again\n')
-    const delta = (await readWorkspaceChanges('big', request)).changes
-    expect(parts(delta.diff).get('edit.txt')).toContain('\n+again\n')
-    forgetWorkspaceChanges('big')
-    for (const k of ['lists', 'body']) fs.rmSync(`${idx}.${k}`, { force: true })
-    expect(delta).toEqual((await readWorkspaceChanges('big', request)).changes)
-  })
-
-  // A big checkout's first read, and any whose listing moved, prints more
-  // than an exec can carry, so it is fetched in pages. The listing is held
-  // and printed again only when a path or an ignored entry came or went.
-  it('pages an output over the exec cap, and prints the listing only when it moved', async () => {
-    const { repo, idx } = scratchRepo()
-    const dir = path.join(repo, 'a-folder-with-a-rather-long-name/and-another-one')
-    fs.mkdirSync(dir, { recursive: true })
-    for (let n = 0; n < 300; n++) fs.writeFileSync(path.join(dir, `file-${n}-also-named-at-length.txt`), `${n}\n`)
-    fs.writeFileSync(path.join(repo, '.gitignore'), '*.log\n')
-    // A submodule whose changes git is told to ignore.
-    const sm = path.join(repo, 'sm')
-    fs.mkdirSync(sm)
-    git(sm, 'init', '-q')
-    git(sm, 'commit', '-q', '--allow-empty', '-m', 'sm')
-    fs.writeFileSync(path.join(repo, '.gitmodules'), '[submodule "sm"]\n\tpath = sm\n\turl = ./sm\n\tignore = all\n')
-    git(repo, 'add', '-A')
-    git(repo, 'commit', '-qm', 'files')
-    git(repo, 'checkout', '-q', '-b', 'agent/x')
-    for (let n = 0; n < 100; n++) fs.appendFileSync(path.join(dir, `file-${n}-also-named-at-length.txt`), 'edit\n')
-    fs.writeFileSync(path.join(repo, 'link'), '')
-    const pageBytes = 4096
-    const outputs = realWorkspace(repo, path.dirname(idx), pageBytes)
-    const request: ChangesRequest = { defaultBase: 'main', diff: true, listing: 'full' }
-    const read = async (r = request): Promise<{ reading: ChangesReading; modes: string; paged: boolean }> => {
-      const before = outputs.length
-      const reading = await readWorkspaceChanges('big', r)
-      const paged = outputs[before].startsWith('PAGED ')
-      const all = paged ? Buffer.concat(outputs.slice(before + 1).map((o) => Buffer.from(o, 'base64'))).toString() : outputs[before]
-      return { reading, modes: /^MODES \S+ \S+ \S+ (\S+ \S+)$/m.exec(all)![1], paged }
-    }
-    /** Read as a server holding nothing would, so nothing is reused. */
-    const fresh = async (r = request): Promise<ChangesReading> => {
-      forgetWorkspaceChanges('big')
-      return (await read(r)).reading
-    }
-    const leftovers = (): string[] => fs.readdirSync(path.dirname(idx)).filter((f) => f.includes('.out.'))
-
-    const first = await read()
-    expect(first).toMatchObject({ modes: 'full full', paged: true })
-    expect(first.reading.changes.files).toHaveLength(101)
-    expect(first.reading.changes.diff).toContain('+edit')
-    expect(first.reading.listing?.paths).toHaveLength(305)
-    expect(first.reading.listing?.ignored).toEqual([])
-    expect(leftovers()).toHaveLength(1)
-
-    // Nothing moved: no listing, no diff, and the next run clears the file.
-    const same = await read()
-    expect(same).toMatchObject({ modes: 'same same', paged: false })
-    expect(outputs.at(-1)).not.toContain('@@PATHS@@')
-    expect(same.reading).toEqual({ ...first.reading, readMs: same.reading.readMs })
-    expect(leftovers()).toEqual([])
-
-    // An edit leaves the paths as held; an ignored file reprints only
-    // those; a retyped path reprints the paths.
-    fs.appendFileSync(path.join(dir, 'file-200-also-named-at-length.txt'), 'edit\n')
-    expect((await read()).modes).toBe('same same')
-    fs.writeFileSync(path.join(repo, 'debug.log'), '')
-    const ignored = await read()
-    expect(ignored).toMatchObject({ modes: 'same full', paged: false })
-    expect(ignored.reading.listing?.ignored).toEqual(['debug.log'])
-    fs.rmSync(path.join(repo, 'link'))
-    fs.symlinkSync('.gitignore', path.join(repo, 'link'))
-    const retyped = await read()
-    expect(retyped.modes).toBe('full same')
-    expect(retyped.reading.listing?.links).toEqual(['link'])
-    expect(retyped.reading).toEqual({ ...await fresh(), readMs: retyped.reading.readMs })
-
-    // A paths listing leaves the held extras out, and keeps them.
-    const paths = await read({ ...request, listing: 'paths' })
-    expect(paths.modes).toBe('same -')
-    expect(paths.reading.listing).toEqual({ paths: retyped.reading.listing!.paths, links: ['link'], conflicted: [] })
-    expect((await read()).modes).toBe('same same')
-
-    // `ls-files` lists a gitlink whatever `.gitmodules` says, so deleting
-    // one reprints the paths.
-    fs.rmSync(sm, { recursive: true })
-    const unlinked = await read()
-    expect(unlinked.modes).toBe('full same')
-    expect(unlinked.reading.listing?.paths).not.toContain('sm')
-    expect(unlinked.reading).toEqual({ ...await fresh(), readMs: unlinked.reading.readMs })
-  })
-
-  // Callers map the exit code (a bad base is a 400), and a transport failure
-  // says nothing about the base, so both arrive as the driver raised them.
-  it('passes a failed run and a transport failure through untranslated', async () => {
-    installFakeWorkspaceDriver({ exec })
-    const badBase = new WorkspaceExecError('command exited 4', CHANGES_BASE_UNRESOLVED, '', '')
-    exec.mockRejectedValueOnce(badBase)
-    await expect(readWorkspaceChanges('yaac-proj-abc', { base: 'nope', diff: true })).rejects.toBe(badBase)
-    const dial = new Error('connection refused')
-    exec.mockRejectedValueOnce(dial)
-    await expect(readWorkspaceChanges('yaac-proj-abc', { base: 'dev', diff: true })).rejects.toBe(dial)
-  })
-
-  // A run cut off mid-staging saves no index, so until a read succeeds each
-  // gets the longer timeout, long enough for a cold index to be staged. An
-  // abandoned read leaves the index as warm as it was.
-  it('gives a read the longer timeout until one succeeds, and again after one fails', async () => {
-    const { repo, idx } = scratchRepo()
-    realWorkspace(repo, path.dirname(idx))
-    const timeouts = (): (number | undefined)[] => exec.mock.calls.map((c) => c[2]?.timeout)
-    const request: ChangesRequest = { defaultBase: 'main', diff: true }
-
-    await readWorkspaceChanges('big', request)
-    await readWorkspaceChanges('big', request)
-    exec.mockRejectedValueOnce(new Error('stream read timeout'))
-    await expect(readWorkspaceChanges('big', request)).rejects.toThrow('stream read timeout')
-    await readWorkspaceChanges('big', request)
-    const caller = new AbortController()
-    exec.mockImplementationOnce((_job, _cmd, opts) => new Promise((_, reject) => {
-      opts!.signal!.addEventListener('abort', () => { reject(opts!.signal!.reason as Error) })
-      caller.abort()
-    }))
-    await expect(readWorkspaceChanges('big', request, caller.signal)).rejects.toThrow()
-    await readWorkspaceChanges('big', request)
-    expect(timeouts()).toEqual([120_000, 20_000, 20_000, 120_000, 20_000, 20_000])
-  })
-
-  // An untracked folder too large to stage is left out, so an unignored
-  // build output cannot stall every read. It counts only files no ignore
-  // pattern covers, less those of a folder already left out below it, and
-  // its tracked files are still diffed.
-  it('leaves out an untracked folder over the size limit, still diffing its tracked files', async () => {
-    const { repo, idx } = scratchRepo()
-    const write = (dir: string, n: number): void => {
-      fs.mkdirSync(path.join(repo, dir), { recursive: true })
-      for (let k = 0; k < n; k++) fs.writeFileSync(path.join(repo, dir, `f${k}.js`), `${dir} ${k}\n`)
-    }
-    fs.writeFileSync(path.join(repo, '.gitignore'), 'node_modules/\n')
-    write('build', 1)
-    git(repo, 'add', '-A')
-    git(repo, 'commit', '-qm', 'build')
-    git(repo, 'checkout', '-q', '-b', 'agent/x')
-    realWorkspace(repo, path.dirname(idx), undefined, (cmd) => cmd.replaceAll(`>${MAX_UNTRACKED_FOLDER_FILES}`, '>5'))
-    const read = async (): Promise<ChangesReading> => readWorkspaceChanges('big', { defaultBase: 'main', diff: true, listing: 'paths' })
-    const changed = (r: ChangesReading): string[] => r.changes.files.map((f) => f.path)
-
-    write('build/m0', 4)
-    const under = await read()
-    expect(under.changes.skipped).toBeUndefined()
-    expect(changed(under)).toEqual(['build/m0/f0.js', 'build/m0/f1.js', 'build/m0/f2.js', 'build/m0/f3.js'])
-
-    write('build/m1', 4)
-    write('out/big', 7)
-    write('out', 1)
-    write('newpkg', 3)
-    write('newpkg/node_modules/dep', 10)
-    fs.appendFileSync(path.join(repo, 'build/f0.js'), 'edited\n')
-    const over = await read()
-    expect(over.changes.skipped?.sort()).toEqual(['build', 'out/big'])
-    expect(changed(over)).toEqual(['build/f0.js', 'newpkg/f0.js', 'newpkg/f1.js', 'newpkg/f2.js', 'out/f0.js'])
-    expect(over.changes.files[0].stages).toEqual({ modified: { additions: 1, deletions: 0 } })
-    expect(over.listing?.paths.filter((p) => p.startsWith('build/') || p.startsWith('out/big/'))).toEqual(['build/f0.js'])
-    expect(git(repo, 'status', '--porcelain', '--', 'build')).toBe(' M build/f0.js\n?? build/m0/\n?? build/m1/\n')
-
-    fs.rmSync(path.join(repo, 'build/m1'), { recursive: true })
-    const back = await read()
-    expect(back.changes.skipped).toEqual(['out/big'])
-    expect(changed(back).filter((p) => p.startsWith('build/'))).toEqual([
-      'build/f0.js', 'build/m0/f0.js', 'build/m0/f1.js', 'build/m0/f2.js', 'build/m0/f3.js',
-    ])
-  })
-
-  // Staging writes its objects to scratch, reading the checkout's store
-  // through an alternate, so polls leave nothing in the checkout. Scratch
-  // starts over past its cap, and when a blob the private index names has
-  // gone from the checkout (the agent added a file, reset it and pruned).
-  it('stages into scratch objects, starting over past the cap or on a missing blob', async () => {
-    const { repo, idx } = scratchRepo()
-    const scratch = path.dirname(idx)
-    const objects = path.join(scratch, 'yaac-changes.idx.objects')
-    git(repo, 'checkout', '-q', '-b', 'agent/x')
-    fs.writeFileSync(path.join(repo, 'new.txt'), 'new\n')
-    let cap = String(SCRATCH_OBJECTS_CAP_KB)
-    realWorkspace(repo, scratch, undefined, (cmd) => cmd.replaceAll(String(SCRATCH_OBJECTS_CAP_KB), cap))
-    const request: ChangesRequest = { defaultBase: 'main', diff: true }
-    const read = async (): Promise<ChangesReading['changes']> => {
-      forgetWorkspaceChanges('big')
-      for (const k of ['committed', 'staged', 'unstaged', 'lists', 'body']) fs.rmSync(path.join(scratch, `yaac-changes.idx.${k}`), { force: true })
-      return (await readWorkspaceChanges('big', request)).changes
-    }
-    const has = (id: string, env: NodeJS.ProcessEnv = {}): boolean => {
-      try {
-        execFileSync('git', ['cat-file', '-e', id], { cwd: repo, stdio: 'ignore', env: { ...process.env, ...env } })
-        return true
-      } catch {
-        return false
-      }
-    }
-    const inScratch = scratchObjectsEnv(repo, scratch)
-    const loose = git(repo, 'count-objects')
-
-    const first = await read()
-    expect(first.diff).toContain('+new')
-    const blob = git(repo, 'hash-object', 'new.txt').trim()
-    expect([has(blob), has(blob, inScratch), has(first.work), has(first.work, inScratch)]).toEqual([false, true, false, true])
-    expect(git(repo, 'count-objects')).toBe(loose)
-
-    // Older than the index, so git trusts its stat data rather than hashing
-    // the racily clean file again.
-    const dropped = path.join(repo, 'dropped.txt')
-    fs.writeFileSync(dropped, 'dropped\n')
-    fs.utimesSync(dropped, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000))
-    git(repo, 'add', 'dropped.txt')
-    await read()
-    git(repo, 'reset', '-q', 'dropped.txt')
-    git(repo, 'prune', '--expire=now')
-    expect((await read()).diff).toContain('+dropped')
-
-    fs.writeFileSync(path.join(objects, 'junk'), 'x'.repeat(4096))
-    cap = '1'
-    expect((await read()).files.map((f) => f.path)).toEqual(['dropped.txt', 'new.txt'])
-    expect(fs.existsSync(path.join(objects, 'junk'))).toBe(false)
-  })
-})
-
 describe('readChangeDiffs', () => {
-  afterEach(() => {
-    exec.mockReset()
-    forgetWorkspaceChanges('big')
-  })
-
   // Past the poll's cap, the Changes pane reads the files it left out, and
   // pages through a file it cut, from the trees the reading names. Both
   // must give git's own parts for those files: a rename paired with its
   // old path, and a cut file's pages adding up to its whole part.
   it('reads the parts a reading left out, and the rest of one it cut', async () => {
-    const { repo, idx } = scratchRepo()
+    const w = workspace()
+    const { repo } = w
     const file = (name: string): string => path.join(repo, name)
     for (const name of ['edit.txt', 'gone.txt', 'old.txt']) fs.writeFileSync(file(name), `${name}\n`.repeat(20))
     git(repo, 'add', '-A')
@@ -1346,33 +1006,32 @@ describe('readChangeDiffs', () => {
     fs.appendFileSync(file('edit.txt'), 'more\n')
     fs.rmSync(file('gone.txt'))
     fs.renameSync(file('old.txt'), file('renamed.txt'))
-    realWorkspace(repo, path.dirname(idx))
-    const { changes } = await readWorkspaceChanges('big', { defaultBase: 'main', diff: true })
+    const { changes } = await w.read()
     // The reading's trees are in its scratch objects.
     const whole = partsOf(execFileSync('git', ['diff', '--no-ext-diff', '--submodule=short', changes.base, changes.work], {
-      cwd: repo, encoding: 'utf8', maxBuffer: 64 << 20, env: { ...process.env, ...scratchObjectsEnv(repo, path.dirname(idx)) },
+      cwd: repo, encoding: 'utf8', maxBuffer: 64 << 20, env: { ...process.env, ...scratchObjectsEnv(repo, w.scratch()) },
     }))
     const polled = partsOf(changes.diff)
     expect([...polled.keys()]).toEqual(['big1.txt', 'big2.txt', 'big3.txt', 'big4.txt'])
     expect(polled.get('big1.txt')).toMatch(/\n@@CUT@@\n$/)
 
     const left = changes.files.filter((f) => !polled.has(f.path))
-    const read = partsOf(await readChangeDiffs('big', { base: changes.base, work: changes.work, files: left }))
+    const read = partsOf(await readChangeDiffs('ws', { base: changes.base, work: changes.work, files: left }))
     expect([...read.keys()]).toEqual(['big5.txt', 'edit.txt', 'gone.txt', 'renamed.txt'])
     for (const p of ['edit.txt', 'gone.txt', 'renamed.txt']) expect(read.get(p)).toBe(whole.get(p))
     expect(read.get('renamed.txt')).toContain('\nrename from old.txt\n')
     expect(read.get('big5.txt')).toMatch(/\n@@CUT@@\n$/)
 
     const held = polled.get('big1.txt')!.slice(0, -'@@CUT@@\n'.length)
-    const rest = await readChangeDiffs('big', {
+    const rest = await readChangeDiffs('ws', {
       base: changes.base, work: changes.work, files: [{ path: 'big1.txt' }], skip: held.split('\n').length - 1,
     })
     expect(held + rest).toBe(whole.get('big1.txt'))
 
-    await expect(readChangeDiffs('big', { base: '0'.repeat(40), work: changes.work, files: left }))
+    await expect(readChangeDiffs('ws', { base: '0'.repeat(40), work: changes.work, files: left }))
       .rejects.toMatchObject({ code: CHANGES_READING_GONE })
     for (const bad of ['../x', '/etc/passwd', 'a\0b', '"..\\057x"']) {
-      await expect(readChangeDiffs('big', { base: changes.base, work: changes.work, files: [{ path: bad }] }))
+      await expect(readChangeDiffs('ws', { base: changes.base, work: changes.work, files: [{ path: bad }] }))
         .rejects.toMatchObject({ code: 'VALIDATION' })
     }
   })
@@ -1380,16 +1039,16 @@ describe('readChangeDiffs', () => {
   // A page that starts on a line of a page or more shows the line, cut to
   // a page, then marks the part cut, so the next page goes on past it.
   it('pages past a line of a page or more', async () => {
-    const { repo, idx } = scratchRepo()
+    const w = workspace()
+    const { repo } = w
     // The diff lines are 1,500,001 bytes, and exactly a page.
     fs.writeFileSync(path.join(repo, 'long.txt'), `${'h'.repeat(1_500_000)}\nsecond\n`)
     fs.writeFileSync(path.join(repo, 'page.txt'), `${'e'.repeat(999_999)}\nafter\n`)
-    realWorkspace(repo, path.dirname(idx))
-    const { changes } = await readWorkspaceChanges('big', { defaultBase: 'main', diff: true })
+    const { changes } = await w.read()
     for (const [name, char, next] of [['long.txt', 'h', '+second\n'], ['page.txt', 'e', '+after\n']]) {
       const polled = partsOf(changes.diff).get(name)!
       expect(polled).toMatch(/\n@@ -0,0 \+1,2 @@\n@@CUT@@\n$/)
-      const page = (skip: number): Promise<string> => readChangeDiffs('big', {
+      const page = (skip: number): Promise<string> => readChangeDiffs('ws', {
         base: changes.base, work: changes.work, files: [{ path: name }], skip,
       })
       const skip = polled.split('\n').length - 2
