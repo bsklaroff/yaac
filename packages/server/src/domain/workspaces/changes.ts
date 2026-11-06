@@ -266,7 +266,7 @@ export const RESOLVE_BASE_SH = 'ref=; '
  * With no fork point, a HEAD that shares history with some origin branch
  * is diffed against itself and prints `FORK 0`: only uncommitted work
  * appears, and callers must not present that as "nothing changed". A HEAD
- * that shares none (an empty repo's first commits, or none yet) is diffed
+ * that shares none (an orphan branch's commits, or none yet) is diffed
  * against the empty tree, so all of it counts as added.
  *
  * Every command feeding the file list is status-checked, and `@@OK@@` is
@@ -307,7 +307,7 @@ function changesScript(loc: ChangesLocation): string {
   // Holding the run lock, any git lock on the private index, and any seed
   // copy, was left by a killed run.
   + `rm -f ${i}.out.* ${i}.lock ${i}.seed.*; o=${i}.out.$$; ( `
-  // An unborn HEAD (an empty repo's checkout) reads as the empty tree.
+  // An unborn HEAD (a new orphan branch) reads as the empty tree.
   + 'e=$(git hash-object -t tree /dev/null) || exit 6; head=$(git rev-parse -q --verify HEAD) || head=$e; '
   + 'fork=1; '
   + 'unforked() { if git merge-base "$head" $(git for-each-ref --format="%(objectname)" refs/remotes/origin) '

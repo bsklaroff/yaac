@@ -30,9 +30,9 @@ see SERVER-LOCAL.
 
 `createHostedProject` creates the repository empty, on `main`
 (`initHostedRepo`), then clones it as the main clone over the `file`
-transport, the same `cloneRepo` that `project add` runs against a URL. An
-empty remote needs no special case anywhere: workspace create already
-handles a repository with no branches (docs/server-git.md).
+transport, the same `cloneRepo` that `project add` runs against a URL. The
+first workspace create gives it `main`, as an empty commit, as it does any
+empty remote (docs/server-git.md).
 
 Nothing is ever lost from the repository:
 

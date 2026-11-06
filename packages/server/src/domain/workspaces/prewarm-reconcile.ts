@@ -105,8 +105,6 @@ async function refreshSpares(spares: RuntimeHandle[]): Promise<void> {
     const refresh = (async () => {
       await runtime.awaitAgentTransport(spare.jobName, { timeoutMs: 10_000 })
       const { workspaceDir } = runtime.workspacePaths(spare.jobName)
-      // Empty for a spare warmed on an empty repo, so it moves once origin
-      // gets its first branch.
       const head = (await runtime.exec(spare.jobName, `git -C ${workspaceDir} rev-parse -q --verify HEAD || true`))
         .stdout.trim()
       if (head !== target.tip) {

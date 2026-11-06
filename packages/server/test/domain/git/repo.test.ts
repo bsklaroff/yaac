@@ -19,6 +19,7 @@ import {
   readBlobAt,
   remoteBranchExists,
   resolveRemoteRef,
+  seedEmptyOrigin,
   serveGitHttp,
   setOriginHead,
 } from '#domain/git'
@@ -188,24 +189,6 @@ describe('createCheckout', () => {
     await fs.writeFile(path.join(wtPath, 'hello.txt'), 'half-written\n')
     await createCheckout(main, wtPath, { branch: 'agent/r', baseBranch: await getDefaultBranch(main), remoteUrl: sourceRepo })
     expect(await fs.readFile(path.join(wtPath, 'hello.txt'), 'utf8')).toBe('hello world\n')
-  })
-
-  it('starts an empty remote\'s checkout on an unborn branch', async () => {
-    const remote = path.join(tmpDir, 'empty.git')
-    await git(tmpDir, ['init', '-q', '--bare', '-b', 'trunk', remote])
-    const main = path.join(tmpDir, 'main')
-    await cloneRepo(remote, main, null)
-    const wtPath = path.join(tmpDir, 'workspace')
-    await createCheckout(main, wtPath, { branch: 'agent/e', baseBranch: 'trunk', remoteUrl: remote })
-    expect((await git(wtPath, ['symbolic-ref', 'HEAD'])).trim()).toBe('refs/heads/agent/e')
-    await expect(git(wtPath, ['rev-parse', '--verify', 'HEAD'])).rejects.toThrow()
-
-    // The agent's first commit starts the history, and pushes to the base.
-    await fs.writeFile(path.join(wtPath, 'a.txt'), 'a\n')
-    await git(wtPath, ['add', '.'])
-    await git(wtPath, ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-q', '-m', 'first'])
-    await git(wtPath, ['push', '-q', 'origin', 'HEAD:trunk'])
-    expect(await subjectAt(remote, 'trunk')).toBe('first')
   })
 
   it('checks out alongside a fetch, and ends on the refs the fetch brought', async () => {
@@ -447,6 +430,45 @@ describe('fetchOrigin', () => {
       a.close()
       b.close()
     }
+  })
+})
+
+describe('seedEmptyOrigin', () => {
+  const author = { name: 'Owner', email: 'owner@example.com' }
+
+  it('gives an empty remote its default branch, once, as an empty commit to check out from', async () => {
+    const remote = path.join(tmpDir, 'empty.git')
+    await git(tmpDir, ['init', '-q', '--bare', '-b', 'trunk', remote])
+    const main = path.join(tmpDir, 'main')
+    await cloneRepo(remote, main, null)
+
+    // Two creates racing: only the first pushes, so neither is rejected.
+    await Promise.all([1, 2].map(() => seedEmptyOrigin(main, remote, null, author)))
+    expect((await git(remote, ['rev-list', '--count', 'trunk'])).trim()).toBe('1')
+    expect((await git(remote, ['log', '-1', '--format=%an <%ae> %s %T', 'trunk'])).trim())
+      .toBe(`Owner <owner@example.com> Initial commit ${(await git(remote, ['hash-object', '-t', 'tree', '/dev/null'])).trim()}`)
+    expect(await listRemoteBranches(main)).toEqual(['trunk'])
+    expect(await getDefaultBranch(main)).toBe('trunk')
+
+    const wtPath = path.join(tmpDir, 'workspace')
+    await createCheckout(main, wtPath, { branch: 'agent/e', baseBranch: 'trunk', remoteUrl: remote })
+    expect((await git(wtPath, ['rev-parse', '--abbrev-ref', '@{u}'])).trim()).toBe('origin/trunk')
+  })
+
+  it('leaves a remote that has a branch alone, even when the main clone has none of its refs', async () => {
+    const main = path.join(tmpDir, 'main')
+    await cloneRepo(sourceRepo, main, null)
+    const before = await git(sourceRepo, ['for-each-ref'])
+    await seedEmptyOrigin(main, sourceRepo, null, author)
+    expect(await git(sourceRepo, ['for-each-ref'])).toBe(before)
+
+    // No fetch has run (as when a test skips it): the remote is asked.
+    for (const ref of (await git(main, ['for-each-ref', '--format=%(refname)', 'refs/remotes/origin'])).trim().split('\n')) {
+      await git(main, ['update-ref', '-d', '--no-deref', ref])
+    }
+    await git(main, ['symbolic-ref', 'HEAD', 'refs/heads/brandnew'])
+    await seedEmptyOrigin(main, sourceRepo, null, author)
+    expect(await git(sourceRepo, ['for-each-ref'])).toBe(before)
   })
 })
 

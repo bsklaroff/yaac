@@ -4,11 +4,11 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { handleFixture, installFakeWorkspaceDriver, snapshotFixture, workspacePathsFixture } from '#test/support/fake-driver'
 import { git } from '@yaac/test-utils/git'
-import { repoDir, workspaceDir } from '@yaac/shared/project-paths'
+import { hostedRepoDir, repoDir, workspaceDir } from '@yaac/shared/project-paths'
 import { closeDb } from '#db/client'
 import { BUILT_IN_USER_ID, recordProject, setProjectShareRevoked } from '#db'
-import { cloneRepo, createCheckout } from '#domain/git'
-import { fetchProjectOrigin, refreshProjectOrigins } from '#domain/projects'
+import { cloneRepo, createCheckout, hostedDefaultBranch, initHostedRepo } from '#domain/git'
+import { fetchProjectOrigin, refreshProjectOrigins, seedProjectOrigin } from '#domain/projects'
 import { execFileAsync } from '#lib/shell'
 
 /**
@@ -96,5 +96,20 @@ describe('fetchProjectOrigin', () => {
     await recordProject({ id: share, name: 'proj', remoteUrl: source, addedAt: '', hosted: true, sharedFrom: PROJECT_ID }, BUILT_IN_USER_ID)
     await setProjectShareRevoked(share, true)
     await expect(fetchProjectOrigin(share)).rejects.toMatchObject({ code: 'FORBIDDEN' })
+  })
+})
+
+describe('seedProjectOrigin', () => {
+  it('gives a new hosted project\'s repository its default branch, by the author it is given', async () => {
+    const hosted = '5b3e2f4c-1d0a-4b9e-8c7f-2a3b4c5d6e7f'
+    await recordProject({ id: hosted, name: 'fresh', remoteUrl: 'http://yaac.internal/x.git', addedAt: '', hosted: true }, BUILT_IN_USER_ID)
+    await fs.mkdir(path.dirname(hostedRepoDir(hosted)), { recursive: true })
+    await initHostedRepo(hostedRepoDir(hosted))
+    await cloneRepo(hostedRepoDir(hosted), repoDir(hosted), { kind: 'hosted' })
+
+    await seedProjectOrigin(hosted, { name: 'Owner', email: 'owner@example.com' })
+    expect(await hostedDefaultBranch(hostedRepoDir(hosted))).toBe('main')
+    expect((await git(hostedRepoDir(hosted), ['log', '-1', '--format=%an %s', 'main'])).trim()).toBe('Owner Initial commit')
+    expect(await tip(repoDir(hosted), 'origin/main')).toBe(await tip(hostedRepoDir(hosted), 'main'))
   })
 })

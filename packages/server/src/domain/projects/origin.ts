@@ -1,4 +1,4 @@
-import { fetchCommit, fetchOrigin, maintainRepo } from '#domain/git'
+import { fetchCommit, fetchOrigin, maintainRepo, seedEmptyOrigin } from '#domain/git'
 import { workspaceDriver } from '#drivers/driver'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { serverLog } from '#lib/log'
@@ -63,6 +63,12 @@ export async function fetchProjectOrigin(projectId: string, opts: { unlessWithin
  *  by id if it does not (`fetchCommit`). */
 export async function fetchProjectCommit(projectId: string, sha: string): Promise<void> {
   await fetchCommit(repoDir(projectId), await projectFetchUrl(projectId), await resolveProjectCredential(projectId), sha)
+}
+
+/** Give a project whose origin has no branches its default one, as an
+ *  empty commit by `author` (`seedEmptyOrigin`). */
+export async function seedProjectOrigin(projectId: string, author: { name: string; email: string }): Promise<void> {
+  await seedEmptyOrigin(repoDir(projectId), await projectFetchUrl(projectId), await resolveProjectCredential(projectId), author)
 }
 
 /**

@@ -45,6 +45,23 @@ the branch picker and the origin-refresh timer fetch too, so the checkout
 costs the create nothing beyond the fetch's own round trip. A base the main
 clone does not have yet waits for the fetch.
 
+**An empty origin gets its default branch from the server.** A just-created
+remote has no branches, and a host such as GitHub makes the first branch
+pushed to it the default, whatever its name. Left alone, that would be an
+agent's `agent/<id>` or a PR branch. So once a create's fetch finds origin
+with no branches, the server pushes an empty root commit, authored as the
+project's owner, to the branch the main clone's `HEAD` names
+(`seedEmptyOrigin`). A clone of an empty remote takes that from the
+remote's advertised default where the host advertises one (GitHub does),
+else from this server's `init.defaultBranch`. The checkout then starts on
+it like any other base. The seed starts only once the create's own checks
+(credential, egress allowlist, tool, the workspace row) have passed, so a
+create refused by one leaves the remote alone. Nothing is forced, and the
+push holds the fetch lock, so of two creates racing on one repo only the
+first pushes. The local refs are only current if a fetch just ran, so the
+remote itself is asked (`ls-remote`) to confirm it is empty before the
+push. A credential that cannot push fails the create, naming the remedy.
+
 **The alternates line** is the only path stored in a checkout's git state. It
 always holds the main clone's objects dir as the server sees it, and a pod
 mounts the main clone at that same path

@@ -37,6 +37,7 @@ export {
   readBlobAt,
   remoteBranchExists,
   resolveRemoteRef,
+  seedEmptyOrigin,
   setOriginHead,
 } from './repo'
 export { bundleCheckout } from './peer-bundle'

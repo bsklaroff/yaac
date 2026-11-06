@@ -45,7 +45,7 @@ import {
 } from '@yaac/shared/paths'
 import { buildCloneLinkExec, buildStatusWarmupExec } from '@yaac/shared/git'
 import { parseGitRemote } from '@yaac/shared/git-remote'
-import { fetchProjectCommit, fetchProjectOrigin, missingCredentialError, resolveProjectCredential, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
+import { fetchProjectCommit, fetchProjectOrigin, missingCredentialError, resolveProjectCredential, resolveProjectEnv, seedProjectOrigin, sshKeyMaterial } from '#domain/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { readLock } from '@yaac/shared/lock'
 import {
@@ -59,7 +59,6 @@ import {
   createCheckout,
   getDefaultBranch,
   isGitAuthError,
-  listRemoteBranches,
   remoteBranchExists,
   writeKnownHostsFile,
 } from '#domain/git'
@@ -852,16 +851,33 @@ export async function createWorkspace(
     })
   imageTask.catch(() => { /* awaited at the join */ })
 
-  const workspaceTask = (async (): Promise<string | null | undefined> => {
+  // The checkout leg first gives an origin with no branches its default one,
+  // so no workspace's push picks it (`seedEmptyOrigin`). That push changes
+  // the remote, so it starts only here, once the checks above (credential,
+  // egress allowlist, tool, the row claiming the id) have passed. Only a
+  // provisioning failure can still refuse the create after it.
+  const workspaceTask = (async (): Promise<string | undefined> => {
+    const seeded = fetched.then(() => seedProjectOrigin(projectId, gitUser).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (isGitAuthError(msg)) {
+        throw new ServerError(
+          'VALIDATION',
+          'the remote is empty, and the project\u2019s git credential cannot push the first commit '
+          + 'that gives it a default branch. Give the credential push access, or push a first '
+          + 'commit to the default branch yourself, then retry.',
+        )
+      }
+      throw new ServerError('INTERNAL', `could not give the empty remote its default branch: ${msg}`)
+    }))
     if (reuseCheckout) {
-      await fetched
+      await seeded
       emit(`Reusing existing workspace at ${wtDir}`, options)
       return undefined
     }
     const branch = `agent/${workspaceId}`
     const commit = options.commit
     if (commit !== undefined && (options.resume !== true || options.branch === undefined)) {
-      await fetched
+      await seeded
       await fetchProjectCommit(projectId, commit).catch((err: unknown) => {
         throw new ServerError('VALIDATION', err instanceof Error ? err.message : String(err))
       })
@@ -871,18 +887,15 @@ export async function createWorkspace(
     }
     if (refBranch !== undefined) {
       // A fresh create checks out from what the main clone has while the
-      // fetch runs, and checks the named branch once it lands. An empty repo
-      // has no branches yet, so its default is the one name a fresh create
-      // may name while it is missing.
+      // fetch runs, and checks the named branch once it lands.
       emit(`Creating workspace from ${refBranch}...`, options)
       const named = options.branch
       return await createCheckout(repo, wtDir, {
         branch,
         baseBranch: refBranch,
         remoteUrl,
-        fetched: fetched.then(async () => {
+        fetched: seeded.then(async () => {
           if (named === undefined || await remoteBranchExists(repo, named)) return
-          if (named === await getDefaultBranch(repo) && (await listRemoteBranches(repo)).length === 0) return
           throw new ServerError('VALIDATION', `branch "${named}" not found on origin.`)
         }),
       })
@@ -891,7 +904,7 @@ export async function createWorkspace(
     // branch, or from the default if origin no longer has that. The default
     // is then recorded as its base branch, since the webapp compares HEAD
     // against origin's copy of whatever the row names.
-    await fetched
+    await seeded
     const base = options.branch !== undefined && !(await remoteBranchExists(repo, options.branch))
       ? await getDefaultBranch(repo)
       : options.branch ?? await getDefaultBranch(repo)
@@ -907,7 +920,7 @@ export async function createWorkspace(
     // A spare's are read when it is claimed, against the branch it is
     // claimed for.
     if (options.prewarm === true) return
-    if (startCommit !== undefined && startCommit !== null) {
+    if (startCommit !== undefined) {
       await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId, workspaceId, startCommit })
     }
     await recordTrackedScratchDirs(projectId, workspaceId, refBranch ?? options.branch ?? options.commit, launch.scratchDirs)
