@@ -197,8 +197,10 @@ holds at most its bases' and ranges' changesets. All of it goes on
 teardown. Entries are never shared between workspaces: each
 is the output of a script the workspace's agent can shape.
 
-The body is capped by whole lines at 250 KB per file and 2 MB in all in the
-fill, and at 1 MB in the answer; a file's part the cap cuts short ends in a
+The body rides in the poll, rather than every part loading through `POST
+changes/diff`, since the Changes pane's find searches it. It is capped by
+whole lines at 250 KB per file and 2 MB in all in the fill, and at 1 MB in
+the answer; a file's part the cap cuts short ends in a
 `DIFF_CUT_LINE` line, so one huge file cannot leave every file after it
 with no diff. A part the fill's total cap cut is not kept, nor any after
 it, all of which lie past the answer's cap. Each answer names its reading
@@ -231,7 +233,22 @@ Each answer says how long its read took (`readMs`), and the webapp waits at
 least that long after an answer before polling again, but no more than 10
 seconds. The read's costs are measured by `changes-bench.test.ts` beside
 the changes tests, skipped unless `BENCH_REPO` names a checkout to read;
-its header says how to build the fixtures it was tuned on.
+its header says how to build the fixtures it was tuned on. On a checkout of
+this repo 683 changed files and a 5 MB body behind its base, under gVisor
+on NFS, the base pair's raw diff takes about 0.4s from trees alone (0.75s
+pairing renames), against 2–3s for its numstat and 4s for its body, and a
+few files' blobs about 0.2s, most of it process start-up. Raw diffs are
+read with `--no-abbrev`, since abbreviating each id probes the object store
+through the alternates, which took 3s on the same pair. There an idle poll
+took 1.2–1.5s, an edit to any file 2.4–2.8s, switching back to a base
+already held 1.3s, and the first poll after an unignored 5,000-file build
+directory appeared 2.3s. What stays costly: a poll after any change rescans
+the base pair's trees and pairs renames among its unpaired added and
+deleted files; raw lines cost about 145 bytes a file, so a changeset over
+about 15,000 files pages its scan's output after every edit; the folder
+count is one more walk of the working tree on every poll (about 0.8s on
+30,000 files); and the first read after a server restart reads back every
+pair's raw lines and an entry file of up to twice the live entries.
 
 An exec's output is capped (streamd cuts one at 4 MiB, and `podExec`
 rejects a cut one rather than pass it on), and a big checkout's first
