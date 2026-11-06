@@ -10,7 +10,7 @@
  * line runs straight except where a branch forks or merges.
  */
 import { FULL_COMMIT_PATTERN } from '@yaac/shared/steps'
-import type { GitLogCommit } from '@yaac/shared/types'
+import { WORKTREE_REF, type GitLogCommit } from '@yaac/shared/types'
 
 /** The one layout target of a workspace's Commits pane. */
 export const COMMITS_TARGET = 'commits'
@@ -76,16 +76,9 @@ export function layoutGraph(commits: Pick<GitLogCommit, 'sha' | 'parents'>[]): {
  *  compared against by default. */
 export const isCommit = (ref: string): boolean => FULL_COMMIT_PATTERN.test(ref)
 
-/** A compared ref as the strips show it: a local branch without its
- *  `refs/heads/`, and a commit by its short sha. */
+/** A compared ref as the strips show it: a commit by its short sha, and
+ *  the working tree by name. */
 export function refName(ref: string): string {
-  if (isCommit(ref)) return ref.slice(0, 7)
-  return ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref
-}
-
-/** What a pane compares against with no branch picked, for its "Compare
- *  with" reset: the fork branch, or the commit a workspace without one was
- *  created at. */
-export function defaultBaseLabel(baseBranch?: string, startCommit?: string): string {
-  return baseBranch ?? (startCommit ? `the start commit (${refName(startCommit)})` : 'the fork branch')
+  if (ref === WORKTREE_REF) return 'Working tree'
+  return isCommit(ref) ? ref.slice(0, 7) : ref
 }

@@ -55,6 +55,7 @@ export {
   Globe as PreviewIcon,
   ArrowLeft as NavBackIcon,
   ArrowRight as NavForwardIcon,
+  ArrowRight as RangeArrowIcon,
   RefreshCw as ReloadIcon,
   House as HomeIcon,
   Copy as CopyIcon,

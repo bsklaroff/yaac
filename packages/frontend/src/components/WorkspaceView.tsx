@@ -13,8 +13,8 @@ import { WorkspaceFiles } from '#components/WorkspaceFiles'
 import { WorkspaceFile } from '#components/WorkspaceFile'
 import { isPreviewTarget, portLabel, previewLabel, previewTarget, previewTargetPort } from '#lib/preview'
 import {
-  discardFileSavers, fileKey, fileTabLabels, fileTargetPath, flushFileSavers, isChangesTarget, isFileTarget,
-  isFilesTarget,
+  discardFileSavers, fileKey, fileTabLabels, fileTargetPath, flushFileSavers, isChangesTarget, isFileTarget, changesRange,
+  isFilesTarget, rangeLabel,
 } from '#lib/files'
 import { isCommitsTarget } from '#lib/commits'
 import {
@@ -107,7 +107,10 @@ function paneName(
     return previewLabel(previewPorts?.find((p) => p.containerPort === port) ?? port)
   }
   if (isFilesTarget(target)) return 'Files'
-  if (isChangesTarget(target)) return 'Changes'
+  if (isChangesTarget(target)) {
+    const range = changesRange(target)
+    return range ? rangeLabel(range) : 'Changes'
+  }
   if (isHistoryTarget(target)) return 'History'
   if (isCommitsTarget(target)) return 'Commits'
   if (isFileTarget(target)) return fileLabels?.[fileTargetPath(target)] ?? fileTargetPath(target)
@@ -895,22 +898,23 @@ export function WorkspaceView({
                 </div>
               ) : commits ? (
                 <div className="h-full w-full overflow-hidden rounded-md">
-                  <WorkspaceCommits workspaceId={id} baseBranch={owner?.baseBranch} startCommit={owner?.startCommit} />
+                  <WorkspaceCommits
+                    workspaceId={id}
+                    projectId={owner?.projectId ?? ''}
+                    baseBranch={owner?.baseBranch}
+                    startCommit={owner?.startCommit}
+                  />
                 </div>
               ) : explorer ? (
                 <div className="h-full w-full overflow-hidden rounded-md">
-                  {(() => {
-                    const ws = workspaces.find((s) => s.workspaceId === id)
-                    return (
-                      <WorkspaceFiles
-                        workspaceId={id}
-                        projectId={ws?.projectId ?? ''}
-                        baseBranch={ws?.baseBranch}
-                        startCommit={ws?.startCommit}
-                        changedOnly={isChangesTarget(target)}
-                      />
-                    )
-                  })()}
+                  <WorkspaceFiles
+                    workspaceId={id}
+                    projectId={owner?.projectId ?? ''}
+                    baseBranch={owner?.baseBranch}
+                    startCommit={owner?.startCommit}
+                    changedOnly={isChangesTarget(target)}
+                    range={changesRange(target)}
+                  />
                 </div>
               ) : (
                 <div className="relative h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">

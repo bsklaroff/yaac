@@ -57,7 +57,6 @@ import {
   getProjectRow,
   getProjectWorkspaceRows,
   getTimeZone,
-  applyWorkspaceEvent,
   getWorkspaceRow,
   listProjectSites,
   listQueuedWorkspaceRows,
@@ -95,9 +94,7 @@ import {
 import { loadToolAuthEntry, modelsForTool } from '#domain/auth'
 import { agentDriver, resolveAgentPermissionMode } from '#runtime/agents'
 import { liveAgents } from '#runtime/status'
-import { bundleCheckout, listRemoteBranches } from '#domain/git'
-import { fetchProjectOrigin } from '#domain/projects'
-import { testEnv } from '@yaac/shared/env'
+import { bundleCheckout } from '#domain/git'
 import { repoDir, workspaceDir } from '@yaac/shared/project-paths'
 import {
   formatSize,
@@ -111,6 +108,7 @@ import {
 import { workspacePrincipal, type Actor } from '#domain/access'
 import type { SessionRow, SiteRow, WorkspaceRow } from '#db'
 import { resolveCreate } from './create'
+import { setWorkspaceBase } from './base-branch'
 
 /** Who is asking — resolved by the transport and `mamaCaller`. */
 export interface MamaCaller {
@@ -1395,51 +1393,13 @@ async function runRename(caller: MamaCaller, request: MamaRequestInput): Promise
   return { ok: true, output: `Renamed ${workspaceId.slice(0, 8)} to "${stored ?? title}".` }
 }
 
-/** How long after one fetch of origin `set-base` may start another. */
-const SET_BASE_FETCH_INTERVAL_MS = 10_000
-
 /**
- * Whether `name` could name a branch under `git check-ref-format --branch`'s
- * rules, so `set-base` refuses one that never could without fetching.
- */
-function isBranchName(name: string): boolean {
-  return /^(?![-./])[^\p{Cc} ~^:?*[\\]+$/u.test(name)
-    && !/\.\.|@\{|\/[./]|\.lock(?:\/|$)|[/.]$/.test(name)
-    && name !== '@'
-}
-
-/**
- * Point the caller's reference branch (`workspaces.baseBranch`) at another
- * branch on origin, as when its work is stacked on another PR's. That is the
- * webapp's default diff base and what a workspace queued after it forks
- * from; the checkout itself is the agent's to rebase. A branch the main
- * clone lacks may have just been pushed, so origin is fetched before it is
- * refused, at most once per `SET_BASE_FETCH_INTERVAL_MS`. Only branch names
- * are taken, never revisions like `main~1`.
+ * Point the caller's base branch at another branch on origin
+ * (`setWorkspaceBase`), as when its work is stacked on another PR's.
  */
 async function runSetBase(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
-  const branch = request.body.trim()
-  if (branch === '') return { ok: false, error: 'set-base needs a branch' }
-  if (!isBranchName(branch)) return { ok: false, error: `"${branch}" is not a branch name` }
-  const repo = repoDir(caller.projectId)
-  const onOrigin = async (): Promise<boolean> => (await listRemoteBranches(repo)).includes(branch)
-  if (!await onOrigin()) {
-    if (!testEnv.e2eSkipFetch) {
-      await fetchProjectOrigin(caller.projectId, { unlessWithinMs: SET_BASE_FETCH_INTERVAL_MS })
-    }
-    if (!await onOrigin()) {
-      return {
-        ok: false,
-        error: `branch "${branch}" not found on origin (pushed just now? retry in ${SET_BASE_FETCH_INTERVAL_MS / 1000}s)`,
-      }
-    }
-  }
-  await applyWorkspaceEvent({
-    type: 'base-branch-resolved',
-    projectId: caller.projectId,
-    workspaceId: caller.workspaceId,
-    baseBranch: branch,
-  })
+  if (request.body.trim() === '') return { ok: false, error: 'set-base needs a branch' }
+  const { baseBranch: branch } = await setWorkspaceBase(caller.principal, caller.workspaceId, request.body)
   return {
     ok: true,
     output: `${caller.workspaceId.slice(0, 8)} is now based on ${branch}: the webapp diffs it `

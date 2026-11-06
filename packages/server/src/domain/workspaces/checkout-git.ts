@@ -37,59 +37,82 @@ export async function checkoutBlobAt(
   return Buffer.from(stdout.slice(newline + 1), 'base64')
 }
 
-/** Field separator in the log's records, which are NUL-terminated. */
+/** Field separator in the log's records. */
 const FS = '\x1f'
+/** Starts each of the log's records, whose body runs over many lines. */
+const RS = '\x1e'
+/** The most of one commit's body the log carries, and of all its bodies
+ *  together, in bytes; a body cut short ends in `…`. Together they keep
+ *  the log well under an exec's 4 MiB output cap however long its messages
+ *  run, and its 10-second poll small. */
+const MAX_BODY_BYTES = 1024
+const MAX_BODIES_BYTES = 512 * 1024
+
+/**
+ * awk that cuts the log's bodies to `m` bytes each and `t` in all. A record
+ * starts at a header line, `r`, a full commit id and `f`; any other line
+ * loses its `r` and `f`, so a message can neither start a record nor split
+ * a field. A line crossing a cap keeps what fits before the `…`. Past `t`,
+ * a body is `…` alone, which still says it has one. A blank line that does
+ * not fit is dropped rather than cut, since a commit with no body still
+ * prints one.
+ */
+const CUT_BODIES = 'index($0, r) == 1 && match($0, /^.[0-9a-f]+/) && (RLENGTH == 41 || RLENGTH == 65) '
+  + '&& substr($0, RLENGTH + 1, 1) == f { n = 0; c = 0; print; next } '
+  + 'c { next } { gsub(r, ""); gsub(f, ""); l = length($0) + 1 } '
+  + 'n + l <= m && b + l <= t { print; n += l; b += l; next } l == 1 { next } '
+  + '{ k = m - n; if (t - b < k) k = t - b; if (k > 1) print substr($0, 1, k - 1); print "…"; c = 1; if (k > 0) b += k }'
 
 /**
  * The Commits pane's history (`WorkspaceGitLog`): up to `limit` commits
- * reachable from HEAD or the compared branch, and with `branches` the
- * checkout's branches. The branch is picked by the changes script's own
- * `RESOLVE_BASE_SH`, so the pane and the git status strip always name the
- * same ref. A named branch it cannot use exits CHANGES_BASE_UNRESOLVED; a
- * default it cannot use leaves the log to HEAD alone.
+ * reachable from HEAD or the base ref, each with its message's body. The
+ * ref is checked by the changes script's own `RESOLVE_BASE_SH`, so the pane
+ * and the git status strip always name the same one; a base that shares no
+ * history with HEAD leaves the log to HEAD alone. Bodies are cut inside the
+ * workspace (`CUT_BODIES`); a commit's pane shows its whole message.
  */
 export async function checkoutLog(
   jobName: string,
-  { base, defaultBase, limit, branches }: { base?: string; defaultBase?: string; limit: number; branches: boolean },
+  { defaultBase, limit }: { defaultBase?: string; limit: number },
 ): Promise<WorkspaceGitLog> {
   const driver = workspaceDriver()
-  const script = `cd ${driver.workspacePaths(jobName).workspaceDir} || exit 3; ${RESOLVE_BASE_SH}`
+  const { workspaceDir, scratchDir } = driver.workspacePaths(jobName)
+  const script = `cd ${workspaceDir} || exit 3; ${RESOLVE_BASE_SH}`
     + 'sha=; [ -z "$ref" ] || sha=$(git rev-parse -q --verify "$ref^{commit}") || exit 5; '
     // An unborn HEAD (an empty repo's checkout) has no history of its own.
     + 'head=$(git rev-parse -q --verify HEAD); '
-    + 'printf "REF %s\\nHEAD %s\\n" "$ref" "$head"; '
-    + '[ "$4" != 1 ] || git for-each-ref --format="%(refname)" refs/heads refs/remotes/origin || exit 5; '
-    + 'printf "LOG\\n"; '
-    + '[ -z "$head$sha" ] || exec git log -z --date-order -n "$3" --decorate-refs-exclude=refs/remotes/origin/HEAD '
-    + `--format="%H${FS}%P${FS}%an${FS}%at${FS}%D${FS}%s" $head $sha --`
+    + 'printf "REF %s\\nHEAD %s\\nLOG\\n" "$ref" "$head"; '
+    + `[ -z "$head$sha" ] && exit 0; o=${scratchDir}/yaac-log.$$; `
+    + 'git log --date-order -n "$3" --decorate-refs-exclude=refs/remotes/origin/HEAD '
+    + `--format="${RS}%H${FS}%P${FS}%an${FS}%at${FS}%D${FS}%s%n%b" $head $sha -- > $o || { rm -f $o; exit 5; }; `
+    + `LC_ALL=C awk -v r="$(printf '\\036')" -v f="$(printf '\\037')" -v m=${MAX_BODY_BYTES} -v t=${MAX_BODIES_BYTES} `
+    + `${shellQuote(CUT_BODIES)} $o; rm -f $o`
   const { stdout } = await driver.exec(
     jobName,
-    `sh -c ${shellQuote(script)} yaac ${shellQuote(base ?? '')} ${shellQuote(defaultBase ?? '')} ${limit + 1} ${branches ? 1 : 0}`,
+    `sh -c ${shellQuote(script)} yaac '' ${shellQuote(defaultBase ?? '')} ${limit + 1}`,
   )
   const split = stdout.indexOf('\nLOG\n')
-  const [refLine = '', headLine = '', ...refnames] = stdout.slice(0, split).split('\n')
+  const [refLine = '', headLine = ''] = stdout.slice(0, split).split('\n')
   if (!refLine.startsWith('REF ') || !headLine.startsWith('HEAD ')) throw new Error('checkout log read: unexpected output')
-  const commits = stdout.slice(split + '\nLOG\n'.length).split('\0').filter((r) => r !== '').map((record) => {
-    const [sha = '', parents = '', author = '', time = '', refs = '', subject = ''] = record.replace(/^\n/, '').split(FS)
+  // A record starts at a line opening with RS; one inside a subject stays.
+  const commits = stdout.slice(split + '\nLOG'.length).split(`\n${RS}`).slice(1).map((record) => {
+    // A commit with no body is its header line alone.
+    const [header = '', ...body] = record.split('\n')
+    // The subject is last, so a separator in it stays part of it.
+    const [sha = '', parents = '', author = '', time = '', refs = '', ...subject] = header.split(FS)
     return {
       sha,
       parents: parents ? parents.split(' ') : [],
       author,
       time: Number(time),
-      subject,
+      subject: subject.join(FS),
+      body: body.join('\n').trim(),
       refs: refs ? refs.split(', ') : [],
     }
   })
   return {
     ref: refLine.slice('REF '.length) || null,
     head: headLine.slice('HEAD '.length) || null,
-    ...(branches ? {
-      branches: refnames.flatMap((r) => {
-        if (r.startsWith('refs/heads/')) return [r]
-        const name = r.slice('refs/remotes/'.length)
-        return name === 'origin/HEAD' ? [] : [name]
-      }),
-    } : {}),
     commits: commits.slice(0, limit),
     more: commits.length > limit,
   }

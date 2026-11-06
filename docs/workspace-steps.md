@@ -121,9 +121,9 @@ Every workspace records the commit its checkout was created at
 (`workspaces.startCommit`). A create names at most one of a branch and a full
 commit id (40 hex digits, or 64 in a SHA-256 repository). One at a branch
 starts at its tip, and the branch is its **base branch**: what the changes
-view diffs against, what `yaac-mama set-base` moves, and what a queued child
-forks from. One at a commit has no base branch until `yaac-mama set-base`
-gives it one; meanwhile its changes are diffed against its start commit, a
+view diffs against, what the Commits pane's picker and `yaac-mama set-base`
+move, and what a queued child forks from. One at a commit has no base branch
+until one of those gives it one; meanwhile its changes are diffed against its start commit, a
 restart whose checkout is gone recreates it there, and a queued child starts
 there too. A commit the main clone lacks is fetched by id
 (`fetchCommit` in `#domain/git`), which GitHub serves for any commit

@@ -9,9 +9,11 @@ kinds of pane, all ordinary layout leaves next to terminals:
 - **`changes`**: the Changes pane, one per workspace: the workspace's review
   diff. It is the same component as the explorer (`WorkspaceFiles` with
   `changedOnly`), listing only the changed files, each with its diff.
+- **`changes:<from>...<to>`**: the same pane on any range (see "Ranges"),
+  as many as are open.
 - **`commits`**: the Commits pane, one per workspace (`WorkspaceCommits`):
-  the history of HEAD and of the branch it is compared against, as a graph
-  beside a commit list.
+  the history of HEAD and of the branch the workspace is based on, as a
+  graph beside a commit list. Its strip picks that branch.
 - **`file:<path>`**: one editor pane per open file (`<path>` is relative to
   the workspace root). Side-by-side files, tabs, drag, Alt-W, tab cycling and
   persistence across reloads all come from the layout, so there is no second
@@ -62,6 +64,7 @@ macOS virtiofs, the same process user under containerless).
 | `DELETE /workspace/:id/file?path=` | deletes a file, a link (never its target) or a folder, recursively |
 | `GET /workspace/:id/changes?base=&diff=&listing=&known=` | `WorkspaceChanges`: `{ base, work, baseResolved, files, diff, truncated, branch, comparison, listing?, readMs }`; `diff=0` leaves the `diff` field out, `listing=paths\|full` adds `WorkspaceFiles` unless its version is `known` |
 | `POST /workspace/:id/changes/diff` `{ base, work, files, skip? }` | `{ diff }`: more of the reading `base` and `work` name — the parts of `files` (each `{ path, oldPath? }`, at most 200), or with `skip` one file's part after its first `skip` lines; 404 once either tree is gone |
+| `GET /workspace/:id/compare?from=&to=` | `WorkspaceComparison`: `{ base, work, baseResolved, files, diff, truncated, commit? }`, the diff from the merge base of `from` and `to` to `to`, or with no `from`, `to` as `git show` shows it (see "Ranges"); 400 when a ref does not resolve or the two share no history |
 | `GET /workspace/:id/file-at?path=&rev=` | `{ exists, content }`: the file at commit `rev` (a full object id), `content` null when binary or over 1 MiB |
 
 ### Changes
@@ -69,11 +72,13 @@ macOS virtiofs, the same process user under containerless).
 The webapp polls one route per workspace, `changes`, for the diff, the
 status bar's counts and the explorer's listing. The changes are everything
 that differs from the **diff base**: the merge
-base of HEAD with the explorer's picked branch, else with the branch the
-workspace forked from, or the one its agent later named with `yaac-mama
-set-base` (`workspaces.baseBranch`, as `origin/<base>`: every way of setting
-it checks origin has it, and a local copy is never kept current), else, for
-a workspace created at a commit with no base branch, that commit (`workspaces.startCommit`, docs/workspace-steps.md). One script (`changes.ts` in `#domain/workspaces`)
+base of HEAD with the workspace's base branch (`workspaces.baseBranch`, as
+`origin/<base>`: every way of setting it checks origin has it, and a local
+copy is never kept current), else, for a workspace created at a commit with
+no base branch, that commit (`workspaces.startCommit`,
+docs/workspace-steps.md). The base branch is the one the workspace forked
+from until the Commits pane's picker or `yaac-mama set-base` moves it
+(`setWorkspaceBase`). One script (`changes.ts` in `#domain/workspaces`)
 runs inside the workspace through the driver's `exec`, under either driver. It
 runs `git add -A` into a private index at a stable scratch path, so the
 whole working tree is diffed without touching the agent's index, and git's
@@ -226,6 +231,35 @@ runs `git cat-file` on `<base>:<path>` inside the workspace (the old path for
 a rename). The commit is the `base` the changes answer named, so the text
 never changes and the client caches it for good.
 
+### Ranges
+
+A Changes pane can show any range instead of the workspace's own changes.
+Its target names it, `changes:<from>...<to>` (a ref name holds no `..`, so
+the first `...` splits it), and each end is a branch on origin (by name,
+tried as `origin/<name>` before itself), a commit, or `HEAD`, which is
+always the checkout's own and never `origin/HEAD`. The newer end may also be
+`:worktree`, the working tree, uncommitted work included; `:` cannot appear
+in a ref name.
+
+A range compares as GitHub compares branches: from the merge base of its
+ends to the newer one, so it shows what `to` adds, and two commits on one
+line of history diff exactly. With no `from` it is one commit, diffed
+against its first parent (a merge shows what it brought in) or, for a root
+commit, against the empty tree, and the answer carries the commit's message,
+author and parents for the pane's header.
+
+A range ending at the working tree is the `changes` read with `base` set to
+`from`, polled as a query of its own; the script's caches and the server's
+held reading are one per workspace, so while such a pane is on screen
+beside the workspace's own readers each poll reads the base-dependent
+sections in full. Any other range is `compare`, a separate script
+(`readComparison`) that reads no working tree, so it touches none of those
+caches. Its body is capped as the poll's is, and its `base` and `work` are
+the merge base and `to`'s commit, so `/changes/diff` pages the rest
+unchanged. A range between two full commit ids never changes and is read
+once; one naming a branch or HEAD is read again every 30 seconds while on
+screen.
+
 ### Git status bar
 
 `GitStatusBar`, above a workspace's panes, shows the reference branch and how
@@ -249,39 +283,55 @@ bar shows `fetchedAt`, the newest mtime among:
 ### Commits
 
 `GET /workspace/:id/commits` runs `git log --date-order` inside the workspace
-over HEAD and the compared branch (`checkoutLog`), so the newest `limit`
+over HEAD and the diff base's ref (`checkoutLog`), so the newest `limit`
 commits (200 by default, `MAX_LOG_COMMITS` = 2,000 at most) come back
-children before parents, each with its parents, author, time, subject and
-decorations, plus HEAD's commit and whether older ones were left out. The
-branch is picked by `RESOLVE_BASE_SH`, the same shell the changes script
-runs: `base`, tried as `origin/<name>` before itself, else the diff base's
-default above, each accepted only if it shares history with HEAD. So the pane, the Changes pane and the git status bar always name the
-same ref, and a branch one of them refuses the others refuse too.
-`branches=1` adds the checkout's branches for the pane's picker: local ones as
-`refs/heads/<name>`, which no origin branch can shadow, and origin's as
-`origin/<name>`. The picker asks for them only while it is open, since a repo
-with hundreds of branches would otherwise send them with every poll.
+children before parents, each with its parents, author, time, subject,
+body and decorations, plus HEAD's commit and whether older ones were left
+out. Bodies are cut inside the workspace to 1 KB each and 512 KB in all,
+a cut one ending in `…` (past the total, a body is `…` alone), so even
+2,000 commits of bot release notes stay far under the 4 MiB exec output
+cap and the 10-second poll stays small; a commit's own pane shows its whole
+message. A body line loses any of the log's separator bytes, so a message
+can neither add a row nor split a field. The
+ref is checked by `RESOLVE_BASE_SH`, the same shell the changes script
+runs, and kept only if it shares history with HEAD, so the pane, the
+Changes pane and the git status bar always name the same ref.
 
 The client lays out the graph itself (`layoutGraph` in `#lib/commits`). Each
 lane waits for one commit; a commit takes the lane waiting for it, its first
 parent continues that lane and a merge's other parents join or open one, so a
 branch keeps one column and color from tip to fork point and lanes never
 shift sideways. A layout depends only on the commits before a row, so "load
-older" leaves the rows already shown in place. Rows are a fixed height, and
-each draws its half-row edges as SVG paths. Commits not reachable from HEAD's
+older" leaves the rows already shown in place. Each commit's line is a fixed
+height and draws its half-row edges as SVG paths; a commit whose message is
+unfolded grows below its line, where the lanes leaving it run straight on to
+the next row. Commits not reachable from HEAD's
 commit (those it is behind by) are dimmed. "Load older" stops at the cap,
 which the pane then names. Of each commit's decorations only HEAD (labelled
-plainly `HEAD`, not by its generated `agent/<id>` branch), tags, origin's
-fork branch and the compared branch get a pill, so a checkout with many
-branches leaves the subjects room.
+plainly `HEAD`, not by its generated `agent/<id>` branch), tags and the
+base branch get a pill, so a checkout with many branches leaves the
+subjects room.
 
-The compared branch is the Changes pane's `changesBase` pick, so choosing it
-in either pane moves both and the git status bar. It is a view setting held
-in the browser's memory, not the workspace's base branch. A pick the log
-cannot compare against keeps the pane's branch strip up over the error, so
-another branch can be picked from there. The pane polls every 10
-seconds while on screen, as the bar does, and unmounts off it as the explorer
-does.
+A commit with a body has a chevron that unfolds its message under its row,
+and the strip has a button that unfolds or folds them all (the unfolded
+commits are kept in the pane's `paneView`). Clicking a commit opens it in a
+Changes pane as `git show` shows it (`changes:...<sha>`, see "Ranges").
+Ticking two commits, or Cmd/Ctrl-clicking them, offers their range in the
+strip, older to newer; a third replaces the first ticked. A commit's context
+menu also compares it with the working tree or HEAD, and copies its id.
+
+The pane's strip picks the workspace's base branch from origin's branches
+(the project's branch list, refreshed while the picker is open). A pick is
+confirmed in a dialog, since it moves the diff base of every pane and the
+git status bar, and what is queued under the workspace forks from it; the
+commits themselves stay where they are. `POST /workspace/:id/base` then
+records it (`setWorkspaceBase`, which `yaac-mama set-base` runs too):
+a branch the main clone lacks is fetched for, at most once per 10 seconds,
+and a running workspace's `origin/*` is refreshed before the answer, so its
+next poll finds the branch. A base the log cannot use keeps the strip up
+over the error, so another can be picked from there. The pane polls every
+10 seconds while on screen, as the bar does, and unmounts off it as the
+explorer does.
 
 ### Confinement
 
@@ -416,8 +466,6 @@ dropped from the queue or stopped mid-run (its process group killed), so
 opening the Changes pane during a status-bar poll waits only for its own
 read. A failed poll leaves the last answer cached, so the status bar shows
 the error in its place and both panes mark their tree "Not up to date".
-When a picked base stops resolving (its branch was pruned), they offer to
-compare with the fork branch again.
 
 - **Tree.** Only rows under expanded folders render, so a large repo needs no
   virtualization. Files get an icon and tint from `languageForPath`. A
@@ -442,9 +490,16 @@ compare with the fork branch again.
   a file's row opens or folds its diff (remembered per file across both
   layouts), and only its name opens it. A header button collapses every diff
   while any is open, and shows them all once none is. A strip shows the diff
-  base with a branch picker, the shown files' totals overall and per stage,
+  base, the shown files' totals overall and per stage,
   and what the diff leaves out (only uncommitted work when no fork point
-  resolves, a body cut at 1 MB). Past the cap the pane loads the rest as
+  resolves, a body cut at 1 MB). Its "Compare…" opens a range pane from the
+  base to the working tree. A range pane's strip has a picker per end
+  (origin's branches, HEAD, a typed commit id, the working tree for the
+  newer end, and for the older end of a range ending at a commit, "Parent",
+  which goes back to that one commit); a pick retargets that pane in place, or focuses the pane
+  already showing the new range. "Review diff" leads back to the
+  workspace's own. A single commit's pane is headed by its message, author
+  and parents, each parent opening its own pane. Past the cap the pane loads the rest as
   it scrolls (`useChangeDiffs`): a file the body left out loads its part
   once its diff comes within a screen of view, batched with the others in
   view, and the end of a cut part loads the next page of it, so every diff

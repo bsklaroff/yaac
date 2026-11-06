@@ -1121,6 +1121,33 @@ export interface WorkspaceDiff {
   truncated: boolean
 }
 
+/** The working tree as the newer end of a compared range: what the Changes
+ *  pane diffs against by default. `:` cannot appear in a ref name, so no
+ *  branch can be mistaken for it. */
+export const WORKTREE_REF = ':worktree'
+
+/**
+ * The diff between two refs of a checkout (`GET /workspace/:id/compare`):
+ * from the merge base of `from` and `to` to `to`, or, with no `from`, from
+ * `to`'s first parent, as `git show` diffs a commit. `work` is `to`'s
+ * commit, and every change counts as committed.
+ */
+export interface WorkspaceComparison extends WorkspaceDiff {
+  /** `to`'s commit, given when no `from` was. */
+  commit?: CommitDetail
+}
+
+/** A commit as `git show` heads it. */
+export interface CommitDetail {
+  sha: string
+  parents: string[]
+  author: string
+  /** Author time, in Unix seconds. */
+  time: number
+  /** The whole message, subject and body. */
+  message: string
+}
+
 /** The line ending a file's part of `WorkspaceDiff.diff` that was cut short.
  *  No line of git's diff output can equal it. */
 export const DIFF_CUT_LINE = '@@CUT@@'
@@ -1158,20 +1185,16 @@ export interface BranchComparison {
 
 /**
  * A workspace's commit history for the Commits pane: the newest `limit`
- * commits reachable from HEAD or the compared branch, children before
+ * commits reachable from HEAD or the base branch, children before
  * parents and otherwise newest first (`git log --date-order`), so the
  * client can draw the graph from `parents` alone.
  */
 export interface WorkspaceGitLog {
-  /** The ref the compared branch resolved to (`origin/main`); null when
-   *  no branch was named or the default one does not resolve. */
+  /** The base ref (`origin/main`, or the start commit of a workspace
+   *  created at one); null when it shares no history with HEAD. */
   ref: string | null
   /** The commit HEAD is at; null in an empty repo. */
   head: string | null
-  /** When asked for, the checkout's branches for the compare picker: local
-   *  ones as `refs/heads/<name>` (so a same-named origin branch cannot
-   *  shadow them) and origin's as `origin/<name>`. */
-  branches?: string[]
   commits: GitLogCommit[]
   /** True when older commits were left out by `limit`. */
   more: boolean
@@ -1187,6 +1210,9 @@ export interface GitLogCommit {
   /** Author time, in Unix seconds. */
   time: number
   subject: string
+  /** The message after its subject, empty when there is none; a long one
+   *  is cut short, ending in `…`. */
+  body: string
   /** The refs pointing at it, as `git log --decorate` names them
    *  (`HEAD -> agent/x`, `origin/main`, `tag: v1`). */
   refs: string[]

@@ -1,9 +1,9 @@
 import { create } from 'zustand'
 import { replaceEqualDeep } from '@tanstack/react-query'
-import { addColumn, isPaneLayout, removeTarget, renameTargets, singleColumn, withActive, type PaneLayout } from '#lib/layout'
+import { addColumn, isPaneLayout, paneTargets, removeTarget, renameTargets, singleColumn, withActive, type PaneLayout } from '#lib/layout'
 import { previewTarget } from '#lib/preview'
 import { stepTarget } from '#lib/steps'
-import { CHANGES_TARGET, FILES_TARGET, fileKey, fileTarget, placeFile } from '#lib/files'
+import { CHANGES_TARGET, FILES_TARGET, changesTarget, fileKey, fileTarget, placeFile, type ChangesRange } from '#lib/files'
 import { HISTORY_TARGET } from '#lib/panes'
 import { COMMITS_TARGET } from '#lib/commits'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '#lib/shortcuts'
@@ -330,6 +330,8 @@ export interface PaneView {
   /** In the Changes pane, where each file's diff starts folded under its
    *  row: the files whose diff is open. */
   openDiffs?: string[]
+  /** In the Commits pane: the commits whose message is unfolded. */
+  openCommits?: string[]
 }
 
 /** Which pane of which workspace a `paneView` entry belongs to. */
@@ -527,6 +529,11 @@ interface UiState {
   /** Open or focus a workspace's Changes pane, its filter cleared and
    *  focused, so what it totals is every change (as the status bar does). */
   openChanges: (workspaceId: string) => void
+  /** Open or focus a Changes pane on a range (`changesTarget`). */
+  openRange: (workspaceId: string, range: ChangesRange) => void
+  /** Point a range's Changes pane at another range, in place; if that one
+   *  is open already, close this one and focus it. */
+  retargetRange: (workspaceId: string, from: string, to: string) => void
   openCommits: (workspaceId: string) => void
   /** Open or focus a workspace's file explorer. */
   openFiles: (workspaceId: string) => void
@@ -594,11 +601,6 @@ interface UiState {
   /** Per-workspace active pane: the visible tab in tabs mode, the
    *  last-focused pane in tiles mode. Cycle shortcuts start from it. */
   activeTabs: Record<string, string>
-  /** Per-workspace branch changes are diffed against; absent means the
-   *  workspace's fork base. In memory only. */
-  changesBase: Record<string, string>
-  /** Set a workspace's diff base branch; undefined resets it. */
-  setChangesBase: (workspaceId: string, branch: string | undefined) => void
   /** View state of panes that unmount off-screen, by `paneViewKey`. */
   paneView: Record<string, PaneView>
   /** Merge into a pane's view state. */
@@ -908,7 +910,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   // Every saved field's default goes above this line, so a loaded value wins.
   ...loadPersisted(),
   activeTabs: {},
-  changesBase: {},
   paneView: {},
   findPending: null,
   dirtyFiles: {},
@@ -1125,6 +1126,17 @@ export const useUiStore = create<UiState>((set, get) => ({
       findPending: CHANGES_TARGET,
     }
   }),
+  openRange: (workspaceId, range) => set((s) => openSpecialPane(s, workspaceId, changesTarget(range))),
+  retargetRange: (workspaceId, from, to) => set((s) => {
+    const cur = layoutOf(s.layouts, workspaceId)
+    const layout = paneTargets(cur).includes(to)
+      ? removeTarget(cur, from)
+      : cur.map((g) => ({ tabs: g.tabs.map((t) => (t === from ? to : t)), active: g.active === from ? to : g.active }))
+    return {
+      layouts: { ...s.layouts, [workspaceId]: withActive(layout, to) },
+      activeTabs: { ...s.activeTabs, [workspaceId]: to },
+    }
+  }),
   openFiles: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, FILES_TARGET)),
   openHistory: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, HISTORY_TARGET)),
   openCommits: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, COMMITS_TARGET)),
@@ -1162,12 +1174,6 @@ export const useUiStore = create<UiState>((set, get) => ({
       ? s
       : { activeTabs: { ...s.activeTabs, [workspaceId]: target } }
   )),
-  setChangesBase: (workspaceId, branch) => set((s) => {
-    const next = { ...s.changesBase }
-    if (branch) next[workspaceId] = branch
-    else delete next[workspaceId]
-    return { changesBase: next }
-  }),
   setPaneView: (key, patch) => set((s) => {
     const cur = s.paneView[key] ?? {}
     const next = { ...cur, ...patch }

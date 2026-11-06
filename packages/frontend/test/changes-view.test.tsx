@@ -1,9 +1,9 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { act, screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react'
-import type { WorkspaceChanges, WorkspaceFiles as WorkspaceFilesData } from '@yaac/shared/types'
+import { WORKTREE_REF, type WorkspaceChanges, type WorkspaceComparison, type WorkspaceFiles as WorkspaceFilesData } from '@yaac/shared/types'
 import { WorkspaceFiles } from '#components/WorkspaceFiles'
 import { GitStatusBar } from '#components/GitStatusBar'
-import { CHANGES_TARGET, FILES_TARGET } from '#lib/files'
+import { CHANGES_TARGET, FILES_TARGET, changesTarget, type ChangesRange } from '#lib/files'
 import { useWorkspaceChanges } from '#lib/useWorkspaceChanges'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { IS_MAC } from '#lib/platform'
@@ -21,7 +21,7 @@ import { intersect, intersection, observedElements } from './setup'
 const CHANGES = 'GET /api/workspace/s1/changes'
 const VIEW = paneViewKey('s1', FILES_TARGET)
 const CHANGES_VIEW = paneViewKey('s1', CHANGES_TARGET)
-const BASE_TRIGGER = 'Choose the branch changes are compared against'
+const BASE = 'The branch changes are compared against'
 
 const LISTING: WorkspaceFilesData = {
   version: 'v1',
@@ -75,8 +75,6 @@ const PAYLOAD: WorkspaceChanges = {
 }
 
 let server: FetchMock
-const basesAsked = (): (string | undefined)[] =>
-  server.called(CHANGES).map((c) => c.query.get('base') ?? undefined)
 
 
 /** The changes route's answer: `payload`, without its diff body under
@@ -91,13 +89,12 @@ const reply = (payload: WorkspaceChanges) => ({ query }: { query: URLSearchParam
 beforeEach(() => {
   server = mockFetch({
     [CHANGES]: reply(PAYLOAD),
-    'GET /api/project/proj/branches': { branches: ['main', 'dev'], defaultBranch: 'main' },
   })
 })
 
 afterEach(() => {
   cleanup()
-  useUiStore.setState({ paneView: {}, changesBase: {}, layouts: {}, activeTabs: {}, findPending: null, filesFontSize: 12 })
+  useUiStore.setState({ paneView: {}, layouts: {}, activeTabs: {}, findPending: null, filesFontSize: 12 })
 })
 
 const explorer = <WorkspaceFiles workspaceId="s1" projectId="proj" baseBranch="main" />
@@ -232,37 +229,20 @@ describe('WorkspaceFiles changes', () => {
     expect(screen.getByLabelText('Collapse all changes')).toBeTruthy()
   })
 
-  it('picks the diff base, and says what an unresolved base or a cut diff leaves out', async () => {
+  it('names the diff base, and says what an unresolved base or a cut diff leaves out', async () => {
     server.route(CHANGES, reply({ ...PAYLOAD, baseResolved: false, truncated: true }))
     renderChanges()
     await waitFor(() => expect(screen.getByText('uncommitted only')).toBeTruthy())
     expect(screen.getByText('diff truncated (large changeset)')).toBeTruthy()
-    expect(screen.getByTitle(BASE_TRIGGER).textContent).toContain('main')
-
-    fireEvent.click(screen.getByTitle(BASE_TRIGGER))
-    await waitFor(() => expect(screen.getByRole('listbox')).toBeTruthy())
-    fireEvent.click(within(screen.getByRole('listbox')).getByText('dev'))
-    expect(useUiStore.getState().changesBase.s1).toBe('dev')
-    await waitFor(() => expect(basesAsked()).toContain('dev'))
-
-    server.route(CHANGES, reply({ ...PAYLOAD, files: [], diff: '', baseResolved: false }))
-    useUiStore.getState().setChangesBase('s1', 'main')
-    await waitFor(() => expect(screen.getByText('Nothing uncommitted')).toBeTruthy())
-    // The picker stays reachable with nothing to list.
-    expect(screen.getByTitle(BASE_TRIGGER)).toBeTruthy()
+    expect(screen.getByTitle(BASE).textContent).toBe('origin/main')
   })
-  // A workspace created at a commit has no fork branch: its base is that
-  // commit, named by its short sha, and a failed pick goes back to it.
-  it('names a commit base by its short sha, and offers it back from a failed pick', async () => {
+
+  // A workspace created at a commit has no base branch: its base is that
+  // commit, named by its short sha.
+  it('names a commit base by its short sha', async () => {
     const start = 'c0ffee'.padEnd(40, '0')
-    server.route(CHANGES, (call: { query: URLSearchParams }) => (
-      call.query.get('base') === 'gone' ? serverError('VALIDATION', 'no diff base', 400) : reply(PAYLOAD)(call)
-    ))
     renderWithClient(<WorkspaceFiles workspaceId="s1" projectId="proj" startCommit={start} changedOnly />)
-    await waitFor(() => expect(screen.getByTitle(BASE_TRIGGER).textContent).toBe('c0ffee0'))
-    act(() => useUiStore.getState().setChangesBase('s1', 'gone'))
-    fireEvent.click(await screen.findByText('Compare with the start commit (c0ffee0)'))
-    expect(useUiStore.getState().changesBase.s1).toBeUndefined()
+    await waitFor(() => expect(screen.getByTitle(BASE).textContent).toBe('c0ffee0'))
   })
 
   // The list below the header scales as a whole, diffs included, so its
@@ -402,7 +382,7 @@ describe('WorkspaceFiles changes, at scale', () => {
     renderWithClient(<><GitStatusBar workspaceId="s1" />{explorer}{changesPane}</>, client)
     await waitFor(() => expect(screen.getByText('needle1')).toBeTruthy())
     const active = client.getQueryCache().findAll({ queryKey: ['changes', 's1'], type: 'active' })
-    expect(active.map((q) => q.queryKey)).toEqual([['changes', 's1', null]])
+    expect(active.map((q) => q.queryKey)).toEqual([['changes', 's1']])
     // Mounted together, they ask for everything any of them wants at once.
     expect(server.called(CHANGES).map((c) => c.query.toString())).toEqual(['diff=1&listing=full'])
   })
@@ -529,25 +509,22 @@ describe('GitStatusBar changes', () => {
   })
 
   // A failed poll keeps the last answer in the cache; neither reader may
-  // pass it off as current. A pick whose branch went away offers a way back.
+  // pass it off as current.
   it('says when a poll fails instead of showing the last answer', async () => {
-    const gone = serverError('VALIDATION', 'base ref "gone" gives no diff base in this workspace', 400)
-    server.route(CHANGES, (call: { query: URLSearchParams }) => (
-      call.query.get('base') === 'gone' ? gone : reply(PAYLOAD)(call)
-    ))
     const client = testQueryClient()
     const view = renderWithClient(<><GitStatusBar workspaceId="s1" />{explorer}</>, client)
     await screen.findByTitle('Review changes')
     await waitFor(() => expect(screen.getByText('README.md')).toBeTruthy())
 
-    act(() => useUiStore.getState().setChangesBase('s1', 'gone'))
+    server.route(CHANGES, () => serverError('INTERNAL', 'origin/main does not resolve', 500))
+    await act(() => client.refetchQueries({ queryKey: ['changes', 's1'] }))
     await waitFor(() => expect(screen.getByText(/Git status unavailable/)).toBeTruthy())
     expect(screen.queryByTitle('Review changes')).toBeNull()
-    expect(screen.getByText(/Not up to date: base ref "gone"/)).toBeTruthy()
+    expect(screen.getByText(/Not up to date: origin\/main does not resolve/)).toBeTruthy()
 
-    fireEvent.click(screen.getByText('Compare with main'))
+    server.route(CHANGES, reply(PAYLOAD))
+    await act(() => client.refetchQueries({ queryKey: ['changes', 's1'] }))
     await waitFor(() => expect(screen.queryByText(/Not up to date/)).toBeNull())
-    expect(useUiStore.getState().changesBase.s1).toBeUndefined()
     await screen.findByTitle('Review changes')
 
     // The diffs a failed fetch never brought are not shown as loading.
@@ -574,3 +551,77 @@ describe('GitStatusBar changes', () => {
     expect(new Set(server.calls.map((c) => c.path))).toEqual(new Set(['/api/workspace/s1/changes']))
   })
 })
+
+describe('a Changes pane on a range', () => {
+  const COMPARE = 'GET /api/workspace/s1/compare'
+  const sha = (c: string): string => c.repeat(40)
+  const comparison = (over: Partial<WorkspaceComparison> = {}): WorkspaceComparison => ({
+    base: sha('a'), work: sha('b'), baseResolved: true, truncated: false,
+    files: [{ path: 'src/app.ts', status: 'modified', additions: 2, deletions: 1, binary: false, stages: { committed: { additions: 2, deletions: 1 } } }],
+    diff: PAYLOAD.diff!.split('diff --git a/src/new.ts')[0],
+    ...over,
+  })
+  /** The pane on `range`, as the only tab of the workspace's layout. */
+  const renderRange = (range: ChangesRange): void => {
+    const target = changesTarget(range)
+    useUiStore.setState({ layouts: { s1: [{ tabs: [target], active: target }] } })
+    useUiStore.getState().setPaneView(paneViewKey('s1', target), { openDiffs: ['src/app.ts'] })
+    renderWithClient(<><GitStatusBar workspaceId="s1" /><WorkspaceFiles workspaceId="s1" projectId="proj" changedOnly range={range} /></>)
+  }
+  const tabs = (): string[] => useUiStore.getState().layouts.s1.flatMap((g) => g.tabs)
+  beforeEach(() => {
+    server.route(COMPARE, comparison())
+    server.route('GET /api/project/proj/branches', { branches: ['main', 'dev'], defaultBranch: 'main' })
+  })
+
+  // Two refs compare through their own route, and the status bar's poll
+  // stays the workspace's own, without the body only the range shows. An
+  // end picked here retargets this pane in place.
+  it('compares two refs, and retargets in place when an end is picked', async () => {
+    const range = { from: 'main', to: sha('b') }
+    renderRange(range)
+    await waitFor(() => expect(screen.getByText('needle1')).toBeTruthy())
+    expect(server.called(COMPARE)[0].query.toString()).toBe(`from=main&to=${sha('b')}`)
+    expect(screen.getByTitle('Compare from').textContent).toBe('main')
+    expect(screen.getByTitle('Compare to').textContent).toBe('bbbbbbb')
+    expect(server.called(CHANGES).every((c) => c.query.get('diff') === '0' && !c.query.has('base'))).toBe(true)
+
+    // Back to the one commit, as git show shows it.
+    fireEvent.click(screen.getByTitle('Compare from'))
+    fireEvent.click(await within(await screen.findByRole('listbox')).findByText('Parent'))
+    expect(tabs()).toEqual([changesTarget({ to: sha('b') })])
+    useUiStore.setState({ layouts: { s1: [{ tabs: [changesTarget(range)], active: changesTarget(range) }] } })
+
+    fireEvent.click(screen.getByTitle('Compare to'))
+    fireEvent.click(await within(await screen.findByRole('listbox')).findByText('Working tree'))
+    expect(tabs()).toEqual([changesTarget({ from: 'main', to: WORKTREE_REF })])
+    fireEvent.click(screen.getByText('Review diff'))
+    expect(tabs()).toContain(CHANGES_TARGET)
+  })
+
+  // Ending at the working tree is the workspace's changes read against
+  // another base, polled apart from the status bar's.
+  it('reads a range ending at the working tree as changes against its start', async () => {
+    renderRange({ from: 'dev', to: WORKTREE_REF })
+    await waitFor(() => expect(screen.getByText('needle1')).toBeTruthy())
+    const ranged = server.called(CHANGES).filter((c) => c.query.get('base') === 'dev')
+    expect(ranged.map((c) => c.query.get('diff'))).toContain('1')
+    expect(server.called(CHANGES).filter((c) => !c.query.has('base')).every((c) => c.query.get('diff') === '0')).toBe(true)
+    expect(server.called(COMPARE)).toEqual([])
+    expect(screen.getByTitle('Compare to').textContent).toBe('Working tree')
+  })
+
+  // One commit is headed by its message, and its parent opens its own pane.
+  it('shows one commit under its message', async () => {
+    server.route(COMPARE, comparison({
+      commit: { sha: sha('b'), parents: [sha('a')], author: 'Tess', time: 1_700_000_000, message: 'Fix the thing\n\nBecause it broke.' },
+    }))
+    renderRange({ to: sha('b') })
+    await waitFor(() => expect(screen.getByText('Fix the thing')).toBeTruthy())
+    expect(screen.getByText('Because it broke.')).toBeTruthy()
+    expect(screen.getByTitle('Compare from').textContent).toBe('parent')
+    fireEvent.click(screen.getByTitle(`Show ${sha('a')}`))
+    expect(tabs()).toContain(changesTarget({ to: sha('a') }))
+  })
+})
+

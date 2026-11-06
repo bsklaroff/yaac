@@ -1283,28 +1283,6 @@ describe('runMamaCommand', () => {
       expect((await listQueuedWorkspaceRows(PROJ)).find((r) => r.id === queued)?.branch).toBe('pr/stacked')
     })
 
-    it('refuses what is not a branch on origin, fetching at most once per interval', async () => {
-      // Past any fetch an earlier test made, which the interval is keyed on.
-      vi.useFakeTimers({ toFake: ['Date'] })
-      vi.setSystemTime(Date.now() + 3_600_000)
-      try {
-        // Never a branch name, so refused before any fetch.
-        for (const name of ['main~1', 'main:evil', '--upload-pack=x', 'a..b', 'x\ny', 'x/', '@']) {
-          expect(await run('set-base', name)).toEqual({ ok: false, error: `"${name}" is not a branch name` })
-        }
-        const missing = { ok: false, error: 'branch "ghost" not found on origin (pushed just now? retry in 10s)' }
-        expect(await run('set-base', 'ghost')).toEqual(missing)
-        // Pushed now, but origin was fetched moments ago, so not again yet.
-        await git(origin, ['branch', 'ghost'])
-        expect(await run('set-base', 'ghost')).toEqual(missing)
-        vi.setSystemTime(Date.now() + 10_000)
-        await output('set-base', 'ghost')
-        expect(await baseOf('caller-workspace')).toBe('ghost')
-      } finally {
-        vi.useRealTimers()
-      }
-    })
-
     it('refuses a blank and another workspace', async () => {
       expect(await run('set-base', '  ')).toEqual({ ok: false, error: 'set-base needs a branch' })
       expect((await run('set-base', 'main', { workspace: 'sibling' })).ok).toBe(false)

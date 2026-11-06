@@ -1401,10 +1401,9 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const project = path.join(testEnv.dataDir, 'global', 'projects', projectId)
     const checkout = path.join(project, 'workspaces', workspaceId)
     const { stdout: main } = await execFileAsync('git', ['-C', repoPath, 'rev-parse', '--abbrev-ref', 'HEAD'])
-    // The remote is fake, so the branch is planted where a fetch would put it.
-    for (const repo of [path.join(project, 'repo'), checkout]) {
-      await execFileAsync('git', ['-C', repo, 'update-ref', 'refs/remotes/origin/pr/stacked', 'HEAD'])
-    }
+    // The remote is fake, so the branch is planted where a fetch would put
+    // it. set-base copies it into the checkout.
+    await execFileAsync('git', ['-C', path.join(project, 'repo'), 'update-ref', 'refs/remotes/origin/pr/stacked', 'HEAD'])
     try {
       const usage = await runMama('set-base')
       expect(usage.code).toBe(2)

@@ -1,19 +1,17 @@
 import {
-  Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState,
+  memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState,
   type ChangeEvent, type DragEvent, type JSX, type KeyboardEvent, type ReactNode,
 } from 'react'
 import clsx from 'clsx'
-import { MENU_ITEM, MenuPopup, PopoverPopup, POPUP } from '#components/ui/menu'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { MENU_ITEM, MenuPopup, POPUP } from '#components/ui/menu'
+import { useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query'
 import { ServerError } from '@yaac/shared/errors'
 import { ContextMenu } from '@base-ui/react/context-menu'
 import { Menu } from '@base-ui/react/menu'
-import { Popover } from '@base-ui/react/popover'
 import { Tooltip } from '@base-ui/react/tooltip'
-import type { SymlinkTarget, WorkspaceChange, WorkspaceChanges } from '@yaac/shared/types'
+import { WORKTREE_REF, type SymlinkTarget, type WorkspaceChange, type WorkspaceDiff, type WorkspaceFiles as Listing } from '@yaac/shared/types'
 import { DEFAULT_FONT_SIZE, layoutOf, paneViewKey, useUiStore } from '#lib/store'
-import { BranchPicker } from '#components/BranchPicker'
-import { defaultBaseLabel, isCommit, refName } from '#lib/commits'
+import { ChangesStrip, CommitHeader } from '#components/ChangesStrip'
 import { DiffView } from '#components/DiffView'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { PaneFindBar, useFindQuery } from '#components/ui/FindPanel'
@@ -23,11 +21,10 @@ import { TextSizeMenu } from '#components/ui/TextSizeMenu'
 import { Tip, WithTip } from '#components/ui/Tooltip'
 import type { ParsedFileDiff } from '#lib/diff'
 import { useChangeDiffs, type DiffWant } from '#lib/useChangeDiffs'
-import { CHANGE_STAGES, ROW_STATUS, lineTotals, pathStatuses, stageTotals, type RowStatus } from '#lib/gitStatus'
+import { CHANGE_STAGES, ROW_STATUS, pathStatuses, type RowStatus } from '#lib/gitStatus'
 import { languageForPath } from '#lib/highlight'
 import { chordMatches, findChord, formatChord, textSizeStep } from '#lib/shortcuts'
-import { useProjectBranches } from '#lib/useProjectBranches'
-import { CHANGES_POLL_MS, useWorkspaceChanges, useWorkspaceFiles } from '#lib/useWorkspaceChanges'
+import { CHANGES_POLL_MS, useComparison, useWorkspaceChanges, useWorkspaceFiles } from '#lib/useWorkspaceChanges'
 import { useDiffFind, type DiffMatch } from '#lib/useDiffFind'
 import { usePinchSize } from '#lib/usePinchSize'
 import { IS_MAC } from '#lib/platform'
@@ -39,6 +36,7 @@ import {
   FILES_TARGET,
   FileConflict,
   buildTree,
+  changesTarget,
   countFiles,
   createWorkspaceFolder,
   deleteWorkspaceEntry,
@@ -52,10 +50,11 @@ import {
   matchScore,
   renameWorkspaceEntry,
   saveWorkspaceFile,
+  type ChangesRange,
   type TreeNode,
 } from '#lib/files'
 import {
-  BranchIcon, ChevronIcon, CollapseAllIcon, CommitsIcon, ExpandAllIcon, FileCodeIcon, FileConfigIcon, FileIcon,
+  ChevronIcon, CollapseAllIcon, ExpandAllIcon, FileCodeIcon, FileConfigIcon, FileIcon,
   FileImageIcon, FileJsonIcon, FileShellIcon, FileTextIcon, FlatListIcon, FolderIcon, FolderOpenIcon, HideIcon,
   LoadingIcon, MoreIcon, NewFileIcon, NewFolderIcon, SearchIcon, ShowIcon, SymlinkIcon, TreeListIcon,
   UploadFilesIcon, UploadFolderIcon, WarningIcon,
@@ -63,6 +62,12 @@ import {
 
 /** The most matches the filter lists. */
 const MAX_MATCHES = 200
+
+/** The listing a range's Changes pane builds its tree on: none, since it
+ *  lists only what it compares. */
+const NO_LISTING: Listing = {
+  version: '', root: '', paths: [], symlinks: {}, ignored: [], emptyDirs: [], conflicted: [], truncated: false,
+}
 
 /** Left padding of a row at `depth`; a guide sits under its chevron. */
 const indent = (depth: number): number => 6 + depth * 12
@@ -147,22 +152,27 @@ function isStopped(err: unknown): boolean {
  * pinch over the list set it. A pinch anywhere else in the pane zooms the
  * page.
  */
-export function WorkspaceFiles({ workspaceId, projectId, baseBranch, startCommit, changedOnly = false }: {
+export function WorkspaceFiles({ workspaceId, projectId, baseBranch, startCommit, changedOnly = false, range }: {
   workspaceId: string
   projectId: string
-  /** The branch the workspace forked from: the diff base picker's default. */
+  /** The branch the workspace is based on, which changes are compared against. */
   baseBranch?: string
-  /** The commit it was created at, the default base when it has no branch. */
+  /** The commit it was created at, the base when it has no branch. */
   startCommit?: string
   changedOnly?: boolean
+  /** With `changedOnly`, the range shown instead of the workspace's own
+   *  changes. */
+  range?: ChangesRange
 }): JSX.Element {
   const queryClient = useQueryClient()
   // The tree rides on the changes poll below, which asks for the listing
-  // while the pane is mounted.
-  const data = useWorkspaceFiles(workspaceId)
+  // while the pane is mounted. A range's pane lists only what it compares,
+  // so it needs no listing of the checkout.
+  const listing = useWorkspaceFiles(workspaceId)
+  const data = listing ?? (range ? NO_LISTING : undefined)
   const refresh = (): void => { void queryClient.invalidateQueries({ queryKey: ['changes', workspaceId] }) }
 
-  const target = changedOnly ? CHANGES_TARGET : FILES_TARGET
+  const target = changedOnly ? (range ? changesTarget(range) : CHANGES_TARGET) : FILES_TARGET
   const viewKey = paneViewKey(workspaceId, target)
   const view = useUiStore((s) => s.paneView[viewKey])
   const setPaneView = useUiStore((s) => s.setPaneView)
@@ -195,24 +205,22 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, startCommit
   }
 
   // Every row shows its line counts, so the explorer fetches the changes
-  // too. The Changes pane needs only the paths, for conflicts.
-  const changes = useWorkspaceChanges(workspaceId, {
-    diff: changedOnly, listing: changedOnly ? 'paths' : 'full', poll: CHANGES_POLL_MS,
+  // too. The Changes pane needs only the paths, for conflicts. A range
+  // ending at the working tree is a changes read against its own base; any
+  // other is a comparison of two refs.
+  const live = range === undefined || range.to === WORKTREE_REF
+  const worktree = useWorkspaceChanges(workspaceId, {
+    ...range ? { base: range.from ?? 'HEAD' } : {},
+    diff: changedOnly && live,
+    ...!range ? { listing: changedOnly ? 'paths' : 'full' } : {},
+    poll: live && CHANGES_POLL_MS,
   })
-  // A picked base whose branch went away fails every poll; this goes back
-  // to the default.
-  const pick = useUiStore((s) => s.changesBase[workspaceId])
-  const resetPick = pick !== undefined && (
-    <button
-      onClick={() => useUiStore.getState().setChangesBase(workspaceId, undefined)}
-      className="shrink-0 rounded bg-surface-2 px-2 py-0.5 text-[11px] text-text-dim transition hover:text-text"
-    >
-      Compare with {defaultBaseLabel(baseBranch, startCommit)}
-    </button>
-  )
+  const compared = useComparison(workspaceId, live ? undefined : range)
+  const changes: UseQueryResult<WorkspaceDiff> = live ? worktree : compared
   const changed = useMemo(() => changes.data?.files ?? [], [changes.data?.files])
   const changeByPath = useMemo(() => new Map(changed.map((c) => [c.path, c])), [changed])
-  const statuses = useMemo(() => pathStatuses(changed, data?.conflicted ?? []), [changed, data?.conflicted])
+  const conflicted = range ? undefined : data?.conflicted
+  const statuses = useMemo(() => pathStatuses(changed, conflicted ?? []), [changed, conflicted])
   const { diffs: diffMap, failed: diffFailed, want: wantDiff } = useChangeDiffs(
     workspaceId, changedOnly ? changes.data : undefined,
   )
@@ -551,7 +559,6 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, startCommit
         >
           Retry
         </button>
-        {resetPick}
       </div>
     )
   }
@@ -770,6 +777,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, startCommit
       )
     }
     if (changed.length === 0) {
+      if (range) return <div className={center}><p className="text-xs text-text-dim">No differences</p></div>
       // An unresolved base means the diff ran against HEAD and misses
       // committed work, so say that rather than "no changes".
       return changes.data.baseResolved ? (
@@ -822,12 +830,16 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, startCommit
           <input ref={folderInput} type="file" hidden onChange={onPicked} {...{ webkitdirectory: '' }} />
         </>
       )}
+      {range && !range.from && compared.data?.commit && (
+        <CommitHeader workspaceId={workspaceId} commit={compared.data.commit} />
+      )}
       {changedOnly && (
         <ChangesStrip
           workspaceId={workspaceId}
           projectId={projectId}
           baseBranch={baseBranch}
           startCommit={startCommit}
+          range={range}
           data={changes.data}
           files={visibleChanged}
         />
@@ -861,7 +873,6 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, startCommit
           <span className="min-w-0 flex-1 truncate" title={errMessage(changes.error)}>
             Not up to date: {errMessage(changes.error)}
           </span>
-          {resetPick}
         </div>
       )}
       {changesNotice ?? (find && !changedOnly ? (
@@ -1277,89 +1288,6 @@ function NearScreen({ content, estimate, force = false, children }: {
   const m = measured.current
   const height = m && m.content === content && m.width === width ? m.px : estimate(width ?? Infinity)
   return <div ref={ref} style={shown ? undefined : { height }}>{shown && children}</div>
-}
-
-/**
- * The Changes pane's strip under the header: the diff base (and a picker
- * for it), the shown files' line totals, overall and per stage, and what
- * the diff leaves out.
- */
-function ChangesStrip({ workspaceId, projectId, baseBranch, startCommit, data, files }: {
-  workspaceId: string
-  projectId: string
-  baseBranch?: string
-  startCommit?: string
-  data: WorkspaceChanges | undefined
-  /** The changed files shown, whose lines are totalled. */
-  files: WorkspaceChange[]
-}): JSX.Element {
-  const base = useUiStore((s) => s.changesBase[workspaceId])
-  const setChangesBase = useUiStore((s) => s.setChangesBase)
-  const [pickerOpen, setPickerOpen] = useState(false)
-  const [pickerQuery, setPickerQuery] = useState('')
-  const { data: branchData } = useProjectBranches(projectId, pickerOpen)
-  const pickBase = (branch: string): void => {
-    setChangesBase(workspaceId, branch)
-    setPickerOpen(false)
-    setPickerQuery('')
-  }
-  const compared = base ?? baseBranch ?? startCommit
-  const byStage = stageTotals(files)
-  return (
-    <div className="flex h-7 shrink-0 items-center gap-2 border-b border-hairline px-1.5 text-[11px] text-text-dim">
-      <Popover.Root open={pickerOpen} onOpenChange={(o) => { setPickerOpen(o); if (!o) setPickerQuery('') }}>
-        <Popover.Trigger
-          title="Choose the branch changes are compared against"
-          className="flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 outline-none transition
-            hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2 data-[popup-open]:text-text"
-        >
-          {compared !== undefined && isCommit(compared)
-            ? <CommitsIcon size={11} className="shrink-0 text-text-faint" />
-            : <BranchIcon size={11} className="shrink-0 text-text-faint" />}
-          <span className="max-w-[180px] truncate font-mono text-text-dim">{compared ? refName(compared) : 'base'}</span>
-          <ChevronIcon size={10} className="shrink-0 rotate-90 text-text-faint" />
-        </Popover.Trigger>
-        <PopoverPopup side="bottom" align="start" sideOffset={6} className="w-[240px]">
-          <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">Diff base</div>
-          <BranchPicker
-            branches={branchData?.branches ?? []}
-            defaultBranch={baseBranch}
-            query={pickerQuery}
-            onQueryChange={setPickerQuery}
-            onSelect={pickBase}
-            showList
-            placeholder={branchData ? 'filter branches…' : 'loading branches…'}
-            ariaLabel="Base branch"
-            className="px-1 pb-1"
-          />
-        </PopoverPopup>
-      </Popover.Root>
-      {files.length > 0 && (
-        // Baseline-aligned: the counts are monospace, the labels are not.
-        <span className="flex shrink-0 items-baseline gap-1 text-text-faint">
-          {[
-            { key: 'total', label: 'total', counts: lineTotals(files) },
-            ...CHANGE_STAGES.filter(({ stage }) => byStage[stage])
-              .map(({ stage, label }) => ({ key: stage, label, counts: byStage[stage]! })),
-          ].map(({ key, label, counts }, i) => (
-            <Fragment key={key}>
-              {i > 0 && <span aria-hidden className="px-0.5">·</span>}
-              {label}
-              <LineCountsLabel counts={counts} />
-            </Fragment>
-          ))}
-        </span>
-      )}
-      <div className="ml-auto flex shrink-0 items-center gap-2">
-        {data && !data.baseResolved && files.length > 0 && (
-          <span title="No fork point for the base branch, so only uncommitted work is shown." className="text-warning">
-            uncommitted only
-          </span>
-        )}
-        {data?.truncated && <span className="text-text-faint">diff truncated (large changeset)</span>}
-      </div>
-    </div>
-  )
 }
 
 /** Children of a folder the listing omits (ignored, or a link), fetched on

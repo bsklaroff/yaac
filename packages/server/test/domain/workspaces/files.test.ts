@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -10,7 +11,7 @@ import { closeDb } from '#db/client'
 import { recordWorkspaceCreated, setWorkspaceStartCommit } from '#db/workspace-store'
 import { createCheckout } from '#domain/git'
 import { execFileAsync } from '#lib/shell'
-import { createWorkspaceFolder, deleteWorkspaceEntry, getWorkspaceChanges, getWorkspaceGitLog, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, uploadWorkspaceFile, writeWorkspaceFile } from '#domain/workspaces'
+import { createWorkspaceFolder, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, getWorkspaceComparison, getWorkspaceGitLog, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, uploadWorkspaceFile, writeWorkspaceFile } from '#domain/workspaces'
 import { git } from '@yaac/test-utils/git'
 import { CHANGES_BASE_UNRESOLVED, CHANGES_BUSY, forgetWorkspaceChanges } from '#domain/workspaces/changes'
 import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
@@ -479,16 +480,14 @@ describe('getWorkspaceGitLog', () => {
     await run(['checkout', '-q', 'agent/log'])
   })
 
-  // By default both sides of the fork against origin's copy of the fork
-  // branch, children before parents, each named by the refs at it.
-  it('reads HEAD and the fork branch, with the branches to pick from', async () => {
-    expect((await getWorkspaceGitLog('log', undefined, { limit: 50, branches: false })).branches).toBeUndefined()
-    const log = await getWorkspaceGitLog('log', undefined, { limit: 50, branches: true })
+  // Both sides of the fork against origin's copy of the base branch,
+  // children before parents, each named by the refs at it; `limit` keeps
+  // the newest.
+  it('reads HEAD and the base branch, newest `limit` first', async () => {
+    const log = await getWorkspaceGitLog('log', 50)
     expect(log.ref).toBe('origin/main')
     expect(log.head).toBe(ours[1])
     expect(log.more).toBe(false)
-    expect(log.branches).toEqual(expect.arrayContaining(['refs/heads/agent/log', 'refs/heads/side', 'origin/main']))
-    expect(log.branches).not.toContain('origin/HEAD')
     // The fork's own history, which other cases add to, follows it.
     const order = log.commits.map((c) => c.sha)
     expect(new Set(order.slice(0, 4))).toEqual(new Set([...ours, theirs, fork]))
@@ -498,43 +497,161 @@ describe('getWorkspaceGitLog', () => {
     expect(head).toMatchObject({ parents: [ours[0]], author: 'Tess', subject: 'second of ours', refs: ['HEAD -> agent/log'] })
     expect(head.time).toBeGreaterThan(0)
     expect(log.commits.find((c) => c.sha === theirs)!.refs).toEqual(['tag: v1', 'origin/main', 'side'])
+
+    const cut = await getWorkspaceGitLog('log', 2)
+    expect(cut.commits.map((c) => c.sha)).toEqual(order.slice(0, 2))
+    expect(cut.more).toBe(true)
+    expect((await refusal(getWorkspaceGitLog('stopped', 10))).code).toBe('CONFLICT')
   })
 
-  // A local branch is named in full so origin's copy cannot shadow it, and
-  // `limit` cuts the oldest off.
-  it('compares against a picked branch, newest `limit` first', async () => {
-    await wtGit('log')(['branch', '-f', 'main', ours[0]])
-    const log = await getWorkspaceGitLog('log', 'refs/heads/main', { limit: 2, branches: false })
-    expect(log.ref).toBe('refs/heads/main')
-    expect(log.commits.map((c) => c.sha)).toEqual([ours[1], ours[0]])
-    expect(log.more).toBe(true)
+  // A message's body comes along, cut short past 1 KB (keeping what fits
+  // of a line that crosses it). Separators in a message neither start a
+  // record nor split a field.
+  it('carries each commit\u2019s body, cutting a long one', async () => {
+    const run = wtGit('log')
+    const bodied = async (subject: string, body: string): Promise<string> => {
+      await run(['-c', 'user.email=t@t', '-c', 'user.name=Tess', 'commit', '-q', '--allow-empty', '-m', subject, '-m', body])
+      return (await run(['rev-parse', 'HEAD'])).trim()
+    }
+    const short = await bodied('subject', 'why it changed\n\n- one\n- two')
+    const long = await bodied('subject', Array.from({ length: 200 }, (_, i) => `line ${i} ${'x'.repeat(40)}`).join('\n'))
+    const oneLine = await bodied('subject', 'L'.repeat(6000))
+    const odd = await bodied('odd \x1e and \x1f subject', 'body with\n\x1e record sep and \x1f field sep')
+    const { commits } = await getWorkspaceGitLog('log', 10)
+    // Made within a second of each other, so no order among them is fixed.
+    expect(commits.map((c) => c.sha)).toEqual(expect.arrayContaining([odd, oneLine, long, short]))
+    const bySha = new Map(commits.map((c) => [c.sha, c]))
+    expect(bySha.get(short)).toMatchObject({ subject: 'subject', body: 'why it changed\n\n- one\n- two' })
+    for (const sha of [long, oneLine]) {
+      const cut = bySha.get(sha)!.body
+      expect(cut.endsWith('…')).toBe(true)
+      expect(Buffer.byteLength(cut)).toBeGreaterThan(900)
+      expect(Buffer.byteLength(cut)).toBeLessThanOrEqual(1024 + 4)
+    }
+    expect(bySha.get(odd)).toMatchObject({ subject: 'odd \x1e and \x1f subject', body: 'body with\n record sep and  field sep' })
+    expect(bySha.get(ours[1])!.body).toBe('')
   })
 
-  it('refuses a branch it cannot find, an option, and a stopped workspace', async () => {
-    const opts = { limit: 10, branches: false }
-    expect((await refusal(getWorkspaceGitLog('log', 'nope', opts))).code).toBe('VALIDATION')
-    expect((await refusal(getWorkspaceGitLog('log', '--output=x', opts))).code).toBe('VALIDATION')
-    expect((await refusal(getWorkspaceGitLog('stopped', undefined, opts))).code).toBe('CONFLICT')
+  // Past the 512 KB of bodies the whole log may carry, a body is `…` alone,
+  // while a commit with none still has none.
+  it('spends the bodies\u2019 budget newest first, leaving body-less commits bare', async () => {
+    const dir = await makeCheckout('budget')
+    await recordWorkspaceCreated({ projectId: PROJECT, workspaceId: 'budget', baseBranch: 'main' })
+    const body = 'b'.repeat(1100)
+    // Oldest first, alternating, so body-less commits sit on both sides of
+    // where the budget runs out.
+    const fork = (await git(dir, ['rev-parse', 'HEAD'])).trim()
+    const stream = Array.from({ length: 1200 }, (_, i) => {
+      const m = i % 2 ? `bare ${i}` : `long ${i}\n\n${body}`
+      return `commit refs/heads/budget\ncommitter T <t@t> ${1_700_000_000 + i} +0000\n`
+        + `data ${Buffer.byteLength(m)}\n${m}\n${i === 0 ? `from ${fork}\n` : ''}\n`
+    }).join('')
+    execFileSync('git', ['fast-import', '--quiet'], { cwd: dir, input: stream })
+    await wtGit('budget')(['checkout', '-q', 'budget'])
+    const { commits } = await getWorkspaceGitLog('budget', 1300)
+    const bare = commits.filter((c) => c.subject.startsWith('bare'))
+    const long = commits.filter((c) => c.subject.startsWith('long'))
+    expect(bare).toHaveLength(600)
+    expect(bare.filter((c) => c.body !== '').map((c) => [c.subject, c.body])).toEqual([])
+    expect(long.some((c) => c.body === '…')).toBe(true)
+    expect(long[0].body.length).toBeGreaterThan(1000)
+    expect(long.reduce((n, c) => n + Buffer.byteLength(c.body), 0)).toBeLessThanOrEqual(512 * 1024 + 600 * 4)
   })
 
-  // A branch sharing no history with HEAD is passed over as the changes
-  // read passes it over, so the pane and the strip never disagree about the
-  // ref: a picked one is refused, and an unusable fork branch leaves HEAD
-  // alone rather than falling back to a local copy nothing keeps current.
-  // Last, since it repoints origin's main.
+  // A base sharing no history with HEAD is passed over as the changes read
+  // passes it over, so the pane and the strip never disagree about the ref:
+  // a picked one is refused, and an unusable base branch leaves HEAD alone
+  // rather than falling back to a local copy nothing keeps current. Last,
+  // since it repoints origin's main.
   it('passes over a branch with no history in common, as the changes read does', async () => {
     const run = wtGit('log')
     await run(['checkout', '-q', '--orphan', 'orphan'])
     const lone = await commit(run, 'unrelated')
     await run(['checkout', '-q', '-f', 'agent/log'])
-    const opts = { limit: 10, branches: false }
-    expect((await refusal(getWorkspaceGitLog('log', 'orphan', opts))).code).toBe('VALIDATION')
     expect((await refusal(getWorkspaceChanges('log', 'orphan', { diff: false }))).code).toBe('VALIDATION')
 
     await run(['update-ref', 'refs/remotes/origin/main', lone])
-    const log = await getWorkspaceGitLog('log', undefined, opts)
-    expect(log.ref).toBeNull()
+    expect((await getWorkspaceGitLog('log', 10)).ref).toBeNull()
     expect((await getWorkspaceChanges('log', undefined, { diff: false })).comparison).toBeNull()
+  })
+})
+
+describe('getWorkspaceComparison', () => {
+  const commit = async (message: string): Promise<string> => {
+    const run = wtGit('cmp')
+    await run(['add', '-A'])
+    await run(['-c', 'user.email=t@t', '-c', 'user.name=Tess', 'commit', '-q', '-m', message])
+    return (await run(['rev-parse', 'HEAD'])).trim()
+  }
+  let dir: string
+  let root: string
+  let first: string
+  let second: string
+  beforeAll(async () => {
+    dir = await makeCheckout('cmp')
+    const run = wtGit('cmp')
+    root = (await run(['rev-parse', 'HEAD'])).trim()
+    await write(dir, 'a.txt', 'alpha\nmore\n')
+    await write(dir, 'new.txt', 'one\n')
+    await fs.rename(path.join(dir, 'b.txt'), path.join(dir, 'bee.txt'))
+    first = await commit('first')
+    await write(dir, 'new.txt', 'one\ntwo\n')
+    // A file named like the script's completion marker is just a file.
+    await write(dir, '@@OK@@', 'ok\n')
+    second = await commit('second \x1f\n\nwith a body')
+    // origin's main moves on after the fork, so a two-dot diff would undo
+    // its change to d.txt.
+    await run(['checkout', '-q', '--detach', root])
+    await write(dir, 'd.txt', 'delta moved\n')
+    await run(['update-ref', 'refs/remotes/origin/main', await commit('upstream')])
+    await run(['checkout', '-q', 'agent/cmp'])
+  })
+
+  // `main` is origin's, compared from its merge base with `to`, so only
+  // what `to` adds shows; the body pages through /changes/diff like the
+  // poll's.
+  it('diffs a range from its merge base, as GitHub compares branches', async () => {
+    const cmp = await getWorkspaceComparison('cmp', { from: 'main', to: second })
+    expect(cmp).toMatchObject({ base: root, work: second, baseResolved: true, truncated: false })
+    expect(cmp.commit).toBeUndefined()
+    expect(cmp.files.map((f) => [f.path, f.status, f.oldPath])).toEqual([
+      ['@@OK@@', 'added', undefined], ['a.txt', 'modified', undefined], ['bee.txt', 'renamed', 'b.txt'], ['new.txt', 'added', undefined],
+    ])
+    expect(cmp.files.find((f) => f.path === 'new.txt')).toMatchObject({ additions: 2, stages: { committed: { additions: 2, deletions: 0 } } })
+    expect(cmp.diff).toContain('+more')
+    const { diff } = await getWorkspaceChangeDiffs('cmp', { base: cmp.base, work: cmp.work, files: [{ path: 'a.txt' }] })
+    expect(diff).toContain('+more')
+
+    // HEAD is the checkout's own, never origin/HEAD, here and as the base
+    // of a range ending at the working tree.
+    expect((await getWorkspaceComparison('cmp', { from: 'HEAD', to: second })).files).toEqual([])
+    const worktree = await getWorkspaceChanges('cmp', 'HEAD', { diff: false })
+    expect(worktree.comparison?.ref).toBe('HEAD')
+    expect(worktree.files).toEqual([])
+  })
+
+  it('shows one commit against its first parent, or a root commit whole', async () => {
+    const shown = await getWorkspaceComparison('cmp', { to: second })
+    expect(shown.base).toBe(first)
+    expect(shown.files.map((f) => f.path)).toEqual(['@@OK@@', 'new.txt'])
+    expect(shown.commit).toMatchObject({ sha: second, parents: [first], author: 'Tess', message: 'second \x1f\n\nwith a body' })
+
+    const initial = (await wtGit('cmp')(['rev-list', '--max-parents=0', 'HEAD'])).trim()
+    const whole = await getWorkspaceComparison('cmp', { to: initial })
+    expect(whole.files.map((f) => [f.path, f.status])).toContainEqual(['a.txt', 'added'])
+    expect(whole.files.every((f) => f.status === 'added')).toBe(true)
+    expect(whole.commit?.parents).toEqual([])
+  })
+
+  it('refuses a ref it cannot find, an option, unrelated history, and a stopped workspace', async () => {
+    const run = wtGit('cmp')
+    await run(['checkout', '-q', '--orphan', 'lone'])
+    const lone = await commit('unrelated')
+    await run(['checkout', '-q', '-f', 'agent/cmp'])
+    for (const range of [{ to: 'nope' }, { from: 'nope', to: second }, { to: '--output=x' }, { from: lone, to: second }]) {
+      expect((await refusal(getWorkspaceComparison('cmp', range))).code).toBe('VALIDATION')
+    }
+    expect((await refusal(getWorkspaceComparison('stopped', { to: 'HEAD' }))).code).toBe('CONFLICT')
   })
 })
 

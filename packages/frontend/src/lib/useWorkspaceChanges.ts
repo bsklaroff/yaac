@@ -1,8 +1,9 @@
 import { useEffect } from 'react'
-import { keepPreviousData, skipToken, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query'
-import type { WorkspaceChanges, WorkspaceFiles } from '@yaac/shared/types'
+import { skipToken, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query'
+import { FULL_COMMIT_PATTERN } from '@yaac/shared/steps'
+import type { WorkspaceChanges, WorkspaceComparison, WorkspaceFiles } from '@yaac/shared/types'
 import { api } from '#lib/api'
-import { useUiStore } from '#lib/store'
+import type { ChangesRange } from '#lib/files'
 
 /** How often a reader that is on screen and shows live changes polls. */
 export const CHANGES_POLL_MS = 3000
@@ -15,10 +16,10 @@ type Part = 'diff' | Listing
 /** The query cache key of a workspace's listing. */
 export const filesKey = (workspaceId: string): unknown[] => ['files', workspaceId]
 
-/** The changes query of a workspace against a picked base, or the default. */
-const changesKey = (workspaceId: string, base: string | undefined): unknown[] => ['changes', workspaceId, base ?? null]
+/** The changes query of a workspace, against its base branch or `base`. */
+const changesKey = (workspaceId: string, base?: string): unknown[] => ['changes', workspaceId, ...base ? [base] : []]
 
-/** Per workspace, how many mounted readers want each costly part. */
+/** Per changes query, how many mounted readers want each costly part. */
 const readers = new Map<string, number>()
 
 /** Per changes query, what its latest fetch asked for; `pending` until it
@@ -40,11 +41,11 @@ function useReader(workspaceId: string, base: string | undefined, part: Part | u
   const queryClient = useQueryClient()
   useEffect(() => {
     if (!part) return
-    const counted = `${workspaceId}|${part}`
+    const queryKey = changesKey(workspaceId, base)
+    const counted = `${JSON.stringify(queryKey)}|${part}`
     readers.set(counted, (readers.get(counted) ?? 0) + 1)
     // Before the query's first fetch nothing is active yet, and that fetch
     // reads this part itself.
-    const queryKey = changesKey(workspaceId, base)
     if (!covers(asked.get(JSON.stringify(queryKey)), part)) void queryClient.refetchQueries({ queryKey, type: 'active' })
     return () => {
       const n = (readers.get(counted) ?? 0) - 1
@@ -59,8 +60,9 @@ function useReader(workspaceId: string, base: string | undefined, part: Part | u
  * branch, and its listing: everything the webapp polls about a checkout,
  * shared by the status bar, the explorer, the Changes pane and every file
  * pane through one query, so they poll the server once between them. The
- * base is the Changes pane's pick, else the server's default (the branch the workspace
- * forked from).
+ * base is the server's, the branch the workspace is based on, unless a
+ * Changes pane on a range ending at the working tree names `base`; that
+ * pane polls a query of its own.
  *
  * The diff body can run to a megabyte and a full listing walks the working
  * tree, so a fetch asks for each only while some mounted reader wants it
@@ -75,10 +77,10 @@ function useReader(workspaceId: string, base: string | undefined, part: Part | u
  */
 export function useWorkspaceChanges(
   workspaceId: string,
-  { diff = false, listing, poll }: { diff?: boolean; listing?: Listing; poll: number | false },
+  { base, diff = false, listing, poll }: { base?: string; diff?: boolean; listing?: Listing; poll: number | false },
 ): UseQueryResult<WorkspaceChanges> {
-  const base = useUiStore((s) => s.changesBase[workspaceId])
   const queryKey = changesKey(workspaceId, base)
+  const key = JSON.stringify(queryKey)
   useReader(workspaceId, base, diff ? 'diff' : undefined)
   useReader(workspaceId, base, listing)
   const queryClient = useQueryClient()
@@ -89,18 +91,18 @@ export function useWorkspaceChanges(
     queryFn: async ({ signal }) => {
       // Readers mounted in the same commit register in their effects, all
       // of which run before this resumes, so one fetch serves them all.
-      asked.set(JSON.stringify(queryKey), 'pending')
+      asked.set(key, 'pending')
       await Promise.resolve()
       const fetch = {
-        diff: readers.has(`${workspaceId}|diff`),
-        listing: LISTINGS.find((l) => readers.has(`${workspaceId}|${l}`)),
+        diff: readers.has(`${key}|diff`),
+        listing: LISTINGS.find((l) => readers.has(`${key}|${l}`)),
       }
-      asked.set(JSON.stringify(queryKey), fetch)
+      asked.set(key, fetch)
       const known = queryClient.getQueryData<WorkspaceFiles>(filesKey(workspaceId))?.version
       const { listing: fresh, ...rest } = await api.workspace[':id'].changes.$get({
         param: { id: workspaceId },
         query: {
-          ...(base ? { base } : {}),
+          ...base ? { base } : {},
           diff: fetch.diff ? '1' : '0',
           ...(fetch.listing ? { listing: fetch.listing } : {}),
           ...(fetch.listing && known ? { known } : {}),
@@ -116,8 +118,6 @@ export function useWorkspaceChanges(
     // fast.
     refetchInterval: poll === false ? false : (q) => Math.max(poll, Math.min(10_000, q.state.data?.readMs ?? 0)),
     staleTime: 1500,
-    // A new base keeps the old answer on screen until its own lands.
-    placeholderData: keepPreviousData,
   })
 }
 
@@ -125,4 +125,22 @@ export function useWorkspaceChanges(
  *  Mount it beside a `useWorkspaceChanges` reader that asks for one. */
 export function useWorkspaceFiles(workspaceId: string): WorkspaceFiles | undefined {
   return useQuery<WorkspaceFiles>({ queryKey: filesKey(workspaceId), queryFn: skipToken }).data
+}
+
+/**
+ * The diff between two refs, for a Changes pane on a range that does not end
+ * at the working tree (`GET /workspace/:id/compare`). Commits never change,
+ * so a range between two full commit ids is read once; one naming a branch
+ * or HEAD, which can move, is read again every 30 seconds while on screen.
+ * Off when `range` is unset.
+ */
+export function useComparison(workspaceId: string, range: ChangesRange | undefined): UseQueryResult<WorkspaceComparison> {
+  const fixed = range !== undefined && FULL_COMMIT_PATTERN.test(range.to)
+    && (range.from === undefined || FULL_COMMIT_PATTERN.test(range.from))
+  return useQuery({
+    queryKey: ['compare', workspaceId, range?.from ?? null, range?.to ?? null],
+    queryFn: range ? () => api.workspace[':id'].compare.$get({ param: { id: workspaceId }, query: range }) : skipToken,
+    refetchInterval: fixed ? false : 30_000,
+    staleTime: fixed ? Infinity : 0,
+  })
 }
