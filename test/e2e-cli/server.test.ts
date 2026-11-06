@@ -181,7 +181,7 @@ describe('yaac cluster start|stop|restart|logs|status against the in-cluster Dep
     expect(list.exitCode, list.stderr).toBe(0)
   })
 
-  it('the server pod mounts the two claims and the node tree, and nothing under the data dir by hostPath', async () => {
+  it('the server pod mounts the three claims and the node tree, and nothing under the data dir by hostPath', async () => {
     const { stdout } = await execFileAsync('kubectl', [
       'get', 'deployment', 'yaac-server', '-n', TEST_NAMESPACE, '-o', 'json',
     ])
@@ -192,7 +192,7 @@ describe('yaac cluster start|stop|restart|logs|status against the in-cluster Dep
       } } }
     }).spec.template.spec
     const claims = pod.volumes.filter((v) => v.persistentVolumeClaim).map((v) => v.persistentVolumeClaim?.claimName)
-    expect(claims.sort()).toEqual(['yaac-global', 'yaac-server-local'])
+    expect(claims.sort()).toEqual(['yaac-global', 'yaac-server-local', 'yaac-volumes'])
     expect(pod.volumes.find((v) => v.name === 'node-local')?.hostPath?.path).toMatch(/^\/var\/lib\/yaac\/node\//)
     // The harness mounts its scratch base too, but the data dir itself is
     // reached only through the claims.
@@ -202,12 +202,15 @@ describe('yaac cluster start|stop|restart|logs|status against the in-cluster Dep
     const mounts = Object.fromEntries(pod.containers[0].volumeMounts.map((m) => [m.name, m.mountPath]))
     expect(mounts).toMatchObject({
       global: '/yaac/global', 'server-local': '/yaac/server-local', 'node-local': '/yaac/node-local',
+      volumes: '/yaac/volumes',
     })
     const { stdout: pvcs } = await execFileAsync('kubectl', [
       'get', 'pvc', '-n', TEST_NAMESPACE, '-o', 'jsonpath={range .items[*]}{.metadata.name}={.status.phase}{"\\n"}{end}',
     ])
-    // The checkouts claim is for workspace pods; the server mounts the other two.
-    expect(pvcs.trim().split('\n').sort()).toEqual(['yaac-checkouts=Bound', 'yaac-global=Bound', 'yaac-server-local=Bound'])
+    // The checkouts claim is for workspace pods; the server mounts the other three.
+    expect(pvcs.trim().split('\n').sort()).toEqual([
+      'yaac-checkouts=Bound', 'yaac-global=Bound', 'yaac-server-local=Bound', 'yaac-volumes=Bound',
+    ])
   })
 
   it('`cluster logs` prints the log the pod wrote into the server-local claim', async () => {

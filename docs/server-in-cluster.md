@@ -7,7 +7,7 @@ it at a fixed origin: loopback on kind, or a tailnet name.
 It runs as a pod so that the server and workspace pods can mount the same
 storage. A host process can share files with pods only through hostPath and
 the assumption that the node is the host. A pod can mount a claim, and this
-one mounts two (see "Storage claims").
+one mounts two, or three on kind (see "Storage claims").
 
 ## What install deploys
 
@@ -493,7 +493,7 @@ The harness provides what a pod cannot provide for itself:
 - RBAC in that namespace;
 - the node half of the ingress policy (a port-forward bypasses
   NetworkPolicy, so there is no fronting or fronting half);
-- the claim pair, with static volumes into the file's own data dir;
+- the claims, with static volumes into the file's own data dir;
 - one extra mount: the file's scratch base at its own absolute path, because
   the source repos and mock-remote stores tests use sit beside the data dir,
   not inside a tier;
