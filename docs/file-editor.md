@@ -172,7 +172,10 @@ as truncated to nothing. A held reading
 is dropped after five minutes unread and on teardown; the scratch-dir files
 carry a workspace across a server restart. Each answer says how long its
 read took (`readMs`), and the webapp waits at least that long after an
-answer before polling again, but no more than 10 seconds.
+answer before polling again, but no more than 10 seconds. The read's
+costs are measured by `changes-bench.test.ts` beside the changes tests,
+skipped unless `BENCH_REPO` names a checkout to read; its header says how
+to build the fixtures it was tuned on.
 
 An exec's output is capped (streamd cuts one at 4 MiB, and `podExec`
 rejects a cut one rather than pass it on), and a big checkout's first
