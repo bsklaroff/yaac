@@ -58,6 +58,9 @@ export interface WorkspaceCreateOptions {
   /** A JSON file of the steps to start with in place of the project's init
    *  steps; false (`--no-steps`) for none (docs/workspace-steps.md). */
   steps?: string | false
+  /** A workflow whose current revision it starts with instead
+   *  (docs/workflows.md). */
+  workflow?: string
   /** Run `steps` untouched, with no session, and stop when they settle. */
   nonInteractive?: boolean
   /** With `nonInteractive`: wait for the outcome, exiting non-zero unless
@@ -84,6 +87,7 @@ export async function workspaceCreate(project: string | undefined, options: Work
     for (const [flag, set] of [['--branch', options.branch], ['--group', options.group], ['--timeout', options.timeout],
       ['--start-at', options.startAt], ['--start-in', options.startIn], ['--volume', options.volume],
       ['--commit', options.commit], [options.steps === false ? '--no-steps' : '--steps', options.steps],
+      ['--workflow', options.workflow],
       ['--non-interactive', options.nonInteractive], ['--wait', options.wait]] as const) {
       if (set !== undefined) throw new Error(`${flag} is a workspace's setting, which --workspace (a session in a running one) does not take.`)
     }
@@ -106,8 +110,9 @@ export async function workspaceCreate(project: string | undefined, options: Work
       if (set !== undefined) throw new Error(`${flag} does not take ${name}: a workspace with no session runs no agent.`)
     }
   }
-  if (nonInteractive && typeof options.steps !== 'string') {
-    throw new Error('--non-interactive runs the steps --steps <file> names; it never runs the project\'s init steps.')
+  if (options.workflow !== undefined && options.steps !== undefined) throw new Error('Give --steps or --workflow, not both.')
+  if (nonInteractive && typeof options.steps !== 'string' && options.workflow === undefined) {
+    throw new Error('--non-interactive runs the steps --steps <file> or --workflow names; it never runs the project\'s init steps.')
   }
   if (options.wait === true && !nonInteractive) throw new Error('--wait goes with --non-interactive: only it ends by itself.')
   if (options.wait === true && (options.startAt !== undefined || options.startIn !== undefined)) {
@@ -143,6 +148,7 @@ export async function workspaceCreate(project: string | undefined, options: Work
   if (options.startAt !== undefined || startIn !== undefined) {
     if (prompt === undefined && !nonInteractive) throw new Error('A scheduled workspace needs a prompt: nobody is watching it start.')
     if (options.volume !== undefined) throw new Error('--volume starts a workspace now; a scheduled one cannot take it.')
+    if (options.workflow !== undefined) throw new Error('--workflow starts a workspace now; a scheduled one cannot take it.')
     const entry = await api.workspace.queue.create.$post({
       json: { ...settings, prompt, startAt: options.startAt, startIn },
     })
@@ -157,6 +163,7 @@ export async function workspaceCreate(project: string | undefined, options: Work
     prompt,
     ...(noSession ? { noSession: true } : {}),
     ...(options.volume !== undefined ? { volume: options.volume } : {}),
+    ...(options.workflow !== undefined ? { workflow: options.workflow } : {}),
   } })
   if (nonInteractive) {
     await followNonInteractive(res, { wait: options.wait === true })

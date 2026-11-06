@@ -193,7 +193,7 @@ describe('pushProjectSecrets', () => {
     await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'PLAIN', value: 'v' })
     await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'SECRET', value: 'sekrit', secret: true, rule: RULE })
     await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'BLANK', value: '', secret: true, rule: RULE })
-    await upsertRunSecret(DEMO_PROJECT_ID, { name: 'P8_KEY', value: 'pem', siteIds: [], routineIds: [] })
+    await upsertRunSecret(DEMO_PROJECT_ID, { name: 'P8_KEY', value: 'pem' })
 
     await pushProjectSecrets(DEMO_PROJECT_ID)
     expect(pushed).toEqual([[DEMO_PROJECT_ID, { SECRET: 'sekrit' }, { P8_KEY: 'pem' }]])

@@ -198,9 +198,10 @@ deploy at one commit. It differs from an ordinary workspace in these ways:
   credentials are pushed under (`NO_CREDENTIALS_OWNER_KEY`), so the proxy
   swaps in no tool, git or ssh credential, and the launch hands it no git
   credential either, so a project needs none to deploy. The project's
-  environment and secrets apply as for any workspace, and the run secrets
-  that name the site arrive as their real values (docs/project-config.md
-  "Run secrets"), for a key the app signs with.
+  environment and secrets apply as for any workspace. A site whose graph
+  is a workflow's gets the run secrets its revision names as their real
+  values (docs/workflows.md), for a key the app signs with: its owner's
+  deploy approves the commit, and setting it to follow a branch the branch.
 - **One image.** A deploy records the image its release launched, and every
   replacement launches that image again, so a release never changes under
   a later image config edit. The registry GC keeps a site's images though

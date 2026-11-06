@@ -16,6 +16,7 @@ import { volumeForLaunch } from './volumes'
 import { VOLUME_NEED } from './steps'
 import { modelDisplayName } from '#domain/auth'
 import { authorizeProject, type Actor } from '#domain/access'
+import { resolveWorkflow, workflowLaunch } from '#domain/projects'
 import { recordProjectCreate } from '#db'
 import { ServerError } from '@yaac/shared/errors'
 import { FULL_COMMIT_PATTERN, graphHasTask, parseStepGraph, type StepGraph } from '@yaac/shared/steps'
@@ -45,8 +46,14 @@ export interface StartWorkspaceRequest {
   nonInteractive?: boolean
   /** The non-interactive workspace this one reruns. */
   rerunOf?: string
-  /** See `WorkspaceCreateOptions.runSecrets`. */
-  runSecrets?: Record<string, string>
+  /** A workflow by name, whose current revision it runs in place of
+   *  `steps` (docs/workflows.md). */
+  workflow?: string
+  /** A workflow revision it runs again: a rerun's or a replacement's. */
+  revisionId?: string
+  /** The branch whose tip `commit` is, for a workflow approved to run on
+   *  that branch: a site's follow deploy. */
+  fromBranch?: string
   prompt?: string
   /** Its session's id, when the client minted one so it can find what it
    *  opened (`GET /workspace/prompt`) before the snapshot names it. */
@@ -101,9 +108,24 @@ export async function prepareStart(
   principal: Actor,
   request: StartWorkspaceRequest,
 ): Promise<ProvisionRun<WorkspaceCreateResult>> {
-  const { projectId, workspaceId, prompt, title, generatedTitle, branch, commit } = request
+  const { projectId, workspaceId, prompt, title, generatedTitle } = request
   await authorizeProject(principal, projectId)
-  const steps = checkStartSteps(request)
+  if ((request.workflow !== undefined || request.revisionId !== undefined) && request.steps !== undefined) {
+    throw new ServerError('VALIDATION', 'name steps or a workflow, not both')
+  }
+  // A start that gets a workflow's run secrets runs at a commit, which
+  // `workflowLaunch` resolves from a branch.
+  const flow = request.workflow !== undefined || request.revisionId !== undefined
+    ? await workflowLaunch(principal, projectId, {
+      revisionId: request.revisionId ?? (await resolveWorkflow(projectId, request.workflow as string)).current.id,
+      ...(request.commit !== undefined ? { commit: request.commit } : {}),
+      ...((request.fromBranch ?? request.branch) !== undefined ? { branch: request.fromBranch ?? request.branch } : {}),
+      secrets: request.nonInteractive === true || request.siteId !== undefined,
+    })
+    : undefined
+  const commit = flow?.commit ?? request.commit
+  const branch = flow?.commit !== undefined ? undefined : request.branch
+  const steps = checkStartSteps({ ...request, branch, commit, ...(flow !== undefined ? { steps: flow.revision.steps } : {}) })
   const setup = request.noSession === true ? undefined : await resolveCreate(projectId, {
     ...(request.tool !== undefined ? { tool: request.tool } : {}),
     ...(request.model !== undefined ? { model: request.model } : {}),
@@ -178,7 +200,7 @@ export async function prepareStart(
         ...(steps !== undefined ? { steps } : {}),
         ...(request.nonInteractive === true ? { nonInteractive: true } : {}),
         ...(request.rerunOf !== undefined ? { rerunOf: request.rerunOf } : {}),
-        ...(request.runSecrets !== undefined ? { runSecrets: request.runSecrets } : {}),
+        ...(flow !== undefined ? { revisionId: flow.revision.id, runSecrets: flow.runSecrets } : {}),
         ...(title !== undefined ? { title } : {}),
         ...(generatedTitle !== undefined ? { generatedTitle } : {}),
         ...(groupId !== undefined ? { groupId } : {}),

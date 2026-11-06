@@ -23,6 +23,8 @@ export interface SiteOptions {
   adminPort?: string | false
   /** A JSON file of the graph each release runs. */
   steps?: string
+  /** A workflow whose current revision each release runs instead. */
+  workflow?: string
   /** A volume name; false (`--no-volume`) for none. */
   volume?: string | false
   /** A branch whose tip it deploys whenever it moves; false (`--no-follow`)
@@ -33,7 +35,7 @@ export interface SiteOptions {
 export async function siteCreate(
   project: string,
   name: string,
-  opts: SiteOptions & { hostname: string; port: string; steps: string },
+  opts: SiteOptions & { hostname: string; port: string },
 ): Promise<void> {
   await api.site.create.$post({ json: {
     project: await resolveProjectId(project),
@@ -41,7 +43,8 @@ export async function siteCreate(
     hostname: opts.hostname,
     port: portOption('--port', opts.port),
     ...(typeof opts.adminPort === 'string' ? { adminPort: portOption('--admin-port', opts.adminPort) } : {}),
-    steps: await readSteps(opts.steps),
+    ...(opts.steps !== undefined ? { steps: await readSteps(opts.steps) } : {}),
+    ...(opts.workflow !== undefined ? { workflow: opts.workflow } : {}),
     ...(typeof opts.volume === 'string' ? { volume: opts.volume } : {}),
     ...(typeof opts.follow === 'string' ? { followBranch: opts.follow } : {}),
   } })
@@ -65,6 +68,7 @@ export async function siteEdit(project: string, name: string, opts: SiteOptions)
       ? { adminPort: opts.adminPort === false ? null : portOption('--admin-port', opts.adminPort) }
       : {}),
     ...(opts.steps !== undefined ? { steps: await readSteps(opts.steps) } : {}),
+    ...(opts.workflow !== undefined ? { workflow: opts.workflow } : {}),
     ...(opts.volume !== undefined ? { volume: opts.volume === false ? null : opts.volume } : {}),
     ...(opts.follow !== undefined ? { followBranch: opts.follow === false ? null : opts.follow } : {}),
   }
@@ -99,7 +103,7 @@ export async function siteShow(project: string, name: string): Promise<void> {
   const site = await api.site.show.$get({ query: { project: await resolveProjectId(project), name } })
   console.log(`Site "${site.name}": https://${site.hostname} -> port ${site.port}`)
   console.log(`  admin port   ${site.adminPort ?? '-'}`)
-  console.log(`  steps        ${Object.keys(site.steps).join(', ')}`)
+  console.log(`  steps        ${Object.keys(site.steps).join(', ')}${site.workflow !== undefined ? ` (workflow ${site.workflow})` : ''}`)
   console.log(`  volume       ${site.volume ?? '-'}`)
   console.log(`  follows      ${site.followBranch ?? '-'}${site.followPaused !== undefined ? ` (paused: ${site.followPaused})` : ''}`)
   if (site.followSkipped !== undefined) {

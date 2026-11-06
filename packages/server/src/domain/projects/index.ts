@@ -46,7 +46,17 @@ export {
   resolveProjectEnv,
   setProjectEnvVar,
 } from './env'
-export { listProjectRunSecrets, removeRunSecret, resolveRunSecrets, setRunSecret } from './run-secrets'
+export { listProjectRunSecrets, removeRunSecret, setRunSecret } from './run-secrets'
+export {
+  approveWorkflowRef,
+  createWorkflow,
+  deleteWorkflow,
+  editWorkflow,
+  listProjectWorkflows,
+  resolveWorkflow,
+  showWorkflow,
+  workflowLaunch,
+} from './workflows'
 export {
   assignProjectCredential,
   missingCredentialError,

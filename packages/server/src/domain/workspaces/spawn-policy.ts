@@ -66,6 +66,8 @@ export interface SpawnRequest {
   commit?: string
   /** Its start graph, unparsed; null for none (docs/workspace-steps.md). */
   steps?: unknown
+  /** A workflow by name, in place of `steps` (docs/workflows.md). */
+  workflow?: string
   /** Run `steps` untouched, with no session. */
   nonInteractive?: boolean
 }
@@ -150,6 +152,7 @@ export async function decideSpawn(request: SpawnRequest): Promise<SpawnDecision>
       ...(request.branch !== undefined ? { branch: request.branch } : {}),
       ...(request.commit !== undefined ? { commit: request.commit } : {}),
       ...(request.steps !== undefined ? { steps: request.steps } : {}),
+      ...(request.workflow !== undefined ? { workflow: request.workflow } : {}),
       ...(request.nonInteractive === true ? { nonInteractive: true } : {}),
       ...(request.group !== undefined ? { group: request.group } : {}),
       ...(request.title !== undefined ? { title: request.title } : {}),

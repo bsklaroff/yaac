@@ -58,6 +58,7 @@ import {
 import { formatInZone } from '@yaac/shared/schedule'
 import type { PermissionMode } from '@yaac/shared/types'
 import { cloneRepo } from '#domain/git'
+import { createWorkflow } from '#domain/projects'
 import { _resetWorkspaceStatusStoreForTests, setLiveAgents } from '#runtime/status/status-store'
 import { WorkspaceExecError, type RuntimeHandle, type WorkspaceDriver } from '#drivers/contract'
 import { git } from '@yaac/test-utils/git'
@@ -1887,6 +1888,26 @@ describe('runMamaCommand', () => {
         [{ workspace: 'elsewhere' }, `no workspace 'elsewhere' in ${PROJ}`],
       ]
       for (const [args, error] of refusals) expect(await run('logs', '', args)).toEqual({ ok: false, error })
+    })
+  })
+
+  describe('workflows', () => {
+    it('lists and shows the project\'s workflows, and create runs one by name, never beside --steps or on a queue', async () => {
+      expect(await output('workflow-list')).toBe('This project has no workflows.')
+      await createWorkflow(local, PROJ, { name: 'ci', steps: { test: { run: 'pnpm test' } } })
+      expect(await output('workflow-list')).toMatch(/^ci\s+revision 1\s+steps test$/)
+      expect(await output('workflow-show', '', { name: 'ci' })).toContain('"run": [\n      "pnpm test"')
+      expect(await run('workflow-show', '', {})).toEqual({ ok: false, error: 'workflow show needs a workflow name' })
+
+      await output('create', '', { 'non-interactive': '1', workflow: 'ci' })
+      await settle()
+      const opts = vi.mocked(createWorkspace).mock.calls.at(-1)?.[1]
+      expect(opts).toMatchObject({ steps: { test: { run: ['pnpm test'] } }, nonInteractive: true })
+      expect(opts?.revisionId).toBeDefined()
+      expect(await run('create', '', { 'non-interactive': '1', workflow: 'ci', steps: '{}' }))
+        .toEqual({ ok: false, error: 'give one of --steps, --no-steps and --workflow' })
+      const queued = await run('queue', 'x', { workflow: 'ci' })
+      expect(queued.ok).toBe(false)
     })
   })
 

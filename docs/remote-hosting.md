@@ -233,8 +233,8 @@ against a local or remote server:
 - **Project environment and secrets**: edited in the webapp (Settings →
   Project Config → Environment) and stored with the project, secrets
   encrypted at rest. Under `k8s` a secret's value never enters a workspace;
-  the egress proxy injects it in flight. A run secret, which only the
-  sites and pinned routines it names get, is the exception
+  the egress proxy injects it in flight. A run secret, which only a
+  workflow naming it gets, on a commit a person ran it on, is the exception
   (docs/project-config.md "Run secrets").
 
 Things to keep in mind:

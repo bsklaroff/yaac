@@ -16,7 +16,6 @@ import {
   updateSite,
 } from '#db/site-store'
 import { recordWorkspaceCreated } from '#db/workspace-store'
-import { listRunSecrets, upsertRunSecret } from '#db'
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
 const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
@@ -102,13 +101,11 @@ describe('beginSiteDeploy', () => {
 })
 
 describe('deleteSiteRow', () => {
-  it('deletes one site, and takes it off the run secrets that name it', async () => {
+  it('deletes one site', async () => {
     const a = await site(PROJ, 'a', 'a.example.com')
-    const b = await site(PROJ, 'b', 'b.example.com')
-    await upsertRunSecret(PROJ, { name: 'KEY', value: 'v', siteIds: [a.id, b.id], routineIds: [] })
+    await site(PROJ, 'b', 'b.example.com')
     await deleteSiteRow(a.id)
     expect((await listSites()).map((s) => s.name)).toEqual(['b'])
-    expect((await listRunSecrets(PROJ))[0].siteIds).toEqual([b.id])
   })
 })
 

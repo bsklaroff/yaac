@@ -718,14 +718,41 @@ export interface ProjectEnvVar {
 /**
  * One of a project's run secrets, as a client sees it
  * (docs/project-config.md "Run secrets"): never its value, only whether a
- * usable one is stored, and the sites and routines whose workspaces get it.
+ * usable one is stored. Workflow revisions name the ones they get.
  */
 export interface ProjectRunSecret {
   id: string
   name: string
   hasValue: boolean
-  siteIds: string[]
-  routineIds: string[]
+}
+
+/** One revision of a workflow (docs/workflows.md). */
+export interface WorkflowRevision {
+  number: number
+  steps: StepGraph
+  /** The run secrets it is given. */
+  secrets: string[]
+  createdAt: string
+}
+
+/**
+ * A project's workflow, with its current revision and what people
+ * approved that revision to run on with its secrets (docs/workflows.md
+ * "Approvals").
+ */
+export interface WorkflowEntry {
+  id: string
+  projectId: string
+  name: string
+  current: WorkflowRevision
+  approvedCommits: string[]
+  approvedBranches: string[]
+  createdAt: string
+}
+
+/** A workflow with every revision, newest first, for `GET /workflow/show`. */
+export interface WorkflowDetail extends WorkflowEntry {
+  revisions: WorkflowRevision[]
 }
 
 // ---------------------------------------------------------------------------
@@ -1729,6 +1756,9 @@ export const routineSettingsSchema = z.object({
   prompt: promptText.min(1).optional(),
   commit: z.string().min(1).max(64).optional(),
   steps: z.unknown().optional(),
+  /** A workflow by name, whose current revision each run starts with, in
+   *  place of `steps` (docs/workflows.md); null on an edit drops it. */
+  workflow: z.string().min(1).max(200).nullable().optional(),
   nonInteractive: z.boolean().optional(),
   tool: z.enum(AGENT_TOOLS).optional(),
   model: z.string().regex(MODEL_RE).max(100).optional(),
@@ -1768,8 +1798,6 @@ export type SiteDeployPhase = 'launching' | 'building' | 'handoff' | 'starting'
 
 /** A public site as `GET /site/list` answers it. */
 export interface SiteEntry {
-  /** What a run secret names it by (`ProjectRunSecret.siteIds`). */
-  id: string
   name: string
   hostname: string
   /** The port its releases serve on. */
@@ -1777,8 +1805,10 @@ export interface SiteEntry {
   /** The port of its releases that its owner may forward or preview, for
    *  an admin view the internet never reaches. */
   adminPort?: number
-  /** The graph each release runs. */
+  /** The graph each release runs: its workflow's current revision's, when
+   *  it names one. */
   steps: StepGraph
+  workflow?: string
   /** Its volume's name. */
   volume?: string
   /** The branch whose tip it deploys whenever it moves, while serving. */
@@ -1830,6 +1860,8 @@ export interface RoutineEntry {
   commit?: string
   /** As on a queued entry (`QueuedWorkspaceEntry.steps`). */
   steps?: StepGraph
+  /** The workflow its runs start with, in place of `steps`. */
+  workflow?: string
   nonInteractive?: true
   groupId?: string
   /** Each run's timeout; absent stops each run at the next tick. */
@@ -2337,7 +2369,9 @@ export const MAX_MODEL_LENGTH = 128
  * `fetch` reads another workspace's branches into the caller's checkout, and
  * `history` its conversations, never writing to theirs. `send` messages a
  * running one's agent, held to the caller's permission mode. `set-base`
- * changes only the caller's own reference branch.
+ * changes only the caller's own reference branch. `workflow-list` and
+ * `workflow-show` read the project's workflows (docs/workflows.md), which
+ * `create` and `routine-*` may run by name; no command edits one.
  */
 export const MAMA_COMMANDS = [
   'list',
@@ -2367,5 +2401,7 @@ export const MAMA_COMMANDS = [
   'send',
   'volumes',
   'logs',
+  'workflow-list',
+  'workflow-show',
 ] as const
 export type MamaCommand = (typeof MAMA_COMMANDS)[number]

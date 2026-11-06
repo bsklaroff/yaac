@@ -45,7 +45,7 @@ import {
 } from '@yaac/shared/paths'
 import { buildCloneLinkExec, buildStatusWarmupExec } from '@yaac/shared/git'
 import { parseGitRemote } from '@yaac/shared/git-remote'
-import { fetchProjectCommit, fetchProjectOrigin, missingCredentialError, pushProjectSecrets, resolveProjectCredential, resolveProjectEnv, seedProjectOrigin, sshKeyMaterial } from '#domain/projects'
+import { fetchProjectCommit, fetchProjectOrigin, missingCredentialError, resolveProjectCredential, resolveProjectEnv, seedProjectOrigin, sshKeyMaterial } from '#domain/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { readLock } from '@yaac/shared/lock'
 import {
@@ -206,10 +206,12 @@ export interface WorkspaceCreateOptions {
   nonInteractive?: boolean
   /** The non-interactive workspace this one reruns. */
   rerunOf?: string
+  /** The workflow revision `steps` came from (docs/workflows.md). */
+  revisionId?: string
   /**
-   * Run secrets by name, with their values (docs/project-config.md "Run
-   * secrets"), for a site's release or a routine's non-interactive run.
-   * Refused on any other create.
+   * The run secrets its revision gets, with their values
+   * (`workflowLaunch`), for a non-interactive create or a site's release.
+   * Refused on any other.
    */
   runSecrets?: Record<string, string>
   /**
@@ -812,6 +814,7 @@ export async function createWorkspace(
       ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
       ...(options.deadline !== undefined ? { deadline: options.deadline } : {}),
       ...(options.steps !== undefined ? { startSteps: options.steps ?? {} } : {}),
+      ...(options.revisionId !== undefined ? { revisionId: options.revisionId } : {}),
       ...(options.nonInteractive === true ? { nonInteractive: true } : {}),
       ...(options.rerunOf !== undefined ? { rerunOf: options.rerunOf } : {}),
       ...(options.siteId !== undefined ? { siteId: options.siteId } : {}),
@@ -1149,14 +1152,11 @@ export async function createWorkspace(
   }
 
   // Run secrets are real values under k8s too. With mediated egress the
-  // runtime holds them, current as of this launch, and the spec only names
-  // them, so no value is written into the workspace's own spec.
+  // runtime holds them, handed over by `workflowLaunch`, and the spec only
+  // names them, so no value is written into the workspace's own spec.
   const runSecrets = Object.entries(options.runSecrets ?? {})
-  if (runSecrets.length > 0) {
-    if (options.nonInteractive !== true && options.siteId === undefined) {
-      throw new Error('run secrets go only to a site\'s release or a non-interactive routine run')
-    }
-    await pushProjectSecrets(projectId)
+  if (runSecrets.length > 0 && options.nonInteractive !== true && options.siteId === undefined) {
+    throw new Error('run secrets go only to a non-interactive workspace or a site\'s release')
   }
   if (!sandboxed) {
     for (const [name, value] of runSecrets) {

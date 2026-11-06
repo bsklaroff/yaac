@@ -66,6 +66,7 @@ import { _resetAcpRegistryForTests } from '#runtime/agents/acp-registry'
 import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 import type { ServerError } from '@yaac/shared/errors'
 import { BUILT_IN_USER_ID } from '#db'
+import { createWorkflow, editWorkflow, resolveWorkflow, setRunSecret } from '#domain/projects'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 
 /** The caller of every user-caused write here. */
@@ -927,5 +928,33 @@ describe('prepareRerun', () => {
 
     // Only a non-interactive workspace is rerun.
     await expect(prepareRerun(local, 'ci-debug', { workspaceId: 'ci-3' })).rejects.toMatchObject({ code: 'CONFLICT' })
+  })
+
+  it('runs a workflow\'s revision again, whose run secrets reach it on the commit it ran on, even after an edit', async () => {
+    const runSecrets: Array<string[] | undefined> = []
+    installDriver({
+      launch: (spec) => {
+        runSecrets.push(spec.runSecrets)
+        return Promise.resolve(handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: spec.workspaceId, jobName: `yaac-${spec.workspaceId}` }))
+      },
+    })
+    const head = (await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'origin/main'])).trim()
+    await setRunSecret(local, DEMO_PROJECT_ID, { name: 'P8_KEY', value: 'pem' })
+    await createWorkflow(local, DEMO_PROJECT_ID, { name: 'relay', steps: { test: { run: 'pnpm test' } }, secrets: ['P8_KEY'] })
+    const first = (await resolveWorkflow(DEMO_PROJECT_ID, 'relay')).current.id
+    await (await prepareStart(local, {
+      projectId: DEMO_PROJECT_ID, workspaceId: 'wf-1', noSession: true, nonInteractive: true, commit: head,
+      workflow: 'relay', rememberDefaults: false, claimSpare: false,
+    }))()
+    await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wf-1' })
+    await editWorkflow(local, DEMO_PROJECT_ID, 'relay', { steps: { other: { run: 'true' } }, secrets: ['P8_KEY'] })
+
+    // An agent's rerun: the same revision on the same commit, so it gets them.
+    const agent = { kind: 'workspace', workspaceId: 'w1', userId: BUILT_IN_USER_ID } as const
+    await (await prepareRerun(agent, 'wf-1', { workspaceId: 'wf-2' }))()
+    expect(await getWorkspaceRow(DEMO_PROJECT_ID, 'wf-2')).toMatchObject({
+      revisionId: first, startSteps: { test: { run: ['pnpm test'] } },
+    })
+    expect(runSecrets).toEqual([['P8_KEY'], ['P8_KEY']])
   })
 })

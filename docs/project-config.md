@@ -96,45 +96,27 @@ you don't need a `GITHUB_TOKEN` secret.
 A **run secret** is a value a workspace needs as it is, under k8s too: a
 key it signs with, say, which no proxy swap can stand in for. Run secrets
 are kept apart from the secrets above (`project_run_secrets`), encrypted
-the same way, and each names the sites (docs/public-sites.md) whose
-releases get it and the routines (docs/routines.md) whose runs do. No
-other workspace gets one: not an interactive workspace, not a create
-through the API or `yaac-mama`, and not a rerun. Set them under Settings →
-Project Config → Run secrets, or with `yaac config env <project> NAME
---run-secret [--site <name>]... [--routine <id>]...`, the value on stdin;
-each set replaces the targets, and `--unset NAME` removes one.
+the same way, and reach a workspace only through a workflow revision that
+names them, on a commit a person ran that workflow on
+(docs/workflows.md). An interactive workspace never gets one. Only a person
+sets them, under Settings → Project Config → Run secrets or with `yaac
+config env <project> NAME --run-secret`, the value on stdin (`--unset NAME`
+removes one); an agent's call is refused, and `yaac-mama` has no verb for
+them.
 
-The value reaches the workspace's process, so whatever it runs can print
-or send it. So it only reaches a workspace whose graph and commit a person
-chose:
-
-- **Only a person sets them.** The routes are the project owner's, and an
-  agent's call is refused; `yaac-mama` has no verb for them.
-- **A routine must be non-interactive and start at a commit.** A branch's
-  tip is whatever was last pushed, and every agent of the project can push.
-  While a routine gets run secrets an agent may not edit it, only run,
-  pause or delete it, which changes when it runs, not what; a person may
-  not move it to a branch or make it interactive. A queued run gets
-  them only while it still runs its routine's graph at its commit, since an
-  agent may edit a queued run.
-- **A site's deploy is the choice.** Only its owner, while an admin, deploys
-  (docs/public-sites.md "Sites and releases"), and a replacement runs that
-  release's commit again. A deploy of a branch takes its tip as it stands,
-  which is the deployer's to check, as for anything sent to production.
-
-Under k8s such a workspace mounts nothing the project's other workspaces
-write, as a release does (docs/public-sites.md "Sites and releases"): no tool
-home, memory or cache volume an agent could have planted code in. What it
-prints still lands in its step logs, which the project's agents read with
-`yaac-mama logs`, so a step must not echo one. Under containerless an agent
-runs as you and can read a run secret as it can every other secret, so
-there the split keeps values out of interactive workspaces' environments
-but is no boundary.
+Under k8s a workspace that gets one mounts nothing the project's other
+workspaces write, as a release does (docs/public-sites.md "Sites and
+releases"): no tool home, memory or cache volume an agent could have
+planted code in. What it prints still lands in its step logs, which the
+project's agents read with `yaac-mama logs`, so a step must not echo one.
+Under containerless an agent runs as you and can read a run secret as it
+can every other secret, so there the split keeps values out of interactive
+workspaces' environments but is no boundary.
 
 Under k8s the values sit in the Secret `yaac-run-secrets-<project>`, one key
 per name, which the server rewrites whenever it launches a workspace that
 gets one and when one is removed; the pod reads the ones it is given by
-`secretKeyRef`, so no value is written into its Job. The proxy never reads
+`secretKeyRef`, so no value is written into its Job. The proxy does not read
 that Secret, and the hosts the workspace reaches with it need no rule, so
 they are tunneled untouched. Under containerless they are ordinary
 environment entries.

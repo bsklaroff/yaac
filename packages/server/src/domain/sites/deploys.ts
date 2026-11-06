@@ -16,6 +16,7 @@ import {
   getSiteRow,
   getUser,
   getVolumeRow,
+  getWorkflow,
   handOverVolume,
   leaseOf,
   listSites,
@@ -27,7 +28,7 @@ import {
   type StepRow,
 } from '#db'
 import { isProjectHeld, systemPrincipal, type Actor } from '#domain/access'
-import { fetchProjectOrigin, resolveRunSecrets } from '#domain/projects'
+import { approveWorkflowRef, fetchProjectOrigin } from '#domain/projects'
 import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
 import {
   listProvisioning,
@@ -92,19 +93,25 @@ async function resolveDeployCommit(projectId: string, ref: string | undefined): 
   })
 }
 
-/** What a release runs with besides its commit and image. */
+/** What a release runs with besides its commit and image: a graph of its
+ *  own, or a workflow's revision (docs/workflows.md). */
 interface ReleaseConfig {
-  steps: StepGraph
+  steps?: StepGraph
+  revisionId?: string
   port: number
   volumeId?: string
 }
 
-/** The site's current settings, which a new deploy runs with. */
-const siteConfig = (site: SiteRow): ReleaseConfig => ({
-  steps: site.steps,
-  port: site.port,
-  ...(site.volumeId !== undefined ? { volumeId: site.volumeId } : {}),
-})
+/** The site's current settings, which a new deploy runs with: its
+ *  workflow's current revision, if it names one. */
+async function siteConfig(site: SiteRow): Promise<ReleaseConfig> {
+  const workflow = site.workflowId !== undefined ? await getWorkflow(site.workflowId) : undefined
+  return {
+    ...(workflow !== undefined ? { revisionId: workflow.current.id } : { steps: site.steps ?? {} }),
+    port: site.port,
+    ...(site.volumeId !== undefined ? { volumeId: site.volumeId } : {}),
+  }
+}
 
 /**
  * What the site's last release ran with, so a replacement or `site start`
@@ -114,9 +121,9 @@ const siteConfig = (site: SiteRow): ReleaseConfig => ({
  */
 async function lastReleaseConfig(site: SiteRow): Promise<ReleaseConfig> {
   const release = site.releaseWorkspaceId !== undefined ? await findWorkspaceRow(site.releaseWorkspaceId) : undefined
-  if (release === undefined) return siteConfig(site)
+  if (release === undefined) return await siteConfig(site)
   return {
-    steps: release.startSteps ?? site.steps,
+    ...(release.revisionId !== undefined ? { revisionId: release.revisionId } : { steps: release.startSteps ?? {} }),
     port: site.livePort ?? site.port,
     ...(release.volumeId !== undefined ? { volumeId: release.volumeId } : {}),
   }
@@ -157,7 +164,12 @@ export async function deploySite(
     if (site.deployWorkspaceId !== undefined && site.deployCommit === commit && !site.deployReplacing) {
       return { workspaceId: site.deployWorkspaceId, commit }
     }
-    return await startDeploy(principal, site, { ...siteConfig(site), commit, timeoutMs })
+    // A person deploying a site that follows a branch approves the branch
+    // for its workflow, as its setup does.
+    if (site.workflowId !== undefined && site.followBranch !== undefined) {
+      await approveWorkflowRef(principal, site.workflowId, { branch: site.followBranch })
+    }
+    return await startDeploy(principal, site, { ...await siteConfig(site), commit, timeoutMs })
   })
 }
 
@@ -269,7 +281,14 @@ function lastDeploy(row: SiteRow, outcome: 'succeeded' | 'failed', error?: strin
 async function startDeploy(
   principal: Actor,
   site: SiteRow,
-  opts: ReleaseConfig & { commit: string; image?: string; timeoutMs: number; replacing?: { rerunOf: string } },
+  opts: ReleaseConfig & {
+    commit: string
+    /** The followed branch whose tip `commit` is. */
+    fromBranch?: string
+    image?: string
+    timeoutMs: number
+    replacing?: { rerunOf: string }
+  },
 ): Promise<{ workspaceId: string; commit: string }> {
   const workspaceId = randomUUID()
   const now = Date.now()
@@ -287,12 +306,12 @@ async function startDeploy(
   if (!begun) throw new ServerError('CONFLICT', `site "${site.name}" is already deploying`)
   try {
     const holder = opts.volumeId !== undefined ? (await getVolumeRow(opts.volumeId))?.holderWorkspaceId : undefined
-    const runSecrets = await resolveRunSecrets(site.projectId, site.id)
     const run = await prepareStart(principal, {
       projectId: site.projectId,
       workspaceId,
       commit: opts.commit,
-      steps: opts.steps,
+      ...(opts.revisionId !== undefined ? { revisionId: opts.revisionId } : { steps: opts.steps }),
+      ...(opts.fromBranch !== undefined ? { fromBranch: opts.fromBranch } : {}),
       noSession: true,
       title: `${site.name} @ ${opts.commit.slice(0, 8)}`,
       siteId: site.id,
@@ -300,7 +319,6 @@ async function startDeploy(
       ...(opts.volumeId !== undefined ? { stageVolumeId: opts.volumeId } : {}),
       ...(holder !== undefined ? { colocateWith: holder } : {}),
       ...(opts.replacing !== undefined ? { rerunOf: opts.replacing.rerunOf } : {}),
-      runSecrets,
       rememberDefaults: false,
       claimSpare: false,
     })
@@ -549,5 +567,7 @@ async function followBranch(row: SiteRow): Promise<void> {
   const tip = await resolveRemoteRef(repoDir(row.projectId), row.followBranch).catch(() => undefined)
   if (tip === undefined || tip === row.releaseCommit || tip === row.failedCommit) return
   serverLog(`[sites] ${row.name}: ${row.followBranch} is at ${tip.slice(0, 12)}; deploying it`)
-  await startDeploy(systemPrincipal, row, { ...siteConfig(row), commit: tip, timeoutMs: DEFAULT_DEPLOY_TIMEOUT_MS })
+  await startDeploy(systemPrincipal, row, {
+    ...await siteConfig(row), commit: tip, fromBranch: row.followBranch, timeoutMs: DEFAULT_DEPLOY_TIMEOUT_MS,
+  })
 }

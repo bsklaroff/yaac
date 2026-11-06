@@ -203,12 +203,12 @@ describe('yaac site (real CLI + real server)', () => {
     expect(await yaac('site', 'list', NAME)).toMatch(/web\s+www\.example\.test\s+3001\s+-\s+failed/)
 
     const withAdmin = { ...serving(3001, 'v2'), ...serving(3002, 'admin', 'admin') }
-    await yaac('site', 'edit', NAME, 'web', '--admin-port', '3002', '--steps', await stepsFile('v2.json', withAdmin))
-    // A run secret named for the site reaches its releases as it is.
-    const given = await runYaac(serverEnv, 'config', 'env', NAME, 'RELAY_KEY', '--run-secret', '--site', 'web',
-      { stdin: 'relay-key-value\n' })
+    // A workflow gives the site's releases a run secret as it is; the
+    // owner's deploy below approves its commit.
+    const given = await runYaac(serverEnv, 'config', 'env', NAME, 'RELAY_KEY', '--run-secret', { stdin: 'relay-key-value\n' })
     expect(given.exitCode, given.stderr).toBe(0)
-    expect(given.stdout).toContain('given to site web')
+    await yaac('workflow', 'create', NAME, 'web', '--file', await stepsFile('v2.json', withAdmin), '--secret', 'RELAY_KEY')
+    await yaac('site', 'edit', NAME, 'web', '--admin-port', '3002', '--workflow', 'web')
     const deployed = await runYaac(serverEnv, 'site', 'deploy', NAME, 'web', '--ref', sha, '--timeout', '10m', '--wait')
     expect(deployed.exitCode, deployed.stderr).toBe(0)
     expect(deployed.stdout).toContain(`Deploying ${sha.slice(0, 7)} to site "web"`)

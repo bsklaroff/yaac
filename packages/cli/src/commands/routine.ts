@@ -31,6 +31,8 @@ export interface RoutineOptions {
   /** A JSON file of the steps each run starts with; false (`--no-steps`)
    *  for none (docs/workspace-steps.md). */
   steps?: string | false
+  /** A workflow whose current revision each run starts with instead. */
+  workflow?: string
   /** Each run runs `steps` untouched, with no prompt or session. */
   nonInteractive?: boolean
   /** A group name or id; false (`--no-group`) is the default list. */
@@ -40,7 +42,7 @@ export interface RoutineOptions {
 export async function routineCreate(project: string, opts: RoutineOptions): Promise<void> {
   const prompt = await promptOf(opts)
   if (opts.name === undefined || opts.cron === undefined || (prompt === undefined && opts.nonInteractive !== true)) {
-    throw new Error('A routine needs --name, --cron and --prompt (or --prompt-file), or --non-interactive with --steps.')
+    throw new Error('A routine needs --name, --cron and --prompt (or --prompt-file), or --non-interactive with --steps or --workflow.')
   }
   // So a routine that names no zone takes this device's (unless the user
   // pinned one).
@@ -155,6 +157,7 @@ async function settingsOf(opts: RoutineOptions): Promise<Partial<RoutineSettings
     ...(opts.branch !== undefined ? { branch: opts.branch } : {}),
     ...(opts.commit !== undefined ? { commit: opts.commit } : {}),
     ...(steps !== undefined ? { steps } : {}),
+    ...(opts.workflow !== undefined ? { workflow: opts.workflow } : {}),
     ...(opts.nonInteractive === true ? { nonInteractive: true } : {}),
     ...(opts.group !== undefined ? { group: opts.group === false ? null : opts.group } : {}),
   }

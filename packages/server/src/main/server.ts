@@ -14,6 +14,7 @@ import { configApp } from '#routes/config'
 import { routineApp } from '#routes/routines'
 import { volumeApp } from '#routes/volumes'
 import { siteApp } from '#routes/sites'
+import { workflowApp } from '#routes/workflows'
 import { imageApp } from '#routes/images'
 import { serverApp } from '#routes/server'
 import { usersApp } from '#routes/users'
@@ -177,6 +178,7 @@ function apiRoutes(
     .route('/routine', routineApp)
     .route('/volume', volumeApp)
     .route('/site', siteApp)
+    .route('/workflow', workflowApp)
     .route('/image', imageApp)
     .route('/server', serverApp)
     .route('/users', usersApp)

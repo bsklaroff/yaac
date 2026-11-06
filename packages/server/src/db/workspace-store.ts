@@ -53,6 +53,8 @@ export interface WorkspaceCreatedInput {
   scratchDirs?: string[]
   /** The graph it brought in place of the project's init steps. */
   startSteps?: StepGraph
+  /** The workflow revision `startSteps` came from. */
+  revisionId?: string
   nonInteractive?: boolean
   /** The workspace it reruns: a non-interactive one, or a site's release
    *  that died. */
@@ -107,6 +109,7 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
       ...(input.deadline !== undefined ? timeoutColumns(input.deadline) : {}),
       ...(input.scratchDirs !== undefined ? { scratchDirs: input.scratchDirs } : {}),
       ...(input.startSteps !== undefined ? { startSteps: input.startSteps } : {}),
+      ...(input.revisionId !== undefined ? { revisionId: input.revisionId } : {}),
       ...(input.nonInteractive === true ? { nonInteractive: true } : {}),
       ...(input.rerunOf !== undefined ? { rerunOf: input.rerunOf } : {}),
       ...(input.siteId !== undefined ? { siteId: input.siteId } : {}),

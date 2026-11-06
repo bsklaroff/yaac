@@ -27,7 +27,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 import { createSite, deploySite, editSite, onSiteTimer, reconcileSites, showSite, startSite, stopSite } from '#domain/sites'
 import { createVolume } from '#domain/workspaces'
-import { setRunSecret } from '#domain/projects'
+import { createWorkflow, setRunSecret } from '#domain/projects'
 import { clearAllProvisioningForTests, listProvisioning } from '#domain/workspaces/provisioning'
 import {
   BUILT_IN_USER_ID,
@@ -153,8 +153,11 @@ const lastRoute = (): SiteRoute | undefined => routed.at(-1)?.[0]
 describe('deploySite', () => {
   it('starts a release at the commit, builds it, hands it the volume, and points the hostname at it once ready', async () => {
     await createVolume(local, DEMO_PROJECT_ID, 'data')
+    // Its graph is a workflow's, which gives its releases a run secret.
+    await setRunSecret(local, DEMO_PROJECT_ID, { name: 'P8_KEY', value: 'pem' })
+    await createWorkflow(local, DEMO_PROJECT_ID, { name: 'shop', steps: STEPS, secrets: ['P8_KEY'] })
     await createSite(local, DEMO_PROJECT_ID, {
-      name: 'shop', hostname: 'shop.example.com', port: 3000, adminPort: 3001, steps: STEPS, volume: 'data',
+      name: 'shop', hostname: 'shop.example.com', port: 3000, adminPort: 3001, workflow: 'shop', volume: 'data',
     })
     const head = (await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'origin/main'])).trim()
     await expect(deploySite(stranger, DEMO_PROJECT_ID, 'shop')).rejects.toMatchObject({ code: 'FORBIDDEN' })
@@ -164,7 +167,6 @@ describe('deploySite', () => {
     await expect(deploySite(local, DEMO_PROJECT_ID, 'shop'))
       .rejects.toMatchObject({ code: 'FORBIDDEN', message: expect.stringContaining('publish sites') as unknown })
     await setUserRole(BUILT_IN_USER_ID, 'admin')
-    await setRunSecret(local, DEMO_PROJECT_ID, { name: 'P8_KEY', value: 'pem', siteIds: [(await site()).id], routineIds: [] })
 
     // First deploy: nothing holds the volume, so it passes once the steps
     // before it are done.
@@ -174,7 +176,8 @@ describe('deploySite', () => {
     // Another deploy of the commit deploying is that deploy.
     expect(await deploySite(local, DEMO_PROJECT_ID, 'shop')).toEqual(first)
     const spec = launched.at(-1)!
-    // The site's run secrets, held by the runtime and named on the spec.
+    // The workflow's run secrets, held by the runtime and named on the spec:
+    // the deploy was a person's, so it approved its commit.
     expect(spec).toMatchObject({ siteId: (await site()).id, image: 'registry.test/proj:1', runSecrets: ['P8_KEY'] })
     expect(spec.env.some((e) => e.startsWith('YAAC_VOLUME_DIR='))).toBe(false)
     // The one port it offers is the site's admin port.
@@ -334,8 +337,12 @@ describe('reconcileSites', () => {
       await git(repo, ['update-ref', 'refs/remotes/origin/dev', sha])
       return sha
     }
+    // Setting it to follow approves the branch for its workflow, so each
+    // tip deploys with the workflow's run secret.
+    await setRunSecret(local, DEMO_PROJECT_ID, { name: 'P8_KEY', value: 'pem' })
+    await createWorkflow(local, DEMO_PROJECT_ID, { name: 'shop', steps: { app: { run: 'pnpm start', service: true } }, secrets: ['P8_KEY'] })
     await createSite(local, DEMO_PROJECT_ID, {
-      name: 'shop', hostname: 'shop.example.com', port: 3000, steps: { app: { run: 'pnpm start', service: true } }, followBranch: 'dev',
+      name: 'shop', hostname: 'shop.example.com', port: 3000, workflow: 'shop', followBranch: 'dev',
     })
     // Not serving yet, so nothing follows.
     await reconcileSites(snapshot(), false)
@@ -367,6 +374,7 @@ describe('reconcileSites', () => {
     await reconcileSites(snapshot(), false)
     const next = (await site()).deployWorkspaceId!
     await created(next)
+    expect(launched.at(-1)?.runSecrets).toEqual(['P8_KEY'])
     await stepsAre(next, { app: 'ready' })
     await reconcileSites(snapshot(), false)
     expect(await site()).toMatchObject({ liveWorkspaceId: next, releaseCommit: fixed })

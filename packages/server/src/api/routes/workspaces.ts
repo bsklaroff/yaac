@@ -271,6 +271,9 @@ export const workspaceApp = new Hono<IdentityEnv>()
       noSession: z.boolean().optional(),
       // A volume of the project to mount, by name (docs/workspace-volumes.md).
       volume: z.string().min(1).optional(),
+      // A workflow by name, whose current revision it runs in place of
+      // `steps` (docs/workflows.md).
+      workflow: z.string().min(1).optional(),
     })),
     async (c) => {
       const body = c.req.valid('json')
@@ -309,6 +312,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
         ...(body.branch !== undefined ? { branch: body.branch } : {}),
         ...(body.commit !== undefined ? { commit: body.commit } : {}),
         ...(body.steps !== undefined ? { steps: body.steps } : {}),
+        ...(body.workflow !== undefined ? { workflow: body.workflow } : {}),
         ...(body.nonInteractive === true ? { nonInteractive: true } : {}),
         ...(body.prompt !== undefined ? { prompt: body.prompt } : {}),
         ...(body.sessionId !== undefined ? { sessionId: body.sessionId } : {}),

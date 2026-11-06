@@ -2,7 +2,6 @@ import type { StepGraph } from '@yaac/shared/steps'
 import { and, asc, desc, eq, isNotNull, isNull, lt, or } from 'drizzle-orm'
 import { getDb } from './client'
 import { queuedWorkspaces, routines, workspaces } from './schema'
-import { forgetRunSecretTarget } from './run-secret-store'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { isUuid } from '#lib/uuid'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
@@ -32,8 +31,10 @@ export interface RoutineFields {
   /** Exactly one of a branch and a full commit. */
   branch?: string
   commit?: string
-  /** Absent runs the project's init steps; `{}` runs none. */
+  /** Absent runs the project's init steps; `{}` runs none. Not with a
+   *  workflow. */
   steps?: StepGraph
+  workflowId?: string
   nonInteractive?: boolean
   groupId?: string
   timeoutMinutes?: number
@@ -53,6 +54,7 @@ function columns(f: RoutineFields): Omit<typeof routines.$inferInsert, 'projectI
     branch: f.branch ?? null,
     commit: f.commit ?? null,
     steps: f.steps ?? null,
+    workflowId: f.workflowId ?? null,
     nonInteractive: f.nonInteractive === true,
     effort: f.effort ?? null,
     groupId: f.groupId ?? null,
@@ -116,7 +118,6 @@ export async function listRoutineRows(projectId?: string): Promise<RoutineRow[]>
 export async function deleteRoutine(id: string): Promise<boolean> {
   const db = await getDb()
   const rows = await db.delete(routines).where(eq(routines.id, id)).returning({ id: routines.id })
-  await forgetRunSecretTarget(id)
   notifyWorkspaceListChanged()
   return rows.length > 0
 }

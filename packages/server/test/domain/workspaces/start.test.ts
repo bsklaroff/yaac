@@ -31,7 +31,7 @@ import { clearPrewarmStateForTests, refreshing } from '#domain/workspaces/prewar
 import { setWorkspaceBinDir } from '#domain/workspaces/workspace-bin'
 import type { StartWorkspaceRequest } from '#domain/workspaces/start'
 import type { WorkspaceCreateResult } from '#domain/workspaces/create'
-import { setInitSteps, setScratchDirs, setProjectEnvVar } from '#domain/projects'
+import { createWorkflow, resolveWorkflow, setInitSteps, setProjectEnvVar, setRunSecret, setScratchDirs } from '#domain/projects'
 import { _clearTmuxAliveCacheForTests } from '#runtime/status/liveness'
 import { _resetAcpRegistryForTests, registerAcpConversation } from '#runtime/agents/acp-registry'
 import type { AcpConversation } from '#runtime/agents'
@@ -81,7 +81,6 @@ import {
   setWorkspaceGroupLimit,
   seeTailnetUser,
   setToolCredential,
-  upsertRunSecret,
   type SessionRow,
   type WorkspaceRow,
 } from '#db'
@@ -569,29 +568,33 @@ describe('prepareStart', () => {
       ]))
     })
 
-    it('gives run secrets to a non-interactive create only, named on the spec with mediated egress', async () => {
-      const ci = { nonInteractive: true, noSession: true, commit: head, steps: { t: { run: 'true' } } }
+    it('runs a workflow\'s revision, its run secrets named on the spec and only for a non-interactive start', async () => {
       const pushed: Array<Record<string, string>> = []
       installDriver({ syncProjectSecrets: (_p, _v, run) => { pushed.push(run); return Promise.resolve() } })
-      await upsertRunSecret(DEMO_PROJECT_ID, { name: 'P8_KEY', value: 'pem', siteIds: [], routineIds: [] })
-      await start({ ...ci, runSecrets: { P8_KEY: 'pem' } })
+      await setRunSecret(local, DEMO_PROJECT_ID, { name: 'P8_KEY', value: 'pem' })
+      await createWorkflow(local, DEMO_PROJECT_ID, { name: 'relay', steps: { t: { run: 'true' } }, secrets: ['P8_KEY'] })
+      const ci = { nonInteractive: true, noSession: true, commit: head, workflow: 'relay' }
+      const { workspaceId } = await start(ci)
       // The runtime holds the value, current as of this launch; the spec
-      // only names it.
+      // only names it, and mounts nothing an agent could have written.
       expect(specs[0].runSecrets).toEqual(['P8_KEY'])
-      expect(pushed).toEqual([{ P8_KEY: 'pem' }])
+      expect(pushed.at(-1)).toEqual({ P8_KEY: 'pem' })
       expect(env().join('\n')).not.toContain('pem')
-      // Nothing an agent could have written beside it: no tool home.
       expect(specs[0].mounts.map((m) => m.mountPath)).not.toContain('/home/yaac/.claude')
+      const row = await getWorkspaceRow(DEMO_PROJECT_ID, workspaceId)
+      expect(row?.startSteps).toEqual({ t: { run: ['true'] } })
+      expect(row?.revisionId).toBe((await resolveWorkflow(DEMO_PROJECT_ID, 'relay')).current.id)
 
       installDriver({ kind: 'containerless' })
-      await start({ ...ci, runSecrets: { P8_KEY: 'pem' } })
+      await start(ci)
       expect(specs[1].runSecrets).toBeUndefined()
       expect(specs[1].env).toContain('P8_KEY=pem')
       expect(specs[1].secretEnvKeys).toContain('P8_KEY')
 
-      // An interactive workspace never gets one.
-      await expect(start({ noSession: true, runSecrets: { P8_KEY: 'pem' } })).rejects.toThrow(/run secrets go only/)
-      expect(specs).toHaveLength(2)
+      // Interactive, it opens without them; steps beside it are refused.
+      await start({ noSession: true, workflow: 'relay' })
+      expect(specs[2].env.join('\n')).not.toContain('P8_KEY')
+      await expect(start({ ...ci, steps: { t: { run: 'true' } } })).rejects.toThrow('not both')
     })
 
     it('gives opencode and pi each their own key for one provider, in the config each tool reads', async () => {

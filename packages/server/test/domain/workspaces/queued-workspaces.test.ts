@@ -336,6 +336,17 @@ describe('queueWorkspace', () => {
 // docs/workspace-groups.md
 
 describe('updateQueuedWorkspace', () => {
+  it('leaves a routine\'s run alone: it starts with its routine\'s settings', async () => {
+    const routine = await insertRoutine(PROJ, {
+      name: 'r', cron: '@daily', timeZone: 'UTC', prompt: 'p', tool: 'claude', model: 'claude-sonnet-5',
+      mode: 'tui', permissionMode: 'auto', branch: 'main',
+    }, null)
+    const run = await insertRoutineRun(routine.id, PROJ, new Date(Date.now() + 60 * 60_000), {
+      prompt: 'p', tool: 'claude', model: 'claude-sonnet-5', mode: 'tui', permissionMode: 'auto', branch: 'main',
+    })
+    await expect(updateQueuedWorkspace(local, run!.id, { prompt: 'changed' }, 'user')).rejects.toMatchObject({ code: 'CONFLICT' })
+  })
+
   it('lets an agent shorten, lengthen or clear a timeout the user gave', async () => {
     await workspace(P, { permissionMode: 'accept-edits' })
     const entry = await queueWorkspace(local, PROJ, { parent: P, prompt: 'x', timeout: 60 }, 'user')

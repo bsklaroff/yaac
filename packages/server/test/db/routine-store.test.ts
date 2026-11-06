@@ -25,7 +25,6 @@ import {
 } from '#db/queued-workspace-store'
 import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { createWorkspaceGroup, deleteWorkspaceGroup } from '#db/group-store'
-import { listRunSecrets, upsertRunSecret } from '#db'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
@@ -84,10 +83,7 @@ describe('routine store', () => {
     await deleteWorkspaceGroup(PROJ, group.groupId)
     expect((await getRoutineRow(r.id))?.groupId).toBeUndefined()
 
-    // A deleted routine comes off the run secrets that name it.
-    await upsertRunSecret(PROJ, { name: 'KEY', value: 'v', siteIds: [], routineIds: [r.id] })
     expect(await deleteRoutine(r.id)).toBe(true)
-    expect((await listRunSecrets(PROJ))[0].routineIds).toEqual([])
     expect(await deleteRoutine(r.id)).toBe(false)
     await deleteProjectRoutines(OTHER)
     expect(await listRoutineRows()).toEqual([])

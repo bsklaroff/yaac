@@ -26,13 +26,10 @@ import {
   reconcileRoutines,
   runRoutineNow,
   setRoutinePaused,
-  updateQueuedWorkspace,
   updateRoutine,
 } from '#domain/workspaces'
-import { setRunSecret } from '#domain/projects'
+import { createWorkflow, editWorkflow, listProjectWorkflows, resolveWorkflow, setRunSecret } from '#domain/projects'
 import type { WorkspaceSpec } from '#drivers/contract'
-import { git } from '@yaac/test-utils/git'
-import { repoDir } from '@yaac/shared/project-paths'
 import { clearQueuedLaunchesForTests } from '#domain/workspaces/queued-workspaces'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { listQueuedWorkspaceRows, claimQueuedLaunch, failQueuedLaunch } from '#db/queued-workspace-store'
@@ -77,10 +74,12 @@ afterEach(async () => {
 const routine = (over: Partial<Parameters<typeof createRoutine>[2]> = {}) =>
   createRoutine(local, PROJ, { name: 'Nightly triage', cron: '0 9 * * *', prompt: 'triage the issues', tool: 'claude', ...over }, 'user')
 
-/** A pinned non-interactive routine, which may be given run secrets. */
-async function pinnedCi(over: Partial<Parameters<typeof createRoutine>[2]> = {}) {
-  const head = (await git(repoDir(PROJ), ['rev-parse', 'origin/main'])).trim()
-  return await routine({ prompt: undefined, nonInteractive: true, steps: { t: { run: 'true' } }, commit: head, ...over })
+/** A non-interactive routine running the `relay` workflow, which gives
+ *  its runs P8_KEY. */
+async function relayRoutine(principal: Parameters<typeof createRoutine>[0], over: Partial<Parameters<typeof createRoutine>[2]> = {}) {
+  return await createRoutine(principal, PROJ, {
+    name: 'Relay', cron: '*/5 * * * *', timeZone: 'UTC', nonInteractive: true, workflow: 'relay', ...over,
+  }, principal.kind === 'workspace' ? { ceiling: 'bypass' } : 'user')
 }
 
 /** Make a routine's next tick already due, as the clock moving past it
@@ -110,6 +109,21 @@ describe('createRoutine', () => {
   })
 })
 
+describe('createRoutine on a workflow', () => {
+  it('approves the commit or branch it runs on when a person saves it, and holds an agent to that', async () => {
+    const agent = { kind: 'workspace', workspaceId: 'w1', userId: BUILT_IN_USER_ID } as const
+    await setRunSecret(local, PROJ, { name: 'P8_KEY', value: 'pem' })
+    await createWorkflow(local, PROJ, { name: 'relay', steps: { t: { run: 'true' } }, secrets: ['P8_KEY'] })
+    await expect(relayRoutine(agent, { branch: 'main' })).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    const r = await relayRoutine(local, { branch: 'main' })
+    expect(r).toMatchObject({ workflow: 'relay', branch: 'main' })
+    expect(r.steps).toBeUndefined()
+    expect((await listProjectWorkflows(PROJ))[0].approvedBranches).toEqual(['main'])
+    expect((await relayRoutine(agent, { name: 'Again', branch: 'main' })).workflow).toBe('relay')
+    await expect(relayRoutine(local, { steps: { t: { run: 'true' } } })).rejects.toThrow('not both')
+  })
+})
+
 describe('updateRoutine', () => {
   it('replaces what it names, re-reading the next tick only when the schedule changes', async () => {
     const r = await routine({ timeout: 30 })
@@ -125,12 +139,17 @@ describe('updateRoutine', () => {
     await expect(updateRoutine(local, r.id, { cron: '61 * * * *' }, 'user')).rejects.toMatchObject({ code: 'VALIDATION' })
   })
 
-  it('keeps an agent off a routine that gets run secrets, and a person from moving it off its commit', async () => {
-    const r = await pinnedCi()
-    await setRunSecret(local, PROJ, { name: 'P8_KEY', value: 'pem', siteIds: [], routineIds: [r.id] })
-    await expect(updateRoutine(local, r.id, { name: 'x' }, { ceiling: 'bypass' })).rejects.toMatchObject({ code: 'FORBIDDEN' })
-    await expect(updateRoutine(local, r.id, { branch: 'main' }, 'user')).rejects.toMatchObject({ code: 'VALIDATION' })
-    expect((await updateRoutine(local, r.id, { name: 'Pinned CI' }, 'user')).name).toBe('Pinned CI')
+  it('replaces its workflow with new steps, and its steps with a workflow', async () => {
+    await createWorkflow(local, PROJ, { name: 'ci', steps: { t: { run: 'true' } } })
+    const r = await routine({ prompt: undefined, nonInteractive: true, steps: { s: { run: 'true' } } })
+    const onWorkflow = await updateRoutine(local, r.id, { workflow: 'ci' }, 'user')
+    expect(onWorkflow.workflow).toBe('ci')
+    expect(onWorkflow.steps).toBeUndefined()
+    // An edit naming neither keeps the workflow.
+    expect((await updateRoutine(local, r.id, { name: 'Renamed' }, 'user')).workflow).toBe('ci')
+    const onSteps = await updateRoutine(local, r.id, { steps: { s: { run: 'true' } } }, 'user')
+    expect(onSteps.workflow).toBeUndefined()
+    expect(Object.keys(onSteps.steps ?? {})).toEqual(['s'])
   })
 
   it('never writes back a tick fired, or a pause made, while it ran', async () => {
@@ -190,7 +209,7 @@ describe('reconcileRoutines', () => {
     expect((await listRoutines())[0].lastRunAt).toBe(slot.toISOString())
   })
 
-  it('gives a run its routine\'s run secrets only while it runs the routine\'s graph at its commit', async () => {
+  it('starts a run with its routine as it is at launch, its workflow\'s current revision and secrets included', async () => {
     const specs: WorkspaceSpec[] = []
     installFakeWorkspaceDriver({
       launch: (spec) => {
@@ -198,21 +217,19 @@ describe('reconcileRoutines', () => {
         return Promise.resolve(handleFixture({ workspaceId: spec.workspaceId, projectId: PROJ }))
       },
     })
-    const r = await pinnedCi({ cron: '*/5 * * * *', timeZone: 'UTC' })
-    await setRunSecret(local, PROJ, { name: 'P8_KEY', value: 'pem', siteIds: [], routineIds: [r.id] })
-    await runRoutineNow(local, r.id)
-    await vi.waitFor(() => { expect(specs).toHaveLength(1) }, { timeout: 60_000 })
-    expect(specs[0].runSecrets).toEqual(['P8_KEY'])
-
-    // Anyone may edit a queued run, an agent included, and an edited one
-    // runs what no person chose.
+    await setRunSecret(local, PROJ, { name: 'P8_KEY', value: 'pem' })
+    await createWorkflow(local, PROJ, { name: 'relay', steps: { t: { run: 'true' } }, secrets: ['P8_KEY'] })
+    const r = await relayRoutine(local, { branch: 'main' })
     await due(r.id, latestCronRun('*/5 * * * *', 'UTC', new Date())!)
     await reconcileRoutines()
-    const [run] = await runsOf(r.id)
-    await updateQueuedWorkspace(local, run.id, { steps: { t: { run: 'echo "$P8_KEY"' } } }, { ceiling: 'bypass' })
+    // Edits made while the run waits are what it starts with.
+    await editWorkflow(local, PROJ, 'relay', { steps: { u: { run: 'true' } }, secrets: ['P8_KEY'] })
     await startScheduledWorkspaces()
-    await vi.waitFor(() => { expect(specs).toHaveLength(2) }, { timeout: 60_000 })
-    expect(specs[1].runSecrets).toBeUndefined()
+    await vi.waitFor(() => { expect(specs).toHaveLength(1) }, { timeout: 60_000 })
+    expect(specs[0].runSecrets).toEqual(['P8_KEY'])
+    const row = await getWorkspaceRow(PROJ, specs[0].workspaceId)
+    expect(row?.startSteps).toEqual({ u: { run: ['true'] } })
+    expect(row?.revisionId).toBe((await resolveWorkflow(PROJ, 'relay')).current.id)
   })
 
   it('gives each run the gap to the following tick, however irregular, and keeps one failed run', async () => {

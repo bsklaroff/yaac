@@ -183,6 +183,23 @@ export {
   type RunSecretRow,
 } from './run-secret-store'
 export {
+  addWorkflowApproval,
+  addWorkflowRevision,
+  deleteProjectWorkflows,
+  deleteWorkflow,
+  findWorkflowByName,
+  getWorkflow,
+  getWorkflowRevision,
+  insertWorkflow,
+  listWorkflowApprovals,
+  listWorkflowRevisions,
+  listWorkflows,
+  recordWorkflowRun,
+  workflowRan,
+  type WorkflowRevisionRow,
+  type WorkflowRow,
+} from './workflow-store'
+export {
   clearProjectKeepsHostedRepo,
   deleteProjectRow,
   getProjectRow,

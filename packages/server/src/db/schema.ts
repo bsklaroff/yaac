@@ -245,6 +245,10 @@ export const workspaces = snakeCase.table('workspaces', {
   /** The step graph each of its lives starts with when its create brought
    *  its own; null runs the project's current init steps. */
   startSteps: json().$type<StepGraph>(),
+  /** The workflow revision `startSteps` came from (docs/workflows.md), which
+   *  a rerun or a site's replacement launches again. No foreign key; a
+   *  deleted workflow's runs keep it. */
+  revisionId: uuid(),
   /** Runs one graph untouched and stops when it settles
    *  (docs/workspace-steps.md "Non-interactive workspaces"). */
   nonInteractive: boolean().notNull().default(false),
@@ -353,8 +357,11 @@ export const sites = snakeCase.table('sites', {
   /** The one port of its releases its owner may forward, for an admin view
    *  that the router never serves. */
   adminPort: integer(),
-  /** The graph each release runs; its `needs` may name `volume`. */
-  steps: json().$type<StepGraph>().notNull(),
+  /** The graph each release runs, unless it names a workflow; its `needs`
+   *  may name `volume`. */
+  steps: json().$type<StepGraph>(),
+  /** The workflow whose current revision each release runs. */
+  workflowId: uuid().references((): AnyPgColumn => workflows.id),
   /** No foreign key; deleting a volume a site names is refused. */
   volumeId: uuid(),
   /** A branch on origin whose tip a serving site deploys whenever it moves. */
@@ -643,10 +650,10 @@ export const projectEnvVars = snakeCase.table('project_env_vars', {
 
 /**
  * A project's run secrets (docs/project-config.md "Run secrets"): values
- * that only the sites and routines each one names get, as they are, in
- * their workspaces' environment. Kept apart from `projectEnvVars`, so an
- * ordinary workspace's launch never reads them. Only run-secret-store.ts
- * reads `sealedValue`; deleting a site or routine drops it from the lists.
+ * that only the workflow revisions naming them get, as they are, in their
+ * workspaces' environment. Kept apart from `projectEnvVars`, so an ordinary
+ * workspace's launch never reads them. Only run-secret-store.ts reads
+ * `sealedValue`.
  */
 export const projectRunSecrets = snakeCase.table('project_run_secrets', {
   id: uuid().primaryKey().defaultRandom(),
@@ -654,11 +661,47 @@ export const projectRunSecrets = snakeCase.table('project_run_secrets', {
   name: text().notNull(),
   /** Encrypted with the key from `secret-key.ts`. */
   sealedValue: text().notNull(),
-  siteIds: uuid().array().notNull().default([]),
-  routineIds: uuid().array().notNull().default([]),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 }, (t) => [uniqueIndex().on(t.projectId, t.name)])
+
+/**
+ * A project's named step graphs (docs/workflows.md). What a workflow holds
+ * is its highest-numbered revision; an edit adds one.
+ */
+export const workflows = snakeCase.table('workflows', {
+  id: uuid().primaryKey().defaultRandom(),
+  projectId: uuid().notNull(),
+  name: text().notNull(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex().on(t.projectId, t.name)])
+
+/** A workflow's revisions, never changed once written. */
+export const workflowRevisions = snakeCase.table('workflow_revisions', {
+  id: uuid().primaryKey().defaultRandom(),
+  workflowId: uuid().notNull().references(() => workflows.id, { onDelete: 'cascade' }),
+  /** 1 for the first; the highest is current. */
+  number: integer().notNull(),
+  steps: json().$type<StepGraph>().notNull(),
+  /** The run secrets it is given. Only a person's edit names any. */
+  secrets: text().array().notNull().default([]),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex().on(t.workflowId, t.number)])
+
+/** What a person's action approved a workflow's current revision to run
+ *  on (docs/workflows.md "Approvals"). */
+export const workflowApprovals = snakeCase.table('workflow_approvals', {
+  workflowId: uuid().notNull().references(() => workflows.id, { onDelete: 'cascade' }),
+  /** A full commit id, or `refs/heads/<branch>` for that branch's tip. */
+  ref: text().notNull(),
+}, (t) => [primaryKey({ columns: [t.workflowId, t.ref] })])
+
+/** Each (revision, commit) that ran with its revision's secrets, which may
+ *  from then on. */
+export const workflowRuns = snakeCase.table('workflow_runs', {
+  revisionId: uuid().notNull().references(() => workflowRevisions.id, { onDelete: 'cascade' }),
+  commit: text().notNull(),
+}, (t) => [primaryKey({ columns: [t.revisionId, t.commit] })])
 
 /**
  * Named git credentials: an HTTPS token the user pasted, or an SSH key the
@@ -793,8 +836,11 @@ export const routines = snakeCase.table('routines', {
   /** Null when its runs start at `commit`. */
   branch: text(),
   commit: text(),
-  /** As on a queued entry (`queuedWorkspaces.steps`). */
+  /** As on a queued entry (`queuedWorkspaces.steps`), unless it names a
+   *  workflow. */
   steps: json().$type<StepGraph>(),
+  /** The workflow whose current revision each run starts with. */
+  workflowId: uuid().references((): AnyPgColumn => workflows.id),
   nonInteractive: boolean().notNull().default(false),
   /** Null is the default list; cleared when the group is deleted. */
   groupId: text(),

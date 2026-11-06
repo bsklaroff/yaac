@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "3f958698-04f5-425e-9ff4-c6bbba48ff0d",
+  "id": "c1da550a-266e-431c-8260-c35cbb90d25d",
   "prevIds": [
     "0b69af83-0674-47fd-9315-52ab8ad2d5d1"
   ],
@@ -111,6 +111,30 @@
     {
       "isRlsEnabled": false,
       "name": "volumes",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "workflow_approvals",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "workflow_revisions",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "workflow_runs",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "workflows",
       "entityType": "tables",
       "schema": "public"
     },
@@ -888,32 +912,6 @@
       "generated": null,
       "identity": null,
       "name": "sealed_value",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "project_run_secrets"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 1,
-      "default": "'{}'",
-      "generated": null,
-      "identity": null,
-      "name": "site_ids",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "project_run_secrets"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 1,
-      "default": "'{}'",
-      "generated": null,
-      "identity": null,
-      "name": "routine_ids",
       "entityType": "columns",
       "schema": "public",
       "table": "project_run_secrets"
@@ -1842,6 +1840,19 @@
       "table": "routines"
     },
     {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "workflow_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "routines"
+    },
+    {
       "type": "boolean",
       "typeSchema": null,
       "notNull": true,
@@ -2351,12 +2362,25 @@
     {
       "type": "json",
       "typeSchema": null,
-      "notNull": true,
+      "notNull": false,
       "dimensions": 0,
       "default": null,
       "generated": null,
       "identity": null,
       "name": "steps",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "sites"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "workflow_id",
       "entityType": "columns",
       "schema": "public",
       "table": "sites"
@@ -2993,6 +3017,188 @@
       "default": null,
       "generated": null,
       "identity": null,
+      "name": "workflow_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_approvals"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "ref",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_approvals"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_revisions"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "workflow_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_revisions"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "number",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_revisions"
+    },
+    {
+      "type": "json",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "steps",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_revisions"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 1,
+      "default": "'{}'",
+      "generated": null,
+      "identity": null,
+      "name": "secrets",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_revisions"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_revisions"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "revision_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_runs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "commit",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_runs"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflows"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "project_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflows"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "name",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflows"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflows"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
       "name": "project_id",
       "entityType": "columns",
       "schema": "public",
@@ -3436,6 +3642,19 @@
       "generated": null,
       "identity": null,
       "name": "start_steps",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workspaces"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "revision_id",
       "entityType": "columns",
       "schema": "public",
       "table": "workspaces"
@@ -4132,6 +4351,62 @@
       "nameExplicit": false,
       "columns": [
         {
+          "value": "workflow_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "number",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "workflow_revisions_workflow_id_number_index",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "workflow_revisions"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        {
+          "value": "project_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "name",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "workflows_project_id_name_index",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "workflows"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        {
           "value": "project_id",
           "isExpression": false,
           "asc": true,
@@ -4271,6 +4546,23 @@
     {
       "nameExplicit": false,
       "columns": [
+        "workflow_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "workflows",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "routines_workflow_id_workflows_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "routines"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
         "workspace_id"
       ],
       "schemaTo": "public",
@@ -4305,6 +4597,23 @@
     {
       "nameExplicit": false,
       "columns": [
+        "workflow_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "workflows",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "sites_workflow_id_workflows_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "sites"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
         "owner"
       ],
       "schemaTo": "public",
@@ -4318,6 +4627,57 @@
       "entityType": "fks",
       "schema": "public",
       "table": "tool_credentials"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "workflow_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "workflows",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "workflow_approvals_workflow_id_workflows_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "workflow_approvals"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "workflow_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "workflows",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "workflow_revisions_workflow_id_workflows_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "workflow_revisions"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "revision_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "workflow_revisions",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "workflow_runs_revision_id_workflow_revisions_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "workflow_runs"
     },
     {
       "nameExplicit": false,
@@ -4347,6 +4707,28 @@
       "entityType": "pks",
       "schema": "public",
       "table": "conversations"
+    },
+    {
+      "columns": [
+        "workflow_id",
+        "ref"
+      ],
+      "nameExplicit": false,
+      "name": "workflow_approvals_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "workflow_approvals"
+    },
+    {
+      "columns": [
+        "revision_id",
+        "commit"
+      ],
+      "nameExplicit": false,
+      "name": "workflow_runs_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "workflow_runs"
     },
     {
       "columns": [
@@ -4551,6 +4933,26 @@
       "name": "volumes_pkey",
       "schema": "public",
       "table": "volumes",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "workflow_revisions_pkey",
+      "schema": "public",
+      "table": "workflow_revisions",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "workflows_pkey",
+      "schema": "public",
+      "table": "workflows",
       "entityType": "pks"
     },
     {

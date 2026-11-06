@@ -138,7 +138,7 @@ export function ProjectSettings(): JSX.Element {
           </div>
 
           <div className="mt-6">
-            <ProjectRunSecrets key={`run-secrets:${projectId}`} projectId={projectId} hasSites={hasVolumes} readOnly={readOnly} />
+            <ProjectRunSecrets key={`run-secrets:${projectId}`} projectId={projectId} readOnly={readOnly} />
           </div>
 
           {mediatedEgress && <div className="mt-6">

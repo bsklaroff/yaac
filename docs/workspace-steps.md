@@ -2,20 +2,21 @@
 
 A **step** is a named list of shell commands that a workspace runs in a tmux
 window of its own, like one job of a GitHub Actions workflow. Steps form a
-graph through `needs`. A workspace gets its steps from one of three places:
+graph through `needs`. A workspace gets its steps from one of these:
 
 | Source | Example |
 |---|---|
 | The project's init steps | every workspace installs, builds and starts its dev server |
 | A create that brings its own graph instead | `yaac workspace create --steps ci.json --non-interactive --wait` |
 | A step added to a running workspace | `yaac-mama create --workspace "$YAAC_WORKSPACE_ID" --run 'pnpm test' --needs build --wait` |
+| A workflow: a named graph kept by yaac (docs/workflows.md) | `yaac workspace create --workflow ci --non-interactive --wait` |
 
 A create runs the project's init steps, or brings its own graph, which
-replaces them entirely (`--no-steps` for none). There are no named graphs to
-pick from: a reusable CI graph lives in a file in the repository, versioned
-with the code, and a routine stores the graph it was given until
-`routine edit --steps` changes it. Steps run commands only; an agent is a
-session, which opens beside the steps.
+replaces them entirely (`--no-steps` for none). A graph it brings is a file
+(`--steps`), which a routine stores until `routine edit --steps` changes
+it, or a workflow by name, kept by yaac in revisions, the only graph that may
+be given run secrets (docs/workflows.md). Steps run commands only; an agent
+is a session, which opens beside the steps.
 
 A workspace is **interactive**, running until someone or its timeout stops
 it, or **non-interactive**: it runs one graph on one commit, untouched,
@@ -156,11 +157,10 @@ own graph, with a step that is not a service, and opens no session.
   with `--interactive`, an interactive workspace there with the graph as its
   start steps, to reproduce a failure in.
 
-A non-interactive run of a routine pinned to a commit gets the run secrets
-that name the routine as their real values, and a site's release those that
-name the site (docs/project-config.md "Run secrets"). A create of its own,
-`yaac-mama create` included, and a rerun get none, since their graph or
-commit may be an agent's.
+A non-interactive workspace, or a site's release, whose graph is a
+workflow's (docs/workflows.md) gets the run secrets its revision names, on a
+commit a person ran that workflow on, and is refused on any other. A rerun
+runs the same revision, so it gets them again on the commit it reruns.
 
 `--wait` on a create or rerun blocks until the outcome and exits non-zero
 unless it succeeded. `yaac-mama create --workspace … --run … --wait` waits

@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { getDb } from './client'
 import { projectRunSecrets } from './schema'
 import { secretConfig } from './secret-key'
@@ -18,8 +18,6 @@ export interface RunSecretRow {
   name: string
   /** Undefined when the sealed value will not open. */
   value: string | undefined
-  siteIds: string[]
-  routineIds: string[]
 }
 
 type Selected = typeof projectRunSecrets.$inferSelect
@@ -32,7 +30,7 @@ async function toRow(r: Selected): Promise<RunSecretRow> {
     serverLog(`[secrets] run secret ${r.projectId}/${r.name} could not be decrypted `
       + `(${err instanceof Error ? err.message : String(err)}); re-enter it in project settings`)
   }
-  return { id: r.id, projectId: r.projectId, name: r.name, value, siteIds: r.siteIds, routineIds: r.routineIds }
+  return { id: r.id, projectId: r.projectId, name: r.name, value }
 }
 
 /** A project's run secrets in name order. */
@@ -44,31 +42,15 @@ export async function listRunSecrets(projectId: string): Promise<RunSecretRow[]>
   return await Promise.all(rows.map(toRow))
 }
 
-/**
- * Create or replace one run secret, matched on (project, name). Without
- * `value` only its targets change, and a secret that does not exist yet
- * answers undefined.
- */
-export async function upsertRunSecret(projectId: string, input: {
-  name: string
-  value?: string
-  siteIds: string[]
-  routineIds: string[]
-}): Promise<RunSecretRow | undefined> {
+/** Create or replace one run secret, matched on (project, name). */
+export async function upsertRunSecret(projectId: string, input: { name: string; value: string }): Promise<RunSecretRow> {
   const db = await getDb()
-  const targets = { siteIds: input.siteIds, routineIds: input.routineIds, updatedAt: new Date() }
-  if (input.value === undefined) {
-    const rows = await db.update(projectRunSecrets).set(targets)
-      .where(and(eq(projectRunSecrets.projectId, projectId), eq(projectRunSecrets.name, input.name)))
-      .returning()
-    return rows[0] && await toRow(rows[0])
-  }
   const sealedValue = await symmetricEncrypt({ key: await secretConfig(), data: input.value })
   const rows = await db.insert(projectRunSecrets)
-    .values({ projectId, name: input.name, sealedValue, ...targets })
+    .values({ projectId, name: input.name, sealedValue })
     .onConflictDoUpdate({
       target: [projectRunSecrets.projectId, projectRunSecrets.name],
-      set: { sealedValue, ...targets },
+      set: { sealedValue, updatedAt: new Date() },
     })
     .returning()
   return await toRow(rows[0])
@@ -87,13 +69,4 @@ export async function deleteRunSecret(projectId: string, id: string): Promise<bo
 export async function deleteProjectRunSecrets(projectId: string): Promise<void> {
   const db = await getDb()
   await db.delete(projectRunSecrets).where(eq(projectRunSecrets.projectId, projectId))
-}
-
-/** Drop a deleted site or routine from every run secret's targets. */
-export async function forgetRunSecretTarget(id: string): Promise<void> {
-  const db = await getDb()
-  await db.update(projectRunSecrets).set({
-    siteIds: sql`array_remove(${projectRunSecrets.siteIds}, ${id}::uuid)`,
-    routineIds: sql`array_remove(${projectRunSecrets.routineIds}, ${id}::uuid)`,
-  })
 }

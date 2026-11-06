@@ -13,6 +13,7 @@ import {
   showSite,
 } from '#domain/sites'
 import { createVolume, offeredForwards } from '#domain/workspaces'
+import { createWorkflow } from '#domain/projects'
 import { BUILT_IN_USER_ID, findSiteByName, seeTailnetUser, setProjectShareRevoked, setUserRole, updateSite } from '#db'
 import { closeDb } from '#db/client'
 import { recordWorkspaceCreated } from '#db/workspace-store'
@@ -165,6 +166,23 @@ describe('editSite', () => {
     expect((await listProjectSiteEntries(DEMO_PROJECT_ID))[0]?.followPaused).toBe('its owner is not an admin')
     await editSite(admin, DEMO_PROJECT_ID, 'shop', { followBranch: null })
     expect((await findSiteByName(DEMO_PROJECT_ID, 'shop'))?.followBranch).toBeUndefined()
+  })
+})
+
+describe('editSite on a workflow', () => {
+  it('runs a workflow\'s graph in place of its own steps, never both', async () => {
+    await create({})
+    await createWorkflow(local, DEMO_PROJECT_ID, { name: 'web', steps: APP })
+    await editSite(local, DEMO_PROJECT_ID, 'shop', { workflow: 'web' })
+    expect((await findSiteByName(DEMO_PROJECT_ID, 'shop'))?.steps).toBeUndefined()
+    expect((await listProjectSiteEntries(DEMO_PROJECT_ID))[0]).toMatchObject({ workflow: 'web', steps: { app: { run: ['pnpm start'], service: true } } })
+    await expect(editSite(local, DEMO_PROJECT_ID, 'shop', { workflow: 'web', steps: APP })).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(editSite(local, DEMO_PROJECT_ID, 'shop', { workflow: null })).rejects.toMatchObject({ code: 'VALIDATION' })
+    // A workflow with no service cannot serve a site.
+    await createWorkflow(local, DEMO_PROJECT_ID, { name: 'ci', steps: { t: { run: 'true' } } })
+    await expect(editSite(local, DEMO_PROJECT_ID, 'shop', { workflow: 'ci' })).rejects.toMatchObject({ code: 'VALIDATION' })
+    await editSite(local, DEMO_PROJECT_ID, 'shop', { steps: APP })
+    expect((await findSiteByName(DEMO_PROJECT_ID, 'shop'))?.workflowId).toBeUndefined()
   })
 })
 

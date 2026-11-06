@@ -8,11 +8,14 @@
  * Settings are resolved when the routine is saved, as a queued entry's are,
  * so what the UI shows is what each run launches with. An agent's writes
  * (`yaac-mama routine …`) are held to its permission mode, as its queue
- * writes are (`QueueSource`), and never reach a routine that gets run
- * secrets.
+ * writes are (`QueueSource`). A routine that runs a workflow
+ * (docs/workflows.md) approves, when a person saves it, the commit or branch
+ * it runs on; an agent's must find that approved already.
  */
 import { resolveParentlessSettings, runQueuedWorkspace, type QueueSource } from './queued-workspaces'
 import { authorizeProject, type Actor } from '#domain/access'
+import { getDefaultBranch } from '#domain/git'
+import { approveWorkflowRef, resolveWorkflow } from '#domain/projects'
 import { modelDisplayName } from '#domain/auth'
 import {
   deleteQueuedWorkspace,
@@ -26,8 +29,8 @@ import {
   listQueuedWorkspaceRows,
   listRoutineRows,
   listRoutineRuns,
-  listRunSecrets,
   listUnlaunchedRoutineRuns,
+  getWorkflow,
   setRoutinePaused as setRoutinePausedRow,
   updateRoutine as updateRoutineRow,
   type QueuedWorkspaceRow,
@@ -39,6 +42,7 @@ import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
 import { cronError, formatInZone, isTimeZone, latestCronRun, nextCronRuns } from '@yaac/shared/schedule'
 import { formatUtcTimestamp } from '@yaac/shared/time'
+import { repoDir } from '@yaac/shared/project-paths'
 import {
   ROUTINE_RUNS_PAGE_MAX,
   type RoutineEntry,
@@ -55,7 +59,7 @@ export async function createRoutine(
   source: QueueSource,
 ): Promise<RoutineEntry> {
   await authorizeProject(principal, projectId)
-  const fields = await resolveRoutine(projectId, request, source)
+  const fields = await resolveRoutine(principal, projectId, request, source)
   const row = await insertRoutine(projectId, fields, nextTick(fields.cron, fields.timeZone, new Date()))
   return (await toEntries([row]))[0]
 }
@@ -79,20 +83,12 @@ export async function updateRoutine(
   const prompt = nonInteractive ? undefined : patch.prompt ?? row.prompt
   const commit = patch.branch !== undefined ? undefined : patch.commit ?? row.commit
   const branch = commit !== undefined ? undefined : patch.branch ?? row.branch
-  // A person who gave the routine run secrets vouched for what it runs
-  // (docs/project-config.md "Run secrets").
-  if ((await listRunSecrets(row.projectId)).some((r) => r.routineIds.includes(id))) {
-    if (source !== 'user') {
-      throw new ServerError('FORBIDDEN', `routine "${row.name}" gets run secrets, so only a person edits it, `
-        + 'in the webapp or with `yaac routine edit`')
-    }
-    if (!nonInteractive || commit === undefined) {
-      throw new ServerError('VALIDATION', `routine "${row.name}" gets run secrets, so it stays non-interactive `
-        + 'at a commit; take it off them first')
-    }
-  }
-  const steps = patch.steps !== undefined ? patch.steps : row.steps
-  const fields = await resolveRoutine(row.projectId, {
+  // New steps replace its workflow, and a workflow its steps.
+  const workflow = patch.workflow !== undefined ? patch.workflow
+    : patch.steps === undefined && row.workflowId !== undefined ? (await getWorkflow(row.workflowId))?.name
+    : undefined
+  const steps = patch.steps !== undefined ? patch.steps : typeof workflow === 'string' ? undefined : row.steps
+  const fields = await resolveRoutine(principal, row.projectId, {
     name: patch.name ?? row.name,
     cron: patch.cron ?? row.cron,
     timeZone: patch.timeZone ?? row.timeZone,
@@ -102,6 +98,7 @@ export async function updateRoutine(
     ...(branch !== undefined ? { branch } : {}),
     ...(commit !== undefined ? { commit } : {}),
     ...(steps !== undefined ? { steps } : {}),
+    ...(typeof workflow === 'string' ? { workflow } : {}),
     ...(nonInteractive ? { nonInteractive } : {}),
     group: patch.group !== undefined ? patch.group : row.groupId ?? null,
     timeout: patch.timeout !== undefined ? patch.timeout : row.timeoutMinutes ?? null,
@@ -262,9 +259,20 @@ function nextTick(cron: string, timeZone: string, from: Date): Date | null {
 /**
  * Check and resolve a routine's fields. The zone defaults to the project
  * owner's, else UTC; a create that names no group files runs under one
- * named after the routine, made if need be.
+ * named after the routine, made if need be. A workflow's current revision
+ * is checked as its runs' steps, and the commit or branch the runs start at
+ * approved for it (`approveWorkflowRef`).
  */
-async function resolveRoutine(projectId: string, request: RoutineSettings, source: QueueSource): Promise<RoutineFields> {
+async function resolveRoutine(
+  principal: Actor,
+  projectId: string,
+  request: RoutineSettings,
+  source: QueueSource,
+): Promise<RoutineFields> {
+  if (request.steps !== undefined && typeof request.workflow === 'string') {
+    throw new ServerError('VALIDATION', 'name steps or a workflow, not both')
+  }
+  const workflow = typeof request.workflow === 'string' ? await resolveWorkflow(projectId, request.workflow) : undefined
   const cron = request.cron.trim()
   const invalid = cronError(cron)
   if (invalid !== undefined) throw new ServerError('VALIDATION', `invalid cron '${cron}': ${invalid}`)
@@ -274,7 +282,8 @@ async function resolveRoutine(projectId: string, request: RoutineSettings, sourc
   const settings = await resolveParentlessSettings(projectId, {
     ...(request.prompt !== undefined ? { prompt: request.prompt } : {}),
     ...(request.commit !== undefined ? { commit: request.commit } : {}),
-    ...(request.steps !== undefined ? { steps: request.steps } : {}),
+    ...(workflow !== undefined ? { steps: workflow.current.steps }
+      : request.steps !== undefined ? { steps: request.steps } : {}),
     ...(request.nonInteractive === true ? { nonInteractive: true } : {}),
     ...(request.tool !== undefined ? { tool: request.tool } : {}),
     ...(request.model !== undefined ? { model: request.model } : {}),
@@ -284,7 +293,7 @@ async function resolveRoutine(projectId: string, request: RoutineSettings, sourc
     ...(request.branch !== undefined ? { branch: request.branch } : {}),
     group: request.group !== undefined ? request.group : name,
   }, source)
-  return {
+  const fields: RoutineFields = {
     name,
     cron,
     timeZone,
@@ -296,11 +305,18 @@ async function resolveRoutine(projectId: string, request: RoutineSettings, sourc
     ...(settings.effort !== undefined ? { effort: settings.effort } : {}),
     ...(settings.branch !== undefined ? { branch: settings.branch } : {}),
     ...(settings.commit !== undefined ? { commit: settings.commit } : {}),
-    ...(settings.steps !== undefined ? { steps: settings.steps } : {}),
+    ...(workflow !== undefined ? { workflowId: workflow.id }
+      : settings.steps !== undefined ? { steps: settings.steps } : {}),
     ...(settings.nonInteractive === true ? { nonInteractive: true } : {}),
     ...(settings.groupId !== undefined ? { groupId: settings.groupId } : {}),
     ...(request.timeout != null ? { timeoutMinutes: request.timeout } : {}),
   }
+  if (workflow !== undefined) {
+    await approveWorkflowRef(principal, workflow.id, settings.commit !== undefined
+      ? { commit: settings.commit }
+      : { branch: settings.branch ?? await getDefaultBranch(repoDir(projectId)) })
+  }
+  return fields
 }
 
 async function ownerTimeZone(projectId: string): Promise<string> {
@@ -343,7 +359,10 @@ async function toEntries(rows: RoutineRow[]): Promise<RoutineEntry[]> {
   const now = new Date()
   // The newest unlaunched run of each routine; its error is the routine's.
   const unlaunched = new Map((await listUnlaunchedRoutineRuns()).map((r) => [r.routineId, r] as const))
+  const workflows = new Map(await Promise.all([...new Set(rows.flatMap((r) => r.workflowId ?? []))]
+    .map(async (id) => [id, await getWorkflow(id)] as const)))
   return rows.map((r) => {
+    const workflow = r.workflowId !== undefined ? workflows.get(r.workflowId) : undefined
     const modelName = modelDisplayName(r.tool, r.model)
     const lastError = unlaunched.get(r.id)?.launchError
     return {
@@ -362,6 +381,7 @@ async function toEntries(rows: RoutineRow[]): Promise<RoutineEntry[]> {
       ...(r.branch !== undefined ? { branch: r.branch } : {}),
       ...(r.commit !== undefined ? { commit: r.commit } : {}),
       ...(r.steps !== undefined ? { steps: r.steps } : {}),
+      ...(workflow !== undefined ? { workflow: workflow.name } : {}),
       ...(r.nonInteractive ? { nonInteractive: true as const } : {}),
       ...(r.groupId !== undefined ? { groupId: r.groupId } : {}),
       ...(r.timeoutMinutes !== undefined ? { timeoutMinutes: r.timeoutMinutes } : {}),

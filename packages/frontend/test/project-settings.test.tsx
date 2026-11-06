@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
-import type { ProjectEnvVar, ProjectRunSecret, ProjectSummary, RoutineEntry, Whoami } from '@yaac/shared/types'
+import type { ProjectEnvVar, ProjectRunSecret, ProjectSummary, Whoami } from '@yaac/shared/types'
 
 // CodeMirror doesn't run under jsdom; each file editor gets a textarea.
 vi.mock('#components/ui/CodeEditor', () => ({
@@ -468,43 +468,29 @@ describe('ProjectSettings', () => {
     expect(server.called('DELETE /api/project/id-alpha/env/v1')).toHaveLength(1)
   })
 
-  it('gives a run secret to a pinned non-interactive routine, offering no other', async () => {
+  it('adds a run secret, its value write-only', async () => {
     useUiStore.setState({ activeProjectId: 'id-alpha' })
-    const routine = (id: string, name: string, over: Partial<RoutineEntry>): RoutineEntry => ({
-      id, projectId: 'id-alpha', name, cron: '@daily', timeZone: 'UTC', tool: 'claude', model: 'm', mode: 'acp',
-      permissionMode: 'bypass', paused: false, nextRuns: [], createdAt: '', ...over,
-    })
     let secrets: ProjectRunSecret[] = []
     const server = mockFetch({
       'GET /api/project/id-alpha/env': { vars: [] },
       'GET /api/project/id-alpha/run-secrets': () => ({ secrets }),
       'PUT /api/project/id-alpha/run-secrets': ({ body }: FetchCall) => {
-        const { name, siteIds, routineIds } = body as ProjectRunSecret
-        secrets = [{ id: 'rs1', name, hasValue: true, siteIds, routineIds }]
+        secrets = [{ id: 'rs1', name: (body as { name: string }).name, hasValue: true }]
         return { secret: secrets[0] }
       },
     })
     renderWithClient(<ProjectSettings />, testQueryClient(undefined, serverSnapshot({
       driver: 'containerless',
       projects: [project('alpha', 'https://github.com/o/alpha.git')],
-      routines: [
-        routine('r-pinned', 'Relay CI', { nonInteractive: true, commit: 'a'.repeat(40) }),
-        routine('r-branch', 'Nightly CI', { nonInteractive: true, branch: 'main' }),
-        routine('r-agent', 'Triage', { prompt: 'triage', commit: 'a'.repeat(40) }),
-      ],
     })))
 
     fireEvent.change(await screen.findByPlaceholderText('SECRET_NAME'), { target: { value: 'P8_KEY' } })
     fireEvent.change(screen.getByLabelText('Run secret value'), { target: { value: 'pem' } })
-    expect(screen.queryByLabelText('routine Nightly CI')).toBeNull()
-    expect(screen.queryByLabelText('routine Triage')).toBeNull()
-    fireEvent.click(screen.getByLabelText('routine Relay CI'))
     fireEvent.click(screen.getByRole('button', { name: 'Add run secret' }))
 
     await screen.findByText('P8_KEY')
-    expect(server.called('PUT /api/project/id-alpha/run-secrets').map((c) => c.body))
-      .toEqual([{ name: 'P8_KEY', value: 'pem', siteIds: [], routineIds: ['r-pinned'] }])
-    screen.getByText('routine Relay CI', { selector: 'span.text-accent' })
+    expect(server.called('PUT /api/project/id-alpha/run-secrets').map((c) => c.body)).toEqual([{ name: 'P8_KEY', value: 'pem' }])
+    expect(screen.queryByText('pem')).toBeNull()
   })
 
   it('shows a teammate\'s project read-only', async () => {

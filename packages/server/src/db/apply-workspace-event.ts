@@ -100,7 +100,7 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
 async function applyCreated(event: WorkspaceCreated): Promise<void> {
   const {
     projectId, workspaceId, baseBranch, title, generatedTitle, groupId, resume, timeZone, deadline, scratchDirs,
-    startSteps, nonInteractive, rerunOf, siteId,
+    startSteps, revisionId, nonInteractive, rerunOf, siteId,
   } = event
   const launch = {
     ...(deadline !== undefined ? { deadline } : {}),
@@ -121,6 +121,7 @@ async function applyCreated(event: WorkspaceCreated): Promise<void> {
     ...(generatedTitle !== undefined ? { generatedTitle } : {}),
     ...(groupId !== undefined ? { groupId } : {}),
     ...(startSteps !== undefined ? { startSteps } : {}),
+    ...(revisionId !== undefined ? { revisionId } : {}),
     ...(nonInteractive === true ? { nonInteractive } : {}),
     ...(rerunOf !== undefined ? { rerunOf } : {}),
     ...(siteId !== undefined ? { siteId } : {}),

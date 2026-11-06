@@ -21,6 +21,7 @@ import { stepAdd, stepCancel, stepRerun, type StepAddOptions } from '#commands/w
 import { workspaceLogs } from '#commands/workspace-logs'
 import { volumeCreate, volumeDelete, volumeList, volumeResize } from '#commands/volume'
 import { siteCreate, siteDelete, siteDeploy, siteEdit, siteList, siteShow, siteStart, siteStop } from '#commands/site'
+import { workflowCreate, workflowDelete, workflowEdit, workflowList, workflowShow } from '#commands/workflow'
 import { workspaceTimeout } from '#commands/workspace-timeout'
 import { routineCreate, routineDelete, routineEdit, routineList, routinePause, routineResume, routineRun, type RoutineOptions } from '#commands/routine'
 import { workspaceAttach } from '#commands/workspace-attach'
@@ -394,6 +395,7 @@ workspace
   .option('--commit <sha>', 'Start at this full commit (40 hex digits) instead of a branch\'s tip; the workspace then has no base branch. Not with --branch')
   .option('--steps <file>', 'A JSON file of the steps to start with, in place of the project\'s init steps (docs/workspace-steps.md)')
   .option('--no-steps', 'Start with no steps at all, not even the project\'s init steps')
+  .option('--workflow <name>', 'Start with this workflow\'s current revision, in place of --steps (docs/workflows.md). Non-interactive, it gets the run secrets the revision names, and this launch approves its commit for them')
   .option('--non-interactive', 'Run --steps untouched, with no session, and stop when they finish: a CI run. Nothing can change it while it runs; it can only be stopped, and is rerun rather than restarted')
   .option('--wait', 'With --non-interactive: wait for its steps to finish, exiting non-zero unless they all succeeded')
   .option('-p, --prompt <text>', 'Initial prompt typed into the agent once the workspace is up; - reads it from stdin')
@@ -543,6 +545,7 @@ function routineOptions(cmd: Command): Command {
     .option('--commit <sha>', 'A full commit every run starts at instead of a branch\'s tip. Not with --branch')
     .option('--steps <file>', 'A JSON file of the steps each run starts with, in place of the project\'s init steps')
     .option('--no-steps', 'Each run starts with no steps')
+    .option('--workflow <name>', 'Each run starts with this workflow\'s current revision, in place of --steps (docs/workflows.md); saving approves the commit or branch it runs on for the workflow\'s run secrets, which on a branch means whatever anyone pushes there')
     .option('--non-interactive', 'Each run runs --steps untouched, with no prompt or session, and stops when they finish')
     .option('-g, --group <group>', 'Sidebar group runs are filed under (by name or id; created if it does not exist). Defaults to a group named after the routine')
     .option('--no-group', 'File runs in the default list instead of a group')
@@ -634,8 +637,9 @@ function siteOptions(cmd: Command, required: boolean): Command {
     required ? cmd.requiredOption(flags, description) : cmd.option(flags, description)
   option('--hostname <host>', 'The public hostname it serves, which the install\'s Cloudflare tunnel must route')
   option('--port <n>', 'The port its releases serve on')
-  option('--steps <file>', 'A JSON file of the steps each release runs; one must be a service')
   return cmd
+    .option('--steps <file>', 'A JSON file of the steps each release runs; one must be a service')
+    .option('--workflow <name>', 'Run this workflow\'s current revision in place of --steps (docs/workflows.md); a deploy approves its commit, and following a branch the branch, for the workflow\'s run secrets')
     .option('--admin-port <n>', 'A port of each release that only you can reach, by `yaac forward` or a preview, never the internet')
     .option('--volume <name>', 'A project volume each release mounts at $YAAC_VOLUME_DIR (see `yaac volume`)')
     .option('--follow <branch>', 'Deploy each new tip of this branch on origin while the site serves, so whoever can push it, the project\'s agents included, publishes unless the remote\'s branch protection stops them; a tip that fails to deploy leaves the last good release serving')
@@ -701,6 +705,49 @@ site
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('<name>', 'Site name')
   .action(siteDelete)
+
+const workflow = program
+  .command('workflow')
+  .description('Manage a project\'s workflows: named step graphs that routines, sites and creates run, and the run secrets each revision gets (docs/workflows.md)')
+
+workflow
+  .command('create')
+  .description('Create a workflow from a JSON file of steps')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<name>', 'Workflow name, unique in the project')
+  .requiredOption('--file <path>', 'A JSON file of its steps')
+  .option('--secret <name>', 'A run secret its runs get (repeatable; see `yaac config env --run-secret`)', collect, [])
+  .action(workflowCreate)
+
+workflow
+  .command('edit')
+  .description('Give a workflow a new revision; runs already started keep theirs')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<name>', 'Workflow name')
+  .option('--file <path>', 'A JSON file of its new steps; needed to give it run secrets, so they reach the steps you gave')
+  .option('--secret <name>', 'A run secret its runs get, replacing those it had (repeatable)', collect, [])
+  .option('--no-secrets', 'Give its runs no run secrets')
+  .action(workflowEdit)
+
+workflow
+  .command('list')
+  .description('List a project\'s workflows with their current revisions')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .action(workflowList)
+
+workflow
+  .command('show')
+  .description('Show a workflow\'s steps, run secrets, approvals and revisions')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<name>', 'Workflow name')
+  .action(workflowShow)
+
+workflow
+  .command('delete')
+  .description('Delete a workflow no routine or site runs')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<name>', 'Workflow name')
+  .action(workflowDelete)
 
 const config = program
   .command('config')
@@ -798,9 +845,7 @@ config
   .option('--header <name>', 'Inject it into this header (default authorization)')
   .option('--prefix <prefix>', 'Put this before the value in the header (default "Bearer " with the default header, none with --header)')
   .option('--body-param <name>', 'Inject it into this form or JSON body field instead of a header')
-  .option('--run-secret', 'Set the run secret NAME, reading its value from stdin as for --secret: a real value that only the sites and routines named with --site and --routine get in their environment, under k8s too. Its targets are replaced by those given')
-  .option('--site <name>', 'With --run-secret: a site whose releases get it (repeatable)', collect, [])
-  .option('--routine <routine-id>', 'With --run-secret: a non-interactive routine pinned to a commit whose runs get it (repeatable)', collect, [])
+  .option('--run-secret', 'Set the run secret NAME, reading its value from stdin as for --secret: a real value, under k8s too, that only the workflows naming it get (yaac workflow edit --secret)')
   .option('--unset <name>', 'Remove this variable, secret or run secret')
   .action(configEnv)
 

@@ -1,7 +1,6 @@
 import { and, asc, desc, eq, inArray, isNull, ne } from 'drizzle-orm'
 import { getDb } from './client'
 import { sites, workspaces } from './schema'
-import { forgetRunSecretTarget } from './run-secret-store'
 import { isUuid } from '#lib/uuid'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
 import { ServerError } from '@yaac/shared/errors'
@@ -31,7 +30,9 @@ export async function insertSite(values: {
   hostname: string
   port: number
   adminPort?: number
-  steps: StepGraph
+  /** Exactly one of a graph and a workflow. */
+  steps?: StepGraph
+  workflowId?: string
   volumeId?: string
   followBranch?: string
 }): Promise<SiteRow> {
@@ -105,7 +106,6 @@ export async function beginSiteDeploy(id: string, patch: SitePatch): Promise<boo
 export async function deleteSiteRow(id: string): Promise<void> {
   const db = await getDb()
   await db.delete(sites).where(eq(sites.id, id))
-  await forgetRunSecretTarget(id)
 }
 
 /** Drop a deleted project's sites. The next sync stops routing them. */

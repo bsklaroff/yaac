@@ -13,7 +13,6 @@
  * has room (`startWaitingWorkspaces`).
  */
 import crypto from 'node:crypto'
-import { isDeepStrictEqual } from 'node:util'
 import { resolveCreate } from './create'
 import { resolveGroup } from './groups'
 import { groupFull, readGroupRoom, refuseFullGroup, reserveGroupSlot } from './group-limits'
@@ -32,7 +31,6 @@ import { toStoppedEntries } from './stopped-list'
 import { modelDisplayName, modelEfforts } from '#domain/auth'
 import { authorizeProject, isProjectHeld, systemPrincipal, type Actor } from '#domain/access'
 import { getDefaultBranch } from '#domain/git'
-import { resolveRunSecrets } from '#domain/projects'
 import {
   claimQueuedLaunch,
   deleteQueuedWorkspace,
@@ -44,6 +42,7 @@ import {
   getProjectWorkspaceRows,
   getQueuedWorkspaceRow,
   getRoutineRow,
+  getWorkflow,
   getTimeZone,
   insertQueuedWorkspace,
   listQueuedWorkspaceRows,
@@ -197,7 +196,8 @@ async function resolveStart(projectId: string, start: QueueStart): Promise<Date>
  * permission mode re-resolves those, and a stored effort the new tool or
  * model lacks is re-resolved too. A parent that would form a cycle is
  * refused. An agent's edit is held to its ceiling, counting the stored
- * permission mode as requested.
+ * permission mode as requested. A routine's run is not edited: it starts
+ * with its routine's settings, so the routine is what changes.
  */
 export async function updateQueuedWorkspace(
   principal: Actor,
@@ -206,6 +206,9 @@ export async function updateQueuedWorkspace(
   source: QueueSource,
 ): Promise<QueuedWorkspaceEntry> {
   const row = await editableRow(principal, id)
+  if (row.routineId !== undefined) {
+    throw new ServerError('CONFLICT', 'a routine\'s run starts with its routine\'s settings; edit the routine instead')
+  }
   if (patch.parent !== undefined && patch.start !== undefined) {
     throw new ServerError('VALIDATION', 'a queued workspace waits on a parent or starts at a time, not both')
   }
@@ -446,23 +449,27 @@ async function launch(row: QueuedWorkspaceRow, timeoutFrom: Date): Promise<{ wor
             ? 'its timeout ran out before it could start; start a fresh run from the routine'
             : 'its scheduled window passed before it could start; run it again to give it a fresh one')
       }
-      const runSecrets = await routineRunSecrets(row)
+      // A routine's run is a record of its routine, so it starts with the
+      // routine's settings as they are now, its workflow's current
+      // revision included (docs/routines.md).
+      const routine = row.routineId !== undefined ? await getRoutineRow(row.routineId) : undefined
+      const s = routine ?? row
+      const workflow = routine?.workflowId !== undefined ? await getWorkflow(routine.workflowId) : undefined
       // The server launches it: whoever queued or ran the entry was
       // authorized then.
       const run = await prepareStart(systemPrincipal, {
         projectId: row.projectId,
         workspaceId,
-        tool: row.tool,
-        model: row.model,
-        mode: row.mode,
-        permissionMode: row.permissionMode,
-        ...(row.effort !== undefined ? { effort: row.effort } : {}),
-        ...(row.branch !== undefined ? { branch: row.branch } : {}),
-        ...(row.commit !== undefined ? { commit: row.commit } : {}),
-        ...(row.steps !== undefined ? { steps: row.steps } : {}),
-        ...(row.nonInteractive ? { nonInteractive: true } : {}),
-        ...(Object.keys(runSecrets).length > 0 ? { runSecrets } : {}),
-        ...(row.prompt !== undefined ? { prompt: row.prompt } : { noSession: true }),
+        tool: s.tool,
+        model: s.model,
+        mode: s.mode,
+        permissionMode: s.permissionMode,
+        ...(s.effort !== undefined ? { effort: s.effort } : {}),
+        ...(s.branch !== undefined ? { branch: s.branch } : {}),
+        ...(s.commit !== undefined ? { commit: s.commit } : {}),
+        ...(workflow !== undefined ? { revisionId: workflow.current.id } : s.steps !== undefined ? { steps: s.steps } : {}),
+        ...(s.nonInteractive ? { nonInteractive: true } : {}),
+        ...(s.prompt !== undefined ? { prompt: s.prompt } : { noSession: true }),
         ...(row.title !== undefined ? { title: row.title } : {}),
         ...(row.title === undefined && row.generatedTitle !== undefined ? { generatedTitle: row.generatedTitle } : {}),
         ...(row.groupId !== undefined ? { groupId: row.groupId } : {}),
@@ -510,22 +517,6 @@ async function nextRunOf(row: QueuedWorkspaceRow): Promise<Date | undefined> {
   const routine = await getRoutineRow(row.routineId)
   if (routine === undefined || routine.timeoutMinutes !== undefined) return undefined
   return nextCronRuns(routine.cron, routine.timeZone, row.startAt, 1)[0]
-}
-
-/**
- * The run secrets a routine's run gets (docs/project-config.md "Run
- * secrets"): its routine's, while the run is non-interactive and still runs
- * its routine's graph at its routine's commit. Anyone who may edit a queued
- * entry may edit a run, an agent included, and an edited run runs what the
- * person who gave the routine its secrets never saw.
- */
-async function routineRunSecrets(row: QueuedWorkspaceRow): Promise<Record<string, string>> {
-  if (row.routineId === undefined || !row.nonInteractive || row.commit === undefined) return {}
-  const routine = await getRoutineRow(row.routineId)
-  if (routine?.nonInteractive !== true || routine.commit !== row.commit || !isDeepStrictEqual(routine.steps, row.steps)) {
-    return {}
-  }
-  return await resolveRunSecrets(row.projectId, routine.id)
 }
 
 /** An entry that exists and is not mid-launch — what every edit needs. */
