@@ -1766,6 +1766,13 @@ export interface SiteEntry {
   steps: StepGraph
   /** Its volume's name. */
   volume?: string
+  /** The branch whose tip it deploys whenever it moves, while serving. */
+  followBranch?: string
+  /** Why following deploys nothing now: its owner is not an admin. */
+  followPaused?: string
+  /** The branch's tip, whose deploy failed, which following does not try
+   *  again; a deploy by hand does. */
+  followSkipped?: string
   createdAt: string
   /** The release the hostname points at, while one is meant to serve.
    *  `running` is false while a crashed one is being replaced. */

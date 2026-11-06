@@ -8,7 +8,7 @@ import { hostedRepoDir, repoDir, workspaceDir } from '@yaac/shared/project-paths
 import { closeDb } from '#db/client'
 import { BUILT_IN_USER_ID, recordProject, setProjectShareRevoked } from '#db'
 import { cloneRepo, createCheckout, hostedDefaultBranch, initHostedRepo } from '#domain/git'
-import { fetchProjectOrigin, refreshProjectOrigins, seedProjectOrigin } from '#domain/projects'
+import { fetchProjectOrigin, onOriginFetched, refreshProjectOrigins, seedProjectOrigin } from '#domain/projects'
 import { execFileAsync } from '#lib/shell'
 
 /**
@@ -111,5 +111,21 @@ describe('seedProjectOrigin', () => {
     expect(await hostedDefaultBranch(hostedRepoDir(hosted))).toBe('main')
     expect((await git(hostedRepoDir(hosted), ['log', '-1', '--format=%an %s', 'main'])).trim()).toBe('Owner Initial commit')
     expect(await tip(repoDir(hosted), 'origin/main')).toBe(await tip(hostedRepoDir(hosted), 'main'))
+  })
+})
+
+describe('onOriginFetched', () => {
+  it('is called once a fetch lands, and not for one that fails', async () => {
+    installDriver()
+    const fetched = vi.fn()
+    onOriginFetched(fetched)
+    await commit('watched')
+    await fetchProjectOrigin(PROJECT_ID)
+    await vi.waitFor(() => expect(fetched).toHaveBeenCalledTimes(1))
+    const unreachable = '5b3e2f4c-1d0a-4b9c-8e7f-2a3b4c5d6e7f'
+    await recordProject({ id: unreachable, name: 'gone', remoteUrl: path.join(tmp, 'missing'), addedAt: '' }, BUILT_IN_USER_ID)
+    await expect(fetchProjectOrigin(unreachable)).rejects.toThrow()
+    await new Promise((r) => setTimeout(r, 100))
+    expect(fetched).toHaveBeenCalledTimes(1)
   })
 })

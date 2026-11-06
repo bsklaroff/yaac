@@ -90,6 +90,7 @@ describe('createSite', () => {
     await expect(create({ name: 'a', hostname: 'a.example.com', steps: { app: { run: 'x', service: true, needs: ['volume'] } } }))
       .rejects.toMatchObject({ code: 'VALIDATION' })
     await expect(create({ name: 'a', hostname: 'a.example.com', volume: 'missing' })).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await expect(create({ name: 'a', hostname: 'a.example.com', followBranch: 'main..x' })).rejects.toMatchObject({ code: 'VALIDATION' })
     await expect(create({ hostname: 'other.example.com' })).rejects.toMatchObject({ code: 'CONFLICT' })
     await expect(create({ name: 'other' })).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('shop.example.com') as unknown })
     await expect(createSite(stranger, DEMO_PROJECT_ID, { name: 'x', hostname: 'x.example.com', port: 1, steps: APP }))
@@ -144,10 +145,26 @@ describe('editSite', () => {
     await editSite(local, DEMO_PROJECT_ID, 'shop', { volume: null, steps: APP })
     expect((await findSiteByName(DEMO_PROJECT_ID, 'shop'))?.volumeId).toBeUndefined()
 
+    // A branch to follow is one on origin, by its own name: a ref-like name
+    // would follow a branch anyone who may push could create.
+    await editSite(local, DEMO_PROJECT_ID, 'shop', { followBranch: 'dev' })
+    expect((await listProjectSiteEntries(DEMO_PROJECT_ID))[0]).toMatchObject({ followBranch: 'dev' })
+    for (const branch of ['HEAD', 'origin/main', 'refs/heads/main', 'agent/x', 'missing']) {
+      await expect(editSite(local, DEMO_PROJECT_ID, 'shop', { followBranch: branch }), branch).rejects.toMatchObject({ code: 'VALIDATION' })
+    }
+
     await updateSite(row.id, { deployWorkspaceId: 'rel-2' })
     await expect(editSite(local, DEMO_PROJECT_ID, 'shop', { port: 5000 })).rejects.toMatchObject({ code: 'CONFLICT' })
     await expect(editSite(stranger, DEMO_PROJECT_ID, 'shop', { port: 5000 })).rejects.toMatchObject({ code: 'FORBIDDEN' })
     await expect(editSite(local, DEMO_PROJECT_ID, 'none', { port: 5000 })).rejects.toMatchObject({ code: 'NOT_FOUND' })
+
+    // Following pauses while its owner is not an admin, and saying so; and
+    // stopping it publishes nothing, so any admin may, mid-deploy too.
+    await expect(editSite(stranger, DEMO_PROJECT_ID, 'shop', { followBranch: null })).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    const admin = await demoteOwner()
+    expect((await listProjectSiteEntries(DEMO_PROJECT_ID))[0]?.followPaused).toBe('its owner is not an admin')
+    await editSite(admin, DEMO_PROJECT_ID, 'shop', { followBranch: null })
+    expect((await findSiteByName(DEMO_PROJECT_ID, 'shop'))?.followBranch).toBeUndefined()
   })
 })
 

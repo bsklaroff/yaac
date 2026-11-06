@@ -169,7 +169,8 @@ describe('deploySite', () => {
     const first = await deploySite(local, DEMO_PROJECT_ID, 'shop')
     expect(first.commit).toBe(head)
     await created(first.workspaceId)
-    await expect(deploySite(local, DEMO_PROJECT_ID, 'shop')).rejects.toMatchObject({ code: 'CONFLICT' })
+    // Another deploy of the commit deploying is that deploy.
+    expect(await deploySite(local, DEMO_PROJECT_ID, 'shop')).toEqual(first)
     const spec = launched.at(-1)!
     expect(spec).toMatchObject({ siteId: (await site()).id, image: 'registry.test/proj:1' })
     expect(spec.env.some((e) => e.startsWith('YAAC_VOLUME_DIR='))).toBe(false)
@@ -320,6 +321,61 @@ describe('reconcileSites', () => {
     await reconcileSites(snapshot(), false)
     await stopsSpawned(1)
     expect((await site()).drainWorkspaceId).toBeUndefined()
+  })
+
+  it('deploys each new tip of the branch a serving site follows, keeping the last good release when one fails', async () => {
+    const repo = repoDir(DEMO_PROJECT_ID)
+    /** Move origin/dev to a new commit on top of it, as a fetch would. */
+    const push = async (): Promise<string> => {
+      const sha = (await git(repo, ['commit-tree', 'origin/dev^{tree}', '-p', 'origin/dev', '-m', 'next'])).trim()
+      await git(repo, ['update-ref', 'refs/remotes/origin/dev', sha])
+      return sha
+    }
+    await createSite(local, DEMO_PROJECT_ID, {
+      name: 'shop', hostname: 'shop.example.com', port: 3000, steps: { app: { run: 'pnpm start', service: true } }, followBranch: 'dev',
+    })
+    // Not serving yet, so nothing follows.
+    await reconcileSites(snapshot(), false)
+    expect((await site()).deployWorkspaceId).toBeUndefined()
+    await expect(deploySite(local, DEMO_PROJECT_ID, 'shop', { ref: 'main' })).rejects.toMatchObject({ code: 'CONFLICT' })
+    const first = await deploySite(local, DEMO_PROJECT_ID, 'shop')
+    expect(first.commit).toBe((await git(repo, ['rev-parse', 'origin/dev'])).trim())
+    await created(first.workspaceId)
+    await stepsAre(first.workspaceId, { app: 'ready' })
+    await reconcileSites(snapshot(), false)
+    expect((await site()).liveWorkspaceId).toBe(first.workspaceId)
+
+    // A new tip that fails leaves the release that worked serving, and is
+    // not tried again.
+    const broken = await push()
+    await reconcileSites(snapshot(), false)
+    const failing = await site()
+    expect(failing).toMatchObject({ deployCommit: broken, deployReplacing: false })
+    await created(failing.deployWorkspaceId!)
+    await stepsAre(failing.deployWorkspaceId!, { app: 'failed' })
+    await reconcileSites(snapshot(), false)
+    expect(await site()).toMatchObject({ liveWorkspaceId: first.workspaceId, releaseCommit: first.commit, failedCommit: broken })
+    await reconcileSites(snapshot(), false)
+    expect((await site()).deployWorkspaceId).toBeUndefined()
+    expect((await showSite(DEMO_PROJECT_ID, 'shop')).followSkipped).toBe(broken)
+
+    // The next tip is deployed and takes the hostname.
+    const fixed = await push()
+    await reconcileSites(snapshot(), false)
+    const next = (await site()).deployWorkspaceId!
+    await created(next)
+    await stepsAre(next, { app: 'ready' })
+    await reconcileSites(snapshot(), false)
+    expect(await site()).toMatchObject({ liveWorkspaceId: next, releaseCommit: fixed })
+    expect(lastRoute()?.liveWorkspaceId).toBe(next)
+    expect((await showSite(DEMO_PROJECT_ID, 'shop')).followSkipped).toBeUndefined()
+
+    // Only while its owner may publish.
+    await setUserRole(await seeTailnetUser('admin@example.com', 'Admin'), 'admin')
+    await setUserRole(BUILT_IN_USER_ID, 'member')
+    await push()
+    await reconcileSites(snapshot(), false)
+    expect((await site()).deployWorkspaceId).toBeUndefined()
   })
 
   // docs/hosted-projects.md "Sharing": a removed share runs nothing.

@@ -51,6 +51,7 @@ export function Sites({ projectId, readOnly }: { projectId: string; readOnly: bo
   const [confirm, setConfirm] = useState<{ action: Action; site: string } | null>(null)
   const [ref, setRef] = useState('')
   const onSettled = (): Promise<void> => queryClient.invalidateQueries({ queryKey: key })
+  const following = sites?.find((s) => s.name === confirm?.site)?.followBranch
 
   const act = useMutation({
     mutationFn: async ({ action, site }: { action: Action; site: string }): Promise<void> => {
@@ -138,7 +139,10 @@ export function Sites({ projectId, readOnly }: { projectId: string; readOnly: bo
         error={act.error?.message}
         onConfirm={() => { if (confirm !== null) act.mutate(confirm) }}
       >
-        {confirm?.action === 'deploy' && (
+        {confirm?.action === 'deploy' && following !== undefined && (
+          <p className="mt-3 text-[11px] text-text-faint">It follows {following}, so it deploys that branch&apos;s tip.</p>
+        )}
+        {confirm?.action === 'deploy' && following === undefined && (
           <input
             aria-label="Ref to deploy"
             value={ref}
@@ -229,6 +233,7 @@ function SiteRow({ projectId, site, canEnd, canPublish, onAction, onEdit }: {
         <span className="shrink-0 font-mono text-[11px] text-text-faint">
           :{site.port}{site.adminPort !== undefined && ` · admin :${site.adminPort}`}
           {site.volume !== undefined && ` · ${site.volume}`}
+          {site.followBranch !== undefined && ` · follows ${site.followBranch}`}
         </span>
         {canEnd && (
           <>
@@ -260,6 +265,10 @@ function SiteRow({ projectId, site, canEnd, canPublish, onAction, onEdit }: {
           <div>
             {deploy.replacing ? 'Replacing the release at ' : 'Deploying '}{release(deploy.workspaceId, deploy.commit)} · {PHASE[deploy.phase]}
           </div>
+        )}
+        {site.followPaused !== undefined && <div className="text-warning">Not following: {site.followPaused}</div>}
+        {site.followSkipped !== undefined && (
+          <div>Not retrying {short(site.followSkipped)}, whose deploy failed; deploy to retry it</div>
         )}
         {lastDeploy !== undefined && (
           <div className={lastDeploy.outcome === 'failed' ? 'text-danger' : undefined}>
@@ -301,17 +310,23 @@ function SiteForm({ projectId, site, onDone, onCancel }: {
   const [port, setPort] = useState(site !== undefined ? String(site.port) : '')
   const [adminPort, setAdminPort] = useState(site?.adminPort !== undefined ? String(site.adminPort) : '')
   const [volume, setVolume] = useState(site?.volume ?? '')
+  const [follow, setFollow] = useState(site?.followBranch ?? '')
   const [steps, setSteps] = useState(site !== undefined ? `${JSON.stringify(site.steps, null, 2)}\n` : '')
 
   const save = useMutation({
     mutationFn: async () => {
       const body = { project: projectId, hostname: hostname.trim(), port: Number(port), steps: parseSteps(steps) }
       const admin = adminPort.trim() === '' ? null : Number(adminPort)
+      const branch = follow.trim() === '' ? null : follow.trim()
       if (site !== undefined) {
-        await api.site.edit.$post({ json: { ...body, name: site.name, adminPort: admin, volume: volume === '' ? null : volume } })
+        await api.site.edit.$post({ json: {
+          ...body, name: site.name, adminPort: admin, volume: volume === '' ? null : volume,
+          ...(branch !== (site.followBranch ?? null) ? { followBranch: branch } : {}),
+        } })
       } else {
         await api.site.create.$post({ json: {
           ...body, name: name.trim(), ...(admin !== null ? { adminPort: admin } : {}), ...(volume !== '' ? { volume } : {}),
+          ...(branch !== null ? { followBranch: branch } : {}),
         } })
       }
     },
@@ -368,6 +383,14 @@ function SiteForm({ projectId, site, onDone, onCancel }: {
           <option value="">No volume</option>
           {volumes?.map((v) => <option key={v.name} value={v.name}>{v.name}</option>)}
         </select>
+        <input
+          aria-label="Follow branch"
+          value={follow}
+          onChange={(e) => setFollow(e.target.value)}
+          placeholder="follow branch"
+          title="Deploy each new tip of this branch while the site serves: whoever can push it publishes"
+          className={`${INPUT} w-28`}
+        />
       </div>
       <textarea
         aria-label="Steps"
@@ -383,6 +406,9 @@ function SiteForm({ projectId, site, onDone, onCancel }: {
         <code className="text-text-dim">{'"service": true'}</code> serving the port. Steps that use the volume
         need <code className="text-text-dim">{'"volume"'}</code>, and run only once the old release has let it go.
         An admin port is one only you can open, as the release&apos;s preview; the internet never reaches it.
+        A followed branch is deployed whenever its tip moves, so whoever can push it, the project&apos;s agents
+        included, publishes the site unless the remote&apos;s branch protection stops them. A tip that fails to
+        deploy leaves the last good release serving.
       </p>
       {save.error && <p className="text-xs text-red-400">{save.error.message}</p>}
       <div className="flex justify-end gap-2">
