@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type JSX } from 'react'
 import clsx from 'clsx'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query'
 import { DeleteIcon } from '#lib/icons'
 import { api } from '#lib/api'
 import { SectionLabel } from '#components/settings/Field'
@@ -13,6 +13,15 @@ interface Draft {
 
 const EMPTY: Draft = { name: '', value: '' }
 
+/** A project's run secrets, also offered to its workflows. */
+export function useRunSecrets(projectId: string): UseQueryResult<ProjectRunSecret[]> {
+  return useQuery({
+    queryKey: ['project-run-secrets', projectId],
+    queryFn: async () => (await api.project[':projectId']['run-secrets'].$get({ param: { projectId } })).secrets,
+    staleTime: 0,
+  })
+}
+
 /**
  * A project's run secrets (docs/project-config.md "Run secrets"): values
  * that only the workflow revisions naming them get, as they are
@@ -24,11 +33,7 @@ export function ProjectRunSecrets({ projectId, readOnly }: { projectId: string; 
   const [editing, setEditing] = useState<string | null>(null)
   const queryClient = useQueryClient()
   const queryKey = ['project-run-secrets', projectId]
-  const { data: secrets, error: loadError } = useQuery({
-    queryKey,
-    queryFn: async () => (await api.project[':projectId']['run-secrets'].$get({ param: { projectId } })).secrets,
-    staleTime: 0,
-  })
+  const { data: secrets, error: loadError } = useRunSecrets(projectId)
 
   const save = useMutation({
     mutationFn: () => api.project[':projectId']['run-secrets'].$put({

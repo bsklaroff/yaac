@@ -1,6 +1,7 @@
 /**
  * A workspace's steps in the webapp (docs/workspace-steps.md): their pane
- * targets, how the workspace bar lists them, and where their logs are.
+ * targets, how the workspace bar lists them, where their logs are, and
+ * reading a graph typed into a settings form.
  */
 
 import { FULL_COMMIT_PATTERN, lifeDirName, stepSettled, type WorkspaceStep } from '@yaac/shared/steps'
@@ -62,4 +63,19 @@ export function startPoint(value: string): { branch: string } | { commit: string
   const v = value.trim()
   if (v === '') return {}
   return FULL_COMMIT_PATTERN.test(v) ? { commit: v } : { branch: v }
+}
+
+/**
+ * Parse a step graph typed by hand, which must be a JSON object. The server
+ * checks the rest and its message shows as given.
+ */
+export function parseSteps(text: string): Record<string, unknown> {
+  let steps: unknown
+  try {
+    steps = JSON.parse(text)
+  } catch (e) {
+    throw new Error(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  if (typeof steps !== 'object' || steps === null || Array.isArray(steps)) throw new Error('Steps must be a JSON object')
+  return steps as Record<string, unknown>
 }

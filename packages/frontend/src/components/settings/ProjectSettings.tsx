@@ -17,9 +17,11 @@ import { WorkspaceAutoDelete } from '#components/settings/WorkspaceAutoDelete'
 import { KeptIgnoredPaths } from '#components/settings/KeptIgnoredPaths'
 import { Volumes } from '#components/settings/Volumes'
 import { Sites } from '#components/settings/Sites'
+import { Workflows } from '#components/settings/Workflows'
 import { ProjectSelect, useSettingsProject } from '#components/settings/ProjectPicker'
 import { api } from '#lib/api'
 import { WarningIcon } from '#lib/icons'
+import { parseSteps } from '#lib/steps'
 import { projectBuildFilesApi } from '#lib/buildFilesApi'
 import { useSnapshot } from '#lib/useSnapshot'
 import { useHasVolumes } from '#lib/volumes'
@@ -28,13 +30,7 @@ import { useTeammateView, useWhoami } from '#lib/viewer'
 const project = api.project[':projectId']
 
 async function saveInitSteps(projectId: string, text: string): Promise<void> {
-  let steps: unknown
-  try {
-    steps = JSON.parse(text)
-  } catch (e) {
-    throw new Error(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
-  }
-  await project['init-steps'].$put({ param: { projectId }, json: { steps } })
+  await project['init-steps'].$put({ param: { projectId }, json: { steps: parseSteps(text) } })
 }
 
 /**
@@ -139,6 +135,10 @@ export function ProjectSettings(): JSX.Element {
 
           <div className="mt-6">
             <ProjectRunSecrets key={`run-secrets:${projectId}`} projectId={projectId} readOnly={readOnly} />
+          </div>
+
+          <div className="mt-6">
+            <Workflows key={`workflows:${projectId}`} projectId={projectId} readOnly={readOnly} />
           </div>
 
           {mediatedEgress && <div className="mt-6">

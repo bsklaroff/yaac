@@ -125,7 +125,9 @@ before the rotation worth nothing.
   (docs/cli.md).
 - **yaac-mama**: `workflow list|show`, and `--workflow` on `create` and
   `routine create|edit`. A queued entry takes none.
-- **Webapp**: run secrets under Settings → Project Config → Run secrets.
+- **Webapp**: Settings → Project Config → Run secrets and Workflows, the
+  latter listing each workflow's approvals; a site's form picks its own
+  steps or a workflow.
 
 | Concern | Path |
 |---|---|

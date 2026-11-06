@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
-import type { SiteEdgeStatus, SiteEntry, VolumeEntry } from '@yaac/shared/types'
+import type { SiteEdgeStatus, SiteEntry, VolumeEntry, WorkflowEntry } from '@yaac/shared/types'
 import { Sites } from '#components/settings/Sites'
 import {
   TEST_WHOAMI, mockFetch, renderWithClient, serverError, serverSnapshot, testQueryClient, type FetchCall, type FetchMock,
@@ -39,12 +39,17 @@ beforeEach(() => {
     },
   ]
   const volumes: VolumeEntry[] = [{ name: 'db', size: '5Gi', createdAt: '', stoppedWorkspaces: [] }]
+  const workflows: WorkflowEntry[] = [{
+    id: 'wf1', projectId: 'proj', name: 'release', current: { number: 1, steps: SERVE, secrets: [], createdAt: '' },
+    approvedCommits: [], approvedBranches: [], createdAt: '',
+  }]
   // A server that keeps its sites in `sites`, and refuses steps with no
   // service as the real one does.
   server = mockFetch({
     [LIST]: () => sites,
     'GET /api/site/edge': () => edge,
     'GET /api/volume/list': volumes,
+    'GET /api/workflow/list': workflows,
     'POST /api/site/create': ({ body }: FetchCall) => {
       const { name, hostname, port, steps, volume } = body as SiteEntry
       if (!Object.values(steps).some((s) => s.service === true)) {
@@ -175,6 +180,47 @@ describe('Sites settings', () => {
       project: 'proj', name: 'web', hostname: 'www.example.com', port: 3000, adminPort: null, steps: SERVE, volume: null,
     })
     expect(screen.queryByRole('note')).toBeNull()
+  })
+
+  it('creates a site that runs a workflow, sending its name and no steps', async () => {
+    renderWithClient(<Sites projectId="proj" readOnly={false} />, client())
+    fireEvent.click(await screen.findByRole('button', { name: 'New site' }))
+    fireEvent.change(screen.getByLabelText('Site name'), { target: { value: 'api' } })
+    fireEvent.change(screen.getByLabelText('Hostname'), { target: { value: 'api.example.com' } })
+    fireEvent.change(screen.getByLabelText('Port'), { target: { value: '4000' } })
+    await screen.findByRole('option', { name: 'Workflow release' })
+    fireEvent.change(screen.getByLabelText('Steps from'), { target: { value: 'release' } })
+    expect(screen.queryByLabelText('Steps')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    await waitFor(() => expect(server.called('POST /api/site/create')).toHaveLength(1))
+    expect(server.called('POST /api/site/create')[0].body).toEqual({
+      project: 'proj', name: 'api', hostname: 'api.example.com', port: 4000, workflow: 'release',
+    })
+  })
+
+  it('keeps a site\'s workflow through an edit, and gives it its own steps only when chosen', async () => {
+    site('web').workflow = 'release'
+    renderWithClient(<Sites projectId="proj" readOnly={false} />, client())
+    const edit = async (): Promise<void> => { fireEvent.click((await screen.findAllByRole('button', { name: 'Edit' }))[0]) }
+    const save = (): Promise<void> => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      return waitFor(() => expect(screen.queryByLabelText('Hostname')).toBeNull())
+    }
+    const edits = (): unknown[] => server.called('POST /api/site/edit').map((c) => c.body)
+    const kept = { project: 'proj', name: 'web', hostname: 'app.example.com', port: 3000, adminPort: 3001, volume: 'db' }
+
+    await edit()
+    await screen.findByRole('option', { name: 'Workflow release' })
+    expect(screen.getByLabelText<HTMLSelectElement>('Steps from').value).toBe('release')
+    expect(screen.queryByLabelText('Steps')).toBeNull()
+    await save()
+    expect(edits()).toEqual([{ ...kept, workflow: 'release' }])
+
+    await edit()
+    fireEvent.change(screen.getByLabelText('Steps from'), { target: { value: '' } })
+    expect(screen.getByLabelText<HTMLTextAreaElement>('Steps').value).toBe(`${JSON.stringify(SERVE, null, 2)}\n`)
+    await save()
+    expect(edits()[1]).toEqual({ ...kept, workflow: null, steps: SERVE })
   })
 
   it('says how to set up a tunnel on an install without one, and only lists a teammate\'s sites to a member', async () => {

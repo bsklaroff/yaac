@@ -2,11 +2,13 @@ import { useState, type FormEvent, type JSX } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '#lib/api'
 import { DeleteIcon } from '#lib/icons'
+import { parseSteps } from '#lib/steps'
 import { relativeAge } from '#lib/time'
 import { useVolumes } from '#lib/volumes'
 import { useIsAdmin } from '#lib/viewer'
 import { SectionLabel } from '#components/settings/Field'
 import { INPUT, WorkspaceLink } from '#components/settings/Volumes'
+import { useWorkflows } from '#components/settings/Workflows'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
 import type { SiteDeployPhase, SiteEntry } from '@yaac/shared/types'
@@ -281,22 +283,10 @@ function SiteRow({ projectId, site, canEnd, canPublish, onAction, onEdit }: {
   )
 }
 
-/** Parse the steps box, which must hold a JSON object. */
-function parseSteps(text: string): Record<string, unknown> {
-  let steps: unknown
-  try {
-    steps = JSON.parse(text)
-  } catch (e) {
-    throw new Error(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
-  }
-  if (typeof steps !== 'object' || steps === null || Array.isArray(steps)) throw new Error('Steps must be a JSON object')
-  return steps as Record<string, unknown>
-}
-
 /**
- * Create a site, or edit `site`. Steps are checked to be a JSON object here
- * and otherwise by the server, whose message shows as given. `onDone` gets
- * a created site's hostname.
+ * Create a site, or edit `site`. It runs its own steps or a workflow; an
+ * edit sends steps only for its own, since steps replace a workflow.
+ * `onDone` gets a created site's hostname.
  */
 function SiteForm({ projectId, site, onDone, onCancel }: {
   projectId: string
@@ -305,6 +295,7 @@ function SiteForm({ projectId, site, onDone, onCancel }: {
   onCancel: () => void
 }): JSX.Element {
   const volumes = useVolumes(projectId)
+  const { data: workflows } = useWorkflows(projectId)
   const [name, setName] = useState('')
   const [hostname, setHostname] = useState(site?.hostname ?? '')
   const [port, setPort] = useState(site !== undefined ? String(site.port) : '')
@@ -312,15 +303,19 @@ function SiteForm({ projectId, site, onDone, onCancel }: {
   const [volume, setVolume] = useState(site?.volume ?? '')
   const [follow, setFollow] = useState(site?.followBranch ?? '')
   const [steps, setSteps] = useState(site !== undefined ? `${JSON.stringify(site.steps, null, 2)}\n` : '')
+  // The workflow it runs, or '' for its own steps.
+  const [workflow, setWorkflow] = useState(site?.workflow ?? '')
 
   const save = useMutation({
     mutationFn: async () => {
-      const body = { project: projectId, hostname: hostname.trim(), port: Number(port), steps: parseSteps(steps) }
+      const graph = workflow !== '' ? { workflow } : { steps: parseSteps(steps) }
+      const body = { project: projectId, hostname: hostname.trim(), port: Number(port), ...graph }
       const admin = adminPort.trim() === '' ? null : Number(adminPort)
       const branch = follow.trim() === '' ? null : follow.trim()
       if (site !== undefined) {
         await api.site.edit.$post({ json: {
           ...body, name: site.name, adminPort: admin, volume: volume === '' ? null : volume,
+          ...(workflow === '' && site.workflow !== undefined ? { workflow: null } : {}),
           ...(branch !== (site.followBranch ?? null) ? { followBranch: branch } : {}),
         } })
       } else {
@@ -392,17 +387,28 @@ function SiteForm({ projectId, site, onDone, onCancel }: {
           className={`${INPUT} w-28`}
         />
       </div>
-      <textarea
-        aria-label="Steps"
-        value={steps}
-        onChange={(e) => setSteps(e.target.value)}
-        placeholder={'{\n  "install": { "run": "pnpm install" },\n  "server": { "run": "pnpm start", "service": true, "needs": ["install"] }\n}'}
-        rows={8}
-        spellCheck={false}
-        className={`${INPUT} block w-full resize-y`}
-      />
+      <select
+        aria-label="Steps from"
+        value={workflow}
+        onChange={(e) => setWorkflow(e.target.value)}
+        className={`${INPUT} w-full`}
+      >
+        <option value="">Its own steps</option>
+        {workflows?.map((w) => <option key={w.id} value={w.name}>Workflow {w.name}</option>)}
+      </select>
+      {workflow === '' && (
+        <textarea
+          aria-label="Steps"
+          value={steps}
+          onChange={(e) => setSteps(e.target.value)}
+          placeholder={'{\n  "install": { "run": "pnpm install" },\n  "server": { "run": "pnpm start", "service": true, "needs": ["install"] }\n}'}
+          rows={8}
+          spellCheck={false}
+          className={`${INPUT} block w-full resize-y`}
+        />
+      )}
       <p className="text-[11px] leading-relaxed text-text-faint">
-        The steps each release runs, like init steps; one must be a{' '}
+        The steps each release runs, its own or a workflow&apos;s, like init steps; one must be a{' '}
         <code className="text-text-dim">{'"service": true'}</code> serving the port. Steps that use the volume
         need <code className="text-text-dim">{'"volume"'}</code>, and run only once the old release has let it go.
         An admin port is one only you can open, as the release&apos;s preview; the internet never reaches it.

@@ -55,7 +55,7 @@ pods cannot reach the server.
   GitHub URL get two unrelated projects, each with its own clone, git
   credential and image chain. Everything inside a project (workspaces,
   queued workspaces, drafts, groups, agent sessions, env vars and secrets,
-  its config) belongs to the project's owner and carries no owner of its
+  workflows, its config) belongs to the project's owner and carries no owner of its
   own. A hosted project can be shared, which gives another user a project
   of their own on the same repository rather than a second owner
   (docs/hosted-projects.md "Sharing").
