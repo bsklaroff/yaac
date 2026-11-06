@@ -1,15 +1,22 @@
-import { Children, createContext, memo, useContext, useMemo, type JSX, type ReactNode } from 'react'
+import { Children, createContext, memo, useContext, useMemo, useState, type JSX, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import rehypeSlug from 'rehype-slug'
+import { useQuery } from '@tanstack/react-query'
 import { CodeView } from '#components/DiffView'
-import { fileLinksIn, resolveFilePath, type CheckoutFiles, type FileRef } from '#lib/files'
+import {
+  InlineBudget, fileLinksIn, imageDataUrl, linkedCheckoutPath, resolveFilePath, type CheckoutFiles, type FileRef,
+} from '#lib/files'
 import { languageForFence, type HighlightLanguage } from '#lib/highlight'
+import { useUiStore } from '#lib/store'
+import { useWorkspaceFiles } from '#lib/useWorkspaceChanges'
 
 /**
  * Renders agent markdown in the chat pane. Raw HTML stays disabled
  * (react-markdown's default) because the text may echo untrusted repository
  * content. Elements are styled individually with tight margins so a one-line
- * reply stays one line high.
+ * reply stays one line high. `MarkdownDocument` renders a checkout file
+ * instead, as a document, for the file pane's preview.
  *
  * Under a `FileLinksContext`, paths of files in the checkout open the file
  * pane on click: in prose, as inline code, or as a link's target (claude
@@ -27,6 +34,21 @@ export interface FileLinks extends CheckoutFiles {
 }
 
 export const FileLinksContext = createContext<FileLinks | null>(null)
+
+/** File links that open the file pane, matched against the listing the
+ *  changes poll keeps; null until it lands. */
+export function useFileLinks(workspaceId: string): FileLinks | null {
+  const listing = useWorkspaceFiles(workspaceId)
+  // Keyed on the fields links read, so a listing change elsewhere (its
+  // ignored entries) does not re-render every link.
+  const root = listing?.root
+  const paths = listing?.paths
+  return useMemo(() => root !== undefined && paths ? {
+    root,
+    paths: new Set(paths),
+    open: ({ path, line }) => useUiStore.getState().openFile(workspaceId, path, line),
+  } : null, [root, paths, workspaceId])
+}
 
 const LINK_CLASS = 'text-link underline decoration-link/40 underline-offset-2 hover:decoration-link'
 
@@ -257,3 +279,123 @@ const PLUGINS = [remarkGfm]
 export const Markdown = memo(function Markdown({ children }: { children: string }): ReactNode {
   return <ReactMarkdown remarkPlugins={PLUGINS} components={COMPONENTS}>{children}</ReactMarkdown>
 })
+
+/**
+ * The ids `rehype-slug` gives headings carry GitHub's prefix, so a heading
+ * named like an element of the app cannot clobber it.
+ */
+const HEADING_ID_PREFIX = 'user-content-'
+const DOC_REHYPE = [[rehypeSlug, { prefix: HEADING_ID_PREFIX }] as [typeof rehypeSlug, { prefix: string }]]
+
+/**
+ * The id a `#fragment` link in a markdown file scrolls to. A fragment that
+ * already has the prefix (remark gives a footnote's its own) keeps it, and
+ * one with a malformed escape is matched as written.
+ */
+function fragmentId(fragment: string): string {
+  let id = fragment
+  try {
+    id = decodeURIComponent(fragment)
+  } catch {
+    // Not percent-encoded after all.
+  }
+  return id.startsWith(HEADING_ID_PREFIX) ? id : HEADING_ID_PREFIX + id
+}
+
+/**
+ * A link in a markdown file. One to a heading or footnote scrolls to it
+ * (keeping its own `id`, which a footnote's back-reference targets), one to
+ * a checkout file opens it (resolved from the file's folder), and anything
+ * else opens in a new tab.
+ */
+function DocLink({ from, href, id, children }: {
+  from: string
+  href?: string
+  id?: string
+  children: ReactNode
+}): ReactNode {
+  const links = useContext(FileLinksContext)
+  const label = <FileLinksContext.Provider value={null}>{children}</FileLinksContext.Provider>
+  if (href?.startsWith('#')) {
+    const target = fragmentId(href.slice(1))
+    return (
+      <a
+        id={id}
+        href={href}
+        onClick={(e) => {
+          e.preventDefault()
+          const doc = e.currentTarget.closest('[data-markdown-document]')
+          Array.from(doc?.querySelectorAll('[id]') ?? []).find((el) => el.id === target)?.scrollIntoView()
+        }}
+        className={LINK_CLASS}
+      >
+        {label}
+      </a>
+    )
+  }
+  const path = href === undefined ? null : linkedCheckoutPath(from, href)
+  if (path === null) return <Link href={href}>{children}</Link>
+  return links?.paths.has(path) ? <FileLink file={{ path }}>{label}</FileLink> : label
+}
+
+/**
+ * An image in a markdown file. One in the checkout is inlined from it,
+ * within its document's `budget`, else shows as its alt text; one elsewhere
+ * stays a link, for the reason chat's images do.
+ */
+function DocImage({ workspaceId, from, budget, src, alt }: {
+  workspaceId: string
+  from: string
+  budget: InlineBudget
+  src?: string
+  alt?: string
+}): ReactNode {
+  const path = src === undefined ? null : linkedCheckoutPath(from, src)
+  const { data } = useQuery({
+    queryKey: ['image-data', workspaceId, path],
+    queryFn: () => imageDataUrl(workspaceId, path!, budget),
+    enabled: path !== null,
+  })
+  if (path === null) return <Link href={src}>{alt || 'image'}</Link>
+  return data ? <img src={data} alt={alt} /> : alt
+}
+
+/**
+ * A markdown file rendered as a document, for the file pane's preview
+ * (docs/file-editor.md, "Previews"). Raw HTML stays off as in chat, and
+ * code blocks and inline code render as they do there.
+ */
+export function MarkdownDocument({ workspaceId, path, text, fontSize }: {
+  workspaceId: string
+  path: string
+  text: string
+  fontSize: number
+}): JSX.Element {
+  const links = useFileLinks(workspaceId)
+  const [budget] = useState(() => new InlineBudget())
+  const components = useMemo((): Components => ({
+    pre: COMPONENTS.pre,
+    code: COMPONENTS.code,
+    a: ({ href, id, children }) => <DocLink from={path} href={href} id={id}>{children}</DocLink>,
+    img: ({ src, alt }) => (
+      <DocImage
+        workspaceId={workspaceId}
+        from={path}
+        budget={budget}
+        src={typeof src === 'string' ? src : undefined}
+        alt={alt}
+      />
+    ),
+  }), [workspaceId, path, budget])
+  return (
+    <FileLinksContext.Provider value={links}>
+      <div
+        data-markdown-document
+        className="prose max-w-none prose-code:before:content-none prose-code:after:content-none"
+        style={{ fontSize }}
+      >
+        <ReactMarkdown remarkPlugins={PLUGINS} rehypePlugins={DOC_REHYPE} components={components}>{text}</ReactMarkdown>
+      </div>
+    </FileLinksContext.Provider>
+  )
+}

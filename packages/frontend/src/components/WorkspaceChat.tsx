@@ -9,7 +9,7 @@ import {
   ChatBottomBar, ChatViewToggles, COMPOSER_INPUT, JumpButtons, Launching, PageLoading, ROUND_BUTTON, useChatColumn,
   useConversationView, useFollowTail,
 } from '#components/ConversationView'
-import { FileLinksContext, type FileLinks } from '#components/Markdown'
+import { FileLinksContext, useFileLinks } from '#components/Markdown'
 import { EffortSelect, PermissionModeSelect } from '#components/ComposerSelect'
 import { imageFiles, useDraftImages } from '#lib/attachments'
 import { DraftImage } from '#components/ui/DraftImage'
@@ -19,7 +19,6 @@ import { DISCONNECT_NOTICE_DELAY_MS } from '#lib/reconnect'
 import { AttachImageIcon, CloseIcon, SendIcon, StopIcon } from '#lib/icons'
 import { chatDraftKey, useUiStore } from '#lib/store'
 import { useTranscriptPages } from '#lib/useTranscriptPages'
-import { useWorkspaceFiles } from '#lib/useWorkspaceChanges'
 import type { AcpContent, AcpEvent, AcpQueuedPrompt } from '@yaac/shared/acp'
 
 /**
@@ -112,16 +111,7 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, visible, f
     useUiStore.getState().chatDrafts[chatDraftKey(workspaceId, conversationId)]?.sent,
   )
   const reconciledRef = useRef(false)
-  const listing = useWorkspaceFiles(workspaceId)
-  /** Keyed on the fields links read, so a listing change elsewhere (its
-   *  ignored entries) does not re-render every link in the transcript. */
-  const root = listing?.root
-  const paths = listing?.paths
-  const fileLinks = useMemo((): FileLinks | null => root !== undefined && paths ? {
-    root,
-    paths: new Set(paths),
-    open: ({ path, line }) => useUiStore.getState().openFile(workspaceId, path, line),
-  } : null, [root, paths, workspaceId])
+  const fileLinks = useFileLinks(workspaceId)
   const usage = useMemo(() => contextUsage(events), [events])
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)

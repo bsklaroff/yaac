@@ -641,6 +641,58 @@ take keystrokes the user has since started typing somewhere else.
   only a save that cannot land asks before discarding. A dirty tab shows a
   dot, and `beforeunload` warns while any file is dirty.
 
+### Previews
+
+A markdown (`.md`, `.markdown`) or HTML (`.htm`, `.html`) file can be shown
+rendered instead of as text, read-only, from a toggle in its header. The
+choice is one saved store value (`filePreview`) for every file pane, like
+the diff mode. The preview draws the editor's current text, unsaved edits
+included, and the editor stays mounted underneath, hidden, so switching back
+keeps its undo history. While previewing, the header's find and diff
+controls are hidden, since they act on the editor.
+
+**Markdown** renders in the pane (`MarkdownDocument`) with the chat pane's
+GFM, code blocks and inline code, styled as a document by the Tailwind
+typography plugin in the theme's colors, at the editor's text size. Raw
+HTML stays off, as in chat. Links and images resolve from the file's
+folder (`linkedCheckoutPath`; a leading `/` is the checkout root, as on
+GitHub). A link to a checkout file opens it, and a heading or footnote
+link (`#…`) scrolls to its target, whose id carries GitHub's
+`user-content-` prefix so it cannot clobber one of the app's. A checkout
+image is read through the file routes and shown as a `data:` URL, within
+an `InlineBudget`: 5 MB a file and 32 MB for the whole document, judged
+from the raw route's `Content-Length` before the body is read, so neither a
+huge image nor many images (or one under many symlinked names) can exhaust
+the tab. One that does not fit shows as its alt text. An image elsewhere
+stays a link, for the reason chat's do: fetching it could leak data
+encoded in its URL.
+
+**HTML** renders as a static page that runs no script and loads nothing
+from anywhere (`HtmlDocument`). Before it is shown, its own stylesheets
+(`<link rel=stylesheet>` to a checkout file) are inlined as `<style>`, with
+`</style` escaped so the text stays whole, and its checkout images as
+`data:` URLs. Each path is read once, within one budget as in markdown, and
+each further use of a path is charged again, since every copy is written
+into the page; one that does not fit stays unloaded. At most 100 are
+inlined: stylesheets first, then images, each in document order. The page is then parsed again, as the iframe will parse
+it, because inlined text can parse as markup where it lands (a stylesheet
+linked inside `<svg>`), and the rest works on that tree. Scripts, `<base>`
+and every `http-equiv` meta are dropped, and a policy meta at the top of
+its head (`default-src 'none'`, inline styles and `data:` images and fonts
+only) refuses every other load: a CDN stylesheet, a remote image, a frame,
+or one that inlined text added. The
+result is the `srcdoc` of an iframe sandboxed with only `allow-popups` and
+`allow-popups-to-escape-sandbox`. So it has an opaque origin, which the
+server's Origin and Sec-Fetch-Site guards refuse, and no script, forms or
+top navigation. A heading link is rewritten to `about:srcdoc#…`, which
+scrolls within the frame (a bare `#…` would resolve against the app's URL
+and navigate the frame away). A link (`<a>` or `<area>`) elsewhere opens a
+new tab with `rel="noreferrer noopener"`, whatever its own `rel`, and a link
+to another checkout file is left inert, since the parent cannot see a click
+inside an opaque frame. A page that builds itself with script shows only its
+static markup, `<noscript>` included. Relative URLs inside a stylesheet
+(`url()`, `@import`) are not followed.
+
 ### Keys
 
 - **`open-files` (Alt-E)** is a shortcut-registry command. It opens or

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach, onTestFinished } from 'vitest'
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react'
 
 // CodeMirror's contenteditable doesn't work under jsdom, and these tests cover
@@ -63,6 +63,10 @@ let changes: WorkspaceChanges | null
 let binary: boolean
 /** The `file-at` requests, as path and rev. */
 let fileAt: { path: string | null; rev: string | null }[]
+/** Text of files other than the one open, by path, for a preview to inline. */
+let others: Record<string, string>
+/** The paths read through the raw route. */
+let rawReads: string[]
 
 function respond(status: number, body: unknown): Response {
   const res = {
@@ -94,6 +98,8 @@ beforeEach(() => {
   changes = null
   fileAt = []
   binary = false
+  others = {}
+  rawReads = []
   // hono hands the client's fetch a relative URL string.
   globalThis.fetch = vi.fn(async (input: string, init?: RequestInit) => {
     const url = new URL(input, 'http://localhost')
@@ -122,6 +128,20 @@ beforeEach(() => {
       disk = { content: body.content, version: (disk?.version ?? 0) + 1 }
       return respond(200, { path: 'a.ts', version: String(disk.version), size: body.content.length })
     }
+    if (url.pathname.endsWith('/raw')) {
+      // A `huge` image is over the preview's cap for one file, and nine
+      // `mid` ones together are over its cap for them all.
+      const path = url.searchParams.get('path') ?? ''
+      rawReads.push(path)
+      const size = path.includes('huge') ? 6 * 1024 * 1024 : path.includes('mid') ? 4 * 1024 * 1024 : 3
+      return {
+        ok: true,
+        headers: new Headers({ 'content-length': String(size) }),
+        blob: () => Promise.resolve(new Blob(['png'], { type: 'image/png' })),
+      } as Response
+    }
+    const other = others[url.searchParams.get('path') ?? '']
+    if (other !== undefined) return respond(200, { path: 'x', version: '1', size: other.length, binary: false, content: other })
     const hold = holdGet
     holdGet = null
     const snapshot = disk && { ...disk }
@@ -139,7 +159,7 @@ afterEach(() => {
   discardFileSavers([fileKey('w1', 'a.ts')])
   vi.useRealTimers()
   vi.unstubAllGlobals()
-  useUiStore.setState({ dirtyFiles: {}, fileDiffMode: 'plain', revealLine: null })
+  useUiStore.setState({ dirtyFiles: {}, fileDiffMode: 'plain', filePreview: false, revealLine: null })
   cm.headless = false
   cm.view?.destroy()
   cm.view?.dom.remove()
@@ -503,6 +523,124 @@ describe('WorkspaceFile', () => {
     expect(useUiStore.getState().fileDiffMode).toBe('inline')
     expect(fileAt).toEqual([{ path: 'old.ts', rev: 'b'.repeat(40) }])
     expect(Number(editor().dataset.extensions)).toBeGreaterThan(plain)
+  })
+
+  it('shows a markdown file rendered on request, resolving its links and images from its folder', async () => {
+    disk = {
+      content: '# Guide\n\n[Setup](#set-up) [code](../a.ts) [missing](gone.md) [site](https://example.com) [bad](#%E0)\n\n'
+        + '![shot](img/shot.png) ![huge](img/huge.png) ![badge](https://example.com/b.svg)\n\n'
+        + Array.from({ length: 9 }, (_, i) => `![m${i}](img/mid${i}.png)`).join(' ') + '\n\n'
+        + 'A claim.[^1]\n\n## Set up\n\n[^1]: The note.\n',
+      version: 1,
+    }
+    changes = {
+      base: 'b'.repeat(40), work: 'w', baseResolved: true, readMs: 0, branch: 'main', comparison: null,
+      files: [], diff: '', truncated: false,
+      listing: {
+        version: '1', root: '/workspace', paths: ['a.ts', 'docs/guide.md', 'docs/img/shot.png'],
+        symlinks: {}, ignored: [], emptyDirs: [], conflicted: [], truncated: false,
+      },
+    }
+    const { openFile: realOpenFile } = useUiStore.getState()
+    const openFile = vi.fn()
+    useUiStore.setState({ openFile })
+    const scrolled = vi.fn()
+    Element.prototype.scrollIntoView = function (this: Element) { scrolled(this.id) }
+    onTestFinished(() => {
+      useUiStore.setState({ openFile: realOpenFile })
+      delete (Element.prototype as Partial<Element>).scrollIntoView
+    })
+    await mount('docs/guide.md')
+    expect(screen.queryByRole('heading')).toBeNull()
+
+    fireEvent.click(screen.getByLabelText('Show rendered'))
+    await tick(0)
+    expect(useUiStore.getState().filePreview).toBe(true)
+    screen.getByRole('heading', { name: 'Guide' })
+    // The editor stays mounted, with its find and diff controls put away.
+    expect(editor().closest('.hidden')).not.toBeNull()
+    expect(screen.queryByLabelText('Find')).toBeNull()
+    expect(screen.queryByLabelText('Diff mode')).toBeNull()
+
+    fireEvent.click(screen.getByText('Setup'))
+    expect(scrolled).toHaveBeenCalledWith('user-content-set-up')
+    // A malformed escape renders, matched as written rather than thrown on.
+    expect(screen.getByText('bad').closest('a')?.getAttribute('href')).toBe('#%E0')
+    // A footnote's ids already carry the prefix, and its reference keeps the
+    // id its back-reference targets.
+    const ref = document.getElementById('user-content-fnref-1')!
+    fireEvent.click(ref)
+    expect(scrolled).toHaveBeenLastCalledWith('user-content-fn-1')
+    fireEvent.click(screen.getByText('↩'))
+    expect(scrolled).toHaveBeenLastCalledWith('user-content-fnref-1')
+    fireEvent.click(screen.getByText('code'))
+    expect(openFile).toHaveBeenCalledWith('w1', 'a.ts', undefined)
+    expect(screen.getByText('missing').closest('a, [role="link"]')).toBeNull()
+    expect(screen.getByText('site').closest('a')?.getAttribute('target')).toBe('_blank')
+    await tick(100)
+    expect(screen.getByAltText<HTMLImageElement>('shot').src).toMatch(/^data:image\/png;base64,/)
+    expect(screen.queryByAltText('huge')).toBeNull()
+    screen.getByText('huge')
+    // What is left of 32 MB after `shot` fits seven of the nine 4 MB images.
+    expect(Array.from({ length: 9 }, (_, i) => screen.queryByAltText(`m${i}`)).filter(Boolean)).toHaveLength(7)
+    expect(screen.getByText('badge').closest('a')?.getAttribute('href')).toBe('https://example.com/b.svg')
+
+    fireEvent.click(screen.getByLabelText('Show source'))
+    expect(editor().closest('.hidden')).toBeNull()
+    expect(screen.queryByRole('heading')).toBeNull()
+  })
+
+  it('shows an HTML file as a page that runs nothing and loads only its own inlined files', async () => {
+    others = {
+      // A stylesheet that tries to close its <style> and add back what was dropped.
+      'site/style.css': 'p { color: red }</style><meta http-equiv="refresh" content="0"><img src="https://x.example/y"><style>',
+      // One linked inside <svg>, whose text is markup when the page is parsed again.
+      'site/foreign.css': 'x{}<meta http-equiv="refresh" content="0"><img src="https://x.example/z">',
+      'site/logo.svg': '<svg xmlns="http://www.w3.org/2000/svg"/>',
+    }
+    disk = {
+      content: '<html><head><meta http-equiv="refresh" content="0;url=https://example.com">'
+        + '<link rel="stylesheet" href="style.css"><link rel="stylesheet" href="https://cdn.example/x.css"></head>'
+        + '<body><script>alert(1)</script><img src="logo.svg" srcset="logo@2x.svg 2x">'
+        + '<svg><link rel="stylesheet" href="foreign.css"></svg><img src="dot.png?1"><img src="dot.png?2">'
+        + Array.from({ length: 10 }, (_, i) => `<img src="mid.png?${i}">`).join('')
+        + '<a href="#top">top</a><a href="https://example.com" rel="opener">out</a><a href="other.html">next</a>'
+        + '<map><area href="https://example.com/area" alt="spot"></map></body></html>',
+      version: 1,
+    }
+    useUiStore.setState({ filePreview: true })
+    const { container } = await mount('site/index.html')
+    await tick(100)
+    const frame = container.querySelector('iframe')!
+    expect(frame.getAttribute('sandbox')).toBe('allow-popups allow-popups-to-escape-sandbox')
+    expect(screen.queryByLabelText('Text size')).toBeNull()
+    const doc = new DOMParser().parseFromString(frame.getAttribute('srcdoc')!, 'text/html')
+    const metas = doc.querySelectorAll('meta[http-equiv]')
+    expect(metas.length).toBe(1)
+    expect(doc.head.firstElementChild).toBe(metas[0])
+    expect(metas[0].getAttribute('content')).toMatch(/^default-src 'none';/)
+    expect(doc.querySelector('script')).toBeNull()
+    expect(doc.querySelector('style')?.textContent).toMatch(/^p \{ color: red \}<\\\/style>/)
+    expect(doc.querySelector('link')?.getAttribute('href')).toBe('https://cdn.example/x.css')
+    const img = doc.querySelector('img')!
+    expect(img.getAttribute('src')).toMatch(/^data:image\/svg\+xml;charset=utf-8,/)
+    expect(img.hasAttribute('srcset')).toBe(false)
+    // One file under many URLs is read once, and each copy written out is
+    // charged: seven copies of the 4 MB `mid` fit in what the page's smaller
+    // files leave of 32 MB.
+    const dots = Array.from(doc.querySelectorAll('img[src^="data:image/png"]'), (el) => el.getAttribute('src'))
+    expect(dots).toHaveLength(2 + 7)
+    expect(dots[1]).toBe(dots[0])
+    expect(doc.querySelectorAll('img[src^="mid.png"]')).toHaveLength(3)
+    expect(rawReads.sort()).toEqual(['site/dot.png', 'site/mid.png'])
+    const links = Array.from(doc.querySelectorAll('a, area'), (a) => [a.textContent || a.getAttribute('alt'),
+      a.getAttribute('href'), a.getAttribute('target'), a.getAttribute('rel')])
+    expect(links).toEqual([
+      ['top', 'about:srcdoc#top', null, null],
+      ['out', 'https://example.com', '_blank', 'noreferrer noopener'],
+      ['next', null, null, null],
+      ['spot', 'https://example.com/area', '_blank', 'noreferrer noopener'],
+    ])
   })
 
   it('puts the cursor on the line a link opened it at, whether or not the file was open', async () => {

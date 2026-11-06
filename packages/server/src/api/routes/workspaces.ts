@@ -857,10 +857,11 @@ export const workspaceApp = new Hono<IdentityEnv>()
     },
   )
   // An image, video, audio or PDF file's bytes for the file pane's media
-  // view. One byte range is honored, so a video can seek. The bytes are
-  // the workspace's, so a response rendered as a page anyway (opened in a
-  // tab, or the PDF iframe) is sandboxed into an opaque origin with no
-  // script, away from the API; Chromium's PDF viewer still runs under it.
+  // view and the images its previews inline. One byte range is honored, so
+  // a video can seek. The bytes are the workspace's, so a response rendered
+  // as a page anyway (opened in a tab, or the PDF iframe) is sandboxed into
+  // an opaque origin with no script, away from the API; Chromium's PDF
+  // viewer still runs under it.
   .get(
     '/:id/raw',
     zv('query', z.object({ path: z.string().min(1) })),
