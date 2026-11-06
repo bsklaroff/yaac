@@ -82,7 +82,17 @@ from until the Commits pane's picker or `yaac-mama set-base` moves it
 runs inside the workspace through the driver's `exec`, under either driver. It
 runs `git add -A` into a private index at a stable scratch path, so the
 whole working tree is diffed without touching the agent's index, and git's
-stat cache keeps each poll incremental. `add -A` skips a tracked file that
+stat cache keeps each poll incremental. The objects it writes (each new
+file's blob, and the trees of the agent's index and the working tree) go to
+an object directory beside the private index (`GIT_OBJECT_DIRECTORY`), with
+the checkout's own store read as an alternate, so polls leave nothing in
+the checkout and a new file costs a write to pod-local scratch rather than
+to the network filesystem: staging 1,000 new files took 2–4s, against
+10–50s into the checkout's store on NFS. Scratch is held in the pod's
+memory, so past 256 MB the directory starts over with the private index,
+which is seeded again. So does a run that finds a blob missing: the agent
+can add a file, reset it and prune, deleting a blob the private index still
+names, which no stat check notices. `add -A` skips a tracked file that
 matches `.gitignore` (one added with `add -f`), so those the agent's index
 tracks are force-added after it, or they would read as deleted. They are
 added by literal name (`--literal-pathspecs`): the names are the agent's,
@@ -103,8 +113,9 @@ it, as a branch switch does to many, so it is retried with the index kept.
 Both the wait and the retries stop 10 seconds after the run starts, the
 wait answering `RUNTIME_UNAVAILABLE` (503). A failed `add -A` leaves the
 private index as it was, so only one git cannot read is seeded afresh,
-within the same run. A killed one also leaves it as it was, since git
-writes the index only when `add -A` finishes. A cold index (missing, just
+within the same run. A killed one also leaves the index as it was, since
+git writes it only when `add -A` finishes, though the objects it wrote
+stay. A cold index (missing, just
 seeded, or behind a big branch switch) has `add -A` hash every changed
 file, which took 20 to 45 seconds for 20,000 changes under gVisor, and is
 slower on NFS (docs/nfs-checkout-performance.md), so a run cut off there
@@ -157,8 +168,8 @@ capped by whole lines at 250 KB per file and 2 MB in all in the workspace,
 and at 1 MB in the answer; a file's part the cap cuts short ends in a
 `DIFF_CUT_LINE` line, so one huge file cannot leave every file after it
 with no diff. Each answer names its reading by the base and the working
-tree's git tree (`work`), which `add -A` wrote into the checkout's object
-store, and `POST changes/diff` reads more of that reading: the parts of
+tree's git tree (`work`), which `add -A` wrote into the scratch objects,
+and `POST changes/diff` reads more of that reading: the parts of
 files the cap left out, under the same caps, or a page of up to 1 MB of
 one file's part past the lines the caller holds. A page that starts on a
 line over 1 MB shows that line's first megabyte, cut at a byte, and goes on

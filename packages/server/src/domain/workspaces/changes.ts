@@ -10,7 +10,8 @@
  *
  * The script runs `git add -A` into a private index (GIT_INDEX_FILE), then
  * diffs the base tree against that index. This captures the whole working
- * tree without touching the agent's real index.
+ * tree without touching the agent's real index, or its object store: the
+ * objects staging writes go to scratch too (`scratchObjects`).
  *
  * Which stages each file's changes sit in comes from trees, so the working
  * tree is walked once (by `add -A`) however many stages are read: HEAD; the
@@ -179,6 +180,23 @@ const MAX_DELTA_PATHS = 300
  *  user's config, so the body splits into per-file chunks. */
 const BODY_FLAGS = '--no-ext-diff --submodule=short'
 
+/** Past this many KiB, the scratch object directory starts over: a pod's
+ *  scratch is held in its memory. */
+export const SCRATCH_OBJECTS_CAP_KB = 256 * 1024
+
+/**
+ * Shell that points git's object writes at `<index>.objects` in scratch,
+ * reading the checkout's own store (and so, through its alternates, the
+ * main clone's) as an alternate. Staging a file then writes its blob to
+ * pod-local scratch rather than the checkout's network filesystem, and
+ * polls leave no loose objects in the checkout. Anything that reads a
+ * reading's trees needs it too.
+ */
+function scratchObjects(indexFile: string): string {
+  return `ob=$(cd "$(git rev-parse --git-path objects)" && pwd -P) && mkdir -p ${indexFile}.objects || exit 6; `
+    + `export GIT_OBJECT_DIRECTORY=${indexFile}.objects GIT_ALTERNATE_OBJECT_DIRECTORIES="$ob"; `
+}
+
 /**
  * Force-adds its arguments that still exist (a link counts, even broken),
  * in one `git add`, and nothing when none do. The names come from the
@@ -306,7 +324,11 @@ function changesScript(loc: ChangesLocation): string {
   + 'rm -f "$lk.$$"; trap \'rm -f "$lk"\' EXIT; '
   // Holding the run lock, any git lock on the private index, and any seed
   // copy, was left by a killed run.
-  + `rm -f ${i}.out.* ${i}.lock ${i}.seed.*; o=${i}.out.$$; ( `
+  + `rm -f ${i}.out.* ${i}.lock ${i}.seed.*; o=${i}.out.$$; run() ( `
+  // Scratch objects past their cap start over with the private index,
+  // which names them.
+  + `kb=$(du -sk ${i}.objects 2>/dev/null); [ "0\${kb%%[!0-9]*}" -lt ${SCRATCH_OBJECTS_CAP_KB} ] || rm -rf ${i} ${i}.objects; `
+  + scratchObjects(i)
   // An unborn HEAD (a new orphan branch) reads as the empty tree.
   + 'e=$(git hash-object -t tree /dev/null) || exit 6; head=$(git rev-parse -q --verify HEAD) || head=$e; '
   + 'fork=1; '
@@ -427,7 +449,12 @@ function changesScript(loc: ChangesLocation): string {
   + `&& { printf "${M_DIFF}\\n"; cat ${i}.dbody; } || printf "${M_NODIFF}\\n"; };; `
   + `full) [ "$3" != diff ] || { cached ${i}.body "$base $work" body > /dev/null `
   + `&& { printf "${M_DIFF}\\n"; tail -n +2 ${i}.body; } || printf "${M_NODIFF}\\n"; };; esac; `
-  + `exit 0 ) > $o 2> ${i}.stderr; r=$?; tail -c 4096 ${i}.stderr >&2; `
+  + `exit 0 ); run "$@" > $o 2> ${i}.stderr; r=$?; `
+  // The private index can name a blob that is gone: the agent added a
+  // file, reset it and pruned. No stat check notices, so the run starts
+  // over from a fresh seed, whose staging hashes the file again.
+  + `[ $r -eq 0 ] || ! grep -q '^fatal: unable to read' ${i}.stderr || { rm -rf ${i} ${i}.objects; run "$@" > $o 2> ${i}.stderr; r=$?; }; `
+  + `tail -c 4096 ${i}.stderr >&2; `
   + `if [ $(wc -c < $o) -gt ${OUTPUT_PAGE_BYTES} ]; then printf "PAGED %s %s\\n" $$ $(wc -c < $o); `
   + 'else cat $o; rm -f $o; fi; exit $r'
 }
@@ -1077,9 +1104,9 @@ export const CHANGES_READING_GONE = 4
  * after the first `skip` lines, up to the whole cap, for a reader scrolling
  * down a file whose part was cut.
  *
- * The trees stay in the checkout's object store after the reading that
- * wrote them; a run that finds either gone fails with
- * `CHANGES_READING_GONE`.
+ * The trees stay in the scratch objects (see `scratchObjects`) until those
+ * pass their cap or the pod restarts; a run that finds either gone fails
+ * with `CHANGES_READING_GONE`.
  */
 export async function readChangeDiffs(jobName: string, request: {
   base: string
@@ -1091,7 +1118,7 @@ export async function readChangeDiffs(jobName: string, request: {
   const { workspaceDir, scratchDir } = driver.workspacePaths(jobName)
   const { base, work, files, skip } = request
   const [p, t] = skip === undefined ? [MAX_FILE_DIFF_BYTES, MAX_DIFF_BYTES] : [MAX_DIFF_BYTES, MAX_DIFF_BYTES]
-  const script = `cd ${workspaceDir} 2>/dev/null || exit 3; `
+  const script = `cd ${workspaceDir} 2>/dev/null || exit 3; ${scratchObjects(`${scratchDir}/yaac-changes.idx`)}`
     + `git cat-file -e "$1^{tree}" && git cat-file -e "$2^{tree}" || exit ${CHANGES_READING_GONE}; `
     + `s=${skip ?? 0}; p=${p}; t=${t}; e=${scratchDir}/yaac-diff.err.$$; ${cappedFn('$e')}`
     + `capped git --literal-pathspecs diff ${BODY_FLAGS} "$@"; r=$?; rm -f $e; exit $r`

@@ -7,6 +7,7 @@ import {
   CHANGES_BASE_UNRESOLVED,
   CHANGES_READING_GONE,
   OUTPUT_PAGE_BYTES,
+  SCRATCH_OBJECTS_CAP_KB,
   parseChangesOutput,
   buildChangesScript as buildScript,
   readChangeDiffs,
@@ -914,15 +915,17 @@ const exec = vi.fn<WorkspaceDriver['exec']>()
 /** A driver whose workspace is `repo`, running the script for real; each
  *  run's output is kept in `outputs`. With `pageBytes`, the script pages
  *  at that size, and an output over twice it fails, as one over streamd's
- *  cap does. */
-function realWorkspace(repo: string, scratchDir: string, pageBytes?: number): string[] {
+ *  cap does. `rewrite` edits each command before it runs. */
+function realWorkspace(
+  repo: string, scratchDir: string, pageBytes?: number, rewrite = (cmd: string): string => cmd,
+): string[] {
   const outputs: string[] = []
   installFakeWorkspaceDriver({
     exec,
     workspacePaths: () => workspacePathsFixture({ workspaceDir: repo, scratchDir }),
   })
   exec.mockImplementation((_job, cmd) => {
-    const run = pageBytes ? cmd.replaceAll(String(OUTPUT_PAGE_BYTES), String(pageBytes)) : cmd
+    const run = rewrite(pageBytes ? cmd.replaceAll(String(OUTPUT_PAGE_BYTES), String(pageBytes)) : cmd)
     let stdout: string
     try {
       stdout = execFileSync('sh', ['-c', run], {
@@ -938,6 +941,13 @@ function realWorkspace(repo: string, scratchDir: string, pageBytes?: number): st
   })
   return outputs
 }
+
+/** The environment that reads a workspace's scratch objects as reads of
+ *  the changes do. */
+const scratchObjectsEnv = (repo: string, scratchDir: string): NodeJS.ProcessEnv => ({
+  GIT_OBJECT_DIRECTORY: path.join(scratchDir, 'yaac-changes.idx.objects'),
+  GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(repo, '.git/objects'),
+})
 
 /** A unified diff's parts by destination path. */
 const partsOf = (diff = ''): Map<string, string> => new Map(diff.split(/(?=^diff --git )/m)
@@ -1216,6 +1226,58 @@ describe('readWorkspaceChanges', () => {
     await readWorkspaceChanges('big', request)
     expect(timeouts()).toEqual([120_000, 20_000, 20_000, 120_000, 20_000, 20_000])
   })
+
+  // Staging writes its objects to scratch, reading the checkout's store
+  // through an alternate, so polls leave nothing in the checkout. Scratch
+  // starts over past its cap, and when a blob the private index names has
+  // gone from the checkout (the agent added a file, reset it and pruned).
+  it('stages into scratch objects, starting over past the cap or on a missing blob', async () => {
+    const { repo, idx } = scratchRepo()
+    const scratch = path.dirname(idx)
+    const objects = path.join(scratch, 'yaac-changes.idx.objects')
+    git(repo, 'checkout', '-q', '-b', 'agent/x')
+    fs.writeFileSync(path.join(repo, 'new.txt'), 'new\n')
+    let cap = String(SCRATCH_OBJECTS_CAP_KB)
+    realWorkspace(repo, scratch, undefined, (cmd) => cmd.replaceAll(String(SCRATCH_OBJECTS_CAP_KB), cap))
+    const request: ChangesRequest = { defaultBase: 'main', diff: true }
+    const read = async (): Promise<ChangesReading['changes']> => {
+      forgetWorkspaceChanges('big')
+      for (const k of ['committed', 'staged', 'unstaged', 'lists', 'body']) fs.rmSync(path.join(scratch, `yaac-changes.idx.${k}`), { force: true })
+      return (await readWorkspaceChanges('big', request)).changes
+    }
+    const has = (id: string, env: NodeJS.ProcessEnv = {}): boolean => {
+      try {
+        execFileSync('git', ['cat-file', '-e', id], { cwd: repo, stdio: 'ignore', env: { ...process.env, ...env } })
+        return true
+      } catch {
+        return false
+      }
+    }
+    const inScratch = scratchObjectsEnv(repo, scratch)
+    const loose = git(repo, 'count-objects')
+
+    const first = await read()
+    expect(first.diff).toContain('+new')
+    const blob = git(repo, 'hash-object', 'new.txt').trim()
+    expect([has(blob), has(blob, inScratch), has(first.work), has(first.work, inScratch)]).toEqual([false, true, false, true])
+    expect(git(repo, 'count-objects')).toBe(loose)
+
+    // Older than the index, so git trusts its stat data rather than hashing
+    // the racily clean file again.
+    const dropped = path.join(repo, 'dropped.txt')
+    fs.writeFileSync(dropped, 'dropped\n')
+    fs.utimesSync(dropped, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000))
+    git(repo, 'add', 'dropped.txt')
+    await read()
+    git(repo, 'reset', '-q', 'dropped.txt')
+    git(repo, 'prune', '--expire=now')
+    expect((await read()).diff).toContain('+dropped')
+
+    fs.writeFileSync(path.join(objects, 'junk'), 'x'.repeat(4096))
+    cap = '1'
+    expect((await read()).files.map((f) => f.path)).toEqual(['dropped.txt', 'new.txt'])
+    expect(fs.existsSync(path.join(objects, 'junk'))).toBe(false)
+  })
 })
 
 describe('readChangeDiffs', () => {
@@ -1240,7 +1302,10 @@ describe('readChangeDiffs', () => {
     fs.renameSync(file('old.txt'), file('renamed.txt'))
     realWorkspace(repo, path.dirname(idx))
     const { changes } = await readWorkspaceChanges('big', { defaultBase: 'main', diff: true })
-    const whole = partsOf(git(repo, 'diff', '--no-ext-diff', '--submodule=short', changes.base, changes.work))
+    // The reading's trees are in its scratch objects.
+    const whole = partsOf(execFileSync('git', ['diff', '--no-ext-diff', '--submodule=short', changes.base, changes.work], {
+      cwd: repo, encoding: 'utf8', maxBuffer: 64 << 20, env: { ...process.env, ...scratchObjectsEnv(repo, path.dirname(idx)) },
+    }))
     const polled = partsOf(changes.diff)
     expect([...polled.keys()]).toEqual(['big1.txt', 'big2.txt', 'big3.txt', 'big4.txt'])
     expect(polled.get('big1.txt')).toMatch(/\n@@CUT@@\n$/)
