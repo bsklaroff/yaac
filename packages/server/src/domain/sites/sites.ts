@@ -26,12 +26,17 @@ import {
   type SiteRow,
 } from '#db'
 import { authorizeProject, isProjectHeld, requireAdmin, type Actor } from '#domain/access'
+import { remoteBranchExists, resolveRemoteRef } from '#domain/git'
+import { fetchProjectOrigin } from '#domain/projects'
 import { VOLUME_NEED } from '#domain/workspaces'
 import { isInfraPort } from '#lib/port-policy'
+import { testEnv } from '@yaac/shared/env'
 import { ServerError } from '@yaac/shared/errors'
+import { isBranchName } from '@yaac/shared/git'
+import { repoDir } from '@yaac/shared/project-paths'
 import { parseStepGraph, type StepGraph } from '@yaac/shared/steps'
 import type { SiteDetail, SiteEdgeStatus, SiteEntry } from '@yaac/shared/types'
-import { endReleases, withSiteLock } from './deploys'
+import { endReleases, followPause, withSiteLock } from './deploys'
 
 const SITE_NAME = /^[a-z0-9-]{1,40}$/
 const DNS_NAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/
@@ -113,6 +118,24 @@ async function reofferAdminPort(row: SiteRow, adminPort: number | undefined): Pr
   }
 }
 
+/**
+ * A branch to follow, which must be on origin now. A name that reads as a
+ * ref (`origin/main`, `refs/heads/main`) would follow a branch literally so
+ * named, which anyone who may push can create, and `agent/*` branches are
+ * each a workspace's own; both are refused.
+ */
+async function checkBranch(projectId: string, branch: string): Promise<string> {
+  if (!isBranchName(branch)) throw new ServerError('VALIDATION', `"${branch}" is not a branch name`)
+  if (/^(?:origin|refs|agent)\//.test(branch)) {
+    throw new ServerError('VALIDATION', `"${branch}" names a branch to follow by its own name on origin, like main`)
+  }
+  if (!testEnv.e2eSkipFetch) await fetchProjectOrigin(projectId)
+  if (!await remoteBranchExists(repoDir(projectId), branch)) {
+    throw new ServerError('VALIDATION', `"${branch}" is not a branch on origin`)
+  }
+  return branch
+}
+
 /** A release's graph: it needs a service, and may need `volume` only when
  *  the site has one. */
 function checkSteps(raw: unknown, hasVolume: boolean): StepGraph {
@@ -144,6 +167,7 @@ export async function createSite(principal: Actor, projectId: string, input: {
   adminPort?: number
   steps: unknown
   volume?: string
+  followBranch?: string
 }): Promise<void> {
   await authorizeSitePublish(principal, projectId)
   if (!SITE_NAME.test(input.name)) {
@@ -158,6 +182,7 @@ export async function createSite(principal: Actor, projectId: string, input: {
     ...(input.adminPort !== undefined ? { adminPort: input.adminPort } : {}),
     steps: checkSteps(input.steps, input.volume !== undefined),
     ...(input.volume !== undefined ? { volumeId: await volumeId(projectId, input.volume) } : {}),
+    ...(input.followBranch !== undefined ? { followBranch: await checkBranch(projectId, input.followBranch) } : {}),
   })
   await syncSiteRoutes()
 }
@@ -165,8 +190,11 @@ export async function createSite(principal: Actor, projectId: string, input: {
 /**
  * Change a site. The hostname and admin port move at once; the port, steps
  * and volume apply from the next deploy, so the live release keeps serving
- * as it was started. Refused while a deploy runs, which was started with
- * the old ones.
+ * as it was started. A followed branch is deployed at the next reconcile
+ * if its tip is not what the site serves. Refused while a deploy runs,
+ * which was started with the old settings, except an edit that only stops
+ * following: that publishes nothing, so whoever may stop the site may make
+ * it, mid-deploy too.
  */
 export async function editSite(principal: Actor, projectId: string, name: string, input: {
   hostname?: string
@@ -174,9 +202,17 @@ export async function editSite(principal: Actor, projectId: string, name: string
   adminPort?: number | null
   steps?: unknown
   volume?: string | null
+  followBranch?: string | null
 }): Promise<void> {
+  if (input.followBranch === null && Object.entries(input).every(([k, v]) => k === 'followBranch' || v === undefined)) {
+    await authorizeSiteEnd(principal, projectId)
+    const { id } = await requireSite(projectId, name)
+    await withSiteLock(id, () => updateSite(id, { followBranch: null }))
+    return
+  }
   await authorizeSitePublish(principal, projectId)
   const { id } = await requireSite(projectId, name)
+  const follow = typeof input.followBranch === 'string' ? await checkBranch(projectId, input.followBranch) : input.followBranch
   await withSiteLock(id, async () => {
     const row = await getSiteRow(id)
     if (!row) throw new ServerError('NOT_FOUND', `this project has no site named "${name}"`)
@@ -190,6 +226,7 @@ export async function editSite(principal: Actor, projectId: string, name: string
     if (input.port !== undefined) patch.port = input.port
     if (input.adminPort !== undefined) patch.adminPort = input.adminPort
     if (input.volume !== undefined) patch.volumeId = input.volume === null ? null : await volumeId(projectId, input.volume, id)
+    if (follow !== undefined) patch.followBranch = follow
     const hasVolume = input.volume !== undefined ? input.volume !== null : row.volumeId !== undefined
     // The graph is checked against the volume it will run with, so dropping
     // the volume of a graph that needs it is refused.
@@ -240,6 +277,10 @@ export async function getSiteEdge(): Promise<SiteEdgeStatus> {
 async function toSiteEntry(row: SiteRow): Promise<SiteEntry> {
   const volume = row.volumeId !== undefined ? await getVolumeRow(row.volumeId) : undefined
   const live = row.liveWorkspaceId !== undefined ? await findWorkspaceRow(row.liveWorkspaceId) : undefined
+  const paused = row.followBranch !== undefined ? await followPause(row) : undefined
+  const tip = row.followBranch !== undefined && row.failedCommit !== undefined
+    ? await resolveRemoteRef(repoDir(row.projectId), row.followBranch).catch(() => undefined)
+    : undefined
   return {
     name: row.name,
     hostname: row.hostname,
@@ -247,6 +288,9 @@ async function toSiteEntry(row: SiteRow): Promise<SiteEntry> {
     ...(row.adminPort !== undefined ? { adminPort: row.adminPort } : {}),
     steps: row.steps,
     ...(volume !== undefined ? { volume: volume.name } : {}),
+    ...(row.followBranch !== undefined ? { followBranch: row.followBranch } : {}),
+    ...(paused !== undefined ? { followPaused: paused } : {}),
+    ...(tip !== undefined && tip === row.failedCommit && tip !== row.releaseCommit ? { followSkipped: tip } : {}),
     createdAt: row.createdAt.toISOString(),
     ...(row.liveWorkspaceId !== undefined && row.releaseCommit !== undefined && row.liveSince !== undefined
       ? {

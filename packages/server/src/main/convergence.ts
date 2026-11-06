@@ -7,6 +7,7 @@ import { restoreAllWorkspaceForwarders } from '#main/restore-forwarders'
 import { applyWorkspaceEvent, findWorkspaceRow, getProjectRow, listWorkspaceSessions } from '#db'
 import { offeredForwards } from '#domain/workspaces'
 import { onSiteTimer } from '#domain/sites'
+import { onOriginFetched } from '#domain/projects'
 import { errorText, serverLog } from '#lib/log'
 import type { ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
 
@@ -88,6 +89,9 @@ export async function attachConvergence(opts: {
   // A site's drain or replacement backoff ending is a time, which no watch
   // sees.
   onSiteTimer(() => fireChange('sites'))
+  // A branch a site follows moves only in the main clone, when a fetch
+  // lands, which no watch sees either.
+  onOriginFetched(() => fireChange('sites'))
   // A session going back to work makes its next waiting spell unread.
   onWaitingEnded((projectId, workspaceId, window) => {
     applyWorkspaceEvent({ type: 'waiting-ended', projectId, workspaceId, window })

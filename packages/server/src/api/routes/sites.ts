@@ -51,6 +51,7 @@ export const siteApp = new Hono<IdentityEnv>()
       adminPort: port.optional(),
       steps: z.unknown(),
       volume: z.string().min(1).optional(),
+      followBranch: z.string().min(1).optional(),
     })),
     async (c) => {
       const { project, ...input } = c.req.valid('json')
@@ -66,6 +67,7 @@ export const siteApp = new Hono<IdentityEnv>()
       adminPort: port.nullable().optional(),
       steps: z.unknown().optional(),
       volume: z.string().min(1).nullable().optional(),
+      followBranch: z.string().min(1).nullable().optional(),
     })),
     async (c) => {
       const { project, name, ...input } = c.req.valid('json')

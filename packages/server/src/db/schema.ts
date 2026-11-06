@@ -357,6 +357,8 @@ export const sites = snakeCase.table('sites', {
   steps: json().$type<StepGraph>().notNull(),
   /** No foreign key; deleting a volume a site names is refused. */
   volumeId: uuid(),
+  /** A branch on origin whose tip a serving site deploys whenever it moves. */
+  followBranch: text(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   /** The release the hostname points at, while one is meant to serve; null
    *  once the site is stopped. A live release whose runtime is gone is
@@ -395,6 +397,9 @@ export const sites = snakeCase.table('sites', {
   lastDeployOutcome: text().$type<'succeeded' | 'failed'>(),
   lastDeployError: text(),
   lastDeployFinishedAt: timestamp({ withTimezone: true }),
+  /** The commit of the last deploy that failed, replacements aside, which
+   *  following the branch does not retry. */
+  failedCommit: text(),
   /** Live releases that died soon after taking the hostname in a row, and
    *  the earliest the next replacement may start, for backoff. */
   replaceFailures: integer().notNull().default(0),

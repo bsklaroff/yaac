@@ -164,8 +164,9 @@ owner may still stop or delete them to free their hostnames.
 A site names its hostname, the port its releases serve on, the step graph
 each release runs (stored on the site, like a routine's), and optionally a
 volume, which no other site may name and which cannot be deleted while
-named. Editing the hostname moves it at once; the port, graph and volume
-apply from the next deploy, and an edit is refused while a deploy runs.
+named, and a branch to follow (see "Following a branch"). Editing the
+hostname moves it at once; the port, graph and volume apply from the next
+deploy, and an edit is refused while a deploy runs.
 
 A **release** is a workspace with `workspaces.siteId` set, started by a
 deploy at one commit. It differs from an ordinary workspace in these ways:
@@ -176,7 +177,8 @@ deploy at one commit. It differs from an ordinary workspace in these ways:
   restart and timeout refuse it with `CONFLICT` naming `yaac site`; only
   the server stops one, unless its site no longer names it (a stop that
   failed, a site deleted under it), when its owner may. `yaac-mama` has no
-  site verbs, so an agent can neither deploy nor stop production. It can
+  site verbs, so an agent can neither deploy nor stop production, except
+  by pushing to a branch a site follows (see "Following a branch"). It can
   watch one: `yaac-mama list` shows each release with its site, whether
   the hostname points at it, the site's address and its commit, and
   `yaac-mama logs` reads its steps' logs.
@@ -266,8 +268,9 @@ site's lock, and a stop or delete ends what the site runs before letting
 go of it, so no release outlives the row that names it. A release is
 forgotten only once its stop succeeds, so a failed stop is retried.
 
-1. **Launch.** Resolve the ref (a branch on origin, the project's default
-   unless named, or a full commit) and start a release there.
+1. **Launch.** Resolve the ref (a branch on origin, unless named the one
+   the site follows or else the project's default, or a full commit) and
+   start a release there.
 2. **Build.** The release runs the steps that do not need the volume.
 3. **Hand over** (sites with a volume; see below).
 4. **Ready.** Wait for every step, up to the deploy's timeout (15 minutes
@@ -281,10 +284,53 @@ forgotten only once its stop succeeds, so a failed stop is retried.
 
 A deploy that fails or times out stops its release, which keeps its logs,
 and the site keeps the release it had. A second deploy while one runs is a
-`CONFLICT`. Rolling back is deploying an earlier commit; `yaac site show`
-lists recent releases. `yaac site stop` stops the live release and the
-router answers 503; `yaac site start` deploys the last release's commit and
-image again. Without a volume, a flip has no gap.
+`CONFLICT`, unless it is of the same commit, when it is that deploy, with
+that deploy's deadline. Rolling back is deploying an earlier commit;
+`yaac site show` lists recent releases. `yaac site stop` stops the live
+release and the router answers 503; `yaac site start` deploys the last
+release's commit and image again. Without a volume, a flip has no gap.
+
+### Following a branch
+
+A site may follow a branch on origin (`--follow <branch>`): while it
+serves, the `sites` reconcile step deploys the branch's tip whenever it is
+not the commit the site serves, as its project's owner, and only while
+that owner is an admin. While they are not, following is paused, and
+`site show` and the webapp say so. The step runs after every fetch of the
+project's origin, so a push to a hosted project deploys within seconds,
+and any other remote within the five-minute origin refresh
+(docs/server-git.md), which fetches every project with a running
+workspace, a live release included. Public traffic never reaches the
+server, so there are no webhooks. A push during a deploy is deployed
+once that deploy ends.
+
+A tip whose deploy fails is not tried again: the site keeps serving the
+last release that worked, as after any failed deploy, until the branch
+moves on or the owner deploys it by hand, and `site show` names the tip
+it is not retrying. That matters most with a volume,
+where each attempt takes the site down for the handoff. A failure after the
+handoff leaves the old release replaced at its own commit, against what
+the migration left (see "Migrations").
+
+**Whoever may push the branch publishes the site.** That includes the
+project's agents, which push with its credential, and on a hosted project
+every workspace of it and of every share of it, since a push fans out to
+each. yaac does not stop them: the branch's protection is the remote's to
+set. A hosted remote has none beyond the default-branch guard, and agents
+land work by pushing to the default branch (docs/hosted-projects.md), so
+follow a branch there only if an agent publishing is acceptable.
+
+The branch must exist on origin when it is named, by its own name: one
+that reads as a ref (`origin/main`, `refs/heads/main`) would follow a
+branch so named, which anyone who may push could create, and `agent/*`
+branches are each one workspace's, so all three are refused.
+
+A following site deploys only the branch's tip: `site deploy` without
+`--ref` deploys it, and a deploy of any other ref is a `CONFLICT`, since
+the next pass would deploy the tip over it. To roll back, stop following
+(`--no-follow`), then deploy the commit. Stopping following publishes
+nothing, so it is taken mid-deploy too, and from anyone who may stop the
+site. A stopped site follows nothing until it is started.
 
 ### Volumes: a staged handoff
 

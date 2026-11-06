@@ -33,6 +33,17 @@ const followedUp = new WeakSet<Promise<void>>()
  *  meanwhile. */
 const fanOuts = new Map<string, { again: boolean }>()
 
+let fetchedListener: (() => void) | null = null
+
+/**
+ * Register what runs after each fetch of a project's origin succeeds,
+ * which the composition root wires to the `sites` reconcile step, so a
+ * site following a branch sees it move.
+ */
+export function onOriginFetched(fn: () => void): void {
+  fetchedListener = fn
+}
+
 /**
  * Fetch a project's origin into its main clone, then, in the background, gc
  * it (`maintainRepo`) and update every running workspace's `origin/*`
@@ -54,6 +65,7 @@ export async function fetchProjectOrigin(projectId: string, opts: { unlessWithin
         serverLog(`[git] maintenance of ${projectId}: ${(err as Error).message}`)
       })
       propagateOrigin(projectId)
+      fetchedListener?.()
     }, () => { /* the caller sees it */ })
   }
   await fetched

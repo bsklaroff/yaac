@@ -22,7 +22,8 @@ import { startMockGit, seedMockGitRepo, cleanupMocks, type MockGit } from '#supp
  * warns that the install has none.
  *
  * Cases run in declaration order over the one site: create, read, edit,
- * a failing then a succeeding deploy, stop and start, and delete last.
+ * a failing then a succeeding deploy, stop and start, following a branch,
+ * and delete last.
  */
 
 const NAME = 'site-demo'
@@ -67,6 +68,7 @@ describe('yaac site (real CLI + real server)', () => {
   let serverEnv: NodeJS.ProcessEnv
   let sha = ''
   let projectId = ''
+  let repoPath = ''
 
   const yaac = async (...args: string[]): Promise<string> => {
     const { stdout, stderr, exitCode } = await runYaac(serverEnv, ...args)
@@ -125,7 +127,7 @@ describe('yaac site (real CLI + real server)', () => {
     // Staged as `yaac project add` would stage github.com/test-org/<NAME>.
     await seedMockGitRepo(mockGit, NAME, { files: { 'README.md': '# site\n' } })
     projectId = randomUUID()
-    const repoPath = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'repo')
+    repoPath = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'repo')
     await cloneRepo(path.join(mockGit.reposDir, `${NAME}.git`), repoPath, null)
     const remote = `https://github.com/test-org/${NAME}.git`
     await git(repoPath, ['remote', 'set-url', 'origin', remote])
@@ -155,6 +157,8 @@ describe('yaac site (real CLI + real server)', () => {
       .toContain('--admin-port takes a port number')
     expect(await refused('site', 'create', NAME, 'web', '--hostname', `https://app.${DOMAIN}`, '--port', '3000', '--steps', steps))
       .toContain('is not a hostname')
+    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--steps', steps, '--follow', 'a..b'))
+      .toContain('is not a branch name')
     expect(await yaac('site', 'list', NAME)).toContain(`No sites in ${NAME}`)
 
     const created = await yaac('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000',
@@ -263,6 +267,24 @@ describe('yaac site (real CLI + real server)', () => {
     await vi.waitFor(async () => {
       expect(await yaac('site', 'list', NAME)).toContain(`${sha.slice(0, 7)} running`)
     }, { timeout: 300_000, interval: 2_000 })
+  }, 360_000)
+
+  // The server here never fetches, so the tip moves in the main clone as a
+  // fetch would move it, and the next reconcile pass sees it.
+  it('edit --follow deploys each new tip of the branch, deploy refuses another ref, and --no-follow stops following', async () => {
+    expect(await refused('site', 'edit', NAME, 'web', '--follow', 'origin/main')).toContain('by its own name')
+    expect(await yaac('site', 'edit', NAME, 'web', '--follow', 'main')).toContain('it deploys each new tip of main')
+    expect(await yaac('site', 'show', NAME, 'web')).toMatch(/follows\s+main/)
+    expect(await refused('site', 'deploy', NAME, 'web', '--ref', sha)).toContain('follows main')
+
+    const next = (await git(repoPath, ['commit-tree', `${sha}^{tree}`, '-p', sha, '-m', 'next'])).trim()
+    await git(repoPath, ['update-ref', 'refs/remotes/origin/main', next])
+    await vi.waitFor(async () => {
+      expect(await yaac('site', 'list', NAME)).toContain(`${next.slice(0, 7)} running`)
+    }, { timeout: 300_000, interval: 2_000 })
+
+    await yaac('site', 'edit', NAME, 'web', '--no-follow')
+    expect(await yaac('site', 'show', NAME, 'web')).toMatch(/follows\s+-/)
   }, 360_000)
 
   // The staged handoff (docs/public-sites.md "Volumes: a staged handoff"):

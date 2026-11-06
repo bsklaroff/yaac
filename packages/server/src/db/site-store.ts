@@ -32,6 +32,7 @@ export async function insertSite(values: {
   adminPort?: number
   steps: StepGraph
   volumeId?: string
+  followBranch?: string
 }): Promise<SiteRow> {
   const db = await getDb()
   const [row] = await db.insert(sites).values(values).onConflictDoNothing().returning()

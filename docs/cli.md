@@ -180,15 +180,23 @@ yaac site                       A project's public sites, each served by a
     --admin-port <n>            Port of each release only its owner reaches,
                                 by `yaac forward` or a preview
     --volume <name>             Volume each release mounts (see `yaac volume`)
+    --follow <branch>           Deploy each new tip of the branch while the
+                                site serves, so whoever can push it, agents
+                                included, publishes; a tip that fails is not
+                                retried, and the last good release keeps
+                                serving
   edit <project> <name>         The same options; the next deploy uses them,
                                 but the hostname and admin port move at once
     --no-admin-port             Offer no admin port
     --no-volume                 Mount no volume
+    --no-follow                 Follow no branch; allowed mid-deploy, to
+                                whoever may stop the site
   list <project>                Sites with their live release and last deploy
   show <project> <name>         A site and its recent releases
   deploy <project> <name>       Start a release; once ready the hostname moves
                                 to it and the old one stops
-    --ref <branch|sha>          What to deploy (default: the default branch)
+    --ref <branch|sha>          What to deploy (default: the followed branch,
+                                else the default branch)
     --timeout <duration>        Fail unless ready this long after it starts
                                 (default 15m)
     --wait                      Wait for it, exiting non-zero unless it succeeded

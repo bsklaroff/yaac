@@ -638,6 +638,7 @@ function siteOptions(cmd: Command, required: boolean): Command {
   return cmd
     .option('--admin-port <n>', 'A port of each release that only you can reach, by `yaac forward` or a preview, never the internet')
     .option('--volume <name>', 'A project volume each release mounts at $YAAC_VOLUME_DIR (see `yaac volume`)')
+    .option('--follow <branch>', 'Deploy each new tip of this branch on origin while the site serves, so whoever can push it, the project\'s agents included, publishes unless the remote\'s branch protection stops them; a tip that fails to deploy leaves the last good release serving')
 }
 
 siteOptions(site
@@ -654,6 +655,7 @@ siteOptions(site
   .argument('<name>', 'Site name'), false)
   .option('--no-admin-port', 'Offer no admin port')
   .option('--no-volume', 'Mount no volume')
+  .option('--no-follow', 'Follow no branch, deploying only when asked; allowed mid-deploy, to whoever may stop the site')
   .action(siteEdit)
 
 site
@@ -674,7 +676,7 @@ site
   .description('Start a release at a commit; once it is ready the hostname moves to it and the old release stops')
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('<name>', 'Site name')
-  .option('--ref <ref>', 'A branch or commit to deploy (default: the project\'s default branch)')
+  .option('--ref <ref>', 'A branch or commit to deploy (default: the branch the site follows, else the project\'s default branch)')
   .option('--timeout <duration>', 'Fail the deploy if its release is not ready this long after it starts, like 30m (default 15m)')
   .option('--wait', 'Wait for the deploy to finish, exiting non-zero unless it succeeded')
   .action(siteDeploy)

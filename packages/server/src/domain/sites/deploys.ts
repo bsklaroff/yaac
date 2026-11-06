@@ -4,7 +4,8 @@
  * hostname at it and drains the old release. It is a state on the site's
  * row, advanced by `reconcileSites`, so a server restart mid-deploy resumes
  * it. A live release whose runtime is gone is replaced by a deploy of the
- * same commit and image, with backoff.
+ * same commit and image, with backoff, and a site that follows a branch
+ * deploys its tip when it moves.
  */
 import { randomUUID } from 'node:crypto'
 import type { RuntimeSnapshot } from '#drivers/contract'
@@ -13,6 +14,7 @@ import {
   findWorkspaceRow,
   getProjectRow,
   getSiteRow,
+  getUser,
   getVolumeRow,
   handOverVolume,
   leaseOf,
@@ -24,7 +26,7 @@ import {
   type SiteRow,
   type StepRow,
 } from '#db'
-import { systemPrincipal, type Actor } from '#domain/access'
+import { isProjectHeld, systemPrincipal, type Actor } from '#domain/access'
 import { fetchProjectOrigin } from '#domain/projects'
 import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
 import {
@@ -128,8 +130,14 @@ async function lockedSite(id: string, name: string): Promise<SiteRow> {
   return site
 }
 
-/** Deploy a site at a branch's tip (the project's default unless named) or
- *  a full commit. Resolves with its release and commit. */
+/**
+ * Deploy a site at a branch's tip (the branch it follows, else the
+ * project's default, unless named) or a full commit. A site that follows a
+ * branch deploys nothing else, which the next reconcile would replace with
+ * the tip. A deploy of the commit already deploying, as following may have
+ * started on the fetch this one made, is that deploy. Resolves with its
+ * release and commit.
+ */
 export async function deploySite(
   principal: Actor,
   projectId: string,
@@ -137,11 +145,18 @@ export async function deploySite(
   opts: { ref?: string; timeoutMinutes?: number } = {},
 ): Promise<{ workspaceId: string; commit: string }> {
   await authorizeSitePublish(principal, projectId)
-  const { id } = await requireSite(projectId, name)
-  const commit = await resolveDeployCommit(projectId, opts.ref)
+  const { id, followBranch } = await requireSite(projectId, name)
+  if (followBranch !== undefined && opts.ref !== undefined && opts.ref !== followBranch) {
+    throw new ServerError('CONFLICT', `site "${name}" follows ${followBranch}, so it deploys only that branch's tip; `
+      + 'stop following it to deploy anything else')
+  }
+  const commit = await resolveDeployCommit(projectId, opts.ref ?? followBranch)
   const timeoutMs = opts.timeoutMinutes !== undefined ? opts.timeoutMinutes * 60_000 : DEFAULT_DEPLOY_TIMEOUT_MS
   return await withSiteLock(id, async () => {
     const site = await lockedSite(id, name)
+    if (site.deployWorkspaceId !== undefined && site.deployCommit === commit && !site.deployReplacing) {
+      return { workspaceId: site.deployWorkspaceId, commit }
+    }
     return await startDeploy(principal, site, { ...siteConfig(site), commit, timeoutMs })
   })
 }
@@ -309,7 +324,8 @@ async function startDeploy(
  * End a deploy that failed: its release stops, and the site keeps the
  * release it had. If the deploy had stopped that release to hand over the
  * volume, the live one is now gone, so the supervisor replaces it. A failed
- * replacement backs off before the next.
+ * replacement backs off before the next; any other failed commit is one
+ * following the branch does not deploy again.
  */
 async function failDeploy(siteId: string, workspaceId: string, error: string): Promise<void> {
   const row = await getSiteRow(siteId)
@@ -323,7 +339,7 @@ async function failDeploy(siteId: string, workspaceId: string, error: string): P
     ...lastDeploy(row, 'failed', error),
     ...(row.deployReplacing
       ? { replaceFailures: row.replaceFailures + 1, replaceAfter: new Date(Date.now() + replaceDelay(row.replaceFailures)) }
-      : {}),
+      : { failedCommit: row.deployCommit ?? null }),
   })
   if (row.deployReplacing) wakeAt(Date.now() + replaceDelay(row.replaceFailures))
   notifyWorkspaceListChanged()
@@ -362,7 +378,7 @@ async function reconcileSite(siteId: string, alive: (id: string) => boolean): Pr
     await updateSite(siteId, { drainWorkspaceId: null, drainUntil: null })
   }
   if (row.deployWorkspaceId !== undefined) return await advanceDeploy(row, row.deployWorkspaceId, alive)
-  await superviseLive(row, alive)
+  if (await superviseLive(row, alive)) await followBranch(row)
   return false
 }
 
@@ -469,12 +485,13 @@ async function advanceDeploy(row: SiteRow, releaseId: string, alive: (id: string
 /**
  * Replace the live release once its runtime is gone, after a backoff that
  * grows while replacements keep dying soon after taking the hostname.
+ * Resolves whether the live release is serving.
  */
-async function superviseLive(row: SiteRow, alive: (id: string) => boolean): Promise<void> {
+async function superviseLive(row: SiteRow, alive: (id: string) => boolean): Promise<boolean> {
   const live = row.liveWorkspaceId
-  if (live === undefined || row.releaseCommit === undefined) return
+  if (live === undefined || row.releaseCommit === undefined) return false
   const release = await findWorkspaceRow(live)
-  if (release !== undefined && release.stoppedAt === undefined && alive(live)) return
+  if (release !== undefined && release.stoppedAt === undefined && alive(live)) return true
   const now = Date.now()
   if (row.replaceAfter === undefined) {
     const served = row.liveSince !== undefined && now - row.liveSince.getTime() >= REPLACE_RESET_MS
@@ -483,9 +500,9 @@ async function superviseLive(row: SiteRow, alive: (id: string) => boolean): Prom
       + `${failures > 0 ? ` in ${String(Math.round(replaceDelay(failures) / 1000))}s` : ''}`)
     await updateSite(row.id, { replaceFailures: failures + 1, replaceAfter: new Date(now + replaceDelay(failures)) })
     wakeAt(now + replaceDelay(failures))
-    return
+    return false
   }
-  if (now < row.replaceAfter.getTime()) return
+  if (now < row.replaceAfter.getTime()) return false
   await updateSite(row.id, { replaceAfter: null })
   await startDeploy(systemPrincipal, row, {
     ...await lastReleaseConfig(row),
@@ -494,4 +511,41 @@ async function superviseLive(row: SiteRow, alive: (id: string) => boolean): Prom
     timeoutMs: DEFAULT_DEPLOY_TIMEOUT_MS,
     replacing: { rerunOf: live },
   }).catch((err: unknown) => serverLog(`[sites] replacing ${row.name}'s release: ${String(err)}`))
+  return false
+}
+
+/** The sites whose paused following has been logged, so it is logged once. */
+const pauseLogged = new Set<string>()
+
+/**
+ * Why a site that follows a branch deploys nothing now, if it does not:
+ * following publishes as the project's owner, who must be an admin, as for
+ * a deploy they start.
+ */
+export async function followPause(row: SiteRow): Promise<string | undefined> {
+  const owner = (await getProjectRow(row.projectId))?.owner
+  return owner !== undefined && (await getUser(owner))?.role === 'admin' ? undefined : 'its owner is not an admin'
+}
+
+/**
+ * Deploy the tip of the branch a serving site follows once it differs from
+ * what the site serves (docs/public-sites.md "Following a branch"). A tip
+ * whose deploy failed is not tried again, so the site keeps serving the
+ * last release that worked until the branch moves on. Not while following
+ * is paused (`followPause`), nor while the project is held, which would
+ * fail the deploy.
+ */
+async function followBranch(row: SiteRow): Promise<void> {
+  if (row.followBranch === undefined || isProjectHeld(row.projectId)) return
+  const paused = await followPause(row)
+  if (paused !== undefined) {
+    if (!pauseLogged.has(row.id)) serverLog(`[sites] ${row.name}: not following ${row.followBranch}: ${paused}`)
+    pauseLogged.add(row.id)
+    return
+  }
+  pauseLogged.delete(row.id)
+  const tip = await resolveRemoteRef(repoDir(row.projectId), row.followBranch).catch(() => undefined)
+  if (tip === undefined || tip === row.releaseCommit || tip === row.failedCommit) return
+  serverLog(`[sites] ${row.name}: ${row.followBranch} is at ${tip.slice(0, 12)}; deploying it`)
+  await startDeploy(systemPrincipal, row, { ...siteConfig(row), commit: tip, timeoutMs: DEFAULT_DEPLOY_TIMEOUT_MS })
 }

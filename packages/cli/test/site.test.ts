@@ -89,11 +89,11 @@ describe('siteDeploy', () => {
 })
 
 describe('siteEdit', () => {
-  it('sends only the options given, --no-admin-port and --no-volume as null, and refuses none or a bad port', async () => {
+  it('sends only the options given, --no-admin-port, --no-volume and --no-follow as null, and refuses none or a bad port', async () => {
     api.on('POST /api/site/edit', {})
-    await siteEdit('demo', 'web', { port: '8080', adminPort: false, volume: false })
+    await siteEdit('demo', 'web', { port: '8080', adminPort: false, volume: false, follow: false })
     expect(api.requests.find((r) => r.route === 'POST /api/site/edit')?.body)
-      .toEqual({ project: 'id-demo', name: 'web', port: 8080, adminPort: null, volume: null })
+      .toEqual({ project: 'id-demo', name: 'web', port: 8080, adminPort: null, volume: null, followBranch: null })
     api.reset()
     serveProjects(api, [['id-demo', 'demo']])
     api.on('POST /api/site/edit', {})

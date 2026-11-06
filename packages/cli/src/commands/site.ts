@@ -25,6 +25,9 @@ export interface SiteOptions {
   steps?: string
   /** A volume name; false (`--no-volume`) for none. */
   volume?: string | false
+  /** A branch whose tip it deploys whenever it moves; false (`--no-follow`)
+   *  for none. */
+  follow?: string | false
 }
 
 export async function siteCreate(
@@ -40,6 +43,7 @@ export async function siteCreate(
     ...(typeof opts.adminPort === 'string' ? { adminPort: portOption('--admin-port', opts.adminPort) } : {}),
     steps: await readSteps(opts.steps),
     ...(typeof opts.volume === 'string' ? { volume: opts.volume } : {}),
+    ...(typeof opts.follow === 'string' ? { followBranch: opts.follow } : {}),
   } })
   const { tunnel } = await api.site.edge.$get()
   console.log(`Created site "${name}". In Cloudflare, add a public hostname to the install's tunnel:`)
@@ -62,13 +66,18 @@ export async function siteEdit(project: string, name: string, opts: SiteOptions)
       : {}),
     ...(opts.steps !== undefined ? { steps: await readSteps(opts.steps) } : {}),
     ...(opts.volume !== undefined ? { volume: opts.volume === false ? null : opts.volume } : {}),
+    ...(opts.follow !== undefined ? { followBranch: opts.follow === false ? null : opts.follow } : {}),
   }
   if (Object.keys(patch).length === 0) throw new Error('Nothing to change: give an option to edit.')
   await api.site.edit.$post({ json: { project: await resolveProjectId(project), name, ...patch } })
-  const later = Object.keys(patch).some((k) => k !== 'hostname' && k !== 'adminPort')
+  const later = Object.keys(patch).some((k) => k !== 'hostname' && k !== 'adminPort' && k !== 'followBranch')
   console.log(`Updated site "${name}"`
     + (opts.hostname !== undefined ? `; it answers at ${opts.hostname} now` : '')
     + (later ? `${opts.hostname !== undefined ? ', and' : ';'} its next deploy uses the rest` : '') + '.')
+  if (typeof opts.follow === 'string') {
+    console.log(`While it serves, it deploys each new tip of ${opts.follow}: whoever can push that branch, `
+      + 'the project\'s agents included, now publishes the site, unless the remote\'s branch protection stops them.')
+  }
 }
 
 export async function siteList(project: string): Promise<void> {
@@ -92,6 +101,10 @@ export async function siteShow(project: string, name: string): Promise<void> {
   console.log(`  admin port   ${site.adminPort ?? '-'}`)
   console.log(`  steps        ${Object.keys(site.steps).join(', ')}`)
   console.log(`  volume       ${site.volume ?? '-'}`)
+  console.log(`  follows      ${site.followBranch ?? '-'}${site.followPaused !== undefined ? ` (paused: ${site.followPaused})` : ''}`)
+  if (site.followSkipped !== undefined) {
+    console.log(`  not retrying ${short(site.followSkipped)}, whose deploy failed; \`yaac site deploy\` retries it`)
+  }
   console.log(`  live         ${liveOf(site)}${site.live !== undefined ? ` in ${site.live.workspaceId}, since ${site.live.since}` : ''}`)
   if (site.deploy !== undefined) console.log(`  deploying    ${deployOf(site)} in ${site.deploy.workspaceId}, since ${site.deploy.startedAt}`)
   if (site.lastDeploy !== undefined) console.log(`  last deploy  ${lastDeployOf(site)} (${site.lastDeploy.finishedAt})`)

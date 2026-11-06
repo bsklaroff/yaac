@@ -83,6 +83,17 @@ export function buildOriginRefreshExec(repoGitDir: string, workspaceDir: string)
     + `${singleQuoted(repoGitDir)} 'refs/remotes/origin/*:refs/remotes/origin/*' 2>/dev/null || true`
 }
 
+/**
+ * Whether `name` could name a branch on origin under `git check-ref-format
+ * --branch`'s rules, so one that never could is refused without fetching.
+ * `HEAD` is refused too: `origin/HEAD` names no branch of its own.
+ */
+export function isBranchName(name: string): boolean {
+  return /^(?![-./])[^\p{Cc} ~^:?*[\\]+$/u.test(name)
+    && !/\.\.|@\{|\/[./]|\.lock(?:\/|$)|[/.]$/.test(name)
+    && name !== '@' && name !== 'HEAD'
+}
+
 /** Quote and escape a git-config value or subsection name so it reads back
  *  verbatim and cannot break the file. */
 export function gitConfigValue(value: string): string {
