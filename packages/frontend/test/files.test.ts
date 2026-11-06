@@ -82,6 +82,14 @@ describe('buildTree', () => {
     expect(index.get('pkg')?.ignored).toBeUndefined()
   })
 
+  // A folder too large to diff lists only its tracked files, so it is read
+  // on expand even when it holds one.
+  it('makes a skipped folder lazy, even one holding a tracked file', () => {
+    const { root, index } = buildTree(listing({ paths: ['build/.gitkeep', 'a.ts'], skipped: ['build', 'out'] }))
+    expect(shape(root)).toEqual([{ 'build/': ['.gitkeep'] }, { 'out/': [] }, 'a.ts'])
+    expect([index.get('build')?.lazy, index.get('out')?.lazy, index.get('build')?.ignored]).toEqual([true, true, undefined])
+  })
+
   it('makes a folder link expandable and leaves file and broken links as files', () => {
     const { index } = buildTree(listing({
       paths: ['lib', 'src/a.ts', 'readme', 'gone'],
