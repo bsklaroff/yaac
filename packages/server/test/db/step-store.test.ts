@@ -65,12 +65,13 @@ describe('insertAddedSteps', () => {
 })
 
 describe('resetSteps', () => {
-  it('puts steps of the life back to pending, clearing how they ended', async () => {
+  it('puts steps of the life back to pending, clearing how they ended but keeping when they last started', async () => {
     await change('install', 'running')
     await change('install', 'failed', 2)
+    const [before] = await listWorkspaceSteps('w1')
     await resetSteps('w1', life, ['install'])
     const [install] = await listWorkspaceSteps('w1')
-    expect(install).toMatchObject({ state: 'pending' })
+    expect(install).toMatchObject({ state: 'pending', startedAt: before.startedAt })
     expect(install.exitCode).toBeUndefined()
     expect(install.finishedAt).toBeUndefined()
   })

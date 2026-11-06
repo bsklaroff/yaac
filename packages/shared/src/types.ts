@@ -2318,5 +2318,6 @@ export const MAMA_COMMANDS = [
   'history',
   'send',
   'volumes',
+  'logs',
 ] as const
 export type MamaCommand = (typeof MAMA_COMMANDS)[number]

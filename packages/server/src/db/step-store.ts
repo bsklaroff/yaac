@@ -90,12 +90,16 @@ export async function insertAddedSteps(projectId: string, workspaceId: string, l
   })
 }
 
-/** Put steps of `life` back to pending, for a rerun. */
+/**
+ * Put steps of `life` back to pending, for a rerun or a service's restart.
+ * `startedAt` stays until the relaunch stamps it again, so the log of the
+ * run before stays readable meanwhile (`yaac-mama logs`).
+ */
 export async function resetSteps(workspaceId: string, life: Date, names: string[]): Promise<void> {
   if (names.length === 0) return
   const db = await getDb()
   await db.update(workspaceSteps)
-    .set({ state: 'pending', exitCode: null, startedAt: null, readyAt: null, finishedAt: null })
+    .set({ state: 'pending', exitCode: null, readyAt: null, finishedAt: null })
     .where(and(eq(workspaceSteps.workspaceId, workspaceId), eq(workspaceSteps.life, life),
       inArray(workspaceSteps.name, names)))
 }

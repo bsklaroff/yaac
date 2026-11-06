@@ -8,7 +8,8 @@ import crypto from 'node:crypto'
  * create or queue one, edit, run or discard a queued one, manage routines,
  * send a running one a message, retitle, group, stop one (its own
  * included), restart a stopped one, fetch another's branches and read
- * another's conversation history, and change its own reference branch.
+ * another's conversation history and step logs, and change its own
+ * reference branch.
  * Stopping is allowed because it is reversible: the checkout, row and
  * conversations are kept. Restarting a stopped workspace only undoes a
  * stop, and is held to the caller's own permission mode, as is everything a
@@ -50,6 +51,7 @@ import { stopWorkspace } from './stop'
 import { prepareRerun } from './restart'
 import { serverLog } from '#lib/log'
 import { addSteps } from './steps'
+import { READ_LIMIT, readWindowLogEnd, windowLogSizes } from './logs'
 import { closeSession } from './sessions'
 import {
   getProjectRow,
@@ -57,6 +59,7 @@ import {
   getTimeZone,
   applyWorkspaceEvent,
   getWorkspaceRow,
+  listProjectSites,
   listQueuedWorkspaceRows,
   listWorkspaceConversations,
   listWorkspaceSessions,
@@ -65,8 +68,9 @@ import {
   type QueuedWorkspaceRow,
 } from '#db'
 import { ServerError } from '@yaac/shared/errors'
-import { stripControlChars } from '@yaac/shared/ansi'
+import { stripAnsi, stripControlChars } from '@yaac/shared/ansi'
 import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
+import { stepSettled } from '@yaac/shared/steps'
 import { formatDuration, formatInZone, minutesUntil, parseDuration } from '@yaac/shared/schedule'
 import {
   AGENT_MODES,
@@ -105,7 +109,7 @@ import {
   type HistoryConversation,
 } from './history-export'
 import { workspacePrincipal, type Actor } from '#domain/access'
-import type { SessionRow } from '#db'
+import type { SessionRow, SiteRow, WorkspaceRow } from '#db'
 import { resolveCreate } from './create'
 
 /** Who is asking — resolved by the transport and `mamaCaller`. */
@@ -250,6 +254,7 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   history: ['workspace', 'conversation', 'files', 'file'],
   send: ['workspace', 'session', 'conversation'],
   volumes: [],
+  logs: ['workspace', 'step', 'tail'],
 }
 
 /**
@@ -307,6 +312,7 @@ export async function runMamaCommand(
       case 'history': return await runHistory(caller, request)
       case 'send': return await runSend(caller, request)
       case 'volumes': return await runVolumes(caller)
+      case 'logs': return await runLogs(caller, request)
     }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -326,14 +332,16 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
   const stray = STOPPED_ARGS.find((a) => request.args[a] !== undefined)
   if (stray !== undefined) return { ok: false, error: `list takes '--${stray}' only with --stopped` }
 
-  const [active, groups, allQueued, rows, zone, allRoutines] = await Promise.all([
+  const [active, groups, allQueued, rows, zone, allRoutines, sites] = await Promise.all([
     listActiveWorkspaces(caller.projectId),
     listWorkspaceGroups(caller.projectId),
     listQueuedWorkspaceRows(caller.projectId),
     getProjectWorkspaceRows(caller.projectId),
     ownerTimeZone(caller.projectId),
     projectRoutines(caller.projectId),
+    listProjectSites(caller.projectId),
   ])
+  const placed = placements(rows, sites)
   const clock = { zone, now: new Date() }
   let workspaces = active.workspaces
   let queued = allQueued
@@ -376,14 +384,14 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
     if (wanted.length === 0) lines.push('No running workspaces in this project.')
   } else {
     lines.push('Running workspaces in this project:', '')
-    lines.push(...renderWorkspaces(workspaces, names, caller.workspaceId, clock))
+    lines.push(...renderWorkspaces(workspaces, names, caller.workspaceId, clock, placed))
     if (workspaces.some((w) => w.sessions.length > 0)) {
       lines.push('', ...renderSessions(workspaces, caller.sessionId))
     }
   }
   if (stopped.length > 0) {
     if (lines.length > 0) lines.push('')
-    lines.push('Stopped workspaces:', '', ...renderStopped(stopped, names))
+    lines.push('Stopped workspaces:', '', ...renderStopped(stopped, names, placed))
   }
   if (queued.length > 0) {
     if (lines.length > 0) lines.push('')
@@ -424,9 +432,11 @@ async function runListStopped(caller: MamaCaller, request: MamaRequestInput): Pr
   if (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > STOPPED_PAGE_MAX) {
     return { ok: false, error: `--limit must be a whole number from 1 to ${STOPPED_PAGE_MAX}` }
   }
-  const [groups, groupId] = await Promise.all([
+  const [groups, groupId, rows, sites] = await Promise.all([
     listWorkspaceGroups(caller.projectId),
     group === undefined ? undefined : resolveGroup(caller.projectId, group).then((g) => g.groupId),
+    getProjectWorkspaceRows(caller.projectId),
+    listProjectSites(caller.projectId),
   ])
   const page = await listStoppedWorkspaces({
     project: caller.projectId,
@@ -446,7 +456,7 @@ async function runListStopped(caller: MamaCaller, request: MamaRequestInput): Pr
   const lines = [
     `Stopped workspaces in this project${matching} (${page.entries.length} of ${page.total}, newest stop first):`,
     '',
-    ...renderStopped(page.entries, new Map(groups.map((g) => [g.groupId, g.name]))),
+    ...renderStopped(page.entries, new Map(groups.map((g) => [g.groupId, g.name])), placements(rows, sites)),
     '',
   ]
   if (page.nextCursor !== undefined) {
@@ -487,6 +497,7 @@ function renderWorkspaces(
   groupNames: Map<string, string>,
   callerId: string,
   clock: ListClock,
+  placed: (workspaceId: string) => Placement,
 ): string[] {
   const rows = [...workspaces]
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
@@ -496,6 +507,7 @@ function renderWorkspaces(
       status: w.status,
       group: w.groupId !== undefined ? groupNames.get(w.groupId) ?? '' : '',
       stops: w.deadline !== undefined ? when(w.deadline, clock) : '',
+      ...placed(w.workspaceId),
       title: flatten(w.title ?? '', 40),
       prompt: flatten(w.prompt ?? '', 60),
     }))
@@ -503,10 +515,44 @@ function renderWorkspaces(
   // each column is shown only when some workspace has a value.
   const hasTitles = rows.some((r) => r.title !== '')
   const hasStops = rows.some((r) => r.stops !== '')
+  const extra = placementColumns(rows)
   return table(
-    ['WORKSPACE', 'TOOL', 'STATUS', 'GROUP', ...(hasStops ? [`STOPS (${clock.zone})`] : []), ...(hasTitles ? ['TITLE'] : []), 'PROMPT'],
-    rows.map((r) => [r.id, r.tool, r.status, r.group, ...(hasStops ? [r.stops] : []), ...(hasTitles ? [r.title] : []), r.prompt]),
+    ['WORKSPACE', 'TOOL', 'STATUS', 'GROUP', ...(hasStops ? [`STOPS (${clock.zone})`] : []), ...extra.header, ...(hasTitles ? ['TITLE'] : []), 'PROMPT'],
+    rows.map((r) => [r.id, r.tool, r.status, r.group, ...(hasStops ? [r.stops] : []), ...extra.cells(r), ...(hasTitles ? [r.title] : []), r.prompt]),
   )
+}
+
+/**
+ * What `list` shows of where a workspace stands in the code and on the
+ * internet: the commit it is pinned to, when it was made at one and has no
+ * base branch, and for a public site's release (docs/public-sites.md) its
+ * site, whether the hostname points at it, and the site's address.
+ */
+interface Placement {
+  commit: string
+  site: string
+  url: string
+}
+
+function placements(rows: Map<string, WorkspaceRow>, sites: SiteRow[]): (workspaceId: string) => Placement {
+  const byId = new Map(sites.map((s) => [s.id, s]))
+  return (workspaceId) => {
+    const row = rows.get(workspaceId)
+    const commit = row?.baseBranch === undefined && row?.startCommit !== undefined ? row.startCommit.slice(0, 12) : ''
+    if (row?.siteId === undefined) return { commit, site: '', url: '' }
+    const site = byId.get(row.siteId)
+    if (site === undefined) return { commit, site: '(deleted site)', url: '' }
+    const role = site.liveWorkspaceId === workspaceId ? 'live'
+      : site.deployWorkspaceId === workspaceId ? `deploying: ${site.deployPhase ?? 'launching'}`
+      : 'not serving'
+    return { commit, site: `${site.name} (${role})`, url: `https://${site.hostname}` }
+  }
+}
+
+/** The placement columns some row has a value for. */
+function placementColumns(rows: Placement[]): { header: string[]; cells: (p: Placement) => string[] } {
+  const shown = (['commit', 'site', 'url'] as const).filter((k) => rows.some((r) => r[k] !== ''))
+  return { header: shown.map((k) => k.toUpperCase()), cells: (p) => shown.map((k) => p[k]) }
 }
 
 /**
@@ -531,7 +577,11 @@ function renderSessions(workspaces: WorkspaceListEntry[], callerSessionId: strin
  * the reaper recorded for a death (`oom`, `crashed`, …), which tells a
  * restart that resumes from one that recovers.
  */
-function renderStopped(entries: StoppedWorkspaceEntry[], groupNames: Map<string, string>): string[] {
+function renderStopped(
+  entries: StoppedWorkspaceEntry[],
+  groupNames: Map<string, string>,
+  placed: (workspaceId: string) => Placement,
+): string[] {
   const rows = entries.map((e) => ({
     id: e.workspaceId.slice(0, 8),
     tool: [...new Set(e.sessions.map((s) => s.tool))].join(',') || '-',
@@ -542,13 +592,15 @@ function renderStopped(entries: StoppedWorkspaceEntry[], groupNames: Map<string,
       : e.deathDetail !== undefined ? `${e.deathReason}: ${flatten(e.deathDetail, 40)}`
       : e.deathReason,
     group: e.groupId !== undefined ? groupNames.get(e.groupId) ?? '' : '',
+    ...placed(e.workspaceId),
     title: flatten(e.title ?? '', 40),
     prompt: flatten(e.prompt ?? '', 60),
   }))
   const hasTitles = rows.some((r) => r.title !== '')
+  const extra = placementColumns(rows)
   return table(
-    ['WORKSPACE', 'TOOL', 'STOPPED (UTC)', 'HOW', 'GROUP', ...(hasTitles ? ['TITLE'] : []), 'PROMPT'],
-    rows.map((r) => [r.id, r.tool, r.stopped, r.how, r.group, ...(hasTitles ? [r.title] : []), r.prompt]),
+    ['WORKSPACE', 'TOOL', 'STOPPED (UTC)', 'HOW', 'GROUP', ...extra.header, ...(hasTitles ? ['TITLE'] : []), 'PROMPT'],
+    rows.map((r) => [r.id, r.tool, r.stopped, r.how, r.group, ...extra.cells(r), ...(hasTitles ? [r.title] : []), r.prompt]),
   )
 }
 
@@ -771,6 +823,11 @@ async function runRerun(caller: MamaCaller, request: MamaRequestInput): Promise<
  * workspace's outcome, else `stopped`; a step's state), and for a settled
  * step its exit code on a second.
  */
+/** Stopped since its current life began. */
+function stoppedSinceLife(row: WorkspaceRow): boolean {
+  return row.stoppedAt !== undefined && (row.lifeStartedAt === undefined || row.stoppedAt >= row.lifeStartedAt)
+}
+
 async function runStatus(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const target = request.args.workspace?.trim() ?? ''
   if (target === '') return { ok: false, error: 'status needs a workspace id' }
@@ -780,7 +837,7 @@ async function runStatus(caller: MamaCaller, request: MamaRequestInput): Promise
   const step = request.args.step?.trim()
   if (step === undefined || step === '') {
     if (row.stepsOutcome !== undefined) return { ok: true, output: row.stepsOutcome }
-    return { ok: true, output: row.stoppedAt !== undefined && (row.lifeStartedAt === undefined || row.stoppedAt >= row.lifeStartedAt) ? 'stopped' : 'running' }
+    return { ok: true, output: stoppedSinceLife(row) ? 'stopped' : 'running' }
   }
   const found = (await listWorkspaceSteps(workspaceId))
     .find((s) => s.name === step && s.life.getTime() === row.lifeStartedAt?.getTime())
@@ -1722,4 +1779,68 @@ async function runVolumes(caller: MamaCaller): Promise<MamaOutcome> {
     return `${v.name.padEnd(20)} ${v.size.padEnd(8)} ${holder}`
   })
   return { ok: true, output: lines.join('\n') }
+}
+
+/**
+ * A workspace's steps, or the end of one step's log with terminal escapes
+ * and control characters stripped, for an agent following a CI run or a
+ * site's release (docs/workspace-steps.md "Logs"). A step's log is served
+ * only once the step has started in the life its row names: the server
+ * clears and recreates the file then, and before it any window opened
+ * under the step's name, a shell included, would be writing it. A step
+ * waiting to rerun or a service waiting out its restart backoff has
+ * started, so its last run's log still reads. A stopped
+ * workspace's unsettled steps show as `stopped`, since their rows keep
+ * the states its last life left.
+ */
+async function runLogs(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const target = request.args.workspace?.trim() ?? ''
+  if (target === '') return { ok: false, error: 'logs needs a workspace id' }
+  const { tail } = request.args
+  if (tail !== undefined && !/^[1-9]\d{0,8}$/.test(tail)) return { ok: false, error: '--tail must be a whole number of lines' }
+  const workspaceId = await resolveProjectWorkspace(target, caller.projectId)
+  const short = workspaceId.slice(0, 8)
+  const steps = await listWorkspaceSteps(workspaceId)
+  const name = request.args.step?.trim() ?? ''
+  if (name === '') {
+    if (tail !== undefined) return { ok: false, error: '--tail goes with a step' }
+    if (steps.length === 0) return { ok: true, output: `${short} has no steps.` }
+    const row = await getWorkspaceRow(caller.projectId, workspaceId)
+    const stopped = row !== undefined && stoppedSinceLife(row)
+    const sizes = await windowLogSizes(caller.projectId, workspaceId, steps)
+    return {
+      ok: true,
+      output: [
+        `Steps of ${short}${stopped ? ' (stopped)' : ''}, in order:`,
+        '',
+        ...table(['STEP', 'STATE', 'EXIT', 'NEEDS', 'LOG'], steps.map((s, i) => {
+          const state = stopped && !stepSettled(s.state) ? 'stopped' : s.state
+          return [
+            s.name,
+            s.spec.service === true ? `${state} (service)` : state,
+            s.exitCode !== undefined ? String(s.exitCode) : '',
+            (s.spec.needs ?? []).join(','),
+            formatSize(sizes[i]),
+          ]
+        })),
+        '',
+        `Print the end of one's log: yaac-mama logs ${short} <step> [--tail <lines>]`,
+      ].join('\n'),
+    }
+  }
+  const step = steps.find((s) => s.name === name)
+  if (step === undefined) return { ok: false, error: `workspace ${short} has no step "${name}" (see: yaac-mama logs ${short})` }
+  if (step.startedAt === undefined) return { ok: false, error: `step "${name}" of ${short} has not run yet (it is ${step.state})` }
+  const lines = tail !== undefined ? Number(tail) : undefined
+  const log = await readWindowLogEnd(caller.projectId, workspaceId, step, lines)
+  if (log === undefined) return { ok: false, error: `step "${name}" of ${short} has logged nothing` }
+  // A cut start falls mid-line, so the rest of that line goes too.
+  const from = log.skipped > 0 ? log.data.indexOf(0x0a) + 1 : 0
+  let kept = stripControlChars(stripAnsi(log.data.subarray(from).toString('utf8'))).split('\n')
+  if (kept.at(-1) === '') kept.pop()
+  if (lines !== undefined) kept = kept.slice(-lines)
+  const cut = log.skipped > 0 && (lines === undefined || kept.length < lines)
+    ? [`(the first ${formatSize(log.skipped + from)} of this log are cut: only its last ${formatSize(READ_LIMIT)} is served)`]
+    : []
+  return { ok: true, body: Buffer.from([...cut, ...kept, ''].join('\n')), contentType: 'text/plain; charset=utf-8', workspaceId }
 }

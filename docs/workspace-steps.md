@@ -206,7 +206,13 @@ one subdir per life named after its start time, mounted in a pod at
 reads it from the host, so a stopped workspace's logs read the same
 (`GET /workspace/:id/logs`, then `GET /workspace/:id/logs/:life/:file` from a
 byte offset, which a client following a running log asks again from;
-`yaac workspace logs`). Every life's logs are kept until the workspace is
+`yaac workspace logs`). Its project's agents read the end of a step's log
+through `yaac-mama logs`, at most 4 MiB of it, and only once the step has
+started: the log file is named after the window, and the server clears
+and recreates a step's file as it starts the step, so before then a window
+opened by hand under the step's name would be writing it. A window opened
+by hand under the name of a step that has already run appends to that
+step's log. Every life's logs are kept until the workspace is
 deleted, and nothing else bounds the total: rotation caps each window of
 each life, not how many there are, so deleting the workspace, or the
 project's stopped-workspace retention, is the only cleanup. A shell's log

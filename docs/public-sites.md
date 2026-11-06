@@ -127,7 +127,10 @@ None of these adds a peer to the server's ingress, which admits no pod.
 A compromised release reaches what any workspace reaches over the network:
 its egress goes through the proxy and its allowlist. It cannot dial the
 router, the tunnel, other releases or the server. Nor can it write where
-other workspaces of the project read (see "Sites and releases").
+other workspaces of the project read (see "Sites and releases"), bar its
+own step logs: the project's agents read those with `yaac-mama logs`, so
+whatever a release prints, including what the internet got it to print,
+reaches their context as untrusted text.
 
 `yaac cluster check`'s `sites` gate holds probe pods carrying the tunnel's
 and the router's labels to the same policies, and requires that they fail
@@ -173,7 +176,10 @@ deploy at one commit. It differs from an ordinary workspace in these ways:
   restart and timeout refuse it with `CONFLICT` naming `yaac site`; only
   the server stops one, unless its site no longer names it (a stop that
   failed, a site deleted under it), when its owner may. `yaac-mama` has no
-  site verbs, so an agent can neither deploy nor stop production.
+  site verbs, so an agent can neither deploy nor stop production. It can
+  watch one: `yaac-mama list` shows each release with its site, whether
+  the hostname points at it, the site's address and its commit, and
+  `yaac-mama logs` reads its steps' logs.
 - **Mounts nothing shared.** It runs no agent and faces the internet, so it
   gets only its own checkout, the main clone's `.git` read-only, its own
   step logs, the tmux socket dir and the staged helper commands: no tool

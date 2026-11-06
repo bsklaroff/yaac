@@ -519,6 +519,8 @@ export const workspaceSteps = snakeCase.table('workspace_steps', {
   life: timestamp({ withTimezone: true }).notNull(),
   /** Display order within its workspace. */
   ordinal: integer().notNull(),
+  /** When the server last opened its window in this life; kept by a reset
+   *  to pending until the relaunch. */
   startedAt: timestamp({ withTimezone: true }),
   readyAt: timestamp({ withTimezone: true }),
   finishedAt: timestamp({ withTimezone: true }),

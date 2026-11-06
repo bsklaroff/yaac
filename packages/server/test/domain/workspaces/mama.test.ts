@@ -34,7 +34,10 @@ import { SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE } from '#domain/workspaces/spawn-poli
 import { recordProjectCreate } from '#db/project-store'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
-import { agentHistoryDir, opencodeCheckpointDir, repoDir, workspaceDir } from '@yaac/shared/project-paths'
+import { agentHistoryDir, opencodeCheckpointDir, repoDir, terminalLogDir, workspaceDir } from '@yaac/shared/project-paths'
+import { lifeDirName } from '@yaac/shared/steps'
+import { insertSite, updateSite } from '#db/site-store'
+import { resetSteps } from '#db/step-store'
 import { recordConversations, setActiveConversations } from '#db/conversation-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
 import { findVolumeByName } from '#db/volume-store'
@@ -428,6 +431,36 @@ describe('runMamaCommand', () => {
         ['dddd', {}, "no workspace 'dddd' in this project"],
       ]
       for (const [body, args, error] of refusals) expect(await run('list', body, args)).toEqual({ ok: false, error })
+    })
+
+    it('marks a workspace pinned to a commit, and a site\'s release with its site, role and address', async () => {
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', baseBranch: 'main' })
+      const site = await insertSite({ projectId: PROJ, name: 'shop', hostname: 'shop.example.com', port: 3000, steps: {} })
+      const pins: Array<[string, string, string?]> = [
+        ['caller-workspace', 'd'.repeat(40)],
+        ['live-rel', 'a'.repeat(40), site.id],
+        ['next-rel', 'b'.repeat(40), site.id],
+        ['old-rel', 'e'.repeat(40), site.id],
+        ['at-commit', 'c'.repeat(40)],
+      ]
+      for (const [id, commit, siteId] of pins) {
+        if (id !== 'caller-workspace') await recordWorkspaceCreated({ projectId: PROJ, workspaceId: id, ...(siteId !== undefined ? { siteId } : {}) })
+        await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId: PROJ, workspaceId: id, startCommit: commit })
+      }
+      await recordWorkspaceStopped(PROJ, 'old-rel')
+      await updateSite(site.id, { liveWorkspaceId: 'live-rel', deployWorkspaceId: 'next-rel', deployPhase: 'building' })
+      running = ['caller-workspace', 'live-rel', 'next-rel', 'at-commit'].map((id) => podFor(id))
+
+      const text = await output('list')
+      expect(text).toMatch(/WORKSPACE\s+TOOL\s+STATUS\s+GROUP\s+COMMIT\s+SITE\s+URL\s+PROMPT/)
+      // A workspace on a branch shows no commit, though it records one.
+      expect(text).not.toContain('dddddddddddd')
+      expect(text).toMatch(/live-rel\s+-\s+\S+\s+aaaaaaaaaaaa\s+shop \(live\)\s+https:\/\/shop\.example\.com/)
+      expect(text).toMatch(/next-rel\s+-\s+\S+\s+bbbbbbbbbbbb\s+shop \(deploying: building\)\s+https:\/\/shop\.example\.com/)
+      expect(text).toMatch(/at-commi\s+-\s+\S+\s+cccccccccccc\s*$/m)
+
+      expect(await output('list', '', { stopped: '1' }))
+        .toMatch(/old-rel\s+-\s+[\d-]+ [\d:]+\s+stopped\s+eeeeeeeeeeee\s+shop \(not serving\)\s+https:\/\/shop\.example\.com/)
     })
 
     it('never shows another project\'s workspaces', async () => {
@@ -1791,6 +1824,91 @@ describe('runMamaCommand', () => {
       expect(await runMamaCommand(await callerFor({ sessionId: mine.id }), { command: 'send', args: { workspace: 'caller-workspace' }, body: 'go' }))
         .toEqual({ ok: false, error: 'caller-w has no other session to send to' })
       expect(exec).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('logs', () => {
+    const life = new Date('2026-11-01T10:00:00.000Z')
+    const logDir = (id: string): string => path.join(terminalLogDir(PROJ, id), lifeDirName(life))
+    const step = (name: string, state: 'running' | 'failed' | 'succeeded', exitCode?: number) => applyWorkspaceEvent({
+      type: 'step-changed', projectId: PROJ, workspaceId: 'ci-run', life, name, state, ...(exitCode !== undefined ? { exitCode } : {}),
+    })
+
+    it('lists a workspace\'s steps and prints the end of a started one\'s log, never a window that only shares its name', async () => {
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'ci-run', nonInteractive: true })
+      await applyWorkspaceEvent({
+        type: 'workspace-life-started', projectId: PROJ, workspaceId: 'ci-run', at: life,
+        startSteps: {
+          build: { run: ['make'] },
+          noisy: { run: ['gen'] },
+          serve: { run: ['srv'], service: true, needs: ['build'] },
+        },
+      })
+      for (const name of ['build', 'noisy']) await step(name, 'running')
+      await step('build', 'failed', 2)
+      await fs.mkdir(logDir('ci-run'), { recursive: true })
+      // The rotated-out half comes first. Escapes, carriage returns, DEL and
+      // C1 controls go, since the text lands in the agent's terminal.
+      await fs.writeFile(path.join(logDir('ci-run'), 'build.log.1'), 'compiling\n')
+      await fs.writeFile(path.join(logDir('ci-run'), 'build.log'), '\x1b[31mmake: *** [all] Error 2\x1b[0m\x7f\u009b\r\nlast line\n')
+      // A window opened by hand under a step's name before the step starts
+      // writes that step's log file, so it is not served.
+      await fs.writeFile(path.join(logDir('ci-run'), 'serve.log'), 'export TOKEN=secret\n')
+      // Over 4 MiB, of which only the end is read.
+      const line = (i: number): string => `line ${String(i).padStart(6, '0')} ${'x'.repeat(80)}\n`
+      await fs.writeFile(path.join(logDir('ci-run'), 'noisy.log.1'), Array.from({ length: 30_000 }, (_, i) => line(i)).join(''))
+      await fs.writeFile(path.join(logDir('ci-run'), 'noisy.log'), Array.from({ length: 30_000 }, (_, i) => line(30_000 + i)).join(''))
+
+      const listed = await output('logs', '', { workspace: 'ci-r' })
+      expect(listed).toContain('Steps of ci-run, in order:')
+      expect(listed).toMatch(/^STEP\s+STATE\s+EXIT\s+NEEDS\s+LOG$/m)
+      expect(listed).toMatch(/^build\s+failed\s+2\s+\S+ B$/m)
+      expect(listed).toMatch(/^noisy\s+running\s+5\.\d MB$/m)
+      expect(listed).toMatch(/^serve\s+pending \(service\)\s+build\s+\S+ B$/m)
+      expect(listed).not.toContain('shell')
+
+      const log = async (args: Record<string, string>): Promise<string> => {
+        const outcome = await run('logs', '', { workspace: 'ci-run', ...args })
+        if (!outcome.ok || !('body' in outcome) || !Buffer.isBuffer(outcome.body)) throw new Error(`expected a log, got ${JSON.stringify(outcome)}`)
+        expect(outcome).toMatchObject({ contentType: 'text/plain; charset=utf-8', workspaceId: 'ci-run' })
+        return outcome.body.toString('utf8')
+      }
+      expect(await log({ step: 'build' })).toBe('compiling\nmake: *** [all] Error 2\nlast line\n')
+      expect(await log({ step: 'build', tail: '2' })).toBe('make: *** [all] Error 2\nlast line\n')
+      expect(await log({ step: 'noisy', tail: '2' })).toBe(line(59_998) + line(59_999))
+      // Untailed, it serves the last 4 MiB from a line's start, saying how
+      // much it left out.
+      const end = (await log({ step: 'noisy' })).split('\n')
+      expect(end[0]).toMatch(/^\(the first 1\.\d MB of this log are cut: only its last 4\.0 MB is served\)$/)
+      expect(`${end[1]}\n`).toMatch(/^line \d{6} x{80}\n$/)
+      expect(end.at(-2)).toBe(line(59_999).trimEnd())
+      expect(end.slice(1).join('\n').length).toBeLessThanOrEqual(4 * 1024 * 1024)
+
+      // A stopped workspace's unsettled steps read as stopped.
+      await recordWorkspaceStopped(PROJ, 'ci-run')
+      const stopped = await output('logs', '', { workspace: 'ci-run' })
+      expect(stopped).toContain('Steps of ci-run (stopped), in order:')
+      expect(stopped).toMatch(/^build\s+failed\s+2/m)
+      expect(stopped).toMatch(/^noisy\s+stopped\s/m)
+      expect(stopped).toMatch(/^serve\s+stopped \(service\)\s/m)
+
+      // Back to pending for a rerun, or a service's restart backoff, a
+      // step's last run still reads.
+      await resetSteps('ci-run', life, ['build'])
+      expect(await log({ step: 'build', tail: '1' })).toBe('last line\n')
+
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'no-steps' })
+      expect(await output('logs', '', { workspace: 'no-steps' })).toBe('no-steps has no steps.')
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'elsewhere' })
+      const refusals: Array<[Record<string, string>, string]> = [
+        [{}, 'logs needs a workspace id'],
+        [{ workspace: 'ci-run', step: 'shell' }, 'workspace ci-run has no step "shell" (see: yaac-mama logs ci-run)'],
+        [{ workspace: 'ci-run', step: 'serve' }, 'step "serve" of ci-run has not run yet (it is pending)'],
+        [{ workspace: 'ci-run', tail: '5' }, '--tail goes with a step'],
+        [{ workspace: 'ci-run', step: 'build', tail: '0' }, '--tail must be a whole number of lines'],
+        [{ workspace: 'elsewhere' }, `no workspace 'elsewhere' in ${PROJ}`],
+      ]
+      for (const [args, error] of refusals) expect(await run('logs', '', args)).toEqual({ ok: false, error })
     })
   })
 
