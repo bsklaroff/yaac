@@ -27,6 +27,7 @@ import { TmpDirRefusal } from '@yaac/shared/paths'
 import { startReconciler } from '#main/reconciler'
 import { setWorkspaceDriver, workspaceDriver, workspacesSandboxed } from '#drivers/driver'
 import { importProjectConfigFiles, pushProjectSecrets } from '#domain/projects'
+import { rememberFeedbackUrl } from '#domain/feedback'
 import { resumeQueuedWorkspaces } from '#domain/workspaces'
 import { createK8sDriver } from '#drivers/k8s'
 import { createContainerlessDriver } from '#drivers/containerless'
@@ -189,6 +190,9 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     return
   }
+  // Under the lock, so a losing start never overwrites the record, and
+  // before any route but `/health` is served.
+  await rememberFeedbackUrl()
   // Renew the lease while we hold it. Readers in another container judge
   // the lock by this heartbeat, since our pid and port mean nothing there.
   // On kind the data dir is a hostPath with no attach exclusivity, so the

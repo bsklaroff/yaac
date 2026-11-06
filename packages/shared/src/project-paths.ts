@@ -90,6 +90,14 @@ export function feedbackKeyPath(): string {
 }
 
 /**
+ * SERVER-LOCAL. The `YAAC_FEEDBACK_URL` the server was last started with,
+ * which a start without the variable keeps (docs/feedback.md).
+ */
+export function feedbackUrlPath(): string {
+  return serverLocalPath('feedback-url')
+}
+
+/**
  * GLOBAL: the project's state tree, holding everything a workspace pod
  * mounts plus the project's metadata.
  */

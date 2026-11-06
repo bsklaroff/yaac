@@ -296,10 +296,12 @@ export const env = {
 
   /**
    * `YAAC_FEEDBACK_URL` — the endpoint the server forwards a user's
-   * feedback to (docs/feedback.md). Unset, the server refuses feedback.
+   * feedback to (docs/feedback.md). Empty turns feedback off. Unset, the
+   * server keeps the value it was last given, else uses yaac.dev's, so
+   * this is undefined only when the variable is unset.
    */
   get feedbackUrl(): string | undefined {
-    return nonEmpty(process.env.YAAC_FEEDBACK_URL)
+    return process.env.YAAC_FEEDBACK_URL
   },
 
   /**

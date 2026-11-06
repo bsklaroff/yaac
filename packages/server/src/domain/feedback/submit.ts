@@ -4,7 +4,7 @@ import path from 'node:path'
 import { env } from '@yaac/shared/env'
 import { readBuildId } from '@yaac/shared/build-id'
 import { ServerError } from '@yaac/shared/errors'
-import { feedbackKeyPath } from '@yaac/shared/project-paths'
+import { feedbackKeyPath, feedbackUrlPath } from '@yaac/shared/project-paths'
 import type { Principal } from '@yaac/shared/types'
 import { getGitIdentity } from '#db'
 import { workspaceDriver } from '#drivers/driver'
@@ -21,11 +21,42 @@ import { serverLog } from '#lib/log'
 /** How long the endpoint may take before the user is told it failed. */
 const SEND_TIMEOUT_MS = 15_000
 
-/** The feedback endpoint, or null when this server has none: the variable
- *  is unset, or is not a URL. */
+/** Where feedback goes when no start has ever set `YAAC_FEEDBACK_URL`. */
+const DEFAULT_ENDPOINT = 'https://yaac.dev/api/feedback'
+
+/** The value in force when the variable is unset, as `rememberFeedbackUrl`
+ *  settled it. Null until then, which reads as off, so a request served
+ *  before it settles cannot reach the default. */
+let settled: string | null = null
+
+/**
+ * Settle the endpoint at server start. A start given `YAAC_FEEDBACK_URL`
+ * (empty included) records it in SERVER-LOCAL; a start without it reads
+ * the record back. Turning feedback off therefore survives a restart from
+ * a shell, tray or install that never set the variable, which would
+ * otherwise fall back to the default and start sending.
+ */
+export async function rememberFeedbackUrl(): Promise<void> {
+  const file = feedbackUrlPath()
+  const given = env.feedbackUrl
+  if (given !== undefined) {
+    await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
+    await fs.writeFile(file, given)
+    settled = given
+    return
+  }
+  const recorded = await fs.readFile(file, 'utf8').catch((err: unknown) => {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw err
+  })
+  settled = recorded ?? DEFAULT_ENDPOINT
+}
+
+/** The feedback endpoint, or null when this server has none: the value in
+ *  force is empty, or is not a URL. */
 function endpoint(): URL | null {
-  const raw = env.feedbackUrl
-  return raw !== undefined && URL.canParse(raw) ? new URL(raw) : null
+  const raw = env.feedbackUrl ?? settled ?? ''
+  return URL.canParse(raw) ? new URL(raw) : null
 }
 
 /** Where this server sends feedback, as the form names it to the user;
@@ -110,7 +141,7 @@ interface FeedbackClient {
 
 /**
  * Forward a report (its words, screenshots and the client it came from) to
- * `YAAC_FEEDBACK_URL` with this server's own build, signed with this
+ * the endpoint with this server's own build, signed with this
  * install's key, and answer the host it went to. Throws when there is no
  * endpoint, an image is refused (`inlineImages`), or the endpoint cannot
  * be reached or does not accept it. A redirect is a failure: the
@@ -122,7 +153,7 @@ export async function submitFeedback(
 ): Promise<{ host: string }> {
   const url = endpoint()
   if (url === null) {
-    throw new ServerError('NOT_SUPPORTED', 'This server has no feedback endpoint: YAAC_FEEDBACK_URL is unset or not a URL.')
+    throw new ServerError('NOT_SUPPORTED', 'This server has no feedback endpoint: YAAC_FEEDBACK_URL is set empty, or is not a URL.')
   }
   const images = inlineImages(report.images)
   if (typeof images === 'string') throw new ServerError('VALIDATION', `feedback not sent: ${images}`)

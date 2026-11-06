@@ -15,7 +15,7 @@ All yaac variables are read, with their defaults and validation, in
 | `YAAC_PREWARM_POOL_SIZE` | `1` | Workspaces kept started ahead of time per active project (`0` disables). |
 | `YAAC_IMAGE_PREWARM` | on | Build project images in the background. Off when empty, `0` or `false`. |
 | `YAAC_AUTO_TITLES` | on | Generate titles with a local model for drafts, queued entries and workspaces whose agent titles nothing (docs/workspace-titles.md). Off when empty, `0` or `false`. |
-| `YAAC_FEEDBACK_URL` | _(unset)_ | Endpoint the server forwards in-app feedback to, signed as this install (docs/feedback.md). `yaac cluster install` copies it to the server pod. Unset, the webapp hides the feedback form. |
+| `YAAC_FEEDBACK_URL` | `https://yaac.dev/api/feedback` | Endpoint the server forwards in-app feedback to, signed as this install (docs/feedback.md). `yaac cluster install` copies it to the server pod. Set empty to turn feedback off, which hides the webapp's form. Unset, the server keeps the value it was last started with. |
 
 Every workspace gets `YAAC_WORKSPACE_ID` set automatically, and
 `YAAC_PORT_<n>` for each forwarded port (docs/workspace-hostnames.md). The other variables

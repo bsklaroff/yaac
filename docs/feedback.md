@@ -4,20 +4,39 @@ The feedback button at the top of the rail's bottom icons (a row on the
 mobile projects screen) opens a form. Send posts its message, any
 screenshots pasted, dropped or picked into it, and what the webapp knows
 about itself to the user's own yaac server (`POST /api/feedback`). The
-server forwards all of it to the endpoint named by `YAAC_FEEDBACK_URL`.
+server forwards all of it to the endpoint named by `YAAC_FEEDBACK_URL`,
+which defaults to the maintainers' `https://yaac.dev/api/feedback`.
 `yaac feedback <message> [--image <file>…]` sends the same report from the
 CLI and prints the host it went to. Its images go unshrunk, so a large
-screenshot can exceed the cap. A report goes out only when the user sends
-it. Nothing else is sent anywhere.
+screenshot can exceed the cap. Nothing is sent anywhere except a report
+someone sends.
+
+Who can send one depends on the driver. Under k8s a workspace pod reaches
+only the mama relay's routes, so only a person at the webapp or a client
+can. Under containerless a workspace is a process on the host, and the
+server treats every loopback caller as the owner, so anything running in a
+workspace can post `/api/feedback` and the report goes out signed, in the
+owner's name. `yaac feedback` refuses to run inside a workspace
+(`YAAC_WORKSPACE_ID` is set), which stops an agent following a README or a
+skill from sending one, but it cannot stop a raw HTTP request. Set the
+variable empty on an install whose workspaces run untrusted agents.
 
 The variable is read from the server's own environment. A host server
 inherits it from the shell that runs `yaac server start`. A cluster's server
 pod gets it from the shell that runs `yaac cluster install`, which copies it
-into the Deployment, so changing it means running install again. If the
-variable is unset or not a URL, the snapshot's `feedbackHost` is null, the
-webapp hides the form, and the route answers `NOT_SUPPORTED`. Otherwise the
-form names that host. The endpoint is whatever the server's operator set,
-and under tailnet access that may not be the person sending.
+into the Deployment, so changing it means running install again. A server
+started with the variable, empty included, records it in SERVER-LOCAL
+`feedback-url`. A start without it (a shell that never exported it, the
+desktop app's tray restarting the server, an install that leaves it out of
+the Deployment) uses that record, and the default only if there is none.
+So feedback set off stays off, and going back to the default means setting
+the variable to it.
+
+If the value in force is empty or is not a URL, the snapshot's
+`feedbackHost` is null, the webapp hides the form, and the route answers
+`NOT_SUPPORTED`. Otherwise the form names that host. The endpoint is
+whatever the server's operator chose, and under tailnet access that may
+not be the person sending.
 
 The server posts to that URL alone. A redirect fails the send rather than
 being followed, so a report never reaches a host the user was not shown.
@@ -93,8 +112,9 @@ bytes (PNG, JPEG, GIF or WebP) and refuses the whole report if any is not
 one of those or if they total over 5 MB, so the endpoint never receives a
 partial report.
 
-The endpoint's own API is not written yet. Until it is, this is the request
-shape the server sends, and the recipient should accept it as is.
+yaac.dev's endpoint is the yaac-site repo
+(https://github.com/bsklaroff/yaac-site), which follows the checklist
+below. Any other endpoint should accept this request shape as is.
 
 `from` is the caller's tailnet login and display name when the request came
 through `tailscale serve`. Otherwise it is the git identity that user's

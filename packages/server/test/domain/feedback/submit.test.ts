@@ -5,9 +5,9 @@ import type { AddressInfo } from 'node:net'
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import type { ServerError } from '@yaac/shared/errors'
-import { feedbackKeyPath } from '@yaac/shared/project-paths'
+import { feedbackKeyPath, feedbackUrlPath } from '@yaac/shared/project-paths'
 import { BUILT_IN_USER_ID, closeDb, setGitIdentity } from '#db'
-import { feedbackHost, submitFeedback } from '#domain/feedback'
+import { feedbackHost, rememberFeedbackUrl, submitFeedback } from '#domain/feedback'
 import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
 
 /** A PNG's signature, which is all `sniffImage` reads. */
@@ -167,5 +167,31 @@ describe('feedbackHost', () => {
     expect(feedbackHost()).toBeNull()
     vi.stubEnv('YAAC_FEEDBACK_URL', '')
     expect(feedbackHost()).toBeNull()
+  })
+})
+
+describe('rememberFeedbackUrl', () => {
+  it('keeps the last value a start was given for a start without one, else yaac.dev', async () => {
+    // Off until settled, so a request served earlier cannot reach the default.
+    vi.stubEnv('YAAC_FEEDBACK_URL', undefined)
+    expect(feedbackHost()).toBeNull()
+    await rememberFeedbackUrl()
+    expect(feedbackHost()).toBe('yaac.dev')
+
+    // Off survives a start from an environment that never set it.
+    vi.stubEnv('YAAC_FEEDBACK_URL', '')
+    await rememberFeedbackUrl()
+    vi.stubEnv('YAAC_FEEDBACK_URL', undefined)
+    await rememberFeedbackUrl()
+    expect(feedbackHost()).toBeNull()
+    expect(await codeOf(submitFeedback(local, { message: 'x' }))).toBe('NOT_SUPPORTED')
+
+    vi.stubEnv('YAAC_FEEDBACK_URL', url)
+    await rememberFeedbackUrl()
+    vi.stubEnv('YAAC_FEEDBACK_URL', undefined)
+    await rememberFeedbackUrl()
+    expect(await fs.readFile(feedbackUrlPath(), 'utf8')).toBe(url)
+    expect(await submitFeedback(local, { message: 'kept' })).toEqual({ host: new URL(url).host })
+    expect(received.map((r) => r.body.message)).toEqual(['kept'])
   })
 })

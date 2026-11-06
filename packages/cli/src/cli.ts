@@ -857,7 +857,7 @@ program
 
 program
   .command('feedback')
-  .description('Send feedback through the selected server to the feedback endpoint its operator set, with your name and email, the server\'s version and driver, and this CLI\'s version, Node version and OS')
+  .description('Send feedback through the selected server to its feedback endpoint (yaac.dev unless the server sets YAAC_FEEDBACK_URL), with your name and email, the server\'s version and driver, and this CLI\'s version, Node version and OS')
   .argument('<message>', 'What to tell them')
   .option('--image <file>', 'Attach a screenshot: PNG, JPEG, GIF or WebP, 5 MB in all (repeatable)', collect, [])
   .action(feedback)

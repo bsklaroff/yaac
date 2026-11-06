@@ -12,8 +12,15 @@ export interface FeedbackOptions {
  * as the webapp's form does (docs/feedback.md). The images go as they
  * are: the server checks their type and the 5 MB cap, and refuses the
  * whole report rather than drop one.
+ *
+ * Refused inside a workspace: a containerless workspace reaches the server
+ * as its owner, so an agent there could send a report in the owner's name
+ * that no person wrote.
  */
 export async function feedback(message: string, options: FeedbackOptions): Promise<void> {
+  if (env.workspaceId !== undefined) {
+    throw new Error('yaac feedback does not run inside a workspace, so an agent cannot send a report in your name. Send it from your own shell or the webapp.')
+  }
   const images = await Promise.all(options.image.map(async (file) => ({
     mimeType: '',
     data: (await fs.readFile(file)).toString('base64'),
