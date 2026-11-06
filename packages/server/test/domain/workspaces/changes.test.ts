@@ -841,7 +841,14 @@ describe('readWorkspaceChanges', () => {
     expect(over.listing?.paths.filter((p) => p.startsWith('build/') || p.startsWith('out/big/'))).toEqual(['build/f0.js'])
     expect(git(w.repo, 'status', '--porcelain', '--', 'build')).toBe(' M build/f0.js\n?? build/m0/\n?? build/m1/\n')
 
-    for (const attrs of ['build/.gitattributes', '.gitattributes']) {
+    // A folder whose name git quotes is read from the tree unquoted.
+    fs.mkdirSync(path.join(w.repo, 'café'))
+    fs.writeFileSync(path.join(w.repo, 'café/f0.js'), 'c\n')
+    git(w.repo, 'add', 'café')
+    git(w.repo, 'commit', '-qm', 'café')
+    fs.appendFileSync(path.join(w.repo, 'café/f0.js'), 'edited\n')
+    await read()
+    for (const attrs of ['build/.gitattributes', '.gitattributes', 'café/.gitattributes']) {
       fs.writeFileSync(path.join(w.repo, attrs), 'f0.js -diff\n')
       if (attrs === '.gitattributes') fs.appendFileSync(path.join(w.repo, '.gitignore'), '/.gitattributes\n')
       expect((await read()).changes).toEqual((await w.fresh({ listing: 'paths' })).changes)

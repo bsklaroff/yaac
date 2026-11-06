@@ -233,7 +233,7 @@ function scratchObjects(indexFile: string): string {
  * depend only on the blob.
  */
 const SETTINGS_SH = 'cf=$({ git config --get-regexp \'^(diff|submodule)\\.|^core\\.(bigfilethreshold|abbrev)$\'; '
-  + 'git ls-tree -r "$t" | grep -E \'\t((.*/)?\\.gitattributes|\\.gitmodules)$\'; cat "$(git rev-parse --git-path info/attributes)" '
+  + 'git ls-tree -r -z "$t" | tr \'\\0\' \'\\n\' | grep -E \'\t((.*/)?\\.gitattributes|\\.gitmodules)$\'; cat "$(git rev-parse --git-path info/attributes)" '
   + '"$(git config --path core.attributesFile || echo "${XDG_CONFIG_HOME:-$HOME/.config}/git/attributes")"; } 2>/dev/null '
   + '| git hash-object --stdin) || exit 6; '
 
@@ -385,9 +385,12 @@ function scanScript(workspaceDir: string, i: string): string {
   // private index holds what earlier runs staged. A large file is still
   // added with intent to add, so the listing names it, though no tree has it.
   + `{ [ ! -f ${i}.agent ] || GIT_INDEX_FILE=${i}.agent git ls-files -z -o --exclude-standard; } | tr '\\0' '\\n' > ${i}.new; `
-  + `< ${i}.new ${SKIP_COUNT} | tr '\\n' '\\0' > ${i}.skip; sed 's|^|./|' ${i}.new | tr '\\n' '\\0' `
+  + `< ${i}.new ${SKIP_COUNT} > ${i}.skipped; `
+  // Only a file that would be staged is sized: none inside a skipped folder.
+  + `LC_ALL=C awk 'FILENAME==ARGV[1]{s[n++]=$0; next} {for(k=0;k<n;k++) if(index($0,s[k])==1) next; print "./" $0}' ${i}.skipped ${i}.new `
+  + `| tr '\\n' '\\0' `
   + `| xargs -0 sh -c '[ $# -eq 0 ] || exec find "$@" -prune -type f -size +${MAX_UNTRACKED_FILE_BYTES}c' yaac-big `
-  + `| sed 's|^\\./||' | tr '\\n' '\\0' > ${i}.big || exit 6; `
+  + `| sed 's|^\\./||' | tr '\\n' '\\0' > ${i}.big && tr '\\n' '\\0' < ${i}.skipped > ${i}.skip || exit 6; `
   // `stage` writes the working tree into the private index. `--ignore-errors`
   // adds what it can past an entry git cannot index (a nested repo with no
   // commit), exiting 1, so one such entry costs the diff and the listing
