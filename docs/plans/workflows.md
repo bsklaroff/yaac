@@ -84,8 +84,8 @@ commit is checked too:
   approved waits for a person to approve the commit it resolved to (the
   webapp shows it, as GitHub's required reviewers do), which adds it to the
   approved commits. This is how a routine on a branch gets secrets. Any
-  other launch at a commit not approved runs without the secrets and asks
-  no one, so an agent cannot raise approval prompts.
+  other launch at a commit not approved is refused, naming the commit and
+  how to approve it; it raises no prompt, so an agent cannot raise one.
 - A revision may instead **trust a branch's tip**, opt-in, for a branch the
   project's git credential cannot push to. Every agent of the project can
   push with that credential, so this is the user's risk to take.
@@ -100,7 +100,12 @@ The launch check: a non-interactive launch (or a site's release) of
 revision R at commit C gets the secrets R names if a person made R, and
 either R is current and C is approved or on its trusted branch, or (R, C)
 is recorded. Nothing else is checked: not who started it, nor through which
-path.
+path. A launch that fails the check is refused rather than run without the
+secrets, which would only fail later and less clearly, or run an app
+without its key; a graph meant to run without them belongs in a workflow
+that names none. An interactive launch, such as `rerun --interactive` to
+debug a failed run, never gets secrets and is not refused: it opens
+without them.
 
 **Values are read at launch**, as GitHub Actions reads a secret when each
 job starts, re-runs included. A rotated value reaches every launch that
