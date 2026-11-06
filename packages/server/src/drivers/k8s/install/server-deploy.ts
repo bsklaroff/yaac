@@ -278,6 +278,8 @@ type ServerEnvVar =
  *
  * Pass-through settings are copied from the environment that ran
  * `yaac cluster install`, since a pod has no shell to set them in later.
+ * `YAAC_FEEDBACK_URL` is copied even when empty, which turns feedback
+ * off; left unset, the pod keeps the value it was last given.
  */
 function buildServerEnv(opts: ServerEnvOptions = {}): ServerEnvVar[] {
   const hosting = opts.remoteHosting ?? { accessMode: 'local', allowedHosts: [] }
@@ -318,11 +320,11 @@ function buildServerEnv(opts: ServerEnvOptions = {}): ServerEnvVar[] {
       ? undefined
       : env.secrets.map((s) => `${String(s.version)}:${s.value}`).join(',')],
     ['YAAC_SECRET', env.secret],
-    ['YAAC_FEEDBACK_URL', env.feedbackUrl],
   ]
   for (const [name, value] of passThrough) {
     if (value !== undefined && value !== '') vars.push({ name, value })
   }
+  if (env.feedbackUrl !== undefined) vars.push({ name: 'YAAC_FEEDBACK_URL', value: env.feedbackUrl })
   return vars
 }
 

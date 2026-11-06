@@ -77,4 +77,11 @@ describe('yaac feedback (real CLI + shared server)', () => {
     expect(res.stderr).toMatch(/not a PNG, JPEG, GIF or WebP/)
     expect(received).toHaveLength(1)
   })
+
+  it('refuses inside a workspace, where an agent would send in the owner\'s name', async () => {
+    const res = await runYaac({ ...testEnv.env, YAAC_WORKSPACE_ID: 'ws-1' }, 'feedback', 'sent by an agent')
+    expect(res.exitCode).toBe(1)
+    expect(res.stderr).toContain('does not run inside a workspace')
+    expect(received).toHaveLength(1)
+  })
 })

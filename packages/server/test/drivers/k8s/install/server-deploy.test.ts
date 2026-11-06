@@ -433,6 +433,19 @@ describe('deployServerWorkload', () => {
     expect(env.YAAC_IN_CLUSTER).toBe('1')
     // The install shell's feedback endpoint, which the pod cannot inherit.
     expect(env.YAAC_FEEDBACK_URL).toBe('https://feedback.example.test/v1')
+
+    // Feedback turned off reaches the pod as an empty value; an install
+    // shell without the variable leaves it unset, so the pod keeps the
+    // value it was last given.
+    const redeployedFeedbackUrl = async (): Promise<string | undefined> => {
+      await deploy({ log: vi.fn(), torHostAddr: '10.89.0.1' })
+      const redeployed = applied('Deployment').filter((m) => m.metadata?.name === SERVER_APP_NAME).at(-1)
+      return redeployed?.spec?.template?.spec.containers[0].env.find((e) => e.name === 'YAAC_FEEDBACK_URL')?.value
+    }
+    vi.stubEnv('YAAC_FEEDBACK_URL', '')
+    expect(await redeployedFeedbackUrl()).toBe('')
+    vi.stubEnv('YAAC_FEEDBACK_URL', undefined)
+    expect(await redeployedFeedbackUrl()).toBeUndefined()
   })
 
   it('stamps the identity install decided, not the uid of the machine running it', async () => {

@@ -43,3 +43,8 @@ setDataDir(path.join(os.tmpdir(), `yaac-test-default-${process.pid}`))
 // one. The refresh-grant tests unstub this per case, behind a stubbed
 // `fetch`.
 process.env.YAAC_E2E_NO_TOKEN_REFRESH = '1'
+
+// Turn feedback off, so no server under test forwards a report to the
+// default endpoint at yaac.dev. Tests that send feedback point it at
+// their own endpoint.
+process.env.YAAC_FEEDBACK_URL = ''

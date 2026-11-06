@@ -5,4 +5,4 @@
 // Each function added here needs a unit test in
 // packages/server/test/domain/feedback/.
 
-export { feedbackHost, submitFeedback } from './submit'
+export { feedbackHost, rememberFeedbackUrl, submitFeedback } from './submit'

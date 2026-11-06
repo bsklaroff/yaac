@@ -84,8 +84,8 @@ function FeedbackForm({ host }: { host: string }): JSX.Element {
       onDrop={(e) => attachFrom(imageFiles(e.dataTransfer), e)}
     >
       <p className="text-[11px] leading-relaxed text-text-faint">
-        Goes to <span className="font-mono text-text-dim">{host}</span>, the feedback endpoint this
-        server&apos;s operator set, with your name and email (your Tailscale login, or else your git
+        Goes to <span className="font-mono text-text-dim">{host}</span>, this server&apos;s feedback
+        endpoint, with your name and email (your Tailscale login, or else your git
         identity), the versions of this server and app, the server&apos;s driver, and your browser. Paste
         or drop screenshots to include them.
       </p>
