@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
-import { DIFF_CUT_LINE, type WorkspaceChanges } from '@yaac/shared/types'
+import { DIFF_CUT_LINE, type WorkspaceDiff } from '@yaac/shared/types'
 import { api } from '#lib/api'
 import { parseDiffPart, splitDiff, type DiffPart, type ParsedFileDiff } from '#lib/diff'
 
@@ -38,7 +38,7 @@ const lineCount = (text: string): number => text.split('\n').length - 1
  * agent did not touch keeps what was scrolled through; one the poll no
  * longer covers is shown as loaded until a reader near it loads it again.
  */
-export function useChangeDiffs(workspaceId: string, data: WorkspaceChanges | undefined): {
+export function useChangeDiffs(workspaceId: string, data: WorkspaceDiff | undefined): {
   diffs: Map<string, ParsedFileDiff>
   /** Whether loading a file's part or its rest failed at this reading. */
   failed: (path: string) => boolean

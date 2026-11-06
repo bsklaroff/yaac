@@ -43,7 +43,9 @@
 import { workspaceDriver } from '#drivers/driver'
 import { ServerError } from '@yaac/shared/errors'
 import { DIFF_CUT_LINE } from '@yaac/shared/types'
-import type { ChangeStage, ChangeStatus, LineCounts, WorkspaceChange, WorkspaceDiff } from '@yaac/shared/types'
+import type {
+  ChangeStage, ChangeStatus, CommitDetail, LineCounts, WorkspaceChange, WorkspaceComparison, WorkspaceDiff,
+} from '@yaac/shared/types'
 
 /**
  * The changes script's exit code for "no diff base": the ref does not
@@ -189,8 +191,9 @@ const FORCE_ADD = 'for p; do shift; { [ -e "$p" ] || [ -L "$p" ]; } && set -- "$
 /**
  * Shell that picks the ref HEAD is compared against, for the changes script
  * and the Commits pane's log (`checkoutLog`) alike: `$1`, a branch the user
- * picked, tried as `origin/<name>` and then as itself, else `$2`, the
- * default ref as given. A candidate counts only if it shares history with
+ * picked, tried as `origin/<name>` and then as itself (`HEAD` only as
+ * itself), else `$2`, the default ref as given. A candidate counts only if
+ * it shares history with
  * HEAD. Sets `ref` to the one found and `base` to its merge base with HEAD;
  * with none, `ref` is empty, and a picked `$1` exits
  * CHANGES_BASE_UNRESOLVED. So does a picked `$1` with a leading dash, which
@@ -199,7 +202,8 @@ const FORCE_ADD = 'for p; do shift; { [ -e "$p" ] || [ -L "$p" ]; } && set -- "$
 export const RESOLVE_BASE_SH = 'ref=; '
   + `case $1 in -*) exit ${CHANGES_BASE_UNRESOLVED};; esac; `
   + 'if [ -n "$1" ]; then '
-  + 'for r in "origin/$1" "$1"; do base=$(git merge-base "$r" HEAD 2>/dev/null) && { ref=$r; break; }; done; '
+  + 'for r in "origin/$1" "$1"; do [ "$1:$r" != HEAD:origin/HEAD ] || continue; '
+  + 'base=$(git merge-base "$r" HEAD 2>/dev/null) && { ref=$r; break; }; done; '
   + `[ -n "$ref" ] || exit ${CHANGES_BASE_UNRESOLVED}; `
   + 'elif [ -n "$2" ]; then base=$(git merge-base "$2" HEAD 2>/dev/null) && ref=$2; fi; '
 
@@ -990,6 +994,75 @@ export function readWorkspaceChanges(
     heldReadings.set(jobName, { held: next, usedAt: Date.now() })
     return { ...reading, readMs: Date.now() - started }
   }, signal)
+}
+
+/** Field separator of the compare script's commit record. */
+const FS = '\x1f'
+
+/**
+ * The diff between two refs (`WorkspaceComparison`), as the Changes pane
+ * shows a range or a single commit. No working tree is read, so none of the
+ * changes script's staging or caches is involved. Each ref is tried as
+ * `origin/<name>` and then as itself (`HEAD` only as itself), like a picked
+ * base. With `from`, the diff runs from its merge base with `to`, so two
+ * branches compare as GitHub compares them; without, from `to`'s first
+ * parent, or the empty tree for a root commit, and `to`'s commit comes
+ * along. A ref that does not resolve, or a pair with no common history,
+ * exits CHANGES_BASE_UNRESOLVED. The body is capped as the changes poll's
+ * is, and the rest is read through `readChangeDiffs`.
+ */
+export async function readComparison(jobName: string, { from, to }: { from?: string; to: string }): Promise<WorkspaceComparison> {
+  const driver = workspaceDriver()
+  const { workspaceDir, scratchDir } = driver.workspacePaths(jobName)
+  const script = `cd ${workspaceDir} 2>/dev/null || exit 3; `
+    + 'res() { case $1 in -*|"") return 1;; esac; for c in "origin/$1" "$1"; do '
+    + '[ "$1:$c" != HEAD:origin/HEAD ] || continue; git rev-parse -q --verify "$c^{commit}" && return; done; return 1; }; '
+    + `to=$(res "$2") || exit ${CHANGES_BASE_UNRESOLVED}; `
+    + `if [ -n "$1" ]; then from=$(res "$1") && base=$(git merge-base "$from" "$to") || exit ${CHANGES_BASE_UNRESOLVED}; `
+    + 'else base=$(git rev-parse -q --verify "$to^1") || base=$(git hash-object -t tree /dev/null) || exit 6; '
+    // A message holds no NUL, so the record ends at the first one.
+    + `git log -1 -z --format="%H${FS}%P${FS}%an${FS}%at${FS}%B" "$to" || exit 6; fi; `
+    + `printf "\nBASE %s\nTO %s\n${M_NUMSTAT}\n" "$base" "$to"; git diff --numstat "$base" "$to" || exit 6; `
+    + `printf "${M_NAMESTATUS}\n"; git diff --name-status "$base" "$to" || exit 6; printf "${M_OK}\n"; `
+    + `s=0; p=${MAX_FILE_DIFF_BYTES}; t=${WORKSPACE_DIFF_CAP_BYTES}; b=${scratchDir}/yaac-compare.$$; ${cappedFn('$b.err')}`
+    + `if capped git diff ${BODY_FLAGS} "$base" "$to" > $b; then printf "${M_DIFF}\n"; cat $b; else printf "${M_NODIFF}\n"; fi; `
+    + 'rm -f $b $b.err'
+  const { stdout } = await driver.exec(jobName, `sh -c ${shSingleQuote(script)} yaac-compare `
+    + [from ?? '', to].map(shSingleQuote).join(' '), { timeout: 20_000 })
+  const nul = from ? -1 : stdout.indexOf('\0')
+  const raw = stdout.slice(nul + 1)
+  // Every line before the marker opens with a count or a status letter, so
+  // a path named like it cannot pass for it.
+  const ok = raw.indexOf(`\n${M_OK}\n`)
+  if (ok === -1) throw new Error('workspace compare: script produced no completion marker')
+  const head = raw.slice(0, ok)
+  const base = /^BASE (.*)$/m.exec(head)?.[1] ?? ''
+  const work = /^TO (.*)$/m.exec(head)?.[1] ?? ''
+  const numstat = parseNumstat(section(head, M_NUMSTAT))
+  const nameStatus = parseNameStatus(section(head, M_NAMESTATUS))
+  const files = nameStatus.map(({ path, status, oldPath }): WorkspaceChange => {
+    const { additions, deletions, binary } = numstat.get(path) ?? { additions: 0, deletions: 0, binary: false }
+    return { path, status, additions, deletions, binary, stages: { committed: { additions, deletions } }, ...oldPath ? { oldPath } : {} }
+  })
+  const d = raw.indexOf(`${M_DIFF}\n`, ok)
+  const body = d === -1
+    ? { text: '', whole: false }
+    : joinChunks(nameStatus, chunksOf(nameStatus, raw.slice(d + M_DIFF.length + 1)))
+  let commit: CommitDetail | undefined
+  if (nul !== -1) {
+    // The message is last, so a separator in it stays part of it.
+    const [sha = '', parents = '', author = '', time = '', ...message] = stdout.slice(0, nul).split(FS)
+    commit = { sha, parents: parents ? parents.split(' ') : [], author, time: Number(time), message: message.join(FS).trimEnd() }
+  }
+  return {
+    base,
+    work,
+    baseResolved: true,
+    files,
+    diff: cutDiff(body.text, MAX_DIFF_BYTES),
+    truncated: !body.whole || Buffer.byteLength(body.text) > MAX_DIFF_BYTES,
+    ...commit ? { commit } : {},
+  }
 }
 
 /** `readChangeDiffs`'s exit code for "a tree it was given is gone". */

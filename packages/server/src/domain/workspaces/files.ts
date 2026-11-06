@@ -16,11 +16,15 @@ import type {
   WorkspaceFileSaved,
   BranchComparison,
   WorkspaceChanges,
+  WorkspaceComparison,
   WorkspaceGitLog,
 } from '@yaac/shared/types'
 import { workspaceDriver } from '#drivers/driver'
 import { WorkspaceExecError } from '#drivers/contract'
-import { CHANGES_BASE_UNRESOLVED, CHANGES_BUSY, CHANGES_READING_GONE, readChangeDiffs, readWorkspaceChanges, type ChangesReading } from './changes'
+import {
+  CHANGES_BASE_UNRESOLVED, CHANGES_BUSY, CHANGES_READING_GONE, readChangeDiffs, readComparison, readWorkspaceChanges,
+  type ChangesReading,
+} from './changes'
 import { lastFetchedAtMs } from '#domain/git'
 import { authorizeProject, type Actor } from '#domain/access'
 import {
@@ -334,25 +338,30 @@ export async function getWorkspaceChangeDiffs(
 }
 
 /**
- * The Commits pane's history: HEAD's commits and those of the branch it is
- * compared against, `base` or else the fork branch, as the changes read
- * picks it, and with `branches` the branches to pick from. A `base` that
- * does not resolve is a VALIDATION error.
+ * The diff between two refs of a running workspace's checkout, for a
+ * Changes pane showing a range or one commit (`readComparison`). A ref that
+ * does not resolve, or a pair sharing no history, is a VALIDATION error.
  */
-export async function getWorkspaceGitLog(
-  idOrName: string, base: string | undefined, opts: { limit: number; branches: boolean },
-): Promise<WorkspaceGitLog> {
-  const named = base?.trim()
-  const { jobName, projectId, workspaceId } = await runningWorkspace(idOrName)
-  const row = await getWorkspaceRow(projectId, workspaceId)
+export async function getWorkspaceComparison(idOrName: string, range: { from?: string; to: string }): Promise<WorkspaceComparison> {
+  const { jobName } = await runningWorkspace(idOrName)
   try {
-    return await checkoutLog(jobName, { base: named, defaultBase: forkBase(row), ...opts })
+    return await readComparison(jobName, range)
   } catch (err) {
-    if (named && err instanceof WorkspaceExecError && err.code === CHANGES_BASE_UNRESOLVED) {
-      throw new ServerError('VALIDATION', `no branch "${named}" that shares history with HEAD in this workspace`)
+    if (err instanceof WorkspaceExecError && err.code === CHANGES_BASE_UNRESOLVED) {
+      const pair = range.from ? `"${range.from}" and "${range.to}"` : `"${range.to}"`
+      throw new ServerError('VALIDATION', `${pair} give no diff in this workspace`)
     }
     throw err
   }
+}
+
+/**
+ * The Commits pane's history: HEAD's commits and those of the branch the
+ * workspace is based on, as the changes read resolves it.
+ */
+export async function getWorkspaceGitLog(idOrName: string, limit: number): Promise<WorkspaceGitLog> {
+  const { jobName, projectId, workspaceId } = await runningWorkspace(idOrName)
+  return await checkoutLog(jobName, { defaultBase: forkBase(await getWorkspaceRow(projectId, workspaceId)), limit })
 }
 
 /** Whether `rel` is a path the file routes would accept as written. */

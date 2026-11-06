@@ -547,7 +547,7 @@ export async function removeWorkspaceRecords(
   await deleteWorkspaceConversations(projectId, workspaceId)
 }
 
-/** Record the branch the workspace is based on, for a `yaac-mama set-base`. */
+/** Record the branch the workspace is based on. */
 export async function setWorkspaceBaseBranch(
   projectId: string,
   workspaceId: string,

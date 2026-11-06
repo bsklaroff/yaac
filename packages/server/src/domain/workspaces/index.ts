@@ -87,6 +87,7 @@ export {
   updateRoutine,
 } from './routines'
 export { reconcileWorkspaceTimeouts, setWorkspaceTimeout } from './timeouts'
+export { setWorkspaceBase } from './base-branch'
 export { markWaitingSeen } from './waiting-seen'
 export { listStoppedWorkspaces } from './stopped-list'
 export { getAcpStoredImage, getConversationTranscript, recordOrigin } from './transcript'
@@ -97,6 +98,7 @@ export {
   deleteWorkspaceEntry,
   getWorkspaceChangeDiffs,
   getWorkspaceChanges,
+  getWorkspaceComparison,
   getWorkspaceGitLog,
   listWorkspaceDir,
   readWorkspaceFile,

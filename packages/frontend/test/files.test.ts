@@ -1,16 +1,20 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import type { WorkspaceFiles } from '@yaac/shared/types'
+import { WORKTREE_REF, type WorkspaceFiles } from '@yaac/shared/types'
 import {
   FileConflict,
   buildTree,
+  changesRange,
+  changesTarget,
   fileLinksIn,
   fileTabLabels,
   fileTarget,
   fileTargetPath,
   filterPaths,
+  isChangesTarget,
   isFileTarget,
   isFilesTarget,
   placeFile,
+  rangeLabel,
   saveWorkspaceFile,
   type TreeNode,
 } from '#lib/files'
@@ -32,6 +36,20 @@ describe('targets', () => {
     expect(isFileTarget('file:src/a.ts')).toBe(true)
     expect(isFileTarget('files')).toBe(false)
     expect(fileTargetPath('file:src/a.ts')).toBe('src/a.ts')
+  })
+
+  // A branch may hold slashes and dots, but never `..`, so the first `...`
+  // splits a range; an empty start is one commit.
+  it('names a Changes pane per range, the workspace\u2019s own apart', () => {
+    const sha = 'c'.repeat(40)
+    for (const range of [{ from: 'feat/x.y', to: WORKTREE_REF }, { from: 'HEAD', to: sha }, { to: sha }]) {
+      expect(changesRange(changesTarget(range))).toEqual(range)
+      expect(isChangesTarget(changesTarget(range))).toBe(true)
+    }
+    expect(isChangesTarget('changes')).toBe(true)
+    expect(changesRange('changes')).toBeUndefined()
+    expect(rangeLabel({ from: 'main', to: WORKTREE_REF })).toBe('main → Working tree')
+    expect(rangeLabel({ to: sha })).toBe('ccccccc')
   })
 })
 

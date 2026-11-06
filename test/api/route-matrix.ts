@@ -258,6 +258,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   // Idempotent for an id with no entry.
   { method: 'POST', path: '/api/workspace/provisioning/:id/dismiss', request: `/api/workspace/provisioning/${ID.provisioning}/dismiss`, access: 'owner', k8s: 204, containerless: 204 },
   { method: 'POST', path: '/api/workspace/:id/keep-scratch-dirs', request: `${W}/keep-scratch-dirs`, body: { paths: ['target'] }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/:id/base', request: `${W}/base`, body: { branch: 'main' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/title', request: `${W}/title`, body: { title: 't' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id', request: W, access: 'reader', k8s: [404, 503], containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/conversations', request: `${W}/conversations`, access: 'reader', k8s: MISSING, containerless: MISSING },
@@ -275,6 +276,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/workspace/:id/changes/diff', request: `${W}/changes/diff`, body: { base: '0'.repeat(40), work: '0'.repeat(40), files: [{ path: 'a' }] }, access: 'reader', k8s: [404, 503], containerless: MISSING },
   // Run git inside the running workspace: 409 when stopped, 404 when
   // unknown.
+  { method: 'GET', path: '/api/workspace/:id/compare', request: `${W}/compare?to=HEAD`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/commits', request: `${W}/commits`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/file-at', request: `${W}/file-at?path=a&rev=${'0'.repeat(40)}`, access: 'reader', k8s: MISSING, containerless: MISSING },
   // The rest of the file editor reads the checkout on the server's disk, so

@@ -13,14 +13,29 @@ import type {
   WorkspaceFileSaved,
 } from '@yaac/shared/types'
 import { api, rawApi } from './api'
+import { refName } from './commits'
 import { addColumn, addTab, groupIndexOf, moveTargetToColumn, paneTargets, type PaneLayout } from './layout'
 
 /** The one layout target a workspace's explorer uses. */
 export const FILES_TARGET = 'files'
 
-/** The one layout target of a workspace's Changes pane: the explorer
- *  listing only changed files, each with its diff. */
+/** The layout target of a workspace's own Changes pane: the explorer
+ *  listing only the files changed since the fork with its base branch,
+ *  each with its diff. */
 export const CHANGES_TARGET = 'changes'
+
+const RANGE_PREFIX = 'changes:'
+
+/**
+ * What a Changes pane opened on a range compares: from the merge base of
+ * `from` and `to` to `to`, or with no `from`, one commit against its first
+ * parent. `to` may be `WORKTREE_REF`. Each end is a branch on origin, a
+ * commit or `HEAD`.
+ */
+export interface ChangesRange {
+  from?: string
+  to: string
+}
 
 const FILE_PREFIX = 'file:'
 
@@ -28,8 +43,31 @@ export function isFilesTarget(target: string): boolean {
   return target === FILES_TARGET
 }
 
+/** A Changes pane, the workspace's own or one on a range. */
 export function isChangesTarget(target: string): boolean {
-  return target === CHANGES_TARGET
+  return target === CHANGES_TARGET || target.startsWith(RANGE_PREFIX)
+}
+
+/** The Changes pane on a range: `changes:<from>...<to>`. A ref name holds
+ *  no `..`, so the first `...` splits it. */
+export function changesTarget({ from, to }: ChangesRange): string {
+  return `${RANGE_PREFIX}${from ?? ''}...${to}`
+}
+
+/** A range as its pane's tab names it: one commit by its short sha, a
+ *  range by both ends. */
+export function rangeLabel({ from, to }: ChangesRange): string {
+  return from === undefined ? refName(to) : `${refName(from)} → ${refName(to)}`
+}
+
+/** The range a Changes pane's target names; undefined for the workspace's
+ *  own pane. */
+export function changesRange(target: string): ChangesRange | undefined {
+  if (!target.startsWith(RANGE_PREFIX)) return undefined
+  const rest = target.slice(RANGE_PREFIX.length)
+  const split = rest.indexOf('...')
+  const from = rest.slice(0, split)
+  return { ...from ? { from } : {}, to: rest.slice(split + 3) }
 }
 
 /** The editor pane of one file, by its path relative to the workspace. */

@@ -4,7 +4,7 @@ import type { Context, MiddlewareHandler } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { jsonBodyLimit, optionalProjectRef, projectRef, zv } from '#routes/validator'
 import { z } from 'zod'
-import { allowWorkspaceHost, claimDraft, keepScratchDirsInCheckout, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getConversationTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listProvisioning, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toConversationEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, getWorkspaceGitLog, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand, mamaCaller, openSession, assertInteractive, addSteps, rerunStep, cancelStep, prepareRerun, listWorkspaceLogs, readWorkspaceLog, closeSession, resumeSession, renameSession, type QueueStart, listQueuedWorkspaces, setWorkspaceTimeout } from '#domain/workspaces'
+import { allowWorkspaceHost, claimDraft, keepScratchDirsInCheckout, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getConversationTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listProvisioning, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toConversationEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, getWorkspaceComparison, getWorkspaceGitLog, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand, mamaCaller, openSession, assertInteractive, addSteps, rerunStep, cancelStep, prepareRerun, listWorkspaceLogs, readWorkspaceLog, closeSession, resumeSession, renameSession, type QueueStart, listQueuedWorkspaces, setWorkspaceBase, setWorkspaceTimeout } from '#domain/workspaces'
 import { createShellWindow, killWindowTerminal } from '#runtime/terminals'
 import {
   createWorkspaceGroup,
@@ -673,6 +673,12 @@ export const workspaceApp = new Hono<IdentityEnv>()
     await dismissProvisioning(c.get('principal'), c.req.param('id'))
     return c.body(null, 204)
   })
+  // Base the workspace on another branch on origin, from the Commits pane.
+  .post(
+    '/:id/base',
+    zv('json', z.object({ branch: z.string().max(500) })),
+    async (c) => c.json(await setWorkspaceBase(c.get('principal'), c.req.param('id'), c.req.valid('json').branch)),
+  )
   .post(
     '/:id/title',
     zv('json', z.object({ title: z.string().max(500) })),
@@ -821,20 +827,19 @@ export const workspaceApp = new Hono<IdentityEnv>()
     }).refine((r) => r.skip === undefined || r.files.length === 1, 'skip reads one file')),
     async (c) => c.json(await getWorkspaceChangeDiffs(c.req.param('id'), c.req.valid('json'))),
   )
-  // The Commits pane's history: HEAD's commits and the compared branch's,
-  // newest `limit` of them. `base` overrides the branch as for `/changes`;
-  // `branches=1` adds the branches to pick from.
+  // The diff between two refs, for a Changes pane showing a range or, with
+  // no `from`, one commit.
+  .get(
+    '/:id/compare',
+    zv('query', z.object({ from: z.string().min(1).max(255).optional(), to: z.string().min(1).max(255) })),
+    async (c) => c.json(await getWorkspaceComparison(c.req.param('id'), c.req.valid('query'))),
+  )
+  // The Commits pane's history: HEAD's commits and the base branch's,
+  // newest `limit` of them.
   .get(
     '/:id/commits',
-    zv('query', z.object({
-      base: z.string().min(1).max(255).optional(),
-      limit: z.coerce.number().int().min(1).max(MAX_LOG_COMMITS).optional(),
-      branches: z.enum(['0', '1']).optional(),
-    })),
-    async (c) => {
-      const { base, limit, branches } = c.req.valid('query')
-      return c.json(await getWorkspaceGitLog(c.req.param('id'), base, { limit: limit ?? 200, branches: branches === '1' }))
-    },
+    zv('query', z.object({ limit: z.coerce.number().int().min(1).max(MAX_LOG_COMMITS).optional() })),
+    async (c) => c.json(await getWorkspaceGitLog(c.req.param('id'), c.req.valid('query').limit ?? 200)),
   )
   // The file editor (docs/file-editor.md). Served from the server's view of
   // the checkout, so stopped workspaces work too, under either driver.
