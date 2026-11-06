@@ -603,10 +603,13 @@ describe('readWorkspaceChanges', () => {
       return { changes, execs: w.runs.length - before }
     }
 
+    // The counts first, then the parts, each written by the next scan.
+    await w.read({ diff: false })
     const first = (await w.read()).changes
     await w.read()
-    // Each file's line, the same in the base diff and the unstaged one.
-    expect(lines()).toHaveLength(5)
+    // Each file's line, the same in the base diff and the unstaged one, as
+    // counts and then with its part.
+    expect(lines()).toHaveLength(10)
     expect(await restarted()).toEqual({ changes: first, execs: 1 })
 
     fs.appendFileSync(entries, '{"k":"cut sho')

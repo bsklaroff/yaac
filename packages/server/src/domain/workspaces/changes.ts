@@ -578,9 +578,10 @@ function entryFileWrite(held: Held): { mode: 'A' | 'R' | ''; text: string } {
 }
 
 /**
- * Take back the entries a scan printed from the file. A line cut short by
- * a killed write is dropped, and the file replaced at the next write, so
- * no append lands on the end of it.
+ * Take back the entries a scan printed from the file, where a later line
+ * for a key replaces an earlier one (a file's counts, then its part). A
+ * line cut short by a killed write is dropped, and the file replaced at the
+ * next write, so no append lands on the end of it.
  */
 function loadEntries(held: Held, text: string): void {
   let whole = text === '' || text.endsWith('\n')
@@ -588,7 +589,7 @@ function loadEntries(held: Held, text: string): void {
     if (!line) continue
     try {
       const { k, a, d, b, p } = JSON.parse(line) as { k: string; a: number; d: number; b: number; p?: string }
-      if (!held.entries.has(k)) held.entries.set(k, { counts: { additions: a, deletions: d, binary: b === 1 }, ...p !== undefined ? { part: p } : {}, json: line })
+      held.entries.set(k, { counts: { additions: a, deletions: d, binary: b === 1 }, ...p !== undefined ? { part: p } : {}, json: line })
     } catch {
       whole = false
     }
