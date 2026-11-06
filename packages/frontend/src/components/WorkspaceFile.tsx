@@ -12,6 +12,8 @@ import { DEFAULT_FONT_SIZE, useUiStore, type FileDiffMode } from '#lib/store'
 import { CodeEditor } from '#components/ui/CodeEditor'
 import { TextSizeMenu } from '#components/ui/TextSizeMenu'
 import { LineCountsLabel } from '#components/ui/LineCountsLabel'
+import { HtmlDocument } from '#components/HtmlDocument'
+import { MarkdownDocument } from '#components/Markdown'
 import { api } from '#lib/api'
 import { diffExtensions, setOriginal } from '#lib/diffEditor'
 import { CHANGE_STAGES } from '#lib/gitStatus'
@@ -26,12 +28,15 @@ import {
   discardFileSavers,
   fileKey,
   fileSaver,
+  previewKind,
   readWorkspaceFile,
   registerFileSaver,
   saveWorkspaceFile,
   workspaceMediaUrl,
 } from '#lib/files'
-import { CheckIcon, DiffIcon, LoadingIcon, SaveIcon, SearchIcon, WarningIcon } from '#lib/icons'
+import {
+  CheckIcon, DiffIcon, FileCodeIcon, LoadingIcon, SaveIcon, SearchIcon, ShowIcon, WarningIcon,
+} from '#lib/icons'
 
 /** Idle time after the last edit before autosave. */
 export const AUTOSAVE_MS = 1000
@@ -300,16 +305,18 @@ function MediaView({ src, type, path, failed }: {
  * size: the editor's own text stays at PHONE_TEXT_PX, and iOS decides
  * whether to zoom on focus from the font size, which a transform leaves
  * alone (CSS `zoom` would not). CodeMirror measures through the transform,
- * so taps, the cursor and selection still land. Rendered at scale 1 too, so
- * crossing the breakpoint keeps the editor mounted, with its undo history.
+ * so taps, the cursor and selection still land. Rendered at scale 1 too, and
+ * kept while `hidden` under a preview, so the editor stays mounted, with its
+ * undo history.
  */
-function Scaled({ scale, touch, children }: {
+function Scaled({ scale, touch, hidden, children }: {
   scale: number
   touch: TouchHandlers
+  hidden: boolean
   children: JSX.Element
 }): JSX.Element {
   return (
-    <div {...touch} className="relative min-h-0 flex-1 touch-pan-x touch-pan-y overflow-hidden">
+    <div {...touch} className={clsx('relative min-h-0 flex-1 touch-pan-x touch-pan-y overflow-hidden', hidden && 'hidden')}>
       <div
         className="absolute left-0 top-0 flex origin-top-left flex-col"
         style={{
@@ -329,7 +336,9 @@ function Scaled({ scale, touch, children }: {
  * so undo history, cursor and unsaved text survive a tab switch; polls only
  * while visible. Autosaves a second after the last keystroke. Pane-level
  * keys: Cmd/Ctrl-S saves now, Cmd/Ctrl-F opens find, Cmd/Ctrl =/−/0 size the
- * text instead of zooming the page, as a two-finger pinch does.
+ * text instead of zooming the page, as a two-finger pinch does. A markdown
+ * or HTML file can be shown rendered instead, over its editor, which stays
+ * mounted underneath.
  */
 export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
   workspaceId: string
@@ -375,6 +384,10 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
   const diffMode = useUiStore((s) => s.fileDiffMode)
   const setDiffMode = useUiStore((s) => s.setFileDiffMode)
   const original = useOriginal(workspaceId, change, changes?.base, diffMode !== 'plain')
+  const kind = previewKind(path)
+  const preview = useUiStore((s) => s.filePreview)
+  const setPreview = useUiStore((s) => s.setFilePreview)
+  const previewing = kind !== null && preview
   const diffing = original !== null
   // The find bar mounts above the editor rather than in it, so a phone's
   // text size (Scaled) leaves its controls their normal size. CodeMirror
@@ -444,7 +457,7 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
     } else if (chordMatches(saveChord(), e.nativeEvent)) {
       e.preventDefault()
       void saver.flush()
-    } else if (chordMatches(findChord(), e.nativeEvent) && viewRef.current) {
+    } else if (chordMatches(findChord(), e.nativeEvent) && viewRef.current && !previewing) {
       e.preventDefault()
       openFind()
     }
@@ -507,8 +520,14 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
         }
         return (
           <>
-            <div ref={setPanelHost} style={{ height: 'auto' }} />
-            <Scaled scale={mobile ? fontSize / PHONE_TEXT_PX : 1} touch={pinch}>
+            {previewing && kind === 'html' && <HtmlDocument workspaceId={workspaceId} path={path} text={saver.text} />}
+            {previewing && kind === 'markdown' && (
+              <div {...pinch} className="min-h-0 flex-1 touch-pan-x touch-pan-y overflow-auto px-6 py-4">
+                <MarkdownDocument workspaceId={workspaceId} path={path} text={saver.text} fontSize={fontSize} />
+              </div>
+            )}
+            <div ref={setPanelHost} style={{ height: 'auto' }} className={clsx(previewing && 'hidden')} />
+            <Scaled scale={mobile ? fontSize / PHONE_TEXT_PX : 1} touch={pinch} hidden={previewing}>
               <CodeEditor
                 value={saver.text}
                 onChange={(v) => saver.edit(v)}
@@ -568,17 +587,30 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
         )}
         {phase.kind === 'ready' && !conflict && (
           <div className="flex shrink-0 items-center">
-            <DiffModeMenu mode={diffMode} active={diffing} onChange={setDiffMode} />
-            <TextSizeMenu size={fontSize} onChange={setFontSize} className="h-5 w-5" />
-            <button
-              onClick={openFind}
-              title={`Find (${formatChord(findChord(), IS_MAC)})`}
-              aria-label="Find"
-              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-faint transition
-                hover:bg-surface-2 hover:text-text"
-            >
-              <SearchIcon size={12} />
-            </button>
+            {kind !== null && (
+              <button
+                onClick={() => setPreview(!preview)}
+                title={previewing ? 'Show source' : 'Show rendered'}
+                aria-label={previewing ? 'Show source' : 'Show rendered'}
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-faint transition
+                  hover:bg-surface-2 hover:text-text"
+              >
+                {previewing ? <FileCodeIcon size={12} /> : <ShowIcon size={12} />}
+              </button>
+            )}
+            {!previewing && <DiffModeMenu mode={diffMode} active={diffing} onChange={setDiffMode} />}
+            {!(previewing && kind === 'html') && <TextSizeMenu size={fontSize} onChange={setFontSize} className="h-5 w-5" />}
+            {!previewing && (
+              <button
+                onClick={openFind}
+                title={`Find (${formatChord(findChord(), IS_MAC)})`}
+                aria-label="Find"
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-faint transition
+                  hover:bg-surface-2 hover:text-text"
+              >
+                <SearchIcon size={12} />
+              </button>
+            )}
           </div>
         )}
       </div>

@@ -251,6 +251,7 @@ const PERSISTED: { [K in keyof UiState]?: Persisted<UiState[K]> } = {
   editorFontSize: number('yaac.editorfontsize.v1', clampFontSize),
   filesFontSize: number('yaac.filesfontsize.v1', clampFontSize),
   fileDiffMode: oneOf('yaac.filediffmode.v1', FILE_DIFF_MODES),
+  filePreview: flag('yaac.filepreview.v1'),
   chatFullWidth: flag('yaac.chatfullwidth.v1'),
   chatCondensed: flag('yaac.chatcondensed.v1'),
   lastWorkspaceOf: jsonRecord('yaac.lastworkspace.v1', isString),
@@ -584,6 +585,10 @@ interface UiState {
   /** How file panes show their changes. Saved. */
   fileDiffMode: FileDiffMode
   setFileDiffMode: (mode: FileDiffMode) => void
+  /** Whether file panes show a markdown or HTML file rendered rather than
+   *  as text. Saved; off by default. */
+  filePreview: boolean
+  setFilePreview: (on: boolean) => void
   /** Whether chat panes span the full pane width instead of a centered
    *  column. Saved; off by default. */
   chatFullWidth: boolean
@@ -899,6 +904,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   editorFontSize: DEFAULT_FONT_SIZE,
   filesFontSize: DEFAULT_FONT_SIZE,
   fileDiffMode: 'plain',
+  filePreview: false,
   chatFullWidth: false,
   chatCondensed: true,
   viewMode: defaultViewMode(),
@@ -1167,6 +1173,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   setEditorFontSize: (px) => set({ editorFontSize: clampFontSize(px) }),
   setFilesFontSize: (px) => set({ filesFontSize: clampFontSize(px) }),
   setFileDiffMode: (mode) => set({ fileDiffMode: mode }),
+  setFilePreview: (on) => set({ filePreview: on }),
   setViewMode: (mode) => set({ viewMode: mode }),
   setPinnedUsageMetric: (key) => set({ pinnedUsageMetric: key }),
   setActiveTab: (workspaceId, target) => set((s) => (

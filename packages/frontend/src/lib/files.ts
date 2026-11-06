@@ -5,6 +5,7 @@
  * links on file paths in terminal and chat text.
  */
 import { ServerError } from '@yaac/shared/errors'
+import { mediaType } from '@yaac/shared/media-types'
 import type {
   SymlinkTarget,
   WorkspaceDir,
@@ -105,8 +106,75 @@ export function readWorkspaceFile(workspaceId: string, path: string, known?: str
 
 /** Where the browser loads a media file from. The version makes a changed
  *  file a new URL, so its view reloads. */
-export function workspaceMediaUrl(workspaceId: string, path: string, version: string): string {
-  return `/api/workspace/${encodeURIComponent(workspaceId)}/raw?${new URLSearchParams({ path, v: version })}`
+export function workspaceMediaUrl(workspaceId: string, path: string, version?: string): string {
+  const query = new URLSearchParams(version === undefined ? { path } : { path, v: version })
+  return `/api/workspace/${encodeURIComponent(workspaceId)}/raw?${query}`
+}
+
+/** The largest image a preview inlines, as for a chat attachment: the
+ *  `data:` URL of a much bigger one can exhaust the tab. */
+const MAX_PREVIEW_IMAGE_BYTES = 5 * 1024 * 1024
+
+/**
+ * The bytes one preview may inline in all, and in any one file, so that many
+ * files, or one file under many names (symlinks are followed), cannot
+ * exhaust the tab either. A path holds one reservation, so reading it
+ * again replaces its own.
+ */
+export class InlineBudget {
+  private readonly held = new Map<string, number>()
+  private total = 0
+
+  constructor(private readonly limit = 32 * 1024 * 1024) {}
+
+  /** Reserves `bytes` for `path`, unless that would go past the limit. */
+  take(path: string, bytes: number): boolean {
+    const total = this.total - (this.held.get(path) ?? 0) + bytes
+    if (bytes > MAX_PREVIEW_IMAGE_BYTES || total > this.limit) return false
+    this.held.set(path, bytes)
+    this.total = total
+    return true
+  }
+
+  /** Charges another copy of what `path` holds, for a page that writes one
+   *  file out more than once, unless that would go past the limit. */
+  again(path: string): boolean {
+    const total = this.total + (this.held.get(path) ?? 0)
+    if (total > this.limit) return false
+    this.total = total
+    return true
+  }
+}
+
+/**
+ * A checkout image as a `data:` URL, for a preview that loads nothing from
+ * anywhere (docs/file-editor.md, "Previews"). An SVG comes from its text,
+ * since the raw route refuses SVG, and runs no script as an image. Null
+ * for a file that is not an image, cannot be read, or does not fit
+ * `budget`; the raw route's `Content-Length` shows that before the body is
+ * read.
+ */
+export async function imageDataUrl(workspaceId: string, path: string, budget: InlineBudget): Promise<string | null> {
+  if (/\.svg$/i.test(path)) {
+    const text = await readWorkspaceFile(workspaceId, path)
+      .then((f) => (budget.take(path, f.size) ? f.content : null), () => null)
+    return typeof text === 'string' ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(text)}` : null
+  }
+  if (!mediaType(path)?.startsWith('image/')) return null
+  const abort = new AbortController()
+  const res = await fetch(workspaceMediaUrl(workspaceId, path), { signal: abort.signal }).catch(() => null)
+  if (!res?.ok) return null
+  if (!budget.take(path, Number(res.headers.get('content-length') ?? Infinity))) {
+    abort.abort()
+    return null
+  }
+  const blob = await res.blob()
+  return new Promise((resolve) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = () => resolve(null)
+    reader.readAsDataURL(blob)
+  })
 }
 
 /** A save refused because the file changed since the version it was based
@@ -368,6 +436,31 @@ export function resolveFilePath(token: string, files: CheckoutFiles): FileRef | 
     : trimmed.replace(/^\.\//, '')
   if (!files.paths.has(relative)) return undefined
   return lineText ? { path: relative, line: Number(lineText) } : { path: relative }
+}
+
+/** How a file pane can show a file rendered rather than as text. */
+export function previewKind(path: string): 'markdown' | 'html' | null {
+  const ext = /\.([^./]+)$/.exec(path)?.[1]?.toLowerCase()
+  if (ext === 'md' || ext === 'markdown') return 'markdown'
+  if (ext === 'html' || ext === 'htm') return 'html'
+  return null
+}
+
+const CHECKOUT_ORIGIN = 'https://checkout.invalid'
+
+/**
+ * The checkout path a link in the file at `from` points to, resolved from
+ * that file's folder, or null for a link elsewhere (a URL, `mailto:`). A
+ * leading `/` is the checkout's root, as on GitHub, and `..` stops there.
+ * The query and fragment are dropped.
+ */
+export function linkedCheckoutPath(from: string, href: string): string | null {
+  try {
+    const url = new URL(href, `${CHECKOUT_ORIGIN}/${from.split('/').map(encodeURIComponent).join('/')}`)
+    return url.origin === CHECKOUT_ORIGIN ? decodeURIComponent(url.pathname.slice(1)) : null
+  } catch {
+    return null
+  }
 }
 
 // ── Tabs and placement ─────────────────────────────────────────────────
