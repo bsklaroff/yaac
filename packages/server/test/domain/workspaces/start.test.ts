@@ -53,6 +53,7 @@ import {
   opencodeCheckpointDir,
   opencodeConfigDir,
   opencodeDataDir,
+  hostedRepoDir,
   piDir,
   repoDir,
   workspaceDir,
@@ -63,6 +64,7 @@ import {
   PLACEHOLDER_API_KEY, PLACEHOLDER_GH_TOKEN, PLACEHOLDER_OPENCODE_API_KEY, PLACEHOLDER_PI_API_KEY,
 } from '@yaac/shared/tool-auth'
 import { closeDb } from '#db/client'
+import { cloneRepo, initHostedRepo } from '#domain/git'
 import {
   BUILT_IN_USER_ID,
   createWorkspaceGroup,
@@ -958,6 +960,28 @@ describe('prepareStart', () => {
       await start({ workspaceId: 'wt-taken' })
       await expect(start({ workspaceId: 'wt-taken' })).rejects.toThrow()
       expect(specs).toHaveLength(1)
+    })
+
+    // Pushing to an empty origin changes the remote, so it waits for every
+    // check that can refuse the create; the next create still seeds it.
+    it('gives an empty origin its default branch only once the create\'s checks pass', async () => {
+      const hosted = '6c4f3a5d-2e1b-4c0a-9d8e-3b4c5d6e7f80'
+      await recordProject({ id: hosted, name: 'fresh', remoteUrl: `http://yaac.internal/${hosted}.git`, addedAt: '', hosted: true }, BUILT_IN_USER_ID)
+      await fs.mkdir(path.dirname(hostedRepoDir(hosted)), { recursive: true })
+      await initHostedRepo(hostedRepoDir(hosted))
+      await cloneRepo(hostedRepoDir(hosted), repoDir(hosted), { kind: 'hosted' })
+      const branches = async (): Promise<string> => git(hostedRepoDir(hosted), ['for-each-ref', '--format=%(refname) %(subject)', 'refs/heads'])
+
+      installDriver({ assertCanLaunch: async () => {
+        await new Promise((r) => setTimeout(r, 500))
+        throw new Error('no claude here')
+      } })
+      await expect(start({ projectId: hosted })).rejects.toThrow('no claude here')
+      expect(await branches()).toBe('')
+
+      installDriver()
+      await start({ projectId: hosted, noSession: true })
+      expect(await branches()).toBe('refs/heads/main Initial commit\n')
     })
 
     it('fails on its first failed launch, rolls a fresh create back entirely, and keeps a failed row', async () => {

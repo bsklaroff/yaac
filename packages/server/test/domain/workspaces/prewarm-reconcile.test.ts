@@ -506,14 +506,6 @@ describe('reconcilePrewarmPool', () => {
       await flush()
       expect(exec).toHaveBeenCalledTimes(2)
       expect(mockRebranch).toHaveBeenCalledTimes(1)
-
-      // Warmed on an empty repo, it has no commit yet: moved once origin
-      // gets its first branch.
-      spareHeads.clear()
-      head = ''
-      await pass()
-      await flush()
-      expect(mockRebranch).toHaveBeenCalledTimes(2)
     })
 
     // A claim that finishes while the refresh reads the base's tip leaves no

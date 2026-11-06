@@ -18,7 +18,7 @@ export {
   setProjectAllowlist,
 } from './allowlist'
 export { getProjectBranches } from './branches'
-export { fetchProjectCommit, fetchProjectOrigin, refreshProjectOrigins } from './origin'
+export { fetchProjectCommit, fetchProjectOrigin, refreshProjectOrigins, seedProjectOrigin } from './origin'
 export {
   deleteBuildFile,
   listBuildFiles,

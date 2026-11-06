@@ -79,7 +79,7 @@ export async function checkoutLog(
   const { workspaceDir, scratchDir } = driver.workspacePaths(jobName)
   const script = `cd ${workspaceDir} || exit 3; ${RESOLVE_BASE_SH}`
     + 'sha=; [ -z "$ref" ] || sha=$(git rev-parse -q --verify "$ref^{commit}") || exit 5; '
-    // An unborn HEAD (an empty repo's checkout) has no history of its own.
+    // An unborn HEAD (a new orphan branch) has no history of its own.
     + 'head=$(git rev-parse -q --verify HEAD); '
     + 'printf "REF %s\\nHEAD %s\\nLOG\\n" "$ref" "$head"; '
     + `[ -z "$head$sha" ] && exit 0; o=${scratchDir}/yaac-log.$$; `

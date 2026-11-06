@@ -170,6 +170,44 @@ export function fetchOrigin(
   return run
 }
 
+/**
+ * Give an origin with no branches its first: an empty root commit by
+ * `author` on the branch the main clone's HEAD names. A clone of an empty
+ * remote takes that from the remote's advertised default where the host
+ * advertises one (GitHub does), else from this server's
+ * `init.defaultBranch`. Otherwise a workspace's first push would create
+ * origin's first branch, which a host such as GitHub makes its default
+ * whatever its name. Nothing is forced, and it holds the fetch lock, so of
+ * two creates racing on one repo only the first pushes. Emptiness is
+ * confirmed against the remote itself before pushing, since the local refs
+ * are only current if a fetch just ran. A no-op once origin has a branch.
+ */
+export function seedEmptyOrigin(
+  repoPath: string,
+  remoteUrl: string,
+  credential: ResolvedGitCredential | null,
+  author: { name: string; email: string },
+): Promise<void> {
+  return fetchOriginMutex(repoPath, async () => {
+    if ((await listRemoteBranches(repoPath)).length > 0) return
+    const git = (args: string[]): Promise<string> => runGit(repo(repoPath), args).then((out) => out.trim())
+    const remote = async (args: string[]): Promise<string> => runGit(repo(repoPath), args, {
+      env: await gitEnvForCredential(credential, remoteUrl),
+      remoteUrl,
+    })
+    if ((await remote(['ls-remote', '--heads', remoteUrl])).trim() !== '') return
+    const branch = await git(['symbolic-ref', '--short', 'HEAD'])
+    const tree = await git(['hash-object', '-w', '-t', 'tree', '/dev/null'])
+    const sha = await git([
+      '-c', `user.name=${author.name}`, '-c', `user.email=${author.email}`,
+      'commit-tree', tree, '-m', 'Initial commit',
+    ])
+    await remote(['push', '--quiet', remoteUrl, `${sha}:refs/heads/${branch}`])
+    await git(['update-ref', `refs/remotes/origin/${branch}`, sha])
+    await setOriginHead(repoPath, branch)
+  })
+}
+
 
 /**
  * The main clone's only gc, run after fetches (docs/server-git.md).
@@ -284,9 +322,6 @@ const CHECKOUT_WORKERS = 8
  * `<workspacePath>/.git`, so the destination's inode never changes and a pod
  * can bind `/workspace` before this runs.
  *
- * When origin has no branches at all (an empty repo), `branch` is left
- * unborn, so the agent's first commit starts the history.
- *
  * `fetched`, a fetch of the main clone in flight, lets the checkout start
  * from the refs the main clone already has instead of waiting on the
  * network. The result still reflects the refs after the fetch: once it
@@ -313,7 +348,7 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
   branch: string
   remoteUrl: string
   fetched?: Promise<void>
-} & ({ baseBranch: string; commit?: undefined } | { commit: string; baseBranch?: undefined })): Promise<string | null> {
+} & ({ baseBranch: string; commit?: undefined } | { commit: string; baseBranch?: undefined })): Promise<string> {
   // Awaited after the checkout; until then nothing would observe a rejection.
   params.fetched?.catch(() => { /* observed below */ })
   if (await fs.lstat(path.join(repoPath, '.git', 'shallow')).then(() => true, () => false)) {
@@ -329,10 +364,8 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
     fetched = undefined
     main = await mainRefs(repoPath)
   }
-  let startSha = commit ?? remoteSha(main, baseBranch ?? '') ?? null
-  if (startSha === null && main.refs.some(([, ref]) => ref.startsWith('refs/remotes/origin/'))) {
-    throw new Error(`origin/${baseBranch ?? ''} does not exist in ${repoPath}`)
-  }
+  let startSha = commit ?? remoteSha(main, baseBranch ?? '')
+  if (startSha === undefined) throw new Error(`origin/${baseBranch ?? ''} does not exist in ${repoPath}`)
   // Assembled beside the checkout, where no workspace mounts it.
   const staging = path.join(path.dirname(workspacePath), `.staging-${path.basename(workspacePath)}`)
   const gitDir = path.join(staging, '.git')
@@ -377,7 +410,7 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
     // `-B` points the branch at `sha` in the same process, with its reflog.
     const checkOut = (sha: string): Promise<string> => runGit({ kind: 'private', gitDir, workTree: workspacePath },
       ['-c', `checkout.workers=${String(CHECKOUT_WORKERS)}`, 'checkout', '--force', '--quiet', '-B', branch, sha])
-    if (startSha !== null) await checkOut(startSha)
+    await checkOut(startSha)
     // Checked out alongside the fetch; catch up with whatever it moved
     // before the checkout becomes visible.
     if (fetched !== undefined) {
