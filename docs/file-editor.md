@@ -113,9 +113,13 @@ them. Taking folders deepest first, one holding more than 2,000, less what
 folders already skipped below it hold, is **skipped**: `add -A` excludes it,
 its entries in the private index go back to the agent's tree (dropping
 anything an earlier poll staged there), and only its tracked files' edits
-are staged. The answer names it in `skipped`; the Changes pane shows it as
-one untracked row, "over 2,000 files, not diffed", and the explorer as one
-folder whose children are read on expand, like an ignored one. So a build
+are staged. The answer names it in `skipped` as `dir/`; the Changes pane
+shows it as one untracked row, "over 2,000 files, not diffed", and the
+explorer as one folder whose children are read on expand, like an ignored
+one. An untracked file over 10 MiB is left out the same way, since staging
+it would copy it into pod memory, and named in `skipped` as itself; it is
+added with intent to add, which records no object and puts it in no tree,
+so the explorer still lists it. So a build
 directory nobody ignored costs one more walk of the working tree per poll
 instead of minutes of failed staging, while the agent's own `git status`
 still sees every file, and the folder leaves the limit once it is ignored,
@@ -166,9 +170,16 @@ unstaged pair (the agent's tree → the working tree, without rename pairing)
 and the base diff (base → the working tree). A file's numstat row and body
 part are a function of its raw line (both modes, both blob ids, the status
 with a rename's score, and the paths) and of the diff settings: `diff.*`
-and `submodule.*` config, `core.bigFileThreshold`, `.gitmodules` and every
-attributes source, hashed together, since one attribute can make another
-file binary. So the server keeps, per workspace, each pair's raw lines
+and `submodule.*` config, `core.bigFileThreshold`, `core.abbrev`,
+`.gitmodules` and every attributes source, hashed together, since one
+attribute can make another file binary. The `.gitattributes` files and
+`.gitmodules` are hashed from the working tree's git tree, and the fill
+reads attributes from that tree too (`GIT_ATTR_SOURCE`), so one staging
+left out (in a skipped folder, or ignored) counts for neither; a git before
+2.40 ignores the variable and reads the working tree's. The one input left
+out on purpose is a textconv program's own output, taken to depend only on
+the blob: a program edited without a change to its config shows its old
+output for a file until that file's raw line changes. So the server keeps, per workspace, each pair's raw lines
 under its two trees and the settings, and each file's counts and part
 under the settings and its raw line (an **entry**), and the scan prints only
 the pairs the server lacks: an idle poll prints none. The second script,
@@ -215,8 +226,9 @@ so they match the poll's parts whatever the checkout has done since. A `git
 diff` that fails before the body's cap (a textconv program that is missing)
 keeps no part: the answer keeps its file list and shows the body as
 truncated to nothing. A fill that finds a blob gone (the agent pruned one
-the private index names) leaves a mark that has the next scan seed afresh,
-and the read runs once more.
+the private index names) leaves a mark that has the next scan seed afresh;
+a poll then runs once more, and `POST changes/diff` answers 404 as for a
+gone tree.
 
 The entries also live in the workspace's scratch, in
 `yaac-changes.idx.entries` beside the private index, one JSON line each,
@@ -224,8 +236,9 @@ so a server restart costs a scan and the file read back rather than a fill
 of every file. The server writes the file through the next scan's stdin,
 appending the entries filled since the last scan, or replacing it with the
 live entries once it would pass twice their size; the first scan after a
-restart prints it back. A line cut short by a killed write is dropped and
-the file replaced, so no append lands on the end of it. Kept in the
+restart prints it back, unless it has grown past 32 MiB. A line cut short
+by a killed write, or one that is not an entry, is dropped, and the file
+replaced, so no append lands on the end of it. Kept in the
 workspace, the agent's uncommitted content stays inside its sandbox, and
 the file dies with the pod like the private index beside it.
 
@@ -256,7 +269,8 @@ read, with every file in its listing and every change's raw lines, can
 pass that, and so can a fill of a whole large pair. So both scripts write
 their output to a scratch file and print it only up to 2 MiB; past that
 they print the file's name and size, and the server fetches it in base64
-pages of that size, one exec each. The next scan clears the file. Only the
+pages of that size, one exec each, refusing one over 128 MiB. The next
+scan clears the file. Only the
 last 4 KiB of stderr is passed on, since a warning per file could pass the
 cap too.
 

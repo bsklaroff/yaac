@@ -6,6 +6,7 @@ import path from 'node:path'
 import {
   CHANGES_BASE_UNRESOLVED,
   CHANGES_READING_GONE,
+  MAX_UNTRACKED_FILE_BYTES,
   MAX_UNTRACKED_FOLDER_FILES,
   OUTPUT_PAGE_BYTES,
   SCRATCH_OBJECTS_CAP_KB,
@@ -539,6 +540,15 @@ describe('readWorkspaceChanges', () => {
     git(repo, 'config', 'diff.renames', 'false')
     expect(await expectRead()).not.toEqual([])
     expect((await w.read()).changes.files.find((f) => f.path === 'moved.txt')?.status).toBe('added')
+
+    // Color never reaches the body, and the ids' length is keyed.
+    git(repo, 'config', 'color.ui', 'always')
+    fs.appendFileSync(file(6), 'more\n')
+    expect(await expectRead()).toEqual(['src/f06.txt'])
+    expect((await w.read()).changes.diff).toMatch(/^diff --git /)
+    git(repo, 'config', 'core.abbrev', '12')
+    expect(await expectRead()).not.toEqual([])
+    expect((await w.read()).changes.diff).toMatch(/^index [0-9a-f]{12}\.\./m)
   })
 
   // A fill reads the lines it lacks by path, and git pairs renames among
@@ -616,6 +626,20 @@ describe('readWorkspaceChanges', () => {
     expect(await restarted()).toEqual({ changes: first, execs: 1 })
     await w.read()
     expect(lines().map((l) => (JSON.parse(l) as { k: string }).k)).toHaveLength(5)
+
+    // A line that is not an entry is dropped too, and so is a file past its
+    // bound, unread; either way the file is replaced.
+    const wrong = lines().map((l) => JSON.parse(l) as Record<string, unknown>)
+    wrong[0].p = 5
+    fs.writeFileSync(entries, wrong.map((e) => `${JSON.stringify(e)}\n`).join(''))
+    expect((await restarted()).changes).toEqual(first)
+    await w.read()
+    expect(lines().every((l) => typeof (JSON.parse(l) as { p: unknown }).p === 'string')).toBe(true)
+    w.rewrite((cmd) => cmd.replace(/-gt \d+ \] \|\| \{ printf "@@ENTRIES@@/, '-gt 10 ] || { printf "@@ENTRIES@@'))
+    expect((await restarted())).toEqual({ changes: first, execs: 2 })
+    w.rewrite((cmd) => cmd)
+    await w.read()
+    expect(lines()).toHaveLength(5)
 
     for (let k = 0; k < 12; k++) {
       fs.appendFileSync(path.join(w.repo, 'f0.txt'), `edit ${k}\n`)
@@ -781,8 +805,10 @@ describe('readWorkspaceChanges', () => {
   // An untracked folder too large to stage is left out, so an unignored
   // build output cannot stall every read. It counts only files no ignore
   // pattern covers, less those of a folder already left out below it, and
-  // its tracked files are still diffed.
-  it('leaves out an untracked folder over the size limit, still diffing its tracked files', async () => {
+  // its tracked files are still diffed. So is an untracked file too large
+  // to hold in scratch, which the listing still names. A `.gitattributes`
+  // staging leaves out applies neither to a cached read nor to a fresh one.
+  it('leaves out untracked folders and files over the size limits, still diffing tracked files', async () => {
     const w = workspace()
     const write = (dir: string, n: number): void => {
       fs.mkdirSync(path.join(w.repo, dir), { recursive: true })
@@ -793,7 +819,7 @@ describe('readWorkspaceChanges', () => {
     git(w.repo, 'add', '-A')
     git(w.repo, 'commit', '-qm', 'build')
     git(w.repo, 'checkout', '-q', '-b', 'agent/x')
-    w.rewrite((cmd) => cmd.replaceAll(`>${MAX_UNTRACKED_FOLDER_FILES}`, '>5'))
+    w.rewrite((cmd) => cmd.replaceAll(`>${MAX_UNTRACKED_FOLDER_FILES}`, '>5').replaceAll(`+${MAX_UNTRACKED_FILE_BYTES}c`, '+100c'))
     const read = (): Promise<ChangesReading> => w.read({ listing: 'paths' })
     const changed = (r: ChangesReading): string[] => r.changes.files.map((f) => f.path)
 
@@ -809,15 +835,32 @@ describe('readWorkspaceChanges', () => {
     write('newpkg/node_modules/dep', 10)
     fs.appendFileSync(path.join(w.repo, 'build/f0.js'), 'edited\n')
     const over = await read()
-    expect(over.changes.skipped?.sort()).toEqual(['build', 'out/big'])
+    expect(over.changes.skipped?.sort()).toEqual(['build/', 'out/big/'])
     expect(changed(over)).toEqual(['build/f0.js', 'newpkg/f0.js', 'newpkg/f1.js', 'newpkg/f2.js', 'out/f0.js'])
     expect(over.changes.files[0].stages).toEqual({ modified: { additions: 1, deletions: 0 } })
     expect(over.listing?.paths.filter((p) => p.startsWith('build/') || p.startsWith('out/big/'))).toEqual(['build/f0.js'])
     expect(git(w.repo, 'status', '--porcelain', '--', 'build')).toBe(' M build/f0.js\n?? build/m0/\n?? build/m1/\n')
 
+    for (const attrs of ['build/.gitattributes', '.gitattributes']) {
+      fs.writeFileSync(path.join(w.repo, attrs), 'f0.js -diff\n')
+      if (attrs === '.gitattributes') fs.appendFileSync(path.join(w.repo, '.gitignore'), '/.gitattributes\n')
+      expect((await read()).changes).toEqual((await w.fresh({ listing: 'paths' })).changes)
+      expect((await read()).changes.files.find((f) => f.path === 'build/f0.js')?.binary).toBe(false)
+      fs.rmSync(path.join(w.repo, attrs))
+      expect((await read()).changes).toEqual((await w.fresh({ listing: 'paths' })).changes)
+    }
+
+    fs.writeFileSync(path.join(w.repo, 'big.bin'), 'x'.repeat(200))
+    const large = await read()
+    expect(large.changes.skipped?.sort()).toEqual(['big.bin', 'build/', 'out/big/'])
+    expect(changed(large)).not.toContain('big.bin')
+    expect(large.listing?.paths).toContain('big.bin')
+    expect(git(w.repo, 'status', '--porcelain', '--', 'big.bin')).toBe('?? big.bin\n')
+    fs.rmSync(path.join(w.repo, 'big.bin'))
+
     fs.rmSync(path.join(w.repo, 'build/m1'), { recursive: true })
     const back = await read()
-    expect(back.changes.skipped).toEqual(['out/big'])
+    expect(back.changes.skipped).toEqual(['out/big/'])
     expect(changed(back).filter((p) => p.startsWith('build/'))).toEqual([
       'build/f0.js', 'build/m0/f0.js', 'build/m0/f1.js', 'build/m0/f2.js', 'build/m0/f3.js',
     ])
@@ -1080,6 +1123,13 @@ describe('readChangeDiffs', () => {
 
     await expect(readChangeDiffs('ws', { base: '0'.repeat(40), work: changes.work, files: left }))
       .rejects.toMatchObject({ code: CHANGES_READING_GONE })
+    // A blob gone from under the reading answers the same, and has the next
+    // scan seed afresh.
+    const blob = git(repo, 'hash-object', 'edit.txt').trim()
+    fs.rmSync(path.join(w.scratch(), 'yaac-changes.idx.objects', blob.slice(0, 2), blob.slice(2)))
+    await expect(readChangeDiffs('ws', { base: changes.base, work: changes.work, files: [{ path: 'edit.txt' }] }))
+      .rejects.toMatchObject({ code: CHANGES_READING_GONE })
+    expect(fs.existsSync(path.join(w.scratch(), 'yaac-changes.idx.reseed'))).toBe(true)
     for (const bad of ['../x', '/etc/passwd', 'a\0b', '"..\\057x"']) {
       await expect(readChangeDiffs('ws', { base: changes.base, work: changes.work, files: [{ path: bad }] }))
         .rejects.toMatchObject({ code: 'VALIDATION' })

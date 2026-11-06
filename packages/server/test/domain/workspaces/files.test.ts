@@ -296,7 +296,7 @@ describe('getWorkspaceChanges', () => {
     await Promise.all(Array.from({ length: 2002 }, (_, k) => write(dir, `gen/m${k % 2}/o${k}.js`)))
     await fs.mkdir(path.join(dir, 'gen/m0/empty'))
     const { listing: files, skipped, files: changed } = await getWorkspaceChanges('gen', undefined, { diff: false, listing: 'full' })
-    expect([skipped, files?.skipped]).toEqual([['gen'], ['gen']])
+    expect([skipped, files?.skipped]).toEqual([['gen/'], ['gen']])
     expect([...files!.paths, ...files!.emptyDirs, ...changed.map((f) => f.path)].filter((p) => p.startsWith('gen'))).toEqual([])
   })
 

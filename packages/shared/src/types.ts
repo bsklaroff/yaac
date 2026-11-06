@@ -1119,9 +1119,10 @@ export interface WorkspaceDiff {
   diff?: string
   /** True when the diff body was capped for size; `files` stays complete. */
   truncated: boolean
-  /** Folders left out of the diff for holding over 2,000 untracked files
-   *  that nothing ignores, such as a build's output: staging them would
-   *  stall every read. Their tracked files are still diffed. */
+  /** What is left out of the diff for being too large to stage: folders
+   *  (as `dir/`) holding over 2,000 untracked files that nothing ignores,
+   *  such as a build's output, whose tracked files are still diffed, and
+   *  untracked files over 10 MiB. */
   skipped?: string[]
 }
 

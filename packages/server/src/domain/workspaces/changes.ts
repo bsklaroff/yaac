@@ -111,13 +111,13 @@ const MAX_FILE_DIFF_BYTES = MAX_DIFF_BYTES / 4
  * whole answer. A cut between two files' parts prints no cut line, since no
  * part was cut. A read that skips into a line of `$p` bytes or more prints
  * its first `$p` bytes as the line, then the cut line, so the next read
- * goes on from the line after it.
+ * goes on from the line after it. git's stderr goes to `log`.
  */
-function cappedFn(errFile: string): string {
+function cappedFn(errFile: string, log: string): string {
   const awk = '/^diff --git /{n=0} s>0{s--; next} n>p{next} {l=length($0)+1} '
     + 'n&&n+l>p{print c; n=p+1; next} b&&b+l>t{if(n)print c; if(z!="")print z; exit} '
     + 'l>p{print substr($0,1,p); print c; n=p+1; next} {print; n+=l; b+=l}'
-  return `capped() { rm -f ${errFile}; { "$@" 2>/dev/null || { r=$?; [ $r -eq 141 ] || [ $r -eq 125 ] || : > ${errFile}; }; } `
+  return `capped() { rm -f ${errFile}; { "$@" 2>${log} || { r=$?; [ $r -eq 141 ] || [ $r -eq 125 ] || : > ${errFile}; }; } `
     + `| LC_ALL=C awk -v s="$s" -v p="$p" -v t="$t" -v z="$z" -v c=${DIFF_CUT_LINE} '${awk}'; [ ! -e ${errFile} ]; }; `
 }
 
@@ -131,7 +131,8 @@ const M_PATHS = '@@PATHS@@'
 const M_CONFLICTED = '@@CONFLICTED@@'
 const M_IGNORED = '@@IGNORED@@'
 const M_DIRS = '@@DIRS@@'
-/** The folders too large to stage, NUL-separated like the listing's. */
+/** The folders (as `dir/`) and files too large to stage, NUL-separated
+ *  like the listing's. */
 const M_SKIPPED = '@@SKIPPED@@'
 const END = '@@END@@'
 /** `END` framed by NULs, as a printf format. */
@@ -153,17 +154,29 @@ const M_NODIFF = '@@NODIFF@@'
  *  4 MiB exec output cap. */
 export const OUTPUT_PAGE_BYTES = 2 * 1024 * 1024
 
+/** The most of the entry file a scan prints back; past it, the server
+ *  replaces the file rather than reading it. */
+const MAX_ENTRY_FILE_BYTES = 16 * OUTPUT_PAGE_BYTES
+
+/** The most pages `execPaged` reads, so nothing in a workspace can have
+ *  the server hold more. */
+const MAX_OUTPUT_PAGES = 64
+
 /** The most lines a fill reads by path; past this, diffing the whole pair
  *  is about as cheap. */
 const MAX_FILL_PATHS = 300
 
-/** Body flags that keep one `diff --git` header per file, whatever the
- *  user's config, so the body splits into per-file chunks. */
-const BODY_FLAGS = '--no-ext-diff --submodule=short'
+/** Body flags that keep one plain `diff --git` header per file, whatever
+ *  the user's config, so the body splits into per-file chunks. */
+const BODY_FLAGS = '--no-ext-diff --no-color --submodule=short'
 
 /** An untracked folder holding more files than this, that no ignore
  *  pattern covers, is not staged (see `SKIP_COUNT`). */
 export const MAX_UNTRACKED_FOLDER_FILES = 2000
+
+/** Nor is an untracked file larger than this: staging writes its blob into
+ *  scratch, which a pod holds in memory. */
+export const MAX_UNTRACKED_FILE_BYTES = 10 * 1024 * 1024
 
 /**
  * awk over `ls-files -o` paths, one a line, that finds the folders too
@@ -171,18 +184,18 @@ export const MAX_UNTRACKED_FOLDER_FILES = 2000
  * that holds them, at every depth, printing those over the limit as
  * `<depth> <count> <folder>/`. Sorted deepest first, the second takes each
  * folder whose count, less what folders already skipped below it hold, is
- * still over the limit, and prints it.
+ * still over the limit, and prints it as `<folder>/`.
  */
 const SKIP_COUNT = `LC_ALL=C awk -F/ '{p=""; for(k=1;k<NF;k++){p=p $k "/"; c[p]++}} `
   + `END{for(d in c) if(c[d]>${MAX_UNTRACKED_FOLDER_FILES}){x=d; print gsub("/","",x), c[d], d}}' | sort -k1,1nr `
   + `| LC_ALL=C awk '{d=$0; sub(/^[0-9]+ [0-9]+ /,"",d); e=$2-s[d]; if(e>${MAX_UNTRACKED_FOLDER_FILES}){`
-  + `print substr(d,1,length(d)-1); p=d; while(sub("[^/]*/$","",p)&&p!="")s[p]+=e}}'`
+  + `print d; p=d; while(sub("[^/]*/$","",p)&&p!="")s[p]+=e}}'`
 
 /**
- * Stages the working tree but the folders it is given as the agent's tree
- * (`$1`) has them: their entries in the private index go back to that
- * tree, dropping any untracked file an earlier run staged, and only their
- * tracked files' edits are staged.
+ * Stages the working tree but the folders and files it is given as the
+ * agent's tree (`$1`) has them: their entries in the private index go back
+ * to that tree, dropping any untracked file an earlier run staged, and only
+ * their tracked files' edits are staged.
  */
 const ADD_SKIPPING = 'a=$1; shift; git --literal-pathspecs reset -q "$a" -- "$@" '
   + '&& git --literal-pathspecs -c core.checkStat=minimal diff-files -z --name-only -- "$@" | git update-index -z --remove --stdin '
@@ -209,16 +222,18 @@ function scratchObjects(indexFile: string): string {
 /**
  * Shell that sets `cf` to a hash of what decides git's diff output besides
  * the two trees: `diff.*` and `submodule.*` config, `core.bigFileThreshold`
- * (a blob over it diffs as binary), `.gitmodules` (a submodule's `ignore`
- * hides it) and every attributes source (`.gitattributes` files,
- * `info/attributes`, `core.attributesFile`), since an attribute can make
- * another file binary or run it through a textconv. The attributes files
- * and `.gitmodules` come from the index, so their content costs no read of
- * the working tree. A textconv program's own output is taken to depend
- * only on the blob.
+ * (a blob over it diffs as binary), `core.abbrev` (the body's `index`
+ * lines), `.gitmodules` (a submodule's `ignore` hides it) and every
+ * attributes source (`.gitattributes` files, `info/attributes`,
+ * `core.attributesFile`), since an attribute can make another file binary
+ * or run it through a textconv. The `.gitattributes` files and
+ * `.gitmodules` come from the tree `$t`, which the fill reads attributes
+ * from too (`GIT_ATTR_SOURCE`), so one the working tree holds but staging
+ * left out counts for neither. A textconv program's own output is taken to
+ * depend only on the blob.
  */
-const SETTINGS_SH = 'cf=$({ git config --get-regexp \'^(diff|submodule)\\.|^core\\.bigfilethreshold$\'; '
-  + 'git ls-files -s -- \':(glob)**/.gitattributes\' .gitmodules; cat "$(git rev-parse --git-path info/attributes)" '
+const SETTINGS_SH = 'cf=$({ git config --get-regexp \'^(diff|submodule)\\.|^core\\.(bigfilethreshold|abbrev)$\'; '
+  + 'git ls-tree -r "$t" | grep -E \'\t((.*/)?\\.gitattributes|\\.gitmodules)$\'; cat "$(git rev-parse --git-path info/attributes)" '
   + '"$(git config --path core.attributesFile || echo "${XDG_CONFIG_HOME:-$HOME/.config}/git/attributes")"; } 2>/dev/null '
   + '| git hash-object --stdin) || exit 6; '
 
@@ -273,8 +288,9 @@ const PRINT_OUTPUT = 'tail -c 4096 $o.err >&2; rm -f $o.err; '
  *  - `$2`: the ref compared against when `$1` is empty (`forkBase`), used
  *    as given.
  *  - `$3`: empty, `paths` or `full`: which listing to print.
- *  - `$4`, `$5`: the working tree the server's listing holds the paths of,
- *    and the hash of its ignored entries and untracked folders, or empty.
+ *  - `$4`, `$5`: the key of the paths the server's listing holds
+ *    (`LISTED`), and the hash of its ignored entries and untracked folders,
+ *    or empty.
  *  - `$6`: the names of the pairs the server holds (`pairName`).
  *  - `$7`: `load` to print the entry file back.
  *  - `$8`: `A` or `R` to append its stdin to the entry file, or replace the
@@ -288,8 +304,9 @@ const PRINT_OUTPUT = 'tail -c 4096 $o.err >&2; rm -f $o.err; '
  *
  * The listing's paths come from the private index after `add -A`, so they
  * cost no second walk: every file git does not ignore, links marked by
- * their mode. They are printed only when a path was added, deleted or
- * retyped since the working tree the server's listing was read at. Ignored
+ * their mode. They are keyed by the working tree they were read at and the
+ * large files added with intent to add, which no tree has, and printed only
+ * when that list changed or a path was added, deleted or retyped. Ignored
  * entries and untracked folders do walk the tree, so only `full` reads
  * them, and they are printed only when their hash (`EXTRAS`) differs from
  * the held one. Conflicts come from the agent's index.
@@ -343,7 +360,9 @@ function scanScript(workspaceDir: string, i: string): string {
   + 'printf "BASE %s\\n" "$base"; '
   + 'printf "FORK %s\\n" "$fork"; '
   + '[ -z "$ref" ] || { n=$(git rev-list --left-right --count "$ref...HEAD" --) && printf "REF %s %s\\n" "$ref" "$n"; }; '
-  + `[ "$7" != load ] || { printf "${M_ENTRIES}\\n"; cat ${i}.entries 2>/dev/null; printf "${END}\\n"; }; `
+  // An entry file past its bound is not printed, and the server replaces it.
+  + `[ "$7" != load ] || [ "$(wc -c < ${i}.entries 2>/dev/null || echo 0)" -gt ${MAX_ENTRY_FILE_BYTES} ] `
+  + `|| { printf "${M_ENTRIES}\\n"; cat ${i}.entries 2>/dev/null; printf "${END}\\n"; }; `
   // The agent's index, copied (git swaps it in by rename, so a copy is
   // never half-written) and written as a tree. With a merge conflict it has
   // no tree, and its changes count as modified.
@@ -361,11 +380,14 @@ function scanScript(workspaceDir: string, i: string): string {
   // and a pod sees other inode numbers, so under the default check every
   // seeded entry would look changed.
   + `seed() { [ -f ${i} ] || { cp ${i}.agent ${i}.seed.$$ && mv ${i}.seed.$$ ${i}; } 2>/dev/null; }; seed; `
-  // The folders too large to stage, from the untracked files that no
-  // ignore pattern covers. Counted against the agent's index, since the
-  // private index holds what earlier runs staged.
-  + `{ [ ! -f ${i}.agent ] || GIT_INDEX_FILE=${i}.agent git ls-files -z -o --exclude-standard; } | tr '\\0' '\\n' `
-  + `| ${SKIP_COUNT} | tr '\\n' '\\0' > ${i}.skip || exit 6; `
+  // The folders and files too large to stage, from the untracked files no
+  // ignore pattern covers. Listed against the agent's index, since the
+  // private index holds what earlier runs staged. A large file is still
+  // added with intent to add, so the listing names it, though no tree has it.
+  + `{ [ ! -f ${i}.agent ] || GIT_INDEX_FILE=${i}.agent git ls-files -z -o --exclude-standard; } | tr '\\0' '\\n' > ${i}.new; `
+  + `< ${i}.new ${SKIP_COUNT} | tr '\\n' '\\0' > ${i}.skip; sed 's|^|./|' ${i}.new | tr '\\n' '\\0' `
+  + `| xargs -0 sh -c '[ $# -eq 0 ] || exec find "$@" -prune -type f -size +${MAX_UNTRACKED_FILE_BYTES}c' yaac-big `
+  + `| sed 's|^\\./||' | tr '\\n' '\\0' > ${i}.big || exit 6; `
   // `stage` writes the working tree into the private index. `--ignore-errors`
   // adds what it can past an entry git cannot index (a nested repo with no
   // commit), exiting 1, so one such entry costs the diff and the listing
@@ -376,7 +398,8 @@ function scanScript(workspaceDir: string, i: string): string {
   // it, as a branch switch does to many, and leaves the index as it was.
   // So staging is retried with the index kept, each retry costing only
   // what changed, and only an index git cannot read is seeded afresh.
-  + `stage() { if [ -s ${i}.skip ]; then xargs -0 sh -c ${shSingleQuote(ADD_SKIPPING)} yaac-add "$agent" < ${i}.skip; `
+  + `stage() { if [ -s ${i}.skip ] || [ -s ${i}.big ]; then cat ${i}.skip ${i}.big | xargs -0 sh -c ${shSingleQuote(ADD_SKIPPING)} yaac-add "$agent" `
+  + `&& { [ ! -s ${i}.big ] || xargs -0 git --literal-pathspecs add -N -- < ${i}.big; }; `
   + 'else git -c core.checkStat=minimal add -A --ignore-errors || [ $? -eq 1 ]; fi '
   + `&& { [ ! -f ${i}.agent ] || GIT_INDEX_FILE=${i}.agent git ls-files -z -c -i --exclude-standard `
   + `| xargs -0 sh -c ${shSingleQuote(FORCE_ADD)} yaac-force-add; }; }; `
@@ -384,7 +407,7 @@ function scanScript(workspaceDir: string, i: string): string {
   + '[ $(date +%s) -lt $d ] || exit 5; sleep 0.2; done; '
   + 'work=$(git write-tree) || exit 5; '
   + 'printf "TREES %s %s %s\\n" "$head" "$agent" "$work"; '
-  + `${SETTINGS_SH}printf "SETTINGS %s\\n" "$cf"; `
+  + `t=$work; ${SETTINGS_SH}printf "SETTINGS %s\\n" "$cf"; `
   // `raw <a> <b> [!]`: the pair's raw diff, unless the server holds it;
   // `!` reads it without rename pairing.
   + `held=" $6 "; raw() { case $held in *" $1..$2$3:$cf "*) return 0;; esac; printf "${M_RAW} %s\\n" "$1..$2$3:$cf" `
@@ -393,42 +416,45 @@ function scanScript(workspaceDir: string, i: string): string {
   // The listing's paths are a function of the working tree's paths and
   // modes, so an edit leaves them as held. `ls-files` lists every gitlink,
   // so this must see one even when `.gitmodules` says `ignore = all`.
-  + '[ -z "$3" ] || { { [ -n "$4" ] && git diff-tree --quiet -r --ignore-submodules=none --diff-filter=ADT "$4" "$work"; } '
+  + `[ -z "$3" ] || { lk="$work $(git hash-object --no-filters ${i}.big)" || exit 6; printf "LISTED %s\\n" "$lk"; `
+  + '{ [ "${4#* }" = "${lk#* }" ] && git diff-tree --quiet -r --ignore-submodules=none --diff-filter=ADT "${4% *}" "$work"; } '
   + `|| { printf "${M_PATHS}\\n"; git ls-files -z -s || exit 6; printf '${nulEnd}'; }; `
   + `printf "${M_CONFLICTED}\\n"; { [ ! -f ${i}.agent ] || GIT_INDEX_FILE=${i}.agent git ls-files -z -u; } || exit 6; printf '${nulEnd}'; }; `
   + `[ "$3" != full ] || { { printf "${M_IGNORED}\\n"; git ls-files -z --others --ignored --exclude-standard --directory `
   + `&& printf '${nulEnd}${M_DIRS}\\n' && git ls-files -z --others --exclude-standard --directory && printf '${nulEnd}'; } `
   + `> ${i}.extras && xh=$(git hash-object --no-filters ${i}.extras) || exit 6; `
   + `printf "EXTRAS %s\\n" "$xh"; [ "$xh" = "$5" ] || cat ${i}.extras || exit 6; }; `
-  + `printf "${M_SKIPPED}\\n"; cat ${i}.skip || exit 6; printf '${nulEnd}'; `
+  + `printf "${M_SKIPPED}\\n"; cat ${i}.skip ${i}.big || exit 6; printf '${nulEnd}'; `
   + `printf "\\n${M_OK}\\n" ); run "$@" > $o 2> $o.err; r=$?; `
   // The private index can name a blob that is gone: the agent added a
   // file, reset it and pruned. No stat check notices, so the run starts
   // over from a fresh seed, whose staging hashes the file again.
-  + `[ $r -eq 0 ] || ! grep -q '^fatal: unable to read' $o.err || { rm -rf ${i} ${i}.objects; run "$@" > $o 2> $o.err; r=$?; }; `
+  + `[ $r -eq 0 ] || ! grep -qE '^fatal: unable to read [0-9a-f]{40}' $o.err || { rm -rf ${i} ${i}.objects; run "$@" > $o 2> $o.err; r=$?; }; `
   + PRINT_OUTPUT
 }
 
 /**
  * The fill: one pair's diff, read from its two trees (`$1`, `$2`), with
- * rename pairing unless `$3` is `!`, at the paths after `$7`, or the whole
- * pair when none follow. With `n` in `$4`, the raw lines and numstat rows,
- * which git prints in the same order; with `d`, the body, capped by `$5`,
- * `$6` and `$7` as `capped` says, with the total cap's cut marked when the
- * numstat was read too. A blob it cannot read leaves a mark that has the
- * next scan seed its index afresh (see scanScript), and exits
- * `CHANGES_READING_GONE`, as a gone tree does.
+ * rename pairing unless `$3` is `!`, at the paths after `$8`, or the whole
+ * pair when none follow. Attributes come from tree `$8`, the one the
+ * settings hashed them from (`GIT_ATTR_SOURCE`, which a git before 2.40
+ * ignores). With `n` in `$4`, the raw lines and numstat rows, which git
+ * prints in the same order; with `d`, the body, capped by `$5`, `$6` and
+ * `$7` as `capped` says, with the total cap's cut marked when the numstat
+ * was read too. A blob it cannot read leaves a mark that has the next scan
+ * seed its index afresh (see scanScript), and exits `CHANGES_READING_GONE`,
+ * as a gone tree does.
  */
 function fillScript(workspaceDir: string, i: string): string {
   const e = `${i}.fill.$$`
+  const gone = `{ ! grep -qE '^fatal: unable to read [0-9a-f]{40}' ${e} || { : > ${i}.reseed; exit ${CHANGES_READING_GONE}; }; }`
   return `cd ${workspaceDir} 2>/dev/null || exit 3; ${scratchObjects(i)}`
     + `git cat-file -e "$1^{tree}" && git cat-file -e "$2^{tree}" || exit ${CHANGES_READING_GONE}; `
-    + `a=$1; b=$2; r=\${3:+--no-renames}; w=$4; s=$5; p=$6; t=$7; z=; shift 7; trap 'rm -f ${e} ${e}.err' EXIT; `
-    + `printf "${M_PAIR}\\n"; case $w in *n*) z=${M_TOTAL}; `
-    + `git --literal-pathspecs diff --raw --numstat --no-abbrev $r "$a" "$b" "$@" 2> ${e} || { `
-    + `! grep -q '^fatal: unable to read' ${e} || { : > ${i}.reseed; exit ${CHANGES_READING_GONE}; }; cat ${e} >&2; exit 6; };; esac; `
-    + `case $w in *d*) ${cappedFn(`${e}.err`)}printf "${M_BODY}\\n"; `
-    + `capped git --literal-pathspecs diff ${BODY_FLAGS} $r "$a" "$b" "$@" || printf "${M_NODIFF}\\n";; esac`
+    + 'a=$1; b=$2; r=${3:+--no-renames}; w=$4; s=$5; p=$6; t=$7; export GIT_ATTR_SOURCE=$8; z=; shift 8; '
+    + `trap 'rm -f ${e} ${e}.err' EXIT; printf "${M_PAIR}\\n"; case $w in *n*) z=${M_TOTAL}; `
+    + `git --literal-pathspecs diff --raw --numstat --no-abbrev $r "$a" "$b" "$@" 2> ${e} || { ${gone}; cat ${e} >&2; exit 6; };; esac; `
+    + `case $w in *d*) ${cappedFn(`${e}.err`, e)}printf "${M_BODY}\\n"; `
+    + `capped git --literal-pathspecs diff ${BODY_FLAGS} $r "$a" "$b" "$@" || { ${gone}; printf "${M_NODIFF}\\n"; };; esac`
 }
 
 /** Single-quote a value for the one shell pass a driver's `exec` applies,
@@ -486,10 +512,11 @@ interface Entry {
   json: string
 }
 
-/** The listing the server holds: the paths, read at working tree `work`,
- *  and the ignored entries and untracked folders, under their hash. */
+/** The listing the server holds: the paths, under the key the scan read
+ *  them at, and the ignored entries and untracked folders, under their
+ *  hash. */
 interface HeldListing {
-  work: string
+  key: string
   paths: string[]
   links: string[]
   extras?: { hash: string; ignored: string[]; untrackedDirs: string[] }
@@ -568,28 +595,41 @@ export function forgetWorkspaceChanges(jobName: string): void {
  * the size of the live entries, every live entry in its place. A file this
  * server has not read back is only appended to.
  */
-function entryFileWrite(held: Held): { mode: 'A' | 'R' | ''; text: string } {
+function entryFileWrite(held: Held): { mode: 'A' | 'R' | ''; text: string; keys: string[] } {
   const { file, entries } = held
-  const lines = (keys: Iterable<string>): string => [...keys].map((k) => `${entries.get(k)!.json}\n`).join('')
-  const unsaved = lines(file.unsaved)
+  const lines = (keys: string[]): string => keys.map((k) => `${entries.get(k)!.json}\n`).join('')
+  const unsaved = [...file.unsaved]
   const live = [...entries.values()].reduce((n, e) => n + e.json.length + 1, 0)
-  if (file.loaded && file.bytes + unsaved.length > 2 * live) return { mode: 'R', text: lines(entries.keys()) }
-  return { mode: unsaved ? 'A' : '', text: unsaved }
+  const text = lines(unsaved)
+  if (file.loaded && file.bytes + text.length > 2 * live) {
+    const keys = [...entries.keys()]
+    return { mode: 'R', text: lines(keys), keys }
+  }
+  return { mode: unsaved.length ? 'A' : '', text, keys: unsaved }
 }
 
 /**
  * Take back the entries a scan printed from the file, where a later line
  * for a key replaces an earlier one (a file's counts, then its part). A
- * line cut short by a killed write is dropped, and the file replaced at the
- * next write, so no append lands on the end of it.
+ * line cut short by a killed write, or one that is not an entry, is
+ * dropped, and the file replaced at the next write, so no append lands on
+ * the end of it. So is a file the scan did not print (`text` undefined),
+ * being past its bound.
  */
-function loadEntries(held: Held, text: string): void {
+function loadEntries(held: Held, text: string | undefined): void {
+  if (text === undefined) {
+    held.file = { loaded: true, bytes: Infinity, unsaved: held.file.unsaved }
+    return
+  }
   let whole = text === '' || text.endsWith('\n')
   for (const line of text.split('\n')) {
     if (!line) continue
     try {
-      const { k, a, d, b, p } = JSON.parse(line) as { k: string; a: number; d: number; b: number; p?: string }
-      held.entries.set(k, { counts: { additions: a, deletions: d, binary: b === 1 }, ...p !== undefined ? { part: p } : {}, json: line })
+      const { k, a, d, b, p } = JSON.parse(line) as Record<string, unknown>
+      if (typeof k !== 'string' || !Number.isSafeInteger(a) || !Number.isSafeInteger(d) || (p !== undefined && typeof p !== 'string')) {
+        throw new Error('not an entry')
+      }
+      held.entries.set(k, { counts: { additions: a as number, deletions: d as number, binary: b === 1 }, ...p !== undefined ? { part: p } : {}, json: line })
     } catch {
       whole = false
     }
@@ -609,6 +649,8 @@ interface Scan {
   /** The pairs it printed. */
   raws: Map<string, RawLine[]>
   entries?: string
+  /** The key of the listing's paths (see scanScript). */
+  listed: string
   paths?: string[]
   links?: string[]
   conflicted?: string[]
@@ -626,7 +668,7 @@ function parseScan(out: string): Scan {
     throw new Error('workspace changes: script produced no completion marker (partial or failed run)')
   }
   const scan: Scan = {
-    base: '', baseResolved: true, head: '', agent: '', work: '', settings: '', ref: null, raws: new Map(), skipped: [],
+    base: '', baseResolved: true, head: '', agent: '', work: '', settings: '', ref: null, raws: new Map(), listed: '', skipped: [],
   }
   let at = 0
   const line = (): string => {
@@ -680,13 +722,14 @@ function parseScan(out: string): Scan {
       }
       // One entry per conflict stage.
       case M_CONFLICTED: scan.conflicted = [...new Set(nul().map((e) => e.slice(e.indexOf('\t') + 1)))]; break
+      case 'LISTED': scan.listed = rest.join(' '); break
       case 'EXTRAS': scan.extras = { hash: rest[0] }; break
       case M_IGNORED: scan.extras!.ignored = nul(); break
       case M_DIRS: scan.extras!.untrackedDirs = nul().filter((d) => d.endsWith('/')).map((d) => d.slice(0, -1)); break
       case M_SKIPPED: {
-        // A folder inside another is named by the outer one alone.
+        // Anything inside a skipped folder is named by the folder alone.
         const all = nul()
-        scan.skipped = all.filter((d) => !all.some((o) => d.startsWith(`${o}/`)))
+        scan.skipped = all.filter((d) => !all.some((o) => o !== d && o.endsWith('/') && d.startsWith(o)))
         break
       }
     }
@@ -757,7 +800,8 @@ function pathArgs(files: { path: string; oldPath?: string }[]): string[] {
 }
 
 /**
- * Read what `needs` lack into the held entries, one exec for every pair.
+ * Read what `needs` lack into the held entries, one exec for every pair,
+ * with attributes from tree `attrs`.
  * A fill by path is checked against the lines it asked for: git pairs
  * renames among the paths it is given alone, so a subset could in
  * principle pair differently (a rename limit the whole pair passed), and
@@ -765,13 +809,15 @@ function pathArgs(files: { path: string; oldPath?: string }[]): string[] {
  * kept, nor, as none is printed, any after it; they lie past the answer's
  * cap. Returns whether a body failed.
  */
-async function fill(jobName: string, held: Held, needs: Need[], opts: { timeout: number; signal?: AbortSignal }): Promise<boolean> {
+async function fill(
+  jobName: string, held: Held, needs: Need[], attrs: string, opts: { timeout: number; signal?: AbortSignal },
+): Promise<boolean> {
   if (needs.length === 0) return false
   const { workspaceDir, scratchDir } = workspaceDriver().workspacePaths(jobName)
   const indexFile = indexFileIn(scratchDir)
   const script = shSingleQuote(fillScript(workspaceDir, indexFile))
   const runs = needs.map((n) => `sh -c ${script} yaac-fill `
-    + [n.a, n.b, n.renames ? '' : '!', n.body ? 'nd' : 'n', '0', String(MAX_FILE_DIFF_BYTES), String(WORKSPACE_DIFF_CAP_BYTES),
+    + [n.a, n.b, n.renames ? '' : '!', n.body ? 'nd' : 'n', '0', String(MAX_FILE_DIFF_BYTES), String(WORKSPACE_DIFF_CAP_BYTES), attrs,
       ...n.lines === 'all' ? [] : ['--', ...pathArgs(n.lines)]].map(shSingleQuote).join(' ')).join(' && ')
   const stdout = await execPaged(jobName, indexFile, `o=${indexFile}.out.$$; { ${runs}; } > $o 2> $o.err; r=$?; ${PRINT_OUTPUT}`, {
     ...opts, maxAttempts: 2,
@@ -814,7 +860,7 @@ async function fill(jobName: string, held: Held, needs: Need[], opts: { timeout:
       held.file.unsaved.add(key)
     }
   }
-  return (await fill(jobName, held, again, opts)) || failed
+  return (await fill(jobName, held, again, attrs, opts)) || failed
 }
 
 /**
@@ -1015,6 +1061,7 @@ async function execPaged(
   const file = shSingleQuote(`${indexFile}.out.${paged[1]}`)
   const pages: Buffer[] = []
   const size = Number(paged[2])
+  if (size > MAX_OUTPUT_PAGES * OUTPUT_PAGE_BYTES) throw new Error(`workspace changes: the run's output is ${size} bytes`)
   let got = 0
   while (got < size) {
     const page = Buffer.from((await driver.exec(
@@ -1039,7 +1086,7 @@ async function runScan(
   const indexFile = indexFileIn(scratchDir)
   const write = entryFileWrite(held)
   const cmd = `sh -c ${shSingleQuote(scanScript(workspaceDir, indexFile))} yaac-changes `
-    + [req.base, req.defaultBase, req.listing, held.listing?.work, held.listing?.extras?.hash, [...held.raws.keys()].join(' '),
+    + [req.base, req.defaultBase, req.listing, held.listing?.key, held.listing?.extras?.hash, [...held.raws.keys()].join(' '),
       held.file.loaded ? '' : 'load', write.mode].map((a) => shSingleQuote((a ?? '').trim())).join(' ')
   // Whether a failed run wrote the file is unknown, so the next replaces it.
   const stdout = await execPaged(jobName, indexFile, cmd, { ...opts, ...write.mode ? { stdin: write.text } : {} }).catch((err: unknown) => {
@@ -1047,9 +1094,10 @@ async function runScan(
     throw err
   })
   held.file.bytes = write.mode === 'R' ? write.text.length : held.file.bytes + write.text.length
-  held.file.unsaved.clear()
+  // A comparison may have filled more while the scan ran.
+  for (const key of write.keys) held.file.unsaved.delete(key)
   const scan = parseScan(stdout)
-  if (scan.entries !== undefined) loadEntries(held, scan.entries)
+  if (!held.file.loaded) loadEntries(held, scan.entries)
   for (const [name, lines] of scan.raws) held.raws.set(name, { settings: scan.settings, lines })
   return scan
 }
@@ -1116,7 +1164,7 @@ async function readOnce(
     needOf(held, names.unstaged, pairs.unstaged, false, (l) => l.status === 'A'),
     needOf(held, names.base, pairs.base, req.diff),
   ].filter((n) => n !== null)
-  const failed = await fill(jobName, held, needs, opts)
+  const failed = await fill(jobName, held, needs, work, opts)
 
   const lines = (name: string): RawLine[] => held.raws.get(name)!.lines
   const entry = (l: RawLine): Entry | undefined => held.entries.get(entryKey(settings, l.line))
@@ -1147,7 +1195,7 @@ async function readOnce(
     if (!paths || !links || (req.listing === 'full' && !extras)) {
       throw new Error('workspace changes: the scan reused a listing this server does not hold')
     }
-    held.listing = { work, paths, links, ...extras ? { extras } : {} }
+    held.listing = { key: scan.listed, paths, links, ...extras ? { extras } : {} }
     listing = {
       paths, links, conflicted: scan.conflicted ?? [],
       ...req.listing === 'full' && extras ? { ignored: extras.ignored, untrackedDirs: extras.untrackedDirs } : {},
@@ -1173,9 +1221,7 @@ const FS = '\x1f'
  * shows a range or a single commit. Both ends are commits, so there is
  * nothing to stage: the script resolves them and prints the one raw diff
  * unless the server holds it, the fill reads what the entries lack, and the
- * answer is assembled as a changes read's is, from the same entries. Its
- * settings read the attributes files from the private index, as the scan's
- * do, so the two share them. Each ref is tried as `origin/<name>` and then
+ * answer is assembled as a changes read's is, from the same entries. Each ref is tried as `origin/<name>` and then
  * as itself (`HEAD` only as itself), like a picked base. With `from`, the
  * diff runs from its merge base with `to`, so two branches compare as
  * GitHub compares them; without, from `to`'s first parent, or the empty
@@ -1188,7 +1234,7 @@ export async function readComparison(jobName: string, { from, to }: { from?: str
   const { workspaceDir, scratchDir } = workspaceDriver().workspacePaths(jobName)
   const indexFile = indexFileIn(scratchDir)
   const held = heldFor(jobName)
-  const script = `cd ${workspaceDir} 2>/dev/null || exit 3; ${scratchObjects(indexFile)}export GIT_INDEX_FILE=${indexFile}; `
+  const script = `cd ${workspaceDir} 2>/dev/null || exit 3; ${scratchObjects(indexFile)}`
     + 'res() { case $1 in -*|"") return 1;; esac; for c in "origin/$1" "$1"; do '
     + '[ "$1:$c" != HEAD:origin/HEAD ] || continue; git rev-parse -q --verify "$c^{commit}" && return; done; return 1; }; '
     + `to=$(res "$2") || exit ${CHANGES_BASE_UNRESOLVED}; `
@@ -1196,7 +1242,7 @@ export async function readComparison(jobName: string, { from, to }: { from?: str
     + 'else base=$(git rev-parse -q --verify "$to^1") || base=$(git hash-object -t tree /dev/null) || exit 6; '
     // A message holds no NUL, so the record ends at the first one.
     + `git log -1 -z --format="%H${FS}%P${FS}%an${FS}%at${FS}%B" "$to" || exit 6; fi; `
-    + `${SETTINGS_SH}printf "\\nBASE %s\\nTO %s\\nSETTINGS %s\\n" "$base" "$to" "$cf"; `
+    + `t=$to; ${SETTINGS_SH}printf "\\nBASE %s\\nTO %s\\nSETTINGS %s\\n" "$base" "$to" "$cf"; `
     + `case " $3 " in *" $base..$to:$cf "*) ;; *) printf "${M_RAW} %s\\n" "$base..$to:$cf"; `
     + 'git diff --raw --no-abbrev "$base" "$to" || exit 6;; esac; '
     + `printf "\\n${M_OK}\\n"`
@@ -1210,7 +1256,7 @@ export async function readComparison(jobName: string, { from, to }: { from?: str
   if (!held.raws.has(name)) throw new Error('workspace compare: the run reused a raw diff this server does not hold')
   held.readings.set(`${from ?? ''}...${to}`, { pairs: [name], usedAt: Date.now() })
   const need = needOf(held, name, [scan.base, scan.work, true], true)
-  const failed = await fill(jobName, held, need ? [need] : [], opts)
+  const failed = await fill(jobName, held, need ? [need] : [], scan.work, opts)
   const { lines } = held.raws.get(name)!
   const entry = (l: RawLine): Entry | undefined => held.entries.get(entryKey(scan.settings, l.line))
   let commit: CommitDetail | undefined
@@ -1256,7 +1302,7 @@ export async function readChangeDiffs(jobName: string, request: {
   const bad = paths.find((f) => f.includes('\0') || f.startsWith('/') || f.split('/').includes('..'))
   if (bad !== undefined) throw new ServerError('VALIDATION', `${JSON.stringify(bad)} is not a path in the checkout`)
   const { stdout } = await driver.exec(jobName, `sh -c ${shSingleQuote(fillScript(workspaceDir, indexFileIn(scratchDir)))} yaac-diff `
-    + [base, work, '', 'd', String(skip ?? 0), String(p), String(t), '--', ...paths].map(shSingleQuote).join(' '), { timeout: 20_000 })
+    + [base, work, '', 'd', String(skip ?? 0), String(p), String(t), work, '--', ...paths].map(shSingleQuote).join(' '), { timeout: 20_000 })
   const body = stdout.slice(stdout.indexOf(`${M_BODY}\n`) + M_BODY.length + 1)
   if (endsWithLine(body, M_NODIFF)) throw new Error('workspace changes: git could not diff those files')
   return body

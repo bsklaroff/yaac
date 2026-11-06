@@ -927,13 +927,19 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, startCommit
             className="min-h-0 flex-1 touch-pan-x touch-pan-y overflow-y-auto py-0.5"
           >
             {renderRows(flat ? flatRows() : tree.root.children.map((c) => rowOf(c, c.name, false)), 0, '')}
-            {changedOnly && changes.data?.skipped?.map((dir) => (
-              <div key={dir} className="flex items-center gap-1.5 px-2 py-0.5 text-xs">
-                <FolderIcon size={13} className="shrink-0 text-accent/80" />
-                <span className={clsx('shrink-0', ROW_STATUS.added)}>{dir}/</span>
-                <span className="min-w-0 flex-1 truncate text-[11px] text-text-faint">over 2,000 files, not diffed</span>
-              </div>
-            ))}
+            {changedOnly && changes.data?.skipped?.map((path) => {
+              const dir = path.endsWith('/')
+              const { Icon, className } = dir ? { Icon: FolderIcon, className: 'text-accent/80' } : fileIcon(path)
+              return (
+                <div key={path} className="flex items-center gap-1.5 px-2 py-0.5 text-xs">
+                  <Icon size={13} className={clsx('shrink-0', className)} />
+                  <span className={clsx('shrink-0', ROW_STATUS.added)}>{path}</span>
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-text-faint">
+                    {dir ? 'over 2,000 files' : 'over 10 MB'}, not diffed
+                  </span>
+                </div>
+              )
+            })}
           </ContextMenu.Trigger>
           <ContextMenu.Portal>
             <ContextMenu.Positioner>

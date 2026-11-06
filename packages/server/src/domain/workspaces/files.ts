@@ -306,7 +306,8 @@ export async function getWorkspaceChanges(
   }
   const listing = reading.listing && await finishListing(
     await openCheckout(idOrName), jobName, reading.listing,
-    { dirs: row?.scratchDirs ?? [], changed: reading.changes.files.map((f) => f.path) }, reading.changes.skipped ?? [],
+    { dirs: row?.scratchDirs ?? [], changed: reading.changes.files.map((f) => f.path) },
+    (reading.changes.skipped ?? []).filter((d) => d.endsWith('/')).map((d) => d.slice(0, -1)),
   )
   return {
     ...reading.changes,
@@ -386,8 +387,9 @@ function isListable(co: Checkout, rel: string): boolean {
  * folders name it or something in it, or the ignored entries name
  * something in it.
  *
- * The diff's `skipped` folders are listed as one entry each, which the
+ * The diff's skipped folders are listed as one entry each, which the
  * explorer reads on expand, so none of their untracked folders is walked.
+ * A skipped file is in `paths` already, added with intent to add.
  */
 async function finishListing(
   co: Checkout, jobName: string, read: NonNullable<ChangesReading['listing']>,
