@@ -84,11 +84,11 @@ branch it names, and an agent's never does:
 - A person setting up or editing a routine approves its commit, or its
   branch. Every agent of the project can push to a branch with the
   project's git credential, so the webapp and CLI say so as they save one.
-- A person creating a workspace, or deploying a site, approves its commit.
-- `yaac workflow approve` approves a commit or branch ahead, for launches
-  an agent will make.
+- A person launching it by hand, in the webapp or with the CLI, or
+  deploying a site, approves its commit.
 
-An agent's routine or launch of a workflow that names secrets, at a commit
+There is no verb that approves on its own, so nothing is approved without
+being run. An agent's routine or launch of a workflow that names secrets, at a commit
 or branch not approved, is refused at once. Nothing ever waits for an
 approval. Approvals reach only the current revision, and every (revision,
 commit) pair that ran with its secrets is recorded (`workflow_runs`) and
@@ -159,14 +159,13 @@ getting none.
 ## Surfaces
 
 - **CLI**: `yaac workflow create|edit|list|show|delete <project> <name>
-  [--file <path>] [--secret NAME...]`, `approve <project> <name>
-  <commit|--branch name>`, `clear-approvals`; `--workflow <name>` on
+  [--file <path>] [--secret NAME...]`, `clear-approvals`; `--workflow <name>` on
   `workspace create`, `routine create|edit` and `site create|edit`, beside
   `--steps`.
 - **yaac-mama**: `--workflow` where it takes `--steps`, and `workflow
   list|show`. Its edits are held to the `--steps` ceiling, refused on a
-  workflow whose current revision names secrets, and name none themselves;
-  it has no approve.
+  workflow whose current revision names secrets, and name none themselves.
+  Nothing it does approves.
 - **Webapp**: a Workflows section in Project Config with each workflow's
   revisions, the secrets each names and its approvals, and a workflow
   picker in the routine, site and create forms, which warns as it saves a
