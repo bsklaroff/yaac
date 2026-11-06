@@ -86,6 +86,10 @@ branch it names, and an agent's never does:
   project's git credential, so the webapp and CLI say so as they save one.
 - A person launching it by hand, in the webapp or with the CLI, or
   deploying a site, approves its commit.
+- A site that follows a branch (`yaac site create|edit --follow`) deploys
+  each new tip as its owner. A person setting it to follow, or deploying a
+  site that follows, approves the branch, as a routine on a branch does, so
+  each follow deploy passes as an approved branch's tip.
 
 There is no verb that approves on its own, so nothing is approved without
 being run. An agent's routine or launch of a workflow that names secrets, at a commit
