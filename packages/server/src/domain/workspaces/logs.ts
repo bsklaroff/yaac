@@ -7,6 +7,7 @@
  */
 import { constants as C } from 'node:fs'
 import { ServerError } from '@yaac/shared/errors'
+import { lifeDirName } from '@yaac/shared/steps'
 import type { WorkspaceLogLife } from '@yaac/shared/types'
 import type { Actor } from '#domain/access'
 import { resolveWorkspaceRecord } from './resolve'
@@ -18,7 +19,21 @@ const LIFE = /^\d{4}-\d{2}-\d{2}T[\d.-]+Z$/
 const FILE = /^[A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:log(?:\.1)?|events)$/
 
 /** At most this much of a log is answered at once. */
-const READ_LIMIT = 4 * 1024 * 1024
+export const READ_LIMIT = 4 * 1024 * 1024
+
+/** How much of a log `readWindowLogEnd` reads at a time. */
+const CHUNK = 256 * 1024
+
+/** A window of a life, as a step row names one. */
+interface LoggedWindow {
+  life: Date
+  name: string
+}
+
+/** A window's log files, the rotated-out part first. */
+function windowLogFiles({ life, name }: LoggedWindow): string[] {
+  return [`${lifeDirName(life)}/${name}.log.1`, `${lifeDirName(life)}/${name}.log`]
+}
 
 /** Each life's log files, newest life first. */
 export async function listWorkspaceLogs(principal: Actor, idOrPrefix: string): Promise<WorkspaceLogLife[]> {
@@ -61,4 +76,57 @@ export async function readWorkspaceLog(
   } finally {
     await handle.close()
   }
+}
+
+/** How many bytes each window's log holds. */
+export async function windowLogSizes(projectId: string, workspaceId: string, windows: LoggedWindow[]): Promise<number[]> {
+  const logs = await openTerminalLogs(projectId, workspaceId)
+  return await Promise.all(windows.map(async (w) => {
+    const sizes = await Promise.all(windowLogFiles(w).map(async (f) => (await logs.stat(f))?.size ?? 0))
+    return sizes[0] + sizes[1]
+  }))
+}
+
+/**
+ * The end of a window's log: enough of it for its last `lines` lines, or
+ * all of it, but never more than 4 MiB, read backwards so a long log costs
+ * only what is answered. `skipped` is how many bytes come before `data`.
+ * Undefined when the window has logged nothing. The current half is read
+ * before the rotated-out one, so a rotation between the two reads can
+ * repeat a stretch but never drop one.
+ */
+export async function readWindowLogEnd(
+  projectId: string,
+  workspaceId: string,
+  window: LoggedWindow,
+  lines?: number,
+): Promise<{ data: Buffer; skipped: number } | undefined> {
+  const logs = await openTerminalLogs(projectId, workspaceId)
+  const chunks: Buffer[] = []
+  let taken = 0
+  let newlines = 0
+  let skipped = 0
+  let found = false
+  const enough = (): boolean => taken >= READ_LIMIT || (lines !== undefined && newlines > lines)
+  for (const file of windowLogFiles(window).reverse()) {
+    const handle = await logs.open(file, C.O_RDONLY).catch(() => undefined)
+    if (handle === undefined) continue
+    found = true
+    try {
+      let end = (await handle.stat()).size
+      while (end > 0 && !enough()) {
+        const start = Math.max(0, end - Math.min(CHUNK, READ_LIMIT - taken))
+        const chunk = Buffer.alloc(end - start)
+        const { bytesRead } = await handle.read(chunk, 0, chunk.length, start)
+        chunks.unshift(chunk.subarray(0, bytesRead))
+        taken += bytesRead
+        for (const byte of chunk.subarray(0, bytesRead)) if (byte === 0x0a) newlines++
+        end = start
+      }
+      skipped += end
+    } finally {
+      await handle.close()
+    }
+  }
+  return found ? { data: Buffer.concat(chunks), skipped } : undefined
 }

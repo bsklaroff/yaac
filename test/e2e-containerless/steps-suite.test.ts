@@ -30,6 +30,8 @@ let repoPath: string
 let projectId: string
 /** The shared interactive workspace, started on the project's init steps. */
 let workspaceId: string
+/** A terminal opened in it, whose log only its owner may read. */
+let terminalName: string
 
 const NAME = 'cl-steps'
 const CAN_RUN = await execFileAsync('sh', ['-c', 'command -v tmux && command -v git']).then(() => true, () => false)
@@ -67,6 +69,19 @@ async function provisioned(p: string, body: Record<string, unknown>): Promise<st
   const res = await api(p, { method: 'POST', body: JSON.stringify(body) })
   expect(res.status, await res.clone().text()).toBe(200)
   return (await consumeNdjsonStream<{ workspaceId: string }>(res, () => {})).workspaceId
+}
+
+/**
+ * Run `yaac-mama` inside a running workspace as a step of its own, which is
+ * where an agent's call comes from, and answer what the step printed.
+ */
+async function mamaStep(id: string, name: string, ...commands: string[]): Promise<string> {
+  const added = await yaac('workspace', 'step', 'add', id, '--name', name, ...commands.flatMap((c) => ['--run', c]))
+  expect(added.exitCode, added.stderr).toBe(0)
+  await vi.waitFor(async () => {
+    expect((await stepStates(id))[name]).toBe('succeeded 0')
+  }, { timeout: 30_000, interval: 500 })
+  return (await yaac('workspace', 'logs', id, name)).stdout
 }
 
 const tmux = async (id: string, ...args: string[]): Promise<string> =>
@@ -133,6 +148,7 @@ describe.skipIf(!CAN_RUN)('workspace steps (containerless)', () => {
 
   it('logs a terminal opened in the workspace, and runs a step added to it once its needs are met', async () => {
     const term = await (await api(`/workspace/${workspaceId}/terminals`, { method: 'POST' })).json() as { name: string }
+    terminalName = term.name
     await tmux(workspaceId, 'send-keys', '-t', `=yaac:=${term.name}`, 'echo hello-from-a-terminal', 'Enter')
     await vi.waitFor(async () => {
       expect((await yaac('workspace', 'logs', workspaceId, term.name)).stdout).toContain('hello-from-a-terminal')
@@ -144,6 +160,20 @@ describe.skipIf(!CAN_RUN)('workspace steps (containerless)', () => {
       expect((await stepStates(workspaceId)).added).toBe('succeeded 0')
     }, { timeout: 20_000, interval: 500 })
     expect((await yaac('workspace', 'logs', workspaceId, 'added')).stdout).toContain('added-2')
+  }, 60_000)
+
+  it('reads its steps\' logs through yaac-mama, but not a terminal\'s', async () => {
+    const out = await mamaStep(workspaceId, 'mama-logs',
+      'yaac-mama logs "$YAAC_WORKSPACE_ID"',
+      'echo "<tail>"; yaac-mama logs "$YAAC_WORKSPACE_ID" gated --tail 1; echo "</tail>"',
+      `yaac-mama logs "$YAAC_WORKSPACE_ID" ${terminalName}; echo "refused=$?"`)
+    expect(out).toMatch(/^gated\s+succeeded\s+0\s+prep,svc\s+\d+ B$/m)
+    expect(out).toMatch(/^svc\s+ready \(service\)\s+\d+ B$/m)
+    expect(out).toMatch(/^flaky\s+failed\s+3\s+\d+ B$/m)
+    expect(/<tail>\n([^]*)<\/tail>/.exec(out)?.[1]).toBe('ok gated-ran\n')
+    expect(out).toContain(`yaac-mama: workspace ${workspaceId.slice(0, 8)} has no step "${terminalName}"`)
+    expect(out).toContain('refused=1')
+    expect(out).not.toContain('hello-from-a-terminal')
   }, 60_000)
 
   it('reruns a failed step with the steps it skipped', async () => {
@@ -200,6 +230,15 @@ describe.skipIf(!CAN_RUN)('workspace steps (containerless)', () => {
     const stillUp = await listed(debug)
     expect(stillUp?.nonInteractive).toBeUndefined()
     expect(stillUp?.startCommit).toBe(head)
+    // yaac-mama shows the commit each workspace made at one is pinned to,
+    // running or stopped; one on a branch shows none.
+    const listing = await mamaStep(debug, 'mama-list', 'yaac-mama list', 'yaac-mama list --stopped')
+    const pinned = (short: string): RegExp => new RegExp(`^${short}( \\(you\\))?\\s.*\\b${head.slice(0, 12)}\\b`, 'm')
+    expect(listing).toMatch(/\bCOMMIT\b/)
+    expect(listing).toMatch(pinned(debug.slice(0, 8)))
+    expect(listing).toMatch(pinned(id.slice(0, 8)))
+    expect(listing).toMatch(new RegExp(`^${workspaceId.slice(0, 8)}\\s`, 'm'))
+    expect(listing).not.toMatch(pinned(workspaceId.slice(0, 8)))
     await yaac('workspace', 'stop', debug)
   }, 240_000)
 })
