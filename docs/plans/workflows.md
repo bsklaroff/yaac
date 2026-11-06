@@ -99,9 +99,9 @@ the current revision.
 The launch check: a non-interactive launch (or a site's release) of
 revision R at commit C gets the secrets R names if a person made R, and
 either R is current and C is approved or the tip of an approved branch, or
-(R, C) is recorded. A routine's run makes this check at each tick, so one
-whose approvals were cleared fails with a launch error, as any broken
-routine does. Nothing else is checked: not who started it, nor through which
+(R, C) is recorded. A routine's run makes this check at each tick, so an
+agent's routine on a workflow a person later gave secrets, at a commit no
+person approved, fails with a launch error, as any broken routine does. Nothing else is checked: not who started it, nor through which
 path. A launch that fails the check is refused rather than run without the
 secrets, which would only fail later and less clearly, or run an app
 without its key; a graph meant to run without them belongs in a workflow
@@ -115,11 +115,12 @@ names it, an earlier revision's rerun or replacement included, so a new key
 reaches production without a deploy. A deleted secret fails the launch of a
 revision that names it, rather than running it without.
 
-**Revoking.** Revisions are immutable, so a secret taken out of the current
-revision still reaches the recorded pairs of earlier ones that name it. To
-cut those off, delete or rotate the secret, or clear the workflow's
-approvals: a person's verb that forgets its approvals and recorded pairs,
-after which only new approvals of the current revision run with secrets.
+**Revoking.** Approvals and recorded pairs are never taken back, and
+revisions are immutable, so a secret taken out of the current revision
+still reaches the recorded pairs of earlier ones that name it. To cut
+those off, delete the secret, which fails every launch that names it, or
+rotate it, which leaves them running with a value worth nothing to a leak
+before the rotation.
 
 ## Lifecycle
 
@@ -159,7 +160,7 @@ getting none.
 ## Surfaces
 
 - **CLI**: `yaac workflow create|edit|list|show|delete <project> <name>
-  [--file <path>] [--secret NAME...]`, `clear-approvals`; `--workflow <name>` on
+  [--file <path>] [--secret NAME...]`; `--workflow <name>` on
   `workspace create`, `routine create|edit` and `site create|edit`, beside
   `--steps`.
 - **yaac-mama**: `--workflow` where it takes `--steps`, and `workflow
