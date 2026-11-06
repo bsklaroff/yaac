@@ -295,6 +295,42 @@ than the reads it replaces. The "Today" columns run the real code. The
 "Proposed" ones are the prototype's shell steps, which leave out the
 server's parsing.
 
+### Measured after landing
+
+`changes-bench.test.ts` ran each step's code on the same workspace, one
+step after another (gVisor, directfs; this node ran today's code about
+twice as fast as the one above, so compare within a column pair).
+
+| Poll (yaac) | Before | Landed |
+|---|---|---|
+| Idle | 1.0s | 1.2–1.5s |
+| Idle, the status bar | 0.9s | 1.1s |
+| Edit to a file the base has | 2.2–3.2s | 2.4–2.7s |
+| Edit to a file the agent added | 4.4s | 2.5–2.8s |
+| A new untracked file | 4.0–4.6s | 2.2–2.5s |
+| Two bases, switching back to `main` | 4.6s | 1.3s |
+| After a server restart, idle | 1.2–1.3s | 2.0–2.5s |
+| After a server restart, an edit | 4.0–4.3s | 2.9–3.2s |
+| First poll after a 5,000-file `build/` appears | 331s | 2.3s (90s with scratch objects alone) |
+| Same, edit to an added file | 54–57s | 2.6–3.7s |
+| Same, a rebuild rewrites every file | 315s | 4.1s (100s with scratch objects alone) |
+
+| Poll (synthetic) | Before | Landed |
+|---|---|---|
+| Idle | 1.8–2.4s | 2.7–3.1s |
+| Idle, the status bar | 1.0s | 1.8–2.0s |
+| Edit to a file the base has | 2.7s | 3.2–3.9s |
+| Edit to a file the agent added | 3.6s | 3.1–3.2s |
+| A new untracked file | 3.5–3.6s | 2.9s |
+| Two bases, switching back | 3.2–3.5s | 3.0–3.3s |
+
+The folder count costs more than the 0.14–0.28s measured on the yaac
+fixture: on 30,000 files it is about 0.8s, which is most of what the
+synthetic idle and status-bar polls gained. A restart reads back every
+pair's raw lines and an entry file of up to twice the live entries, so an
+idle read after one costs about a second more than the section files did,
+while the first edit after one costs a second less.
+
 ### More than one base
 
 Nothing in the cache belongs to a base. A range pane's pairs and entries
