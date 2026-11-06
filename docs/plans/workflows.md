@@ -77,29 +77,31 @@ was shown, because the rest of the graph is copied from it: without the
 check, an agent's edit in between would be vouched for unseen.
 
 **Commits.** A revision runs what the repository holds at a commit, so the
-commit is checked too:
+commit is checked too. The workflow keeps its **approvals**: commits, and
+branches whose tip it may run on. A person's action approves the commit or
+branch it names, and an agent's never does:
 
-- The workflow keeps its **approved commits**: pinned ahead, or approved
-  one at a time. A routine's run of the current revision at a commit not
-  approved waits for a person to approve the commit it resolved to (the
-  webapp shows it, as GitHub's required reviewers do), which adds it to the
-  approved commits. This is how a routine on a branch gets secrets. Any
-  other launch at a commit not approved is refused, naming the commit and
-  how to approve it; it raises no prompt, so an agent cannot raise one.
-- A revision may instead **trust a branch's tip**, opt-in, for a branch the
-  project's git credential cannot push to. Every agent of the project can
-  push with that credential, so this is the user's risk to take.
-- A site's deploy approves the commit it deploys, since only the site's
-  owner, while an admin, deploys.
-- Every (revision, commit) pair that ran with its secrets is recorded
-  (`workflow_runs`) and allowed from then on. So after an edit, reruns and
-  replacements of what ran keep their secrets, while a commit approved
-  later, or a branch's new tip, reaches only the current revision.
+- A person setting up or editing a routine approves its commit, or its
+  branch. Every agent of the project can push to a branch with the
+  project's git credential, so the webapp and CLI say so as they save one.
+- A person creating a workspace, or deploying a site, approves its commit.
+- `yaac workflow approve` approves a commit or branch ahead, for launches
+  an agent will make.
+
+An agent's routine or launch of a workflow that names secrets, at a commit
+or branch not approved, is refused at once. Nothing ever waits for an
+approval. Approvals reach only the current revision, and every (revision,
+commit) pair that ran with its secrets is recorded (`workflow_runs`) and
+allowed from then on. So after an edit, reruns and replacements of what ran
+keep their secrets, while a commit or branch approved later reaches only
+the current revision.
 
 The launch check: a non-interactive launch (or a site's release) of
 revision R at commit C gets the secrets R names if a person made R, and
-either R is current and C is approved or on its trusted branch, or (R, C)
-is recorded. Nothing else is checked: not who started it, nor through which
+either R is current and C is approved or the tip of an approved branch, or
+(R, C) is recorded. A routine's run makes this check at each tick, so one
+whose approvals were cleared fails with a launch error, as any broken
+routine does. Nothing else is checked: not who started it, nor through which
 path. A launch that fails the check is refused rather than run without the
 secrets, which would only fail later and less clearly, or run an app
 without its key; a graph meant to run without them belongs in a workflow
@@ -116,9 +118,8 @@ revision that names it, rather than running it without.
 **Revoking.** Revisions are immutable, so a secret taken out of the current
 revision still reaches the recorded pairs of earlier ones that name it. To
 cut those off, delete or rotate the secret, or clear the workflow's
-approvals: a person's verb that forgets its approved commits and recorded
-pairs, after which only new approvals of the current revision run with
-secrets.
+approvals: a person's verb that forgets its approvals and recorded pairs,
+after which only new approvals of the current revision run with secrets.
 
 ## Lifecycle
 
@@ -132,9 +133,9 @@ secrets.
 ## Schema
 
 - `workflows` (id, project, name, current revision), unique (project, name).
-- `workflow_revisions` (id, workflow or null, graph, secret names, trusted
-  branch, created at, made by a person or an agent).
-- `workflow_approved_commits` (workflow, commit).
+- `workflow_revisions` (id, workflow or null, graph, secret names, created
+  at, made by a person or an agent).
+- `workflow_approvals` (workflow, a commit or a branch).
 - `workflow_runs` (revision, commit): the pairs that ran with their secrets.
 - `routines.workflowId`, `sites.workflowId`, `projects.initWorkflowId`;
   `workspaces.revisionId` and `queued_workspaces.revisionId` for what a
@@ -158,8 +159,8 @@ getting none.
 ## Surfaces
 
 - **CLI**: `yaac workflow create|edit|list|show|delete <project> <name>
-  [--file <path>] [--secret NAME...] [--trust-branch <name>]`, `approve
-  <project> <name> <commit>`, `clear-approvals`; `--workflow <name>` on
+  [--file <path>] [--secret NAME...]`, `approve <project> <name>
+  <commit|--branch name>`, `clear-approvals`; `--workflow <name>` on
   `workspace create`, `routine create|edit` and `site create|edit`, beside
   `--steps`.
 - **yaac-mama**: `--workflow` where it takes `--steps`, and `workflow
@@ -167,7 +168,7 @@ getting none.
   workflow whose current revision names secrets, and name none themselves;
   it has no approve.
 - **Webapp**: a Workflows section in Project Config with each workflow's
-  revisions, the secrets each names, its approved commits, an approval
-  prompt for a waiting run, and a workflow picker in the routine, site and
-  create forms.
+  revisions, the secrets each names and its approvals, and a workflow
+  picker in the routine, site and create forms, which warns as it saves a
+  routine on a branch.
 - **API**: routes for the above, each with a row in `test/api/route-matrix.ts`.
