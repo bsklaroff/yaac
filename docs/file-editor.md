@@ -189,10 +189,12 @@ A poll that wants no body fills only counts, and the next that wants one
 fills the parts it lacks.
 
 Nothing held belongs to a base. Raw diffs are kept for the four pairs of
-each base's latest reading, and entries while a held raw line names them,
+each base's latest reading and the pair of each range (see "Ranges"), each
+until five minutes after it was last read, and entries while a held raw
+line names them,
 so an agent rewriting one file leaves one entry for it, and a workspace
-holds at most its bases' changesets. All of it goes after five minutes
-unread, and on teardown. Entries are never shared between workspaces: each
+holds at most its bases' and ranges' changesets. All of it goes on
+teardown. Entries are never shared between workspaces: each
 is the output of a script the workspace's agent can shape.
 
 The body is capped by whole lines at 250 KB per file and 2 MB in all in the
@@ -311,10 +313,14 @@ base, so beside the workspace's own readers it costs its own fills once,
 and its polls after that cost what an idle one does; a file whose blobs are
 the same under both bases shares one entry. Only the private index is one
 per workspace, so reads against different bases take turns. Any other
-range is `compare`, a separate script (`readComparison`) that reads no
-working tree, so it touches none of what the server holds. Its body is capped as the poll's is, and its `base` and `work` are
-the merge base and `to`'s commit, so `/changes/diff` pages the rest
-unchanged. A range between two full commit ids never changes and is read
+range is `compare` (`readComparison`), which reads no working tree: both
+ends are commits, so its script resolves them and prints the one raw diff
+unless the server holds it, the fill reads what the entries lack, and the
+answer is assembled the same way. So a range read before costs only its
+script, and one that shares files with the workspace's own diff shares
+their entries. Its body is capped as the poll's is, and its `base` and
+`work` are the merge base and `to`'s commit, so `/changes/diff` pages the
+rest unchanged. A range between two full commit ids never changes and is read
 once; one naming a branch or HEAD is read again every 30 seconds while on
 screen.
 

@@ -147,10 +147,6 @@ const M_BODY = '@@BODY@@'
 const M_TOTAL = '@@TOTAL@@'
 /** Ends a fill's body that `git diff` could not finish. */
 const M_NODIFF = '@@NODIFF@@'
-/** Kept from the compare script's own output; see readComparison. */
-const M_NUMSTAT = '@@NUMSTAT@@'
-const M_NAMESTATUS = '@@NAMESTATUS@@'
-const M_DIFF = '@@DIFF@@'
 
 /** A scan whose output passes this size leaves it in a file, fetched in
  *  pages of this size: base64 makes a page about 2.8 MB, under streamd's
@@ -548,11 +544,6 @@ function heldFor(jobName: string): Held {
   return held
 }
 
-/** Record a reading's pairs, replacing the last reading under `key`. */
-function hold(held: Held, key: string, pairs: string[]): void {
-  held.readings.set(key, { pairs, usedAt: Date.now() })
-}
-
 /** Drop the raw diffs no reading names and the entries no raw diff does. */
 function prune(held: Held): void {
   const pairs = new Set([...held.readings.values()].flatMap((r) => r.pairs))
@@ -569,12 +560,6 @@ function prune(held: Held): void {
 /** Drop what the server holds of a workspace's changes, on teardown. */
 export function forgetWorkspaceChanges(jobName: string): void {
   heldChanges.delete(jobName)
-}
-
-function setEntry(held: Held, key: string, counts: Counts, part?: string): void {
-  const json = JSON.stringify({ k: key, a: counts.additions, d: counts.deletions, b: counts.binary ? 1 : 0, ...part !== undefined ? { p: part } : {} })
-  held.entries.set(key, { counts, ...part !== undefined ? { part } : {}, json })
-  held.file.unsaved.add(key)
 }
 
 /**
@@ -664,6 +649,8 @@ function parseScan(out: string): Scan {
       // FORK 0: no fork point, diffed against HEAD, so commits are missing.
       case 'FORK': scan.baseResolved = rest[0] !== '0'; break
       case 'TREES': [scan.head, scan.agent, scan.work] = rest; break
+      // A comparison's newer end, which stands where the working tree does.
+      case 'TO': scan.work = rest[0]; break
       case 'SETTINGS': scan.settings = rest[0]; break
       // `REF <ref> <behind>\t<ahead>`: rev-list counts the left side first.
       case 'REF': {
@@ -820,7 +807,10 @@ async function fill(jobName: string, held: Held, needs: Need[], opts: { timeout:
       const counts = { additions: binary ? 0 : Number(add) || 0, deletions: binary ? 0 : Number(del) || 0, binary }
       const old = held.entries.get(key)
       const part = chunks.get(l) ?? old?.part
-      if (!old || old.part !== part || JSON.stringify(old.counts) !== JSON.stringify(counts)) setEntry(held, key, counts, part)
+      if (old && old.part === part && JSON.stringify(old.counts) === JSON.stringify(counts)) continue
+      const json = JSON.stringify({ k: key, a: counts.additions, d: counts.deletions, b: binary ? 1 : 0, ...part !== undefined ? { p: part } : {} })
+      held.entries.set(key, { counts, ...part !== undefined ? { part } : {}, json })
+      held.file.unsaved.add(key)
     }
   }
   return (await fill(jobName, held, again, opts)) || failed
@@ -851,24 +841,37 @@ function needOf(held: Held, name: string, pair: [string, string, boolean], body:
   }
 }
 
+const NO_COUNTS: Counts = { additions: 0, deletions: 0, binary: false }
+
+/** A raw line as one of an answer's files. */
+function changeOf(l: RawLine, { additions, deletions, binary }: Counts, stages: WorkspaceChange['stages']): WorkspaceChange {
+  return { path: l.path, status: statusFromCode(l.status), additions, deletions, binary, stages, ...l.oldPath ? { oldPath: l.oldPath } : {} }
+}
+
 /**
- * The unified diff from the pair's parts in file order, stopping at the
- * first file whose part is missing, or once past the cap; not `whole` when
- * it stopped early or holds a part that was cut.
+ * An answer's body: the parts of `lines` in file order, stopping at the
+ * first file whose part is missing, or once past the cap, then cut to it.
+ * It is `truncated` when it stopped early, holds a part that was cut, or
+ * passed the cap, measured in bytes as the fill's caps are; a body that
+ * failed is shown as cut short to nothing.
  */
-function joinParts(lines: RawLine[], part: (l: RawLine) => string | undefined): { text: string; whole: boolean } {
+function bodyOf(lines: RawLine[], entry: (l: RawLine) => Entry | undefined, failed: boolean): { diff: string; truncated: boolean } {
   let text = ''
-  let bytes = 0
-  let whole = true
-  for (const [n, l] of lines.entries()) {
-    const c = part(l)
-    if (c === undefined) return { text, whole: false }
-    text += c
-    bytes += Buffer.byteLength(c)
-    if (c.endsWith(`\n${DIFF_CUT_LINE}\n`)) whole = false
-    if (bytes > MAX_DIFF_BYTES && n < lines.length - 1) return { text, whole: false }
+  let whole = !failed
+  for (const [n, l] of (failed ? [] : lines).entries()) {
+    const part = entry(l)?.part
+    if (part === undefined) {
+      whole = false
+      break
+    }
+    text += part
+    if (part.endsWith(`\n${DIFF_CUT_LINE}\n`)) whole = false
+    if (Buffer.byteLength(text) > MAX_DIFF_BYTES && n < lines.length - 1) {
+      whole = false
+      break
+    }
   }
-  return { text, whole }
+  return { diff: cutDiff(text, MAX_DIFF_BYTES), truncated: !whole || Buffer.byteLength(text) > MAX_DIFF_BYTES }
 }
 
 /**
@@ -1103,7 +1106,7 @@ async function readOnce(
   if (Object.values(names).some((n) => !held.raws.has(n))) {
     throw new Error('workspace changes: the scan reused a raw diff this server does not hold')
   }
-  hold(held, `${(req.base ?? '').trim()}\0${(req.defaultBase ?? '').trim()}`, Object.values(names))
+  held.readings.set(`${(req.base ?? '').trim()}\0${(req.defaultBase ?? '').trim()}`, { pairs: Object.values(names), usedAt: Date.now() })
   const needs = [
     needOf(held, names.committed, pairs.committed, false),
     needOf(held, names.staged, pairs.staged, false),
@@ -1113,30 +1116,24 @@ async function readOnce(
   const failed = await fill(jobName, held, needs, opts)
 
   const lines = (name: string): RawLine[] => held.raws.get(name)!.lines
-  const counts = (l: RawLine): Counts => held.entries.get(entryKey(settings, l.line))?.counts
-    ?? { additions: 0, deletions: 0, binary: false }
+  const entry = (l: RawLine): Entry | undefined => held.entries.get(entryKey(settings, l.line))
+  const counts = (l: RawLine): Counts => entry(l)?.counts ?? NO_COUNTS
   const byStage: [ChangeStage, Map<string, Counts>][] = [
     ['committed', new Map(lines(names.committed).map((l) => [l.path, counts(l)]))],
     ['staged', new Map(lines(names.staged).map((l) => [l.path, counts(l)]))],
     ['modified', new Map(lines(names.unstaged).filter((l) => l.status !== 'A').map((l) => [l.path, counts(l)]))],
   ]
   const untracked = new Set(lines(names.unstaged).filter((l) => l.status === 'A').map((l) => l.path))
-  const files = lines(names.base).map((l): WorkspaceChange => {
-    const { additions, deletions, binary } = counts(l)
+  const files = lines(names.base).map((l) => {
+    const c = counts(l)
     const stages: WorkspaceChange['stages'] = {}
     for (const [stage, byPath] of byStage) {
-      const c = byPath.get(l.path)
-      if (c) stages[stage] = { additions: c.additions, deletions: c.deletions }
+      const s = byPath.get(l.path)
+      if (s) stages[stage] = { additions: s.additions, deletions: s.deletions }
     }
-    if (untracked.has(l.path)) stages.untracked = { additions, deletions }
-    return { path: l.path, status: statusFromCode(l.status), additions, deletions, binary, stages, ...l.oldPath ? { oldPath: l.oldPath } : {} }
+    if (untracked.has(l.path)) stages.untracked = { additions: c.additions, deletions: c.deletions }
+    return changeOf(l, c, stages)
   })
-  // Measure bytes, not UTF-16 code units: the script's caps are in bytes,
-  // so comparing `.length` could report a diff the script already cut as
-  // `truncated: false`. A body that failed is shown as cut short to nothing.
-  const body = !req.diff ? undefined
-    : failed ? { text: '', whole: false }
-    : joinParts(lines(names.base), (l) => held.entries.get(entryKey(settings, l.line))?.part)
 
   let listing: ChangesReading['listing']
   if (req.listing) {
@@ -1157,8 +1154,7 @@ async function readOnce(
   return {
     changes: {
       base, work, baseResolved: scan.baseResolved, files,
-      ...body ? { diff: cutDiff(body.text, MAX_DIFF_BYTES) } : {},
-      truncated: body !== undefined && (!body.whole || Buffer.byteLength(body.text) > MAX_DIFF_BYTES),
+      ...req.diff ? bodyOf(lines(names.base), entry, failed) : { truncated: false },
       ...scan.skipped.length ? { skipped: scan.skipped } : {},
     },
     ref: scan.ref,
@@ -1166,129 +1162,30 @@ async function readOnce(
   }
 }
 
-/**
- * Resolve git's rename path notation to the destination path:
- * `{old => new}` inline segments and a bare `old => new` both collapse to the
- * "new" side.
- */
-function resolveRenamePath(raw: string): string {
-  let s = raw.replace(/\{[^}]*? => ([^}]*?)\}/g, '$1')
-  const arrow = s.indexOf(' => ')
-  if (arrow !== -1) s = s.slice(arrow + 4)
-  return s.trim()
-}
-
-/** Parse `git diff --numstat` into per-path add/delete counts (binary = -/-). */
-function parseNumstat(text: string): Map<string, { additions: number; deletions: number; binary: boolean }> {
-  const out = new Map<string, { additions: number; deletions: number; binary: boolean }>()
-  for (const line of text.split('\n')) {
-    if (!line.trim()) continue
-    const parts = line.split('\t')
-    if (parts.length < 3) continue
-    const [addRaw, delRaw, ...rest] = parts
-    const path = resolveRenamePath(rest.join('\t'))
-    const binary = addRaw === '-' || delRaw === '-'
-    out.set(path, {
-      additions: binary ? 0 : Number(addRaw) || 0,
-      deletions: binary ? 0 : Number(delRaw) || 0,
-      binary,
-    })
-  }
-  return out
-}
-
-/** A name-status row: the new path, its status, and (for R/C) the old path. */
-type NameStatusEntry = { path: string; status: ChangeStatus; oldPath?: string }
-
-/** Parse `git diff --name-status` into {path,status,oldPath?} (rename → new
- *  path; oldPath is the "from" side of an R/C row). */
-function parseNameStatus(text: string): NameStatusEntry[] {
-  const out: NameStatusEntry[] = []
-  for (const line of text.split('\n')) {
-    if (!line.trim()) continue
-    const parts = line.split('\t')
-    const code = parts[0]
-    // R/C rows are `R100\told\tnew`; everything else `M\tpath`.
-    const renameOrCopy = code[0] === 'R' || code[0] === 'C'
-    const path = renameOrCopy ? parts[2] : parts[1]
-    if (!path) continue
-    const entry: NameStatusEntry = { path, status: statusFromCode(code) }
-    if (renameOrCopy && parts[1]) entry.oldPath = parts[1]
-    out.push(entry)
-  }
-  return out
-}
-
-/** A line holding one of the line-separated sections' markers. */
-const MARKER_LINE = new RegExp(`^(?:${[
-  M_NUMSTAT, M_NAMESTATUS,
-].join('|')})$`, 'gm')
-
-/** The lines after `marker` up to the next marker line; empty when it was
- *  not printed. */
-function section(head: string, marker: string): string {
-  const s = head.indexOf(`\n${marker}\n`)
-  if (s === -1) return ''
-  MARKER_LINE.lastIndex = s + marker.length + 2
-  return head.slice(MARKER_LINE.lastIndex, MARKER_LINE.exec(head)?.index)
-}
-
-/**
- * A unified diff split into its files' parts, keyed by path. git prints the
- * parts in name-status order, one `diff --git` header each, but two for a
- * typechange (a deletion, then a creation), so a typechange the cap left
- * one part of has none.
- */
-function chunksByPath(files: NameStatusEntry[], text: string): Map<string, string> {
-  const parts = text ? text.split(/(?=^diff --git )/m) : []
-  const chunks = new Map<string, string>()
-  let k = 0
-  for (const f of files) {
-    const n = f.status === 'typechange' ? 2 : 1
-    if (k + n > parts.length) break
-    chunks.set(f.path, parts.slice(k, k + n).join(''))
-    k += n
-  }
-  return chunks
-}
-
-/** The unified diff from per-file parts in file order, stopping at the
- *  first file whose part is missing, or once past the cap; not `whole`
- *  when it stopped early or holds a part that was cut. */
-function joinChunks(files: NameStatusEntry[], chunks: Map<string, string>): { text: string; whole: boolean } {
-  let text = ''
-  let bytes = 0
-  let whole = true
-  for (const [n, f] of files.entries()) {
-    const c = chunks.get(f.path)
-    if (c === undefined) return { text, whole: false }
-    text += c
-    bytes += Buffer.byteLength(c)
-    if (c.endsWith(`\n${DIFF_CUT_LINE}\n`)) whole = false
-    if (bytes >= WORKSPACE_DIFF_CAP_BYTES && n < files.length - 1) return { text, whole: false }
-  }
-  return { text, whole }
-}
-
 /** Field separator of the compare script's commit record. */
 const FS = '\x1f'
 
 /**
  * The diff between two refs (`WorkspaceComparison`), as the Changes pane
- * shows a range or a single commit. No working tree is read, so none of the
- * changes script's staging or caches is involved. Each ref is tried as
- * `origin/<name>` and then as itself (`HEAD` only as itself), like a picked
- * base. With `from`, the diff runs from its merge base with `to`, so two
- * branches compare as GitHub compares them; without, from `to`'s first
- * parent, or the empty tree for a root commit, and `to`'s commit comes
- * along. A ref that does not resolve, or a pair with no common history,
- * exits CHANGES_BASE_UNRESOLVED. The body is capped as the changes poll's
- * is, and the rest is read through `readChangeDiffs`.
+ * shows a range or a single commit. Both ends are commits, so there is
+ * nothing to stage: the script resolves them and prints the one raw diff
+ * unless the server holds it, the fill reads what the entries lack, and the
+ * answer is assembled as a changes read's is, from the same entries. Its
+ * settings read the attributes files from the private index, as the scan's
+ * do, so the two share them. Each ref is tried as `origin/<name>` and then
+ * as itself (`HEAD` only as itself), like a picked base. With `from`, the
+ * diff runs from its merge base with `to`, so two branches compare as
+ * GitHub compares them; without, from `to`'s first parent, or the empty
+ * tree for a root commit, and `to`'s commit comes along. A ref that does
+ * not resolve, or a pair with no common history, exits
+ * CHANGES_BASE_UNRESOLVED. The rest of the body is read through
+ * `readChangeDiffs`.
  */
 export async function readComparison(jobName: string, { from, to }: { from?: string; to: string }): Promise<WorkspaceComparison> {
-  const driver = workspaceDriver()
-  const { workspaceDir, scratchDir } = driver.workspacePaths(jobName)
-  const script = `cd ${workspaceDir} 2>/dev/null || exit 3; `
+  const { workspaceDir, scratchDir } = workspaceDriver().workspacePaths(jobName)
+  const indexFile = indexFileIn(scratchDir)
+  const held = heldFor(jobName)
+  const script = `cd ${workspaceDir} 2>/dev/null || exit 3; ${scratchObjects(indexFile)}export GIT_INDEX_FILE=${indexFile}; `
     + 'res() { case $1 in -*|"") return 1;; esac; for c in "origin/$1" "$1"; do '
     + '[ "$1:$c" != HEAD:origin/HEAD ] || continue; git rev-parse -q --verify "$c^{commit}" && return; done; return 1; }; '
     + `to=$(res "$2") || exit ${CHANGES_BASE_UNRESOLVED}; `
@@ -1296,49 +1193,36 @@ export async function readComparison(jobName: string, { from, to }: { from?: str
     + 'else base=$(git rev-parse -q --verify "$to^1") || base=$(git hash-object -t tree /dev/null) || exit 6; '
     // A message holds no NUL, so the record ends at the first one.
     + `git log -1 -z --format="%H${FS}%P${FS}%an${FS}%at${FS}%B" "$to" || exit 6; fi; `
-    + `printf "\nBASE %s\nTO %s\n${M_NUMSTAT}\n" "$base" "$to"; git diff --numstat "$base" "$to" || exit 6; `
-    + `printf "${M_NAMESTATUS}\n"; git diff --name-status "$base" "$to" || exit 6; printf "${M_OK}\n"; `
-    + `s=0; p=${MAX_FILE_DIFF_BYTES}; t=${WORKSPACE_DIFF_CAP_BYTES}; b=${scratchDir}/yaac-compare.$$; ${cappedFn('$b.err')}`
-    + `if capped git diff ${BODY_FLAGS} "$base" "$to" > $b; then printf "${M_DIFF}\n"; cat $b; else printf "${M_NODIFF}\n"; fi; `
-    + 'rm -f $b $b.err'
-  const { stdout } = await driver.exec(jobName, `sh -c ${shSingleQuote(script)} yaac-compare `
-    + [from ?? '', to].map(shSingleQuote).join(' '), { timeout: 20_000 })
+    + `${SETTINGS_SH}printf "\\nBASE %s\\nTO %s\\nSETTINGS %s\\n" "$base" "$to" "$cf"; `
+    + `case " $3 " in *" $base..$to:$cf "*) ;; *) printf "${M_RAW} %s\\n" "$base..$to:$cf"; `
+    + 'git diff --raw --no-abbrev "$base" "$to" || exit 6;; esac; '
+    + `printf "\\n${M_OK}\\n"`
+  const run = `sh -c ${shSingleQuote(script)} yaac-compare ${[from ?? '', to, [...held.raws.keys()].join(' ')].map(shSingleQuote).join(' ')}`
+  const opts = { timeout: 20_000, maxAttempts: 2 }
+  const stdout = await execPaged(jobName, indexFile, `o=${indexFile}.out.$$; ${run} > $o 2> $o.err; r=$?; ${PRINT_OUTPUT}`, opts)
   const nul = from ? -1 : stdout.indexOf('\0')
-  const raw = stdout.slice(nul + 1)
-  // Every line before the marker opens with a count or a status letter, so
-  // a path named like it cannot pass for it.
-  const ok = raw.indexOf(`\n${M_OK}\n`)
-  if (ok === -1) throw new Error('workspace compare: script produced no completion marker')
-  const head = raw.slice(0, ok)
-  const base = /^BASE (.*)$/m.exec(head)?.[1] ?? ''
-  const work = /^TO (.*)$/m.exec(head)?.[1] ?? ''
-  const numstat = parseNumstat(section(head, M_NUMSTAT))
-  const nameStatus = parseNameStatus(section(head, M_NAMESTATUS))
-  const files = nameStatus.map(({ path, status, oldPath }): WorkspaceChange => {
-    const { additions, deletions, binary } = numstat.get(path) ?? { additions: 0, deletions: 0, binary: false }
-    return { path, status, additions, deletions, binary, stages: { committed: { additions, deletions } }, ...oldPath ? { oldPath } : {} }
-  })
-  const d = raw.indexOf(`${M_DIFF}\n`, ok)
-  const body = d === -1
-    ? { text: '', whole: false }
-    : joinChunks(nameStatus, chunksByPath(nameStatus, raw.slice(d + M_DIFF.length + 1)))
+  const scan = parseScan(stdout.slice(nul + 1))
+  for (const [name, lines] of scan.raws) held.raws.set(name, { settings: scan.settings, lines })
+  const name = pairName(scan.base, scan.work, scan.settings)
+  if (!held.raws.has(name)) throw new Error('workspace compare: the run reused a raw diff this server does not hold')
+  held.readings.set(`${from ?? ''}...${to}`, { pairs: [name], usedAt: Date.now() })
+  const need = needOf(held, name, [scan.base, scan.work, true], true)
+  const failed = await fill(jobName, held, need ? [need] : [], opts)
+  const { lines } = held.raws.get(name)!
+  const entry = (l: RawLine): Entry | undefined => held.entries.get(entryKey(scan.settings, l.line))
   let commit: CommitDetail | undefined
   if (nul !== -1) {
     // The message is last, so a separator in it stays part of it.
     const [sha = '', parents = '', author = '', time = '', ...message] = stdout.slice(0, nul).split(FS)
     commit = { sha, parents: parents ? parents.split(' ') : [], author, time: Number(time), message: message.join(FS).trimEnd() }
   }
-  return {
-    base,
-    work,
-    baseResolved: true,
-    files,
-    diff: cutDiff(body.text, MAX_DIFF_BYTES),
-    truncated: !body.whole || Buffer.byteLength(body.text) > MAX_DIFF_BYTES,
-    ...commit ? { commit } : {},
-  }
+  const files = lines.map((l) => {
+    const counts = entry(l)?.counts ?? NO_COUNTS
+    return changeOf(l, counts, { committed: { additions: counts.additions, deletions: counts.deletions } })
+  })
+  prune(held)
+  return { base: scan.base, work: scan.work, baseResolved: true, files, ...bodyOf(lines, entry, failed), ...commit ? { commit } : {} }
 }
-
 
 /**
  * More of a diff the changes poll left out, for the Changes pane: the parts

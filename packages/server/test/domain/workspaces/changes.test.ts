@@ -11,6 +11,7 @@ import {
   SCRATCH_OBJECTS_CAP_KB,
   forgetWorkspaceChanges,
   readChangeDiffs,
+  readComparison,
   readWorkspaceChanges,
   runChangesRead,
   type ChangesReading,
@@ -867,6 +868,52 @@ describe('readWorkspaceChanges', () => {
     cap = '1'
     expect((await read()).files.map((f) => f.path)).toEqual(['dropped.txt', 'new.txt'])
     expect(fs.existsSync(path.join(objects, 'junk'))).toBe(false)
+  })
+})
+
+describe('readComparison', () => {
+  // Both ends of a range are commits, so it needs no staging: its script
+  // prints the one raw diff unless the server holds it, and the fill reads
+  // only what the entries lack, sharing them with the changes read. A
+  // range whose files the workspace's own diff holds costs the script
+  // alone, and a range read again costs a script that prints no pair.
+  it('diffs a range from what it holds, sharing what the changes read filled', async () => {
+    const w = workspace()
+    const main = git(w.repo, 'rev-parse', 'HEAD').trim()
+    git(w.repo, 'checkout', '-q', '-b', 'agent/x')
+    fs.appendFileSync(path.join(w.repo, 'base.txt'), 'more\n')
+    git(w.repo, 'commit', '-qam', 'edit')
+    const edit = git(w.repo, 'rev-parse', 'HEAD').trim()
+    fs.writeFileSync(path.join(w.repo, 'added.txt'), 'added\n')
+    git(w.repo, 'add', '-A')
+    git(w.repo, 'commit', '-qm', 'add')
+    const compare = async (range: { from?: string; to: string }): Promise<{ printed: boolean; filled: string[] }> => {
+      const before = w.runs.length
+      const answer = await readComparison('ws', range)
+      forgetWorkspaceChanges('fresh')
+      expect(answer).toEqual(await readComparison('fresh', range))
+      const runs = w.runs.slice(before, w.runs.findIndex((r, n) => n >= before && r.cmd.includes('scratch-fresh')))
+      return { printed: runs.some((r) => r.out.includes('@@RAW@@')), filled: filled(runs) }
+    }
+
+    await w.read()
+    expect(await compare({ from: 'main', to: 'HEAD' })).toEqual({ printed: false, filled: [] })
+    const range = await readComparison('ws', { from: 'main', to: 'HEAD' })
+    expect(range).toMatchObject({ base: main, baseResolved: true, truncated: false })
+    expect(range.files.map((f) => [f.path, f.stages])).toEqual([
+      ['added.txt', { committed: { additions: 1, deletions: 0 } }], ['base.txt', { committed: { additions: 1, deletions: 0 } }],
+    ])
+    expect(range.diff).toContain('+added')
+
+    // One commit, against its first parent: a pair of its own, whose file
+    // the range already filled.
+    expect(await compare({ to: edit })).toEqual({ printed: true, filled: [] })
+    expect(await compare({ to: edit })).toEqual({ printed: false, filled: [] })
+    const commit = await readComparison('ws', { to: edit })
+    expect(commit.commit).toMatchObject({ sha: edit, parents: [main], author: 't', message: 'edit' })
+    expect(commit.files.map((f) => f.path)).toEqual(['base.txt'])
+
+    await expect(readComparison('ws', { from: 'nowhere', to: 'HEAD' })).rejects.toMatchObject({ code: CHANGES_BASE_UNRESOLVED })
   })
 })
 
