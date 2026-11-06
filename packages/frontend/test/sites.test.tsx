@@ -26,7 +26,7 @@ beforeEach(() => {
   edge = { tunnel: 'connected' }
   sites = [
     {
-      name: 'web', hostname: 'app.example.com', port: 3000, adminPort: 3001, steps: SERVE, volume: 'db', createdAt: ago(60),
+      id: 'site-web', name: 'web', hostname: 'app.example.com', port: 3000, adminPort: 3001, steps: SERVE, volume: 'db', createdAt: ago(60),
       live: { workspaceId: 'w-live0001', commit: 'abcdef1234567', since: ago(5), running: true },
       lastDeploy: {
         workspaceId: 'w-fail0001', commit: '9876543210', outcome: 'failed', error: 'step "build" failed (exit 2)',
@@ -34,7 +34,7 @@ beforeEach(() => {
       },
     },
     {
-      name: 'docs', hostname: 'docs.example.com', port: 8080, steps: SERVE, createdAt: ago(60),
+      id: 'site-docs', name: 'docs', hostname: 'docs.example.com', port: 8080, steps: SERVE, createdAt: ago(60),
       lastDeploy: { workspaceId: 'w-docs0001', commit: '1111111222', outcome: 'succeeded', finishedAt: ago(90) },
     },
   ]
@@ -50,7 +50,7 @@ beforeEach(() => {
       if (!Object.values(steps).some((s) => s.service === true)) {
         return serverError('VALIDATION', 'a site\'s steps need a service step', 400)
       }
-      sites = [...sites, { name, hostname, port, steps, ...(volume !== undefined ? { volume } : {}), createdAt: '' }]
+      sites = [...sites, { id: `site-${name}`, name, hostname, port, steps, ...(volume !== undefined ? { volume } : {}), createdAt: '' }]
       return undefined
     },
     'POST /api/site/edit': () => undefined,

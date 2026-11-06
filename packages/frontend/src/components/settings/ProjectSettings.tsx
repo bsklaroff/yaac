@@ -3,6 +3,7 @@ import { remoteKind } from '#components/GitCredentialPicker'
 import { FileEditor } from '#components/settings/FileEditor'
 import { BuildFiles } from '#components/settings/BuildFiles'
 import { ProjectEnv } from '#components/settings/ProjectEnv'
+import { ProjectRunSecrets } from '#components/settings/ProjectRunSecrets'
 import { EgressAllowlist } from '#components/settings/EgressAllowlist'
 import { ScratchDirs } from '#components/settings/ScratchDirs'
 import { PortForwards } from '#components/settings/PortForwards'
@@ -134,6 +135,10 @@ export function ProjectSettings(): JSX.Element {
               mediatedEgress={mediatedEgress}
               readOnly={readOnly}
             />
+          </div>
+
+          <div className="mt-6">
+            <ProjectRunSecrets key={`run-secrets:${projectId}`} projectId={projectId} hasSites={hasVolumes} readOnly={readOnly} />
           </div>
 
           {mediatedEgress && <div className="mt-6">

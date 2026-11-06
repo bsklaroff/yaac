@@ -715,6 +715,19 @@ export interface ProjectEnvVar {
   rule?: SecretProxyRule
 }
 
+/**
+ * One of a project's run secrets, as a client sees it
+ * (docs/project-config.md "Run secrets"): never its value, only whether a
+ * usable one is stored, and the sites and routines whose workspaces get it.
+ */
+export interface ProjectRunSecret {
+  id: string
+  name: string
+  hasValue: boolean
+  siteIds: string[]
+  routineIds: string[]
+}
+
 // ---------------------------------------------------------------------------
 // Wire types: RPC request/response shapes shared by the server and clients.
 // ---------------------------------------------------------------------------
@@ -1755,6 +1768,8 @@ export type SiteDeployPhase = 'launching' | 'building' | 'handoff' | 'starting'
 
 /** A public site as `GET /site/list` answers it. */
 export interface SiteEntry {
+  /** What a run secret names it by (`ProjectRunSecret.siteIds`). */
+  id: string
   name: string
   hostname: string
   /** The port its releases serve on. */

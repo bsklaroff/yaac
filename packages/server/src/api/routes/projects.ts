@@ -11,14 +11,17 @@ import {
   getProjectBranches,
   getProjectDetail,
   listProjectEnv,
+  listProjectRunSecrets,
   listProjects,
   portForwardsSchema,
   readProjectDockerfile,
   registerStagedProject,
   removeKeptHostedRepo,
   removeProjectEnvVar,
+  removeRunSecret,
   setProjectAllowlist,
   setProjectEnvVar,
+  setRunSecret,
   writeProjectDockerfile,
   pushProjectSecrets,
   resolveProjectId,
@@ -293,6 +296,29 @@ export const projectApp = new Hono<IdentityEnv>()
     const projectId = await resolveProjectId(c.req.param('projectId'))
     await removeProjectEnvVar(c.get('principal'), projectId, c.req.param('id'))
     await syncRunningWorkspaces(projectId, 'the variable was removed')
+    return c.body(null, 204)
+  })
+  // Values only the sites and routines each one names get, as they are
+  // (docs/project-config.md "Run secrets").
+  .get('/:projectId/run-secrets', async (c) =>
+    c.json({ secrets: await listProjectRunSecrets(await resolveProjectId(c.req.param('projectId'))) }))
+  .put(
+    '/:projectId/run-secrets',
+    zv('json', z.object({
+      name: z.string().min(1),
+      // Optional so the targets can change without resending the value.
+      value: z.string().optional(),
+      siteIds: z.array(z.string()),
+      routineIds: z.array(z.string()),
+    })),
+    async (c) => {
+      const projectId = await resolveProjectId(c.req.param('projectId'))
+      return c.json({ secret: await setRunSecret(c.get('principal'), projectId, c.req.valid('json')) })
+    },
+  )
+  .delete('/:projectId/run-secrets/:id', async (c) => {
+    const projectId = await resolveProjectId(c.req.param('projectId'))
+    await removeRunSecret(c.get('principal'), projectId, c.req.param('id'))
     return c.body(null, 204)
   })
   // The project's egress allowlist, with the install's defaults so a client

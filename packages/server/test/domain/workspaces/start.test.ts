@@ -81,6 +81,7 @@ import {
   setWorkspaceGroupLimit,
   seeTailnetUser,
   setToolCredential,
+  upsertRunSecret,
   type SessionRow,
   type WorkspaceRow,
 } from '#db'
@@ -566,6 +567,31 @@ describe('prepareStart', () => {
       expect(env()).toEqual(expect.arrayContaining([
         'OPENCODE_DISABLE_AUTOUPDATE=1', 'PI_CODING_AGENT_SESSION_DIR=/home/yaac/.yaac-pi-sessions', 'PI_SKIP_VERSION_CHECK=1',
       ]))
+    })
+
+    it('gives run secrets to a non-interactive create only, named on the spec with mediated egress', async () => {
+      const ci = { nonInteractive: true, noSession: true, commit: head, steps: { t: { run: 'true' } } }
+      const pushed: Array<Record<string, string>> = []
+      installDriver({ syncProjectSecrets: (_p, _v, run) => { pushed.push(run); return Promise.resolve() } })
+      await upsertRunSecret(DEMO_PROJECT_ID, { name: 'P8_KEY', value: 'pem', siteIds: [], routineIds: [] })
+      await start({ ...ci, runSecrets: { P8_KEY: 'pem' } })
+      // The runtime holds the value, current as of this launch; the spec
+      // only names it.
+      expect(specs[0].runSecrets).toEqual(['P8_KEY'])
+      expect(pushed).toEqual([{ P8_KEY: 'pem' }])
+      expect(env().join('\n')).not.toContain('pem')
+      // Nothing an agent could have written beside it: no tool home.
+      expect(specs[0].mounts.map((m) => m.mountPath)).not.toContain('/home/yaac/.claude')
+
+      installDriver({ kind: 'containerless' })
+      await start({ ...ci, runSecrets: { P8_KEY: 'pem' } })
+      expect(specs[1].runSecrets).toBeUndefined()
+      expect(specs[1].env).toContain('P8_KEY=pem')
+      expect(specs[1].secretEnvKeys).toContain('P8_KEY')
+
+      // An interactive workspace never gets one.
+      await expect(start({ noSession: true, runSecrets: { P8_KEY: 'pem' } })).rejects.toThrow(/run secrets go only/)
+      expect(specs).toHaveLength(2)
     })
 
     it('gives opencode and pi each their own key for one provider, in the config each tool reads', async () => {

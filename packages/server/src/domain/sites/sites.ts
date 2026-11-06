@@ -282,6 +282,7 @@ async function toSiteEntry(row: SiteRow): Promise<SiteEntry> {
     ? await resolveRemoteRef(repoDir(row.projectId), row.followBranch).catch(() => undefined)
     : undefined
   return {
+    id: row.id,
     name: row.name,
     hostname: row.hostname,
     port: row.port,

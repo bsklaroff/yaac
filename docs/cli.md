@@ -285,7 +285,12 @@ yaac config                     Each setting prints given no value, and is
     --prefix <prefix>           Before the value (default "Bearer " with the
                                 default header)
     --body-param <name>         Into this form/JSON body field instead
-    --unset <name>              Remove a variable or secret
+    --run-secret                Set the run secret NAME instead, its value
+                                read from stdin: a real value only the
+                                targets below get (project-config.md)
+    --site <name>               A site whose releases get it (repeatable)
+    --routine <routine-id>      A routine whose runs get it (repeatable)
+    --unset <name>              Remove a variable, secret or run secret
   egress-allowlist <project> [hosts...]
                                 Show or replace the hosts workspaces may reach
                                 besides the defaults (k8s servers only)

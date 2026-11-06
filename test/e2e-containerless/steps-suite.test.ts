@@ -185,6 +185,46 @@ describe.skipIf(!CAN_RUN)('workspace steps (containerless)', () => {
     }, { timeout: 30_000, interval: 500 })
   }, 60_000)
 
+  it('gives a run secret to a pinned routine\'s runs alone, set by a person and out of an agent\'s reach', async () => {
+    const head = (await execFileAsync('git', ['-C', repoPath, 'rev-parse', 'HEAD'])).stdout.trim()
+    const stepsFile = path.join(testEnv.scratchDir, 'relay-ci.json')
+    await fs.writeFile(stepsFile, JSON.stringify({ check: { run: 'test "$RELAY_KEY" = "relay-key-value"' } }))
+    const made = await yaac('routine', 'create', NAME, '--name', 'Relay CI', '--cron', '@yearly',
+      '--non-interactive', '--steps', stepsFile, '--commit', head)
+    expect(made.exitCode, made.stderr).toBe(0)
+    const routineId = /Created routine (\S+) /.exec(made.stdout)![1]
+
+    // Without --run-secret, a target names nothing to give.
+    expect((await yaac('config', 'env', NAME, '--routine', routineId)).stderr).toContain('pass --run-secret too')
+    const set = await runYaac(serverEnv, 'config', 'env', NAME, 'RELAY_KEY', '--run-secret', '--routine', routineId.slice(0, 8),
+      { stdin: 'relay-key-value\n' })
+    expect(set.exitCode, set.stderr).toBe(0)
+    expect(set.stdout).toContain('given to routine Relay CI')
+    const listing = (await yaac('config', 'env', NAME)).stdout
+    expect(listing).toMatch(/Run secrets in cl-steps:\n {2}RELAY_KEY {2}\*{8} {2}routine Relay CI/)
+    expect(listing).not.toContain('relay-key-value')
+
+    // An agent can neither change what the routine runs nor reach the value.
+    const agent = await mamaStep(workspaceId, 'mama-routine-edit',
+      `yaac-mama routine edit --cron @monthly ${routineId.slice(0, 8)}; echo "refused=$?"`,
+      'echo "key=[${RELAY_KEY:-}]"')
+    expect(agent).toContain('only a person edits it')
+    expect(agent).toContain('refused=1')
+    expect(agent).toContain('key=[]')
+
+    // Its run gets the real value; a rerun of that run gets none.
+    const ran = await yaac('routine', 'run', routineId)
+    expect(ran.exitCode, ran.stderr).toBe(0)
+    const runId = /Started workspace (\S+) /.exec(ran.stdout)![1]
+    await vi.waitFor(async () => expect((await stopped(runId))?.stepsOutcome).toBe('succeeded'), { timeout: 60_000, interval: 500 })
+    const again = await provisioned('/workspace/rerun', { workspaceId: runId })
+    await vi.waitFor(async () => expect((await stopped(again))?.stepsOutcome).toBe('failed'), { timeout: 60_000, interval: 500 })
+
+    const unset = await yaac('config', 'env', NAME, '--unset', 'RELAY_KEY')
+    expect(unset.exitCode, unset.stderr).toBe(0)
+    expect(unset.stdout).toContain('Removed run secret RELAY_KEY')
+  }, 240_000)
+
   it('keeps every log after the workspace stops', async () => {
     const stop = await yaac('workspace', 'stop', workspaceId)
     expect(stop.exitCode, stop.stderr).toBe(0)

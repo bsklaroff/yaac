@@ -11,6 +11,7 @@ let api: FakeApi
 let logged: string[]
 
 const SITE: SiteDetail = {
+  id: '00000000-0000-4000-8000-000000000001',
   name: 'web',
   hostname: 'app.example.com',
   port: 3000,

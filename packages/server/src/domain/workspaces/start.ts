@@ -45,6 +45,8 @@ export interface StartWorkspaceRequest {
   nonInteractive?: boolean
   /** The non-interactive workspace this one reruns. */
   rerunOf?: string
+  /** See `WorkspaceCreateOptions.runSecrets`. */
+  runSecrets?: Record<string, string>
   prompt?: string
   /** Its session's id, when the client minted one so it can find what it
    *  opened (`GET /workspace/prompt`) before the snapshot names it. */
@@ -176,6 +178,7 @@ export async function prepareStart(
         ...(steps !== undefined ? { steps } : {}),
         ...(request.nonInteractive === true ? { nonInteractive: true } : {}),
         ...(request.rerunOf !== undefined ? { rerunOf: request.rerunOf } : {}),
+        ...(request.runSecrets !== undefined ? { runSecrets: request.runSecrets } : {}),
         ...(title !== undefined ? { title } : {}),
         ...(generatedTitle !== undefined ? { generatedTitle } : {}),
         ...(groupId !== undefined ? { groupId } : {}),

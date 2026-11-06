@@ -27,7 +27,7 @@ import {
   type StepRow,
 } from '#db'
 import { isProjectHeld, systemPrincipal, type Actor } from '#domain/access'
-import { fetchProjectOrigin } from '#domain/projects'
+import { fetchProjectOrigin, resolveRunSecrets } from '#domain/projects'
 import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
 import {
   listProvisioning,
@@ -287,6 +287,7 @@ async function startDeploy(
   if (!begun) throw new ServerError('CONFLICT', `site "${site.name}" is already deploying`)
   try {
     const holder = opts.volumeId !== undefined ? (await getVolumeRow(opts.volumeId))?.holderWorkspaceId : undefined
+    const runSecrets = await resolveRunSecrets(site.projectId, site.id)
     const run = await prepareStart(principal, {
       projectId: site.projectId,
       workspaceId,
@@ -299,6 +300,7 @@ async function startDeploy(
       ...(opts.volumeId !== undefined ? { stageVolumeId: opts.volumeId } : {}),
       ...(holder !== undefined ? { colocateWith: holder } : {}),
       ...(opts.replacing !== undefined ? { rerunOf: opts.replacing.rerunOf } : {}),
+      runSecrets,
       rememberDefaults: false,
       claimSpare: false,
     })

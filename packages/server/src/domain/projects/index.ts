@@ -46,6 +46,7 @@ export {
   resolveProjectEnv,
   setProjectEnvVar,
 } from './env'
+export { listProjectRunSecrets, removeRunSecret, resolveRunSecrets, setRunSecret } from './run-secrets'
 export {
   assignProjectCredential,
   missingCredentialError,

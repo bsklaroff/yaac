@@ -122,7 +122,7 @@ export function createK8sDriver(): WorkspaceDriver {
     currentImage: (opts) => currentWorkspaceImage(opts),
     prepareSubstrate: (intent) => prepareWorkspaceSubstrate(intent),
     syncCredentials: (bundle) => syncProxyCredentials(bundle),
-    syncProjectSecrets: (projectId, values) => syncProjectSecrets(projectId, values),
+    syncProjectSecrets: (projectId, values, runValues) => syncProjectSecrets(projectId, values, runValues),
     refreshedCredentials: () => refreshedCredentials(),
     launch: (spec) => launchWorkspace(spec),
     awaitReady: (handle) => waitForJobPodReady(handle.jobName),

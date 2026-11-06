@@ -27,6 +27,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 import { createSite, deploySite, editSite, onSiteTimer, reconcileSites, showSite, startSite, stopSite } from '#domain/sites'
 import { createVolume } from '#domain/workspaces'
+import { setRunSecret } from '#domain/projects'
 import { clearAllProvisioningForTests, listProvisioning } from '#domain/workspaces/provisioning'
 import {
   BUILT_IN_USER_ID,
@@ -163,6 +164,7 @@ describe('deploySite', () => {
     await expect(deploySite(local, DEMO_PROJECT_ID, 'shop'))
       .rejects.toMatchObject({ code: 'FORBIDDEN', message: expect.stringContaining('publish sites') as unknown })
     await setUserRole(BUILT_IN_USER_ID, 'admin')
+    await setRunSecret(local, DEMO_PROJECT_ID, { name: 'P8_KEY', value: 'pem', siteIds: [(await site()).id], routineIds: [] })
 
     // First deploy: nothing holds the volume, so it passes once the steps
     // before it are done.
@@ -172,7 +174,8 @@ describe('deploySite', () => {
     // Another deploy of the commit deploying is that deploy.
     expect(await deploySite(local, DEMO_PROJECT_ID, 'shop')).toEqual(first)
     const spec = launched.at(-1)!
-    expect(spec).toMatchObject({ siteId: (await site()).id, image: 'registry.test/proj:1' })
+    // The site's run secrets, held by the runtime and named on the spec.
+    expect(spec).toMatchObject({ siteId: (await site()).id, image: 'registry.test/proj:1', runSecrets: ['P8_KEY'] })
     expect(spec.env.some((e) => e.startsWith('YAAC_VOLUME_DIR='))).toBe(false)
     // The one port it offers is the site's admin port.
     expect(spec.env.filter((e) => e.startsWith('YAAC_PORT_'))).toEqual(['YAAC_PORT_3001=3001'])

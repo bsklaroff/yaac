@@ -644,9 +644,9 @@ describe('syncProxyCredentials', () => {
 })
 
 describe('syncProjectSecrets', () => {
-  it('names the object after the project id and scopes every ref, replacing the set whole', async () => {
-    await syncProjectSecrets(PROJECT_ID, { KEY: 'v1', OTHER: '' })
-    const secret = applied()[0]
+  it('names the objects after the project id and scopes every proxy ref, replacing each set whole', async () => {
+    await syncProjectSecrets(PROJECT_ID, { KEY: 'v1', OTHER: '' }, { P8_KEY: 'pem' })
+    const [secret, run] = applied()
     expect(secret.kind).toBe('Secret')
     expect(secret.metadata.name).toBe(`yaac-proxy-secrets-${PROJECT_ID}`)
     expect(secret.metadata.labels).toEqual({
@@ -654,19 +654,25 @@ describe('syncProjectSecrets', () => {
     })
     expect(JSON.parse(b64d(secret.data!['values.json'])))
       .toEqual({ [`${PROJECT_ID}/KEY`]: 'v1', [`${PROJECT_ID}/OTHER`]: '' })
+    // Run secrets sit apart, one key per name for a pod's secretKeyRef, and
+    // carry no proxy label, so the proxy never reads them as its input.
+    expect(run.metadata.name).toBe(`yaac-run-secrets-${PROJECT_ID}`)
+    expect(run.metadata.labels).toEqual({ 'yaac.project-id': PROJECT_ID })
+    expect(b64d(run.data!.P8_KEY)).toBe('pem')
 
     // An emptied set is applied as such, so a deleted secret stops being injected.
-    await syncProjectSecrets(PROJECT_ID, {})
-    expect(JSON.parse(b64d(applied()[1].data!['values.json']))).toEqual({})
+    await syncProjectSecrets(PROJECT_ID, {}, {})
+    expect(JSON.parse(b64d(applied()[2].data!['values.json']))).toEqual({})
+    expect(applied()[3].data).toEqual({})
   })
 })
 
 describe('removeProjectSecrets', () => {
-  it('deletes the project’s object by its install-scoped name', async () => {
-    await syncProjectSecrets(PROJECT_ID, { A: '1' })
-    const name = applied()[0].metadata.name
+  it('deletes the project’s objects by their install-scoped names', async () => {
+    await syncProjectSecrets(PROJECT_ID, { A: '1' }, { B: '2' })
+    const names = applied().map((o) => o.metadata.name)
     await removeProjectSecrets(PROJECT_ID)
-    expect(fakeCluster.get('Secret', name, 'test-ns')).toBeUndefined()
+    for (const name of names) expect(fakeCluster.get('Secret', name, 'test-ns')).toBeUndefined()
     // Already gone is success.
     await removeProjectSecrets(PROJECT_ID)
   })

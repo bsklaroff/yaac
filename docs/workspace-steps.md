@@ -156,6 +156,12 @@ own graph, with a step that is not a service, and opens no session.
   with `--interactive`, an interactive workspace there with the graph as its
   start steps, to reproduce a failure in.
 
+A non-interactive run of a routine pinned to a commit gets the run secrets
+that name the routine as their real values, and a site's release those that
+name the site (docs/project-config.md "Run secrets"). A create of its own,
+`yaac-mama create` included, and a rerun get none, since their graph or
+commit may be an agent's.
+
 `--wait` on a create or rerun blocks until the outcome and exits non-zero
 unless it succeeded. `yaac-mama create --workspace … --run … --wait` waits
 on the step it adds instead, until it settles (a service until ready),

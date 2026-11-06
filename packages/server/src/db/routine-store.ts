@@ -2,6 +2,7 @@ import type { StepGraph } from '@yaac/shared/steps'
 import { and, asc, desc, eq, isNotNull, isNull, lt, or } from 'drizzle-orm'
 import { getDb } from './client'
 import { queuedWorkspaces, routines, workspaces } from './schema'
+import { forgetRunSecretTarget } from './run-secret-store'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { isUuid } from '#lib/uuid'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
@@ -115,6 +116,7 @@ export async function listRoutineRows(projectId?: string): Promise<RoutineRow[]>
 export async function deleteRoutine(id: string): Promise<boolean> {
   const db = await getDb()
   const rows = await db.delete(routines).where(eq(routines.id, id)).returning({ id: routines.id })
+  await forgetRunSecretTarget(id)
   notifyWorkspaceListChanged()
   return rows.length > 0
 }

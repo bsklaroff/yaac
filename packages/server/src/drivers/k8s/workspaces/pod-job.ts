@@ -104,6 +104,9 @@ export interface PodJobParams {
   /** `NAME=VALUE` entries. A name repeated with the same value is
    *  rendered once; with a different value, the build throws. */
   env: string[]
+  /** Variables read from a Secret's key of the same name, by Secret: a
+   *  project's run secrets. */
+  secretEnv?: { secretName: string; names: string[] }
   /** Workspace mounts in render order, each declaring its own source. */
   mounts: PodMount[]
   /**
@@ -288,6 +291,12 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
   const scratchLimit = scratchDirs.reduce((sum, d) => sum + d.sizeBytes + SCRATCH_SIZELIMIT_SLACK_BYTES, 0)
   const scratchRequest = scratchDirs.length > 0 ? SCRATCH_REQUEST_BYTES : 0
 
+  const env: Array<Record<string, unknown>> = mergeEnvEntries(p.env)
+  for (const name of p.secretEnv?.names ?? []) {
+    if (env.some((e) => e.name === name)) throw new Error(`run secret ${name} shares its name with another variable`)
+    env.push({ name, valueFrom: { secretKeyRef: { name: p.secretEnv?.secretName, key: name } } })
+  }
+
   return {
     apiVersion: 'batch/v1',
     kind: 'Job',
@@ -345,7 +354,7 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
               // Tags are content hashes, so a cached tag is always correct.
               imagePullPolicy: 'IfNotPresent',
               workingDir: '/workspace',
-              env: mergeEnvEntries(p.env),
+              env,
               volumeMounts,
               ...(p.postStartExec || p.preStopExec ? {
                 lifecycle: {

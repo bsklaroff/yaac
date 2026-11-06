@@ -45,7 +45,7 @@ import {
 } from '@yaac/shared/paths'
 import { buildCloneLinkExec, buildStatusWarmupExec } from '@yaac/shared/git'
 import { parseGitRemote } from '@yaac/shared/git-remote'
-import { fetchProjectCommit, fetchProjectOrigin, missingCredentialError, resolveProjectCredential, resolveProjectEnv, seedProjectOrigin, sshKeyMaterial } from '#domain/projects'
+import { fetchProjectCommit, fetchProjectOrigin, missingCredentialError, pushProjectSecrets, resolveProjectCredential, resolveProjectEnv, seedProjectOrigin, sshKeyMaterial } from '#domain/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { readLock } from '@yaac/shared/lock'
 import {
@@ -206,6 +206,12 @@ export interface WorkspaceCreateOptions {
   nonInteractive?: boolean
   /** The non-interactive workspace this one reruns. */
   rerunOf?: string
+  /**
+   * Run secrets by name, with their values (docs/project-config.md "Run
+   * secrets"), for a site's release or a routine's non-interactive run.
+   * Refused on any other create.
+   */
+  runSecrets?: Record<string, string>
   /**
    * Resume an existing workspace (a restart): reuse its checkout if present,
    * and relaunch each of its open sessions in its own window, resuming its
@@ -1142,6 +1148,23 @@ export async function createWorkspace(
     secretEnvKeys.push(name)
   }
 
+  // Run secrets are real values under k8s too. With mediated egress the
+  // runtime holds them, current as of this launch, and the spec only names
+  // them, so no value is written into the workspace's own spec.
+  const runSecrets = Object.entries(options.runSecrets ?? {})
+  if (runSecrets.length > 0) {
+    if (options.nonInteractive !== true && options.siteId === undefined) {
+      throw new Error('run secrets go only to a site\'s release or a non-interactive routine run')
+    }
+    await pushProjectSecrets(projectId)
+  }
+  if (!sandboxed) {
+    for (const [name, value] of runSecrets) {
+      env.push(`${name}=${value}`)
+      secretEnvKeys.push(name)
+    }
+  }
+
   // API-key env vars for every tool (a spare may be retooled at claim), so
   // no tool prompts for login. With mediated egress these are placeholders
   // the proxy swaps by destination host and placeholder, regardless of the
@@ -1314,9 +1337,12 @@ export async function createWorkspace(
   // A public site's release runs no agent and faces the internet, so it
   // mounts only what is its own or read-only: nothing other workspaces of
   // the project read, such as a tool home, its memory or a cache volume, is
-  // there for it to poison (docs/public-sites.md).
+  // there for it to poison (docs/public-sites.md). A sandboxed workspace
+  // given run secrets is held to the same, so nothing an agent wrote into
+  // one of those runs beside the real values. Without a sandbox an agent
+  // runs as the host user, who can read them anyway.
   const releaseMountPaths = new Set(['/workspace', `${repo}/.git`, CONTAINER_TERMINAL_LOG_DIR, CONTAINER_TMUX_DIR])
-  const mounts = options.siteId === undefined
+  const mounts = options.siteId === undefined && !(sandboxed && runSecrets.length > 0)
     ? allMounts
     : allMounts.filter((m) => releaseMountPaths.has(m.mountPath) || binMounts.includes(m))
 
@@ -1340,6 +1366,7 @@ export async function createWorkspace(
     ...(imageRef !== undefined ? { image: imageRef } : {}),
     env,
     secretEnvKeys,
+    ...(sandboxed && runSecrets.length > 0 ? { runSecrets: runSecrets.map(([name]) => name) } : {}),
     mounts,
     scratchDirs,
     resources: WORKSPACE_RESOURCES,

@@ -8,7 +8,8 @@
  * Settings are resolved when the routine is saved, as a queued entry's are,
  * so what the UI shows is what each run launches with. An agent's writes
  * (`yaac-mama routine …`) are held to its permission mode, as its queue
- * writes are (`QueueSource`).
+ * writes are (`QueueSource`), and never reach a routine that gets run
+ * secrets.
  */
 import { resolveParentlessSettings, runQueuedWorkspace, type QueueSource } from './queued-workspaces'
 import { authorizeProject, type Actor } from '#domain/access'
@@ -25,6 +26,7 @@ import {
   listQueuedWorkspaceRows,
   listRoutineRows,
   listRoutineRuns,
+  listRunSecrets,
   listUnlaunchedRoutineRuns,
   setRoutinePaused as setRoutinePausedRow,
   updateRoutine as updateRoutineRow,
@@ -77,6 +79,18 @@ export async function updateRoutine(
   const prompt = nonInteractive ? undefined : patch.prompt ?? row.prompt
   const commit = patch.branch !== undefined ? undefined : patch.commit ?? row.commit
   const branch = commit !== undefined ? undefined : patch.branch ?? row.branch
+  // A person who gave the routine run secrets vouched for what it runs
+  // (docs/project-config.md "Run secrets").
+  if ((await listRunSecrets(row.projectId)).some((r) => r.routineIds.includes(id))) {
+    if (source !== 'user') {
+      throw new ServerError('FORBIDDEN', `routine "${row.name}" gets run secrets, so only a person edits it, `
+        + 'in the webapp or with `yaac routine edit`')
+    }
+    if (!nonInteractive || commit === undefined) {
+      throw new ServerError('VALIDATION', `routine "${row.name}" gets run secrets, so it stays non-interactive `
+        + 'at a commit; take it off them first')
+    }
+  }
   const steps = patch.steps !== undefined ? patch.steps : row.steps
   const fields = await resolveRoutine(row.projectId, {
     name: patch.name ?? row.name,

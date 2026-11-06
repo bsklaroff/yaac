@@ -314,6 +314,17 @@ describe('launchWorkspace', () => {
     expect(env.SSL_CERT_FILE).toBe('/etc/yaac/certs/proxy-ca.pem')
   })
 
+  it('reads run secrets by key from the project\'s run-secrets Secret, so no value is in the Job', async () => {
+    const substrate = await prepareWorkspaceSubstrate(INTENT)
+    await launchWorkspace(specOf(substrate, { runSecrets: ['P8_KEY'] }))
+    expect(appliedJob().spec.template.spec.containers[0].env).toContainEqual({
+      name: 'P8_KEY',
+      valueFrom: { secretKeyRef: { name: `yaac-run-secrets-${PROJECT_ID}`, key: 'P8_KEY' } },
+    })
+    // One that shadows another variable is refused, not silently dropped.
+    await expect(launchWorkspace(specOf(substrate, { runSecrets: ['CALLER_SAID'] }))).rejects.toThrow(/shares its name/)
+  })
+
   // pnpm's SQLite store index cannot be shared between pods, so each pod
   // has its own store on the same volume as `.pnpm`, letting pnpm hardlink.
   it('backs each scratch dir with its own volume and keeps pnpm\'s store inside the root one', async () => {

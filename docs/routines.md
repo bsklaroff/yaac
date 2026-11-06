@@ -115,7 +115,9 @@ launches with (resolved when saved, as a queued entry's are), an optional
 branch's tip or at a fixed commit, and may bring their own step graph and be
 non-interactive, which makes a routine a nightly CI run
 (docs/workspace-steps.md). It keeps the graph it was given; only
-`routine edit --steps` changes it.
+`routine edit --steps` changes it. A non-interactive routine pinned to a
+commit may be given run secrets, after which only a person edits it
+(docs/project-config.md "Run secrets").
 
 **Firing.** The `routines` step takes each unpaused routine whose
 `nextRunAt` has passed, skipping one in a removed share. In one transaction

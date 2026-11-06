@@ -642,6 +642,25 @@ export const projectEnvVars = snakeCase.table('project_env_vars', {
 }, (t) => [uniqueIndex().on(t.projectId, t.name)])
 
 /**
+ * A project's run secrets (docs/project-config.md "Run secrets"): values
+ * that only the sites and routines each one names get, as they are, in
+ * their workspaces' environment. Kept apart from `projectEnvVars`, so an
+ * ordinary workspace's launch never reads them. Only run-secret-store.ts
+ * reads `sealedValue`; deleting a site or routine drops it from the lists.
+ */
+export const projectRunSecrets = snakeCase.table('project_run_secrets', {
+  id: uuid().primaryKey().defaultRandom(),
+  projectId: uuid().notNull(),
+  name: text().notNull(),
+  /** Encrypted with the key from `secret-key.ts`. */
+  sealedValue: text().notNull(),
+  siteIds: uuid().array().notNull().default([]),
+  routineIds: uuid().array().notNull().default([]),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex().on(t.projectId, t.name)])
+
+/**
  * Named git credentials: an HTTPS token the user pasted, or an SSH key the
  * server generated (the user only sees its public half)
  * (docs/git-credentials.md). A project references one via

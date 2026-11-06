@@ -71,6 +71,7 @@ export {
   buildBuilderRoleGuardPolicyManifest,
   buildRegistrationConfigMapManifest,
   proxyRegistrationName,
+  runSecretsName,
 } from './proxy-manifests'
 export {
   baseImageHash,

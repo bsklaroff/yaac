@@ -176,6 +176,13 @@ export {
   type ProjectEnvVarRow,
 } from './project-env-store'
 export {
+  deleteProjectRunSecrets,
+  deleteRunSecret,
+  listRunSecrets,
+  upsertRunSecret,
+  type RunSecretRow,
+} from './run-secret-store'
+export {
   clearProjectKeepsHostedRepo,
   deleteProjectRow,
   getProjectRow,

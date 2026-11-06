@@ -317,6 +317,13 @@ export interface WorkspaceSpec {
    * the workspace but never stores them in its own durable records.
    */
   secretEnvKeys: string[]
+  /**
+   * Names of the project's run secrets the workspace gets as real values,
+   * from what `syncProjectSecrets` last stored, so no value is written into
+   * the workspace's own spec. Only with mediated egress; without it they
+   * are `env` entries like any secret.
+   */
+  runSecrets?: string[]
   /** Caller-decided mounts; the runtime appends its own. */
   mounts: WorkspaceMount[]
   /**
@@ -785,9 +792,12 @@ export interface WorkspaceDriver {
    * sign-in. A no-op without mediated egress.
    */
   syncCredentials(bundles: Record<string, CredentialBundle>): Promise<void>
-  /** Replace one project's proxied secret values. A no-op without mediated
-   *  egress, where values go into the workspace at launch. */
-  syncProjectSecrets(projectId: string, values: Record<string, string>): Promise<void>
+  /**
+   * Replace one project's proxied secret values, and its run secrets'
+   * (`WorkspaceSpec.runSecrets`). A no-op without mediated egress, where
+   * values go into the workspace at launch.
+   */
+  syncProjectSecrets(projectId: string, values: Record<string, string>, runValues: Record<string, string>): Promise<void>
   /**
    * OAuth tokens the egress path captured from a workspace's refresh, which
    * the owner's store may not have yet, keyed by the owner whose credential

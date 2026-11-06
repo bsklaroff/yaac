@@ -26,6 +26,7 @@ import {
   buildBuilderRoleGuardBindingManifest,
   buildBuilderRoleGuardPolicyManifest,
   buildProjectSecretsManifest,
+  buildRunSecretsManifest,
   buildProxyCredentialsSecretManifest,
   buildProxyDeploymentManifest,
   buildProxyOutputManifests,
@@ -35,6 +36,7 @@ import {
   buildProxyServiceManifest,
   buildServerMamaServiceManifest,
   proxyProjectSecretsName,
+  runSecretsName,
 } from './proxy-manifests'
 import {
   buildEgressWorldDenyNpManifest,
@@ -205,20 +207,22 @@ export async function syncProxyCredentials(bundles: Record<string, CredentialBun
   }
 }
 
-/** Replace one project's secret values for the proxy (an empty set is
- *  applied too, so deleted secrets stop being injected). */
+/** Replace one project's secret values for the proxy and its run secrets
+ *  (an empty set is applied too, so deleted secrets stop being injected). */
 export async function syncProjectSecrets(
   projectId: string,
   values: Record<string, string>,
+  runValues: Record<string, string>,
 ): Promise<void> {
   await applyObject(buildProjectSecretsManifest(projectId, values))
+  await applyObject(buildRunSecretsManifest(projectId, runValues))
 }
 
-/** Delete a project's secret values object. */
+/** Delete a project's secret values objects. */
 export async function removeProjectSecrets(projectId: string): Promise<void> {
-  await deleteObject({
-    apiVersion: 'v1', kind: 'Secret', name: proxyProjectSecretsName(projectId), namespace: k8sNamespace(),
-  })
+  for (const name of [proxyProjectSecretsName(projectId), runSecretsName(projectId)]) {
+    await deleteObject({ apiVersion: 'v1', kind: 'Secret', name, namespace: k8sNamespace() })
+  }
 }
 
 /**

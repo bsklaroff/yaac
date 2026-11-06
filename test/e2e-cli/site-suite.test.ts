@@ -204,6 +204,11 @@ describe('yaac site (real CLI + real server)', () => {
 
     const withAdmin = { ...serving(3001, 'v2'), ...serving(3002, 'admin', 'admin') }
     await yaac('site', 'edit', NAME, 'web', '--admin-port', '3002', '--steps', await stepsFile('v2.json', withAdmin))
+    // A run secret named for the site reaches its releases as it is.
+    const given = await runYaac(serverEnv, 'config', 'env', NAME, 'RELAY_KEY', '--run-secret', '--site', 'web',
+      { stdin: 'relay-key-value\n' })
+    expect(given.exitCode, given.stderr).toBe(0)
+    expect(given.stdout).toContain('given to site web')
     const deployed = await runYaac(serverEnv, 'site', 'deploy', NAME, 'web', '--ref', sha, '--timeout', '10m', '--wait')
     expect(deployed.exitCode, deployed.stderr).toBe(0)
     expect(deployed.stdout).toContain(`Deploying ${sha.slice(0, 7)} to site "web"`)
@@ -233,6 +238,7 @@ describe('yaac site (real CLI + real server)', () => {
       '-d', '{"command":"list"}', 'http://yaac.internal/api/workspace/mama',
     ])
     expect(stdout).toBe('403')
+    expect((await execInJob(`yaac-${release}`, ['printenv', 'RELAY_KEY'])).stdout.trim()).toBe('relay-key-value')
 
     // The admin port is the one port the release offers, and its owner
     // reaches it as any workspace's forward.

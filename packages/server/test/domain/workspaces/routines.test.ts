@@ -26,8 +26,13 @@ import {
   reconcileRoutines,
   runRoutineNow,
   setRoutinePaused,
+  updateQueuedWorkspace,
   updateRoutine,
 } from '#domain/workspaces'
+import { setRunSecret } from '#domain/projects'
+import type { WorkspaceSpec } from '#drivers/contract'
+import { git } from '@yaac/test-utils/git'
+import { repoDir } from '@yaac/shared/project-paths'
 import { clearQueuedLaunchesForTests } from '#domain/workspaces/queued-workspaces'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { listQueuedWorkspaceRows, claimQueuedLaunch, failQueuedLaunch } from '#db/queued-workspace-store'
@@ -72,6 +77,12 @@ afterEach(async () => {
 const routine = (over: Partial<Parameters<typeof createRoutine>[2]> = {}) =>
   createRoutine(local, PROJ, { name: 'Nightly triage', cron: '0 9 * * *', prompt: 'triage the issues', tool: 'claude', ...over }, 'user')
 
+/** A pinned non-interactive routine, which may be given run secrets. */
+async function pinnedCi(over: Partial<Parameters<typeof createRoutine>[2]> = {}) {
+  const head = (await git(repoDir(PROJ), ['rev-parse', 'origin/main'])).trim()
+  return await routine({ prompt: undefined, nonInteractive: true, steps: { t: { run: 'true' } }, commit: head, ...over })
+}
+
 /** Make a routine's next tick already due, as the clock moving past it
  *  would. */
 async function due(id: string, at: Date): Promise<void> {
@@ -112,6 +123,14 @@ describe('updateRoutine', () => {
     expect((await getRoutineRow(r.id))!.nextRunAt).toEqual(nextCronRuns('30 6 * * 1', 'Europe/Paris', new Date(), 1)[0])
     expect(moved.cron).toBe('30 6 * * 1')
     await expect(updateRoutine(local, r.id, { cron: '61 * * * *' }, 'user')).rejects.toMatchObject({ code: 'VALIDATION' })
+  })
+
+  it('keeps an agent off a routine that gets run secrets, and a person from moving it off its commit', async () => {
+    const r = await pinnedCi()
+    await setRunSecret(local, PROJ, { name: 'P8_KEY', value: 'pem', siteIds: [], routineIds: [r.id] })
+    await expect(updateRoutine(local, r.id, { name: 'x' }, { ceiling: 'bypass' })).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    await expect(updateRoutine(local, r.id, { branch: 'main' }, 'user')).rejects.toMatchObject({ code: 'VALIDATION' })
+    expect((await updateRoutine(local, r.id, { name: 'Pinned CI' }, 'user')).name).toBe('Pinned CI')
   })
 
   it('never writes back a tick fired, or a pause made, while it ran', async () => {
@@ -169,6 +188,31 @@ describe('reconcileRoutines', () => {
     expect(launched).toHaveLength(1)
     expect((await getWorkspaceRow(PROJ, launched[0]))?.deadline).toEqual(next)
     expect((await listRoutines())[0].lastRunAt).toBe(slot.toISOString())
+  })
+
+  it('gives a run its routine\'s run secrets only while it runs the routine\'s graph at its commit', async () => {
+    const specs: WorkspaceSpec[] = []
+    installFakeWorkspaceDriver({
+      launch: (spec) => {
+        specs.push(spec)
+        return Promise.resolve(handleFixture({ workspaceId: spec.workspaceId, projectId: PROJ }))
+      },
+    })
+    const r = await pinnedCi({ cron: '*/5 * * * *', timeZone: 'UTC' })
+    await setRunSecret(local, PROJ, { name: 'P8_KEY', value: 'pem', siteIds: [], routineIds: [r.id] })
+    await runRoutineNow(local, r.id)
+    await vi.waitFor(() => { expect(specs).toHaveLength(1) }, { timeout: 60_000 })
+    expect(specs[0].runSecrets).toEqual(['P8_KEY'])
+
+    // Anyone may edit a queued run, an agent included, and an edited one
+    // runs what no person chose.
+    await due(r.id, latestCronRun('*/5 * * * *', 'UTC', new Date())!)
+    await reconcileRoutines()
+    const [run] = await runsOf(r.id)
+    await updateQueuedWorkspace(local, run.id, { steps: { t: { run: 'echo "$P8_KEY"' } } }, { ceiling: 'bypass' })
+    await startScheduledWorkspaces()
+    await vi.waitFor(() => { expect(specs).toHaveLength(2) }, { timeout: 60_000 })
+    expect(specs[1].runSecrets).toBeUndefined()
   })
 
   it('gives each run the gap to the following tick, however irregular, and keeps one failed run', async () => {

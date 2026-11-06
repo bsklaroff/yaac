@@ -13,6 +13,7 @@
  * has room (`startWaitingWorkspaces`).
  */
 import crypto from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import { resolveCreate } from './create'
 import { resolveGroup } from './groups'
 import { groupFull, readGroupRoom, refuseFullGroup, reserveGroupSlot } from './group-limits'
@@ -31,6 +32,7 @@ import { toStoppedEntries } from './stopped-list'
 import { modelDisplayName, modelEfforts } from '#domain/auth'
 import { authorizeProject, isProjectHeld, systemPrincipal, type Actor } from '#domain/access'
 import { getDefaultBranch } from '#domain/git'
+import { resolveRunSecrets } from '#domain/projects'
 import {
   claimQueuedLaunch,
   deleteQueuedWorkspace,
@@ -444,6 +446,7 @@ async function launch(row: QueuedWorkspaceRow, timeoutFrom: Date): Promise<{ wor
             ? 'its timeout ran out before it could start; start a fresh run from the routine'
             : 'its scheduled window passed before it could start; run it again to give it a fresh one')
       }
+      const runSecrets = await routineRunSecrets(row)
       // The server launches it: whoever queued or ran the entry was
       // authorized then.
       const run = await prepareStart(systemPrincipal, {
@@ -458,6 +461,7 @@ async function launch(row: QueuedWorkspaceRow, timeoutFrom: Date): Promise<{ wor
         ...(row.commit !== undefined ? { commit: row.commit } : {}),
         ...(row.steps !== undefined ? { steps: row.steps } : {}),
         ...(row.nonInteractive ? { nonInteractive: true } : {}),
+        ...(Object.keys(runSecrets).length > 0 ? { runSecrets } : {}),
         ...(row.prompt !== undefined ? { prompt: row.prompt } : { noSession: true }),
         ...(row.title !== undefined ? { title: row.title } : {}),
         ...(row.title === undefined && row.generatedTitle !== undefined ? { generatedTitle: row.generatedTitle } : {}),
@@ -506,6 +510,22 @@ async function nextRunOf(row: QueuedWorkspaceRow): Promise<Date | undefined> {
   const routine = await getRoutineRow(row.routineId)
   if (routine === undefined || routine.timeoutMinutes !== undefined) return undefined
   return nextCronRuns(routine.cron, routine.timeZone, row.startAt, 1)[0]
+}
+
+/**
+ * The run secrets a routine's run gets (docs/project-config.md "Run
+ * secrets"): its routine's, while the run is non-interactive and still runs
+ * its routine's graph at its routine's commit. Anyone who may edit a queued
+ * entry may edit a run, an agent included, and an edited run runs what the
+ * person who gave the routine its secrets never saw.
+ */
+async function routineRunSecrets(row: QueuedWorkspaceRow): Promise<Record<string, string>> {
+  if (row.routineId === undefined || !row.nonInteractive || row.commit === undefined) return {}
+  const routine = await getRoutineRow(row.routineId)
+  if (routine?.nonInteractive !== true || routine.commit !== row.commit || !isDeepStrictEqual(routine.steps, row.steps)) {
+    return {}
+  }
+  return await resolveRunSecrets(row.projectId, routine.id)
 }
 
 /** An entry that exists and is not mid-launch — what every edit needs. */
