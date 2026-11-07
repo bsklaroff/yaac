@@ -16,47 +16,6 @@ the SPA would vanish exactly when that server is down.
 It is a single SwiftUI target with no dependencies, outside the pnpm
 workspace; nothing in `pnpm build`, `pnpm lint` or vitest touches it.
 
-## Set up your iPhone
-
-You need a yaac server reachable over Tailscale, the Tailscale app on the
-phone, and the yaac app installed on it. In order:
-
-1. **Put the server on your tailnet.** On the machine running yaac, run
-   `tailscale serve` in front of it and start the server with `--tailnet`, as
-   in [docs/remote-hosting.md](../docs/remote-hosting.md) "Server setup". The
-   result is an `https://<machine>.<tailnet>.ts.net` address. Check it opens
-   in a browser on a device that is on your tailnet.
-2. **Connect the phone to Tailscale.** Install Tailscale from the App Store
-   and sign in as a person, not a tagged device. A tagged device is refused.
-3. **Install the yaac app.** It is not on the App Store. Either accept a
-   TestFlight invite from the maintainer, or build it yourself on a Mac with
-   Xcode (see "Build and run"). A free Apple ID build stops opening after 7
-   days.
-4. **Add the server.** Two ways:
-   - On a computer, open the webapp at its `https://…ts.net` address, go to
-     **Settings → General → Open on your phone**, and scan the QR code with
-     the phone's Camera app. Tap "Open in yaac", then Add.
-   - Or open the yaac app and, on the server list, type the host
-     (`srv.<tailnet>.ts.net`) and tap **Add server**, or tap **Scan QR
-     code** to use the in-app scanner.
-5. **Check it worked.** The server's row shows your tailnet login and the
-   webapp loads. Later, the **Servers** row on the projects screen switches
-   between saved servers.
-
-### If something goes wrong
-
-- **Camera says "No usable data found".** No installed app handles the
-  `yaac://` link: the yaac app is missing, or is a build that predates the
-  scheme. Install or rebuild it. To test the link without the code, paste
-  `yaac://connect?origin=https%3A%2F%2F<host>` into Notes on the phone and
-  tap it. The in-app scanner works without the scheme.
-- **No "Open on your phone" field in Settings.** The page was opened on an
-  `http://` or loopback address. Open it at the `https://…ts.net` one.
-- **The row says stopped.** Tailscale is off on the phone, or the server is
-  down. The error names Tailscale when the request got no answer.
-- **The row says refused.** The phone is a tagged device, or the server is in
-  `local` mode. The row gives the server's reason.
-
 | File | Role |
 |---|---|
 | `Yaac/YaacApp.swift` | the app, and the root view choosing the page or the list |
@@ -72,6 +31,49 @@ phone, and the yaac app installed on it. In order:
 The project uses Xcode 16 synchronized folders, so a file added under
 `Yaac/` or `YaacTests/` is in its target with no project edit.
 
+## Set up your iPhone
+
+You need a yaac server reachable over Tailscale, the Tailscale app on the
+phone, and the yaac app installed on it. In order:
+
+1. **Put the server on your tailnet.** Publish it as
+   [docs/remote-hosting.md](../docs/remote-hosting.md) "Server setup"
+   describes. The result is an `https://….ts.net` origin; check it opens in a
+   browser on a device that is on your tailnet.
+2. **Connect the phone to Tailscale.** Install Tailscale from the App Store
+   and sign in as a person, not a tagged device. A tagged device is refused.
+3. **Install the yaac app.** It is not on the App Store. If you are on
+   the maintainer's App Store Connect team, accept their TestFlight invite
+   (see "Distribute through TestFlight"). Otherwise build it yourself on a
+   Mac with Xcode (see "Build and run"); a free Apple ID build stops opening
+   after 7 days.
+4. **Add the server.** Two ways:
+   - On a computer, open the webapp at its `https://…ts.net` address, go to
+     **Settings → General → Open on your phone**, and scan the QR code with
+     the phone's Camera app. Tap "Open in yaac", then Add.
+   - Or open the yaac app and, on the server list, type the host
+     (`srv.<tailnet>.ts.net`) and tap **Add server**, or tap **Scan QR
+     code** to use the in-app scanner.
+5. **Check it worked.** The webapp loads. The projects screen's **Servers**
+   row reopens the list, where the server's row reads `Signed in as <your
+   tailnet login>`, and switches between saved servers.
+
+### If something goes wrong
+
+- **Camera says "No usable data found".** The yaac app is probably not
+  installed on the phone, so nothing handles the `yaac://` link (install it,
+  step 3). To test the link without the code, paste
+  `yaac://connect?origin=https%3A%2F%2F<host>` into Notes on the phone and
+  tap it. Or scan with the in-app scanner, which needs no scheme.
+- **No "Open on your phone" field in Settings.** The page was opened on an
+  `http://` or loopback address. Open it at the `https://…ts.net` one.
+- **"Could not connect to <origin>", or a row reading `Stopped:`.** Tailscale
+  is off on the phone, or the server is down. The message names Tailscale
+  when the request got no answer.
+- **"<origin> refused to identify this phone", or a row reading `Refused:`.**
+  The phone is a tagged device, or the server is in `local` mode. The message
+  gives the server's reason. A first Add that fails shows its message above
+  the list and saves no row.
 ## How it reaches a server
 
 Exactly as Safari does. A phone reaches a server through `tailscale serve`,
