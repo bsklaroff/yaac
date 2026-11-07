@@ -67,7 +67,8 @@ install, build the app with `pnpm desktop:install`. In the app:
 5. **New workspace:** pick a tool, write a prompt, and start it.
 
 To use the server from other devices over Tailscale, see
-[docs/remote-hosting.md](docs/remote-hosting.md); to share it with
+[docs/remote-hosting.md](docs/remote-hosting.md); to use it from an iPhone,
+follow [ios/README.md](ios/README.md#set-up-your-iphone); to share it with
 teammates, each as their own user, see
 [docs/multi-user.md](docs/multi-user.md).
 
