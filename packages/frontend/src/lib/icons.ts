@@ -72,7 +72,7 @@ export {
   Sparkles as SkillsIcon,
   Server as ServerIcon,
   Activity as HealthIcon,
-  MessageCircleHeart as FeedbackIcon,
+  MessageCircleQuestionMark as FeedbackIcon,
   Plug as PortIcon,
   FolderTree as FilesIcon,
   Folder as FolderIcon,
