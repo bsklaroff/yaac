@@ -307,6 +307,7 @@ export async function getWorkspaceChanges(
   const listing = reading.listing && await finishListing(
     await openCheckout(idOrName), jobName, reading.listing,
     { dirs: row?.scratchDirs ?? [], changed: reading.changes.files.map((f) => f.path) },
+    (reading.changes.skipped ?? []).filter((d) => d.endsWith('/')).map((d) => d.slice(0, -1)),
   )
   return {
     ...reading.changes,
@@ -385,10 +386,14 @@ function isListable(co: Checkout, rel: string): boolean {
  * cares about is hidden. A dir counts as a real folder only when the empty
  * folders name it or something in it, or the ignored entries name
  * something in it.
+ *
+ * The diff's skipped folders are listed as one entry each, which the
+ * explorer reads on expand, so none of their untracked folders is walked.
+ * A skipped file is in `paths` already, added with intent to add.
  */
 async function finishListing(
   co: Checkout, jobName: string, read: NonNullable<ChangesReading['listing']>,
-  scratch: { dirs: string[]; changed: string[] },
+  scratch: { dirs: string[]; changed: string[] }, skippedDirs: string[],
 ): Promise<WorkspaceFiles> {
   // The script runs in the workspace, so every list may name anything. Only
   // paths the file routes accept are kept, before any is opened or resolved.
@@ -399,7 +404,11 @@ async function finishListing(
   const truncated = listed.length > MAX_LISTED_PATHS || listedIgnored.length > MAX_LISTED_PATHS
   const paths = listed.slice(0, MAX_LISTED_PATHS)
   let ignored = listedIgnored.slice(0, MAX_LISTED_PATHS)
-  let emptyDirs = read.untrackedDirs ? await findEmptyDirs(co, listable(read.untrackedDirs), paths, ignored) : []
+  const skipped = listable(skippedDirs)
+  const untracked = listable(read.untrackedDirs ?? []).filter((d) => !skipped.some((s) => `${d}/`.startsWith(`${s}/`)))
+  let emptyDirs = read.untrackedDirs
+    ? await findEmptyDirs(co, untracked, paths, [...ignored, ...skipped.map((d) => `${d}/`)])
+    : []
   // Sorted, so a dir inside another scratch dir is already under its entry.
   for (const dir of [...scratch.dirs].sort()) {
     const inDir = (p: string): boolean => p === dir || p.startsWith(`${dir}/`)
@@ -420,6 +429,7 @@ async function finishListing(
     symlinks,
     ignored,
     emptyDirs,
+    ...skipped.length ? { skipped } : {},
     conflicted: listable(read.conflicted),
     truncated,
   }
