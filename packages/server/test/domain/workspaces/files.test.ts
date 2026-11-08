@@ -105,7 +105,7 @@ beforeEach(() => {
     workspacePaths: hostPaths,
     exec: async (jobName, cmd, opts) => {
       execs.push({ cmd, opts })
-      return hostExec(jobName, cmd)
+      return hostExec(jobName, cmd, opts?.stdin)
     },
   })
 })
@@ -119,8 +119,10 @@ function hostPaths(jobName: string): ReturnType<WorkspaceDriver['workspacePaths'
 }
 
 /** A command run in a host shell, failing as a driver's exec does. */
-async function hostExec(_jobName: string, cmd: string): Promise<{ stdout: string; stderr: string }> {
-  return execFileAsync('sh', ['-c', cmd], { maxBuffer: 64 << 20 }).catch((err: unknown) => {
+async function hostExec(_jobName: string, cmd: string, stdin = ''): Promise<{ stdout: string; stderr: string }> {
+  const run = execFileAsync('sh', ['-c', cmd], { maxBuffer: 64 << 20 })
+  run.child.stdin?.end(stdin)
+  return run.catch((err: unknown) => {
     const { code } = err as { code?: number }
     throw typeof code === 'number' ? new WorkspaceExecError(`exited ${code}`, code, '', '') : err
   })
@@ -287,6 +289,17 @@ describe('getWorkspaceChanges', () => {
     expect(cheap).toMatchObject({ ignored: [], emptyDirs: [] })
   })
 
+  // A folder too large to stage is one entry the explorer reads on expand,
+  // so neither its files nor its folders are listed.
+  it('lists an untracked folder too large to diff as one entry, walking none of its folders', async () => {
+    const dir = await makeCheckout('gen')
+    await Promise.all(Array.from({ length: 2002 }, (_, k) => write(dir, `gen/m${k % 2}/o${k}.js`)))
+    await fs.mkdir(path.join(dir, 'gen/m0/empty'))
+    const { listing: files, skipped, files: changed } = await getWorkspaceChanges('gen', undefined, { diff: false, listing: 'full' })
+    expect([skipped, files?.skipped]).toEqual([['gen/'], ['gen']])
+    expect([...files!.paths, ...files!.emptyDirs, ...changed.map((f) => f.path)].filter((p) => p.startsWith('gen'))).toEqual([])
+  })
+
   it('reports merge conflicts without writing the index', async () => {
     await makeCheckout('status')
     const inWt = wtGit('status')
@@ -340,8 +353,9 @@ describe('getWorkspaceChanges', () => {
 
   it('caps the listing and says so', async () => {
     const wt = await makeCheckout('big')
-    const names = Array.from({ length: 50_001 }, (_, i) => `many/f${i}`)
-    await fs.mkdir(path.join(wt, 'many'))
+    // In folders small enough to stage.
+    const names = Array.from({ length: 50_001 }, (_, i) => `many${i % 26}/f${i}`)
+    for (let i = 0; i < 26; i++) await fs.mkdir(path.join(wt, `many${i}`))
     for (let i = 0; i < names.length; i += 1000) {
       await Promise.all(names.slice(i, i + 1000).map((n) => fs.writeFile(path.join(wt, n), '')))
     }
@@ -391,19 +405,19 @@ describe('getWorkspaceChanges', () => {
   // Origin's copy of the recorded fork branch, never a local one nothing
   // keeps current; a workspace created at a commit is compared against it.
   it('offers origin\'s fork branch as the default base, and lets a picked one win', async () => {
-    // The script's last line names its base, default base, diff and
-    // listing (`yaac-changes <base> <default> diff|nodiff <listing> ...`).
+    // The scan's arguments start with its base, default base and listing
+    // (`yaac-changes <base> <default> <listing> ...`).
     const asked = async (...args: Parameters<typeof getWorkspaceChanges>): Promise<string | undefined> => {
       execs = []
       await getWorkspaceChanges(...args)
-      return /yaac-changes '[^']*' '[^']*' \S+ \S+/.exec(execs[0]?.cmd ?? '')?.[0]
+      return /yaac-changes '[^']*' '[^']*' '[^']*'/.exec(execs[0]?.cmd ?? '')?.[0]
     }
-    expect(await asked('gs', undefined, { diff: false, listing: 'paths' })).toBe("yaac-changes '' 'origin/main' nodiff paths")
-    expect(await asked('gs', 'agent/gs')).toBe("yaac-changes 'agent/gs' 'origin/main' diff ''")
+    expect(await asked('gs', undefined, { diff: false, listing: 'paths' })).toBe("yaac-changes '' 'origin/main' 'paths'")
+    expect(await asked('gs', 'agent/gs')).toBe("yaac-changes 'agent/gs' 'origin/main' ''")
     // Nothing records a fork branch or a start commit for this one.
-    expect(await asked('list', undefined, { diff: false })).toBe("yaac-changes '' '' nodiff ''")
+    expect(await asked('list', undefined, { diff: false })).toBe("yaac-changes '' '' ''")
     await setWorkspaceStartCommit(PROJECT, 'scratch', 'c0ffee')
-    expect(await asked('scratch', undefined, { diff: false })).toBe("yaac-changes '' 'c0ffee' nodiff ''")
+    expect(await asked('scratch', undefined, { diff: false })).toBe("yaac-changes '' 'c0ffee' ''")
   })
 
   // With no explicit base, the recorded fork branch failed to resolve. That

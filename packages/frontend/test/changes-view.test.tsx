@@ -229,12 +229,22 @@ describe('WorkspaceFiles changes', () => {
     expect(screen.getByLabelText('Collapse all changes')).toBeTruthy()
   })
 
-  it('names the diff base, and says what an unresolved base or a cut diff leaves out', async () => {
-    server.route(CHANGES, reply({ ...PAYLOAD, baseResolved: false, truncated: true }))
+  it('names the diff base, and says what an unresolved base, a cut diff or a skipped folder leaves out', async () => {
+    server.route(CHANGES, reply({ ...PAYLOAD, baseResolved: false, truncated: true, skipped: ['build/', 'weights.bin'] }))
     renderChanges()
     await waitFor(() => expect(screen.getByText('uncommitted only')).toBeTruthy())
     expect(screen.getByText('diff truncated (large changeset)')).toBeTruthy()
     expect(screen.getByTitle(BASE).textContent).toBe('origin/main')
+    expect(screen.getByText('build/').nextElementSibling?.textContent).toBe('over 2,000 files, not diffed')
+    expect(screen.getByText('weights.bin').nextElementSibling?.textContent).toBe('over 10 MB, not diffed')
+  })
+
+  // A skipped folder is a change, so the pane does not say there are none.
+  it('lists a skipped folder when nothing else changed', async () => {
+    server.route(CHANGES, reply({ ...PAYLOAD, files: [], diff: '', skipped: ['build/'] }))
+    renderChanges()
+    await waitFor(() => expect(screen.getByText('build/')).toBeTruthy())
+    expect(screen.queryByText('No changes yet')).toBeNull()
   })
 
   // A workspace created at a commit has no base branch: its base is that
