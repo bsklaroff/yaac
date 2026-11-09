@@ -1726,8 +1726,9 @@ async function runModels(caller: MamaCaller): Promise<MamaOutcome> {
     const provider = 'opencodeProvider' in auth ? auth.opencodeProvider
       : 'piProvider' in auth ? auth.piProvider
       : undefined
+    const endpoint = 'endpoint' in auth ? auth.endpoint : undefined
     // Each model's effort levels follow it, its default starred.
-    const models = modelsForTool(tool, provider).map((m) => {
+    const models = modelsForTool(tool, provider, endpoint).map((m) => {
       const efforts = m.efforts !== undefined
         ? ` [effort ${m.efforts.levels.map((l) => (l === m.efforts?.default ? `${l}*` : l)).join(' ')}]`
         : ''

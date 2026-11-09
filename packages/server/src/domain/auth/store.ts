@@ -5,9 +5,12 @@ import {
   listProjectRows,
   setToolCredential,
 } from '#db'
+import { workspaceDriver } from '#drivers/driver'
 import {
+  CUSTOM_PROVIDER,
   parseOpencodeProvider,
   parsePiProvider,
+  type CustomEndpoint,
 } from '@yaac/shared/tool-providers'
 import {
   claudeOAuthBundleSchema,
@@ -78,11 +81,17 @@ async function loadEntry(owner: string, tool: AgentTool): Promise<ToolAuthEntry 
   }
   if (tool === 'opencode') {
     const f = await getToolCredential(owner, 'opencode')
-    return f && { tool: 'opencode', kind: 'api-key', apiKey: f.apiKey, savedAt: f.savedAt, opencodeProvider: f.provider }
+    return f && {
+      tool: 'opencode', kind: 'api-key', apiKey: f.apiKey, savedAt: f.savedAt, opencodeProvider: f.provider,
+      ...(f.endpoint !== undefined ? { endpoint: f.endpoint } : {}),
+    }
   }
   if (tool === 'pi') {
     const f = await getToolCredential(owner, 'pi')
-    return f && { tool: 'pi', kind: 'api-key', apiKey: f.apiKey, savedAt: f.savedAt, piProvider: f.provider }
+    return f && {
+      tool: 'pi', kind: 'api-key', apiKey: f.apiKey, savedAt: f.savedAt, piProvider: f.provider,
+      ...(f.endpoint !== undefined ? { endpoint: f.endpoint } : {}),
+    }
   }
   const f = await getToolCredential(owner, 'codex')
   if (!f) return null
@@ -130,19 +139,56 @@ function requireProvider<P>(tool: 'opencode' | 'pi', value: string | undefined, 
  * `provider` is required for opencode and pi and validated against that
  * tool's registry; it is ignored for claude and codex.
  */
-async function saveApiKey(owner: string, tool: AgentTool, apiKey: string, provider?: string): Promise<void> {
+async function saveApiKey(
+  owner: string,
+  tool: AgentTool,
+  apiKey: string,
+  provider?: string,
+  endpoint?: CustomEndpoint,
+): Promise<void> {
   const savedAt = new Date().toISOString()
   if (tool === 'opencode') {
-    await setToolCredential(owner, 'opencode', {
-      kind: 'api-key', provider: requireProvider('opencode', provider, parseOpencodeProvider), savedAt, apiKey,
-    })
+    const parsed = requireProvider(tool, provider, parseOpencodeProvider)
+    await setToolCredential(owner, tool, { ...apiKeyToolCredential(tool, parsed, apiKey, endpoint), savedAt })
   } else if (tool === 'pi') {
-    await setToolCredential(owner, 'pi', {
-      kind: 'api-key', provider: requireProvider('pi', provider, parsePiProvider), savedAt, apiKey,
-    })
+    const parsed = requireProvider(tool, provider, parsePiProvider)
+    await setToolCredential(owner, tool, { ...apiKeyToolCredential(tool, parsed, apiKey, endpoint), savedAt })
   } else {
+    if (apiKey === '') throw new ServerError('VALIDATION', `${tool} needs an api key.`)
+    if (endpoint !== undefined) throw new ServerError('VALIDATION', `${tool} does not take an endpoint.`)
     await setToolCredential(owner, tool, { kind: 'api-key', savedAt, apiKey })
   }
+}
+
+/**
+ * An opencode or pi sign-in, checked: only the `custom` provider takes an
+ * endpoint, which it requires, and only it may have an empty key. A key for
+ * a plain-HTTP endpoint is refused where the proxy mediates egress: it never
+ * injects a key over HTTP, so the endpoint would only see the placeholder.
+ */
+function apiKeyToolCredential<P extends string>(
+  tool: 'opencode' | 'pi',
+  provider: P,
+  apiKey: string,
+  endpoint: CustomEndpoint | undefined,
+): { kind: 'api-key'; provider: P; apiKey: string; endpoint?: CustomEndpoint } {
+  const custom = provider === CUSTOM_PROVIDER
+  if (custom && endpoint === undefined) {
+    throw new ServerError('VALIDATION', `The custom ${tool} provider needs an endpoint URL and its models.`)
+  }
+  if (!custom && endpoint !== undefined) {
+    throw new ServerError('VALIDATION', `Only the custom ${tool} provider takes an endpoint.`)
+  }
+  if (!custom && apiKey === '') throw new ServerError('VALIDATION', `${tool} needs an api key.`)
+  if (endpoint !== undefined && apiKey !== '' && new URL(endpoint.baseUrl).protocol === 'http:'
+    && workspaceDriver().kind === 'k8s') {
+    throw new ServerError(
+      'VALIDATION',
+      'Cluster workspaces never send a key over plain HTTP, so this endpoint would only see a placeholder. '
+        + 'Use an https:// URL, or save it without a key.',
+    )
+  }
+  return { kind: 'api-key', provider, apiKey, ...(endpoint !== undefined ? { endpoint } : {}) }
 }
 
 /**
@@ -152,7 +198,7 @@ async function saveApiKey(owner: string, tool: AgentTool, apiKey: string, provid
  * tool, or a bad provider.
  */
 export async function persistToolAuthPayload(owner: string, tool: AgentTool, payload: ToolAuthPayload): Promise<void> {
-  if (payload.kind === 'api-key') return saveApiKey(owner, tool, payload.apiKey, payload.provider)
+  if (payload.kind === 'api-key') return saveApiKey(owner, tool, payload.apiKey, payload.provider, payload.endpoint)
   if (tool === 'opencode' || tool === 'pi') {
     throw new ServerError('VALIDATION', `${tool} only supports api-key auth.`)
   }

@@ -14,12 +14,14 @@ import {
   type ToolLoginResult,
 } from '@yaac/shared/tool-auth-interactive'
 import {
+  CUSTOM_PROVIDER,
   OPENCODE_DEFAULT_PROVIDER,
   OPENCODE_PROVIDERS,
   PI_DEFAULT_PROVIDER,
   PI_PROVIDERS,
   opencodeProviderInfo,
   piProviderInfo,
+  type CustomEndpoint,
   type OpencodeProvider,
   type PiProvider,
   type ToolProviderInfo,
@@ -216,7 +218,11 @@ async function promptForProvider<T extends string>(
   }
 }
 
-/** Prompt the user to paste an API key, asking for the provider first on opencode/pi. */
+/**
+ * Prompt the user to paste an API key, asking for the provider first on
+ * opencode/pi. The custom provider asks for its endpoint and models too, and
+ * takes an empty key, since a self-hosted server often needs none.
+ */
 async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
   let opencodeProvider: OpencodeProvider | undefined
@@ -227,7 +233,14 @@ async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult> {
   if (tool === 'pi') {
     piProvider = await promptForProvider(rl, 'pi', PI_PROVIDERS, PI_DEFAULT_PROVIDER)
   }
+  let endpoint: CustomEndpoint | undefined
+  if ((opencodeProvider ?? piProvider) === CUSTOM_PROVIDER) {
+    const baseUrl = (await rl.question('Endpoint URL (e.g. http://my-box:8080/v1): ')).trim()
+    const models = (await rl.question('Model ids it serves, comma-separated: ')).split(/[\s,]+/).filter(Boolean)
+    endpoint = { baseUrl, models }
+  }
   const label =
+    endpoint ? 'API key (Enter for none)' :
     tool === 'claude' ? 'Anthropic API key or OAuth token' :
     tool === 'codex' ? 'OpenAI API key' :
     tool === 'opencode' && opencodeProvider ? `${opencodeProviderInfo(opencodeProvider).label} API key` :
@@ -235,9 +248,9 @@ async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult> {
     'API key'
   const key = (await rl.question(`Paste your ${label}: `)).trim()
   rl.close()
-  if (!key) {
+  if (!key && !endpoint) {
     console.error('Key cannot be empty.')
     process.exit(1)
   }
-  return { apiKey: key, kind: detectAuthKind(tool, key), opencodeProvider, piProvider }
+  return { apiKey: key, kind: detectAuthKind(tool, key), opencodeProvider, piProvider, ...(endpoint ? { endpoint } : {}) }
 }

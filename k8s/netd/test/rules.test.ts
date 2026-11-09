@@ -14,6 +14,7 @@ function input(overrides: Partial<Parameters<typeof renderRedirectRules>[0]> = {
     podCidrs: ['10.244.0.0/16'],
     sshSentinelIp: '198.18.0.2',
     sshSentinelPort: 10259,
+    dnsSinkholeIp: '198.18.0.1',
     ...overrides,
   }
 }
@@ -24,9 +25,9 @@ function dnatRules(overrides: Partial<Parameters<typeof renderRedirectRules>[0]>
 }
 
 describe('renderRedirectRules', () => {
-  it('renders the https/http/tunnel trio for a pod, keyed on its veth', () => {
+  it('renders the https/http/tunnel trio and the sinkhole rule for a pod, keyed on its veth', () => {
     const rules = dnatRules()
-    expect(rules).toHaveLength(3)
+    expect(rules).toHaveLength(4)
     for (const rule of rules) {
       expect(rule.slice(0, 4)).toEqual(['-i', 'calia132c78e002', '-p', 'tcp'])
       expect(rule).toContain('DNAT')
@@ -34,6 +35,7 @@ describe('renderRedirectRules', () => {
     expect(rules[0]).toContain('10.89.0.7:15100')
     expect(rules[1]).toContain('10.89.0.7:15101')
     expect(rules[2]).toContain('10.89.0.7:15102')
+    expect(rules[3]).toContain('10.89.0.7:15101')
   })
 
   it('scopes the redirect to world with a leading RETURN per pod CIDR', () => {
@@ -51,6 +53,19 @@ describe('renderRedirectRules', () => {
     const tunnel = dnatRules()[2]
     expect(tunnel).toContain('198.18.0.2')
     expect(tunnel).toContain('10259')
+  })
+
+  it('sends the sinkhole on any port to the HTTP listener, after the 443 and 80 rules', () => {
+    // DNS answers every outside name with the sinkhole, so this is what
+    // `http://host:8080` dials. iptables takes the first match, so 443 and
+    // 80 to it still reach their own listeners. A real address on another
+    // port matches nothing and stays dropped.
+    const [https, http, , sinkhole] = dnatRules()
+    expect(sinkhole.slice(0, 6)).toEqual(['-i', 'calia132c78e002', '-p', 'tcp', '-d', '198.18.0.1'])
+    expect(sinkhole).not.toContain('--dport')
+    expect(sinkhole.at(-1)).toBe('10.89.0.7:15101')
+    expect(https).not.toContain('-d')
+    expect(http).not.toContain('-d')
   })
 
   it('emits nothing for a pod whose veth Calico has not programmed yet', () => {
@@ -87,9 +102,9 @@ describe('renderRedirectRules', () => {
       ],
       vethByPodIp: new Map([['10.244.0.9', 'caliA'], ['10.244.0.10', 'caliB']]),
     })
-    expect(rules).toHaveLength(6)
+    expect(rules).toHaveLength(8)
     expect(rules[0]).toContain('caliA')
-    expect(rules[3]).toContain('caliB')
+    expect(rules[4]).toContain('caliB')
     expect(rules.filter((r) => r.includes('10.89.0.7:15100'))).toHaveLength(2)
   })
 })
@@ -116,7 +131,7 @@ describe('renderNatRestore', () => {
     expect(lines[0]).toBe('*nat')
     expect(lines[1]).toBe(`:${CHAIN} - [0:0]`)
     expect(lines[2]).toBe(`-F ${CHAIN}`)
-    expect(lines.filter((l) => l.startsWith(`-A ${CHAIN}`))).toHaveLength(4)
+    expect(lines.filter((l) => l.startsWith(`-A ${CHAIN}`))).toHaveLength(5)
     expect(lines.at(-2)).toBe('COMMIT')
     // --noflush keeps Calico's and kube-proxy's chains intact.
     expect(doc).not.toMatch(new RegExp(`^-[AFX] (?!${CHAIN})`, 'm'))

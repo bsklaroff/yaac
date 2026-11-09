@@ -191,7 +191,10 @@ async function redirectChainRules(): Promise<string[]> {
 }
 
 /** The DNAT ports programmed for one pod. */
-async function trioPortsFor(namespace: string, pod: string): Promise<number[]> {
+/** DNAT rules netd programs per pod: https, http, ssh sentinel, DNS sinkhole. */
+const RULES_PER_POD = 4
+
+async function rulePortsFor(namespace: string, pod: string): Promise<number[]> {
   return (await redirectChainRules())
     .filter((l) => l.includes(`yaac:${namespace}/${pod}`))
     .map((l) => Number(/--to-destination \S+:(\d+)/.exec(l)?.[1] ?? 0))
@@ -199,14 +202,14 @@ async function trioPortsFor(namespace: string, pod: string): Promise<number[]> {
     .sort((a, b) => a - b)
 }
 
-/** Poll until all three of a pod's DNAT rules are programmed. */
-async function waitForTrioPorts(
+/** Poll until all of a pod's DNAT rules are programmed. */
+async function waitForRulePorts(
   namespace: string, pod: string, timeoutMs = 90_000,
 ): Promise<number[]> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
-    const got = await trioPortsFor(namespace, pod)
-    if (got.length === 3 || Date.now() >= deadline) return got
+    const got = await rulePortsFor(namespace, pod)
+    if (got.length === RULES_PER_POD || Date.now() >= deadline) return got
     await new Promise((r) => setTimeout(r, 2000))
   }
 }
@@ -310,7 +313,7 @@ describe('netd datapath gates', () => {
     try { await client.stop() } catch { /* ok */ }
   }, 300_000)
 
-  it('programs one redirect rule trio per session pod, keyed on its veth', async () => {
+  it('programs the redirect rules for each session pod, keyed on its veth', async () => {
     expect(await egressWorks(podA)).toBe(true)
 
     interface RawPod { status?: { podIP?: string } }
@@ -330,13 +333,13 @@ describe('netd datapath gates', () => {
       let last: string[] = []
       for (;;) {
         last = (await redirectChainRules()).filter((l) => l.includes(`-i ${veth!} `))
-        if (last.length === 3 || Date.now() >= deadline) return last
+        if (last.length === RULES_PER_POD || Date.now() >= deadline) return last
         await new Promise((r) => setTimeout(r, 2000))
       }
     })()
-    // https / http / ssh-sentinel.
-    expect(mine, `no rules for ${veth} (pod ${podIp})`).toHaveLength(3)
+    expect(mine, `no rules for ${veth} (pod ${podIp})`).toHaveLength(RULES_PER_POD)
     expect(mine.every((l) => l.includes('-j DNAT'))).toBe(true)
+    expect(mine.some((l) => l.includes('-d 198.18.0.1/32'))).toBe(true)
 
     // Pod-to-pod traffic is never redirected: one RETURN per cluster CIDR
     // leads the chain.
@@ -469,9 +472,9 @@ describe('netd datapath gates', () => {
       // Read each pod's rules from the netd on its own node.
       await focusNetdOnPod(podA)
       expect(
-        await waitForTrioPorts(k8sNamespace(), podA),
+        await waitForRulePorts(k8sNamespace(), podA),
         'our own install\'s workspace pod must still be redirected',
-      ).toHaveLength(3)
+      ).toHaveLength(RULES_PER_POD)
       await focusNetdOnPod(foreignPod, foreignNs)
       expect(
         await rulesMentioning(`yaac:${foreignNs}/${foreignPod}`),

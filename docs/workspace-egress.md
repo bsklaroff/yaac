@@ -11,7 +11,8 @@ Two components share the work:
   `yaac cluster install`) is the CNI and the policy engine. It enforces every
   allow and deny, written as plain `networking.k8s.io/v1` NetworkPolicy.
 - **netd** (`k8s/netd/`, a DaemonSet) only *redirects*: it steers a
-  workspace's outbound 443, 80 and SSH-sentinel traffic into the proxy. It
+  workspace's outbound 443, 80, SSH-sentinel and DNS-sinkhole traffic into
+  the proxy. It
   decides nothing about what is allowed. (It also writes each pod's swap
   bound, a job unrelated to egress: docs/cluster-setup.md "Memory
   pressure".)
@@ -34,6 +35,7 @@ nat YAAC_RDR_<install>:
   -i caliXXXX -p tcp --dport 80              -j DNAT --to <node>:<T>
   -i caliXXXX -p tcp -d 198.18.0.2 --dport 10259
                                              -j DNAT --to <node>:<S>
+  -i caliXXXX -p tcp -d 198.18.0.1           -j DNAT --to <node>:<T>
 ```
 
 The pod-CIDR RETURNs come first, so in-cluster traffic leaves the chain before
@@ -47,6 +49,18 @@ original destination with the `original_dst` listener filter (`SO_ORIGINAL_DST`,
 from conntrack) and forwards to the proxy's transparent port, prefixed with a
 PROXY protocol v2 header carrying the pod's real source IP. The proxy maps that
 IP to a workspace through its pod watch, then routes by TLS SNI or Host header.
+
+The last rule is for plain HTTP on other ports (`http://box:8080`). The
+proxy's DNS stub answers every outside name with the sinkhole `198.18.0.1`
+(`DNS_SINKHOLE`), a benchmark-range address nothing lives at, so a pod dials
+a name on any port as a connection to the sinkhole. The rule sends that to
+the plain-HTTP listener, which takes its destination, port included, from
+the Host header, exactly as for port 80. It adds no reach: a request on port
+80 with `Host: box:8080` already gets there, and the allowlist and the
+non-public guard apply unchanged. It comes after the 443 and 80 rules, so
+those ports still reach their own listeners. A connection to a real address
+on another port matches nothing and is dropped as before, and anything other
+than HTTP sent to the sinkhole fails at the listener.
 
 Identity comes from **which veth the packet arrived on**, not its source IP,
 because a sandboxed workload cannot forge the interface. A gVisor guest cannot
@@ -105,10 +119,11 @@ headers.
 
 **Probe egress with real requests, not connects.** Because 443 and 80 are
 DNAT'd, a bare TCP connect to any address on those ports succeeds (against the
-node's Envoy). `nc -z 1.1.1.1 443` therefore reports a false "reachable".
+node's Envoy), as does one to any name on any port, since names resolve to
+the sinkhole. `nc -z 1.1.1.1 443` therefore reports a false "reachable".
 Assert on a completed request (the proxy refuses a host no allowlist admits).
-To test the NetworkPolicy layer, use a port that is not redirected, where the
-default-deny answers.
+To test the NetworkPolicy layer, use a real address on a port that is not
+redirected, where the default-deny answers.
 
 ## The two direct pod→proxy dials
 
@@ -290,6 +305,23 @@ different keys for one provider, unaffected by claude's or codex's
 `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` or a project's own provider variable. Each
 carries its own placeholder too, so the proxy picks the key by which
 placeholder a request sends, not by the workspace's tool.
+
+The `custom` provider is a self-hosted OpenAI-compatible endpoint: its
+credential carries the base URL and the model ids, and yaac writes the whole
+provider definition into each tool's config. Its `apiHost` is the URL's
+host, so a key is swapped in there over HTTPS like any provider's. Over plain
+HTTP no key is ever injected, so an endpoint reached that way must take none;
+the key is optional for this provider, a keyless one gets no variable, and
+under k8s saving an `http://` endpoint with a key is refused.
+
+Which endpoints a cluster workspace can reach follows from the datapath:
+
+- `http://<name>:<any port>` and `https://<name>` on 443 work, given the
+  allowlist entry (and, for a non-public address, the opening below).
+- `https://<name>` on another port does not: the name resolves to the
+  sinkhole, whose rule sends the TLS handshake to the plain-HTTP listener.
+- An IP-literal URL never touches the sinkhole, so only ports 80 and 443
+  are redirected, and HTTPS to an IP fails as described below. Use a name.
 
 **RBAC.** RBAC cannot scope `create` by name, so the server pre-creates the
 three outputs empty and the proxy's Role grants `update`/`patch` on exactly
@@ -516,6 +548,29 @@ every project whose allowlist names it then reads what the metadata server
 hands the node, so open it only where that is what is wanted. Never open it
 on Hetzner, where a worker's metadata holds the cluster join token
 (infra/hetzner-k3s/README.md "Security notes").
+
+**A model server on a tailnet.** A custom endpoint at a MagicDNS name such
+as `http://gpu-box.tail1234.ts.net:8080/v1` resolves to a `100.x` (CGNAT)
+address, so it takes all three of: an exact allowlist entry
+`gpu-box.tail1234.ts.net` in the project; a policy like the one above
+opening the endpoint's address (or `100.64.0.0/10`) on its port, here 8080;
+and a way for the proxy to resolve the name. The proxy resolves through
+CoreDNS, which forwards to the node's resolver and does not see MagicDNS, so
+add a server block for the tailnet's zone to the `coredns` ConfigMap in
+`kube-system`:
+
+```
+tail1234.ts.net:53 {
+    forward . 100.100.100.100
+}
+```
+
+This needs `tailscaled` on the host, so the node can route to tailnet
+addresses. Port 8080 needs nothing more, by the sinkhole rule above. yaac
+never writes CoreDNS, so on kind the edit survives `yaac cluster install`.
+k3s re-applies its packaged CoreDNS on restart; put the block in the
+`coredns-custom` ConfigMap there instead, under a key like `tailnet.server`.
+On EKS's managed addon, re-apply it after an addon update.
 
 The e2e suites open their mock pods to the proxy the same way
 (`openToProxy` in `test/support/cluster.ts`).

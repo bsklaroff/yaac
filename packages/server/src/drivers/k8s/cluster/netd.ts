@@ -1,4 +1,5 @@
 import {
+  DNS_SINKHOLE,
   DNS_STUB_PORT,
   NETD_APP_NAME,
   NETD_LISTENER_PORT_BASE,
@@ -24,7 +25,7 @@ import { clusterPodCidrs } from './cluster-cidrs'
  * the proxy. Two host-network containers:
  *
  *  - **netd** maps each pod to its veth and programs a nat DNAT chain
- *    sending its 443/80/ssh-sentinel egress to a node-local Envoy listener,
+ *    sending its 443/80/ssh-sentinel/sinkhole egress to a node-local Envoy listener,
  *    and writes Envoy's config files.
  *  - **envoy** (stock) recovers each connection's original destination and
  *    forwards it to the proxy with a PROXY-protocol-v2 header carrying the
@@ -191,6 +192,7 @@ function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<string, 
                 { name: 'TRANSPARENT_TUNNEL_PORT', value: String(TRANSPARENT_TUNNEL_PORT) },
                 { name: 'TUNNEL_INGRESS_PORT', value: String(TUNNEL_INGRESS_PORT) },
                 { name: 'SSH_TUNNEL_SENTINEL', value: SSH_TUNNEL_SENTINEL },
+                { name: 'DNS_SINKHOLE', value: DNS_SINKHOLE },
                 { name: 'DNS_STUB_PORT', value: String(DNS_STUB_PORT) },
                 { name: 'NETD_ENVOY_DIR', value: envoyDir },
                 { name: 'NETD_CGROUP_ROOT', value: cgroupDir },

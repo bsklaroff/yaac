@@ -7,7 +7,9 @@ import type {
   ToolAuthSummary,
 } from '@yaac/shared/types'
 
+/** A key's last four characters; empty for a keyless custom endpoint. */
 function maskKey(key: string): string {
+  if (key === '') return ''
   return key.length > 4 ? '***' + key.slice(-4) : '****'
 }
 
@@ -17,6 +19,7 @@ async function toolAuthSummary(owner: string, tool: AgentTool): Promise<ToolAuth
   const provider = entry.tool === 'opencode' ? entry.opencodeProvider
     : entry.tool === 'pi' ? entry.piProvider
     : undefined
+  const endpoint = entry.tool === 'opencode' || entry.tool === 'pi' ? entry.endpoint : undefined
   return {
     tool,
     kind: entry.kind,
@@ -25,10 +28,11 @@ async function toolAuthSummary(owner: string, tool: AgentTool): Promise<ToolAuth
     // `entry` is the full union, so narrow per tool.
     opencodeProvider: entry.tool === 'opencode' ? entry.opencodeProvider : undefined,
     piProvider: entry.tool === 'pi' ? entry.piProvider : undefined,
+    ...(endpoint !== undefined ? { endpoint } : {}),
     // The create form's model list; for opencode/pi it depends on the
     // provider.
-    models: modelsForTool(tool, provider),
-    defaultModel: defaultModelFor(tool, provider),
+    models: modelsForTool(tool, provider, endpoint),
+    defaultModel: defaultModelFor(tool, provider, endpoint),
   }
 }
 

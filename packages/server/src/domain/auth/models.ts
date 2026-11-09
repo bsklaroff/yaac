@@ -1,7 +1,9 @@
 import {
+  CUSTOM_PROVIDER,
   FALLBACK_MODELS,
   OPENCODE_DEFAULT_PROVIDER,
   PI_DEFAULT_PROVIDER,
+  type CustomEndpoint,
 } from '@yaac/shared/tool-providers'
 import {
   CLAUDE_MODELS,
@@ -19,16 +21,18 @@ import type { AgentTool, ModelEfforts, ModelOption } from '@yaac/shared/types'
  * first, each with its effort levels. claude uses models.dev's anthropic
  * list less models the pinned claude doesn't know (`CLAUDE_MODELS`), codex
  * models.dev's openai list; opencode and pi use `provider/model` for their
- * credential's provider, and pi uses its own registry. Not an allowlist:
- * yaac only shape-checks ids.
+ * credential's provider, and pi uses its own registry. A custom endpoint's
+ * models are the ones its credential lists. Not an allowlist: yaac only
+ * shape-checks ids.
  */
-export function modelsForTool(tool: AgentTool, provider: string | undefined): ModelOption[] {
-  return catalogIds(tool, provider).map((id) => option(tool, id))
+export function modelsForTool(tool: AgentTool, provider: string | undefined, endpoint?: CustomEndpoint): ModelOption[] {
+  return catalogIds(tool, provider, endpoint).map((id) => option(tool, id))
 }
 
-function catalogIds(tool: AgentTool, provider: string | undefined): string[] {
+function catalogIds(tool: AgentTool, provider: string | undefined, endpoint?: CustomEndpoint): string[] {
   if (tool === 'claude') return CLAUDE_MODELS
   if (tool === 'codex') return MODELS_BY_PROVIDER.openai ?? []
+  if (provider === CUSTOM_PROVIDER) return (endpoint?.models ?? []).map((m) => `${CUSTOM_PROVIDER}/${m}`)
   if (provider === undefined) return []
   const catalog = tool === 'pi' ? PI_MODELS_BY_PROVIDER : MODELS_BY_PROVIDER
   return (catalog[provider] ?? []).map((m) => `${provider}/${m}`)
@@ -66,12 +70,14 @@ export function modelEfforts(tool: AgentTool, id: string): ModelEfforts | undefi
 
 /**
  * The model a create uses when its project remembers none for this tool:
- * a pinned id for claude and codex (`FALLBACK_MODELS`), pi's own
- * per-provider default for pi, and for opencode pi's default for the same
- * provider if opencode's catalog lists it, else the provider's newest.
+ * a pinned id for claude and codex (`FALLBACK_MODELS`), a custom
+ * endpoint's first listed model, pi's own per-provider default for pi, and
+ * for opencode pi's default for the same provider if opencode's catalog
+ * lists it, else the provider's newest.
  */
-export function defaultModelFor(tool: AgentTool, provider: string | undefined): string {
+export function defaultModelFor(tool: AgentTool, provider: string | undefined, endpoint?: CustomEndpoint): string {
   if (tool === 'claude' || tool === 'codex') return FALLBACK_MODELS[tool]
+  if (provider === CUSTOM_PROVIDER) return catalogIds(tool, provider, endpoint)[0] ?? ''
   if (tool === 'pi') {
     const p = provider ?? PI_DEFAULT_PROVIDER
     return PI_PROVIDER_DEFAULT_MODELS[p] ?? qualifiedHead(PI_MODELS_BY_PROVIDER, p)

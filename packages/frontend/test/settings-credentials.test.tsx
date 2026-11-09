@@ -125,6 +125,30 @@ describe('Settings → Credentials', () => {
       .toEqual([{ kind: 'api-key', apiKey: 'nw-key', provider: 'neuralwatt' }]))
   })
 
+  it('saves a keyless custom endpoint with its URL and models, and shows the URL once signed in', async () => {
+    await openCredentials()
+
+    fireEvent.click(within(toolRow('pi')).getByRole('button', { name: 'Sign in' }))
+    await pickProvider('Custom (OpenAI-compatible)')
+    fireEvent.change(screen.getByPlaceholderText(/^Endpoint URL/), { target: { value: 'http://box.tail1234.ts.net:8080/v1' } })
+    fireEvent.change(screen.getByPlaceholderText(/^Model ids/), { target: { value: 'Qwen/Qwen3-Coder, llama' } })
+    authList = {
+      gitCredentials: [],
+      toolAuth: [{
+        tool: 'pi', kind: 'api-key', keyPreview: '', savedAt: 'x', piProvider: 'custom',
+        endpoint: { baseUrl: 'http://box.tail1234.ts.net:8080/v1', models: ['Qwen/Qwen3-Coder', 'llama'] },
+        models: [], defaultModel: 'custom/Qwen/Qwen3-Coder',
+      }],
+    }
+    fireEvent.submit(screen.getByPlaceholderText('API key (optional)').closest('form') as HTMLFormElement)
+
+    await waitFor(() => expect(server.called('PUT /api/auth/pi').map((c) => c.body)).toEqual([{
+      kind: 'api-key', apiKey: '', provider: 'custom',
+      endpoint: { baseUrl: 'http://box.tail1234.ts.net:8080/v1', models: ['Qwen/Qwen3-Coder', 'llama'] },
+    }]))
+    expect(await within(toolRow('pi')).findByText('http://box.tail1234.ts.net:8080/v1')).toBeTruthy()
+  })
+
   it('saves a pi key with the picked provider (no web sign-in offered)', async () => {
     await openCredentials()
 

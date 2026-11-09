@@ -51,6 +51,14 @@ export const TUNNEL_INGRESS_PORT = 10259
  * it reaches the sentinel rule.
  */
 export const SSH_TUNNEL_SENTINEL = '198.18.0.2'
+/**
+ * The address the proxy's DNS stub answers every outside name with, so a
+ * workspace never learns a real one. netd sends TCP bound for it, on any
+ * port but 443 and 80, to the proxy's plain-HTTP listener, which routes by
+ * the Host header (docs/workspace-egress.md). In the benchmark range like
+ * the SSH sentinel, and for the same reason outside every pod CIDR.
+ */
+export const DNS_SINKHOLE = '198.18.0.1'
 /** UDP port of the proxy's DNS stub (needs CAP_NET_BIND_SERVICE). */
 export const DNS_STUB_PORT = 53
 /**

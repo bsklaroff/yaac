@@ -1,5 +1,6 @@
 import {
   BUILDER_ROLE_GUARD_NAME,
+  DNS_SINKHOLE,
   DNS_STUB_PORT,
   LABEL_INSTALL_ID,
   LABEL_PROJECT_ID,
@@ -37,7 +38,7 @@ import {
   k8sNamespace,
 } from '#drivers/k8s/substrate'
 import { env } from '@yaac/shared/env'
-import { OPENCODE_PROVIDERS, PI_PROVIDERS, type ToolProviderInfo } from '@yaac/shared/tool-providers'
+import { OPENCODE_PROVIDERS, PI_PROVIDERS, providerApiHost } from '@yaac/shared/tool-providers'
 import type { CredentialBundle } from '#drivers/contract'
 
 /**
@@ -112,6 +113,7 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
                 { name: 'RELAY_PORT', value: String(RELAY_PORT) },
                 { name: 'POD_STREAM_PORT', value: String(POD_STREAM_PORT) },
                 { name: 'DNS_STUB_PORT', value: String(DNS_STUB_PORT) },
+                { name: 'DNS_SINKHOLE', value: DNS_SINKHOLE },
                 // ssh-agent forwarding for entitled workspace pods, which expose
                 // it in-pod as SSH_AUTH_SOCK.
                 { name: 'SSH_AGENT_PORT', value: String(SSH_AGENT_PORT) },
@@ -291,8 +293,9 @@ function assertProxyOwnerKey(owner: string): void {
  * plus `git-tokens.json` (`[{token, projects}]`) and `ssh-keys.json`
  * (`[{privateKey, publicKey, projects: [{projectId, host, knownHostsEntry}]}]`),
  * each key prefixed `<owner>.`. The opencode and pi files also carry
- * `apiHost`, the provider's host the proxy swaps the key in on; a provider
- * with no known host gets no file, so the key goes nowhere. Replaced whole
+ * `apiHost`, the provider's host the proxy swaps the key in on (a custom
+ * endpoint's own host); a provider with no known host gets no file, so the
+ * key goes nowhere. Replaced whole
  * on every push, so a removed key disappears.
  */
 export function buildProxyCredentialsSecretManifest(bundles: Record<string, CredentialBundle>): Record<string, unknown> {
@@ -303,9 +306,7 @@ export function buildProxyCredentialsSecretManifest(bundles: Record<string, Cred
     if (bundle.codex) files[`${owner}.codex.json`] = JSON.stringify(bundle.codex)
     for (const [tool, providers] of [['opencode', OPENCODE_PROVIDERS], ['pi', PI_PROVIDERS]] as const) {
       const file = bundle[tool]
-      // No fallback: a guessed host would send the key to a vendor the user
-      // never chose.
-      const apiHost = (providers as readonly ToolProviderInfo[]).find((p) => p.id === file?.provider)?.apiHost
+      const apiHost = file && providerApiHost(providers, file.provider, file.endpoint)
       if (file && apiHost) files[`${owner}.${tool}.json`] = JSON.stringify({ ...file, apiHost })
     }
     files[`${owner}.git-tokens.json`] = JSON.stringify(bundle.git)

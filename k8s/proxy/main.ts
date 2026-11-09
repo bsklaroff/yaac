@@ -86,15 +86,18 @@ const POD_STREAM_PORT = process.env.POD_STREAM_PORT
 // UDP/53 DNS stub (see dns-stub.ts) and ssh-agent relay
 // (see ssh-agent-relay.ts) for workspace pods.
 const DNS_STUB_PORT = process.env.DNS_STUB_PORT
+// The answer for external names. The address is never dialed through; see
+// dns-stub.ts.
+const DNS_SINKHOLE = process.env.DNS_SINKHOLE
 const SSH_AGENT_PORT = process.env.SSH_AGENT_PORT
 // The server's yaac-mama listener, which workspaces' calls are relayed to.
 const MAMA_RELAY_URL = process.env.MAMA_RELAY_URL
 if (!API_PORT || !PROXY_AUTH_SECRET || !TRANSPARENT_HTTPS_PORT || !TRANSPARENT_HTTP_PORT
-  || !TRANSPARENT_TUNNEL_PORT || !RELAY_PORT || !POD_STREAM_PORT || !DNS_STUB_PORT || !SSH_AGENT_PORT
-  || !MAMA_RELAY_URL) {
+  || !TRANSPARENT_TUNNEL_PORT || !RELAY_PORT || !POD_STREAM_PORT || !DNS_STUB_PORT || !DNS_SINKHOLE
+  || !SSH_AGENT_PORT || !MAMA_RELAY_URL) {
   console.error('[proxy] API_PORT, PROXY_AUTH_SECRET, TRANSPARENT_HTTPS_PORT, '
     + 'TRANSPARENT_HTTP_PORT, TRANSPARENT_TUNNEL_PORT, RELAY_PORT, POD_STREAM_PORT, '
-    + 'DNS_STUB_PORT, SSH_AGENT_PORT and MAMA_RELAY_URL environment variables are required')
+    + 'DNS_STUB_PORT, DNS_SINKHOLE, SSH_AGENT_PORT and MAMA_RELAY_URL environment variables are required')
   process.exit(1)
 }
 
@@ -105,9 +108,6 @@ if (!API_PORT || !PROXY_AUTH_SECRET || !TRANSPARENT_HTTPS_PORT || !TRANSPARENT_H
 const MAMA_RELAY_TIMEOUT_MS = 240_000
 // Pod-local scratch (an emptyDir): Tor's state and its readiness marker.
 const DATA_DIR = '/data'
-// Answer for external names. The address is never dialed through; see
-// dns-stub.ts.
-const DNS_SINKHOLE_IPV4 = '198.18.0.1'
 
 /**
  * Resolve an internal name's first IPv4 address via the proxy's own resolver
@@ -783,7 +783,7 @@ dnsServer.on('message', (msg, rinfo) => {
     dnsServer.send(buildDnsResponse(query, ip), rinfo.port, rinfo.address)
   }
   if (!isInternalName(query.name)) {
-    reply(DNS_SINKHOLE_IPV4)
+    reply(DNS_SINKHOLE)
     return
   }
   if (query.qtype !== DNS_QTYPE_A) {

@@ -606,7 +606,10 @@ describe('syncProxyCredentials', () => {
         claude: { kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant-secret' },
         codex: null,
         opencode: { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'sk-or-secret' },
-        pi: null,
+        pi: {
+          kind: 'api-key', provider: 'custom', savedAt: 'x', apiKey: 'sk-self-secret',
+          endpoint: { baseUrl: 'https://llm.example.com/v1', models: ['llama'] },
+        },
         git: [{ token: 'ghp-secret', projects: ['acme'] }],
         ssh: [{
           privateKey: 'KEY-secret', publicKey: 'ssh-ed25519 AAAA yaac',
@@ -624,12 +627,14 @@ describe('syncProxyCredentials', () => {
     // Every key names its owner. A signed-out tool has no key; the Secret
     // is replaced whole.
     expect(Object.keys(secret.data!).sort()).toEqual([
-      'alice.claude.json', 'alice.git-tokens.json', 'alice.opencode.json', 'alice.ssh-keys.json',
+      'alice.claude.json', 'alice.git-tokens.json', 'alice.opencode.json', 'alice.pi.json', 'alice.ssh-keys.json',
       'bob.git-tokens.json', 'bob.ssh-keys.json',
     ])
     expect(JSON.parse(b64d(secret.data!['alice.claude.json']))).toEqual({ kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant-secret' })
     // The proxy sends an api key only to the provider host named here.
     expect(JSON.parse(b64d(secret.data!['alice.opencode.json']))).toMatchObject({ apiKey: 'sk-or-secret', apiHost: 'openrouter.ai' })
+    // A custom endpoint's key goes to the endpoint's own host.
+    expect(JSON.parse(b64d(secret.data!['alice.pi.json']))).toMatchObject({ apiKey: 'sk-self-secret', apiHost: 'llm.example.com' })
     expect(JSON.parse(b64d(secret.data!['alice.git-tokens.json']))).toEqual([{ token: 'ghp-secret', projects: ['acme'] }])
     expect(JSON.parse(b64d(secret.data!['bob.git-tokens.json']))).toEqual([{ token: 'ghp-bob-secret', projects: ['bobs'] }])
     expect(JSON.parse(b64d(secret.data!['alice.ssh-keys.json']))).toEqual([{

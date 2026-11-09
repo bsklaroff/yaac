@@ -615,12 +615,13 @@ export async function resolveCreate(
   const provider = auth?.tool === 'opencode' ? auth.opencodeProvider
     : auth?.tool === 'pi' ? auth.piProvider
     : undefined
+  const endpoint = auth?.tool === 'opencode' || auth?.tool === 'pi' ? auth.endpoint : undefined
   const fallback = resolveToolCreateDefaults({
     driver,
     tool,
     remembered,
     ...(provider !== undefined ? { provider } : {}),
-    defaultModel: defaultModelFor(tool, provider),
+    defaultModel: defaultModelFor(tool, provider, endpoint),
     effortsFor: (model) => modelEfforts(tool, model),
   })
   const model = request.model ?? fallback.model
@@ -1010,8 +1011,10 @@ export async function createWorkspace(
     }
     // The api-key-only tools' providers (`#runtime/agents` tool-api-keys).
     const keyProviders = {
-      ...(opencodeAuth?.kind === 'api-key' ? { opencode: opencodeProviderInfo(opencodeAuth.opencodeProvider) } : {}),
-      ...(piAuth?.kind === 'api-key' ? { pi: piProviderInfo(piAuth.piProvider) } : {}),
+      ...(opencodeAuth?.kind === 'api-key'
+        ? { opencode: { ...opencodeProviderInfo(opencodeAuth.opencodeProvider), endpoint: opencodeAuth.endpoint } }
+        : {}),
+      ...(piAuth?.kind === 'api-key' ? { pi: { ...piProviderInfo(piAuth.piProvider), endpoint: piAuth.endpoint } } : {}),
     }
 
     // The rest at once, since each writes files of its own (claude's
@@ -1181,21 +1184,20 @@ export async function createWorkspace(
     secretEnvKeys.push('OPENAI_API_KEY')
   }
   // opencode and pi are api-key only, and read their key from a variable of
-  // their own that their config names (`ensureToolApiKeyConfig` above).
-  if (toolAuthByTool.opencode?.kind === 'api-key' && keyProviders.opencode) {
-    const name = toolApiKeyEnvVar('opencode', keyProviders.opencode.id)
-    env.push(`${name}=${apiKeyFor(toolAuthByTool.opencode.apiKey, PLACEHOLDER_OPENCODE_API_KEY)}`)
-    // A project's own `OPENCODE_CONFIG` replaces this file, and with it the
-    // pointer to yaac's key.
-    if (!projectSets('OPENCODE_CONFIG')) {
-      env.push(`OPENCODE_CONFIG=${OPENCODE_CONFIG_CONTAINER_DIR}/${opencodeConfigFile}`)
-    }
+  // their own that their config names (`ensureToolApiKeyConfig` above). A
+  // keyless custom endpoint gets no variable, so no placeholder reaches it.
+  for (const [tool, placeholder] of [['opencode', PLACEHOLDER_OPENCODE_API_KEY], ['pi', PLACEHOLDER_PI_API_KEY]] as const) {
+    const auth = toolAuthByTool[tool]
+    const provider = keyProviders[tool]
+    if (auth?.kind !== 'api-key' || !provider || auth.apiKey === '') continue
+    const name = toolApiKeyEnvVar(tool, provider.id)
+    env.push(`${name}=${apiKeyFor(auth.apiKey, placeholder)}`)
     secretEnvKeys.push(name)
   }
-  if (toolAuthByTool.pi?.kind === 'api-key' && keyProviders.pi) {
-    const name = toolApiKeyEnvVar('pi', keyProviders.pi.id)
-    env.push(`${name}=${apiKeyFor(toolAuthByTool.pi.apiKey, PLACEHOLDER_PI_API_KEY)}`)
-    secretEnvKeys.push(name)
+  // A project's own `OPENCODE_CONFIG` replaces this file, and with it the
+  // pointer to yaac's key and any custom endpoint.
+  if (opencodeConfigFile !== undefined && !projectSets('OPENCODE_CONFIG')) {
+    env.push(`OPENCODE_CONFIG=${OPENCODE_CONFIG_CONTAINER_DIR}/${opencodeConfigFile}`)
   }
   // Codex OAuth reads the mounted .codex/auth.json. Setting OPENAI_API_KEY
   // could switch codex to api-key mode.

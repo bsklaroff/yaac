@@ -17,7 +17,7 @@ const ENV_KEYS = [
   'YAAC_NAMESPACE', 'NODE_NAME', 'NODE_IP', 'CLUSTER_POD_CIDRS', 'SSH_TUNNEL_SENTINEL',
   'TUNNEL_INGRESS_PORT', 'TRANSPARENT_HTTPS_PORT', 'TRANSPARENT_HTTP_PORT',
   'TRANSPARENT_TUNNEL_PORT', 'NETD_LISTENER_PORT_BASE', 'NETD_LISTENER_SLOTS',
-  'NETD_VETH_PREFIX',
+  'NETD_VETH_PREFIX', 'DNS_SINKHOLE',
 ]
 
 describe('loadConfig', () => {
@@ -76,6 +76,7 @@ describe('loadConfig', () => {
     expect(config.transparentPorts).toEqual({ https: 10256, http: 10257, tunnel: 10258 })
     expect(config.sshSentinelIp).toBe('198.18.0.2')
     expect(config.sshSentinelPort).toBe(10259)
+    expect(config.dnsSinkholeIp).toBe('198.18.0.1')
   })
 
   it('ignores a non-numeric port rather than propagating NaN into a rule', () => {
@@ -106,6 +107,7 @@ const CONFIG: NetdConfig = {
   vethPrefix: 'cali',
   sshSentinelIp: '198.18.0.2',
   sshSentinelPort: 10259,
+  dnsSinkholeIp: '198.18.0.1',
   transparentPorts: { https: 10256, http: 10257, tunnel: 10258 },
   listenerRange: { base: 15100, slots: 300 },
   cgroupRoot: '/host/cgroup',
@@ -216,8 +218,8 @@ describe('reconcileOnce', () => {
     const changed = await reconcileOnce(h.deps, h.memo)
     expect(changed[0]).toBe('cds(proxy 10.96.0.50)')
     expect(changed[1]).toContain('15100/15101/15102')
-    // 1 pod-CIDR RETURN + 3 DNAT rules.
-    expect(changed[2]).toBe('rules(4 for 1 pods)')
+    // 1 pod-CIDR RETURN + 4 DNAT rules.
+    expect(changed[2]).toBe('rules(5 for 1 pods)')
   })
 
   it('rewrites the listeners and the chain when the pod set changes', async () => {

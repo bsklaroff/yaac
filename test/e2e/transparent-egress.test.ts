@@ -349,6 +349,19 @@ describe('node-level transparent egress (source-IP identity)', () => {
     expect(echoed.headers.host).toBe(echoHost)
   }, 60_000)
 
+  it('forwards plain HTTP on another port when the name resolved to the DNS sinkhole', async () => {
+    // What `http://<name>:8080` dials once the stub has answered the name:
+    // netd sends any port on the sinkhole to the HTTP listener, which takes
+    // the port from the Host header.
+    const r = await curlInPod(
+      podA, `--resolve ${echoHost}:${ECHO_PORT}:198.18.0.1 "http://${echoHost}:${ECHO_PORT}/v1/models"`,
+    )
+    expect(r.exit, r.out).toBe(0)
+    const echoed = JSON.parse(r.out.slice(0, r.out.lastIndexOf('EXIT:'))) as { url: string; headers: Record<string, string> }
+    expect(echoed.url).toBe('/v1/models')
+    expect(echoed.headers.host).toBe(`${echoHost}:${ECHO_PORT}`)
+  }, 60_000)
+
   it('tunnels an explicit CONNECT through the redirected SSH sentinel', async () => {
     // Sends the same CONNECT as git's ncat ProxyCommand. The proxy's tunnel
     // listener connects it to the TLS echo; seeing the echo's own cert shows
