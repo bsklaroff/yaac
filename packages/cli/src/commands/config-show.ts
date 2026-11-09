@@ -10,9 +10,10 @@ import { DEFAULT_SCRATCH_DIR_GIB } from '@yaac/shared/types'
 export async function configShow(project: string): Promise<void> {
   const p = await resolveProject(project)
   const projectId = p.id
-  const [{ driver }, { vars }] = await Promise.all([
+  const [{ driver }, { vars }, { secrets: runSecrets }] = await Promise.all([
     api.health.$get(),
     api.project[':projectId'].env.$get({ param: { projectId } }),
+    api.project[':projectId']['run-secrets'].$get({ param: { projectId } }),
   ])
   const k8s = driver === 'k8s'
   const [allowlist, dockerfile] = k8s
@@ -26,7 +27,10 @@ export async function configShow(project: string): Promise<void> {
   const rows = ([
     ['git-credential', p.hosted ? 'none needed (hosted by yaac)' : p.gitCredential?.name ?? 'none'],
     p.hosted && ['default-branch-guard', onOff(p.guardDefaultBranch)],
-    ['env', list(vars.map((v) => (v.secret ? `${v.name} (secret)` : v.name)))],
+    ['env', list([
+      ...vars.map((v) => (v.secret ? `${v.name} (secret)` : v.name)),
+      ...runSecrets.map((r) => `${r.name} (run secret)`),
+    ])],
     allowlist !== undefined && ['egress-allowlist',
       list([...(allowlist.allowlist.defaults ? ['the defaults'] : []), ...allowlist.allowlist.hosts])],
     ['port-forwards', formatPortForwards(p.portForwards)],

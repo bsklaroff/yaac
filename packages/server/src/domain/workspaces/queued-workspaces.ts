@@ -31,6 +31,7 @@ import { toStoppedEntries } from './stopped-list'
 import { modelDisplayName, modelEfforts } from '#domain/auth'
 import { authorizeProject, isProjectHeld, systemPrincipal, type Actor } from '#domain/access'
 import { getDefaultBranch } from '#domain/git'
+import { resolveWorkflow } from '#domain/projects'
 import {
   claimQueuedLaunch,
   deleteQueuedWorkspace,
@@ -41,7 +42,10 @@ import {
   getProjectRow,
   getProjectWorkspaceRows,
   getQueuedWorkspaceRow,
+  getNamedWorkflow,
   getRoutineRow,
+  getWorkflow,
+  storeWorkflow,
   getTimeZone,
   insertQueuedWorkspace,
   listQueuedWorkspaceRows,
@@ -107,6 +111,9 @@ export interface QueueRequest {
   /** The step graph it starts with, unparsed; null for none, absent for the
    *  project's init steps (docs/workspace-steps.md). */
   steps?: unknown
+  /** A named workflow it starts with in place of `steps`, followed until it
+   *  launches (docs/workflows.md). */
+  workflow?: string
   /** Launch `steps` untouched, with no session. */
   nonInteractive?: boolean
   /** The launched workspace's title; blank leaves it to be auto-titled. */
@@ -195,7 +202,8 @@ async function resolveStart(projectId: string, start: QueueStart): Promise<Date>
  * permission mode re-resolves those, and a stored effort the new tool or
  * model lacks is re-resolved too. A parent that would form a cycle is
  * refused. An agent's edit is held to its ceiling, counting the stored
- * permission mode as requested.
+ * permission mode as requested. A routine's run is not edited: it starts
+ * with its routine's settings, so the routine is what changes.
  */
 export async function updateQueuedWorkspace(
   principal: Actor,
@@ -204,6 +212,9 @@ export async function updateQueuedWorkspace(
   source: QueueSource,
 ): Promise<QueuedWorkspaceEntry> {
   const row = await editableRow(principal, id)
+  if (row.routineId !== undefined) {
+    throw new ServerError('CONFLICT', 'a routine\'s run starts with its routine\'s settings; edit the routine instead')
+  }
   if (patch.parent !== undefined && patch.start !== undefined) {
     throw new ServerError('VALIDATION', 'a queued workspace waits on a parent or starts at a time, not both')
   }
@@ -223,7 +234,12 @@ export async function updateQueuedWorkspace(
   const prompt = nonInteractive ? undefined : patch.prompt ?? row.prompt
   const commit = patch.branch !== undefined ? undefined : patch.commit ?? row.commit
   const branch = commit !== undefined ? undefined : patch.branch ?? row.branch
-  const steps = patch.steps !== undefined ? patch.steps : row.steps
+  // New steps replace a workflow, and a workflow steps; neither keeps its own.
+  const named = patch.steps === undefined && patch.workflow === undefined && row.namedWorkflowId !== undefined
+    ? await getNamedWorkflow(row.namedWorkflowId) : undefined
+  const workflow = patch.workflow ?? named?.name
+  const steps = patch.steps !== undefined ? patch.steps
+    : workflow === undefined && row.workflowId !== undefined ? (await getWorkflow(row.workflowId))?.steps : undefined
   const settings = await resolveSettings(row.projectId, parent, {
     ...(prompt !== undefined ? { prompt } : {}),
     tool: patch.tool ?? row.tool,
@@ -231,6 +247,7 @@ export async function updateQueuedWorkspace(
     ...(branch !== undefined ? { branch } : {}),
     ...(commit !== undefined ? { commit } : {}),
     ...(steps !== undefined ? { steps } : {}),
+    ...(workflow !== undefined ? { workflow } : {}),
     ...(nonInteractive ? { nonInteractive } : {}),
     title: patch.title ?? row.title ?? '',
     group: parent.pointer === null && parent.groupId !== undefined ? parent.groupId
@@ -444,6 +461,9 @@ async function launch(row: QueuedWorkspaceRow, timeoutFrom: Date): Promise<{ wor
             ? 'its timeout ran out before it could start; start a fresh run from the routine'
             : 'its scheduled window passed before it could start; run it again to give it a fresh one')
       }
+      // A named workflow is followed until now; its current workflow and
+      // name are what the workspace starts with and records.
+      const named = row.namedWorkflowId !== undefined ? await getNamedWorkflow(row.namedWorkflowId) : undefined
       // The server launches it: whoever queued or ran the entry was
       // authorized then.
       const run = await prepareStart(systemPrincipal, {
@@ -456,7 +476,7 @@ async function launch(row: QueuedWorkspaceRow, timeoutFrom: Date): Promise<{ wor
         ...(row.effort !== undefined ? { effort: row.effort } : {}),
         ...(row.branch !== undefined ? { branch: row.branch } : {}),
         ...(row.commit !== undefined ? { commit: row.commit } : {}),
-        ...(row.steps !== undefined ? { steps: row.steps } : {}),
+        ...(named !== undefined ? { workflow: named.name } : row.workflowId !== undefined ? { workflowId: row.workflowId } : {}),
         ...(row.nonInteractive ? { nonInteractive: true } : {}),
         ...(row.prompt !== undefined ? { prompt: row.prompt } : { noSession: true }),
         ...(row.title !== undefined ? { title: row.title } : {}),
@@ -715,7 +735,15 @@ async function resolveSettings(
     : request.group === null ? undefined
     : (await resolveGroup(projectId, request.group, { create: true })).groupId
   checkPrompt(request.prompt, request.nonInteractive)
-  const steps = checkStartSteps({ ...request, noSession: request.prompt === undefined })
+  if (request.steps !== undefined && request.workflow !== undefined) {
+    throw new ServerError('VALIDATION', 'name steps or a workflow, not both')
+  }
+  const named = request.workflow !== undefined ? await resolveWorkflow(projectId, request.workflow) : undefined
+  const steps = checkStartSteps({
+    ...request,
+    ...(named !== undefined ? { steps: named.workflow.steps } : {}),
+    noSession: request.prompt === undefined,
+  })
   return {
     ...(request.prompt !== undefined ? { prompt: request.prompt } : {}),
     tool: setup.tool,
@@ -726,7 +754,8 @@ async function resolveSettings(
     ...(request.commit !== undefined ? { commit: request.commit }
       : request.branch === undefined && parent.branch === undefined && parent.commit !== undefined ? { commit: parent.commit }
       : { branch: request.branch ?? parent.branch ?? await getDefaultBranch(repoDir(projectId)) }),
-    ...(steps !== undefined ? { steps: steps ?? {} } : {}),
+    ...(named !== undefined ? { namedWorkflowId: named.id }
+      : steps !== undefined ? { workflowId: (await storeWorkflow(projectId, { steps: steps ?? {}, secrets: [] })).id } : {}),
     ...(request.nonInteractive === true ? { nonInteractive: true } : {}),
     ...(title !== '' ? { title } : {}),
     ...(groupId !== undefined ? { groupId } : {}),
@@ -754,6 +783,13 @@ async function toEntries(rows: QueuedWorkspaceRow[]): Promise<QueuedWorkspaceEnt
   const known = new Set((await Promise.all(projectIds.map(async (projectId) =>
     [...(await getProjectWorkspaceRows(projectId)).keys()].map((id) => `${projectId}/${id}`)))).flat())
   for (const p of listProvisioning()) known.add(`${p.projectId}/${p.workspaceId}`)
+  // Each entry's graph as it would start now, and the workflow it follows.
+  const graphs = new Map(await Promise.all(rows.map(async (r) => {
+    const named = r.namedWorkflowId !== undefined ? await getNamedWorkflow(r.namedWorkflowId) : undefined
+    const own = r.workflowId !== undefined ? await getWorkflow(r.workflowId) : undefined
+    const steps = named?.workflow.steps ?? own?.steps
+    return [r.id, { ...(steps !== undefined ? { steps } : {}), ...(named !== undefined ? { workflow: named.name } : {}) }] as const
+  })))
   return rows.map((r) => {
     const modelName = modelDisplayName(r.tool, r.model)
     const orphaned = r.parentWorkspaceId !== undefined && !known.has(`${r.projectId}/${r.parentWorkspaceId}`)
@@ -774,7 +810,7 @@ async function toEntries(rows: QueuedWorkspaceRow[]): Promise<QueuedWorkspaceEnt
       ...(r.effort !== undefined ? { effort: r.effort } : {}),
       ...(r.branch !== undefined ? { branch: r.branch } : {}),
       ...(r.commit !== undefined ? { commit: r.commit } : {}),
-      ...(r.steps !== undefined ? { steps: r.steps } : {}),
+      ...(graphs.get(r.id) ?? {}),
       ...(r.nonInteractive ? { nonInteractive: true as const } : {}),
       ...(r.title !== undefined ? { title: r.title } : {}),
       ...(r.generatedTitle !== undefined ? { generatedTitle: r.generatedTitle } : {}),

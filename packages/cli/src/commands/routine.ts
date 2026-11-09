@@ -1,6 +1,6 @@
 import { api, projectScope, resolveProjectId } from '#commands/api'
 import { printTable } from '#commands/table'
-import { durationOption, promptSource, readPrompt, readSteps } from '#commands/workspace-create'
+import { durationOption, promptSource, readPrompt } from '#commands/workspace-create'
 import { formatDuration, formatInZone } from '@yaac/shared/schedule'
 import { reportDeviceTimeZone } from '@yaac/shared/time-zone-report'
 import type { AgentMode, AgentTool, PermissionMode, RoutineEntry, RoutineSettings } from '@yaac/shared/types'
@@ -28,10 +28,9 @@ export interface RoutineOptions {
   branch?: string
   /** A full commit each run starts at, in place of a branch's tip. */
   commit?: string
-  /** A JSON file of the steps each run starts with; false (`--no-steps`)
-   *  for none (docs/workspace-steps.md). */
-  steps?: string | false
-  /** Each run runs `steps` untouched, with no prompt or session. */
+  /** The named workflow each run starts with (docs/workflows.md). */
+  workflow?: string
+  /** Each run runs its workflow untouched, with no prompt or session. */
   nonInteractive?: boolean
   /** A group name or id; false (`--no-group`) is the default list. */
   group?: string | false
@@ -40,7 +39,7 @@ export interface RoutineOptions {
 export async function routineCreate(project: string, opts: RoutineOptions): Promise<void> {
   const prompt = await promptOf(opts)
   if (opts.name === undefined || opts.cron === undefined || (prompt === undefined && opts.nonInteractive !== true)) {
-    throw new Error('A routine needs --name, --cron and --prompt (or --prompt-file), or --non-interactive with --steps.')
+    throw new Error('A routine needs --name, --cron and --prompt (or --prompt-file), or --non-interactive with --workflow.')
   }
   // So a routine that names no zone takes this device's (unless the user
   // pinned one).
@@ -48,7 +47,7 @@ export async function routineCreate(project: string, opts: RoutineOptions): Prom
   const routine = await api.routine.create.$post({
     json: {
       project: await resolveProjectId(project),
-      ...await settingsOf(opts),
+      ...settingsOf(opts),
       name: opts.name,
       cron: opts.cron,
       ...(prompt !== undefined ? { prompt } : {}),
@@ -93,7 +92,7 @@ export async function routineEdit(id: string, opts: RoutineOptions): Promise<voi
   if (opts.tz === undefined) await reportDeviceTimeZone().catch(() => {})
   const prompt = await promptOf(opts)
   const patch = {
-    ...await settingsOf(opts),
+    ...settingsOf(opts),
     ...(opts.name !== undefined ? { name: opts.name } : {}),
     ...(opts.cron !== undefined ? { cron: opts.cron } : {}),
     ...(prompt !== undefined ? { prompt } : {}),
@@ -135,12 +134,11 @@ async function promptOf(opts: RoutineOptions): Promise<string | undefined> {
 }
 
 /** The settings the options name, in the shape the routes take. */
-async function settingsOf(opts: RoutineOptions): Promise<Partial<RoutineSettings>> {
+function settingsOf(opts: RoutineOptions): Partial<RoutineSettings> {
   if (opts.commit !== undefined && opts.branch !== undefined) throw new Error('Give --branch or --commit, not both.')
   if (opts.nonInteractive === true && (opts.prompt !== undefined || opts.promptFile !== undefined)) {
     throw new Error('--non-interactive runs take no prompt: they open no session.')
   }
-  const steps = opts.steps === undefined ? undefined : opts.steps === false ? null : await readSteps(opts.steps)
   const timeout = opts.timeout === undefined ? undefined
     : opts.timeout.trim().toLowerCase() === 'next' ? null
     : durationOption('--timeout', opts.timeout)
@@ -154,7 +152,7 @@ async function settingsOf(opts: RoutineOptions): Promise<Partial<RoutineSettings
     ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
     ...(opts.branch !== undefined ? { branch: opts.branch } : {}),
     ...(opts.commit !== undefined ? { commit: opts.commit } : {}),
-    ...(steps !== undefined ? { steps } : {}),
+    ...(opts.workflow !== undefined ? { workflow: opts.workflow } : {}),
     ...(opts.nonInteractive === true ? { nonInteractive: true } : {}),
     ...(opts.group !== undefined ? { group: opts.group === false ? null : opts.group } : {}),
   }

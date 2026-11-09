@@ -3,6 +3,7 @@ import { remoteKind } from '#components/GitCredentialPicker'
 import { FileEditor } from '#components/settings/FileEditor'
 import { BuildFiles } from '#components/settings/BuildFiles'
 import { ProjectEnv } from '#components/settings/ProjectEnv'
+import { ProjectRunSecrets } from '#components/settings/ProjectRunSecrets'
 import { EgressAllowlist } from '#components/settings/EgressAllowlist'
 import { ScratchDirs } from '#components/settings/ScratchDirs'
 import { PortForwards } from '#components/settings/PortForwards'
@@ -16,9 +17,11 @@ import { WorkspaceAutoDelete } from '#components/settings/WorkspaceAutoDelete'
 import { KeptIgnoredPaths } from '#components/settings/KeptIgnoredPaths'
 import { Volumes } from '#components/settings/Volumes'
 import { Sites } from '#components/settings/Sites'
+import { Workflows } from '#components/settings/Workflows'
 import { ProjectSelect, useSettingsProject } from '#components/settings/ProjectPicker'
 import { api } from '#lib/api'
 import { WarningIcon } from '#lib/icons'
+import { parseSteps } from '#lib/steps'
 import { projectBuildFilesApi } from '#lib/buildFilesApi'
 import { useSnapshot } from '#lib/useSnapshot'
 import { useHasVolumes } from '#lib/volumes'
@@ -27,13 +30,7 @@ import { useTeammateView, useWhoami } from '#lib/viewer'
 const project = api.project[':projectId']
 
 async function saveInitSteps(projectId: string, text: string): Promise<void> {
-  let steps: unknown
-  try {
-    steps = JSON.parse(text)
-  } catch (e) {
-    throw new Error(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
-  }
-  await project['init-steps'].$put({ param: { projectId }, json: { steps } })
+  await project['init-steps'].$put({ param: { projectId }, json: { steps: parseSteps(text) } })
 }
 
 /**
@@ -136,6 +133,14 @@ export function ProjectSettings(): JSX.Element {
             />
           </div>
 
+          <div className="mt-6">
+            <ProjectRunSecrets key={`run-secrets:${projectId}`} projectId={projectId} readOnly={readOnly} />
+          </div>
+
+          <div className="mt-6">
+            <Workflows key={`workflows:${projectId}`} projectId={projectId} readOnly={readOnly} />
+          </div>
+
           {mediatedEgress && <div className="mt-6">
             <EgressAllowlist key={`allowlist:${projectId}`} projectId={projectId} readOnly={readOnly} />
           </div>}
@@ -212,6 +217,12 @@ export function ProjectSettings(): JSX.Element {
               with <code className="text-text-dim">{'"service": true'}</code> and an optional{' '}
               <code className="text-text-dim">ready</code> check for one that keeps running.
             </p>
+            {selected.initWorkflow !== undefined && (
+              <p className="mt-1 text-[11px] leading-relaxed text-text-faint">
+                These follow workflow <code className="text-text-dim">{selected.initWorkflow}</code>; saving the
+                editor gives the project its own steps instead.
+              </p>
+            )}
             <div className="mt-2">
               <FileEditor
                 key={`init-steps:${projectId}`}

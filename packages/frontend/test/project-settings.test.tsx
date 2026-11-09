@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
-import type { ProjectEnvVar, ProjectSummary, Whoami } from '@yaac/shared/types'
+import type { ProjectEnvVar, ProjectRunSecret, ProjectSummary, Whoami } from '@yaac/shared/types'
 
 // CodeMirror doesn't run under jsdom; each file editor gets a textarea.
 vi.mock('#components/ui/CodeEditor', () => ({
@@ -109,11 +109,14 @@ describe('ProjectSettings', () => {
       .toEqual([{ enabled: false }]))
   })
 
-  it('edits the init steps, showing the server\'s refusal of a bad graph', async () => {
+  it('edits the init steps, saying which workflow they follow and showing the server\'s refusal of a bad graph', async () => {
     useUiStore.setState({ activeProjectId: 'id-alpha' })
     const snapshot = serverSnapshot({
       driver: 'containerless',
-      projects: [{ ...project('alpha', 'https://github.com/o/alpha.git'), initSteps: { install: { run: ['pnpm install'] } } }],
+      projects: [{
+        ...project('alpha', 'https://github.com/o/alpha.git'), initSteps: { install: { run: ['pnpm install'] } },
+        initWorkflow: 'setup',
+      }],
     })
     const server = mockFetch({
       'GET /api/project/id-alpha/env': { vars: [] },
@@ -132,6 +135,7 @@ describe('ProjectSettings', () => {
       expect(first.value).toContain('pnpm install')
       return first
     })
+    expect(screen.getByText(/^These follow workflow/).textContent).toContain('These follow workflow setup;')
     const save = (text: string): void => {
       fireEvent.change(editor, { target: { value: text } })
       const box = editor.closest('.flex-col') as HTMLElement
@@ -466,6 +470,31 @@ describe('ProjectSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete FOO' }))
     await waitFor(() => expect(screen.queryByText('FOO')).toBeNull())
     expect(server.called('DELETE /api/project/id-alpha/env/v1')).toHaveLength(1)
+  })
+
+  it('adds a run secret, its value write-only', async () => {
+    useUiStore.setState({ activeProjectId: 'id-alpha' })
+    let secrets: ProjectRunSecret[] = []
+    const server = mockFetch({
+      'GET /api/project/id-alpha/env': { vars: [] },
+      'GET /api/project/id-alpha/run-secrets': () => ({ secrets }),
+      'PUT /api/project/id-alpha/run-secrets': ({ body }: FetchCall) => {
+        secrets = [{ id: 'rs1', name: (body as { name: string }).name, hasValue: true }]
+        return { secret: secrets[0] }
+      },
+    })
+    renderWithClient(<ProjectSettings />, testQueryClient(undefined, serverSnapshot({
+      driver: 'containerless',
+      projects: [project('alpha', 'https://github.com/o/alpha.git')],
+    })))
+
+    fireEvent.change(await screen.findByPlaceholderText('SECRET_NAME'), { target: { value: 'P8_KEY' } })
+    fireEvent.change(screen.getByLabelText('Run secret value'), { target: { value: 'pem' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add run secret' }))
+
+    await screen.findByText('P8_KEY')
+    expect(server.called('PUT /api/project/id-alpha/run-secrets').map((c) => c.body)).toEqual([{ name: 'P8_KEY', value: 'pem' }])
+    expect(screen.queryByText('pem')).toBeNull()
   })
 
   it('shows a teammate\'s project read-only', async () => {

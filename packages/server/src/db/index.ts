@@ -176,6 +176,33 @@ export {
   type ProjectEnvVarRow,
 } from './project-env-store'
 export {
+  deleteProjectRunSecrets,
+  deleteRunSecret,
+  listRunSecrets,
+  upsertRunSecret,
+  type RunSecretRow,
+} from './run-secret-store'
+export {
+  addWorkflowApproval,
+  deleteNamedWorkflow,
+  deleteProjectWorkflows,
+  deleteUnnamedWorkflows,
+  findNamedWorkflow,
+  getNamedWorkflow,
+  getWorkflow,
+  insertNamedWorkflow,
+  listNamedWorkflows,
+  listWorkflowApprovals,
+  pointNamedWorkflow,
+  recordWorkflowRun,
+  storeWorkflow,
+  workflowApproved,
+  workflowRan,
+  type NamedWorkflowRow,
+  type WorkflowRow,
+} from './workflow-store'
+
+export {
   clearProjectKeepsHostedRepo,
   deleteProjectRow,
   getProjectRow,
@@ -187,7 +214,7 @@ export {
   setProjectEgressAllowlist,
   setProjectScratchDirs,
   setProjectGitCredential,
-  setProjectInitSteps,
+  setProjectInit,
   setProjectKeptIgnoredPaths,
   setProjectRemote,
   setProjectShareRevoked,

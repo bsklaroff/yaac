@@ -13,7 +13,8 @@ import {
   showSite,
 } from '#domain/sites'
 import { createVolume, offeredForwards } from '#domain/workspaces'
-import { BUILT_IN_USER_ID, findSiteByName, seeTailnetUser, setProjectShareRevoked, setUserRole, updateSite } from '#db'
+import { createWorkflow, setRunSecret } from '#domain/projects'
+import { BUILT_IN_USER_ID, findSiteByName, recordProject, seeTailnetUser, setProjectShareRevoked, setUserRole, updateSite } from '#db'
 import { closeDb } from '#db/client'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
@@ -24,6 +25,7 @@ import type { SiteRoute } from '#drivers/contract'
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 const stranger = { kind: 'local', userId: '4101bef8-794f-4d98-8e95-dfb54850c68b' } as const
 const APP = { app: { run: 'pnpm start', service: true } }
+const SHARE = '0a0a0a0a-0000-4000-8000-0000000000aa'
 
 let tmpDir: string
 let routed: SiteRoute[][]
@@ -33,6 +35,11 @@ let offered: Map<string, number[]>
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
   await seedProject()
+  // The graphs its sites run: one that serves, one that serves from the
+  // volume, and one with no service.
+  await createWorkflow(local, DEMO_PROJECT_ID, { name: 'app', steps: APP })
+  await createWorkflow(local, DEMO_PROJECT_ID, { name: 'on-volume', steps: { app: { run: 'x', service: true, needs: ['volume'] } } })
+  await createWorkflow(local, DEMO_PROJECT_ID, { name: 'build', steps: { build: { run: 'make' } } })
   routed = []
   offered = new Map([['rel-1', [3001]]])
   installFakeWorkspaceDriver({
@@ -66,7 +73,7 @@ async function demoteOwner(): Promise<{ kind: 'tailnet'; userId: string; login: 
 }
 
 const create = (over: Partial<Parameters<typeof createSite>[2]> = {}): Promise<void> =>
-  createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, steps: APP, ...over })
+  createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, workflow: 'app', ...over })
 
 describe('createSite', () => {
   it('routes a new site with no release, refusing bad settings, a taken name or hostname and a non-owner', async () => {
@@ -84,16 +91,16 @@ describe('createSite', () => {
     // The router serves the site's port to the internet, which the admin
     // port must never be.
     await expect(create({ name: 'a', hostname: 'a.example.com', adminPort: 3000 })).rejects.toMatchObject({ code: 'VALIDATION' })
-    await expect(create({ name: 'a', hostname: 'a.example.com', steps: { build: { run: 'make' } } }))
+    await expect(create({ name: 'a', hostname: 'a.example.com', workflow: 'build' }))
       .rejects.toMatchObject({ code: 'VALIDATION', message: expect.stringContaining('service') as unknown })
     // Only a site with a volume may wait on it.
-    await expect(create({ name: 'a', hostname: 'a.example.com', steps: { app: { run: 'x', service: true, needs: ['volume'] } } }))
+    await expect(create({ name: 'a', hostname: 'a.example.com', workflow: 'on-volume' }))
       .rejects.toMatchObject({ code: 'VALIDATION' })
     await expect(create({ name: 'a', hostname: 'a.example.com', volume: 'missing' })).rejects.toMatchObject({ code: 'NOT_FOUND' })
     await expect(create({ name: 'a', hostname: 'a.example.com', followBranch: 'main..x' })).rejects.toMatchObject({ code: 'VALIDATION' })
     await expect(create({ hostname: 'other.example.com' })).rejects.toMatchObject({ code: 'CONFLICT' })
     await expect(create({ name: 'other' })).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('shop.example.com') as unknown })
-    await expect(createSite(stranger, DEMO_PROJECT_ID, { name: 'x', hostname: 'x.example.com', port: 1, steps: APP }))
+    await expect(createSite(stranger, DEMO_PROJECT_ID, { name: 'x', hostname: 'x.example.com', port: 1, workflow: 'app' }))
       .rejects.toMatchObject({ code: 'FORBIDDEN' })
 
     // One volume holds one site's data.
@@ -115,7 +122,7 @@ describe('createSite', () => {
 describe('editSite', () => {
   it('moves the hostname and admin port at once and keeps the rest for the next deploy, refusing during a deploy', async () => {
     await createVolume(local, DEMO_PROJECT_ID, 'data')
-    await create({ adminPort: 3001, volume: 'data', steps: { app: { run: 'x', service: true, needs: ['volume'] } } })
+    await create({ adminPort: 3001, volume: 'data', workflow: 'on-volume' })
     const row = (await findSiteByName(DEMO_PROJECT_ID, 'shop'))!
     await updateSite(row.id, { liveWorkspaceId: 'rel-1', livePort: 3000 })
 
@@ -139,10 +146,10 @@ describe('editSite', () => {
     expect(offered.get('rel-1')).toEqual([])
     expect(await offeredForwards([], row.id)).toEqual([])
 
-    // Its graph needs the volume, so the volume cannot go without a graph
-    // that does not.
+    // Its workflow needs the volume, so the volume cannot go without a
+    // workflow that does not.
     await expect(editSite(local, DEMO_PROJECT_ID, 'shop', { volume: null })).rejects.toMatchObject({ code: 'VALIDATION' })
-    await editSite(local, DEMO_PROJECT_ID, 'shop', { volume: null, steps: APP })
+    await editSite(local, DEMO_PROJECT_ID, 'shop', { volume: null, workflow: 'app' })
     expect((await findSiteByName(DEMO_PROJECT_ID, 'shop'))?.volumeId).toBeUndefined()
 
     // A branch to follow is one on origin, by its own name: a ref-like name
@@ -165,6 +172,37 @@ describe('editSite', () => {
     expect((await listProjectSiteEntries(DEMO_PROJECT_ID))[0]?.followPaused).toBe('its owner is not an admin')
     await editSite(admin, DEMO_PROJECT_ID, 'shop', { followBranch: null })
     expect((await findSiteByName(DEMO_PROJECT_ID, 'shop'))?.followBranch).toBeUndefined()
+  })
+})
+
+describe('editSite on a workflow', () => {
+  it('moves a site to another named workflow, checked as a release\'s graph', async () => {
+    await create({})
+    await createWorkflow(local, DEMO_PROJECT_ID, { name: 'web', steps: { web: { run: 'pnpm serve', service: true } } })
+    await editSite(local, DEMO_PROJECT_ID, 'shop', { workflow: 'web' })
+    expect((await listProjectSiteEntries(DEMO_PROJECT_ID))[0]).toMatchObject({ workflow: 'web', steps: { web: { run: ['pnpm serve'], service: true } } })
+    await expect(editSite(local, DEMO_PROJECT_ID, 'shop', { workflow: 'build' })).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(editSite(local, DEMO_PROJECT_ID, 'shop', { workflow: 'nope' })).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+})
+
+describe('createSite and editSite on a shared remote', () => {
+  it('refuse following a branch for a workflow naming secrets before writing anything', async () => {
+    await setRunSecret(local, DEMO_PROJECT_ID, { name: 'P8_KEY', value: 'pem' })
+    await createWorkflow(local, DEMO_PROJECT_ID, { name: 'keyed', steps: APP, secrets: ['P8_KEY'] })
+    await create({ workflow: 'keyed', followBranch: 'dev' })
+    // Another user can push the remote once it is shared.
+    await recordProject({ id: SHARE, name: 'shared', remoteUrl: 'r', addedAt: 'now', sharedFrom: DEMO_PROJECT_ID }, BUILT_IN_USER_ID)
+    await expect(create({ name: 'b', hostname: 'b.example.com', workflow: 'keyed', followBranch: 'dev' }))
+      .rejects.toMatchObject({ code: 'FORBIDDEN' })
+    expect(await findSiteByName(DEMO_PROJECT_ID, 'b')).toBeUndefined()
+    await createWorkflow(local, DEMO_PROJECT_ID, { name: 'keyed-2', steps: APP, secrets: ['P8_KEY'] })
+    await expect(editSite(local, DEMO_PROJECT_ID, 'shop', { workflow: 'keyed-2', hostname: 'moved.example.com' }))
+      .rejects.toMatchObject({ code: 'FORBIDDEN' })
+    expect(await findSiteByName(DEMO_PROJECT_ID, 'shop')).toMatchObject({ hostname: 'shop.example.com' })
+    // An edit that changes neither its workflow nor its branch approves nothing.
+    await editSite(local, DEMO_PROJECT_ID, 'shop', { hostname: 'moved.example.com' })
+    expect((await findSiteByName(DEMO_PROJECT_ID, 'shop'))?.hostname).toBe('moved.example.com')
   })
 })
 

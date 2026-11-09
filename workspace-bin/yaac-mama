@@ -9,17 +9,18 @@
 #   yaac-mama create --no-session [--branch B] [--group G] [--title T] [--timeout D]
 #   yaac-mama create --non-interactive --steps F [--branch B | --commit C] [--wait] [opts]
 #   yaac-mama create --workspace W --run CMD [--run CMD]... [--name N] [--needs A,B] [--service [--ready CMD]] [--wait]
+#   yaac-mama create --workspace W --workflow X
 #   yaac-mama queue [--parent-workspace W | --start-at T | --start-in D] [opts] "<prompt>"
 #   yaac-mama edit-queued [--parent-workspace W | --no-parent | --start-at T | --start-in D] [opts] <queued> ["<prompt>"]
 #   yaac-mama run-queued <queued>
 #   yaac-mama delete-queued <queued>
 #     where opts: [--tool T] [--model M] [--effort E] [--permission-mode P]
 #                 [--ui-mode U] [--branch B | --commit C] [--group G] [--title T] [--timeout D]
-#                 [--steps F | --no-steps] [--non-interactive]
+#                 [--steps F | --no-steps | --workflow W] [--non-interactive]
 #   yaac-mama routine create --name N --cron C [--tz Z] [opts] "<prompt>"
 #   yaac-mama routine edit [--name N] [--cron C] [--tz Z] [opts] <routine> ["<prompt>"]
 #   yaac-mama routine pause|resume|run|delete <routine>
-#     where opts are create's but --title
+#     where opts are create's but --title, --steps and --no-steps
 #   yaac-mama send [--session S | --conversation C] <workspace> "<message>"
 #   (each prompt or message also as - for stdin, or as --prompt-file F)
 #   yaac-mama rename [<workspace>] "<title>"
@@ -35,6 +36,8 @@
 #   yaac-mama group set-limit "<group>" <limit|none>
 #   yaac-mama models
 #   yaac-mama volumes
+#   yaac-mama workflow list
+#   yaac-mama workflow show <name>
 #   yaac-mama fetch <workspace>
 #   yaac-mama history <workspace> [<conversation>] [-o <dir>]
 #
@@ -136,6 +139,8 @@ Usage:
   yaac-mama group set-limit "<group>" <n|none>     # cap how many run at once
   yaac-mama models                                 # tools/models available
   yaac-mama volumes                                # volumes, and who holds each
+  yaac-mama workflow list                          # the project's workflows
+  yaac-mama workflow show <name>                   # one's steps and run secrets
   yaac-mama fetch <workspace>                      # read its branches into git
   yaac-mama history <workspace>                    # list its conversations
   yaac-mama history <workspace> <conversation>     # print one's transcripts
@@ -144,7 +149,7 @@ Usage:
   yaac-mama --help
 
 Options for create, queue and edit-queued (routine create and edit take all
-but --title):
+but --title, --steps and --no-steps):
   --tool <tool>    agent for the new workspace: claude, codex, opencode, or pi.
                    Omitted, inherits this workspace's tool, then the project
                    default, then claude. Must be logged in on the host (see
@@ -178,6 +183,14 @@ but --title):
                    [...], "service": true, "ready": "<cmd>"}. Only a caller
                    at bypass may: the commands run as the workspace does.
   --no-steps       start with no steps at all.
+  --workflow <name>
+                   start with this named workflow instead of --steps (see
+                   `yaac-mama workflow list`; docs/workflows.md); a queued one
+                   takes it as it is at launch. A routine runs only a named
+                   workflow, never --steps. One that names run secrets gets
+                   them only on a commit or branch a person already ran it
+                   on; anything else is refused. With create --workspace W,
+                   it adds that workflow's steps to W instead.
   --non-interactive
                    run --steps untouched, with no session or prompt, then
                    stop: a CI run. Nothing can change it while it runs; it can
@@ -666,6 +679,15 @@ case "$1" in
 
   volumes) run volumes '' ;;
 
+  workflow)
+    case "${2:-}" in
+      list) [ $# -eq 2 ] || { echo 'usage: yaac-mama workflow list' >&2; exit 2; }; run workflow-list '' ;;
+      show) [ $# -eq 3 ] && [ -n "$3" ] || { echo 'usage: yaac-mama workflow show <name>' >&2; exit 2; }
+        run workflow-show '' name "$3" ;;
+      *) echo 'usage: yaac-mama workflow list|show …' >&2; exit 2 ;;
+    esac
+    ;;
+
   fetch)
     shift
     if [ $# -ne 1 ] || [ -z "$1" ]; then
@@ -741,6 +763,7 @@ EOF
     tool=""; model=""; effort=""; perm=""; ui_mode=""; branch=""; group=""; title=""; parent=""; no_parent=""; prompt_file=""
     timeout=""; start_at=""; start_in=""; routine_name=""; cron=""; tz=""; target=""; resume=""; no_session=""; volume=""
     commit=""; steps=""; no_steps=""; non_interactive=""; wait=""; run_json=""; step_name=""; needs=""; service=""; ready=""
+    workflow=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --no-parent) no_parent=1; shift; continue ;;
@@ -749,12 +772,13 @@ EOF
         --non-interactive) non_interactive=1; shift; continue ;;
         --wait) wait=1; shift; continue ;;
         --service) service=1; shift; continue ;;
-        --tool|--model|--effort|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace|--prompt-file|--timeout|--start-at|--start-in|--name|--cron|--tz|--workspace|--resume|--volume|--commit|--steps|--run|--needs|--ready)
+        --tool|--model|--effort|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace|--prompt-file|--timeout|--start-at|--start-in|--name|--cron|--tz|--workspace|--resume|--volume|--commit|--steps|--workflow|--run|--needs|--ready)
           [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a value" >&2; exit 2; } ;;
         *) break ;;
       esac
       case "$1" in
         --commit) commit=$2 ;;
+        --workflow) workflow=$2 ;;
         --steps)
           [ -r "$2" ] || { echo "yaac-mama: cannot read the steps from $2" >&2; exit 2; }
           steps=$(cat -- "$2") ;;
@@ -796,6 +820,17 @@ EOF
       printf '%s\n' "$text"
       [ -z "$wait" ] || wait_status "$target" "$text"
       exit 0
+    fi
+    if [ "$cmd" = create ] && [ -n "$target" ] && [ -n "$workflow" ]; then
+      # A named workflow's steps, added to a running workspace as they are.
+      # The other options go along for the server to refuse, bar the two it
+      # never sees.
+      [ $# -eq 0 ] && [ -z "$prompt_file" ] || { echo 'yaac-mama: --workspace with --workflow takes no prompt' >&2; exit 2; }
+      [ -z "$wait" ] || { echo 'yaac-mama: --wait goes with --run or --non-interactive, not --workflow' >&2; exit 2; }
+      run create '' workspace "$target" workflow "$workflow" tool "$tool" model "$model" effort "$effort" \
+        permission-mode "$perm" ui-mode "$ui_mode" branch "$branch" group "$group" title "$title" timeout "$timeout" \
+        resume "$resume" no-session "$no_session" volume "$volume" commit "$commit" steps "$steps" \
+        no-steps "$no_steps" non-interactive "$non_interactive"
     fi
     if [ -n "$wait" ] && [ -z "$non_interactive" ]; then
       echo 'yaac-mama: --wait goes with --non-interactive or --run' >&2
@@ -849,7 +884,8 @@ EOF
       tool "$tool" model "$model" effort "$effort" permission-mode "$perm" ui-mode "$ui_mode" branch "$branch" \
       group "$group" title "$title" timeout "$timeout" start-at "$start_at" start-in "$start_in" \
       name "$routine_name" cron "$cron" tz "$tz" workspace "$target" resume "$resume" no-session "$no_session" \
-      volume "$volume" commit "$commit" steps "$steps" no-steps "$no_steps" non-interactive "$non_interactive"
+      volume "$volume" commit "$commit" steps "$steps" no-steps "$no_steps" non-interactive "$non_interactive" \
+      workflow "$workflow"
     if [ -n "$wait" ]; then
       ask "$@"
       printf '%s\n' "$text"
@@ -1066,7 +1102,7 @@ EOF
     ;;
 
   *)
-    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, run-queued, delete-queued, routine, send, rename, stop, restart, rerun, status, logs, group, models, volumes, fetch, history)" >&2
+    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, run-queued, delete-queued, routine, send, rename, stop, restart, rerun, status, logs, group, models, volumes, workflow, fetch, history)" >&2
     echo 'run "yaac-mama --help" for usage' >&2
     exit 2
     ;;

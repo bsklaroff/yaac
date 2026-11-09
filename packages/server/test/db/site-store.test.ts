@@ -16,6 +16,7 @@ import {
   updateSite,
 } from '#db/site-store'
 import { recordWorkspaceCreated } from '#db/workspace-store'
+import { findNamedWorkflow, insertNamedWorkflow, storeWorkflow } from '#db/workflow-store'
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
 const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
@@ -33,13 +34,17 @@ afterEach(async () => {
   await cleanupTempDir(tmpDir)
 })
 
-const site = (projectId: string, name: string, hostname: string, volumeId?: string) =>
-  insertSite({ projectId, name, hostname, port: 3000, steps: APP, ...(volumeId !== undefined ? { volumeId } : {}) })
+const site = async (projectId: string, name: string, hostname: string, volumeId?: string) => {
+  const workflow = await storeWorkflow(projectId, { steps: APP, secrets: [] })
+  await insertNamedWorkflow(projectId, `${name}-${hostname}`, workflow.id)
+  const named = await findNamedWorkflow(projectId, `${name}-${hostname}`)
+  return await insertSite({ projectId, name, hostname, port: 3000, namedWorkflowId: named!.id, ...(volumeId !== undefined ? { volumeId } : {}) })
+}
 
 describe('insertSite', () => {
   it('refuses a name the project uses, and a hostname any site uses', async () => {
     const row = await site(PROJ, 'shop', 'shop.example.com')
-    expect(row).toMatchObject({ name: 'shop', port: 3000, steps: APP, deployReplacing: false, replaceFailures: 0 })
+    expect(row).toMatchObject({ name: 'shop', port: 3000, deployReplacing: false, replaceFailures: 0 })
     await expect(site(PROJ, 'shop', 'b.example.com')).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('named "shop"') as unknown })
     await expect(site(OTHER, 'other', 'shop.example.com')).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('shop.example.com') as unknown })
     await site(OTHER, 'shop', 'other.example.com')

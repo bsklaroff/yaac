@@ -37,7 +37,7 @@ export { importProjectConfigFiles } from './config-import'
 export { scratchDirSettingsPatchSchema, setScratchDirs } from './scratch-dirs'
 export { dismissImageBuild, retryImageBuild } from './images'
 export { setKeptIgnoredPaths } from './kept-paths'
-export { setInitSteps } from './init-steps'
+export { setInitSteps, setInitWorkflow } from './init-steps'
 export {
   listProjectEnv,
   parseSecretProxyRule,
@@ -46,6 +46,20 @@ export {
   resolveProjectEnv,
   setProjectEnvVar,
 } from './env'
+export { listProjectRunSecrets, removeRunSecret, setRunSecret } from './run-secrets'
+export {
+  approveWorkflowRef,
+  checkWorkflowRef,
+  createWorkflow,
+  deleteWorkflow,
+  editWorkflow,
+  initWorkflowOf,
+  listProjectWorkflows,
+  resolveWorkflow,
+  showWorkflow,
+  storeSteps,
+  workflowLaunch,
+} from './workflows'
 export {
   assignProjectCredential,
   missingCredentialError,

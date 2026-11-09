@@ -8,10 +8,14 @@
  * Settings are resolved when the routine is saved, as a queued entry's are,
  * so what the UI shows is what each run launches with. An agent's writes
  * (`yaac-mama routine …`) are held to its permission mode, as its queue
- * writes are (`QueueSource`).
+ * writes are (`QueueSource`). A routine that runs a workflow
+ * (docs/workflows.md) approves, when a person saves it, the commit or branch
+ * it runs on; an agent's must find that approved already.
  */
 import { resolveParentlessSettings, runQueuedWorkspace, type QueueSource } from './queued-workspaces'
 import { authorizeProject, type Actor } from '#domain/access'
+import { getDefaultBranch } from '#domain/git'
+import { approveWorkflowRef } from '#domain/projects'
 import { modelDisplayName } from '#domain/auth'
 import {
   deleteQueuedWorkspace,
@@ -26,6 +30,7 @@ import {
   listRoutineRows,
   listRoutineRuns,
   listUnlaunchedRoutineRuns,
+  getNamedWorkflow,
   setRoutinePaused as setRoutinePausedRow,
   updateRoutine as updateRoutineRow,
   type QueuedWorkspaceRow,
@@ -37,6 +42,7 @@ import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
 import { cronError, formatInZone, isTimeZone, latestCronRun, nextCronRuns } from '@yaac/shared/schedule'
 import { formatUtcTimestamp } from '@yaac/shared/time'
+import { repoDir } from '@yaac/shared/project-paths'
 import {
   ROUTINE_RUNS_PAGE_MAX,
   type RoutineEntry,
@@ -53,7 +59,7 @@ export async function createRoutine(
   source: QueueSource,
 ): Promise<RoutineEntry> {
   await authorizeProject(principal, projectId)
-  const fields = await resolveRoutine(projectId, request, source)
+  const fields = await resolveRoutine(principal, projectId, request, source)
   const row = await insertRoutine(projectId, fields, nextTick(fields.cron, fields.timeZone, new Date()))
   return (await toEntries([row]))[0]
 }
@@ -77,8 +83,10 @@ export async function updateRoutine(
   const prompt = nonInteractive ? undefined : patch.prompt ?? row.prompt
   const commit = patch.branch !== undefined ? undefined : patch.commit ?? row.commit
   const branch = commit !== undefined ? undefined : patch.branch ?? row.branch
-  const steps = patch.steps !== undefined ? patch.steps : row.steps
-  const fields = await resolveRoutine(row.projectId, {
+  const workflow = patch.workflow !== undefined ? patch.workflow
+    : row.namedWorkflowId !== undefined ? (await getNamedWorkflow(row.namedWorkflowId))?.name
+    : undefined
+  const fields = await resolveRoutine(principal, row.projectId, {
     name: patch.name ?? row.name,
     cron: patch.cron ?? row.cron,
     timeZone: patch.timeZone ?? row.timeZone,
@@ -87,7 +95,7 @@ export async function updateRoutine(
     mode: patch.mode ?? row.mode,
     ...(branch !== undefined ? { branch } : {}),
     ...(commit !== undefined ? { commit } : {}),
-    ...(steps !== undefined ? { steps } : {}),
+    ...(typeof workflow === 'string' ? { workflow } : {}),
     ...(nonInteractive ? { nonInteractive } : {}),
     group: patch.group !== undefined ? patch.group : row.groupId ?? null,
     timeout: patch.timeout !== undefined ? patch.timeout : row.timeoutMinutes ?? null,
@@ -217,7 +225,7 @@ async function insertRun(
     ...(row.effort !== undefined ? { effort: row.effort } : {}),
     ...(row.branch !== undefined ? { branch: row.branch } : {}),
     ...(row.commit !== undefined ? { commit: row.commit } : {}),
-    ...(row.steps !== undefined ? { steps: row.steps } : {}),
+    ...(row.namedWorkflowId !== undefined ? { namedWorkflowId: row.namedWorkflowId } : {}),
     ...(row.nonInteractive ? { nonInteractive: true } : {}),
     title: `${row.name} · ${formatInZone(slot, row.timeZone)}`,
     ...(row.groupId !== undefined ? { groupId: row.groupId } : {}),
@@ -248,9 +256,16 @@ function nextTick(cron: string, timeZone: string, from: Date): Date | null {
 /**
  * Check and resolve a routine's fields. The zone defaults to the project
  * owner's, else UTC; a create that names no group files runs under one
- * named after the routine, made if need be.
+ * named after the routine, made if need be. Its named workflow's current
+ * graph is checked as its runs' steps, and the commit or branch the runs
+ * start at approved for it (`approveWorkflowRef`).
  */
-async function resolveRoutine(projectId: string, request: RoutineSettings, source: QueueSource): Promise<RoutineFields> {
+async function resolveRoutine(
+  principal: Actor,
+  projectId: string,
+  request: RoutineSettings,
+  source: QueueSource,
+): Promise<RoutineFields> {
   const cron = request.cron.trim()
   const invalid = cronError(cron)
   if (invalid !== undefined) throw new ServerError('VALIDATION', `invalid cron '${cron}': ${invalid}`)
@@ -260,7 +275,7 @@ async function resolveRoutine(projectId: string, request: RoutineSettings, sourc
   const settings = await resolveParentlessSettings(projectId, {
     ...(request.prompt !== undefined ? { prompt: request.prompt } : {}),
     ...(request.commit !== undefined ? { commit: request.commit } : {}),
-    ...(request.steps !== undefined ? { steps: request.steps } : {}),
+    ...(typeof request.workflow === 'string' ? { workflow: request.workflow } : {}),
     ...(request.nonInteractive === true ? { nonInteractive: true } : {}),
     ...(request.tool !== undefined ? { tool: request.tool } : {}),
     ...(request.model !== undefined ? { model: request.model } : {}),
@@ -270,7 +285,7 @@ async function resolveRoutine(projectId: string, request: RoutineSettings, sourc
     ...(request.branch !== undefined ? { branch: request.branch } : {}),
     group: request.group !== undefined ? request.group : name,
   }, source)
-  return {
+  const fields: RoutineFields = {
     name,
     cron,
     timeZone,
@@ -282,11 +297,17 @@ async function resolveRoutine(projectId: string, request: RoutineSettings, sourc
     ...(settings.effort !== undefined ? { effort: settings.effort } : {}),
     ...(settings.branch !== undefined ? { branch: settings.branch } : {}),
     ...(settings.commit !== undefined ? { commit: settings.commit } : {}),
-    ...(settings.steps !== undefined ? { steps: settings.steps } : {}),
+    ...(settings.namedWorkflowId !== undefined ? { namedWorkflowId: settings.namedWorkflowId } : {}),
     ...(settings.nonInteractive === true ? { nonInteractive: true } : {}),
     ...(settings.groupId !== undefined ? { groupId: settings.groupId } : {}),
     ...(request.timeout != null ? { timeoutMinutes: request.timeout } : {}),
   }
+  if (settings.namedWorkflowId !== undefined) {
+    await approveWorkflowRef(principal, settings.namedWorkflowId, settings.commit !== undefined
+      ? { commit: settings.commit }
+      : { branch: settings.branch ?? await getDefaultBranch(repoDir(projectId)) })
+  }
+  return fields
 }
 
 async function ownerTimeZone(projectId: string): Promise<string> {
@@ -329,7 +350,10 @@ async function toEntries(rows: RoutineRow[]): Promise<RoutineEntry[]> {
   const now = new Date()
   // The newest unlaunched run of each routine; its error is the routine's.
   const unlaunched = new Map((await listUnlaunchedRoutineRuns()).map((r) => [r.routineId, r] as const))
+  const workflows = new Map(await Promise.all([...new Set(rows.flatMap((r) => r.namedWorkflowId ?? []))]
+    .map(async (id) => [id, await getNamedWorkflow(id)] as const)))
   return rows.map((r) => {
+    const workflow = r.namedWorkflowId !== undefined ? workflows.get(r.namedWorkflowId) : undefined
     const modelName = modelDisplayName(r.tool, r.model)
     const lastError = unlaunched.get(r.id)?.launchError
     return {
@@ -347,7 +371,7 @@ async function toEntries(rows: RoutineRow[]): Promise<RoutineEntry[]> {
       ...(r.effort !== undefined ? { effort: r.effort } : {}),
       ...(r.branch !== undefined ? { branch: r.branch } : {}),
       ...(r.commit !== undefined ? { commit: r.commit } : {}),
-      ...(r.steps !== undefined ? { steps: r.steps } : {}),
+      ...(workflow !== undefined ? { workflow: workflow.name } : {}),
       ...(r.nonInteractive ? { nonInteractive: true as const } : {}),
       ...(r.groupId !== undefined ? { groupId: r.groupId } : {}),
       ...(r.timeoutMinutes !== undefined ? { timeoutMinutes: r.timeoutMinutes } : {}),

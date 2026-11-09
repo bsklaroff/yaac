@@ -104,6 +104,13 @@ describe('yaac site (real CLI + real server)', () => {
     }
     return { origin: `http://127.0.0.1:${String(local)}`, output: () => out, stop: () => child.kill('SIGTERM') }
   }
+  /** A named workflow of `graph`, made or changed, answering its name. */
+  const workflowOf = async (name: string, graph: object): Promise<string> => {
+    const file = await stepsFile(`${name}.json`, graph)
+    const made = await runYaac(serverEnv, 'workflow', 'create', NAME, name, '--file', file)
+    if (made.exitCode !== 0) await yaac('workflow', 'edit', NAME, name, '--file', file)
+    return name
+  }
   const stepsFile = async (file: string, graph: object): Promise<string> => {
     const at = path.join(testEnv.scratchDir, file)
     await fs.writeFile(at, JSON.stringify(graph))
@@ -147,47 +154,47 @@ describe('yaac site (real CLI + real server)', () => {
     await testEnv.cleanup()
   })
 
-  it('create needs --hostname, --port and --steps, refuses a malformed hostname or port, and prints the tunnel\'s settings', async () => {
-    const steps = await stepsFile('v1.json', serving(3000, 'v1'))
-    expect(await refused('site', 'create', NAME, 'web', '--port', '3000', '--steps', steps))
+  it('create needs --hostname, --port and --workflow, refuses a malformed hostname or port, and prints the tunnel\'s settings', async () => {
+    const steps = await workflowOf('v1', serving(3000, 'v1'))
+    expect(await refused('site', 'create', NAME, 'web', '--port', '3000', '--workflow', steps))
       .toContain('--hostname <host>')
-    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', 'http', '--steps', steps))
+    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', 'http', '--workflow', steps))
       .toContain('--port takes a port number')
-    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--admin-port', 'x', '--steps', steps))
+    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--admin-port', 'x', '--workflow', steps))
       .toContain('--admin-port takes a port number')
-    expect(await refused('site', 'create', NAME, 'web', '--hostname', `https://app.${DOMAIN}`, '--port', '3000', '--steps', steps))
+    expect(await refused('site', 'create', NAME, 'web', '--hostname', `https://app.${DOMAIN}`, '--port', '3000', '--workflow', steps))
       .toContain('is not a hostname')
-    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--steps', steps, '--follow', 'a..b'))
+    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--workflow', steps, '--follow', 'a..b'))
       .toContain('is not a branch name')
     expect(await yaac('site', 'list', NAME)).toContain(`No sites in ${NAME}`)
 
     const created = await yaac('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000',
-      '--admin-port', '3002', '--steps', steps, '--volume', 'data')
+      '--admin-port', '3002', '--workflow', steps, '--volume', 'data')
     expect(created).toContain('Created site "web"')
     expect(created).toContain(`hostname  app.${DOMAIN}`)
     expect(created).toContain('service   http://yaac-site-router:8080')
     expect(created).toContain('no tunnel yet')
   })
 
-  it('list and show name its hostname, ports, steps and volume before any deploy', async () => {
+  it('list and show name its hostname, ports, workflow and volume before any deploy', async () => {
     expect(await yaac('site', 'list', NAME))
       .toMatch(/NAME\s+HOSTNAME\s+PORT\s+LIVE[\s\S]*web\s+app\.example\.test\s+3000\s+-/)
     const shown = await yaac('site', 'show', NAME, 'web')
     expect(shown).toContain(`https://app.${DOMAIN} -> port 3000`)
     expect(shown).toMatch(/admin port\s+3002/)
-    expect(shown).toMatch(/steps\s+server/)
+    expect(shown).toMatch(/workflow\s+v1 \(server\)/)
     expect(shown).toMatch(/volume\s+data/)
   })
 
-  it('edit changes --hostname, --port, --steps and --volume, and --no-admin-port and --no-volume drop theirs', async () => {
+  it('edit changes --hostname, --port, --workflow and --volume, and --no-admin-port and --no-volume drop theirs', async () => {
     expect(await refused('site', 'edit', NAME, 'web')).toContain('Nothing to change')
-    const failing = await stepsFile('failing.json', { build: { run: 'exit 3' }, ...serving(3001, 'v2') })
-    await yaac('site', 'edit', NAME, 'web', '--hostname', `www.${DOMAIN}`, '--port', '3001', '--steps', failing,
+    const failing = await workflowOf('failing', { build: { run: 'exit 3' }, ...serving(3001, 'v2') })
+    await yaac('site', 'edit', NAME, 'web', '--hostname', `www.${DOMAIN}`, '--port', '3001', '--workflow', failing,
       '--no-admin-port', '--no-volume')
     let shown = await yaac('site', 'show', NAME, 'web')
     expect(shown).toContain(`https://www.${DOMAIN} -> port 3001`)
     expect(shown).toMatch(/admin port\s+-/)
-    expect(shown).toMatch(/steps\s+build, server/)
+    expect(shown).toMatch(/workflow\s+failing \(build, server\)/)
     expect(shown).toMatch(/volume\s+-/)
     await yaac('site', 'edit', NAME, 'web', '--volume', 'data')
     expect(await yaac('site', 'show', NAME, 'web')).toMatch(/volume\s+data/)
@@ -203,7 +210,12 @@ describe('yaac site (real CLI + real server)', () => {
     expect(await yaac('site', 'list', NAME)).toMatch(/web\s+www\.example\.test\s+3001\s+-\s+failed/)
 
     const withAdmin = { ...serving(3001, 'v2'), ...serving(3002, 'admin', 'admin') }
-    await yaac('site', 'edit', NAME, 'web', '--admin-port', '3002', '--steps', await stepsFile('v2.json', withAdmin))
+    // A workflow gives the site's releases a run secret as it is; the
+    // owner's deploy below approves its commit.
+    const given = await runYaac(serverEnv, 'config', 'env', NAME, 'RELAY_KEY', '--run-secret', { stdin: 'relay-key-value\n' })
+    expect(given.exitCode, given.stderr).toBe(0)
+    await yaac('workflow', 'create', NAME, 'web', '--file', await stepsFile('v2.json', withAdmin), '--secret', 'RELAY_KEY')
+    await yaac('site', 'edit', NAME, 'web', '--admin-port', '3002', '--workflow', 'web')
     const deployed = await runYaac(serverEnv, 'site', 'deploy', NAME, 'web', '--ref', sha, '--timeout', '10m', '--wait')
     expect(deployed.exitCode, deployed.stderr).toBe(0)
     expect(deployed.stdout).toContain(`Deploying ${sha.slice(0, 7)} to site "web"`)
@@ -233,6 +245,7 @@ describe('yaac site (real CLI + real server)', () => {
       '-d', '{"command":"list"}', 'http://yaac.internal/api/workspace/mama',
     ])
     expect(stdout).toBe('403')
+    expect((await execInJob(`yaac-${release}`, ['printenv', 'RELAY_KEY'])).stdout.trim()).toBe('relay-key-value')
 
     // The admin port is the one port the release offers, and its owner
     // reaches it as any workspace's forward.
@@ -293,7 +306,7 @@ describe('yaac site (real CLI + real server)', () => {
   // first wrote. The site answers 503 only in that gap.
   it('hands the volume from one release to the next, which reads what the first wrote', async () => {
     const api = makeServerApiClient(server!)
-    await yaac('site', 'edit', NAME, 'web', '--volume', 'data', '--steps', await stepsFile('vol1.json', servingVolume(3001, 'one')))
+    await yaac('site', 'edit', NAME, 'web', '--volume', 'data', '--workflow', await workflowOf('vol1', servingVolume(3001, 'one')))
     const first = await runYaac(serverEnv, 'site', 'deploy', NAME, 'web', '--wait')
     expect(first.exitCode, first.stderr).toBe(0)
     const firstRelease = /in release (\S+)\./.exec(first.stdout)?.[1]
@@ -304,7 +317,7 @@ describe('yaac site (real CLI + real server)', () => {
         expect(await viaRouter(router.origin, `www.${DOMAIN}`)).toEqual({ status: 200, body: 'one\n' })
       }, { timeout: 120_000, interval: 2_000 })
 
-      await yaac('site', 'edit', NAME, 'web', '--steps', await stepsFile('vol2.json', servingVolume(3001, 'two')))
+      await yaac('site', 'edit', NAME, 'web', '--workflow', await workflowOf('vol2', servingVolume(3001, 'two')))
       const seen = new Set<number>()
       let polling = true
       const poller = (async () => {

@@ -1,4 +1,3 @@
-import type { StepGraph } from '@yaac/shared/steps'
 import { eq, sql } from 'drizzle-orm'
 import { getDb } from './client'
 import { projects, projectToolDefaults } from './schema'
@@ -129,8 +128,10 @@ export interface ProjectRow extends ProjectMeta, ProjectConfig {
   /** Gitignored checkout paths a stop keeps. */
   keptIgnoredPaths: string[]
   scratchDirs: ScratchDirSettings
-  /** The steps every workspace runs at start (docs/workspace-steps.md). */
-  initSteps: StepGraph
+  /** The steps every workspace runs at start (docs/workspace-steps.md): a
+   *  workflow, or a named workflow followed to its current one. */
+  initWorkflowId?: string
+  initNamedWorkflowId?: string
 }
 
 function toProjectRow(
@@ -181,11 +182,17 @@ export async function setProjectWorkspaceRetention(projectId: string, days: numb
   return rows.length > 0
 }
 
-/** Replace the project's init steps, already parsed. False when there is
- *  no such project. */
-export async function setProjectInitSteps(projectId: string, initSteps: StepGraph): Promise<boolean> {
+/** Replace the project's init steps: a workflow, a named workflow, or
+ *  neither for none. False when there is no such project. */
+export async function setProjectInit(
+  projectId: string,
+  init: { workflowId: string } | { namedWorkflowId: string } | null,
+): Promise<boolean> {
   const db = await getDb()
-  const rows = await db.update(projects).set({ initSteps })
+  const rows = await db.update(projects).set({
+    initWorkflowId: init !== null && 'workflowId' in init ? init.workflowId : null,
+    initNamedWorkflowId: init !== null && 'namedWorkflowId' in init ? init.namedWorkflowId : null,
+  })
     .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
   notifyWorkspaceListChanged()
   return rows.length > 0

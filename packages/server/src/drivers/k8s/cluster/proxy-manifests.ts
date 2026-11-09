@@ -16,6 +16,7 @@ import {
   PROXY_OWNER_KEY_PATTERN,
   PROXY_PORT,
   PROXY_PROJECT_SECRETS_PREFIX,
+  RUN_SECRETS_PREFIX,
   PROXY_REFRESHED_SECRET_NAME,
   PROXY_REGISTRATION_PREFIX,
   PROXY_SA_NAME,
@@ -348,6 +349,30 @@ export function buildProjectSecretsManifest(
     },
     type: 'Opaque',
     data: secretData({ 'values.json': JSON.stringify(scoped) }),
+  }
+}
+
+/** A project's run-secrets Secret name. */
+export function runSecretsName(projectId: string): string {
+  return `${RUN_SECRETS_PREFIX}-${projectId}`
+}
+
+/** One project's run secret values, one key per name, which a workspace pod
+ *  reads the ones it is given from with `secretKeyRef`. */
+export function buildRunSecretsManifest(
+  projectId: string,
+  values: Record<string, string>,
+): Record<string, unknown> {
+  return {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    metadata: {
+      name: runSecretsName(projectId),
+      namespace: k8sNamespace(),
+      labels: { [LABEL_PROJECT_ID]: projectId },
+    },
+    type: 'Opaque',
+    data: secretData(values),
   }
 }
 

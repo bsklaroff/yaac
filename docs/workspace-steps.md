@@ -2,20 +2,21 @@
 
 A **step** is a named list of shell commands that a workspace runs in a tmux
 window of its own, like one job of a GitHub Actions workflow. Steps form a
-graph through `needs`. A workspace gets its steps from one of three places:
+graph through `needs`. A workspace gets its steps from one of these:
 
 | Source | Example |
 |---|---|
 | The project's init steps | every workspace installs, builds and starts its dev server |
 | A create that brings its own graph instead | `yaac workspace create --steps ci.json --non-interactive --wait` |
 | A step added to a running workspace | `yaac-mama create --workspace "$YAAC_WORKSPACE_ID" --run 'pnpm test' --needs build --wait` |
+| A named workflow (docs/workflows.md) | `yaac workspace create --workflow ci --non-interactive --wait` |
 
 A create runs the project's init steps, or brings its own graph, which
-replaces them entirely (`--no-steps` for none). There are no named graphs to
-pick from: a reusable CI graph lives in a file in the repository, versioned
-with the code, and a routine stores the graph it was given until
-`routine edit --steps` changes it. Steps run commands only; an agent is a
-session, which opens beside the steps.
+replaces them entirely (`--no-steps` for none): a file (`--steps`), or a
+named workflow (`--workflow`). Every graph is stored as a workflow, once per
+content, and only a named workflow may be given run secrets; routines and
+sites run named workflows only (docs/workflows.md). Steps run commands only;
+an agent is a session, which opens beside the steps.
 
 A workspace is **interactive**, running until someone or its timeout stops
 it, or **non-interactive**: it runs one graph on one commit, untouched,
@@ -156,6 +157,11 @@ own graph, with a step that is not a service, and opens no session.
   with `--interactive`, an interactive workspace there with the graph as its
   start steps, to reproduce a failure in.
 
+A non-interactive workspace, or a site's release, gets the run secrets its
+workflow names (docs/workflows.md) on a commit a person ran it on, and is
+refused on any other. A rerun runs the same workflow, so it gets them again
+on the commit it reruns.
+
 `--wait` on a create or rerun blocks until the outcome and exits non-zero
 unless it succeeded. `yaac-mama create --workspace … --run … --wait` waits
 on the step it adds instead, until it settles (a service until ready),
@@ -179,11 +185,12 @@ it. Two things differ in its steps:
 ## Permissions
 
 A command a caller hands a workspace runs as whatever the workspace runs as,
-so through `yaac-mama` a create, queue or routine with `--steps`, and `--run`
-on any workspace, the caller's own included, are refused unless the caller's
+so through `yaac-mama` a create or queue with `--steps`, and `--run` on any
+workspace, the caller's own included, are refused unless the caller's
 ceiling is `bypass` (docs/permission-modes.md). `--no-steps` is always
-allowed, and the project's own init steps run in every create, being the
-user's setting. The webapp and CLI are the user's and have no ceiling.
+allowed, and so is `--workflow`, a named workflow being written through the
+user's surfaces; the project's own init steps run in every create, being
+the user's setting. The webapp and CLI are the user's and have no ceiling.
 
 ## Logs
 

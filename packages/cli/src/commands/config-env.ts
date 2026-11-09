@@ -2,10 +2,11 @@ import readline from 'node:readline/promises'
 import { Writable } from 'node:stream'
 import { text } from 'node:stream/consumers'
 import { api, resolveProject } from '#commands/api'
-import type { ProjectEnvVar, SecretProxyRule } from '@yaac/shared/types'
+import type { ProjectEnvVar, ProjectRunSecret, SecretProxyRule } from '@yaac/shared/types'
 
 export interface ConfigEnvOptions {
   secret?: boolean
+  runSecret?: boolean
   host: string[]
   path?: string
   header?: string
@@ -24,32 +25,36 @@ function ruleSummary(rule: SecretProxyRule | undefined): string {
   return `${rule.hosts.join(', ')}${path} · ${where}`
 }
 
-function printEnv(name: string, vars: ProjectEnvVar[]): void {
-  if (vars.length === 0) {
+function printEnv(name: string, vars: ProjectEnvVar[], runSecrets: ProjectRunSecret[]): void {
+  if (vars.length === 0 && runSecrets.length === 0) {
     console.log(`${name} has no environment variables or secrets.`)
     return
   }
   const plain = vars.filter((v) => !v.secret)
   const secrets = vars.filter((v) => v.secret)
+  const masked = (hasValue: boolean): string => (hasValue ? '********' : 'no value stored')
   if (plain.length > 0) console.log(`Variables in ${name}:\n${plain.map((v) => `  ${v.name}=${v.value ?? ''}`).join('\n')}`)
   if (secrets.length > 0) {
-    console.log(`Secrets in ${name}:\n${secrets.map((v) =>
-      `  ${v.name}  ${v.hasValue ? '********' : 'no value stored'}  ${ruleSummary(v.rule)}`).join('\n')}`)
+    console.log(`Secrets in ${name}:\n${secrets.map((v) => `  ${v.name}  ${masked(v.hasValue)}  ${ruleSummary(v.rule)}`).join('\n')}`)
+  }
+  if (runSecrets.length > 0) {
+    console.log(`Run secrets in ${name}:\n${runSecrets.map((r) => `  ${r.name}  ${masked(r.hasValue)}`).join('\n')}`)
   }
 }
 
 /**
  * A secret's value, from stdin rather than argv so it stays out of shell
- * history and `ps`. On a terminal it is asked for without echo. Blank keeps
- * the value already stored, to change only the rule.
+ * history and `ps`. On a terminal it is asked for without echo. For a
+ * proxied secret, blank keeps the value already stored, to change only the
+ * rule; a run secret has none to keep.
  */
-async function readSecretValue(name: string): Promise<string> {
+async function readSecretValue(name: string, blankKeeps = true): Promise<string> {
   if (!process.stdin.isTTY) return (await text(process.stdin)).replace(/\r?\n$/, '')
   // The interface puts the terminal in raw mode, so it comes first: a
   // value typed after the prompt must not be echoed by the terminal.
   const muted = new Writable({ write: (_chunk, _enc, done) => done() })
   const rl = readline.createInterface({ input: process.stdin, output: muted, terminal: true })
-  process.stderr.write(`Value of ${name} (not shown; blank keeps the stored one): `)
+  process.stderr.write(`Value of ${name} (not shown${blankKeeps ? '; blank keeps the stored one' : ''}): `)
   try {
     return await rl.question('')
   } finally {
@@ -60,27 +65,49 @@ async function readSecretValue(name: string): Promise<string> {
 
 /**
  * `yaac config env <project> [NAME=value...]`: list a project's environment
- * variables and secrets (values masked), set plain variables, set one
- * secret with `--secret NAME` and its proxy rule, or remove one with
- * `--unset NAME`. The rule defaults match the webapp's: path `/*`, header
- * `authorization` with a `Bearer ` prefix (no prefix once `--header` names
- * another). Under containerless the workspace gets the secret's real value
- * and the rule is stored but unused.
+ * variables, secrets and run secrets (values masked), set plain variables,
+ * set one secret with `--secret NAME` and its proxy rule, set one run secret
+ * with `--run-secret NAME` (a workflow names the ones it gets), or remove
+ * one with `--unset NAME`. The rule defaults match the webapp's: path
+ * `/*`, header `authorization` with a `Bearer ` prefix (no prefix once
+ * `--header` names another). Under containerless the workspace gets the
+ * secret's real value and the rule is stored but unused.
  */
 export async function configEnv(project: string, assignments: string[], opts: ConfigEnvOptions): Promise<void> {
   const { id: projectId, name } = await resolveProject(project)
   const env = api.project[':projectId'].env
+  const run = api.project[':projectId']['run-secrets']
   const ruleGiven = opts.host.length > 0 || opts.path !== undefined || opts.header !== undefined
     || opts.prefix !== undefined || opts.bodyParam !== undefined
 
   if (opts.unset !== undefined) {
-    if (assignments.length > 0 || opts.secret === true || ruleGiven) {
+    if (assignments.length > 0 || opts.secret === true || opts.runSecret === true || ruleGiven) {
       throw new Error('Pass --unset on its own, without variables or secret options.')
     }
     const target = (await env.$get({ param: { projectId } })).vars.find((v) => v.name === opts.unset)
-    if (!target) throw new Error(`${name} has no variable or secret ${opts.unset}.`)
-    await env[':id'].$delete({ param: { projectId, id: target.id } })
-    console.log(`Removed ${target.name} from ${name}. Workspaces created from now on start without it.`)
+    if (target) {
+      await env[':id'].$delete({ param: { projectId, id: target.id } })
+      console.log(`Removed ${target.name} from ${name}. Workspaces created from now on start without it.`)
+      return
+    }
+    const runTarget = (await run.$get({ param: { projectId } })).secrets.find((r) => r.name === opts.unset)
+    if (!runTarget) throw new Error(`${name} has no variable or secret ${opts.unset}.`)
+    await run[':id'].$delete({ param: { projectId, id: runTarget.id } })
+    console.log(`Removed run secret ${runTarget.name} from ${name}. Workspaces launched from now on start without it.`)
+    return
+  }
+
+  if (opts.runSecret === true) {
+    const [secretName] = assignments
+    if (assignments.length !== 1 || secretName.includes('=')) {
+      throw new Error('Pass --run-secret one NAME without a value; the value is read from stdin.')
+    }
+    if (opts.secret === true || ruleGiven) throw new Error('A run secret has no proxy rule; pass --run-secret without --secret or rule options.')
+    const value = await readSecretValue(secretName, false)
+    if (value === '') throw new Error(`A run secret needs a value; give ${secretName}'s on stdin.`)
+    const { secret: saved } = await run.$put({ param: { projectId }, json: { name: secretName, value } })
+    console.log(`Run secret ${saved.name} in ${name} is stored. A workflow gets it once it names it `
+      + `(yaac workflow edit ${name} <workflow> --file <path> --secret ${saved.name}).`)
     return
   }
 
@@ -112,7 +139,8 @@ export async function configEnv(project: string, assignments: string[], opts: Co
   if (ruleGiven) throw new Error('--host, --path, --header, --prefix and --body-param describe a secret; pass --secret too.')
 
   if (assignments.length === 0) {
-    printEnv(name, (await env.$get({ param: { projectId } })).vars)
+    const [{ vars }, { secrets }] = await Promise.all([env.$get({ param: { projectId } }), run.$get({ param: { projectId } })])
+    printEnv(name, vars, secrets)
     return
   }
   const pairs = assignments.map((arg) => {

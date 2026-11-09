@@ -92,6 +92,7 @@ import {
   type WorkspaceListEntry,
 } from '@yaac/shared/types'
 import { loadToolAuthEntry, modelsForTool } from '#domain/auth'
+import { listProjectWorkflows, showWorkflow } from '#domain/projects'
 import { agentDriver, resolveAgentPermissionMode } from '#runtime/agents'
 import { liveAgents } from '#runtime/status'
 import { bundleCheckout } from '#domain/git'
@@ -211,14 +212,14 @@ const STOPPED_PAGE_MAX = 200
 /** The options every command that makes a workspace takes. */
 const CREATE_ARGS = [
   'tool', 'model', 'effort', 'permission-mode', 'ui-mode', 'branch', 'commit', 'group', 'title', 'timeout',
-  'steps', 'no-steps', 'non-interactive',
+  'steps', 'no-steps', 'workflow', 'non-interactive',
 ] as const
 
 /** What `create --workspace` takes to add a step rather than a session. */
 const STEP_ARGS = ['run', 'name', 'needs', 'service', 'ready'] as const
 
 /** The options a routine write takes. Its runs are titled from its name. */
-const ROUTINE_ARGS = ['name', 'cron', 'tz', ...CREATE_ARGS.filter((a) => a !== 'title')]
+const ROUTINE_ARGS = ['name', 'cron', 'tz', ...CREATE_ARGS.filter((a) => a !== 'title' && a !== 'steps' && a !== 'no-steps')]
 
 /**
  * Options each command accepts. Others are refused rather than ignored, so a
@@ -253,6 +254,8 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   send: ['workspace', 'session', 'conversation'],
   volumes: [],
   logs: ['workspace', 'step', 'tail'],
+  'workflow-list': [],
+  'workflow-show': ['name'],
 }
 
 /**
@@ -311,6 +314,8 @@ export async function runMamaCommand(
       case 'send': return await runSend(caller, request)
       case 'volumes': return await runVolumes(caller)
       case 'logs': return await runLogs(caller, request)
+      case 'workflow-list': return await runWorkflowList(caller)
+      case 'workflow-show': return await runWorkflowShow(caller, request)
     }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -709,6 +714,7 @@ function flatten(text: string, max: number): string {
  */
 async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   if (request.args.run !== undefined) return await runAddStep(caller, request)
+  if (request.args.workspace !== undefined && request.args.workflow !== undefined) return await runAddWorkflow(caller, request)
   const stray = STEP_ARGS.find((a) => request.args[a] !== undefined)
   if (stray !== undefined) return { ok: false, error: `--${stray} goes with --workspace and --run` }
   const settings = createSettings(request.args)
@@ -727,7 +733,7 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
     if (request.body.trim() !== '') return { ok: false, error: `${flag} takes no prompt: a workspace with no session runs no agent` }
   }
   if (workspace !== undefined) {
-    const stray = ['branch', 'commit', 'group', 'timeout', 'volume', 'steps', 'no-steps', 'non-interactive']
+    const stray = ['branch', 'commit', 'group', 'timeout', 'volume', 'steps', 'no-steps', 'workflow', 'non-interactive']
       .find((a) => request.args[a] !== undefined)
     if (stray !== undefined) {
       return { ok: false, error: `--${stray} is a workspace's setting, which --workspace (a session in a running one) does not take` }
@@ -787,15 +793,29 @@ async function runAddStep(caller: MamaCaller, request: MamaRequestInput): Promis
   const name = args.name?.trim() || `run-${crypto.randomUUID().slice(0, 8)}`
   const needs = args.needs?.split(',').map((n) => n.trim()).filter((n) => n !== '')
   const workspaceId = await resolveProjectWorkspace(target, caller.projectId)
-  await addSteps(caller.principal, workspaceId, {
+  await addSteps(caller.principal, workspaceId, { steps: {
     [name]: {
       run,
       ...(needs !== undefined && needs.length > 0 ? { needs } : {}),
       ...(args.service !== undefined ? { service: true } : {}),
       ...(args.ready !== undefined ? { ready: args.ready } : {}),
     },
-  })
+  } })
   return { ok: true, output: name }
+}
+
+/**
+ * Add a named workflow's steps to a running workspace of the project
+ * (`--workspace W --workflow X`): a person wrote them, so no ceiling
+ * applies. Prints the added steps' names.
+ */
+async function runAddWorkflow(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const stray = Object.keys(request.args).find((a) => a !== 'workspace' && a !== 'workflow')
+  if (stray !== undefined) return { ok: false, error: `--workspace with --workflow does not take --${stray}` }
+  if (request.body.trim() !== '') return { ok: false, error: '--workflow takes no prompt' }
+  const workspaceId = await resolveProjectWorkspace(request.args.workspace ?? '', caller.projectId)
+  const added = await addSteps(caller.principal, workspaceId, { workflow: request.args.workflow ?? '' })
+  return { ok: true, output: added.map((s) => s.name).join('\n') }
 }
 
 /**
@@ -1038,10 +1058,6 @@ function nextRuns(routine: RoutineEntry): string {
 async function runRoutineCreate(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const parsed = routineFields(request)
   if (!parsed.ok) return parsed
-  if (parsed.fields.steps != null) {
-    const refused = refuseCommands(caller, '--steps')
-    if (refused !== undefined) return refused
-  }
   const { name, cron, prompt, nonInteractive } = parsed.fields
   if (name === undefined || cron === undefined || (prompt === undefined && nonInteractive !== true)) {
     return { ok: false, error: 'routine-create needs --name, --cron and a prompt (or --non-interactive)' }
@@ -1067,10 +1083,6 @@ async function runRoutineEdit(caller: MamaCaller, request: MamaRequestInput): Pr
   if (!picked.ok) return picked
   const parsed = routineFields(request)
   if (!parsed.ok) return parsed
-  if (parsed.fields.steps != null) {
-    const refused = refuseCommands(caller, '--steps')
-    if (refused !== undefined) return refused
-  }
   if (Object.keys(parsed.fields).length === 0) {
     return { ok: false, error: 'routine-edit needs a new prompt or an option to change' }
   }
@@ -1249,7 +1261,7 @@ async function runSend(caller: MamaCaller, request: MamaRequestInput): Promise<M
 type CreateSettings = Pick<
   SpawnRequest,
   'tool' | 'model' | 'permissionMode' | 'effort' | 'uiMode' | 'branch' | 'commit' | 'group' | 'title' | 'timeout'
-  | 'steps' | 'nonInteractive'
+  | 'steps' | 'workflow' | 'nonInteractive'
 >
 
 /**
@@ -1284,7 +1296,9 @@ function createSettings(
     return { ok: false, error: `invalid ui mode '${uiMode}' (expected one of: ${AGENT_MODES.join(', ')})` }
   }
   if (branch !== undefined && branch.trim() === '') return { ok: false, error: 'branch must not be empty' }
-  if (args.steps !== undefined && args['no-steps'] !== undefined) return { ok: false, error: 'give --steps or --no-steps, not both' }
+  if ([args.steps, args['no-steps'], args.workflow].filter((a) => a !== undefined).length > 1) {
+    return { ok: false, error: 'give one of --steps, --no-steps and --workflow' }
+  }
   let steps: unknown
   try {
     steps = args['no-steps'] !== undefined ? null : args.steps !== undefined ? JSON.parse(args.steps) : undefined
@@ -1306,6 +1320,7 @@ function createSettings(
       ...(branch !== undefined ? { branch: branch.trim() } : {}),
       ...(args.commit !== undefined ? { commit: args.commit.trim() } : {}),
       ...(steps !== undefined ? { steps } : {}),
+      ...(args.workflow !== undefined ? { workflow: args.workflow } : {}),
       ...(args['non-interactive'] !== undefined ? { nonInteractive: true } : {}),
       ...(group !== undefined ? { group } : {}),
       ...(title !== undefined ? { title } : {}),
@@ -1739,6 +1754,30 @@ async function runVolumes(caller: MamaCaller): Promise<MamaOutcome> {
     return `${v.name.padEnd(20)} ${v.size.padEnd(8)} ${holder}`
   })
   return { ok: true, output: lines.join('\n') }
+}
+
+/** The project's named workflows (docs/workflows.md), each with its
+ *  steps and the run secrets it names. */
+async function runWorkflowList(caller: MamaCaller): Promise<MamaOutcome> {
+  const workflows = await listProjectWorkflows(caller.projectId)
+  if (workflows.length === 0) return { ok: true, output: 'This project has no workflows.' }
+  return { ok: true, output: workflows.map((w) => `${w.name.padEnd(20)} steps ${Object.keys(w.steps).join(',')}`
+    + (w.secrets.length > 0 ? `  run secrets ${w.secrets.join(',')}` : '')).join('\n') }
+}
+
+/** One named workflow's steps, its run secrets, and the commits and
+ *  branches people ran it on, which a launch of it may use. */
+async function runWorkflowShow(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const name = request.args.name?.trim() ?? ''
+  if (name === '') return { ok: false, error: 'workflow show needs a workflow name' }
+  const w = await showWorkflow(caller.projectId, name)
+  return { ok: true, output: [
+    `workflow ${w.name}`,
+    JSON.stringify(w.steps, null, 2),
+    `run secrets: ${w.secrets.join(', ') || 'none'}`,
+    `approved commits: ${w.approvedCommits.join(', ') || 'none'}`,
+    `approved branches: ${w.approvedBranches.join(', ') || 'none'}`,
+  ].join('\n') }
 }
 
 /**

@@ -25,8 +25,9 @@ vi.mock('node:child_process', async (importOriginal) => {
   }
 })
 
-import { createSite, deploySite, editSite, onSiteTimer, reconcileSites, showSite, startSite, stopSite } from '#domain/sites'
+import { createSite, deploySite, onSiteTimer, reconcileSites, showSite, startSite, stopSite } from '#domain/sites'
 import { createVolume } from '#domain/workspaces'
+import { createWorkflow, editWorkflow, setRunSecret } from '#domain/projects'
 import { clearAllProvisioningForTests, listProvisioning } from '#domain/workspaces/provisioning'
 import {
   BUILT_IN_USER_ID,
@@ -83,6 +84,7 @@ function snapshot(): RuntimeSnapshot {
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
   await seedProject()
+  await createWorkflow(local, DEMO_PROJECT_ID, { name: 'app', steps: { app: { run: 'pnpm start', service: true } } })
   clearAllProvisioningForTests()
   _clearTerminatingForTests()
   teardowns.children = []
@@ -152,8 +154,11 @@ const lastRoute = (): SiteRoute | undefined => routed.at(-1)?.[0]
 describe('deploySite', () => {
   it('starts a release at the commit, builds it, hands it the volume, and points the hostname at it once ready', async () => {
     await createVolume(local, DEMO_PROJECT_ID, 'data')
+    // Its graph is a workflow's, which gives its releases a run secret.
+    await setRunSecret(local, DEMO_PROJECT_ID, { name: 'P8_KEY', value: 'pem' })
+    await createWorkflow(local, DEMO_PROJECT_ID, { name: 'shop', steps: STEPS, secrets: ['P8_KEY'] })
     await createSite(local, DEMO_PROJECT_ID, {
-      name: 'shop', hostname: 'shop.example.com', port: 3000, adminPort: 3001, steps: STEPS, volume: 'data',
+      name: 'shop', hostname: 'shop.example.com', port: 3000, adminPort: 3001, workflow: 'shop', volume: 'data',
     })
     const head = (await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'origin/main'])).trim()
     await expect(deploySite(stranger, DEMO_PROJECT_ID, 'shop')).rejects.toMatchObject({ code: 'FORBIDDEN' })
@@ -172,7 +177,9 @@ describe('deploySite', () => {
     // Another deploy of the commit deploying is that deploy.
     expect(await deploySite(local, DEMO_PROJECT_ID, 'shop')).toEqual(first)
     const spec = launched.at(-1)!
-    expect(spec).toMatchObject({ siteId: (await site()).id, image: 'registry.test/proj:1' })
+    // The workflow's run secrets, held by the runtime and named on the spec:
+    // the deploy was a person's, so it approved its commit.
+    expect(spec).toMatchObject({ siteId: (await site()).id, image: 'registry.test/proj:1', runSecrets: ['P8_KEY'] })
     expect(spec.env.some((e) => e.startsWith('YAAC_VOLUME_DIR='))).toBe(false)
     // The one port it offers is the site's admin port.
     expect(spec.env.filter((e) => e.startsWith('YAAC_PORT_'))).toEqual(['YAAC_PORT_3001=3001'])
@@ -233,7 +240,7 @@ describe('deploySite', () => {
   // A release runs no git of its own: the server makes its checkout.
   it('deploys a project with no git credential, whose release is given none', async () => {
     await (await getDb()).update(projects).set({ gitCredentialId: null }).where(eq(projects.id, DEMO_PROJECT_ID))
-    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, steps: { app: { run: 'pnpm start', service: true } } })
+    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, workflow: 'app' })
     const deploy = await deploySite(local, DEMO_PROJECT_ID, 'shop')
     await created(deploy.workspaceId)
     expect(launched.at(-1)?.gitCredential).toBeUndefined()
@@ -241,7 +248,7 @@ describe('deploySite', () => {
   })
 
   it('fails a deploy that is not ready by its deadline', async () => {
-    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, steps: { app: { run: 'pnpm start', service: true } } })
+    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, workflow: 'app' })
     const deploy = await deploySite(local, DEMO_PROJECT_ID, 'shop', { timeoutMinutes: 1 })
     await created(deploy.workspaceId)
     vi.useFakeTimers({ toFake: ['Date'] })
@@ -254,7 +261,7 @@ describe('deploySite', () => {
 
 describe('reconcileSites', () => {
   it('replaces a live release whose runtime is gone, at its commit and image, after a backoff', async () => {
-    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, steps: { app: { run: 'pnpm start', service: true } } })
+    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, workflow: 'app' })
     const due = vi.fn()
     onSiteTimer(due)
     const first = await deploySite(local, DEMO_PROJECT_ID, 'shop')
@@ -263,7 +270,7 @@ describe('reconcileSites', () => {
     await reconcileSites(snapshot(), false)
     expect((await site()).liveWorkspaceId).toBe(first.workspaceId)
     // An edit not yet deployed is not what a replacement runs.
-    await editSite(local, DEMO_PROJECT_ID, 'shop', { steps: { web: { run: 'pnpm serve', service: true } } })
+    await editWorkflow(local, DEMO_PROJECT_ID, 'app', { steps: { web: { run: 'pnpm serve', service: true } } })
 
     vi.useFakeTimers({ toFake: ['Date'] })
     running.delete(first.workspaceId)
@@ -280,14 +287,16 @@ describe('reconcileSites', () => {
     await created(replacing.deployWorkspaceId!)
     expect(launched.at(-1)).toMatchObject({ image: 'registry.test/proj:1' })
     expect(await findWorkspaceRow(replacing.deployWorkspaceId!)).toMatchObject({ rerunOf: first.workspaceId })
-    expect(Object.keys((await findWorkspaceRow(replacing.deployWorkspaceId!))?.startSteps ?? {})).toEqual(['app'])
+    expect((await findWorkspaceRow(replacing.deployWorkspaceId!))?.workflowId)
+      .toBe((await findWorkspaceRow(first.workspaceId))?.workflowId)
+    expect((await findWorkspaceRow(replacing.deployWorkspaceId!))?.workflowName).toBe('app')
     await stepsAre(replacing.deployWorkspaceId!, { app: 'ready' })
     await reconcileSites(snapshot(), false)
     expect((await site()).liveWorkspaceId).toBe(replacing.deployWorkspaceId)
   })
 
   it('stops the old release once its drain is over, or at once when the next flip comes first', async () => {
-    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, steps: { app: { run: 'pnpm start', service: true } } })
+    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, workflow: 'app' })
     const flip = async (): Promise<string> => {
       const deploy = await deploySite(local, DEMO_PROJECT_ID, 'shop')
       await created(deploy.workspaceId)
@@ -331,8 +340,12 @@ describe('reconcileSites', () => {
       await git(repo, ['update-ref', 'refs/remotes/origin/dev', sha])
       return sha
     }
+    // Setting it to follow approves the branch for its workflow, so each
+    // tip deploys with the workflow's run secret.
+    await setRunSecret(local, DEMO_PROJECT_ID, { name: 'P8_KEY', value: 'pem' })
+    await createWorkflow(local, DEMO_PROJECT_ID, { name: 'shop', steps: { app: { run: 'pnpm start', service: true } }, secrets: ['P8_KEY'] })
     await createSite(local, DEMO_PROJECT_ID, {
-      name: 'shop', hostname: 'shop.example.com', port: 3000, steps: { app: { run: 'pnpm start', service: true } }, followBranch: 'dev',
+      name: 'shop', hostname: 'shop.example.com', port: 3000, workflow: 'shop', followBranch: 'dev',
     })
     // Not serving yet, so nothing follows.
     await reconcileSites(snapshot(), false)
@@ -364,6 +377,7 @@ describe('reconcileSites', () => {
     await reconcileSites(snapshot(), false)
     const next = (await site()).deployWorkspaceId!
     await created(next)
+    expect(launched.at(-1)?.runSecrets).toEqual(['P8_KEY'])
     await stepsAre(next, { app: 'ready' })
     await reconcileSites(snapshot(), false)
     expect(await site()).toMatchObject({ liveWorkspaceId: next, releaseCommit: fixed })
@@ -380,7 +394,7 @@ describe('reconcileSites', () => {
 
   // docs/hosted-projects.md "Sharing": a removed share runs nothing.
   it('leaves a revoked share\'s site alone, replacing nothing', async () => {
-    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, steps: { app: { run: 'pnpm start', service: true } } })
+    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, workflow: 'app' })
     const first = await deploySite(local, DEMO_PROJECT_ID, 'shop')
     await created(first.workspaceId)
     await stepsAre(first.workspaceId, { app: 'ready' })
@@ -395,7 +409,7 @@ describe('reconcileSites', () => {
 
 describe('onSiteTimer', () => {
   it('is called when a drain is due', async () => {
-    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, steps: { app: { run: 'pnpm start', service: true } } })
+    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, workflow: 'app' })
     const due = vi.fn()
     onSiteTimer(due)
     const first = await deploySite(local, DEMO_PROJECT_ID, 'shop')
@@ -417,7 +431,7 @@ describe('onSiteTimer', () => {
 
 describe('stopSite', () => {
   it('stops the live release and its route, keeping what it ran for startSite', async () => {
-    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, steps: { app: { run: 'pnpm start', service: true } } })
+    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, workflow: 'app' })
     const first = await deploySite(local, DEMO_PROJECT_ID, 'shop')
     await created(first.workspaceId)
     await stepsAre(first.workspaceId, { app: 'ready' })
@@ -432,7 +446,7 @@ describe('stopSite', () => {
   })
 
   it('forgets nothing when a release cannot be stopped, so a retry stops it', async () => {
-    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, steps: { app: { run: 'pnpm start', service: true } } })
+    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, workflow: 'app' })
     const first = await deploySite(local, DEMO_PROJECT_ID, 'shop')
     await created(first.workspaceId)
     await stepsAre(first.workspaceId, { app: 'ready' })
@@ -445,7 +459,7 @@ describe('stopSite', () => {
 
 describe('startSite', () => {
   it('deploys the release a stopped site last ran, at its commit and image', async () => {
-    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, steps: { app: { run: 'pnpm start', service: true } } })
+    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, workflow: 'app' })
     await expect(startSite(local, DEMO_PROJECT_ID, 'shop')).rejects.toMatchObject({ code: 'CONFLICT' })
     const first = await deploySite(local, DEMO_PROJECT_ID, 'shop')
     await created(first.workspaceId)

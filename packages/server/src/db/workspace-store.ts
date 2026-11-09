@@ -8,7 +8,7 @@ import { normalizeTitle } from '@yaac/shared/titles'
 import { ServerError } from '@yaac/shared/errors'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
 import type { WorkspaceDeathCause } from '@yaac/shared/types'
-import type { StepGraph, StepsOutcome } from '@yaac/shared/steps'
+import type { StepsOutcome } from '@yaac/shared/steps'
 
 /**
  * One row per workspace yaac has created. The runtime is authoritative for
@@ -51,8 +51,10 @@ export interface WorkspaceCreatedInput {
   deadline?: Date
   /** The scratch dirs it is started with (see `workspaces.scratchDirs`). */
   scratchDirs?: string[]
-  /** The graph it brought in place of the project's init steps. */
-  startSteps?: StepGraph
+  /** The workflow it brought in place of the project's init steps. */
+  workflowId?: string
+  /** The named workflow it was chosen through: a record. */
+  workflowName?: string
   nonInteractive?: boolean
   /** The workspace it reruns: a non-interactive one, or a site's release
    *  that died. */
@@ -106,7 +108,8 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
       ...(input.timeZone !== undefined ? { timeZone: input.timeZone } : {}),
       ...(input.deadline !== undefined ? timeoutColumns(input.deadline) : {}),
       ...(input.scratchDirs !== undefined ? { scratchDirs: input.scratchDirs } : {}),
-      ...(input.startSteps !== undefined ? { startSteps: input.startSteps } : {}),
+      ...(input.workflowId !== undefined ? { workflowId: input.workflowId } : {}),
+      ...(input.workflowName !== undefined ? { workflowName: input.workflowName } : {}),
       ...(input.nonInteractive === true ? { nonInteractive: true } : {}),
       ...(input.rerunOf !== undefined ? { rerunOf: input.rerunOf } : {}),
       ...(input.siteId !== undefined ? { siteId: input.siteId } : {}),

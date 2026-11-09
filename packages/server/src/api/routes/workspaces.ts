@@ -309,6 +309,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
         ...(body.branch !== undefined ? { branch: body.branch } : {}),
         ...(body.commit !== undefined ? { commit: body.commit } : {}),
         ...(body.steps !== undefined ? { steps: body.steps } : {}),
+        ...(body.workflow !== undefined ? { workflow: body.workflow } : {}),
         ...(body.nonInteractive === true ? { nonInteractive: true } : {}),
         ...(body.prompt !== undefined ? { prompt: body.prompt } : {}),
         ...(body.sessionId !== undefined ? { sessionId: body.sessionId } : {}),
@@ -1053,12 +1054,13 @@ export const workspaceApp = new Hono<IdentityEnv>()
       return c.body(null, 204)
     },
   )
-  // Steps added to a running workspace (docs/workspace-steps.md); their
-  // `needs` may name its steps. A non-interactive one refuses.
+  // Steps added to a running workspace (docs/workspace-steps.md): a graph,
+  // or a named workflow's (docs/workflows.md). Their `needs` may name its
+  // steps. A non-interactive one refuses.
   .post(
     '/:id/steps',
-    zv('json', z.object({ steps: z.unknown() })),
-    async (c) => c.json(await addSteps(c.get('principal'), c.req.param('id'), c.req.valid('json').steps)),
+    zv('json', z.union([z.object({ steps: z.unknown() }), z.object({ workflow: z.string().min(1) })])),
+    async (c) => c.json(await addSteps(c.get('principal'), c.req.param('id'), c.req.valid('json'))),
   )
   .post('/:id/steps/:name/rerun', async (c) =>
     c.json(await rerunStep(c.get('principal'), c.req.param('id'), c.req.param('name'))))

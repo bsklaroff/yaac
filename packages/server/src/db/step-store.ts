@@ -69,7 +69,13 @@ export async function startLifeSteps(projectId: string, workspaceId: string, lif
  * of this life holds is a `CONFLICT`; an earlier life's step of that name is
  * replaced.
  */
-export async function insertAddedSteps(projectId: string, workspaceId: string, life: Date, graph: StepGraph): Promise<StepRow[]> {
+export async function insertAddedSteps(
+  projectId: string,
+  workspaceId: string,
+  life: Date,
+  graph: StepGraph,
+  workflow?: { id: string; name: string },
+): Promise<StepRow[]> {
   const names = Object.keys(graph)
   if (names.length === 0) return []
   const db = await getDb()
@@ -84,7 +90,7 @@ export async function insertAddedSteps(projectId: string, workspaceId: string, l
       .from(workspaceSteps).where(eq(workspaceSteps.workspaceId, workspaceId))
     const rows = await tx.insert(workspaceSteps).values(names.map((name, i) => ({
       workspaceId, projectId, name, origin: 'added' as const, spec: graph[name], state: 'pending' as const,
-      life, ordinal: Number(next) + i,
+      life, ordinal: Number(next) + i, workflowId: workflow?.id ?? null, workflowName: workflow?.name ?? null,
     }))).returning()
     return rows.map((r) => nullsToUndefined(r))
   })

@@ -9,7 +9,7 @@ import { z } from 'zod'
 import { projectConfigDir } from '@yaac/shared/project-paths'
 import { parseStepGraph, type StepGraph } from '@yaac/shared/steps'
 import type { ProjectConfig } from '@yaac/shared/types'
-import { backfillWorkspaceScratchDirs, getProjectRow, listProjectRows, setProjectConfig, setProjectInitSteps, setProjectScratchDirs } from '#db'
+import { backfillWorkspaceScratchDirs, getProjectRow, listProjectRows, setProjectConfig, setProjectInit, setProjectScratchDirs, storeWorkflow } from '#db'
 import { workspaceDriver } from '#drivers/driver'
 import { errorText, serverLog } from '#lib/log'
 import { cacheVolumesSchema, checkoutPathSchema, portForwardsSchema } from './config'
@@ -103,8 +103,9 @@ async function applyImport(projectId: string, plan: ImportPlan): Promise<void> {
     await backfillWorkspaceScratchDirs(projectId, plan.scratchDirs)
   }
   // A project that has init steps of its own keeps them.
-  if (plan.initSteps && Object.keys((await getProjectRow(projectId))?.initSteps ?? {}).length === 0) {
-    await setProjectInitSteps(projectId, plan.initSteps)
+  const project = await getProjectRow(projectId)
+  if (plan.initSteps && project?.initWorkflowId === undefined && project?.initNamedWorkflowId === undefined) {
+    await setProjectInit(projectId, { workflowId: (await storeWorkflow(projectId, { steps: plan.initSteps, secrets: [] })).id })
   }
   if (Object.keys(plan.set).length > 0) await setProjectConfig(projectId, plan.set)
 }

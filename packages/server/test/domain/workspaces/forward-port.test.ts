@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { namedWorkflowFor } from '#test/support/workflows'
 
 import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { dismissWorkspacePort, forwardWorkspacePort, offeredForwards, unforwardWorkspacePort } from '#domain/workspaces/forward-port'
@@ -197,7 +198,7 @@ describe('offeredForwards', () => {
     expect(await offeredForwards([], undefined)).toEqual([])
 
     const site = await insertSite({
-      projectId: PROJ, name: 'shop', hostname: 'shop.example.com', port: 3000, adminPort: 3001, steps: {},
+      projectId: PROJ, name: 'shop', hostname: 'shop.example.com', port: 3000, adminPort: 3001, namedWorkflowId: await namedWorkflowFor(PROJ),
     })
     expect(await offeredForwards(ports, site.id)).toEqual([{ containerPort: 3001, hostPortStart: 3001 }])
     await updateSite(site.id, { adminPort: null })

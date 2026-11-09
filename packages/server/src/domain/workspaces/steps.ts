@@ -7,6 +7,7 @@
 import { workspaceDriver } from '#drivers/driver'
 import { KEEPER_WINDOW, type RuntimeSnapshot, type WorkspaceWindow } from '#drivers/contract'
 import { authorizeProject, systemPrincipal, type Actor } from '#domain/access'
+import { resolveWorkflow } from '#domain/projects'
 import {
   applyWorkspaceEvent,
   findWorkspaceRow,
@@ -123,23 +124,30 @@ async function liveWorkspace(p: { projectId: string; workspaceId: string; jobNam
 }
 
 /**
- * Add steps to a running workspace. Their `needs` may name the steps it
- * already has. Answers with the new steps; they start once their needs are
- * met.
+ * Add steps to a running workspace: a graph, or a named workflow's current
+ * one, which each added step records with its name (docs/workflows.md). Their
+ * `needs` may name the steps it already has. Answers with the new steps;
+ * they start once their needs are met.
  */
-export async function addSteps(principal: Actor, idOrPrefix: string, raw: unknown): Promise<WorkspaceStep[]> {
+export async function addSteps(
+  principal: Actor,
+  idOrPrefix: string,
+  add: { steps: unknown } | { workflow: string },
+): Promise<WorkspaceStep[]> {
   const workspace = await resolveWorkspaceContainer(idOrPrefix, { requireRunning: true, owner: principal })
   await assertInteractive(workspace.workspaceId)
   const live = await liveWorkspace(workspace)
   if (live === undefined) throw new ServerError('CONFLICT', `workspace ${workspace.workspaceId.slice(0, 8)} is not running`)
+  const named = 'workflow' in add ? await resolveWorkflow(live.projectId, add.workflow) : undefined
   let graph: StepGraph
   try {
-    graph = parseStepGraph(raw, new Set(live.steps.map((s) => s.name)))
+    graph = parseStepGraph(named?.workflow.steps ?? ('steps' in add ? add.steps : {}), new Set(live.steps.map((s) => s.name)))
   } catch (err) {
     throw new ServerError('VALIDATION', (err as Error).message)
   }
   if (Object.keys(graph).length === 0) throw new ServerError('VALIDATION', 'no steps to add')
-  const rows = await insertAddedSteps(live.projectId, live.workspaceId, live.life, graph)
+  const rows = await insertAddedSteps(live.projectId, live.workspaceId, live.life, graph,
+    named !== undefined ? { id: named.workflow.id, name: named.name } : undefined)
   await reconcileOne(workspace)
   return rows.map((r) => toStepEntry(r))
 }
