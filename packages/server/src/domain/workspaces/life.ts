@@ -6,17 +6,19 @@
  */
 import fs from 'node:fs/promises'
 import type { WorkspacePaths } from '#drivers/contract'
-import { applyWorkspaceEvent, getProjectRow, type WorkspaceRow } from '#db'
+import { applyWorkspaceEvent, getWorkflow, type WorkspaceRow } from '#db'
+import { initWorkflowOf } from '#domain/projects'
 import { openSandboxDir } from '#runtime/agents'
 import { lifeHooksConfig, sourceHooksCommand } from '#runtime/terminals'
 import type { ConfinedRoot } from '#lib/confined-fs'
 import { terminalLogDir } from '@yaac/shared/project-paths'
 import { lifeDirName, type StepGraph } from '@yaac/shared/steps'
 
-/** A workspace's start graph: the one its create brought, else its
- *  project's current init steps. */
-export async function startStepsOf(projectId: string, row: Pick<WorkspaceRow, 'startSteps'> | undefined): Promise<StepGraph> {
-  return row?.startSteps ?? (await getProjectRow(projectId))?.initSteps ?? {}
+/** A workspace's start graph: the workflow its create brought, else its
+ *  project's current init steps (docs/workflows.md). */
+export async function startStepsOf(projectId: string, row: Pick<WorkspaceRow, 'workflowId'> | undefined): Promise<StepGraph> {
+  const own = row?.workflowId !== undefined ? await getWorkflow(row.workflowId) : undefined
+  return own?.steps ?? (await initWorkflowOf(projectId))?.workflow.steps ?? {}
 }
 
 /** Record a new life starting `graph`, before any window of it opens.

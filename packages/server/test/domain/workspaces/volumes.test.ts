@@ -4,6 +4,7 @@
  * (docs/workspace-volumes.md). The driver is the fake, recording what it was
  * asked; leases are taken by real creates in restart.test.ts.
  */
+import { namedWorkflowFor } from '#test/support/workflows'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { collectDeletedVolumes, createVolume, deleteVolume, listVolumes, reconcileVolumeLeases, resizeVolume, workspacesAlive } from '#domain/workspaces'
 import { BUILT_IN_USER_ID, claimVolume, findVolumeByName, insertSite, listDeletedVolumeIds, setWorkspaceVolume, stageVolume, updateSite } from '#db'
@@ -118,7 +119,7 @@ describe('deleteVolume', () => {
   it('refuses while a site keeps its data there', async () => {
     await createVolume(local, DEMO_PROJECT_ID, 'data')
     const v = (await findVolumeByName(DEMO_PROJECT_ID, 'data'))!
-    const site = await insertSite({ projectId: DEMO_PROJECT_ID, name: 'shop', hostname: 'shop.example.com', port: 3000, steps: {}, volumeId: v.id })
+    const site = await insertSite({ projectId: DEMO_PROJECT_ID, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(DEMO_PROJECT_ID), volumeId: v.id })
     await expect(deleteVolume(local, DEMO_PROJECT_ID, 'data')).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('"shop"') as unknown })
     await updateSite(site.id, { volumeId: null })
     await deleteVolume(local, DEMO_PROJECT_ID, 'data')

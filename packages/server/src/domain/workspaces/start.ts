@@ -16,7 +16,8 @@ import { volumeForLaunch } from './volumes'
 import { VOLUME_NEED } from './steps'
 import { modelDisplayName } from '#domain/auth'
 import { authorizeProject, type Actor } from '#domain/access'
-import { recordProjectCreate } from '#db'
+import { resolveWorkflow, workflowLaunch } from '#domain/projects'
+import { getWorkflow, recordProjectCreate, storeWorkflow } from '#db'
 import { ServerError } from '@yaac/shared/errors'
 import { FULL_COMMIT_PATTERN, graphHasTask, parseStepGraph, type StepGraph } from '@yaac/shared/steps'
 import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
@@ -45,6 +46,16 @@ export interface StartWorkspaceRequest {
   nonInteractive?: boolean
   /** The non-interactive workspace this one reruns. */
   rerunOf?: string
+  /** A named workflow, whose current workflow it runs in place of `steps`
+   *  (docs/workflows.md). */
+  workflow?: string
+  /** A workflow it runs again, a rerun's or a replacement's, with the name
+   *  it was chosen through. */
+  workflowId?: string
+  workflowName?: string
+  /** The branch whose tip `commit` is, for a workflow approved to run on
+   *  that branch: a site's follow deploy. */
+  fromBranch?: string
   prompt?: string
   /** Its session's id, when the client minted one so it can find what it
    *  opened (`GET /workspace/prompt`) before the snapshot names it. */
@@ -99,9 +110,25 @@ export async function prepareStart(
   principal: Actor,
   request: StartWorkspaceRequest,
 ): Promise<ProvisionRun<WorkspaceCreateResult>> {
-  const { projectId, workspaceId, prompt, title, generatedTitle, branch, commit } = request
+  const { projectId, workspaceId, prompt, title, generatedTitle } = request
   await authorizeProject(principal, projectId)
-  const steps = checkStartSteps(request)
+  if ([request.steps, request.workflow, request.workflowId].filter((g) => g !== undefined).length > 1) {
+    throw new ServerError('VALIDATION', 'name steps or a workflow, not both')
+  }
+  const workflow = await startWorkflow(projectId, request)
+  // A start that gets a workflow's run secrets runs at a commit, which
+  // `workflowLaunch` resolves from a branch.
+  const flow = workflow !== undefined
+    ? await workflowLaunch(principal, projectId, {
+      workflowId: workflow.id,
+      ...(workflow.namedWorkflowId !== undefined ? { namedWorkflowId: workflow.namedWorkflowId } : {}),
+      ...(request.commit !== undefined ? { commit: request.commit } : {}),
+      ...((request.fromBranch ?? request.branch) !== undefined ? { branch: request.fromBranch ?? request.branch } : {}),
+      secrets: request.nonInteractive === true || request.siteId !== undefined,
+    })
+    : undefined
+  const commit = flow?.commit ?? request.commit
+  const branch = flow?.commit !== undefined ? undefined : request.branch
   const setup = request.noSession === true ? undefined : await resolveCreate(projectId, {
     ...(request.tool !== undefined ? { tool: request.tool } : {}),
     ...(request.model !== undefined ? { model: request.model } : {}),
@@ -156,7 +183,7 @@ export async function prepareStart(
       // spare's mounts, fixed at launch, have no volume, and a spare starts
       // the project's init steps at a branch.
       if (request.claimSpare && workspaceDriver().kind !== 'containerless' && volume === undefined
-        && steps === undefined && commit === undefined) {
+        && workflow === undefined && commit === undefined) {
         const claimed = await tryClaimPrewarmed(projectId, workspaceId, session, onProgress, {
           ...(branch !== undefined ? { branch } : {}),
           ...(title !== undefined ? { title } : {}),
@@ -173,9 +200,12 @@ export async function prepareStart(
         ...(session !== undefined ? { session } : {}),
         ...(branch !== undefined ? { branch } : {}),
         ...(commit !== undefined ? { commit } : {}),
-        ...(steps !== undefined ? { steps } : {}),
+        ...(workflow !== undefined ? {
+          workflow: { id: workflow.id, steps: workflow.steps, ...(workflow.name !== undefined ? { name: workflow.name } : {}) },
+        } : {}),
         ...(request.nonInteractive === true ? { nonInteractive: true } : {}),
         ...(request.rerunOf !== undefined ? { rerunOf: request.rerunOf } : {}),
+        ...(flow !== undefined ? { runSecrets: flow.runSecrets } : {}),
         ...(title !== undefined ? { title } : {}),
         ...(generatedTitle !== undefined ? { generatedTitle } : {}),
         ...(groupId !== undefined ? { groupId } : {}),
@@ -216,6 +246,31 @@ export async function prepareStart(
       throw err instanceof ServerError ? new ServerError(err.code, message) : new Error(message, { cause: err })
     }
   })
+}
+
+/**
+ * The workflow a start runs in place of the project's init steps: one its
+ * `steps` make (none for null), a named workflow's current one, or one it
+ * runs again; undefined for the project's. Checked as a start's graph.
+ */
+async function startWorkflow(
+  projectId: string,
+  request: StartWorkspaceRequest,
+): Promise<{ id: string; steps: StepGraph; name?: string; namedWorkflowId?: string } | undefined> {
+  if (request.workflow !== undefined) {
+    const named = await resolveWorkflow(projectId, request.workflow)
+    checkStartSteps({ ...request, steps: named.workflow.steps })
+    return { ...named.workflow, name: named.name, namedWorkflowId: named.id }
+  }
+  if (request.workflowId !== undefined) {
+    const pinned = await getWorkflow(request.workflowId)
+    if (pinned?.projectId !== projectId) throw new ServerError('NOT_FOUND', 'the workflow it ran is gone')
+    checkStartSteps({ ...request, steps: pinned.steps })
+    return { ...pinned, ...(request.workflowName !== undefined ? { name: request.workflowName } : {}) }
+  }
+  const steps = checkStartSteps(request)
+  if (steps === undefined) return undefined
+  return await storeWorkflow(projectId, { steps: steps ?? {}, secrets: [] })
 }
 
 /**

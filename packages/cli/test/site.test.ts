@@ -12,6 +12,7 @@ let logged: string[]
 
 const SITE: SiteDetail = {
   name: 'web',
+  workflow: 'web',
   hostname: 'app.example.com',
   port: 3000,
   steps: { server: { run: ['pnpm start'], service: true } },

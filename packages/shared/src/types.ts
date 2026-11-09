@@ -715,6 +715,33 @@ export interface ProjectEnvVar {
   rule?: SecretProxyRule
 }
 
+/**
+ * One of a project's run secrets, as a client sees it
+ * (docs/project-config.md "Run secrets"): never its value, only whether a
+ * usable one is stored. Workflow revisions name the ones they get.
+ */
+export interface ProjectRunSecret {
+  id: string
+  name: string
+  hasValue: boolean
+}
+
+/**
+ * A project's named workflow (docs/workflows.md): the graph and run secrets
+ * of the workflow it points at now, and what people approved that workflow
+ * to run on with its secrets ("Approvals").
+ */
+export interface WorkflowEntry {
+  id: string
+  projectId: string
+  name: string
+  steps: StepGraph
+  secrets: string[]
+  approvedCommits: string[]
+  approvedBranches: string[]
+  createdAt: string
+}
+
 // ---------------------------------------------------------------------------
 // Wire types: RPC request/response shapes shared by the server and clients.
 // ---------------------------------------------------------------------------
@@ -1517,8 +1544,10 @@ export interface ProjectSummary extends ProjectConfig {
   keptIgnoredPaths?: string[]
   scratchDirs: ScratchDirSettings
   /** The steps every workspace runs at start unless its create brings its
-   *  own (docs/workspace-steps.md). */
+   *  own (docs/workspace-steps.md), and the named workflow they follow, if
+   *  any (docs/workflows.md). */
   initSteps: StepGraph
+  initWorkflow?: string
 }
 
 /**
@@ -1620,9 +1649,11 @@ export interface QueuedWorkspaceEntry {
    *  full commit it starts at instead (docs/workspace-steps.md). */
   branch?: string
   commit?: string
-  /** The step graph it starts with in place of the project's init steps
-   *  (`{}` for none), and whether it runs it non-interactive. */
+  /** The step graph it would start with in place of the project's init
+   *  steps, and the named workflow it follows until it launches
+   *  (docs/workflows.md). */
   steps?: StepGraph
+  workflow?: string
   nonInteractive?: true
   /** The user's title for the workspace; suppresses auto-titling. */
   title?: string
@@ -1693,6 +1724,9 @@ export const queuedWorkspaceSettingsSchema = z.object({
   /** The step graph to start with, checked by the server; null for none
    *  (docs/workspace-steps.md). */
   steps: z.unknown().optional(),
+  /** A named workflow to start with in place of `steps`, followed until it
+   *  launches (docs/workflows.md). */
+  workflow: z.string().min(1).max(200).optional(),
   /** Run `steps` untouched, with no prompt or session. */
   nonInteractive: z.boolean().optional(),
   tool: z.enum(AGENT_TOOLS).optional(),
@@ -1723,7 +1757,9 @@ export const routineSettingsSchema = z.object({
   /** Absent only for a non-interactive routine. */
   prompt: promptText.min(1).optional(),
   commit: z.string().min(1).max(64).optional(),
-  steps: z.unknown().optional(),
+  /** A named workflow each run starts with (docs/workflows.md); null on an
+   *  edit runs the project's init steps instead. */
+  workflow: z.string().min(1).max(200).nullable().optional(),
   nonInteractive: z.boolean().optional(),
   tool: z.enum(AGENT_TOOLS).optional(),
   model: z.string().regex(MODEL_RE).max(100).optional(),
@@ -1770,7 +1806,8 @@ export interface SiteEntry {
   /** The port of its releases that its owner may forward or preview, for
    *  an admin view the internet never reaches. */
   adminPort?: number
-  /** The graph each release runs. */
+  /** The named workflow each release runs, and its current graph. */
+  workflow: string
   steps: StepGraph
   /** Its volume's name. */
   volume?: string
@@ -1821,8 +1858,9 @@ export interface RoutineEntry {
   /** Its runs start at this branch's tip, or at this full commit. */
   branch?: string
   commit?: string
-  /** As on a queued entry (`QueuedWorkspaceEntry.steps`). */
-  steps?: StepGraph
+  /** The named workflow its runs start with; absent runs the project's
+   *  init steps. */
+  workflow?: string
   nonInteractive?: true
   groupId?: string
   /** Each run's timeout; absent stops each run at the next tick. */
@@ -2330,7 +2368,9 @@ export const MAX_MODEL_LENGTH = 128
  * `fetch` reads another workspace's branches into the caller's checkout, and
  * `history` its conversations, never writing to theirs. `send` messages a
  * running one's agent, held to the caller's permission mode. `set-base`
- * changes only the caller's own reference branch.
+ * changes only the caller's own reference branch. `workflow-list` and
+ * `workflow-show` read the project's workflows (docs/workflows.md), which
+ * `create` and `routine-*` may run by name; no command edits one.
  */
 export const MAMA_COMMANDS = [
   'list',
@@ -2360,5 +2400,7 @@ export const MAMA_COMMANDS = [
   'send',
   'volumes',
   'logs',
+  'workflow-list',
+  'workflow-show',
 ] as const
 export type MamaCommand = (typeof MAMA_COMMANDS)[number]

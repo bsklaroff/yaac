@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
+import { namedWorkflowFor } from '#test/support/workflows'
 import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
@@ -52,12 +53,14 @@ import {
   setTimeZone,
   setToolCredential,
   setWorkspaceGroup,
+  storeWorkflow,
   type SessionLaunchSettings,
   type SessionRow,
 } from '#db'
 import { formatInZone } from '@yaac/shared/schedule'
 import type { PermissionMode } from '@yaac/shared/types'
 import { cloneRepo } from '#domain/git'
+import { createWorkflow } from '#domain/projects'
 import { _resetWorkspaceStatusStoreForTests, setLiveAgents } from '#runtime/status/status-store'
 import { WorkspaceExecError, type RuntimeHandle, type WorkspaceDriver } from '#drivers/contract'
 import { git } from '@yaac/test-utils/git'
@@ -435,7 +438,7 @@ describe('runMamaCommand', () => {
 
     it('marks a workspace pinned to a commit, and a site\'s release with its site, role and address', async () => {
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', baseBranch: 'main' })
-      const site = await insertSite({ projectId: PROJ, name: 'shop', hostname: 'shop.example.com', port: 3000, steps: {} })
+      const site = await insertSite({ projectId: PROJ, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(PROJ) })
       const pins: Array<[string, string, string?]> = [
         ['caller-workspace', 'd'.repeat(40)],
         ['live-rel', 'a'.repeat(40), site.id],
@@ -1422,7 +1425,7 @@ describe('runMamaCommand', () => {
       expect(made).toMatchObject({ ok: true })
       await vi.waitFor(() => { expect(vi.mocked(createWorkspace).mock.calls.length).toBeGreaterThanOrEqual(2) })
       expect(vi.mocked(createWorkspace).mock.calls.at(-1)?.[1]).toMatchObject({
-        nonInteractive: true, commit: sha, steps: { test: { run: ['pnpm test'] } },
+        nonInteractive: true, commit: sha, workflow: { steps: { test: { run: ['pnpm test'] } } },
       })
       expect(vi.mocked(createWorkspace).mock.calls.at(-1)?.[1].session).toBeUndefined()
 
@@ -1465,12 +1468,15 @@ describe('runMamaCommand', () => {
 
     it('reruns a non-interactive workspace at its start commit, refusing any other', async () => {
       await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { permissionMode: 'accept-edits' })
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'ci-run', nonInteractive: true, startSteps: { test: { run: ['pnpm test'] } } })
+      await recordWorkspaceCreated({
+        projectId: PROJ, workspaceId: 'ci-run', nonInteractive: true,
+        workflowId: (await storeWorkflow(PROJ, { steps: { test: { run: ['pnpm test'] } }, secrets: [] })).id,
+      })
       await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId: PROJ, workspaceId: 'ci-run', startCommit: 'b'.repeat(40) })
       const id = await output('rerun', '', { workspace: 'ci-run' })
       await vi.waitFor(() => { expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1) })
       expect(vi.mocked(createWorkspace).mock.calls[0]?.[1]).toMatchObject({
-        workspaceId: id, nonInteractive: true, rerunOf: 'ci-run', commit: 'b'.repeat(40), steps: { test: { run: ['pnpm test'] } },
+        workspaceId: id, nonInteractive: true, rerunOf: 'ci-run', commit: 'b'.repeat(40), workflow: { steps: { test: { run: ['pnpm test'] } } },
       })
       expect(await run('rerun', '', { workspace: 'caller-workspace' })).toMatchObject({
         ok: false, error: expect.stringContaining('not a non-interactive workspace') as string,
@@ -1887,6 +1893,23 @@ describe('runMamaCommand', () => {
         [{ workspace: 'elsewhere' }, `no workspace 'elsewhere' in ${PROJ}`],
       ]
       for (const [args, error] of refusals) expect(await run('logs', '', args)).toEqual({ ok: false, error })
+    })
+  })
+
+  describe('workflows', () => {
+    it('lists and shows the project\'s workflows, and create runs one by name, never beside --steps', async () => {
+      expect(await output('workflow-list')).toBe('This project has no workflows.')
+      await createWorkflow(local, PROJ, { name: 'ci', steps: { test: { run: 'pnpm test' } } })
+      expect(await output('workflow-list')).toMatch(/^ci\s+steps test$/)
+      expect(await output('workflow-show', '', { name: 'ci' })).toContain('"run": [\n      "pnpm test"')
+      expect(await run('workflow-show', '', {})).toEqual({ ok: false, error: 'workflow show needs a workflow name' })
+
+      await output('create', '', { 'non-interactive': '1', workflow: 'ci' })
+      await settle()
+      const opts = vi.mocked(createWorkspace).mock.calls.at(-1)?.[1]
+      expect(opts).toMatchObject({ workflow: { steps: { test: { run: ['pnpm test'] } }, name: 'ci' }, nonInteractive: true })
+      expect(await run('create', '', { 'non-interactive': '1', workflow: 'ci', steps: '{}' }))
+        .toEqual({ ok: false, error: 'give one of --steps, --no-steps and --workflow' })
     })
   })
 

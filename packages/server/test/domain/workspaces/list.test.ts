@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { namedWorkflowFor } from '#test/support/workflows'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-driver'
 // Only the runtime is faked; the listing joins real rows with real status
@@ -260,7 +261,7 @@ describe('listActiveWorkspaces', () => {
 
   it('names the site a running release serves, which makes the webapp show it read-only', async () => {
     await recordTestProject(DEMO_PROJECT_ID)
-    const site = await insertSite({ projectId: DEMO_PROJECT_ID, name: 'shop', hostname: 'shop.example.com', port: 3000, steps: {} })
+    const site = await insertSite({ projectId: DEMO_PROJECT_ID, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(DEMO_PROJECT_ID) })
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'rel-1', siteId: site.id })
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'dev' })
     running([live('rel-1'), live('dev')])

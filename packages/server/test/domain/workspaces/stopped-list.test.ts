@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { namedWorkflowFor } from '#test/support/workflows'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
@@ -128,7 +129,7 @@ describe('listStoppedWorkspaces', () => {
   })
 
   it('names the site a release was of', async () => {
-    const site = await insertSite({ projectId: DEMO_PROJECT_ID, name: 'shop', hostname: 'shop.example.com', port: 3000, steps: {} })
+    const site = await insertSite({ projectId: DEMO_PROJECT_ID, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(DEMO_PROJECT_ID) })
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'rel-1', siteId: site.id })
     await recordWorkspaceStopped(DEMO_PROJECT_ID, 'rel-1')
     await seedWorkspace(DEMO_PROJECT_ID, 'dev', { deleted: true })

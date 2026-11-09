@@ -134,6 +134,9 @@ export const PROXY_STATE_CONFIGMAP_NAME = 'yaac-proxy-state'
 export const PROXY_REGISTRATION_PREFIX = 'yaac-proxy-reg'
 /** Prefix of the per-project secret-values Secrets (install-scoped name). */
 export const PROXY_PROJECT_SECRETS_PREFIX = 'yaac-proxy-secrets'
+/** Prefix of the per-project run-secrets Secrets, which workspace pods read
+ *  and the proxy does not (docs/project-config.md "Run secrets"). */
+export const RUN_SECRETS_PREFIX = 'yaac-run-secrets'
 
 /**
  * Name of the yaac server's own Deployment, Service and ServiceAccount in

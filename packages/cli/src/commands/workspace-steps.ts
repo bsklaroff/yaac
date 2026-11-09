@@ -15,11 +15,23 @@ export interface StepAddOptions {
   needs?: string
   service?: boolean
   ready?: string
+  /** A named workflow whose steps to add instead (docs/workflows.md). */
+  workflow?: string
 }
 
-/** Add a step to a running workspace, printing its name. */
+/** Add a step to a running workspace, or a named workflow's steps,
+ *  printing their names. */
 export async function stepAdd(workspace: string, opts: StepAddOptions): Promise<void> {
-  if (opts.run.length === 0) throw new Error('Give the step\'s commands with --run (repeat it for more).')
+  if (opts.workflow !== undefined) {
+    if (opts.run.length > 0 || opts.name !== undefined || opts.needs !== undefined || opts.service === true
+      || opts.ready !== undefined) {
+      throw new Error('--workflow adds that workflow\'s steps as they are; it takes no other step option.')
+    }
+    const added = await api.workspace[':id'].steps.$post({ param: { id: workspace }, json: { workflow: opts.workflow } })
+    console.log(added.map((s) => s.name).join('\n'))
+    return
+  }
+  if (opts.run.length === 0) throw new Error('Give the step\'s commands with --run (repeat it for more), or --workflow.')
   if (opts.ready !== undefined && opts.service !== true) throw new Error('--ready goes with --service: only a service has a ready check.')
   const name = opts.name ?? `run-${randomBytes(4).toString('hex')}`
   const needs = opts.needs?.split(',').map((n) => n.trim()).filter((n) => n !== '') ?? []

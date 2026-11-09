@@ -1,0 +1,2 @@
+ALTER TABLE "workspace_steps" ADD COLUMN "workflow_id" uuid;--> statement-breakpoint
+ALTER TABLE "workspace_steps" ADD CONSTRAINT "workspace_steps_workflow_id_workflows_id_fkey" FOREIGN KEY ("workflow_id") REFERENCES "workflows"("id");

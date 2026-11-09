@@ -171,10 +171,11 @@ export const projects = snakeCase.table('projects', {
     ignoredTracked: [],
   }),
   /** The steps every workspace runs at start unless its create brings its
-   *  own graph (docs/workspace-steps.md). Parsed before it is written.
-   *  `json`, not `jsonb`, as every step graph here is: a graph's key order
-   *  is its steps' display order, which `jsonb` would re-sort. */
-  initSteps: json().$type<StepGraph>().notNull().default({}),
+   *  own graph (docs/workspace-steps.md): a workflow, or a named workflow
+   *  whose current one each launch takes (docs/workflows.md). Neither runs
+   *  none. */
+  initWorkflowId: uuid().references((): AnyPgColumn => workflows.id),
+  initNamedWorkflowId: uuid().references((): AnyPgColumn => namedWorkflows.id),
   /** What workspaces launch with besides their checkout (`ProjectConfig`,
    *  docs/project-config.md). */
   portForwards: jsonb().$type<PortForwardConfig[]>().notNull().default([]),
@@ -242,9 +243,12 @@ export const workspaces = snakeCase.table('workspaces', {
   /** The commit its checkout was created at. Null for a workspace created
    *  before this was recorded, which always has a base branch. */
   startCommit: text(),
-  /** The step graph each of its lives starts with when its create brought
-   *  its own; null runs the project's current init steps. */
-  startSteps: json().$type<StepGraph>(),
+  /** The workflow each of its lives starts with when its create brought
+   *  one (docs/workflows.md), which a rerun or a site's replacement launches
+   *  again; null runs the project's current init steps. */
+  workflowId: uuid().references((): AnyPgColumn => workflows.id),
+  /** The named workflow it was chosen through, as named then: a record. */
+  workflowName: text(),
   /** Runs one graph untouched and stops when it settles
    *  (docs/workspace-steps.md "Non-interactive workspaces"). */
   nonInteractive: boolean().notNull().default(false),
@@ -353,8 +357,9 @@ export const sites = snakeCase.table('sites', {
   /** The one port of its releases its owner may forward, for an admin view
    *  that the router never serves. */
   adminPort: integer(),
-  /** The graph each release runs; its `needs` may name `volume`. */
-  steps: json().$type<StepGraph>().notNull(),
+  /** The named workflow whose current workflow each release runs; its
+   *  `needs` may name `volume`. */
+  namedWorkflowId: uuid().notNull().references((): AnyPgColumn => namedWorkflows.id),
   /** No foreign key; deleting a volume a site names is refused. */
   volumeId: uuid(),
   /** A branch on origin whose tip a serving site deploys whenever it moves. */
@@ -516,6 +521,10 @@ export const workspaceSteps = snakeCase.table('workspace_steps', {
   projectId: uuid().notNull(),
   origin: text().$type<StepOrigin>().notNull(),
   spec: jsonb().$type<StepSpec>().notNull(),
+  /** For a step added from a named workflow, the workflow it pointed at
+   *  then and its name: a record. */
+  workflowId: uuid().references((): AnyPgColumn => workflows.id),
+  workflowName: text(),
   state: text().$type<StepState>().notNull(),
   /** Its window's exit status, once it exited. */
   exitCode: integer(),
@@ -642,6 +651,63 @@ export const projectEnvVars = snakeCase.table('project_env_vars', {
 }, (t) => [uniqueIndex().on(t.projectId, t.name)])
 
 /**
+ * A project's run secrets (docs/project-config.md "Run secrets"): values
+ * that only the workflow revisions naming them get, as they are, in their
+ * workspaces' environment. Kept apart from `projectEnvVars`, so an ordinary
+ * workspace's launch never reads them. Only run-secret-store.ts reads
+ * `sealedValue`.
+ */
+export const projectRunSecrets = snakeCase.table('project_run_secrets', {
+  id: uuid().primaryKey().defaultRandom(),
+  projectId: uuid().notNull(),
+  name: text().notNull(),
+  /** Encrypted with the key from `secret-key.ts`. */
+  sealedValue: text().notNull(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex().on(t.projectId, t.name)])
+
+/**
+ * Workflows (docs/workflows.md): a project's step graphs, each with the run
+ * secrets it names, never changed once written. One row per content, which
+ * `hash` keys, so a graph given twice is one row.
+ */
+export const workflows = snakeCase.table('workflows', {
+  id: uuid().primaryKey().defaultRandom(),
+  projectId: uuid().notNull(),
+  steps: json().$type<StepGraph>().notNull(),
+  /** Only a person's edit of a named workflow names any. */
+  secrets: text().array().notNull().default([]),
+  /** Of `steps` and `secrets` (`workflowHash`). */
+  hash: text().notNull(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex().on(t.projectId, t.hash)])
+
+/** A project's name for a workflow, which an edit points at another. */
+export const namedWorkflows = snakeCase.table('named_workflows', {
+  id: uuid().primaryKey().defaultRandom(),
+  projectId: uuid().notNull(),
+  name: text().notNull(),
+  workflowId: uuid().notNull().references(() => workflows.id),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex().on(t.projectId, t.name)])
+
+/** What a person's action approved a named workflow's current workflow to
+ *  run on with its secrets (docs/workflows.md "Approvals"). */
+export const workflowApprovals = snakeCase.table('workflow_approvals', {
+  namedWorkflowId: uuid().notNull().references(() => namedWorkflows.id, { onDelete: 'cascade' }),
+  /** A full commit id, or `refs/heads/<branch>` for that branch's tip. */
+  ref: text().notNull(),
+}, (t) => [primaryKey({ columns: [t.namedWorkflowId, t.ref] })])
+
+/** Each (workflow, commit) that ran with the workflow's secrets, which may
+ *  from then on. */
+export const workflowRuns = snakeCase.table('workflow_runs', {
+  workflowId: uuid().notNull().references(() => workflows.id, { onDelete: 'cascade' }),
+  commit: text().notNull(),
+}, (t) => [primaryKey({ columns: [t.workflowId, t.commit] })])
+
+/**
  * Named git credentials: an HTTPS token the user pasted, or an SSH key the
  * server generated (the user only sees its public half)
  * (docs/git-credentials.md). A project references one via
@@ -719,10 +785,14 @@ export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
   branch: text(),
   /** A full commit to start at instead of a branch's tip. */
   commit: text(),
-  /** The step graph it starts with in place of the project's init steps,
-   *  `{}` for none; null runs the project's (docs/workspace-steps.md). */
-  steps: json().$type<StepGraph>(),
-  /** It launches non-interactive: `steps`, untouched, with no session. */
+  /** What it starts with in place of the project's init steps
+   *  (docs/workflows.md): a workflow its `steps` gave, or a named workflow
+   *  whose current one it takes at launch. Neither runs the project's. */
+  workflowId: uuid().references((): AnyPgColumn => workflows.id),
+  /** Cleared when the named workflow is deleted, which only a launched
+   *  entry, a record, can still name. */
+  namedWorkflowId: uuid().references((): AnyPgColumn => namedWorkflows.id, { onDelete: 'set null' }),
+  /** It launches non-interactive: its workflow, untouched, with no session. */
   nonInteractive: boolean().notNull().default(false),
   /** The user's title for the launched workspace; wins over
    *  `generatedTitle`. */
@@ -774,8 +844,9 @@ export const routines = snakeCase.table('routines', {
   /** Null when its runs start at `commit`. */
   branch: text(),
   commit: text(),
-  /** As on a queued entry (`queuedWorkspaces.steps`). */
-  steps: json().$type<StepGraph>(),
+  /** The named workflow whose current workflow each run starts with, fixed
+   *  as it is queued; null runs the project's init steps. */
+  namedWorkflowId: uuid().references((): AnyPgColumn => namedWorkflows.id),
   nonInteractive: boolean().notNull().default(false),
   /** Null is the default list; cleared when the group is deleted. */
   groupId: text(),

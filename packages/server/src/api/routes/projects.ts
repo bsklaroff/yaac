@@ -11,14 +11,17 @@ import {
   getProjectBranches,
   getProjectDetail,
   listProjectEnv,
+  listProjectRunSecrets,
   listProjects,
   portForwardsSchema,
   readProjectDockerfile,
   registerStagedProject,
   removeKeptHostedRepo,
   removeProjectEnvVar,
+  removeRunSecret,
   setProjectAllowlist,
   setProjectEnvVar,
+  setRunSecret,
   writeProjectDockerfile,
   pushProjectSecrets,
   resolveProjectId,
@@ -26,6 +29,7 @@ import {
   setDefaultBranch,
   setDefaultBranchGuard,
   setInitSteps,
+  setInitWorkflow,
   setKeptIgnoredPaths,
   setScratchDirs,
   scratchDirSettingsPatchSchema,
@@ -150,10 +154,15 @@ export const projectApp = new Hono<IdentityEnv>()
   // summary.
   .put(
     '/:projectId/init-steps',
-    zv('json', z.object({ steps: z.unknown() })),
-    async (c) => c.json({
-      steps: await setInitSteps(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.valid('json').steps),
-    }),
+    // A graph, or a named workflow to follow (docs/workflows.md).
+    zv('json', z.union([z.object({ steps: z.unknown() }), z.object({ workflow: z.string().min(1) })])),
+    async (c) => {
+      const projectId = await resolveProjectId(c.req.param('projectId'))
+      const body = c.req.valid('json')
+      return c.json({ steps: 'workflow' in body
+        ? await setInitWorkflow(c.get('principal'), projectId, body.workflow)
+        : await setInitSteps(c.get('principal'), projectId, body.steps) })
+    },
   )
   // Which dirs live with a workspace's runtime rather than its checkout, with
   // their caps, and which of them git tracks without the user wanting a
@@ -293,6 +302,23 @@ export const projectApp = new Hono<IdentityEnv>()
     const projectId = await resolveProjectId(c.req.param('projectId'))
     await removeProjectEnvVar(c.get('principal'), projectId, c.req.param('id'))
     await syncRunningWorkspaces(projectId, 'the variable was removed')
+    return c.body(null, 204)
+  })
+  // Values only the workflow revisions naming them get, as they are
+  // (docs/project-config.md "Run secrets").
+  .get('/:projectId/run-secrets', async (c) =>
+    c.json({ secrets: await listProjectRunSecrets(await resolveProjectId(c.req.param('projectId'))) }))
+  .put(
+    '/:projectId/run-secrets',
+    zv('json', z.object({ name: z.string().min(1), value: z.string() })),
+    async (c) => {
+      const projectId = await resolveProjectId(c.req.param('projectId'))
+      return c.json({ secret: await setRunSecret(c.get('principal'), projectId, c.req.valid('json')) })
+    },
+  )
+  .delete('/:projectId/run-secrets/:id', async (c) => {
+    const projectId = await resolveProjectId(c.req.param('projectId'))
+    await removeRunSecret(c.get('principal'), projectId, c.req.param('id'))
     return c.body(null, 204)
   })
   // The project's egress allowlist, with the install's defaults so a client

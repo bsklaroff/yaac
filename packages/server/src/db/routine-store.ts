@@ -1,4 +1,3 @@
-import type { StepGraph } from '@yaac/shared/steps'
 import { and, asc, desc, eq, isNotNull, isNull, lt, or } from 'drizzle-orm'
 import { getDb } from './client'
 import { queuedWorkspaces, routines, workspaces } from './schema'
@@ -31,8 +30,9 @@ export interface RoutineFields {
   /** Exactly one of a branch and a full commit. */
   branch?: string
   commit?: string
-  /** Absent runs the project's init steps; `{}` runs none. */
-  steps?: StepGraph
+  /** The named workflow each run starts with; absent runs the project's
+   *  init steps. */
+  namedWorkflowId?: string
   nonInteractive?: boolean
   groupId?: string
   timeoutMinutes?: number
@@ -51,7 +51,7 @@ function columns(f: RoutineFields): Omit<typeof routines.$inferInsert, 'projectI
     prompt: f.prompt ?? null,
     branch: f.branch ?? null,
     commit: f.commit ?? null,
-    steps: f.steps ?? null,
+    namedWorkflowId: f.namedWorkflowId ?? null,
     nonInteractive: f.nonInteractive === true,
     effort: f.effort ?? null,
     groupId: f.groupId ?? null,

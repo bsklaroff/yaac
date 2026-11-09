@@ -15,6 +15,7 @@ import {
   getProjectRow,
   getSiteRow,
   getVolumeRow,
+  getNamedWorkflow,
   insertSite,
   listProjectRows,
   listProjectSites,
@@ -27,14 +28,14 @@ import {
 } from '#db'
 import { authorizeProject, isProjectHeld, requireAdmin, type Actor } from '#domain/access'
 import { remoteBranchExists, resolveRemoteRef } from '#domain/git'
-import { fetchProjectOrigin } from '#domain/projects'
+import { approveWorkflowRef, checkWorkflowRef, fetchProjectOrigin, resolveWorkflow } from '#domain/projects'
 import { VOLUME_NEED } from '#domain/workspaces'
 import { isInfraPort } from '#lib/port-policy'
 import { testEnv } from '@yaac/shared/env'
 import { ServerError } from '@yaac/shared/errors'
 import { isBranchName } from '@yaac/shared/git'
 import { repoDir } from '@yaac/shared/project-paths'
-import { parseStepGraph, type StepGraph } from '@yaac/shared/steps'
+import { parseStepGraph } from '@yaac/shared/steps'
 import type { SiteDetail, SiteEdgeStatus, SiteEntry } from '@yaac/shared/types'
 import { endReleases, followPause, withSiteLock } from './deploys'
 
@@ -136,19 +137,24 @@ async function checkBranch(projectId: string, branch: string): Promise<string> {
   return branch
 }
 
-/** A release's graph: it needs a service, and may need `volume` only when
- *  the site has one. */
-function checkSteps(raw: unknown, hasVolume: boolean): StepGraph {
-  let graph: StepGraph
+/**
+ * The named workflow a site's releases run (docs/workflows.md): the one
+ * named, else the site's own. Its current graph is checked as a release's:
+ * it needs a service, and may need `volume` only when the site has one. A
+ * deploy checks the graph it runs again.
+ */
+async function siteWorkflow(projectId: string, name: string | undefined, hasVolume: boolean, row?: SiteRow): Promise<string> {
+  const named = name !== undefined ? await resolveWorkflow(projectId, name) : await getNamedWorkflow(row?.namedWorkflowId ?? '')
+  if (!named) throw new ServerError('VALIDATION', 'a site runs a named workflow; give one')
   try {
-    graph = parseStepGraph(raw, new Set(hasVolume ? [VOLUME_NEED] : []))
+    parseStepGraph(named.workflow.steps, new Set(hasVolume ? [VOLUME_NEED] : []))
   } catch (err) {
-    throw new ServerError('VALIDATION', (err as Error).message)
+    throw new ServerError('VALIDATION', `workflow "${named.name}": ${(err as Error).message}`)
   }
-  if (!Object.values(graph).some((s) => s.service === true)) {
-    throw new ServerError('VALIDATION', 'a site\'s steps need a service, which serves the site')
+  if (!Object.values(named.workflow.steps).some((s) => s.service === true)) {
+    throw new ServerError('VALIDATION', `workflow "${named.name}" needs a service, which serves the site`)
   }
-  return graph
+  return named.id
 }
 
 /** A volume of the project that no other site keeps its data in. */
@@ -165,7 +171,7 @@ export async function createSite(principal: Actor, projectId: string, input: {
   hostname: string
   port: number
   adminPort?: number
-  steps: unknown
+  workflow: string
   volume?: string
   followBranch?: string
 }): Promise<void> {
@@ -174,22 +180,28 @@ export async function createSite(principal: Actor, projectId: string, input: {
     throw new ServerError('VALIDATION', `"${input.name}" is not a site name: use 1-40 of a-z, 0-9 and -`)
   }
   checkPorts(input.port, input.adminPort)
+  const namedWorkflowId = await siteWorkflow(projectId, input.workflow, input.volume !== undefined)
+  const followBranch = input.followBranch !== undefined ? await checkBranch(projectId, input.followBranch) : undefined
+  // Following a branch approves it for the workflow (docs/workflows.md
+  // "Approvals"): refused, if at all, before the site exists.
+  if (followBranch !== undefined) await checkWorkflowRef(principal, namedWorkflowId, { branch: followBranch })
   await insertSite({
     projectId,
     name: input.name,
     hostname: checkHostname(input.hostname),
     port: input.port,
     ...(input.adminPort !== undefined ? { adminPort: input.adminPort } : {}),
-    steps: checkSteps(input.steps, input.volume !== undefined),
+    namedWorkflowId,
     ...(input.volume !== undefined ? { volumeId: await volumeId(projectId, input.volume) } : {}),
-    ...(input.followBranch !== undefined ? { followBranch: await checkBranch(projectId, input.followBranch) } : {}),
+    ...(followBranch !== undefined ? { followBranch } : {}),
   })
+  if (followBranch !== undefined) await approveWorkflowRef(principal, namedWorkflowId, { branch: followBranch })
   await syncSiteRoutes()
 }
 
 /**
- * Change a site. The hostname and admin port move at once; the port, steps
- * and volume apply from the next deploy, so the live release keeps serving
+ * Change a site. The hostname and admin port move at once; the port,
+ * workflow and volume apply from the next deploy, so the live release keeps serving
  * as it was started. A followed branch is deployed at the next reconcile
  * if its tip is not what the site serves. Refused while a deploy runs,
  * which was started with the old settings, except an edit that only stops
@@ -200,7 +212,7 @@ export async function editSite(principal: Actor, projectId: string, name: string
   hostname?: string
   port?: number
   adminPort?: number | null
-  steps?: unknown
+  workflow?: string
   volume?: string | null
   followBranch?: string | null
 }): Promise<void> {
@@ -230,8 +242,15 @@ export async function editSite(principal: Actor, projectId: string, name: string
     const hasVolume = input.volume !== undefined ? input.volume !== null : row.volumeId !== undefined
     // The graph is checked against the volume it will run with, so dropping
     // the volume of a graph that needs it is refused.
-    patch.steps = checkSteps(input.steps ?? row.steps, hasVolume)
+    patch.namedWorkflowId = await siteWorkflow(projectId, input.workflow, hasVolume, row)
+    // A person setting a site to follow a branch, or giving a site that
+    // follows one another workflow, approves the branch for its workflow
+    // (docs/workflows.md "Approvals"), refused before anything is written.
+    const branch = follow === undefined ? row.followBranch : follow ?? undefined
+    const approves = branch !== undefined && (follow !== undefined || input.workflow !== undefined)
+    if (approves) await checkWorkflowRef(principal, patch.namedWorkflowId, { branch })
     await updateSite(id, patch)
+    if (approves) await approveWorkflowRef(principal, patch.namedWorkflowId, { branch })
     await reofferAdminPort(row, adminPort)
   })
   await syncSiteRoutes()
@@ -281,12 +300,14 @@ async function toSiteEntry(row: SiteRow): Promise<SiteEntry> {
   const tip = row.followBranch !== undefined && row.failedCommit !== undefined
     ? await resolveRemoteRef(repoDir(row.projectId), row.followBranch).catch(() => undefined)
     : undefined
+  const workflow = await getNamedWorkflow(row.namedWorkflowId)
   return {
     name: row.name,
     hostname: row.hostname,
     port: row.port,
     ...(row.adminPort !== undefined ? { adminPort: row.adminPort } : {}),
-    steps: row.steps,
+    workflow: workflow?.name ?? '',
+    steps: workflow?.workflow.steps ?? {},
     ...(volume !== undefined ? { volume: volume.name } : {}),
     ...(row.followBranch !== undefined ? { followBranch: row.followBranch } : {}),
     ...(paused !== undefined ? { followPaused: paused } : {}),

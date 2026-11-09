@@ -1,4 +1,3 @@
-import type { StepGraph } from '@yaac/shared/steps'
 import { and, asc, eq, inArray, isNull, lte, sql } from 'drizzle-orm'
 import { getDb } from './client'
 import { queuedWorkspaces, routines } from './schema'
@@ -42,8 +41,10 @@ export interface QueuedWorkspaceSettings {
   /** Exactly one of a branch and a full commit. */
   branch?: string
   commit?: string
-  /** Absent runs the project's init steps; `{}` runs none. */
-  steps?: StepGraph
+  /** A workflow its steps gave, or a named workflow followed until launch;
+   *  neither runs the project's init steps. */
+  workflowId?: string
+  namedWorkflowId?: string
   nonInteractive?: boolean
   title?: string
   groupId?: string
@@ -79,7 +80,8 @@ function settingsColumns(s: QueuedWorkspaceSettings): Omit<typeof queuedWorkspac
     prompt: s.prompt ?? null,
     branch: s.branch ?? null,
     commit: s.commit ?? null,
-    steps: s.steps ?? null,
+    workflowId: s.workflowId ?? null,
+    namedWorkflowId: s.namedWorkflowId ?? null,
     nonInteractive: s.nonInteractive === true,
     title: s.title ?? null,
     groupId: s.groupId ?? null,

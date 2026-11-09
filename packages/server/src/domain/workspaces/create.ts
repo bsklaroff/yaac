@@ -197,15 +197,21 @@ export interface WorkspaceCreateOptions {
    */
   commit?: string
   /**
-   * A fresh create's start graph (docs/workspace-steps.md): absent runs the
-   * project's init steps, null none. A resume starts the graph its row
-   * names.
+   * A fresh create's start workflow (docs/workflows.md), with the named
+   * workflow it was chosen through: absent runs the project's init steps. A
+   * resume starts what its row names.
    */
-  steps?: StepGraph | null
+  workflow?: { id: string; steps: StepGraph; name?: string }
   /** Run `steps` untouched and stop when they settle. */
   nonInteractive?: boolean
   /** The non-interactive workspace this one reruns. */
   rerunOf?: string
+  /**
+   * The run secrets its revision gets, with their values
+   * (`workflowLaunch`), for a non-interactive create or a site's release.
+   * Refused on any other.
+   */
+  runSecrets?: Record<string, string>
   /**
    * Resume an existing workspace (a restart): reuse its checkout if present,
    * and relaunch each of its open sessions in its own window, resuming its
@@ -805,7 +811,8 @@ export async function createWorkspace(
       ...(options.generatedTitle !== undefined ? { generatedTitle: options.generatedTitle } : {}),
       ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
       ...(options.deadline !== undefined ? { deadline: options.deadline } : {}),
-      ...(options.steps !== undefined ? { startSteps: options.steps ?? {} } : {}),
+      ...(options.workflow !== undefined ? { workflowId: options.workflow.id } : {}),
+      ...(options.workflow?.name !== undefined ? { workflowName: options.workflow.name } : {}),
       ...(options.nonInteractive === true ? { nonInteractive: true } : {}),
       ...(options.rerunOf !== undefined ? { rerunOf: options.rerunOf } : {}),
       ...(options.siteId !== undefined ? { siteId: options.siteId } : {}),
@@ -830,7 +837,7 @@ export async function createWorkspace(
   if (options.prewarm !== true) {
     life = await recordLife(projectId, workspaceId, options.resume === true
       ? await startStepsOf(projectId, await getWorkspaceRow(projectId, workspaceId))
-      : options.steps === undefined ? projectRow.initSteps : options.steps ?? {})
+      : options.workflow?.steps ?? await startStepsOf(projectId, undefined))
     sessions = options.session !== undefined
       ? [await insertSession(projectId, workspaceId, options.session)]
       : resumed
@@ -1142,6 +1149,20 @@ export async function createWorkspace(
     secretEnvKeys.push(name)
   }
 
+  // Run secrets are real values under k8s too. With mediated egress the
+  // runtime holds them, handed over by `workflowLaunch`, and the spec only
+  // names them, so no value is written into the workspace's own spec.
+  const runSecrets = Object.entries(options.runSecrets ?? {})
+  if (runSecrets.length > 0 && options.nonInteractive !== true && options.siteId === undefined) {
+    throw new Error('run secrets go only to a non-interactive workspace or a site\'s release')
+  }
+  if (!sandboxed) {
+    for (const [name, value] of runSecrets) {
+      env.push(`${name}=${value}`)
+      secretEnvKeys.push(name)
+    }
+  }
+
   // API-key env vars for every tool (a spare may be retooled at claim), so
   // no tool prompts for login. With mediated egress these are placeholders
   // the proxy swaps by destination host and placeholder, regardless of the
@@ -1314,9 +1335,12 @@ export async function createWorkspace(
   // A public site's release runs no agent and faces the internet, so it
   // mounts only what is its own or read-only: nothing other workspaces of
   // the project read, such as a tool home, its memory or a cache volume, is
-  // there for it to poison (docs/public-sites.md).
+  // there for it to poison (docs/public-sites.md). A sandboxed workspace
+  // given run secrets is held to the same, so nothing an agent wrote into
+  // one of those runs beside the real values. Without a sandbox an agent
+  // runs as the host user, who can read them anyway.
   const releaseMountPaths = new Set(['/workspace', `${repo}/.git`, CONTAINER_TERMINAL_LOG_DIR, CONTAINER_TMUX_DIR])
-  const mounts = options.siteId === undefined
+  const mounts = options.siteId === undefined && !(sandboxed && runSecrets.length > 0)
     ? allMounts
     : allMounts.filter((m) => releaseMountPaths.has(m.mountPath) || binMounts.includes(m))
 
@@ -1340,6 +1364,7 @@ export async function createWorkspace(
     ...(imageRef !== undefined ? { image: imageRef } : {}),
     env,
     secretEnvKeys,
+    ...(sandboxed && runSecrets.length > 0 ? { runSecrets: runSecrets.map(([name]) => name) } : {}),
     mounts,
     scratchDirs,
     resources: WORKSPACE_RESOURCES,

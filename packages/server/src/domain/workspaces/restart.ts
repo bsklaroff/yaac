@@ -157,8 +157,10 @@ export async function terminalConversationSessions(
 /**
  * Rerun a non-interactive workspace (docs/workspace-steps.md): a new one
  * with the same graph at the commit it was created at, linked to it, in its
- * group. With `interactive`, an interactive workspace there instead, its
- * graph as the start steps, for reproducing a failure by hand.
+ * group: the same workflow, whose run secrets reach it as they reached the
+ * original, and the name it was chosen through (docs/workflows.md). With
+ * `interactive`, an interactive workspace there instead, its graph as the
+ * start steps, for reproducing a failure by hand.
  */
 export async function prepareRerun(
   principal: Actor,
@@ -176,7 +178,9 @@ export async function prepareRerun(
     projectId: row.projectId,
     workspaceId: opts.workspaceId,
     commit: row.startCommit,
-    steps: row.startSteps ?? {},
+    ...(row.workflowId !== undefined
+      ? { workflowId: row.workflowId, ...(row.workflowName !== undefined ? { workflowName: row.workflowName } : {}) }
+      : { steps: {} }),
     noSession: true,
     ...(interactive ? {} : { nonInteractive: true, rerunOf: row.workspaceId }),
     ...(row.title !== undefined ? { title: row.title } : {}),

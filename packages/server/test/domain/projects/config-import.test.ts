@@ -14,7 +14,7 @@ import { PROJECT_CONFIG_DEFAULTS, recordTestProject } from '@yaac/test-utils/pro
 import { projectConfigDir } from '@yaac/shared/project-paths'
 import { applyWorkspaceEvent, BUILT_IN_USER_ID, getProjectRow, getWorkspaceRow, setProjectConfig } from '#db'
 import type * as dbModule from '#db'
-import { importProjectConfigFiles, resolveProjectConfig, setInitSteps } from '#domain/projects'
+import { importProjectConfigFiles, initWorkflowOf, resolveProjectConfig, setInitSteps } from '#domain/projects'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { serverLog } from '#lib/log'
 import type * as logModule from '#lib/log'
@@ -76,8 +76,8 @@ describe('importProjectConfigFiles', () => {
     const foo = await getProjectRow(FOO)
     expect(foo?.scratchDirs.dirs).toEqual([{ path: 'node_modules' }, { path: 'web/node_modules' }])
     expect((await getWorkspaceRow(FOO, 'running'))?.scratchDirs).toEqual(['node_modules', 'web/node_modules'])
-    expect(foo?.initSteps).toEqual({ init: { run: ['pnpm install', 'pnpm build'] } })
-    expect((await getProjectRow(BAR))?.initSteps).toEqual({
+    expect((await initWorkflowOf(FOO))?.workflow.steps).toEqual({ init: { run: ['pnpm install', 'pnpm build'] } })
+    expect((await initWorkflowOf(BAR))?.workflow.steps).toEqual({
       backend: { run: ['pnpm dev:be'] },
       frontend: { run: ['pnpm i', 'pnpm dev'] },
       'init-claude-setup': { run: ['a'] },
@@ -88,7 +88,7 @@ describe('importProjectConfigFiles', () => {
     // Once imported there is nothing left to import.
     await setInitSteps(OWNER, FOO, { mine: { run: 'make' } })
     await importProjectConfigFiles()
-    expect((await getProjectRow(FOO))?.initSteps).toEqual({ mine: { run: ['make'] } })
+    expect((await initWorkflowOf(FOO))?.workflow.steps).toEqual({ mine: { run: ['make'] } })
   })
 
   it('imports what validates and keeps the file aside, logging no value, as it does a file that is not JSON', async () => {
@@ -106,7 +106,7 @@ describe('importProjectConfigFiles', () => {
 
     // A project with init steps of its own keeps them.
     expect(await resolveProjectConfig(FOO)).toEqual({ ...PROJECT_CONFIG_DEFAULTS, npmCache: false })
-    expect((await getProjectRow(FOO))?.initSteps).toEqual({ mine: { run: ['make'] } })
+    expect((await initWorkflowOf(FOO))?.workflow.steps).toEqual({ mine: { run: ['make'] } })
     const logged = vi.mocked(serverLog).mock.calls.map(([m]) => m).join('\n')
     expect(logged).toContain('portForward (10300 is reserved')
     expect(logged).toContain('somethingElse (not a setting)')

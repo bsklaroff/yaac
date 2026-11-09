@@ -33,6 +33,7 @@ import {
   updateQueuedWorkspace,
 } from '#domain/workspaces'
 import { clearQueuedLaunchesForTests, startQueuedChildren } from '#domain/workspaces/queued-workspaces'
+import { createWorkflow, editWorkflow } from '#domain/projects'
 import {
   clearAllProvisioningForTests,
   listProvisioning,
@@ -164,6 +165,23 @@ describe('queueWorkspace', () => {
     expect(other).toMatchObject({ tool: 'claude', model: FALLBACK_MODELS.claude, mode: 'tui', branch: 'develop' })
     // A prefix names the parent like an id does.
     expect(other.parentWorkspaceId).toBe('parent-1')
+  })
+
+  it('follows a named workflow until it launches, and hands its name on; steps of its own are fixed', async () => {
+    await workspace('parent-1', { permissionMode: 'accept-edits' })
+    await createWorkflow(local, PROJ, { name: 'ci', steps: { test: { run: 'pnpm test' } } })
+    const entry = await queueWorkspace(local, PROJ, { parent: 'parent-1', prompt: 'x', workflow: 'ci' }, 'user')
+    expect(entry).toMatchObject({ workflow: 'ci', steps: { test: { run: ['pnpm test'] } } })
+    await editWorkflow(local, PROJ, 'ci', { steps: { lint: { run: 'pnpm lint' } } })
+    await runQueuedWorkspace(local, entry.id)
+    await launched(1)
+    expect(mockCreate.mock.calls[0][1].workflow).toMatchObject({ steps: { lint: { run: ['pnpm lint'] } }, name: 'ci' })
+
+    const own = await queueWorkspace(local, PROJ, { parent: 'parent-1', prompt: 'y', steps: { build: { run: 'make' } } }, 'user')
+    expect(own.steps).toEqual({ build: { run: ['make'] } })
+    expect(own.workflow).toBeUndefined()
+    await expect(queueWorkspace(local, PROJ, { parent: 'parent-1', prompt: 'z', steps: {}, workflow: 'ci' }, 'user'))
+      .rejects.toThrow('not both')
   })
 
   // The parent's model is as its agent reported it, which anything in that
@@ -336,6 +354,17 @@ describe('queueWorkspace', () => {
 // docs/workspace-groups.md
 
 describe('updateQueuedWorkspace', () => {
+  it('leaves a routine\'s run alone: it starts with its routine\'s settings', async () => {
+    const routine = await insertRoutine(PROJ, {
+      name: 'r', cron: '@daily', timeZone: 'UTC', prompt: 'p', tool: 'claude', model: 'claude-sonnet-5',
+      mode: 'tui', permissionMode: 'auto', branch: 'main',
+    }, null)
+    const run = await insertRoutineRun(routine.id, PROJ, new Date(Date.now() + 60 * 60_000), {
+      prompt: 'p', tool: 'claude', model: 'claude-sonnet-5', mode: 'tui', permissionMode: 'auto', branch: 'main',
+    })
+    await expect(updateQueuedWorkspace(local, run!.id, { prompt: 'changed' }, 'user')).rejects.toMatchObject({ code: 'CONFLICT' })
+  })
+
   it('lets an agent shorten, lengthen or clear a timeout the user gave', async () => {
     await workspace(P, { permissionMode: 'accept-edits' })
     const entry = await queueWorkspace(local, PROJ, { parent: P, prompt: 'x', timeout: 60 }, 'user')

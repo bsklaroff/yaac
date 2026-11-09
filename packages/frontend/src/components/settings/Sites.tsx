@@ -7,6 +7,7 @@ import { useVolumes } from '#lib/volumes'
 import { useIsAdmin } from '#lib/viewer'
 import { SectionLabel } from '#components/settings/Field'
 import { INPUT, WorkspaceLink } from '#components/settings/Volumes'
+import { useWorkflows } from '#components/settings/Workflows'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
 import type { SiteDeployPhase, SiteEntry } from '@yaac/shared/types'
@@ -77,7 +78,7 @@ export function Sites({ projectId, readOnly }: { projectId: string; readOnly: bo
       <SectionLabel>Sites</SectionLabel>
       <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
         A site publishes the project&apos;s app at a hostname on the internet. Each deploy starts a release: a
-        workspace that runs the site&apos;s steps at one commit and, once ready, takes over the hostname.
+        workspace that runs the site&apos;s workflow at one commit and, once ready, takes over the hostname.
       </p>
       <EdgeStatus />
 
@@ -167,7 +168,7 @@ function confirmText(confirm: { action: Action; site: string } | null): {
   switch (confirm?.action) {
     case 'deploy': return {
       title: `Deploy “${site}”?`,
-      description: 'A new release runs the site’s steps at this commit and takes over the hostname once it is ready.',
+      description: 'A new release runs the site’s workflow at this commit and takes over the hostname once it is ready.',
       confirmLabel: 'Deploy',
       destructive: false,
     }
@@ -281,22 +282,9 @@ function SiteRow({ projectId, site, canEnd, canPublish, onAction, onEdit }: {
   )
 }
 
-/** Parse the steps box, which must hold a JSON object. */
-function parseSteps(text: string): Record<string, unknown> {
-  let steps: unknown
-  try {
-    steps = JSON.parse(text)
-  } catch (e) {
-    throw new Error(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
-  }
-  if (typeof steps !== 'object' || steps === null || Array.isArray(steps)) throw new Error('Steps must be a JSON object')
-  return steps as Record<string, unknown>
-}
-
 /**
- * Create a site, or edit `site`. Steps are checked to be a JSON object here
- * and otherwise by the server, whose message shows as given. `onDone` gets
- * a created site's hostname.
+ * Create a site, or edit `site`. Its releases run one of the project's
+ * workflows. `onDone` gets a created site's hostname.
  */
 function SiteForm({ projectId, site, onDone, onCancel }: {
   projectId: string
@@ -305,17 +293,18 @@ function SiteForm({ projectId, site, onDone, onCancel }: {
   onCancel: () => void
 }): JSX.Element {
   const volumes = useVolumes(projectId)
+  const { data: workflows } = useWorkflows(projectId)
   const [name, setName] = useState('')
   const [hostname, setHostname] = useState(site?.hostname ?? '')
   const [port, setPort] = useState(site !== undefined ? String(site.port) : '')
   const [adminPort, setAdminPort] = useState(site?.adminPort !== undefined ? String(site.adminPort) : '')
   const [volume, setVolume] = useState(site?.volume ?? '')
   const [follow, setFollow] = useState(site?.followBranch ?? '')
-  const [steps, setSteps] = useState(site !== undefined ? `${JSON.stringify(site.steps, null, 2)}\n` : '')
+  const [workflow, setWorkflow] = useState(site?.workflow ?? '')
 
   const save = useMutation({
     mutationFn: async () => {
-      const body = { project: projectId, hostname: hostname.trim(), port: Number(port), steps: parseSteps(steps) }
+      const body = { project: projectId, hostname: hostname.trim(), port: Number(port), workflow }
       const admin = adminPort.trim() === '' ? null : Number(adminPort)
       const branch = follow.trim() === '' ? null : follow.trim()
       if (site !== undefined) {
@@ -392,17 +381,20 @@ function SiteForm({ projectId, site, onDone, onCancel }: {
           className={`${INPUT} w-28`}
         />
       </div>
-      <textarea
-        aria-label="Steps"
-        value={steps}
-        onChange={(e) => setSteps(e.target.value)}
-        placeholder={'{\n  "install": { "run": "pnpm install" },\n  "server": { "run": "pnpm start", "service": true, "needs": ["install"] }\n}'}
-        rows={8}
-        spellCheck={false}
-        className={`${INPUT} block w-full resize-y`}
-      />
+      <select
+        aria-label="Workflow"
+        value={workflow}
+        onChange={(e) => setWorkflow(e.target.value)}
+        className={`${INPUT} w-full`}
+      >
+        <option value="" disabled>Pick a workflow</option>
+        {workflows?.map((w) => <option key={w.id} value={w.name}>Workflow {w.name}</option>)}
+      </select>
+      {workflows?.length === 0 && (
+        <p className="text-[11px] text-warning">This project has no workflows yet. Add one under Workflows first.</p>
+      )}
       <p className="text-[11px] leading-relaxed text-text-faint">
-        The steps each release runs, like init steps; one must be a{' '}
+        Each release runs the workflow&apos;s steps; one must be a{' '}
         <code className="text-text-dim">{'"service": true'}</code> serving the port. Steps that use the volume
         need <code className="text-text-dim">{'"volume"'}</code>, and run only once the old release has let it go.
         An admin port is one only you can open, as the release&apos;s preview; the internet never reaches it.
@@ -415,7 +407,7 @@ function SiteForm({ projectId, site, onDone, onCancel }: {
         <button type="button" onClick={onCancel} className={TEXT_BUTTON}>Cancel</button>
         <button
           type="submit"
-          disabled={save.isPending || hostname.trim() === '' || (site === undefined && name.trim() === '')}
+          disabled={save.isPending || hostname.trim() === '' || workflow === '' || (site === undefined && name.trim() === '')}
           className={BUTTON}
         >
           {save.isPending ? 'Saving…' : site !== undefined ? 'Save' : 'Create'}

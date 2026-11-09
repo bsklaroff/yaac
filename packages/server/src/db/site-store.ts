@@ -4,7 +4,6 @@ import { sites, workspaces } from './schema'
 import { isUuid } from '#lib/uuid'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
 import { ServerError } from '@yaac/shared/errors'
-import type { StepGraph } from '@yaac/shared/steps'
 
 /**
  * Public sites (docs/public-sites.md). Everything here is the domain's own
@@ -30,7 +29,7 @@ export async function insertSite(values: {
   hostname: string
   port: number
   adminPort?: number
-  steps: StepGraph
+  namedWorkflowId: string
   volumeId?: string
   followBranch?: string
 }): Promise<SiteRow> {

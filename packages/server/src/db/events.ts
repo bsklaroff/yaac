@@ -68,7 +68,9 @@ export interface WorkspaceCreated {
   /** On a fresh create: the graph it brought in place of the project's
    *  init steps, whether it is non-interactive, and the non-interactive
    *  workspace it reruns. */
-  startSteps?: StepGraph
+  workflowId?: string
+  /** The named workflow it was chosen through: a record. */
+  workflowName?: string
   nonInteractive?: boolean
   rerunOf?: string
   /** The public site it is a release of. */

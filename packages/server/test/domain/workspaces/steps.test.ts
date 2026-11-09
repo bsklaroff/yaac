@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises'
+import { namedWorkflowFor } from '#test/support/workflows'
 import path from 'node:path'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { addSteps, assertInteractive, cancelStep, reconcileSteps, rerunStep } from '#domain/workspaces/steps'
@@ -12,8 +13,10 @@ import {
   insertVolume,
   listWorkspaceSteps,
   setWorkspaceVolume,
+  storeWorkflow,
   updateSite,
 } from '#db'
+import { createWorkflow, editWorkflow, resolveWorkflow } from '#domain/projects'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { closeDb } from '#db/client'
 import { setWorkspaceWindows, _resetWorkspaceStatusStoreForTests } from '#runtime/status/status-store'
@@ -55,7 +58,9 @@ const states = async (): Promise<Record<string, string>> =>
 
 async function startLife(raw: Record<string, unknown>, row: { nonInteractive?: boolean; siteId?: string } = {}): Promise<void> {
   const graph = parseStepGraph(raw, new Set(row.siteId !== undefined ? ['volume'] : []))
-  await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: WS, startSteps: graph, ...row })
+  await recordWorkspaceCreated({
+    projectId: DEMO_PROJECT_ID, workspaceId: WS, workflowId: (await storeWorkflow(DEMO_PROJECT_ID, { steps: graph, secrets: [] })).id, ...row,
+  })
   life = new Date()
   await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS, at: life, startSteps: graph })
 }
@@ -89,7 +94,7 @@ async function release(): Promise<{ siteId: string; volumeId: string }> {
   const volume = await insertVolume(DEMO_PROJECT_ID, 'data', '10Gi')
   const site = await insertSite({
     projectId: DEMO_PROJECT_ID, name: 'shop', hostname: 'shop.example.com', port: 3000,
-    steps: {}, volumeId: volume.id,
+    namedWorkflowId: await namedWorkflowFor(DEMO_PROJECT_ID), volumeId: volume.id,
   })
   await startLife({
     build: { run: 'pnpm build' },
@@ -145,7 +150,7 @@ describe('reconcileSteps', () => {
     const victim = path.join(tmpDir, 'victim.txt')
     await fs.writeFile(victim, 'untouched')
     await fs.symlink(victim, path.join(dir, 'gated-alias.sh'))
-    await addSteps(local, WS, { 'gated-alias': { run: 'echo hi', needs: ['install'] } })
+    await addSteps(local, WS, { steps: { 'gated-alias': { run: 'echo hi', needs: ['install'] } } })
     expect(await fs.readFile(victim, 'utf8')).toBe('untouched')
     expect((await fs.lstat(path.join(dir, 'gated-alias.sh'))).isSymbolicLink()).toBe(false)
 
@@ -235,29 +240,39 @@ describe('addSteps', () => {
     listed()
     await reconcileSteps(view)
 
-    const added = await addSteps(local, WS, { e2e: { run: ['pnpm build', 'pnpm e2e'], needs: ['install'] } })
+    const added = await addSteps(local, WS, { steps: { e2e: { run: ['pnpm build', 'pnpm e2e'], needs: ['install'] } } })
     expect(added).toMatchObject([{ name: 'e2e', origin: 'added', state: 'pending' }])
     listed({ name: 'install', dead: true, exitStatus: 0 })
     await reconcileSteps(view)
     expect(opened()).toEqual(['install', 'e2e'])
 
-    await expect(addSteps(local, WS, { e2e: { run: 'again' } })).rejects.toThrow('already exists')
-    await expect(addSteps(local, WS, { x: { run: 'y', needs: ['nope'] } })).rejects.toThrow('"nope", which is not a step')
-    await expect(addSteps(local, WS, {})).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(addSteps(local, WS, { steps: { e2e: { run: 'again' } } })).rejects.toThrow('already exists')
+    await expect(addSteps(local, WS, { steps: { x: { run: 'y', needs: ['nope'] } } })).rejects.toThrow('"nope", which is not a step')
+    await expect(addSteps(local, WS, { steps: {} })).rejects.toMatchObject({ code: 'VALIDATION' })
+
+    // A named workflow's steps, each recording the workflow it pointed at
+    // then and its name, which an edit to it leaves.
+    await createWorkflow(local, DEMO_PROJECT_ID, { name: 'lint', steps: { lint: { run: 'pnpm lint' } } })
+    const lint = (await resolveWorkflow(DEMO_PROJECT_ID, 'lint')).workflow.id
+    expect(await addSteps(local, WS, { workflow: 'lint' })).toMatchObject([{ name: 'lint', origin: 'added' }])
+    await editWorkflow(local, DEMO_PROJECT_ID, 'lint', { steps: { lint: { run: 'pnpm lint --fix' } } })
+    expect((await listWorkspaceSteps(WS)).find((r) => r.name === 'lint'))
+      .toMatchObject({ workflowId: lint, workflowName: 'lint', spec: { run: ['pnpm lint'] } })
 
     // A new life reruns the start steps but not an added one; one that had
     // not settled is interrupted.
-    await addSteps(local, WS, { later: { run: 'echo', needs: ['e2e'] } })
+    await addSteps(local, WS, { steps: { later: { run: 'echo', needs: ['e2e'] } } })
     await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS, at: new Date(), startSteps: parseStepGraph({ install: { run: 'pnpm install' } }) })
     const rows = await listWorkspaceSteps(WS)
     expect(rows.map((s) => [s.name, s.origin, s.state])).toEqual([
-      ['e2e', 'added', 'interrupted'], ['later', 'added', 'interrupted'], ['install', 'start', 'pending'],
+      ['e2e', 'added', 'interrupted'], ['lint', 'added', 'interrupted'], ['later', 'added', 'interrupted'],
+      ['install', 'start', 'pending'],
     ])
   })
 
   it('refuses a non-interactive workspace while it runs', async () => {
     await startLife({ test: { run: 'pnpm test' } }, { nonInteractive: true })
-    await expect(addSteps(local, WS, { x: { run: 'y' } })).rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(addSteps(local, WS, { steps: { x: { run: 'y' } } })).rejects.toMatchObject({ code: 'CONFLICT' })
   })
 })
 

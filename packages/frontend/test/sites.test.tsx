@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
-import type { SiteEdgeStatus, SiteEntry, VolumeEntry } from '@yaac/shared/types'
+import type { SiteEdgeStatus, SiteEntry, VolumeEntry, WorkflowEntry } from '@yaac/shared/types'
 import { Sites } from '#components/settings/Sites'
 import {
   TEST_WHOAMI, mockFetch, renderWithClient, serverError, serverSnapshot, testQueryClient, type FetchCall, type FetchMock,
@@ -19,6 +19,7 @@ const ago = (minutes: number): string => new Date(Date.now() - minutes * 60_000)
 const SERVE = { server: { run: ['pnpm start'], service: true } }
 
 let sites: SiteEntry[]
+let workflows: WorkflowEntry[]
 let edge: SiteEdgeStatus
 let server: FetchMock
 const site = (name: string): SiteEntry => sites.find((s) => s.name === name) as SiteEntry
@@ -26,7 +27,8 @@ beforeEach(() => {
   edge = { tunnel: 'connected' }
   sites = [
     {
-      name: 'web', hostname: 'app.example.com', port: 3000, adminPort: 3001, steps: SERVE, volume: 'db', createdAt: ago(60),
+      name: 'web', hostname: 'app.example.com', port: 3000, adminPort: 3001, workflow: 'release', steps: SERVE, volume: 'db',
+      createdAt: ago(60),
       live: { workspaceId: 'w-live0001', commit: 'abcdef1234567', since: ago(5), running: true },
       lastDeploy: {
         workspaceId: 'w-fail0001', commit: '9876543210', outcome: 'failed', error: 'step "build" failed (exit 2)',
@@ -34,23 +36,29 @@ beforeEach(() => {
       },
     },
     {
-      name: 'docs', hostname: 'docs.example.com', port: 8080, steps: SERVE, createdAt: ago(60),
+      name: 'docs', hostname: 'docs.example.com', port: 8080, workflow: 'release', steps: SERVE, createdAt: ago(60),
       lastDeploy: { workspaceId: 'w-docs0001', commit: '1111111222', outcome: 'succeeded', finishedAt: ago(90) },
     },
   ]
   const volumes: VolumeEntry[] = [{ name: 'db', size: '5Gi', createdAt: '', stoppedWorkspaces: [] }]
-  // A server that keeps its sites in `sites`, and refuses steps with no
-  // service as the real one does.
+  const workflow = (name: string, steps: WorkflowEntry['steps']): WorkflowEntry => ({
+    id: `wf-${name}`, projectId: 'proj', name, steps, secrets: [], approvedCommits: [], approvedBranches: [], createdAt: '',
+  })
+  workflows = [workflow('release', SERVE), workflow('preview', SERVE), workflow('lint', { lint: { run: ['pnpm lint'] } })]
+  // A server that keeps its sites in `sites`, and refuses a workflow with no
+  // service step as the real one does.
   server = mockFetch({
     [LIST]: () => sites,
     'GET /api/site/edge': () => edge,
     'GET /api/volume/list': volumes,
+    'GET /api/workflow/list': () => workflows,
     'POST /api/site/create': ({ body }: FetchCall) => {
-      const { name, hostname, port, steps, volume } = body as SiteEntry
+      const { name, hostname, port, workflow: wf, volume } = body as SiteEntry
+      const { steps } = workflows.find((w) => w.name === wf) as WorkflowEntry
       if (!Object.values(steps).some((s) => s.service === true)) {
-        return serverError('VALIDATION', 'a site\'s steps need a service step', 400)
+        return serverError('VALIDATION', `workflow "${wf}" has no service step`, 400)
       }
-      sites = [...sites, { name, hostname, port, steps, ...(volume !== undefined ? { volume } : {}), createdAt: '' }]
+      sites = [...sites, { name, hostname, port, workflow: wf, steps, ...(volume !== undefined ? { volume } : {}), createdAt: '' }]
       return undefined
     },
     'POST /api/site/edit': () => undefined,
@@ -127,7 +135,7 @@ describe('Sites settings', () => {
     expect(server.called('POST /api/site/delete')[0].body).toEqual({ project: 'proj', name: 'docs' })
   })
 
-  it('creates a site, checking its steps and showing the server\'s refusal, then says what to set in Cloudflare', async () => {
+  it('creates a site running a workflow, showing the server\'s refusal, then says what to set in Cloudflare', async () => {
     renderWithClient(<Sites projectId="proj" readOnly={false} />, client())
     fireEvent.click(await screen.findByRole('button', { name: 'New site' }))
     fireEvent.change(screen.getByLabelText('Site name'), { target: { value: 'api' } })
@@ -137,34 +145,32 @@ describe('Sites settings', () => {
     await screen.findByRole('option', { name: 'db' })
     fireEvent.change(screen.getByLabelText('Volume'), { target: { value: 'db' } })
 
-    const steps = screen.getByLabelText('Steps')
-    const create = screen.getByRole('button', { name: 'Create' })
-    fireEvent.change(steps, { target: { value: '{' } })
+    // A site needs a workflow before it can be created.
+    const create = screen.getByRole<HTMLButtonElement>('button', { name: 'Create' })
+    expect(create.disabled).toBe(true)
+    await screen.findByRole('option', { name: 'Workflow lint' })
+    fireEvent.change(screen.getByLabelText('Workflow'), { target: { value: 'lint' } })
     fireEvent.click(create)
-    expect(await screen.findByText(/^Invalid JSON/)).toBeTruthy()
-    fireEvent.change(steps, { target: { value: '[]' } })
-    fireEvent.click(create)
-    expect(await screen.findByText('Steps must be a JSON object')).toBeTruthy()
-    fireEvent.change(steps, { target: { value: '{"build": {"run": "make"}}' } })
-    fireEvent.click(create)
-    expect(await screen.findByText('a site\'s steps need a service step')).toBeTruthy()
+    expect(await screen.findByText('workflow "lint" has no service step')).toBeTruthy()
 
-    fireEvent.change(steps, { target: { value: JSON.stringify(SERVE) } })
+    fireEvent.change(screen.getByLabelText('Workflow'), { target: { value: 'release' } })
     fireEvent.click(create)
     expect(await screen.findByRole('link', { name: 'api.example.com' })).toBeTruthy()
     expect(server.called('POST /api/site/create').at(-1)?.body).toEqual({
-      project: 'proj', name: 'api', hostname: 'api.example.com', port: 4000, adminPort: 4001, steps: SERVE, volume: 'db',
+      project: 'proj', name: 'api', hostname: 'api.example.com', port: 4000, adminPort: 4001, workflow: 'release', volume: 'db',
     })
     expect(screen.queryByLabelText('Site name')).toBeNull()
     expect(screen.getByRole('note').textContent).toContain('add a public hostname api.example.com')
     expect(screen.getByRole('note').textContent).toContain('the router (yaac-site-router, port 8080)')
   })
 
-  it('edits a site, dropping its admin port and volume', async () => {
+  it('edits a site, switching its workflow and dropping its admin port and volume', async () => {
     renderWithClient(<Sites projectId="proj" readOnly={false} />, client())
     fireEvent.click((await screen.findAllByRole('button', { name: 'Edit' }))[0])
     expect(screen.queryByLabelText('Site name')).toBeNull()
-    expect(screen.getByLabelText<HTMLTextAreaElement>('Steps').value).toBe(`${JSON.stringify(SERVE, null, 2)}\n`)
+    await screen.findByRole('option', { name: 'Workflow preview' })
+    expect(screen.getByLabelText<HTMLSelectElement>('Workflow').value).toBe('release')
+    fireEvent.change(screen.getByLabelText('Workflow'), { target: { value: 'preview' } })
     fireEvent.change(screen.getByLabelText('Hostname'), { target: { value: 'www.example.com' } })
     expect(screen.getByLabelText<HTMLInputElement>('Admin port').value).toBe('3001')
     fireEvent.change(screen.getByLabelText('Admin port'), { target: { value: '' } })
@@ -172,9 +178,19 @@ describe('Sites settings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(screen.queryByLabelText('Hostname')).toBeNull())
     expect(server.called('POST /api/site/edit')[0].body).toEqual({
-      project: 'proj', name: 'web', hostname: 'www.example.com', port: 3000, adminPort: null, steps: SERVE, volume: null,
+      project: 'proj', name: 'web', hostname: 'www.example.com', port: 3000, adminPort: null, workflow: 'preview', volume: null,
     })
     expect(screen.queryByRole('note')).toBeNull()
+  })
+
+  it('points to Workflows when the project has none to run', async () => {
+    workflows = []
+    renderWithClient(<Sites projectId="proj" readOnly={false} />, client())
+    fireEvent.click(await screen.findByRole('button', { name: 'New site' }))
+    fireEvent.change(screen.getByLabelText('Site name'), { target: { value: 'api' } })
+    fireEvent.change(screen.getByLabelText('Hostname'), { target: { value: 'api.example.com' } })
+    expect(await screen.findByText(/^This project has no workflows yet/)).toBeTruthy()
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Create' }).disabled).toBe(true)
   })
 
   it('says how to set up a tunnel on an install without one, and only lists a teammate\'s sites to a member', async () => {

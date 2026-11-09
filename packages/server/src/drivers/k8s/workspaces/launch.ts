@@ -27,6 +27,7 @@ import {
   ensureProjectRegistry,
   projectRegistryConfDropIn,
   proxyServiceClusterIp,
+  runSecretsName,
   servingNpmCacheUrl,
 } from '#drivers/k8s/cluster'
 import {
@@ -299,6 +300,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     labels,
     image,
     env,
+    ...(spec.runSecrets !== undefined ? { secretEnv: { secretName: runSecretsName(spec.projectId), names: spec.runSecrets } } : {}),
     mounts,
     memoryRequestBytes: spec.resources.memoryRequestBytes,
     memoryLimitBytes: spec.resources.memoryLimitBytes,

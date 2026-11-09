@@ -1,6 +1,7 @@
 import {
   deleteProjectEnvVar,
   listProjectEnvVars,
+  listRunSecrets,
   upsertProjectEnvVar,
   type ProjectEnvVarRow,
 } from '#db'
@@ -18,11 +19,12 @@ import { workspaceDriver } from '#drivers/driver'
  * act on (a bad rule would otherwise be dropped silently inside the proxy).
  *
  * Secret values never leave here, except through {@link resolveProjectEnv}
- * for workspace create and {@link pushProjectSecrets} for the runtime.
+ * for workspace create and {@link pushProjectSecrets} for the runtime, which
+ * also carries the project's run secrets (run-secrets.ts).
  */
 
 /** A shell-legal variable name. */
-const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
+export const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 /** Validate one secret's injection rule against what the proxy can act on. */
 export function parseSecretProxyRule(name: string, raw: unknown): SecretProxyRule {
@@ -174,13 +176,16 @@ export async function resolveProjectEnv(projectId: string): Promise<ResolvedProj
 }
 
 /**
- * Hand the runtime a project's current secret values, which it injects per
- * request, so running workspaces pick up an edit without a restart.
+ * Hand the runtime a project's current secret values: the proxied ones,
+ * which it injects per request, so running workspaces pick up an edit
+ * without a restart, and the run secrets with a value, which it hands to
+ * the launches that name them.
  */
 export async function pushProjectSecrets(projectId: string): Promise<void> {
-  const { secrets } = await resolveProjectEnv(projectId)
+  const [{ secrets }, runSecrets] = await Promise.all([resolveProjectEnv(projectId), listRunSecrets(projectId)])
   await workspaceDriver().syncProjectSecrets(
     projectId,
     Object.fromEntries(Object.entries(secrets).map(([name, { value }]) => [name, value])),
+    Object.fromEntries(runSecrets.flatMap((r) => r.value !== undefined ? [[r.name, r.value]] : [])),
   )
 }

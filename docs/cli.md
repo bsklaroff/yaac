@@ -86,6 +86,9 @@ yaac workspace
     --steps <file>              JSON file of the steps to start with, in
                                 place of the project's init steps
     --no-steps                  Start with no steps
+    --workflow <name>           Start with this named workflow; non-interactive,
+                                it gets its run secrets, and this launch
+                                approves its commit (workflows.md)
     -t, --tool <tool>           claude, codex, opencode or pi (default: the
                                 project's last, else claude)
     -b, --branch <branch>       Base branch (default: the remote's default)
@@ -129,6 +132,7 @@ yaac workspace
     --needs <a,b>               Steps that must succeed (or be ready) first
     --service [--ready <cmd>]   It keeps running; steps needing it wait for the
                                 ready check, if any
+    --workflow <name>           Add a named workflow's steps instead
   step rerun <workspace-id> <name>
                                 Run a finished step again, with the steps it
                                 caused to be skipped
@@ -148,7 +152,7 @@ yaac workspace
 
 yaac routine                    Workspaces started on a cron schedule (routines.md)
   create <project>              --name, --cron and --prompt (or
-                                --non-interactive with --steps) required
+                                --non-interactive with --workflow) required
     --name <name>               Heads each run's title; names its default group
     --cron <expr>               5-field cron or a nickname like @daily
     -p, --prompt <text>         Each run's prompt; - reads it from stdin
@@ -156,8 +160,11 @@ yaac routine                    Workspaces started on a cron schedule (routines.
     --tz <zone>                 Zone the cron is read in (default: yours)
     --timeout <duration|next>   Stop each run this long after it starts;
                                 next (the default) stops it at the next tick
-    -t/-m/-e/-b, --mode, --permission-mode, --commit, --steps, --no-steps,
+    -t/-m/-e/-b, --mode, --permission-mode, --commit,
     --non-interactive           As for workspace create
+    --workflow <name>           The named workflow each run starts with;
+                                saving approves the commit or branch it runs
+                                on for its run secrets (workflows.md)
     -g, --group <group>         Group runs are filed under (default: one named
                                 after the routine)
     --no-group                  File runs in the default list
@@ -172,11 +179,13 @@ yaac site                       A project's public sites, each served by a
                                 locked workspace, its release (cluster servers
                                 only; public-sites.md). Only an admin creates,
                                 edits, deploys or starts one
-  create <project> <name>       --hostname, --port and --steps required; prints
-                                what to add to the Cloudflare tunnel
+  create <project> <name>       --hostname, --port and --workflow required;
+                                prints what to add to the Cloudflare tunnel
     --hostname <host>           Public hostname the tunnel routes
     --port <n>                  Port its releases serve on
-    --steps <file>              JSON file of the steps each release runs
+    --workflow <name>           The named workflow each release runs; a deploy
+                                approves its commit, following a branch the
+                                branch (workflows.md)
     --admin-port <n>            Port of each release only its owner reaches,
                                 by `yaac forward` or a preview
     --volume <name>             Volume each release mounts (see `yaac volume`)
@@ -203,6 +212,21 @@ yaac site                       A project's public sites, each served by a
   stop <project> <name>         Stop the live release; the hostname answers 503
   start <project> <name>        Start a replacement of the last release
   delete <project> <name>       Delete the site and stop its release
+
+yaac workflow                   A project's named workflows, which routines,
+                                sites, creates and queued workspaces run, and
+                                the run secrets each gets (workflows.md)
+  create <project> <name>       A workflow from --file
+    --file <path>               JSON file of its steps
+    --secret <name>             A run secret its runs get (repeatable)
+  edit <project> <name>         New steps or secrets; workspaces started keep
+                                what they started with
+    --file <path>               Its new steps; needed to give it run secrets
+    --secret <name>             Run secrets it gets, replacing its own
+    --no-secrets                Give it none
+  list <project>                Workflows with their steps and run secrets
+  show <project> <name>         Steps, run secrets and approvals
+  delete <project> <name>       Refused while anything follows it
 
 yaac volume                     A project's volumes, one running workspace at a
                                 time (cluster servers only; workspace-volumes.md)
@@ -273,6 +297,7 @@ yaac config                     Each setting prints given no value, and is
   init-steps <project>          Print the steps every workspace runs at start,
                                 as JSON (docs/workspace-steps.md)
     --file <path>               Replace them with a JSON file's
+    --workflow <name>           Follow a named workflow instead
     --none                      Remove them
   env <project> [NAME=value...] List the project's variables and secrets
                                 (secrets masked, with their proxy rule), or
@@ -285,7 +310,10 @@ yaac config                     Each setting prints given no value, and is
     --prefix <prefix>           Before the value (default "Bearer " with the
                                 default header)
     --body-param <name>         Into this form/JSON body field instead
-    --unset <name>              Remove a variable or secret
+    --run-secret                Set the run secret NAME instead, its value
+                                read from stdin: a real value only the
+                                workflows naming it get (project-config.md)
+    --unset <name>              Remove a variable, secret or run secret
   egress-allowlist <project> [hosts...]
                                 Show or replace the hosts workspaces may reach
                                 besides the defaults (k8s servers only)

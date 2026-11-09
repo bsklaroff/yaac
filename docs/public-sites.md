@@ -161,11 +161,11 @@ A share whose source's owner removed it (docs/hosted-projects.md
 "Sharing") runs nothing: its sites are not routed or supervised, and its
 owner may still stop or delete them to free their hostnames.
 
-A site names its hostname, the port its releases serve on, the step graph
-each release runs (stored on the site, like a routine's), and optionally a
+A site names its hostname, the port its releases serve on, the named
+workflow each release runs (docs/workflows.md), and optionally a
 volume, which no other site may name and which cannot be deleted while
 named, and a branch to follow (see "Following a branch"). Editing the
-hostname moves it at once; the port, graph and volume apply from the next
+hostname moves it at once; the port, workflow and volume apply from the next
 deploy, and an edit is refused while a deploy runs.
 
 A **release** is a workspace with `workspaces.siteId` set, started by a
@@ -198,7 +198,10 @@ deploy at one commit. It differs from an ordinary workspace in these ways:
   credentials are pushed under (`NO_CREDENTIALS_OWNER_KEY`), so the proxy
   swaps in no tool, git or ssh credential, and the launch hands it no git
   credential either, so a project needs none to deploy. The project's
-  environment and secrets apply as for any workspace.
+  environment and secrets apply as for any workspace, and the run secrets
+  its workflow names arrive as their real values (docs/workflows.md), for
+  a key the app signs with: its owner's deploy approves the commit, and
+  setting it to follow a branch the branch.
 - **One image.** A deploy records the image its release launched, and every
   replacement launches that image again, so a release never changes under
   a later image config edit. The registry GC keeps a site's images though
@@ -318,7 +321,12 @@ every workspace of it and of every share of it, since a push fans out to
 each. yaac does not stop them: the branch's protection is the remote's to
 set. A hosted remote has none beyond the default-branch guard, and agents
 land work by pushing to the default branch (docs/hosted-projects.md), so
-follow a branch there only if an agent publishing is acceptable.
+follow a branch there only if an agent publishing is acceptable. Following
+a branch also approves it for the run secrets of the site's workflow, so
+whoever may push it gets those values too, and can print them into the
+release's step logs, which the project's agents read (docs/workflows.md
+"Run secrets"). A hosted project shared with another user follows no
+branch with a workflow that names secrets.
 
 The branch must exist on origin when it is named, by its own name: one
 that reads as a ref (`origin/main`, `refs/heads/main`) would follow a
