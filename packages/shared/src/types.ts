@@ -1,8 +1,10 @@
 import { z } from 'zod'
 import type { StepGraph, StepsOutcome, WorkspaceStep } from './steps'
 import {
+  CUSTOM_PROVIDER,
   parseOpencodeProvider,
   parsePiProvider,
+  type CustomEndpoint,
   type OpencodeProvider,
   type PiProvider,
 } from '#tool-providers'
@@ -535,40 +537,66 @@ export const codexCredentialsFileSchema = z.discriminatedUnion('kind', [
 ])
 export type CodexCredentialsFile = z.infer<typeof codexCredentialsFileSchema>
 
-/**
- * Shape of a user's stored opencode sign-in (the server's
- * `tool_credentials`): an api key for one provider in the generated registry
- * (`tool-providers.ts`). `provider` picks
- * the env var and the host the proxy swaps the key on; a sign-in whose provider
- * is missing or unknown fails to parse rather than defaulting, which could
- * send the key to the wrong vendor.
- */
-export const opencodeCredentialsFileSchema = apiKeyCredentialSchema.extend({
-  savedAt,
-  provider: z.custom<OpencodeProvider>(
-    (v) => typeof v === 'string' && parseOpencodeProvider(v) !== undefined,
-    'provider is missing or not in this build\'s registry',
-  ),
+/** A `custom` provider's endpoint (`CustomEndpoint`), as stored and sent. */
+export const customEndpointSchema = z.object({
+  baseUrl: z.string().refine((v) => {
+    try {
+      return ['http:', 'https:'].includes(new URL(v).protocol)
+    } catch {
+      return false
+    }
+  }, 'the endpoint must be an http(s) URL'),
+  // Each id launches as `custom/<id>`, so it must pass the create form's
+  // model check, which also keeps it shell-safe.
+  models: z.array(
+    z.string().trim().regex(MODEL_RE, 'a model id is letters, digits and . _ : / -, starting with a letter or digit')
+      .max(100 - `${CUSTOM_PROVIDER}/`.length),
+  ).min(1, 'list at least one model the endpoint serves'),
 })
+
+/**
+ * Shape of a user's stored opencode or pi sign-in (the server's
+ * `tool_credentials`): an api key for one provider in the tool's registry
+ * (`tool-providers.ts`). `provider` picks the env var and the host the proxy
+ * swaps the key on; a sign-in whose provider is missing or unknown fails to
+ * parse rather than defaulting, which could send the key to the wrong
+ * vendor. The `custom` provider carries its endpoint, and may have no key,
+ * since a self-hosted server often takes none.
+ */
+function apiKeyToolCredentialsFileSchema<P extends string>(parse: (v: string | undefined) => P | undefined) {
+  return z.object({
+    kind: z.literal('api-key'),
+    apiKey: z.string(),
+    savedAt,
+    provider: z.custom<P>(
+      (v) => typeof v === 'string' && parse(v) !== undefined,
+      'provider is missing or not in this build\'s registry',
+    ),
+    endpoint: customEndpointSchema.optional(),
+  })
+    .refine((c) => (c.provider === CUSTOM_PROVIDER) === (c.endpoint !== undefined), 'only the custom provider has an endpoint, and it needs one')
+    .refine((c) => c.apiKey !== '' || c.provider === CUSTOM_PROVIDER, 'an api key is required')
+}
+
+export const opencodeCredentialsFileSchema = apiKeyToolCredentialsFileSchema(parseOpencodeProvider)
 export type OpencodeCredentialsFile = z.infer<typeof opencodeCredentialsFileSchema>
 
-/** Shape of a user's stored pi sign-in; like opencode's. */
-export const piCredentialsFileSchema = apiKeyCredentialSchema.extend({
-  savedAt,
-  provider: z.custom<PiProvider>(
-    (v) => typeof v === 'string' && parsePiProvider(v) !== undefined,
-    'provider is missing or not in this build\'s registry',
-  ),
-})
+export const piCredentialsFileSchema = apiKeyToolCredentialsFileSchema(parsePiProvider)
 export type PiCredentialsFile = z.infer<typeof piCredentialsFileSchema>
 
 /**
  * The `PUT /auth/:tool` body. The server checks it against the named tool:
- * an OAuth bundle must be that tool's, and opencode/pi need a provider from
- * their registry, rejected rather than defaulted when missing or unknown.
+ * an OAuth bundle must be that tool's, opencode/pi need a provider from
+ * their registry, rejected rather than defaulted when missing or unknown,
+ * and only their `custom` provider takes an endpoint or an empty key.
  */
 export const toolAuthPayloadSchema = z.discriminatedUnion('kind', [
-  apiKeyCredentialSchema.extend({ provider: z.string().optional() }),
+  z.object({
+    kind: z.literal('api-key'),
+    apiKey: z.string(),
+    provider: z.string().optional(),
+    endpoint: customEndpointSchema.optional(),
+  }),
   z.object({
     kind: z.literal('oauth'),
     bundle: z.union([claudeOAuthBundleSchema, codexOAuthBundleSchema]),
@@ -604,7 +632,8 @@ export interface RefreshedToolCredentials {
  */
 interface ToolAuthEntryBase {
   kind: ToolAuthKind
-  /** Access token (OAuth) or raw API key. */
+  /** Access token (OAuth) or raw API key; empty for a keyless custom
+   *  endpoint. */
   apiKey: string
   savedAt: string
 }
@@ -623,11 +652,15 @@ export type ToolAuthEntry =
     tool: 'opencode'
     /** Which backend the stored api-key authenticates against. */
     opencodeProvider: OpencodeProvider
+    /** The `custom` provider's endpoint. */
+    endpoint?: CustomEndpoint
   })
   | (ToolAuthEntryBase & {
     tool: 'pi'
     /** Which provider the stored api-key authenticates against. */
     piProvider: PiProvider
+    /** The `custom` provider's endpoint. */
+    endpoint?: CustomEndpoint
   })
 
 export interface ProjectMeta {
@@ -780,6 +813,8 @@ export interface ToolAuthSummary {
   opencodeProvider?: OpencodeProvider
   /** pi only — which provider the stored api-key authenticates against. */
   piProvider?: PiProvider
+  /** opencode / pi with the `custom` provider: its endpoint. */
+  endpoint?: CustomEndpoint
   /** Candidate `--model` values for this credential, newest first, for the
    *  create form. Not an allowlist. */
   models: ModelOption[]

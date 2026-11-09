@@ -58,6 +58,13 @@ export interface RuleRenderInput {
   sshSentinelIp: string
   /** Port dialed on the sentinel. */
   sshSentinelPort: number
+  /** The address the proxy's DNS stub answers outside names with. TCP to
+   *  it on any port the rules above don't take goes to the HTTP listener,
+   *  so `http://host:8080` works; the proxy routes by the Host header, port
+   *  included, exactly as it already does for port 80. Real addresses on
+   *  other ports stay unredirected and are dropped. Like the sentinel, it
+   *  must sit outside every pod CIDR. */
+  dnsSinkholeIp: string
 }
 
 /**
@@ -92,6 +99,10 @@ export function renderRedirectRules(input: RuleRenderInput): string[][] {
     rules.push([
       ...base(['-d', input.sshSentinelIp, '--dport', String(input.sshSentinelPort)]),
       '-j', 'DNAT', '--to-destination', `${input.nodeIp}:${input.trio.tunnel}`,
+    ])
+    rules.push([
+      ...base(['-d', input.dnsSinkholeIp]),
+      '-j', 'DNAT', '--to-destination', `${input.nodeIp}:${input.trio.http}`,
     ])
   }
   return rules

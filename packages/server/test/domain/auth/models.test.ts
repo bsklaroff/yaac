@@ -27,6 +27,12 @@ describe('modelsForTool', () => {
     // No credential, no provider — nothing to offer.
     expect(modelsForTool('opencode', undefined)).toEqual([])
   })
+
+  it('offers a custom endpoint the models its credential lists, unnamed', () => {
+    const endpoint = { baseUrl: 'http://box:8080/v1', models: ['Qwen/Qwen3-Coder', 'llama'] }
+    expect(modelsForTool('pi', 'custom', endpoint)).toEqual([{ id: 'custom/Qwen/Qwen3-Coder' }, { id: 'custom/llama' }])
+    expect(modelsForTool('opencode', 'custom', undefined)).toEqual([])
+  })
 })
 
 describe('isCatalogModel', () => {
@@ -54,6 +60,12 @@ describe('defaultModelFor', () => {
   it('answers the pinned fallback for claude and codex', () => {
     expect(defaultModelFor('claude', undefined)).toBe(FALLBACK_MODELS.claude)
     expect(defaultModelFor('codex', undefined)).toBe(FALLBACK_MODELS.codex)
+  })
+
+  it('answers a custom endpoint\'s first model, or none without one', () => {
+    const endpoint = { baseUrl: 'http://box:8080/v1', models: ['llama', 'qwen'] }
+    expect(defaultModelFor('opencode', 'custom', endpoint)).toBe('custom/llama')
+    expect(defaultModelFor('pi', 'custom', undefined)).toBe('')
   })
 
   it('answers pi\'s own default for its provider — what it launched with before', () => {

@@ -75,6 +75,16 @@ describe('listAuth', () => {
     expect(result.toolAuth[3].defaultModel).toMatch(/^openrouter\//)
   })
 
+  it('shows a custom endpoint\'s URL and models, and no preview for a keyless one', async () => {
+    const endpoint = { baseUrl: 'http://box.tail1234.ts.net:8080/v1', models: ['llama', 'qwen'] }
+    await setToolCredential(BUILT_IN_USER_ID, 'pi', { kind: 'api-key', provider: 'custom', savedAt: 'x', apiKey: '', endpoint })
+    const [pi] = (await listAuth(BUILT_IN_USER_ID)).toolAuth
+    expect(pi).toMatchObject({
+      tool: 'pi', piProvider: 'custom', endpoint, keyPreview: '',
+      models: [{ id: 'custom/llama' }, { id: 'custom/qwen' }], defaultModel: 'custom/llama',
+    })
+  })
+
   it('never leaks the raw access token', async () => {
     await setToolCredential(BUILT_IN_USER_ID, 'claude', {
       kind: 'oauth',

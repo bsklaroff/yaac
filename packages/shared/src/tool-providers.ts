@@ -6,25 +6,51 @@
  * points the tool's own config at that variable.
  *
  * The provider data is generated into `tool-providers.generated.ts` by
- * `pnpm gen:providers` (scripts/gen-tool-providers.ts).
+ * `pnpm gen:providers` (scripts/gen-tool-providers.ts). One provider is not
+ * generated: `custom`, a self-hosted OpenAI-compatible endpoint whose URL
+ * and models the credential itself carries (`CustomEndpoint`).
  */
 import {
-  OPENCODE_PROVIDERS,
-  PI_PROVIDERS,
+  OPENCODE_PROVIDERS as GENERATED_OPENCODE_PROVIDERS,
+  PI_PROVIDERS as GENERATED_PI_PROVIDERS,
   type OpencodeProviderId,
   type PiProviderId,
   type ToolProviderInfo,
 } from '#tool-providers.generated'
 
-export { OPENCODE_PROVIDERS, PI_PROVIDERS }
 export type { ToolProviderInfo }
 
+/** The provider id of a self-hosted OpenAI-compatible endpoint. */
+export const CUSTOM_PROVIDER = 'custom'
+
 /**
- * A provider id for the tool, from the generated registry. Parse raw
- * strings with `parseOpencodeProvider` / `parsePiProvider`.
+ * Where a `custom` provider sends requests, and the model ids it serves.
+ * The proxy swaps a key in on `baseUrl`'s host, as it does on a generated
+ * provider's `apiHost`.
  */
-export type OpencodeProvider = OpencodeProviderId
-export type PiProvider = PiProviderId
+export interface CustomEndpoint {
+  baseUrl: string
+  models: string[]
+}
+
+/**
+ * The `custom` row. Its host comes from the credential's endpoint, and it
+ * has no variable of its own to fall back to, so both are left empty.
+ * Listed first so the provider pickers show it without a search.
+ */
+const CUSTOM_PROVIDER_INFO = {
+  id: CUSTOM_PROVIDER, label: 'Custom (OpenAI-compatible)', envVar: '', apiHost: '',
+} as const satisfies ToolProviderInfo
+
+export const OPENCODE_PROVIDERS = [CUSTOM_PROVIDER_INFO, ...GENERATED_OPENCODE_PROVIDERS] as const
+export const PI_PROVIDERS = [CUSTOM_PROVIDER_INFO, ...GENERATED_PI_PROVIDERS] as const
+
+/**
+ * A provider id for the tool, from the generated registry or `custom`.
+ * Parse raw strings with `parseOpencodeProvider` / `parsePiProvider`.
+ */
+export type OpencodeProvider = OpencodeProviderId | typeof CUSTOM_PROVIDER
+export type PiProvider = PiProviderId | typeof CUSTOM_PROVIDER
 
 /** The picker's default provider. */
 export const OPENCODE_DEFAULT_PROVIDER: OpencodeProvider = 'openrouter'
@@ -71,6 +97,20 @@ export function opencodeProviderInfo(id: OpencodeProvider): ToolProviderInfo {
 /** Look up a pi provider's metadata; falls back to the default. */
 export function piProviderInfo(id: PiProvider): ToolProviderInfo {
   return infoOrDefault(PI_PROVIDERS, id, PI_DEFAULT_PROVIDER)
+}
+
+/**
+ * The host the proxy swaps a provider's key in on: the generated row's
+ * `apiHost`, or a custom endpoint's host. Undefined when there is none,
+ * so the key goes nowhere rather than to a guessed vendor.
+ */
+export function providerApiHost(
+  list: readonly ToolProviderInfo[],
+  provider: string | undefined,
+  endpoint: CustomEndpoint | undefined,
+): string | undefined {
+  if (provider === CUSTOM_PROVIDER) return endpoint && new URL(endpoint.baseUrl).hostname
+  return list.find((p) => p.id === provider)?.apiHost || undefined
 }
 
 /**

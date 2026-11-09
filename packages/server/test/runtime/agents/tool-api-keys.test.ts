@@ -5,7 +5,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { ensureToolApiKeyConfig } from '#runtime/agents/tool-api-keys'
 import { openRoot } from '#lib/confined-fs'
-import { opencodeProviderInfo, piProviderInfo } from '@yaac/shared/tool-providers'
+import { CUSTOM_PROVIDER, opencodeProviderInfo, piProviderInfo } from '@yaac/shared/tool-providers'
 
 describe('ensureToolApiKeyConfig', () => {
   let dir: string
@@ -67,5 +67,45 @@ describe('ensureToolApiKeyConfig', () => {
 
     expect(await fs.readFile(path.join(dir, 'pi', 'agent', 'models.json'), 'utf8')).toBe('{ broken')
     expect(await fs.readdir(path.join(dir, 'opencode'))).toEqual([])
+  })
+
+  it('defines a custom endpoint whole for both tools, replacing an earlier definition', async () => {
+    await fs.mkdir(path.join(dir, 'pi', 'agent'), { recursive: true })
+    await fs.writeFile(path.join(dir, 'pi', 'agent', 'models.json'), JSON.stringify({
+      providers: { anthropic: { apiKey: 'sk-user' }, custom: { baseUrl: 'http://old:1/v1', models: [{ id: 'old' }] } },
+    }))
+    const endpoint = { baseUrl: 'http://box.tail1234.ts.net:8080/v1', models: ['Qwen/Qwen3-Coder', 'llama'] }
+
+    expect(await ensureToolApiKeyConfig(await homes(), {
+      opencode: { ...opencodeProviderInfo(CUSTOM_PROVIDER), endpoint },
+      pi: { ...piProviderInfo(CUSTOM_PROVIDER), endpoint },
+    })).toEqual({ opencodeConfigFile: 'yaac-keys/custom.json' })
+
+    expect(await read('opencode/yaac-keys/custom.json')).toEqual({ provider: { custom: {
+      npm: '@ai-sdk/openai-compatible',
+      name: 'Custom (OpenAI-compatible)',
+      env: ['YAAC_OPENCODE_KEY_CUSTOM'],
+      options: { baseURL: 'http://box.tail1234.ts.net:8080/v1' },
+      models: { 'Qwen/Qwen3-Coder': {}, llama: {} },
+    } } })
+    const models = await read('pi/agent/models.json') as { providers: Record<string, { apiKey: string }> }
+    expect(models).toEqual({ providers: {
+      anthropic: { apiKey: 'sk-user' },
+      custom: {
+        name: 'Custom (OpenAI-compatible)',
+        baseUrl: 'http://box.tail1234.ts.net:8080/v1',
+        api: 'openai-completions',
+        apiKey: '!printenv YAAC_PI_KEY_CUSTOM || echo none',
+        models: [{ id: 'Qwen/Qwen3-Coder' }, { id: 'llama' }],
+      },
+    } })
+
+    // A keyless endpoint gets no variable, and pi needs some key to offer
+    // the models, so it falls back to a dummy.
+    const run = (env: Record<string, string>): string => execFileSync(
+      'sh', ['-c', models.providers.custom.apiKey.slice(1)], { env: { PATH: process.env.PATH, ...env }, encoding: 'utf8' },
+    ).trim()
+    expect(run({ YAAC_PI_KEY_CUSTOM: 'sk-yaac' })).toBe('sk-yaac')
+    expect(run({})).toBe('none')
   })
 })

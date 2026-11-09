@@ -350,6 +350,24 @@ describe('yaac auth (real CLI + shared server)', () => {
       expect(typed.exitCode).toBe(0)
       expect(await stored('pi')).toMatchObject({ kind: 'api-key', piProvider: 'anthropic', keyPreview: '***-key' })
     })
+
+    it('stores a keyless custom endpoint with the URL and models typed at its prompts', async () => {
+      const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'update', {
+        stdinOnPrompt: [
+          { when: /Choice \[1-5\]: /, send: '5\n' },
+          { when: /Provider \[openrouter\]: /, send: 'custom\n' },
+          { when: /Endpoint URL .*: /, send: 'http://gpu-box.tail1234.ts.net:8080/v1\n' },
+          { when: /Model ids .*: /, send: 'Qwen/Qwen3-Coder, llama\n' },
+          { when: /Paste your API key \(Enter for none\): /, send: '\n' },
+        ],
+      })
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain('Pi credentials saved.')
+      expect(await stored('pi')).toMatchObject({
+        piProvider: 'custom', keyPreview: '', defaultModel: 'custom/Qwen/Qwen3-Coder',
+        endpoint: { baseUrl: 'http://gpu-box.tail1234.ts.net:8080/v1', models: ['Qwen/Qwen3-Coder', 'llama'] },
+      })
+    })
   })
 
   // The daemon the desktop app bundles, run from source as its

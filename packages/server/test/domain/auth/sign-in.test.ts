@@ -122,6 +122,32 @@ describe('signInTool', () => {
     expect(await getToolCredential(ME, 'claude')).toMatchObject({ kind: 'api-key', apiKey: 'sk-ant-api' })
   })
 
+  it('stores a custom endpoint, with or without a key, and hands the proxy its host', async () => {
+    installFakeWorkspaceDriver({ kind: 'k8s' })
+    const synced: Array<Record<string, { opencode: unknown; pi: unknown }>> = []
+    workspaceDriver().syncCredentials = (bundles) => { synced.push(bundles); return Promise.resolve() }
+    const endpoint = { baseUrl: 'http://box.tail1234.ts.net:8080/v1', models: ['llama'] }
+    const tls = { baseUrl: 'https://llm.example.com/v1', models: ['llama'] }
+
+    await signInTool(ME, 'opencode', { kind: 'api-key', apiKey: '', provider: 'custom', endpoint })
+    await signInTool(ME, 'pi', { kind: 'api-key', apiKey: 'sk-self', provider: 'custom', endpoint: tls })
+
+    expect(await loadToolAuthEntry(ME, 'opencode')).toMatchObject({ apiKey: '', opencodeProvider: 'custom', endpoint })
+    expect(await loadToolAuthEntry(ME, 'pi')).toMatchObject({ apiKey: 'sk-self', piProvider: 'custom', endpoint: tls })
+    expect(synced.at(-1)?.install).toMatchObject({
+      opencode: { provider: 'custom', apiKey: '', endpoint },
+      pi: { provider: 'custom', apiKey: 'sk-self', endpoint: tls },
+    })
+
+    // A key the proxy would never send over plain HTTP is refused on a
+    // cluster, and kept where the workspace holds the real key.
+    expect((await rejection(signInTool(ME, 'opencode', { kind: 'api-key', apiKey: 'k', provider: 'custom', endpoint }))).message)
+      .toMatch(/never send a key over plain HTTP/)
+    installFakeWorkspaceDriver({ kind: 'containerless' })
+    await signInTool(ME, 'opencode', { kind: 'api-key', apiKey: 'k', provider: 'custom', endpoint })
+    expect(await loadToolAuthEntry(ME, 'opencode')).toMatchObject({ apiKey: 'k', endpoint })
+  })
+
   it('refuses a payload that does not fit the tool, storing nothing', async () => {
     expect((await rejection(signInTool(ME, 'codex', { kind: 'oauth', bundle: claudeBundle('x') }))).code).toBe('VALIDATION')
     expect((await rejection(signInTool(ME, 'opencode', { kind: 'oauth', bundle: claudeBundle('x') }))).message)
@@ -132,6 +158,16 @@ describe('signInTool', () => {
     // A rejected provider is echoed truncated, in case a key was pasted there.
     const err = await rejection(signInTool(ME, 'opencode', { kind: 'api-key', apiKey: 'k', provider: 'sk-or-v1-0123456789abcdef' }))
     expect(err.message).toContain('"sk-or-v1-0123456…"')
+    // Only the custom provider takes an endpoint, it needs one, and only it
+    // goes without a key.
+    const endpoint = { baseUrl: 'http://box:8080/v1', models: ['llama'] }
+    expect((await rejection(signInTool(ME, 'pi', { kind: 'api-key', apiKey: '', provider: 'custom' }))).message)
+      .toMatch(/needs an endpoint/)
+    expect((await rejection(signInTool(ME, 'pi', { kind: 'api-key', apiKey: 'k', provider: 'openrouter', endpoint }))).message)
+      .toMatch(/Only the custom pi provider/)
+    expect((await rejection(signInTool(ME, 'opencode', { kind: 'api-key', apiKey: '', provider: 'openrouter' }))).message)
+      .toMatch(/needs an api key/)
+    expect((await rejection(signInTool(ME, 'codex', { kind: 'api-key', apiKey: '' }))).message).toMatch(/needs an api key/)
     for (const tool of ['codex', 'opencode', 'pi'] as const) expect(await getToolCredential(ME, tool)).toBeNull()
   })
 })

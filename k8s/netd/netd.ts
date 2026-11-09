@@ -110,6 +110,7 @@ export interface NetdConfig {
   vethPrefix: string
   sshSentinelIp: string
   sshSentinelPort: number
+  dnsSinkholeIp: string
   transparentPorts: TransparentPorts
   listenerRange: ListenerRange
   /** Where the host's cgroup2 tree is mounted, for the swap bounds and
@@ -135,6 +136,7 @@ export function loadConfig(): NetdConfig {
     vethPrefix: normalizeVethPrefix(process.env.NETD_VETH_PREFIX),
     sshSentinelIp: process.env.SSH_TUNNEL_SENTINEL ?? '198.18.0.2',
     sshSentinelPort: envInt('TUNNEL_INGRESS_PORT', 10259),
+    dnsSinkholeIp: process.env.DNS_SINKHOLE ?? '198.18.0.1',
     transparentPorts: {
       https: envInt('TRANSPARENT_HTTPS_PORT', 10256),
       http: envInt('TRANSPARENT_HTTP_PORT', 10257),
@@ -246,6 +248,7 @@ export async function reconcileOnce(
     podCidrs: config.podCidrs,
     sshSentinelIp: config.sshSentinelIp,
     sshSentinelPort: config.sshSentinelPort,
+    dnsSinkholeIp: config.dnsSinkholeIp,
   })
   const document = renderNatRestore(deps.chain, rules)
   if (resync || memo.chain !== document) {

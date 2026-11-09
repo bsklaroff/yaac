@@ -8,21 +8,34 @@ import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
 import { GitCredentials } from '#components/settings/GitCredentials'
 import { Field } from '#components/settings/Field'
 import { filterSuggestions, Typeahead, type TypeaheadItem } from '#components/ui/Typeahead'
-import { OPENCODE_PROVIDERS, PI_PROVIDERS } from '@yaac/shared/tool-providers'
+import {
+  CUSTOM_PROVIDER,
+  OPENCODE_DEFAULT_PROVIDER,
+  OPENCODE_PROVIDERS,
+  PI_DEFAULT_PROVIDER,
+  PI_PROVIDERS,
+} from '@yaac/shared/tool-providers'
 import { TOOL_LABELS, type AgentTool, type ToolAuthSummary, type ToolInstallView, type ToolLoginView } from '@yaac/shared/types'
 
 const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
 
 /**
  * Provider choices for the API-key-only tools: which backend the pasted key
- * is for, as a picker item whose value is the provider id. The first entry
- * is the default. Unlisted tools have no provider.
+ * is for, as a picker item whose value is the provider id, and the one
+ * picked to begin with. Unlisted tools have no provider.
  */
 const providerItem = (p: { id: string; label: string }): TypeaheadItem => ({ value: p.id, label: p.label, detail: p.id })
 const PROVIDER_OPTIONS: Partial<Record<AgentTool, TypeaheadItem[]>> = {
   opencode: OPENCODE_PROVIDERS.map(providerItem),
   pi: PI_PROVIDERS.map(providerItem),
 }
+const DEFAULT_PROVIDER: Partial<Record<AgentTool, string>> = {
+  opencode: OPENCODE_DEFAULT_PROVIDER,
+  pi: PI_DEFAULT_PROVIDER,
+}
+
+const INPUT = 'rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-xs text-text outline-none '
+  + 'focus:border-border-strong'
 
 /**
  * Per-tool sign-in plus git credentials. claude and codex sign in through the
@@ -63,6 +76,7 @@ export function CredentialsPane(): JSX.Element {
 function apiKeyLabel(tool: AgentTool, provider: string | undefined): string {
   if (tool === 'claude') return 'Anthropic API key'
   if (tool === 'codex') return 'OpenAI API key'
+  if (provider === CUSTOM_PROVIDER) return 'API key (optional)'
   const label = PROVIDER_OPTIONS[tool]?.find((o) => o.value === provider)?.label
   return label ? `${label} API key` : 'API key'
 }
@@ -115,7 +129,8 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
   const [expanded, setExpanded] = useState(false)
   const [justSignedIn, setJustSignedIn] = useState(false)
   const providerOptions = PROVIDER_OPTIONS[tool]
-  const [provider, setProvider] = useState<string>(providerOptions?.[0].value ?? 'openrouter')
+  const [provider, setProvider] = useState<string>(DEFAULT_PROVIDER[tool] ?? '')
+  const custom = provider === CUSTOM_PROVIDER
 
   // Opened from a "Sign in" link elsewhere: start with this tool's form open.
   useEffect(() => {
@@ -135,15 +150,22 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
   const saveKey = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault()
     const formElement = event.currentTarget
-    const raw = new FormData(formElement).get('apiKey')
-    const apiKey = (typeof raw === 'string' ? raw : '').trim()
-    if (!apiKey) return
+    const form = new FormData(formElement)
+    const field = (name: string): string => {
+      const raw = form.get(name)
+      return (typeof raw === 'string' ? raw : '').trim()
+    }
+    const apiKey = field('apiKey')
+    const endpoint = custom
+      ? { baseUrl: field('baseUrl'), models: field('models').split(/[\s,]+/).filter(Boolean) }
+      : undefined
+    if (endpoint ? !endpoint.baseUrl || endpoint.models.length === 0 : !apiKey) return
     change.mutate({
       kind: 'save',
       run: async () => {
         await api.auth[':tool'].$put({
           param: { tool },
-          json: { kind: 'api-key', apiKey, ...(providerOptions ? { provider } : {}) },
+          json: { kind: 'api-key', apiKey, ...(providerOptions ? { provider } : {}), ...(endpoint ? { endpoint } : {}) },
         })
         formElement.reset()
       },
@@ -162,7 +184,9 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
         </span>
         {summary ? (
           <span className="ml-2 flex shrink-0 items-center gap-2">
-            <span className="font-mono text-text-faint">{summary.keyPreview}</span>
+            <span className="truncate font-mono text-text-faint">
+              {[summary.endpoint?.baseUrl, summary.keyPreview].filter(Boolean).join(' · ')}
+            </span>
             <button
               onClick={() => change.mutate({
                 kind: 'signout',
@@ -202,17 +226,28 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
               onChange={setProvider}
             />
           )}
-          <form onSubmit={saveKey} className="flex items-center gap-2">
-            <input
-              name="apiKey"
-              type="password"
-              placeholder={apiKeyLabel(tool, provider)}
-              className="flex-1 rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-xs
-                text-text outline-none focus:border-border-strong"
-            />
-            <button type="submit" disabled={busy !== null} className={BUTTON}>
-              {busy === 'save' ? 'Saving…' : 'Save'}
-            </button>
+          <form onSubmit={saveKey} className="flex flex-col gap-2">
+            {custom && (
+              <>
+                <input name="baseUrl" placeholder="Endpoint URL, e.g. http://my-box:8080/v1" className={INPUT} />
+                <input name="models" placeholder="Model ids, comma-separated" className={INPUT} />
+                <p className="text-[11px] text-text-faint">
+                  Any OpenAI-compatible server (vLLM, Ollama, llama.cpp…). On a cluster, add its host to
+                  the project&apos;s allowlist; a key is only sent over https there.
+                </p>
+              </>
+            )}
+            <div className="flex items-center gap-2">
+              <input
+                name="apiKey"
+                type="password"
+                placeholder={apiKeyLabel(tool, provider)}
+                className={clsx(INPUT, 'flex-1')}
+              />
+              <button type="submit" disabled={busy !== null} className={BUTTON}>
+                {busy === 'save' ? 'Saving…' : 'Save'}
+              </button>
+            </div>
           </form>
         </div>
       )}

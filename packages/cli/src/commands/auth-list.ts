@@ -32,5 +32,6 @@ function printToolAuth(label: AgentTool, entry: ToolAuthSummary | undefined): vo
   const kindLabel = entry.kind === 'oauth' ? 'oauth' : 'api-key'
   const provider = entry.opencodeProvider ?? entry.piProvider
   const providerLabel = provider ? `${provider}, ` : ''
-  console.log(`  ${padded} ${entry.keyPreview}  (${providerLabel}${kindLabel}, saved ${entry.savedAt.slice(0, 10)})`)
+  const target = [entry.endpoint?.baseUrl, entry.keyPreview].filter(Boolean).join(' ')
+  console.log(`  ${padded} ${target}  (${providerLabel}${kindLabel}, saved ${entry.savedAt.slice(0, 10)})`)
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  CUSTOM_PROVIDER,
   FALLBACK_MODELS,
   OPENCODE_DEFAULT_PROVIDER,
   OPENCODE_PROVIDERS,
@@ -9,14 +10,15 @@ import {
   parseOpencodeProvider,
   parsePiProvider,
   piProviderInfo,
+  providerApiHost,
   type OpencodeProvider,
   type PiProvider,
   type ToolProviderInfo,
 } from '@yaac/shared/tool-providers'
 import { CLAUDE_MODELS, EFFORTS, MODEL_NAMES, MODELS_BY_PROVIDER } from '@yaac/shared/tool-providers.generated'
 
-// Both registries are generated (scripts/gen-tool-providers.ts), so these
-// check invariants rather than a fixed list.
+// Both registries are generated (scripts/gen-tool-providers.ts), bar the
+// custom row, so these check invariants rather than a fixed list.
 const REGISTRIES: Array<{ name: string; list: readonly ToolProviderInfo[]; defaultId: string; hasModel: boolean }> = [
   { name: 'opencode', list: OPENCODE_PROVIDERS, defaultId: OPENCODE_DEFAULT_PROVIDER, hasModel: false },
   { name: 'pi', list: PI_PROVIDERS, defaultId: PI_DEFAULT_PROVIDER, hasModel: true },
@@ -28,13 +30,14 @@ describe.each(REGISTRIES)('$name provider registry', ({ list, defaultId, hasMode
     expect(list.some((p) => p.id === defaultId)).toBe(true)
   })
 
-  it('has unique provider ids', () => {
+  it('has unique provider ids, so no generated one shadows the custom row', () => {
     const ids = list.map((p) => p.id)
     expect(new Set(ids).size).toBe(ids.length)
+    expect(ids[0]).toBe(CUSTOM_PROVIDER)
   })
 
-  it('carries a non-empty label + env var and a bare host per provider', () => {
-    for (const p of list) {
+  it('carries a non-empty label + env var and a bare host per generated provider', () => {
+    for (const p of list.filter((row) => row.id !== CUSTOM_PROVIDER)) {
       expect(p.label.length).toBeGreaterThan(0)
       expect(p.envVar.length).toBeGreaterThan(0)
       // A bare hostname: no scheme, port or path.
@@ -43,8 +46,8 @@ describe.each(REGISTRIES)('$name provider registry', ({ list, defaultId, hasMode
     }
   })
 
-  it(hasModel ? 'gives every provider a provider-prefixed default model' : 'omits default models', () => {
-    for (const p of list) {
+  it(hasModel ? 'gives every generated provider a provider-prefixed default model' : 'omits default models', () => {
+    for (const p of list.filter((row) => row.id !== CUSTOM_PROVIDER)) {
       const model = p.defaultModel
       if (hasModel) {
         expect(model).toBeDefined()
@@ -62,6 +65,8 @@ describe('parse*Provider', () => {
   it('accepts known providers verbatim', () => {
     expect(parsePiProvider('anthropic')).toBe('anthropic')
     expect(parseOpencodeProvider('openrouter')).toBe('openrouter')
+    expect(parsePiProvider(CUSTOM_PROVIDER)).toBe(CUSTOM_PROVIDER)
+    expect(parseOpencodeProvider(CUSTOM_PROVIDER)).toBe(CUSTOM_PROVIDER)
   })
 
   it('drops anything unrecognized, absent, or empty — never coerces', () => {
@@ -166,5 +171,20 @@ describe('effort table', () => {
   it('offers only claude models the pinned claude knows, the fallback among them', () => {
     expect(CLAUDE_MODELS).toContain(FALLBACK_MODELS.claude)
     for (const id of Object.keys(EFFORTS.claude)) expect(CLAUDE_MODELS).toContain(id)
+  })
+})
+
+describe('providerApiHost', () => {
+  it('takes a generated provider\'s host, and a custom endpoint\'s own', () => {
+    expect(providerApiHost(OPENCODE_PROVIDERS, 'anthropic', undefined)).toBe('api.anthropic.com')
+    const endpoint = { baseUrl: 'http://box.tail1234.ts.net:8080/v1', models: ['qwen'] }
+    expect(providerApiHost(PI_PROVIDERS, CUSTOM_PROVIDER, endpoint)).toBe('box.tail1234.ts.net')
+  })
+
+  it('has no host for an unknown provider or a custom one without an endpoint', () => {
+    // No host means the proxy holds the key back rather than guessing.
+    expect(providerApiHost(OPENCODE_PROVIDERS, 'bogus', undefined)).toBeUndefined()
+    expect(providerApiHost(OPENCODE_PROVIDERS, undefined, undefined)).toBeUndefined()
+    expect(providerApiHost(PI_PROVIDERS, CUSTOM_PROVIDER, undefined)).toBeUndefined()
   })
 })

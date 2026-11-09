@@ -8,7 +8,7 @@ import {
   type ToolAuthKind,
   type ToolAuthPayload,
 } from '#types'
-import type { OpencodeProvider, PiProvider } from '#tool-providers'
+import type { CustomEndpoint, OpencodeProvider, PiProvider } from '#tool-providers'
 
 /** A claude token starting with "sk-ant-oat" is OAuth; anything else is an api key. */
 export function detectAuthKind(tool: AgentTool, token: string): ToolAuthKind {
@@ -180,6 +180,8 @@ export interface ToolLoginResult {
   opencodeProvider?: OpencodeProvider
   /** pi only: the provider the api key is for. */
   piProvider?: PiProvider
+  /** opencode / pi with the custom provider: its endpoint. */
+  endpoint?: CustomEndpoint
 }
 
 /** Shape a login result into the `PUT /auth/:tool` body. */
@@ -190,22 +192,16 @@ export function buildAuthPayload(tool: AgentTool, result: ToolLoginResult): Tool
   if (tool === 'codex' && result.kind === 'oauth' && result.codexBundle) {
     return { kind: 'oauth', bundle: result.codexBundle }
   }
-  if (!result.apiKey) {
+  if (!result.apiKey && !result.endpoint) {
     throw new Error('No credentials captured from tool login.')
   }
-  if (tool === 'opencode') {
+  if (tool === 'opencode' || tool === 'pi') {
     return {
       kind: 'api-key',
       apiKey: result.apiKey,
       // No default here, so the server's validation catches a missing one.
-      provider: result.opencodeProvider,
-    }
-  }
-  if (tool === 'pi') {
-    return {
-      kind: 'api-key',
-      apiKey: result.apiKey,
-      provider: result.piProvider,
+      provider: tool === 'opencode' ? result.opencodeProvider : result.piProvider,
+      ...(result.endpoint ? { endpoint: result.endpoint } : {}),
     }
   }
   return { kind: 'api-key', apiKey: result.apiKey }
