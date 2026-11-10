@@ -11,9 +11,13 @@ import {
   waitForRollout,
 } from '@yaac/server/drivers/k8s/substrate'
 import {
+  apiserverEndpoints,
+  buildServerEgressNpManifest,
   buildServerIngressNpManifest,
+  clusterDnsCidrs,
   ensureNamespace,
   ensureSiteEdge,
+  nodeAddressBlocks,
   nodeIpBlocks,
 } from '@yaac/server/drivers/k8s/cluster'
 import { registryRef, registryTagState } from '@yaac/server/drivers/k8s/cluster'
@@ -51,6 +55,8 @@ const execFileAsync = promisify(execFile)
  *    returned lock reports its local port, not the pod's.
  *  - **RBAC.** A ServiceAccount and a ClusterRoleBinding named per
  *    namespace, so files don't share one.
+ *  - **The server's network policies**: the node half of its ingress and
+ *    its egress floor.
  *  - **Storage.** The install's claims, as hostPath volumes into the
  *    file's own data dir's tiers, plus one extra mount of the scratch base
  *    (`testTmpBase()`) at its own path, since test repos and mock-remote
@@ -110,6 +116,10 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
   // Only the node-side ingress rule, which admits the kubelet's readiness
   // probe. `kubectl port-forward` bypasses network policy.
   await applyObject(buildServerIngressNpManifest(await nodeIpBlocks()))
+  // The egress floor, as install applies it, so every file runs under it.
+  await applyObject(buildServerEgressNpManifest(
+    await nodeAddressBlocks(), await clusterDnsCidrs(), await apiserverEndpoints(), null,
+  ))
   await applyObject(testServerDeploymentManifest(imageRef, opts.env))
   // The router rolls out while the server does.
   await Promise.all([

@@ -9,6 +9,7 @@ import {
   buildEgressWorldDenyNpManifest,
   buildProxyEgressNpManifest,
   buildProxyIngressNpManifest,
+  buildServerEgressNpManifest,
   buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
   buildWorkspaceEgressNpManifest,
@@ -18,7 +19,10 @@ import {
   LABEL_ROLE,
   PROXY_APP_NAME,
   PROXY_INGRESS_NP_NAME,
+  PROXY_PORT,
+  RELAY_PORT,
   SERVER_APP_NAME,
+  SERVER_EGRESS_NP_NAME,
   SERVER_FRONT_INGRESS_NP_NAME,
   SERVER_FRONT_PORT,
   SERVER_INGRESS_NP_NAME,
@@ -55,8 +59,8 @@ describe('buildEgressWorldDenyNpManifest', () => {
 
   it('exempts only the proxy, the server, session pods, and builders', () => {
     // NotIn/DoesNotExist also match unlabelled pods, so new pods are denied
-    // by default. The server, like the proxy, needs the internet (git
-    // clones, fetches).
+    // by default. The server keeps its exclusion although its own egress
+    // policy selects it, so this one can never cut it off the apiserver.
     expect(spec.podSelector).toEqual({
       matchExpressions: [
         { key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME, SERVER_APP_NAME] },
@@ -286,5 +290,50 @@ describe('buildProxyEgressNpManifest', () => {
       to: [{ ipBlock: { cidr: '172.20.0.10/32' } }, { ipBlock: { cidr: '172.20.0.11/32' } }],
       ports: [{ protocol: 'TCP', port: 443 }],
     })
+  })
+})
+
+describe('buildServerEgressNpManifest', () => {
+  // The server clones whatever remote a user types, so its egress is the
+  // builders' floor (public addresses, DNS, the main registry) plus exactly
+  // the in-cluster peers it dials itself. A node address appears only as the
+  // apiserver endpoint, on its own port, as on kind and k3s.
+  const nodes = ['172.18.0.2/32', '5.75.1.9/32']
+  const apiserver = { cidrs: ['172.18.0.2/32'], ports: [6443] }
+  const build = (tor: string | null) => buildServerEgressNpManifest(nodes, ['10.96.0.10/32'], apiserver, tor) as
+    unknown as { metadata: { name: string }; spec: Spec }
+
+  it('selects the server by role, on the builders\' floor, adding the proxy and the apiserver', () => {
+    const manifest = build(null)
+    expect(manifest.metadata.name).toBe(SERVER_EGRESS_NP_NAME)
+    // Not `app`: a `cluster check` probe carrying the role must not join the
+    // server's Service or be adopted by its ReplicaSet.
+    expect(manifest.spec.podSelector).toEqual({ matchLabels: { [LABEL_ROLE]: 'server' } })
+    expect(manifest.spec.policyTypes).toEqual(['Egress'])
+    const builders = buildBuilderEgressNpManifest(nodes, ['10.96.0.10/32']) as unknown as { spec: Spec }
+    expect(manifest.spec.egress!.slice(0, 3)).toEqual(builders.spec.egress)
+    expect(manifest.spec.egress!.slice(3)).toEqual([
+      {
+        to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }],
+        ports: [{ protocol: 'TCP', port: PROXY_PORT }, { protocol: 'TCP', port: RELAY_PORT }],
+      },
+      { to: [{ ipBlock: { cidr: '172.18.0.2/32' } }], ports: [{ protocol: 'TCP', port: 6443 }] },
+    ])
+  })
+
+  it('opens the host\'s Tor listener only when the server is given one', () => {
+    expect(build('socks5h://172.18.0.1:9050').spec.egress!.at(-1)).toEqual({
+      to: [{ ipBlock: { cidr: '172.18.0.1/32' } }], ports: [{ protocol: 'TCP', port: 9050 }],
+    })
+    expect(build('socks5h://[fd00::1]').spec.egress!.at(-1)).toEqual({
+      to: [{ ipBlock: { cidr: 'fd00::1/128' } }], ports: [{ protocol: 'TCP', port: 1080 }],
+    })
+    // A name cannot be an ipBlock, and leaving it out would time out every
+    // Tor dial, so it is refused.
+    expect(() => build('socks5h://host.containers.internal:9050')).toThrow(/must name the Tor listener by IP address/)
+  })
+
+  it('refuses to render without an apiserver endpoint, which would cut the server off', () => {
+    expect(() => buildServerEgressNpManifest(nodes, [], { cidrs: [], ports: [] }, null)).toThrow(/apiserver/)
   })
 })

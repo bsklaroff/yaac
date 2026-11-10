@@ -268,7 +268,8 @@ one and NFS (docs/workspace-egress.md "Non-public destinations"). It gets
 that policy with the proxy and again on every server start (a proxy that is
 already current is never redeployed).
 
-Every other pod in the namespace is under the world-egress default-deny.
+Every other pod in the namespace except the server is under the
+world-egress default-deny; the server has a floor of its own (below).
 
 Together with the workspace egress default-deny, this is what keeps
 untrusted code from becoming the server's owner. `yaac cluster check`'s
@@ -281,11 +282,78 @@ readiness probe would send `Host: <pod ip>` and get a 403 from the
 DNS-rebind check. The probe therefore sends `Host: 127.0.0.1` explicitly,
 standing in for a client of the published origin.
 
-Egress is the reverse: the server pod is **excluded** from the install
-namespace's world-egress default-deny. It clones and fetches git remotes
-directly. It does not route its own traffic through the egress proxy, which
-exists to mediate untrusted code. The kind forwarder, being host-networked,
-is selected by no policy (like netd); it only dials one ClusterIP.
+### The server's own egress
+
+The server dials URLs its users choose. It clones, fetches and `ls-remote`s
+whatever git remote a project names, and fetches an SSH remote's host key.
+It dials these directly, not through the egress proxy, which exists to
+mediate untrusted code. With no floor, any user of a shared install could
+point the server at the cluster's internal addresses (the main registry, the
+proxy's internal listeners, the kubelet, cloud metadata) and learn from the
+errors what answers. So the pod's egress is `yaac-server-egress`
+(`buildServerEgressNpManifest`). It sits on the same floor as the proxy and
+builder pods (docs/workspace-egress.md "Non-public destinations"): public
+addresses less every node address, plus DNS. On top of that it allows the
+peers the server dials itself:
+
+- the apiserver, at the real endpoints the `kubernetes` Service's
+  EndpointSlices list, since policy sees a destination after kube-proxy's
+  DNAT. On kind and k3s that is a node address on 6443;
+- the main registry, by selector in its own namespace, for tag lookups;
+- the proxy's control and relay ports, by selector. The relay carries every
+  stream into a workspace pod, which the server never dials directly;
+- under `YAAC_USE_TOR`, the host's Tor listener at the address in the pod's
+  `YAAC_HOST_TOR_SOCKS_URL`. A policy can open only an address, so install
+  refuses a URL that names the host before it changes anything.
+
+The floor is a network rule, not a check before each fetch. It therefore
+covers git and ssh subprocesses, redirects and DNS rebinding, and a fetch
+added later gets it just by running in the pod.
+
+The policy selects `yaac.role: server`, which the Deployment's pod template
+carries, rather than `app`. A `cluster check` probe pod can then sit under
+it without joining the server's Service or being adopted by its ReplicaSet.
+The pod stays excluded from the namespace's world-egress default-deny by
+`app`. Allows add up across policies, so the exclusion changes nothing once
+this policy selects the pod, and a world-deny applied first can never cut
+the server off.
+
+Install applies the policy before the Deployment. The server re-renders it,
+with the other node-address policies, on every start and whenever the node,
+DNS or apiserver addresses change. A policy without the apiserver would cut
+the server off the cluster, so install refuses to render one. When the
+server's own read of the endpoints comes back empty (a single apiserver
+drops its endpoint while it restarts), it keeps the last good policy and
+retries on the next pass, while the other policies still render.
+
+The server can still lose the apiserver if every endpoint moves at once
+where it cannot follow (an EKS control plane replacing its network
+interfaces, say). Nothing in-cluster can repair that, so `yaac cluster
+start` and `yaac cluster restart` render the policy from this machine before
+they start the pod, and `yaac cluster check` points there.
+
+So a git server at a private, tailnet or in-cluster address is unreachable
+from the server until the network operator opens it. The opening works as it
+does for the proxy (docs/workspace-egress.md "Opening an internal
+destination"), with a policy selecting `app: yaac-server`. Until then the
+dial is dropped and fails with a connect timeout. A git error that timed out
+in the in-cluster server says so and cites this section.
+
+`yaac cluster check`'s `egress` gate verifies the floor on every install. A
+probe pod labelled `yaac.role: server` must reach the apiserver Service,
+which shows the policy names its current endpoints, and resolve a name
+through the cluster's DNS. It must fail to reach a node's kubelet and the
+link-local metadata address. The gate also fails when the server runs
+in-cluster without the policy. The probe dials neither the main registry nor
+the proxy: their ingress admits only `app: yaac-server`, which the probe
+lacks.
+
+A containerless server has no such floor. It runs on the host as its owner,
+and so does every workspace, so anyone who can make it dial an address can
+already run code there.
+
+The kind forwarder, being host-networked, is selected by no policy (like
+netd); it only dials one ClusterIP.
 
 ## The site edge
 
@@ -442,7 +510,9 @@ without waiting for a launch. Where no proxy exists yet, the first launch
 deploys it.
 
 `yaac cluster start|stop|restart` act on the Deployment (scale to 1 and
-wait, scale to 0, `rollout restart`); `yaac cluster status` reads its lock,
+wait, scale to 0, `rollout restart`); `start` and `restart` first re-render
+the server's egress policy ("The server's own egress"). `yaac cluster
+status` reads its lock,
 then asks `/health` at the install's origin (the lock's port is the pod's).
 A server that is up but refused to start (an unknown migration, a lost
 `secret.key`, another access mode) reports the reason instead of `running`,

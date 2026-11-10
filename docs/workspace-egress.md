@@ -424,7 +424,9 @@ name, and Tor dials from its exit, off the cluster's network. Internal names
 and non-public addresses skip Tor and are checked like any direct dial.
 
 **The network floor** (`wideEgress` in `drivers/k8s/cluster/policy-manifests.ts`)
-is shared by the proxy's and the builder pods' egress policies. It allows
+is shared by the proxy's, the builder pods' and the server's egress policies
+(the server's peers are in docs/server-in-cluster.md "The server's own
+egress"). It allows
 public addresses only: 0.0.0.0/0 less the same special-purpose ranges and
 168.63.129.16, and IPv6 global unicast (2000::/3) less its special-purpose
 blocks. That leaves out ULA, where AWS (fd00:ec2::254, and EKS Pod Identity
@@ -498,9 +500,9 @@ destination is read as a URL parser reads it, so `0x0a.20.0.5` or
 
 Only the network operator can open one, by applying a NetworkPolicy of their
 own in yaac's namespace. NetworkPolicy allows add up across every policy that
-selects a pod, so a separate policy selecting the proxy (`app: yaac-proxy`)
-or builders (`yaac.role: builder`) widens their egress without touching
-yaac's. yaac never writes, prunes or deletes a policy it does not own, so the
+selects a pod, so a separate policy selecting the proxy (`app: yaac-proxy`),
+builders (`yaac.role: builder`) or the server (`app: yaac-server`) widens
+their egress without touching yaac's. yaac never writes, prunes or deletes a policy it does not own, so the
 opening survives server restarts and reinstalls (`yaac cluster delete`
 removes it with the namespace). Creating one takes kubectl access to the
 namespace, which no workspace has.
@@ -529,7 +531,11 @@ spec:
           port: 443
 ```
 
-and `git.corp.example` in the project's allowlist. Builds that need an
+and `git.corp.example` in the project's allowlist. The server clones and
+fetches the project's remote itself, so for a project whose remote is that
+server, the same policy must also select `app: yaac-server`: use
+`podSelector: {matchExpressions: [{key: app, operator: In, values:
+[yaac-proxy, yaac-server]}]}`. Builds that need an
 internal package mirror get the same kind of policy with `podSelector:
 {matchLabels: {yaac.role: builder}}`. Builds do not pass through the proxy,
 so the opening alone admits them.

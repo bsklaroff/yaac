@@ -23,7 +23,9 @@ import {
   POD_NODE_LOCAL_ROOT,
   POD_VOLUMES_ROOT,
   POD_SERVER_LOCAL_ROOT,
+  LABEL_ROLE,
   PRIORITY_CLASS_INFRA,
+  ROLE_SERVER,
   SERVER_APP_NAME,
   SERVER_LOCAL_CLAIM_NAME,
   VOLUMES_CLAIM_NAME,
@@ -49,10 +51,14 @@ import {
 import { waitFor } from '@yaac/shared/wait-for'
 import { ensureStorageClaims, type StorageShape } from './storage'
 import {
+  apiserverEndpoints,
+  buildServerEgressNpManifest,
   buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
+  clusterDnsCidrs,
   contextHash,
   imagePrefix,
+  nodeAddressBlocks,
   nodeIpBlocks,
   registryRef,
   registryTagState,
@@ -121,9 +127,9 @@ export async function ensureServerImage(
   return pushImageToRegistry(tag)
 }
 
-/** Server pod labels, including the install identity. */
+/** Server pod labels: the install identity, and the role its egress policy selects. */
 function serverPodLabels(): Record<string, string> {
-  return { app: SERVER_APP_NAME, [LABEL_INSTALL_ID]: installId() }
+  return { app: SERVER_APP_NAME, [LABEL_INSTALL_ID]: installId(), [LABEL_ROLE]: ROLE_SERVER }
 }
 
 /**
@@ -436,13 +442,16 @@ export function buildServerDeploymentManifest(
 }
 
 /**
- * Apply the server workload and its fronting, wait for both to roll out,
- * and return the published origin. Order matters: RBAC before the pod;
- * ingress policies before the Service, so workspaces never see an open
- * API; and the fronting before the Deployment, whose env needs the origin.
+ * Apply the server workload, its egress policy (`egress`) and its
+ * fronting, wait for both to roll out, and return the published origin.
+ * Order matters: RBAC before the pod; ingress policies before the Service,
+ * so workspaces never see an open API; the egress policy before the pod, so
+ * the server is never unbounded; and the fronting before the Deployment,
+ * whose env needs the origin.
  */
 async function ensureServerDeployment(
   imageRef: string,
+  egress: Record<string, unknown>,
   fronting: ServerFronting,
   identity: InstallIdentity,
   envOpts: ServerEnvOptions = {},
@@ -452,6 +461,7 @@ async function ensureServerDeployment(
   await applyObject(buildServerClusterRoleBindingManifest())
   await applyObject(buildServerIngressNpManifest(await nodeIpBlocks()))
   await applyObject(buildServerFrontIngressNpManifest(fronting.ingressPeers()))
+  await applyObject(egress)
   // Wait, so `installedFronting` never reads a retired Ingress that is
   // still terminating behind the tailnet operator's finalizer.
   for (const retired of fronting.retired()) {
@@ -481,6 +491,32 @@ function waitForDeployment(name: string, timeoutSeconds = 300): Promise<void> {
 
 function serverDeploymentRef(): ObjectRef {
   return { apiVersion: 'apps/v1', kind: 'Deployment', name: SERVER_APP_NAME, namespace: k8sNamespace() }
+}
+
+/**
+ * The server's egress policy as this machine renders it, opening
+ * `torSocksUrl`, the Tor listener the pod is handed (null without Tor).
+ */
+async function serverEgressManifest(torSocksUrl: string | null): Promise<Record<string, unknown>> {
+  return buildServerEgressNpManifest(
+    await nodeAddressBlocks(), await clusterDnsCidrs(), await apiserverEndpoints(), torSocksUrl,
+  )
+}
+
+/**
+ * Re-render the server's egress policy from this machine, opening the Tor
+ * listener the live Deployment hands its pod. A server whose apiserver
+ * endpoints all moved cannot reach the cluster to follow them, so `cluster
+ * start|restart` repair that here (docs/server-in-cluster.md "The server's
+ * own egress").
+ */
+async function reapplyServerEgress(): Promise<void> {
+  const deployment = await readObject<{
+    spec?: { template?: { spec?: { containers?: Array<{ env?: Array<{ name: string; value?: string }> }> } } }
+  }>(serverDeploymentRef())
+  const tor = deployment?.spec?.template?.spec?.containers?.[0]?.env
+    ?.find((e) => e.name === 'YAAC_HOST_TOR_SOCKS_URL')?.value
+  await applyObject(await serverEgressManifest(tor ?? null))
 }
 
 /** Set the Deployment's replica count; the caller waits for it to settle. */
@@ -585,6 +621,9 @@ async function deployServer(
       data: { admins: opts.admin.join(',') },
     })
   }
+  // Rendered before the running server is stopped, so a Tor URL it refuses
+  // leaves that server up.
+  const egress = await serverEgressManifest(env.useTor ? torSocksUrlForPod(opts.torHostAddr) : null)
   // Built before the storage step too: the binder pod runs it.
   opts.log('Building the server image (from the bundle)...')
   const imageRef = await ensureServerImage()
@@ -605,7 +644,7 @@ async function deployServer(
   opts.log(`Deploying the yaac server (${imageRef})...`)
   // Pass opts whole: every `ServerEnvOptions` field is optional, so a
   // copied field list could silently drop a new one.
-  const origin = await ensureServerDeployment(imageRef, opts.fronting, opts.identity, {
+  const origin = await ensureServerDeployment(imageRef, egress, opts.fronting, opts.identity, {
     ...opts,
     ...(opts.storage.kind === 'classes' ? { volumeStorageClass: opts.storage.rwo } : {}),
   })
@@ -708,11 +747,13 @@ async function waitForInstalledServer(): Promise<string> {
 }
 
 /**
- * `yaac cluster start`: scale the existing Deployment back to one replica
- * and return the origin once it answers. It does not deploy anything.
+ * `yaac cluster start`: re-render the server's egress policy, scale the
+ * existing Deployment back to one replica and return the origin once it
+ * answers. It deploys nothing else.
  */
 export async function startClusterServer(): Promise<string> {
   await deleteLogReader()
+  await reapplyServerEgress()
   await scaleServerDeployment(1)
   await waitForDeployment(SERVER_APP_NAME)
   return waitForInstalledServer()
@@ -735,11 +776,13 @@ export async function stopClusterServer(): Promise<void> {
 }
 
 /**
- * `yaac cluster restart`: roll the pod and return the origin once it
- * answers. `Recreate` removes the old pod before starting the new one.
+ * `yaac cluster restart`: re-render the server's egress policy, roll the
+ * pod and return the origin once it answers. `Recreate` removes the old pod
+ * before starting the new one.
  */
 export async function restartClusterServer(): Promise<string> {
   await deleteLogReader()
+  await reapplyServerEgress()
   // What `kubectl rollout restart` does: a template change rolls the pod.
   await patchObject(serverDeploymentRef(), {
     spec: { template: { metadata: { annotations: { 'kubectl.kubernetes.io/restartedAt': new Date().toISOString() } } } },

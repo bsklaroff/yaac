@@ -26,6 +26,7 @@ import {
   LABEL_CLAIM,
   LABEL_INSTALL_ID,
   LABEL_NPM_CACHE,
+  LABEL_ROLE,
   LABEL_SITE_ID,
   LABEL_WORKSPACE_ID,
   NESTED_ENGINE_CAPS,
@@ -42,6 +43,8 @@ import {
   SERVER_FRONT_INGRESS_NP_NAME,
   SERVER_INGRESS_NP_NAME,
   PROXY_EGRESS_NP_NAME,
+  ROLE_SERVER,
+  SERVER_EGRESS_NP_NAME,
   SERVER_LOCAL_CLAIM_NAME,
   VOLUMES_CLAIM_NAME,
   SERVER_POD_PORT,
@@ -1530,7 +1533,8 @@ async function efsMountTargets(handle: string): Promise<Array<{ server: string; 
  * label, so listWorkspacePods ignores it) must fail to reach, by IP:
  * the apiserver, the proxy's transparent port, the registry, the yaac
  * server, and the global volume's NFS server. Targets that do not exist
- * are reported as unverified.
+ * are reported as unverified. Then the server's own egress is probed
+ * (`runServerEgressProbe`).
  */
 async function runNetworkPolicyProbe(): Promise<CheckResult> {
   const ns = k8sNamespace()
@@ -1681,13 +1685,15 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
       }
     }
     if (logs.includes('NP_BLOCKED')) {
+      const server = await runServerEgressProbe(apiserverIp)
+      if ('open' in server) return { name: 'egress', status: 'fail', ...server.open }
       const denied = targets.filter((t) => t.ip).map((t) => t.denied)
       const deniedHalf = denied.length ? `, and cannot dial ${denied.join(', nor ')}` : ''
       const unverified = targets.filter((t) => !t.ip).map((t) => t.absent)
       const unverifiedHalf = unverified.length ? ` (${unverified.join('; ')})` : ''
       return {
         name: 'egress', status: 'pass',
-        detail: `session egress is default-denied at the CNI${deniedHalf}${unverifiedHalf}`,
+        detail: `session egress is default-denied at the CNI${deniedHalf}${unverifiedHalf}; ${server.pass}`,
       }
     }
     return {
@@ -1702,6 +1708,91 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
       fix: KIND_SETUP_FIX,
     }
   }
+}
+
+const SERVER_EGRESS_PROBE_POD_NAME = 'yaac-cluster-check-server-egress'
+
+/** The kubelet's port, which every node listens on. */
+const KUBELET_PORT = 10250
+
+/**
+ * The `egress` gate's server half (docs/server-in-cluster.md "The server's
+ * own egress"). A pod under the server's egress policy (labelled with its
+ * role, on runc like the server) must reach the apiserver Service, which
+ * shows the policy names the apiserver's current endpoints, and resolve a
+ * name through the cluster's DNS, which every clone needs. It must not reach
+ * a node's kubelet, a real listener on every node, nor the link-local
+ * metadata address (which only a cloud node serves, so on kind that denial
+ * proves nothing). The main registry and the proxy are not dialed: their
+ * ingress admits only `app: yaac-server`, which the probe lacks. Returns
+ * the failure, or how a pass reads.
+ */
+async function runServerEgressProbe(
+  apiserverIp: string,
+): Promise<{ open: { detail: string; fix: string } } | { pass: string }> {
+  const ns = k8sNamespace()
+  if (!await serviceIp(SERVER_APP_NAME, ns)) return { pass: 'server not deployed in-cluster — its egress unverified' }
+  const fix = 'Run `yaac cluster restart`, which renders the server\'s egress policy from this machine.'
+  if (!await readObject({
+    apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', name: SERVER_EGRESS_NP_NAME, namespace: ns,
+  })) {
+    return { open: {
+      detail: `the yaac server has no ${SERVER_EGRESS_NP_NAME} NetworkPolicy — a git remote a user `
+        + 'names can reach the cluster\'s internal addresses through it',
+      fix,
+    } }
+  }
+  const node = (await nodeIpBlocks()).find((cidr) => !cidr.includes(':'))?.replace(/\/32$/, '')
+  const targets: Array<[key: string, ip: string, port: number]> = [
+    ['API', apiserverIp, 443],
+    ...(node ? [['KUBELET', node, KUBELET_PORT] as [string, string, number]] : []),
+    ['METADATA', '169.254.169.254', 80],
+  ]
+  const { phase, logs } = await runProbePod(SERVER_EGRESS_PROBE_POD_NAME, {
+    timeoutMs: 60_000,
+    labels: { [LABEL_ROLE]: ROLE_SERVER },
+    container: {
+      image: await ensureProbeImage(),
+      command: ['sh', '-c', [
+        ...targets.map(([key, ip, port]) =>
+          `nc -w 4 ${ip} ${String(port)} </dev/null >/dev/null 2>&1 && echo SRV_${key}_OPEN || echo SRV_${key}_LOCKED`),
+        // The short name too, for a cluster whose domain is not cluster.local.
+        // Read by its answer, a `Name:` line, as some busybox builds exit 0
+        // on a failed lookup.
+        '{ nslookup kubernetes.default.svc.cluster.local; nslookup kubernetes.default.svc; } 2>/dev/null '
+          + '| grep -q \'^Name:\' && echo SRV_DNS_OK || echo SRV_DNS_FAIL',
+      ].join('; ')],
+    },
+  })
+  if (phase !== 'Succeeded' || !logs.includes('SRV_API_')) {
+    return { open: { detail: `server egress probe pod ended in phase ${phase}, with no verdict`, fix: KIND_SETUP_FIX } }
+  }
+  if (logs.includes('SRV_API_LOCKED')) {
+    return { open: {
+      detail: `the ${SERVER_EGRESS_NP_NAME} NetworkPolicy does not admit the apiserver at its current `
+        + 'endpoints — the server cannot reach the cluster to correct it',
+      fix,
+    } }
+  }
+  if (logs.includes('SRV_DNS_FAIL')) {
+    return { open: {
+      detail: `a pod under the ${SERVER_EGRESS_NP_NAME} NetworkPolicy could not resolve a name through the `
+        + 'cluster\'s DNS — every clone and fetch the server makes would fail to resolve its host',
+      fix,
+    } }
+  }
+  const reached = [
+    ...(logs.includes('SRV_KUBELET_OPEN') ? [`the kubelet on node ${node ?? ''}`] : []),
+    ...(logs.includes('SRV_METADATA_OPEN') ? ['the link-local metadata address'] : []),
+  ]
+  if (reached.length > 0) {
+    return { open: {
+      detail: `a pod under the server's egress policy reached ${reached.join(' and ')} — a git remote `
+        + 'a user names could reach it too',
+      fix,
+    } }
+  }
+  return { pass: `the server's own dials reach the apiserver and DNS, but not a node's kubelet nor link-local metadata` }
 }
 
 const NPM_CACHE_PROBE_POD_NAME = 'yaac-cluster-check-npm-cache'

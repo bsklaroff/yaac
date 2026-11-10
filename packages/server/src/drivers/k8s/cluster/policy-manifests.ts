@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import {
   DNS_STUB_PORT,
   EGRESS_WORLD_DENY_NAME,
@@ -13,7 +14,9 @@ import {
   PROXY_PORT,
   RELAY_PORT,
   ROLE_BUILDER,
+  ROLE_SERVER,
   SERVER_APP_NAME,
+  SERVER_EGRESS_NP_NAME,
   SERVER_FRONT_INGRESS_NP_NAME,
   SERVER_FRONT_PORT,
   SERVER_INGRESS_NP_NAME,
@@ -319,6 +322,56 @@ export function buildBuilderEgressNpManifest(nodeAddrs: string[], dnsCidrs: stri
 }
 
 /**
+ * The host's Tor listener (`YAAC_HOST_TOR_SOCKS_URL`) as an egress rule.
+ * Throws unless the URL names it by IP address, the only form a policy can
+ * open. A name would leave every Tor dial to time out.
+ */
+function torEgress(socksUrl: string | null): Array<Record<string, unknown>> {
+  if (socksUrl === null) return []
+  const { hostname, port } = URL.canParse(socksUrl) ? new URL(socksUrl) : { hostname: '', port: '' }
+  const host = hostname.replace(/^\[(.*)\]$/, '$1')
+  if (!isIP(host)) {
+    throw new Error(`YAAC_HOST_TOR_SOCKS_URL (${socksUrl}) must name the Tor listener by IP address, `
+      + `the only form the server's egress policy (${SERVER_EGRESS_NP_NAME}) can open`)
+  }
+  return [{ to: ipBlocks([`${host}/${isIP(host) === 6 ? 128 : 32}`]), ports: [tcp(Number(port) || 1080)] }]
+}
+
+/**
+ * Server-pod egress (docs/server-in-cluster.md "The server's own egress"):
+ * the builders' floor, which is public addresses, DNS and the main
+ * registry, plus the server's own in-cluster peers. Those are the proxy's
+ * control and relay ports, the apiserver at its real endpoints, and under
+ * `YAAC_USE_TOR` the host's Tor listener (`torSocksUrl`, null without Tor).
+ * It keeps a git remote or endpoint URL a user names off the cluster's
+ * internal addresses.
+ *
+ * Selects `yaac.role: server` (see ROLE_SERVER). Throws without an
+ * apiserver endpoint, since that policy would cut the server off the cluster
+ * it manages, and for a Tor URL that names no address (`torEgress`).
+ */
+export function buildServerEgressNpManifest(
+  nodeAddrs: string[],
+  dnsCidrs: string[],
+  apiserver: { cidrs: string[]; ports: number[] },
+  torSocksUrl: string | null,
+): Record<string, unknown> {
+  if (apiserver.cidrs.length === 0 || apiserver.ports.length === 0) {
+    throw new Error('the apiserver publishes no endpoint, so the server\'s egress policy cannot admit it')
+  }
+  return np(SERVER_EGRESS_NP_NAME, k8sNamespace(), {
+    podSelector: { matchLabels: { [LABEL_ROLE]: ROLE_SERVER } },
+    policyTypes: ['Egress'],
+    egress: [
+      ...builderEgress(nodeAddrs, dnsCidrs),
+      { to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }], ports: [tcp(PROXY_PORT), tcp(RELAY_PORT)] },
+      { to: ipBlocks(apiserver.cidrs), ports: apiserver.ports.map(tcp) },
+      ...torEgress(torSocksUrl),
+    ],
+  }, { app: SERVER_APP_NAME })
+}
+
+/**
  * Server-pod ingress, node half: the API from node addresses (kubelet probe,
  * and on kind the fronting forwarder), plus the mama-only listener from the
  * egress proxy.
@@ -378,8 +431,9 @@ export function buildServerFrontIngressNpManifest(
  *  - the proxy, which dials upstream under each workspace's allowlist (it
  *    can read every Secret in this namespace, so keep only yaac objects
  *    here);
- *  - the server, whose egress is unrestricted (git, title model downloads);
- *  - workspace and builder pods, which have their own policies.
+ *  - the server, workspace and builder pods, which have their own policies.
+ *    The server stays excluded so this policy can never cut it off the
+ *    apiserver before its own egress policy exists.
  *
  * Pods without these labels (registries, mocks, future pods) are covered by
  * default. Other policies' allows still apply, e.g. the npm cache's 443

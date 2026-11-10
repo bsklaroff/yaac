@@ -67,6 +67,36 @@ describe('cloneRepo', () => {
     // checkouts borrow.
     expect((await git(dest, ['config', 'gc.pruneExpire'])).trim()).toBe('never')
   })
+
+  // In-cluster, the server's egress policy drops a dial to a private
+  // address, so the clone fails only by timing out. The error says where to
+  // look; a host server's timeout is just a timeout.
+  it('points an in-cluster connect timeout at the server\'s egress policy', async () => {
+    const bin = path.join(tmpDir, 'bin')
+    await fs.mkdir(bin)
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH ?? ''}`)
+    /** Clone through a git that fails with `stderr`. */
+    const clone = async (stderr: string): Promise<unknown> => {
+      await fs.writeFile(path.join(bin, 'git'), `#!/bin/sh\necho "${stderr}" >&2\nexit 128\n`, { mode: 0o755 })
+      return cloneRepo('https://git.corp.example/a.git', path.join(tmpDir, 'clone'), null)
+    }
+    const access = 'fatal: unable to access \'https://git.corp.example/a.git/\': '
+    // ssh says it timed out; curl 8 says only how long the connect took.
+    const sshTimeout = 'ssh: connect to host git.corp.example port 22: Connection timed out'
+    const curlTimeout = `${access}Failed to connect to git.corp.example port 443 after 135652 ms: Could not connect to server`
+    const curlRefused = `${access}Failed to connect to git.corp.example port 443 after 3 ms: Could not connect to server`
+    const hint = /\(the in-cluster yaac server reaches only public addresses.*The server's own egress"\)$/
+    try {
+      await expect(clone(curlTimeout)).rejects.toThrow(/Could not connect to server$/)
+      vi.stubEnv('YAAC_IN_CLUSTER', '1')
+      await expect(clone(sshTimeout)).rejects.toThrow(hint)
+      await expect(clone(curlTimeout)).rejects.toThrow(hint)
+      // A refusal answers at once, so the policy did not drop it.
+      await expect(clone(curlRefused)).rejects.toThrow(/Could not connect to server$/)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
 })
 
 describe('getDefaultBranch', () => {

@@ -15,7 +15,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import { isIPv4 } from 'node:net'
+import { isIP, isIPv4 } from 'node:net'
 import { parse as parseToml } from 'smol-toml'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import {
@@ -248,6 +248,7 @@ export async function runClusterInstall(
   const nodeCount = resolveNodeCount(opts)
   const recorded = await readInstallRecord()
   refuseByoSwitch(recorded, opts)
+  refuseTorHostName()
   // Created by the first run and reused, so a run that failed halfway
   // recognizes the objects it made. A test file's own id is used when set.
   const installId = recorded?.installId ?? env.installId ?? crypto.randomUUID()
@@ -828,6 +829,22 @@ async function verifyByoCluster(
     driver: 'k8s', installId, clusterUid: current.uid, kubeContext: current.context, byo: true,
   })
   return storage
+}
+
+/**
+ * Refuse, before changing anything, a Tor SOCKS URL naming its host by a
+ * name other than `localhost` (which install rewrites to the host's address
+ * on the kind network): the server's egress policy can open only an address
+ * (docs/server-in-cluster.md "The server's own egress").
+ */
+function refuseTorHostName(): void {
+  if (!env.useTor) return
+  const host = URL.canParse(env.torSocksUrl) ? new URL(env.torSocksUrl).hostname.replace(/^\[(.*)\]$/, '$1') : ''
+  if (host === 'localhost' || isIP(host)) return
+  throw new ClusterInstallError(
+    `YAAC_HOST_TOR_SOCKS_URL (${env.torSocksUrl}) must name the Tor listener by IP address: `
+    + 'the server\'s egress policy can open only an address.',
+  )
 }
 
 function refuseIfAny(heading: string, problems: string[]): void {

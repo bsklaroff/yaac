@@ -31,7 +31,9 @@ forged login gets that user's writes and attaches. The ownership code
 runs unchanged there and gives grouping, read-only views and attribution,
 not protection; the webapp says that this substrate does not separate
 users. Under `k8s` only the host can forge those headers, since workspace
-pods cannot reach the server.
+pods cannot reach the server. Nor can a user steer the server's own dials,
+such as cloning a project's remote, into the cluster's internal addresses
+(docs/server-in-cluster.md "The server's own egress").
 
 ## Users and owners
 

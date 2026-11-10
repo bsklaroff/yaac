@@ -110,7 +110,7 @@ interface Manifest {
     ingress?: unknown
     externalTrafficPolicy?: unknown
     ports?: Array<Record<string, unknown>>
-    template?: { spec: PodSpec }
+    template?: { metadata?: { labels?: Record<string, string> }; spec: PodSpec }
   }
 }
 
@@ -297,6 +297,12 @@ beforeEach(async () => {
     spec: { podCIDR: '10.244.0.0/24' },
     status: { addresses: [{ type: 'InternalIP', address: '10.89.0.2' }] },
   })
+  // The apiserver on that node, as on kind, for the server's egress policy.
+  fakeCluster.seed({
+    apiVersion: 'discovery.k8s.io/v1', kind: 'EndpointSlice', addressType: 'IPv4',
+    metadata: { name: 'kubernetes', namespace: 'default', labels: { 'kubernetes.io/service-name': 'kubernetes' } },
+    endpoints: [{ addresses: ['10.89.0.2'] }], ports: [{ port: 6443 }],
+  })
   // The image is already in the registry, so nothing is built.
   mockContextHash.mockResolvedValue('bundlehash')
   mockRegistryTagState.mockResolvedValue('present')
@@ -324,6 +330,15 @@ describe('deployServerWorkload', () => {
     expect(order('ClusterRole')).toBeLessThan(order('Deployment'))
     expect(order('ClusterRoleBinding')).toBeLessThan(order('Deployment'))
     expect(order('NetworkPolicy')).toBeLessThan(order('Service'))
+    // The pod carries the role its egress floor selects, and that policy is
+    // in place before the pod exists, admitting the apiserver it needs.
+    const egressAt = applies.findIndex((c) => c.kind === 'NetworkPolicy' && c.name === 'yaac-server-egress')
+    expect(egressAt).toBeGreaterThan(-1)
+    expect(egressAt).toBeLessThan(order('Deployment'))
+    const egress = applied('NetworkPolicy').find((m) => (m.metadata as { name: string }).name === 'yaac-server-egress')
+    expect(JSON.stringify(egress)).toContain('{"to":[{"ipBlock":{"cidr":"10.89.0.2/32"}}],"ports":[{"protocol":"TCP","port":6443}]}')
+    expect(applied('Deployment').find((d) => d.metadata?.name === SERVER_APP_NAME)?.spec?.template?.metadata?.labels)
+      .toMatchObject({ 'yaac.role': 'server' })
     // The Service before the Deployment, whose env uses its origin. The
     // forwarder after the Service, which frees an old NodePort first.
     expect(order('Service')).toBeLessThan(order('Deployment'))
@@ -478,6 +493,19 @@ describe('deployServerWorkload', () => {
     expect(names).not.toContain('YAAC_ALLOWED_HOSTS')
   })
 
+  it('refuses a Tor SOCKS URL that names its host, leaving the running server up', async () => {
+    // The pod's egress policy can open only an address. Install refuses
+    // such a URL up front; this is the backstop, which must still come
+    // before the running server is stopped.
+    vi.stubEnv('YAAC_USE_TOR', '1')
+    vi.stubEnv('YAAC_HOST_TOR_SOCKS_URL', 'socks5h://host.containers.internal:9050')
+    liveDeployment()
+    await expect(deploy({ log: vi.fn(), torHostAddr: '10.89.0.1' })).rejects.toThrow(/must name the Tor listener by IP address/)
+    expect(actions.filter((c) => c.startsWith(`patch Deployment ${SERVER_APP_NAME}`))).toEqual([])
+    expect(applied('Deployment')).toEqual([])
+    expect(applied('ServiceAccount')).toEqual([])
+  })
+
   it('rewrites an IPv6-loopback Tor SOCKS URL to the host, brackets and all', async () => {
     // Tor listens on the host, so loopback addresses are rewritten to the
     // host's kind-network address. `new URL(...).hostname` returns `[::1]`
@@ -491,6 +519,9 @@ describe('deployServerWorkload', () => {
       deployedPodSpec().containers[0].env.map((e) => [e.name, e.value]),
     )
     expect(env.YAAC_HOST_TOR_SOCKS_URL).toBe('socks5h://10.89.0.1:9050')
+    // The server's egress opens exactly the address the pod was handed.
+    const egress = applied('NetworkPolicy').find((m) => (m.metadata as { name: string }).name === 'yaac-server-egress')
+    expect(JSON.stringify(egress)).toContain('{"to":[{"ipBlock":{"cidr":"10.89.0.1/32"}}],"ports":[{"protocol":"TCP","port":9050}]}')
   })
 
   it('walls the API off from pods, and publishes it through the kind forwarder', async () => {
@@ -794,6 +825,9 @@ describe('startClusterServer', () => {
     // its node, so it is deleted first.
     expect(actions.indexOf('delete Pod yaac-server-log-reader')).toBeGreaterThanOrEqual(0)
     expect(actions.indexOf('delete Pod yaac-server-log-reader')).toBeLessThan(scaleAt)
+    // The egress policy is rendered from here before the pod starts.
+    expect(actions.indexOf('apply NetworkPolicy yaac-server-egress')).toBeGreaterThanOrEqual(0)
+    expect(actions.indexOf('apply NetworkPolicy yaac-server-egress')).toBeLessThan(scaleAt)
   })
 
   it('waits on the port the cluster was created with, not this shell\'s default', async () => {
@@ -941,9 +975,17 @@ describe('stopClusterServer', () => {
 
 describe('restartClusterServer', () => {
   it('rolls the pod and waits for the published origin to answer again', async () => {
-    liveDeployment()
+    liveDeployment(1000, [{ name: 'YAAC_HOST_TOR_SOCKS_URL', value: 'socks5h://10.89.0.1:9050' }])
     await expect(restartClusterServer()).resolves.toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
     const restartAt = actions.findIndex((c) => c.startsWith(`patch Deployment ${SERVER_APP_NAME}`))
+    // The egress policy is rendered from here first, at the apiserver's
+    // current endpoints and the Tor listener the pod holds: a server whose
+    // endpoints all moved cannot reach the cluster to follow them.
+    expect(actions.indexOf('apply NetworkPolicy yaac-server-egress')).toBeGreaterThanOrEqual(0)
+    expect(actions.indexOf('apply NetworkPolicy yaac-server-egress')).toBeLessThan(restartAt)
+    const egress = JSON.stringify(applied('NetworkPolicy').find((m) => (m.metadata as { name: string }).name === 'yaac-server-egress'))
+    expect(egress).toContain('{"to":[{"ipBlock":{"cidr":"10.89.0.2/32"}}],"ports":[{"protocol":"TCP","port":6443}]}')
+    expect(egress).toContain('{"to":[{"ipBlock":{"cidr":"10.89.0.1/32"}}],"ports":[{"protocol":"TCP","port":9050}]}')
     expect(actions.indexOf('delete Pod yaac-server-log-reader')).toBeGreaterThanOrEqual(0)
     expect(actions.indexOf('delete Pod yaac-server-log-reader')).toBeLessThan(restartAt)
     // A pod-template change is what rolls the pod.

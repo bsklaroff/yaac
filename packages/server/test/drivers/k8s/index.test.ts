@@ -20,6 +20,12 @@ describe('createK8sDriver', () => {
       metadata: { name: 'node-1' },
       status: { addresses: [{ type: 'InternalIP', address: '10.89.0.2' }], conditions: [{ type: 'Ready', status: 'False' }] },
     })
+    // The apiserver on that node, which the server's egress policy names.
+    fakeCluster.seed({
+      apiVersion: 'discovery.k8s.io/v1', kind: 'EndpointSlice', addressType: 'IPv4',
+      metadata: { name: 'kubernetes', namespace: 'default', labels: { 'kubernetes.io/service-name': 'kubernetes' } },
+      endpoints: [{ addresses: ['10.89.0.2'] }], ports: [{ port: 6443 }],
+    })
   })
 
   it('runs each of its reconcile steps over an empty install', async () => {

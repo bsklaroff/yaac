@@ -111,6 +111,13 @@ export const LABEL_ROLE = 'yaac.role'
  * sweep.
  */
 export const ROLE_BUILDER = 'builder'
+/**
+ * Role of the server pod, which its egress policy selects on. A role rather
+ * than `app` so `yaac cluster check` can run a probe pod under that policy
+ * without it joining the server's Service or being adopted by its
+ * ReplicaSet.
+ */
+export const ROLE_SERVER = 'server'
 
 /** ServiceAccount the proxy uses to watch pods (source-IP -> workspace). */
 export const PROXY_SA_NAME = 'yaac-proxy'
@@ -149,8 +156,8 @@ export const RUN_SECRETS_PREFIX = 'yaac-run-secrets'
 /**
  * Name of the yaac server's own Deployment, Service and ServiceAccount in
  * the install namespace (docs/server-in-cluster.md). Network policies
- * select on it: world-egress deny excludes it, and the proxy's ingress
- * admits its dials.
+ * select on it: world-egress deny excludes it, and the proxy's and main
+ * registry's ingress admit its dials.
  */
 export const SERVER_APP_NAME = 'yaac-server'
 export const SERVER_SA_NAME = 'yaac-server'
@@ -167,6 +174,8 @@ export const SERVER_INGRESS_NP_NAME = 'yaac-server-ingress'
  * only. On kind the host-networked forwarder is covered by the node policy.
  */
 export const SERVER_FRONT_INGRESS_NP_NAME = 'yaac-server-ingress-front'
+/** NetworkPolicy keeping the server's own dials off non-public addresses but its peers. */
+export const SERVER_EGRESS_NP_NAME = 'yaac-server-egress'
 /** Port the server listens on inside its pod (container + Service port). */
 export const SERVER_POD_PORT = 8787
 /**
