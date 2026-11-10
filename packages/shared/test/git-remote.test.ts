@@ -28,13 +28,36 @@ describe('parseGitRemote', () => {
       .toEqual({ scheme: 'ssh', host: 'github.com', path: 'acme/repo' })
   })
 
-  it('rejects unsupported schemes, ports, and empty paths', () => {
-    expect(() => parseGitRemote('ssh://git@github.com/acme/repo')).toThrow(/SCP-style/)
-    expect(() => parseGitRemote('http://github.com/acme/repo')).toThrow(/Only HTTPS/)
-    expect(() => parseGitRemote('https://github.com:8443/acme/repo')).toThrow(/Custom HTTPS ports/)
+  it('parses ssh:// remotes with or without a user', () => {
+    expect(parseGitRemote('ssh://git@ssh.example.host/acme/repo.git'))
+      .toEqual({ scheme: 'ssh', host: 'ssh.example.host', path: 'acme/repo' })
+    expect(parseGitRemote('ssh://gitlab.com/group/sub/repo/'))
+      .toEqual({ scheme: 'ssh', host: 'gitlab.com', path: 'group/sub/repo' })
+  })
+
+  it('rejects unsupported schemes, ports, odd hosts, and empty paths', () => {
+    expect(() => parseGitRemote('http://github.com/acme/repo')).toThrow(/Only https:\/\/ and ssh:\/\//)
+    expect(() => parseGitRemote('git://github.com/acme/repo')).toThrow(/Only https:\/\/ and ssh:\/\//)
+    expect(() => parseGitRemote('https://github.com:8443/acme/repo')).toThrow(/Custom ports/)
+    expect(() => parseGitRemote('ssh://git@github.com:2222/acme/repo')).toThrow(/Custom ports/)
+    expect(() => parseGitRemote('SSH://github.com/acme/repo')).toThrow(/Only https:\/\/ and ssh:\/\//)
+    expect(() => parseGitRemote('ssh://git@github.com/')).toThrow(/Cannot parse repo path/)
     expect(() => parseGitRemote('https://github.com/')).toThrow(/Cannot parse repo path/)
     expect(() => parseGitRemote('git@github.com:.git')).toThrow(/Cannot parse repo path/)
     expect(() => parseGitRemote('not-a-url')).toThrow(/Unrecognized git remote URL/)
+  })
+
+  it('rejects an ssh:// URL whose host git could read differently', () => {
+    // git percent-decodes the whole URL before cutting the host at the first
+    // `/`, so it would dial b.example; `new URL` would report a.example.
+    for (const url of [
+      'ssh://b.example%2F@a.example/r',
+      'ssh://a.exa\tmple/r',
+      'ssh://a.exa\nmple/r',
+      'ssh://git:secret@github.com/acme/repo',
+    ]) {
+      expect(() => parseGitRemote(url)).toThrow(/Unrecognized git remote URL/)
+    }
   })
 
   it('rejects a remote-helper URL, which git would run rather than dial', () => {

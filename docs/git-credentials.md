@@ -8,12 +8,12 @@ and no other user's. There are two kinds, and the kind must match the
 project's remote:
 
 - an **HTTPS token** the user pastes, for an `https://` remote;
-- an **SSH key** yaac generates, for an SCP-style `git@host:path` remote. The
-  private half is stored sealed in the database and held only transiently in
-  the memory of the processes that sign with it. It is never read from the
-  user's machine, never written to a file, and never shown. The user sees only
-  the public half, which they register with their git host as a deploy key or
-  account key.
+- an **SSH key** yaac generates, for an `ssh://git@host/path` or SCP-style
+  `git@host:path` remote. The private half is stored sealed in the database
+  and held only transiently in the memory of the processes that sign with it.
+  It is never read from the user's machine, never written to a file, and never
+  shown. The user sees only the public half, which they register with their
+  git host as a deploy key or account key.
 
 Credentials are managed in the webapp (Settings → Git credentials, and the Add
 Project form). From the CLI, `yaac auth update` adds one, `yaac auth list`

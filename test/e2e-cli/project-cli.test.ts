@@ -61,14 +61,12 @@ describe('yaac project (real CLI + real server)', () => {
     expect(combined).toMatch(/Failed to clone|git authentication failed/)
   })
 
-  it('project add accepts SCP-style SSH URLs, which need an SSH key credential', async () => {
-    const { stdout, stderr, exitCode } = await runYaac(
-      testEnv.env, 'project', 'add', 'git@github.com:org/repo.git', 'fake-github',
-    )
-    const combined = stdout + stderr
-    expect(exitCode).not.toBe(0)
-    expect(combined).not.toMatch(/SSH URLs are not supported/i)
-    expect(combined).toMatch(/needs an SSH key, not a token/)
+  it('project add accepts ssh:// and SCP-style SSH URLs, which need an SSH key credential', async () => {
+    for (const url of ['git@github.com:org/repo.git', 'ssh://git@github.com/org/repo.git']) {
+      const { stdout, stderr, exitCode } = await runYaac(testEnv.env, 'project', 'add', url, 'fake-github')
+      expect(exitCode).not.toBe(0)
+      expect(stdout + stderr).toMatch(/needs an SSH key, not a token/)
+    }
   })
 
   it('project add requires a credential, and one that exists', async () => {
@@ -87,14 +85,6 @@ describe('yaac project (real CLI + real server)', () => {
     )
     expect(exitCode).not.toBe(0)
     expect(stderr).toMatch(/HTTPS/i)
-  })
-
-  it('project add rejects ssh:// URLs pointing at SCP-style instead', async () => {
-    const { stderr, exitCode } = await runYaac(
-      testEnv.env, 'project', 'add', 'ssh://git@github.com/org/repo', 'fake-github',
-    )
-    expect(exitCode).not.toBe(0)
-    expect(stderr).toMatch(/SCP-style/)
   })
 
   it('project add rejects unparseable URLs', async () => {

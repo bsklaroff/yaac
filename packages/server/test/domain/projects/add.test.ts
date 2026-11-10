@@ -169,7 +169,7 @@ describe('addProject', () => {
   it('rejects a remote URL it cannot parse as VALIDATION', async () => {
     for (const bad of [
       'http://github.com/acme/foo',
-      'ssh://git@github.com/acme/foo',
+      'ssh://git@github.com:2222/acme/foo',
       'https://git.example.com:8443/a/b',
       'https://github.com/',
       'acme/foo',

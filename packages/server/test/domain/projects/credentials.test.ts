@@ -104,13 +104,15 @@ describe('resolveCredentialForRemote', () => {
 
     expect(await resolveCredentialForRemote(BUILT_IN_USER_ID, token.id, 'https://github.com/acme/web.git'))
       .toEqual({ credential: { kind: 'https', token: 'ghp_abcd1234' }, knownHostsEntry: null })
-    expect(await resolveCredentialForRemote(BUILT_IN_USER_ID, key.id, 'git@git.example.com:acme/svc.git')).toEqual({
-      credential: { kind: 'ssh', id: key.id, publicKey: key.publicKey, knownHostsEntry: HOST_KEY },
-      knownHostsEntry: HOST_KEY,
-    })
+    for (const url of ['git@git.example.com:acme/svc.git', 'ssh://git@git.example.com/acme/svc.git']) {
+      expect(await resolveCredentialForRemote(BUILT_IN_USER_ID, key.id, url)).toEqual({
+        credential: { kind: 'ssh', id: key.id, publicKey: key.publicKey, knownHostsEntry: HOST_KEY },
+        knownHostsEntry: HOST_KEY,
+      })
+    }
 
     await expect(resolveCredentialForRemote(BUILT_IN_USER_ID, token.id, 'http://github.com/acme/web.git'))
-      .rejects.toMatchObject({ code: 'VALIDATION', message: expect.stringMatching(/Only HTTPS/) as string })
+      .rejects.toMatchObject({ code: 'VALIDATION', message: expect.stringMatching(/Only https:\/\/ and ssh:\/\//) as string })
     // A token in the URL would be stored, listed to every user and written
     // into checkouts.
     for (const url of ['https://x-access-token:ghp_secret@github.com/acme/web.git', 'https://ghp_secret@github.com/acme/web.git']) {
