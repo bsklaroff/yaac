@@ -341,6 +341,20 @@ yaac auth
   list                          List credentials (masked; git credentials by name)
   update                        Add a git credential or sign in an agent tool
   clear                         Remove stored tool credentials
+  endpoint                      Custom endpoints (docs/custom-endpoints.md)
+    add <name> <url>            Add one, its models from its /models
+      --key-stdin               Read its api key from stdin
+      --models-file <path>      Its models as JSON instead (- for stdin)
+    edit <name>                 Edit its models in $VISUAL/$EDITOR
+      --models-file <path>      Replace its models instead (- for stdin)
+      --rename <name>           Rename it
+      --url <url>               Change its base URL
+      --key-stdin | --clear-key Replace or remove its api key
+    models <name>               Print its models as JSON
+    refresh <name>              Show how its /models differs from its saved list
+      --apply <parts>           Apply all, or any of new,changed,gone
+      --edit                    Review the result in the editor before saving
+    remove <name>               Delete it, signing out the tools using it
   fake <kinds...>               Seed placeholder credentials for yaac-in-yaac:
                                 claude-oauth, opencode-openrouter, pi-openrouter,
                                 omp-openrouter, github

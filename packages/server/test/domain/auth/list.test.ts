@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { BUILT_IN_USER_ID, closeDb, seeTailnetUser, setToolCredential } from '#db'
-import { addHttpsCredential, listAuth } from '#domain/auth'
+import { addEndpoint, addHttpsCredential, listAuth } from '#domain/auth'
+import type { EndpointModel } from '@yaac/shared/tool-providers'
 import { EFFORTS } from '@yaac/shared/tool-providers.generated'
 
 describe('listAuth', () => {
@@ -18,7 +19,7 @@ describe('listAuth', () => {
 
   it('returns empty lists when nothing is configured', async () => {
     const result = await listAuth(BUILT_IN_USER_ID)
-    expect(result).toEqual({ gitCredentials: [], toolAuth: [] })
+    expect(result).toEqual({ gitCredentials: [], toolAuth: [], customEndpoints: [] })
   })
 
   it('lists git credentials with masked previews', async () => {
@@ -77,14 +78,25 @@ describe('listAuth', () => {
     expect(result.toolAuth[3].defaultModel).toMatch(/^openrouter\//)
   })
 
-  it('shows a custom endpoint\'s URL and models, and no preview for a keyless one', async () => {
-    const endpoint = { baseUrl: 'http://box.tail1234.ts.net:8080/v1', models: ['llama', 'qwen'] }
-    await setToolCredential(BUILT_IN_USER_ID, 'pi', { kind: 'api-key', provider: 'custom', savedAt: 'x', apiKey: '', endpoint })
-    const [pi] = (await listAuth(BUILT_IN_USER_ID)).toolAuth
-    expect(pi).toMatchObject({
-      tool: 'pi', piProvider: 'custom', endpoint, keyPreview: '',
-      models: [{ id: 'custom/llama' }, { id: 'custom/qwen' }], defaultModel: 'custom/llama',
+  it('lists custom endpoints with their tools, and names a custom sign-in\'s endpoint with its models', async () => {
+    const models = [{ id: 'llama', efforts: { levels: ['low', 'high'], default: 'low' } }, { id: 'qwen' }] satisfies EndpointModel[]
+    const keyless = await addEndpoint(BUILT_IN_USER_ID, { name: 'box', baseUrl: 'http://box.tail1234.ts.net:8080/v1', models })
+    const keyed = await addEndpoint(BUILT_IN_USER_ID, { name: 'tls', baseUrl: 'https://llm.example.com/v1', apiKey: 'sk-self-hosted', models })
+    await setToolCredential(BUILT_IN_USER_ID, 'pi', { kind: 'api-key', provider: 'custom', savedAt: 'x', apiKey: '', endpointId: keyless.id })
+    await setToolCredential(BUILT_IN_USER_ID, 'omp', { kind: 'api-key', provider: 'custom', savedAt: 'x', apiKey: '', endpointId: keyless.id })
+    const result = await listAuth(BUILT_IN_USER_ID)
+
+    expect(result.customEndpoints).toEqual([
+      { id: keyless.id, name: 'box', baseUrl: 'http://box.tail1234.ts.net:8080/v1', keyPreview: '', models, tools: ['pi', 'omp'] },
+      { id: keyed.id, name: 'tls', baseUrl: 'https://llm.example.com/v1', keyPreview: '***sted', models, tools: [] },
+    ])
+    expect(result.toolAuth[0]).toMatchObject({
+      tool: 'pi', piProvider: 'custom', keyPreview: '',
+      endpoint: { id: keyless.id, name: 'box', baseUrl: 'http://box.tail1234.ts.net:8080/v1' },
+      models: [{ id: 'custom/llama', efforts: { levels: ['low', 'high'], default: 'low' } }, { id: 'custom/qwen' }],
+      defaultModel: 'custom/llama',
     })
+    expect(JSON.stringify(result)).not.toContain('sk-self-hosted')
   })
 
   it('never leaks the raw access token', async () => {

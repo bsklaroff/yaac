@@ -56,7 +56,7 @@ import {
   PLACEHOLDER_OPENCODE_API_KEY,
   PLACEHOLDER_PI_API_KEY,
 } from '@yaac/shared/tool-auth'
-import { NO_CREDENTIALS_OWNER_KEY, authEntryEndpoint, authEntryProvider, credentialOwnerKey, defaultModelFor, isCatalogModel, loadToolAuthEntry, modelEfforts, seedProjectToolHome } from '#domain/auth'
+import { NO_CREDENTIALS_OWNER_KEY, authEntryEndpoint, authEntryProvider, credentialOwnerKey, defaultModelFor, isCatalogModel, loadToolAuthEntry, modelEfforts, seedProjectToolHome, toolKeyProviders } from '#domain/auth'
 import {
   createCheckout,
   getDefaultBranch,
@@ -128,12 +128,7 @@ import {
   type PermissionMode,
   type PortMapping,
 } from '@yaac/shared/types'
-import {
-  opencodeProviderInfo,
-  ompProviderInfo,
-  piProviderInfo,
-  toolApiKeyEnvVar,
-} from '@yaac/shared/tool-providers'
+import { toolApiKeyEnvVar, type CustomEndpoint } from '@yaac/shared/tool-providers'
 
 /** In-pod claude home, where `claudeDir` is mounted. `CLAUDE_CONFIG_DIR`
  *  points here, which also puts claude's global config at
@@ -630,14 +625,14 @@ export async function resolveCreate(
     remembered,
     ...(provider !== undefined ? { provider } : {}),
     defaultModel: defaultModelFor(tool, provider, endpoint),
-    effortsFor: (model) => modelEfforts(tool, model),
+    effortsFor: (model) => modelEfforts(tool, model, endpoint),
   })
   const model = request.model ?? fallback.model
   const effort = request.effort !== undefined
-    ? namedEffort(tool, model, request.effort)
+    ? namedEffort(tool, model, request.effort, endpoint)
     // A named model re-resolves the remembered effort against itself.
     : request.model !== undefined
-      ? rememberedEffort(tool, model, remembered?.effort)
+      ? rememberedEffort(tool, model, remembered?.effort, endpoint)
       : fallback.effort
   return {
     tool,
@@ -652,8 +647,13 @@ export async function resolveCreate(
 
 /** A remembered effort where `model` has it, else its default; none for a
  *  model without effort levels. */
-function rememberedEffort(tool: AgentTool, model: string, remembered: string | undefined): string | undefined {
-  const efforts = modelEfforts(tool, model)
+function rememberedEffort(
+  tool: AgentTool,
+  model: string,
+  remembered: string | undefined,
+  endpoint: CustomEndpoint | undefined,
+): string | undefined {
+  const efforts = modelEfforts(tool, model, endpoint)
   return efforts !== undefined ? effortFor(efforts, remembered) : undefined
 }
 
@@ -661,15 +661,15 @@ function rememberedEffort(tool: AgentTool, model: string, remembered: string | u
  * A named effort, refused when the model's levels are known and lack it. A
  * model outside the catalog takes it as is, like a named model.
  */
-function namedEffort(tool: AgentTool, model: string, effort: string): string {
-  const efforts = modelEfforts(tool, model)
+function namedEffort(tool: AgentTool, model: string, effort: string, endpoint: CustomEndpoint | undefined): string {
+  const efforts = modelEfforts(tool, model, endpoint)
   if (efforts !== undefined && !efforts.levels.includes(effort)) {
     throw new ServerError(
       'VALIDATION',
       `${model} has no "${effort}" effort; it supports: ${efforts.levels.join(', ')}`,
     )
   }
-  if (efforts === undefined && model !== '' && isCatalogModel(tool, model)) {
+  if (efforts === undefined && model !== '' && isCatalogModel(tool, model, endpoint)) {
     throw new ServerError('VALIDATION', `${model} has no effort setting`)
   }
   return effort
@@ -1020,13 +1020,7 @@ export async function createWorkspace(
       claude: claudeAuth, codex: codexAuth, opencode: opencodeAuth, pi: piAuth, omp: ompAuth,
     }
     // The api-key-only tools' providers (`#runtime/agents` tool-api-keys).
-    const keyProviders = {
-      ...(opencodeAuth?.kind === 'api-key'
-        ? { opencode: { ...opencodeProviderInfo(opencodeAuth.opencodeProvider), endpoint: opencodeAuth.endpoint } }
-        : {}),
-      ...(piAuth?.kind === 'api-key' ? { pi: { ...piProviderInfo(piAuth.piProvider), endpoint: piAuth.endpoint } } : {}),
-      ...(ompAuth?.kind === 'api-key' ? { omp: { ...ompProviderInfo(ompAuth.ompProvider), endpoint: ompAuth.endpoint } } : {}),
-    }
+    const keyProviders = toolKeyProviders({ opencode: opencodeAuth, pi: piAuth, omp: ompAuth })
 
     // The rest at once, since each writes files of its own (claude's
     // settings.json, which two of them update, is locked) and the agent

@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   GitCredentialPicker, INPUT, PublicKey, remoteKind, TrustedHostKey, type GitCredentialKind,
 } from '#components/GitCredentialPicker'
+import { AffectsBanner } from '#components/settings/AffectsBanner'
 import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { api } from '#lib/api'
@@ -16,10 +17,13 @@ import { useUiStore } from '#lib/store'
 import type { GitCredentialSummary, ProjectSummary } from '@yaac/shared/types'
 
 /**
- * The git credentials section (docs/git-credentials.md): stored credentials
- * with the projects using each, a form for a new one, and projects with none
- * (which cannot create workspaces until assigned one). Replacing a secret
- * keeps the credential's name and projects; deleting it unassigns them.
+ * The git credentials section (docs/git-credentials.md), as one list: the
+ * caller's projects with no credential first (they cannot create workspaces
+ * until assigned one), then every other project with the credential it uses,
+ * then credentials no project uses. A credential is edited from any row that
+ * shows it, and its editor names every project the edit reaches. Replacing
+ * a secret keeps the credential's name and projects; deleting it unassigns
+ * them.
  *
  * `settingsFocusProject`, set by links elsewhere, scrolls that project's row
  * into view with its picker open.
@@ -39,10 +43,14 @@ export function GitCredentials(): JSX.Element {
   // reminder to register them until settings close.
   const [newKeys, setNewKeys] = useState<Record<string, string>>({})
   const [addKey, setAddKey] = useState(0) // remounts the add form once it's done
-  // A failed Delete or Replace. Shown here, not on its row, because the
+  // A failed Delete or Replace. Shown here, not in the editor, because the
   // server may have applied the change and failed only to update the egress
-  // proxy (RUNTIME_UNAVAILABLE); the refreshed list may drop the row.
+  // proxy (RUNTIME_UNAVAILABLE); the refreshed list may drop the credential.
   const [failure, setFailure] = useState<string | null>(null)
+  // The one open credential editor, and the row (a project id, or the
+  // credential's own id for an unused one) it opened under.
+  const [editing, setEditing] = useState<{ credentialId: string; row: string } | null>(null)
+  const projectName = useProjectName()
 
   const refresh = (): Promise<void> => queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
 
@@ -61,38 +69,85 @@ export function GitCredentials(): JSX.Element {
     await refresh()
   }
 
-  const unassigned = projects.filter((p) => p.gitCredential === null && !p.hosted)
+  const credentials = auth?.gitCredentials ?? []
+  const sorted = [...projects].sort((a, b) => a.name.localeCompare(b.name))
+  const missing = sorted.filter((p) => p.gitCredential === null && !p.hosted)
+  const assigned = sorted.filter((p) => p.gitCredential !== null || p.hosted)
+  const unused = credentials.filter((c) => c.projects.length === 0)
+
+  /** The editor for `c`, when it is the one open under `row`. */
+  const editorFor = (c: GitCredentialSummary, row: string): ReactNode => {
+    if (editing?.credentialId !== c.id || editing.row !== row) return null
+    return (
+      <CredentialEditor
+        credential={c}
+        projectNames={c.projects.map(projectName)}
+        newKey={newKeys[c.id]}
+        onClose={() => setEditing(null)}
+        onReplaced={(id, publicKey) => {
+          if (publicKey !== undefined) setNewKeys((k) => ({ ...k, [id]: publicKey }))
+          setEditing({ credentialId: id, row: row === c.id ? id : row })
+          setFailure(null)
+          void refresh()
+        }}
+        onChanged={() => { setFailure(null); void refresh() }}
+        onFailed={(message) => { setFailure(message); void refresh() }}
+      />
+    )
+  }
+  const edit = (credentialId: string, row: string): void => {
+    setEditing((e) => (e?.credentialId === credentialId && e.row === row ? null : { credentialId, row }))
+  }
 
   return (
     <>
       <Group
         label="Git credentials"
-        hint="HTTPS tokens the proxy injects, and SSH keys yaac generated. Each project uses one; replace a credential to rotate it for all of its projects."
+        hint="Each project uses one: an HTTPS token the proxy injects, or an SSH key yaac generated. One credential can serve several projects; replace it to rotate it for all of them."
       >
         <div className="space-y-2 text-xs">
-          {/* Unused credentials sort last. The sort is stable, so each group
-              keeps the server's oldest-first order. */}
           {failure && <p className="text-[11px] text-red-400">{failure}</p>}
-          {[...(auth?.gitCredentials ?? [])].sort((a, b) => Number(a.projects.length === 0) - Number(b.projects.length === 0)).map((c) => (
-            <CredentialRow
-              key={c.id}
-              credential={c}
-              projects={projects}
-              focus={focus}
-              trusted={trusted}
-              newKey={newKeys[c.id]}
-              onAssign={assign}
-              onReplaced={(id, publicKey) => {
-                if (publicKey !== undefined) setNewKeys((k) => ({ ...k, [id]: publicKey }))
-                setFailure(null)
-                void refresh()
-              }}
-              onChanged={() => { setFailure(null); void refresh() }}
-              onFailed={(message) => { setFailure(message); void refresh() }}
-            />
+          {missing.map((p) => (
+            <ProjectRow key={p.id} projectId={p.id} name={p.name} focused={focus === p.id} attention>
+              <p className="truncate font-mono text-[11px] text-text-faint">{p.remoteUrl}</p>
+              <GitCredentialPicker
+                kind={remoteKind(p.remoteUrl)}
+                projectName={p.name}
+                actionLabel="Assign"
+                onSubmit={(id) => assign(p.id, id)}
+              />
+            </ProjectRow>
           ))}
-          {auth && auth.gitCredentials.length === 0 && (
-            <p className="text-text-faint">No git credentials yet.</p>
+          {assigned.map((p) => {
+            const credential = credentials.find((c) => c.id === p.gitCredential?.id)
+            return (
+              <AssignedProjectRow
+                key={p.id}
+                project={p}
+                credential={credential}
+                focused={focus === p.id}
+                trusted={trusted[p.id]}
+                onAssign={(id) => assign(p.id, id)}
+                onEdit={credential && (() => edit(credential.id, p.id))}
+              >
+                {credential && editorFor(credential, p.id)}
+              </AssignedProjectRow>
+            )
+          })}
+          {unused.map((c) => (
+            <div key={c.id} data-credential={c.id} className="flex flex-col gap-1.5 rounded-md bg-bg px-2.5 py-1.5">
+              <div className="flex items-center gap-2">
+                <CredentialLabel credential={c} />
+                <span className="shrink-0 text-[11px] text-text-faint">unused</span>
+                <button type="button" onClick={() => edit(c.id, c.id)} className={clsx(TEXT_BUTTON, 'ml-auto')}>
+                  Edit credential
+                </button>
+              </div>
+              {editorFor(c, c.id)}
+            </div>
+          ))}
+          {auth && projects.length === 0 && credentials.length === 0 && (
+            <p className="text-text-faint">No projects or git credentials yet.</p>
           )}
         </div>
       </Group>
@@ -100,24 +155,6 @@ export function GitCredentials(): JSX.Element {
       <Group label="Add git credential" hint="Stored without a project; you can assign it to projects after creation.">
         <AddCredential key={addKey} onDone={() => { setAddKey((k) => k + 1); void refresh() }} />
       </Group>
-
-      {unassigned.length > 0 && (
-        <Group label="Projects without git authentication" hint="Assign each a credential to create workspaces in it.">
-          <div className="space-y-2 text-xs">
-            {unassigned.map((p) => (
-              <ProjectRow key={p.id} projectId={p.id} name={p.name} focused={focus === p.id}>
-                <p className="truncate font-mono text-[11px] text-text-faint">{p.remoteUrl}</p>
-                <GitCredentialPicker
-                  kind={remoteKind(p.remoteUrl)}
-                  projectName={p.name}
-                  actionLabel="Assign"
-                  onSubmit={(id) => assign(p.id, id)}
-                />
-              </ProjectRow>
-            ))}
-          </div>
-        </Group>
-      )}
     </>
   )
 }
@@ -133,17 +170,115 @@ function Group({ label, hint, children }: { label: string; hint: string; childre
   )
 }
 
-/** One stored credential: its name (click to rename), kind and preview, the
- *  projects using it — each with "Change" — and Replace and Delete, each
- *  destructive step behind a confirmation that names the projects it hits. */
-function CredentialRow({ credential: c, projects, focus, trusted, newKey, onAssign, onReplaced, onChanged, onFailed }: {
+/** A credential's name, kind and (for a token) masked preview. */
+function CredentialLabel({ credential: c }: { credential: GitCredentialSummary }): JSX.Element {
+  return (
+    <span className="flex min-w-0 items-center gap-2">
+      <span className="truncate font-medium text-text">{c.name}</span>
+      <span className="shrink-0 font-mono text-text-faint">{c.kind}</span>
+      {c.kind === 'https' && <span className="shrink-0 font-mono text-text-faint">{c.preview}</span>}
+    </span>
+  )
+}
+
+/** A project that has a credential (or, hosted, needs none): the credential
+ *  it uses, "Change" to assign it another, and "Edit credential". */
+function AssignedProjectRow({ project: p, credential, focused, trusted, onAssign, onEdit, children }: {
+  project: ProjectSummary
+  /** Its credential's summary; absent for a hosted project, or until the
+   *  list catches up with an assignment. */
+  credential: GitCredentialSummary | undefined
+  focused: boolean
+  trusted: string | undefined
+  onAssign: (credentialId: string) => Promise<void>
+  onEdit: (() => void) | undefined
+  /** The credential editor, when open under this row. */
+  children: ReactNode
+}): JSX.Element {
+  const [changing, setChanging] = useState(focused && !p.hosted)
+  return (
+    <ProjectRow
+      projectId={p.id}
+      name={p.name}
+      focused={focused}
+      aside={p.hosted ? <span className="text-[11px] text-text-faint">hosted, no credential needed</span> : (
+        <>
+          {credential ? <CredentialLabel credential={credential} />
+            : <span className="truncate font-medium text-text">{p.gitCredential?.name}</span>}
+          {!changing && (
+            <button type="button" onClick={() => setChanging(true)} className={TEXT_BUTTON}>
+              Change
+            </button>
+          )}
+          {onEdit && (
+            <button type="button" onClick={onEdit} className={TEXT_BUTTON}>
+              Edit credential
+            </button>
+          )}
+        </>
+      )}
+    >
+      <p className="truncate font-mono text-[11px] text-text-faint">{p.remoteUrl}</p>
+      {trusted !== undefined && <TrustedHostKey entry={trusted} />}
+      {changing && (
+        <GitCredentialPicker
+          kind={remoteKind(p.remoteUrl)}
+          projectName={p.name}
+          exclude={p.gitCredential?.id}
+          actionLabel="Assign"
+          onSubmit={async (id) => { await onAssign(id); setChanging(false) }}
+          onCancel={() => setChanging(false)}
+        />
+      )}
+      {children}
+    </ProjectRow>
+  )
+}
+
+/** A project's row: its name and `aside`, then whatever it offers. Focused,
+ *  it scrolls into view and stands out; `attention` marks one that cannot
+ *  create workspaces yet. */
+function ProjectRow({ projectId, name, focused, attention = false, aside, children }: {
+  projectId: string
+  name: string
+  focused: boolean
+  attention?: boolean
+  aside?: ReactNode
+  children: ReactNode
+}): JSX.Element {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (focused) ref.current?.scrollIntoView?.({ block: 'center' })
+  }, [focused])
+  return (
+    <div
+      ref={ref}
+      data-project={projectId}
+      className={clsx(
+        'flex flex-col gap-1.5 rounded-md bg-bg px-2.5 py-1.5',
+        attention && 'border border-amber-500/30',
+        focused && 'ring-1 ring-accent',
+      )}
+    >
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 font-mono text-text-dim">{name}</span>
+        {attention && <span className="text-[11px] text-amber-400">no git credential</span>}
+        {aside !== undefined && <span className="ml-auto flex min-w-0 items-center gap-2">{aside}</span>}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+/** One credential's editor: rename, replace and delete, under a banner
+ *  naming every project they reach. Replace and Delete break those
+ *  projects' git until fixed, so each also asks for a confirming click. */
+function CredentialEditor({ credential: c, projectNames, newKey, onClose, onReplaced, onChanged, onFailed }: {
   credential: GitCredentialSummary
-  projects: ProjectSummary[]
-  focus: string | null
-  trusted: Record<string, string>
+  projectNames: string[]
   /** The public key a Replace just generated, not yet acknowledged. */
   newKey: string | undefined
-  onAssign: (projectId: string, credentialId: string) => Promise<void>
+  onClose: () => void
   onReplaced: (id: string, publicKey?: string) => void
   onChanged: () => void
   /** A Delete or Replace failed, possibly after the server made it. */
@@ -161,7 +296,7 @@ function CredentialRow({ credential: c, projects, focus, trusted, newKey, onAssi
     if (next !== '') renaming.mutate(next)
   })
   // A failure goes up to the list (`onFailed`), since the server may have
-  // made the change anyway and the refreshed list may drop this row.
+  // made the change anyway and the refreshed list may drop this credential.
   const change = useMutation({
     mutationFn: (action: () => Promise<void>) => action(),
     onError: (err) => onFailed(`${c.name}: ${err.message}`),
@@ -182,10 +317,15 @@ function CredentialRow({ credential: c, projects, focus, trusted, newKey, onAssi
     if (token.trim() !== '' && !busy) replace()
   }
 
-  const projectName = useProjectName()
-  const using = c.projects.map(projectName).join(', ')
+  const using = projectNames.join(', ')
   return (
-    <div className="flex flex-col gap-2 rounded-md bg-bg px-2.5 py-1.5">
+    <div data-credential-editor={c.id} className="flex flex-col gap-2 rounded-md border border-hairline-soft p-2.5">
+      <AffectsBanner
+        lead="Used by"
+        names={projectNames}
+        none="No project uses this credential."
+        note={projectNames.length > 1 ? 'Changes here apply to all of them.' : 'Changes here apply to it.'}
+      />
       <div className="flex items-center gap-2">
         {rename.editing ? (
           <input
@@ -209,8 +349,7 @@ function CredentialRow({ credential: c, projects, focus, trusted, newKey, onAssi
           </button>
         )}
         <span className="shrink-0 font-mono text-text-faint">{c.kind}</span>
-        <span className="ml-auto shrink-0 font-mono text-text-faint">{c.kind === 'https' && c.preview}</span>
-        <span className="flex shrink-0">
+        <span className="ml-auto flex shrink-0">
           {!replacingToken && (
             <button
               type="button"
@@ -222,6 +361,9 @@ function CredentialRow({ credential: c, projects, focus, trusted, newKey, onAssi
           )}
           <button type="button" onClick={() => setConfirm('delete')} className={TEXT_BUTTON}>
             Delete
+          </button>
+          <button type="button" onClick={onClose} className={TEXT_BUTTON}>
+            Close
           </button>
         </span>
       </div>
@@ -253,35 +395,26 @@ function CredentialRow({ credential: c, projects, focus, trusted, newKey, onAssi
           <PublicKey publicKey={newKey} wrap />
         </div>
       ) : c.publicKey !== undefined && <PublicKey publicKey={c.publicKey} />}
-      {c.projects.length === 0 && <p className="text-[11px] text-text-faint">No assigned projects</p>}
-      {c.projects.map((projectId) => (
-        <UsingProject
-          key={projectId}
-          projectId={projectId}
-          name={projectName(projectId)}
-          credentialId={c.id}
-          remoteUrl={projects.find((p) => p.id === projectId)?.remoteUrl}
-          focused={focus === projectId}
-          trusted={trusted[projectId]}
-          onAssign={(id) => onAssign(projectId, id)}
-        />
-      ))}
       {renaming.error && <p className="text-[11px] text-red-400">{renaming.error.message}</p>}
       <ConfirmDialog
         open={confirm === 'delete'}
         onOpenChange={(open) => { if (!open) setConfirm(null) }}
         title={`Delete ${c.name}?`}
-        description={c.projects.length === 0 ? 'No project uses it.'
+        description={projectNames.length === 0 ? 'No project uses it.'
           : `${using} will be left with no git credential, and cannot create workspaces until assigned another.`}
         busy={busy}
         requireClick
-        onConfirm={() => change.mutate(async () => { await credential.$delete({ param: { id: c.id } }); onChanged() })}
+        onConfirm={() => change.mutate(async () => {
+          await credential.$delete({ param: { id: c.id } })
+          onClose()
+          onChanged()
+        })}
       />
       <ConfirmDialog
         open={confirm === 'replace'}
         onOpenChange={(open) => { if (!open) setConfirm(null) }}
         title={`Generate a new key for ${c.name}?`}
-        description={`The current key is discarded. ${c.projects.length === 0
+        description={`The current key is discarded. ${projectNames.length === 0
           ? 'Register the new public key with your git host before a project uses it.'
           : `Git in ${using} fails until the new public key is registered with your git host.`}`}
         confirmLabel="Generate new key"
@@ -289,71 +422,6 @@ function CredentialRow({ credential: c, projects, focus, trusted, newKey, onAssi
         requireClick
         onConfirm={replace}
       />
-    </div>
-  )
-}
-
-/** A project under the credential it uses, with "Change" to assign it
- *  another. */
-function UsingProject({ projectId, name, credentialId, remoteUrl, focused, trusted, onAssign }: {
-  projectId: string
-  name: string
-  /** The credential it uses now, which "Change" does not offer. */
-  credentialId: string
-  /** Absent until the snapshot names the project. */
-  remoteUrl: string | undefined
-  focused: boolean
-  trusted: string | undefined
-  onAssign: (credentialId: string) => Promise<void>
-}): JSX.Element {
-  const [changing, setChanging] = useState(focused)
-  return (
-    <ProjectRow projectId={projectId} name={name} focused={focused} nested>
-      {!changing && remoteUrl !== undefined && (
-        <button type="button" onClick={() => setChanging(true)} className={clsx(TEXT_BUTTON, 'absolute right-1.5 top-1')}>
-          Change
-        </button>
-      )}
-      {trusted !== undefined && <TrustedHostKey entry={trusted} />}
-      {changing && remoteUrl !== undefined && (
-        <GitCredentialPicker
-          kind={remoteKind(remoteUrl)}
-          projectName={name}
-          exclude={credentialId}
-          actionLabel="Assign"
-          onSubmit={async (id) => { await onAssign(id); setChanging(false) }}
-          onCancel={() => setChanging(false)}
-        />
-      )}
-    </ProjectRow>
-  )
-}
-
-/** A project's row: its name, then whatever it offers. Focused, it scrolls
- *  into view and stands out. */
-function ProjectRow({ projectId, name, focused, nested = false, children }: {
-  projectId: string
-  name: string
-  focused: boolean
-  nested?: boolean
-  children: ReactNode
-}): JSX.Element {
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (focused) ref.current?.scrollIntoView?.({ block: 'center' })
-  }, [focused])
-  return (
-    <div
-      ref={ref}
-      data-project={projectId}
-      className={clsx(
-        'relative flex flex-col gap-1.5 rounded-md px-2.5 py-1.5',
-        nested ? 'border border-hairline-soft' : 'bg-bg',
-        focused && 'ring-1 ring-accent',
-      )}
-    >
-      <span className="font-mono text-text-dim">{name}</span>
-      {children}
     </div>
   )
 }

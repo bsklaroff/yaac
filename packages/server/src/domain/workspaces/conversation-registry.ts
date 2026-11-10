@@ -1,4 +1,4 @@
-import { catalogModel, modelEfforts } from '#domain/auth'
+import { catalogModel, customEndpointFor, modelEfforts } from '#domain/auth'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { isWorkspaceTerminating, liveAgents } from '#runtime/status'
 import {
@@ -318,7 +318,8 @@ async function followSessionReports(
     const posture = a.reportedMode !== undefined
       ? resolveAgentPermissionMode(s.mode, s.tool, a.reportedMode, s.permissionMode)
       : undefined
-    const levels = modelEfforts(s.tool, model ?? s.model ?? '')?.levels
+    const running = model ?? s.model ?? ''
+    const levels = modelEfforts(s.tool, running, await customEndpointFor(projectId, s.tool, running))?.levels
     const effort = a.reportedEffort !== undefined && EFFORT_RE.test(a.reportedEffort)
       && (levels === undefined || a.reportedEffort === 'default' || levels.includes(a.reportedEffort))
       ? a.reportedEffort

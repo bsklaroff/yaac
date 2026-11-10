@@ -25,12 +25,12 @@ import {
   opencodeProviderInfo,
   piProviderInfo,
   type ApiKeyTool,
-  type CustomEndpoint,
   type OmpProvider,
   type OpencodeProvider,
   type PiProvider,
   type ToolProviderInfo,
 } from '@yaac/shared/tool-providers'
+import { describeEndpointModel } from '@yaac/shared/endpoint-models'
 import { TOOL_LABELS, type AgentTool } from '@yaac/shared/types'
 
 export async function authUpdate(): Promise<void> {
@@ -226,8 +226,8 @@ async function promptForProvider<T extends string>(
 
 /**
  * Prompt the user to paste an API key, asking for the provider first on an
- * api-key tool. The custom provider asks for its endpoint and models too,
- * and takes an empty key, since a self-hosted server often needs none.
+ * api-key tool. The custom provider takes one of the user's custom
+ * endpoints instead, which holds its own key.
  */
 async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -243,14 +243,12 @@ async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult> {
   if (tool === 'omp') {
     ompProvider = await promptForProvider(rl, 'omp', OMP_PROVIDERS, OMP_DEFAULT_PROVIDER)
   }
-  let endpoint: CustomEndpoint | undefined
   if ((opencodeProvider ?? piProvider ?? ompProvider) === CUSTOM_PROVIDER) {
-    const baseUrl = (await rl.question('Endpoint URL (e.g. http://my-box:8080/v1): ')).trim()
-    const models = (await rl.question('Model ids it serves, comma-separated: ')).split(/[\s,]+/).filter(Boolean)
-    endpoint = { baseUrl, models }
+    const endpointId = await promptForEndpoint(rl)
+    rl.close()
+    return { apiKey: '', kind: 'api-key', opencodeProvider, piProvider, ompProvider, endpointId }
   }
   const label =
-    endpoint ? 'API key (Enter for none)' :
     tool === 'claude' ? 'Anthropic API key or OAuth token' :
     tool === 'codex' ? 'OpenAI API key' :
     tool === 'opencode' && opencodeProvider ? `${opencodeProviderInfo(opencodeProvider).label} API key` :
@@ -259,9 +257,39 @@ async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult> {
     'API key'
   const key = (await rl.question(`Paste your ${label}: `)).trim()
   rl.close()
-  if (!key && !endpoint) {
+  if (!key) {
     console.error('Key cannot be empty.')
     process.exit(1)
   }
-  return { apiKey: key, kind: detectAuthKind(tool, key), opencodeProvider, piProvider, ompProvider, ...(endpoint ? { endpoint } : {}) }
+  return { apiKey: key, kind: detectAuthKind(tool, key), opencodeProvider, piProvider, ompProvider }
+}
+
+/**
+ * Pick one of the caller's custom endpoints by name, or add one under a new
+ * name: its URL and key, then the models its /models lists.
+ */
+async function promptForEndpoint(rl: readline.Interface): Promise<string> {
+  const client = getApiClient()
+  const { customEndpoints } = await client.auth.list.$get()
+  const names = customEndpoints.map((e) => e.name)
+  console.log(names.length > 0
+    ? `Your custom endpoints: ${names.join(', ')}. Type one, or a new name to add one.`
+    : 'You have no custom endpoints yet. Name one to add it.')
+  const name = (await rl.question('Custom endpoint: ')).trim()
+  if (!name) throw new Error('No custom endpoint named.')
+  const existing = customEndpoints.find((e) => e.name === name)
+  if (existing) return existing.id
+  const baseUrl = (await rl.question('Endpoint URL (e.g. http://my-box:8080/v1): ')).trim()
+  const apiKey = (await rl.question('API key (Enter for none): ')).trim()
+  const found = await client.auth.endpoints.discover.$post({ json: { baseUrl, ...(apiKey ? { apiKey } : {}) } })
+  if (found.models.length === 0) {
+    throw new Error(`${baseUrl} listed no usable models. Add it with \`yaac auth endpoint add --models-file\`.`)
+  }
+  console.log('It serves:')
+  for (const m of found.models) console.log(`  ${describeEndpointModel(m)}`)
+  const { id } = await client.auth.endpoints.$post({
+    json: { name, baseUrl, ...(apiKey ? { apiKey } : {}), models: found.models },
+  })
+  console.log(`Custom endpoint "${name}" saved; edit its models with \`yaac auth endpoint edit ${name}\`.`)
+  return id
 }

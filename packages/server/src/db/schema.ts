@@ -11,6 +11,7 @@ import type {
   WorkspaceDeathReason,
 } from '@yaac/shared/types'
 import type { StepGraph, StepOrigin, StepSpec, StepState, StepsOutcome } from '@yaac/shared/steps'
+import type { EndpointModel } from '@yaac/shared/tool-providers'
 import { sql } from 'drizzle-orm'
 import { boolean, bytea, index, integer, json, jsonb, primaryKey, snakeCase, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core'
 
@@ -744,6 +745,25 @@ export const gitCredentials = snakeCase.table('git_credentials', {
   /** ssh only: the public key as one OpenSSH line, unencrypted so listings
    *  can show it. Its comment is the credential's name. */
   publicKey: text(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex().on(t.owner, t.name)])
+
+/**
+ * Each user's custom endpoints: self-hosted OpenAI-compatible servers
+ * (docs/custom-endpoints.md). An opencode, pi or omp sign-in with the
+ * `custom` provider names one by id inside its sealed credential, so a
+ * delete detaches those sign-ins in code rather than by foreign key.
+ */
+export const customEndpoints = snakeCase.table('custom_endpoints', {
+  id: uuid().primaryKey().defaultRandom(),
+  owner: uuid().notNull().references(() => users.id),
+  /** Unique per owner. */
+  name: text().notNull(),
+  baseUrl: text().notNull(),
+  /** Its api key, '' when it takes none; encrypted. */
+  sealedApiKey: text().notNull(),
+  /** The models it serves, as the user last saved them. */
+  models: jsonb().$type<EndpointModel[]>().notNull(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 }, (t) => [uniqueIndex().on(t.owner, t.name)])
 

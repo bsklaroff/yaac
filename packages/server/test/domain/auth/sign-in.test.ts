@@ -3,10 +3,10 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { workspaceDriver } from '#drivers/driver'
-import { loadToolAuthEntry, signInTool } from '#domain/auth'
+import { addEndpoint, loadToolAuthEntry, signInTool } from '#domain/auth'
 import { BUILT_IN_USER_ID, closeDb, getToolCredential, recordProject, seeTailnetUser } from '#db'
 import { getDb } from '#db/client'
-import { projects, toolCredentials } from '#db/schema'
+import { customEndpoints, projects, toolCredentials } from '#db/schema'
 import { getProjectsDir } from '@yaac/shared/project-paths'
 import {
   PLACEHOLDER_ACCESS_TOKEN,
@@ -66,6 +66,7 @@ beforeEach(async () => {
   installFakeWorkspaceDriver({ kind: 'containerless' })
   const db = await getDb()
   await db.delete(toolCredentials)
+  await db.delete(customEndpoints)
   await db.delete(projects)
   await fs.rm(getProjectsDir(), { recursive: true, force: true })
   bob = await seeTailnetUser('bob@example.com', 'Bob')
@@ -122,33 +123,36 @@ describe('signInTool', () => {
     expect(await getToolCredential(ME, 'claude')).toMatchObject({ kind: 'api-key', apiKey: 'sk-ant-api' })
   })
 
-  it('stores a custom endpoint, with or without a key, and hands the proxy its host', async () => {
-    installFakeWorkspaceDriver({ kind: 'k8s' })
+  it('signs a tool in with one of its user\'s custom endpoints, handing the proxy that endpoint\'s URL and key', async () => {
     const synced: Array<Record<string, { opencode: unknown; pi: unknown; omp: unknown }>> = []
     workspaceDriver().syncCredentials = (bundles) => { synced.push(bundles); return Promise.resolve() }
-    const endpoint = { baseUrl: 'http://box.tail1234.ts.net:8080/v1', models: ['llama'] }
-    const tls = { baseUrl: 'https://llm.example.com/v1', models: ['llama'] }
+    const models = [{ id: 'llama' }]
+    const local = await addEndpoint(ME, { name: 'box', baseUrl: 'http://box.tail1234.ts.net:8080/v1', models })
+    const tls = await addEndpoint(ME, { name: 'tls', baseUrl: 'https://llm.example.com/v1', apiKey: 'sk-self', models })
 
-    await signInTool(ME, 'opencode', { kind: 'api-key', apiKey: '', provider: 'custom', endpoint })
-    await signInTool(ME, 'pi', { kind: 'api-key', apiKey: 'sk-self', provider: 'custom', endpoint: tls })
-    await signInTool(ME, 'omp', { kind: 'api-key', apiKey: '', provider: 'custom', endpoint })
+    await signInTool(ME, 'opencode', { kind: 'api-key', apiKey: '', provider: 'custom', endpointId: local.id })
+    await signInTool(ME, 'pi', { kind: 'api-key', apiKey: '', provider: 'custom', endpointId: tls.id })
+    await signInTool(ME, 'omp', { kind: 'api-key', apiKey: '', provider: 'custom', endpointId: local.id })
 
-    expect(await loadToolAuthEntry(ME, 'opencode')).toMatchObject({ apiKey: '', opencodeProvider: 'custom', endpoint })
-    expect(await loadToolAuthEntry(ME, 'pi')).toMatchObject({ apiKey: 'sk-self', piProvider: 'custom', endpoint: tls })
-    expect(await loadToolAuthEntry(ME, 'omp')).toMatchObject({ apiKey: '', ompProvider: 'custom', endpoint })
-    expect(synced.at(-1)?.install).toMatchObject({
-      opencode: { provider: 'custom', apiKey: '', endpoint },
-      pi: { provider: 'custom', apiKey: 'sk-self', endpoint: tls },
-      omp: { provider: 'custom', apiKey: '', endpoint },
+    // The sign-in reads as its endpoint, key included.
+    expect(await loadToolAuthEntry(ME, 'opencode')).toMatchObject({
+      apiKey: '', opencodeProvider: 'custom', endpoint: { id: local.id, name: 'box', baseUrl: 'http://box.tail1234.ts.net:8080/v1', models },
     })
+    expect(await loadToolAuthEntry(ME, 'pi')).toMatchObject({ apiKey: 'sk-self', piProvider: 'custom', endpoint: { id: tls.id } })
+    expect(synced.at(-1)?.install).toMatchObject({
+      opencode: { provider: 'custom', apiKey: '', endpoint: { baseUrl: 'http://box.tail1234.ts.net:8080/v1' } },
+      pi: { provider: 'custom', apiKey: 'sk-self', endpoint: { baseUrl: 'https://llm.example.com/v1' } },
+      omp: { provider: 'custom', apiKey: '', endpoint: { baseUrl: 'http://box.tail1234.ts.net:8080/v1' } },
+    })
+    // The stored sign-in holds only the endpoint's id.
+    expect(await getToolCredential(ME, 'pi')).toMatchObject({ apiKey: '', endpointId: tls.id })
+    expect(await getToolCredential(ME, 'pi')).not.toHaveProperty('endpoint')
 
-    // A key the proxy would never send over plain HTTP is refused on a
-    // cluster, and kept where the workspace holds the real key.
-    expect((await rejection(signInTool(ME, 'opencode', { kind: 'api-key', apiKey: 'k', provider: 'custom', endpoint }))).message)
-      .toMatch(/never send a key over plain HTTP/)
-    installFakeWorkspaceDriver({ kind: 'containerless' })
-    await signInTool(ME, 'opencode', { kind: 'api-key', apiKey: 'k', provider: 'custom', endpoint })
-    expect(await loadToolAuthEntry(ME, 'opencode')).toMatchObject({ apiKey: 'k', endpoint })
+    // Another user's endpoint reads as missing.
+    const bobs = await addEndpoint(bob, { name: 'bobs', baseUrl: 'https://bob.example.com/v1', models })
+    expect((await rejection(signInTool(ME, 'omp', { kind: 'api-key', apiKey: '', provider: 'custom', endpointId: bobs.id }))).code)
+      .toBe('NOT_FOUND')
+    expect(await loadToolAuthEntry(ME, 'omp')).toMatchObject({ endpoint: { id: local.id } })
   })
 
   it('refuses a payload that does not fit the tool, storing nothing', async () => {
@@ -163,10 +167,10 @@ describe('signInTool', () => {
     expect(err.message).toContain('"sk-or-v1-0123456…"')
     // Only the custom provider takes an endpoint, it needs one, and only it
     // goes without a key.
-    const endpoint = { baseUrl: 'http://box:8080/v1', models: ['llama'] }
+    const endpointId = '00000000-0000-4000-8000-0000000000e1'
     expect((await rejection(signInTool(ME, 'pi', { kind: 'api-key', apiKey: '', provider: 'custom' }))).message)
-      .toMatch(/needs an endpoint/)
-    expect((await rejection(signInTool(ME, 'pi', { kind: 'api-key', apiKey: 'k', provider: 'openrouter', endpoint }))).message)
+      .toMatch(/needs one of your custom endpoints/)
+    expect((await rejection(signInTool(ME, 'pi', { kind: 'api-key', apiKey: 'k', provider: 'openrouter', endpointId }))).message)
       .toMatch(/Only the custom pi provider/)
     expect((await rejection(signInTool(ME, 'opencode', { kind: 'api-key', apiKey: '', provider: 'openrouter' }))).message)
       .toMatch(/needs an api key/)

@@ -28,7 +28,7 @@ import { resolveWorkspace } from './resolve'
 import { workspaceDriver } from '#drivers/driver'
 import { checkStartSteps, prepareStart } from './start'
 import { toStoppedEntries } from './stopped-list'
-import { modelDisplayName, modelEfforts } from '#domain/auth'
+import { customEndpointFor, modelDisplayName, modelEfforts } from '#domain/auth'
 import { authorizeProject, isProjectHeld, systemPrincipal, type Actor } from '#domain/access'
 import { getDefaultBranch } from '#domain/git'
 import { resolveWorkflow } from '#domain/projects'
@@ -229,7 +229,7 @@ export async function updateQueuedWorkspace(
         ? await resolveParent(row.projectId, patch.parent)
         : await parentInfo(row.projectId, pointerOf(row))
   const retooled = patch.tool !== undefined && patch.tool !== row.tool
-  const keptEffort = patch.effort ?? (retooled ? undefined : keepableEffort(row, patch.model))
+  const keptEffort = patch.effort ?? (retooled ? undefined : await keepableEffort(row, patch.model))
   const nonInteractive = patch.nonInteractive ?? row.nonInteractive
   const prompt = nonInteractive ? undefined : patch.prompt ?? row.prompt
   const commit = patch.branch !== undefined ? undefined : patch.commit ?? row.commit
@@ -272,9 +272,10 @@ export async function updateQueuedWorkspace(
 
 /** An entry's stored effort, if the model it will run (a new one, or its
  *  own) has it. */
-function keepableEffort(row: QueuedWorkspaceRow, model: string | undefined): string | undefined {
+async function keepableEffort(row: QueuedWorkspaceRow, model: string | undefined): Promise<string | undefined> {
   if (row.effort === undefined) return undefined
-  const levels = modelEfforts(row.tool, model ?? row.model)?.levels
+  const running = model ?? row.model
+  const levels = modelEfforts(row.tool, running, await customEndpointFor(row.projectId, row.tool, running))?.levels
   return levels?.includes(row.effort) === true ? row.effort : undefined
 }
 

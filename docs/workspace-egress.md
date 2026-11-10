@@ -307,13 +307,15 @@ different keys for one provider, unaffected by claude's or codex's
 carries its own placeholder too, so the proxy picks the key by which
 placeholder a request sends, not by the workspace's tool.
 
-The `custom` provider is a self-hosted OpenAI-compatible endpoint, for
-opencode, pi and omp: its credential carries the base URL and the model ids,
-and yaac writes the whole provider definition into each tool's config. Its `apiHost` is the URL's
-host, so a key is swapped in there over HTTPS like any provider's. Over plain
-HTTP no key is ever injected, so an endpoint reached that way must take none;
-the key is optional for this provider, a keyless one gets no variable, and
-under k8s saving an `http://` endpoint with a key is refused.
+The `custom` provider is one of the user's custom endpoints
+(docs/custom-endpoints.md), a self-hosted OpenAI-compatible server, for
+opencode, pi and omp: the endpoint holds the base URL, key and models, and
+yaac writes the whole provider definition into each tool's config. Its
+`apiHost` is the URL's host, so a key is swapped in there over HTTPS like any
+provider's. Over plain HTTP no key is ever injected, so an endpoint reached
+that way must take none; the key is optional for this provider, a keyless
+one gets no variable, and under k8s saving an `http://` endpoint with a key
+is refused.
 
 **omp's own traffic.** Besides its provider, omp fetches a public
 models.dev mirror at startup (`catalog.stencil.so`: a plain GET, carrying

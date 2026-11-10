@@ -9,6 +9,7 @@ import { mockFetch, testQueryClient } from './harness'
 
 const LIST: AuthListResult = {
   gitCredentials: [],
+  customEndpoints: [],
   toolAuth: [
     { tool: 'claude', kind: 'oauth', keyPreview: '***host', savedAt: '2026-01-01T00:00:00.000Z', models: [], defaultModel: 'claude-opus-5-5' },
     {

@@ -393,6 +393,39 @@ describe('write routes', () => {
     })
   })
 
+  describe('custom endpoint routes', () => {
+    it('stores an endpoint, signs a tool in with it, edits it and deletes it, signing that tool out', async () => {
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+      const models = [{ id: 'gpt-oss', efforts: { levels: ['low' as const, 'high' as const], default: 'high' as const } }]
+      const { id } = await (await client.auth.endpoints.$post({ json: { name: 'box', baseUrl: 'https://box/v1', models } })).json()
+      expect((await client.auth[':tool'].$put({
+        param: { tool: 'pi' }, json: { kind: 'api-key', apiKey: '', provider: 'custom', endpointId: id },
+      })).status).toBe(204)
+      const listed = await (await client.auth.list.$get()).json()
+      expect(listed.customEndpoints).toEqual([{ id, name: 'box', baseUrl: 'https://box/v1', keyPreview: '', models, tools: ['pi'] }])
+      expect(listed.toolAuth.find((t) => t.tool === 'pi')).toMatchObject({
+        endpoint: { id, name: 'box' },
+        models: [{ id: 'custom/gpt-oss', efforts: { levels: ['low', 'high'], default: 'high' } }],
+        defaultModel: 'custom/gpt-oss',
+      })
+
+      expect((await client.auth.endpoints[':id'].$patch({ param: { id }, json: { name: 'renamed', apiKey: 'sk-new' } })).status).toBe(204)
+      expect((await (await client.auth.list.$get()).json()).customEndpoints).toMatchObject([{ name: 'renamed', keyPreview: '***-new' }])
+      // A model list the schema refuses never reaches the store.
+      const app = buildApp({ buildId: 'test' })
+      const refused = await app.request(`/api/auth/endpoints/${id}`, rawInit({
+        method: 'PATCH', body: JSON.stringify({ models: [{ id: 'm', efforts: { levels: ['low'], default: 'max' } }] }),
+      }))
+      expect(refused.status).toBe(400)
+
+      expect((await client.auth.endpoints[':id'].$delete({ param: { id } })).status).toBe(204)
+      const after = await (await client.auth.list.$get()).json()
+      expect(after.customEndpoints).toEqual([])
+      expect(after.toolAuth.find((t) => t.tool === 'pi')).toBeUndefined()
+      expect((await client.auth.endpoints[':id'].$delete({ param: { id } })).status).toBe(404)
+    })
+  })
+
   describe('GET/PUT /config/time-zone', () => {
     it('takes device reports until the user pins a zone, then ignores them until unpinned', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
@@ -1811,7 +1844,7 @@ describe('write routes', () => {
 
       // Bob sees none of it, and his clear and credential writes reach none
       // of it either.
-      expect(await (await client.auth.list.$get({}, as(BOB))).json()).toEqual({ gitCredentials: [], toolAuth: [] })
+      expect(await (await client.auth.list.$get({}, as(BOB))).json()).toEqual({ gitCredentials: [], toolAuth: [], customEndpoints: [] })
       expect((await client.auth.clear.$post({ json: { service: 'all' } }, as(BOB))).status).toBe(204)
       expect(await getToolCredential(alice, 'claude')).toMatchObject({ apiKey: 'sk-ant-alice' })
       expect((await client.auth.git.credentials[':id'].$patch({ param: { id: gh.id }, json: { name: 'x' } }, as(BOB))).status).toBe(404)

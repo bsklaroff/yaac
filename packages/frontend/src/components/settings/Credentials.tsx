@@ -5,6 +5,7 @@ import { api } from '#lib/api'
 import { AUTH_LIST_KEY, useAuthList } from '#lib/useAuthList'
 import { useUiStore } from '#lib/store'
 import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
+import { CustomEndpoints } from '#components/settings/CustomEndpoints'
 import { GitCredentials } from '#components/settings/GitCredentials'
 import { Field } from '#components/settings/Field'
 import { filterSuggestions, Typeahead, type TypeaheadItem } from '#components/ui/Typeahead'
@@ -17,7 +18,7 @@ import {
   PI_DEFAULT_PROVIDER,
   PI_PROVIDERS,
 } from '@yaac/shared/tool-providers'
-import { AGENT_TOOLS, TOOL_LABELS, type AgentTool, type ToolAuthSummary, type ToolInstallView, type ToolLoginView } from '@yaac/shared/types'
+import { AGENT_TOOLS, TOOL_LABELS, type AgentTool, type CustomEndpointSummary, type ToolAuthSummary, type ToolInstallView, type ToolLoginView } from '@yaac/shared/types'
 
 /**
  * Provider choices for the API-key-only tools: which backend the pasted key
@@ -40,10 +41,11 @@ const INPUT = 'rounded-md border border-border bg-surface px-2.5 py-1.5 font-mon
   + 'focus:border-border-strong'
 
 /**
- * Per-tool sign-in plus git credentials. claude and codex sign in through the
- * vendor's browser login or a pasted API key; opencode, pi and omp take a
- * provider and an API key. Creating a workspace needs a credential for its
- * tool, and a git credential for its project.
+ * Per-tool sign-in, custom endpoints and git credentials. claude and codex
+ * sign in through the vendor's browser login or a pasted API key; opencode,
+ * pi and omp take a provider and an API key, or one of the user's custom
+ * endpoints. Creating a workspace needs a credential for its tool, and a git
+ * credential for its project.
  */
 export function CredentialsPane(): JSX.Element {
   const auth = useAuthList()
@@ -63,12 +65,14 @@ export function CredentialsPane(): JSX.Element {
               key={t}
               tool={t}
               summary={auth?.toolAuth.find((a) => a.tool === t) ?? null}
+              endpoints={auth?.customEndpoints ?? []}
               autoExpand={focusTool === t}
               onChanged={refresh}
             />
           ))}
         </div>
       </Field>
+      <CustomEndpoints />
       <GitCredentials />
     </section>
   )
@@ -78,7 +82,6 @@ export function CredentialsPane(): JSX.Element {
 function apiKeyLabel(tool: AgentTool, provider: string | undefined): string {
   if (tool === 'claude') return 'Anthropic API key'
   if (tool === 'codex') return 'OpenAI API key'
-  if (provider === CUSTOM_PROVIDER) return 'API key (optional)'
   const label = PROVIDER_OPTIONS[tool]?.find((o) => o.value === provider)?.label
   return label ? `${label} API key` : 'API key'
 }
@@ -122,9 +125,11 @@ function ProviderCombobox({ options, value, onChange }: {
  * One tool's credential row. Signed in: masked key + sign-out. Signed out:
  * a "Sign in" expander with the tool's available methods.
  */
-function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
+function ToolAuthRow({ tool, summary, endpoints, autoExpand, onChanged }: {
   tool: AgentTool
   summary: ToolAuthSummary | null
+  /** The user's custom endpoints, which the `custom` provider picks from. */
+  endpoints: CustomEndpointSummary[]
   autoExpand: boolean
   onChanged: () => void
 }): JSX.Element {
@@ -157,17 +162,15 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
       const raw = form.get(name)
       return (typeof raw === 'string' ? raw : '').trim()
     }
-    const apiKey = field('apiKey')
-    const endpoint = custom
-      ? { baseUrl: field('baseUrl'), models: field('models').split(/[\s,]+/).filter(Boolean) }
-      : undefined
-    if (endpoint ? !endpoint.baseUrl || endpoint.models.length === 0 : !apiKey) return
+    const apiKey = custom ? '' : field('apiKey')
+    const endpointId = custom ? field('endpointId') : undefined
+    if (custom ? !endpointId : !apiKey) return
     change.mutate({
       kind: 'save',
       run: async () => {
         await api.auth[':tool'].$put({
           param: { tool },
-          json: { kind: 'api-key', apiKey, ...(providerOptions ? { provider } : {}), ...(endpoint ? { endpoint } : {}) },
+          json: { kind: 'api-key', apiKey, ...(providerOptions ? { provider } : {}), ...(endpointId ? { endpointId } : {}) },
         })
         formElement.reset()
       },
@@ -182,12 +185,12 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
           {summary && ` · ${(() => {
             const p = summary.opencodeProvider ?? summary.piProvider ?? summary.ompProvider
             return p ? `${p} · ` : ''
-          })()}${summary.kind}`}
+          })()}${summary.endpoint?.name ?? summary.kind}`}
         </span>
         {summary ? (
           <span className="ml-2 flex shrink-0 items-center gap-2">
             <span className="truncate font-mono text-text-faint">
-              {[summary.endpoint?.baseUrl, summary.keyPreview].filter(Boolean).join(' · ')}
+              {summary.endpoint?.baseUrl ?? summary.keyPreview}
             </span>
             <button
               onClick={() => change.mutate({
@@ -229,27 +232,29 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
             />
           )}
           <form onSubmit={saveKey} className="flex flex-col gap-2">
-            {custom && (
-              <>
-                <input name="baseUrl" placeholder="Endpoint URL, e.g. http://my-box:8080/v1" className={INPUT} />
-                <input name="models" placeholder="Model ids, comma-separated" className={INPUT} />
-                <p className="text-[11px] text-text-faint">
-                  Any OpenAI-compatible server (vLLM, Ollama, llama.cpp…). On a cluster, add its host to
-                  the project&apos;s allowlist; a key is only sent over https there.
-                </p>
-              </>
+            {custom && endpoints.length === 0 ? (
+              <p className="text-[11px] text-text-faint">
+                Add a custom endpoint under &quot;Custom endpoints&quot; below, then pick it here.
+              </p>
+            ) : (
+              <div className="flex items-center gap-2">
+                {custom ? (
+                  <select name="endpointId" aria-label="Custom endpoint" className={clsx(INPUT, 'flex-1')}>
+                    {endpoints.map((e) => <option key={e.id} value={e.id}>{e.name} ({e.baseUrl})</option>)}
+                  </select>
+                ) : (
+                  <input
+                    name="apiKey"
+                    type="password"
+                    placeholder={apiKeyLabel(tool, provider)}
+                    className={clsx(INPUT, 'flex-1')}
+                  />
+                )}
+                <button type="submit" disabled={busy !== null} className={BUTTON}>
+                  {busy === 'save' ? 'Saving…' : 'Save'}
+                </button>
+              </div>
             )}
-            <div className="flex items-center gap-2">
-              <input
-                name="apiKey"
-                type="password"
-                placeholder={apiKeyLabel(tool, provider)}
-                className={clsx(INPUT, 'flex-1')}
-              />
-              <button type="submit" disabled={busy !== null} className={BUTTON}>
-                {busy === 'save' ? 'Saving…' : 'Save'}
-              </button>
-            </div>
           </form>
         </div>
       )}

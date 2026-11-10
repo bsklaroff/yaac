@@ -76,6 +76,12 @@ regeneration produces: claude models dropped as unknown to the pinned claude,
 and openai models codex does not bundle. A unit test pins a few rows, so a
 regeneration that quietly loses a source fails CI.
 
+A custom endpoint's models (docs/custom-endpoints.md) are not in the
+table: their levels come from the endpoint's own list, fetched from its
+`/models` or entered by hand, and are put in each tool's words there (pi and
+omp call `none` `off`, opencode leads with `default`). The resolution below
+checks a custom model's effort against those levels.
+
 The table stays on the server; the new-workspace pane gets each model's levels on
 its `ModelOption`, so it and the server resolve from the same data.
 

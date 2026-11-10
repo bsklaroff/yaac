@@ -11,6 +11,7 @@ import {
   opencodeProviderInfo,
   parseOpencodeProvider,
   parsePiProvider,
+  endpointEfforts,
   piProviderInfo,
   providerApiHost,
   type OpencodeProvider,
@@ -180,8 +181,7 @@ describe('effort table', () => {
 describe('providerApiHost', () => {
   it('takes a generated provider\'s host, and a custom endpoint\'s own', () => {
     expect(providerApiHost(OPENCODE_PROVIDERS, 'anthropic', undefined)).toBe('api.anthropic.com')
-    const endpoint = { baseUrl: 'http://box.tail1234.ts.net:8080/v1', models: ['qwen'] }
-    expect(providerApiHost(PI_PROVIDERS, CUSTOM_PROVIDER, endpoint)).toBe('box.tail1234.ts.net')
+    expect(providerApiHost(PI_PROVIDERS, CUSTOM_PROVIDER, { baseUrl: 'http://box.tail1234.ts.net:8080/v1' })).toBe('box.tail1234.ts.net')
   })
 
   it('has no host for an unknown provider or a custom one without an endpoint', () => {
@@ -189,5 +189,19 @@ describe('providerApiHost', () => {
     expect(providerApiHost(OPENCODE_PROVIDERS, 'bogus', undefined)).toBeUndefined()
     expect(providerApiHost(OPENCODE_PROVIDERS, undefined, undefined)).toBeUndefined()
     expect(providerApiHost(PI_PROVIDERS, CUSTOM_PROVIDER, undefined)).toBeUndefined()
+  })
+})
+
+describe('endpointEfforts', () => {
+  it('puts an endpoint model\'s levels in each tool\'s words, least first', () => {
+    const model = { id: 'm', efforts: { levels: ['high' as const, 'none' as const, 'low' as const], default: 'none' as const } }
+    expect(endpointEfforts('pi', model)).toEqual({ levels: ['off', 'low', 'high'], default: 'off' })
+    expect(endpointEfforts('omp', model)).toEqual({ levels: ['off', 'low', 'high'], default: 'off' })
+    expect(endpointEfforts('opencode', model)).toEqual({ levels: ['default', 'none', 'low', 'high'], default: 'none' })
+    // omp can always turn thinking off; pi only where the model can.
+    const always = { id: 'm', efforts: { levels: ['low' as const, 'max' as const], default: 'max' as const } }
+    expect(endpointEfforts('omp', always)).toEqual({ levels: ['off', 'low', 'max'], default: 'max' })
+    expect(endpointEfforts('pi', always)).toEqual({ levels: ['low', 'max'], default: 'max' })
+    expect(endpointEfforts('pi', { id: 'plain' })).toBeUndefined()
   })
 })

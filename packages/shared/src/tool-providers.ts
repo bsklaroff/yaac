@@ -7,13 +7,15 @@
  *
  * The provider data is generated into `tool-providers.generated.ts` by
  * `pnpm gen:providers` (scripts/gen-tool-providers.ts). One provider is not
- * generated: `custom`, a self-hosted OpenAI-compatible endpoint whose URL
- * and models the credential itself carries (`CustomEndpoint`).
+ * generated: `custom`, a self-hosted OpenAI-compatible endpoint the user
+ * defines once and attaches to any of these tools (`CustomEndpoint`,
+ * docs/custom-endpoints.md).
  */
 import {
   OMP_PROVIDERS as GENERATED_OMP_PROVIDERS,
   OPENCODE_PROVIDERS as GENERATED_OPENCODE_PROVIDERS,
   PI_PROVIDERS as GENERATED_PI_PROVIDERS,
+  type ModelEfforts,
   type OmpProviderId,
   type OpencodeProviderId,
   type PiProviderId,
@@ -25,21 +27,55 @@ export type { ToolProviderInfo }
 /** The tools that authenticate only with an api key for a chosen provider. */
 export type ApiKeyTool = 'opencode' | 'pi' | 'omp'
 
+export const API_KEY_TOOLS: readonly ApiKeyTool[] = ['opencode', 'pi', 'omp']
+
 export function isApiKeyTool(tool: string): tool is ApiKeyTool {
-  return tool === 'opencode' || tool === 'pi' || tool === 'omp'
+  return (API_KEY_TOOLS as readonly string[]).includes(tool)
 }
 
 /** The provider id of a self-hosted OpenAI-compatible endpoint. */
 export const CUSTOM_PROVIDER = 'custom'
 
 /**
- * Where a `custom` provider sends requests, and the model ids it serves.
- * The proxy swaps a key in on `baseUrl`'s host, as it does on a generated
- * provider's `apiHost`.
+ * The reasoning levels an endpoint may advertise for a model, in the words
+ * of the OpenAI `reasoning_effort` parameter it is sent as, least first.
+ */
+export const ENDPOINT_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+export type EndpointEffort = typeof ENDPOINT_EFFORTS[number]
+
+/** One model a custom endpoint serves, with its reasoning levels in the
+ *  endpoint's words when it has any. */
+export interface EndpointModel {
+  id: string
+  name?: string
+  efforts?: { levels: EndpointEffort[]; default: EndpointEffort }
+}
+
+/**
+ * A user's custom endpoint: where a `custom` provider sends requests, and
+ * the models it serves. The proxy swaps a key in on `baseUrl`'s host, as it
+ * does on a generated provider's `apiHost`.
  */
 export interface CustomEndpoint {
+  id: string
+  name: string
   baseUrl: string
-  models: string[]
+  models: EndpointModel[]
+}
+
+/**
+ * A custom endpoint model's effort levels in an api-key tool's own words
+ * (docs/effort-levels.md), or undefined when it advertises none. pi and omp
+ * call `none` `off`; omp can always turn thinking off, so it offers `off`
+ * either way. opencode leads with `default` (no variant), but defaults to
+ * the endpoint's level so every launch names one.
+ */
+export function endpointEfforts(tool: ApiKeyTool, model: EndpointModel): ModelEfforts | undefined {
+  if (model.efforts === undefined) return undefined
+  const word = (level: EndpointEffort): string => (tool !== 'opencode' && level === 'none' ? 'off' : level)
+  const levels = ENDPOINT_EFFORTS.filter((l) => model.efforts?.levels.includes(l)).map(word)
+  const lead = tool === 'opencode' ? ['default'] : tool === 'omp' && !levels.includes('off') ? ['off'] : []
+  return { levels: [...lead, ...levels], default: word(model.efforts.default) }
 }
 
 /**
@@ -125,7 +161,7 @@ export function ompProviderInfo(id: OmpProvider): ToolProviderInfo {
 export function providerApiHost(
   list: readonly ToolProviderInfo[],
   provider: string | undefined,
-  endpoint: CustomEndpoint | undefined,
+  endpoint: { baseUrl: string } | undefined,
 ): string | undefined {
   if (provider === CUSTOM_PROVIDER) return endpoint && new URL(endpoint.baseUrl).hostname
   return list.find((p) => p.id === provider)?.apiHost || undefined

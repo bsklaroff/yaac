@@ -16,7 +16,10 @@ project's remote:
   git host as a deploy key or account key.
 
 Credentials are managed in the webapp (Settings → Git credentials, and the Add
-Project form). From the CLI, `yaac auth update` adds one, `yaac auth list`
+Project form). Settings lists every project with the credential it uses
+(projects with none first, credentials no project uses last), and a
+credential is edited from any row showing it, under a banner naming every
+project the edit reaches. From the CLI, `yaac auth update` adds one, `yaac auth list`
 lists them by name, and `yaac project add <url> <credential>` clones with the
 named credential and assigns it; a project is always added with one.
 `yaac config git-credential <project> <credential>` assigns another.

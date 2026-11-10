@@ -47,6 +47,7 @@ import { configDefaultBranchGuard } from '#commands/config-default-branch-guard'
 import { configGitCredential } from '#commands/config-git-credential'
 import { configTimeZone } from '#commands/config-time-zone'
 import { authFake } from '#commands/auth-fake'
+import { authEndpointAdd, authEndpointEdit, authEndpointModels, authEndpointRefresh, authEndpointRemove } from '#commands/auth-endpoint'
 import { remoteAdd, remoteConnect, remoteDisconnect, remoteList, remoteRemove } from '#commands/remote'
 import {
   clusterStatus,
@@ -970,6 +971,50 @@ auth
   .command('clear')
   .description('Remove stored tool credentials (interactive)')
   .action(authClear)
+
+const endpoint = auth
+  .command('endpoint')
+  .description('Manage custom endpoints: self-hosted OpenAI-compatible servers opencode, pi and omp can sign in with')
+
+endpoint
+  .command('add')
+  .description('Add a custom endpoint, listing its models from its /models unless --models-file names them')
+  .argument('<name>', 'Name for the endpoint')
+  .argument('<url>', 'Its OpenAI-compatible base URL, e.g. http://my-box:8080/v1')
+  .option('--key-stdin', 'Read its api key from stdin')
+  .option('--models-file <path>', 'Its models as JSON (see `yaac auth endpoint models`), or - for stdin')
+  .action(authEndpointAdd)
+
+endpoint
+  .command('edit')
+  .description('Edit a custom endpoint: with no option, its models in $VISUAL/$EDITOR')
+  .argument('<name>', 'The endpoint, as `yaac auth list` names it')
+  .option('--models-file <path>', 'Replace its models with this JSON, or - for stdin')
+  .option('--rename <name>', 'Rename it')
+  .option('--url <url>', 'Change its base URL')
+  .option('--key-stdin', 'Replace its api key with one read from stdin')
+  .option('--clear-key', 'Remove its api key')
+  .action(authEndpointEdit)
+
+endpoint
+  .command('models')
+  .description('Print a custom endpoint\'s models as JSON, the form --models-file reads')
+  .argument('<name>', 'The endpoint, as `yaac auth list` names it')
+  .action(authEndpointModels)
+
+endpoint
+  .command('refresh')
+  .description('Show how the models an endpoint lists now differ from its saved ones, and apply some or all')
+  .argument('<name>', 'The endpoint, as `yaac auth list` names it')
+  .option('--apply <parts>', 'Apply all, or a comma list of new, changed, gone')
+  .option('--edit', 'Review the result in $VISUAL/$EDITOR before saving (new and changed applied unless --apply says)')
+  .action(authEndpointRefresh)
+
+endpoint
+  .command('remove')
+  .description('Delete a custom endpoint, signing out the tools that use it')
+  .argument('<name>', 'The endpoint, as `yaac auth list` names it')
+  .action(authEndpointRemove)
 
 auth
   .command('fake')

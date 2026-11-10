@@ -13,6 +13,9 @@
 //  - the user's named git credentials (add, rename, replace, remove), and
 //    `yaac auth fake`'s placeholder credentials;
 //  - the model catalog, for the create path and `yaac-mama models`;
+//  - the user's custom endpoints (add, edit, remove, ask one for its
+//    models), which opencode, pi and omp sign in with, and the startup
+//    importer for sign-ins that still carry their own;
 //  - the runtime link: every writer of a store pushes every user's set to
 //    the runtime, each under its owner key, and the reconcile pass adopts
 //    tokens a mediating runtime captured from a workspace's refresh.
@@ -20,6 +23,8 @@
 
 export { authAgentHub } from './agent'
 export { clearAuth } from './clear'
+export { addEndpoint, discoverEndpointModels, removeEndpoint, updateEndpoint } from './endpoints'
+export { importEmbeddedEndpoints } from './import-endpoints'
 export { harvestToolCredentials, seedProjectToolHome, syncToolCredentials } from './credential-sync'
 export { seedFakeAuth } from './fake-auth'
 export {
@@ -33,7 +38,8 @@ export { listAuth } from './list'
 export { catalogModel, defaultModelFor, isCatalogModel, modelDisplayName, modelEfforts, modelsForTool } from './models'
 export { adoptRefreshedToolCredentials, pushCredentialsToRuntime } from './runtime-push'
 export { signInTool } from './sign-in'
-export { NO_CREDENTIALS_OWNER_KEY, authEntryEndpoint, authEntryProvider, credentialOwnerKey, loadToolAuthEntry } from './store'
+export { NO_CREDENTIALS_OWNER_KEY, authEntryEndpoint, authEntryProvider, credentialOwnerKey, customEndpointFor, loadToolAuthEntry } from './store'
+export { toolKeyProviders } from './tool-key-config'
 export {
   planUsageForSnapshot,
   refreshPlanUsage,

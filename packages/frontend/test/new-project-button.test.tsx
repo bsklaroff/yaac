@@ -10,7 +10,7 @@ import { mockFetch, renderWithClient, serverError, type FetchMock } from './harn
 const TOKEN: GitCredentialSummary = {
   id: 'c-token', name: 'repo-token', kind: 'https', preview: '***abcd', projects: ['alpha'],
 }
-const list = (...gitCredentials: GitCredentialSummary[]): AuthListResult => ({ gitCredentials, toolAuth: [] })
+const list = (...gitCredentials: GitCredentialSummary[]): AuthListResult => ({ gitCredentials, toolAuth: [], customEndpoints: [] })
 
 const AUTH_LIST = 'GET /api/auth/list'
 const ADD = 'POST /api/project/add'

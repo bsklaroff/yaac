@@ -2,7 +2,7 @@ import type { Server } from 'node:http'
 import { serve, type ServerType } from '@hono/node-server'
 import { WebSocketServer } from 'ws'
 import { buildApp, buildMamaRelayApp } from '#main/server'
-import { pushCredentialsToRuntime, refreshPlanUsage } from '#domain/auth'
+import { importEmbeddedEndpoints, pushCredentialsToRuntime, refreshPlanUsage } from '#domain/auth'
 import { closeDb, DbRefusal, listProjectRows, openDb, pingDb } from '#db'
 import { startGitSshAgent, stopGitSshAgent } from '#domain/git'
 import { EventHub } from '#api/events'
@@ -250,8 +250,10 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     refuse(err.message)
     return
   }
-  // Before any create reads the setting (docs/legacy-compat-shims.md).
+  // Before any create reads the setting, or anything a sign-in
+  // (docs/legacy-compat-shims.md).
   await importProjectConfigFiles()
+  await importEmbeddedEndpoints()
 
   // Set synchronously so it is true before any queued request runs.
   ready = true
