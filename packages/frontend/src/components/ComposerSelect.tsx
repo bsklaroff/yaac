@@ -4,14 +4,24 @@ import { Menu } from '@base-ui/react/menu'
 import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { CheckIcon, ChevronIcon } from '#lib/icons'
 import { useSnapshot } from '#lib/useSnapshot'
-import { effortLabel, PERMISSION_MODE_COPY, type PermissionMode } from '@yaac/shared/types'
+import {
+  AGENT_OPTIONS,
+  effortLabel,
+  PERMISSION_MODE_COPY,
+  toolAgentOptions,
+  type AgentOption,
+  type AgentOptions,
+  type AgentTool,
+  type PermissionMode,
+} from '@yaac/shared/types'
 
 /*
  * The chat composer's per-conversation settings: its permission posture
- * (docs/permission-modes.md) and its effort level (docs/effort-levels.md).
- * Each is a label showing the current value, which opens a menu of the
- * values the server says the conversation can switch to. A narrow pane
- * drops the label's last word so the composer's footer fits on one line.
+ * (docs/permission-modes.md), its effort level (docs/effort-levels.md) and
+ * its agent options (docs/sessions.md). Each is a label showing the current
+ * value, which opens a menu of the values the conversation can switch to. A
+ * narrow pane drops the label's last word so the composer's footer fits on
+ * one line.
  */
 
 /** What each posture lets the agent do, for hover text and the menu. */
@@ -139,5 +149,53 @@ export function EffortSelect({ current, available, disabled, onSelect }: {
       disabled={disabled}
       onSelect={onSelect}
     />
+  )
+}
+
+/**
+ * The agent options `options` names (`AGENT_OPTIONS`), each a checkbox that
+ * turns it on or off; nothing when it names none. `onChange` gets the one
+ * that changed. The label counts the ones on.
+ */
+export function AgentOptionsMenu({ tool, options = toolAgentOptions(tool), value, disabled, onChange }: {
+  tool: AgentTool
+  options?: readonly AgentOption[]
+  value: AgentOptions
+  disabled: boolean
+  onChange: (changed: AgentOptions) => void
+}): JSX.Element | null {
+  if (options.length === 0) return null
+  const on = options.filter((o) => value[o] === true).length
+  return (
+    <Menu.Root>
+      <Menu.Trigger
+        aria-label="Agent options"
+        title={options.map((o) => `${AGENT_OPTIONS[o].label}: ${value[o] === true ? 'on' : 'off'}`).join('\n')}
+        disabled={disabled}
+        className={clsx(LABEL, 'outline-none hover:bg-surface-2 hover:text-text disabled:opacity-40',
+          'data-[popup-open]:bg-surface-2 data-[popup-open]:text-text')}
+      >
+        <Label head={on === 0 ? 'Options' : `Options (${String(on)})`} />
+        <ChevronIcon size={11} className="-rotate-90" />
+      </Menu.Trigger>
+      <MenuPopup side="top" align="start" sideOffset={6} className="w-[280px]">
+        {options.map((o) => (
+          <Menu.CheckboxItem
+            key={o}
+            checked={value[o] === true}
+            onCheckedChange={(checked) => onChange({ [o]: checked })}
+            className={clsx(MENU_ITEM, 'items-start')}
+          >
+            <span className="mt-0.5 w-3 shrink-0">
+              <Menu.CheckboxItemIndicator><CheckIcon size={12} /></Menu.CheckboxItemIndicator>
+            </span>
+            <span className="flex flex-col gap-0.5">
+              <span className="text-text">{AGENT_OPTIONS[o].label}</span>
+              <span className="text-[11px] text-text-faint">{AGENT_OPTIONS[o].hint}</span>
+            </span>
+          </Menu.CheckboxItem>
+        ))}
+      </MenuPopup>
+    </Menu.Root>
   )
 }

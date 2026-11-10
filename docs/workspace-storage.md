@@ -260,8 +260,8 @@ hand-started one reports as well:
 Each tool also ends its conversation (claude's and codex's `SessionEnd`, pi's
 `session_shutdown`, the plugin's dispose), which clears the option when the
 agent quits. That matters in a shell pane that outlives the agent. (Verified
-against claude 2.1.310, codex-cli 0.164.0, pi 1.4.0, omp 18.18.3 and
-@opencode/cli 2.1.4.)
+against claude 2.1.321, codex-cli 0.166.0, pi 1.5.1, omp 18.18.6 and
+@opencode/cli 2.2.6.)
 
 A conversation is **active** exactly when a live agent names it. A pane option
 dies with its pane, and a new pod's tmux starts with none, so a previous pod's
@@ -464,7 +464,7 @@ One tool reads another's: omp loads Claude Code's user config whenever
 `CLAUDE_CONFIG_DIR` is set, as every workspace sets it. So the project's
 Claude skills, and the MCP servers in its `.claude.json` with any secrets in
 their config, reach its omp workspaces too. Claude's `settings.json` hooks do
-not (checked against omp 18.18.3).
+not (checked against omp 18.18.6).
 
 | `history/<id>/…` | Holds | k8s | containerless |
 |---|---|---|---|

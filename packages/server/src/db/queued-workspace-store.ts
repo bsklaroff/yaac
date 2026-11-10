@@ -5,7 +5,7 @@ import { notifyWorkspaceListChanged } from '#lib/notify'
 import { isUuid } from '#lib/uuid'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
 import { ServerError } from '@yaac/shared/errors'
-import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
+import type { AgentMode, AgentOptions, AgentTool, PermissionMode } from '@yaac/shared/types'
 
 /**
  * Queued workspaces: create requests saved to run when their parent stops
@@ -29,7 +29,8 @@ import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 export type QueuedParent = { parentWorkspaceId: string } | { parentQueuedId: string } | { startAt: Date } | null
 
 /** An entry's settings: what an insert takes and an update replaces. An
- *  absent title, group or effort is stored as null. */
+ *  absent title, group or effort is stored as null, absent agent options
+ *  as none. */
 export interface QueuedWorkspaceSettings {
   /** Absent for a non-interactive entry, which opens no session. */
   prompt?: string
@@ -38,6 +39,7 @@ export interface QueuedWorkspaceSettings {
   mode: AgentMode
   permissionMode: PermissionMode
   effort?: string
+  agentOptions?: AgentOptions
   /** Exactly one of a branch and a full commit. */
   branch?: string
   commit?: string
@@ -86,6 +88,7 @@ function settingsColumns(s: QueuedWorkspaceSettings): Omit<typeof queuedWorkspac
     title: s.title ?? null,
     groupId: s.groupId ?? null,
     effort: s.effort ?? null,
+    agentOptions: s.agentOptions ?? {},
     timeoutMinutes: s.timeoutMinutes ?? null,
   }
 }

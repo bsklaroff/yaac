@@ -4,7 +4,7 @@
  * record, only claude's own session JSONL.
  *
  * The translation is not written here. The pinned `claude-agent-acp` adapter
- * (the version dockerfiles/Dockerfile.tools installs) exposes the two pieces
+ * (the version dockerfiles/Dockerfile.tools installs) holds the two pieces
  * its `session/load` uses: the SDK's `getSessionMessages` and
  * `toAcpNotifications`. This module runs them over a transcript file and
  * projects the result as acpd's record is projected (`AcpRecordWriter`), so
@@ -16,7 +16,9 @@
  * credentials or claude binary, under either driver.
  */
 
+import { createRequire } from 'node:module'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { AcpRecordWriter } from './acp-log'
 import { ACP, CLAUDE_INTERRUPT, COMPACTION_META } from './acp-protocol'
 import { jsonObjects, parseJson } from './jsonl'
@@ -122,13 +124,42 @@ function claudeSdk(): ReturnType<typeof loadSdk> {
   return sdk
 }
 
+/**
+ * The adapter's internal modules this translation calls. The package exports
+ * only its server entry, so they are loaded by file path from its install
+ * and typed here. A load that lacks one fails naming it (`loadSdk`), and
+ * claude-acp-replay.test.ts fails if one changes.
+ */
+interface AdapterInternals {
+  toAcpNotifications: (
+    content: never, role: 'assistant' | 'user', sessionId: string, toolUseCache: object,
+    client: never, logger: never, options: { registerHooks: false; messageId?: string },
+  ) => Array<Record<string, unknown>>
+  stripLocalCommandMetadata: (content: unknown) => unknown
+  isReplayHiddenMetaMessage: (message: unknown) => boolean
+  messageIdForGrouping: (message: unknown) => string | undefined
+  compactionSummaryText: (raw: string) => string | undefined
+}
+
+const ADAPTER_INTERNALS: ReadonlyArray<keyof AdapterInternals> = [
+  'toAcpNotifications', 'stripLocalCommandMetadata', 'isReplayHiddenMetaMessage', 'messageIdForGrouping', 'compactionSummaryText',
+]
+
+async function adapterModule(name: string): Promise<Partial<AdapterInternals>> {
+  const manifest = createRequire(import.meta.url).resolve('@agentclientprotocol/claude-agent-acp/package.json')
+  // eslint-disable-next-line no-restricted-syntax -- deferred with the rest; see above
+  return await import(pathToFileURL(path.join(path.dirname(manifest), 'dist', `${name}.js`)).href) as Partial<AdapterInternals>
+}
+
 async function loadSdk() {
-  /* eslint-disable no-restricted-syntax -- deferring these is the point; see above */
+  // eslint-disable-next-line no-restricted-syntax -- deferring this is the point; see above
   const { getSessionMessages } = await import('@anthropic-ai/claude-agent-sdk')
-  const { stripLocalCommandMetadata, toAcpNotifications } = await import('@agentclientprotocol/claude-agent-acp')
-  const { isReplayHiddenMetaMessage, messageIdForGrouping } = await import('@agentclientprotocol/claude-agent-acp/dist/acp-agent.js')
-  const { compactionSummaryText } = await import('@agentclientprotocol/claude-agent-acp/dist/context-compaction.js')
-  /* eslint-enable no-restricted-syntax */
+  const modules = await Promise.all(['sdk-to-acp', 'message-filters', 'context-compaction'].map(adapterModule))
+  const internals = Object.assign({}, ...modules) as Partial<AdapterInternals>
+  const missing = ADAPTER_INTERNALS.filter((name) => typeof internals[name] !== 'function')
+  if (missing.length > 0) throw new Error(`the pinned claude-agent-acp lacks ${missing.join(', ')}, which the transcript replay calls`)
+  const { toAcpNotifications, messageIdForGrouping, stripLocalCommandMetadata, isReplayHiddenMetaMessage, compactionSummaryText } =
+    internals as AdapterInternals
   return { getSessionMessages, stripLocalCommandMetadata, toAcpNotifications, isReplayHiddenMetaMessage, messageIdForGrouping, compactionSummaryText }
 }
 

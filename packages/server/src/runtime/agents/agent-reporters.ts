@@ -1,5 +1,5 @@
 import type { ConfinedRoot } from '#lib/confined-fs'
-import { PI_MESSAGE_KEY } from './agent-command'
+import { AGENT_OPTION_WINDOW_OPTIONS, PI_MESSAGE_KEY } from './agent-command'
 import { OMP_PLAN_VAR } from './omp'
 
 /**
@@ -19,8 +19,8 @@ import { OMP_PLAN_VAR } from './omp'
  * omp's and opencode's run one at a time, in order, since pane options are
  * last-write-wins.
  *
- * Verified against claude 2.1.310, codex-cli 0.164.0, pi 1.4.0, omp 18.18.3
- * and @opencode/cli 2.1.4.
+ * Verified against claude 2.1.321, codex-cli 0.166.0, pi 1.5.1, omp 18.18.6
+ * and @opencode/cli 2.2.6.
  */
 
 /**
@@ -87,7 +87,17 @@ const CODEX_HOOKS: Hooks = [
  * session restore included, as `plan` or `default` (`ompPermissionMode`).
  * omp restores a conversation's saved modes only after `session_start`
  * handlers return, and answers `busy` until then, so the switch is retried
- * outside the handler. Verified against omp 18.18.3.
+ * outside the handler. Verified against omp 18.18.6.
+ *
+ * It also holds the session's idle cache warming option (docs/sessions.md,
+ * "Agent options"): between runs it stops each warm-up the agent would send
+ * unless the session's window option is `on`. Warming during a run is left
+ * alone. The tool warms anyway if its `cache_warming_decision` handler
+ * throws, and omp also if it takes over 2s, so the handler answers at once
+ * from the option as last read: after each run, and in the background at
+ * each decision. Turning it off mid-idle applies from the warm-up after
+ * next; turning it on applies from the next turn, since a `stop` ends
+ * warming until the next request.
  */
 const piExtension = (tool: 'pi' | 'omp'): string => `// Written by yaac: reports the conversation, model and thinking level to the pane
 // (see yaac-agent-links and yaac-agent-report), and submits messages that
@@ -113,6 +123,31 @@ export default function (pi) {
   pi.on('model_select', (event) => report(event.model))
   pi.on('thinking_level_select', (event) => run('yaac-agent-report', ['', '', event.level]))
   pi.on('session_shutdown', () => run('yaac-agent-links', ['', '${tool}', session, '--end']))
+  let running = false
+  let warmWhenIdle = false
+  let reads = 0
+  const readWarming = async () => {
+    const read = ++reads
+    let on = false
+    try {
+      const socket = (process.env.TMUX ?? '').split(',')[0]
+      const option = await pi.exec('tmux', ['-S', socket, 'show-options', '-wqv', '-t', process.env.TMUX_PANE ?? '', '${AGENT_OPTION_WINDOW_OPTIONS.idleCacheWarming}'])
+      on = option.stdout.trim() === 'on'
+    } catch {}
+    // Only the latest read counts, however the reads finish.
+    if (read === reads) warmWhenIdle = on
+  }
+  pi.on('agent_start', () => { running = true })
+  pi.on('agent_end', () => {
+    running = false
+    return readWarming()
+  })
+  pi.on('cache_warming_decision', () => {
+    if (running) return undefined
+    const answer = warmWhenIdle ? undefined : { action: 'stop' }
+    void readWarming()
+    return answer
+  })
   pi.registerShortcut('${PI_MESSAGE_KEY}', {
     description: 'yaac: submit a message another workspace sent',
     handler: async (ctx) => {

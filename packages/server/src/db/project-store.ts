@@ -139,8 +139,8 @@ function toProjectRow(
   defaults: Array<typeof projectToolDefaults.$inferSelect>,
 ): ProjectRow {
   const createDefaults: Partial<Record<AgentTool, ToolCreateDefaults>> = {}
-  for (const { tool, model, permissionMode, mode, effort } of defaults) {
-    createDefaults[tool] = nullsToUndefined({ model, permissionMode, mode, effort })
+  for (const { tool, model, permissionMode, mode, effort, agentOptions } of defaults) {
+    createDefaults[tool] = { ...nullsToUndefined({ model, permissionMode, mode, effort }), agentOptions }
   }
   return {
     ...nullsToUndefined(r),
@@ -325,8 +325,9 @@ export async function listProjectRows(): Promise<ProjectRow[]> {
 
 /**
  * Remember a create's choices as the project's next defaults: the tool, the
- * branch if named, and whichever of model, permission mode, agent mode and
- * effort were given (for that tool). Omitted fields are left unchanged.
+ * branch if named, and whichever of model, permission mode, agent mode,
+ * effort and agent options were given (for that tool). Omitted fields are
+ * left unchanged.
  *
  * Only the create route calls this, since only there is the choice known to
  * be the user's (not a restart, prewarm or spawn policy).
@@ -343,6 +344,9 @@ export async function recordProjectCreate(
     ...(picked.permissionMode !== undefined ? { permissionMode: picked.permissionMode } : {}),
     ...(picked.mode !== undefined ? { mode: picked.mode } : {}),
     ...(picked.effort !== undefined ? { effort: picked.effort } : {}),
+    ...(picked.agentOptions !== undefined && Object.keys(picked.agentOptions).length > 0
+      ? { agentOptions: sql`${projectToolDefaults.agentOptions} || ${JSON.stringify(picked.agentOptions)}::jsonb` }
+      : {}),
   }
   await db.transaction(async (tx) => {
     const updated = await tx.update(projects)
@@ -350,7 +354,12 @@ export async function recordProjectCreate(
       .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
     // No such project: skip rather than leave an orphan defaults row.
     if (updated.length === 0) return
-    const insert = tx.insert(projectToolDefaults).values({ projectId, tool, ...set })
+    const insert = tx.insert(projectToolDefaults).values({
+      projectId,
+      tool,
+      ...set,
+      ...(picked.agentOptions !== undefined ? { agentOptions: picked.agentOptions } : {}),
+    })
     // drizzle rejects an empty `set`, so with nothing to update just ensure
     // the row exists.
     await (Object.keys(set).length > 0

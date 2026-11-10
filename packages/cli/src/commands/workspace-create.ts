@@ -5,7 +5,8 @@ import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { testEnv } from '@yaac/shared/env'
 import { reportDeviceTimeZone } from '@yaac/shared/time-zone-report'
 import { formatInZone, parseDuration } from '@yaac/shared/schedule'
-import type { AgentMode, AgentTool, PermissionMode, SessionEntry } from '@yaac/shared/types'
+import { InvalidArgumentError } from 'commander'
+import { AGENT_OPTION_NAMES, type AgentMode, type AgentOption, type AgentOptions, type AgentTool, type PermissionMode, type SessionEntry } from '@yaac/shared/types'
 
 export interface WorkspaceCreateOptions {
   tool?: AgentTool
@@ -27,6 +28,8 @@ export interface WorkspaceCreateOptions {
   /** Effort level, in the tool's words; the server refuses one the model
    *  lacks. See docs/effort-levels.md. */
   effort?: string
+  /** From each `--agent-option`; the server refuses one the tool lacks. */
+  agentOption?: AgentOptions
   /** How the agent is driven; defaults to this project's last choice for
    *  the tool, else acp. See docs/agent-modes.md. */
   mode?: AgentMode
@@ -102,7 +105,8 @@ export async function workspaceCreate(project: string | undefined, options: Work
   if (noSession || nonInteractive) {
     const flag = noSession ? '--no-session' : '--non-interactive'
     const agentOptions: Array<[string, unknown]> = [['--tool', options.tool], ['--model', options.model],
-      ['--effort', options.effort], ['--mode', options.mode], ['--permission-mode', options.permissionMode],
+      ['--effort', options.effort], ['--agent-option', options.agentOption], ['--mode', options.mode],
+      ['--permission-mode', options.permissionMode],
       ['--prompt', options.prompt], ['--prompt-file', options.promptFile]]
     // A non-interactive workspace may be scheduled: it needs no prompt.
     if (noSession) agentOptions.push(['--start-at', options.startAt], ['--start-in', options.startIn])
@@ -134,6 +138,7 @@ export async function workspaceCreate(project: string | undefined, options: Work
     commit: options.commit,
     model: options.model,
     effort: options.effort,
+    agentOptions: options.agentOption,
     mode: options.mode,
     permissionMode: options.permissionMode,
     group: options.group,
@@ -232,6 +237,7 @@ async function openSession(workspace: string, options: WorkspaceCreateOptions): 
       tool: options.tool,
       model: options.model,
       effort: options.effort,
+      agentOptions: options.agentOption,
       mode: options.mode,
       permissionMode: options.permissionMode,
       prompt,
@@ -239,6 +245,25 @@ async function openSession(workspace: string, options: WorkspaceCreateOptions): 
     },
   })
   await attachSession(resolved.workspaceId, sessionId, { attach: source !== '-' })
+}
+
+/** An agent option's name on the command line: `idle-compaction`. */
+const agentOptionFlag = (o: AgentOption): string => o.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)
+
+/** The `--agent-option` help, naming every option. */
+export const AGENT_OPTION_HELP = 'Turn an agent option on or off, as <name>=<on|off>; repeatable. Each is off unless '
+  + `turned on, and defaults to this project's last choice for the tool. Names: ${AGENT_OPTION_NAMES.map(agentOptionFlag).join(', ')} `
+  + '(see docs/sessions.md)'
+
+/** Commander's parser for a repeated `--agent-option <name>=<on|off>`,
+ *  gathering the agent options it names. */
+export function agentOptionArg(value: string, previous: AgentOptions = {}): AgentOptions {
+  const [name, setting, extra] = value.split('=')
+  const option = AGENT_OPTION_NAMES.find((o) => agentOptionFlag(o) === name)
+  if (option === undefined || (setting !== 'on' && setting !== 'off') || extra !== undefined) {
+    throw new InvalidArgumentError(`expected <name>=<on|off>, with a name of ${AGENT_OPTION_NAMES.map(agentOptionFlag).join(', ')}`)
+  }
+  return { ...previous, [option]: setting === 'on' }
 }
 
 /** A duration option in whole minutes, refusing anything else. */

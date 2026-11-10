@@ -11,7 +11,7 @@ import { openSandboxDir, type SandboxFile } from './sandbox-fs'
 
 /**
  * Launch, settings, status and history for omp
- * (`@oh-my-pi/pi-coding-agent`), a fork of pi verified against 18.18.3.
+ * (`@oh-my-pi/pi-coding-agent`), a fork of pi verified against 18.18.6.
  *
  * omp reads pi's `PI_CODING_AGENT_DIR` and `PI_CODING_AGENT_SESSION_DIR`,
  * which a workspace sets to pi's dirs, so the workspace names omp's agent

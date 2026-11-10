@@ -8,7 +8,7 @@ import { isUuid } from '#lib/uuid'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
 import { normalizeTitle } from '@yaac/shared/titles'
 import { MAX_MODEL_LENGTH, MAX_PROMPT_LENGTH } from '@yaac/shared/types'
-import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
+import type { AgentMode, AgentOptions, AgentTool, PermissionMode } from '@yaac/shared/types'
 
 /**
  * Session rows (docs/sessions.md): what each agent of a workspace runs with,
@@ -28,6 +28,7 @@ export interface SessionLaunchSettings {
   permissionMode: PermissionMode
   model?: string
   effort?: string
+  agentOptions?: AgentOptions
   /** The message it opens with. */
   prompt?: string
   /** An earlier conversation of the project to resume, rather than a new
@@ -68,6 +69,7 @@ export async function insertSession(
     tool: settings.tool,
     mode: settings.mode,
     permissionMode: settings.permissionMode,
+    agentOptions: settings.agentOptions ?? {},
     ...(settings.model !== undefined ? { model: settings.model.slice(0, MAX_MODEL_LENGTH) } : {}),
     ...(settings.effort !== undefined ? { effort: settings.effort } : {}),
     ...(settings.conversationId !== undefined ? { conversationId: settings.conversationId } : {}),
@@ -137,6 +139,14 @@ export async function setSessionTitle(sessionId: string, title: string): Promise
   const db = await getDb()
   const normalized = normalizeTitle(title)
   await db.update(sessions).set({ title: normalized === '' ? null : normalized }).where(eq(sessions.id, sessionId))
+  notifyWorkspaceListChanged()
+}
+
+/** Set some of a session's agent options, keeping the rest. */
+export async function setSessionAgentOptions(sessionId: string, options: AgentOptions): Promise<void> {
+  const db = await getDb()
+  await db.update(sessions).set({ agentOptions: sql`${sessions.agentOptions} || ${JSON.stringify(options)}::jsonb` })
+    .where(eq(sessions.id, sessionId))
   notifyWorkspaceListChanged()
 }
 

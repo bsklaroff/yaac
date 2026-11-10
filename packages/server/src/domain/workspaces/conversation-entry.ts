@@ -70,6 +70,7 @@ export function toSessionEntry(
     permissionMode: s.permissionMode,
     ordinal: s.ordinal,
     ...(s.effort !== undefined ? { effort: s.effort } : {}),
+    agentOptions: s.agentOptions,
     ...(model !== undefined ? { model } : {}),
     ...(modelName !== undefined ? { modelName } : {}),
     ...(title !== undefined ? { title } : {}),

@@ -282,6 +282,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/workspace/:id/sessions', request: `${W}/sessions`, body: { tool: 'claude', prompt: 'p' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/sessions/:sessionId/close', request: `${W}/sessions/${ID.session}/close`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/sessions/:sessionId/resume', request: `${W}/sessions/${ID.session}/resume`, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/:id/sessions/:sessionId/agent-options', request: `${W}/sessions/${ID.session}/agent-options`, body: { idleCompaction: true }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/sessions/:sessionId/title', request: `${W}/sessions/${ID.session}/title`, body: { title: 't' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/acp-images/:hash', request: `${W}/acp-images/${'0'.repeat(64)}`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/changes', request: `${W}/changes`, access: 'reader', k8s: [404, 503], containerless: MISSING },

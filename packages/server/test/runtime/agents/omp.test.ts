@@ -52,7 +52,7 @@ describe('ompTranscriptAsAcp', () => {
   const hash = (c: string): string => c.repeat(64)
   const message = (id: string, parentId: string | null, m: unknown): string =>
     JSON.stringify({ type: 'message', id, parentId, message: m })
-  // A log as omp 18.18.3 writes one: its title slot, then pi's entries, with
+  // A log as omp 18.18.6 writes one: its title slot, then pi's entries, with
   // each image's bytes in the agent dir's blob store.
   const log = [
     JSON.stringify({ type: 'title', v: 1, title: 'Look', pad: '   ' }),

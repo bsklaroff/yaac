@@ -4,7 +4,7 @@ import type { Context, MiddlewareHandler } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { jsonBodyLimit, optionalProjectRef, projectRef, zv } from '#routes/validator'
 import { z } from 'zod'
-import { allowWorkspaceHost, claimDraft, keepScratchDirsInCheckout, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getConversationTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listProvisioning, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toConversationEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, getWorkspaceComparison, getWorkspaceGitLog, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand, mamaCaller, openSession, assertInteractive, addSteps, rerunStep, cancelStep, prepareRerun, listWorkspaceLogs, readWorkspaceLog, closeSession, resumeSession, renameSession, type QueueStart, listQueuedWorkspaces, setWorkspaceBase, setWorkspaceTimeout } from '#domain/workspaces'
+import { allowWorkspaceHost, claimDraft, keepScratchDirsInCheckout, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getConversationTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listProvisioning, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toConversationEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, getWorkspaceComparison, getWorkspaceGitLog, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand, mamaCaller, openSession, assertInteractive, addSteps, rerunStep, cancelStep, prepareRerun, listWorkspaceLogs, readWorkspaceLog, changeSessionAgentOptions, closeSession, resumeSession, renameSession, type QueueStart, listQueuedWorkspaces, setWorkspaceBase, setWorkspaceTimeout } from '#domain/workspaces'
 import { createShellWindow, killWindowTerminal } from '#runtime/terminals'
 import {
   createWorkspaceGroup,
@@ -41,6 +41,7 @@ import {
   MAX_LOG_COMMITS,
   MAX_PROMPT_LENGTH,
   promptText,
+  agentOptionsSchema,
   queuedWorkspaceSettingsSchema,
   timeoutMinutesSchema,
 } from '@yaac/shared/types'
@@ -276,7 +277,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
       const body = c.req.valid('json')
       // A non-interactive workspace opens no session (docs/workspace-steps.md).
       const noSession = body.noSession === true || body.nonInteractive === true
-      if (noSession && (['tool', 'model', 'permissionMode', 'effort', 'mode', 'prompt'] as const)
+      if (noSession && (['tool', 'model', 'permissionMode', 'effort', 'agentOptions', 'mode', 'prompt'] as const)
         .some((k) => body[k] !== undefined)) {
         throw new ServerError('VALIDATION', 'a workspace with no session takes no prompt or agent settings')
       }
@@ -305,6 +306,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
         ...(body.model !== undefined ? { model: body.model } : {}),
         ...(body.permissionMode !== undefined ? { permissionMode: body.permissionMode } : {}),
         ...(body.effort !== undefined ? { effort: body.effort } : {}),
+        ...(body.agentOptions !== undefined ? { agentOptions: body.agentOptions } : {}),
         ...(body.mode !== undefined ? { mode: body.mode } : {}),
         ...(body.branch !== undefined ? { branch: body.branch } : {}),
         ...(body.commit !== undefined ? { commit: body.commit } : {}),
@@ -716,6 +718,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
       mode: queuedSettings.mode,
       permissionMode: queuedSettings.permissionMode,
       effort: queuedSettings.effort,
+      agentOptions: queuedSettings.agentOptions,
       prompt: queuedSettings.prompt.optional(),
       title: queuedSettings.title,
       // One of the workspace's earlier conversations to resume.
@@ -729,6 +732,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
         ...(body.mode !== undefined ? { mode: body.mode } : {}),
         ...(body.permissionMode !== undefined ? { permissionMode: body.permissionMode } : {}),
         ...(body.effort !== undefined ? { effort: body.effort } : {}),
+        ...(body.agentOptions !== undefined ? { agentOptions: body.agentOptions } : {}),
         ...(body.prompt !== undefined ? { prompt: body.prompt } : {}),
         ...(body.title !== undefined ? { title: body.title } : {}),
         ...(body.resume !== undefined ? { resume: body.resume } : {}),
@@ -748,6 +752,16 @@ export const workspaceApp = new Hono<IdentityEnv>()
     await resumeSession(c.get('principal'), await sessionOf(c.req.param('id'), c.req.param('sessionId')))
     return c.body(null, 204)
   })
+  // Change a running session's agent options; the ones not named are kept.
+  .post(
+    '/:id/sessions/:sessionId/agent-options',
+    zv('json', agentOptionsSchema),
+    async (c) => {
+      const sessionId = await sessionOf(c.req.param('id'), c.req.param('sessionId'))
+      await changeSessionAgentOptions(c.get('principal'), sessionId, c.req.valid('json'))
+      return c.body(null, 204)
+    },
+  )
   // Name a session; blank clears the name.
   .post(
     '/:id/sessions/:sessionId/title',

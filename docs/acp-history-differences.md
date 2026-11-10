@@ -93,6 +93,9 @@ that mapping cannot bring back.
   cell, and TUI slash commands (`/review`, `/compact`) as user messages.
 - **Compactions** show without a summary, live and restored alike: codex
   keeps none a reader can show.
+- **File citations.** Live, codex-acp rewrites the model's
+  `:codex-file-citation{path=…}` markers into Markdown links to the file. The
+  rollout keeps the markers as written, and the replay shows them raw.
 
 ## pi
 
@@ -134,6 +137,8 @@ compactions, and nothing else:
 - **Permission asks** are not replayed.
 - **A turn opencode starts itself** reaches neither the record nor the live
   pane, but its messages are in opencode's history, so the replay shows them.
+  `/goal` is one: opencode answers the prompt at once and then works toward
+  the goal in turns of its own.
 - **Message times.** The replay carries none, so the messages of earlier
   lives show undated, and a subagent or task launched in one shows no
   "Started" time.
@@ -143,6 +148,8 @@ A `tui` conversation's transcript is read from opencode's database:
 - **Permission asks.** opencode does not persist them.
 - **Slash commands** show as the text they expanded into, not the
   `/command` typed. opencode stores only the expansion.
+- **A `/goal` objective** is not shown. opencode stores it only as a
+  synthetic message, which the translator drops.
 - **Failed steps.** A failed step's error arrives live as the prompt's reply,
   which opencode does not store.
 - **Edit diffs** show the changed hunks and their context. Live, opencode

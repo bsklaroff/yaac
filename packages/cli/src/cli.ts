@@ -10,7 +10,7 @@ import { projectCreate } from '#commands/project-create'
 import { projectClone } from '#commands/project-clone'
 import { projectMove } from '#commands/project-move'
 import { groupCreate, groupDelete, groupList, groupMove, groupSetLimit } from '#commands/group'
-import { workspaceCreate } from '#commands/workspace-create'
+import { AGENT_OPTION_HELP, agentOptionArg, workspaceCreate } from '#commands/workspace-create'
 import { scopeToUser } from '#commands/api'
 import { workspaceList } from '#commands/workspace-list'
 import { workspaceRename } from '#commands/workspace-rename'
@@ -404,6 +404,7 @@ workspace
   .option('--prompt-file <path>', 'Read the initial prompt from this file, in place of --prompt. The way to hand over a long brief: one argument holds at most 128 KiB, and a prompt can be up to 200,000 characters')
   .option('-m, --model <model>', 'Model for the agent: an id or alias for claude/codex (e.g. opus), provider/model for opencode, pi and omp. Defaults to the model this project last used for the tool, else a per-tool default')
   .option('-e, --effort <level>', 'How hard the model thinks, in the agent\'s own levels (e.g. low, high, xhigh; opencode\'s default is no variant). The model must offer it. Defaults to this project\'s last choice for the tool where the model has it, else the model\'s default')
+  .option('--agent-option <name=on|off>', AGENT_OPTION_HELP, agentOptionArg)
   .addOption(new Option('--mode <mode>', 'How the agent is driven: tui runs its terminal UI, acp drives it over the Agent Client Protocol and renders a chat pane in the web app. Every tool has an adapter; a tool\'s adapter may offer fewer permission modes than its terminal UI. Defaults to this project\'s last choice for the tool, else acp; an acp workspace is not attached, so open it in the web app').choices([...AGENT_MODES]))
   .addOption(new Option('--permission-mode <mode>', 'How much the agent may do before it asks: bypass acts freely, auto lets a reviewer model judge each action, accept-edits edits without asking but asks for the rest, manual asks for everything, plan explores and asks to act on a plan, read-only (codex\'s strictest, in place of plan) asks before any edit. Defaults to this project\'s last choice for the tool, else bypass in a container and accept-edits on the host. Not every tool has every mode (pi has only bypass)').choices([...PERMISSION_MODES]))
   .option('-g, --group <group>', 'File the workspace under this sidebar group (by name; created if it does not exist)')
@@ -542,6 +543,7 @@ function routineOptions(cmd: Command): Command {
     .option('-t, --tool <tool>', 'Agent tool (claude, codex, opencode, pi, or omp); defaults as for workspace create')
     .option('-m, --model <model>', 'Model for the agent; defaults as for workspace create')
     .option('-e, --effort <level>', 'Effort level, which the model must offer')
+    .option('--agent-option <name=on|off>', 'Turn an agent option on or off for each run; repeatable, as for workspace create', agentOptionArg)
     .addOption(new Option('--mode <mode>', 'How the agent is driven (tui or acp)').choices([...AGENT_MODES]))
     .addOption(new Option('--permission-mode <mode>', 'How much each run may do before it asks; a run that asks waits until it is stopped').choices([...PERMISSION_MODES]))
     .option('-b, --branch <branch>', 'Reference branch each run forks from')

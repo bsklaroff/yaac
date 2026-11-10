@@ -72,6 +72,7 @@ import {
   launchableModel,
   toolSupportsPermissionMode,
   type AgentMode,
+  type AgentOptions,
   type AgentTool,
   type HeldWorkspaceEntry,
   type PermissionMode,
@@ -105,6 +106,9 @@ export interface QueueRequest {
   /** Refused if the model lacks it; unnamed is the project's remembered
    *  effort where the model has it, else the model's default. */
   effort?: string
+  /** Refused if the tool lacks one; unnamed ones are the project's
+   *  remembered choices, else off. */
+  agentOptions?: AgentOptions
   /** At most one of a branch and a full commit; neither inherits. */
   branch?: string
   commit?: string
@@ -200,7 +204,7 @@ async function resolveStart(projectId: string, start: QueueStart): Promise<Date>
 /**
  * Edit a queued entry's fields or parent. A new tool without a model or
  * permission mode re-resolves those, and a stored effort the new tool or
- * model lacks is re-resolved too. A parent that would form a cycle is
+ * model lacks is re-resolved too, as are the agent options of a new tool. A parent that would form a cycle is
  * refused. An agent's edit is held to its ceiling, counting the stored
  * permission mode as requested. A routine's run is not edited: it starts
  * with its routine's settings, so the routine is what changes.
@@ -257,6 +261,8 @@ export async function updateQueuedWorkspace(
       ? { permissionMode: patch.permissionMode }
       : retooled ? {} : { permissionMode: row.permissionMode }),
     ...(keptEffort !== undefined ? { effort: keptEffort } : {}),
+    ...(retooled ? patch.agentOptions !== undefined ? { agentOptions: patch.agentOptions } : {}
+      : { agentOptions: { ...row.agentOptions, ...patch.agentOptions } }),
     timeout: patch.timeout !== undefined ? patch.timeout : row.timeoutMinutes ?? null,
   }, source)
   refuseDeletedParent(parent.pointer)
@@ -475,6 +481,7 @@ async function launch(row: QueuedWorkspaceRow, timeoutFrom: Date): Promise<{ wor
         mode: row.mode,
         permissionMode: row.permissionMode,
         ...(row.effort !== undefined ? { effort: row.effort } : {}),
+        agentOptions: row.agentOptions,
         ...(row.branch !== undefined ? { branch: row.branch } : {}),
         ...(row.commit !== undefined ? { commit: row.commit } : {}),
         ...(named !== undefined ? { workflow: named.name } : row.workflowId !== undefined ? { workflowId: row.workflowId } : {}),
@@ -724,6 +731,7 @@ async function resolveSettings(
     ...(mode !== undefined ? { mode } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(request.effort !== undefined ? { effort: request.effort } : {}),
+    ...(request.agentOptions !== undefined ? { agentOptions: request.agentOptions } : {}),
     ...(request.model !== undefined
       ? { model: request.model }
       : sameTool && parent.model !== undefined ? { model: parent.model } : {}),
@@ -752,6 +760,7 @@ async function resolveSettings(
     mode: setup.mode,
     permissionMode: setup.permissionMode,
     ...(setup.effort !== undefined ? { effort: setup.effort } : {}),
+    agentOptions: setup.agentOptions,
     ...(request.commit !== undefined ? { commit: request.commit }
       : request.branch === undefined && parent.branch === undefined && parent.commit !== undefined ? { commit: parent.commit }
       : { branch: request.branch ?? parent.branch ?? await getDefaultBranch(repoDir(projectId)) }),
@@ -809,6 +818,7 @@ async function toEntries(rows: QueuedWorkspaceRow[]): Promise<QueuedWorkspaceEnt
       mode: r.mode,
       permissionMode: r.permissionMode,
       ...(r.effort !== undefined ? { effort: r.effort } : {}),
+      agentOptions: r.agentOptions,
       ...(r.branch !== undefined ? { branch: r.branch } : {}),
       ...(r.commit !== undefined ? { commit: r.commit } : {}),
       ...(graphs.get(r.id) ?? {}),

@@ -482,8 +482,8 @@ describe('attachAcp', () => {
   })
 
   it('holds a turn codex starts itself from a late steer as running until codex reports idle', async () => {
-    // codex-acp ignores `promptRequired`: a steer landing as its turn ends
-    // starts a turn no `session/prompt` reply of ours will ever end.
+    // An adapter that ignores `promptRequired` may start a turn for a steer
+    // landing as its turn ends, which no `session/prompt` reply of ours ends.
     reattach(acpAdapterFor('codex'))
     await waitFor(() => conversation.status !== undefined)
     const sock = new FakeSocket()

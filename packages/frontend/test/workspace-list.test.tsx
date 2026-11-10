@@ -164,6 +164,7 @@ const queuedEntry = (id: string, over: Partial<QueuedWorkspaceEntry> = {}): Queu
   modelName: 'Sonnet 5',
   mode: 'tui',
   permissionMode: 'bypass',
+  agentOptions: {},
   branch: 'main',
   createdAt: '2026-08-10 00:00:00',
   ...over,
@@ -1094,7 +1095,7 @@ describe('WorkspaceList', () => {
     const inMinutes = (m: number): string => new Date(Date.now() + m * 60_000).toISOString()
     const routine = (id: string, over: Partial<RoutineEntry> = {}): RoutineEntry => ({
       id, projectId: 'proj', name: `Routine ${id}`, cron: '0 9 * * 1-5', timeZone: 'UTC', prompt: 'triage',
-      tool: 'claude', model: 'claude-sonnet-5', mode: 'tui', permissionMode: 'bypass', branch: 'main',
+      tool: 'claude', model: 'claude-sonnet-5', mode: 'tui', permissionMode: 'bypass', agentOptions: {}, branch: 'main',
       paused: false, nextRuns: [inMinutes(180)], createdAt: '2026-08-10 00:00:00', ...over,
     })
 

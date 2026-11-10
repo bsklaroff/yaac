@@ -182,7 +182,9 @@ read-only pane can show a stopped workspace's whole conversation.
   process, pod or credential is involved, and a stopped conversation renders
   the same way it would have looked in an `acp` pane.
   - claude: the server calls `claude-agent-acp`'s `toAcpNotifications` (the
-    function its `session/load` uses) as a library over claude's transcript.
+    function its `session/load` uses) over claude's transcript. The package
+    exports only its server, so the server loads that module by file path
+    from the pinned install.
     The package the server imports must match the version
     `dockerfiles/Dockerfile.tools` installs; a unit test fails if they drift.
   - codex, pi, omp and opencode: their adapters export no translation, so
@@ -451,10 +453,10 @@ typed mid-turn where its adapter allows:
   the calls before it); one that was not taken shows once, as the prompt
   that followed.
 
-  codex's adapter ignores `promptRequired`: a steer that lands as its turn
-  ends makes it start a turn of its own (`startedNewTurn`), which answers no
+  Every pinned adapter honors `promptRequired`. One that did not could
+  answer `startedNewTurn`, starting a turn of its own that answers no
   `session/prompt` of yaac's. Like any turn an agent starts itself, it
-  counts as running until codex reports its thread idle, both live and when
+  counts as running until the agent reports itself idle, both live and when
   a reattach reads the record (see "The agent can start turns itself").
 - **opencode queues.** Its TUI steers by default, but its acp refuses a
   second `session/prompt` while one runs and has no steering method, and the

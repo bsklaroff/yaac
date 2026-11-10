@@ -18,7 +18,7 @@ import type { AcpEvent } from '@yaac/shared/acp'
  * `yaac-opencode-checkpoint` wrote from the database that same run left.
  * `tui-rows.jsonl` is a conversation driven through the TUI: a `!command`,
  * a subagent, an answered question, an interrupt and a manual `/compact`.
- * The pinned 2.1.4 streams and stores the same shapes for everything the
+ * The pinned 2.2.6 streams and stores the same shapes for everything the
  * reader uses: its rows differ only in fields the reader ignores (provider
  * data is named `native`, and a compaction keeps `metadata.keepID` in place
  * of `recent`).

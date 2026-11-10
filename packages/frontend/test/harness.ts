@@ -155,7 +155,7 @@ export const provisioningEntry = (over: Partial<ProvisioningWorkspaceEntry> = {}
 
 /** An open session: a claude chat agent, not yet holding a conversation. */
 export const sessionEntry = (over: Partial<SessionEntry> = {}): SessionEntry => ({
-  sessionId: 'sess-1', tool: 'claude', mode: 'acp', window: 'claude-sess1', permissionMode: 'bypass', ordinal: 0, ...over,
+  sessionId: 'sess-1', tool: 'claude', mode: 'acp', window: 'claude-sess1', permissionMode: 'bypass', ordinal: 0, agentOptions: {}, ...over,
 })
 
 /** A workspace's first, active agent conversation. */

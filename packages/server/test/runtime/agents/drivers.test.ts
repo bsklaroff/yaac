@@ -467,7 +467,7 @@ describe('agentDriver', () => {
       JSON.parse(/CODEX_CONFIG="((?:[^"\\]|\\.)*)"/.exec(cmd)![1].replace(/\\(.)/g, '$1'))
     const codex = spec('codex')
     expect(codex).toContain('-- codex-acp')
-    expect(codex).toMatch(/NO_BROWSER=1 CODEX_PATH=codex CODEX_CONFIG=\S+ YAAC_NO_PANE_REPORT=1 exec node \/opt\/yaac\/acpd\/main\.js/)
+    expect(codex).toMatch(/NO_BROWSER=1 CODEX_PATH=codex CODEX_ACP_PROMPT_SUGGESTIONS=false CODEX_CONFIG=\S+ YAAC_NO_PANE_REPORT=1 exec node \/opt\/yaac\/acpd\/main\.js/)
     expect(codexConfig(codex))
       .toEqual({ approval_policy: 'never', approvals_reviewer: 'user', sandbox_mode: 'danger-full-access' })
     expect(codexConfig(spec('codex', { permissionMode: 'auto' })))

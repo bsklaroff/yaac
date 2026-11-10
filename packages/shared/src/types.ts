@@ -148,12 +148,12 @@ export const DEFAULT_AGENT_MODE: AgentMode = 'acp'
 /** claude's `AGENT_CLIS.claude.binarySha256`, typed to be looked up by any
  *  platform name. */
 const CLAUDE_BINARY_SHA256: Partial<Record<string, string>> = {
-  'darwin-arm64': 'ffb64331bc0ee1b69efb7c2c428bd3ab516bc31b75bf60886b356c97c1c25ffd',
-  'darwin-x64': '28fdbed5a84ef7d4205b5751c7f021e79151c4e319c4a401e48fe6aae86bbb39',
-  'linux-arm64': '9c64d9a7442436b65fcd7cc02c1aa0051bb5a7041e7788576ed3b5f29c447d54',
-  'linux-x64': 'b73676430af12f97316a798b8371f81d640f90a58bdcb8f3ce56a835bb47df56',
-  'linux-arm64-musl': 'adfd1f0ef12a3bcafa66e33491fc3e4204e41aeb4a7305ffc311c16c26793825',
-  'linux-x64-musl': '2ceb05e0a97b09be4c14717464a2156e8d087dea9867a399dd75d3b898ca4824',
+  'darwin-arm64': 'abc9feeeca8091d51b623291e044cf0528c2f6b74e0c1d6ef671d52c73f7cd3c',
+  'darwin-x64': 'f4e04d8726ee1343999679ad745eca2f6d263c2941f132b1fdca4283ee6d5f02',
+  'linux-arm64': '6bea0633074627ba79328e00115ed0588c3acf906a8463612b25db696dbfd3f0',
+  'linux-x64': '426c33815ca6645a772f722fbff10dbf2cbdb124a8aeab733c1365dbf8bbf61f',
+  'linux-arm64-musl': 'd223ea603b4fe8521d35a47f1972fbb36f1028a40927f16160e6258e0b92d597',
+  'linux-x64-musl': 'efc4a3d94daf10c550cde589a4add37f67519be54252ba88f27e9627f7ad62b4',
 }
 
 /**
@@ -182,17 +182,17 @@ const CLAUDE_BINARY_SHA256: Partial<Record<string, string>> = {
 export const AGENT_CLIS = {
   claude: {
     package: '@anthropic-ai/claude-code',
-    version: '2.1.310',
+    version: '2.1.321',
     binarySha256: CLAUDE_BINARY_SHA256,
   },
   codex: {
     package: '@openai/codex',
-    version: '0.164.0',
-    installScriptSha256: '95d14ccaba915e52a3f0cc590638ca5ac510086ff6a23dc9ac9f77e957403a93',
+    version: '0.166.0',
+    installScriptSha256: '44ac252c1b9a68c02bdf0de8e1c6cbfde36fc1afa8684624962eae7d4c461e70',
   },
-  opencode: { package: '@opencode/cli', version: '2.1.4' },
-  pi: { package: '@earendil-works/pi-coding-agent', version: '1.4.0' },
-  omp: { package: '@oh-my-pi/pi-coding-agent', version: '18.18.3' },
+  opencode: { package: '@opencode/cli', version: '2.2.6' },
+  pi: { package: '@earendil-works/pi-coding-agent', version: '1.5.1' },
+  omp: { package: '@oh-my-pi/pi-coding-agent', version: '18.18.6' },
 } as const satisfies Record<AgentTool, {
   package: string
   version: string
@@ -224,13 +224,13 @@ export const ACP_ADAPTERS = {
   claude: {
     binary: 'claude-agent-acp',
     package: '@agentclientprotocol/claude-agent-acp',
-    verified: '0.97.0',
+    verified: '0.103.0',
     needsCli: false,
   },
   codex: {
     binary: 'codex-acp',
     package: '@agentclientprotocol/codex-acp',
-    verified: '2.3.0',
+    verified: '2.6.0',
     needsCli: true,
   },
   opencode: {
@@ -428,6 +428,61 @@ export function defaultPermissionMode(driver: DriverKind, tool: AgentTool): Perm
 }
 
 /**
+ * On/off options a session's agent runs with beside its model, posture and
+ * effort, each for the tools that have it (docs/sessions.md, "Agent
+ * options"). Both spend tokens while nobody is using the session, so every
+ * option is off unless asked for.
+ *
+ * - `idleCompaction`: claude compacts a long conversation shortly before its
+ *   one-hour prompt cache expires, so the next prompt reads a summary rather
+ *   than the whole context.
+ * - `idleCacheWarming`: pi and omp re-send the last request between turns,
+ *   for up to 30 minutes, to keep the prompt cache warm. Warming during a
+ *   turn is not affected.
+ *
+ * `live`: the modes in which a running session's option can change. In the
+ * others it is fixed at launch.
+ */
+export const AGENT_OPTIONS = {
+  idleCompaction: {
+    tools: ['claude'],
+    live: ['acp'],
+    label: 'Compact when idle',
+    hint: 'Compact a long conversation before its prompt cache expires',
+  },
+  idleCacheWarming: {
+    tools: ['pi', 'omp'],
+    live: ['acp', 'tui'],
+    label: 'Keep cache warm when idle',
+    hint: 'Re-send the last request between turns to keep the prompt cache warm',
+  },
+} as const satisfies Record<string, { tools: readonly AgentTool[]; live: readonly AgentMode[]; label: string; hint: string }>
+
+export type AgentOption = keyof typeof AGENT_OPTIONS
+export const AGENT_OPTION_NAMES = Object.keys(AGENT_OPTIONS) as AgentOption[]
+export type AgentOptions = Partial<Record<AgentOption, boolean>>
+export const agentOptionsSchema = z.partialRecord(z.enum(AGENT_OPTION_NAMES as [AgentOption, ...AgentOption[]]), z.boolean())
+
+/** The options `tool` has. */
+export function toolAgentOptions(tool: AgentTool): AgentOption[] {
+  return AGENT_OPTION_NAMES.filter((o) => (AGENT_OPTIONS[o].tools as readonly AgentTool[]).includes(tool))
+}
+
+/** Whether a running `mode` session of its tool can change `option`. */
+export function agentOptionIsLive(option: AgentOption, mode: AgentMode): boolean {
+  return (AGENT_OPTIONS[option].live as readonly AgentMode[]).includes(mode)
+}
+
+/**
+ * Every option `tool` has, as `wanted` names it, else as `remembered` does,
+ * else off. Options the tool lacks are dropped, so a remembered choice for
+ * another tool never leaks into this one's launch.
+ */
+export function resolveAgentOptions(tool: AgentTool, wanted?: AgentOptions, remembered?: AgentOptions): AgentOptions {
+  return Object.fromEntries(toolAgentOptions(tool).map((o) => [o, wanted?.[o] ?? remembered?.[o] ?? false]))
+}
+
+/**
  * What one agent was last created with in a project
  * (`project_tool_defaults`). Each field is absent until first picked.
  */
@@ -436,12 +491,13 @@ export interface ToolCreateDefaults {
   permissionMode?: PermissionMode
   mode?: AgentMode
   effort?: string
+  agentOptions?: AgentOptions
 }
 
 /**
- * The model, posture and effort a create for `tool` runs with when the
- * request names none of them: what the project remembers for that agent
- * where it still fits, else the fallback. Both the create form and the
+ * The model, posture, effort and agent options a create for `tool` runs
+ * with when the request names none of them: what the project remembers for
+ * that agent where it still fits, else the fallback. Both the create form and the
  * server call this, so the form shows what an untouched create would run.
  *
  * A remembered posture the tool lacks goes through
@@ -460,7 +516,7 @@ export function resolveToolCreateDefaults(args: {
   defaultModel: string
   /** A model's effort levels, from the catalog (`ModelOption.efforts`). */
   effortsFor: (model: string) => ModelEfforts | undefined
-}): { model: string; permissionMode: PermissionMode; effort?: string } {
+}): { model: string; permissionMode: PermissionMode; effort?: string; agentOptions: AgentOptions } {
   const { driver, tool, remembered, provider } = args
   const posture = remembered?.permissionMode
   const qualified = isApiKeyTool(tool)
@@ -476,6 +532,7 @@ export function resolveToolCreateDefaults(args: {
       ? launchablePermissionMode(tool, posture)
       : defaultPermissionMode(driver, tool),
     ...(effort !== undefined ? { effort } : {}),
+    agentOptions: resolveAgentOptions(tool, undefined, remembered?.agentOptions),
   }
 }
 
@@ -1113,6 +1170,8 @@ export interface SessionEntry {
   permissionMode: PermissionMode
   /** Its effort level, in the tool's words; absent when its model has none. */
   effort?: string
+  /** Each option its tool has (`AGENT_OPTIONS`). */
+  agentOptions: AgentOptions
   /** The model it runs, in the tool's spelling, and its display name. */
   model?: string
   modelName?: string
@@ -1805,6 +1864,7 @@ export interface QueuedWorkspaceEntry {
   permissionMode: PermissionMode
   /** The effort it launches at; absent when its model has none. */
   effort?: string
+  agentOptions: AgentOptions
   /** The reference branch it forks from, fetched fresh at launch, or the
    *  full commit it starts at instead (docs/workspace-steps.md). */
   branch?: string
@@ -1894,6 +1954,8 @@ export const queuedWorkspaceSettingsSchema = z.object({
   mode: z.enum(AGENT_MODES).optional(),
   permissionMode: z.enum(PERMISSION_MODES).optional(),
   effort: effortSchema.optional(),
+  /** Options the tool lacks are refused. Unnamed ones resolve as a create's. */
+  agentOptions: agentOptionsSchema.optional(),
   branch: z.string().min(1).max(255).optional(),
   title: z.string().max(500).optional(),
   /** Minutes until the server stops the workspace. */
@@ -1926,6 +1988,8 @@ export const routineSettingsSchema = z.object({
   mode: z.enum(AGENT_MODES).optional(),
   permissionMode: z.enum(PERMISSION_MODES).optional(),
   effort: effortSchema.optional(),
+  /** Options the tool lacks are refused. Unnamed ones resolve as a create's. */
+  agentOptions: agentOptionsSchema.optional(),
   branch: z.string().min(1).max(255).optional(),
   group: z.string().min(1).max(500).nullable().optional(),
   timeout: timeoutMinutesSchema.nullable().optional(),
@@ -2015,6 +2079,7 @@ export interface RoutineEntry {
   mode: AgentMode
   permissionMode: PermissionMode
   effort?: string
+  agentOptions: AgentOptions
   /** Its runs start at this branch's tip, or at this full commit. */
   branch?: string
   commit?: string

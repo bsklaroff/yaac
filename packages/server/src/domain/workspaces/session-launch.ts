@@ -8,6 +8,7 @@ import {
 } from '#db'
 import {
   agentDriver,
+  agentOptionsCmd,
   buildRespawnExec,
   buildWindowsExec,
   hasConversationHistory,
@@ -21,6 +22,7 @@ import {
   effortFor,
   launchableModel,
   launchablePermissionMode,
+  resolveAgentOptions,
   SELF_NAMING_TOOLS,
   TOOL_LABELS,
   type AgentTool,
@@ -68,6 +70,8 @@ export async function sessionLaunches(
   return plans.map(({ session: s, conversationId, resume }, i) => {
     const model = s.model !== undefined ? launchableModel(s.tool, s.model) : undefined
     const effort = launchEffort(s.tool, model, s.effort, endpoints[i])
+    const agentOptions = resolveAgentOptions(s.tool, s.agentOptions)
+    const setOptions = agentOptionsCmd(paths, s.window, agentOptions)
     return {
       session: s,
       tool: s.tool,
@@ -77,7 +81,8 @@ export async function sessionLaunches(
       ...(resume ? { resumes: conversationId } : {}),
       // `YAAC_SESSION_ID` tells the agent's own commands which session they
       // run in, which `yaac-mama` reports (`mamaCaller`).
-      cmd: `export YAAC_SESSION_ID=${s.id}; ` + agentDriver(s.mode).launchCmd({
+      // The window options carry its agent options (`agentOptionsCmd`).
+      cmd: `export YAAC_SESSION_ID=${s.id}; ${setOptions === '' ? '' : `${setOptions}; `}` + agentDriver(s.mode).launchCmd({
         tool: s.tool,
         conversationId,
         resume,
@@ -87,6 +92,7 @@ export async function sessionLaunches(
         ...(s.tool === 'pi' && piProvider !== undefined ? { piProvider } : {}),
         ...(model !== undefined ? { model } : {}),
         ...(effort !== undefined ? { effort } : {}),
+        agentOptions,
         ...(opts.beforeCheckout === true && s.mode === 'acp' ? { beforeCheckout: true } : {}),
       }),
     }

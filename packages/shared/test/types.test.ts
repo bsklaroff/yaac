@@ -93,13 +93,22 @@ describe('resolveToolCreateDefaults', () => {
     })
 
   it('falls back per field when nothing is remembered', () => {
-    expect(resolve()).toEqual({ model: 'fallback', permissionMode: 'bypass' })
+    expect(resolve()).toEqual({ model: 'fallback', permissionMode: 'bypass', agentOptions: { idleCompaction: false } })
     expect(resolve({ driver: 'containerless' }).permissionMode).toBe('accept-edits')
   })
 
   it('takes what is remembered where it still fits', () => {
     expect(resolve({ remembered: { model: 'claude-sonnet-5', permissionMode: 'plan' } }))
-      .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan' })
+      .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan', agentOptions: { idleCompaction: false } })
+  })
+
+  // docs/sessions.md, "Agent options": each the tool has, off unless
+  // remembered on; another tool's never carries over.
+  it('takes the remembered agent options the tool has, the rest off', () => {
+    expect(resolve({ remembered: { agentOptions: { idleCompaction: true } } }).agentOptions).toEqual({ idleCompaction: true })
+    expect(resolve({ tool: 'pi', remembered: { agentOptions: { idleCompaction: true } } }).agentOptions)
+      .toEqual({ idleCacheWarming: false })
+    expect(resolve({ tool: 'codex' }).agentOptions).toEqual({})
   })
 
   // One level name means the same across a tool's models, so a remembered

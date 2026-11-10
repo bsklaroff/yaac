@@ -40,6 +40,7 @@ export {
   resolveAgentPermissionMode,
 } from './agent-tools'
 export {
+  agentOptionsCmd,
   tmuxCmd,
   verifyAgentWindowAlive,
   windowTarget,

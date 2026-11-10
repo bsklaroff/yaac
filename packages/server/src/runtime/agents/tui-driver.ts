@@ -313,6 +313,7 @@ export const tuiDriver: AgentDriver = {
       ...(spec.piProvider !== undefined ? { piProvider: spec.piProvider } : {}),
       ...(spec.model !== undefined ? { model: spec.model } : {}),
       ...(spec.effort !== undefined ? { effort: spec.effort } : {}),
+      ...(spec.agentOptions !== undefined ? { agentOptions: spec.agentOptions } : {}),
     })
   },
 

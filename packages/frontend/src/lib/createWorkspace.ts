@@ -4,7 +4,7 @@ import { rememberOpening } from '#lib/opening'
 import { throwingFetch } from '@yaac/shared/api-core'
 import type { LaunchPane } from '#lib/store'
 import { randomUUID } from '#lib/uuid'
-import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
+import type { AgentMode, AgentOptions, AgentTool, PermissionMode } from '@yaac/shared/types'
 
 export interface CreateWorkspaceResult {
   workspaceId: string
@@ -52,6 +52,7 @@ export interface WorkspaceCreate {
   modelName?: string
   /** Effort level, in the tool's words. */
   effort?: string
+  agentOptions?: AgentOptions
   /** The agent's opening message, typed into it once it is up. */
   prompt?: string
   /** The workspace's title, which turns off auto-titling it. */
@@ -94,6 +95,7 @@ export async function createWorkspace(
       : { sessionId, tool: c.tool, mode: c.mode, permissionMode: c.permissionMode }),
     ...(c.model ? { model: c.model } : {}),
     ...(c.effort !== undefined ? { effort: c.effort } : {}),
+    ...(c.agentOptions !== undefined ? { agentOptions: c.agentOptions } : {}),
     ...(c.prompt ? { prompt: c.prompt } : {}),
     ...(c.title ? { title: c.title } : {}),
     ...(c.branch ? { branch: c.branch } : {}),
@@ -149,6 +151,7 @@ export interface SessionOpen {
   permissionMode?: PermissionMode
   model?: string
   effort?: string
+  agentOptions?: AgentOptions
   prompt?: string
   /** One of the workspace's earlier conversations to resume. */
   resume?: string
@@ -159,6 +162,11 @@ export interface SessionOpen {
 export async function openSession(workspaceId: string, s: SessionOpen): Promise<string> {
   const { sessionId } = await api.workspace[':id'].sessions.$post({ param: { id: workspaceId }, json: s })
   return sessionId
+}
+
+/** Change some of a running session's agent options. */
+export async function setSessionAgentOptions(workspaceId: string, sessionId: string, options: AgentOptions): Promise<void> {
+  await api.workspace[':id'].sessions[':sessionId']['agent-options'].$post({ param: { id: workspaceId, sessionId }, json: options })
 }
 
 /** Close a session: its agent stops, its conversations stay as history. */

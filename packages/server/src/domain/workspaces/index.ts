@@ -13,7 +13,7 @@
 // packages/server/test/domain/workspaces/.
 
 export { reconcileConversations, reconcileStoppedConversations } from './conversation-registry'
-export { closeSession, openSession, reconcileSessions, renameSession, resumeSession, type OpenSessionRequest } from './sessions'
+export { changeSessionAgentOptions, closeSession, openSession, reconcileSessions, renameSession, resumeSession, type OpenSessionRequest } from './sessions'
 export { toConversationEntry } from './conversation-entry'
 export { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileIgnoredFileCleans } from './cleanup'
 export { keepScratchDirsInCheckout } from './tracked-scratch-dirs'

@@ -6,7 +6,7 @@ import { startPoint } from '#lib/steps'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChatIcon, CloseIcon, RenameIcon, SendIcon, TerminalIcon, TOOL_LABEL } from '#lib/icons'
 import { BranchPicker } from '#components/BranchPicker'
-import { EffortSelect, PermissionModeSelect } from '#components/ComposerSelect'
+import { AgentOptionsMenu, EffortSelect, PermissionModeSelect } from '#components/ComposerSelect'
 import { ChatBottomBar, COMPOSER_INPUT, ROUND_BUTTON } from '#components/ConversationView'
 import { ContainerlessBadge } from '#components/ContainerlessBadge'
 import { PaneBarActions, PaneOverflowMenu } from '#components/PaneBar'
@@ -35,6 +35,7 @@ import {
   SUPPORTED_PERMISSION_MODES,
   effortFor,
   effortLabel,
+  resolveAgentOptions,
   toolSupportsPermissionMode,
 } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
@@ -42,6 +43,7 @@ import { cronError, formatInZone, isTimeZone, nextCronRuns, parseDuration } from
 import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
 import type {
   AgentMode,
+  AgentOptions,
   AgentTool,
   DraftWorkspaceSettings,
   PermissionMode,
@@ -77,6 +79,7 @@ interface Seed {
   mode?: AgentMode
   permissionMode?: PermissionMode
   effort?: string
+  agentOptions?: AgentOptions
   branch?: string
   groupId?: string
 }
@@ -100,6 +103,7 @@ function workspaceSeed(w: WorkspaceListEntry): Seed {
       permissionMode: first.permissionMode,
       ...(first.model !== undefined ? { model: first.model } : {}),
       ...(first.effort !== undefined ? { effort: first.effort } : {}),
+      agentOptions: first.agentOptions,
     } : {}),
     ...(w.baseBranch !== undefined ? { branch: w.baseBranch } : {}),
     ...(w.groupId !== undefined ? { groupId: w.groupId } : {}),
@@ -113,6 +117,7 @@ function entrySeed(e: QueuedWorkspaceEntry): Seed {
     mode: e.mode,
     permissionMode: e.permissionMode,
     ...(e.effort !== undefined ? { effort: e.effort } : {}),
+    agentOptions: e.agentOptions,
     ...((e.branch ?? e.commit) !== undefined ? { branch: e.branch ?? e.commit } : {}),
     ...(e.groupId !== undefined ? { groupId: e.groupId } : {}),
   }
@@ -127,7 +132,7 @@ const workspaceName = (w: { title?: string; prompt?: string }): string =>
   clip(w.title || w.prompt || 'New workspace', 40)
 
 const DRAFT_FIELDS = [
-  'prompt', 'tool', 'mode', 'permissionMode', 'model', 'effort', 'branch', 'startAfter', 'title', 'groupId',
+  'prompt', 'tool', 'mode', 'permissionMode', 'model', 'effort', 'agentOptions', 'branch', 'startAfter', 'title', 'groupId',
   'startAt', 'timeout', 'cron', 'timeZone',
 ] as const satisfies
   readonly (keyof DraftWorkspaceSettings)[]
@@ -350,6 +355,10 @@ export function NewWorkspacePane({ projectId, bar }: {
   const effort = efforts !== undefined
     ? effortFor(efforts, picks.effort ?? fromSeed?.effort ?? base.effort)
     : undefined
+  // Each picked, else seeded, else remembered (`base`), else off.
+  const agentOptions = resolveAgentOptions(tool, { ...fromSeed?.agentOptions, ...picks.agentOptions }, base.agentOptions)
+  // A request names them only for an agent that has any.
+  const sentOptions = Object.keys(agentOptions).length > 0 ? { agentOptions } : {}
   const signedIn = defaults.configured.has(tool)
   const needsGitAuth = defaults.ready && !defaults.hasGitCredential
 
@@ -409,6 +418,7 @@ export function NewWorkspacePane({ projectId, bar }: {
     permissionMode,
     ...(model !== '' ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
+    agentOptions,
     ...(branchValue !== '' ? { branch: branchValue } : {}),
     ...(afterParent && start !== START_WHEN_ROOM ? { startAfter: start } : {}),
     ...(start === START_AT && form.startAt !== undefined ? { startAt: form.startAt } : {}),
@@ -420,10 +430,12 @@ export function NewWorkspacePane({ projectId, bar }: {
   }
   // Leaving loses a typed prompt on a create (not an edit of a queued
   // entry or routine), unless it matches the reopened draft exactly.
-  const saved = draft !== undefined ? { ...draft, prompt: form.savedPrompt ?? draft.prompt } : undefined
+  const saved = draft !== undefined
+    ? { ...draft, agentOptions: resolveAgentOptions(draft.tool, draft.agentOptions), prompt: form.savedPrompt ?? draft.prompt }
+    : undefined
   const pending: PendingDraft | null = form.editId === undefined && form.editRoutineId === undefined && text !== ''
     && !inWorkspace && !noAgent
-    && (saved === undefined || DRAFT_FIELDS.some((k) => current[k] !== saved[k]))
+    && (saved === undefined || DRAFT_FIELDS.some((k) => JSON.stringify(current[k]) !== JSON.stringify(saved[k])))
     ? { projectId, settings: current, ...(draft !== undefined ? { id: draft.id } : {}) }
     : null
   const pendingRef = useRef(pending)
@@ -478,6 +490,7 @@ export function NewWorkspacePane({ projectId, bar }: {
       permissionMode,
       ...(model !== '' ? { model } : {}),
       ...(effort !== undefined ? { effort } : {}),
+      ...sentOptions,
       ...(text !== '' ? { prompt: text } : {}),
     }).then((sessionId) => {
       const st = useUiStore.getState()
@@ -504,6 +517,7 @@ export function NewWorkspacePane({ projectId, bar }: {
         model,
         ...(modelName !== undefined ? { modelName } : {}),
         ...(effort !== undefined ? { effort } : {}),
+        ...sentOptions,
         ...(text !== '' ? { prompt: text } : {}),
       }),
       ...(titleText !== '' ? { title: titleText } : {}),
@@ -530,6 +544,7 @@ export function NewWorkspacePane({ projectId, bar }: {
       mode,
       permissionMode,
       ...(effort !== undefined ? { effort } : {}),
+      ...sentOptions,
       ...startPoint(branchValue),
     }
     const group = newGroup !== null ? newGroupName : groupId
@@ -575,6 +590,7 @@ export function NewWorkspacePane({ projectId, bar }: {
       mode,
       permissionMode,
       ...(effort !== undefined ? { effort } : {}),
+      ...sentOptions,
       ...startPoint(branchValue),
       title: titleText,
       group: newGroup !== null ? newGroupName : groupId,
@@ -1003,6 +1019,14 @@ export function NewWorkspacePane({ projectId, bar }: {
                 available={efforts.levels.map((l) => ({ value: l, name: effortLabel(l) }))}
                 disabled={false}
                 onSelect={(e) => setPicks({ effort: e })}
+              />
+            )}
+            {signedIn && !noAgent && (
+              <AgentOptionsMenu
+                tool={tool}
+                value={agentOptions}
+                disabled={false}
+                onChange={(o) => setPicks({ agentOptions: { ...picks.agentOptions, ...o } })}
               />
             )}
             {routineMode && (
