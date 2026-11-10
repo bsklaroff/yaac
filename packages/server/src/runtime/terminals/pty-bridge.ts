@@ -17,9 +17,8 @@ const DEFAULT_ROWS = 24
  *    (`pane-mirror.ts`).
  *  - 'native'         the CLI's full attach: a per-client grouped session
  *    with tmux chrome intact (status bar, prefix keys, `C-b d`). Grouped so
- *    each client keeps its own size and current window, and
- *    `destroy-unattached` cleans up on disconnect. 'native:<name>' opens it
- *    on a session's window.
+ *    each client keeps its own size and current window. 'native:<name>'
+ *    opens it on a session's window.
  *  - 'shell'          a raw `$SHELL` with no tmux (the CLI's
  *    `workspace shell`); exiting the shell ends the connection.
  */
@@ -52,9 +51,13 @@ function newViewName(): string {
 /**
  * In-workspace argv for the CLI's native attach, spawned under a real PTY
  * by the driver: a per-client view session grouped with `yaac`, keeping
- * the tmux chrome and the group's current window. Only
- * `destroy-unattached` differs from `attach-session -t yaac`; it is set
- * after the attach so nothing reaps the view in between.
+ * the tmux chrome and the group's current window.
+ *
+ * The view is reclaimed by the connection's close (`killViewSession`), not
+ * by `destroy-unattached`. A tmux older than 3.8 crashes on that option: a
+ * client that has detached but not yet exited still points at its session,
+ * and any other tmux command finishing in that gap destroys the session
+ * under it, taking every window in the workspace down with the server.
  *
  * The has-session guard matters: before setup has created the `yaac`
  * session, `new-session -t yaac` silently creates a new group named `yaac`
@@ -73,8 +76,7 @@ function nativeAttachArgs(
     `${tmux} has-session -t =yaac 2>/dev/null`
     + ` && ${tmux} new-session -d -t yaac -s ${viewName} -x ${size.cols ?? DEFAULT_COLS} -y ${size.rows ?? DEFAULT_ROWS}`
     + (window !== undefined ? ` && { ${tmux} select-window -t ${viewName}:=${window} 2>/dev/null || true; }` : '')
-    + ` && exec ${tmux} attach-session -t ${viewName}`
-    + ' \\; set-option destroy-unattached on',
+    + ` && exec ${tmux} attach-session -t ${viewName}`,
   ]
 }
 
@@ -98,11 +100,11 @@ function killViewsCmd(views: string[], paths: WorkspacePaths): string {
 
 /**
  * Reap ghost view sessions in a workspace. A view normally dies with its
- * connection (kill-session on close, destroy-unattached as backstop), but
- * an ungraceful end (server crash, a dropped exec after a laptop sleep)
- * leaves a tmux client pinning its view "attached" forever; dozens have
- * been seen. Swept on every native attach. `live` is read after the listing,
- * so views attached mid-sweep are never treated as ghosts.
+ * connection (kill-session on close), but an ungraceful end (server crash,
+ * a dropped exec after a laptop sleep) leaves the view behind, often with a
+ * tmux client still attached to it; dozens have been seen. Swept on every
+ * native attach. `live` is read after the listing, so views attached
+ * mid-sweep are never treated as ghosts.
  */
 async function sweepGhostViews(
   jobName: string,
