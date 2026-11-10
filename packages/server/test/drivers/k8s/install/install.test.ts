@@ -226,6 +226,13 @@ function claimClasses(): Record<string, unknown> {
     .map((m) => [m.metadata.name, m.spec?.storageClassName]))
 }
 
+/** The apiserver on the kind node, which the server's egress policy names. */
+const APISERVER_SLICE = {
+  apiVersion: 'discovery.k8s.io/v1', kind: 'EndpointSlice', addressType: 'IPv4',
+  metadata: { name: 'kubernetes', namespace: 'default', labels: { 'kubernetes.io/service-name': 'kubernetes' } },
+  endpoints: [{ addresses: ['10.89.0.2'] }], ports: [{ port: 6443 }],
+}
+
 beforeEach(() => {
   events.length = 0
   failing.clear()
@@ -236,7 +243,7 @@ beforeEach(() => {
   cluster.adopt = null
   resetClusterCidrCache()
   fakeCluster.intercept(world)
-  fakeCluster.seed(kubeSystem('uid-kind'))
+  fakeCluster.seed(kubeSystem('uid-kind'), APISERVER_SLICE)
   // The published server answers ready.
   vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(
     new Response(JSON.stringify({ ok: true, ready: true }), { status: 200 }),
@@ -1023,6 +1030,20 @@ describe('runClusterInstall', () => {
     expect(fromSource).toContain(block.slice(block.indexOf('\n') + 1))
   })
 
+  // The server's egress policy can open only an address, so a Tor URL
+  // naming its host would leave every Tor dial to time out.
+  it('refuses a Tor SOCKS URL naming its host before running anything, and accepts an address', async () => {
+    vi.stubEnv('YAAC_USE_TOR', '1')
+    vi.stubEnv('YAAC_HOST_TOR_SOCKS_URL', 'socks5h://tor.example.invalid:9050')
+    const deps = makeDeps()
+    await expect(runClusterInstall({}, deps)).rejects.toThrow(/must name the Tor listener by IP address/)
+    expect(deps.run).not.toHaveBeenCalled()
+    expect(events).toEqual([])
+
+    vi.stubEnv('YAAC_HOST_TOR_SOCKS_URL', 'socks5h://10.89.0.1:9050')
+    await expect(runClusterInstall({}, makeDeps())).resolves.toBeUndefined()
+  })
+
   it('refuses a Linux host missing aardvark-dns, or nft under the nftables driver, before creating anything', async () => {
     const install = async (opts: {
       dns?: string
@@ -1206,7 +1227,7 @@ describe('runClusterInstall', () => {
     // A recreated cluster names everything after the install id again.
     fakeCluster.reset()
     fakeCluster.intercept(world)
-    fakeCluster.seed(kubeSystem('uid-kind'))
+    fakeCluster.seed(kubeSystem('uid-kind'), APISERVER_SLICE)
     cluster.applied = []
     await runClusterInstall({}, makeDeps({ run: freshRun() }))
     expect(await readInstallRecord()).not.toHaveProperty('legacyDataDirHash')

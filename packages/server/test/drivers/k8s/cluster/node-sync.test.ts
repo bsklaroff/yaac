@@ -68,9 +68,9 @@ function seedApiserver(address: string): void {
   })
 }
 
-/** The addresses the proxy's egress names on `port`, in the last apply of it. */
-function proxyPeers(port: number): string[] {
-  const np = applied().filter((m) => m.kind === 'NetworkPolicy' && m.metadata.name === 'yaac-proxy-egress').pop()
+/** The addresses an egress policy names on `port`, in the last apply of it. */
+function egressPeers(port: number, policy = 'yaac-proxy-egress'): string[] {
+  const np = applied().filter((m) => m.kind === 'NetworkPolicy' && m.metadata.name === policy).pop()
   return (np?.spec?.egress ?? []).filter((r) => r.ports?.some((p) => p.port === port))
     .flatMap((r) => r.to ?? []).flatMap((t) => (t.ipBlock ? [t.ipBlock.cidr] : []))
 }
@@ -160,8 +160,12 @@ describe('reconcileNodeSet', () => {
     ]))
     expect(hostsWrites()).toEqual(['node-a yaac-registry.yaac.svc.cluster.local:5000'])
     // The apiserver at its real endpoint, and DNS at the kube-dns Service.
-    expect(proxyPeers(443)).toEqual(['172.20.0.10/32'])
-    expect(proxyPeers(53)).toEqual(['10.96.0.10/32', '169.254.0.0/16'])
+    expect(egressPeers(443)).toEqual(['172.20.0.10/32'])
+    expect(egressPeers(53)).toEqual(['10.96.0.10/32', '169.254.0.0/16'])
+    // The server's own egress names the same apiserver, and no Tor listener
+    // when Tor is off.
+    expect(egressPeers(443, 'yaac-server-egress')).toEqual(['172.20.0.10/32'])
+    expect(egressPeers(9050, 'yaac-server-egress')).toEqual([])
 
     // Nothing changed: no writes at all.
     clearCalls()
@@ -186,10 +190,35 @@ describe('reconcileNodeSet', () => {
     expect(hostsWrites().map((w) => w.split(' ')[0])).toEqual(['node-b'])
     expect(applied().some((m) => m.kind === 'NetworkPolicy')).toBe(false)
 
-    // The proxy's watches follow the apiserver's endpoint when it moves.
+    // The proxy's watches and the server's own calls follow the apiserver's
+    // endpoint when it moves.
     seedApiserver('172.20.0.11')
     await pass()
-    expect(proxyPeers(443)).toEqual(['172.20.0.11/32'])
+    expect(egressPeers(443)).toEqual(['172.20.0.11/32'])
+    expect(egressPeers(443, 'yaac-server-egress')).toEqual(['172.20.0.11/32'])
+  })
+
+  // A single apiserver drops its own endpoint while it restarts. The server's
+  // egress keeps its last good apiserver rule, and the rest still renders.
+  it('renders every other policy while the apiserver\'s endpoints read empty, then the server\'s once they return', async () => {
+    fakeCluster.request({ verb: 'delete', apiVersion: 'discovery.k8s.io/v1', kind: 'EndpointSlice', name: 'kubernetes', namespace: 'default' })
+    await pass()
+    expect(admittedNodes('yaac-server-ingress')).toEqual(['10.0.1.5/32'])
+    expect(admittedNodes('yaac-registry-ingress')).toEqual(['10.0.1.5/32'])
+    expect(applied().map((m) => m.metadata.name)).not.toContain('yaac-server-egress')
+
+    // Nothing else changed, but the server's egress is still due.
+    seedApiserver('172.20.0.10')
+    clearCalls()
+    await pass()
+    expect(egressPeers(443, 'yaac-server-egress')).toEqual(['172.20.0.10/32'])
+  })
+
+  it('opens the server\'s egress to the host Tor listener its pod was handed', async () => {
+    vi.stubEnv('YAAC_USE_TOR', '1')
+    vi.stubEnv('YAAC_HOST_TOR_SOCKS_URL', 'socks5h://172.18.0.1:9050')
+    await pass()
+    expect(egressPeers(9050, 'yaac-server-egress')).toEqual(['172.18.0.1/32'])
   })
 
   it('writes to a replacement node that reuses a departed node\'s name and address', async () => {

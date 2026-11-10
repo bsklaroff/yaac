@@ -17,11 +17,13 @@ export {
   buildEgressWorldDenyNpManifest,
   buildProxyEgressNpManifest,
   buildProxyIngressNpManifest,
+  buildServerEgressNpManifest,
   buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
   buildWorkspaceEgressNpManifest,
 } from './policy-manifests'
 export {
+  apiserverEndpoints,
   clusterDnsCidrs,
   nodeAddressBlocks,
   nodeIpBlocks,

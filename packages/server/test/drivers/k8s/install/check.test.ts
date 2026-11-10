@@ -219,6 +219,8 @@ let npmCacheReady = true
 let serviceIps: Record<string, string> = {}
 /** Whether the deployed proxy has its egress NetworkPolicy; a case edits. */
 let proxyEgressPolicy = true
+/** Whether the server has its egress NetworkPolicy; a case edits. */
+let serverEgressPolicy = true
 /** `ready/desired` for the two datapath DaemonSets; null for not deployed. */
 let datapathReady: Record<'calico-node' | 'yaac-netd', string | null> = { 'calico-node': '1/1', 'yaac-netd': '1/1' }
 /** Where calico-node runs: a manifest install's kube-system, or the Tigera operator's calico-system. */
@@ -241,6 +243,7 @@ function logsFor(name: string): string {
     case 'yaac-cluster-check-gvisor': return 'GVISOR_SANDBOXED\n'
     case 'yaac-cluster-check-fsprobe': return FSPROBE_ALL_PASS
     case 'yaac-cluster-check-egress': return 'NP_BLOCKED\n'
+    case 'yaac-cluster-check-server-egress': return 'SRV_API_OPEN\nSRV_KUBELET_LOCKED\nSRV_METADATA_LOCKED\nSRV_DNS_OK\n'
     case 'yaac-cluster-check-npm-cache': return 'NPM_CACHE_OK\n'
     case 'yaac-cluster-check-sites-tunnel':
     case 'yaac-cluster-check-sites-router':
@@ -301,6 +304,9 @@ function seedCluster(): void {
     ] : []),
     ...(proxyEgressPolicy
       ? [{ apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', metadata: { name: 'yaac-proxy-egress', namespace: NS } }]
+      : []),
+    ...(serverEgressPolicy
+      ? [{ apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', metadata: { name: 'yaac-server-egress', namespace: NS } }]
       : []),
     ...(serverSecurityContext ? [{
       apiVersion: 'apps/v1',
@@ -475,6 +481,7 @@ describe('runClusterCheck', () => {
     npmCacheReady = true
     serviceIps = {}
     proxyEgressPolicy = true
+    serverEgressPolicy = true
     datapathReady = { 'calico-node': '1/1', 'yaac-netd': '1/1' }
     calicoNamespace = 'kube-system'
     netdContainerStatuses = []
@@ -1146,6 +1153,58 @@ describe('runClusterCheck', () => {
     const egress = byName(results, 'egress')
     expect(egress).toMatchObject({ status: 'fail' })
     expect(egress?.detail).toContain('yaac-proxy-egress')
+    expect(egress?.fix).toContain('yaac cluster restart')
+  })
+
+  // The server clones whatever remote a user types, so a pod under its
+  // egress policy must reach the apiserver and nothing internal. The kubelet
+  // listens on every node, so a denial there is a real one.
+  it('probes the server\'s egress from a pod carrying its role', async () => {
+    serviceIps['yaac-server'] = '10.96.7.1'
+    stage()
+    const { results } = await check()
+    expect(byName(results, 'egress')).toMatchObject({
+      status: 'pass',
+      detail: expect.stringContaining('the server\'s own dials reach the apiserver and DNS, but not a node\'s kubelet') as string,
+    })
+    const pod = applied()
+      .map((c) => c[0] as { kind?: string; metadata?: { name?: string; labels?: Record<string, string> } })
+      .find((m) => m.kind === 'Pod' && m.metadata?.name === 'yaac-cluster-check-server-egress')
+    // The role, not `app`, so the probe never joins the server's Service.
+    expect(pod?.metadata?.labels).toEqual({ 'yaac.role': 'server' })
+    const command = appliedPodCommand('yaac-cluster-check-server-egress')
+    expect(command).toContain('nc -w 4 10.96.0.1 443')
+    expect(command).toContain('nc -w 4 10.89.0.7 10250')
+    expect(command).toContain('nc -w 4 169.254.169.254 80')
+    expect(command).toContain('nslookup kubernetes.default.svc.cluster.local')
+  })
+
+  it('leaves the server\'s egress unverified when no server runs in-cluster', async () => {
+    stage()
+    const { results } = await check()
+    expect(byName(results, 'egress')?.detail).toContain('server not deployed in-cluster')
+    expect(appliedPodCommand('yaac-cluster-check-server-egress')).toBe('')
+  })
+
+  it.each([
+    ['has no egress policy', null, 'no yaac-server-egress NetworkPolicy'],
+    ['reaches a node\'s kubelet', 'SRV_API_OPEN\nSRV_KUBELET_OPEN\nSRV_METADATA_LOCKED\nSRV_DNS_OK\n', 'reached the kubelet on node 10.89.0.7'],
+    ['reaches link-local metadata', 'SRV_API_OPEN\nSRV_KUBELET_LOCKED\nSRV_METADATA_OPEN\nSRV_DNS_OK\n', 'the link-local metadata address'],
+    // A stale apiserver rule would cut the server off the cluster, and
+    // nothing in-cluster could correct it.
+    ['cannot reach the apiserver', 'SRV_API_LOCKED\nSRV_KUBELET_LOCKED\nSRV_METADATA_LOCKED\nSRV_DNS_OK\n', 'does not admit the apiserver'],
+    // A wrong DNS rule would fail every clone at name resolution.
+    ['cannot resolve a name', 'SRV_API_OPEN\nSRV_KUBELET_LOCKED\nSRV_METADATA_LOCKED\nSRV_DNS_FAIL\n', 'could not resolve a name'],
+  ])('fails the egress check when the server %s', async (_, logs, detail) => {
+    serviceIps['yaac-server'] = '10.96.7.1'
+    if (logs === null) serverEgressPolicy = false
+    else podLogs['yaac-cluster-check-server-egress'] = logs
+    stage()
+    const { ok, results } = await check()
+    expect(ok).toBe(false)
+    const egress = byName(results, 'egress')
+    expect(egress).toMatchObject({ status: 'fail' })
+    expect(egress?.detail).toContain(detail)
     expect(egress?.fix).toContain('yaac cluster restart')
   })
 

@@ -1,6 +1,7 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { env as serverEnv } from '@yaac/shared/env'
 import { serverLocalPath } from '@yaac/shared/paths'
 
 /**
@@ -62,7 +63,28 @@ export async function runGit(target: GitTarget, args: string[], opts: GitRunOpti
   }
   const pins = [...PINS]
   if (opts.remoteUrl !== undefined) pins.push(`protocol.${transportOf(opts.remoteUrl)}.allow=always`)
-  return execGit([...pins.flatMap((p) => ['-c', p]), ...args], cwd, env)
+  const run = execGit([...pins.flatMap((p) => ['-c', p]), ...args], cwd, env)
+  if (opts.remoteUrl === undefined) return run
+  return run.catch((err: Error) => {
+    err.message = withEgressHint(err.message)
+    throw err
+  })
+}
+
+/**
+ * `message`, with a pointer appended when it is a connect timeout in the
+ * in-cluster server. Its egress policy drops dials to non-public addresses
+ * silently, so a remote at one fails only by timing out
+ * (docs/server-in-cluster.md "The server's own egress"). ssh says "timed
+ * out"; curl 8 says only "Failed to connect to … after <n> ms", as it does
+ * for a refusal, so a connect that took over 10s is read as a timeout.
+ */
+export function withEgressHint(message: string): string {
+  const waited = /Failed to connect to .* after (\d+) ms/.exec(message)
+  const timedOut = /timed out/i.test(message) || (waited !== null && Number(waited[1]) >= 10_000)
+  if (!serverEnv.inCluster || !timedOut) return message
+  return `${message} (the in-cluster yaac server reaches only public addresses; a git server at `
+    + 'a private one must be opened to it: docs/server-in-cluster.md "The server\'s own egress")'
 }
 
 /**

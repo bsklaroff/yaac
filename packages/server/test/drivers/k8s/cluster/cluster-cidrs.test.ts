@@ -8,7 +8,9 @@
  */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
-import { nodeAddressBlocks, nodeIpBlocks, podCidrSources, resetClusterCidrCache } from '#drivers/k8s/cluster'
+import {
+  apiserverEndpoints, nodeAddressBlocks, nodeIpBlocks, podCidrSources, resetClusterCidrCache,
+} from '#drivers/k8s/cluster'
 
 const node = (ip: string, annotations?: Record<string, string>) => ({
   apiVersion: 'v1',
@@ -91,6 +93,27 @@ describe('nodeAddressBlocks', () => {
     // The admitted set stays the InternalIP and tunnel address.
     await expect(nodeIpBlocks()).resolves.toEqual(['10.0.1.5/32', '10.244.86.128/32'])
     expect(fakeCluster.callsOf('list', 'Node')).toHaveLength(1)
+  })
+})
+
+describe('apiserverEndpoints', () => {
+  it('reads the apiserver\'s real endpoints, of either family, from the kubernetes Service\'s slices', async () => {
+    // Policy sees a destination after kube-proxy's DNAT, so the proxy's and
+    // the server's egress must name these rather than the Service address.
+    const slice = (name: string, addressType: string, addresses: string[], port: number) => ({
+      apiVersion: 'discovery.k8s.io/v1', kind: 'EndpointSlice', addressType,
+      metadata: { name, namespace: 'default', labels: { 'kubernetes.io/service-name': 'kubernetes' } },
+      endpoints: [{ addresses }], ports: [{ port }],
+    })
+    fakeCluster.seed(
+      slice('kubernetes', 'IPv4', ['172.18.0.3', '172.18.0.2'], 6443),
+      slice('kubernetes-v6', 'IPv6', ['fd00::2'], 6443),
+      // Another Service's slice in the same namespace is not the apiserver.
+      { ...slice('other', 'IPv4', ['10.0.0.9'], 80), metadata: { name: 'other', namespace: 'default', labels: { 'kubernetes.io/service-name': 'other' } } },
+    )
+    await expect(apiserverEndpoints()).resolves.toEqual({
+      cidrs: ['172.18.0.2/32', '172.18.0.3/32', 'fd00::2/128'], ports: [6443],
+    })
   })
 })
 

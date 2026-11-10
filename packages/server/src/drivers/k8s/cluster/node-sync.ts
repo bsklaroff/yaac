@@ -1,4 +1,5 @@
 import { applyObject, listObjects } from '#drivers/k8s/substrate'
+import { env } from '@yaac/shared/env'
 import { serverLog } from '#lib/log'
 import { apiserverEndpoints, clusterDnsCidrs, nodeAddressBlocks, nodeIpBlocks } from './cluster-cidrs'
 import { applyMainRegistryIngress, writeMainRegistryHosts } from './main-registry'
@@ -7,6 +8,7 @@ import {
   buildBuilderEgressNpManifest,
   buildProxyEgressNpManifest,
   buildProxyIngressNpManifest,
+  buildServerEgressNpManifest,
   buildServerIngressNpManifest,
   buildWorkspaceEgressNpManifest,
 } from './policy-manifests'
@@ -44,8 +46,9 @@ interface RawNode {
 
 /**
  * Re-render the node-address policies if the address set (or the DNS
- * Service's or apiserver's, which the proxy's egress names) changed, and
- * start writing hosts.toml to Ready nodes that do not have it yet.
+ * Service's or apiserver's, which the proxy's and server's egress name)
+ * changed, and start writing hosts.toml to Ready nodes that do not have it
+ * yet.
  */
 export async function reconcileNodeSet(projectIds: string[]): Promise<void> {
   const nodeCidrs = await nodeIpBlocks({ fresh: true })
@@ -54,18 +57,21 @@ export async function reconcileNodeSet(projectIds: string[]): Promise<void> {
   const apiserver = await apiserverEndpoints()
   const addresses = JSON.stringify([nodeAddrs, dnsCidrs, apiserver])
   if (addresses !== renderedAddresses) {
+    const serverEgress = renderServerEgress(nodeAddrs, dnsCidrs, apiserver)
     for (const manifest of [
       buildServerIngressNpManifest(nodeCidrs),
       buildWorkspaceEgressNpManifest(nodeCidrs),
       buildProxyIngressNpManifest(nodeCidrs),
       buildProxyEgressNpManifest(nodeAddrs, dnsCidrs, apiserver),
       buildBuilderEgressNpManifest(nodeAddrs, dnsCidrs),
+      ...(serverEgress ? [serverEgress] : []),
     ]) await applyObject(manifest)
     await syncNpmCacheNodes(nodeCidrs)
     await syncSiteEdgeNodes(nodeCidrs, dnsCidrs)
     await applyMainRegistryIngress(nodeCidrs)
     for (const projectId of projectIds) await applyProjectRegistryIngress(projectId, nodeCidrs)
-    renderedAddresses = addresses
+    // Unset after a failed server render, so the next pass retries it.
+    renderedAddresses = serverEgress ? addresses : null
   }
 
   if (hostsRun) return
@@ -75,6 +81,26 @@ export async function reconcileNodeSet(projectIds: string[]): Promise<void> {
     .filter((n) => n.name && !hostsWritten.has(n.key))
   if (pending.length === 0) return
   hostsRun = writeHostsTo(pending).finally(() => { hostsRun = null })
+}
+
+/**
+ * The server's egress policy, or null when it cannot be rendered: an empty
+ * read of the apiserver's endpoints (a single apiserver drops its own while
+ * it restarts), or a Tor URL naming no address. The last good policy then
+ * stays, since one without the apiserver would cut the server off, and the
+ * other node-address policies still render.
+ */
+function renderServerEgress(
+  nodeAddrs: string[],
+  dnsCidrs: string[],
+  apiserver: { cidrs: string[]; ports: number[] },
+): Record<string, unknown> | null {
+  try {
+    return buildServerEgressNpManifest(nodeAddrs, dnsCidrs, apiserver, env.useTor ? env.torSocksUrl : null)
+  } catch (err) {
+    serverLog(`[node-sync] keeping the server's last egress policy (retried next pass): ${String(err)}`)
+    return null
+  }
 }
 
 /** Write the main registry's hosts.toml to each node in turn; a failed node is retried on a later pass. */

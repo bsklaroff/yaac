@@ -7,6 +7,7 @@ import { env } from '@yaac/shared/env'
 import { formatSshCommand, torSshOpts } from '@yaac/shared/git'
 import { serverLocalPath } from '@yaac/shared/paths'
 import { gitSshAgentSock } from './agent'
+import { withEgressHint } from './run'
 
 /**
  * Turns a resolved credential into a runnable git invocation: the
@@ -173,7 +174,7 @@ export async function fetchKnownHostsEntry(host: string): Promise<string> {
     const lines = written.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'))
     if (lines.length === 0) {
       const tail = stderr.trim().split('\n').slice(-3).join(' | ')
-      throw new Error(`no host key recovered for ${host}${tail ? `: ${tail}` : ''}`)
+      throw new Error(withEgressHint(`no host key recovered for ${host}${tail ? `: ${tail}` : ''}`))
     }
     return lines[0]
   } finally {

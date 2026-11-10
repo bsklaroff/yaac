@@ -112,6 +112,31 @@ describe('yaac cluster start|stop|restart|logs|status against the in-cluster Dep
     expect(logs).not.toContain('NP_SERVER_OPEN')
   })
 
+  it('keeps the server pod\'s own dials off a node\'s kubelet, while it reaches the apiserver', async () => {
+    // The server clones whatever remote a user types, so its egress floor
+    // (docs/server-in-cluster.md "The server's own egress") must leave the
+    // cluster's internal addresses unreachable from the real pod, its own
+    // peers aside. The kubelet listens on every node, so a refusal there is
+    // the policy's.
+    const { stdout: nodeIp } = await execFileAsync('kubectl', [
+      'get', 'nodes', '-o', 'jsonpath={.items[0].status.addresses[?(@.type=="InternalIP")].address}',
+    ], { timeout: 30_000 })
+    const dial = [
+      "const net = require('node:net')",
+      "const host = process.argv[1] === 'api' ? process.env.KUBERNETES_SERVICE_HOST : process.argv[1]",
+      "const port = Number(process.argv[1] === 'api' ? process.env.KUBERNETES_SERVICE_PORT : process.argv[2])",
+      'const s = net.connect({ host, port, timeout: 4000 })',
+      "s.on('connect', () => { console.log('OPEN'); s.destroy() })",
+      "s.on('timeout', () => { console.log('LOCKED'); s.destroy() })",
+      "s.on('error', () => console.log('LOCKED'))",
+    ].join('\n')
+    const probe = async (...target: string[]): Promise<string> => (await execFileAsync('kubectl', [
+      'exec', '-n', TEST_NAMESPACE, 'deploy/yaac-server', '--', 'node', '-e', dial, ...target,
+    ], { timeout: 60_000 })).stdout.trim()
+    expect(await probe('api')).toBe('OPEN')
+    expect(await probe(nodeIp.trim().split(' ')[0], '10250')).toBe('LOCKED')
+  })
+
   it('`cluster start` against a rolled-out Deployment is idempotent', async () => {
     const before = await serverPods()
     const res = await runYaac(testEnv.env, 'cluster', 'start')

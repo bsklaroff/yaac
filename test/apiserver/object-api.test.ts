@@ -20,6 +20,7 @@ import {
   buildEgressWorldDenyNpManifest,
   buildProxyEgressNpManifest,
   buildProxyIngressNpManifest,
+  buildServerEgressNpManifest,
   buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
   buildWorkspaceEgressNpManifest,
@@ -57,6 +58,7 @@ describe('object writes and reads', () => {
       buildProxyIngressNpManifest(cidrs),
       buildProxyEgressNpManifest(cidrs, ['10.96.0.10/32'], { cidrs: ['172.18.0.3/32'], ports: [6443] }),
       buildServerIngressNpManifest(cidrs),
+      buildServerEgressNpManifest(cidrs, ['10.96.0.10/32'], { cidrs: ['172.18.0.3/32'], ports: [6443] }, 'socks5h://172.18.0.1:9050'),
       buildServerFrontIngressNpManifest([{ podSelector: { matchLabels: { app: 'fronting' } } }]),
       buildEgressWorldDenyNpManifest(),
     ]
