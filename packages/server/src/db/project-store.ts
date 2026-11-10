@@ -1,6 +1,6 @@
 import { asc, eq, sql } from 'drizzle-orm'
 import { getDb } from './client'
-import { projects, projectToolDefaults } from './schema'
+import { projectIcons, projects, projectToolDefaults } from './schema'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { nullsToUndefined } from '#lib/nulls'
 import type { AgentTool, EgressAllowlist, ProjectConfig, ProjectMeta, ScratchDirSettings, ToolCreateDefaults } from '@yaac/shared/types'
@@ -267,6 +267,40 @@ export async function setProjectShareRevoked(projectId: string, revoked: boolean
     .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
   notifyWorkspaceListChanged()
   return rows.length > 0
+}
+
+/** A project's chip picture: its bytes, their type, and a hash of them. */
+export interface ProjectIcon {
+  mimeType: string
+  bytes: Buffer
+  hash: string
+}
+
+/** Replace the project's picture. The project must exist. */
+export async function setProjectIcon(projectId: string, icon: ProjectIcon): Promise<void> {
+  const db = await getDb()
+  await db.insert(projectIcons).values({ projectId, ...icon })
+    .onConflictDoUpdate({ target: projectIcons.projectId, set: icon })
+  notifyWorkspaceListChanged()
+}
+
+export async function getProjectIcon(projectId: string): Promise<ProjectIcon | undefined> {
+  const db = await getDb()
+  const [row] = await db.select().from(projectIcons).where(eq(projectIcons.projectId, projectId))
+  return row && { mimeType: row.mimeType, bytes: row.bytes, hash: row.hash }
+}
+
+export async function deleteProjectIcon(projectId: string): Promise<void> {
+  const db = await getDb()
+  await db.delete(projectIcons).where(eq(projectIcons.projectId, projectId))
+  notifyWorkspaceListChanged()
+}
+
+/** Each project with a picture, mapped to its picture's hash. */
+export async function listProjectIconHashes(): Promise<Map<string, string>> {
+  const db = await getDb()
+  const rows = await db.select({ projectId: projectIcons.projectId, hash: projectIcons.hash }).from(projectIcons)
+  return new Map(rows.map((r) => [r.projectId, r.hash]))
 }
 
 export async function getProjectRow(projectId: string): Promise<ProjectRow | undefined> {

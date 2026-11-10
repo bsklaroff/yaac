@@ -10,7 +10,7 @@ import { WindowControls } from '#components/WindowControls'
 import { api } from '#lib/api'
 import { LoadingIcon, WarningIcon } from '#lib/icons'
 import { isElectron } from '#lib/platform'
-import { identityColor, identityInitial } from '#lib/projectIdentity'
+import { identityColor, identityInitial, projectIconUrl } from '#lib/projectIdentity'
 import type { ProjectOp } from '#lib/store'
 import { usePressDrag } from '#lib/usePressDrag'
 import { useTeammateView } from '#lib/viewer'
@@ -21,27 +21,38 @@ import type { ProjectSummary } from '@yaac/shared/types'
 export function listedProjects(
   projects: ProjectSummary[],
   ops: ProjectOp[],
-): Array<{ id: string; name: string; op: ProjectOp | undefined }> {
-  return [...projects, ...ops.filter((o) => o.kind === 'add')]
-    .map((p) => ({ id: p.id, name: p.name, op: ops.find((o) => o.id === p.id) }))
+): Array<ChipProject & { op: ProjectOp | undefined }> {
+  return [...projects, ...ops.filter((o) => o.kind === 'add')].map((p) => ({
+    id: p.id,
+    name: p.name,
+    iconHash: 'iconHash' in p ? p.iconHash : undefined,
+    op: ops.find((o) => o.id === p.id),
+  }))
 }
 
-/** A project's initial on a chip tinted with its identity color, or a
- *  spinner while an op runs on it and a warning once that op failed. */
-export function ProjectChip({ name, op, iconSize, className, style }: {
-  name: string
+type ChipProject = Pick<ProjectSummary, 'id' | 'name' | 'iconHash'>
+
+/** A project's picture, else its initial, on a chip tinted with its
+ *  identity color; a spinner while an op runs on it and a warning once that
+ *  op failed. A picture that fails to load falls back to the initial. */
+export function ProjectChip({ project, op, iconSize, className, style }: {
+  project: ChipProject
   op: ProjectOp | undefined
   iconSize: number
   className: string
   style: CSSProperties
 }): JSX.Element {
+  const src = project.iconHash === undefined ? undefined : projectIconUrl(project.id, project.iconHash)
+  const [failed, setFailed] = useState<string>()
   return (
-    <span className={className} style={style}>
-      {op === undefined
-        ? identityInitial(name)
-        : op.error === undefined
+    <span className={clsx(className, 'overflow-hidden')} style={style}>
+      {op !== undefined
+        ? op.error === undefined
           ? <LoadingIcon size={iconSize} className="animate-spin" aria-label={`${op.kind === 'add' ? 'Adding' : 'Removing'} project`} />
-          : <WarningIcon size={iconSize} className="text-danger" aria-label="Failed" />}
+          : <WarningIcon size={iconSize} className="text-danger" aria-label="Failed" />
+        : src !== undefined && src !== failed
+          ? <img src={src} alt="" className="h-full w-full object-cover" onError={() => setFailed(src)} />
+          : identityInitial(project.name)}
     </span>
   )
 }
@@ -53,6 +64,17 @@ function inOrder(projects: ProjectSummary[], ids: string[]): ProjectSummary[] {
     return i === -1 ? ids.length : i
   }
   return [...projects].sort((a, b) => rank(a) - rank(b))
+}
+
+/** A rail chip's colors: muted tints of the project color, slightly
+ *  stronger for the active project. */
+export function railChipStyle(color: string, active: boolean): CSSProperties {
+  return {
+    background: `color-mix(in oklab, ${color} ${active ? 26 : 12}%, var(--color-surface-2))`,
+    color: active
+      ? `color-mix(in oklab, ${color} 40%, var(--color-text))`
+      : `color-mix(in oklab, ${color} 45%, var(--color-text-dim))`,
+  }
 }
 
 /**
@@ -138,7 +160,6 @@ export function ProjectRail({
       <UserSwitcher />
       {listedProjects(placed, ops).map(({ op, ...p }, i) => {
         const active = p.id === activeProjectId
-        const color = identityColor(p.id)
         const waiting = attentionByProject[p.id] ?? 0
         const draggable = !readOnly && i < placed.length
         return (
@@ -179,22 +200,14 @@ export function ProjectRail({
               )}
             />
             <ProjectChip
-              name={p.name}
+              project={p}
               op={op}
               iconSize={18}
               className={clsx(
                 'flex h-10 w-10 items-center justify-center text-[16px] font-semibold transition-all',
                 active ? 'rounded-xl' : 'rounded-[20px] group-hover:rounded-xl',
               )}
-              // Muted tints of the project color; active is slightly stronger.
-              style={{
-                background: active
-                  ? `color-mix(in oklab, ${color} 26%, var(--color-surface-2))`
-                  : `color-mix(in oklab, ${color} 12%, var(--color-surface-2))`,
-                color: active
-                  ? `color-mix(in oklab, ${color} 40%, var(--color-text))`
-                  : `color-mix(in oklab, ${color} 45%, var(--color-text-dim))`,
-              }}
+              style={railChipStyle(identityColor(p.id), active)}
             />
             {waiting > 0 && op === undefined && (
               <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-amber-500 ring-2 ring-base" />

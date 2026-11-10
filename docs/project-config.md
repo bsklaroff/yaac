@@ -121,6 +121,24 @@ namespace), and the hosts the workspace reaches with it need no rule, so
 they are tunneled untouched. Under containerless they are ordinary
 environment entries.
 
+## Icon
+
+The picture a project's chip shows in the rail (and the mobile projects
+list) instead of its initial. It is set only from the webapp: paste or drop
+an image on the preview chip, or choose a file, then place it in the crop
+dialog (drag to move, slider or scroll wheel to zoom). The browser draws the
+chosen square to a 256px PNG and uploads that; removing the icon returns the
+chip to the initial.
+
+Every image, SVG included, is drawn to a canvas before upload, and the
+server stores only PNG, JPEG, GIF or WebP (up to 512 KB, in the
+`project_icons` table), refusing SVG. An SVG can carry script: inside an
+`<img>` it never runs, but a stored SVG served from yaac's origin would run
+it in that origin if its URL were opened directly. The server serves the
+icon at `GET /api/project/:id/icon`; the snapshot names it by a hash of its
+bytes, which the image URL carries, so the browser caches it until it
+changes.
+
 ## Kept ignored files
 
 Stopping a workspace deletes every file the repository's `.gitignore`

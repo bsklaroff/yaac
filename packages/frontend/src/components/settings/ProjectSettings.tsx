@@ -10,6 +10,7 @@ import { PortForwards } from '#components/settings/PortForwards'
 import { CacheVolumes } from '#components/settings/CacheVolumes'
 import { ContainerOptions } from '#components/settings/ContainerOptions'
 import { HostedRemote } from '#components/settings/HostedRemote'
+import { ProjectIcon } from '#components/settings/ProjectIcon'
 import { ProjectSharing } from '#components/settings/ProjectSharing'
 import { MoveToRemote } from '#components/settings/MoveToRemote'
 import { KeptHostedRepo } from '#components/settings/KeptHostedRepo'
@@ -85,6 +86,10 @@ export function ProjectSettings(): JSX.Element {
                 </span>
               )}
             </p>
+          </div>
+
+          <div className="mt-6">
+            <ProjectIcon key={`icon:${projectId}`} project={selected} readOnly={readOnly} />
           </div>
 
           {selected.hosted && <div className="mt-6">

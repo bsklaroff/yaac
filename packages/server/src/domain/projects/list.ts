@@ -1,4 +1,4 @@
-import { countStoppedWorkspaces, listProjectRows, type StoppedCount } from '#db'
+import { countStoppedWorkspaces, listProjectIconHashes, listProjectRows, type StoppedCount } from '#db'
 import { workspaceDriver } from '#drivers/driver'
 import { projectCredentialNames } from './credentials'
 import { initWorkflowOf } from './workflows'
@@ -14,10 +14,11 @@ import type { ProjectSummary } from '@yaac/shared/types'
 export async function listProjects(
   counts: Promise<StoppedCount[]> = countStoppedWorkspaces(),
 ): Promise<ProjectSummary[]> {
-  const [rows, workspaceCounts, stoppedCounts] = await Promise.all([
+  const [rows, workspaceCounts, stoppedCounts, iconHashes] = await Promise.all([
     listProjectRows(),
     workspaceDriver().count(),
     counts,
+    listProjectIconHashes(),
   ])
   const stoppedIn = (projectId: string): Pick<ProjectSummary, 'stoppedCount' | 'deaths' | 'deathsSeenBy'> => {
     const total = { stoppedCount: 0, deaths: 0, deathsSeenBy: {} as Record<string, number> }
@@ -38,6 +39,7 @@ export async function listProjects(
     remoteUrl: meta.remoteUrl,
     addedAt: meta.addedAt,
     owner: meta.owner,
+    ...(iconHashes.has(meta.id) ? { iconHash: iconHashes.get(meta.id) } : {}),
     workspaceCount: workspaceCounts[meta.id] ?? 0,
     ...stoppedIn(meta.id),
     // Remembered create defaults, so the create form opens on what an

@@ -540,4 +540,81 @@ describe('ProjectSettings', () => {
     expect(screen.queryByRole('button', { name: 'Rename init.lua' })).toBeNull()
     expect(server.calls.filter((c) => c.method !== 'GET')).toEqual([])
   })
+
+  it("shows the project's icon, crops a pasted image where it is dragged and zoomed, and removes the icon", async () => {
+    useUiStore.setState({ activeProjectId: 'id-alpha' })
+    const snapshot = serverSnapshot({
+      driver: 'containerless',
+      projects: [{ ...project('alpha', 'git@github.com:o/alpha.git'), iconHash: 'h1' }, project('beta', 'git@gitlab.com:o/beta.git')],
+    })
+    const server = mockFetch({
+      'GET /api/project/id-alpha/env': { vars: [] },
+      'GET /api/project/id-alpha/run-secrets': { secrets: [] },
+      'GET /api/project/id-beta/env': { vars: [] },
+      'GET /api/project/id-beta/run-secrets': { secrets: [] },
+      'PUT /api/project/id-alpha/icon': undefined,
+      'DELETE /api/project/id-alpha/icon': undefined,
+    })
+    // The browser's canvas, which jsdom lacks.
+    const drawImage = vi.fn()
+    vi.stubGlobal('OffscreenCanvas', class {
+      constructor(public width: number, public height: number) {}
+      getContext() { return { drawImage } }
+      convertToBlob() { return Promise.resolve(new Blob(['png'], { type: 'image/png' })) }
+    })
+    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
+
+    const chip = screen.getByLabelText('Project icon')
+    expect(chip.querySelector('img')?.getAttribute('src')).toBe('/api/project/id-alpha/icon?v=h1')
+
+    /** Paste `file` on the chip and answer the cropper's image load as a
+     *  `w`x`h` image, returning the crop area. */
+    const paste = async (file: File, w: number, h: number): Promise<HTMLElement> => {
+      fireEvent.paste(chip, { clipboardData: { getData: () => '', files: [file] } })
+      const area = await screen.findByRole('group', { name: 'Crop area' })
+      const img = area.querySelector('img') as HTMLImageElement
+      expect(img.src).toMatch(/^data:/)
+      Object.defineProperties(img, { naturalWidth: { value: w }, naturalHeight: { value: h } })
+      fireEvent.load(img)
+      return area
+    }
+
+    // A 300x200 image just covers the 240px square, centered: 360px wide, 60px off each side.
+    const area = await paste(new File(['x'], 'shot.png', { type: 'image/png' }), 300, 200)
+    const img = area.querySelector('img') as HTMLImageElement
+    expect([img.style.left, img.style.top, img.style.width]).toEqual(['-60px', '0px', '360px'])
+    // Dragging past the left edge stops there; dragging back moves it.
+    fireEvent.pointerDown(area, { clientX: 100, clientY: 100 })
+    fireEvent.pointerMove(window, { clientX: 200, clientY: 150 })
+    fireEvent.pointerMove(window, { clientX: 170, clientY: 150 })
+    fireEvent.pointerUp(window)
+    expect([img.style.left, img.style.top]).toEqual(['-30px', '0px'])
+    // Zooming 2x about the center.
+    fireEvent.change(screen.getByLabelText('Zoom'), { target: { value: '2' } })
+    expect([img.style.left, img.style.top]).toEqual(['-180px', '-120px'])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(server.called('PUT /api/project/id-alpha/icon')).toHaveLength(1))
+    // At 2.4 CSS px per image px, the square is the image's 100px from (75, 50), drawn at 256px.
+    expect(drawImage.mock.calls[0].slice(1)).toEqual([75, 50, 100, 100, 0, 0, 256, 256])
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'Crop area' })).toBeNull())
+
+    // An SVG opens the cropper too; Cancel uploads nothing.
+    await paste(new File(['<svg/>'], 'logo.svg', { type: 'image/svg+xml' }), 24, 24)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'Crop area' })).toBeNull())
+    expect(server.called('PUT /api/project/id-alpha/icon')).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(server.called('DELETE /api/project/id-alpha/icon')).toHaveLength(1))
+
+    // A picture that fails to load shows the initial instead.
+    fireEvent.error(chip.querySelector('img') as HTMLImageElement)
+    expect(chip.textContent).toBe('A')
+
+    // A project without a picture has nothing to remove.
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'id-beta' } })
+    expect(screen.getByLabelText('Project icon').textContent).toBe('B')
+    expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull()
+  })
 })

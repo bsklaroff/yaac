@@ -1574,6 +1574,9 @@ export interface ProjectSummary extends ProjectConfig {
   /** The owning user's id (`User.id`). Every other snapshot row belongs to
    *  its project's owner. */
   owner: string
+  /** A hash of the picture its chip shows instead of its initial, which
+   *  `GET /project/:id/icon` serves; absent when it has none. */
+  iconHash?: string
   workspaceCount: number
   /** Stopped workspaces. In the snapshot it leaves out workspaces it draws
    *  a row of their own for (still stopping, held, or restarting). */

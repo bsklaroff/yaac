@@ -204,8 +204,11 @@ export {
 
 export {
   clearProjectKeepsHostedRepo,
+  deleteProjectIcon,
   deleteProjectRow,
+  getProjectIcon,
   getProjectRow,
+  listProjectIconHashes,
   listProjectRows,
   recordProject,
   recordProjectCreate,
@@ -214,12 +217,14 @@ export {
   setProjectEgressAllowlist,
   setProjectScratchDirs,
   setProjectGitCredential,
+  setProjectIcon,
   setProjectInit,
   setProjectOrder,
   setProjectKeptIgnoredPaths,
   setProjectRemote,
   setProjectShareRevoked,
   setProjectWorkspaceRetention,
+  type ProjectIcon,
   type ProjectRow,
 } from './project-store'
 export {
