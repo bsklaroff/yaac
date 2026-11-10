@@ -541,17 +541,23 @@ describe('ProjectSettings', () => {
     expect(server.calls.filter((c) => c.method !== 'GET')).toEqual([])
   })
 
-  it("shows the project's icon, crops a pasted image where it is dragged and zoomed, and removes the icon", async () => {
+  it("shows the project's icon, offers it for download, crops a pasted image where it is dragged and zoomed, and removes the icon", async () => {
     useUiStore.setState({ activeProjectId: 'id-alpha' })
     const snapshot = serverSnapshot({
       driver: 'containerless',
-      projects: [{ ...project('alpha', 'git@github.com:o/alpha.git'), iconHash: 'h1' }, project('beta', 'git@gitlab.com:o/beta.git')],
+      projects: [
+        { ...project('alpha', 'git@github.com:o/alpha.git'), iconHash: 'h1' },
+        project('beta', 'git@gitlab.com:o/beta.git'),
+        { ...project('next.js', 'git@github.com:o/next.js.git'), iconHash: 'h2' },
+      ],
     })
     const server = mockFetch({
       'GET /api/project/id-alpha/env': { vars: [] },
       'GET /api/project/id-alpha/run-secrets': { secrets: [] },
       'GET /api/project/id-beta/env': { vars: [] },
       'GET /api/project/id-beta/run-secrets': { secrets: [] },
+      'GET /api/project/id-next.js/env': { vars: [] },
+      'GET /api/project/id-next.js/run-secrets': { secrets: [] },
       'PUT /api/project/id-alpha/icon': undefined,
       'DELETE /api/project/id-alpha/icon': undefined,
     })
@@ -566,6 +572,8 @@ describe('ProjectSettings', () => {
 
     const chip = screen.getByLabelText('Project icon')
     expect(chip.querySelector('img')?.getAttribute('src')).toBe('/api/project/id-alpha/icon?v=h1')
+    const download = screen.getByRole('link', { name: 'Download' })
+    expect([download.getAttribute('href'), download.getAttribute('download')]).toEqual(['/api/project/id-alpha/icon?v=h1', 'alpha icon'])
 
     /** Paste `file` on the chip and answer the cropper's image load as a
      *  `w`x`h` image, returning the crop area. */
@@ -612,9 +620,15 @@ describe('ProjectSettings', () => {
     fireEvent.error(chip.querySelector('img') as HTMLImageElement)
     expect(chip.textContent).toBe('A')
 
-    // A project without a picture has nothing to remove.
+    // A project without a picture has nothing to download or remove.
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'id-beta' } })
     expect(screen.getByLabelText('Project icon').textContent).toBe('B')
+    expect(screen.queryByRole('link', { name: 'Download' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull()
+
+    // A dot in the name would read as the file's extension, and the browser
+    // then adds none from the picture's type.
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'id-next.js' } })
+    expect(screen.getByRole('link', { name: 'Download' }).getAttribute('download')).toBe('next-js icon')
   })
 })

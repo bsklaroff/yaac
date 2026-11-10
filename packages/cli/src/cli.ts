@@ -808,8 +808,9 @@ config
 
 config
   .command('icon')
-  .description('Show whether a project has an icon, the picture its chip shows in the sidebar in place of its initial, or replace it with an image file')
+  .description('Show whether a project has an icon, the picture its chip shows in the sidebar in place of its initial, save it, or replace it with an image file')
   .argument('<project>', 'Project name, id, or id prefix')
+  .option('--out <path>', 'Save it to this file, or - to write it to stdout')
   .option('--file <path>', 'Replace it with this PNG, JPEG, GIF or WebP file (at most 512 KB, ideally square), or - to read it from stdin')
   .option('--none', 'Remove it, so the chip shows the project\'s initial')
   .action(configIcon)

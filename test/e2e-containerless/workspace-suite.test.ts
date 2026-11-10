@@ -1409,7 +1409,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(mine?.title).toBe('wiring up the mama channel')
   })
 
-  it('sets and removes its project\'s icon from an image file, refusing a directory and one too large to send', async () => {
+  it('sets, saves and removes its project\'s icon, refusing a directory and one too large to send', async () => {
     const png = path.join(testEnv.scratchDir, 'mama-icon.png')
     const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...Array.from({ length: 300 }, (_, i) => i % 256)])
     await fs.writeFile(png, bytes)
@@ -1417,6 +1417,9 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(set.code, set.out).toBe(0)
     expect(set.out).toContain('Set the project\'s icon')
     expect(Buffer.from(await (await fetch(`${origin()}/api/project/${projectId}/icon`)).arrayBuffer())).toEqual(bytes)
+    const out = path.join(testEnv.scratchDir, 'mama-icon-out.png')
+    expect(await runMama('icon', 'get', out)).toEqual({ code: 0, out: `Saved the project's icon (image/png, ${bytes.length} bytes) to ${out}.\n` })
+    expect(await fs.readFile(out)).toEqual(bytes)
 
     const big = path.join(testEnv.scratchDir, 'mama-icon-big.png')
     await fs.writeFile(big, Buffer.alloc(150_001))
@@ -1428,6 +1431,9 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
 
     expect((await runMama('icon', 'remove')).out).toContain('Removed the project\'s icon')
     expect((await fetch(`${origin()}/api/project/${projectId}/icon`)).status).toBe(404)
+    const none = await runMama('icon', 'get', out)
+    expect(none.code).toBe(1)
+    expect(none.out).toContain('has no icon (HTTP 422)')
   })
 
   it('rebases its own diff onto another branch on origin, and refuses one origin lacks', async () => {

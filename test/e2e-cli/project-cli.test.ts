@@ -380,7 +380,7 @@ describe('yaac config project and user settings (real CLI + real server)', () =>
     expect((await config('default-branch-guard', 'demo-settings', 'on')).stderr).toContain('is not hosted by yaac; set its default-branch guard at its git host')
   })
 
-  it('config icon shows, replaces from an image file or stdin, refuses a non-image, and removes a project\'s icon', async () => {
+  it('config icon shows, replaces from an image file or stdin, saves, refuses a non-image, and removes a project\'s icon', async () => {
     const png = path.join(testEnv.scratchDir, 'icon.png')
     const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
     await fs.writeFile(png, bytes)
@@ -400,12 +400,19 @@ describe('yaac config project and user settings (real CLI + real server)', () =>
     const piped = Buffer.from([...bytes, 9])
     expect((await config('icon', 'demo-settings', '--file', '-', { stdin: piped })).exitCode).toBe(0)
     expect(await served()).toEqual(piped)
+    const out = path.join(testEnv.scratchDir, 'icon-out.png')
+    const saved = await config('icon', 'demo-settings', '--out', out)
+    expect(saved.stdout).toContain(`Saved demo-settings's icon (image/png, ${piped.length} bytes) to ${out}.`)
+    expect(await fs.readFile(out)).toEqual(piped)
+    // The helper decodes stdout as UTF-8, so the PNG signature's 0x89 is lost.
+    expect((await config('icon', 'demo-settings', '--out', '-')).stdout).toMatch(/^\uFFFDPNG\r\n/)
 
     expect((await config('icon', 'demo-settings', '--file', svg)).stderr).toContain('must be a PNG, JPEG, GIF or WebP image')
     expect((await config('icon', 'demo-settings', '--file', path.join(testEnv.scratchDir, 'nope.png'))).stderr).toContain('Cannot read')
-    expect((await config('icon', 'demo-settings', '--file', png, '--none')).stderr).toContain('Pass --file or --none, not both.')
+    expect((await config('icon', 'demo-settings', '--file', png, '--none')).stderr).toContain('Pass only one of --out, --file and --none.')
     expect((await config('icon', 'demo-settings', '--none')).stdout).toContain('Removed demo-settings\'s icon')
     expect((await config('icon', 'demo-settings')).stdout).toContain('has no icon')
+    expect((await config('icon', 'demo-settings', '--out', out)).stderr).toContain('demo-settings has no icon')
   })
 
   it('config time-zone shows, pins a zone, refuses a bad one, and follows the device again', async () => {
