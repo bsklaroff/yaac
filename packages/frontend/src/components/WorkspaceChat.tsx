@@ -6,7 +6,7 @@ import { ActivityBar } from '#components/AcpActivity'
 import { useComposerMenu } from '#components/ComposerMenu'
 import { tokenCount } from '#components/AcpTranscript'
 import {
-  ChatBottomBar, ChatViewToggles, COMPOSER_INPUT, JumpButtons, Launching, PageLoading, ROUND_BUTTON, useChatColumn,
+  ChatBottomBar, ChatViewToggles, COMPOSER_INPUT, JumpButtons, Launching, PageFailed, PageLoading, ROUND_BUTTON, useChatColumn,
   useConversationView, useFollowTail,
 } from '#components/ConversationView'
 import { FileLinksContext, useFileLinks } from '#components/Markdown'
@@ -187,6 +187,10 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
     : !connected && groups.length === 0 ? { caption: 'connecting' }
     : opening !== undefined && !started ? {}
     : undefined
+  /** Nothing to show yet. Past page 0 that means the pages before are still
+   *  to be read (an agent restart's new life can start with an empty last
+   *  page), so only a conversation shown from its first page is empty. */
+  const empty = view === undefined && groups.length === 0 && standIn === undefined
   useEffect(() => {
     if (started) onStarted?.()
   }, [started, onStarted])
@@ -286,14 +290,16 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
           onScroll={onScroll}
           className="flex-1 overflow-y-auto px-4 py-4"
         >
-          {view === undefined && groups.length === 0 && pages.loading === undefined && standIn === undefined && (
+          {empty && pages.fromStart && pages.loading === undefined && (
             <div className="flex h-full items-center justify-center text-xs text-text-faint">
               No messages yet — say something.
             </div>
           )}
           <FileLinksContext.Provider value={fileLinks}>
             <div className={column}>
-              {pages.loading === 'earlier' && <PageLoading />}
+              {empty && !pages.fromStart && pages.failed
+                ? <PageFailed onRetry={pages.retry} />
+                : (pages.loading === 'earlier' || (empty && !pages.fromStart)) && <PageLoading />}
               {standIn !== undefined && <Launching {...opening} {...standIn} />}
               {body}
               {pages.loading === 'later' && <PageLoading />}

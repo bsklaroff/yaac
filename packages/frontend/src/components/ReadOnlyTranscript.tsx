@@ -3,7 +3,7 @@ import clsx from 'clsx'
 import { skipToken, useQuery } from '@tanstack/react-query'
 import { ActivityBar } from '#components/AcpActivity'
 import {
-  ChatBottomBar, JumpButtons, PageLoading, useChatColumn, useConversationView, useFollowTail,
+  ChatBottomBar, JumpButtons, PageFailed, PageLoading, useChatColumn, useConversationView, useFollowTail,
 } from '#components/ConversationView'
 import type { FindOptions } from '#components/ConversationFind'
 import { StatusMark } from '#components/StatusMark'
@@ -191,6 +191,7 @@ function Conversation({
   const promptOnly = session === undefined || read === null
     || (read !== undefined && read.page === 0 && read.events.length === 0 && !!prompt)
   const loaded = streamed || (!isPending && !isError)
+  const empty = loaded && groups.length === 0
   const bottom = titleBar ?? (typeof footer === 'function' ? footer(session) : footer)
 
   return (
@@ -212,10 +213,12 @@ function Conversation({
                     : 'The conversation could not be read.'}
                 </p>
               )}
-              {loaded && groups.length === 0 && pages.loading === undefined && (
+              {empty && pages.fromStart && pages.loading === undefined && (
                 <p className="text-xs text-text-faint">This conversation has no messages.</p>
               )}
-              {pages.loading === 'earlier' && <PageLoading />}
+              {empty && !pages.fromStart && pages.failed
+                ? <PageFailed onRetry={pages.retry} />
+                : (pages.loading === 'earlier' || (empty && !pages.fromStart)) && <PageLoading />}
               {body}
               {pages.loading === 'later' && <PageLoading />}
             </div>

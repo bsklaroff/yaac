@@ -358,6 +358,22 @@ export function PageLoading(): JSX.Element {
   )
 }
 
+/** In place of the pages before the shown ones when there is nothing
+ *  else to show and reading them failed. */
+export function PageFailed({ onRetry }: { onRetry: () => void }): JSX.Element {
+  return (
+    <div className="my-3 flex items-center justify-center gap-2 text-xs text-text-faint">
+      The earlier pages could not be read.
+      <button
+        onClick={onRetry}
+        className="rounded bg-surface-2 px-2 py-1 text-[11px] text-text-dim transition hover:text-text"
+      >
+        Retry
+      </button>
+    </div>
+  )
+}
+
 /** The buttons over a conversation that jump to its first message or back
  *  to its latest, each shown once the reader is off that end at all. The
  *  latest is dotted while there is `unseen` activity there. Its parent must

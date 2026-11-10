@@ -362,7 +362,12 @@ at its end. Scrolling near the top reads the page before from the
 transcript route and keeps the reader where they were. The buttons over the
 conversation jump to the start, which shows the first page alone and reads
 each next one as the reader scrolls down, and back to the latest. The live
-pane follows new output only while it shows the last page.
+pane follows new output only while it shows the last page. A pane says a
+conversation has no messages only when it shows the first page: past it, an
+empty list means the page before is still to be read (an agent restart's new
+life can open on an empty last page), so the pane shows that page loading,
+or, if reading it failed, says so and offers to read it again, since a list
+with nothing in it cannot be scrolled to retry.
 
 ## Find
 
