@@ -5,6 +5,8 @@ import {
   CLAUDE_MODELS,
   EFFORTS,
   MODELS_BY_PROVIDER,
+  OMP_MODELS_BY_PROVIDER,
+  OMP_PROVIDER_DEFAULT_MODELS,
   PI_MODELS_BY_PROVIDER,
   PI_PROVIDER_DEFAULT_MODELS,
 } from '@yaac/shared/tool-providers.generated'
@@ -24,6 +26,8 @@ describe('modelsForTool', () => {
       .toEqual((MODELS_BY_PROVIDER['anthropic'] ?? []).map((m) => `anthropic/${m}`))
     expect(modelsForTool('pi', 'anthropic').map((m) => m.id))
       .toEqual((PI_MODELS_BY_PROVIDER['anthropic'] ?? []).map((m) => `anthropic/${m}`))
+    expect(modelsForTool('omp', 'anthropic').map((m) => m.id))
+      .toEqual((OMP_MODELS_BY_PROVIDER['anthropic'] ?? []).map((m) => `anthropic/${m}`))
     // No credential, no provider — nothing to offer.
     expect(modelsForTool('opencode', undefined)).toEqual([])
   })
@@ -70,6 +74,12 @@ describe('defaultModelFor', () => {
 
   it('answers pi\'s own default for its provider — what it launched with before', () => {
     expect(defaultModelFor('pi', 'anthropic')).toBe(PI_PROVIDER_DEFAULT_MODELS['anthropic'])
+  })
+
+  it('answers omp\'s own default for its provider, openrouter when it has none', () => {
+    expect(defaultModelFor('omp', 'anthropic')).toBe(OMP_PROVIDER_DEFAULT_MODELS['anthropic'])
+    expect(defaultModelFor('omp', undefined)).toBe(OMP_PROVIDER_DEFAULT_MODELS['openrouter'])
+    expect(isCatalogModel('omp', defaultModelFor('omp', 'anthropic'))).toBe(true)
   })
 
   it('borrows pi\'s default for opencode where opencode lists it, else its provider\'s newest', () => {

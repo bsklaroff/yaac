@@ -91,7 +91,7 @@ import {
   type StoppedWorkspaceEntry,
   type WorkspaceListEntry,
 } from '@yaac/shared/types'
-import { loadToolAuthEntry, modelsForTool } from '#domain/auth'
+import { authEntryEndpoint, authEntryProvider, loadToolAuthEntry, modelsForTool } from '#domain/auth'
 import { listProjectWorkflows, showWorkflow } from '#domain/projects'
 import { agentDriver, resolveAgentPermissionMode } from '#runtime/agents'
 import { liveAgents } from '#runtime/status'
@@ -1723,10 +1723,8 @@ async function runModels(caller: MamaCaller): Promise<MamaOutcome> {
       lines.push(`${tool.padEnd(9)} not configured — its agent cannot authenticate`)
       continue
     }
-    const provider = 'opencodeProvider' in auth ? auth.opencodeProvider
-      : 'piProvider' in auth ? auth.piProvider
-      : undefined
-    const endpoint = 'endpoint' in auth ? auth.endpoint : undefined
+    const provider = authEntryProvider(auth)
+    const endpoint = authEntryEndpoint(auth)
     // Each model's effort levels follow it, its default starred.
     const models = modelsForTool(tool, provider, endpoint).map((m) => {
       const efforts = m.efforts !== undefined

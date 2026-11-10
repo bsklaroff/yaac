@@ -124,19 +124,22 @@ describe('signInTool', () => {
 
   it('stores a custom endpoint, with or without a key, and hands the proxy its host', async () => {
     installFakeWorkspaceDriver({ kind: 'k8s' })
-    const synced: Array<Record<string, { opencode: unknown; pi: unknown }>> = []
+    const synced: Array<Record<string, { opencode: unknown; pi: unknown; omp: unknown }>> = []
     workspaceDriver().syncCredentials = (bundles) => { synced.push(bundles); return Promise.resolve() }
     const endpoint = { baseUrl: 'http://box.tail1234.ts.net:8080/v1', models: ['llama'] }
     const tls = { baseUrl: 'https://llm.example.com/v1', models: ['llama'] }
 
     await signInTool(ME, 'opencode', { kind: 'api-key', apiKey: '', provider: 'custom', endpoint })
     await signInTool(ME, 'pi', { kind: 'api-key', apiKey: 'sk-self', provider: 'custom', endpoint: tls })
+    await signInTool(ME, 'omp', { kind: 'api-key', apiKey: '', provider: 'custom', endpoint })
 
     expect(await loadToolAuthEntry(ME, 'opencode')).toMatchObject({ apiKey: '', opencodeProvider: 'custom', endpoint })
     expect(await loadToolAuthEntry(ME, 'pi')).toMatchObject({ apiKey: 'sk-self', piProvider: 'custom', endpoint: tls })
+    expect(await loadToolAuthEntry(ME, 'omp')).toMatchObject({ apiKey: '', ompProvider: 'custom', endpoint })
     expect(synced.at(-1)?.install).toMatchObject({
       opencode: { provider: 'custom', apiKey: '', endpoint },
       pi: { provider: 'custom', apiKey: 'sk-self', endpoint: tls },
+      omp: { provider: 'custom', apiKey: '', endpoint },
     })
 
     // A key the proxy would never send over plain HTTP is refused on a

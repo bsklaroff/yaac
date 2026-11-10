@@ -27,6 +27,7 @@ import {
   opencodeCheckpointDir,
   opencodeConfigDir,
   opencodeDataDir,
+  ompDir,
   piDir,
   cachedPackagesDir,
   cacheVolumeDir,
@@ -51,10 +52,11 @@ import { readLock } from '@yaac/shared/lock'
 import {
   PLACEHOLDER_API_KEY,
   PLACEHOLDER_GH_TOKEN,
+  PLACEHOLDER_OMP_API_KEY,
   PLACEHOLDER_OPENCODE_API_KEY,
   PLACEHOLDER_PI_API_KEY,
 } from '@yaac/shared/tool-auth'
-import { NO_CREDENTIALS_OWNER_KEY, credentialOwnerKey, defaultModelFor, isCatalogModel, loadToolAuthEntry, modelEfforts, seedProjectToolHome } from '#domain/auth'
+import { NO_CREDENTIALS_OWNER_KEY, authEntryEndpoint, authEntryProvider, credentialOwnerKey, defaultModelFor, isCatalogModel, loadToolAuthEntry, modelEfforts, seedProjectToolHome } from '#domain/auth'
 import {
   createCheckout,
   getDefaultBranch,
@@ -64,7 +66,7 @@ import {
 } from '#domain/git'
 import { serverLog } from '#lib/log'
 import type { AcpConversation } from '#runtime/agents'
-import { AgentLaunchDeadError, buildWindowsExec, ensureAgentReporters, ensureToolApiKeyConfig, finishSetupCommand, verifyAgentWindowAlive, whenAcpConversation, openSandboxDir } from '#runtime/agents'
+import { AgentLaunchDeadError, buildWindowsExec, ensureAgentReporters, ensureOmpSettings, ensureToolApiKeyConfig, finishSetupCommand, verifyAgentWindowAlive, whenAcpConversation, openSandboxDir } from '#runtime/agents'
 import {
   applyWorkspaceEvent,
   getGitIdentity,
@@ -128,6 +130,7 @@ import {
 } from '@yaac/shared/types'
 import {
   opencodeProviderInfo,
+  ompProviderInfo,
   piProviderInfo,
   toolApiKeyEnvVar,
 } from '@yaac/shared/tool-providers'
@@ -148,6 +151,8 @@ const OPENCODE_CONFIG_CONTAINER_DIR = '/home/yaac/.config/opencode'
  *  Per-workspace history, kept outside the shared home so a pod can mount it
  *  as-is. */
 const PI_SESSIONS_CONTAINER_DIR = '/home/yaac/.yaac-pi-sessions'
+/** In-pod omp home, where the project's shared `ompDir` is mounted. */
+const OMP_CONTAINER_HOME = '/home/yaac/.omp'
 /** Where codex keeps its sqlite state (CODEX_SQLITE_HOME). Per workspace,
  *  outside the shared home, like pi's sessions. */
 const CODEX_SQLITE_CONTAINER_DIR = '/home/yaac/.codex-sqlite'
@@ -612,10 +617,8 @@ export async function resolveCreate(
   const mode = request.mode ?? remembered?.mode ?? DEFAULT_AGENT_MODE
   const driver = workspaceDriver().kind
   const auth = row && await loadToolAuthEntry(row.owner, tool)
-  const provider = auth?.tool === 'opencode' ? auth.opencodeProvider
-    : auth?.tool === 'pi' ? auth.piProvider
-    : undefined
-  const endpoint = auth?.tool === 'opencode' || auth?.tool === 'pi' ? auth.endpoint : undefined
+  const provider = authEntryProvider(auth)
+  const endpoint = authEntryEndpoint(auth)
   const fallback = resolveToolCreateDefaults({
     driver,
     tool,
@@ -958,6 +961,7 @@ export async function createWorkspace(
     const opencodeCheckpoint = opencodeCheckpointDir(projectId, workspaceId)
     const opencodeConfig = opencodeConfigDir(projectId)
     const pi = piDir(projectId)
+    const omp = ompDir(projectId)
     const cachedPackages = cachedPackagesDir(projectId)
     // acpd's conversation records. Kept under the project dir (which
     // teardown does not prune) so the server can read them after the pod is
@@ -994,20 +998,21 @@ export async function createWorkspace(
     // it directly. Node-local dirs (`opencodeData`, `cachedPackages`) may not
     // be reachable from here; the driver creates them where the workspace
     // runs.
-    const [claudeAuth, codexAuth, opencodeAuth, piAuth] = await Promise.all([
+    const [claudeAuth, codexAuth, opencodeAuth, piAuth, ompAuth] = await Promise.all([
       loadToolAuthEntry(owner, 'claude'),
       loadToolAuthEntry(owner, 'codex'),
       loadToolAuthEntry(owner, 'opencode'),
       loadToolAuthEntry(owner, 'pi'),
+      loadToolAuthEntry(owner, 'omp'),
       ...[
-        claude, codex, opencodeConfig, opencodeCheckpoint, pi, attachments,
+        claude, codex, opencodeConfig, opencodeCheckpoint, pi, omp, attachments,
         acpLogs, terminalLogs,
         ...(sandboxed ? [claudeSessions] : []),
         ...cacheVolumeEntries.map(([key]) => cacheVolumeDir(projectId, key)),
       ].map((dir) => fs.mkdir(dir, { recursive: true })),
     ])
     const toolAuthByTool = {
-      claude: claudeAuth, codex: codexAuth, opencode: opencodeAuth, pi: piAuth,
+      claude: claudeAuth, codex: codexAuth, opencode: opencodeAuth, pi: piAuth, omp: ompAuth,
     }
     // The api-key-only tools' providers (`#runtime/agents` tool-api-keys).
     const keyProviders = {
@@ -1015,6 +1020,7 @@ export async function createWorkspace(
         ? { opencode: { ...opencodeProviderInfo(opencodeAuth.opencodeProvider), endpoint: opencodeAuth.endpoint } }
         : {}),
       ...(piAuth?.kind === 'api-key' ? { pi: { ...piProviderInfo(piAuth.piProvider), endpoint: piAuth.endpoint } } : {}),
+      ...(ompAuth?.kind === 'api-key' ? { omp: { ...ompProviderInfo(ompAuth.ompProvider), endpoint: ompAuth.endpoint } } : {}),
     }
 
     // The rest at once, since each writes files of its own (claude's
@@ -1033,20 +1039,23 @@ export async function createWorkspace(
         // and its trusted roots as the agent will see them. The homes are
         // writable by the workspace, so writes go through a sandboxed dir
         // handle that replaces a planted symlink rather than following it.
-        const [claudeHome, codexHome, piHome, opencodeConfigHome] = await Promise.all([
+        const [claudeHome, codexHome, piHome, ompHome, opencodeConfigHome] = await Promise.all([
           openSandboxDir(projectId, claude), openSandboxDir(projectId, codex),
-          openSandboxDir(projectId, pi), openSandboxDir(projectId, opencodeConfig),
+          openSandboxDir(projectId, pi), openSandboxDir(projectId, omp),
+          openSandboxDir(projectId, opencodeConfig),
         ])
-        const [, , , keys] = await Promise.all([
+        const [, , , , keys] = await Promise.all([
           (sandboxed ? Promise.resolve(['/workspace']) : withResolved([wtDir]))
             .then((roots) => seedClaudeJson(claudeHome, roots)),
           seedClaudeSettings(claudeHome, { denyWorktrees: runtime.kind !== 'containerless' }),
           // The reporters that publish each agent's conversation, model and
           // mode on its pane. Best-effort: agents still run without them.
-          ensureAgentReporters({ claude: claudeHome, codex: codexHome, pi: piHome, opencodeConfig: opencodeConfigHome })
+          ensureAgentReporters({ claude: claudeHome, codex: codexHome, pi: piHome, omp: ompHome, opencodeConfig: opencodeConfigHome })
             .catch(() => {}),
-          // Not best-effort: without it opencode and pi find no key.
-          ensureToolApiKeyConfig({ opencodeConfig: opencodeConfigHome, pi: piHome }, keyProviders),
+          // Not best-effort: omp would open its setup wizard at launch.
+          ensureOmpSettings(ompHome),
+          // Not best-effort: without it opencode, pi and omp find no key.
+          ensureToolApiKeyConfig({ opencodeConfig: opencodeConfigHome, pi: piHome, omp: ompHome }, keyProviders),
         ])
         return keys.opencodeConfigFile
       })(),
@@ -1085,7 +1094,7 @@ export async function createWorkspace(
     return {
       toolAuthByTool, keyProviders, opencodeConfigFile, sshKnownHostsFile, cacheVolumeEntries,
       builtinSkillsStaging, builtinSkillNames, workspaceBinStaging, workspaceBinNames,
-      claude, codex, opencodeData, opencodeCheckpoint, opencodeConfig, pi,
+      claude, codex, opencodeData, opencodeCheckpoint, opencodeConfig, pi, omp,
       cachedPackages, acpLogs, terminalLogs, attachments, claudeSessions,
     }
   })()
@@ -1098,7 +1107,7 @@ export async function createWorkspace(
   const {
     toolAuthByTool, keyProviders, opencodeConfigFile, sshKnownHostsFile, cacheVolumeEntries,
     builtinSkillsStaging, builtinSkillNames, workspaceBinStaging, workspaceBinNames,
-    claude, codex, opencodeData, opencodeCheckpoint, opencodeConfig, pi,
+    claude, codex, opencodeData, opencodeCheckpoint, opencodeConfig, pi, omp,
     cachedPackages, acpLogs, terminalLogs, attachments, claudeSessions,
   } = prep
 
@@ -1183,10 +1192,13 @@ export async function createWorkspace(
     env.push(`OPENAI_API_KEY=${apiKeyFor(toolAuthByTool.codex.apiKey)}`)
     secretEnvKeys.push('OPENAI_API_KEY')
   }
-  // opencode and pi are api-key only, and read their key from a variable of
-  // their own that their config names (`ensureToolApiKeyConfig` above). A
-  // keyless custom endpoint gets no variable, so no placeholder reaches it.
-  for (const [tool, placeholder] of [['opencode', PLACEHOLDER_OPENCODE_API_KEY], ['pi', PLACEHOLDER_PI_API_KEY]] as const) {
+  // opencode, pi and omp are api-key only, and read their key from a
+  // variable of their own that their config names (`ensureToolApiKeyConfig`
+  // above). A keyless custom endpoint gets no variable, so no placeholder
+  // reaches it.
+  for (const [tool, placeholder] of [
+    ['opencode', PLACEHOLDER_OPENCODE_API_KEY], ['pi', PLACEHOLDER_PI_API_KEY], ['omp', PLACEHOLDER_OMP_API_KEY],
+  ] as const) {
     const auth = toolAuthByTool[tool]
     const provider = keyProviders[tool]
     if (auth?.kind !== 'api-key' || !provider || auth.apiKey === '') continue
@@ -1226,13 +1238,16 @@ export async function createWorkspace(
   // launch.ts) and clears any host value (`TOOL_HOME_VARS`). The exact string
   // matters: claude names its macOS Keychain item after a hash of it.
   // opencode has no such variable. Pi's version check is skipped so a fresh
-  // workspace does not stall on a network probe.
+  // workspace does not stall on a network probe. omp reads pi's variables,
+  // so its agent dir gets a name of its own, which the installed `omp` (a
+  // wrapper, dockerfiles/agent-patches/omp-homes.js) hands it under pi's.
   env.push(`CLAUDE_CONFIG_DIR=${CLAUDE_CONTAINER_HOME}`)
   env.push(`CODEX_HOME=${CODEX_CONTAINER_HOME}`)
   env.push(`PI_CODING_AGENT_DIR=${PI_CONTAINER_HOME}/agent`)
   env.push(`PI_CODING_AGENT_SESSION_DIR=${PI_SESSIONS_CONTAINER_DIR}`)
   env.push(`CODEX_SQLITE_HOME=${CODEX_SQLITE_CONTAINER_DIR}`)
   env.push('PI_SKIP_VERSION_CHECK=1')
+  env.push(`YAAC_OMP_AGENT_DIR=${OMP_CONTAINER_HOME}/agent`)
   // Containerless: one pnpm store per project, so each workspace's
   // `node_modules` hardlinks into it instead of holding a full copy. Set
   // under both names since pnpm 11+ reads only `pnpm_config_` and 10.x only
@@ -1298,7 +1313,8 @@ export async function createWorkspace(
     ...opencodeMounts,
     { source: { kind: 'hostPath', path: opencodeConfig }, mountPath: OPENCODE_CONFIG_CONTAINER_DIR },
     { source: { kind: 'hostPath', path: pi }, mountPath: PI_CONTAINER_HOME },
-    // Per-workspace history. These two are outside every tool home, so both
+    { source: { kind: 'hostPath', path: omp }, mountPath: OMP_CONTAINER_HOME },
+    // Per-workspace history. These are outside every tool home, so both
     // drivers can mount them as-is.
     { source: { kind: 'hostPath', path: history('codex-sqlite') }, mountPath: CODEX_SQLITE_CONTAINER_DIR },
     { source: { kind: 'hostPath', path: history('pi') }, mountPath: PI_SESSIONS_CONTAINER_DIR },
@@ -1316,6 +1332,9 @@ export async function createWorkspace(
         { source: { kind: 'hostPath' as const, path: history('claude-file-history') }, mountPath: `${CLAUDE_CONTAINER_HOME}/file-history` },
         { source: { kind: 'hostPath' as const, path: claudeSessions }, mountPath: `${CLAUDE_CONTAINER_HOME}/sessions` },
         { source: { kind: 'hostPath' as const, path: history('codex') }, mountPath: `${CODEX_CONTAINER_HOME}/sessions` },
+        // omp keeps its logs where its acp server finds a conversation to
+        // load: under its agent dir, never a session dir it is handed.
+        { source: { kind: 'hostPath' as const, path: history('omp') }, mountPath: `${OMP_CONTAINER_HOME}/agent/sessions` },
       ]
       : []),
     // Containerless only: the project's pnpm store (see the env above).

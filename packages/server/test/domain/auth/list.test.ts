@@ -41,6 +41,7 @@ describe('listAuth', () => {
     await setToolCredential(BUILT_IN_USER_ID, 'codex', { kind: 'api-key', savedAt: 'x', apiKey: 'shrt' })
     await setToolCredential(BUILT_IN_USER_ID, 'opencode', { kind: 'api-key', provider: 'neuralwatt', savedAt: 'x', apiKey: 'nw-secret-key' })
     await setToolCredential(BUILT_IN_USER_ID, 'pi', { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'pi-secret-key' })
+    await setToolCredential(BUILT_IN_USER_ID, 'omp', { kind: 'api-key', provider: 'anthropic', savedAt: 'x', apiKey: 'omp-secret-key' })
     // Another user's sign-ins are not the caller's.
     const bob = await seeTailnetUser('bob@example.com', 'Bob')
     await setToolCredential(bob, 'claude', { kind: 'api-key', savedAt: 'x', apiKey: 'sk-bob' })
@@ -64,6 +65,7 @@ describe('listAuth', () => {
       expect.objectContaining({ tool: 'codex', kind: 'api-key', keyPreview: '****' }),
       expect.objectContaining({ tool: 'opencode', kind: 'api-key', opencodeProvider: 'neuralwatt' }),
       expect.objectContaining({ tool: 'pi', kind: 'api-key', piProvider: 'openrouter' }),
+      expect.objectContaining({ tool: 'omp', kind: 'api-key', ompProvider: 'anthropic', keyPreview: '***-key' }),
     ])
     // Each provider field appears only on its own tool's entry.
     expect(result.toolAuth[2]).toMatchObject({ piProvider: undefined })

@@ -1,6 +1,6 @@
 /**
  * Code-generate the api-key provider tables for the api-key-only agent tools
- * (`opencode` and `pi`) by reading each tool's own provider registry, so yaac
+ * (`opencode`, `pi` and `omp`) by reading each tool's own provider registry, so yaac
  * can offer every provider they support without hand-maintaining a list.
  *
  * Run with:  pnpm gen:providers
@@ -17,9 +17,13 @@
  *     (id/label/baseUrl), findEnvKeys() (env var per provider), and
  *     pi-coding-agent's defaultModelPerProvider map, read by importing pi's
  *     compiled modules.
+ *   - omp: the installed @oh-my-pi/pi-coding-agent's catalog packages
+ *     (`pi-catalog`, `pi-ai`), which ship TypeScript that only bun runs, so
+ *     they are read by a bun child (`OMP_REGISTRY_SCRIPT`): provider entries
+ *     (env vars, default model), bundled models (host, name, efforts).
  *   - effort levels: each tool's own catalog. claude's model table is read
  *     from its binary, codex's from `codex debug models --bundled`, pi's from
- *     pi-ai, and opencode's variants from a private `opencode serve`. The
+ *     pi-ai, omp's from its catalog, and opencode's variants from a private `opencode serve`. The
  *     claude catalog also drops models the pinned claude does not know.
  *
  * Only api-key providers with a single fixed https host are emitted.
@@ -27,8 +31,8 @@
  * per-account gateways) can't be pinned to one host for the proxy's key
  * swap, so they are skipped and logged. OAuth-only providers are skipped too.
  *
- * Needs network access to models.dev and the pinned claude, codex, opencode
- * and pi on PATH (`AGENT_CLIS`; a mismatch stops the run). Run it when
+ * Needs network access to models.dev and the pinned claude, codex, opencode,
+ * pi and omp (with bun) on PATH (`AGENT_CLIS`; a mismatch stops the run). Run it when
  * bumping any of them; it is not part of `pnpm build`. A source whose
  * output can't be trusted (claude's table changed layout, an empty codex
  * catalog) stops the run without writing.
@@ -49,7 +53,7 @@ interface ProviderRow {
   label: string
   envVar: string
   apiHost: string
-  /** pi only: `pi --model <provider>/<id>` default. */
+  /** pi and omp only: `--model <provider>/<id>` default. */
   defaultModel?: string
 }
 
@@ -355,7 +359,122 @@ interface ModelEfforts {
 /** The claude catalog and every tool's per-model effort table. */
 interface EffortTables {
   claudeModels: string[]
-  efforts: Record<'claude' | 'codex' | 'opencode' | 'pi', Record<string, ModelEfforts>>
+  efforts: Record<'claude' | 'codex' | 'opencode' | 'pi' | 'omp', Record<string, ModelEfforts>>
+}
+
+// ── omp: installed @oh-my-pi/pi-coding-agent, read under bun ────────────
+
+/**
+ * Prints omp's providers and their bundled models as JSON. omp's packages
+ * are TypeScript using bun APIs, so this runs as `bun --eval` with the
+ * package root in `OMP_ROOT`, rather than being imported here.
+ */
+const OMP_REGISTRY_SCRIPT = `
+const imp = (p) => import(process.env.OMP_ROOT + '/node_modules/@oh-my-pi/' + p)
+const { providerEntries } = await imp('pi-catalog/src/compat/providers.ts')
+const { authProviders } = await imp('pi-catalog/src/compat/auth.ts')
+const { getBundledModels } = await imp('pi-catalog/src/models.ts')
+const { getSupportedEfforts, clampThinkingLevelForModel } = await imp('pi-catalog/src/model-thinking.ts')
+const names = Object.fromEntries(authProviders().map((a) => [a.id, a.name]))
+console.log(JSON.stringify(Object.values(providerEntries()).map((e) => ({
+  id: e.id, name: names[e.id], envVars: e.envVars ?? [], defaultModel: e.defaultModel,
+  models: getBundledModels(e.id).map((m) => ({
+    id: m.id, name: m.name, baseUrl: m.baseUrl,
+    efforts: m.reasoning ? getSupportedEfforts(m) : [],
+    default: m.reasoning ? clampThinkingLevelForModel(m, 'high') : undefined,
+  })),
+}))))
+`
+
+interface OmpProvider {
+  id: string
+  name?: string
+  envVars: string[]
+  defaultModel?: string
+  models: { id: string; name?: string; baseUrl?: string; efforts: string[]; default?: string }[]
+}
+
+function ompPackageRoot(): string {
+  const npmRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf8' }).trim()
+  const root = path.join(npmRoot, '@oh-my-pi', 'pi-coding-agent')
+  if (!fs.existsSync(root)) {
+    throw new Error(
+      `omp is not installed globally (looked in ${root}). Install it with ` +
+      '`npm i -g @oh-my-pi/pi-coding-agent bun` before regenerating.',
+    )
+  }
+  requirePinned('omp', pkgVersion(root))
+  return root
+}
+
+let ompRegistry: OmpProvider[] | undefined
+function readOmpRegistry(): OmpProvider[] {
+  ompRegistry ??= JSON.parse(execFileSync('bun', ['--eval', OMP_REGISTRY_SCRIPT], {
+    encoding: 'utf8',
+    env: { ...process.env, OMP_ROOT: ompPackageRoot() },
+    maxBuffer: 256 * 1024 * 1024,
+  })) as OmpProvider[]
+  return ompRegistry
+}
+
+/**
+ * omp's api-key providers. The host is the default model's (every bundled
+ * model of a provider shares it). Skipped: a provider that takes an OAuth
+ * token, which is a subscription login, and one whose URL needs the user's
+ * account filled in (`<account>`, `{region}`, a `.invalid` stand-in host).
+ */
+function buildOmpRows(db: Record<string, ModelsDevProvider>): ProviderRow[] {
+  const rows: ProviderRow[] = []
+  const skipped: string[] = []
+  for (const p of readOmpRegistry()) {
+    if (p.envVars.some((v) => /OAUTH/i.test(v))) { skipped.push(`${p.id} (oauth)`); continue }
+    const envVar = pickEnvVar(p.envVars)
+    if (!envVar) { skipped.push(`${p.id} (no api-key env var)`); continue }
+    const url = (p.models.find((m) => m.id === p.defaultModel) ?? p.models[0])?.baseUrl ?? ''
+    const host = /[<{]/.test(url) ? null : hostFromUrl(url)
+    if (!host || host.endsWith('.invalid')) { skipped.push(`${p.id} (no fixed host)`); continue }
+    rows.push({
+      id: p.id,
+      label: db[p.id]?.name ?? p.name ?? p.id,
+      envVar,
+      apiHost: host,
+      defaultModel: p.defaultModel ? `${p.id}/${p.defaultModel}` : undefined,
+    })
+  }
+  console.log(`  omp: ${rows.length} providers, ${skipped.length} skipped`)
+  if (skipped.length) console.log(`    skipped: ${skipped.join(', ')}`)
+  return sortRows(rows)
+}
+
+/** omp's bundled model ids per provider, like `buildPiModelsCatalog`. */
+function buildOmpModelsCatalog(): ModelsCatalog {
+  const catalog: ModelsCatalog = { ids: {}, names: {} }
+  for (const p of readOmpRegistry()) {
+    if (p.models.length === 0) continue
+    catalog.ids[p.id] = p.models.map((m) => m.id).sort()
+    catalog.names[p.id] = Object.fromEntries(p.models.flatMap((m) => {
+      const name = displayName(m.name)
+      return name !== undefined ? [[m.id, name]] : []
+    }))
+  }
+  return catalog
+}
+
+/**
+ * omp's thinking levels per bundled model, with `off` first (every level
+ * `--thinking` takes), defaulting to omp's `high` clamped to the model.
+ */
+function buildOmpEfforts(): Record<string, ModelEfforts> {
+  const efforts: Record<string, ModelEfforts> = {}
+  for (const p of readOmpRegistry()) {
+    for (const m of p.models) {
+      if (m.efforts.length === 0 || m.default === undefined) continue
+      efforts[`${p.id}/${m.id}`] = { levels: ['off', ...m.efforts], default: m.default }
+    }
+  }
+  if (Object.keys(efforts).length === 0) fail('omp lists no reasoning models')
+  console.log(`  omp efforts: ${Object.keys(efforts).length} models`)
+  return efforts
 }
 
 /** Stop the run: an effort source changed shape, so its output can't be
@@ -615,6 +734,7 @@ async function buildEffortTables(
   catalog: ModelsCatalog,
   opencode: ProviderRow[],
   piModels: ModelsCatalog,
+  ompModels: ModelsCatalog,
 ): Promise<EffortTables> {
   const claude = buildClaudeCatalog(catalog.ids.anthropic ?? [])
   const codex = buildCodexEfforts(db, catalog.ids.openai ?? [])
@@ -629,6 +749,7 @@ async function buildEffortTables(
       codex,
       opencode: pickCatalog(opencodeEfforts, qualified(catalog.ids, opencode.map((r) => r.id))),
       pi: pickCatalog(pi, qualified(piModels.ids, Object.keys(piModels.ids))),
+      omp: pickCatalog(buildOmpEfforts(), qualified(ompModels.ids, Object.keys(ompModels.ids))),
     },
   }
 }
@@ -664,13 +785,13 @@ function providerRows(constName: string, typeName: string, rows: ProviderRow[]):
     + `export type ${typeName} = (typeof ${constName})[number]['id']`
 }
 
-/** pi provider id → default `provider/model` launch string (pi rows only). */
-function piDefaultModelsMap(rows: ProviderRow[]): string {
+/** Provider id → default `provider/model` launch string (pi and omp rows). */
+function defaultModelsMap(name: string, rows: ProviderRow[]): string {
   const entries = rows
     .filter((r) => r.defaultModel)
     .map((r) => `  ${JSON.stringify(r.id)}: ${JSON.stringify(r.defaultModel)},`)
     .join('\n')
-  return `export const PI_PROVIDER_DEFAULT_MODELS: Record<string, string> = {\n${entries}\n}`
+  return `export const ${name}: Record<string, string> = {\n${entries}\n}`
 }
 
 function modelNamesMap(name: string, names: Record<string, Record<string, string>>): string {
@@ -708,7 +829,7 @@ function effortTablesSource(tables: EffortTables): string {
     }
     return `EFFORT_SETS[${index.get(literal)}]`
   }
-  const tools = (['claude', 'codex', 'opencode', 'pi'] as const).map((tool) => {
+  const tools = (['claude', 'codex', 'opencode', 'pi', 'omp'] as const).map((tool) => {
     const efforts = tables.efforts[tool]
     const rows = Object.keys(efforts).sort().map((id) => `    ${JSON.stringify(id)}: ${ref(efforts[id])},`)
     return `  ${tool}: {\n${rows.join('\n')}\n  },`
@@ -719,7 +840,7 @@ const EFFORT_SETS: readonly ModelEfforts[] = [
 ${sets.map((s) => `  ${s},`).join('\n')}
 ]
 
-export const EFFORTS: Record<'claude' | 'codex' | 'opencode' | 'pi', Record<string, ModelEfforts>> = {
+export const EFFORTS: Record<'claude' | 'codex' | 'opencode' | 'pi' | 'omp', Record<string, ModelEfforts>> = {
 ${tools.join('\n')}
 }`
 }
@@ -728,8 +849,10 @@ ${tools.join('\n')}
 function generatedFile(
   opencode: ProviderRow[],
   pi: ProviderRow[],
+  omp: ProviderRow[],
   catalog: ModelsCatalog,
   piModels: ModelsCatalog,
+  ompModels: ModelsCatalog,
   efforts: EffortTables,
   header: string,
 ): string {
@@ -739,9 +862,10 @@ function generatedFile(
 ${header}
 
 /**
- * One api-key provider row for an api-key-only agent tool (opencode / pi).
- * Drives the credential picker (label), pi's key fallback (envVar), the
- * proxy key swap (apiHost), and — pi only — the launch model (defaultModel).
+ * One api-key provider row for an api-key-only agent tool (opencode, pi,
+ * omp). Drives the credential picker (label), the key fallback (envVar), the
+ * proxy key swap (apiHost), and — pi and omp only — the launch model
+ * (defaultModel).
  */
 export interface ToolProviderInfo {
   id: string
@@ -750,7 +874,7 @@ export interface ToolProviderInfo {
   envVar: string
   /** Bare hostname the egress proxy swaps the placeholder key on. */
   apiHost: string
-  /** pi only: default \`pi --model <provider>/<id>\` value. */
+  /** pi and omp only: default \`--model <provider>/<id>\` value. */
   defaultModel?: string
 }
 
@@ -758,7 +882,11 @@ ${providerRows('OPENCODE_PROVIDERS', 'OpencodeProviderId', opencode)}
 
 ${providerRows('PI_PROVIDERS', 'PiProviderId', pi)}
 
-${piDefaultModelsMap(pi)}
+${defaultModelsMap('PI_PROVIDER_DEFAULT_MODELS', pi)}
+
+${providerRows('OMP_PROVIDERS', 'OmpProviderId', omp)}
+
+${defaultModelsMap('OMP_PROVIDER_DEFAULT_MODELS', omp)}
 
 // ── Model catalogs: candidate --model values per provider ────────────────
 // Served to a workspace asking \`yaac-mama models\` so a
@@ -766,22 +894,27 @@ ${piDefaultModelsMap(pi)}
 // available to the app (e.g. a model picker). MODELS_BY_PROVIDER is models.dev's
 // tool-calling models (claude → anthropic, codex → openai, opencode → provider),
 // newest first with dated snapshots of a listed alias dropped;
-// PI_MODELS_BY_PROVIDER is pi's own registry, which differs from models.dev.
+// PI_MODELS_BY_PROVIDER and OMP_MODELS_BY_PROVIDER are pi's and omp's own
+// registries, which differ from models.dev and from each other.
 // The *_NAMES maps carry each registry's display name for an id.
 
 ${modelsCatalogMap('MODELS_BY_PROVIDER', catalog.ids)}
 
 ${modelsCatalogMap('PI_MODELS_BY_PROVIDER', piModels.ids)}
 
+${modelsCatalogMap('OMP_MODELS_BY_PROVIDER', ompModels.ids)}
+
 ${modelNamesMap('MODEL_NAMES', catalog.names)}
 
 ${modelNamesMap('PI_MODEL_NAMES', piModels.names)}
+
+${modelNamesMap('OMP_MODEL_NAMES', ompModels.names)}
 
 // ── Effort levels: each tool's own per-model levels and default ─────────
 // docs/effort-levels.md. CLAUDE_MODELS is the claude catalog: models.dev's
 // anthropic list, minus models the pinned claude's model table lacks. EFFORTS
 // is keyed like the catalogs (bare ids for claude and codex, provider/model
-// for opencode and pi); a model with no entry has no effort setting.
+// for opencode, pi and omp); a model with no entry has no effort setting.
 
 /** One model's effort levels, in the tool's own words, and its default. */
 export interface ModelEfforts {
@@ -799,7 +932,9 @@ async function main(): Promise<void> {
   const [pi, piModels] = await Promise.all([buildPiRows(), buildPiModelsCatalog()])
   const catalog = buildModelsCatalog(db)
   const opencode = buildOpencodeRows(db, catalog.ids)
-  const efforts = await buildEffortTables(db, catalog, opencode, piModels)
+  const omp = buildOmpRows(db)
+  const ompModels = buildOmpModelsCatalog()
+  const efforts = await buildEffortTables(db, catalog, opencode, piModels, ompModels)
 
   const piRoot = piPackageRoot()
   const opencodeVer = (() => {
@@ -813,9 +948,10 @@ async function main(): Promise<void> {
   })()
   const header = `// Sources: opencode → models.dev (@opencode/cli ${opencodeVer}); ` +
     `pi → @earendil-works/pi-coding-agent ${pkgVersion(piRoot)}; ` +
+    `omp → @oh-my-pi/pi-coding-agent ${pkgVersion(ompPackageRoot())}; ` +
     `efforts → claude ${AGENT_CLIS.claude.version}, codex ${AGENT_CLIS.codex.version} and the above.`
 
-  const content = generatedFile(opencode, pi, catalog, piModels, efforts, header)
+  const content = generatedFile(opencode, pi, omp, catalog, piModels, ompModels, efforts, header)
   const sharedPath = path.join(REPO_ROOT, 'packages', 'shared', 'src', 'tool-providers.generated.ts')
   fs.writeFileSync(sharedPath, content)
   console.log(`Wrote ${path.relative(REPO_ROOT, sharedPath)}`)

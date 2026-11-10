@@ -80,12 +80,13 @@ export type ProxyCredentials = {
   codex: CodexCreds | null
   opencode: ApiKeyCreds | null
   pi: ApiKeyCreds | null
+  omp: ApiKeyCreds | null
   git: HttpsCredentialEntry[]
   ssh: SshCredentialEntry[]
 }
 
 export const EMPTY_CREDENTIALS: ProxyCredentials = {
-  claude: null, codex: null, opencode: null, pi: null, git: [], ssh: [],
+  claude: null, codex: null, opencode: null, pi: null, omp: null, git: [], ssh: [],
 }
 
 /**
@@ -362,7 +363,8 @@ function filesByOwner(secret: RawObject): Map<string, Map<string, string>> {
 
 /**
  * The credentials Secret: per owner, one key per tool's credentials file
- * (`<owner>.claude.json`, `.codex.json`, `.opencode.json`, `.pi.json`), plus
+ * (`<owner>.claude.json`, `.codex.json`, `.opencode.json`, `.pi.json`,
+ * `.omp.json`), plus
  * `<owner>.git-tokens.json` and `<owner>.ssh-keys.json`, JSON arrays of
  * project-scoped entries. A missing or malformed key means no credential of
  * that kind; a malformed entry is dropped on its own.
@@ -375,6 +377,7 @@ export function decodeCredentials(secret: RawObject): OwnerCredentials {
       codex: decodeCodex(parseJson(files.get('codex.json'))),
       opencode: decodeApiKeyTool(parseJson(files.get('opencode.json'))),
       pi: decodeApiKeyTool(parseJson(files.get('pi.json'))),
+      omp: decodeApiKeyTool(parseJson(files.get('omp.json'))),
       git: decodeGit(parseJsonArray(files.get('git-tokens.json'))),
       ssh: decodeSsh(parseJsonArray(files.get('ssh-keys.json'))),
     })

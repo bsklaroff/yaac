@@ -91,6 +91,10 @@ describe('getConversationFirstMessage', () => {
     ['pi non-user entries skipped', 'pi',
       [{ type: 'tool', name: 'bash' }, piMessage('assistant', 'thinking'), piMessage('user', 'the real prompt')],
       'the real prompt'],
+    // omp keeps pi's entries, under a title slot.
+    ['omp, past its title slot', 'omp',
+      [{ type: 'title', v: 1, title: 'Fix login', pad: '   ' }, { type: 'session', version: 3 },
+        piMessage('user', [{ type: 'text', text: 'fix the login bug' }])], 'fix the login bug'],
   ]
 
   it.each(cases)('reads %s', async (_name, tool, entries, expected) => {
@@ -196,12 +200,23 @@ describe('getConversationTitle', () => {
   it('has no title for pi, which titles nothing', async () => {
     expect(await getConversationTitle('pi', src('p-1', await jsonl('pi.jsonl', [aiTitle('Not pi')])))).toBeUndefined()
   })
+
+  it("reads omp's title from its log's first line, and none while the slot is empty", async () => {
+    const titled = await jsonl('omp.jsonl', [
+      { type: 'title', v: 1, title: 'Fix the login bug', source: 'auto', pad: '      ' },
+      { type: 'session', version: 3, id: 'o-1' },
+    ])
+    expect(await getConversationTitle('omp', src('o-1', titled))).toBe('Fix the login bug')
+    const untitled = await jsonl('omp-new.jsonl', [{ type: 'title', v: 1, title: '', pad: '   ' }, { type: 'session', version: 3 }])
+    expect(await getConversationTitle('omp', src('o-2', untitled))).toBeUndefined()
+    expect(await getConversationTitle('omp', src('o-3'))).toBeUndefined()
+  })
 })
 
 describe('agentTitlesItself', () => {
   it('is every tool with a title store but pi', () => {
-    expect(['claude', 'codex', 'opencode', 'pi'].map((t) => agentTitlesItself(t as AgentTool)))
-      .toEqual([true, true, true, false])
+    expect(['claude', 'codex', 'opencode', 'pi', 'omp'].map((t) => agentTitlesItself(t as AgentTool)))
+      .toEqual([true, true, true, false, true])
   })
 })
 
@@ -235,6 +250,17 @@ describe('resolveAgentPermissionMode', () => {
     // Neither plan with looser rules nor a project's own agent is a posture.
     expect(resolveAgentPermissionMode('tui', 'opencode', 'plan', 'bypass')).toBeUndefined()
     expect(resolveAgentPermissionMode('tui', 'opencode', 'reviewer', 'manual')).toBeUndefined()
+  })
+
+  // omp's plan mode sits on the launch's approval mode, which plan and
+  // manual share; acp reads its session modes.
+  it('reads an omp mode against the approval mode the workspace runs under', () => {
+    expect(resolveAgentPermissionMode('tui', 'omp', 'default', 'plan')).toBe('manual')
+    expect(resolveAgentPermissionMode('tui', 'omp', 'plan', 'manual')).toBe('plan')
+    expect(resolveAgentPermissionMode('tui', 'omp', 'default', 'accept-edits')).toBe('accept-edits')
+    expect(resolveAgentPermissionMode('tui', 'omp', 'plan', 'bypass')).toBeUndefined()
+    expect(resolveAgentPermissionMode('acp', 'omp', 'plan', 'bypass')).toBe('plan')
+    expect(resolveAgentPermissionMode('acp', 'omp', 'default', 'plan')).toBeUndefined()
   })
 
   it('reads nothing from a tool that reports no mode on its pane', () => {

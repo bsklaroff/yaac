@@ -37,10 +37,10 @@ and accept that model; if not, say so and stop — never silently fall back,
 since an unauthed tool spawns fine and *then* fails to authenticate, which
 looks like a hung review rather than a misconfiguration. A **tool omitted** is
 resolved to the authed tools whose model list has that id: none → stop and
-show near matches (ids are easy to typo, and `opencode`/`pi` use
+show near matches (ids are easy to typo, and `opencode`/`pi`/`omp` use
 `provider/model` while `claude`/`codex` use bare ids); one → use it; several →
 prefer this workspace's tool (the listing marks it), then `claude`, `codex`,
-`opencode`, `pi`, and say it was available on more than one.
+`opencode`, `pi`, `omp`, and say it was available on more than one.
 
 Use the same reviewer for every PR unless the user changes it.
 

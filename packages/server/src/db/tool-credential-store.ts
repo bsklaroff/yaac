@@ -8,6 +8,7 @@ import { serverLog } from '#lib/log'
 import {
   claudeCredentialsFileSchema,
   codexCredentialsFileSchema,
+  ompCredentialsFileSchema,
   opencodeCredentialsFileSchema,
   piCredentialsFileSchema,
   type AgentTool,
@@ -29,9 +30,10 @@ const schemas: { [T in AgentTool]: z.ZodType<ToolCredential<T>> } = {
   codex: codexCredentialsFileSchema,
   opencode: opencodeCredentialsFileSchema,
   pi: piCredentialsFileSchema,
+  omp: ompCredentialsFileSchema,
 }
 
-const EMPTY_BUNDLE: ToolCredentialBundle = { claude: null, codex: null, opencode: null, pi: null }
+const EMPTY_BUNDLE: ToolCredentialBundle = { claude: null, codex: null, opencode: null, pi: null, omp: null }
 
 async function open<T extends AgentTool>(tool: T, sealed: string): Promise<ToolCredential<T> | null> {
   let reason: string

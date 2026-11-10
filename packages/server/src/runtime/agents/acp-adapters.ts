@@ -13,18 +13,20 @@ import { ACP_ADAPTERS, launchablePermissionMode, type AgentTool, type Permission
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import { envJsonAssignment } from '#lib/shell'
 import { claudeModelArg, opencodeConfigArg } from './agent-command'
+import { ompLaunchArgs } from './omp'
 import { CLAUDE_SESSION_META, CODEX_CAPABILITIES_META, OPENCODE_CAPABILITIES_META } from './acp-protocol'
 import { type AcpSessionProfile } from './acp-client'
 import type { AgentLaunchSpec } from './drivers'
 
 export interface AcpAdapterProfile extends AcpSessionProfile {
-  /** The command the tmux window runs, joined with spaces. Never quoted: the
-   *  launch string is embedded in a single-quoted `respawn-window '<cmd>'`. */
-  argv: string[]
+  /** The command the tmux window runs, joined with spaces. Single quotes
+   *  never: the launch string is embedded in a single-quoted
+   *  `respawn-window '<cmd>'`. */
+  argv(spec: AgentLaunchSpec): string[]
   /** `NAME=value` assignments prefixed to that command. */
   env(spec: AgentLaunchSpec): string[]
   /**
-   * How the model is set: `env` before launch, or `set_config_option` (the
+   * How the model is set: `env` (or argv) at launch, or `set_config_option` (the
    * `model` config option) after the handshake. Never `session/set_model`:
    * opencode v2 removed it and pi-acp 0.0.34 answers "Method not found",
    * while both advertise `model` in `configOptions`.
@@ -70,7 +72,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    * Its running/idle report must be asked for (`CLAUDE_SDK_MESSAGE`).
    */
   claude: {
-    argv: [ACP_ADAPTERS.claude.binary],
+    argv: () => [ACP_ADAPTERS.claude.binary],
     env: (spec) => (spec.model !== undefined ? [`ANTHROPIC_MODEL=${claudeModelArg(spec.model)}`] : []),
     modeIds: {
       bypass: 'bypassPermissions',
@@ -103,7 +105,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    * goal continuations included.
    */
   codex: {
-    argv: [ACP_ADAPTERS.codex.binary],
+    argv: () => [ACP_ADAPTERS.codex.binary],
     env: (spec) => [
       'NO_BROWSER=1',
       'CODEX_PATH=codex',
@@ -133,7 +135,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    * `session/set_model`.
    */
   opencode: {
-    argv: [ACP_ADAPTERS.opencode.binary, 'acp'],
+    argv: () => [ACP_ADAPTERS.opencode.binary, 'acp'],
     env: (spec) => [opencodeConfigArg(spec.permissionMode, undefined)],
     modeIds: { plan: 'plan' },
     modelVia: 'set_config_option',
@@ -157,11 +159,31 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    * it.
    */
   pi: {
-    argv: [ACP_ADAPTERS.pi.binary],
+    argv: () => [ACP_ADAPTERS.pi.binary],
     env: () => [],
     modeIds: {},
     modelVia: 'set_config_option',
     forwardAsksUnderBypass: true,
+    steers: true,
+  },
+
+  /**
+   * `omp acp` is built in. It takes the same flags as the TUI
+   * (`ompLaunchArgs`): the posture's approval mode, which no session mode
+   * carries, and the model, which names the provider whose key the egress
+   * proxy swaps. Its session modes are `default` and `plan`, and a session
+   * starts in `default`, so `plan` is sent as a mode. It asks with
+   * `session/request_permission` and steers with `_session/steering`.
+   */
+  omp: {
+    argv: (spec) => [
+      ACP_ADAPTERS.omp.binary, 'acp',
+      ...ompLaunchArgs(launchablePermissionMode('omp', spec.permissionMode), spec.model),
+    ],
+    env: () => [],
+    modeIds: { plan: 'plan' },
+    modelVia: 'env',
+    forwardAsksUnderBypass: false,
     steers: true,
   },
 }

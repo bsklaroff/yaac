@@ -5,6 +5,7 @@ import {
   ACP_ADAPTERS,
   AGENT_CLIS,
   AGENT_TOOLS,
+  BUN_RUNTIME,
   customEndpointSchema,
   defaultPermissionMode,
   normalizeTool,
@@ -168,6 +169,16 @@ describe('AGENT_CLIS', () => {
     for (const platform of ['linux-x64', 'linux-arm64']) {
       expect(dockerfile).toContain(`PLATFORM=${platform} SHA256=${binarySha256[platform] ?? '(unpinned)'} `)
     }
+  })
+})
+
+describe('BUN_RUNTIME', () => {
+  it('names the bun the workspace image installs', () => {
+    const dockerfile = fs.readFileSync(
+      path.resolve(import.meta.dirname, '../../../dockerfiles/Dockerfile.tools'),
+      'utf8',
+    )
+    expect(/npm install -g bun@(\S+)/.exec(dockerfile)?.[1]).toBe(BUN_RUNTIME.version)
   })
 })
 

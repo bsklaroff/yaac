@@ -256,6 +256,15 @@ export function piDir(projectId: string): string {
 }
 
 /**
+ * GLOBAL. The project's omp home, mounted at `/home/yaac/.omp/`, like
+ * {@link piDir}. Session logs go to each workspace's own
+ * {@link agentHistoryDir}.
+ */
+export function ompDir(projectId: string): string {
+  return globalProjectPath(projectId, 'omp')
+}
+
+/**
  * GLOBAL. One workspace's agent conversation history, kept out of the
  * project's shared tool homes so other workspaces cannot delete it
  * (docs/workspace-storage.md). One subdirectory per
@@ -267,7 +276,7 @@ export function agentHistoryDir(projectId: string, workspaceId: string, part?: A
   return globalProjectPath(projectId, 'history', workspaceId, ...(part === undefined ? [] : [part]))
 }
 
-export const AGENT_HISTORY_PARTS = ['claude', 'claude-file-history', 'codex', 'codex-sqlite', 'pi'] as const
+export const AGENT_HISTORY_PARTS = ['claude', 'claude-file-history', 'codex', 'codex-sqlite', 'pi', 'omp'] as const
 export type AgentHistoryPart = typeof AGENT_HISTORY_PARTS[number]
 
 /** GLOBAL — see {@link workspaceDir}. */

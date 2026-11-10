@@ -13,20 +13,20 @@
  */
 import path from 'node:path'
 import { nodeLocalPath } from '#project-paths'
-import { ACP_ADAPTERS, AGENT_CLIS, AGENT_TOOLS } from '#types'
+import { ACP_ADAPTERS, AGENT_CLIS, AGENT_TOOLS, BUN_RUNTIME } from '#types'
 
 export interface AgentPackage {
   package: string
   version: string
   /**
    * Whether npm runs the package's lifecycle scripts. Opt-in, so no
-   * third-party script runs unreviewed. Only claude and opencode need theirs,
-   * to put their native binary in place.
+   * third-party script runs unreviewed. Only claude, opencode and bun need
+   * theirs, to put their native binary in place.
    */
   runScripts: boolean
   /**
    * A script in `dockerfiles/agent-patches/` the install runs on the package
-   * after npm, as the image build does. `revision` names the patched install
+   * after npm, as the image build does, given the path of `entry`. `revision` names the patched install
    * apart from an unpatched or older one, so bump it whenever the script
    * changes.
    */
@@ -36,19 +36,24 @@ export interface AgentPackage {
 /** Packages yaac patches after installing; see `AgentPackage.patch`. */
 const PATCHES: Record<string, AgentPackage['patch']> = {
   'pi-acp': { script: 'pi-acp.js', entry: 'dist/index.js', revision: 6 },
+  omp: { script: 'omp-homes.js', entry: 'dist/cli.js', revision: 2 },
 }
 
 /**
- * Keyed by the binary a launch execs: an agent CLI, or an ACP adapter that
- * is a separate program. opencode's adapter is its CLI (`opencode acp`).
+ * Keyed by the binary a launch execs: an agent CLI, an ACP adapter that is
+ * a separate program, or bun, which omp runs under. opencode's and omp's
+ * adapters are their CLIs (`opencode acp`, `omp acp`).
  */
 export const AGENT_PACKAGES: Record<string, AgentPackage> = Object.fromEntries([
-  ...AGENT_TOOLS.map((tool): [string, AgentPackage] =>
-    [tool, {
+  ...AGENT_TOOLS.map((tool): [string, AgentPackage] => {
+    const patch = PATCHES[tool]
+    return [tool, {
       package: AGENT_CLIS[tool].package,
       version: AGENT_CLIS[tool].version,
       runScripts: tool === 'claude' || tool === 'opencode',
-    }]),
+      ...(patch ? { patch } : {}),
+    }]
+  }),
   ...AGENT_TOOLS
     .filter((tool) => ACP_ADAPTERS[tool].binary !== tool)
     .map((tool): [string, AgentPackage] => {
@@ -56,6 +61,7 @@ export const AGENT_PACKAGES: Record<string, AgentPackage> = Object.fromEntries([
       const patch = PATCHES[binary]
       return [binary, { package: pkg, version: verified, runScripts: false, ...(patch ? { patch } : {}) }]
     }),
+  ['bun', { package: BUN_RUNTIME.package, version: BUN_RUNTIME.version, runScripts: true }],
 ])
 
 /**

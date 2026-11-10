@@ -21,6 +21,7 @@ import {
   waitForRollout,
 } from '#drivers/k8s/substrate'
 import type { CredentialBundle } from '#drivers/contract'
+import { AGENT_TOOLS } from '@yaac/shared/types'
 import { serverLog } from '#lib/log'
 import {
   buildBuilderRoleGuardBindingManifest,
@@ -201,7 +202,7 @@ export async function ensureCaConfigMap(): Promise<void> {
 export async function syncProxyCredentials(bundles: Record<string, CredentialBundle>): Promise<void> {
   await applyObject(buildProxyCredentialsSecretManifest(bundles))
   for (const [owner, bundle] of Object.entries(bundles)) {
-    const signedIn = (['claude', 'codex', 'opencode', 'pi'] as const).filter((t) => bundle[t] !== null)
+    const signedIn = AGENT_TOOLS.filter((t) => bundle[t] !== null)
     serverLog(`[server] proxy credentials of ${owner}: ${signedIn.length ? signedIn.join(', ') : 'no tools'} signed in, `
       + `${String(bundle.git.length)} git token(s), ${String(bundle.ssh.length)} ssh key(s)`)
   }

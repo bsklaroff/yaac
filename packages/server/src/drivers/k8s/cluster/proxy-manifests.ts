@@ -38,7 +38,7 @@ import {
   k8sNamespace,
 } from '#drivers/k8s/substrate'
 import { env } from '@yaac/shared/env'
-import { OPENCODE_PROVIDERS, PI_PROVIDERS, providerApiHost } from '@yaac/shared/tool-providers'
+import { OMP_PROVIDERS, OPENCODE_PROVIDERS, PI_PROVIDERS, providerApiHost } from '@yaac/shared/tool-providers'
 import type { CredentialBundle } from '#drivers/contract'
 
 /**
@@ -292,7 +292,7 @@ function assertProxyOwnerKey(owner: string): void {
  * The credentials Secret: per owner, each signed-in tool's credential file,
  * plus `git-tokens.json` (`[{token, projects}]`) and `ssh-keys.json`
  * (`[{privateKey, publicKey, projects: [{projectId, host, knownHostsEntry}]}]`),
- * each key prefixed `<owner>.`. The opencode and pi files also carry
+ * each key prefixed `<owner>.`. The opencode, pi and omp files also carry
  * `apiHost`, the provider's host the proxy swaps the key in on (a custom
  * endpoint's own host); a provider with no known host gets no file, so the
  * key goes nowhere. Replaced whole
@@ -304,7 +304,7 @@ export function buildProxyCredentialsSecretManifest(bundles: Record<string, Cred
     assertProxyOwnerKey(owner)
     if (bundle.claude) files[`${owner}.claude.json`] = JSON.stringify(bundle.claude)
     if (bundle.codex) files[`${owner}.codex.json`] = JSON.stringify(bundle.codex)
-    for (const [tool, providers] of [['opencode', OPENCODE_PROVIDERS], ['pi', PI_PROVIDERS]] as const) {
+    for (const [tool, providers] of [['opencode', OPENCODE_PROVIDERS], ['pi', PI_PROVIDERS], ['omp', OMP_PROVIDERS]] as const) {
       const file = bundle[tool]
       const apiHost = file && providerApiHost(providers, file.provider, file.endpoint)
       if (file && apiHost) files[`${owner}.${tool}.json`] = JSON.stringify({ ...file, apiHost })

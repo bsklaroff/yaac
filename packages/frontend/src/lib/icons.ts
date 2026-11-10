@@ -137,4 +137,5 @@ export const TOOL_LABEL: Record<AgentTool, string> = {
   codex: 'Codex',
   opencode: 'OpenCode',
   pi: 'Pi',
+  omp: 'Oh My Pi',
 }

@@ -142,6 +142,13 @@ describe('yaac auth (real CLI + shared server)', () => {
       expect(await stored('pi')).toMatchObject({ kind: 'api-key', piProvider: 'openrouter', keyPreview: '***-key' })
     })
 
+    it('auth fake omp-openrouter seeds a placeholder openrouter api-key', async () => {
+      const { exitCode, stderr } = await runYaac(testEnv.env, 'auth', 'fake', 'omp-openrouter')
+      expect(exitCode, stderr).toBe(0)
+
+      expect(await stored('omp')).toMatchObject({ kind: 'api-key', ompProvider: 'openrouter', keyPreview: '***-key' })
+    })
+
     it('seeds several kinds passed in one invocation (variadic)', async () => {
       const { exitCode, stdout, stderr } = await runYaac(
         testEnv.env, 'auth', 'fake', 'claude-oauth', 'opencode-openrouter',
@@ -217,7 +224,7 @@ describe('yaac auth (real CLI + shared server)', () => {
         testEnv.env, 'auth', 'update',
         {
           stdinOnPrompt: [
-            { when: /Choice \[1-5\]: /, send: '1\n' },
+            { when: /Choice \[1-6\]: /, send: '1\n' },
             { when: /Choice \[a\/b\]: /, send: 'a\n' },
             { when: /Name \[git-token\]: /, send: 'acme\n' },
             { when: /Token \(PAT\): /, send: 'ghp_test_token_xyz\n' },
@@ -238,7 +245,7 @@ describe('yaac auth (real CLI + shared server)', () => {
         testEnv.env, 'auth', 'update',
         {
           stdinOnPrompt: [
-            { when: /Choice \[1-5\]: /, send: '1\n' },
+            { when: /Choice \[1-6\]: /, send: '1\n' },
             { when: /Choice \[a\/b\]: /, send: 'a\n' },
             { when: /Name \[git-token\]: /, send: '\n' },
             { when: /Token \(PAT\): /, send: '\n' },
@@ -256,7 +263,7 @@ describe('yaac auth (real CLI + shared server)', () => {
         testEnv.env, 'auth', 'update',
         {
           stdinOnPrompt: [
-            { when: /Choice \[1-5\]: /, send: '1\n' },
+            { when: /Choice \[1-6\]: /, send: '1\n' },
             { when: /Choice \[a\/b\]: /, send: 'b\n' },
             { when: /Name \[git-key\]: /, send: '\n' },
           ],
@@ -318,7 +325,7 @@ describe('yaac auth (real CLI + shared server)', () => {
     const pasteApiKey = (choice: string, provider: string, key: string): ReturnType<typeof runYaac> =>
       runYaac(testEnv.env, 'auth', 'update', {
         stdinOnPrompt: [
-          { when: /Choice \[1-5\]: /, send: `${choice}\n` },
+          { when: /Choice \[1-6\]: /, send: `${choice}\n` },
           { when: /Provider \[openrouter\]: /, send: `${provider}\n` },
           { when: /Paste your .*API key: /, send: `${key}\n` },
         ],
@@ -354,7 +361,7 @@ describe('yaac auth (real CLI + shared server)', () => {
     it('stores a keyless custom endpoint with the URL and models typed at its prompts', async () => {
       const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'update', {
         stdinOnPrompt: [
-          { when: /Choice \[1-5\]: /, send: '5\n' },
+          { when: /Choice \[1-6\]: /, send: '5\n' },
           { when: /Provider \[openrouter\]: /, send: 'custom\n' },
           { when: /Endpoint URL .*: /, send: 'http://gpu-box.tail1234.ts.net:8080/v1\n' },
           { when: /Model ids .*: /, send: 'Qwen/Qwen3-Coder, llama\n' },
@@ -367,6 +374,13 @@ describe('yaac auth (real CLI + shared server)', () => {
         piProvider: 'custom', keyPreview: '', defaultModel: 'custom/Qwen/Qwen3-Coder',
         endpoint: { baseUrl: 'http://gpu-box.tail1234.ts.net:8080/v1', models: ['Qwen/Qwen3-Coder', 'llama'] },
       })
+    })
+
+    it('stores an Oh My Pi api key for the provider typed, apart from pi\'s', async () => {
+      const { stdout, exitCode } = await pasteApiKey('6', 'deepseek', 'sk-ds-omp-test-key')
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain('Oh My Pi credentials saved.')
+      expect(await stored('omp')).toMatchObject({ kind: 'api-key', ompProvider: 'deepseek', keyPreview: '***-key' })
     })
   })
 

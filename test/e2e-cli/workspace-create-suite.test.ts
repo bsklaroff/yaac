@@ -2376,13 +2376,13 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     }, 60_000)
 
     /**
-     * The other three adapters, using the real pinned binaries. Only the
+     * The other adapters, using the real pinned binaries. Only the
      * handshake runs: by then the launch command, the conversation id and the
      * posture are all settled. These are claims about upstream packages that a
      * version bump could break, which unit tests check only against tables.
      */
     const REAL_ADAPTERS: Array<{
-      tool: 'codex' | 'opencode' | 'pi'
+      tool: 'codex' | 'opencode' | 'pi' | 'omp'
       posture: string
       launch: string[]
       /** The mode id the adapter is told, where it has one for the posture. */
@@ -2421,6 +2421,16 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         posture: 'bypass',
         launch: ['pi-acp'],
         method: '"method":"session/set_config_option"',
+      },
+      {
+        // omp takes the TUI's flags: the approval mode, which no session mode
+        // carries, and the model. Its sessions start in `default`, so `plan`
+        // is also sent as a mode.
+        tool: 'omp',
+        posture: 'plan',
+        launch: ['omp acp', '--approval-mode always-ask'],
+        modeId: 'plan',
+        defaultModeId: 'default',
       },
     ]
 

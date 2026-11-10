@@ -24,6 +24,7 @@ docs/permission-modes.md) all read that one table:
 | codex | `codex-acp` | drives `codex app-server` (the CLI on PATH, via `CODEX_PATH`), so the CLI must be installed too |
 | opencode | `opencode acp` | a subcommand of the CLI |
 | pi | `pi-acp` | drives `pi --mode rpc`, so the CLI must be installed too; yaac's patch adds `--approve`, so pi trusts the project and loads its `.pi/` and `.agents/skills` as the TUI does |
+| omp | `omp acp` | a subcommand of the CLI (a bun script), taking the TUI's flags: the posture's approval mode and the model |
 
 How the adapters differ is described by per-tool profiles in
 `#runtime/agents/acp-adapters.ts`: the argv, the environment that carries a
@@ -184,12 +185,13 @@ read-only pane can show a stopped workspace's whole conversation.
     function its `session/load` uses) as a library over claude's transcript.
     The package the server imports must match the version
     `dockerfiles/Dockerfile.tools` installs; a unit test fails if they drift.
-  - codex, pi and opencode: their adapters export no translation, so yaac
-    carries its own (`codex-acp-replay.ts`, `pi-acp-replay.ts`,
+  - codex, pi, omp and opencode: their adapters export no translation, so
+    yaac carries its own (`codex-acp-replay.ts`, `pi-acp-replay.ts`,
     `opencode-acp-replay.ts`), written against the pinned versions and
     matching what each adapter streams live rather than its `session/load`
     replay, which is lossier. codex reads the rollout and its subagents'
-    rollouts; pi its session log; opencode its database (see
+    rollouts; pi its session log, and omp, a fork of pi that keeps pi's log
+    format, its own through the same translator; opencode its database (see
     docs/workspace-storage.md, "opencode", for how a sandboxed workspace's
     database is read without the server opening it).
   - A conversation a reader follows live (docs/multi-user.md "Following a
@@ -403,10 +405,13 @@ sends, and Stop sits beside Send. What happens to the message is the adapter
 profile's `steers` fact, matching what each tool's TUI does with a message
 typed mid-turn where its adapter allows:
 
-- **claude, codex and pi steer.** Their adapters implement the
+- **claude, codex, pi and omp steer.** Their adapters implement the
   `_session/steering` extension, which adds the message to the running turn.
   When it lands differs per adapter:
   - codex delivers it at the turn's next model call, as its TUI does.
+  - omp delivers it at the next tool batch or model call; its ACP server
+    implements the method itself and hands back a steer to an idle
+    session.
   - pi delivers it once the current tool calls finish, before the next model
     call, as Enter does in its TUI. pi-acp steers only as yaac patches it at
     install, in the image and in a host install alike
@@ -498,7 +503,8 @@ this (v2's `state_update` is still a draft), so each adapter's own is read
   and queues prompts behind it.
 - opencode's ACP server forwards nothing from a turn it did not start, not
   even its content, so such a turn never reaches the record or the pane
-  (bsklaroff/yaac#288 tracks the upstream fix).
+  (bsklaroff/yaac#288 tracks the upstream fix). omp's sends no running
+  report either.
 
 A conversation is working while either signal says so. The pane's busy
 indicator, Stop and steering follow the combination: a message sent during a

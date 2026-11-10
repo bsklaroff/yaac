@@ -10,14 +10,14 @@ import { Field } from '#components/settings/Field'
 import { filterSuggestions, Typeahead, type TypeaheadItem } from '#components/ui/Typeahead'
 import {
   CUSTOM_PROVIDER,
+  OMP_DEFAULT_PROVIDER,
+  OMP_PROVIDERS,
   OPENCODE_DEFAULT_PROVIDER,
   OPENCODE_PROVIDERS,
   PI_DEFAULT_PROVIDER,
   PI_PROVIDERS,
 } from '@yaac/shared/tool-providers'
-import { TOOL_LABELS, type AgentTool, type ToolAuthSummary, type ToolInstallView, type ToolLoginView } from '@yaac/shared/types'
-
-const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
+import { AGENT_TOOLS, TOOL_LABELS, type AgentTool, type ToolAuthSummary, type ToolInstallView, type ToolLoginView } from '@yaac/shared/types'
 
 /**
  * Provider choices for the API-key-only tools: which backend the pasted key
@@ -28,10 +28,12 @@ const providerItem = (p: { id: string; label: string }): TypeaheadItem => ({ val
 const PROVIDER_OPTIONS: Partial<Record<AgentTool, TypeaheadItem[]>> = {
   opencode: OPENCODE_PROVIDERS.map(providerItem),
   pi: PI_PROVIDERS.map(providerItem),
+  omp: OMP_PROVIDERS.map(providerItem),
 }
 const DEFAULT_PROVIDER: Partial<Record<AgentTool, string>> = {
   opencode: OPENCODE_DEFAULT_PROVIDER,
   pi: PI_DEFAULT_PROVIDER,
+  omp: OMP_DEFAULT_PROVIDER,
 }
 
 const INPUT = 'rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-xs text-text outline-none '
@@ -39,9 +41,9 @@ const INPUT = 'rounded-md border border-border bg-surface px-2.5 py-1.5 font-mon
 
 /**
  * Per-tool sign-in plus git credentials. claude and codex sign in through the
- * vendor's browser login or a pasted API key; opencode and pi take a provider
- * and an API key. Creating a workspace needs a credential for its tool, and a
- * git credential for its project.
+ * vendor's browser login or a pasted API key; opencode, pi and omp take a
+ * provider and an API key. Creating a workspace needs a credential for its
+ * tool, and a git credential for its project.
  */
 export function CredentialsPane(): JSX.Element {
   const auth = useAuthList()
@@ -56,7 +58,7 @@ export function CredentialsPane(): JSX.Element {
       <h2 className="text-sm font-semibold">Credentials</h2>
       <Field label="Agent tools" hint="Sign in to create workspaces with a tool. Keys stay on this machine — containers only ever see placeholders.">
         <div className="space-y-2 text-xs">
-          {TOOLS.map((t) => (
+          {AGENT_TOOLS.map((t) => (
             <ToolAuthRow
               key={t}
               tool={t}
@@ -72,7 +74,7 @@ export function CredentialsPane(): JSX.Element {
   )
 }
 
-/** What the key-paste input asks for, per tool (and opencode/pi provider). */
+/** What the key-paste input asks for, per tool (and api-key tool provider). */
 function apiKeyLabel(tool: AgentTool, provider: string | undefined): string {
   if (tool === 'claude') return 'Anthropic API key'
   if (tool === 'codex') return 'OpenAI API key'
@@ -178,7 +180,7 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
         <span className="truncate font-mono text-text-dim">
           {tool}
           {summary && ` · ${(() => {
-            const p = summary.opencodeProvider ?? summary.piProvider
+            const p = summary.opencodeProvider ?? summary.piProvider ?? summary.ompProvider
             return p ? `${p} · ` : ''
           })()}${summary.kind}`}
         </span>

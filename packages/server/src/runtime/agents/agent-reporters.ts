@@ -1,12 +1,13 @@
 import type { ConfinedRoot } from '#lib/confined-fs'
 import { PI_MESSAGE_KEY } from './agent-command'
+import { OMP_PLAN_VAR } from './omp'
 
 /**
  * The in-tool half of agent reporting: what each tool runs so it writes its
  * conversation (`workspace-bin/yaac-agent-links`) and its model, permission
  * mode and effort (`workspace-bin/yaac-agent-report`) onto its tmux pane,
- * where the status watcher reads them. claude and codex use hooks; pi and
- * opencode load a small extension/plugin. codex reports no model, mode or
+ * where the status watcher reads them. claude and codex use hooks; pi, omp
+ * and opencode load a small extension/plugin. codex reports no model, mode or
  * effort (they come from its title and rollout).
  *
  * Installed into the project's tool homes at create, since every workspace
@@ -14,12 +15,12 @@ import { PI_MESSAGE_KEY } from './agent-command'
  * reporter scripts are on each workspace's PATH, so one form works on both
  * drivers.
  *
- * Reports are best-effort (a missing script never fails the agent). pi's and
- * opencode's run one at a time, in order, since pane options are
+ * Reports are best-effort (a missing script never fails the agent). pi's,
+ * omp's and opencode's run one at a time, in order, since pane options are
  * last-write-wins.
  *
- * Verified against claude 2.1.310, codex-cli 0.164.0, pi 1.4.0 and
- * @opencode/cli 2.1.4.
+ * Verified against claude 2.1.310, codex-cli 0.164.0, pi 1.4.0, omp 18.18.3
+ * and @opencode/cli 2.1.4.
  */
 
 /**
@@ -70,7 +71,8 @@ const CODEX_HOOKS: Hooks = [
 ]
 
 /**
- * pi's extension, auto-discovered from `$PI_CODING_AGENT_DIR/extensions`.
+ * pi's and omp's extension, auto-discovered from
+ * `$PI_CODING_AGENT_DIR/extensions` (omp loads pi extensions as its own).
  * `session_start` (startup, resume, `/new`) gives the session id, log,
  * model and thinking level; `model_select` and `thinking_level_select` fire
  * on any change to those; `session_shutdown` fires as a session ends.
@@ -78,8 +80,16 @@ const CODEX_HOOKS: Hooks = [
  * It also takes `yaac-mama send` messages (`buildMessageCmd`): on
  * `PI_MESSAGE_KEY` it submits the file left for its conversation, queued
  * as a follow-up mid-turn, without touching what the user has in the editor.
+ * omp reports no thinking level until one is set.
+ *
+ * omp's copy also keeps plan mode in step with the posture (`OMP_PLAN_VAR`)
+ * and reports each mode change, entering or leaving plan mode by any route,
+ * session restore included, as `plan` or `default` (`ompPermissionMode`).
+ * omp restores a conversation's saved modes only after `session_start`
+ * handlers return, and answers `busy` until then, so the switch is retried
+ * outside the handler. Verified against omp 18.18.3.
  */
-const PI_EXTENSION = `// Written by yaac: reports the conversation, model and thinking level to the pane
+const piExtension = (tool: 'pi' | 'omp'): string => `// Written by yaac: reports the conversation, model and thinking level to the pane
 // (see yaac-agent-links and yaac-agent-report), and submits messages that
 // other workspaces send it (see yaac-mama send).
 import { readFileSync, unlinkSync } from 'node:fs'
@@ -92,17 +102,17 @@ export default function (pi) {
     return reported
   }
   const report = (model) => {
-    if (model !== undefined) run('yaac-agent-report', [model.provider + '/' + model.id, '', pi.getThinkingLevel()])
+    if (model !== undefined) run('yaac-agent-report', [model.provider + '/' + model.id, '', pi.getThinkingLevel() ?? ''])
   }
   let session = ''
   pi.on('session_start', (_event, ctx) => {
     session = ctx.sessionManager.getSessionId()
-    run('yaac-agent-links', [dirname(process.env.PI_CODING_AGENT_DIR ?? ''), 'pi', session, ctx.sessionManager.getSessionFile() ?? ''])
+    run('yaac-agent-links', [dirname(process.env.PI_CODING_AGENT_DIR ?? ''), '${tool}', session, ctx.sessionManager.getSessionFile() ?? ''])
     report(ctx.model)
   })
   pi.on('model_select', (event) => report(event.model))
   pi.on('thinking_level_select', (event) => run('yaac-agent-report', ['', '', event.level]))
-  pi.on('session_shutdown', () => run('yaac-agent-links', ['', 'pi', session, '--end']))
+  pi.on('session_shutdown', () => run('yaac-agent-links', ['', '${tool}', session, '--end']))
   pi.registerShortcut('${PI_MESSAGE_KEY}', {
     description: 'yaac: submit a message another workspace sent',
     handler: async (ctx) => {
@@ -117,7 +127,21 @@ export default function (pi) {
       pi.sendUserMessage(text, ctx.isIdle() ? undefined : { deliverAs: 'followUp' })
     },
   })
-}
+${tool === 'omp' ? OMP_MODE_SYNC : ''}}
+`
+
+const OMP_MODE_SYNC = `  pi.on('session_start', (_event, ctx) => {
+    const want = process.env.${OMP_PLAN_VAR}
+    if (want !== '0' && want !== '1') return
+    void (async () => {
+      for (let i = 0; i < 40; i++) {
+        const result = await ctx.sessionModes?.set({ mode: 'plan', action: want === '1' ? 'enter' : 'exit' })
+        if (result === undefined || result.ok || result.code !== 'busy') return
+        await new Promise((done) => setTimeout(done, 250))
+      }
+    })()
+  })
+  pi.on('mode_changed', (event) => run('yaac-agent-report', ['', event.state.plan.status === 'active' ? 'plan' : 'default', '']))
 `
 
 /**
@@ -193,18 +217,21 @@ export default {
 /**
  * Install every tool's reporter into a project's tool homes (opened with
  * `openSandboxDir`): claude's hooks into `settings.json`, codex's into
- * `hooks.json`, pi's extension into its agent dir and opencode's plugin into
- * its config dir. Idempotent; unchanged files are not rewritten.
+ * `hooks.json`, pi's and omp's extension into their agent dirs and
+ * opencode's plugin into its config dir. Idempotent; unchanged files are not
+ * rewritten.
  */
 export async function ensureAgentReporters(homes: {
   claude: ConfinedRoot
   codex: ConfinedRoot
   pi: ConfinedRoot
+  omp: ConfinedRoot
   opencodeConfig: ConfinedRoot
 }): Promise<void> {
   await mergeHooks(homes.claude, 'settings.json', CLAUDE_HOOKS)
   await mergeHooks(homes.codex, 'hooks.json', CODEX_HOOKS)
-  await install(homes.pi, 'agent/extensions/yaac-report.ts', PI_EXTENSION)
+  await install(homes.pi, 'agent/extensions/yaac-report.ts', piExtension('pi'))
+  await install(homes.omp, 'agent/extensions/yaac-report.ts', piExtension('omp'))
   await install(homes.opencodeConfig, 'plugins/yaac-report/index.ts', OPENCODE_PLUGIN)
 }
 

@@ -63,10 +63,10 @@ export async function captureTitle(
     const wait = tool === 'opencode' ? last.waitMs : idle ? IDLE_RECHECK_MS : RECHECK_MS
     if (since < wait) return known
   }
-  // An acp conversation has no recorded transcript, but claude's is named
-  // for it.
+  // An acp conversation has no recorded transcript, and omp reports none,
+  // but claude's and omp's are found by id.
   const file = transcript
-    ?? (tool === 'claude' ? await sessionTranscriptPath(projectId, workspaceId, tool, conversationId) : undefined)
+    ?? (tool === 'claude' || tool === 'omp' ? await sessionTranscriptPath(projectId, workspaceId, tool, conversationId) : undefined)
   const found = await getConversationTitle(tool, {
     projectId,
     conversationId,

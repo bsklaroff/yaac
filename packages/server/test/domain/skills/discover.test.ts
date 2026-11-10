@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { setDataDir, claudeDir, codexDir, opencodeConfigDir, piDir, repoDir } from '@yaac/shared/project-paths'
+import { setDataDir, claudeDir, codexDir, ompDir, opencodeConfigDir, piDir, repoDir } from '@yaac/shared/project-paths'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
 // State hooks, reset so each case sees only the tiers it opts into.
 import { setBuiltinSkillsDir } from '#domain/skills/builtin'
@@ -255,10 +255,10 @@ describe('getProjectSkills', () => {
       return { agents: s?.agents, overriddenFor: s?.overriddenFor }
     }
     // opencode reads Claude's home and `.claude/skills` too, but prefers the
-    // repo copy where Claude prefers its home.
-    expect(agents('personal', 'push-branch')).toEqual({ agents: ['claude', 'opencode'], overriddenFor: ['opencode'] })
-    expect(agents('repo', 'push-branch')).toEqual({ agents: ['claude', 'opencode'], overriddenFor: ['claude'] })
-    expect(agents('repo', 'deploy')).toEqual({ agents: ['claude', 'opencode'], overriddenFor: [] })
+    // repo copy where Claude prefers its home. omp reads both and keeps both.
+    expect(agents('personal', 'push-branch')).toEqual({ agents: ['claude', 'opencode', 'omp'], overriddenFor: ['opencode'] })
+    expect(agents('repo', 'push-branch')).toEqual({ agents: ['claude', 'opencode', 'omp'], overriddenFor: ['claude'] })
+    expect(agents('repo', 'deploy')).toEqual({ agents: ['claude', 'opencode', 'omp'], overriddenFor: [] })
     expect(agents('plugin', 'review')).toEqual({ agents: ['claude'], overriddenFor: [] })
   })
 
@@ -367,7 +367,7 @@ describe('getProjectSkills', () => {
       id: 'yaac:yaac-welcome',
       name: 'yaac-welcome',
       description: 'Orient yourself in a yaac session.',
-      agents: ['claude', 'codex', 'opencode', 'pi'],
+      agents: ['claude', 'codex', 'opencode', 'pi', 'omp'],
     })
     // yaac sorts after the on-disk tiers, so the builtin skill is last.
     expect(skills.at(-1)).toMatchObject({ source: 'yaac' })
@@ -454,9 +454,9 @@ describe('getProjectSkills', () => {
     }
     expect(credit('opencode/skill:greet')).toEqual([['opencode'], []]) // singular skill/ found
     // claude-compat, though opencode prefers the repo's `.claude/skills/push-branch`.
-    expect(credit('claude/skills:push-branch')).toEqual([['claude', 'opencode'], ['opencode']])
+    expect(credit('claude/skills:push-branch')).toEqual([['claude', 'opencode', 'omp'], ['opencode']])
     expect(credit('repo/.opencode/skills:deploy')).toEqual([['opencode'], []])
-    expect(credit('repo/.claude/skills:deploy')).toEqual([['claude', 'opencode'], ['opencode']])
+    expect(credit('repo/.claude/skills:deploy')).toEqual([['claude', 'opencode', 'omp'], ['opencode']])
   })
 
   it('reads pi personal skills from piDir/agent/skills plus project skills from the repo', async () => {
@@ -476,7 +476,22 @@ describe('getProjectSkills', () => {
       'personal:globby',
     ])
     // `.agents/skills` is the cross-agent dir.
-    expect(skills.find((s) => s.name === 'shared')?.agents).toEqual(['codex', 'opencode', 'pi'])
+    expect(skills.find((s) => s.name === 'shared')?.agents).toEqual(['codex', 'opencode', 'pi', 'omp'])
+  })
+
+  it('reads omp personal skills from ompDir/agent/skills, keeping every copy of a name', async () => {
+    await writeSkill(path.join(ompDir(projectId), 'agent', 'skills', 'deploy'),
+      '---\nname: deploy\ndescription: omp personal skill\n---\nb')
+    await writeSkill(path.join(repoDir(projectId), '.omp', 'skills', 'ship'),
+      '---\nname: ship\ndescription: omp project skill\n---\nb')
+
+    const skills = (await getProjectSkills(projectId)).skills.filter((s) => s.agents.includes('omp'))
+    const ids = skills.map((s) => s.id)
+    expect(ids).toEqual(expect.arrayContaining([
+      'omp/agent/skills:deploy', 'repo/.omp/skills:ship', 'repo/.claude/skills:deploy',
+    ]))
+    // omp namespaces a second `deploy` rather than dropping it.
+    expect(skills.filter((s) => s.name === 'deploy').map((s) => s.overriddenFor.includes('omp'))).toEqual([false, false])
   })
 
   // A separate slug so beforeEach's working-tree writes don't interfere.

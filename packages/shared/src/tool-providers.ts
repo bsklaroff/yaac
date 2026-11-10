@@ -1,6 +1,6 @@
 /**
  * Provider registries and helpers for the api-key-only agent tools
- * (`opencode` and `pi`). The user stores an api key for one provider; yaac
+ * (`opencode`, `pi` and `omp`). The user stores an api key for one provider; yaac
  * seeds it into the workspace under `toolApiKeyEnvVar` (a placeholder the
  * egress proxy swaps on that provider's host, when there is a proxy), and
  * points the tool's own config at that variable.
@@ -11,14 +11,23 @@
  * and models the credential itself carries (`CustomEndpoint`).
  */
 import {
+  OMP_PROVIDERS as GENERATED_OMP_PROVIDERS,
   OPENCODE_PROVIDERS as GENERATED_OPENCODE_PROVIDERS,
   PI_PROVIDERS as GENERATED_PI_PROVIDERS,
+  type OmpProviderId,
   type OpencodeProviderId,
   type PiProviderId,
   type ToolProviderInfo,
 } from '#tool-providers.generated'
 
 export type { ToolProviderInfo }
+
+/** The tools that authenticate only with an api key for a chosen provider. */
+export type ApiKeyTool = 'opencode' | 'pi' | 'omp'
+
+export function isApiKeyTool(tool: string): tool is ApiKeyTool {
+  return tool === 'opencode' || tool === 'pi' || tool === 'omp'
+}
 
 /** The provider id of a self-hosted OpenAI-compatible endpoint. */
 export const CUSTOM_PROVIDER = 'custom'
@@ -44,17 +53,21 @@ const CUSTOM_PROVIDER_INFO = {
 
 export const OPENCODE_PROVIDERS = [CUSTOM_PROVIDER_INFO, ...GENERATED_OPENCODE_PROVIDERS] as const
 export const PI_PROVIDERS = [CUSTOM_PROVIDER_INFO, ...GENERATED_PI_PROVIDERS] as const
+export const OMP_PROVIDERS = [CUSTOM_PROVIDER_INFO, ...GENERATED_OMP_PROVIDERS] as const
 
 /**
  * A provider id for the tool, from the generated registry or `custom`.
- * Parse raw strings with `parseOpencodeProvider` / `parsePiProvider`.
+ * Parse raw strings with `parseOpencodeProvider` / `parsePiProvider` /
+ * `parseOmpProvider`.
  */
 export type OpencodeProvider = OpencodeProviderId | typeof CUSTOM_PROVIDER
 export type PiProvider = PiProviderId | typeof CUSTOM_PROVIDER
+export type OmpProvider = OmpProviderId | typeof CUSTOM_PROVIDER
 
 /** The picker's default provider. */
 export const OPENCODE_DEFAULT_PROVIDER: OpencodeProvider = 'openrouter'
 export const PI_DEFAULT_PROVIDER: PiProvider = 'openrouter'
+export const OMP_DEFAULT_PROVIDER: OmpProvider = 'openrouter'
 
 /**
  * The model a claude / codex create runs when its project remembers none for
@@ -99,6 +112,11 @@ export function piProviderInfo(id: PiProvider): ToolProviderInfo {
   return infoOrDefault(PI_PROVIDERS, id, PI_DEFAULT_PROVIDER)
 }
 
+/** Look up an omp provider's metadata; falls back to the default. */
+export function ompProviderInfo(id: OmpProvider): ToolProviderInfo {
+  return infoOrDefault(OMP_PROVIDERS, id, OMP_DEFAULT_PROVIDER)
+}
+
 /**
  * The host the proxy swaps a provider's key in on: the generated row's
  * `apiHost`, or a custom endpoint's host. Undefined when there is none,
@@ -115,12 +133,12 @@ export function providerApiHost(
 
 /**
  * The workspace variable holding a tool's key for a provider, e.g.
- * `YAAC_PI_KEY_OPENROUTER`. Named per tool so opencode and pi can hold
- * different keys for one provider without clashing, and per provider so a
+ * `YAAC_PI_KEY_OPENROUTER`. Named per tool so each api-key tool can hold
+ * a different key for one provider without clashing, and per provider so a
  * config entry left from a provider the user has since switched away from
  * is never handed the new provider's key.
  */
-export function toolApiKeyEnvVar(tool: 'opencode' | 'pi', provider: string): string {
+export function toolApiKeyEnvVar(tool: ApiKeyTool, provider: string): string {
   return `YAAC_${tool.toUpperCase()}_KEY_${provider.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`
 }
 
@@ -132,4 +150,9 @@ export function parseOpencodeProvider(value: string | undefined): OpencodeProvid
 /** A raw string as a PiProvider, or undefined if it isn't one. */
 export function parsePiProvider(value: string | undefined): PiProvider | undefined {
   return parseProvider(PI_PROVIDERS, value)
+}
+
+/** A raw string as an OmpProvider, or undefined if it isn't one. */
+export function parseOmpProvider(value: string | undefined): OmpProvider | undefined {
+  return parseProvider(OMP_PROVIDERS, value)
 }

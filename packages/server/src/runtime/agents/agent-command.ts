@@ -16,6 +16,7 @@ import {
 import { ServerError } from '@yaac/shared/errors'
 import { doubleQuoted, envJsonAssignment } from '#lib/shell'
 import { CODEX_TITLE_ITEMS, codexLaunchConfig } from './codex'
+import { OMP_PLAN_VAR, ompLaunchArgs } from './omp'
 
 /**
  * Prefix for every `tmux` invocation here, pointing at the driver's socket
@@ -48,7 +49,7 @@ export interface AgentCmdSpec {
    *  when no explicit `model` override is given. */
   piProvider?: PiProvider
   /** Model for the agent's `--model` flag: an id or alias for claude/codex
-   *  (`opus`, `gpt-5.2-codex`), `provider/model` for opencode and pi.
+   *  (`opus`, `gpt-5.2-codex`), `provider/model` for opencode, pi and omp.
    *  `launchCmd` refuses one `launchableModel` would change
    *  (`assertLaunchableModel`), so it can be embedded bare in the
    *  single-quoted respawn-window wrapper, bar claude's
@@ -74,7 +75,8 @@ export interface AgentCmdSpec {
  * restart. It picks the loosest supported posture no looser than the row's
  * (`launchablePermissionMode`): opencode `auto` → `accept-edits`; codex's
  * strictest is `read-only` and claude/opencode's is `plan`, so each maps to
- * the other's; pi has no permission system, so always `bypass`.
+ * the other's; omp `auto` → `accept-edits`, `read-only` → `plan`; pi has
+ * no permission system, so always `bypass`.
  */
 function postureFor(tool: AgentTool, mode: PermissionMode): PermissionMode {
   return launchablePermissionMode(tool, mode)
@@ -280,6 +282,17 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     const warn = 'Warning: No project session found with id .*creating a new session with that id\\.'
     return `{ ${pi} 2>&1 1>&3 3>&- | sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*${warn}/{//d}" >&2 3>&-; } 3>&1`
   }
+  if (tool === 'omp') {
+    // omp takes no conversation id for a new conversation (it names its
+    // own, reported by yaac's extension), and refuses `--resume` with an id
+    // it does not have.
+    return [
+      `${OMP_PLAN_VAR}=${mode === 'plan' ? 1 : 0}`,
+      'exec omp',
+      ...ompLaunchArgs(mode, model, effort),
+      resume ? `--resume ${workspaceId}` : '',
+    ].filter(Boolean).join(' ')
+  }
   if (tool === 'opencode') {
     // --standalone runs a private server as a child instead of a shared
     // background service, so the config (posture, model) comes from this
@@ -424,9 +437,9 @@ const SAFE_SESSION_ID = /^[A-Za-z0-9._-]+$/
  *    draft stays set aside.
  *  - 5: the user's draft could not be set aside, so nothing was typed.
  *
- * A pi agent is handed the message by yaac's pi extension, which submits it
- * without touching the editor (`PI_MESSAGE_KEY`). The others are pasted
- * into:
+ * A pi or omp agent is handed the message by yaac's extension, which
+ * submits it without touching the editor (`PI_MESSAGE_KEY`). The others are
+ * pasted into:
  *
  *  1. If the input box holds a draft (`draftHandling`), set it aside with
  *     the tool's own stash where it has one.
@@ -466,14 +479,16 @@ function messageScript(
   if (!SAFE_SESSION_ID.test(conversationId)) return 'echo "unexpected conversation id" >&2; exit 3'
   const TMUX = tmuxCmd(paths)
   const target = `-t ${paneTarget}`
-  if (tool === 'pi') {
-    // The extension takes the file, so its being gone is the delivery.
+  if (tool === 'pi' || tool === 'omp') {
+    // The extension takes the file, so its being gone is the delivery. It
+    // looks in the agent dir the tool was handed (omp's, by its wrapper).
     const b64 = Buffer.from(stripControlChars(message), 'utf8').toString('base64')
-    return `f="$PI_CODING_AGENT_DIR/yaac-messages/${conversationId}.txt"; mkdir -p "\${f%/*}" || exit 1
+    const dir = tool === 'pi' ? '$PI_CODING_AGENT_DIR' : '$YAAC_OMP_AGENT_DIR'
+    return `f="${dir}/yaac-messages/${conversationId}.txt"; mkdir -p "\${f%/*}" || exit 1
 printf %s ${b64} | base64 -d > "$f.tmp" && mv "$f.tmp" "$f" || exit 1
 ${TMUX} send-keys ${target} ${PI_MESSAGE_KEY}
 i=0; while [ -e "$f" ]; do
-  [ $i -ge 40 ] && { rm -f "$f"; echo "pi never took the message" >&2; exit 1; }
+  [ $i -ge 40 ] && { rm -f "$f"; echo "${tool} never took the message" >&2; exit 1; }
   i=$((i+1)); sleep 0.25
 done`
   }
@@ -513,7 +528,7 @@ ${draft.finish}
 exit 0`
 }
 
-/** The key yaac's pi extension takes a `yaac-mama send` message on. */
+/** The key yaac's pi and omp extension takes a `yaac-mama send` message on. */
 export const PI_MESSAGE_KEY = 'f9'
 
 /**
@@ -557,6 +572,7 @@ function atInputTest(tool: AgentTool, TMUX: string, target: string, conversation
     case 'opencode':
       return `! ${TMUX} capture-pane -p ${target} | head -n 1 | grep -qE "^ [!?] "`
     case 'pi':
+    case 'omp':
       return 'true'
   }
 }
@@ -604,7 +620,7 @@ function atInputTest(tool: AgentTool, TMUX: string, target: string, conversation
  * (`\302\240` is a no-break space), which macOS's awk does not match in a
  * UTF-8 locale.
  */
-function draftHandling(tool: Exclude<AgentTool, 'pi'>, TMUX: string, target: string): {
+function draftHandling(tool: Exclude<AgentTool, 'pi' | 'omp'>, TMUX: string, target: string): {
   defs?: string; box: string; prepare: string; stash: string; finish: string; unstash: string
 } {
   switch (tool) {

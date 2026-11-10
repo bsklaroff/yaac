@@ -206,7 +206,7 @@ objects the server watches. All live in the install namespace, are labelled
 
 | object | kind | writer | reader | content |
 |---|---|---|---|---|
-| `yaac-proxy-credentials` | Secret | server | proxy informer | per owner, keys prefixed `<owner>.`: `claude.json`, `codex.json`, `opencode.json`, `pi.json` (each tool's host-store file verbatim, plus `apiHost` for opencode and pi: the provider host the key is swapped in on; a signed-out tool has no key), `git-tokens.json` (`[{token, projects}]`) and `ssh-keys.json` (`[{privateKey, publicKey, projects: [{projectId, host, knownHostsEntry}]}]`, the private key OpenSSH-encoded from the sealed seed). `projects` lists the ids of the projects a credential is assigned to: a token goes only to its project's https remote host (and, for github.com, `api.github.com`), and a workspace's agent connection sees only its project's keys |
+| `yaac-proxy-credentials` | Secret | server | proxy informer | per owner, keys prefixed `<owner>.`: `claude.json`, `codex.json`, `opencode.json`, `pi.json`, `omp.json` (each tool's host-store file verbatim, plus `apiHost` for opencode, pi and omp: the provider host the key is swapped in on; a signed-out tool has no key), `git-tokens.json` (`[{token, projects}]`) and `ssh-keys.json` (`[{privateKey, publicKey, projects: [{projectId, host, knownHostsEntry}]}]`, the private key OpenSSH-encoded from the sealed seed). `projects` lists the ids of the projects a credential is assigned to: a token goes only to its project's https remote host (and, for github.com, `api.github.com`), and a workspace's agent connection sees only its project's keys |
 | `yaac-proxy-secrets-<project id>` | Secret, one per project | server | proxy informer | `values.json`: `{ "<project id>/<NAME>": value }`, the secret values behind that project's `secretRef` rules |
 | `yaac-proxy-reg-<workspaceId>` | ConfigMap, one per workspace | server | proxy informer | `registration.json`: rules with `secretRef`s (never values), allowed hosts, repo URL, tool, project, owner, test redirects |
 | `yaac-proxy-refreshed` | Secret | proxy | server informer | `<owner>.claude.json`, `<owner>.codex.json`: OAuth bundles the proxy captured from a workspace's token refresh, in the credentials-file shape |
@@ -296,23 +296,37 @@ The access-token swap covers `mcp-proxy.anthropic.com` as well as
 there, and a placeholder sent there would get a 401 that makes claude force a
 refresh on every start.
 
-**opencode and pi keys.** Each tool reads its key from a workspace variable of
-its own, `YAAC_<TOOL>_KEY_<PROVIDER>`, which its config in the project's tool
-home names (an `OPENCODE_CONFIG` file for opencode, a `models.json` entry for
-pi; `ensureToolApiKeyConfig`), ahead of the provider's own variable. So the
-key reaches the tool however it is started, and the two tools can hold
+**opencode, pi and omp keys.** Each tool reads its key from a workspace
+variable of its own, `YAAC_<TOOL>_KEY_<PROVIDER>`, which its config in the
+project's tool home names (an `OPENCODE_CONFIG` file for opencode, a
+`models.json` entry for pi, a `models.yml` one for omp;
+`ensureToolApiKeyConfig`), ahead of the provider's own variable. So the
+key reaches the tool however it is started, and the tools can hold
 different keys for one provider, unaffected by claude's or codex's
 `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` or a project's own provider variable. Each
 carries its own placeholder too, so the proxy picks the key by which
 placeholder a request sends, not by the workspace's tool.
 
-The `custom` provider is a self-hosted OpenAI-compatible endpoint: its
-credential carries the base URL and the model ids, and yaac writes the whole
-provider definition into each tool's config. Its `apiHost` is the URL's
+The `custom` provider is a self-hosted OpenAI-compatible endpoint, for
+opencode, pi and omp: its credential carries the base URL and the model ids,
+and yaac writes the whole provider definition into each tool's config. Its `apiHost` is the URL's
 host, so a key is swapped in there over HTTPS like any provider's. Over plain
 HTTP no key is ever injected, so an endpoint reached that way must take none;
 the key is optional for this provider, a keyless one gets no variable, and
 under k8s saving an `http://` endpoint with a key is refused.
+
+**omp's own traffic.** Besides its provider, omp fetches a public
+models.dev mirror at startup (`catalog.stencil.so`: a plain GET, carrying
+nothing about the workspace, user or prompts). No setting turns it off, so
+it is among the install's default allowed hosts, for every workspace as the
+other agents' hosts are. A first launch in a project also refreshes the
+model lists of providers that need no key (`api.commandcode.ai`,
+`api.kilo.ai`, `api.venice.ai`, `coding-intl.dashscope.aliyuncs.com`,
+`hyper.charm.land`, `zenmux.ai`), cached for a day in `models.db`. Those are
+not allowed by default, so under k8s they are refused and omp keeps its
+bundled lists; under containerless they go out. Refusing them does not hold
+up a launch or a turn. yaac's launches turn off omp's update check,
+marketplace updates and issue reports (`ensureOmpSettings`).
 
 Which endpoints a cluster workspace can reach follows from the datapath:
 

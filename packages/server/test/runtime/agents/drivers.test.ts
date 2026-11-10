@@ -444,10 +444,11 @@ describe('agentDriver', () => {
     }
     expect(_ACP_PROFILES.opencode.modeIds).toEqual({ plan: 'plan' })
     expect(_ACP_PROFILES.pi.modeIds).toEqual({})
+    expect(_ACP_PROFILES.omp.modeIds).toEqual({ plan: 'plan' })
   })
 
   it("launches each tool's adapter the way that adapter takes its configuration", () => {
-    const spec = (tool: 'codex' | 'opencode' | 'pi', over: Record<string, unknown> = {}) =>
+    const spec = (tool: 'codex' | 'opencode' | 'pi' | 'omp', over: Record<string, unknown> = {}) =>
       agentDriver('acp').launchCmd({
         tool,
         conversationId: 'conv-1',
@@ -493,8 +494,16 @@ describe('agentDriver', () => {
     expect(pi).toContain('-- pi-acp')
     expect(pi.slice(0, pi.indexOf('exec node '))).toBe('YAAC_NO_PANE_REPORT=1 ')
 
+    // omp is its own adapter and takes the TUI's flags, the model included.
+    // Plan mode is sent as a session mode, not set by the extension.
+    const omp = spec('omp', { permissionMode: 'plan', model: 'openrouter/openai/gpt-5.5' })
+    expect(omp).toMatch(/^YAAC_NO_PANE_REPORT=1 exec node /)
+    expect(omp).toContain('-- omp acp --config "$YAAC_OMP_AGENT_DIR/yaac.yml" --approval-mode always-ask --model openrouter/openai/gpt-5.5')
+    expect(omp).not.toContain('YAAC_OMP_PLAN')
+    expect(spec('omp', { permissionMode: 'bypass' })).toContain('--approval-mode yolo')
+
     // All are embedded in a single-quoted respawn-window.
-    for (const cmd of [codex, opencode, pi]) expect(cmd).not.toContain("'")
+    for (const cmd of [codex, opencode, pi, omp]) expect(cmd).not.toContain("'")
   })
 
   /**
@@ -539,6 +548,13 @@ describe('agentDriver', () => {
         + '#{C/ri:\\b(thinking|working|generating|streaming|running)\\b}},running,waiting}',
       running: [' running '],
       waiting: ['waiting'],
+    },
+    // omp swaps the `>` after its π for a spinner frame during a turn, and
+    // for `!` while it asks.
+    omp: {
+      format: '#{pane_title}',
+      running: ['π ⠧ proj', 'π ⠋ yaac', 'π ⣿ edge'],
+      waiting: ['π > proj', 'π ! proj', HOSTNAME, '', '⠋ proj', 'proj π ⠋'],
     },
   } as const
 
@@ -2884,6 +2900,7 @@ describe('agentDriver', () => {
         '    "opencode f9") [ -s "$S/input" ] && { enc < "$S/input"; echo; } | tee -a "$S/stack" >> "$XDG_STATE_HOME/opencode/prompt-stash.jsonl"; : > "$S/input" ;;',
         '    "opencode f10") tail -n 1 "$S/stack" | base64 -d > "$S/input"; sed -i "\\$d" "$S/stack" ;;',
         '    "pi f9") f="$PI_CODING_AGENT_DIR/yaac-messages/conv-1.txt"; { cat "$f"; echo; } >> "$S/transcript"; rm -f "$f" ;;',
+        '    "omp f9") f="$YAAC_OMP_AGENT_DIR/yaac-messages/conv-1.txt"; { cat "$f"; echo; } >> "$S/transcript"; rm -f "$f" ;;',
         '  esac; done ;;',
         'esac',
         'exit 0',
@@ -2921,6 +2938,7 @@ describe('agentDriver', () => {
       mkdirSync(file('state/opencode'), { recursive: true })
       writeFileSync(file('state/opencode/prompt-stash.jsonl'), '')
       mkdirSync(file('pi'), { recursive: true })
+      mkdirSync(file('omp'), { recursive: true })
       const res = spawnSync('sh', ['-c', cmd], {
         encoding: 'utf8',
         input: execOpts!.stdin,
@@ -2936,6 +2954,7 @@ describe('agentDriver', () => {
           CLAUDE_CONFIG_DIR: file('claude'),
           XDG_STATE_HOME: file('state'),
           PI_CODING_AGENT_DIR: file('pi'),
+          YAAC_OMP_AGENT_DIR: file('omp'),
         },
       })
       const read = (name: string): string => (existsSync(file(name)) ? readFileSync(file(name), 'utf8') : '')
@@ -2976,6 +2995,10 @@ describe('agentDriver', () => {
       })
       // pi's extension submits the message without touching the editor.
       expect(await send('pi', { draft })).toMatchObject({
+        status: 0, calls: ['send-keys f9'], submitted: delivered, input: draft,
+      })
+      // So does omp's, which takes it from omp's agent dir, not pi's.
+      expect(await send('omp', { draft })).toMatchObject({
         status: 0, calls: ['send-keys f9'], submitted: delivered, input: draft,
       })
     })
@@ -3167,6 +3190,33 @@ describe('agentDriver', () => {
         } finally {
           rmSync(bin, { recursive: true, force: true })
         }
+      })
+    })
+
+    describe('omp tool', () => {
+      it('names its settings overlay, approval mode, model and thinking level', () => {
+        const cmd = tuiLaunchCmd({ tool: 'omp', workspaceId: 'sess-1', model: 'openrouter/openai/gpt-5.5', effort: 'high', permissionMode: 'accept-edits' })
+        expect(cmd).toBe('YAAC_OMP_PLAN=0 exec omp --config "$YAAC_OMP_AGENT_DIR/yaac.yml" --approval-mode write '
+          + '--model openrouter/openai/gpt-5.5 --thinking high')
+        // No single quotes: the command is embedded in `respawn-window '<cmd>'`.
+        expect(cmd).not.toContain("'")
+      })
+
+      it('maps every posture it has, plan through the extension rather than a flag', () => {
+        const launch = (permissionMode: PermissionMode): string =>
+          tuiLaunchCmd({ tool: 'omp', workspaceId: 'sess-1', permissionMode })
+        expect(launch('bypass')).toBe('YAAC_OMP_PLAN=0 exec omp --config "$YAAC_OMP_AGENT_DIR/yaac.yml" --approval-mode yolo')
+        expect(launch('manual')).toBe('YAAC_OMP_PLAN=0 exec omp --config "$YAAC_OMP_AGENT_DIR/yaac.yml" --approval-mode always-ask')
+        expect(launch('plan')).toBe('YAAC_OMP_PLAN=1 exec omp --config "$YAAC_OMP_AGENT_DIR/yaac.yml" --approval-mode always-ask')
+        // Postures it lacks launch as the nearest stricter one.
+        expect(launch('auto')).toBe(launch('accept-edits'))
+        expect(launch('read-only')).toBe(launch('plan'))
+      })
+
+      it('names no conversation for a new one and resumes by id', () => {
+        expect(tuiLaunchCmd({ tool: 'omp', workspaceId: 'sess-1', resume: false, permissionMode: 'bypass' })).not.toContain('sess-1')
+        expect(tuiLaunchCmd({ tool: 'omp', workspaceId: 'conv-9', resume: true, permissionMode: 'plan' }))
+          .toMatch(/^YAAC_OMP_PLAN=1 exec omp .* --resume conv-9$/)
       })
     })
 

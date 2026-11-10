@@ -390,7 +390,7 @@ workspace
   .option('-w, --workspace <workspace-id>', 'Open the session in this running workspace (id or unique prefix) instead of a new one. Takes the agent options, but not --branch, --group, --timeout, --start-at or --start-in')
   .option('--resume <conversation>', 'With --workspace: open the session on one of that workspace\'s conversations (see `yaac workspace conversations`) instead of a new one')
   .option('--no-session', 'Create the workspace with no agent session; it takes no prompt or agent options')
-  .option('-t, --tool <tool>', 'Agent tool to use (claude, codex, opencode, or pi). Defaults to the agent this project was last created with, else claude')
+  .option('-t, --tool <tool>', 'Agent tool to use (claude, codex, opencode, pi, or omp). Defaults to the agent this project was last created with, else claude')
   .option('-b, --branch <branch>', 'Reference branch for the workspace (defaults to the remote default branch)')
   .option('--commit <sha>', 'Start at this full commit (40 hex digits) instead of a branch\'s tip; the workspace then has no base branch. Not with --branch')
   .option('--steps <file>', 'A JSON file of the steps to start with, in place of the project\'s init steps (docs/workspace-steps.md)')
@@ -400,7 +400,7 @@ workspace
   .option('--wait', 'With --non-interactive: wait for its steps to finish, exiting non-zero unless they all succeeded')
   .option('-p, --prompt <text>', 'Initial prompt typed into the agent once the workspace is up; - reads it from stdin')
   .option('--prompt-file <path>', 'Read the initial prompt from this file, in place of --prompt. The way to hand over a long brief: one argument holds at most 128 KiB, and a prompt can be up to 200,000 characters')
-  .option('-m, --model <model>', 'Model for the agent: an id or alias for claude/codex (e.g. opus), provider/model for opencode and pi. Defaults to the model this project last used for the tool, else a per-tool default')
+  .option('-m, --model <model>', 'Model for the agent: an id or alias for claude/codex (e.g. opus), provider/model for opencode, pi and omp. Defaults to the model this project last used for the tool, else a per-tool default')
   .option('-e, --effort <level>', 'How hard the model thinks, in the agent\'s own levels (e.g. low, high, xhigh; opencode\'s default is no variant). The model must offer it. Defaults to this project\'s last choice for the tool where the model has it, else the model\'s default')
   .addOption(new Option('--mode <mode>', 'How the agent is driven: tui runs its terminal UI, acp drives it over the Agent Client Protocol and renders a chat pane in the web app. Every tool has an adapter; a tool\'s adapter may offer fewer permission modes than its terminal UI. Defaults to this project\'s last choice for the tool, else acp; an acp workspace is not attached, so open it in the web app').choices([...AGENT_MODES]))
   .addOption(new Option('--permission-mode <mode>', 'How much the agent may do before it asks: bypass acts freely, auto lets a reviewer model judge each action, accept-edits edits without asking but asks for the rest, manual asks for everything, plan explores and asks to act on a plan, read-only (codex\'s strictest, in place of plan) asks before any edit. Defaults to this project\'s last choice for the tool, else bypass in a container and accept-edits on the host. Not every tool has every mode (pi has only bypass)').choices([...PERMISSION_MODES]))
@@ -537,7 +537,7 @@ function routineOptions(cmd: Command): Command {
     .option('--prompt-file <path>', 'Read the prompt from this file instead, for one too long for an argument')
     .option('--tz <zone>', 'IANA time zone the cron is read in (default: your yaac time zone)')
     .option('--timeout <duration>', 'Stop each run this long after it starts, like 2h; "next" (the default) stops it when the next run starts')
-    .option('-t, --tool <tool>', 'Agent tool (claude, codex, opencode, or pi); defaults as for workspace create')
+    .option('-t, --tool <tool>', 'Agent tool (claude, codex, opencode, pi, or omp); defaults as for workspace create')
     .option('-m, --model <model>', 'Model for the agent; defaults as for workspace create')
     .option('-e, --effort <level>', 'Effort level, which the model must offer')
     .addOption(new Option('--mode <mode>', 'How the agent is driven (tui or acp)').choices([...AGENT_MODES]))
@@ -954,7 +954,7 @@ auth
 
 auth
   .command('update')
-  .description('Add a git credential (HTTPS token or generated SSH key), or sign in a tool (Claude Code, Codex, OpenCode, or Pi)')
+  .description('Add a git credential (HTTPS token or generated SSH key), or sign in a tool (Claude Code, Codex, OpenCode, Pi, or Oh My Pi)')
   .action(authUpdate)
 
 auth
@@ -968,7 +968,7 @@ auth
   .addArgument(
     new Argument(
       '<kinds...>',
-      'Credential kinds to seed (claude-oauth, opencode-openrouter, pi-openrouter, github); pass one or more',
+      'Credential kinds to seed (claude-oauth, opencode-openrouter, pi-openrouter, omp-openrouter, github); pass one or more',
     ).choices([...FAKE_AUTH_KINDS]),
   )
   .action(authFake)

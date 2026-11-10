@@ -10,6 +10,7 @@ import {
   claudeDir,
   claudeProjectDirName,
   codexDir,
+  ompDir,
   codexRolloutParent,
   codexRolloutThreadId,
   projectDir,
@@ -57,6 +58,7 @@ export async function convergeAgentHistory(
     await fs.mkdir(path.join(claudeDir(projectId), 'file-history'), { recursive: true })
     await fs.mkdir(path.join(claudeDir(projectId), 'sessions'), { recursive: true })
     await fs.mkdir(path.join(codexDir(projectId), 'sessions'), { recursive: true })
+    await fs.mkdir(path.join(ompDir(projectId), 'agent', 'sessions'), { recursive: true })
     return
   }
 

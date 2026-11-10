@@ -2,9 +2,12 @@ import { z } from 'zod'
 import type { StepGraph, StepsOutcome, WorkspaceStep } from './steps'
 import {
   CUSTOM_PROVIDER,
+  isApiKeyTool,
+  parseOmpProvider,
   parseOpencodeProvider,
   parsePiProvider,
   type CustomEndpoint,
+  type OmpProvider,
   type OpencodeProvider,
   type PiProvider,
 } from '#tool-providers'
@@ -13,9 +16,9 @@ import type { ErrorCode } from '#errors'
 
 export type { ModelEfforts }
 
-export type AgentTool = 'claude' | 'codex' | 'opencode' | 'pi'
+export type AgentTool = 'claude' | 'codex' | 'opencode' | 'pi' | 'omp'
 
-export const AGENT_TOOLS: readonly AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
+export const AGENT_TOOLS: readonly AgentTool[] = ['claude', 'codex', 'opencode', 'pi', 'omp']
 
 /** Each tool's product name, for messages that name it in full. */
 export const TOOL_LABELS: Record<AgentTool, string> = {
@@ -23,15 +26,16 @@ export const TOOL_LABELS: Record<AgentTool, string> = {
   codex: 'Codex',
   opencode: 'OpenCode',
   pi: 'Pi',
+  omp: 'Oh My Pi',
 }
 
 /**
  * The tools that choose their own conversation ids. claude and pi launch
- * under an id yaac picks (the workspace id, for a create), but codex and
- * opencode take none, so the recorded id is a stand-in until the pane
- * reports the real one.
+ * under an id yaac picks (the workspace id, for a create), but codex,
+ * opencode and omp take none, so the recorded id is a stand-in until the
+ * pane reports the real one.
  */
-export const SELF_NAMING_TOOLS: readonly AgentTool[] = ['codex', 'opencode']
+export const SELF_NAMING_TOOLS: readonly AgentTool[] = ['codex', 'opencode', 'omp']
 
 /**
  * Coerce a raw tool name into an `AgentTool`, defaulting to claude.
@@ -185,6 +189,7 @@ export const AGENT_CLIS = {
   },
   opencode: { package: '@opencode/cli', version: '2.1.4' },
   pi: { package: '@earendil-works/pi-coding-agent', version: '1.4.0' },
+  omp: { package: '@oh-my-pi/pi-coding-agent', version: '18.18.3' },
 } as const satisfies Record<AgentTool, {
   package: string
   version: string
@@ -193,12 +198,20 @@ export const AGENT_CLIS = {
 }>
 
 /**
+ * The bun omp runs under: its `omp` is a bun script (`#!/usr/bin/env bun`).
+ * Installed from npm beside the agents, by the image and on a host, with its
+ * install script, which puts the platform's binary in place.
+ */
+export const BUN_RUNTIME = { package: 'bun', version: '1.4.4' } as const
+
+/**
  * The ACP adapter each tool uses in `acp` mode. The image install steps, the
  * host preflight and the driver's launch profiles all derive from this.
  *
  * `needsCli`: the adapter drives the CLI (codex-acp runs `codex app-server`,
  * pi-acp runs `pi --mode rpc`), so the CLI must be on PATH. claude's adapter
- * bundles its own SDK; opencode's adapter is the CLI itself (`opencode acp`).
+ * bundles its own SDK; opencode's and omp's adapters are the CLI itself
+ * (`opencode acp`, `omp acp`).
  *
  * `verified`: the version whose advertised session modes yaac maps to
  * permission postures. An adapter that drops a mode fails silently, so a
@@ -227,6 +240,12 @@ export const ACP_ADAPTERS = {
     binary: 'pi-acp',
     package: 'pi-acp',
     verified: '0.0.34',
+    needsCli: true,
+  },
+  omp: {
+    binary: 'omp',
+    package: AGENT_CLIS.omp.package,
+    verified: AGENT_CLIS.omp.version,
     needsCli: true,
   },
 } as const satisfies Record<
@@ -298,12 +317,15 @@ function ranked(...modes: PermissionMode[]): readonly PermissionMode[] {
  *   accepts only the `on-request` and `never` approval policies.
  * - opencode: no reviewer-model posture, so no `auto`.
  * - pi: no permission system at all, so `bypass` only.
+ * - omp: an approval mode per posture (`--approval-mode`) plus its plan
+ *   mode; no reviewer model, so no `auto`.
  */
 export const SUPPORTED_PERMISSION_MODES: Record<AgentTool, readonly PermissionMode[]> = {
   claude: ranked('bypass', 'auto', 'accept-edits', 'manual', 'plan'),
   codex: ranked('bypass', 'auto', 'accept-edits', 'read-only'),
   opencode: ranked('bypass', 'accept-edits', 'manual', 'plan'),
   pi: ranked('bypass'),
+  omp: ranked('bypass', 'accept-edits', 'manual', 'plan'),
 }
 
 export function toolSupportsPermissionMode(tool: AgentTool, mode: PermissionMode): boolean {
@@ -420,8 +442,8 @@ export interface ToolCreateDefaults {
  * server call this, so the form shows what an untouched create would run.
  *
  * A remembered posture the tool lacks goes through
- * `launchablePermissionMode`. A remembered opencode/pi model must name the
- * credential's current provider; any claude or codex model stands, since the
+ * `launchablePermissionMode`. A remembered api-key tool's model must name
+ * the credential's current provider; any claude or codex model stands, since the
  * catalog is not an allowlist. A remembered effort stands where the model
  * has it, else the model's default; a model with no effort levels gets none.
  */
@@ -429,7 +451,7 @@ export function resolveToolCreateDefaults(args: {
   driver: DriverKind
   tool: AgentTool
   remembered: ToolCreateDefaults | undefined
-  /** opencode / pi: the provider the stored credential authenticates against. */
+  /** An api-key tool's provider: the one its stored credential authenticates against. */
   provider?: string
   /** What the tool runs when nothing is remembered (`defaultModelFor`). */
   defaultModel: string
@@ -438,7 +460,7 @@ export function resolveToolCreateDefaults(args: {
 }): { model: string; permissionMode: PermissionMode; effort?: string } {
   const { driver, tool, remembered, provider } = args
   const posture = remembered?.permissionMode
-  const qualified = tool === 'opencode' || tool === 'pi'
+  const qualified = isApiKeyTool(tool)
   const rememberedModel = remembered?.model
   const modelFits = rememberedModel !== undefined
     && (!qualified || provider === undefined || rememberedModel.startsWith(`${provider}/`))
@@ -466,6 +488,7 @@ export const FAKE_AUTH_KINDS = [
   'claude-oauth',
   'opencode-openrouter',
   'pi-openrouter',
+  'omp-openrouter',
   'github',
 ] as const
 export type FakeAuthKind = (typeof FAKE_AUTH_KINDS)[number]
@@ -555,7 +578,7 @@ export const customEndpointSchema = z.object({
 })
 
 /**
- * Shape of a user's stored opencode or pi sign-in (the server's
+ * Shape of a user's stored opencode, pi or omp sign-in (the server's
  * `tool_credentials`): an api key for one provider in the tool's registry
  * (`tool-providers.ts`). `provider` picks the env var and the host the proxy
  * swaps the key on; a sign-in whose provider is missing or unknown fails to
@@ -584,11 +607,14 @@ export type OpencodeCredentialsFile = z.infer<typeof opencodeCredentialsFileSche
 export const piCredentialsFileSchema = apiKeyToolCredentialsFileSchema(parsePiProvider)
 export type PiCredentialsFile = z.infer<typeof piCredentialsFileSchema>
 
+export const ompCredentialsFileSchema = apiKeyToolCredentialsFileSchema(parseOmpProvider)
+export type OmpCredentialsFile = z.infer<typeof ompCredentialsFileSchema>
+
 /**
  * The `PUT /auth/:tool` body. The server checks it against the named tool:
- * an OAuth bundle must be that tool's, opencode/pi need a provider from
- * their registry, rejected rather than defaulted when missing or unknown,
- * and only their `custom` provider takes an endpoint or an empty key.
+ * an OAuth bundle must be that tool's, an api-key tool needs a provider
+ * from its registry, rejected rather than defaulted when missing or unknown,
+ * and only its `custom` provider takes an endpoint or an empty key.
  */
 export const toolAuthPayloadSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -605,7 +631,7 @@ export const toolAuthPayloadSchema = z.discriminatedUnion('kind', [
 export type ToolAuthPayload = z.infer<typeof toolAuthPayloadSchema>
 
 /**
- * The four tool credential files as one value, handed to a runtime whose
+ * The tool credential files as one value, handed to a runtime whose
  * proxy injects credentials whenever a user's store changes. `null` means
  * signed out.
  */
@@ -614,6 +640,7 @@ export interface ToolCredentialBundle {
   codex: CodexCredentialsFile | null
   opencode: OpencodeCredentialsFile | null
   pi: PiCredentialsFile | null
+  omp: OmpCredentialsFile | null
 }
 
 /**
@@ -640,7 +667,7 @@ interface ToolAuthEntryBase {
 
 /**
  * A stored credential, discriminated on `tool` so the provider is required
- * for opencode and pi. This keeps a consumer from falling back to a default
+ * for the api-key tools. This keeps a consumer from falling back to a default
  * provider, which could send the key to the wrong vendor.
  */
 export type ToolAuthEntry =
@@ -659,6 +686,13 @@ export type ToolAuthEntry =
     tool: 'pi'
     /** Which provider the stored api-key authenticates against. */
     piProvider: PiProvider
+    /** The `custom` provider's endpoint. */
+    endpoint?: CustomEndpoint
+  })
+  | (ToolAuthEntryBase & {
+    tool: 'omp'
+    /** Which provider the stored api-key authenticates against. */
+    ompProvider: OmpProvider
     /** The `custom` provider's endpoint. */
     endpoint?: CustomEndpoint
   })
@@ -813,8 +847,10 @@ export interface ToolAuthSummary {
   opencodeProvider?: OpencodeProvider
   /** pi only — which provider the stored api-key authenticates against. */
   piProvider?: PiProvider
-  /** opencode / pi with the `custom` provider: its endpoint. */
+  /** An api-key tool with the `custom` provider: its endpoint. */
   endpoint?: CustomEndpoint
+  /** omp only — which provider the stored api-key authenticates against. */
+  ompProvider?: OmpProvider
   /** Candidate `--model` values for this credential, newest first, for the
    *  create form. Not an allowlist. */
   models: ModelOption[]

@@ -19,7 +19,7 @@ describe('AGENT_PACKAGES', () => {
   it('runs install scripts only for the packages whose binary one puts in place', () => {
     // Everything else is third-party code with nothing yaac needs from it.
     const running = Object.entries(AGENT_PACKAGES).filter(([, p]) => p.runScripts).map(([b]) => b)
-    expect(running.sort()).toEqual(['claude', 'opencode'])
+    expect(running.sort()).toEqual(['bun', 'claude', 'opencode'])
   })
 })
 

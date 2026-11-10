@@ -9,6 +9,7 @@ import { buildFakeClaudeOAuthBundle } from '#domain/auth/fake-auth'
 import {
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_GH_TOKEN,
+  PLACEHOLDER_OMP_API_KEY,
   PLACEHOLDER_OPENCODE_API_KEY,
   PLACEHOLDER_PI_API_KEY,
   PLACEHOLDER_REFRESH_TOKEN,
@@ -65,13 +66,14 @@ describe('seedFakeAuth', () => {
     expect(parsed.claudeAiOauth.accessToken).toBe(PLACEHOLDER_ACCESS_TOKEN)
   })
 
-  it('seeds opencode and pi as OpenRouter api-keys holding their own placeholders, again over its own fake', async () => {
-    await seedFakeAuth(['opencode-openrouter', 'pi-openrouter'], BUILT_IN_USER_ID)
-    await seedFakeAuth(['opencode-openrouter', 'pi-openrouter'], BUILT_IN_USER_ID)
+  it('seeds opencode, pi and omp as OpenRouter api-keys holding their own placeholders, again over its own fake', async () => {
+    await seedFakeAuth(['opencode-openrouter', 'pi-openrouter', 'omp-openrouter'], BUILT_IN_USER_ID)
+    await seedFakeAuth(['opencode-openrouter', 'pi-openrouter', 'omp-openrouter'], BUILT_IN_USER_ID)
 
     for (const [creds, placeholder] of [
       [await getToolCredential(ME, 'opencode'), PLACEHOLDER_OPENCODE_API_KEY],
       [await getToolCredential(ME, 'pi'), PLACEHOLDER_PI_API_KEY],
+      [await getToolCredential(ME, 'omp'), PLACEHOLDER_OMP_API_KEY],
     ] as const) {
       expect(creds?.kind).toBe('api-key')
       expect(creds?.provider).toBe('openrouter')

@@ -244,6 +244,8 @@ hand-started one reports as well:
   that started it, as opencode's does, so on containerless a codex started
   by hand needs `-c features.daemon_auto_start=false` to be recorded.
 - **pi**: an extension, on `session_start` (startup, resume, `/new`).
+- **omp**: pi's extension, which omp loads as its own, reporting under
+  omp's name.
 - **opencode**: a plugin, on a top-level `session.created`. opencode creates a
   session at its first prompt, and a subagent's session has a `parentID`. A
   `/new` does not announce the end of the session it replaces, so the plugin
@@ -258,7 +260,8 @@ hand-started one reports as well:
 Each tool also ends its conversation (claude's and codex's `SessionEnd`, pi's
 `session_shutdown`, the plugin's dispose), which clears the option when the
 agent quits. That matters in a shell pane that outlives the agent. (Verified
-against claude 2.1.310, codex-cli 0.164.0, pi 1.4.0 and @opencode/cli 2.1.4.)
+against claude 2.1.310, codex-cli 0.164.0, pi 1.4.0, omp 18.18.3 and
+@opencode/cli 2.1.4.)
 
 A conversation is **active** exactly when a live agent names it. A pane option
 dies with its pane, and a new pod's tmux starts with none, so a previous pod's
@@ -351,7 +354,7 @@ and the watcher subscribes to it on agent windows:
   interactive startup. `SessionStart` does not name the model on the CLI
   `--resume` a restart uses, so a restarted claude pane reports nothing until
   its first `/model`.
-- **pi**: its extension, on every switch and session start.
+- **pi** and **omp**: the extension, on every switch and session start.
 - **opencode**: its plugin. The TUI holds a `/models` pick until the next
   prompt is submitted, so that is when the switch is reported. The plugin also
   reports the model of each step, which covers a resumed session at its first
@@ -429,8 +432,8 @@ The reporter names the path the tool sees (`claude/projects/…`,
 shared home, following links so a host workspace's row names the real file. A
 path that resolves outside the project, into a sibling's history, or to nothing
 yet is skipped (the next tick retries). pi writes only to the history, and
-its reporter names no path, so pi conversations are found there by the id in
-the log's filename.
+its reporter names no path, so its conversations are found there by the id
+in the log's filename, as omp's are (see "Agent history").
 
 `toProjectRelative` / `resolveProjectPath` in `runtime/agents/transcripts.ts`
 convert between the two forms. Disk code works with `SandboxFile`s (a dir plus
@@ -457,6 +460,12 @@ the project's shared tool homes, so under k8s a pod can reach only its own
 conversations. Agent *config* (settings, `.claude.json`, credentials, skills,
 plugins, `config.toml`) stays shared on purpose.
 
+One tool reads another's: omp loads Claude Code's user config whenever
+`CLAUDE_CONFIG_DIR` is set, as every workspace sets it. So the project's
+Claude skills, and the MCP servers in its `.claude.json` with any secrets in
+their config, reach its omp workspaces too. Claude's `settings.json` hooks do
+not (checked against omp 18.18.3).
+
 | `history/<id>/…` | Holds | k8s | containerless |
 |---|---|---|---|
 | `claude/` | claude's `projects/` (transcripts, subagent logs, tool results) | mounted at `~/.claude/projects` | the folder claude files this checkout under, linked to `claude/-workspace` |
@@ -464,13 +473,21 @@ plugins, `config.toml`) stays shared on purpose.
 | `codex/` | codex's `sessions/` rollouts | mounted at `~/.codex/sessions` | one link per rollout in the shared `sessions/` |
 | `codex-sqlite/` | codex's SQLite state | mounted at `~/.codex-sqlite`, named by `CODEX_SQLITE_HOME` | the same variable, pointing at it |
 | `pi/` | pi's session logs | mounted at `~/.yaac-pi-sessions`, named by `PI_CODING_AGENT_SESSION_DIR` | likewise |
+| `omp/` | omp's session logs, in a folder per cwd | mounted at `~/.omp/agent/sessions` | unused: they stay in the project's `omp/agent/sessions/` |
 
 Where a tool has an env override, the directory sits outside every tool home
-and both drivers use it directly. The other three are nested inside a shared
-home. A pod mounts them over it, but a host has no mount namespace, so a host
-create plants links in the shared homes instead. On both drivers every
-conversation is filed under `-workspace` (a pod's cwd), which is why one
-folder link is enough on a host.
+and both drivers use it directly. claude's and codex's are nested inside a
+shared home. A pod mounts them over it, but a host has no mount namespace, so
+a host create plants links in the shared homes instead. On both drivers every
+claude conversation is filed under `-workspace` (a pod's cwd), which is why
+one folder link is enough on a host.
+
+omp has an override, but its acp server ignores it when it looks a
+conversation up to load, and searches only its agent dir's `sessions/`. So
+omp keeps its logs there (its wrapper drops pi's session dir), and a pod
+mounts the history over it. A host leaves them in the project's omp home,
+one folder per checkout, found by conversation id; deleting a workspace does
+not delete them.
 
 Auto-memory stays shared. claude keys it on the checkout's git root, which is
 the checkout itself (`/workspace` in a pod). So the project's
@@ -588,7 +605,7 @@ never prunes it.
 ## Sandbox-writable dirs
 
 Under k8s every pod of a project mounts read-write its tool homes (`claude/`,
-`codex/`, `pi/`, `opencode-config/`), its conversation records
+`codex/`, `pi/`, `omp/`, `opencode-config/`), its conversation records
 (`acp/<workspaceId>/`), its terminal logs (`logs/<workspaceId>/`), its history
 (`history/<workspaceId>/…`) and the checkout. Anything below a mount root may be a link or a FIFO the pod planted.
 The server never touches these trees with plain path I/O. It opens them as a
