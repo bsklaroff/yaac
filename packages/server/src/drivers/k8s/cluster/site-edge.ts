@@ -158,8 +158,11 @@ function buildRouterBootstrap(): string {
  * connections would stay pinned to the old pod by conntrack after a
  * deploy moves the selector. With pod IPs, new requests go to the new
  * release as soon as DNS shows it, while open connections to the old one
- * finish. A site with no live release resolves to nothing, so its cluster
- * has no hosts and Envoy answers 503.
+ * finish. DNS shows it within a second where CoreDNS answers
+ * `cluster.local` names uncached: kind and the `infra/` clusters
+ * (docs/cluster-setup.md "Uncached cluster DNS"). A site with no live
+ * release resolves to nothing, so its cluster has no hosts and Envoy
+ * answers 503.
  */
 function buildSiteRoutes(sites: SiteRoute[]): { 'rds.json': string; 'cds.json': string } {
   const sorted = [...sites].sort((a, b) => a.siteId.localeCompare(b.siteId))

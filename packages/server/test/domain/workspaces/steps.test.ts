@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import { namedWorkflowFor } from '#test/support/workflows'
 import path from 'node:path'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { addSteps, assertInteractive, cancelStep, reconcileSteps, rerunStep } from '#domain/workspaces/steps'
+import { addSteps, assertInteractive, cancelStep, onReleaseStepChanged, reconcileSteps, rerunStep } from '#domain/workspaces/steps'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import {
   BUILT_IN_USER_ID,
@@ -231,6 +231,35 @@ describe('reconcileSteps', () => {
     listed({ name: 'build', dead: true, exitStatus: 0 }, { name: 'db', dead: true, exitStatus: 1 }, { name: 'app', dead: false, ready: true })
     await reconcileSteps(view)
     expect(await states()).toMatchObject({ db: 'failed 1' })
+  })
+})
+
+describe('onReleaseStepChanged', () => {
+  it("fires when a site release's step changes state, so a deploy waiting on it can flip", async () => {
+    const changed = vi.fn()
+    onReleaseStepChanged(changed)
+    const { volumeId } = await release()
+    await claimVolume(volumeId, WS)
+    listed()
+    await reconcileSteps(view)
+    changed.mockClear()
+
+    listed({ name: 'build', dead: true, exitStatus: 0 })
+    await reconcileSteps(view)
+    expect(await states()).toMatchObject({ build: 'succeeded 0' })
+    expect(changed).toHaveBeenCalled()
+  })
+
+  it('stays quiet for a workspace that is not a release', async () => {
+    const changed = vi.fn()
+    onReleaseStepChanged(changed)
+    await startLife({ install: { run: 'pnpm install' } })
+    listed()
+    await reconcileSteps(view)
+    listed({ name: 'install', dead: true, exitStatus: 0 })
+    await reconcileSteps(view)
+    expect(await states()).toMatchObject({ install: 'succeeded 0' })
+    expect(changed).not.toHaveBeenCalled()
   })
 })
 

@@ -182,6 +182,28 @@ locals {
         volumeBindingMode = "Immediate"
         mountOptions      = ["nfsvers=4.2", "hard"]
       },
+      # Answers the cluster's own names without CoreDNS's cache, so the site
+      # router sees a deploy's flip at once (docs/cluster-setup.md "Uncached
+      # cluster DNS"). k3s's Corefile imports `*.server` keys of this
+      # ConfigMap as extra server blocks.
+      {
+        apiVersion = "v1"
+        kind       = "ConfigMap"
+        metadata   = { name = "coredns-custom", namespace = "kube-system" }
+        data = {
+          "yaac.server" = <<-EOT
+            cluster.local:53 {
+                errors
+                ready
+                kubernetes cluster.local {
+                    pods insecure
+                }
+                prometheus :9153
+                loadbalance
+            }
+          EOT
+        }
+      },
     ],
     [for name, c in local.charts : {
       apiVersion = "helm.cattle.io/v1"

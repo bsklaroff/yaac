@@ -328,6 +328,17 @@ describe('defaultReconcileSteps', () => {
     expect([...titles.triggers].sort()).toEqual(['live-agents', 'workspaces'])
   })
 
+  // A `sites` pass can hand a release its volume, and `steps`, after it,
+  // opens the steps that were waiting on it in that same pass.
+  it('runs steps after sites, on every trigger sites runs on', () => {
+    const steps = defaultReconcileSteps()
+    const names = steps.map((s) => s.name)
+    const sites = steps.find((s) => s.name === 'sites')!
+    const stepRun = steps.find((s) => s.name === 'steps')!
+    expect(names.indexOf('steps')).toBeGreaterThan(names.indexOf('sites'))
+    expect(sites.triggers.filter((t) => !stepRun.triggers.includes(t))).toEqual([])
+  })
+
   /** Assert that `triggers` runs exactly `expected` and no other step. */
   async function expectOnly(
     triggers: ReconcileTrigger[],

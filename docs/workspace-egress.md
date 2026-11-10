@@ -584,7 +584,10 @@ addresses. Port 8080 needs nothing more, by the sinkhole rule above. yaac
 never writes CoreDNS, so on kind the edit survives `yaac cluster install`.
 k3s re-applies its packaged CoreDNS on restart; put the block in the
 `coredns-custom` ConfigMap there instead, under a key like `tailnet.server`.
-On EKS's managed addon, re-apply it after an addon update.
+With `infra/hetzner-k3s`, add it as another key of the `coredns-custom`
+ConfigMap in its `cluster.tf`, which owns that ConfigMap. With
+`infra/aws-eks`, add it to the `corefile` its `main.tf` gives the CoreDNS
+add-on, which replaces any edit made in the cluster.
 
 The e2e suites open their mock pods to the proxy the same way
 (`openToProxy` in `test/support/cluster.ts`).

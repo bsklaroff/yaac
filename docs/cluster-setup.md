@@ -388,6 +388,46 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
    a cache pod is ready; otherwise its pnpm goes to npmjs. Install carries on
    if the cache fails, since installs are only slower without it.
 
+## Uncached cluster DNS
+
+The site router re-resolves a site's headless Service every second, so it
+sees a deploy's flip as soon as CoreDNS does (docs/public-sites.md "The
+router"). CoreDNS's `cache` plugin runs ahead of its `kubernetes` plugin,
+so wherever it caches the cluster's own names, the router can see the old
+answer for up to that answer's TTL (5 s by default). A cluster's own names
+come from CoreDNS's in-memory copy of the API, so that cache saves little.
+
+- **kind**: kubeadm's Corefile already turns the cache off for
+  `cluster.local` (`disable success` and `disable denial` under `cache`),
+  so install leaves CoreDNS alone.
+- **byo**: `infra/aws-eks` gives the CoreDNS add-on a `corefile` with the
+  same two lines. That pins the whole Corefile, so a later add-on's default
+  does not reach the cluster; re-diff it when bumping `kubernetes_version`.
+  k3s owns its default server block, so `infra/hetzner-k3s` adds a block
+  of its own under a `yaac.server` key of k3s's `coredns-custom`
+  ConfigMap:
+
+  ```
+  cluster.local:53 {
+      errors
+      ready
+      kubernetes cluster.local {
+          pods insecure
+      }
+      prometheus :9153
+      loadbalance
+  }
+  ```
+
+  CoreDNS hands a query to the block with the most specific zone, so this
+  one answers every `cluster.local` name, uncached, while every other name
+  still goes through the default block and its cache. It carries over what
+  the default block did for those names: `ready`, so readiness covers the
+  plugin that now answers them, metrics, and `loadbalance`. On another cluster,
+  make the same change however its CoreDNS is configured. Without it,
+  sites still work, but a flip reaches the router a few seconds late,
+  which for a site with a volume is that much more downtime.
+
 ## Multi-node
 
 `--nodes N` creates one control-plane node and `N-1` workers, up to 5. Every
