@@ -49,6 +49,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   useUiStore.setState({ layouts: {}, activeTabs: {}, paneView: {} })
+  localStorage.clear()
 })
 
 describe('layoutGraph', () => {

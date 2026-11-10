@@ -95,6 +95,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   useUiStore.setState({ paneView: {}, layouts: {}, activeTabs: {}, findPending: null, filesFontSize: 12 })
+  localStorage.clear()
 })
 
 const explorer = <WorkspaceFiles workspaceId="s1" projectId="proj" baseBranch="main" />
@@ -516,6 +517,21 @@ describe('GitStatusBar changes', () => {
     fireEvent.click(button)
     expect(useUiStore.getState().activeTabs.s1).toBe(CHANGES_TARGET)
     expect(useUiStore.getState().findPending).toBe(CHANGES_TARGET)
+  })
+
+  // A reload (a server switch in the desktop shell) starts with an empty
+  // query cache; the bar shows the last answer, muted, until a read lands.
+  it('shows the last answer saved across a reload until a read lands', async () => {
+    server.route(CHANGES, reply({ ...PAYLOAD, comparison: { ref: 'origin/main', ahead: 2, behind: 0 } }))
+    renderWithClient(<GitStatusBar workspaceId="s1" />)
+    expect((await screen.findByTitle('Review changes')).parentElement!.className).not.toContain('opacity-60')
+    cleanup()
+
+    server.route(CHANGES, () => new Promise(() => {}))
+    renderWithClient(<GitStatusBar workspaceId="s1" />)
+    expect(screen.getByTitle('Review changes').textContent).toBe('+4 −5')
+    expect(screen.getByTitle('Review changes').parentElement!.className).toContain('opacity-60')
+    expect(screen.getByText(/2 commits ahead of/)).toBeTruthy()
   })
 
   // A failed poll keeps the last answer in the cache; neither reader may
