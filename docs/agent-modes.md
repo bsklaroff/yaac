@@ -716,10 +716,13 @@ that never comes up. The provisioning pane before it and the chat pane
 after it look the same: the prompt, then a spinner captioned with the
 create's progress, then "Starting <agent>…", then "connecting" until the
 conversation's history arrives, and "working" until the agent echoes the
-prompt, so the hand-over shows no gap. A chat pane opened later on a
-session's first conversation shows the same prompt while it connects. A
-`tui` create's provisioning pane is the same, and the terminal replaces it
-once the prompt is typed in.
+prompt, so the hand-over shows no gap. Only a session the tab drew
+starting carries the prompt on this way (`wasDrawnStarting`), and only
+until its chat sees the conversation start. Any other
+chat pane, such as one opened on an existing conversation after a reload,
+connects under a bare spinner, because the prompt would flash there until
+the history replaced it. A `tui` create's provisioning pane is the same,
+and the terminal replaces it once the prompt is typed in.
 
 The snapshot cuts prompts short, so these panes show the opening message
 whole (`useOpening`): the text the tab sent, when it created the workspace,
