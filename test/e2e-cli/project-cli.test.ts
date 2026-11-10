@@ -380,6 +380,34 @@ describe('yaac config project and user settings (real CLI + real server)', () =>
     expect((await config('default-branch-guard', 'demo-settings', 'on')).stderr).toContain('is not hosted by yaac; set its default-branch guard at its git host')
   })
 
+  it('config icon shows, replaces from an image file or stdin, refuses a non-image, and removes a project\'s icon', async () => {
+    const png = path.join(testEnv.scratchDir, 'icon.png')
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+    await fs.writeFile(png, bytes)
+    const svg = path.join(testEnv.scratchDir, 'icon.svg')
+    await fs.writeFile(svg, '<svg xmlns="http://www.w3.org/2000/svg"/>')
+
+    expect((await config('icon', 'demo-settings')).stdout).toContain('demo-settings has no icon; its chip shows its initial.')
+    const set = await config('icon', 'demo-settings', '--file', png)
+    expect(set.exitCode, set.stderr).toBe(0)
+    expect(set.stdout).toContain('Saved demo-settings\'s icon.')
+    expect((await config('icon', 'demo-settings')).stdout).toContain('demo-settings has an icon.')
+    const projectId = (await (await fetch(`http://127.0.0.1:${String(server.lock.port)}/api/project/list`)).json() as Array<{ id: string; name: string }>)
+      .find((p) => p.name === 'demo-settings')!.id
+    const served = async (): Promise<Buffer> =>
+      Buffer.from(await (await fetch(`http://127.0.0.1:${String(server.lock.port)}/api/project/${projectId}/icon`)).arrayBuffer())
+    expect(await served()).toEqual(bytes)
+    const piped = Buffer.from([...bytes, 9])
+    expect((await config('icon', 'demo-settings', '--file', '-', { stdin: piped })).exitCode).toBe(0)
+    expect(await served()).toEqual(piped)
+
+    expect((await config('icon', 'demo-settings', '--file', svg)).stderr).toContain('must be a PNG, JPEG, GIF or WebP image')
+    expect((await config('icon', 'demo-settings', '--file', path.join(testEnv.scratchDir, 'nope.png'))).stderr).toContain('Cannot read')
+    expect((await config('icon', 'demo-settings', '--file', png, '--none')).stderr).toContain('Pass --file or --none, not both.')
+    expect((await config('icon', 'demo-settings', '--none')).stdout).toContain('Removed demo-settings\'s icon')
+    expect((await config('icon', 'demo-settings')).stdout).toContain('has no icon')
+  })
+
   it('config time-zone shows, pins a zone, refuses a bad one, and follows the device again', async () => {
     expect((await config('time-zone')).stdout).toMatch(/^Time zone: /)
     const pinned = await config('time-zone', 'Europe/Berlin')

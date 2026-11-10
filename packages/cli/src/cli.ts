@@ -31,6 +31,7 @@ import { authUpdate } from '#commands/auth-update'
 import { authClear } from '#commands/auth-clear'
 import { authList } from '#commands/auth-list'
 import { configDockerfile, configUserDockerfile } from '#commands/config-dockerfile'
+import { configIcon } from '#commands/config-icon'
 import { configCacheVolumes, configNestedContainers, configNpmCache, configPortForwards } from '#commands/config-launch-settings'
 import { configShow } from '#commands/config-show'
 import { configGitIdentity } from '#commands/config-git-identity'
@@ -801,6 +802,14 @@ config
   .option('--file <path>', 'Replace it with this file, or - to read it from stdin')
   .option('--none', 'Remove it')
   .action(configUserDockerfile)
+
+config
+  .command('icon')
+  .description('Show whether a project has an icon, the picture its chip shows in the sidebar in place of its initial, or replace it with an image file')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .option('--file <path>', 'Replace it with this PNG, JPEG, GIF or WebP file (at most 512 KB, ideally square), or - to read it from stdin')
+  .option('--none', 'Remove it, so the chip shows the project\'s initial')
+  .action(configIcon)
 
 config
   .command('git-identity')

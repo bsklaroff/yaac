@@ -124,14 +124,18 @@ environment entries.
 ## Icon
 
 The picture a project's chip shows in the rail (and the mobile projects
-list) instead of its initial. It is set only from the webapp: paste or drop
-an image on the preview chip, or choose a file, then place it in the crop
-dialog (drag to move, slider or scroll wheel to zoom). The browser draws the
-chosen square to a 256px PNG and uploads that; removing the icon returns the
-chip to the initial.
+list) instead of its initial. In the webapp, paste or drop an image on the
+preview chip, or choose a file, then place it in the crop dialog (drag to
+move, slider or scroll wheel to zoom). The browser draws the chosen square
+to a 256px PNG and uploads that; removing the icon returns the chip to the
+initial. `yaac config icon <project> --file <path>` (or `--none`) and an
+agent's `yaac-mama icon set <file>` (or `icon remove`) upload a file as it
+is, and the chip shows the middle of one that is not square; `yaac-mama`
+sends it as base64 inside its JSON request, which caps its icons at 150000
+bytes.
 
-Every image, SVG included, is drawn to a canvas before upload, and the
-server stores only PNG, JPEG, GIF or WebP (up to 512 KB, in the
+The webapp draws every image, SVG included, to a canvas before upload, and
+the server stores only PNG, JPEG, GIF or WebP (up to 512 KB, in the
 `project_icons` table), refusing SVG. An SVG can carry script: inside an
 `<img>` it never runs, but a stored SVG served from yaac's origin would run
 it in that origin if its URL were opened directly. The server serves the

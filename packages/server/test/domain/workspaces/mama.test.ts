@@ -60,7 +60,7 @@ import {
 import { formatInZone } from '@yaac/shared/schedule'
 import type { PermissionMode } from '@yaac/shared/types'
 import { cloneRepo } from '#domain/git'
-import { createWorkflow } from '#domain/projects'
+import { createWorkflow, listProjects, readProjectIcon } from '#domain/projects'
 import { _resetWorkspaceStatusStoreForTests, setLiveAgents } from '#runtime/status/status-store'
 import { WorkspaceExecError, type RuntimeHandle, type WorkspaceDriver } from '#drivers/contract'
 import { git } from '@yaac/test-utils/git'
@@ -1290,6 +1290,26 @@ describe('runMamaCommand', () => {
       expect(await run('set-base', '  ')).toEqual({ ok: false, error: 'set-base needs a branch' })
       expect((await run('set-base', 'main', { workspace: 'sibling' })).ok).toBe(false)
       expect(await baseOf('caller-workspace')).toBe('main')
+    })
+  })
+
+  describe('icon-set / icon-remove', () => {
+    const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+    const iconHash = async (): Promise<string | undefined> =>
+      (await listProjects()).find((p) => p.id === PROJ)?.iconHash
+
+    it('sets the caller\'s project icon from base64, refuses what is not an image, and removes it', async () => {
+      expect(await output('icon-set', PNG.toString('base64'))).toContain('Set the project\'s icon')
+      expect((await readProjectIcon(PROJ)).bytes).toEqual(PNG)
+      expect(await iconHash()).toBeDefined()
+
+      expect(await run('icon-set', '')).toEqual({ ok: false, error: 'icon-set needs an image' })
+      const svg = await run('icon-set', Buffer.from('<svg/>').toString('base64'))
+      expect(svg).toEqual({ ok: false, error: 'the icon must be a PNG, JPEG, GIF or WebP image' })
+      expect((await readProjectIcon(PROJ)).bytes).toEqual(PNG)
+
+      expect(await output('icon-remove')).toContain('Removed the project\'s icon')
+      expect(await iconHash()).toBeUndefined()
     })
   })
 

@@ -286,7 +286,7 @@ export interface RunYaacOptions {
    * prompt would lose later answers to the first reader, so use
    * `stdinOnPrompt` there.
    */
-  stdin?: string
+  stdin?: string | Buffer
   /**
    * Write each `send` once its `when` pattern appears in stdout after the
    * previous match. The prompt is printed by the readline that will read

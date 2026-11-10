@@ -8,15 +8,18 @@ import crypto from 'node:crypto'
  * create or queue one, edit, run or discard a queued one, manage routines,
  * send a running one a message, retitle, group, stop one (its own
  * included), restart a stopped one, fetch another's branches and read
- * another's conversation history and step logs, and change its own
- * reference branch.
+ * another's conversation history and step logs, change its own
+ * reference branch, and set or remove the project's icon.
  * Stopping is allowed because it is reversible: the checkout, row and
  * conversations are kept. Restarting a stopped workspace only undoes a
  * stop, and is held to the caller's own permission mode, as is everything a
  * routine launches. Discarding a queued workspace loses only a prompt and
  * settings that never ran; deleting a routine loses its schedule and the
- * run history it lists, but no run's workspace. Deleting a workspace and
- * reconfiguring stay the user's.
+ * run history it lists, but no run's workspace. The project's icon is the
+ * one piece of project config an agent may change: replacing it loses the
+ * old picture, which every viewer of the project sees, but like a `rename`
+ * title it changes nothing that runs. Deleting a workspace and the rest of
+ * the project's config stay the user's.
  *
  * The caller's workspace comes from the transport (pod IP under k8s, a
  * per-workspace token under containerless), never the request, and every
@@ -92,7 +95,7 @@ import {
   type WorkspaceListEntry,
 } from '@yaac/shared/types'
 import { authEntryEndpoint, authEntryProvider, loadToolAuthEntry, modelsForTool } from '#domain/auth'
-import { listProjectWorkflows, showWorkflow } from '#domain/projects'
+import { listProjectWorkflows, removeProjectIcon, setProjectIcon, showWorkflow } from '#domain/projects'
 import { agentDriver, resolveAgentPermissionMode } from '#runtime/agents'
 import { liveAgents } from '#runtime/status'
 import { bundleCheckout } from '#domain/git'
@@ -233,6 +236,8 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   status: ['workspace', 'step'],
   rename: ['workspace'],
   'set-base': [],
+  'icon-set': [],
+  'icon-remove': [],
   stop: ['workspace', 'session'],
   restart: ['workspace', 'timeout', 'no-volume'],
   'group-create': [],
@@ -293,6 +298,8 @@ export async function runMamaCommand(
       case 'status': return await runStatus(caller, request)
       case 'rename': return await runRename(caller, request)
       case 'set-base': return await runSetBase(caller, request)
+      case 'icon-set': return await runIconSet(caller, request)
+      case 'icon-remove': return await runIconRemove(caller)
       case 'stop': return await runStop(caller, request)
       case 'restart': return await runRestart(caller, request)
       case 'group-create': return await runGroupCreate(caller, request)
@@ -1421,6 +1428,23 @@ async function runSetBase(caller: MamaCaller, request: MamaRequestInput): Promis
       + `against origin/${branch}, and what is queued under it from now on forks from there. `
       + `Your commits have not moved; rebase onto origin/${branch} yourself if they should.`,
   }
+}
+
+/**
+ * Replace the project's icon with the image the body carries as base64,
+ * since the envelope is JSON. The script sends a file's bytes; the server
+ * checks they are an image (`setProjectIcon`).
+ */
+async function runIconSet(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const bytes = Buffer.from(request.body, 'base64')
+  if (bytes.length === 0) return { ok: false, error: 'icon-set needs an image' }
+  await setProjectIcon(caller.principal, caller.projectId, bytes)
+  return { ok: true, output: 'Set the project\'s icon: the sidebar shows it in place of the project\'s initial.' }
+}
+
+async function runIconRemove(caller: MamaCaller): Promise<MamaOutcome> {
+  await removeProjectIcon(caller.principal, caller.projectId)
+  return { ok: true, output: 'Removed the project\'s icon: the sidebar shows the project\'s initial again.' }
 }
 
 /**
