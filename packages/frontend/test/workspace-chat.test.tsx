@@ -72,6 +72,7 @@ const pane = (workspaceId = 'w1', conversationId = 'acp-1', focused = true, open
     {...(opening !== undefined ? { opening } : {})}
     visible
     focused={focused}
+    onShowLog={() => {}}
   />
 
 function show(

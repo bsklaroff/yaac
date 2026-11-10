@@ -5,7 +5,7 @@
  * `WorkspacePaths.terminalLogDir`, so no command text nests a script inside
  * shell and tmux quoting.
  */
-import { tmuxCmd, windowTarget } from '#runtime/agents'
+import { pipeToLogCommand, tmuxCmd, windowTarget } from '#runtime/agents'
 import { shellQuote } from '#lib/shell'
 import type { WorkspacePaths } from '#drivers/contract'
 import { AGENT_TOOLS } from '@yaac/shared/types'
@@ -16,7 +16,8 @@ export const STEP_READY_OPTION = '@yaac-step-ready'
 
 /**
  * The tmux config a life sources: where its logs go, a hook that pipes
- * every new window but a session's into the log writer, and one that
+ * every new window but a session's into the log writer (an `acp` session's
+ * window is piped as it opens, by `buildWindowsExec`), and one that
  * renames a window whose pane died to its own name. The rename sends
  * control clients a `%window-renamed`, so the status watcher re-lists at
  * once and sees the exit status of a step, which no other notification
@@ -29,7 +30,7 @@ export function lifeHooksConfig(paths: WorkspacePaths, logDir: string): string {
     `set-option -g @yaac-log-dir "${logDir}"`,
     'set-hook -g after-new-window {',
     `  if-shell -F "${session}" {} {`,
-    '    pipe-pane -o "exec yaac-log-writer \'#{@yaac-log-dir}/#{window_name}.log\'"',
+    `    ${pipeToLogCommand()}`,
     '  }',
     '}',
     'set-hook -g pane-died {',

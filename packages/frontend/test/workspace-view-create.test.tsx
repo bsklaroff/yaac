@@ -181,7 +181,7 @@ describe('WorkspaceView around a create', () => {
   // already holds it (the provisioning row before carried it uncut), else
   // once fetched, connecting meanwhile. A failed fetch leaves the spinner
   // without the message, never the cut one.
-  it('draws a chat session whose agent is still starting as the create, with its log a click away', async () => {
+  it('draws a chat session whose agent is still starting as the create', async () => {
     const listed = (mode: 'acp' | 'tui', prompt = 'fix the parser bug', sessionId = 'sess-1'): ServerSnapshot => ({
       ...snapshot,
       workspaces: [workspaceEntry({
@@ -195,8 +195,6 @@ describe('WorkspaceView around a create', () => {
     expect(screen.getByText('fix the parser bug')).toBeTruthy()
     expect(screen.getByText('Starting Claude Code')).toBeTruthy()
     expect(screen.queryByTestId('terminal')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Show log' }))
-    expect(screen.getByTestId('terminal')).toBeTruthy()
 
     cleanup()
     renderWithClient(<WorkspaceView snapshot={listed('tui')} provisioning={[]} />)

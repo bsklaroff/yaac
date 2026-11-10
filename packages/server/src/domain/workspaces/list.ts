@@ -174,6 +174,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       sessions: entries,
       ...(w.windows !== undefined ? { terminals: terminalsOf(w.windows, sessions, steps.map((s) => s.name)) } : {}),
       ...(steps.length > 0 ? { steps: steps.map((s) => toStepEntry(s, w.windows)) } : {}),
+      ...(row?.lifeStartedAt !== undefined ? { life: row.lifeStartedAt.toISOString() } : {}),
       blockedHosts: w.blockedHosts,
       forwardedPorts: w.forwardedPorts,
       unforwardedPorts: w.unforwardedPorts,

@@ -716,8 +716,12 @@ one that does is reported as a failed create naming the adapter, as a `tui`
 agent that dies at launch is, with the prompt beside it.
 
 Until its conversation is named, an ACP session's pane is drawn as the
-agent starting (`SessionPane`), with acpd's log a click away for an agent
-that never comes up. The provisioning pane before it and the chat pane
+agent starting (`SessionPane`). Any ACP session's pane can switch from that
+or its chat to acpd's log (docs/workspace-steps.md "Logs") and back, from
+the bar under either: while the agent comes up, back is the starting
+screen, and a chat that opens while the log is shown is announced rather
+than switched to. An agent that exits before naming a conversation offers
+its log in the pane itself. The provisioning pane before it and the chat pane
 after it look the same: the prompt, then a spinner captioned with the
 create's progress, then "Starting <agent>…", then "connecting" until the
 conversation's history arrives, and "working" until the agent echoes the

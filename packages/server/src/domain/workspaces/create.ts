@@ -391,7 +391,8 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<{ handle: 
   // and acpd holds the conversation until the checkout's `.git` lands. The
   // adapter's boot then overlaps the checkout. Containerless only: there
   // acpd ships with this server, while a pod's comes from its image, which
-  // may predate `--wait-for`.
+  // may predate `--wait-for`. The life's log hooks go first, since a
+  // session's window is logged into the life's dir as it opens.
   const early = runtime.kind === 'containerless' && !reusedCheckout && sessions.every((s) => s.mode === 'acp')
   const launches = await sessionLaunches(projectId, workspaceId, sessions, paths, { beforeCheckout: early })
   const tools = [...new Set(launches.map((l) => TOOL_LABELS[l.tool]))]
@@ -399,9 +400,14 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<{ handle: 
     throwIfProvisionStopped(workspaceId)
     if (tools.length > 0) emit(`Starting ${tools.join(', ')}...`, options)
   }
-  if (early && launches.length > 0) {
+  const windows = [
+    ...(life !== undefined ? [await lifeHooksExec(projectId, workspaceId, life, paths)] : []),
+    buildWindowsExec(launches, paths),
+  ].filter((cmd) => cmd !== '')
+  const opensEarly = early && launches.length > 0
+  if (opensEarly) {
     announceAgents()
-    await runtime.exec(jobName, buildWindowsExec(launches, paths))
+    await runtime.exec(jobName, windows.join(' && '))
   }
 
   // Everything below reads the checkout, so join it now.
@@ -423,8 +429,8 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<{ handle: 
     }
   }
 
-  // Then the life's log hooks, and the sessions if they did not start
-  // early, in one command with the checkout's own setup to save round
+  // Then the life's log hooks and the sessions, unless they opened early,
+  // in one command with the checkout's own setup to save round
   // trips, ending with the mark that setup is done, which lets the step
   // reconcile open the life's steps. A checkout this create made already
   // borrows from the main clone and holds its current refs; a reused one is
@@ -433,10 +439,9 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<{ handle: 
   const setup = [
     ...(reusedCheckout ? [buildCloneLinkExec(path.join(repoDir(projectId), '.git'), paths.workspaceDir, remoteUrl)] : []),
     ...(runtime.kind === 'containerless' ? [] : [buildStatusWarmupExec(paths.workspaceDir)]),
-    ...(life !== undefined ? [await lifeHooksExec(projectId, workspaceId, life, paths)] : []),
-    buildWindowsExec(early ? [] : launches, paths),
+    ...(opensEarly ? [] : windows),
     finishSetupCommand(paths),
-  ].filter((cmd) => cmd !== '')
+  ]
   if (!early) announceAgents()
   await runtime.exec(jobName, setup.join(' && '))
   await markSessionsLaunched(launches.map((l) => l.session.id))
