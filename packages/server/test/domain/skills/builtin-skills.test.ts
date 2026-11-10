@@ -89,6 +89,7 @@ describe('yaac-mama skill', () => {
     expect(body).toContain('yaac-mama list')
     expect(body).toContain('yaac-mama group create "<name>"')
     expect(body).toContain('yaac-mama set-base <branch>')
+    expect(body).toContain('yaac-mama icon set <file>')
     // Omitting the workspace stops the caller itself, and a self-stop's
     // confirmation may never arrive.
     expect(body).toContain('yaac-mama stop [<workspace>]')

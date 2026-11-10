@@ -1404,6 +1404,27 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(mine?.title).toBe('wiring up the mama channel')
   })
 
+  it('sets and removes its project\'s icon from an image file, refusing a directory and one too large to send', async () => {
+    const png = path.join(testEnv.scratchDir, 'mama-icon.png')
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...Array.from({ length: 300 }, (_, i) => i % 256)])
+    await fs.writeFile(png, bytes)
+    const set = await runMama('icon', 'set', png)
+    expect(set.code, set.out).toBe(0)
+    expect(set.out).toContain('Set the project\'s icon')
+    expect(Buffer.from(await (await fetch(`${origin()}/api/project/${projectId}/icon`)).arrayBuffer())).toEqual(bytes)
+
+    const big = path.join(testEnv.scratchDir, 'mama-icon-big.png')
+    await fs.writeFile(big, Buffer.alloc(150_001))
+    const refused = await runMama('icon', 'set', big)
+    expect(refused.code).toBe(2)
+    expect(refused.out).toContain('over the 150000 bytes an icon may be')
+    const dir = await runMama('icon', 'set', testEnv.scratchDir)
+    expect(dir).toEqual({ code: 2, out: `yaac-mama: cannot read ${testEnv.scratchDir}\n` })
+
+    expect((await runMama('icon', 'remove')).out).toContain('Removed the project\'s icon')
+    expect((await fetch(`${origin()}/api/project/${projectId}/icon`)).status).toBe(404)
+  })
+
   it('rebases its own diff onto another branch on origin, and refuses one origin lacks', async () => {
     const project = path.join(testEnv.dataDir, 'global', 'projects', projectId)
     const checkout = path.join(project, 'workspaces', workspaceId)

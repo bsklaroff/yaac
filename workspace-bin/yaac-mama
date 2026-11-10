@@ -25,6 +25,7 @@
 #   (each prompt or message also as - for stdin, or as --prompt-file F)
 #   yaac-mama rename [<workspace>] "<title>"
 #   yaac-mama set-base <branch>
+#   yaac-mama icon set <file> | icon remove
 #   yaac-mama stop [<workspace>]
 #   yaac-mama stop --session [<session>]
 #   yaac-mama restart [--timeout D] [--no-volume] <workspace>
@@ -49,9 +50,11 @@
 # no more permissive than the caller's, which also caps what a routine it
 # makes or edits launches. The things it deletes are a queued workspace,
 # which never ran, and a routine, whose schedule and run history go but
-# whose runs' workspaces stay. The settings it changes are the caller's own base branch and a group's
-# workspace limit, which an orchestrator sets for the workers it queues
-# there; the rest stays with the user.
+# whose runs' workspaces stay. The settings it changes are the caller's own
+# base branch, a group's workspace limit, which an orchestrator sets for the
+# workers it queues there, and the project's icon, which every viewer of the
+# project sees and whose old picture is not kept, but which, like a title,
+# changes nothing that runs; the rest stays with the user.
 # `fetch` reads another workspace's branches into this
 # checkout, `history` its conversations and `logs` its steps' output; none
 # writes to theirs.
@@ -123,6 +126,8 @@ Usage:
   --prompt-file <path>, given before the other arguments.
   yaac-mama rename [<workspace>] "<title>"          # retitle (default: yourself)
   yaac-mama set-base <branch>                      # change your base branch
+  yaac-mama icon set <file>                        # the project's sidebar icon
+  yaac-mama icon remove                            # back to its initial
   yaac-mama stop [<workspace>]                      # stop it (default: yourself)
   yaac-mama stop --session [<session>]             # close one agent's session
                                                    # (default: yours); its
@@ -363,6 +368,12 @@ the yaac webapp diffs it against, and what a workspace queued under it from
 then on forks from. Use it when this work is stacked on another PR's
 branch. It does not touch this checkout: rebase onto origin/<branch>
 yourself (`git fetch origin <branch>` first if git does not have it yet).
+
+icon set makes an image file the picture this project's chip shows in the
+yaac sidebar in place of its initial: a square PNG, JPEG, GIF or WebP of at
+most 150000 bytes (256px is plenty). An SVG is refused; draw it to a PNG
+first. It replaces any icon already set, which is not kept, and everyone
+who views the project sees it. icon remove puts the initial back.
 
 stop ends a workspace's running container/tmux server and keeps its checkout,
 title, group and conversation, so it can be restarted. Stopping YOURSELF
@@ -1065,6 +1076,35 @@ EOF
     run "$cmd" '' "$noun" "$1"
     ;;
 
+  icon)
+    shift
+    case "${1:-}" in
+      set)
+        if [ $# -ne 2 ] || [ -z "$2" ]; then
+          echo 'usage: yaac-mama icon set <file>' >&2
+          exit 2
+        fi
+        # The envelope is JSON, so the image goes as base64 in the body,
+        # which holds 200000 characters: 150000 bytes once encoded.
+        [ -f "$2" ] && [ -r "$2" ] || { echo "yaac-mama: cannot read $2" >&2; exit 2; }
+        [ "$(wc -c < "$2")" -le 150000 ] \
+          || { echo "yaac-mama: $2 is over the 150000 bytes an icon may be; shrink it (256px is plenty)" >&2; exit 2; }
+        scratch
+        base64 < "$2" | tr -d '\n' > "$tmp/icon"
+        body_file=$tmp/icon
+        run icon-set ''
+        ;;
+      remove)
+        [ $# -eq 1 ] || { echo 'usage: yaac-mama icon remove' >&2; exit 2; }
+        run icon-remove ''
+        ;;
+      *)
+        echo 'usage: yaac-mama icon set <file> | icon remove' >&2
+        exit 2
+        ;;
+    esac
+    ;;
+
   group)
     shift
     [ $# -gt 0 ] || { echo 'usage: yaac-mama group create|move|set-limit …' >&2; exit 2; }
@@ -1102,7 +1142,7 @@ EOF
     ;;
 
   *)
-    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, run-queued, delete-queued, routine, send, rename, stop, restart, rerun, status, logs, group, models, volumes, workflow, fetch, history)" >&2
+    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, run-queued, delete-queued, routine, send, rename, set-base, icon, stop, restart, rerun, status, logs, group, models, volumes, workflow, fetch, history)" >&2
     echo 'run "yaac-mama --help" for usage' >&2
     exit 2
     ;;
