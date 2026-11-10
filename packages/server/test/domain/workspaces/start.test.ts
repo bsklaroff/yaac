@@ -304,7 +304,7 @@ describe('prepareStart', () => {
         .toMatchObject({ model: 'claude-opus-5', permissionMode: 'manual' })
       // Only a person's create is remembered.
       expect((await getProjectRow(DEMO_PROJECT_ID))?.createDefaults.claude)
-        .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan' })
+        .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan', agentOptions: {} })
     })
 
     // docs/effort-levels.md. One level name means the same across a tool's
@@ -915,7 +915,8 @@ describe('prepareStart', () => {
       // window opens; its steps wait, pending, for the step reconcile.
       const setup = execOf('new-window')!
       expect(setup).toMatch(/source-file '\/home\/yaac\/\.yaac-logs\/[\dT.-]+Z\/hooks\.conf' && .*new-window/)
-      expect(setup).toContain(`claude --permission-mode bypassPermissions --model claude-opus-4-5 --session-id ${result.sessionId}`)
+      expect(setup).toContain('claude --permission-mode bypassPermissions --model claude-opus-4-5 '
+        + `--settings "{\\"idleCompaction\\":false}" --session-id ${result.sessionId}`)
       const steps = await listWorkspaceSteps(result.workspaceId)
       expect(steps.map((s) => [s.name, s.origin, s.state])).toEqual([['install', 'start', 'pending'], ['dev', 'start', 'pending']])
       // A create bringing its own graph replaces them; one with none, none.

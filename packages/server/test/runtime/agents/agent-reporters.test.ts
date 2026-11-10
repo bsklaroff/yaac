@@ -43,6 +43,9 @@ describe('ensureAgentReporters', () => {
       await fs.writeFile(path.join(dir, 'bin', name),
         `#!/bin/sh\nprintf '%s %s|%s|%s|%s\\n' ${name} "$1" "$2" "$3" "$4" >> ${calls}\n`, { mode: 0o755 })
     }
+    // Answers the idle cache warming query from `FAKE_OPTION`.
+    await fs.writeFile(path.join(dir, 'bin', 'tmux'), '#!/bin/sh\n'
+      + '[ "$*" = "-S /sock show-options -wqv -t %3 @yaac-idle-cache-warming" ] && echo "$FAKE_OPTION"\n', { mode: 0o755 })
   })
 
   afterEach(async () => {
@@ -150,8 +153,8 @@ describe('ensureAgentReporters', () => {
     expect((await fs.lstat(path.join(homes.codexDir, 'hooks.json'))).isFile()).toBe(true)
   })
 
-  // Against the extension API of pi 1.4.0.
-  it("reports pi's conversation, model and thinking level, ends each conversation as pi does, and submits messages sent to it", async () => {
+  // Against the extension API of pi 1.5.1.
+  it("reports pi's conversation, model and thinking level, ends each conversation as pi does, submits messages sent to it, and warms its cache between runs only when the session says so", async () => {
     await ensureAgentReporters(await roots())
     const messages = path.join(dir, 'pi-agent', 'yaac-messages')
     await fs.mkdir(messages, { recursive: true })
@@ -164,7 +167,7 @@ describe('ensureAgentReporters', () => {
       'const keys = {}',
       'reporter({',
       '  on: (event, handler) => { on[event] = handler },',
-      '  exec: (cmd, args) => new Promise((done, fail) => execFile(cmd, args, (e) => (e ? fail(e) : done()))),',
+      '  exec: (cmd, args) => new Promise((done, fail) => execFile(cmd, args, (e, stdout) => (e ? fail(e) : done({ stdout, code: 0 })))),',
       '  registerShortcut: (key, shortcut) => { keys[key] = shortcut },',
       "  getThinkingLevel: () => 'medium',",
       `  sendUserMessage: (text, opts) => appendFileSync(${JSON.stringify(calls)}, 'sent ' + JSON.stringify([text, opts]) + '\\n'),`,
@@ -180,6 +183,21 @@ describe('ensureAgentReporters', () => {
       "on.thinking_level_select({ level: 'high', previousLevel: 'medium' })",
       "on.session_shutdown({ reason: 'new' })",
       "await on.session_shutdown({ reason: 'quit' })",
+      "process.env.TMUX = '/sock,1,0'",
+      "process.env.TMUX_PANE = '%3'",
+      `const decide = async (label) => appendFileSync(${JSON.stringify(calls)}, label + ' ' + JSON.stringify(await on.cache_warming_decision({ type: 'cache_warming_decision', action: 'warm' }) ?? null) + '\\n')`,
+      "await decide('unset')",
+      "process.env.FAKE_OPTION = 'on'",
+      'on.agent_start({})',
+      "await decide('mid-run')",
+      // The option is read as a run ends, and answered from at once.
+      'await on.agent_end({})',
+      "await decide('on')",
+      // A change mid-idle is read at a decision, for the one after it.
+      "process.env.FAKE_OPTION = 'off'",
+      "await decide('changed')",
+      'await new Promise((done) => setTimeout(done, 300))',
+      "await decide('off')",
     ])).toEqual([
       // Mid-turn, the message waits for the turn.
       'sent ["Sent from w via yaac-mama:\\n\\nhi",{"deliverAs":"followUp"}]',
@@ -191,12 +209,18 @@ describe('ensureAgentReporters', () => {
       // `/new` ends the conversation and starts another.
       'yaac-agent-links |pi|pi-1|--end',
       'yaac-agent-links |pi|pi-1|--end',
+      // Off unless the session's window option is on; never during a run.
+      'unset {"action":"stop"}',
+      'mid-run null',
+      'on null',
+      'changed null',
+      'off {"action":"stop"}',
     ])
     // Taken, so the sender sees it delivered.
     await expect(fs.access(path.join(messages, 'pi-1.txt'))).rejects.toThrow()
   })
 
-  // Against omp 18.18.3, which loads pi extensions as its own and reports no
+  // Against omp 18.18.6, which loads pi extensions as its own and reports no
   // thinking level until one is set.
   it("reports omp's conversation, model and mode under omp's own name, and takes messages from omp's agent dir", async () => {
     await ensureAgentReporters(await roots())
@@ -248,7 +272,7 @@ describe('ensureAgentReporters', () => {
     ])
   })
 
-  // Against opencode 2.1.4's events. An agent switch arrives with the next
+  // Against opencode 2.2.6's events. An agent switch arrives with the next
   // prompt as `session.agent.selected`; subagent sessions (`parentID`) are
   // not the pane's.
   it("reports opencode's conversation, model, variant and agent, and ends the conversation on dispose", async () => {

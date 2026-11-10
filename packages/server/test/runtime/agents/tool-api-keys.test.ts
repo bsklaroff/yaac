@@ -119,7 +119,7 @@ describe('ensureToolApiKeyConfig', () => {
       pi: { ...piProviderInfo(CUSTOM_PROVIDER), endpoint },
       omp: { ...ompProviderInfo(CUSTOM_PROVIDER), endpoint },
     })).toEqual({ opencodeConfigFile: 'yaac-keys/custom.json' })
-    // omp takes pi's entry in YAML (checked against 18.18.3 with a mock
+    // omp takes pi's entry in YAML (checked against 18.18.6 with a mock
     // server, keyless and with a key), the user's comment and entries kept.
     expect(await fs.readFile(path.join(dir, 'omp', 'agent', 'models.yml'), 'utf8')).toBe([
       '# mine',

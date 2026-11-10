@@ -652,13 +652,18 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   })
 
   it('creates a workspace as a tmux session on this host', async () => {
-    workspaceId = await createWorkspace('--effort', 'high')
+    workspaceId = await createWorkspace('--effort', 'high', '--agent-option', 'idle-compaction=on')
     // A tmux server of its own on this host.
     const windows = await tmux(workspaceId, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
     expect(windows).toContain('claude')
     // The named effort rides the launch (docs/effort-levels.md).
     expect(await tmux(workspaceId, 'display', '-p', '-t', 'yaac:claude', '#{pane_start_command}'))
       .toContain('--effort high')
+    // So do its agent options: claude's terminal UI takes its own as a flag,
+    // and every agent finds them on its window (docs/sessions.md).
+    expect(await tmux(workspaceId, 'display', '-p', '-t', 'yaac:claude', '#{pane_start_command}'))
+      .toMatch(/--settings \S*idleCompaction\S*:true\S* /)
+    expect((await tmux(workspaceId, 'show-options', '-wqv', '-t', 'yaac:claude', '@yaac-idle-compaction')).trim()).toBe('on')
     // The agent keeps the session's first pane, so its history limit must be
     // set before the session exists: it is the scrollback the webapp seeds.
     expect((await tmux(workspaceId, 'display', '-p', '-t', 'yaac:claude', '#{history_limit}')).trim()).toBe('200000')

@@ -40,6 +40,7 @@ export {
   markSessionsLaunched,
   recordSessionWaitingSeen,
   sessionWindowName,
+  setSessionAgentOptions,
   setSessionTitle,
   takeSessionPrompt,
   type SessionLaunchSettings,

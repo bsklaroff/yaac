@@ -67,6 +67,7 @@ const queued = (id: string, extra: Partial<QueuedWorkspaceEntry> = {}): QueuedWo
   model: 'm',
   mode: 'tui',
   permissionMode: 'bypass',
+  agentOptions: {},
   branch: 'main',
   createdAt: '2026-01-01 00:00:00',
   ...extra,

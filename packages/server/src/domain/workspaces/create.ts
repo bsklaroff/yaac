@@ -118,11 +118,15 @@ import {
   defaultPermissionMode,
   effortFor,
   launchablePermissionMode,
+  resolveAgentOptions,
   resolveToolCreateDefaults,
   SUPPORTED_PERMISSION_MODES,
   TOOL_LABELS,
+  toolAgentOptions,
   toolSupportsPermissionMode,
   type AgentMode,
+  type AgentOption,
+  type AgentOptions,
   type AgentTool,
   type DriverKind,
   type PermissionMode,
@@ -589,6 +593,8 @@ export interface CreateSetup {
   /** Absent when the model has no effort setting. */
   effort?: string
   mode: AgentMode
+  /** Every option the tool has. */
+  agentOptions: AgentOptions
 }
 
 /**
@@ -597,8 +603,8 @@ export interface CreateSetup {
  * valid, else `resolveToolCreateDefaults`. The tool itself defaults to the
  * project's last tool, else claude.
  *
- * A requested permission mode or effort the tool or model lacks is refused;
- * a remembered one it lacks falls back to the default. Restart skips this
+ * A requested permission mode, effort or agent option the tool or model
+ * lacks is refused; a remembered one it lacks falls back to the default. Restart skips this
  * and calls `createWorkspace` directly.
  */
 export async function resolveCreate(
@@ -609,6 +615,7 @@ export async function resolveCreate(
     permissionMode?: PermissionMode
     effort?: string
     mode?: AgentMode
+    agentOptions?: AgentOptions
   },
 ): Promise<CreateSetup> {
   const row = await getProjectRow(projectId)
@@ -642,7 +649,15 @@ export async function resolveCreate(
       : fallback.permissionMode,
     ...(effort !== undefined ? { effort } : {}),
     mode,
+    agentOptions: resolveAgentOptions(tool, namedAgentOptions(tool, request.agentOptions), remembered?.agentOptions),
   }
+}
+
+/** Named agent options, refused when the tool lacks one. */
+function namedAgentOptions(tool: AgentTool, options: AgentOptions | undefined): AgentOptions | undefined {
+  const lacking = Object.keys(options ?? {}).filter((o) => !toolAgentOptions(tool).includes(o as AgentOption))
+  if (lacking.length > 0) throw new ServerError('VALIDATION', `${tool} has no agent option ${lacking.join(', ')}`)
+  return options
 }
 
 /** A remembered effort where `model` has it, else its default; none for a

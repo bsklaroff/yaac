@@ -1,5 +1,6 @@
 import type {
   AccessMode,
+  AgentOptions,
   AgentMode,
   AgentTool,
   EgressAllowlist,
@@ -204,6 +205,8 @@ export const projectToolDefaults = snakeCase.table('project_tool_defaults', {
   mode: text().$type<AgentMode>(),
   /** In the tool's words; used where the next create's model has it. */
   effort: text(),
+  /** Each agent option last picked; one never picked is absent. */
+  agentOptions: jsonb().$type<AgentOptions>().notNull().default({}),
 }, (t) => [uniqueIndex().on(t.projectId, t.tool)])
 
 /**
@@ -494,6 +497,8 @@ export const sessions = snakeCase.table('sessions', {
   /** Its effort level, in the tool's words (docs/effort-levels.md). Null
    *  when its model has no effort setting. */
   effort: text(),
+  /** Each option its tool has (`AGENT_OPTIONS`), as last set. */
+  agentOptions: jsonb().$type<AgentOptions>().notNull().default({}),
   /** Display and restore order within its workspace. */
   ordinal: integer().notNull(),
   /** The tmux window it runs in, which is also its handle: the status
@@ -816,6 +821,7 @@ export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
   permissionMode: text().$type<PermissionMode>().notNull(),
   /** Null when its model has no effort setting. */
   effort: text(),
+  agentOptions: jsonb().$type<AgentOptions>().notNull().default({}),
   /** The branch to fork from (no `origin/` prefix), fetched at launch so the
    *  child starts from its latest tip; null when it starts at `commit`. */
   branch: text(),
@@ -877,6 +883,7 @@ export const routines = snakeCase.table('routines', {
   mode: text().$type<AgentMode>().notNull(),
   permissionMode: text().$type<PermissionMode>().notNull(),
   effort: text(),
+  agentOptions: jsonb().$type<AgentOptions>().notNull().default({}),
   /** Null when its runs start at `commit`. */
   branch: text(),
   commit: text(),
@@ -920,6 +927,7 @@ export const draftWorkspaces = snakeCase.table('draft_workspaces', {
   model: text(),
   /** Null when the model has no effort setting, or none was resolved. */
   effort: text(),
+  agentOptions: jsonb().$type<AgentOptions>().notNull().default({}),
   branch: text(),
   /** The dialog's Start field: the workspace or queued entry to wait on, or
    *  null for "Now". Not a live reference; a parent that is gone when the

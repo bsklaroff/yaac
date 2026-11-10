@@ -48,7 +48,7 @@ import {
  * opencode then sends no credential, and pi's and omp's key falls back to a
  * dummy, which they need before they will offer the models.
  *
- * Verified against pi 1.4.0, omp 18.18.3 and @opencode/cli 2.1.4.
+ * Verified against pi 1.5.1, omp 18.18.6 and @opencode/cli 2.2.6.
  */
 
 /** A provider row, plus the endpoint when it is `custom`. */

@@ -9,6 +9,7 @@ import {
   DEFAULT_AGENT_MODE,
   resolveToolCreateDefaults,
   type AgentMode,
+  type AgentOptions,
   type AgentTool,
   type ModelOption,
   type PermissionMode,
@@ -21,6 +22,8 @@ export interface AgentSetup {
   /** Absent when the model has no effort setting. */
   effort?: string
   mode: AgentMode
+  /** Every option the agent has. */
+  agentOptions: AgentOptions
   /** The credential's model list, newest first, shown as suggestions. */
   models: ModelOption[]
   /** The tool's own default model, marked in the list. */

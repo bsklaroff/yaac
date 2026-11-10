@@ -61,7 +61,7 @@ const PARENT: WorkspaceListEntry = {
   title: 'Parent work',
   sessions: [{
     sessionId: 'sp', tool: 'codex', mode: 'tui', window: 'codex-sp', ordinal: 0, model: 'gpt-5.5',
-    permissionMode: 'accept-edits', effort: 'high',
+    permissionMode: 'accept-edits', effort: 'high', agentOptions: {},
   }],
   conversations: [{
     conversationId: 'a1', tool: 'codex', mode: 'tui', ordinal: 0, active: true, model: 'gpt-5.5', sessionId: 'sp',
@@ -87,6 +87,7 @@ const entry = (id: string, extra: Partial<QueuedWorkspaceEntry> = {}): QueuedWor
   model: 'claude-sonnet-5',
   mode: 'tui',
   permissionMode: 'manual',
+  agentOptions: {},
   branch: 'release/2.x',
   createdAt: '2026-01-01 00:00:02',
   ...extra,
@@ -356,6 +357,22 @@ describe('NewWorkspacePane', () => {
     typePrompt('go')
     fireEvent.click(sendButton())
     expect(sent(CREATE).at(-1)).not.toHaveProperty('effort')
+  })
+
+  // docs/sessions.md, "Agent options": the agent's own, remembered per
+  // project, off until picked.
+  it("offers the agent's options at their remembered values and sends them", async () => {
+    setSnapshot(project({ createDefaults: { claude: { agentOptions: { idleCompaction: true } } } }))
+    await openReady()
+    fireEvent.click(screen.getByRole('button', { name: 'Agent options' }))
+    const [item] = await screen.findAllByRole('menuitemcheckbox')
+    expect(item.textContent).toContain('Compact when idle')
+    expect(item.getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(item)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Agent options' }).textContent).toBe('Options'))
+    typePrompt('go')
+    fireEvent.click(sendButton())
+    expect(sent(CREATE).at(-1)).toMatchObject({ tool: 'claude', agentOptions: { idleCompaction: false } })
   })
 
   it('searches models by name or id, and Enter picks before it creates', async () => {
@@ -901,7 +918,7 @@ describe('NewWorkspacePane', () => {
       fireEvent.click(sendButton())
       await waitFor(() => expect(sent(UPDATE)).toEqual([{
         id: 'q2', prompt: 'step q2', tool: 'claude', model: 'claude-sonnet-5', mode: 'tui', permissionMode: 'manual',
-        branch: 'release/2.x', title: '', group: null, timeout: null, parent: 'q4',
+        agentOptions: { idleCompaction: false }, branch: 'release/2.x', title: '', group: null, timeout: null, parent: 'q4',
       }]))
       expect(sent(RUN)).toHaveLength(0)
       // The sidebar opens the set the server says it landed in.
@@ -1036,7 +1053,7 @@ describe('NewWorkspacePane', () => {
       await waitFor(() => expect(useUiStore.getState().activeProjectId).toBe('other'))
       expect(sent(SAVE_DRAFT)).toEqual([{
         project: 'proj', prompt: 'later, maybe', tool: 'codex', model: 'gpt-5.5', mode: 'tui', permissionMode: 'accept-edits',
-        branch: 'dev', startAfter: 'w-parent', title: 'Someday', groupId: 'g-review',
+        agentOptions: {}, branch: 'dev', startAfter: 'w-parent', title: 'Someday', groupId: 'g-review',
       }])
       expect(useUiStore.getState().newWorkspace).toBeNull()
       expect(sent(CREATE)).toHaveLength(0)

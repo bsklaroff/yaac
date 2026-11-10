@@ -1408,10 +1408,10 @@ export class AcpConversation {
    * anything else (the turn already over, an adapter without steering, a
    * failure) leaves the message for the queue rather than losing it.
    *
-   * codex-acp ignores `promptRequired`: a steer arriving as its turn ends
-   * starts a new turn itself (`startedNewTurn`), which answers no
+   * An adapter that ignores `promptRequired` may answer `startedNewTurn`:
+   * it started a turn for the message itself, which answers no
    * `session/prompt` of ours. Like any turn the agent starts, it runs until
-   * codex reports its thread idle (`agentRunningReport`).
+   * the agent reports itself idle (`agentRunningReport`).
    */
   private async steer(prompt: Array<Record<string, string>>): Promise<boolean> {
     try {

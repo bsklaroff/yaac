@@ -98,6 +98,10 @@ yaac workspace
     -p, --prompt <text>         Initial prompt for the agent
     -m, --model <model>         Model id or alias (provider/model for opencode, pi, omp)
     -e, --effort <level>        Effort level the model offers (effort-levels.md)
+    --agent-option <name=on|off>
+                                Turn an agent option on or off; repeatable
+                                (idle-compaction, idle-cache-warming;
+                                sessions.md)
     --mode <tui|acp>            Terminal UI, or chat pane over ACP
                                 (agent-modes.md)
     --permission-mode <mode>    bypass, auto, accept-edits, manual, plan or
@@ -161,8 +165,8 @@ yaac routine                    Workspaces started on a cron schedule (routines.
     --tz <zone>                 Zone the cron is read in (default: yours)
     --timeout <duration|next>   Stop each run this long after it starts;
                                 next (the default) stops it at the next tick
-    -t/-m/-e/-b, --mode, --permission-mode, --commit,
-    --non-interactive           As for workspace create
+    -t/-m/-e/-b, --agent-option, --mode, --permission-mode,
+    --commit, --non-interactive As for workspace create
     --workflow <name>           The named workflow each run starts with;
                                 saving approves the commit or branch it runs
                                 on for its run secrets (workflows.md)

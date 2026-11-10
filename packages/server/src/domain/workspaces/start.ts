@@ -20,7 +20,7 @@ import { resolveWorkflow, workflowLaunch } from '#domain/projects'
 import { getWorkflow, recordProjectCreate, storeWorkflow } from '#db'
 import { ServerError } from '@yaac/shared/errors'
 import { FULL_COMMIT_PATTERN, graphHasTask, parseStepGraph, type StepGraph } from '@yaac/shared/steps'
-import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
+import type { AgentMode, AgentOptions, AgentTool, PermissionMode } from '@yaac/shared/types'
 
 /** A request to start a workspace. */
 export interface StartWorkspaceRequest {
@@ -34,6 +34,8 @@ export interface StartWorkspaceRequest {
   /** Effort level, in the tool's words; refused if the model lacks it. */
   effort?: string
   mode?: AgentMode
+  /** Refused if the tool lacks one; unnamed ones resolve as a create's. */
+  agentOptions?: AgentOptions
   /** Reference branch on `origin`; unnamed is the project's default. */
   branch?: string
   /** A full commit to start at instead of a branch's tip, which leaves the
@@ -135,6 +137,7 @@ export async function prepareStart(
     ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
     ...(request.effort !== undefined ? { effort: request.effort } : {}),
     ...(request.mode !== undefined ? { mode: request.mode } : {}),
+    ...(request.agentOptions !== undefined ? { agentOptions: request.agentOptions } : {}),
   })
   const session = setup === undefined
     ? undefined
@@ -159,6 +162,7 @@ export async function prepareStart(
       ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
       ...(request.effort !== undefined ? { effort: request.effort } : {}),
       ...(request.mode !== undefined ? { mode: request.mode } : {}),
+      ...(request.agentOptions !== undefined ? { agentOptions: request.agentOptions } : {}),
     }, branch)
   }
 
@@ -227,6 +231,7 @@ export async function prepareStart(
         permissionMode: setup.permissionMode,
         ...(setup.model !== undefined ? { model: setup.model } : {}),
         ...(setup.effort !== undefined ? { effort: setup.effort } : {}),
+        agentOptions: setup.agentOptions,
         ...(branch !== undefined ? { branch } : {}),
         ...(title !== undefined ? { title } : {}),
         ...(groupId !== undefined ? { groupId } : {}),

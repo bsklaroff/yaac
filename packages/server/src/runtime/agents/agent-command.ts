@@ -10,6 +10,8 @@ import {
   CLAUDE_1M_SUFFIX,
   launchableModel,
   launchablePermissionMode,
+  type AgentOption,
+  type AgentOptions,
   type AgentTool,
   type PermissionMode,
 } from '@yaac/shared/types'
@@ -40,6 +42,28 @@ export function windowTarget(name: string): string {
   return `=yaac:=${name}`
 }
 
+/**
+ * The tmux window option a session's agent reads one of its agent options
+ * from, `on` or `off` (docs/sessions.md, "Agent options"). The server sets
+ * it as the window launches and again when a running session's option
+ * changes; yaac's pi extension and the claude-agent-acp patch read it.
+ */
+export const AGENT_OPTION_WINDOW_OPTIONS: Record<AgentOption, string> = {
+  idleCompaction: '@yaac-idle-compaction',
+  idleCacheWarming: '@yaac-idle-cache-warming',
+}
+
+/** A command setting `options` on window `name`'s window options; empty
+ *  when there are none. Free of single quotes, for the launch wrapper. The
+ *  target is quoted because a launch may run in zsh, which reads a bare
+ *  word starting with `=` as a command's path. */
+export function agentOptionsCmd(paths: Pick<WorkspacePaths, 'tmuxSock'>, name: string, options: AgentOptions): string {
+  return Object.entries(options)
+    .map(([o, on]) => `${tmuxCmd(paths)} set-option -wq -t "${windowTarget(name)}" `
+      + `${AGENT_OPTION_WINDOW_OPTIONS[o as AgentOption]} ${on === true ? 'on' : 'off'}`)
+    .join('; ')
+}
+
 /** What one agent's launch command is built from. */
 export interface AgentCmdSpec {
   tool: AgentTool
@@ -58,6 +82,9 @@ export interface AgentCmdSpec {
   /** Effort level, in the tool's words (docs/effort-levels.md). Shape-checked
    *  (`EFFORT_RE`), so it embeds bare like the model. Absent passes none. */
   effort?: string
+  /** claude only: its idle compaction, as a `--settings` flag, which
+   *  outranks the project's shared settings. */
+  agentOptions?: AgentOptions
   /**
    * The permission posture to launch in. Required, not defaulted: without a
    * sandbox it decides what the agent may do to this machine unsupervised.
@@ -106,7 +133,7 @@ interface OpencodeConfig {
 
 /**
  * The permission actions opencode knows, read off the pinned binary
- * (`@opencode/cli@2.1.4`): its tools plus the wildcard and
+ * (`@opencode/cli@2.2.6`): its tools plus the wildcard and
  * `external_directory`. Unknown actions are accepted silently and match
  * nothing, so `drivers.test.ts` checks every action used below against
  * this list. Re-read it when the pin in dockerfiles/Dockerfile.tools moves.
@@ -114,7 +141,7 @@ interface OpencodeConfig {
 export const OPENCODE_ACTIONS: readonly string[] = [
   '*', 'browser', 'edit', 'glob', 'grep', 'question', 'read', 'shell', 'skill',
   'subagent', 'todowrite', 'webfetch', 'websearch', 'execute', 'external_directory',
-  'opencode_list_mcp_resources', 'opencode_read_mcp_resource',
+  'experimental_image_generate', 'opencode_list_mcp_resources', 'opencode_read_mcp_resource',
 ]
 
 const rule = (action: string, effect: OpencodeRule['effect']): OpencodeRule =>
@@ -164,7 +191,7 @@ const OPENCODE_POSTURE: Record<PermissionMode, OpencodeConfig> = {
  *
  * An effort is a model variant, which opencode's config takes only on an
  * agent, beside the model it applies to (a `model#variant` there is dropped
- * as a legacy reference, checked against 2.1.4). It goes on both built-in
+ * as a legacy reference, checked against 2.2.6). It goes on both built-in
  * agents, so a Shift+Tab between them keeps it. `default` (no variant) needs no
  * entry.
  */
@@ -336,6 +363,9 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // Outranks the effort a `/effort` in another workspace saved to the
     // shared settings.
     effort !== undefined ? `--effort ${effort}` : '',
+    spec.agentOptions?.idleCompaction !== undefined
+      ? `--settings ${doubleQuoted(JSON.stringify({ idleCompaction: spec.agentOptions.idleCompaction }))}`
+      : '',
     resume ? `--resume ${workspaceId}` : `--session-id ${workspaceId}`,
   ].filter(Boolean).join(' ')
 }

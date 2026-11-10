@@ -344,7 +344,7 @@ describe('prepareRestart', () => {
     await restart('wt-6')
 
     // Quoted, since a bare `[1m]` is a shell glob.
-    expect(windowOf(first)).toMatch(/ --model "claude-opus-5-5\[1m\]" --effort max --session-id /)
+    expect(windowOf(first)).toMatch(/ --model "claude-opus-5-5\[1m\]" --effort max --settings "\{\\"idleCompaction\\":false\}" --session-id /)
     // gpt-5.5 has no `max`, so it takes its own default.
     expect(windowOf(codex)).toMatch(/model_reasoning_effort=medium[^']* resume conv-2 --model gpt-5\.5'$/)
     expect(windowOf(third)).not.toContain('--model')

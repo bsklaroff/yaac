@@ -20,7 +20,7 @@ const workspace: WorkspaceListEntry = {
   workspaceId: 's1',
   projectId: 'proj',
   status: 'running',
-  sessions: [{ sessionId: 'sess-1', tool: 'claude', mode: 'tui', window: 'claude-sess1', permissionMode: 'bypass', ordinal: 0 }],
+  sessions: [{ sessionId: 'sess-1', tool: 'claude', mode: 'tui', window: 'claude-sess1', permissionMode: 'bypass', ordinal: 0, agentOptions: {} }],
   createdAt: '2026-08-10 00:00:00',
   conversations: [],
   blockedHosts: [],

@@ -717,12 +717,15 @@ describe('write routes', () => {
         await res.text() // drain the NDJSON stream so the handler finishes
       }
 
-      await create({ tool: 'claude', model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp', effort: 'max' })
+      await create({
+        tool: 'claude', model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp', effort: 'max',
+        agentOptions: { idleCompaction: true },
+      })
       await create({ tool: 'pi', permissionMode: 'bypass' })
       expect(await getProjectRow(DEMO)).toMatchObject({
         lastTool: 'pi',
         createDefaults: {
-          claude: { model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp', effort: 'max' },
+          claude: { model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp', effort: 'max', agentOptions: { idleCompaction: true } },
           pi: { permissionMode: 'bypass' },
         },
       })
@@ -731,13 +734,16 @@ describe('write routes', () => {
       // with no mode remembered, it is chat.
       await create({ tool: 'claude' })
       expect(mockCreateWorkspace.mock.calls.at(-1)?.[1]).toMatchObject({
-        session: { tool: 'claude', model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp', effort: 'max' },
+        session: {
+          tool: 'claude', model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp', effort: 'max', agentOptions: { idleCompaction: true },
+        },
       })
       await create({ tool: 'pi' })
       expect(mockCreateWorkspace.mock.calls.at(-1)?.[1]).toMatchObject({ session: { tool: 'pi', mode: 'acp' } })
       // ...and records only the agent.
-      expect((await getProjectRow(DEMO))?.createDefaults.claude)
-        .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp', effort: 'max' })
+      expect((await getProjectRow(DEMO))?.createDefaults.claude).toEqual({
+        model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp', effort: 'max', agentOptions: { idleCompaction: true },
+      })
 
       // An effort is one lowercase word, since it is embedded bare in the
       // launch command.
@@ -745,7 +751,7 @@ describe('write routes', () => {
         method: 'POST', body: JSON.stringify({ project: DEMO, tool: 'claude', effort: 'max; rm' }),
       }))
       expect(res.status).toBe(400)
-      expect((await getProjectRow(DEMO))?.createDefaults.pi).toEqual({ permissionMode: 'bypass' })
+      expect((await getProjectRow(DEMO))?.createDefaults.pi).toEqual({ permissionMode: 'bypass', agentOptions: {} })
     })
 
     // And the session the webapp minted the id of, which the create opens.

@@ -48,8 +48,8 @@ export interface NewWorkspaceForm {
   timeZone?: string
   customCron?: boolean
   tool?: AgentTool
-  /** Model, mode, posture and effort picks, which apply only to the agent
-   *  they were made for. */
+  /** Model, mode, posture, effort and agent option picks, which apply only
+   *  to the agent they were made for. */
   picked?: { tool: AgentTool; picks: ToolCreateDefaults }
   branch?: string
   /** null is no group. */
@@ -175,6 +175,7 @@ export function seedNewWorkspace(opts: NewWorkspaceOpts, snapshot: ServerSnapsho
         mode: from.mode,
         permissionMode: from.permissionMode,
         ...(from.effort !== undefined ? { effort: from.effort } : {}),
+        agentOptions: from.agentOptions ?? {},
       },
     },
     // A start at a commit shows in the Base branch field, which sends a full

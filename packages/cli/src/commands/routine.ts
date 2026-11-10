@@ -3,7 +3,7 @@ import { printTable } from '#commands/table'
 import { durationOption, promptSource, readPrompt } from '#commands/workspace-create'
 import { formatDuration, formatInZone } from '@yaac/shared/schedule'
 import { reportDeviceTimeZone } from '@yaac/shared/time-zone-report'
-import type { AgentMode, AgentTool, PermissionMode, RoutineEntry, RoutineSettings } from '@yaac/shared/types'
+import type { AgentMode, AgentOptions, AgentTool, PermissionMode, RoutineEntry, RoutineSettings } from '@yaac/shared/types'
 
 /**
  * `yaac routine …`: workspaces started on a cron schedule (docs/routines.md).
@@ -23,6 +23,7 @@ export interface RoutineOptions {
   tool?: AgentTool
   model?: string
   effort?: string
+  agentOption?: AgentOptions
   mode?: AgentMode
   permissionMode?: PermissionMode
   branch?: string
@@ -148,6 +149,7 @@ function settingsOf(opts: RoutineOptions): Partial<RoutineSettings> {
     ...(opts.tool !== undefined ? { tool: opts.tool } : {}),
     ...(opts.model !== undefined ? { model: opts.model } : {}),
     ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
+    ...(opts.agentOption !== undefined ? { agentOptions: opts.agentOption } : {}),
     ...(opts.mode !== undefined ? { mode: opts.mode } : {}),
     ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
     ...(opts.branch !== undefined ? { branch: opts.branch } : {}),

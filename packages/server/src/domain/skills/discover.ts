@@ -303,7 +303,7 @@ async function ompReaders(projectId: string, ref: string | null): Promise<SkillR
   const claudeHome = claudeDir(projectId)
   // Like pi's, with omp's own dirs, plus Claude's: the repo's by default, and
   // Claude's home because omp reads it whenever `CLAUDE_CONFIG_DIR` is set,
-  // as every workspace sets it (checked against 18.18.3). No plugin tier.
+  // as every workspace sets it (checked against 18.18.6). No plugin tier.
   return [
     repoReader(repo, ref, '.omp/skills'),
     personalReader('omp', await toolHome(projectId, dir), dir, 'agent/skills'),

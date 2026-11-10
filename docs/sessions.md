@@ -13,7 +13,7 @@ Three nouns, each with one job:
 | | Owns | Lifetime |
 |---|---|---|
 | **Workspace** | checkout, branch, runtime, ports, group, timeout, title, egress | create → stop → restart → delete |
-| **Session** (`sessions`) | one agent in one window: tool, mode, model, posture, effort, the message it was opened with | open → close; survives a workspace stop and restart while open |
+| **Session** (`sessions`) | one agent in one window: tool, mode, model, posture, effort, agent options, the message it was opened with | open → close; survives a workspace stop and restart while open |
 | **Conversation** (`conversations`) | the tool's own history, keyed by the tool's id | forever, project-scoped |
 
 yaac mints a session's id before anything launches. The id names the
@@ -56,10 +56,10 @@ launch, never on a resume.
 
 `launchSessions` (and `createWorkspace`, for a create or a restart) builds
 each open session's command with its own mode's driver, on its own model,
-posture and effort, with `YAAC_SESSION_ID` exported for the agent's
-commands. A session whose agent has named a conversation resumes it if its
-history is where its tool keeps it; one the rows say wrote history that is
-gone refuses the launch rather than start the work over
+posture, effort and agent options, with `YAAC_SESSION_ID` exported for the
+agent's commands. A session whose agent has named a conversation resumes it
+if its history is where its tool keeps it; one the rows say wrote history
+that is gone refuses the launch rather than start the work over
 (`planSessionResumes`). A fresh `tui` claude or pi session is launched with
 its session id as the conversation id.
 
@@ -68,6 +68,54 @@ session of a running workspace whose setup is done has a window, so one
 opened while the workspace was stopped, or one a server restart cut off
 mid-launch, is launched there. A window that was seen in this life and then
 vanished was killed from inside tmux, which closes its session.
+
+## Agent options
+
+Beside its model, posture and effort, a session has an on/off value for
+each **agent option** its tool has (`AGENT_OPTIONS` in
+`@yaac/shared/types`). Both options exist because the agent would otherwise
+spend tokens while nobody is using the session, so each is off unless
+turned on:
+
+| Option | Tools | What it does when on | Can change while running |
+|---|---|---|---|
+| `idleCompaction` | claude | compacts a long conversation (200k tokens or more) shortly before its one-hour prompt cache expires, so the next prompt reads a summary rather than the whole context | in `acp` |
+| `idleCacheWarming` | pi, omp | re-sends the last request between turns, for up to 30 minutes, to keep the prompt cache warm | in both modes; see below |
+
+They are stored as one JSON object (`agentOptions`) on the session, and on
+each place a launch's settings are kept (queued workspaces, routines,
+drafts), so an option can be added without a migration. A create, a
+session opened in a running workspace, a queued workspace or a routine
+takes them as `agentOptions`, from the webapp's Options menu or
+`--agent-option <name>=<on|off>`; one the tool lacks is refused. An unnamed
+option is the project's last choice for that tool (`project_tool_defaults`,
+as model and effort are), else off.
+
+Every agent reads its options from its tmux window, as the window options
+`@yaac-idle-compaction` and `@yaac-idle-cache-warming` (`on` or `off`). The
+launch sets them before the agent starts (`agentOptionsCmd`), and a running
+session's change sets them again (`POST
+/api/workspace/:id/sessions/:sessionId/agent-options`), after recording it
+on the row. Only the chat pane's Options menu offers that change, so a
+`tui` pi or omp session, which could take it, is changed mid-run only
+through the route itself. Each tool reads them where
+its own decision is made:
+
+- **claude, `tui`**: the CLI takes its own `idleCompaction` setting as
+  `--settings`, which outranks the project's shared settings file. It
+  reads it only at launch, so a `tui` session's option is fixed.
+- **claude, `acp`**: the adapter runs its own idle compaction, and reads
+  whether to from claude's settings files, which every session of the
+  project shares. yaac patches it (`dockerfiles/agent-patches/claude-agent-acp.js`)
+  to also ask the window option each time it would arm the timer or fire.
+- **pi and omp**: neither has a per-session switch (pi's `cacheWarming`
+  setting is global), but both ask their extensions before each warm-up.
+  yaac's extension (`agent-reporters.ts`) stops every warm-up between runs
+  unless the window option is `on`. omp warms anyway if the extension takes
+  over 2s to answer, so it answers from the option as last read (after each
+  run, and again at each decision). Turned off mid-idle, warming stops after
+  one more warm-up. Turned on mid-idle, it applies from the next turn: the
+  `stop` the extension already gave ends warming until the next request.
 
 ## The workspace without an agent
 

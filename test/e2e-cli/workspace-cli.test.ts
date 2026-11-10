@@ -750,7 +750,8 @@ describe('with seeded projects', () => {
         expect(stderr, args.join(' ')).toContain(message)
       }
       for (const [flag, ...value] of [['--prompt', 'go'], ['--tool', 'claude'], ['--mode', 'acp'], ['--permission-mode', 'plan'],
-        ['--model', 'opus'], ['--effort', 'high'], ['--prompt-file', 'brief.md'], ['--start-at', '10:00'], ['--start-in', '5m']]) {
+        ['--model', 'opus'], ['--effort', 'high'], ['--agent-option', 'idle-compaction=on'], ['--prompt-file', 'brief.md'],
+        ['--start-at', '10:00'], ['--start-in', '5m']]) {
         await refused(['some-project', '--no-session', flag, ...value], `--no-session does not take ${flag}: a workspace with no session runs no agent.`)
       }
       await refused([], 'Name the project to create the workspace in, or --workspace to open a session in a running one.')
@@ -760,6 +761,7 @@ describe('with seeded projects', () => {
       }
       await refused(['--workspace', 'abc123', '--no-session'], '--no-session starts a new workspace; it does not take --workspace.')
       await refused(['some-project', '--resume', 'conv-1'], '--resume needs --workspace: a conversation resumes in the workspace that holds it.')
+      await refused(['some-project', '--agent-option', 'idle-compaction'], 'expected <name>=<on|off>, with a name of idle-compaction, idle-cache-warming')
     })
 
     it('rejects an unknown --tool value via server VALIDATION', async () => {
@@ -863,19 +865,22 @@ describe('with seeded projects', () => {
     it('creates, lists, edits, pauses, resumes and deletes a routine', async () => {
       const created = await runYaac(testEnv.env, 'routine', 'create', NAME, '--name', 'Nightly sweep',
         '--cron', '0 3 * * *', '--tz', 'Pacific/Auckland', '--prompt', 'sweep', '--tool', 'claude', '--mode', 'tui',
-        '--permission-mode', 'manual', '--model', 'opus', '--effort', 'high', '--timeout', '2h', '--branch', 'master')
+        '--permission-mode', 'manual', '--model', 'opus', '--effort', 'high', '--agent-option', 'idle-compaction=on',
+        '--timeout', '2h', '--branch', 'master')
       expect(created.exitCode, created.stderr).toBe(0)
       expect(created.stdout).toContain('Next runs (Pacific/Auckland): ')
       const id = /Created routine ([0-9a-f-]{36})/.exec(created.stdout)?.[1] ?? ''
       type Listed = {
         id: string; cron: string; timeZone: string; groupId?: string; timeoutMinutes?: number; paused: boolean
         nextRuns: string[]; name: string; prompt: string; branch: string; tool: string; model: string; effort?: string
-        mode: string; permissionMode: string
+        mode: string; permissionMode: string; agentOptions: Record<string, boolean>
       }
       const routines = async (): Promise<Listed[]> =>
         await (await fetch(`http://127.0.0.1:${server.lock.port}/api/routine/list`)).json() as Listed[]
       const routineOf = async (): Promise<Listed | undefined> => (await routines()).find((r) => r.id === id)
-      expect(await routineOf()).toMatchObject({ timeoutMinutes: 120, branch: 'master', model: 'opus', effort: 'high' })
+      expect(await routineOf()).toMatchObject({
+        timeoutMinutes: 120, branch: 'master', model: 'opus', effort: 'high', agentOptions: { idleCompaction: true },
+      })
       const groupOf = async (): Promise<string | undefined> => {
         const groupId = (await routineOf())?.groupId
         const { groups } = await (await fetch(`http://127.0.0.1:${server.lock.port}/api/workspace/group/list`)).json() as {
@@ -916,11 +921,12 @@ describe('with seeded projects', () => {
       await fs.writeFile(promptPath, 'sweep again')
       const edited = await runYaac(testEnv.env, 'routine', 'edit', id.slice(0, 8), '--cron', '*/30 * * * *',
         '--tz', 'Europe/Paris', '--timeout', '20m', '--no-group', '--name', 'Half-hourly', '--prompt-file', promptPath,
-        '--branch', 'master', '-t', 'claude', '-m', 'sonnet', '-e', 'low', '--mode', 'acp', '--permission-mode', 'plan')
+        '--branch', 'master', '-t', 'claude', '-m', 'sonnet', '-e', 'low', '--mode', 'acp', '--permission-mode', 'plan',
+        '--agent-option', 'idle-compaction=off')
       expect(edited.exitCode, edited.stderr).toBe(0)
       expect(await routineOf()).toMatchObject({
         cron: '*/30 * * * *', timeZone: 'Europe/Paris', timeoutMinutes: 20, name: 'Half-hourly', prompt: 'sweep again',
-        tool: 'claude', model: 'sonnet', effort: 'low', mode: 'acp', permissionMode: 'plan',
+        tool: 'claude', model: 'sonnet', effort: 'low', mode: 'acp', permissionMode: 'plan', agentOptions: { idleCompaction: false },
       })
       expect((await routineOf())?.groupId).toBeUndefined()
       await runYaac(testEnv.env, 'routine', 'edit', id, '--group', 'Sweeps', '--timeout', 'next')

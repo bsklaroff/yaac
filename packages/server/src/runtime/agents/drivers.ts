@@ -21,7 +21,7 @@
 
 import { acpDriver } from './acp-driver'
 import { tuiDriver } from './tui-driver'
-import type { AgentMode, AgentStatus, AgentTool, PermissionMode } from '@yaac/shared/types'
+import type { AgentMode, AgentOptions, AgentStatus, AgentTool, PermissionMode } from '@yaac/shared/types'
 import type { PiProvider } from '@yaac/shared/tool-providers'
 import type { StreamChild, WorkspacePaths } from '#drivers/contract'
 
@@ -170,6 +170,9 @@ export interface AgentLaunchSpec {
   model?: string
   /** Effort level, in the tool's words. See `AgentCmdSpec`. */
   effort?: string
+  /** Every option its tool has. A `tui` claude takes its own as a flag; the
+   *  rest read the window option `agentOptionsCmd` sets. */
+  agentOptions?: AgentOptions
   piProvider?: PiProvider
   /** The permission posture to launch in. See `AgentCmdSpec`. */
   permissionMode: PermissionMode

@@ -105,6 +105,8 @@ export async function updateRoutine(
       : retooled ? {} : { permissionMode: row.permissionMode }),
     ...(patch.effort !== undefined ? { effort: patch.effort }
       : !retooled && patch.model === undefined && row.effort !== undefined ? { effort: row.effort } : {}),
+    ...(retooled ? patch.agentOptions !== undefined ? { agentOptions: patch.agentOptions } : {}
+      : { agentOptions: { ...row.agentOptions, ...patch.agentOptions } }),
   }, source)
   const rescheduled = fields.cron !== row.cron || fields.timeZone !== row.timeZone
   const updated = await updateRoutineRow(id, fields,
@@ -223,6 +225,7 @@ async function insertRun(
     mode: row.mode,
     permissionMode: row.permissionMode,
     ...(row.effort !== undefined ? { effort: row.effort } : {}),
+    agentOptions: row.agentOptions,
     ...(row.branch !== undefined ? { branch: row.branch } : {}),
     ...(row.commit !== undefined ? { commit: row.commit } : {}),
     ...(row.namedWorkflowId !== undefined ? { namedWorkflowId: row.namedWorkflowId } : {}),
@@ -282,6 +285,7 @@ async function resolveRoutine(
     ...(request.mode !== undefined ? { mode: request.mode } : {}),
     ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
     ...(request.effort !== undefined ? { effort: request.effort } : {}),
+    ...(request.agentOptions !== undefined ? { agentOptions: request.agentOptions } : {}),
     ...(request.branch !== undefined ? { branch: request.branch } : {}),
     group: request.group !== undefined ? request.group : name,
   }, source)
@@ -295,6 +299,7 @@ async function resolveRoutine(
     mode: settings.mode,
     permissionMode: settings.permissionMode,
     ...(settings.effort !== undefined ? { effort: settings.effort } : {}),
+    agentOptions: settings.agentOptions ?? {},
     ...(settings.branch !== undefined ? { branch: settings.branch } : {}),
     ...(settings.commit !== undefined ? { commit: settings.commit } : {}),
     ...(settings.namedWorkflowId !== undefined ? { namedWorkflowId: settings.namedWorkflowId } : {}),
@@ -369,6 +374,7 @@ async function toEntries(rows: RoutineRow[]): Promise<RoutineEntry[]> {
       mode: r.mode,
       permissionMode: r.permissionMode,
       ...(r.effort !== undefined ? { effort: r.effort } : {}),
+      agentOptions: r.agentOptions,
       ...(r.branch !== undefined ? { branch: r.branch } : {}),
       ...(r.commit !== undefined ? { commit: r.commit } : {}),
       ...(workflow !== undefined ? { workflow: workflow.name } : {}),

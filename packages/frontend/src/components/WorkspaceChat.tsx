@@ -10,7 +10,7 @@ import {
   useConversationView, useFollowTail,
 } from '#components/ConversationView'
 import { FileLinksContext, useFileLinks } from '#components/Markdown'
-import { EffortSelect, PermissionModeSelect } from '#components/ComposerSelect'
+import { AgentOptionsMenu, EffortSelect, PermissionModeSelect } from '#components/ComposerSelect'
 import { imageFiles, useDraftImages } from '#lib/attachments'
 import { DraftImage } from '#components/ui/DraftImage'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
@@ -19,6 +19,9 @@ import { DISCONNECT_NOTICE_DELAY_MS } from '#lib/reconnect'
 import { AttachImageIcon, CloseIcon, LogIcon, SendIcon, StopIcon } from '#lib/icons'
 import { chatDraftKey, useUiStore } from '#lib/store'
 import { useTranscriptPages } from '#lib/useTranscriptPages'
+import { useSnapshot } from '#lib/useSnapshot'
+import { setSessionAgentOptions } from '#lib/createWorkspace'
+import { agentOptionIsLive, toolAgentOptions } from '@yaac/shared/types'
 import type { AcpContent, AcpEvent, AcpQueuedPrompt } from '@yaac/shared/acp'
 
 /**
@@ -69,6 +72,11 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
 }): JSX.Element {
   const stream = useAcpStream(workspaceId, conversationId)
   const { events, busy, queued, connected, refused, send, permissionModes, efforts } = stream
+  // The session holding this conversation, whose agent options it can
+  // change while it runs (docs/sessions.md, "Agent options").
+  const session = useSnapshot()?.workspaces.find((w) => w.workspaceId === workspaceId)
+    ?.sessions.find((s) => s.conversationId === conversationId)
+  const [optionError, setOptionError] = useState<string | null>(null)
   /**
    * Whether to say the pane is disconnected: only once an attach it had, or
    * the server's refusal of one, is `DISCONNECT_NOTICE_DELAY_MS` old, as a
@@ -331,6 +339,9 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
             {view === undefined && imageError !== null && (
               <div className="mb-1.5 px-1 text-xs text-error">Image not attached: {imageError}</div>
             )}
+            {view === undefined && optionError !== null && (
+              <div className="mb-1.5 px-1 text-xs text-error">Option not changed: {optionError}</div>
+            )}
             {view === undefined && menu}
           </>
         }
@@ -412,6 +423,20 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
                     available={efforts.available}
                     disabled={!connected}
                     onSelect={(effort) => send({ type: 'effort', effort })}
+                  />
+                )}
+                {session !== undefined && (
+                  <AgentOptionsMenu
+                    tool={session.tool}
+                    options={toolAgentOptions(session.tool).filter((o) => agentOptionIsLive(o, session.mode))}
+                    value={session.agentOptions}
+                    disabled={!connected}
+                    onChange={(o) => {
+                      setSessionAgentOptions(workspaceId, session.sessionId, o).then(
+                        () => setOptionError(null),
+                        (err: unknown) => setOptionError(err instanceof Error ? err.message : String(err)),
+                      )
+                    }}
                   />
                 )}
               </div>

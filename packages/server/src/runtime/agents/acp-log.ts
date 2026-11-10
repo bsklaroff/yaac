@@ -788,7 +788,7 @@ export interface AcpRecovery {
  *   Turns never overlap (`AcpConversation` queues them, and a steered
  *   message joins the running turn), so only the last can be open. An
  *   adapter that reports its own state also covers turns the agent started
- *   itself, including one codex starts from a steer it answers
+ *   itself, including one started for a steer the adapter answers
  *   `startedNewTurn`.
  * - An ask is pending if it has no recorded answer; the ask went to a
  *   connection that is gone and nothing replays it.

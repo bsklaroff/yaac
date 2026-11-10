@@ -14,12 +14,13 @@ import {
   listWorkspaceConversations,
   listWorkspaceSessions,
   recordProjectCreate,
+  setSessionAgentOptions,
   setSessionTitle,
   type SessionRow,
 } from '#db'
 import { KEEPER_WINDOW, type RuntimeSnapshot } from '#drivers/contract'
 import { isWorkspaceTerminating, readWorkspaceWindows } from '#runtime/status'
-import { tmuxCmd, windowTarget } from '#runtime/agents'
+import { agentOptionsCmd, tmuxCmd, windowTarget } from '#runtime/agents'
 import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
 import { resolveCreate } from './create'
@@ -28,7 +29,16 @@ import { inFlightWorkspaceIds } from './provisioning'
 import { claiming } from './prewarm'
 import { resolveWorkspaceContainer } from './resolve'
 import { assertInteractive } from './steps'
-import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
+import {
+  AGENT_OPTIONS,
+  agentOptionIsLive,
+  toolAgentOptions,
+  type AgentMode,
+  type AgentOption,
+  type AgentOptions,
+  type AgentTool,
+  type PermissionMode,
+} from '@yaac/shared/types'
 
 /** What a session is opened with; unnamed settings resolve as a create's. */
 export interface OpenSessionRequest {
@@ -37,6 +47,7 @@ export interface OpenSessionRequest {
   mode?: AgentMode
   permissionMode?: PermissionMode
   effort?: string
+  agentOptions?: AgentOptions
   prompt?: string
   /** One of the workspace's earlier conversations to resume. */
   resume?: string
@@ -73,6 +84,7 @@ export async function openSession(
     ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
     ...(request.effort !== undefined ? { effort: request.effort } : {}),
     ...(request.mode !== undefined ? { mode: request.mode } : {}),
+    ...(request.agentOptions !== undefined ? { agentOptions: request.agentOptions } : {}),
     ...(resumed !== undefined ? { tool: resumed.tool, mode: resumed.mode } : {}),
     ...(resumed?.model !== undefined && request.model === undefined ? { model: resumed.model } : {}),
   })
@@ -82,6 +94,7 @@ export async function openSession(
       ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
       ...(request.effort !== undefined ? { effort: request.effort } : {}),
       ...(request.mode !== undefined ? { mode: request.mode } : {}),
+      ...(request.agentOptions !== undefined ? { agentOptions: request.agentOptions } : {}),
     })
   }
   const session = await insertSession(projectId, workspaceId, {
@@ -142,6 +155,29 @@ export async function resumeSession(principal: Actor, sessionId: string): Promis
   await (kept === true ? respawnSession(workspace, session) : launchSessions(workspace, [session]))
   await applyWorkspaceEvent({ type: 'waiting-ended', projectId: session.projectId, workspaceId: session.workspaceId, window: session.window })
   return session
+}
+
+/**
+ * Change some of a running session's agent options (docs/sessions.md,
+ * "Agent options"): recorded on its row, and set on its window if its
+ * workspace is running, where its agent reads them. Refused for an option
+ * its tool lacks, or one its mode fixes at launch.
+ */
+export async function changeSessionAgentOptions(principal: Actor, sessionId: string, options: AgentOptions): Promise<void> {
+  const session = await ownedSession(principal, sessionId)
+  for (const option of Object.keys(options) as AgentOption[]) {
+    if (!toolAgentOptions(session.tool).includes(option)) {
+      throw new ServerError('VALIDATION', `${session.tool} has no agent option ${option}`)
+    }
+    if (!agentOptionIsLive(option, session.mode)) {
+      throw new ServerError('VALIDATION', `"${AGENT_OPTIONS[option].label}" is fixed at launch for a ${session.mode} session`)
+    }
+  }
+  await setSessionAgentOptions(session.id, options)
+  const unit = await workspaceDriver().find(session.workspaceId).catch(() => undefined)
+  if (unit?.running !== true) return
+  const runtime = workspaceDriver()
+  await runtime.exec(unit.jobName, agentOptionsCmd(runtime.workspacePaths(unit.jobName), session.window, options), { maxAttempts: 1 })
 }
 
 /** Name a session; blank clears the name. */

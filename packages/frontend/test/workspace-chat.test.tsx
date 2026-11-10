@@ -3,7 +3,7 @@ import { render, screen, cleanup, waitFor, fireEvent, within, act } from '@testi
 import { QueryClientProvider, type QueryClient } from '@tanstack/react-query'
 import type { JSX, ReactNode } from 'react'
 import { ACP_PAGE_SPAN, type AcpClientMessage, type AcpDiff, type AcpEvent, type AcpEventInit, type AcpQueuedPrompt, type AcpToolCall } from '@yaac/shared/acp'
-import type { PermissionMode, WorkspaceFiles } from '@yaac/shared/types'
+import type { PermissionMode, SessionEntry, WorkspaceFiles } from '@yaac/shared/types'
 
 
 /**
@@ -29,7 +29,7 @@ const stream = {
 }
 
 vi.mock('#lib/acp', () => ({ useAcpStream: () => stream }))
-const snapshot = vi.fn((): { driver: string } | undefined => undefined)
+const snapshot = vi.fn((): { driver: string; workspaces: Array<{ workspaceId: string; sessions: SessionEntry[] }> } | undefined => undefined)
 vi.mock('#lib/useSnapshot', () => ({ useSnapshot: () => snapshot() }))
 
 import { WorkspaceChat } from '#components/WorkspaceChat'
@@ -38,7 +38,7 @@ import { chatDraftKey, flushTypedText, useUiStore } from '#lib/store'
 import { IS_MAC } from '#lib/platform'
 import { DISCONNECT_NOTICE_DELAY_MS } from '#lib/reconnect'
 import { filesKey } from '#lib/useWorkspaceChanges'
-import { agentEvent as agent, mockFetch, serverError, testQueryClient, userEvent as user } from './harness'
+import { agentEvent as agent, mockFetch, serverError, sessionEntry, testQueryClient, userEvent as user } from './harness'
 import { resizeAll } from './setup'
 
 function box(): HTMLTextAreaElement {
@@ -393,7 +393,7 @@ describe('WorkspaceChat permission mode', () => {
   })
 
   it('shows the posture, switches it from the menu, and warns that containerless bypass acts as you', async () => {
-    snapshot.mockReturnValue({ driver: 'containerless' })
+    snapshot.mockReturnValue({ driver: 'containerless', workspaces: [] })
     stream.send.mockClear()
     stream.permissionModes = { current: 'accept-edits', available: ['bypass', 'accept-edits', 'plan'] }
     show()
@@ -440,6 +440,48 @@ describe('WorkspaceChat effort', () => {
   it('shows nothing for an agent with no effort option', () => {
     show()
     expect(screen.queryByRole('button', { name: 'Effort' })).toBeNull()
+  })
+})
+
+// docs/sessions.md, "Agent options". Only the ones its mode can change live.
+describe('WorkspaceChat agent options', () => {
+  afterEach(() => {
+    cleanup()
+    snapshot.mockReturnValue(undefined)
+  })
+
+  const holding = (session: Partial<SessionEntry>): void => {
+    snapshot.mockReturnValue({ driver: 'k8s', workspaces: [{ workspaceId: 'w1', sessions: [sessionEntry({ conversationId: 'acp-1', ...session })] }] })
+  }
+
+  it("shows its session's options and changes one on the session", async () => {
+    const server = mockFetch({ 'POST /api/workspace/w1/sessions/sess-1/agent-options': undefined })
+    holding({ agentOptions: { idleCompaction: false } })
+    show()
+    fireEvent.click(screen.getByRole('button', { name: 'Agent options' }))
+    const [item] = await screen.findAllByRole('menuitemcheckbox')
+    expect(item.textContent).toContain('Compact when idle')
+    expect(item.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(item)
+    await waitFor(() => expect(server.called('POST /api/workspace/w1/sessions/sess-1/agent-options')[0]?.body)
+      .toEqual({ idleCompaction: true }))
+  })
+
+  it('says when a change was refused', async () => {
+    mockFetch({
+      'POST /api/workspace/w1/sessions/sess-1/agent-options': serverError('VALIDATION', 'claude has no agent option x', 400),
+    })
+    holding({ agentOptions: { idleCompaction: false } })
+    show()
+    fireEvent.click(screen.getByRole('button', { name: 'Agent options' }))
+    fireEvent.click((await screen.findAllByRole('menuitemcheckbox'))[0])
+    expect(await screen.findByText('Option not changed: claude has no agent option x')).toBeTruthy()
+  })
+
+  it('shows nothing for a session with no options it can change while running', () => {
+    holding({ tool: 'codex', agentOptions: {} })
+    show()
+    expect(screen.queryByRole('button', { name: 'Agent options' })).toBeNull()
   })
 })
 

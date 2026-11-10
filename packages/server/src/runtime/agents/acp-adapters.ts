@@ -95,6 +95,8 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    * (`gpt-5.2-codex[medium]`) that `MODEL_RE` excludes. `NO_BROWSER=1` stops
    * the ChatGPT login from opening a browser. `CODEX_PATH` makes it run the
    * pinned CLI on PATH rather than the copy it bundles.
+   * `CODEX_ACP_PROMPT_SUGGESTIONS=false` stops the extra model call it makes
+   * after each turn to guess the next prompt, which yaac never shows.
    *
    * Its four modes are presets of codex's approval × sandbox grid, one per
    * posture the TUI offers. Its default is `agent`, weaker than
@@ -109,6 +111,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
     env: (spec) => [
       'NO_BROWSER=1',
       'CODEX_PATH=codex',
+      'CODEX_ACP_PROMPT_SUGGESTIONS=false',
       envJsonAssignment('CODEX_CONFIG', {
         ...CODEX_POSTURE_CONFIG[launchablePermissionMode('codex', spec.permissionMode)],
         ...(spec.model !== undefined ? { model: spec.model } : {}),

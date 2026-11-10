@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
+  changeSessionAgentOptions,
   closeSession,
   openSession,
   reconcileSessions,
@@ -89,6 +90,23 @@ describe('openSession', () => {
     expect(execs.some((c) => c.includes('.yaac-prompt-'))).toBe(true)
   })
 
+  it('opens each session with every agent option its tool has, a named one remembered as the project\'s next', async () => {
+    const claude = await openSession(local, WS, { tool: 'claude', mode: 'tui', agentOptions: { idleCompaction: true }, rememberDefaults: true })
+    expect(claude.agentOptions).toEqual({ idleCompaction: true })
+    const launch = execs.join('\n')
+    // Every agent finds its options on its window; claude's terminal UI also
+    // takes its own as a flag.
+    expect(launch).toContain(`set-option -wq -t "=yaac:=${claude.window}" @yaac-idle-compaction on; `)
+    expect(launch).toContain('--settings "{\\"idleCompaction\\":true}"')
+
+    expect((await openSession(local, WS, { tool: 'claude', mode: 'acp' })).agentOptions).toEqual({ idleCompaction: true })
+    // Another tool's are its own, off until picked.
+    expect((await openSession(local, WS, { tool: 'pi', mode: 'tui' })).agentOptions).toEqual({ idleCacheWarming: false })
+    expect((await openSession(local, WS, { tool: 'codex', mode: 'tui' })).agentOptions).toEqual({})
+    await expect(openSession(local, WS, { tool: 'codex', agentOptions: { idleCompaction: true } }))
+      .rejects.toMatchObject({ code: 'VALIDATION' })
+  })
+
   it('opens a session on one of the workspace\'s conversations, in its own tool and mode, and refuses one it does not hold', async () => {
     await recordConversations(DEMO_PROJECT_ID, WS, [{ tool: 'claude', conversationId: 'conv-1', mode: 'acp' }])
     await expect(openSession(local, WS, { resume: 'conv-nope' })).rejects.toMatchObject({ code: 'VALIDATION' })
@@ -140,6 +158,23 @@ describe('resumeSession', () => {
     execs = []
     await resumeSession(local, session.id)
     expect(opened()).toEqual([session.window])
+  })
+})
+
+describe('changeSessionAgentOptions', () => {
+  it('records a running session\'s change and sets it on its window, refusing an option its tool lacks or its mode fixes', async () => {
+    const pi = await openSession(local, WS, { tool: 'pi', mode: 'tui' })
+    execs = []
+    await changeSessionAgentOptions(local, pi.id, { idleCacheWarming: true })
+    expect((await getSessionRow(pi.id))?.agentOptions).toEqual({ idleCacheWarming: true })
+    expect(execs).toHaveLength(1)
+    expect(execs[0]).toMatch(new RegExp(`set-option -wq -t "=yaac:=${pi.window}" @yaac-idle-cache-warming on$`))
+
+    await expect(changeSessionAgentOptions(local, pi.id, { idleCompaction: true })).rejects.toMatchObject({ code: 'VALIDATION' })
+    // claude's terminal UI reads its option only at launch.
+    const claude = await openSession(local, WS, { tool: 'claude', mode: 'tui' })
+    await expect(changeSessionAgentOptions(local, claude.id, { idleCompaction: true })).rejects.toMatchObject({ code: 'VALIDATION' })
+    expect((await getSessionRow(claude.id))?.agentOptions).toEqual({ idleCompaction: false })
   })
 })
 
