@@ -5,7 +5,7 @@ import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { api } from '#lib/api'
 import { imageFiles } from '#lib/attachments'
-import { identityColor } from '#lib/projectIdentity'
+import { identityColor, projectIconUrl } from '#lib/projectIdentity'
 import type { ProjectSummary } from '@yaac/shared/types'
 
 /*
@@ -180,7 +180,9 @@ function IconCropper({ src, busy, error, onCancel, onCrop }: {
 
 /**
  * The picture the project's rail chip shows instead of its initial: pasted
- * or dropped on the preview chip, or picked from a file, then cropped.
+ * or dropped on the preview chip, or picked from a file, then cropped. Its
+ * Download link keeps dots out of the suggested file name, since a browser
+ * reads one as the extension and then adds none from the picture's type.
  */
 export function ProjectIcon({ project, readOnly }: { project: ProjectSummary; readOnly: boolean }): JSX.Element {
   const param = { projectId: project.id }
@@ -225,7 +227,7 @@ export function ProjectIcon({ project, readOnly }: { project: ProjectSummary; re
             style={railChipStyle(identityColor(project.id), true)}
           />
         </div>
-        {!readOnly && <>
+        {!readOnly && (
           <label className={`${BUTTON} cursor-pointer`}>
             Choose image…
             <input
@@ -235,7 +237,12 @@ export function ProjectIcon({ project, readOnly }: { project: ProjectSummary; re
               onChange={(e) => { take([...e.target.files ?? []]); e.target.value = '' }}
             />
           </label>
-          {project.iconHash !== undefined && (
+        )}
+        {project.iconHash !== undefined && <>
+          <a href={projectIconUrl(project.id, project.iconHash)} download={`${project.name.replaceAll('.', '-')} icon`} className={TEXT_BUTTON}>
+            Download
+          </a>
+          {!readOnly && (
             <button type="button" onClick={() => remove.mutate()} disabled={remove.isPending} className={TEXT_BUTTON}>
               Remove
             </button>

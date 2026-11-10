@@ -2593,19 +2593,20 @@ export const MAX_MODEL_LENGTH = 128
  * `fetch` reads another workspace's branches into the caller's checkout, and
  * `history` its conversations, never writing to theirs. `send` messages a
  * running one's agent, held to the caller's permission mode. `set-base`
- * changes only the caller's own reference branch. `icon-set` and
- * `icon-remove` replace or drop the project's one picture, which every
- * viewer of the project sees and whose previous version is not kept; like
- * a `rename` title, it changes what people see and nothing that runs.
- * `workflow-list` and `workflow-show` read the
- * project's workflows (docs/workflows.md), which `create` and `routine-*` may
- * run by name; no command edits one.
+ * changes only the caller's own reference branch. `icon-get` reads the
+ * project's one picture, and `icon-set` and `icon-remove` replace or drop
+ * it, which every viewer of the project sees and whose previous version is
+ * not kept; like a `rename` title, it changes what people see and nothing
+ * that runs. `workflow-list` and `workflow-show` read the project's
+ * workflows (docs/workflows.md), which `create` and `routine-*` may run by
+ * name; no command edits one.
  */
 export const MAMA_COMMANDS = [
   'list',
   'create',
   'rename',
   'set-base',
+  'icon-get',
   'icon-set',
   'icon-remove',
   'stop',

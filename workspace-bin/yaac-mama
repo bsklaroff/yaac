@@ -25,7 +25,7 @@
 #   (each prompt or message also as - for stdin, or as --prompt-file F)
 #   yaac-mama rename [<workspace>] "<title>"
 #   yaac-mama set-base <branch>
-#   yaac-mama icon set <file> | icon remove
+#   yaac-mama icon get <file> | icon set <file> | icon remove
 #   yaac-mama stop [<workspace>]
 #   yaac-mama stop --session [<session>]
 #   yaac-mama restart [--timeout D] [--no-volume] <workspace>
@@ -126,7 +126,8 @@ Usage:
   --prompt-file <path>, given before the other arguments.
   yaac-mama rename [<workspace>] "<title>"          # retitle (default: yourself)
   yaac-mama set-base <branch>                      # change your base branch
-  yaac-mama icon set <file>                        # the project's sidebar icon
+  yaac-mama icon get <file>                        # save the project's sidebar icon
+  yaac-mama icon set <file>                        # replace it
   yaac-mama icon remove                            # back to its initial
   yaac-mama stop [<workspace>]                      # stop it (default: yourself)
   yaac-mama stop --session [<session>]             # close one agent's session
@@ -369,6 +370,8 @@ then on forks from. Use it when this work is stacked on another PR's
 branch. It does not touch this checkout: rebase onto origin/<branch>
 yourself (`git fetch origin <branch>` first if git does not have it yet).
 
+icon get saves the picture this project's chip shows in the yaac sidebar
+to a file (- for stdout), as it was uploaded, and says its type.
 icon set makes an image file the picture this project's chip shows in the
 yaac sidebar in place of its initial: a square PNG, JPEG, GIF or WebP of at
 most 150000 bytes (256px is plenty). An SVG is refused; draw it to a PNG
@@ -565,7 +568,7 @@ wait_status() {
 }
 
 # Run one command whose answer is a file, into $tmp/body, with the id of the
-# workspace it is about in $id. Arguments as envelope. A partial download
+# workspace it is about, when there is one, in $id. Arguments as envelope. A partial download
 # fails (curl exits non-zero), so $tmp/body is only ever whole.
 download() {
   scratch
@@ -1079,6 +1082,21 @@ EOF
   icon)
     shift
     case "${1:-}" in
+      get)
+        if [ $# -ne 2 ] || [ -z "$2" ]; then
+          echo 'usage: yaac-mama icon get <file>' >&2
+          exit 2
+        fi
+        download icon-get ''
+        if [ "$2" = - ]; then
+          cat "$tmp/body"
+          exit 0
+        fi
+        cat "$tmp/body" > "$2" || { echo "yaac-mama: cannot write $2" >&2; exit 1; }
+        type=$(tr 'A-Z' 'a-z' < "$tmp/headers" | sed -n 's/^content-type: *\([a-z0-9./+-]*\).*/\1/p' | tail -n 1)
+        echo "Saved the project's icon (${type:-image}, $(wc -c < "$2" | tr -d ' ') bytes) to $2."
+        exit 0
+        ;;
       set)
         if [ $# -ne 2 ] || [ -z "$2" ]; then
           echo 'usage: yaac-mama icon set <file>' >&2
@@ -1099,7 +1117,7 @@ EOF
         run icon-remove ''
         ;;
       *)
-        echo 'usage: yaac-mama icon set <file> | icon remove' >&2
+        echo 'usage: yaac-mama icon get <file> | icon set <file> | icon remove' >&2
         exit 2
         ;;
     esac

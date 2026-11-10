@@ -137,8 +137,9 @@ export const MAMA_BODY_LIMIT = MAX_PROMPT_LENGTH * 6 + 64 * 1024
  *
  * `yaac-mama` ends in `runMamaCommand`, which holds the command allowlist.
  * Answers are JSON, except a file (`fetch`'s git bundle, `history`'s
- * transcripts, database or one file, a step's log from `logs`), sent as the
- * body with the workspace it is about in `x-yaac-workspace-id` (and a
+ * transcripts, database or one file, a step's log from `logs`, the
+ * project's icon from `icon-get`), sent as the body with the workspace it
+ * is about, when there is one, in `x-yaac-workspace-id` (and a
  * conversation in `x-yaac-conversation-id`).
  */
 function mamaRoute(identifyCaller: IdentifyCaller) {
@@ -177,7 +178,7 @@ function mamaRoute(identifyCaller: IdentifyCaller) {
       if ('output' in outcome) return c.json({ output: outcome.output })
       return c.body(outcome.body, 200, {
         'content-type': outcome.contentType,
-        'x-yaac-workspace-id': outcome.workspaceId,
+        ...(outcome.workspaceId !== undefined ? { 'x-yaac-workspace-id': outcome.workspaceId } : {}),
         ...(outcome.conversationId !== undefined ? { 'x-yaac-conversation-id': outcome.conversationId } : {}),
       })
     },

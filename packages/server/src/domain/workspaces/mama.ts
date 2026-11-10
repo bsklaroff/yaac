@@ -9,7 +9,7 @@ import crypto from 'node:crypto'
  * send a running one a message, retitle, group, stop one (its own
  * included), restart a stopped one, fetch another's branches and read
  * another's conversation history and step logs, change its own
- * reference branch, and set or remove the project's icon.
+ * reference branch, and read, set or remove the project's icon.
  * Stopping is allowed because it is reversible: the checkout, row and
  * conversations are kept. Restarting a stopped workspace only undoes a
  * stop, and is held to the caller's own permission mode, as is everything a
@@ -95,7 +95,7 @@ import {
   type WorkspaceListEntry,
 } from '@yaac/shared/types'
 import { authEntryEndpoint, authEntryProvider, loadToolAuthEntry, modelsForTool } from '#domain/auth'
-import { listProjectWorkflows, removeProjectIcon, setProjectIcon, showWorkflow } from '#domain/projects'
+import { listProjectWorkflows, readProjectIcon, removeProjectIcon, setProjectIcon, showWorkflow } from '#domain/projects'
 import { agentDriver, resolveAgentPermissionMode } from '#runtime/agents'
 import { liveAgents } from '#runtime/status'
 import { bundleCheckout } from '#domain/git'
@@ -187,13 +187,14 @@ export interface MamaRequestInput {
 
 export type MamaOutcome =
   | { ok: true; output: string }
-  /** A file about `workspaceId` (and one of its conversations): `fetch`'s
-   *  git bundle, or `history`'s transcripts, database or one file. */
+  /** A file, about `workspaceId` (and one of its conversations) when it is
+   *  `fetch`'s git bundle or `history`'s transcripts, database or one file,
+   *  or the project's icon. */
   | {
     ok: true
     body: Buffer<ArrayBuffer> | ReadableStream<Uint8Array>
     contentType: string
-    workspaceId: string
+    workspaceId?: string
     conversationId?: string
   }
   | { ok: false; error: string }
@@ -236,6 +237,7 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   status: ['workspace', 'step'],
   rename: ['workspace'],
   'set-base': [],
+  'icon-get': [],
   'icon-set': [],
   'icon-remove': [],
   stop: ['workspace', 'session'],
@@ -298,6 +300,7 @@ export async function runMamaCommand(
       case 'status': return await runStatus(caller, request)
       case 'rename': return await runRename(caller, request)
       case 'set-base': return await runSetBase(caller, request)
+      case 'icon-get': return await runIconGet(caller)
       case 'icon-set': return await runIconSet(caller, request)
       case 'icon-remove': return await runIconRemove(caller)
       case 'stop': return await runStop(caller, request)
@@ -1428,6 +1431,11 @@ async function runSetBase(caller: MamaCaller, request: MamaRequestInput): Promis
       + `against origin/${branch}, and what is queued under it from now on forks from there. `
       + `Your commits have not moved; rebase onto origin/${branch} yourself if they should.`,
   }
+}
+
+async function runIconGet(caller: MamaCaller): Promise<MamaOutcome> {
+  const { bytes, mimeType } = await readProjectIcon(caller.projectId)
+  return { ok: true, body: Buffer.from(bytes), contentType: mimeType }
 }
 
 /**

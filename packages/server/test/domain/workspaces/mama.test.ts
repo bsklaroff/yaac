@@ -1308,15 +1308,16 @@ describe('runMamaCommand', () => {
     })
   })
 
-  describe('icon-set / icon-remove', () => {
+  describe('icon-get / icon-set / icon-remove', () => {
     const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
     const iconHash = async (): Promise<string | undefined> =>
       (await listProjects()).find((p) => p.id === PROJ)?.iconHash
 
-    it('sets the caller\'s project icon from base64, refuses what is not an image, and removes it', async () => {
+    it('sets the caller\'s project icon from base64, hands it back, refuses what is not an image, and removes it', async () => {
       expect(await output('icon-set', PNG.toString('base64'))).toContain('Set the project\'s icon')
       expect((await readProjectIcon(PROJ)).bytes).toEqual(PNG)
       expect(await iconHash()).toBeDefined()
+      expect(await run('icon-get')).toEqual({ ok: true, body: PNG, contentType: 'image/png' })
 
       expect(await run('icon-set', '')).toEqual({ ok: false, error: 'icon-set needs an image' })
       const svg = await run('icon-set', Buffer.from('<svg/>').toString('base64'))
@@ -1325,6 +1326,7 @@ describe('runMamaCommand', () => {
 
       expect(await output('icon-remove')).toContain('Removed the project\'s icon')
       expect(await iconHash()).toBeUndefined()
+      expect(await run('icon-get')).toEqual({ ok: false, error: `project ${PROJ} has no icon` })
     })
   })
 

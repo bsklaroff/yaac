@@ -1,6 +1,6 @@
 ---
 name: yaac-mama
-description: Ask the yaac server running this workspace to list the project's workspaces (running, queued, or stopped — searchable), start a sibling workspace with a prompt (now, or queued to start when a workspace stops or a group with a workspace limit has room), start another agent session in a running workspace (this one included, on the same checkout), edit or discard a queued workspace, make or manage a routine (a fresh workspace started on a cron schedule), send a message to a running workspace's agent (any of its sessions), retitle a workspace, change this workspace's base branch, set or remove the project's sidebar icon, stop a workspace (a sibling, or this one) or close just one agent session in it, restart a stopped one, file workspaces into named groups, or fetch another workspace's branches into this checkout — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), start another agent beside this one on the same checkout, queue a follow-up to run after this one (or change or drop one already queued), schedule a recurring task (nightly, weekly, every hour …) or pause, change or remove one, send/tell/nudge/steer a running workspace (or "session") with a message or follow-up instruction, farm a task out to a parallel one, see what else is running, rename/retitle a workspace, give the project a sidebar icon, rebase this workspace's diff onto another branch (e.g. when stacking on another PR), stop/shut down/wind down a workspace or this one when its work is done, find an old or stopped workspace by what it was about, restart/revive/resume a stopped workspace, organize workspaces into groups, read what another workspace committed (its branches, log, diffs), or read another workspace's agent conversations (full session transcripts, subagents included), running or stopped.
+description: Ask the yaac server running this workspace to list the project's workspaces (running, queued, or stopped — searchable), start a sibling workspace with a prompt (now, or queued to start when a workspace stops or a group with a workspace limit has room), start another agent session in a running workspace (this one included, on the same checkout), edit or discard a queued workspace, make or manage a routine (a fresh workspace started on a cron schedule), send a message to a running workspace's agent (any of its sessions), retitle a workspace, change this workspace's base branch, download, set or remove the project's sidebar icon, stop a workspace (a sibling, or this one) or close just one agent session in it, restart a stopped one, file workspaces into named groups, or fetch another workspace's branches into this checkout — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), start another agent beside this one on the same checkout, queue a follow-up to run after this one (or change or drop one already queued), schedule a recurring task (nightly, weekly, every hour …) or pause, change or remove one, send/tell/nudge/steer a running workspace (or "session") with a message or follow-up instruction, farm a task out to a parallel one, see what else is running, rename/retitle a workspace, give the project a sidebar icon, rebase this workspace's diff onto another branch (e.g. when stacking on another PR), stop/shut down/wind down a workspace or this one when its work is done, find an old or stopped workspace by what it was about, restart/revive/resume a stopped workspace, organize workspaces into groups, read what another workspace committed (its branches, log, diffs), or read another workspace's agent conversations (full session transcripts, subagents included), running or stopped.
 ---
 
 You are running **inside a yaac workspace**. The `yaac-mama` command (already on
@@ -34,7 +34,8 @@ yaac-mama send [--session S | --conversation C] <workspace> "<message>"  # to on
   # any "<prompt>" or "<message>": also - (stdin) or --prompt-file F before the arguments
 yaac-mama rename [<workspace>] "<title>"            # omit the workspace to rename yourself
 yaac-mama set-base <branch>                         # your base branch, on origin
-yaac-mama icon set <file>                           # the project's sidebar icon
+yaac-mama icon get <file>                           # save the project's sidebar icon
+yaac-mama icon set <file>                           # replace it
 yaac-mama icon remove                               # back to the project's initial
 yaac-mama stop [<workspace>]                        # omit the workspace to stop yourself
 yaac-mama stop --session [<session>]                # close one session; omit it to close your own
@@ -373,6 +374,11 @@ pass — the server resolves who is calling and answers for that project only.
   git does not have it yet). A branch not yet on the server's copy of origin
   is fetched for; one origin lacks is refused. Run it again with the
   default branch to undo it.
+
+- **`icon get <file>`** — save the picture this project's chip shows in
+  the yaac sidebar to `<file>` (`-` for stdout), byte for byte as it was
+  uploaded, and print its type and size. A project with no icon is refused.
+  Use it to adjust the current icon (shift, pad, recolor) before `icon set`.
 
 - **`icon set <file>` / `icon remove`** — set the picture this project's
   chip shows in the yaac sidebar in place of its initial, or put the initial
