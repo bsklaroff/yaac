@@ -7,16 +7,17 @@
  */
 import { constants as C } from 'node:fs'
 import { ServerError } from '@yaac/shared/errors'
-import { lifeDirName } from '@yaac/shared/steps'
+import { isAgentWindow, lifeDirName } from '@yaac/shared/steps'
 import type { WorkspaceLogLife } from '@yaac/shared/types'
 import type { Actor } from '#domain/access'
 import { resolveWorkspaceRecord } from './resolve'
 import { authorizeWorkspace } from './steps'
 import { openTerminalLogs } from './life'
 
-/** A life dir (`lifeDirName`) and a file in one: no separators, no `..`. */
+/** A life dir (`lifeDirName`) and a file in one, its window's name
+ *  captured: no separators, no `..`. */
 const LIFE = /^\d{4}-\d{2}-\d{2}T[\d.-]+Z$/
-const FILE = /^[A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:log(?:\.1)?|events)$/
+const FILE = /^([A-Za-z0-9_][A-Za-z0-9_.-]*)\.(?:log(?:\.1)?|events)$/
 
 /** At most this much of a log is answered at once. */
 export const READ_LIMIT = 4 * 1024 * 1024
@@ -35,14 +36,18 @@ function windowLogFiles({ life, name }: LoggedWindow): string[] {
   return [`${lifeDirName(life)}/${name}.log.1`, `${lifeDirName(life)}/${name}.log`]
 }
 
-/** Each life's log files, newest life first. */
+/** Each life's log files, newest life first. An agent session's are left
+ *  out (`isAgentWindow`), though `readWorkspaceLog` still serves them. */
 export async function listWorkspaceLogs(principal: Actor, idOrPrefix: string): Promise<WorkspaceLogLife[]> {
   const { projectId, workspaceId } = await resolveWorkspaceRecord(idOrPrefix)
   await authorizeWorkspace(principal, workspaceId)
   const logs = await openTerminalLogs(projectId, workspaceId)
   const lives = (await logs.readdir('')).filter((d) => d.isDirectory() && LIFE.test(d.name)).map((d) => d.name).sort().reverse()
   return await Promise.all(lives.map(async (life) => {
-    const names = (await logs.readdir(life)).filter((f) => f.isFile() && FILE.test(f.name)).map((f) => f.name).sort()
+    const names = (await logs.readdir(life)).flatMap((f) => {
+      const window = f.isFile() ? FILE.exec(f.name)?.[1] : undefined
+      return window !== undefined && !isAgentWindow(window) ? [f.name] : []
+    }).sort()
     const files = await Promise.all(names.map(async (name) => ({ name, size: (await logs.stat(`${life}/${name}`))?.size ?? 0 })))
     return { life, files }
   }))

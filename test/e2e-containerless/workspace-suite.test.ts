@@ -2302,8 +2302,10 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
 
       // The create returns before the agent names its conversation. The
       // registry records it then, with no pod events here to prompt it.
-      // acpd's window is logged in the life's dir, where the chat pane's
-      // log view reads it.
+      // acpd's window is logged in the life's dir, where the exited bar's
+      // Show log and `yaac workspace logs` read it by name, though the
+      // listing leaves it out.
+      let window = ''
       await vi.waitFor(async () => {
         const res = await fetch(`${origin()}/api/workspace/list`)
         const { workspaces } = await res.json() as {
@@ -2315,9 +2317,12 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
         expect(row?.conversations[0]?.mode).toBe('acp')
         // From the record; most tools leave no transcript to read.
         expect(row?.conversations[0]?.model).toBe(model)
-        const log = await fetch(`${origin()}/api/workspace/${id}/logs/${lifeDirName(row?.life ?? '')}/${row?.sessions[0]?.window ?? ''}.log`)
+        window = row?.sessions[0]?.window ?? ''
+        const log = await fetch(`${origin()}/api/workspace/${id}/logs/${lifeDirName(row?.life ?? '')}/${window}.log`)
         expect(await log.text()).toContain('[acpd] listening on')
       }, { timeout: 30_000, interval: 250 })
+      expect((await runYaac(cliEnv(), 'workspace', 'logs', id, window)).stdout).toContain('[acpd] listening on')
+      expect((await runYaac(cliEnv(), 'workspace', 'logs', id)).stdout).not.toContain(window)
 
       // acpd records both directions, under the session id once
       // `session/new` answers. The handshake is done once the posture is

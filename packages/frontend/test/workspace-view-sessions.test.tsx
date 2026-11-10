@@ -4,22 +4,15 @@ import { screen, cleanup, waitFor, fireEvent, type RenderResult } from '@testing
 import type { WorkspaceListEntry } from '@yaac/shared/types'
 
 // No xterm, no sockets: the terminal, chat and log panes are stubs naming
-// what they were given, the chat with its log button.
+// what they were given.
 vi.mock('#components/WorkspaceTerminal', () => ({
   WorkspaceTerminal: ({ target }: { target: string }) => <div data-testid="terminal">{target}</div>,
 }))
 vi.mock('#components/WorkspaceChat', () => ({
-  WorkspaceChat: ({ conversationId, onShowLog }: { conversationId: string; onShowLog: () => void }) => (
-    <>
-      <div data-testid="chat">{conversationId}</div>
-      <button type="button" onClick={onShowLog}>Show agent log</button>
-    </>
-  ),
+  WorkspaceChat: ({ conversationId }: { conversationId: string }) => <div data-testid="chat">{conversationId}</div>,
 }))
 vi.mock('#components/StepLog', () => ({
-  StepLog: ({ life, file, follow }: { life: string; file: string; follow: boolean }) => (
-    <div data-testid="log">{`${life}/${file}${follow ? ' following' : ''}`}</div>
-  ),
+  StepLog: ({ life, file }: { life: string; file: string }) => <div data-testid="log">{`${life}/${file}`}</div>,
 }))
 
 import { WorkspaceView } from '#components/WorkspaceView'
@@ -127,42 +120,36 @@ describe('WorkspaceView sessions', () => {
   })
 
   /*
-   * The log is a view of the chat pane, toggled from the bar under it. While
-   * the agent comes up, back is the starting screen; a chat that opens
-   * meanwhile is announced, never switched to. One that never opened offers
-   * its log in the pane as well.
+   * A chat session's log is offered only once its agent exited, from the
+   * bar under it, whether or not a chat ever opened. Back returns to what
+   * the log covered, and a resume returns to the chat.
    */
-  it('switches a chat session between its chat and its agent\'s log, from the bar under either', () => {
+  it('offers a chat session\'s agent log from the exited bar, and only once the agent exited', () => {
     const LIFE = '2026-11-03T01:00:00.000Z'
     const starting = sessionEntry({ sessionId: 'sa', window: 'claude-sa' })
     const view = show({ life: LIFE, sessions: [starting] })
     expect(screen.getByText('Starting Claude Code')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Show log' }))
-    expect(screen.getByTestId('log').textContent).toBe('2026-11-03T01-00-00.000Z/claude-sa.log following')
-    expect(screen.getByText('Starting Claude Code…')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
-    expect(screen.queryByTestId('log')).toBeNull()
-    expect(screen.getByText('Starting Claude Code')).toBeTruthy()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Show log' }))
-    show({ life: LIFE, sessions: [{ ...starting, conversationId: 'conv-a' }] }, view)
-    expect(screen.getByTestId('log')).toBeTruthy()
-    expect(screen.getByText('The chat is ready.')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Open chat' }))
-    expect(screen.queryByTestId('log')).toBeNull()
-    expect(screen.getByTestId('chat').textContent).toBe('conv-a')
-
-    fireEvent.click(screen.getByRole('button', { name: 'Show agent log' }))
-    expect(screen.getByTestId('log')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Back to chat' }))
-    expect(screen.queryByTestId('log')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Show log' })).toBeNull()
 
     show({ life: LIFE, sessions: [{ ...starting, exited: true }] }, view)
     expect(screen.getByText('Claude Code exited before the chat opened.')).toBeTruthy()
-    const [inPane, inBar] = screen.getAllByRole('button', { name: 'Show log' })
-    expect(inBar).toBeTruthy()
-    fireEvent.click(inPane)
+    fireEvent.click(screen.getByRole('button', { name: 'Show log' }))
     expect(screen.getByTestId('log').textContent).toBe('2026-11-03T01-00-00.000Z/claude-sa.log')
+    expect(screen.queryByRole('button', { name: 'Show log' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+    expect(screen.queryByTestId('log')).toBeNull()
+    expect(screen.getByText('Claude Code exited before the chat opened.')).toBeTruthy()
+
+    const running = { ...starting, conversationId: 'conv-a' }
+    show({ life: LIFE, sessions: [running] }, view)
+    expect(screen.getByTestId('chat').textContent).toBe('conv-a')
+    expect(screen.queryByRole('button', { name: 'Show log' })).toBeNull()
+
+    show({ life: LIFE, sessions: [{ ...running, exited: true }] }, view)
+    fireEvent.click(screen.getByRole('button', { name: 'Show log' }))
+    expect(screen.getByTestId('log')).toBeTruthy()
+    show({ life: LIFE, sessions: [running] }, view)
+    expect(screen.queryByTestId('log')).toBeNull()
   })
 
   it('shows a workspace with no session what it can start, its history included', async () => {

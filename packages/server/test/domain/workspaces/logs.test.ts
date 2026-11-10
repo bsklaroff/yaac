@@ -33,6 +33,7 @@ beforeEach(async () => {
   await fs.writeFile(path.join(root, NEW, 'build.events'), 'start 0 t\n')
   await fs.writeFile(path.join(root, NEW, 'build.sh'), 'the script')
   await fs.writeFile(path.join(root, OLD, 'shell.log'), '$ ls\n')
+  await fs.writeFile(path.join(root, NEW, 'claude-c09f7077.log'), '[acpd] listening on\n')
 })
 
 afterEach(async () => {
@@ -41,11 +42,14 @@ afterEach(async () => {
 })
 
 describe('listWorkspaceLogs', () => {
-  it('lists every life, newest first, with its log files and their sizes', async () => {
+  // An agent session's log is the chat pane's to offer once its agent
+  // exits, so it is served but not listed.
+  it('lists every life, newest first, with its log files and their sizes, leaving out an agent session\'s', async () => {
     expect(await listWorkspaceLogs(local, WS)).toEqual([
       { life: NEW, files: [{ name: 'build.events', size: 10 }, { name: 'build.log', size: 8 }, { name: 'build.log.1', size: 5 }] },
       { life: OLD, files: [{ name: 'shell.log', size: 5 }] },
     ])
+    expect((await readWorkspaceLog(local, WS, NEW, 'claude-c09f7077.log')).data.toString()).toBe('[acpd] listening on\n')
   })
 })
 
