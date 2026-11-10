@@ -2,7 +2,8 @@
 // project's rows and its files on disk. That covers the clone and its
 // branches, the remote of a project the server hosts, the settings its
 // workspaces launch with, the egress allowlist, the ignored paths a stop keeps, the Dockerfile and build-dir files, which of its
-// owner's git credentials it uses, and the project lifecycle verbs.
+// owner's git credentials it uses, the picture its chip shows, and the
+// project lifecycle verbs.
 // Nothing below this layer reads project state; a driver that needs a
 // project's config is handed it (`PassContext.projectConfig`, a launch
 // intent).
@@ -18,6 +19,7 @@ export {
   setProjectAllowlist,
 } from './allowlist'
 export { getProjectBranches } from './branches'
+export { MAX_ICON_BYTES, readProjectIcon, removeProjectIcon, setProjectIcon } from './icon'
 export { fetchProjectCommit, fetchProjectOrigin, onOriginFetched, refreshProjectOrigins, seedProjectOrigin } from './origin'
 export {
   deleteBuildFile,

@@ -9,6 +9,7 @@ import { cloneRepo } from '@yaac/server/domain/git'
 import { credentialOwnerKey } from '@yaac/server/domain/auth'
 import { addHttpsCredential, listCredentialSummaries } from '@yaac/server/domain/auth/git-credentials'
 import { assignProjectCredential } from '@yaac/server/domain/projects/credentials'
+import { MAX_ICON_BYTES } from '@yaac/server/domain/projects/icon'
 import { getToolCredential, setToolCredential } from '@yaac/server/db/tool-credential-store'
 import { seeTailnetUser } from '@yaac/server/db/user-store'
 import { buildAuthPayload } from '@yaac/shared/tool-auth-interactive'
@@ -1117,6 +1118,35 @@ describe('write routes', () => {
       expect((await getProjectRow(DEMO))?.keptIgnoredPaths).toEqual(['.env', 'target/release'])
       expect((await kept.$put({ param: { projectId: DEMO }, json: { paths: ['../up'] } })).status).toBe(400)
       expect((await getProjectRow(DEMO))?.keptIgnoredPaths).toEqual(['.env', 'target/release'])
+    })
+
+    it('stores an uploaded icon and serves it back, cached only under its own hash, refusing a non-image and an oversized body, then removes it', async () => {
+      const app = buildApp({ buildId: 'test' })
+      const client = makeTestApiClient(app)
+      const icon = client.project[':projectId'].icon
+      const put = (body: Uint8Array<ArrayBuffer>) => icon.$put({ param: { projectId: DEMO } }, { init: { body, headers: { 'Content-Type': 'image/png' } } })
+      const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7])
+
+      expect((await put(png)).status).toBe(204)
+      const served = await icon.$get({ param: { projectId: DEMO } })
+      expect(served.status).toBe(200)
+      expect(served.headers.get('content-type')).toBe('image/png')
+      expect(served.headers.get('x-content-type-options')).toBe('nosniff')
+      expect(new Uint8Array(await served.arrayBuffer())).toEqual(png)
+      // The browser keeps it only under the hash the snapshot names for it.
+      const hash = (await (await client.project.list.$get()).json()).find((p) => p.id === DEMO)?.iconHash
+      const cacheFor = async (v: string): Promise<string | null> =>
+        (await app.request(`/api/project/${DEMO}/icon?v=${v}`, rawInit())).headers.get('cache-control')
+      expect(await cacheFor(hash ?? '')).toBe('private, max-age=31536000, immutable')
+      expect(await cacheFor('0123456789abcdef')).toBe('no-cache')
+      expect(served.headers.get('cache-control')).toBe('no-cache')
+
+      expect((await put(new TextEncoder().encode('<svg/>'))).status).toBe(400)
+      expect((await put(new Uint8Array(MAX_ICON_BYTES + 1))).status).toBe(413)
+      expect(new Uint8Array(await (await icon.$get({ param: { projectId: DEMO } })).arrayBuffer())).toEqual(png)
+
+      expect((await icon.$delete({ param: { projectId: DEMO } })).status).toBe(204)
+      expect((await icon.$get({ param: { projectId: DEMO } })).status).toBe(404)
     })
   })
 

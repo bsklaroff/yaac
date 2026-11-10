@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
 import type { Context } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
@@ -13,11 +14,14 @@ import {
   listProjectEnv,
   listProjectRunSecrets,
   listProjects,
+  MAX_ICON_BYTES,
   portForwardsSchema,
   readProjectDockerfile,
+  readProjectIcon,
   registerStagedProject,
   removeKeptHostedRepo,
   removeProjectEnvVar,
+  removeProjectIcon,
   removeRunSecret,
   setProjectAllowlist,
   setProjectEnvVar,
@@ -31,6 +35,7 @@ import {
   setInitSteps,
   setInitWorkflow,
   setKeptIgnoredPaths,
+  setProjectIcon,
   setScratchDirs,
   scratchDirSettingsPatchSchema,
   shareProject,
@@ -159,6 +164,33 @@ export const projectApp = new Hono<IdentityEnv>()
       return c.json({ paths })
     },
   )
+  // The picture the project's chip shows instead of its initial. The
+  // webapp's URL carries the snapshot's `iconHash` as `v`; only a `v` naming
+  // the bytes served lets the browser keep them, since a client with a stale
+  // hash would otherwise cache the new picture under the old one's URL.
+  .get('/:projectId/icon', async (c) => {
+    const { bytes, mimeType, hash } = await readProjectIcon(await resolveProjectId(c.req.param('projectId')))
+    c.header('Content-Type', mimeType)
+    c.header('Cache-Control', c.req.query('v') === hash ? 'private, max-age=31536000, immutable' : 'no-cache')
+    c.header('X-Content-Type-Options', 'nosniff')
+    return c.body(new Uint8Array(bytes))
+  })
+  // Takes the image's raw bytes.
+  .put(
+    '/:projectId/icon',
+    bodyLimit({
+      maxSize: MAX_ICON_BYTES,
+      onError: () => { throw new ServerError('TOO_LARGE', 'the icon is over the 512 KB limit') },
+    }),
+    async (c) => {
+      await setProjectIcon(c.get('principal'), await resolveProjectId(c.req.param('projectId')), new Uint8Array(await c.req.arrayBuffer()))
+      return c.body(null, 204)
+    },
+  )
+  .delete('/:projectId/icon', async (c) => {
+    await removeProjectIcon(c.get('principal'), await resolveProjectId(c.req.param('projectId')))
+    return c.body(null, 204)
+  })
   // The steps every workspace runs at start unless its create brings its
   // own (docs/workspace-steps.md). The current graph is in the project
   // summary.

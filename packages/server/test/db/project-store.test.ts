@@ -4,8 +4,11 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { closeDb } from '#db/client'
 import {
   clearProjectKeepsHostedRepo,
+  deleteProjectIcon,
   deleteProjectRow,
+  getProjectIcon,
   getProjectRow,
+  listProjectIconHashes,
   listProjectRows,
   recordProject,
   recordProjectCreate,
@@ -16,6 +19,7 @@ import {
   setProjectEgressAllowlist,
   setProjectScratchDirs,
   setProjectGitCredential,
+  setProjectIcon,
   setProjectInit,
   setProjectOrder,
   setProjectRemote,
@@ -536,5 +540,68 @@ describe('setProjectConfig', () => {
       .toEqual({ portForwards: ports, cacheVolumes: { pip: '/p' }, nestedContainers: false, npmCache: false })
     expect(await getProjectRow(P)).toMatchObject({ portForwards: ports, cacheVolumes: { pip: '/p' }, npmCache: false })
     expect(await setProjectConfig('0a0a0a0a-0000-4000-8000-0000000000ff', { npmCache: true })).toBeUndefined()
+  })
+})
+
+const icon = (hash: string) => ({ mimeType: 'image/png', bytes: Buffer.from(hash), hash })
+
+/** A fresh data dir holding projects APP and P, for the icon describes. */
+function withIconProjects(): void {
+  let tmpDir: string
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://example.com/x.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    await recordProject({ id: P, name: 'p', remoteUrl: 'https://example.com/p.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+  })
+  afterEach(async () => {
+    _resetWorkspaceListChangedForTests()
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+}
+
+describe('setProjectIcon', () => {
+  withIconProjects()
+
+  it('stores a picture, then replaces it, pushing a fresh snapshot each time', async () => {
+    let pushes = 0
+    onWorkspaceListChanged(() => { pushes += 1 })
+    await setProjectIcon(APP, icon('a'))
+    await setProjectIcon(APP, { mimeType: 'image/jpeg', bytes: Buffer.from('b'), hash: 'b' })
+    expect(await getProjectIcon(APP)).toEqual({ mimeType: 'image/jpeg', bytes: Buffer.from('b'), hash: 'b' })
+    expect(pushes).toBe(2)
+  })
+})
+
+describe('getProjectIcon', () => {
+  withIconProjects()
+
+  it('is undefined for a project without one, and once its project is deleted', async () => {
+    expect(await getProjectIcon(APP)).toBeUndefined()
+    await setProjectIcon(APP, icon('a'))
+    await deleteProjectRow(APP)
+    expect(await getProjectIcon(APP)).toBeUndefined()
+  })
+})
+
+describe('deleteProjectIcon', () => {
+  withIconProjects()
+
+  it("removes only that project's picture", async () => {
+    await setProjectIcon(APP, icon('a'))
+    await setProjectIcon(P, icon('p'))
+    await deleteProjectIcon(APP)
+    expect(await getProjectIcon(APP)).toBeUndefined()
+    expect(await getProjectIcon(P)).toEqual(icon('p'))
+  })
+})
+
+describe('listProjectIconHashes', () => {
+  withIconProjects()
+
+  it('maps each project with a picture to its hash', async () => {
+    expect(await listProjectIconHashes()).toEqual(new Map())
+    await setProjectIcon(P, icon('p'))
+    expect(await listProjectIconHashes()).toEqual(new Map([[P, 'p']]))
   })
 })

@@ -65,7 +65,7 @@ export function ProjectsScreen({
                 active:bg-surface-2"
             >
               <ProjectChip
-                name={p.name}
+                project={p}
                 op={op}
                 iconSize={16}
                 className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-[15px] font-semibold"

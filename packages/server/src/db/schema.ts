@@ -12,7 +12,7 @@ import type {
 } from '@yaac/shared/types'
 import type { StepGraph, StepOrigin, StepSpec, StepState, StepsOutcome } from '@yaac/shared/steps'
 import { sql } from 'drizzle-orm'
-import { boolean, index, integer, json, jsonb, primaryKey, snakeCase, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core'
+import { boolean, bytea, index, integer, json, jsonb, primaryKey, snakeCase, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core'
 
 /**
  * Drizzle schema for the server's PGlite database, opened only by the server
@@ -204,6 +204,19 @@ export const projectToolDefaults = snakeCase.table('project_tool_defaults', {
   /** In the tool's words; used where the next create's model has it. */
   effort: text(),
 }, (t) => [uniqueIndex().on(t.projectId, t.tool)])
+
+/**
+ * The picture a project's chip shows in place of its initial, uploaded by
+ * its owner (#domain/projects icon). Apart from the
+ * project row so listing projects never reads the bytes; `hash` is what a
+ * client's image URL carries, so it reloads only when the picture changes.
+ */
+export const projectIcons = snakeCase.table('project_icons', {
+  projectId: uuid().primaryKey().references(() => projects.id, { onDelete: 'cascade' }),
+  mimeType: text().notNull(),
+  bytes: bytea().notNull(),
+  hash: text().notNull(),
+})
 
 /**
  * Every workspace yaac has created (see workspace-store.ts). The runtime is
