@@ -22,6 +22,7 @@ import { builtinSkillsDir, sharedSkillRoots } from '@yaac/server/domain/skills'
 import { defaultModelFor } from '@yaac/server/domain/auth'
 import { AGENT_PACKAGES, agentPackagePrefix } from '@yaac/shared/tool-install'
 import { ACP_ADAPTERS, AGENT_TOOLS, MAX_PROMPT_LENGTH } from '@yaac/shared/types'
+import { lifeDirName } from '@yaac/shared/steps'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { FALLBACK_MODELS, PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import type {
@@ -2269,10 +2270,12 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
 
       // The create returns before the agent names its conversation. The
       // registry records it then, with no pod events here to prompt it.
+      // acpd's window is logged in the life's dir, where the chat pane's
+      // log view reads it.
       await vi.waitFor(async () => {
         const res = await fetch(`${origin()}/api/workspace/list`)
         const { workspaces } = await res.json() as {
-          workspaces: Array<{ workspaceId: string; sessions: SessionEntry[]; conversations: ConversationEntry[] }>
+          workspaces: Array<{ workspaceId: string; life?: string; sessions: SessionEntry[]; conversations: ConversationEntry[] }>
         }
         const row = workspaces.find((w) => w.workspaceId === id)
         expect(row?.sessions[0]?.mode).toBe('acp')
@@ -2280,6 +2283,8 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
         expect(row?.conversations[0]?.mode).toBe('acp')
         // From the record; most tools leave no transcript to read.
         expect(row?.conversations[0]?.model).toBe(model)
+        const log = await fetch(`${origin()}/api/workspace/${id}/logs/${lifeDirName(row?.life ?? '')}/${row?.sessions[0]?.window ?? ''}.log`)
+        expect(await log.text()).toContain('[acpd] listening on')
       }, { timeout: 30_000, interval: 250 })
 
       // acpd records both directions, under the session id once

@@ -10,7 +10,7 @@
 import { tmuxCmd, windowTarget } from './agent-command'
 import { nameSessionCommand } from './agent-tools'
 import { KEEPER_STARTING, KEEPER_WINDOW, type WorkspacePaths } from '#drivers/contract'
-import type { AgentTool } from '@yaac/shared/types'
+import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
 /**
  * One session's window to open: its name, which is its handle, and the
@@ -18,12 +18,23 @@ import type { AgentTool } from '@yaac/shared/types'
  */
 export interface SessionWindowSpec {
   tool: AgentTool
+  mode: AgentMode
   window: string
   cmd: string
   /** The conversation it resumes, named on its pane by the command that
    *  starts it: codex and opencode announce a resumed conversation only at
    *  its next turn. */
   resumes?: string
+}
+
+/**
+ * The tmux command that appends a window's output to `<window>.log` in the
+ * life's log dir (docs/workspace-steps.md "Logs"): the window `target`, or
+ * without one the window a hook runs for. A pipe outlives a respawn of its
+ * window.
+ */
+export function pipeToLogCommand(target?: string): string {
+  return `pipe-pane ${target !== undefined ? `-t ${target} ` : ''}-o "exec yaac-log-writer '#{@yaac-log-dir}/#{window_name}.log'"`
 }
 
 /** The tmux command that marks the workspace's setup finished. */
@@ -44,10 +55,12 @@ export function buildRespawnExec(spec: SessionWindowSpec, paths: WorkspacePaths)
  *
  * Each session's window keeps its pane when the agent exits
  * (`remain-on-exit`), so an agent that quits or crashes leaves its session
- * to be resumed or closed rather than vanishing. `-d` keeps whichever window
- * is current, and `-c` matters because a new window otherwise starts in this
- * exec's cwd (`/` in a pod), and an agent resumed from the wrong directory
- * looks up the wrong project.
+ * to be resumed or closed rather than vanishing. An `acp` session's window
+ * holds acpd's own lines and the adapter's stderr, so it is logged, which
+ * the chat pane's log view reads; a `tui` one's full-screen redraws are
+ * not. `-d` keeps whichever window is current, and `-c` matters because a
+ * new window otherwise starts in this exec's cwd (`/` in a pod), and an
+ * agent resumed from the wrong directory looks up the wrong project.
  */
 export function buildWindowsExec(
   sessions: SessionWindowSpec[],
@@ -60,6 +73,7 @@ export function buildWindowsExec(
     const target = windowTarget(spec.window)
     return `new-window -d -t yaac -n ${spec.window} -c ${paths.workspaceDir} '${spec.cmd}'`
       + ` \\; set-option -t ${target} remain-on-exit on`
+      + (spec.mode === 'acp' ? ` \\; ${pipeToLogCommand(target)}` : '')
       + (spec.resumes !== undefined ? ` \\; ${nameSessionCommand(target, spec.tool, spec.resumes)}` : '')
   })
   return `${tmuxCmd(paths)} ${sessionCmds.join(' \\; ')}`

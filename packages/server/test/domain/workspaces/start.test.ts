@@ -929,14 +929,15 @@ describe('prepareStart', () => {
       installDriver({ kind: 'containerless' })
       await start({ workspaceId: 'wt-early', mode: 'acp' })
 
-      // The agent's command goes first, on its own; acpd holds the
-      // conversation until `.git` exists. The setup that reads the checkout
-      // follows it.
+      // The agent's command goes first, after only the life's log hooks
+      // its window is logged under; acpd holds the conversation until
+      // `.git` exists. The setup that reads the checkout follows it.
       const agents = execs.findIndex(({ cmd }) => SESSION_WINDOW.test(cmd))
-      const setup = execs.findIndex(({ cmd }) => cmd.includes('hooks.conf'))
-      expect(execs[agents].cmd).toContain('--wait-for /workspace/.git --')
+      const setup = execs.findIndex(({ cmd }) => cmd.includes(`rename-window -t =yaac:=${KEEPER_STARTING}`))
+      expect(execs[agents].cmd).toMatch(/hooks\.conf' && .*--wait-for \/workspace\/\.git --/)
       expect(setup).toBeGreaterThan(agents)
       expect(execs[setup].cmd).not.toMatch(SESSION_WINDOW)
+      expect(execs[setup].cmd).not.toContain('hooks.conf')
 
       // A terminal agent reads the checkout as it starts, so it waits for it.
       execs.length = 0

@@ -1101,6 +1101,9 @@ export interface WorkspaceListEntry {
   /** Its current life's steps (docs/workspace-steps.md), each with the
    *  window it runs in while it has one. */
   steps?: Array<WorkspaceStep & { target?: string }>
+  /** When its current life began (ISO time), which names that life's log
+   *  dir (docs/workspace-steps.md "Logs"). */
+  life?: string
   /** It runs one graph untouched and stops when it settles. */
   nonInteractive?: true
   /** The name of the public site it is a release of (docs/public-sites.md),

@@ -194,15 +194,18 @@ the user's setting. The webapp and CLI are the user's and have no ceiling.
 
 ## Logs
 
-Every window that is not a session's is logged: steps, the webapp's
-terminals, and windows opened by hand inside tmux. A session's is not: a
-TUI's output is full-screen redraws, and its conversation is already
-recorded.
+Every window that is not a `tui` session's is logged: steps, the webapp's
+terminals, windows opened by hand inside tmux, and `acp` sessions' windows,
+which hold acpd's own lines (the agent's exits and restarts) and the
+adapter's whole stderr, and which the chat pane's log view reads. A `tui` session's is not: its output is full-screen
+redraws, and its conversation is already recorded.
 
 Each life sources a tmux config the server writes into its log dir
 (`lifeHooksConfig`), which names the dir in the global option
 `@yaac-log-dir` and sets an `after-new-window` hook piping every new window
-whose name is not a session's into `workspace-bin/yaac-log-writer`. The
+whose name is not a session's into `workspace-bin/yaac-log-writer`; an
+`acp` session's window is piped the same way by the command that opens it
+(`buildWindowsExec`), and the pipe outlives a resume's respawn. The
 writer appends to `<window>.log` and at 64 MiB moves it to `<window>.log.1`,
 replacing the one before, so a window that runs for days holds at most twice
 that.
@@ -224,7 +227,9 @@ deleted, and nothing else bounds the total: rotation caps each window of
 each life, not how many there are, so deleting the workspace, or the
 project's stopped-workspace retention, is the only cleanup. A shell's log
 holds whatever it printed, which under containerless can be the user's real
-credentials; the logs routes are the owner's alone (docs/multi-user.md), and
+credentials, and an `acp` session's the adapter's routine log lines and,
+on its error paths, raw protocol messages that can carry prompt text or
+tool payloads; the logs routes are the owner's alone (docs/multi-user.md), and
 the webapp's New shell says the shell is logged.
 
 ## The webapp

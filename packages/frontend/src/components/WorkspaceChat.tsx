@@ -16,7 +16,7 @@ import { DraftImage } from '#components/ui/DraftImage'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { focusRaisesKeyboard } from '#lib/viewport'
 import { DISCONNECT_NOTICE_DELAY_MS } from '#lib/reconnect'
-import { AttachImageIcon, CloseIcon, SendIcon, StopIcon } from '#lib/icons'
+import { AttachImageIcon, CloseIcon, LogIcon, SendIcon, StopIcon } from '#lib/icons'
 import { chatDraftKey, useUiStore } from '#lib/store'
 import { useTranscriptPages } from '#lib/useTranscriptPages'
 import type { AcpContent, AcpEvent, AcpQueuedPrompt } from '@yaac/shared/acp'
@@ -52,7 +52,7 @@ function echoKey(text: string, images: number): string {
   return `${text}\u0000${String(images)}`
 }
 
-export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted, visible, focused }: {
+export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted, visible, focused, onShowLog }: {
   workspaceId: string
   conversationId: string
   /** The message its session was opened with, when this tab drew that
@@ -64,6 +64,8 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
   visible: boolean
   /** The pane the user is in, which Cmd/Ctrl-F searches. */
   focused: boolean
+  /** Switch the pane to its agent's log. */
+  onShowLog: () => void
 }): JSX.Element {
   const stream = useAcpStream(workspaceId, conversationId)
   const { events, busy, queued, connected, refused, send, permissionModes, efforts } = stream
@@ -386,6 +388,15 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
                 <AttachImageIcon size={16} />
               </button>
               <ChatViewToggles />
+              <button
+                type="button"
+                aria-label="Show agent log"
+                title="Show agent log"
+                onClick={onShowLog}
+                className="rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text"
+              >
+                <LogIcon size={16} />
+              </button>
               <div className="mr-auto flex items-center">
                 {permissionModes.current !== undefined && (
                   <PermissionModeSelect

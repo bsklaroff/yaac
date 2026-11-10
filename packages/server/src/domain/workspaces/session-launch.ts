@@ -70,6 +70,7 @@ export async function sessionLaunches(
     return {
       session: s,
       tool: s.tool,
+      mode: s.mode,
       window: s.window,
       resume,
       ...(resume ? { resumes: conversationId } : {}),
