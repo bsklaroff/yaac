@@ -64,8 +64,9 @@ yaac user                       The install's users (multi-user.md "Roles")
 
 yaac project
   list                          Your projects (or --user's)
-  add <remote-url> <credential> Clone a project (HTTPS or git@host:path) with the
-                                named git credential (see `yaac auth list`)
+  add <remote-url> <credential> Clone a project (https://, ssh:// or
+                                git@host:path) with the named git credential
+                                (see `yaac auth list`)
   create <name>                 Create an empty project whose git remote yaac
                                 hosts (docs/hosted-projects.md)
   clone <project> [dir]         Clone a hosted project's remote to this machine

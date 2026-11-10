@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { remoteKind, remoteProjectName } from '#components/GitCredentialPicker'
 
 describe('remoteKind', () => {
-  it('asks for an SSH key for an SCP-style remote, and a token otherwise', () => {
+  it('asks for an SSH key for an ssh:// or SCP-style remote, and a token otherwise', () => {
     expect(remoteKind('git@github.com:acme/repo.git')).toBe('ssh')
+    expect(remoteKind('ssh://git@github.com/acme/repo.git')).toBe('ssh')
     expect(remoteKind('https://github.com/acme/repo.git')).toBe('https')
     expect(remoteKind('')).toBe('https')
     // A remote-helper URL is no SCP remote: the server refuses it, so no

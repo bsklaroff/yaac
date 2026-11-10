@@ -8,9 +8,9 @@ import { projectNameFor } from '@yaac/shared/project-name'
 
 export type GitCredentialKind = 'https' | 'ssh'
 
-/** The credential kind a remote takes, as the server reads it: SCP-style
- *  remotes use an SSH key; anything else (or nothing parseable yet) uses an
- *  HTTPS token. */
+/** The credential kind a remote takes, as the server reads it: ssh:// and
+ *  SCP-style remotes use an SSH key; anything else (or nothing parseable
+ *  yet) uses an HTTPS token. */
 export function remoteKind(remoteUrl: string): GitCredentialKind {
   try {
     return parseGitRemote(remoteUrl).scheme

@@ -19,14 +19,11 @@ import { authorizeProject, type Actor } from '#domain/access'
  */
 
 /**
- * Validate a git remote URL and return it parsed. Accepts the two
- * `parseGitRemote` forms:
- *   - https://<host>/<path>[.git]
- *   - SCP-style: git@<host>:<path>[.git]
- * Rejects http://, ssh://, custom ports, and unparseable input. Also
- * rejects an https URL carrying a user or token: the URL is stored on the
- * row, shown to every user and written into checkouts, so a secret belongs
- * in a git credential instead.
+ * Validate a git remote URL and return it parsed: one of the
+ * `parseGitRemote` forms (https://, ssh:// or SCP-style). Also rejects an
+ * https URL carrying a user or token: the URL is stored on the row, shown
+ * to every user and written into checkouts, so a secret belongs in a git
+ * credential instead.
  */
 export function validateGitRemoteUrl(url: string): ReturnType<typeof parseGitRemote> {
   let parsed: ReturnType<typeof parseGitRemote>
