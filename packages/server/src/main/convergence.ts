@@ -5,7 +5,7 @@ import { startUsageSampler, stopUsageSampler } from '#runtime/usage'
 import { loadToolAuthEntry } from '#domain/auth'
 import { restoreAllWorkspaceForwarders } from '#main/restore-forwarders'
 import { applyWorkspaceEvent, findWorkspaceRow, getProjectRow, listWorkspaceSessions } from '#db'
-import { offeredForwards } from '#domain/workspaces'
+import { offeredForwards, onReleaseStepChanged } from '#domain/workspaces'
 import { onSiteTimer } from '#domain/sites'
 import { onOriginFetched } from '#domain/projects'
 import { errorText, serverLog } from '#lib/log'
@@ -89,6 +89,9 @@ export async function attachConvergence(opts: {
   // A site's drain or replacement backoff ending is a time, which no watch
   // sees.
   onSiteTimer(() => fireChange('sites'))
+  // A release's step becoming ready is recorded after `sites` ran in that
+  // pass, so the deploy waiting on it needs one more.
+  onReleaseStepChanged(() => fireChange('sites'))
   // A branch a site follows moves only in the main clone, when a fetch
   // lands, which no watch sees either.
   onOriginFetched(() => fireChange('sites'))

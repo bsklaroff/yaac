@@ -102,8 +102,11 @@ for its hostname whose cluster is its Service by absolute name, resolved as
 the live release's pod IP. A ClusterIP would hide a flip from Envoy: pooled
 keep-alive connections to it stay pinned to the old pod by conntrack. With
 pod IPs, new requests move as soon as DNS changes, and connections to the
-old release finish. An unknown `Host` gets a 404 and a site with no live
-release a 503. WebSocket upgrades are on and the route timeout is off.
+old release finish. Where CoreDNS answers `cluster.local` names without
+its cache (kind and the `infra/` clusters; docs/cluster-setup.md "Uncached
+cluster DNS"), the router sees a flip within about a second. An unknown
+`Host` gets a 404 and a site with no live release a 503. WebSocket upgrades
+are on and the route timeout is off.
 Envoy appends to `X-Forwarded-For`, trusting cloudflared as one hop.
 
 The kubelet can take up to about a minute to deliver a ConfigMap change,
@@ -264,7 +267,8 @@ which the site's row in project settings links to.
 ## Deploys
 
 A deploy is a state on the site's row, advanced by the `sites` reconcile
-step on workspace and window changes and when a drain or backoff is due,
+step on workspace and window changes, when a step of a release changes
+state, and when a drain or backoff is due,
 so a server restart mid-deploy resumes it. Every change to a site's row
 (a deploy's start, an edit, a stop or delete, the reconcile) holds the
 site's lock, and a stop or delete ends what the site runs before letting
@@ -279,7 +283,8 @@ forgotten only once its stop succeeds, so a failed stop is retried.
 4. **Ready.** Wait for every step, up to the deploy's timeout (15 minutes
    unless it names one).
 5. **Flip.** Write the site Service's selector, in one write. The router
-   sees the new pod at its next DNS refresh.
+   sees the new pod at its next DNS refresh, a second later where cluster
+   DNS is uncached.
 6. **Drain.** Keep the old release for 30 s, which covers that refresh and
    lets in-flight requests finish, then stop it. Its app gets `SIGTERM`
    first. A flip while an earlier drain is under way stops that release at

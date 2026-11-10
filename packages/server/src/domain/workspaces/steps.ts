@@ -56,6 +56,19 @@ const SERVICE_RESTART_FIRST_MS = 1000
 const SERVICE_RESTART_MAX_MS = 5 * 60_000
 const SERVICE_RESTART_RESET_MS = 10 * 60_000
 
+let releaseStepListener: (() => void) | null = null
+
+/**
+ * Register what runs when a step of a site release changes state, which the
+ * composition root wires to a `sites` reconcile pass. A deploy flips once
+ * its release's steps are ready, and this step records that after `sites`
+ * has run in the same pass, so without a further pass the flip would wait
+ * for the next resync.
+ */
+export function onReleaseStepChanged(fn: () => void): void {
+  releaseStepListener = fn
+}
+
 /** Each release service's restarts in a row and the earliest it may open
  *  again, by workspace and step. In memory: a server restart only resets
  *  the backoff. */
@@ -196,8 +209,8 @@ export async function cancelStep(principal: Actor, idOrPrefix: string, name: str
   await reconcileOne(live)
 }
 
-function changeStep(live: LiveWorkspace, name: string, state: StepState, exitCode?: number): Promise<void> {
-  return applyWorkspaceEvent({
+async function changeStep(live: LiveWorkspace, name: string, state: StepState, exitCode?: number): Promise<void> {
+  await applyWorkspaceEvent({
     type: 'step-changed',
     projectId: live.projectId,
     workspaceId: live.workspaceId,
@@ -206,6 +219,7 @@ function changeStep(live: LiveWorkspace, name: string, state: StepState, exitCod
     state,
     ...(exitCode !== undefined ? { exitCode } : {}),
   })
+  if (live.row.siteId !== undefined) releaseStepListener?.()
 }
 
 /**

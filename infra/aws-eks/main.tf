@@ -163,7 +163,40 @@ module "eks" {
       before_compute = true
     }
     kube-proxy = {}
-    coredns    = {}
+    # The add-on's stock Corefile (eksctl's pkg/addons/default/assets
+    # copies it), with the cache off for the cluster's own names as kubeadm
+    # has it, so the site router sees a deploy's flip at once
+    # (docs/cluster-setup.md "Uncached cluster DNS"). `corefile` replaces
+    # the whole file, so the rest is repeated here, and a later add-on's
+    # default never reaches this cluster: when bumping kubernetes_version,
+    # diff it against `aws eks describe-addon-configuration --addon-name
+    # coredns --addon-version <v>` or eksctl's assets.
+    coredns = {
+      configuration_values = jsonencode({
+        corefile = <<-EOT
+          .:53 {
+              errors
+              health {
+                  lameduck 5s
+              }
+              ready
+              kubernetes cluster.local in-addr.arpa ip6.arpa {
+                  pods insecure
+                  fallthrough in-addr.arpa ip6.arpa
+              }
+              prometheus :9153
+              forward . /etc/resolv.conf
+              cache 30 {
+                  disable success cluster.local
+                  disable denial cluster.local
+              }
+              loop
+              reload
+              loadbalance
+          }
+        EOT
+      })
+    }
     aws-ebs-csi-driver = {
       pod_identity_association = [{
         role_arn        = aws_iam_role.csi["ebs"].arn

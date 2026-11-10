@@ -92,8 +92,9 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // the ones that exited, became ready or were killed, and open those
     // whose needs are met. A step's exit shows only in the window listing,
     // which `windows` reports; a create's setup finishing renames its keeper,
-    // which is a listing change too.
-    { name: 'steps', triggers: ['workspaces', 'windows'],
+    // which is a listing change too. On `sites` as well, so a volume the
+    // step above hands over opens the steps waiting on it in that pass.
+    { name: 'steps', triggers: ['workspaces', 'windows', 'sites'],
       run: (ctx) => reconcileSteps(ctx.snapshot()) },
     // Record each workspace's conversations, which are live, and their
     // opening messages, and what each session's agent reports, from the
