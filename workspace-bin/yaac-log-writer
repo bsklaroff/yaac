@@ -4,6 +4,19 @@
 # `<file>.1`, replacing the one before, so a window that runs for days holds
 # at most twice that.
 #
+# `head` writes straight to the file, so no other process reads a pipe it
+# splices into. uutils' `head` moves its input with splice(2), and a process
+# asleep on such a pipe can miss the wakeup and leave the pane's last output
+# unread for good, since a dead pane kept on screen never closes the socket.
+# With a file on stdout it splices through an internal pipe that it drains
+# itself, which is safe.
+#
+# The writer stops at end of input, when a chunk adds nothing to the file.
+# The size is read back from the file, so a log replaced, truncated or
+# deleted while `head` runs, or a `head` killed early, does not end the
+# logging. A log that cannot be opened at all does, so the writer never
+# spins without reading its input.
+#
 # Usage: yaac-log-writer <file>
 f=$1
 cap=67108864
@@ -14,7 +27,8 @@ while :; do
     mv -f "$f" "$f.1"
     size=0
   fi
-  n=$(head -c $((cap - size)) | tee -a "$f" | wc -c)
-  [ "$n" -gt 0 ] || exit 0
-  size=$((size + n))
+  { head -c $((cap - size)) || :; } >> "$f" || exit 0
+  was=$size
+  size=$(wc -c 2>/dev/null < "$f") || { size=0; continue; }
+  [ "$size" -ne "$was" ] || exit 0
 done
