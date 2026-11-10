@@ -38,7 +38,7 @@ import { chatDraftKey, flushTypedText, useUiStore } from '#lib/store'
 import { IS_MAC } from '#lib/platform'
 import { DISCONNECT_NOTICE_DELAY_MS } from '#lib/reconnect'
 import { filesKey } from '#lib/useWorkspaceChanges'
-import { agentEvent as agent, mockFetch, testQueryClient, userEvent as user } from './harness'
+import { agentEvent as agent, mockFetch, serverError, testQueryClient, userEvent as user } from './harness'
 import { resizeAll } from './setup'
 
 function box(): HTMLTextAreaElement {
@@ -2155,6 +2155,7 @@ describe('WorkspaceChat file links', () => {
 describe('WorkspaceChat pages', () => {
   afterEach(() => {
     cleanup()
+    stream.connected = true
     stream.page = 0
     stream.life = undefined
     stream.events = []
@@ -2215,5 +2216,77 @@ describe('WorkspaceChat pages', () => {
     expect(screen.queryByText('the old life, live')).toBeNull()
     // Each life's pages were read for that life.
     expect(server.called(route).map((c) => c.query.get('page'))).toEqual(['0', '1', '0'])
+  })
+
+  it('shows a spinner, never the empty placeholder, until a restarted conversation\'s earlier pages arrive', async () => {
+    // The first life's read hangs until the end, so the next life's hello
+    // lands while it is still in flight.
+    let releaseOld = (): void => undefined
+    const pages: Record<string, AcpEvent[][]> = {
+      L1: [[user(0, 'the first ask')]],
+      L2: [[user(0, 'the first ask')], [user(ACP_PAGE_SPAN, 'the old life, read back')]],
+    }
+    let life = 'L1'
+    const route = 'GET /api/workspace/w1/conversations/acp-1/transcript'
+    mockFetch({
+      [route]: async (c: { query: URLSearchParams }) => {
+        const read = life
+        if (read === 'L1') await new Promise<void>((resolve) => { releaseOld = resolve })
+        return { page: Number(c.query.get('page')), life: read, events: pages[read][Number(c.query.get('page'))] }
+      },
+    })
+    // Every node the pane ever adds, kept even once removed, so a placeholder
+    // that shows for a single render is still caught.
+    const added: Node[] = []
+    const observer = new MutationObserver((records) => {
+      for (const r of records) added.push(...r.addedNodes)
+    })
+    observer.observe(document.body, { childList: true, subtree: true })
+    const flashed = (): boolean => {
+      for (const r of observer.takeRecords()) added.push(...r.addedNodes)
+      return added.some((n) => n.textContent?.includes('No messages yet'))
+    }
+
+    stream.connected = false
+    const view = show()
+    stream.connected = true
+    stream.page = 1
+    stream.life = 'L1'
+    stream.events = [agent(ACP_PAGE_SPAN, 'the old life, live')]
+    view.rerender(pane())
+    expect(screen.getByText('Loading the conversation…')).toBeTruthy()
+
+    // The new life's last page has nothing in it yet.
+    life = 'L2'
+    stream.page = 2
+    stream.life = 'L2'
+    stream.events = []
+    view.rerender(pane())
+    expect(screen.getByText('Loading the conversation…')).toBeTruthy()
+    expect(await screen.findByText('the old life, read back')).toBeTruthy()
+    // The first life's read finishing late changes nothing.
+    releaseOld()
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)))
+    expect(screen.getByText('the old life, read back')).toBeTruthy()
+    expect(flashed()).toBe(false)
+    observer.disconnect()
+  })
+
+  it('offers to read again an earlier page that failed while nothing else is shown', async () => {
+    const route = 'GET /api/workspace/w1/conversations/acp-1/transcript'
+    const server = mockFetch({ [route]: serverError('INTERNAL', 'the disk went away') })
+    stream.page = 1
+    stream.life = 'L1'
+    stream.events = []
+    show()
+    expect(await screen.findByText('The earlier pages could not be read.')).toBeTruthy()
+    expect(screen.queryByText('Loading the conversation…')).toBeNull()
+    expect(screen.queryByText(/No messages yet/)).toBeNull()
+
+    server.route(route, { page: 0, life: 'L1', events: [user(0, 'the first ask')] })
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('the first ask')).toBeTruthy()
+    expect(screen.queryByText('The earlier pages could not be read.')).toBeNull()
+    expect(server.called(route)).toHaveLength(2)
   })
 })

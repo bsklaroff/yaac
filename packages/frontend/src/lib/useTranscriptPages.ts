@@ -48,6 +48,13 @@ export interface TranscriptPages {
   atEnd: boolean
   /** A page past an end of the shown ones is being read. */
   loading: 'earlier' | 'later' | undefined
+  /** The shown pages start at the conversation's first, so an empty list
+   *  is an empty conversation. Otherwise the page before is still to come. */
+  fromStart: boolean
+  /** The last read failed. A list with nothing in it cannot be scrolled to
+   *  read again, so the pane offers `retry` instead. */
+  failed: boolean
+  retry: () => void
   /** Whether there is any more of the conversation above or below the
    *  screen, for offering to jump there. */
   above: boolean
@@ -108,25 +115,35 @@ export function useTranscriptPages({ workspaceId, conversationId, life, last, la
     [pages, atEnd, lastEvents],
   )
 
-  const [loading, setLoading] = useState<TranscriptPages['loading']>()
-  const busy = useRef(false)
+  /** The read in flight, and the view it was started for. A read for a
+   *  view the pane has since left neither blocks the current view's nor
+   *  changes what it shows. */
+  const [reading, setReading] = useState<{ view: string; direction: 'earlier' | 'later' }>()
+  const busy = useRef<string | undefined>(undefined)
+  /** The view whose last read failed. */
+  const [failed, setFailed] = useState<string>()
   const placement = useRef<Placement | undefined>(undefined)
   const [edges, setEdges] = useState({ above: false, below: false })
 
   /** Read `page`, then show it as `next` says. A failed read leaves the
-   *  view as it was, for the next scroll to retry. */
+   *  view as it was, for the next scroll or `retry` to read again. */
   const show = (page: number, direction: 'earlier' | 'later', next: Span, place?: () => Placement): void => {
-    if (busy.current) return
-    busy.current = true
-    setLoading(direction)
+    if (busy.current === view) return
+    busy.current = view
+    setReading({ view, direction })
+    setFailed(undefined)
     queryClient.fetchQuery(pageQuery(workspaceId, conversationId, life, page))
       .then(() => {
+        if (busy.current !== view) return
         placement.current = place?.()
         setSpan(next)
-      }, () => undefined)
+      }, () => {
+        if (busy.current === view) setFailed(view)
+      })
       .finally(() => {
-        busy.current = false
-        setLoading(undefined)
+        if (busy.current !== view) return
+        busy.current = undefined
+        setReading(undefined)
       })
   }
 
@@ -145,7 +162,9 @@ export function useTranscriptPages({ workspaceId, conversationId, life, last, la
     }
   }
 
-  // A conversation opens at its end, as does each new life of it.
+  // A conversation opens at its end, as does each new life of it, and a
+  // read for the view before is dropped.
+  if (busy.current !== view) busy.current = undefined
   const opened = useRef<string | undefined>(undefined)
   if (opened.current !== view && lastEvents.length > 0) {
     opened.current = view
@@ -167,7 +186,10 @@ export function useTranscriptPages({ workspaceId, conversationId, life, last, la
   return {
     events,
     atEnd,
-    loading,
+    loading: reading?.view === view ? reading.direction : undefined,
+    fromStart: from === 0,
+    failed: failed === view,
+    retry: measure,
     above: edges.above,
     below: edges.below,
     onScroll: measure,
