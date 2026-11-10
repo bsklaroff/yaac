@@ -6,7 +6,7 @@ import { WorkspaceChat } from '#components/WorkspaceChat'
 import { WorkspaceTerminal } from '#components/WorkspaceTerminal'
 import { agentLabel } from '#lib/agentLabel'
 import { closeSession, resumeSession } from '#lib/createWorkspace'
-import { useOpening, type Opening } from '#lib/opening'
+import { forgetDrawnStarting, markDrawnStarting, useOpening, wasDrawnStarting, type Opening } from '#lib/opening'
 import { useReadOnly } from '#lib/viewer'
 import {
   CONVERSATION_PROMPT_PREVIEW_LENGTH, TOOL_LABELS, type SessionEntry, type WorkspaceListEntry,
@@ -20,8 +20,9 @@ export function sessionPtyTarget(session: Pick<SessionEntry, 'window'>): string 
 /**
  * One session's pane (docs/sessions.md), in its mode's renderer: a chat for
  * `acp`, the agent's terminal for `tui`. An `acp` session whose agent has
- * not named a conversation yet is drawn starting, with its opening message;
- * one whose agent exited keeps what it showed, under a bar that resumes or
+ * not named a conversation yet is drawn starting, with its opening message,
+ * which its chat then keeps showing until the agent echoes it; one whose
+ * agent exited keeps what it showed, under a bar that resumes or
  * closes it.
  */
 export function SessionPane({ workspace, session, paneTarget, visible, focused, focusKey, nonce }: {
@@ -39,10 +40,15 @@ export function SessionPane({ workspace, session, paneTarget, visible, focused, 
   const { workspaceId } = workspace
   const [showLog, setShowLog] = useState(false)
   const conversations = workspace.conversations.filter((c) => c.sessionId === session.sessionId)
-  // Only a chat session's first conversation opened with its message.
+  // Only a chat session's first conversation opened with its message. One
+  // that held a conversation before (a restart resuming it) is not starting.
+  if (session.mode === 'acp' && session.conversationId === undefined && conversations.length === 0) {
+    markDrawnStarting(session.sessionId)
+  }
   const opening = useOpening(
     session.sessionId,
-    session.mode === 'acp' && conversations.length <= 1 ? session.prompt : undefined,
+    session.mode === 'acp' && conversations.length <= 1 && wasDrawnStarting(session.sessionId)
+      ? session.prompt : undefined,
     CONVERSATION_PROMPT_PREVIEW_LENGTH,
   )
   const terminal = (
@@ -77,6 +83,7 @@ export function SessionPane({ workspace, session, paneTarget, visible, focused, 
           workspaceId={workspaceId}
           conversationId={session.conversationId}
           {...(opening !== undefined ? { opening } : {})}
+          onStarted={() => forgetDrawnStarting(session.sessionId)}
           visible={visible}
           focused={focused}
         />

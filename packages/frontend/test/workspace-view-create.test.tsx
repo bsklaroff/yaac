@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
-import { screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClientProvider } from '@tanstack/react-query'
 import type { JSX } from 'react'
 import { PROMPT_PREVIEW_LENGTH, type ProvisioningWorkspaceEntry, type ServerSnapshot, type StoppedWorkspaceEntry } from '@yaac/shared/types'
@@ -12,7 +12,8 @@ import { rememberOpening } from '#lib/opening'
 import { layoutOf, mergeProvisioning, useUiStore } from '#lib/store'
 import { useRestartStopped } from '#lib/useStoppedWorkspaces'
 import {
-  mockFetch, renderWithClient, serverError, sessionEntry, testQueryClient, workspaceEntry, type FetchCall, type FetchMock,
+  FakeSocket, mockFetch, renderWithClient, serverError, sessionEntry, testQueryClient, userEvent, workspaceEntry,
+  type FetchCall, type FetchMock,
 } from './harness'
 
 /*
@@ -232,5 +233,50 @@ describe('WorkspaceView around a create', () => {
     expect(await screen.findByText('Starting Claude Code')).toBeTruthy()
     expect(screen.queryByText(whole.slice(0, 300))).toBeNull()
     expect(server.called('GET /api/workspace/prompt').map((c) => c.query.get('id'))).toEqual(['sess-long', 'sess-gone'])
+  })
+
+  // The chat that takes over from a create carries its prompt on while it
+  // connects, even when the conversation is named by then, until the agent
+  // echoes it. One this tab never drew starting, such as an existing
+  // conversation after a reload, connects under a bare spinner rather than
+  // flash its first message, and so does a later mount of the created one.
+  it('carries the prompt into the chat only for a session it drew starting', () => {
+    vi.stubGlobal('WebSocket', FakeSocket)
+    const listed = (sessionId: string): ServerSnapshot => ({
+      ...snapshot,
+      workspaces: [workspaceEntry({
+        workspaceId: 'w1',
+        sessions: [sessionEntry({ sessionId, conversationId: 'conv-1', prompt: 'fix the parser bug' })],
+        terminals: [],
+      })],
+    })
+    useUiStore.setState({ activeProjectId: 'proj', selectedWorkspaceId: 'w1' })
+    const client = testQueryClient()
+    const { rerender } = renderWithClient(
+      <WorkspaceView snapshot={snapshot} provisioning={[creating({ sessionId: 'sess-created' })]} />, client,
+    )
+    rerender(
+      <QueryClientProvider client={client}>
+        <WorkspaceView snapshot={listed('sess-created')} provisioning={[]} />
+      </QueryClientProvider>,
+    )
+    expect(screen.getByText('fix the parser bug')).toBeTruthy()
+    expect(screen.getByText('connecting')).toBeTruthy()
+    act(() => {
+      FakeSocket.latest().open()
+      FakeSocket.latest().deliver({
+        type: 'hello', conversationId: 'conv-1', busy: true, queued: [], page: 0,
+        events: [userEvent(0, 'fix the parser bug')],
+      })
+    })
+    expect(screen.getAllByText('fix the parser bug')).toHaveLength(1)
+
+    for (const sessionId of ['sess-created', 'sess-reloaded']) {
+      cleanup()
+      renderWithClient(<WorkspaceView snapshot={listed(sessionId)} provisioning={[]} />)
+      expect(screen.getByText('connecting')).toBeTruthy()
+      expect(screen.queryByText('fix the parser bug')).toBeNull()
+    }
+    vi.unstubAllGlobals()
   })
 })

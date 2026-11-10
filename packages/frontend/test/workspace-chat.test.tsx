@@ -309,6 +309,7 @@ describe('WorkspaceChat right after its session opens', () => {
 
   afterEach(() => {
     stream.busy = false
+    stream.page = 0
     cleanup()
   })
 
@@ -339,7 +340,7 @@ describe('WorkspaceChat right after its session opens', () => {
     expect(screen.getByText('working')).toBeTruthy()
   })
 
-  it('leaves a session opened with no message, and a failed start, to their own view', () => {
+  it('leaves a session opened with no message, a failed start and a later page to their own view', () => {
     stream.connected = false
     const { rerender } = show()
     expect(screen.getByText('connecting')).toBeTruthy()
@@ -351,6 +352,14 @@ describe('WorkspaceChat right after its session opens', () => {
     stream.events = [{ type: 'error', seq: 0, message: 'the agent refused' }]
     show('w1', 'acp-1', true, { prompt: 'build it' })
     expect(screen.getByText('the agent refused')).toBeTruthy()
+    expect(screen.queryByText('build it')).toBeNull()
+    cleanup()
+
+    // A later page with no message of the user's: the echo is on an earlier one.
+    stream.page = 2
+    stream.events = [agent(0, 'still going')]
+    show('w1', 'acp-1', true, { prompt: 'build it' })
+    expect(screen.getByText('still going')).toBeTruthy()
     expect(screen.queryByText('build it')).toBeNull()
   })
 })

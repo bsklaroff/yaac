@@ -5,7 +5,7 @@ import { ChatBottomBar, Launching, ROUND_BUTTON, useChatColumn } from '#componen
 import { agentLabel } from '#lib/agentLabel'
 import { useProjectName } from '#lib/projectIdentity'
 import { dismissProvisioning, restartWorkspace } from '#lib/createWorkspace'
-import { useOpening } from '#lib/opening'
+import { markDrawnStarting, useOpening } from '#lib/opening'
 import { useUiStore, type LaunchPane } from '#lib/store'
 import { useProvisionWorkspace } from '#lib/useProvisionWorkspace'
 import { stopProvisioning } from '#lib/stopWorkspaceFlow'
@@ -31,6 +31,7 @@ export function CreatingPane({ creating }: { creating: ProvisioningWorkspaceEntr
   const column = useChatColumn()
   const pane = useUiStore((s) => s.launches[creating.workspaceId]?.pane)
   const opening = useOpening(creating.sessionId, creating.prompt, PROMPT_PREVIEW_LENGTH)
+  if (creating.sessionId !== undefined) markDrawnStarting(creating.sessionId)
   const provision = useProvisionWorkspace()
   // A restart refused before it started has no server row, so its code is
   // only on this tab's own.

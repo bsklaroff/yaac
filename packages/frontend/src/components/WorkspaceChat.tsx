@@ -52,12 +52,15 @@ function echoKey(text: string, images: number): string {
   return `${text}\u0000${String(images)}`
 }
 
-export function WorkspaceChat({ workspaceId, conversationId, opening, visible, focused }: {
+export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted, visible, focused }: {
   workspaceId: string
   conversationId: string
-  /** The message its session was opened with, when this is that session's
-   *  first conversation. */
+  /** The message its session was opened with, when this tab drew that
+   *  session starting (`wasDrawnStarting`). */
   opening?: Opening
+  /** Called once the conversation has started, when no later mount should
+   *  carry the opening message on. */
+  onStarted?: () => void
   visible: boolean
   /** The pane the user is in, which Cmd/Ctrl-F searches. */
   focused: boolean
@@ -171,16 +174,22 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, visible, f
   }, [draft, workspaceId, conversationId, setChatDraft])
 
   /**
-   * What stands in for the conversation, with the session's opening message
-   * if it has one: a spinner saying the pane is connecting until there is
-   * something to show, then one saying the agent is working until it echoes
-   * that message (or fails), so the session's start shows no gap.
+   * What stands in for the conversation: a spinner saying the pane is
+   * connecting until there is something to show, then, for a session that
+   * opened with a message, one saying the agent is working until it echoes
+   * that message (or fails), so the session's start shows no gap. Only a
+   * conversation whose history is all one page can still be waiting on its
+   * echo.
    */
-  const started = events.some((e) => (e.type === 'user' && e.thread === undefined) || e.type === 'error')
+  const started = stream.page > 0
+    || events.some((e) => (e.type === 'user' && e.thread === undefined) || e.type === 'error')
   const standIn = view !== undefined ? undefined
     : !connected && groups.length === 0 ? { caption: 'connecting' }
     : opening !== undefined && !started ? {}
     : undefined
+  useEffect(() => {
+    if (started) onStarted?.()
+  }, [started, onStarted])
 
   /**
    * On first connect, settle a message a previous mount sent but never saw

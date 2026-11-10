@@ -28,6 +28,30 @@ export function rememberOpening(sessionId: string, prompt: string): void {
 }
 
 /**
+ * The sessions this tab has drawn starting, whose chat has not yet seen the
+ * agent echo the opening message: a create's pane, or a session's before its
+ * agent named its first conversation. Only their chat panes carry the
+ * opening message on while they connect; any other would show it until the
+ * conversation's history arrives, and then swap it for a later page.
+ */
+const drawnStarting = new Set<string>()
+
+/** Note that session `sessionId` was drawn starting. */
+export function markDrawnStarting(sessionId: string): void {
+  drawnStarting.add(sessionId)
+}
+
+/** Whether session `sessionId` was drawn starting in this tab. */
+export function wasDrawnStarting(sessionId: string): boolean {
+  return drawnStarting.has(sessionId)
+}
+
+/** Note that session `sessionId`'s conversation has started. */
+export function forgetDrawnStarting(sessionId: string): void {
+  drawnStarting.delete(sessionId)
+}
+
+/**
  * Session `sessionId`'s opening message, from `text`, the snapshot's copy
  * cut at `cutAt` characters. Undefined when there is none.
  */
