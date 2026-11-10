@@ -1,6 +1,7 @@
 import { api } from '#commands/api'
 import { printTable } from '#commands/table'
 import { stripAnsi } from '@yaac/shared/ansi'
+import { isAgentWindow } from '@yaac/shared/steps'
 import type { WorkspaceLogLife } from '@yaac/shared/types'
 
 /**
@@ -8,7 +9,9 @@ import type { WorkspaceLogLife } from '@yaac/shared/types'
  * (docs/workspace-steps.md "Logs"), kept for every life until it is
  * deleted, so a stopped workspace's read the same. With no window it lists
  * one life's files; with one (a step's name, or any logged window's) it
- * prints that window's log, the rotated-out part first.
+ * prints that window's log, the rotated-out part first. An agent session's
+ * window is left out of the listing (`isAgentWindow`) but still read by
+ * name, its current file only.
  */
 export async function workspaceLogs(
   workspace: string,
@@ -27,7 +30,8 @@ export async function workspaceLogs(
     printTable([{ header: 'FILE' }, { header: 'BYTES' }], life.files.map((f) => [f.name, String(f.size)]))
     return
   }
-  const files = [`${window}.log.1`, `${window}.log`].filter((f) => life.files.some((l) => l.name === f))
+  const listed = [`${window}.log.1`, `${window}.log`].filter((f) => life.files.some((l) => l.name === f))
+  const files = listed.length > 0 ? listed : isAgentWindow(window) ? [`${window}.log`] : []
   if (files.length === 0) throw new Error(`No log for "${window}" in life ${life.life}; run without it to list the logs there.`)
   for (const file of files) {
     for (let offset = 0; ;) {

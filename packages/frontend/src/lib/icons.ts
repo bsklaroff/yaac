@@ -65,7 +65,6 @@ export {
   Monitor as DesktopIcon,
   FileDiff as ChangesIcon,
   GitCommitHorizontal as CommitsIcon,
-  ScrollText as LogIcon,
   List as FlatListIcon,
   ListTree as TreeListIcon,
   Search as SearchIcon,

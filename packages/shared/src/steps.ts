@@ -62,13 +62,25 @@ export function stepSatisfiesNeeds(state: StepState): boolean {
 
 const STEP_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$/
 
+const AGENT_TOOL = `(?:${AGENT_TOOLS.join('|')})`
+
+/**
+ * Whether a tmux window is an agent session's (`claude-c09f7077`), by the
+ * same `<tool>-*` match as the log hook (`lifeHooksConfig`). An `acp`
+ * session's window is logged, but only for its chat pane to offer once the
+ * agent exits, so it is left out of the workspace's log listing.
+ */
+export function isAgentWindow(window: string): boolean {
+  return new RegExp(`^${AGENT_TOOL}-`).test(window)
+}
+
 /**
  * Names a step may not take: an agent tool's, or one starting with it and a
- * `-` like a session's window (`claude-c09f7077`), which the log hook leaves
- * unlogged; `yaac`; and the webapp's scratch shells (`shell`, `shell-2`),
- * whose windows a step's launch would kill.
+ * `-` like a session's window, which the log hook leaves unlogged; `yaac`;
+ * and the webapp's scratch shells (`shell`, `shell-2`), whose windows a
+ * step's launch would kill.
  */
-const RESERVED_STEP_NAME = new RegExp(`^(?:(?:${AGENT_TOOLS.join('|')})(?:-.*)?|yaac|shell(?:-\\d+)?)$`)
+const RESERVED_STEP_NAME = new RegExp(`^(?:${AGENT_TOOL}(?:-.*)?|yaac|shell(?:-\\d+)?)$`)
 
 const command = z.string({ error: 'must be a non-empty string' }).min(1, { error: 'must be a non-empty string' })
 

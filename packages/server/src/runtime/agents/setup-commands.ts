@@ -56,11 +56,12 @@ export function buildRespawnExec(spec: SessionWindowSpec, paths: WorkspacePaths)
  * Each session's window keeps its pane when the agent exits
  * (`remain-on-exit`), so an agent that quits or crashes leaves its session
  * to be resumed or closed rather than vanishing. An `acp` session's window
- * holds acpd's own lines and the adapter's stderr, so it is logged, which
- * the chat pane's log view reads; a `tui` one's full-screen redraws are
- * not. `-d` keeps whichever window is current, and `-c` matters because a
- * new window otherwise starts in this exec's cwd (`/` in a pod), and an
- * agent resumed from the wrong directory looks up the wrong project.
+ * holds acpd's own lines and the adapter's stderr, so it is logged for the
+ * chat pane to offer once the agent exits; a `tui` one's full-screen
+ * redraws are not. `-d` keeps whichever window is current, and `-c`
+ * matters because a new window otherwise starts in this exec's cwd (`/` in
+ * a pod), and an agent resumed from the wrong directory looks up the wrong
+ * project.
  */
 export function buildWindowsExec(
   sessions: SessionWindowSpec[],

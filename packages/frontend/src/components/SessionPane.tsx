@@ -25,11 +25,11 @@ export function sessionPtyTarget(session: Pick<SessionEntry, 'window'>): string 
  * One session's pane (docs/sessions.md), in its mode's renderer: a chat for
  * `acp`, the agent's terminal for `tui`. An `acp` session whose agent has
  * not named a conversation yet is drawn starting, with its opening message,
- * which its chat then keeps showing until the agent echoes it, and any
- * `acp` session can switch between that chat view and its log; the chat
- * stays mounted under the log, since re-attaching is slow on a bad link.
- * One whose agent exited keeps what it showed, under a bar that resumes or
- * closes it.
+ * which its chat then keeps showing until the agent echoes it. One whose
+ * agent exited keeps what it showed, under a bar that resumes or closes it
+ * and, for `acp`, switches to the agent's log; the chat stays mounted under
+ * the log, since re-attaching is slow on a bad link. A resume goes back to
+ * the chat.
  */
 export function SessionPane({ workspace, session, paneTarget, visible, focused, focusKey, nonce }: {
   workspace: WorkspaceListEntry
@@ -57,8 +57,8 @@ export function SessionPane({ workspace, session, paneTarget, visible, focused, 
       ? session.prompt : undefined,
     CONVERSATION_PROMPT_PREVIEW_LENGTH,
   )
-  const showLog = (): void => setView('log')
   const onLog = view === 'log'
+  if (onLog && session.exited !== true) setView('chat')
   const body = session.mode === 'tui' ? (
     <div className="relative h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
       {/* Its own boundary: a terminal that fails to mount (an xterm
@@ -92,31 +92,33 @@ export function SessionPane({ workspace, session, paneTarget, visible, focused, 
             onStarted={() => forgetDrawnStarting(session.sessionId)}
             visible={visible && !onLog}
             focused={focused && !onLog}
-            onShowLog={showLog}
           />
         </div>
-      ) : !onLog && <AcpStarting session={session} opening={opening} onShowLog={showLog} />}
+      ) : !onLog && <AcpStarting session={session} opening={opening} />}
       {onLog && <AcpLog workspace={workspace} session={session} onBack={() => setView('chat')} />}
     </div>
   )
   return (
     <div className="flex h-full w-full flex-col">
       <div className="min-h-0 flex-1">{body}</div>
-      {session.exited === true && <ExitedBar workspaceId={workspaceId} session={session} />}
+      {session.exited === true && (
+        <ExitedBar
+          workspaceId={workspaceId}
+          session={session}
+          {...(session.mode === 'acp' && !onLog ? { onShowLog: () => setView('log') } : {})}
+        />
+      )}
     </div>
   )
 }
 
 /**
  * An `acp` session before its agent has named a conversation: the message
- * it was opened with and the spinner, as the create's pane drew them. Its
- * log is a click away for an agent that never comes up, and offered in the
- * pane itself for one that exited.
+ * it was opened with and the spinner, as the create's pane drew them.
  */
-function AcpStarting({ session, opening, onShowLog }: {
+function AcpStarting({ session, opening }: {
   session: SessionEntry
   opening: Opening | undefined
-  onShowLog: () => void
 }): JSX.Element {
   const column = useChatColumn()
   const label = TOOL_LABELS[session.tool]
@@ -127,20 +129,14 @@ function AcpStarting({ session, opening, onShowLog }: {
           {session.exited === true ? (
             <div className="flex flex-col items-start break-words text-sm">
               {opening?.prompt !== undefined && <div className={USER_BUBBLE}>{opening.prompt}</div>}
-              <div className="mt-3 flex items-center gap-3 text-text-dim">
-                {label} exited before the chat opened.
-                <button type="button" onClick={onShowLog} className={PRIMARY_BUTTON}>Show log</button>
-              </div>
+              <div className="mt-3 text-text-dim">{label} exited before the chat opened.</div>
             </div>
           ) : <Launching {...opening} caption={`Starting ${label}…`} />}
         </div>
       </div>
       <ChatBottomBar>
-        <div className="flex items-center gap-2 py-2 pl-3 pr-2">
-          <span className="min-w-0 flex-1 truncate text-sm text-text-faint">
-            {session.exited === true ? 'Its log may say why.' : 'The chat opens once the agent is up.'}
-          </span>
-          <button type="button" onClick={onShowLog} className={BAR_BUTTON}>Show log</button>
+        <div className="truncate py-2 pl-3 pr-2 text-sm text-text-faint">
+          {session.exited === true ? 'Its log may say why.' : 'The chat opens once the agent is up.'}
         </div>
       </ChatBottomBar>
     </div>
@@ -148,22 +144,16 @@ function AcpStarting({ session, opening, onShowLog }: {
 }
 
 /**
- * An `acp` session's log: acpd's own lines (the agent's exits and
+ * An exited `acp` session's log: acpd's own lines (the agent's exits and
  * restarts) and the adapter's stderr, read from the life's terminal log
  * (docs/workspace-steps.md "Logs"), under a bar that goes back to the
- * chat, or to the starting screen while the agent is not up. A chat that
- * opens while the log is shown is announced rather than switched to, so a
- * reader is never moved off what they are reading.
+ * chat, or to the starting screen for an agent that never opened one.
  */
 function AcpLog({ workspace, session, onBack }: {
   workspace: WorkspaceListEntry
   session: SessionEntry
   onBack: () => void
 }): JSX.Element {
-  const starting = session.conversationId === undefined
-  const [openedStarting] = useState(starting)
-  const ready = openedStarting && !starting
-  const label = TOOL_LABELS[session.tool]
   return (
     <div className="absolute inset-0 flex flex-col overflow-hidden rounded-md bg-bg">
       <div className="min-h-0 flex-1 px-2.5 py-1.5">
@@ -172,18 +162,14 @@ function AcpLog({ workspace, session, onBack }: {
             workspaceId={workspace.workspaceId}
             life={lifeDirName(workspace.life)}
             file={`${session.window}.log`}
-            follow={session.exited !== true}
+            follow={false}
           />
         )}
       </div>
       <ChatBottomBar>
         <div className="flex items-center gap-2 py-2 pl-3 pr-2">
-          <span className="min-w-0 flex-1 truncate text-sm text-text-faint">
-            {ready ? 'The chat is ready.' : starting && session.exited !== true ? `Starting ${label}…` : `${label}'s log`}
-          </span>
-          <button type="button" onClick={onBack} className={ready ? PRIMARY_BUTTON : BAR_BUTTON}>
-            {ready ? 'Open chat' : starting ? 'Back' : 'Back to chat'}
-          </button>
+          <span className="min-w-0 flex-1 truncate text-sm text-text-faint">{TOOL_LABELS[session.tool]}'s log</span>
+          <button type="button" onClick={onBack} className={BAR_BUTTON}>Back</button>
         </div>
       </ChatBottomBar>
     </div>
@@ -193,12 +179,14 @@ function AcpLog({ workspace, session, onBack }: {
 const BAR_BUTTON = 'rounded-md bg-surface-2 px-3 py-1.5 text-xs text-text-dim transition hover:bg-surface-3 '
   + 'hover:text-text disabled:opacity-50'
 
-/** A bar button for the step the user most likely wants next. */
-const PRIMARY_BUTTON = 'rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-bg transition hover:brightness-110'
-
-/** Under a session whose agent exited: resume it on its conversation, or
- *  close it. */
-function ExitedBar({ workspaceId, session }: { workspaceId: string; session: SessionEntry }): JSX.Element {
+/** Under a session whose agent exited: resume it on its conversation,
+ *  close it, or read why it exited. */
+function ExitedBar({ workspaceId, session, onShowLog }: {
+  workspaceId: string
+  session: SessionEntry
+  /** Show the agent's log, which may say why it exited. */
+  onShowLog?: () => void
+}): JSX.Element {
   const readOnly = useReadOnly()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -210,9 +198,12 @@ function ExitedBar({ workspaceId, session }: { workspaceId: string; session: Ses
   }
   return (
     <div className="flex shrink-0 items-center gap-2 border-t border-hairline bg-surface px-3 py-2 text-xs">
-      <span className="min-w-0 flex-1 truncate text-text-dim">
+      <span className="min-w-0 flex-1 break-words text-text-dim">
         {error ?? `${agentLabel(session.tool, session)} exited.`}
       </span>
+      {onShowLog !== undefined && (
+        <button type="button" onClick={onShowLog} className={BAR_BUTTON}>Show log</button>
+      )}
       {!readOnly && (
         <>
           <button type="button" disabled={busy} onClick={() => act(() => resumeSession(workspaceId, session.sessionId))}
