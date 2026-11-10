@@ -1,5 +1,5 @@
 import { workspaceDriver } from '#drivers/driver'
-import { loadToolAuthEntry, modelEfforts } from '#domain/auth'
+import { customEndpointFor, loadToolAuthEntry, modelEfforts } from '#domain/auth'
 import {
   getProjectRow,
   listWorkspaceConversations,
@@ -26,7 +26,7 @@ import {
   type AgentTool,
 } from '@yaac/shared/types'
 import type { WorkspacePaths } from '#drivers/contract'
-import type { PiProvider } from '@yaac/shared/tool-providers'
+import type { CustomEndpoint, PiProvider } from '@yaac/shared/tool-providers'
 
 /**
  * How a session's window is launched (docs/sessions.md): one builder shared
@@ -64,9 +64,10 @@ export async function sessionLaunches(
 ): Promise<SessionLaunch[]> {
   const plans = await planSessionResumes(projectId, workspaceId, sessions)
   const piProvider = sessions.some((s) => s.tool === 'pi') ? await piProviderFor(projectId) : undefined
-  return plans.map(({ session: s, conversationId, resume }) => {
+  const endpoints = await Promise.all(plans.map(({ session: s }) => customEndpointFor(projectId, s.tool, s.model)))
+  return plans.map(({ session: s, conversationId, resume }, i) => {
     const model = s.model !== undefined ? launchableModel(s.tool, s.model) : undefined
-    const effort = launchEffort(s.tool, model, s.effort)
+    const effort = launchEffort(s.tool, model, s.effort, endpoints[i])
     return {
       session: s,
       tool: s.tool,
@@ -216,7 +217,12 @@ async function piProviderFor(projectId: string): Promise<PiProvider | undefined>
  * The effort a session launches at: its recorded one where its model has
  * that level, else the model's default (docs/effort-levels.md).
  */
-function launchEffort(tool: AgentTool, model: string | undefined, recorded: string | undefined): string | undefined {
-  const efforts = model !== undefined ? modelEfforts(tool, model) : undefined
+function launchEffort(
+  tool: AgentTool,
+  model: string | undefined,
+  recorded: string | undefined,
+  endpoint: CustomEndpoint | undefined,
+): string | undefined {
+  const efforts = model !== undefined ? modelEfforts(tool, model, endpoint) : undefined
   return efforts !== undefined ? effortFor(efforts, recorded) : recorded
 }

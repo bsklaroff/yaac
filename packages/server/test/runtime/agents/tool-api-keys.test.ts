@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process'
 import { ensureToolApiKeyConfig } from '#runtime/agents/tool-api-keys'
 import { openRoot } from '#lib/confined-fs'
 import { CUSTOM_PROVIDER, ompProviderInfo, opencodeProviderInfo, piProviderInfo } from '@yaac/shared/tool-providers'
+import type { CustomEndpoint } from '@yaac/shared/tool-providers'
 
 describe('ensureToolApiKeyConfig', () => {
   let dir: string
@@ -103,7 +104,15 @@ describe('ensureToolApiKeyConfig', () => {
     await fs.mkdir(path.join(dir, 'omp', 'agent'), { recursive: true })
     await fs.writeFile(path.join(dir, 'omp', 'agent', 'models.yml'),
       '# mine\nproviders:\n  anthropic:\n    apiKey: sk-user\n  custom:\n    baseUrl: http://old:1/v1\n')
-    const endpoint = { baseUrl: 'http://box.tail1234.ts.net:8080/v1', models: ['Qwen/Qwen3-Coder', 'llama'] }
+    // One model with reasoning levels the endpoint calls none, low and
+    // high, and one with none.
+    const endpoint: CustomEndpoint = {
+      id: 'e', name: 'my-box', baseUrl: 'http://box.tail1234.ts.net:8080/v1',
+      models: [
+        { id: 'Qwen/Qwen3-Coder', name: 'Qwen3 Coder', efforts: { levels: ['none', 'low', 'high'], default: 'low' } },
+        { id: 'llama' },
+      ],
+    }
 
     expect(await ensureToolApiKeyConfig(await homes(), {
       opencode: { ...opencodeProviderInfo(CUSTOM_PROVIDER), endpoint },
@@ -123,26 +132,52 @@ describe('ensureToolApiKeyConfig', () => {
       '    apiKey: "!printenv YAAC_OMP_KEY_CUSTOM || echo none"',
       '    models:',
       '      - id: Qwen/Qwen3-Coder',
+      '        name: Qwen3 Coder',
+      '        reasoning: true',
+      '        thinking:',
+      '          mode: effort',
+      '          efforts:',
+      '            - low',
+      '            - high',
+      '          defaultLevel: low',
       '      - id: llama',
       '',
     ].join('\n'))
 
     expect(await read('opencode/yaac-keys/custom.json')).toEqual({ provider: { custom: {
       npm: '@ai-sdk/openai-compatible',
-      name: 'Custom (OpenAI-compatible)',
+      name: 'my-box',
       env: ['YAAC_OPENCODE_KEY_CUSTOM'],
       options: { baseURL: 'http://box.tail1234.ts.net:8080/v1' },
-      models: { 'Qwen/Qwen3-Coder': {}, llama: {} },
+      // Each level a variant sending it (checked against opencode 2.1.4's
+      // /api/model, which lists exactly these for the model).
+      models: {
+        'Qwen/Qwen3-Coder': {
+          name: 'Qwen3 Coder',
+          variants: { none: { reasoningEffort: 'none' }, low: { reasoningEffort: 'low' }, high: { reasoningEffort: 'high' } },
+        },
+        llama: {},
+      },
     } } })
     const models = await read('pi/agent/models.json') as { providers: Record<string, { apiKey: string }> }
     expect(models).toEqual({ providers: {
       anthropic: { apiKey: 'sk-user' },
       custom: {
-        name: 'Custom (OpenAI-compatible)',
+        name: 'my-box',
         baseUrl: 'http://box.tail1234.ts.net:8080/v1',
         api: 'openai-completions',
         apiKey: '!printenv YAAC_PI_KEY_CUSTOM || echo none',
-        models: [{ id: 'Qwen/Qwen3-Coder' }, { id: 'llama' }],
+        models: [
+          {
+            id: 'Qwen/Qwen3-Coder',
+            name: 'Qwen3 Coder',
+            reasoning: true,
+            // Every level the model lacks is null, or pi would send its
+            // provider default for it.
+            thinkingLevelMap: { off: 'none', minimal: null, low: 'low', medium: null, high: 'high', xhigh: null, max: null },
+          },
+          { id: 'llama', reasoning: false },
+        ],
       },
     } })
 

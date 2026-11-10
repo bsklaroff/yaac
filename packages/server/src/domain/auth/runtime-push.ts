@@ -1,9 +1,9 @@
-import { listToolCredentials } from '#db'
+import { listCustomEndpoints, listToolCredentials } from '#db'
 import { workspaceDriver } from '#drivers/driver'
 import { serverLog } from '#lib/log'
 import { runtimeGitCredentials } from './git-credentials'
 import { adoptNewest, OAUTH_TOOLS } from './oauth-tools'
-import { credentialOwnerKey, ownerOfCredentialKey } from './store'
+import { bundleWithEndpoints, credentialOwnerKey, ownerOfCredentialKey } from './store'
 import type { CredentialBundle } from '#drivers/contract'
 import type { RefreshedToolCredentials } from '@yaac/shared/types'
 
@@ -11,8 +11,8 @@ import type { RefreshedToolCredentials } from '@yaac/shared/types'
  * Two-way sync between the users' credential stores and the runtime that
  * injects from them.
  *
- * Down: every writer of a user's store (login, clear, git credential
- * changes, a plan-usage refresh that rotated a token) calls
+ * Down: every writer of a user's store (login, clear, git credential and
+ * custom endpoint changes, a plan-usage refresh that rotated a token) calls
  * `pushCredentialsToRuntime`, which sends every user's set. The store is the
  * authority; nothing re-reads it on a schedule.
  *
@@ -25,11 +25,11 @@ import type { RefreshedToolCredentials } from '@yaac/shared/types'
  *  Logs and returns any failure. */
 async function pushOnce(): Promise<Error | undefined> {
   try {
-    const [tools, git] = await Promise.all([listToolCredentials(), runtimeGitCredentials()])
+    const [tools, endpoints, git] = await Promise.all([listToolCredentials(), listCustomEndpoints(), runtimeGitCredentials()])
     const bundles: Record<string, CredentialBundle> = {}
     for (const owner of new Set([...Object.keys(tools), ...Object.keys(git)])) {
       bundles[credentialOwnerKey(owner)] = {
-        ...tools[owner] ?? { claude: null, codex: null, opencode: null, pi: null, omp: null },
+        ...bundleWithEndpoints(owner, tools[owner] ?? { claude: null, codex: null, opencode: null, pi: null, omp: null }, endpoints),
         ...git[owner] ?? { git: [], ssh: [] },
       }
     }

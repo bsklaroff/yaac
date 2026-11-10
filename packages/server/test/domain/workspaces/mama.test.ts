@@ -48,6 +48,7 @@ import {
   deleteToolCredential,
   getSessionRow,
   getWorkspaceRow,
+  insertCustomEndpoint,
   insertSession,
   listWorkspaceSessions,
   setTimeZone,
@@ -588,6 +589,20 @@ describe('runMamaCommand', () => {
       await recordProjectCreate(PROJ, 'pi', {})
       await setToolCredential(BUILT_IN_USER_ID, 'pi', { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'k' })
       expect(await spawn({}, { tool: undefined, permissionMode: 'bypass' })).toMatchObject({ tool: 'pi' })
+    })
+
+    it('checks a named effort on a custom endpoint model against the levels the endpoint lists', async () => {
+      const { id } = await insertCustomEndpoint({
+        owner: BUILT_IN_USER_ID, name: 'spawn-box', baseUrl: 'https://box/v1', apiKey: '',
+        models: [{ id: 'gpt-oss', efforts: { levels: ['low', 'high'], default: 'high' } }],
+      })
+      await setToolCredential(BUILT_IN_USER_ID, 'pi', { kind: 'api-key', provider: 'custom', savedAt: 'x', apiKey: '', endpointId: id })
+      const caller = { permissionMode: 'bypass' as const }
+      expect(await spawn({ tool: 'pi', model: 'custom/gpt-oss', effort: 'low' }, caller))
+        .toMatchObject({ model: 'custom/gpt-oss', effort: 'low' })
+      expect(await spawn({ tool: 'pi', model: 'custom/gpt-oss' }, caller)).toMatchObject({ effort: 'high' })
+      expect(await spawn({ tool: 'pi', model: 'custom/gpt-oss', effort: 'medium' }, caller))
+        .toEqual({ ok: false, error: expect.stringContaining('no "medium" effort; it supports: low, high') as unknown })
     })
 
     it('refuses a tool the project owner has not signed in to, starting nothing', async () => {
@@ -2196,6 +2211,15 @@ describe('runMamaCommand', () => {
       expect(text).toContain('codex')
       // Each model's effort levels follow it, its default starred.
       expect(text).toContain('claude-opus-4-7 (Opus 4.7) [effort low medium high xhigh* max]')
+    })
+
+    it('lists a custom endpoint\'s models with their names and levels in the tool\'s words', async () => {
+      const { id } = await insertCustomEndpoint({
+        owner: BUILT_IN_USER_ID, name: 'models-box', baseUrl: 'https://box/v1', apiKey: '',
+        models: [{ id: 'gpt-oss', name: 'gpt-oss 120B', efforts: { levels: ['none', 'low', 'high'], default: 'low' } }, { id: 'gemma' }],
+      })
+      await setToolCredential(BUILT_IN_USER_ID, 'omp', { kind: 'api-key', provider: 'custom', savedAt: 'x', apiKey: '', endpointId: id })
+      expect(await output('models')).toContain('models: custom/gpt-oss (gpt-oss 120B) [effort off low* high], custom/gemma')
     })
   })
 })

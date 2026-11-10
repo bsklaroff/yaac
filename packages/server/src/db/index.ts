@@ -159,6 +159,14 @@ export {
   setTimeZone,
 } from './preferences'
 export {
+  deleteCustomEndpoint,
+  getCustomEndpoint,
+  insertCustomEndpoint,
+  listCustomEndpoints,
+  updateCustomEndpoint,
+  type CustomEndpointRow,
+} from './custom-endpoint-store'
+export {
   deleteGitCredential,
   getGitCredential,
   getGitCredentialByName,

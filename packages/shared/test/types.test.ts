@@ -6,7 +6,7 @@ import {
   AGENT_CLIS,
   AGENT_TOOLS,
   BUN_RUNTIME,
-  customEndpointSchema,
+  customEndpointCreateSchema,
   defaultPermissionMode,
   normalizeTool,
   PERMISSION_MODES,
@@ -201,25 +201,37 @@ describe('ACP_ADAPTERS', () => {
   })
 })
 
-describe('customEndpointSchema', () => {
-  const parse = (endpoint: unknown) => customEndpointSchema.safeParse(endpoint)
+describe('customEndpointCreateSchema', () => {
+  const parse = (body: unknown) => customEndpointCreateSchema.safeParse(body)
+  const ok = { name: 'box', baseUrl: 'http://box.tail1234.ts.net:8080/v1', models: [{ id: 'llama' }] }
 
-  it('takes an http(s) URL and model ids a create can launch, trimmed', () => {
-    expect(parse({ baseUrl: 'http://box.tail1234.ts.net:8080/v1', models: [' Qwen/Qwen3-Coder ', 'llama3.1:8b'] }))
-      .toEqual({ success: true, data: { baseUrl: 'http://box.tail1234.ts.net:8080/v1', models: ['Qwen/Qwen3-Coder', 'llama3.1:8b'] } })
+  it('takes a name, an http(s) URL and model ids a create can launch, trimmed', () => {
+    expect(parse({ ...ok, name: ' box ', models: [{ id: ' Qwen/Qwen3-Coder ', name: ' Qwen ' }, { id: 'llama3.1:8b' }] }))
+      .toEqual({ success: true, data: { ...ok, models: [{ id: 'Qwen/Qwen3-Coder', name: 'Qwen' }, { id: 'llama3.1:8b' }] } })
   })
 
-  it('refuses an id the create form would refuse, so the credential\'s default model always launches', () => {
+  it('refuses an id the create form would refuse, so a listed model always launches', () => {
     for (const id of ['a"b', 'c d;rm -rf ~', '$(id)', '-flag', 'x'.repeat(94)]) {
-      expect(parse({ baseUrl: 'http://box:8080/v1', models: [id] }).success).toBe(false)
+      expect(parse({ ...ok, models: [{ id }] }).success).toBe(false)
     }
     // `custom/` plus the longest id fits the create schema's 100 characters.
-    expect(parse({ baseUrl: 'http://box:8080/v1', models: ['x'.repeat(93)] }).success).toBe(true)
+    expect(parse({ ...ok, models: [{ id: 'x'.repeat(93) }] }).success).toBe(true)
   })
 
-  it('refuses a non-http URL and an empty model list', () => {
-    expect(parse({ baseUrl: 'ftp://box/v1', models: ['m'] }).success).toBe(false)
-    expect(parse({ baseUrl: 'not a url', models: ['m'] }).success).toBe(false)
-    expect(parse({ baseUrl: 'http://box/v1', models: [] }).success).toBe(false)
+  it('refuses a non-http URL, an empty or repeated model list, and unknown keys', () => {
+    expect(parse({ ...ok, baseUrl: 'ftp://box/v1' }).success).toBe(false)
+    expect(parse({ ...ok, baseUrl: 'not a url' }).success).toBe(false)
+    expect(parse({ ...ok, models: [] }).success).toBe(false)
+    expect(parse({ ...ok, models: [{ id: 'm' }, { id: 'm' }] }).success).toBe(false)
+    expect(parse({ ...ok, models: [{ id: 'm', typo: 1 }] }).success).toBe(false)
+  })
+
+  it('takes reasoning levels in the endpoint\'s words, with a default among them', () => {
+    const efforts = (e: unknown) => parse({ ...ok, models: [{ id: 'm', efforts: e }] }).success
+    expect(efforts({ levels: ['none', 'low', 'max'], default: 'low' })).toBe(true)
+    expect(efforts({ levels: ['low'], default: 'high' })).toBe(false)
+    expect(efforts({ levels: ['ultra'], default: 'ultra' })).toBe(false)
+    expect(efforts({ levels: [], default: 'low' })).toBe(false)
+    expect(efforts({ levels: ['low', 'low'], default: 'low' })).toBe(false)
   })
 })

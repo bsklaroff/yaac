@@ -547,3 +547,32 @@ it, and if it was writable by others, removes the entries they own.
   older server created, which is after every one has rebooted (or had its
   temp dir cleared) since running a yaac with this function. The refusals
   of a symlink and a foreign owner stay.
+
+## A custom sign-in that carries its own endpoint
+
+An opencode, pi or omp sign-in with the `custom` provider names one of its
+user's custom endpoints by id (`endpointId`, docs/custom-endpoints.md). One
+written before endpoints were their own rows carries the endpoint inline
+instead: `endpoint: { baseUrl, models }`, with the key on the sign-in. Two
+pieces cover it, and they go together:
+
+- `importEmbeddedEndpoints` (`#domain/auth`), run at server start before
+  anything reads a sign-in, moves each such sign-in onto an endpoint row of
+  its owner's (sign-ins sharing a URL and key share one) and rewrites it to
+  name that row.
+- The credential file schemas (`apiKeyToolCredentialsFileSchema` in
+  `@yaac/shared/types`) still accept the inline `endpoint` with model ids,
+  so the importer can read the old sign-ins at all. The same field also
+  carries the URL to the runtime, which stays.
+
+- **What it reads.** Every user's stored opencode, pi and omp sign-ins, at
+  each server start.
+- **What breaks silently if it goes too early.** A tool signed in to a
+  custom endpoint reads as signed out (its sign-in names no endpoint), so its
+  workspaces stop being creatable, and the URL, key and model list the user
+  entered are gone from the settings page.
+- **When it is safe to remove.** Once every install has started a server
+  that carries the importer at least once: from then on no stored sign-in
+  has an inline `endpoint` without an `endpointId`. Remove the importer
+  first or together with narrowing the schema's `models` field, never the
+  schema first, since the importer cannot read what the schema refuses.

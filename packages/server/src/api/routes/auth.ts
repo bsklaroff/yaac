@@ -4,20 +4,31 @@ import type { IdentityEnv } from '#api/http/web-auth'
 import { z } from 'zod'
 import { ServerError } from '@yaac/shared/errors'
 import {
+  addEndpoint,
   addHttpsCredential,
   authAgentHub,
   clearAuth,
+  discoverEndpointModels,
   generateSshCredential,
   listAuth,
   pushCredentialsToRuntime,
   removeCredential,
+  removeEndpoint,
   renameCredential,
   replaceCredential,
   requestPlanUsageRefresh,
   seedFakeAuth,
   signInTool,
+  updateEndpoint,
 } from '#domain/auth'
-import { AGENT_TOOLS, FAKE_AUTH_KINDS, toolAuthPayloadSchema } from '@yaac/shared/types'
+import {
+  AGENT_TOOLS,
+  FAKE_AUTH_KINDS,
+  customEndpointCreateSchema,
+  customEndpointPatchSchema,
+  endpointDiscoverSchema,
+  toolAuthPayloadSchema,
+} from '@yaac/shared/types'
 
 /**
  * Push the credential set, and fail the request if the runtime could not take
@@ -25,16 +36,18 @@ import { AGENT_TOOLS, FAKE_AUTH_KINDS, toolAuthPayloadSchema } from '@yaac/share
  * gone either way, and a plain success would hide that the egress proxy still
  * injects the old secret. The next push or server start fixes it.
  */
-async function requireRuntimeTold(applied: string): Promise<void> {
+async function requireRuntimeTold(applied: string, revoke = 'revoke it at the git host meanwhile'): Promise<void> {
   const failure = await pushCredentialsToRuntime()
   if (!failure) return
   throw new ServerError(
     'RUNTIME_UNAVAILABLE',
     `${applied}, but the egress proxy could not be updated, so workspaces running right now `
     + `still hold the old one: ${failure.message}. It is dropped when the proxy is next reachable `
-    + '(any credential change, or a server restart) — revoke it at the git host meanwhile.',
+    + `(any credential change, or a server restart) — ${revoke}.`,
   )
 }
+
+const ENDPOINT_REVOKE = 'revoke the old key at the endpoint meanwhile if it leaked'
 
 /*
  * Every route acts on the caller's own credentials and sign-in flows.
@@ -149,6 +162,37 @@ export const authApp = new Hono<IdentityEnv>()
     authAgentHub.cancelInstall(c.get('principal').userId, c.req.param('id'))
     return c.body(null, 204)
   })
+  // The caller's custom endpoints (docs/custom-endpoints.md).
+  .post(
+    '/endpoints',
+    zv('json', customEndpointCreateSchema),
+    async (c) => c.json(await addEndpoint(c.get('principal').userId, c.req.valid('json'))),
+  )
+  .post(
+    '/endpoints/discover',
+    zv('json', endpointDiscoverSchema),
+    async (c) => c.json(await discoverEndpointModels(c.get('principal').userId, c.req.valid('json'))),
+  )
+  .patch(
+    '/endpoints/:id',
+    zv('param', z.object({ id: z.uuid() })),
+    zv('json', customEndpointPatchSchema),
+    async (c) => {
+      await updateEndpoint(c.get('principal').userId, c.req.valid('param').id, c.req.valid('json'))
+      // A new URL or key moves where the proxy swaps it in.
+      await requireRuntimeTold('The endpoint is updated', ENDPOINT_REVOKE)
+      return c.body(null, 204)
+    },
+  )
+  .delete(
+    '/endpoints/:id',
+    zv('param', z.object({ id: z.uuid() })),
+    async (c) => {
+      await removeEndpoint(c.get('principal').userId, c.req.valid('param').id)
+      await requireRuntimeTold('The endpoint is deleted', ENDPOINT_REVOKE)
+      return c.body(null, 204)
+    },
+  )
   .put(
     '/:tool',
     zv('param', z.object({ tool: z.enum(AGENT_TOOLS) })),

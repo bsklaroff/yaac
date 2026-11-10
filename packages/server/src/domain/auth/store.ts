@@ -1,11 +1,13 @@
 import { ServerError } from '@yaac/shared/errors'
 import {
   BUILT_IN_USER_ID,
+  getCustomEndpoint,
+  getProjectRow,
   getToolCredential,
   listProjectRows,
   setToolCredential,
+  type CustomEndpointRow,
 } from '#db'
-import { workspaceDriver } from '#drivers/driver'
 import {
   CUSTOM_PROVIDER,
   isApiKeyTool,
@@ -21,8 +23,12 @@ import {
   type AgentTool,
   type ClaudeOAuthBundle,
   type CodexOAuthBundle,
+  type OmpCredentialsFile,
+  type OpencodeCredentialsFile,
+  type PiCredentialsFile,
   type ToolAuthEntry,
   type ToolAuthPayload,
+  type ToolCredentialBundle,
 } from '@yaac/shared/types'
 
 /**
@@ -83,30 +89,63 @@ async function loadEntry(owner: string, tool: AgentTool): Promise<ToolAuthEntry 
     return { tool: 'claude', kind: f.kind, apiKey, savedAt: f.savedAt }
   }
   if (tool === 'opencode') {
-    const f = await getToolCredential(owner, 'opencode')
-    return f && {
-      tool: 'opencode', kind: 'api-key', apiKey: f.apiKey, savedAt: f.savedAt, opencodeProvider: f.provider,
-      ...(f.endpoint !== undefined ? { endpoint: f.endpoint } : {}),
-    }
+    const r = await resolveEndpoint(owner, await getToolCredential(owner, 'opencode'))
+    return r && { tool: 'opencode', ...r.entry, opencodeProvider: r.file.provider }
   }
   if (tool === 'pi') {
-    const f = await getToolCredential(owner, 'pi')
-    return f && {
-      tool: 'pi', kind: 'api-key', apiKey: f.apiKey, savedAt: f.savedAt, piProvider: f.provider,
-      ...(f.endpoint !== undefined ? { endpoint: f.endpoint } : {}),
-    }
+    const r = await resolveEndpoint(owner, await getToolCredential(owner, 'pi'))
+    return r && { tool: 'pi', ...r.entry, piProvider: r.file.provider }
   }
   if (tool === 'omp') {
-    const f = await getToolCredential(owner, 'omp')
-    return f && {
-      tool: 'omp', kind: 'api-key', apiKey: f.apiKey, savedAt: f.savedAt, ompProvider: f.provider,
-      ...(f.endpoint !== undefined ? { endpoint: f.endpoint } : {}),
-    }
+    const r = await resolveEndpoint(owner, await getToolCredential(owner, 'omp'))
+    return r && { tool: 'omp', ...r.entry, ompProvider: r.file.provider }
   }
   const f = await getToolCredential(owner, 'codex')
   if (!f) return null
   const apiKey = f.kind === 'oauth' ? f.codexOauth.accessToken : f.apiKey
   return { tool: 'codex', kind: f.kind, apiKey, savedAt: f.savedAt }
+}
+
+type ApiKeyToolFile = OpencodeCredentialsFile | PiCredentialsFile | OmpCredentialsFile
+
+/** A custom endpoint row as the endpoint a sign-in uses. */
+export function endpointOfRow(row: CustomEndpointRow): CustomEndpoint {
+  return { id: row.id, name: row.name, baseUrl: row.baseUrl, models: row.models }
+}
+
+/**
+ * An api-key tool's stored sign-in as entry fields, with a custom sign-in's
+ * endpoint looked up: its key is the endpoint's. Null when signed out, or
+ * when the endpoint it names is gone or not the owner's.
+ */
+async function resolveEndpoint<F extends ApiKeyToolFile>(
+  owner: string,
+  file: F | null,
+): Promise<{ file: F; entry: { kind: 'api-key'; apiKey: string; savedAt: string; endpoint?: CustomEndpoint } } | null> {
+  if (!file) return null
+  const base = { kind: 'api-key' as const, apiKey: file.apiKey, savedAt: file.savedAt }
+  if (file.provider !== CUSTOM_PROVIDER) return { file, entry: base }
+  const row = file.endpointId !== undefined ? await getCustomEndpoint(file.endpointId) : undefined
+  if (row?.owner !== owner) return null
+  return { file, entry: { ...base, apiKey: row.apiKey, endpoint: endpointOfRow(row) } }
+}
+
+/**
+ * A user's stored sign-ins as the runtime takes them: each custom sign-in
+ * carries its endpoint's URL and key, which the proxy swaps in on that host.
+ * One naming an endpoint that is gone or not the owner's is dropped.
+ */
+export function bundleWithEndpoints(
+  owner: string,
+  bundle: ToolCredentialBundle,
+  endpoints: CustomEndpointRow[],
+): ToolCredentialBundle {
+  const fill = <F extends ApiKeyToolFile>(file: F | null): F | null => {
+    if (file?.provider !== CUSTOM_PROVIDER) return file
+    const row = endpoints.find((e) => e.id === file.endpointId && e.owner === owner)
+    return row ? { ...file, apiKey: row.apiKey, endpoint: { baseUrl: row.baseUrl } } : null
+  }
+  return { ...bundle, opencode: fill(bundle.opencode), pi: fill(bundle.pi), omp: fill(bundle.omp) }
 }
 
 /** An api-key tool's credential's provider; undefined for claude and codex,
@@ -121,6 +160,17 @@ export function authEntryProvider(entry: ToolAuthEntry | null | undefined): stri
 /** An api-key tool's credential's endpoint, when its provider is `custom`. */
 export function authEntryEndpoint(entry: ToolAuthEntry | null | undefined): CustomEndpoint | undefined {
   return entry !== null && entry !== undefined && 'endpoint' in entry ? entry.endpoint : undefined
+}
+
+/**
+ * The custom endpoint a project owner's sign-in for `tool` uses, looked up
+ * only when `model` is one of its (`custom/<id>`), for checking an effort
+ * against that model's levels. Undefined otherwise.
+ */
+export async function customEndpointFor(projectId: string, tool: AgentTool, model: string | undefined): Promise<CustomEndpoint | undefined> {
+  if (!isApiKeyTool(tool) || model?.startsWith(`${CUSTOM_PROVIDER}/`) !== true) return undefined
+  const owner = (await getProjectRow(projectId))?.owner
+  return owner === undefined ? undefined : authEntryEndpoint(await loadToolAuthEntry(owner, tool))
 }
 
 /** Store a full Claude OAuth bundle (refresh token, expiry, scopes). */
@@ -168,54 +218,49 @@ async function saveApiKey(
   tool: AgentTool,
   apiKey: string,
   provider?: string,
-  endpoint?: CustomEndpoint,
+  endpointId?: string,
 ): Promise<void> {
   const savedAt = new Date().toISOString()
   if (tool === 'opencode') {
     const parsed = requireProvider(tool, provider, parseOpencodeProvider)
-    await setToolCredential(owner, tool, { ...apiKeyToolCredential(tool, parsed, apiKey, endpoint), savedAt })
+    await setToolCredential(owner, tool, { ...await apiKeyToolCredential(owner, tool, parsed, apiKey, endpointId), savedAt })
   } else if (tool === 'pi') {
     const parsed = requireProvider(tool, provider, parsePiProvider)
-    await setToolCredential(owner, tool, { ...apiKeyToolCredential(tool, parsed, apiKey, endpoint), savedAt })
+    await setToolCredential(owner, tool, { ...await apiKeyToolCredential(owner, tool, parsed, apiKey, endpointId), savedAt })
   } else if (tool === 'omp') {
     const parsed = requireProvider(tool, provider, parseOmpProvider)
-    await setToolCredential(owner, tool, { ...apiKeyToolCredential(tool, parsed, apiKey, endpoint), savedAt })
+    await setToolCredential(owner, tool, { ...await apiKeyToolCredential(owner, tool, parsed, apiKey, endpointId), savedAt })
   } else {
     if (apiKey === '') throw new ServerError('VALIDATION', `${tool} needs an api key.`)
-    if (endpoint !== undefined) throw new ServerError('VALIDATION', `${tool} does not take an endpoint.`)
+    if (endpointId !== undefined) throw new ServerError('VALIDATION', `${tool} does not take an endpoint.`)
     await setToolCredential(owner, tool, { kind: 'api-key', savedAt, apiKey })
   }
 }
 
 /**
  * An api-key tool's sign-in, checked: only the `custom` provider takes an
- * endpoint, which it requires, and only it may have an empty key. A key for
- * a plain-HTTP endpoint is refused where the proxy mediates egress: it never
- * injects a key over HTTP, so the endpoint would only see the placeholder.
+ * endpoint, which it requires and which must be the owner's, and it holds
+ * no key of its own (the endpoint does).
  */
-function apiKeyToolCredential<P extends string>(
+async function apiKeyToolCredential<P extends string>(
+  owner: string,
   tool: ApiKeyTool,
   provider: P,
   apiKey: string,
-  endpoint: CustomEndpoint | undefined,
-): { kind: 'api-key'; provider: P; apiKey: string; endpoint?: CustomEndpoint } {
-  const custom = provider === CUSTOM_PROVIDER
-  if (custom && endpoint === undefined) {
-    throw new ServerError('VALIDATION', `The custom ${tool} provider needs an endpoint URL and its models.`)
+  endpointId: string | undefined,
+): Promise<{ kind: 'api-key'; provider: P; apiKey: string; endpointId?: string }> {
+  if (provider !== CUSTOM_PROVIDER) {
+    if (endpointId !== undefined) throw new ServerError('VALIDATION', `Only the custom ${tool} provider takes an endpoint.`)
+    if (apiKey === '') throw new ServerError('VALIDATION', `${tool} needs an api key.`)
+    return { kind: 'api-key', provider, apiKey }
   }
-  if (!custom && endpoint !== undefined) {
-    throw new ServerError('VALIDATION', `Only the custom ${tool} provider takes an endpoint.`)
+  if (endpointId === undefined) {
+    throw new ServerError('VALIDATION', `The custom ${tool} provider needs one of your custom endpoints.`)
   }
-  if (!custom && apiKey === '') throw new ServerError('VALIDATION', `${tool} needs an api key.`)
-  if (endpoint !== undefined && apiKey !== '' && new URL(endpoint.baseUrl).protocol === 'http:'
-    && workspaceDriver().kind === 'k8s') {
-    throw new ServerError(
-      'VALIDATION',
-      'Cluster workspaces never send a key over plain HTTP, so this endpoint would only see a placeholder. '
-        + 'Use an https:// URL, or save it without a key.',
-    )
+  if ((await getCustomEndpoint(endpointId))?.owner !== owner) {
+    throw new ServerError('NOT_FOUND', 'No such custom endpoint.')
   }
-  return { kind: 'api-key', provider, apiKey, ...(endpoint !== undefined ? { endpoint } : {}) }
+  return { kind: 'api-key', provider, apiKey: '', endpointId }
 }
 
 /**
@@ -225,7 +270,7 @@ function apiKeyToolCredential<P extends string>(
  * tool, or a bad provider.
  */
 export async function persistToolAuthPayload(owner: string, tool: AgentTool, payload: ToolAuthPayload): Promise<void> {
-  if (payload.kind === 'api-key') return saveApiKey(owner, tool, payload.apiKey, payload.provider, payload.endpoint)
+  if (payload.kind === 'api-key') return saveApiKey(owner, tool, payload.apiKey, payload.provider, payload.endpointId)
   if (isApiKeyTool(tool)) {
     throw new ServerError('VALIDATION', `${tool} only supports api-key auth.`)
   }

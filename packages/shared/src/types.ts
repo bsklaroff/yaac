@@ -6,7 +6,10 @@ import {
   parseOmpProvider,
   parseOpencodeProvider,
   parsePiProvider,
+  ENDPOINT_EFFORTS,
+  type ApiKeyTool,
   type CustomEndpoint,
+  type EndpointModel,
   type OmpProvider,
   type OpencodeProvider,
   type PiProvider,
@@ -560,21 +563,82 @@ export const codexCredentialsFileSchema = z.discriminatedUnion('kind', [
 ])
 export type CodexCredentialsFile = z.infer<typeof codexCredentialsFileSchema>
 
-/** A `custom` provider's endpoint (`CustomEndpoint`), as stored and sent. */
-export const customEndpointSchema = z.object({
-  baseUrl: z.string().refine((v) => {
-    try {
-      return ['http:', 'https:'].includes(new URL(v).protocol)
-    } catch {
-      return false
-    }
-  }, 'the endpoint must be an http(s) URL'),
+/** An http(s) URL, as a custom endpoint's base URL. */
+const endpointUrlSchema = z.string().trim().max(2000).refine((v) => {
+  try {
+    return ['http:', 'https:'].includes(new URL(v).protocol)
+  } catch {
+    return false
+  }
+}, 'the endpoint must be an http(s) URL')
+
+const endpointEffortSchema = z.enum(ENDPOINT_EFFORTS)
+
+/** One model of a custom endpoint (`EndpointModel`), as stored and sent. */
+export const endpointModelSchema = z.object({
   // Each id launches as `custom/<id>`, so it must pass the create form's
   // model check, which also keeps it shell-safe.
-  models: z.array(
-    z.string().trim().regex(MODEL_RE, 'a model id is letters, digits and . _ : / -, starting with a letter or digit')
-      .max(100 - `${CUSTOM_PROVIDER}/`.length),
-  ).min(1, 'list at least one model the endpoint serves'),
+  id: z.string().trim().regex(MODEL_RE, 'a model id is letters, digits and . _ : / -, starting with a letter or digit')
+    .max(100 - `${CUSTOM_PROVIDER}/`.length),
+  name: z.string().trim().min(1).max(200).optional(),
+  efforts: z.object({
+    levels: z.array(endpointEffortSchema).min(1, 'list at least one level')
+      .refine((l) => new Set(l).size === l.length, 'a level is listed twice'),
+    default: endpointEffortSchema,
+  }).strict().refine((e) => e.levels.includes(e.default), { message: 'the default is not one of the levels', path: ['default'] })
+    .optional(),
+}).strict()
+
+/** A custom endpoint's model list: at least one, ids unique. */
+export const endpointModelsSchema = z.array(endpointModelSchema)
+  .min(1, 'list at least one model the endpoint serves')
+  .superRefine((models, ctx) => {
+    const seen = new Set<string>()
+    models.forEach((m, i) => {
+      if (seen.has(m.id)) ctx.addIssue({ code: 'custom', message: `"${m.id}" is listed twice`, path: [i, 'id'] })
+      seen.add(m.id)
+    })
+  })
+
+/** The `POST /auth/endpoints` body. `apiKey` may be omitted for an
+ *  endpoint that takes none. */
+export const customEndpointCreateSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  baseUrl: endpointUrlSchema,
+  apiKey: z.string().trim().max(4000).optional(),
+  models: endpointModelsSchema,
+})
+export type CustomEndpointCreate = z.infer<typeof customEndpointCreateSchema>
+
+/** The `PATCH /auth/endpoints/:id` body: what changes. An omitted `apiKey`
+ *  keeps the stored one and `''` removes it. */
+export const customEndpointPatchSchema = customEndpointCreateSchema.partial()
+export type CustomEndpointPatch = z.infer<typeof customEndpointPatchSchema>
+
+/** The `POST /auth/endpoints/discover` body: a URL and key to try, or a
+ *  stored endpoint whose URL and key to use. */
+export const endpointDiscoverSchema = z.union([
+  z.object({ endpointId: z.string().uuid() }).strict(),
+  z.object({ baseUrl: endpointUrlSchema, apiKey: z.string().trim().max(4000).optional() }).strict(),
+])
+export type EndpointDiscoverRequest = z.infer<typeof endpointDiscoverSchema>
+
+/** What an endpoint's `/models` listed: the models it serves, and the ids
+ *  left out, each with why. */
+export interface EndpointDiscovery {
+  models: EndpointModel[]
+  skipped: { id: string; reason: string }[]
+}
+
+/**
+ * A custom sign-in's endpoint inside its credential file: filled in from
+ * the endpoint for the runtime, which needs only where to send the key, and
+ * written whole (with model ids) by servers that kept the endpoint on the
+ * credential (docs/legacy-compat-shims.md).
+ */
+const embeddedEndpointSchema = z.object({
+  baseUrl: endpointUrlSchema,
+  models: z.array(z.string()).optional(),
 })
 
 /**
@@ -583,8 +647,8 @@ export const customEndpointSchema = z.object({
  * (`tool-providers.ts`). `provider` picks the env var and the host the proxy
  * swaps the key on; a sign-in whose provider is missing or unknown fails to
  * parse rather than defaulting, which could send the key to the wrong
- * vendor. The `custom` provider carries its endpoint, and may have no key,
- * since a self-hosted server often takes none.
+ * vendor. The `custom` provider names one of the user's custom endpoints,
+ * which holds the URL and key, so its own key is empty.
  */
 function apiKeyToolCredentialsFileSchema<P extends string>(parse: (v: string | undefined) => P | undefined) {
   return z.object({
@@ -595,9 +659,13 @@ function apiKeyToolCredentialsFileSchema<P extends string>(parse: (v: string | u
       (v) => typeof v === 'string' && parse(v) !== undefined,
       'provider is missing or not in this build\'s registry',
     ),
-    endpoint: customEndpointSchema.optional(),
+    endpointId: z.string().uuid().optional(),
+    endpoint: embeddedEndpointSchema.optional(),
   })
-    .refine((c) => (c.provider === CUSTOM_PROVIDER) === (c.endpoint !== undefined), 'only the custom provider has an endpoint, and it needs one')
+    .refine(
+      (c) => (c.provider === CUSTOM_PROVIDER) === (c.endpointId !== undefined || c.endpoint !== undefined),
+      'only the custom provider has an endpoint, and it needs one',
+    )
     .refine((c) => c.apiKey !== '' || c.provider === CUSTOM_PROVIDER, 'an api key is required')
 }
 
@@ -614,14 +682,15 @@ export type OmpCredentialsFile = z.infer<typeof ompCredentialsFileSchema>
  * The `PUT /auth/:tool` body. The server checks it against the named tool:
  * an OAuth bundle must be that tool's, an api-key tool needs a provider
  * from its registry, rejected rather than defaulted when missing or unknown,
- * and only its `custom` provider takes an endpoint or an empty key.
+ * and only its `custom` provider takes an `endpointId` (one of the caller's
+ * custom endpoints) in place of a key.
  */
 export const toolAuthPayloadSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('api-key'),
     apiKey: z.string(),
     provider: z.string().optional(),
-    endpoint: customEndpointSchema.optional(),
+    endpointId: z.string().uuid().optional(),
   }),
   z.object({
     kind: z.literal('oauth'),
@@ -847,8 +916,8 @@ export interface ToolAuthSummary {
   opencodeProvider?: OpencodeProvider
   /** pi only — which provider the stored api-key authenticates against. */
   piProvider?: PiProvider
-  /** An api-key tool with the `custom` provider: its endpoint. */
-  endpoint?: CustomEndpoint
+  /** An api-key tool with the `custom` provider: the endpoint it uses. */
+  endpoint?: { id: string; name: string; baseUrl: string }
   /** omp only — which provider the stored api-key authenticates against. */
   ompProvider?: OmpProvider
   /** Candidate `--model` values for this credential, newest first, for the
@@ -866,9 +935,23 @@ export interface ModelOption {
   efforts?: ModelEfforts
 }
 
+/** One of a user's custom endpoints (docs/custom-endpoints.md), for the
+ *  settings page and `yaac auth list`. */
+export interface CustomEndpointSummary {
+  id: string
+  name: string
+  baseUrl: string
+  /** Its key's last four characters; empty when it has none. */
+  keyPreview: string
+  models: EndpointModel[]
+  /** The tools signed in with it. */
+  tools: ApiKeyTool[]
+}
+
 export interface AuthListResult {
   gitCredentials: GitCredentialSummary[]
   toolAuth: ToolAuthSummary[]
+  customEndpoints: CustomEndpointSummary[]
 }
 
 // --- subscription plan usage (domain/auth/plan-usage.ts, snapshot field) ---

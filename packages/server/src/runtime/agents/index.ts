@@ -48,7 +48,7 @@ export {
 // codex's posture is read from its rollout rather than pushed on its pane.
 export { getCodexRolloutSettings } from './codex'
 export { ensureAgentReporters } from './agent-reporters'
-export { ensureToolApiKeyConfig } from './tool-api-keys'
+export { ensureToolApiKeyConfig, type KeyProviders } from './tool-api-keys'
 export { ensureOmpSettings, ompTranscriptAsAcp } from './omp'
 export {
   buildRespawnExec, buildWindowsExec, finishSetupCommand, pipeToLogCommand, type SessionWindowSpec,

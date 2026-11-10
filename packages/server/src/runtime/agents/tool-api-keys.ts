@@ -1,6 +1,13 @@
 import { parseDocument, type Document } from 'yaml'
 import type { ConfinedRoot } from '#lib/confined-fs'
-import { CUSTOM_PROVIDER, toolApiKeyEnvVar, type CustomEndpoint, type ToolProviderInfo } from '@yaac/shared/tool-providers'
+import {
+  CUSTOM_PROVIDER,
+  ENDPOINT_EFFORTS,
+  toolApiKeyEnvVar,
+  type CustomEndpoint,
+  type EndpointModel,
+  type ToolProviderInfo,
+} from '@yaac/shared/tool-providers'
 
 /**
  * Points opencode, pi and omp at the workspace variable holding yaac's key
@@ -28,20 +35,64 @@ import { CUSTOM_PROVIDER, toolApiKeyEnvVar, type CustomEndpoint, type ToolProvid
  * Entries for providers the user has since switched away from are kept:
  * each names only its own provider's variable, which then goes unset.
  *
- * The `custom` provider (a self-hosted OpenAI-compatible endpoint) is
- * defined here whole rather than pointed at: an `@ai-sdk/openai-compatible`
- * provider in opencode's file, and an `openai-completions` provider in
- * pi's `models.json` and omp's `models.yml`, which yaac owns and rewrites
- * on every create. Each lists the credential's models. With no key the
- * workspace sets no variable: opencode then sends no credential, and pi's
- * and omp's key falls back to a dummy, which they need before they will
- * offer the models.
+ * The `custom` provider (the user's custom endpoint,
+ * docs/custom-endpoints.md) is defined here whole rather than pointed at:
+ * an `@ai-sdk/openai-compatible` provider in opencode's file, and an
+ * `openai-completions` provider in pi's `models.json` and omp's
+ * `models.yml`, which yaac owns and rewrites on every create and endpoint
+ * edit. Each lists the endpoint's models, named as the endpoint is, with
+ * their reasoning levels in the tool's own form: opencode `variants` that
+ * each send a `reasoningEffort`, pi's `thinkingLevelMap` (every level the
+ * model lacks mapped to null, or pi would send its provider default), and
+ * omp's `thinking.efforts`. With no key the workspace sets no variable:
+ * opencode then sends no credential, and pi's and omp's key falls back to a
+ * dummy, which they need before they will offer the models.
  *
  * Verified against pi 1.4.0, omp 18.18.3 and @opencode/cli 2.1.4.
  */
 
 /** A provider row, plus the endpoint when it is `custom`. */
 type KeyProvider = ToolProviderInfo & { endpoint?: CustomEndpoint }
+
+/** Each signed-in api-key tool's provider. */
+export interface KeyProviders { opencode?: KeyProvider; pi?: KeyProvider; omp?: KeyProvider }
+
+/** pi's thinking levels, least first, beside the endpoint word each sends. */
+const PI_LEVELS = [['off', 'none'], ...ENDPOINT_EFFORTS.filter((l) => l !== 'none').map((l) => [l, l])] as const
+
+const named = (m: EndpointModel): { name?: string } => (m.name !== undefined ? { name: m.name } : {})
+
+function opencodeModel(m: EndpointModel): object {
+  const levels = m.efforts?.levels
+  return {
+    ...named(m),
+    ...(levels ? { variants: Object.fromEntries(levels.map((l) => [l, { reasoningEffort: l }])) } : {}),
+  }
+}
+
+function piModel(m: EndpointModel): object {
+  const levels = m.efforts?.levels
+  return {
+    id: m.id,
+    ...named(m),
+    reasoning: levels !== undefined,
+    ...(levels
+      ? { thinkingLevelMap: Object.fromEntries(PI_LEVELS.map(([pi, word]) => [pi, (levels as string[]).includes(word) ? word : null])) }
+      : {}),
+  }
+}
+
+function ompModel(m: EndpointModel): object {
+  const efforts = m.efforts?.levels.filter((l) => l !== 'none') ?? []
+  const defaultLevel = m.efforts?.default !== 'none' ? m.efforts?.default : undefined
+  return {
+    id: m.id,
+    ...named(m),
+    ...(efforts.length > 0
+      ? { reasoning: true, thinking: { mode: 'effort', efforts, ...(defaultLevel !== undefined ? { defaultLevel } : {}) } }
+      : {}),
+  }
+}
 
 /** Larger than any hand-written models file; a bigger one is left alone. */
 const MAX_MODELS_BYTES = 1024 * 1024
@@ -54,7 +105,7 @@ const MAX_MODELS_BYTES = 1024 * 1024
  */
 export async function ensureToolApiKeyConfig(
   homes: { opencodeConfig: ConfinedRoot; pi: ConfinedRoot; omp: ConfinedRoot },
-  providers: { opencode?: KeyProvider; pi?: KeyProvider; omp?: KeyProvider },
+  providers: KeyProviders,
 ): Promise<{ opencodeConfigFile?: string }> {
   let opencodeConfigFile: string | undefined
   if (providers.opencode) {
@@ -64,10 +115,10 @@ export async function ensureToolApiKeyConfig(
     const entry = id === CUSTOM_PROVIDER
       ? {
           npm: '@ai-sdk/openai-compatible',
-          name: providers.opencode.label,
+          name: endpoint?.name ?? providers.opencode.label,
           env: [keyVar],
           options: { baseURL: endpoint?.baseUrl },
-          models: Object.fromEntries((endpoint?.models ?? []).map((m) => [m, {}])),
+          models: Object.fromEntries((endpoint?.models ?? []).map((m) => [m.id, opencodeModel(m)])),
         }
       : { env: [keyVar, providers.opencode.envVar] }
     const config = { provider: { [id]: entry } }
@@ -80,11 +131,11 @@ export async function ensureToolApiKeyConfig(
       providers: {
         ...models.providers,
         [CUSTOM_PROVIDER]: {
-          name: label,
+          name: endpoint?.name ?? label,
           baseUrl: endpoint?.baseUrl,
           api: 'openai-completions',
           apiKey: `!printenv ${toolApiKeyEnvVar('pi', CUSTOM_PROVIDER)} || echo none`,
-          models: (endpoint?.models ?? []).map((id) => ({ id })),
+          models: (endpoint?.models ?? []).map(piModel),
         },
       },
     }))
@@ -103,7 +154,7 @@ export async function ensureToolApiKeyConfig(
         baseUrl: endpoint?.baseUrl,
         api: 'openai-completions',
         apiKey: `!printenv ${toolApiKeyEnvVar('omp', CUSTOM_PROVIDER)} || echo none`,
-        models: (endpoint?.models ?? []).map((id) => ({ id })),
+        models: (endpoint?.models ?? []).map(ompModel),
       }))
       return true
     })

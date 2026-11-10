@@ -4,6 +4,7 @@ import {
   OMP_DEFAULT_PROVIDER,
   OPENCODE_DEFAULT_PROVIDER,
   PI_DEFAULT_PROVIDER,
+  endpointEfforts,
   isApiKeyTool,
   type CustomEndpoint,
 } from '@yaac/shared/tool-providers'
@@ -27,17 +28,17 @@ import type { AgentTool, ModelEfforts, ModelOption } from '@yaac/shared/types'
  * list less models the pinned claude doesn't know (`CLAUDE_MODELS`), codex
  * models.dev's openai list; opencode, pi and omp use `provider/model` for
  * their credential's provider, and pi and omp use their own registries. A
- * custom endpoint's models are the ones its credential lists. Not an
- * allowlist: yaac only shape-checks ids.
+ * custom endpoint's models are the ones the endpoint lists, with its names
+ * and levels. Not an allowlist: yaac only shape-checks ids.
  */
 export function modelsForTool(tool: AgentTool, provider: string | undefined, endpoint?: CustomEndpoint): ModelOption[] {
-  return catalogIds(tool, provider, endpoint).map((id) => option(tool, id))
+  return catalogIds(tool, provider, endpoint).map((id) => option(tool, id, endpoint))
 }
 
 function catalogIds(tool: AgentTool, provider: string | undefined, endpoint?: CustomEndpoint): string[] {
   if (tool === 'claude') return CLAUDE_MODELS
   if (tool === 'codex') return MODELS_BY_PROVIDER.openai ?? []
-  if (provider === CUSTOM_PROVIDER) return (endpoint?.models ?? []).map((m) => `${CUSTOM_PROVIDER}/${m}`)
+  if (provider === CUSTOM_PROVIDER) return (endpoint?.models ?? []).map((m) => `${CUSTOM_PROVIDER}/${m.id}`)
   if (provider === undefined) return []
   return (OWN_CATALOGS[tool]?.ids ?? MODELS_BY_PROVIDER)[provider]?.map((m) => `${provider}/${m}`) ?? []
 }
@@ -58,9 +59,9 @@ const OWN_CATALOGS: Partial<Record<AgentTool, OwnCatalog>> = {
   omp: { ids: OMP_MODELS_BY_PROVIDER, names: OMP_MODEL_NAMES, defaults: OMP_PROVIDER_DEFAULT_MODELS, defaultProvider: OMP_DEFAULT_PROVIDER },
 }
 
-function option(tool: AgentTool, id: string): ModelOption {
-  const name = modelDisplayName(tool, id)
-  const efforts = modelEfforts(tool, id)
+function option(tool: AgentTool, id: string, endpoint?: CustomEndpoint): ModelOption {
+  const name = endpointModel(tool, id, endpoint)?.name ?? modelDisplayName(tool, id)
+  const efforts = modelEfforts(tool, id, endpoint)
   return {
     id,
     ...(name !== undefined ? { name } : {}),
@@ -68,21 +69,32 @@ function option(tool: AgentTool, id: string): ModelOption {
   }
 }
 
+/** A `custom/<id>` model of an api-key tool, from its endpoint's list. */
+function endpointModel(tool: AgentTool, id: string, endpoint: CustomEndpoint | undefined) {
+  if (endpoint === undefined || !isApiKeyTool(tool) || !id.startsWith(`${CUSTOM_PROVIDER}/`)) return undefined
+  return endpoint.models.find((m) => m.id === id.slice(CUSTOM_PROVIDER.length + 1))
+}
+
 /**
  * Whether the catalog offers this model id. An api-key tool's ids name
- * their provider, which picks the catalog to look in.
+ * their provider, which picks the catalog to look in; a custom model is
+ * looked up in `endpoint`, the tool's custom endpoint.
  */
-export function isCatalogModel(tool: AgentTool, id: string): boolean {
+export function isCatalogModel(tool: AgentTool, id: string, endpoint?: CustomEndpoint): boolean {
   const provider = isApiKeyTool(tool) ? id.slice(0, Math.max(0, id.indexOf('/'))) : undefined
-  return catalogIds(tool, provider).includes(id)
+  return catalogIds(tool, provider, endpoint).includes(id)
 }
 
 /**
  * A model's effort levels and default (docs/effort-levels.md), or undefined
- * when the catalog has none for it. Tried as given, then without a `[1m]`
- * suffix or a `-YYYYMMDD` snapshot suffix, as `modelDisplayName` does.
+ * when the catalog has none for it. A custom model's come from `endpoint`,
+ * in the tool's words (`endpointEfforts`). Otherwise tried as given, then
+ * without a `[1m]` suffix or a `-YYYYMMDD` snapshot suffix, as
+ * `modelDisplayName` does.
  */
-export function modelEfforts(tool: AgentTool, id: string): ModelEfforts | undefined {
+export function modelEfforts(tool: AgentTool, id: string, endpoint?: CustomEndpoint): ModelEfforts | undefined {
+  const custom = endpointModel(tool, id, endpoint)
+  if (custom !== undefined && isApiKeyTool(tool)) return endpointEfforts(tool, custom)
   const table = EFFORTS[tool]
   const undecorated = id.replace(/\[[^\]]*\]$/, '')
   return table[id] ?? table[undecorated] ?? table[undecorated.replace(/-\d{8}$/, '')]

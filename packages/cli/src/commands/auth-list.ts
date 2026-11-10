@@ -1,4 +1,5 @@
 import { api } from '#commands/api'
+import { describeEndpointModel } from '@yaac/shared/endpoint-models'
 import { AGENT_TOOLS, type AgentTool, type ToolAuthSummary } from '@yaac/shared/types'
 
 export async function authList(): Promise<void> {
@@ -21,6 +22,15 @@ export async function authList(): Promise<void> {
   for (const tool of AGENT_TOOLS) {
     printToolAuth(tool, result.toolAuth.find((t) => t.tool === tool))
   }
+
+  console.log('')
+  console.log('Custom endpoints:')
+  if (result.customEndpoints.length === 0) console.log('  (none — add one with `yaac auth endpoint add`)')
+  for (const e of result.customEndpoints) {
+    const used = e.tools.length > 0 ? `  (used by ${e.tools.join(', ')})` : ''
+    console.log(`  ${e.name}  ${[e.baseUrl, e.keyPreview].filter(Boolean).join(' ')}${used}`)
+    for (const m of e.models) console.log(`    ${describeEndpointModel(m)}`)
+  }
 }
 
 function printToolAuth(label: AgentTool, entry: ToolAuthSummary | undefined): void {
@@ -32,6 +42,6 @@ function printToolAuth(label: AgentTool, entry: ToolAuthSummary | undefined): vo
   const kindLabel = entry.kind === 'oauth' ? 'oauth' : 'api-key'
   const provider = entry.opencodeProvider ?? entry.piProvider ?? entry.ompProvider
   const providerLabel = provider ? `${provider}, ` : ''
-  const target = [entry.endpoint?.baseUrl, entry.keyPreview].filter(Boolean).join(' ')
+  const target = entry.endpoint ? `endpoint "${entry.endpoint.name}"` : entry.keyPreview
   console.log(`  ${padded} ${target}  (${providerLabel}${kindLabel}, saved ${entry.savedAt.slice(0, 10)})`)
 }

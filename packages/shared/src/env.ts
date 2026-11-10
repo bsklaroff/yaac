@@ -19,6 +19,14 @@ import type { AccessMode, AgentTool } from '#types'
 /** Set during real builds or runs (users, operators, the build, or the server). */
 export const env = {
   /**
+   * `VISUAL`, else `EDITOR`: the editor `yaac auth endpoint edit` opens.
+   * Unset → `vi`.
+   */
+  get editor(): string {
+    return nonEmpty(process.env.VISUAL) ?? nonEmpty(process.env.EDITOR) ?? 'vi'
+  },
+
+  /**
    * `YAAC_DATA_DIR` override for the data dir (projects/sessions/lock).
    * Unset → `~/.yaac-server` for the host server, `~/.yaac-cluster` for a
    * cluster, and `~/.yaac-client` for the client tier.

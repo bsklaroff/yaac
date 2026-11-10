@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { credentialOwnerKey, loadToolAuthEntry } from '#domain/auth'
-import { BUILT_IN_USER_ID, closeDb, seeTailnetUser, setToolCredential } from '#db'
+import { addEndpoint, credentialOwnerKey, customEndpointFor, loadToolAuthEntry, removeEndpoint } from '#domain/auth'
+import { BUILT_IN_USER_ID, closeDb, recordProject, seeTailnetUser, setToolCredential } from '#db'
 
 let tmpDir: string
 
@@ -42,5 +42,34 @@ describe('loadToolAuthEntry', () => {
       .toEqual({ tool: 'omp', kind: 'api-key', apiKey: 'sk-omp', savedAt: 's', ompProvider: 'openrouter' })
     expect(await loadToolAuthEntry(BUILT_IN_USER_ID, 'opencode')).toBeNull()
     expect(await loadToolAuthEntry(bob, 'claude')).toBeNull()
+  })
+
+  it('reads a custom sign-in as its endpoint, key included, and as none once the endpoint is not the owner\'s', async () => {
+    const bob = await seeTailnetUser('bob@example.com', 'Bob')
+    const models = [{ id: 'llama' }]
+    const { id } = await addEndpoint(BUILT_IN_USER_ID, { name: 'box', baseUrl: 'https://box/v1', apiKey: 'sk-box', models })
+    await setToolCredential(BUILT_IN_USER_ID, 'opencode', { kind: 'api-key', provider: 'custom', savedAt: 's', apiKey: '', endpointId: id })
+    expect(await loadToolAuthEntry(BUILT_IN_USER_ID, 'opencode')).toEqual({
+      tool: 'opencode', kind: 'api-key', apiKey: 'sk-box', savedAt: 's', opencodeProvider: 'custom',
+      endpoint: { id, name: 'box', baseUrl: 'https://box/v1', models },
+    })
+    // A sign-in naming someone else's endpoint never uses it.
+    await setToolCredential(bob, 'opencode', { kind: 'api-key', provider: 'custom', savedAt: 's', apiKey: '', endpointId: id })
+    expect(await loadToolAuthEntry(bob, 'opencode')).toBeNull()
+  })
+})
+
+describe('customEndpointFor', () => {
+  it('looks up the project owner\'s endpoint only for one of its custom models', async () => {
+    const project = '00000000-0000-4000-8000-0000000000f1'
+    await recordProject({ id: project, name: 'p', remoteUrl: 'https://github.com/acme/p', addedAt: 'x' }, BUILT_IN_USER_ID)
+    const { id } = await addEndpoint(BUILT_IN_USER_ID, { name: 'pi-box', baseUrl: 'https://pi-box/v1', models: [{ id: 'llama' }] })
+    await setToolCredential(BUILT_IN_USER_ID, 'pi', { kind: 'api-key', provider: 'custom', savedAt: 's', apiKey: '', endpointId: id })
+
+    expect(await customEndpointFor(project, 'pi', 'custom/llama')).toMatchObject({ id, models: [{ id: 'llama' }] })
+    expect(await customEndpointFor(project, 'pi', 'anthropic/claude-opus-5-5')).toBeUndefined()
+    expect(await customEndpointFor(project, 'claude', 'custom/llama')).toBeUndefined()
+    await removeEndpoint(BUILT_IN_USER_ID, id)
+    expect(await customEndpointFor(project, 'pi', 'custom/llama')).toBeUndefined()
   })
 })

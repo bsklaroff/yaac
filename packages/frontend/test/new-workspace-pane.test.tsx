@@ -29,8 +29,8 @@ const PI = {
   models: [{ id: 'anthropic/claude-opus-4-8', name: 'Claude Opus 4.8' }],
   defaultModel: 'anthropic/claude-opus-4-8',
 }
-const CLAUDE_ONLY: AuthListResult = { gitCredentials: [], toolAuth: [CLAUDE] }
-const SIGNED_IN: AuthListResult = { gitCredentials: [], toolAuth: [CLAUDE, CODEX, PI] }
+const CLAUDE_ONLY: AuthListResult = { gitCredentials: [], toolAuth: [CLAUDE], customEndpoints: [] }
+const SIGNED_IN: AuthListResult = { gitCredentials: [], toolAuth: [CLAUDE, CODEX, PI], customEndpoints: [] }
 
 const BRANCHES: ProjectBranches = {
   branches: ['main', 'dev', 'release/2.x'],
@@ -333,7 +333,7 @@ describe('NewWorkspacePane', () => {
         { id: 'claude-haiku-4-5', name: 'Haiku 4.5' },
       ],
     }
-    server.route(AUTH_LIST, { gitCredentials: [], toolAuth: [efforts] })
+    server.route(AUTH_LIST, { gitCredentials: [], toolAuth: [efforts], customEndpoints: [] })
     setSnapshot(project({ createDefaults: { claude: { effort: 'max' } } }))
     await openReady()
     expect(effortShown()).toBe('Max effort')

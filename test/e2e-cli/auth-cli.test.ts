@@ -1,12 +1,14 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs/promises'
+import http from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { createYaacTestEnv, spawnYaacServer, runYaac, type YaacTestEnv } from '#support/cli'
 import { makeServerApiClient, signInTestTool, type SpawnedServer } from '@yaac/test-utils/api'
 import { CLAUDE_STUB, CODEX_STUB } from '@yaac/test-utils/fixtures'
-import type { AgentTool, ToolAuthSummary } from '@yaac/shared/types'
+import type { AgentTool, CustomEndpointSummary, ToolAuthSummary } from '@yaac/shared/types'
 
 /**
  * The auth and tool CLI commands, sharing one test env and one server for
@@ -358,29 +360,207 @@ describe('yaac auth (real CLI + shared server)', () => {
       expect(await stored('pi')).toMatchObject({ kind: 'api-key', piProvider: 'anthropic', keyPreview: '***-key' })
     })
 
-    it('stores a keyless custom endpoint with the URL and models typed at its prompts', async () => {
-      const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'update', {
-        stdinOnPrompt: [
-          { when: /Choice \[1-6\]: /, send: '5\n' },
-          { when: /Provider \[openrouter\]: /, send: 'custom\n' },
-          { when: /Endpoint URL .*: /, send: 'http://gpu-box.tail1234.ts.net:8080/v1\n' },
-          { when: /Model ids .*: /, send: 'Qwen/Qwen3-Coder, llama\n' },
-          { when: /Paste your API key \(Enter for none\): /, send: '\n' },
-        ],
-      })
-      expect(exitCode).toBe(0)
-      expect(stdout).toContain('Pi credentials saved.')
-      expect(await stored('pi')).toMatchObject({
-        piProvider: 'custom', keyPreview: '', defaultModel: 'custom/Qwen/Qwen3-Coder',
-        endpoint: { baseUrl: 'http://gpu-box.tail1234.ts.net:8080/v1', models: ['Qwen/Qwen3-Coder', 'llama'] },
-      })
-    })
-
     it('stores an Oh My Pi api key for the provider typed, apart from pi\'s', async () => {
       const { stdout, exitCode } = await pasteApiKey('6', 'deepseek', 'sk-ds-omp-test-key')
       expect(exitCode).toBe(0)
       expect(stdout).toContain('Oh My Pi credentials saved.')
       expect(await stored('omp')).toMatchObject({ kind: 'api-key', ompProvider: 'deepseek', keyPreview: '***-key' })
+    })
+  })
+
+  describe('auth endpoint', () => {
+    // The containerless tier's server runs on this host and can reach a stub
+    // here; a cluster's server pod cannot, so the cases that fetch /models
+    // run in that tier only.
+    const reachesHost = process.env.YAAC_DRIVER === 'containerless'
+    /** What the stub endpoint's /models lists next. */
+    let listed: unknown[] = []
+    let stub: http.Server
+    let stubUrl: string
+
+    beforeAll(async () => {
+      stub = http.createServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ object: 'list', data: listed }))
+      })
+      await new Promise<void>((resolve) => stub.listen(0, '127.0.0.1', resolve))
+      stubUrl = `http://127.0.0.1:${(stub.address() as AddressInfo).port}/v1`
+    })
+
+    afterAll(async () => {
+      stub.closeAllConnections()
+      await new Promise((resolve) => stub.close(resolve))
+    })
+
+    /** The caller's endpoints as the server lists them. */
+    async function endpoints(): Promise<CustomEndpointSummary[]> {
+      const res = await makeServerApiClient(server).auth.list.$get()
+      return (await res.json()).customEndpoints
+    }
+
+    /**
+     * An `$EDITOR` that writes each of `saves` over the file in turn, one per
+     * opening, keeping its `//` header, and records what it was shown.
+     */
+    async function scriptedEditor(saves: string[]): Promise<{ env: NodeJS.ProcessEnv; shown: () => Promise<string[]> }> {
+      const dir = await fs.mkdtemp(path.join(testEnv.dataDir, 'editor-'))
+      await fs.writeFile(path.join(dir, 'saves.json'), JSON.stringify(saves))
+      const script = path.join(dir, 'editor.cjs')
+      await fs.writeFile(script, `
+        const fs = require('fs'), path = require('path')
+        const dir = ${JSON.stringify(dir)}
+        const saves = JSON.parse(fs.readFileSync(path.join(dir, 'saves.json'), 'utf8'))
+        const shown = fs.existsSync(path.join(dir, 'shown.json')) ? JSON.parse(fs.readFileSync(path.join(dir, 'shown.json'), 'utf8')) : []
+        const file = process.argv[2]
+        const text = fs.readFileSync(file, 'utf8')
+        shown.push(text)
+        fs.writeFileSync(path.join(dir, 'shown.json'), JSON.stringify(shown))
+        const next = saves[shown.length - 1]
+        if (next !== undefined) fs.writeFileSync(file, next)
+      `)
+      return {
+        env: { ...testEnv.env, VISUAL: '', EDITOR: `${process.execPath} ${script}` },
+        shown: async () => JSON.parse(await fs.readFile(path.join(dir, 'shown.json'), 'utf8')) as string[],
+      }
+    }
+
+    it('adds endpoints from a models file, edits each part, signs a tool in with one and removes it', async () => {
+      await resetCreds()
+      const file = path.join(testEnv.dataDir, 'models.json')
+      await fs.writeFile(file, JSON.stringify([{ id: 'gpt-oss', efforts: { levels: ['low', 'high'], default: 'low' } }]))
+      const added = await runYaac(testEnv.env, 'auth', 'endpoint', 'add', 'files', 'http://box.example:8080/v1', '--models-file', file)
+      expect(added.exitCode).toBe(0)
+      expect(added.stdout).toContain('Custom endpoint "files" saved with 1 model(s):')
+      expect(added.stdout).toContain('gpt-oss [low* high]')
+      // A key read from stdin, for an https endpoint (a cluster refuses one
+      // over plain HTTP).
+      const keyed = await runYaac(testEnv.env, 'auth', 'endpoint', 'add', 'keyed', 'https://llm.example.com/v1',
+        '--key-stdin', '--models-file', file, { stdin: 'sk-e2e-endpoint-key\n' })
+      expect(keyed.exitCode).toBe(0)
+      expect((await endpoints()).find((e) => e.name === 'keyed')).toMatchObject({ keyPreview: '***-key' })
+
+      // `models` prints what `--models-file` reads, so an edit round-trips.
+      const printed = await runYaac(testEnv.env, 'auth', 'endpoint', 'models', 'files')
+      expect(JSON.parse(printed.stdout)).toEqual([{ id: 'gpt-oss', efforts: { levels: ['low', 'high'], default: 'low' } }])
+      const piped = await runYaac(testEnv.env, 'auth', 'endpoint', 'edit', 'files', '--models-file', '-',
+        { stdin: JSON.stringify([{ id: 'gpt-oss', name: 'gpt-oss 120B' }, { id: 'gemma' }]) })
+      expect(piped.exitCode).toBe(0)
+      expect((await endpoints()).find((e) => e.name === 'files')?.models).toEqual([{ id: 'gpt-oss', name: 'gpt-oss 120B' }, { id: 'gemma' }])
+      const bad = await runYaac(testEnv.env, 'auth', 'endpoint', 'edit', 'files', '--models-file', '-',
+        { stdin: JSON.stringify([{ id: 'x', efforts: { levels: ['low'], default: 'high' } }]) })
+      expect(bad.exitCode).not.toBe(0)
+      expect(bad.stderr).toContain('[0].efforts.default: the default is not one of the levels')
+
+      const moved = await runYaac(testEnv.env, 'auth', 'endpoint', 'edit', 'files', '--rename', 'renamed',
+        '--url', 'https://moved.example.com/v1', '--key-stdin', { stdin: 'sk-moved-key' })
+      expect(moved.exitCode).toBe(0)
+      expect((await endpoints()).find((e) => e.name === 'renamed'))
+        .toMatchObject({ baseUrl: 'https://moved.example.com/v1', keyPreview: '***-key' })
+      expect((await runYaac(testEnv.env, 'auth', 'endpoint', 'edit', 'renamed', '--clear-key')).exitCode).toBe(0)
+      expect((await endpoints()).find((e) => e.name === 'renamed')).toMatchObject({ keyPreview: '' })
+
+      // `yaac auth update` signs pi in with an endpoint named at its prompt.
+      const signedIn = await runYaac(testEnv.env, 'auth', 'update', {
+        stdinOnPrompt: [
+          { when: /Choice \[1-6\]: /, send: '5\n' },
+          { when: /Provider \[openrouter\]: /, send: 'custom\n' },
+          { when: /Custom endpoint: /, send: 'renamed\n' },
+        ],
+      })
+      expect(signedIn.exitCode).toBe(0)
+      expect(signedIn.stdout).toContain('Your custom endpoints: renamed, keyed.')
+      expect(await stored('pi')).toMatchObject({
+        piProvider: 'custom', endpoint: { name: 'renamed', baseUrl: 'https://moved.example.com/v1' },
+        models: [{ id: 'custom/gpt-oss', name: 'gpt-oss 120B' }, { id: 'custom/gemma' }],
+      })
+      const list = await runYaac(testEnv.env, 'auth', 'list')
+      expect(list.stdout).toMatch(/pi\s+endpoint "renamed"/)
+      expect(list.stdout).toContain('Custom endpoints:')
+      expect(list.stdout).toContain('renamed  https://moved.example.com/v1  (used by pi)')
+      expect(list.stdout).toContain('    gpt-oss (gpt-oss 120B)')
+
+      // The editor: a save that does not parse reopens with its errors, an
+      // unchanged one cancels.
+      const editor = await scriptedEditor(['not json', '[{ "id": "edited" }]'])
+      const edited = await runYaac(editor.env, 'auth', 'endpoint', 'edit', 'renamed')
+      expect(edited.exitCode).toBe(0)
+      expect(edited.stdout).toContain('Custom endpoint "renamed" saved. Updated for pi; agents already running keep their list until restarted.')
+      const shown = await editor.shown()
+      expect(shown[0]).toContain('// The models of the custom endpoint "renamed" (https://moved.example.com/v1).')
+      expect(shown[0]).toContain('"gpt-oss 120B"')
+      expect(shown[1]).toContain('// The last save did not parse:')
+      expect((await endpoints()).find((e) => e.name === 'renamed')?.models).toEqual([{ id: 'edited' }])
+      const unchanged = await runYaac((await scriptedEditor([])).env, 'auth', 'endpoint', 'edit', 'renamed')
+      expect(unchanged.stdout).toContain('Nothing changed.')
+
+      const removed = await runYaac(testEnv.env, 'auth', 'endpoint', 'remove', 'renamed')
+      expect(removed.exitCode).toBe(0)
+      expect(removed.stdout).toContain('Custom endpoint "renamed" deleted. Signed out: pi.')
+      expect(await stored('pi')).toBeUndefined()
+      expect((await runYaac(testEnv.env, 'auth', 'endpoint', 'remove', 'renamed')).stderr).toContain('No custom endpoint named "renamed". Yours: keyed.')
+    })
+
+    it.runIf(reachesHost)('adds an endpoint from its /models, then reviews and applies what a refresh finds', async () => {
+      listed = [
+        { id: 'gpt-oss', supported_reasoning_levels: [{ effort: 'low' }, { effort: 'high' }], default_reasoning_level: 'high' },
+        { id: 'qwen3', meta: { llamaswap: { supported_reasoning_levels: ['low', 'medium'] } } },
+        { id: 'embed', capabilities: { embeddings: true } },
+      ]
+      const added = await runYaac(testEnv.env, 'auth', 'endpoint', 'add', 'swap', stubUrl)
+      expect(added.exitCode).toBe(0)
+      expect(added.stdout).toContain('skipped embed: not a chat model')
+      expect(added.stdout).toContain('gpt-oss [low high*]')
+      expect(added.stdout).toContain('qwen3 [low medium*]')
+
+      // Without --apply a refresh only shows what changed.
+      listed = [listed[0], { id: 'qwen3', supported_reasoning_levels: ['low', 'medium', 'high'] }, { id: 'llama4' }]
+      const shown = await runYaac(testEnv.env, 'auth', 'endpoint', 'refresh', 'swap')
+      expect(shown.stdout).toContain('  new      llama4')
+      expect(shown.stdout).toContain('  changed  qwen3 [low medium*] -> qwen3 [low medium* high]')
+      expect(shown.stdout).toContain('Apply with --apply all')
+      const models = async (): Promise<unknown> => (await endpoints()).find((e) => e.name === 'swap')?.models
+      expect(await models()).toHaveLength(2)
+
+      expect((await runYaac(testEnv.env, 'auth', 'endpoint', 'refresh', 'swap', '--apply', 'new')).exitCode).toBe(0)
+      expect(await models()).toEqual([
+        { id: 'gpt-oss', efforts: { levels: ['low', 'high'], default: 'high' } },
+        { id: 'qwen3', efforts: { levels: ['low', 'medium'], default: 'medium' } },
+        { id: 'llama4' },
+      ])
+      // --edit opens the merged list (new and changed by default) for
+      // review, and saving it as shown stores it.
+      listed = [listed[1]]
+      const editor = await scriptedEditor([])
+      const reviewed = await runYaac(editor.env, 'auth', 'endpoint', 'refresh', 'swap', '--edit')
+      expect(reviewed.stdout).toContain('  gone     gpt-oss [low high*]')
+      expect((await editor.shown())[0]).toContain('"high"')
+      expect(reviewed.stdout).toContain('Custom endpoint "swap" saved with 3 model(s).')
+      expect(await models()).toEqual([
+        { id: 'gpt-oss', efforts: { levels: ['low', 'high'], default: 'high' } },
+        { id: 'qwen3', efforts: { levels: ['low', 'medium', 'high'], default: 'medium' } },
+        { id: 'llama4' },
+      ])
+      // Only gone models are left, which start unpicked: the merged list is
+      // the stored one, so saving it as shown changes nothing.
+      const again = await runYaac((await scriptedEditor([])).env, 'auth', 'endpoint', 'refresh', 'swap', '--edit')
+      expect(again.stdout).toContain('Nothing changed.')
+      expect((await runYaac(testEnv.env, 'auth', 'endpoint', 'refresh', 'swap', '--apply', 'all')).exitCode).toBe(0)
+      expect(await models()).toEqual([{ id: 'qwen3', efforts: { levels: ['low', 'medium', 'high'], default: 'medium' } }])
+      expect((await runYaac(testEnv.env, 'auth', 'endpoint', 'refresh', 'swap')).stdout).toContain('The endpoint\'s list matches yours.')
+
+      // `yaac auth update` adds an endpoint under a new name, from its /models.
+      const signedIn = await runYaac(testEnv.env, 'auth', 'update', {
+        stdinOnPrompt: [
+          { when: /Choice \[1-6\]: /, send: '6\n' },
+          { when: /Provider \[openrouter\]: /, send: 'custom\n' },
+          { when: /Custom endpoint: /, send: 'fresh\n' },
+          { when: /Endpoint URL .*: /, send: `${stubUrl}\n` },
+          { when: /API key \(Enter for none\): /, send: '\n' },
+        ],
+      })
+      expect(signedIn.exitCode).toBe(0)
+      expect(signedIn.stdout).toContain('Custom endpoint "fresh" saved')
+      expect(await stored('omp')).toMatchObject({ ompProvider: 'custom', endpoint: { name: 'fresh' }, defaultModel: 'custom/qwen3' })
     })
   })
 

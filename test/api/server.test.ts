@@ -56,7 +56,7 @@ describe('buildApp', () => {
     const client = makeTestApiClient(buildApp({ buildId: 'test-build-id' }))
     const auth = await client.auth.list.$get()
     expect(auth.status).toBe(200)
-    expect(await auth.json()).toEqual({ gitCredentials: [], toolAuth: [] })
+    expect(await auth.json()).toEqual({ gitCredentials: [], toolAuth: [], customEndpoints: [] })
     const listed = await client.workspace.list.$get({ query: { project: 'missing' } })
     expect(listed.status).toBe(404)
     expect(await listed.json()).toMatchObject({ error: { code: 'NOT_FOUND' } })

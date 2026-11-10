@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { catalogModel, defaultModelFor, isCatalogModel, modelDisplayName, modelEfforts, modelsForTool } from '#domain/auth'
+import type { CustomEndpoint } from '@yaac/shared/tool-providers'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 import {
   CLAUDE_MODELS,
@@ -32,9 +33,23 @@ describe('modelsForTool', () => {
     expect(modelsForTool('opencode', undefined)).toEqual([])
   })
 
-  it('offers a custom endpoint the models its credential lists, unnamed', () => {
-    const endpoint = { baseUrl: 'http://box:8080/v1', models: ['Qwen/Qwen3-Coder', 'llama'] }
-    expect(modelsForTool('pi', 'custom', endpoint)).toEqual([{ id: 'custom/Qwen/Qwen3-Coder' }, { id: 'custom/llama' }])
+  it('offers a custom endpoint\'s models with its names, and its levels in each tool\'s words', () => {
+    const endpoint: CustomEndpoint = {
+      id: 'e', name: 'box', baseUrl: 'http://box:8080/v1',
+      models: [
+        { id: 'Qwen/Qwen3-Coder', name: 'Qwen3 Coder', efforts: { levels: ['none', 'low', 'high'], default: 'low' } },
+        { id: 'llama' },
+      ],
+    }
+    expect(modelsForTool('pi', 'custom', endpoint)).toEqual([
+      { id: 'custom/Qwen/Qwen3-Coder', name: 'Qwen3 Coder', efforts: { levels: ['off', 'low', 'high'], default: 'low' } },
+      { id: 'custom/llama' },
+    ])
+    // opencode leads with `default`, and omp can always turn thinking off.
+    expect(modelsForTool('opencode', 'custom', endpoint)[0]?.efforts)
+      .toEqual({ levels: ['default', 'none', 'low', 'high'], default: 'low' })
+    const noOff = { ...endpoint, models: [{ id: 'm', efforts: { levels: ['medium', 'high'], default: 'high' } }] } satisfies CustomEndpoint
+    expect(modelsForTool('omp', 'custom', noOff)[0]?.efforts).toEqual({ levels: ['off', 'medium', 'high'], default: 'high' })
     expect(modelsForTool('opencode', 'custom', undefined)).toEqual([])
   })
 })
@@ -47,6 +62,13 @@ describe('isCatalogModel', () => {
     expect(isCatalogModel('opencode', 'nowhere/claude-opus-5-5')).toBe(false)
     expect(isCatalogModel('pi', 'no-slash')).toBe(false)
   })
+
+  it('finds a custom model in the endpoint it is handed', () => {
+    const endpoint: CustomEndpoint = { id: 'e', name: 'box', baseUrl: 'http://box/v1', models: [{ id: 'llama' }] }
+    expect(isCatalogModel('pi', 'custom/llama', endpoint)).toBe(true)
+    expect(isCatalogModel('pi', 'custom/llama')).toBe(false)
+    expect(isCatalogModel('pi', 'custom/other', endpoint)).toBe(false)
+  })
 })
 
 describe('modelEfforts', () => {
@@ -58,6 +80,16 @@ describe('modelEfforts', () => {
     expect(modelEfforts('codex', 'gpt-6-sol')?.levels).toContain('ultra')
     expect(modelEfforts('claude', 'opus')).toBeUndefined()
   })
+
+  it('reads a custom model\'s levels from its endpoint, and none without one', () => {
+    const endpoint: CustomEndpoint = {
+      id: 'e', name: 'box', baseUrl: 'http://box/v1',
+      models: [{ id: 'gpt-oss', efforts: { levels: ['low', 'medium', 'high'], default: 'medium' } }, { id: 'plain' }],
+    }
+    expect(modelEfforts('pi', 'custom/gpt-oss', endpoint)).toEqual({ levels: ['low', 'medium', 'high'], default: 'medium' })
+    expect(modelEfforts('pi', 'custom/plain', endpoint)).toBeUndefined()
+    expect(modelEfforts('pi', 'custom/gpt-oss')).toBeUndefined()
+  })
 })
 
 describe('defaultModelFor', () => {
@@ -67,7 +99,7 @@ describe('defaultModelFor', () => {
   })
 
   it('answers a custom endpoint\'s first model, or none without one', () => {
-    const endpoint = { baseUrl: 'http://box:8080/v1', models: ['llama', 'qwen'] }
+    const endpoint: CustomEndpoint = { id: 'e', name: 'box', baseUrl: 'http://box:8080/v1', models: [{ id: 'llama' }, { id: 'qwen' }] }
     expect(defaultModelFor('opencode', 'custom', endpoint)).toBe('custom/llama')
     expect(defaultModelFor('pi', 'custom', undefined)).toBe('')
   })
