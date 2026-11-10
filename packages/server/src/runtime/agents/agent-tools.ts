@@ -23,6 +23,7 @@ import {
   getOpencodeSessionTitle,
   opencodePermissionMode,
 } from './opencode'
+import { classifyOmpTitle, getOmpSessionTitle, ompPermissionMode } from './omp'
 import { PI_BUSY_MARKERS, getPiFirstUserMessage } from './pi'
 import type { SandboxFile } from './sandbox-fs'
 
@@ -38,7 +39,8 @@ export async function getConversationFirstMessage(
 ): Promise<string | undefined> {
   if (tool === 'opencode' || transcript === undefined) return undefined
   if (tool === 'codex') return getCodexFirstUserMessage(transcript)
-  if (tool === 'pi') return getPiFirstUserMessage(transcript)
+  // omp's log keeps pi's message entries.
+  if (tool === 'pi' || tool === 'omp') return getPiFirstUserMessage(transcript)
   return getFirstUserMessage(transcript)
 }
 
@@ -46,7 +48,7 @@ export async function getConversationFirstMessage(
 export interface AgentTitleSource {
   projectId: string
   conversationId: string
-  /** claude's transcript, under either mode. */
+  /** claude's or omp's transcript, under either mode. */
   transcript?: SandboxFile
   /** The running workspace, which opencode's lookup runs in. */
   jobName: string
@@ -55,8 +57,8 @@ export interface AgentTitleSource {
 /**
  * The title the agent gave its own conversation, or undefined while it has
  * none. Each tool keeps it in its own store, which `tui` and `acp` share:
- * claude in its transcript, codex in its session index, opencode in its
- * database. pi titles nothing. The adapters' ACP `session_info_update`
+ * claude and omp in their transcripts, codex in its session index, opencode
+ * in its database. pi titles nothing. The adapters' ACP `session_info_update`
  * titles are not used: codex-acp sends the raw opening message before its
  * generated title, and opencode's server sends none.
  */
@@ -66,6 +68,7 @@ export async function getConversationTitle(tool: AgentTool, src: AgentTitleSourc
     case 'codex': return getCodexThreadName(src.projectId, src.conversationId)
     case 'opencode': return getOpencodeSessionTitle(src.jobName, src.conversationId)
     case 'pi': return undefined
+    case 'omp': return src.transcript !== undefined ? getOmpSessionTitle(src.transcript) : undefined
   }
 }
 
@@ -77,8 +80,8 @@ export function agentTitlesItself(tool: AgentTool): boolean {
 
 /**
  * The pane option a tool's reporter (`workspace-bin/yaac-agent-report`)
- * sets to its current model: claude via hooks, opencode and pi via their
- * plugin/extension.
+ * sets to its current model: claude via hooks, opencode, pi and omp via
+ * their plugin/extension.
  */
 export const MODEL_PANE_OPTION = '@yaac-model'
 
@@ -198,7 +201,8 @@ export function parsePaneSession(value: string): PaneSession | undefined {
  *
  * Under `acp` it is a session mode id, mapped through the adapter profile.
  * Under `tui` it is the reporter's value: claude's mode name, or opencode's
- * agent, which is interpreted against the workspace's `current` posture.
+ * agent or omp's mode, which are interpreted against the workspace's
+ * `current` posture.
  * codex's hooks cannot report a mode, so the registry reads it from the
  * rollout (`getCodexRolloutSettings`). pi has no modes.
  */
@@ -211,6 +215,7 @@ export function resolveAgentPermissionMode(
   if (mode === 'acp') return acpPermissionModeFor(acpAdapterFor(tool), reported)
   if (tool === 'claude') return claudePermissionMode(reported)
   if (tool === 'opencode') return opencodePermissionMode(reported, current)
+  if (tool === 'omp') return ompPermissionMode(reported, current)
   if (tool === 'codex') return PERMISSION_MODES.find((m) => m === reported)
   return undefined
 }
@@ -247,10 +252,10 @@ function busyStatusFormat(markers: readonly string[]): string {
 }
 
 /**
- * The tmux status format a tool's watcher subscribes to. claude/codex show
- * busy/idle in the OSC title, so the format is `#{pane_title}`, classified
- * server-side (`classifyAgentObservation`). opencode/pi draw it in the pane,
- * so the format resolves `running`/`waiting` inside tmux.
+ * The tmux status format a tool's watcher subscribes to. claude, codex and
+ * omp show busy/idle in the OSC title, so the format is `#{pane_title}`,
+ * classified server-side (`classifyAgentObservation`). opencode/pi draw it
+ * in the pane, so the format resolves `running`/`waiting` inside tmux.
  */
 export function agentStatusFormat(tool: AgentTool): string {
   if (tool === 'opencode') return busyStatusFormat(OPENCODE_BUSY_MARKERS)
@@ -259,11 +264,12 @@ export function agentStatusFormat(tool: AgentTool): string {
 }
 
 /**
- * Classify a pushed subscription value: claude/codex push the title
- * (classified by spinner prefix); opencode/pi push a resolved verdict.
+ * Classify a pushed subscription value: claude, codex and omp push the
+ * title (classified by its spinner); opencode/pi push a resolved verdict.
  */
 export function classifyAgentObservation(tool: AgentTool, observed: string): AgentStatus {
   if (tool === 'codex') return classifyCodexTitle(observed)
+  if (tool === 'omp') return classifyOmpTitle(observed)
   if (tool === 'opencode' || tool === 'pi') return observed.trim() === 'running' ? 'running' : 'waiting'
   return classifyClaudeTitle(observed)
 }

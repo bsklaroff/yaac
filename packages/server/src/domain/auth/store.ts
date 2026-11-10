@@ -8,8 +8,11 @@ import {
 import { workspaceDriver } from '#drivers/driver'
 import {
   CUSTOM_PROVIDER,
+  isApiKeyTool,
+  parseOmpProvider,
   parseOpencodeProvider,
   parsePiProvider,
+  type ApiKeyTool,
   type CustomEndpoint,
 } from '@yaac/shared/tool-providers'
 import {
@@ -93,10 +96,31 @@ async function loadEntry(owner: string, tool: AgentTool): Promise<ToolAuthEntry 
       ...(f.endpoint !== undefined ? { endpoint: f.endpoint } : {}),
     }
   }
+  if (tool === 'omp') {
+    const f = await getToolCredential(owner, 'omp')
+    return f && {
+      tool: 'omp', kind: 'api-key', apiKey: f.apiKey, savedAt: f.savedAt, ompProvider: f.provider,
+      ...(f.endpoint !== undefined ? { endpoint: f.endpoint } : {}),
+    }
+  }
   const f = await getToolCredential(owner, 'codex')
   if (!f) return null
   const apiKey = f.kind === 'oauth' ? f.codexOauth.accessToken : f.apiKey
   return { tool: 'codex', kind: f.kind, apiKey, savedAt: f.savedAt }
+}
+
+/** An api-key tool's credential's provider; undefined for claude and codex,
+ *  whose credential names none. */
+export function authEntryProvider(entry: ToolAuthEntry | null | undefined): string | undefined {
+  if (entry?.tool === 'opencode') return entry.opencodeProvider
+  if (entry?.tool === 'pi') return entry.piProvider
+  if (entry?.tool === 'omp') return entry.ompProvider
+  return undefined
+}
+
+/** An api-key tool's credential's endpoint, when its provider is `custom`. */
+export function authEntryEndpoint(entry: ToolAuthEntry | null | undefined): CustomEndpoint | undefined {
+  return entry !== null && entry !== undefined && 'endpoint' in entry ? entry.endpoint : undefined
 }
 
 /** Store a full Claude OAuth bundle (refresh token, expiry, scopes). */
@@ -121,7 +145,7 @@ function truncateForMessage(value: string): string {
  * Parse a provider on a write path. A missing or unknown id throws rather
  * than being guessed, since the provider decides where the key is sent.
  */
-function requireProvider<P>(tool: 'opencode' | 'pi', value: string | undefined, parse: (v: string | undefined) => P | undefined): P {
+function requireProvider<P>(tool: ApiKeyTool, value: string | undefined, parse: (v: string | undefined) => P | undefined): P {
   const provider = parse(value)
   if (provider !== undefined) return provider
   const repair = `Run \`yaac auth update ${tool}\` or pass a provider id from \`yaac-mama models\`.`
@@ -136,7 +160,7 @@ function requireProvider<P>(tool: 'opencode' | 'pi', value: string | undefined, 
 /**
  * Store a user's api key for a tool. OAuth for claude and codex is stored
  * through the bundle savers, since an api key loses the refresh token.
- * `provider` is required for opencode and pi and validated against that
+ * `provider` is required for an api-key tool and validated against that
  * tool's registry; it is ignored for claude and codex.
  */
 async function saveApiKey(
@@ -153,6 +177,9 @@ async function saveApiKey(
   } else if (tool === 'pi') {
     const parsed = requireProvider(tool, provider, parsePiProvider)
     await setToolCredential(owner, tool, { ...apiKeyToolCredential(tool, parsed, apiKey, endpoint), savedAt })
+  } else if (tool === 'omp') {
+    const parsed = requireProvider(tool, provider, parseOmpProvider)
+    await setToolCredential(owner, tool, { ...apiKeyToolCredential(tool, parsed, apiKey, endpoint), savedAt })
   } else {
     if (apiKey === '') throw new ServerError('VALIDATION', `${tool} needs an api key.`)
     if (endpoint !== undefined) throw new ServerError('VALIDATION', `${tool} does not take an endpoint.`)
@@ -161,13 +188,13 @@ async function saveApiKey(
 }
 
 /**
- * An opencode or pi sign-in, checked: only the `custom` provider takes an
+ * An api-key tool's sign-in, checked: only the `custom` provider takes an
  * endpoint, which it requires, and only it may have an empty key. A key for
  * a plain-HTTP endpoint is refused where the proxy mediates egress: it never
  * injects a key over HTTP, so the endpoint would only see the placeholder.
  */
 function apiKeyToolCredential<P extends string>(
-  tool: 'opencode' | 'pi',
+  tool: ApiKeyTool,
   provider: P,
   apiKey: string,
   endpoint: CustomEndpoint | undefined,
@@ -199,7 +226,7 @@ function apiKeyToolCredential<P extends string>(
  */
 export async function persistToolAuthPayload(owner: string, tool: AgentTool, payload: ToolAuthPayload): Promise<void> {
   if (payload.kind === 'api-key') return saveApiKey(owner, tool, payload.apiKey, payload.provider, payload.endpoint)
-  if (tool === 'opencode' || tool === 'pi') {
+  if (isApiKeyTool(tool)) {
     throw new ServerError('VALIDATION', `${tool} only supports api-key auth.`)
   }
   if (tool === 'claude') {

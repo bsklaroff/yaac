@@ -1,7 +1,7 @@
 # Built-in skills
 
 Skills that ship inside the yaac package and are given to every workspace,
-for every agent tool (Claude Code, Codex, OpenCode, pi). Each is a
+for every agent tool (Claude Code, Codex, OpenCode, pi, omp). Each is a
 `<name>/SKILL.md` directory, in the same format as a personal skill.
 
 Delivery depends on the driver:

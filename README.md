@@ -2,7 +2,7 @@
 
 yaac runs many agent sessions in parallel, each in its own workspace: a git
 clone of your project with one or more agents working in it. It supports
-Claude Code, Codex, OpenCode, and Pi.
+Claude Code, Codex, OpenCode, Pi, and Oh My Pi (omp).
 
 A workspace runs on one of two drivers, decided by how you start the server:
 
@@ -58,7 +58,7 @@ this machine's servers, and forwards workspace ports to this machine
 install, build the app with `pnpm desktop:install`. In the app:
 
 1. **Settings → Credentials → Agent tools:** sign in to Claude Code, Codex,
-   OpenCode, or Pi.
+   OpenCode, Pi, or Oh My Pi.
 2. **Settings → Credentials → Git credentials:** add an HTTPS token, or have
    yaac generate an SSH key and add its public half to your git host.
 3. **Settings → General → Git identity:** the name and email workspaces

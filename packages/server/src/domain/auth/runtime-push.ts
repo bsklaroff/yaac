@@ -29,7 +29,7 @@ async function pushOnce(): Promise<Error | undefined> {
     const bundles: Record<string, CredentialBundle> = {}
     for (const owner of new Set([...Object.keys(tools), ...Object.keys(git)])) {
       bundles[credentialOwnerKey(owner)] = {
-        ...tools[owner] ?? { claude: null, codex: null, opencode: null, pi: null },
+        ...tools[owner] ?? { claude: null, codex: null, opencode: null, pi: null, omp: null },
         ...git[owner] ?? { git: [], ssh: [] },
       }
     }

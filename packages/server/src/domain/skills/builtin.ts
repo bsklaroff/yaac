@@ -21,7 +21,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
-  PACKAGE_ROOT, claudeDir, codexDir, opencodeConfigDir, piDir, projectDir,
+  PACKAGE_ROOT, claudeDir, codexDir, ompDir, opencodeConfigDir, piDir, projectDir,
 } from '@yaac/shared/project-paths'
 import type { WorkspaceMount } from '#drivers/contract'
 import { workspacesSandboxed } from '#drivers/driver'
@@ -42,6 +42,7 @@ export const TOOL_SKILL_ROOTS = [
   '/home/yaac/.codex/skills',
   '/home/yaac/.config/opencode/skills',
   '/home/yaac/.pi/agent/skills',
+  '/home/yaac/.omp/agent/skills',
 ] as const
 
 let sourceDirOverride: string | null = null
@@ -57,8 +58,8 @@ export function builtinSkillsDir(): string {
 
 /**
  * Each tool's personal skills root on the host: the per-project config dirs
- * a pod mounts at `TOOL_SKILL_ROOTS` (containerless links them instead). All
- * four tools, regardless of the active one.
+ * a pod mounts at `TOOL_SKILL_ROOTS` (containerless links them instead).
+ * Every tool's, regardless of the active one.
  */
 export function sharedSkillRoots(projectId: string): string[] {
   return SKILL_HOMES.map(([home, rel]) => path.join(home(projectId), rel))
@@ -70,6 +71,7 @@ const SKILL_HOMES: ReadonlyArray<readonly [home: (projectId: string) => string, 
   [codexDir, 'skills'],
   [opencodeConfigDir, 'skills'],
   [piDir, 'agent/skills'],
+  [ompDir, 'agent/skills'],
 ]
 
 /** Point discovery + staging at a different builtin-skills dir (tests). Pass

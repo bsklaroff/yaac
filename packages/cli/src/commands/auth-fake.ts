@@ -6,6 +6,7 @@ const SEEDED_MESSAGE: Record<FakeAuthKind, string> = {
   'claude-oauth': 'Seeded fake Claude OAuth credentials (proxy placeholder bundle).',
   'opencode-openrouter': 'Seeded fake OpenCode OpenRouter api-key (proxy placeholder).',
   'pi-openrouter': 'Seeded fake Pi OpenRouter api-key (proxy placeholder).',
+  'omp-openrouter': 'Seeded fake Oh My Pi OpenRouter api-key (proxy placeholder).',
   'github': 'Seeded fake GitHub git credential "fake-github" (proxy placeholder).',
 }
 

@@ -8,6 +8,7 @@ import {
   PLACEHOLDER_GH_TOKEN as PH_GH,
   PLACEHOLDER_OPENCODE_API_KEY as PH_OC,
   PLACEHOLDER_PI_API_KEY as PH_PI,
+  PLACEHOLDER_OMP_API_KEY as PH_OMP,
   PLACEHOLDER_REFRESH_TOKEN as PH_REFRESH,
   applyBodyInjections,
   applyInjections,
@@ -173,19 +174,21 @@ describe('buildDynamicRules', () => {
       .toBe(`token ${PH_GH}`)
   })
 
-  it('puts an opencode or pi key wherever its own placeholder rides, on the host the server named', async () => {
+  it('puts an opencode, pi or omp key wherever its own placeholder rides, on the host the server named', async () => {
     const objects = await load(
       {
         'opencode.json': { kind: 'api-key', apiKey: 'sk-or-oc', apiHost: 'openrouter.ai' },
         'pi.json': { kind: 'api-key', apiKey: 'sk-or-pi', apiHost: 'openrouter.ai' },
+        'omp.json': { kind: 'api-key', apiKey: 'sk-or-omp', apiHost: 'openrouter.ai' },
       },
       { oc: {}, pi: {} },
     )
-    // Both tools on one host with different keys: the placeholder picks the
+    // Every tool on one host with different keys: the placeholder picks the
     // key, whichever tool the workspace was created for.
     for (const ws of ['oc', 'pi']) {
       expect(send(objects, 'openrouter.ai', { authorization: `Bearer ${PH_OC}` }, ws).authorization).toBe('Bearer sk-or-oc')
       expect(send(objects, 'openrouter.ai', { authorization: `Bearer ${PH_PI}` }, ws).authorization).toBe('Bearer sk-or-pi')
+      expect(send(objects, 'openrouter.ai', { authorization: `Bearer ${PH_OMP}` }, ws).authorization).toBe('Bearer sk-or-omp')
     }
     expect(send(objects, 'openrouter.ai', { authorization: PH_OC }, 'oc').authorization).toBe(PH_OC)
     expect(send(objects, 'groq.com', { authorization: `Bearer ${PH_OC}` }, 'oc').authorization).toBe(`Bearer ${PH_OC}`)
@@ -275,6 +278,7 @@ describe('hostNeedsDynamicMitm', () => {
       {
         'opencode.json': { kind: 'api-key', apiKey: 'sk-or', apiHost: 'openrouter.ai' },
         'pi.json': { kind: 'api-key', apiKey: 'sk-groq', apiHost: 'api.groq.com' },
+        'omp.json': { kind: 'api-key', apiKey: 'sk-ds', apiHost: 'api.deepseek.com' },
         'git-tokens.json': [{ token: 'ghp', projects: ['demo'] }],
       },
       { oc: { repoUrl: 'https://github.com/acme/r' }, pi: {}, cl: {} },
@@ -287,6 +291,7 @@ describe('hostNeedsDynamicMitm', () => {
     for (const ws of ['oc', 'pi', 'cl']) {
       expect(hostNeedsDynamicMitm(objects, ws, 'openrouter.ai', 443)).toBe(true)
       expect(hostNeedsDynamicMitm(objects, ws, 'api.groq.com', 443)).toBe(true)
+      expect(hostNeedsDynamicMitm(objects, ws, 'api.deepseek.com', 443)).toBe(true)
     }
     expect(hostNeedsDynamicMitm(objects, 'cl', 'groq.com', 443)).toBe(false)
     expect(hostNeedsDynamicMitm(objects, 'oc', 'github.com', 443)).toBe(true)

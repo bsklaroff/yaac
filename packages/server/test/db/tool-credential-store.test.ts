@@ -84,8 +84,8 @@ describe('listToolCredentials', () => {
     await setToolCredential(BUILT_IN_USER_ID, 'claude', OAUTH)
     await setToolCredential(bob, 'pi', { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'sk-pi' })
     expect(await listToolCredentials()).toEqual({
-      [BUILT_IN_USER_ID]: { claude: OAUTH, codex: null, opencode: null, pi: null },
-      [bob]: { claude: null, codex: null, opencode: null, pi: { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'sk-pi' } },
+      [BUILT_IN_USER_ID]: { claude: OAUTH, codex: null, opencode: null, pi: null, omp: null },
+      [bob]: { claude: null, codex: null, opencode: null, pi: { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'sk-pi' }, omp: null },
     })
   })
 })

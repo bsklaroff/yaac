@@ -49,6 +49,7 @@ export {
 export { getCodexRolloutSettings } from './codex'
 export { ensureAgentReporters } from './agent-reporters'
 export { ensureToolApiKeyConfig } from './tool-api-keys'
+export { ensureOmpSettings, ompTranscriptAsAcp } from './omp'
 export { buildRespawnExec, buildWindowsExec, finishSetupCommand, type SessionWindowSpec } from './setup-commands'
 export { PromptNotRunError, type AcpConversation } from './acp-client'
 export { acpPage, acpRecord, acpStoredImage, activityStarts, readAcpFirstPrompt, readAcpLife, readAcpPage, replayAcpLog, type AcpLife, type RecordOrigin } from './acp-log'

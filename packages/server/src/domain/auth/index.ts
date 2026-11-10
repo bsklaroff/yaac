@@ -33,7 +33,7 @@ export { listAuth } from './list'
 export { catalogModel, defaultModelFor, isCatalogModel, modelDisplayName, modelEfforts, modelsForTool } from './models'
 export { adoptRefreshedToolCredentials, pushCredentialsToRuntime } from './runtime-push'
 export { signInTool } from './sign-in'
-export { NO_CREDENTIALS_OWNER_KEY, credentialOwnerKey, loadToolAuthEntry } from './store'
+export { NO_CREDENTIALS_OWNER_KEY, authEntryEndpoint, authEntryProvider, credentialOwnerKey, loadToolAuthEntry } from './store'
 export {
   planUsageForSnapshot,
   refreshPlanUsage,

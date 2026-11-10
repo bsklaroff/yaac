@@ -10,6 +10,7 @@ import {
   agentHistoryDir,
   claudeDir,
   codexDir,
+  ompDir,
   opencodeCheckpointDir,
   projectDir,
 } from '@yaac/shared/project-paths'
@@ -106,6 +107,20 @@ describe('transcripts', () => {
       expect(await sessionTranscriptPath(projectId, wt, 'pi', 'sid'))
         .toEqual({ projectId, dir, rel: 'workspace/150_sid.jsonl' })
       expect(await sessionTranscriptPath(projectId, wt, 'pi', 'unknown')).toBeUndefined()
+    })
+
+    it("finds omp's log by id in its per-cwd folder, in the history or the project's omp home, never pi's", async () => {
+      // A pod's: the history, mounted at omp's agent dir's sessions/.
+      await write(path.join(agentHistoryDir(projectId, wt, 'omp'), '--workspace--', '100_osid.jsonl'))
+      // A host's: the project's omp home, shared by its workspaces.
+      await write(path.join(ompDir(projectId), 'agent', 'sessions', '-data-checkout', '150_hsid.jsonl'))
+      await write(path.join(agentHistoryDir(projectId, wt, 'pi'), '200_psid.jsonl'))
+      expect(await sessionTranscriptPath(projectId, wt, 'omp', 'osid'))
+        .toEqual({ projectId, dir: agentHistoryDir(projectId, wt, 'omp'), rel: '--workspace--/100_osid.jsonl' })
+      expect(await sessionTranscriptPath(projectId, wt, 'omp', 'hsid'))
+        .toEqual({ projectId, dir: ompDir(projectId), rel: 'agent/sessions/-data-checkout/150_hsid.jsonl' })
+      expect(await hasConversationHistory(projectId, wt, { tool: 'omp', conversationId: 'hsid' })).toBe(true)
+      expect(await hasConversationHistory(projectId, wt, { tool: 'omp', conversationId: 'psid' })).toBe(false)
     })
 
     it('has none for opencode, which leaves no host transcript', async () => {

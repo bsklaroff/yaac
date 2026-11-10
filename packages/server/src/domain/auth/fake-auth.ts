@@ -4,6 +4,7 @@ import {
   PLACEHOLDER_REFRESH_TOKEN,
   PLACEHOLDER_API_KEY,
   PLACEHOLDER_GH_TOKEN,
+  PLACEHOLDER_OMP_API_KEY,
   PLACEHOLDER_OPENCODE_API_KEY,
   PLACEHOLDER_PI_API_KEY,
 } from '@yaac/shared/tool-auth'
@@ -94,6 +95,16 @@ async function seedFakePiOpenrouter(owner: string): Promise<void> {
   })
 }
 
+/** Store a fake Oh My Pi OpenRouter api-key credential, as for opencode. */
+async function seedFakeOmpOpenrouter(owner: string): Promise<void> {
+  await setToolCredential(owner, 'omp', {
+    kind: 'api-key',
+    provider: 'openrouter',
+    savedAt: new Date().toISOString(),
+    apiKey: PLACEHOLDER_OMP_API_KEY,
+  })
+}
+
 /**
  * Whether this kind's store holds a real (non-placeholder) credential.
  * GitHub never counts: its seed touches no other credential.
@@ -114,6 +125,10 @@ async function holdsRealCredential(owner: string, kind: FakeAuthKind): Promise<b
     case 'pi-openrouter': {
       const creds = await getToolCredential(owner, 'pi')
       return creds !== null && creds.apiKey !== PLACEHOLDER_PI_API_KEY
+    }
+    case 'omp-openrouter': {
+      const creds = await getToolCredential(owner, 'omp')
+      return creds !== null && creds.apiKey !== PLACEHOLDER_OMP_API_KEY
     }
     case 'github':
       return false
@@ -149,6 +164,9 @@ export async function seedFakeAuth(kinds: readonly FakeAuthKind[], owner: string
         break
       case 'pi-openrouter':
         await seedFakePiOpenrouter(owner)
+        break
+      case 'omp-openrouter':
+        await seedFakeOmpOpenrouter(owner)
         break
       case 'github':
         await seedFakeGithubCredential(owner)

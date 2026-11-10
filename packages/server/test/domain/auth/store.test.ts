@@ -30,6 +30,7 @@ describe('loadToolAuthEntry', () => {
     })
     await setToolCredential(BUILT_IN_USER_ID, 'codex', { kind: 'api-key', savedAt: 's', apiKey: 'sk-proj' })
     await setToolCredential(BUILT_IN_USER_ID, 'pi', { kind: 'api-key', provider: 'anthropic', savedAt: 's', apiKey: 'sk-pi' })
+    await setToolCredential(BUILT_IN_USER_ID, 'omp', { kind: 'api-key', provider: 'openrouter', savedAt: 's', apiKey: 'sk-omp' })
 
     expect(await loadToolAuthEntry(BUILT_IN_USER_ID, 'claude'))
       .toEqual({ tool: 'claude', kind: 'oauth', apiKey: 'sk-ant-oat', savedAt: 's' })
@@ -37,6 +38,8 @@ describe('loadToolAuthEntry', () => {
       .toEqual({ tool: 'codex', kind: 'api-key', apiKey: 'sk-proj', savedAt: 's' })
     expect(await loadToolAuthEntry(BUILT_IN_USER_ID, 'pi'))
       .toEqual({ tool: 'pi', kind: 'api-key', apiKey: 'sk-pi', savedAt: 's', piProvider: 'anthropic' })
+    expect(await loadToolAuthEntry(BUILT_IN_USER_ID, 'omp'))
+      .toEqual({ tool: 'omp', kind: 'api-key', apiKey: 'sk-omp', savedAt: 's', ompProvider: 'openrouter' })
     expect(await loadToolAuthEntry(BUILT_IN_USER_ID, 'opencode')).toBeNull()
     expect(await loadToolAuthEntry(bob, 'claude')).toBeNull()
   })

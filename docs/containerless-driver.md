@@ -111,8 +111,12 @@ environment, by variables it names and variables it clears.
 
 - **Named.** Where a tool has a home override, every create sets it:
   `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR` and pi's session
-  dir. Creates write these as container paths on both drivers; here each is
-  translated to the host dir its mount came from, the project's shared one.
+  dir. omp reads pi's two variables, so its agent dir is named
+  `YAAC_OMP_AGENT_DIR`, and the installed `omp` is a wrapper that hands it
+  over under pi's name (`dockerfiles/agent-patches/omp-homes.js`, which
+  says what bypasses it). Creates write these as container paths on both
+  drivers; here each is translated to the host dir its mount came from, the
+  project's shared one.
   The pnpm store (below) is named the same way. The launch adds
   `GIT_CONFIG_GLOBAL` and `GH_CONFIG_DIR`, both in the driver's state dir.
 - **Cleared.** Any variable that could redirect a tool without an override
@@ -133,10 +137,25 @@ the user's preference.
 
 Under the real `$HOME`, anything an agent writes to a fixed path there
 would be shared by every workspace and the user's own sessions. The pinned
-CLIs and adapters keep to their home variables, with one exception that
-yaac's patch fixes: pi-acp's session map and prompt commands follow
+CLIs and adapters keep to their home variables, with two exceptions. yaac's
+patch fixes one: pi-acp's session map and prompt commands follow
 `PI_CODING_AGENT_DIR`, as pi's do, rather than `~/.pi`
 (`dockerfiles/agent-patches/pi-acp.js`).
+
+The other is omp, whose home is split in two. Its agent dir (settings,
+credentials, models, extensions, skills, sessions) follows the variable and
+is the project's. Its config root does not: it is always `~/.omp`, the
+user's own, shared by every project's omp workspaces and the user's own omp.
+It holds omp's plugins (`plugins/`, `installed_plugins.json`) and
+`marketplaces.json`, which omp loads at startup, so the user's own omp
+plugins run in every omp workspace, and an `omp plugin install` in a
+workspace installs for all of them. It also holds omp's worktrees (`wt/`),
+`remote/`, `security/`, `python-env/`, its stats and issue-report
+databases, logs, caches, daemon sockets, and `install-id`, which omp sends to
+some providers. The root cannot be moved: `PI_CONFIG_DIR` names it only
+relative to `$HOME` and also names each repo's project-level config dir, and
+omp's XDG layout applies only to its default agent dir. In a pod `~/.omp` is
+the project's omp home, so there it is the project's like everything else.
 
 gh gets a config dir of its own, so it never sees the user's own login. An
 HTTPS GitHub project's workspace is logged in through `GH_TOKEN`; any other
@@ -299,7 +318,7 @@ In a pod, yaac's skills are a per-workspace staging dir mounted read-only
 over each tool's skills root. Here a create links them into the project's
 shared skills roots instead:
 `<data>/projects/<project-id>/{claude,codex,…}/skills/<name>` points at the
-install's `builtin-skills/<name>`. All four tools' roots are written. They
+install's `builtin-skills/<name>`. Every tool's roots are written. They
 are per project because those dirs are already shared, and links rather than
 copies keep them in step with the running yaac version.
 
@@ -569,9 +588,10 @@ startup.
   required. A create checks them up front rather than failing halfway
   through `launchWorkspace`.
 - **node** 22+ **with npm**: required. npm installs every agent, codex and
-  pi are node scripts, and `--mode acp` runs yaac's acpd under `node`. The
-  pinned agents need 22; Debian and Ubuntu `apt install nodejs` is older and
-  lacks npm. A server started by a node not on `PATH` (like the desktop
+  pi are node scripts, and `--mode acp` runs yaac's acpd under `node`. omp
+  is a bun script; yaac installs its pinned bun from npm beside it
+  (`BUN_RUNTIME`), so bun needs no host install. The pinned agents need 22;
+  Debian and Ubuntu `apt install nodejs` is older and lacks npm. A server started by a node not on `PATH` (like the desktop
   app's bundled one) is the usual way to be missing it.
 - **socat**: required for `--mode acp`, whose chat transport uses it to dial
   acpd; `yaac host check` only warns, and an acp-mode create refuses.

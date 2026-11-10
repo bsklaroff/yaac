@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   CUSTOM_PROVIDER,
   FALLBACK_MODELS,
+  OMP_DEFAULT_PROVIDER,
+  OMP_PROVIDERS,
   OPENCODE_DEFAULT_PROVIDER,
   OPENCODE_PROVIDERS,
   PI_DEFAULT_PROVIDER,
@@ -22,6 +24,7 @@ import { CLAUDE_MODELS, EFFORTS, MODEL_NAMES, MODELS_BY_PROVIDER } from '@yaac/s
 const REGISTRIES: Array<{ name: string; list: readonly ToolProviderInfo[]; defaultId: string; hasModel: boolean }> = [
   { name: 'opencode', list: OPENCODE_PROVIDERS, defaultId: OPENCODE_DEFAULT_PROVIDER, hasModel: false },
   { name: 'pi', list: PI_PROVIDERS, defaultId: PI_DEFAULT_PROVIDER, hasModel: true },
+  { name: 'omp', list: OMP_PROVIDERS, defaultId: OMP_DEFAULT_PROVIDER, hasModel: true },
 ]
 
 describe.each(REGISTRIES)('$name provider registry', ({ list, defaultId, hasModel }) => {

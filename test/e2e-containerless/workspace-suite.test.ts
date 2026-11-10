@@ -140,7 +140,8 @@ const managedBin = (binary: string): string =>
  * `FAKE_CODEX`.
  *
  * ACP adapters are faked too (`fakeAcpAdapter`), one per adapter binary.
- * opencode's adapter is its CLI's `acp` subcommand, so its fake is both.
+ * opencode's and omp's adapters are their CLI's `acp` subcommand, so each
+ * fake is both. omp runs under bun, whose install a launch also checks for.
  */
 async function installFakeAgents(): Promise<void> {
   await fs.mkdir(agentEnvDir(), { recursive: true })
@@ -154,7 +155,7 @@ async function installFakeAgents(): Promise<void> {
     await fs.chmod(file, 0o755)
     return file
   }
-  for (const tool of ['claude', 'pi']) {
+  for (const tool of ['claude', 'pi', 'bun']) {
     await write(tool, '#!/bin/sh\nexec sleep 2147483647\n')
   }
   await write('codex', FAKE_CODEX)
@@ -165,13 +166,15 @@ async function installFakeAgents(): Promise<void> {
     await write(binary, fakeAcpAdapter(tool))
   }
   // `exec` so the adapter itself owns acpd's stdio.
-  await write('opencode-acp-impl', fakeAcpAdapter('opencode'), 'opencode')
-  await write(
-    'opencode',
-    '#!/bin/sh\n'
-    + 'if [ "$1" = "acp" ]; then shift; exec opencode-acp-impl "$@"; fi\n'
-    + 'exec sleep 2147483647\n',
-  )
+  for (const tool of ['opencode', 'omp'] as const) {
+    await write(`${tool}-acp-impl`, fakeAcpAdapter(tool), tool)
+    await write(
+      tool,
+      '#!/bin/sh\n'
+      + `if [ "$1" = "acp" ]; then shift; exec ${tool}-acp-impl "$@"; fi\n`
+      + 'exec sleep 2147483647\n',
+    )
+  }
 }
 
 /**
@@ -187,6 +190,7 @@ const ACP_MODES: Record<AgentTool, { current: string; available: string[] }> = {
   opencode: { current: 'build', available: ['build', 'plan'] },
   // pi advertises thinking levels, which yaac never sets.
   pi: { current: 'medium', available: ['off', 'medium', 'high'] },
+  omp: { current: 'default', available: ['default', 'plan'] },
 }
 
 /**
@@ -507,6 +511,7 @@ beforeAll(async () => {
     CLAUDE_CONFIG_DIR: '/nowhere/claude',
     CODEX_HOME: '/nowhere/codex',
     PI_CODING_AGENT_DIR: '/nowhere/pi',
+    OMP_PROFILE: 'nowhere',
     OPENCODE_CONFIG_DIR: '/nowhere/opencode',
     XDG_CONFIG_HOME: '/nowhere/config',
     XDG_DATA_HOME: '/nowhere/share',
@@ -1216,7 +1221,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // Overrides with no replacement are removed, as are the variables of a
     // claude session that started the server.
     for (const key of [
-      'OPENCODE_CONFIG_DIR',
+      'OPENCODE_CONFIG_DIR', 'OMP_PROFILE',
       'CLAUDECODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'GIT_EDITOR',
     ]) {
       expect(env[key], `${key} reached the workspace`).toBeUndefined()
@@ -1232,6 +1237,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(env.CLAUDE_CONFIG_DIR).toBe(path.join(projectDir, 'claude'))
     expect(env.CODEX_HOME).toBe(path.join(projectDir, 'codex'))
     expect(env.PI_CODING_AGENT_DIR).toBe(path.join(projectDir, 'pi', 'agent'))
+    expect(env.YAAC_OMP_AGENT_DIR).toBe(path.join(projectDir, 'omp', 'agent'))
     // Per-workspace ones name the history directory itself, not a link.
     expect(env.PI_CODING_AGENT_SESSION_DIR)
       .toBe(path.join(projectDir, 'history', workspaceId, 'pi'))
@@ -2240,6 +2246,16 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
       launch: ['-- pi-acp'],
       model: piProviderInfo(PI_DEFAULT_PROVIDER).defaultModel,
       bare: true,
+    },
+    {
+      // omp's approval mode and model are launch flags; only `plan` is a
+      // mode. tmux shows the command's quotes escaped, so fragments avoid
+      // them.
+      tool: 'omp',
+      posture: 'plan',
+      modeId: 'plan',
+      launch: ['-- omp acp --config ', `--approval-mode always-ask --model ${defaultModelFor('omp', undefined)}`],
+      model: 'e2e-model',
     },
   ]
 

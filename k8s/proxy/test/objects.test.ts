@@ -56,6 +56,7 @@ describe('decodeCredentials', () => {
       'codex.json': { kind: 'oauth', savedAt: 'x', codexOauth: CODEX_BUNDLE },
       'opencode.json': { kind: 'api-key', savedAt: 'x', apiKey: 'sk-or', provider: 'openrouter', apiHost: 'openrouter.ai' },
       'pi.json': { kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant', provider: 'anthropic', apiHost: 'api.anthropic.com' },
+      'omp.json': { kind: 'api-key', savedAt: 'x', apiKey: 'sk-omp', provider: 'openrouter', apiHost: 'openrouter.ai' },
       'git-tokens.json': [{ token: 'ghp', projects: ['acme', 'other'] }],
       'ssh-keys.json': [SSH_ENTRY],
     }))
@@ -63,6 +64,7 @@ describe('decodeCredentials', () => {
     expect(creds.codex).toEqual({ kind: 'oauth', bundle: CODEX_BUNDLE })
     expect(creds.opencode).toEqual({ kind: 'api-key', apiKey: 'sk-or', apiHost: 'openrouter.ai' })
     expect(creds.pi).toEqual({ kind: 'api-key', apiKey: 'sk-ant', apiHost: 'api.anthropic.com' })
+    expect(creds.omp).toEqual({ kind: 'api-key', apiKey: 'sk-omp', apiHost: 'openrouter.ai' })
     expect(creds.git).toEqual([{ token: 'ghp', projects: ['acme', 'other'] }])
     expect(creds.ssh).toEqual([SSH_ENTRY])
   })

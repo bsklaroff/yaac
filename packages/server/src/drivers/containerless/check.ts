@@ -76,7 +76,7 @@ const OPTIONAL: Array<{ binary: string; why: string; fix: string }> = [
  * and pi). `acp` also needs socat, which the chat transport uses to reach
  * acpd's socket; without it the pane just hangs. The agent CLI (or ACP
  * adapter, plus the CLI it drives) is installed on first use
- * (`ensureAgentBinary`). `onPath` uses the same environment the workspace's
+ * (`ensureAgentBinary`), and so is bun for omp, which runs under it. `onPath` uses the same environment the workspace's
  * tmux gets.
  */
 export async function assertHostCanLaunch(opts: {
@@ -96,6 +96,9 @@ export async function assertHostCanLaunch(opts: {
     // Before installing anything, so the refusal is immediate.
     await requireBinary('socat', "the chat transport dials acpd's socket with it",
       'apt install socat / brew install socat', 'create the workspace with --mode tui')
+  }
+  if (tool === 'omp') await ensureAgentBinary('bun', onProgress)
+  if (mode === 'acp') {
     const adapter = ACP_ADAPTERS[tool]
     await ensureAgentBinary(adapter.binary, onProgress)
     // Some adapters drive the CLI (codex-acp, pi-acp) and need it too.

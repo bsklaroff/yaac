@@ -61,7 +61,7 @@ const PLACEHOLDER_API_KEY = 'yaac-ph-api-key'
 const PLACEHOLDER_ACCESS_TOKEN = 'yaac-ph-access'
 const PLACEHOLDER_REFRESH_TOKEN = 'yaac-ph-refresh'
 
-const EMPTY: CredentialBundle = { claude: null, codex: null, opencode: null, pi: null, git: [], ssh: [] }
+const EMPTY: CredentialBundle = { claude: null, codex: null, opencode: null, pi: null, omp: null, git: [], ssh: [] }
 /** The owner the suite's workspace registers under. */
 const OWNER = 'suite-owner'
 /** Replace the credentials Secret with `bundle` as OWNER's, plus `others`. */

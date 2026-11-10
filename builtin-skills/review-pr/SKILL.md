@@ -120,7 +120,7 @@ Monitor(command: "yaac-watch-prs --pr <n> --events commit,comment",
         description: "PR #<n> activity", persistent: true)
 ```
 
-On codex, opencode or pi, use the detached tmux paste loop from
+On codex, opencode, pi or omp, use the detached tmux paste loop from
 [`yaac-watch-prs`](../yaac-watch-prs/SKILL.md) ("Option B") with `<n>`
 substituted.
 

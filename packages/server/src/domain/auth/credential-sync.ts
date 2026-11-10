@@ -171,7 +171,7 @@ export async function syncToolCredentials(): Promise<void> {
  * failures are logged and skipped; the next sweep or create repairs them.
  */
 export async function fanOutToolCredentials(owner: string, tool: AgentTool): Promise<void> {
-  // opencode and pi authenticate by env var and keep no project file.
+  // opencode, pi and omp authenticate by env var and keep no project file.
   const t = OAUTH_TOOLS.find((o) => o.tool === tool)
   if (t) await fanOut(t, owner)
 }

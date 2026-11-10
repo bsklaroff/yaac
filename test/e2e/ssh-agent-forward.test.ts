@@ -264,7 +264,7 @@ beforeAll(async () => {
   // grant on a second project puts OTHER_HOST in the agent's own `-h` set,
   // so only the relay keeps this workspace from signing for it.
   await syncProxyCredentials({ e2e: {
-    claude: null, codex: null, opencode: null, pi: null, git: [],
+    claude: null, codex: null, opencode: null, pi: null, omp: null, git: [],
     ssh: [{
       privateKey: key.privateKey,
       publicKey: key.publicKey,

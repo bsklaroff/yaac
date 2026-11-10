@@ -6,14 +6,14 @@ docs/sessions.md). It is one enum, `PermissionMode` in `@yaac/shared`,
 translated per tool at launch by `buildAgentCmd` (effort levels travel the
 same paths, docs/effort-levels.md):
 
-| Mode | claude | codex | opencode | pi |
-|---|---|---|---|---|
-| `bypass` | `--permission-mode bypassPermissions` | `--yolo` | `permissions`: `*` allow | — |
-| `auto` | `--permission-mode auto` | `--approve-for-me` | — | — |
-| `accept-edits` | `--permission-mode acceptEdits` | `--sandbox workspace-write` + user asks | the `manual` rules + `edit` allow | — |
-| `manual` | `--permission-mode manual` | — | `permissions`: `*` ask, reads allow | — |
-| `plan` | `--permission-mode plan` | — | `default_agent: plan` + the `manual` rules | — |
-| `read-only` | — | `--sandbox read-only` + user asks | — | — |
+| Mode | claude | codex | opencode | pi | omp |
+|---|---|---|---|---|---|
+| `bypass` | `--permission-mode bypassPermissions` | `--yolo` | `permissions`: `*` allow | — | `--approval-mode yolo` |
+| `auto` | `--permission-mode auto` | `--approve-for-me` | — | — | — |
+| `accept-edits` | `--permission-mode acceptEdits` | `--sandbox workspace-write` + user asks | the `manual` rules + `edit` allow | — | `--approval-mode write` |
+| `manual` | `--permission-mode manual` | — | `permissions`: `*` ask, reads allow | — | `--approval-mode always-ask` |
+| `plan` | `--permission-mode plan` | — | `default_agent: plan` + the `manual` rules | — | `always-ask` + plan mode (`YAAC_OMP_PLAN=1`) |
+| `read-only` | — | `--sandbox read-only` + user asks | — | — | — |
 
 Rows run most permissive first, the order the create form and CLI list them
 in (`PERMISSION_MODES`). `plan` and `read-only` rank equal: each is the
@@ -114,13 +114,25 @@ pi has no permission system, by design: its tools run immediately. It is
 `bypass`-only, and create refuses anything else. Adding postures would need a
 pi extension that denies or prompts on its blocking `tool_call` event.
 
+### omp
+
+omp sorts its tools into tiers (read, write, exec) and an approval mode
+says which tiers run unasked: `yolo` all of them, `write` reads and edits in
+the workspace, `always-ask` only reads. `plan` is `always-ask` plus omp's
+read-only plan mode, which no flag starts: omp restores the mode a resumed
+conversation last had. So a `tui` launch sets `YAAC_OMP_PLAN` (`1` under
+`plan`, else `0`), and yaac's extension enters or leaves plan mode as each
+conversation starts, a resumed one included (`runtime/agents/omp.ts`). omp
+has no reviewer model, so no `auto`.
+
 ### A posture the tool lacks
 
 A row can hold a posture its tool lacks (written by another build). On
 create or restart it launches in the most permissive posture the tool has
 that is no looser, else the tool's strictest (`launchablePermissionMode`):
-codex `plan`/`manual` as `read-only`, claude's and opencode's `read-only` as
-`plan`, opencode `auto` as `accept-edits`, pi as `bypass`. It never falls
+codex `plan`/`manual` as `read-only`, claude's, opencode's and omp's
+`read-only` as `plan`, opencode's and omp's `auto` as `accept-edits`, pi as
+`bypass`. It never falls
 back to the driver default, which in a container is `bypass`.
 
 ## Under `acp`, the adapter's session modes
@@ -128,14 +140,14 @@ back to the driver default, which in a container is `bypass`.
 For an ACP adapter a posture is a session mode the adapter advertises. Each
 adapter covers the same postures as its TUI (`SUPPORTED_PERMISSION_MODES`):
 
-| Mode | claude | codex | opencode | pi |
-|---|---|---|---|---|
-| `bypass` | `bypassPermissions` | `agent-full-access` | the TUI's config | — |
-| `auto` | `auto` | `agent` | — | — |
-| `accept-edits` | `acceptEdits` | `workspace-write` | the TUI's config | — |
-| `manual` | `default` | — | the TUI's config | — |
-| `plan` | `plan` | — | its config, whose `plan` agent is the session's mode | — |
-| `read-only` | — | `read-only` | — | — |
+| Mode | claude | codex | opencode | pi | omp |
+|---|---|---|---|---|---|
+| `bypass` | `bypassPermissions` | `agent-full-access` | the TUI's config | — | the TUI's flag |
+| `auto` | `auto` | `agent` | — | — | — |
+| `accept-edits` | `acceptEdits` | `workspace-write` | the TUI's config | — | the TUI's flag |
+| `manual` | `default` | — | the TUI's config | — | the TUI's flag |
+| `plan` | `plan` | — | its config, whose `plan` agent is the session's mode | — | the TUI's flag + `plan` |
+| `read-only` | — | `read-only` | — | — | — |
 
 - **codex's posture is also its launch config.** codex-acp applies a mode
   only from the next turn it starts, and loads a thread without naming its
@@ -152,6 +164,10 @@ adapter covers the same postures as its TUI (`SUPPORTED_PERMISSION_MODES`):
   `session/request_permission` are its extensions' questions for the user,
   so they are forwarded to the pane even under `bypass`. `bypass` skips
   permission prompts; it does not answer questions.
+- **omp's approval mode is a launch flag.** `omp acp` takes the TUI's
+  `--approval-mode`, which no session mode carries. Its modes are `default`
+  and `plan`, and a new session starts in `default`, so `plan` is also sent
+  as a mode.
 
 If a conversation can't be put in the requested mode (not advertised, or
 refused), it is not fatal, but the conversation never keeps running looser
@@ -420,9 +436,14 @@ it writes it down:
   looser. The collaboration (plan) mode is ignored, since it only instructs
   the model. Only entries from the current pod's life count, since a resumed
   rollout's newest entry is the old process's until codex writes a turn.
+- **omp.** yaac's extension reports each plan-mode change, from `/plan`, a
+  plan's approval or session restore, as `plan` or `default`, read against
+  the session's posture as opencode's agents are: `plan` and `manual` share
+  `always-ask`, so a change moves between those two, and leaving plan mode
+  under any other posture is that posture.
 - **pi** has no permission system to change.
 
-claude's and opencode's pane option rides the same per-pane tmux subscription
+claude's, opencode's and omp's pane option rides the same per-pane tmux subscription
 as the model, filtered inside the format string so a value set by anything
 in the workspace cannot forge control-mode lines.
 

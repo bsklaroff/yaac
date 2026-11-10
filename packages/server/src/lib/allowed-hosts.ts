@@ -24,13 +24,15 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'chatgpt.com',
   'ab.chatgpt.com',
 
-  // OpenCode / OpenRouter / NeuralWatt / Pi
+  // OpenCode / OpenRouter / NeuralWatt / Pi / Oh My Pi
   'openrouter.ai',
   'api.neuralwatt.com',
   'opencode.ai',
   // v2's models.dev mirror, which it refreshes its catalog from in the background
   'models.opencode.ai',
   'pi.dev',
+  // omp's model catalog, which it refreshes at startup
+  'catalog.stencil.so',
   // Exa MCP — backs opencode's websearch tool
   'mcp.exa.ai',
 

@@ -89,13 +89,13 @@ yaac workspace
     --workflow <name>           Start with this named workflow; non-interactive,
                                 it gets its run secrets, and this launch
                                 approves its commit (workflows.md)
-    -t, --tool <tool>           claude, codex, opencode or pi (default: the
+    -t, --tool <tool>           claude, codex, opencode, pi or omp (default: the
                                 project's last, else claude)
     -b, --branch <branch>       Base branch (default: the remote's default)
     --commit <sha>              Start at this full commit instead; no base
                                 branch then (not with --branch)
     -p, --prompt <text>         Initial prompt for the agent
-    -m, --model <model>         Model id or alias (provider/model for opencode, pi)
+    -m, --model <model>         Model id or alias (provider/model for opencode, pi, omp)
     -e, --effort <level>        Effort level the model offers (effort-levels.md)
     --mode <tui|acp>            Terminal UI, or chat pane over ACP
                                 (agent-modes.md)
@@ -341,7 +341,8 @@ yaac auth
   update                        Add a git credential or sign in an agent tool
   clear                         Remove stored tool credentials
   fake <kinds...>               Seed placeholder credentials for yaac-in-yaac:
-                                claude-oauth, opencode-openrouter, pi-openrouter, github
+                                claude-oauth, opencode-openrouter, pi-openrouter,
+                                omp-openrouter, github
 
 yaac remote                     Which server this machine's clients use
   list                          Show the saved servers, the selected one marked *

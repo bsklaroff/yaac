@@ -63,10 +63,11 @@ Monitor(command: "yaac-watch-prs --pr <n> --events comment",
         description: "PR #<n> reviewer comments", persistent: true)
 ```
 
-It is the only one of yaac's four tools with one. codex, opencode and pi offer
-external control surfaces instead (`codex remote-control`, `opencode
-serve`/`attach`, `pi --mode rpc`), and all need the agent run as a server or
-daemon — yaac runs every tool as a TUI in tmux, so those three use Option B.
+It is the only one of yaac's tools with one. codex, opencode, pi and omp
+offer external control surfaces instead (`codex remote-control`, `opencode
+serve`/`attach`, `pi --mode rpc`, `omp --mode rpc`), and all need the agent
+run as a server or daemon — yaac runs every tool as a TUI in tmux, so those
+use Option B.
 
 ### Option B — paste into your own agent pane (any harness)
 

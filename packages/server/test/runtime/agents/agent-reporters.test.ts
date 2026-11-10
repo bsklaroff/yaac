@@ -10,14 +10,18 @@ import { openRoot } from '#lib/confined-fs'
 
 describe('ensureAgentReporters', () => {
   let dir: string
-  let homes: { claudeDir: string; codexDir: string; piAgentDir: string; opencodeConfigDir: string }
+  let homes: { claudeDir: string; codexDir: string; piAgentDir: string; ompAgentDir: string; opencodeConfigDir: string }
   const roots = async () => {
-    const dirs = { claude: homes.claudeDir, codex: homes.codexDir, pi: path.dirname(homes.piAgentDir), opencodeConfig: homes.opencodeConfigDir }
+    const dirs = {
+      claude: homes.claudeDir, codex: homes.codexDir, pi: path.dirname(homes.piAgentDir),
+      omp: path.dirname(homes.ompAgentDir), opencodeConfig: homes.opencodeConfigDir,
+    }
     for (const d of Object.values(dirs)) await fs.mkdir(d, { recursive: true })
     return {
       claude: await openRoot(dirs.claude, 'no-links'),
       codex: await openRoot(dirs.codex, 'no-links'),
       pi: await openRoot(dirs.pi, 'no-links'),
+      omp: await openRoot(dirs.omp, 'no-links'),
       opencodeConfig: await openRoot(dirs.opencodeConfig, 'no-links'),
     }
   }
@@ -29,6 +33,7 @@ describe('ensureAgentReporters', () => {
       claudeDir: path.join(dir, 'claude'),
       codexDir: path.join(dir, 'codex'),
       piAgentDir: path.join(dir, 'pi', 'agent'),
+      ompAgentDir: path.join(dir, 'omp', 'agent'),
       opencodeConfigDir: path.join(dir, 'opencode'),
     }
     // Stub commands on PATH log each call.
@@ -118,6 +123,7 @@ describe('ensureAgentReporters', () => {
       claudeSettings,
       path.join(homes.codexDir, 'hooks.json'),
       path.join(homes.piAgentDir, 'extensions', 'yaac-report.ts'),
+      path.join(homes.ompAgentDir, 'extensions', 'yaac-report.ts'),
       path.join(homes.opencodeConfigDir, 'plugins', 'yaac-report', 'index.ts'),
     ]
     const before = await Promise.all(files.map((f) => fs.stat(f).then((s) => s.mtimeMs)))
@@ -188,6 +194,58 @@ describe('ensureAgentReporters', () => {
     ])
     // Taken, so the sender sees it delivered.
     await expect(fs.access(path.join(messages, 'pi-1.txt'))).rejects.toThrow()
+  })
+
+  // Against omp 18.18.3, which loads pi extensions as its own and reports no
+  // thinking level until one is set.
+  it("reports omp's conversation, model and mode under omp's own name, and takes messages from omp's agent dir", async () => {
+    await ensureAgentReporters(await roots())
+    const messages = path.join(homes.ompAgentDir, 'yaac-messages')
+    await fs.mkdir(messages, { recursive: true })
+    await fs.writeFile(path.join(messages, 'omp-1.txt'), 'hi')
+    expect(await runModule(path.join(homes.ompAgentDir, 'extensions', 'yaac-report.ts'), [
+      "const { execFile } = await import('node:child_process')",
+      "const { appendFileSync } = await import('node:fs')",
+      `process.env.PI_CODING_AGENT_DIR = ${JSON.stringify(homes.ompAgentDir)}`,
+      "process.env.YAAC_OMP_PLAN = '1'",
+      'const on = {}',
+      // omp answers busy until it has restored the conversation's modes.
+      'let tries = 0',
+      'const sessionModes = { set: async (request) => {',
+      `  appendFileSync(${JSON.stringify(calls)}, 'set ' + JSON.stringify(request) + '\\n')`,
+      "  return ++tries < 3 ? { ok: false, code: 'busy' } : { ok: true, changed: true }",
+      '} }',
+      'const keys = {}',
+      // omp keeps every handler of an event, as its copy registers two.
+      'const emit = (event, ...args) => Promise.all((on[event] ?? []).map((h) => h(...args)))',
+      'reporter({',
+      '  on: (event, handler) => { (on[event] ??= []).push(handler) },',
+      '  exec: (cmd, args) => new Promise((done, fail) => execFile(cmd, args, (e) => (e ? fail(e) : done()))),',
+      '  registerShortcut: (key, shortcut) => { keys[key] = shortcut },',
+      '  getThinkingLevel: () => undefined,',
+      `  sendUserMessage: (text, opts) => appendFileSync(${JSON.stringify(calls)}, 'sent ' + JSON.stringify([text, opts ?? null]) + '\\n'),`,
+      '})',
+      "emit('session_start', { reason: 'startup' }, {",
+      "  model: { provider: 'openrouter', id: 'openai/gpt-5.5' },",
+      "  sessionManager: { getSessionId: () => 'omp-1', getSessionFile: () => '/s/t_omp-1.jsonl' },",
+      '  sessionModes,',
+      '})',
+      `await keys[${JSON.stringify(PI_MESSAGE_KEY)}].handler({ isIdle: () => true })`,
+      'await new Promise((done) => setTimeout(done, 700))',
+      "emit('mode_changed', { state: { plan: { status: 'active' } } })",
+      "emit('mode_changed', { state: { plan: { status: 'inactive' } } })",
+      "await emit('session_shutdown', { reason: 'quit' })",
+    ])).toEqual([
+      'set {"mode":"plan","action":"enter"}',
+      'sent ["hi",null]',
+      `yaac-agent-links ${path.join(dir, 'omp')}|omp|omp-1|/s/t_omp-1.jsonl`,
+      'yaac-agent-report openrouter/openai/gpt-5.5|||',
+      'set {"mode":"plan","action":"enter"}',
+      'set {"mode":"plan","action":"enter"}',
+      'yaac-agent-report |plan||',
+      'yaac-agent-report |default||',
+      'yaac-agent-links |omp|omp-1|--end',
+    ])
   })
 
   // Against opencode 2.1.4's events. An agent switch arrives with the next

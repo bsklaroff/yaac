@@ -7,7 +7,7 @@
       "npm install -g .",
       "YAAC_FEEDBACK_URL= yaac server start",
       "yaac config git-identity --name 'Yaac Test' --email test@example.com",
-      "yaac auth fake claude-oauth opencode-openrouter pi-openrouter github",
+      "yaac auth fake claude-oauth opencode-openrouter pi-openrouter omp-openrouter github",
       "yaac project add https://github.com/bsklaroff/yaac.git fake-github"
     ]
   }

@@ -47,6 +47,7 @@ import {
   substrateFixture,
 } from '#test/support/fake-driver'
 import {
+  agentHistoryDir,
   cachedPackagesDir,
   claudeDir,
   codexDir,
@@ -54,6 +55,7 @@ import {
   opencodeConfigDir,
   opencodeDataDir,
   hostedRepoDir,
+  ompDir,
   piDir,
   repoDir,
   workspaceDir,
@@ -61,7 +63,7 @@ import {
 } from '@yaac/shared/project-paths'
 import { CONTAINER_TMUX_DIR } from '@yaac/shared/paths'
 import {
-  PLACEHOLDER_API_KEY, PLACEHOLDER_GH_TOKEN, PLACEHOLDER_OPENCODE_API_KEY, PLACEHOLDER_PI_API_KEY,
+  PLACEHOLDER_API_KEY, PLACEHOLDER_GH_TOKEN, PLACEHOLDER_OMP_API_KEY, PLACEHOLDER_OPENCODE_API_KEY, PLACEHOLDER_PI_API_KEY,
 } from '@yaac/shared/tool-auth'
 import { closeDb } from '#db/client'
 import { cloneRepo, initHostedRepo } from '#domain/git'
@@ -107,7 +109,7 @@ const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 /** Store the built-in user's api key for a tool, with its provider where
  *  the tool needs one. */
 async function saveToolAuth(tool: AgentTool, apiKey: string, provider?: string): Promise<void> {
-  if (tool === 'opencode' || tool === 'pi') {
+  if (tool === 'opencode' || tool === 'pi' || tool === 'omp') {
     await setToolCredential(BUILT_IN_USER_ID, tool, { kind: 'api-key', provider: provider as never, savedAt: 'x', apiKey })
   } else {
     await setToolCredential(BUILT_IN_USER_ID, tool, { kind: 'api-key', savedAt: 'x', apiKey })
@@ -495,6 +497,13 @@ describe('prepareStart', () => {
       })
       expect((await fs.stat(claudeSessions)).isDirectory()).toBe(true)
       expect((await fs.stat(path.join(claudeDir(DEMO_PROJECT_ID), 'sessions'))).isDirectory()).toBe(true)
+      // omp's acp server loads conversations only from its agent dir's
+      // sessions/, so the workspace's history goes there.
+      expect(mounts).toContainEqual({
+        source: { kind: 'hostPath', path: agentHistoryDir(DEMO_PROJECT_ID, workspaceId, 'omp') },
+        mountPath: '/home/yaac/.omp/agent/sessions',
+      })
+      expect((await fs.stat(path.join(ompDir(DEMO_PROJECT_ID), 'agent', 'sessions'))).isDirectory()).toBe(true)
       expect(postStartExec).toEqual(['/usr/local/bin/yaac-workspace-init'])
       // The shipped helper commands are mounted where the agent finds them.
       const helpers = mounts.map((m) => m.mountPath).filter((p) => p.startsWith('/usr/local/bin/'))
@@ -506,7 +515,7 @@ describe('prepareStart', () => {
       const sources = mounts.flatMap((m) => (m.source.kind === 'hostPath' ? [m.source.path] : []))
       expect(sources).toEqual(expect.arrayContaining([
         claudeDir(DEMO_PROJECT_ID), codexDir(DEMO_PROJECT_ID), opencodeConfigDir(DEMO_PROJECT_ID), piDir(DEMO_PROJECT_ID),
-        opencodeCheckpointDir(DEMO_PROJECT_ID, workspaceId), opencodeDataDir(DEMO_PROJECT_ID, workspaceId),
+        ompDir(DEMO_PROJECT_ID), opencodeCheckpointDir(DEMO_PROJECT_ID, workspaceId), opencodeDataDir(DEMO_PROJECT_ID, workspaceId),
       ]))
       expect(sources).not.toContain(cachedPackagesDir(DEMO_PROJECT_ID))
       expect(env()).toEqual(expect.arrayContaining([
@@ -546,6 +555,7 @@ describe('prepareStart', () => {
       { name: 'opencode on openrouter', tool: 'opencode', key: 'sk-or', kind: 'api-key', provider: 'openrouter', want: { YAAC_OPENCODE_KEY_OPENROUTER: PLACEHOLDER_OPENCODE_API_KEY, OPENCODE_CONFIG: '/home/yaac/.config/opencode/yaac-keys/openrouter.json' }, not: ['OPENROUTER_API_KEY'] },
       { name: 'opencode on neuralwatt', tool: 'opencode', key: 'nw', kind: 'api-key', provider: 'neuralwatt', want: { YAAC_OPENCODE_KEY_NEURALWATT: PLACEHOLDER_OPENCODE_API_KEY }, not: ['NEURALWATT_API_KEY', 'YAAC_OPENCODE_KEY_OPENROUTER'] },
       { name: 'pi on anthropic', tool: 'pi', key: 'sk-ant', kind: 'api-key', provider: 'anthropic', want: { YAAC_PI_KEY_ANTHROPIC: PLACEHOLDER_PI_API_KEY }, not: ['ANTHROPIC_API_KEY'] },
+      { name: 'omp on anthropic', tool: 'omp', key: 'sk-ant', kind: 'api-key', provider: 'anthropic', want: { YAAC_OMP_KEY_ANTHROPIC: PLACEHOLDER_OMP_API_KEY }, not: ['ANTHROPIC_API_KEY', 'YAAC_PI_KEY_ANTHROPIC'] },
       { name: 'codex api key', tool: 'codex', key: 'sk-oai', kind: 'api-key', want: { OPENAI_API_KEY: PLACEHOLDER_API_KEY }, not: [] },
       // Under codex OAuth this var would switch it into api-key mode.
       { name: 'codex OAuth', tool: 'codex', key: 'access', kind: 'oauth', want: {}, not: ['OPENAI_API_KEY'] },
@@ -565,6 +575,7 @@ describe('prepareStart', () => {
       for (const name of not) expect(names).not.toContain(name)
       expect(env()).toEqual(expect.arrayContaining([
         'OPENCODE_DISABLE_AUTOUPDATE=1', 'PI_CODING_AGENT_SESSION_DIR=/home/yaac/.yaac-pi-sessions', 'PI_SKIP_VERSION_CHECK=1',
+        'YAAC_OMP_AGENT_DIR=/home/yaac/.omp/agent',
       ]))
     })
 
@@ -597,10 +608,11 @@ describe('prepareStart', () => {
       await expect(start({ ...ci, steps: { t: { run: 'true' } } })).rejects.toThrow('not both')
     })
 
-    it('gives opencode and pi each their own key for one provider, in the config each tool reads', async () => {
+    it('gives opencode, pi and omp each their own key for one provider, in the config each tool reads', async () => {
       installDriver({ kind: 'containerless' })
       await saveToolAuth('opencode', 'sk-or-oc', 'openrouter')
       await saveToolAuth('pi', 'sk-or-pi', 'openrouter')
+      await saveToolAuth('omp', 'sk-or-omp', 'openrouter')
       // A user's own pi config is kept.
       const models = path.join(piDir(DEMO_PROJECT_ID), 'agent', 'models.json')
       await fs.mkdir(path.dirname(models), { recursive: true })
@@ -609,7 +621,7 @@ describe('prepareStart', () => {
       await start({ tool: 'claude' })
 
       expect(env()).toEqual(expect.arrayContaining([
-        'YAAC_OPENCODE_KEY_OPENROUTER=sk-or-oc', 'YAAC_PI_KEY_OPENROUTER=sk-or-pi',
+        'YAAC_OPENCODE_KEY_OPENROUTER=sk-or-oc', 'YAAC_PI_KEY_OPENROUTER=sk-or-pi', 'YAAC_OMP_KEY_OPENROUTER=sk-or-omp',
       ]))
       expect(env().map((e) => e.split('=')[0])).not.toContain('OPENROUTER_API_KEY')
       expect(JSON.parse(await fs.readFile(path.join(opencodeConfigDir(DEMO_PROJECT_ID), 'yaac-keys', 'openrouter.json'), 'utf8')))
@@ -618,6 +630,13 @@ describe('prepareStart', () => {
         ollama: { baseUrl: 'http://localhost:11434/v1' },
         openrouter: { apiKey: '!printenv YAAC_PI_KEY_OPENROUTER || printenv OPENROUTER_API_KEY' },
       } })
+      // omp gets its key entry, its launch overlays, yaac's extension and
+      // yaac's skills in its own home.
+      const ompAgent = path.join(ompDir(DEMO_PROJECT_ID), 'agent')
+      expect(await fs.readFile(path.join(ompAgent, 'models.yml'), 'utf8'))
+        .toBe('providers:\n  openrouter:\n    apiKey: "!printenv YAAC_OMP_KEY_OPENROUTER || printenv OPENROUTER_API_KEY"\n')
+      expect((await fs.readdir(ompAgent)).sort()).toEqual(['extensions', 'models.yml', 'skills', 'yaac.yml'])
+      expect(await fs.readFile(path.join(ompAgent, 'extensions', 'yaac-report.ts'), 'utf8')).toContain("'omp', session")
     })
 
     it('lets a project override TZ and OPENCODE_CONFIG, takes a variable matching yaac\'s, and refuses one that conflicts', async () => {

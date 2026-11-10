@@ -28,6 +28,16 @@ export const PLACEHOLDER_REFRESH_TOKEN = 'yaac-ph-refresh'
 export const PLACEHOLDER_API_KEY = 'yaac-ph-api-key'
 export const PLACEHOLDER_OPENCODE_API_KEY = 'yaac-ph-opencode-api-key'
 export const PLACEHOLDER_PI_API_KEY = 'yaac-ph-pi-api-key'
+export const PLACEHOLDER_OMP_API_KEY = 'yaac-ph-omp-api-key'
+
+/** The api-key tools, each with the placeholder its workspaces carry. One
+ *  per tool, so whose key to swap in is told from the request alone even
+ *  when several tools' providers share a host. */
+const API_KEY_TOOLS = [
+  ['opencode', PLACEHOLDER_OPENCODE_API_KEY],
+  ['pi', PLACEHOLDER_PI_API_KEY],
+  ['omp', PLACEHOLDER_OMP_API_KEY],
+] as const
 export const PLACEHOLDER_GH_TOKEN = 'yaac-ph-gh-token'
 
 export type Injection =
@@ -307,10 +317,10 @@ export function hostNeedsDynamicMitm(
   if (hostname === OPENAI_API_HOST) return true
   if (hostname === OPENAI_TOKEN_URL_HOST) return true
   if (hostname === CHATGPT_HOST) return true
-  // opencode / pi: the provider host each credential points at. Every
-  // workspace carries both placeholders, whichever agents it runs.
+  // opencode / pi / omp: the provider host each credential points at.
+  // Every workspace carries every placeholder, whichever agents it runs.
   const creds = workspaceCredentials(objects, workspaceId)
-  if (hostname === creds.opencode?.apiHost || hostname === creds.pi?.apiHost) return true
+  if (API_KEY_TOOLS.some(([tool]) => hostname === creds[tool]?.apiHost)) return true
   if (workspaceHasHttpsCredentialForHost(objects, workspaceId, hostname)) return true
   // gh CLI talks to api.github.com, not the git remote host.
   if (resolveGithubApiTokenForWorkspace(objects, workspaceId, hostname) !== null) return true
@@ -353,8 +363,8 @@ function headerValue(
 }
 
 /**
- * Swap a tool's API-key placeholder for the real key on an opencode/pi
- * request. Providers differ on the header (`x-api-key` or `Authorization:
+ * Swap a tool's API-key placeholder for the real key on an opencode, pi or
+ * omp request. Providers differ on the header (`x-api-key` or `Authorization:
  * Bearer`), so the key goes wherever the placeholder is. A request without
  * `placeholder` is left alone.
  */
@@ -427,13 +437,11 @@ export function buildDynamicRules(
     }
   }
 
-  // opencode / pi: API key on the credential's provider host, chosen by the
-  // tool's own placeholder.
-  if (creds.opencode && hostname === creds.opencode.apiHost) {
-    swapApiKeyHeader(rules, reqHeaders, PLACEHOLDER_OPENCODE_API_KEY, creds.opencode.apiKey)
-  }
-  if (creds.pi && hostname === creds.pi.apiHost) {
-    swapApiKeyHeader(rules, reqHeaders, PLACEHOLDER_PI_API_KEY, creds.pi.apiKey)
+  // opencode / pi / omp: API key on the credential's provider host, chosen
+  // by the tool's own placeholder.
+  for (const [tool, placeholder] of API_KEY_TOOLS) {
+    const tc = creds[tool]
+    if (tc && hostname === tc.apiHost) swapApiKeyHeader(rules, reqHeaders, placeholder, tc.apiKey)
   }
 
   if (hostname === ANTHROPIC_API_HOST || hostname === CLAUDE_MCP_PROXY_HOST) {

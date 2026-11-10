@@ -1,8 +1,10 @@
 import {
   CUSTOM_PROVIDER,
   FALLBACK_MODELS,
+  OMP_DEFAULT_PROVIDER,
   OPENCODE_DEFAULT_PROVIDER,
   PI_DEFAULT_PROVIDER,
+  isApiKeyTool,
   type CustomEndpoint,
 } from '@yaac/shared/tool-providers'
 import {
@@ -10,6 +12,9 @@ import {
   EFFORTS,
   MODEL_NAMES,
   MODELS_BY_PROVIDER,
+  OMP_MODEL_NAMES,
+  OMP_MODELS_BY_PROVIDER,
+  OMP_PROVIDER_DEFAULT_MODELS,
   PI_MODEL_NAMES,
   PI_MODELS_BY_PROVIDER,
   PI_PROVIDER_DEFAULT_MODELS,
@@ -20,10 +25,10 @@ import type { AgentTool, ModelEfforts, ModelOption } from '@yaac/shared/types'
  * The models a tool can be created with, from the baked catalog, newest
  * first, each with its effort levels. claude uses models.dev's anthropic
  * list less models the pinned claude doesn't know (`CLAUDE_MODELS`), codex
- * models.dev's openai list; opencode and pi use `provider/model` for their
- * credential's provider, and pi uses its own registry. A custom endpoint's
- * models are the ones its credential lists. Not an allowlist: yaac only
- * shape-checks ids.
+ * models.dev's openai list; opencode, pi and omp use `provider/model` for
+ * their credential's provider, and pi and omp use their own registries. A
+ * custom endpoint's models are the ones its credential lists. Not an
+ * allowlist: yaac only shape-checks ids.
  */
 export function modelsForTool(tool: AgentTool, provider: string | undefined, endpoint?: CustomEndpoint): ModelOption[] {
   return catalogIds(tool, provider, endpoint).map((id) => option(tool, id))
@@ -34,8 +39,23 @@ function catalogIds(tool: AgentTool, provider: string | undefined, endpoint?: Cu
   if (tool === 'codex') return MODELS_BY_PROVIDER.openai ?? []
   if (provider === CUSTOM_PROVIDER) return (endpoint?.models ?? []).map((m) => `${CUSTOM_PROVIDER}/${m}`)
   if (provider === undefined) return []
-  const catalog = tool === 'pi' ? PI_MODELS_BY_PROVIDER : MODELS_BY_PROVIDER
-  return (catalog[provider] ?? []).map((m) => `${provider}/${m}`)
+  return (OWN_CATALOGS[tool]?.ids ?? MODELS_BY_PROVIDER)[provider]?.map((m) => `${provider}/${m}`) ?? []
+}
+
+/** A tool's own model registry: ids and display names per provider, and
+ *  each provider's default `provider/model`. */
+interface OwnCatalog {
+  ids: Record<string, string[]>
+  names: Record<string, Record<string, string>>
+  defaults: Record<string, string>
+  defaultProvider: string
+}
+
+/** pi's and omp's own registries, which differ from models.dev's and from
+ *  each other. */
+const OWN_CATALOGS: Partial<Record<AgentTool, OwnCatalog>> = {
+  pi: { ids: PI_MODELS_BY_PROVIDER, names: PI_MODEL_NAMES, defaults: PI_PROVIDER_DEFAULT_MODELS, defaultProvider: PI_DEFAULT_PROVIDER },
+  omp: { ids: OMP_MODELS_BY_PROVIDER, names: OMP_MODEL_NAMES, defaults: OMP_PROVIDER_DEFAULT_MODELS, defaultProvider: OMP_DEFAULT_PROVIDER },
 }
 
 function option(tool: AgentTool, id: string): ModelOption {
@@ -49,11 +69,11 @@ function option(tool: AgentTool, id: string): ModelOption {
 }
 
 /**
- * Whether the catalog offers this model id. opencode and pi ids name their
- * provider, which picks the catalog to look in.
+ * Whether the catalog offers this model id. An api-key tool's ids name
+ * their provider, which picks the catalog to look in.
  */
 export function isCatalogModel(tool: AgentTool, id: string): boolean {
-  const provider = tool === 'opencode' || tool === 'pi' ? id.slice(0, Math.max(0, id.indexOf('/'))) : undefined
+  const provider = isApiKeyTool(tool) ? id.slice(0, Math.max(0, id.indexOf('/'))) : undefined
   return catalogIds(tool, provider).includes(id)
 }
 
@@ -71,16 +91,17 @@ export function modelEfforts(tool: AgentTool, id: string): ModelEfforts | undefi
 /**
  * The model a create uses when its project remembers none for this tool:
  * a pinned id for claude and codex (`FALLBACK_MODELS`), a custom
- * endpoint's first listed model, pi's own per-provider default for pi, and
- * for opencode pi's default for the same provider if opencode's catalog
- * lists it, else the provider's newest.
+ * endpoint's first listed model, the tool's own per-provider default for pi
+ * and omp, and for opencode pi's default for the same provider if opencode's
+ * catalog lists it, else the provider's newest.
  */
 export function defaultModelFor(tool: AgentTool, provider: string | undefined, endpoint?: CustomEndpoint): string {
   if (tool === 'claude' || tool === 'codex') return FALLBACK_MODELS[tool]
   if (provider === CUSTOM_PROVIDER) return catalogIds(tool, provider, endpoint)[0] ?? ''
-  if (tool === 'pi') {
-    const p = provider ?? PI_DEFAULT_PROVIDER
-    return PI_PROVIDER_DEFAULT_MODELS[p] ?? qualifiedHead(PI_MODELS_BY_PROVIDER, p)
+  const own = OWN_CATALOGS[tool]
+  if (own !== undefined) {
+    const p = provider ?? own.defaultProvider
+    return own.defaults[p] ?? qualifiedHead(own.ids, p)
   }
   const p = provider ?? OPENCODE_DEFAULT_PROVIDER
   const borrowed = PI_PROVIDER_DEFAULT_MODELS[p]
@@ -112,7 +133,7 @@ export function modelDisplayName(tool: AgentTool, id: string): string | undefine
   } else {
     const slash = id.indexOf('/')
     if (slash <= 0) return undefined
-    names = (tool === 'pi' ? PI_MODEL_NAMES : MODEL_NAMES)[id.slice(0, slash)]
+    names = (OWN_CATALOGS[tool]?.names ?? MODEL_NAMES)[id.slice(0, slash)]
     bare = id.slice(slash + 1)
   }
   if (names === undefined) return undefined

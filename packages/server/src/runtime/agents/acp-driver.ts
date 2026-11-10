@@ -520,9 +520,10 @@ export const acpDriver: AgentDriver = {
    * inside env JSON values.
    *
    * No `--resume`: resuming is a `session/load` call after connecting. No
-   * posture either (except opencode's env): the adapter is told it with
-   * `session/set_mode` after the handshake, which avoids two sources for
-   * one answer across reconnects.
+   * posture either (except opencode's env and omp's approval mode, which no
+   * session mode carries): the adapter is told it with `session/set_mode`
+   * after the handshake, which avoids two sources for one answer across
+   * reconnects.
    */
   launchCmd(spec: AgentLaunchSpec): string {
     assertLaunchableModel(spec.tool, spec.model)
@@ -544,7 +545,7 @@ export const acpDriver: AgentDriver = {
       `--cwd ${spec.paths.workspaceDir}`,
       ...(spec.beforeCheckout === true ? [`--wait-for ${spec.paths.workspaceDir}/.git`] : []),
       '--',
-      ...adapter.argv,
+      ...adapter.argv(spec),
     ].join(' ')
   },
 

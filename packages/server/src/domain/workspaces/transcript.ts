@@ -3,7 +3,7 @@ import { StringDecoder } from 'node:string_decoder'
 import { ServerError } from '@yaac/shared/errors'
 import { ConfinedPathError } from '#lib/confined-fs'
 import { sniffImage } from '@yaac/shared/attachments'
-import { ACP_RECORD_NAME, ClaudeTranscriptReplay, acpPage, activityStarts, acpStoredImage, openSandboxDir, openSandboxFile, readAcpLife, readAcpPage, claudeSubagentThreads, claudeTranscriptAsAcp, codexTranscriptAsAcp, conversationFiles, opencodeTranscriptAsAcp, piTranscriptAsAcp, sessionTranscriptPath, readSandboxFile, type AcpLife, type RecordOrigin, type SandboxFile } from '#runtime/agents'
+import { ACP_RECORD_NAME, ClaudeTranscriptReplay, acpPage, activityStarts, acpStoredImage, openSandboxDir, openSandboxFile, readAcpLife, readAcpPage, claudeSubagentThreads, claudeTranscriptAsAcp, codexTranscriptAsAcp, conversationFiles, ompTranscriptAsAcp, opencodeTranscriptAsAcp, piTranscriptAsAcp, sessionTranscriptPath, readSandboxFile, type AcpLife, type RecordOrigin, type SandboxFile } from '#runtime/agents'
 import { listWorkspaceConversations, type ConversationLinkRow } from '#db'
 import { serverLog } from '#lib/log'
 import { recordedTranscript } from './conversation-paths'
@@ -271,8 +271,8 @@ export async function historyStamp(files: SandboxFile[]): Promise<string> {
 /**
  * A conversation's history as the tool keeps it, translated into the
  * updates its ACP adapter would have sent: claude's transcript, codex's
- * rollout and the rollouts of the subagents it spawned, pi's session log,
- * or opencode's history (its database, or the checkpoint's export of a
+ * rollout and the rollouts of the subagents it spawned, pi's or omp's
+ * session log (omp keeps pi's format, with images apart), or opencode's history (its database, or the checkpoint's export of a
  * sandboxed one). Only what the tool wrote before `before` (epoch ms), when
  * given (`readTranscript`): the agent lives before the one running, whose
  * subagents and tasks died with them. What this loses against the live pane
@@ -302,6 +302,10 @@ async function ownHistory(
     case 'pi': {
       const raw = await readTranscript(await sessionTranscriptPath(projectId, workspaceId, session.tool, id), before)
       return { events: raw === null ? [] : piTranscriptAsAcp(raw), budget: 0 }
+    }
+    case 'omp': {
+      const raw = await readTranscript(await sessionTranscriptPath(projectId, workspaceId, session.tool, id), before)
+      return { events: raw === null ? [] : await ompTranscriptAsAcp(projectId, raw, MAX_TRANSCRIPT_BYTES), budget: 0 }
     }
     case 'opencode':
       return { events: await opencodeTranscriptAsAcp(projectId, workspaceId, id), budget: 0 }

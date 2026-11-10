@@ -15,13 +15,18 @@ import {
 } from '@yaac/shared/tool-auth-interactive'
 import {
   CUSTOM_PROVIDER,
+  OMP_DEFAULT_PROVIDER,
+  OMP_PROVIDERS,
   OPENCODE_DEFAULT_PROVIDER,
   OPENCODE_PROVIDERS,
   PI_DEFAULT_PROVIDER,
   PI_PROVIDERS,
+  ompProviderInfo,
   opencodeProviderInfo,
   piProviderInfo,
+  type ApiKeyTool,
   type CustomEndpoint,
+  type OmpProvider,
   type OpencodeProvider,
   type PiProvider,
   type ToolProviderInfo,
@@ -36,14 +41,15 @@ export async function authUpdate(): Promise<void> {
   console.log('  3) Codex (OpenAI)')
   console.log('  4) OpenCode (any supported provider)')
   console.log('  5) Pi (any supported provider)')
-  const answer = (await rl.question('Choice [1-5]: ')).trim()
+  console.log('  6) Oh My Pi (any supported provider)')
+  const answer = (await rl.question('Choice [1-6]: ')).trim()
   rl.close()
 
   if (answer === '1') {
     await runGitUpdate()
     return
   }
-  const choices: Partial<Record<string, AgentTool>> = { 2: 'claude', 3: 'codex', 4: 'opencode', 5: 'pi' }
+  const choices: Partial<Record<string, AgentTool>> = { 2: 'claude', 3: 'codex', 4: 'opencode', 5: 'pi', 6: 'omp' }
   const tool = choices[answer]
   if (tool === undefined) {
     console.log('Cancelled.')
@@ -97,8 +103,8 @@ async function runGitUpdate(): Promise<void> {
 
 /**
  * Sign a tool in: claude and codex through their vendor CLI's browser
- * sign-in when it is installed here, else (and always for opencode and
- * pi) with a pasted api key.
+ * sign-in when it is installed here, else (and always for the api-key
+ * tools) with a pasted api key.
  */
 async function runToolUpdate(tool: AgentTool): Promise<void> {
   const label = TOOL_LABELS[tool]
@@ -194,13 +200,13 @@ async function runBrowserLogin(tool: 'claude' | 'codex'): Promise<'success' | 'c
 }
 
 /**
- * Ask which provider an opencode/pi api key is for. There are too many for
+ * Ask which provider an api-key tool's key is for. There are too many for
  * a numbered menu, so the user types an id; "?" lists them and Enter takes
  * the default. Re-prompts on an unknown id.
  */
 async function promptForProvider<T extends string>(
   rl: readline.Interface,
-  tool: 'opencode' | 'pi',
+  tool: ApiKeyTool,
   list: readonly ToolProviderInfo[],
   defaultId: T,
 ): Promise<T> {
@@ -219,22 +225,26 @@ async function promptForProvider<T extends string>(
 }
 
 /**
- * Prompt the user to paste an API key, asking for the provider first on
- * opencode/pi. The custom provider asks for its endpoint and models too, and
- * takes an empty key, since a self-hosted server often needs none.
+ * Prompt the user to paste an API key, asking for the provider first on an
+ * api-key tool. The custom provider asks for its endpoint and models too,
+ * and takes an empty key, since a self-hosted server often needs none.
  */
 async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
   let opencodeProvider: OpencodeProvider | undefined
   let piProvider: PiProvider | undefined
+  let ompProvider: OmpProvider | undefined
   if (tool === 'opencode') {
     opencodeProvider = await promptForProvider(rl, 'opencode', OPENCODE_PROVIDERS, OPENCODE_DEFAULT_PROVIDER)
   }
   if (tool === 'pi') {
     piProvider = await promptForProvider(rl, 'pi', PI_PROVIDERS, PI_DEFAULT_PROVIDER)
   }
+  if (tool === 'omp') {
+    ompProvider = await promptForProvider(rl, 'omp', OMP_PROVIDERS, OMP_DEFAULT_PROVIDER)
+  }
   let endpoint: CustomEndpoint | undefined
-  if ((opencodeProvider ?? piProvider) === CUSTOM_PROVIDER) {
+  if ((opencodeProvider ?? piProvider ?? ompProvider) === CUSTOM_PROVIDER) {
     const baseUrl = (await rl.question('Endpoint URL (e.g. http://my-box:8080/v1): ')).trim()
     const models = (await rl.question('Model ids it serves, comma-separated: ')).split(/[\s,]+/).filter(Boolean)
     endpoint = { baseUrl, models }
@@ -245,6 +255,7 @@ async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult> {
     tool === 'codex' ? 'OpenAI API key' :
     tool === 'opencode' && opencodeProvider ? `${opencodeProviderInfo(opencodeProvider).label} API key` :
     tool === 'pi' && piProvider ? `${piProviderInfo(piProvider).label} API key` :
+    tool === 'omp' && ompProvider ? `${ompProviderInfo(ompProvider).label} API key` :
     'API key'
   const key = (await rl.question(`Paste your ${label}: `)).trim()
   rl.close()
@@ -252,5 +263,5 @@ async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult> {
     console.error('Key cannot be empty.')
     process.exit(1)
   }
-  return { apiKey: key, kind: detectAuthKind(tool, key), opencodeProvider, piProvider, ...(endpoint ? { endpoint } : {}) }
+  return { apiKey: key, kind: detectAuthKind(tool, key), opencodeProvider, piProvider, ompProvider, ...(endpoint ? { endpoint } : {}) }
 }

@@ -9,7 +9,7 @@
  * against its binary, which decides which of two same-named skills it loads:
  * Claude prefers its home over the repo, opencode and pi the repo over their
  * homes, and codex loads both (it lists both, and `$name` is then
- * ambiguous).
+ * ambiguous), as does omp (it namespaces one of two that differ).
  *
  * Only each agent's known skill roots are read, one level deep
  * (`<root>/<name>/SKILL.md`), never scanning whole trees.
@@ -30,7 +30,7 @@
 
 import path from 'node:path'
 import { parse as parseToml } from 'smol-toml'
-import { claudeDir, codexDir, opencodeConfigDir, piDir, projectDir, repoDir } from '@yaac/shared/project-paths'
+import { claudeDir, codexDir, ompDir, opencodeConfigDir, piDir, projectDir, repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import { AGENT_TOOLS, type AgentTool, type ProjectSkills, type SkillDetail, type SkillSummary } from '@yaac/shared/types'
 import { getDefaultBranch, listTreeSubdirs, readBlobAt, remoteBranchExists } from '#domain/git'
@@ -297,12 +297,29 @@ async function piReaders(projectId: string, ref: string | null): Promise<SkillRe
   ]
 }
 
+async function ompReaders(projectId: string, ref: string | null): Promise<SkillReader[]> {
+  const repo = repoDir(projectId)
+  const dir = ompDir(projectId)
+  const claudeHome = claudeDir(projectId)
+  // Like pi's, with omp's own dirs, plus Claude's: the repo's by default, and
+  // Claude's home because omp reads it whenever `CLAUDE_CONFIG_DIR` is set,
+  // as every workspace sets it (checked against 18.18.3). No plugin tier.
+  return [
+    repoReader(repo, ref, '.omp/skills'),
+    personalReader('omp', await toolHome(projectId, dir), dir, 'agent/skills'),
+    repoReader(repo, ref, '.agents/skills'),
+    repoReader(repo, ref, '.claude/skills'),
+    personalReader('claude', await toolHome(projectId, claudeHome), claudeHome, 'skills'),
+  ]
+}
+
 async function readersFor(tool: AgentTool, projectId: string, ref: string | null): Promise<SkillReader[]> {
   switch (tool) {
     case 'claude': return claudeReaders(projectId, ref)
     case 'codex': return codexReaders(projectId, ref)
     case 'opencode': return opencodeReaders(projectId, ref)
     case 'pi': return piReaders(projectId, ref)
+    case 'omp': return ompReaders(projectId, ref)
   }
 }
 
@@ -355,8 +372,8 @@ function groupRank(s: SkillSummary): number {
  * Walk each agent's readers, highest precedence first, crediting every skill
  * to the agents that read its dir. Personal and repo skills share one
  * namespace per agent, where the first of a name wins and later ones are
- * overridden, except for codex, which loads them all; plugin and yaac skills
- * never collide.
+ * overridden, except for codex and omp, which load them all; plugin and yaac
+ * skills never collide.
  */
 async function discover(projectId: string, branch?: string): Promise<DiscoveredSkill[]> {
   const ref = await resolveRepoRef(repoDir(projectId), branch)
@@ -376,7 +393,7 @@ async function discover(projectId: string, branch?: string): Promise<DiscoveredS
     for (const skill of lists[i].flat()) {
       byId.set(skill.id, skill)
       skill.agents.push(tool)
-      const named = tool !== 'codex' && (skill.source === 'personal' || skill.source === 'repo')
+      const named = tool !== 'codex' && tool !== 'omp' && (skill.source === 'personal' || skill.source === 'repo')
       if (named && loaded.has(skill.name)) skill.overriddenFor.push(tool)
       else if (named) loaded.add(skill.name)
     }

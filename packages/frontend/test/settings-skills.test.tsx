@@ -34,7 +34,7 @@ const ALPHA: ProjectSkills = {
     skill({ id: 'claude/skills:push', name: 'push', source: 'personal', home: 'claude', agents: ['claude', 'opencode'], overriddenFor: ['opencode'] }),
     skill({ id: 'codex/skills:lint', name: 'lint', source: 'personal', home: 'codex', agents: ['codex'] }),
     skill({ id: 'codex/skills:shared', name: 'shared', source: 'personal', home: 'codex', agents: ['codex'] }),
-    skill({ id: 'yaac:yaac-welcome', name: 'yaac-welcome', source: 'yaac', agents: ['claude', 'codex', 'opencode', 'pi'] }),
+    skill({ id: 'yaac:yaac-welcome', name: 'yaac-welcome', source: 'yaac', agents: ['claude', 'codex', 'opencode', 'pi', 'omp'] }),
   ],
 }
 

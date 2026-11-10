@@ -167,12 +167,12 @@ pass — the server resolves who is calling and answers for that project only.
     `"$(cat brief.md)"` fails for a long one before yaac-mama even runs. A
     prompt of `-` reads it from stdin instead. `queue`, `edit-queued` and
     `send` take both forms too. An empty or unreadable file is an error.
-  - **`--tool`**: `claude`, `codex`, `opencode`, or `pi`. Omitted, it
+  - **`--tool`**: `claude`, `codex`, `opencode`, `pi`, or `omp`. Omitted, it
     defaults to your own session's tool, then the project default, then
     `claude`. **Run `yaac-mama models` before choosing** — a tool with no
     host credentials still spawns, and its agent then fails to authenticate.
   - **`--model`**: any model id the chosen tool accepts — an id or alias for
-    claude/codex (e.g. `opus`), `provider/model` for opencode and pi (e.g.
+    claude/codex (e.g. `opus`), `provider/model` for opencode, pi and omp (e.g.
     `anthropic/claude-opus-5`), where the provider must be the one that tool
     is authed for. There is no fixed list yaac enforces, only a shape check,
     so a typo'd id spawns and fails at the vendor.
@@ -481,8 +481,8 @@ pass — the server resolves who is calling and answers for that project only.
     stdout, the main one first and then each subagent's (a claude subagent's
     transcript, a codex `spawn_agent` child or fork). The conversation is its
     id from the listing or a unique prefix. Pipe it to `jq`, `grep` or a file.
-    Lines are the tool's own format: claude, codex and pi each write
-    different JSON.
+    Lines are the tool's own format: claude, codex and pi (omp too, in pi's
+    format) each write different JSON.
   - **`-o <dir>`** saves every file instead, of the one conversation or of
     all of them, as `<dir>/<conversation>/…`, and prints the paths written.
     That adds what a transcript only points at (claude's saved tool results

@@ -24,6 +24,7 @@ since it is embedded bare in launch commands.
 | codex | `none minimal low medium high xhigh max ultra` | `-c model_reasoning_effort=` / the `reasoning_effort` option |
 | opencode | `default none minimal low medium high xhigh max thinking` | the agents' `variant` (beside their `model`) in `OPENCODE_CONFIG_CONTENT` / the `effort` option |
 | pi | `off minimal low medium high xhigh max` | `--thinking` / the `thought_level` option |
+| omp | `off minimal low medium high xhigh max` | `--thinking` / the `thought_level` option |
 
 opencode calls its levels variants. `default` is a real choice there: no
 variant, so the provider's own default applies.
@@ -53,6 +54,9 @@ lists what a vendor's API accepts, which is not what each CLI offers:
   an unknown model.
 - **pi**: pi-ai's `getSupportedThinkingLevels`, with `DEFAULT_THINKING_LEVEL`
   clamped to the model as the default. Models without reasoning get none.
+- **omp**: its catalog's `getSupportedEfforts` per bundled model, after
+  `off`, with omp's default `high` clamped to the model. omp's packages are
+  TypeScript only bun runs, so the generator reads them in a bun child.
 - **opencode**: asked of opencode itself. A private `opencode serve` with
   every provider given a placeholder key lists each model's computed
   variants on `/api/model`; no key-less call does. It answers before it has
@@ -79,8 +83,8 @@ its `ModelOption`, so it and the server resolve from the same data.
 
 Every tool saves an in-session effort change into its home: claude's
 `/effort` writes `effortLevel` to its settings, codex's `/model` writes
-`model_reasoning_effort` to `config.toml`, and pi saves its default and
-per-model thinking levels. A project's workspaces share those homes, so a
+`model_reasoning_effort` to `config.toml`, and pi and omp save their default
+and per-model thinking levels. A project's workspaces share those homes, so a
 launch that names nothing would run at whatever another workspace last
 picked. The launch values outrank those files (checked live for claude's
 `--effort` against 2.1.310 and pi's `--thinking` against 1.4.0).
@@ -156,8 +160,9 @@ same filtered subscription as `@yaac-model` and `@yaac-permission-mode`
   same current-life rule.
 - **opencode**: the plugin reports the model's `variant` (`default` when it
   names none) with the model.
-- **pi**: the extension reports `getThinkingLevel()` with the model and each
-  `thinking_level_select`.
+- **pi** and **omp**: the extension reports `getThinkingLevel()` with the
+  model and each `thinking_level_select` (omp reports none until one is
+  set).
 
 Anything in the workspace can set a pane option, so a reported level that
 is not one word, or not one the agent's model has, is dropped (`default` is

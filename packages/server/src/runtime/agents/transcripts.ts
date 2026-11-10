@@ -7,6 +7,7 @@ import {
   CLAUDE_POD_CWD,
   claudeDir,
   codexDir,
+  ompDir,
   codexRolloutParent,
   codexRolloutThreadId,
   opencodeCheckpointDir,
@@ -41,13 +42,14 @@ import { openSandboxDir, openSandboxFile, type SandboxFile } from './sandbox-fs'
 /** Where one tool's transcripts sit: the part of a workspace's history
  *  holding them, and the shared-home subdirectory it stands in for (the one
  *  a pod's mount covers). */
-const TRANSCRIPT_LAYOUT: Record<'claude' | 'codex', {
+const TRANSCRIPT_LAYOUT: Record<'claude' | 'codex' | 'omp', {
   home: (projectId: string) => string
   part: AgentHistoryPart
   shared: string
 }> = {
   claude: { home: claudeDir, part: 'claude', shared: 'projects' },
   codex: { home: codexDir, part: 'codex', shared: 'sessions' },
+  omp: { home: ompDir, part: 'omp', shared: 'agent/sessions' },
 }
 
 /** The dirs a tool's transcripts are read under for one workspace, history
@@ -55,7 +57,7 @@ const TRANSCRIPT_LAYOUT: Record<'claude' | 'codex', {
  *  tool with none on the host; pi writes only to the history. */
 function transcriptRoots(projectId: string, workspaceId: string, tool: AgentTool): Array<{ dir: string; sub: string }> {
   if (tool === 'opencode') return []
-  if (tool === 'pi') return [{ dir: agentHistoryDir(projectId, workspaceId, 'pi'), sub: '' }]
+  if (tool === 'pi') return [{ dir: agentHistoryDir(projectId, workspaceId, tool), sub: '' }]
   const { home, part, shared } = TRANSCRIPT_LAYOUT[tool]
   return [{ dir: agentHistoryDir(projectId, workspaceId, part), sub: '' }, { dir: home(projectId), sub: shared }]
 }
@@ -182,7 +184,7 @@ export function resolveProjectPath(
  * (a host workspace reaches its history through links). If nothing is there
  * yet (claude writes on its first turn), the path is left for a later pass.
  *
- * pi reports no path, so its conversation is found by id.
+ * pi and omp report no path, so their conversations are found by id.
  *
  * A path resolving somewhere `resolveProjectPath` would refuse is dropped,
  * since on a host a link could point anywhere.
@@ -194,8 +196,8 @@ export async function locateTranscript(
   conversationId: string,
   reported: string | undefined,
 ): Promise<string | undefined> {
-  if (tool === 'pi') {
-    const logs = await piSessionLogs(projectId, workspaceId, conversationId)
+  if (isPiLike(tool)) {
+    const logs = await piSessionLogs(projectId, workspaceId, tool, conversationId)
     const newest = logs[logs.length - 1]
     return newest === undefined ? undefined : toProjectRelative(newest)
   }
@@ -215,15 +217,23 @@ export async function locateTranscript(
   return undefined
 }
 
+/** The tools that keep pi's session-log layout: omp is a fork of pi. */
+function isPiLike(tool: AgentTool): tool is 'pi' | 'omp' {
+  return tool === 'pi' || tool === 'omp'
+}
+
 /**
- * pi's JSONL logs for one workspace's history, oldest first. pi names files
- * `<timestamp>_<uuid>.jsonl`, possibly under a cwd-derived subdir, so one
- * level of subdirectories is walked. The timestamp prefix makes a basename
- * sort chronological (mtime would change as pi appends).
+ * pi's (or omp's) JSONL logs for one workspace, oldest first. pi names
+ * files `<timestamp>_<uuid>.jsonl`, possibly under a cwd-derived subdir, so
+ * one level of subdirectories is walked. The timestamp prefix makes a
+ * basename sort chronological (mtime would change as pi appends). omp's sit
+ * in a cwd-named subdir of its agent dir's `sessions/`, which a pod mounts
+ * from the workspace's history; on a host that dir is the project's, shared
+ * by its workspaces, and the id picks the conversation out.
  */
-async function listPiJsonlFiles(projectId: string, workspaceId: string, strict = false): Promise<SandboxFile[]> {
+async function listPiJsonlFiles(projectId: string, workspaceId: string, tool: 'pi' | 'omp', strict = false): Promise<SandboxFile[]> {
   const found: SandboxFile[] = []
-  for (const { dir, sub } of transcriptRoots(projectId, workspaceId, 'pi')) {
+  for (const { dir, sub } of transcriptRoots(projectId, workspaceId, tool)) {
     const home = await openHistoryDir(projectId, dir, strict)
     if (home === null) continue
     const walk = async (rel: string, depth: number): Promise<void> => {
@@ -240,7 +250,7 @@ async function listPiJsonlFiles(projectId: string, workspaceId: string, strict =
 
 /**
  * The session id in a pi log filename, `<timestamp>_<sessionId>.jsonl` (we
- * pass the id via `--session-id`). The timestamp has no underscore, so the
+ * pass pi the id via `--session-id`; omp picks its own). The timestamp has no underscore, so the
  * id follows the first one. Undefined without that separator.
  */
 function sessionIdFromPiLog(file: string): string | undefined {
@@ -251,14 +261,15 @@ function sessionIdFromPiLog(file: string): string | undefined {
   return id.length > 0 ? id : undefined
 }
 
-/** A conversation's pi logs (oldest first), matched by id. */
+/** A conversation's pi or omp logs (oldest first), matched by id. */
 async function piSessionLogs(
   projectId: string,
   workspaceId: string,
+  tool: 'pi' | 'omp',
   conversationId: string,
   strict = false,
 ): Promise<SandboxFile[]> {
-  const files = await listPiJsonlFiles(projectId, workspaceId, strict)
+  const files = await listPiJsonlFiles(projectId, workspaceId, tool, strict)
   return files.filter((f) => sessionIdFromPiLog(f.rel) === conversationId)
 }
 
@@ -266,7 +277,7 @@ async function piSessionLogs(
  * The transcript of a workspace conversation (by default the one pinned to
  * the workspace id) found without a recorded path, or undefined if the tool
  * leaves none (opencode) or has not written one. claude's is named for the
- * conversation; pi's newest log wins. codex is not supported: its rollout
+ * conversation; pi's and omp's newest log wins. codex is not supported: its rollout
  * filename is not derivable from any id, so only a recorded path finds it.
  */
 export async function sessionTranscriptPath(
@@ -276,8 +287,8 @@ export async function sessionTranscriptPath(
   conversationId = workspaceId,
 ): Promise<SandboxFile | undefined> {
   if (tool === 'opencode' || tool === 'codex') return undefined
-  if (tool === 'pi') {
-    const logs = await piSessionLogs(projectId, workspaceId, conversationId)
+  if (isPiLike(tool)) {
+    const logs = await piSessionLogs(projectId, workspaceId, tool, conversationId)
     return logs[logs.length - 1]
   }
   return findClaudeTranscript(projectId, workspaceId, conversationId)
@@ -285,7 +296,7 @@ export async function sessionTranscriptPath(
 
 /**
  * Whether a conversation's history is where its tool resumes it from:
- * claude's transcript, codex's rollout, pi's log, or for opencode the
+ * claude's transcript, codex's rollout, pi's or omp's log, or for opencode the
  * workspace's database, which is as close as the host can tell without
  * opening it. Only a
  * missing file or dir answers false; any other failure to look throws, so a
@@ -299,7 +310,9 @@ export async function hasConversationHistory(
   switch (tool) {
     case 'claude': return await findClaudeTranscript(projectId, workspaceId, conversationId, true) !== undefined
     case 'codex': return (await codexRolloutFiles(projectId, workspaceId, true)).has(conversationId)
-    case 'pi': return (await piSessionLogs(projectId, workspaceId, conversationId, true)).length > 0
+    case 'pi':
+    case 'omp':
+      return (await piSessionLogs(projectId, workspaceId, tool, conversationId, true)).length > 0
     case 'opencode': return await opencodeDatabase(projectId, workspaceId, true) !== undefined
   }
 }
@@ -372,7 +385,7 @@ export async function conversationFiles(
   for (const s of sessions) {
     const files: Candidate[] = s.tool === 'claude' ? await claudeFiles(projectId, workspaceId, s)
       : s.tool === 'codex' ? codexFiles(s.conversationId, rollouts)
-      : s.tool === 'pi' ? (await piSessionLogs(projectId, workspaceId, s.conversationId))
+      : isPiLike(s.tool) ? (await piSessionLogs(projectId, workspaceId, s.tool, s.conversationId))
         .map((file) => ({ name: path.basename(file.rel), file }))
       : opencode !== undefined ? [{ name: OPENCODE_DB_NAME, file: opencode, sqlite: true }]
       : []

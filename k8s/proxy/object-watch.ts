@@ -170,7 +170,7 @@ export class ProxyObjects {
       if (captured.codex && (!codex || !codexIsNewer(captured.codex, codex))) delete captured.codex
     }
     for (const [owner, creds] of this.creds) {
-      const authed = (['claude', 'codex', 'opencode', 'pi'] as const).filter((t) => creds[t] !== null)
+      const authed = (['claude', 'codex', 'opencode', 'pi', 'omp'] as const).filter((t) => creds[t] !== null)
       this.log(`[proxy] credentials of ${owner}: ${authed.length ? authed.join(', ') : 'no tools'} signed in, `
         + `${creds.git.length} git token(s), ${creds.ssh.length} ssh key(s)`)
     }

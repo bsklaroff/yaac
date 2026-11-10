@@ -3,7 +3,7 @@
 An `acp` conversation's chat pane shows acpd's record of the current agent
 life as it streams. Once the agent restarts, or the workspace stops, what
 came before that life is read back from the tool's own history (claude's
-transcript, codex's rollouts, pi's session log) and translated into the
+transcript, codex's rollouts, pi's and omp's session logs) and translated into the
 events the pane renders (docs/agent-modes.md, "Pages and compaction"). That
 translation is also what a `tui` conversation's transcript shows. opencode
 is the exception: its `session/load` replays the whole conversation, so its
@@ -106,6 +106,19 @@ that mapping cannot bring back.
   send.
 - **Not restored:** entries off the active branch, hidden extension
   messages, labels and session names.
+
+## omp
+
+omp keeps pi's session-log format, so its history is restored by pi's
+translator, which writes what pi-acp sends live rather than what `omp acp`
+does. Besides pi's differences above:
+
+- **Tool calls** render as pi's do: a shell call titled by its command with
+  its output, other tools by name with their arguments. Live, omp's own
+  titles and the shell's trace details show instead.
+- **Images** are restored from the blob store omp keeps them in, apart from
+  the log (`ompTranscriptAsAcp`). One omp's own cleanup has removed, or one
+  past the read cap, is missing.
 
 ## opencode
 

@@ -11,8 +11,8 @@ export type ClearAuthTarget = 'all' | AgentTool
 /**
  * Remove a user's stored tool credentials for `target` (`all` or one tool),
  * and claude's and codex's copies in the tool homes of that user's projects,
- * so their running workspaces stop using a revoked credential. opencode and
- * pi keep no project copy. Git credentials are deleted separately
+ * so their running workspaces stop using a revoked credential. opencode, pi
+ * and omp keep no project copy. Git credentials are deleted separately
  * (`DELETE /auth/git/credentials/:id`).
  *
  * On macOS claude may have moved a project's live token into its scoped

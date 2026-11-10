@@ -109,6 +109,12 @@ RUN umask 002 && npm install -g @opencode/cli@2.1.4
 # pi. pi-acp (below) depends on pi's unstable `--mode rpc` event shapes, so
 # bump the two together and re-run the acp e2e tier.
 RUN umask 002 && npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.4.0
+# omp, a fork of pi whose `omp` is a bun script, and that bun (pinned as
+# `BUN_RUNTIME`). bun's install script puts its platform binary in place;
+# omp runs none. Its ACP server is `omp acp`, so it has no adapter below.
+# Its `bin/omp` is replaced with a wrapper further down (omp-homes.js).
+RUN umask 002 && npm install -g bun@1.4.4 && \
+    npm install -g --ignore-scripts @oh-my-pi/pi-coding-agent@18.18.3
 # Claude Code: the pinned release binary, checked against its SHA-256 in
 # `AGENT_CLIS.claude.binarySha256` (a test checks they match), then its own
 # `install`. That downloads the version again into
@@ -131,8 +137,8 @@ RUN umask 002 && case "$(dpkg --print-architecture)" in \
 # acpd. yaac maps each adapter's advertised session modes to permission
 # postures (packages/server/src/runtime/agents/acp-adapters.ts); an adapter
 # that drops one silently runs in its default. A unit test ties each pin here
-# to the version that table was verified against. opencode's adapter is
-# `opencode acp`, part of the CLI above.
+# to the version that table was verified against. opencode's and omp's
+# adapters are `opencode acp` and `omp acp`, part of the CLIs above.
 RUN umask 002 && npm install -g @agentclientprotocol/claude-agent-acp@0.97.0
 # Runs the codex CLI above (`codex app-server`, via the CODEX_PATH its launch
 # sets), so bump the two together within codex-acp's `@openai/codex`
@@ -140,11 +146,13 @@ RUN umask 002 && npm install -g @agentclientprotocol/claude-agent-acp@0.97.0
 RUN umask 002 && npm install -g --ignore-scripts @agentclientprotocol/codex-acp@2.3.0
 # Runs the pinned pi CLI above (`pi --mode rpc`). Patched after install
 # (dockerfiles/agent-patches/pi-acp.js says what it changes and when it can
-# go); the patch fails the build if the release no longer matches it. It is
-# copied as yaac (this stage's user) so the same RUN can delete it.
+# go); the patch fails the build if the release no longer matches it. The
+# same RUN puts omp's wrapper in place (agent-patches/omp-homes.js). The
+# patches are copied as yaac (this stage's user) so that RUN can delete them.
 COPY --chown=yaac agent-patches /tmp/agent-patches
 RUN umask 002 && npm install -g --ignore-scripts pi-acp@0.0.34 && \
     node /tmp/agent-patches/pi-acp.js "$(npm root -g)/pi-acp/dist/index.js" && \
+    node /tmp/agent-patches/omp-homes.js "$(npm root -g)/@oh-my-pi/pi-coding-agent/dist/cli.js" && \
     rm -rf /tmp/agent-patches
 
 # codex system config. The session discovery hook is passed at launch

@@ -189,7 +189,7 @@ an in-container proxy.
 A step in `.yaac/init-steps.json` takes `run` (a command or a list), `needs`
 (step names), `service` (`true` for a long-running one) and `ready` (a
 service's readiness check). Its name must not be an agent tool's (`claude`,
-`codex`, `opencode`, `pi`, or one of those followed by `-`), `yaac`, or
+`codex`, `opencode`, `pi`, `omp`, or one of those followed by `-`), `yaac`, or
 `shell`/`shell-<n>`. Every step's output is kept in its log
 (`yaac workspace logs <workspace> <step>`).
 

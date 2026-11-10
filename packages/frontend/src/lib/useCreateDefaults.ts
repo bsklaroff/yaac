@@ -66,7 +66,7 @@ export function useCreateDefaults(projectId: string | null): CreateDefaults {
       const summary = auth?.toolAuth.find((t) => t.tool === tool)
       const remembered = project?.createDefaults[tool]
       const mode = remembered?.mode ?? DEFAULT_AGENT_MODE
-      const provider = summary?.opencodeProvider ?? summary?.piProvider
+      const provider = summary?.opencodeProvider ?? summary?.piProvider ?? summary?.ompProvider
       const defaultModel = summary?.defaultModel ?? ''
       const models = summary?.models ?? []
       const resolved = resolveToolCreateDefaults({

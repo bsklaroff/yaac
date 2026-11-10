@@ -15,6 +15,9 @@
  * - codex: `CODEX_HOME`, `CODEX_SQLITE_HOME`.
  * - pi: `PI_CODING_AGENT_DIR`. (`PI_CODING_AGENT_SESSION_DIR` is always set
  *   by the create.)
+ * - omp: pi's variables, which its launch sets from the create's
+ *   `YAAC_OMP_*`, and `OMP_PROFILE` (or `PI_PROFILE`), which would move its
+ *   homes into a profile.
  * - opencode: no home variable; the launch's `opencode` wrapper sets its
  *   XDG dirs. `OPENCODE_CONFIG*` add config inputs (a host value would
  *   inject the user's own config and keys; yaac sets its own
@@ -28,6 +31,8 @@ export const TOOL_HOME_VARS = new Set([
   'CODEX_HOME',
   'CODEX_SQLITE_HOME',
   'PI_CODING_AGENT_DIR',
+  'OMP_PROFILE',
+  'PI_PROFILE',
   'OPENCODE_CONFIG_DIR',
   'OPENCODE_CONFIG',
   'OPENCODE_CONFIG_CONTENT',
