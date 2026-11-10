@@ -109,6 +109,7 @@ const ROUTE_MATRIX: RouteCase[] = [
 
   // ── projects ──────────────────────────────────────────────────────────
   { method: 'GET', path: '/api/project/list', access: 'reader', k8s: 200, containerless: 200 },
+  { method: 'PUT', path: '/api/project/order', body: { projectIds: [] }, access: 'owner', callerScoped: true, k8s: 204, containerless: 204 },
   // Both create a project the caller then owns.
   { method: 'POST', path: '/api/project/add', body: { url: 'not a url' }, access: 'owner', callerScoped: true, k8s: 400, containerless: 400 },
   { method: 'POST', path: '/api/project/register', body: {}, access: 'owner', callerScoped: true, k8s: 400, containerless: 400 },

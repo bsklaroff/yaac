@@ -238,6 +238,24 @@ describe('write routes', () => {
     })
   })
 
+  describe('PUT /project/order', () => {
+    it('places the caller\'s projects, unplaced ones last, and leaves others\' alone', async () => {
+      const [b, c, theirs] = ['b', 'c', 'd'].map((n) => `0b0b0b0b-0000-4000-8000-00000000000${n}`)
+      const bob = await seeTailnetUser('bob@example.com', 'bob')
+      for (const [id, addedAt, owner] of [[b, '2026-01-02', BUILT_IN_USER_ID], [c, '2026-01-03', BUILT_IN_USER_ID], [theirs, '2026-01-04', bob]]) {
+        await recordProject({ id, name: id, remoteUrl: 'https://example.com/x', addedAt }, owner)
+      }
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+      const listed = async (): Promise<string[]> => (await (await client.project.list.$get()).json()).map((p) => p.id)
+      expect(await listed()).toEqual([DEMO, b, c, theirs])
+
+      expect((await client.project.order.$put({ json: { projectIds: [theirs, c, DEMO] } })).status).toBe(204)
+      expect(await listed()).toEqual([c, DEMO, b, theirs])
+
+      expect((await client.project.order.$put({ json: { projectIds: ['not-a-uuid'] } })).status).toBe(400)
+    })
+  })
+
   describe('project config routes', () => {
     it('sets each launch setting on its own route, answering them all, and refuses a bad value', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))

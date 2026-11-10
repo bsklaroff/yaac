@@ -17,6 +17,7 @@ import {
   setProjectScratchDirs,
   setProjectGitCredential,
   setProjectInit,
+  setProjectOrder,
   setProjectRemote,
   setProjectShareRevoked,
 } from '#db/project-store'
@@ -169,6 +170,44 @@ describe('listProjectRows', () => {
         npmCache: true,
       },
     ])
+  })
+
+  it('lists projects nobody has placed by when they were added', async () => {
+    await recordProject({ id: P, name: 'p', remoteUrl: 'https://x/p.git', addedAt: '2026-01-02' }, BUILT_IN_USER_ID)
+    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    // An update rewrites the row, which must not move it.
+    await setProjectDefaultBranchGuard(APP, false)
+    expect((await listProjectRows()).map((r) => r.id)).toEqual([APP, P])
+  })
+})
+
+describe('setProjectOrder', () => {
+  let tmpDir: string
+
+  beforeEach(async () => { tmpDir = await createTempDataDir() })
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  it('places the owner\'s listed projects, puts the rest last, and ignores other ids', async () => {
+    const R = '0a0a0a0a-0000-4000-8000-000000000004'
+    const bob = await seeTailnetUser('bob@example.com', 'bob')
+    for (const [id, addedAt, owner] of [[APP, '2026-01-01', BUILT_IN_USER_ID], [P, '2026-01-02', BUILT_IN_USER_ID], [Q, '2026-01-03', BUILT_IN_USER_ID], [R, '2026-01-04', bob]]) {
+      await recordProject({ id, name: id, remoteUrl: 'https://x/r.git', addedAt }, owner)
+    }
+    const listed = async (): Promise<string[]> => (await listProjectRows()).map((r) => r.id)
+
+    // R is bob's and the last id is no project: both are ignored. APP is
+    // left out, so it follows the placed ones.
+    await setProjectOrder(BUILT_IN_USER_ID, [R, Q, P, randomUUID()])
+    expect(await listed()).toEqual([Q, P, APP, R])
+    await setProjectOrder(bob, [R])
+    expect(await listed()).toEqual([R, Q, P, APP])
+
+    // An empty list unplaces all of the owner's projects, and no one else's.
+    await setProjectOrder(BUILT_IN_USER_ID, [])
+    expect(await listed()).toEqual([R, APP, P, Q])
   })
 })
 

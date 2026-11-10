@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm'
+import { asc, eq, sql } from 'drizzle-orm'
 import { getDb } from './client'
 import { projects, projectToolDefaults } from './schema'
 import { notifyWorkspaceListChanged } from '#lib/notify'
@@ -172,6 +172,21 @@ export async function setProjectDefaultBranchGuard(projectId: string, enabled: b
   return rows.length > 0
 }
 
+/**
+ * Place `owner`'s projects in the order `projectIds` lists them. Any of
+ * theirs it leaves out lose their place and follow in `addedAt` order, so a
+ * project added while the list was being dragged lands last; ids of other
+ * users' projects are ignored.
+ */
+export async function setProjectOrder(owner: string, projectIds: string[]): Promise<void> {
+  const db = await getDb()
+  const ids = sql.join(projectIds.map((id) => sql`${id}`), sql`, `)
+  await db.update(projects)
+    .set({ position: sql`array_position(array[${ids}]::uuid[], ${projects.id})` })
+    .where(eq(projects.owner, owner))
+  notifyWorkspaceListChanged()
+}
+
 /** Set how many days the project's stopped workspaces are kept (null:
  *  forever). False when there is no such project. */
 export async function setProjectWorkspaceRetention(projectId: string, days: number | null): Promise<boolean> {
@@ -263,10 +278,12 @@ export async function getProjectRow(projectId: string): Promise<ProjectRow | und
   return toProjectRow(rows[0], defaults)
 }
 
+/** Every project, in the order their owners placed them. */
 export async function listProjectRows(): Promise<ProjectRow[]> {
   const db = await getDb()
   const [rows, defaults] = await Promise.all([
-    db.select().from(projects),
+    // Ascending puts nulls last: projects never placed follow the placed.
+    db.select().from(projects).orderBy(asc(projects.position), asc(projects.addedAt)),
     db.select().from(projectToolDefaults),
   ])
   return rows.map((r) => toProjectRow(r, defaults.filter((d) => d.projectId === r.id)))
