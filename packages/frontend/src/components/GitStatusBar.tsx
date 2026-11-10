@@ -1,4 +1,4 @@
-import type { JSX } from 'react'
+import { useEffect, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { ServerError } from '@yaac/shared/errors'
 import { useUiStore } from '#lib/store'
@@ -7,8 +7,9 @@ import { relativeAge } from '#lib/time'
 import { isCommit, refName } from '#lib/commits'
 import { lineTotals } from '#lib/gitStatus'
 import { useWorkspaceChanges } from '#lib/useWorkspaceChanges'
+import { lastGitStatus, saveGitStatus, type GitStatusSummary } from '#lib/lastGitStatus'
 import { LineCountsLabel } from '#components/ui/LineCountsLabel'
-import type { BranchComparison } from '@yaac/shared/types'
+import type { BranchComparison, WorkspaceChanges } from '@yaac/shared/types'
 
 /**
  * On desktop the strip tucks up under the borderless workspace bar. On mobile
@@ -25,6 +26,10 @@ const BAR = 'flex h-5 shrink-0 items-start px-2 text-[11px] leading-4 md:-mt-1.5
  * comparison opens the Commits pane, which draws it, and the line counts the
  * Changes pane, which breaks them down.
  *
+ * Until the first answer lands it shows the last one saved for the
+ * workspace (`lastGitStatus`), muted since it may be days old, so a reload
+ * does not blank it for the length of a read.
+ *
  * The strip always takes its height, even when empty: a row appearing later
  * would resize the panes below and send a SIGWINCH to the agent's TUI.
  */
@@ -39,7 +44,11 @@ export function GitStatusBar({ workspaceId }: { workspaceId: string }): JSX.Elem
   )
   const openChanges = useUiStore((s) => s.openChanges)
   const openCommits = useUiStore((s) => s.openCommits)
-  const files = data?.files ?? []
+  const [saved] = useState(() => lastGitStatus(workspaceId))
+  useEffect(() => {
+    if (data) saveGitStatus(workspaceId, summarize(data))
+  }, [workspaceId, data])
+  const shown = data ? summarize(data) : saved
   // A failed poll leaves the last answer in `data`; show why instead of it.
   // A stopped workspace has nothing to say.
   if (isError) {
@@ -52,30 +61,34 @@ export function GitStatusBar({ workspaceId }: { workspaceId: string }): JSX.Elem
     )
   }
   return (
-    <div className={clsx(BAR, 'gap-2 text-text-dim')}>
-      {data?.branch && (
+    <div className={clsx(BAR, 'gap-2 text-text-dim', !data && 'opacity-60')}>
+      {shown?.branch && (
         <button
           onClick={() => openCommits(workspaceId)}
           title="Review commits"
           className="min-w-0 truncate rounded px-1 text-left transition hover:bg-surface-2"
         >
-          {describe(data.branch, data.comparison)}
-          {data.comparison?.fetchedAt && (
-            <span className="text-text-faint"> · fetched {relativeAge(data.comparison.fetchedAt)}</span>
+          {describe(shown.branch, shown.comparison)}
+          {shown.comparison?.fetchedAt && (
+            <span className="text-text-faint"> · fetched {relativeAge(shown.comparison.fetchedAt)}</span>
           )}
         </button>
       )}
-      {files.length > 0 && (
+      {shown?.counts && (
         <button
           onClick={() => openChanges(workspaceId)}
           title="Review changes"
           className="shrink-0 rounded px-1 transition hover:bg-surface-2"
         >
-          <LineCountsLabel counts={lineTotals(files)} />
+          <LineCountsLabel counts={shown.counts} />
         </button>
       )}
     </div>
   )
+}
+
+function summarize({ branch, comparison, files }: WorkspaceChanges): GitStatusSummary {
+  return { branch, comparison, counts: files.length > 0 ? lineTotals(files) : null }
 }
 
 function commits(n: number): string {
