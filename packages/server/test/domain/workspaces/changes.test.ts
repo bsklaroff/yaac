@@ -452,103 +452,100 @@ describe('readWorkspaceChanges', () => {
   // A file's numstat row and body part are a function of its raw line and
   // the diff settings, so every answer, whatever the server holds, must
   // match a read from nothing: after each kind of change, including
-  // settings that change every file's diff mid-session. An edit costs the
-  // fill that file alone, whatever kind of file it is, and a second base,
-  // as a range pane ending at the working tree polls beside the
-  // workspace's own, costs nothing once both are held.
+  // settings that change every file's diff mid-session. A change costs the
+  // fill of the files it touched alone, whatever kind of file each is, and a
+  // second base, as a range pane ending at the working tree polls beside
+  // the workspace's own, costs nothing once both are held. Each scan is
+  // slow, so changes are batched and a read is checked against a fresh one
+  // only where its answer is not already known.
   it('answers from what it holds as a read from nothing would, filling only what changed', async () => {
     const w = workspace()
     const { repo } = w
     const file = (n: number): string => path.join(repo, `src/f${String(n).padStart(2, '0')}.txt`)
     fs.mkdirSync(path.join(repo, 'src'))
-    for (let n = 0; n < 40; n++) fs.writeFileSync(file(n), `line ${n}\n`.repeat(20))
+    for (let n = 0; n < 12; n++) fs.writeFileSync(file(n), `line ${n}\n`.repeat(20))
     git(repo, 'add', '-A')
     git(repo, 'commit', '-qm', 'files')
     git(repo, 'checkout', '-q', '-b', 'agent/x')
-    for (let n = 0; n < 20; n++) fs.appendFileSync(file(n), `edit ${n}\n`)
-    git(repo, 'mv', 'src/f39.txt', 'moved.txt')
+    for (let n = 0; n < 8; n++) fs.appendFileSync(file(n), `edit ${n}\n`)
+    git(repo, 'mv', 'src/f11.txt', 'moved.txt')
     fs.writeFileSync(path.join(repo, 'added.txt'), 'new\n')
     git(repo, 'add', '-A')
     git(repo, 'commit', '-qm', 'work')
     // Uncommitted work on top: edits, and files the agent never added.
-    for (let n = 20; n < 30; n++) fs.appendFileSync(file(n), `edit ${n}\n`)
-    for (let n = 0; n < 5; n++) fs.writeFileSync(path.join(repo, `new${n}.txt`), `n${n}\n`)
-    /** Read, check it against a read from nothing, and return the paths
-     *  its fill read. */
-    const expectRead = async (r: Partial<ChangesRequest> = {}): Promise<string[]> => {
+    for (let n = 8; n < 10; n++) fs.appendFileSync(file(n), `edit ${n}\n`)
+    for (let n = 0; n < 3; n++) fs.writeFileSync(path.join(repo, `new${n}.txt`), `n${n}\n`)
+    /** Read, keeping the answer as `last`, and return the paths its fill
+     *  read. */
+    let last!: ChangesReading['changes']
+    const readFills = async (r: Partial<ChangesRequest> = {}): Promise<string[]> => {
       const before = w.runs.length
-      const got = await w.read(r)
-      const fills = filled(w.runs.slice(before))
-      expect(got.changes).toEqual((await w.fresh(r)).changes)
+      last = (await w.read(r)).changes
+      return filled(w.runs.slice(before))
+    }
+    /** As `readFills`, checking the answer against a read from nothing. */
+    const expectRead = async (r: Partial<ChangesRequest> = {}): Promise<string[]> => {
+      const fills = await readFills(r)
+      expect(last).toEqual((await w.fresh(r)).changes)
       return fills
     }
-
-    expect(await expectRead()).toHaveLength(37)
-    const idle = w.runs.length
-    expect(await expectRead()).toEqual([])
-    expect(w.runs[idle].out).not.toContain('@@RAW@@')
-
-    // An edit to a file the base has, one to a file the agent added, a new
-    // file, a file put back as the base had it, and a mode change.
-    for (const [change, paths] of [
-      [() => fs.appendFileSync(file(3), 'more\n'), ['src/f03.txt']],
-      [() => fs.appendFileSync(path.join(repo, 'added.txt'), 'more\n'), ['added.txt']],
-      [() => fs.writeFileSync(path.join(repo, 'untracked.txt'), 'u\n'), ['untracked.txt']],
-      [() => fs.writeFileSync(file(7), 'line 7\n'.repeat(20)), ['src/f07.txt']],
-      [() => fs.chmodSync(file(2), 0o755), ['src/f02.txt']],
-      [() => fs.rmSync(path.join(repo, 'new3.txt')), []],
-    ] as const) {
-      change()
-      expect(await expectRead()).toEqual(paths)
+    /** A read of what is held, which must scan once, print no pair, and
+     *  answer `held`. */
+    const expectHeld = async (r: Partial<ChangesRequest>, held: ChangesReading['changes']): Promise<void> => {
+      const at = w.runs.length
+      expect((await w.read(r)).changes).toEqual(held)
+      expect(w.runs.slice(at).map((run) => run.out)).toEqual([expect.not.stringContaining('@@RAW@@')])
     }
 
-    // A typechange prints two body parts for its one row, and a quoted
-    // name sorts by its bytes.
+    expect(await readFills()).toHaveLength(15)
+    await expectHeld({}, last)
+
+    // An edit to a file the base has, one to a file the agent added, a new
+    // file, a file put back as the base had it, a mode change, a deleted
+    // untracked file, a typechange (two body parts for its one row) and a
+    // quoted name (sorted by its bytes). A read with no body fills only the
+    // counts, and the next with one the parts, of which the file put back
+    // has none: the body is the base diff, where it no longer appears.
+    fs.appendFileSync(file(3), 'more\n')
+    fs.appendFileSync(file(5), 'more\n')
+    fs.appendFileSync(path.join(repo, 'added.txt'), 'more\n')
+    fs.writeFileSync(path.join(repo, 'untracked.txt'), 'u\n')
+    fs.writeFileSync(file(7), 'line 7\n'.repeat(20))
+    fs.chmodSync(file(2), 0o755)
+    fs.rmSync(path.join(repo, 'new2.txt'))
     fs.rmSync(file(10))
     fs.symlinkSync('../moved.txt', file(10))
     fs.writeFileSync(path.join(repo, 'src/café.txt'), 'c\n')
-    expect(await expectRead()).toEqual(['"src/caf\\303\\251.txt"', 'src/f10.txt'])
-
-    // A read with no body fills only the counts, and the next with one
-    // the parts.
-    fs.appendFileSync(file(4), 'more\n')
-    expect(await expectRead({ diff: false })).toEqual(['src/f04.txt'])
-    expect(await expectRead()).toEqual(['src/f04.txt'])
+    const changed = ['"src/caf\\303\\251.txt"', 'added.txt', 'src/f02.txt', 'src/f03.txt', 'src/f05.txt', 'src/f07.txt', 'src/f10.txt', 'untracked.txt']
+    expect(await readFills({ diff: false })).toEqual(changed)
+    expect(await expectRead()).toEqual(changed.filter((p) => p !== 'src/f07.txt'))
 
     // Staging an edit and committing it read nothing: the staged line is
     // the unstaged one it replaces, and the committed one the base diff's.
-    fs.appendFileSync(file(5), 'more\n')
-    expect(await expectRead()).toEqual(['src/f05.txt'])
     git(repo, 'add', 'src/f05.txt')
     expect(await expectRead()).toEqual([])
     git(repo, 'commit', '-qm', 'f05')
     expect(await expectRead()).toEqual([])
 
     // Another base: once both are held, switching prints no pair.
+    const own = last
     expect(await expectRead({ base: 'agent/x' })).not.toEqual([])
-    for (const base of [undefined, 'agent/x', undefined]) {
-      const at = w.runs.length
-      expect(await expectRead({ base })).toEqual([])
-      expect(w.runs[at].out).not.toContain('@@RAW@@')
-    }
+    await expectHeld({}, own)
+    await expectHeld({ base: 'agent/x' }, last)
 
-    // An attribute can turn another file binary, and rename pairing can be
-    // turned off; either changes every file's key.
+    // An attribute can turn another file binary, and the diff config can
+    // turn rename pairing off; either changes every file's key. Color never
+    // reaches the body, and the ids' length is keyed.
     fs.writeFileSync(path.join(repo, '.gitattributes'), 'src/f01.txt -diff\n')
-    expect(await expectRead()).toEqual(expect.arrayContaining((await w.fresh()).changes.files.map((f) => f.path)))
-    expect((await w.read()).changes.files.find((f) => f.path === 'src/f01.txt')?.binary).toBe(true)
+    expect(await expectRead()).toEqual(expect.arrayContaining(last.files.map((f) => f.path)))
+    expect(last.files.find((f) => f.path === 'src/f01.txt')?.binary).toBe(true)
     git(repo, 'config', 'diff.renames', 'false')
-    expect(await expectRead()).not.toEqual([])
-    expect((await w.read()).changes.files.find((f) => f.path === 'moved.txt')?.status).toBe('added')
-
-    // Color never reaches the body, and the ids' length is keyed.
     git(repo, 'config', 'color.ui', 'always')
-    fs.appendFileSync(file(6), 'more\n')
-    expect(await expectRead()).toEqual(['src/f06.txt'])
-    expect((await w.read()).changes.diff).toMatch(/^diff --git /)
     git(repo, 'config', 'core.abbrev', '12')
     expect(await expectRead()).not.toEqual([])
-    expect((await w.read()).changes.diff).toMatch(/^index [0-9a-f]{12}\.\./m)
+    expect(last.files.find((f) => f.path === 'moved.txt')?.status).toBe('added')
+    expect(last.diff).toMatch(/^diff --git /)
+    expect(last.diff).toMatch(/^index [0-9a-f]{12}\.\./m)
   })
 
   // A fill reads the lines it lacks by path, and git pairs renames among
