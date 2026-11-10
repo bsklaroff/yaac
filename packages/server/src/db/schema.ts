@@ -103,6 +103,9 @@ export const projects = snakeCase.table('projects', {
   name: text().notNull(),
   remoteUrl: text().notNull(),
   addedAt: text().notNull(),
+  /** Where its owner placed it in their project list (`setProjectOrder`).
+   *  Null until they reorder; unplaced projects follow in `addedAt` order. */
+  position: integer(),
   /**
    * The agent this project was last created with: the default for a create
    * naming no tool, the create form, and the prewarm pool. Null (meaning

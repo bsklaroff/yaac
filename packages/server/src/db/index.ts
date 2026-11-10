@@ -215,6 +215,7 @@ export {
   setProjectScratchDirs,
   setProjectGitCredential,
   setProjectInit,
+  setProjectOrder,
   setProjectKeptIgnoredPaths,
   setProjectRemote,
   setProjectShareRevoked,

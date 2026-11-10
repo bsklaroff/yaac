@@ -1,4 +1,4 @@
-import type { CSSProperties, JSX } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type JSX } from 'react'
 import clsx from 'clsx'
 import { FeedbackButton } from '#components/FeedbackButton'
 import { NewProjectButton } from '#components/NewProjectButton'
@@ -7,10 +7,13 @@ import { ServerHealthButton } from '#components/ServerHealthOverlay'
 import { SettingsButton } from '#components/SettingsButton'
 import { UserSwitcher } from '#components/UserSwitcher'
 import { WindowControls } from '#components/WindowControls'
+import { api } from '#lib/api'
 import { LoadingIcon, WarningIcon } from '#lib/icons'
 import { isElectron } from '#lib/platform'
 import { identityColor, identityInitial } from '#lib/projectIdentity'
 import type { ProjectOp } from '#lib/store'
+import { usePressDrag } from '#lib/usePressDrag'
+import { useTeammateView } from '#lib/viewer'
 import type { ProjectSummary } from '@yaac/shared/types'
 
 /** The projects to list, then the adds still pending, each with the op
@@ -43,11 +46,26 @@ export function ProjectChip({ name, op, iconSize, className, style }: {
   )
 }
 
+/** `projects` in the order `ids` lists them, with any it leaves out last. */
+function inOrder(projects: ProjectSummary[], ids: string[]): ProjectSummary[] {
+  const rank = (p: ProjectSummary): number => {
+    const i = ids.indexOf(p.id)
+    return i === -1 ? ids.length : i
+  }
+  return [...projects].sort((a, b) => rank(a) - rank(b))
+}
+
 /**
  * Left rail: the user switcher, then the viewed user's project chips. The
  * active project scopes the sidebar; a project with unviewed workspaces
  * waiting for input shows a dot. A project being added or removed (`ops`)
  * shows a spinner, or a warning once its request failed.
+ *
+ * The user can drag their own chips with the mouse to reorder them. The
+ * server keeps the order (`PUT /project/order`). The rail shows a dropped
+ * order straight away and holds it until the snapshot lists the projects
+ * that way, or until the save of the latest drop fails. Saves are sent one
+ * at a time, so the server ends on the last drop.
  */
 export function ProjectRail({
   projects,
@@ -62,8 +80,55 @@ export function ProjectRail({
   attentionByProject: Record<string, number>
   onSelect: (projectId: string) => void
 }): JSX.Element {
+  const readOnly = useTeammateView()
+  const [order, setOrder] = useState<string[] | null>(null)
+  const placed = order === null ? projects : inOrder(projects, order)
+  const agreed = placed.every((p, i) => p === projects[i])
+  useEffect(() => {
+    if (agreed) setOrder(null)
+  }, [agreed])
+
+  // The drop target is an insertion index into `placed`: how many chips'
+  // midpoints lie above the pointer. Off the rail there is none.
+  const rail = useRef<HTMLDivElement>(null)
+  const chips = useRef(new Map<string, HTMLElement>())
+  const saving = useRef(Promise.resolve())
+  const drops = useRef(0)
+  // Set while a mouse press is usePressDrag's to settle. The browser still
+  // fires a click when the press ends on the chip, which must not select
+  // after a drag.
+  const pressDrag = useRef(false)
+  /** Whether dropping `item` at `over` would move it. */
+  const moves = (item: string, over: number | undefined): over is number => {
+    const from = placed.findIndex((p) => p.id === item)
+    return over !== undefined && over !== from && over !== from + 1
+  }
+  const { drag, start } = usePressDrag<string, number>({
+    over: (x, y) => {
+      const r = rail.current?.getBoundingClientRect()
+      if (!r || x < r.left || x > r.right) return undefined
+      return placed.filter((p) => {
+        const c = chips.current.get(p.id)?.getBoundingClientRect()
+        return c !== undefined && y > c.top + c.height / 2
+      }).length
+    },
+    onDrop: ({ item, over }) => {
+      if (!moves(item, over)) return
+      const ids = placed.map((p) => p.id)
+      const from = ids.indexOf(item)
+      ids.splice(from, 1)
+      ids.splice(over > from ? over - 1 : over, 0, item)
+      setOrder(ids)
+      const drop = ++drops.current
+      saving.current = saving.current
+        .then(() => api.project.order.$put({ json: { projectIds: ids } }))
+        .then(() => {}, () => { if (drop === drops.current) setOrder(null) })
+    },
+  })
+  const dropAt = drag !== null && moves(drag.item, drag.over) ? drag.over : -1
+
   return (
-    <div className={clsx(
+    <div ref={rail} className={clsx(
       // pl-2 centers the chips in the rail plus the 8px gap to the sidebar,
       // which read as one region.
       'flex w-16 shrink-0 flex-col items-center gap-2 pb-3 pl-2',
@@ -71,17 +136,41 @@ export function ProjectRail({
     )}>
       {isElectron() && <WindowControls className="h-5" />}
       <UserSwitcher />
-      {listedProjects(projects, ops).map(({ op, ...p }) => {
+      {listedProjects(placed, ops).map(({ op, ...p }, i) => {
         const active = p.id === activeProjectId
         const color = identityColor(p.id)
         const waiting = attentionByProject[p.id] ?? 0
+        const draggable = !readOnly && i < placed.length
         return (
           <button
             key={p.id}
-            onClick={() => onSelect(p.id)}
-            className="group relative flex items-center justify-center"
+            ref={(el) => {
+              if (el && draggable) chips.current.set(p.id, el)
+              else chips.current.delete(p.id)
+            }}
+            // A mouse press may become a drag; if not, usePressDrag selects.
+            // Touch and keyboard (a click with no pointer, `detail` 0) use
+            // onClick.
+            onPointerDown={(e) => {
+              pressDrag.current = draggable && e.pointerType === 'mouse' && e.button === 0
+              if (pressDrag.current) start(e, p.id, () => onSelect(p.id))
+            }}
+            onClick={(e) => {
+              if (e.detail === 0 || !pressDrag.current) onSelect(p.id)
+            }}
+            className={clsx(
+              'group relative flex items-center justify-center',
+              drag?.item === p.id && 'opacity-40',
+            )}
             title={p.name}
           >
+            {/* Centered in the 8px gap above, or below the last chip. */}
+            {(dropAt === i || (dropAt === placed.length && i === placed.length - 1)) && (
+              <span className={clsx(
+                'absolute inset-x-0 h-0.5 rounded-full bg-accent',
+                dropAt === i ? '-top-[5px]' : '-bottom-[5px]',
+              )} />
+            )}
             <span
               className={clsx(
                 // -ml-4 pulls the bar flush to the window's left edge.

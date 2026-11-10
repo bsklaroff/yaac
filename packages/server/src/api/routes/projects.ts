@@ -38,6 +38,7 @@ import {
 } from '#domain/projects'
 import { moveProjectToRemote, previewProjectMove, previewWorkspaceRetention, removeProject, setWorkspaceRetention, unshareProject } from '#domain/workspaces'
 import { pushCredentialsToRuntime } from '#domain/auth'
+import { setProjectOrder } from '#db'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { projectBuildDir } from '#lib/build-dirs'
 import { DEFAULT_ALLOWED_HOSTS, missingCriticalHosts } from '#lib/allowed-hosts'
@@ -79,6 +80,15 @@ const RETENTION_DAYS = z.number().int().min(1).max(36_500)
 
 export const projectApp = new Hono<IdentityEnv>()
   .get('/list', async (c) => c.json(await listProjects()))
+  // The caller's own projects, in the order their project list shows them.
+  .put(
+    '/order',
+    zv('json', z.object({ projectIds: z.array(z.uuid()) })),
+    async (c) => {
+      await setProjectOrder(c.get('principal').userId, c.req.valid('json').projectIds)
+      return c.body(null, 204)
+    },
+  )
   .post(
     '/add',
     zv('json', z.object({
