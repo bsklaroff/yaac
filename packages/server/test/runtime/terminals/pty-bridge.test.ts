@@ -277,11 +277,11 @@ describe('attachPty', () => {
     // Live output arrives raw, unescaped.
     tmux.output('%3', 'hi\\there\r\n')
     expect(sock.binaries()[1]).toBe('hi\\there\r\n')
-    // A pane nobody views is switched off, once.
+    // A pane nobody views is paused, once.
     tmux.output('%9', 'noise')
     tmux.output('%9', 'more noise')
     await flush()
-    expect(tmux.commands.filter((c) => c.includes('%9'))).toEqual(["refresh-client -A '%9:off'"])
+    expect(tmux.commands.filter((c) => c.includes('%9'))).toEqual(["refresh-client -A '%9:pause'"])
     expect(sock.binaries()).toHaveLength(2)
 
     // A malformed or injected target falls back to the CLI's native attach,
@@ -513,8 +513,7 @@ describe('attachPty', () => {
     expect(a.cmd).toBe(
       `${TMUX} has-session -t =yaac 2>/dev/null`
       + ` && ${TMUX} new-session -d -t yaac -s ${a.view} -x 150 -y 40`
-      + ` && exec ${TMUX} attach-session -t ${a.view}`
-      + ' \\; set-option destroy-unattached on',
+      + ` && exec ${TMUX} attach-session -t ${a.view}`,
     )
 
     // An unusable grid defaults to 80x24; out-of-range sizes are dropped per

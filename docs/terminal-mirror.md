@@ -58,9 +58,12 @@ as latin1, one char per byte: a pane's output can split a UTF-8 character
 across two `%output` lines, and the browser reassembles it from raw bytes.
 
 The client receives `%output` for every pane in the session. A pane nobody
-views is switched off (`refresh-client -A %<pane>:off`) and back on for its
-next viewer. `pause-after` is not used, because with it set tmux ignores
-`off`; the stream is read eagerly, so tmux never buffers for the server.
+views is paused (`refresh-client -A %<pane>:pause`) and continued for its
+next viewer. Pausing drops the output tmux has queued for the client; `off`
+keeps it, and a tmux older than 3.7 then aborts when it comes to write that
+output, ending the workspace. `pause-after` is not set: the stream is read
+eagerly, so tmux never buffers for the server and need not pause a pane on
+its own.
 
 ## Seeding a viewer
 

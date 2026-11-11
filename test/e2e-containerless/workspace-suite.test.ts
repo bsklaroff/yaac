@@ -995,6 +995,10 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       stdinOnPrompt: [{ when: new RegExp(`${session.window}\\*`), send: '\x02d' }],
     })
     expect(onSession.exitCode, onSession.stderr).toBe(0)
+
+    // Each attach's view session is reclaimed when its connection closes.
+    await vi.waitFor(async () => expect(await tmux(workspaceId, 'list-sessions', '-F', '#{session_name}'))
+      .not.toMatch(/^view-/m), { timeout: 10_000, interval: 200 })
   }, 90_000)
 
   it.skipIf(!CAN_RUN_PORTS)('tunnels a connection onto a port the workspace is listening on', async () => {

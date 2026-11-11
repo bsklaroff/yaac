@@ -222,8 +222,12 @@ class WorkspaceMirror {
   private readonly viewers = new Set<MirrorViewer>()
   private readonly child: StreamChild
   private readonly client: ControlModeClient
-  /** Panes whose output is switched off because nobody views them. */
-  private readonly offPanes = new Set<string>()
+  /**
+   * Panes whose output is paused because nobody views them. Paused rather
+   * than switched `off`: before tmux 3.7, `off` keeps the output already
+   * queued for the client, and the server aborts when it comes to write it.
+   */
+  private readonly pausedPanes = new Set<string>()
   /** Per window, the viewer whose size the control client last applied. */
   private readonly sizedBy = new Map<string, MirrorViewer>()
   /** Whether the client's default size, for windows nobody views, is set. */
@@ -279,7 +283,7 @@ class WorkspaceMirror {
     // whichever client last resized or typed.
     await this.client.send(`set-option -w -t ${windowId} window-size latest`)
     await this.applySize(viewer)
-    if (this.offPanes.delete(paneId)) await this.client.send(`refresh-client -A '${paneId}:on'`)
+    if (this.pausedPanes.delete(paneId)) await this.client.send(`refresh-client -A '${paneId}:continue'`)
     await this.seed(viewer)
   }
 
@@ -325,9 +329,9 @@ class WorkspaceMirror {
     if (n.kind === 'output') {
       const viewing = [...this.viewers].filter((v) => v.paneId === n.paneId)
       if (viewing.length === 0) {
-        if (!this.offPanes.has(n.paneId) && ![...this.viewers].some((v) => v.paneId === '')) {
-          this.offPanes.add(n.paneId)
-          void this.client.send(`refresh-client -A '${n.paneId}:off'`).catch(() => {})
+        if (!this.pausedPanes.has(n.paneId) && ![...this.viewers].some((v) => v.paneId === '')) {
+          this.pausedPanes.add(n.paneId)
+          void this.client.send(`refresh-client -A '${n.paneId}:pause'`).catch(() => {})
         }
         return
       }
