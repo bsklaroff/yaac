@@ -43,9 +43,11 @@ describe('ensureAgentReporters', () => {
       await fs.writeFile(path.join(dir, 'bin', name),
         `#!/bin/sh\nprintf '%s %s|%s|%s|%s\\n' ${name} "$1" "$2" "$3" "$4" >> ${calls}\n`, { mode: 0o755 })
     }
-    // Answers the idle cache warming query from `FAKE_OPTION`.
+    // Answers the idle cache warming query from `FAKE_OPTION`, and logs
+    // each option set.
     await fs.writeFile(path.join(dir, 'bin', 'tmux'), '#!/bin/sh\n'
-      + '[ "$*" = "-S /sock show-options -wqv -t %3 @yaac-idle-cache-warming" ] && echo "$FAKE_OPTION"\n', { mode: 0o755 })
+      + '[ "$*" = "-S /sock show-options -wqv -t %3 @yaac-idle-cache-warming" ] && echo "$FAKE_OPTION"\n'
+      + `case "$*" in *set-option*) echo "tmux $*" >> ${calls};; esac\n`, { mode: 0o755 })
   })
 
   afterEach(async () => {
@@ -222,16 +224,18 @@ describe('ensureAgentReporters', () => {
 
   // Against omp 18.18.6, which loads pi extensions as its own and reports no
   // thinking level until one is set.
-  it("reports omp's conversation, model and mode under omp's own name, and takes messages from omp's agent dir", async () => {
+  it("reports omp's conversation, model and mode under omp's own name, takes messages from omp's agent dir, and marks its first message", async () => {
     await ensureAgentReporters(await roots())
     const messages = path.join(homes.ompAgentDir, 'yaac-messages')
     await fs.mkdir(messages, { recursive: true })
     await fs.writeFile(path.join(messages, 'omp-1.txt'), 'hi')
-    expect(await runModule(path.join(homes.ompAgentDir, 'extensions', 'yaac-report.ts'), [
+    const lines = await runModule(path.join(homes.ompAgentDir, 'extensions', 'yaac-report.ts'), [
       "const { execFile } = await import('node:child_process')",
       "const { appendFileSync } = await import('node:fs')",
       `process.env.PI_CODING_AGENT_DIR = ${JSON.stringify(homes.ompAgentDir)}`,
       "process.env.YAAC_OMP_PLAN = '1'",
+      "process.env.TMUX = '/sock,1,0'",
+      "process.env.TMUX_PANE = '%3'",
       'const on = {}',
       // omp answers busy until it has restored the conversation's modes.
       'let tries = 0',
@@ -259,7 +263,11 @@ describe('ensureAgentReporters', () => {
       "emit('mode_changed', { state: { plan: { status: 'active' } } })",
       "emit('mode_changed', { state: { plan: { status: 'inactive' } } })",
       "await emit('session_shutdown', { reason: 'quit' })",
-    ])).toEqual([
+      "emit('message_start', { message: { role: 'user' } })",
+      "emit('message_start', { message: { role: 'assistant' } })",
+      'await new Promise((done) => setTimeout(done, 300))',
+    ])
+    expect(lines.filter((l) => !l.startsWith('tmux '))).toEqual([
       'set {"mode":"plan","action":"enter"}',
       'sent ["hi",null]',
       `yaac-agent-links ${path.join(dir, 'omp')}|omp|omp-1|/s/t_omp-1.jsonl`,
@@ -269,6 +277,12 @@ describe('ensureAgentReporters', () => {
       'yaac-agent-report |plan||',
       'yaac-agent-report |default||',
       'yaac-agent-links |omp|omp-1|--end',
+    ])
+    // Held as the extension loads, before omp's boot, then released once,
+    // at its first message, whatever follows.
+    expect(lines.filter((l) => l.startsWith('tmux '))).toEqual([
+      'tmux -S /sock set-option -p -t %3 @yaac-omp-first-message pending',
+      'tmux -S /sock set-option -p -t %3 @yaac-omp-first-message drawn',
     ])
   })
 

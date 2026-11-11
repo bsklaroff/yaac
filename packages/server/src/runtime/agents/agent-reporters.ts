@@ -1,6 +1,6 @@
 import type { ConfinedRoot } from '#lib/confined-fs'
 import { AGENT_OPTION_WINDOW_OPTIONS, PI_MESSAGE_KEY } from './agent-command'
-import { OMP_PLAN_VAR } from './omp'
+import { OMP_PLAN_VAR, OMP_FIRST_MESSAGE_OPTION } from './omp'
 
 /**
  * The in-tool half of agent reporting: what each tool runs so it writes its
@@ -87,7 +87,9 @@ const CODEX_HOOKS: Hooks = [
  * session restore included, as `plan` or `default` (`ompPermissionMode`).
  * omp restores a conversation's saved modes only after `session_start`
  * handlers return, and answers `busy` until then, so the switch is retried
- * outside the handler. Verified against omp 18.18.6.
+ * outside the handler. It marks the pane `pending` as it loads and `drawn`
+ * at omp's first message (`OMP_FIRST_MESSAGE_OPTION`), which omp's status
+ * waits on. Verified against omp 18.18.6.
  *
  * It also holds the session's idle cache warming option (docs/sessions.md,
  * "Agent options"): between runs it stops each warm-up the agent would send
@@ -177,6 +179,17 @@ const OMP_MODE_SYNC = `  pi.on('session_start', (_event, ctx) => {
     })()
   })
   pi.on('mode_changed', (event) => run('yaac-agent-report', ['', event.state.plan.status === 'active' ? 'plan' : 'default', '']))
+  const markFirstMessage = (value) => {
+    const socket = (process.env.TMUX ?? '').split(',')[0]
+    return pi.exec('tmux', ['-S', socket, 'set-option', '-p', '-t', process.env.TMUX_PANE ?? '', '${OMP_FIRST_MESSAGE_OPTION}', value]).catch(() => {})
+  }
+  let firstMessage = markFirstMessage('pending')
+  let drawn = false
+  pi.on('message_start', () => {
+    if (drawn) return
+    drawn = true
+    firstMessage = firstMessage.then(() => markFirstMessage('drawn'))
+  })
 `
 
 /**

@@ -213,6 +213,15 @@ describe('markOpening', () => {
     expect(readOpening('demo', 's1')).toEqual([])
     setAgentStatus('demo', 's2', 'claude-1', 'asking')
     expect(readOpening('demo', 's2')).toEqual([])
+
+    // An observation showing the message drawn ends it while still idle,
+    // announcing the change though the status held.
+    markOpening('demo', 's3', 'omp-1')
+    setAgentStatus('demo', 's3', 'omp-1', 'waiting')
+    listener.mockClear()
+    setAgentStatus('demo', 's3', 'omp-1', 'waiting', true)
+    expect(readOpening('demo', 's3')).toEqual([])
+    expect(listener).toHaveBeenCalledTimes(1)
   })
 
   it('gives up after its timeout, and is dropped with its workspace', () => {
