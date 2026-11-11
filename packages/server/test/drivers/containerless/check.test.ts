@@ -107,11 +107,21 @@ describe('runHostCheck', () => {
     expect(results.some((r) => r.status === 'fail')).toBe(false)
   })
 
-  it('fails a tmux older than 3.1, whose terminals cannot open', async () => {
-    // Every webapp terminal sets `window-size latest`, which 3.0 rejects.
-    for (const [v, status] of [['2.8', 'fail'], ['3.0a', 'fail'], ['3.1c', 'pass'], ['next-3.6', 'pass'], ['master', 'pass']]) {
+  it('fails a tmux older than 3.3, whose terminals cannot open', async () => {
+    // Every webapp terminal sizes its window with `refresh-client -C
+    // @<window>:<cols>x<rows>`, which 3.2a (Ubuntu 22.04's) rejects.
+    for (const [v, status] of [
+      ['2.8', 'fail'], ['3.1c', 'fail'], ['3.2a', 'fail'],
+      ['3.3', 'pass'], ['3.3a', 'pass'], ['3.10', 'pass'], ['4.0', 'pass'],
+      ['next-3.6', 'pass'], ['master', 'pass'],
+    ]) {
       mockRunHost.mockResolvedValue({ stdout: `tmux ${v}\n`, stderr: '' })
-      expect(byName(await runHostCheck(), 'tmux version')?.status, v).toBe(status)
+      const check = byName(await runHostCheck(), 'tmux version')
+      expect(check?.status, v).toBe(status)
+      expect(check?.detail, v).toBe(`tmux ${v}`)
+      // A failure names the release to upgrade to.
+      if (status === 'fail') expect(check?.fix, v).toMatch(/tmux 3\.3 or newer/)
+      else expect(check?.fix, v).toBeUndefined()
     }
   })
 
@@ -204,6 +214,9 @@ describe('assertHostCanLaunch', () => {
   /** Make the host lack these system binaries. */
   const missing = (...bins: string[]) =>
     mockOnPath.mockImplementation((bin: string) => Promise.resolve(!bins.includes(bin)))
+  /** The binary of each host command run. A launch that installs nothing
+   *  runs only `tmux`, for its version. */
+  const ran = (): string[] => mockRunHost.mock.calls.map(([argv]) => (argv as string[])[0])
 
   it('refuses any launch on a host with no tmux, before a thing is provisioned', async () => {
     // Otherwise it surfaces as a bare spawn ENOENT inside launchWorkspace,
@@ -217,6 +230,25 @@ describe('assertHostCanLaunch', () => {
     // No alternative is offered; this driver requires tmux.
     expect(err.message).not.toMatch(/, or /)
     expect(mockRunHost).not.toHaveBeenCalled()
+  })
+
+  it('refuses a launch on a tmux older than 3.3, rather than leaving its terminal blank', async () => {
+    // A create on 3.2a succeeds, and then no webapp terminal attaches.
+    mockRunHost.mockResolvedValue({ stdout: 'tmux 3.2a\n', stderr: '' })
+    const refused = await assertHostCanLaunch({ tool: 'claude', mode: 'tui' }).catch((e: unknown) => e)
+    expect(refused).toMatchObject({ code: 'MISSING_TOOL' })
+    // It names the tmux found and the one to install.
+    expect((refused as Error).message).toMatch(/tmux is 3\.2a/)
+    expect((refused as Error).message).toMatch(/tmux 3\.3 or newer/)
+    // Before anything is installed.
+    expect(ran()).toEqual(['tmux'])
+
+    // The oldest tmux that works, and one that reports no version, launch.
+    preinstalled('claude')
+    for (const stdout of ['tmux 3.3\n', 'tmux master\n', '']) {
+      mockRunHost.mockResolvedValue({ stdout, stderr: '' })
+      await expect(assertHostCanLaunch({ tool: 'claude', mode: 'tui' })).resolves.toBeUndefined()
+    }
   })
 
   it('refuses a launch on a host with no git, which makes the checkout', async () => {
@@ -356,7 +388,7 @@ describe('assertHostCanLaunch', () => {
     expect(err.message).toContain('apt install socat')
     expect(err.message).toContain('--mode tui')
     // Refused before downloading the adapter.
-    expect(mockRunHost).not.toHaveBeenCalled()
+    expect(ran()).not.toContain('npm')
   })
 
   it('asks for node whatever the mode, because the agents install and run under it', async () => {
@@ -370,14 +402,14 @@ describe('assertHostCanLaunch', () => {
       expect(err.message).toMatch(/"node" is not on this host's PATH/)
       expect(err.message).toContain('node 22 or newer, with npm')
     }
-    expect(mockRunHost).not.toHaveBeenCalled()
+    expect(ran()).not.toContain('npm')
   })
 
   it('asks nothing about socat for tui, which dials no socket', async () => {
     preinstalled('codex')
     missing('socat')
     await expect(assertHostCanLaunch({ tool: 'codex', mode: 'tui' })).resolves.toBeUndefined()
-    expect(mockRunHost).not.toHaveBeenCalled()
+    expect(ran()).not.toContain('npm')
   })
 
   it('refuses an install on a host with no npm, naming what provides it', async () => {

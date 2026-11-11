@@ -613,9 +613,22 @@ The webapp reads `snapshot.driver` and hides these features.
 `yaac host check` verifies these, and the driver logs hard failures at
 startup.
 
-- **tmux** 3.1+ (webapp terminals use `window-size latest`) and **git**:
-  required. A create checks them up front rather than failing halfway
-  through `launchWorkspace`.
+- **tmux** 3.3+ and **git**: required. A create checks up front that both
+  are installed, and that tmux is new enough, rather than failing halfway
+  through `launchWorkspace` or leaving a blank terminal behind.
+  tmux 3.3 is the oldest release the webapp's terminals and the status
+  watcher both work on:
+
+  | Needs | For |
+  |---|---|
+  | 3.1 | `window-size latest`, set on every window a webapp terminal shows |
+  | 3.2 | client flags on attach (`attach-session -f ignore-size,no-output`), for the driver's liveness watch and the status watcher; the status watcher's format subscriptions (`refresh-client -B`); the terminal mirror's `refresh-client -A` pause and continue |
+  | 3.3 | per-window sizes for the terminal mirror's control client (`refresh-client -C @<window>:<cols>x<rows>`); an older tmux answers "bad size argument" and no webapp terminal attaches |
+
+  Ubuntu 22.04's tmux (3.2a) is therefore too old; Debian 12's (3.3a) and
+  Ubuntu 24.04's (3.4) pass. Only a snapshot's cursor shape needs a newer
+  tmux still, 3.6, and goes without on an older one
+  (docs/terminal-mirror.md "Limits").
 - **node** 22+ **with npm**: required. npm installs every agent, codex and
   pi are node scripts, and `--mode acp` runs yaac's acpd under `node`. omp
   is a bun script; yaac installs its pinned bun from npm beside it

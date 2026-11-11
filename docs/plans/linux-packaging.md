@@ -45,7 +45,7 @@ Linux the cluster runs on the host's rootful podman with no VM
 
 Supported releases are Debian 13 (trixie) and Ubuntu 24.04 LTS and later.
 Debian 12 is best effort: its tmux (3.3a) clears the containerless driver's
-3.1 floor, but `yaac cluster install` has never run on its podman (4.3),
+3.3 floor, but `yaac cluster install` has never run on its podman (4.3),
 since docs/install-from-source.md covers podman 5.x. A release is listed as
 supported for clusters only once the k8s e2e tier passes on its stock podman
 (see "Verification").
@@ -90,7 +90,7 @@ same directory because Debian names fd `fdfind` and the agents look for `fd`.
 
 **Dependencies.**
 
-- `Depends: tmux (>= 3.1), socat, git, curl, lsof, ca-certificates, libgomp1`.
+- `Depends: tmux (>= 3.3), socat, git, curl, lsof, ca-certificates, libgomp1`.
   A create refuses to run without tmux and socat. git, curl and lsof are the
   formula's `uses_from_macos` set. libgomp1 is for the bundled llama.cpp
   title model (docs/workspace-title-model-eval.md), which would otherwise
