@@ -22,15 +22,28 @@ The win is cost, not latency. A claimed live spare is faster than any
 restore, which adds seconds of kernel-state load plus reconnects. Snapshots
 make sense once spare RAM, not claim time, is what limits pool size.
 
-## Upstream state (checked 2026-10)
+## Upstream state (checked 2026-11-11)
 
 - **KEP-5823** adds a `PodCheckpoint` object and a pod field
   `spec.restoreFrom`, behind the `PodLevelCheckpointRestore` gate. It is
   meant to work regardless of runtime and names gVisor alongside CRIU.
   Checkpoints stay on the node that took them. Restoring on another node,
   keeping the pod's IP, and keeping TCP connections are all out of scope.
-  Alpha is targeted for v1.38; the implementation is
-  kubernetes/kubernetes#140186, which is open and on hold.
+  Alpha is targeted for v1.38, whose code freeze is 2026-11-16. The
+  implementation is split in two, both open and awaiting API review:
+  checkpoint in kubernetes/kubernetes#140186 (on hold, changes requested)
+  and restore, the half this plan needs, in kubernetes/kubernetes#143579.
+  Neither looks likely to make v1.38, which puts alpha at v1.39 (about
+  April 2027) at the earliest.
+- **Where we can use it.** Alpha gates can be turned on in our kind config
+  and in the k3s component args (`infra/hetzner-k3s`), so both are usable
+  from the first alpha release, once kind ships a node image and k3s a
+  release for that minor. k3s runs on the host's containerd, so the shim
+  support restore needs is a host upgrade rather than a k3s release. EKS
+  does not enable alpha gates, so EKS has to wait for the gate to be on by
+  default, usually two or more releases after alpha. Every install runs one
+  Kubernetes minor (`docs/cluster-setup.md`), so using snapshots before
+  then means leaving the feature off on EKS.
 - **kubernetes-sigs/agent-sandbox** (v1.0.x): `SandboxWarmPool` keeps
   running pods. Its suspend/resume deletes the pod and keeps the PVCs, so
   memory is lost. Memory snapshots exist only as a client wrapper over
