@@ -76,6 +76,13 @@ export function isStepName(name: string): boolean {
 
 export const NAME_RULE = 'letters, digits, "-" and "_", starting with a letter or digit, at most 48 long'
 
+/** Whether `name` may name a workflow in a need: a chosen name, or one the
+ *  server mints for a workflow that has none (`_steps`, `_added-2`), whose
+ *  leading `_` no chosen name can have (docs/workspace-steps.md). */
+function isWorkflowName(name: string): boolean {
+  return isStepName(name.startsWith('_') ? name.slice(1) : name)
+}
+
 /** A step's full name: `<workflow>.<step>`, or the bare name for a step
  *  whose workflow has no name (a life started before steps had one). */
 export function stepFullName(workflow: string, step: string): string {
@@ -144,7 +151,7 @@ export function parseStepGraph(raw: unknown, existing: ReadonlySet<string> = new
       if (need === name) throw new Error(`step "${name}" needs itself`)
       const [workflow, step, extra] = need.split('.')
       if (step !== undefined) {
-        if (extra !== undefined || !isStepName(workflow) || !isStepName(step)) {
+        if (extra !== undefined || !isWorkflowName(workflow) || !isStepName(step)) {
           throw new Error(`step "${name}" needs "${need}", which is not a step name or <workflow>.<step>`)
         }
         continue

@@ -1555,10 +1555,10 @@ describe('runMamaCommand', () => {
       await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { permissionMode: 'bypass' })
       await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: PROJ, workspaceId: 'caller-workspace', at: new Date(), startSteps: [] })
       running = [podFor('caller-workspace')]
-      // It is a workflow of its own, with a short name, and prints its full
-      // name; a bare name reads where it stands while it is unambiguous.
+      // It is a workflow of its own, `_added-N`, and prints its full name; a
+      // bare name reads where it stands while it is unambiguous.
       const name = await output('create', '', { workspace: 'caller-workspace', run: '["pnpm build","pnpm test"]', needs: '', name: 'ci' })
-      expect(name).toMatch(/^[a-z][a-z0-9]{3}\.ci$/)
+      expect(name).toBe('_added-1.ci')
       expect(await output('status', '', { workspace: 'caller-workspace', step: name })).toBe('pending')
       expect(await output('status', '', { workspace: 'caller-workspace', step: 'ci' })).toBe('pending')
       expect(await output('status', '', { workspace: 'caller-workspace' })).toBe('running')
@@ -1566,7 +1566,7 @@ describe('runMamaCommand', () => {
       // With no --name it is `run`, with --needs on a bare name stored in
       // full. --repo names a repo of the workspace's.
       const after = await output('create', '', { workspace: 'caller-workspace', run: '["true"]', needs: 'ci' })
-      expect(after).toMatch(/^[a-z][a-z0-9]{3}\.run$/)
+      expect(after).toBe('_added-2.run')
       expect((await listWorkspaceSteps('caller-workspace')).find((s) => `${s.workflowName}.${s.name}` === after)?.spec.needs).toEqual([name])
       expect(await run('create', '', { workspace: 'caller-workspace', run: '["true"]', repos: '["demo"]' }))
         .toMatchObject({ ok: false, error: expect.stringContaining('which this start does not include') as string })

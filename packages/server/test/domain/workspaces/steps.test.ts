@@ -340,18 +340,17 @@ describe('addSteps', () => {
     listed()
     await reconcileSteps(view)
 
-    // An anonymous add gets a short name of its own, and a bare need on a
-    // step of the life is stored in full.
+    // An anonymous add is named `_added-N`, and a bare need on a step of
+    // the life is stored in full.
     const [e2e] = await addSteps(local, WS, { steps: { e2e: { run: ['pnpm build', 'pnpm e2e'], needs: ['install'] } } })
-    expect(e2e).toMatchObject({ origin: 'added', state: 'pending', spec: { needs: ['ci.install'] } })
-    expect(e2e.name).toMatch(/^[a-z][a-z0-9]{3}\.e2e$/)
+    expect(e2e).toMatchObject({ name: '_added-1.e2e', workflow: '_added-1', origin: 'added', state: 'pending', spec: { needs: ['ci.install'] } })
     listed({ name: 'ci.install', dead: true, exitStatus: 0 })
     await reconcileSteps(view)
     expect(opened()).toEqual(['ci.install', e2e.name])
 
     // Running the same command twice is two names for one stored workflow.
     const [again] = await addSteps(local, WS, { steps: { e2e: { run: ['pnpm build', 'pnpm e2e'], needs: ['install'] } } })
-    expect(again.name).not.toBe(e2e.name)
+    expect(again.name).toBe('_added-2.e2e')
     const rows = await listWorkspaceSteps(WS)
     expect(rows.find((r) => `${r.workflowName}.${r.name}` === again.name)?.workflowId)
       .toBe(rows.find((r) => `${r.workflowName}.${r.name}` === e2e.name)?.workflowId)
@@ -385,6 +384,11 @@ describe('addSteps', () => {
     const after = await listWorkspaceSteps(WS)
     expect(after.filter((s) => s.origin === 'added').every((s) => s.state === 'interrupted')).toBe(true)
     expect(after.filter((s) => s.origin === 'start').map((s) => [s.workflowName, s.name, s.state])).toEqual([['ci', 'install', 'pending']])
+
+    // A minted name never repeats in the workspace's history: two adds at
+    // once take two numbers, and a new life goes on past every earlier one.
+    const twins = await Promise.all([1, 2].map(() => addSteps(local, WS, { steps: { t: { run: 'true' } } })))
+    expect(twins.map(([s]) => s.name).sort()).toEqual(['_added-3.t', '_added-4.t'])
   })
 
   it('starts a step in its repo\'s checkout, at the root for several, in the cwd for none; refused without the repo', async () => {

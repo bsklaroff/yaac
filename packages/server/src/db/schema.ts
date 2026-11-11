@@ -299,7 +299,7 @@ export const workspaces = snakeCase.table('workspaces', {
    *  again; null runs the project's init workflows. */
   workflowId: uuid().references((): AnyPgColumn => workflows.id),
   /** The name that workflow has in this workspace, which its steps are
-   *  known by: a named workflow's, else a short random one. Set exactly
+   *  known by: a named workflow's, else `_steps`. Set exactly
    *  when `workflowId` is. */
   workflowName: text(),
   /** Runs one graph untouched and stops when it settles

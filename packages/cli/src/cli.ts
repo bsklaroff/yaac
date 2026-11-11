@@ -566,7 +566,7 @@ const step = workspace
 
 step
   .command('add')
-  .description('Add a step to a running workspace, as a workflow of its own with a short name of its own; it starts once the steps it needs have succeeded. Prints its full name, <workflow>.<step>')
+  .description('Add a step to a running workspace, as a workflow of its own named _added-N; it starts once the steps it needs have succeeded. Prints its full name, <workflow>.<step>')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
   .option('--run <command>', 'A command to run (repeatable: they run in order in one shell, stopping at the first that fails)', collect, [])
   .option('--name <name>', 'Its name within its workflow (default: run)')

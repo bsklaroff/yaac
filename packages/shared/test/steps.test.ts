@@ -45,7 +45,10 @@ describe('parseStepGraph', () => {
     expect(parseStepGraph({ app: { run: 'x', needs: ['volume'] } }, new Set(['volume']))).toEqual({ app: { run: ['x'], needs: ['volume'] } })
     // A step of another workflow is checked only when placed in a life.
     expect(parseStepGraph({ migrate: { run: 'x', needs: ['db-init.postgres'] } })).toEqual({ migrate: { run: ['x'], needs: ['db-init.postgres'] } })
-    for (const need of ['a.b.c', '.b', 'a.', 'a b.c']) {
+    // A minted workflow name starts with `_`; a step name never does.
+    expect(parseStepGraph({ e2e: { run: 'x', needs: ['_added-2.run', '_steps.build'] } }).e2e.needs).toEqual(['_added-2.run', '_steps.build'])
+    expect(() => parseStepGraph({ _e2e: { run: 'x' } })).toThrow('a name is')
+    for (const need of ['a.b.c', '.b', 'a.', 'a b.c', 'a._b', '__x.b', '_.b']) {
       expect(() => parseStepGraph({ x: { run: 'x', needs: [need] } }), need).toThrow('not a step name or <workflow>.<step>')
     }
   })

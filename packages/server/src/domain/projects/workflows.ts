@@ -250,22 +250,6 @@ export async function listInitWorkflows(projectId: string): Promise<NamedWorkflo
   return (await listNamedWorkflows(projectId)).filter((w) => w.init)
 }
 
-/**
- * A short random name for a workflow that has none of its own in a
- * workspace (a create's `steps`, a step added with `run`), unique among
- * `taken` (the workspace's workflows) and the project's workflow names.
- */
-export async function mintWorkflowName(projectId: string, taken: Iterable<string> = []): Promise<string> {
-  const used = new Set([...taken, ...(await listNamedWorkflows(projectId)).map((w) => w.name)])
-  const letters = 'abcdefghijklmnopqrstuvwxyz'
-  const chars = `${letters}0123456789`
-  for (;;) {
-    const name = letters[Math.floor(Math.random() * letters.length)]
-      + Array.from({ length: 3 }, () => chars[Math.floor(Math.random() * chars.length)]).join('')
-    if (!used.has(name)) return name
-  }
-}
-
 /** What each repo of a start is approved as: its commit, or its branch of
  *  that repo. Stored selections name repos by id. */
 function startRefs(repos: RepoStart[]): Array<{ repoId: string; ref: string; label: string }> {

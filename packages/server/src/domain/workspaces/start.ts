@@ -16,7 +16,7 @@ import { volumeForLaunch } from './volumes'
 import { VOLUME_NEED } from './steps'
 import { modelDisplayName } from '#domain/auth'
 import { authorizeProject, type Actor } from '#domain/access'
-import { assertWorkflowRepos, mintWorkflowName, resolveWorkflow, workflowLaunch } from '#domain/projects'
+import { assertWorkflowRepos, resolveWorkflow, workflowLaunch } from '#domain/projects'
 import { getProjectRow, getWorkflow, listWorkspaceRepos, recordProjectCreate, storeWorkflow } from '#db'
 import { resolveStart, storedSelection, type StartRequest, type WorkspaceStart } from './checkouts'
 import { ServerError } from '@yaac/shared/errors'
@@ -276,11 +276,15 @@ export async function prepareStart(
   })
 }
 
+/** The name of the graph a start brings of its own. A workspace has at most
+ *  one, and a chosen name never starts with `_` (docs/workspace-steps.md). */
+const OWN_WORKFLOW = '_steps'
+
 /**
  * The workflow a start runs in place of the project's init workflows: one
  * its `steps` make (none for null), a named workflow's current one, or one
  * it runs again, with the name it has in the workspace: a named workflow's,
- * the one it had where it ran before, else a short random one. Undefined
+ * the one it had where it ran before, else `_steps`. Undefined
  * for the project's. Checked as a start's graph; its `<workflow>.<step>`
  * needs can only name its own steps, since nothing runs beside it.
  */
@@ -297,11 +301,11 @@ async function startWorkflow(
     const pinned = await getWorkflow(request.workflowId)
     if (pinned?.projectId !== projectId) throw new ServerError('NOT_FOUND', 'the workflow it ran is gone')
     checkStartSteps({ ...request, steps: pinned.steps })
-    flow = { ...pinned, name: request.workflowName ?? await mintWorkflowName(projectId) }
+    flow = { ...pinned, name: request.workflowName ?? OWN_WORKFLOW }
   } else {
     const steps = checkStartSteps(request)
     if (steps === undefined) return undefined
-    flow = { ...await storeWorkflow(projectId, { steps: steps ?? {}, secrets: [] }), name: await mintWorkflowName(projectId) }
+    flow = { ...await storeWorkflow(projectId, { steps: steps ?? {}, secrets: [] }), name: OWN_WORKFLOW }
   }
   for (const [step, spec] of Object.entries(flow.steps)) {
     const foreign = (spec.needs ?? []).find((n) => n.includes('.') && !(n.startsWith(`${flow.name}.`)

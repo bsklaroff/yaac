@@ -27,9 +27,11 @@ row that does. Nothing keeps a named workflow's earlier workflows as
 history; the retention sweep deletes a workflow once nothing names it and it
 is an hour old.
 
-A workflow's name follows a step's rule (letters, digits, `-` and `_`, at
-most 48 long), so it holds no `.`: a step is known as `<workflow>.<step>`
-(docs/workspace-steps.md "Workflow names").
+A named workflow's name follows a step's rule (letters, digits, `-` and
+`_`, starting with a letter or digit, at most 48 long), so it holds no `.`:
+a step is known as `<workflow>.<step>`. A workflow with no name of its own
+gets one the server mints in each workspace, `_steps` or `_added-N`, whose
+leading `_` no chosen name has (docs/workspace-steps.md "Workflow names").
 
 ## Repos
 

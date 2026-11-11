@@ -356,7 +356,7 @@ describe('openDb', () => {
   // over 48 is cut, and a name that becomes another's gets a number; where
   // a workspace recorded the name it follows. Steps of a life already
   // running keep their bare names, and a workspace that brought its own
-  // graph names its workflow.
+  // graph names its workflow `_steps`.
   it('gives every step a workflow name, and workflow names a step name\'s rule', async () => {
     const [P, F1, F2, F3, F4, F5, F6, F7, F8] = [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `0b0b0b0b-0000-4000-8000-00000000000${n}`)
     const long = `${'a'.repeat(50)}`
@@ -385,7 +385,7 @@ describe('openDb', () => {
         'SELECT workspace_id, workflow_name FROM workspaces ORDER BY workspace_id')
       expect(spaces.rows[0]).toEqual({ workspace_id: 'w-init', workflow_name: null })
       expect(spaces.rows[1]).toEqual({ workspace_id: 'w-named', workflow_name: names.rows[0].name })
-      expect(spaces.rows[2].workflow_name).toMatch(/^[0-9a-f]{4}$/)
+      expect(spaces.rows[2]).toEqual({ workspace_id: 'w-own', workflow_name: '_steps' })
       const steps = await db.$client.query<{ name: string; workflow_name: string }>(
         'SELECT name, workflow_name FROM workspace_steps ORDER BY ordinal')
       expect(steps.rows).toEqual([{ name: 'build', workflow_name: '' }, { name: 'lint', workflow_name: '' }])

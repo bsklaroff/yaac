@@ -1613,15 +1613,15 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     it('adds a step with step add, run in one shell after what it needs, and prints its log', async () => {
       const name = (await yaac('workspace', 'step', 'add', workspaceId, '--run', 'export WORD=two', '--run', 'echo one $WORD',
         '--name', 'extra', '--needs', 'install')).trim()
-      expect(name).toMatch(/^[a-z][a-z0-9]{3}\.extra$/)
+      expect(name).toBe('_added-1.extra')
       await waitForState(workspaceId, 'extra', 'succeeded')
       expect(await yaac('workspace', 'logs', workspaceId, 'extra')).toContain('one two')
       expect(await yaac('workspace', 'logs', workspaceId, 'extra', '--raw', '--life', '1')).toContain('one two')
       const listed = await yaac('workspace', 'logs', workspaceId)
-      for (const file of ['.install.log', `${name}.log`, `${name}.events`]) expect(listed).toContain(file)
+      for (const file of ['_steps.install.log', `${name}.log`, `${name}.events`]) expect(listed).toContain(file)
       // A default name, printed in full for whoever reruns or cancels it.
       const unnamed = (await yaac('workspace', 'step', 'add', workspaceId, '--run', 'true')).trim()
-      expect(unnamed).toMatch(/^[a-z][a-z0-9]{3}\.run$/)
+      expect(unnamed).toBe('_added-2.run')
       await waitForState(workspaceId, unnamed, 'succeeded')
     }, 120_000)
 

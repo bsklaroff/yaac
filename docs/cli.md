@@ -191,8 +191,8 @@ yaac workspace
                                 reproduce a failure in
     --wait                      As for workspace create
   step add <workspace-id>       Add a step to a running workspace, a workflow of
-                                its own with a short name; prints its full
-                                name, <workflow>.<step>
+                                its own named _added-N; prints its full name,
+                                <workflow>.<step>
     --run <command>             A command (repeatable; run in order in one shell)
     --name <name>               Its name in its workflow (default: run)
     --needs <a,b>               Steps that must succeed (or be ready) first,
