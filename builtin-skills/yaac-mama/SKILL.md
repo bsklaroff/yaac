@@ -161,9 +161,9 @@ pass — the server resolves who is calling and answers for that project only.
   - **`--workspace <id> --run "<cmd>"`** (repeat `--run` for more commands,
     run in order in one shell) adds a **step** to that running workspace, your
     own included, instead of a session: its output is logged, and the
-    webapp shows it. It is a workflow of its own with a short name, so it
+    webapp shows it. It is a workflow of its own, named `_added-N`, so it
     prints the step's full name, `<workflow>.<step>` (its step name is
-    `--name`, else `run`). `--needs a,b` waits for those steps, each a full
+    `--name`, else `run`), such as `_added-1.run`. `--needs a,b` waits for those steps, each a full
     name (`web-init.build`) or a bare one while only one workflow has it;
     `--repo <dir>` runs it in that repo's checkout; `--service`
     `[--ready <cmd>]` makes it a long-running one. **`--wait`** blocks until

@@ -22,7 +22,6 @@ import {
   listInitWorkflows,
   listProjectRunSecrets,
   listProjectWorkflows,
-  mintWorkflowName,
   missingRepos,
   projectRepoIds,
   removeRunSecret,
@@ -97,8 +96,9 @@ describe('createWorkflow', () => {
     expect((await createWorkflow(agent, DEMO_PROJECT_ID, { name: 'plain', steps: CI })).secrets).toEqual([])
     await expect(createWorkflow(local, DEMO_PROJECT_ID, { name: 'x', steps: CI, secrets: ['NOPE'] }))
       .rejects.toMatchObject({ code: 'VALIDATION' })
-    // A name follows a step's rule: no ".", which joins a workflow to its step.
-    for (const bad of ['bad name', 'web.init', 'x'.repeat(49)]) {
+    // A name follows a step's rule: no ".", which joins a workflow to its
+    // step, and no leading "_", which only the server's own names have.
+    for (const bad of ['bad name', 'web.init', 'x'.repeat(49), '_steps']) {
       await expect(createWorkflow(local, DEMO_PROJECT_ID, { name: bad, steps: CI })).rejects.toMatchObject({ code: 'VALIDATION' })
     }
     // A step may now take a tool's name, or `shell`.
@@ -247,15 +247,6 @@ describe('assertWorkflowRepos', () => {
     await expect(assertWorkflowRepos(DEMO_PROJECT_ID, 'workflow "docs"', [DOCS], [DEMO_PROJECT_ID]))
       .rejects.toMatchObject({ code: 'VALIDATION', message: 'workflow "docs" runs in docs, which this start does not include' })
     await assertWorkflowRepos(DEMO_PROJECT_ID, 'workflow "docs"', [DOCS], [DOCS, DEMO_PROJECT_ID])
-  })
-})
-
-describe('mintWorkflowName', () => {
-  it('answers a short name no workflow of the workspace or project has', async () => {
-    await createWorkflow(local, DEMO_PROJECT_ID, { name: 'ci', steps: CI })
-    const name = await mintWorkflowName(DEMO_PROJECT_ID, ['k3f9'])
-    expect(name).toMatch(/^[a-z][a-z0-9]{3}$/)
-    expect(['ci', 'k3f9']).not.toContain(name)
   })
 })
 

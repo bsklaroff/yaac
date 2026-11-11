@@ -63,7 +63,6 @@ export {
   editWorkflow,
   listInitWorkflows,
   listProjectWorkflows,
-  mintWorkflowName,
   missingRepos,
   projectRepoIds,
   resolveWorkflow,

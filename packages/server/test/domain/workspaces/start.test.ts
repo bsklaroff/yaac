@@ -1062,13 +1062,12 @@ describe('prepareStart', () => {
       expect(steps.map((s) => [s.workflowName, s.name, s.origin, s.state])).toEqual([
         ['init', 'install', 'start', 'pending'], ['init', 'dev', 'start', 'pending'],
       ])
-      // A create bringing its own graph replaces them, under a short name of
-      // its own kept for every life; one with none, none.
+      // A create bringing its own graph replaces them, named `_steps` for
+      // every life; one with none, none.
       const own = await start({ noSession: true, steps: { lint: { run: ['pnpm lint', 'pnpm test'] } } })
-      const ownName = (await getWorkspaceRow(DEMO_PROJECT_ID, own.workspaceId))?.workflowName
-      expect(ownName).toMatch(/^[a-z][a-z0-9]{3}$/)
+      expect((await getWorkspaceRow(DEMO_PROJECT_ID, own.workspaceId))?.workflowName).toBe('_steps')
       expect((await listWorkspaceSteps(own.workspaceId)).map((s) => [s.workflowName, s.name, s.spec.run]))
-        .toEqual([[ownName, 'lint', ['pnpm lint', 'pnpm test']]])
+        .toEqual([['_steps', 'lint', ['pnpm lint', 'pnpm test']]])
       const none = await start({ noSession: true, steps: null })
       expect(await listWorkspaceSteps(none.workspaceId)).toEqual([])
     })

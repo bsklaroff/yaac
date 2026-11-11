@@ -197,11 +197,11 @@ describe.skipIf(!CAN_RUN)('workspace steps (containerless)', () => {
     // A bare need, while one workflow has the step, is stored in full; a
     // full one names a step of another workflow outright.
     const added = await addStep(workspaceId, '--run', 'echo "added-$((1 + 1))"', '--name', 'added', '--needs', 'gated')
-    expect(added).toMatch(/^[a-z][a-z0-9]{3}\.added$/)
+    expect(added).toBe('_added-1.added')
     expect((await listed(workspaceId))?.steps?.find((s) => s.name === added)?.spec.needs).toEqual(['init.gated'])
     expect((await yaac('workspace', 'logs', workspaceId, added)).stdout).toContain('added-2')
     const after = await addStep(workspaceId, '--run', 'echo after-added', '--needs', `${added},init.prep`)
-    expect(after).toMatch(/\.run$/)
+    expect(after).toBe('_added-2.run')
     expect((await yaac('workspace', 'logs', workspaceId, after)).stdout).toContain('after-added')
     const missing = await yaac('workspace', 'step', 'add', workspaceId, '--run', 'true', '--needs', 'nope.step')
     expect(missing.stderr).toContain('not a step of this workspace')
@@ -403,9 +403,9 @@ describe.skipIf(!CAN_RUN)('workspace steps (containerless)', () => {
       return e!
     }, { timeout: 60_000, interval: 500 })
     expect(entry.nonInteractive).toBe(true)
-    // Its graph is a workflow with a short name of its own.
+    // Its graph is a workflow named `_steps`.
     const test = await logged(id, 'test')
-    expect(test).toMatch(/^[a-z][a-z0-9]{3}\.test$/)
+    expect(test).toBe('_steps.test')
     expect((await yaac('workspace', 'logs', id, test)).stdout).toContain('ci-out')
     expect((await api('/workspace/restart', { method: 'POST', body: JSON.stringify({ workspaceId: id }) })).status).toBe(409)
 

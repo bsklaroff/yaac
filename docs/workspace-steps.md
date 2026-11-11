@@ -21,14 +21,25 @@ an agent is a session, which opens beside the steps.
 ## Workflow names
 
 Every step belongs to a workflow, and every workflow in a workspace has a
-name there: a named workflow its own, and an anonymous one (a create's
-`--steps`, a `step add --run` or `--steps`) a short random one such as
-`k3f9`, unique among the workspace's workflows and the project's workflow
-names. A create's is kept for every life of the workspace and copied by a
-rerun, so logs line up. The name belongs to the step rows, not to the
-stored workflow, which is one row per content: running `pnpm test` ten
-times is one workflow under ten names. A step added with `--run` and no
-`--name` is called `run`.
+name there: a named workflow its own, and an anonymous one a name the
+server mints. A create's own graph (`--steps`) is `_steps`; a workspace has
+at most one, and it is kept for every life of the workspace and copied by a
+rerun, a site's replacement and `site start`, so logs line up. Each
+workflow added to a running workspace without a name (`step add --run`,
+or a graph given to the API) is `_added-N`, N one past the highest `_added-*` of any of the
+workspace's lives, so a name never repeats in its history; two adds racing
+for one number are told apart by the step store, which refuses a workflow
+name already in the life, and the later one takes the next.
+
+A leading `_` marks a minted name. Names people choose, for workflows and
+steps alike, are letters, digits, `-` and `_`, starting with a letter or
+digit, at most 48 long, so they never meet a minted one and minting needs
+no lookup. A `<workflow>.<step>` need may name a minted workflow
+(`--needs _added-2.run`).
+
+The name belongs to the step rows, not to the stored workflow, which is one
+row per content: running `pnpm test` ten times is one workflow under ten
+names. A step added with `--run` and no `--name` is called `run`.
 
 A step's **full name** is `<workflow>.<step>`, such as `web-init.install`.
 It names the step's window, its pane in the webapp (`step:<full name>`), its

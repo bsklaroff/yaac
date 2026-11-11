@@ -304,8 +304,9 @@ create also takes:
                    no agent options.
   --run <cmd>      with --workspace: add a step running <cmd> (repeat it for
                    more, run in order in one shell) to that running workspace
-                   instead of a session, with --name <name> (else run), its
-                   full name <workflow>.<step> printed; --needs <a,b> (its
+                   instead of a session, with --name <name> (else run), as a
+                   workflow of its own named _added-N, its full name
+                   <workflow>.<step> (_added-1.run) printed; --needs <a,b> (its
                    steps that must succeed first, each <workflow>.<step>, or
                    a bare name while one workflow has it); --repo <dir> to
                    run in that repo's checkout (else the workspace's cwd);

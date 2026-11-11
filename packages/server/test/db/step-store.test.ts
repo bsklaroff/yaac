@@ -64,16 +64,16 @@ describe('insertAddedSteps', () => {
     await change('install', 'running', undefined, both, 'api')
     expect(await rows()).toEqual(['ci.install:start:pending', 'api.install:start:running'])
 
-    await insertAddedSteps(PROJ, 'w1', both, { id: workflowId, name: 'k3f9' }, { install: { run: ['again'], needs: ['ci.install'] } })
-    await expect(insertAddedSteps(PROJ, 'w1', both, { id: workflowId, name: 'k3f9' }, { e2e: { run: ['pnpm e2e'] } }))
+    await insertAddedSteps(PROJ, 'w1', both, { id: workflowId, name: 'lint' }, { install: { run: ['again'], needs: ['ci.install'] } })
+    await expect(insertAddedSteps(PROJ, 'w1', both, { id: workflowId, name: 'lint' }, { e2e: { run: ['pnpm e2e'] } }))
       .rejects.toMatchObject({ code: 'CONFLICT' })
-    expect(await rows()).toEqual(['ci.install:start:pending', 'api.install:start:running', 'k3f9.install:added:pending'])
+    expect(await rows()).toEqual(['ci.install:start:pending', 'api.install:start:running', 'lint.install:added:pending'])
 
     const next = await startLife('w1', { install: { run: ['pnpm install'] } })
-    expect(await rows()).toEqual(['k3f9.install:added:interrupted', 'ci.install:start:pending'])
+    expect(await rows()).toEqual(['lint.install:added:interrupted', 'ci.install:start:pending'])
     // An earlier life's added step of a workflow is replaced by a new one.
-    await insertAddedSteps(PROJ, 'w1', next, { id: workflowId, name: 'k3f9' }, { install: { run: ['pnpm e2e'] } })
-    expect(await rows()).toEqual(['ci.install:start:pending', 'k3f9.install:added:pending'])
+    await insertAddedSteps(PROJ, 'w1', next, { id: workflowId, name: 'lint' }, { install: { run: ['pnpm e2e'] } })
+    expect(await rows()).toEqual(['ci.install:start:pending', 'lint.install:added:pending'])
   })
 })
 

@@ -814,9 +814,8 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
  * the script builds, under `--name` (else `run`), after the steps `--needs`
  * lists (each a full name, or a bare one while only one workflow has it),
  * in the checkout of the repos `--repo` names (`repos`, a JSON list of
- * folders). It is a
- * workflow of its own, with a short name of its own. Prints the step's
- * full name.
+ * folders). It is a workflow of its own, named `_added-N`. Prints the
+ * step's full name.
  */
 async function runAddStep(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const { args } = request

@@ -28,7 +28,7 @@ UPDATE "named_workflows" AS n SET "name" = f.new FROM (
     FROM "named_workflows"
   ) ranked
 ) AS f WHERE n.id = f.id AND f.old <> f.new;--> statement-breakpoint
--- A workspace that brought its own graph names its workflow, which its
--- steps are known by from its next life.
-UPDATE "workspaces" SET "workflow_name" = substr(md5("workspace_id"), 1, 4)
+-- A workspace that brought its own graph names its workflow `_steps`, as a
+-- start does, which its steps are known by from its next life.
+UPDATE "workspaces" SET "workflow_name" = '_steps'
   WHERE "workflow_id" IS NOT NULL AND "workflow_name" IS NULL;

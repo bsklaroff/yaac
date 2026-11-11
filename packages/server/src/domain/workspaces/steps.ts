@@ -8,7 +8,7 @@ import { workspaceDriver } from '#drivers/driver'
 import { KEEPER_WINDOW, type RuntimeSnapshot, type WorkspaceWindow } from '#drivers/contract'
 import path from 'node:path'
 import { authorizeProject, systemPrincipal, type Actor } from '#domain/access'
-import { assertWorkflowRepos, mintWorkflowName, projectRepoIds, resolveWorkflow } from '#domain/projects'
+import { assertWorkflowRepos, projectRepoIds, resolveWorkflow } from '#domain/projects'
 import {
   applyWorkspaceEvent,
   findWorkspaceRow,
@@ -167,8 +167,8 @@ async function liveWorkspace(p: { projectId: string; workspaceId: string; jobNam
  * Add steps to a running workspace (docs/workspace-steps.md): a named
  * workflow's current graph under its name, refused when the workspace lacks
  * a repo it names or already runs it in this life; or a graph of its own,
- * stored as a workflow with `repos` (folders or ids) and given a short name
- * of its own. A bare need of such a graph that names none of its steps
+ * stored as a workflow with `repos` (folders or ids) and named `_added-N`
+ * (`nextAdded`). A bare need of such a graph that names none of its steps
  * names a step of the life, while only one workflow has a step of that
  * name, and is stored in full. A `<workflow>.<step>` need must name a step
  * of the life. Answers with the new steps; they start once their needs are
@@ -185,6 +185,7 @@ export async function addSteps(
   if (live === undefined) throw new ServerError('CONFLICT', `workspace ${workspace.workspaceId.slice(0, 8)} is not running`)
   const have = (await listWorkspaceRepos(live.workspaceId)).map((c) => c.repoId)
   let workflow: { id: string; name: string; steps: StepGraph }
+  let added: number | undefined
   if ('workflow' in add) {
     const named = await resolveWorkflow(live.projectId, add.workflow)
     if (live.steps.some((s) => s.workflowName === named.name)) {
@@ -202,14 +203,39 @@ export async function addSteps(
       throw new ServerError('VALIDATION', (err as Error).message)
     }
     const stored = await storeWorkflow(live.projectId, { steps: graph, secrets: [], repos })
-    const name = await mintWorkflowName(live.projectId, [...live.steps.map((s) => s.workflowName), live.row.workflowName ?? ''])
-    workflow = { id: stored.id, name, steps: graph }
+    added = await nextAdded(live.workspaceId)
+    workflow = { id: stored.id, name: `${ADDED}${added}`, steps: graph }
   }
   if (Object.keys(workflow.steps).length === 0) throw new ServerError('VALIDATION', 'no steps to add')
   checkPlacement(workflow.name, workflow.steps, live.steps)
-  const rows = await insertAddedSteps(live.projectId, live.workspaceId, live.life, { id: workflow.id, name: workflow.name }, workflow.steps)
+  let rows: StepRow[] | undefined
+  while (rows === undefined) {
+    try {
+      rows = await insertAddedSteps(live.projectId, live.workspaceId, live.life, { id: workflow.id, name: workflow.name }, workflow.steps)
+    } catch (err) {
+      if (added === undefined || !(err instanceof ServerError && err.code === 'CONFLICT')) throw err
+      added += 1
+      workflow.name = `${ADDED}${added}`
+    }
+  }
   await reconcileOne(workspace)
   return rows.map((r) => toStepEntry(r))
+}
+
+/** The prefix of the name a workflow added with no name of its own gets. A
+ *  chosen name never starts with `_` (docs/workspace-steps.md). */
+const ADDED = '_added-'
+
+/**
+ * The number for the next workflow added to a workspace with no name of
+ * its own: one past the highest of any of its lives, so a name never
+ * repeats in its history. An add racing this one can pick the same number,
+ * which `insertAddedSteps` refuses, so `addSteps` tries the next.
+ */
+async function nextAdded(workspaceId: string): Promise<number> {
+  const taken = (await listWorkspaceSteps(workspaceId))
+    .map((s) => s.workflowName.startsWith(ADDED) ? Number(s.workflowName.slice(ADDED.length)) : 0)
+  return Math.max(0, ...taken.filter(Number.isSafeInteger)) + 1
 }
 
 /** A graph given to `addSteps` with each bare need that names none of its
