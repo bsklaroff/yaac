@@ -11,10 +11,7 @@ expected while the source install owns the link. To switch back later:
 ## macOS (arm64)
 
 ```sh
-brew trust bsklaroff/yaac
-brew trust libkrun/krun
-brew tap libkrun/krun
-brew install node pnpm kubernetes-cli podman kind bsklaroff/yaac/yaac-krunkit
+brew install node pnpm kubernetes-cli podman kind krunkit
 brew install tmux socat fd ripgrep   # for the containerless driver
 
 # Download and install yaac

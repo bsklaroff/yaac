@@ -271,7 +271,7 @@ every hostPath stays the host path. Grouped by what matters for mounting:
 **Ownership on Apple's virtiofs.** Virtualization.framework's virtiofs does
 not report real ownership. Every file in a share appears to be owned by the
 process looking at it ([lima#1513](https://github.com/lima-vm/lima/issues/1513)).
-That is why the k8s path on macOS needs the patched `yaac-krunkit`
+That is why the k8s path on macOS needs krunkit's complete permission mode
 (docs/cluster-setup.md): there, gVisor's root gofer is the process looking,
 so every file appears root-owned and the workspace uid cannot write. Here
 the guest kernel accesses files on behalf of the agent, so files appear

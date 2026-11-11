@@ -64,6 +64,7 @@ import { isNfsFamily } from './storage'
 import { NODE_PIDS_LIMIT } from './check'
 import { ensureRootfulPodmanHost, ROOTFUL_PODMAN_SOCKET } from './podman'
 import { SERVER_FRONT_PORT } from '#drivers/k8s/substrate'
+import { shellQuote } from '#lib/shell'
 import { BYO_INSTALL_IDENTITY, deployServerWorkload } from './server-deploy'
 import { TAILNET_HOSTNAME, kindFronting, serveFronting, tailnetFronting } from './server-fronting'
 import { ensureTailnetOperator, verifyTailnetOperator } from './tailscale-operator'
@@ -169,7 +170,8 @@ export interface ClusterInstallDeps {
   totalmem: () => number
   cpuCount: () => number
   readTextFile: (p: string) => Promise<string | null>
-  writeTextFile: (p: string, content: string) => Promise<void>
+  /** Creates the file with `mode` when one is given. */
+  writeTextFile: (p: string, content: string, mode?: number) => Promise<void>
   /** HTTP GET of a text asset (the Calico manifest), injectable for tests. */
   fetchText: (url: string) => Promise<string>
   listDir: (p: string) => Promise<string[]>
@@ -211,9 +213,9 @@ function defaultDeps(): ClusterInstallDeps {
     totalmem: () => os.totalmem(),
     cpuCount: () => os.cpus().length,
     readTextFile: (p) => fs.readFile(p, 'utf8').catch(() => null),
-    writeTextFile: async (p, content) => {
+    writeTextFile: async (p, content, mode) => {
       await fs.mkdir(path.dirname(p), { recursive: true })
-      await fs.writeFile(p, content)
+      await fs.writeFile(p, content, { mode })
     },
     listDir: (p) => fs.readdir(p).catch(() => [] as string[]),
     fetchText: async (url) => {
@@ -1301,12 +1303,12 @@ function containersConfValue(sources: string[], section: string, key: string): s
 /**
  * The `.conf` drop-ins of containers.conf.d dirs, given highest priority
  * first: pooled by file name (the higher-priority dir's copy wins), then
- * sorted by name.
+ * sorted by name. `except` names one to leave out.
  */
-async function readDropIns(deps: ClusterInstallDeps, dirs: string[]): Promise<string[]> {
+async function readDropIns(deps: ClusterInstallDeps, dirs: string[], except?: string): Promise<string[]> {
   const byName = new Map<string, string>()
   for (const dir of dirs) {
-    for (const f of (await deps.listDir(dir)).filter((f) => f.endsWith('.conf'))) {
+    for (const f of (await deps.listDir(dir)).filter((f) => f.endsWith('.conf') && f !== except)) {
       if (!byName.has(f)) byName.set(f, path.join(dir, f))
     }
   }
@@ -1340,10 +1342,14 @@ interface MachineListEntry {
   VMType?: string
 }
 
-async function listMachines(deps: ClusterInstallDeps): Promise<MachineListEntry[]> {
-  const { stdout } = await deps.run('podman', ['machine', 'list', '--format', 'json'])
-  const parsed = JSON.parse(stdout || '[]') as MachineListEntry[] | null
-  return parsed ?? []
+/** The machine podman commands act on by default, if any exists. */
+async function defaultMachine(deps: ClusterInstallDeps): Promise<MachineListEntry | undefined> {
+  let machines: MachineListEntry[] = []
+  try {
+    const { stdout } = await deps.run('podman', ['machine', 'list', '--format', 'json'])
+    machines = (JSON.parse(stdout || '[]') as MachineListEntry[] | null) ?? []
+  } catch { /* an unreadable list is treated as no machine */ }
+  return machines.find((m) => m.Default) ?? machines[0]
 }
 
 async function machineRootful(deps: ClusterInstallDeps, name: string): Promise<boolean> {
@@ -1352,11 +1358,108 @@ async function machineRootful(deps: ClusterInstallDeps, name: string): Promise<b
   return parsed[0]?.Rootful === true
 }
 
-function providerDropinPath(deps: ClusterInstallDeps): string {
-  return path.join(
-    deps.homedir(), '.config', 'containers', 'containers.conf.d',
-    '99-yaac-machine-provider.conf',
+/** podman's built-in macOS search path for the programs it starts (krunkit, gvproxy). */
+const PODMAN_HELPER_DIRS = [
+  '$BINDIR/../libexec/podman',
+  '/usr/local/opt/podman/libexec/podman',
+  '/opt/homebrew/opt/podman/libexec/podman',
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+  '/usr/local/libexec/podman',
+  '/usr/local/lib/podman',
+  '/usr/libexec/podman',
+  '/usr/lib/podman',
+]
+
+/**
+ * The helper directories the user's own containers.conf sources leave in
+ * effect, else podman's defaults. A later source replaces the list unless
+ * it carries `{append=true}`.
+ */
+function helperBinariesDirs(sources: string[]): string[] {
+  let dirs = PODMAN_HELPER_DIRS
+  for (const src of sources) {
+    try {
+      const listed = (parseToml(src) as { engine?: { helper_binaries_dir?: unknown } }).engine?.helper_binaries_dir
+      if (!Array.isArray(listed)) continue
+      const named = listed.filter((d): d is string => typeof d === 'string')
+      const append = listed.some((d) => (d as { append?: unknown } | null)?.append === true)
+      dirs = append ? [...dirs, ...named] : named
+    } catch { /* not valid TOML: ignore this source */ }
+  }
+  return dirs
+}
+
+/** Where podman reads the user's configuration. */
+function containersConfigDir(deps: ClusterInstallDeps): string {
+  return path.join(env.xdgConfigHome ?? path.join(deps.homedir(), '.config'), 'containers')
+}
+
+/** Where the `krunkit` wrapper lives: outside the data dir, which pods can write. */
+function krunkitWrapperPath(deps: ClusterInstallDeps): string {
+  return path.join(containersConfigDir(deps), 'yaac-helpers', 'krunkit')
+}
+
+function machineDropInPath(deps: ClusterInstallDeps): string {
+  return path.join(containersConfigDir(deps), 'containers.conf.d', '99-yaac-machine-provider.conf')
+}
+
+/**
+ * Point podman at the libkrun provider, started through a `krunkit` wrapper
+ * that asks for real file ownership on every shared folder. gVisor workspace
+ * pods need that and podman has no setting for it (docs/cluster-setup.md
+ * "macOS: the podman machine"). The drop-in replaces podman's list of
+ * helper directories, so it restates the one in effect after the wrapper's.
+ */
+async function writeMachineConfig(deps: ClusterInstallDeps): Promise<void> {
+  const wrapper = krunkitWrapperPath(deps)
+  const dropIn = machineDropInPath(deps)
+  // The wrapper itself is skipped, for a PATH that lists its directory.
+  const { stdout } = await deps.run('which', ['-a', 'krunkit']).catch(() => ({ stdout: '' }))
+  const krunkit = stdout.split('\n').map((l) => l.trim()).find((l) => l !== '' && l !== wrapper)
+  if (krunkit === undefined) {
+    throw new ClusterInstallError(
+      `krunkit is not on PATH, and the podman machine runs on it. It comes with:\n${YAAC_CLUSTER_INSTALL}`,
+    )
+  }
+  const sources: string[] = []
+  const base = await deps.readTextFile(path.join(containersConfigDir(deps), 'containers.conf'))
+  if (base !== null) sources.push(base)
+  sources.push(...await readDropIns(deps, [path.dirname(dropIn)], path.basename(dropIn)))
+  await deps.writeTextFile(
+    wrapper,
+    '#!/bin/sh\n'
+    + '# Written by `yaac cluster install`. podman starts its machine through\n'
+    + '# this instead of krunkit itself, so that each shared folder reports its\n'
+    + '# files\' real owners. krunkit otherwise reports whoever is looking, and\n'
+    + '# gVisor workspace pods then cannot write their volumes.\n'
+    + 'for arg do\n'
+    + '  shift\n'
+    + '  case $arg in virtio-fs,*) arg=$arg,permissionSemantics=complete ;; esac\n'
+    + '  set -- "$@" "$arg"\n'
+    + 'done\n'
+    + `exec ${shellQuote(krunkit)} "$@"\n`,
+    0o755,
   )
+  await deps.writeTextFile(
+    dropIn,
+    '# Written by `yaac cluster install`: the podman machine runs on libkrun,\n'
+    + '# started through the krunkit wrapper in the first directory below.\n'
+    + '[machine]\nprovider = "libkrun"\n\n'
+    + `[engine]\nhelper_binaries_dir = ${JSON.stringify([path.dirname(wrapper), ...helperBinariesDirs(sources)])}\n`,
+  )
+}
+
+/**
+ * Whether the machine's shared folders report real file ownership. Without
+ * the wrapper a file belongs to whoever looks at it, so root sees itself as
+ * the owner of the home directory.
+ */
+async function sharesRealOwnership(deps: ClusterInstallDeps, machine: string): Promise<boolean> {
+  const { stdout } = await deps.run(
+    'podman', ['machine', 'ssh', machine, `sudo stat -c %u ${shellQuote(deps.homedir())}`],
+  )
+  return stdout.trim() !== '0'
 }
 
 async function initMachine(deps: ClusterInstallDeps): Promise<void> {
@@ -1368,45 +1471,20 @@ async function initMachine(deps: ClusterInstallDeps): Promise<void> {
     ])
   } catch (err) {
     throw new ClusterInstallError(
-      `podman machine init failed (${err instanceof Error ? err.message : String(err)}).\n`
-      + `Is yaac's patched krunkit installed? It comes with:\n${YAAC_CLUSTER_INSTALL}`,
+      `podman machine init failed (${err instanceof Error ? err.message : String(err)}).`,
     )
   }
 }
 
 /**
- * Set up the macOS podman machine:
- *   - provider libkrun, via a containers.conf.d drop-in. Its virtiofs
- *     reports real file ownership; with applehv/vz, gVisor's root gofer
- *     sees every file as root-owned and non-root workspaces cannot write
- *     hostPath mounts;
- *   - rootful (kind's podman provider requires it).
+ * Set up the macOS podman machine (docs/cluster-setup.md "macOS: the podman
+ * machine"): on the libkrun provider with real file ownership on its shared
+ * folders, and rootful, which kind's podman provider requires. A machine
+ * found running without the wrapper is restarted through it.
  */
 async function ensurePodmanMachineSetup(deps: ClusterInstallDeps): Promise<void> {
-  // Provider: base containers.conf, then conf.d drop-ins (later wins).
-  const confDir = path.join(deps.homedir(), '.config', 'containers')
-  const sources: string[] = []
-  const base = await deps.readTextFile(path.join(confDir, 'containers.conf'))
-  if (base !== null) sources.push(base)
-  sources.push(...await readDropIns(deps, [path.join(confDir, 'containers.conf.d')]))
-  if (containersConfValue(sources, 'machine', 'provider') !== 'libkrun') {
-    deps.log('Setting the podman machine provider to libkrun '
-      + '(gVisor session pods need its ownership-preserving virtiofs)...')
-    await deps.writeTextFile(
-      providerDropinPath(deps),
-      '# Written by `yaac cluster install`: gVisor session pods need the VM\'s\n'
-      + '# file sharing to report real file ownership — the runsc gofer does\n'
-      + '# hostPath I/O as root while the sentry enforces permissions on the\n'
-      + '# ownership the gofer sees. libkrun\'s virtiofs passes ownership\n'
-      + '# through; applehv/vz virtiofs reports the accessing process as every\n'
-      + '# file\'s owner, so the root gofer sees root-owned files and non-root\n'
-      + '# session uids cannot write hostPath mounts.\n'
-      + '[machine]\nprovider = "libkrun"\n',
-    )
-  }
-
-  const machines = await listMachines(deps).catch(() => [] as MachineListEntry[])
-  const machine = machines.find((m) => m.Default) ?? machines[0]
+  await writeMachineConfig(deps)
+  const machine = await defaultMachine(deps)
 
   if (machine && machine.VMType !== undefined && machine.VMType !== 'libkrun') {
     const replace = await deps.confirm(
@@ -1430,13 +1508,26 @@ async function ensurePodmanMachineSetup(deps: ClusterInstallDeps): Promise<void>
     await deps.run('podman', ['machine', 'set', '--rootful', machine.Name])
   }
 
+  const name = await startMachine(deps)
+  if (name === undefined || await sharesRealOwnership(deps, name)) return
+  deps.log(`Restarting podman machine "${name}" so its shared folders report real file ownership...`)
+  await deps.run('podman', ['machine', 'stop', name])
   await startMachine(deps)
+  if (!(await sharesRealOwnership(deps, name))) {
+    throw new ClusterInstallError(
+      `Podman machine "${name}" reports whoever reads a shared file as its owner, so workspace `
+      + `pods could not write their volumes. podman did not start it through ${krunkitWrapperPath(deps)}: `
+      + `${machineDropInPath(deps)} is not in effect. Check the environment for CONTAINERS_CONF, `
+      + 'CONTAINERS_CONF_OVERRIDE and CONTAINERS_HELPER_BINARY_DIR, and for a later drop-in that sets '
+      + 'helper_binaries_dir.',
+    )
+  }
 }
 
-async function startMachine(deps: ClusterInstallDeps): Promise<void> {
-  const machines = await listMachines(deps).catch(() => [] as MachineListEntry[])
-  const machine = machines.find((m) => m.Default) ?? machines[0]
-  if (!machine || machine.Running) return
+/** Start the default machine unless it is running. Returns its name, if one exists. */
+async function startMachine(deps: ClusterInstallDeps): Promise<string | undefined> {
+  const machine = await defaultMachine(deps)
+  if (!machine || machine.Running) return machine?.Name
 
   deps.log('Starting the podman machine...')
   try {
@@ -1444,11 +1535,7 @@ async function startMachine(deps: ClusterInstallDeps): Promise<void> {
   } catch (err) {
     const stderr = ((err as { stderr?: string })?.stderr ?? '')
       + (err instanceof Error ? err.message : '')
-    // An upgrade that dropped yaac's krunkit leaves a libkrun machine that
-    // can no longer start, so name the formula that brings it back.
-    throw new ClusterInstallError(
-      `podman machine start failed:\n  ${stderr.trim().split('\n')[0]}\n`
-      + `Is yaac's patched krunkit installed? It comes with:\n${YAAC_CLUSTER_INSTALL}`,
-    )
+    throw new ClusterInstallError(`podman machine start failed:\n  ${stderr.trim().split('\n')[0]}`)
   }
+  return machine.Name
 }

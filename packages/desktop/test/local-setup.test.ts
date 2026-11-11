@@ -107,9 +107,8 @@ describe('createSetupRunner', () => {
       'cluster install': 'echo "kind: creating cluster"; echo "no podman machine" >&2; exit 3',
     })
     await fake('brew', {
-      'trust --tap --json=v1': 'echo \'["bsklaroff/yaac", "libkrun/krun"]\'',
+      'trust --tap --json=v1': 'echo \'["bsklaroff/yaac"]\'',
       'list --formula --versions yaac-cluster': 'exit 1',
-      'tap': 'printf "homebrew/core\\nlibkrun/krun\\n"',
       'install bsklaroff/yaac/yaac-cluster': 'echo installed',
     })
     const { setup } = runner()
@@ -117,15 +116,13 @@ describe('createSetupRunner', () => {
     expect(await setup.run('cluster', false))
       .toEqual({ ok: false, error: 'yaac cluster install exited with code 3' })
     // Only the missing formula and the install itself ran.
-    expect((await called()).filter((c) => !/ (list|--json)/.test(c) && c !== 'brew tap'))
+    expect((await called()).filter((c) => !/ (list|--json)/.test(c)))
       .toEqual(['brew install bsklaroff/yaac/yaac-cluster', 'yaac cluster install'])
     const run = setup.current()!
     expect(run.phase).toBe('failed')
     expect(run.steps.map((s) => [s.label, s.state, s.note])).toEqual([
       ['Trust the yaac tap', 'skipped', 'already trusted'],
       ['Install the yaac CLI', 'skipped', 'already installed'],
-      ['Trust the libkrun tap', 'skipped', 'already trusted'],
-      ['Add the libkrun tap', 'skipped', 'already added'],
       ['Install the cluster tools', 'done', undefined],
       ['Install the cluster', 'failed', 'exited with code 3'],
     ])
@@ -145,8 +142,7 @@ describe('createSetupRunner', () => {
     })
     expect(await relaunched.run('cluster', false)).toEqual({ ok: true })
     expect(relaunched.current()!.steps.map((s) => s.note)).toEqual([
-      'nothing to install from it', 'already installed', 'nothing to install from it', 'nothing to install from it',
-      'already installed', undefined,
+      'nothing to install from it', 'already installed', 'already installed', undefined,
     ])
     expect(relaunched.unfinished()).toEqual([])
     expect(JSON.parse(await fs.readFile(path.join(dir, 'unfinished.json'), 'utf8'))).toEqual([])
@@ -189,7 +185,7 @@ describe('createSetupRunner', () => {
   it('confirms a setup by naming its commands and the taps it trusts', () => {
     const { message, detail } = setupConfirmation('cluster', false)
     expect(message).toBe('Set up a local kubernetes cluster on this Mac?')
-    expect(detail).toContain('trusts the Homebrew taps bsklaroff/yaac and libkrun/krun (third-party, not yaac\'s)')
+    expect(detail).toContain('trusts the Homebrew tap bsklaroff/yaac, which')
     // One command per line.
     expect(detail).toContain('already done:\n  brew trust bsklaroff/yaac\n  brew install bsklaroff/yaac/yaac-server\n')
     expect(setupConfirmation('server', false).detail).toContain('trusts the Homebrew tap bsklaroff/yaac, which')
