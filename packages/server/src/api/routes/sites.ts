@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { projectRef, zv } from '#routes/validator'
+import { repoStartSchema } from '@yaac/shared/types'
 import {
   createSite,
   deleteSite,
@@ -51,10 +52,10 @@ export const siteApp = new Hono<IdentityEnv>()
       adminPort: port.optional(),
       workflow: z.string().min(1),
       volume: z.string().min(1).optional(),
-      // The repo its releases are built from, by its folder or id; a
-      // project with one repo needs none.
-      repo: z.string().min(1).max(255).optional(),
-      followBranch: z.string().min(1).optional(),
+      // The repos its releases start with, by folder or id, each at a
+      // branch or a full commit.
+      repos: z.array(repoStartSchema).min(1),
+      follow: z.boolean().optional(),
     })),
     async (c) => {
       const { project, ...input } = c.req.valid('json')
@@ -70,7 +71,9 @@ export const siteApp = new Hono<IdentityEnv>()
       adminPort: port.nullable().optional(),
       workflow: z.string().min(1).optional(),
       volume: z.string().min(1).nullable().optional(),
-      followBranch: z.string().min(1).nullable().optional(),
+      // The site's whole list of repos.
+      repos: z.array(repoStartSchema).min(1).optional(),
+      follow: z.boolean().optional(),
     })),
     async (c) => {
       const { project, name, ...input } = c.req.valid('json')
@@ -90,7 +93,10 @@ export const siteApp = new Hono<IdentityEnv>()
   .post(
     '/deploy',
     zv('json', siteRef.extend({
+      // A branch or full commit for a site of one repo; `refs` names one per
+      // repo, by folder or id. A repo not named takes its setting.
       ref: z.string().min(1).optional(),
+      refs: z.record(z.string().min(1).max(255), z.string().min(1)).optional(),
       timeoutMinutes: z.number().int().positive().optional(),
     })),
     async (c) => {

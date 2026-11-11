@@ -52,13 +52,16 @@ export interface StartSelection {
  * An untouched branch is the parent's, else the last one a create named for
  * the repo if origin still has it, else origin's default. The last-used
  * branch can't be submitted until the branch list confirms it; if the list
- * fails, it is dropped and the server picks origin's default.
+ * fails, it is dropped and the server picks origin's default. With
+ * `defaults` false (a site's form, where which branch is published is the
+ * owner's choice), an untouched branch is the seed's or empty.
  */
 export function useStartSelection(
   project: ProjectSummary | undefined,
   form: Pick<NewWorkspaceForm, 'repos' | 'nested' | 'cwd'>,
   seed: RepoSelection | undefined,
   queries: Record<string, string>,
+  defaults = true,
 ): StartSelection {
   const repos = project?.repos ?? []
   const seeded = (id: string): RepoStart | undefined => seed?.repos.find((r) => r.repo === id)
@@ -79,7 +82,7 @@ export function useStartSelection(
     const picked = form.repos?.[repo.id]?.branch
     const parent = seeded(repo.id)
     const fromParent = parent?.branch ?? parent?.commit
-    const last = repo.lastBranch !== undefined && !failed
+    const last = defaults && repo.lastBranch !== undefined && !failed
       && (data === undefined || data.branches.includes(repo.lastBranch))
       ? repo.lastBranch
       : undefined
@@ -89,7 +92,7 @@ export function useStartSelection(
     return {
       repo,
       included: isIncluded(repo),
-      branch: typedCommit ?? picked ?? fromParent ?? last ?? data?.defaultBranch ?? '',
+      branch: typedCommit ?? picked ?? fromParent ?? last ?? (defaults ? data?.defaultBranch : undefined) ?? '',
       query,
       ...(typedCommit !== undefined ? { typedCommit } : {}),
       ...(data !== undefined ? { branches: data.branches, defaultBranch: data.defaultBranch } : {}),

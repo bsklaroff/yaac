@@ -15,7 +15,7 @@ import {
 } from '#db'
 import { listedStatus, toConversationEntry, toSessionEntry } from './conversation-entry'
 import { HELD_PROMPT_GRACE_MS } from './conversation-registry'
-import { toStepEntry } from './steps'
+import { stepName, toStepEntry } from './steps'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
@@ -184,7 +184,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       ...base,
       ...workspaceStatus(entries, w, starting.size > 0),
       sessions: entries,
-      ...(w.windows !== undefined ? { terminals: terminalsOf(w.windows, sessions, steps.map((s) => s.name)) } : {}),
+      ...(w.windows !== undefined ? { terminals: terminalsOf(w.windows, sessions, steps.map(stepName)) } : {}),
       ...(steps.length > 0 ? { steps: steps.map((s) => toStepEntry(s, w.windows)) } : {}),
       ...(row?.lifeStartedAt !== undefined ? { life: row.lifeStartedAt.toISOString() } : {}),
       blockedHosts: w.blockedHosts,

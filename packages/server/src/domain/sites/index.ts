@@ -17,4 +17,4 @@ export {
   listProjectSiteEntries,
   showSite,
 } from './sites'
-export { deploySite, onSiteTimer, reconcileSites, startSite, stopSite } from './deploys'
+export { backfillSiteBranches, deploySite, onSiteTimer, reconcileSites, startSite, stopSite } from './deploys'

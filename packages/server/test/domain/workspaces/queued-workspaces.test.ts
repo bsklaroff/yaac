@@ -189,6 +189,10 @@ describe('queueWorkspace', () => {
     expect(own.workflow).toBeUndefined()
     await expect(queueWorkspace(local, PROJ, { parent: 'parent-1', prompt: 'z', steps: {}, workflow: 'ci' }, 'user'))
       .rejects.toThrow('not both')
+    // What it starts with is known, so a workflow it cannot run is refused now.
+    await createWorkflow(local, PROJ, { name: 'everywhere', steps: { t: { run: 'true' } }, repos: [PROJ] })
+    await expect(queueWorkspace(local, PROJ, { parent: 'parent-1', prompt: 'w', workflow: 'everywhere', repos: [] }, 'user'))
+      .rejects.toThrow('runs in')
   })
 
   // The parent's model is as its agent reported it, which anything in that

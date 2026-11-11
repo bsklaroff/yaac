@@ -6,6 +6,7 @@
  * `preferences` is the sample table.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -246,7 +247,7 @@ describe('openDb', () => {
         { id: QUEUED, repos: null },
         { id: DRAFT, repos: [{ repo: PLAIN, branch: 'dev' }] },
       ])
-      expect(await rows('SELECT repo_id FROM sites')).toEqual([{ repo_id: HOSTED }])
+      expect(await rows('SELECT repos FROM sites')).toEqual([{ repos: [{ repo: HOSTED }] }])
       // A share's approved branch is its source repo's; a commit is as it was.
       expect(await rows('SELECT ref FROM workflow_approvals ORDER BY ref')).toEqual([
         { ref: `${HOSTED}:refs/heads/main` }, { ref: 'abc123' },
@@ -346,6 +347,115 @@ describe('openDb', () => {
       for (const gone of ['mode', 'model', 'permission_mode', 'effort', 'pending_prompt', 'waiting_seen_by']) {
         expect(columns).not.toContain(gone)
       }
+    } finally {
+      await db.$client.close()
+    }
+  })
+
+  // A workflow's name follows a step's rule, so its `.` becomes `-`, one
+  // over 48 is cut, and a name that becomes another's gets a number; where
+  // a workspace recorded the name it follows. Steps of a life already
+  // running keep their bare names, and a workspace that brought its own
+  // graph names its workflow.
+  it('gives every step a workflow name, and workflow names a step name\'s rule', async () => {
+    const [P, F1, F2, F3, F4, F5, F6, F7, F8] = [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `0b0b0b0b-0000-4000-8000-00000000000${n}`)
+    const long = `${'a'.repeat(50)}`
+    const db = await seedBefore('key_steps_by_workflow', `
+      INSERT INTO projects (id, owner, name, added_at) VALUES ('${P}', (SELECT id FROM users LIMIT 1), 'p', '2026-01-01');
+      INSERT INTO workflows (id, project_id, steps, hash) VALUES ('${F1}', '${P}', '{}', 'h1');
+      INSERT INTO named_workflows (id, project_id, name, workflow_id, created_at) VALUES
+        ('${F2}', '${P}', 'web.init', '${F1}', '2026-01-01'), ('${F3}', '${P}', 'web-init', '${F1}', '2026-01-02'),
+        ('${F4}', '${P}', 'ci', '${F1}', '2026-01-03'), ('${F5}', '${P}', '${long}', '${F1}', '2026-01-04'),
+        ('${F6}', '${P}', 'a.b', '${F1}', '2026-01-05'), ('${F7}', '${P}', 'a-b', '${F1}', '2026-01-06'),
+        ('${F8}', '${P}', 'a-b-2', '${F1}', '2026-01-07');
+      INSERT INTO workspaces (project_id, workspace_id, workflow_id, workflow_name) VALUES
+        ('${P}', 'w-named', '${F1}', 'web.init'), ('${P}', 'w-own', '${F1}', NULL), ('${P}', 'w-init', NULL, NULL);
+      INSERT INTO workspace_steps (workspace_id, name, project_id, origin, spec, state, life, ordinal, workflow_id, workflow_name)
+        VALUES ('w-named', 'build', '${P}', 'start', '{"run":["make"]}', 'running', now(), 0, NULL, NULL),
+          ('w-named', 'lint', '${P}', 'added', '{"run":["lint"]}', 'pending', now(), 1, '${F1}', 'ci');
+    `)
+    try {
+      // A suffix from the id, which no other name can hold: `a-b-2` existing
+      // beside `a.b` would refuse a number.
+      const names = await db.$client.query<{ name: string }>('SELECT name FROM named_workflows ORDER BY created_at')
+      const suffixed = (base: string, id: string): string => `${base}-${createHash('md5').update(id).digest('hex').slice(0, 6)}`
+      expect(names.rows.map((r) => r.name))
+        .toEqual([suffixed('web-init', F2), 'web-init', 'ci', 'a'.repeat(48), suffixed('a-b', F6), 'a-b', 'a-b-2'])
+      const spaces = await db.$client.query<{ workspace_id: string; workflow_name: string | null }>(
+        'SELECT workspace_id, workflow_name FROM workspaces ORDER BY workspace_id')
+      expect(spaces.rows[0]).toEqual({ workspace_id: 'w-init', workflow_name: null })
+      expect(spaces.rows[1]).toEqual({ workspace_id: 'w-named', workflow_name: names.rows[0].name })
+      expect(spaces.rows[2].workflow_name).toMatch(/^[0-9a-f]{4}$/)
+      const steps = await db.$client.query<{ name: string; workflow_name: string }>(
+        'SELECT name, workflow_name FROM workspace_steps ORDER BY ordinal')
+      expect(steps.rows).toEqual([{ name: 'build', workflow_name: '' }, { name: 'lint', workflow_name: '' }])
+    } finally {
+      await db.$client.close()
+    }
+  })
+
+  // A project's init steps become init workflows: the named workflow it
+  // followed is marked, and a graph of its own becomes a marked named
+  // workflow `init`, or `init-steps` where the project already has an
+  // `init`.
+  it('turns each project\'s init steps into an init workflow', async () => {
+    const [FOLLOWS, OWN, CLASH, NONE, F, N1, N2] = [1, 2, 3, 4, 5, 6, 7].map((n) => `0c0c0c0c-0000-4000-8000-00000000000${n}`)
+    const db = await seedBefore('add_init_workflows', `
+      INSERT INTO projects (id, owner, name, added_at) VALUES
+        ('${FOLLOWS}', (SELECT id FROM users LIMIT 1), 'follows', '2026-01-01'),
+        ('${OWN}', (SELECT id FROM users LIMIT 1), 'own', '2026-01-01'),
+        ('${CLASH}', (SELECT id FROM users LIMIT 1), 'clash', '2026-01-01'),
+        ('${NONE}', (SELECT id FROM users LIMIT 1), 'none', '2026-01-01');
+      INSERT INTO workflows (id, project_id, steps, hash) VALUES ('${F}', '${FOLLOWS}', '{}', 'h');
+      INSERT INTO named_workflows (id, project_id, name, workflow_id) VALUES
+        ('${N1}', '${FOLLOWS}', 'setup', '${F}'), ('${N2}', '${CLASH}', 'init', '${F}');
+      UPDATE projects SET init_named_workflow_id = '${N1}' WHERE id = '${FOLLOWS}';
+      UPDATE projects SET init_workflow_id = '${F}' WHERE id IN ('${OWN}', '${CLASH}');
+    `)
+    try {
+      const rows = await db.$client.query<{ project: string; name: string; init: boolean }>(
+        'SELECT p.name AS project, n.name, n.init FROM named_workflows n JOIN projects p ON p.id = n.project_id ORDER BY p.name, n.name')
+      expect(rows.rows).toEqual([
+        { project: 'clash', name: 'init', init: false },
+        { project: 'clash', name: 'init-steps', init: true },
+        { project: 'follows', name: 'setup', init: true },
+        { project: 'own', name: 'init', init: true },
+      ])
+    } finally {
+      await db.$client.close()
+    }
+  })
+
+  // A site names its repos: the one it followed, at that branch, and one
+  // that followed nothing with no branch for the backfill to name. Each
+  // commit becomes a map of that repo to it, so a deploy in progress across
+  // the upgrade resumes.
+  it('gives each site its repos and commit maps', async () => {
+    const [P, REPO, F, N] = [1, 2, 3, 4].map((n) => `0d0d0d0d-0000-4000-8000-00000000000${n}`)
+    const [A, B] = ['a'.repeat(40), 'b'.repeat(40)]
+    const db = await seedBefore('add_site_repos', `
+      INSERT INTO projects (id, owner, name, added_at) VALUES ('${P}', (SELECT id FROM users LIMIT 1), 'p', '2026-01-01');
+      INSERT INTO workflows (id, project_id, steps, hash) VALUES ('${F}', '${P}', '{}', 'h');
+      INSERT INTO named_workflows (id, project_id, name, workflow_id) VALUES ('${N}', '${P}', 'serve', '${F}');
+      INSERT INTO sites (project_id, name, hostname, port, named_workflow_id, repo_id, follow_branch, release_commit,
+        deploy_workspace_id, deploy_commit, last_deploy_commit, failed_commit) VALUES
+        ('${P}', 'follows', 'f.example.com', 80, '${N}', '${REPO}', 'main', '${A}', 'w1', '${B}', '${A}', NULL),
+        ('${P}', 'fixed', 'x.example.com', 80, '${N}', '${REPO}', NULL, '${A}', 'w2', '${B}', NULL, '${B}');
+    `)
+    try {
+      const rows = await db.$client.query<Record<string, unknown>>(
+        `SELECT name, repos, follow, release_commits, deploy_commits, last_deploy_commits, failed_commits
+          FROM sites ORDER BY name`)
+      expect(rows.rows).toEqual([
+        {
+          name: 'fixed', repos: [{ repo: REPO }], follow: false, release_commits: { [REPO]: A },
+          deploy_commits: { [REPO]: B }, last_deploy_commits: null, failed_commits: { [REPO]: B },
+        },
+        {
+          name: 'follows', repos: [{ repo: REPO, branch: 'main' }], follow: true, release_commits: { [REPO]: A },
+          deploy_commits: { [REPO]: B }, last_deploy_commits: { [REPO]: A }, failed_commits: null,
+        },
+      ])
     } finally {
       await db.$client.close()
     }

@@ -34,7 +34,10 @@ import { clearQueuedLaunchesForTests } from '#domain/workspaces/queued-workspace
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { listQueuedWorkspaceRows, claimQueuedLaunch, failQueuedLaunch } from '#db/queued-workspace-store'
 import { getRoutineRow, setRoutinePaused as setRoutinePausedRow } from '#db/routine-store'
-import { BUILT_IN_USER_ID, getWorkspaceRow, listWorkspaceGroupRows, setTimeZone } from '#db'
+import { BUILT_IN_USER_ID, getWorkspaceRow, insertRepo, linkProjectRepo, listWorkspaceGroupRows, setTimeZone } from '#db'
+import fs from 'node:fs/promises'
+import { git } from '@yaac/test-utils/git'
+import { repoDir } from '@yaac/shared/project-paths'
 import { clearWorkspaceStopped, recordWorkspaceStopped, setWorkspaceDeadline } from '#db/workspace-store'
 import { closeDb, getDb } from '#db/client'
 import { workspaces } from '#db/schema'
@@ -76,6 +79,9 @@ const routine = (over: Partial<Parameters<typeof createRoutine>[2]> = {}) =>
 
 /** A non-interactive routine running the `relay` workflow, which gives
  *  its runs P8_KEY. */
+/** A second repo of the project, in the folder `docs`. */
+const DOCS = '0a0a0a0a-0000-4000-8000-0000000000dd'
+
 async function relayRoutine(principal: Parameters<typeof createRoutine>[0], over: Partial<Parameters<typeof createRoutine>[2]> = {}) {
   return await createRoutine(principal, PROJ, {
     name: 'Relay', cron: '*/5 * * * *', timeZone: 'UTC', nonInteractive: true, workflow: 'relay', ...over,
@@ -119,11 +125,21 @@ describe('createRoutine on a workflow', () => {
     expect(r).toMatchObject({ workflow: 'relay', selection: { repos: [{ repo: PROJ, branch: 'main' }], nested: false, cwd: PROJ } })
     expect((await listProjectWorkflows(PROJ))[0].approvedBranches).toEqual(['main'])
     expect((await relayRoutine(agent, { name: 'Again', branch: 'main' })).workflow).toBe('relay')
-    // Its secrets reach a run only at a commit of the one repo it starts
-    // with, so one that starts with none would fail at every tick.
-    await expect(relayRoutine(local, { name: 'Bare', repos: [] }))
-      .rejects.toMatchObject({ code: 'VALIDATION', message: /exactly one repo/ })
+    // One that starts with no repos runs only steps a person wrote.
+    expect((await relayRoutine(local, { name: 'Bare', repos: [] })).selection.repos).toEqual([])
     await expect(relayRoutine(local, { workflow: 'nope' })).rejects.toMatchObject({ code: 'NOT_FOUND' })
+
+    // Saved with two repos, a person approves the start of each.
+    await fs.cp(repoDir(PROJ), repoDir(DOCS), { recursive: true })
+    await insertRepo({ id: DOCS, owner: BUILT_IN_USER_ID, remoteUrl: 'https://example.com/docs' })
+    await linkProjectRepo(PROJ, DOCS, 'docs')
+    const commit = (await git(repoDir(PROJ), ['rev-parse', 'origin/main'])).trim()
+    await relayRoutine(local, { name: 'Two', repos: [{ repo: PROJ, branch: 'dev' }, { repo: 'docs', commit }] })
+    expect((await listProjectWorkflows(PROJ))[0]).toMatchObject({ approvedCommits: [commit], approvedBranches: expect.arrayContaining(['demo@dev']) as unknown })
+    // A routine whose workflow runs in a repo its runs lack is refused at save.
+    await createWorkflow(local, PROJ, { name: 'docs-ci', steps: { t: { run: 'true' } }, repos: ['docs'] })
+    await expect(relayRoutine(local, { name: 'Lacks', workflow: 'docs-ci', repos: [{ repo: PROJ, branch: 'main' }] }))
+      .rejects.toMatchObject({ code: 'VALIDATION', message: /runs in docs/ })
   })
 })
 

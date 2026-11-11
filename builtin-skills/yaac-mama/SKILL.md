@@ -161,11 +161,15 @@ pass — the server resolves who is calling and answers for that project only.
   - **`--workspace <id> --run "<cmd>"`** (repeat `--run` for more commands,
     run in order in one shell) adds a **step** to that running workspace, your
     own included, instead of a session: its output is logged, and the
-    webapp shows it. `--needs a,b` waits for those steps; `--service`
-    `[--ready <cmd>]` makes it a long-running one. It prints the step's name
-    (`--name`, else `run-…`); **`--wait`** blocks until it ends (a service
-    until ready) and exits with its exit code. `status <workspace> <step>`
-    reads where one stands, and `logs <workspace> <step>` what it printed.
+    webapp shows it. It is a workflow of its own with a short name, so it
+    prints the step's full name, `<workflow>.<step>` (its step name is
+    `--name`, else `run`). `--needs a,b` waits for those steps, each a full
+    name (`web-init.build`) or a bare one while only one workflow has it;
+    `--repo <dir>` runs it in that repo's checkout; `--service`
+    `[--ready <cmd>]` makes it a long-running one. **`--wait`** blocks until
+    it ends (a service until ready) and exits with its exit code.
+    `status <workspace> <step>` reads where one stands, and
+    `logs <workspace> <step>` what it printed.
   - Commands you hand a workspace this way (`--steps`, `--run`) run as the
     workspace does, so they need you to be at `bypass`.
 
@@ -499,7 +503,7 @@ pass — the server resolves who is calling and answers for that project only.
 
 - **`logs <workspace>`** — a workspace's steps, running or stopped (a CI
   run's, a site release's, or ones added with `--run`), in order: each one's
-  state (`(service)` marks a long-running one), exit code, the steps it
+  full name (`<workflow>.<step>`), state (`(service)` marks a long-running one), exit code, the steps it
   needs, and how much it has logged. A stopped workspace's unfinished
   steps show as `stopped`. **`logs <workspace> <step>`** prints the end of
   what that step's window printed in its latest run (at most its last

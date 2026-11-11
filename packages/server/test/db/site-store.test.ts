@@ -10,6 +10,7 @@ import {
   insertSite,
   listProjectSites,
   listSiteReleases,
+  siteBuiltFrom,
   listSites,
   listVolumeSites,
   siteNames,
@@ -38,7 +39,10 @@ const site = async (projectId: string, name: string, hostname: string, volumeId?
   const workflow = await storeWorkflow(projectId, { steps: APP, secrets: [] })
   await insertNamedWorkflow(projectId, `${name}-${hostname}`, workflow.id)
   const named = await findNamedWorkflow(projectId, `${name}-${hostname}`)
-  return await insertSite({ projectId, repoId: projectId, name, hostname, port: 3000, namedWorkflowId: named!.id, ...(volumeId !== undefined ? { volumeId } : {}) })
+  return await insertSite({
+    projectId, repos: [{ repo: projectId, branch: 'main' }], follow: false, name, hostname, port: 3000, namedWorkflowId: named!.id,
+    ...(volumeId !== undefined ? { volumeId } : {}),
+  })
 }
 
 describe('insertSite', () => {
@@ -140,13 +144,28 @@ describe('listVolumeSites', () => {
 })
 
 describe('listSiteReleases', () => {
-  it('lists a site\'s releases newest first, up to the limit', async () => {
+  it('lists a site\'s releases newest first, up to the limit, each with its checkouts', async () => {
     const a = await site(PROJ, 'a', 'a.example.com')
     for (const id of ['r1', 'r2', 'r3']) {
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: id, siteId: a.id })
+      await recordWorkspaceCreated({
+        projectId: PROJ, workspaceId: id, siteId: a.id,
+        repos: id === 'r3' ? [{ repoId: PROJ, path: 'web' }, { repoId: OTHER, path: 'api' }] : [{ repoId: PROJ, path: '' }],
+      })
       await new Promise((r) => setTimeout(r, 5))
     }
     await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'dev' })
-    expect((await listSiteReleases(a.id, 2)).map((r) => r.workspaceId)).toEqual(['r3', 'r2'])
+    const releases = await listSiteReleases(a.id, 2)
+    expect(releases.map((r) => r.workspaceId)).toEqual(['r3', 'r2'])
+    expect(releases[0].checkouts.map((c) => [c.repoId, c.path])).toEqual([[OTHER, 'api'], [PROJ, 'web']])
+    expect(releases[1].checkouts.map((c) => [c.repoId, c.path])).toEqual([[PROJ, '']])
+  })
+})
+
+describe('siteBuiltFrom', () => {
+  it('is true of a repo in its repos or among the commits its last release ran', async () => {
+    const a = await site(PROJ, 'a', 'a.example.com')
+    expect(siteBuiltFrom(a, PROJ)).toBe(true)
+    expect(siteBuiltFrom(a, OTHER)).toBe(false)
+    expect(siteBuiltFrom({ ...a, releaseCommits: { [OTHER]: 'c'.repeat(40) } }, OTHER)).toBe(true)
   })
 })

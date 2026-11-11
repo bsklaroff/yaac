@@ -6,26 +6,70 @@
  */
 import fs from 'node:fs/promises'
 import type { WorkspacePaths } from '#drivers/contract'
-import { applyWorkspaceEvent, getWorkflow, type WorkspaceRow } from '#db'
-import { initWorkflowOf } from '#domain/projects'
+import { applyWorkspaceEvent, getWorkflow, type LifeWorkflow, type WorkspaceRow } from '#db'
+import { listInitWorkflows, missingRepos } from '#domain/projects'
 import { openSandboxDir } from '#runtime/agents'
 import { lifeHooksConfig, sourceHooksCommand } from '#runtime/terminals'
 import type { ConfinedRoot } from '#lib/confined-fs'
 import { terminalLogDir } from '@yaac/shared/project-paths'
-import { lifeDirName, type StepGraph } from '@yaac/shared/steps'
+import { findCycle, fullNeed, lifeDirName, stepFullName } from '@yaac/shared/steps'
 
-/** A workspace's start graph: the workflow its create brought, else its
- *  project's current init steps (docs/workflows.md). */
-export async function startStepsOf(projectId: string, row: Pick<WorkspaceRow, 'workflowId'> | undefined): Promise<StepGraph> {
-  const own = row?.workflowId !== undefined ? await getWorkflow(row.workflowId) : undefined
-  return own?.steps ?? (await initWorkflowOf(projectId))?.workflow.steps ?? {}
+/** The workflows a life starts, and the init workflows it skips for lack
+ *  of a repo, with the folders it lacks. */
+export interface LifeStart {
+  flows: LifeWorkflow[]
+  skipped: Array<{ name: string; missing: string[] }>
 }
 
-/** Record a new life starting `graph`, before any window of it opens.
+/**
+ * A workspace's start workflows (docs/workflows.md "Init workflows"): the
+ * workflow its create brought, under the name it has there, else each of
+ * its project's init workflows whose repos `repoIds` (its checkouts) has.
+ * A step in a cycle through several workflows starts skipped.
+ */
+export async function startStepsOf(
+  projectId: string,
+  row: Pick<WorkspaceRow, 'workflowId' | 'workflowName'> | undefined,
+  repoIds: string[],
+): Promise<LifeStart> {
+  const own = row?.workflowId !== undefined ? await getWorkflow(row.workflowId) : undefined
+  if (own !== undefined) return { flows: [{ id: own.id, name: row?.workflowName ?? '', steps: own.steps }], skipped: [] }
+  const flows: LifeWorkflow[] = []
+  const skipped: LifeStart['skipped'] = []
+  for (const w of await listInitWorkflows(projectId)) {
+    const missing = await missingRepos(projectId, w.workflow.repos, repoIds)
+    if (missing.length > 0) skipped.push({ name: w.name, missing })
+    else flows.push({ id: w.workflow.id, name: w.name, steps: w.workflow.steps })
+  }
+  return { flows: skipCycles(flows), skipped }
+}
+
+/** Mark the steps of a cycle through several workflows skipped, as a step
+ *  whose need can never be met. */
+function skipCycles(flows: LifeWorkflow[]): LifeWorkflow[] {
+  if (flows.length < 2) return flows
+  const graph: Record<string, string[]> = {}
+  for (const f of flows) {
+    for (const [name, spec] of Object.entries(f.steps)) {
+      graph[stepFullName(f.name, name)] = (spec.needs ?? []).map((n) => fullNeed(f.name, n))
+    }
+  }
+  const cyclic = new Set<string>()
+  for (let cycle = findCycle(graph); cycle !== undefined; cycle = findCycle(graph)) {
+    for (const name of cycle) {
+      cyclic.add(name)
+      graph[name] = []
+    }
+  }
+  if (cyclic.size === 0) return flows
+  return flows.map((f) => ({ ...f, skip: Object.keys(f.steps).filter((n) => cyclic.has(stepFullName(f.name, n))) }))
+}
+
+/** Record a new life starting `flows`, before any window of it opens.
  *  Resolves with when it started, which names its log dir. */
-export async function recordLife(projectId: string, workspaceId: string, graph: StepGraph): Promise<Date> {
+export async function recordLife(projectId: string, workspaceId: string, flows: LifeWorkflow[]): Promise<Date> {
   const at = new Date()
-  await applyWorkspaceEvent({ type: 'workspace-life-started', projectId, workspaceId, at, startSteps: graph })
+  await applyWorkspaceEvent({ type: 'workspace-life-started', projectId, workspaceId, at, startSteps: flows })
   return at
 }
 

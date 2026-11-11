@@ -182,14 +182,9 @@ repo deletes the bare repository, the only copy of its code. It deletes no
 workspace: one that holds a checkout keeps its files and commits, with no
 remote, and still restarts with that checkout as it stands (one that has
 lost it cannot make it again). A create in flight that starts with the repo
-is stopped, and a delete is refused while a site is built from the repo.
+is stopped, and a delete is refused while a site is built from the repo or
+a named workflow of a project linking it names it.
 Those checkouts borrow their objects from the main clone, so while
 any workspace holds one, the main clone and the repo's row (marked deleted,
 linkable by no one) stay, and the delete lists the workspaces holding it.
 Once those workspaces are deleted the server removes both.
-
-## Limits
-
-A public site and a workflow with run secrets both name one commit, so each
-needs a workspace with exactly one repo; a site records which repo it is
-built from (`sites.repoId`).

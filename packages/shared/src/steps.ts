@@ -1,9 +1,10 @@
 /**
  * A workspace's steps (docs/workspace-steps.md): named lists of shell
  * commands, each run in a tmux window of its own and ordered by `needs`.
- * One parser serves every source of a graph: a project's init steps, the
- * graph a create brings in their place, and steps added to a running
- * workspace.
+ * Every step belongs to a workflow with a name in its workspace, and is
+ * known as `<workflow>.<step>`. One parser serves every source of a graph:
+ * a project's init workflows, the graph a create brings in their place, and
+ * steps added to a running workspace.
  */
 import { z } from 'zod'
 import { AGENT_TOOLS } from './types'
@@ -34,7 +35,12 @@ export type StepOrigin = 'start' | 'added'
 
 /** A step as the API answers it. */
 export interface WorkspaceStep {
+  /** Its full name, `<workflow>.<step>`, which names its window, its log
+   *  and its pane; a bare name for a step of a life started before steps
+   *  had workflows. */
   name: string
+  /** The name its workflow has in this workspace; '' for such a step. */
+  workflow: string
   origin: StepOrigin
   spec: StepSpec
   state: StepState
@@ -60,27 +66,40 @@ export function stepSatisfiesNeeds(state: StepState): boolean {
   return state === 'succeeded' || state === 'ready'
 }
 
-const STEP_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$/
+/** A step's name, and a workflow's: no `.`, so a full name splits one way. */
+const NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$/
+
+/** Whether `name` may name a step or a workflow. */
+export function isStepName(name: string): boolean {
+  return NAME_PATTERN.test(name)
+}
+
+export const NAME_RULE = 'letters, digits, "-" and "_", starting with a letter or digit, at most 48 long'
+
+/** A step's full name: `<workflow>.<step>`, or the bare name for a step
+ *  whose workflow has no name (a life started before steps had one). */
+export function stepFullName(workflow: string, step: string): string {
+  return workflow === '' ? step : `${workflow}.${step}`
+}
+
+/** A need as a full name: a bare one names a step of the same workflow. */
+export function fullNeed(workflow: string, need: string): string {
+  return need.includes('.') ? need : stepFullName(workflow, need)
+}
 
 const AGENT_TOOL = `(?:${AGENT_TOOLS.join('|')})`
 
 /**
  * Whether a tmux window is an agent session's (`claude-c09f7077`), by the
- * same `<tool>-*` match as the log hook (`lifeHooksConfig`). An `acp`
- * session's window is logged, but only for its chat pane to offer once the
- * agent exits, so it is left out of the workspace's log listing.
+ * same `<tool>-*` match as the log hook (`lifeHooksConfig`). A step's window
+ * holds a `.`, which no session's does, so a workflow named after a tool is
+ * still a step. An `acp` session's window is logged, but only for its chat
+ * pane to offer once the agent exits, so it is left out of the workspace's
+ * log listing.
  */
 export function isAgentWindow(window: string): boolean {
-  return new RegExp(`^${AGENT_TOOL}-`).test(window)
+  return !window.includes('.') && new RegExp(`^${AGENT_TOOL}-`).test(window)
 }
-
-/**
- * Names a step may not take: an agent tool's, or one starting with it and a
- * `-` like a session's window, which the log hook leaves unlogged; `yaac`;
- * and the webapp's scratch shells (`shell`, `shell-2`), whose windows a
- * step's launch would kill.
- */
-const RESERVED_STEP_NAME = new RegExp(`^(?:${AGENT_TOOL}(?:-.*)?|yaac|shell(?:-\\d+)?)$`)
 
 const command = z.string({ error: 'must be a non-empty string' }).min(1, { error: 'must be a non-empty string' })
 
@@ -93,9 +112,10 @@ const stepSchema = z.object({
 }).strict()
 
 /**
- * Parse a step graph, throwing an `Error` that names the first problem.
- * `existing` names steps the workspace already has, which an added step's
- * `needs` may name; they are not part of the graph and may not be redefined.
+ * Parse a step graph, throwing an `Error` that names the first problem. A
+ * bare need names a step of the graph, or one of `existing` (`volume`, for a
+ * site's release); `<workflow>.<step>` names a step of another workflow of
+ * the same life, which only placing the graph in a life can check.
  */
 export function parseStepGraph(raw: unknown, existing: ReadonlySet<string> = new Set()): StepGraph {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
@@ -103,11 +123,7 @@ export function parseStepGraph(raw: unknown, existing: ReadonlySet<string> = new
   }
   const graph: StepGraph = {}
   for (const [name, value] of Object.entries(raw)) {
-    if (!STEP_NAME_PATTERN.test(name)) {
-      throw new Error(`step "${name}": a name is letters, digits, "-" and "_", starting with a letter or digit, at most 48 long`)
-    }
-    if (RESERVED_STEP_NAME.test(name)) throw new Error(`step "${name}": the name is reserved`)
-    if (existing.has(name)) throw new Error(`step "${name}" already exists in this workspace`)
+    if (!isStepName(name)) throw new Error(`step "${name}": a name is ${NAME_RULE}`)
     const parsed = stepSchema.safeParse(value)
     if (!parsed.success) {
       const issue = parsed.error.issues[0]
@@ -126,16 +142,24 @@ export function parseStepGraph(raw: unknown, existing: ReadonlySet<string> = new
   for (const [name, step] of Object.entries(graph)) {
     for (const need of step.needs ?? []) {
       if (need === name) throw new Error(`step "${name}" needs itself`)
+      const [workflow, step, extra] = need.split('.')
+      if (step !== undefined) {
+        if (extra !== undefined || !isStepName(workflow) || !isStepName(step)) {
+          throw new Error(`step "${name}" needs "${need}", which is not a step name or <workflow>.<step>`)
+        }
+        continue
+      }
       if (!(need in graph) && !existing.has(need)) throw new Error(`step "${name}" needs "${need}", which is not a step`)
     }
   }
-  const cycle = findCycle(graph)
+  const cycle = findCycle(Object.fromEntries(Object.entries(graph).map(([n, s]) => [n, s.needs ?? []])))
   if (cycle !== undefined) throw new Error(`steps form a cycle: ${cycle.join(' -> ')}`)
   return graph
 }
 
-/** A cycle among `graph`'s own steps, as the names around it, if any. */
-function findCycle(graph: StepGraph): string[] | undefined {
+/** A cycle among `graph`'s steps (each step's needs by name), as the names
+ *  around it, if any. A need on no step of `graph` is passed over. */
+export function findCycle(graph: Record<string, string[]>): string[] | undefined {
   const done = new Set<string>()
   const path: string[] = []
   const visit = (name: string): string[] | undefined => {
@@ -143,7 +167,7 @@ function findCycle(graph: StepGraph): string[] | undefined {
     const at = path.indexOf(name)
     if (at !== -1) return [...path.slice(at), name]
     path.push(name)
-    for (const need of graph[name]?.needs ?? []) {
+    for (const need of graph[name] ?? []) {
       if (!(need in graph)) continue
       const cycle = visit(need)
       if (cycle !== undefined) return cycle
@@ -173,3 +197,9 @@ export function lifeDirName(life: Date | string): string {
 
 /** A full commit id: 40 hex digits, or 64 in a SHA-256 repository. */
 export const FULL_COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
+
+/** Commits as one line: `<dir>@<short>` each, bare for a checkout at the
+ *  workspace root, joined by spaces. */
+export function formatCommits(commits: Array<{ dir: string; commit: string }>, length = 12): string {
+  return commits.map((c) => `${c.dir !== '' ? `${c.dir}@` : ''}${c.commit.slice(0, length)}`).join(' ')
+}

@@ -49,7 +49,7 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
       await setWorkspaceRepoStart(event.workspaceId, event.repoId, { startCommit: event.startCommit })
       return
     case 'step-changed':
-      await recordStepChange(event.workspaceId, event.life, event.name, {
+      await recordStepChange(event.workspaceId, event.life, { workflowName: event.workflowName, name: event.name }, {
         state: event.state,
         ...(event.exitCode !== undefined ? { exitCode: event.exitCode } : {}),
       })

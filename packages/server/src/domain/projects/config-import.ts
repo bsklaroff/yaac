@@ -9,7 +9,10 @@ import { z } from 'zod'
 import { projectConfigDir } from '@yaac/shared/project-paths'
 import { parseStepGraph, type StepGraph } from '@yaac/shared/steps'
 import type { ProjectConfig } from '@yaac/shared/types'
-import { backfillWorkspaceScratchDirs, getProjectRow, listProjectRows, setProjectConfig, setProjectInit, setProjectScratchDirs, storeWorkflow } from '#db'
+import {
+  backfillWorkspaceScratchDirs, insertNamedWorkflow, listNamedWorkflows, listProjectRows, setProjectConfig, setProjectScratchDirs,
+  storeWorkflow,
+} from '#db'
 import { workspaceDriver } from '#drivers/driver'
 import { errorText, serverLog } from '#lib/log'
 import { cacheVolumesSchema, checkoutPathSchema, portForwardsSchema } from './config'
@@ -20,7 +23,7 @@ const K8S_ONLY = ['cacheVolumes', 'nestedContainers', 'npmCache'] as const
  * The graph an `initCommands` value ran as: the string form's one `init`
  * window chain becomes one step, and each object form entry a step of its
  * own with no needs, as its window ran beside the others. A window name a
- * step may not take (`claude-setup`, `shell`, one over 48 long) is renamed
+ * step may not take (one with a `.`, or over 48 long) is renamed
  * `init-<name>`, cut to 48 and made unique.
  */
 function initCommandsGraph(initCommands: unknown): unknown {
@@ -30,7 +33,7 @@ function initCommandsGraph(initCommands: unknown): unknown {
   return Object.fromEntries(initCommands.map((e: { name?: unknown; commands?: unknown }) => {
     let name = String(e.name)
     if (!stepNameAllowed(name)) {
-      const base = `init-${name}`.slice(0, 48)
+      const base = `init-${name.replace(/[^A-Za-z0-9_-]/g, '-')}`.slice(0, 48)
       name = base
       for (let i = 2; taken.has(name); i++) name = `${base.slice(0, 48 - String(i).length - 1)}-${String(i)}`
     }
@@ -94,18 +97,23 @@ function planImport(file: Record<string, unknown>): ImportPlan {
 }
 
 /** Write a plan onto the project's row. Safe to run again after a partial
- *  failure: each write sets the same values, and init steps yield to those
- *  the row has. */
+ *  failure: each write sets the same values, and the init workflow is
+ *  written once. */
 async function applyImport(projectId: string, plan: ImportPlan): Promise<void> {
   if (plan.scratchDirs) {
     await setProjectScratchDirs(projectId, { dirs: plan.scratchDirs.map((p) => ({ path: p })) })
     // Its workspaces running now were started with this list too.
     await backfillWorkspaceScratchDirs(projectId, plan.scratchDirs)
   }
-  // A project that has init steps of its own keeps them.
-  const project = await getProjectRow(projectId)
-  if (plan.initSteps && project?.initWorkflowId === undefined && project?.initNamedWorkflowId === undefined) {
-    await setProjectInit(projectId, { workflowId: (await storeWorkflow(projectId, { steps: plan.initSteps, secrets: [] })).id })
+  // Written as an init workflow named `init` (`init-steps` where the
+  // project has an `init`, as the migration names one), unless the project
+  // has init workflows of its own already, an earlier import's included.
+  const flows = await listNamedWorkflows(projectId)
+  if (plan.initSteps && !flows.some((w) => w.init)) {
+    const taken = new Set(flows.map((w) => w.name))
+    const name = ['init', 'init-steps'].find((n) => !taken.has(n)) ?? `init-${projectId.slice(0, 6)}`
+    const { id } = await storeWorkflow(projectId, { steps: plan.initSteps, secrets: [] })
+    await insertNamedWorkflow(projectId, name, id, true)
   }
   if (Object.keys(plan.set).length > 0) await setProjectConfig(projectId, plan.set)
 }

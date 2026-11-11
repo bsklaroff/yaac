@@ -26,8 +26,8 @@ import {
   type SiteRow,
 } from '#db'
 import { authorizeProject, isProjectHeld, requireAdmin, type Actor } from '#domain/access'
-import { remoteBranchExists, resolveRemoteRef } from '#domain/git'
-import { approveWorkflowRef, checkWorkflowRef, repoOfProject, resolveWorkflow } from '#domain/projects'
+import { remoteBranchExists } from '#domain/git'
+import { approveWorkflowStart, checkWorkflowStart, missingRepos, projectRepo, resolveWorkflow } from '#domain/projects'
 import { fetchRepoOrigin } from '#domain/repos'
 import { VOLUME_NEED } from '#domain/workspaces'
 import { isInfraPort } from '#lib/port-policy'
@@ -35,9 +35,10 @@ import { testEnv } from '@yaac/shared/env'
 import { ServerError } from '@yaac/shared/errors'
 import { isBranchName } from '@yaac/shared/git'
 import { repoDir } from '@yaac/shared/project-paths'
-import { parseStepGraph } from '@yaac/shared/steps'
-import type { SiteDetail, SiteEdgeStatus, SiteEntry } from '@yaac/shared/types'
-import { endReleases, followPause, withSiteLock } from './deploys'
+import { FULL_COMMIT_PATTERN, parseStepGraph } from '@yaac/shared/steps'
+import type { ProjectRow } from '#db'
+import type { RepoCommits, RepoStart, SiteCommit, SiteDetail, SiteEdgeStatus, SiteEntry } from '@yaac/shared/types'
+import { endReleases, followPause, sameCommits, siteTarget, withSiteLock } from './deploys'
 
 const SITE_NAME = /^[a-z0-9-]{1,40}$/
 const DNS_NAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/
@@ -117,30 +118,62 @@ async function reofferAdminPort(row: SiteRow, adminPort: number | undefined): Pr
 }
 
 /**
- * A branch of the site's repo to follow, which must be on origin now. A name that reads as a
- * ref (`origin/main`, `refs/heads/main`) would follow a branch literally so
- * named, which anyone who may push can create, and `agent/*` branches are
- * each a workspace's own; both are refused.
+ * A branch of a site's repo, which must be on origin now. A name that reads
+ * as a ref (`origin/main`, `refs/heads/main`) would deploy a branch
+ * literally so named, which anyone who may push can create, and `agent/*`
+ * branches are each a workspace's own; both are refused.
  */
-async function checkBranch(repoId: string, branch: string): Promise<string> {
-  if (!isBranchName(branch)) throw new ServerError('VALIDATION', `"${branch}" is not a branch name`)
+async function checkBranch(dir: string, repoId: string, branch: string): Promise<string> {
+  if (!isBranchName(branch)) throw new ServerError('VALIDATION', `${dir}: "${branch}" is not a branch name`)
   if (/^(?:origin|refs|agent)\//.test(branch)) {
-    throw new ServerError('VALIDATION', `"${branch}" names a branch to follow by its own name on origin, like main`)
+    throw new ServerError('VALIDATION', `${dir}: "${branch}" names a branch by its own name on origin, like main`)
   }
   if (!testEnv.e2eSkipFetch) await fetchRepoOrigin(repoId)
   if (!await remoteBranchExists(repoDir(repoId), branch)) {
-    throw new ServerError('VALIDATION', `"${branch}" is not a branch on origin`)
+    throw new ServerError('VALIDATION', `${dir}: "${branch}" is not a branch on origin`)
   }
   return branch
 }
 
 /**
+ * A site's repos as given (by folder or id), checked and stored by id: at
+ * least one, each once, each at a branch on origin or a full commit. No
+ * repo falls back to a default branch, which a rename on the remote would
+ * change under the site.
+ */
+async function siteRepos(project: ProjectRow, raw: RepoStart[]): Promise<RepoStart[]> {
+  if (raw.length === 0) throw new ServerError('VALIDATION', 'a site starts with at least one repo')
+  const out: RepoStart[] = []
+  for (const r of raw) {
+    const link = projectRepo(project, r.repo)
+    if (out.some((o) => o.repo === link.repo.id)) throw new ServerError('VALIDATION', `${link.dir} is named twice`)
+    if ((r.branch === undefined) === (r.commit === undefined)) {
+      throw new ServerError('VALIDATION', `${link.dir}: name a branch or a full commit, as ${link.dir}@<branch or commit>`)
+    }
+    if (r.commit !== undefined && !FULL_COMMIT_PATTERN.test(r.commit)) {
+      throw new ServerError('VALIDATION', `${link.dir}: "${r.commit}" is not a full commit id (40 or 64 hex digits)`)
+    }
+    out.push(r.commit !== undefined
+      ? { repo: link.repo.id, commit: r.commit }
+      : { repo: link.repo.id, branch: await checkBranch(link.dir, link.repo.id, r.branch ?? '') })
+  }
+  return out
+}
+
+/**
  * The named workflow a site's releases run (docs/workflows.md): the one
  * named, else the site's own. Its current graph is checked as a release's:
- * it needs a service, and may need `volume` only when the site has one. A
- * deploy checks the graph it runs again.
+ * it needs a service, and may need `volume` only when the site has one; and
+ * the site's repos must include every repo it names. A deploy checks the
+ * graph it runs again.
  */
-async function siteWorkflow(projectId: string, name: string | undefined, hasVolume: boolean, row?: SiteRow): Promise<string> {
+async function siteWorkflow(
+  projectId: string,
+  name: string | undefined,
+  hasVolume: boolean,
+  repos: RepoStart[],
+  row?: SiteRow,
+): Promise<string> {
   const named = name !== undefined ? await resolveWorkflow(projectId, name) : await getNamedWorkflow(row?.namedWorkflowId ?? '')
   if (!named) throw new ServerError('VALIDATION', 'a site runs a named workflow; give one')
   try {
@@ -150,6 +183,10 @@ async function siteWorkflow(projectId: string, name: string | undefined, hasVolu
   }
   if (!Object.values(named.workflow.steps).some((s) => s.service === true)) {
     throw new ServerError('VALIDATION', `workflow "${named.name}" needs a service, which serves the site`)
+  }
+  const missing = await missingRepos(projectId, named.workflow.repos, repos.map((r) => r.repo))
+  if (missing.length > 0) {
+    throw new ServerError('VALIDATION', `workflow "${named.name}" runs in ${missing.join(', ')}, which the site does not include`)
   }
   return named.id
 }
@@ -164,9 +201,11 @@ async function volumeId(projectId: string, name: string, siteId?: string): Promi
 }
 
 /**
- * Create a site. Its releases are built from one of the project's repos,
- * each a workspace holding that repo alone: the one `repo` names by its
- * folder or id, or the project's only one.
+ * Create a site. Its releases start with `repos`, each at a branch or a
+ * full commit: one at the release's root, several in their folders.
+ * Setting it to follow approves each branch and commit for its workflow
+ * (docs/workflows.md "Approvals"), refused, if at all, before the site
+ * exists.
  */
 export async function createSite(principal: Actor, projectId: string, input: {
   name: string
@@ -175,45 +214,43 @@ export async function createSite(principal: Actor, projectId: string, input: {
   adminPort?: number
   workflow: string
   volume?: string
-  repo?: string
-  followBranch?: string
+  repos: RepoStart[]
+  follow?: boolean
 }): Promise<void> {
   await authorizeSitePublish(principal, projectId)
   const project = await getProjectRow(projectId)
   if (!project) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
-  const repoId = repoOfProject(project, input.repo).repo.id
   if (!SITE_NAME.test(input.name)) {
     throw new ServerError('VALIDATION', `"${input.name}" is not a site name: use 1-40 of a-z, 0-9 and -`)
   }
   checkPorts(input.port, input.adminPort)
-  const namedWorkflowId = await siteWorkflow(projectId, input.workflow, input.volume !== undefined)
-  const followBranch = input.followBranch !== undefined ? await checkBranch(repoId, input.followBranch) : undefined
-  // Following a branch approves it for the workflow (docs/workflows.md
-  // "Approvals"): refused, if at all, before the site exists.
-  if (followBranch !== undefined) await checkWorkflowRef(principal, namedWorkflowId, { branch: followBranch, repoId })
+  const repos = await siteRepos(project, input.repos)
+  const namedWorkflowId = await siteWorkflow(projectId, input.workflow, input.volume !== undefined, repos)
+  const follow = input.follow === true
+  if (follow) await checkWorkflowStart(principal, namedWorkflowId, repos)
   await insertSite({
     projectId,
-    repoId,
     name: input.name,
     hostname: checkHostname(input.hostname),
     port: input.port,
     ...(input.adminPort !== undefined ? { adminPort: input.adminPort } : {}),
     namedWorkflowId,
     ...(input.volume !== undefined ? { volumeId: await volumeId(projectId, input.volume) } : {}),
-    ...(followBranch !== undefined ? { followBranch } : {}),
+    repos,
+    follow,
   })
-  if (followBranch !== undefined) await approveWorkflowRef(principal, namedWorkflowId, { branch: followBranch, repoId })
+  if (follow) await approveWorkflowStart(principal, namedWorkflowId, repos)
   await syncSiteRoutes()
 }
 
 /**
  * Change a site. The hostname and admin port move at once; the port,
- * workflow and volume apply from the next deploy, so the live release keeps serving
- * as it was started. A followed branch is deployed at the next reconcile
- * if its tip is not what the site serves. Refused while a deploy runs,
- * which was started with the old settings, except an edit that only stops
- * following: that publishes nothing, so whoever may stop the site may make
- * it, mid-deploy too.
+ * workflow, volume and repos apply from the next deploy, so the live
+ * release keeps serving as it was started. A following site deploys its
+ * target at the next reconcile if it is not what the site serves. Refused
+ * while a deploy runs, which was started with the old settings, except an
+ * edit that only stops following: that publishes nothing, so whoever may
+ * stop the site may make it, mid-deploy too.
  */
 export async function editSite(principal: Actor, projectId: string, name: string, input: {
   hostname?: string
@@ -221,17 +258,20 @@ export async function editSite(principal: Actor, projectId: string, name: string
   adminPort?: number | null
   workflow?: string
   volume?: string | null
-  followBranch?: string | null
+  repos?: RepoStart[]
+  follow?: boolean
 }): Promise<void> {
-  if (input.followBranch === null && Object.entries(input).every(([k, v]) => k === 'followBranch' || v === undefined)) {
+  if (input.follow === false && Object.entries(input).every(([k, v]) => k === 'follow' || v === undefined)) {
     await authorizeSiteEnd(principal, projectId)
     const { id } = await requireSite(projectId, name)
-    await withSiteLock(id, () => updateSite(id, { followBranch: null }))
+    await withSiteLock(id, () => updateSite(id, { follow: false }))
     return
   }
   await authorizeSitePublish(principal, projectId)
-  const { id, repoId } = await requireSite(projectId, name)
-  const follow = typeof input.followBranch === 'string' ? await checkBranch(repoId, input.followBranch) : input.followBranch
+  const { id } = await requireSite(projectId, name)
+  const project = await getProjectRow(projectId)
+  if (!project) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
+  const repos = input.repos !== undefined ? await siteRepos(project, input.repos) : undefined
   await withSiteLock(id, async () => {
     const row = await getSiteRow(id)
     if (!row) throw new ServerError('NOT_FOUND', `this project has no site named "${name}"`)
@@ -245,19 +285,20 @@ export async function editSite(principal: Actor, projectId: string, name: string
     if (input.port !== undefined) patch.port = input.port
     if (input.adminPort !== undefined) patch.adminPort = input.adminPort
     if (input.volume !== undefined) patch.volumeId = input.volume === null ? null : await volumeId(projectId, input.volume, id)
-    if (follow !== undefined) patch.followBranch = follow
+    if (repos !== undefined) patch.repos = repos
+    if (input.follow !== undefined) patch.follow = input.follow
     const hasVolume = input.volume !== undefined ? input.volume !== null : row.volumeId !== undefined
-    // The graph is checked against the volume it will run with, so dropping
-    // the volume of a graph that needs it is refused.
-    patch.namedWorkflowId = await siteWorkflow(projectId, input.workflow, hasVolume, row)
-    // A person setting a site to follow a branch, or giving a site that
-    // follows one another workflow, approves the branch for its workflow
+    // The graph is checked against the volume and repos it will run with,
+    // so dropping the volume, or a repo, that the graph needs is refused.
+    patch.namedWorkflowId = await siteWorkflow(projectId, input.workflow, hasVolume, repos ?? row.repos, row)
+    // A person setting a site to follow, or changing what a following site
+    // runs, approves each branch and commit it names for its workflow
     // (docs/workflows.md "Approvals"), refused before anything is written.
-    const branch = follow === undefined ? row.followBranch : follow ?? undefined
-    const approves = branch !== undefined && (follow !== undefined || input.workflow !== undefined)
-    if (approves) await checkWorkflowRef(principal, patch.namedWorkflowId, { branch, repoId })
+    const approves = (input.follow ?? row.follow)
+      && (input.follow === true || repos !== undefined || input.workflow !== undefined)
+    if (approves) await checkWorkflowStart(principal, patch.namedWorkflowId, repos ?? row.repos)
     await updateSite(id, patch)
-    if (approves) await approveWorkflowRef(principal, patch.namedWorkflowId, { branch, repoId })
+    if (approves) await approveWorkflowStart(principal, patch.namedWorkflowId, repos ?? row.repos)
     await reofferAdminPort(row, adminPort)
   })
   await syncSiteRoutes()
@@ -287,7 +328,7 @@ export async function showSite(projectId: string, name: string): Promise<SiteDet
     ...await toSiteEntry(row),
     releases: releases.map((r) => ({
       workspaceId: r.workspaceId,
-      ...(r.startCommit !== undefined ? { commit: r.startCommit } : {}),
+      commits: r.checkouts.flatMap((c) => (c.startCommit !== undefined ? [{ dir: c.path, commit: c.startCommit }] : [])),
       createdAt: r.createdAt.toISOString(),
       ...(r.stoppedAt !== undefined ? { stoppedAt: r.stoppedAt.toISOString() } : {}),
       ...(r.rerunOf !== undefined ? { rerunOf: r.rerunOf } : {}),
@@ -300,14 +341,26 @@ export async function getSiteEdge(): Promise<SiteEdgeStatus> {
   return { tunnel: await workspaceDriver().siteTunnelStatus() }
 }
 
+/**
+ * Commits by repo as a release's checkouts sit: a lone repo at the root,
+ * several each in its folder (the repo's id where the project links it no
+ * more).
+ */
+export function siteCommits(project: ProjectRow | undefined, commits: RepoCommits): SiteCommit[] {
+  const entries = Object.entries(commits)
+  if (entries.length === 1) return [{ dir: '', commit: entries[0][1] }]
+  return entries.map(([repoId, commit]) => ({ dir: project?.repos.find((l) => l.repo.id === repoId)?.dir ?? repoId, commit }))
+    .sort((a, b) => a.dir.localeCompare(b.dir))
+}
+
 async function toSiteEntry(row: SiteRow): Promise<SiteEntry> {
+  const project = await getProjectRow(row.projectId)
   const volume = row.volumeId !== undefined ? await getVolumeRow(row.volumeId) : undefined
   const live = row.liveWorkspaceId !== undefined ? await findWorkspaceRow(row.liveWorkspaceId) : undefined
-  const paused = row.followBranch !== undefined ? await followPause(row) : undefined
-  const tip = row.followBranch !== undefined && row.failedCommit !== undefined
-    ? await resolveRemoteRef(repoDir(row.repoId), row.followBranch).catch(() => undefined)
-    : undefined
+  const paused = row.follow ? await followPause(row) : undefined
+  const target = row.follow && row.failedCommits !== undefined ? await siteTarget(row) : undefined
   const workflow = await getNamedWorkflow(row.namedWorkflowId)
+  const commits = (map: RepoCommits): SiteCommit[] => siteCommits(project, map)
   return {
     name: row.name,
     hostname: row.hostname,
@@ -316,37 +369,43 @@ async function toSiteEntry(row: SiteRow): Promise<SiteEntry> {
     workflow: workflow?.name ?? '',
     steps: workflow?.workflow.steps ?? {},
     ...(volume !== undefined ? { volume: volume.name } : {}),
-    ...(row.followBranch !== undefined ? { followBranch: row.followBranch } : {}),
+    repos: row.repos.map((r) => ({
+      dir: project?.repos.find((l) => l.repo.id === r.repo)?.dir ?? r.repo,
+      ...(r.branch !== undefined ? { branch: r.branch } : {}),
+      ...(r.commit !== undefined ? { commit: r.commit } : {}),
+    })),
+    follow: row.follow,
     ...(paused !== undefined ? { followPaused: paused } : {}),
-    ...(tip !== undefined && tip === row.failedCommit && tip !== row.releaseCommit ? { followSkipped: tip } : {}),
+    ...(target !== undefined && sameCommits(target, row.failedCommits) && !sameCommits(target, row.releaseCommits)
+      ? { followSkipped: commits(target) } : {}),
     createdAt: row.createdAt.toISOString(),
-    ...(row.liveWorkspaceId !== undefined && row.releaseCommit !== undefined && row.liveSince !== undefined
+    ...(row.liveWorkspaceId !== undefined && row.releaseCommits !== undefined && row.liveSince !== undefined
       ? {
         live: {
           workspaceId: row.liveWorkspaceId,
-          commit: row.releaseCommit,
+          commits: commits(row.releaseCommits),
           since: row.liveSince.toISOString(),
           running: live !== undefined && live.stoppedAt === undefined,
         },
       }
       : {}),
-    ...(row.deployWorkspaceId !== undefined && row.deployCommit !== undefined && row.deployStartedAt !== undefined
+    ...(row.deployWorkspaceId !== undefined && row.deployCommits !== undefined && row.deployStartedAt !== undefined
       ? {
         deploy: {
           workspaceId: row.deployWorkspaceId,
-          commit: row.deployCommit,
+          commits: commits(row.deployCommits),
           startedAt: row.deployStartedAt.toISOString(),
           phase: row.deployPhase ?? 'launching',
           ...(row.deployReplacing ? { replacing: true as const } : {}),
         },
       }
       : {}),
-    ...(row.lastDeployWorkspaceId !== undefined && row.lastDeployCommit !== undefined
+    ...(row.lastDeployWorkspaceId !== undefined && row.lastDeployCommits !== undefined
       && row.lastDeployOutcome !== undefined && row.lastDeployFinishedAt !== undefined
       ? {
         lastDeploy: {
           workspaceId: row.lastDeployWorkspaceId,
-          commit: row.lastDeployCommit,
+          commits: commits(row.lastDeployCommits),
           outcome: row.lastDeployOutcome,
           ...(row.lastDeployError !== undefined ? { error: row.lastDeployError } : {}),
           finishedAt: row.lastDeployFinishedAt.toISOString(),

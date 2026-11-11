@@ -36,9 +36,13 @@ export function tmuxCmd(paths: Pick<WorkspacePaths, 'tmuxSock'>): string {
 /**
  * The tmux target for the yaac session's window `name`, matched exactly.
  * A bare `yaac:<name>` falls back to a prefix match, so it would hit
- * `claude-c09f7077` when a window named `claude` is gone.
+ * `claude-c09f7077` when a window named `claude` is gone. tmux reads a `.`
+ * in a target as the pane separator and resolves the part before it, so a
+ * name holding one (a step's) is refused: a step's window is addressed by
+ * its id (docs/workspace-steps.md "Running a step").
  */
 export function windowTarget(name: string): string {
+  if (name.includes('.')) throw new Error(`window "${name}" holds a ".", so it cannot be targeted by name`)
   return `=yaac:=${name}`
 }
 

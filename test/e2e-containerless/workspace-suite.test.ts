@@ -1094,10 +1094,10 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       body: JSON.stringify({ ports: [{ containerPort: base, hostPortStart: base }] }),
     })
     expect(put.status, await put.text()).toBe(200)
-    const steps = await fetch(`${origin()}/api/project/${portsProject}/init-steps`, {
-      method: 'PUT',
+    const steps = await fetch(`${origin()}/api/workflow/create`, {
+      method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ steps: { dev: { run: `'${process.execPath}' '${script}'`, service: true } } }),
+      body: JSON.stringify({ project: portsProject, name: 'init', init: true, steps: { dev: { run: `'${process.execPath}' '${script}'`, service: true } } }),
     })
     expect(steps.status, await steps.text()).toBe(200)
 

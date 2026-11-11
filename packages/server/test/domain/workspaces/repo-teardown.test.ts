@@ -41,7 +41,7 @@ import { closeDb } from '#db/client'
 import { hostedRepoDir, repoDir } from '@yaac/shared/project-paths'
 import { git } from '@yaac/test-utils/git'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
-import { BUILT_IN_USER_ID, deleteSiteRow, findNamedWorkflow, insertNamedWorkflow, insertSite, seeTailnetUser, storeWorkflow } from '#db'
+import { BUILT_IN_USER_ID, deleteNamedWorkflow, deleteSiteRow, findNamedWorkflow, insertNamedWorkflow, insertSite, seeTailnetUser, storeWorkflow } from '#db'
 
 /** The caller of every user-caused write here: the repos' owner. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -386,11 +386,15 @@ describe('deleteRepo', () => {
     // A site built from it keeps it: its next release would have no repo.
     await insertNamedWorkflow(project, 'serve', (await storeWorkflow(project, { steps: {}, secrets: [] })).id)
     const site = await insertSite({
-      projectId: project, name: 'www', hostname: 'www.example.com', port: 80, repoId: repo.id,
+      projectId: project, name: 'www', hostname: 'www.example.com', port: 80, repos: [{ repo: repo.id, branch: 'main' }], follow: false,
       namedWorkflowId: (await findNamedWorkflow(project, 'serve'))?.id ?? '',
     })
     await expect(deleteRepo(local, repo.id)).rejects.toMatchObject({ code: 'CONFLICT', message: /site "www"/ })
     await deleteSiteRow(site.id)
+    // So does a named workflow that runs in it, of any project linking it.
+    await insertNamedWorkflow(project, 'in-it', (await storeWorkflow(project, { steps: {}, secrets: [], repos: [repo.id] })).id)
+    await expect(deleteRepo(local, repo.id)).rejects.toMatchObject({ code: 'CONFLICT', message: /workflow "in-it"/ })
+    await deleteNamedWorkflow((await findNamedWorkflow(project, 'in-it'))?.id ?? '')
     // A create in flight that starts with it is stopped, rather than left to
     // fetch a repo that is gone.
     const starting = provision({

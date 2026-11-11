@@ -12,7 +12,7 @@ vi.mock('#components/ui/CodeEditor', () => ({
 import { ProjectSettings } from '#components/settings/ProjectSettings'
 import { useUiStore } from '#lib/store'
 import {
-  mockFetch, projectRepo, renderWithClient, repoSummary, serverError, serverSnapshot, testQueryClient, TEST_USER_ID,
+  mockFetch, projectRepo, renderWithClient, repoSummary, serverSnapshot, testQueryClient, TEST_USER_ID,
   type FetchCall, type FetchMock,
 } from './harness'
 
@@ -24,7 +24,7 @@ afterEach(() => {
 /** A project keyed by `id-<name>`, so a test can tell the key from the
  *  displayed name, linking one repo `repo-<name>` in a folder of its name. */
 const project = (name: string, remoteUrl: string): ProjectSummary =>
-  ({ id: `id-${name}`, name, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [projectRepo({ id: `repo-${name}`, dir: name, remoteUrl })], scratchDirs: { dirs: [], ignoredTracked: [] }, initSteps: {}, portForwards: [], cacheVolumes: {}, nestedContainers: false, npmCache: true })
+  ({ id: `id-${name}`, name, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [projectRepo({ id: `repo-${name}`, dir: name, remoteUrl })], scratchDirs: { dirs: [], ignoredTracked: [] }, portForwards: [], cacheVolumes: {}, nestedContainers: false, npmCache: true })
 
 /** Show settings for `alpha` (and `beta`) on a containerless server, whose
  *  env routes keep `vars` in memory. */
@@ -72,43 +72,23 @@ describe('ProjectSettings', () => {
     expect(server.calls.filter((c) => c.path.startsWith('/api/volume') || c.path.startsWith('/api/site'))).toEqual([])
   })
 
-  it('edits the init steps, saying which workflow they follow and showing the server\'s refusal of a bad graph', async () => {
+  it('shows the init workflows, each with its repos, apart from the project\'s other workflows', async () => {
     useUiStore.setState({ activeProjectId: 'id-alpha' })
-    const snapshot = serverSnapshot({
-      driver: 'containerless',
-      projects: [{
-        ...project('alpha', 'https://github.com/o/alpha.git'), initSteps: { install: { run: ['pnpm install'] } },
-        initWorkflow: 'setup',
-      }],
+    const snapshot = serverSnapshot({ driver: 'containerless', projects: [project('alpha', 'https://github.com/o/alpha.git')] })
+    const flow = (name: string, init: boolean): Record<string, unknown> => ({
+      id: `wf-${name}`, projectId: 'id-alpha', name, steps: { install: { run: ['pnpm install'] } }, secrets: [],
+      repos: init ? ['alpha'] : [], init, approvedCommits: [], approvedBranches: [], createdAt: '',
     })
-    const server = mockFetch({
+    mockFetch({
       'GET /api/project/id-alpha/env': { vars: [] },
-      'PUT /api/project/id-alpha/init-steps': ({ body }: FetchCall) => {
-        const { steps } = body as { steps: Record<string, unknown> }
-        return 'cycle' in steps
-          ? serverError('VALIDATION', 'init steps: steps form a cycle: cycle -> cycle', 400)
-          : { steps }
-      },
+      'GET /api/workflow/list': [flow('alpha-init', true), flow('lint', false)],
     })
     renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
-
-    // The first editor is the init steps', opened on the snapshot's graph.
-    const editor = await waitFor(() => {
-      const [first] = screen.getAllByLabelText<HTMLTextAreaElement>('editor')
-      expect(first.value).toContain('pnpm install')
-      return first
-    })
-    expect(screen.getByText(/^These follow workflow/).textContent).toContain('These follow workflow setup;')
-    const save = (text: string): void => {
-      fireEvent.change(editor, { target: { value: text } })
-      const box = editor.closest('.flex-col') as HTMLElement
-      fireEvent.click(within(box).getByRole('button', { name: 'Save' }))
-    }
-    save('{"build": {"run": "pnpm build"}}')
-    await waitFor(() => expect(server.called('PUT /api/project/id-alpha/init-steps').map((c) => c.body))
-      .toEqual([{ steps: { build: { run: 'pnpm build' } } }]))
-    save('{"cycle": {"run": "x", "needs": ["cycle"]}}')
-    await screen.findByText('init steps: steps form a cycle: cycle -> cycle')
+    const section = (await screen.findByText('Init workflows')).parentElement as HTMLElement
+    await waitFor(() => expect(within(section).getByText('alpha-init')).toBeTruthy())
+    expect(within(section).queryByText('lint')).toBeNull()
+    expect(within(section).getByText('repos: alpha')).toBeTruthy()
+    expect(within(section).getByRole('button', { name: 'Add init workflow' })).toBeTruthy()
   })
 
   it('adds a kept ignored path to the snapshot\'s list, and removes one', async () => {
@@ -492,11 +472,13 @@ describe('ProjectSettings', () => {
     expect(screen.queryByPlaceholderText('NAME')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
 
-    // Init steps, Dockerfile and a build file read, with nothing to save or
-    // upload, and the launch settings shown but not editable.
-    await waitFor(() => expect(screen.getAllByLabelText('editor')).toHaveLength(2))
+    // The Dockerfile and a build file read, with nothing to save or upload,
+    // no init workflow to add, and the launch settings shown but not
+    // editable.
+    await waitFor(() => expect(screen.getAllByLabelText('editor')).toHaveLength(1))
     fireEvent.click(await screen.findByRole('button', { name: 'init.lua' }))
-    await waitFor(() => expect(screen.getAllByLabelText('editor')).toHaveLength(3))
+    await waitFor(() => expect(screen.getAllByLabelText('editor')).toHaveLength(2))
+    expect(screen.queryByRole('button', { name: 'Add init workflow' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Add forwarded port' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Add cache volume' })).toBeNull()
     expect(screen.getAllByRole<HTMLInputElement>('checkbox').every((c) => c.disabled)).toBe(true)

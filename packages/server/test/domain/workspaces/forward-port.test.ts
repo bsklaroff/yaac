@@ -199,7 +199,7 @@ describe('offeredForwards', () => {
     expect(await offeredForwards([], undefined)).toEqual([])
 
     const site = await insertSite({
-      projectId: PROJ, repoId: PROJ, name: 'shop', hostname: 'shop.example.com', port: 3000, adminPort: 3001, namedWorkflowId: await namedWorkflowFor(PROJ),
+      projectId: PROJ, repos: [{ repo: PROJ, branch: 'main' }], follow: false, name: 'shop', hostname: 'shop.example.com', port: 3000, adminPort: 3001, namedWorkflowId: await namedWorkflowFor(PROJ),
     })
     expect(await offeredForwards(ports, site.id)).toEqual([{ containerPort: 3001, hostPortStart: 3001 }])
     await updateSite(site.id, { adminPort: null })

@@ -129,7 +129,7 @@ describe('listStoppedWorkspaces', () => {
   })
 
   it('names the site a release was of', async () => {
-    const site = await insertSite({ projectId: DEMO_PROJECT_ID, repoId: DEMO_PROJECT_ID, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(DEMO_PROJECT_ID) })
+    const site = await insertSite({ projectId: DEMO_PROJECT_ID, repos: [{ repo: DEMO_PROJECT_ID, branch: 'main' }], follow: false, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(DEMO_PROJECT_ID) })
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'rel-1', siteId: site.id })
     await recordWorkspaceStopped(DEMO_PROJECT_ID, 'rel-1')
     await seedWorkspace(DEMO_PROJECT_ID, 'dev', { deleted: true })

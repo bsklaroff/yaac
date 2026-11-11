@@ -27,5 +27,5 @@ export {
   withRepoHeld,
 } from './hosted'
 export { moveLegacyMainClones } from './legacy-main-clones'
-export { fetchRepoCommit, fetchRepoOrigin, onOriginFetched, refreshRepoOrigins, seedRepoOrigin } from './origin'
+export { fetchRepoCommit, fetchRepoOrigin, freshenOrigin, onOriginFetched, refreshRepoOrigins, seedRepoOrigin } from './origin'
 export { addRepo, createHostedRepo, listRepoSummaries, registerStagedRepo, shareRepo } from './repos'

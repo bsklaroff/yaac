@@ -28,8 +28,7 @@ import {
   writeProjectDockerfile,
   pushProjectSecrets,
   resolveProjectId,
-  setInitSteps,
-  setInitWorkflow,
+  setInitWorkflows,
   setKeptIgnoredPaths,
   setProjectIcon,
   setScratchDirs,
@@ -246,19 +245,15 @@ export const projectApp = new Hono<IdentityEnv>()
     await removeProjectIcon(c.get('principal'), await resolveProjectId(c.req.param('projectId')))
     return c.body(null, 204)
   })
-  // The steps every workspace runs at start unless its create brings its
-  // own (docs/workspace-steps.md). The current graph is in the project
-  // summary.
+  // Which named workflows are the project's init workflows, which every
+  // workspace that brings no graph of its own and has their repos starts
+  // (docs/workflows.md "Init workflows"): exactly the names given.
   .put(
-    '/:projectId/init-steps',
-    // A graph, or a named workflow to follow (docs/workflows.md).
-    zv('json', z.union([z.object({ steps: z.unknown() }), z.object({ workflow: z.string().min(1) })])),
+    '/:projectId/init-workflows',
+    zv('json', z.object({ workflows: z.array(z.string().min(1)) })),
     async (c) => {
       const projectId = await resolveProjectId(c.req.param('projectId'))
-      const body = c.req.valid('json')
-      return c.json({ steps: 'workflow' in body
-        ? await setInitWorkflow(c.get('principal'), projectId, body.workflow)
-        : await setInitSteps(c.get('principal'), projectId, body.steps) })
+      return c.json(await setInitWorkflows(c.get('principal'), projectId, c.req.valid('json').workflows))
     },
   )
   // Which dirs live with a workspace's runtime rather than its checkout, with

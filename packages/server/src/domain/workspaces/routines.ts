@@ -15,7 +15,7 @@
 import { resolveParentlessSettings, runQueuedWorkspace, type QueueSource } from './queued-workspaces'
 import { authorizeProject, type Actor } from '#domain/access'
 import { getDefaultBranch } from '#domain/git'
-import { approveWorkflowRef, RUN_SECRETS_NEED_ONE_REPO } from '#domain/projects'
+import { approveWorkflowStart, assertWorkflowRepos } from '#domain/projects'
 import { modelDisplayName } from '#domain/auth'
 import {
   deleteQueuedWorkspace,
@@ -261,9 +261,10 @@ function nextTick(cron: string, timeZone: string, from: Date): Date | null {
  * Check and resolve a routine's fields. The zone defaults to the project
  * owner's, else UTC; a create that names no group files runs under one
  * named after the routine, made if need be. Its named workflow's current
- * graph is checked as its runs' steps, and the commit or branch the runs
- * start their one repo at approved for it (`approveWorkflowRef`). On an
- * edit, `own` is what its runs start with now.
+ * graph is checked as its runs' steps and against its repos, and the
+ * commit or branch each repo of its runs starts at approved for it
+ * (`approveWorkflowStart`). On an edit, `own` is what its runs start with
+ * now.
  */
 async function resolveRoutine(
   principal: Actor,
@@ -314,18 +315,13 @@ async function resolveRoutine(
     ...(settings.groupId !== undefined ? { groupId: settings.groupId } : {}),
     ...(request.timeout != null ? { timeoutMinutes: request.timeout } : {}),
   }
-  // Run secrets reach only a workspace of one repo, so only such a start
-  // has a commit or branch to approve, and a non-interactive routine that
-  // names them with any other start would fail at every tick.
-  const [lone] = settings.repos.length === 1 ? settings.repos : []
-  if (settings.namedWorkflowId !== undefined && lone === undefined && settings.nonInteractive === true
-    && ((await getNamedWorkflow(settings.namedWorkflowId))?.workflow.secrets.length ?? 0) > 0) {
-    throw new ServerError('VALIDATION', RUN_SECRETS_NEED_ONE_REPO)
-  }
-  if (settings.namedWorkflowId !== undefined && lone !== undefined) {
-    await approveWorkflowRef(principal, settings.namedWorkflowId, lone.commit !== undefined
-      ? { commit: lone.commit }
-      : { branch: lone.branch ?? await getDefaultBranch(repoDir(lone.repo)), repoId: lone.repo })
+  if (settings.namedWorkflowId !== undefined) {
+    const named = await getNamedWorkflow(settings.namedWorkflowId)
+    if (named !== undefined) {
+      await assertWorkflowRepos(projectId, `workflow "${named.name}"`, named.workflow.repos, settings.repos.map((r) => r.repo))
+    }
+    await approveWorkflowStart(principal, settings.namedWorkflowId, await Promise.all(settings.repos.map(async (r) => (
+      r.commit !== undefined ? r : { repo: r.repo, branch: r.branch ?? await getDefaultBranch(repoDir(r.repo)) }))))
   }
   return fields
 }

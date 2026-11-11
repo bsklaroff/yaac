@@ -55,6 +55,7 @@ import {
   insertCustomEndpoint,
   insertSession,
   listWorkspaceSessions,
+  listWorkspaceSteps,
   setTimeZone,
   setToolCredential,
   setWorkspaceGroup,
@@ -173,7 +174,7 @@ describe('mamaCaller', () => {
   // held to the strictest of the workspace's open sessions.
   it("holds a session's agent to its own session's posture, and anyone else to the strictest open one", async () => {
     const loose = await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { tool: 'codex', mode: 'acp', permissionMode: 'bypass' })
-    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: PROJ, workspaceId: 'caller-workspace', at: new Date(), startSteps: {} })
+    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: PROJ, workspaceId: 'caller-workspace', at: new Date(), startSteps: [] })
     const plan = await insertSession(PROJ, 'caller-workspace', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'plan' })
     const edits = await insertSession(PROJ, 'caller-workspace', { cwd: '', tool: 'claude', mode: 'acp', permissionMode: 'accept-edits' })
     const elsewhere = await created({ projectId: PROJ, workspaceId: 'other-workspace' }, { permissionMode: 'bypass' })
@@ -456,7 +457,7 @@ describe('runMamaCommand', () => {
 
     it('marks a workspace pinned to a commit, and a site\'s release with its site, role and address', async () => {
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', repos: [{ repoId: PROJ, path: '', baseBranch: 'main' }] })
-      const site = await insertSite({ projectId: PROJ, repoId: PROJ, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(PROJ) })
+      const site = await insertSite({ projectId: PROJ, repos: [{ repo: PROJ, branch: 'main' }], follow: false, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(PROJ) })
       const pins: Array<[string, string, string?]> = [
         ['caller-workspace', 'd'.repeat(40)],
         ['live-rel', 'a'.repeat(40), site.id],
@@ -1552,16 +1553,27 @@ describe('runMamaCommand', () => {
 
     it('adds a step to a running workspace with --run, and reads where it stands', async () => {
       await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { permissionMode: 'bypass' })
-      await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: PROJ, workspaceId: 'caller-workspace', at: new Date(), startSteps: {} })
+      await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: PROJ, workspaceId: 'caller-workspace', at: new Date(), startSteps: [] })
       running = [podFor('caller-workspace')]
-      const name = await output('create', '', { workspace: 'caller-workspace', run: '["pnpm build","pnpm test"]', needs: '' , name: 'ci' })
-      expect(name).toBe('ci')
+      // It is a workflow of its own, with a short name, and prints its full
+      // name; a bare name reads where it stands while it is unambiguous.
+      const name = await output('create', '', { workspace: 'caller-workspace', run: '["pnpm build","pnpm test"]', needs: '', name: 'ci' })
+      expect(name).toMatch(/^[a-z][a-z0-9]{3}\.ci$/)
+      expect(await output('status', '', { workspace: 'caller-workspace', step: name })).toBe('pending')
       expect(await output('status', '', { workspace: 'caller-workspace', step: 'ci' })).toBe('pending')
       expect(await output('status', '', { workspace: 'caller-workspace' })).toBe('running')
       expect(await run('status', '', { workspace: 'caller-workspace', step: 'nope' })).toMatchObject({ ok: false })
-      // A generated name, and refusals: no workspace, a prompt, a stray
-      // option, a caller below bypass.
-      expect(await output('create', '', { workspace: 'caller-workspace', run: '["true"]' })).toMatch(/^run-[0-9a-f]{8}$/)
+      // With no --name it is `run`, with --needs on a bare name stored in
+      // full. --repo names a repo of the workspace's.
+      const after = await output('create', '', { workspace: 'caller-workspace', run: '["true"]', needs: 'ci' })
+      expect(after).toMatch(/^[a-z][a-z0-9]{3}\.run$/)
+      expect((await listWorkspaceSteps('caller-workspace')).find((s) => `${s.workflowName}.${s.name}` === after)?.spec.needs).toEqual([name])
+      expect(await run('create', '', { workspace: 'caller-workspace', run: '["true"]', repos: '["demo"]' }))
+        .toMatchObject({ ok: false, error: expect.stringContaining('which this start does not include') as string })
+      expect(await run('create', '', { workspace: 'caller-workspace', run: '["true"]', repos: '["demo@main"]' }))
+        .toMatchObject({ ok: false, error: expect.stringContaining('--repo takes a repo\'s folder') as string })
+      // Refusals: no workspace, a prompt, a stray option, a caller below
+      // bypass.
       expect(await run('create', '', { run: '["true"]' })).toMatchObject({ ok: false, error: expect.stringContaining('needs --workspace') as string })
       expect(await run('create', 'go', { workspace: 'caller-workspace', run: '["true"]' })).toMatchObject({ ok: false })
       expect(await run('create', '', { workspace: 'caller-workspace', run: '["true"]', tool: 'claude' })).toMatchObject({ ok: false })
@@ -1922,40 +1934,40 @@ describe('runMamaCommand', () => {
     const life = new Date('2026-11-01T10:00:00.000Z')
     const logDir = (id: string): string => path.join(terminalLogDir(PROJ, id), lifeDirName(life))
     const step = (name: string, state: 'running' | 'failed' | 'succeeded', exitCode?: number) => applyWorkspaceEvent({
-      type: 'step-changed', projectId: PROJ, workspaceId: 'ci-run', life, name, state, ...(exitCode !== undefined ? { exitCode } : {}),
+      type: 'step-changed', projectId: PROJ, workspaceId: 'ci-run', life, workflowName: 'ci', name, state, ...(exitCode !== undefined ? { exitCode } : {}),
     })
 
     it('lists a workspace\'s steps and prints the end of a started one\'s log, never a window that only shares its name', async () => {
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'ci-run', nonInteractive: true })
       await applyWorkspaceEvent({
         type: 'workspace-life-started', projectId: PROJ, workspaceId: 'ci-run', at: life,
-        startSteps: {
+        startSteps: [{ id: (await storeWorkflow(PROJ, { steps: {}, secrets: [] })).id, name: 'ci', steps: {
           build: { run: ['make'] },
           noisy: { run: ['gen'] },
           serve: { run: ['srv'], service: true, needs: ['build'] },
-        },
+        } }],
       })
       for (const name of ['build', 'noisy']) await step(name, 'running')
       await step('build', 'failed', 2)
       await fs.mkdir(logDir('ci-run'), { recursive: true })
       // The rotated-out half comes first. Escapes, carriage returns, DEL and
       // C1 controls go, since the text lands in the agent's terminal.
-      await fs.writeFile(path.join(logDir('ci-run'), 'build.log.1'), 'compiling\n')
-      await fs.writeFile(path.join(logDir('ci-run'), 'build.log'), '\x1b[31mmake: *** [all] Error 2\x1b[0m\x7f\u009b\r\nlast line\n')
+      await fs.writeFile(path.join(logDir('ci-run'), 'ci.build.log.1'), 'compiling\n')
+      await fs.writeFile(path.join(logDir('ci-run'), 'ci.build.log'), '\x1b[31mmake: *** [all] Error 2\x1b[0m\x7f\u009b\r\nlast line\n')
       // A window opened by hand under a step's name before the step starts
       // writes that step's log file, so it is not served.
-      await fs.writeFile(path.join(logDir('ci-run'), 'serve.log'), 'export TOKEN=secret\n')
+      await fs.writeFile(path.join(logDir('ci-run'), 'ci.serve.log'), 'export TOKEN=secret\n')
       // Over 4 MiB, of which only the end is read.
       const line = (i: number): string => `line ${String(i).padStart(6, '0')} ${'x'.repeat(80)}\n`
-      await fs.writeFile(path.join(logDir('ci-run'), 'noisy.log.1'), Array.from({ length: 30_000 }, (_, i) => line(i)).join(''))
-      await fs.writeFile(path.join(logDir('ci-run'), 'noisy.log'), Array.from({ length: 30_000 }, (_, i) => line(30_000 + i)).join(''))
+      await fs.writeFile(path.join(logDir('ci-run'), 'ci.noisy.log.1'), Array.from({ length: 30_000 }, (_, i) => line(i)).join(''))
+      await fs.writeFile(path.join(logDir('ci-run'), 'ci.noisy.log'), Array.from({ length: 30_000 }, (_, i) => line(30_000 + i)).join(''))
 
       const listed = await output('logs', '', { workspace: 'ci-r' })
       expect(listed).toContain('Steps of ci-run, in order:')
       expect(listed).toMatch(/^STEP\s+STATE\s+EXIT\s+NEEDS\s+LOG$/m)
-      expect(listed).toMatch(/^build\s+failed\s+2\s+\S+ B$/m)
-      expect(listed).toMatch(/^noisy\s+running\s+5\.\d MB$/m)
-      expect(listed).toMatch(/^serve\s+pending \(service\)\s+build\s+\S+ B$/m)
+      expect(listed).toMatch(/^ci\.build\s+failed\s+2\s+\S+ B$/m)
+      expect(listed).toMatch(/^ci\.noisy\s+running\s+5\.\d MB$/m)
+      expect(listed).toMatch(/^ci\.serve\s+pending \(service\)\s+build\s+\S+ B$/m)
       expect(listed).not.toContain('shell')
 
       const log = async (args: Record<string, string>): Promise<string> => {
@@ -1964,7 +1976,8 @@ describe('runMamaCommand', () => {
         expect(outcome).toMatchObject({ contentType: 'text/plain; charset=utf-8', workspaceId: 'ci-run' })
         return outcome.body.toString('utf8')
       }
-      expect(await log({ step: 'build' })).toBe('compiling\nmake: *** [all] Error 2\nlast line\n')
+      // By full name, or bare while one workflow has the step.
+      expect(await log({ step: 'ci.build' })).toBe('compiling\nmake: *** [all] Error 2\nlast line\n')
       expect(await log({ step: 'build', tail: '2' })).toBe('make: *** [all] Error 2\nlast line\n')
       expect(await log({ step: 'noisy', tail: '2' })).toBe(line(59_998) + line(59_999))
       // Untailed, it serves the last 4 MiB from a line's start, saying how
@@ -1979,13 +1992,13 @@ describe('runMamaCommand', () => {
       await recordWorkspaceStopped(PROJ, 'ci-run')
       const stopped = await output('logs', '', { workspace: 'ci-run' })
       expect(stopped).toContain('Steps of ci-run (stopped), in order:')
-      expect(stopped).toMatch(/^build\s+failed\s+2/m)
-      expect(stopped).toMatch(/^noisy\s+stopped\s/m)
-      expect(stopped).toMatch(/^serve\s+stopped \(service\)\s/m)
+      expect(stopped).toMatch(/^ci\.build\s+failed\s+2/m)
+      expect(stopped).toMatch(/^ci\.noisy\s+stopped\s/m)
+      expect(stopped).toMatch(/^ci\.serve\s+stopped \(service\)\s/m)
 
       // Back to pending for a rerun, or a service's restart backoff, a
       // step's last run still reads.
-      await resetSteps('ci-run', life, ['build'])
+      await resetSteps('ci-run', life, [{ workflowName: 'ci', name: 'build' }])
       expect(await log({ step: 'build', tail: '1' })).toBe('last line\n')
 
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'no-steps' })
@@ -2009,6 +2022,11 @@ describe('runMamaCommand', () => {
       await createWorkflow(local, PROJ, { name: 'ci', steps: { test: { run: 'pnpm test' } } })
       expect(await output('workflow-list')).toMatch(/^ci\s+steps test$/)
       expect(await output('workflow-show', '', { name: 'ci' })).toContain('"run": [\n      "pnpm test"')
+      expect(await output('workflow-show', '', { name: 'ci' })).toContain('repos: none')
+      // Its repos and whether it is an init workflow.
+      await createWorkflow(local, PROJ, { name: 'setup', steps: { install: { run: 'pnpm i' } }, repos: [PROJ], init: true })
+      expect(await output('workflow-list')).toMatch(/^setup\s+steps install\s+repos \S+\s+init$/m)
+      expect(await output('workflow-show', '', { name: 'setup' })).toMatch(/^workflow setup \(init: [^\n]*\)\n[\s\S]*\nrepos: \S+/)
       expect(await run('workflow-show', '', {})).toEqual({ ok: false, error: 'workflow show needs a workflow name' })
 
       await output('create', '', { 'non-interactive': '1', workflow: 'ci' })

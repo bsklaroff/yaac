@@ -17,11 +17,9 @@ import {
   setProjectEgressAllowlist,
   setProjectScratchDirs,
   setProjectIcon,
-  setProjectInit,
   setProjectOrder,
 } from '#db/project-store'
 import { insertRepo, linkProjectRepo, listProjectRepos } from '#db/repo-store'
-import { findNamedWorkflow, insertNamedWorkflow, storeWorkflow } from '#db/workflow-store'
 import { BUILT_IN_USER_ID, seeTailnetUser } from '#db/user-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
@@ -355,34 +353,6 @@ describe('setProjectKeptIgnoredPaths', () => {
     expect(await setProjectKeptIgnoredPaths(APP, [])).toBe(true)
     expect((await getProjectRow(APP))?.keptIgnoredPaths).toEqual([])
     expect(await setProjectKeptIgnoredPaths('0a0a0a0a-0000-4000-8000-0000000000ff', [])).toBe(false)
-  })
-})
-
-describe('setProjectInit', () => {
-  let tmpDir: string
-
-  beforeEach(async () => {
-    tmpDir = await createTempDataDir()
-  })
-  afterEach(async () => {
-    await closeDb()
-    await cleanupTempDir(tmpDir)
-  })
-
-  it('starts a project with none, points it at a workflow or a named one, and reports an unknown projectId', async () => {
-    await recordProject({ id: P, name: 'p', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
-    expect((await getProjectRow(P))?.initWorkflowId).toBeUndefined()
-    const workflow = await storeWorkflow(P, { steps: { install: { run: ['pnpm install'] } }, secrets: [] })
-    expect(await setProjectInit(P, { workflowId: workflow.id })).toBe(true)
-    expect((await getProjectRow(P))?.initWorkflowId).toBe(workflow.id)
-    await insertNamedWorkflow(P, 'init', workflow.id)
-    const named = await findNamedWorkflow(P, 'init')
-    await setProjectInit(P, { namedWorkflowId: named!.id })
-    expect((await getProjectRow(P))?.initWorkflowId).toBeUndefined()
-    expect((await getProjectRow(P))?.initNamedWorkflowId).toBe(named!.id)
-    await setProjectInit(P, null)
-    expect((await getProjectRow(P))?.initNamedWorkflowId).toBeUndefined()
-    expect(await setProjectInit('0a0a0a0a-0000-4000-8000-0000000000ff', null)).toBe(false)
   })
 })
 

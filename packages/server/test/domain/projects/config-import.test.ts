@@ -14,7 +14,7 @@ import { PROJECT_CONFIG_DEFAULTS, recordTestProject } from '@yaac/test-utils/pro
 import { projectConfigDir } from '@yaac/shared/project-paths'
 import { applyWorkspaceEvent, BUILT_IN_USER_ID, getProjectRow, getWorkspaceRow, setProjectConfig } from '#db'
 import type * as dbModule from '#db'
-import { importProjectConfigFiles, initWorkflowOf, resolveProjectConfig, setInitSteps } from '#domain/projects'
+import { createWorkflow, importProjectConfigFiles, listInitWorkflows, resolveProjectConfig } from '#domain/projects'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { serverLog } from '#lib/log'
 import type * as logModule from '#lib/log'
@@ -44,6 +44,11 @@ async function writeConfig(id: string, config: unknown): Promise<void> {
 }
 const exists = (p: string): Promise<boolean> => fs.access(p).then(() => true, () => false)
 
+/** A project's init workflows' graphs, by name. */
+async function initSteps(projectId: string): Promise<Record<string, unknown>> {
+  return Object.fromEntries((await listInitWorkflows(projectId)).map((w) => [w.name, w.workflow.steps]))
+}
+
 describe('importProjectConfigFiles', () => {
   it('moves every key onto the row and deletes the file', async () => {
     // Running since before the upgrade, so started with the file's scratch dirs.
@@ -60,9 +65,9 @@ describe('importProjectConfigFiles', () => {
     await writeConfig(BAR, { initCommands: [
       { name: 'backend', commands: ['pnpm dev:be'] },
       { name: 'frontend', commands: ['pnpm i', 'pnpm dev'], hidePane: true },
-      // Names a step may not take, which the old file allowed, are renamed.
+      // A name a step may not take, which the old file allowed, is renamed.
       { name: 'claude-setup', commands: ['a'] },
-      { name: 'shell', commands: ['b'] },
+      { name: 'db.setup', commands: ['b'] },
     ] })
 
     await importProjectConfigFiles()
@@ -76,23 +81,26 @@ describe('importProjectConfigFiles', () => {
     const foo = await getProjectRow(FOO)
     expect(foo?.scratchDirs.dirs).toEqual([{ path: 'node_modules' }, { path: 'web/node_modules' }])
     expect((await getWorkspaceRow(FOO, 'running'))?.scratchDirs).toEqual(['node_modules', 'web/node_modules'])
-    expect((await initWorkflowOf(FOO))?.workflow.steps).toEqual({ init: { run: ['pnpm install', 'pnpm build'] } })
-    expect((await initWorkflowOf(BAR))?.workflow.steps).toEqual({
+    // Its init commands are a marked workflow named `init`.
+    expect(await initSteps(FOO)).toEqual({ init: { init: { run: ['pnpm install', 'pnpm build'] } } })
+    expect(await initSteps(BAR)).toEqual({ init: {
       backend: { run: ['pnpm dev:be'] },
       frontend: { run: ['pnpm i', 'pnpm dev'] },
-      'init-claude-setup': { run: ['a'] },
-      'init-shell': { run: ['b'] },
-    })
+      'claude-setup': { run: ['a'] },
+      'init-db-setup': { run: ['b'] },
+    } })
     expect(await exists(file(FOO))).toBe(false)
 
     // Once imported there is nothing left to import.
-    await setInitSteps(OWNER, FOO, { mine: { run: 'make' } })
     await importProjectConfigFiles()
-    expect((await initWorkflowOf(FOO))?.workflow.steps).toEqual({ mine: { run: ['make'] } })
+    expect(Object.keys(await initSteps(FOO))).toEqual(['init'])
   })
 
   it('imports what validates and keeps the file aside, logging no value, as it does a file that is not JSON', async () => {
-    await setInitSteps(OWNER, FOO, { mine: { run: 'make' } })
+    await createWorkflow(OWNER, FOO, { name: 'init', steps: { mine: { run: 'make' } } })
+    // A project with an init workflow of its own, whatever its name, keeps it alone.
+    await createWorkflow(OWNER, BAZ, { name: 'setup', steps: { mine: { run: 'make' } }, init: true })
+    await writeConfig(BAZ, { initCommands: ['pnpm install'] })
     const foo = JSON.stringify({
       npmCache: false,
       portForward: [{ containerPort: 10300, hostPortStart: 1 }],
@@ -104,9 +112,11 @@ describe('importProjectConfigFiles', () => {
 
     await importProjectConfigFiles()
 
-    // A project with init steps of its own keeps them.
+    // A workflow named `init` that is no init workflow takes nothing from
+    // the import's name: the commands become `init-steps`.
     expect(await resolveProjectConfig(FOO)).toEqual({ ...PROJECT_CONFIG_DEFAULTS, npmCache: false })
-    expect((await initWorkflowOf(FOO))?.workflow.steps).toEqual({ mine: { run: ['make'] } })
+    expect(Object.keys(await initSteps(FOO))).toEqual(['init-steps'])
+    expect(Object.keys(await initSteps(BAZ))).toEqual(['setup'])
     const logged = vi.mocked(serverLog).mock.calls.map(([m]) => m).join('\n')
     expect(logged).toContain('portForward (10300 is reserved')
     expect(logged).toContain('somethingElse (not a setting)')

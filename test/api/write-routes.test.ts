@@ -283,6 +283,22 @@ describe('write routes', () => {
     })
   })
 
+  describe('PUT /project/:projectId/init-workflows', () => {
+    it('makes exactly the named workflows the init workflows, refusing a body without the list or an unknown name', async () => {
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+      for (const name of ['web-init', 'lint']) {
+        await client.workflow.create.$post({ json: { project: DEMO, name, steps: { a: { run: 'true' } } } })
+      }
+      const put = client.project[':projectId']['init-workflows'].$put
+      const set = await put({ param: { projectId: DEMO }, json: { workflows: ['web-init'] } })
+      expect(((await set.json()) as Array<{ name: string; init: boolean }>).map((w) => [w.name, w.init])).toEqual([['web-init', true]])
+      expect((await put({ param: { projectId: DEMO }, json: { workflows: ['nope'] } })).status).toBe(404)
+      const raw = await buildApp({ buildId: 'test' }).request(`/api/project/${DEMO}/init-workflows`, rawInit({ method: 'PUT', body: '{}' }))
+      expect(raw.status).toBe(400)
+      expect(await (await put({ param: { projectId: DEMO }, json: { workflows: [] } })).json()).toEqual([])
+    })
+  })
+
   describe('project env routes', () => {
     it('round-trips a plain variable and never gives a secret back', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))

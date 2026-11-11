@@ -5,7 +5,7 @@
  * `WorkspacePaths.terminalLogDir`, so no command text nests a script inside
  * shell and tmux quoting.
  */
-import { pipeToLogCommand, tmuxCmd, windowTarget } from '#runtime/agents'
+import { pipeToLogCommand, tmuxCmd } from '#runtime/agents'
 import { shellQuote } from '#lib/shell'
 import type { WorkspacePaths } from '#drivers/contract'
 import { AGENT_TOOLS } from '@yaac/shared/types'
@@ -21,11 +21,13 @@ export const STEP_READY_OPTION = '@yaac-step-ready'
  * renames a window whose pane died to its own name. The rename sends
  * control clients a `%window-renamed`, so the status watcher re-lists at
  * once and sees the exit status of a step, which no other notification
- * reports.
+ * reports. A step's window holds a `.`, which no session's does, so a
+ * workflow named after a tool is still logged.
  */
 export function lifeHooksConfig(paths: WorkspacePaths, logDir: string): string {
-  const session = AGENT_TOOLS.map((t) => `#{m:${t}-*,#{window_name}}`)
+  const tool = AGENT_TOOLS.map((t) => `#{m:${t}-*,#{window_name}}`)
     .reduce((acc, m) => `#{||:${acc},${m}}`)
+  const session = `#{?#{m:*.*,#{window_name}},0,${tool}}`
   return [
     `set-option -g @yaac-log-dir "${logDir}"`,
     'set-hook -g after-new-window {',
@@ -47,23 +49,27 @@ export function sourceHooksCommand(paths: WorkspacePaths, configPath: string): s
 }
 
 /**
- * A step's script. Its commands run in order in one shell, stopping at the
- * first failure, whose status the script exits with. The shell is the
- * workspace's `$SHELL` when that is a POSIX-family one, as init commands
- * always ran in (zsh reads `~/.zshenv`, which shims a PATH), else bash,
- * else sh. Around each command it appends `start <i> <time>` and
- * `end <i> <status> <time>` to the events file, the end from an EXIT trap
- * too, so a command that exits the script still closes its own. A service
- * starts its ready check in the background just before its last command,
- * and the check sets `STEP_READY_OPTION` on the window and renames it to
- * itself so the watcher re-lists. `env` holds `NAME=VALUE` entries
- * exported for this step alone.
+ * A step's script. Its first act keeps its pane when it exits
+ * (`remain-on-exit`), which is how the exit status is read, set on its own
+ * pane since a step's name cannot target its window. Its commands run in
+ * order in one shell, stopping at the first failure, whose status the
+ * script exits with. The shell is the workspace's `$SHELL` when that is a
+ * POSIX-family one, as init commands always ran in (zsh reads
+ * `~/.zshenv`, which shims a PATH), else bash, else sh. It starts in `cwd`,
+ * else the workspace's default cwd. Around each command it appends
+ * `start <i> <time>` and `end <i> <status> <time>` to the events file, the
+ * end from an EXIT trap too, so a command that exits the script still
+ * closes its own. A service starts its ready check in the background just
+ * before its last command, and the check sets `STEP_READY_OPTION` on the
+ * window and renames it to itself so the watcher re-lists. `env` holds
+ * `NAME=VALUE` entries exported for this step alone.
  */
 export function stepScript(
   name: string,
   spec: StepSpec,
   eventsPath: string,
   env: string[] = [],
+  cwd?: string,
 ): string {
   const relist = `tmux rename-window -t "$TMUX_PANE" ${shellQuote(name)}`
   const ready = `tmux set-option -w -t "$TMUX_PANE" ${STEP_READY_OPTION} 1; ${relist}`
@@ -71,6 +77,7 @@ export function stepScript(
   const lines = [
     `# yaac step ${JSON.stringify(name)}, written by the server (docs/workspace-steps.md).`,
     'if [ -z "${YAAC_STEP_SHELL:-}" ]; then',
+    '  tmux set-option -w -t "$TMUX_PANE" remain-on-exit on',
     '  export YAAC_STEP_SHELL=1',
     '  case "${SHELL##*/}" in bash|zsh|sh|dash|ksh) exec "$SHELL" "$0" ;; esac',
     '  ! command -v bash >/dev/null 2>&1 || exec bash "$0"',
@@ -80,8 +87,8 @@ export function stepScript(
       const at = entry.indexOf('=')
       return `export ${entry.slice(0, at)}=${shellQuote(entry.slice(at + 1))}`
     }),
-    // The workspace's default cwd, which its tmux session was started in.
-    'cd "$(tmux display-message -p \'#{session_path}\')" || exit 1',
+    // The workspace's default cwd is the one its tmux session started in.
+    cwd !== undefined ? `cd ${shellQuote(cwd)} || exit 1` : 'cd "$(tmux display-message -p \'#{session_path}\')" || exit 1',
     `yaac_mark() { printf '%s %s\\n' "$*" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ${shellQuote(eventsPath)}; }`,
     'yaac_i=; yaac_probe=',
     'trap \'yaac_rc=$?; [ -z "$yaac_i" ] || yaac_mark end "$yaac_i" "$yaac_rc"; [ -z "$yaac_probe" ] || kill "$yaac_probe" 2>/dev/null\' EXIT',
@@ -98,20 +105,24 @@ export function stepScript(
   return `${lines.join('\n')}\n`
 }
 
-/**
- * Open a step's window running its script, after killing any window of its
- * name (a rerun's dead one). The window keeps its pane when the script
- * exits, which is how its exit status is read.
- */
+/** Kill every window of the yaac session named `name`, found by name in
+ *  the window listing and killed by id, since a step's name cannot target
+ *  its window (`windowTarget`). */
+function killWindowsNamed(tmux: string, name: string): string {
+  return `for w in $(${tmux} list-windows -t =yaac -F '#{window_id} #{window_name}' 2>/dev/null `
+    + `| awk -v n=${shellQuote(name)} '{ id = $1; sub(/^[^ ]* /, ""); if ($0 == n) print id }'); `
+    + `do ${tmux} kill-window -t "$w" 2>/dev/null; done`
+}
+
+/** Open a step's window running its script, after killing any window of
+ *  its name (a rerun's dead one). */
 export function stepWindowExec(name: string, paths: WorkspacePaths, scriptPath: string): string {
   const tmux = tmuxCmd(paths)
-  const target = windowTarget(name)
-  return `${tmux} kill-window -t ${target} 2>/dev/null; `
-    + `${tmux} new-window -d -t yaac -n ${shellQuote(name)} -c '#{session_path}' `
-    + `${shellQuote(`sh ${shellQuote(scriptPath)}`)} \\; set-option -t ${target} remain-on-exit on`
+  return `${killWindowsNamed(tmux, name)}; `
+    + `${tmux} new-window -d -t yaac -n ${shellQuote(name)} -c '#{session_path}' ${shellQuote(`sh ${shellQuote(scriptPath)}`)}`
 }
 
 /** Kill a step's window, if it has one. */
 export function killStepWindowExec(name: string, paths: WorkspacePaths): string {
-  return `${tmuxCmd(paths)} kill-window -t ${windowTarget(name)} 2>/dev/null || true`
+  return `${killWindowsNamed(tmuxCmd(paths), name)}; true`
 }

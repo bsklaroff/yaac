@@ -138,7 +138,10 @@ A containerless workspace runs on the host, as the host's user, with the
 host's own `$HOME`. So a bare `yaac` drives the **host's own install**, the
 server running this workspace: `yaac server stop` would stop it, and `yaac
 auth fake` would replace the user's real sign-ins. This repo's
-init steps (`.yaac/init-steps.json`) start the workspace's own server with
+init steps (`.yaac/init-steps.json`, applied as an init workflow with `yaac
+workflow create <project> init --file .yaac/init-steps.json --init`, or
+`yaac workflow edit <project> init --file .yaac/init-steps.json` once it
+exists) start the workspace's own server with
 `YAAC_DATA_DIR=$PWD/.yaac-dev`, and installs the branch's `yaac` under
 `$PWD/.yaac-dev-npm` rather than over the host's global one (all
 gitignored), so export the same first in every shell that runs `yaac`:

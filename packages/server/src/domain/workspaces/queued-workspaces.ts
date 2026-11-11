@@ -32,7 +32,7 @@ import { toStoppedEntries } from './stopped-list'
 import { customEndpointFor, modelDisplayName, modelEfforts } from '#domain/auth'
 import { authorizeProject, isProjectHeld, systemPrincipal, type Actor } from '#domain/access'
 import { getDefaultBranch } from '#domain/git'
-import { resolveWorkflow } from '#domain/projects'
+import { assertWorkflowRepos, resolveWorkflow } from '#domain/projects'
 import {
   claimQueuedLaunch,
   deleteQueuedWorkspace,
@@ -804,6 +804,12 @@ async function resolveSettings(
     ...(named !== undefined ? { steps: named.workflow.steps } : {}),
     noSession: request.prompt === undefined,
   })
+  const selection = await queuedSelection(project, own ?? parent.selection, request)
+  // What it starts with is known now, so a workflow it cannot run is
+  // refused at save rather than at launch.
+  if (named !== undefined) {
+    await assertWorkflowRepos(projectId, `workflow "${named.name}"`, named.workflow.repos, selection.repos.map((r) => r.repo))
+  }
   return {
     ...(request.prompt !== undefined ? { prompt: request.prompt } : {}),
     tool: setup.tool,
@@ -812,7 +818,7 @@ async function resolveSettings(
     permissionMode: setup.permissionMode,
     ...(setup.effort !== undefined ? { effort: setup.effort } : {}),
     agentOptions: setup.agentOptions,
-    ...await queuedSelection(project, own ?? parent.selection, request),
+    ...selection,
     ...(named !== undefined ? { namedWorkflowId: named.id }
       : steps !== undefined ? { workflowId: (await storeWorkflow(projectId, { steps: steps ?? {}, secrets: [] })).id } : {}),
     ...(request.nonInteractive === true ? { nonInteractive: true } : {}),

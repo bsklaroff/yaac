@@ -3,8 +3,9 @@ import type { AnyPgColumn } from 'drizzle-orm/pg-core'
 import { getDb } from './client'
 import {
   draftWorkspaces, namedWorkflows, projectRepos, projects, queuedWorkspaces, repos, repoShares, routines, sites,
-  workflowApprovals, workspaceRepos, workspaces,
+  workflowApprovals, workflows, workspaceRepos, workspaces,
 } from './schema'
+import { workflowHash } from './workflow-store'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { nullsToUndefined } from '#lib/nulls'
 
@@ -266,8 +267,9 @@ export async function setProjectRepoOrder(projectId: string, repoIds: string[]):
  * `toRepoId`, in one transaction: for a user whose shared repo became one of
  * their own when it moved to a git host. That is each link (keeping its
  * folder and flags), each workspace's checkout, what queued entries,
- * routines and drafts start with, the remembered cwd, a site's repo, and
- * the branches their workflows are approved on.
+ * routines, drafts and sites start with, the commits a site's releases
+ * ran, the repos a workflow names (with its hash), and the branches their
+ * workflows are approved on.
  */
 export async function repointProjectRepos(owner: string, fromRepoId: string, toRepoId: string): Promise<void> {
   const db = await getDb()
@@ -288,7 +290,25 @@ export async function repointProjectRepos(owner: string, fromRepoId: string, toR
     await tx.update(draftWorkspaces).set({ repos: renamed(draftWorkspaces.repos) })
       .where(and(inArray(draftWorkspaces.projectId, owned), isNotNull(draftWorkspaces.repos)))
     await tx.update(projects).set({ lastCwd: toRepoId }).where(and(eq(projects.owner, owner), eq(projects.lastCwd, fromRepoId)))
-    await tx.update(sites).set({ repoId: toRepoId }).where(and(eq(sites.repoId, fromRepoId), inArray(sites.projectId, owned)))
+    await tx.update(sites).set({
+      repos: renamed(sites.repos),
+      releaseCommits: renamed(sites.releaseCommits),
+      deployCommits: renamed(sites.deployCommits),
+      lastDeployCommits: renamed(sites.lastDeployCommits),
+      failedCommits: renamed(sites.failedCommits),
+    }).where(inArray(sites.projectId, owned))
+    // A workflow's repos are content, so its hash moves with them. Where the
+    // project already holds that content, its names point there instead.
+    const named = await tx.select().from(workflows)
+      .where(and(inArray(workflows.projectId, owned), sql`${fromRepoId}::uuid = any(${workflows.repos})`))
+    for (const w of named) {
+      const repos = [...new Set(w.repos.map((r) => (r === fromRepoId ? toRepoId : r)))].sort()
+      const hash = workflowHash(w.steps, w.secrets, repos)
+      const [same] = await tx.select({ id: workflows.id }).from(workflows)
+        .where(and(eq(workflows.projectId, w.projectId), eq(workflows.hash, hash)))
+      if (same === undefined) await tx.update(workflows).set({ repos, hash }).where(eq(workflows.id, w.id))
+      else await tx.update(namedWorkflows).set({ workflowId: same.id }).where(eq(namedWorkflows.workflowId, w.id))
+    }
     await tx.update(workflowApprovals)
       .set({ ref: sql`${toRepoId} || substr(${workflowApprovals.ref}, ${fromRepoId.length + 1})` })
       .where(and(

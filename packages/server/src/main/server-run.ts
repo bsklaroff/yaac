@@ -27,6 +27,7 @@ import { TmpDirRefusal } from '@yaac/shared/paths'
 import { startReconciler } from '#main/reconciler'
 import { setWorkspaceDriver, workspaceDriver, workspacesSandboxed } from '#drivers/driver'
 import { importProjectConfigFiles, pushProjectSecrets } from '#domain/projects'
+import { backfillSiteBranches } from '#domain/sites'
 import { moveLegacyMainClones } from '#domain/repos'
 import { rememberFeedbackUrl } from '#domain/feedback'
 import { resumeQueuedWorkspaces } from '#domain/workspaces'
@@ -256,6 +257,8 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   await importProjectConfigFiles()
   await importEmbeddedEndpoints()
   await moveLegacyMainClones()
+  // Reads the main clones, so after they are where they belong.
+  await backfillSiteBranches()
 
   // Set synchronously so it is true before any queued request runs.
   ready = true

@@ -16,7 +16,7 @@ import { volumeForLaunch } from './volumes'
 import { VOLUME_NEED } from './steps'
 import { modelDisplayName } from '#domain/auth'
 import { authorizeProject, type Actor } from '#domain/access'
-import { resolveWorkflow, workflowLaunch } from '#domain/projects'
+import { assertWorkflowRepos, mintWorkflowName, resolveWorkflow, workflowLaunch } from '#domain/projects'
 import { getProjectRow, getWorkflow, listWorkspaceRepos, recordProjectCreate, storeWorkflow } from '#db'
 import { resolveStart, storedSelection, type StartRequest, type WorkspaceStart } from './checkouts'
 import { ServerError } from '@yaac/shared/errors'
@@ -47,8 +47,8 @@ export interface StartWorkspaceRequest {
   cwd?: string
   branch?: string
   commit?: string
-  /** The step graph it starts with in place of the project's init steps,
-   *  unparsed; null for none (docs/workspace-steps.md). */
+  /** The step graph it starts with in place of the project's init
+   *  workflows, unparsed; null for none (docs/workspace-steps.md). */
   steps?: unknown
   /** Run `steps` untouched, with no session, and stop when they settle. */
   nonInteractive?: boolean
@@ -58,12 +58,9 @@ export interface StartWorkspaceRequest {
    *  (docs/workflows.md). */
   workflow?: string
   /** A workflow it runs again, a rerun's or a replacement's, with the name
-   *  it was chosen through. */
+   *  it had there. */
   workflowId?: string
   workflowName?: string
-  /** The branch whose tip `commit` is, for a workflow approved to run on
-   *  that branch: a site's follow deploy. */
-  fromBranch?: string
   prompt?: string
   /** Its session's id, when the client minted one so it can find what it
    *  opened (`GET /workspace/prompt`) before the snapshot names it. */
@@ -128,23 +125,29 @@ export async function prepareStart(
   const start = resolveStart(project, request)
   checkStartCommits(start)
   const workflow = await startWorkflow(projectId, request)
-  // A start that gets a workflow's run secrets runs at a commit of its one
-  // repo, which `workflowLaunch` resolves from a branch.
-  const lone = start.repos.length === 1 ? start.repos[0] : undefined
-  const fromBranch = request.fromBranch ?? lone?.branch
+  if (workflow !== undefined) {
+    await assertWorkflowRepos(projectId, workflow.name !== undefined && workflow.namedWorkflowId !== undefined
+      ? `workflow "${workflow.name}"` : 'this workflow', workflow.repos, start.repos.map((r) => r.link.repo.id))
+  }
+  // A start that gets a workflow's run secrets runs each repo at a commit,
+  // which `workflowLaunch` resolves from a branch.
   const flow = workflow !== undefined
     ? await workflowLaunch(principal, projectId, {
       workflowId: workflow.id,
       ...(workflow.namedWorkflowId !== undefined ? { namedWorkflowId: workflow.namedWorkflowId } : {}),
-      ...(lone !== undefined ? { repoId: lone.link.repo.id } : {}),
-      ...(lone?.commit !== undefined ? { commit: lone.commit } : {}),
-      ...(fromBranch !== undefined ? { branch: fromBranch } : {}),
+      repos: start.repos.map((r) => ({
+        repoId: r.link.repo.id,
+        ...(r.commit !== undefined ? { commit: r.commit } : {}),
+        ...(r.branch !== undefined ? { branch: r.branch } : {}),
+      })),
       secrets: request.nonInteractive === true || request.siteId !== undefined,
     })
     : undefined
-  if (flow?.commit !== undefined && lone !== undefined) {
-    lone.commit = flow.commit
-    delete lone.branch
+  for (const r of start.repos) {
+    const commit = flow?.commits?.[r.link.repo.id]
+    if (commit === undefined) continue
+    r.commit = commit
+    delete r.branch
   }
   const selection = storedSelection(start)
   const atCommit = start.repos.some((r) => r.commit !== undefined)
@@ -208,7 +211,7 @@ export async function prepareStart(
       throwIfProvisionStopped(workspaceId)
       // Containerless keeps no spare pool (`defaultReconcileSteps`), a
       // spare's mounts, fixed at launch, have no volume, and a spare starts
-      // the project's init steps with each repo at a branch.
+      // the project's init workflows with each repo at a branch.
       if (request.claimSpare && workspaceDriver().kind !== 'containerless' && volume === undefined
         && workflow === undefined && !atCommit) {
         const claimed = await tryClaimPrewarmed(projectId, workspaceId, session, onProgress, {
@@ -226,9 +229,7 @@ export async function prepareStart(
         onProgress,
         ...(session !== undefined ? { session } : {}),
         start,
-        ...(workflow !== undefined ? {
-          workflow: { id: workflow.id, steps: workflow.steps, ...(workflow.name !== undefined ? { name: workflow.name } : {}) },
-        } : {}),
+        ...(workflow !== undefined ? { workflow: { id: workflow.id, steps: workflow.steps, name: workflow.name } } : {}),
         ...(request.nonInteractive === true ? { nonInteractive: true } : {}),
         ...(request.rerunOf !== undefined ? { rerunOf: request.rerunOf } : {}),
         ...(flow !== undefined ? { runSecrets: flow.runSecrets } : {}),
@@ -276,28 +277,40 @@ export async function prepareStart(
 }
 
 /**
- * The workflow a start runs in place of the project's init steps: one its
- * `steps` make (none for null), a named workflow's current one, or one it
- * runs again; undefined for the project's. Checked as a start's graph.
+ * The workflow a start runs in place of the project's init workflows: one
+ * its `steps` make (none for null), a named workflow's current one, or one
+ * it runs again, with the name it has in the workspace: a named workflow's,
+ * the one it had where it ran before, else a short random one. Undefined
+ * for the project's. Checked as a start's graph; its `<workflow>.<step>`
+ * needs can only name its own steps, since nothing runs beside it.
  */
 async function startWorkflow(
   projectId: string,
   request: StartWorkspaceRequest,
-): Promise<{ id: string; steps: StepGraph; name?: string; namedWorkflowId?: string } | undefined> {
+): Promise<{ id: string; steps: StepGraph; repos: string[]; name: string; namedWorkflowId?: string } | undefined> {
+  let flow: { id: string; steps: StepGraph; repos: string[]; name: string; namedWorkflowId?: string } | undefined
   if (request.workflow !== undefined) {
     const named = await resolveWorkflow(projectId, request.workflow)
     checkStartSteps({ ...request, steps: named.workflow.steps })
-    return { ...named.workflow, name: named.name, namedWorkflowId: named.id }
-  }
-  if (request.workflowId !== undefined) {
+    flow = { ...named.workflow, name: named.name, namedWorkflowId: named.id }
+  } else if (request.workflowId !== undefined) {
     const pinned = await getWorkflow(request.workflowId)
     if (pinned?.projectId !== projectId) throw new ServerError('NOT_FOUND', 'the workflow it ran is gone')
     checkStartSteps({ ...request, steps: pinned.steps })
-    return { ...pinned, ...(request.workflowName !== undefined ? { name: request.workflowName } : {}) }
+    flow = { ...pinned, name: request.workflowName ?? await mintWorkflowName(projectId) }
+  } else {
+    const steps = checkStartSteps(request)
+    if (steps === undefined) return undefined
+    flow = { ...await storeWorkflow(projectId, { steps: steps ?? {}, secrets: [] }), name: await mintWorkflowName(projectId) }
   }
-  const steps = checkStartSteps(request)
-  if (steps === undefined) return undefined
-  return await storeWorkflow(projectId, { steps: steps ?? {}, secrets: [] })
+  for (const [step, spec] of Object.entries(flow.steps)) {
+    const foreign = (spec.needs ?? []).find((n) => n.includes('.') && !(n.startsWith(`${flow.name}.`)
+      && n.slice(flow.name.length + 1) in flow.steps))
+    if (foreign !== undefined) {
+      throw new ServerError('VALIDATION', `step "${step}" needs "${foreign}", which is not a step of this workspace`)
+    }
+  }
+  return flow
 }
 
 /** Refuse a start naming a commit that is not a full commit id. */
@@ -334,7 +347,7 @@ export async function startOf(
 
 /**
  * Check a start's steps and non-interactive flag, answering its
- * parsed graph: absent runs the project's init steps, null none. A
+ * parsed graph: absent runs the project's init workflows, null none. A
  * non-interactive workspace brings its own graph, with a step that is not a
  * service (it ends when those settle), and opens no session
  * (docs/workspace-steps.md "Non-interactive workspaces").

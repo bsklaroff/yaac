@@ -67,7 +67,7 @@ export { previewWorkspaceRetention, reconcileWorkspaceRetention, setWorkspaceRet
 export { prepareRerun, prepareRestart } from './restart'
 export { VOLUME_NEED, addSteps, assertInteractive, cancelStep, onReleaseStepChanged, reconcileSteps, rerunStep, volumeUsers } from './steps'
 export { listWorkspaceLogs, readWorkspaceLog } from './logs'
-export { prepareStart } from './start'
+export { prepareStart, startOf } from './start'
 export { reconcileStaleWorkspaces } from './stale-workspaces'
 export { stopWorkspace } from './stop'
 export {

@@ -49,7 +49,7 @@ import { configGitIdentity } from '#commands/config-git-identity'
 import { feedback } from '#commands/feedback'
 import { configWorkspaceAutoDelete } from '#commands/config-workspace-auto-delete'
 import { configScratchDirs } from '#commands/config-scratch-dirs'
-import { configInitSteps } from '#commands/config-init-steps'
+import { configInitWorkflows } from '#commands/config-init-workflows'
 import { configEnv } from '#commands/config-env'
 import { configEgressAllowlist } from '#commands/config-egress-allowlist'
 import { configKeptIgnoredPaths } from '#commands/config-kept-ignored-paths'
@@ -494,8 +494,8 @@ selectionOptions(workspace
   .option('-t, --tool <tool>', 'Agent tool to use (claude, codex, opencode, pi, or omp). Defaults to the agent this project was last created with, else claude')
   .option('-b, --branch <branch>', 'Reference branch for a workspace that starts with one repo (defaults to the remote default branch); with several, name each repo\'s with --repo')
   .option('--commit <sha>', 'Start a workspace that starts with one repo at this full commit (40 hex digits) instead of a branch\'s tip; its checkout then has no base branch. Not with --branch')
-  .option('--steps <file>', 'A JSON file of the steps to start with, in place of the project\'s init steps (docs/workspace-steps.md)')
-  .option('--no-steps', 'Start with no steps at all, not even the project\'s init steps')
+  .option('--steps <file>', 'A JSON file of the steps to start with, in place of the project\'s init workflows (docs/workspace-steps.md)')
+  .option('--no-steps', 'Start with no steps at all, not even the project\'s init workflows')
   .option('--workflow <name>', 'Start with this named workflow, in place of --steps (docs/workflows.md). Non-interactive, it gets the run secrets the workflow names, and this launch approves its commit for them')
   .option('--non-interactive', 'Run --steps untouched, with no session, and stop when they finish: a CI run. Nothing can change it while it runs; it can only be stopped, and is rerun rather than restarted')
   .option('--wait', 'With --non-interactive: wait for its steps to finish, exiting non-zero unless they all succeeded')
@@ -566,11 +566,12 @@ const step = workspace
 
 step
   .command('add')
-  .description('Add a step to a running workspace; it starts once the steps it needs have succeeded. Prints its name')
+  .description('Add a step to a running workspace, as a workflow of its own with a short name of its own; it starts once the steps it needs have succeeded. Prints its full name, <workflow>.<step>')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
   .option('--run <command>', 'A command to run (repeatable: they run in order in one shell, stopping at the first that fails)', collect, [])
-  .option('--name <name>', 'Its name (default: run-<8 hex>)')
-  .option('--needs <steps>', 'Comma-separated steps of the workspace that must succeed (a service: be ready) first')
+  .option('--name <name>', 'Its name within its workflow (default: run)')
+  .option('--needs <steps>', 'Comma-separated steps of the workspace that must succeed (a service: be ready) first, each <workflow>.<step>, or a bare name while one workflow has it')
+  .option('--repo <dir>', 'Run in this repo\'s checkout, by its folder (repeatable: several run at the workspace root); refused if the workspace has none', collect, [])
   .option('--service', 'It keeps running: its last command is the process, and it never finishes')
   .option('--ready <command>', 'With --service: a check run every two seconds; steps that need it start once it passes')
   .option('--workflow <name>', 'Add a named workflow\'s steps instead, as they are (docs/workflows.md)')
@@ -580,21 +581,21 @@ step
   .command('rerun')
   .description('Run a finished step again, with the steps it caused to be skipped')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
-  .argument('<name>', 'Step name')
+  .argument('<name>', 'Step name, <workflow>.<step>, or a bare one while one workflow has it')
   .action(stepRerun)
 
 step
   .command('cancel')
   .description('Stop a step that has not finished; the steps that need it are skipped')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
-  .argument('<name>', 'Step name')
+  .argument('<name>', 'Step name, <workflow>.<step>, or a bare one while one workflow has it')
   .action(stepCancel)
 
 workspace
   .command('logs')
   .description('Print a workspace\'s terminal logs, kept for each of its lives until it is deleted, running or stopped')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
-  .argument('[window]', 'A step\'s name, or any logged window\'s (shell, …); omit it to list the life\'s logs')
+  .argument('[window]', 'A step\'s full name (<workflow>.<step>), or any logged window\'s (shell, …); omit it to list the life\'s logs')
   .option('--life <n>', 'Which life: 1 (the default) is the newest, 2 the one before; or a life\'s name as the listing prints it')
   .option('--raw', 'Print the log as written, terminal escape codes and all')
   .action((workspaceId: string, window: string | undefined, opts: { life?: string; raw?: boolean }) => workspaceLogs(workspaceId, window, opts))
@@ -647,7 +648,7 @@ function routineOptions(cmd: Command): Command {
     .addOption(new Option('--permission-mode <mode>', 'How much each run may do before it asks; a run that asks waits until it is stopped').choices([...PERMISSION_MODES]))
     .option('-b, --branch <branch>', 'Reference branch each run forks from, for runs that start with one repo')
     .option('--commit <sha>', 'A full commit every run starts at instead of a branch\'s tip, for runs that start with one repo. Not with --branch')
-    .option('--workflow <name>', 'Each run starts with this named workflow, in place of the project\'s init steps (docs/workflows.md); saving approves the commit or branch it runs on for the workflow\'s run secrets, which on a branch means whatever anyone pushes there')
+    .option('--workflow <name>', 'Each run starts with this named workflow, in place of the project\'s init workflows (docs/workflows.md); saving approves the commit or branch each repo runs on for the workflow\'s run secrets, which on a branch means whatever anyone pushes there')
     .option('--non-interactive', 'Each run runs its --workflow untouched, with no prompt or session, and stops when it finishes')
     .option('-g, --group <group>', 'Sidebar group runs are filed under (by name or id; created if it does not exist). Defaults to a group named after the routine')
     .option('--no-group', 'File runs in the default list instead of a group')
@@ -739,11 +740,13 @@ function siteOptions(cmd: Command, required: boolean): Command {
     required ? cmd.requiredOption(flags, description) : cmd.option(flags, description)
   option('--hostname <host>', 'The public hostname it serves, which the install\'s Cloudflare tunnel must route')
   option('--port <n>', 'The port its releases serve on')
-  option('--workflow <name>', 'The named workflow each release runs, one of its steps a service (docs/workflows.md); a deploy approves its commit, and following a branch the branch, for its run secrets')
+  option('--workflow <name>', 'The named workflow each release runs, one of its steps a service (docs/workflows.md); a deploy approves its commits, and following its branches, for its run secrets')
   return cmd
+    .option('--repo <dir@ref>', 'A repo each release starts with, by folder, at a branch on origin or a full commit (repeatable: one sits at the release\'s root, several in their folders); on edit, the whole list', collect, [])
     .option('--admin-port <n>', 'A port of each release that only you can reach, by `yaac forward` or a preview, never the internet')
     .option('--volume <name>', 'A project volume each release mounts at $YAAC_VOLUME_DIR (see `yaac volume`)')
-    .option('--follow <branch>', 'Deploy each new tip of this branch on origin while the site serves, so whoever can push it, the project\'s agents included, publishes unless the remote\'s branch protection stops them; a tip that fails to deploy leaves the last good release serving')
+    .addOption(new Option('--no-repos', 'Refused: a site starts with at least one repo').hideHelp())
+    .option('--follow', 'Deploy whenever a branch in --repo moves while the site serves, so whoever can push one, the project\'s agents included, publishes unless the remote\'s branch protection stops them; what fails to deploy leaves the last good release serving')
 }
 
 siteOptions(site
@@ -751,7 +754,6 @@ siteOptions(site
   .description('Create a site, and print what to add to the Cloudflare tunnel; `site deploy` publishes it')
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('<name>', 'Site name, unique in the project'), true)
-  .option('--repo <dir>', 'The repo its releases are built from, by its folder; needed when the project has several')
   .action(siteCreate)
 
 siteOptions(site
@@ -761,7 +763,7 @@ siteOptions(site
   .argument('<name>', 'Site name'), false)
   .option('--no-admin-port', 'Offer no admin port')
   .option('--no-volume', 'Mount no volume')
-  .option('--no-follow', 'Follow no branch, deploying only when asked; allowed mid-deploy, to whoever may stop the site')
+  .option('--no-follow', 'Deploy only when asked; allowed mid-deploy, to whoever may stop the site')
   .action(siteEdit)
 
 site
@@ -779,10 +781,10 @@ site
 
 site
   .command('deploy')
-  .description('Start a release at a commit; once it is ready the hostname moves to it and the old release stops')
+  .description('Start a release with each repo at a commit; once it is ready the hostname moves to it and the old release stops')
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('<name>', 'Site name')
-  .option('--ref <ref>', 'A branch or commit to deploy (default: the branch the site follows, else the project\'s default branch)')
+  .option('--ref <[dir@]ref>', 'A branch or full commit to deploy a repo at, as <dir>@<ref> (a bare <ref> for a site of one repo; repeatable); a repo not named deploys at its --repo setting', collect, [])
   .option('--timeout <duration>', 'Fail the deploy if its release is not ready this long after it starts, like 30m (default 15m)')
   .option('--wait', 'Wait for the deploy to finish, exiting non-zero unless it succeeded')
   .action(siteDeploy)
@@ -796,7 +798,7 @@ site
 
 site
   .command('start')
-  .description('Start a replacement of the last release, at its commit')
+  .description('Start a replacement of the last release, at its commits')
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('<name>', 'Site name')
   .action(siteStart)
@@ -819,34 +821,40 @@ workflow
   .argument('<name>', 'Workflow name, unique in the project')
   .requiredOption('--file <path>', 'A JSON file of its steps')
   .option('--secret <name>', 'A run secret its runs get (repeatable; see `yaac config env --run-secret`)', collect, [])
+  .option('--repo <dir>', 'A repo its steps are written for, by folder (repeatable): they start in its checkout (the workspace root for several), and it runs only in a workspace with each', collect, [])
+  .option('--init', 'Make it an init workflow: every workspace that brings no steps of its own and has its repos starts it')
   .action(workflowCreate)
 
 workflow
   .command('edit')
-  .description('Change a workflow\'s steps or run secrets; workspaces already started keep what they started with')
+  .description('Change a workflow\'s steps, run secrets or repos, or whether it is an init workflow; workspaces already started keep what they started with')
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('<name>', 'Workflow name')
   .option('--file <path>', 'A JSON file of its new steps; needed to give it run secrets, so they reach the steps you gave')
   .option('--secret <name>', 'A run secret its runs get, replacing those it had (repeatable)', collect, [])
   .option('--no-secrets', 'Give its runs no run secrets')
+  .option('--repo <dir>', 'A repo its steps are written for, replacing those it named (repeatable)', collect, [])
+  .option('--no-repos', 'Name no repos: its steps start in the workspace\'s cwd')
+  .option('--init', 'Make it an init workflow')
+  .option('--no-init', 'Make it no longer an init workflow')
   .action(workflowEdit)
 
 workflow
   .command('list')
-  .description('List a project\'s workflows with their steps and run secrets')
+  .description('List a project\'s workflows with their steps, repos, run secrets, and which are init workflows')
   .argument('<project>', 'Project name, id, or id prefix')
   .action(workflowList)
 
 workflow
   .command('show')
-  .description('Show a workflow\'s steps, run secrets and approvals')
+  .description('Show a workflow\'s steps, repos, run secrets and approvals, and whether it is an init workflow')
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('<name>', 'Workflow name')
   .action(workflowShow)
 
 workflow
   .command('delete')
-  .description('Delete a workflow nothing follows: no routine, site, queued workspace or project init steps')
+  .description('Delete a workflow no routine, site or queued workspace follows; deleting an init workflow stops it running')
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('<name>', 'Workflow name')
   .action(workflowDelete)
@@ -938,13 +946,12 @@ config
   .action(configScratchDirs)
 
 config
-  .command('init-steps')
-  .description('Print a project\'s init steps as JSON, the steps every workspace runs at start unless its create brings its own; or replace them')
+  .command('init-workflows')
+  .description('Print a project\'s init workflows, the named workflows every workspace that brings no steps of its own and has their repos starts, each with its repos and steps; or make exactly the named ones its init workflows')
   .argument('<project>', 'Project name, id, or id prefix')
-  .option('--file <path>', 'Replace them with the steps in this JSON file (docs/workspace-steps.md)')
-  .option('--workflow <name>', 'Follow this named workflow, so workspaces start its current steps (docs/workflows.md)')
-  .option('--none', 'Remove them all')
-  .action(configInitSteps)
+  .argument('[workflows...]', 'The named workflows to be its init workflows (docs/workflows.md)')
+  .option('--none', 'Make none of its workflows init workflows')
+  .action(configInitWorkflows)
 
 config
   .command('env')

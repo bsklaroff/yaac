@@ -1,7 +1,6 @@
 import { countStoppedWorkspaces, listProjectIconHashes, listProjectRows, type StoppedCount } from '#db'
 import { workspaceDriver } from '#drivers/driver'
 import { repoCredentialNames } from '#domain/repos'
-import { initWorkflowOf } from './workflows'
 import type { ProjectSummary } from '@yaac/shared/types'
 
 /**
@@ -32,7 +31,6 @@ export async function listProjects(
     return total
   }
   const credentials = await repoCredentialNames(rows.flatMap((r) => r.repos.map((l) => l.repo)))
-  const inits = new Map(await Promise.all(rows.map(async (r) => [r.id, await initWorkflowOf(r.id)] as const)))
   return rows.map((meta) => ({
     id: meta.id,
     name: meta.name,
@@ -65,8 +63,6 @@ export async function listProjects(
       ? { stoppedWorkspaceRetentionDays: meta.stoppedWorkspaceRetentionDays } : {}),
     ...(meta.keptIgnoredPaths.length > 0 ? { keptIgnoredPaths: meta.keptIgnoredPaths } : {}),
     scratchDirs: meta.scratchDirs,
-    initSteps: inits.get(meta.id)?.workflow.steps ?? {},
-    ...(inits.get(meta.id)?.name !== undefined ? { initWorkflow: inits.get(meta.id)?.name } : {}),
     portForwards: meta.portForwards,
     cacheVolumes: meta.cacheVolumes,
     nestedContainers: meta.nestedContainers,

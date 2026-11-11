@@ -18,17 +18,12 @@ import { Workflows } from '#components/settings/Workflows'
 import { ProjectSelect, useSettingsProject } from '#components/settings/ProjectPicker'
 import { api } from '#lib/api'
 import { WarningIcon } from '#lib/icons'
-import { parseSteps } from '#lib/steps'
 import { projectBuildFilesApi } from '#lib/buildFilesApi'
 import { useSnapshot } from '#lib/useSnapshot'
 import { useHasVolumes } from '#lib/volumes'
 import { useTeammateView } from '#lib/viewer'
 
 const project = api.project[':projectId']
-
-async function saveInitSteps(projectId: string, text: string): Promise<void> {
-  await project['init-steps'].$put({ param: { projectId }, json: { steps: parseSteps(text) } })
-}
 
 /**
  * Settings section for a project's settings and its `Dockerfile.yaac`, for
@@ -98,7 +93,7 @@ export function ProjectSettings(): JSX.Element {
           </div>
 
           <div className="mt-6">
-            <Workflows key={`workflows:${projectId}`} projectId={projectId} readOnly={readOnly} />
+            <Workflows key={`workflows:${projectId}`} projectId={projectId} repos={selected.repos} readOnly={readOnly} />
           </div>
 
           {mediatedEgress && <div className="mt-6">
@@ -147,7 +142,7 @@ export function ProjectSettings(): JSX.Element {
           </div>}
 
           {hasVolumes && <div className="mt-6">
-            <Sites key={`sites:${projectId}`} projectId={projectId} readOnly={readOnly} />
+            <Sites key={`sites:${projectId}`} project={selected} readOnly={readOnly} />
           </div>}
 
           <div className="mt-6">
@@ -170,29 +165,7 @@ export function ProjectSettings(): JSX.Element {
           </div>
 
           <div className="mt-6">
-            <div className="text-xs font-medium text-text">Init steps</div>
-            <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
-              What every workspace runs when it starts, unless its create brings its own steps: steps by name,
-              each{' '}<code className="text-text-dim">{'{"run": "<cmd>" or ["<cmd>", …], "needs": [...]}'}</code>,
-              with <code className="text-text-dim">{'"service": true'}</code> and an optional{' '}
-              <code className="text-text-dim">ready</code> check for one that keeps running.
-            </p>
-            {selected.initWorkflow !== undefined && (
-              <p className="mt-1 text-[11px] leading-relaxed text-text-faint">
-                These follow workflow <code className="text-text-dim">{selected.initWorkflow}</code>; saving the
-                editor gives the project its own steps instead.
-              </p>
-            )}
-            <div className="mt-2">
-              <FileEditor
-                key={`init-steps:${projectId}`}
-                title={`${selected.name} · init steps`}
-                language="json"
-                queryKey={['project-init-steps', projectId]}
-                load={() => Promise.resolve(`${JSON.stringify(selected.initSteps, null, 2)}\n`)}
-                {...(readOnly ? {} : { save: (text: string) => saveInitSteps(projectId, text) })}
-              />
-            </div>
+            <Workflows key={`init-workflows:${projectId}`} projectId={projectId} repos={selected.repos} readOnly={readOnly} init />
           </div>
 
           {buildsImages && <><div className="mt-6">

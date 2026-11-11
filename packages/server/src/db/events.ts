@@ -5,7 +5,8 @@ import type {
   PermissionMode,
   WorkspaceDeathCause,
 } from '@yaac/shared/types'
-import type { StepGraph, StepState, StepsOutcome } from '@yaac/shared/steps'
+import type { StepState, StepsOutcome } from '@yaac/shared/steps'
+import type { LifeWorkflow } from './step-store'
 
 /**
  * Facts that substrate- and disk-observing code reports to db, applied by
@@ -102,8 +103,8 @@ export interface WorkspaceLifeStarted {
   workspaceId: string
   /** When it started, which names its log dir and its steps' life. */
   at: Date
-  /** The graph this life starts, replacing the last life's start steps. */
-  startSteps: StepGraph
+  /** The workflows this life starts, replacing the last life's start steps. */
+  startSteps: LifeWorkflow[]
 }
 
 /** The commit one of a workspace's checkouts was created at. */
@@ -125,6 +126,8 @@ export interface StepChanged {
   projectId: string
   workspaceId: string
   life: Date
+  /** The step's workflow's name in the workspace, and its own. */
+  workflowName: string
   name: string
   state: StepState
   exitCode?: number
