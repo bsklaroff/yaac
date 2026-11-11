@@ -2,8 +2,8 @@
 
 A source install and the brew one both own the `bin/yaac` link, so run
 `brew unlink yaac-server` first if you have it. Unlinking rather than
-uninstalling keeps the desktop cask's dependency met, and the app then runs
-the source install, since it runs the `yaac` on PATH. `brew upgrade` tries to
+uninstalling keeps `yaac-cluster`'s dependency met. The desktop app runs the
+`yaac` on PATH, so it then runs the source install. `brew upgrade` tries to
 relink the formula and reports a link error over `bin/yaac`; that is
 expected while the source install owns the link. To switch back later:
 `npm uninstall -g @bsklaroff/yaac && brew link yaac-server`.

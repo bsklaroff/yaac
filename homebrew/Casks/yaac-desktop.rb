@@ -1,8 +1,10 @@
 # Source of truth for the bsklaroff/homebrew-yaac tap (see ../README.md for
-# the release/sync flow). The desktop app alone: it runs the yaac-server
-# formula's CLI for any server on this Mac, so the server code has one copy.
-# No auto_updates: the app has no updater, and `brew upgrade` moves it and
-# the formula together.
+# the release/sync flow). The desktop app alone. It runs the yaac-server
+# formula's CLI for any server on this Mac, but does not depend on it, since
+# installing the cask by name trusts only the cask and not a dependency in
+# this tap (../README.md). The app installs the formula itself when asked to
+# set up a server here.
+# No auto_updates: the app has no updater, and `brew upgrade` moves it.
 cask "yaac-desktop" do
   version "<VERSION>"
   # Printed by `pnpm desktop:release`; recompute with shasum -a 256 <dmg>
@@ -19,7 +21,6 @@ cask "yaac-desktop" do
   end
 
   depends_on arch: :arm64
-  depends_on formula: "bsklaroff/yaac/yaac-server"
 
   app "yaac.app"
 

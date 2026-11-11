@@ -16,8 +16,8 @@
  *  2. "Copy commands" copies.
  *  3. A containerless setup whose brew install hangs shows its steps and
  *     output, and Cancel stops it and marks the step cancelled.
- *  4. Run again: the trust step is skipped as done, the install runs, the
- *     server starts, and the window lands on its origin.
+ *  4. Run again: the install runs without trusting the tap, the server
+ *     starts, and the window lands on its origin.
  *  5. The SPA's Servers button opens the Servers page, which shows that
  *     server running, with a Stop, and the cluster setup (or why this
  *     machine cannot run it).
@@ -92,9 +92,7 @@ exec node '${CLI}' "$@"
   write(path.join(BIN, 'brew'), `#!/bin/sh
 echo "brew $*" >> '${CALLS}'
 case "$*" in
-  'trust --tap --json=v1') if [ -e '${SCRATCH}/trusted' ]; then echo '["bsklaroff/yaac"]'; else echo '[]'; fi ;;
   'list --formula --versions yaac-server') exit 1 ;;
-  'trust bsklaroff/yaac') touch '${SCRATCH}/trusted'; echo 'Trusted tap: bsklaroff/yaac' ;;
   'install bsklaroff/yaac/yaac-server')
     echo '==> Fetching bsklaroff/yaac/yaac-server'
     if [ -e '${SLOW}' ]; then sleep 600 & echo $! > '${SLEEP_PID}'; wait; fi
@@ -186,36 +184,35 @@ async function main() {
     await page.click('button.copy[data-scope="server"]')
     await until(page, () => document.getElementById('status')?.textContent === 'Copied.', null, 5000)
     const copied = await app.evaluate(({ clipboard }) => clipboard.readText())
-    check('the clipboard holds the commands', copied.startsWith('brew trust bsklaroff/yaac'), copied)
+    check('the clipboard holds the commands', copied.startsWith('brew install bsklaroff/yaac/yaac-server'), copied)
 
     console.log('\n3. a declined confirmation runs nothing; a hanging brew install → progress, then Cancel')
     await app.evaluate(() => { globalThis.answer = 0 })
     await page.click('button.setup[data-scope="server"]')
     await until(page, () => /not started/.test(document.getElementById('status')?.textContent ?? ''), null, 10_000)
     const asked = (await dialogs())[0] ?? ''
-    check('the confirmation names the tap it trusts', asked.includes('trusts the Homebrew tap bsklaroff/yaac'), asked)
+    check('the confirmation names the commands', asked.includes('brew install bsklaroff/yaac/yaac-server'), asked)
     check('declining ran no command', !fs.existsSync(CALLS))
     await app.evaluate(() => { globalThis.answer = 1 })
     fs.writeFileSync(SLOW, '')
     await page.click('button.setup[data-scope="server"]')
     await until(page, () => /Fetching/.test(document.getElementById('run-log')?.textContent ?? ''), null, 30_000)
-    check('the trust step ran', (await stepStates(page))[0].startsWith('done'), (await stepStates(page))[0])
-    check('the install step is running', (await stepStates(page))[1].startsWith('running'))
+    check('the install step is running', (await stepStates(page))[0].startsWith('running'))
     check('the other setup is off meanwhile', await page.isDisabled('button.setup[data-scope="server"]'))
     await shot(page, '3-running')
     await page.click('#run-cancel')
     await until(page, () => document.getElementById('run-title')?.textContent === 'Setup cancelled', null, 15_000)
-    check('the install step is cancelled', (await stepStates(page))[1].startsWith('cancelled'))
+    check('the install step is cancelled', (await stepStates(page))[0].startsWith('cancelled'))
     await shot(page, '3-cancelled')
 
-    console.log('\n4. run again → skips the trust, installs, starts, lands')
+    console.log('\n4. run again → installs, starts, lands')
     fs.rmSync(SLOW)
     await page.click('button.setup[data-scope="server"]')
     await until(win, () => location.protocol === 'http:', null, 120_000)
     const origin = JSON.parse(fs.readFileSync(path.join(CLIENT_DIR, 'server.json'), 'utf8')).url
     check('landed on the new server', (await win.evaluate(() => location.origin)) === origin, origin)
     const calls = fs.readFileSync(CALLS, 'utf8').trim().split('\n')
-    check('trusted the tap once', calls.filter((c) => c === 'brew trust bsklaroff/yaac').length === 1, calls.join(', '))
+    check('never trusted the tap', !calls.some((c) => c.startsWith('brew trust')), calls.join(', '))
     await shot(win, '4-landed')
 
     console.log('\n5. the Servers button shows this Mac\'s installs')

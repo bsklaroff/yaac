@@ -26,7 +26,3 @@ export const SETUP_COPY: Record<'server' | 'cluster', { title: string; summary: 
       + 'silicon only.',
   },
 }
-
-/** What a setup that trusts yaac's Homebrew tap allows. */
-export const TAP_TRUST_NOTE = 'Running it trusts the Homebrew tap bsklaroff/yaac, '
-  + 'which lets Homebrew run its formula code on this Mac.'

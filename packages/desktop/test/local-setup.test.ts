@@ -59,13 +59,11 @@ const HOST_CHECK = [
 ].join('\n')
 
 describe('createSetupRunner', () => {
-  it('sets up a containerless server from nothing: trust, install, start, and the host check\'s failures', async () => {
+  it('sets up a containerless server from nothing: install, start, and the host check\'s failures', async () => {
     // The formula install is what puts `yaac` on PATH.
     await fake('yaac', { 'server start': 'echo started', 'host check': `printf '%s\\n' '${HOST_CHECK}'; exit 1` }, dir)
     await fake('brew', {
-      'trust --tap --json=v1': 'echo \'[]\'',
       'list --formula --versions yaac-server': 'exit 1',
-      'trust bsklaroff/yaac': 'echo Trusted tap: bsklaroff/yaac',
       'install bsklaroff/yaac/yaac-server':
         `printf '\\033[34m==>\\033[0m Pouring\\r 10%%\\r100%%\\n'; cp '${dir}/yaac' '${bin}/yaac'`,
     })
@@ -76,10 +74,6 @@ describe('createSetupRunner', () => {
     expect(outcome).toEqual({ ok: true, hostCheckFailures: '✗ claude: not on PATH\n    fix: npm install -g @anthropic-ai/claude-code' })
     expect(await called()).toEqual([
       'brew list --formula --versions yaac-server',
-      'brew trust --tap --json=v1',
-      'brew trust bsklaroff/yaac',
-      // Each command can change the answers, so the next step asks again.
-      'brew list --formula --versions yaac-server',
       'brew install bsklaroff/yaac/yaac-server',
       'yaac server start',
       'yaac host check',
@@ -87,14 +81,12 @@ describe('createSetupRunner', () => {
     const run = setup.current()!
     expect(run.phase).toBe('succeeded')
     expect(run.steps.map((s) => [s.command, s.state])).toEqual([
-      ['brew trust bsklaroff/yaac', 'done'],
       ['brew install bsklaroff/yaac/yaac-server', 'done'],
       ['yaac server start', 'done'],
       ['yaac host check', 'done'],
     ])
     // Colors are stripped, and a carriage return ends a line.
     expect(run.log).toEqual([
-      '$ brew trust bsklaroff/yaac', 'Trusted tap: bsklaroff/yaac',
       '$ brew install bsklaroff/yaac/yaac-server', '==> Pouring', ' 10%', '100%',
       '$ yaac server start', 'started',
       '$ yaac host check', ...HOST_CHECK.split('\n'),
@@ -107,22 +99,19 @@ describe('createSetupRunner', () => {
       'cluster install': 'echo "kind: creating cluster"; echo "no podman machine" >&2; exit 3',
     })
     await fake('brew', {
-      'trust --tap --json=v1': 'echo \'["bsklaroff/yaac"]\'',
       'list --formula --versions yaac-cluster': 'exit 1',
-      'install bsklaroff/yaac/yaac-cluster': 'echo installed',
+      // Named together: yaac-cluster's dependency on yaac-server is in an untrusted tap.
+      'install bsklaroff/yaac/yaac-server bsklaroff/yaac/yaac-cluster': 'echo installed',
     })
     const { setup } = runner()
 
     expect(await setup.run('cluster', false))
       .toEqual({ ok: false, error: 'yaac cluster install exited with code 3' })
-    // Only the missing formula and the install itself ran.
-    expect((await called()).filter((c) => !/ (list|--json)/.test(c)))
-      .toEqual(['brew install bsklaroff/yaac/yaac-cluster', 'yaac cluster install'])
+    expect((await called()).filter((c) => !c.includes(' list ')))
+      .toEqual(['brew install bsklaroff/yaac/yaac-server bsklaroff/yaac/yaac-cluster', 'yaac cluster install'])
     const run = setup.current()!
     expect(run.phase).toBe('failed')
     expect(run.steps.map((s) => [s.label, s.state, s.note])).toEqual([
-      ['Trust the yaac tap', 'skipped', 'already trusted'],
-      ['Install the yaac CLI', 'skipped', 'already installed'],
       ['Install the cluster tools', 'done', undefined],
       ['Install the cluster', 'failed', 'exited with code 3'],
     ])
@@ -134,16 +123,11 @@ describe('createSetupRunner', () => {
     await new Promise((r) => setTimeout(r, 50))
     expect(relaunched.unfinished()).toEqual(['cluster'])
 
-    // `yaac cluster install` runs again to converge it, here under a Homebrew from before tap trust.
+    // Only the formula already installed is skipped; `yaac cluster install` runs again to converge it.
     await fake('yaac', { 'cluster install': 'echo converged' })
-    await fake('brew', {
-      'trust --tap --json=v1': 'echo "Error: Unknown command: trust" >&2; exit 1',
-      'list --formula --versions yaac-cluster': 'echo yaac-cluster 1.0.0',
-    })
+    await fake('brew', { 'list --formula --versions yaac-cluster': 'echo yaac-cluster 1.0.0' })
     expect(await relaunched.run('cluster', false)).toEqual({ ok: true })
-    expect(relaunched.current()!.steps.map((s) => s.note)).toEqual([
-      'nothing to install from it', 'already installed', 'already installed', undefined,
-    ])
+    expect(relaunched.current()!.steps.map((s) => s.note)).toEqual(['already installed', undefined])
     expect(relaunched.unfinished()).toEqual([])
     expect(JSON.parse(await fs.readFile(path.join(dir, 'unfinished.json'), 'utf8'))).toEqual([])
   })
@@ -182,14 +166,13 @@ describe('createSetupRunner', () => {
     }
   })
 
-  it('confirms a setup by naming its commands and the taps it trusts', () => {
+  it('confirms a setup by naming its commands, leaving out the CLI install when yaac is on PATH', () => {
     const { message, detail } = setupConfirmation('cluster', false)
     expect(message).toBe('Set up a local kubernetes cluster on this Mac?')
-    expect(detail).toContain('trusts the Homebrew tap bsklaroff/yaac, which')
-    // One command per line.
-    expect(detail).toContain('already done:\n  brew trust bsklaroff/yaac\n  brew install bsklaroff/yaac/yaac-server\n')
-    expect(setupConfirmation('server', false).detail).toContain('trusts the Homebrew tap bsklaroff/yaac, which')
-    // With the CLI on PATH, starting the server trusts no tap.
+    expect(detail).toBe('These commands run, skipping any that are already done:\n'
+      + '  brew install bsklaroff/yaac/yaac-server bsklaroff/yaac/yaac-cluster\n  yaac cluster install')
+    expect(setupConfirmation('cluster', true).detail).toBe(detail)
+    expect(setupConfirmation('server', false).detail).toContain('done:\n  brew install bsklaroff/yaac/yaac-server\n  yaac server start\n')
     expect(setupConfirmation('server', true).detail)
       .toBe('These commands run, skipping any that are already done:\n  yaac server start\n  yaac host check')
   })

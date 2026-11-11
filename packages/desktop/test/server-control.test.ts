@@ -136,7 +136,7 @@ describe('trayServerItems', () => {
       phase: 'running',
       log: [],
       steps: [
-        { label: 'Trust the yaac tap', command: 'brew trust bsklaroff/yaac', state: 'skipped' },
+        { label: 'Install the cluster tools', command: 'brew install bsklaroff/yaac/yaac-server bsklaroff/yaac/yaac-cluster', state: 'skipped' },
         { label: 'Install the cluster', command: 'yaac cluster install', state: 'running' },
       ],
     }
