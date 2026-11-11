@@ -187,23 +187,17 @@ describe('serversPageHtml', () => {
       expect(html).toContain('<button class="setup" data-scope="cluster">')
       expect(html).not.toContain('class="start"')
     }
-    // With no CLI, each setup installs it first, and says which taps it trusts.
+    // With no CLI, each setup installs it first.
     const bare = serversPageHtml({ ...STATE, local: view(NO_CLI) })
-    expect(bare).toContain('Running it trusts the Homebrew tap bsklaroff/yaac, which lets Homebrew run')
-    expect(bare).toContain([
-      'brew trust bsklaroff/yaac', 'brew install bsklaroff/yaac/yaac-server', 'yaac server start', 'yaac host check',
-    ].join('\n'))
-    expect(bare).toContain([
-      'brew trust bsklaroff/yaac', 'brew install bsklaroff/yaac/yaac-server',
-      'brew install bsklaroff/yaac/yaac-cluster', 'yaac cluster install',
-    ].join('\n'))
-    // With the CLI already installed (the cask), the server's setup only starts it.
-    const cask = serversPageHtml({ ...unselected, local: view({ server: NONE, cluster: NONE }) })
-    expect(cask).toContain('<pre class="commands" id="commands-server">yaac server start\nyaac host check</pre>')
-    // Only the cluster's setup still installs from the tap.
-    expect(cask.match(/Running it trusts the Homebrew tap bsklaroff\/yaac,/g)).toHaveLength(1)
-    expect(cask).not.toContain('brew install bsklaroff/yaac/yaac-server')
-    expect(cask).toContain('brew install bsklaroff/yaac/yaac-cluster\nyaac cluster install</pre>')
+    expect(bare).toContain('<pre class="commands" id="commands-server">'
+      + 'brew install bsklaroff/yaac/yaac-server\nyaac server start\nyaac host check</pre>')
+    const clusterCommands = '<pre class="commands" id="commands-cluster">'
+      + 'brew install bsklaroff/yaac/yaac-server bsklaroff/yaac/yaac-cluster\nyaac cluster install</pre>'
+    expect(bare).toContain(clusterCommands)
+    // With the CLI already installed, the server's setup only starts it.
+    const withCli = serversPageHtml({ ...unselected, local: view({ server: NONE, cluster: NONE }) })
+    expect(withCli).toContain('<pre class="commands" id="commands-server">yaac server start\nyaac host check</pre>')
+    expect(withCli).toContain(clusterCommands)
     // With no saved server either, it is a welcome rather than an error.
     const welcome = serversPageHtml({ ...unselected, local: view(NO_CLI) })
     expect(welcome).toContain('<h1>Set up yaac</h1>')
@@ -213,8 +207,8 @@ describe('serversPageHtml', () => {
     // A fresh Mac has nothing to retry, with or without the CLI.
     expect(welcome).not.toContain('id="back"')
     expect(welcome).not.toContain('Try again')
-    expect(cask).toContain('<h1>Set up yaac</h1>')
-    expect(cask).not.toContain('id="back"')
+    expect(withCli).toContain('<h1>Set up yaac</h1>')
+    expect(withCli).not.toContain('id="back"')
     expect(serversPageHtml({ ...STATE, local: view(NO_CLI) })).toContain('Could not connect to http://127.0.0.1:8787')
     // A selected server that is down is not a fresh Mac: its setups stay folded.
     const down = serversPageHtml({ ...STATE, local: view({ server: NONE, cluster: NONE }) })
@@ -462,7 +456,7 @@ describe('serversPageHtml (running in a document)', () => {
       scope: 'cluster',
       phase: 'running',
       steps: [
-        { label: 'Trust the yaac tap', command: 'brew trust bsklaroff/yaac', state: 'skipped', note: 'already trusted' },
+        { label: 'Install the cluster tools', command: 'brew install bsklaroff/yaac/yaac-server bsklaroff/yaac/yaac-cluster', state: 'skipped', note: 'already installed' },
         { label: 'Install the cluster', command: 'yaac cluster install', state: 'running' },
       ],
       log: ['$ yaac cluster install', 'Creating the podman machine <img src=x>'],
@@ -475,7 +469,7 @@ describe('serversPageHtml (running in a document)', () => {
     expect(runEl.hidden).toBe(false)
     expect(document.getElementById('run-title')?.textContent).toBe('Setting up…')
     const steps = [...document.querySelectorAll('#run-steps li')].map((li) => li.textContent)
-    expect(steps).toEqual(['– Trust the yaac tap (already trusted)', '… Install the cluster'])
+    expect(steps).toEqual(['– Install the cluster tools (already installed)', '… Install the cluster'])
     // Inside the card of the setup that runs, unfolded.
     expect(runEl.parentElement?.id).toBe('choice-cluster')
     expect((runEl.parentElement as HTMLDetailsElement).open).toBe(true)

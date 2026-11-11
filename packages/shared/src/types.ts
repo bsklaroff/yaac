@@ -2663,8 +2663,6 @@ export interface DesktopSetupChoice {
   scope: DesktopLocalScope
   /** What a user would run in a terminal for the same result. */
   commands: string[]
-  /** Whether running it trusts yaac's Homebrew tap, which lets Homebrew run its formula code. */
-  trustsTap: boolean
   /** Why the app cannot run this setup itself: not an Apple silicon Mac, or no Homebrew. */
   blocked: 'unsupported' | 'no-brew' | null
 }

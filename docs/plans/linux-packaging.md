@@ -1,10 +1,10 @@
 # Linux packaging: .deb packages and an apt repository
 
 The desktop app ships for macOS only. `pnpm desktop:release` builds a
-signed, notarized arm64 `.dmg`, the `yaac-desktop` cask installs it, and the
-cask depends on the `yaac-server` formula, whose CLI the app runs for any
-server on the machine (packages/desktop/README.md "Packaging",
-homebrew/README.md). On Linux today the only route is a source build
+signed, notarized arm64 `.dmg` and the `yaac-desktop` cask installs it. The
+app runs the `yaac-server` formula's CLI for any server on the machine, and
+its setup installs that formula when asked (packages/desktop/README.md
+"Packaging", homebrew/README.md). On Linux today the only route is a source build
 (docs/install-from-source.md), and the desktop app is not distributed at all.
 
 This plan ships Debian and Ubuntu packages with the same split, served from a
@@ -18,7 +18,8 @@ Debian (VS Code, Chrome, Slack and Docker Desktop work the same way). Past
 that point, the app's setup does the rest:
 
 - **A containerless server** needs nothing further. The CLI is already on
-  PATH, so the setup is `yaac server start`, the same as after the cask.
+  PATH, so the setup is `yaac server start`, the same as on a Mac with the
+  `yaac-server` formula installed.
 - **A cluster** needs one more root step, granting your user the rootful
   podman socket. The app runs it through a polkit-guarded helper, so it
   becomes a system password prompt rather than commands typed in a terminal.
@@ -34,7 +35,7 @@ yet.
 | `yaac-server_<v>_<arch>.deb` | the CLI and server, a private Node, the containerless driver's host deps | `yaac-server` formula |
 | `yaac-cluster_<v>_<arch>.deb` | the cluster's host deps and the podman-access helper | `yaac-cluster` formula |
 | `yaac-desktop_<v>_<arch>.deb` | the Electron app | `yaac-desktop` cask |
-| `yaac-archive-keyring_<v>_all.deb` | the repo's signing key and its `.sources` entry | `brew trust bsklaroff/yaac` |
+| `yaac-archive-keyring_<v>_all.deb` | the repo's signing key and its `.sources` entry | naming each formula in `brew install` |
 | `SHA256SUMS`, `SHA256SUMS.asc` | checksums, signed with the repo key | |
 
 Each package but the keyring is built for amd64 and arm64. They are published in the apt
@@ -261,7 +262,7 @@ linux:
       StartupWMClass: yaac
 deb:
   # Recommends, not Depends: apt installs Recommends by default, so a
-  # default install gets the CLI as the cask does, while
+  # default install gets the CLI with the app, while
   # --no-install-recommends gives a remote-only client with no Node or tmux.
   recommends: [yaac-server]
   afterInstall: build/linux/after-install.sh
@@ -302,7 +303,7 @@ each needs a decision:
   `@yaac/shared/setup-copy` ("this Mac" on darwin, "this computer" elsewhere)
   and use it throughout. Doc comments in `types.ts` say "this machine".
 - **Setup (`local-setup.ts`).** `PLANS` becomes per-platform. Homebrew's
-  steps (trust, tap, install) have no unprivileged counterpart on Linux,
+  steps (tap, install) have no unprivileged counterpart on Linux,
   because installing a package needs root. Linux setups therefore never run
   apt. A step that needs a package shows its command to copy, and the setup
   runs everything after it:
@@ -424,8 +425,9 @@ sudo apt install yaac-cluster            # for a local kubernetes cluster
 
 The key is scoped with `Signed-By` and never added to the global trusted
 set. Installing the keyring package is the explicit step that trusts the
-repo, the apt counterpart of `brew trust bsklaroff/yaac`, and the setup copy
-says so in the same words (`trustSentence`). Before installing it, a user
+repo, the apt counterpart of naming a formula in `brew install`, which
+trusts that item, and the Linux setup copy says that it trusts the repo.
+Before installing it, a user
 can check the key's fingerprint, which is published in `linux/README.md`,
 with `dpkg-deb -x` and `gpg --show-keys`.
 
@@ -433,8 +435,8 @@ The `.deb`s on the GitHub Release also install without the repo (`sudo apt
 install ./yaac-server_<v>_amd64.deb ./yaac-desktop_<v>_amd64.deb`), and
 nothing updates them until the keyring package is installed. The packages
 do not add the repo from a postinst, as VS Code and Chrome do, because that
-would be a silent trust grant, and the Homebrew side deliberately makes
-trust explicit.
+would be a silent trust grant, and the Homebrew side keeps trust explicit:
+it extends only to the items a command names.
 
 **Signing key.** The repo is signed with a dedicated ed25519 signing
 subkey. Its primary key stays offline with the Developer ID material. The

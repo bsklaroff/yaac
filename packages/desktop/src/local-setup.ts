@@ -1,14 +1,16 @@
 /**
  * Setting up one of this Mac's installs from nothing: the Homebrew formulas
- * and taps (homebrew/README.md), then the `yaac` command that creates the
- * install. The same commands are shown for a user to copy, and run here in
- * the background on request.
+ * (homebrew/README.md), then the `yaac` command that creates the install.
+ * The same commands are shown for a user to copy, and run here in the
+ * background on request.
  *
  * A renderer names a setup by its scope alone. The commands come from this
  * module's fixed table, so web content can never choose what runs, and the
  * main process confirms each run in a native dialog (`setupConfirmation`).
- * Each Homebrew step first checks whether its effect is already in place (a
- * formula installed, a tap trusted) and skips itself if so.
+ * Each Homebrew step first checks whether its formula is already installed
+ * and skips itself if so. Every formula a step needs from yaac's tap is named
+ * on its command line: naming an item in `brew install` trusts it, but a
+ * dependency must be trusted already, so no setup needs `brew trust`.
  * `yaac cluster install` always runs: it converges whatever an earlier,
  * interrupted install left. Homebrew itself is never installed here: a
  * setup that needs it and finds none fails, pointing at https://brew.sh.
@@ -16,7 +18,6 @@
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import { findExecutable, pathDirs } from '@yaac/shared/executables'
-import { TAP_TRUST_NOTE } from '@yaac/shared/setup-copy'
 import type {
   DesktopLocalState, DesktopSetupChoice, DesktopSetupRun, DesktopSetupStep,
 } from '@yaac/shared/types'
@@ -30,8 +31,7 @@ const MINUTE = 60_000
 const BREW_INSTALL_TIMEOUT_MS = 90 * MINUTE
 /** `yaac cluster install` creates a podman VM and a kind cluster and builds every image. */
 const CLUSTER_INSTALL_TIMEOUT_MS = 90 * MINUTE
-const BREW_TAP_TIMEOUT_MS = 5 * MINUTE
-/** A probe: `brew list`, `brew trust --json`. */
+/** A probe: `brew list`. */
 const PROBE_TIMEOUT_MS = MINUTE
 /** How long a cancelled or timed-out command has to exit before it is killed. */
 const KILL_GRACE_MS = 5000
@@ -48,7 +48,6 @@ const LOG_LINES = 200
 interface Probes {
   onPath(name: string): Promise<boolean>
   formula(name: string): Promise<boolean>
-  trusted(tap: string): Promise<boolean>
 }
 
 interface StepDef {
@@ -56,30 +55,17 @@ interface StepDef {
   argv: readonly string[]
   timeoutMs: number
   /** Why the step can be skipped, or null to run it. */
-  skip?(probes: Probes, scope: ServerScope): Promise<string | null>
+  skip?(probes: Probes): Promise<string | null>
   /** A failing exit is reported, not fatal: `yaac host check`. */
   advisory?: boolean
 }
 
-const needsServerFormula = async (p: Probes): Promise<boolean> => !await p.onPath('yaac') && !await p.formula('yaac-server')
-const needsClusterFormula = async (p: Probes, scope: ServerScope): Promise<boolean> =>
-  scope === 'cluster' && !await p.formula('yaac-cluster')
-
 const STEPS = {
-  trustYaac: {
-    label: 'Trust the yaac tap',
-    argv: ['brew', 'trust', 'bsklaroff/yaac'],
-    timeoutMs: BREW_TAP_TIMEOUT_MS,
-    skip: async (p, scope) => {
-      if (!await needsServerFormula(p) && !await needsClusterFormula(p, scope)) return 'nothing to install from it'
-      return await p.trusted('bsklaroff/yaac') ? 'already trusted' : null
-    },
-  },
   installServer: {
     label: 'Install the yaac CLI',
     argv: ['brew', 'install', 'bsklaroff/yaac/yaac-server'],
     timeoutMs: BREW_INSTALL_TIMEOUT_MS,
-    skip: async (p) => await needsServerFormula(p) ? null : 'already installed',
+    skip: async (p) => await p.onPath('yaac') || await p.formula('yaac-server') ? 'already installed' : null,
   },
   startServer: {
     label: 'Start the server',
@@ -92,11 +78,12 @@ const STEPS = {
     timeoutMs: READ_TIMEOUT_MS,
     advisory: true,
   },
+  /* yaac-server is named too, as yaac-cluster depends on it (see the module comment). */
   installCluster: {
     label: 'Install the cluster tools',
-    argv: ['brew', 'install', 'bsklaroff/yaac/yaac-cluster'],
+    argv: ['brew', 'install', 'bsklaroff/yaac/yaac-server', 'bsklaroff/yaac/yaac-cluster'],
     timeoutMs: BREW_INSTALL_TIMEOUT_MS,
-    skip: async (p, scope) => await needsClusterFormula(p, scope) ? null : 'already installed',
+    skip: async (p) => await p.formula('yaac-cluster') ? 'already installed' : null,
   },
   clusterInstall: {
     label: 'Install the cluster',
@@ -112,30 +99,22 @@ type StepId = keyof typeof STEPS
  * start` always selects, and a first `yaac cluster install` does.
  */
 const PLANS: Record<ServerScope, StepId[]> = {
-  server: ['trustYaac', 'installServer', 'startServer', 'hostCheck'],
-  cluster: ['trustYaac', 'installServer', 'installCluster', 'clusterInstall'],
+  server: ['installServer', 'startServer', 'hostCheck'],
+  cluster: ['installCluster', 'clusterInstall'],
 }
 
 /**
- * The steps that only get the `yaac` CLI onto this Mac. With `yaac` already
- * on PATH, as the cask leaves it, they would skip themselves, so a setup
- * leaves them out: from its commands, its confirmation and its run.
+ * A setup's steps, given whether `yaac` is on PATH. With it there, the step
+ * that only installs the CLI would skip itself, so a setup leaves it out:
+ * from its commands, its confirmation and its run.
  */
-const CLI_STEPS: Record<ServerScope, StepId[]> = { server: ['trustYaac', 'installServer'], cluster: ['installServer'] }
-
-/** A setup's steps, given whether `yaac` is on PATH. */
 function shownSteps(scope: ServerScope, cli: boolean): StepDef[] {
-  return PLANS[scope].filter((id) => !cli || !CLI_STEPS[scope].includes(id)).map((id) => STEPS[id])
+  return PLANS[scope].filter((id) => !cli || id !== 'installServer').map((id) => STEPS[id])
 }
 
 /** What a user would type for the same setup. */
 function setupCommands(scope: ServerScope, cli: boolean): string[] {
   return shownSteps(scope, cli).map((step) => step.argv.join(' '))
-}
-
-/** Whether a setup trusts yaac's tap. */
-function trustsTap(scope: ServerScope, cli: boolean): boolean {
-  return shownSteps(scope, cli).includes(STEPS.trustYaac)
 }
 
 /**
@@ -145,10 +124,7 @@ function trustsTap(scope: ServerScope, cli: boolean): boolean {
 export function setupConfirmation(scope: ServerScope, cli: boolean): { message: string, detail: string } {
   return {
     message: scope === 'server' ? 'Set up a containerless server on this Mac?' : 'Set up a local kubernetes cluster on this Mac?',
-    detail: [
-      ...trustsTap(scope, cli) ? [TAP_TRUST_NOTE] : [],
-      ['These commands run, skipping any that are already done:', ...setupCommands(scope, cli).map((c) => `  ${c}`)].join('\n'),
-    ].join('\n\n'),
+    detail: ['These commands run, skipping any that are already done:', ...setupCommands(scope, cli).map((c) => `  ${c}`)].join('\n'),
   }
 }
 
@@ -256,16 +232,6 @@ function createProbes(signal: AbortSignal): Probes & { forget(): void } {
       const r = await read('brew', 'list', '--formula', '--versions', name)
       return r.ok && r.out.trim() !== ''
     }),
-    trusted: (tap) => once(`trusted:${tap}`, async () => {
-      const r = await read('brew', 'trust', '--tap', '--json=v1')
-      // A Homebrew from before tap trust loads any tap.
-      if (!r.ok) return /unknown command/i.test(r.out)
-      try {
-        return (JSON.parse(r.out) as unknown[]).includes(tap)
-      } catch {
-        return false
-      }
-    }),
     forget: () => memo.clear(),
   }
 }
@@ -345,7 +311,7 @@ export function createSetupRunner(onChange: () => void, unfinishedFile: string):
       step.state = 'running'
       onChange()
       try {
-        const skip = await def.skip?.(probes, scope) ?? null
+        const skip = await def.skip?.(probes) ?? null
         if (controller.signal.aborted) break
         if (skip) {
           step.state = 'skipped'
@@ -419,7 +385,6 @@ export function localView(input: {
   const choice = (scope: ServerScope): DesktopSetupChoice => ({
     scope,
     commands: setupCommands(scope, cli),
-    trustsTap: trustsTap(scope, cli),
     blocked: scope === 'cluster' && !clusterSupported
       ? 'unsupported'
       : !brew && (scope === 'cluster' || !cli) ? 'no-brew' : null,

@@ -27,19 +27,28 @@ you can switch between.
 ### Homebrew (macOS, arm64)
 
 ```sh
-brew trust bsklaroff/yaac
 brew install --cask bsklaroff/yaac/yaac-desktop
 ```
 
-This installs the desktop app and the `yaac` CLI it runs (the `yaac-server`
-formula). For the CLI alone, `brew install bsklaroff/yaac/yaac-server`.
-
-To run a local kubernetes cluster, add its tools:
+This installs the desktop app. When it sets up a server on this Mac, it
+installs the `yaac` CLI it runs (the `yaac-server` formula) as well. To set
+up from a terminal instead, install the CLI and start a containerless server:
 
 ```sh
-brew install bsklaroff/yaac/yaac-cluster
+brew install bsklaroff/yaac/yaac-server
+yaac server start
+```
+
+or install the CLI with a local kubernetes cluster's tools, and the cluster:
+
+```sh
+brew install bsklaroff/yaac/yaac-server bsklaroff/yaac/yaac-cluster
 yaac cluster install
 ```
+
+None of this needs `brew trust`: naming a formula or cask in `brew install`
+trusts that one item. A dependency is not trusted that way, so name
+`yaac-server` beside `yaac-cluster` unless you installed it earlier.
 
 To install from source on macOS or Linux, see
 [docs/install-from-source.md](docs/install-from-source.md).

@@ -93,22 +93,23 @@ never stops a server.
   and **Local kubernetes cluster** (kind), gVisor-sandboxed pods behind
   the egress proxy, which needs a podman VM, several GB of disk and memory,
   and an Apple silicon Mac (it is disabled elsewhere). Each shows its
-  commands to copy, says which Homebrew tap it trusts, and has a button
-  that runs them in the background (`src/local-setup.ts`):
+  commands to copy and has a button that runs them in the background
+  (`src/local-setup.ts`):
 
   | Containerless | Cluster |
   |---|---|
-  | `brew trust bsklaroff/yaac` | `brew trust bsklaroff/yaac` |
-  | `brew install bsklaroff/yaac/yaac-server` | `brew install bsklaroff/yaac/yaac-server` |
-  | `yaac server start` | `brew install bsklaroff/yaac/yaac-cluster` |
-  | `yaac host check` | `yaac cluster install` |
+  | `brew install bsklaroff/yaac/yaac-server` | `brew install bsklaroff/yaac/yaac-server bsklaroff/yaac/yaac-cluster` |
+  | `yaac server start` | `yaac cluster install` |
+  | `yaac host check` | |
 
-  Each Homebrew step first checks whether it is already done (the formula
-  installed or `yaac` already on PATH, the tap trusted) and skips
-  itself, so only the missing work runs and a source-built `yaac` needs no
-  Homebrew for the containerless setup. With `yaac` already on PATH, as
-  the cask leaves it, the page and the confirmation leave out the steps
-  that only install it, so the containerless setup is just starting the
+  Neither trusts the tap: every formula a setup needs from it is named on
+  the command line, which is why the cluster's install names `yaac-server`,
+  its dependency, too (homebrew/README.md). Each Homebrew step first checks
+  whether its formula is already installed (or for the CLI, `yaac` already
+  on PATH) and skips itself, so only the missing work runs and a
+  source-built `yaac` needs no Homebrew for the containerless setup. With
+  `yaac` already on PATH, the page and the confirmation leave out the step
+  that only installs it, so the containerless setup is just starting the
   server. `yaac cluster install` always
   runs, since it converges whatever an interrupted install left. The shell
   never installs Homebrew: without it the setup says so and links
@@ -281,7 +282,7 @@ The Servers page:
 
 - With no `yaac` on PATH, launch: both setups, each with its commands and
   **Run them for me**. Run the containerless one: a native confirmation
-  names the commands and the taps, the steps tick off, the log tail
+  names the commands, the steps tick off, the log tail
   follows the brew output, and the window lands on the new server. Cancel
   a cluster setup during `brew install` and check that brew stops; quit
   during `yaac cluster install`, and check that relaunching offers the
