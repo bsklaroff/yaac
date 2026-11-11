@@ -21,14 +21,11 @@ import {
   acpConversationByHandle,
 } from '#runtime/agents/acp-registry'
 import { installFakeWorkspaceDriver, workspacePathsFixture } from '#test/support/fake-driver'
-import { execInWorkspace } from '#drivers/containerless/exec'
-import { containerlessJobName, containerlessStateDir, containerlessWorkspacePaths } from '#drivers/containerless/paths'
 import type { StreamChild, WorkspaceDriver } from '#drivers/contract'
 import { PromptNotRunError, type AcpConversation } from '#runtime/agents/acp-client'
 import type { AcpEventInit } from '@yaac/shared/acp'
 import {
   AGENT_TOOLS,
-  MAX_PROMPT_LENGTH,
   SUPPORTED_PERMISSION_MODES,
 } from '@yaac/shared/types'
 import { _ACP_PROFILES, acpLaunchModel } from '#runtime/agents/acp-adapters'
@@ -957,7 +954,7 @@ describe('agentDriver', () => {
 
     const events = collect(acpConversation('demo', 'wt-1', 'acp-1')!)
     // Status comes from the protocol, not from a spinner.
-    await driver.deliverPrompt(session, 'claude', 'hello there')
+    await driver.deliverPrompt(session, 'claude', 'hello there', { tool: 'claude', conversationId: 'acp-1' })
     await vi.waitFor(() => expect(seen).toContainEqual({ kind: 'status', handle: 'claude', status: 'running' }))
     const prompt = stream.sent().find((m) => m.method === 'session/prompt')!
     expect(prompt.params).toEqual({ sessionId: 'acp-1', prompt: [{ type: 'text', text: 'hello there' }] })
@@ -1020,7 +1017,7 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(statuses(seen)).toEqual(['waiting', 'running']))
     expect(conversation.isBusy).toBe(true)
     // A message steers into it, as into any running turn.
-    await driver.deliverPrompt(session, 'claude', 'also this')
+    await driver.deliverPrompt(session, 'claude', 'also this', { tool: 'claude', conversationId: 'acp-1' })
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === '_session/steering')).toBe(true))
     const steer = stream.sent().find((m) => m.method === '_session/steering')!
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: steer.id, result: { outcome: 'injected' } })}\n`)
@@ -1035,7 +1032,7 @@ describe('agentDriver', () => {
 
     // Our prompt's reply comes before the adapter goes idle (it waits out
     // background agents), so the turn ends at idle, with the reply's reason.
-    await driver.deliverPrompt(session, 'claude', 'next')
+    await driver.deliverPrompt(session, 'claude', 'next', { tool: 'claude', conversationId: 'acp-1' })
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/prompt')).toBe(true))
     const prompt = stream.sent().find((m) => m.method === 'session/prompt')!
     stream.feed(state('running'))
@@ -1050,7 +1047,7 @@ describe('agentDriver', () => {
     // the adapter refuses what is sent next. That refusal ends the run.
     stream.feed(state('running'))
     await vi.waitFor(() => expect(statuses(seen).at(-1)).toBe('running'))
-    await driver.deliverPrompt(session, 'claude', 'still there?')
+    await driver.deliverPrompt(session, 'claude', 'still there?', { tool: 'claude', conversationId: 'acp-1' })
     await vi.waitFor(() => expect(stream.sent().filter((m) => m.method === '_session/steering')).toHaveLength(2))
     const deadSteer = stream.sent().filter((m) => m.method === '_session/steering')[1]
     const refusal = { code: -32603, message: 'the session has ended' }
@@ -2701,147 +2698,6 @@ describe('agentDriver', () => {
   })
 
   /**
-   * A tui prompt is pasted by a detached in-workspace script, so the exec
-   * returns before the script's polling ends. The script is run here
-   * against a stub `tmux` (and a no-op `sleep`) that records what changed
-   * the pane.
-   */
-  describe('tui prompt delivery', () => {
-    let bin: string
-    beforeEach(() => {
-      bin = mkdtempSync(path.join(os.tmpdir(), 'yaac-paste-'))
-      writeFileSync(path.join(bin, 'sleep'), '#!/bin/sh\n', { mode: 0o755 })
-      writeFileSync(path.join(bin, 'tmux'), [
-        '#!/bin/sh',
-        'shift 2',
-        'case "$1" in',
-        '  display) echo 1 ;;',
-        '  capture-pane) cat "$STUB/screen" 2>/dev/null ;;',
-        '  load-buffer) cat > "$STUB/buffer" ;;',
-        '  paste-buffer)',
-        '    echo paste >> "$STUB/calls"',
-        '    case "$RENDER" in',
-        '      text) cat "$STUB/buffer" > "$STUB/screen" ;;',
-        '      claude) tr "\\t\\r" "  " < "$STUB/buffer" | fold -w 7 | tail -n 6 > "$STUB/screen" ;;',
-        '      marker) echo "> [paste #1 +13 lines]" > "$STUB/screen" ;;',
-        '    esac ;;',
-        '  send-keys) echo "send-keys $4" >> "$STUB/calls" ;;',
-        'esac',
-        'exit 0',
-        '',
-      ].join('\n'), { mode: 0o755 })
-    })
-    afterEach(() => { rmSync(bin, { recursive: true, force: true }) })
-
-    /** The script a delivery would leave running in the workspace. */
-    async function deliveredScript(prompt: string): Promise<string> {
-      await agentDriver('tui').deliverPrompt(session, '%3', prompt)
-      const [jobName, cmd, opts] = podExec.mock.calls.at(-1)!
-      expect(jobName).toBe(session.jobName)
-      // One attempt: a retried paste would submit the prompt twice.
-      expect(opts).toEqual({ maxAttempts: 1, timeout: 15_000, stdin: expect.any(String) as string })
-      // The script arrives on stdin, so the command line stays small, and
-      // is named for its target, since two sessions can be handed prompts at
-      // once.
-      expect(cmd).toMatch(/^cat > \/tmp\/\.yaac-prompt-_3\.sh \|\| exit 1; /)
-      // Detached, by setsid where the host has it and nohup on macOS.
-      expect(cmd).toContain('then setsid sh /tmp/.yaac-prompt-_3.sh; else nohup sh /tmp/.yaac-prompt-_3.sh; fi; }'
-        + ' >/tmp/yaac-prompt-_3.log 2>&1 </dev/null &')
-      return opts!.stdin!
-    }
-
-    /**
-     * How the stub pane renders a paste:
-     * - `text`: verbatim, like a wide input box.
-     * - `claude`: tabs and CRs as spaces, wrapped at 7 columns, only the
-     *   last 6 rows visible, like claude's input box in a small window.
-     * - `marker`: a collapsed-paste placeholder, as pi and codex show a
-     *   long paste.
-     * - `none`: nothing, like a dialog that swallows the keys.
-     */
-    async function run(render: 'text' | 'claude' | 'marker' | 'none', prompt = 'hello there') {
-      const script = await deliveredScript(prompt)
-      writeFileSync(path.join(bin, 'calls'), '')
-      rmSync(path.join(bin, 'screen'), { force: true })
-      const res = spawnSync('sh', ['-c', script], {
-        encoding: 'utf8',
-        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, STUB: bin, RENDER: render },
-      })
-      const calls = readFileSync(path.join(bin, 'calls'), 'utf8').trim().split('\n')
-      return { status: res.status ?? -1, calls }
-    }
-    const submitted = { status: 0, calls: ['paste', 'send-keys Enter', 'send-keys Enter'] }
-
-    it('carries any text to the pane intact as a bracketed paste, but no control sequence', async () => {
-      const nasty = 'say "hi" && don\'t eval `$HOME`\nsecond line — ünïcode'
-      // An escape could end the bracketed paste and type the rest as keys.
-      const script = await deliveredScript(`${nasty}\x1b[201~\x1b[Z\x07\r\u009b`)
-      expect(script).not.toContain('$HOME')
-      const b64 = /printf %s ([A-Za-z0-9+/=]+) \| base64 -d \| tmux[^|]*load-buffer/.exec(script)?.[1]
-      expect(Buffer.from(b64!, 'base64').toString('utf8')).toBe(`${nasty}[201~[Z`)
-      expect(script).toContain('paste-buffer -p -d -b yaac-prompt-$$ -t %3')
-      expect(script).toContain('send-keys -t %3 Enter')
-    })
-
-    it('submits once the paste shows in the pane however the TUI wraps, scrolls or collapses it', async () => {
-      expect(await run('text')).toEqual(submitted)
-      // CRLF endings, wrapped lines, and a first line that scrolls out of
-      // view, so only the last-20 probe can match under `claude`.
-      const long = `Please\tfix the flaky login test todayxx\u{1F642} now\r\n${'more detail\r\n'.repeat(8)}thanks`
-      expect(await run('claude', long)).toEqual(submitted)
-      expect(await run('marker', long)).toEqual(submitted)
-      // 19 visible characters on each side of the emoji, so the first-20 and
-      // last-20 probes both reach it; a UTF-16 slice would cut it in half.
-      expect(await run('claude', 'Please\tfix the flakyyy\u{1F642} login test is red today')).toEqual(submitted)
-    })
-
-    it('never presses Enter on a pane that does not show the paste', async () => {
-      // A startup dialog (claude's folder trust) swallows the paste, and
-      // Enter there would pick its preselected "No, exit".
-      expect(await run('none')).toEqual({ status: 1, calls: Array<string>(10).fill('paste') })
-    })
-
-    it('gets a prompt of the maximum length to the pane whole through a containerless workspace', async () => {
-      // Real host processes: the containerless exec runs the delivery as
-      // `sh -c`, so only `tmux` and `sleep` are stubbed, on the workspace's
-      // own PATH. Its multibyte text is far past what one argument holds.
-      const workspaceId = '4bfc59c6-1e83-4dd0-80f1-735294d5d2bb'
-      const jobName = containerlessJobName('demo', workspaceId)
-      const paths = containerlessWorkspacePaths(jobName)
-      const stubs = path.join(containerlessStateDir('demo', workspaceId), 'bin')
-      for (const dir of [paths.workspaceDir, paths.scratchDir, stubs]) mkdirSync(dir, { recursive: true })
-      writeFileSync(path.join(stubs, 'sleep'), '#!/bin/sh\n', { mode: 0o755 })
-      writeFileSync(path.join(stubs, 'tmux'), [
-        '#!/bin/sh',
-        `S=${bin}; shift 2`,
-        'case "$1" in',
-        '  display) echo 1 ;;',
-        '  capture-pane) cat "$S/screen" 2>/dev/null ;;',
-        '  load-buffer) cat > "$S/buffer" ;;',
-        '  paste-buffer) echo paste >> "$S/calls"; cp "$S/buffer" "$S/screen" ;;',
-        '  send-keys) echo "send-keys $4" >> "$S/calls" ;;',
-        'esac',
-        '',
-      ].join('\n'), { mode: 0o755 })
-      installFakeWorkspaceDriver({ exec: execInWorkspace, workspacePaths: containerlessWorkspacePaths })
-      const prompt = 'Pläase fix ✓ the 🙂 build\n'.repeat(MAX_PROMPT_LENGTH).slice(0, MAX_PROMPT_LENGTH)
-      expect(Buffer.byteLength(prompt)).toBeGreaterThan(128 * 1024)
-
-      await agentDriver('tui').deliverPrompt({ ...session, workspaceId, jobName }, '%3', prompt)
-      const calls = path.join(bin, 'calls')
-      await vi.waitFor(() => expect(existsSync(calls) && readFileSync(calls, 'utf8'))
-        .toBe('paste\nsend-keys Enter\nsend-keys Enter\n'), { timeout: 15_000 })
-      expect(readFileSync(path.join(bin, 'buffer'), 'utf8') === prompt).toBe(true)
-    })
-
-    it('pastes a whitespace-only prompt once, blind', async () => {
-      const script = await deliveredScript(' \n ')
-      expect(script).not.toContain('head=')
-      expect(script).toContain('paste-buffer -p -d -b yaac-prompt-$$ -t %3')
-    })
-  })
-
-  /**
    * A message to a running agent (`running`) runs in the foreground, against
    * a stub `tmux` that plays a small TUI per `$TOOL`: a transcript of what
    * was submitted, an input box holding `$STUB/input`, and each tool's way of
@@ -2922,7 +2778,7 @@ describe('agentDriver', () => {
       draft?: string; stash?: string; claude?: string | null; raise?: string; title?: string; dialog?: string
       enterDialog?: string; label?: string
     } = {}) {
-      await agentDriver('tui').deliverPrompt({ ...session }, '%3', MESSAGE, { running: { tool, conversationId: 'conv-1' } })
+      await agentDriver('tui').deliverPrompt({ ...session }, '%3', MESSAGE, { tool, conversationId: 'conv-1' })
       const [, cmd, execOpts] = podExec.mock.calls.at(-1)!
       expect(execOpts).toEqual({ maxAttempts: 1, timeout: 30_000, stdin: expect.any(String) as string })
       const file = (name: string): string => path.join(bin, name)
@@ -3094,7 +2950,7 @@ describe('agentDriver', () => {
           // Its worktrees would go in the project's shared codex home.
           '-c', 'mcp_servers.codex_worktrees={command="false",enabled=false}',
           // Trust the folder and run yaac's hooks without asking, so no startup
-          // screen swallows the pasted prompt.
+          // screen holds up the opening message.
           '-c', 'projects={"/data/wt"={trust_level="trusted"}}',
           '--dangerously-bypass-hook-trust',
           // codex's defaults, named so a resume does not restore another posture.
@@ -3139,57 +2995,24 @@ describe('agentDriver', () => {
       const defaultModel = piProviderInfo(PI_DEFAULT_PROVIDER).defaultModel
       const anthropicModel = piProviderInfo('anthropic').defaultModel
 
-      // pi's stderr goes through sed to drop the first "Warning: No project
-      // session found with id ..." line, including any leading color codes.
-      const wrapped = (piCmd: string) =>
-        `{ ${piCmd} 2>&1 1>&3 3>&- | sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*Warning: No project session found with id .*creating a new session with that id\\./{//d}" >&2 3>&-; } 3>&1`
-
       it('uses --approve, the default provider model, and --session-id when none is given', () => {
         const cmd = tuiLaunchCmd({ tool: 'pi', workspaceId: 'sess-1', permissionMode: 'bypass' })
-        expect(cmd).toBe(wrapped(`pi --approve --tui-mode fullscreen --model ${defaultModel} --session-id sess-1`))
+        expect(cmd).toBe(`exec pi --approve --tui-mode fullscreen --model ${defaultModel} --session-id sess-1`)
       })
 
       it('uses the given provider default model', () => {
         const cmd = tuiLaunchCmd({ tool: 'pi', workspaceId: 'sess-1', resume: false, piProvider: 'anthropic', permissionMode: 'bypass' })
-        expect(cmd).toBe(wrapped(`pi --approve --tui-mode fullscreen --model ${anthropicModel} --session-id sess-1`))
+        expect(cmd).toBe(`exec pi --approve --tui-mode fullscreen --model ${anthropicModel} --session-id sess-1`)
       })
 
       it('addresses the session by id when resuming (same command as create)', () => {
         const cmd = tuiLaunchCmd({ tool: 'pi', workspaceId: 'sess-1', resume: true, piProvider: 'anthropic', permissionMode: 'bypass' })
-        expect(cmd).toBe(wrapped(`pi --approve --tui-mode fullscreen --model ${anthropicModel} --session-id sess-1`))
+        expect(cmd).toBe(`exec pi --approve --tui-mode fullscreen --model ${anthropicModel} --session-id sess-1`)
       })
 
       it('prefers an explicit model override over the provider default', () => {
         const cmd = tuiLaunchCmd({ tool: 'pi', workspaceId: 'sess-1', resume: false, piProvider: 'anthropic', model: 'openai/gpt-5.2', permissionMode: 'bypass' })
-        expect(cmd).toBe(wrapped('pi --approve --tui-mode fullscreen --model openai/gpt-5.2 --session-id sess-1'))
-      })
-
-      it('filters the fresh-run warning in plain sh, without single quotes (survives respawn wrapper)', () => {
-        const cmd = tuiLaunchCmd({ tool: 'pi', workspaceId: 'sess-1', permissionMode: 'bypass' })
-        // No single quotes: the command is embedded in `respawn-window '<cmd>'`.
-        expect(cmd).not.toContain("'")
-        // Run under /bin/sh, as a containerless launch is, against a pi that
-        // warns in color: only the first warning goes, stdout untouched.
-        const bin = mkdtempSync(path.join(os.tmpdir(), 'yaac-pi-'))
-        try {
-          const warn = 'Warning: No project session found with id sess-1; creating a new session with that id.'
-          writeFileSync(path.join(bin, 'pi'), [
-            '#!/bin/sh',
-            'echo drawn',
-            `printf '\\033[33m${warn}\\033[0m\\n' >&2`,
-            'echo "a real error" >&2',
-            `echo '${warn}' >&2`,
-            '',
-          ].join('\n'), { mode: 0o755 })
-          const run = spawnSync('/bin/sh', ['-c', cmd], {
-            env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` },
-            encoding: 'utf8',
-          })
-          expect(run.stdout).toBe('drawn\n')
-          expect(run.stderr).toBe(`a real error\n${warn}\n`)
-        } finally {
-          rmSync(bin, { recursive: true, force: true })
-        }
+        expect(cmd).toBe('exec pi --approve --tui-mode fullscreen --model openai/gpt-5.2 --session-id sess-1')
       })
     })
 
@@ -3225,6 +3048,7 @@ describe('agentDriver', () => {
       // is unset, so every claude launch below must include `env -u TMUX`.
       it('hides $TMUX so the title keeps animating, and omits prompt flags', () => {
         const cmd = tuiLaunchCmd({ tool: 'claude', workspaceId: 'sess-1', permissionMode: 'bypass' })
+        expect(cmd).not.toContain('yaac-opening')
         expect(cmd).toBe('exec env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --session-id sess-1')
       })
 

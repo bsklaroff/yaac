@@ -130,11 +130,9 @@ move, slider or scroll wheel to zoom). The browser draws the chosen square
 to a 256px PNG and uploads that; removing the icon returns the chip to the
 initial. `yaac config icon <project> --file <path>` (or `--none`) and an
 agent's `yaac-mama icon set <file>` (or `icon remove`) upload a file as it
-is, and the chip shows the middle of one that is not square; `yaac-mama`
-sends it as base64 inside its JSON request, which caps its icons at 150000
-bytes. The stored picture downloads as it is from the settings page's
-Download link, `yaac config icon <project> --out <path>`, or
-`yaac-mama icon get <file>`.
+is, and the chip shows the middle of one that is not square. The stored
+picture downloads as it is from the settings page's Download link,
+`yaac config icon <project> --out <path>`, or `yaac-mama icon get <file>`.
 
 The webapp draws every image, SVG included, to a canvas before upload, and
 the server stores only PNG, JPEG, GIF or WebP (up to 512 KB, in the

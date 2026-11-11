@@ -15,7 +15,7 @@ import {
 import type { JsonRpcTransport } from '#runtime/agents/acp-jsonrpc'
 import { acpPageOf, type AcpServerMessage } from '@yaac/shared/acp'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
-import { MAX_PROMPT_LENGTH } from '@yaac/shared/types'
+import { MAX_PROMPT_BYTES } from '@yaac/shared/types'
 
 // Workspaces sandboxed, as under k8s; a test wanting containerless
 // installs its own.
@@ -366,11 +366,11 @@ describe('attachAcp', () => {
     expect(prompts()).toHaveLength(1)
 
     // As may words past the prompt limit, whatever images come with them.
-    // Counted in UTF-16 units, so an emoji counts twice.
-    sock.clientSend({ type: 'prompt', text: '🙂'.repeat(MAX_PROMPT_LENGTH / 2 + 1) })
+    // Counted in UTF-8 bytes, so an emoji counts four times.
+    sock.clientSend({ type: 'prompt', text: '🙂'.repeat(Math.floor(MAX_PROMPT_BYTES / 4) + 1) })
     await waitFor(() => errors() === 3)
     expect(sock.sent.at(-1)).toMatchObject({
-      type: 'event', event: { type: 'error', message: 'message not sent: the prompt is over the 200,000-character limit' },
+      type: 'event', event: { type: 'error', message: 'message not sent: the prompt is over the 130 KB limit' },
     })
     expect(prompts()).toHaveLength(1)
 

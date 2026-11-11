@@ -79,6 +79,8 @@ import {
   AGENT_TOOLS,
   MAMA_COMMANDS,
   EFFORT_RE,
+  PROMPT_TOO_LONG,
+  promptFits,
   MODEL_RE,
   PERMISSION_MODES,
   isRankedPermissionMode,
@@ -269,6 +271,8 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
  * Run one `yaac-mama` command for a workspace and return the text for its
  * stdout (plain text, since the reader is an agent via a shell script).
  * Errors are returned, never thrown, so the transport always has an answer.
+ * The body is a prompt or other text, held to the prompt cap, for every
+ * command but `icon-set`, whose image `setProjectIcon` bounds.
  */
 export async function runMamaCommand(
   caller: MamaCaller,
@@ -292,6 +296,7 @@ export async function runMamaCommand(
       }
     }
   }
+  if (command !== 'icon-set' && !promptFits(request.body)) return { ok: false, error: PROMPT_TOO_LONG }
   try {
     switch (command) {
       case 'list': return await runList(caller, request)
@@ -1252,7 +1257,7 @@ async function runSend(caller: MamaCaller, request: MamaRequestInput): Promise<M
       { projectId: caller.projectId, workspaceId, jobName: running.jobName },
       session.window,
       `Sent from ${caller.workspaceId} via yaac-mama:\n\n${body}`,
-      { running: { tool: session.tool, conversationId } },
+      { tool: session.tool, conversationId },
     )
   } catch (err) {
     return { ok: false, error: `not delivered to ${label}: ${err instanceof Error ? err.message : String(err)}` }

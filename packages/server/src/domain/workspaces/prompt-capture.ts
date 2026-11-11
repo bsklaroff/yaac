@@ -1,6 +1,6 @@
 import { getConversationFirstMessage } from '#runtime/agents'
 import type { SandboxFile } from '#runtime/agents'
-import { MAX_PROMPT_LENGTH } from '@yaac/shared/types'
+import { MAX_PROMPT_BYTES } from '@yaac/shared/types'
 import type { AgentTool } from '@yaac/shared/types'
 
 /**
@@ -24,7 +24,7 @@ export async function captureFirstPrompt(
   const prompt = await getConversationFirstMessage(tool, transcript).catch(() => undefined)
   if (prompt === undefined) return undefined
   // Cap to the recorded length so the cache and the row agree.
-  const capped = prompt.slice(0, MAX_PROMPT_LENGTH)
+  const capped = prompt.slice(0, MAX_PROMPT_BYTES)
   known.set(key, capped)
   return capped
 }

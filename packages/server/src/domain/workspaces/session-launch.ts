@@ -9,12 +9,14 @@ import {
 import {
   agentDriver,
   agentOptionsCmd,
+  buildOpeningWrite,
   buildRespawnExec,
   buildWindowsExec,
   hasConversationHistory,
   verifyAgentWindowAlive,
   type SessionWindowSpec,
 } from '#runtime/agents'
+import { markOpening } from '#runtime/status'
 import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
 import { projectDir } from '@yaac/shared/project-paths'
@@ -22,6 +24,8 @@ import {
   effortFor,
   launchableModel,
   launchablePermissionMode,
+  PROMPT_TOO_LONG,
+  promptFits,
   resolveAgentOptions,
   SELF_NAMING_TOOLS,
   TOOL_LABELS,
@@ -41,6 +45,9 @@ export interface SessionLaunch extends SessionWindowSpec {
   session: SessionRow
   /** It resumes a conversation rather than starting one. */
   resume: boolean
+  /** The opening message its `tui` agent is launched with, left for it by
+   *  `leaveOpenings`: a fresh session's, on its first launch. */
+  opening?: string
 }
 
 /**
@@ -56,6 +63,11 @@ export interface SessionLaunch extends SessionWindowSpec {
  * at launch (`--session-id`); one that ran but never reported it is found
  * by that id and resumed. An `acp` agent mints its own id, so its record is
  * named for the session until it does.
+ *
+ * A `tui` session's opening message is a launch argument, on its first
+ * launch only; an `acp` one's waits on its row for the registry to send
+ * once its conversation is up. A `tui` message an older install stored over
+ * the cap is refused (docs/legacy-compat-shims.md).
  */
 export async function sessionLaunches(
   projectId: string,
@@ -72,6 +84,11 @@ export async function sessionLaunches(
     const effort = launchEffort(s.tool, model, s.effort, endpoints[i])
     const agentOptions = resolveAgentOptions(s.tool, s.agentOptions)
     const setOptions = agentOptionsCmd(paths, s.window, agentOptions)
+    const opening = s.mode === 'tui' && !resume && s.launchedAt === undefined ? s.firstPrompt : undefined
+    if (opening !== undefined && !promptFits(opening)) {
+      throw new ServerError('VALIDATION', `${PROMPT_TOO_LONG}, the most one launch argument holds; it was `
+        + 'saved by an older yaac, which allowed more. Shorten it to start this session.')
+    }
     return {
       session: s,
       tool: s.tool,
@@ -79,6 +96,7 @@ export async function sessionLaunches(
       window: s.window,
       resume,
       ...(resume ? { resumes: conversationId } : {}),
+      ...(opening !== undefined ? { opening } : {}),
       // `YAAC_SESSION_ID` tells the agent's own commands which session they
       // run in, which `yaac-mama` reports (`mamaCaller`).
       // The window options carry its agent options (`agentOptionsCmd`).
@@ -94,6 +112,7 @@ export async function sessionLaunches(
         ...(effort !== undefined ? { effort } : {}),
         agentOptions,
         ...(opts.beforeCheckout === true && s.mode === 'acp' ? { beforeCheckout: true } : {}),
+        ...(opening !== undefined ? { opening: true } : {}),
       }),
     }
   })
@@ -141,10 +160,8 @@ export const launching = new Set<string>()
 
 /**
  * Open sessions' windows in a running workspace that has finished its
- * setup, then type each new `tui` session's opening message into it. An
- * `acp` one's waits on its row for the registry to send once its
- * conversation is up. Checks the agents came up without waiting on it: one
- * that dies leaves its session exited, for the user to resume or close.
+ * setup. Checks the agents came up without waiting on it: one that dies
+ * leaves its session exited, for the user to resume or close.
  */
 export async function launchSessions(
   workspace: { projectId: string; workspaceId: string; jobName: string },
@@ -165,6 +182,7 @@ export async function launchSessions(
     }
     launches = await sessionLaunches(projectId, workspaceId, mine, paths)
     if (launches.length === 0) return
+    await leaveOpenings(workspace, launches)
     await runtime.exec(jobName, buildWindowsExec(launches, paths))
     await markSessionsLaunched(launches.map((l) => l.session.id))
   } finally {
@@ -173,7 +191,6 @@ export async function launchSessions(
   void verifyAgentWindowAlive(jobName, launches.map((l) => l.window)).catch((err: unknown) => {
     serverLog(`[server] sessions ${workspaceId}: ${err instanceof Error ? err.message : String(err)}`)
   })
-  await Promise.all(launches.map((l) => deliverTuiPrompt(workspace, l)))
 }
 
 /**
@@ -189,28 +206,29 @@ export async function respawnSession(
   const paths = runtime.workspacePaths(workspace.jobName)
   const [launch] = await sessionLaunches(workspace.projectId, workspace.workspaceId, [session], paths)
   if (launch === undefined) return
+  await leaveOpenings(workspace, [launch])
   await runtime.exec(workspace.jobName, buildRespawnExec(launch, paths))
   await markSessionsLaunched([session.id])
 }
 
-/** Whether this launch types its session's opening message in: a `tui`
- *  session's first launch, never a resume. */
-export function typesOpeningMessage(launch: SessionLaunch): boolean {
-  const { session } = launch
-  return session.mode === 'tui' && session.firstPrompt !== undefined && !launch.resume && session.launchedAt === undefined
-}
-
-/** Type a session's opening message into its agent when this launch does
- *  (`typesOpeningMessage`). */
-export async function deliverTuiPrompt(
+/**
+ * Leave each launch's opening message where its agent's launch command
+ * reads it, before its window opens, and mark the session opening
+ * (`markOpening`) so its pane shows the message rather than the agent
+ * starting up until the agent starts on it.
+ */
+export async function leaveOpenings(
   workspace: { projectId: string; workspaceId: string; jobName: string },
-  launch: SessionLaunch,
+  launches: SessionLaunch[],
 ): Promise<void> {
-  const { session } = launch
-  if (!typesOpeningMessage(launch) || session.firstPrompt === undefined) return
-  await agentDriver('tui').deliverPrompt(workspace, session.window, session.firstPrompt).catch((err: unknown) => {
-    serverLog(`[server] session ${session.id}: opening message failed: ${String(err)}`)
-  })
+  const runtime = workspaceDriver()
+  const paths = runtime.workspacePaths(workspace.jobName)
+  await Promise.all(launches.map(async ({ window, opening }) => {
+    if (opening === undefined) return
+    markOpening(workspace.projectId, workspace.workspaceId, window)
+    const { cmd, stdin } = buildOpeningWrite(paths, window, opening)
+    await runtime.exec(workspace.jobName, cmd, { stdin })
+  }))
 }
 
 /** The project owner's stored pi provider. */

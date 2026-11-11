@@ -86,8 +86,13 @@ describe('openSession', () => {
     // Its agent's commands learn which session they run in.
     expect(execs.join('\n')).toContain(`export YAAC_SESSION_ID=${first.id}; `)
     expect((await getSessionRow(first.id))?.launchedAt).toBeInstanceOf(Date)
-    // A tui session's opening message is typed in once its window is up.
-    expect(execs.some((c) => c.includes('.yaac-prompt-'))).toBe(true)
+    // A tui session's agent is launched with its opening message, left for
+    // it before its window opens.
+    const opening = `/tmp/.yaac-opening-${first.window}`
+    const write = execs.findIndex((c) => c.startsWith(`cat > ${opening} `))
+    expect(write).toBeGreaterThanOrEqual(0)
+    expect(write).toBeLessThan(execs.findIndex((c) => c.includes(`-n ${first.window} `)))
+    expect(execs.join('\n')).toContain(`-- "$(cat ${opening}; rm -f ${opening}) "'`)
   })
 
   it('opens each session with every agent option its tool has, a named one remembered as the project\'s next', async () => {

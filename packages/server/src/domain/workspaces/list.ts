@@ -79,6 +79,10 @@ export function _clearListActiveInflightForTests(): void {
  * its session before a slow image build and boot, a runtime's watcher takes
  * a moment to attach, and a claimed spare's agent may have been waiting
  * since it was warmed.
+ *
+ * A `tui` session whose agent has not started on its opening message
+ * (`SessionEntry.opening`) lists as `running` the same way, for as long as
+ * the status store marks it.
  */
 export async function listActiveWorkspaces(projectFilter?: string): Promise<ActiveWorkspacesResult> {
   const key = projectFilter ?? ''
@@ -159,11 +163,15 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
     }
     const starting = new Set<string>()
     const entries = sessions.map((s) => {
-      const entry = toSessionEntry(s, links, { agents: w.agents, ...(w.windows !== undefined ? { windows: w.windows } : {}) })
+      const entry = toSessionEntry(s, links, {
+        agents: w.agents,
+        opening: w.opening,
+        ...(w.windows !== undefined ? { windows: w.windows } : {}),
+      })
       const until = startingUntil(s, entry, w)
-      if (until === undefined) return entry
+      if (until === undefined && entry.opening !== true) return entry
       starting.add(s.id)
-      republishAt(until)
+      if (until !== undefined) republishAt(until)
       if (entry.status !== 'waiting' || entry.asking === true || entry.exited === true) return entry
       const { waitingSinceMs: _, ...rest } = entry
       return { ...rest, status: 'running' as const }

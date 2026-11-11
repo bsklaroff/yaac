@@ -49,8 +49,18 @@ siblings.
 An `acp` session's opening message waits on its row (`pendingPrompt`) until
 its conversation has finished its handshake, and is taken by
 compare-and-set before it is sent, as docs/agent-modes.md "State"
-describes. A `tui` session's is typed into its window once, on its first
-launch, never on a resume.
+describes. A `tui` session's is its agent's last launch argument, on its
+first launch only, which is why a prompt is capped at what one argument
+holds (`MAX_PROMPT_BYTES`, 130 KB, with room for what a launch adds). The
+server writes it to a file in the workspace's scratch dir over exec stdin
+before the window opens, since tmux caps the commands it is sent far lower,
+and the launch command reads the file and deletes it. Each tool submits the
+message once its TUI is up; `openingArg` pads it where a tool would take it
+for a subcommand or an attached file. One an older install stored over the
+cap is refused at launch (docs/legacy-compat-shims.md). Until the status
+watcher first sees the agent working, or for at most `OPENING_TIMEOUT_MS`,
+the session lists as `opening`, so its pane shows the message rather than
+the agent starting up.
 
 ## Launching
 
@@ -194,7 +204,9 @@ workspace or beside it in its own.
   mode (`SessionPane`): a chat for `acp`, the agent's terminal for `tui`.
   An `acp` session whose agent has not named a conversation shows its
   opening message and a spinner, and an `acp` pane whose agent exited can
-  switch to acpd's log (docs/agent-modes.md describes both). Every pane
+  switch to acpd's log (docs/agent-modes.md describes both). A `tui`
+  session listed `opening` shows the same over its terminal, which attaches
+  underneath and takes focus once it shows. Every pane
   has a ×; closing a session asks first, as killing a terminal does, unless
   its agent has already exited.
   A workspace with no pane open shows what it can start (`EmptyWorkspace`).

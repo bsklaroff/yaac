@@ -11,11 +11,12 @@ import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-st
 import { recordConversations } from '#db/conversation-store'
 import { insertSession } from '#db/session-store'
 import { clearAllProvisioningForTests, registerProvisioning } from '#domain/workspaces/provisioning'
+import { MAX_ICON_BYTES } from '#domain/projects'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import {
   CONVERSATION_PROMPT_PREVIEW_LENGTH,
-  MAX_PROMPT_LENGTH,
+  MAX_PROMPT_BYTES,
   PROMPT_PREVIEW_LENGTH,
   type StoppedWorkspacePage,
 } from '@yaac/shared/types'
@@ -35,8 +36,9 @@ const app = new Hono()
   .route('/proxied', mamaRelayApp(() => Promise.resolve(true)))
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
-/** A prompt of the maximum length, multibyte throughout. */
-const LONG = 'é✓🙂 fix it\n'.repeat(MAX_PROMPT_LENGTH).slice(0, MAX_PROMPT_LENGTH)
+/** A prompt of the maximum size, multibyte throughout: 20 bytes a repeat,
+ *  which divides the cap. */
+const LONG = 'é✓🙂 fix it no\n'.repeat(MAX_PROMPT_BYTES / 20)
 
 let tmpDir: string
 
@@ -65,22 +67,18 @@ describe('POST /mama', () => {
   }).replace('__BODY__', Array.from({ length: prompt.length }, (_, n) =>
     `\\u${prompt.charCodeAt(n).toString(16).padStart(4, '0')}`).join(''))
 
-  it('takes a prompt of the maximum length however it is escaped, and refuses more', async () => {
-    const maximal = envelope('é'.repeat(MAX_PROMPT_LENGTH))
-    expect(Buffer.byteLength(maximal)).toBeGreaterThan(MAX_PROMPT_LENGTH * 6)
+  // What a body may hold is each command's to check (`runMamaCommand`); an
+  // unauthenticated caller shows a request got past the size limit.
+  it('lets through the largest request a prompt or an icon makes, however it is escaped, and no more', async () => {
+    // One byte a character, so the most characters to escape.
+    const maximal = envelope('a'.repeat(MAX_PROMPT_BYTES))
+    expect(Buffer.byteLength(maximal)).toBeGreaterThan(MAX_PROMPT_BYTES * 6)
     expect((await post(maximal)).status).toBe(401)
     // A raw multibyte prompt passes the same way.
     expect((await post(JSON.stringify({ command: 'queue', body: LONG }))).status).toBe(401)
-
-    // Counted in UTF-16 units, as every bound on a prompt is: an emoji
-    // counts twice.
-    for (const prompt of ['é'.repeat(MAX_PROMPT_LENGTH + 1), '🙂'.repeat(MAX_PROMPT_LENGTH / 2 + 1)]) {
-      const over = await post(envelope(prompt))
-      expect(over.status).toBe(400)
-      expect(await over.json()).toMatchObject({
-        error: { message: 'body: the prompt is over the 200,000-character limit' },
-      })
-    }
+    // An icon goes as base64, well past the prompt cap.
+    const icon = Buffer.alloc(MAX_ICON_BYTES).toString('base64')
+    expect((await post(JSON.stringify({ command: 'icon-set', body: icon }))).status).toBe(401)
     expect((await post(JSON.stringify({ command: 'queue', body: ' '.repeat(MAMA_BODY_LIMIT) }))).status).toBe(413)
   })
 

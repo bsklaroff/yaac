@@ -41,6 +41,7 @@ export {
 } from './agent-tools'
 export {
   agentOptionsCmd,
+  buildOpeningWrite,
   tmuxCmd,
   verifyAgentWindowAlive,
   windowTarget,

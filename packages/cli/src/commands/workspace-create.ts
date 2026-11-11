@@ -275,8 +275,8 @@ export function durationOption(flag: string, text: string): number {
 
 /**
  * Where the prompt is read from, if not from `--prompt` itself: a file
- * (`--prompt-file`), or `-` for stdin (`--prompt -`). These carry a long
- * prompt, which a single argument cannot: Linux caps one at 128 KiB.
+ * (`--prompt-file`), or `-` for stdin (`--prompt -`). These spare a long
+ * prompt the shell's quoting.
  */
 export function promptSource(options: { prompt?: string; promptFile?: string }): string | undefined {
   if (options.prompt !== undefined && options.promptFile !== undefined) {

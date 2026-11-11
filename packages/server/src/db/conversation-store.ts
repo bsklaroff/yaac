@@ -2,7 +2,7 @@ import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm
 import { getDb } from './client'
 import { conversations, workspaceConversations, workspaces } from './schema'
 import type { CapturedConversation } from './events'
-import { MAX_MODEL_LENGTH, MAX_PROMPT_LENGTH } from '@yaac/shared/types'
+import { MAX_MODEL_LENGTH, MAX_PROMPT_BYTES } from '@yaac/shared/types'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 import { nullsToUndefined } from '#lib/nulls'
 
@@ -116,7 +116,7 @@ export async function recordConversations(
           ? {
             // Keep the first value: a compacted transcript would otherwise
             // replace the opening message.
-            firstPrompt: sql`coalesce(${conversations.firstPrompt}, ${d.firstPrompt.slice(0, MAX_PROMPT_LENGTH)})`,
+            firstPrompt: sql`coalesce(${conversations.firstPrompt}, ${d.firstPrompt.slice(0, MAX_PROMPT_BYTES)})`,
           }
           : {}),
       }
@@ -127,7 +127,7 @@ export async function recordConversations(
         createdAt: seenAt,
         mode: d.mode ?? 'tui',
         transcriptPath: stored,
-        firstPrompt: d.firstPrompt?.slice(0, MAX_PROMPT_LENGTH) ?? null,
+        firstPrompt: d.firstPrompt?.slice(0, MAX_PROMPT_BYTES) ?? null,
         title: d.title ?? null,
         lastActiveAt: d.lastActiveMs !== undefined ? new Date(d.lastActiveMs) : null,
         model: d.model?.slice(0, MAX_MODEL_LENGTH) ?? null,
@@ -354,7 +354,7 @@ export async function recordConversationCaptures(projectId: string, captures: Ca
     await db.update(conversations).set({
       lastActiveAt: new Date(c.lastActiveMs),
       ...(c.firstPrompt !== undefined
-        ? { firstPrompt: sql`coalesce(${conversations.firstPrompt}, ${c.firstPrompt.slice(0, MAX_PROMPT_LENGTH)})` }
+        ? { firstPrompt: sql`coalesce(${conversations.firstPrompt}, ${c.firstPrompt.slice(0, MAX_PROMPT_BYTES)})` }
         : {}),
     }).where(and(
       eq(conversations.projectId, projectId),

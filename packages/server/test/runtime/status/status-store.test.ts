@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 import {
   readWorkspaceStatus,
@@ -10,6 +10,9 @@ import {
   onLiveAgentsChanged,
   onStreamHealthLost,
   onWaitingEnded,
+  markOpening,
+  readOpening,
+  OPENING_TIMEOUT_MS,
   _resetWorkspaceStatusStoreForTests,
 } from '#runtime/status/status-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
@@ -182,6 +185,51 @@ describe('readWorkspaceWaitingSince (waiting spells)', () => {
     setAgentStatus('demo', 's1', '%0', 'waiting')
     evictWorkspaceStatus('demo', 's1')
     expect(readWorkspaceWaitingSince('demo', 's1')).toBeUndefined()
+  })
+})
+
+/**
+ * A session launched with its opening message shows it until its agent is
+ * seen working, which the snapshot learns through `#lib/notify`.
+ */
+describe('markOpening', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  it('holds through the agent\'s boot and clears for good once it works', () => {
+    const listener = vi.fn()
+    onWorkspaceListChanged(listener)
+    markOpening('demo', 's1', 'claude-1')
+    markOpening('demo', 's2', 'claude-1')
+    expect(listener).toHaveBeenCalledTimes(2)
+    expect(readOpening('demo', 's1')).toEqual(['claude-1'])
+
+    // A booting TUI reads as waiting, which proves nothing.
+    setAgentStatus('demo', 's1', 'claude-1', 'waiting')
+    expect(readOpening('demo', 's1')).toEqual(['claude-1'])
+    // Working on it, or asking about it, ends it; a turn ending does not
+    // bring it back.
+    setAgentStatus('demo', 's1', 'claude-1', 'running')
+    setAgentStatus('demo', 's1', 'claude-1', 'waiting')
+    expect(readOpening('demo', 's1')).toEqual([])
+    setAgentStatus('demo', 's2', 'claude-1', 'asking')
+    expect(readOpening('demo', 's2')).toEqual([])
+  })
+
+  it('gives up after its timeout, and is dropped with its workspace', () => {
+    vi.useFakeTimers()
+    const listener = vi.fn()
+    onWorkspaceListChanged(listener)
+    markOpening('demo', 's1', 'claude-1')
+    markOpening('demo', 's2', 'codex-1')
+    vi.advanceTimersByTime(OPENING_TIMEOUT_MS - 1)
+    expect(readOpening('demo', 's1')).toEqual(['claude-1'])
+    evictWorkspaceStatus('demo', 's2')
+    expect(readOpening('demo', 's2')).toEqual([])
+    listener.mockClear()
+    vi.advanceTimersByTime(1)
+    expect(readOpening('demo', 's1')).toEqual([])
+    // Only the mark still held announces its end.
+    expect(listener).toHaveBeenCalledTimes(1)
   })
 })
 

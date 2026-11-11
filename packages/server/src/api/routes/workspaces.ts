@@ -28,7 +28,7 @@ import { requireDriverFeature } from '#api/http/driver-features'
 import type { IdentityEnv } from '#api/http/web-auth'
 import { authorizeProject } from '#domain/access'
 import { workspaceDriver } from '#drivers/driver'
-import { serveHostedRepo } from '#domain/projects'
+import { MAX_ICON_BYTES, serveHostedRepo } from '#domain/projects'
 import { ServerError } from '@yaac/shared/errors'
 import { MAX_TEXT_FILE_BYTES } from '#lib/text-file'
 import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
@@ -39,8 +39,7 @@ import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
 import {
   draftWorkspaceSettingsSchema,
   MAX_LOG_COMMITS,
-  MAX_PROMPT_LENGTH,
-  promptText,
+  MAX_PROMPT_BYTES,
   agentOptionsSchema,
   queuedWorkspaceSettingsSchema,
   timeoutMinutesSchema,
@@ -124,11 +123,13 @@ type IdentifyCaller = (bearer: string, header: (name: string) => string | undefi
   => Promise<WorkspaceRow | undefined>
 
 /**
- * The largest yaac-mama request: a body of `MAX_PROMPT_LENGTH` UTF-16 units,
- * each at most 6 bytes of JSON (a `\uXXXX` escape; raw UTF-8 takes at most
- * 3), plus room for the command and its args.
+ * The largest yaac-mama request, checked before it is parsed: the larger of
+ * a prompt of `MAX_PROMPT_BYTES` (at most that many UTF-16 units, each at
+ * most 6 bytes of JSON as a `\uXXXX` escape) and `icon set`'s image of
+ * `MAX_ICON_BYTES` as base64, plus room for the command and its args. What
+ * the body may hold is each command's to check (`runMamaCommand`).
  */
-export const MAMA_BODY_LIMIT = MAX_PROMPT_LENGTH * 6 + 64 * 1024
+export const MAMA_BODY_LIMIT = Math.max(MAX_PROMPT_BYTES * 6, Math.ceil(MAX_ICON_BYTES / 3) * 4) + 64 * 1024
 
 /**
  * The endpoints a workspace calls: `yaac-mama`, and the remote of a project
@@ -163,7 +164,7 @@ function mamaRoute(identifyCaller: IdentifyCaller) {
     zv('json', z.object({
       command: z.string().min(1).max(32),
       args: z.record(z.string(), z.string()).optional(),
-      body: promptText.optional(),
+      body: z.string().optional(),
       /** The calling agent's session (`YAAC_SESSION_ID`), when it has one. */
       session: z.string().max(64).optional(),
     })),

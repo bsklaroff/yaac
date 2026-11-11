@@ -7,7 +7,7 @@ import { notifyWorkspaceListChanged } from '#lib/notify'
 import { isUuid } from '#lib/uuid'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
 import { normalizeTitle } from '@yaac/shared/titles'
-import { MAX_MODEL_LENGTH, MAX_PROMPT_LENGTH } from '@yaac/shared/types'
+import { MAX_MODEL_LENGTH } from '@yaac/shared/types'
 import type { AgentMode, AgentOptions, AgentTool, PermissionMode } from '@yaac/shared/types'
 
 /**
@@ -50,7 +50,7 @@ export function sessionWindowName(tool: AgentTool, sessionId: string): string {
 /**
  * Record a new open session in a workspace, after its others. Its `acp`
  * prompt is held for its conversation (`takeSessionPrompt`); a `tui` one is
- * typed in by whoever launches it. A session opened on a conversation the
+ * its agent's launch argument (`sessionLaunches`). A session opened on a conversation the
  * workspace already holds takes over its link.
  */
 export async function insertSession(
@@ -60,7 +60,7 @@ export async function insertSession(
 ): Promise<SessionRow> {
   const db = await getDb()
   const id = settings.id ?? randomUUID()
-  const prompt = settings.prompt?.slice(0, MAX_PROMPT_LENGTH)
+  const { prompt } = settings
   const title = settings.title === undefined ? '' : normalizeTitle(settings.title)
   const [row] = await db.insert(sessions).values({
     id,

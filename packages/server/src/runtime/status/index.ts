@@ -28,6 +28,7 @@ export {
 export {
   evictWorkspaceStatus,
   liveAgents,
+  markOpening,
   onLiveAgentsChanged,
   onWindowsChanged,
   onStreamHealthLost,

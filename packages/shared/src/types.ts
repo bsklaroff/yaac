@@ -1196,6 +1196,9 @@ export interface SessionEntry {
   /** Its agent exited and its window is kept, for the user to resume or
    *  close it. */
   exited?: true
+  /** Live only: a `tui` agent launched with its opening message has not
+   *  started on it yet, so its pane shows the message, not the terminal. */
+  opening?: true
 }
 
 /**
@@ -1895,28 +1898,32 @@ export interface QueuedWorkspaceEntry {
 }
 
 /**
- * Cap on a prompt, both as a create or queue write takes it and as an opening
- * message is recorded. Shared so routes, the store and the discovery sweeps
- * apply the same bound.
+ * Cap on a prompt, in UTF-8 bytes, both as a write takes it and as an
+ * opening message is recorded. A `tui` agent is launched with its opening
+ * message as one command-line argument, which Linux caps at 128 KiB with
+ * its terminating NUL; this leaves room for what a launch adds around it
+ * (`openingArg`), the same for every tool. Recorded messages are cut to this
+ * many characters, which never cuts one a write took, since none has more
+ * characters than bytes.
  */
-export const MAX_PROMPT_LENGTH = 200_000
+export const MAX_PROMPT_BYTES = 130_000
 
-/** Why a prompt over `MAX_PROMPT_LENGTH` is refused. */
-export const PROMPT_TOO_LONG = `the prompt is over the ${MAX_PROMPT_LENGTH.toLocaleString('en-US')}-character limit`
+/** Whether a prompt is within `MAX_PROMPT_BYTES`. */
+export function promptFits(prompt: string): boolean {
+  return new TextEncoder().encode(prompt).length <= MAX_PROMPT_BYTES
+}
 
-/**
- * A prompt as a write takes it, at most `MAX_PROMPT_LENGTH` UTF-16 units:
- * the length JavaScript reports, which every other bound on a prompt (and
- * the yaac-mama body limit) counts. Zod's own `max` counts code points, so
- * an emoji would count once here and twice everywhere else.
- */
-export const promptText = z.string().refine((s) => s.length <= MAX_PROMPT_LENGTH, PROMPT_TOO_LONG)
+/** Why a prompt over `MAX_PROMPT_BYTES` is refused. */
+export const PROMPT_TOO_LONG = 'the prompt is over the 130 KB limit'
+
+/** A prompt as a write takes it (`promptFits`). */
+export const promptText = z.string().refine(promptFits, PROMPT_TOO_LONG)
 
 /**
  * How much of a prompt the `/events` snapshot and the stopped list carry.
  * The snapshot goes to every client on every change, and a stopped page
  * holds dozens of rows, so full prompts would send up to
- * `MAX_PROMPT_LENGTH` per row each time. A row's prompt keeps 10,000
+ * `MAX_PROMPT_BYTES` per row each time. A row's prompt keeps 10,000
  * characters, which the sidebar's search matches against; a conversation's
  * first prompt, which nothing searches, keeps only enough for its tab label
  * and tooltip. A client needing the whole text fetches it:

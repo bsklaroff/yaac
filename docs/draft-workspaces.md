@@ -83,7 +83,7 @@ restores the screen.
 - The `/events` snapshot carries only the first 10,000 characters of the
   prompt (`PROMPT_PREVIEW_LENGTH`), as it does of every row's prompt, since
   it is resent to every client on each change and a prompt can run to
-  200,000 characters. The sidebar's search matches within those. Reopening a draft, or editing a queued entry, fetches the
+  130 KB. The sidebar's search matches within those. Reopening a draft, or editing a queued entry, fetches the
   whole prompt from `GET /workspace/prompt`; until it arrives the prompt is
   read-only and nothing can be sent, so a save never cuts it short. The
   sidebar's "Run now" on a draft fetches it the same way.
