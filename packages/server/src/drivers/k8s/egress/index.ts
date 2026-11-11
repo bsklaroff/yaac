@@ -31,4 +31,4 @@ export {
   readBlockedHosts,
   refreshedCredentials,
 } from './proxy-state'
-export { workspaceSshTransport } from './ssh-transport'
+export { workspaceSshEnv } from './ssh-transport'

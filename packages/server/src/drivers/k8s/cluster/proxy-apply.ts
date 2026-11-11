@@ -3,6 +3,7 @@ import {
   CA_BUNDLE_KEY,
   CA_CONFIGMAP_KEY,
   CA_CONFIGMAP_NAME,
+  CA_SSH_KNOWN_HOSTS_KEY,
   apiStatus,
   applyObject,
   createObject,
@@ -17,6 +18,7 @@ import {
   PROXY_AUTH_SECRET_NAME,
   PROXY_CA_SECRET_NAME,
   ROLE_BUILDER,
+  SSH_HOST_KEY_ALIAS,
   readProxyAuthSecret,
   waitForRollout,
 } from '#drivers/k8s/substrate'
@@ -153,16 +155,20 @@ interface RawObject {
 const CA_WAIT_MS = 30_000
 
 /**
- * Upsert the proxy-CA ConfigMap that workspace pods mount, from the proxy's
- * CA Secret. Two keys: the bare CA (for tools that add to the system trust,
- * e.g. NODE_EXTRA_CA_CERTS) and public roots plus the CA (for tools that
- * replace it, e.g. CURL_CA_BUNDLE). Skips the write if unchanged. Waits
- * briefly for a freshly rolled proxy to write the Secret.
+ * Upsert the proxy-CA ConfigMap that workspace pods mount, from the public
+ * parts of the proxy's CA Secret. Three keys: the bare CA (for tools that
+ * add to the system trust, e.g. NODE_EXTRA_CA_CERTS), public roots plus the
+ * CA (for tools that replace it, e.g. CURL_CA_BUNDLE), and a known_hosts
+ * file naming the proxy's ssh host key, which a workspace's git trusts for
+ * every ssh remote (docs/workspace-egress.md "Git over SSH"). Skips the
+ * write if unchanged. Waits briefly for a freshly rolled proxy to write
+ * the Secret.
  */
 export async function ensureCaConfigMap(): Promise<void> {
   const deadline = Date.now() + CA_WAIT_MS
   let caPem: string | undefined
   let caBundlePem: string | undefined
+  let sshHostKey: string | undefined
   for (;;) {
     const secret = await readObject<RawObject>({
       apiVersion: 'v1', kind: 'Secret', name: PROXY_CA_SECRET_NAME, namespace: k8sNamespace(),
@@ -173,7 +179,8 @@ export async function ensureCaConfigMap(): Promise<void> {
     }
     caPem = decode('ca.pem')
     caBundlePem = decode('ca-bundle.pem')
-    if (caPem && caBundlePem) break
+    sshHostKey = decode('ssh-host-key.pub')
+    if (caPem && caBundlePem && sshHostKey) break
     if (Date.now() >= deadline) {
       throw new Error(`the proxy has not written its CA to ${PROXY_CA_SECRET_NAME}`)
     }
@@ -182,15 +189,17 @@ export async function ensureCaConfigMap(): Promise<void> {
   const existing = await readObject<RawObject>({
     apiVersion: 'v1', kind: 'ConfigMap', name: CA_CONFIGMAP_NAME, namespace: k8sNamespace(),
   })
+  const knownHosts = `${SSH_HOST_KEY_ALIAS} ${sshHostKey.trim()}\n`
   if (
     existing?.data?.[CA_CONFIGMAP_KEY] === caPem &&
-    existing?.data?.[CA_BUNDLE_KEY] === caBundlePem
+    existing?.data?.[CA_BUNDLE_KEY] === caBundlePem &&
+    existing?.data?.[CA_SSH_KNOWN_HOSTS_KEY] === knownHosts
   ) return
   await applyObject({
     apiVersion: 'v1',
     kind: 'ConfigMap',
     metadata: { name: CA_CONFIGMAP_NAME, namespace: k8sNamespace() },
-    data: { [CA_CONFIGMAP_KEY]: caPem, [CA_BUNDLE_KEY]: caBundlePem },
+    data: { [CA_CONFIGMAP_KEY]: caPem, [CA_BUNDLE_KEY]: caBundlePem, [CA_SSH_KNOWN_HOSTS_KEY]: knownHosts },
   })
 }
 

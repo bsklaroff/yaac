@@ -2,7 +2,7 @@
 
 A **queued workspace** (an *entry*) is a workspace create request saved for
 later: a prompt plus the full create settings (tool, model, agent mode,
-permission mode, reference branch, and optionally a title and a sidebar
+permission mode, what it starts with, and optionally a title and a sidebar
 group), attached to a **parent**. It runs when the parent stops *naturally*:
 a user stop from the webapp or `yaac workspace stop`, or an agent's
 `yaac-mama stop`. It does not run when the parent dies (OOM, crash, eviction,
@@ -86,18 +86,29 @@ settings (and for `yaac-mama queue`, the caller's tool and agent mode, as
 
 - A **workspace** parent supplies its first session's tool, mode, *current*
   model (which follows a `/model` switch) and permission mode, its group,
-  and its **reference branch** (`workspaces.baseBranch`, the branch it
+  and **what it started with**: its repos in its layout, its cwd, and each
+  checkout's reference branch (`workspace_repos.baseBranch`, the branch it
   forked from or a later base change named (the Commits pane's picker or
-  `yaac-mama set-base`), not its own `agent/<id>`),
-  or, for a parent created at a commit with no base branch, that commit. A
-  parent still provisioning has no
-  conversation yet, so its provisioning row supplies the tool and group.
-
-An entry may also start at a full commit instead of a branch, bring its own
-step graph (`steps`, `{}` for none) in place of the project's init steps, and
-be non-interactive, which takes no prompt and opens no session
-(docs/workspace-steps.md).
+  `yaac-mama set-base`), not its own `agent/<id>`), or, for a checkout
+  created at a commit with no base branch, that commit. A parent still
+  provisioning has no conversation yet, so its provisioning row supplies
+  the tool and group.
 - An **entry** parent supplies its stored settings.
+
+What an entry starts with (docs/project-repos.md) is stored whole, like its
+other settings: each repo by id with the branch or full commit it starts
+at, whether a lone repo sits in a folder of its own, and the agent's cwd
+(`queuedSelection`). A request that names repos replaces the parent's, and
+its layout and cwd with them, which then resolve as a create's do; a branch
+or commit on its own restarts the parent's one repo. A repo with no start
+named is stored at its remote's default branch. The launch resolves the
+stored selection against the project again, so an entry naming a repo the
+project has since unlinked fails its launch, saying so, and waits for the
+user like any failed launch.
+
+An entry may also bring its own step graph (`steps`, `{}` for none) in
+place of the project's init steps, and be non-interactive, which takes no
+prompt and opens no session (docs/workspace-steps.md).
 
 Choosing a different tool than the parent's takes that tool's create
 defaults (`resolveCreate`) for the tool-dependent fields. A model the catalog
@@ -105,11 +116,12 @@ cannot supply is refused rather than stored empty. Queueing never updates the
 project's remembered create defaults: inheriting from a parent is not a user
 choice for the project.
 
-`baseBranch` is written with the workspace row at creation (its inputs are
-local reads), so a still-provisioning parent can supply it. A script like
+A workspace's checkouts and their base branches are written with its row
+at creation (their inputs are local reads), so a still-provisioning parent
+can supply them. A script like
 `id=$(yaac-mama create …); yaac-mama queue --parent-workspace "$id" …` can
 arrive before the row exists. The in-flight create then resolves as a parent
-from its provisioning entry, which carries the requested branch. This relies
+from its provisioning entry, which carries what the create starts with. This relies
 on `yaac-mama create` never claiming a spare, since a claimed spare lists
 under the spare's id.
 

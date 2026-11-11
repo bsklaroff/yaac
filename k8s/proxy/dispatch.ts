@@ -1,16 +1,21 @@
 /**
  * Where a workspace's connection goes once the transparent listeners know
  * its workspace and destination: checked against the allowlist and the
- * non-public guard (upstream.ts), then MITM'd, tunneled, or (plain HTTP)
- * forwarded. Every upstream dial a workspace can steer passes through here.
+ * non-public guard (upstream.ts), then MITM'd, tunneled, ended here as an
+ * ssh session, or (plain HTTP) forwarded. Every upstream dial a workspace
+ * can steer passes through here.
  */
 
 import http from 'node:http'
+import net from 'node:net'
 import type { LookupAddress } from 'node:dns'
 import type { Duplex } from 'node:stream'
 import { admissionFor, findRulesForHost, hostNeedsDynamicMitm, isHostNamedExactly } from './injection'
 import type { LiveTunnels } from './live-tunnels'
-import { handleMitm, handleTunnel, type MitmContext } from './mitm'
+import type { UpstreamRedirect } from './objects'
+import { dialUpstream, handleMitm, handleTunnel, type MitmContext } from './mitm'
+import { hasSshGrantOnHost, sshAccessAt } from './repo-grants'
+import { serveSshSession } from './ssh-session'
 import {
   UpstreamRefused,
   dialOptions,
@@ -27,6 +32,8 @@ export interface DispatchContext extends MitmContext {
   recordBlockedHost: (workspaceId: string, hostname: string) => void
   /** Every IPv4 address of a name (dns.lookup); stubbed by tests. */
   lookup: (hostname: string) => Promise<LookupAddress[]>
+  /** The proxy's private ssh host key (ssh-session.ts). */
+  sshHostKey: string
 }
 
 /**
@@ -41,6 +48,20 @@ function directUpstream(ctx: DispatchContext, workspaceId: string, hostname: str
 
 const STATUS_TEXT: Record<number, string> = { 403: 'Forbidden', 502: 'Bad Gateway' }
 
+const SSH_PORT = 22
+
+/** Dial a registered redirect's target, which the server named. */
+function dialRedirect(redirect: UpstreamRedirect): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(redirect.port, redirect.host)
+    socket.once('error', reject)
+    socket.once('connect', () => {
+      socket.removeListener('error', reject)
+      resolve(socket)
+    })
+  })
+}
+
 /**
  * Check `requested` against the workspace's allowlist and the guard, and
  * hand the socket to the MITM or tunnel path. With `writeConnectOk` (a
@@ -51,6 +72,11 @@ const STATUS_TEXT: Record<number, string> = { 403: 'Forbidden', 502: 'Bad Gatewa
  * MITM applies when the workspace has rules for the host, the proxy injects
  * credentials there, or a redirect is registered for it. A redirect's
  * target is named by the server, not the workspace, so it is not checked.
+ *
+ * A connection to the ssh port of a host the workspace's project has an ssh
+ * repo on is neither: the proxy ends the ssh session itself and logs in to
+ * the host, or to a redirect registered for it, with that repo's key
+ * (ssh-session.ts).
  */
 export async function dispatchToUpstream(
   ctx: DispatchContext,
@@ -117,8 +143,21 @@ export async function dispatchToUpstream(
     if (clientSocket.destroyed) return
   }
 
-  const rules = findRulesForHost(ctx.objects, workspaceId, hostname)
   const destPort = parseInt(port ?? '', 10) || 443
+  if (destPort === SSH_PORT && hasSshGrantOnHost(ctx.objects, workspaceId, hostname)) {
+    if (opts.writeConnectOk) clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+    if (opts.head && opts.head.length > 0) clientSocket.unshift(opts.head)
+    serveSshSession({
+      client: clientSocket,
+      hostKey: ctx.sshHostKey,
+      hostname,
+      accessAt: (repoPath) => sshAccessAt(ctx.objects, workspaceId, hostname, repoPath),
+      dial: () => (redirect !== null ? dialRedirect(redirect) : dialUpstream(hostname, SSH_PORT, direct)),
+    })
+    return
+  }
+
+  const rules = findRulesForHost(ctx.objects, workspaceId, hostname)
   const needsDynMitm = hostNeedsDynamicMitm(ctx.objects, workspaceId, hostname, destPort)
 
   const mitm = rules.length > 0 || needsDynMitm || redirect !== null

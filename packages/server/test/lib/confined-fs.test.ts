@@ -150,6 +150,13 @@ function contract(load: () => Promise<ConfinedFs>): void {
     expect(r.contains(path.join(r.real, 'sub', 'f.txt'))).toBeNull()
     expect(r.contains('pipe:[123]')).toBeNull()
     expect(r.contains(path.join(r.real, 'a.txt'))).toBe('a.txt')
+    // An entry below the top is excluded with what it holds, and nothing
+    // beside it.
+    const nested = await openRoot(root, 'inside', { exclude: ['sub/.git'] })
+    expect(await reason(nested.open('sub/.git/config', 0))).toBe('invalid')
+    expect(nested.contains(path.join(nested.real, 'sub', '.git'))).toBeNull()
+    expect(nested.contains(path.join(nested.real, 'sub', '.github'))).toBe('sub/.github')
+    expect(await text(nested.readFile('sub/f.txt', { maxBytes: 1024 }))).toBe('in sub')
   })
 
   it('takes paths from a base below a larger root', async () => {

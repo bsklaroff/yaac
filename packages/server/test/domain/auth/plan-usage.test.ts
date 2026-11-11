@@ -503,7 +503,7 @@ describe('planUsageForSnapshot', () => {
     })
     await seedClaude({ expiresAt: Date.now() - 1000 })
     const DEMO = '00000000-0000-4000-8000-00000000de30'
-    await recordProject({ id: DEMO, name: 'demo', remoteUrl: 'https://github.com/acme/demo', addedAt: 'x' }, ME)
+    await recordProject({ id: DEMO, name: 'demo', addedAt: 'x' }, ME)
     await writeProjectClaudeCredentials(DEMO, {
       accessToken: 'tok-from-workspace',
       refreshToken: 'ref-from-workspace',

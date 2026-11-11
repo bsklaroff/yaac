@@ -5,7 +5,7 @@ import { notifyWorkspaceListChanged } from '#lib/notify'
 import { isUuid } from '#lib/uuid'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
 import { ServerError } from '@yaac/shared/errors'
-import type { AgentMode, AgentOptions, AgentTool, PermissionMode } from '@yaac/shared/types'
+import type { AgentMode, AgentOptions, AgentTool, PermissionMode, RepoStart } from '@yaac/shared/types'
 
 /**
  * Queued workspaces: create requests saved to run when their parent stops
@@ -40,9 +40,10 @@ export interface QueuedWorkspaceSettings {
   permissionMode: PermissionMode
   effort?: string
   agentOptions?: AgentOptions
-  /** Exactly one of a branch and a full commit. */
-  branch?: string
-  commit?: string
+  /** What it starts with (`queued_workspaces.repos`). */
+  repos: RepoStart[]
+  nested: boolean
+  cwd: string
   /** A workflow its steps gave, or a named workflow followed until launch;
    *  neither runs the project's init steps. */
   workflowId?: string
@@ -80,8 +81,6 @@ function settingsColumns(s: QueuedWorkspaceSettings): Omit<typeof queuedWorkspac
   return {
     ...s,
     prompt: s.prompt ?? null,
-    branch: s.branch ?? null,
-    commit: s.commit ?? null,
     workflowId: s.workflowId ?? null,
     namedWorkflowId: s.namedWorkflowId ?? null,
     nonInteractive: s.nonInteractive === true,

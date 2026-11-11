@@ -21,6 +21,9 @@ export interface SessionWindowSpec {
   mode: AgentMode
   window: string
   cmd: string
+  /** The directory its agent runs in, as the workspace sees it: the
+   *  workspace dir or a checkout's (`sessions.cwd`). */
+  cwd: string
   /** The conversation it resumes, named on its pane by the command that
    *  starts it: codex and opencode announce a resumed conversation only at
    *  its next turn. */
@@ -46,7 +49,7 @@ export function finishSetupCommand(paths: WorkspacePaths): string {
  *  and its options: how an exited session is resumed. */
 export function buildRespawnExec(spec: SessionWindowSpec, paths: WorkspacePaths): string {
   const target = windowTarget(spec.window)
-  return `${tmuxCmd(paths)} respawn-window -k -t ${target} -c ${paths.workspaceDir} '${spec.cmd}'`
+  return `${tmuxCmd(paths)} respawn-window -k -t ${target} -c ${spec.cwd} '${spec.cmd}'`
     + (spec.resumes !== undefined ? ` \\; ${nameSessionCommand(target, spec.tool, spec.resumes)}` : '')
 }
 
@@ -72,7 +75,7 @@ export function buildWindowsExec(
   // command group to completion, so the watcher sees all of them or none.
   const sessionCmds = sessions.map((spec) => {
     const target = windowTarget(spec.window)
-    return `new-window -d -t yaac -n ${spec.window} -c ${paths.workspaceDir} '${spec.cmd}'`
+    return `new-window -d -t yaac -n ${spec.window} -c ${spec.cwd} '${spec.cmd}'`
       + ` \\; set-option -t ${target} remain-on-exit on`
       + (spec.mode === 'acp' ? ` \\; ${pipeToLogCommand(target)}` : '')
       + (spec.resumes !== undefined ? ` \\; ${nameSessionCommand(target, spec.tool, spec.resumes)}` : '')

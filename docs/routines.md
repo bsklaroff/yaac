@@ -111,12 +111,14 @@ deadline with `stopWorkspace`, as the system:
 A routine (`routines`) stores a name, a 5-field cron (or `@daily`-style
 nickname, via croner), the IANA zone it is read in, the settings each run
 launches with (resolved when saved, as a queued entry's are), an optional
-`timeoutMinutes`, `paused`, and `nextRunAt`. Its runs may start at a
-branch's tip or at a fixed commit, and may run a named workflow
+`timeoutMinutes`, `paused`, and `nextRunAt`. What its runs start with is
+stored as a queued entry's is (docs/queued-workspaces.md): each repo at a
+branch's tip or at a fixed commit, the layout and the cwd. Its runs may run a
+named workflow
 (docs/workflows.md) in place of the init steps, non-interactive, which makes
 a routine a nightly CI run (docs/workspace-steps.md). A person saving the
-routine approves the commit or branch it runs on for the workflow's run
-secrets; a branch approval gives them to whoever can push the branch, the
+routine approves the commit or branch its one repo starts at for the
+workflow's run secrets, which reach only a workspace of one repo; a branch approval gives them to whoever can push the branch, the
 project's agents included (docs/workflows.md "Run secrets"). A run copies its routine's settings at its tick and follows its
 named workflow until it launches; it cannot be edited.
 

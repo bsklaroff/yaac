@@ -2,14 +2,14 @@ import { useState, type JSX } from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import type {
-  AuthListResult, DraftWorkspaceEntry, QueuedWorkspaceEntry, ServerSnapshot, WorkspaceListEntry,
+  AuthListResult, DraftWorkspaceEntry, ProjectRepo, QueuedWorkspaceEntry, ServerSnapshot, WorkspaceListEntry,
 } from '@yaac/shared/types'
 import { LeaveNewWorkspaceDialog, NewWorkspacePane } from '#components/NewWorkspacePane'
 import { NewWorkspaceButton } from '#components/NewWorkspaceButton'
 import { flushTypedText, loadPersisted, useUiStore } from '#lib/store'
 import { SCHEDULE, START_AT, START_IN, type NewWorkspaceOpts } from '#lib/newWorkspace'
-import type { ProjectBranches } from '#lib/useProjectBranches'
-import { mockFetch, renderWithClient, serverError, typeInto, type FetchMock } from './harness'
+import type { RepoBranches } from '#lib/repoApi'
+import { mockFetch, projectRepo, renderWithClient, serverError, typeInto, type FetchMock } from './harness'
 
 const CLAUDE = {
   tool: 'claude' as const, kind: 'oauth' as const, keyPreview: '***h', savedAt: '2026-01-01T00:00:00.000Z',
@@ -32,16 +32,28 @@ const PI = {
 const CLAUDE_ONLY: AuthListResult = { gitCredentials: [], toolAuth: [CLAUDE], customEndpoints: [] }
 const SIGNED_IN: AuthListResult = { gitCredentials: [], toolAuth: [CLAUDE, CODEX, PI], customEndpoints: [] }
 
-const BRANCHES: ProjectBranches = {
+const BRANCHES: RepoBranches = {
   branches: ['main', 'dev', 'release/2.x'],
   defaultBranch: 'main',
 }
 
-/** A snapshot for project `proj` with the given create memory. */
-function project(memory: Record<string, unknown> = {}, driver = 'k8s', extra: Record<string, unknown> = {}): ServerSnapshot {
+/** What a request sends for the project's one repo, at the workspace root,
+ *  from `branch`. */
+const at = (branch: string): Record<string, unknown> =>
+  ({ repos: [{ repo: 'repo-1', branch }], nested: false, cwd: 'repo-1' })
+
+/** A snapshot for project `proj`, which links one repo, with the given
+ *  create memory; `repo` sets that repo's own (its last branch, its
+ *  credential). */
+function project(
+  memory: Record<string, unknown> = {},
+  driver = 'k8s',
+  extra: Record<string, unknown> = {},
+  repo: Partial<ProjectRepo> = {},
+): ServerSnapshot {
   return {
     driver,
-    projects: [{ id: 'proj', name: 'proj', createDefaults: {}, gitCredential: { id: 'c1', name: 'github.com token' }, ...memory }],
+    projects: [{ id: 'proj', name: 'proj', createDefaults: {}, repos: [projectRepo(repo)], ...memory }],
     workspaces: [],
     queuedWorkspaces: [],
     heldWorkspaces: [],
@@ -61,7 +73,7 @@ const PARENT: WorkspaceListEntry = {
   title: 'Parent work',
   sessions: [{
     sessionId: 'sp', tool: 'codex', mode: 'tui', window: 'codex-sp', ordinal: 0, model: 'gpt-5.5',
-    permissionMode: 'accept-edits', effort: 'high', agentOptions: {},
+    permissionMode: 'accept-edits', effort: 'high', agentOptions: {}, cwd: '',
   }],
   conversations: [{
     conversationId: 'a1', tool: 'codex', mode: 'tui', ordinal: 0, active: true, model: 'gpt-5.5', sessionId: 'sp',
@@ -69,7 +81,8 @@ const PARENT: WorkspaceListEntry = {
   blockedHosts: [],
   forwardedPorts: [],
   unforwardedPorts: [],
-  baseBranch: 'dev',
+  repos: [{ repoId: 'repo-1', path: '', baseBranch: 'dev' }],
+  cwd: '',
 }
 
 const GROUPS = [
@@ -88,13 +101,13 @@ const entry = (id: string, extra: Partial<QueuedWorkspaceEntry> = {}): QueuedWor
   mode: 'tui',
   permissionMode: 'manual',
   agentOptions: {},
-  branch: 'release/2.x',
+  selection: { repos: [{ repo: 'repo-1', branch: 'release/2.x' }], nested: false, cwd: 'repo-1' },
   createdAt: '2026-01-01 00:00:02',
   ...extra,
 })
 
 const AUTH_LIST = 'GET /api/auth/list'
-const BRANCH_LIST = 'GET /api/project/proj/branches'
+const BRANCH_LIST = 'GET /api/repo/repo-1/branches'
 const CREATE = 'POST /api/workspace/create'
 const QUEUE = 'POST /api/workspace/queue/create'
 const UPDATE = 'POST /api/workspace/queue/update'
@@ -242,9 +255,8 @@ describe('NewWorkspacePane', () => {
     server.route(AUTH_LIST, SIGNED_IN)
     setSnapshot(project({
       lastTool: 'codex',
-      lastBranch: 'dev',
       createDefaults: { codex: { model: 'gpt-5.5', permissionMode: 'read-only' } },
-    }))
+    }, 'k8s', {}, { lastBranch: 'dev' }))
     await openReady()
 
     expect(select('Agent').value).toBe('codex')
@@ -262,7 +274,7 @@ describe('NewWorkspacePane', () => {
     // Every field is sent, so every field becomes the next default.
     expect(sent(CREATE)).toEqual([{
       project: 'proj', tool: 'codex', workspaceId: expect.any(String) as string, prompt: 'tidy the parser',
-      sessionId: expect.any(String) as string, branch: 'dev', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'acp', draftOnFailure: true,
+      sessionId: expect.any(String) as string, ...at('dev'), model: 'gpt-5.5', permissionMode: 'read-only', mode: 'acp', draftOnFailure: true,
     }])
     // The create opens at once, its row naming the model and prompt.
     const state = useUiStore.getState()
@@ -454,7 +466,7 @@ describe('NewWorkspacePane', () => {
 
     fireEvent.keyDown(promptInput(), { key: 'Enter' })
     expect(sent(CREATE).at(-1)).toMatchObject({
-      project: 'proj', tool: 'claude', branch: 'dev', model: 'claude-opus-5-5', permissionMode: 'bypass', mode: 'acp',
+      project: 'proj', tool: 'claude', ...at('dev'), model: 'claude-opus-5-5', permissionMode: 'bypass', mode: 'acp',
       prompt: 'fix the flaky test',
     })
   })
@@ -539,16 +551,16 @@ describe('NewWorkspacePane', () => {
     expect(server.calls.filter((c) => c.method === 'POST')).toEqual([])
   })
 
-  it('sends a project without a git credential to its row in settings', async () => {
-    setSnapshot(project({ gitCredential: null }))
+  it('sends a project whose repo has no git credential to the repo\'s row in settings', async () => {
+    setSnapshot(project({}, 'k8s', {}, { gitCredential: null }))
     mount()
     await waitFor(() => expect(sendButton().title).toBe('Add git authentication first'))
-    expect(screen.getByText('This project has no git credential')).toBeTruthy()
+    expect(screen.getByText('widgets has no git credential')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Add git authentication…' }))
     const state = useUiStore.getState()
     expect(state.settingsOpen).toBe(true)
-    expect(state.settingsSection).toBe('credentials')
-    expect(state.settingsFocusProject).toBe('proj')
+    expect(state.settingsSection).toBe('repos')
+    expect(state.settingsFocusRepo).toBe('repo-1')
   })
 
   // Opening from the + or Alt+N must leave keys typed next in the prompt,
@@ -650,17 +662,17 @@ describe('NewWorkspacePane', () => {
   // default when origin no longer has it.
   it('opens on origin\'s default when origin lost the branch last created from', async () => {
     server.route(BRANCH_LIST, { ...BRANCHES, defaultBranch: 'dev' })
-    setSnapshot(project({ lastBranch: 'deleted' }))
+    setSnapshot(project({}, 'k8s', {}, { lastBranch: 'deleted' }))
     mount()
     await waitFor(() => expect(branchInput().value).toBe('dev'))
   })
 
   // Whether origin still has it is only known once the list lands.
   it('sends a remembered branch only once the list confirms it', async () => {
-    let land: (b: ProjectBranches) => void = () => {}
-    const landed = new Promise<ProjectBranches>((r) => { land = r })
+    let land: (b: RepoBranches) => void = () => {}
+    const landed = new Promise<RepoBranches>((r) => { land = r })
     server.route(BRANCH_LIST, () => landed)
-    setSnapshot(project({ lastBranch: 'dev' }))
+    setSnapshot(project({}, 'k8s', {}, { lastBranch: 'dev' }))
     mount()
     typePrompt('go')
     await waitFor(() => expect(sendButton().title).toBe('Loading branches…'))
@@ -670,19 +682,19 @@ describe('NewWorkspacePane', () => {
     act(() => land(BRANCHES))
     await waitFor(() => expect(sendButton().disabled).toBe(false))
     fireEvent.click(sendButton())
-    expect(sent(CREATE).at(-1)).toMatchObject({ project: 'proj', tool: 'claude', branch: 'dev' })
+    expect(sent(CREATE).at(-1)).toMatchObject({ project: 'proj', tool: 'claude', ...at('dev') })
   })
 
   it('leaves the branch to the server when the list fails to load', async () => {
     server.route(BRANCH_LIST, serverError('INTERNAL', 'boom'))
-    setSnapshot(project({ lastBranch: 'dev' }))
+    setSnapshot(project({}, 'k8s', {}, { lastBranch: 'dev' }))
     mount()
     typePrompt('go')
     await waitFor(() => expect(sendButton().disabled).toBe(false))
     expect(branchInput().value).toBe('')
 
     fireEvent.click(sendButton())
-    expect(sent(CREATE)[0]).not.toHaveProperty('branch')
+    expect(sent(CREATE)[0].repos).toEqual([{ repo: 'repo-1' }])
   })
 
   it('typeahead filters the branch list and a picked branch rides the create', async () => {
@@ -699,7 +711,7 @@ describe('NewWorkspacePane', () => {
 
     typePrompt('go')
     fireEvent.click(sendButton())
-    expect(sent(CREATE).at(-1)).toMatchObject({ project: 'proj', tool: 'claude', branch: 'release/2.x' })
+    expect(sent(CREATE).at(-1)).toMatchObject({ project: 'proj', tool: 'claude', ...at('release/2.x') })
   })
 
   it('takes a full commit id in the branch field, and starts the workspace at that commit', async () => {
@@ -712,8 +724,7 @@ describe('NewWorkspacePane', () => {
 
     typePrompt('bisect it')
     fireEvent.click(sendButton())
-    expect(sent(CREATE).at(-1)).toMatchObject({ project: 'proj', commit: sha })
-    expect(sent(CREATE).at(-1)).not.toHaveProperty('branch')
+    expect(sent(CREATE).at(-1)).toMatchObject({ project: 'proj', repos: [{ repo: 'repo-1', commit: sha }] })
   })
 
   // A reload brings the form back; leaving drops it.
@@ -785,7 +796,7 @@ describe('NewWorkspacePane', () => {
 
       await waitFor(() => expect(sent(QUEUE)).toEqual([{
         project: 'proj', parent: 'w-parent',
-        prompt: 'follow up', tool: 'codex', model: 'gpt-5.5', mode: 'tui', permissionMode: 'accept-edits', branch: 'dev',
+        prompt: 'follow up', tool: 'codex', model: 'gpt-5.5', mode: 'tui', permissionMode: 'accept-edits', ...at('dev'),
         title: 'Follow-up', group: 'g-review',
       }]))
       expect(sent(CREATE)).toHaveLength(0)
@@ -918,7 +929,7 @@ describe('NewWorkspacePane', () => {
       fireEvent.click(sendButton())
       await waitFor(() => expect(sent(UPDATE)).toEqual([{
         id: 'q2', prompt: 'step q2', tool: 'claude', model: 'claude-sonnet-5', mode: 'tui', permissionMode: 'manual',
-        agentOptions: { idleCompaction: false }, branch: 'release/2.x', title: '', group: null, timeout: null, parent: 'q4',
+        agentOptions: { idleCompaction: false }, ...at('release/2.x'), title: '', group: null, timeout: null, parent: 'q4',
       }]))
       expect(sent(RUN)).toHaveLength(0)
       // The sidebar opens the set the server says it landed in.
@@ -1017,7 +1028,7 @@ describe('NewWorkspacePane', () => {
   describe('drafts', () => {
     const draft = (extra: Partial<DraftWorkspaceEntry> = {}): DraftWorkspaceEntry => ({
       id: 'd1', projectId: 'proj', prompt: 'half an idea', tool: 'codex', mode: 'tui',
-      permissionMode: 'read-only', model: 'gpt-5.5', branch: 'dev', createdAt: '', updatedAt: '', ...extra,
+      permissionMode: 'read-only', model: 'gpt-5.5', ...at('dev'), createdAt: '', updatedAt: '', ...extra,
     })
 
     it('leaves without asking when no prompt is typed, dropping the form', async () => {
@@ -1053,7 +1064,7 @@ describe('NewWorkspacePane', () => {
       await waitFor(() => expect(useUiStore.getState().activeProjectId).toBe('other'))
       expect(sent(SAVE_DRAFT)).toEqual([{
         project: 'proj', prompt: 'later, maybe', tool: 'codex', model: 'gpt-5.5', mode: 'tui', permissionMode: 'accept-edits',
-        agentOptions: {}, branch: 'dev', startAfter: 'w-parent', title: 'Someday', groupId: 'g-review',
+        agentOptions: {}, ...at('dev'), startAfter: 'w-parent', title: 'Someday', groupId: 'g-review',
       }])
       expect(useUiStore.getState().newWorkspace).toBeNull()
       expect(sent(CREATE)).toHaveLength(0)
@@ -1156,7 +1167,7 @@ describe('NewWorkspacePane', () => {
       // The server deletes the draft only once the create succeeds.
       expect(sent(CREATE)).toEqual([{
         project: 'proj', tool: 'codex', workspaceId: expect.any(String) as string, sessionId: expect.any(String) as string,
-        branch: 'dev', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'tui', prompt: 'half an idea',
+        ...at('dev'), model: 'gpt-5.5', permissionMode: 'read-only', mode: 'tui', prompt: 'half an idea',
         title: 'Named', group: 'g-other', draftId: 'd1', draftOnFailure: true,
       }])
     })
@@ -1362,7 +1373,7 @@ describe('NewWorkspacePane', () => {
       fireEvent.click(routineButton('Create routine'))
       await waitFor(() => expect(sent(CREATE_ROUTINE)).toEqual([expect.objectContaining({
         project: 'proj', name: 'Nightly triage', cron: '*/30 * * * *', timeZone: 'Europe/Paris',
-        prompt: 'triage new issues', tool: 'claude', model: 'claude-opus-5-5', branch: 'main', timeout: 60,
+        prompt: 'triage new issues', tool: 'claude', model: 'claude-opus-5-5', ...at('main'), timeout: 60,
       })]))
       // Left unset, the server files runs under a group named after it.
       expect(sent(CREATE_ROUTINE)[0]).not.toHaveProperty('group')
@@ -1376,7 +1387,7 @@ describe('NewWorkspacePane', () => {
         routines: [{
           id: 'r1', projectId: 'proj', name: 'Standup notes', cron: '0 9 * * 1,3', timeZone: 'Europe/Paris',
           prompt: 'summarize yesterday', tool: 'codex', model: 'gpt-5.5', mode: 'tui', permissionMode: 'accept-edits',
-          branch: 'dev', groupId: 'g-review', paused: false, nextRuns: [], createdAt: '2026-10-01 00:00:00',
+          selection: at('dev'), groupId: 'g-review', paused: false, nextRuns: [], createdAt: '2026-10-01 00:00:00',
         }],
       }))
       await openWith({ routineId: 'r1' })
@@ -1394,7 +1405,7 @@ describe('NewWorkspacePane', () => {
       fireEvent.click(routineButton('Save'))
       await waitFor(() => expect(sent(UPDATE_ROUTINE)).toEqual([expect.objectContaining({
         id: 'r1', name: 'Standup notes', cron: '0 9 * * 1,3,5', timeZone: 'Europe/Paris', tool: 'codex',
-        model: 'gpt-5.5', branch: 'dev', group: 'g-review', timeout: null,
+        model: 'gpt-5.5', ...at('dev'), group: 'g-review', timeout: null,
       })]))
       await waitFor(() => expect(useUiStore.getState().selectedRoutineId).toBe('r1'))
     })
@@ -1402,7 +1413,7 @@ describe('NewWorkspacePane', () => {
     it('keeps the schedule in a draft, and a passed start time goes back to now', async () => {
       const kept: DraftWorkspaceEntry[] = [
         { id: 'd1', projectId: 'proj', prompt: 'hourly sweep', tool: 'claude', mode: 'tui', permissionMode: 'manual',
-          model: 'claude-opus-5-5', branch: 'main', title: 'Sweep', cron: '15 * * * *', timeZone: 'Asia/Tokyo',
+          model: 'claude-opus-5-5', ...at('main'), title: 'Sweep', cron: '15 * * * *', timeZone: 'Asia/Tokyo',
           timeout: 20, createdAt: '', updatedAt: '' },
         { id: 'd2', projectId: 'proj', prompt: 'missed', tool: 'claude', mode: 'tui', permissionMode: 'manual',
           startAt: '2026-10-22T09:00:00.000Z', createdAt: '', updatedAt: '' },
@@ -1474,5 +1485,144 @@ describe('NewWorkspacePane sessions', () => {
     await waitFor(() => expect(sent(CREATE)).toHaveLength(1))
     expect(sent(CREATE)[0]).toMatchObject({ project: 'proj', noSession: true })
     for (const key of ['tool', 'mode', 'permissionMode', 'prompt']) expect(sent(CREATE)[0]).not.toHaveProperty(key)
+  })
+})
+
+// What a workspace starts with (docs/project-repos.md): which of the
+// project's repos, each at its branch, whether a lone one sits in a folder,
+// and where the agent starts.
+describe('NewWorkspacePane repos', () => {
+  const api = projectRepo({ id: 'repo-api', dir: 'api', remoteUrl: 'https://github.com/o/api.git', lastBranch: 'dev' })
+  const web = projectRepo({ id: 'repo-web', dir: 'web', remoteUrl: 'https://github.com/o/web.git' })
+  const docs = projectRepo({ id: 'repo-docs', dir: 'docs', remoteUrl: 'https://github.com/o/docs.git', lastIncluded: false })
+  /** The project linking `repos`, with the layout and cwd its last create chose. */
+  const linking = (repos: ProjectRepo[], memory: Record<string, unknown> = {}, extra: Record<string, unknown> = {}): ServerSnapshot => {
+    const snapshot = project(memory, 'k8s', extra)
+    return { ...snapshot, projects: [{ ...snapshot.projects[0], repos }] }
+  }
+  const include = (dir: string): HTMLInputElement => screen.getByRole<HTMLInputElement>('checkbox', { name: `Include ${dir}` })
+  const branchOf = (dir: string): HTMLInputElement => screen.getByLabelText<HTMLInputElement>(`Base branch of ${dir}`)
+
+  beforeEach(() => {
+    for (const id of ['repo-api', 'repo-web', 'repo-docs']) server.route(`GET /api/repo/${id}/branches`, BRANCHES)
+  })
+
+  it('starts with the repos last included, each on its own branch, in folders, the agent where it last started', async () => {
+    setSnapshot(linking([api, web, docs], { lastCwd: 'repo-web' }))
+    await openReady()
+    expect([include('api').checked, include('web').checked, include('docs').checked]).toEqual([true, true, false])
+    await waitFor(() => expect([branchOf('api').value, branchOf('web').value]).toEqual(['dev', 'main']))
+    // A repo left out has no branch to pick, and its branches are not read.
+    expect(screen.queryByLabelText('Base branch of docs')).toBeNull()
+    expect(server.called('GET /api/repo/repo-docs/branches')).toEqual([])
+    // Several repos always sit in folders, so there is nothing to choose.
+    expect(screen.queryByLabelText('Checkout')).toBeNull()
+    expect([...select('Start in').options].map((o) => o.textContent)).toEqual(['Workspace root', 'api/', 'web/'])
+    expect(select('Start in').value).toBe('repo-web')
+
+    typeInto(branchOf('web'), 'rel')
+    fireEvent.keyDown(branchOf('web'), { key: 'Enter' })
+    fireEvent.change(select('Start in'), { target: { value: '.' } })
+    typePrompt('wire them up')
+    fireEvent.click(sendButton())
+    expect(sent(CREATE).at(-1)).toMatchObject({
+      repos: [{ repo: 'repo-api', branch: 'dev' }, { repo: 'repo-web', branch: 'release/2.x' }],
+      cwd: '.',
+    })
+    expect(sent(CREATE).at(-1)).not.toHaveProperty('nested')
+  })
+
+  it('offers a lone repo at the root or in its folder, and starts the agent in it when the cwd\'s repo is left out', async () => {
+    setSnapshot(linking([api, web], { lastCwd: 'repo-web', lastNested: true }))
+    await openReady()
+    fireEvent.click(include('web'))
+    // One repo left: it sits as a lone repo last did, or at the root, where
+    // the agent then starts.
+    expect(select('Checkout').value).toBe('nested')
+    expect(select('Start in').value).toBe('repo-api')
+    fireEvent.change(select('Checkout'), { target: { value: 'root' } })
+    expect(screen.queryByLabelText('Start in')).toBeNull()
+    await waitFor(() => expect(branchOf('api').value).toBe('dev'))
+
+    typePrompt('just the api')
+    fireEvent.click(sendButton())
+    expect(sent(CREATE).at(-1)).toMatchObject({ repos: [{ repo: 'repo-api', branch: 'dev' }], nested: false, cwd: 'repo-api' })
+  })
+
+  it('nests a single-repo project\'s repo when asked, or starts with no repo at all', async () => {
+    setSnapshot(linking([api]))
+    await openReady()
+    await waitFor(() => expect(branchInput().value).toBe('dev'))
+    expect(screen.queryByRole('checkbox', { name: 'Include api' })).toBeNull()
+    expect([...select('Checkout').options].map((o) => o.textContent)).toEqual(['At the workspace root', 'In api/', 'No repo'])
+    expect(screen.queryByLabelText('Start in')).toBeNull()
+
+    fireEvent.change(select('Checkout'), { target: { value: 'nested' } })
+    expect(select('Start in').value).toBe('repo-api')
+    typePrompt('in a folder')
+    fireEvent.click(sendButton())
+    expect(sent(CREATE).at(-1)).toMatchObject({ repos: [{ repo: 'repo-api', branch: 'dev' }], nested: true, cwd: 'repo-api' })
+
+    act(() => useUiStore.getState().openNewWorkspace({ projectId: 'proj' }))
+    fireEvent.change(select('Checkout'), { target: { value: 'none' } })
+    expect(screen.queryByLabelText('Base branch')).toBeNull()
+    typePrompt('scratch work')
+    fireEvent.click(sendButton())
+    expect(sent(CREATE).at(-1)).toMatchObject({ repos: [], cwd: '.' })
+  })
+
+  it('names the included repo that has no git credential, not one left out', async () => {
+    setSnapshot(linking([api, { ...web, gitCredential: null }]))
+    mount()
+    await waitFor(() => expect(sendButton().title).toBe('Add git authentication first'))
+    expect(screen.getByText('web has no git credential')).toBeTruthy()
+    fireEvent.click(include('web'))
+    await waitFor(() => expect(sendButton().title).not.toBe('Add git authentication first'))
+  })
+
+  it('queues after a workspace with that workspace\'s repos, branches, layout and cwd', async () => {
+    const parent = {
+      ...PARENT,
+      repos: [{ repoId: 'repo-web', path: 'web', baseBranch: 'release/2.x' }],
+      cwd: 'web',
+    }
+    setSnapshot(linking([api, web], {}, { workspaces: [parent] }))
+    server.route(AUTH_LIST, SIGNED_IN)
+    await openReady()
+    fireEvent.change(select('Start'), { target: { value: 'w-parent' } })
+    expect([include('api').checked, include('web').checked]).toEqual([false, true])
+    await waitFor(() => expect(branchOf('web').value).toBe('release/2.x'))
+    expect(select('Checkout').value).toBe('nested')
+    expect(select('Start in').value).toBe('repo-web')
+
+    typePrompt('carry on')
+    fireEvent.click(sendButton())
+    await waitFor(() => expect(sent(QUEUE)).toHaveLength(1))
+    expect(sent(QUEUE)[0]).toMatchObject({
+      parent: 'w-parent', repos: [{ repo: 'repo-web', branch: 'release/2.x' }], nested: true, cwd: 'repo-web',
+    })
+  })
+
+  it('starts a session in a running workspace\'s root or one of its checkouts, by default its own cwd', async () => {
+    const OPEN = 'POST /api/workspace/w-parent/sessions'
+    const parent = {
+      ...PARENT,
+      repos: [{ repoId: 'repo-api', path: 'api' }, { repoId: 'repo-web', path: 'web' }],
+      cwd: 'web',
+    }
+    setSnapshot(linking([api, web], {}, { workspaces: [parent] }))
+    server.route(OPEN, { sessionId: 'sn', workspaceId: 'w-parent' })
+    act(() => useUiStore.getState().openNewWorkspace({ projectId: 'proj', inWorkspace: 'w-parent' }))
+    mount()
+    const start = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>('button', { name: 'Start session' })
+    await waitFor(() => expect(start().title).not.toMatch(/^Loading/))
+    expect([...select('Start in').options].map((o) => o.textContent)).toEqual(['workspace root', 'api/', 'web/'])
+    expect(select('Start in').value).toBe('web')
+
+    fireEvent.change(select('Start in'), { target: { value: '' } })
+    typePrompt('look across both')
+    fireEvent.click(start())
+    await waitFor(() => expect(sent(OPEN)).toHaveLength(1))
+    expect(sent(OPEN)[0]).toMatchObject({ prompt: 'look across both', cwd: '.' })
   })
 })

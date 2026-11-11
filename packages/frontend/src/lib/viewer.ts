@@ -50,17 +50,13 @@ export function useTeammateName(): string | undefined {
 }
 
 /**
- * Whether the active project is shown read-only: it is another user's, or a
- * share its source's owner removed, which its owner can still read but no
- * longer change (docs/hosted-projects.md "Sharing"). Every control is then
- * off, and views skip the writes they would make as a side effect
- * (remembering create choices), since the server refuses them.
+ * Whether the active project is shown read-only: it is another user's.
+ * Every control is then off, and views skip the writes they would make as
+ * a side effect (remembering create choices), since the server refuses
+ * them.
  */
 export function useReadOnly(): boolean {
-  const teammate = useTeammateView()
-  const removed = useUiStore((s) =>
-    s.snapshot?.projects.find((p) => p.id === s.activeProjectId)?.sharedFrom?.revoked === true)
-  return teammate || removed
+  return useTeammateView()
 }
 
 /** The projects `userId` owns, in snapshot order. */

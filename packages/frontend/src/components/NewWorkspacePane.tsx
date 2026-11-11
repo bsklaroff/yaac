@@ -1,8 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type JSX, type KeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import clsx from 'clsx'
-import { FULL_COMMIT_PATTERN } from '@yaac/shared/steps'
-import { startPoint } from '#lib/steps'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChatIcon, CloseIcon, RenameIcon, SendIcon, TerminalIcon, TOOL_LABEL } from '#lib/icons'
 import { BranchPicker } from '#components/BranchPicker'
@@ -21,7 +19,8 @@ import { shownGroups } from '#lib/groups'
 import { entryStart, SCHEDULE, START_AT, START_IN, START_WHEN_ROOM, type NewWorkspaceForm, type PendingDraft } from '#lib/newWorkspace'
 import { compileRepeat, DEFAULT_REPEAT, EVERY_MINUTES, parseRepeat, REPEAT_KINDS, WEEK, type Repeat, type RepeatKind } from '#lib/routines'
 import { useTimeZone, zonedInputInstant, zonedInputValue } from '#lib/time'
-import { useProjectBranches } from '#lib/useProjectBranches'
+import { checkoutLabel } from '#lib/checkouts'
+import { useStartSelection, type RepoRow } from '#lib/useStartSelection'
 import { clip, fetchFullPrompt, queuedDescendants, queuedInTreeOrder, queuedParentId, queuedTitle } from '#lib/queued'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
 import { useCreateDefaults, useCreateWorkspace } from '#lib/useCreateDefaults'
@@ -48,6 +47,7 @@ import type {
   DraftWorkspaceSettings,
   PermissionMode,
   QueuedWorkspaceEntry,
+  RepoSelection,
   ToolCreateDefaults,
   WorkspaceListEntry,
 } from '@yaac/shared/types'
@@ -80,7 +80,9 @@ interface Seed {
   permissionMode?: PermissionMode
   effort?: string
   agentOptions?: AgentOptions
-  branch?: string
+  /** What it started with: its repos at their base branches, their layout
+   *  and its cwd. */
+  selection?: RepoSelection
   groupId?: string
 }
 
@@ -105,7 +107,14 @@ function workspaceSeed(w: WorkspaceListEntry): Seed {
       ...(first.effort !== undefined ? { effort: first.effort } : {}),
       agentOptions: first.agentOptions,
     } : {}),
-    ...(w.baseBranch !== undefined ? { branch: w.baseBranch } : {}),
+    selection: {
+      repos: w.repos.map((r) => ({
+        repo: r.repoId,
+        ...(r.baseBranch !== undefined ? { branch: r.baseBranch } : r.startCommit !== undefined ? { commit: r.startCommit } : {}),
+      })),
+      nested: w.repos.some((r) => r.path !== ''),
+      cwd: w.repos.find((r) => r.path === w.cwd)?.repoId ?? '.',
+    },
     ...(w.groupId !== undefined ? { groupId: w.groupId } : {}),
   }
 }
@@ -118,7 +127,7 @@ function entrySeed(e: QueuedWorkspaceEntry): Seed {
     permissionMode: e.permissionMode,
     ...(e.effort !== undefined ? { effort: e.effort } : {}),
     agentOptions: e.agentOptions,
-    ...((e.branch ?? e.commit) !== undefined ? { branch: e.branch ?? e.commit } : {}),
+    selection: e.selection,
     ...(e.groupId !== undefined ? { groupId: e.groupId } : {}),
   }
 }
@@ -132,7 +141,8 @@ const workspaceName = (w: { title?: string; prompt?: string }): string =>
   clip(w.title || w.prompt || 'New workspace', 40)
 
 const DRAFT_FIELDS = [
-  'prompt', 'tool', 'mode', 'permissionMode', 'model', 'effort', 'agentOptions', 'branch', 'startAfter', 'title', 'groupId',
+  'prompt', 'tool', 'mode', 'permissionMode', 'model', 'effort', 'agentOptions', 'repos', 'nested', 'cwd', 'startAfter',
+  'title', 'groupId',
   'startAt', 'timeout', 'cron', 'timeZone',
 ] as const satisfies
   readonly (keyof DraftWorkspaceSettings)[]
@@ -217,8 +227,13 @@ export function NewWorkspacePane({ projectId, bar }: {
   const newGroupRef = useRef<HTMLInputElement>(null)
   const naming = newGroup !== null
   useEffect(() => { if (naming) newGroupRef.current?.focus() }, [naming])
-  // null = not typing; the field shows the chosen branch or model.
-  const [branchQuery, setBranchQuery] = useState<string | null>(null)
+  // What is being typed into each repo's branch field, by repo id, and into
+  // the model's; absent or null = not typing, and the field shows the
+  // chosen branch or model.
+  const [branchQueries, setBranchQueries] = useState<Record<string, string>>({})
+  const setBranchQuery = (repoId: string, query: string | null): void => setBranchQueries(({ [repoId]: _, ...rest }) => (
+    query === null ? rest : { ...rest, [repoId]: query }
+  ))
   const [modelQuery, setModelQuery] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -360,9 +375,21 @@ export function NewWorkspacePane({ projectId, bar }: {
   // A request names them only for an agent that has any.
   const sentOptions = Object.keys(agentOptions).length > 0 ? { agentOptions } : {}
   const signedIn = defaults.configured.has(tool)
-  const needsGitAuth = defaults.ready && !defaults.hasGitCredential
 
-  const { data: branchData, isError: branchesFailed } = useProjectBranches(projectId)
+  // What it starts with: the project's repos, each included or not and at
+  // a branch, their layout, and the cwd.
+  const project = snapshot?.projects.find((p) => p.id === projectId)
+  const selection = useStartSelection(project, form, seed?.selection, branchQueries)
+  const setRepoPick = (repoId: string, pick: { included?: boolean; branch?: string }): void =>
+    update({ repos: { ...form.repos, [repoId]: { ...form.repos?.[repoId], ...pick } } })
+  const needsGitAuth = defaults.ready ? selection.needsCredential : undefined
+  // A session in a running workspace starts in its root or one checkout.
+  const sessionCwds = inTarget !== undefined && inTarget.repos.some((r) => r.path !== '')
+    ? ['', ...inTarget.repos.map((r) => r.path).filter((p) => p !== '')]
+    : []
+  const sessionCwd = form.sessionCwd !== undefined && sessionCwds.includes(form.sessionCwd)
+    ? form.sessionCwd
+    : inTarget?.cwd ?? ''
 
   // Only a create now attaches a volume. A choice since deleted, or since
   // attached to another workspace, falls back to none.
@@ -387,23 +414,6 @@ export function NewWorkspacePane({ projectId, bar }: {
     el.style.height = `${el.scrollHeight}px`
   }, [prompt])
 
-  // Untouched branch: the parent's, else the project's last-used branch if
-  // origin still has it, else origin's default. The last-used branch can't
-  // be submitted until the branch list confirms it; if the list fails, it is
-  // dropped and the server picks origin's default.
-  const defaultBranch = branchData?.defaultBranch
-  const lastBranch = defaults.lastBranch !== undefined && !branchesFailed
-    && (branchData === undefined || branchData.branches.includes(defaults.lastBranch))
-    ? defaults.lastBranch
-    : undefined
-  // A full commit id typed in the field is a start point of its own, which
-  // the branch list never has (docs/workspace-steps.md).
-  const typedCommit = branchQuery !== null && FULL_COMMIT_PATTERN.test(branchQuery.trim())
-    ? branchQuery.trim() : undefined
-  const branchValue = typedCommit ?? form.branch ?? seed?.branch ?? lastBranch ?? defaultBranch ?? ''
-  const branchUnverified = branchData === undefined && lastBranch !== undefined
-    && form.branch === undefined && seed?.branch === undefined
-
   // An untitled edit or draft is headed by the title generated from its
   // prompt until the prompt changes.
   const text = prompt.trim()
@@ -419,7 +429,7 @@ export function NewWorkspacePane({ projectId, bar }: {
     ...(model !== '' ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
     agentOptions,
-    ...(branchValue !== '' ? { branch: branchValue } : {}),
+    ...selection.request,
     ...(afterParent && start !== START_WHEN_ROOM ? { startAfter: start } : {}),
     ...(start === START_AT && form.startAt !== undefined ? { startAt: form.startAt } : {}),
     ...(startIn !== undefined ? { startAt: new Date(Date.now() + startIn * 60_000).toISOString() } : {}),
@@ -431,7 +441,17 @@ export function NewWorkspacePane({ projectId, bar }: {
   // Leaving loses a typed prompt on a create (not an edit of a queued
   // entry or routine), unless it matches the reopened draft exactly.
   const saved = draft !== undefined
-    ? { ...draft, agentOptions: resolveAgentOptions(draft.tool, draft.agentOptions), prompt: form.savedPrompt ?? draft.prompt }
+    ? {
+      ...draft,
+      agentOptions: resolveAgentOptions(draft.tool, draft.agentOptions),
+      prompt: form.savedPrompt ?? draft.prompt,
+      // In the key order `current` builds its own, to compare as text.
+      ...(draft.repos !== undefined ? {
+        repos: draft.repos.map(({ repo, branch, commit }) => ({
+          repo, ...(branch !== undefined ? { branch } : {}), ...(commit !== undefined ? { commit } : {}),
+        })),
+      } : {}),
+    }
     : undefined
   const pending: PendingDraft | null = form.editId === undefined && form.editRoutineId === undefined && text !== ''
     && !inWorkspace && !noAgent
@@ -447,14 +467,13 @@ export function NewWorkspacePane({ projectId, bar }: {
   // settings, so it also needs a model and a branch.
   const storesEntry = queued || editing !== undefined
   const blocked = !defaults.ready || loadingPrompt ? 'Loading…'
-    : needsGitAuth && !inWorkspace ? 'Add git authentication first'
+    : needsGitAuth !== undefined && !inWorkspace ? 'Add git authentication first'
     : !noAgent && !signedIn ? `Sign in to ${TOOL_LABEL[tool]} first`
     : !noAgent && modelQuery !== null ? 'Pick a model from the list'
-    : !inWorkspace && branchQuery !== null && typedCommit === undefined ? 'Pick a branch from the list, or give a full commit id'
-    : !inWorkspace && branchUnverified ? 'Loading branches…'
+    : !inWorkspace && selection.blocked(false) !== null ? selection.blocked(false)
     : !noAgent && !toolSupportsPermissionMode(tool, permissionMode) ? 'Pick a permission mode this agent offers'
     : storesEntry && model === '' ? 'Pick a model'
-    : storesEntry && branchValue === '' ? 'Pick a branch'
+    : storesEntry && selection.blocked(true) !== null ? selection.blocked(true)
     : !inWorkspace && newGroup !== null && newGroupName === '' ? 'Name the new group'
     : !inWorkspace && timeoutText !== '' && timeout === undefined ? 'Give the timeout as a duration like 1h30m'
     : start === START_AT && form.startAt === undefined ? 'Pick a start time'
@@ -492,6 +511,7 @@ export function NewWorkspacePane({ projectId, bar }: {
       ...(effort !== undefined ? { effort } : {}),
       ...sentOptions,
       ...(text !== '' ? { prompt: text } : {}),
+      ...(sessionCwds.length > 0 ? { cwd: sessionCwd === '' ? '.' : sessionCwd } : {}),
     }).then((sessionId) => {
       const st = useUiStore.getState()
       st.selectWorkspace(workspaceId)
@@ -522,7 +542,7 @@ export function NewWorkspacePane({ projectId, bar }: {
       }),
       ...(titleText !== '' ? { title: titleText } : {}),
       ...(generatedTitle !== undefined ? { shownTitle: generatedTitle } : {}),
-      ...startPoint(branchValue),
+      ...selection.request,
       ...group,
       ...(draft !== undefined && text !== '' ? { draftId: draft.id } : {}),
       ...(timeout !== undefined ? { timeout } : {}),
@@ -545,7 +565,7 @@ export function NewWorkspacePane({ projectId, bar }: {
       permissionMode,
       ...(effort !== undefined ? { effort } : {}),
       ...sentOptions,
-      ...startPoint(branchValue),
+      ...selection.request,
     }
     const group = newGroup !== null ? newGroupName : groupId
     const show = (id: string): void => {
@@ -591,7 +611,7 @@ export function NewWorkspacePane({ projectId, bar }: {
       permissionMode,
       ...(effort !== undefined ? { effort } : {}),
       ...sentOptions,
-      ...startPoint(branchValue),
+      ...selection.request,
       title: titleText,
       group: newGroup !== null ? newGroupName : groupId,
     }
@@ -841,27 +861,59 @@ export function NewWorkspacePane({ projectId, bar }: {
           </Row>
           {overlaps && <div className={NOTE}>Runs may overlap</div>}
 
-          <Row label="Base branch">
-            <div className="min-w-0 flex-1">
-              <BranchPicker
-                branches={branchData?.branches ?? []}
-                defaultBranch={defaultBranch}
-                query={branchQuery ?? branchValue}
-                onQueryChange={setBranchQuery}
-                onSelect={(b) => { update({ branch: b }); setBranchQuery(null) }}
-                showList={branchQuery !== null}
-                placeholder={branchData ? '' : branchesFailed ? 'origin\'s default branch' : 'loading branches…'}
-                ariaLabel="Base branch"
-                autoHighlight
-                onBlur={() => {
-                  if (typedCommit !== undefined) update({ branch: typedCommit })
-                  setBranchQuery(null)
+          {selection.rows.map((row, i) => {
+            const lone = selection.rows.length === 1
+            if (lone && !row.included) return null
+            const { repo } = row
+            return (
+              <Row key={repo.id} label={lone ? 'Base branch' : i === 0 ? 'Repos' : ''}>
+                {!lone && (
+                  <label className="flex h-[26px] w-[112px] shrink-0 items-center gap-1.5 truncate" title={repo.remoteUrl}>
+                    <input
+                      type="checkbox"
+                      aria-label={`Include ${repo.dir}`}
+                      checked={row.included}
+                      onChange={(e) => setRepoPick(repo.id, { included: e.target.checked })}
+                    />
+                    <span className="truncate font-mono text-text">{repo.dir}</span>
+                  </label>
+                )}
+                {row.included && <div className="min-w-0 flex-1"><RepoBranch row={row} lone={lone} onQuery={setBranchQuery} onPick={setRepoPick} /></div>}
+              </Row>
+            )
+          })}
+          {selection.rows.length > 0 && (selection.rows.length === 1 || selection.included.length === 1) && (
+            <Row label="Checkout" title="Where the repo's checkout sits in the workspace">
+              <select
+                aria-label="Checkout"
+                value={selection.included.length === 0 ? 'none' : selection.nested ? 'nested' : 'root'}
+                onChange={(e) => {
+                  const [only] = selection.rows
+                  if (selection.rows.length === 1) setRepoPick(only.repo.id, { included: e.target.value !== 'none' })
+                  if (e.target.value !== 'none') update({ nested: e.target.value === 'nested' })
                 }}
-                onDismiss={() => setBranchQuery(null)}
-              />
-            </div>
-          </Row>
-          {queued && <div className={NOTE}>latest from origin when it starts</div>}
+                className={SELECT}
+              >
+                <option value="root">At the workspace root</option>
+                <option value="nested">In {(selection.included[0] ?? selection.rows[0]).repo.dir}/</option>
+                {selection.rows.length === 1 && <option value="none">No repo</option>}
+              </select>
+            </Row>
+          )}
+          {selection.nested && (
+            <Row label="Start in" title="The directory the agent starts in">
+              <select
+                aria-label="Start in"
+                value={selection.cwd}
+                onChange={(e) => update({ cwd: e.target.value })}
+                className={SELECT}
+              >
+                <option value=".">Workspace root</option>
+                {selection.included.map((r) => <option key={r.repo.id} value={r.repo.id}>{r.repo.dir}/</option>)}
+              </select>
+            </Row>
+          )}
+          {queued && selection.included.length > 0 && <div className={NOTE}>latest from origin when it starts</div>}
 
           {!storesEntry && volumes !== undefined && volumes.length > 0 && (
             <Row label="Volume" title="Project storage to attach, which one running workspace at a time can have">
@@ -883,6 +935,19 @@ export function NewWorkspacePane({ projectId, bar }: {
             </Row>
           )}
           </>}
+
+          {sessionCwds.length > 0 && (
+            <Row label="Start in" title="The directory the agent starts in">
+              <select
+                aria-label="Start in"
+                value={sessionCwd}
+                onChange={(e) => update({ sessionCwd: e.target.value })}
+                className={SELECT}
+              >
+                {sessionCwds.map((p) => <option key={p} value={p}>{checkoutLabel(p)}</option>)}
+              </select>
+            </Row>
+          )}
 
           <Row label="Agent">
             <select
@@ -909,11 +974,11 @@ export function NewWorkspacePane({ projectId, bar }: {
             </select>
           </Row>
 
-          {noAgent ? null : needsGitAuth && !inWorkspace ? (
+          {noAgent ? null : needsGitAuth !== undefined && !inWorkspace ? (
             <Notice
-              text="This project has no git credential"
+              text={`${needsGitAuth.dir} has no git credential`}
               action="Add git authentication…"
-              onClick={() => openSettings('credentials', undefined, projectId)}
+              onClick={() => openSettings('repos', undefined, needsGitAuth.id)}
             />
           ) : !defaults.ready || signedIn ? (
             <>
@@ -1216,6 +1281,36 @@ function RoutineSchedule({ cron, custom, timeZone, upcoming, error, onChange }: 
         </p>
       </div>
     </>
+  )
+}
+
+/** One repo's Base branch field: origin's branches, or a full commit id
+ *  typed in, which is a start point of its own (docs/workspace-steps.md). */
+function RepoBranch({ row, lone, onQuery, onPick }: {
+  row: RepoRow
+  /** The project's only repo, whose field needs no repo's name. */
+  lone: boolean
+  onQuery: (repoId: string, query: string | null) => void
+  onPick: (repoId: string, pick: { branch: string }) => void
+}): JSX.Element {
+  const { id, dir } = row.repo
+  return (
+    <BranchPicker
+      branches={row.branches ?? []}
+      defaultBranch={row.defaultBranch}
+      query={row.query ?? row.branch}
+      onQueryChange={(q) => onQuery(id, q)}
+      onSelect={(b) => { onPick(id, { branch: b }); onQuery(id, null) }}
+      showList={row.query !== null}
+      placeholder={row.branches ? '' : row.failed ? 'origin\'s default branch' : 'loading branches…'}
+      ariaLabel={lone ? 'Base branch' : `Base branch of ${dir}`}
+      autoHighlight
+      onBlur={() => {
+        if (row.typedCommit !== undefined) onPick(id, { branch: row.typedCommit })
+        onQuery(id, null)
+      }}
+      onDismiss={() => onQuery(id, null)}
+    />
   )
 }
 

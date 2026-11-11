@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { closeDb } from '#db/client'
 import {
-  clearProjectKeepsHostedRepo,
   deleteProjectIcon,
   deleteProjectRow,
   getProjectIcon,
@@ -13,19 +12,15 @@ import {
   recordProject,
   recordProjectCreate,
   setProjectConfig,
-  setProjectDefaultBranchGuard,
   setProjectKeptIgnoredPaths,
   setProjectWorkspaceRetention,
   setProjectEgressAllowlist,
   setProjectScratchDirs,
-  setProjectGitCredential,
   setProjectIcon,
   setProjectInit,
   setProjectOrder,
-  setProjectRemote,
-  setProjectShareRevoked,
 } from '#db/project-store'
-import { insertGitCredential } from '#db/git-credential-store'
+import { insertRepo, linkProjectRepo, listProjectRepos } from '#db/repo-store'
 import { findNamedWorkflow, insertNamedWorkflow, storeWorkflow } from '#db/workflow-store'
 import { BUILT_IN_USER_ID, seeTailnetUser } from '#db/user-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
@@ -51,22 +46,16 @@ describe('recordProject', () => {
   })
 
   it('records a project and reads it back', async () => {
-    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    await recordProject({ id: APP, name: 'app', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
 
     expect(await getProjectRow(APP)).toEqual({
       id: APP,
       name: 'app',
-      remoteUrl: 'https://x/app.git',
       addedAt: '2026-01-01',
       owner: BUILT_IN_USER_ID,
       createDefaults: {},
-      gitCredentialId: null,
-      knownHostsEntry: null,
+      repos: [],
       egressAllowlist: { hosts: [], defaults: true },
-      hosted: false,
-      guardDefaultBranch: true,
-      keepsHostedRepo: false,
-      shareRevoked: false,
       keptIgnoredPaths: [],
       scratchDirs: { dirs: [{ path: 'node_modules' }, { path: 'target' }], ignoredTracked: [] },
       portForwards: [],
@@ -76,37 +65,10 @@ describe('recordProject', () => {
     })
   })
 
-  // A host key was trusted for the remote it was fetched from; the same
-  // record under a different remote must not carry it over.
-  it('records the credential it was added with, and drops its host key when the remote changes', async () => {
-    const cred = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'k', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 AAAA yaac k' })
-    await recordProject(
-      { id: APP, name: 'app', remoteUrl: 'git@x:app.git', addedAt: '2026-01-01' },
-      BUILT_IN_USER_ID,
-      { id: cred.id, knownHostsEntry: 'x ssh-ed25519 HOST' },
-    )
-    await recordProject({ id: APP, name: 'app', remoteUrl: 'git@x:app.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
-    expect(await getProjectRow(APP)).toMatchObject({ gitCredentialId: cred.id, knownHostsEntry: 'x ssh-ed25519 HOST' })
-
-    await recordProject({ id: APP, name: 'app', remoteUrl: 'git@y:app.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
-    expect(await getProjectRow(APP)).toMatchObject({ gitCredentialId: cred.id, knownHostsEntry: null })
-  })
-
-  // Re-recording the same id is how a re-clone lands; the original addedAt is
-  // the project's age and must not be reset by it.
-  it('keeps the original addedAt when the same projectId is recorded again', async () => {
-    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
-    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://y/app.git', addedAt: '2026-06-01' }, BUILT_IN_USER_ID)
-
-    expect(await getProjectRow(APP)).toMatchObject({
-      remoteUrl: 'https://y/app.git', addedAt: '2026-01-01',
-    })
-  })
-
   // The project list is a snapshot input and this is its only INSERT, so
   // this is where a new project notifies.
   it('pushes a fresh snapshot', async () => {
-    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    await recordProject({ id: APP, name: 'app', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
     expect(pushes).toBe(1)
   })
 })
@@ -121,9 +83,11 @@ describe('deleteProjectRow', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  it('removes the row and its create memory, and pushes a fresh snapshot', async () => {
-    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+  it('removes the row, its create memory and its links, and pushes a fresh snapshot', async () => {
+    await recordProject({ id: APP, name: 'app', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
     await recordProjectCreate(APP, 'codex', { model: 'gpt-6-sol' })
+    await insertRepo({ id: P, owner: BUILT_IN_USER_ID, remoteUrl: 'https://x/app.git' })
+    await linkProjectRepo(APP, P, 'app')
     _resetWorkspaceListChangedForTests()
     let pushes = 0
     onWorkspaceListChanged(() => { pushes += 1 })
@@ -131,9 +95,11 @@ describe('deleteProjectRow', () => {
     await deleteProjectRow(APP)
     expect(await getProjectRow(APP)).toBeUndefined()
     expect(pushes).toBe(1)
+    // Its links go with it; the repo stays its owner's.
+    expect(await listProjectRepos(APP)).toEqual([])
     // A project re-added under the same id starts with no memory rather
     // than inheriting the removed one's.
-    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-02-01' }, BUILT_IN_USER_ID)
+    await recordProject({ id: APP, name: 'app', addedAt: '2026-02-01' }, BUILT_IN_USER_ID)
     expect(await getProjectRow(APP)).toMatchObject({ createDefaults: {} })
     expect((await getProjectRow(APP))?.lastTool).toBeUndefined()
   })
@@ -150,22 +116,16 @@ describe('listProjectRows', () => {
 
   it('is empty on a fresh data dir, and lists what was recorded', async () => {
     expect(await listProjectRows()).toEqual([])
-    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    await recordProject({ id: APP, name: 'app', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
     expect(await listProjectRows()).toEqual([
       {
         id: APP,
         name: 'app',
-        remoteUrl: 'https://x/app.git',
         addedAt: '2026-01-01',
         owner: BUILT_IN_USER_ID,
         createDefaults: {},
-        gitCredentialId: null,
-        knownHostsEntry: null,
+        repos: [],
         egressAllowlist: { hosts: [], defaults: true },
-        hosted: false,
-        guardDefaultBranch: true,
-        keepsHostedRepo: false,
-        shareRevoked: false,
         keptIgnoredPaths: [],
         scratchDirs: { dirs: [{ path: 'node_modules' }, { path: 'target' }], ignoredTracked: [] },
         portForwards: [],
@@ -177,11 +137,26 @@ describe('listProjectRows', () => {
   })
 
   it('lists projects nobody has placed by when they were added', async () => {
-    await recordProject({ id: P, name: 'p', remoteUrl: 'https://x/p.git', addedAt: '2026-01-02' }, BUILT_IN_USER_ID)
-    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    await recordProject({ id: P, name: 'p', addedAt: '2026-01-02' }, BUILT_IN_USER_ID)
+    await recordProject({ id: APP, name: 'app', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
     // An update rewrites the row, which must not move it.
-    await setProjectDefaultBranchGuard(APP, false)
+    await setProjectKeptIgnoredPaths(APP, ['.env'])
     expect((await listProjectRows()).map((r) => r.id)).toEqual([APP, P])
+  })
+
+  it('carries each project\'s links, in the order it lists them, on both reads', async () => {
+    await recordProject({ id: APP, name: 'app', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    await recordProject({ id: P, name: 'p', addedAt: '2026-01-02' }, BUILT_IN_USER_ID)
+    for (const [id, url] of [[P, 'https://x/api.git'], [Q, 'https://x/web.git']]) {
+      await insertRepo({ id, owner: BUILT_IN_USER_ID, remoteUrl: url })
+    }
+    await linkProjectRepo(APP, P, 'api')
+    await linkProjectRepo(APP, Q, 'web')
+
+    const [app, p] = await listProjectRows()
+    expect(app.repos.map((l) => [l.dir, l.repo.remoteUrl])).toEqual([['api', 'https://x/api.git'], ['web', 'https://x/web.git']])
+    expect(p.repos).toEqual([])
+    expect((await getProjectRow(APP))?.repos).toEqual(app.repos)
   })
 })
 
@@ -198,7 +173,7 @@ describe('setProjectOrder', () => {
     const R = '0a0a0a0a-0000-4000-8000-000000000004'
     const bob = await seeTailnetUser('bob@example.com', 'bob')
     for (const [id, addedAt, owner] of [[APP, '2026-01-01', BUILT_IN_USER_ID], [P, '2026-01-02', BUILT_IN_USER_ID], [Q, '2026-01-03', BUILT_IN_USER_ID], [R, '2026-01-04', bob]]) {
-      await recordProject({ id, name: id, remoteUrl: 'https://x/r.git', addedAt }, owner)
+      await recordProject({ id, name: id, addedAt }, owner)
     }
     const listed = async (): Promise<string[]> => (await listProjectRows()).map((r) => r.id)
 
@@ -224,7 +199,7 @@ describe('setProjectScratchDirs', () => {
   })
 
   it('replaces whichever part it is given, answering the settings as stored, or undefined for no such project', async () => {
-    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    await recordProject({ id: APP, name: 'app', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
     const dirs = [{ path: 'node_modules' }, { path: 'target' }]
     expect(await setProjectScratchDirs(APP, { ignoredTracked: ['target'] }))
       .toEqual({ dirs, ignoredTracked: ['target'] })
@@ -249,8 +224,8 @@ describe('recordProjectCreate', () => {
   })
 
   it('remembers the agent and what it was created with, per agent and per project', async () => {
-    await recordProject({ id: P, name: 'p', remoteUrl: 'git@h:o/r.git', addedAt: 'now' }, BUILT_IN_USER_ID)
-    await recordProject({ id: Q, name: 'q', remoteUrl: 'git@h:o/s.git', addedAt: 'now' }, BUILT_IN_USER_ID)
+    await recordProject({ id: P, name: 'p', addedAt: 'now' }, BUILT_IN_USER_ID)
+    await recordProject({ id: Q, name: 'q', addedAt: 'now' }, BUILT_IN_USER_ID)
     let pushes = 0
     onWorkspaceListChanged(() => { pushes += 1 })
 
@@ -278,105 +253,42 @@ describe('recordProjectCreate', () => {
   // it, and must not overwrite what a person picked — while the agent itself
   // is always the one this project was last created with.
   it('writes only the fields it is given', async () => {
-    await recordProject({ id: P, name: 'p', remoteUrl: 'git@h:o/r.git', addedAt: 'now' }, BUILT_IN_USER_ID)
-    await recordProjectCreate(P, 'claude', { model: 'claude-opus-5-5', permissionMode: 'plan' }, 'develop')
+    await recordProject({ id: P, name: 'p', addedAt: 'now' }, BUILT_IN_USER_ID)
+    await recordProjectCreate(P, 'claude', { model: 'claude-opus-5-5', permissionMode: 'plan' })
     await recordProjectCreate(P, 'claude', { mode: 'acp' })
     await recordProjectCreate(P, 'claude', {})
 
     expect(await getProjectRow(P)).toMatchObject({
       lastTool: 'claude',
-      lastBranch: 'develop',
       createDefaults: { claude: { model: 'claude-opus-5-5', permissionMode: 'plan', mode: 'acp' } },
     })
-
-    // It survives a re-record of the project itself, which only rewrites the
-    // remote (an `add` of a project that already exists).
-    await recordProject({ id: P, name: 'p', remoteUrl: 'git@h:o/moved.git', addedAt: 'now' }, BUILT_IN_USER_ID)
-    expect((await getProjectRow(P))?.lastTool).toBe('claude')
-  })
-})
-
-describe('setProjectGitCredential', () => {
-  let tmpDir: string
-
-  beforeEach(async () => {
-    tmpDir = await createTempDataDir()
-  })
-  afterEach(async () => {
-    await closeDb()
-    await cleanupTempDir(tmpDir)
   })
 
-  it('assigns the credential with its host key, replacing both, and reports an unknown projectId', async () => {
-    const a = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'a', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 AAAA yaac a' })
-    const b = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'b', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 BBBB yaac b' })
-    await recordProject({ id: APP, name: 'app', remoteUrl: 'git@x:app.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+  // What a create started with is remembered whole: the repos it included
+  // (and so the ones it left out), the branch it named for each, its
+  // layout and its cwd. A create that says nothing of them leaves all be.
+  it('remembers which repos a create started with, each one\'s branch, the layout and the cwd', async () => {
+    await recordProject({ id: P, name: 'p', addedAt: 'now' }, BUILT_IN_USER_ID)
+    const [api, web, docs] = [APP, Q, '0a0a0a0a-0000-4000-8000-000000000005']
+    for (const [id, dir] of [[api, 'api'], [web, 'web'], [docs, 'docs']]) {
+      await insertRepo({ id, owner: BUILT_IN_USER_ID, remoteUrl: `https://x/${dir}.git` })
+      await linkProjectRepo(P, id, dir)
+    }
+    const remembered = async (): Promise<Array<[string, boolean, string | undefined]>> =>
+      (await listProjectRepos(P)).map((l) => [l.dir, l.lastIncluded, l.lastBranch])
+    expect(await remembered()).toEqual([['api', true, undefined], ['web', true, undefined], ['docs', true, undefined]])
 
-    expect(await setProjectGitCredential(APP, a.id, 'x ssh-ed25519 ONE')).toBe(true)
-    expect(await setProjectGitCredential(APP, b.id, 'x ssh-ed25519 TWO')).toBe(true)
-    expect(await getProjectRow(APP)).toMatchObject({ gitCredentialId: b.id, knownHostsEntry: 'x ssh-ed25519 TWO' })
-    expect(await setProjectGitCredential('0a0a0a0a-0000-4000-8000-0000000000ff', a.id, null)).toBe(false)
-  })
-})
+    await recordProjectCreate(P, 'claude', {}, { repos: [{ repoId: api, branch: 'develop' }, { repoId: web }], nested: true, cwd: api })
+    expect(await remembered()).toEqual([['api', true, 'develop'], ['web', true, undefined], ['docs', false, undefined]])
+    expect(await getProjectRow(P)).toMatchObject({ lastNested: true, lastCwd: api })
 
-describe('setProjectRemote', () => {
-  let tmpDir: string
+    // A branch is kept for a repo a later create leaves out or names none for.
+    await recordProjectCreate(P, 'claude', {}, { repos: [], nested: false, cwd: '.' })
+    expect(await remembered()).toEqual([['api', false, 'develop'], ['web', false, undefined], ['docs', false, undefined]])
+    expect(await getProjectRow(P)).toMatchObject({ lastNested: false, lastCwd: '.' })
 
-  beforeEach(async () => {
-    tmpDir = await createTempDataDir()
-  })
-  afterEach(async () => {
-    await closeDb()
-    await cleanupTempDir(tmpDir)
-  })
-
-  it('points a hosted project and its shares at a remote, the credential its alone, and reports an unknown projectId', async () => {
-    const cred = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'gh', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 AAAA yaac gh' })
-    const hosted = (id: string): string => `http://yaac.internal/api/workspace/git/${id}.git`
-    await recordProject({ id: APP, name: 'app', remoteUrl: hosted(APP), addedAt: '2026-01-01', hosted: true }, BUILT_IN_USER_ID)
-    const [ada, bob] = await Promise.all([seeTailnetUser('ada@example.com', 'Ada'), seeTailnetUser('bob@example.com', 'Bob')])
-    await recordProject({ id: P, name: 'app', remoteUrl: hosted(P), addedAt: '2026-01-01', hosted: true, sharedFrom: APP }, ada)
-    await recordProject({ id: Q, name: 'app', remoteUrl: hosted(Q), addedAt: '2026-01-01', hosted: true, sharedFrom: APP }, bob)
-    await setProjectShareRevoked(Q, true)
-    const seen: number[] = []
-    _resetWorkspaceListChangedForTests()
-    onWorkspaceListChanged(() => seen.push(1))
-
-    const remote = 'git@github.com:acme/app.git'
-    expect(await setProjectRemote(APP, remote, { id: cred.id, knownHostsEntry: 'github.com ssh-ed25519 KEY' })).toBe(true)
-    expect(await getProjectRow(APP)).toMatchObject({
-      remoteUrl: remote, hosted: false, keepsHostedRepo: true, gitCredentialId: cred.id, knownHostsEntry: 'github.com ssh-ed25519 KEY',
-    })
-    // An active share becomes a project of its own; a removed one stays
-    // removed, and so read-only. Neither has a repository of its own.
-    const share = await getProjectRow(P)
-    expect(share).toMatchObject({ remoteUrl: remote, hosted: false, keepsHostedRepo: false, gitCredentialId: null, knownHostsEntry: null })
-    expect(share?.sharedFrom).toBeUndefined()
-    expect(await getProjectRow(Q)).toMatchObject({ remoteUrl: remote, hosted: false, sharedFrom: APP, shareRevoked: true })
-    expect(seen.length).toBeGreaterThan(0)
-    expect(await setProjectRemote('0a0a0a0a-0000-4000-8000-0000000000ff', remote, { id: cred.id, knownHostsEntry: null })).toBe(false)
-  })
-})
-
-describe('clearProjectKeepsHostedRepo', () => {
-  let tmpDir: string
-
-  beforeEach(async () => {
-    tmpDir = await createTempDataDir()
-  })
-  afterEach(async () => {
-    await closeDb()
-    await cleanupTempDir(tmpDir)
-  })
-
-  it('records that a moved project keeps no old repository, and reports an unknown projectId', async () => {
-    const cred = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'gh', kind: 'https', secret: 'ghp_x' })
-    await recordProject({ id: APP, name: 'app', remoteUrl: `http://yaac.internal/api/workspace/git/${APP}.git`, addedAt: '2026-01-01', hosted: true }, BUILT_IN_USER_ID)
-    await setProjectRemote(APP, 'https://github.com/acme/app.git', { id: cred.id, knownHostsEntry: null })
-
-    expect(await clearProjectKeepsHostedRepo(APP)).toBe(true)
-    expect(await getProjectRow(APP)).toMatchObject({ keepsHostedRepo: false, remoteUrl: 'https://github.com/acme/app.git' })
-    expect(await clearProjectKeepsHostedRepo('0a0a0a0a-0000-4000-8000-0000000000ff')).toBe(false)
+    await recordProjectCreate(P, 'claude', { mode: 'acp' })
+    expect(await getProjectRow(P)).toMatchObject({ lastNested: false, lastCwd: '.' })
   })
 })
 
@@ -392,34 +304,13 @@ describe('setProjectEgressAllowlist', () => {
   })
 
   it('replaces the allowlist, and reports an unknown projectId', async () => {
-    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    await recordProject({ id: APP, name: 'app', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
 
     expect(await setProjectEgressAllowlist(APP, { hosts: ['a.com'], defaults: true })).toBe(true)
     expect(await setProjectEgressAllowlist(APP, { hosts: ['b.com'], defaults: false })).toBe(true)
     expect(await getProjectRow(APP)).toMatchObject({ egressAllowlist: { hosts: ['b.com'], defaults: false } })
     expect(await setProjectEgressAllowlist('0a0a0a0a-0000-4000-8000-0000000000ff', { hosts: [], defaults: true }))
       .toBe(false)
-  })
-})
-
-describe('setProjectDefaultBranchGuard', () => {
-  let tmpDir: string
-
-  beforeEach(async () => {
-    tmpDir = await createTempDataDir()
-  })
-  afterEach(async () => {
-    await closeDb()
-    await cleanupTempDir(tmpDir)
-  })
-
-  it('records a hosted project with the guard on, toggles it, and reports an unknown projectId', async () => {
-    await recordProject({ id: APP, name: 'app', remoteUrl: 'http://yaac.internal/x.git', addedAt: '2026-01-01', hosted: true }, BUILT_IN_USER_ID)
-    expect(await getProjectRow(APP)).toMatchObject({ hosted: true, guardDefaultBranch: true })
-
-    expect(await setProjectDefaultBranchGuard(APP, false)).toBe(true)
-    expect(await getProjectRow(APP)).toMatchObject({ guardDefaultBranch: false })
-    expect(await setProjectDefaultBranchGuard('0a0a0a0a-0000-4000-8000-0000000000ff', true)).toBe(false)
   })
 })
 
@@ -435,7 +326,7 @@ describe('setProjectWorkspaceRetention', () => {
   })
 
   it('sets and clears the retention, and reports an unknown projectId', async () => {
-    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://example.com/x.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    await recordProject({ id: APP, name: 'app', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
     expect((await getProjectRow(APP))?.stoppedWorkspaceRetentionDays).toBeUndefined()
 
     expect(await setProjectWorkspaceRetention(APP, 30)).toBe(true)
@@ -443,31 +334,6 @@ describe('setProjectWorkspaceRetention', () => {
     expect(await setProjectWorkspaceRetention(APP, null)).toBe(true)
     expect((await getProjectRow(APP))?.stoppedWorkspaceRetentionDays).toBeUndefined()
     expect(await setProjectWorkspaceRetention('0a0a0a0a-0000-4000-8000-0000000000ff', 30)).toBe(false)
-  })
-})
-
-describe('setProjectShareRevoked', () => {
-  let tmpDir: string
-
-  beforeEach(async () => {
-    tmpDir = await createTempDataDir()
-  })
-  afterEach(async () => {
-    await closeDb()
-    await cleanupTempDir(tmpDir)
-  })
-
-  it('removes a share and gives it back, and reports an unknown projectId', async () => {
-    await recordProject({ id: APP, name: 'app', remoteUrl: 'http://yaac.internal/a.git', addedAt: '2026-01-01', hosted: true }, BUILT_IN_USER_ID)
-    await recordProject({ id: P, name: 'app', remoteUrl: 'http://yaac.internal/p.git', addedAt: '2026-01-01', hosted: true, sharedFrom: APP }, BUILT_IN_USER_ID)
-    expect((await getProjectRow(APP))?.sharedFrom).toBeUndefined()
-    expect(await getProjectRow(P)).toMatchObject({ sharedFrom: APP, shareRevoked: false })
-
-    expect(await setProjectShareRevoked(P, true)).toBe(true)
-    expect(await getProjectRow(P)).toMatchObject({ shareRevoked: true })
-    expect(await setProjectShareRevoked(P, false)).toBe(true)
-    expect(await getProjectRow(P)).toMatchObject({ shareRevoked: false })
-    expect(await setProjectShareRevoked('0a0a0a0a-0000-4000-8000-0000000000ff', true)).toBe(false)
   })
 })
 
@@ -483,7 +349,7 @@ describe('setProjectKeptIgnoredPaths', () => {
   })
 
   it('replaces the kept paths, and reports an unknown projectId', async () => {
-    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://example.com/x.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    await recordProject({ id: APP, name: 'app', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
     expect(await setProjectKeptIgnoredPaths(APP, ['.env', 'data/dev.db'])).toBe(true)
     expect((await getProjectRow(APP))?.keptIgnoredPaths).toEqual(['.env', 'data/dev.db'])
     expect(await setProjectKeptIgnoredPaths(APP, [])).toBe(true)
@@ -504,7 +370,7 @@ describe('setProjectInit', () => {
   })
 
   it('starts a project with none, points it at a workflow or a named one, and reports an unknown projectId', async () => {
-    await recordProject({ id: P, name: 'p', remoteUrl: 'https://github.com/o/p.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    await recordProject({ id: P, name: 'p', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
     expect((await getProjectRow(P))?.initWorkflowId).toBeUndefined()
     const workflow = await storeWorkflow(P, { steps: { install: { run: ['pnpm install'] } }, secrets: [] })
     expect(await setProjectInit(P, { workflowId: workflow.id })).toBe(true)
@@ -532,7 +398,7 @@ describe('setProjectConfig', () => {
   })
 
   it('replaces the settings it names, keeps the rest, and answers undefined for an unknown projectId', async () => {
-    await recordProject({ id: P, name: 'p', remoteUrl: 'https://github.com/o/p.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    await recordProject({ id: P, name: 'p', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
     const ports = [{ containerPort: 3000, hostPortStart: 3000 }]
     expect(await setProjectConfig(P, { portForwards: ports, npmCache: false }))
       .toEqual({ portForwards: ports, cacheVolumes: {}, nestedContainers: false, npmCache: false })
@@ -550,8 +416,8 @@ function withIconProjects(): void {
   let tmpDir: string
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
-    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://example.com/x.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
-    await recordProject({ id: P, name: 'p', remoteUrl: 'https://example.com/p.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    await recordProject({ id: APP, name: 'app', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    await recordProject({ id: P, name: 'p', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
   })
   afterEach(async () => {
     _resetWorkspaceListChangedForTests()

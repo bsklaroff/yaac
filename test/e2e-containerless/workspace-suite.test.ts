@@ -291,6 +291,10 @@ process.stdin.resume()
 /** The spawned server's origin (a per-worker port). */
 const origin = (): string => `http://127.0.0.1:${String(server.lock.port)}`
 
+/** The main clone of a staged project's repo, which carries the project's
+ *  id (`addTestProject`). */
+const mainClone = (id = projectId): string => path.join(testEnv.dataDir, 'global', 'repos', id)
+
 /** The tmux socket the driver uses for a workspace. */
 function sockFor(id: string): string {
   return containerlessWorkspacePaths(containerlessJobName(projectId, id)).tmuxSock
@@ -773,7 +777,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // Its own clone, borrowing objects from the main clone.
     expect((await fs.stat(path.join(dir, '.git'))).isDirectory()).toBe(true)
     expect(await fs.readFile(path.join(dir, '.git', 'objects', 'info', 'alternates'), 'utf8'))
-      .toBe(`${path.join(testEnv.dataDir, 'global', 'projects', projectId, 'repo', '.git', 'objects')}\n`)
+      .toBe(`${path.join(mainClone(), '.git', 'objects')}\n`)
   })
 
   it('runs the review diff with host git in that checkout, and reads a file at its base', async () => {
@@ -1469,7 +1473,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const { stdout: main } = await execFileAsync('git', ['-C', repoPath, 'rev-parse', '--abbrev-ref', 'HEAD'])
     // The remote is fake, so the branch is planted where a fetch would put
     // it. set-base copies it into the checkout.
-    await execFileAsync('git', ['-C', path.join(project, 'repo'), 'update-ref', 'refs/remotes/origin/pr/stacked', 'HEAD'])
+    await execFileAsync('git', ['-C', mainClone(), 'update-ref', 'refs/remotes/origin/pr/stacked', 'HEAD'])
     try {
       const usage = await runMama('set-base')
       expect(usage.code).toBe(2)
@@ -1484,7 +1488,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       expect(changes.comparison?.ref).toBe('origin/pr/stacked')
     } finally {
       expect((await runMama('set-base', main.trim())).code).toBe(0)
-      for (const repo of [path.join(project, 'repo'), checkout]) {
+      for (const repo of [mainClone(), checkout]) {
         await execFileAsync('git', ['-C', repo, 'update-ref', '-d', 'refs/remotes/origin/pr/stacked'])
       }
     }
@@ -1811,7 +1815,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // A checkout gets a git dir and config of its own (docs/server-git.md).
     // Plant a filter driver and hooks (each leaves a marker) in the main
     // clone and a sibling; the new checkout must run none of them.
-    const gitDir = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'repo', '.git')
+    const gitDir = path.join(mainClone(), '.git')
     const markers = path.join(testEnv.scratchDir, 'planted-markers')
     const hooks = path.join(testEnv.scratchDir, 'planted-hooks')
     const evil = path.join(testEnv.scratchDir, 'planted.sh')
@@ -1888,7 +1892,9 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   it('hosts a new project\'s remote: a workspace pushes through the server and its sibling sees it', async () => {
     const created = await runYaac(cliEnv(), 'project', 'create', 'cl-hosted')
     expect(created.exitCode, created.stderr).toBe(0)
-    const hostedId = (await (await fetch(`${origin()}/api/project/cl-hosted`)).json() as { id: string }).id
+    // The project's id names its workspaces' dirs, its repo's id the remote.
+    const { id: hostedId, repos: [{ id: hostedRepo }] } = await (await fetch(`${origin()}/api/project/cl-hosted`))
+      .json() as { id: string; repos: Array<{ id: string }> }
 
     const create = async (): Promise<string> => {
       const res = await fetch(`${origin()}/api/workspace/create`, {
@@ -1915,9 +1921,9 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       // Origin names the remote as a pod would; the gitconfig sends it to
       // this server.
       expect((await wsGit(pusher, 'config', 'remote.origin.url')).trim())
-        .toBe(`http://yaac.internal/api/workspace/git/${hostedId}.git`)
+        .toBe(`http://yaac.internal/api/workspace/git/${hostedRepo}.git`)
       expect((await wsGit(pusher, 'remote', 'get-url', 'origin')).trim())
-        .toBe(`${origin()}/api/workspace/git/${hostedId}.git`)
+        .toBe(`${origin()}/api/workspace/git/${hostedRepo}.git`)
 
       // The first create pushed an empty commit to the empty repository, so
       // main exists before any workspace pushes, and both start on it.
@@ -1943,7 +1949,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
 
       // Another project's workspace, with its own valid token, is refused.
       const other = await paneEnv(workspaceId)
-      const refused = await fetch(`${origin()}/api/workspace/git/${hostedId}.git/info/refs?service=git-upload-pack`, {
+      const refused = await fetch(`${origin()}/api/workspace/git/${hostedRepo}.git/info/refs?service=git-upload-pack`, {
         headers: { authorization: `Bearer ${other.YAAC_MAMA_TOKEN}` },
       })
       expect(refused.status).toBe(403)
@@ -1952,6 +1958,12 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       const local = path.join(testEnv.scratchDir, 'hosted-local')
       expect((await runYaac(cliEnv(), 'project', 'clone', 'cl-hosted', local)).exitCode).toBe(0)
       expect(await fs.readFile(path.join(local, 'hello.txt'), 'utf8')).toBe('hello\n')
+      // A clone made while a project had one repo names the project in its
+      // URL, which still answers (docs/legacy-compat-shims.md).
+      const { stdout: viaProject } = await execFileAsync('git', ['ls-remote', `${origin()}/api/project/${hostedId}/git`, 'refs/heads/main'])
+      const { stdout: viaRepo } = await execFileAsync('git', ['ls-remote', `${origin()}/api/repo/${hostedRepo}/git`, 'refs/heads/main'])
+      expect(viaProject).toBe(viaRepo)
+      expect(viaRepo).toMatch(/\trefs\/heads\/main\n$/)
     } finally {
       await runYaac(serverEnv, 'workspace', 'stop', pusher)
       await runYaac(serverEnv, 'workspace', 'stop', sibling)
@@ -2142,7 +2154,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
 
   // The launch updates the checkout's `origin/*` from the main clone.
   it('restarts the stopped workspace back onto a live tmux server', async () => {
-    const repoGit = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'repo', '.git')
+    const repoGit = path.join(mainClone(), '.git')
     const checkout = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', workspaceId)
     const base = (await execFileAsync('git', ['--git-dir', repoGit, 'symbolic-ref', 'refs/remotes/origin/HEAD'])).stdout.trim()
     const upstream = (await execFileAsync('git', [
@@ -2340,11 +2352,16 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     },
   ]
 
+  /** The workspace each adapter case ran in, which holds the conversation
+   *  the fake adapter names for that tool. */
+  const adapterCase = new Map<AgentTool, string>()
+
   it.each(CASES)('supervises $tool\'s adapter under acpd and handshakes a conversation',
     async ({ tool, posture, modeId, launch, model, bare }) => {
       const { workspaceId: id, stdout } = await createWorkspaceFrom(
         '--tool', tool, ...(bare ? [] : ['--mode', 'acp']), '--permission-mode', posture,
       )
+      adapterCase.set(tool, id)
       // The CLI cannot show a chat, so it points at the web app instead.
       expect(stdout).toContain(`Workspace ${id} is running in ACP mode — open it in the web app`)
 
@@ -2428,6 +2445,16 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     // A host opencode's database is its working copy, here held open by a
     // writer whose rows are still only in the WAL. The script reads it as
     // JSONL, the subagent's session after its parent's.
+    //
+    // A conversation belongs to the workspace that first recorded it, and
+    // the fake adapter names every opencode conversation alike, so the
+    // adapter case's stopped workspace goes first.
+    const earlier = adapterCase.get('opencode')
+    if (earlier !== undefined) {
+      await vi.waitFor(async () => {
+        expect((await runYaac(serverEnv, 'workspace', 'delete', earlier, '--yes')).exitCode).toBe(0)
+      }, { timeout: 60_000, interval: 2000 })
+    }
     const id = await createWorkspaceWith('opencode', '--mode', 'acp')
     const short = id.slice(0, 8)
     const db = new DatabaseSync(path.join(testEnv.dataDir, 'global', 'projects', projectId, 'opencode-data', id, 'opencode.db'))
@@ -2765,7 +2792,7 @@ describe.skipIf(!CAN_RUN)('a create that fails', () => {
       const cliPrompt = 'a cli prompt'
       const bad = await runYaac(serverEnv, 'workspace', 'create', NAME, '--branch', 'ghost', '--prompt', cliPrompt)
       expect(bad.exitCode).not.toBe(0)
-      expect(bad.stdout + bad.stderr).toContain('branch "ghost" not found on origin.')
+      expect(bad.stdout + bad.stderr).toContain('branch "ghost" not found on origin')
       await vi.waitFor(() => {
         expect(watch.latest()?.provisioning.find((p) => p.prompt === cliPrompt)?.error).toBeDefined()
       }, { timeout: 30_000, interval: 250 })
@@ -2778,10 +2805,10 @@ describe.skipIf(!CAN_RUN)('a create that fails', () => {
         body: JSON.stringify({ project: NAME, tool: 'claude', mode: 'tui', branch: 'ghost', prompt: webPrompt, draftOnFailure: true }),
       })
       await expect(consumeNdjsonStream(res, () => {})).rejects.toThrow(
-        'branch "ghost" not found on origin; its prompt is kept as a draft')
+        /branch "ghost" not found on origin.*; its prompt is kept as a draft/)
       await vi.waitFor(() => {
         expect(watch.latest()?.draftWorkspaces.find((d) => d.prompt === webPrompt))
-          .toMatchObject({ projectId, branch: 'ghost' })
+          .toMatchObject({ projectId, repos: [{ repo: projectId, branch: 'ghost' }] })
       }, { timeout: 30_000, interval: 250 })
       const draft = watch.latest()!.draftWorkspaces.find((d) => d.prompt === webPrompt)!
       const discarded = await fetch(`${origin()}/api/workspace/draft/discard`, {
@@ -2792,6 +2819,309 @@ describe.skipIf(!CAN_RUN)('a create that fails', () => {
       watch.ws.close()
     }
   }, 180_000)
+})
+
+/**
+ * A project with several repos (docs/project-repos.md): a create picks which
+ * of them the workspace starts with, where each checkout sits and where its
+ * agent runs, and each checkout uses its own repo's credential. One project
+ * and its workspaces are shared by the cases; the last one deletes a repo.
+ */
+describe.skipIf(!CAN_RUN)('a project with several repos', () => {
+  const MULTI = 'cl-multi'
+  const LIB = 'cl-lib'
+  const MULTI_TOKEN = 'ghp_multi_token'
+  const LIB_TOKEN = 'ghp_lib_token'
+  let multiId: string
+  /** The repo the project links beside its own, in the folder `lib`. */
+  let libRepo: string
+  /** A workspace with both repos, and one with `lib` alone, in its folder. */
+  let both: string
+  let libOnly: string
+  const made: string[] = []
+  const wsDir = (id: string, ...rest: string[]): string =>
+    path.join(testEnv.dataDir, 'global', 'projects', multiId, 'workspaces', id, ...rest)
+  const real = (p: string): Promise<string> => fs.realpath(p)
+
+  interface Listed {
+    workspaceId: string
+    projectId: string
+    cwd: string
+    repos: Array<{ repoId: string; path: string; baseBranch?: string; startCommit?: string }>
+    sessions: Array<SessionEntry & { cwd: string }>
+  }
+  const listed = async (id: string): Promise<Listed> => {
+    const { workspaces } = await (await fetch(`${origin()}/api/workspace/list`)).json() as { workspaces: Listed[] }
+    const found = workspaces.find((w) => w.workspaceId === id)
+    if (!found) throw new Error(`workspace ${id} is not listed`)
+    return found
+  }
+
+  /** `yaac workspace create cl-multi …` with a terminal claude; the new id. */
+  async function create(...args: string[]): Promise<string> {
+    const before = new Set((await listWorkspaces()).map((w) => w.workspaceId))
+    const res = await runYaac(cliEnv(), 'workspace', 'create', MULTI, '--tool', 'claude', '--mode', 'tui', ...args)
+    expect(res.exitCode, `${args.join(' ')}\n${res.stdout}\n${res.stderr}`).toBe(0)
+    const fresh = (await listWorkspaces()).find((w) => !before.has(w.workspaceId) && w.projectId === multiId)
+    if (!fresh) throw new Error(`create listed no new workspace\n${res.stdout}`)
+    made.push(fresh.workspaceId)
+    return fresh.workspaceId
+  }
+
+  /** The password the workspace's own git would send for a remote, read as
+   *  git itself reads it, from the checkout at `dir`. */
+  async function tokenFor(id: string, dir: string, remote: string): Promise<string> {
+    const gitConfigGlobal = await workspaceEnvVar(id, 'GIT_CONFIG_GLOBAL')
+    const filled = await new Promise<string>((resolve, reject) => {
+      const child = execFile('git', ['credential', 'fill'], {
+        cwd: dir,
+        env: { ...process.env, HOME: userHome(), GIT_CONFIG_GLOBAL: gitConfigGlobal, GIT_TERMINAL_PROMPT: '0' },
+      }, (err, stdout) => (err ? reject(err instanceof Error ? err : new Error('git credential fill failed')) : resolve(stdout)))
+      child.stdin?.end(`url=${remote}\n\n`)
+    })
+    return /^password=(.*)$/m.exec(filled)?.[1] ?? ''
+  }
+
+  /** `yaac-mama` as workspace `id` runs it from `cwd`; its output and exit code. */
+  async function mamaIn(id: string, cwd: string, ...args: string[]): Promise<{ code: number; out: string }> {
+    const env = await paneEnv(id)
+    const quoted = args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(' ')
+    const { stdout } = await execFileAsync('sh', ['-c',
+      `${path.join(process.cwd(), 'workspace-bin', 'yaac-mama')} ${quoted} 2>&1 </dev/null; echo "EXIT:$?"`,
+    ], {
+      cwd,
+      env: {
+        ...process.env,
+        YAAC_MAMA_URL: env.YAAC_MAMA_URL,
+        YAAC_MAMA_TOKEN: env.YAAC_MAMA_TOKEN,
+        YAAC_WORKSPACE_DIR: env.YAAC_WORKSPACE_DIR,
+        YAAC_CHECKOUTS: env.YAAC_CHECKOUTS,
+        YAAC_SESSION_ID: '',
+      },
+    })
+    const m = /EXIT:(\d+)\s*$/.exec(stdout)
+    if (!m) throw new Error(`no exit marker:\n${stdout}`)
+    return { code: Number(m[1]), out: stdout.slice(0, m.index) }
+  }
+
+  beforeAll(async () => {
+    multiId = await addTestProject(server, await createTestRepo(path.join(testEnv.scratchDir, MULTI)), {
+      remoteUrl: `https://github.com/test/${MULTI}.git`,
+    })
+    // A project of its own, whose repo `cl-multi` links too: a staged
+    // project's repo carries the project's id.
+    libRepo = await addTestProject(server, await createTestRepo(path.join(testEnv.scratchDir, LIB)), {
+      remoteUrl: `https://github.com/test/${LIB}.git`,
+    })
+    await assignTestGitCredential(server, MULTI, MULTI_TOKEN)
+    await assignTestGitCredential(server, LIB, LIB_TOKEN)
+    // A branch origin "has", planted where a fetch would put it.
+    await execFileAsync('git', ['-C', mainClone(libRepo), 'update-ref', 'refs/remotes/origin/dev', 'HEAD'])
+    const linked = await runYaac(cliEnv(), 'project', 'repo', 'add', MULTI, '--repo-id', libRepo.slice(0, 8), '--dir', 'lib')
+    expect(linked.exitCode, linked.stderr).toBe(0)
+  }, 60_000)
+
+  afterAll(async () => {
+    for (const id of made) await runYaac(serverEnv, 'workspace', 'stop', id).catch(() => {})
+  }, 120_000)
+
+  it('starts with every repo by default, each in its folder with its own credential, the agent at the root', async () => {
+    both = await create()
+    const { repos, cwd, sessions } = await listed(both)
+    expect(repos.map((r) => [r.repoId, r.path])).toEqual([[multiId, MULTI], [libRepo, 'lib']])
+    expect(cwd).toBe('')
+    expect(sessions.map((s) => s.cwd)).toEqual([''])
+
+    // Each checkout is its own clone on the workspace's branch, borrowing
+    // its own repo's main clone; the workspace dir itself is no checkout.
+    for (const [dir, repo] of [[MULTI, multiId], ['lib', libRepo]]) {
+      expect((await execFileAsync('git', ['-C', wsDir(both, dir), 'rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim())
+        .toBe(`agent/${both}`)
+      expect(await fs.readFile(wsDir(both, dir, '.git', 'objects', 'info', 'alternates'), 'utf8'))
+        .toBe(`${path.join(mainClone(repo), '.git', 'objects')}\n`)
+    }
+    expect((await fs.readdir(wsDir(both))).sort()).toEqual([MULTI, 'lib'])
+
+    const env = await paneEnv(both)
+    expect(await real(env.PWD)).toBe(await real(wsDir(both)))
+    expect(await real(env.YAAC_WORKSPACE_DIR)).toBe(await real(wsDir(both)))
+    expect(env.YAAC_CHECKOUTS).toBe(`${MULTI}:lib`)
+    // No sandbox, so gh gets a real token: the first repo's, from the root.
+    expect(env.GH_TOKEN).toBe(MULTI_TOKEN)
+    // git picks each repo's own token by the remote it talks to.
+    expect(await tokenFor(both, wsDir(both, MULTI), `https://github.com/test/${MULTI}.git`)).toBe(MULTI_TOKEN)
+    expect(await tokenFor(both, wsDir(both, 'lib'), `https://github.com/test/${LIB}.git`)).toBe(LIB_TOKEN)
+  }, 180_000)
+
+  it('--repo picks the repos and their starts, --nested the layout and --cwd where the agent runs, and the next create remembers them', async () => {
+    libOnly = await create('--repo', 'lib@dev', '--nested', '--cwd', 'lib')
+    expect(await listed(libOnly)).toMatchObject({ cwd: 'lib', repos: [{ repoId: libRepo, path: 'lib', baseBranch: 'dev' }] })
+    expect(await fs.readdir(wsDir(libOnly))).toEqual(['lib'])
+    expect((await execFileAsync('git', ['-C', wsDir(libOnly, 'lib'), 'rev-parse', '--abbrev-ref', '@{u}'])).stdout.trim())
+      .toBe('origin/dev')
+    const env = await paneEnv(libOnly)
+    expect(await real(env.PWD)).toBe(await real(wsDir(libOnly, 'lib')))
+    expect(env.GH_TOKEN).toBe(LIB_TOKEN)
+
+    // A create that names nothing takes what the last one chose: the same
+    // repo, layout and cwd, at the repo's default branch.
+    const again = await create()
+    const remembered = await listed(again)
+    expect(remembered).toMatchObject({ cwd: 'lib', repos: [{ repoId: libRepo, path: 'lib' }] })
+    expect(remembered.repos[0].baseBranch).not.toBe('dev')
+
+    // One repo at the workspace root, at a full commit, the agent in it.
+    const sha = (await execFileAsync('git', ['-C', mainClone(multiId), 'rev-parse', 'HEAD'])).stdout.trim()
+    const flat = await create('--repo', `${MULTI}@${sha}`, '--no-nested')
+    const pinned = await listed(flat)
+    expect(pinned).toMatchObject({ cwd: '', repos: [{ repoId: multiId, path: '', startCommit: sha }] })
+    expect(pinned.repos[0].baseBranch).toBeUndefined()
+    expect((await execFileAsync('git', ['-C', wsDir(flat), 'rev-parse', 'HEAD'])).stdout.trim()).toBe(sha)
+
+    // --branch is the start of a selection of one repo.
+    const branched = await create('--repo', 'lib', '--branch', 'dev', '--no-nested')
+    expect(await listed(branched)).toMatchObject({ cwd: '', repos: [{ repoId: libRepo, path: '', baseBranch: 'dev' }] })
+
+    const refusals: Array<[string[], RegExp]> = [
+      [['--repo', 'nope'], /has no repo "nope"/],
+      [['--repo', 'lib', '--repo', MULTI, '--no-nested'], /several repos always sit in folders of their own/],
+      [['--repo', 'lib', '--repo', MULTI, '--branch', 'dev'], /names the start of exactly one repo/],
+      [['--repo', 'lib', '--cwd', MULTI], /is not "\." or a repo this workspace starts with/],
+    ]
+    for (const [args, error] of refusals) {
+      const { stderr, exitCode } = await runYaac(cliEnv(), 'workspace', 'create', MULTI, '--tool', 'claude', ...args)
+      expect(exitCode, args.join(' ')).not.toBe(0)
+      expect(stderr, args.join(' ')).toMatch(error)
+    }
+    for (const id of [again, flat, branched]) expect((await runYaac(serverEnv, 'workspace', 'stop', id)).exitCode).toBe(0)
+  }, 300_000)
+
+  it('--no-repos starts an empty workspace, and a session opened with --cwd runs in one of a workspace\'s checkouts', async () => {
+    const empty = await create('--no-repos')
+    expect(await listed(empty)).toMatchObject({ cwd: '', repos: [] })
+    expect(await fs.readdir(wsDir(empty))).toEqual([])
+    const env = await paneEnv(empty)
+    expect(env.YAAC_CHECKOUTS).toBe('')
+    // No repo's token: whatever GH_TOKEN the user's own shell sets stands.
+    expect([MULTI_TOKEN, LIB_TOKEN]).not.toContain(env.GH_TOKEN)
+    expect((await runYaac(serverEnv, 'workspace', 'stop', empty)).exitCode).toBe(0)
+
+    // A second session of the two-repo workspace, in `lib`: it runs there
+    // with that repo's token as its GH_TOKEN, beside the first at the root.
+    const opened = await runYaac(cliEnv(), 'workspace', 'create', '--workspace', both, '--tool', 'claude', '--mode', 'tui', '--cwd', 'lib')
+    expect(opened.exitCode, opened.stderr).toBe(0)
+    const session = await vi.waitFor(async () => {
+      const found = (await listed(both)).sessions.find((s) => s.cwd === 'lib')
+      expect(found).toBeDefined()
+      return found!
+    }, { timeout: 30_000, interval: 250 })
+    const sessionEnv = await vi.waitFor(async () => {
+      const pid = (await tmux(both, 'display-message', '-p', '-t', `yaac:${session.window}`, '#{pane_pid}')).trim()
+      const dumped = await processEnv(pid)
+      expect(Object.keys(dumped)).not.toHaveLength(0)
+      return dumped
+    }, { timeout: 30_000, interval: 250 })
+    expect(await real(sessionEnv.PWD)).toBe(await real(wsDir(both, 'lib')))
+    expect(sessionEnv.GH_TOKEN).toBe(LIB_TOKEN)
+
+    const elsewhere = await runYaac(cliEnv(), 'workspace', 'create', '--workspace', both, '--tool', 'claude', '--cwd', 'nope')
+    expect(elsewhere.exitCode).not.toBe(0)
+  }, 180_000)
+
+  it('yaac-mama acts on the checkout it is run in: set-base, fetch and as-repo, and starts workspaces with --repo', async () => {
+    // set-base moves the base of the checkout it runs in, and no other.
+    await execFileAsync('git', ['-C', mainClone(libRepo), 'update-ref', 'refs/remotes/origin/pr/stacked', 'HEAD'])
+    const main = (await listed(both)).repos.find((r) => r.path === MULTI)?.baseBranch
+    const set = await mamaIn(both, wsDir(both, 'lib'), 'set-base', 'pr/stacked')
+    expect(set.code, set.out).toBe(0)
+    expect((await listed(both)).repos.map((r) => [r.path, r.baseBranch])).toEqual([[MULTI, main], ['lib', 'pr/stacked']])
+    const changes = await (await fetch(`${origin()}/api/workspace/${both}/changes?diff=0&repo=lib`)).json() as WorkspaceChanges
+    expect(changes.branch).toBe('pr/stacked')
+    // Outside every checkout there is no telling which is meant, unless named.
+    expect((await mamaIn(both, wsDir(both), 'set-base', 'dev')).code).toBe(1)
+    const named = await mamaIn(both, wsDir(both), 'set-base', '--repo', 'lib', 'dev')
+    expect(named.code, named.out).toBe(0)
+    expect((await listed(both)).repos.find((r) => r.path === 'lib')?.baseBranch).toBe('dev')
+
+    // fetch reads the other workspace's checkout of the same repo.
+    await execFileAsync('git', ['-C', wsDir(libOnly, 'lib'), '-c', 'user.name=T', '-c', 'user.email=t@t',
+      'commit', '-q', '--allow-empty', '-m', 'from lib-only'])
+    const tip = (await execFileAsync('git', ['-C', wsDir(libOnly, 'lib'), 'rev-parse', 'HEAD'])).stdout.trim()
+    const fetched = await mamaIn(both, wsDir(both, 'lib'), 'fetch', libOnly)
+    expect(fetched.code, fetched.out).toBe(0)
+    expect((await execFileAsync('git', ['-C', wsDir(both, 'lib'), 'rev-parse', `yaac/peers/${libOnly.slice(0, 8)}/HEAD`])).stdout.trim())
+      .toBe(tip)
+    const none = await mamaIn(both, wsDir(both, MULTI), 'fetch', libOnly)
+    expect(none.code).toBe(1)
+    expect(none.out).toContain('has no checkout of this repo')
+
+    // as-repo runs one command with another repo's token as GH_TOKEN.
+    const asLib = await mamaIn(both, wsDir(both), 'as-repo', 'lib', '--', 'sh', '-c', 'printf %s "$GH_TOKEN"')
+    expect(asLib).toEqual({ code: 0, out: LIB_TOKEN })
+    const unknown = await mamaIn(both, wsDir(both), 'as-repo', 'nope', '--', 'true')
+    expect(unknown.code).toBe(1)
+    expect(unknown.out).toContain('has no repo "nope"')
+    expect((await mamaIn(both, wsDir(both), 'as-repo', 'lib')).code).toBe(2)
+
+    // create and queue take the selection the CLI does.
+    const spawned = await mamaIn(both, wsDir(both), 'create', '--repo', `${MULTI}`, '--repo', 'lib@dev', '--cwd', MULTI, 'hello')
+    expect(spawned.code, spawned.out).toBe(0)
+    const sibling = spawned.out.trim().split('\n')[0]
+    made.push(sibling)
+    await vi.waitFor(async () => {
+      expect(await listed(sibling)).toMatchObject({
+        cwd: MULTI, repos: [{ repoId: multiId, path: MULTI }, { repoId: libRepo, path: 'lib', baseBranch: 'dev' }],
+      })
+    }, { timeout: 120_000, interval: 1000 })
+    const queued = await mamaIn(both, wsDir(both), 'queue', '--parent-workspace', both, '--repo', 'lib', '--no-nested', 'after')
+    expect(queued.code, queued.out).toBe(0)
+    const queuedId = queued.out.trim().split('\n')[0]
+    const entries = await (await fetch(`${origin()}/api/workspace/queue/list`)).json() as Array<{
+      id: string; selection: { repos: Array<{ repo: string }>; nested: boolean }
+    }>
+    expect(entries.find((e) => e.id === queuedId)?.selection).toMatchObject({ repos: [{ repo: libRepo }], nested: false })
+    expect((await mamaIn(both, wsDir(both), 'delete-queued', queuedId)).code).toBe(0)
+    expect((await mamaIn(both, wsDir(both), 'create', '--no-repos', '--repo', 'lib', 'x')).code).not.toBe(0)
+    expect((await runYaac(serverEnv, 'workspace', 'stop', sibling)).exitCode).toBe(0)
+  }, 300_000)
+
+  // Last: it deletes the repo the cases above use.
+  it('repo delete unlinks a repo everywhere but keeps its clone while workspaces hold checkouts', async () => {
+    const holders = (await (await fetch(`${origin()}/api/repo/${libRepo}/delete-preview`)).json() as {
+      heldBy: Array<{ workspaceId: string }>
+    }).heldBy.map((h) => h.workspaceId)
+    expect(holders).toEqual(expect.arrayContaining([both, libOnly]))
+
+    const deleted = await runYaac(cliEnv(), 'repo', 'delete', `${MULTI}/lib`, '--yes')
+    expect(deleted.exitCode, deleted.stderr).toBe(0)
+    expect(deleted.stdout).toContain(`Deleted https://github.com/test/${LIB}.git. These workspaces still hold a checkout of it`)
+    for (const id of holders) expect(deleted.stdout).toContain(`${id}  in `)
+    expect(deleted.stdout).toContain('Delete them (`yaac workspace delete <id>`)')
+
+    // Unlinked from both projects that linked it; the running workspace
+    // keeps its checkout, and the main clone its objects borrow from.
+    expect((await runYaac(cliEnv(), 'project', 'repo', 'list', MULTI)).stdout).not.toContain('lib ')
+    expect((await runYaac(cliEnv(), 'project', 'repo', 'list', LIB)).stdout).toContain('links no repos')
+    expect((await runYaac(cliEnv(), 'repo', 'list')).stdout)
+      .toMatch(new RegExp(`${libRepo.slice(0, 8)}.*deleted; held by ${String(holders.length)} workspace\\(s\\)`))
+    await expect(fs.access(path.join(mainClone(libRepo), '.git'))).resolves.toBeUndefined()
+    expect((await execFileAsync('git', ['-C', wsDir(both, 'lib'), 'log', '--format=%s', '-1'])).stdout.trim()).not.toBe('')
+    // It can no longer be started with.
+    const gone = await runYaac(cliEnv(), 'workspace', 'create', MULTI, '--tool', 'claude', '--repo', 'lib')
+    expect(gone.exitCode).not.toBe(0)
+
+    // With the last workspace holding it deleted, nothing holds it; the
+    // `deleted-repos` reconcile step then removes its clone and row, on a
+    // timer too long to wait out here (unit tests cover it).
+    for (const id of holders) {
+      await runYaac(serverEnv, 'workspace', 'stop', id)
+      await vi.waitFor(async () => {
+        expect((await runYaac(serverEnv, 'workspace', 'delete', id, '--yes')).exitCode).toBe(0)
+      }, { timeout: 60_000, interval: 2000 })
+    }
+    expect((await (await fetch(`${origin()}/api/repo/list`)).json() as Array<{ id: string; deleted?: { heldBy: unknown[] } }>)
+      .find((r) => r.id === libRepo)?.deleted?.heldBy ?? []).toEqual([])
+  }, 480_000)
 })
 
 /**
@@ -2946,7 +3276,8 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
       const entry = latest().queuedWorkspaces.find((q) => q.id === grandchild)
       const group = latest().workspaceGroups.find((g) => g.projectId === projectId && g.name === 'e2e follow-ups')
       expect(entry).toMatchObject({
-        parentWorkspaceId: childWorkspace, prompt: 'after that', mode: 'acp', branch: 'release/next',
+        parentWorkspaceId: childWorkspace, prompt: 'after that', mode: 'acp',
+        selection: { repos: [{ repo: projectId, branch: 'release/next' }] },
         groupId: group?.groupId,
       })
       expect(group).toBeDefined()

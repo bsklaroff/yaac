@@ -9,6 +9,8 @@ import { lineTotals } from '#lib/gitStatus'
 import { useWorkspaceChanges } from '#lib/useWorkspaceChanges'
 import { lastGitStatus, saveGitStatus, type GitStatusSummary } from '#lib/lastGitStatus'
 import { LineCountsLabel } from '#components/ui/LineCountsLabel'
+import { CheckoutSwitcher } from '#components/CheckoutSwitcher'
+import { useCheckout } from '#lib/checkouts'
 import type { BranchComparison, WorkspaceChanges } from '@yaac/shared/types'
 
 /**
@@ -24,7 +26,8 @@ const BAR = 'flex h-5 shrink-0 items-start px-2 text-[11px] leading-4 md:-mt-1.5
  * its base branch, and how many lines differ from it in all. The base is the
  * Changes pane's pick, else the branch the workspace forked from. The
  * comparison opens the Commits pane, which draws it, and the line counts the
- * Changes pane, which breaks them down.
+ * Changes pane, which breaks them down. A workspace with several checkouts
+ * says so for the one its switcher picks, and one with no repos says that.
  *
  * Until the first answer lands it shows the last one saved for the
  * workspace (`lastGitStatus`), muted since it may be days old, so a reload
@@ -44,11 +47,13 @@ export function GitStatusBar({ workspaceId }: { workspaceId: string }): JSX.Elem
   )
   const openChanges = useUiStore((s) => s.openChanges)
   const openCommits = useUiStore((s) => s.openCommits)
+  const { known, repos } = useCheckout(workspaceId)
   const [saved] = useState(() => lastGitStatus(workspaceId))
   useEffect(() => {
     if (data) saveGitStatus(workspaceId, summarize(data))
   }, [workspaceId, data])
   const shown = data ? summarize(data) : saved
+  if (known && repos.length === 0) return <div className={clsx(BAR, 'px-3 text-text-faint')}>No repos</div>
   // A failed poll leaves the last answer in `data`; show why instead of it.
   // A stopped workspace has nothing to say.
   if (isError) {
@@ -62,6 +67,7 @@ export function GitStatusBar({ workspaceId }: { workspaceId: string }): JSX.Elem
   }
   return (
     <div className={clsx(BAR, 'gap-2 text-text-dim', !data && 'opacity-60')}>
+      <CheckoutSwitcher workspaceId={workspaceId} className="h-4" />
       {shown?.branch && (
         <button
           onClick={() => openCommits(workspaceId)}

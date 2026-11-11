@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from 'vitest'
-import { projectScope, resolveProjectId, scopeToUser } from '#commands/api'
+import { projectRepoOf, projectScope, resolveProjectId, resolveRepo, scopeToUser } from '#commands/api'
+import type { ProjectSummary } from '@yaac/shared/types'
 import { workspaceList } from '#commands/workspace-list'
 import { ADA, ME, serveProjects, startFakeApi, type FakeApi } from './fake-api'
 
@@ -56,6 +57,55 @@ describe('resolveProjectId', () => {
   })
 })
 
+describe('projectRepoOf', () => {
+  const project = (...dirs: string[]): ProjectSummary =>
+    ({ name: 'app', repos: dirs.map((dir) => ({ id: `id-${dir}`, dir })) }) as unknown as ProjectSummary
+
+  it('is the repo --repo names by folder or id, else the project\'s only one', () => {
+    expect(projectRepoOf(project('web'), undefined).dir).toBe('web')
+    expect(projectRepoOf(project('web', 'api'), 'api').dir).toBe('api')
+    expect(projectRepoOf(project('web', 'api'), 'id-web').dir).toBe('web')
+    expect(() => projectRepoOf(project('web', 'api'), undefined))
+      .toThrow('Project "app" has several repos; name one with --repo: web, api.')
+    expect(() => projectRepoOf(project(), undefined)).toThrow('Project "app" has no repos')
+    expect(() => projectRepoOf(project('web'), 'nope')).toThrow('Project "app" has no repo "nope"; its repos are web.')
+  })
+})
+
+describe('resolveRepo', () => {
+  const MY_REPO = 'dddddddd-4444-4444-8444-444444444444'
+  const HER_REPO = 'eeeeeeee-5555-4555-8555-555555555555'
+  const SHARED = 'ffffffff-6666-4666-8666-666666666666'
+
+  beforeEach(() => {
+    api.on('GET /api/project/list', { json: [
+      { id: MINE, name: 'app', owner: ME, repos: [{ id: MY_REPO, dir: 'web' }, { id: SHARED, dir: 'lib' }] },
+      { id: HERS, name: 'app', owner: ADA, repos: [{ id: HER_REPO, dir: 'web' }] },
+    ] })
+    api.on('GET /api/repo/list', { json: [
+      { id: MY_REPO, owner: ME, remoteUrl: 'https://github.com/me/web.git', sharedWith: [], projects: [] },
+      { id: HER_REPO, owner: ADA, remoteUrl: 'https://github.com/ada/web.git', sharedWith: [], projects: [] },
+      { id: SHARED, owner: ADA, remoteUrl: 'http://yaac.internal/api/workspace/git/x.git', sharedWith: [ME], projects: [] },
+    ] })
+  })
+
+  it('takes an id, a unique id prefix, a remote or <project>/<folder>, among the repos in scope', async () => {
+    expect((await resolveRepo(MY_REPO)).id).toBe(MY_REPO)
+    expect((await resolveRepo('dddd')).id).toBe(MY_REPO)
+    expect((await resolveRepo('https://github.com/me/web.git')).id).toBe(MY_REPO)
+    expect((await resolveRepo('app/web')).id).toBe(MY_REPO)
+    // One shared with the caller is in scope; a full id names anyone's.
+    expect((await resolveRepo('app/lib')).id).toBe(SHARED)
+    expect((await resolveRepo('ffff')).id).toBe(SHARED)
+    expect((await resolveRepo(HER_REPO)).id).toBe(HER_REPO)
+    await expect(resolveRepo('eeee')).rejects.toThrow('No repo "eeee". Run `yaac repo list` to see them.')
+    await expect(resolveRepo('https://github.com/ada/web.git')).rejects.toThrow('No repo')
+
+    scopeToUser('ada@example.com')
+    expect((await resolveRepo('app/web')).id).toBe(HER_REPO)
+  })
+})
+
 describe('workspaceList', () => {
   const running = (workspaceId: string, projectId: string, forwardedPorts: object[] = []): object => ({
     workspaceId, projectId, status: 'running', conversations: [], sessions: [], blockedHosts: [], createdAt: '', forwardedPorts,
@@ -67,7 +117,8 @@ describe('workspaceList', () => {
     api.on('GET /api/workspace/group/list', { json: { groups: [] } })
     api.on('GET /api/workspace/list-stopped', { json: { entries: [], total: 0 } })
     const scheduled = (id: string, projectId: string, prompt: string): object => ({
-      id, projectId, prompt, tool: 'claude', model: 'm', mode: 'tui', permissionMode: 'manual', branch: 'main',
+      id, projectId, prompt, tool: 'claude', model: 'm', mode: 'tui', permissionMode: 'manual',
+      selection: { repos: [], nested: false, cwd: '.' },
       createdAt: '', startAt: '2099-01-01T09:00:00.000Z',
     })
     api.on('GET /api/workspace/queue/list', { json: [scheduled('q-mine', MINE, 'my later'), scheduled('q-hers', HERS, 'her later')] })

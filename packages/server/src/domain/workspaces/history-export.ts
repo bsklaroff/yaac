@@ -14,6 +14,7 @@ import { Readable } from 'node:stream'
 import { ServerError } from '@yaac/shared/errors'
 import { ACP_RECORD_NAME, conversationFiles, openConversationFile, type ConversationFile } from '#runtime/agents'
 import type { ConversationLinkRow } from '#db'
+import { withCwds } from './conversation-paths'
 
 export const MAX_HISTORY_FILE_BYTES = 256 * 1024 * 1024
 
@@ -33,7 +34,7 @@ export async function withFiles(
   workspaceId: string,
   rows: ConversationLinkRow[],
 ): Promise<HistoryConversation[]> {
-  const files = await conversationFiles(projectId, workspaceId, rows)
+  const files = await conversationFiles(projectId, workspaceId, await withCwds(rows))
   return rows.map((row) => ({
     row,
     files: (files.get(row.conversationId) ?? []).filter((f) => !UNLISTABLE.test(f.name)),

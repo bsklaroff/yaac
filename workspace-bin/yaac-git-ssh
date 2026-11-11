@@ -1,0 +1,56 @@
+#!/bin/sh
+# yaac-git-ssh: the ssh a containerless workspace's git runs
+# (docs/containerless-driver.md "Git auth"), as
+#
+#   GIT_SSH_COMMAND='yaac-git-ssh <key table> <known_hosts>'
+#
+# so git calls it with those two paths, then ssh's own arguments: options,
+# the host (`[user@]host`), and the one command git wants run there
+# (`git-upload-pack '<path>'`, `git-receive-pack`, `git-upload-archive`, or
+# git-lfs's `git-lfs-authenticate <path> <operation>`).
+#
+# The workspace's ssh-agent holds the key of every ssh repo it has a
+# checkout of. The key table says which key each repo uses, one line per
+# repo: host, the repo's path there (no leading slash or `.git`) and that
+# key's public key file, separated by tabs. For a repo in the table, ssh
+# offers that key and no other, so two repos on one host (a deploy key each)
+# both authenticate. Any other repo gets plain ssh, which offers every key.
+#
+# Host keys are always checked against <known_hosts>, and the user's own ssh
+# config is not read.
+set -eu
+
+table=$1
+known_hosts=$2
+shift 2
+
+# The last two arguments are the host and the command.
+host=
+command=
+for arg in "$@"; do
+  host=$command
+  command=$arg
+done
+host=${host##*@}
+
+# The repo path is the command's first argument, which git single-quotes.
+repo=${command#* }
+case "$repo" in
+  "'"*) repo=${repo#\'}; repo=${repo%%\'*} ;;
+  *) repo=${repo%% *} ;;
+esac
+repo=${repo#/}
+repo=${repo%/}
+repo=${repo%.git}
+
+key=
+if [ -r "$table" ]; then
+  key=$(awk -F '\t' -v host="$host" -v repo="$repo" \
+    'tolower($1) == tolower(host) && tolower($2) == tolower(repo) { print $3; exit }' "$table")
+fi
+
+set -- -F /dev/null -o "UserKnownHostsFile=$known_hosts" -o StrictHostKeyChecking=yes "$@"
+# With `IdentitiesOnly`, the public key selects which agent identity ssh
+# offers.
+[ -z "$key" ] || set -- -o IdentitiesOnly=yes -i "$key" "$@"
+exec ssh "$@"

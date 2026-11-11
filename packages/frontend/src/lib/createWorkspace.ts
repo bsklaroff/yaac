@@ -4,7 +4,7 @@ import { rememberOpening } from '#lib/opening'
 import { throwingFetch } from '@yaac/shared/api-core'
 import type { LaunchPane } from '#lib/store'
 import { randomUUID } from '#lib/uuid'
-import type { AgentMode, AgentOptions, AgentTool, PermissionMode } from '@yaac/shared/types'
+import type { AgentMode, AgentOptions, AgentTool, PermissionMode, RepoStart } from '@yaac/shared/types'
 
 export interface CreateWorkspaceResult {
   workspaceId: string
@@ -59,10 +59,13 @@ export interface WorkspaceCreate {
   title?: string
   /** The row's label while it provisions, when `title` is unset. */
   shownTitle?: string
-  /** Unset forks from origin's default branch. */
-  branch?: string
-  /** A full commit to start at instead of a branch (not with `branch`). */
-  commit?: string
+  /** The repos it starts with, each at a branch or a full commit (neither
+   *  forks from origin's default branch), whether a lone one sits in a
+   *  folder of its own, and where its agent starts: a repo or `.`. Unset,
+   *  each takes what the project last used (docs/project-repos.md). */
+  repos?: RepoStart[]
+  nested?: boolean
+  cwd?: string
   /** The sidebar group to file it under, by id. */
   groupId?: string
   /** A group to create and file it under, by name. */
@@ -98,8 +101,9 @@ export async function createWorkspace(
     ...(c.agentOptions !== undefined ? { agentOptions: c.agentOptions } : {}),
     ...(c.prompt ? { prompt: c.prompt } : {}),
     ...(c.title ? { title: c.title } : {}),
-    ...(c.branch ? { branch: c.branch } : {}),
-    ...(c.commit ? { commit: c.commit } : {}),
+    ...(c.repos !== undefined ? { repos: c.repos } : {}),
+    ...(c.nested !== undefined ? { nested: c.nested } : {}),
+    ...(c.cwd !== undefined ? { cwd: c.cwd } : {}),
     ...(group !== undefined ? { group } : {}),
     ...(c.draftId !== undefined ? { draftId: c.draftId } : {}),
     ...(c.timeout !== undefined ? { timeout: c.timeout } : {}),
@@ -155,6 +159,9 @@ export interface SessionOpen {
   prompt?: string
   /** One of the workspace's earlier conversations to resume. */
   resume?: string
+  /** Where its agent runs: `.` for the workspace root or a checkout's
+   *  path. Unset is the workspace's own cwd. */
+  cwd?: string
 }
 
 /** Open a session in a running workspace; resolves with its id once its

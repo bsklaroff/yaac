@@ -9,6 +9,7 @@ import {
   getDataDir,
   getProjectsDir,
   projectDir,
+  legacyRepoDir,
   repoDir,
   projectConfigDir,
   cachedPackagesDir,
@@ -111,7 +112,9 @@ describe('paths', () => {
     setDataDir('/tmp/yaac-test')
     const proj = '/tmp/yaac-test/global/projects/my-repo'
     expect(projectDir('my-repo')).toBe(proj)
-    expect(repoDir('my-repo')).toBe(`${proj}/repo`)
+    // A repo's main clone is no project's: projects share it.
+    expect(repoDir('my-repo')).toBe('/tmp/yaac-test/global/repos/my-repo')
+    expect(legacyRepoDir('my-repo')).toBe(`${proj}/repo`)
     expect(projectConfigDir('my-repo')).toBe(`${proj}/config`)
     expect(claudeDir('my-repo')).toBe(`${proj}/claude`)
     expect(projectClaudeCredentialsFile('my-repo')).toBe(`${proj}/claude/.credentials.json`)

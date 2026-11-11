@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type { QueryClient } from '@tanstack/react-query'
 import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
-import type { AuthListResult, CustomEndpointSummary, GitCredentialSummary, ProjectSummary, ToolLoginView } from '@yaac/shared/types'
+import type { AuthListResult, CustomEndpointSummary, GitCredentialSummary, ToolLoginView } from '@yaac/shared/types'
 import { OPENCODE_PROVIDERS, PI_PROVIDERS } from '@yaac/shared/tool-providers'
 
 const snapshot = vi.hoisted(() => vi.fn())
@@ -10,7 +10,7 @@ vi.mock('#lib/useSnapshot', () => ({ useSnapshot: snapshot }))
 import { SettingsButton } from '#components/SettingsButton'
 import { useUiStore } from '#lib/store'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
-import { mockFetch, renderWithClient, serverError, testQueryClient, TEST_USER_ID, type FetchMock } from './harness'
+import { mockFetch, renderWithClient, serverError, testQueryClient, type FetchMock } from './harness'
 
 // jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
 
@@ -39,7 +39,7 @@ let client: QueryClient
 
 beforeEach(() => {
   useUiStore.setState({
-    settingsOpen: false, settingsSection: 'general', settingsFocusTool: null, settingsFocusProject: null,
+    settingsOpen: false, settingsSection: 'general', settingsFocusTool: null, settingsFocusRepo: null,
   })
   snapshot.mockReturnValue(undefined)
   authList = CLAUDE_CONFIGURED
@@ -357,33 +357,18 @@ describe('Settings → Credentials → CLI install', () => {
 })
 
 describe('Settings → Credentials → git', () => {
+  const ALPHA = 'https://github.com/o/alpha.git'
+  const GAMMA = 'https://github.com/o/gamma.git'
   const TOKEN: GitCredentialSummary = {
-    id: 'c-token', name: 'alpha-token', kind: 'https', preview: '***abcd', projects: ['id-alpha'],
+    id: 'c-token', name: 'alpha-token', kind: 'https', preview: '***abcd', repos: [ALPHA],
   }
   const KEY: GitCredentialSummary = {
     id: 'c-key', name: 'gitlab-key', kind: 'ssh', preview: 'ssh-ed25519 AAAAkey gitlab-key',
-    publicKey: 'ssh-ed25519 AAAAkey gitlab-key', projects: [],
+    publicKey: 'ssh-ed25519 AAAAkey gitlab-key', repos: [],
   }
-  /** A project keyed by `id-<name>`, so the rows show the name, not the key. */
-  const project = (name: string, remoteUrl: string, gitCredential: ProjectSummary['gitCredential']): ProjectSummary =>
-    ({ id: `id-${name}`, name, remoteUrl, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential, hosted: false, guardDefaultBranch: true, scratchDirs: { dirs: [], ignoredTracked: [] }, initSteps: {}, portForwards: [], cacheVolumes: {}, nestedContainers: false, npmCache: true })
-  const ALPHA = project('alpha', 'https://github.com/o/alpha.git', { id: 'c-token', name: 'alpha-token' })
-  const BETA = project('beta', 'git@gitlab.com:o/beta.git', null)
-  const GAMMA = project('gamma', 'https://github.com/o/gamma', null)
-  // yaac hosts its remote, so it needs no credential.
-  const DELTA = { ...project('delta', 'http://yaac.internal/api/workspace/git/id-delta.git', null), hosted: true }
 
-  const projectRow = (name: string): HTMLElement =>
-    document.querySelector(`[data-project="id-${name}"]`) as HTMLElement
-  /** An unused credential's row. */
-  const unusedRow = (id: string): HTMLElement =>
-    document.querySelector(`[data-credential="${id}"]`) as HTMLElement
+  const row = (id: string): HTMLElement => document.querySelector(`[data-credential="${id}"]`) as HTMLElement
   const editor = (): HTMLElement => document.querySelector('[data-credential-editor]') as HTMLElement
-  const pickerOptions = (row: HTMLElement): string[] =>
-    [...within(row).getByLabelText<HTMLSelectElement>('Git credential').options].map((o) => o.textContent ?? '')
-  /** Every row of the list, in order, by project name or credential id. */
-  const rowOrder = (): string[] => [...document.querySelectorAll('[data-project], [data-credential]')]
-    .map((el) => (el as HTMLElement).dataset.project ?? (el as HTMLElement).dataset.credential ?? '')
 
   /** Open the editor's confirmation, check a stray Enter can't confirm it,
    *  and return the dialog. */
@@ -400,72 +385,42 @@ describe('Settings → Credentials → git', () => {
 
   beforeEach(() => {
     authList = { ...CLAUDE_CONFIGURED, gitCredentials: [TOKEN, KEY] }
-    snapshot.mockReturnValue({ driver: 'k8s', projects: [ALPHA, BETA, GAMMA, DELTA] })
+    snapshot.mockReturnValue({ driver: 'k8s', projects: [] })
   })
 
-  it('lists projects without a credential first, then the rest with theirs, then unused credentials', async () => {
-    // The server lists oldest first; an unused credential still sorts last.
-    authList = { ...CLAUDE_CONFIGURED, gitCredentials: [KEY, TOKEN] }
+  it('lists each credential with how many repos use it, and leads to Repos to assign them', async () => {
     await openCredentials()
-    await waitFor(() => expect(projectRow('alpha')).toBeTruthy())
-    expect(rowOrder()).toEqual(['id-beta', 'id-gamma', 'id-alpha', 'id-delta', 'c-key'])
+    await waitFor(() => expect(row('c-token')).toBeTruthy())
 
-    expect(within(projectRow('alpha')).getByText('alpha-token')).toBeTruthy()
-    expect(within(projectRow('alpha')).getByText('***abcd')).toBeTruthy()
-    expect(within(projectRow('delta')).getByText('hosted, no credential needed')).toBeTruthy()
-    expect(within(projectRow('delta')).queryByRole('button')).toBeNull()
-    expect(within(unusedRow('c-key')).getByText('gitlab-key')).toBeTruthy()
+    expect(within(row('c-token')).getByText('alpha-token')).toBeTruthy()
+    expect(within(row('c-token')).getByText('***abcd')).toBeTruthy()
+    expect(within(row('c-token')).getByText('1 repo')).toBeTruthy()
+    expect(within(row('c-key')).getByText('unused')).toBeTruthy()
     // An SSH key's public half is shown in its editor.
-    expect(within(unusedRow('c-key')).queryByText('Public key:')).toBeNull()
-    fireEvent.click(within(unusedRow('c-key')).getByRole('button', { name: 'Edit credential' }))
-    expect(within(editor()).getByText('No project uses this credential.')).toBeTruthy()
+    expect(within(row('c-key')).queryByText('Public key:')).toBeNull()
+    fireEvent.click(within(row('c-key')).getByRole('button', { name: 'Edit credential' }))
+    expect(within(editor()).getByText('No repo uses this credential.')).toBeTruthy()
     expect(within(editor()).getByText('Public key:')).toBeTruthy()
     const shown = within(editor()).getByText('ssh-ed25519 AAAAkey gitlab-key')
     expect(shown.className).toContain('truncate')
     fireEvent.click(within(editor()).getByRole('button', { name: 'View' }))
     expect(shown.className).toContain('break-all')
 
-    // Projects without a credential are each offered only what their remote
-    // can use, with a new one named for the project.
-    expect(pickerOptions(projectRow('beta'))).toEqual(['Choose a git credential…', 'gitlab-key', 'New SSH key…'])
-    expect(pickerOptions(projectRow('gamma')))
-      .toEqual(['Choose a git credential…', 'alpha-token', 'New HTTPS token…'])
-    fireEvent.change(within(projectRow('gamma')).getByLabelText('Git credential'), { target: { value: 'new' } })
-    expect(within(projectRow('gamma')).getByLabelText<HTMLInputElement>('Credential name').value).toBe('gamma-token')
-
-    // Assigning trusts the host key, which is shown on the project's row,
-    // and the project moves among those with a credential.
-    server.route('PUT /api/project/id-beta/git-credential', { knownHostsEntry: 'gitlab.com ssh-ed25519 HOSTKEY' })
-    authList = { ...CLAUDE_CONFIGURED, gitCredentials: [TOKEN, { ...KEY, projects: ['id-beta'] }] }
-    snapshot.mockReturnValue({
-      driver: 'k8s', projects: [ALPHA, { ...BETA, gitCredential: { id: 'c-key', name: 'gitlab-key' } }, GAMMA, DELTA],
-    })
-    const beta = projectRow('beta')
-    fireEvent.change(within(beta).getByLabelText('Git credential'), { target: { value: 'c-key' } })
-    fireEvent.click(within(beta).getByRole('button', { name: 'Assign' }))
-
-    await waitFor(() => expect(rowOrder()).toEqual(['id-gamma', 'id-alpha', 'id-beta', 'id-delta']))
-    expect(server.called('PUT /api/project/id-beta/git-credential').map((c) => c.body)).toEqual([{ credentialId: 'c-key' }])
-    expect(within(projectRow('beta')).getByText('gitlab-key')).toBeTruthy()
-    expect(within(projectRow('beta')).getByText('gitlab.com ssh-ed25519 HOSTKEY')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Assign credentials to repos in Repos…' }))
+    expect(useUiStore.getState().settingsSection).toBe('repos')
   })
 
-  it('edits a shared credential from any of its rows under a banner naming every project, deleting only on a confirming click', async () => {
-    const shared = { ...TOKEN, projects: ['id-alpha', 'id-gamma'] }
+  it('edits a shared credential under a banner naming every repo, deleting only on a confirming click', async () => {
+    const shared = { ...TOKEN, repos: [ALPHA, GAMMA] }
     authList = { ...CLAUDE_CONFIGURED, gitCredentials: [shared, KEY] }
-    snapshot.mockReturnValue({
-      driver: 'k8s', projects: [ALPHA, BETA, { ...GAMMA, gitCredential: { id: 'c-token', name: 'alpha-token' } }],
-    })
     server.route('PATCH /api/auth/git/credentials/c-token', undefined)
     server.route('DELETE /api/auth/git/credentials/c-token', undefined)
     await openCredentials()
-    await waitFor(() => expect(projectRow('gamma')).toBeTruthy())
+    await waitFor(() => expect(row('c-token')).toBeTruthy())
 
-    // Opened from gamma's row, the banner still names alpha.
-    fireEvent.click(within(projectRow('gamma')).getByRole('button', { name: 'Edit credential' }))
-    expect(projectRow('gamma').contains(editor())).toBe(true)
+    fireEvent.click(within(row('c-token')).getByRole('button', { name: 'Edit credential' }))
     expect(within(editor()).getByRole('note').textContent)
-      .toBe('Used by alpha and gamma. Changes here apply to all of them.')
+      .toBe(`Used by ${ALPHA} and ${GAMMA}. Changes here apply to all of them.`)
 
     // A rename needs no confirmation: the banner is the warning.
     fireEvent.click(within(editor()).getByRole('button', { name: 'alpha-token' }))
@@ -476,14 +431,15 @@ describe('Settings → Credentials → git', () => {
       .toEqual([{ name: 'github-token' }]))
     expect(screen.queryByRole('alertdialog')).toBeNull()
 
-    // Only one editor is open: alpha's replaces gamma's.
-    fireEvent.click(within(projectRow('alpha')).getByRole('button', { name: 'Edit credential' }))
+    // Only one editor is open: the key's replaces the token's, and back.
+    fireEvent.click(within(row('c-key')).getByRole('button', { name: 'Edit credential' }))
     expect(document.querySelectorAll('[data-credential-editor]')).toHaveLength(1)
-    expect(projectRow('alpha').contains(editor())).toBe(true)
+    expect(row('c-key').contains(editor())).toBe(true)
+    fireEvent.click(within(row('c-token')).getByRole('button', { name: 'Edit credential' }))
 
     // Cancel keeps it.
     let dialog = await openConfirm('Delete', 'Delete')
-    expect(within(dialog).getByText(/alpha, gamma will be left with no git credential/)).toBeTruthy()
+    expect(within(dialog).getByText(/alpha\.git, .*gamma\.git will be left with no git credential/)).toBeTruthy()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
 
@@ -501,13 +457,13 @@ describe('Settings → Credentials → git', () => {
     ))
     const fetches = server.called('GET /api/auth/list').length
     authList = { ...CLAUDE_CONFIGURED, gitCredentials: [shared] }
-    fireEvent.click(within(unusedRow('c-key')).getByRole('button', { name: 'Edit credential' }))
+    fireEvent.click(within(row('c-key')).getByRole('button', { name: 'Edit credential' }))
     dialog = await openConfirm('Delete', 'Delete')
-    expect(within(dialog).getByText('No project uses it.')).toBeTruthy()
+    expect(within(dialog).getByText('No repo uses it.')).toBeTruthy()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }))
     expect(await screen.findByText(/gitlab-key: The credential is deleted, but the egress proxy/)).toBeTruthy()
     await waitFor(() => expect(server.called('GET /api/auth/list').length).toBeGreaterThan(fetches))
-    await waitFor(() => expect(unusedRow('c-key')).toBeNull())
+    await waitFor(() => expect(row('c-key')).toBeNull())
   })
 
   it('replaces a token in place, and a key behind a confirmation, showing the new public key', async () => {
@@ -516,10 +472,10 @@ describe('Settings → Credentials → git', () => {
       id: 'c-key2', publicKey: 'ssh-ed25519 AAAAnew yaac gitlab-key',
     })
     await openCredentials()
-    await waitFor(() => expect(projectRow('alpha')).toBeTruthy())
+    await waitFor(() => expect(row('c-token')).toBeTruthy())
 
-    fireEvent.click(within(projectRow('alpha')).getByRole('button', { name: 'Edit credential' }))
-    expect(within(editor()).getByRole('note').textContent).toBe('Used by alpha. Changes here apply to it.')
+    fireEvent.click(within(row('c-token')).getByRole('button', { name: 'Edit credential' }))
+    expect(within(editor()).getByRole('note').textContent).toBe(`Used by ${ALPHA}. Changes here apply to it.`)
     fireEvent.click(within(editor()).getByRole('button', { name: 'Replace' }))
     fireEvent.change(screen.getByLabelText('New token'), { target: { value: 'ghp_new' } })
     fireEvent.click(within(editor()).getByRole('button', { name: 'Replace' }))
@@ -527,8 +483,8 @@ describe('Settings → Credentials → git', () => {
     expect(server.called('POST /api/auth/git/credentials/c-token/replace').map((c) => c.body))
       .toEqual([{ token: 'ghp_new' }])
 
-    // Same name and projects, new id and public key; the editor follows it.
-    fireEvent.click(within(unusedRow('c-key')).getByRole('button', { name: 'Edit credential' }))
+    // Same name and repos, new id and public key; the editor follows it.
+    fireEvent.click(within(row('c-key')).getByRole('button', { name: 'Edit credential' }))
     const dialog = await openConfirm('Replace', 'Generate new key')
     expect(within(dialog).getByText(/current key is discarded/)).toBeTruthy()
     expect(server.called('POST /api/auth/git/credentials/c-key/replace')).toEqual([])
@@ -541,16 +497,16 @@ describe('Settings → Credentials → git', () => {
     await waitFor(() => expect(server.called('POST /api/auth/git/credentials/c-key/replace').map((c) => c.body))
       .toEqual([{}]))
     await waitFor(() => expect(within(editor()).getByText(/Register this public key with your git host/)).toBeTruthy())
-    expect(unusedRow('c-key2').contains(editor())).toBe(true)
+    expect(row('c-key2').contains(editor())).toBe(true)
     expect(within(editor()).getByText('ssh-ed25519 AAAAnew yaac gitlab-key')).toBeTruthy()
     expect(within(editor()).getByRole('button', { name: 'Copy' })).toBeTruthy()
   })
 
-  it('generates a key no project uses yet, showing its public half under a unique default name', async () => {
+  it('generates a key no repo uses yet, showing its public half under a unique default name', async () => {
     authList = { ...CLAUDE_CONFIGURED, gitCredentials: [TOKEN, { ...KEY, name: 'git-key' }] }
     server.route('POST /api/auth/git/ssh-keys', { id: 'c-new', publicKey: 'ssh-ed25519 AAAAnew git-key-2' })
     await openCredentials()
-    await waitFor(() => expect(unusedRow('c-key')).toBeTruthy())
+    await waitFor(() => expect(row('c-key')).toBeTruthy())
 
     fireEvent.change(screen.getByLabelText('Credential kind'), { target: { value: 'ssh' } })
     const name = screen.getByLabelText<HTMLInputElement>('Credential name')
@@ -562,20 +518,6 @@ describe('Settings → Credentials → git', () => {
     expect(screen.getByText(/Register this public key with your git host/)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Done' }))
     await waitFor(() => expect(screen.queryByText('ssh-ed25519 AAAAnew git-key-2')).toBeNull())
-  })
-
-  it('opens onto a focused project, its "Change" picker offering all but its current credential', async () => {
-    useUiStore.getState().openSettings('credentials', undefined, 'id-alpha')
-    renderSettings()
-
-    await waitFor(() => expect(within(projectRow('alpha')).getByRole('button', { name: 'Assign' })).toBeTruthy())
-    expect(projectRow('alpha').className).toMatch(/ring-accent/)
-    expect(projectRow('beta').className).not.toMatch(/ring-accent/)
-    // alpha-token is its current and only token, so only a new one is
-    // offered (once the credential list has loaded).
-    await waitFor(() => expect(pickerOptions(projectRow('alpha'))).toEqual(['New HTTPS token…']))
-    expect(within(projectRow('alpha')).getByLabelText<HTMLInputElement>('Credential name').value)
-      .toBe('alpha-token-2')
   })
 })
 

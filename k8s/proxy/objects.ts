@@ -57,18 +57,34 @@ export type CodexCreds =
 /** opencode and pi keys, with the provider host the server resolved. */
 export type ApiKeyCreds = { kind: 'api-key'; apiKey: string; apiHost: string }
 
-/** One HTTPS token and the ids of the projects it is assigned to — a
- *  workspace is handed it only when its registration names one of them. */
-export type HttpsCredentialEntry = { token: string; projects: string[] }
+/**
+ * One use of a git credential: a repo a project links, which that project's
+ * workspaces may reach with it. `path` is the repo's path on `host`
+ * (`owner/repo`, no leading slash or `.git`). `readOnly` refuses every git
+ * write to the repo from the project's workspaces; `ghToken` lets an https
+ * GitHub repo's token stand in for the `GH_TOKEN` placeholder, never while
+ * `readOnly`.
+ */
+export type RepoGrant = {
+  projectId: string
+  repoId: string
+  host: string
+  path: string
+  readOnly: boolean
+  ghToken: boolean
+}
 
-/** One project an ssh key is assigned to: the host its remote names, and the
- *  known_hosts line that project trusts for it. */
-export type SshProjectGrant = { projectId: string; host: string; knownHostsEntry: string }
+/** One HTTPS token and the repos it is granted for. A request carries it
+ *  only under the path of one of them, from a workspace of that project. */
+export type HttpsCredentialEntry = { token: string; grants: RepoGrant[] }
 
-/** One ssh identity: the OpenSSH private key, its public line
- *  (`<type> <base64 blob> <comment>`; the agent protocol identifies keys by
- *  the blob) and the projects it is assigned to. */
-export type SshCredentialEntry = { privateKey: string; publicKey: string; projects: SshProjectGrant[] }
+/** An ssh key's grant: the repo, and the known_hosts lines trusted for its
+ *  host. */
+export type SshRepoGrant = RepoGrant & { knownHostsEntry: string }
+
+/** One ssh identity: the OpenSSH private key, its public line and the repos
+ *  it is granted for. The proxy logs in with it; no workspace holds it. */
+export type SshCredentialEntry = { privateKey: string; publicKey: string; grants: SshRepoGrant[] }
 
 /** An owner key. No `.`, since a Secret key's owner ends at its first one.
  *  Must match PROXY_OWNER_KEY_PATTERN in the server's proxy-constants.ts. */
@@ -130,7 +146,7 @@ export type ProxyRegistration = {
   rules: HostInjectionRule[]
   /** Absent means block all — fail closed. */
   allowedHosts: string[]
-  repoUrl?: string
+  /** The project whose repo grants and secrets the workspace is served. */
   projectId: string
   /** The owner key whose credentials this workspace spends. */
   owner: string
@@ -159,6 +175,10 @@ export type RefreshedBundles = { claude?: ClaudeOAuthBundle; codex?: CodexOAuthB
 export type OwnerRefreshedBundles = Map<string, RefreshedBundles>
 
 export type CaMaterial = { keyPem: string; certPem: string }
+
+/** The proxy's ssh host key: the OpenSSH private key and its public line
+ *  (`<type> <base64 blob>`), which workspaces trust for every git host. */
+export type SshHostKey = { privateKey: string; publicKey: string }
 
 /** The subset of a Secret / ConfigMap object the codecs read. */
 export interface RawObject {
@@ -275,70 +295,60 @@ export function publicKeyBlob(publicKey: string): string | null {
 
 const nonEmpty = (v: unknown): v is string => typeof v === 'string' && v !== ''
 
+/** A grant with every field well-formed, else null: a malformed grant is
+ *  dropped rather than read as a wider one. */
+function decodeGrant(grant: unknown): RepoGrant | null {
+  if (!grant || typeof grant !== 'object') return null
+  const { projectId, repoId, host, path, readOnly, ghToken } = grant as Record<string, unknown>
+  if (!nonEmpty(projectId) || !nonEmpty(repoId) || !nonEmpty(host) || !nonEmpty(path)) return null
+  if (typeof readOnly !== 'boolean' || typeof ghToken !== 'boolean') return null
+  return { projectId, repoId, host, path, readOnly, ghToken }
+}
+
 function decodeGit(entries: unknown[]): HttpsCredentialEntry[] {
   const out: HttpsCredentialEntry[] = []
   for (const entry of entries) {
     if (!entry || typeof entry !== 'object') continue
     const e = entry as Record<string, unknown>
-    if (!nonEmpty(e.token) || !Array.isArray(e.projects)) continue
-    out.push({ token: e.token, projects: e.projects.filter(nonEmpty) })
+    if (!nonEmpty(e.token) || !Array.isArray(e.grants)) continue
+    out.push({ token: e.token, grants: e.grants.map(decodeGrant).filter((g): g is RepoGrant => g !== null) })
   }
   return out
 }
 
-function decodeSshGrant(grant: unknown): SshProjectGrant | null {
-  if (!grant || typeof grant !== 'object') return null
-  const { projectId, host, knownHostsEntry } = grant as Record<string, unknown>
-  return nonEmpty(projectId) && nonEmpty(host) && nonEmpty(knownHostsEntry) ? { projectId, host, knownHostsEntry } : null
+function decodeSshGrant(raw: unknown): SshRepoGrant | null {
+  const grant = decodeGrant(raw)
+  const knownHostsEntry = (raw as Record<string, unknown> | null)?.knownHostsEntry
+  return grant !== null && nonEmpty(knownHostsEntry) ? { ...grant, knownHostsEntry } : null
 }
 
-/** Keys whose public line has no blob are dropped; the relay can't use them. */
+/** Keys whose public line has no blob are dropped as malformed. */
 function decodeSsh(entries: unknown[]): SshCredentialEntry[] {
   const out: SshCredentialEntry[] = []
   for (const entry of entries) {
     if (!entry || typeof entry !== 'object') continue
     const e = entry as Record<string, unknown>
     if (!nonEmpty(e.privateKey) || !nonEmpty(e.publicKey) || publicKeyBlob(e.publicKey) === null
-      || !Array.isArray(e.projects)) continue
-    const projects = e.projects.map(decodeSshGrant).filter((g): g is SshProjectGrant => g !== null)
-    out.push({ privateKey: e.privateKey, publicKey: e.publicKey, projects })
+      || !Array.isArray(e.grants)) continue
+    const grants = e.grants.map(decodeSshGrant).filter((g): g is SshRepoGrant => g !== null)
+    out.push({ privateKey: e.privateKey, publicKey: e.publicKey, grants })
   }
   return out
 }
 
 /**
- * The canonical base64 host keys of known_hosts lines (`hosts type key
- * [comment]`). A line with a marker is skipped: `@revoked` must never grant,
- * and a `@cert-authority` key is a CA's, never the host key a client binds.
+ * The host keys of known_hosts lines (`hosts type key [comment]`), each as
+ * its key type and canonical base64 blob. A line with a marker is skipped:
+ * `@revoked` must never grant, and a `@cert-authority` key is a CA's, never
+ * the host key a client binds.
  */
-function knownHostKeyBlobs(knownHosts: string): string[] {
-  const out: string[] = []
+export function knownHostKeys(knownHosts: string): Array<{ type: string; blob: string }> {
+  const out: Array<{ type: string; blob: string }> = []
   for (const line of knownHosts.split('\n')) {
     const fields = line.trim().split(/\s+/)
     if (fields[0]?.startsWith('@')) continue
     const blob = publicKeyBlob(fields.slice(1).join(' '))
-    if (blob !== null) out.push(blob)
-  }
-  return out
-}
-
-/**
- * What a workspace of `projectId` may sign with: each assigned key's blob
- * (publicKeyBlob) → the host keys of the hosts it is granted for there.
- * The agent's own `-h` constraint is the union over every grant of a key,
- * so the relay checks the bound host against this narrower set.
- */
-export function sshGrantsForProject(ssh: SshCredentialEntry[], projectId: string): Map<string, Set<string>> {
-  const out = new Map<string, Set<string>>()
-  for (const entry of ssh) {
-    const blob = publicKeyBlob(entry.publicKey)
-    if (blob === null) continue
-    for (const grant of entry.projects) {
-      if (grant.projectId !== projectId) continue
-      let hostKeys = out.get(blob)
-      if (!hostKeys) out.set(blob, hostKeys = new Set())
-      for (const hostKey of knownHostKeyBlobs(grant.knownHostsEntry)) hostKeys.add(hostKey)
-    }
+    if (blob !== null) out.push({ type: fields[1], blob })
   }
   return out
 }
@@ -366,8 +376,8 @@ function filesByOwner(secret: RawObject): Map<string, Map<string, string>> {
  * (`<owner>.claude.json`, `.codex.json`, `.opencode.json`, `.pi.json`,
  * `.omp.json`), plus
  * `<owner>.git-tokens.json` and `<owner>.ssh-keys.json`, JSON arrays of
- * project-scoped entries. A missing or malformed key means no credential of
- * that kind; a malformed entry is dropped on its own.
+ * entries, each with its repo grants. A missing or malformed key means no
+ * credential of that kind; a malformed entry or grant is dropped on its own.
  */
 export function decodeCredentials(secret: RawObject): OwnerCredentials {
   const out: OwnerCredentials = new Map()
@@ -431,7 +441,6 @@ export function decodeRegistration(
     registration: {
       rules: o.rules as HostInjectionRule[],
       allowedHosts: (o.allowedHosts as unknown[]).filter((h): h is string => typeof h === 'string'),
-      repoUrl: typeof o.repoUrl === 'string' && o.repoUrl ? o.repoUrl : undefined,
       projectId: o.projectId,
       owner: o.owner,
       upstreamRedirects: decodeRedirects(o.upstreamRedirects),
@@ -461,6 +470,14 @@ export function decodeCa(secret: RawObject): CaMaterial | null {
   const keyPem = secretString(secret, 'ca.key')
   const certPem = secretString(secret, 'ca.pem')
   return keyPem && certPem ? { keyPem, certPem } : null
+}
+
+/** The ssh host key the CA Secret holds, or null when either half is
+ *  absent. */
+export function decodeSshHostKey(secret: RawObject): SshHostKey | null {
+  const privateKey = secretString(secret, 'ssh-host-key')
+  const publicKey = secretString(secret, 'ssh-host-key.pub')
+  return privateKey && publicKey ? { privateKey, publicKey } : null
 }
 
 /** The state ConfigMap. Malformed entries are dropped, never guessed at. */
@@ -520,10 +537,17 @@ export function encodeRefreshed(bundles: OwnerRefreshedBundles): Record<string, 
   return secretData(entries)
 }
 
-/** The CA Secret's `data`: key, cert, and the system roots plus the CA as
- *  one trust bundle for nested containers. */
-export function encodeCa(ca: CaMaterial & { bundlePem: string }): Record<string, string> {
-  return secretData({ 'ca.key': ca.keyPem, 'ca.pem': ca.certPem, 'ca-bundle.pem': ca.bundlePem })
+/** The CA Secret's `data`: key, cert, the system roots plus the CA as one
+ *  trust bundle for nested containers, and the ssh host key. The server
+ *  copies the public parts into the ConfigMap workspace pods mount. */
+export function encodeCa(ca: CaMaterial & { bundlePem: string; sshHostKey: SshHostKey }): Record<string, string> {
+  return secretData({
+    'ca.key': ca.keyPem,
+    'ca.pem': ca.certPem,
+    'ca-bundle.pem': ca.bundlePem,
+    'ssh-host-key': ca.sshHostKey.privateKey,
+    'ssh-host-key.pub': ca.sshHostKey.publicKey,
+  })
 }
 
 /** The state ConfigMap's `data`. */

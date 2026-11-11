@@ -27,7 +27,7 @@ import {
 import { captureFirstPrompt } from './prompt-capture'
 import { captureTitle } from './title-capture'
 import { claiming } from './prewarm'
-import { recordedTranscript } from './conversation-paths'
+import { conversationCwds, recordedTranscript } from './conversation-paths'
 import { serverLog } from '#lib/log'
 import type { ConversationLinkRow, CapturedConversation, DiscoveredConversation, SessionRow, WorkspaceRow } from '#db'
 import type { AcpConversation, LiveAgent } from '#runtime/agents'
@@ -73,16 +73,20 @@ export async function reconcileWorkspaceConversations(
   // does not look like every agent exited.
   const reported = liveAgents(projectId, workspaceId)
   if (reported === undefined) return
-  // Map each reported transcript path to where the file really is, or drop it.
-  const observed = await Promise.all(reported.map(async (a): Promise<LiveAgent> => {
-    const { transcriptPath, ...rest } = a
-    const located = a.conversationId === undefined
-      ? undefined
-      : await locateTranscript(projectId, workspaceId, a.tool, a.conversationId, transcriptPath)
-    return located === undefined ? rest : { ...rest, transcriptPath: located }
-  }))
   const row = await getWorkspaceRow(projectId, workspaceId)
   const sessions = new Map((await listWorkspaceSessions(workspaceId)).map((s) => [s.window, s]))
+  // Map each reported transcript path to where the file really is, or drop
+  // it. An agent that reports none is looked for where its tool files it for
+  // the directory its session runs in (one started by hand in a terminal
+  // has no session; the workspace's default stands in).
+  const observed = await Promise.all(reported.map(async (a): Promise<LiveAgent> => {
+    const { transcriptPath, ...rest } = a
+    const cwd = sessions.get(a.handle)?.cwd ?? row?.cwd ?? ''
+    const located = a.conversationId === undefined
+      ? undefined
+      : await locateTranscript(projectId, workspaceId, a.tool, a.conversationId, transcriptPath, cwd)
+    return located === undefined ? rest : { ...rest, transcriptPath: located }
+  }))
   const links = await listWorkspaceConversations(projectId, workspaceId)
   if (row !== undefined) {
     const reports = await withRolloutReports(row, observed, links)
@@ -233,7 +237,8 @@ async function captureStoppedBatch(pending: ConversationLinkRow[]): Promise<void
 async function captureStopped(l: ConversationLinkRow): Promise<CapturedConversation> {
   const record = { projectId: l.projectId, workspaceId: l.workspaceId, conversationId: l.conversationId }
   const activity = l.mode === 'acp' ? acpRecord(record)
-    : recordedTranscript(l) ?? await sessionTranscriptPath(l.projectId, l.workspaceId, l.tool, l.conversationId)
+    : recordedTranscript(l)
+      ?? await sessionTranscriptPath(l.projectId, l.workspaceId, l.tool, l.conversationId, await conversationCwds(l))
   const firstPrompt = l.firstPrompt !== undefined ? undefined
     : l.mode === 'acp' ? await readAcpFirstPrompt(record)
     : await getConversationFirstMessage(l.tool, activity)
@@ -251,8 +256,8 @@ async function captureStopped(l: ConversationLinkRow): Promise<CapturedConversat
  * own title (`captureTitle`), and its last activity: the mtime of the file
  * the agent appends to, recorded every pass so the stopped listing can show
  * it without a read. Under `tui` that file is the tool's transcript. Under
- * `acp` most tools leave no transcript yaac can find, so acpd's record is
- * read instead.
+ * `acp` not every tool leaves a transcript yaac can find, so acpd's record
+ * is read instead.
  *
  * The model is mapped to its catalog id, since an ACP adapter may report its
  * own naming.
@@ -277,7 +282,7 @@ async function describe(
   const activity = mode === 'acp' ? acpRecord(record) : transcript
   const lastActiveMs = activity !== undefined ? await transcriptLastActiveMs(activity) : undefined
   const title = await captureTitle(
-    projectId, workspaceId, tool, conversationId, transcript, jobName, lastActiveMs, recorded?.title,
+    projectId, tool, conversationId, transcript, jobName, lastActiveMs, recorded?.title,
   )
   return {
     tool,

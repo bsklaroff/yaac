@@ -26,7 +26,8 @@ import {
 } from './provisioning'
 import { resolveWorkspace } from './resolve'
 import { workspaceDriver } from '#drivers/driver'
-import { checkStartSteps, prepareStart } from './start'
+import { checkStartCommits, checkStartSteps, prepareStart, startOf } from './start'
+import { resolveStart, storedSelection, type StartRequest } from './checkouts'
 import { toStoppedEntries } from './stopped-list'
 import { customEndpointFor, modelDisplayName, modelEfforts } from '#domain/auth'
 import { authorizeProject, isProjectHeld, systemPrincipal, type Actor } from '#domain/access'
@@ -56,6 +57,7 @@ import {
   releaseQueuedWorkspace,
   updateQueuedWorkspace as updateQueuedWorkspaceRow,
   type QueuedParent,
+  type ProjectRow,
   type QueuedWorkspaceRow,
   type QueuedWorkspaceSettings,
 } from '#db'
@@ -77,6 +79,8 @@ import {
   type HeldWorkspaceEntry,
   type PermissionMode,
   type QueuedWorkspaceEntry,
+  type RepoSelection,
+  type RepoStart,
 } from '@yaac/shared/types'
 
 /**
@@ -109,7 +113,13 @@ export interface QueueRequest {
   /** Refused if the tool lacks one; unnamed ones are the project's
    *  remembered choices, else off. */
   agentOptions?: AgentOptions
-  /** At most one of a branch and a full commit; neither inherits. */
+  /** What it starts with (`queuedSelection`): repos by folder or id, each
+   *  at a branch or a full commit, their layout and the agent's cwd.
+   *  `branch` or `commit` alone names the start of its one repo. Each left
+   *  out inherits. */
+  repos?: RepoStart[]
+  nested?: boolean
+  cwd?: string
   branch?: string
   commit?: string
   /** The step graph it starts with, unparsed; null for none, absent for the
@@ -142,10 +152,9 @@ interface ParentInfo {
   mode?: AgentMode
   model?: string
   permissionMode?: PermissionMode
-  branch?: string
-  /** A parent with no base branch: the commit it was created at, which a
-   *  child starts at in its place. */
-  commit?: string
+  /** What it starts or started with: a workspace's repos each at its base
+   *  branch, or with none at the commit it was created at. */
+  selection?: RepoSelection
   groupId?: string
 }
 
@@ -169,7 +178,7 @@ export async function queueWorkspace(
     throw new ServerError('VALIDATION', 'a queued workspace waits on a parent or starts at a time, not both')
   }
   const parent = request.start !== undefined
-    ? { pointer: { startAt: await resolveStart(projectId, request.start) } }
+    ? { pointer: { startAt: await startTime(projectId, request.start) } }
     : request.parent == null
       ? await roomToWaitIn(projectId, request.group)
       : await resolveParent(projectId, request.parent)
@@ -189,7 +198,7 @@ export async function queueWorkspace(
  * The instant a start names. A wall-clock text is read in the project
  * owner's zone (queue writes are the owner's), else UTC.
  */
-async function resolveStart(projectId: string, start: QueueStart): Promise<Date> {
+async function startTime(projectId: string, start: QueueStart): Promise<Date> {
   if ('inMinutes' in start) return new Date(Date.now() + start.inMinutes * 60_000)
   const owner = (await getProjectRow(projectId))?.owner
   const zone = (owner !== undefined ? (await getTimeZone(owner)).timeZone : null) ?? 'UTC'
@@ -226,7 +235,7 @@ export async function updateQueuedWorkspace(
   const parentless = patch.start === undefined
     && (patch.parent === null || (patch.parent === undefined && pointerOf(row) === null))
   const parent = patch.start !== undefined
-    ? { pointer: { startAt: await resolveStart(row.projectId, patch.start) } }
+    ? { pointer: { startAt: await startTime(row.projectId, patch.start) } }
     : parentless && (patch.parent === null || patch.group !== undefined)
       ? await roomToWaitIn(row.projectId, patch.group !== undefined ? patch.group : row.groupId ?? null)
       : patch.parent != null
@@ -236,8 +245,6 @@ export async function updateQueuedWorkspace(
   const keptEffort = patch.effort ?? (retooled ? undefined : await keepableEffort(row, patch.model))
   const nonInteractive = patch.nonInteractive ?? row.nonInteractive
   const prompt = nonInteractive ? undefined : patch.prompt ?? row.prompt
-  const commit = patch.branch !== undefined ? undefined : patch.commit ?? row.commit
-  const branch = commit !== undefined ? undefined : patch.branch ?? row.branch
   // New steps replace a workflow, and a workflow steps; neither keeps its own.
   const named = patch.steps === undefined && patch.workflow === undefined && row.namedWorkflowId !== undefined
     ? await getNamedWorkflow(row.namedWorkflowId) : undefined
@@ -248,8 +255,11 @@ export async function updateQueuedWorkspace(
     ...(prompt !== undefined ? { prompt } : {}),
     tool: patch.tool ?? row.tool,
     mode: patch.mode ?? row.mode,
-    ...(branch !== undefined ? { branch } : {}),
-    ...(commit !== undefined ? { commit } : {}),
+    ...(patch.repos !== undefined ? { repos: patch.repos } : {}),
+    ...(patch.nested !== undefined ? { nested: patch.nested } : {}),
+    ...(patch.cwd !== undefined ? { cwd: patch.cwd } : {}),
+    ...(patch.branch !== undefined ? { branch: patch.branch } : {}),
+    ...(patch.commit !== undefined ? { commit: patch.commit } : {}),
     ...(steps !== undefined ? { steps } : {}),
     ...(workflow !== undefined ? { workflow } : {}),
     ...(nonInteractive ? { nonInteractive } : {}),
@@ -264,7 +274,7 @@ export async function updateQueuedWorkspace(
     ...(retooled ? patch.agentOptions !== undefined ? { agentOptions: patch.agentOptions } : {}
       : { agentOptions: { ...row.agentOptions, ...patch.agentOptions } }),
     timeout: patch.timeout !== undefined ? patch.timeout : row.timeoutMinutes ?? null,
-  }, source)
+  }, source, selectionOf(row))
   refuseDeletedParent(parent.pointer)
   const updated = await updateQueuedWorkspaceRow(id, {
     ...settings,
@@ -482,8 +492,7 @@ async function launch(row: QueuedWorkspaceRow, timeoutFrom: Date): Promise<{ wor
         permissionMode: row.permissionMode,
         ...(row.effort !== undefined ? { effort: row.effort } : {}),
         agentOptions: row.agentOptions,
-        ...(row.branch !== undefined ? { branch: row.branch } : {}),
-        ...(row.commit !== undefined ? { commit: row.commit } : {}),
+        ...selectionOf(row),
         ...(named !== undefined ? { workflow: named.name } : row.workflowId !== undefined ? { workflowId: row.workflowId } : {}),
         ...(row.nonInteractive ? { nonInteractive: true } : {}),
         ...(row.prompt !== undefined ? { prompt: row.prompt } : { noSession: true }),
@@ -661,8 +670,7 @@ async function parentInfo(projectId: string, pointer: QueuedParent): Promise<Par
   const model = reported ?? creating?.model
   const mode = first?.mode
   const tool = first?.tool ?? creating?.tool
-  const branch = row?.baseBranch ?? creating?.branch
-  const commit = branch === undefined ? row?.startCommit : undefined
+  const selection = row !== undefined ? await startOf(row, 'branch') : creating?.selection
   const groupId = row !== undefined ? row.groupId : creating?.groupId
   return {
     pointer,
@@ -670,10 +678,49 @@ async function parentInfo(projectId: string, pointer: QueuedParent): Promise<Par
     ...(mode !== undefined ? { mode } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(first !== undefined ? { permissionMode: first.permissionMode } : {}),
-    ...(branch !== undefined ? { branch } : {}),
-    ...(commit !== undefined ? { commit } : {}),
+    ...(selection !== undefined ? { selection } : {}),
     ...(groupId !== undefined ? { groupId } : {}),
   }
+}
+
+/** What an entry starts with, as its row keeps it. */
+function selectionOf(entry: QueuedWorkspaceRow): RepoSelection {
+  return { repos: entry.repos, nested: entry.nested, cwd: entry.cwd }
+}
+
+/**
+ * What a queued entry or a routine's runs start with, resolved now so the
+ * sidebar shows what will launch: the request's repos, layout and cwd,
+ * with those it leaves out taken from `base` (its parent's, or on an edit
+ * its own) while it names no repos, else from the project's last create
+ * (`resolveStart`). A `branch` or `commit` on its own replaces the start of
+ * `base`'s one repo. A repo with no start named takes its remote's default
+ * branch.
+ */
+export async function queuedSelection(
+  project: ProjectRow,
+  base: RepoSelection | undefined,
+  request: StartRequest,
+): Promise<RepoSelection> {
+  const inherited = request.repos === undefined ? base : undefined
+  const restarted = request.branch !== undefined || request.commit !== undefined
+  const nested = request.nested ?? inherited?.nested
+  const cwd = request.cwd ?? inherited?.cwd
+  const start = resolveStart(project, {
+    ...(request.repos !== undefined ? { repos: request.repos }
+      : inherited === undefined ? {}
+      : { repos: restarted && inherited.repos.length === 1 ? [{ repo: inherited.repos[0].repo }] : inherited.repos }),
+    ...(nested !== undefined ? { nested } : {}),
+    ...(cwd !== undefined ? { cwd } : {}),
+    ...(request.branch !== undefined ? { branch: request.branch } : {}),
+    ...(request.commit !== undefined ? { commit: request.commit } : {}),
+  })
+  checkStartCommits(start)
+  const selection = storedSelection(start)
+  for (const repo of selection.repos) {
+    if (repo.branch === undefined && repo.commit === undefined) repo.branch = await getDefaultBranch(repoDir(repo.repo))
+  }
+  return selection
 }
 
 function settingsOf(entry: QueuedWorkspaceRow): Omit<ParentInfo, 'pointer'> {
@@ -682,8 +729,7 @@ function settingsOf(entry: QueuedWorkspaceRow): Omit<ParentInfo, 'pointer'> {
     mode: entry.mode,
     model: entry.model,
     permissionMode: entry.permissionMode,
-    ...(entry.branch !== undefined ? { branch: entry.branch } : {}),
-    ...(entry.commit !== undefined ? { commit: entry.commit } : {}),
+    selection: selectionOf(entry),
     ...(entry.groupId !== undefined ? { groupId: entry.groupId } : {}),
   }
 }
@@ -691,15 +737,20 @@ function settingsOf(entry: QueuedWorkspaceRow): Omit<ParentInfo, 'pointer'> {
 /**
  * Resolve every setting: the request's, else the parent's (tool-specific ones
  * only for the same tool), else the project's create defaults. The group is
- * fixed now, so moving the parent later does not move it.
+ * fixed now, so moving the parent later does not move it. On an edit, `own`
+ * is what the entry starts with now, which it keeps where the edit names
+ * nothing else.
  */
 async function resolveSettings(
   projectId: string,
   parent: ParentInfo,
   request: Omit<QueueRequest, 'parent' | 'start'>,
   source: QueueSource,
+  own?: RepoSelection,
 ): Promise<QueuedWorkspaceSettings> {
-  const tool = request.tool ?? parent.tool ?? (await getProjectRow(projectId))?.lastTool ?? 'claude'
+  const project = await getProjectRow(projectId)
+  if (!project) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
+  const tool = request.tool ?? parent.tool ?? project.lastTool ?? 'claude'
   const sameTool = tool === parent.tool
   // The UI mode is not tool-specific, so it is borrowed whatever the tool.
   // With the parent's tool unknown, borrow the permission mode (checked
@@ -761,9 +812,7 @@ async function resolveSettings(
     permissionMode: setup.permissionMode,
     ...(setup.effort !== undefined ? { effort: setup.effort } : {}),
     agentOptions: setup.agentOptions,
-    ...(request.commit !== undefined ? { commit: request.commit }
-      : request.branch === undefined && parent.branch === undefined && parent.commit !== undefined ? { commit: parent.commit }
-      : { branch: request.branch ?? parent.branch ?? await getDefaultBranch(repoDir(projectId)) }),
+    ...await queuedSelection(project, own ?? parent.selection, request),
     ...(named !== undefined ? { namedWorkflowId: named.id }
       : steps !== undefined ? { workflowId: (await storeWorkflow(projectId, { steps: steps ?? {}, secrets: [] })).id } : {}),
     ...(request.nonInteractive === true ? { nonInteractive: true } : {}),
@@ -782,8 +831,9 @@ export async function resolveParentlessSettings(
   projectId: string,
   request: Omit<QueueRequest, 'parent' | 'start'>,
   source: QueueSource,
+  own?: RepoSelection,
 ): Promise<QueuedWorkspaceSettings> {
-  return await resolveSettings(projectId, { pointer: { startAt: new Date() } }, request, source)
+  return await resolveSettings(projectId, { pointer: { startAt: new Date() } }, request, source, own)
 }
 
 /** Wire entries, flagging the ones whose parent workspace is gone. */
@@ -819,8 +869,7 @@ async function toEntries(rows: QueuedWorkspaceRow[]): Promise<QueuedWorkspaceEnt
       permissionMode: r.permissionMode,
       ...(r.effort !== undefined ? { effort: r.effort } : {}),
       agentOptions: r.agentOptions,
-      ...(r.branch !== undefined ? { branch: r.branch } : {}),
-      ...(r.commit !== undefined ? { commit: r.commit } : {}),
+      selection: selectionOf(r),
       ...(graphs.get(r.id) ?? {}),
       ...(r.nonInteractive ? { nonInteractive: true as const } : {}),
       ...(r.title !== undefined ? { title: r.title } : {}),

@@ -41,7 +41,7 @@ describe('desiredWorkspaces', () => {
   it('marks a workspace whose agent got going as having run', async () => {
     for (const id of ['wt-1', 'wt-2', 'wt-3']) await recordWorkspaceCreated({ projectId: PROJ, workspaceId: id })
     await recordConversations(PROJ, 'wt-1', [{ tool: 'claude', conversationId: 'conv-a' }])
-    const claude = { tool: 'claude', mode: 'tui', permissionMode: 'bypass' } as const
+    const claude = { tool: 'claude', mode: 'tui', permissionMode: 'bypass', cwd: '' } as const
     await markSessionsLaunched([(await insertSession(PROJ, 'wt-2', claude)).id])
     await insertSession(PROJ, 'wt-3', claude)
 

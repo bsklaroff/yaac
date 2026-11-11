@@ -28,6 +28,9 @@ import { createWorkspaceGroup, deleteWorkspaceGroup } from '#db/group-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
+/** The repo the fixtures start with; only its id is stored. */
+const REPO = PROJ
+const START = { repos: [{ repo: REPO, branch: 'main' }], nested: false, cwd: REPO }
 const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
 
 describe('routine store', () => {
@@ -50,13 +53,13 @@ describe('routine store', () => {
   const first = new Date('2026-10-24T09:00:00Z')
   const fields: RoutineFields = {
     name: 'Nightly', cron: '0 9 * * *', timeZone: 'UTC', prompt: 'triage', tool: 'claude', model: 'opus',
-    mode: 'acp', permissionMode: 'bypass', branch: 'main',
+    mode: 'acp', permissionMode: 'bypass', ...START,
   }
   const runSettings = {
-    prompt: 'triage', tool: 'claude', model: 'opus', mode: 'acp', permissionMode: 'bypass', branch: 'main',
+    prompt: 'triage', tool: 'claude', model: 'opus', mode: 'acp', permissionMode: 'bypass', ...START,
   } as const
   const run = (routineId: string, startAt: Date, prompt = 'triage') => insertQueuedWorkspace(PROJ, { startAt }, {
-    prompt, tool: 'claude', model: 'opus', mode: 'acp', permissionMode: 'bypass', branch: 'main',
+    prompt, tool: 'claude', model: 'opus', mode: 'acp', permissionMode: 'bypass', ...START,
   }, { routineId })
 
   it('stores, replaces and lists routines, leaving the schedule to the calls that own it', async () => {

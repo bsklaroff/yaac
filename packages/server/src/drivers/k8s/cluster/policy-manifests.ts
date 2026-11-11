@@ -24,7 +24,6 @@ import {
   SERVER_POD_PORT,
   WORKSPACE_EGRESS_NP_NAME,
   WORKSPACE_INGRESS_LOCK_NP_NAME,
-  SSH_AGENT_PORT,
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_TUNNEL_PORT,
@@ -81,9 +80,7 @@ const workspacePodSelector = {
  * address in the PROXY-protocol header, and the proxy's transparent ports
  * are node-only (buildProxyIngressNpManifest).
  *
- * Also allowed: the proxy pod's DNS stub (53/udp) and ssh-agent port. The
- * proxy only signs for workspaces whose remote is SSH, and only allows
- * list/sign requests.
+ * Also allowed: the proxy pod's DNS stub (53/udp).
  *
  * The npm cache and per-project registries are allowed by their own
  * label-scoped policies. This install-wide policy cannot scope to one
@@ -105,7 +102,7 @@ export function buildWorkspaceEgressNpManifest(nodeCidrs: string[]): Record<stri
       },
       {
         to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }],
-        ports: [udp(DNS_STUB_PORT), tcp(SSH_AGENT_PORT)],
+        ports: [udp(DNS_STUB_PORT)],
       },
     ],
   })
@@ -131,7 +128,7 @@ export function buildWorkspaceIngressLockNpManifest(): Record<string, unknown> {
 /**
  * Proxy ingress. The transparent ports are open only to node addresses,
  * where netd's Envoy delivers from, so no pod can forge a PROXY-protocol
- * source. Workspace pods may reach only the DNS stub and ssh-agent ports.
+ * source. Workspace pods may reach only the DNS stub.
  * The control API and relay are open to the node and to the in-cluster
  * server pod.
  */
@@ -153,7 +150,7 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
       },
       {
         from: [{ podSelector: workspacePodSelector }],
-        ports: [udp(DNS_STUB_PORT), tcp(SSH_AGENT_PORT)],
+        ports: [udp(DNS_STUB_PORT)],
       },
       {
         // The in-cluster server (docs/server-in-cluster.md), by label.

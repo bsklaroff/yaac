@@ -28,7 +28,8 @@ import {
   type StepRow,
 } from '#db'
 import { isProjectHeld, systemPrincipal, type Actor } from '#domain/access'
-import { approveWorkflowRef, fetchProjectOrigin } from '#domain/projects'
+import { approveWorkflowRef } from '#domain/projects'
+import { fetchRepoOrigin } from '#domain/repos'
 import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
 import {
   listProvisioning,
@@ -79,16 +80,16 @@ function wakeAt(at: number): void {
 
 const replaceDelay = (failures: number): number => Math.min(REPLACE_MAX_MS, REPLACE_FIRST_MS * 2 ** failures)
 
-/** A branch's tip on origin, or a full commit as given. */
-async function resolveDeployCommit(projectId: string, ref: string | undefined): Promise<string> {
+/** A branch's tip on the origin of a site's repo, or a full commit as given. */
+async function resolveDeployCommit(repoId: string, ref: string | undefined): Promise<string> {
   if (ref !== undefined && FULL_COMMIT_PATTERN.test(ref)) return ref
   if (!testEnv.e2eSkipFetch) {
-    await fetchProjectOrigin(projectId).catch((err: unknown) => {
+    await fetchRepoOrigin(repoId).catch((err: unknown) => {
       throw new ServerError('INTERNAL', `could not fetch from remote: ${err instanceof Error ? err.message : String(err)}`)
     })
   }
-  const branch = ref ?? await getDefaultBranch(repoDir(projectId))
-  return await resolveRemoteRef(repoDir(projectId), branch).catch(() => {
+  const branch = ref ?? await getDefaultBranch(repoDir(repoId))
+  return await resolveRemoteRef(repoDir(repoId), branch).catch(() => {
     throw new ServerError('VALIDATION', `"${branch}" is neither a branch on origin nor a full commit id`)
   })
 }
@@ -152,12 +153,12 @@ export async function deploySite(
   opts: { ref?: string; timeoutMinutes?: number } = {},
 ): Promise<{ workspaceId: string; commit: string }> {
   await authorizeSitePublish(principal, projectId)
-  const { id, followBranch } = await requireSite(projectId, name)
+  const { id, followBranch, repoId } = await requireSite(projectId, name)
   if (followBranch !== undefined && opts.ref !== undefined && opts.ref !== followBranch) {
     throw new ServerError('CONFLICT', `site "${name}" follows ${followBranch}, so it deploys only that branch's tip; `
       + 'stop following it to deploy anything else')
   }
-  const commit = await resolveDeployCommit(projectId, opts.ref ?? followBranch)
+  const commit = await resolveDeployCommit(repoId, opts.ref ?? followBranch)
   const timeoutMs = opts.timeoutMinutes !== undefined ? opts.timeoutMinutes * 60_000 : DEFAULT_DEPLOY_TIMEOUT_MS
   return await withSiteLock(id, async () => {
     const site = await lockedSite(id, name)
@@ -167,7 +168,7 @@ export async function deploySite(
     // A person deploying a site that follows a branch approves the branch
     // for its workflow, as its setup does.
     if (site.followBranch !== undefined) {
-      await approveWorkflowRef(principal, site.namedWorkflowId, { branch: site.followBranch })
+      await approveWorkflowRef(principal, site.namedWorkflowId, { branch: site.followBranch, repoId: site.repoId })
     }
     return await startDeploy(principal, site, { ...await siteConfig(site), commit, timeoutMs })
   })
@@ -205,15 +206,13 @@ export async function stopSite(principal: Actor, projectId: string, name: string
  * Stop a site's deploy and every release it runs, and forget the live
  * one, keeping the commit and image it ran for `startSite`. Called holding
  * the site's lock. A release that could not be stopped is refused as
- * RUNTIME_UNAVAILABLE with nothing forgotten, so a retry stops it; a
- * revoked share's releases are the revoked-shares sweep's to stop.
+ * RUNTIME_UNAVAILABLE with nothing forgotten, so a retry stops it.
  */
 export async function endReleases(siteId: string): Promise<void> {
   const row = await getSiteRow(siteId)
   if (!row) return
-  const revoked = (await getProjectRow(row.projectId))?.shareRevoked === true
   for (const id of [row.deployWorkspaceId, row.liveWorkspaceId, row.drainWorkspaceId]) {
-    if (id !== undefined && !revoked && !await stopRelease(id)) {
+    if (id !== undefined && !await stopRelease(id)) {
       throw new ServerError('RUNTIME_UNAVAILABLE', `release ${id.slice(0, 8)} of site "${row.name}" could not be stopped; try again`)
     }
   }
@@ -309,7 +308,10 @@ async function startDeploy(
     const run = await prepareStart(principal, {
       projectId: site.projectId,
       workspaceId,
-      commit: opts.commit,
+      // The site's repo alone, at the workspace root.
+      repos: [{ repo: site.repoId, commit: opts.commit }],
+      nested: false,
+      cwd: '.',
       ...('id' in opts.workflow
         ? { workflowId: opts.workflow.id, ...(opts.workflow.name !== undefined ? { workflowName: opts.workflow.name } : {}) }
         : { workflow: opts.workflow.name }),
@@ -387,13 +389,11 @@ export async function reconcileSites(snapshot: RuntimeSnapshot, resync: boolean)
 }
 
 /**
- * One site's pass. Resolves whether its route changed. A revoked share's
- * site runs nothing (docs/hosted-projects.md "Sharing"), so it is left to
- * the revoked-shares sweep until its owner deletes it.
+ * One site's pass. Resolves whether its route changed.
  */
 async function reconcileSite(siteId: string, alive: (id: string) => boolean): Promise<boolean> {
   const row = await getSiteRow(siteId)
-  if (!row || (await getProjectRow(row.projectId))?.shareRevoked === true) return false
+  if (!row) return false
   const now = Date.now()
   if (row.drainWorkspaceId !== undefined && row.drainUntil !== undefined && now >= row.drainUntil.getTime()
     && await stopRelease(row.drainWorkspaceId)) {
@@ -566,7 +566,7 @@ async function followBranch(row: SiteRow): Promise<void> {
     return
   }
   pauseLogged.delete(row.id)
-  const tip = await resolveRemoteRef(repoDir(row.projectId), row.followBranch).catch(() => undefined)
+  const tip = await resolveRemoteRef(repoDir(row.repoId), row.followBranch).catch(() => undefined)
   if (tip === undefined || tip === row.releaseCommit || tip === row.failedCommit) return
   serverLog(`[sites] ${row.name}: ${row.followBranch} is at ${tip.slice(0, 12)}; deploying it`)
   await startDeploy(systemPrincipal, row, {

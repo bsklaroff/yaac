@@ -12,6 +12,7 @@ import {
   getSessionRow,
   insertSession,
   listWorkspaceConversations,
+  listWorkspaceRepos,
   listWorkspaceSessions,
   recordProjectCreate,
   setSessionAgentOptions,
@@ -49,6 +50,10 @@ export interface OpenSessionRequest {
   effort?: string
   agentOptions?: AgentOptions
   prompt?: string
+  /** Where its agent runs: `.` for the workspace root, or one of the
+   *  workspace's checkouts by path or repo id. Unnamed is the workspace's
+   *  cwd, or for `resume` where that conversation's session ran. */
+  cwd?: string
   /** One of the workspace's earlier conversations to resume. */
   resume?: string
   title?: string
@@ -77,6 +82,7 @@ export async function openSession(
   if (request.resume !== undefined && resumed === undefined) {
     throw new ServerError('VALIDATION', `workspace ${workspaceId.slice(0, 8)} has no conversation ${request.resume}`)
   }
+  const cwd = await sessionCwd(workspaceId, request.cwd, resumed?.sessionId)
   // A resumed conversation keeps its own tool and protocol.
   const setup = await resolveCreate(projectId, {
     ...(request.tool !== undefined ? { tool: request.tool } : {}),
@@ -99,6 +105,7 @@ export async function openSession(
   }
   const session = await insertSession(projectId, workspaceId, {
     ...setup,
+    cwd,
     ...(request.prompt !== undefined ? { prompt: request.prompt } : {}),
     ...(request.resume !== undefined ? { conversationId: request.resume } : {}),
     ...(request.title !== undefined ? { title: request.title } : {}),
@@ -111,6 +118,33 @@ export async function openSession(
     throw err
   }
   return session
+}
+
+/**
+ * Where a session opened in a workspace runs, relative to its root: the
+ * directory `requested` names (`.`, or a checkout by path or repo id), else
+ * where the session that held the conversation it resumes ran, else the
+ * workspace's cwd. An agent runs only at the root or a checkout's root, and
+ * claude and codex find a conversation only from the directory it started
+ * in.
+ */
+async function sessionCwd(
+  workspaceId: string,
+  requested: string | undefined,
+  resumedSessionId: string | undefined,
+): Promise<string> {
+  const held = resumedSessionId !== undefined ? (await getSessionRow(resumedSessionId))?.cwd : undefined
+  if (requested === undefined) return held ?? (await findWorkspaceRow(workspaceId))?.cwd ?? ''
+  const checkouts = await listWorkspaceRepos(workspaceId)
+  const cwd = requested === '.' ? '' : (checkouts.find((c) => c.path === requested) ?? checkouts.find((c) => c.repoId === requested))?.path
+  if (cwd === undefined) {
+    throw new ServerError('VALIDATION', `the cwd "${requested}" is not "." or one of this workspace's checkouts`
+      + (checkouts.length > 0 ? ` (${checkouts.map((c) => c.path || '.').join(', ')})` : ''))
+  }
+  if (held !== undefined && held !== cwd) {
+    throw new ServerError('VALIDATION', `that conversation ran in "${held || '.'}", and resumes only there`)
+  }
+  return cwd
 }
 
 /** An open session the caller owns, with its workspace. */

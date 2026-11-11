@@ -176,6 +176,87 @@ describe('openDb', () => {
     }
   })
 
+  // Each project's remote becomes a repo with the project's id, linked into
+  // it and held by its workspaces at their root, so nothing on disk moves. A
+  // share has no repo of its own: it links the one it was shared from, and
+  // its owner is shared that repo unless the share was removed. What queued
+  // entries, routines and drafts start with, and a site's repo, name the
+  // repo; a conversation two workspaces linked keeps its first.
+  it('turns each project\'s remote into a repo, and a share into a link to its source\'s', async () => {
+    const [PLAIN, HOSTED, SHARE, REVOKED, ODD] = [1, 2, 3, 4, 5].map((n) => `00000000-0000-4000-8000-00000000000${n}`)
+    const [ADA, BOB, CRED, FLOW, NAMED, QUEUED, ROUTINE, DRAFT] = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => `0a0a0a0a-0000-4000-8000-00000000000${n}`)
+    const hosted = (id: string): string => `http://yaac.internal/api/workspace/git/${id}.git`
+    const db = await seedBefore('add_repos', `
+      INSERT INTO users (id, login, name) VALUES ('${ADA}', 'ada@x', 'Ada'), ('${BOB}', 'bob@x', 'Bob');
+      INSERT INTO git_credentials (id, owner, name, kind, sealed_secret) VALUES ('${CRED}', '${ADA}', 'k', 'ssh', 'x');
+      INSERT INTO projects (id, owner, name, remote_url, added_at, last_branch, git_credential_id, known_hosts_entry)
+        VALUES ('${PLAIN}', '${ADA}', 'my.app', 'git@h:o/app.git', '2026-01-01', 'dev', '${CRED}', 'h ssh-ed25519 KEY');
+      INSERT INTO projects (id, owner, name, remote_url, added_at, hosted, guard_default_branch)
+        VALUES ('${HOSTED}', '${ADA}', 'notes', '${hosted(HOSTED)}', '2026-01-02', true, false);
+      INSERT INTO projects (id, owner, name, remote_url, added_at, hosted, shared_from, share_revoked) VALUES
+        ('${SHARE}', '${BOB}', 'notes', '${hosted(SHARE)}', '2026-01-03', true, '${HOSTED}', false),
+        ('${REVOKED}', (SELECT id FROM users WHERE login IS NULL LIMIT 1), 'notes', '${hosted(REVOKED)}', '2026-01-04', true, '${HOSTED}', true);
+      INSERT INTO projects (id, owner, name, remote_url, added_at) VALUES ('${ODD}', '${ADA}', '.Git', 'https://h/o/odd.git', '2026-01-05');
+      INSERT INTO workspaces (project_id, workspace_id, base_branch, start_commit) VALUES
+        ('${PLAIN}', 'w-plain', 'dev', 'abc'), ('${HOSTED}', 'w-hosted', NULL, 'def'),
+        ('${SHARE}', 'w-share', 'main', NULL), ('${REVOKED}', 'w-revoked', 'main', NULL);
+      INSERT INTO queued_workspaces (id, project_id, parent_workspace_id, prompt, tool, model, mode, permission_mode, branch, commit) VALUES
+        ('${QUEUED}', '${SHARE}', 'w-share', 'go', 'claude', 'opus', 'tui', 'bypass', 'main', NULL),
+        ('${ROUTINE}', '${PLAIN}', 'w-plain', 'go', 'claude', 'opus', 'tui', 'bypass', NULL, 'abc');
+      INSERT INTO routines (id, project_id, name, cron, time_zone, tool, model, mode, permission_mode, branch)
+        VALUES ('${ROUTINE}', '${PLAIN}', 'nightly', '@daily', 'UTC', 'claude', 'opus', 'tui', 'bypass', 'dev');
+      INSERT INTO draft_workspaces (id, project_id, prompt, tool, mode, permission_mode, branch) VALUES
+        ('${DRAFT}', '${PLAIN}', 'x', 'claude', 'tui', 'bypass', 'dev'), ('${QUEUED}', '${PLAIN}', 'y', 'claude', 'tui', 'bypass', NULL);
+      INSERT INTO workflows (id, project_id, steps, hash) VALUES ('${FLOW}', '${SHARE}', '{}', 'h');
+      INSERT INTO named_workflows (id, project_id, name, workflow_id) VALUES ('${NAMED}', '${SHARE}', 'site', '${FLOW}');
+      INSERT INTO sites (project_id, name, hostname, port, named_workflow_id) VALUES ('${SHARE}', 's', 's.example.com', 80, '${NAMED}');
+      INSERT INTO workflow_approvals (named_workflow_id, ref) VALUES ('${NAMED}', 'refs/heads/main'), ('${NAMED}', 'abc123');
+      INSERT INTO conversations (project_id, tool, conversation_id) VALUES ('${PLAIN}', 'claude', 'c1');
+      INSERT INTO workspace_conversations (project_id, workspace_id, tool, conversation_id, first_seen_at) VALUES
+        ('${PLAIN}', 'w-later', 'claude', 'c1', '2026-02-02T00:00:00Z'), ('${PLAIN}', 'w-plain', 'claude', 'c1', '2026-02-01T00:00:00Z');
+    `)
+    try {
+      const rows = async (sql: string): Promise<unknown[]> => (await db.$client.query(sql)).rows
+      expect(await rows('SELECT id, owner, remote_url, hosted, guard_default_branch, git_credential_id, known_hosts_entry FROM repos ORDER BY id')).toEqual([
+        { id: PLAIN, owner: ADA, remote_url: 'git@h:o/app.git', hosted: false, guard_default_branch: true, git_credential_id: CRED, known_hosts_entry: 'h ssh-ed25519 KEY' },
+        { id: HOSTED, owner: ADA, remote_url: hosted(HOSTED), hosted: true, guard_default_branch: false, git_credential_id: null, known_hosts_entry: null },
+        { id: ODD, owner: ADA, remote_url: 'https://h/o/odd.git', hosted: false, guard_default_branch: true, git_credential_id: null, known_hosts_entry: null },
+      ])
+      expect(await rows('SELECT project_id, repo_id, dir, last_branch, last_included FROM project_repos ORDER BY project_id')).toEqual([
+        { project_id: PLAIN, repo_id: PLAIN, dir: 'my.app', last_branch: 'dev', last_included: true },
+        { project_id: HOSTED, repo_id: HOSTED, dir: 'notes', last_branch: null, last_included: true },
+        { project_id: SHARE, repo_id: HOSTED, dir: 'notes', last_branch: null, last_included: true },
+        { project_id: REVOKED, repo_id: HOSTED, dir: 'notes', last_branch: null, last_included: true },
+        // A name no checkout folder may take.
+        { project_id: ODD, repo_id: ODD, dir: 'repo', last_branch: null, last_included: true },
+      ])
+      expect(await rows('SELECT repo_id, user_id FROM repo_shares')).toEqual([{ repo_id: HOSTED, user_id: BOB }])
+      expect(await rows('SELECT workspace_id, repo_id, path, base_branch, start_commit FROM workspace_repos ORDER BY workspace_id')).toEqual([
+        { workspace_id: 'w-hosted', repo_id: HOSTED, path: '', base_branch: null, start_commit: 'def' },
+        { workspace_id: 'w-plain', repo_id: PLAIN, path: '', base_branch: 'dev', start_commit: 'abc' },
+        { workspace_id: 'w-revoked', repo_id: HOSTED, path: '', base_branch: 'main', start_commit: null },
+        { workspace_id: 'w-share', repo_id: HOSTED, path: '', base_branch: 'main', start_commit: null },
+      ])
+      expect(await rows('SELECT id, repos, nested, cwd FROM queued_workspaces ORDER BY id')).toEqual([
+        { id: QUEUED, repos: [{ repo: HOSTED, branch: 'main' }], nested: false, cwd: HOSTED },
+        { id: ROUTINE, repos: [{ repo: PLAIN, commit: 'abc' }], nested: false, cwd: PLAIN },
+      ])
+      expect(await rows('SELECT repos, cwd FROM routines')).toEqual([{ repos: [{ repo: PLAIN, branch: 'dev' }], cwd: PLAIN }])
+      expect(await rows('SELECT id, repos FROM draft_workspaces ORDER BY id')).toEqual([
+        { id: QUEUED, repos: null },
+        { id: DRAFT, repos: [{ repo: PLAIN, branch: 'dev' }] },
+      ])
+      expect(await rows('SELECT repo_id FROM sites')).toEqual([{ repo_id: HOSTED }])
+      // A share's approved branch is its source repo's; a commit is as it was.
+      expect(await rows('SELECT ref FROM workflow_approvals ORDER BY ref')).toEqual([
+        { ref: `${HOSTED}:refs/heads/main` }, { ref: 'abc123' },
+      ])
+      expect(await rows('SELECT workspace_id FROM workspace_conversations')).toEqual([{ workspace_id: 'w-plain' }])
+    } finally {
+      await db.$client.close()
+    }
+  })
+
   // Every conversation live at the upgrade becomes an open session with the
   // settings its workspace row held, in the window it already runs in, so a
   // running agent is watched as before and a restart brings back the same

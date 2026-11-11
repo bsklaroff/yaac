@@ -103,7 +103,7 @@ describe('buildOpeningWrite', () => {
       const { cmd, stdin } = buildOpeningWrite(paths, tool, prompt)
       execFileSync('/bin/sh', ['-c', cmd], { input: stdin })
       const launch = agentDriver('tui').launchCmd({
-        tool, conversationId: 'sess-1', resume: false, windowName: tool, paths, permissionMode: 'bypass', opening: true,
+        tool, conversationId: 'sess-1', resume: false, windowName: tool, paths, cwd: paths.workspaceDir, permissionMode: 'bypass', opening: true,
       })
       // No single quotes: the command is embedded in `new-window '<cmd>'`.
       expect(launch).not.toContain("'")

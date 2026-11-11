@@ -17,10 +17,11 @@ import { VOLUME_NEED } from './steps'
 import { modelDisplayName } from '#domain/auth'
 import { authorizeProject, type Actor } from '#domain/access'
 import { resolveWorkflow, workflowLaunch } from '#domain/projects'
-import { getWorkflow, recordProjectCreate, storeWorkflow } from '#db'
+import { getProjectRow, getWorkflow, listWorkspaceRepos, recordProjectCreate, storeWorkflow } from '#db'
+import { resolveStart, storedSelection, type StartRequest, type WorkspaceStart } from './checkouts'
 import { ServerError } from '@yaac/shared/errors'
 import { FULL_COMMIT_PATTERN, graphHasTask, parseStepGraph, type StepGraph } from '@yaac/shared/steps'
-import type { AgentMode, AgentOptions, AgentTool, PermissionMode } from '@yaac/shared/types'
+import type { AgentMode, AgentOptions, AgentTool, PermissionMode, RepoStart } from '@yaac/shared/types'
 
 /** A request to start a workspace. */
 export interface StartWorkspaceRequest {
@@ -36,10 +37,15 @@ export interface StartWorkspaceRequest {
   mode?: AgentMode
   /** Refused if the tool lacks one; unnamed ones resolve as a create's. */
   agentOptions?: AgentOptions
-  /** Reference branch on `origin`; unnamed is the project's default. */
+  /** What it starts with (`resolveStart`): its repos, by folder or id, each
+   *  at a branch on `origin` or a full commit (which leaves that checkout
+   *  with no base branch), their layout and its agent's cwd. `branch` and
+   *  `commit` name the start of a selection of one repo. Each left out
+   *  takes what the project's last create chose. */
+  repos?: RepoStart[]
+  nested?: boolean
+  cwd?: string
   branch?: string
-  /** A full commit to start at instead of a branch's tip, which leaves the
-   *  workspace with no base branch. Not with `branch`. */
   commit?: string
   /** The step graph it starts with in place of the project's init steps,
    *  unparsed; null for none (docs/workspace-steps.md). */
@@ -117,20 +123,31 @@ export async function prepareStart(
   if ([request.steps, request.workflow, request.workflowId].filter((g) => g !== undefined).length > 1) {
     throw new ServerError('VALIDATION', 'name steps or a workflow, not both')
   }
+  const project = await getProjectRow(projectId)
+  if (!project) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
+  const start = resolveStart(project, request)
+  checkStartCommits(start)
   const workflow = await startWorkflow(projectId, request)
-  // A start that gets a workflow's run secrets runs at a commit, which
-  // `workflowLaunch` resolves from a branch.
+  // A start that gets a workflow's run secrets runs at a commit of its one
+  // repo, which `workflowLaunch` resolves from a branch.
+  const lone = start.repos.length === 1 ? start.repos[0] : undefined
+  const fromBranch = request.fromBranch ?? lone?.branch
   const flow = workflow !== undefined
     ? await workflowLaunch(principal, projectId, {
       workflowId: workflow.id,
       ...(workflow.namedWorkflowId !== undefined ? { namedWorkflowId: workflow.namedWorkflowId } : {}),
-      ...(request.commit !== undefined ? { commit: request.commit } : {}),
-      ...((request.fromBranch ?? request.branch) !== undefined ? { branch: request.fromBranch ?? request.branch } : {}),
+      ...(lone !== undefined ? { repoId: lone.link.repo.id } : {}),
+      ...(lone?.commit !== undefined ? { commit: lone.commit } : {}),
+      ...(fromBranch !== undefined ? { branch: fromBranch } : {}),
       secrets: request.nonInteractive === true || request.siteId !== undefined,
     })
     : undefined
-  const commit = flow?.commit ?? request.commit
-  const branch = flow?.commit !== undefined ? undefined : request.branch
+  if (flow?.commit !== undefined && lone !== undefined) {
+    lone.commit = flow.commit
+    delete lone.branch
+  }
+  const selection = storedSelection(start)
+  const atCommit = start.repos.some((r) => r.commit !== undefined)
   const setup = request.noSession === true ? undefined : await resolveCreate(projectId, {
     ...(request.tool !== undefined ? { tool: request.tool } : {}),
     ...(request.model !== undefined ? { model: request.model } : {}),
@@ -141,7 +158,7 @@ export async function prepareStart(
   })
   const session = setup === undefined
     ? undefined
-    : { ...setup, id: request.sessionId ?? randomUUID(), ...(prompt !== undefined ? { prompt } : {}) }
+    : { ...setup, cwd: start.cwd, id: request.sessionId ?? randomUUID(), ...(prompt !== undefined ? { prompt } : {}) }
   // Before the group and defaults below, so a create refused as a duplicate
   // leaves neither behind.
   refuseLiveProvision(workspaceId)
@@ -157,13 +174,19 @@ export async function prepareStart(
     : undefined
   if (request.rememberDefaults && setup !== undefined) {
     // Only the named fields, so a resolved default never overwrites a pick.
+    // What it starts with resolved from the last create's where unnamed, so
+    // recording it changes only what this one named.
     await recordProjectCreate(projectId, setup.tool, {
       ...(request.model !== undefined ? { model: request.model } : {}),
       ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
       ...(request.effort !== undefined ? { effort: request.effort } : {}),
       ...(request.mode !== undefined ? { mode: request.mode } : {}),
       ...(request.agentOptions !== undefined ? { agentOptions: request.agentOptions } : {}),
-    }, branch)
+    }, {
+      repos: start.repos.map((r) => ({ repoId: r.link.repo.id, ...(r.branch !== undefined ? { branch: r.branch } : {}) })),
+      nested: selection.nested,
+      cwd: selection.cwd,
+    })
   }
 
   const modelName = setup?.model !== undefined ? modelDisplayName(setup.tool, setup.model) : undefined
@@ -179,17 +202,17 @@ export async function prepareStart(
     ...(session?.prompt !== undefined ? { prompt: session.prompt } : {}),
     ...(setup?.model !== undefined ? { model: setup.model } : {}),
     ...(modelName !== undefined ? { modelName } : {}),
-    ...(branch !== undefined ? { branch } : {}),
+    selection,
   }, async (onProgress) => {
     try {
       throwIfProvisionStopped(workspaceId)
       // Containerless keeps no spare pool (`defaultReconcileSteps`), a
       // spare's mounts, fixed at launch, have no volume, and a spare starts
-      // the project's init steps at a branch.
+      // the project's init steps with each repo at a branch.
       if (request.claimSpare && workspaceDriver().kind !== 'containerless' && volume === undefined
-        && workflow === undefined && commit === undefined) {
+        && workflow === undefined && !atCommit) {
         const claimed = await tryClaimPrewarmed(projectId, workspaceId, session, onProgress, {
-          ...(branch !== undefined ? { branch } : {}),
+          start,
           ...(title !== undefined ? { title } : {}),
           ...(generatedTitle !== undefined ? { generatedTitle } : {}),
           ...(groupId !== undefined ? { groupId } : {}),
@@ -202,8 +225,7 @@ export async function prepareStart(
         workspaceId,
         onProgress,
         ...(session !== undefined ? { session } : {}),
-        ...(branch !== undefined ? { branch } : {}),
-        ...(commit !== undefined ? { commit } : {}),
+        start,
         ...(workflow !== undefined ? {
           workflow: { id: workflow.id, steps: workflow.steps, ...(workflow.name !== undefined ? { name: workflow.name } : {}) },
         } : {}),
@@ -232,7 +254,7 @@ export async function prepareStart(
         ...(setup.model !== undefined ? { model: setup.model } : {}),
         ...(setup.effort !== undefined ? { effort: setup.effort } : {}),
         agentOptions: setup.agentOptions,
-        ...(branch !== undefined ? { branch } : {}),
+        ...selection,
         ...(title !== undefined ? { title } : {}),
         ...(groupId !== undefined ? { groupId } : {}),
       }
@@ -278,22 +300,48 @@ async function startWorkflow(
   return await storeWorkflow(projectId, { steps: steps ?? {}, secrets: [] })
 }
 
+/** Refuse a start naming a commit that is not a full commit id. */
+export function checkStartCommits(start: WorkspaceStart): void {
+  for (const { link, commit } of start.repos) {
+    if (commit !== undefined && !FULL_COMMIT_PATTERN.test(commit)) {
+      throw new ServerError('VALIDATION', `${link.dir}: "${commit}" is not a full commit id (40 or 64 hex digits)`)
+    }
+  }
+}
+
 /**
- * Check a start's commit, steps and non-interactive flag, answering its
+ * What a workspace started with, as a request that starts another the same
+ * way: its repos in its layout and its cwd. Each repo starts at the commit
+ * its checkout was created at or at its base branch, whichever `prefer`
+ * names if the checkout has both.
+ */
+export async function startOf(
+  workspace: { workspaceId: string; cwd: string },
+  prefer: 'commit' | 'branch',
+): Promise<Required<Pick<StartRequest, 'repos' | 'nested' | 'cwd'>>> {
+  const rows = await listWorkspaceRepos(workspace.workspaceId)
+  const nested = rows.some((r) => r.path !== '')
+  return {
+    repos: rows.map((r) => {
+      const commit = r.startCommit !== undefined ? { commit: r.startCommit } : undefined
+      const branch = r.baseBranch !== undefined ? { branch: r.baseBranch } : undefined
+      return { repo: r.repoId, ...(prefer === 'commit' ? commit ?? branch : branch ?? commit) }
+    }),
+    nested,
+    cwd: rows.find((r) => r.path === workspace.cwd && (!nested || r.path !== ''))?.repoId ?? '.',
+  }
+}
+
+/**
+ * Check a start's steps and non-interactive flag, answering its
  * parsed graph: absent runs the project's init steps, null none. A
  * non-interactive workspace brings its own graph, with a step that is not a
  * service (it ends when those settle), and opens no session
  * (docs/workspace-steps.md "Non-interactive workspaces").
  */
 export function checkStartSteps(
-  request: Pick<StartWorkspaceRequest, 'branch' | 'commit' | 'steps' | 'nonInteractive' | 'noSession' | 'stageVolumeId'>,
+  request: Pick<StartWorkspaceRequest, 'steps' | 'nonInteractive' | 'noSession' | 'stageVolumeId'>,
 ): StepGraph | null | undefined {
-  if (request.commit !== undefined && request.branch !== undefined) {
-    throw new ServerError('VALIDATION', 'name a branch or a commit, not both')
-  }
-  if (request.commit !== undefined && !FULL_COMMIT_PATTERN.test(request.commit)) {
-    throw new ServerError('VALIDATION', `"${request.commit}" is not a full commit id (40 or 64 hex digits)`)
-  }
   let steps: StepGraph | null | undefined
   try {
     steps = request.steps === undefined || request.steps === null

@@ -6,7 +6,10 @@ import { GitStatusBar } from '#components/GitStatusBar'
 import { COMMITS_TARGET, layoutGraph } from '#lib/commits'
 import { changesTarget } from '#lib/files'
 import { useUiStore } from '#lib/store'
-import { mockFetch, renderWithClient, serverError, type FetchMock } from './harness'
+import {
+  mockFetch, renderWithClient, serverError, serverSnapshot, testQueryClient, TEST_REPO_ID, TEST_WHOAMI, workspaceEntry,
+  type FetchMock,
+} from './harness'
 
 /**
  * The Commits pane: the graph's lanes, the list beside it, the base branch
@@ -35,11 +38,19 @@ const LOG: WorkspaceGitLog = {
   more: true,
 }
 
+/** The Commits pane of a workspace whose one checkout, at its root, has
+ *  this base branch or start commit. */
+function renderCommits(checkout: { baseBranch?: string; startCommit?: string }): void {
+  renderWithClient(<WorkspaceCommits workspaceId="s1" />, testQueryClient(TEST_WHOAMI, serverSnapshot({
+    workspaces: [workspaceEntry({ repos: [{ repoId: TEST_REPO_ID, path: '', ...checkout }] })],
+  })))
+}
+
 let server: FetchMock
 beforeEach(() => {
   server = mockFetch({
     [COMMITS]: LOG,
-    'GET /api/project/proj/branches': { branches: ['main', 'dev', 'pr/stacked'], defaultBranch: 'main' },
+    'GET /api/repo/repo-1/branches': { branches: ['main', 'dev', 'pr/stacked'], defaultBranch: 'main' },
     [BASE]: ({ body }: { body: { branch: string } }) => (body.branch === 'dev'
       ? serverError('VALIDATION', 'branch "dev" not found on origin', 400)
       : { workspaceId: 's1', baseBranch: body.branch }),
@@ -48,7 +59,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
-  useUiStore.setState({ layouts: {}, activeTabs: {}, paneView: {} })
+  useUiStore.setState({ layouts: {}, activeTabs: {}, paneView: {}, snapshot: undefined })
   localStorage.clear()
 })
 
@@ -127,7 +138,7 @@ describe('layoutGraph', () => {
 
 describe('WorkspaceCommits', () => {
   it('lists the commits with their notable refs, dimming the ones only the base branch has', async () => {
-    renderWithClient(<WorkspaceCommits workspaceId="s1" projectId="proj" baseBranch="main" />)
+    renderCommits({ baseBranch: 'main' })
     await waitFor(() => expect(screen.getByText('second of ours')).toBeTruthy())
     expect(screen.getByTitle(TRIGGER).textContent).toContain('origin/main')
     expect(screen.getByTitle('HEAD -> agent/x').textContent).toBe('HEAD')
@@ -155,7 +166,7 @@ describe('WorkspaceCommits', () => {
   // click shows a commit; two ticked (or Cmd/Ctrl-clicked) give their
   // range, older to newer, and a third replaces the first.
   it('unfolds messages, shows a commit, and compares two', async () => {
-    renderWithClient(<WorkspaceCommits workspaceId="s1" projectId="proj" baseBranch="main" />)
+    renderCommits({ baseBranch: 'main' })
     await waitFor(() => expect(screen.getByText('second of ours')).toBeTruthy())
     const tabs = (): string[] => (useUiStore.getState().layouts.s1 ?? []).flatMap((g) => g.tabs)
     const sha = (s: string): string => s.padEnd(40, '0')
@@ -189,7 +200,7 @@ describe('WorkspaceCommits', () => {
   // one the server refuses keeps the dialog up with its reason, and one it
   // takes is read again everywhere the base shows.
   it('rebases the workspace onto a picked branch once confirmed', async () => {
-    renderWithClient(<WorkspaceCommits workspaceId="s1" projectId="proj" baseBranch="pr/stacked" />)
+    renderCommits({ baseBranch: 'pr/stacked' })
     await waitFor(() => expect(screen.getByText('second of ours')).toBeTruthy())
     const pick = async (name: string): Promise<void> => {
       fireEvent.click(screen.getByTitle(TRIGGER))
@@ -222,7 +233,7 @@ describe('WorkspaceCommits', () => {
   it('names a commit base by its short sha', async () => {
     const start = 'f'.padEnd(40, '0')
     server.route(COMMITS, { ...LOG, ref: start })
-    renderWithClient(<WorkspaceCommits workspaceId="s1" projectId="proj" startCommit={start} />)
+    renderCommits({ startCommit: start })
     await waitFor(() => expect(screen.getByTitle(TRIGGER).textContent).toBe('f000000'))
   })
 })

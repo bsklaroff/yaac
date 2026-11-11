@@ -122,7 +122,7 @@ async function main() {
   await apiAs(ADA, '/auth/fake', { kinds: ['claude-oauth'] })
   await apiAs(ADA, '/config/git-identity', { name: 'Ada', email: 'ada@example.com' }, 'PUT')
   const cred = await apiAs(ADA, '/auth/git/credentials', { name: 'gh', token: 'ghp_fake' })
-  await apiAs(ADA, `/project/${projectId}/git-credential`, { credentialId: cred.id }, 'PUT')
+  await apiAs(ADA, `/repo/${projectId}/git-credential`, { credentialId: cred.id }, 'PUT')
   const created = await fetch(`${ORIGIN}/api/workspace/create`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...headersFor(ADA) },

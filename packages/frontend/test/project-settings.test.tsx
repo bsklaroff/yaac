@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
-import type { ProjectEnvVar, ProjectRunSecret, ProjectSummary, Whoami } from '@yaac/shared/types'
+import type { ProjectEnvVar, ProjectRunSecret, ProjectSummary } from '@yaac/shared/types'
 
 // CodeMirror doesn't run under jsdom; each file editor gets a textarea.
 vi.mock('#components/ui/CodeEditor', () => ({
@@ -12,7 +12,8 @@ vi.mock('#components/ui/CodeEditor', () => ({
 import { ProjectSettings } from '#components/settings/ProjectSettings'
 import { useUiStore } from '#lib/store'
 import {
-  mockFetch, renderWithClient, serverError, serverSnapshot, testQueryClient, TEST_USER_ID, type FetchCall, type FetchMock,
+  mockFetch, projectRepo, renderWithClient, repoSummary, serverError, serverSnapshot, testQueryClient, TEST_USER_ID,
+  type FetchCall, type FetchMock,
 } from './harness'
 
 afterEach(() => {
@@ -21,9 +22,9 @@ afterEach(() => {
 })
 
 /** A project keyed by `id-<name>`, so a test can tell the key from the
- *  displayed name. */
+ *  displayed name, linking one repo `repo-<name>` in a folder of its name. */
 const project = (name: string, remoteUrl: string): ProjectSummary =>
-  ({ id: `id-${name}`, name, remoteUrl, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true, scratchDirs: { dirs: [], ignoredTracked: [] }, initSteps: {}, portForwards: [], cacheVolumes: {}, nestedContainers: false, npmCache: true })
+  ({ id: `id-${name}`, name, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [projectRepo({ id: `repo-${name}`, dir: name, remoteUrl })], scratchDirs: { dirs: [], ignoredTracked: [] }, initSteps: {}, portForwards: [], cacheVolumes: {}, nestedContainers: false, npmCache: true })
 
 /** Show settings for `alpha` (and `beta`) on a containerless server, whose
  *  env routes keep `vars` in memory. */
@@ -52,18 +53,16 @@ function renderAlpha(vars: ProjectEnvVar[] = []): FetchMock {
 }
 
 describe('ProjectSettings', () => {
-  it('picks a project by name and shows its remote, with its scheme, above the environment', () => {
+  it('picks a project by name and lists its repos, each in its folder, above the environment', () => {
     renderAlpha()
     expect([...screen.getByRole<HTMLSelectElement>('combobox').options].map((o) => [o.value, o.textContent]))
       .toEqual([['id-alpha', 'alpha'], ['id-beta', 'beta']])
 
     const remote = screen.getByText('https://github.com/o/alpha.git')
-    expect(remote.previousElementSibling?.textContent).toBe('HTTPS')
-    // Directly under the project picker, ahead of the environment section.
-    expect(remote.closest('div')?.querySelector('select')).toBeTruthy()
+    expect(remote.previousElementSibling?.textContent).toBe('alpha/')
 
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'id-beta' } })
-    expect(screen.getByText('git@gitlab.com:o/beta.git').previousElementSibling?.textContent).toBe('SSH')
+    expect(screen.getByText('git@gitlab.com:o/beta.git').previousElementSibling?.textContent).toBe('beta/')
   })
 
   it('has no Volumes or Sites section on a containerless server, nor asks for either', () => {
@@ -71,42 +70,6 @@ describe('ProjectSettings', () => {
     expect(screen.queryByText('Volumes')).toBeNull()
     expect(screen.queryByText('Sites')).toBeNull()
     expect(server.calls.filter((c) => c.path.startsWith('/api/volume') || c.path.startsWith('/api/site'))).toEqual([])
-  })
-
-  it('shows a hosted project\'s clone command instead of a remote, changes its default branch, and turns its guard off', async () => {
-    useUiStore.setState({ activeProjectId: 'id-gamma' })
-    let defaultBranch = 'main'
-    const snapshot = serverSnapshot({
-      driver: 'containerless',
-      projects: [{ ...project('gamma', 'http://yaac.internal/api/workspace/git/id-gamma.git'), hosted: true }],
-    })
-    const server = mockFetch({
-      'GET /api/project/id-gamma/env': { vars: [] },
-      'PUT /api/project/id-gamma/default-branch-guard': () => undefined,
-      'GET /api/project/id-gamma/branches': () => ({ branches: ['agent/x', 'main'], defaultBranch }),
-      'PUT /api/project/id-gamma/default-branch': ({ body }: FetchCall) => {
-        defaultBranch = (body as { branch: string }).branch
-        return undefined
-      },
-    })
-    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
-
-    expect(screen.getByText('HOSTED BY YAAC')).toBeTruthy()
-    expect(screen.queryByText('http://yaac.internal/api/workspace/git/id-gamma.git')).toBeNull()
-    expect(screen.getByText(`git clone ${window.location.origin}/api/project/id-gamma/git gamma`)).toBeTruthy()
-
-    const branch = await screen.findByRole<HTMLSelectElement>('combobox', { name: 'Default branch' })
-    await waitFor(() => expect(branch.value).toBe('main'))
-    expect([...branch.options].map((o) => o.value)).toEqual(['agent/x', 'main'])
-    fireEvent.change(branch, { target: { value: 'agent/x' } })
-    await waitFor(() => expect(branch.value).toBe('agent/x'))
-    expect(server.called('PUT /api/project/id-gamma/default-branch').map((c) => c.body)).toEqual([{ branch: 'agent/x' }])
-
-    const guard = screen.getByRole<HTMLInputElement>('checkbox', { name: /Protect the default branch/ })
-    expect(guard.checked).toBe(true)
-    fireEvent.click(guard)
-    await waitFor(() => expect(server.called('PUT /api/project/id-gamma/default-branch-guard').map((c) => c.body))
-      .toEqual([{ enabled: false }]))
   })
 
   it('edits the init steps, saying which workflow they follow and showing the server\'s refusal of a bad graph', async () => {
@@ -330,118 +293,120 @@ describe('ProjectSettings', () => {
     expect(screen.queryByRole('alertdialog')).toBeNull()
   })
 
-  it('shares a hosted project with another user and stops sharing it', async () => {
-    useUiStore.setState({ activeProjectId: 'id-gamma' })
-    const whoami: Whoami = {
-      kind: 'tailnet', userId: TEST_USER_ID, login: 'me@x.com', name: 'Me',
-      users: [{ id: TEST_USER_ID, login: 'me@x.com', name: 'Me', role: 'admin' }, { id: 'u-ada', login: 'ada@x.com', name: 'Ada', role: 'member' }, { id: 'u-bo', login: 'bo@x.com', name: 'Bo', role: 'member' }],
+  // The Repos section: each link's folder, order and (under a proxy) its two
+  // flags; a repo is linked by URL, by picking one, or as a new hosted one.
+  describe('Repos', () => {
+    const api = projectRepo({ id: 'repo-api', dir: 'api', remoteUrl: 'https://github.com/o/api.git' })
+    const web = projectRepo({ id: 'repo-web', dir: 'web', remoteUrl: 'git@github.com:o/web.git' })
+    const two = (driver: 'k8s' | 'containerless', repos = [api, web]): ReturnType<typeof serverSnapshot> =>
+      serverSnapshot({ driver, projects: [{ ...project('alpha', ''), repos }] })
+    const LINK = 'POST /api/project/id-alpha/repo'
+    const show = (snapshot: ReturnType<typeof serverSnapshot>, routes: Record<string, unknown> = {}): FetchMock => {
+      useUiStore.setState({ activeProjectId: 'id-alpha' })
+      const server = mockFetch({ 'GET /api/project/id-alpha/env': { vars: [] }, 'GET /api/repo/list': [], ...routes })
+      renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
+      return server
     }
-    const gamma = { ...project('gamma', 'http://yaac.internal/api/workspace/git/id-gamma.git'), hosted: true }
-    const snapshot = serverSnapshot({
-      driver: 'containerless',
-      projects: [gamma, { ...gamma, id: 'id-ada-gamma', owner: 'u-ada', sharedFrom: { projectId: 'id-gamma', revoked: false } }],
+
+    it('renames a link\'s folder, reorders the links and unlinks one', async () => {
+      const server = show(two('containerless'), {
+        'PATCH /api/project/id-alpha/repo/repo-api': () => undefined,
+        'PUT /api/project/id-alpha/repo-order': () => undefined,
+        'DELETE /api/project/id-alpha/repo/repo-web': () => undefined,
+      })
+      // A name another link has, or that is no folder name, is not sent.
+      for (const name of ['web', 'a b', '..', 'backend']) {
+        fireEvent.click(screen.getByRole('button', { name: 'api/' }))
+        const input = screen.getByRole<HTMLInputElement>('textbox', { name: 'Folder name' })
+        fireEvent.change(input, { target: { value: name } })
+        fireEvent.keyDown(input, { key: 'Enter' })
+      }
+      await waitFor(() => expect(server.called('PATCH /api/project/id-alpha/repo/repo-api').map((c) => c.body))
+        .toEqual([{ dir: 'backend' }]))
+
+      expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Move api up' }).disabled).toBe(true)
+      fireEvent.click(screen.getByRole('button', { name: 'Move web up' }))
+      await waitFor(() => expect(server.called('PUT /api/project/id-alpha/repo-order').map((c) => c.body))
+        .toEqual([{ repos: ['repo-web', 'repo-api'] }]))
+
+      fireEvent.click(screen.getAllByRole('button', { name: 'Unlink' })[1])
+      await waitFor(() => expect(server.called('DELETE /api/project/id-alpha/repo/repo-web')).toHaveLength(1))
     })
-    const server = mockFetch({
-      'GET /api/project/id-gamma/env': { vars: [] },
-      'POST /api/project/id-gamma/shares': { id: 'id-bo-gamma', name: 'gamma', remoteUrl: '', addedAt: '' },
-      'DELETE /api/project/id-gamma/shares/u-ada': () => undefined,
+
+    it('offers read-only and GH_TOKEN only behind a proxy, and never GH_TOKEN for a read-only repo', async () => {
+      const server = show(two('k8s', [api, { ...web, readOnly: true }, projectRepo({
+        id: 'repo-ro', dir: 'ro', remoteUrl: 'https://github.com/o/ro.git', readOnly: true, ghToken: true,
+      })]), {
+        'PUT /api/project/id-alpha/repo/repo-api/read-only': () => undefined,
+        'PUT /api/project/id-alpha/repo/repo-api/gh-token': () => undefined,
+      })
+      const row = (id: string): HTMLElement => document.querySelector<HTMLElement>(`[data-repo="${id}"]`)!
+      const box = (id: string, name: RegExp): HTMLInputElement | null =>
+        within(row(id)).queryByRole<HTMLInputElement>('checkbox', { name })
+      // An ssh remote has no token to offer.
+      expect(box('repo-web', /Read-only/)?.checked).toBe(true)
+      expect(box('repo-web', /GH_TOKEN/)).toBeNull()
+      // Read-only turns the token off, with why, whatever was stored.
+      expect(box('repo-ro', /GH_TOKEN/)).toMatchObject({ checked: false, disabled: true })
+      expect(row('repo-ro').textContent).toContain('off while read-only')
+
+      fireEvent.click(box('repo-api', /GH_TOKEN/)!)
+      await waitFor(() => expect(server.called('PUT /api/project/id-alpha/repo/repo-api/gh-token').map((c) => c.body))
+        .toEqual([{ enabled: false }]))
+      fireEvent.click(box('repo-api', /Read-only/)!)
+      await waitFor(() => expect(server.called('PUT /api/project/id-alpha/repo/repo-api/read-only').map((c) => c.body))
+        .toEqual([{ enabled: true }]))
+      cleanup()
+
+      show(two('containerless'))
+      expect(screen.queryByRole('checkbox', { name: /Read-only/ })).toBeNull()
+      expect(screen.queryByRole('checkbox', { name: /GH_TOKEN/ })).toBeNull()
     })
-    renderWithClient(<ProjectSettings />, testQueryClient(whoami, snapshot))
 
-    expect(screen.getAllByRole('option').map((o) => o.textContent)).toContain('gamma')
-    screen.getByText('ada@x.com')
-    const pick = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Share with' })
-    expect([...pick.options].map((o) => o.textContent)).toEqual(['Share with…', 'Bo'])
-    fireEvent.change(pick, { target: { value: 'u-bo' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Share' }))
-    await waitFor(() => expect(server.called('POST /api/project/id-gamma/shares').map((c) => c.body)).toEqual([{ userId: 'u-bo' }]))
+    it('links a repo by URL with a credential, one of the owner\'s or one shared with them, or a new hosted one', async () => {
+      const token = { id: 'c-token', name: 'gh', kind: 'https', preview: '***abcd', repos: [] } as const
+      const server = show(two('containerless', [api]), {
+        'GET /api/auth/list': { gitCredentials: [token], toolAuth: [], customEndpoints: [] },
+        'GET /api/repo/list': [
+          repoSummary({ id: 'repo-api', remoteUrl: api.remoteUrl }),
+          repoSummary({ id: 'repo-docs', remoteUrl: 'https://github.com/o/docs.git' }),
+          repoSummary({ id: 'repo-hers', owner: 'u-ada', hosted: true, sharedWith: [TEST_USER_ID] }),
+          repoSummary({ id: 'repo-theirs', owner: 'u-ada', remoteUrl: 'https://github.com/a/theirs.git' }),
+          repoSummary({ id: 'repo-gone', remoteUrl: 'https://github.com/o/gone.git', deleted: { heldBy: [] } }),
+        ],
+        [LINK]: ({ body }: FetchCall) => ({ repoId: 'new', dir: (body as { dir?: string }).dir ?? 'x', knownHostsEntry: null }),
+      })
+      const open = async (): Promise<HTMLSelectElement> => {
+        fireEvent.click(await screen.findByRole('button', { name: 'Add repo…' }))
+        return screen.getByRole<HTMLSelectElement>('combobox', { name: 'Repo to add' })
+      }
+      /** The form's own Add, apart from the environment section's. */
+      const add = (): void => {
+        const form = screen.getByRole('combobox', { name: 'Repo to add' }).parentElement!
+        fireEvent.click(within(form).getByRole('button', { name: 'Add' }))
+      }
+      // Its own unlinked repos and the ones shared with its owner, no others.
+      const what = await open()
+      await waitFor(() => expect([...what.options].map((o) => o.value))
+        .toEqual(['url', 'repo-docs', 'repo-hers', 'hosted']))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Stop sharing with Ada' }))
-    await waitFor(() => expect(server.called('DELETE /api/project/id-gamma/shares/u-ada')).toHaveLength(1))
-  })
+      fireEvent.change(screen.getByRole('textbox', { name: 'Repository URL' }), { target: { value: 'https://github.com/o/new.git' } })
+      fireEvent.change(screen.getByRole('textbox', { name: 'Folder name' }), { target: { value: 'api' } })
+      screen.getByText(/no other repo of this project has it/)
+      fireEvent.change(screen.getByRole('textbox', { name: 'Folder name' }), { target: { value: 'fresh' } })
+      fireEvent.change(await screen.findByRole('combobox', { name: 'Git credential' }), { target: { value: 'c-token' } })
+      add()
+      await waitFor(() => expect(server.called(LINK).map((c) => c.body))
+        .toEqual([{ remoteUrl: 'https://github.com/o/new.git', credentialId: 'c-token', dir: 'fresh' }]))
 
-  it('warns what a move stops and hands over, then moves the project with the chosen credential', async () => {
-    useUiStore.setState({ activeProjectId: 'id-gamma' })
-    const snapshot = serverSnapshot({
-      driver: 'containerless',
-      projects: [{ ...project('gamma', 'http://yaac.internal/api/workspace/git/id-gamma.git'), hosted: true }],
+      fireEvent.change(await open(), { target: { value: 'repo-hers' } })
+      add()
+      await waitFor(() => expect(server.called(LINK).at(-1)?.body).toEqual({ repoId: 'repo-hers' }))
+
+      fireEvent.change(await open(), { target: { value: 'hosted' } })
+      add()
+      await waitFor(() => expect(server.called(LINK).at(-1)?.body).toEqual({ hosted: true }))
     })
-    const token = { id: 'c-token', name: 'gh', kind: 'https', preview: '***abcd', projects: [] } as const
-    const server = mockFetch({
-      'GET /api/project/id-gamma/env': { vars: [] },
-      'GET /api/auth/list': { gitCredentials: [token], toolAuth: [] },
-      'GET /api/project/id-gamma/move': { runningWorkspaces: 2, sharedWith: ['ada@x.com'] },
-      'POST /api/project/id-gamma/move': { knownHostsEntry: null },
-    })
-    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
-
-    fireEvent.click(screen.getByRole('button', { name: 'Move…' }))
-    const warning = await screen.findByRole('note', { name: 'What moving does' })
-    await waitFor(() => expect(warning.textContent).toContain('2 running workspaces on this project stop first, whoever owns them'))
-    expect(warning.textContent).toContain('It is shared with ada@x.com')
-    expect(warning.textContent).toContain('yaac keeps its own copy')
-    fireEvent.change(screen.getByRole('textbox', { name: 'Repository URL' }), { target: { value: 'https://github.com/o/gamma.git' } })
-    fireEvent.change(await screen.findByRole('combobox', { name: 'Git credential' }), { target: { value: 'c-token' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Stop 2 workspaces and move' }))
-    await waitFor(() => expect(server.called('POST /api/project/id-gamma/move').map((c) => c.body))
-      .toEqual([{ remoteUrl: 'https://github.com/o/gamma.git', gitCredentialId: 'c-token' }]))
-  })
-
-  it("shows how to compare a moved project's old repository with its remote, and removes it once confirmed", async () => {
-    useUiStore.setState({ activeProjectId: 'id-gamma' })
-    const snapshot = serverSnapshot({
-      driver: 'containerless',
-      projects: [{ ...project('gamma', 'https://github.com/o/gamma.git'), keepsHostedRepo: true }],
-    })
-    const server = mockFetch({
-      'GET /api/project/id-gamma/env': { vars: [] },
-      'DELETE /api/project/id-gamma/hosted-repo': () => undefined,
-    })
-    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
-
-    expect(screen.queryByRole('button', { name: 'Move…' })).toBeNull()
-    screen.getByText(`git ls-remote ${window.location.origin}/api/project/id-gamma/git`)
-    screen.getByText('git ls-remote https://github.com/o/gamma.git')
-    fireEvent.click(screen.getByRole('button', { name: 'Remove yaac\'s copy…' }))
-    expect(server.called('DELETE /api/project/id-gamma/hosted-repo')).toHaveLength(0)
-    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
-    await waitFor(() => expect(server.called('DELETE /api/project/id-gamma/hosted-repo')).toHaveLength(1))
-  })
-
-  it("shows a share as its sharer's, with the guard left to them and no sharing of its own", () => {
-    useUiStore.setState({ activeProjectId: 'id-mine' })
-    const whoami: Whoami = {
-      kind: 'tailnet', userId: TEST_USER_ID, login: 'me@x.com', name: 'Me',
-      users: [{ id: TEST_USER_ID, login: 'me@x.com', name: 'Me', role: 'admin' }, { id: 'u-ada', login: 'ada@x.com', name: 'Ada', role: 'member' }],
-    }
-    const hosted = { ...project('gamma', 'http://yaac.internal/api/workspace/git/x.git'), hosted: true }
-    const snapshot = serverSnapshot({
-      driver: 'containerless',
-      projects: [
-        { ...hosted, id: 'id-gamma', owner: 'u-ada' },
-        { ...hosted, id: 'id-mine', sharedFrom: { projectId: 'id-gamma', revoked: false } },
-      ],
-    })
-    mockFetch({ 'GET /api/project/id-mine/env': { vars: [] } })
-    renderWithClient(<ProjectSettings />, testQueryClient(whoami, snapshot))
-
-    screen.getByText('Shared by Ada')
-    expect(screen.getByRole<HTMLInputElement>('checkbox', { name: /Protect the default branch/ }).disabled).toBe(true)
-    expect(screen.queryByText('Sharing')).toBeNull()
-  })
-
-  it('shows a share its source\'s owner removed to its owner read-only', () => {
-    useUiStore.setState({ activeProjectId: 'id-mine' })
-    const hosted = { ...project('gamma', 'http://yaac.internal/api/workspace/git/x.git'), hosted: true }
-    const snapshot = serverSnapshot({
-      driver: 'containerless',
-      projects: [{ ...hosted, id: 'id-mine', sharedFrom: { projectId: 'id-gamma', revoked: true } }],
-    })
-    mockFetch({ 'GET /api/project/id-mine/env': { vars: [] } })
-    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
-
-    screen.getByText('Sharing removed')
-    expect(screen.queryByPlaceholderText('NAME')).toBeNull()
   })
 
   it('lists the project\'s variables, adds a secret with its proxy rule, and deletes one', async () => {

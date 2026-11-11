@@ -283,7 +283,7 @@ describe.skipIf(!CAN_RUN)('workspace steps (containerless)', () => {
     expect((await api(`/workspace/${id}/terminals`, { method: 'POST' })).status).toBe(409)
     expect((await api(`/workspace/${id}/steps`, { method: 'POST', body: JSON.stringify({ steps: { x: { run: 'true' } } }) })).status).toBe(409)
     expect((await api(`/workspace/${id}/sessions`, { method: 'POST', body: JSON.stringify({ tool: 'claude' }) })).status).toBe(409)
-    expect((await listed(id))?.startCommit).toBe(head)
+    expect((await listed(id))?.repos[0]?.startCommit).toBe(head)
 
     const entry = await vi.waitFor(async () => {
       const e = await stopped(id)
@@ -307,7 +307,7 @@ describe.skipIf(!CAN_RUN)('workspace steps (containerless)', () => {
     }, { timeout: 60_000, interval: 500 })
     const stillUp = await listed(debug)
     expect(stillUp?.nonInteractive).toBeUndefined()
-    expect(stillUp?.startCommit).toBe(head)
+    expect(stillUp?.repos[0]?.startCommit).toBe(head)
     // yaac-mama shows the commit each workspace made at one is pinned to,
     // running or stopped; one on a branch shows none.
     const listing = await mamaStep(debug, 'mama-list', 'yaac-mama list', 'yaac-mama list --stopped')

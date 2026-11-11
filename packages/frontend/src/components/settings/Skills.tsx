@@ -9,9 +9,9 @@ import { EmptyState } from '#components/ui/EmptyState'
 import { MasterDetail } from '#components/ui/MasterDetail'
 import { PopoverPopup } from '#components/ui/menu'
 import { api } from '#lib/api'
-import { useProjectBranches } from '#lib/useProjectBranches'
+import { useRepoBranches } from '#lib/repoApi'
 import { useIsMobile } from '#lib/viewport'
-import { AGENT_TOOLS, type AgentTool, type SkillSummary } from '@yaac/shared/types'
+import { AGENT_TOOLS, type AgentTool, type ProjectRepo, type SkillSummary } from '@yaac/shared/types'
 
 /** The list section a skill sits under, one per skill dir (an agent's
  *  plugins share one); the server sorts rows by section. */
@@ -76,14 +76,14 @@ function AgentPills({ agents }: { agents: AgentTool[] }): JSX.Element {
 
 /** The read-only detail pane for the selected skill: metadata + full SKILL.md. */
 function SkillDetailPane(
-  { projectId, branch, skill, note }:
-  { projectId: string; branch: string | undefined; skill: SkillSummary; note: string | null },
+  { projectId, source, skill, note }:
+  { projectId: string; source: { repo?: string; branch?: string }; skill: SkillSummary; note: string | null },
 ): JSX.Element {
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['skill-body', projectId, branch ?? null, skill.id],
+    queryKey: ['skill-body', projectId, source.repo ?? null, source.branch ?? null, skill.id],
     queryFn: () => api.project[':projectId'].skills.body.$get({
       param: { projectId },
-      query: { id: skill.id, ...(branch ? { branch } : {}) },
+      query: { id: skill.id, ...source },
     }),
     staleTime: 30_000,
   })
@@ -133,10 +133,11 @@ function SkillDetailPane(
  * One project's skills: every agent's, in one searchable master/detail list
  * with a section per skill dir, headed by the agents that read it. The
  * agent filter narrows the list to one agent's. Repo skills are read
- * from an origin branch the picker chooses; the other tiers live in the
- * project's agent config dirs and have no branch.
+ * from an origin branch the picker chooses, of the repo chosen beside it
+ * when the project links several; the other tiers live in the project's
+ * agent config dirs and have neither.
  */
-function SkillsBrowser({ projectId }: { projectId: string }): JSX.Element {
+function SkillsBrowser({ projectId, repos }: { projectId: string; repos: ProjectRepo[] }): JSX.Element {
   const [queryText, setQueryText] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [agent, setAgent] = useState<AgentTool | null>(null)
@@ -146,16 +147,20 @@ function SkillsBrowser({ projectId }: { projectId: string }): JSX.Element {
   const [pickerQuery, setPickerQuery] = useState('')
   const isMobile = useIsMobile()
 
-  const { data: branchData } = useProjectBranches(projectId, true)
+  // The repo whose skills are read: the pick, else the project's first.
+  const [repoPick, setRepoPick] = useState<string | null>(null)
+  const repo = repos.find((r) => r.id === repoPick) ?? repos.at(0)
+  const { data: branchData } = useRepoBranches(repo?.id ?? '', true)
   const defaultBranch = branchData?.defaultBranch
   const effectiveBranch = branch ?? defaultBranch
+  const source = {
+    ...(repo !== undefined && repos.length > 1 ? { repo: repo.id } : {}),
+    ...(effectiveBranch ? { branch: effectiveBranch } : {}),
+  }
 
   const { data, isLoading } = useQuery({
-    queryKey: ['skills', projectId, effectiveBranch ?? null],
-    queryFn: () => api.project[':projectId'].skills.$get({
-      param: { projectId },
-      query: effectiveBranch ? { branch: effectiveBranch } : {},
-    }),
+    queryKey: ['skills', projectId, source.repo ?? null, effectiveBranch ?? null],
+    queryFn: () => api.project[':projectId'].skills.$get({ param: { projectId }, query: source }),
     staleTime: 5_000,
     // Avoid flashing an empty list while switching branches.
     placeholderData: keepPreviousData,
@@ -199,7 +204,17 @@ function SkillsBrowser({ projectId }: { projectId: string }): JSX.Element {
             </button>
           ))}
         </div>
-        <Popover.Root
+        {repos.length > 1 && (
+          <select
+            aria-label="Repo skills are read from"
+            value={repo?.id ?? ''}
+            onChange={(e) => { setRepoPick(e.target.value); setBranch(null) }}
+            className="rounded-md border border-border bg-bg px-2 py-1.5 font-mono text-[11px] text-text outline-none max-md:h-10"
+          >
+            {repos.map((r) => <option key={r.id} value={r.id}>{r.dir}/</option>)}
+          </select>
+        )}
+        {repo !== undefined && <Popover.Root
           open={pickerOpen}
           onOpenChange={(o) => { setPickerOpen(o); if (!o) setPickerQuery('') }}
         >
@@ -227,7 +242,7 @@ function SkillsBrowser({ projectId }: { projectId: string }): JSX.Element {
               className="px-1 pb-1"
             />
           </PopoverPopup>
-        </Popover.Root>
+        </Popover.Root>}
       </div>
 
       {!isLoading && all.length === 0 ? (
@@ -296,7 +311,7 @@ function SkillsBrowser({ projectId }: { projectId: string }): JSX.Element {
             ? <SkillDetailPane
                 key={selected.id}
                 projectId={projectId}
-                branch={effectiveBranch}
+                source={source}
                 skill={selected}
                 note={clashNote(selected, all)}
               />
@@ -329,7 +344,7 @@ export function SkillsSettings(): JSX.Element {
         </>}
       </div>
       {selected
-        ? <SkillsBrowser key={selected.id} projectId={selected.id} />
+        ? <SkillsBrowser key={selected.id} projectId={selected.id} repos={selected.repos} />
         : <p className="text-xs text-text-faint">No projects yet. Add one from the rail first.</p>}
     </section>
   )

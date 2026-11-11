@@ -7,7 +7,7 @@ import { forgetWorkspaceChanges } from './changes'
 import { removeAgentHistory } from './history'
 import { deletionHeld, inFlightWorkspaceIds } from './provisioning'
 import { workspaceBinDir } from './workspace-bin'
-import { applyWorkspaceEvent, getProjectRow, getWorkspaceRow, listProjectRows, listUncleanedStoppedWorkspaces } from '#db'
+import { applyWorkspaceEvent, getProjectRow, getWorkspaceRow, listProjectRows, listUncleanedStoppedWorkspaces, listWorkspaceRepos } from '#db'
 import {
   clearWorkspaceTerminating,
   evictWorkspaceStatus,
@@ -77,16 +77,17 @@ export function tearingDown(workspaceId: string): boolean {
 }
 
 /**
- * The scratch dirs inside the checkout, to remove at stop: the ones its
- * runtime was started with, never the project's list as it is now. Under
+ * The scratch dirs inside the workspace's checkouts, to remove at stop: the
+ * ones its runtime was started with, each relative to the workspace dir,
+ * never the project's list as it is now. Under
  * containerless they hold the real contents; under a pod they are mount
  * points, holding whatever git checked out beneath them. Files git tracks
  * go too: they stay in its history. The restart's init steps rebuild
  * the rest.
  *
  * Symlinks, and paths reached through a symlink leading out of the
- * checkout, are skipped: the checkout holds agent-written content, and
- * `rm -rf` through a link would delete host files.
+ * workspace dir, are skipped: it holds agent-written content, and `rm -rf`
+ * through a link would delete host files.
  */
 async function checkoutScratchDirs(
   projectId: string,
@@ -120,10 +121,22 @@ const IGNORED_CLEAN_TIMEOUT_MS = 5 * 60_000
 /** How long the fallback waits to try a checkout again after failing on it. */
 const IGNORED_CLEAN_RETRY_MS = 60 * 60_000
 
-/** The script that removes a checkout's ignored files. Run by its text, so
- *  a workspace launched before an upgrade runs the current one. */
-async function cleanIgnoredScript(): Promise<string> {
-  return await fs.readFile(path.join(workspaceBinDir(), 'yaac-clean-ignored'), 'utf8')
+/**
+ * The script that removes the ignored files of each of a workspace's
+ * checkouts, or undefined for a workspace with none: `yaac-clean-ignored`
+ * run once per checkout, taking the workspace dir as `$1` and the kept
+ * paths, which are relative to each checkout, after it. It fails if any
+ * run did. Run by its text, so a workspace launched before an upgrade runs
+ * the current one.
+ */
+async function cleanIgnoredScript(workspaceId: string): Promise<string | undefined> {
+  const checkouts = (await listWorkspaceRepos(workspaceId)).map((r) => r.path)
+  if (checkouts.length === 0) return undefined
+  const one = await fs.readFile(path.join(workspaceBinDir(), 'yaac-clean-ignored'), 'utf8')
+  // The root is named as itself: the script matches mount points by prefix.
+  return `clean=${shellQuote(one)}; root=$1; shift; status=0; `
+    + `for c in ${checkouts.map((c) => shellQuote(c)).join(' ')}; do `
+    + 'sh -c "$clean" sh "$root${c:+/$c}" "$@" || status=1; done; exit $status'
 }
 
 /**
@@ -138,10 +151,12 @@ async function removeIgnoredFiles(target: TeardownTarget): Promise<void> {
   try {
     const runtime = workspaceDriver()
     const root = runtime.workspacePaths(unitName).workspaceDir
-    const [row, script] = await Promise.all([getProjectRow(projectId), cleanIgnoredScript()])
+    const [row, script] = await Promise.all([getProjectRow(projectId), cleanIgnoredScript(workspaceId)])
     const kept = row?.keptIgnoredPaths ?? []
-    await runtime.exec(unitName, ['sh', '-c', script, 'sh', root, ...kept].map(shellQuote).join(' '),
-      { timeout: IGNORED_CLEAN_TIMEOUT_MS })
+    if (script !== undefined) {
+      await runtime.exec(unitName, ['sh', '-c', script, 'sh', root, ...kept].map(shellQuote).join(' '),
+        { timeout: IGNORED_CLEAN_TIMEOUT_MS })
+    }
     await applyWorkspaceEvent({ type: 'ignored-files-cleaned', projectId, workspaceId, at })
   } catch (err) {
     serverLog(`[server] ignored-file clean ${projectId}/${workspaceId} at stop: ${String(err)}`)
@@ -189,9 +204,9 @@ async function removableTree(dir: string): Promise<boolean> {
 }
 
 /**
- * Remove everything on disk that belongs to one workspace: the checkout, the
- * opencode checkpoint, ACP records and agent history. Node-local working
- * copies are the driver's sweep's.
+ * Remove everything on disk that belongs to one workspace: its dir with
+ * every checkout, the opencode checkpoint, ACP records and agent history.
+ * Node-local working copies are the driver's sweep's.
  *
  * Not used by an ordinary stop, which keeps the checkout for restart. Used
  * when the workspace itself goes away: a user's or the retention's delete
@@ -202,13 +217,15 @@ async function removableTree(dir: string): Promise<boolean> {
  * Callers run this only once the pod is gone, so plain recursive `rm` is
  * safe (it does not follow links, and nothing can swap one in mid-walk).
  *
- * The checkout goes first and the rest only once it is gone, since the
- * checkout is what most often fails: a root-owned file a workspace left
- * needs the driver's `removeAsRoot` (`removeEntries`), which may fail.
- * Its `.git` goes last, so that failure leaves the git state and the
+ * The workspace dir goes first and the rest only once it is gone, since it
+ * is what most often fails: a root-owned file a workspace left needs the
+ * driver's `removeAsRoot` (`removeEntries`), which may fail. Each
+ * checkout's `.git` goes last, so that failure leaves the git state and the
  * history, and so a workspace that still restarts on its committed work.
  * A `.git` the server cannot remove all of goes whole to `removeAsRoot`,
  * since Node's walk would first delete what it could and leave it broken.
+ * The checkouts are the ones the workspace's rows name; with none (a spare
+ * has no rows) nothing is kept for last.
  * Returns `false` if anything failed. Callers then keep whatever records the
  * leftover bytes: a row, which still lists a stopped workspace, or a spare's
  * unit, which the next reap retries.
@@ -226,21 +243,29 @@ export async function deleteWorkspaceState(
     serverLog(`[server] delete workspace state ${projectId}/${workspaceId}: ${String(err)}`)
     return false
   })
-  const checkout = workspaceDir(projectId, workspaceId)
+  const root = workspaceDir(projectId, workspaceId)
+  // Each checkout in a folder of its own is one name under the root.
+  const folders = (await listWorkspaceRepos(workspaceId).catch(() => [])).map((r) => r.path).filter((p) => p !== '')
   // Only a real directory is listed: a link is unlinked, never followed.
-  const isDir = await fs.lstat(checkout).then((st) => st.isDirectory(), () => false)
-  let entries: string[] = []
-  try {
-    if (isDir) entries = await fs.readdir(checkout)
-  } catch (err) {
-    return removed(Promise.reject(err))
+  const holders = (await Promise.all([root, ...folders.map((f) => path.join(root, f))]
+    .map(async (dir) => (await fs.lstat(dir).then((st) => st.isDirectory(), () => false) ? [dir] : [])))).flat()
+  for (const dir of holders) {
+    const keep = new Set(['.git', ...(dir === root ? folders : [])])
+    let entries: string[]
+    try {
+      entries = await fs.readdir(dir)
+    } catch (err) {
+      return removed(Promise.reject(err))
+    }
+    if (!await removed(removeEntries(dir, entries.filter((e) => !keep.has(e))))) return false
   }
-  if (!await removed(removeEntries(checkout, entries.filter((e) => e !== '.git')))) return false
-  if (isDir && !await removableTree(path.join(checkout, '.git'))
-    && !await removed(workspaceDriver().removeAsRoot(checkout, ['.git']).then((gone) => {
-      if (!gone) throw new Error('its .git holds entries the server cannot remove')
-    }))) return false
-  if (!await removed(removeEntries(path.dirname(checkout), [path.basename(checkout)]))) return false
+  for (const dir of holders) {
+    if (!await removableTree(path.join(dir, '.git'))
+      && !await removed(workspaceDriver().removeAsRoot(dir, ['.git']).then((gone) => {
+        if (!gone) throw new Error('its .git holds entries the server cannot remove')
+      }))) return false
+  }
+  if (!await removed(removeEntries(path.dirname(root), [path.basename(root)]))) return false
   const outcomes = await Promise.all([
     fs.rm(opencodeCheckpointDir(projectId, workspaceId), { recursive: true, force: true }),
     fs.rm(acpLogDir(projectId, workspaceId), { recursive: true, force: true }),
@@ -463,9 +488,11 @@ export async function reconcileIgnoredFileCleans(view: RuntimeSnapshot): Promise
   void (async () => {
     // A checkout that is gone holds nothing to clean.
     if (await fs.lstat(workspaceDir(projectId, workspaceId)).then((st) => st.isDirectory(), () => false)) {
-      const row = await getProjectRow(projectId)
-      await workspaceDriver().runInStoppedCheckout({ projectId, workspaceId }, await cleanIgnoredScript(),
-        row?.keptIgnoredPaths ?? [], { timeoutMs: IGNORED_CLEAN_TIMEOUT_MS })
+      const [row, script] = await Promise.all([getProjectRow(projectId), cleanIgnoredScript(workspaceId)])
+      if (script !== undefined) {
+        await workspaceDriver().runInStoppedCheckout({ projectId, workspaceId }, script,
+          row?.keptIgnoredPaths ?? [], { timeoutMs: IGNORED_CLEAN_TIMEOUT_MS })
+      }
     }
     await applyWorkspaceEvent({ type: 'ignored-files-cleaned', projectId, workspaceId, at })
     ignoredCleanRetryAt.delete(workspaceId)

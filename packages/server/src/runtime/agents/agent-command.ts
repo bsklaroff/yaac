@@ -91,9 +91,9 @@ export interface AgentCmdSpec {
    * The workspace row remembers it across restarts.
    */
   permissionMode: PermissionMode
-  /** codex only — the workspace to run it in and launch it trusting
+  /** codex only: the directory to run it in and launch it trusting
    *  (`codexLaunchConfig`). */
-  paths: Pick<WorkspacePaths, 'workspaceDir'>
+  cwd: string
   /** The file holding the opening message a fresh agent is launched with
    *  (`openingFile`). */
   opening?: string
@@ -309,14 +309,14 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // screens (`codexLaunchConfig`).
     const config = [
       `tui.terminal_title=${JSON.stringify(CODEX_TITLE_ITEMS)}`,
-      ...codexLaunchConfig(spec.paths.workspaceDir),
+      ...codexLaunchConfig(spec.cwd),
       ...(effort !== undefined ? [`model_reasoning_effort=${effort}`] : []),
     ]
-    // Name the workspace with `-C`: a resume from a different cwd than the
+    // Name its directory with `-C`: a resume from a different cwd than the
     // one recorded stops on a "session or current directory?" screen.
     return [
       'exec codex',
-      `-C ${spec.paths.workspaceDir}`,
+      `-C ${spec.cwd}`,
       ...config.map((c) => `-c ${doubleQuoted(c)}`),
       '--dangerously-bypass-hook-trust',
       posture,

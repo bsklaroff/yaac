@@ -53,14 +53,20 @@ such as cloning a project's remote, into the cluster's internal addresses
   does not ask for, and would rule out writes that several users make
   together.
 - **Projects are private.** `projects.owner` names the one user who may
-  change a project or start workspaces in it. Two users adding the same
-  GitHub URL get two unrelated projects, each with its own clone, git
-  credential and image chain. Everything inside a project (workspaces,
-  queued workspaces, drafts, groups, agent sessions, env vars and secrets,
-  workflows, its config) belongs to the project's owner and carries no owner of its
-  own. A hosted project can be shared, which gives another user a project
-  of their own on the same repository rather than a second owner
-  (docs/hosted-projects.md "Sharing").
+  change a project or start workspaces in it. Everything inside a project
+  (workspaces, queued workspaces, drafts, groups, agent sessions, env vars
+  and secrets, workflows, its config, which repos it links) belongs to the
+  project's owner and carries no owner of its own.
+- **Repos are private too.** `repos.owner` names the one user who may
+  change a repo (its credential, its default branch, sharing, delete), and
+  a project links only repos its owner may use (docs/project-repos.md). Two
+  users adding the same GitHub URL get two unrelated repos, each with its
+  own main clone and git credential: a main clone holds what its owner's
+  credential fetched, so a second user reading it would read a private
+  repo without ever proving access. The one exception is a repo the server
+  hosts, which its owner can share: the other user links the same repo, and
+  so the same main clone, into projects of their own rather than becoming a
+  second owner (docs/hosted-projects.md "Sharing").
 - **User-scoped rows** carry an `owner`: `preferences` (git identity, time
   zone), `shortcut_overrides`, `git_credentials` (names unique per owner)
   and `tool_credentials`. Their stores take the owner's id as an argument
@@ -175,8 +181,9 @@ There are three access levels:
   hold whatever its shells printed, credentials included
   (docs/workspace-steps.md "Logs"). The attaches are classed by what they
   grant, not by their method.
-  A push to a project's hosted remote is a write, so it is the owner's; a
-  clone or fetch of it is a read (docs/hosted-projects.md).
+  A push to a hosted repo's remote is a write, so it is the owner's or a
+  user's it is shared with; a clone or fetch of it is a read
+  (docs/hosted-projects.md).
 - **`admin`**: an admin of the install (see "Roles"), who must also own
   what the route names, if anything: setting roles, and publishing a site
   (create, edit, deploy, start). Stopping and deleting a site stay at
@@ -208,7 +215,7 @@ write as `CONFLICT` (409), the server's own included.
   second user gets their own answer rather than a 403: `/auth/*` and the
   `/agent/auth` socket, `/config/*`, `/shortcuts/*`. A git credential is
   its owner's alone: renaming, replacing or deleting another user's reads
-  as missing, and a project is assigned (or cloned with) only its owner's
+  as missing, and a repo is assigned (or cloned with) only its owner's
   credential (`resolveCredentialForRemote`).
 - `/project/add` and `/project/register` create a project the caller then
   owns.
@@ -245,8 +252,8 @@ registered in `server-run`, outside `buildApp`, so
   sign-ins and are refused without one, and refused until the owner has a
   git identity.
 - **Git credentials** (docs/git-credentials.md) belong to their owner and
-  are assigned only to that owner's projects. Host-side fetches on a
-  project's clone use the owner's credential.
+  are assigned only to that owner's repos. Host-side fetches on a repo's
+  main clone use its owner's credential.
 
 ### Under `k8s`: the egress proxy
 

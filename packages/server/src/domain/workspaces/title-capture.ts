@@ -1,4 +1,4 @@
-import { getConversationTitle, sessionTranscriptPath } from '#runtime/agents'
+import { getConversationTitle } from '#runtime/agents'
 import type { SandboxFile } from '#runtime/agents'
 import { normalizeTitle } from '@yaac/shared/titles'
 import type { AgentTool } from '@yaac/shared/types'
@@ -44,7 +44,6 @@ const reads = new Map<string, Read>()
  */
 export async function captureTitle(
   projectId: string,
-  workspaceId: string,
   tool: AgentTool,
   conversationId: string,
   transcript: SandboxFile | undefined,
@@ -63,15 +62,11 @@ export async function captureTitle(
     const wait = tool === 'opencode' ? last.waitMs : idle ? IDLE_RECHECK_MS : RECHECK_MS
     if (since < wait) return known
   }
-  // An acp conversation has no recorded transcript, and omp reports none,
-  // but claude's and omp's are found by id.
-  const file = transcript
-    ?? (tool === 'claude' || tool === 'omp' ? await sessionTranscriptPath(projectId, workspaceId, tool, conversationId) : undefined)
   const found = await getConversationTitle(tool, {
     projectId,
     conversationId,
     jobName,
-    ...(file !== undefined ? { transcript: file } : {}),
+    ...(transcript !== undefined ? { transcript } : {}),
   }).catch(() => undefined)
   const title = (found !== undefined ? normalizeTitle(found) : '') || known
   reads.set(key, {

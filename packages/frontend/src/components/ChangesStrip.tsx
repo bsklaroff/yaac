@@ -10,7 +10,9 @@ import { CHANGE_STAGES, lineTotals, stageTotals } from '#lib/gitStatus'
 import { RangeArrowIcon, BranchIcon, ChevronIcon, CommitsIcon, FileIcon } from '#lib/icons'
 import { useUiStore } from '#lib/store'
 import { relativeAge } from '#lib/time'
-import { useProjectBranches } from '#lib/useProjectBranches'
+import { useRepoBranches } from '#lib/repoApi'
+import { useCheckout } from '#lib/checkouts'
+import { CheckoutSwitcher } from '#components/CheckoutSwitcher'
 
 /** A typed commit id (or a prefix of one) the ref pickers offer as is. */
 const COMMIT_PREFIX = /^[0-9a-f]{7,64}$/
@@ -23,13 +25,11 @@ const PARENT = ':parent'
  * files' line totals, overall and per stage, and what the diff leaves out.
  * The workspace's own pane names its base and offers to compare something
  * else; a range's pane picks either end, which retargets it in place
- * (`retargetRange`), and leads back to the workspace's own.
+ * (`retargetRange`), and leads back to the workspace's own. Both describe
+ * the checkout the workspace's switcher picks (`useCheckout`).
  */
-export function ChangesStrip({ workspaceId, projectId, baseBranch, startCommit, range, data, files }: {
+export function ChangesStrip({ workspaceId, range, data, files }: {
   workspaceId: string
-  projectId: string
-  baseBranch?: string
-  startCommit?: string
   range?: ChangesRange
   data: WorkspaceDiff | undefined
   /** The changed files shown, whose lines are totalled. */
@@ -38,6 +38,10 @@ export function ChangesStrip({ workspaceId, projectId, baseBranch, startCommit, 
   const openRange = useUiStore((s) => s.openRange)
   const openChanges = useUiStore((s) => s.openChanges)
   const retargetRange = useUiStore((s) => s.retargetRange)
+  const { current } = useCheckout(workspaceId)
+  const repoId = current?.repoId ?? ''
+  const baseBranch = current?.baseBranch
+  const startCommit = current?.startCommit
   const base = baseBranch ?? startCommit
   const retarget = (next: ChangesRange): void => {
     if (range) retargetRange(workspaceId, changesTarget(range), changesTarget(next))
@@ -46,10 +50,11 @@ export function ChangesStrip({ workspaceId, projectId, baseBranch, startCommit, 
   const action = 'shrink-0 rounded px-1.5 py-0.5 transition hover:bg-surface-2 hover:text-text'
   return (
     <div className="flex h-7 shrink-0 items-center gap-1 border-b border-hairline px-1.5 text-[11px] text-text-dim">
+      <CheckoutSwitcher workspaceId={workspaceId} />
       {range ? (
         <>
           <RefPicker
-            projectId={projectId}
+            repoId={repoId}
             value={range.from}
             ariaLabel="Compare from"
             parent={range.to !== WORKTREE_REF}
@@ -57,7 +62,7 @@ export function ChangesStrip({ workspaceId, projectId, baseBranch, startCommit, 
           />
           <RangeArrowIcon size={11} className="shrink-0 text-text-faint" />
           <RefPicker
-            projectId={projectId}
+            repoId={repoId}
             value={range.to}
             ariaLabel="Compare to"
             worktree
@@ -125,8 +130,8 @@ function RefIcon({ value }: { value?: string }): JSX.Element {
  * when `parent`, or a commit id typed into the filter. An unset `value` is a
  * single commit's parent.
  */
-function RefPicker({ projectId, value, ariaLabel, worktree = false, parent = false, onPick }: {
-  projectId: string
+function RefPicker({ repoId, value, ariaLabel, worktree = false, parent = false, onPick }: {
+  repoId: string
   value?: string
   ariaLabel: string
   worktree?: boolean
@@ -135,7 +140,7 @@ function RefPicker({ projectId, value, ariaLabel, worktree = false, parent = fal
 }): JSX.Element {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
-  const listed = useProjectBranches(projectId, open)
+  const listed = useRepoBranches(repoId, open)
   const typed = query.trim()
   const items: TypeaheadItem[] = [
     ...worktree ? [{ value: WORKTREE_REF, label: 'Working tree', detail: 'with uncommitted work' }] : [],

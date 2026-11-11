@@ -79,7 +79,7 @@ describe('reconcileConversations', () => {
 
   /** An open session of the workspace. */
   const opened = (over: Partial<Parameters<typeof insertSession>[2]> = {}): Promise<SessionRow> =>
-    insertSession(DEMO_PROJECT_ID, 'wt-1', { tool: 'claude', mode: 'tui', permissionMode: 'accept-edits', ...over })
+    insertSession(DEMO_PROJECT_ID, 'wt-1', { tool: 'claude', mode: 'tui', permissionMode: 'accept-edits', cwd: '', ...over })
 
   /** Write a claude transcript opening with `firstMessage`; return a pane
    *  naming it. */
@@ -258,8 +258,9 @@ describe('reconcileConversations', () => {
       }),
       '',
     ].join('\n'))
-    // claude writes its generated title to its transcript under acp too;
-    // with no recorded path, the transcript is found by the conversation's id.
+    // claude writes a transcript under acp too, with its generated title.
+    // It reports no path, so the transcript is found where claude files it
+    // for the session's cwd, and that path is recorded.
     const transcript = path.join(claudeDir(DEMO_PROJECT_ID), 'projects', '-workspace', 'acp-1.jsonl')
     await fs.mkdir(path.dirname(transcript), { recursive: true })
     await fs.writeFile(transcript, `${JSON.stringify({ type: 'ai-title', aiTitle: 'Ship it', sessionId: 'acp-1' })}\n`)
@@ -282,7 +283,7 @@ describe('reconcileConversations', () => {
     expect(await rows()).toEqual([['acp-1', true, a.id]])
     const link = await row('acp-1')
     expect(link).toMatchObject({ mode: 'acp', firstPrompt: 'ship the thing', title: 'Ship it', model: 'claude-opus-5-5' })
-    expect(link?.transcriptPath).toBeUndefined()
+    expect(link?.transcriptPath).toBe('claude/projects/-workspace/acp-1.jsonl')
     expect(link?.lastActiveAt).toBeInstanceOf(Date)
 
     // A recorded conversation whose stream drops stays active until the

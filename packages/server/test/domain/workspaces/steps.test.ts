@@ -93,7 +93,7 @@ afterEach(async () => {
 async function release(): Promise<{ siteId: string; volumeId: string }> {
   const volume = await insertVolume(DEMO_PROJECT_ID, 'data', '10Gi')
   const site = await insertSite({
-    projectId: DEMO_PROJECT_ID, name: 'shop', hostname: 'shop.example.com', port: 3000,
+    projectId: DEMO_PROJECT_ID, repoId: DEMO_PROJECT_ID, name: 'shop', hostname: 'shop.example.com', port: 3000,
     namedWorkflowId: await namedWorkflowFor(DEMO_PROJECT_ID), volumeId: volume.id,
   })
   await startLife({

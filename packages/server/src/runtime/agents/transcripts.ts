@@ -4,14 +4,16 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   agentHistoryDir,
-  CLAUDE_POD_CWD,
   claudeDir,
+  claudePodCwd,
+  claudeProjectDirName,
   codexDir,
   ompDir,
   codexRolloutParent,
   codexRolloutThreadId,
   opencodeCheckpointDir,
   projectDir,
+  workspaceDir,
   type AgentHistoryPart,
 } from '@yaac/shared/project-paths'
 import { conversationIdSchema, type AgentMode, type AgentTool } from '@yaac/shared/types'
@@ -34,9 +36,8 @@ import { openSandboxDir, openSandboxFile, type SandboxFile } from './sandbox-fs'
  *
  * A transcript is either in the workspace's own history (`agentHistoryDir`),
  * where every tool writes on both drivers, or in the project's shared tool
- * home when nothing linked it into the history yet (e.g. a containerless
- * claude conversation under an unlinked cwd), until the next create moves it
- * (docs/workspace-storage.md). Readers check history first.
+ * home when nothing linked it into the history yet, until the next create
+ * moves it (docs/workspace-storage.md). Readers check history first.
  */
 
 /** Where one tool's transcripts sit: the part of a workspace's history
@@ -78,42 +79,50 @@ async function openHistoryDir(projectId: string, dir: string, strict: boolean): 
 }
 
 /**
- * Find a claude conversation's transcript by searching, since a
- * conversation in the shared home is filed under whatever cwd claude ran in.
- * Only a fallback for when no path was recorded (e.g. the pod died before
- * the registry's first tick).
+ * A claude conversation's transcript where claude files it for one of
+ * `cwds`, each relative to the workspace root, the likeliest first
+ * (docs/workspace-storage.md "Agent history"). claude names the folder for
+ * the directory it ran in, and yaac chose that directory at launch, so the
+ * path is computed, never searched for. Each cwd is tried in the workspace's
+ * history, then in the shared home: under its name in a pod, where a pod
+ * wrote before workspaces had a history of their own, and under the names
+ * a host run uses before a create links them into the history.
  *
- * The scan is sorted so a conversation somehow filed twice resolves to the
- * same file every time.
+ * Only for a conversation with no usable recorded path (its pod died before
+ * the registry's first tick, say).
  */
-async function findClaudeTranscript(
+async function claudeTranscript(
   projectId: string,
   workspaceId: string,
-  sessionId: string,
+  conversationId: string,
+  cwds: string[],
   strict = false,
 ): Promise<SandboxFile | undefined> {
   // Validate the id before joining it into a path.
-  if (!conversationIdSchema.safeParse(sessionId).success) return undefined
-  const name = `${sessionId}.jsonl`
-  for (const { dir, sub } of transcriptRoots(projectId, workspaceId, 'claude')) {
-    const home = await openHistoryDir(projectId, dir, strict)
-    if (home === null) continue
-    // `stat` reads any failure as absent; a listing throws on all but that.
-    const found = async (cwd: string): Promise<SandboxFile | undefined> => {
-      const rel = under(sub, `${cwd}/${name}`)
-      const hit = strict
-        ? (await home.readdir(under(sub, cwd))).some((e) => e.isFile() && e.name === name)
-        : (await home.stat(rel))?.isFile() === true
-      return hit ? { projectId, dir, rel } : undefined
-    }
-    const conventional = await found(CLAUDE_POD_CWD)
-    if (conventional) return conventional
-    const entries = await home.readdir(sub)
-    entries.sort((a, b) => a.name.localeCompare(b.name))
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue
-      const candidate = await found(entry.name)
-      if (candidate) return candidate
+  if (!conversationIdSchema.safeParse(conversationId).success) return undefined
+  const name = `${conversationId}.jsonl`
+  const project = projectDir(projectId)
+  const resolved = await fs.realpath(project).catch(() => project)
+  for (const cwd of cwds) {
+    const hostPath = path.join(workspaceDir(projectId, workspaceId), cwd)
+    const candidates = [
+      { dir: agentHistoryDir(projectId, workspaceId, 'claude'), folders: [claudePodCwd(cwd)] },
+      {
+        dir: claudeDir(projectId),
+        folders: [claudePodCwd(cwd), ...[...new Set([hostPath, path.join(resolved, path.relative(project, hostPath))])]
+          .map(claudeProjectDirName)].map((name) => `projects/${name}`),
+      },
+    ]
+    for (const { dir, folders } of candidates) {
+      const home = await openHistoryDir(projectId, dir, strict)
+      if (home === null) continue
+      for (const folder of folders) {
+        // `stat` reads any failure as absent; a listing throws on all but that.
+        const hit = strict
+          ? (await home.readdir(folder)).some((e) => e.isFile() && e.name === name)
+          : (await home.stat(`${folder}/${name}`))?.isFile() === true
+        if (hit) return { projectId, dir, rel: `${folder}/${name}` }
+      }
     }
   }
   return undefined
@@ -184,7 +193,11 @@ export function resolveProjectPath(
  * (a host workspace reaches its history through links). If nothing is there
  * yet (claude writes on its first turn), the path is left for a later pass.
  *
- * pi and omp report no path, so their conversations are found by id.
+ * pi and omp report no path, so their conversations are found by id. A
+ * claude conversation that reports none (one driven over `acp`) is looked
+ * for where claude files it for `cwd`, the directory its session runs in
+ * (`claudeTranscript`); once it has written there, the path is recorded
+ * like a reported one.
  *
  * A path resolving somewhere `resolveProjectPath` would refuse is dropped,
  * since on a host a link could point anywhere.
@@ -195,11 +208,16 @@ export async function locateTranscript(
   tool: AgentTool,
   conversationId: string,
   reported: string | undefined,
+  cwd: string,
 ): Promise<string | undefined> {
   if (isPiLike(tool)) {
     const logs = await piSessionLogs(projectId, workspaceId, tool, conversationId)
     const newest = logs[logs.length - 1]
     return newest === undefined ? undefined : toProjectRelative(newest)
+  }
+  if (tool === 'claude' && reported === undefined) {
+    const filed = await claudeTranscript(projectId, workspaceId, conversationId, [cwd])
+    return filed === undefined ? undefined : toProjectRelative(filed)
   }
   if (tool === 'opencode' || reported === undefined) return undefined
   const { part, shared } = TRANSCRIPT_LAYOUT[tool]
@@ -274,41 +292,45 @@ async function piSessionLogs(
 }
 
 /**
- * The transcript of a workspace conversation (by default the one pinned to
- * the workspace id) found without a recorded path, or undefined if the tool
- * leaves none (opencode) or has not written one. claude's is named for the
- * conversation; pi's and omp's newest log wins. codex is not supported: its rollout
- * filename is not derivable from any id, so only a recorded path finds it.
+ * The transcript of a workspace conversation found without a recorded path,
+ * or undefined if the tool leaves none (opencode) or has not written one.
+ * claude's is named for the conversation, in the folder of the directory it
+ * ran in, so `cwds` lists where that may be, the likeliest first
+ * (`claudeTranscript`); pi's and omp's newest log wins. codex is not
+ * supported: its rollout filename is not derivable from any id, so only a
+ * recorded path finds it.
  */
 export async function sessionTranscriptPath(
   projectId: string,
   workspaceId: string,
   tool: AgentTool,
-  conversationId = workspaceId,
+  conversationId: string,
+  cwds: string[],
 ): Promise<SandboxFile | undefined> {
   if (tool === 'opencode' || tool === 'codex') return undefined
   if (isPiLike(tool)) {
     const logs = await piSessionLogs(projectId, workspaceId, tool, conversationId)
     return logs[logs.length - 1]
   }
-  return findClaudeTranscript(projectId, workspaceId, conversationId)
+  return claudeTranscript(projectId, workspaceId, conversationId, cwds)
 }
 
 /**
  * Whether a conversation's history is where its tool resumes it from:
- * claude's transcript, codex's rollout, pi's or omp's log, or for opencode the
- * workspace's database, which is as close as the host can tell without
- * opening it. Only a
+ * claude's transcript in the folder of `cwd` (the directory its session
+ * runs in, which is where claude looks a conversation up), codex's rollout,
+ * pi's or omp's log, or for opencode the workspace's database, which is as
+ * close as the host can tell without opening it. Only a
  * missing file or dir answers false; any other failure to look throws, so a
  * passing read error is never taken for lost history.
  */
 export async function hasConversationHistory(
   projectId: string,
   workspaceId: string,
-  { tool, conversationId }: { tool: AgentTool; conversationId: string },
+  { tool, conversationId, cwd }: { tool: AgentTool; conversationId: string; cwd: string },
 ): Promise<boolean> {
   switch (tool) {
-    case 'claude': return await findClaudeTranscript(projectId, workspaceId, conversationId, true) !== undefined
+    case 'claude': return await claudeTranscript(projectId, workspaceId, conversationId, [cwd], true) !== undefined
     case 'codex': return (await codexRolloutFiles(projectId, workspaceId, true)).has(conversationId)
     case 'pi':
     case 'omp':
@@ -332,6 +354,9 @@ export interface ConversationRef {
   conversationId: string
   /** Project-relative, as stored. */
   transcriptPath?: string
+  /** Where claude may have filed it when no path is recorded
+   *  (`sessionTranscriptPath`); the workspace root when absent. */
+  cwds?: string[]
 }
 
 /** One file of a conversation's history, named as it is handed out. */
@@ -404,7 +429,7 @@ async function claudeFiles(projectId: string, workspaceId: string, s: Conversati
     : resolveProjectPath(projectId, workspaceId, 'claude', s.transcriptPath)
   const main = recorded !== undefined && await transcriptLastActiveMs(recorded) !== undefined
     ? recorded
-    : await findClaudeTranscript(projectId, workspaceId, s.conversationId)
+    : await claudeTranscript(projectId, workspaceId, s.conversationId, s.cwds ?? [''])
   if (main === undefined) return []
   const companion = main.rel.replace(/\.jsonl$/, '')
   const root = await openRoot(main.dir, 'no-links').catch(() => null)

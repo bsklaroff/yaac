@@ -2,7 +2,7 @@ import type { JSX } from 'react'
 
 /**
  * The warning an editor for a shared credential opens with: every thing the
- * edit reaches (a git credential's projects, an endpoint's tools), so a
+ * edit reaches (a git credential's repos, an endpoint's tools), so a
  * change made from one row is never a surprise to the others.
  */
 export function AffectsBanner({ lead, names, none, note }: {

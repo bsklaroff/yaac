@@ -3,7 +3,10 @@
  * pure `computePrewarmPlan` decides; this lists pods, finds spares in an
  * outdated zone or image (or warmed before a server restart), and spawns
  * (`createWorkspace({ prewarm: true })`) or reaps (`reapSpare`). It also
- * keeps each spare on its base branch's latest tip (`refreshSpares`).
+ * keeps each spare's checkouts on their base branches' latest tips
+ * (`refreshSpares`). Spares are warmed with what the project's last create
+ * started with (`resolveStart`), since that is what the next is likeliest
+ * to ask for.
  */
 import crypto from 'node:crypto'
 import type { RuntimeSnapshot } from '#drivers/contract'
@@ -19,12 +22,15 @@ import {
   reaping,
   refreshing,
   spareHeads,
+  spareMatches,
   spareSettings,
   type SpareSettings,
 } from './prewarm'
+import { resolveStart } from './checkouts'
 import { rebranchSpare } from './spare-pool'
 import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
-import { getTimeZone, listProjectRows } from '#db'
+import path from 'node:path'
+import { getProjectRow, getTimeZone, listProjectRows } from '#db'
 import { serverLog } from '#lib/log'
 import { repoDir } from '@yaac/shared/project-paths'
 import { env } from '@yaac/shared/env'
@@ -36,7 +42,9 @@ import type { RuntimeHandle } from '#drivers/contract'
  */
 async function spawnSpare(projectId: string, workspaceId: string): Promise<void> {
   try {
-    await createWorkspace(projectId, { prewarm: true, workspaceId })
+    const project = await getProjectRow(projectId)
+    if (!project) return
+    await createWorkspace(projectId, { prewarm: true, workspaceId, start: resolveStart(project, {}) })
   } catch (err) {
     spareSettings.delete(workspaceId)
     serverLog(`[prewarm] spawn for ${projectId} failed: ${String(err)}`)
@@ -74,11 +82,11 @@ export async function reconcilePrewarmPool(view: RuntimeSnapshot): Promise<void>
 }
 
 /**
- * Move each spare whose base branch has a new tip up to it, in the
- * background (`rebranchSpare`), so a
- * claim finds it current instead of doing that work while the user waits.
- * The tip is read from the server's clone, which `origin-refresh` and every
- * create keep fetched. A spare left half-moved by a failure is reaped.
+ * Move each spare checkout whose base branch has a new tip up to it, in the
+ * background (`rebranchSpare`), so a claim finds it current instead of
+ * doing that work while the user waits. The tips are read from the main
+ * clones, which `origin-refresh` and every create keep fetched. A spare
+ * left half-moved by a failure is reaped.
  */
 async function refreshSpares(spares: RuntimeHandle[]): Promise<void> {
   const runtime = workspaceDriver()
@@ -91,27 +99,32 @@ async function refreshSpares(spares: RuntimeHandle[]): Promise<void> {
   await Promise.all(spares.map(async (spare) => {
     const warmed = free(spare)
     if (!warmed) return
-    let target: { branch: string; tip: string }
+    let targets: Array<{ path: string; branch: string; tip: string }>
     try {
-      const repo = repoDir(spare.projectId)
-      const branch = warmed.baseBranch ?? await getDefaultBranch(repo)
-      target = { branch, tip: await resolveRemoteRef(repo, branch) }
+      targets = await Promise.all(warmed.repos.map(async (r) => {
+        const repo = repoDir(r.repoId)
+        const branch = r.baseBranch ?? await getDefaultBranch(repo)
+        return { path: r.path, branch, tip: await resolveRemoteRef(repo, branch) }
+      }))
     } catch (err) {
       serverLog(`[prewarm] reading spare ${spare.workspaceId}'s base failed: ${String(err)}`)
       return
     }
-    if (spareHeads.get(spare.workspaceId) === target.tip || free(spare) !== warmed) return
+    const tips = targets.map((t) => t.tip).join(',')
+    if (spareHeads.get(spare.workspaceId) === tips || free(spare) !== warmed) return
     let changed = false
     const refresh = (async () => {
       await runtime.awaitAgentTransport(spare.jobName, { timeoutMs: 10_000 })
       const { workspaceDir } = runtime.workspacePaths(spare.jobName)
-      const head = (await runtime.exec(spare.jobName, `git -C ${workspaceDir} rev-parse -q --verify HEAD || true`))
-        .stdout.trim()
-      if (head !== target.tip) {
+      for (const target of targets) {
+        const checkout = path.posix.join(workspaceDir, target.path)
+        const head = (await runtime.exec(spare.jobName, `git -C ${checkout} rev-parse -q --verify HEAD || true`))
+          .stdout.trim()
+        if (head === target.tip) continue
         changed = true
-        await rebranchSpare(spare, target.branch, target.tip)
+        await rebranchSpare(spare, checkout, target.branch, target.tip)
       }
-      spareHeads.set(spare.workspaceId, target.tip)
+      spareHeads.set(spare.workspaceId, tips)
     })().catch((err: unknown) => {
       serverLog(`[prewarm] refreshing spare ${spare.workspaceId} failed: ${String(err)}`)
       if (changed) reapSpare(spare)
@@ -121,9 +134,10 @@ async function refreshSpares(spares: RuntimeHandle[]): Promise<void> {
 }
 
 /**
- * Spares warmed in a zone other than the user's current one, or on an image
- * other than the one the project now builds. Both are fixed at warm time,
- * so no claim takes them. So are spares whose warm-time settings this process never
+ * Spares warmed in a zone other than the user's current one, on an image
+ * other than the one the project now builds, or with other repos, folders
+ * or cwd than its last create's. All are fixed at warm time, so no claim
+ * like the last takes them. So are spares whose warm-time settings this process never
  * recorded (warmed before it started), which no claim can match. A project
  * whose image cannot be resolved keeps its spares, which a claim then
  * passes over.
@@ -133,6 +147,7 @@ async function staleSpares(pods: RuntimeHandle[]): Promise<Set<string>> {
   if (spares.length === 0) return new Set()
   const projects = (await listProjectRows()).filter((p) => spares.some((s) => s.projectId === p.id))
   const wanted = new Map(await Promise.all(projects.map(async (p) => [p.id, {
+    start: resolveStart(p, {}),
     timeZone: (await getTimeZone(p.owner)).timeZone ?? undefined,
     image: await currentSpareImage(p).then((ref) => ({ ref }), (err: unknown) => {
       serverLog(`[prewarm] resolving ${p.id}'s image failed: ${String(err)}`)
@@ -144,6 +159,7 @@ async function staleSpares(pods: RuntimeHandle[]): Promise<Set<string>> {
     const warmed = spareSettings.get(p.workspaceId)
     const want = wanted.get(p.projectId)
     if (!warmed || (want !== undefined && (warmed.timeZone !== want.timeZone
+      || !spareMatches(warmed, want.start)
       || (want.image !== undefined && warmed.image !== want.image.ref)))) {
       stale.add(p.jobName)
     }

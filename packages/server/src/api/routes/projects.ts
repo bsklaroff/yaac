@@ -1,15 +1,13 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
-import type { Context } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
 import {
   addProject,
-  assignProjectCredential,
+  addProjectRepo,
   cacheVolumesSchema,
   createHostedProject,
   getProjectAllowlist,
-  getProjectBranches,
   getProjectDetail,
   listProjectEnv,
   listProjectRunSecrets,
@@ -19,9 +17,10 @@ import {
   readProjectDockerfile,
   readProjectIcon,
   registerStagedProject,
-  removeKeptHostedRepo,
   removeProjectEnvVar,
   removeProjectIcon,
+  removeProjectRepo,
+  reorderProjectRepos,
   removeRunSecret,
   setProjectAllowlist,
   setProjectEnvVar,
@@ -29,25 +28,24 @@ import {
   writeProjectDockerfile,
   pushProjectSecrets,
   resolveProjectId,
-  serveHostedRepo,
-  setDefaultBranch,
-  setDefaultBranchGuard,
   setInitSteps,
   setInitWorkflow,
   setKeptIgnoredPaths,
   setProjectIcon,
   setScratchDirs,
   scratchDirSettingsPatchSchema,
-  shareProject,
   updateProjectConfig,
+  updateProjectRepoLink,
 } from '#domain/projects'
-import { moveProjectToRemote, previewProjectMove, previewWorkspaceRetention, removeProject, setWorkspaceRetention, unshareProject } from '#domain/workspaces'
+import { previewWorkspaceRetention, removeProject, setWorkspaceRetention } from '#domain/workspaces'
 import { pushCredentialsToRuntime } from '#domain/auth'
+import { serveHostedRepo } from '#domain/repos'
 import { setProjectOrder } from '#db'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { projectBuildDir } from '#lib/build-dirs'
 import { DEFAULT_ALLOWED_HOSTS, missingCriticalHosts } from '#lib/allowed-hosts'
 import { ServerError } from '@yaac/shared/errors'
+import { MAX_PROJECT_REPOS } from '@yaac/shared/types'
 import { buildFilesApp } from '#routes/build-files'
 import { authorizeProject } from '#domain/access'
 import { requireDriverFeature } from '#api/http/driver-features'
@@ -75,13 +73,12 @@ async function syncRunningWorkspaces(projectId: string, applied: string): Promis
   }
 }
 
-async function serveUserGit(c: Context<IdentityEnv>, pathInfo: string): Promise<Response> {
-  const projectId = await resolveProjectId(c.req.param('projectId') ?? '')
-  return serveHostedRepo(projectId, c.req.raw, pathInfo, { kind: 'user', principal: c.get('principal') })
-}
-
 /** A stopped-workspace retention, in days; a century is plenty. */
 const RETENTION_DAYS = z.number().int().min(1).max(36_500)
+
+async function serveLegacyGit(c: Context<IdentityEnv>, pathInfo: string): Promise<Response> {
+  return serveHostedRepo(c.req.param('projectId') ?? '', c.req.raw, pathInfo, { kind: 'user', principal: c.get('principal') })
+}
 
 export const projectApp = new Hono<IdentityEnv>()
   .get('/list', async (c) => c.json(await listProjects()))
@@ -108,14 +105,16 @@ export const projectApp = new Hono<IdentityEnv>()
       return c.json(result)
     },
   )
-  // An empty project whose remote the server hosts (docs/hosted-projects.md).
+  // A project with one empty repo whose remote the server hosts
+  // (docs/hosted-projects.md).
   .post(
     '/create',
     zv('json', z.object({ name: z.string().min(1).max(200) })),
     async (c) => c.json(await createHostedProject(c.req.valid('json').name, c.get('principal').userId)),
   )
-  // Record a project whose checkout is already staged in the data dir,
-  // without cloning. Tests use this to add a local repo.
+  // Record a project whose repo's main clone is already staged in the data
+  // dir under the project's id, without cloning. Tests use this to add a
+  // local repo.
   .post(
     '/register',
     zv('json', z.object({ id: z.uuid(), name: z.string().min(1), remoteUrl: z.string().min(1) })),
@@ -125,35 +124,86 @@ export const projectApp = new Hono<IdentityEnv>()
     },
   )
   .get('/:projectId', async (c) => c.json(await getProjectDetail(await resolveProjectId(c.req.param('projectId')))))
-  // Assign the project its git credential. For an SSH key, returns the host
-  // key that was trusted so the user can compare it.
-  .put(
-    '/:projectId/git-credential',
-    zv('json', z.object({ credentialId: z.uuid() })),
+  // The repos the project links (docs/project-repos.md): link one by its
+  // remote and a credential, by the id of a repo its owner may use, or as a
+  // new repo yaac hosts, under `dir` (by default the repo's name). Answers
+  // the link, with the host key trusted for a fresh ssh clone.
+  .post(
+    '/:projectId/repo',
+    zv('json', z.intersection(
+      z.union([
+        z.object({ remoteUrl: z.string().min(1), credentialId: z.uuid() }),
+        z.object({ repoId: z.uuid() }),
+        z.object({ hosted: z.literal(true) }),
+      ]),
+      z.object({ dir: z.string().min(1).max(100).optional() }),
+    )),
     async (c) => {
-      const result = await assignProjectCredential(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.valid('json').credentialId)
+      const { dir, ...what } = c.req.valid('json')
+      const linked = await addProjectRepo(c.get('principal'), await resolveProjectId(c.req.param('projectId')), what, dir)
       await pushCredentialsToRuntime()
-      return c.json(result)
+      return c.json(linked)
     },
   )
-  // A hosted project's default branch (docs/hosted-projects.md).
+  // Where a hosted project's remote was served while a project had one
+  // repo: a clone made then still names it. The id is a repo's (every repo
+  // from then carries its project's id) or a former share's project
+  // (docs/legacy-compat-shims.md "Hosted URLs naming a project").
+  .get('/:projectId/git/info/refs', async (c) => serveLegacyGit(c, '/info/refs'))
+  .post('/:projectId/git/git-upload-pack', async (c) => serveLegacyGit(c, '/git-upload-pack'))
+  .post('/:projectId/git/git-receive-pack', async (c) => serveLegacyGit(c, '/git-receive-pack'))
+  // The order the project lists its repos in, each named by folder or id.
   .put(
-    '/:projectId/default-branch',
-    zv('json', z.object({ branch: z.string().min(1) })),
+    '/:projectId/repo-order',
+    zv('json', z.object({ repos: z.array(z.string().min(1)).max(MAX_PROJECT_REPOS) })),
     async (c) => {
-      await setDefaultBranch(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.valid('json').branch)
+      await reorderProjectRepos(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.valid('json').repos)
       return c.body(null, 204)
     },
   )
-  // A hosted project's default-branch guard (docs/hosted-projects.md).
+  // One link, named by its folder or the repo's id: the folder its checkout
+  // takes in workspaces created from now on. Unlinking deletes neither the
+  // repo nor any checkout of it.
+  .patch(
+    '/:projectId/repo/:repo',
+    zv('json', z.object({ dir: z.string().min(1).max(100) })),
+    async (c) => {
+      const projectId = await resolveProjectId(c.req.param('projectId'))
+      await updateProjectRepoLink(c.get('principal'), projectId, c.req.param('repo'), c.req.valid('json'))
+      return c.body(null, 204)
+    },
+  )
+  // Whether the project may only read a repo, and whether the repo's token
+  // may be its workspaces' `GH_TOKEN` (docs/project-repos.md "Read-only
+  // repos"). The egress proxy enforces both, so they reach running
+  // workspaces at once, and a server without one has neither.
   .put(
-    '/:projectId/default-branch-guard',
+    '/:projectId/repo/:repo/read-only',
     zv('json', z.object({ enabled: z.boolean() })),
     async (c) => {
-      await setDefaultBranchGuard(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.valid('json').enabled)
+      requireDriverFeature('repoAccess')
+      const projectId = await resolveProjectId(c.req.param('projectId'))
+      await updateProjectRepoLink(c.get('principal'), projectId, c.req.param('repo'), { readOnly: c.req.valid('json').enabled })
+      await pushCredentialsToRuntime()
       return c.body(null, 204)
     },
   )
+  .put(
+    '/:projectId/repo/:repo/gh-token',
+    zv('json', z.object({ enabled: z.boolean() })),
+    async (c) => {
+      requireDriverFeature('repoAccess')
+      const projectId = await resolveProjectId(c.req.param('projectId'))
+      await updateProjectRepoLink(c.get('principal'), projectId, c.req.param('repo'), { ghToken: c.req.valid('json').enabled })
+      await pushCredentialsToRuntime()
+      return c.body(null, 204)
+    },
+  )
+  .delete('/:projectId/repo/:repo', async (c) => {
+    await removeProjectRepo(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.param('repo'))
+    await pushCredentialsToRuntime()
+    return c.body(null, 204)
+  })
   // The gitignored paths a stop keeps. The current list is in the project
   // summary.
   .put(
@@ -238,43 +288,6 @@ export const projectApp = new Hono<IdentityEnv>()
       return c.json(await setWorkspaceRetention(c.get('principal'), projectId, days, before === undefined ? undefined : new Date(before)))
     },
   )
-  // A hosted project's remote, for the user's own git: `git clone
-  // <origin>/api/project/<id>/git`. Workspaces reach it through their own
-  // route (#routes/workspaces).
-  .get('/:projectId/git/info/refs', async (c) => serveUserGit(c, '/info/refs'))
-  .post('/:projectId/git/git-upload-pack', async (c) => serveUserGit(c, '/git-upload-pack'))
-  .post('/:projectId/git/git-receive-pack', async (c) => serveUserGit(c, '/git-receive-pack'))
-  // Share a hosted project with another user, or remove their share
-  // (docs/hosted-projects.md "Sharing").
-  .post(
-    '/:projectId/shares',
-    zv('json', z.object({ userId: z.uuid() })),
-    async (c) => c.json(await shareProject(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.valid('json').userId)),
-  )
-  .delete('/:projectId/shares/:userId', async (c) => {
-    await unshareProject(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.param('userId'))
-    return c.body(null, 204)
-  })
-  // Move a hosted project, and its shares, to an empty remote elsewhere
-  // (docs/hosted-projects.md "Moving to a git host"). The GET says what the
-  // move would stop and hand over, which clients warn with before the POST.
-  .get('/:projectId/move', async (c) =>
-    c.json(await previewProjectMove(c.get('principal'), await resolveProjectId(c.req.param('projectId')))))
-  .post(
-    '/:projectId/move',
-    zv('json', z.object({ remoteUrl: z.string().min(1), gitCredentialId: z.uuid() })),
-    async (c) => {
-      const { remoteUrl, gitCredentialId } = c.req.valid('json')
-      const projectId = await resolveProjectId(c.req.param('projectId'))
-      return c.json(await moveProjectToRemote(c.get('principal'), projectId, remoteUrl, gitCredentialId))
-    },
-  )
-  // The repository yaac kept when the project moved, removed once its owner
-  // has checked the new remote.
-  .delete('/:projectId/hosted-repo', async (c) => {
-    await removeKeptHostedRepo(c.get('principal'), await resolveProjectId(c.req.param('projectId')))
-    return c.body(null, 204)
-  })
   .delete('/:projectId', async (c) => {
     await removeProject(c.get('principal'), await resolveProjectId(c.req.param('projectId')))
     return c.body(null, 204)
@@ -382,29 +395,20 @@ export const projectApp = new Hono<IdentityEnv>()
       return c.json({ allowlist, leavesOut: missingCriticalHosts(allowlist) })
     },
   )
-  // Branch data for the new-workspace picker: local remote-tracking refs
-  // (instant), or freshly fetched with ?refresh=1.
-  .get(
-    '/:projectId/branches',
-    zv('query', z.object({ refresh: z.string().optional() })),
-    async (c) => {
-      const projectId = await resolveProjectId(c.req.param('projectId'))
-      const refresh = c.req.valid('query').refresh === '1'
-      return c.json(await getProjectBranches(projectId, { refresh }))
-    },
-  )
   // Every SKILL.md the project's agents can use, each naming the agents that
   // load it. Read on the host, so no running workspace is needed.
   .get(
     '/:projectId/skills',
     zv('query', z.object({
-      // Origin branch to read repo skills and repo plugin settings from
-      // (default: the remote's default branch). Host tiers ignore it.
+      // The repo (its folder or id; default: the project's first) and its
+      // origin branch (default: the remote's default branch) to read repo
+      // skills and repo plugin settings from. Host tiers ignore both.
+      repo: z.string().optional(),
       branch: z.string().optional(),
     })),
     async (c) => {
       const projectId = await resolveProjectId(c.req.param('projectId'))
-      return c.json(await getProjectSkills(projectId, c.req.valid('query').branch))
+      return c.json(await getProjectSkills(projectId, c.req.valid('query')))
     },
   )
   // The full SKILL.md for one skill, fetched on demand when a row is picked.
@@ -412,12 +416,13 @@ export const projectApp = new Hono<IdentityEnv>()
     '/:projectId/skills/body',
     zv('query', z.object({
       id: z.string().min(1),
+      repo: z.string().optional(),
       branch: z.string().optional(),
     })),
     async (c) => {
       const projectId = await resolveProjectId(c.req.param('projectId'))
-      const { id, branch } = c.req.valid('query')
-      return c.json(await getSkillDetail(projectId, id, branch))
+      const { id, ...query } = c.req.valid('query')
+      return c.json(await getSkillDetail(projectId, id, query))
     },
   )
   // Support files next to Dockerfile.yaac in the project's build dir: its

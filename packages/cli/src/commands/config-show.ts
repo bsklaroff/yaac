@@ -25,8 +25,15 @@ export async function configShow(project: string): Promise<void> {
   const list = (items: string[]): string => (items.length === 0 ? 'none' : items.join(', '))
 
   const rows = ([
-    ['git-credential', p.hosted ? 'none needed (hosted by yaac)' : p.gitCredential?.name ?? 'none'],
-    p.hosted && ['default-branch-guard', onOff(p.guardDefaultBranch)],
+    // Each repo's own settings, named with its folder in a project with
+    // several.
+    ...p.repos.flatMap((r): Array<[string, string]> => {
+      const of = (setting: string): string => (p.repos.length > 1 ? `${setting} --repo ${r.dir}` : setting)
+      const credential: [string, string] = [
+        of('git-credential'), r.hosted ? 'none needed (hosted by yaac)' : r.gitCredential?.name ?? 'none',
+      ]
+      return r.hosted ? [credential, [of('default-branch-guard'), onOff(r.guardDefaultBranch)]] : [credential]
+    }),
     ['env', list([
       ...vars.map((v) => (v.secret ? `${v.name} (secret)` : v.name)),
       ...runSecrets.map((r) => `${r.name} (run secret)`),
@@ -44,7 +51,12 @@ export async function configShow(project: string): Promise<void> {
     dockerfile !== undefined && ['dockerfile', dockerfile.content.trim() === '' ? 'none' : 'set'],
   ] satisfies Array<[string, string] | false>).filter((row) => row !== false)
   const width = Math.max(...rows.map(([key]) => key.length))
-  console.log(`${p.name} (${projectId.slice(0, 8)}), ${p.hosted ? 'hosted by yaac' : p.remoteUrl}`)
+  console.log(`${p.name} (${projectId.slice(0, 8)})`)
+  console.log(p.repos.length === 0 ? '  no repos' : `  repos  ${p.repos.map((r) => `${r.dir} (${[
+    r.hosted ? 'hosted by yaac' : r.remoteUrl,
+    ...(k8s && r.readOnly ? ['read-only'] : []),
+    ...(k8s && !r.ghToken ? ['not GH_TOKEN'] : []),
+  ].join(', ')})`).join('; ')}`)
   for (const [key, value] of rows) console.log(`  ${key.padEnd(width)}  ${value}`)
   console.log('Change one with `yaac config <setting>`.')
 }

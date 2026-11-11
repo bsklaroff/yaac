@@ -66,7 +66,7 @@ beforeEach(async () => {
   await db.delete(customEndpoints)
   await db.delete(projects)
   await fs.rm(getProjectsDir(), { recursive: true, force: true })
-  await recordProject({ id: PROJECT, name: 'p', remoteUrl: 'https://github.com/acme/p', addedAt: 'x' }, ME)
+  await recordProject({ id: PROJECT, name: 'p', addedAt: 'x' }, ME)
 })
 
 describe('addEndpoint', () => {

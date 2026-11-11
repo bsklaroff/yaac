@@ -1,8 +1,8 @@
 // Public interface of the sealed projects folder (`#domain/projects`): a
-// project's rows and its files on disk. That covers the clone and its
-// branches, the remote of a project the server hosts, the settings its
-// workspaces launch with, the egress allowlist, the ignored paths a stop keeps, the Dockerfile and build-dir files, which of its
-// owner's git credentials it uses, the picture its chip shows, and the
+// project's rows and its files on disk. That covers which repos it links
+// (the repos themselves are `#domain/repos`), the settings its workspaces
+// launch with, the egress allowlist, the ignored paths a stop keeps, the
+// Dockerfile and build-dir files, the picture its chip shows, and the
 // project lifecycle verbs.
 // Nothing below this layer reads project state; a driver that needs a
 // project's config is handed it (`PassContext.projectConfig`, a launch
@@ -11,16 +11,22 @@
 // Adding a name here widens the interface and requires a unit test in
 // packages/server/test/domain/projects/.
 
-export { addProject, createHostedProject, registerStagedProject, shareProject } from './add'
-export { removeKeptHostedRepo, serveHostedRepo, setDefaultBranch, setDefaultBranchGuard } from './hosted'
+export { addProject, createHostedProject, registerStagedProject } from './add'
+export {
+  addProjectRepo,
+  projectRepo,
+  removeProjectRepo,
+  reorderProjectRepos,
+  repoOfProject,
+  updateProjectRepoLink,
+  type RepoToLink,
+} from './repos'
 export {
   addAllowedHostToProject,
   getProjectAllowlist,
   setProjectAllowlist,
 } from './allowlist'
-export { getProjectBranches } from './branches'
 export { MAX_ICON_BYTES, readProjectIcon, removeProjectIcon, setProjectIcon } from './icon'
-export { fetchProjectCommit, fetchProjectOrigin, onOriginFetched, refreshProjectOrigins, seedProjectOrigin } from './origin'
 export {
   deleteBuildFile,
   listBuildFiles,
@@ -58,21 +64,14 @@ export {
   initWorkflowOf,
   listProjectWorkflows,
   resolveWorkflow,
+  RUN_SECRETS_NEED_ONE_REPO,
   showWorkflow,
   storeSteps,
   workflowLaunch,
 } from './workflows'
 export {
-  assignProjectCredential,
-  missingCredentialError,
-  resolveCredentialForRemote,
-  resolveProjectCredential,
-  sshKeyMaterial,
-} from './credentials'
-export {
   assertProjectExists,
   getProjectDetail,
-  projectRemoteUrl,
   resolveProjectId,
 } from './detail'
 export {

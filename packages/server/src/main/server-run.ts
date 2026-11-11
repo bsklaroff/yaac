@@ -27,6 +27,7 @@ import { TmpDirRefusal } from '@yaac/shared/paths'
 import { startReconciler } from '#main/reconciler'
 import { setWorkspaceDriver, workspaceDriver, workspacesSandboxed } from '#drivers/driver'
 import { importProjectConfigFiles, pushProjectSecrets } from '#domain/projects'
+import { moveLegacyMainClones } from '#domain/repos'
 import { rememberFeedbackUrl } from '#domain/feedback'
 import { resumeQueuedWorkspaces } from '#domain/workspaces'
 import { createK8sDriver } from '#drivers/k8s'
@@ -254,6 +255,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // (docs/legacy-compat-shims.md).
   await importProjectConfigFiles()
   await importEmbeddedEndpoints()
+  await moveLegacyMainClones()
 
   // Set synchronously so it is true before any queued request runs.
   ready = true

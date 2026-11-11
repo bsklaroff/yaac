@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -7,13 +8,19 @@ import { getProjectSkills, getSkillDetail } from '#domain/skills'
 // State hooks, reset so each case sees only the tiers it opts into.
 import { setBuiltinSkillsDir } from '#domain/skills/builtin'
 import { git } from '@yaac/test-utils/git'
+import { recordTestProject } from '@yaac/test-utils/project-fixture'
+import { closeDb, insertRepo, linkProjectRepo } from '#db'
+import { BUILT_IN_USER_ID } from '#db/user-store'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 
 // Workspaces sandboxed, as under k8s; a test wanting containerless
 // installs its own.
 beforeEach(() => { installFakeWorkspaceDriver() })
 
-const projectId = 'proj'
+const projectId = '7d4e2a1c-5b3f-4e8a-9c6d-1f2e3a4b5c6d'
+/** A project whose repo tiers are read from git, apart from `projectId`'s
+ *  working-tree writes. */
+const GITPROJ = '59f56625-001b-4df1-8d07-9b32191dc0a0'
 
 /** Commit `files` (relPath → contents) onto `branch` of a repo at
  *  `repoDir(s)` and set the `origin/<branch>` ref discovery reads, with no
@@ -93,9 +100,19 @@ const SHAPES: Record<string, string> = {
 
 let tmp: string
 
+/** Another recorded project with one repo and nothing on disk. */
+async function freshProject(): Promise<string> {
+  const id = randomUUID()
+  await recordTestProject(id)
+  return id
+}
+
 beforeEach(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-skills-test-'))
   setDataDir(tmp)
+  // Each project links one repo, whose main clone is `repoDir(<its id>)`.
+  await recordTestProject(projectId)
+  await recordTestProject(GITPROJ)
   // Hide the builtin tier unless a test opts in.
   setBuiltinSkillsDir(path.join(tmp, 'no-builtins'))
 
@@ -128,6 +145,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   setBuiltinSkillsDir(null)
+  await closeDb()
   await fs.rm(tmp, { recursive: true, force: true })
 })
 
@@ -205,11 +223,12 @@ describe('getProjectSkills', () => {
   })
 
   it('tolerates every SKILL.md frontmatter shape, coercing each field type', async () => {
-    const personal = path.join(claudeDir('shapes'), 'skills')
+    const shapes = await freshProject()
+    const personal = path.join(claudeDir(shapes), 'skills')
     for (const [name, contents] of Object.entries(SHAPES)) {
       await writeSkill(path.join(personal, name), contents)
     }
-    const { skills } = await getProjectSkills('shapes')
+    const { skills } = await getProjectSkills(shapes)
     const by = (name: string) => skills.find((s) => s.id === `claude/skills:${name}`)
 
     // No fence, unparseable YAML, and a non-mapping block all degrade to no
@@ -263,7 +282,7 @@ describe('getProjectSkills', () => {
   })
 
   it('resolves a name clash in each agent\'s own measured order, and codex loads every copy', async () => {
-    const p = 'clash'
+    const p = await freshProject()
     const repo = repoDir(p)
     /** Every dir an agent may read a `push` skill from, by its skill id. */
     const dirs: Record<string, string> = {
@@ -357,7 +376,7 @@ describe('getProjectSkills', () => {
   })
 
   it('is empty-safe when a project has no skill dirs', async () => {
-    expect((await getProjectSkills('nonexistent')).skills).toEqual([])
+    expect((await getProjectSkills(await freshProject())).skills).toEqual([])
   })
 
   it('injects the yaac builtin tier into every tool', async () => {
@@ -496,54 +515,77 @@ describe('getProjectSkills', () => {
 
   // A separate slug so beforeEach's working-tree writes don't interfere.
   it('reads repo skills from origin/<default>, ignoring uncommitted working-tree files', async () => {
-    await commitRepoBranch('gitproj', 'main', {
+    await commitRepoBranch(GITPROJ, 'main', {
       '.claude/skills/committed/SKILL.md': '---\nname: committed\ndescription: on main\n---\nb',
     })
     // A working-tree-only skill must NOT appear — the ref read ignores it.
-    await writeSkill(path.join(repoDir('gitproj'), '.claude', 'skills', 'uncommitted'),
+    await writeSkill(path.join(repoDir(GITPROJ), '.claude', 'skills', 'uncommitted'),
       '---\nname: uncommitted\ndescription: working tree only\n---\nb')
 
-    const names = (await getProjectSkills('gitproj')).skills.map((s) => s.name)
+    const names = (await getProjectSkills(GITPROJ)).skills.map((s) => s.name)
     expect(names).toContain('committed')
     expect(names).not.toContain('uncommitted')
   })
 
   it('reads repo skills from an explicitly selected branch', async () => {
-    await commitRepoBranch('gitproj', 'main', {
+    await commitRepoBranch(GITPROJ, 'main', {
       '.claude/skills/on-main/SKILL.md': '---\nname: on-main\ndescription: main\n---\nb',
     })
-    await commitRepoBranch('gitproj', 'feature', {
+    await commitRepoBranch(GITPROJ, 'feature', {
       '.claude/skills/on-feature/SKILL.md': '---\nname: on-feature\ndescription: feature\n---\nb',
     })
 
-    const main = (await getProjectSkills('gitproj')).skills.map((s) => s.name)
+    const main = (await getProjectSkills(GITPROJ)).skills.map((s) => s.name)
     expect(main).toContain('on-main')
     expect(main).not.toContain('on-feature')
 
-    const feat = (await getProjectSkills('gitproj', 'feature')).skills.map((s) => s.name)
+    const feat = (await getProjectSkills(GITPROJ, { branch: 'feature' })).skills.map((s) => s.name)
     expect(feat).toContain('on-feature')
     expect(feat).toContain('on-main') // feature was branched off main
+  })
+
+  it('reads the repo tiers of the repo named, the project\'s first unless one is, and none for a project with no repos', async () => {
+    const DOCS = '11111111-2222-4333-8444-555555555555'
+    await insertRepo({ id: DOCS, owner: BUILT_IN_USER_ID, remoteUrl: 'https://example.com/docs' })
+    await linkProjectRepo(GITPROJ, DOCS, 'docs')
+    await commitRepoBranch(GITPROJ, 'main', { '.claude/skills/in-first/SKILL.md': '---\nname: in-first\ndescription: d\n---\nb' })
+    await commitRepoBranch(DOCS, 'main', { '.claude/skills/in-docs/SKILL.md': '---\nname: in-docs\ndescription: d\n---\nb' })
+    const names = async (query?: { repo?: string }): Promise<string[]> =>
+      (await getProjectSkills(GITPROJ, query)).skills.map((s) => s.name)
+
+    expect(await names()).toContain('in-first')
+    expect(await names()).not.toContain('in-docs')
+    // By its folder in the project, or its id.
+    expect(await names({ repo: 'docs' })).toContain('in-docs')
+    expect(await names({ repo: DOCS })).not.toContain('in-first')
+    await expect(names({ repo: 'nope' })).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    const [docs] = (await getProjectSkills(GITPROJ, { repo: 'docs' })).skills.filter((s) => s.name === 'in-docs')
+    expect((await getSkillDetail(GITPROJ, docs.id, { repo: 'docs' })).body).toBe('b')
+
+    const BARE = '22222222-3333-4444-8555-666666666666'
+    await recordTestProject(BARE, { repo: false })
+    expect((await getProjectSkills(BARE)).skills.filter((s) => s.source === 'repo')).toEqual([])
   })
 
   it('gates plugins on enabledPlugins committed to the branch, not the working tree', async () => {
     // The plugin is cloned to the host claude dir (a host tier)...
     await writeSkill(
-      path.join(claudeDir('gitproj'), 'plugins', 'marketplaces', 'off', 'plugins', 'code-review', 'skills', 'review'),
+      path.join(claudeDir(GITPROJ), 'plugins', 'marketplaces', 'off', 'plugins', 'code-review', 'skills', 'review'),
       '---\nname: review\ndescription: plugin\n---\nb',
     )
     // ...but enabled only via .claude/settings.json committed on the branch.
-    await commitRepoBranch('gitproj', 'main', {
+    await commitRepoBranch(GITPROJ, 'main', {
       '.claude/settings.json': JSON.stringify({ enabledPlugins: { 'code-review@off': true } }),
     })
 
-    const { skills } = await getProjectSkills('gitproj')
+    const { skills } = await getProjectSkills(GITPROJ)
     expect(skills.find((s) => s.source === 'plugin' && s.name === 'review')).toBeDefined()
   })
 
   it('falls back to the working tree when no origin ref exists (local-only repo)', async () => {
-    await writeSkill(path.join(repoDir('gitproj'), '.claude', 'skills', 'wt'),
+    await writeSkill(path.join(repoDir(GITPROJ), '.claude', 'skills', 'wt'),
       '---\nname: wt\ndescription: working tree\n---\nb')
-    const names = (await getProjectSkills('gitproj')).skills.map((s) => s.name)
+    const names = (await getProjectSkills(GITPROJ)).skills.map((s) => s.name)
     expect(names).toContain('wt')
   })
 })
@@ -591,10 +633,10 @@ describe('getSkillDetail', () => {
   })
 
   it('serves the detail body from the selected branch', async () => {
-    await commitRepoBranch('gitproj', 'main', {
+    await commitRepoBranch(GITPROJ, 'main', {
       '.claude/skills/doc/SKILL.md': '---\nname: doc\ndescription: d\n---\nfull-body-on-main\n',
     })
-    const detail = await getSkillDetail('gitproj', 'repo/.claude/skills:doc')
+    const detail = await getSkillDetail(GITPROJ, 'repo/.claude/skills:doc')
     expect(detail.body.trim()).toBe('full-body-on-main')
   })
 })

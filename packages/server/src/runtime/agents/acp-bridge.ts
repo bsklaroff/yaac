@@ -243,7 +243,7 @@ function bridgeAcp(
       }
       // Only claude keeps a subagent's transcript apart; for another tool
       // the search finds nothing and the thread stays as the record has it.
-      sessionTranscriptPath(projectId, workspaceId, 'claude', conversationId)
+      sessionTranscriptPath(projectId, workspaceId, 'claude', conversationId, [conversation.sessionCwd])
         .then((session) => (session === undefined ? [] : claudeSubagentThreads(session, [subagentId])))
         .then(
           (events) => reply({ events }),

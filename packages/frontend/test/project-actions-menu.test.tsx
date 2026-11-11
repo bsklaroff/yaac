@@ -4,15 +4,18 @@ import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
 import { ProjectOpPane } from '#components/ProjectOpPane'
 import { useUiStore } from '#lib/store'
-import { mockFetch, renderWithClient, serverError, type FetchMock } from './harness'
+import { mockFetch, projectRepo, renderWithClient, serverError, type FetchMock } from './harness'
 import type { ProjectSummary, ServerSnapshot } from '@yaac/shared/types'
 
 
 const REMOTE = 'https://github.com/acme/widgets.git'
 
 const ID = 'f3b1c2d4-0000-4000-8000-000000000001'
-const PROJECT = { id: ID, name: 'widgets', remoteUrl: REMOTE } as ProjectSummary
+const PROJECT = { id: ID, name: 'widgets', repos: [projectRepo({ remoteUrl: REMOTE })] } as ProjectSummary
 const REMOVE = `DELETE /api/project/${ID}`
+/** What the confirmation says goes, and that the repo stays. */
+const REMOVES = 'Removes "widgets" and all its workspaces, with their uncommitted and unpushed work. '
+  + 'Its repo stays in Settings → Repos, to link again or delete. '
 let server: FetchMock
 
 beforeEach(() => {
@@ -35,11 +38,11 @@ async function openConfirm(): Promise<void> {
   renderWithClient(<Harness />)
   fireEvent.click(screen.getByRole('button', { name: 'widgets' }))
   fireEvent.click(await screen.findByText('Remove project'))
-  await screen.findByText('Removes "widgets" and all its workspaces. This can\'t be undone.')
+  await screen.findByText(`${REMOVES}This can't be undone.`)
 }
 
 describe('ProjectActionsMenu', () => {
-  it('requires typing the git URL, then removes in the background', async () => {
+  it('requires typing the project\'s name, then removes in the background', async () => {
     let finishRemove = (): void => {}
     server.route(REMOVE, () => new Promise((resolve) => { finishRemove = () => resolve(undefined) }))
     await openConfirm()
@@ -49,7 +52,7 @@ describe('ProjectActionsMenu', () => {
     fireEvent.click(remove)
     expect(server.called(REMOVE)).toHaveLength(0)
 
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: REMOTE } })
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'widgets' } })
     expect(remove.disabled).toBe(false)
     fireEvent.click(remove)
 
@@ -70,7 +73,7 @@ describe('ProjectActionsMenu', () => {
   it('shows a failed removal until dismissed', async () => {
     server.route(REMOVE, serverError('RUNTIME_UNAVAILABLE', 'cluster unreachable', 503))
     await openConfirm()
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: REMOTE } })
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'widgets' } })
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
 
     expect(await screen.findByText('cluster unreachable')).toBeTruthy()
@@ -80,10 +83,10 @@ describe('ProjectActionsMenu', () => {
     expect(useUiStore.getState().activeProjectId).toBe(ID)
   })
 
-  it('does not remove on a wrong URL', async () => {
+  it('does not remove on a wrong name', async () => {
     await openConfirm()
 
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'https://github.com/acme/other.git' } })
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'other' } })
     const remove = screen.getByRole<HTMLButtonElement>('button', { name: 'Remove' })
     expect(remove.disabled).toBe(true)
     fireEvent.click(remove)
@@ -102,8 +105,7 @@ describe('ProjectActionsMenu', () => {
     fireEvent.click(screen.getByRole('button', { name: 'widgets' }))
     fireEvent.click(await screen.findByText('Remove project'))
     expect(await screen.findByText(
-      'Removes "widgets" and all its workspaces. Its 2 volumes (queue, db) and all their data go too. '
-      + 'This can\'t be undone.',
+      `${REMOVES}Its 2 volumes (queue, db) and all their data go too. This can't be undone.`,
     )).toBeTruthy()
   })
 })

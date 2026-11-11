@@ -125,48 +125,108 @@ Assert on a completed request (the proxy refuses a host no allowlist admits).
 To test the NetworkPolicy layer, use a real address on a port that is not
 redirected, where the default-deny answers.
 
-## The two direct pod→proxy dials
+## The direct pod→proxy dial
 
-Two flows address the proxy pod directly instead of being redirected. The
-workspace policy allows them by selector (`podSelector: app=yaac-proxy`), not
-through the node's listener range:
+One flow addresses the proxy pod directly instead of being redirected: **DNS**,
+udp/53. The proxy's split-horizon stub is the pod's only resolver
+(`dnsPolicy: None`), and the workspace policy allows the dial by selector
+(`podSelector: app=yaac-proxy`), not through the node's listener range. It
+does not reach outside the cluster or bypass the allowlist.
 
-- **DNS**, udp/53: the pod's only resolver (`dnsPolicy: None`), answered by the
-  proxy's split-horizon stub.
-- **ssh-agent**, tcp/10261: the proxy speaks the ssh-agent protocol here and
-  relays to an agent running in its own pod. A workspace whose project has an
-  SSH remote runs a socat forwarder (started by `yaac-workspace-init`) that
-  exposes it as the UNIX socket `SSH_AUTH_SOCK` names, so the pod's ssh client
-  is unmodified. Private keys stay in the proxy's memory.
+## Git credentials
 
-How the agent is scoped:
+A git credential belongs to a repo, and the proxy uses it for that repo and
+nothing else (docs/project-repos.md "Credentials per repo"). The credentials
+Secret carries, with each token and ssh key, its **grants**: one per
+(project, repo) that may use it, with the repo's host and path
+(`owner/repo`) and the link's `readOnly` and `ghToken` flags, and for an ssh
+key the host's trusted key. A workspace is served the grants of its
+registration's project, from its registration's owner. Grants are read on
+every request, so a changed flag or a reassigned credential applies to
+running workspaces at once (`k8s/proxy/repo-grants.ts`).
 
-- Each key is loaded once, with one `ssh-add -h <host>` per host any of its
-  grants names. That is the union over every owner and project holding the
-  key, so the agent's own constraint is only an outer bound.
-- The relay parses both directions and narrows that bound to the workspace's
-  grants: the keys its owner assigned to its project, each for the hosts that
-  assignment names. An identities answer is rewritten to list just those
-  keys. The relay records the host key of every `session-bind@openssh.com`
-  the connection sends, and a sign request gets `SSH_AGENT_FAILURE` without
-  reaching the agent unless its key is one of those, the connection has bound,
-  and every bound host key is in that key's grant (matched against the
-  grant's `knownHostsEntry`). Grants are read per message, so a reassignment
-  applies to an open connection's next request.
-- Besides list and sign, the relay allows only the session bind, which every
-  OpenSSH client since 8.9 sends before asking for a signature. Add, remove,
-  lock and every other extension are refused, so one workspace cannot lock or
-  empty the agent every other workspace shares.
-- The proxy checks each connection's source pod IP against its pod watch and
-  refuses one it cannot place, or one whose workspace registered a non-SSH
-  remote (the same condition under which the server sets `SSH_AUTH_SOCK`).
+### Git over HTTPS
 
-Neither dial reaches outside the cluster or bypasses the allowlist:
-git-over-SSH still goes through the proxy's transparent tunnel listener like
-any other egress. The agent port is allowed from the workspace selector only,
-not from the node CIDRs. It is TCP rather than a UNIX socket on a shared host
-directory because that would only work when the proxy and the workspace share a
-node, which nothing guarantees.
+A host the project has an https repo on is MITM'd. A request whose path is
+under a granted repo (`/<owner>/<repo>` or `/<owner>/<repo>.git`, then a
+segment boundary, which covers the smart-HTTP endpoints and LFS) leaves with
+that repo's token as `Authorization: Basic`. Every other path on the host
+passes with no token: a public repo still clones, and a private one the
+project does not link answers as it would to anyone.
+
+The match is on the path as the host would resolve it: case folded,
+percent-encoding decoded, an encoded or backward slash read as a separator,
+`;` parameters dropped, empty and dot segments resolved. A request that only resolves to the repo
+(`/acme/x/../repo.git/…`) counts as under it for the read-only rules below but
+carries no token, so nothing ambiguous is authenticated.
+
+### `GH_TOKEN`
+
+A workspace's `GH_TOKEN` is a placeholder naming a repo,
+`yaac-ph-gh-token-<repo id>`. The proxy swaps it, keeping `gh`'s scheme, for
+that repo's token on requests to the API host of the repo's git host
+(`api.github.com` for `github.com`), when the workspace's project holds a
+grant for the repo with `ghToken` and without `readOnly`. Any other
+`Authorization` passes as it came, a user's own token included. Through the
+API a token reaches whatever it can at the host, so this is the one place a
+token leaves its repo's path, and a read-only repo's never does.
+
+### Read-only repos
+
+A grant with `readOnly` passes only the requests known to read under its
+repo's path, and refuses every other with a 403, whichever credential the
+request carries. It lists what reads rather than what writes, so a spelling
+of a push the proxy does not recognize is refused, not passed. What passes:
+
+- a GET or HEAD, except an `info/refs` asking for any service but
+  `git-upload-pack` (the push probe is `service=git-receive-pack`);
+- the fetch RPC, a POST to `git-upload-pack`;
+- an LFS download: a POST to `info/lfs/objects/batch` is the only request
+  body the proxy reads for this, up to 8 MiB, and it passes only a JSON body
+  whose `operation` is `download`;
+- an LFS lock check, a POST to `info/lfs/locks/verify`.
+
+So fetches pass, including refs outside `refs/heads` and LFS downloads, and
+a push, an LFS upload, a lock change and any other POST, PUT, PATCH or
+DELETE do not. What this does not stop is a write to the repo that does not
+go to that path: the host's API with a token that can write the repo, and
+the same host under another name the allowlist admits.
+
+### Git over SSH
+
+The proxy ends ssh sessions to a project's git hosts itself
+(`k8s/proxy/ssh-session.ts`). A workspace with an ssh repo gets a
+`GIT_SSH_COMMAND` that reaches the proxy's tunnel listener through the
+sentinel, as before, offers no identity, and trusts one host key under one
+name (`HostKeyAlias=yaac-proxy`): the proxy's, which it mints once, keeps in
+the `yaac-proxy-ca` Secret and the server publishes as `ssh_known_hosts` in
+the ConfigMap every pod mounts beside the CA. The workspace holds no key and
+no agent socket. A pod's ssh settings are fixed at launch, so one that
+trusts anything else needs a restart (docs/legacy-compat-shims.md "Pods
+whose ssh trusts the git host").
+
+For a `CONNECT` to port 22 of a host the workspace's project has an ssh grant
+on, after the allowlist and the non-public guard, the proxy answers as the
+ssh server. The workspace is already identified by its source address, so
+any login is accepted. Then:
+
+- Only an `exec` of a git command passes: `git-upload-pack`,
+  `git-receive-pack`, `git-upload-archive`, `git-lfs-authenticate` and
+  `git-lfs-transfer`, each naming a path. A shell, a subsystem or any other
+  command is answered on stderr with `yaac: …` and exit status 1.
+- The path must be one of the project's ssh repos on that host. Any other is
+  refused, since ssh has no anonymous access to fall back to.
+- A read-only grant refuses `git-receive-pack` and the two LFS commands when
+  their operation is `upload`.
+- Otherwise the proxy opens its own session to the host, accepting only a
+  host key in the grant's `knownHostsEntry`, logs in as the user the
+  workspace named with the key granted for that repo, runs the same command
+  and joins the two streams, relaying the exit status. `GIT_PROTOCOL` is
+  carried to the host; no other variable is.
+
+So a key reaches its own repo and nothing else, and a session on that host
+carries only git. A `CONNECT` to port 22 of any other host is a plain tunnel
+under the allowlist, with whatever the workspace itself brings.
 
 ## The npm cache: an exception to the allowlist
 
@@ -206,19 +266,18 @@ objects the server watches. All live in the install namespace, are labelled
 
 | object | kind | writer | reader | content |
 |---|---|---|---|---|
-| `yaac-proxy-credentials` | Secret | server | proxy informer | per owner, keys prefixed `<owner>.`: `claude.json`, `codex.json`, `opencode.json`, `pi.json`, `omp.json` (each tool's host-store file verbatim, plus `apiHost` for opencode, pi and omp: the provider host the key is swapped in on; a signed-out tool has no key), `git-tokens.json` (`[{token, projects}]`) and `ssh-keys.json` (`[{privateKey, publicKey, projects: [{projectId, host, knownHostsEntry}]}]`, the private key OpenSSH-encoded from the sealed seed). `projects` lists the ids of the projects a credential is assigned to: a token goes only to its project's https remote host (and, for github.com, `api.github.com`), and a workspace's agent connection sees only its project's keys |
+| `yaac-proxy-credentials` | Secret | server | proxy informer | per owner, keys prefixed `<owner>.`: `claude.json`, `codex.json`, `opencode.json`, `pi.json`, `omp.json` (each tool's host-store file verbatim, plus `apiHost` for opencode, pi and omp: the provider host the key is swapped in on; a signed-out tool has no key), `git-tokens.json` (`[{token, grants}]`) and `ssh-keys.json` (`[{privateKey, publicKey, grants}]`, the private key OpenSSH-encoded from the sealed seed). Each grant is `{projectId, repoId, host, path, readOnly, ghToken}`, an ssh key's with its `knownHostsEntry` (see "Git credentials") |
 | `yaac-proxy-secrets-<project id>` | Secret, one per project | server | proxy informer | `values.json`: `{ "<project id>/<NAME>": value }`, the secret values behind that project's `secretRef` rules |
-| `yaac-proxy-reg-<workspaceId>` | ConfigMap, one per workspace | server | proxy informer | `registration.json`: rules with `secretRef`s (never values), allowed hosts, repo URL, tool, project, owner, test redirects |
+| `yaac-proxy-reg-<workspaceId>` | ConfigMap, one per workspace | server | proxy informer | `registration.json`: rules with `secretRef`s (never values), allowed hosts, project, owner, test redirects |
 | `yaac-proxy-refreshed` | Secret | proxy | server informer | `<owner>.claude.json`, `<owner>.codex.json`: OAuth bundles the proxy captured from a workspace's token refresh, in the credentials-file shape |
-| `yaac-proxy-ca` | Secret | proxy | server (one get) | `ca.key`, `ca.pem`, `ca-bundle.pem` |
+| `yaac-proxy-ca` | Secret | proxy | server (one get) | `ca.key`, `ca.pem`, `ca-bundle.pem`, and the proxy's ssh host key, `ssh-host-key` and `ssh-host-key.pub`. The server copies the public parts into the `yaac-proxy-ca` ConfigMap pods mount |
 | `yaac-proxy-state` | ConfigMap | proxy | server informer | `blocked-hosts.json`, `git-auth-failures.json` |
 
 **Owners.** Credentials belong to an owner, an opaque key (letters,
 digits, `-`, `_`; the proxy reads a Secret key up to its first `.` as the
 owner) that each registration names. Every credential path resolves through
 the registration's owner: the sentinel swaps, the OAuth refresh and its
-write-back, the git token pool, and the ssh keys the agent relay shows and
-the hosts it lets them sign for. A
+write-back, and the git tokens and ssh keys with their grants. A
 workspace never spends another owner's credential, even one assigned to a
 project of the same id, and a registration naming an owner the Secret lacks
 gets nothing swapped. The server decides the owner and hands it to the

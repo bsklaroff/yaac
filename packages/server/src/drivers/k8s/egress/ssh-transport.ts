@@ -1,50 +1,37 @@
+import path from 'node:path'
 import {
-  SSH_AGENT_PORT,
-  SSH_AGENT_SOCKET_PATH,
+  CA_SSH_KNOWN_HOSTS_KEY,
+  SSH_HOST_KEY_ALIAS,
   SSH_TUNNEL_SENTINEL,
   TUNNEL_INGRESS_PORT,
 } from '#drivers/k8s/substrate'
 import { formatSshCommand } from '@yaac/shared/git'
-import type { WorkspaceMount } from '#drivers/contract'
-
-/** Where the project-scoped known_hosts is mounted inside the workspace. */
-const CONTAINER_KNOWN_HOSTS = '/home/yaac/.ssh/yaac/known_hosts'
+import { PROXY_CA_PATH } from './proxy-client'
 
 /**
- * The mounts and env that let a workspace use git over SSH without holding
- * a private key:
- * - identity comes from the proxy's ssh-agent, reached over TCP and
- *   re-exposed in the pod as the UNIX socket SSH_AUTH_SOCK names (a TCP hop
- *   works when the workspace runs on a different node from the proxy);
- * - host keys are checked against a project-scoped known_hosts the server
- *   wrote;
+ * The env that lets a workspace use git over SSH without holding a key
+ * (docs/workspace-egress.md "Git over SSH"):
  * - the connection is an HTTP CONNECT to a sentinel address that netd
- *   redirects into the proxy, so the allowlist sees the real hostname.
+ *   redirects into the proxy, so the allowlist sees the real hostname;
+ * - the proxy ends the ssh session there, as the server, and logs in to
+ *   the git host itself with the key of the repo the command names. So the
+ *   workspace offers no identity, and the one host key it trusts is the
+ *   proxy's, under one name for every host, from the file every pod mounts
+ *   beside the proxy's CA.
+ * Warnings are silenced because the proxy's ssh server lacks key exchanges
+ * a new OpenSSH would rather use, which it says on every connection.
  */
-export function workspaceSshTransport(
-  knownHostsFile: string,
-  proxyHost: string,
-): { mounts: WorkspaceMount[]; env: string[] } {
+export function workspaceSshEnv(): string[] {
   const proxyCommand = `ncat --proxy ${SSH_TUNNEL_SENTINEL}:${TUNNEL_INGRESS_PORT}`
     + ' --proxy-type http %h %p'
   const gitSshCmd = formatSshCommand([
     'ssh', '-F', '/dev/null',
-    '-o', `UserKnownHostsFile=${CONTAINER_KNOWN_HOSTS}`,
+    '-o', `UserKnownHostsFile=${path.posix.dirname(PROXY_CA_PATH)}/${CA_SSH_KNOWN_HOSTS_KEY}`,
     '-o', 'StrictHostKeyChecking=yes',
-    '-o', 'IdentitiesOnly=no',
+    '-o', `HostKeyAlias=${SSH_HOST_KEY_ALIAS}`,
+    '-o', 'IdentityAgent=none',
+    '-o', 'LogLevel=ERROR',
     '-o', `ProxyCommand=${proxyCommand}`,
   ])
-
-  return {
-    mounts: [{
-      source: { kind: 'hostPath', path: knownHostsFile, type: 'File' },
-      mountPath: CONTAINER_KNOWN_HOSTS,
-      readOnly: true,
-    }],
-    env: [
-      `SSH_AUTH_SOCK=${SSH_AGENT_SOCKET_PATH}`,
-      `GIT_SSH_COMMAND=${gitSshCmd}`,
-      `YAAC_SSH_AGENT_UPSTREAM=${proxyHost}:${SSH_AGENT_PORT}`,
-    ],
-  }
+  return [`GIT_SSH_COMMAND=${gitSshCmd}`]
 }

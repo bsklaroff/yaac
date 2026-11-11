@@ -66,7 +66,8 @@ describe('yaac prewarmed sessions', () => {
    */
   async function stageProject(): Promise<void> {
     const projectDir = path.join(testEnv.dataDir, 'global', 'projects', PROJECT_ID)
-    const repoDir = path.join(projectDir, 'repo')
+    // The main clone of the project's repo, which carries the project's id.
+    const repoDir = path.join(testEnv.dataDir, 'global', 'repos', PROJECT_ID)
     await fs.mkdir(path.join(projectDir, 'claude'), { recursive: true })
 
     await cloneRepo(path.join(mockGit!.reposDir, 'repo-demo.git'), repoDir, null)
@@ -164,9 +165,9 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     expect(devFile).toBe('dev content\n')
     // Read through the server; this process's DB handle cannot see its write.
     const listed = await (await fetch(`http://127.0.0.1:${server.lock.port}/api/workspace/list?project=repo-demo`))
-      .json() as { workspaces: Array<{ workspaceId: string; baseBranch?: string; sessions: Array<{ tool: string }> }> }
+      .json() as { workspaces: Array<{ workspaceId: string; repos: Array<{ baseBranch?: string }>; sessions: Array<{ tool: string }> }> }
     const claimed = listed.workspaces.find((w) => w.workspaceId === retooled!.workspaceId)
-    expect(claimed?.baseBranch).toBe('dev')
+    expect(claimed?.repos.map((r) => r.baseBranch)).toEqual(['dev'])
     expect(claimed?.sessions.map((s) => s.tool)).toEqual(['codex'])
 
     // 5. A replacement spare is warmed. Nothing claims it, so running is

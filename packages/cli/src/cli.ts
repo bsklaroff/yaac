@@ -9,9 +9,20 @@ import { projectList } from '#commands/project-list'
 import { projectCreate } from '#commands/project-create'
 import { projectClone } from '#commands/project-clone'
 import { projectMove } from '#commands/project-move'
+import {
+  projectRepoAdd,
+  projectRepoGhToken,
+  projectRepoList,
+  projectRepoReadOnly,
+  projectRepoRemove,
+  projectRepoRename,
+  type ProjectRepoAddOptions,
+} from '#commands/project-repo'
+import { repoDelete, repoList, repoShare, repoUnshare } from '#commands/repo'
 import { groupCreate, groupDelete, groupList, groupMove, groupSetLimit } from '#commands/group'
 import { AGENT_OPTION_HELP, agentOptionArg, workspaceCreate } from '#commands/workspace-create'
 import { scopeToUser } from '#commands/api'
+import { selectionOptions } from '#commands/repo-selection'
 import { workspaceList } from '#commands/workspace-list'
 import { workspaceRename } from '#commands/workspace-rename'
 import { workspaceStop } from '#commands/workspace-stop'
@@ -302,6 +313,9 @@ user
   .addArgument(new Argument('<role>', 'The role').choices(['admin', 'member']))
   .action(userRole)
 
+const REPO_HELP = 'Which of the project\'s repos, by its folder (see `yaac project repo list`); needed when it has several'
+const REPO_REF_HELP = 'The repo: an id or unique id prefix (see `yaac repo list`), a remote URL, or <project>/<folder>'
+
 const project = program
   .command('project')
   .description('Manage projects')
@@ -313,31 +327,116 @@ project
 
 project
   .command('add')
-  .description('Add a project from a git remote, cloned with — and assigned — the named git credential')
+  .description('Add a project around one git remote, cloned with — and assigned — the named git credential; a remote you already have a repo for reuses that repo and its clone')
   .argument('<remote-url>', 'Git remote URL')
   .argument('<credential>', 'Name of the git credential to clone with and assign (see `yaac auth list`)')
   .action(projectAdd)
 
 project
   .command('create')
-  .description('Create an empty project whose git remote yaac hosts')
+  .description('Create a project with one empty repo whose git remote yaac hosts')
   .argument('<name>', 'Project name')
   .action(projectCreate)
 
 project
   .command('clone')
-  .description('Clone a yaac-hosted project\'s git remote to this machine')
+  .description('Clone a project\'s yaac-hosted repo to this machine')
   .argument('<project>', 'Project name or id')
-  .argument('[dir]', 'Directory to clone into (default: the project name)')
+  .argument('[dir]', 'Directory to clone into (default: the project name, or the repo\'s folder in a project with several repos)')
+  .option('--repo <dir>', REPO_HELP)
   .action(projectClone)
 
 project
   .command('move')
-  .description('Move a yaac-hosted project, and every share of it, to an empty git remote elsewhere: stop every workspace on it (other users\' too), push every branch and tag there, and use the remote from then on. yaac keeps its copy, read-only, until removed in Project settings. Asks for confirmation, so it needs a terminal')
+  .description('Move a project\'s yaac-hosted repo to an empty git remote elsewhere: stop every workspace holding a checkout of it (other users\' too), push every branch and tag there, and use the remote from then on. Its shares end, and each user it was shared with gets a repo of their own for the remote. yaac keeps its copy, read-only, until removed in Settings. Asks for confirmation, so it needs a terminal')
   .argument('<project>', 'Project name or id')
   .argument('<remote-url>', 'Git remote URL to push to: an empty repository, e.g. a new GitHub one with no README')
-  .argument('<credential>', 'Name of the git credential that can push there, assigned to the project (see `yaac auth list`)')
+  .argument('<credential>', 'Name of the git credential that can push there, assigned to the repo (see `yaac auth list`)')
+  .option('--repo <dir>', REPO_HELP)
   .action(projectMove)
+
+const projectRepo = project
+  .command('repo')
+  .description('Manage the git repos a project links; each workspace starts with some of them (see `yaac workspace create --repo`)')
+
+projectRepo
+  .command('add')
+  .description('Link a repo into a project: a git remote cloned with the named credential (reusing the repo you already have for that remote), a repo of yours or one shared with you (--repo-id), or a new empty repo yaac hosts (--hosted)')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('[remote-url]', 'Git remote URL')
+  .argument('[credential]', 'Name of the git credential to clone with and assign (see `yaac auth list`)')
+  .option('--repo-id <id>', 'Link this repo, as `yaac repo list` prints it, instead of a remote')
+  .option('--hosted', 'Link a new, empty repo yaac hosts instead of a remote')
+  .option('--dir <name>', 'The folder its checkout takes in a workspace with several repos: letters, digits, ".", "_" and "-" (default: the repo\'s name)')
+  .action((project: string, remoteUrl: string | undefined, credential: string | undefined, opts: ProjectRepoAddOptions) =>
+    projectRepoAdd(project, remoteUrl, credential, opts))
+
+projectRepo
+  .command('remove')
+  .description('Unlink a repo from a project. The repo stays among its owner\'s (`yaac repo list`), and workspaces keep their checkouts of it')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<repo>', 'The repo\'s folder in the project, or its id')
+  .action(projectRepoRemove)
+
+projectRepo
+  .command('list')
+  .description('List a project\'s repos: each one\'s folder, credential and remote')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .action(projectRepoList)
+
+projectRepo
+  .command('rename')
+  .description('Change the folder a repo\'s checkout takes in workspaces created from now on; existing workspaces keep theirs')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<repo>', 'The repo\'s folder in the project, or its id')
+  .argument('<dir>', 'The new folder name')
+  .action(projectRepoRename)
+
+projectRepo
+  .command('read-only')
+  .description('Show or set whether a project\'s workspaces may only read a repo: on, the egress proxy refuses their pushes and LFS uploads to it, and its token is never GH_TOKEN (k8s servers only)')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<repo>', 'The repo\'s folder in the project, or its id')
+  .addArgument(new Argument('[on|off]').choices(['on', 'off']))
+  .action(projectRepoReadOnly)
+
+projectRepo
+  .command('gh-token')
+  .description('Show or set whether an https GitHub repo\'s token may be the GH_TOKEN of a project\'s workspaces, which reaches whatever the token can at GitHub, not only this repo (k8s servers only)')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<repo>', 'The repo\'s folder in the project, or its id')
+  .addArgument(new Argument('[on|off]').choices(['on', 'off']))
+  .action(projectRepoGhToken)
+
+const repo = program
+  .command('repo')
+  .description('Manage your git repos, whatever projects link them: one remote each, with its credential and its clone on the server')
+
+repo
+  .command('list')
+  .description('List your repos (or --user\'s) and those shared with you: each one\'s remote, credential, the projects linking it and whom it is shared with. Repos no project links come first; a deleted one stays listed while workspaces hold checkouts of it')
+  .action(repoList)
+
+repo
+  .command('share')
+  .description('Share a repo yaac hosts with another user, who can then link it into their own projects and push to it')
+  .argument('<repo>', REPO_REF_HELP)
+  .argument('<user>', 'The user: a login, name or id (see `yaac user list`)')
+  .action(repoShare)
+
+repo
+  .command('unshare')
+  .description('End a user\'s share of a repo, stopping their running workspaces that hold a checkout of it; their projects keep the link, which works again if the repo is shared again')
+  .argument('<repo>', REPO_REF_HELP)
+  .argument('<user>', 'The user: a login, name or id (see `yaac user list`)')
+  .action(repoUnshare)
+
+repo
+  .command('delete')
+  .description('Delete a repo: unlink it from every project (other users\' too), end its shares and, for a repo yaac hosts, delete the repository itself. No workspace is deleted; while any holds a checkout of it, its clone stays on the server and the command lists them')
+  .argument('<repo>', REPO_REF_HELP)
+  .option('-y, --yes', 'Skip the confirmation prompt')
+  .action(repoDelete)
 
 const group = program
   .command('group')
@@ -385,16 +484,16 @@ const workspace = program
   .command('workspace')
   .description('Manage workspaces — a git clone plus the container and the agent sessions running in it')
 
-workspace
+selectionOptions(workspace
   .command('create')
   .description('Create a new workspace for a project, with an agent session in it; or with --workspace, open another session in a running workspace')
   .argument('[project]', 'Project name, id, or id prefix (omit with --workspace)')
-  .option('-w, --workspace <workspace-id>', 'Open the session in this running workspace (id or unique prefix) instead of a new one. Takes the agent options, but not --branch, --group, --timeout, --start-at or --start-in')
+  .option('-w, --workspace <workspace-id>', 'Open the session in this running workspace (id or unique prefix) instead of a new one. Takes the agent options and --cwd (one of its checkouts\' folders, or . for its root), but not --repo, --branch, --group, --timeout, --start-at or --start-in')
   .option('--resume <conversation>', 'With --workspace: open the session on one of that workspace\'s conversations (see `yaac workspace conversations`) instead of a new one')
   .option('--no-session', 'Create the workspace with no agent session; it takes no prompt or agent options')
   .option('-t, --tool <tool>', 'Agent tool to use (claude, codex, opencode, pi, or omp). Defaults to the agent this project was last created with, else claude')
-  .option('-b, --branch <branch>', 'Reference branch for the workspace (defaults to the remote default branch)')
-  .option('--commit <sha>', 'Start at this full commit (40 hex digits) instead of a branch\'s tip; the workspace then has no base branch. Not with --branch')
+  .option('-b, --branch <branch>', 'Reference branch for a workspace that starts with one repo (defaults to the remote default branch); with several, name each repo\'s with --repo')
+  .option('--commit <sha>', 'Start a workspace that starts with one repo at this full commit (40 hex digits) instead of a branch\'s tip; its checkout then has no base branch. Not with --branch')
   .option('--steps <file>', 'A JSON file of the steps to start with, in place of the project\'s init steps (docs/workspace-steps.md)')
   .option('--no-steps', 'Start with no steps at all, not even the project\'s init steps')
   .option('--workflow <name>', 'Start with this named workflow, in place of --steps (docs/workflows.md). Non-interactive, it gets the run secrets the workflow names, and this launch approves its commit for them')
@@ -411,7 +510,7 @@ workspace
   .option('--timeout <duration>', 'Stop the workspace this long after it starts, like 45m, 2h or 1h30m (whole minutes; the server checks every minute)')
   .option('--start-at <time>', 'Queue it to start at this time instead of now: HH:MM (its next occurrence), YYYY-MM-DD HH:MM, or ISO 8601, read in your yaac time zone. Needs --prompt')
   .option('--start-in <duration>', 'Queue it to start this long from now, like 30m or 2h. Needs --prompt')
-  .option('--volume <name>', 'Mount this project\'s volume at $YAAC_VOLUME_DIR (see `yaac volume`); refused while another running workspace has it')
+  .option('--volume <name>', 'Mount this project\'s volume at $YAAC_VOLUME_DIR (see `yaac volume`); refused while another running workspace has it'), 'the workspace')
   .action(workspaceCreate)
 
 workspace
@@ -533,7 +632,7 @@ const routine = program
 
 /** The options `routine create` and `routine edit` share. */
 function routineOptions(cmd: Command): Command {
-  return cmd
+  return selectionOptions(cmd, 'each run')
     .option('--name <name>', 'Its name: heads each run\'s title, and names the group runs are filed under by default')
     .option('--cron <expr>', 'When it runs: a 5-field cron expression (minute hour day month weekday, e.g. "0 9 * * 1-5") or a nickname like @daily')
     .option('-p, --prompt <text>', 'The prompt each run starts with; - reads it from stdin')
@@ -546,8 +645,8 @@ function routineOptions(cmd: Command): Command {
     .option('--agent-option <name=on|off>', 'Turn an agent option on or off for each run; repeatable, as for workspace create', agentOptionArg)
     .addOption(new Option('--mode <mode>', 'How the agent is driven (tui or acp)').choices([...AGENT_MODES]))
     .addOption(new Option('--permission-mode <mode>', 'How much each run may do before it asks; a run that asks waits until it is stopped').choices([...PERMISSION_MODES]))
-    .option('-b, --branch <branch>', 'Reference branch each run forks from')
-    .option('--commit <sha>', 'A full commit every run starts at instead of a branch\'s tip. Not with --branch')
+    .option('-b, --branch <branch>', 'Reference branch each run forks from, for runs that start with one repo')
+    .option('--commit <sha>', 'A full commit every run starts at instead of a branch\'s tip, for runs that start with one repo. Not with --branch')
     .option('--workflow <name>', 'Each run starts with this named workflow, in place of the project\'s init steps (docs/workflows.md); saving approves the commit or branch it runs on for the workflow\'s run secrets, which on a branch means whatever anyone pushes there')
     .option('--non-interactive', 'Each run runs its --workflow untouched, with no prompt or session, and stops when it finishes')
     .option('-g, --group <group>', 'Sidebar group runs are filed under (by name or id; created if it does not exist). Defaults to a group named after the routine')
@@ -652,6 +751,7 @@ siteOptions(site
   .description('Create a site, and print what to add to the Cloudflare tunnel; `site deploy` publishes it')
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('<name>', 'Site name, unique in the project'), true)
+  .option('--repo <dir>', 'The repo its releases are built from, by its folder; needed when the project has several')
   .action(siteCreate)
 
 siteOptions(site
@@ -880,23 +980,26 @@ config
 
 config
   .command('default-branch')
-  .description('Show a project\'s default branch, or set a project yaac hosts to another existing branch')
+  .description('Show the default branch of a project\'s repo, or set a repo yaac hosts to another existing branch')
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('[branch]', 'The branch clones check out and new workspaces fork from')
+  .option('--repo <dir>', REPO_HELP)
   .action(configDefaultBranch)
 
 config
   .command('default-branch-guard')
-  .description('Show or set whether a project yaac hosts refuses pushes that delete its default branch or rewrite its history')
+  .description('Show or set whether a project\'s repo that yaac hosts refuses pushes that delete its default branch or rewrite its history')
   .argument('<project>', 'Project name, id, or id prefix')
   .addArgument(new Argument('[on|off]', 'on refuses such pushes, off accepts them').choices(['on', 'off']))
+  .option('--repo <dir>', REPO_HELP)
   .action(configDefaultBranchGuard)
 
 config
   .command('git-credential')
-  .description('Show which git credential a project uses, or assign it one')
+  .description('Show which git credential a project\'s repo uses, or assign it one; the credential is the repo\'s, so every project linking the repo uses it')
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('[credential]', 'Git credential name, as `yaac auth list` prints it')
+  .option('--repo <dir>', REPO_HELP)
   .action(configGitCredential)
 
 config

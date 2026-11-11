@@ -7,9 +7,9 @@ import { handleFixture, installFakeWorkspaceDriver, workspacePathsFixture } from
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { git } from '@yaac/test-utils/git'
 import { closeDb } from '#db/client'
-import { recordProject } from '#db/project-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
-import { getWorkspaceRow } from '#db'
+import { insertRepo, listWorkspaceRepos } from '#db'
+import { recordTestProject } from '@yaac/test-utils/project-fixture'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { cloneRepo } from '#domain/git'
 import { setWorkspaceBase } from '#domain/workspaces'
@@ -44,11 +44,11 @@ beforeEach(async () => {
   await git(origin, ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', 'init'])
   // On origin since the clone, so basing on it fetches nothing.
   await git(origin, ['branch', 'other'])
-  await recordProject({ id: PROJ, name: 'demo', remoteUrl: origin, addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
+  await recordTestProject(PROJ, { remoteUrl: origin })
   await cloneRepo(origin, repoDir(PROJ), null)
   checkout = path.join(tmpDir, 'checkout')
   await git(tmpDir, ['clone', '-q', repoDir(PROJ), checkout])
-  await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'ws-1', baseBranch: 'main' })
+  await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'ws-1', repos: [{ repoId: PROJ, path: '', baseBranch: 'main' }] })
 })
 
 afterEach(async () => {
@@ -56,14 +56,15 @@ afterEach(async () => {
   await cleanupTempDir(tmpDir)
 })
 
-const baseOf = async (): Promise<string | undefined> => (await getWorkspaceRow(PROJ, 'ws-1'))?.baseBranch
+const baseOf = async (workspaceId = 'ws-1', at = ''): Promise<string | undefined> =>
+  (await listWorkspaceRepos(workspaceId)).find((r) => r.path === at)?.baseBranch
 
 describe('setWorkspaceBase', () => {
   it('bases a running workspace on a just-pushed branch, which its checkout then has', async () => {
     running = [handleFixture({ workspaceId: 'ws-1', projectId: PROJ })]
     await git(origin, ['branch', 'pr/stacked'])
 
-    expect(await setWorkspaceBase(local, 'ws-1', ' pr/stacked ')).toEqual({ workspaceId: 'ws-1', baseBranch: 'pr/stacked' })
+    expect(await setWorkspaceBase(local, 'ws-1', ' pr/stacked ')).toEqual({ workspaceId: 'ws-1', repo: '', baseBranch: 'pr/stacked' })
     expect(await baseOf()).toBe('pr/stacked')
     expect(await git(checkout, ['rev-parse', '--verify', '-q', 'refs/remotes/origin/pr/stacked'])).toMatch(/^[0-9a-f]{40}/)
   })
@@ -71,6 +72,35 @@ describe('setWorkspaceBase', () => {
   it('bases a stopped workspace too, from its row alone', async () => {
     await setWorkspaceBase(local, 'ws-1', 'other')
     expect(await baseOf()).toBe('other')
+  })
+
+  it('bases the checkout named, by folder or repo, in a workspace with several, and no other', async () => {
+    const WEB = '11111111-2222-4333-8444-555555555555'
+    await cloneRepo(origin, repoDir(WEB), null)
+    await insertRepo({ id: WEB, owner: BUILT_IN_USER_ID, remoteUrl: origin })
+    // `api` was created at a commit, so it has no base yet; `gone` is a
+    // checkout whose repo no longer has a row, which nothing can name.
+    await recordWorkspaceCreated({
+      projectId: PROJ,
+      workspaceId: 'ws-2',
+      repos: [
+        { repoId: WEB, path: 'web', baseBranch: 'main' },
+        { repoId: PROJ, path: 'api', startCommit: 'c'.repeat(40) },
+        { repoId: '99999999-2222-4333-8444-555555555555', path: 'gone', baseBranch: 'main' },
+      ],
+    })
+    await expect(setWorkspaceBase(local, 'ws-2', 'other'))
+      .rejects.toMatchObject({ code: 'VALIDATION', message: /several repos; name one of: api, web$/ })
+    expect(await setWorkspaceBase(local, 'ws-2', 'other', 'web')).toEqual({ workspaceId: 'ws-2', repo: 'web', baseBranch: 'other' })
+    expect([await baseOf('ws-2', 'api'), await baseOf('ws-2', 'web')]).toEqual([undefined, 'other'])
+    expect(await setWorkspaceBase(local, 'ws-2', 'main', PROJ)).toEqual({ workspaceId: 'ws-2', repo: 'api', baseBranch: 'main' })
+    for (const at of ['docs', 'gone']) {
+      await expect(setWorkspaceBase(local, 'ws-2', 'other', at)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    }
+
+    // A workspace with no repos has nothing to base.
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'ws-3', repos: [] })
+    await expect(setWorkspaceBase(local, 'ws-3', 'other')).rejects.toMatchObject({ code: 'VALIDATION', message: /has no repos/ })
   })
 
   it('refuses what is not a branch on origin, fetching at most once per interval', async () => {

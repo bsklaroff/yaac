@@ -3,9 +3,11 @@ import { vi } from 'vitest'
 import {
   BUILT_IN_USER_ID,
   insertGitCredential,
+  insertRepo,
+  linkProjectRepo,
   recordProject,
   setGitIdentity,
-  setProjectGitCredential,
+  setRepoGitCredential,
 } from '@yaac/server/db'
 import { projectDir, repoDir } from '@yaac/shared/project-paths'
 import type { ProjectConfig, ProjectMeta } from '@yaac/shared/types'
@@ -18,16 +20,31 @@ export const PROJECT_CONFIG_DEFAULTS: ProjectConfig = { portForwards: [], cacheV
 /** The project id unit tests use when one project is enough. */
 export const DEMO_PROJECT_ID = '7d4e2a1c-5b3f-4e8a-9c6d-1f2e3a4b5c6d'
 
-/** A recorded project and its directory, with nothing cloned into it. */
-export async function recordTestProject(projectId: string, meta: Partial<ProjectMeta> = {}): Promise<void> {
+/**
+ * A recorded project and its directory, linking one repo that carries the
+ * project's id (so `repoDir(projectId)` is its main clone), with nothing
+ * cloned into it. `repo: false` records a project with no repos.
+ */
+export async function recordTestProject(
+  projectId: string,
+  { remoteUrl, hosted, repo = true, owner = BUILT_IN_USER_ID, ...meta }: Partial<ProjectMeta> & {
+    remoteUrl?: string
+    hosted?: boolean
+    repo?: boolean
+    owner?: string
+  } = {},
+): Promise<void> {
   await fs.mkdir(projectDir(projectId), { recursive: true })
-  await recordProject({
+  const project = { id: projectId, name: 'demo', addedAt: '2026-01-01T00:00:00.000Z', ...meta }
+  await recordProject(project, owner)
+  if (!repo) return
+  await insertRepo({
     id: projectId,
-    name: 'demo',
-    remoteUrl: `https://example.com/${projectId}`,
-    addedAt: '2026-01-01T00:00:00.000Z',
-    ...meta,
-  }, BUILT_IN_USER_ID)
+    owner,
+    remoteUrl: remoteUrl ?? `https://example.com/${projectId}`,
+    ...(hosted === true ? { hosted } : {}),
+  })
+  await linkProjectRepo(projectId, projectId, project.name)
 }
 
 /**
@@ -49,5 +66,5 @@ export async function seedProject(projectId = DEMO_PROJECT_ID): Promise<void> {
   await recordTestProject(projectId, { remoteUrl: 'https://github.com/o/r.git' })
   await setGitIdentity(BUILT_IN_USER_ID, { name: 'Ada', email: 'ada@example.com' })
   const cred = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'gh', kind: 'https', secret: 'ghp_x' })
-  await setProjectGitCredential(projectId, cred.id, null)
+  await setRepoGitCredential(projectId, cred.id, null)
 }

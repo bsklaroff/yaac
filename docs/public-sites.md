@@ -160,14 +160,13 @@ lets one go (deleted, or edited to another), any admin may create a site
 on it, and the tunnel already routes it, so admins who share an install
 share its hostnames too.
 
-A share whose source's owner removed it (docs/hosted-projects.md
-"Sharing") runs nothing: its sites are not routed or supervised, and its
-owner may still stop or delete them to free their hostnames.
-
 A site names its hostname, the port its releases serve on, the named
-workflow each release runs (docs/workflows.md), and optionally a
-volume, which no other site may name and which cannot be deleted while
-named, and a branch to follow (see "Following a branch"). Editing the
+workflow each release runs (docs/workflows.md), the repo its releases are
+built from (`sites.repoId`: the one named at create, else the project's only
+one), and optionally a volume, which no other site may name and which cannot
+be deleted while named, and a branch of that repo to follow (see "Following
+a branch"). Each release is a workspace holding that repo alone, at its
+root. Editing the
 hostname moves it at once; the port, workflow and volume apply from the next
 deploy, and an edit is refused while a deploy runs.
 
@@ -330,8 +329,8 @@ follow a branch there only if an agent publishing is acceptable. Following
 a branch also approves it for the run secrets of the site's workflow, so
 whoever may push it gets those values too, and can print them into the
 release's step logs, which the project's agents read (docs/workflows.md
-"Run secrets"). A hosted project shared with another user follows no
-branch with a workflow that names secrets.
+"Run secrets"). A site whose repo is hosted by yaac and shared with another
+user follows no branch with a workflow that names secrets.
 
 The branch must exist on origin when it is named, by its own name: one
 that reads as a ref (`origin/main`, `refs/heads/main`) would follow a

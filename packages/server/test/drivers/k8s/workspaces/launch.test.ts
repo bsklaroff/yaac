@@ -14,6 +14,7 @@ vi.mock('#drivers/k8s/substrate/stream-relay', async (importOriginal) => ({
 // cluster like the Job, so the manifests are built for real and asserted on.
 const mockEnsureRunning = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/egress/proxy-client', () => ({
+  PROXY_CA_PATH: '/etc/yaac/certs/proxy-ca.pem',
   proxyClient: {
     ensureRunning: mockEnsureRunning,
     getCaTrustEnv: () => ['SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem'],
@@ -76,7 +77,6 @@ const INTENT = {
   tool: 'claude' as const,
   config: PROJECT_CONFIG_DEFAULTS,
   allowlist: { hosts: [], defaults: true },
-  remoteUrl: 'https://github.com/example/repo.git',
   nestedContainers: false,
   proxySecretRules: {},
 }
@@ -101,6 +101,8 @@ function specOf(
     },
     postStartExec: ['/usr/local/bin/yaac-workspace-init'],
     nestedContainers: false,
+    cwd: '',
+    gitCredentials: [],
     substrate,
     ...overrides,
   }
@@ -186,10 +188,10 @@ describe('prepareWorkspaceSubstrate', () => {
     expect(reg?.labels).toMatchObject({
       app: 'yaac-proxy', 'yaac.proxy-input': 'registration', 'yaac.workspace-id': 's1', 'yaac.project-id': PROJECT_ID,
     })
-    expect(reg?.payload).toMatchObject({
-      projectId: PROJECT_ID,
-      repoUrl: 'https://github.com/example/repo.git',
-    })
+    expect(reg?.payload).toMatchObject({ projectId: PROJECT_ID, owner: 'o' })
+    // Which repos the workspace may authenticate to comes from its owner's
+    // credential grants, never the registration.
+    expect(reg?.payload).not.toHaveProperty('repoUrl')
     // Only a reference to the secret, never its value.
     expect(reg?.payload.rules).toEqual([{
       hostPattern: 'api.example.com',
@@ -400,7 +402,7 @@ describe('launchWorkspace', () => {
     }
   })
 
-  it('routes an SSH workspace through the tunnel sentinel, with no key in the pod', async () => {
+  it('routes an SSH workspace through the tunnel sentinel, with no key, agent or host key file of its own', async () => {
     const substrate = await prepareWorkspaceSubstrate(INTENT)
     await launchWorkspace(specOf(substrate, {
       ssh: { knownHostsFile: path.join(projectDir(PROJECT_ID), 'known_hosts') },
@@ -410,13 +412,28 @@ describe('launchWorkspace', () => {
     expect(env.GIT_SSH_COMMAND).toContain('--proxy 198.18.0.2:10259')
     expect(env.GIT_SSH_COMMAND).toContain('--proxy-type http')
     expect(env.GIT_SSH_COMMAND).toContain('StrictHostKeyChecking=yes')
-    // Keys come from the forwarded agent, never a mounted file.
-    expect(env.SSH_AUTH_SOCK).toBe('/ssh-agent/socket')
-    expect(env.YAAC_SSH_AGENT_UPSTREAM).toBe('10.96.0.5:10261')
+    // The proxy ends the session: the pod trusts the proxy's host key, from
+    // the ConfigMap every pod mounts, and the proxy checks the git host's.
+    expect(env.GIT_SSH_COMMAND).toContain('UserKnownHostsFile=/etc/yaac/certs/ssh_known_hosts')
+    expect(env.GIT_SSH_COMMAND).toContain('HostKeyAlias=yaac-proxy')
+    expect(env).not.toHaveProperty('SSH_AUTH_SOCK')
+    expect(env).not.toHaveProperty('YAAC_SSH_AGENT_UPSTREAM')
     const mounts = appliedJob().spec.template.spec.containers[0].volumeMounts
-    expect(mounts).toContainEqual(
-      expect.objectContaining({ mountPath: '/home/yaac/.ssh/yaac/known_hosts', readOnly: true }),
-    )
+    expect(mounts.map((m) => m.mountPath).filter((p) => p.includes('known_hosts') || p.includes('ssh'))).toEqual([])
+
+    // A workspace with no ssh remote gets no ssh command at all.
+    fakeCluster.calls = []
+    await launchWorkspace(specOf(substrate))
+    expect(containerEnv()).not.toHaveProperty('GIT_SSH_COMMAND')
+  })
+
+  it('tells the init script where the workspace\'s shells start', async () => {
+    const substrate = await prepareWorkspaceSubstrate(INTENT)
+    await launchWorkspace(specOf(substrate, { cwd: 'web' }))
+    expect(containerEnv().YAAC_CWD).toBe('web')
+    fakeCluster.calls = []
+    await launchWorkspace(specOf(substrate))
+    expect(containerEnv().YAAC_CWD).toBe('')
   })
 
   it('builds the same env twice from one spec, because a retry relaunches it', async () => {

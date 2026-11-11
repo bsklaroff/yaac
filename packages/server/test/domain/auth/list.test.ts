@@ -27,8 +27,8 @@ describe('listAuth', () => {
     const other = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'other', token: 'ghp_fallback_xxyz' })
     const result = await listAuth(BUILT_IN_USER_ID)
     expect(result.gitCredentials).toEqual([
-      { id: acme.id, name: 'acme', kind: 'https', preview: '***3456', projects: [] },
-      { id: other.id, name: 'other', kind: 'https', preview: '***xxyz', projects: [] },
+      { id: acme.id, name: 'acme', kind: 'https', preview: '***3456', repos: [] },
+      { id: other.id, name: 'other', kind: 'https', preview: '***xxyz', repos: [] },
     ])
   })
 

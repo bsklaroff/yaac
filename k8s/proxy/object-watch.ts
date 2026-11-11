@@ -12,7 +12,6 @@
 
 import { PatchStrategy, setHeaderOptions, type KubernetesObject } from '@kubernetes/client-node'
 import { inClusterClient, makeInformer, superviseInformer } from './pod-watch'
-import { agentIdentities, type AgentIdentity } from './agent-keys'
 import {
   CA_SECRET_NAME,
   CREDENTIALS_SECRET_NAME,
@@ -24,7 +23,6 @@ import {
   decodeCredentials,
   decodeProjectSecrets,
   decodeRegistration,
-  sshGrantsForProject,
   type ClaudeOAuthBundle,
   type CodexOAuthBundle,
   type OwnerCredentials,
@@ -36,8 +34,6 @@ import {
 } from './objects'
 
 export interface ProxyObjectsDeps {
-  /** Replace the ssh-agent's identities (injected for tests). */
-  loadSshKeys: (identities: AgentIdentity[]) => Promise<void>
   /** A workspace's registration changed (or went, on `null`): the listener
    *  prunes its blocked-host record against the new allowlist. */
   onRegistration?: (workspaceId: string, registration: ProxyRegistration | null) => void
@@ -79,16 +75,11 @@ export class ProxyObjects {
    * the pushed one is spent.
    */
   private readonly captured: OwnerRefreshedBundles = new Map()
-  /** The identities last loaded into the agent, so unrelated credential
-   *  changes don't reload it under an in-flight ssh operation. */
-  private loadedSsh: string | null = null
   private readonly seeded = new Set<string>()
-  private readonly loadSshKeys: ProxyObjectsDeps['loadSshKeys']
   private readonly onRegistration: ProxyObjectsDeps['onRegistration']
   private readonly log: (message: string) => void
 
-  constructor(deps: ProxyObjectsDeps) {
-    this.loadSshKeys = deps.loadSshKeys
+  constructor(deps: ProxyObjectsDeps = {}) {
     this.onRegistration = deps.onRegistration
     this.log = deps.log ?? ((m) => { console.log(m) })
   }
@@ -120,14 +111,6 @@ export class ProxyObjects {
     return captured && (!pushed || codexIsNewer(captured, pushed)) ? captured : pushed
   }
 
-  /** The ssh keys a workspace may list and sign with, and for which host
-   *  keys: its owner's grants to its project (`sshGrantsForProject`). */
-  sshGrants(workspaceId: string): Map<string, Set<string>> {
-    const projectId = this.registrations.get(workspaceId)?.projectId
-    if (projectId === undefined) return new Map<string, Set<string>>()
-    return sshGrantsForProject(this.credentials(this.ownerOf(workspaceId)).ssh, projectId)
-  }
-
   secret(ref: string): string | undefined {
     return this.secrets.get(ref)
   }
@@ -153,13 +136,13 @@ export class ProxyObjects {
 
   /**
    * The credentials Secret changed (or was deleted, if `gone`): replace
-   * every owner's set, and reload the ssh-agent if its identities changed.
-   * Objects with the label but the wrong name are ignored.
+   * every owner's set. Objects with the label but the wrong name are
+   * ignored.
    */
-  applyCredentials(secret: RawObject, gone = false): Promise<void> {
+  applyCredentials(secret: RawObject, gone = false): void {
     if (secret.metadata?.name !== CREDENTIALS_SECRET_NAME) {
       this.log(`[proxy] ignoring a credentials-labelled object that is not ${CREDENTIALS_SECRET_NAME}: ${secret.metadata?.name ?? '?'}`)
-      return Promise.resolve()
+      return
     }
     this.creds = gone ? new Map<string, ProxyCredentials>() : decodeCredentials(secret)
     // Drop captured bundles the pushed ones have caught up with.
@@ -174,15 +157,6 @@ export class ProxyObjects {
       this.log(`[proxy] credentials of ${owner}: ${authed.length ? authed.join(', ') : 'no tools'} signed in, `
         + `${creds.git.length} git token(s), ${creds.ssh.length} ssh key(s)`)
     }
-    const identities = agentIdentities([...this.creds.values()].flatMap((c) => c.ssh))
-    const ssh = JSON.stringify(identities)
-    if (ssh === this.loadedSsh) return Promise.resolve()
-    this.loadedSsh = ssh
-    return this.loadSshKeys(identities).catch((err: unknown) => {
-      // Retried on the next change.
-      this.loadedSsh = null
-      this.log(`[proxy] ssh-agent reload failed: ${String(err)}`)
-    })
   }
 
   /** A project's secrets Secret changed or went. */
@@ -256,10 +230,10 @@ export function startObjectWatch(objects: ProxyObjects, client: Client = inClust
     () => client.core.listNamespacedSecret({ namespace: ns, labelSelector: selector('credentials') }),
     selector('credentials'),
   )
-  const feedCredentials = (obj: KubernetesObject): void => { void objects.applyCredentials(obj) }
+  const feedCredentials = (obj: KubernetesObject): void => { objects.applyCredentials(obj) }
   credentials.on('add', feedCredentials)
   credentials.on('update', feedCredentials)
-  credentials.on('delete', (obj) => { void objects.applyCredentials(obj, true) })
+  credentials.on('delete', (obj) => { objects.applyCredentials(obj, true) })
 
   const secrets = makeInformer(
     client.kubeConfig, secretsPath,

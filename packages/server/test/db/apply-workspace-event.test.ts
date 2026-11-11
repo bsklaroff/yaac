@@ -10,12 +10,16 @@ import {
 } from '#db/workspace-store'
 import { getSessionRow, insertSession, listWorkspaceSessions, recordSessionWaitingSeen } from '#db/session-store'
 import { createWorkspaceGroup } from '#db/group-store'
+import { listWorkspaceRepos } from '#db/repo-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
 import { listWorkspaceConversations } from '#db/conversation-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
 const ELSEWHERE = '916a4314-2e8d-4811-8766-75eeedc5ae4a'
+/** Repos the fixtures hold checkouts of; a checkout's row needs no repo row. */
+const REPO = '0b9b4c6e-2f0d-4c5e-9a55-7f1f3e1f2a10'
+const OTHER_REPO = '1c0c5d7f-3a1e-4d6f-8b66-8a2a4f2a3b21'
 
 describe('applyWorkspaceEvent', () => {
   let tmpDir: string
@@ -27,7 +31,7 @@ describe('applyWorkspaceEvent', () => {
     pushes = 0
     onWorkspaceListChanged(() => { pushes += 1 })
     tmpDir = await createTempDataDir()
-    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'wt-1' })
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'wt-1', repos: [{ repoId: REPO, path: '' }] })
   })
 
   afterEach(async () => {
@@ -54,12 +58,14 @@ describe('applyWorkspaceEvent', () => {
       type: 'workspace-create-failed', projectId: PROJ, workspaceId, ...extra,
     })
 
-  it('records a reported workspace, with the branch when the emitter knew it', async () => {
-    await created('wt-new', { baseBranch: 'main' })
+  it('records a reported workspace, with its checkouts, each branch the emitter knew, and its cwd', async () => {
+    await created('wt-new', { repos: [{ repoId: REPO, path: 'api', baseBranch: 'main' }, { repoId: OTHER_REPO, path: 'web' }], cwd: 'api' })
 
-    expect(await rowOf('wt-new')).toMatchObject({
-      projectId: PROJ, workspaceId: 'wt-new', baseBranch: 'main', deathSeenBy: [],
-    })
+    expect(await rowOf('wt-new')).toMatchObject({ projectId: PROJ, workspaceId: 'wt-new', cwd: 'api', deathSeenBy: [] })
+    expect(await listWorkspaceRepos('wt-new')).toEqual([
+      { workspaceId: 'wt-new', repoId: REPO, path: 'api', baseBranch: 'main' },
+      { workspaceId: 'wt-new', repoId: OTHER_REPO, path: 'web' },
+    ])
   })
 
   // What its runtime launched with, which a restart replaces.
@@ -73,8 +79,8 @@ describe('applyWorkspaceEvent', () => {
   // up or down, on that session alone, and an unnamed field is left alone.
   it("follows what a session's agent reports, on that session alone", async () => {
     await created('wt-p')
-    const a = await insertSession(PROJ, 'wt-p', { tool: 'claude', mode: 'tui', permissionMode: 'accept-edits', effort: 'high' })
-    const b = await insertSession(PROJ, 'wt-p', { tool: 'claude', mode: 'acp', permissionMode: 'accept-edits' })
+    const a = await insertSession(PROJ, 'wt-p', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'accept-edits', effort: 'high' })
+    const b = await insertSession(PROJ, 'wt-p', { cwd: '', tool: 'claude', mode: 'acp', permissionMode: 'accept-edits' })
     const reported = (fields: object): Promise<void> => applyWorkspaceEvent({
       type: 'session-reported', projectId: PROJ, workspaceId: 'wt-p', sessionId: a.id, ...fields,
     })
@@ -92,8 +98,8 @@ describe('applyWorkspaceEvent', () => {
   // waiting spell unread, and a workspace restart does not.
   it("clears a session's waitingSeenBy when its waiting ends, and keeps it over a resume", async () => {
     await created('wt-w')
-    const a = await insertSession(PROJ, 'wt-w', { tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
-    const b = await insertSession(PROJ, 'wt-w', { tool: 'codex', mode: 'tui', permissionMode: 'bypass' })
+    const a = await insertSession(PROJ, 'wt-w', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
+    const b = await insertSession(PROJ, 'wt-w', { cwd: '', tool: 'codex', mode: 'tui', permissionMode: 'bypass' })
     for (const s of [a, b]) await recordSessionWaitingSeen(s.id, BUILT_IN_USER_ID)
     await created('wt-w', { resume: true })
     expect((await getSessionRow(a.id))?.waitingSeenBy).toEqual([BUILT_IN_USER_ID])
@@ -106,21 +112,23 @@ describe('applyWorkspaceEvent', () => {
   // posting a live workspace's id could re-stamp it and then tear it down
   // as its own when the create failed.
   it('refuses a fresh create on a taken id, in this project or another, leaving the row be', async () => {
-    await applyWorkspaceEvent({ type: 'base-branch-resolved', projectId: PROJ, workspaceId: 'wt-1', baseBranch: 'main' })
+    await applyWorkspaceEvent({ type: 'base-branch-resolved', projectId: PROJ, workspaceId: 'wt-1', repoId: REPO, baseBranch: 'main' })
     await stopped('wt-1', { cause: { reason: 'oom' } })
     const before = await rowOf('wt-1')
 
-    await expect(created('wt-1', { baseBranch: 'other' })).rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(created('wt-1', { repos: [{ repoId: OTHER_REPO, path: '', baseBranch: 'other' }] }))
+      .rejects.toMatchObject({ code: 'CONFLICT' })
     await expect(applyWorkspaceEvent({
       type: 'workspace-created', projectId: ELSEWHERE, workspaceId: 'wt-1',
     })).rejects.toMatchObject({ code: 'CONFLICT' })
 
     expect(await rowOf('wt-1')).toEqual(before)
+    expect(await listWorkspaceRepos('wt-1')).toEqual([{ workspaceId: 'wt-1', repoId: REPO, path: '', baseBranch: 'main' }])
     expect((await getProjectWorkspaceRows(ELSEWHERE)).size).toBe(0)
   })
 
   it('re-stamps a resumed workspace\'s live fields, keeping what belongs to the workspace', async () => {
-    await applyWorkspaceEvent({ type: 'base-branch-resolved', projectId: PROJ, workspaceId: 'wt-1', baseBranch: 'main' })
+    await applyWorkspaceEvent({ type: 'base-branch-resolved', projectId: PROJ, workspaceId: 'wt-1', repoId: REPO, baseBranch: 'main' })
     await setWorkspaceTitle(PROJ, 'wt-1', 'my workspace')
     const group = await createWorkspaceGroup(PROJ, 'release', 'wt-1')
     await stopped('wt-1', { cause: { reason: 'oom', detail: 'exit code 137' } })
@@ -132,12 +140,12 @@ describe('applyWorkspaceEvent', () => {
       createdAt: before?.createdAt,
       title: 'my workspace',
       groupId: group.groupId,
-      baseBranch: 'main',
       timeZone: 'Asia/Tokyo',
       // The stop stays until the restart succeeds (`clearWorkspaceStopped`).
       stoppedAt: before?.stoppedAt,
       deathReason: 'oom',
     })
+    expect(await listWorkspaceRepos('wt-1')).toMatchObject([{ repoId: REPO, baseBranch: 'main' }])
   })
 
   // A stop keeps its row, so only a pod yaac has no record of (a reset or
@@ -148,22 +156,28 @@ describe('applyWorkspaceEvent', () => {
     expect(await rowOf('wt-ghost')).toBeUndefined()
   })
 
-  it('stamps a resolved base branch onto an existing row', async () => {
+  it('stamps a resolved base branch and start commit onto the checkout they are of', async () => {
     await applyWorkspaceEvent({
-      type: 'base-branch-resolved',
-      projectId: PROJ,
-      workspaceId: 'wt-1',
-      baseBranch: 'develop',
+      type: 'base-branch-resolved', projectId: PROJ, workspaceId: 'wt-1', repoId: REPO, baseBranch: 'develop',
+    })
+    await applyWorkspaceEvent({
+      type: 'start-commit-resolved', projectId: PROJ, workspaceId: 'wt-1', repoId: REPO, startCommit: 'a'.repeat(40),
+    })
+    // A repo the workspace holds no checkout of is no row to write.
+    await applyWorkspaceEvent({
+      type: 'base-branch-resolved', projectId: PROJ, workspaceId: 'wt-1', repoId: OTHER_REPO, baseBranch: 'main',
     })
 
-    expect((await rowOf('wt-1'))?.baseBranch).toBe('develop')
+    expect(await listWorkspaceRepos('wt-1')).toEqual([
+      { workspaceId: 'wt-1', repoId: REPO, path: '', baseBranch: 'develop', startCommit: 'a'.repeat(40) },
+    ])
   })
 
   // Discovery only adds, in the order the workspace first saw each
   // conversation; the active set is reported apart, since a pass also finds
   // conversations that ended long ago.
   it('links discovered conversations to their sessions, and marks the live ones active', async () => {
-    const session = await insertSession(PROJ, 'wt-1', { tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
+    const session = await insertSession(PROJ, 'wt-1', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
     await applyWorkspaceEvent({
       type: 'conversations-discovered',
       projectId: PROJ,
@@ -301,7 +315,7 @@ describe('applyWorkspaceEvent', () => {
 
   it('erases a failed fresh workspace, sessions, links and all', async () => {
     await created('wt-fresh')
-    await insertSession(PROJ, 'wt-fresh', { tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
+    await insertSession(PROJ, 'wt-fresh', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
     await applyWorkspaceEvent({
       type: 'conversations-discovered',
       projectId: PROJ,
@@ -334,7 +348,7 @@ describe('applyWorkspaceEvent', () => {
     const before = pushes
     await created('wt-2')
     await applyWorkspaceEvent({
-      type: 'base-branch-resolved', projectId: PROJ, workspaceId: 'wt-2', baseBranch: 'main',
+      type: 'base-branch-resolved', projectId: PROJ, workspaceId: 'wt-2', repoId: REPO, baseBranch: 'main',
     })
     await applyWorkspaceEvent({
       type: 'conversations-discovered', projectId: PROJ, workspaceId: 'wt-2', sessions: [],

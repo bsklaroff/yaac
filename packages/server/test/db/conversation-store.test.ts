@@ -40,28 +40,20 @@ describe('deleteWorkspaceConversations', () => {
       .map((r) => r.id).sort()
   }
 
-  it('takes the conversations a rolled-back create invented, but not shared ones', async () => {
-    // wt-doomed is the create that gave up: it wrote its own conversation and
-    // also linked one it was told to resume, which wt-live still holds. Only
-    // the first is the rollback's to erase — a conversation another workspace
-    // links is that workspace's history, and nothing would bring it back.
+  it('takes the workspace\'s conversations and leaves a sibling\'s', async () => {
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-live' })
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-doomed' })
     await recordConversations(DEMO_PROJECT_ID, 'wt-live', [
-      { tool: 'claude', conversationId: 'conv-shared' },
+      { tool: 'claude', conversationId: 'conv-kept' },
     ])
     await recordConversations(DEMO_PROJECT_ID, 'wt-doomed', [
-      { tool: 'claude', conversationId: 'conv-shared' },
       { tool: 'claude', conversationId: 'conv-own', firstPrompt: 'the ask nobody heard' },
     ])
 
     await deleteWorkspaceConversations(DEMO_PROJECT_ID, 'wt-doomed')
 
     expect(await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-doomed')).toEqual([])
-    expect(await conversationIds()).toEqual(['conv-shared'])
-    // The surviving workspace keeps its link to the shared one.
-    expect((await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-live')).map((l) => l.conversationId))
-      .toEqual(['conv-shared'])
+    expect(await conversationIds()).toEqual(['conv-kept'])
   })
 
   it('is a no-op for a workspace that linked nothing', async () => {
@@ -90,6 +82,22 @@ describe('recordConversations', () => {
 
   const conversation = async (id: string) =>
     (await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-1')).find((l) => l.conversationId === id)
+
+  it('ignores a conversation another workspace recorded first', async () => {
+    await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1' })
+    await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-2' })
+    await recordConversations(DEMO_PROJECT_ID, 'wt-1', [
+      { tool: 'claude', conversationId: 'conv-a', title: 'Theirs' },
+    ])
+    await recordConversations(DEMO_PROJECT_ID, 'wt-2', [
+      { tool: 'claude', conversationId: 'conv-a', title: 'Resumed by hand' },
+      { tool: 'claude', conversationId: 'conv-b' },
+    ])
+
+    expect((await listWorkspaceConversations(DEMO_PROJECT_ID, 'wt-2')).map((l) => l.conversationId))
+      .toEqual(['conv-b'])
+    expect((await conversation('conv-a'))?.title).toBe('Theirs')
+  })
 
   it('follows a model switch and a retitle but keeps the opening message', async () => {
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1' })

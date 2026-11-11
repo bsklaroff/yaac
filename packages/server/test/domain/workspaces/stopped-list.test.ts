@@ -17,7 +17,7 @@ import {
 import { createWorkspaceGroup } from '#db/group-store'
 import { recordConversations } from '#db/conversation-store'
 import { closeDb } from '#db/client'
-import { BUILT_IN_USER_ID, insertSession, insertSite, recordProject, seeTailnetUser } from '#db'
+import { BUILT_IN_USER_ID, insertSession, insertSite, seeTailnetUser } from '#db'
 import { claudeDir } from '@yaac/shared/project-paths'
 import { listStoppedWorkspaces } from '#domain/workspaces/stopped-list'
 import type { AgentTool, StoppedWorkspaceEntry } from '@yaac/shared/types'
@@ -113,7 +113,7 @@ describe('listStoppedWorkspaces', () => {
 
   it("filters by owner, to that user's projects", async () => {
     const ada = await seeTailnetUser('ada@example.com', 'Ada')
-    await recordProject({ id: OTHER, name: 'theirs', remoteUrl: 'https://example.com/theirs', addedAt: '' }, ada)
+    await recordTestProject(OTHER, { name: 'theirs', remoteUrl: 'https://example.com/theirs', addedAt: '', owner: ada })
     await seedWorkspace(DEMO_PROJECT_ID, 'mine', { deleted: true })
     await seedWorkspace(OTHER, 'hers', { deleted: true })
     expect(await ids({ owner: ada })).toEqual(['hers'])
@@ -129,7 +129,7 @@ describe('listStoppedWorkspaces', () => {
   })
 
   it('names the site a release was of', async () => {
-    const site = await insertSite({ projectId: DEMO_PROJECT_ID, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(DEMO_PROJECT_ID) })
+    const site = await insertSite({ projectId: DEMO_PROJECT_ID, repoId: DEMO_PROJECT_ID, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(DEMO_PROJECT_ID) })
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'rel-1', siteId: site.id })
     await recordWorkspaceStopped(DEMO_PROJECT_ID, 'rel-1')
     await seedWorkspace(DEMO_PROJECT_ID, 'dev', { deleted: true })
@@ -274,7 +274,7 @@ describe('listStoppedWorkspaces', () => {
     ])
 
     await seedWorkspace(DEMO_PROJECT_ID, 'held', { deleted: true })
-    await insertSession(DEMO_PROJECT_ID, 'held', { tool: 'claude', mode: 'acp', permissionMode: 'bypass', prompt: 'fix the parser' })
+    await insertSession(DEMO_PROJECT_ID, 'held', { cwd: '', tool: 'claude', mode: 'acp', permissionMode: 'bypass', prompt: 'fix the parser' })
 
     const result = await entries()
     expect(result.find((r) => r.workspaceId === 'captured')?.prompt).toBe('port the lexer')

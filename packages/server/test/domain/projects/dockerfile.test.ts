@@ -37,7 +37,6 @@ beforeEach(async () => {
   const meta: ProjectMeta = {
     id: projectId,
     name: 'demo',
-    remoteUrl: 'https://example.com/foo',
     addedAt: '2026-01-01T00:00:00.000Z',
   }
   await recordProject(meta, BUILT_IN_USER_ID)

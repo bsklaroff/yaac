@@ -5,9 +5,9 @@ import { startUsageSampler, stopUsageSampler } from '#runtime/usage'
 import { loadToolAuthEntry } from '#domain/auth'
 import { restoreAllWorkspaceForwarders } from '#main/restore-forwarders'
 import { applyWorkspaceEvent, findWorkspaceRow, getProjectRow, listWorkspaceSessions } from '#db'
-import { offeredForwards, onReleaseStepChanged } from '#domain/workspaces'
+import { offeredForwards, onReleaseStepChanged, propagateOrigin } from '#domain/workspaces'
 import { onSiteTimer } from '#domain/sites'
-import { onOriginFetched } from '#domain/projects'
+import { onOriginFetched } from '#domain/repos'
 import { errorText, serverLog } from '#lib/log'
 import type { ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
 
@@ -66,6 +66,7 @@ export async function attachConvergence(opts: {
           mode: s.mode,
           sessionId: s.id,
           permissionMode: s.permissionMode,
+          cwd: s.cwd,
           ...(s.conversationId !== undefined ? { conversationId: s.conversationId } : {}),
           ...(s.effort !== undefined ? { effort: s.effort } : {}),
           ...(model !== undefined ? { model } : {}),
@@ -93,8 +94,10 @@ export async function attachConvergence(opts: {
   // pass, so the deploy waiting on it needs one more.
   onReleaseStepChanged(() => fireChange('sites'))
   // A branch a site follows moves only in the main clone, when a fetch
-  // lands, which no watch sees either.
+  // lands, which no watch sees either. The same fetch's refs are copied
+  // into the running checkouts of the repo.
   onOriginFetched(() => fireChange('sites'))
+  onOriginFetched(propagateOrigin)
   // A session going back to work makes its next waiting spell unread.
   onWaitingEnded((projectId, workspaceId, window) => {
     applyWorkspaceEvent({ type: 'waiting-ended', projectId, workspaceId, window })

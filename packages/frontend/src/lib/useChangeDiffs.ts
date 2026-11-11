@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
 import { DIFF_CUT_LINE, type WorkspaceDiff } from '@yaac/shared/types'
 import { api } from '#lib/api'
+import { useCheckout } from '#lib/checkouts'
 import { parseDiffPart, splitDiff, type DiffPart, type ParsedFileDiff } from '#lib/diff'
 
 /** What a reader near a file's diff wants: its `part`, which the changes
@@ -37,6 +38,10 @@ const lineCount = (text: string): number => text.split('\n').length - 1
  * while a later poll shows the same header for the file, so a file the
  * agent did not touch keeps what was scrolled through; one the poll no
  * longer covers is shown as loaded until a reader near it loads it again.
+ *
+ * `data` and the diffs' own headers name files relative to the checkout
+ * shown (`useCheckout`); the paths this takes and answers are relative to
+ * the workspace dir, as the pane's rows are.
  */
 export function useChangeDiffs(workspaceId: string, data: WorkspaceDiff | undefined): {
   diffs: Map<string, ParsedFileDiff>
@@ -44,6 +49,7 @@ export function useChangeDiffs(workspaceId: string, data: WorkspaceDiff | undefi
   failed: (path: string) => boolean
   want: (path: string, kind: DiffWant, near: boolean) => void
 } {
+  const { repo, prefix } = useCheckout(workspaceId)
   const [version, bump] = useReducer((n: number) => n + 1, 0)
   const loaded = useRef(new Map<string, Loaded>())
   const wanted = useRef(new Set<string>())
@@ -57,7 +63,7 @@ export function useChangeDiffs(workspaceId: string, data: WorkspaceDiff | undefi
   useEffect(() => {
     loaded.current.clear()
     failedAt.current.clear()
-  }, [workspaceId])
+  }, [workspaceId, repo])
 
   /**
    * A file's part as far as it is held, and whether it is of `reading`.
@@ -94,6 +100,7 @@ export function useChangeDiffs(workspaceId: string, data: WorkspaceDiff | undefi
       const { diff } = await api.workspace[':id'].changes.diff.$post({
         param: { id: workspaceId },
         json: {
+          ...repo !== undefined ? { repo } : {},
           base: d.base,
           work: d.work,
           files: batch.map((f) => ({ path: f.path, ...f.oldPath ? { oldPath: f.oldPath } : {} })),
@@ -124,7 +131,7 @@ export function useChangeDiffs(workspaceId: string, data: WorkspaceDiff | undefi
       bump()
     }
     void pump()
-  }, [workspaceId, partOf])
+  }, [workspaceId, repo, partOf])
 
   useEffect(() => {
     latest.current = data
@@ -138,7 +145,7 @@ export function useChangeDiffs(workspaceId: string, data: WorkspaceDiff | undefi
   }, [data, polled, pump])
 
   const want = useCallback((path: string, kind: DiffWant, near: boolean): void => {
-    const key = `${kind}:${path}`
+    const key = `${kind}:${path.slice(prefix.length)}`
     if (!near) {
       wanted.current.delete(key)
       return
@@ -147,7 +154,7 @@ export function useChangeDiffs(workspaceId: string, data: WorkspaceDiff | undefi
     failedAt.current.delete(key)
     // Readers coming into view together land in one batch.
     queueMicrotask(() => void pump())
-  }, [pump])
+  }, [pump, prefix])
 
   // Parsing a part is the costly step, so each is parsed once per text.
   const parsed = useRef(new Map<string, { part: DiffPart; diff: ParsedFileDiff }>())
@@ -162,17 +169,17 @@ export function useChangeDiffs(workspaceId: string, data: WorkspaceDiff | undefi
       if (!held || (!held.current && failedAt.current.get(`part:${path}`) === at)) continue
       let p = parsed.current.get(path)
       if (p?.part.text !== held.part.text || p.part.cut !== held.part.cut) {
-        p = { part: held.part, diff: parseDiffPart(path, held.part) }
+        p = { part: held.part, diff: parseDiffPart(`${prefix}${path}`, held.part) }
       }
       kept.set(path, p)
-      out.set(path, p.diff)
+      out.set(`${prefix}${path}`, p.diff)
     }
     parsed.current = kept
     return out
-  }, [polled, at, data?.truncated, version, partOf])
+  }, [polled, at, data?.truncated, version, partOf, prefix])
 
   const failed = useCallback((path: string): boolean => (['part', 'rest'] as const)
-    .some((k) => failedAt.current.get(`${k}:${path}`) === at), [at])
+    .some((k) => failedAt.current.get(`${k}:${path.slice(prefix.length)}`) === at), [at, prefix])
 
   return { diffs, failed, want }
 }

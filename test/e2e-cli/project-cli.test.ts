@@ -9,8 +9,8 @@ import { BUILT_IN_USER_ID } from '@yaac/server/db/user-store'
 import { git } from '@yaac/test-utils/git'
 
 /**
- * e2e coverage for `yaac project` (list/add/create/clone/move) and `yaac
- * config`, sharing one test env and server across the file.
+ * e2e coverage for `yaac project` (list/add/create/clone/move/repo), `yaac
+ * repo` and `yaac config`, sharing one test env and server across the file.
  *
  * Tests run in declaration order over one data dir, so order matters:
  *  - The empty-state `project list` test runs first.
@@ -21,6 +21,8 @@ import { git } from '@yaac/test-utils/git'
  *    demo-*) except where a case makes two projects share one on purpose.
  *  - The config settings cases use the hosted-demo project `project create`
  *    left behind as their hosted project that takes no git credential.
+ *  - The `project repo` and `repo` cases run last, on projects of their own
+ *    (multi, lib), and end by deleting repos.
  */
 
 let testEnv: YaacTestEnv
@@ -105,10 +107,11 @@ describe('yaac project (real CLI + real server)', () => {
 
     const { stdout, exitCode } = await runYaac(testEnv.env, 'project', 'list')
     expect(exitCode).toBe(0)
-    expect(stdout).toMatch(/PROJECT\s+ID\s+REMOTE\s+WORKSPACES/)
-    // No workspaces started, so 0 sessions each.
-    expect(stdout).toMatch(new RegExp(`repo-alpha\\s+${alpha.slice(0, 8)}\\s+https://github.com/test-org/repo-alpha.git\\s+0`))
-    expect(stdout).toMatch(new RegExp(`repo-beta\\s+${beta.slice(0, 8)}\\s+https://github.com/test-org/repo-beta.git\\s+0`))
+    expect(stdout).toMatch(/PROJECT\s+ID\s+WORKSPACES\s+REPOS/)
+    // No workspaces started, so 0 each; a project with one repo lists its
+    // remote.
+    expect(stdout).toMatch(new RegExp(`repo-alpha\\s+${alpha.slice(0, 8)}\\s+0\\s+https://github.com/test-org/repo-alpha.git`))
+    expect(stdout).toMatch(new RegExp(`repo-beta\\s+${beta.slice(0, 8)}\\s+0\\s+https://github.com/test-org/repo-beta.git`))
   })
 
   it('project create makes an empty hosted project, which project clone clones for pushing', async () => {
@@ -131,7 +134,7 @@ describe('yaac project (real CLI + real server)', () => {
     expect(await git(path.join(parent, 'hosted-demo'), ['log', '--format=%s'])).toBe('first\n')
 
     const list = await runYaac(testEnv.env, 'project', 'list')
-    expect(list.stdout).toMatch(/hosted-demo\s+\S+\s+\(hosted by yaac\)\s+0/)
+    expect(list.stdout).toMatch(/hosted-demo\s+\S+\s+0\s+\(hosted by yaac\)/)
   })
 
   it('project create refuses an unusable name, and project clone a project yaac does not host', async () => {
@@ -151,7 +154,7 @@ describe('yaac project (real CLI + real server)', () => {
     const answer = (send: string): RunYaacOptions => ({ tty: true, stdinOnPrompt: [{ when: /Continue\? \[y\/N\]/, send }] })
     const target = 'https://gitlab.example.com/foo/bar'
     const stillHosted = async (): Promise<void> => {
-      expect((await runYaac(testEnv.env, 'project', 'list')).stdout).toMatch(/hosted-demo\s+\S+\s+\(hosted by yaac\)/)
+      expect((await runYaac(testEnv.env, 'project', 'list')).stdout).toMatch(/hosted-demo\s+\S+\s+\d+\s+\(hosted by yaac\)/)
     }
 
     // With no terminal to confirm on it refuses; on one, Enter means no.
@@ -168,9 +171,9 @@ describe('yaac project (real CLI + real server)', () => {
     const unreachable = await move('hosted-demo', target, 'fake-github', answer('y\r'))
     expect(unreachable.exitCode).not.toBe(0)
     expect(unreachable.stdout).toContain(`Moving hosted-demo to ${target}...`)
-    expect(unreachable.stdout).toMatch(buildsImages
-      ? /"gitlab.example.com" is not in the egress allowlist of "hosted-demo"/
-      : /did not move: .*It stays on yaac/s)
+    expect(unreachable.stdout + unreachable.stderr).toMatch(buildsImages
+      ? /"gitlab.example.com" is not in the egress allowlist/
+      : /did not move/)
     await stillHosted()
 
     const sshWithToken = await move('hosted-demo', 'git@github.com:org/repo.git', 'fake-github', answer('y\r'))
@@ -344,12 +347,14 @@ describe('yaac config project and user settings (real CLI + real server)', () =>
     expect((await config('kept-ignored-paths', 'demo-settings', '--none')).stdout).toContain('are now: none.')
   })
 
-  it('config git-credential shows and assigns a credential by name, and refuses one for a hosted project', async () => {
-    expect((await config('git-credential', 'demo-settings')).stdout).toContain('demo-settings has no git credential')
+  it('config git-credential shows and assigns a repo\'s credential by name, and refuses one for a hosted repo', async () => {
+    // The credential is the repo's, so it is named by its remote.
+    const remote = 'https://github.com/test-org/demo-settings.git'
+    expect((await config('git-credential', 'demo-settings')).stdout).toContain(`${remote} has no git credential`)
     const set = await config('git-credential', 'demo-settings', 'fake-github')
     expect(set.exitCode, set.stderr).toBe(0)
-    expect(set.stdout).toContain('demo-settings now uses the git credential fake-github')
-    expect((await config('git-credential', 'demo-settings')).stdout).toContain('demo-settings uses the git credential fake-github.')
+    expect(set.stdout).toContain(`${remote} now uses the git credential fake-github`)
+    expect((await config('git-credential', 'demo-settings')).stdout).toContain(`${remote} uses the git credential fake-github.`)
     expect((await config('git-credential', 'demo-settings', 'nope')).stderr).toContain('No git credential named "nope"')
     expect((await config('git-credential', 'hosted-demo')).stdout).toContain('hosted-demo is hosted by yaac, so it needs no git credential.')
     expect((await config('git-credential', 'hosted-demo', 'fake-github')).stderr).toContain('is hosted by yaac, so it needs no git credential')
@@ -367,7 +372,7 @@ describe('yaac config project and user settings (real CLI + real server)', () =>
     expect(set.exitCode, set.stderr).toBe(0)
     expect(set.stdout).toContain('branchy\'s default branch is now release.')
     expect((await config('default-branch', 'branchy')).stdout).toContain('branchy\'s default branch is release.')
-    expect((await config('default-branch', 'branchy', 'nope')).stderr).toContain('"branchy" has no branch "nope"')
+    expect((await config('default-branch', 'branchy', 'nope')).stderr).toContain('has no branch "nope"')
     expect((await config('default-branch', 'demo-settings')).stdout).toMatch(/demo-settings's default branch is \S+, set at its git host\./)
     expect((await config('default-branch', 'demo-settings', 'main')).stderr).toContain('is not hosted by yaac; set its default branch at its git host')
 
@@ -510,7 +515,7 @@ describe('yaac config project and user settings (real CLI + real server)', () =>
     expect((await config('port-forwards', 'demo-settings', '3000')).exitCode).toBe(0)
     const { stdout, exitCode, stderr } = await config('show', 'demo-settings')
     expect(exitCode, stderr).toBe(0)
-    expect(stdout).toMatch(/^demo-settings \([0-9a-f]{8}\), /)
+    expect(stdout).toMatch(/^demo-settings \([0-9a-f]{8}\)\n {2}repos {2}demo-settings \(https:\/\/github\.com\/test-org\/demo-settings\.git\)\n/)
     expect(stdout).toMatch(/\n {2}git-credential +fake-github\n/)
     const env = /\n {2}env +(.*)\n/.exec(stdout)?.[1].split(', ')
     expect(env?.sort()).toEqual(['CLIENT_SECRET (secret)', 'EMPTY', 'FOO', 'KEY_HEADER (secret)'])
@@ -526,5 +531,232 @@ describe('yaac config project and user settings (real CLI + real server)', () =>
       expect(stdout).not.toContain('cache-volumes')
     }
     expect((await config('show', 'branchy')).stdout).toMatch(/\n {2}git-credential +none needed \(hosted by yaac\)\n {2}default-branch-guard +on\n/)
+  })
+})
+
+// Last in the file: these end by deleting repos.
+describe('yaac project repo and yaac repo (real CLI + real server)', () => {
+  const projectRepo = (...args: Array<string | RunYaacOptions>): ReturnType<typeof runYaac> => runYaac(testEnv.env, 'project', 'repo', ...args)
+  const repo = (...args: Array<string | RunYaacOptions>): ReturnType<typeof runYaac> => runYaac(testEnv.env, 'repo', ...args)
+  const config = (...args: Array<string | RunYaacOptions>): ReturnType<typeof runYaac> => runYaac(testEnv.env, 'config', ...args)
+  const api = async <T>(route: string): Promise<T> =>
+    await (await fetch(`http://127.0.0.1:${String(server.lock.port)}/api${route}`)).json() as T
+  /** The repos a project links, by folder. */
+  const reposOf = async (project: string): Promise<Record<string, string>> => {
+    const projects = await api<Array<{ name: string; repos: Array<{ id: string; dir: string }> }>>('/project/list')
+    return Object.fromEntries(projects.find((p) => p.name === project)?.repos.map((r) => [r.dir, r.id]) ?? [])
+  }
+  /** `multi`'s own repo and `lib`'s, which `multi` links too; a staged
+   *  project's repo carries the project's id. */
+  let multiId: string
+  let libId: string
+
+  beforeAll(async () => {
+    const seed = async (name: string): Promise<string> => {
+      const dir = path.join(testEnv.scratchDir, name)
+      await createTestRepo(dir)
+      return await addTestProject(server, dir)
+    }
+    multiId = await seed('multi')
+    libId = await seed('lib')
+  })
+
+  it('project repo list, add, rename and remove manage which repos a project links', async () => {
+    const list = await projectRepo('list', 'multi')
+    expect(list.exitCode, list.stderr).toBe(0)
+    expect(list.stdout).toMatch(/DIR\s+REPO\s+CREDENTIAL\s+(READ-ONLY\s+GH_TOKEN\s+)?REMOTE/)
+    expect(list.stdout).toMatch(new RegExp(`multi\\s+${multiId.slice(0, 8)}\\s+\\(none\\)\\s+(off\\s+on\\s+)?https://github.com/test-org/multi.git`))
+
+    // Exactly one way of naming the repo to link.
+    for (const args of [[], ['https://github.com/x/y'], ['https://github.com/x/y', 'fake-github', '--hosted'], ['--hosted', '--repo-id', libId]]) {
+      const refused = await projectRepo('add', 'multi', ...args)
+      expect(refused.exitCode, args.join(' ')).not.toBe(0)
+      expect(refused.stderr, args.join(' ')).toContain('Give one of: <remote-url> <credential>, --repo-id <id>, or --hosted.')
+    }
+    expect((await projectRepo('add', 'multi', 'https://github.com/x/y', 'nope')).stderr).toContain('No git credential named "nope"')
+
+    // A repo of the owner's, by id, under its own name by default.
+    const byId = await projectRepo('add', 'multi', '--repo-id', libId)
+    expect(byId.exitCode, byId.stderr).toBe(0)
+    expect(byId.stdout).toContain(`Project "multi" now links repo ${libId} in the folder lib.`)
+    expect((await projectRepo('add', 'multi', '--repo-id', libId)).stderr).toContain('already links that repo')
+    expect((await projectRepo('add', 'multi', '--repo-id', '00000000-0000-4000-8000-000000000000')).stderr).toContain('No repo "00000000-0000-4000-8000-000000000000"')
+
+    // A new repo yaac hosts, in a named folder.
+    const hosted = await projectRepo('add', 'multi', '--hosted', '--dir', 'docs')
+    expect(hosted.exitCode, hosted.stderr).toBe(0)
+    expect(hosted.stdout).toMatch(/Project "multi" now links repo [0-9a-f-]{36} in the folder docs\./)
+    expect((await projectRepo('add', 'multi', '--hosted', '--dir', 'bad/name')).stderr).toContain('not a usable folder name')
+    expect((await projectRepo('add', 'multi', '--hosted', '--dir', 'lib')).stderr).toContain('already has a repo in "lib"')
+
+    // A remote its owner already has a repo for links that repo, uncloned,
+    // and gives it the credential it lacked.
+    const alphaRepo = (await reposOf('repo-alpha'))['repo-alpha']
+    const byUrl = await projectRepo('add', 'multi', 'https://github.com/test-org/repo-alpha.git', 'fake-github')
+    expect(byUrl.exitCode, byUrl.stderr).toBe(0)
+    expect(byUrl.stdout).toContain(`Project "multi" now links repo ${alphaRepo} in the folder repo-alpha.`)
+    expect((await config('git-credential', 'repo-alpha')).stdout).toContain('uses the git credential fake-github.')
+
+    expect(Object.keys(await reposOf('multi'))).toEqual(['multi', 'lib', 'docs', 'repo-alpha'])
+    // A project with several repos lists each by its folder.
+    expect((await runYaac(testEnv.env, 'project', 'list')).stdout).toMatch(/multi\s+\S+\s+0\s+multi: https:\/\/github\.com\/test-org\/multi\.git, lib: /)
+
+    const renamed = await projectRepo('rename', 'multi', 'lib', 'library')
+    expect(renamed.exitCode, renamed.stderr).toBe(0)
+    expect(renamed.stdout).toContain('lib of project "multi" is now library.')
+    expect((await projectRepo('rename', 'multi', 'library', 'docs')).stderr).toContain('already has a repo in "docs"')
+    expect((await projectRepo('rename', 'multi', 'nope', 'x')).stderr).toContain('Project "multi" has no repo "nope"; its repos are multi, library, docs, repo-alpha.')
+
+    // By folder or by id; the repo itself stays.
+    const removed = await projectRepo('remove', 'multi', alphaRepo)
+    expect(removed.exitCode, removed.stderr).toBe(0)
+    expect(removed.stdout).toContain('Project "multi" no longer links repo-alpha.')
+    expect(Object.keys(await reposOf('multi'))).toEqual(['multi', 'library', 'docs'])
+    expect(Object.keys(await reposOf('repo-alpha'))).toEqual(['repo-alpha'])
+    expect((await config('show', 'multi')).stdout).toMatch(/\n {2}repos {2}multi \(https:[^)]*\); library \(https:[^)]*\); docs \(hosted by yaac\)\n/)
+  })
+
+  it('the repo-scoped commands need --repo in a project with several repos, and act on the one it names', async () => {
+    const several = 'Project "multi" has several repos; name one with --repo: multi, library, docs.'
+    expect((await config('git-credential', 'multi')).stderr).toContain(several)
+    expect((await config('default-branch', 'multi')).stderr).toContain(several)
+    expect((await config('default-branch-guard', 'multi')).stderr).toContain(several)
+    expect((await runYaac(testEnv.env, 'project', 'clone', 'multi')).stderr).toContain(several)
+    expect((await runYaac(testEnv.env, 'project', 'move', 'multi', 'https://github.com/org/repo', 'fake-github')).stderr).toContain(several)
+    expect((await config('git-credential', 'multi', '--repo', 'nope')).stderr).toContain('Project "multi" has no repo "nope"')
+
+    // The credential is the repo's, so the other project linking it has it too.
+    const remote = 'https://github.com/test-org/lib.git'
+    expect((await config('git-credential', 'multi', '--repo', 'library')).stdout).toContain(`${remote} has no git credential`)
+    const set = await config('git-credential', 'multi', 'fake-github', '--repo', 'library')
+    expect(set.exitCode, set.stderr).toBe(0)
+    expect(set.stdout).toContain(`${remote} now uses the git credential fake-github`)
+    expect((await config('git-credential', 'lib')).stdout).toContain(`${remote} uses the git credential fake-github.`)
+    expect((await config('git-credential', 'multi', '--repo', 'docs')).stdout).toContain('docs is hosted by yaac, so it needs no git credential.')
+    expect((await config('show', 'multi')).stdout).toMatch(/\n {2}git-credential --repo library +fake-github\n/)
+
+    // The hosted repo is cloned into its folder's name by default.
+    const parent = path.join(testEnv.scratchDir, 'multi-clones')
+    await fs.mkdir(parent)
+    const cloned = await runYaac(testEnv.env, 'project', 'clone', 'multi', '--repo', 'docs', { cwd: parent })
+    expect(cloned.exitCode, cloned.stderr).toBe(0)
+    const dir = path.join(parent, 'docs')
+    expect((await git(dir, ['remote', 'get-url', 'origin'])).trim()).toContain(`/api/repo/${(await reposOf('multi')).docs}/git`)
+    await git(dir, ['-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'first'])
+    await git(dir, ['push', '-q', 'origin', 'HEAD:main', 'HEAD:release'])
+    expect((await runYaac(testEnv.env, 'project', 'clone', 'multi', path.join(parent, 'nope'), '--repo', 'library')).stderr)
+      .toContain('is not hosted by yaac')
+
+    expect((await config('default-branch', 'multi', '--repo', 'docs')).stdout).toContain('multi/docs\'s default branch is main.')
+    const branch = await config('default-branch', 'multi', 'release', '--repo', 'docs')
+    expect(branch.exitCode, branch.stderr).toBe(0)
+    expect(branch.stdout).toContain('multi/docs\'s default branch is now release.')
+    expect((await config('default-branch', 'multi', '--repo', 'library')).stdout).toMatch(/multi\/library's default branch is \S+, set at its git host\./)
+    expect((await config('default-branch-guard', 'multi', '--repo', 'docs')).stdout).toContain('multi/docs refuses pushes')
+    expect((await config('default-branch-guard', 'multi', 'off', '--repo', 'docs')).stdout).toContain('multi/docs now accepts pushes')
+    expect((await config('default-branch-guard', 'multi', '--repo', 'library')).stdout).toContain('is not hosted by yaac; its git host protects its branches')
+
+    // A move names its repo the same way, and asks before anything stops.
+    const target = 'https://gitlab.example.com/foo/bar'
+    const move = (...args: Array<string | RunYaacOptions>): ReturnType<typeof runYaac> => runYaac(testEnv.env, 'project', 'move', 'multi', ...args)
+    expect((await move(target, 'fake-github', '--repo', 'library')).stderr).toContain('is not hosted by yaac')
+    expect((await move(target, 'fake-github', '--repo', 'docs')).stderr).toContain('only moved from a terminal')
+    const declined = await move(target, 'fake-github', '--repo', 'docs', { tty: true, stdinOnPrompt: [{ when: /Continue\? \[y\/N\]/, send: '\r' }] })
+    expect(declined.stdout).toContain(`This moves multi/docs to ${target}, which must be empty. It first stops 0 running workspace(s)`)
+    expect(declined.stdout).toContain('Aborted — nothing was stopped or moved.')
+  })
+
+  it('project repo read-only and gh-token show and set what a project\'s workspaces may do with a repo; k8s only', async () => {
+    expect((await projectRepo('read-only', 'multi', 'library')).stdout).toContain('library of project "multi" can be pushed to by its workspaces.')
+    expect((await projectRepo('gh-token', 'multi', 'library')).stdout).toContain('library of project "multi" lets its token be GH_TOKEN.')
+    expect((await projectRepo('read-only', 'multi', 'library', 'maybe')).stderr).toContain('Allowed choices are on, off')
+    expect((await projectRepo('gh-token', 'multi', 'nope', 'on')).stderr).toContain('Project "multi" has no repo "nope"')
+    if (!buildsImages) {
+      // Without a sandbox a workspace holds every credential.
+      for (const flag of ['read-only', 'gh-token']) {
+        const refused = await projectRepo(flag, 'multi', 'library', 'on')
+        expect(refused.exitCode, flag).not.toBe(0)
+        expect(refused.stderr, flag).toContain('This server limits no repo\'s credential')
+      }
+      return
+    }
+    const readOnly = await projectRepo('read-only', 'multi', 'library', 'on')
+    expect(readOnly.exitCode, readOnly.stderr).toBe(0)
+    expect(readOnly.stdout).toContain('library of project "multi" now is read-only: its workspaces can fetch it but not push to it.')
+    expect((await projectRepo('read-only', 'multi', 'library')).stdout).toContain('is read-only')
+    // Its stored GH_TOKEN setting stands, but does not apply while read-only.
+    expect((await projectRepo('gh-token', 'multi', 'library')).stdout)
+      .toContain('While the repo is read-only its token is never GH_TOKEN, whatever this says.')
+    expect((await projectRepo('list', 'multi')).stdout).toMatch(/library\s+\S+\s+fake-github\s+on\s+off\s+https:/)
+    expect((await config('show', 'multi')).stdout).toMatch(/library \(https:[^)]*, read-only\)/)
+    expect((await projectRepo('read-only', 'multi', 'library', 'off')).stdout).toContain('now can be pushed to by its workspaces.')
+
+    const ghToken = await projectRepo('gh-token', 'multi', 'library', 'off')
+    expect(ghToken.exitCode, ghToken.stderr).toBe(0)
+    expect(ghToken.stdout).toContain('library of project "multi" now keeps its token from being GH_TOKEN.')
+    expect((await projectRepo('list', 'multi')).stdout).toMatch(/library\s+\S+\s+fake-github\s+off\s+off\s+https:/)
+    expect((await projectRepo('gh-token', 'multi', 'library', 'on')).stdout).toContain('now lets its token be GH_TOKEN.')
+    // The other project linking the repo has flags of its own.
+    expect((await projectRepo('read-only', 'lib', 'lib')).stdout).toContain('can be pushed to by its workspaces')
+  })
+
+  it('repo list shows each repo with what links it, and repo share and unshare take a repo and a user', async () => {
+    const docs = (await reposOf('multi')).docs
+    const listed = await repo('list')
+    expect(listed.exitCode, listed.stderr).toBe(0)
+    expect(listed.stdout).toMatch(/REPO\s+REMOTE\s+CREDENTIAL\s+PROJECTS/)
+    expect(listed.stdout).toMatch(new RegExp(`${libId.slice(0, 8)}\\s+https://github.com/test-org/lib.git\\s+fake-github\\s+(multi, lib|lib, multi)`))
+    expect(listed.stdout).toMatch(new RegExp(`${docs.slice(0, 8)}\\s+\\(hosted by yaac\\)\\s+\\(none needed\\)\\s+multi`))
+    expect(listed.stdout).not.toContain('(not linked)')
+
+    const { userId, users } = await api<{ userId: string; users: Array<{ id: string; login: string | null; name: string }> }>('/whoami')
+    const me = users.find((u) => u.id === userId)!
+    const self = me.login ?? me.name
+    // Only a repo yaac hosts is shared, and never with its owner; the repo
+    // is named by id, id prefix, remote or <project>/<folder>.
+    expect((await repo('share', docs, 'nobody@example.com')).stderr).toContain('No user "nobody@example.com" on this server')
+    expect((await repo('share', 'multi/docs', self)).stderr).toContain('already yours')
+    expect((await repo('share', docs.slice(0, 8), self)).stderr).toContain('already yours')
+    expect((await repo('share', 'https://github.com/test-org/lib.git', self)).stderr).toContain('can\'t be shared: only a repo hosted by yaac can be')
+    expect((await repo('share', 'zzzz', self)).stderr).toContain('No repo "zzzz"')
+    const unshared = await repo('unshare', 'multi/docs', self)
+    expect(unshared.exitCode).not.toBe(0)
+    expect((await repo('unshare', 'multi/docs', 'nobody@example.com')).stderr).toContain('No user "nobody@example.com" on this server')
+  })
+
+  it('repo delete asks first, unlinks the repo from every project, and removes one no workspace holds', async () => {
+    const docs = (await reposOf('multi')).docs
+    // A repo no project links is listed first, and marked.
+    expect((await projectRepo('remove', 'multi', 'docs')).exitCode).toBe(0)
+    const unlinked = (await repo('list')).stdout
+    expect(unlinked).toMatch(new RegExp(`${docs.slice(0, 8)}\\s+\\(hosted by yaac\\)\\s+\\(none needed\\)\\s+\\(not linked\\)`))
+    expect(unlinked.indexOf(docs.slice(0, 8))).toBeLessThan(unlinked.indexOf(libId.slice(0, 8)))
+
+    const unconfirmed = await repo('delete', docs)
+    expect(unconfirmed.exitCode).toBe(1)
+    expect(unconfirmed.stderr).toContain('No terminal to confirm on; pass --yes to delete without asking.')
+    const declined = await repo('delete', docs, { tty: true, stdinOnPrompt: [{ when: /Continue\? \[y\/N\]/, send: '\r' }] })
+    expect(declined.stdout).toContain(`This deletes repo ${docs.slice(0, 8)} (hosted by yaac): it is unlinked from 0 project(s)`)
+    expect(declined.stdout).toContain('yaac hosts this repository, so this deletes the only copy of its code')
+    expect(declined.stdout).toContain('Aborted — nothing was deleted.')
+    expect((await repo('list')).stdout).toContain(docs.slice(0, 8))
+
+    const deleted = await repo('delete', docs, '--yes')
+    expect(deleted.exitCode, deleted.stderr).toBe(0)
+    expect(deleted.stdout).toContain(`Deleted repo ${docs.slice(0, 8)} (hosted by yaac), with its main clone.`)
+    expect((await repo('list')).stdout).not.toContain(docs.slice(0, 8))
+    await expect(fs.access(path.join(testEnv.dataDir, 'global', 'repos', docs))).rejects.toThrow()
+
+    // One two projects link is unlinked from both; the projects stay.
+    const both = await repo('delete', 'https://github.com/test-org/lib.git',
+      { tty: true, stdinOnPrompt: [{ when: /Continue\? \[y\/N\]/, send: 'y\r' }] })
+    expect(both.stdout).toContain('This deletes https://github.com/test-org/lib.git: it is unlinked from 2 project(s)')
+    expect(both.stdout).toContain('Deleted https://github.com/test-org/lib.git, with its main clone.')
+    expect(Object.keys(await reposOf('multi'))).toEqual(['multi'])
+    const emptied = await projectRepo('list', 'lib')
+    expect(emptied.stdout).toContain('Project "lib" links no repos.')
+    expect((await runYaac(testEnv.env, 'project', 'list')).stdout).toMatch(/lib\s+\S+\s+0\s+\(none\)/)
+    // A project with no repos has nothing for a repo-scoped command to act on.
+    expect((await config('git-credential', 'lib')).stderr).toContain('Project "lib" has no repos; add one with `yaac project repo add`.')
   })
 })

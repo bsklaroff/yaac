@@ -6,4 +6,4 @@
 export {
   builtinSkillMounts, builtinSkillsDir, reconcileSharedSkillRoots, sharedSkillRoots, stageBuiltinSkills,
 } from './builtin'
-export { getProjectSkills, getSkillDetail } from './discover'
+export { getProjectSkills, getSkillDetail, type SkillsQuery } from './discover'

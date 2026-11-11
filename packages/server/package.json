@@ -10,6 +10,7 @@
     "#domain/feedback": "./src/domain/feedback/index.js",
     "#domain/git": "./src/domain/git/index.js",
     "#domain/projects": "./src/domain/projects/index.js",
+    "#domain/repos": "./src/domain/repos/index.js",
     "#domain/sites": "./src/domain/sites/index.js",
     "#domain/skills": "./src/domain/skills/index.js",
     "#domain/workspaces": "./src/domain/workspaces/index.js",

@@ -7,14 +7,16 @@ import type * as childProcess from 'node:child_process'
 import { promisify } from 'node:util'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
 import {
-  assignProjectCredential,
+  assignRepoCredential,
   missingCredentialError,
+  repoCredentialNames,
   resolveCredentialForRemote,
-  resolveProjectCredential,
+  resolveRepoCredential,
   sshKeyMaterial,
-} from '#domain/projects'
+  validateGitRemoteUrl,
+} from '#domain/repos'
 import { addHttpsCredential, generateSshCredential, listAuth } from '#domain/auth'
-import { BUILT_IN_USER_ID, closeDb, recordProject, seeTailnetUser } from '#db'
+import { BUILT_IN_USER_ID, closeDb, getRepo, insertRepo, listRepos, seeTailnetUser, type RepoRow } from '#db'
 import { forgetSecretConfig } from '#db/secret-key'
 import { secretKeyPath } from '@yaac/shared/project-paths'
 import { hostedRemoteUrl } from '@yaac/shared/hosted-git'
@@ -65,35 +67,74 @@ afterEach(async () => {
 
 const summaries = async (owner: string) => (await listAuth(owner)).gitCredentials
 
-function project(id: string, remoteUrl: string): Promise<void> {
-  return recordProject({ id, name: 'demo', remoteUrl, addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+function repo(id: string, remoteUrl: string, owner = BUILT_IN_USER_ID): Promise<RepoRow> {
+  return insertRepo({ id, owner, remoteUrl })
 }
 
-describe('assignProjectCredential', () => {
+/** A repo's row as it stands now. */
+async function row(id: string): Promise<RepoRow> {
+  return (await getRepo(id)) as RepoRow
+}
+
+describe('assignRepoCredential', () => {
   it('assigns a matching credential — fetching an ssh remote\'s host key — and refuses a mismatched kind', async () => {
-    await project(WEB, 'https://github.com/acme/web.git')
-    await project(SVC, 'git@git.example.com:acme/svc.git')
+    await repo(WEB, 'https://github.com/acme/web.git')
+    await repo(SVC, 'git@git.example.com:acme/svc.git')
     const token = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_abcd1234' })
     const key = await generateSshCredential(BUILT_IN_USER_ID, { name: 'deploy' })
 
-    expect(await assignProjectCredential(local, WEB, token.id)).toEqual({ knownHostsEntry: null })
+    expect(await assignRepoCredential(local, WEB, token.id)).toEqual({ knownHostsEntry: null })
     expect(sshRuns).toEqual([])
-    expect(await assignProjectCredential(local, SVC, key.id)).toEqual({ knownHostsEntry: HOST_KEY })
+    expect(await assignRepoCredential(local, SVC, key.id)).toEqual({ knownHostsEntry: HOST_KEY })
     expect(sshRuns.at(-1)).toContain('nobody@git.example.com')
+    expect(await row(SVC)).toMatchObject({ gitCredentialId: key.id, knownHostsEntry: HOST_KEY })
 
-    await expect(assignProjectCredential(local, WEB, key.id)).rejects.toThrow(/needs a token, not an SSH key/)
-    await expect(assignProjectCredential(local, SVC, token.id)).rejects.toThrow(/needs an SSH key, not a token/)
-    await expect(assignProjectCredential(local, NOPE, token.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
-    // Another user's credential is never theirs to assign, so a project
-    // cannot spend it.
-    const bobs = await addHttpsCredential(await seeTailnetUser('bob@example.com', 'Bob'), { name: 'b', token: 'ghp_b' })
-    await expect(assignProjectCredential(local, WEB, bobs.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
-    expect((await summaries(BUILT_IN_USER_ID)).map((c) => [c.name, c.projects]))
-      .toEqual([['gh', [WEB]], ['deploy', [SVC]]])
+    await expect(assignRepoCredential(local, WEB, key.id)).rejects.toThrow(/needs a token, not an SSH key/)
+    await expect(assignRepoCredential(local, SVC, token.id)).rejects.toThrow(/needs an SSH key, not a token/)
+    await expect(assignRepoCredential(local, NOPE, token.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    // Another user's credential is never theirs to assign, so a repo cannot
+    // spend it; nor is another user's repo theirs to change.
+    const bob = await seeTailnetUser('bob@example.com', 'Bob')
+    const bobs = await addHttpsCredential(bob, { name: 'b', token: 'ghp_b' })
+    await expect(assignRepoCredential(local, WEB, bobs.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await repo(BARE, 'https://github.com/bob/own.git', bob)
+    await expect(assignRepoCredential(local, BARE, token.id)).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    expect((await summaries(BUILT_IN_USER_ID)).map((c) => [c.name, c.repos]))
+      .toEqual([['gh', ['https://github.com/acme/web.git']], ['deploy', ['git@git.example.com:acme/svc.git']]])
 
     // A remote yaac hosts takes no credential.
-    await recordProject({ id: API, name: 'api', remoteUrl: hostedRemoteUrl(API), addedAt: '2026-01-01', hosted: true }, BUILT_IN_USER_ID)
-    await expect(assignProjectCredential(local, API, token.id)).rejects.toThrow(/needs no git credential/)
+    await insertRepo({ id: API, owner: BUILT_IN_USER_ID, remoteUrl: hostedRemoteUrl(API), hosted: true })
+    await expect(assignRepoCredential(local, API, token.id)).rejects.toThrow(/needs no git credential/)
+  })
+})
+
+describe('repoCredentialNames', () => {
+  it('names the credential each repo can use, and none for a repo without a usable one', async () => {
+    await repo(WEB, 'https://github.com/acme/web.git')
+    await repo(SVC, 'git@git.example.com:acme/svc.git')
+    await repo(BARE, 'https://github.com/acme/bare.git')
+    const token = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_abcd1234' })
+    const key = await generateSshCredential(BUILT_IN_USER_ID, { name: 'deploy' })
+    await assignRepoCredential(local, WEB, token.id)
+    await assignRepoCredential(local, SVC, key.id)
+
+    expect(await repoCredentialNames(await listRepos())).toEqual(new Map([
+      [WEB, { id: token.id, name: 'gh' }],
+      [SVC, { id: key.id, name: 'deploy' }],
+    ]))
+    // An ssh key whose host key is gone no longer counts.
+    expect(await repoCredentialNames([{ ...await row(SVC), knownHostsEntry: null }])).toEqual(new Map())
+  })
+})
+
+describe('validateGitRemoteUrl', () => {
+  it('parses the three remote forms and refuses the rest, a token in the URL included', () => {
+    expect(validateGitRemoteUrl('https://github.com/acme/web.git')).toEqual({ scheme: 'https', host: 'github.com', path: 'acme/web' })
+    expect(validateGitRemoteUrl('git@git.example.com:acme/svc.git')).toMatchObject({ scheme: 'ssh', host: 'git.example.com', path: 'acme/svc' })
+    expect(validateGitRemoteUrl('ssh://git@git.example.com/acme/svc')).toMatchObject({ scheme: 'ssh', path: 'acme/svc' })
+    for (const bad of ['http://github.com/acme/web', '/some/local/path', 'ext::sh -c evil', 'https://tok@github.com/acme/web.git']) {
+      expect(() => validateGitRemoteUrl(bad)).toThrow(expect.objectContaining({ code: 'VALIDATION' }) as Error)
+    }
   })
 })
 
@@ -127,44 +168,43 @@ describe('resolveCredentialForRemote', () => {
   })
 })
 
-describe('resolveProjectCredential', () => {
-  it('resolves the assigned credential for git, and nothing for a project without a usable one', async () => {
-    await project(WEB, 'https://github.com/acme/web.git')
-    await project(SVC, 'git@git.example.com:acme/svc.git')
-    await project(BARE, 'https://github.com/acme/bare.git')
+describe('resolveRepoCredential', () => {
+  it('resolves the assigned credential for git, and nothing for a repo without a usable one', async () => {
+    await repo(WEB, 'https://github.com/acme/web.git')
+    await repo(SVC, 'git@git.example.com:acme/svc.git')
+    const bare = await repo(BARE, 'https://github.com/acme/bare.git')
     const token = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_abcd1234' })
     const key = await generateSshCredential(BUILT_IN_USER_ID, { name: 'deploy' })
-    await assignProjectCredential(local, WEB, token.id)
-    await assignProjectCredential(local, SVC, key.id)
+    await assignRepoCredential(local, WEB, token.id)
+    await assignRepoCredential(local, SVC, key.id)
 
-    expect(await resolveProjectCredential(WEB)).toEqual({ kind: 'https', token: 'ghp_abcd1234' })
-    expect(await resolveProjectCredential(SVC)).toEqual({
+    expect(await resolveRepoCredential(await row(WEB))).toEqual({ kind: 'https', token: 'ghp_abcd1234' })
+    expect(await resolveRepoCredential(await row(SVC))).toEqual({
       kind: 'ssh', id: key.id, publicKey: key.publicKey, knownHostsEntry: HOST_KEY,
     })
-    expect(await resolveProjectCredential(BARE)).toBeNull()
-    expect(await resolveProjectCredential(NOPE)).toBeNull()
+    expect(await resolveRepoCredential(bare)).toBeNull()
     // A remote yaac hosts is always usable, with no credential row.
-    await recordProject({ id: API, name: 'api', remoteUrl: hostedRemoteUrl(API), addedAt: '2026-01-01', hosted: true }, BUILT_IN_USER_ID)
-    expect(await resolveProjectCredential(API)).toEqual({ kind: 'hosted' })
+    const hosted = await insertRepo({ id: API, owner: BUILT_IN_USER_ID, remoteUrl: hostedRemoteUrl(API), hosted: true })
+    expect(await resolveRepoCredential(hosted)).toEqual({ kind: 'hosted' })
 
-    // Changing the remote drops the host key, and so the credential, until
-    // the key is assigned again.
-    await project(SVC, 'git@other.example.com:acme/svc.git')
-    expect(await resolveProjectCredential(SVC)).toBeNull()
+    // A credential of the wrong kind for the remote, or an ssh key with no
+    // trusted host key, is no credential.
+    expect(await resolveRepoCredential({ ...await row(SVC), knownHostsEntry: null })).toBeNull()
+    expect(await resolveRepoCredential({ ...await row(WEB), gitCredentialId: key.id })).toBeNull()
 
     // A secret that no longer decrypts resolves to null.
     await fs.writeFile(secretKeyPath(), 'a-completely-different-key\n', { mode: 0o600 })
     forgetSecretConfig()
-    expect(await resolveProjectCredential(WEB)).toBeNull()
+    expect(await resolveRepoCredential(await row(WEB))).toBeNull()
     expect((await summaries(BUILT_IN_USER_ID))[0].preview).toMatch(/unreadable/)
   })
 })
 
 describe('missingCredentialError', () => {
-  it('names the project and where to fix it', () => {
-    expect(missingCredentialError('web')).toMatchObject({
+  it('names the repo and where to fix it', async () => {
+    expect(missingCredentialError(await repo(WEB, 'https://github.com/acme/web.git'))).toMatchObject({
       code: 'VALIDATION',
-      message: expect.stringMatching(/"web" has no git credential.*Settings/) as string,
+      message: expect.stringMatching(/github\.com\/acme\/web\.git has no git credential.*Settings/) as string,
     })
   })
 })

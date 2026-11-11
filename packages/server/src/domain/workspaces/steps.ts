@@ -358,7 +358,7 @@ async function reconcilePass(p: { projectId: string; workspaceId: string; jobNam
             if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
           })
         }
-        await logs.writeAtomic(`${dir}/${s.name}.sh`, stepScript(s.name, s.spec, paths, `${inside}.events`, env))
+        await logs.writeAtomic(`${dir}/${s.name}.sh`, stepScript(s.name, s.spec, `${inside}.events`, env))
         await runtime.exec(live.jobName, stepWindowExec(s.name, paths, `${inside}.sh`), { maxAttempts: 1 })
       } catch (err) {
         serverLog(`[server] steps ${live.workspaceId}: opening "${s.name}" failed: ${String(err)}`)

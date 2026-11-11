@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import zlib from 'node:zlib'
 import { bundleCheckout, cloneRepo, createCheckout, getDefaultBranch } from '#domain/git'
-import { git } from '@yaac/test-utils/git'
+import { git, stagingBeside } from '@yaac/test-utils/git'
 import { buildPeerReader } from '@yaac/test-utils/peer-reader'
 import { READER_ADDRESS_SPACE_KB, setPeerReaderEntry } from '#domain/git/peer-bundle'
 
@@ -92,8 +92,8 @@ beforeAll(async () => {
   const base = await getDefaultBranch(main)
   peer = path.join(tmpDir, 'peer')
   reader = path.join(tmpDir, 'reader')
-  await createCheckout(main, peer, { branch: 'agent/peer', baseBranch: base, remoteUrl: source })
-  await createCheckout(main, reader, { branch: 'agent/reader', baseBranch: base, remoteUrl: source })
+  await createCheckout(main, peer, { staging: stagingBeside(peer), branch: 'agent/peer', baseBranch: base, remoteUrl: source })
+  await createCheckout(main, reader, { staging: stagingBeside(reader), branch: 'agent/reader', baseBranch: base, remoteUrl: source })
 })
 
 afterAll(async () => {
@@ -123,7 +123,7 @@ describe('bundleCheckout', () => {
 
   it('runs nothing a checkout asks git to run: hooks, fsmonitor, filters, helpers or transports', async () => {
     const trapped = path.join(tmpDir, 'trapped')
-    await createCheckout(main, trapped, { branch: 'agent/trapped', baseBranch: await getDefaultBranch(main), remoteUrl: main })
+    await createCheckout(main, trapped, { staging: stagingBeside(trapped), branch: 'agent/trapped', baseBranch: await getDefaultBranch(main), remoteUrl: main })
     await commit(trapped, 'src/a.txt', 'trapped work')
     const fired = path.join(tmpDir, 'fired')
     await fs.mkdir(fired)
@@ -185,7 +185,7 @@ describe('bundleCheckout', () => {
     const foreign = await commit(other, 'secret.txt', 'another project')
     const foreignObjects = (await git(other, ['rev-list', '--objects', '--all'])).trim().split('\n').map((l) => l.split(' ')[0])
     const victim = path.join(tmpDir, 'victim')
-    await createCheckout(main, victim, { branch: 'agent/victim', baseBranch: await getDefaultBranch(main), remoteUrl: main })
+    await createCheckout(main, victim, { staging: stagingBeside(victim), branch: 'agent/victim', baseBranch: await getDefaultBranch(main), remoteUrl: main })
     await commit(victim, 'mine.txt', 'own work')
     await fs.appendFile(path.join(victim, '.git', 'objects', 'info', 'alternates'), `${path.join(other, '.git', 'objects')}\n`)
     await fs.writeFile(path.join(victim, '.git', 'refs', 'heads', 'foreign'), `${foreign}\n`)
@@ -270,7 +270,7 @@ describe('bundleCheckout', () => {
     // 5,000 objects in one pack, as gc leaves a busy workspace. Reloading the
     // pack for every object takes minutes.
     const packed = path.join(tmpDir, 'packed')
-    await createCheckout(main, packed, { branch: 'agent/packed', baseBranch: await getDefaultBranch(main), remoteUrl: main })
+    await createCheckout(main, packed, { staging: stagingBeside(packed), branch: 'agent/packed', baseBranch: await getDefaultBranch(main), remoteUrl: main })
     await fs.mkdir(path.join(packed, 'many'))
     for (let i = 0; i < 4997; i++) await fs.writeFile(path.join(packed, 'many', String(i)), `${String(i)}\n`)
     await git(packed, ['add', '.'])
@@ -288,7 +288,7 @@ describe('bundleCheckout', () => {
     // limit the reader inflates it whole, past any heap cap.
     const size = 1900 * (1 << 20)
     const bombed = path.join(tmpDir, 'bombed')
-    await createCheckout(main, bombed, { branch: 'agent/bombed', baseBranch: await getDefaultBranch(main), remoteUrl: main })
+    await createCheckout(main, bombed, { staging: stagingBeside(bombed), branch: 'agent/bombed', baseBranch: await getDefaultBranch(main), remoteUrl: main })
     const oid = `ab${'1'.repeat(38)}`
     await fs.mkdir(path.join(bombed, '.git', 'objects', 'ab'), { recursive: true })
     await fs.writeFile(path.join(bombed, '.git', 'objects', 'ab', oid.slice(2)), await deflateBomb(Buffer.from(`blob ${String(size)}\0`), size))

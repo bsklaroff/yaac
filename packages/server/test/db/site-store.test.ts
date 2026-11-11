@@ -38,7 +38,7 @@ const site = async (projectId: string, name: string, hostname: string, volumeId?
   const workflow = await storeWorkflow(projectId, { steps: APP, secrets: [] })
   await insertNamedWorkflow(projectId, `${name}-${hostname}`, workflow.id)
   const named = await findNamedWorkflow(projectId, `${name}-${hostname}`)
-  return await insertSite({ projectId, name, hostname, port: 3000, namedWorkflowId: named!.id, ...(volumeId !== undefined ? { volumeId } : {}) })
+  return await insertSite({ projectId, repoId: projectId, name, hostname, port: 3000, namedWorkflowId: named!.id, ...(volumeId !== undefined ? { volumeId } : {}) })
 }
 
 describe('insertSite', () => {

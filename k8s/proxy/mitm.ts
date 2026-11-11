@@ -28,9 +28,9 @@ import {
   buildDynamicRules,
   collectBodyInjections,
   resolveRegisteredRules,
-  workspaceHasHttpsCredentialForHost,
   type BodyParamSwap,
 } from './injection'
+import { httpsGrantAt, lfsBatchUploads, readOnlyVerdict } from './repo-grants'
 import {
   collectTokenReply,
   errorReply,
@@ -71,6 +71,10 @@ const LEAF_REFRESH_MS = 60 * 60 * 1000
 // are answered much sooner (refresh-flight.ts); this only stops a dead
 // upstream from holding the flight open forever.
 const TOKEN_REFRESH_HARD_TIMEOUT_MS = 5 * 60_000
+
+/** The most of an LFS batch request the proxy reads to see whether it
+ *  uploads; a larger one to a read-only repo is refused unread. */
+const LFS_BATCH_MAX_BYTES = 8 * 1024 * 1024
 
 // Tor's SOCKS listener (entrypoint.sh). Its first circuit to a destination
 // can take longer than the `socks` library's 30s default.
@@ -187,7 +191,7 @@ export function handleMitm(
     const headers: http.OutgoingHttpHeaders = { ...req.headers }
     delete headers['proxy-authorization']
     delete headers['proxy-connection']
-    const dynamicRules = buildDynamicRules(objects, workspaceId, hostname, req.headers)
+    const dynamicRules = buildDynamicRules(objects, workspaceId, hostname, req.headers, reqPath)
     const projectId = objects.registration(workspaceId)?.projectId
     const allRules = [...resolveRegisteredRules(objects, rules, projectId), ...dynamicRules]
     const headerCount = applyInjections(headers, reqPath, allRules)
@@ -247,8 +251,21 @@ export function handleMitm(
     const owner = objects.ownerOf(workspaceId)
     const heldAtArrival = tokenTool && owner !== undefined ? heldBundle(objects, owner, tokenTool) : null
 
-    // Same condition under which buildDynamicRules injects the git token.
-    const gitCredInjected = workspaceHasHttpsCredentialForHost(objects, workspaceId, hostname)
+    // The project's repo this request is under, if any: its token was
+    // injected above when the path is spelled plainly, and a read-only one
+    // takes only reads (docs/workspace-egress.md "Read-only repos").
+    const repo = httpsGrantAt(objects, workspaceId, hostname, reqPath)
+    const gitCredInjected = repo !== null && repo.token !== null
+    const verdict = repo?.grant.readOnly === true ? readOnlyVerdict(req.method, repo.rest, repo.query) : 'pass'
+    const refuseNonRead = (): void => {
+      console.log(`[proxy] REFUSED ${req.method ?? ''} https://${hostname}${reqPath}: read-only repo`)
+      res.writeHead(403, { 'Content-Type': 'text/plain', Connection: 'close' })
+      res.end(`yaac: ${hostname}/${repo?.grant.path ?? ''} is read-only in this project, so the proxy passes only fetches to it\n`)
+    }
+    if (verdict === 'refuse') {
+      refuseNonRead()
+      return
+    }
 
     /** `refresh` set means this request is a mediated refresh of `held`:
      *  its response is collected for `done` instead of streamed to `res`. */
@@ -301,18 +318,32 @@ export function handleMitm(
       }
     }
 
-    // Buffer the body when a body rule or a token refresh needs to read it.
-    if (bodyInjections.length === 0 && !heldAtArrival) {
+    // Buffer the body when a body rule, a token refresh or a read-only
+    // repo's LFS batch check needs to read it.
+    if (bodyInjections.length === 0 && !heldAtArrival && verdict !== 'inspect') {
       sendUpstream(null, null)
       return
     }
     const chunks: Buffer[] = []
-    req.on('data', (chunk: Buffer) => chunks.push(chunk))
+    let size = 0
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length
+      if (verdict === 'inspect' && size > LFS_BATCH_MAX_BYTES) {
+        if (!res.headersSent) refuseNonRead()
+        return
+      }
+      chunks.push(chunk)
+    })
     req.on('end', () => {
+      if (res.headersSent) return
       const contentTypeHeader = headers['content-type']
       const contentType = typeof contentTypeHeader === 'string' ? contentTypeHeader
         : Array.isArray(contentTypeHeader) ? contentTypeHeader[0] : undefined
       const inboundBody = Buffer.concat(chunks)
+      if (verdict === 'inspect' && lfsBatchUploads(inboundBody)) {
+        refuseNonRead()
+        return
+      }
 
       // Only a request carrying the placeholder refresh token is one of our
       // refreshes. Anything else passes through untouched in both
@@ -332,7 +363,7 @@ export function handleMitm(
         )
         return
       }
-      sendUpstream(applyBodyInjections(inboundBody, contentType, bodyInjections), null)
+      sendUpstream(bodyInjections.length > 0 ? applyBodyInjections(inboundBody, contentType, bodyInjections) : inboundBody, null)
     })
   })
 
@@ -430,8 +461,32 @@ function responseHead(res: http.IncomingMessage): string {
 }
 
 /**
- * Splice a workspace's connection to `hostname` untouched: directly to the
- * addresses upstream.ts checked, or through Tor when `upstream` is null.
+ * Dial `hostname` for a spliced connection: directly, to the addresses
+ * upstream.ts checked, or through Tor when `upstream` is null. Resolves
+ * once connected.
+ */
+export function dialUpstream(hostname: string, destPort: number, upstream: DirectUpstream | null): Promise<net.Socket> {
+  if (upstream === null) {
+    return SocksClient.createConnection({
+      proxy: TOR_PROXY,
+      command: 'connect',
+      destination: { host: hostname, port: destPort },
+      timeout: TOR_TUNNEL_TIMEOUT_MS,
+    }).then((info) => info.socket, (err: unknown) => { throw new Error(`Tor: ${(err as Error).message}`) })
+  }
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ port: destPort, host: hostname, lookup: pinnedLookup(upstream.addrs) })
+    failFastIfNonPublic(socket, hostname, upstream)
+    socket.once('error', reject)
+    socket.once('connect', () => {
+      socket.removeListener('error', reject)
+      resolve(socket)
+    })
+  })
+}
+
+/**
+ * Splice a workspace's connection to `hostname` untouched (`dialUpstream`).
  * With `connectReply` (a CONNECT tunnel) the client gets its 200 once
  * upstream connects, or a 502 with the reason.
  */
@@ -442,7 +497,6 @@ export function handleTunnel(
   upstream: DirectUpstream | null,
   connectReply: boolean,
 ): void {
-  const destPort = parseInt(port ?? '', 10) || 443
   let connected = false
   const fail = (message: string): void => {
     console.error(`[proxy] Tunnel error for ${hostname}:`, message)
@@ -450,35 +504,17 @@ export function handleTunnel(
       ? `HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n\r\n${message}\n`
       : undefined)
   }
-  const splice = (socket: net.Socket): void => {
+  dialUpstream(hostname, parseInt(port ?? '', 10) || 443, upstream).then((socket) => {
     socket.on('error', (err: Error) => fail(err.message))
-    clientSocket.on('close', () => { socket.destroy() })
-    const ready = (): void => {
-      connected = true
-      if (connectReply) clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
-      clientSocket.pipe(socket)
-      socket.pipe(clientSocket)
-    }
-    if (socket.connecting) socket.once('connect', ready)
-    else ready()
-  }
-
-  if (upstream !== null) {
-    const socket = net.connect({ port: destPort, host: hostname, lookup: pinnedLookup(upstream.addrs) })
-    failFastIfNonPublic(socket, hostname, upstream)
-    splice(socket)
-    return
-  }
-  void SocksClient.createConnection({
-    proxy: TOR_PROXY,
-    command: 'connect',
-    destination: { host: hostname, port: destPort },
-    timeout: TOR_TUNNEL_TIMEOUT_MS,
-  }, (err, info) => {
-    if (err || !info) {
-      fail(`Tor: ${err?.message ?? 'no socket'}`)
+    // The client hung up during the dial.
+    if (clientSocket.destroyed) {
+      socket.destroy()
       return
     }
-    splice(info.socket)
-  })
+    clientSocket.on('close', () => { socket.destroy() })
+    connected = true
+    if (connectReply) clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+    clientSocket.pipe(socket)
+    socket.pipe(clientSocket)
+  }, (err: Error) => fail(err.message))
 }

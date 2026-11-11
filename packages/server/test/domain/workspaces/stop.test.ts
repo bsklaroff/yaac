@@ -34,7 +34,7 @@ import {
 import { clearQueuedLaunchesForTests } from '#domain/workspaces/queued-workspaces'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { getQueuedWorkspaceRow } from '#db/queued-workspace-store'
-import { createWorkspaceGroup, getWorkspaceRow, insertSession, insertSite, updateSite, listWorkspaceSessions, setProjectKeptIgnoredPaths, setWorkspaceGroup, setWorkspaceGroupLimit } from '#db'
+import { createWorkspaceGroup, getWorkspaceRow, insertSession, insertSite, updateSite, listWorkspaceRepos, listWorkspaceSessions, setProjectKeptIgnoredPaths, setWorkspaceGroup, setWorkspaceGroupLimit } from '#db'
 import { clearWorkspaceStopped, recordWorkspaceCreated } from '#db/workspace-store'
 import { closeDb, getDb } from '#db/client'
 import { workspaces } from '#db/schema'
@@ -81,8 +81,8 @@ beforeEach(async () => {
       return Promise.resolve(handleFixture({ workspaceId: spec.workspaceId, projectId: PROJ }))
     },
   })
-  await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'parent', baseBranch: 'dev' })
-  await insertSession(PROJ, 'parent', { tool: 'claude', mode: 'tui', permissionMode: 'auto' })
+  await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'parent', repos: [{ repoId: PROJ, path: '', baseBranch: 'dev' }] })
+  await insertSession(PROJ, 'parent', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'auto' })
 })
 
 afterEach(async () => {
@@ -137,7 +137,7 @@ describe('stopWorkspace', () => {
     const becameId = await launchedWith('child')
     expect(await launchedWith('sibling')).toBeDefined()
     // On the parent's base, its session in the parent's posture.
-    expect(await getWorkspaceRow(PROJ, becameId!)).toMatchObject({ baseBranch: 'dev' })
+    expect(await listWorkspaceRepos(becameId!)).toMatchObject([{ repoId: PROJ, path: '', baseBranch: 'dev' }])
     expect((await listWorkspaceSessions(becameId!))[0]).toMatchObject({ permissionMode: 'auto', mode: 'tui' })
     // The grandchild now waits for the child's new workspace to stop.
     const waiting = await getQueuedWorkspaceRow(grandchild.id)
@@ -542,7 +542,7 @@ describe('stopWorkspace', () => {
   // only its site (the system) stops one. A release its site no longer
   // tracks is the owner's to stop, so a leak always has a way out.
   it('refuses a site\'s tracked release unless the server stops it, and lets an untracked one go', async () => {
-    const site = await insertSite({ projectId: PROJ, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(PROJ) })
+    const site = await insertSite({ projectId: PROJ, repoId: PROJ, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(PROJ) })
     await updateSite(site.id, { liveWorkspaceId: 'parent' })
     await (await getDb()).update(workspaces).set({ siteId: site.id }).where(eq(workspaces.workspaceId, 'parent'))
     await expect(stopWorkspace(local, 'parent')).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('yaac site stop') as unknown })

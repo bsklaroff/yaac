@@ -5,7 +5,7 @@ import { setWorkspaceDriver } from '#drivers/driver'
 import { K8S_TRIGGERS } from '#drivers/k8s/lifecycle'
 import type * as cleanupModule from '#domain/workspaces/cleanup'
 import type * as titleGenerationModule from '#domain/workspaces/title-generation'
-import type * as teardownModule from '#domain/workspaces/project-teardown'
+import type * as teardownModule from '#domain/workspaces/repo-teardown'
 
 // Each mediator step is faked, and the runtime's steps come from a fake
 // driver; these tests check which steps run and in what order, not what
@@ -25,7 +25,7 @@ vi.mock('#domain/auth/runtime-push', () => ({
   adoptRefreshedToolCredentials: vi.fn(),
   pushCredentialsToRuntime: vi.fn(),
 }))
-vi.mock('#domain/workspaces/project-teardown', async (importOriginal) => ({
+vi.mock('#domain/workspaces/repo-teardown', async (importOriginal) => ({
   ...(await importOriginal<typeof teardownModule>()),
   reconcileRevokedShares: vi.fn(),
 }))
@@ -43,7 +43,7 @@ import { reconcileConversations } from '#domain/workspaces/conversation-registry
 import { gcOrphanScratchDirs, reapOrphanNodeLocal } from '#domain/workspaces/cleanup'
 import { adoptRefreshedToolCredentials } from '#domain/auth/runtime-push'
 import { reconcileGeneratedTitles } from '#domain/workspaces/title-generation'
-import { reconcileRevokedShares } from '#domain/workspaces/project-teardown'
+import { reconcileRevokedShares } from '#domain/workspaces/repo-teardown'
 
 /** The fake driver's steps: one before the pool, one in maintenance. */
 const runtimePrePool = vi.fn<(ctx: PassContext) => Promise<void>>()

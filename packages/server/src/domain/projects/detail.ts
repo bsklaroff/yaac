@@ -1,20 +1,18 @@
-import { hostedRepoDir } from '@yaac/shared/project-paths'
-import { getProjectRow, listProjectRows } from '#db'
+import { getProjectRow, listProjectRows, type ProjectRow } from '#db'
 import { workspaceDriver } from '#drivers/driver'
 import { ServerError } from '@yaac/shared/errors'
 import { resolveProjectRef } from '@yaac/shared/project-name'
-import type { ProjectMeta } from '@yaac/shared/types'
 
 export interface ProjectDetail {
   id: string
   name: string
-  remoteUrl: string
   addedAt: string
-  hosted: boolean
+  /** Its repos, in order: each one's folder and remote. */
+  repos: Array<{ id: string; dir: string; remoteUrl: string; hosted: boolean }>
   workspaceCount: number
 }
 
-async function loadProjectMeta(projectId: string): Promise<ProjectMeta & { hosted: boolean; sharedFrom?: string; shareRevoked: boolean }> {
+async function loadProjectMeta(projectId: string): Promise<ProjectRow> {
   const meta = await getProjectRow(projectId)
   if (!meta) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
   return meta
@@ -31,25 +29,6 @@ export async function resolveProjectId(ref: string): Promise<string> {
   return resolveProjectRef(await listProjectRows(), ref)
 }
 
-/**
- * The project's remote URL from its row: the only source the server uses to
- * fetch or pick a credential, since pods can write the clone's own
- * `remote.origin.url`.
- */
-export async function projectRemoteUrl(projectId: string): Promise<string> {
-  return (await loadProjectMeta(projectId)).remoteUrl
-}
-
-/** Where the server's own git fetches the project from: the row's URL, or
- *  for a hosted project the bare repository on disk, which a share takes
- *  from the project it was shared from. A removed share fetches nothing,
- *  so its main clone keeps what it had. */
-export async function projectFetchUrl(projectId: string): Promise<string> {
-  const meta = await loadProjectMeta(projectId)
-  if (meta.shareRevoked) throw new ServerError('FORBIDDEN', `${meta.name} is no longer shared with its owner`)
-  return meta.hosted ? hostedRepoDir(meta.sharedFrom ?? projectId) : meta.remoteUrl
-}
-
 /** The project's row and live workspace count. */
 export async function getProjectDetail(projectId: string): Promise<ProjectDetail> {
   const meta = await loadProjectMeta(projectId)
@@ -57,9 +36,8 @@ export async function getProjectDetail(projectId: string): Promise<ProjectDetail
   return {
     id: meta.id,
     name: meta.name,
-    remoteUrl: meta.remoteUrl,
     addedAt: meta.addedAt,
-    hosted: meta.hosted,
+    repos: meta.repos.map((l) => ({ id: l.repo.id, dir: l.dir, remoteUrl: l.repo.remoteUrl, hosted: l.repo.hosted })),
     workspaceCount: workspaceCount[projectId] ?? 0,
   }
 }

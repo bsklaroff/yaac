@@ -1,15 +1,17 @@
-import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm'
 import { getDb } from './client'
 import { conversations, workspaceConversations, workspaces } from './schema'
 import type { CapturedConversation } from './events'
 import { MAX_MODEL_LENGTH, MAX_PROMPT_BYTES } from '@yaac/shared/types'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
+import { serverLog } from '#lib/log'
 import { nullsToUndefined } from '#lib/nulls'
 
 /**
  * Conversation rows: `conversations` (one row per tool-native conversation,
  * project-scoped like the tool homes) and `workspace_conversations` (which
- * conversations belong to which workspace, and which were live).
+ * workspace each belongs to, and which were live). A conversation belongs to
+ * the workspace that first recorded it.
  *
  * Everything here is discovered by the registry reconciler, so writes are
  * upserts and failures are non-fatal: the next tick retries. The exception
@@ -78,6 +80,10 @@ export interface ObservedConversation {
  * Ordinals follow first appearance; an existing link keeps its ordinal, so
  * resuming an old conversation does not reorder the history.
  *
+ * A conversation another workspace already recorded is skipped: its
+ * transcript lives in that workspace's history, so only an agent resumed by
+ * hand outside yaac's launch can report it from here.
+ *
  * Does not touch `active`; only `setActiveConversations` writes it.
  */
 export async function recordConversations(
@@ -96,15 +102,26 @@ export async function recordConversations(
     }).from(workspaceConversations).where(linkKey(projectId, workspaceId))
     const ordinalOf = new Map(existing.map((e) => [`${e.tool}/${e.conversationId}`, e.ordinal]))
     let nextOrdinal = existing.reduce((max, e) => Math.max(max, e.ordinal + 1), 0)
+    const elsewhere = new Set((await db.select({
+      tool: workspaceConversations.tool,
+      conversationId: workspaceConversations.conversationId,
+    }).from(workspaceConversations).where(and(
+      eq(workspaceConversations.projectId, projectId),
+      ne(workspaceConversations.workspaceId, workspaceId),
+      inArray(workspaceConversations.conversationId, discovered.map((d) => d.conversationId)),
+    ))).map((l) => `${l.tool}/${l.conversationId}`))
 
     for (const d of discovered) {
+      if (elsewhere.has(`${d.tool}/${d.conversationId}`)) {
+        logForeignOnce(`${workspaceId}/${d.tool}/${d.conversationId}`)
+        continue
+      }
       const seenAt = d.firstSeenMs !== undefined ? new Date(d.firstSeenMs) : now
       // Already project-relative. Absent means unknown, so the fill below
       // omits the column rather than clearing a good stored value.
       const stored = d.transcriptPath ?? null
-      // Only fill in, so a conversation rediscovered from a second workspace
-      // keeps what the first learned. Built first because drizzle rejects
-      // an empty `set`; an id-only sighting takes the DO NOTHING branch.
+      // Built first because drizzle rejects an empty `set`; an id-only
+      // sighting takes the DO NOTHING branch.
       const fill = {
         ...(stored !== null ? { transcriptPath: stored } : {}),
         ...(d.lastActiveMs !== undefined ? { lastActiveAt: new Date(d.lastActiveMs) } : {}),
@@ -166,6 +183,15 @@ export async function recordConversations(
   } catch {
     // Non-fatal: discovery is idempotent, so the next tick re-records.
   }
+}
+
+/** Reports already logged, since discovery repeats every tick. */
+const loggedForeign = new Set<string>()
+
+function logForeignOnce(report: string): void {
+  if (loggedForeign.has(report)) return
+  loggedForeign.add(report)
+  serverLog(`[conversations] ignoring ${report}: the conversation belongs to another workspace`)
 }
 
 const linkKey = (projectId: string, workspaceId: string) => and(
@@ -373,38 +399,22 @@ export async function deleteProjectConversations(projectId: string): Promise<voi
   await db.delete(conversations).where(eq(conversations.projectId, projectId))
 }
 
-/**
- * Delete one workspace's links, plus any conversation no other workspace
- * links. Used by `removeWorkspaceRecords`, since nothing else prunes these
- * rows. A conversation resumed into another workspace is kept.
- */
+/** Delete one workspace's conversations and its links to them, which
+ *  nothing else prunes. Used by `removeWorkspaceRecords`. */
 export async function deleteWorkspaceConversations(
   projectId: string,
   workspaceId: string,
 ): Promise<void> {
   const db = await getDb()
-  const key = (l: { tool: string; conversationId: string }): string =>
-    `${l.tool}/${l.conversationId}`
-  const linkedColumns = {
+  const dropped = await db.delete(workspaceConversations).where(linkKey(projectId, workspaceId)).returning({
     tool: workspaceConversations.tool,
     conversationId: workspaceConversations.conversationId,
-  }
-  const dropped = await db.select(linkedColumns)
-    .from(workspaceConversations).where(linkKey(projectId, workspaceId))
-  await db.delete(workspaceConversations).where(linkKey(projectId, workspaceId))
-  if (dropped.length === 0) return
-
-  // Queried after the delete so this workspace's own links don't count.
-  const survivors = new Set((await db.select(linkedColumns)
-    .from(workspaceConversations).where(and(
-      eq(workspaceConversations.projectId, projectId),
-      inArray(workspaceConversations.conversationId, dropped.map((l) => l.conversationId)),
-    ))).map(key))
-  for (const orphan of dropped.filter((l) => !survivors.has(key(l)))) {
+  })
+  for (const { tool, conversationId } of dropped) {
     await db.delete(conversations).where(and(
       eq(conversations.projectId, projectId),
-      eq(conversations.tool, orphan.tool),
-      eq(conversations.conversationId, orphan.conversationId),
+      eq(conversations.tool, tool),
+      eq(conversations.conversationId, conversationId),
     ))
   }
 }

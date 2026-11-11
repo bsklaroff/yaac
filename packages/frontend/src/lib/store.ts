@@ -454,7 +454,7 @@ export function resolveVacantSelection(args: {
 
 /** Sections of the settings modal (left-nav entries). */
 export type SettingsSection =
-  | 'general' | 'shortcuts' | 'credentials' | 'project' | 'skills' | 'userDockerfile' | 'users'
+  | 'general' | 'shortcuts' | 'credentials' | 'repos' | 'project' | 'skills' | 'userDockerfile' | 'users'
 
 /**
  * A project add or remove this tab started, shown in the rail and in place
@@ -667,16 +667,17 @@ interface UiState {
   /** Tool whose sign-in form the credentials section expands, when opened
    *  from a "Sign in" button. Cleared on close. */
   settingsFocusTool: AgentTool | null
-  /** Project whose git-credential row the credentials section scrolls to,
-   *  when opened from "Add git authentication". Cleared on close. */
-  settingsFocusProject: string | null
+  /** Repo whose row the repos section scrolls to with its credential
+   *  picker open, when opened from "Add git authentication". Cleared on
+   *  close. */
+  settingsFocusRepo: string | null
   /** Project the project-scoped sections (Project Config, Skills) show, one
    *  pick shared by both; null follows the active project. Cleared on close. */
   settingsProjectId: string | null
   setSettingsProjectId: (projectId: string) => void
-  /** Open settings, optionally onto a section, tool or project. Without
-   *  args it reopens the last section. */
-  openSettings: (section?: SettingsSection, focusTool?: AgentTool, focusProject?: string) => void
+  /** Open settings, optionally onto a section, tool or repo. Without args
+   *  it reopens the last section. */
+  openSettings: (section?: SettingsSection, focusTool?: AgentTool, focusRepo?: string) => void
   closeSettings: () => void
   setSettingsSection: (section: SettingsSection) => void
   /** The new-workspace pane's form, shown while no workspace is selected.
@@ -704,6 +705,10 @@ interface UiState {
    *  in App. */
   addProjectForm: AddProjectForm | null
   setAddProjectForm: (form: AddProjectForm | null) => void
+  /** Per workspace with several checkouts, the path of the one its git
+   *  views (status bar, Changes, Commits) show (`useCheckout`). */
+  checkoutPicks: Record<string, string>
+  pickCheckout: (workspaceId: string, path: string) => void
   /** Host keys from finished SSH adds. The dialog shows them once no form is
    *  open, so a key never replaces a form being filled in. */
   trustedHostKeys: TrustedHostKey[]
@@ -931,17 +936,17 @@ export const useUiStore = create<UiState>((set, get) => ({
   settingsOpen: false,
   settingsSection: 'general',
   settingsFocusTool: null,
-  settingsFocusProject: null,
+  settingsFocusRepo: null,
   settingsProjectId: null,
   setSettingsProjectId: (projectId) => set({ settingsProjectId: projectId }),
-  openSettings: (section, focusTool, focusProject) => set((s) => ({
+  openSettings: (section, focusTool, focusRepo) => set((s) => ({
     settingsOpen: true,
     settingsSection: section ?? s.settingsSection,
     settingsFocusTool: focusTool ?? null,
-    settingsFocusProject: focusProject ?? null,
+    settingsFocusRepo: focusRepo ?? null,
   })),
   closeSettings: () => set({
-    settingsOpen: false, settingsFocusTool: null, settingsFocusProject: null, settingsProjectId: null,
+    settingsOpen: false, settingsFocusTool: null, settingsFocusRepo: null, settingsProjectId: null,
   }),
   setSettingsSection: (section) => set({ settingsSection: section }),
   setNewWorkspace: (newWorkspace) => set({ newWorkspace }),
@@ -977,6 +982,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   }),
   addProjectForm: null,
   setAddProjectForm: (addProjectForm) => set({ addProjectForm }),
+  checkoutPicks: {},
+  pickCheckout: (workspaceId, path) => set((s) => ({ checkoutPicks: { ...s.checkoutPicks, [workspaceId]: path } })),
   trustedHostKeys: [],
   pushTrustedHostKey: (key) => set((s) => ({ trustedHostKeys: [...s.trustedHostKeys, key] })),
   clearTrustedHostKeys: () => set({ trustedHostKeys: [] }),

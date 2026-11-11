@@ -3,6 +3,7 @@ import { skipToken, useQuery, useQueryClient, type UseQueryResult } from '@tanst
 import { FULL_COMMIT_PATTERN } from '@yaac/shared/steps'
 import type { WorkspaceChanges, WorkspaceComparison, WorkspaceFiles } from '@yaac/shared/types'
 import { api } from '#lib/api'
+import { useCheckout } from '#lib/checkouts'
 import type { ChangesRange } from '#lib/files'
 
 /** How often a reader that is on screen and shows live changes polls. */
@@ -16,8 +17,10 @@ type Part = 'diff' | Listing
 /** The query cache key of a workspace's listing. */
 export const filesKey = (workspaceId: string): unknown[] => ['files', workspaceId]
 
-/** The changes query of a workspace, against its base branch or `base`. */
-const changesKey = (workspaceId: string, base?: string): unknown[] => ['changes', workspaceId, ...base ? [base] : []]
+/** The changes query of a workspace's checkout `repo` (absent for its only
+ *  one), against its base branch or `base`. */
+const changesKey = (workspaceId: string, repo?: string, base?: string): unknown[] =>
+  ['changes', workspaceId, ...repo !== undefined ? [`repo:${repo}`] : [], ...base ? [base] : []]
 
 /** Per changes query, how many mounted readers want each costly part. */
 const readers = new Map<string, number>()
@@ -37,11 +40,11 @@ function covers(fetch: { diff: boolean; listing?: Listing } | 'pending' | undefi
  * Count this component as a reader of `part` while it is mounted. A part
  * the latest fetch did not ask for is fetched now, not at the next poll.
  */
-function useReader(workspaceId: string, base: string | undefined, part: Part | undefined): void {
+function useReader(workspaceId: string, repo: string | undefined, base: string | undefined, part: Part | undefined): void {
   const queryClient = useQueryClient()
   useEffect(() => {
     if (!part) return
-    const queryKey = changesKey(workspaceId, base)
+    const queryKey = changesKey(workspaceId, repo, base)
     const counted = `${JSON.stringify(queryKey)}|${part}`
     readers.set(counted, (readers.get(counted) ?? 0) + 1)
     // Before the query's first fetch nothing is active yet, and that fetch
@@ -52,14 +55,17 @@ function useReader(workspaceId: string, base: string | undefined, part: Part | u
       if (n > 0) readers.set(counted, n)
       else readers.delete(counted)
     }
-  }, [queryClient, workspaceId, base, part])
+  }, [queryClient, workspaceId, repo, base, part])
 }
 
 /**
  * A workspace's changes since its diff base, how far HEAD is from the base
  * branch, and its listing: everything the webapp polls about a checkout,
  * shared by the status bar, the explorer, the Changes pane and every file
- * pane through one query, so they poll the server once between them. The
+ * pane through one query, so they poll the server once between them. In a
+ * workspace with several checkouts it describes the one `useCheckout`
+ * shows, with paths relative to that checkout; the listing covers the
+ * whole workspace dir either way. The
  * base is the server's, the branch the workspace is based on, unless a
  * Changes pane on a range ending at the working tree names `base`; that
  * pane polls a query of its own.
@@ -79,10 +85,11 @@ export function useWorkspaceChanges(
   workspaceId: string,
   { base, diff = false, listing, poll }: { base?: string; diff?: boolean; listing?: Listing; poll: number | false },
 ): UseQueryResult<WorkspaceChanges> {
-  const queryKey = changesKey(workspaceId, base)
+  const { repo } = useCheckout(workspaceId)
+  const queryKey = changesKey(workspaceId, repo, base)
   const key = JSON.stringify(queryKey)
-  useReader(workspaceId, base, diff ? 'diff' : undefined)
-  useReader(workspaceId, base, listing)
+  useReader(workspaceId, repo, base, diff ? 'diff' : undefined)
+  useReader(workspaceId, repo, base, listing)
   const queryClient = useQueryClient()
   return useQuery({
     queryKey,
@@ -102,6 +109,7 @@ export function useWorkspaceChanges(
       const { listing: fresh, ...rest } = await api.workspace[':id'].changes.$get({
         param: { id: workspaceId },
         query: {
+          ...repo !== undefined ? { repo } : {},
           ...base ? { base } : {},
           diff: fetch.diff ? '1' : '0',
           ...(fetch.listing ? { listing: fetch.listing } : {}),
@@ -135,11 +143,17 @@ export function useWorkspaceFiles(workspaceId: string): WorkspaceFiles | undefin
  * Off when `range` is unset.
  */
 export function useComparison(workspaceId: string, range: ChangesRange | undefined): UseQueryResult<WorkspaceComparison> {
+  const { repo } = useCheckout(workspaceId)
   const fixed = range !== undefined && FULL_COMMIT_PATTERN.test(range.to)
     && (range.from === undefined || FULL_COMMIT_PATTERN.test(range.from))
   return useQuery({
-    queryKey: ['compare', workspaceId, range?.from ?? null, range?.to ?? null],
-    queryFn: range ? () => api.workspace[':id'].compare.$get({ param: { id: workspaceId }, query: range }) : skipToken,
+    queryKey: ['compare', workspaceId, repo ?? null, range?.from ?? null, range?.to ?? null],
+    queryFn: range
+      ? () => api.workspace[':id'].compare.$get({
+        param: { id: workspaceId },
+        query: { ...range, ...repo !== undefined ? { repo } : {} },
+      })
+      : skipToken,
     refetchInterval: fixed ? false : 30_000,
     staleTime: fixed ? Infinity : 0,
   })

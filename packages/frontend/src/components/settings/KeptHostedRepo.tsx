@@ -3,31 +3,31 @@ import { useMutation } from '@tanstack/react-query'
 import { hostedCloneUrl } from '@yaac/shared/hosted-git'
 import { SectionLabel } from '#components/settings/Field'
 import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
-import { api } from '#lib/api'
+import { removeKeptHostedRepo } from '#lib/repoApi'
 
 /**
- * The repository yaac kept when the project moved to another git host
+ * The repository yaac kept when a repo moved to another git host
  * (docs/hosted-projects.md "Moving to a git host"): read-only, so the owner
  * can compare it with the new remote, then remove it. Removal asks twice,
- * since yaac's copy may be the only other one. Once it is gone, the
- * snapshot drops `keepsHostedRepo` and this section with it.
+ * since yaac's copy may be the only other one. Once it is gone
+ * (`onRemoved`), the repo list drops `keepsHostedRepo` and this section
+ * with it.
  */
-export function KeptHostedRepo({ projectId, remoteUrl, readOnly }: {
-  projectId: string
+export function KeptHostedRepo({ repoId, remoteUrl, readOnly, onRemoved }: {
+  repoId: string
   remoteUrl: string
   readOnly: boolean
+  onRemoved: () => void
 }): JSX.Element {
   const [confirming, setConfirming] = useState(false)
-  const kept = hostedCloneUrl(window.location.origin, projectId)
-  const remove = useMutation({
-    mutationFn: () => api.project[':projectId']['hosted-repo'].$delete({ param: { projectId } }),
-  })
+  const kept = hostedCloneUrl(window.location.origin, repoId)
+  const remove = useMutation({ mutationFn: () => removeKeptHostedRepo(repoId), onSuccess: onRemoved })
 
   return (
     <div>
       <SectionLabel>yaac&apos;s old repository</SectionLabel>
       <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
-        yaac still keeps the repository this project had before it moved, read-only. The move pushed its
+        yaac still keeps the repository this repo was before it moved, read-only. The move pushed its
         branches and tags only; other refs and its reflog are here alone. Check that the new remote has
         what you need, for example by comparing:
       </p>

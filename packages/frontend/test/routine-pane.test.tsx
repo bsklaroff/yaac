@@ -25,7 +25,8 @@ const inMinutes = (m: number): string => new Date(Date.now() + m * 60_000).toISO
 const ROUTINE: RoutineEntry = {
   id: 'r1', projectId: 'proj', name: 'Nightly triage', cron: '0 9 * * 1-5', timeZone: 'Europe/Paris',
   prompt: 'Triage new issues.\nLabel each.\nClose duplicates.\nPing owners.\nSummarize.', tool: 'claude',
-  model: 'claude-opus-5-5', modelName: 'Opus 5.5', mode: 'acp', permissionMode: 'accept-edits', agentOptions: {}, branch: 'main',
+  model: 'claude-opus-5-5', modelName: 'Opus 5.5', mode: 'acp', permissionMode: 'accept-edits', agentOptions: {},
+  selection: { repos: [{ repo: 'repo-1', branch: 'main' }], nested: false, cwd: 'repo-1' },
   groupId: 'g1', timeoutMinutes: 90, paused: false,
   nextRuns: ['2026-10-26T08:00:00.000Z', '2026-10-27T08:00:00.000Z', '2026-10-28T08:00:00.000Z'],
   createdAt: '2026-10-01 00:00:00',

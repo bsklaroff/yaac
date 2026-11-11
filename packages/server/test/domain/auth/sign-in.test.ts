@@ -71,7 +71,7 @@ beforeEach(async () => {
   await fs.rm(getProjectsDir(), { recursive: true, force: true })
   bob = await seeTailnetUser('bob@example.com', 'Bob')
   for (const [id, owner] of [[ALPHA, ME], [BETA, ME], [BOBS, bob]]) {
-    await recordProject({ id, name: 'p', remoteUrl: `https://github.com/acme/${id}`, addedAt: 'x' }, owner)
+    await recordProject({ id, name: 'p', addedAt: 'x' }, owner)
   }
 })
 

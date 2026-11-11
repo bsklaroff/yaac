@@ -4,6 +4,7 @@ import https from 'node:https'
 import net from 'node:net'
 import { once } from 'node:events'
 import type { AddressInfo } from 'node:net'
+import ssh2 from 'ssh2'
 import { ProxyObjects } from 'yaac-proxy-sidecar/object-watch'
 import { LABEL_WORKSPACE_ID } from 'yaac-proxy-sidecar/objects'
 import { LiveTunnels } from 'yaac-proxy-sidecar/live-tunnels'
@@ -11,6 +12,7 @@ import { RefreshFlights } from 'yaac-proxy-sidecar/refresh-flight'
 import { errorReply, type TokenReply } from 'yaac-proxy-sidecar/oauth-swap'
 import { generateCA } from 'yaac-proxy-sidecar/mitm'
 import { dispatchToUpstream, forwardPlainHttp, type DispatchContext } from 'yaac-proxy-sidecar/dispatch'
+import { generateSshHostKey } from 'yaac-proxy-sidecar/ssh-session'
 
 /**
  * Every dial a workspace can steer, against the non-public guard: the
@@ -50,7 +52,7 @@ beforeAll(async () => {
   tcpPort = portOf(await listen(net.createServer((s) => s.end('hello'))))
   httpPort = portOf(await listen(http.createServer((req, res) => res.end(`upstream saw ${req.url}`))))
 
-  const objects = new ProxyObjects({ loadSshKeys: () => Promise.resolve(), log: () => {} })
+  const objects = new ProxyObjects({ log: () => {} })
   const register = (ws: string, reg: Record<string, unknown>): void => objects.applyRegistration({
     metadata: { name: `yaac-proxy-reg-${ws}`, labels: { [LABEL_WORKSPACE_ID]: ws } },
     data: { 'registration.json': JSON.stringify({ rules: [], projectId: 'demo', owner: 'o', ...reg }) },
@@ -61,10 +63,48 @@ beforeAll(async () => {
     upstreamRedirects: { 'redirected.test': { host: '127.0.0.1', port: httpPort } },
   })
   register('named', { allowedHosts: ['127.0.0.1', 'git.corp.test', '192.0.2.1', 'pool.test', '*.corp.test'] })
+  // A project with an ssh repo on a git host, here an ssh server that
+  // answers each command with its own text.
+  const gitHostKey = generateSshHostKey()
+  const repoKey = generateSshHostKey()
+  const gitHost = new ssh2.Server({ hostKeys: [gitHostKey.privateKey] }, (conn) => {
+    conn.on('authentication', (auth) => {
+      if (auth.method === 'publickey') auth.accept()
+      else auth.reject(['publickey'])
+    })
+    conn.on('ready', () => conn.on('session', (accept) => {
+      accept().on('exec', (acceptExec, _reject, info) => {
+        const channel = acceptExec()
+        channel.write(`ran:${info.command}`)
+        channel.exit(0)
+        channel.end()
+      })
+    }))
+    conn.on('error', () => {})
+  })
+  await new Promise<void>((r) => gitHost.listen(0, '127.0.0.1', r))
+  servers.push(gitHost)
+  register('ssh', {
+    projectId: 'sshp',
+    allowedHosts: ['git.example'],
+    upstreamRedirects: { 'git.example': { host: '127.0.0.1', port: (gitHost.address() as AddressInfo).port } },
+  })
+  objects.applyCredentials({
+    metadata: { name: 'yaac-proxy-credentials' },
+    data: { 'o.ssh-keys.json': Buffer.from(JSON.stringify([{
+      privateKey: repoKey.privateKey,
+      publicKey: repoKey.publicKey,
+      grants: [{
+        projectId: 'sshp', repoId: 'r1', host: 'git.example', path: 'acme/repo', readOnly: false, ghToken: false,
+        knownHostsEntry: `git.example ${gitHostKey.publicKey}`,
+      }],
+    }])).toString('base64') },
+  })
 
   const counts = new Map<string, number>()
   ctx = {
     ca: generateCA(),
+    sshHostKey: generateSshHostKey().privateKey,
     objects,
     torAgent: null,
     refreshFlights: new RefreshFlights<TokenReply>((r) => r.rotatedTo, () => errorReply(504, 'slow')),
@@ -205,4 +245,53 @@ describe('dispatchToUpstream and forwardPlainHttp', () => {
     expect(body).toBe('upstream saw /r')
     expect(lookups).toEqual([])
   }, 60_000)
+
+  it('end an ssh session to a host the project has an ssh repo on, and log in there with the repo\'s key', async () => {
+    const entry = await listen(net.createServer((socket) => {
+      void dispatchToUpstream(ctx, socket, 'git.example', '22', 'ssh', { writeConnectOk: true })
+    }))
+    /** One command over a fresh CONNECT, as the workspace's ssh sends it. */
+    const run = async (command: string): Promise<{ code: number | null; stdout: string; stderr: string }> => {
+      const sock = net.connect(portOf(entry), '127.0.0.1')
+      // The CONNECT's 200 comes first; ssh starts after it.
+      await new Promise<void>((resolve) => {
+        let head = ''
+        const onData = (chunk: Buffer): void => {
+          head += chunk.toString('latin1')
+          const end = head.indexOf('\r\n\r\n')
+          if (end === -1) return
+          sock.removeListener('data', onData)
+          sock.pause()
+          expect(head.slice(0, end)).toBe('HTTP/1.1 200 Connection Established')
+          sock.unshift(Buffer.from(head.slice(end + 4), 'latin1'))
+          resolve()
+        }
+        sock.on('data', onData)
+      })
+      const client = new ssh2.Client()
+      return new Promise((resolve, reject) => {
+        client.on('error', reject)
+        client.on('ready', () => client.exec(command, (err, stream) => {
+          if (err) { reject(err); return }
+          const out = { code: null as number | null, stdout: '', stderr: '' }
+          stream.on('data', (c: Buffer) => { out.stdout += c.toString() })
+          stream.stderr.on('data', (c: Buffer) => { out.stderr += c.toString() })
+          stream.on('exit', (c: number | null) => { out.code = c })
+          stream.on('close', () => { client.end(); resolve(out) })
+          stream.end()
+        }))
+        client.connect({ sock, username: 'git', hostVerifier: () => true })
+      })
+    }
+    // The project's repo: the proxy logs in to the host with its key.
+    expect(await run("git-upload-pack 'acme/repo.git'"))
+      .toEqual({ code: 0, stdout: "ran:git-upload-pack 'acme/repo.git'", stderr: '' })
+    // Anything else is answered by the proxy and never reaches the host.
+    const other = await run("git-upload-pack 'acme/other.git'")
+    expect(other.code).toBe(1)
+    expect(other.stderr).toContain("not one of this project's ssh repos")
+    expect((await run('cat /etc/passwd')).stderr).toContain('carries only git commands')
+    entry.close()
+    expect(lookups).toEqual([])
+  }, 30_000)
 })

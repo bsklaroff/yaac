@@ -70,7 +70,7 @@ describe('createShellWindow', () => {
   it('returns the new window id the create printed', async () => {
     windows = '@0 claude\n@1 shell'
     expect(await createShellWindow('yaac-demo')).toEqual({ target: 'window:@7', name: 'shell-2' })
-    expect(ran).toEqual(['new-window -d -P -F #{window_id} #{window_name} -t yaac -n shell-2 -c /workspace'])
+    expect(ran).toEqual(['new-window -d -P -F #{window_id} #{window_name} -t yaac -n shell-2 -c #{session_path}'])
   })
 
   it('throws when new-window returns no window id', async () => {

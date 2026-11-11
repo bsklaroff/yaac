@@ -32,7 +32,7 @@ const RULE = { hosts: ['api.example.com'], header: 'x-api-key' }
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
   await fs.mkdir(projectDir(DEMO_PROJECT_ID), { recursive: true })
-  await recordProject({ id: DEMO_PROJECT_ID, name: 'demo', remoteUrl: 'https://github.com/o/r.git', addedAt: 'now' }, BUILT_IN_USER_ID)
+  await recordProject({ id: DEMO_PROJECT_ID, name: 'demo', addedAt: 'now' }, BUILT_IN_USER_ID)
 })
 
 afterEach(async () => {

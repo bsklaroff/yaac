@@ -1,16 +1,19 @@
 # Server-side git
 
-A project has one **main clone**, at `global/projects/<project id>/repo`. Each
-workspace's checkout is a separate clone that borrows the main clone's
-objects. The server owns the main clone; each workspace owns its checkout.
+A repo (docs/project-repos.md) has one **main clone**, at
+`global/repos/<repo id>`, shared by every project that links the repo. Each
+checkout of it in a workspace is a separate clone that borrows the main
+clone's objects. The server owns the main clone; each workspace owns its
+checkouts: none, one at its root, or one per repo in a folder each.
 
 ## The layout
 
 | Path (server view) | What it is | Who writes it | In a k8s pod |
 |---|---|---|---|
-| `repo/.git` | The main clone: origin's refs as `refs/remotes/origin/*`, and origin's objects | the server only | read-only, at the path the server sees |
-| `workspaces/<id>/` | The checkout | the workspace | `/workspace` |
-| `workspaces/<id>/.git/` | A git dir whose `objects/info/alternates` points at the main clone's objects | the workspace (created by the server) | inside `/workspace` |
+| `repos/<repo id>/.git` | The main clone: origin's refs as `refs/remotes/origin/*`, and origin's objects | the server only | read-only, at the path the server sees |
+| `workspaces/<id>/` | The workspace dir | the workspace | `/workspace` |
+| `workspaces/<id>/[<folder>/]` | A checkout: the workspace dir itself, or a folder of it | the workspace | `/workspace[/<folder>]` |
+| `workspaces/<id>/[<folder>/].git/` | A git dir whose `objects/info/alternates` points at its main clone's objects | the workspace (created by the server) | inside the checkout |
 
 A containerless workspace sees the server's paths unchanged.
 
@@ -18,10 +21,11 @@ A containerless workspace sees the server's paths unchanged.
 objects. It starts with the main clone's `origin/*` refs and tags written as
 `packed-refs` (so thousands of branches do not become thousands of files),
 `agent/<id>` checked out at `origin/<base>`, and a server-written config: the
-object format, `remote.origin` (the project row's URL, without a token), and
-`agent/<id>`'s upstream. It is built in a staging dir and renamed in as
-`.git`, so the checkout directory itself is never replaced; a pod may already
-have it bound as `/workspace`. Plain `git clone` can't do this: it refuses a
+object format, `remote.origin` (the repo row's URL, without a token), and
+`agent/<id>`'s upstream. It is built in a staging dir beside the workspace
+dir, where no workspace mounts it, and renamed in as `.git`, so the checkout
+directory itself is never replaced; a pod may already have the workspace
+dir bound as `/workspace`. Plain `git clone` can't do this: it refuses a
 non-empty destination, copies local branches rather than remote-tracking
 ones, and writes its own alternates path. The tree is written by eight
 processes at once (`checkout.workers`, which a workspace's own git also
@@ -65,12 +69,12 @@ push. A credential that cannot push fails the create, naming the remedy.
 **The alternates line** is the only path stored in a checkout's git state. It
 always holds the main clone's objects dir as the server sees it, and a pod
 mounts the main clone at that same path
-(`/yaac/global/projects/<project id>/repo/.git` under the in-cluster server), so the
+(`/yaac/global/repos/<repo id>/.git` under the in-cluster server), so the
 line is valid everywhere. A launch that reuses a checkout rewrites it
 (`buildCloneLinkExec`), which repairs a checkout last launched by a server
 that saw the data dir at another path. The same command sets an `origin`
-that still names yaac's hosted remote to the project row's URL, so a
-checkout of a project that moved to another git host
+that still names yaac's hosted remote to the repo row's URL, so a
+checkout of a repo that moved to another git host
 (docs/hosted-projects.md) pushes there once restarted. An `origin` the
 user pointed elsewhere is left alone. A checkout the launch made has both
 already.
@@ -112,17 +116,19 @@ gc safe again.
 ## Keeping `origin/*` fresh
 
 A checkout's `origin/*` refs are its own, so they change only when something
-copies them over (`origin.ts` in `#domain/projects`):
+copies them over (`origin.ts` in `#domain/repos` fetches,
+`origin-fanout.ts` in `#domain/workspaces` copies):
 
-- **Every server fetch fans out.** `fetchProjectOrigin` (create, spare
+- **Every server fetch fans out.** `fetchRepoOrigin` (create, spare
   claims, the branch picker's refresh, a base branch change, the timer
   below) schedules
-  `maintainRepo` and refreshes every running workspace of the project, a few
-  at a time, without making the caller wait. Fan-outs are coalesced per
-  project, so a burst of creates costs at most two rounds.
+  `maintainRepo` and refreshes the checkout of the repo in every running
+  workspace that has one, in any project, a few at a time, without making
+  the caller wait. Fan-outs are coalesced per repo, so a burst of creates
+  costs at most two rounds.
 - **A timer fetches.** The `origin-refresh` reconcile step fetches every
-  project that has a running workspace and was not fetched in the last five
-  minutes. A failure is logged and retried next interval.
+  repo that a running workspace has a checkout of and that was not fetched
+  in the last five minutes. A failure is logged and retried next interval.
 - **A launch that reuses a checkout refreshes**, right after rewriting the
   alternates line, in the same exec that starts the agents. A checkout the
   launch made was copied from the main clone after the create's fetch, so
@@ -135,7 +141,7 @@ The refresh (`buildOriginRefreshExec`) is a local fetch from the main clone,
 run inside the workspace:
 
 ```sh
-git -C <workspace> fetch --quiet --no-tags --no-write-fetch-head \
+git -C <checkout> fetch --quiet --no-tags --no-write-fetch-head \
     <main clone>/.git 'refs/remotes/origin/*:refs/remotes/origin/*'
 ```
 
@@ -160,9 +166,9 @@ downloads only what the main clone lacks.
 - **Against a checkout's staged git dir**, only while `createCheckout` builds
   it and no workspace can see it (the runner's `private` target).
 - **Never against a checkout's git dir after that.** Anything that needs a
-  checkout's state runs inside the workspace, so only while it runs: the
-  changes diff, the file explorer, the git status bar's ahead/behind
-  count (docs/file-editor.md), a spare's HEAD and its move to a new base
+  checkout's state runs inside the workspace, in that checkout's directory,
+  so only while it runs: the changes diff, the file explorer, the git status
+  bar's ahead/behind count (docs/file-editor.md), a spare's HEAD and its move to a new base
   tip, a stop's removal of ignored files, and the refresh above. The one
   exception is that removal's fallback for a stopped workspace, which runs
   git on the checkout as root in a one-shot gVisor pod that mounts nothing
@@ -176,8 +182,11 @@ downloads only what the main clone lacks.
 ## Reading another workspace's git
 
 `yaac-mama fetch <workspace>` gives one workspace another's committed work,
-running or stopped, in the same project. The server reads the target's git
-dir and answers with a git bundle of its branches and HEAD; the caller's own
+running or stopped, in the same project. It acts on one repo: the checkout
+the caller runs it in (the script sends that checkout's path; a workspace
+with one checkout needs none), and the target's checkout of the same repo.
+The server reads the target's git dir and answers with a git bundle of its
+branches and HEAD; the caller's own
 git fetches that into `refs/yaac/peers/<id8>/*` with
 `transfer.fsckObjects`, so every object is checked in the caller's sandbox.
 That namespace is outside `refs/remotes`, so no remote's fetch or prune can
@@ -264,14 +273,13 @@ it already runs as the server's user. A call with no
 repository runs in an empty server-private dir under a ceiling, so git never
 discovers one from its cwd.
 
-## Remote URLs come from the project row
+## Remote URLs come from the repo's row
 
-The URL a fetch goes to, the credential matched to it, and the `repoUrl` the
-k8s proxy uses to limit the project's https credential to one host and to
-gate the ssh agent all come from `projectRemoteUrl(projectId)` in
-`#domain/projects`, which reads the project row. For a project the server
-hosts, the server's own fetch reads the bare repository from disk instead
-(`projectFetchUrl`, docs/hosted-projects.md). `fetchOrigin` fetches by
+The URL a fetch goes to and the credential matched to it come from the
+repo's row (`origin.ts` in `#domain/repos`), as do the grants that tell the
+egress path which repo each credential may reach (docs/git-credentials.md).
+For a repo the server hosts, the server's own fetch reads the bare
+repository from disk instead (docs/hosted-projects.md). `fetchOrigin` fetches by
 explicit URL and refspec, never by the remote name `origin`, so a
 repository's `remote.origin.*` cannot change where a fetch goes or which
 token it sends. Each clone's `remote.origin.url` is written from the row,

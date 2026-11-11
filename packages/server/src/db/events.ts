@@ -46,9 +46,11 @@ export interface WorkspaceCreated {
   type: 'workspace-created'
   projectId: string
   workspaceId: string
-  /** The branch it forks from, resolved before provisioning. Absent on a
-   *  resume, which keeps the recorded base. */
-  baseBranch?: string
+  /** Its checkouts, each with the branch it forks from when that is
+   *  resolved before provisioning, and where its shells and steps start.
+   *  Absent on a resume, which keeps what its rows record. */
+  repos?: Array<{ repoId: string; path: string; baseBranch?: string }>
+  cwd?: string
   /** An existing workspace is being restarted. Its row has history (title,
    *  founding prompt, how it last died), so a failed resume leaves the row
    *  as it was rather than erasing it. */
@@ -104,11 +106,12 @@ export interface WorkspaceLifeStarted {
   startSteps: StepGraph
 }
 
-/** The commit a workspace's checkout was created at. */
+/** The commit one of a workspace's checkouts was created at. */
 export interface StartCommitResolved {
   type: 'start-commit-resolved'
   projectId: string
   workspaceId: string
+  repoId: string
   startCommit: string
 }
 
@@ -135,13 +138,14 @@ export interface StepsSettled {
   outcome: StepsOutcome
 }
 
-/** The branch a workspace forks from changed: its agent ran
- *  `yaac-mama set-base`, or a restart rebuilt its lost checkout from the
+/** The branch one of a workspace's checkouts forks from changed: its agent
+ *  ran `yaac-mama set-base`, or a restart rebuilt a lost checkout from the
  *  default branch because origin no longer has the old one. */
 export interface BaseBranchResolved {
   type: 'base-branch-resolved'
   projectId: string
   workspaceId: string
+  repoId: string
   baseBranch: string
 }
 

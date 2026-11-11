@@ -1,12 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import crypto from 'node:crypto'
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { requireCluster, useTestNamespace, createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { openTestPodsToProxy, requirePodman, TEST_PROXY_CONFIG } from '#support/cluster'
-import { e2eMkdtemp } from '@yaac/test-utils/tmp'
 import { resolveTestBaseImageRef } from '#support/test-pods'
 import { startWorkspacePod, waitForPod } from '#support/test-pods'
 import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
@@ -24,10 +19,7 @@ import {
 } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
 import { applyObject, deleteObject, deleteObjects, k8sNamespace, readObject } from '@yaac/server/drivers/k8s/substrate/api'
 import { kubectl } from '@yaac/test-utils/kubectl'
-import { encodeOpenSshPrivateKey, generateSshKey } from '@yaac/server/lib/ssh-key'
 import type { CredentialBundle } from '@yaac/server/drivers/contract'
-
-const execFileAsync = promisify(execFile)
 
 /**
  * The Kubernetes objects that configure the proxy and that it reports
@@ -37,8 +29,8 @@ const execFileAsync = promisify(execFile)
  *
  * - the credentials Secret drives injection (api key, git token); removing
  *   a tool from it signs that tool out, and a git token reaches only its
- *   assigned projects
- * - ssh keys reach the proxy's agent through the same Secret
+ *   own repo's path, from workspaces of the projects it is granted to, and
+ *   a read-only grant takes no push
  * - a workspace-driven refresh is captured into `yaac-proxy-refreshed`, and
  *   a burst of them spends the credential upstream once
  * - a blocked host lands in `yaac-proxy-state` until the registration is
@@ -67,43 +59,17 @@ const OWNER = 'suite-owner'
 /** Replace the credentials Secret with `bundle` as OWNER's, plus `others`. */
 const syncCredentials = (bundle: CredentialBundle, others: Record<string, CredentialBundle> = {}): Promise<void> =>
   syncProxyCredentials({ [OWNER]: bundle, ...others })
-/** The git token, assigned to the suite workspace's project. */
-const GIT_TOKENS: CredentialBundle['git'] = [{ token: 'ghp-real-token', projects: ['creds-suite'] }]
+/** A grant of the suite workspace's project to one repo on GIT_HOST. */
+const gitGrant = (repo: string, readOnly = false): CredentialBundle['git'][number]['grants'][number] => ({
+  projectId: 'creds-suite', repoId: `repo-${repo}`, host: GIT_HOST, path: `acme/${repo}`, readOnly, ghToken: true,
+})
+/** The git token, granted to the suite workspace's project for `acme/app`. */
+const GIT_TOKENS: CredentialBundle['git'] = [{ token: 'ghp-real-token', grants: [gitGrant('app')] }]
 
 let restoreNamespace: (() => void) | null = null
 let tempDataDir: string | null = null
-let keyDir: string | null = null
 
 const client = new ProxyClient(TEST_PROXY_CONFIG)
-
-interface TestKey {
-  privateKey: string
-  publicKey: string
-  fingerprint: string
-  knownHostsEntry: string
-}
-
-/**
- * A client key made the way the server makes one, plus a host keypair
- * whose public half becomes the known_hosts entry for `host`.
- */
-async function makeTestKey(dir: string, host: string, name: string): Promise<TestKey> {
-  const key = generateSshKey(`yaac ${name}`)
-  const publicKeyPath = path.join(dir, `${name}.pub`)
-  const hostKeyPath = path.join(dir, `${name}-hostkey`)
-  await fs.writeFile(publicKeyPath, `${key.publicKey}\n`)
-  await execFileAsync('ssh-keygen', ['-t', 'ed25519', '-f', hostKeyPath, '-N', '', '-q'])
-  const { stdout: lint } = await execFileAsync('ssh-keygen', ['-lf', publicKeyPath])
-  const fingerprint = lint.trim().split(/\s+/)[1]
-  const hostPub = await fs.readFile(`${hostKeyPath}.pub`, 'utf8')
-  const [keyType, keyBlob] = hostPub.trim().split(/\s+/)
-  return {
-    privateKey: encodeOpenSshPrivateKey(key.seed, `yaac ${name}`),
-    publicKey: key.publicKey,
-    fingerprint,
-    knownHostsEntry: `${host} ${keyType} ${keyBlob}`,
-  }
-}
 
 async function deleteTestPod(name: string): Promise<void> {
   await deleteObject({ apiVersion: 'v1', kind: 'Pod', name, namespace: k8sNamespace() }, { gracePeriodSeconds: 1 })
@@ -222,21 +188,11 @@ interface RefreshReply {
   echoed: { refresh_token: string }
 }
 
-/** An HTTPS git request to the workspace's registered remote. */
-const gitProbe = `--cacert ${CA_PATH} --resolve ${GIT_HOST}:443:${FAKE_IP} https://${GIT_HOST}/acme/app.git/info/refs?service=git-upload-pack`
-
-/** What the proxy's agent holds, read in its own pod. */
-async function agentFingerprints(): Promise<string[]> {
-  const { stdout } = await kubectl([
-    'exec', '-n', k8sNamespace(), `deployment/${PROXY_APP_NAME}`, '--',
-    'sh', '-c', 'SSH_AUTH_SOCK=$HOME/agent.sock ssh-add -l || true',
-  ], { timeout: 30_000 })
-  return stdout.split('\n')
-    .map((l) => l.trim().split(/\s+/))
-    .filter((parts) => parts.length >= 3 && parts[1]?.startsWith('SHA256:'))
-    .map((parts) => parts[1])
-}
-
+/** An HTTPS git request under `path` on the git host. */
+const gitRequest = (path: string): string =>
+  `--cacert ${CA_PATH} --resolve ${GIT_HOST}:443:${FAKE_IP} https://${GIT_HOST}${path}`
+/** A fetch of the repo the suite's token is granted for. */
+const gitProbe = gitRequest('/acme/app.git/info/refs?service=git-upload-pack')
 
 interface RawObject { data?: Record<string, string> }
 const readSecretKey = async (name: string, key: string): Promise<string | undefined> => {
@@ -264,7 +220,6 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     await requireCluster()
     restoreNamespace = useTestNamespace()
     tempDataDir = await createTempDataDir()
-    keyDir = await e2eMkdtemp('yaac-proxy-creds-')
     // Write credentials before the proxy starts, with claude signed out
     // (the first case relies on that).
     await ensureNamespace()
@@ -281,7 +236,6 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     registration = {
       rules: [],
       allowedHosts: [MITM_HOST, MCP_PROXY_HOST, TOKEN_HOST, GIT_HOST],
-      repoUrl: `https://${GIT_HOST}/acme/app.git`,
       projectId: 'creds-suite',
       owner: OWNER,
       upstreamRedirects: {
@@ -300,8 +254,6 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     restoreNamespace = null
     if (tempDataDir) await cleanupTempDir(tempDataDir)
     tempDataDir = null
-    if (keyDir) await fs.rm(keyDir, { recursive: true, force: true })
-    keyDir = null
   })
 
   it('forwards the placeholder untouched until the Secret carries a credential, then injects it', async () => {
@@ -352,30 +304,26 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     expect(echoedOf(r.out).headers['x-api-key']).toBe(PLACEHOLDER_API_KEY)
   }, 120_000)
 
-  it('loads the agent from the Secret’s ssh keys, and empties it with them', async () => {
-    const keyA = await makeTestKey(keyDir!, 'git.a.example', 'key-a')
-    const keyB = await makeTestKey(keyDir!, 'git.b.example', 'key-b')
-    const withKeys = (keys: TestKey[]): CredentialBundle => ({
-      ...EMPTY,
-      ssh: keys.map((k, i) => ({
-        privateKey: k.privateKey,
-        publicKey: k.publicKey,
-        projects: [{ projectId: 'creds-suite', host: `git.${i === 0 ? 'a' : 'b'}.example`, knownHostsEntry: k.knownHostsEntry }],
-      })),
-    })
-    // Two hosts, so known_hosts has several entries. ssh-add must be given
-    // the file with -H or it never finds the host key.
-    await syncCredentials(withKeys([keyA, keyB]))
-    const agentHolds = (expected: unknown): Promise<void> =>
-      vi.waitFor(async () => expect(await agentFingerprints()).toEqual(expected), { timeout: 30_000, interval: 500 })
-    await agentHolds(expect.arrayContaining([keyA.fingerprint, keyB.fingerprint]))
-
-    // An empty list empties the agent...
-    await syncCredentials(EMPTY)
-    await agentHolds([])
-    // ...and a cleared agent accepts keys again.
-    await syncCredentials(withKeys([keyA]))
-    await agentHolds([keyA.fingerprint])
+  it('sends a token only under its own repo\'s path, and refuses a read-only repo a push', async () => {
+    const basic = (token: string): string => 'Basic ' + Buffer.from(`x-access-token:${token}`).toString('base64')
+    await syncCredentials({ ...EMPTY, git: [
+      ...GIT_TOKENS,
+      { token: 'ghp-read-only', grants: [gitGrant('ro', true)] },
+    ] })
+    const roFetch = gitRequest('/acme/ro.git/info/refs?service=git-upload-pack')
+    await curlUntil(podName, roFetch, (r) => r.exit === 0 && echoedOf(r.out).headers.authorization === basic('ghp-read-only'))
+    const own = await curlInPod(podName, gitProbe)
+    expect(echoedOf(own.out).headers.authorization).toBe(basic('ghp-real-token'))
+    // A neighbouring repo on the same host passes with no token.
+    const neighbour = await curlInPod(podName, gitRequest('/acme/other.git/info/refs?service=git-upload-pack'))
+    expect(neighbour.exit, neighbour.out).toBe(0)
+    expect(echoedOf(neighbour.out).headers.authorization).toBeUndefined()
+    // The read-only repo fetches, and is refused a push by the proxy.
+    const push = await curlInPod(podName, `-o /dev/null -w '%{http_code}' ${gitRequest('/acme/ro.git/info/refs?service=git-receive-pack')}`)
+    expect(push.out).toMatch(/^403\nEXIT:0\s*$/)
+    const rpc = await curlInPod(podName, `-o /dev/null -w '%{http_code}' -X POST --data-binary pack ${gitRequest('/acme/ro.git/git-receive-pack')}`)
+    expect(rpc.out).toMatch(/^403\nEXIT:0\s*$/)
+    await syncCredentials({ ...EMPTY, git: GIT_TOKENS })
   }, 180_000)
 
   it('captures a rotation a workspace drives, spending the credential once for a burst', async () => {
@@ -475,7 +423,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     const otherKey = { ...EMPTY, claude: { kind: 'api-key' as const, savedAt: new Date().toISOString(), apiKey: 'sk-ant-other' } }
     // Another owner signed in, this one signed out: the placeholder travels
     // untouched, and the git token stays this owner's.
-    await syncCredentials({ ...EMPTY, git: GIT_TOKENS }, { other: { ...otherKey, git: [{ token: 'ghp-other', projects: ['creds-suite'] }] } })
+    await syncCredentials({ ...EMPTY, git: GIT_TOKENS }, { other: { ...otherKey, git: [{ token: 'ghp-other', grants: [gitGrant('app')] }] } })
     await curlUntil(podName, gitProbe, (r) => r.exit === 0
       && echoedOf(r.out).headers.authorization === 'Basic ' + Buffer.from('x-access-token:ghp-real-token').toString('base64'))
     const mine = await curlInPod(podName, probeArgs(`-H 'x-api-key: ${PLACEHOLDER_API_KEY}'`))

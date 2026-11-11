@@ -14,7 +14,7 @@ import {
 } from '#domain/sites'
 import { createVolume, offeredForwards } from '#domain/workspaces'
 import { createWorkflow, setRunSecret } from '#domain/projects'
-import { BUILT_IN_USER_ID, findSiteByName, recordProject, seeTailnetUser, setProjectShareRevoked, setUserRole, updateSite } from '#db'
+import { addRepoShare, BUILT_IN_USER_ID, findSiteByName, insertRepo, linkProjectRepo, seeTailnetUser, setUserRole, updateSite } from '#db'
 import { closeDb } from '#db/client'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
@@ -25,7 +25,8 @@ import type { SiteRoute } from '#drivers/contract'
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 const stranger = { kind: 'local', userId: '4101bef8-794f-4d98-8e95-dfb54850c68b' } as const
 const APP = { app: { run: 'pnpm start', service: true } }
-const SHARE = '0a0a0a0a-0000-4000-8000-0000000000aa'
+/** A second repo for the project, in the folder `docs`. */
+const DOCS = '0a0a0a0a-0000-4000-8000-0000000000aa'
 
 let tmpDir: string
 let routed: SiteRoute[][]
@@ -187,12 +188,23 @@ describe('editSite on a workflow', () => {
 })
 
 describe('createSite and editSite on a shared remote', () => {
+  it('build from one of the project\'s repos, which a project with several must name', async () => {
+    await create()
+    expect((await findSiteByName(DEMO_PROJECT_ID, 'shop'))?.repoId).toBe(DEMO_PROJECT_ID)
+    await insertRepo({ id: DOCS, owner: BUILT_IN_USER_ID, remoteUrl: 'https://example.com/docs' })
+    await linkProjectRepo(DEMO_PROJECT_ID, DOCS, 'docs')
+    await expect(create({ name: 'b', hostname: 'b.example.com' })).rejects.toMatchObject({ code: 'VALIDATION', message: /several repos/ })
+    await create({ name: 'b', hostname: 'b.example.com', repo: 'demo' })
+    expect((await findSiteByName(DEMO_PROJECT_ID, 'b'))?.repoId).toBe(DEMO_PROJECT_ID)
+    await expect(create({ name: 'c', hostname: 'c.example.com', repo: 'nope' })).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+
   it('refuse following a branch for a workflow naming secrets before writing anything', async () => {
     await setRunSecret(local, DEMO_PROJECT_ID, { name: 'P8_KEY', value: 'pem' })
     await createWorkflow(local, DEMO_PROJECT_ID, { name: 'keyed', steps: APP, secrets: ['P8_KEY'] })
     await create({ workflow: 'keyed', followBranch: 'dev' })
     // Another user can push the remote once it is shared.
-    await recordProject({ id: SHARE, name: 'shared', remoteUrl: 'r', addedAt: 'now', sharedFrom: DEMO_PROJECT_ID }, BUILT_IN_USER_ID)
+    await addRepoShare(DEMO_PROJECT_ID, await seeTailnetUser('other@example.com', 'Other'))
     await expect(create({ name: 'b', hostname: 'b.example.com', workflow: 'keyed', followBranch: 'dev' }))
       .rejects.toMatchObject({ code: 'FORBIDDEN' })
     expect(await findSiteByName(DEMO_PROJECT_ID, 'b')).toBeUndefined()
@@ -214,14 +226,6 @@ describe('deleteSite', () => {
     await deleteSite(local, DEMO_PROJECT_ID, 'shop')
     expect(await findSiteByName(DEMO_PROJECT_ID, 'shop')).toBeUndefined()
     expect(routed.at(-1)?.map((r) => r.hostname)).toEqual(['blog.example.com'])
-
-    // A share its source removed runs nothing and routes nothing, but its
-    // owner may still delete its site to free the hostname.
-    await setProjectShareRevoked(DEMO_PROJECT_ID, true)
-    await expect(deleteSite(stranger, DEMO_PROJECT_ID, 'blog')).rejects.toMatchObject({ code: 'FORBIDDEN' })
-    await deleteSite(local, DEMO_PROJECT_ID, 'blog')
-    expect(await findSiteByName(DEMO_PROJECT_ID, 'blog')).toBeUndefined()
-    expect(routed.at(-1)).toEqual([])
   })
 
   it('lets any admin take a site down, and its owner once demoted', async () => {

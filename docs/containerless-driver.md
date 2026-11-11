@@ -63,8 +63,8 @@ workspace, since all workspaces share one filesystem.
 
 | | k8s | containerless |
 |---|---|---|
-| checkout | `/workspace` | `~/.yaac-server/global/projects/<project-id>/workspaces/<id>` |
-| project main clone | the server's own path, read-only | `~/.yaac-server/global/projects/<project-id>/repo/.git` |
+| workspace dir | `/workspace` | `~/.yaac-server/global/projects/<project-id>/workspaces/<id>` |
+| a repo's main clone | the server's own path, read-only | `~/.yaac-server/global/repos/<repo-id>/.git` |
 | tmux socket | `/tmp/yaac-tmux/server` (pod-local) | `$TMPDIR/yaac-<hash>/<short-id>.sock` |
 | scratch | `/tmp` | `<state dir>/containerless/scratch` |
 | ACP record | `/home/yaac/.yaac-acp` (mounted) | `~/.yaac-server/global/projects/<project-id>/acp/<id>` |
@@ -79,11 +79,17 @@ first-prompt capture, a stopped workspace's transcript) opens that location. It
 must also outlive the state dir, which a stop removes, so a stopped
 workspace's conversation stays readable (docs/agent-modes.md).
 
-The review diff is plain host `git` in the checkout. The checkout is its own
+A workspace's checkouts sit in the workspace dir: one at its root, or each
+in a folder of its own (docs/project-repos.md). The tmux session starts in
+the workspace's default cwd, the workspace dir or one checkout, which shell
+and step windows take from it; each agent session's window starts in that
+session's own cwd.
+
+The review diff is plain host `git` in a checkout. Each checkout is its own
 clone whose only path-dependent git state is the alternates line pointing at
-the main clone's objects (docs/server-git.md). A pod mounts the main clone at
-the same path, and a launch on either driver that reuses a checkout rewrites
-the line (`buildCloneLinkExec`).
+its repo's main clone's objects (docs/server-git.md). A pod mounts the main
+clone at the same path, and a launch on either driver that reuses a checkout
+rewrites the line (`buildCloneLinkExec`).
 
 ## Storage
 
@@ -270,7 +276,8 @@ The tmux server starts with `-f /dev/null`, as in a pod: a user's
 ### What a workspace keeps in the state dir
 
 The driver's state dir (`<state dir>/containerless`) holds the marker, the
-gitconfig and git credential store, the SSH public key, gh's config,
+gitconfig and git credential store, the SSH public keys and the table of
+which repo uses which, gh's config,
 opencode's wrapper and its state and cache, zsh's startup dir,
 `yaac-watch-prs`'s seen state (`YAAC_WATCH_PRS_STATE`) and the
 `YAAC_SHELL_ENV` file and its fish copy. A stop removes it with the rest of the state dir.
@@ -300,10 +307,14 @@ The other three (claude's `projects/` and `file-history/`, codex's
 `sessions/`) sit inside the shared tool homes, so the create plants links
 in those homes instead:
 
-- The folder claude files this checkout's conversations under (named from
-  the cwd by claude's rule, for every spelling of the data dir) links to the
-  history's `claude/-workspace`.
-- That folder's `memory` links to `-repo/memory`, so claude's auto-memory
+- For each directory an agent can run in (the workspace root and each
+  checkout in a folder), the folder claude files that cwd's conversations
+  under (named from the cwd by claude's rule, for every spelling of the data
+  dir) links to the history's folder for it (`claude/-workspace`,
+  `claude/-workspace-<dir>`).
+- Each such folder's `memory` links to the memory of the repo checked out
+  there, or the project's root memory where the root is no checkout
+  (docs/project-repos.md "Agent history by cwd"), so claude's auto-memory
   is the one a pod uses.
 - Each file-history dir and codex rollout already in the history is linked
   where its tool looks.
@@ -416,36 +427,54 @@ attempted, and the attempt is the damage.
 
 ### Git credentials
 
-The checkout's `origin` has no token (server-side git adds it per command).
-In a pod the proxy adds the credential in flight. Here the launch receives
-the resolved credential and writes it into the driver's state dir, beside
-the gitconfig `GIT_CONFIG_GLOBAL` names, so the user's `~/.gitconfig` never
-applies. An HTTPS token becomes a line in a credential store the helper
-names with `store --file=`; without it, `store` would read the user's own
-`~/.git-credentials`, write the project's token into it, and could erase the
-user's entry after a failed push.
+A checkout's `origin` has no token (server-side git adds it per command).
+In a pod the proxy adds each repo's credential in flight, and holds it to
+that repo. Here the launch receives the resolved credential of every
+checkout and writes them into the driver's state dir, beside the gitconfig
+`GIT_CONFIG_GLOBAL` names, so the user's `~/.gitconfig` never applies.
+Nothing restricts what the workspace does with them: it runs as the server's
+user and holds them all, so the launch only has to make git pick the right
+one for each repo. A link's read-only and `GH_TOKEN` settings
+(docs/project-repos.md) do not exist on this driver for the same reason.
+
+Each HTTPS token becomes lines in a credential store the helper names with
+`store --file=`; without it, `store` would read the user's own
+`~/.git-credentials`, write the tokens into it, and could erase the user's
+entry after a failed push. `credential.useHttpPath` makes git ask for a
+credential by repo path, and the store holds each token under its own
+repo's path (with and without `.git`, and its LFS endpoint), so two repos on
+one host each get their own. A repo on that host the workspace has no
+checkout of gets none.
 
 An SSH key is never written to disk. The launch starts an **ssh-agent per
-workspace**, detached beside the tmux server, and pipes yaac's generated key
-(docs/git-credentials.md) into `ssh-add -`. Only the public half goes in the
-state dir, named by `GIT_SSH_COMMAND` with `-F /dev/null`, `-i` and
-`IdentitiesOnly`, so the user's ssh config does not apply and ssh does
-not offer every key the agent holds (which could lock the account). The
-agent's pid is stored in the workspace marker so teardown stops it and
-recovery can tell a live agent from a stale socket. A state dir can outlive
-a workspace whose host rebooted, so recovery also clears the credential
-store and gh's config of any workspace it finds dead. Host keys use the same project-scoped
-known_hosts as the pod path.
+workspace**, detached beside the tmux server, and pipes each of yaac's
+generated keys (docs/git-credentials.md) into `ssh-add -`. Only the public
+halves go in the state dir, with a table of host, repo path and public key
+file. `GIT_SSH_COMMAND` is `yaac-git-ssh` (staged with the other
+`workspace-bin/` commands) with the table and the known_hosts file. Git
+calls it with the host and the command it wants run there, which names the
+repo; the wrapper runs ssh with `-F /dev/null`, so the user's ssh config
+does not apply, and for a repo in the table with `-i` and `IdentitiesOnly`,
+so ssh offers that repo's key rather than every key the agent holds (which
+would authenticate as the wrong deploy key, or lock the account). Any other
+repo gets ssh with the whole agent. The agent's pid is stored in the
+workspace marker so teardown stops it and recovery can tell a live agent
+from a stale socket. A state dir can outlive a workspace whose host
+rebooted, so recovery also clears the credential store and gh's config of
+any workspace it finds dead. Host keys are checked against the workspace's
+known_hosts, which holds the trusted key of each ssh repo's host, as in a
+pod.
 
 The credential helper list is reset before `store` is added, so a system
 credential manager cannot answer first. `GIT_CONFIG_GLOBAL` points at the
 file the launch wrote, since an inherited value would hide it, including
-identity and trusted directories. Through the real `$HOME`, git does find
-the user's `~/.config/git/ignore` and `attributes`. The workspace's SSH command omits the Tor
-options the server's own git uses; see "Egress control" below.
+identity and trusted directories (one per checkout). Through the real
+`$HOME`, git does find the user's `~/.config/git/ignore` and `attributes`.
+The workspace's SSH command omits the Tor options the server's own git uses;
+see "Egress control" below.
 
-A project the server hosts (docs/hosted-projects.md) needs no secret of its
-own. The workspace's gitconfig rewrites the remote's `yaac.internal` URL to
+A repo the server hosts (docs/hosted-projects.md) needs no secret of its
+own. The workspace's gitconfig rewrites every hosted remote's `yaac.internal` URL to
 the server's loopback origin, and sends the workspace's yaac-mama token
 there as a bearer header. The token is in that file, so the launch writes
 it owner-only.

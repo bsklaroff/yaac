@@ -4,7 +4,7 @@ import type { ProjectSkills, ProjectSummary, SkillDetail, SkillSummary } from '@
 import { SkillsSettings } from '#components/settings/Skills'
 import { useUiStore } from '#lib/store'
 import {
-  mockFetch, renderWithClient, serverSnapshot, testQueryClient, TEST_USER_ID, type FetchMock,
+  mockFetch, projectRepo, renderWithClient, serverSnapshot, testQueryClient, TEST_USER_ID, type FetchMock,
 } from './harness'
 
 // eslint-disable-next-line @typescript-eslint/unbound-method -- only ever restored onto window
@@ -19,7 +19,7 @@ function setMobileViewport(): void {
 }
 
 const project = (name: string): ProjectSummary =>
-  ({ id: `id-${name}`, name, remoteUrl: `https://github.com/o/${name}.git`, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true, scratchDirs: { dirs: [], ignoredTracked: [] }, initSteps: {}, portForwards: [], cacheVolumes: {}, nestedContainers: false, npmCache: true })
+  ({ id: `id-${name}`, name, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [projectRepo({ id: `repo-${name}`, dir: name, remoteUrl: `https://github.com/o/${name}.git` })], scratchDirs: { dirs: [], ignoredTracked: [] }, initSteps: {}, portForwards: [], cacheVolumes: {}, nestedContainers: false, npmCache: true })
 
 const skill = (over: Partial<SkillSummary> & Pick<SkillSummary, 'id' | 'name' | 'source'>): SkillSummary =>
   ({ description: '', agents: [], overriddenFor: [], userInvocable: true, modelInvocable: true, ...over })
@@ -51,9 +51,9 @@ beforeEach(() => {
   server = mockFetch({
     [LIST]: ALPHA,
     [DETAIL]: BODY,
-    'GET /api/project/id-alpha/branches': { branches: ['main', 'feature'], defaultBranch: 'main' },
+    'GET /api/repo/repo-alpha/branches': { branches: ['main', 'feature'], defaultBranch: 'main' },
     'GET /api/project/id-beta/skills': { skills: [skill({ id: 'yaac:beta-only', name: 'beta-only', source: 'yaac', agents: ['pi'] })] },
-    'GET /api/project/id-beta/branches': { branches: ['main'], defaultBranch: 'main' },
+    'GET /api/repo/repo-beta/branches': { branches: ['main'], defaultBranch: 'main' },
   })
 })
 

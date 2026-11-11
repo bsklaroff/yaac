@@ -17,8 +17,8 @@ const KEEP = 'POST /api/workspace/ws-1/keep-scratch-dirs'
 
 /** A project with the default scratch dirs, warning about none but `ignoredTracked`. */
 const project = (ignoredTracked: string[] = []): ProjectSummary => ({
-  id: 'p-1', name: 'demo', remoteUrl: '', addedAt: '', owner: TEST_USER_ID, workspaceCount: 1, stoppedCount: 0,
-  deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true,
+  id: 'p-1', name: 'demo', addedAt: '', owner: TEST_USER_ID, workspaceCount: 1, stoppedCount: 0,
+  deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [],
   scratchDirs: { dirs: [{ path: 'node_modules', sizeGiB: 8 }, { path: 'target', sizeGiB: 32 }], ignoredTracked },
   initSteps: {},
   portForwards: [],

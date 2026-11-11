@@ -61,15 +61,14 @@ export interface UpstreamRedirect {
 
 /**
  * The registration ConfigMap's payload. `projectId` is required (the proxy
- * drops a registration without it); git-auth-failure records are keyed by
- * the owning project. `owner` names
- * the credentials Secret entry every swap, refresh and ssh key resolves
- * through.
+ * drops a registration without it): it selects the repo grants the
+ * workspace is served, and git-auth-failure records are keyed by it.
+ * `owner` names the credentials Secret entry every swap, refresh, git
+ * token and ssh key resolves through.
  */
 export interface ProxyRegistration {
   rules: InjectionRule[]
   allowedHosts: string[]
-  repoUrl?: string
   projectId: string
   owner: string
   upstreamRedirects?: Record<string, UpstreamRedirect>
@@ -152,7 +151,6 @@ export function parseUpstreamRedirectsEnv(
 export function buildProxyRegistration(input: {
   config: ProjectConfig
   allowlist: EgressAllowlist
-  remoteUrl: string
   projectId: string
   owner: string
   secretRules: Record<string, SecretProxyRule>
@@ -169,7 +167,6 @@ export function buildProxyRegistration(input: {
   return {
     rules: buildRulesFromSecrets(input.projectId, input.secretRules),
     allowedHosts,
-    repoUrl: input.remoteUrl,
     projectId: input.projectId,
     owner: input.owner,
     upstreamRedirects: parseUpstreamRedirectsEnv(env.YAAC_E2E_UPSTREAM_REDIRECTS),
@@ -187,8 +184,8 @@ export async function applyProxyRegistration(
 }
 
 /**
- * Write a workspace's full registration from the config and remote
- * the caller resolved, and return it. Idempotent; a claimed prewarmed
+ * Write a workspace's full registration from the config the caller
+ * resolved, and return it. Idempotent; a claimed prewarmed
  * workspace calls it again to pick up the project's current allowlist and
  * proxied secrets.
  */
@@ -198,7 +195,6 @@ export async function registerWorkspaceEgress(
   const registration = buildProxyRegistration({
     config: reg.config,
     allowlist: reg.allowlist,
-    remoteUrl: reg.remoteUrl,
     projectId: reg.projectId,
     owner: reg.owner,
     secretRules: reg.proxySecretRules,

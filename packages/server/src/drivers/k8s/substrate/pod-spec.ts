@@ -10,12 +10,11 @@ export const CA_CONFIGMAP_KEY = 'proxy-ca.pem'
  */
 export const CA_BUNDLE_KEY = 'ca-bundle.pem'
 /**
- * Pod-local directory (an emptyDir) holding the forwarded ssh-agent socket
- * that `SSH_AUTH_SOCK` names. The agent itself is in the proxy pod, reached
- * over TCP (SSH_AGENT_PORT).
+ * Third key in the CA ConfigMap: a known_hosts file holding the proxy's ssh
+ * host key under `SSH_HOST_KEY_ALIAS`, which a workspace's git trusts for
+ * every ssh remote.
  */
-export const SSH_AGENT_MOUNT = '/ssh-agent'
-export const SSH_AGENT_SOCKET_PATH = `${SSH_AGENT_MOUNT}/socket`
+export const CA_SSH_KNOWN_HOSTS_KEY = 'ssh_known_hosts'
 
 /**
  * In-container directory of the nested rootful podman graphroot. It is a

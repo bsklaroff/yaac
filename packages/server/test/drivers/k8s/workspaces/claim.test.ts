@@ -209,7 +209,6 @@ describe('registerWorkspace', () => {
     owner: 'o',
     config: PROJECT_CONFIG_DEFAULTS,
     allowlist: { hosts: [], defaults: true },
-    remoteUrl: 'https://github.com/example/repo.git',
     proxySecretRules: {},
     ...o,
   })

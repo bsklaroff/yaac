@@ -17,7 +17,10 @@ import {
   isPlaceholderClaudeBundle,
   isPlaceholderCodexBundle,
   PLACEHOLDER_ACCESS_TOKEN,
+  PLACEHOLDER_GH_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
+  ghTokenEnvName,
+  ghTokenPlaceholder,
 } from '#tool-auth'
 import {
   claudeKeychainService,
@@ -90,6 +93,16 @@ describe('tool-auth', () => {
       expect(extractClaudeOAuthBundle('not-json')).toBeNull()
       expect(extractClaudeOAuthBundle(JSON.stringify({}))).toBeNull()
       expect(extractClaudeOAuthBundle(JSON.stringify({ claudeAiOauth: {} }))).toBeNull()
+    })
+  })
+
+  describe('GH_TOKEN per repo', () => {
+    it('names each repo in its placeholder and in the variable a session takes its token from', () => {
+      const repo = '7d4e2a1c-5b3f-4e8a-9c6d-1f2e3a4b5c6d'
+      expect(ghTokenPlaceholder(repo)).toBe(`${PLACEHOLDER_GH_TOKEN}-${repo}`)
+      // A shell variable name: no dashes.
+      expect(ghTokenEnvName(repo)).toBe('YAAC_GH_TOKEN_7d4e2a1c5b3f4e8a9c6d1f2e3a4b5c6d')
+      expect(ghTokenEnvName(repo)).toMatch(/^[A-Za-z_][A-Za-z0-9_]*$/)
     })
   })
 

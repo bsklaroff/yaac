@@ -3,6 +3,7 @@ import { and, count, desc, eq, exists, ilike, inArray, isNotNull, isNull, lt, lt
 import { getDb } from './client'
 import { conversations, sessions, workspaceConversations, workspaceGroups, workspaces } from './schema'
 import { deleteWorkspaceConversations } from './conversation-store'
+import { insertWorkspaceRepos, type WorkspaceRepoRow } from './repo-store'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { normalizeTitle } from '@yaac/shared/titles'
 import { ServerError } from '@yaac/shared/errors'
@@ -37,8 +38,10 @@ import type { StepsOutcome } from '@yaac/shared/steps'
 export interface WorkspaceCreatedInput {
   projectId: string
   workspaceId: string
-  /** Branch the workspace forked from. */
-  baseBranch?: string
+  /** Its checkouts, each with the branch it forks from if known yet. */
+  repos?: Array<Omit<WorkspaceRepoRow, 'workspaceId'>>
+  /** Where its shells and steps start. */
+  cwd?: string
   /** The user's title. */
   title?: string
   /** A title generated for the draft or queued entry it came from. */
@@ -91,7 +94,7 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
     .values({
       projectId: input.projectId,
       workspaceId: input.workspaceId,
-      ...(input.baseBranch !== undefined ? { baseBranch: input.baseBranch } : {}),
+      ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
       ...(title !== '' ? { title } : {}),
       ...(input.generatedTitle !== undefined ? { generatedTitle: input.generatedTitle } : {}),
       // A subquery, so a group deleted since the request was resolved
@@ -119,6 +122,7 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
   if (!rows[0]) {
     throw new ServerError('CONFLICT', `workspace id ${input.workspaceId} is already in use`)
   }
+  await insertWorkspaceRepos((input.repos ?? []).map((r) => ({ ...r, workspaceId: input.workspaceId })))
 }
 
 /**
@@ -161,12 +165,6 @@ export async function recordWorkspaceLife(
   await db.update(workspaces)
     .set({ lifeStartedAt: at })
     .where(key(projectId, workspaceId))
-}
-
-/** Record the commit a workspace's checkout was created at. */
-export async function setWorkspaceStartCommit(projectId: string, workspaceId: string, startCommit: string): Promise<void> {
-  const db = await getDb()
-  await db.update(workspaces).set({ startCommit }).where(key(projectId, workspaceId))
 }
 
 /** Record how a non-interactive workspace's graph ended; the first one
@@ -550,16 +548,6 @@ export async function removeWorkspaceRecords(
   await deleteWorkspaceConversations(projectId, workspaceId)
 }
 
-/** Record the branch the workspace is based on. */
-export async function setWorkspaceBaseBranch(
-  projectId: string,
-  workspaceId: string,
-  baseBranch: string,
-): Promise<void> {
-  const db = await getDb()
-  await db.update(workspaces).set({ baseBranch }).where(key(projectId, workspaceId))
-}
-
 /** Take `paths` off the scratch dirs a workspace was started with, so its
  *  stop leaves them in its checkout. A row recording none is left as is. */
 export async function forgetWorkspaceScratchDirs(projectId: string, workspaceId: string, paths: string[]): Promise<void> {
@@ -617,15 +605,6 @@ export async function listLiveWorkspaceRows(): Promise<Array<{
     workspaceId: r.workspaceId,
     ran: ran.has(`${r.projectId}/${r.workspaceId}`),
   }))
-}
-
-/** Every workspace id of a project. */
-export async function listProjectWorkspaceIds(projectId: string): Promise<string[]> {
-  const db = await getDb()
-  const rows = await db.select({ workspaceId: workspaces.workspaceId })
-    .from(workspaces)
-    .where(eq(workspaces.projectId, projectId))
-  return rows.map((r) => r.workspaceId)
 }
 
 /**

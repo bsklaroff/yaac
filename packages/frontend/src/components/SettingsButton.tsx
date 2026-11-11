@@ -6,6 +6,7 @@ import { Modal } from '#components/ui/Modal'
 import { Radio } from '@base-ui/react/radio'
 import { RadioGroup } from '@base-ui/react/radio-group'
 import {
+  BranchIcon,
   CloseIcon,
   DockerIcon,
   GeneralIcon,
@@ -26,6 +27,7 @@ import { CredentialsPane } from '#components/settings/Credentials'
 import { Field } from '#components/settings/Field'
 import { PhoneLinkField } from '#components/settings/PhoneLink'
 import { ProjectSettings } from '#components/settings/ProjectSettings'
+import { ReposSettings } from '#components/settings/Repos'
 import { SkillsSettings } from '#components/settings/Skills'
 import { UsersPane } from '#components/settings/Users'
 import { FileEditor } from '#components/settings/FileEditor'
@@ -47,6 +49,7 @@ const SECTIONS: { key: SettingsSection; label: string; Icon: typeof GeneralIcon 
   { key: 'general', label: 'General', Icon: GeneralIcon },
   { key: 'shortcuts', label: 'Shortcuts', Icon: KeyboardIcon },
   { key: 'credentials', label: 'Credentials', Icon: KeyIcon },
+  { key: 'repos', label: 'Repos', Icon: BranchIcon },
   { key: 'project', label: 'Project Config', Icon: ProjectConfigIcon },
   { key: 'skills', label: 'Skills', Icon: SkillsIcon },
   { key: 'userDockerfile', label: 'User Dockerfile', Icon: DockerIcon },
@@ -215,6 +218,8 @@ export function SettingsButton(
               {section === 'shortcuts' && <ShortcutsPane />}
 
               {section === 'credentials' && <CredentialsPane />}
+
+              {section === 'repos' && <ReposSettings />}
 
               {section === 'project' && <ProjectSettings />}
 

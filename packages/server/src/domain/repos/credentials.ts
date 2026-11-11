@@ -2,19 +2,19 @@ import { ServerError } from '@yaac/shared/errors'
 import { parseGitRemote, usableAssignment } from '@yaac/shared/git-remote'
 import {
   getGitCredential,
-  getProjectRow,
   listGitCredentials,
-  setProjectGitCredential,
+  setRepoGitCredential,
   type GitCredentialRow,
-  type ProjectRow,
+  type RepoRow,
 } from '#db'
 import { fetchKnownHostsEntry } from '#domain/git'
 import type { ResolvedGitCredential } from '#domain/git'
 import { encodeOpenSshPrivateKey } from '#lib/ssh-key'
-import { authorizeProject, type Actor } from '#domain/access'
+import type { Actor } from '#domain/access'
+import { ownRepo } from './access'
 
 /**
- * A project's git credential: assigning one of its owner's credentials
+ * A repo's git credential: assigning one of its owner's credentials
  * (`#domain/auth` keeps them) and resolving it for git.
  */
 
@@ -89,26 +89,25 @@ function sshCredential(cred: GitCredentialRow, knownHostsEntry: string): Resolve
   return { kind: 'ssh', id: cred.id, publicKey: cred.publicKey ?? '', knownHostsEntry }
 }
 
-/** Assign a project its git credential; returns the trusted host key. */
-export async function assignProjectCredential(
+/** Assign a repo its git credential; returns the trusted host key. Only
+ *  the repo's owner assigns one. */
+export async function assignRepoCredential(
   principal: Actor,
-  projectId: string,
+  repoId: string,
   credentialId: string,
 ): Promise<{ knownHostsEntry: string | null }> {
-  const row = await getProjectRow(projectId)
-  if (!row) throw new ServerError('NOT_FOUND', `Project "${projectId}" not found`)
-  await authorizeProject(principal, projectId)
-  if (row.hosted) {
-    throw new ServerError('VALIDATION', `"${row.name}" is hosted by yaac, so it needs no git credential.`)
+  const repo = await ownRepo(principal, repoId)
+  if (repo.hosted) {
+    throw new ServerError('VALIDATION', `${repo.remoteUrl} is hosted by yaac, so it needs no git credential.`)
   }
-  const { knownHostsEntry } = await resolveCredentialForRemote(row.owner, credentialId, row.remoteUrl)
-  await setProjectGitCredential(projectId, credentialId, knownHostsEntry)
+  const { knownHostsEntry } = await resolveCredentialForRemote(repo.owner, credentialId, repo.remoteUrl)
+  await setRepoGitCredential(repoId, credentialId, knownHostsEntry)
   return { knownHostsEntry }
 }
 
-/** The credential each project can use, by project id — for the listing. */
-export async function projectCredentialNames(
-  rows: ProjectRow[],
+/** The credential each repo can use, by repo id, for the listings. */
+export async function repoCredentialNames(
+  rows: RepoRow[],
 ): Promise<Map<string, { id: string; name: string }>> {
   const creds = new Map((await listGitCredentials()).map((c) => [c.id, c]))
   const out = new Map<string, { id: string; name: string }>()
@@ -119,28 +118,27 @@ export async function projectCredentialNames(
   return out
 }
 
-/** The project's git credential, resolved for git; null when it has none
- *  it can use. A hosted project's is always `hosted`. */
-export async function resolveProjectCredential(projectId: string): Promise<ResolvedGitCredential | null> {
-  const row = await getProjectRow(projectId)
-  if (row?.hosted === true) return { kind: 'hosted' }
-  if (row?.gitCredentialId == null) return null
-  const cred = await getGitCredential(row.gitCredentialId)
-  if (!usableAssignment(row, cred)) return null
+/** The repo's git credential, resolved for git; null when it has none it
+ *  can use. A hosted repo's is always `hosted`. */
+export async function resolveRepoCredential(repo: RepoRow): Promise<ResolvedGitCredential | null> {
+  if (repo.hosted) return { kind: 'hosted' }
+  if (repo.gitCredentialId === null) return null
+  const cred = await getGitCredential(repo.gitCredentialId)
+  if (!usableAssignment(repo, cred)) return null
   // An undecryptable secret resolves to null rather than failing obscurely
   // at the remote; the store already logged which row.
   const secret = await cred.openSecret()
   if (secret === undefined) return null
   return cred.kind === 'https'
     ? { kind: 'https', token: secret }
-    : sshCredential(cred, row.knownHostsEntry ?? '')
+    : sshCredential(cred, repo.knownHostsEntry ?? '')
 }
 
-/** The create error for a project with no usable credential. */
-export function missingCredentialError(projectName: string): ServerError {
+/** The create error for a repo with no usable credential. */
+export function missingCredentialError(repo: RepoRow): ServerError {
   return new ServerError(
     'VALIDATION',
-    `Project "${projectName}" has no git credential. Assign one in Settings → Git credentials.`,
+    `${repo.remoteUrl} has no git credential. Assign one in Settings → Repos.`,
   )
 }
 

@@ -20,8 +20,9 @@ import {
   terminalLogDir,
   agentHistoryDir,
   type AgentHistoryPart,
-  CLAUDE_POD_CWD,
-  CLAUDE_POD_REPO,
+  claudeMemoryDirName,
+  claudePodCwd,
+  POD_WORKSPACE_DIR,
   claudeDir,
   codexDir,
   opencodeCheckpointDir,
@@ -34,7 +35,6 @@ import {
   workspaceAttachmentsDir,
   workspaceStateDir,
   workspaceDir,
-  projectDir,
 } from '@yaac/shared/project-paths'
 import {
   CONTAINER_ACP_LOG_DIR,
@@ -46,24 +46,20 @@ import {
 } from '@yaac/shared/paths'
 import { buildCloneLinkExec, buildStatusWarmupExec } from '@yaac/shared/git'
 import { parseGitRemote } from '@yaac/shared/git-remote'
-import { fetchProjectCommit, fetchProjectOrigin, missingCredentialError, resolveProjectCredential, resolveProjectEnv, seedProjectOrigin, sshKeyMaterial } from '#domain/projects'
+import { resolveProjectEnv } from '#domain/projects'
+import { assertCanUseRepo, fetchRepoOrigin, missingCredentialError, resolveRepoCredential, sshKeyMaterial } from '#domain/repos'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { readLock } from '@yaac/shared/lock'
 import {
+  ghTokenEnvName,
+  ghTokenPlaceholder,
   PLACEHOLDER_API_KEY,
-  PLACEHOLDER_GH_TOKEN,
   PLACEHOLDER_OMP_API_KEY,
   PLACEHOLDER_OPENCODE_API_KEY,
   PLACEHOLDER_PI_API_KEY,
 } from '@yaac/shared/tool-auth'
 import { NO_CREDENTIALS_OWNER_KEY, authEntryEndpoint, authEntryProvider, credentialOwnerKey, defaultModelFor, isCatalogModel, loadToolAuthEntry, modelEfforts, seedProjectToolHome, toolKeyProviders } from '#domain/auth'
-import {
-  createCheckout,
-  getDefaultBranch,
-  isGitAuthError,
-  remoteBranchExists,
-  writeKnownHostsFile,
-} from '#domain/git'
+import { getDefaultBranch, isGitAuthError, writeKnownHostsFile, type ResolvedGitCredential } from '#domain/git'
 import { serverLog } from '#lib/log'
 import type { AcpConversation } from '#runtime/agents'
 import { AgentLaunchDeadError, buildWindowsExec, ensureAgentReporters, ensureOmpSettings, ensureToolApiKeyConfig, finishSetupCommand, verifyAgentWindowAlive, whenAcpConversation, openSandboxDir } from '#runtime/agents'
@@ -85,6 +81,16 @@ import {
 import { leaveOpenings, sessionLaunches } from './session-launch'
 import { reportAgentLaunchFailure, throwIfProvisionStopped } from './provisioning'
 import { recordTrackedScratchDirs } from './tracked-scratch-dirs'
+import {
+  checkoutDir,
+  provisionCheckout,
+  refuseCheckingOutOver,
+  storedSelection,
+  workspaceCheckouts,
+  workspaceCwds,
+  type PlannedCheckout,
+  type WorkspaceStart,
+} from './checkouts'
 import { spareSettings } from './prewarm'
 import { CODEX_CONTAINER_HOME, codexHomeMounts } from './codex-home'
 import {
@@ -189,17 +195,11 @@ export interface WorkspaceCreateOptions {
    */
   session?: SessionLaunchSettings
   /**
-   * Reference branch for the fresh workspace (a branch on `origin`, no
-   * `origin/` prefix); unset → the remote's default branch. A resume passes
-   * the row's base branch, used only if its checkout is gone.
+   * What a fresh workspace starts with: its repos, each at a branch or a
+   * commit, their layout and its cwd (`resolveStart`). Absent only on a
+   * resume, which brings back the checkouts its rows record.
    */
-  branch?: string
-  /**
-   * A full commit to create the checkout at, in place of a branch's tip;
-   * the workspace then has no base branch. A resume of a workspace with no
-   * base branch passes its start commit, used only if its checkout is gone.
-   */
-  commit?: string
+  start?: WorkspaceStart
   /**
    * A fresh create's start workflow (docs/workflows.md), with the named
    * workflow it was chosen through: absent runs the project's init steps. A
@@ -263,29 +263,6 @@ export interface WorkspaceCreateOptions {
   onProgress?: (message: string) => void
 }
 
-/** Refuse a resume's checkout over `dir` if it holds the user's files. */
-async function refuseCheckingOutOver(dir: string): Promise<void> {
-  if (!await holdsFiles(dir)) return
-  throw new ServerError(
-    'CONFLICT',
-    `${dir} holds files but no .git, so restarting would check out over them. `
-    + 'Restore its .git or move the files aside, then restart.',
-  )
-}
-
-/** Whether `dir` holds anything but empty directories; a missing one holds
- *  nothing. Links count as files and are not followed. */
-async function holdsFiles(dir: string): Promise<boolean> {
-  const entries = await fs.readdir(dir, { withFileTypes: true }).catch((err: unknown) => {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
-    throw err
-  })
-  for (const e of entries) {
-    if (!e.isDirectory() || await holdsFiles(path.join(dir, e.name))) return true
-  }
-  return false
-}
-
 export interface WorkspaceCreateResult {
   workspaceId: string
   jobName: string
@@ -343,10 +320,10 @@ interface WorkspaceSetupParams {
    * input (bad branch, fetch failure).
    */
   workspace: Promise<void>
-  /** The checkout predates this launch, so it must be relinked to the main
-   *  clone and `remoteUrl`, and its `origin/*` brought up to date. */
-  reusedCheckout: boolean
-  remoteUrl: string
+  /** The workspace's checkouts. One that predates this launch (`reuse`)
+   *  must be relinked to its main clone and remote, and its `origin/*`
+   *  brought up to date. */
+  checkouts: PlannedCheckout[]
 }
 
 /**
@@ -357,7 +334,7 @@ interface WorkspaceSetupParams {
  */
 async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHandle> {
   const {
-    spec, projectId, workspaceId, sessions, life, onLaunched, options, workspace, reusedCheckout, remoteUrl,
+    spec, projectId, workspaceId, sessions, life, onLaunched, options, workspace, checkouts,
   } = params
   const runtime = workspaceDriver()
 
@@ -385,15 +362,18 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   transportReady.catch(() => { /* observed via race */ })
   await Promise.race([transportReady, workspaceFailure])
 
-  // An acp agent reads nothing from the checkout until its conversation
-  // opens, so one going into a checkout this create is writing starts now,
-  // and acpd holds the conversation until the checkout's `.git` lands. The
+  // An acp agent reads nothing from the checkouts until its conversation
+  // opens, so one going into checkouts this create is writing starts now,
+  // and acpd holds the conversation until each checkout's `.git` lands. The
   // adapter's boot then overlaps the checkout. Containerless only: there
   // acpd ships with this server, while a pod's comes from its image, which
   // may predate `--wait-for`. The life's log hooks go first, since a
   // session's window is logged into the life's dir as it opens.
-  const early = runtime.kind === 'containerless' && !reusedCheckout && sessions.every((s) => s.mode === 'acp')
-  const launches = await sessionLaunches(projectId, workspaceId, sessions, paths, { beforeCheckout: early })
+  const seenAt = (c: PlannedCheckout): string => path.posix.join(paths.workspaceDir, c.path)
+  const early = runtime.kind === 'containerless' && checkouts.every((c) => !c.reuse) && sessions.every((s) => s.mode === 'acp')
+  const launches = await sessionLaunches(projectId, workspaceId, sessions, paths, {
+    ...(early ? { waitFor: checkouts.map((c) => `${seenAt(c)}/.git`) } : {}),
+  })
   const tools = [...new Set(launches.map((l) => TOOL_LABELS[l.tool]))]
   const announceAgents = (): void => {
     throwIfProvisionStopped(workspaceId)
@@ -432,12 +412,13 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   // in one command with the checkout's own setup to save round
   // trips, ending with the mark that setup is done, which lets the step
   // reconcile open the life's steps. A checkout this create made already
-  // borrows from the main clone and holds its current refs; a reused one is
+  // borrows from its main clone and holds its current refs; a reused one is
   // relinked so the agent starts current. A pod's file cache is warmed,
   // which a host's needs no help with.
   const setup = [
-    ...(reusedCheckout ? [buildCloneLinkExec(path.join(repoDir(projectId), '.git'), paths.workspaceDir, remoteUrl)] : []),
-    ...(runtime.kind === 'containerless' ? [] : [buildStatusWarmupExec(paths.workspaceDir)]),
+    ...checkouts.filter((c) => c.reuse)
+      .map((c) => buildCloneLinkExec(path.join(repoDir(c.repo.id), '.git'), seenAt(c), c.repo.remoteUrl)),
+    ...(runtime.kind === 'containerless' ? [] : checkouts.map((c) => buildStatusWarmupExec(seenAt(c)))),
     ...(opensEarly ? [] : windows),
     finishSetupCommand(paths),
   ]
@@ -708,19 +689,17 @@ export async function createWorkspace(
 
   const projectRow = await getProjectRow(projectId)
   if (!projectRow) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
-  const { remoteUrl, owner } = projectRow
+  const { owner } = projectRow
 
   const gitUser = await getGitIdentity(owner)
   if (!gitUser) {
     throw new ServerError(
       'VALIDATION',
-      'This project\u2019s owner has no git identity set, so a workspace would commit as nobody. '
-      + 'Set yours in Settings \u2192 General, or with '
+      'This project’s owner has no git identity set, so a workspace would commit as nobody. '
+      + 'Set yours in Settings → General, or with '
       + '`yaac config git-identity --name <name> --email <email>`.',
     )
   }
-
-  const repo = repoDir(projectId)
 
   const { portForwards, cacheVolumes, nestedContainers, npmCache } = projectRow
 
@@ -729,45 +708,96 @@ export async function createWorkspace(
   // (docs/remote-hosting.md).
   const projectEnv = await resolveProjectEnv(projectId)
 
-  // Without a git credential the agent could neither fetch nor push. A
-  // hosted remote is the server itself, so it has no host to check. A site's
-  // release runs no git of its own (the server makes its checkout), so it is
-  // given none and needs none.
-  const remoteHost = projectRow.hosted ? null : parseGitRemote(remoteUrl).host
-  const credential = options.siteId === undefined ? await resolveProjectCredential(projectId) : undefined
-  if (!credential && options.siteId === undefined) throw missingCredentialError(projectRow.name)
-
-  // Started before anything else, since the network is the slowest leg. The
-  // checkout runs alongside it (`createCheckout`'s `fetched`). e2e fixtures
-  // pre-populate the repo, so the fetch is skipped there.
-  if (!testEnv.e2eSkipFetch) emit('Fetching latest from remote...', options)
-  const fetched = testEnv.e2eSkipFetch
-    ? Promise.resolve()
-    : fetchProjectOrigin(projectId).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (remoteHost !== null && isGitAuthError(msg)) {
-        throw new ServerError(
-          'VALIDATION',
-          `git authentication failed for ${remoteHost} — the project's credential was `
-          + 'rejected (expired or revoked?). Assign it a new one in Settings → Git credentials, '
-          + 'then retry.',
-        )
+  // The checkouts: the repos a fresh create starts with, or the ones a
+  // resume's rows record. A resume reuses each as it stands. One with files
+  // but no `.git` (lost to a crash or a partial restore) is refused:
+  // checking out into it would overwrite every tracked file with the base
+  // branch. Only a missing `.git` counts as lost, so a read error fails the
+  // restart instead.
+  const wtDir = workspaceDir(projectId, workspaceId)
+  const resumedRow = options.resume === true ? await getWorkspaceRow(projectId, workspaceId) : undefined
+  if (options.resume !== true && options.start === undefined) throw new Error('a fresh create names what it starts with')
+  const cwd = options.resume === true ? resumedRow?.cwd ?? '' : options.start?.cwd ?? ''
+  const checkouts: PlannedCheckout[] = options.resume === true
+    ? await Promise.all((await workspaceCheckouts(projectId, workspaceId)).map(async (c) => {
+      const reuse = await fs.access(path.join(c.dir, '.git')).then(
+        () => true,
+        (err: unknown) => {
+          if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false
+          throw err
+        },
+      )
+      if (!reuse) await refuseCheckingOutOver(c.dir)
+      return {
+        repo: c.repo,
+        path: c.path,
+        dir: c.dir,
+        reuse,
+        ...(c.baseBranch !== undefined ? { branch: c.baseBranch } : {}),
+        ...(c.baseBranch === undefined && c.startCommit !== undefined ? { commit: c.startCommit } : {}),
       }
-      throw new ServerError('INTERNAL', `could not fetch from remote: ${msg}`)
-    })
-  fetched.catch(() => { /* awaited by the checkout leg */ })
+    }))
+    : (options.start?.repos ?? []).map(({ link, path: at, branch, commit }) => ({
+      repo: link.repo,
+      path: at,
+      dir: checkoutDir(projectId, workspaceId, at),
+      reuse: false,
+      ...(branch !== undefined ? { branch } : {}),
+      ...(commit !== undefined ? { commit } : {}),
+    }))
 
-  // Fail now rather than let the agent hit a confusing proxy 403 on fetch.
-  // Containerless has no proxy, so nothing to check, and the proxy relays
-  // a hosted remote before it reads the allowlist.
+  // Each repo must be its owner's to use, have a git credential (without
+  // one the agent could neither fetch nor push) and, behind a proxy, a host
+  // the egress allowlist admits, so the agent never hits a confusing proxy
+  // 403 on fetch. A hosted remote is the server itself, so it has no host to
+  // check, and the proxy relays it before it reads the allowlist. A site's
+  // release runs no git of its own (the server makes its checkout), so it
+  // is given no credential and needs none. Nor does a checkout whose repo
+  // its owner deleted: a resume brings it back as it stands, with no remote
+  // (docs/project-repos.md "Unlinking and deleting").
   const allowlist = projectRow.egressAllowlist
-  if (runtime.kind !== 'containerless' && remoteHost !== null && !allowlistAllows(allowlist, remoteHost)) {
-    throw new ServerError(
-      'VALIDATION',
-      `Project remote host "${remoteHost}" is not in the egress allowlist. `
-      + 'Add it in Settings \u2192 Project Config.',
-    )
+  const credentials = new Map<string, ResolvedGitCredential>()
+  const remoteOf = (c: PlannedCheckout): { host: string; path: string } | null =>
+    c.repo.hosted ? null : parseGitRemote(c.repo.remoteUrl)
+  const live = checkouts.filter((c) => c.repo.deletedAt === undefined)
+  for (const c of live) {
+    await assertCanUseRepo(owner, c.repo)
+    if (options.siteId !== undefined) continue
+    const credential = await resolveRepoCredential(c.repo)
+    if (!credential) throw missingCredentialError(c.repo)
+    credentials.set(c.repo.id, credential)
+    const host = remoteOf(c)?.host
+    if (runtime.kind !== 'containerless' && host !== undefined && !allowlistAllows(allowlist, host)) {
+      throw new ServerError(
+        'VALIDATION',
+        `The remote host "${host}" of ${c.repo.remoteUrl} is not in the egress allowlist. `
+        + 'Add it in Settings → Project Config.',
+      )
+    }
   }
+
+  // Started before anything else, since the network is the slowest leg. Each
+  // checkout runs alongside its fetch (`createCheckout`'s `fetched`). e2e
+  // fixtures pre-populate the repo, so the fetch is skipped there.
+  if (!testEnv.e2eSkipFetch && live.length > 0) emit('Fetching latest from remote...', options)
+  const fetches = new Map(live.map((c) => {
+    const fetched = testEnv.e2eSkipFetch
+      ? Promise.resolve()
+      : fetchRepoOrigin(c.repo.id).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        const host = remoteOf(c)?.host
+        if (host !== undefined && isGitAuthError(msg)) {
+          throw new ServerError(
+            'VALIDATION',
+            `git authentication failed for ${host} — the credential of ${c.repo.remoteUrl} was `
+            + 'rejected (expired or revoked?). Assign it a new one in Settings → Repos, then retry.',
+          )
+        }
+        throw new ServerError('INTERNAL', `could not fetch from ${c.repo.remoteUrl}: ${msg}`)
+      })
+    fetched.catch(() => { /* awaited by the checkout leg */ })
+    return [c.repo.id, fetched] as const
+  }))
 
   // The sessions this create brings up: a fresh create's one, or the ones a
   // resume had open.
@@ -777,11 +807,15 @@ export async function createWorkspace(
     : resumed
   // Check this runtime can run each tool in its mode (a host installs the
   // pinned version on first use). Otherwise the workspace would die seconds
-  // after reporting success. A fresh create's base branch is read alongside.
-  const [, refBranch] = await Promise.all([
-    Promise.all([...new Map(planned.map((s) => [`${s.tool}|${s.mode}`, s])).values()].map((s) =>
-      runtime.assertCanLaunch({ tool: s.tool, mode: s.mode, onProgress: (message) => { emit(message, options) } }))),
-    options.resume === true || options.commit !== undefined ? undefined : options.branch ?? getDefaultBranch(repo),
+  // after reporting success. A fresh create's base branches are read
+  // alongside.
+  await Promise.all([
+    ...[...new Map(planned.map((s) => [`${s.tool}|${s.mode}`, s])).values()].map((s) =>
+      runtime.assertCanLaunch({ tool: s.tool, mode: s.mode, onProgress: (message) => { emit(message, options) } })),
+    ...checkouts.map(async (c) => {
+      if (options.resume === true || c.commit !== undefined) return
+      c.refBranch = c.branch ?? await getDefaultBranch(repoDir(c.repo.id))
+    }),
   ])
 
   // Warn: containerless has no sandbox, so bypass acts as the user on this
@@ -793,19 +827,6 @@ export async function createWorkspace(
     )
   }
 
-  // A resume reuses its checkout as it stands. One with files but no `.git`
-  // (lost to a crash or a partial restore) is refused: checking out into it
-  // would overwrite every tracked file with the base branch. Only a missing
-  // `.git` counts as lost, so a read error fails the restart instead.
-  const wtDir = workspaceDir(projectId, workspaceId)
-  const reuseCheckout = options.resume === true && await fs.access(path.join(wtDir, '.git')).then(
-    () => true,
-    (err: unknown) => {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false
-      throw err
-    },
-  )
-  if (options.resume === true && !reuseCheckout) await refuseCheckingOutOver(wtDir)
   // Record the row before provisioning anything, so no user workspace's pod
   // exists without one (a rowless pod is invisible to titles, groups and
   // restart). The insert also claims the id: a fresh create reusing a taken
@@ -815,16 +836,22 @@ export async function createWorkspace(
   //
   // A prewarmed spare gets no row until it is claimed; its settings are
   // kept in memory for the claim to match on, once its image is known. The
-  // base branch is recorded now because a workspace queued after this one
-  // defaults to it. The user's zone, as clients report it; a pod otherwise
-  // runs in UTC, and a containerless server's host need not be where the
-  // user is. Recorded so a spare warmed in another zone is never claimed.
+  // base branches are recorded now because a workspace queued after this
+  // one defaults to them. The user's zone, as clients report it; a pod
+  // otherwise runs in UTC, and a containerless server's host need not be
+  // where the user is. Recorded so a spare warmed in another zone is never
+  // claimed. Scratch dirs are the project's, in every checkout.
   const { timeZone } = await getTimeZone(owner)
+  const scratchDirPaths = projectRow.scratchDirs.dirs.map((d) => d.path)
   const launch = {
-    ...(refBranch !== undefined ? { baseBranch: refBranch } : {}),
     ...(timeZone !== null ? { timeZone } : {}),
-    scratchDirs: projectRow.scratchDirs.dirs.map((d) => d.path),
+    scratchDirs: checkouts.flatMap((c) => scratchDirPaths.map((d) => path.posix.join(c.path, d))),
   }
+  const recordedRepos = checkouts.map((c) => ({
+    repoId: c.repo.id,
+    path: c.path,
+    ...(c.refBranch !== undefined ? { baseBranch: c.refBranch } : {}),
+  }))
   throwIfProvisionStopped(workspaceId)
   if (options.prewarm !== true) {
     await applyWorkspaceEvent({
@@ -832,6 +859,7 @@ export async function createWorkspace(
       projectId,
       workspaceId,
       ...launch,
+      ...(options.resume === true ? {} : { repos: recordedRepos, cwd }),
       ...(options.title !== undefined ? { title: options.title } : {}),
       ...(options.generatedTitle !== undefined ? { generatedTitle: options.generatedTitle } : {}),
       ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
@@ -845,13 +873,15 @@ export async function createWorkspace(
     })
   }
 
-  // Pre-create the checkout dir so its hostPath mount (type Directory)
-  // works while the checkout is still running.
+  // Pre-create the workspace dir and each checkout's, so the hostPath mount
+  // (type Directory) works while the checkouts are still running and the
+  // cwd exists when the runtime starts. Then the scratch-dir mount points
+  // (inside each checkout); otherwise the pod may create them root-owned
+  // 0700. createCheckout copes with the non-empty destination.
   await fs.mkdir(wtDir, { recursive: true })
-  // Create the scratch-dir mount points (inside the checkout) now;
-  // otherwise the pod may create them root-owned 0700. createCheckout copes
-  // with the non-empty destination.
-  const scratchDirs = await prepareScratchDirs(wtDir, projectRow.scratchDirs.dirs)
+  for (const c of checkouts) await fs.mkdir(c.dir, { recursive: true })
+  const scratchDirs = (await Promise.all(checkouts.map((c) =>
+    prepareScratchDirs(c.dir, c.path, projectRow.scratchDirs.dirs)))).flat()
 
   // A new life starts once the row exists, before any session is launched
   // in it. A fresh create's session is recorded with its prompt; an `acp`
@@ -861,7 +891,7 @@ export async function createWorkspace(
   let life: Date | undefined
   if (options.prewarm !== true) {
     life = await recordLife(projectId, workspaceId, options.resume === true
-      ? await startStepsOf(projectId, await getWorkspaceRow(projectId, workspaceId))
+      ? await startStepsOf(projectId, resumedRow)
       : options.workflow?.steps ?? await startStepsOf(projectId, undefined))
     sessions = options.session !== undefined
       ? [await insertSession(projectId, workspaceId, options.session)]
@@ -869,7 +899,7 @@ export async function createWorkspace(
   }
 
   // ── Concurrent provisioning ─────────────────────────────────────────
-  // Image, checkout, substrate and host fs prep run concurrently. The
+  // Image, checkouts, substrate and host fs prep run concurrently. The
   // checkout leg is joined later, inside launchWithSetup, so it also
   // overlaps pod boot.
 
@@ -883,79 +913,33 @@ export async function createWorkspace(
     })
   imageTask.catch(() => { /* awaited at the join */ })
 
-  // The checkout leg first gives an origin with no branches its default one,
-  // so no workspace's push picks it (`seedEmptyOrigin`). That push changes
-  // the remote, so it starts only here, once the checks above (credential,
-  // egress allowlist, tool, the row claiming the id) have passed. Only a
-  // provisioning failure can still refuse the create after it.
-  const workspaceTask = (async (): Promise<string | undefined> => {
-    const seeded = fetched.then(() => seedProjectOrigin(projectId, gitUser).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (isGitAuthError(msg)) {
-        throw new ServerError(
-          'VALIDATION',
-          'the remote is empty, and the project\u2019s git credential cannot push the first commit '
-          + 'that gives it a default branch. Give the credential push access, or push a first '
-          + 'commit to the default branch yourself, then retry.',
-        )
-      }
-      throw new ServerError('INTERNAL', `could not give the empty remote its default branch: ${msg}`)
-    }))
-    if (reuseCheckout) {
-      await seeded
-      emit(`Reusing existing workspace at ${wtDir}`, options)
-      return undefined
-    }
-    const branch = `agent/${workspaceId}`
-    const commit = options.commit
-    if (commit !== undefined && (options.resume !== true || options.branch === undefined)) {
-      await seeded
-      await fetchProjectCommit(projectId, commit).catch((err: unknown) => {
-        throw new ServerError('VALIDATION', err instanceof Error ? err.message : String(err))
-      })
-      if (options.resume === true) await refuseCheckingOutOver(wtDir)
-      emit(`Creating workspace at ${commit.slice(0, 12)}...`, options)
-      return await createCheckout(repo, wtDir, { branch, commit, remoteUrl })
-    }
-    if (refBranch !== undefined) {
-      // A fresh create checks out from what the main clone has while the
-      // fetch runs, and checks the named branch once it lands.
-      emit(`Creating workspace from ${refBranch}...`, options)
-      const named = options.branch
-      return await createCheckout(repo, wtDir, {
-        branch,
-        baseBranch: refBranch,
-        remoteUrl,
-        fetched: seeded.then(async () => {
-          if (named === undefined || await remoteBranchExists(repo, named)) return
-          throw new ServerError('VALIDATION', `branch "${named}" not found on origin.`)
-        }),
-      })
-    }
-    // A resume whose checkout is gone recreates it from its recorded base
-    // branch, or from the default if origin no longer has that. The default
-    // is then recorded as its base branch, since the webapp compares HEAD
-    // against origin's copy of whatever the row names.
-    await seeded
-    const base = options.branch !== undefined && !(await remoteBranchExists(repo, options.branch))
-      ? await getDefaultBranch(repo)
-      : options.branch ?? await getDefaultBranch(repo)
-    if (base !== options.branch) {
-      await applyWorkspaceEvent({ type: 'base-branch-resolved', projectId, workspaceId, baseBranch: base })
-    }
-    // Again, since files may have landed while the fetch ran; the module
-    // dirs made since are empty, so they do not count.
-    await refuseCheckingOutOver(wtDir)
-    emit(`Creating workspace from ${base}...`, options)
-    return await createCheckout(repo, wtDir, { branch, baseBranch: base, remoteUrl })
-  })().then(async (startCommit) => {
+  // The checkouts, each alongside its fetch (`provisionCheckout`). An empty
+  // origin's first push changes the remote, so they start only here, once
+  // the checks above (credentials, egress allowlist, tool, the row claiming
+  // the id) have passed. Only a provisioning failure can still refuse the
+  // create after it.
+  const workspaceTask = Promise.all(checkouts.map(async (c) => {
+    const startCommit = await provisionCheckout({
+      projectId,
+      workspaceId,
+      checkout: c,
+      resume: options.resume === true,
+      fetched: fetches.get(c.repo.id) ?? Promise.resolve(),
+      gitUser,
+      emit: (m) => emit(m, options),
+    })
     // A spare's are read when it is claimed, against the branch it is
     // claimed for.
-    if (options.prewarm === true) return
-    if (startCommit !== undefined) {
-      await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId, workspaceId, startCommit })
+    if (options.prewarm !== true && startCommit !== undefined) {
+      await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId, workspaceId, repoId: c.repo.id, startCommit })
     }
-    await recordTrackedScratchDirs(projectId, workspaceId, refBranch ?? options.branch ?? options.commit, launch.scratchDirs)
+  })).then(async () => {
+    if (options.prewarm === true) return
+    await recordTrackedScratchDirs(projectId, workspaceId, checkouts.map((c) => ({
+      repoId: c.repo.id,
+      path: c.path,
+      base: c.refBranch ?? c.branch ?? c.commit,
+    })), scratchDirPaths)
   })
   workspaceTask.catch(() => { /* awaited later */ })
 
@@ -966,7 +950,6 @@ export async function createWorkspace(
     owner: options.siteId !== undefined ? NO_CREDENTIALS_OWNER_KEY : credentialOwnerKey(owner),
     config: { portForwards, cacheVolumes, nestedContainers, npmCache },
     allowlist,
-    remoteUrl,
     nestedContainers,
     proxySecretRules: Object.fromEntries(
       Object.entries(projectEnv.secrets).map(([name, { rule }]) => [name, rule]),
@@ -974,6 +957,18 @@ export async function createWorkspace(
     onProgress: (m) => emit(m, options),
   })
   substrateTask.catch(() => { /* awaited at the join */ })
+
+  // Each repo's main clone, mounted read-only at the server's own path: a
+  // checkout's alternates file names this path (docs/server-git.md).
+  const repoMounts = [...new Set(checkouts.map((c) => `${repoDir(c.repo.id)}/.git`))]
+  // Where an agent can run, each with the repo whose memory claude keeps
+  // there.
+  const cwds = workspaceCwds(checkouts)
+  // The trusted host key of each checkout whose remote is ssh.
+  const sshHostKeys = [...new Set(checkouts.flatMap((c) => {
+    const credential = credentials.get(c.repo.id)
+    return credential?.kind === 'ssh' ? [credential.knownHostsEntry] : []
+  }))]
 
   const prepTask = (async () => {
     const claude = claudeDir(projectId)
@@ -1001,13 +996,13 @@ export async function createWorkspace(
     // shared one.
     const claudeSessions = path.join(workspaceStateDir(projectId, workspaceId), 'claude-sessions')
     // Pre-created so they are server-owned (and so writable in-pod) rather
-    // than root-owned. None may overlap the main clone's mount. A
+    // than root-owned. None may overlap a main clone's mount. A
     // containerless project has none (docs/project-config.md).
     const cacheVolumeEntries = Object.entries(cacheVolumes)
-    const repoMount = `${repo}/.git`
     for (const [key, p] of cacheVolumeEntries) {
-      if (p === repoMount || p.startsWith(`${repoMount}/`) || repoMount.startsWith(`${p}/`)) {
-        throw new ServerError('VALIDATION', `cacheVolumes.${key} (${p}) overlaps the project's git mount at ${repoMount}`)
+      const repoMount = repoMounts.find((m) => p === m || p.startsWith(`${m}/`) || m.startsWith(`${p}/`))
+      if (repoMount !== undefined) {
+        throw new ServerError('VALIDATION', `cacheVolumes.${key} (${p}) overlaps a repo's git mount at ${repoMount}`)
       }
     }
 
@@ -1043,10 +1038,12 @@ export async function createWorkspace(
     // waits on all of it.
     const builtinSkillsStaging = path.join(workspaceStateDir(projectId, workspaceId), 'builtin-skills')
     const workspaceBinStaging = path.join(workspaceStateDir(projectId, workspaceId), 'bin')
-    // SSH remotes need a known_hosts file, written from the host key the
+    // SSH remotes need a known_hosts file, written from the host key each
     // credential was assigned with. How it reaches the workspace is the
-    // driver's concern.
-    const sshKnownHostsFile = credential?.kind === 'ssh' ? path.join(projectDir(projectId), 'known_hosts') : undefined
+    // driver's concern. Per workspace, since each has its own repos.
+    const sshKnownHostsFile = sshHostKeys.length > 0
+      ? path.join(workspaceStateDir(projectId, workspaceId), 'known_hosts')
+      : undefined
     const [opencodeConfigFile, builtinSkillNames, workspaceBinNames] = await Promise.all([
       (async () => {
         // Seed every tool's config (a retooled spare needs it too). Claude
@@ -1060,7 +1057,9 @@ export async function createWorkspace(
           openSandboxDir(projectId, opencodeConfig),
         ])
         const [, , , , keys] = await Promise.all([
-          (sandboxed ? Promise.resolve(['/workspace']) : withResolved([wtDir]))
+          (sandboxed
+            ? Promise.resolve(cwds.map((c) => path.posix.join(POD_WORKSPACE_DIR, c.cwd)))
+            : withResolved(cwds.map((c) => path.join(wtDir, c.cwd))))
             .then((roots) => seedClaudeJson(claudeHome, roots)),
           seedClaudeSettings(claudeHome, { denyWorktrees: runtime.kind !== 'containerless' }),
           // The reporters that publish each agent's conversation, model and
@@ -1085,14 +1084,14 @@ export async function createWorkspace(
       stageWorkspaceBin(workspaceBinDir(), workspaceBinStaging),
       // Every tool's history for this workspace in the layout this driver
       // uses (mounted over the tool homes, or linked into them).
-      convergeAgentHistory(projectId, workspaceId, { layers: sandboxed }),
+      convergeAgentHistory(projectId, workspaceId, cwds, { layers: sandboxed }),
       // Every tool's per-project credential files. With mediated egress they
       // hold placeholders the proxy swaps; without it, the real credentials
       // (docs/containerless-driver.md), merged so a token a running
       // workspace refreshed is not overwritten (#domain/auth).
       seedProjectToolHome(projectId, owner),
-      ...(credential?.kind === 'ssh' && sshKnownHostsFile !== undefined
-        ? [writeKnownHostsFile([credential.knownHostsEntry], sshKnownHostsFile)]
+      ...(sshKnownHostsFile !== undefined
+        ? [writeKnownHostsFile(sshHostKeys, sshKnownHostsFile)]
         : []),
     ])
     if (sandboxed && builtinSkillNames.length > 0) {
@@ -1115,9 +1114,15 @@ export async function createWorkspace(
   })()
 
   const [imageRef, substrate, prep] = await Promise.all([imageTask, substrateTask, prepTask])
-  // The image too, so a spare that outlives an image change is never claimed.
-  if (options.prewarm === true) {
-    spareSettings.set(workspaceId, { ...launch, ...(imageRef !== undefined ? { image: imageRef } : {}) })
+  // The image too, so a spare that outlives an image change is never
+  // claimed, and what it started with, which a claim must ask for exactly.
+  if (options.prewarm === true && options.start !== undefined) {
+    spareSettings.set(workspaceId, {
+      ...launch,
+      selection: storedSelection(options.start),
+      repos: recordedRepos,
+      ...(imageRef !== undefined ? { image: imageRef } : {}),
+    })
   }
   const {
     toolAuthByTool, keyProviders, opencodeConfigFile, sshKnownHostsFile, cacheVolumeEntries,
@@ -1229,16 +1234,32 @@ export async function createWorkspace(
   // Codex OAuth reads the mounted .codex/auth.json. Setting OPENAI_API_KEY
   // could switch codex to api-key mode.
 
-  // For an HTTPS GitHub remote, give `gh` the project's git token (a
-  // placeholder the proxy swaps on api.github.com, if mediated) so it is
-  // logged in. Skipped if the user set their own GH_TOKEN/GITHUB_TOKEN.
+  // For each HTTPS GitHub repo whose link allows it, a variable holding its
+  // git token (a placeholder the proxy swaps on api.github.com, if
+  // mediated), so `gh` is logged in: `GH_TOKEN` is the one of the repo the
+  // workspace's cwd is in, else the first, and a session running in another
+  // repo's checkout takes that repo's (`sessionLaunches`). Skipped if the
+  // user set their own GH_TOKEN/GITHUB_TOKEN. Without a sandbox the
+  // workspace holds every credential, so the link's settings do not apply
+  // (docs/project-repos.md "Read-only repos").
   const userWiresGithubToken = env.some((e) => e.startsWith('GH_TOKEN='))
     || projectEnv.secrets.GH_TOKEN !== undefined
     || projectEnv.secrets.GITHUB_TOKEN !== undefined
-  if (credential?.kind === 'https' && remoteHost !== null
-    && ghApiHostForGitHost(remoteHost) !== null
-    && !userWiresGithubToken) {
-    env.push(`GH_TOKEN=${sandboxed ? PLACEHOLDER_GH_TOKEN : credential.token}`)
+  const ghRepos = userWiresGithubToken ? [] : checkouts.flatMap((c) => {
+    const credential = credentials.get(c.repo.id)
+    const host = remoteOf(c)?.host
+    const link = projectRow.repos.find((l) => l.repo.id === c.repo.id)
+    if (credential?.kind !== 'https' || host === undefined || ghApiHostForGitHost(host) === null) return []
+    if (sandboxed && (link === undefined || !link.ghToken || link.readOnly)) return []
+    return [{ path: c.path, repoId: c.repo.id, value: sandboxed ? ghTokenPlaceholder(c.repo.id) : credential.token }]
+  })
+  for (const { repoId, value } of ghRepos) {
+    env.push(`${ghTokenEnvName(repoId)}=${value}`)
+    secretEnvKeys.push(ghTokenEnvName(repoId))
+  }
+  const defaultGh = ghRepos.find((r) => r.path === cwd) ?? ghRepos.at(0)
+  if (defaultGh !== undefined) {
+    env.push(`GH_TOKEN=${defaultGh.value}`)
     secretEnvKeys.push('GH_TOKEN')
   }
 
@@ -1292,7 +1313,11 @@ export async function createWorkspace(
     emit(`Offering host port ${hostPort} -> container port ${containerPort}`, options)
   })
 
-  // Inputs for yaac-workspace-init.
+  // The workspace dir as the workspace sees it (containerless translates
+  // the mount path), and its checkouts relative to it (`.` for one at the
+  // root), colon-separated: read by yaac-workspace-init and yaac-mama.
+  env.push(`YAAC_WORKSPACE_DIR=${POD_WORKSPACE_DIR}`)
+  env.push(`YAAC_CHECKOUTS=${checkouts.map((c) => c.path || '.').join(':')}`)
   env.push(`YAAC_GIT_NAME=${gitUser.name}`)
   env.push(`YAAC_GIT_EMAIL=${gitUser.email}`)
   env.push(`YAAC_STATUS_RIGHT=${buildStatusRight(workspaceId, forwardedPorts)}`)
@@ -1316,10 +1341,8 @@ export async function createWorkspace(
   const history = (part: AgentHistoryPart): string => agentHistoryDir(projectId, workspaceId, part)
   const binMounts = workspaceBinMounts(workspaceBinStaging, workspaceBinNames)
   const allMounts: WorkspaceMount[] = [
-    { source: { kind: 'hostPath', path: wtDir }, mountPath: '/workspace' },
-    // Read-only, at the server's own path: the checkout's alternates file
-    // names this path (docs/server-git.md).
-    { source: { kind: 'hostPath', path: `${repo}/.git` }, mountPath: `${repo}/.git`, readOnly: true },
+    { source: { kind: 'hostPath', path: wtDir }, mountPath: POD_WORKSPACE_DIR },
+    ...repoMounts.map((m): WorkspaceMount => ({ source: { kind: 'hostPath', path: m }, mountPath: m, readOnly: true })),
     { source: { kind: 'hostPath', path: claude }, mountPath: '/home/yaac/.claude' },
     { source: { kind: 'hostPath', path: acpLogs }, mountPath: CONTAINER_ACP_LOG_DIR },
     { source: { kind: 'hostPath', path: terminalLogs }, mountPath: CONTAINER_TERMINAL_LOG_DIR },
@@ -1334,16 +1357,17 @@ export async function createWorkspace(
     { source: { kind: 'hostPath', path: history('codex-sqlite') }, mountPath: CODEX_SQLITE_CONTAINER_DIR },
     { source: { kind: 'hostPath', path: history('pi') }, mountPath: PI_SESSIONS_CONTAINER_DIR },
     // The rest sit inside the shared tool homes, so they are layered over
-    // them, with claude's shared project memory put back on top, and the
+    // them, with claude's shared memory put back on top for each cwd (its
+    // repo's, or the project's for a root that is no checkout), and the
     // pod's own claude `sessions/` beside them. Without layering,
     // convergeAgentHistory links the history in instead.
     ...(sandboxed
       ? [
         { source: { kind: 'hostPath' as const, path: history('claude') }, mountPath: `${CLAUDE_CONTAINER_HOME}/projects` },
-        {
-          source: { kind: 'hostPath' as const, path: path.join(claude, 'projects', CLAUDE_POD_REPO, 'memory') },
-          mountPath: `${CLAUDE_CONTAINER_HOME}/projects/${CLAUDE_POD_CWD}/memory`,
-        },
+        ...cwds.map((c) => ({
+          source: { kind: 'hostPath' as const, path: path.join(claude, 'projects', claudeMemoryDirName(c.repoId), 'memory') },
+          mountPath: `${CLAUDE_CONTAINER_HOME}/projects/${claudePodCwd(c.cwd)}/memory`,
+        })),
         { source: { kind: 'hostPath' as const, path: history('claude-file-history') }, mountPath: `${CLAUDE_CONTAINER_HOME}/file-history` },
         { source: { kind: 'hostPath' as const, path: claudeSessions }, mountPath: `${CLAUDE_CONTAINER_HOME}/sessions` },
         { source: { kind: 'hostPath' as const, path: history('codex') }, mountPath: `${CODEX_CONTAINER_HOME}/sessions` },
@@ -1375,21 +1399,32 @@ export async function createWorkspace(
   // given run secrets is held to the same, so nothing an agent wrote into
   // one of those runs beside the real values. Without a sandbox an agent
   // runs as the host user, who can read them anyway.
-  const releaseMountPaths = new Set(['/workspace', `${repo}/.git`, CONTAINER_TERMINAL_LOG_DIR, CONTAINER_TMUX_DIR])
+  const releaseMountPaths = new Set([POD_WORKSPACE_DIR, ...repoMounts, CONTAINER_TERMINAL_LOG_DIR, CONTAINER_TMUX_DIR])
   const mounts = options.siteId === undefined && !(sandboxed && runSecrets.length > 0)
     ? allMounts
     : allMounts.filter((m) => releaseMountPaths.has(m.mountPath) || binMounts.includes(m))
 
-  // Without a proxy to inject auth, the workspace's git needs the real
-  // credential: the checkout's `origin` URL carries no token.
-  let gitCredential: WorkspaceGitCredential | undefined
+  // Without a proxy to inject auth, the workspace's git needs each repo's
+  // real credential: a checkout's `origin` URL carries no token.
+  const gitCredentials: WorkspaceGitCredential[] = []
   if (!sandboxed) {
-    if (credential?.kind === 'https' && remoteHost !== null) {
-      gitCredential = { kind: 'https', host: remoteHost, token: credential.token }
-    } else if (credential?.kind === 'ssh') {
-      gitCredential = { kind: 'ssh', privateKey: await sshKeyMaterial(credential.id) }
-    } else if (credential?.kind === 'hosted' && mama?.origin !== undefined) {
-      gitCredential = { kind: 'hosted', origin: mama.origin, token: mama.token }
+    for (const c of checkouts) {
+      const credential = credentials.get(c.repo.id)
+      const remote = remoteOf(c)
+      if (credential?.kind === 'https' && remote !== null) {
+        gitCredentials.push({ kind: 'https', host: remote.host, path: remote.path, token: credential.token })
+      } else if (credential?.kind === 'ssh' && remote !== null) {
+        gitCredentials.push({
+          kind: 'ssh',
+          host: remote.host,
+          path: remote.path,
+          privateKey: await sshKeyMaterial(credential.id),
+          publicKey: credential.publicKey,
+        })
+      } else if (credential?.kind === 'hosted' && mama?.origin !== undefined
+        && !gitCredentials.some((g) => g.kind === 'hosted')) {
+        gitCredentials.push({ kind: 'hosted', origin: mama.origin, token: mama.token })
+      }
     }
   }
 
@@ -1413,8 +1448,11 @@ export async function createWorkspace(
       ? {}
       : { preStopExec: [`/usr/local/bin/${OPENCODE_CHECKPOINT_SCRIPT}`, 'stop'] }),
     nestedContainers,
-    ...(sshKnownHostsFile !== undefined && options.siteId === undefined ? { ssh: { knownHostsFile: sshKnownHostsFile } } : {}),
-    ...(gitCredential !== undefined ? { gitCredential } : {}),
+    cwd,
+    ...(sshKnownHostsFile !== undefined
+      ? { ssh: { knownHostsFile: sshKnownHostsFile } }
+      : {}),
+    gitCredentials,
     substrate,
     ...(options.siteId !== undefined ? { siteId: options.siteId } : {}),
     ...(options.colocateWith !== undefined ? { colocateWith: options.colocateWith } : {}),
@@ -1446,7 +1484,7 @@ export async function createWorkspace(
       onLaunched: (h) => {
         target = { projectId, workspaceId: workspaceId, unitName: h.jobName }
       },
-      options, workspace: workspaceTask, reusedCheckout: reuseCheckout, remoteUrl,
+      options, workspace: workspaceTask, checkouts,
     })
   } catch (err) {
     // Tear down the half-started unit, or it would list as a bogus

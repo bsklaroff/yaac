@@ -1,15 +1,13 @@
 import { workspaceDriver } from '#drivers/driver'
 import { deleteWorkspaceState, tearingDown } from './cleanup'
 import { claimDeletion, removeProvisioning } from './provisioning'
+import { collectDeletedRepos } from './repo-teardown'
 import { resolveWorkspaceId } from './resolve'
 import { authorizeProject, type Actor } from '#domain/access'
 import {
   deleteWorkspaceRecords,
   findWorkspaceRow,
-  getProjectConversations,
-  listProjectWorkspaceIds,
   listQueuedWorkspaceRows,
-  listWorkspaceConversations,
 } from '#db'
 import { ServerError } from '@yaac/shared/errors'
 
@@ -22,9 +20,7 @@ import { ServerError } from '@yaac/shared/errors'
  * rows are gone, so no restart or queued child can start on it meanwhile.
  * Only a stopped workspace is deleted, so a delete never races its own
  * runtime writing the checkout. Refused too: one with entries queued after
- * it, which would wait on a parent that can no longer stop, and one where a
- * conversation it started has been resumed by a sibling, since the
- * transcript lives in this workspace's history.
+ * it, which would wait on a parent that can no longer stop.
  *
  * The files go before the rows. If removing them fails, the row stays and
  * the workspace is still listed as stopped; no sweep collects a checkout
@@ -51,24 +47,14 @@ export async function deleteWorkspace(principal: Actor, idOrPrefix: string): Pro
       throw new ServerError('CONFLICT', `workspace ${short} has ${queued.length} queued workspace(s) waiting on it; `
         + 'discard or run them first')
     }
-    // Only a conversation that started here, which this workspace linked
-    // before any sibling did; one it merely resumed lives elsewhere.
-    const own = new Map((await listWorkspaceConversations(projectId, workspaceId))
-      .map((l) => [l.conversationId, l.firstSeenAt.getTime()]))
-    const siblings = (await listProjectWorkspaceIds(projectId)).filter((w) => w !== workspaceId)
-    const sharer = [...(await getProjectConversations(projectId, siblings)).values()].flat()
-      .find((l) => (own.get(l.conversationId) ?? Infinity) <= l.firstSeenAt.getTime())
-    if (sharer) {
-      throw new ServerError('CONFLICT', `workspace ${short}'s conversation ${sharer.conversationId} is resumed in `
-        + `workspace ${sharer.workspaceId.slice(0, 8)}, and its transcript would go with this one`)
-    }
-
     if (!await deleteWorkspaceState(projectId, workspaceId)) {
       throw new ServerError('INTERNAL', `could not remove all of workspace ${short}'s files (see the server log); `
         + 'its record is kept so the delete can be retried, and a restart '
         + 'reuses its .git (run `git restore .` there to bring back its tracked files)')
     }
     await deleteWorkspaceRecords(projectId, workspaceId)
+    // It may have been the last to hold a checkout of a deleted repo.
+    await collectDeletedRepos().catch(() => { /* the reconcile step retries */ })
     // Under the hold no live entry can exist, so this drops only a failed
     // restart's, which would otherwise stay listed for a workspace that is
     // gone.

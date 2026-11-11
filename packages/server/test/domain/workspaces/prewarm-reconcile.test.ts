@@ -23,6 +23,7 @@ vi.mock('#db', async (importOriginal) => ({
   ...(await importOriginal<typeof dbModule>()),
   getTimeZone: vi.fn(),
   findWorkspaceRow: vi.fn(),
+  getProjectRow: vi.fn(),
   listProjectRows: vi.fn(),
 }))
 
@@ -49,7 +50,7 @@ import {
 import { createWorkspace } from '#domain/workspaces/create'
 import { clearAllProvisioningForTests, failProvisioning, registerProvisioning } from '#domain/workspaces/provisioning'
 import { cleanupWorkspace, deleteWorkspaceState } from '#domain/workspaces/cleanup'
-import { findWorkspaceRow, getTimeZone, listProjectRows, type ProjectRow, type WorkspaceRow } from '#db'
+import { findWorkspaceRow, getProjectRow, getTimeZone, listProjectRows, type ProjectRow, type WorkspaceRow } from '#db'
 
 /** The workspaces the runtime reports for a pass. */
 const mockWorkspaces = vi.fn<() => Promise<RuntimeHandle[]>>()
@@ -59,8 +60,28 @@ const mockCreate = vi.mocked(createWorkspace)
 const mockCleanup = vi.mocked(cleanupWorkspace)
 const mockDeleteState = vi.mocked(deleteWorkspaceState)
 
-/** A spare's create: it opens no session, so it takes no agent settings. */
-const WARM = { prewarm: true, workspaceId: expect.any(String) as string }
+/** The one repo each project here links, which its last create started
+ *  with, at the workspace root. */
+const REPO = 'r'
+const project = (id: string): ProjectRow => ({
+  id,
+  createDefaults: {},
+  repos: [{ projectId: id, dir: 'r', readOnly: false, ghToken: true, lastIncluded: true, repo: { id: REPO } }],
+}) as unknown as ProjectRow
+
+/** A spare warmed with that. */
+const WARMED: Pick<SpareSettings, 'selection' | 'repos'> = {
+  selection: { repos: [{ repo: REPO }], nested: false, cwd: REPO },
+  repos: [{ repoId: REPO, path: '' }],
+}
+
+/** A spare's create: it opens no session, so it takes no agent settings,
+ *  and starts with what the project's last create did. */
+const WARM = {
+  prewarm: true,
+  workspaceId: expect.any(String) as string,
+  start: expect.objectContaining({ repos: [expect.objectContaining({ path: '' })], nested: false, cwd: '' }) as unknown,
+}
 
 /** The image the fake driver says the project builds now. */
 const IMAGE = 'registry.test/fake-image:latest'
@@ -82,7 +103,7 @@ async function pass(): Promise<void> {
 function pod(o: Partial<PodInfo> & { prewarmed?: boolean; warmed?: Partial<SpareSettings> | null } = {}): RuntimeHandle {
   const { prewarmed, warmed, ...rest } = o
   if (prewarmed === true && warmed !== null) {
-    spareSettings.set(o.workspaceId ?? 's1', { image: IMAGE, ...warmed })
+    spareSettings.set(o.workspaceId ?? 's1', { image: IMAGE, ...WARMED, ...warmed })
   }
   return runtimeHandleFromPod({
     jobName: 'yaac-p-s1',
@@ -105,6 +126,7 @@ describe('reconcilePrewarmPool', () => {
     clearAllProvisioningForTests()
     mockWorkspaces.mockResolvedValue([])
     vi.mocked(listProjectRows).mockResolvedValue([])
+    vi.mocked(getProjectRow).mockImplementation((id) => Promise.resolve(project(id)))
     vi.mocked(getTimeZone).mockResolvedValue({ timeZone: null, pinned: false })
     vi.mocked(findWorkspaceRow).mockResolvedValue(undefined)
     installFakeWorkspaceDriver({ destroy })
@@ -256,7 +278,7 @@ describe('reconcilePrewarmPool', () => {
   it('forgets a spawn that throws', async () => {
     mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-real', workspaceId: 'r1' })])
     mockCreate.mockImplementation((_projectId, options) => {
-      spareSettings.set(options.workspaceId ?? '', { })
+      spareSettings.set(options.workspaceId ?? '', WARMED)
       return Promise.reject(new Error('boom'))
     })
     await pass()
@@ -358,7 +380,7 @@ describe('reconcilePrewarmPool', () => {
   // changed (or was first reported) is replaced rather than left unclaimable.
   it('replaces a spare warmed in another zone than the user\'s current one', async () => {
     vi.mocked(listProjectRows).mockResolvedValue([
-      { id: 'p', createDefaults: {} } as unknown as ProjectRow,
+      project('p'),
     ])
     vi.mocked(getTimeZone).mockResolvedValue({ timeZone: 'Asia/Tokyo', pinned: false })
     mockWorkspaces.mockResolvedValue([
@@ -374,7 +396,7 @@ describe('reconcilePrewarmPool', () => {
   // would hand the user the old toolchain.
   it('replaces a spare warmed on an image the project no longer builds', async () => {
     vi.mocked(listProjectRows).mockResolvedValue([
-      { id: 'p', createDefaults: {} } as unknown as ProjectRow,
+      project('p'),
     ])
     installFakeWorkspaceDriver({ destroy, currentImage: () => Promise.resolve(`${IMAGE}-edited`) })
     mockWorkspaces.mockResolvedValue([
@@ -386,9 +408,22 @@ describe('reconcilePrewarmPool', () => {
     expect(mockCreate).toHaveBeenCalledWith('p', WARM)
   })
 
+  // Its checkouts and cwd are fixed too, and a claim asks for exactly what
+  // the next create starts with, which is what the last one did.
+  it('replaces a spare warmed with other repos or cwd than the project\'s last create started with', async () => {
+    vi.mocked(listProjectRows).mockResolvedValue([project('p')])
+    mockWorkspaces.mockResolvedValue([
+      pod({ jobName: 'yaac-p-real', workspaceId: 'r1' }),
+      pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true, warmed: { repos: [{ repoId: REPO, path: 'r' }] } }),
+    ])
+    await pass()
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2', keepRecord: true })
+    expect(mockCreate).toHaveBeenCalledWith('p', WARM)
+  })
+
   it('keeps a spare whose mode, zone and image match', async () => {
     vi.mocked(listProjectRows).mockResolvedValue([
-      { id: 'p', createDefaults: {} } as unknown as ProjectRow,
+      project('p'),
     ])
     vi.mocked(getTimeZone).mockResolvedValue({ timeZone: 'Asia/Tokyo', pinned: false })
     mockWorkspaces.mockResolvedValue([
@@ -471,7 +506,7 @@ describe('reconcilePrewarmPool', () => {
         jobName: 'yaac-p-spare',
         workspaceId: 's2',
         prewarmed: true,
-        warmed: { baseBranch: 'dev' },
+        warmed: { repos: [{ repoId: REPO, path: '', baseBranch: 'dev' }] },
       }),
     ]
 
@@ -491,7 +526,7 @@ describe('reconcilePrewarmPool', () => {
       await pass()
       await flush()
       expect(mockRebranch).toHaveBeenCalledWith(
-        expect.objectContaining({ workspaceId: 's2' }), 'dev', 'new',
+        expect.objectContaining({ workspaceId: 's2' }), '/workspace', 'dev', 'new',
       )
       // Already at that tip: no further exec, let alone a move.
       head = 'new'

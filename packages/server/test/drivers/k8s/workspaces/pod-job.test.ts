@@ -7,8 +7,6 @@ import { promisify } from 'node:util'
 import {
   CA_CONFIGMAP_NAME,
   NESTED_GRAPHROOT_PATH,
-  SSH_AGENT_MOUNT,
-  SSH_AGENT_SOCKET_PATH,
   installSecurityContext,
   sentryTmpfsAnnotations,
 } from '#drivers/k8s/substrate'
@@ -498,20 +496,6 @@ describe('buildPodJobManifest', () => {
       mountPath: CA_MOUNT_DIR,
       readOnly: true,
     })
-  })
-
-  it('always mounts a pod-local emptyDir for the forwarded ssh-agent socket', () => {
-    // Used only within the pod, so the proxy can be on another node.
-    const m = build()
-    const { volumes, containers } = m.spec.template.spec
-    expect(volumes).toContainEqual({ name: 'ssh-agent', emptyDir: {} })
-    expect(containers[0].volumeMounts).toContainEqual({
-      name: 'ssh-agent',
-      mountPath: SSH_AGENT_MOUNT,
-    })
-    expect(SSH_AGENT_SOCKET_PATH.startsWith(`${SSH_AGENT_MOUNT}/`)).toBe(true)
-    expect(volumes.filter((v) => v.name === 'ssh-agent')
-      .every((v) => !('hostPath' in v))).toBe(true)
   })
 
   describe('nestedContainers', () => {

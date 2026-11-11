@@ -26,6 +26,7 @@
  * second base shares what it can.
  */
 
+import { posix } from 'node:path'
 import { workspaceDriver } from '#drivers/driver'
 import { ServerError } from '@yaac/shared/errors'
 import { DIFF_CUT_LINE } from '@yaac/shared/types'
@@ -58,6 +59,9 @@ export const CHANGES_READING_GONE = 8
  * working tree again.
  */
 export interface ChangesRequest {
+  /** The checkout read, by its path under the workspace root; the one at
+   *  the root when absent. */
+  checkout?: string
   base?: string
   /** The ref compared against when `base` is unset (`forkBase`). */
   defaultBase?: string
@@ -559,17 +563,22 @@ const HELD_IDLE_MS = 5 * 60_000
 
 const entryKey = (settings: string, line: string): string => `${settings} ${line}`
 
-/** The workspace's held changes, after dropping what has gone idle. */
-function heldFor(jobName: string): Held {
+/** What names one checkout of one workspace among the held changes and
+ *  the queued reads. */
+const checkoutKey = (jobName: string, checkout: string): string => `${jobName}\n${checkout}`
+
+/** One checkout's held changes, after dropping what has gone idle. */
+function heldFor(jobName: string, checkout: string): Held {
   const now = Date.now()
   for (const [name, h] of heldChanges) {
     for (const [k, r] of h.readings) if (now - r.usedAt > HELD_IDLE_MS) h.readings.delete(k)
     if (h.readings.size === 0) heldChanges.delete(name)
   }
-  let held = heldChanges.get(jobName)
+  const key = checkoutKey(jobName, checkout)
+  let held = heldChanges.get(key)
   if (!held) {
     held = { raws: new Map(), readings: new Map(), entries: new Map(), file: { loaded: false, bytes: 0, unsaved: new Set() }, warm: false }
-    heldChanges.set(jobName, held)
+    heldChanges.set(key, held)
   }
   return held
 }
@@ -587,9 +596,10 @@ function prune(held: Held): void {
   }
 }
 
-/** Drop what the server holds of a workspace's changes, on teardown. */
+/** Drop what the server holds of a workspace's changes, in every checkout,
+ *  on teardown. */
 export function forgetWorkspaceChanges(jobName: string): void {
-  heldChanges.delete(jobName)
+  for (const key of heldChanges.keys()) if (key.startsWith(checkoutKey(jobName, ''))) heldChanges.delete(key)
 }
 
 /**
@@ -813,12 +823,11 @@ function pathArgs(files: { path: string; oldPath?: string }[]): string[] {
  * cap. Returns whether a body failed.
  */
 async function fill(
-  jobName: string, held: Held, needs: Need[], attrs: string, opts: { timeout: number; signal?: AbortSignal },
+  jobName: string, checkout: string, held: Held, needs: Need[], attrs: string, opts: { timeout: number; signal?: AbortSignal },
 ): Promise<boolean> {
   if (needs.length === 0) return false
-  const { workspaceDir, scratchDir } = workspaceDriver().workspacePaths(jobName)
-  const indexFile = indexFileIn(scratchDir)
-  const script = shSingleQuote(fillScript(workspaceDir, indexFile))
+  const { dir, indexFile } = readPaths(jobName, checkout)
+  const script = shSingleQuote(fillScript(dir, indexFile))
   const runs = needs.map((n) => `sh -c ${script} yaac-fill `
     + [n.a, n.b, n.renames ? '' : '!', n.body ? 'nd' : 'n', '0', String(MAX_FILE_DIFF_BYTES), String(WORKSPACE_DIFF_CAP_BYTES), attrs,
       ...n.lines === 'all' ? [] : ['--', ...pathArgs(n.lines)]].map(shSingleQuote).join(' ')).join(' && ')
@@ -863,7 +872,7 @@ async function fill(
       held.file.unsaved.add(key)
     }
   }
-  return (await fill(jobName, held, again, attrs, opts)) || failed
+  return (await fill(jobName, checkout, held, again, attrs, opts)) || failed
 }
 
 /**
@@ -957,9 +966,9 @@ const LISTING_RANK = { undefined: 0, paths: 1, full: 2 } as const
 const listingRank = (r: ChangesRequest): number => LISTING_RANK[r.listing ?? 'undefined']
 
 /**
- * Run `read` for a workspace's changes, one read at a time, sharing reads
- * between requests. The reads share one git index in the workspace, so
- * they cannot overlap, and each walks the whole working tree, which is
+ * Run `read` for the changes of one checkout of a workspace, one read at a
+ * time, sharing reads between requests. A checkout's reads share one git
+ * index in the workspace, so they cannot overlap, and each walks the whole working tree, which is
  * slow on a network filesystem. A request against the same base therefore
  * joins a read still queued, widening what it asks for, rather than
  * queuing one of its own. It never joins the running read: that read
@@ -978,7 +987,8 @@ export function runChangesRead(
   read: (request: ChangesRequest, signal: AbortSignal) => Promise<ChangesReading>,
   signal?: AbortSignal,
 ): Promise<ChangesReading> {
-  const runs = changesRuns.get(jobName) ?? []
+  const key = checkoutKey(jobName, request.checkout ?? '')
+  const runs = changesRuns.get(key) ?? []
   let run = runs.find((r) => !r.started && !r.abandon.signal.aborted
     && (r.request.base ?? '') === (request.base ?? '') && (r.request.defaultBase ?? '') === (request.defaultBase ?? ''))
   if (run) {
@@ -999,11 +1009,11 @@ export function runChangesRead(
         return await read(queued.request, queued.abandon.signal)
       } finally {
         runs.splice(runs.indexOf(queued), 1)
-        if (runs.length === 0) changesRuns.delete(jobName)
+        if (runs.length === 0) changesRuns.delete(key)
       }
     })()
     runs.push(queued)
-    changesRuns.set(jobName, runs)
+    changesRuns.set(key, runs)
     run = queued
   }
   const joined = run
@@ -1047,7 +1057,19 @@ function answerFor(reading: ChangesReading, request: ChangesRequest): ChangesRea
  */
 const READ_TIMEOUT_MS = { warm: 20_000, cold: 120_000 }
 
-const indexFileIn = (scratchDir: string): string => `${scratchDir}/yaac-changes.idx`
+/**
+ * Where one checkout's reads run: the checkout as the workspace sees it,
+ * and its private git index in the workspace's scratch, whose name every
+ * other file a read keeps there is derived from. `checkout` is its path
+ * under the workspace root, one folder name or `''`.
+ */
+function readPaths(jobName: string, checkout: string): { dir: string; indexFile: string } {
+  const { workspaceDir, scratchDir } = workspaceDriver().workspacePaths(jobName)
+  return {
+    dir: posix.join(workspaceDir, checkout),
+    indexFile: `${scratchDir}/yaac-changes${checkout === '' ? '' : `.${checkout}`}.idx`,
+  }
+}
 
 /**
  * Run `cmd`, fetching an output it left in a file (`PRINT_OUTPUT`) in
@@ -1085,10 +1107,9 @@ async function execPaged(
 async function runScan(
   jobName: string, held: Held, req: ChangesRequest, opts: { timeout: number; maxAttempts: number; signal: AbortSignal },
 ): Promise<Scan> {
-  const { workspaceDir, scratchDir } = workspaceDriver().workspacePaths(jobName)
-  const indexFile = indexFileIn(scratchDir)
+  const { dir, indexFile } = readPaths(jobName, req.checkout ?? '')
   const write = entryFileWrite(held)
-  const cmd = `sh -c ${shSingleQuote(scanScript(workspaceDir, indexFile))} yaac-changes `
+  const cmd = `sh -c ${shSingleQuote(scanScript(dir, indexFile))} yaac-changes `
     + [req.base, req.defaultBase, req.listing, held.listing?.key, held.listing?.extras?.hash, [...held.raws.keys()].join(' '),
       held.file.loaded ? '' : 'load', write.mode].map((a) => shSingleQuote((a ?? '').trim())).join(' ')
   // Whether a failed run wrote the file is unknown, so the next replaces it.
@@ -1125,7 +1146,7 @@ export function readWorkspaceChanges(
 ): Promise<ChangesReading> {
   return runChangesRead(jobName, request, async (req, abandoned) => {
     const started = Date.now()
-    const held = heldFor(jobName)
+    const held = heldFor(jobName, req.checkout ?? '')
     const opts = { timeout: READ_TIMEOUT_MS[held.warm ? 'warm' : 'cold'], maxAttempts: 2, signal: abandoned }
     for (let attempt = 0; ; attempt++) {
       try {
@@ -1167,7 +1188,7 @@ async function readOnce(
     needOf(held, names.unstaged, pairs.unstaged, false, (l) => l.status === 'A'),
     needOf(held, names.base, pairs.base, req.diff),
   ].filter((n) => n !== null)
-  const failed = await fill(jobName, held, needs, work, opts)
+  const failed = await fill(jobName, req.checkout ?? '', held, needs, work, opts)
 
   const lines = (name: string): RawLine[] => held.raws.get(name)!.lines
   const entry = (l: RawLine): Entry | undefined => held.entries.get(entryKey(settings, l.line))
@@ -1233,11 +1254,13 @@ const FS = '\x1f'
  * CHANGES_BASE_UNRESOLVED. The rest of the body is read through
  * `readChangeDiffs`.
  */
-export async function readComparison(jobName: string, { from, to }: { from?: string; to: string }): Promise<WorkspaceComparison> {
-  const { workspaceDir, scratchDir } = workspaceDriver().workspacePaths(jobName)
-  const indexFile = indexFileIn(scratchDir)
-  const held = heldFor(jobName)
-  const script = `cd ${workspaceDir} 2>/dev/null || exit 3; ${scratchObjects(indexFile)}`
+export async function readComparison(
+  jobName: string,
+  { from, to, checkout = '' }: { from?: string; to: string; checkout?: string },
+): Promise<WorkspaceComparison> {
+  const { dir, indexFile } = readPaths(jobName, checkout)
+  const held = heldFor(jobName, checkout)
+  const script = `cd ${dir} 2>/dev/null || exit 3; ${scratchObjects(indexFile)}`
     + 'res() { case $1 in -*|"") return 1;; esac; for c in "origin/$1" "$1"; do '
     + '[ "$1:$c" != HEAD:origin/HEAD ] || continue; git rev-parse -q --verify "$c^{commit}" && return; done; return 1; }; '
     + `to=$(res "$2") || exit ${CHANGES_BASE_UNRESOLVED}; `
@@ -1259,7 +1282,7 @@ export async function readComparison(jobName: string, { from, to }: { from?: str
   if (!held.raws.has(name)) throw new Error('workspace compare: the run reused a raw diff this server does not hold')
   held.readings.set(`${from ?? ''}...${to}`, { pairs: [name], usedAt: Date.now() })
   const need = needOf(held, name, [scan.base, scan.work, true], true)
-  const failed = await fill(jobName, held, need ? [need] : [], scan.work, opts)
+  const failed = await fill(jobName, checkout, held, need ? [need] : [], scan.work, opts)
   const { lines } = held.raws.get(name)!
   const entry = (l: RawLine): Entry | undefined => held.entries.get(entryKey(scan.settings, l.line))
   let commit: CommitDetail | undefined
@@ -1283,7 +1306,8 @@ export async function readComparison(jobName: string, { from, to }: { from?: str
  * file's old path is diffed too, so the pair is found again. The answer is
  * capped as the poll's body is, but with `skip`, it is the one file's part
  * after the first `skip` lines, up to the whole cap, for a reader scrolling
- * down a file whose part was cut.
+ * down a file whose part was cut. `checkout` names the checkout the reading
+ * was of, as a read's request does.
  *
  * It is the fill (see fillScript), reading only a body. The trees stay in
  * the scratch objects until those pass their cap or the pod restarts; a run
@@ -1294,9 +1318,10 @@ export async function readChangeDiffs(jobName: string, request: {
   work: string
   files: { path: string; oldPath?: string }[]
   skip?: number
+  checkout?: string
 }): Promise<string> {
   const driver = workspaceDriver()
-  const { workspaceDir, scratchDir } = driver.workspacePaths(jobName)
+  const { dir, indexFile } = readPaths(jobName, request.checkout ?? '')
   const { base, work, files, skip } = request
   const [p, t] = skip === undefined ? [MAX_FILE_DIFF_BYTES, MAX_DIFF_BYTES] : [MAX_DIFF_BYTES, MAX_DIFF_BYTES]
   // Paths are named as name-status prints them, quoted when unusual. git
@@ -1304,7 +1329,7 @@ export async function readChangeDiffs(jobName: string, request: {
   const paths = pathArgs(files)
   const bad = paths.find((f) => f.includes('\0') || f.startsWith('/') || f.split('/').includes('..'))
   if (bad !== undefined) throw new ServerError('VALIDATION', `${JSON.stringify(bad)} is not a path in the checkout`)
-  const { stdout } = await driver.exec(jobName, `sh -c ${shSingleQuote(fillScript(workspaceDir, indexFileIn(scratchDir)))} yaac-diff `
+  const { stdout } = await driver.exec(jobName, `sh -c ${shSingleQuote(fillScript(dir, indexFile))} yaac-diff `
     + [base, work, '', 'd', String(skip ?? 0), String(p), String(t), work, '--', ...paths].map(shSingleQuote).join(' '), { timeout: 20_000 })
   const body = stdout.slice(stdout.indexOf(`${M_BODY}\n`) + M_BODY.length + 1)
   if (endsWithLine(body, M_NODIFF)) throw new Error('workspace changes: git could not diff those files')

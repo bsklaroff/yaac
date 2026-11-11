@@ -27,8 +27,9 @@
 # absence of events (the failure is noted on stderr), and the first pass is
 # retried until it completes, so an outage at startup can't turn into a flood
 # of stale events once GitHub comes back.
-# Seen state persists in $HOME/.yaac-watch-prs-seen (override via
-# YAAC_WATCH_PRS_STATE) for this session's lifetime.
+# Seen state persists in $HOME/.yaac-watch-prs-seen, with `-<folder>` added
+# for a repo in a folder of a workspace with several (override via
+# YAAC_WATCH_PRS_STATE), for this session's lifetime.
 #
 # No author filtering: comments from the authenticated account surface too —
 # the user and sibling yaac sessions post from the same account, so authorship
@@ -39,8 +40,10 @@
 # (gh embeds a jq engine), never a `| jq` pipe, so this works on a containerless
 # workspace whose host has no jq installed. gh authenticates via the session's
 # GH_TOKEN and infers the repo from the git remote of the checkout the caller is
-# standing in (override with YAAC_WATCH_PRS_WORKDIR). No yaac-specific
-# dependencies.
+# standing in (override with YAAC_WATCH_PRS_WORKDIR). To watch another repo of
+# the workspace than the one the session started in, run it from that repo's
+# folder under `yaac-mama as-repo <folder> --`, which gives gh that repo's
+# token.
 set -u
 
 interval=60
@@ -59,14 +62,22 @@ done
 
 command -v gh >/dev/null 2>&1 || { echo "yaac-watch-prs: gh not found" >&2; exit 1; }
 # gh infers the repo from this dir's git remote. Default to the checkout the
-# caller is standing in — that is /workspace in a container, but an arbitrary
-# host path on a containerless workspace, so a hard-coded /workspace would fail
-# outright there. Fall back to /workspace only when the cwd is in no repo at
-# all, and let YAAC_WATCH_PRS_WORKDIR override both (tests, odd layouts).
+# caller is standing in: the workspace dir or, in a workspace with several
+# repos, one repo's folder under it. When the cwd is in no repo at all, fall
+# back to the workspace's only checkout ($YAAC_CHECKOUTS lists them relative
+# to $YAAC_WORKSPACE_DIR, colon-separated, `.` for one at the root); with
+# several there is no telling which repo is meant. YAAC_WATCH_PRS_WORKDIR
+# overrides all of it (tests, odd layouts).
 workdir="${YAAC_WATCH_PRS_WORKDIR:-}"
 if [ -z "$workdir" ]; then
   workdir=$(git rev-parse --show-toplevel 2>/dev/null) || workdir=""
-  [ -n "$workdir" ] || workdir=/workspace
+  if [ -z "$workdir" ]; then
+    case "$YAAC_CHECKOUTS" in
+      '') echo "yaac-watch-prs: this workspace has no repos" >&2; exit 1 ;;
+      *:*) echo "yaac-watch-prs: this workspace has several repos; run it from the folder of the one to watch" >&2; exit 2 ;;
+      *) workdir=$YAAC_WORKSPACE_DIR/$YAAC_CHECKOUTS ;;
+    esac
+  fi
 fi
 cd "$workdir" || exit 1
 # A remote yaac hosts (docs/hosted-projects.md) is not on GitHub and has no
@@ -97,7 +108,14 @@ if [ -n "$pr" ] && [ "$want_opened" = 1 ]; then
   want_opened=0
 fi
 
-state="${YAAC_WATCH_PRS_STATE:-$HOME/.yaac-watch-prs-seen}"
+# One state file per checkout, since PR numbers repeat across the repos of a
+# workspace: a checkout in a folder adds the folder's name.
+folder=""
+root=$(cd "$YAAC_WORKSPACE_DIR" 2>/dev/null && pwd -P) || root=""
+if [ -n "$root" ]; then
+  case "$(pwd -P)" in "$root"/*) folder="-$(basename "$(pwd -P)")" ;; esac
+fi
+state="${YAAC_WATCH_PRS_STATE:-$HOME/.yaac-watch-prs-seen}$folder"
 # Field separator for jq→read: a non-whitespace unit-separator (0x1f) so empty
 # middle fields (e.g. a top-level comment's absent path) survive `read`, which
 # collapses runs of whitespace IFS like tab and would otherwise drop them.

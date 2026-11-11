@@ -21,7 +21,7 @@ import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
 const TEAMMATE = '5b1c9d3e-2f0a-4e6b-9c7d-8a1e2f3b4c5d'
-const claude = { tool: 'claude', mode: 'tui', permissionMode: 'bypass' } as const
+const claude = { tool: 'claude', mode: 'tui', permissionMode: 'bypass', cwd: '' } as const
 
 let tmpDir: string
 let pushes: number
@@ -50,7 +50,7 @@ describe('sessionWindowName', () => {
 describe('insertSession', () => {
   it('opens sessions after a workspace\'s others, each in a window of its own, with its settings', async () => {
     const a = await insertSession(PROJ, 'w1', { ...claude, model: 'claude-opus-5-5', effort: 'high', title: '  lead  ' })
-    const b = await insertSession(PROJ, 'w1', { tool: 'codex', mode: 'acp', permissionMode: 'read-only' })
+    const b = await insertSession(PROJ, 'w1', { cwd: '', tool: 'codex', mode: 'acp', permissionMode: 'read-only' })
     const other = await insertSession(PROJ, 'w2', claude)
 
     expect([a.ordinal, b.ordinal, other.ordinal]).toEqual([0, 1, 0])

@@ -37,6 +37,7 @@ export function RoutinePane({ routine, bar }: {
   const actions = useRoutineActions(routine)
   const [promptOpen, setPromptOpen] = useState(false)
   const group = snapshot?.workspaceGroups.find((g) => g.groupId === routine.groupId)
+  const project = snapshot?.projects.find((p) => p.id === routine.projectId)
   const schedule = describeSchedule(routine.cron)
 
   return (
@@ -90,9 +91,14 @@ export function RoutinePane({ routine, bar }: {
             <Fact label="UI">{routine.mode === 'acp' ? 'Chat' : 'Terminal'}</Fact>
             <Fact label="Permissions">{PERMISSION_MODE_COPY[routine.permissionMode]}</Fact>
             {routine.effort !== undefined && <Fact label="Effort">{effortLabel(routine.effort)}</Fact>}
-            {routine.commit !== undefined
-              ? <Fact label="Commit"><span className="font-mono">{routine.commit.slice(0, 12)}</span></Fact>
-              : <Fact label="Base branch">{routine.branch}</Fact>}
+            {routine.selection.repos.length === 0 && <Fact label="Repos">None</Fact>}
+            {routine.selection.repos.map((r) => {
+              const dir = project?.repos.find((p) => p.id === r.repo)?.dir ?? r.repo.slice(0, 8)
+              const at = r.commit !== undefined ? <span className="font-mono">{r.commit.slice(0, 12)}</span> : r.branch
+              return routine.selection.repos.length === 1
+                ? <Fact key={r.repo} label={r.commit !== undefined ? 'Commit' : 'Base branch'}>{at}</Fact>
+                : <Fact key={r.repo} label={dir}>{at}</Fact>
+            })}
             <Fact label="Group">{group?.name ?? 'None'}</Fact>
             <Fact label="Stops">
               {routine.timeoutMinutes !== undefined ? `after ${formatDuration(routine.timeoutMinutes)}` : 'at the next run'}

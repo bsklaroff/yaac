@@ -16,7 +16,9 @@ import {
 } from '#lib/icons'
 import { paneViewKey, useUiStore } from '#lib/store'
 import { relativeAge } from '#lib/time'
-import { useProjectBranches } from '#lib/useProjectBranches'
+import { useRepoBranches } from '#lib/repoApi'
+import { useCheckout } from '#lib/checkouts'
+import { CheckoutSwitcher } from '#components/CheckoutSwitcher'
 
 /** Commits fetched at first, and added by each "load older". */
 const PAGE = 200
@@ -43,18 +45,19 @@ const paint = (color: number): string => PALETTE[color % PALETTE.length]
  * two (or Cmd/Ctrl-clicking them) offers their range, older to newer. Polls
  * as often as the strip does while on screen, and is unmounted off it.
  */
-export function WorkspaceCommits({ workspaceId, projectId, baseBranch, startCommit }: {
-  workspaceId: string
-  projectId: string
-  /** The branch the workspace is based on. */
-  baseBranch?: string
-  /** The commit it was created at, its base when it has no branch. */
-  startCommit?: string
-}): JSX.Element {
+export function WorkspaceCommits({ workspaceId }: { workspaceId: string }): JSX.Element {
   const [limit, setLimit] = useState(PAGE)
+  // The checkout shown, with the branch it is based on (or, with none, the
+  // commit it was created at).
+  const { known, repos, current, repo } = useCheckout(workspaceId)
+  const baseBranch = current?.baseBranch
   const log = useQuery({
-    queryKey: ['commits', workspaceId, limit],
-    queryFn: () => api.workspace[':id'].commits.$get({ param: { id: workspaceId }, query: { limit: String(limit) } }),
+    queryKey: ['commits', workspaceId, repo ?? null, limit],
+    queryFn: () => api.workspace[':id'].commits.$get({
+      param: { id: workspaceId },
+      query: { limit: String(limit), ...repo !== undefined ? { repo } : {} },
+    }),
+    enabled: !known || repos.length > 0,
     refetchInterval: 10_000,
     placeholderData: keepPreviousData,
   })
@@ -87,6 +90,13 @@ export function WorkspaceCommits({ workspaceId, projectId, baseBranch, startComm
   // A stopped workspace has no checkout to read a log from, so the strip
   // goes too; any other failure keeps it, since picking another base is
   // often the way out (one sharing no history with HEAD).
+  if (known && repos.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center bg-surface text-xs text-text-dim">
+        This workspace has no repos.
+      </div>
+    )
+  }
   if (log.isError && !data && log.error instanceof ServerError && log.error.code === 'CONFLICT') {
     return (
       <div className="flex h-full items-center justify-center bg-surface text-xs text-text-dim">
@@ -98,9 +108,6 @@ export function WorkspaceCommits({ workspaceId, projectId, baseBranch, startComm
     <div className="flex h-full flex-col bg-surface">
       <CommitsStrip
         workspaceId={workspaceId}
-        projectId={projectId}
-        baseBranch={baseBranch}
-        startCommit={startCommit}
         error={log.isError && data ? log.error.message : undefined}
       >
         {older !== undefined && (
@@ -216,11 +223,8 @@ export function WorkspaceCommits({ workspaceId, projectId, baseBranch, startComm
  * it changes the workspace's base for every pane and for what is queued
  * under it.
  */
-function CommitsStrip({ workspaceId, projectId, baseBranch, startCommit, error, children }: {
+function CommitsStrip({ workspaceId, error, children }: {
   workspaceId: string
-  projectId: string
-  baseBranch?: string
-  startCommit?: string
   /** Why the latest poll failed, shown over the last answer. */
   error?: string
   /** The list's own controls, at the strip's end. */
@@ -230,9 +234,15 @@ function CommitsStrip({ workspaceId, projectId, baseBranch, startCommit, error, 
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [picked, setPicked] = useState<string | null>(null)
-  const listed = useProjectBranches(projectId, open)
+  const { current, repo } = useCheckout(workspaceId)
+  const baseBranch = current?.baseBranch
+  const startCommit = current?.startCommit
+  const listed = useRepoBranches(current?.repoId ?? '', open)
   const rebase = useMutation({
-    mutationFn: (branch: string) => api.workspace[':id'].base.$post({ param: { id: workspaceId }, json: { branch } }),
+    mutationFn: (branch: string) => api.workspace[':id'].base.$post({
+      param: { id: workspaceId },
+      json: { branch, ...repo !== undefined ? { repo } : {} },
+    }),
     onSuccess: async () => {
       setPicked(null)
       await Promise.all([
@@ -249,6 +259,7 @@ function CommitsStrip({ workspaceId, projectId, baseBranch, startCommit, error, 
     : names
   return (
     <div className="flex h-8 shrink-0 items-center gap-2 border-b border-hairline px-1.5 text-[11px] text-text-dim">
+      <CheckoutSwitcher workspaceId={workspaceId} />
       <span className="shrink-0 whitespace-nowrap pl-1 text-text-faint">Based on</span>
       <Popover.Root open={open} onOpenChange={(o) => { setOpen(o); if (!o) setQuery('') }}>
         <Popover.Trigger

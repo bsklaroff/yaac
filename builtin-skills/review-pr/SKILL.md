@@ -19,13 +19,24 @@ remote.origin.url` starts with `http://yaac.internal/`, yaac hosts this
 project's remote, which has no pull requests. Tell the user this skill does
 not apply there, and stop.
 
+**In a workspace with several repos**, each repo sits in its own folder
+under the workspace dir (`$YAAC_CHECKOUTS` lists the folders, colon-separated),
+and this skill works on **one** of them: `cd` into that repo's folder and
+run every `git`, `gh` and `yaac-watch-prs` command from there. `GH_TOKEN`
+is the token of the repo your session started in, so when you work on
+another one, run each `gh` call (and `yaac-watch-prs`) as
+`yaac-mama as-repo <folder> -- gh …`, which gives it that repo's token.
+The PR belongs to one repo; if it is unclear which, ask.
+
 ## Which PR
 
 The argument is the PR number. Without one, take the current branch's PR
 (`gh pr view --json number --jq .number`); if that resolves nothing, run
 `gh pr list --state open` and ask which — do not pick for the user.
 
-`GH_TOKEN` is already set, so every `gh` call below works as-is.
+`GH_TOKEN` is already set, so every `gh` call below works as-is (in a
+workspace with several repos, for the repo your session started in; see
+above for another).
 
 ## 1. Check out the head
 

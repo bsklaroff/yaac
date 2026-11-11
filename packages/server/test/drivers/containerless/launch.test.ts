@@ -36,6 +36,11 @@ import { TOOL_HOME_VARS } from '#drivers/containerless/tool-homes'
 const execFileAsync = promisify(execFile)
 const UUID = '4bfc59c6-1e83-4dd0-80f1-735294d5d2bb'
 const PRIVATE_KEY = '-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n'
+const PUBLIC_KEY = 'ssh-ed25519 AAAAPUBLIC yaac'
+/** One ssh repo's credential, as a create hands it over. */
+const sshRepo = (repo = 'o/r', keys: { privateKey?: string; publicKey?: string } = {}) => ({
+  kind: 'ssh' as const, host: 'github.com', path: repo, privateKey: PRIVATE_KEY, publicKey: PUBLIC_KEY, ...keys,
+})
 let dataDir: string
 
 /** The driver's state dir for the test workspace. */
@@ -54,7 +59,7 @@ function spec(overrides: Partial<WorkspaceSpec> = {}): WorkspaceSpec {
     projectId: 'demo',
     workspaceId: UUID,
     prewarm: false,
-    env: ['YAAC_GIT_NAME=Ada', 'YAAC_GIT_EMAIL=ada@example.com', 'YAAC_STATUS_RIGHT= demo 4bfc59c6 '],
+    env: ['YAAC_GIT_NAME=Ada', 'YAAC_GIT_EMAIL=ada@example.com', 'YAAC_STATUS_RIGHT= demo 4bfc59c6 ', 'YAAC_CHECKOUTS=.'],
     secretEnvKeys: [],
     mounts: [],
     scratchDirs: [],
@@ -64,6 +69,8 @@ function spec(overrides: Partial<WorkspaceSpec> = {}): WorkspaceSpec {
     },
     postStartExec: [],
     nestedContainers: false,
+    cwd: '',
+    gitCredentials: [],
     substrate: substrateFixture(),
     ...overrides,
   }
@@ -74,13 +81,8 @@ beforeEach(() => {
   setDataDir(dataDir)
   _resetRegistryForTests()
   mockRunHost.mockReset()
-  // '4242' answers both the tmux pid probe and `ssh-add -L`; the ssh-agent
-  // cases override the latter.
+  // '4242' answers the tmux pid probe.
   mockRunHost.mockResolvedValue({ stdout: '4242', stderr: '' })
-  mockRunHost.mockImplementation((argv: string[]) =>
-    argv[0] === 'ssh-add' && argv[1] === '-L'
-      ? Promise.resolve({ stdout: 'ssh-ed25519 AAAAPUBLIC yaac\n', stderr: '' })
-      : Promise.resolve({ stdout: '4242', stderr: '' }))
   mockSpawnSshAgent.mockReset()
   mockSpawnSshAgent.mockResolvedValue(4242)
   mockKillPids.mockReset()
@@ -105,8 +107,25 @@ describe('launchWorkspace', () => {
     expect(newSession).toContain('sleep 2147483647')
     expect(newSession).toContain('yaac')
     expect(newSession).toContain(KEEPER_STARTING)
-    // Windows open in the checkout, not the server's cwd.
-    expect(newSession).toContain(workspaceDir('demo', UUID))
+    // Windows open in the workspace, not the server's cwd.
+    expect(newSession?.[(newSession.indexOf('-c')) + 1]).toBe(workspaceDir('demo', UUID))
+  })
+
+  it('starts the session in the workspace\'s default cwd, and trusts each checkout', async () => {
+    await launchWorkspace(spec({
+      env: ['YAAC_GIT_NAME=Ada', 'YAAC_GIT_EMAIL=ada@example.com', 'YAAC_CHECKOUTS=api:web'],
+      cwd: 'web',
+    }))
+    const root = workspaceDir('demo', UUID)
+    const newSession = tmuxCalls().find((a) => a.includes('new-session')) ?? []
+    // Shell and step windows take the session's directory.
+    expect(newSession[newSession.indexOf('-c') + 1]).toBe(path.join(root, 'web'))
+    const { stdout } = await execFileAsync('git', ['config', '--file', path.join(stateDir(), 'gitconfig'), '--get-all', 'safe.directory'])
+    expect(stdout.trim().split('\n')).toEqual([path.join(root, 'api'), path.join(root, 'web')])
+
+    // A workspace with no repos has no checkout to trust.
+    await launchWorkspace(spec({ env: ['YAAC_GIT_NAME=Ada', 'YAAC_GIT_EMAIL=ada@example.com', 'YAAC_CHECKOUTS='] }))
+    expect(await fsp.readFile(path.join(stateDir(), 'gitconfig'), 'utf8')).not.toContain('directory =')
   })
 
   it('registers the workspace and writes the marker a restart recovers from', async () => {
@@ -288,7 +307,7 @@ describe('launchWorkspace', () => {
     // syntax unless escaped.
     const name = 'Ada "The" \\Lovelace #1\n[core]\n\tpager = touch /tmp/x'
     await launchWorkspace(spec({
-      env: [`YAAC_GIT_NAME=${name}`, 'YAAC_GIT_EMAIL=ada@example.com'],
+      env: [`YAAC_GIT_NAME=${name}`, 'YAAC_GIT_EMAIL=ada@example.com', 'YAAC_CHECKOUTS=.'],
     }))
     const gitconfigPath = path.join(stateDir(), 'gitconfig')
     const read = async (key: string): Promise<string> =>
@@ -297,23 +316,30 @@ describe('launchWorkspace', () => {
     expect(await read('user.email')).toBe('ada@example.com\n')
     await expect(read('core.pager')).rejects.toThrow()
     const gitconfig = await fsp.readFile(gitconfigPath, 'utf8')
-    // Both repo roots are trusted, as in a pod.
-    expect(gitconfig).toContain(workspaceDir('demo', UUID))
+    // The checkout is trusted, as in a pod.
+    expect(gitconfig).toContain(`directory = ${workspaceDir('demo', UUID)}\n`)
 
     // GIT_CONFIG_GLOBAL points at that file; an inherited value would
     // otherwise make git ignore it.
     const env = mockRunHost.mock.calls
       .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
     expect(env.env.GIT_CONFIG_GLOBAL).toBe(gitconfigPath)
+    // git run at a workspace dir that is no checkout stops there, whatever
+    // repository encloses the data dir.
+    expect(env.env.GIT_CEILING_DIRECTORIES).toBe(path.dirname(workspaceDir('demo', UUID)))
   })
 
-  it('hands the workspace\'s own git the real HTTPS credential', async () => {
+  it('hands the workspace\'s own git each repo\'s real HTTPS credential', async () => {
     // No proxy injects a token here, and `origin` has none, so the
     // workspace needs a credential helper to fetch or push.
     await launchWorkspace(spec({
-      gitCredential: { kind: 'https', host: 'github.com', token: 'ghp_a/b+c%d' },
+      gitCredentials: [
+        { kind: 'https', host: 'github.com', path: 'o/api', token: 'ghp_a/b+c%d' },
+        { kind: 'https', host: 'github.com', path: 'o/web', token: 'ghp_web' },
+      ],
     }))
-    const gitconfig = await fsp.readFile(path.join(stateDir(), 'gitconfig'), 'utf8')
+    const gitconfigPath = path.join(stateDir(), 'gitconfig')
+    const gitconfig = await fsp.readFile(gitconfigPath, 'utf8')
     // An empty helper first resets the list, so a system-wide helper cannot
     // answer with the user's own stored credential. The store is named, or
     // it would read and write the user's own `~/.git-credentials`.
@@ -322,9 +348,23 @@ describe('launchWorkspace', () => {
     expect(gitconfig).toContain(`helper = store --file=${creds}\n`)
 
     // Percent-encoded, since git URL-decodes the stored credential.
-    expect(await fsp.readFile(creds, 'utf8'))
-      .toBe('https://x-access-token:ghp_a%2Fb%2Bc%25d@github.com\n')
+    expect(await fsp.readFile(creds, 'utf8')).toContain('https://x-access-token:ghp_a%2Fb%2Bc%25d@github.com/o/api\n')
     expect((await fsp.stat(creds)).mode & 0o777).toBe(0o600)
+
+    // Git itself picks each repo's own token, however the remote is spelled,
+    // and none for a repo on the same host the workspace has no checkout of.
+    const fill = async (url: string): Promise<string> => {
+      const child = execFileAsync('git', ['credential', 'fill'], {
+        env: { ...process.env, GIT_CONFIG_GLOBAL: gitconfigPath, GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' },
+      })
+      child.child.stdin?.end(`url=${url}\n\n`)
+      return (await child.then((r) => r.stdout, () => '')).split('\n').find((l) => l.startsWith('password='))?.slice('password='.length) ?? ''
+    }
+    expect(await fill('https://github.com/o/api.git')).toBe('ghp_a/b+c%d')
+    expect(await fill('https://github.com/o/api')).toBe('ghp_a/b+c%d')
+    expect(await fill('https://github.com/o/web.git')).toBe('ghp_web')
+    expect(await fill('https://github.com/o/web.git/info/lfs')).toBe('ghp_web')
+    expect(await fill('https://github.com/o/other.git')).toBe('')
   })
 
   it('sends a hosted remote to the server, as the workspace', async () => {
@@ -332,7 +372,7 @@ describe('launchWorkspace', () => {
     // workspace's gitconfig turns that into the server's loopback origin and
     // sends its yaac-mama token there, and nowhere else.
     await launchWorkspace(spec({
-      gitCredential: { kind: 'hosted', origin: 'http://127.0.0.1:9999', token: 'tok' },
+      gitCredentials: [{ kind: 'hosted', origin: 'http://127.0.0.1:9999', token: 'tok' }],
     }))
     const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: path.join(stateDir(), 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' }
     const remote = hostedRemoteUrl('p1')
@@ -345,41 +385,42 @@ describe('launchWorkspace', () => {
     expect((await fsp.stat(path.join(stateDir(), 'gitconfig'))).mode & 0o777).toBe(0o600)
   })
 
-  it('holds an SSH key in a per-workspace agent, never in the workspace', async () => {
-    // With no proxy, the workspace gets its own ssh-agent. The key is piped
+  it('holds each SSH key in a per-workspace agent, never in the workspace', async () => {
+    // With no proxy, the workspace gets its own ssh-agent. Each key is piped
     // in over stdin, so no private key is left on disk; the state dir holds
-    // only the public key.
+    // only the public keys, and the table saying which one each repo uses.
     const knownHosts = path.join(dataDir, 'global', 'projects', 'demo', 'known_hosts')
+    const other = { privateKey: PRIVATE_KEY.replace('AAAA', 'BBBB'), publicKey: 'ssh-ed25519 BBBBPUBLIC web' }
     await launchWorkspace(spec({
-      gitCredential: { kind: 'ssh', privateKey: PRIVATE_KEY },
+      gitCredentials: [sshRepo('o/api'), sshRepo('o/web', other), sshRepo('o/docs')],
       ssh: { knownHostsFile: knownHosts },
     }))
 
-    // Piped in, never written to disk.
-    expect(mockRunHost).toHaveBeenCalledWith(
-      ['ssh-add', '-'], expect.objectContaining({ input: PRIVATE_KEY }),
-    )
-    const pub = path.join(stateDir(), 'ssh', 'id.pub')
-    expect(await fsp.readFile(pub, 'utf8')).toBe('ssh-ed25519 AAAAPUBLIC yaac\n')
+    // Piped in, never written to disk, and a key two repos share only once.
+    const added = mockRunHost.mock.calls.filter((c) => (c[0] as string[]).join(' ') === 'ssh-add -')
+      .map((c) => (c[1] as { input: string }).input)
+    expect(added).toEqual([PRIVATE_KEY, other.privateKey])
+    const sshDir = path.join(stateDir(), 'ssh')
+    expect(await fsp.readFile(path.join(sshDir, 'id-0.pub'), 'utf8')).toBe(`${PUBLIC_KEY}\n`)
+    expect(await fsp.readFile(path.join(sshDir, 'keys'), 'utf8')).toBe([
+      `github.com\to/api\t${path.join(sshDir, 'id-0.pub')}\n`,
+      `github.com\to/web\t${path.join(sshDir, 'id-1.pub')}\n`,
+      `github.com\to/docs\t${path.join(sshDir, 'id-0.pub')}\n`,
+    ].join(''))
 
-    const env = mockRunHost.mock.calls
-      .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
-    expect(env.env.SSH_AUTH_SOCK).toContain('-ssh.sock')
+    const env = sessionEnv()
+    expect(env.SSH_AUTH_SOCK).toContain('-ssh.sock')
     // Cleared when the session is created, before any attach; otherwise
     // each attach would copy the host user's SSH_AUTH_SOCK into the session.
     const newSession = tmuxCalls().find((a) => a.includes('new-session')) ?? []
     const created = newSession.indexOf('new-session')
     expect(newSession.slice(created).join(' ')).toMatch(/^new-session [^;]* ; set-option -g update-environment  ;/)
-    const sshCmd = env.env.GIT_SSH_COMMAND ?? ''
-    // `-i` with the public key and IdentitiesOnly pins ssh to the agent's
-    // identity.
-    expect(sshCmd).toContain(`-i ${pub}`)
-    expect(sshCmd).toContain('IdentitiesOnly=yes')
-    // Host key verification is as strict as in a pod.
-    expect(sshCmd).toContain(`UserKnownHostsFile=${knownHosts}`)
-    expect(sshCmd).toContain('StrictHostKeyChecking=yes')
+    // Git runs ssh through the wrapper that offers each repo's own key and
+    // checks host keys as strictly as a pod does.
+    expect(env.GIT_SSH_COMMAND).toBe(`yaac-git-ssh ${path.join(sshDir, 'keys')} ${knownHosts}`)
+    expect(env.GIT_SSH_VARIANT).toBe('ssh')
 
-    // No file the launch wrote holds the private key.
+    // No file the launch wrote holds a private key.
     for (const entry of await fsp.readdir(stateDir(), { recursive: true, withFileTypes: true })) {
       if (!entry.isFile()) continue
       const body = await fsp.readFile(path.join(entry.parentPath, entry.name), 'utf8')
@@ -391,7 +432,7 @@ describe('launchWorkspace', () => {
     // On relaunch (a retried create or restart), unlinking the socket alone
     // would leave the old agent running with the key.
     const sshSpec = (): WorkspaceSpec => spec({
-      gitCredential: { kind: 'ssh', privateKey: PRIVATE_KEY },
+      gitCredentials: [sshRepo()],
       ssh: { knownHostsFile: path.join(dataDir, 'global', 'projects', 'demo', 'known_hosts') },
     })
     await launchWorkspace(sshSpec())
@@ -405,7 +446,7 @@ describe('launchWorkspace', () => {
 
   it('records the agent pid so teardown can end the process holding the key', async () => {
     await launchWorkspace(spec({
-      gitCredential: { kind: 'ssh', privateKey: PRIVATE_KEY },
+      gitCredentials: [sshRepo()],
       ssh: { knownHostsFile: path.join(dataDir, 'global', 'projects', 'demo', 'known_hosts') },
     }))
 
@@ -417,9 +458,7 @@ describe('launchWorkspace', () => {
 
   it('refuses an SSH credential with no host list rather than skipping the check', async () => {
     // Otherwise the workspace would verify no host key at all.
-    await expect(launchWorkspace(spec({
-      gitCredential: { kind: 'ssh', privateKey: PRIVATE_KEY },
-    }))).rejects.toThrow(/known_hosts/)
+    await expect(launchWorkspace(spec({ gitCredentials: [sshRepo()] }))).rejects.toThrow(/known_hosts/)
   })
 
   it('clears a credential the last launch, or an older yaac\'s private HOME, left behind', async () => {
@@ -429,10 +468,10 @@ describe('launchWorkspace', () => {
     // A relaunch may bring a rotated token, a switch to SSH, or no
     // credential at all.
     await launchWorkspace(spec({
-      gitCredential: { kind: 'https', host: 'github.com', token: 'first' },
+      gitCredentials: [{ kind: 'https', host: 'github.com', path: 'o/r', token: 'first' }],
     }))
     await launchWorkspace(spec({
-      gitCredential: { kind: 'https', host: 'github.com', token: 'second' },
+      gitCredentials: [{ kind: 'https', host: 'github.com', path: 'o/r', token: 'second' }],
     }))
     expect(await fsp.readFile(path.join(stateDir(), 'git-credentials'), 'utf8')).toContain('second')
 
@@ -660,12 +699,11 @@ describe('launchWorkspace', () => {
   it('tears down what it started when its tmux call fails', async () => {
     mockRunHost.mockImplementation((argv: string[]) => {
       if (argv.includes('new-session')) return Promise.reject(new Error('not a suitable shell'))
-      if (argv[0] === 'ssh-add' && argv[1] === '-L') return Promise.resolve({ stdout: 'ssh-ed25519 AAAAPUBLIC yaac\n', stderr: '' })
       return Promise.resolve({ stdout: '', stderr: '' })
     })
     const knownHosts = path.join(dataDir, 'global', 'projects', 'demo', 'known_hosts')
     await expect(launchWorkspace(spec({
-      gitCredential: { kind: 'ssh', privateKey: PRIVATE_KEY },
+      gitCredentials: [sshRepo()],
       ssh: { knownHostsFile: knownHosts },
     }))).rejects.toThrow('not a suitable shell')
     // No marker exists yet, so nothing else would find either to stop it.

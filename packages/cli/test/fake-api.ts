@@ -107,5 +107,5 @@ export function serveProjects(api: FakeApi, projects: Array<[string, string, str
     kind: 'tailnet', userId: ME, login: 'me@example.com', name: 'Me',
     users: [{ id: ME, login: 'me@example.com', name: 'Me' }, { id: ADA, login: 'ada@example.com', name: 'Ada' }],
   } })
-  api.on('GET /api/project/list', { json: projects.map(([id, name, owner]) => ({ id, name, owner: owner ?? ME })) })
+  api.on('GET /api/project/list', { json: projects.map(([id, name, owner]) => ({ id, name, owner: owner ?? ME, repos: [] })) })
 }

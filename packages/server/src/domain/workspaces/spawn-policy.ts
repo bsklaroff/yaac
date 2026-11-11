@@ -14,6 +14,7 @@ import {
   type AgentMode,
   type AgentTool,
   type PermissionMode,
+  type RepoStart,
 } from '@yaac/shared/types'
 import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
@@ -50,7 +51,12 @@ export interface SpawnRequest {
   effort?: string
   /** `tui` or `acp`; unnamed is the caller's. */
   uiMode?: AgentMode
-  /** Reference branch on `origin`; unnamed is the project's default. */
+  /** What a new workspace starts with (`resolveStart`); each left out is
+   *  what the project's last create chose. `cwd` alone is also where a
+   *  session opened in a running workspace runs. */
+  repos?: RepoStart[]
+  nested?: boolean
+  cwd?: string
   branch?: string
   /** Group id or name; an unknown name is created, but only after every
    *  other check passes. */
@@ -149,6 +155,9 @@ export async function decideSpawn(request: SpawnRequest): Promise<SpawnDecision>
       }),
       ...(request.model !== undefined ? { model: request.model } : {}),
       ...(request.effort !== undefined ? { effort: request.effort } : {}),
+      ...(request.repos !== undefined ? { repos: request.repos } : {}),
+      ...(request.nested !== undefined ? { nested: request.nested } : {}),
+      ...(request.cwd !== undefined ? { cwd: request.cwd } : {}),
       ...(request.branch !== undefined ? { branch: request.branch } : {}),
       ...(request.commit !== undefined ? { commit: request.commit } : {}),
       ...(request.steps !== undefined ? { steps: request.steps } : {}),
@@ -225,7 +234,7 @@ export async function decideRestart(request: RestartRequest): Promise<RestartDec
   const ceiling = request.callerPermissionMode
   const sessions: Array<{ tool: AgentTool; permissionMode: PermissionMode }> = [
     ...await listWorkspaceSessions(workspaceId),
-    ...await terminalConversationSessions(projectId, workspaceId),
+    ...await terminalConversationSessions(projectId, workspaceId, row.cwd),
   ]
   const beyond = `more than the caller's ceiling ('${ceiling}'); only one at or below it can be restarted`
   for (const s of sessions) {
@@ -300,6 +309,7 @@ async function spawnSession(request: SpawnRequest, target: string): Promise<Spaw
       ...(request.model !== undefined ? { model: request.model } : {}),
       ...(request.effort !== undefined ? { effort: request.effort } : {}),
       ...(request.resume !== undefined ? { resume: request.resume } : {}),
+      ...(request.cwd !== undefined ? { cwd: request.cwd } : {}),
       ...(request.title !== undefined ? { title: request.title } : {}),
     })
     return { ok: true, workspaceId, sessionId: session.id }

@@ -42,9 +42,12 @@ import {
   insertSession,
   listActiveConversations,
   listWorkspaceConversations,
+  listWorkspaceRepos,
   listWorkspaceSessions,
   getWorkspaceRow,
   findVolumeByName,
+  markRepoDeleted,
+  unlinkProjectRepo,
   type SessionRow,
   setProjectScratchDirs,
   setWorkspaceGroup,
@@ -53,12 +56,12 @@ import {
 import { eq } from 'drizzle-orm'
 import { closeDb, getDb } from '#db/client'
 import { recordConversations } from '#db/conversation-store'
-import { workspaces } from '#db/schema'
+import { workspaceRepos, workspaces } from '#db/schema'
 import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
 import { git } from '@yaac/test-utils/git'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
 import { DEMO_PROJECT_ID, seedProject } from '@yaac/test-utils/project-fixture'
-import { CLAUDE_POD_CWD, projectDir, repoDir, workspaceDir, workspaceStateDir } from '@yaac/shared/project-paths'
+import { claudePodCwd, projectDir, repoDir, workspaceDir, workspaceStateDir } from '@yaac/shared/project-paths'
 import { isWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#runtime/status/liveness'
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
@@ -116,7 +119,7 @@ async function created(
   workspaceId: string,
   over: {
     tool?: AgentTool; permissionMode?: PermissionMode; model?: string; effort?: string; mode?: AgentMode
-    prompt?: string; branch?: string; volume?: string
+    prompt?: string; branch?: string; commit?: string; volume?: string
   } = {},
 ): Promise<void> {
   const run = await prepareStart(local, {
@@ -138,7 +141,7 @@ async function stoppedWorkspace(workspaceId: string, over: Parameters<typeof cre
  *  registry would once it saw the file. Returns the file. */
 async function history(workspaceId: string, tool: 'claude' | 'codex', conversationId: string): Promise<string> {
   const rel = tool === 'claude'
-    ? path.join('history', workspaceId, 'claude', CLAUDE_POD_CWD, `${conversationId}.jsonl`)
+    ? path.join('history', workspaceId, 'claude', claudePodCwd(''), `${conversationId}.jsonl`)
     : path.join('history', workspaceId, 'codex', '2026', '10', '03', `rollout-2026-10-03T12-00-00-${conversationId}.jsonl`)
   const file = path.join(projectDir(DEMO_PROJECT_ID), rel)
   await fs.mkdir(path.dirname(file), { recursive: true })
@@ -165,7 +168,7 @@ const lead = async (workspaceId: string): Promise<SessionRow> => (await listWork
 
 /** Another session of the workspace, as one opened beside the first. */
 const beside = (workspaceId: string, over: Partial<Parameters<typeof insertSession>[2]> = {}): Promise<SessionRow> =>
-  insertSession(DEMO_PROJECT_ID, workspaceId, { tool: 'claude', mode: 'tui', permissionMode: 'bypass', ...over })
+  insertSession(DEMO_PROJECT_ID, workspaceId, { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'bypass', ...over })
 
 /** What a session's agent reported, as the registry records it. */
 const reported = async (s: SessionRow, report: { conversationId?: string; model?: string; permissionMode?: PermissionMode; effort?: string }): Promise<void> => {
@@ -486,7 +489,7 @@ describe('prepareRestart', () => {
     // A checkout the launch made is linked and current already.
     expect(windowsExec()).not.toContain('objects/info/alternates')
     expect((await git(checkout, ['rev-parse', 'HEAD'])).trim()).toBe(dev)
-    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-gone'))?.baseBranch).toBe('dev')
+    expect((await listWorkspaceRepos('wt-gone'))[0]?.baseBranch).toBe('dev')
 
     await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-gone' })
     await lose()
@@ -494,7 +497,40 @@ describe('prepareRestart', () => {
     await restart('wt-gone')
 
     expect((await git(checkout, ['rev-parse', 'HEAD'])).trim()).toBe(await ref('origin/main'))
-    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-gone'))?.baseBranch).toBe('main')
+    expect((await listWorkspaceRepos('wt-gone'))[0]?.baseBranch).toBe('main')
+
+    // One created at a commit has no base branch, and comes back at the
+    // commit, tracking nothing. A checkout whose repo has no row any more
+    // is not brought back.
+    await stoppedWorkspace('wt-pinned', { commit: dev })
+    const pinned = workspaceDir(DEMO_PROJECT_ID, 'wt-pinned')
+    const gone = { workspaceId: 'wt-pinned', repoId: '99999999-2222-4333-8444-555555555555', path: 'gone' }
+    await (await getDb()).insert(workspaceRepos).values(gone)
+    await fs.rm(pinned, { recursive: true })
+    await restart('wt-pinned')
+
+    expect((await git(pinned, ['rev-parse', 'HEAD'])).trim()).toBe(dev)
+    await expect(git(pinned, ['rev-parse', '--abbrev-ref', '@{u}'])).rejects.toThrow()
+    await expect(fs.access(path.join(pinned, 'gone'))).rejects.toThrow()
+    expect(await listWorkspaceRepos('wt-pinned'))
+      .toEqual([{ workspaceId: 'wt-pinned', repoId: DEMO_PROJECT_ID, path: '', startCommit: dev }, gone])
+  })
+
+  // A repo its owner deleted has no remote, credential or link, but its
+  // main clone stays for the checkouts that borrow from it.
+  it('brings back the checkout of a deleted repo as it stands, and cannot make a lost one again', async () => {
+    await stoppedWorkspace('wt-orphan')
+    await unlinkProjectRepo(DEMO_PROJECT_ID)
+    await markRepoDeleted(DEMO_PROJECT_ID)
+
+    await restart('wt-orphan')
+    // Reused, so relinked to the main clone, with nothing fetched for it.
+    expect(windowsExec()).toBeDefined()
+    expect(calls.some((c) => c.includes('objects/info/alternates'))).toBe(true)
+
+    await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-orphan' })
+    await fs.rm(workspaceDir(DEMO_PROJECT_ID, 'wt-orphan'), { recursive: true })
+    await expect(restart('wt-orphan')).rejects.toMatchObject({ code: 'VALIDATION', message: /deleted by its owner/ })
   })
 
   // A crash or partial restore can lose `.git` but keep the work. Checking
@@ -552,7 +588,7 @@ describe('prepareRestart', () => {
     const codex = await beside('wt-lost', { tool: 'codex', conversationId: 'conv-cx' })
     const claude = await beside('wt-lost', { conversationId: 'conv-3' })
     const unrecorded = await beside('wt-lost', { conversationId: 'conv-4' })
-    await fs.writeFile(path.join(projectDir(DEMO_PROJECT_ID), 'history', 'wt-lost', 'claude', CLAUDE_POD_CWD, 'conv-4.jsonl'), '{}\n')
+    await fs.writeFile(path.join(projectDir(DEMO_PROJECT_ID), 'history', 'wt-lost', 'claude', claudePodCwd(''), 'conv-4.jsonl'), '{}\n')
 
     await restart('wt-lost')
 
@@ -932,14 +968,16 @@ describe('prepareRerun', () => {
 
     await (await prepareRerun(local, 'ci-1', { workspaceId: 'ci-2' }))()
     expect(await getWorkspaceRow(DEMO_PROJECT_ID, 'ci-2')).toMatchObject({
-      nonInteractive: true, rerunOf: 'ci-1', startCommit: head, workflowId: (await getWorkspaceRow(DEMO_PROJECT_ID, 'ci-1'))?.workflowId,
+      nonInteractive: true, rerunOf: 'ci-1', workflowId: (await getWorkspaceRow(DEMO_PROJECT_ID, 'ci-1'))?.workflowId,
     })
-    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'ci-2'))?.baseBranch).toBeUndefined()
+    expect((await listWorkspaceRepos('ci-2'))[0]?.startCommit).toBe(head)
+    expect((await listWorkspaceRepos('ci-2'))[0]?.baseBranch).toBeUndefined()
 
     // Interactively: the same graph and commit, in a workspace that stays up.
     await (await prepareRerun(local, 'ci-1', { workspaceId: 'ci-debug', interactive: true }))()
     const debug = await getWorkspaceRow(DEMO_PROJECT_ID, 'ci-debug')
-    expect(debug).toMatchObject({ nonInteractive: false, startCommit: head, workflowId: (await getWorkspaceRow(DEMO_PROJECT_ID, 'ci-1'))?.workflowId })
+    expect(debug).toMatchObject({ nonInteractive: false, workflowId: (await getWorkspaceRow(DEMO_PROJECT_ID, 'ci-1'))?.workflowId })
+    expect((await listWorkspaceRepos('ci-debug'))[0]?.startCommit).toBe(head)
     expect(debug?.rerunOf).toBeUndefined()
 
     // Only a non-interactive workspace is rerun.

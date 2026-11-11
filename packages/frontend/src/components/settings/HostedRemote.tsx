@@ -1,65 +1,52 @@
 import { useState, type JSX } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { api } from '#lib/api'
-import { useProjectBranches } from '#lib/useProjectBranches'
+import { repoBranchesKey, setRepoDefaultBranch, setRepoDefaultBranchGuard, useRepoBranches } from '#lib/repoApi'
 import { TEXT_BUTTON } from '#components/ui/button'
 import { hostedCloneUrl } from '@yaac/shared/hosted-git'
 
 /**
- * Project settings for a project whose git remote yaac hosts
+ * Settings of a repo whose git remote yaac hosts
  * (docs/hosted-projects.md): the URL to clone it from on this machine, its
  * default branch, and the default-branch guard. The guard's value comes
- * from the snapshot, which the server pushes again once it changes; the
- * default branch from the project's branch list, read again after a
- * change. `cliRef` names the project to `yaac project clone`; `shared`
- * says it is a share, whose repository is the source's
- * (docs/hosted-projects.md "Sharing").
+ * from the repo list, read again once it changes; the default branch from
+ * the repo's branch list, likewise. `name` is the folder the clone command
+ * suggests. Only the owner changes either setting (`readOnly` otherwise).
  */
-export function HostedRemote({ projectId, name, cliRef, shared, guardDefaultBranch, readOnly }: {
-  projectId: string
+export function HostedRemote({ repoId, name, guardDefaultBranch, readOnly, onChanged }: {
+  repoId: string
   name: string
-  cliRef: string
-  shared: boolean
   guardDefaultBranch: boolean
   readOnly: boolean
+  /** The guard changed. */
+  onChanged: () => void
 }): JSX.Element {
   const [copied, setCopied] = useState(false)
-  const url = hostedCloneUrl(window.location.origin, projectId)
+  const url = hostedCloneUrl(window.location.origin, repoId)
   const copy = (): void => {
     void navigator.clipboard?.writeText(`git clone ${url} ${name}`)
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }
   const queryClient = useQueryClient()
-  const { data: branchData } = useProjectBranches(projectId)
+  const { data: branchData } = useRepoBranches(repoId)
   const current = branchData?.defaultBranch
   // An empty repository's default is a branch no push has made yet.
   const options = branchData && current !== undefined && !branchData.branches.includes(current)
     ? [current, ...branchData.branches]
     : branchData?.branches ?? []
   const setDefault = useMutation({
-    mutationFn: (branch: string) => api.project[':projectId']['default-branch'].$put({
-      param: { projectId },
-      json: { branch },
-    }),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['project-branches', projectId] }),
+    mutationFn: (branch: string) => setRepoDefaultBranch(repoId, branch),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: repoBranchesKey(repoId) }),
   })
   const guard = useMutation({
-    mutationFn: (enabled: boolean) => api.project[':projectId']['default-branch-guard'].$put({
-      param: { projectId },
-      json: { enabled },
-    }),
+    mutationFn: (enabled: boolean) => setRepoDefaultBranchGuard(repoId, enabled),
+    onSuccess: onChanged,
   })
 
   return (
     <div>
-      <div className="text-xs font-medium text-text">Git repository</div>
-      <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
-        {shared
-          ? 'yaac hosts this project\'s repository, which it shares with the project it was shared from; '
-            + 'removing this project leaves it alone.'
-          : 'yaac hosts this project\'s repository, and it is the only copy.'}{' '}
-        Clone it with <code className="text-text-dim">yaac project clone {cliRef}</code>, or:
+      <p className="text-[11px] leading-relaxed text-text-faint">
+        yaac hosts this repository, and it is the only copy. Clone it with:
       </p>
       <div className="mt-2 flex min-w-0 items-center gap-2 rounded-md bg-bg px-2.5 py-1.5">
         <code title={url} className="min-w-0 flex-1 select-all truncate font-mono text-[11px] text-text-faint">

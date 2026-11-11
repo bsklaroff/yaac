@@ -34,7 +34,7 @@ import {
   applyProxyRegistration,
   buildProxyRegistration,
   proxyClient,
-  workspaceSshTransport,
+  workspaceSshEnv,
   type ProxyRegistration,
 } from '#drivers/k8s/egress'
 import { ensureNodeImageStore, nodeImageStoreMount } from '#drivers/k8s/images'
@@ -154,14 +154,14 @@ export async function prepareWorkspaceSubstrate(
   // proxy can reach streamd, and the token opens only this pod's daemon.
   const streamToken = await podStreamToken(workspaceId)
 
-  // Secret-injection rules, allowlist and repo URL; written by `launch`.
-  // GitHub / Claude / Codex auth needs no per-workspace rule. Rules name
+  // Secret-injection rules and allowlist; written by `launch`. Git, GitHub,
+  // Claude and Codex auth need no per-workspace rule: the proxy resolves
+  // them from the owner's credentials by the registration's project. Rules name
   // their values, which already sit in the project's secrets object
   // (`syncProjectSecrets`).
   const registration = buildProxyRegistration({
     config,
     allowlist: intent.allowlist,
-    remoteUrl: intent.remoteUrl,
     projectId,
     owner: intent.owner,
     secretRules: intent.proxySecretRules,
@@ -257,11 +257,13 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   const declared: Array<PodMount | WorkspaceMount> = [...spec.mounts]
   // Read-only node-local image store.
   declared.push(...substrate.storeMounts)
-  if (spec.ssh) {
-    const ssh = workspaceSshTransport(spec.ssh.knownHostsFile, substrate.proxyHost)
-    declared.push(...ssh.mounts)
-    env.push(...ssh.env)
-  }
+  // The proxy ends ssh sessions to the project's git hosts and checks their
+  // host keys itself, so the workspace needs neither `spec.ssh`'s file nor
+  // a key: only an ssh that reaches the proxy and trusts it.
+  if (spec.ssh) env.push(...workspaceSshEnv())
+  // Where the init script starts the keeper tmux session, relative to the
+  // workspace dir.
+  env.push(`YAAC_CWD=${spec.cwd}`)
   // Map each declared host path to its cluster source (a subPath of the
   // global claim, or the node's tree); see mount-sources.ts.
   const mounts = declared.map(resolveMountSource)

@@ -199,7 +199,9 @@ describe('yaac-watch-prs script', () => {
       await fixtureLines('issue-comments', [['7', 'alice', '', 'looks good']])
 
       // tmpDir is a bare temp dir under no git repo.
-      await run(['--pr', '43', '--events', 'comment', '--once'], { YAAC_WATCH_PRS_WORKDIR: '' })
+      await run(['--pr', '43', '--events', 'comment', '--once'], {
+        YAAC_WATCH_PRS_WORKDIR: '', YAAC_WORKSPACE_DIR: '/workspace', YAAC_CHECKOUTS: '.',
+      })
       expect((await fs.readFile(path.join(fixtures, 'gh-cwd'), 'utf8')).trim()).toBe('/workspace')
     },
   )

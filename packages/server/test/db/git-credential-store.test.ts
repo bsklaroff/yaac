@@ -8,20 +8,21 @@ import {
   deleteGitCredential,
   getGitCredential,
   getGitCredentialByName,
-  getProjectRow,
+  getRepo,
   insertGitCredential,
   listGitCredentials,
-  recordProject,
+  insertRepo,
   renameGitCredential,
   replaceGitCredential,
   seeTailnetUser,
-  setProjectGitCredential,
+  setRepoGitCredential,
 } from '#db'
 import { forgetSecretConfig } from '#db/secret-key'
 import { secretKeyPath } from '@yaac/shared/project-paths'
 import { generateSshKey } from '#lib/ssh-key'
 
 const P = '83878c91-1713-4890-8e0f-e0fb97a8c47a'
+const Q = '94989da2-2824-4901-9f1a-f1ac08b9d58b'
 
 /**
  * The named git credentials, sealed at rest.
@@ -121,29 +122,29 @@ describe('renameGitCredential', () => {
 })
 
 describe('deleteGitCredential', () => {
-  it('deletes even while a project uses it, leaving the project with no credential or host key', async () => {
+  it('deletes even while a repo uses it, leaving the repo with no credential or host key', async () => {
     const row = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'a', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 AAAA yaac a' })
-    await recordProject({ id: P, name: 'demo', remoteUrl: 'git@x:acme/p.git', addedAt: 'now' }, BUILT_IN_USER_ID)
-    await setProjectGitCredential(P, row.id, 'x ssh-ed25519 HOST')
+    await insertRepo({ id: P, owner: BUILT_IN_USER_ID, remoteUrl: 'git@x:acme/p.git' })
+    await setRepoGitCredential(P, row.id, 'x ssh-ed25519 HOST')
 
     expect(await deleteGitCredential(row.id)).toBe(true)
-    expect(await getProjectRow(P)).toMatchObject({ gitCredentialId: null, knownHostsEntry: null })
+    expect(await getRepo(P)).toMatchObject({ gitCredentialId: null, knownHostsEntry: null })
     expect(await listGitCredentials()).toEqual([])
     expect(await deleteGitCredential(row.id)).toBe(false)
   })
 })
 
 describe('replaceGitCredential', () => {
-  it('moves the name and every project onto a new row, keeping their host keys, and drops the old one', async () => {
+  it('moves the name and every repo onto a new row, keeping their host keys, and drops the old one', async () => {
     const old = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'deploy', kind: 'ssh', secret: 'b2xk', publicKey: 'ssh-ed25519 OLD yaac deploy' })
-    await recordProject({ id: P, name: 'demo', remoteUrl: 'git@x:acme/p.git', addedAt: 'now' }, BUILT_IN_USER_ID)
-    await setProjectGitCredential(P, old.id, 'x ssh-ed25519 HOST')
+    await insertRepo({ id: Q, owner: BUILT_IN_USER_ID, remoteUrl: 'git@x:acme/q.git' })
+    await setRepoGitCredential(Q, old.id, 'x ssh-ed25519 HOST')
 
     const fresh = await replaceGitCredential(old.id, { secret: 'bmV3', publicKey: 'ssh-ed25519 NEW yaac deploy' })
     expect(fresh?.id).not.toBe(old.id)
     expect(fresh).toMatchObject({ name: 'deploy', kind: 'ssh', publicKey: 'ssh-ed25519 NEW yaac deploy' })
     expect(await fresh?.openSecret()).toBe('bmV3')
-    expect(await getProjectRow(P)).toMatchObject({ gitCredentialId: fresh?.id, knownHostsEntry: 'x ssh-ed25519 HOST' })
+    expect(await getRepo(Q)).toMatchObject({ gitCredentialId: fresh?.id, knownHostsEntry: 'x ssh-ed25519 HOST' })
     expect((await listGitCredentials()).map((c) => c.id)).toEqual([fresh?.id])
     expect(await replaceGitCredential(old.id, { secret: 'x' })).toBeUndefined()
   })

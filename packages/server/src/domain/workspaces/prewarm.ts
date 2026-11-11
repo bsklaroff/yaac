@@ -9,17 +9,21 @@
  * is claimed; only its runtime's `prewarmed` mark says what it is
  * (docs/workspace-storage.md).
  *
- * Any spare can serve a claim: a different or moved base branch is fixed by
- * `rebranchSpare`. The zone and the image are fixed at warm time. Each claim
- * re-registers egress from the current config.
+ * A spare serves a claim that starts with what it was warmed with: the same
+ * repos in the same folders and the same cwd (`spareMatches`). A different
+ * or moved base branch is fixed by `rebranchSpare`, per checkout. The zone
+ * and the image are fixed at warm time. Each claim re-registers egress from
+ * the current config.
  *
  * The server is a single process, so module-level state is enough mutual
  * exclusion.
  */
+import path from 'node:path'
 import { workspaceDriver } from '#drivers/driver'
 import { cleanupWorkspace, deleteWorkspaceState } from './cleanup'
 import { claimProvisioning, spawningSpares } from './provisioning'
 import { rebranchSpare } from './spare-pool'
+import { storedSelection, type WorkspaceStart } from './checkouts'
 import { lifeHooksExec, recordLife, startStepsOf } from './life'
 import { recordTrackedScratchDirs } from './tracked-scratch-dirs'
 import { launchSessions } from './session-launch'
@@ -37,19 +41,15 @@ import type { WorkspaceCreateResult } from './create'
 import { isTmuxSessionAlive } from '#runtime/status'
 import { getDefaultBranch, remoteBranchExists, resolveRemoteRef } from '#domain/git'
 import { credentialOwnerKey } from '#domain/auth'
-import {
-  fetchProjectOrigin,
-  getProjectAllowlist,
-  projectRemoteUrl,
-  resolveProjectConfig,
-  resolveProjectEnv,
-} from '#domain/projects'
+import { getProjectAllowlist, resolveProjectConfig, resolveProjectEnv } from '#domain/projects'
+import { fetchRepoOrigin } from '#domain/repos'
 import { shellEscape } from '#lib/shell'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#lib/log'
 import type { RuntimeHandle } from '#drivers/contract'
+import type { RepoSelection } from '@yaac/shared/types'
 
 /**
  * Job names of spares being claimed. Reserved synchronously so concurrent
@@ -76,8 +76,9 @@ export const reaping = new Set<string>()
 export const refreshing = new Map<string, Promise<void>>()
 
 /**
- * The commit each spare's checkout was last seen at, by workspace id, so a
- * refresh pass execs into a spare only when its base branch's tip has moved.
+ * The commits each spare's checkouts were last seen at, in order and joined,
+ * by workspace id, so a refresh pass execs into a spare only when one of its
+ * base branches' tips has moved.
  */
 export const spareHeads = new Map<string, string>()
 
@@ -85,12 +86,26 @@ export const spareHeads = new Map<string, string>()
 export interface SpareSettings {
   /** The `TZ` it launched with. */
   timeZone?: string
-  /** Its checkout's upstream; absent on an empty repo. */
-  baseBranch?: string
+  /** What it started with: its layout and cwd (`storedSelection`), and
+   *  each checkout's repo, folder and upstream, absent for an empty repo. A
+   *  claim must ask for the same repos, folders and cwd. */
+  selection: RepoSelection
+  repos: Array<{ repoId: string; path: string; baseBranch?: string }>
   /** The image it runs; absent for a driver that runs none. */
   image?: string
-  /** The scratch dirs its checkout was prepared with. */
+  /** The scratch dirs its checkouts were prepared with, relative to the
+   *  workspace root. */
   scratchDirs?: string[]
+}
+
+/**
+ * Whether a spare was warmed with what `start` asks for: the same repos in
+ * the same folders, and the same cwd. Branches are left to the claim.
+ */
+export function spareMatches(warmed: SpareSettings, start: WorkspaceStart): boolean {
+  return warmed.repos.length === start.repos.length
+    && start.repos.every((r) => warmed.repos.some((w) => w.repoId === r.link.repo.id && w.path === r.path))
+    && warmed.selection.cwd === storedSelection(start).cwd
 }
 
 /**
@@ -290,10 +305,10 @@ export function resolveRebranchTarget(params: {
   return desired === spareBranch ? null : desired
 }
 
-/** Fetch the project's origin (skipped in e2e, like the cold path). */
-async function fetchSpareOrigin(projectId: string): Promise<void> {
+/** Fetch a repo's origin (skipped in e2e, like the cold path). */
+async function fetchSpareOrigin(repoId: string): Promise<void> {
   if (testEnv.e2eSkipFetch) return
-  await fetchProjectOrigin(projectId)
+  await fetchRepoOrigin(repoId)
 }
 
 /** How long a claim keeping its spare's branch waits for the fetch before
@@ -366,8 +381,9 @@ async function allSucceed(tasks: Array<Promise<unknown>>): Promise<void> {
  * for a nonexistent requested branch propagates (before any change), since a
  * cold create would fail the same way.
  *
- * Spares in the create's zone and on its image qualify, newest first. A
- * spare is re-branched (`rebranchSpare`) as needed. Inserting the workspace
+ * Spares in the create's zone and on its image, warmed with what it starts
+ * with (`spareMatches`), qualify, newest first. Each of a spare's checkouts
+ * is re-branched (`rebranchSpare`) as needed. Inserting the workspace
  * row is the commit point: from then on no reap deletes the spare's files. A
  * failure after it deletes the row, then returns the spare to the pool if
  * it is untouched, else reaps it. Once `claimSpare` has unmarked the
@@ -382,10 +398,10 @@ export async function tryClaimPrewarmed(
   /** The session it opens; absent for a workspace with none. */
   session: SessionLaunchSettings | undefined,
   emit: (message: string) => void,
-  /** The base branch, titles, group and deadline. */
-  request: { branch?: string; title?: string; generatedTitle?: string; groupId?: string; deadline?: Date } = {},
+  /** What it starts with, its titles, group and deadline. */
+  request: { start: WorkspaceStart; title?: string; generatedTitle?: string; groupId?: string; deadline?: Date },
 ): Promise<WorkspaceCreateResult | undefined> {
-  const { branch } = request
+  const { start } = request
   const runtime = workspaceDriver()
   let reserved: string | undefined
   let chosen: RuntimeHandle | undefined
@@ -412,8 +428,12 @@ export async function tryClaimPrewarmed(
     ])
     const candidates = spares
       // Neither the zone nor the image can be converted: the pod spec is
-      // fixed, and `TZ` is set at launch.
-      .filter((p) => launched.get(p.jobName)?.timeZone === timeZone && launched.get(p.jobName)?.image === image)
+      // fixed, and `TZ` is set at launch. Nor can its checkouts or cwd.
+      .filter((p) => {
+        const settings = launched.get(p.jobName)
+        return settings !== undefined && settings.timeZone === timeZone && settings.image === image
+          && spareMatches(settings, start)
+      })
       .sort((a, b) => b.createdAtMs - a.createdAtMs)
 
     for (const c of candidates) {
@@ -440,25 +460,40 @@ export async function tryClaimPrewarmed(
     }
     if (!chosen) return undefined
     warmed = launched.get(chosen.jobName)
-    // Start the fetch now so it overlaps the steps below; awaited at the
+    const job = chosen.jobName
+    const paths = runtime.workspacePaths(job)
+    // Start each fetch now so it overlaps the steps below; awaited at the
     // branch prep.
-    const fetched = fetchSpareOrigin(projectId)
-    fetched.catch(() => { /* observed below */ })
+    const checkouts = start.repos.map((r) => {
+      const fetched = fetchSpareOrigin(r.link.repo.id)
+      fetched.catch(() => { /* observed below */ })
+      return {
+        repoId: r.link.repo.id,
+        path: r.path,
+        seenAt: path.posix.join(paths.workspaceDir, r.path),
+        repo: repoDir(r.link.repo.id),
+        requested: r.branch,
+        upstream: warmed?.repos.find((w) => w.repoId === r.link.repo.id)?.baseBranch ?? null,
+        fetched,
+      }
+    })
 
     // The commands below need the agent transport. The liveness check above
     // may be cached, so gate here, before any change: on failure the spare
     // is untouched and the claim falls back to a cold create.
-    const repo = repoDir(projectId)
-    const [defaultBranch] = await Promise.all([
-      getDefaultBranch(repo),
-      runtime.awaitAgentTransport(chosen.jobName, { timeoutMs: 10_000 }),
+    const [defaultBranches] = await Promise.all([
+      Promise.all(checkouts.map((c) => getDefaultBranch(c.repo))),
+      runtime.awaitAgentTransport(job, { timeoutMs: 10_000 }),
     ])
-    const spareUpstreamBranch = warmed?.baseBranch ?? null
-    const rebranchTo = resolveRebranchTarget({
-      requestedBranch: branch,
-      spareUpstreamBranch,
-      defaultBranch,
-    })
+    const branches = checkouts.map((c, i) => ({
+      ...c,
+      defaultBranch: defaultBranches[i],
+      rebranchTo: resolveRebranchTarget({
+        requestedBranch: c.requested,
+        spareUpstreamBranch: c.upstream,
+        defaultBranch: defaultBranches[i],
+      }),
+    }))
 
     // Insert the row before changing the spare, so a server that dies from
     // here on leaves a row, which keeps the reap from deleting the checkout.
@@ -466,12 +501,15 @@ export async function tryClaimPrewarmed(
     // sidebar does not show both.
     const claimedId = chosen.workspaceId
     claimProvisioning(requestId, claimedId)
-    const baseBranch = rebranchTo ?? spareUpstreamBranch
     await applyWorkspaceEvent({
       type: 'workspace-created',
       projectId,
       workspaceId: claimedId,
-      ...(baseBranch !== null ? { baseBranch } : {}),
+      repos: branches.map((c) => {
+        const baseBranch = c.rebranchTo ?? c.upstream
+        return { repoId: c.repoId, path: c.path, ...(baseBranch !== null ? { baseBranch } : {}) }
+      }),
+      cwd: start.cwd,
       ...(request.title !== undefined ? { title: request.title } : {}),
       ...(request.generatedTitle !== undefined ? { generatedTitle: request.generatedTitle } : {}),
       ...(request.groupId !== undefined ? { groupId: request.groupId } : {}),
@@ -488,36 +526,32 @@ export async function tryClaimPrewarmed(
     const opened = session !== undefined ? await insertSession(projectId, claimedId, session) : undefined
 
     // Branch prep happens before the session launches.
-    let prep: { branch: string; sha: string } | null = null
-    if (rebranchTo !== null) {
-      // A re-branch needs the fetch, however long it takes.
-      await fetched
-      if (!(await remoteBranchExists(repo, rebranchTo))) {
-        throw new ServerError('VALIDATION', `branch "${rebranchTo}" not found on origin.`)
+    const preps = await Promise.all(branches.map(async (c): Promise<{ seenAt: string; branch: string; sha: string } | null> => {
+      if (c.rebranchTo !== null) {
+        // A re-branch needs the fetch, however long it takes.
+        await c.fetched
+        if (!(await remoteBranchExists(c.repo, c.rebranchTo))) {
+          throw new ServerError('VALIDATION', `branch "${c.rebranchTo}" not found on origin.`)
+        }
+        emit(`Switching prewarmed session to branch ${c.rebranchTo}...`)
+        return { seenAt: c.seenAt, branch: c.rebranchTo, sha: await resolveRemoteRef(c.repo, c.rebranchTo) }
       }
-      prep = { branch: rebranchTo, sha: await resolveRemoteRef(repo, rebranchTo) }
-      emit(`Switching prewarmed session to branch ${rebranchTo}...`)
-    } else {
       // Keep the branch, but move up to where origin now has it. HEAD is
       // read inside the workspace; the server never runs git on its clone.
-      const warmedBranch = spareUpstreamBranch ?? defaultBranch
-      const job = chosen.jobName
-      const head = async (): Promise<string> => (await runtime.exec(
-        job, `git -C ${runtime.workspacePaths(job).workspaceDir} rev-parse -q --verify HEAD || true`,
-      )).stdout.trim()
-      const sha = await refreshTarget(fetched, repo, warmedBranch, claimedId, head)
-      if (sha !== null) {
-        prep = { branch: warmedBranch, sha }
-        emit(`Updating prewarmed session to the latest ${warmedBranch}...`)
-      }
-    }
-    // Re-register from the current config (allowlist, secrets, remote), so
-    // project edits since warming apply. The allowlist is read fresh here so
-    // an allow-host during the fetch is not overwritten.
-    const [config, allowlist, remoteUrl, projectEnv] = await Promise.all([
+      const warmedBranch = c.upstream ?? c.defaultBranch
+      const head = async (): Promise<string> =>
+        (await runtime.exec(job, `git -C ${c.seenAt} rev-parse -q --verify HEAD || true`)).stdout.trim()
+      const sha = await refreshTarget(c.fetched, c.repo, warmedBranch, claimedId, head)
+      if (sha === null) return null
+      emit(`Updating prewarmed session to the latest ${warmedBranch}...`)
+      return { seenAt: c.seenAt, branch: warmedBranch, sha }
+    }))
+    // Re-register from the current config (allowlist, secrets), so project
+    // edits since warming apply. The allowlist is read fresh here so an
+    // allow-host during the fetch is not overwritten.
+    const [config, allowlist, projectEnv] = await Promise.all([
       resolveProjectConfig(projectId),
       getProjectAllowlist(projectId),
-      projectRemoteUrl(projectId),
       resolveProjectEnv(projectId),
     ])
     if (!config) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
@@ -527,18 +561,17 @@ export async function tryClaimPrewarmed(
       owner: credentialOwnerKey(owner),
       config,
       allowlist,
-      remoteUrl,
       proxySecretRules: Object.fromEntries(
         Object.entries(projectEnv.secrets).map(([name, { rule }]) => [name, rule]),
       ),
     }
     // A re-branch makes the spare inconsistent if we fail.
-    if (prep !== null) mutated = true
+    if (preps.some((p) => p !== null)) mutated = true
     const spare = chosen
     await allSucceed([
       (async () => {
         await runtime.registerWorkspace(registration)
-        if (prep !== null) await rebranchSpare(spare, prep.branch, prep.sha)
+        for (const p of preps) if (p !== null) await rebranchSpare(spare, p.seenAt, p.branch, p.sha)
       })(),
       // Re-apply the current git identity, which may have changed since the
       // spare was warmed. Non-fatal: the workspace is already usable.
@@ -553,12 +586,16 @@ export async function tryClaimPrewarmed(
         )
       }),
     ])
-    // Not awaited: a claim never waits out a slow fetch.
-    void fetched.then(async () => recordTrackedScratchDirs(
+    // Not awaited: a claim never waits out a slow fetch. The scratch dirs
+    // are the same in every checkout, so the first one's name them all.
+    const under = branches[0] !== undefined && branches[0].path !== '' ? `${branches[0].path}/` : ''
+    const scratchDirs = branches.length === 0 ? []
+      : (warmed?.scratchDirs ?? []).filter((d) => d.startsWith(under)).map((d) => d.slice(under.length))
+    void Promise.all(branches.map((c) => c.fetched)).then(async () => recordTrackedScratchDirs(
       projectId,
       claimedId,
-      prep?.branch ?? baseBranch ?? undefined,
-      warmed?.scratchDirs ?? [],
+      branches.map((c) => ({ repoId: c.repoId, path: c.path, base: c.rebranchTo ?? c.upstream ?? undefined })),
+      scratchDirs,
     )).catch(() => { /* a failed fetch is the branch prep's to report */ })
 
     // Unmark the runtime. A lost race throws and falls back to a cold
@@ -570,12 +607,17 @@ export async function tryClaimPrewarmed(
     spareSettings.delete(claimedId)
 
     // The life's log hooks, before any window of it opens, and the commit
-    // the checkout now starts at.
-    const paths = runtime.workspacePaths(chosen.jobName)
-    const { stdout } = await runtime.exec(chosen.jobName, `${await lifeHooksExec(projectId, claimedId, life, paths)}`
-      + ` && git -C ${paths.workspaceDir} rev-parse -q --verify HEAD || true`)
-    const startCommit = stdout.trim()
-    if (startCommit !== '') await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId, workspaceId: claimedId, startCommit })
+    // each checkout now starts at, one per line.
+    const { stdout } = await runtime.exec(job, [
+      await lifeHooksExec(projectId, claimedId, life, paths),
+      ...branches.map((c) => `{ git -C ${c.seenAt} rev-parse -q --verify HEAD || echo; }`),
+    ].filter((cmd) => cmd !== '').join(' && '))
+    const heads = stdout.split('\n')
+    for (const [i, c] of branches.entries()) {
+      const startCommit = heads[i]?.trim() ?? ''
+      if (startCommit === '') continue
+      await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId, workspaceId: claimedId, repoId: c.repoId, startCommit })
+    }
 
     emit('Using prewarmed session...')
     if (opened !== undefined) await launchSessions({ projectId, workspaceId: claimedId, jobName: chosen.jobName }, [opened])

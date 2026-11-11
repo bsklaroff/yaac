@@ -15,7 +15,8 @@
 #   yaac-mama run-queued <queued>
 #   yaac-mama delete-queued <queued>
 #     where opts: [--tool T] [--model M] [--effort E] [--permission-mode P]
-#                 [--ui-mode U] [--branch B | --commit C] [--group G] [--title T] [--timeout D]
+#                 [--ui-mode U] [--repo DIR[@BRANCH]]... [--no-repos] [--nested | --no-nested]
+#                 [--cwd DIR] [--branch B | --commit C] [--group G] [--title T] [--timeout D]
 #                 [--steps F | --no-steps | --workflow W] [--non-interactive]
 #   yaac-mama routine create --name N --cron C [--tz Z] [opts] "<prompt>"
 #   yaac-mama routine edit [--name N] [--cron C] [--tz Z] [opts] <routine> ["<prompt>"]
@@ -24,7 +25,8 @@
 #   yaac-mama send [--session S | --conversation C] <workspace> "<message>"
 #   (each prompt or message also as - for stdin, or as --prompt-file F)
 #   yaac-mama rename [<workspace>] "<title>"
-#   yaac-mama set-base <branch>
+#   yaac-mama set-base [--repo DIR] <branch>
+#   yaac-mama as-repo <repo> -- <command>...
 #   yaac-mama icon get <file> | icon set <file> | icon remove
 #   yaac-mama stop [<workspace>]
 #   yaac-mama stop --session [<session>]
@@ -55,6 +57,8 @@
 # workers it queues there, and the project's icon, which every viewer of the
 # project sees and whose old picture is not kept, but which, like a title,
 # changes nothing that runs; the rest stays with the user.
+# `as-repo` runs one command with `GH_TOKEN` set to another of this
+# workspace's repos' token, where the project lets that repo's be one.
 # `fetch` reads another workspace's branches into this
 # checkout, `history` its conversations and `logs` its steps' output; none
 # writes to theirs.
@@ -125,7 +129,9 @@ Usage:
   Any "<prompt>" or "<message>" can instead be - (read from stdin) or
   --prompt-file <path>, given before the other arguments.
   yaac-mama rename [<workspace>] "<title>"          # retitle (default: yourself)
-  yaac-mama set-base <branch>                      # change your base branch
+  yaac-mama set-base [--repo <dir>] <branch>       # change your base branch
+  yaac-mama as-repo <repo> -- <command>...         # run a command with another
+                                                   # repo's GH_TOKEN
   yaac-mama icon get <file>                        # save the project's sidebar icon
   yaac-mama icon set <file>                        # replace it
   yaac-mama icon remove                            # back to its initial
@@ -178,11 +184,29 @@ but --title, --steps and --no-steps):
                    Not every tool has every mode (pi has only bypass).
   --ui-mode <mode> how the agent is driven: tui (its terminal UI, the default)
                    or acp (a chat pane in the yaac webapp).
-  --branch <name>  reference branch on origin for the new workspace. Omitted,
-                   the project's default branch.
-  --commit <sha>   start at this full commit (40 hex digits) instead of a
-                   branch's tip; not with --branch. The workspace then has no
-                   base branch until `yaac-mama set-base` gives it one.
+  --repo <dir>[@<branch>]
+                   a repo of the project the new workspace starts with, by
+                   its folder (this workspace's own are in $YAAC_CHECKOUTS,
+                   colon-separated, . for one at the root), at this branch
+                   on origin, or with a full commit in the branch's place
+                   at that commit; repeat it for several. Omitted, the repos
+                   the project's last create included, each at its default
+                   branch.
+  --no-repos       start with no repos: an empty workspace dir.
+  --nested         put a lone repo in a folder named for it instead of at the
+                   workspace root (--no-nested: at the root). Several repos
+                   always sit in folders. Omitted, the project's last choice.
+  --cwd <dir>      where the new agent starts: a selected repo's folder, or .
+                   for the workspace root. Omitted, the project's last choice
+                   where that repo is selected, else a lone repo, else the
+                   root.
+  --branch <name>  reference branch on origin for a workspace that starts with
+                   one repo. Omitted, the repo's default branch. With several
+                   repos, name each one's with --repo.
+  --commit <sha>   start a workspace that starts with one repo at this full
+                   commit (40 hex digits) instead of a branch's tip; not with
+                   --branch. Its checkout then has no base branch until
+                   `yaac-mama set-base` gives it one.
   --steps <file>   a JSON file of the steps to start with, in place of the
                    project's init steps (docs/workspace-steps.md): steps by
                    name, each {"run": "<cmd>" or ["<cmd>", ...], "needs":
@@ -222,8 +246,10 @@ create also takes:
                    of the project, on its checkout, rather than in a new
                    workspace. It takes the agent options (--tool, --model,
                    --effort, --permission-mode, --ui-mode, --title for the
-                   session's title) but not a workspace's (--branch, --group,
-                   --timeout). It prints the new session's id.
+                   session's title) and --cwd (one of that workspace's
+                   checkouts' folders, or . for its root; omitted, the
+                   workspace's own), but not a workspace's (--repo, --branch,
+                   --group, --timeout). It prints the new session's id.
   --resume <conversation>
                    with --workspace: open the session on one of that
                    workspace's earlier conversations (see `yaac-mama history`)
@@ -335,7 +361,9 @@ Everything else prints a short report.
 fetch copies another workspace's branches and HEAD, running or stopped, into
 this checkout as refs/yaac/peers/<id>/<branch> and refs/yaac/peers/<id>/HEAD,
 where <id> is its first 8 characters (e.g. `git log yaac/peers/1a2b3c4d/HEAD`).
-Only committed work travels. Fetching again replaces those refs.
+Only committed work travels. Fetching again replaces those refs. With
+several repos, run it inside the checkout to fetch into: it reads the other
+workspace's checkout of the same repo.
 
 history reads another workspace's agent conversations, running or stopped.
 With no conversation it lists them (CONVERSATION is the id the other forms
@@ -364,11 +392,21 @@ allows, or queues it. Read its answer with `yaac-mama history`. The session
 may not run in a more permissive mode than you.
 send takes --prompt-file <path> or - for the message, as create does.
 
-set-base makes <branch>, a branch on origin, this workspace's base: what
+set-base makes <branch>, a branch on origin, this checkout's base: what
 the yaac webapp diffs it against, and what a workspace queued under it from
 then on forks from. Use it when this work is stacked on another PR's
 branch. It does not touch this checkout: rebase onto origin/<branch>
 yourself (`git fetch origin <branch>` first if git does not have it yet).
+In a workspace with several repos it acts on the checkout the current
+directory is in, or the one --repo names by its folder.
+
+as-repo runs <command> with GH_TOKEN set to the token of another repo of
+this project, named by its folder: `yaac-mama as-repo web -- gh pr create`. gh then acts as that repo's
+credential, wherever the command runs. GH_TOKEN is otherwise the token of
+the repo your session started in. It is refused for a repo that is not an
+https GitHub one, and for one the project made read-only or keeps from
+being GH_TOKEN. git itself needs none of this: each checkout already
+fetches and pushes with its own repo's credential.
 
 icon get saves the picture this project's chip shows in the yaac sidebar
 to a file (- for stdout), as it was uploaded, and says its type.
@@ -632,6 +670,23 @@ for sid in sessions:
 PY
 }
 
+# The checkout the current directory is in, as its path under the workspace
+# dir, into $checkout: empty for one at the workspace root, and outside any
+# checkout, where the server takes a workspace's only checkout. $inside says
+# whether the directory is in one of the workspace's checkouts at all, when
+# the workspace dir is known. Both paths are resolved first, since a host's
+# data dir may sit behind a symlink.
+checkout_path() {
+  checkout=""; inside=""
+  root=$(cd "$YAAC_WORKSPACE_DIR" 2>/dev/null && pwd -P) || { inside=1; return 0; }
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+  top=$(cd "$top" 2>/dev/null && pwd -P) || return 0
+  case "$top" in
+    "$root") inside=1 ;;
+    "$root"/*) inside=1; checkout=${top#"$root"/} ;;
+  esac
+}
+
 # Fetch another workspace's branches. The answer is a git bundle. The
 # receiving git checks every object (transfer.fsckObjects), since another
 # workspace wrote them.
@@ -640,7 +695,10 @@ fetch_workspace() {
     echo 'yaac-mama: run fetch from inside your checkout' >&2
     exit 2
   }
-  download fetch '' workspace "$1"
+  # Never into a repository the workspace dir merely sits inside.
+  checkout_path
+  [ -n "$inside" ] || { echo "yaac-mama: run fetch from inside one of this workspace's checkouts" >&2; exit 2; }
+  download fetch '' workspace "$1" repo "$checkout"
   short=$(printf '%.8s' "$id")
   [ -n "$short" ] || { echo 'yaac-mama: the server named no workspace' >&2; exit 1; }
   # A workspace whose branch has no commit yet has no HEAD to fetch.
@@ -652,6 +710,15 @@ fetch_workspace() {
     "+refs/heads/*:refs/yaac/peers/$short/*" $head || exit 1
   git -C "$workdir" for-each-ref --format='%(refname:lstrip=1)' "refs/yaac/peers/$short/"
   exit 0
+}
+
+# One --repo value as a JSON string: <dir> or <dir>@<branch or full commit>,
+# where <dir> is the repo's folder in the project (or its id).
+repo_start() {
+  case "$1" in
+    ''|@*|*@) echo "yaac-mama: --repo takes <dir> or <dir>@<branch> (got \"$1\")" >&2; exit 2 ;;
+  esac
+  printf '%s' "$1" | json_string
 }
 
 [ $# -gt 0 ] || { usage >&2; exit 2; }
@@ -777,20 +844,27 @@ EOF
     tool=""; model=""; effort=""; perm=""; ui_mode=""; branch=""; group=""; title=""; parent=""; no_parent=""; prompt_file=""
     timeout=""; start_at=""; start_in=""; routine_name=""; cron=""; tz=""; target=""; resume=""; no_session=""; volume=""
     commit=""; steps=""; no_steps=""; non_interactive=""; wait=""; run_json=""; step_name=""; needs=""; service=""; ready=""
-    workflow=""
+    workflow=""; repos=""; no_repos=""; nested=""; no_nested=""; cwd=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --no-parent) no_parent=1; shift; continue ;;
         --no-session) no_session=1; shift; continue ;;
         --no-steps) no_steps=1; shift; continue ;;
         --non-interactive) non_interactive=1; shift; continue ;;
+        --no-repos) no_repos=1; shift; continue ;;
+        --nested) nested=1; shift; continue ;;
+        --no-nested) no_nested=1; shift; continue ;;
         --wait) wait=1; shift; continue ;;
         --service) service=1; shift; continue ;;
-        --tool|--model|--effort|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace|--prompt-file|--timeout|--start-at|--start-in|--name|--cron|--tz|--workspace|--resume|--volume|--commit|--steps|--workflow|--run|--needs|--ready)
+        --tool|--model|--effort|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace|--prompt-file|--timeout|--start-at|--start-in|--name|--cron|--tz|--workspace|--resume|--volume|--commit|--steps|--workflow|--run|--needs|--ready|--repo|--cwd)
           [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a value" >&2; exit 2; } ;;
         *) break ;;
       esac
       case "$1" in
+        --repo)
+          item=$(repo_start "$2") || exit 2
+          if [ -z "$repos" ]; then repos="[$item]"; else repos="${repos%]},$item]"; fi ;;
+        --cwd) cwd=$2 ;;
         --commit) commit=$2 ;;
         --workflow) workflow=$2 ;;
         --steps)
@@ -844,18 +918,18 @@ EOF
       run create '' workspace "$target" workflow "$workflow" tool "$tool" model "$model" effort "$effort" \
         permission-mode "$perm" ui-mode "$ui_mode" branch "$branch" group "$group" title "$title" timeout "$timeout" \
         resume "$resume" no-session "$no_session" volume "$volume" commit "$commit" steps "$steps" \
-        no-steps "$no_steps" non-interactive "$non_interactive"
+        no-steps "$no_steps" non-interactive "$non_interactive" repos "$repos" no-repos "$no_repos" nested "$nested" no-nested "$no_nested" cwd "$cwd"
     fi
     if [ -n "$wait" ] && [ -z "$non_interactive" ]; then
       echo 'yaac-mama: --wait goes with --non-interactive or --run' >&2
       exit 2
     fi
-    opts='[--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T] [--timeout D]'
+    opts='[--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--repo DIR[@BRANCH]]... [--cwd DIR] [--branch B] [--group G] [--title T] [--timeout D]'
     if [ "$cmd" = create ] && { [ -n "$parent" ] || [ -n "$start_at" ] || [ -n "$start_in" ]; }; then
       echo 'yaac-mama: create starts now; use queue for --parent-workspace, --start-at or --start-in' >&2
       exit 2
     fi
-    ropts='--name N --cron C [--tz Z] [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--timeout D]'
+    ropts='--name N --cron C [--tz Z] [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--repo DIR[@BRANCH]]... [--cwd DIR] [--branch B] [--group G] [--timeout D]'
     case "$cmd" in
       create) use="create $opts" ;;
       # Whether a missing parent is allowed (a start time, or a group with
@@ -899,7 +973,7 @@ EOF
       group "$group" title "$title" timeout "$timeout" start-at "$start_at" start-in "$start_in" \
       name "$routine_name" cron "$cron" tz "$tz" workspace "$target" resume "$resume" no-session "$no_session" \
       volume "$volume" commit "$commit" steps "$steps" no-steps "$no_steps" non-interactive "$non_interactive" \
-      workflow "$workflow"
+      workflow "$workflow" repos "$repos" no-repos "$no_repos" nested "$nested" no-nested "$no_nested" cwd "$cwd"
     if [ -n "$wait" ]; then
       ask "$@"
       printf '%s\n' "$text"
@@ -957,11 +1031,32 @@ EOF
 
   set-base)
     shift
+    # The checkout whose base it is: the one --repo names by its folder,
+    # else the one the current directory is in.
+    checkout_path
+    if [ "${1:-}" = --repo ]; then
+      [ $# -ge 2 ] && [ -n "$2" ] || { echo 'yaac-mama: --repo needs a value' >&2; exit 2; }
+      checkout=$2; shift 2
+    fi
     if [ $# -ne 1 ] || [ -z "$1" ]; then
-      echo 'usage: yaac-mama set-base <branch>' >&2
+      echo 'usage: yaac-mama set-base [--repo <dir>] <branch>' >&2
       exit 2
     fi
-    run set-base "$1"
+    run set-base "$1" repo "$checkout"
+    ;;
+
+  as-repo)
+    shift
+    if [ $# -lt 3 ] || [ -z "$1" ] || [ "$2" != -- ]; then
+      echo 'usage: yaac-mama as-repo <repo> -- <command>...' >&2
+      exit 2
+    fi
+    repo=$1; shift 2
+    # The answer is the value itself: that repo's token, or in a pod the
+    # placeholder the egress proxy swaps for it.
+    ask as-repo '' repo "$repo"
+    [ -n "$text" ] || { echo "yaac-mama: the server named no GH_TOKEN for $repo" >&2; exit 1; }
+    GH_TOKEN=$text exec "$@"
     ;;
 
   stop)
@@ -1160,7 +1255,7 @@ EOF
     ;;
 
   *)
-    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, run-queued, delete-queued, routine, send, rename, set-base, icon, stop, restart, rerun, status, logs, group, models, volumes, workflow, fetch, history)" >&2
+    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, run-queued, delete-queued, routine, send, rename, set-base, as-repo, icon, stop, restart, rerun, status, logs, group, models, volumes, workflow, fetch, history)" >&2
     echo 'run "yaac-mama --help" for usage' >&2
     exit 2
     ;;

@@ -36,7 +36,7 @@ import { _clearTmuxAliveCacheForTests } from '#runtime/status/liveness'
 import { _resetAcpRegistryForTests, registerAcpConversation } from '#runtime/agents/acp-registry'
 import type { AcpConversation } from '#runtime/agents'
 import { serverLog } from '#lib/log'
-import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { createTempDataDir, cleanupTempDir, createTestRepo } from '@yaac/test-utils/setup'
 import { git } from '@yaac/test-utils/git'
 import { DEMO_PROJECT_ID, recordTestProject, seedProject } from '@yaac/test-utils/project-fixture'
 import {
@@ -63,9 +63,12 @@ import {
 } from '@yaac/shared/project-paths'
 import { CONTAINER_TMUX_DIR } from '@yaac/shared/paths'
 import {
-  PLACEHOLDER_API_KEY, PLACEHOLDER_GH_TOKEN, PLACEHOLDER_OMP_API_KEY, PLACEHOLDER_OPENCODE_API_KEY, PLACEHOLDER_PI_API_KEY,
+  ghTokenPlaceholder, PLACEHOLDER_API_KEY, PLACEHOLDER_OMP_API_KEY, PLACEHOLDER_OPENCODE_API_KEY, PLACEHOLDER_PI_API_KEY,
 } from '@yaac/shared/tool-auth'
-import { closeDb } from '#db/client'
+import { eq } from 'drizzle-orm'
+import { closeDb, getDb } from '#db/client'
+import { repos } from '#db/schema'
+import { getRepo, insertRepo, linkProjectRepo, listWorkspaceRepos, type WorkspaceRepoRow } from '#db/repo-store'
 import { cloneRepo, initHostedRepo } from '#domain/git'
 import {
   BUILT_IN_USER_ID,
@@ -78,15 +81,14 @@ import {
   listWorkspaceSessions,
   setGitIdentity,
   setProjectEgressAllowlist,
-  setProjectGitCredential,
+  setRepoGitCredential,
   setTimeZone,
   setWorkspaceGroupLimit,
   seeTailnetUser,
   setToolCredential,
   type SessionRow,
-  type WorkspaceRow,
 } from '#db'
-import { getProjectRow, recordProject, recordProjectCreate, setProjectConfig } from '#db/project-store'
+import { getProjectRow, recordProjectCreate, setProjectConfig } from '#db/project-store'
 import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { listWorkspaceSteps } from '#db/step-store'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
@@ -105,6 +107,33 @@ import type { AgentTool } from '@yaac/shared/types'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
+
+/** A workspace's one checkout, as its row records it. */
+const checkout = async (workspaceId: string): Promise<WorkspaceRepoRow | undefined> =>
+  (await listWorkspaceRepos(workspaceId))[0]
+
+/**
+ * A second repo of the demo project's owner, linked into it under `dir`
+ * with the demo repo's credential, its main clone holding `origin/main` and
+ * `origin/dev` like the first's. Answers its id.
+ */
+async function seedSecondRepo(dir: string): Promise<string> {
+  const id = randomUUID()
+  const clone = repoDir(id)
+  await createTestRepo(clone)
+  await git(clone, ['branch', '-M', 'main'])
+  for (const branch of ['main', 'dev']) await git(clone, ['update-ref', `refs/remotes/origin/${branch}`, 'HEAD'])
+  await git(clone, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+  await insertRepo({ id, owner: BUILT_IN_USER_ID, remoteUrl: `https://github.com/o/${dir}.git` })
+  await setRepoGitCredential(id, (await getRepo(DEMO_PROJECT_ID))?.gitCredentialId as string, null)
+  await linkProjectRepo(DEMO_PROJECT_ID, id, dir)
+  return id
+}
+
+/** Point the demo project's repo at another remote. */
+async function setRemote(remoteUrl: string): Promise<void> {
+  await (await getDb()).update(repos).set({ remoteUrl }).where(eq(repos.id, DEMO_PROJECT_ID))
+}
 
 /** Store the built-in user's api key for a tool, with its provider where
  *  the tool needs one. */
@@ -342,13 +371,100 @@ describe('prepareStart', () => {
       expect((await settled({ tool: 'opencode', permissionMode: 'plan' })).permissionMode).toBe('plan')
     })
 
-    it('remembers what a person named, and only that, with the branch', async () => {
+    it('remembers what a person named, and only that, with what the workspace started with', async () => {
       await start({ tool: 'codex', permissionMode: 'accept-edits', branch: 'dev', rememberDefaults: true })
       expect(await getProjectRow(DEMO_PROJECT_ID)).toMatchObject({
         lastTool: 'codex',
-        lastBranch: 'dev',
+        lastNested: false,
+        lastCwd: DEMO_PROJECT_ID,
+        repos: [{ dir: 'demo', lastIncluded: true, lastBranch: 'dev' }],
         createDefaults: { codex: { permissionMode: 'accept-edits', mode: 'tui' } },
       })
+    })
+
+    // What a workspace starts with is a create setting like the rest: named
+    // or else as the project's last create had it (docs/project-repos.md).
+    it('starts with the repos named, each in its folder at its branch, the agent in the cwd named, and the next create takes the same', async () => {
+      const web = await seedSecondRepo('web')
+      const checkouts = async (workspaceId: string): Promise<Array<[string, string, string | undefined]>> =>
+        (await listWorkspaceRepos(workspaceId)).map((c) => [c.repoId, c.path, c.baseBranch])
+      const checkedOut = async (workspaceId: string): Promise<string[]> =>
+        (await fs.readdir(workspaceDir(DEMO_PROJECT_ID, workspaceId), { recursive: true }))
+          .filter((f) => path.basename(f) === '.git').map((f) => path.dirname(f)).sort()
+
+      const both = await start({ repos: [{ repo: 'demo', branch: 'dev' }, { repo: web }], cwd: 'web', rememberDefaults: true })
+      expect(await checkouts(both.workspaceId)).toEqual([[DEMO_PROJECT_ID, 'demo', 'dev'], [web, 'web', 'main']])
+      expect(await checkedOut(both.workspaceId)).toEqual(['demo', 'web'])
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, both.workspaceId)).toMatchObject({ cwd: 'web' })
+      expect((await listWorkspaceSessions(both.workspaceId))[0]).toMatchObject({ cwd: 'web' })
+      expect(specs.at(-1)).toMatchObject({ cwd: 'web' })
+
+      // Unnamed, each is as that create had it: both repos (at their
+      // default branches), in folders, the agent in `web`.
+      const same = await start()
+      expect(await checkouts(same.workspaceId)).toEqual([[DEMO_PROJECT_ID, 'demo', 'main'], [web, 'web', 'main']])
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, same.workspaceId)).toMatchObject({ cwd: 'web' })
+      // A branch on its own names the start of one repo, which this is not.
+      await expect(start({ branch: 'dev' })).rejects.toThrow(/names the start of exactly one repo/)
+      await expect(start({ repos: [{ repo: 'demo' }, { repo: 'web' }], nested: false })).rejects.toThrow(/always sit in folders/)
+      await expect(start({ repos: [{ repo: 'nope' }] })).rejects.toMatchObject({ code: 'NOT_FOUND' })
+      await expect(start({ repos: [{ repo: 'web' }], cwd: 'demo' })).rejects.toThrow(/not "\." or a repo this workspace starts with/)
+      // Nor does it add to a repo's own start, or start anything of no repos.
+      await expect(start({ repos: [{ repo: 'web', branch: 'main' }], branch: 'dev' })).rejects.toThrow(/names the start of exactly one repo/)
+      await expect(start({ repos: [], branch: 'dev' })).rejects.toThrow(/names the start of exactly one repo/)
+      await expect(start({ repos: [], cwd: 'web' })).rejects.toMatchObject({ code: 'VALIDATION' })
+      await expect(start({ repos: [{ repo: 'web' }, { repo: web }] })).rejects.toThrow(/selected twice/)
+      await expect(start({ repos: [{ repo: 'web', branch: 'dev', commit: head }] })).rejects.toThrow(/a branch or a commit, not both/)
+      await expect(start({ repos: [{ repo: 'web', branch: 'bad..name' }] })).rejects.toThrow(/"bad\.\.name" is not a branch name/)
+
+      // One repo sits at the root unless asked into its folder, and the
+      // remembered cwd, its repo, is then the root.
+      const flat = await start({ repos: [{ repo: 'web' }], nested: false })
+      expect(await checkouts(flat.workspaceId)).toEqual([[web, '', 'main']])
+      expect(await checkedOut(flat.workspaceId)).toEqual(['.'])
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, flat.workspaceId)).toMatchObject({ cwd: '' })
+      // With no layout named it sits as the last create's did, in its
+      // folder, and the agent there, since the remembered repo is not in it.
+      const lone = await start({ repos: [{ repo: 'demo' }] })
+      expect(await checkouts(lone.workspaceId)).toEqual([[DEMO_PROJECT_ID, 'demo', 'main']])
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, lone.workspaceId)).toMatchObject({ cwd: 'demo' })
+      // A remembered root stays the root.
+      const nested = await start({ repos: [{ repo: 'web' }], nested: true, cwd: '.', rememberDefaults: true })
+      expect(await checkouts(nested.workspaceId)).toEqual([[web, 'web', 'main']])
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, nested.workspaceId)).toMatchObject({ cwd: '' })
+      const rooted = await start({ repos: [{ repo: 'demo' }] })
+      expect(await checkouts(rooted.workspaceId)).toEqual([[DEMO_PROJECT_ID, 'demo', 'main']])
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, rooted.workspaceId)).toMatchObject({ cwd: '' })
+
+      // A branch on its own starts a selection of one repo, and a cwd
+      // naming a repo at the root is the root.
+      const short = await start({ repos: [{ repo: 'web' }], nested: false, branch: 'dev', cwd: 'web' })
+      expect(await checkouts(short.workspaceId)).toEqual([[web, '', 'dev']])
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, short.workspaceId)).toMatchObject({ cwd: '' })
+      // Each repo of several names its own start, a commit included, and
+      // the cwd may name its repo by id. Each `.git` is assembled beside
+      // the workspace dir, never inside it.
+      const pinned = await start({ repos: [{ repo: 'demo', commit: head }, { repo: 'web', branch: 'dev' }], cwd: web })
+      expect(await listWorkspaceRepos(pinned.workspaceId)).toEqual([
+        { workspaceId: pinned.workspaceId, repoId: DEMO_PROJECT_ID, path: 'demo', startCommit: head },
+        expect.objectContaining({ repoId: web, path: 'web', baseBranch: 'dev' }),
+      ])
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, pinned.workspaceId)).toMatchObject({ cwd: 'web' })
+      const pinnedDir = workspaceDir(DEMO_PROJECT_ID, pinned.workspaceId)
+      expect((await git(path.join(pinnedDir, 'demo'), ['rev-parse', 'HEAD'])).trim()).toBe(head)
+      await expect(git(path.join(pinnedDir, 'demo'), ['rev-parse', '--abbrev-ref', '@{u}'])).rejects.toThrow()
+      expect((await git(path.join(pinnedDir, 'web'), ['rev-parse', '--abbrev-ref', '@{u}'])).trim()).toBe('origin/dev')
+      expect((await fs.readdir(path.dirname(pinnedDir))).filter((name) => name.startsWith('.staging-'))).toEqual([])
+
+      // None is an empty workspace dir, with no credential or fetch needed,
+      // and no layout to speak of.
+      const none = await start({ repos: [], nested: true, rememberDefaults: true })
+      expect(await checkouts(none.workspaceId)).toEqual([])
+      expect(await fs.readdir(workspaceDir(DEMO_PROJECT_ID, none.workspaceId))).toEqual([])
+      expect(await getProjectRow(DEMO_PROJECT_ID)).toMatchObject({
+        lastNested: false, lastCwd: '.', repos: [{ dir: 'demo', lastIncluded: false, lastBranch: 'dev' }, { dir: 'web', lastIncluded: false }],
+      })
+      expect(await checkouts((await start()).workspaceId)).toEqual([])
     })
 
     it('files the workspace by group name, creating the group only for a start that checks out', async () => {
@@ -460,7 +576,7 @@ describe('prepareStart', () => {
         .toBe(`agent/${workspaceId}\n`)
       // Stored up front: a workspace queued while this one boots defaults to
       // its branch. The session keeps the user's choices for a restart.
-      expect((await getWorkspaceRow(DEMO_PROJECT_ID, workspaceId))?.baseBranch).toBe('dev')
+      expect((await checkout(workspaceId))?.baseBranch).toBe('dev')
       expect(session).toMatchObject({
         tool: 'codex', mode: 'tui', permissionMode: 'bypass', model: 'gpt-6-sol', firstPrompt: 'ship it',
       })
@@ -667,12 +783,12 @@ describe('prepareStart', () => {
     // `gh` is logged in with the git token for a GitHub HTTPS remote, unless
     // the project wires a GitHub token of its own.
     it.each<{ name: string; remote?: string; plain?: string; secret?: string; want: string | undefined }>([
-      { name: 'a github.com remote', want: PLACEHOLDER_GH_TOKEN },
+      { name: 'a github.com remote', want: ghTokenPlaceholder(DEMO_PROJECT_ID) },
       { name: 'a non-GitHub remote', remote: 'https://gitlab.com/o/r.git', want: undefined },
       { name: 'a project GH_TOKEN', plain: 'GH_TOKEN', want: 'ghp_user' },
       { name: 'a proxied GITHUB_TOKEN secret', secret: 'GITHUB_TOKEN', want: undefined },
     ])('seeds GH_TOKEN as it should for $name', async ({ remote, plain, secret, want }) => {
-      if (remote !== undefined) await recordProject({ id: DEMO_PROJECT_ID, name: 'demo', remoteUrl: remote, addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
+      if (remote !== undefined) await setRemote(remote)
       if (plain !== undefined) await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: plain, value: 'ghp_user' })
       if (secret !== undefined) {
         await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: secret, value: 'sekrit', secret: true, rule: { hosts: ['api.github.com'] } })
@@ -956,12 +1072,12 @@ describe('prepareStart', () => {
 
     it('creates at a commit, with no base branch, recording the commit it started at', async () => {
       const result = await start({ noSession: true, commit: head })
-      const row = await getWorkspaceRow(DEMO_PROJECT_ID, result.workspaceId)
+      const row = await checkout(result.workspaceId)
       expect(row?.baseBranch).toBeUndefined()
       expect(row?.startCommit).toBe(head)
       // A branch create records its tip too.
       const branched = await start({ noSession: true })
-      expect((await getWorkspaceRow(DEMO_PROJECT_ID, branched.workspaceId))?.startCommit).toBe(head)
+      expect((await checkout(branched.workspaceId))?.startCommit).toBe(head)
       // A commit origin cannot serve is refused.
       await expect(start({ noSession: true, commit: 'f'.repeat(40) })).rejects.toThrow(/origin has no commit/)
     })
@@ -969,10 +1085,10 @@ describe('prepareStart', () => {
     it('fails fast, rolling the row back, when origin cannot be fetched', async () => {
       // Nothing listens on this host's 443, so the fetch fails at once.
       vi.stubEnv('YAAC_E2E_SKIP_FETCH', '')
-      await recordTestProject(DEMO_PROJECT_ID, { remoteUrl: 'https://127.0.0.1/o/r.git' })
+      await setRemote('https://127.0.0.1/o/r.git')
       await setProjectEgressAllowlist(DEMO_PROJECT_ID, { hosts: ['127.0.0.1'], defaults: true })
 
-      await expect(start({ workspaceId: 'wt-nofetch' })).rejects.toThrow(/could not fetch from remote/)
+      await expect(start({ workspaceId: 'wt-nofetch' })).rejects.toThrow(/could not fetch from https:\/\/127\.0\.0\.1\/o\/r\.git/)
 
       // A bad input is not retried.
       expect(specs).toHaveLength(1)
@@ -982,9 +1098,9 @@ describe('prepareStart', () => {
     })
 
     it('hands an SSH remote the host key it was assigned with, and no GH_TOKEN', async () => {
-      await recordTestProject(DEMO_PROJECT_ID, { remoteUrl: 'git@github.com:o/r.git' })
+      await setRemote('git@github.com:o/r.git')
       const key = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'key', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 AAAA yaac' })
-      await setProjectGitCredential(DEMO_PROJECT_ID, key.id, 'github.com ssh-ed25519 AAAAC3')
+      await setRepoGitCredential(DEMO_PROJECT_ID, key.id, 'github.com ssh-ed25519 AAAAC3')
 
       await start()
 
@@ -1010,7 +1126,7 @@ describe('prepareStart', () => {
     // check that can refuse the create; the next create still seeds it.
     it('gives an empty origin its default branch only once the create\'s checks pass', async () => {
       const hosted = '6c4f3a5d-2e1b-4c0a-9d8e-3b4c5d6e7f80'
-      await recordProject({ id: hosted, name: 'fresh', remoteUrl: `http://yaac.internal/${hosted}.git`, addedAt: '', hosted: true }, BUILT_IN_USER_ID)
+      await recordTestProject(hosted, { name: 'fresh', remoteUrl: `http://yaac.internal/${hosted}.git`, hosted: true })
       await fs.mkdir(path.dirname(hostedRepoDir(hosted)), { recursive: true })
       await initHostedRepo(hostedRepoDir(hosted))
       await cloneRepo(hostedRepoDir(hosted), repoDir(hosted), { kind: 'hosted' })
@@ -1050,11 +1166,11 @@ describe('prepareStart', () => {
       // A workspace queued after this one defaults to this branch and may be
       // queued mid-provisioning, so it is recorded up front: the requested
       // branch, else the clone's default.
-      const rowAtImage = async (workspaceId: string, branch?: string): Promise<WorkspaceRow | undefined> => {
-        let row: WorkspaceRow | undefined
+      const rowAtImage = async (workspaceId: string, branch?: string): Promise<WorkspaceRepoRow | undefined> => {
+        let row: WorkspaceRepoRow | undefined
         installDriver({
           prepareImage: async () => {
-            row = await getWorkspaceRow(DEMO_PROJECT_ID, workspaceId)
+            row = await checkout(workspaceId)
             throw new Error('stop here')
           },
         })
@@ -1216,8 +1332,9 @@ describe('prepareStart', () => {
       // holding the prompt, which the agent of the window it opens is
       // launched with.
       expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toMatchObject({
-        groupId: group.groupId, title: 'Bug fix', baseBranch: 'main',
+        groupId: group.groupId, title: 'Bug fix', cwd: '',
       })
+      expect(await checkout(spare.workspaceId)).toMatchObject({ repoId: DEMO_PROJECT_ID, path: '', baseBranch: 'main' })
       expect(session).toMatchObject({ tool: 'claude', mode: 'tui', permissionMode: 'bypass', firstPrompt: 'fix the bug' })
       expect(session.launchedAt).toBeInstanceOf(Date)
       expect(ranIn(spare)).toContainEqual(expect.stringContaining(`new-window -d -t yaac -n ${session.window} `))
@@ -1272,7 +1389,7 @@ describe('prepareStart', () => {
       expect(ran.filter((c) => SESSION_WINDOW.test(c))).toEqual([
         expect.stringMatching(new RegExp(`-n ${session.window} [^']*'[^']*exec codex .*--sandbox read-only`)),
       ])
-      expect((await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId))?.baseBranch).toBe('dev')
+      expect((await checkout(spare.workspaceId))?.baseBranch).toBe('dev')
     })
 
     // A chat session's conversation has no id until its agent answers, so
@@ -1507,7 +1624,7 @@ describe('prepareStart', () => {
       head = 'an-older-commit'
       // Nothing listens on this host's 443, so the fetch fails at once.
       vi.stubEnv('YAAC_E2E_SKIP_FETCH', '')
-      await recordTestProject(DEMO_PROJECT_ID, { remoteUrl: 'https://127.0.0.1/o/r.git' })
+      await setRemote('https://127.0.0.1/o/r.git')
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
       expect((await start({ claimSpare: true })).workspaceId).toBe(spare.workspaceId)

@@ -8,7 +8,7 @@ import { useUiStore } from '#lib/store'
 import { mockFetch, renderWithClient, serverError, type FetchMock } from './harness'
 
 const TOKEN: GitCredentialSummary = {
-  id: 'c-token', name: 'repo-token', kind: 'https', preview: '***abcd', projects: ['alpha'],
+  id: 'c-token', name: 'repo-token', kind: 'https', preview: '***abcd', repos: ['https://github.com/o/alpha.git'],
 }
 const list = (...gitCredentials: GitCredentialSummary[]): AuthListResult => ({ gitCredentials, toolAuth: [], customEndpoints: [] })
 
@@ -123,7 +123,7 @@ describe('NewProjectButton', () => {
     fireEvent.change(screen.getByLabelText('Token'), { target: { value: 'ghp_x' } })
 
     server.route(AUTH_LIST, list(TOKEN, {
-      id: 'c-new', name: 'repo-token-2', kind: 'https', preview: '***_x', projects: [],
+      id: 'c-new', name: 'repo-token-2', kind: 'https', preview: '***_x', repos: [],
     }))
     fireEvent.click(addButton())
     expect(await screen.findByText('git authentication failed for github.com')).toBeTruthy()

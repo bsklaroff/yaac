@@ -6,18 +6,19 @@ import {
   insertGitCredential,
   listGitCredentials,
   listProjectRows,
+  listRepos,
   renameGitCredential,
   replaceGitCredential,
   type GitCredentialRow,
 } from '#db'
 import { encodeOpenSshPrivateKey, generateSshKey, withKeyComment } from '#lib/ssh-key'
 import type { GitCredentialSummary } from '@yaac/shared/types'
-import type { HttpsCredentialEntry, SshCredentialEntry } from '#drivers/contract'
+import type { HttpsCredentialEntry, RepoGrant, SshCredentialEntry } from '#drivers/contract'
 
 /**
  * A user's git credentials (docs/git-credentials.md): HTTPS tokens and
- * generated SSH keys, stored under a name and assigned to projects by
- * `#domain/projects`.
+ * generated SSH keys, stored under a name and assigned to repos by
+ * `#domain/repos`.
  */
 
 const MAX_NAME_LENGTH = 100
@@ -45,7 +46,7 @@ export async function addHttpsCredential(
 /**
  * Generate and store an SSH key under a name. Returns the public key for the
  * user to register with their git host. No host is contacted until the key
- * is assigned to a project.
+ * is assigned to a repo.
  */
 export async function generateSshCredential(
   owner: string,
@@ -80,7 +81,7 @@ export async function renameCredential(owner: string, id: string, rawName: strin
 
 /**
  * Replace the secret of one of `owner`'s credentials (a pasted token, or a
- * newly generated key), keeping its name and project assignments. For a
+ * newly generated key), keeping its name and repo assignments. For a
  * key, returns the new public key, which the user must register with the
  * git host.
  */
@@ -103,7 +104,7 @@ export async function replaceCredential(
   return { id: row.id, publicKey: key.publicKey }
 }
 
-/** Delete one of `owner`'s credentials; the projects that used it are left
+/** Delete one of `owner`'s credentials; the repos that used it are left
  *  with none. */
 export async function removeCredential(owner: string, id: string): Promise<void> {
   await ownCredential(owner, id)
@@ -111,24 +112,25 @@ export async function removeCredential(owner: string, id: string): Promise<void>
 }
 
 /**
- * Every credential of `owner`'s with a masked preview and the projects using
- * it. An ssh key's preview is its public key. Each secret is decrypted here
- * so one that no longer decrypts is marked for replacement.
+ * Every credential of `owner`'s with a masked preview and the remote URLs
+ * of the repos using it. An ssh key's preview is its public key. Each secret
+ * is decrypted here so one that no longer decrypts is marked for
+ * replacement.
  */
 export async function listCredentialSummaries(owner: string): Promise<GitCredentialSummary[]> {
-  const [creds, rows] = await Promise.all([listGitCredentials(owner), listProjectRows()])
+  const [creds, rows] = await Promise.all([listGitCredentials(owner), listRepos()])
   const out: GitCredentialSummary[] = []
   for (const c of creds) {
     const secret = await c.openSecret()
-    const projects = rows.filter((r) => r.gitCredentialId === c.id).map((r) => r.id)
+    const repos = rows.filter((r) => r.gitCredentialId === c.id).map((r) => r.remoteUrl)
     if (c.kind === 'https') {
       const preview = secret === undefined ? '(unreadable — replace it)'
         : secret.length > 4 ? '***' + secret.slice(-4) : '****'
-      out.push({ id: c.id, name: c.name, kind: 'https', preview, projects })
+      out.push({ id: c.id, name: c.name, kind: 'https', preview, repos })
     } else {
       const publicKey = c.publicKey ?? ''
       const preview = secret === undefined ? `${publicKey} (unreadable — replace it)` : publicKey
-      out.push({ id: c.id, name: c.name, kind: 'ssh', preview, publicKey, projects })
+      out.push({ id: c.id, name: c.name, kind: 'ssh', preview, publicKey, repos })
     }
   }
   return out
@@ -141,32 +143,36 @@ export interface RuntimeGitCredentials {
 }
 
 /**
- * The git credentials handed to the runtime, keyed by their owner, each with
- * the projects allowed to use it, so egress gives it only to those projects'
- * workspaces. A credential is only ever usable by its owner's projects. Rows
- * that don't decrypt or that no project can use are left out.
+ * The git credentials handed to the runtime, keyed by their owner. Each
+ * carries one grant per repo that uses it and project that links that repo
+ * (docs/project-repos.md "Credentials per repo"), so egress uses it for
+ * those projects' workspaces, toward those repos, and nothing else. A
+ * credential is only ever usable by its owner's projects. Rows that don't
+ * decrypt or that no project can use are left out.
  */
 export async function runtimeGitCredentials(): Promise<Record<string, RuntimeGitCredentials>> {
-  const [creds, rows] = await Promise.all([listGitCredentials(), listProjectRows()])
+  const [creds, projects] = await Promise.all([listGitCredentials(), listProjectRows()])
   const out: Record<string, RuntimeGitCredentials> = {}
   for (const c of creds) {
-    const users = rows.filter((r) => r.gitCredentialId === c.id && usableAssignment(r, c))
-    if (users.length === 0) continue
+    const grants = projects.filter((p) => p.owner === c.owner).flatMap((p) => p.repos.flatMap((link) => {
+      const { repo } = link
+      if (repo.gitCredentialId !== c.id || repo.deletedAt !== undefined || !usableAssignment(repo, c)) return []
+      const { host, path } = parseGitRemote(repo.remoteUrl)
+      const grant: RepoGrant = { projectId: p.id, repoId: repo.id, host, path, readOnly: link.readOnly, ghToken: link.ghToken }
+      return [{ ...grant, knownHostsEntry: repo.knownHostsEntry ?? '' }]
+    }))
+    if (grants.length === 0) continue
     const secret = await c.openSecret()
     if (secret === undefined) continue
     const entry = out[c.owner] ??= { git: [], ssh: [] }
     if (c.kind === 'https') {
-      entry.git.push({ token: secret, projects: users.map((r) => r.id) })
+      entry.git.push({ token: secret, grants: grants.map(({ knownHostsEntry: _, ...grant }) => grant) })
       continue
     }
     entry.ssh.push({
       privateKey: encodeOpenSshPrivateKey(Buffer.from(secret, 'base64'), c.name),
       publicKey: c.publicKey ?? '',
-      projects: users.map((r) => ({
-        projectId: r.id,
-        host: parseGitRemote(r.remoteUrl).host,
-        knownHostsEntry: r.knownHostsEntry ?? '',
-      })),
+      grants,
     })
   }
   return out

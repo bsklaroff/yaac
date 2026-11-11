@@ -1,5 +1,4 @@
 import { useMemo, type JSX } from 'react'
-import { remoteKind } from '#components/GitCredentialPicker'
 import { FileEditor } from '#components/settings/FileEditor'
 import { BuildFiles } from '#components/settings/BuildFiles'
 import { ProjectEnv } from '#components/settings/ProjectEnv'
@@ -9,11 +8,8 @@ import { ScratchDirs } from '#components/settings/ScratchDirs'
 import { PortForwards } from '#components/settings/PortForwards'
 import { CacheVolumes } from '#components/settings/CacheVolumes'
 import { ContainerOptions } from '#components/settings/ContainerOptions'
-import { HostedRemote } from '#components/settings/HostedRemote'
 import { ProjectIcon } from '#components/settings/ProjectIcon'
-import { ProjectSharing } from '#components/settings/ProjectSharing'
-import { MoveToRemote } from '#components/settings/MoveToRemote'
-import { KeptHostedRepo } from '#components/settings/KeptHostedRepo'
+import { ProjectRepos } from '#components/settings/ProjectRepos'
 import { WorkspaceAutoDelete } from '#components/settings/WorkspaceAutoDelete'
 import { KeptIgnoredPaths } from '#components/settings/KeptIgnoredPaths'
 import { Volumes } from '#components/settings/Volumes'
@@ -26,7 +22,7 @@ import { parseSteps } from '#lib/steps'
 import { projectBuildFilesApi } from '#lib/buildFilesApi'
 import { useSnapshot } from '#lib/useSnapshot'
 import { useHasVolumes } from '#lib/volumes'
-import { useTeammateView, useWhoami } from '#lib/viewer'
+import { useTeammateView } from '#lib/viewer'
 
 const project = api.project[':projectId']
 
@@ -39,17 +35,9 @@ async function saveInitSteps(projectId: string, text: string): Promise<void> {
  * the project `useSettingsProject` picks; a teammate's show read-only.
  */
 export function ProjectSettings(): JSX.Element {
-  const teammateView = useTeammateView()
-  const whoami = useWhoami()
-  const all = useSnapshot()?.projects ?? []
+  const readOnly = useTeammateView()
   const { projects, selected, pick } = useSettingsProject()
   const projectId = selected?.id ?? null
-  const sharedFrom = selected?.sharedFrom
-  // A removed share stays readable by its owner, like a teammate's project.
-  const readOnly = teammateView || sharedFrom?.revoked === true
-  // A name its owner has twice names no one project to the CLI.
-  const cliRef = selected && projects.filter((p) => p.name === selected.name).length > 1 ? selected.id : selected?.name
-  const sharer = whoami?.users.find((u) => u.id === all.find((p) => p.id === sharedFrom?.projectId)?.owner)
 
   const filesApi = useMemo(() => (projectId ? projectBuildFilesApi(projectId) : null), [projectId])
 
@@ -73,48 +61,15 @@ export function ProjectSettings(): JSX.Element {
           <div className="mt-6">
             <div className="text-xs font-medium text-text">Project</div>
             <ProjectSelect projects={projects} value={projectId} onChange={pick} className="mt-2 w-full" />
-            <p className="mt-1.5 flex min-w-0 items-center gap-2 text-[11px]">
-              <span className="shrink-0 rounded bg-surface-3 px-1.5 py-0.5 font-medium text-text-dim">
-                {selected.hosted ? 'HOSTED BY YAAC' : remoteKind(selected.remoteUrl).toUpperCase()}
-              </span>
-              {!selected.hosted && (
-                <span title={selected.remoteUrl} className="truncate font-mono text-text-faint">{selected.remoteUrl}</span>
-              )}
-              {sharedFrom && (
-                <span className="truncate text-text-faint">
-                  {sharedFrom.revoked ? 'Sharing removed' : 'Shared'}{sharer ? ` by ${sharer.name}` : ''}
-                </span>
-              )}
-            </p>
           </div>
 
           <div className="mt-6">
             <ProjectIcon key={`icon:${projectId}`} project={selected} readOnly={readOnly} />
           </div>
 
-          {selected.hosted && <div className="mt-6">
-            <HostedRemote
-              key={`hosted:${projectId}`}
-              projectId={projectId}
-              name={selected.name}
-              cliRef={cliRef ?? selected.name}
-              shared={sharedFrom !== undefined}
-              guardDefaultBranch={selected.guardDefaultBranch}
-              readOnly={readOnly || sharedFrom !== undefined}
-            />
-          </div>}
-
-          {selected.hosted && !sharedFrom && <div className="mt-6">
-            <ProjectSharing key={`sharing:${projectId}`} projectId={projectId} owner={selected.owner} readOnly={readOnly} />
-          </div>}
-
-          {selected.hosted && !sharedFrom && !readOnly && <div className="mt-6">
-            <MoveToRemote key={`move:${projectId}`} projectId={projectId} name={selected.name} />
-          </div>}
-
-          {selected.keepsHostedRepo && <div className="mt-6">
-            <KeptHostedRepo key={`kept:${projectId}`} projectId={projectId} remoteUrl={selected.remoteUrl} readOnly={readOnly} />
-          </div>}
+          <div className="mt-6">
+            <ProjectRepos key={`repos:${projectId}`} project={selected} readOnly={readOnly} />
+          </div>
 
           {!mediatedEgress && (
             <div role="note" className="mt-6 flex gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] leading-relaxed text-text-dim">

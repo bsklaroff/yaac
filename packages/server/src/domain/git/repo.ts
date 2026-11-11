@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { constants as fsConstants } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { gitConfigValue } from '@yaac/shared/git'
@@ -10,10 +11,10 @@ import { gitEnvForCredential } from './transport'
 import type { ResolvedGitCredential } from './transport'
 
 /**
- * Git operations on a project's main clone and the checkouts that borrow
+ * Git operations on a repo's main clone and the checkouts that borrow
  * from it: clone, fetch, gc, branch and tree lookups, and checkout creation.
  * Every call goes through `runGit` (docs/server-git.md). The remote URL
- * always comes from the project row, never from the repository.
+ * always comes from the repo's row, never from the repository.
  */
 
 const repo = (repoPath: string): GitTarget => ({ kind: 'repo', repoPath })
@@ -225,6 +226,32 @@ export function maintainRepo(repoPath: string): Promise<void> {
   })
 }
 
+/**
+ * Copy into the main clone at `repoPath` every object another clone of the
+ * same remote holds, reachable or not, so nothing a checkout borrowed from
+ * the other clone is lost when it is removed (docs/legacy-compat-shims.md
+ * "Main clones under the project dir"). Objects are content-addressed, so
+ * a file already there is the same one. A pack's index goes last, since
+ * git reads a pack once it sees its index.
+ */
+export function absorbClone(repoPath: string, otherPath: string): Promise<void> {
+  return fetchOriginMutex(repoPath, async () => {
+    const from = path.join(otherPath, '.git', 'objects')
+    const to = path.join(repoPath, '.git', 'objects')
+    for (const dir of await fs.readdir(from)) {
+      if (dir !== 'pack' && !/^[0-9a-f]{2}$/.test(dir)) continue
+      await fs.mkdir(path.join(to, dir), { recursive: true })
+      const names = await fs.readdir(path.join(from, dir))
+      for (const name of [...names.filter((n) => !n.endsWith('.idx')), ...names.filter((n) => n.endsWith('.idx'))]) {
+        await fs.copyFile(path.join(from, dir, name), path.join(to, dir, name), fsConstants.COPYFILE_EXCL)
+          .catch((err: unknown) => {
+            if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+          })
+      }
+    }
+  })
+}
+
 /** `gc --auto` that never deletes an object; see `maintainRepo`. */
 export const NEVER_PRUNE_GC = [
   '-c', 'gc.auto=6700',
@@ -318,7 +345,7 @@ const CHECKOUT_WORKERS = 8
  * The checkout is its own clone (docs/server-git.md): a full `.git` with a
  * snapshot of the main clone's `origin/*` and tags, `branch` at
  * `origin/<baseBranch>` tracking it, and all objects borrowed via
- * alternates. It is built in a staging dir, then renamed in as
+ * alternates. It is built in `staging`, then renamed in as
  * `<workspacePath>/.git`, so the destination's inode never changes and a pod
  * can bind `/workspace` before this runs.
  *
@@ -347,6 +374,9 @@ const CHECKOUT_WORKERS = 8
 export async function createCheckout(repoPath: string, workspacePath: string, params: {
   branch: string
   remoteUrl: string
+  /** Where the `.git` is assembled: a dir of the caller's that no
+   *  workspace mounts, on the checkout's filesystem. */
+  staging: string
   fetched?: Promise<void>
 } & ({ baseBranch: string; commit?: undefined } | { commit: string; baseBranch?: undefined })): Promise<string> {
   // Awaited after the checkout; until then nothing would observe a rejection.
@@ -366,8 +396,7 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
   }
   let startSha = commit ?? remoteSha(main, baseBranch ?? '')
   if (startSha === undefined) throw new Error(`origin/${baseBranch ?? ''} does not exist in ${repoPath}`)
-  // Assembled beside the checkout, where no workspace mounts it.
-  const staging = path.join(path.dirname(workspacePath), `.staging-${path.basename(workspacePath)}`)
+  const { staging } = params
   const gitDir = path.join(staging, '.git')
   await fs.rm(staging, { recursive: true, force: true })
   await fs.mkdir(staging, { recursive: true })

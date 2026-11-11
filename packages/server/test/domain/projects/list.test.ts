@@ -6,7 +6,17 @@ import { getProjectsDir } from '@yaac/shared/project-paths'
 
 import { listProjects } from '#domain/projects'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
-import { BUILT_IN_USER_ID, recordProject, setProjectDefaultBranchGuard, setProjectRemote, setProjectShareRevoked } from '#db'
+import {
+  BUILT_IN_USER_ID,
+  insertRepo,
+  linkProjectRepo,
+  recordProjectCreate,
+  seeTailnetUser,
+  setProjectRepoOrder,
+  setRepoGitCredential,
+  setRepoRemote,
+  updateProjectRepo,
+} from '#db'
 import { insertGitCredential } from '#db/git-credential-store'
 import { recordDeathSeen, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { createWorkspaceGroup, setWorkspaceGroup } from '#db/group-store'
@@ -49,10 +59,23 @@ describe('listProjects', () => {
     expect(foo).toMatchObject({
       id: FOO,
       name: 'demo',
-      remoteUrl: 'https://example/foo',
       addedAt: '2026-01-01T00:00:00.000Z',
       owner: BUILT_IN_USER_ID,
+      repos: [{
+        id: FOO,
+        dir: 'demo',
+        remoteUrl: 'https://example/foo',
+        owner: BUILT_IN_USER_ID,
+        hosted: false,
+        guardDefaultBranch: true,
+        gitCredential: null,
+        readOnly: false,
+        ghToken: true,
+        lastIncluded: true,
+      }],
     })
+    expect(foo).not.toHaveProperty('lastNested')
+    expect(foo).not.toHaveProperty('lastCwd')
     // A project the substrate said nothing about counts 0, not undefined.
     expect(typeof foo?.workspaceCount).toBe('number')
   })
@@ -89,23 +112,49 @@ describe('listProjects', () => {
     })
   })
 
-  it("says what a share was shared from and whether it was removed, with its source's guard", async () => {
-    await recordTestProject(FOO, { remoteUrl: 'http://yaac.internal/foo.git' })
-    await recordProject({ id: BAR, name: 'demo', remoteUrl: 'http://yaac.internal/bar.git', addedAt: '', hosted: true, sharedFrom: FOO }, BUILT_IN_USER_ID)
-    await setProjectDefaultBranchGuard(FOO, false)
-    await setProjectShareRevoked(BAR, true)
+  it('lists the repos a project links, in its order, each with its credential, flags and what the last create chose', async () => {
+    const ada = await seeTailnetUser('ada@example.com', 'Ada')
+    const WEB = '0a0a0a0a-0000-4000-8000-000000000001'
+    const SHARED = '0a0a0a0a-0000-4000-8000-000000000002'
+    await recordTestProject(FOO, { remoteUrl: 'https://github.com/acme/api.git', name: 'api' })
+    await recordTestProject(BAR, { repo: false })
+    await insertRepo({ id: WEB, owner: BUILT_IN_USER_ID, remoteUrl: 'https://github.com/acme/web.git' })
+    await insertRepo({ id: SHARED, owner: ada, remoteUrl: 'http://yaac.internal/api/workspace/git/shared.git', hosted: true })
+    await linkProjectRepo(FOO, WEB, 'web')
+    await linkProjectRepo(FOO, SHARED, 'shared')
+    const cred = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'gh', kind: 'https', secret: 'ghp_x' })
+    await setRepoGitCredential(WEB, cred.id, null)
+    await updateProjectRepo(FOO, WEB, { readOnly: true, ghToken: false })
+    await setProjectRepoOrder(FOO, [SHARED, WEB])
+    await recordProjectCreate(FOO, 'claude', {}, { repos: [{ repoId: WEB, branch: 'dev' }, { repoId: FOO }], nested: true, cwd: WEB })
+
     const byId = new Map((await listProjects()).map((p) => [p.id, p]))
-    expect(byId.get(FOO)?.sharedFrom).toBeUndefined()
-    expect(byId.get(BAR)).toMatchObject({ sharedFrom: { projectId: FOO, revoked: true }, guardDefaultBranch: false })
+    expect(byId.get(BAR)?.repos).toEqual([])
+    expect(byId.get(FOO)).toMatchObject({ lastTool: 'claude', lastNested: true, lastCwd: WEB })
+    expect(byId.get(FOO)?.repos).toEqual([
+      {
+        id: SHARED, dir: 'shared', remoteUrl: 'http://yaac.internal/api/workspace/git/shared.git', owner: ada, hosted: true,
+        guardDefaultBranch: true, gitCredential: null, readOnly: false, ghToken: true, lastIncluded: false,
+      },
+      {
+        id: WEB, dir: 'web', remoteUrl: 'https://github.com/acme/web.git', owner: BUILT_IN_USER_ID, hosted: false,
+        guardDefaultBranch: true, gitCredential: { id: cred.id, name: 'gh' }, readOnly: true, ghToken: false,
+        lastIncluded: true, lastBranch: 'dev',
+      },
+      {
+        id: FOO, dir: 'api', remoteUrl: 'https://github.com/acme/api.git', owner: BUILT_IN_USER_ID, hosted: false,
+        guardDefaultBranch: true, gitCredential: null, readOnly: false, ghToken: true, lastIncluded: true,
+      },
+    ])
   })
 
-  it('says when yaac still keeps the repository of a project that moved off it', async () => {
-    await recordProject({ id: FOO, name: 'demo', remoteUrl: 'http://yaac.internal/foo.git', addedAt: '', hosted: true }, BUILT_IN_USER_ID)
+  it('says when yaac still keeps the repository of a repo that moved off it', async () => {
+    await recordTestProject(FOO, { remoteUrl: 'http://yaac.internal/foo.git', hosted: true })
     await recordTestProject(BAR)
     const cred = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'gh', kind: 'https', secret: 'ghp_x' })
-    await setProjectRemote(FOO, 'https://github.com/acme/foo.git', { id: cred.id, knownHostsEntry: null })
+    await setRepoRemote(FOO, 'https://github.com/acme/foo.git', { id: cred.id, knownHostsEntry: null })
     const byId = new Map((await listProjects()).map((p) => [p.id, p]))
-    expect(byId.get(FOO)).toMatchObject({ hosted: false, keepsHostedRepo: true })
-    expect(byId.get(BAR)?.keepsHostedRepo).toBeUndefined()
+    expect(byId.get(FOO)?.repos[0]).toMatchObject({ hosted: false, keepsHostedRepo: true, remoteUrl: 'https://github.com/acme/foo.git' })
+    expect(byId.get(BAR)?.repos[0]).not.toHaveProperty('keepsHostedRepo')
   })
 })

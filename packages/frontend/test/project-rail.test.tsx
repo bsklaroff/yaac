@@ -17,7 +17,7 @@ afterEach(() => {
 const ORDER = 'PUT /api/project/order'
 
 const project = (id: string): ProjectSummary =>
-  ({ id, name: id, remoteUrl: '', addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true, scratchDirs: { dirs: [], ignoredTracked: [] }, initSteps: {}, portForwards: [], cacheVolumes: {}, nestedContainers: false, npmCache: true })
+  ({ id, name: id, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [], scratchDirs: { dirs: [], ignoredTracked: [] }, initSteps: {}, portForwards: [], cacheVolumes: {}, nestedContainers: false, npmCache: true })
 
 const NAMES = ['alpha', 'beta', 'gamma']
 const chips = (): HTMLElement[] => screen.getAllByRole('button').filter((b) => NAMES.includes(b.title))

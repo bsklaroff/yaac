@@ -55,8 +55,8 @@ function opencodeConfigOf(cmd: string): OpencodeConfig {
 }
 
 /**
- * A tui conversation's launch line, as a create asks for one. `paths`
- * overrides the in-pod workspace dir.
+ * A tui conversation's launch line, as a create asks for one. `cwd`
+ * overrides the in-pod workspace dir as where the agent runs.
  */
 function tuiLaunchCmd(o: {
   tool: AgentTool
@@ -66,14 +66,15 @@ function tuiLaunchCmd(o: {
   model?: string
   effort?: string
   piProvider?: PiProvider
-  paths?: { workspaceDir: string }
+  cwd?: string
 }): string {
   return agentDriver('tui').launchCmd({
     tool: o.tool,
     conversationId: o.workspaceId,
     resume: o.resume ?? false,
     windowName: o.tool,
-    paths: { ...workspacePathsFixture(), ...o.paths },
+    paths: workspacePathsFixture(),
+    cwd: o.cwd ?? workspacePathsFixture().workspaceDir,
     permissionMode: o.permissionMode,
     ...(o.model !== undefined ? { model: o.model } : {}),
     ...(o.effort !== undefined ? { effort: o.effort } : {}),
@@ -235,6 +236,7 @@ function withSessions(mode: 'acp' | 'tui', deps: TestDeps): AgentConnectDeps {
           tool,
           mode,
           sessionId: session.workspaceId,
+          cwd: '',
           permissionMode: posture,
           ...(conversationId !== undefined ? { conversationId } : {}),
           ...(level !== undefined ? { effort: level } : {}),
@@ -380,6 +382,7 @@ describe('agentDriver', () => {
       resume: false,
       windowName: 'claude-2',
       paths: workspacePathsFixture(),
+      cwd: '/workspace',
       permissionMode: 'bypass' as const,
     }
     // TUI: the tool's own binary.
@@ -394,8 +397,9 @@ describe('agentDriver', () => {
     expect(agentDriver('tui').launchCmd(spec)).not.toContain('YAAC_NO_PANE_REPORT')
     expect(acp).toContain('--sock /tmp/yaac-acp/claude-2.sock')
     expect(acp).toContain('-- claude-agent-acp')
-    // Explicit cwd: acpd cannot know where the checkout is.
+    // Explicit cwd: acpd cannot know where the session runs.
     expect(acp).toContain('--cwd /workspace')
+    expect(agentDriver('acp').launchCmd({ ...spec, cwd: '/workspace/web' })).toContain('--cwd /workspace/web ')
     // The log is named for the conversation, not the window, since window
     // names can shift between restarts.
     expect(acp).toContain('--log /home/yaac/.yaac-acp/conv-1.jsonl')
@@ -403,11 +407,11 @@ describe('agentDriver', () => {
     expect(acp).not.toContain('resume')
     // Embedded in a single-quoted respawn-window, so no quotes.
     expect(acp).not.toContain("'")
-    // Started ahead of its checkout, acpd holds the conversation until the
-    // checkout's `.git` lands.
+    // Started ahead of its checkouts, acpd holds the conversation until
+    // each one's `.git` lands.
     expect(acp).not.toContain('--wait-for')
-    expect(agentDriver('acp').launchCmd({ ...spec, beforeCheckout: true }))
-      .toContain('--cwd /workspace --wait-for /workspace/.git --')
+    expect(agentDriver('acp').launchCmd({ ...spec, waitFor: ['/workspace/api/.git', '/workspace/web/.git'] }))
+      .toContain('--cwd /workspace --wait-for /workspace/api/.git --wait-for /workspace/web/.git --')
     // The adapter takes no flags, so the model goes in an env var.
     const withModel = agentDriver('acp').launchCmd({ ...spec, model: 'claude-opus-5-5' })
     expect(withModel).toMatch(/^ANTHROPIC_MODEL=claude-opus-5-5 YAAC_NO_PANE_REPORT=1 exec node /)
@@ -2933,7 +2937,7 @@ describe('agentDriver', () => {
           tool: 'codex',
           workspaceId: 'sess-1',
           permissionMode: 'accept-edits',
-          paths: { workspaceDir: '/data/wt' },
+          cwd: '/data/wt',
         })
         const argv = execFileSync('sh', ['-c', cmd.replace(/^exec codex /, `printf '%s\\n' `)], {
           env: { ...process.env, CODEX_HOME: '/must/not/expand' },

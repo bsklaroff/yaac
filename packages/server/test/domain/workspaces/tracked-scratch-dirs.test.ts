@@ -14,7 +14,11 @@ beforeEach(async () => {
   tmpDir = await createTempDataDir()
   await recordTestProject(DEMO_PROJECT_ID)
   await applyWorkspaceEvent({
-    type: 'workspace-created', projectId: DEMO_PROJECT_ID, workspaceId: 'wt', scratchDirs: ['node_modules', 'target'],
+    type: 'workspace-created',
+    projectId: DEMO_PROJECT_ID,
+    workspaceId: 'wt',
+    repos: [{ repoId: DEMO_PROJECT_ID, path: '' }],
+    scratchDirs: ['node_modules', 'target'],
   })
 })
 
@@ -29,6 +33,20 @@ describe('keepScratchDirsInCheckout', () => {
 
     expect((await getProjectRow(DEMO_PROJECT_ID))?.scratchDirs.dirs).toEqual([{ path: 'node_modules' }])
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt'))?.scratchDirs).toEqual(['node_modules'])
+  })
+
+  it('reads a path in a checkout\'s folder as that checkout\'s, and keeps the dir in every checkout', async () => {
+    await applyWorkspaceEvent({
+      type: 'workspace-created',
+      projectId: DEMO_PROJECT_ID,
+      workspaceId: 'multi',
+      repos: [{ repoId: DEMO_PROJECT_ID, path: 'api' }, { repoId: '11111111-2222-4333-8444-555555555555', path: 'web' }],
+      scratchDirs: ['api/node_modules', 'api/target', 'web/node_modules', 'web/target'],
+    })
+    await keepScratchDirsInCheckout(OWNER, 'multi', ['web/target'])
+
+    expect((await getProjectRow(DEMO_PROJECT_ID))?.scratchDirs.dirs).toEqual([{ path: 'node_modules' }])
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'multi'))?.scratchDirs).toEqual(['api/node_modules', 'web/node_modules'])
   })
 
   it('refuses anyone but the project\'s owner, and a workspace it does not know, changing nothing', async () => {

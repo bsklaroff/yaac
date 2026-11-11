@@ -8,6 +8,7 @@
 import type http from 'node:http'
 import type { ProxyObjects } from './object-watch'
 import type { HostInjectionRule, ProxyCredentials } from './objects'
+import { ghTokenSwap, hasHttpsGrantOnHost, httpsGrantAt, isGhApiHostFor } from './repo-grants'
 
 export const CLAUDE_TOKEN_URL_HOST = 'platform.claude.com'
 export const CLAUDE_TOKEN_URL_PATH = '/v1/oauth/token'
@@ -38,7 +39,6 @@ const API_KEY_TOOLS = [
   ['pi', PLACEHOLDER_PI_API_KEY],
   ['omp', PLACEHOLDER_OMP_API_KEY],
 ] as const
-export const PLACEHOLDER_GH_TOKEN = 'yaac-ph-gh-token'
 
 export type Injection =
   | { action: 'set_header'; name: string; value: string }
@@ -86,34 +86,9 @@ export function resolveRegisteredRules(
   return out
 }
 
-/** The host of an `https://` git remote naming a repo path, else null. */
-function httpsRemoteHost(remoteUrl: string | undefined): string | null {
-  if (!remoteUrl?.startsWith('https://')) return null
-  try {
-    const url = new URL(remoteUrl)
-    return url.pathname.replace(/^\//, '').replace(/\.git$/, '') ? url.hostname : null
-  } catch {
-    return null
-  }
-}
-
 /** The credentials of the owner a workspace's registration names. */
 function workspaceCredentials(objects: ProxyObjects, workspaceId: string): ProxyCredentials {
   return objects.credentials(objects.ownerOf(workspaceId))
-}
-
-/**
- * The HTTPS credential assigned to a workspace's project, from its owner's
- * token pool, with the host of
- * its https remote. Callers send the token only to that host.
- */
-function resolveHttpsCredentialForWorkspace(objects: ProxyObjects, workspaceId: string): { token: string; host: string } | null {
-  const registration = objects.registration(workspaceId)
-  if (!registration) return null
-  const entry = workspaceCredentials(objects, workspaceId).git.find((e) => e.projects.includes(registration.projectId))
-  if (!entry) return null
-  const host = httpsRemoteHost(registration.repoUrl)
-  return host ? { token: entry.token, host } : null
 }
 
 function pathMatches(requestPath: string, pattern: string): boolean {
@@ -321,35 +296,12 @@ export function hostNeedsDynamicMitm(
   // Every workspace carries every placeholder, whichever agents it runs.
   const creds = workspaceCredentials(objects, workspaceId)
   if (API_KEY_TOOLS.some(([tool]) => hostname === creds[tool]?.apiHost)) return true
-  if (workspaceHasHttpsCredentialForHost(objects, workspaceId, hostname)) return true
+  // A host the project has an https repo on, whose requests get that
+  // repo's token under its path and are refused writes when read-only.
+  if (hasHttpsGrantOnHost(objects, workspaceId, hostname)) return true
   // gh CLI talks to api.github.com, not the git remote host.
-  if (resolveGithubApiTokenForWorkspace(objects, workspaceId, hostname) !== null) return true
+  if (isGhApiHostFor(objects, workspaceId, hostname)) return true
   return false
-}
-
-export function workspaceHasHttpsCredentialForHost(objects: ProxyObjects, workspaceId: string, hostname: string): boolean {
-  const cred = resolveHttpsCredentialForWorkspace(objects, workspaceId)
-  return cred?.host === hostname
-}
-
-/**
- * The API host `gh` uses for a git host. Mirrors ghApiHostForGitHost in
- * packages/shared/src/credentials.ts.
- */
-function ghApiHostForGitHost(host: string): string | null {
-  if (host === 'github.com') return 'api.github.com'
-  return null
-}
-
-/**
- * The workspace's HTTPS git token, if `hostname` is the `gh` API host for
- * that credential's git host; otherwise null.
- */
-function resolveGithubApiTokenForWorkspace(objects: ProxyObjects, workspaceId: string, hostname: string): string | null {
-  const cred = resolveHttpsCredentialForWorkspace(objects, workspaceId)
-  if (!cred) return null
-  if (ghApiHostForGitHost(cred.host) !== hostname) return null
-  return cred.token
 }
 
 function headerValue(
@@ -395,23 +347,25 @@ function swapApiKeyHeader(
  * restarts. Another owner's credentials are never consulted.
  *
  * Each tool credential swap fires only when the request carries the matching
- * placeholder, so a user's own key passes through unchanged. The rules
- * apply only to hosts the proxy MITMs (see `hostNeedsDynamicMitm`).
+ * placeholder, so a user's own key passes through unchanged. A git token
+ * goes only to a request under its own repo's path (`httpsGrantAt`). The
+ * rules apply only to hosts the proxy MITMs (see `hostNeedsDynamicMitm`).
  */
 export function buildDynamicRules(
   objects: ProxyObjects,
   workspaceId: string,
   hostname: string,
   reqHeaders: http.IncomingHttpHeaders,
+  requestPath = '/',
 ): InjectionRule[] {
   const rules: InjectionRule[] = []
   const owner = objects.ownerOf(workspaceId)
   const creds = objects.credentials(owner)
 
-  // Git token, only to the workspace's https remote host.
-  const httpsCred = resolveHttpsCredentialForWorkspace(objects, workspaceId)
-  if (httpsCred && httpsCred.host === hostname) {
-    const basic = 'Basic ' + Buffer.from(`x-access-token:${httpsCred.token}`).toString('base64')
+  // A repo's git token, only to requests under that repo's path.
+  const gitToken = httpsGrantAt(objects, workspaceId, hostname, requestPath)?.token
+  if (gitToken) {
+    const basic = 'Basic ' + Buffer.from(`x-access-token:${gitToken}`).toString('base64')
     rules.push({
       pathPattern: '*',
       injections: [{ action: 'set_header', name: 'Authorization', value: basic }],
@@ -419,22 +373,20 @@ export function buildDynamicRules(
   }
 
   // gh sends GH_TOKEN's placeholder as `token <ph>` or `Bearer <ph>`; swap
-  // in the project's git token and keep gh's scheme.
-  const ghApiToken = resolveGithubApiTokenForWorkspace(objects, workspaceId, hostname)
-  if (ghApiToken) {
-    const incomingAuth = headerValue(reqHeaders, 'authorization')
-    if (incomingAuth && incomingAuth.includes(PLACEHOLDER_GH_TOKEN)) {
-      rules.push({
-        pathPattern: '*',
-        injections: [{
-          action: 'set_header',
-          name: 'Authorization',
-          // Function replacer so a token with `$` can't trigger replace's
-          // special-pattern substitution.
-          value: incomingAuth.replace(PLACEHOLDER_GH_TOKEN, () => ghApiToken),
-        }],
-      })
-    }
+  // in the token of the repo it names and keep gh's scheme.
+  const incomingGhAuth = headerValue(reqHeaders, 'authorization')
+  const gh = ghTokenSwap(objects, workspaceId, hostname, incomingGhAuth)
+  if (gh && incomingGhAuth !== undefined) {
+    rules.push({
+      pathPattern: '*',
+      injections: [{
+        action: 'set_header',
+        name: 'Authorization',
+        // Function replacer so a token with `$` can't trigger replace's
+        // special-pattern substitution.
+        value: incomingGhAuth.replace(gh.placeholder, () => gh.token),
+      }],
+    })
   }
 
   // opencode / pi / omp: API key on the credential's provider host, chosen

@@ -1,25 +1,31 @@
-import { api, resolveGitCredentialId, resolveProject } from '#commands/api'
+import { api, projectRepoOf, resolveGitCredentialId, resolveProject } from '#commands/api'
 
 /**
  * `yaac config git-credential <project> [credential]`: show which git
- * credential a project clones, fetches and pushes with, or assign it one by
- * name, as `yaac auth list` prints it (docs/git-credentials.md). A project
- * hosted by yaac needs none, and the server refuses one.
+ * credential a project's repo clones, fetches and pushes with, or assign it
+ * one by name, as `yaac auth list` prints it (docs/git-credentials.md). The
+ * credential is the repo's, so every project linking the repo uses it. A
+ * repo hosted by yaac needs none, and the server refuses one. `--repo`
+ * names the repo of a project with several.
  */
-export async function configGitCredential(project: string, credential: string | undefined): Promise<void> {
-  const summary = await resolveProject(project)
-  const { id: projectId, name } = summary
+export async function configGitCredential(
+  project: string,
+  credential: string | undefined,
+  opts: { repo?: string } = {},
+): Promise<void> {
+  const repo = projectRepoOf(await resolveProject(project), opts.repo)
+  const name = repo.hosted ? repo.dir : repo.remoteUrl
 
   if (credential === undefined) {
-    console.log(summary.hosted === true
+    console.log(repo.hosted
       ? `${name} is hosted by yaac, so it needs no git credential.`
-      : summary.gitCredential
-        ? `${name} uses the git credential ${summary.gitCredential.name}.`
-        : `${name} has no git credential, so it cannot create workspaces until it is given one.`)
+      : repo.gitCredential
+        ? `${name} uses the git credential ${repo.gitCredential.name}.`
+        : `${name} has no git credential, so no workspace can start with it until it is given one.`)
     return
   }
   const credentialId = await resolveGitCredentialId(credential)
-  const { knownHostsEntry } = await api.project[':projectId']['git-credential'].$put({ param: { projectId }, json: { credentialId } })
+  const { knownHostsEntry } = await api.repo[':repoId']['git-credential'].$put({ param: { repoId: repo.id }, json: { credentialId } })
   console.log(`${name} now uses the git credential ${credential}, from its next fetch.`)
   if (knownHostsEntry !== null) console.log(`Host key trusted: ${knownHostsEntry}`)
 }

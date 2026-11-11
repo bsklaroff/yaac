@@ -8,31 +8,34 @@ import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir, repo
 import { cloneRepo } from '@yaac/server/domain/git'
 import { credentialOwnerKey } from '@yaac/server/domain/auth'
 import { addHttpsCredential, listCredentialSummaries } from '@yaac/server/domain/auth/git-credentials'
-import { assignProjectCredential } from '@yaac/server/domain/projects/credentials'
+import { assignRepoCredential } from '@yaac/server/domain/repos/credentials'
 import { MAX_ICON_BYTES } from '@yaac/server/domain/projects/icon'
 import { getToolCredential, setToolCredential } from '@yaac/server/db/tool-credential-store'
 import { seeTailnetUser } from '@yaac/server/db/user-store'
 import { buildAuthPayload } from '@yaac/shared/tool-auth-interactive'
 import { getProjectWorkspaceRows, recordWorkspaceCreated, recordWorkspaceStopped } from '@yaac/server/db/workspace-store'
-import { getProjectRow, recordProject } from '@yaac/server/db/project-store'
+import { getProjectRow } from '@yaac/server/db/project-store'
+import { getRepo, linkProjectRepo } from '@yaac/server/db/repo-store'
+import { repos } from '@yaac/server/db/schema'
+import { eq } from 'drizzle-orm'
 import { insertSession } from '@yaac/server/db/session-store'
 import { listWorkspaceGroups } from '@yaac/server/domain/workspaces/groups'
 import { getQueuedWorkspaceRow, listQueuedWorkspaceRows } from '@yaac/server/db/queued-workspace-store'
 import { setDraftWorkspaceTitle } from '@yaac/server/db/draft-workspace-store'
 import { listDraftWorkspaces } from '@yaac/server/domain/workspaces/drafts'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
-import { closeDb } from '@yaac/server/db/client'
+import { closeDb, getDb } from '@yaac/server/db/client'
 import { BUILT_IN_USER_ID } from '@yaac/server/db/user-store'
 import type * as sessionCreateModule from '@yaac/server/domain/workspaces/create'
 import type * as projectAddModule from '@yaac/server/domain/projects/add'
 import type * as sessionDeleteModule from '@yaac/server/domain/workspaces/stop'
 import type * as projectRemoveModule from '@yaac/server/domain/workspaces/project-teardown'
 import type * as cliResolveModule from '@yaac/auth-daemon/cli-resolve'
-import type { ProjectMeta, ClaudeOAuthBundle } from '@yaac/shared/types'
+import type { ClaudeOAuthBundle } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
 import { asTailnet, makeTestApiClient } from '@yaac/test-utils/api'
 import { workspaceDriver } from '@yaac/server/drivers/driver'
-import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
+import { recordTestProject, DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 
 vi.mock('@yaac/server/domain/workspaces/create', async () => {
   const actual = await vi.importActual<typeof sessionCreateModule>('@yaac/server/domain/workspaces/create')
@@ -171,16 +174,14 @@ const DEMO = DEMO_PROJECT_ID
 const SESSION = '44444444-4444-4444-8444-444444444444'
 const WEB = '0b0b0b0b-0000-4000-8000-000000000001'
 
+/** A project with one repo, which carries its id (`recordTestProject`). */
 async function writeProject(id: string, remoteUrl = 'https://example.com/foo', name = 'demo'): Promise<void> {
-  const dir = path.join(getProjectsDir(), id)
-  await fs.mkdir(dir, { recursive: true })
-  const meta: ProjectMeta = {
-    id,
-    name,
-    remoteUrl,
-    addedAt: '2026-01-01T00:00:00.000Z',
-  }
-  await recordProject(meta, BUILT_IN_USER_ID)
+  await recordTestProject(id, { remoteUrl, name })
+}
+
+/** Point a repo at another remote. */
+async function setRemote(repoId: string, remoteUrl: string): Promise<void> {
+  await (await getDb()).update(repos).set({ remoteUrl }).where(eq(repos.id, repoId))
 }
 
 describe('write routes', () => {
@@ -218,7 +219,7 @@ describe('write routes', () => {
 
     it('delegates to addProject and returns 200 on success', async () => {
       mockAddProject.mockResolvedValue({
-        project: { id: DEMO, name: 'foo', remoteUrl: 'https://github.com/x/foo', addedAt: 'now' },
+        project: { id: DEMO, name: 'foo', addedAt: 'now' },
         knownHostsEntry: null,
       })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
@@ -244,7 +245,7 @@ describe('write routes', () => {
       const [b, c, theirs] = ['b', 'c', 'd'].map((n) => `0b0b0b0b-0000-4000-8000-00000000000${n}`)
       const bob = await seeTailnetUser('bob@example.com', 'bob')
       for (const [id, addedAt, owner] of [[b, '2026-01-02', BUILT_IN_USER_ID], [c, '2026-01-03', BUILT_IN_USER_ID], [theirs, '2026-01-04', bob]]) {
-        await recordProject({ id, name: id, remoteUrl: 'https://example.com/x', addedAt }, owner)
+        await recordTestProject(id, { name: id, remoteUrl: 'https://example.com/x', addedAt, owner: owner })
       }
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const listed = async (): Promise<string[]> => (await (await client.project.list.$get()).json()).map((p) => p.id)
@@ -457,13 +458,13 @@ describe('write routes', () => {
     })
   })
 
-  describe('project branches routes', () => {
-    // A real repo behind the project: source with main + develop, cloned to
-    // the project's repo dir so origin/* remote-tracking refs exist.
+  describe('repo branches routes', () => {
+    // A real repo behind the project's: source with main + develop, cloned
+    // to its main clone so origin/* remote-tracking refs exist.
     async function writeProjectWithRepo(projectId: string): Promise<string> {
       const sourceRepo = path.join(getProjectsDir(), `${projectId}-source`)
       // The row's remote is what a refresh fetches, so it names the source.
-      await writeProject(projectId, sourceRepo)
+      await setRemote(projectId, sourceRepo)
       await fs.mkdir(sourceRepo, { recursive: true })
       await git(sourceRepo, ['init', '-b', 'main'])
       await git(sourceRepo, ['config', 'user.email', 't@t.co'])
@@ -476,10 +477,10 @@ describe('write routes', () => {
       return sourceRepo
     }
 
-    it('GET /project/:projectId/branches lists branches with the default branch', async () => {
+    it('GET /repo/:repoId/branches lists branches with the default branch', async () => {
       await writeProjectWithRepo(DEMO)
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':projectId'].branches.$get({ param: { projectId: DEMO }, query: {} })
+      const res = await client.repo[':repoId'].branches.$get({ param: { repoId: DEMO }, query: {} })
       expect(res.status).toBe(200)
       const body = await res.json()
       expect(body.branches).toContain('main')
@@ -487,21 +488,21 @@ describe('write routes', () => {
       expect(body.defaultBranch).toBe('main')
     })
 
-    it('GET /project/:projectId/branches?refresh=1 fetches new branches first', async () => {
+    it('GET /repo/:repoId/branches?refresh=1 fetches new branches first', async () => {
       const sourceRepo = await writeProjectWithRepo(DEMO)
       await git(sourceRepo, ['branch', 'feature/late'])
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':projectId'].branches.$get({
-        param: { projectId: DEMO },
+      const res = await client.repo[':repoId'].branches.$get({
+        param: { repoId: DEMO },
         query: { refresh: '1' },
       })
       expect(res.status).toBe(200)
       expect((await res.json()).branches).toContain('feature/late')
     })
 
-    it('GET returns 404 for an unknown project', async () => {
+    it('GET returns 404 for an unknown repo', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':projectId'].branches.$get({ param: { projectId: 'nope' }, query: {} })
+      const res = await client.repo[':repoId'].branches.$get({ param: { repoId: 'nope' }, query: {} })
       expect(res.status).toBe(404)
     })
   })
@@ -813,7 +814,9 @@ describe('write routes', () => {
       const res = await client.workspace.create.$post({ json: { project: DEMO, branch: 'dev' } })
       expect(res.status).toBe(200)
       await res.text()
-      expect(mockCreateWorkspace).toHaveBeenCalledWith(DEMO, expect.objectContaining({ branch: 'dev' }))
+      expect(mockCreateWorkspace).toHaveBeenCalledWith(DEMO, expect.objectContaining({
+        start: expect.objectContaining({ repos: [expect.objectContaining({ path: '', branch: 'dev' })], cwd: '' }) as unknown,
+      }))
     })
 
     // What the CLI sends as typed: a name, an id or an id prefix.
@@ -868,7 +871,7 @@ describe('write routes', () => {
     // then tear down the live workspace as if it were its own.
     it('answers 409 for an id a workspace already holds, touching nothing', async () => {
       const id = '22222222-2222-4222-8222-222222222222'
-      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: id, baseBranch: 'main' })
+      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: id, repos: [{ repoId: DEMO, path: '', baseBranch: 'main' }] })
       const before = (await getProjectWorkspaceRows(DEMO)).get(id)
       await writeProject(WEB, 'https://github.com/acme/web', 'web')
       const app = buildApp({ buildId: 'test' })
@@ -1076,77 +1079,138 @@ describe('write routes', () => {
     })
   })
 
-  // A project whose remote the server hosts (docs/hosted-projects.md):
-  // created through the route, read by a workspace through the relay
-  // listener exactly as the egress proxy sends it, and guarded by a setting.
-  describe('hosted projects', () => {
-    const relayGit = async (projectId: string, workspaceId: string, bearer = 'proxy-secret'): Promise<Response> =>
+  // A repo whose remote the server hosts (docs/hosted-projects.md): made
+  // with its project through the route, read by a workspace through the
+  // relay listener exactly as the egress proxy sends it, and guarded by a
+  // setting.
+  describe('hosted repos', () => {
+    const relayGit = async (repoId: string, workspaceId: string, bearer = 'proxy-secret'): Promise<Response> =>
       await buildMamaRelayApp((b) => Promise.resolve(b === 'proxy-secret'))
-        .request(`/api/workspace/git/${projectId}.git/info/refs?service=git-upload-pack`, {
+        .request(`/api/workspace/git/${repoId}.git/info/refs?service=git-upload-pack`, {
           headers: { 'authorization': `Bearer ${bearer}`, 'x-yaac-workspace-id': workspaceId },
         })
 
-    it('creates one, and serves its remote to its own workspaces only', async () => {
+    /** A project made with one hosted repo, and that repo's id. */
+    const hostedProject = async (name: string): Promise<{ projectId: string; repoId: string }> => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const created = await client.project.create.$post({ json: { name: 'Fresh' } })
+      const created = await client.project.create.$post({ json: { name } })
       expect(created.status).toBe(200)
       const project = await created.json()
-      expect(project.name).toBe('fresh')
-      expect(await getProjectRow(project.id)).toMatchObject({ hosted: true, guardDefaultBranch: true })
+      expect(project.name).toBe(name.toLowerCase())
+      const [link] = (await getProjectRow(project.id))?.repos ?? []
+      expect(link).toMatchObject({ dir: project.name, repo: { hosted: true, guardDefaultBranch: true } })
+      return { projectId: project.id, repoId: link.repo.id }
+    }
 
-      await recordWorkspaceCreated({ projectId: project.id, workspaceId: 'sess-h' })
+    it('creates one, and serves its remote to the workspaces of the projects that link it only', async () => {
+      const { projectId, repoId } = await hostedProject('Fresh')
+
+      await recordWorkspaceCreated({ projectId, workspaceId: 'sess-h' })
       await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'sess-other' })
-      const own = await relayGit(project.id, 'sess-h')
+      const own = await relayGit(repoId, 'sess-h')
       expect(own.status).toBe(200)
       expect(own.headers.get('content-type')).toBe('application/x-git-upload-pack-advertisement')
       expect(await own.text()).toContain('# service=git-upload-pack')
-      expect((await relayGit(project.id, 'sess-other')).status).toBe(403)
-      expect((await relayGit(project.id, 'sess-h', 'guess')).status).toBe(401)
+      expect((await relayGit(repoId, 'sess-other')).status).toBe(403)
+      expect((await relayGit(repoId, 'sess-h', 'guess')).status).toBe(401)
     })
 
-    it('shares one with another user, whose workspaces reach its repository until the share is removed', async () => {
+    it('shares one with another user, whose workspaces reach it from a project of theirs until the share ends', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const project = await (await client.project.create.$post({ json: { name: 'together' } })).json()
+      const { repoId } = await hostedProject('together')
       const bob = await seeTailnetUser('bob@example.com', 'Bob')
-      const shares = client.project[':projectId'].shares
+      await recordTestProject(WEB, { repo: false, owner: bob })
+      await linkProjectRepo(WEB, repoId, 'together')
+      await recordWorkspaceCreated({ projectId: WEB, workspaceId: 'sess-s' })
+      expect((await relayGit(repoId, 'sess-s')).status).toBe(403)
 
-      const shared = await shares.$post({ param: { projectId: project.id }, json: { userId: bob } })
-      expect(shared.status).toBe(200)
-      const share = await shared.json()
-      expect(await getProjectRow(share.id)).toMatchObject({ owner: bob, name: 'together', sharedFrom: project.id })
+      const shared = await client.repo[':repoId'].share.$post({ param: { repoId }, json: { userId: bob } })
+      expect(shared.status).toBe(204)
+      expect((await (await client.repo.list.$get()).json()).find((r) => r.id === repoId)).toMatchObject({
+        hosted: true, sharedWith: [bob], projects: [{ id: WEB, owner: bob }, { name: 'together', owner: BUILT_IN_USER_ID }],
+      })
+      expect((await relayGit(repoId, 'sess-s')).status).toBe(200)
 
-      await recordWorkspaceCreated({ projectId: share.id, workspaceId: 'sess-s' })
-      expect((await relayGit(share.id, 'sess-s')).status).toBe(200)
-
-      const removed = await shares[':userId'].$delete({ param: { projectId: project.id, userId: bob } })
-      expect(removed.status).toBe(204)
-      expect((await getProjectRow(share.id))?.shareRevoked).toBe(true)
-      expect((await relayGit(share.id, 'sess-s')).status).toBe(403)
-      expect((await shares[':userId'].$delete({ param: { projectId: project.id, userId: bob } })).status).toBe(404)
+      const unshare = client.repo[':repoId'].unshare
+      expect((await unshare.$post({ param: { repoId }, json: { userId: bob } })).status).toBe(204)
+      expect((await relayGit(repoId, 'sess-s')).status).toBe(403)
+      expect((await unshare.$post({ param: { repoId }, json: { userId: bob } })).status).toBe(404)
     })
 
-    it('turns the default-branch guard off and on, for a hosted project only', async () => {
+    it('turns the default-branch guard off and on, for a hosted repo only', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const project = await (await client.project.create.$post({ json: { name: 'guarded' } })).json()
-      const guard = client.project[':projectId']['default-branch-guard']
+      const { repoId } = await hostedProject('guarded')
+      const guard = client.repo[':repoId']['default-branch-guard']
 
-      expect((await guard.$put({ param: { projectId: project.id }, json: { enabled: false } })).status).toBe(204)
-      expect((await getProjectRow(project.id))?.guardDefaultBranch).toBe(false)
-      expect((await guard.$put({ param: { projectId: DEMO }, json: { enabled: false } })).status).toBe(400)
+      expect((await guard.$put({ param: { repoId }, json: { enabled: false } })).status).toBe(204)
+      expect((await getRepo(repoId))?.guardDefaultBranch).toBe(false)
+      expect((await guard.$put({ param: { repoId: DEMO }, json: { enabled: false } })).status).toBe(400)
     })
 
-    it('sets the default branch to one the repository has, for a hosted project only', async () => {
+    it('sets the default branch to one the repository has, for a hosted repo only', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const project = await (await client.project.create.$post({ json: { name: 'retarget' } })).json()
-      const branch = client.project[':projectId']['default-branch']
+      const { repoId } = await hostedProject('retarget')
+      const branch = client.repo[':repoId']['default-branch']
 
       // An empty repository has no branch to name.
-      const refused = await branch.$put({ param: { projectId: project.id }, json: { branch: 'main' } })
+      const refused = await branch.$put({ param: { repoId }, json: { branch: 'main' } })
       expect(refused.status).toBe(400)
       expect(((await refused.json()) as { error: { message: string } }).error.message).toMatch(/has no branch "main"/)
-      expect((await branch.$put({ param: { projectId: DEMO }, json: { branch: 'main' } })).status).toBe(400)
+      expect((await branch.$put({ param: { repoId: DEMO }, json: { branch: 'main' } })).status).toBe(400)
     })
 
+    // Deleting is the one way a repo goes: the delete says what it would
+    // reach, then unlinks it everywhere and removes it.
+    it('previews and deletes one, unlinking it from the project made with it', async () => {
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+      const { projectId, repoId } = await hostedProject('doomed')
+      const preview = await client.repo[':repoId']['delete-preview'].$get({ param: { repoId } })
+      expect(await preview.json()).toEqual({
+        hosted: true, projects: [{ id: projectId, name: 'doomed', owner: BUILT_IN_USER_ID }], heldBy: [],
+      })
+
+      const deleted = await client.repo[':repoId'].$delete({ param: { repoId } })
+      expect(deleted.status).toBe(200)
+      expect(await deleted.json()).toEqual({ heldBy: [] })
+      expect(await getRepo(repoId)).toBeUndefined()
+      expect((await getProjectRow(projectId))?.repos).toEqual([])
+      expect((await client.repo[':repoId'].$delete({ param: { repoId } })).status).toBe(404)
+    })
+  })
+
+  // Which repos a project links (docs/project-repos.md).
+  describe('project repo routes', () => {
+    it('links a new hosted repo and an existing one, renames and reorders the links, and unlinks without deleting', async () => {
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+      const links = async (): Promise<string[]> => ((await getProjectRow(DEMO))?.repos ?? []).map((l) => l.dir)
+      const repo = client.project[':projectId'].repo
+
+      const added = await repo.$post({ param: { projectId: DEMO }, json: { hosted: true, dir: 'notes' } })
+      expect(added.status).toBe(200)
+      const { repoId } = await added.json()
+      expect(await getRepo(repoId)).toMatchObject({ hosted: true, owner: BUILT_IN_USER_ID })
+      expect(await links()).toEqual(['demo', 'notes'])
+      // A folder is one path segment, unique in the project; a repo links once.
+      expect((await repo.$post({ param: { projectId: DEMO }, json: { hosted: true, dir: 'notes' } })).status).toBe(409)
+      expect((await repo.$post({ param: { projectId: DEMO }, json: { hosted: true, dir: 'a/b' } })).status).toBe(400)
+      expect((await repo.$post({ param: { projectId: DEMO }, json: { repoId } })).status).toBe(409)
+
+      const link = repo[':repo']
+      expect((await link.$patch({ param: { projectId: DEMO, repo: 'notes' }, json: { dir: 'docs' } })).status).toBe(204)
+      expect((await client.project[':projectId']['repo-order'].$put({ param: { projectId: DEMO }, json: { repos: ['docs', 'demo'] } })).status).toBe(204)
+      expect(await links()).toEqual(['docs', 'demo'])
+      expect((await link.$patch({ param: { projectId: DEMO, repo: 'nope' }, json: { dir: 'x' } })).status).toBe(404)
+
+      expect((await link.$delete({ param: { projectId: DEMO, repo: 'docs' } })).status).toBe(204)
+      expect(await links()).toEqual(['demo'])
+      expect(await getRepo(repoId)).toBeDefined()
+      // Linked again by id, since it is still its owner's.
+      expect((await repo.$post({ param: { projectId: DEMO }, json: { repoId } })).status).toBe(200)
+      expect(await links()).toEqual(['demo', 'demo-2'])
+    })
+  })
+
+  describe('project settings routes', () => {
     it('replaces the gitignored paths a stop keeps, refusing one outside the checkout', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const kept = client.project[':projectId']['kept-ignored-paths']
@@ -1365,8 +1429,8 @@ describe('write routes', () => {
       })))
 
     beforeEach(async () => {
-      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'parent', baseBranch: 'main' })
-      await insertSession(DEMO, 'parent', { tool: 'claude', mode: 'tui', permissionMode: 'plan' })
+      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'parent', repos: [{ repoId: DEMO, path: '', baseBranch: 'main' }] })
+      await insertSession(DEMO, 'parent', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'plan' })
     })
 
     it('queues, edits and runs one — once', async () => {
@@ -1377,7 +1441,8 @@ describe('write routes', () => {
         json: { project: DEMO, parent: 'parent', prompt: 'follow up', tool: 'claude', title: 'Named', group: 'review' },
       })).json()
       expect(queued).toMatchObject({
-        parentWorkspaceId: 'parent', branch: 'main', permissionMode: 'plan', title: 'Named', groupId,
+        parentWorkspaceId: 'parent', permissionMode: 'plan', title: 'Named', groupId,
+        selection: { repos: [{ repo: DEMO, branch: 'main' }], nested: false },
       })
 
       const edited = await (await client().workspace.queue.update.$post({
@@ -1412,7 +1477,7 @@ describe('write routes', () => {
       expect(mockCreateWorkspace.mock.calls[0][1]).toMatchObject({
         workspaceId,
         session: expect.objectContaining({ prompt: 'follow up, edited', permissionMode: 'plan' }) as unknown,
-        branch: 'main',
+        start: expect.objectContaining({ repos: [expect.objectContaining({ path: '', branch: 'main' })], cwd: '' }) as unknown,
         title: 'Named',
         groupId: refiled.groupId,
       })
@@ -1530,9 +1595,9 @@ describe('write routes', () => {
     it('saves, replaces and discards a draft', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const saved = await (await client.workspace.draft.save.$post({
-        json: { project: DEMO, prompt: 'someday', tool: 'codex', mode: 'acp', permissionMode: 'plan', branch: 'dev' },
+        json: { project: DEMO, prompt: 'someday', tool: 'codex', mode: 'acp', permissionMode: 'plan', repos: [{ repo: 'demo', branch: 'dev' }] },
       })).json()
-      expect(saved).toMatchObject({ projectId: DEMO, tool: 'codex', mode: 'acp', branch: 'dev' })
+      expect(saved).toMatchObject({ projectId: DEMO, tool: 'codex', mode: 'acp', repos: [{ repo: 'demo', branch: 'dev' }] })
 
       const replaced = await (await client.workspace.draft.save.$post({
         json: { id: saved.id, project: DEMO, prompt: 'someday', tool: 'claude', mode: 'tui', permissionMode: 'plan', startAfter: 'w1' },
@@ -1594,7 +1659,7 @@ describe('write routes', () => {
         json: { project: DEMO, parent: 'nope', prompt: 'p', draftId: queued },
       })).status).toBe(404)
       expect(await ids()).toEqual([queued])
-      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'parent', baseBranch: 'main' })
+      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'parent', repos: [{ repoId: DEMO, path: '', baseBranch: 'main' }] })
       expect((await client.workspace.queue.create.$post({
         json: { project: DEMO, parent: 'parent', prompt: 'someday', draftId: queued },
       })).status).toBe(200)
@@ -1650,7 +1715,7 @@ describe('write routes', () => {
         expect(res.status).toBe(200)
         const { id } = await res.json()
         expect(await listCredentialSummaries(BUILT_IN_USER_ID)).toEqual([
-          { id, name: 'gh', kind: 'https', preview: '***_new', projects: [] },
+          { id, name: 'gh', kind: 'https', preview: '***_new', repos: [] },
         ])
         expect(synced).not.toHaveBeenCalled()
 
@@ -1701,7 +1766,7 @@ describe('write routes', () => {
     it('deletes a credential in use and takes it from the runtime at once', async () => {
       await writeProject(WEB, 'https://github.com/acme/web', 'web')
       const a = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'a', token: 'ghp_a' })
-      await assignProjectCredential(local, WEB, a.id)
+      await assignRepoCredential(local, WEB, a.id)
       const synced = vi.spyOn(workspaceDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
         const client = makeTestApiClient(buildApp({ buildId: 'test' }))
@@ -1744,7 +1809,7 @@ describe('write routes', () => {
     it('replaces the secret under the same name and projects, and pushes it', async () => {
       await writeProject(WEB, 'https://github.com/acme/web', 'web')
       const { id } = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_leaked' })
-      await assignProjectCredential(local, WEB, id)
+      await assignRepoCredential(local, WEB, id)
       const synced = vi.spyOn(workspaceDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
         const client = makeTestApiClient(buildApp({ buildId: 'test' }))
@@ -1752,43 +1817,43 @@ describe('write routes', () => {
         expect(res.status).toBe(200)
         const body = await res.json()
         expect(await listCredentialSummaries(BUILT_IN_USER_ID)).toEqual([
-          { id: body.id, name: 'gh', kind: 'https', preview: '***resh', projects: [WEB] },
+          { id: body.id, name: 'gh', kind: 'https', preview: '***resh', repos: ['https://github.com/acme/web'] },
         ])
-        expect(synced.mock.calls.at(-1)?.[0][credentialOwnerKey(BUILT_IN_USER_ID)].git).toEqual([{ token: 'ghp_fresh', projects: [WEB] }])
+        expect(synced.mock.calls.at(-1)?.[0][credentialOwnerKey(BUILT_IN_USER_ID)].git).toMatchObject([{ token: 'ghp_fresh', grants: [{ projectId: WEB, repoId: WEB }] }])
       } finally {
         synced.mockRestore()
       }
     })
   })
 
-  describe('PUT /project/:projectId/git-credential', () => {
-    it('assigns the credential and hands the runtime what the project may now use', async () => {
+  describe('PUT /repo/:repoId/git-credential', () => {
+    it('assigns the credential and hands the runtime what the projects linking the repo may now use', async () => {
       await writeProject(WEB, 'https://github.com/acme/web', 'web')
       const { id } = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_web' })
       const synced = vi.spyOn(workspaceDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
         const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-        const res = await client.project[':projectId']['git-credential'].$put({
-          param: { projectId: WEB }, json: { credentialId: id },
+        const res = await client.repo[':repoId']['git-credential'].$put({
+          param: { repoId: WEB }, json: { credentialId: id },
         })
         expect(res.status).toBe(200)
         expect(await res.json()).toEqual({ knownHostsEntry: null })
         // The runtime injects from what it was last told, never from the store.
-        expect(synced.mock.calls.at(-1)?.[0][credentialOwnerKey(BUILT_IN_USER_ID)].git).toEqual([{ token: 'ghp_web', projects: [WEB] }])
+        expect(synced.mock.calls.at(-1)?.[0][credentialOwnerKey(BUILT_IN_USER_ID)].git).toMatchObject([{ token: 'ghp_web', grants: [{ projectId: WEB, repoId: WEB, host: 'github.com', path: 'acme/web' }] }])
       } finally {
         synced.mockRestore()
       }
     })
 
-    it('404s an unknown project or credential', async () => {
+    it('404s an unknown repo or credential', async () => {
       await writeProject(WEB, 'https://github.com/acme/web', 'web')
       const { id } = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_web' })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      expect((await client.project[':projectId']['git-credential'].$put({
-        param: { projectId: 'nope' }, json: { credentialId: id },
+      expect((await client.repo[':repoId']['git-credential'].$put({
+        param: { repoId: 'nope' }, json: { credentialId: id },
       })).status).toBe(404)
-      expect((await client.project[':projectId']['git-credential'].$put({
-        param: { projectId: WEB }, json: { credentialId: '00000000-0000-4000-8000-000000000000' },
+      expect((await client.repo[':repoId']['git-credential'].$put({
+        param: { repoId: WEB }, json: { credentialId: '00000000-0000-4000-8000-000000000000' },
       })).status).toBe(404)
     })
   })

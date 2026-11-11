@@ -28,6 +28,9 @@ export interface SiteOptions {
   /** A branch whose tip it deploys whenever it moves; false (`--no-follow`)
    *  for none. */
   follow?: string | false
+  /** On create: the repo its releases are built from, in a project with
+   *  several. */
+  repo?: string
 }
 
 export async function siteCreate(
@@ -44,6 +47,7 @@ export async function siteCreate(
     workflow: opts.workflow,
     ...(typeof opts.volume === 'string' ? { volume: opts.volume } : {}),
     ...(typeof opts.follow === 'string' ? { followBranch: opts.follow } : {}),
+    ...(opts.repo !== undefined ? { repo: opts.repo } : {}),
   } })
   const { tunnel } = await api.site.edge.$get()
   console.log(`Created site "${name}". In Cloudflare, add a public hostname to the install's tunnel:`)

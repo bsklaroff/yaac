@@ -1,12 +1,8 @@
 import fs from 'node:fs/promises'
-import path from 'node:path'
 import crypto from 'node:crypto'
-import { ensureDataDir, projectDir, repoDir, claudeDir, hostedRepoDir } from '@yaac/shared/project-paths'
-import { hostedRemoteUrl } from '@yaac/shared/hosted-git'
-import { cloneRepo, initHostedRepo, isGitAuthError } from '#domain/git'
-import { resolveCredentialForRemote, validateGitRemoteUrl } from './credentials'
-import { getProjectRow, getToolCredential, listProjectRows, listUsers, recordProject, setProjectShareRevoked } from '#db'
-import { authorizeProject, type Actor } from '#domain/access'
+import { ensureDataDir, projectDir, claudeDir } from '@yaac/shared/project-paths'
+import { addRepo, createHostedRepo, registerStagedRepo, validateGitRemoteUrl } from '#domain/repos'
+import { getProjectRow, getToolCredential, linkProjectRepo, recordProject } from '#db'
 import {
   writeProjectClaudePlaceholder,
   writeProjectCodexPlaceholder,
@@ -23,115 +19,46 @@ export interface AddProjectResult {
 }
 
 /**
- * Clone a git repo into the data dir as a yaac project owned by `owner`,
- * assigning it the credential used for the clone (docs/git-credentials.md). User-facing
- * failures throw `ServerError`.
+ * Add a yaac project owned by `owner` around one git repo: the repo they
+ * already have for `remoteUrl`, or a fresh clone of it under the named
+ * credential (`addRepo`, docs/git-credentials.md). User-facing failures
+ * throw `ServerError`.
  */
 export async function addProject(
   remoteUrl: string,
   gitCredentialId: string,
   owner: string,
 ): Promise<AddProjectResult> {
-  const parsed = validateGitRemoteUrl(remoteUrl)
-  const name = projectNameFor(parsed.path)
-  if (!name) throw new ServerError('VALIDATION', `no project name can be derived from "${parsed.path}"`)
-
-  await ensureDataDir()
-  const { credential, knownHostsEntry } = await resolveCredentialForRemote(owner, gitCredentialId, remoteUrl)
-
-  const project = await setUpProject(name, owner, { gitCredential: { id: gitCredentialId, knownHostsEntry } }, async (projectId) => {
-    try {
-      await cloneRepo(remoteUrl, repoDir(projectId), credential)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      if (isGitAuthError(message)) {
-        throw new ServerError(
-          'VALIDATION',
-          `git authentication failed for ${parsed.host} — the credential was rejected `
-          + '(a revoked token, or a key not yet registered with the host?).',
-        )
-      }
-      throw new ServerError('INTERNAL', `Failed to clone: ${message}`)
-    }
-    return remoteUrl
-  })
-  return { project, knownHostsEntry }
+  const name = projectNameFor(validateGitRemoteUrl(remoteUrl).path)
+  if (!name) throw new ServerError('VALIDATION', `no project name can be derived from "${remoteUrl}"`)
+  const { repo, knownHostsEntry } = await addRepo(owner, remoteUrl, gitCredentialId)
+  return { project: await setUpProject(crypto.randomUUID(), name, owner, repo.id), knownHostsEntry }
 }
 
 /**
- * Create an empty project whose remote the server hosts
- * (docs/hosted-projects.md). Its main clone is cloned from the hosted bare
- * repository like any other remote, so everything downstream runs as for a
- * cloned project.
+ * Create a project with one empty repo whose remote the server hosts
+ * (docs/hosted-projects.md).
  */
 export async function createHostedProject(rawName: string, owner: string): Promise<ProjectMeta> {
   const name = projectNameFor(rawName.trim())
   if (!name) throw new ServerError('VALIDATION', `"${rawName}" is not a usable project name`)
+  const repo = await createHostedRepo(owner)
+  return setUpProject(crypto.randomUUID(), name, owner, repo.id)
+}
+
+/**
+ * What every way of adding a project shares: the project dir, the
+ * tool-auth placeholders, the row, and its link to its first repo under a
+ * folder named for the project. A failure removes the project dir, since
+ * files without a row couldn't be listed, removed or re-added; the repo
+ * stays among its owner's.
+ */
+async function setUpProject(projectId: string, name: string, owner: string, repoId: string): Promise<ProjectMeta> {
   await ensureDataDir()
-  return setUpProject(name, owner, { hosted: true }, async (projectId) => {
-    const hosted = hostedRepoDir(projectId)
-    try {
-      await fs.mkdir(path.dirname(hosted), { recursive: true })
-      await initHostedRepo(hosted)
-      await cloneRepo(hosted, repoDir(projectId), { kind: 'hosted' })
-    } catch (err) {
-      throw new ServerError('INTERNAL', `Failed to create the repository: ${err instanceof Error ? err.message : String(err)}`)
-    }
-    return hostedRemoteUrl(projectId)
-  })
-}
-
-/**
- * Share a hosted project with another user (docs/hosted-projects.md
- * "Sharing"): give them a project of their own under the same name, whose
- * remote is this project's repository. Sharing again with a user whose
- * share was removed gives that share back, workspaces and all. Only the
- * owner shares, and only a project created in yaac that is not itself a
- * share.
- */
-export async function shareProject(principal: Actor, projectId: string, userId: string): Promise<ProjectMeta> {
-  const row = await getProjectRow(projectId)
-  if (!row) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
-  await authorizeProject(principal, projectId)
-  if (!row.hosted || row.sharedFrom !== undefined) {
-    throw new ServerError('VALIDATION', `"${row.name}" can't be shared: only a project created in yaac can be, by its owner.`)
-  }
-  if (userId === row.owner) throw new ServerError('VALIDATION', `"${row.name}" is already yours`)
-  if (!(await listUsers()).some((u) => u.id === userId)) throw new ServerError('NOT_FOUND', `user ${userId} not found`)
-  const existing = (await listProjectRows()).find((r) => r.sharedFrom === projectId && r.owner === userId)
-  if (existing) {
-    if (existing.shareRevoked) await setProjectShareRevoked(existing.id, false)
-    return { id: existing.id, name: existing.name, remoteUrl: existing.remoteUrl, addedAt: existing.addedAt }
-  }
-  return setUpProject(row.name, userId, { hosted: true, sharedFrom: projectId }, async (shareId) => {
-    try {
-      await cloneRepo(hostedRepoDir(projectId), repoDir(shareId), { kind: 'hosted' })
-    } catch (err) {
-      throw new ServerError('INTERNAL', `Failed to clone the repository: ${err instanceof Error ? err.message : String(err)}`)
-    }
-    return hostedRemoteUrl(shareId)
-  })
-}
-
-/**
- * What every way of adding a project shares: a new id, the project dir,
- * `makeRepo` to fill its main clone (returning the remote URL to record),
- * the tool-auth placeholders, and the row. A failure removes the project
- * dir and any hosted remote, since files without a row couldn't be listed,
- * removed or re-added.
- */
-async function setUpProject(
-  name: string,
-  owner: string,
-  record: { hosted?: boolean; sharedFrom?: string; gitCredential?: { id: string; knownHostsEntry: string | null } },
-  makeRepo: (projectId: string) => Promise<string>,
-): Promise<ProjectMeta> {
-  const projectId = crypto.randomUUID()
   const dir = projectDir(projectId)
   await fs.mkdir(dir, { recursive: true })
   try {
-    const remoteUrl = await makeRepo(projectId)
-    const meta: ProjectMeta = { id: projectId, name, remoteUrl, addedAt: new Date().toISOString() }
+    const meta: ProjectMeta = { id: projectId, name, addedAt: new Date().toISOString() }
     await fs.mkdir(claudeDir(projectId), { recursive: true })
 
     const claudeCreds = await getToolCredential(owner, 'claude')
@@ -144,20 +71,20 @@ async function setUpProject(
       await writeProjectCodexPlaceholder(projectId, codexCreds.codexOauth)
     }
 
-    await recordProject({ ...meta, hosted: record.hosted === true, sharedFrom: record.sharedFrom }, owner, record.gitCredential)
+    await recordProject(meta, owner)
+    await linkProjectRepo(projectId, repoId, name)
     return meta
   } catch (err) {
     await fs.rm(dir, { recursive: true, force: true })
-    await fs.rm(hostedRepoDir(projectId), { recursive: true, force: true })
     throw err
   }
 }
 
 /**
- * Record a project whose checkout is already staged in the data dir under
- * `id`, without cloning; test suites use this for local repos. Refuses a
- * remote `project add` would reject, a missing staged checkout, and an id
- * already recorded.
+ * Record a project whose repo's main clone is already staged in the data
+ * dir under `id`, without cloning; test suites use this for local repos.
+ * The repo takes the project's id. Refuses a remote `project add` would
+ * reject, a missing staged clone, and an id already recorded.
  */
 export async function registerStagedProject(
   id: string,
@@ -165,18 +92,9 @@ export async function registerStagedProject(
   remoteUrl: string,
   owner: string,
 ): Promise<ProjectMeta> {
-  // The remote decides every later fetch's transport, so validate it as
-  // `addProject` does.
-  validateGitRemoteUrl(remoteUrl)
-  try {
-    await fs.access(repoDir(id))
-  } catch {
-    throw new ServerError('NOT_FOUND', `no checkout is staged for project ${id}`)
-  }
   if (await getProjectRow(id)) {
     throw new ServerError('CONFLICT', `Project ${id} already exists`)
   }
-  const meta: ProjectMeta = { id, name, remoteUrl, addedAt: new Date().toISOString() }
-  await recordProject(meta, owner)
-  return meta
+  await registerStagedRepo(id, remoteUrl, owner)
+  return setUpProject(id, name, owner, id)
 }

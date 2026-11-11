@@ -1,49 +1,31 @@
 import { describe, it, expect } from 'vitest'
-import { workspaceSshTransport } from '#drivers/k8s/egress/ssh-transport'
-import {
-  SSH_AGENT_PORT,
-  SSH_AGENT_SOCKET_PATH,
-  SSH_TUNNEL_SENTINEL,
-  TUNNEL_INGRESS_PORT,
-} from '#drivers/k8s/substrate'
+import { workspaceSshEnv } from '#drivers/k8s/egress/ssh-transport'
+import { SSH_HOST_KEY_ALIAS, SSH_TUNNEL_SENTINEL, TUNNEL_INGRESS_PORT } from '#drivers/k8s/substrate'
 
-const KNOWN_HOSTS = '/data/projects/demo/known_hosts'
+describe('workspaceSshEnv', () => {
+  const gitSsh = workspaceSshEnv().find((e) => e.startsWith('GIT_SSH_COMMAND=')) ?? ''
 
-describe('workspaceSshTransport', () => {
   it('tunnels git\'s SSH through the proxy with CONNECT, so the allowlist still sees the host', () => {
     // A raw port-22 redirect would lose the hostname; CONNECT carries it.
-    const { env } = workspaceSshTransport(KNOWN_HOSTS, '10.96.0.5')
-    const gitSsh = env.find((e) => e.startsWith('GIT_SSH_COMMAND='))
-
     expect(gitSsh).toContain(`--proxy ${SSH_TUNNEL_SENTINEL}:${TUNNEL_INGRESS_PORT}`)
     expect(gitSsh).toContain('--proxy-type http')
     expect(gitSsh).toContain('%h %p')
   })
 
-  it('verifies against the project\'s own known_hosts, mounted read-only', () => {
-    const { mounts, env } = workspaceSshTransport(KNOWN_HOSTS, '10.96.0.5')
-
-    expect(mounts).toEqual([{
-      source: { kind: 'hostPath', path: KNOWN_HOSTS, type: 'File' },
-      mountPath: '/home/yaac/.ssh/yaac/known_hosts',
-      readOnly: true,
-    }])
-    const gitSsh = env.find((e) => e.startsWith('GIT_SSH_COMMAND='))
-    expect(gitSsh).toContain('UserKnownHostsFile=/home/yaac/.ssh/yaac/known_hosts')
-    // An unknown host fails rather than being trusted on first use.
+  it('trusts the proxy\'s host key alone, under one name for every git host', () => {
+    // The proxy ends the session, so its key is the one presented whatever
+    // host git names; the file sits beside the proxy's CA in every pod.
+    expect(gitSsh).toContain('UserKnownHostsFile=/etc/yaac/certs/ssh_known_hosts')
+    expect(gitSsh).toContain(`HostKeyAlias=${SSH_HOST_KEY_ALIAS}`)
+    // An unknown key fails rather than being trusted on first use.
     expect(gitSsh).toContain('StrictHostKeyChecking=yes')
     // No user ssh config can weaken this.
     expect(gitSsh).toContain('-F /dev/null')
   })
 
-  it('points identity at the forwarded agent — never a key inside the workspace', () => {
-    // The agent is a TCP connection to the proxy, exposed in the pod as
-    // the SSH_AUTH_SOCK socket, so it works on any node.
-    const { env, mounts } = workspaceSshTransport(KNOWN_HOSTS, '10.96.0.5')
-
-    expect(env).toContain(`SSH_AUTH_SOCK=${SSH_AGENT_SOCKET_PATH}`)
-    expect(env).toContain(`YAAC_SSH_AGENT_UPSTREAM=10.96.0.5:${SSH_AGENT_PORT}`)
-    expect(mounts.map((m) => m.mountPath)).not.toContain('/home/yaac/.ssh/id_rsa')
-    expect(env.join('\n')).not.toContain('IdentityFile')
+  it('offers no identity: the workspace holds no key and reaches no agent', () => {
+    expect(workspaceSshEnv()).toEqual([gitSsh])
+    expect(gitSsh).toContain('IdentityAgent=none')
+    expect(gitSsh).not.toContain('IdentityFile')
   })
 })

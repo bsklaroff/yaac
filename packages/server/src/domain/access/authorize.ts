@@ -54,13 +54,11 @@ export function isProjectHeld(projectId: string): boolean {
 }
 
 /** A project's owner. A project that does not exist is `NOT_FOUND`, since
- *  some verbs authorize before they check the project exists. A share its
- *  source's owner removed is FORBIDDEN to everyone, the server included,
- *  and a held project (`withProjectsHeld`) is CONFLICT. */
+ *  some verbs authorize before they check the project exists, and a held
+ *  project (`withProjectsHeld`) is CONFLICT. */
 async function projectOwner(projectId: string): Promise<string> {
   const row = await getProjectRow(projectId)
   if (!row) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
-  if (row.shareRevoked) throw new ServerError('FORBIDDEN', `${row.name} is no longer shared with its owner`)
   const held = holds.get(projectId)
   if (held !== undefined) throw new ServerError('CONFLICT', held)
   return row.owner

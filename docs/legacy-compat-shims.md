@@ -605,3 +605,117 @@ over the protocol whole, so it needs no check.
   `octet_length` of `sessions.first_prompt` (for sessions not yet
   launched), `queued_workspaces.prompt`, `routines.prompt` and
   `draft_workspaces.prompt` is at most 130000 in every install's database.
+
+## Claude memory under `-repo`
+
+A project keeps one claude auto-memory per repo, in
+`claude/projects/-repo-<repo id>/memory` (docs/workspace-storage.md "Agent
+history"). While a project had exactly one repo its memory was
+`claude/projects/-repo/memory`. `moveLegacyMainClones`
+(`packages/server/src/domain/repos/legacy-main-clones.ts`) runs at every
+server start and renames that folder to the one named for the repo the
+project had then: the one carrying the project's id, or for a project that
+was a share the repo it links. It leaves a relative symlink at `-repo`,
+because a containerless workspace started before the upgrade links its
+memory through that name until it restarts (a pod keeps its mount of the
+renamed folder).
+
+- **What it reads.** A real `claude/projects/-repo` directory under each
+  project dir, and the symlink it leaves there.
+- **What breaks silently if it goes too early.** claude in every workspace
+  of a project never started since the upgrade begins with an empty memory,
+  and the old one sits unread on disk. With the symlinks gone, a
+  containerless workspace not restarted since the upgrade writes memory
+  nothing else reads.
+- **When it is safe to remove.** The rename: once no project dir holds a
+  real `claude/projects/-repo`. The symlinks: once every containerless
+  workspace created before the upgrade has been restarted or deleted.
+
+## Main clones under the project dir
+
+Each repo's main clone is `global/repos/<repo id>`. An install from before
+repos were rows of their own kept one per project, at
+`global/projects/<project id>/repo`. `moveLegacyMainClones`
+(`packages/server/src/domain/repos/legacy-main-clones.ts`) runs at every
+server start and moves what it finds there:
+
+- A project whose repo carries its id (the `add_repos` migration gave every
+  project such a repo, except a share) has its clone renamed into place.
+- A project that was a share links the repo it was shared from, so its own
+  clone is no longer used. Every object it holds, reachable or not, is
+  copied into the clone it now uses (`absorbClone`), and it is removed once
+  none of the project's workspaces runs, since a pod started before the
+  upgrade still mounts it.
+
+Either way a relative symlink is left at the old path, because the
+alternates file of a checkout made before the upgrade names it until its
+workspace restarts (a restart rewrites it, `buildCloneLinkExec`). A start
+that finds the clone moved and no link there (the server died in between)
+makes the link.
+
+- **What it reads.** A real `repo` directory under each
+  `global/projects/<id>/`, and the symlinks it leaves there.
+- **What breaks silently if it goes too early.** A project never started
+  since the upgrade has no main clone where the server looks, so its
+  creates fail to fetch. With the symlinks gone, a workspace not restarted
+  since the upgrade loses the objects its checkout borrows: git there
+  reports missing objects, in a pod or a stopped workspace's file reads.
+- **When it is safe to remove.** The mover: once no `global/projects/<id>/`
+  holds a real `repo` directory. The symlinks: once every workspace created
+  before the upgrade has been restarted or deleted, which no row records; a
+  checkout whose `.git/objects/info/alternates` names `projects/<id>/repo`
+  is one that has not.
+
+## Hosted URLs naming a project
+
+A user's own git reaches a hosted repo at `<origin>/api/repo/<repo id>/git`.
+While a project had exactly one repo that was
+`<origin>/api/project/<project id>/git`, which is what every clone made
+with `yaac project clone` then carries as its `origin`. The three
+`/:projectId/git/…` routes in `packages/server/src/api/routes/projects.ts`
+still answer it: the id is a repo's too (every repo from then carries its
+project's id), or a former share's project (the next entry).
+
+- **What it reads.** The id in `/api/project/<id>/git/…`, as a repo id.
+- **What breaks silently if it goes too early.** Nothing silently: a clone
+  made before the upgrade gets "repository not found" on its next fetch or
+  push, until its owner runs `git remote set-url origin
+  <origin>/api/repo/<id>/git`.
+- **When it is safe to remove.** Once no user's clone still names
+  `/api/project/<id>/git`, which the server cannot see; the access log
+  showing no request to those routes for a release is the evidence.
+
+## Pods whose ssh trusts the git host
+
+No code: a note for an upgrade. The proxy ends a workspace's ssh sessions
+to git hosts itself (docs/workspace-egress.md "Git over SSH"), so a pod's
+`GIT_SSH_COMMAND` trusts the proxy's host key. A pod launched while the
+proxy only tunnelled ssh trusts the git host's own key and holds an agent
+socket the proxy no longer serves, and both are fixed at launch.
+
+- **What it reads.** Nothing; no shim covers it.
+- **What breaks.** In a k8s workspace with an ssh remote that has run since
+  before the upgrade, the next `git fetch` or `push` fails with OpenSSH's
+  "REMOTE HOST IDENTIFICATION HAS CHANGED". Restarting the workspace fixes
+  it.
+- **When this note can go.** Once no such pod is running.
+
+## Hosted URLs naming a share
+
+A hosted repo's remote is `http://yaac.internal/api/workspace/git/<repo
+id>.git`. Before repos were shared, a share was a project of its own whose
+checkouts' `origin` named the share project's id there. That project now
+links the repo it was shared from, so `hostedRepo` in
+`packages/server/src/domain/repos/hosted.ts` answers an id that is a
+project's rather than a repo's with that project's one hosted repo. A
+restart points such a checkout's `origin` at the repo's own URL
+(`buildCloneLinkExec`).
+
+- **What it reads.** The id in a hosted git URL, against `projects.id`.
+- **What breaks silently if it goes too early.** A workspace of a former
+  share that has not restarted since the upgrade cannot fetch or push:
+  its git answers "repo not found" for a remote that exists.
+- **When it is safe to remove.** Once every workspace of a project that was
+  a share before the upgrade has been restarted or deleted. No row records
+  which projects those were; a checkout whose `remote.origin.url` names an
+  id that is no repo's is one that has not.

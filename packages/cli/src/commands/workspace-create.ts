@@ -6,15 +6,11 @@ import { testEnv } from '@yaac/shared/env'
 import { reportDeviceTimeZone } from '@yaac/shared/time-zone-report'
 import { formatInZone, parseDuration } from '@yaac/shared/schedule'
 import { InvalidArgumentError } from 'commander'
+import { selectionOf, type SelectionOptions } from '#commands/repo-selection'
 import { AGENT_OPTION_NAMES, type AgentMode, type AgentOption, type AgentOptions, type AgentTool, type PermissionMode, type SessionEntry } from '@yaac/shared/types'
 
-export interface WorkspaceCreateOptions {
+export interface WorkspaceCreateOptions extends SelectionOptions {
   tool?: AgentTool
-  /**
-   * Reference branch, without `origin/`. Defaults to the project's configured
-   * branch.
-   */
-  branch?: string
   /** Initial prompt typed into the agent pane once the workspace is up;
    *  `-` reads it from stdin. */
   prompt?: string
@@ -56,8 +52,6 @@ export interface WorkspaceCreateOptions {
   session?: boolean
   /** A volume of the project to mount (docs/workspace-volumes.md). */
   volume?: string
-  /** A full commit to start at instead of a branch's tip. */
-  commit?: string
   /** A JSON file of the steps to start with in place of the project's init
    *  steps; false (`--no-steps`) for none (docs/workspace-steps.md). */
   steps?: string | false
@@ -87,7 +81,10 @@ export async function workspaceCreate(project: string | undefined, options: Work
   const nonInteractive = options.nonInteractive === true
   if (options.workspace !== undefined) {
     if (project !== undefined) throw new Error('Give a project or --workspace, not both: the workspace names its project.')
-    for (const [flag, set] of [['--branch', options.branch], ['--group', options.group], ['--timeout', options.timeout],
+    for (const [flag, set] of [['--branch', options.branch], ['--repo', options.repo],
+      ['--no-repos', options.repos === false ? true : undefined],
+      [options.nested === false ? '--no-nested' : '--nested', options.nested],
+      ['--group', options.group], ['--timeout', options.timeout],
       ['--start-at', options.startAt], ['--start-in', options.startIn], ['--volume', options.volume],
       ['--commit', options.commit], [options.steps === false ? '--no-steps' : '--steps', options.steps],
       ['--workflow', options.workflow],
@@ -100,7 +97,7 @@ export async function workspaceCreate(project: string | undefined, options: Work
   }
   if (project === undefined) throw new Error('Name the project to create the workspace in, or --workspace to open a session in a running one.')
   if (options.resume !== undefined) throw new Error('--resume needs --workspace: a conversation resumes in the workspace that holds it.')
-  if (options.commit !== undefined && options.branch !== undefined) throw new Error('Give --branch or --commit, not both.')
+  const selection = selectionOf(options)
   if (noSession && nonInteractive) throw new Error('--non-interactive already starts no session; drop --no-session.')
   if (noSession || nonInteractive) {
     const flag = noSession ? '--no-session' : '--non-interactive'
@@ -134,8 +131,7 @@ export async function workspaceCreate(project: string | undefined, options: Work
   const settings = {
     project: await resolveProjectId(project),
     tool: options.tool,
-    branch: options.branch,
-    commit: options.commit,
+    ...selection,
     model: options.model,
     effort: options.effort,
     agentOptions: options.agentOption,
@@ -242,6 +238,7 @@ async function openSession(workspace: string, options: WorkspaceCreateOptions): 
       permissionMode: options.permissionMode,
       prompt,
       resume: options.resume,
+      ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
     },
   })
   await attachSession(resolved.workspaceId, sessionId, { attach: source !== '-' })

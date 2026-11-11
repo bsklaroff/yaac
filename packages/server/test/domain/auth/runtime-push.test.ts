@@ -5,8 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 
 import { addHttpsCredential, adoptRefreshedToolCredentials, generateSshCredential, pushCredentialsToRuntime } from '#domain/auth'
-import { assignProjectCredential } from '#domain/projects'
-import { BUILT_IN_USER_ID, closeDb, getToolCredential, openDb, recordProject, seeTailnetUser, setToolCredential } from '#db'
+import { assignRepoCredential } from '#domain/repos'
+import {
+  BUILT_IN_USER_ID, closeDb, getToolCredential, linkProjectRepo, openDb, seeTailnetUser, setRepoGitCredential,
+  setToolCredential, updateProjectRepo,
+} from '#db'
+import { recordTestProject } from '@yaac/test-utils/project-fixture'
 import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
 import { setDataDir } from '@yaac/shared/project-paths'
 import { PLACEHOLDER_ACCESS_TOKEN, PLACEHOLDER_REFRESH_TOKEN } from '@yaac/shared/tool-auth'
@@ -72,10 +76,24 @@ describe('pushCredentialsToRuntime', () => {
     await setToolCredential(ME, 'claude', { kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant' })
     await setToolCredential(ME, 'codex', { kind: 'oauth', savedAt: 'x', codexOauth: codexBundle() })
     await setToolCredential(ME, 'opencode', { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'sk-or' })
-    // Only credentials a project uses are sent, each with its projects.
-    await recordProject({ id: WEB, name: 'demo', remoteUrl: 'https://github.com/acme/web', addedAt: 'x' }, BUILT_IN_USER_ID)
-    await assignProjectCredential(local, WEB, (await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp' })).id)
+    // Only credentials a project's repo uses are sent, each with a grant
+    // per repo using it and project linking that repo, carrying that link's
+    // settings.
+    const API = '2567a5ec-9705-4b7a-82c9-84033e06189e'
+    const gh = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp' })
+    await recordTestProject(WEB, { remoteUrl: 'https://github.com/acme/web.git' })
+    await recordTestProject(API, { remoteUrl: 'https://github.com/acme/api' })
+    await assignRepoCredential(local, WEB, gh.id)
+    await assignRepoCredential(local, API, gh.id)
+    await linkProjectRepo(API, WEB, 'web')
+    await updateProjectRepo(API, WEB, { readOnly: true, ghToken: false })
     await addHttpsCredential(BUILT_IN_USER_ID, { name: 'unused', token: 'ghp_unused' })
+    const grant = (projectId: string, repoId: string, repo: string, flags = { readOnly: false, ghToken: true }) =>
+      ({ projectId, repoId, host: 'github.com', path: `acme/${repo}`, ...flags })
+    const mine = [{
+      token: 'ghp',
+      grants: [grant(WEB, WEB, 'web'), grant(API, API, 'api'), grant(API, WEB, 'web', { readOnly: true, ghToken: false })],
+    }]
 
     await pushCredentialsToRuntime()
 
@@ -87,7 +105,7 @@ describe('pushCredentialsToRuntime', () => {
     // Signed out is sent as null; the runtime replaces its whole set, so it
     // must learn about absences too.
     expect(bundle.pi).toBeNull()
-    expect(bundle.git).toEqual([{ token: 'ghp', projects: [WEB] }])
+    expect(bundle.git).toEqual(mine)
     expect(bundle.ssh).toEqual([])
 
     // A second user gets a bundle of their own: their sign-in and the git
@@ -95,34 +113,41 @@ describe('pushCredentialsToRuntime', () => {
     const bob = await seeTailnetUser('bob@example.com', 'Bob')
     const BOBS = '2567a5ec-9705-4b7a-82c9-84033e0618b0'
     await setToolCredential(bob, 'pi', { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'sk-bob' })
-    await recordProject({ id: BOBS, name: 'b', remoteUrl: 'https://github.com/bob/b', addedAt: 'x' }, bob)
+    await recordTestProject(BOBS, { remoteUrl: 'https://github.com/bob/b', owner: bob })
     const bobs = { kind: 'tailnet', userId: bob, login: 'bob@example.com', name: 'Bob' } as const
-    await assignProjectCredential(bobs, BOBS, (await addHttpsCredential(bob, { name: 'gh', token: 'ghp_bob' })).id)
+    await assignRepoCredential(bobs, BOBS, (await addHttpsCredential(bob, { name: 'gh', token: 'ghp_bob' })).id)
+    // A credential serves its owner's projects only, whoever links the repo.
+    await linkProjectRepo(BOBS, WEB, 'web')
     let all: Record<string, CredentialBundle> = {}
     installFakeWorkspaceDriver({ syncCredentials: (bundles) => { all = bundles; return Promise.resolve() } })
 
     await pushCredentialsToRuntime()
 
     expect(Object.keys(all).sort()).toEqual([bob, OWNER].sort())
-    expect(all[bob]).toMatchObject({ claude: null, pi: { apiKey: 'sk-bob' }, git: [{ token: 'ghp_bob', projects: [BOBS] }] })
-    expect(all[OWNER].git).toEqual([{ token: 'ghp', projects: [WEB] }])
+    expect(all[bob]).toMatchObject({ claude: null, pi: { apiKey: 'sk-bob' } })
+    expect(all[bob].git).toEqual([{
+      token: 'ghp_bob',
+      grants: [{ projectId: BOBS, repoId: BOBS, host: 'github.com', path: 'bob/b', readOnly: false, ghToken: true }],
+    }])
+    expect(all[OWNER].git).toEqual(mine)
   })
 
-  it('hands an ssh key over in the form ssh-add reads, with each project\'s host and trusted host key', async () => {
+  it('hands an ssh key over in the form ssh-add reads, with each repo\'s host, path and trusted host key', async () => {
     const SVC = '961e38b5-146c-4b07-8078-f53dec9b699a'
     const HOST_KEY = 'git.example.com ssh-ed25519 AAAAHOST'
     const key = await generateSshCredential(ME, { name: 'deploy' })
-    await recordProject(
-      { id: SVC, name: 'svc', remoteUrl: 'git@git.example.com:acme/svc.git', addedAt: 'x' }, ME,
-      { id: key.id, knownHostsEntry: HOST_KEY },
-    )
+    await recordTestProject(SVC, { remoteUrl: 'git@git.example.com:acme/svc.git' })
+    await setRepoGitCredential(SVC, key.id, HOST_KEY)
 
     await pushCredentialsToRuntime()
 
     expect(synced[0].ssh).toEqual([{
       privateKey: expect.stringContaining('BEGIN OPENSSH PRIVATE KEY') as string,
       publicKey: key.publicKey,
-      projects: [{ projectId: SVC, host: 'git.example.com', knownHostsEntry: HOST_KEY }],
+      grants: [{
+        projectId: SVC, repoId: SVC, host: 'git.example.com', path: 'acme/svc', readOnly: false, ghToken: true,
+        knownHostsEntry: HOST_KEY,
+      }],
     }])
   })
 

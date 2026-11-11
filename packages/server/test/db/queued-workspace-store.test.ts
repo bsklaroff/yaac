@@ -25,6 +25,9 @@ import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib
 const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
+/** The repo the fixtures start with; only its id is stored. */
+const REPO = PROJ
+const START = { repos: [{ repo: REPO, branch: 'main' }], nested: false, cwd: REPO }
 
 describe('queued workspace store', () => {
   let tmpDir: string
@@ -44,7 +47,7 @@ describe('queued workspace store', () => {
   })
 
   const settings = {
-    prompt: 'next', tool: 'claude', model: 'opus', mode: 'tui', permissionMode: 'bypass', branch: 'main',
+    prompt: 'next', tool: 'claude', model: 'opus', mode: 'tui', permissionMode: 'bypass', ...START,
   } as const
   const queue = (parent: QueuedParent, prompt = 'next', projectId = PROJ): Promise<QueuedWorkspaceRow> =>
     insertQueuedWorkspace(projectId, parent, { ...settings, prompt })
@@ -61,7 +64,7 @@ describe('queued workspace store', () => {
     const top = await queue({ parentWorkspaceId: 'wt-a' })
     expect(pushes).toBe(1)
     const child = await queue({ parentQueuedId: top.id })
-    expect(child).toMatchObject({ parentQueuedId: top.id, projectId: PROJ, branch: 'main' })
+    expect(child).toMatchObject({ parentQueuedId: top.id, projectId: PROJ, repos: [{ repo: REPO, branch: 'main' }], nested: false, cwd: REPO })
     expect(child.parentWorkspaceId).toBeUndefined()
 
     // Re-parented onto a workspace, the entry column clears.
@@ -90,7 +93,7 @@ describe('queued workspace store', () => {
     expect(await titleOf()).toBe('Next up')
 
     // An edit that keeps the prompt keeps the title; a new prompt drops it.
-    await updateQueuedWorkspace(entry.id, { ...settings, branch: 'dev' })
+    await updateQueuedWorkspace(entry.id, { ...settings, repos: [{ repo: REPO, branch: 'dev' }] })
     expect(await titleOf()).toBe('Next up')
     await updateQueuedWorkspace(entry.id, { ...settings, prompt: 'edited' })
     expect(await titleOf()).toBeUndefined()

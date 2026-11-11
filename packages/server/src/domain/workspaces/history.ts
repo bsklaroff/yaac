@@ -5,9 +5,9 @@ import {
   acpLogDir,
   AGENT_HISTORY_PARTS,
   agentHistoryDir,
-  CLAUDE_POD_CWD,
-  CLAUDE_POD_REPO,
   claudeDir,
+  claudeMemoryDirName,
+  claudePodCwd,
   claudeProjectDirName,
   codexDir,
   ompDir,
@@ -20,16 +20,27 @@ import { conversationIdSchema } from '@yaac/shared/types'
 import { openRoot, type ConfinedRoot } from '#lib/confined-fs'
 import {
   applyWorkspaceEvent,
-  getProjectConversations,
-  listProjectWorkspaceIds,
   listWorkspaceConversations,
   type ConversationLinkRow,
 } from '#db'
 import { serverLog } from '#lib/log'
 
+/** One directory an agent of the workspace can run in, relative to its
+ *  root, with the repo whose checkout it is (`workspaceCwds`). */
+export interface AgentCwd {
+  cwd: string
+  repoId?: string
+}
+
 /**
  * Prepare a workspace's agent history before launch
  * (docs/workspace-storage.md).
+ *
+ * claude files conversations, and its memory, under a folder named for the
+ * directory it runs in, so the history keeps one claude folder per `cwds`
+ * entry (`claudePodCwd`), and each one's `memory` is the project's memory
+ * for that cwd's repo, or for a root that is no checkout
+ * (`claudeMemoryDirName`).
  *
  * A runtime that `layers` mounts over the tool homes (k8s) only needs the
  * mount sources: its pods write their history through those mounts, never
@@ -39,22 +50,25 @@ import { serverLog } from '#lib/log'
  * A runtime that can't layer mounts (containerless) has every conversation
  * the workspace owns moved out of the project's shared tool homes into its
  * own `history/`, then gets symlinks in the shared homes pointing into it:
- * claude's folder for this checkout, the memory folder, and each
- * file-history dir and codex rollout. Files a host run writes outside those
- * links are moved in at the next create. The moves are best-effort.
+ * claude's folder for each cwd, the memory folders, and each file-history
+ * dir and codex rollout. Files a host run writes outside those links are
+ * moved in at the next create. The moves are best-effort.
  */
 export async function convergeAgentHistory(
   projectId: string,
   workspaceId: string,
+  cwds: AgentCwd[],
   runtime: { layers: boolean },
 ): Promise<void> {
   const history = agentHistoryDir(projectId, workspaceId)
   await Promise.all(AGENT_HISTORY_PARTS.map((part) => fs.mkdir(path.join(history, part), { recursive: true })))
-  await fs.mkdir(path.join(history, 'claude', CLAUDE_POD_CWD), { recursive: true })
+  for (const c of cwds) {
+    await fs.mkdir(path.join(history, 'claude', claudePodCwd(c.cwd)), { recursive: true })
+    await fs.mkdir(memoryDir(projectId, c), { recursive: true })
+  }
   if (runtime.layers) {
-    // The memory mount source and every nested mountpoint.
-    await fs.mkdir(path.join(claudeDir(projectId), 'projects', CLAUDE_POD_REPO, 'memory'), { recursive: true })
-    await fs.mkdir(path.join(history, 'claude', CLAUDE_POD_CWD, 'memory'), { recursive: true })
+    // Every nested mountpoint.
+    for (const c of cwds) await fs.mkdir(path.join(history, 'claude', claudePodCwd(c.cwd), 'memory'), { recursive: true })
     await fs.mkdir(path.join(claudeDir(projectId), 'file-history'), { recursive: true })
     await fs.mkdir(path.join(claudeDir(projectId), 'sessions'), { recursive: true })
     await fs.mkdir(path.join(codexDir(projectId), 'sessions'), { recursive: true })
@@ -63,33 +77,66 @@ export async function convergeAgentHistory(
   }
 
   const rows = await listWorkspaceConversations(projectId, workspaceId)
-  const shared = await siblingConversations(projectId, workspaceId)
-  const ids = await conversationIds(projectId, workspaceId, rows, shared)
+  const ids = await conversationIds(projectId, workspaceId, rows)
+  const folders = await sharedFolders(projectId, workspaceId, cwds)
   for (const step of [
-    () => moveClaude(projectId, history, ids),
-    () => moveCodex(projectId, history, ids, shared, rows),
-    () => linkOut(projectId, workspaceId, history, shared),
+    () => moveClaude(projectId, history, ids, folders),
+    () => moveCodex(projectId, history, ids, rows),
+    () => linkOut(projectId, history, cwds, folders),
   ]) {
     await step().catch((err: unknown) => {
       serverLog(`[agent-history] ${projectId}/${workspaceId}: ${String(err)}`)
     })
   }
-  await repointRows(projectId, workspaceId, rows.filter((r) => !shared.has(r.conversationId)))
+  await repointRows(projectId, workspaceId, rows, folders)
+}
+
+/** The project's claude memory for one cwd: its repo's, or the one for a
+ *  workspace root that is no checkout. */
+function memoryDir(projectId: string, c: AgentCwd): string {
+  return path.join(claudeDir(projectId), 'projects', claudeMemoryDirName(c.repoId), 'memory')
 }
 
 /**
+ * The names a host claude files each cwd's conversations under in the
+ * shared home, mapped to that cwd's folder in the history: the cwd's host
+ * path in every spelling (`forms`), and its name in a pod.
+ */
+async function sharedFolders(projectId: string, workspaceId: string, cwds: AgentCwd[]): Promise<Map<string, string>> {
+  const folders = new Map<string, string>()
+  for (const { cwd } of cwds) {
+    const into = claudePodCwd(cwd)
+    folders.set(into, into)
+    for (const form of await forms(projectId, path.join(workspaceDir(projectId, workspaceId), cwd))) {
+      folders.set(claudeProjectDirName(form), into)
+    }
+  }
+  return folders
+}
+
+/** The history folder a conversation filed under `name` in the shared home
+ *  belongs in: that cwd's when it is one of the workspace's, else the
+ *  root's. */
+const folderFor = (folders: Map<string, string>, name: string): string => folders.get(name) ?? claudePodCwd('')
+
+/**
  * Update the transcript path of each row whose file has moved from the shared
- * home into the history (the caller excludes rows a sibling shares). Checks
+ * home into the history. Checks
  * the disk rather than this pass's moves, so an interrupted converge is
  * repaired next time. The shared home is checked `no-links`, since through
  * the links into the history every moved file would look unmoved.
  */
-async function repointRows(projectId: string, workspaceId: string, rows: ConversationLinkRow[]): Promise<void> {
+async function repointRows(
+  projectId: string,
+  workspaceId: string,
+  rows: ConversationLinkRow[],
+  folders: Map<string, string>,
+): Promise<void> {
   const project = projectDir(projectId)
   const sessions = []
   for (const r of rows) {
     const stored = r.transcriptPath
-    const to = stored === undefined ? undefined : historyDestination(workspaceId, stored)
+    const to = stored === undefined ? undefined : historyDestination(workspaceId, stored, folders)
     if (stored === undefined || to === undefined) continue
     const [tool, ...rel] = stored.split('/')
     const home = await openRoot(path.join(project, tool), 'no-links').catch(() => null)
@@ -104,10 +151,12 @@ async function repointRows(projectId: string, workspaceId: string, rows: Convers
 
 /** The project-relative history path a shared-home path moves to, or
  *  undefined if converge doesn't move it. */
-function historyDestination(workspaceId: string, stored: string): string | undefined {
+function historyDestination(workspaceId: string, stored: string, folders: Map<string, string>): string | undefined {
   const [tool, sub, ...rest] = stored.split('/')
   const into = (part: string, ...tail: string[]): string => path.join('history', workspaceId, part, ...tail)
-  if (tool === 'claude' && sub === 'projects' && rest.length >= 2) return into('claude', CLAUDE_POD_CWD, ...rest.slice(1))
+  if (tool === 'claude' && sub === 'projects' && rest.length >= 2) {
+    return into('claude', folderFor(folders, rest[0]), ...rest.slice(1))
+  }
   if (tool === 'codex' && sub === 'sessions' && rest.length >= 1) return into('codex', ...rest)
   return undefined
 }
@@ -120,16 +169,14 @@ function historyDestination(workspaceId: string, stored: string): string | undef
  * Also removes the `session-env/<id>` dir claude makes in the shared home
  * for every conversation (usually empty, never cleaned up by claude), for
  * each conversation in the history and the workspace id a `tui` agent's
- * first conversation takes. The ids come from the history rather than the
- * workspace's rows because rows also name conversations it only resumed,
- * whose dir a sibling may still be using; one in the history it started,
- * and `deleteWorkspace` refuses while a sibling has resumed that.
+ * first conversation takes.
  */
 export async function removeAgentHistory(projectId: string, workspaceId: string): Promise<void> {
   const history = agentHistoryDir(projectId, workspaceId)
-  const conversations = (await fs.readdir(path.join(history, 'claude', CLAUDE_POD_CWD)).catch(() => []))
-    .filter((name) => name.endsWith('.jsonl'))
-    .map((name) => name.slice(0, -'.jsonl'.length))
+  const projects = path.join(claudeDir(projectId), 'projects')
+  const conversations = (await filesUnder(path.join(history, 'claude'), 1))
+    .filter((rel) => rel.endsWith('.jsonl'))
+    .map((rel) => path.basename(rel, '.jsonl'))
   const home = await openRoot(claudeDir(projectId), 'no-links').catch(() => null)
   for (const sid of new Set([workspaceId, ...conversations])) {
     if (!conversationIdSchema.safeParse(sid).success) continue
@@ -139,8 +186,8 @@ export async function removeAgentHistory(projectId: string, workspaceId: string)
     })
   }
   const links = [
-    ...(await checkoutForms(projectId, workspaceId))
-      .map((form) => path.join(claudeDir(projectId), 'projects', claudeProjectDirName(form))),
+    // Each cwd's folder, under whatever spelling of its path it was linked.
+    ...(await fs.readdir(projects).catch(() => [])).map((name) => path.join(projects, name)),
     ...(await fs.readdir(path.join(history, 'claude-file-history')).catch(() => []))
       .map((sid) => path.join(claudeDir(projectId), 'file-history', sid)),
     ...(await filesUnder(path.join(history, 'codex')))
@@ -179,50 +226,35 @@ async function moveIn(home: ConfinedRoot, rel: string, dest: string): Promise<vo
 }
 
 /**
- * Conversations linked to a sibling workspace. A conversation linked to two
- * workspaces has no single owner, so it stays in the shared home (readable by
- * both, though neither's pod can resume it) rather than going to whichever
- * converges first.
- */
-async function siblingConversations(projectId: string, workspaceId: string): Promise<Set<string>> {
-  const siblings = (await listProjectWorkspaceIds(projectId)).filter((id) => id !== workspaceId)
-  const links = await getProjectConversations(projectId, siblings)
-  return new Set([...links.values()].flat().map((r) => r.conversationId))
-}
-
-/**
  * This workspace's conversation ids: every one its rows name, every one acpd
  * recorded (an ACP conversation fires no hook but still writes a transcript),
  * and the workspace id (used by the pinned first conversation). Excludes
- * shared ones and any id failing the id schema, since each becomes a path.
+ * any id failing the id schema, since each becomes a path.
  */
 async function conversationIds(
   projectId: string,
   workspaceId: string,
   rows: ConversationLinkRow[],
-  shared: Set<string>,
 ): Promise<Set<string>> {
   const records = (await fs.readdir(acpLogDir(projectId, workspaceId)).catch(() => []))
     .filter((name) => name.endsWith('.jsonl'))
     .map((name) => name.slice(0, -'.jsonl'.length))
   const ids = [workspaceId, ...rows.map((r) => r.conversationId), ...records]
-  for (const id of ids.filter((i) => shared.has(i))) {
-    serverLog(`[agent-history] ${projectId}/${workspaceId}: ${id} is a sibling's conversation too; left shared`)
-  }
-  return new Set(ids.filter((id) => !shared.has(id) && conversationIdSchema.safeParse(id).success))
+  return new Set(ids.filter((id) => conversationIdSchema.safeParse(id).success))
 }
 
 /**
  * Move claude's files: each conversation's transcript and companion dir (tool
- * results, subagents) from any cwd folder into the history's single folder,
- * plus its file-history (used by `/rewind`).
+ * results, subagents) from whatever folder of the shared home it was filed
+ * under into the history's folder for that cwd (`folderFor`), plus its
+ * file-history (used by `/rewind`).
  */
-async function moveClaude(projectId: string, history: string, ids: Set<string>): Promise<void> {
+async function moveClaude(projectId: string, history: string, ids: Set<string>, folders: Map<string, string>): Promise<void> {
   const home = await openRoot(claudeDir(projectId), 'no-links').catch(() => null)
   if (home === null) return
-  const into = path.join(history, 'claude', CLAUDE_POD_CWD)
   for (const cwd of await home.readdir('projects')) {
     if (!cwd.isDirectory()) continue
+    const into = path.join(history, 'claude', folderFor(folders, cwd.name))
     for (const id of ids) {
       await moveIn(home, `projects/${cwd.name}/${id}.jsonl`, path.join(into, `${id}.jsonl`))
       await moveIn(home, `projects/${cwd.name}/${id}`, path.join(into, id))
@@ -240,14 +272,12 @@ async function moveClaude(projectId: string, history: string, ids: Set<string>):
  * A `spawn_agent` child or fork is its own thread and may be in no row, so
  * the set is extended with any rollout whose parent (first line) is already
  * in it, until nothing is added. Parents come from the rollouts, not codex's
- * sqlite, which may be shared or absent. A thread a sibling's rows name never
- * joins.
+ * sqlite, which may be absent.
  */
 async function moveCodex(
   projectId: string,
   history: string,
   ids: Set<string>,
-  shared: Set<string>,
   rows: ConversationLinkRow[],
 ): Promise<void> {
   const home = await openRoot(codexDir(projectId), 'no-links').catch(() => null)
@@ -273,7 +303,7 @@ async function moveCodex(
   for (let grew = true; grew;) {
     grew = false
     for (const r of rollouts) {
-      if (r.thread === undefined || threads.has(r.thread) || shared.has(r.thread)) continue
+      if (r.thread === undefined || threads.has(r.thread)) continue
       const parent = await parentOf(r)
       if (parent !== undefined && threads.has(parent)) {
         threads.add(r.thread)
@@ -283,7 +313,7 @@ async function moveCodex(
   }
 
   const recorded = new Set(rows.flatMap((r) =>
-    r.tool === 'codex' && !shared.has(r.conversationId) && r.transcriptPath?.startsWith('codex/') === true
+    r.tool === 'codex' && r.transcriptPath?.startsWith('codex/') === true
       ? [r.transcriptPath.slice('codex/'.length)]
       : []))
   for (const r of rollouts) {
@@ -296,31 +326,33 @@ async function moveCodex(
  * Plant symlinks in the shared homes for a host (containerless) workspace,
  * which has no mounts:
  *
- * - claude's folder for this checkout, linked to the history's, so host
+ * - claude's folder for each cwd, linked to the history's, so host
  *   conversations are written straight into it. An existing real folder is
- *   first emptied into the history, unless it holds a shared conversation,
- *   in which case it stays real.
- * - the `memory` folder among those conversations, linked to the project's
- *   shared memory (which a pod mounts at the same place), so auto-memory is
- *   shared across drivers and workspaces.
+ *   first emptied into the history.
+ * - the `memory` folder among each cwd's conversations, linked to the
+ *   project's memory for it (which a pod mounts at the same place), so
+ *   auto-memory is shared across drivers and workspaces. claude keys memory
+ *   on the git root it starts in, which is the cwd itself: a checkout's
+ *   root, or a workspace root with no repository above it.
  * - each file-history dir and codex rollout, at the path claude or codex
  *   looks for it.
  *
  * Every spelling of each path gets a link: the data dir as named and as
  * resolved (macOS's `/var` is `/private/var`).
  */
-async function linkOut(projectId: string, workspaceId: string, history: string, shared: Set<string>): Promise<void> {
+async function linkOut(projectId: string, history: string, cwds: AgentCwd[], folders: Map<string, string>): Promise<void> {
   const projects = path.join(claudeDir(projectId), 'projects')
-  const conversations = path.join(history, 'claude', CLAUDE_POD_CWD)
-  for (const form of await checkoutForms(projectId, workspaceId)) {
-    const link = path.join(projects, claudeProjectDirName(form))
+  const pod = new Set(cwds.map((c) => claudePodCwd(c.cwd)))
+  for (const [name, into] of folders) {
+    // A pod's own name for a cwd is no host path; nothing runs there.
+    if (pod.has(name)) continue
+    const link = path.join(projects, name)
+    const conversations = path.join(history, 'claude', into)
     const stat = await fs.lstat(link).catch(() => null)
     if (stat?.isDirectory() === true) {
       const home = await openRoot(claudeDir(projectId), 'no-links')
-      for (const name of await fs.readdir(link)) {
-        // A shared conversation stays, so the folder stays real.
-        if (shared.has(name.replace(/\.jsonl$/, ''))) continue
-        await moveIn(home, `projects/${path.basename(link)}/${name}`, path.join(conversations, name))
+      for (const entry of await fs.readdir(link)) {
+        await moveIn(home, `projects/${name}/${entry}`, path.join(conversations, entry))
       }
       if (!await fs.rmdir(link).then(() => true, () => false)) {
         serverLog(`[agent-history] ${link}: not empty after moving it in; not linked`)
@@ -330,9 +362,9 @@ async function linkOut(projectId: string, workspaceId: string, history: string, 
     await ensureLink(link, conversations)
   }
 
-  // claude keys memory on the git root (the checkout), so its memory folder
-  // sits among this workspace's conversations; link it to the shared one.
-  await ensureLink(path.join(conversations, 'memory'), path.join(projects, CLAUDE_POD_REPO, 'memory'))
+  for (const c of cwds) {
+    await ensureLink(path.join(history, 'claude', claudePodCwd(c.cwd), 'memory'), memoryDir(projectId, c))
+  }
 
   for (const sid of await fs.readdir(path.join(history, 'claude-file-history'))) {
     await ensureLink(
@@ -370,11 +402,10 @@ async function forms(projectId: string, of: string): Promise<string[]> {
   return [...new Set([of, path.join(real, rel)])]
 }
 
-const checkoutForms = (projectId: string, workspaceId: string): Promise<string[]> =>
-  forms(projectId, workspaceDir(projectId, workspaceId))
-
-/** Every file below `dir`, relative to it; [] when there is no `dir`. */
-async function filesUnder(dir: string): Promise<string[]> {
+/** Every file below `dir`, relative to it, or only those at most `depth`
+ *  folders down; [] when there is no `dir`. */
+async function filesUnder(dir: string, depth = Infinity): Promise<string[]> {
   const entries = await fs.readdir(dir, { recursive: true, withFileTypes: true }).catch(() => [])
   return entries.filter((e) => e.isFile()).map((e) => path.relative(dir, path.join(e.parentPath, e.name)))
+    .filter((rel) => rel.split(path.sep).length - 1 <= depth)
 }

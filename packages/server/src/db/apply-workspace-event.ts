@@ -10,12 +10,11 @@ import {
   recordIgnoredFilesCleaned,
   recordWorkspaceStopped,
   removeWorkspaceRecords,
-  setWorkspaceBaseBranch,
-  setWorkspaceStartCommit,
   setWorkspaceStepsOutcome,
   setWorkspaceTrackedScratchDirs,
 } from './workspace-store'
 import { recordStepChange, startLifeSteps } from './step-store'
+import { setWorkspaceRepoStart } from './repo-store'
 import { closeSessionRow, recordSessionReport, recordSessionWaitingUnseen } from './session-store'
 import { markVolumesPinned, releaseVolume } from './volume-store'
 import { notifyWorkspaceListChanged } from '#lib/notify'
@@ -47,7 +46,7 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
       await startLifeSteps(event.projectId, event.workspaceId, event.at, event.startSteps)
       return
     case 'start-commit-resolved':
-      await setWorkspaceStartCommit(event.projectId, event.workspaceId, event.startCommit)
+      await setWorkspaceRepoStart(event.workspaceId, event.repoId, { startCommit: event.startCommit })
       return
     case 'step-changed':
       await recordStepChange(event.workspaceId, event.life, event.name, {
@@ -59,7 +58,7 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
       await setWorkspaceStepsOutcome(event.projectId, event.workspaceId, event.outcome)
       return
     case 'base-branch-resolved':
-      await setWorkspaceBaseBranch(event.projectId, event.workspaceId, event.baseBranch)
+      await setWorkspaceRepoStart(event.workspaceId, event.repoId, { baseBranch: event.baseBranch })
       return
     case 'tracked-scratch-dirs-found':
       await setWorkspaceTrackedScratchDirs(event.projectId, event.workspaceId, event.paths)
@@ -99,7 +98,7 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
 
 async function applyCreated(event: WorkspaceCreated): Promise<void> {
   const {
-    projectId, workspaceId, baseBranch, title, generatedTitle, groupId, resume, timeZone, deadline, scratchDirs,
+    projectId, workspaceId, repos, cwd, title, generatedTitle, groupId, resume, timeZone, deadline, scratchDirs,
     workflowId, workflowName, nonInteractive, rerunOf, siteId,
   } = event
   const launch = {
@@ -116,7 +115,8 @@ async function applyCreated(event: WorkspaceCreated): Promise<void> {
   await recordWorkspaceCreated({
     projectId,
     workspaceId,
-    ...(baseBranch !== undefined ? { baseBranch } : {}),
+    ...(repos !== undefined ? { repos } : {}),
+    ...(cwd !== undefined ? { cwd } : {}),
     ...(title !== undefined ? { title } : {}),
     ...(generatedTitle !== undefined ? { generatedTitle } : {}),
     ...(groupId !== undefined ? { groupId } : {}),

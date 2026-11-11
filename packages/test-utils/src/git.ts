@@ -12,3 +12,9 @@ export function git(dir: string, args: string[], opts: { env?: NodeJS.ProcessEnv
     })
   })
 }
+
+/** A `createCheckout` staging dir beside `checkout`, as a workspace's sits
+ *  beside its dir. */
+export function stagingBeside(checkout: string): string {
+  return `${checkout.replace(/\/+$/, '')}.staging`
+}

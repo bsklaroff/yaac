@@ -58,7 +58,7 @@ async function seedEverything(): Promise<void> {
   bob = await seeTailnetUser('bob@example.com', 'Bob')
   await addHttpsCredential(ME, { name: 'gh', token: 'ghp_x' })
   for (const [owner, project] of [[ME, DEMO], [bob, BOBS]]) {
-    await recordProject({ id: project, name: 'demo', remoteUrl: `https://github.com/acme/${project}`, addedAt: 'x' }, owner)
+    await recordProject({ id: project, name: 'demo', addedAt: 'x' }, owner)
     await setToolCredential(owner, 'claude', { kind: 'oauth', savedAt: 'x', claudeAiOauth: SAMPLE_CLAUDE })
     await setToolCredential(owner, 'codex', { kind: 'oauth', savedAt: 'x', codexOauth: SAMPLE_CODEX })
     await setToolCredential(owner, 'opencode', { kind: 'api-key', provider: 'neuralwatt', savedAt: 'x', apiKey: 'oc-key' })

@@ -85,7 +85,7 @@ beforeEach(async () => {
   await db.delete(projects)
   await fs.rm(getProjectsDir(), { recursive: true, force: true })
   for (const [name, id] of Object.entries(P)) {
-    await recordProject({ id, name, remoteUrl: `https://github.com/acme/${name}`, addedAt: 'x' }, OWNER)
+    await recordProject({ id, name, addedAt: 'x' }, OWNER)
   }
 })
 
@@ -361,7 +361,7 @@ describe('syncToolCredentials', () => {
   it('converges each owner\'s projects on that owner\'s credential only', async () => {
     const bob = await seeTailnetUser('bob@example.com', 'Bob')
     const BOB_PROJECT = '00000000-0000-4000-8000-0000000000b0'
-    await recordProject({ id: BOB_PROJECT, name: 'bob', remoteUrl: 'https://github.com/bob/x', addedAt: 'x' }, bob)
+    await recordProject({ id: BOB_PROJECT, name: 'bob', addedAt: 'x' }, bob)
     await storeClaude(claudeBundle())
     await storeClaude(claudeBundle({ accessToken: 'bob-access' }), bob)
     // Bob's workspace refreshed his own token, later than the built-in

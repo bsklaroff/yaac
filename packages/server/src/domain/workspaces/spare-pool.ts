@@ -18,7 +18,8 @@ function workspaceMountPaths(cacheVolumes: Record<string, string>, modules: stri
 }
 
 /**
- * Move a spare's checkout to another branch, or to a newer tip of its own:
+ * Move one of a spare's checkouts, at `checkoutDir` as the workspace sees
+ * it, to another branch, or to a newer tip of its own:
  * at claim time, or in the background when its base moves
  * (`./prewarm-reconcile`). The caller resolves the SHA (`origin/<branch>` as
  * fetched into the main clone, whose objects the checkout borrows) and
@@ -28,12 +29,12 @@ function workspaceMountPaths(cacheVolumes: Record<string, string>, modules: stri
  */
 export async function rebranchSpare(
   spare: { jobName: string; workspaceId: string; projectId: string },
+  checkoutDir: string,
   branch: string,
   sha: string,
 ): Promise<void> {
   const runtime = workspaceDriver()
-  const paths = runtime.workspacePaths(spare.jobName)
-  const wd = paths.workspaceDir
+  const wd = checkoutDir
   // Move `agent/<id>` to the SHA and remove untracked files. `clean -fd` not
   // `-x`, which would empty mounted module and cache dirs. reset+clean walks
   // the whole checkout, so allow longer than the default.

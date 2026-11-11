@@ -62,13 +62,12 @@ export const DNS_SINKHOLE = '198.18.0.1'
 /** UDP port of the proxy's DNS stub (needs CAP_NET_BIND_SERVICE). */
 export const DNS_STUB_PORT = 53
 /**
- * ssh-agent listener backed by the proxy's in-memory agent. Workspace pods
- * run socat to expose it as the `SSH_AUTH_SOCK` UNIX socket, which works
- * across nodes. Only workspace pods may connect, and the proxy re-checks
- * the source pod IP. Keys stay in the proxy, and only identity listings
- * and sign requests pass through (k8s/proxy/ssh-agent-relay.ts).
+ * The name a workspace's ssh knows the proxy's host key under
+ * (`HostKeyAlias`), whichever git host it dials: the proxy ends every ssh
+ * session to a project's git hosts itself (k8s/proxy/ssh-session.ts, which
+ * holds the same name).
  */
-export const SSH_AGENT_PORT = 10261
+export const SSH_HOST_KEY_ALIAS = 'yaac-proxy'
 /**
  * Relay listener: the server dials it through the proxy's Service, sends
  * one auth line (`{token, workspaceId}`), and the proxy splices the rest of
