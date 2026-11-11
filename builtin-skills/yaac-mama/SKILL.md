@@ -58,6 +58,7 @@ yaac-mama history <workspace>                     # its conversations
 yaac-mama history <workspace> <conversation>      # one's transcripts, to stdout
 yaac-mama history <workspace> [<conversation>] -o <dir>   # every file, into <dir>
 yaac-mama --help
+yaac-mama <command> --help                        # just that command's usage, options and notes
 ```
 
 That list is the whole surface. `yaac-mama` is a **strict subset** of the

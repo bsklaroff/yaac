@@ -1230,6 +1230,29 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     return { code: Number(m[1]), out: stdout.slice(0, m.index) }
   }
 
+  // Every command the script knows (the list its unknown-command error
+  // names) has help of its own, so `<cmd> --help` never runs the command.
+  // Only a trailing --help asks for it: one given as an option's value is
+  // sent, here to be refused for naming no workspace.
+  it('prints each yaac-mama command\'s own help, and sends a --help given as a value', async () => {
+    const unknown = await runMama('bogus', '--help')
+    expect(unknown.code).toBe(2)
+    const commands = /\(expected: ([^)]+)\)/.exec(unknown.out)?.[1].split(', ') ?? []
+    expect(commands).toContain('create')
+    for (const cmd of commands) {
+      const { code, out } = await runMama(cmd, '--help')
+      expect(code, cmd).toBe(0)
+      expect(out, cmd).toMatch(new RegExp(`^Usage:\\n {2}yaac-mama ${cmd} `))
+      expect(out, cmd).not.toMatch(/^@/m)
+    }
+    const create = await runMama('create', '--tool', 'claude', '-h')
+    expect(create.out).toContain('create also takes')
+    expect(create.out).not.toContain('yaac-mama stop')
+    const value = await runMama('send', '--session', '-h', 'no-such-workspace', 'hi')
+    expect(value.code).toBe(1)
+    expect(value.out).not.toContain('Usage:')
+  })
+
   it('hands the workspace a yaac-mama credential and server address', async () => {
     const creds = await mamaCreds()
     expect(creds.YAAC_MAMA_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
