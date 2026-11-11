@@ -10,19 +10,24 @@ import {
 import { ServerError } from '@yaac/shared/errors'
 import type { ProjectMeta } from '@yaac/shared/types'
 import { projectNameFor } from '@yaac/shared/project-name'
+import { allowRepoHost } from './allowlist'
 
 export interface AddProjectResult {
   project: ProjectMeta
   /** The host key trusted for an SSH credential, for the user to compare
    *  against what the host publishes. */
   knownHostsEntry: string | null
+  /** The repo's host, when the project's allowlist left it out and so it
+   *  was added there. */
+  allowedHost: string | null
 }
 
 /**
  * Add a yaac project owned by `owner` around one git repo: the repo they
  * already have for `remoteUrl`, or a fresh clone of it under the named
- * credential (`addRepo`, docs/git-credentials.md). User-facing failures
- * throw `ServerError`.
+ * credential (`addRepo`, docs/git-credentials.md), with its host added to
+ * the allowlist when the defaults leave it out. User-facing failures throw
+ * `ServerError`.
  */
 export async function addProject(
   remoteUrl: string,
@@ -32,7 +37,8 @@ export async function addProject(
   const name = projectNameFor(validateGitRemoteUrl(remoteUrl).path)
   if (!name) throw new ServerError('VALIDATION', `no project name can be derived from "${remoteUrl}"`)
   const { repo, knownHostsEntry } = await addRepo(owner, remoteUrl, gitCredentialId)
-  return { project: await setUpProject(crypto.randomUUID(), name, owner, repo.id), knownHostsEntry }
+  const project = await setUpProject(crypto.randomUUID(), name, owner, repo.id)
+  return { project, knownHostsEntry, allowedHost: await allowRepoHost(project.id, repo) }
 }
 
 /**

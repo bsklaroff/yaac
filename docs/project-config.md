@@ -178,13 +178,14 @@ Set it under Settings → Project Config →
 Egress allowlist, with `yaac config egress-allowlist <project> [hosts...]
 [--defaults on|off]`, or allow a blocked host for the whole project from a
 workspace's blocked-hosts badge. A workspace may reach the proxy's default
-hosts (`DEFAULT_ALLOWED_HOSTS` in `packages/server/src/lib/allowed-hosts.ts`)
+hosts (`DEFAULT_ALLOWED_HOSTS` in `packages/shared/src/allowed-hosts.ts`)
 plus the hosts you add: exact names (`api.example.com`) or wildcards
 (`*.example.com`, or `*` inside a label as in `store*.example.com`, which
 matches letters, digits, `-` and `_` within that one label); `*` allows
 everything. Turning the defaults off leaves only your hosts, so an empty list
 blocks all external access; `yaac config egress-allowlist` warns if that leaves out
 `api.anthropic.com` or `github.com`. Changes apply to workspaces created afterwards.
+Linking a repo whose host the list leaves out adds that host, and says so.
 See [workspace-egress.md](workspace-egress.md).
 
 ## Custom images (k8s)

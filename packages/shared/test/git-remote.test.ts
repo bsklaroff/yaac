@@ -47,6 +47,25 @@ describe('parseGitRemote', () => {
     expect(() => parseGitRemote('not-a-url')).toThrow(/Unrecognized git remote URL/)
   })
 
+  it('rejects an https URL whose host git could read differently, or that carries a user', () => {
+    // `new URL` reads the backslash as a path separator and sees evil.com;
+    // git reads `evil.com\` as a user and connects to github.com.
+    expect(() => parseGitRemote('https://evil.com\\@github.com/acme/repo.git')).toThrow(/must not carry a user/)
+    expect(() => parseGitRemote('https://evil.com\\github.com/acme/repo.git')).toThrow(/Unrecognized/)
+    expect(() => parseGitRemote('https://ghp_x@github.com/acme/repo.git')).toThrow(/must not carry a user/)
+    for (const url of ['https://*/a/b', 'https://*.com/a/b', 'https://[::1]/a/b', 'https://bücher.example/a/b']) {
+      expect(() => parseGitRemote(url), url).toThrow(/Unrecognized/)
+    }
+    // The host as git dials it: lowercased, an IPv4 address canonicalized.
+    for (const [url, host] of [
+      ['https://Git.Example.com/a/b', 'git.example.com'],
+      ['https://git_host.internal/a/b', 'git_host.internal'],
+      ['https://2130706433/a/b', '127.0.0.1'],
+      ['https://0x7f.1/a/b', '127.0.0.1'],
+      ['https://010.0.0.1/a/b', '8.0.0.1'],
+    ]) expect(parseGitRemote(url).host, url).toBe(host)
+  })
+
   it('rejects an ssh:// URL whose host git could read differently', () => {
     // git percent-decodes the whole URL before cutting the host at the first
     // `/`, so it would dial b.example; `new URL` would report a.example.

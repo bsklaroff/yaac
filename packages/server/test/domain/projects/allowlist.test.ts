@@ -70,4 +70,10 @@ describe('addAllowedHostToProject', () => {
     await addAllowedHostToProject(local, projectId, 'pinned.com')
     expect(await getProjectAllowlist(projectId)).toEqual({ hosts: ['pinned.com', 'extra.com'], defaults: false })
   })
+
+  it('keeps every host of concurrent adds, normalized, and refuses one that is no host', async () => {
+    await Promise.all(['A.com', 'b.com', 'c.com'].map((h) => addAllowedHostToProject(local, projectId, h)))
+    expect((await getProjectAllowlist(projectId)).hosts.sort()).toEqual(['a.com', 'b.com', 'c.com'])
+    await expect(addAllowedHostToProject(local, projectId, 'a.com/x')).rejects.toMatchObject({ code: 'VALIDATION' })
+  })
 })

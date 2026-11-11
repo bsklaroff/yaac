@@ -222,6 +222,7 @@ export {
   recordProjectCreate,
   setProjectConfig,
   setProjectEgressAllowlist,
+  addProjectEgressHost,
   setProjectScratchDirs,
   setProjectIcon,
   setProjectInit,

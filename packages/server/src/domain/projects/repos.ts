@@ -8,6 +8,7 @@ import {
   updateProjectRepo,
   type ProjectRepoLink,
   type ProjectRow,
+  type RepoRow,
 } from '#db'
 import { authorizeProject, type Actor } from '#domain/access'
 import { addRepo, assertCanUseRepo, createHostedRepo } from '#domain/repos'
@@ -17,6 +18,7 @@ import { parseGitRemote } from '@yaac/shared/git-remote'
 import { projectNameFor } from '@yaac/shared/project-name'
 import { MAX_PROJECT_REPOS, REPO_DIR_RE } from '@yaac/shared/types'
 import { isUuid } from '#lib/uuid'
+import { allowRepoHost } from './allowlist'
 
 /*
  * Which repos a project links (docs/project-repos.md): linking one by URL,
@@ -77,43 +79,43 @@ function freeDir(project: ProjectRow, wanted: string): string {
 }
 
 /**
- * Link a repo into a project under `dir`, by default the repo's name.
- * Answers the link, with the host key trusted for a fresh ssh clone.
+ * Link a repo into a project under `dir`, by default the repo's name, and
+ * add its host to the project's allowlist when the list leaves it out.
+ * Answers the link, with the host key trusted for a fresh ssh clone and the
+ * host added to the allowlist, if any.
  */
 export async function addProjectRepo(
   principal: Actor,
   projectId: string,
   what: RepoToLink,
   dir?: string,
-): Promise<{ repoId: string; dir: string; knownHostsEntry: string | null }> {
+): Promise<{ repoId: string; dir: string; knownHostsEntry: string | null; allowedHost: string | null }> {
   const project = await ownProject(principal, projectId)
   if (project.repos.length >= MAX_PROJECT_REPOS) {
     throw new ServerError('VALIDATION', `a project links at most ${MAX_PROJECT_REPOS} repos`)
   }
   if (dir !== undefined) checkDir(project, dir)
   let knownHostsEntry: string | null = null
-  let repoId: string
-  let named = project.name
+  let repo: RepoRow
   if ('remoteUrl' in what) {
     const added = await addRepo(project.owner, what.remoteUrl, what.credentialId)
-    repoId = added.repo.id
+    repo = added.repo
     knownHostsEntry = added.knownHostsEntry
-    named = projectNameFor(parseGitRemote(what.remoteUrl).path) || 'repo'
   } else if ('repoId' in what) {
-    const repo = isUuid(what.repoId) ? await getRepo(what.repoId) : undefined
-    if (!repo) throw new ServerError('NOT_FOUND', `repo ${what.repoId} not found`)
-    await assertCanUseRepo(project.owner, repo)
-    repoId = repo.id
-    if (!repo.hosted) named = projectNameFor(parseGitRemote(repo.remoteUrl).path) || 'repo'
+    const found = isUuid(what.repoId) ? await getRepo(what.repoId) : undefined
+    if (!found) throw new ServerError('NOT_FOUND', `repo ${what.repoId} not found`)
+    await assertCanUseRepo(project.owner, found)
+    repo = found
   } else {
-    repoId = (await createHostedRepo(project.owner)).id
+    repo = await createHostedRepo(project.owner)
   }
-  if (project.repos.some((l) => l.repo.id === repoId)) {
+  if (project.repos.some((l) => l.repo.id === repo.id)) {
     throw new ServerError('CONFLICT', `project "${project.name}" already links that repo`)
   }
+  const named = repo.hosted ? project.name : projectNameFor(parseGitRemote(repo.remoteUrl).path) || 'repo'
   const at = dir ?? freeDir(project, named)
-  await linkProjectRepo(projectId, repoId, at)
-  return { repoId, dir: at, knownHostsEntry }
+  await linkProjectRepo(projectId, repo.id, at)
+  return { repoId: repo.id, dir: at, knownHostsEntry, allowedHost: await allowRepoHost(projectId, repo) }
 }
 
 /**

@@ -1,10 +1,13 @@
 import { useState, type JSX } from 'react'
 import clsx from 'clsx'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { GitCredentialPicker, INPUT, remoteKind, remoteProjectName, TrustedHostKey } from '#components/GitCredentialPicker'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  AllowlistAddNotice, GitCredentialPicker, INPUT, remoteKind, remoteProjectName, TrustedHostKey,
+} from '#components/GitCredentialPicker'
 import { SectionLabel } from '#components/settings/Field'
 import { repoName } from '#components/settings/Repos'
 import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
+import { api } from '#lib/api'
 import {
   addProjectRepo, refreshRepos, removeProjectRepo, renameProjectRepo, setProjectRepoFlag, setProjectRepoOrder, useRepos,
   type RepoToLink,
@@ -225,11 +228,21 @@ function AddRepoForm({ project, onCancel, onAdded }: {
   const remoteUrl = url.trim()
   const folder = dir.trim()
   const badDir = folder !== '' && (!REPO_DIR_RE.test(folder) || project.repos.some((r) => r.dir === folder))
+  // Shares its key with Settings → Egress allowlist, so that list shows a
+  // host the add allowed.
+  const allowlistKey = ['project-allowlist', project.id]
+  const mediatedEgress = useSnapshot()?.driver !== 'containerless'
+  const allowlist = useQuery({
+    queryKey: allowlistKey,
+    queryFn: async () => await api.project[':projectId'].allowlist.$get({ param: { projectId: project.id } }),
+    enabled: mediatedEgress,
+  }).data?.allowlist
+  const picked = offered.find((r) => r.id === what)
   const link = useMutation({
     mutationFn: (to: RepoToLink) => addProjectRepo(project.id, to, folder === '' ? undefined : folder),
     onSuccess: async ({ knownHostsEntry }) => {
       onAdded(knownHostsEntry)
-      await refreshRepos(queryClient)
+      await Promise.all([refreshRepos(queryClient), queryClient.invalidateQueries({ queryKey: allowlistKey })])
     },
   })
 
@@ -266,6 +279,10 @@ function AddRepoForm({ project, onCancel, onAdded }: {
         onChange={(e) => setDir(e.target.value)}
         placeholder={`folder name (default: ${what === NEW_URL ? remoteProjectName(remoteUrl) || 'the repo\'s name' : 'the repo\'s name'})`}
         className={INPUT}
+      />
+      <AllowlistAddNotice
+        remoteUrl={what === NEW_URL ? remoteUrl : picked?.hosted === false ? picked.remoteUrl : ''}
+        allowlist={allowlist}
       />
       {badDir && (
         <p className="text-[11px] text-red-400">

@@ -1,4 +1,11 @@
 import type { EgressAllowlist } from '@yaac/shared/types'
+import { parseGitRemote } from '@yaac/shared/git-remote'
+
+/*
+ * The egress allowlist's default hosts and how a pattern matches a host
+ * (docs/workspace-egress.md). Shared so the webapp can tell, before a repo
+ * is added, whether the server will have to allow its host.
+ */
 
 // Default allowed host patterns for the proxy URL allowlist.
 // Based on https://code.claude.com/docs/en/claude-code-on-the-web#default-allowed-domains
@@ -369,8 +376,26 @@ function labelMatches(label: string, pattern: string): boolean {
 /** Whether a project's allowlist lets its workspaces reach `host` through
  *  an egress proxy. */
 export function allowlistAllows(allowlist: EgressAllowlist, host: string): boolean {
-  const allowed = resolveAllowedHosts(allowlist)
-  return allowed[0] === '*' || allowed.some((pattern) => hostMatchesPattern(host, pattern))
+  const allowed = [...(allowlist.defaults ? DEFAULT_ALLOWED_HOSTS : []), ...allowlist.hosts]
+  const name = host.toLowerCase()
+  return allowed.some((pattern) => pattern === '*' || hostMatchesPattern(name, pattern))
+}
+
+/**
+ * The host of a git remote that `allowlist` leaves out, which linking the
+ * repo adds to the project's allowlist (`allowRepoHost` on the server); null
+ * when the list admits it or the remote names no literal hostname. A
+ * literal name only, so the list can never be widened by a pattern such as
+ * `*`.
+ */
+export function repoHostToAllow(allowlist: EgressAllowlist, remoteUrl: string): string | null {
+  let host: string
+  try {
+    host = parseGitRemote(remoteUrl).host.toLowerCase()
+  } catch {
+    return null
+  }
+  return /^[a-z0-9._-]+$/.test(host) && !allowlistAllows(allowlist, host) ? host : null
 }
 
 const CRITICAL_HOSTS = [
@@ -398,7 +423,5 @@ export function resolveAllowedHosts(allowlist: EgressAllowlist): string[] {
 /** The hosts an agent session needs that a project's allowlist leaves
  *  out. */
 export function missingCriticalHosts(allowlist: EgressAllowlist): typeof CRITICAL_HOSTS {
-  const allowed = [...(allowlist.defaults ? DEFAULT_ALLOWED_HOSTS : []), ...allowlist.hosts]
-  if (allowed.includes('*')) return []
-  return CRITICAL_HOSTS.filter(({ host }) => !allowed.some((pattern) => hostMatchesPattern(host, pattern)))
+  return CRITICAL_HOSTS.filter(({ host }) => !allowlistAllows(allowlist, host))
 }

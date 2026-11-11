@@ -5,8 +5,9 @@ import {
   allowlistAllows,
   hostMatchesPattern,
   missingCriticalHosts,
+  repoHostToAllow,
   resolveAllowedHosts,
-} from '#lib/allowed-hosts'
+} from '@yaac/shared/allowed-hosts'
 
 describe('DEFAULT_ALLOWED_HOSTS', () => {
   it('is a non-empty array of strings', () => {
@@ -126,6 +127,20 @@ describe('allowlistAllows', () => {
     expect(allowlistAllows({ hosts: ['*.example.test'], defaults: false }, 'git.example.test')).toBe(true)
     expect(allowlistAllows({ hosts: ['*'], defaults: false }, 'anything.test')).toBe(true)
     expect(allowlistAllows({ hosts: ['other.test'], defaults: true }, 'git.example.test')).toBe(false)
+    expect(allowlistAllows({ hosts: ['git.example.test'], defaults: false }, 'Git.Example.test')).toBe(true)
+  })
+})
+
+describe('repoHostToAllow', () => {
+  it('names a remote\'s host the list leaves out, and nothing for one it admits or no literal host', () => {
+    const defaults = { hosts: [], defaults: true }
+    expect(repoHostToAllow(defaults, 'https://Git.Example.test/acme/x.git')).toBe('git.example.test')
+    expect(repoHostToAllow(defaults, 'git@git_host.test:acme/x.git')).toBe('git_host.test')
+    expect(repoHostToAllow(defaults, 'https://github.com/acme/x.git')).toBeNull()
+    expect(repoHostToAllow({ hosts: ['*.example.test'], defaults: false }, 'https://git.example.test/a/b')).toBeNull()
+    for (const url of ['', 'not a url', 'https://*/a/b', 'https://evil.test\\@github.com/a/b']) {
+      expect(repoHostToAllow(defaults, url), url).toBeNull()
+    }
   })
 })
 

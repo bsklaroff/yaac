@@ -95,6 +95,24 @@ describe('addProjectRepo', () => {
       .rejects.toMatchObject({ code: 'CONFLICT' })
   })
 
+  it('adds a repo\'s host to the allowlist when the list leaves it out, and only behind an egress proxy', async () => {
+    const allowlist = async (id: string) => (await project(id)).egressAllowlist
+    // github.com is a default host.
+    expect(await addProjectRepo(local, EMPTY, { remoteUrl: 'https://github.com/acme/web.git', credentialId: token }))
+      .toMatchObject({ allowedHost: null })
+    expect(await addProjectRepo(local, EMPTY, { remoteUrl: 'https://Git.Example.com/acme/lib.git', credentialId: token }))
+      .toMatchObject({ allowedHost: 'git.example.com' })
+    expect(await addProjectRepo(local, EMPTY, { remoteUrl: 'https://git.example.com/acme/docs.git', credentialId: token }))
+      .toMatchObject({ allowedHost: null })
+    expect(await addProjectRepo(local, EMPTY, { hosted: true })).toMatchObject({ allowedHost: null })
+    expect(await allowlist(EMPTY)).toEqual({ hosts: ['git.example.com'], defaults: true })
+
+    installFakeWorkspaceDriver({ kind: 'containerless' })
+    expect(await addProjectRepo(local, PROJECT, { remoteUrl: 'https://other.example.com/acme/x.git', credentialId: token }))
+      .toMatchObject({ allowedHost: null })
+    expect(await allowlist(PROJECT)).toEqual({ hosts: [], defaults: true })
+  })
+
   it('names the folder as asked, else free of the ones taken, and refuses a name that is no folder or is in use', async () => {
     // A second repo whose name is taken gets a suffix.
     const other = await addProjectRepo(local, PROJECT, { remoteUrl: 'https://github.com/other/api.git', credentialId: token })
@@ -119,7 +137,8 @@ describe('addProjectRepo', () => {
     const mine = await insertRepo({ id: '0a0a0a0a-0000-4000-8000-00000000000a', owner: BUILT_IN_USER_ID, remoteUrl: 'git@git.example.com:acme/lib.git' })
     const hers = await insertRepo({ id: '0a0a0a0a-0000-4000-8000-00000000000b', owner: ada, remoteUrl: 'http://yaac.internal/api/workspace/git/x.git', hosted: true })
 
-    expect(await addProjectRepo(local, PROJECT, { repoId: mine.id })).toEqual({ repoId: mine.id, dir: 'lib', knownHostsEntry: null })
+    expect(await addProjectRepo(local, PROJECT, { repoId: mine.id }))
+      .toEqual({ repoId: mine.id, dir: 'lib', knownHostsEntry: null, allowedHost: 'git.example.com' })
     await expect(addProjectRepo(local, PROJECT, { repoId: hers.id })).rejects.toMatchObject({ code: 'FORBIDDEN' })
     await addRepoShare(hers.id, BUILT_IN_USER_ID)
     // A hosted repo has no name of its own, so it takes the project's.

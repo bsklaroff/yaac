@@ -43,7 +43,7 @@ import { serveHostedRepo } from '#domain/repos'
 import { setProjectOrder } from '#db'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { projectBuildDir } from '#lib/build-dirs'
-import { DEFAULT_ALLOWED_HOSTS, missingCriticalHosts } from '#lib/allowed-hosts'
+import { DEFAULT_ALLOWED_HOSTS, missingCriticalHosts } from '@yaac/shared/allowed-hosts'
 import { ServerError } from '@yaac/shared/errors'
 import { MAX_PROJECT_REPOS } from '@yaac/shared/types'
 import { buildFilesApp } from '#routes/build-files'
@@ -91,6 +91,10 @@ export const projectApp = new Hono<IdentityEnv>()
       return c.body(null, 204)
     },
   )
+  // A project around one git repo, cloned with the named credential unless
+  // its owner has it. Answers the project, with the host key trusted for an
+  // ssh clone and the repo's host if it was added to the project's egress
+  // allowlist.
   .post(
     '/add',
     zv('json', z.object({
@@ -127,7 +131,8 @@ export const projectApp = new Hono<IdentityEnv>()
   // The repos the project links (docs/project-repos.md): link one by its
   // remote and a credential, by the id of a repo its owner may use, or as a
   // new repo yaac hosts, under `dir` (by default the repo's name). Answers
-  // the link, with the host key trusted for a fresh ssh clone.
+  // the link, with the host key trusted for a fresh ssh clone and the
+  // repo's host if it was added to the project's egress allowlist.
   .post(
     '/:projectId/repo',
     zv('json', z.intersection(

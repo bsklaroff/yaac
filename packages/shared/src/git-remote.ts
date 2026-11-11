@@ -19,14 +19,22 @@ const SCP_REGEX = /^(?:([\w._-]+)@)?([\w.-]+):(?![/:])(.+)$/
 // the user and host to the SCP characters leaves nothing to decode.
 const SSH_URL_REGEX = /^ssh:\/\/(?:([\w.-]+)@)?([\w.-]+)\/(.*)$/
 const SSH_PORT_REGEX = /^ssh:\/\/(?:[\w.-]+@)?[\w.-]+:\d+\//
+// An https host is held to the same characters for the same reason:
+// `new URL` reads `\` as `/` and git does not, so in
+// `https://evil.com\@github.com/…` it sees the host evil.com where git
+// connects to github.com. Past that gate `new URL` only lowercases the
+// host or canonicalizes an IPv4 address (`2130706433` is 127.0.0.1), as
+// curl does, so the host is taken from it.
+const HTTPS_URL_REGEX = /^https:\/\/[\w.-]+\//
+const HTTPS_PORT_REGEX = /^https:\/\/[\w.-]+:\d+\//
 
 /**
  * Parse a git remote URL in one of three forms:
  *   - https://<host>/<path>[.git]
  *   - ssh://[user@]<host>/<path>[.git]
  *   - SCP-style: [user@]<host>:<path>[.git]
- * `<path>` may be any depth. Throws on other schemes, explicit ports, or
- * unparseable input. A trailing slash is stripped so the last path segment
+ * `<path>` may be any depth. Throws on other schemes, explicit ports, a
+ * user or token in an https URL, or unparseable input. A trailing slash is stripped so the last path segment
  * (used for the project name) is the repo name.
  */
 export function parseGitRemote(remoteUrl: string): ParsedGitRemote {
@@ -34,8 +42,13 @@ export function parseGitRemote(remoteUrl: string): ParsedGitRemote {
   let host: string
   let rawPath: string
   if (remoteUrl.startsWith('https://')) {
+    if (HTTPS_PORT_REGEX.test(remoteUrl)) throw new Error(`Custom ports are not supported: "${remoteUrl}"`)
+    if (/^https:\/\/[^/]*@/.test(remoteUrl)) {
+      throw new Error('A remote URL must not carry a user or token; '
+        + 'leave it out of the URL and add it as a git credential instead.')
+    }
+    if (!HTTPS_URL_REGEX.test(remoteUrl)) throw new Error(`Unrecognized git remote URL: "${remoteUrl}"`)
     const url = new URL(remoteUrl)
-    if (url.port) throw new Error(`Custom ports are not supported: "${remoteUrl}"`)
     scheme = 'https'
     host = url.hostname
     rawPath = url.pathname.replace(/^\//, '')
