@@ -11,19 +11,21 @@ describe('buildTrayBitmap', () => {
     expect(b.height).toBe(36)
     expect(b.data.length).toBe(36 * 36 * 4)
   })
-  it('draws the head, horns and ears, with gaps around them', () => {
+  it('draws the four strokes, with gaps around them', () => {
     const b = buildTrayBitmap(36)
-    expect(alphaAt(b, 18, 18)).toBe(255) // head
-    expect(alphaAt(b, 5, 5)).toBe(255) // horn
-    expect(alphaAt(b, 3, 16)).toBe(255) // ear
-    expect(alphaAt(b, 4, 11)).toBe(0) // between horn and ear
-    expect(alphaAt(b, 18, 2)).toBe(0) // between the horns
+    expect(alphaAt(b, 15, 27)).toBe(255) // inner left stroke
+    expect(alphaAt(b, 20, 27)).toBe(255) // inner right stroke
+    expect(alphaAt(b, 10, 26)).toBe(255) // outer left stroke
+    expect(alphaAt(b, 25, 26)).toBe(255) // outer right stroke
+    expect(alphaAt(b, 15, 33)).toBe(255) // the inner strokes run longer
+    expect(alphaAt(b, 10, 33)).toBe(0)
+    for (const x of [13, 17, 18, 22]) expect(alphaAt(b, x, 22)).toBe(0) // between the stems
+    expect(alphaAt(b, 17, 3)).toBe(0) // between the arms
     expect(alphaAt(b, 0, 0)).toBe(0)
     expect(alphaAt(b, 35, 35)).toBe(0)
   })
   it('keeps RGB channels zero (a template glyph)', () => {
     const b = buildTrayBitmap(36)
-    const i = (18 * 36 + 18) * 4
-    expect([b.data[i], b.data[i + 1], b.data[i + 2]]).toEqual([0, 0, 0])
+    expect(b.data.some((v, i) => i % 4 !== 3 && v !== 0)).toBe(false)
   })
 })
