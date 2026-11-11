@@ -94,7 +94,7 @@ const WS = { projectId: 'demo', workspaceId: 's1', jobName: 'yaac-demo-s1' }
 
 /** A `tui` session in `window`. */
 function tuiSession(window: string, tool: AgentTool = 'claude'): WatchedSession {
-  return { window, tool, mode: 'tui', sessionId: `id-${window}`, permissionMode: 'bypass' }
+  return { window, tool, mode: 'tui', sessionId: `id-${window}`, cwd: '', permissionMode: 'bypass' }
 }
 
 function makeWatcher(opts: {

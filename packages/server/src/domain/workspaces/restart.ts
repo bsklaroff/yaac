@@ -1,5 +1,5 @@
 import { tearingDown, teardownForRestart } from './cleanup'
-import { prepareStart } from './start'
+import { prepareStart, startOf } from './start'
 import { createWorkspace, type WorkspaceCreateResult } from './create'
 import { resolveWorkspaceId } from './resolve'
 import { provision, type ProvisionRun } from './provisioning'
@@ -33,8 +33,8 @@ import { defaultPermissionMode } from '@yaac/shared/types'
  * resuming its conversation, and refuses if one has lost its history
  * (`planSessionResumes`). A conversation an agent started by hand in a
  * terminal, live when the workspace stopped, comes back as a session of its
- * own. A checkout that is gone is recreated from its base branch, or with
- * none, at the commit it was created at. Config comes fresh from the
+ * own, in the workspace's cwd. A checkout that is gone is recreated from its
+ * base branch, or with none, at the commit it was created at. Config comes fresh from the
  * project. It attaches the volume it last
  * held, refusing with `VOLUME_HELD` if a running workspace has it now.
  */
@@ -107,7 +107,7 @@ export async function prepareRestart(
     await releaseWorkspaceVolumes(workspaceId, volume?.id)
     if (opts.volume === null) await setWorkspaceVolume(workspaceId, null)
 
-    for (const settings of await terminalConversationSessions(projectId, workspaceId)) {
+    for (const settings of await terminalConversationSessions(projectId, workspaceId, row.cwd)) {
       await insertSession(projectId, workspaceId, settings)
     }
     const sessions = await listWorkspaceSessions(workspaceId)
@@ -116,8 +116,6 @@ export async function prepareRestart(
     const result = await createWorkspace(projectId, {
       workspaceId,
       resume: true,
-      ...(row.baseBranch !== undefined ? { branch: row.baseBranch } : {}),
-      ...(row.baseBranch === undefined && row.startCommit !== undefined ? { commit: row.startCommit } : {}),
       ...(opts.deadline !== undefined ? { deadline: opts.deadline } : {}),
       ...(volume !== undefined ? { volumeId: volume.id } : {}),
       onProgress,
@@ -141,6 +139,7 @@ export async function prepareRestart(
 export async function terminalConversationSessions(
   projectId: string,
   workspaceId: string,
+  cwd: string,
 ): Promise<SessionLaunchSettings[]> {
   const loose = (await listActiveConversations(projectId, workspaceId)).filter((l) => l.sessionId === undefined)
   if (loose.length === 0) return []
@@ -149,6 +148,7 @@ export async function terminalConversationSessions(
     tool: l.tool,
     mode: l.mode,
     permissionMode: first?.permissionMode ?? defaultPermissionMode(workspaceDriver().kind, l.tool),
+    cwd,
     conversationId: l.conversationId,
     ...(l.model !== undefined ? { model: l.model } : {}),
   }))
@@ -156,8 +156,8 @@ export async function terminalConversationSessions(
 
 /**
  * Rerun a non-interactive workspace (docs/workspace-steps.md): a new one
- * with the same graph at the commit it was created at, linked to it, in its
- * group: the same workflow, whose run secrets reach it as they reached the
+ * with the same graph, each repo at the commit its checkout was created at,
+ * linked to it, in its group: the same workflow, whose run secrets reach it as they reached the
  * original, and the name it was chosen through (docs/workflows.md). With
  * `interactive`, an interactive workspace there instead, its graph as the
  * start steps, for reproducing a failure by hand.
@@ -170,14 +170,14 @@ export async function prepareRerun(
   const row = await findWorkspaceRow(await resolveWorkspaceId(idOrPrefix))
   if (!row) throw new ServerError('NOT_FOUND', `No workspace found matching "${idOrPrefix}"`)
   await authorizeProject(principal, row.projectId)
-  if (!row.nonInteractive || row.startCommit === undefined) {
+  if (!row.nonInteractive) {
     throw new ServerError('CONFLICT', `workspace ${row.workspaceId.slice(0, 8)} is not a non-interactive workspace to rerun`)
   }
   const interactive = opts.interactive === true
   return await prepareStart(principal, {
     projectId: row.projectId,
     workspaceId: opts.workspaceId,
-    commit: row.startCommit,
+    ...await startOf(row, 'commit'),
     ...(row.workflowId !== undefined
       ? { workflowId: row.workflowId, ...(row.workflowName !== undefined ? { workflowName: row.workflowName } : {}) }
       : { steps: {} }),

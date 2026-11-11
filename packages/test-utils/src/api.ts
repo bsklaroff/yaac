@@ -41,9 +41,10 @@ export function asTailnet(login: string | null, host: string): Record<string, st
 }
 
 /**
- * Register a project whose checkout the test staged at
- * `<projects>/<id>/repo`: `project add` without the clone. The helpers
- * below act as the caller `headers` name, the built-in user by default.
+ * Register a project whose main clone the test staged at `repoDir(id)`:
+ * `project add` without the clone, its one repo carrying the project's id.
+ * The helpers below act as the caller `headers` name, the built-in user by
+ * default.
  */
 export async function registerTestProject(
   server: SpawnedServer,
@@ -57,8 +58,8 @@ export async function registerTestProject(
 }
 
 /**
- * Give a project a git credential as the webapp's Settings does: store an
- * HTTPS token under a name, then assign it. Throws on any non-2xx.
+ * Give a project's one repo a git credential as the webapp's Settings does:
+ * store an HTTPS token under a name, then assign it. Throws on any non-2xx.
  * `project` is anything the routes resolve (a name or an id). Credential
  * names are unique and outlive projects, so a second project with the same
  * name must pass its own `name`.
@@ -74,8 +75,11 @@ export async function assignTestGitCredential(
   const created = await client.auth.git.credentials.$post({ json: { name, token } })
   if (!created.ok) throw new Error(`creating the git credential failed: ${await created.text()}`)
   const { id } = await created.json()
-  const assigned = await client.project[':projectId']['git-credential'].$put({
-    param: { projectId: project }, json: { credentialId: id },
+  const detail = await client.project[':projectId'].$get({ param: { projectId: project } })
+  if (!detail.ok) throw new Error(`reading project ${project} failed: ${await detail.text()}`)
+  const [repo] = (await detail.json()).repos
+  const assigned = await client.repo[':repoId']['git-credential'].$put({
+    param: { repoId: repo.id }, json: { credentialId: id },
   })
   if (!assigned.ok) throw new Error(`assigning the git credential failed: ${await assigned.text()}`)
 }

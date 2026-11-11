@@ -6,6 +6,7 @@ import type {
   DraftWorkspaceEntry,
   HeldWorkspaceEntry,
   ProvisioningWorkspaceEntry,
+  ProjectRepo,
   ProjectSummary,
   QueuedWorkspaceEntry,
   RoutineEntry,
@@ -29,7 +30,7 @@ vi.mock('#lib/useProvisionWorkspace', () => ({ useProvisionWorkspace: () => prov
 import { ListTitle, WorkspaceList, type ProjectScope } from '#components/WorkspaceList'
 import { createWorkspace, renameWorkspace } from '#lib/createWorkspace'
 import { useUiStore } from '#lib/store'
-import { mockFetch, renderWithClient, serverError, serverSnapshot, sessionEntry, testQueryClient, TEST_USER_ID, type FetchCall, type FetchMock } from './harness'
+import { mockFetch, renderWithClient, serverError, serverSnapshot, sessionEntry, testQueryClient, type FetchCall, type FetchMock } from './harness'
 import { intersect, intersection } from './setup'
 
 /** Scroll every load-more marker into view: jsdom has no layout, so the
@@ -130,6 +131,8 @@ const entry = (over: Partial<WorkspaceListEntry> = {}): WorkspaceListEntry => ({
   blockedHosts: [],
   forwardedPorts: [],
   unforwardedPorts: [],
+  repos: [],
+  cwd: '',
   ...over,
 })
 
@@ -165,7 +168,7 @@ const queuedEntry = (id: string, over: Partial<QueuedWorkspaceEntry> = {}): Queu
   mode: 'tui',
   permissionMode: 'bypass',
   agentOptions: {},
-  branch: 'main',
+  selection: { repos: [{ repo: 'repo-1', branch: 'main' }], nested: false, cwd: 'repo-1' },
   createdAt: '2026-08-10 00:00:00',
   ...over,
 })
@@ -1073,7 +1076,7 @@ describe('WorkspaceList', () => {
     // until the server reports it.
     it('runs a draft now from its menu, with the whole prompt the snapshot previews', async () => {
       renderList([], {
-        drafts: [draft('d1', { generatedTitle: 'Idea one', branch: 'dev', startAfter: 's1', groupId: 'g1' })],
+        drafts: [draft('d1', { generatedTitle: 'Idea one', repos: [{ repo: 'repo-1', branch: 'dev' }], startAfter: 's1', groupId: 'g1' })],
       })
       const full = 'Idea d1\nmore detail, and the rest of a long brief'
       server.route('GET /api/workspace/prompt', (c: FetchCall) => (c.query.get('id') === 'd1' ? { prompt: full } : undefined))
@@ -1085,7 +1088,7 @@ describe('WorkspaceList', () => {
       const op = provision.mock.calls[0][1] as (onProgress: () => void) => Promise<unknown>
       await op(() => {})
       expect(createWorkspace).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
-        projectId: 'proj', tool: 'codex', branch: 'dev', permissionMode: 'manual', mode: 'tui',
+        projectId: 'proj', tool: 'codex', repos: [{ repo: 'repo-1', branch: 'dev' }], permissionMode: 'manual', mode: 'tui',
         prompt: full, groupId: 'g1', draftId: 'd1',
       }), expect.any(Function))
     })
@@ -1095,7 +1098,8 @@ describe('WorkspaceList', () => {
     const inMinutes = (m: number): string => new Date(Date.now() + m * 60_000).toISOString()
     const routine = (id: string, over: Partial<RoutineEntry> = {}): RoutineEntry => ({
       id, projectId: 'proj', name: `Routine ${id}`, cron: '0 9 * * 1-5', timeZone: 'UTC', prompt: 'triage',
-      tool: 'claude', model: 'claude-sonnet-5', mode: 'tui', permissionMode: 'bypass', agentOptions: {}, branch: 'main',
+      tool: 'claude', model: 'claude-sonnet-5', mode: 'tui', permissionMode: 'bypass', agentOptions: {},
+      selection: { repos: [{ repo: 'repo-1', branch: 'main' }], nested: false, cwd: 'repo-1' },
       paused: false, nextRuns: [inMinutes(180)], createdAt: '2026-08-10 00:00:00', ...over,
     })
 
@@ -1434,63 +1438,11 @@ describe('WorkspaceList', () => {
       expect(useUiStore.getState().selectedWorkspaceId).toBeNull()
     })
   })
-
-  it('shows a share its source\'s owner removed read-only to its own owner', () => {
-    const removed = {
-      id: 'proj', name: 'proj', remoteUrl: '', addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0,
-      deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: true, guardDefaultBranch: true, scratchDirs: { dirs: [], ignoredTracked: [] }, initSteps: {}, portForwards: [], cacheVolumes: {}, nestedContainers: false, npmCache: true,
-      sharedFrom: { projectId: 'src', revoked: true },
-    }
-    useUiStore.setState({ activeProjectId: 'proj' })
-    renderList([entry({ workspaceId: 'a', title: 'My run' })], {
-      project: removed, snapshot: serverSnapshot({ projects: [removed] }),
-    })
-
-    expect(screen.getByText('No longer shared with you, so read-only')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Workspace actions' })).toBeNull()
-    fireEvent.click(screen.getByText('My run'))
-    expect(useUiStore.getState().selectedWorkspaceId).toBe('a')
-  })
-
-  it('lays out a teammate\'s list as theirs, with every control off and rows still opening', async () => {
-    // Viewing another user (#lib/viewer): the caller is TEST_USER_ID.
-    useUiStore.setState({ viewedUserId: 'u-ada' })
-    stoppedRows.push({
-      workspaceId: 'ghost', projectId: 'proj', sessions: [], createdAt: '2026-08-09 00:00:00',
-      stoppedAt: '2026-08-09 01:00:00', title: 'Old run', deathSeenBy: [], conversations: [], groupId: 'g1',
-    })
-    renderList([entry({ workspaceId: 'a', title: 'Their run' }), entry({ workspaceId: 'b', title: 'Filed', groupId: 'g1' })], {
-      groups: [group({ stoppedCount: 1 })],
-      provisioning: [provisioning({ kind: 'create', title: 'Booting' })],
-      queued: [queuedEntry('q1')],
-      drafts: [{
-        id: 'd1', projectId: 'proj', prompt: 'An idea', tool: 'codex', mode: 'tui',
-        permissionMode: 'manual', createdAt: '2026-08-10 00:00:00', updatedAt: '2026-08-10 00:00:00',
-      }],
-    })
-
-    expect(screen.getByText(/workspaces, read-only/)).toBeTruthy()
-    for (const menu of ['Workspace actions', 'Queued workspace actions', 'Draft actions']) {
-      expect(screen.queryByRole('button', { name: menu })).toBeNull()
-    }
-    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
-    // Queued entries and drafts open the create form, which writes.
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: /An idea/ }).disabled).toBe(true)
-
-    // The group menu keeps only what changes this client's view.
-    await pickAction('Show stopped workspaces', 'Group actions')
-    await screen.findByText('Old run')
-    expect(screen.queryByRole('button', { name: 'Restart workspace' })).toBeNull()
-
-    fireEvent.click(screen.getByText('Their run'))
-    expect(useUiStore.getState().selectedWorkspaceId).toBe('a')
-    expect(server.calls.filter((c) => c.method !== 'GET')).toEqual([])
-  })
 })
 
 describe('ListTitle', () => {
   it('shows nothing for a project the snapshot does not list yet, then its name', () => {
-    const project = { id: 'proj', name: 'widgets', remoteUrl: 'https://github.com/acme/widgets.git' } as ProjectSummary
+    const project = { id: 'proj', name: 'widgets', repos: [] as ProjectRepo[] } as ProjectSummary
     const scope = { projectId: 'proj', project: undefined } as ProjectScope
     const { container, unmount } = renderWithClient(<ListTitle scope={scope} />)
     expect(container.textContent).toBe('')

@@ -1,11 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
-import fs from 'node:fs/promises'
-import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-import { repoDir } from '@yaac/shared/project-paths'
-import { getProjectDetail, assertProjectExists, projectRemoteUrl, resolveProjectId } from '#domain/projects'
+import { getProjectDetail, assertProjectExists, resolveProjectId } from '#domain/projects'
 import { ServerError } from '@yaac/shared/errors'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
 
@@ -35,21 +32,22 @@ describe('getProjectDetail', () => {
     await expect(getProjectDetail(MISSING)).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 
-  it('returns the metadata and the live session count', async () => {
+  it('returns the metadata, its repos and the live session count', async () => {
     await recordTestProject(FOO, {
       remoteUrl: 'https://example.com/foo',
       addedAt: '2026-01-01T00:00:00.000Z',
     })
+    await recordTestProject(NOPE, { repo: false })
     count.mockResolvedValue({ [FOO]: 2, bar: 1 })
 
     expect(await getProjectDetail(FOO)).toEqual({
       id: FOO,
       name: 'demo',
-      remoteUrl: 'https://example.com/foo',
       addedAt: '2026-01-01T00:00:00.000Z',
-      hosted: false,
+      repos: [{ id: FOO, dir: 'demo', remoteUrl: 'https://example.com/foo', hosted: false }],
       workspaceCount: 2,
     })
+    expect((await getProjectDetail(NOPE)).repos).toEqual([])
   })
 
   // An unreachable substrate counts zero rather than throwing, so a project
@@ -73,19 +71,6 @@ describe('assertProjectExists', () => {
   it('resolves for a registered project', async () => {
     await recordTestProject(FOO, { remoteUrl: 'x', addedAt: '2026-01-01T00:00:00.000Z' })
     await expect(assertProjectExists(FOO)).resolves.toBeUndefined()
-  })
-})
-
-describe('projectRemoteUrl', () => {
-  it('answers the row\'s remote, whatever the clone says, and NOT_FOUND for an unknown projectId', async () => {
-    await recordTestProject(FOO, { remoteUrl: 'https://example.com/foo', addedAt: '2026-01-01T00:00:00.000Z' })
-    // The clone's own origin is pod-writable and never consulted.
-    await fs.mkdir(path.join(repoDir(FOO), '.git'), { recursive: true })
-    await fs.writeFile(path.join(repoDir(FOO), '.git', 'config'),
-      '[remote "origin"]\n\turl = https://attacker.example/x\n')
-
-    expect(await projectRemoteUrl(FOO)).toBe('https://example.com/foo')
-    await expect(projectRemoteUrl(MISSING)).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 })
 

@@ -1,3 +1,5 @@
+import { posix } from 'node:path'
+import { POD_WORKSPACE_DIR } from '@yaac/shared/project-paths'
 import { AGENT_CLIS, DEFAULT_SCRATCH_DIR_GIB, type ScratchDir } from '@yaac/shared/types'
 import type { ScratchDirMount } from '#drivers/contract'
 import { openRoot, type ConfinedRoot } from '#lib/confined-fs'
@@ -95,21 +97,26 @@ async function readJson(claudeHome: ConfinedRoot, rel: string): Promise<Record<s
 }
 
 /**
- * Create each scratch dir in the checkout before launch (so a pod does not
+ * Create each scratch dir in one checkout before launch (so a pod does not
  * create its mount point root-owned) and return them as the workspace sees
- * them, for `scratchDirs`.
+ * them, for `scratchDirs`. `checkoutPath` is the checkout's place under the
+ * workspace root; the dirs are relative to the checkout.
  */
 export async function prepareScratchDirs(
-  workspaceDirPath: string,
+  checkoutDirPath: string,
+  checkoutPath: string,
   dirs: ScratchDir[],
 ): Promise<ScratchDirMount[]> {
   // Confined to the checkout: a committed symlink must not turn this into a
   // mkdir elsewhere on the host. Links inside the checkout are followed.
-  const checkout = await openRoot(workspaceDirPath, 'inside')
+  const checkout = await openRoot(checkoutDirPath, 'inside')
   for (const { path } of dirs) {
     await checkout.mkdirp(path).catch((err: unknown) => {
       throw new Error(`scratch dir "${path}": ${err instanceof Error ? err.message : String(err)}`)
     })
   }
-  return dirs.map(({ path, sizeGiB = DEFAULT_SCRATCH_DIR_GIB }) => ({ path: `/workspace/${path}`, sizeBytes: sizeGiB * 1024 ** 3 }))
+  return dirs.map(({ path, sizeGiB = DEFAULT_SCRATCH_DIR_GIB }) => ({
+    path: posix.join(POD_WORKSPACE_DIR, checkoutPath, path),
+    sizeBytes: sizeGiB * 1024 ** 3,
+  }))
 }

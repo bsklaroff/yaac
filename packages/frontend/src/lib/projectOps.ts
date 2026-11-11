@@ -29,7 +29,7 @@ export function addProjectInBackground(
   state.setActiveProject(id)
   api.project.add.$post({ json: { remoteUrl, gitCredentialId } }).then(
     ({ project, knownHostsEntry }) => {
-      // Refresh the credential's project list.
+      // Refresh the credential's repo list.
       void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
       useUiStore.getState().patchProjectOp(id, { doneId: project.id })
       if (knownHostsEntry !== null) useUiStore.getState().pushTrustedHostKey({ projectName: name, entry: knownHostsEntry })
@@ -52,8 +52,8 @@ export function createProjectInBackground(name: string): void {
 }
 
 /** Remove a project and every workspace in it. */
-export function removeProjectInBackground(projectId: string, name: string, remoteUrl: string): void {
-  useUiStore.getState().putProjectOp({ id: projectId, kind: 'remove', name, remoteUrl })
+export function removeProjectInBackground(projectId: string, name: string): void {
+  useUiStore.getState().putProjectOp({ id: projectId, kind: 'remove', name, remoteUrl: '' })
   api.project[':projectId'].$delete({ param: { projectId } }).then(
     () => useUiStore.getState().patchProjectOp(projectId, { doneId: projectId }),
     (e: unknown) => useUiStore.getState().patchProjectOp(projectId, {

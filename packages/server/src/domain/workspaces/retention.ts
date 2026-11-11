@@ -82,14 +82,13 @@ export async function setWorkspaceRetention(
 
 /**
  * Apply every project's retention: the hourly sweep that deletes workspaces
- * as they age past it. A share whose source's owner removed it is skipped,
- * since every delete there is refused. Then the workflows nothing names any
- * more go too (docs/workflows.md "Lifecycle").
+ * as they age past it. Then the workflows nothing names any more go too
+ * (docs/workflows.md "Lifecycle").
  */
 export async function reconcileWorkspaceRetention(signal: AbortSignal): Promise<void> {
-  for (const { id, stoppedWorkspaceRetentionDays: days, shareRevoked } of await listProjectRows()) {
+  for (const { id, stoppedWorkspaceRetentionDays: days } of await listProjectRows()) {
     if (signal.aborted) return
-    if (days !== undefined && !shareRevoked) await deleteExpired(id, cutoffFor(days), signal)
+    if (days !== undefined) await deleteExpired(id, cutoffFor(days), signal)
   }
   await deleteUnnamedWorkflows()
 }

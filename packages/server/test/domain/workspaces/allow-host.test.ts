@@ -3,8 +3,8 @@ import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-dr
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getProjectAllowlist } from '#domain/projects'
 import { allowWorkspaceHost } from '#domain/workspaces/allow-host'
-import { BUILT_IN_USER_ID, recordProject } from '#db'
-import { DEMO_PROJECT_ID as PROJ } from '@yaac/test-utils/project-fixture'
+import { BUILT_IN_USER_ID } from '#db'
+import { recordTestProject, DEMO_PROJECT_ID as PROJ } from '@yaac/test-utils/project-fixture'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -22,7 +22,7 @@ const HANDLE = handleFixture({
 beforeEach(async () => {
   vi.clearAllMocks()
   tmpDir = await createTempDataDir()
-  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://github.com/o/r', addedAt: 'now' }, BUILT_IN_USER_ID)
+  await recordTestProject(PROJ, { name: 'demo', remoteUrl: 'https://github.com/o/r', addedAt: 'now' })
   mockAllowHost.mockResolvedValue()
   installFakeWorkspaceDriver({
     find: () => Promise.resolve(HANDLE),

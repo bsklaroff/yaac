@@ -16,9 +16,11 @@
 #   - init windows + the agent respawn (need the populated workspace).
 #
 # Inputs (env, set by session-create): YAAC_GIT_NAME,
-# YAAC_GIT_EMAIL, YAAC_STATUS_RIGHT, for SSH-remote projects
-# YAAC_SSH_AGENT_UPSTREAM (+ SSH_AUTH_SOCK), for installs through the npm
-# cache YAAC_NPM_REGISTRY, and for nested-containers sessions
+# YAAC_GIT_EMAIL, YAAC_STATUS_RIGHT, YAAC_CHECKOUTS (the workspace's
+# checkouts, relative to /workspace, `.` for one at its root, separated by
+# `:`; empty with no repos), YAAC_CWD (where the tmux session starts,
+# relative to /workspace; empty for /workspace itself), for installs through
+# the npm cache YAAC_NPM_REGISTRY, and for nested-containers sessions
 # YAAC_NESTED_ENGINE=1 plus optional YAAC_REGISTRY_CONF_B64.
 set -eu
 
@@ -109,17 +111,24 @@ if [ -d "$OPENCODE_DATA" ]; then
 fi
 
 # Run from /, never the container's /workspace workingDir: the host-side
-# checkout populates /workspace CONCURRENTLY with this hook, and git does
+# checkouts populate /workspace CONCURRENTLY with this hook, and git does
 # repository discovery from the cwd even for `config --global` — from /
 # there is no half-made repo to discover.
 cd /
 
-# Git identity and trust for the checkout. --global writes the image-local
+# Git identity and trust for each checkout. --global writes the image-local
 # ~/.gitconfig (not a shared mount), so this is per-pod and never races
 # another session.
 git config --global user.name "$YAAC_GIT_NAME"
 git config --global user.email "$YAAC_GIT_EMAIL"
-git config --global --add safe.directory /workspace
+IFS=:
+for checkout in ${YAAC_CHECKOUTS:-}; do
+  case "$checkout" in
+    .) git config --global --add safe.directory /workspace ;;
+    *) git config --global --add safe.directory "/workspace/$checkout" ;;
+  esac
+done
+unset IFS
 # Write a large checkout's files from 8 processes at once: on the shared
 # tier each file costs network round trips, which this overlaps. Keep in
 # sync with CHECKOUT_WORKERS (packages/server/src/domain/git/repo.ts).
@@ -156,13 +165,15 @@ fi
 # only TERM=tmux-256color and quantize their themes to the 256-color
 # palette before the RGB passthrough configured below can help.
 #
-# `-c /workspace` pins the session's start directory (we cd'd to / above):
-# every later window runs in the workspace.
+# `-c` pins the session's start directory (we cd'd to / above) to the
+# workspace's default cwd, /workspace or one checkout's folder, which the
+# server made before the pod started: shell and step windows start there
+# (`-c '#{session_path}'`).
 #
 # history-limit is set before the session: tmux fixes a pane's limit when the
 # pane is created.
 env COLORTERM=truecolor $TMUX -u start-server \; set-option -g history-limit 200000 \; \
-  new-session -d -s yaac -n _yaac-starting -x 500 -y 200 -c /workspace 'sleep infinity'
+  new-session -d -s yaac -n _yaac-starting -x 500 -y 200 -c "/workspace${YAAC_CWD:+/$YAAC_CWD}" 'sleep infinity'
 
 # Session UX options, one tmux invocation (command sequence via `\;`):
 #  - monitor-bell/bell-action: propagate terminal bells (\a) from any window
@@ -196,28 +207,6 @@ $TMUX \
   set-option -t yaac status-right-length 80 \; \
   set-option -t yaac status-right "$YAAC_STATUS_RIGHT" \; \
   bind-key k confirm-before -p 'kill this yaac session? (y/n)' kill-server
-
-# ssh-agent forwarding (SSH-remote projects only). The agent itself runs in
-# the proxy pod and never hands out key bytes — it only signs — so all this
-# does is carry the agent protocol: a UNIX socket at SSH_AUTH_SOCK, relayed
-# per connection to the proxy's agent listener, which admits list/sign
-# messages only. The transport is TCP rather
-# than a shared host directory because a hostPath UNIX socket only
-# rendezvous between pods on the SAME node; the proxy authenticates the
-# connection by its source pod IP.
-#
-# 0600 keeps the socket to the session user (the whole pod is one trust
-# domain either way). Backgrounded with setsid, like streamd, so the hook's
-# exec stream can close while the forwarder keeps running under the pod's
-# init. `fork` dials the proxy once per agent connection, so a replaced
-# proxy pod (image upgrade, eviction) heals on the next `git push` — the
-# Service ClusterIP the upstream names outlives the pod behind it.
-if [ -n "${YAAC_SSH_AGENT_UPSTREAM:-}" ] && [ -n "${SSH_AUTH_SOCK:-}" ]; then
-  mkdir -p "$(dirname "$SSH_AUTH_SOCK")"
-  rm -f "$SSH_AUTH_SOCK"
-  setsid socat "UNIX-LISTEN:$SSH_AUTH_SOCK,fork,mode=0600" \
-    "TCP:$YAAC_SSH_AGENT_UPSTREAM" >>/tmp/ssh-agent-forward.log 2>&1 </dev/null &
-fi
 
 # Nested sessions: start the in-pod ROOTFUL podman engine (it serves the
 # Docker Engine API on the socket DOCKER_HOST points at). Backgrounded so

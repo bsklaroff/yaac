@@ -29,6 +29,8 @@ export interface SessionLaunchSettings {
   model?: string
   effort?: string
   agentOptions?: AgentOptions
+  /** Where its agent runs, relative to the workspace root. */
+  cwd: string
   /** The message it opens with. */
   prompt?: string
   /** An earlier conversation of the project to resume, rather than a new
@@ -70,6 +72,7 @@ export async function insertSession(
     mode: settings.mode,
     permissionMode: settings.permissionMode,
     agentOptions: settings.agentOptions ?? {},
+    cwd: settings.cwd,
     ...(settings.model !== undefined ? { model: settings.model.slice(0, MAX_MODEL_LENGTH) } : {}),
     ...(settings.effort !== undefined ? { effort: settings.effort } : {}),
     ...(settings.conversationId !== undefined ? { conversationId: settings.conversationId } : {}),

@@ -5,8 +5,10 @@
 # KEPT path (relative to CHECKOUT: a file, or a folder and all it holds)
 # and every mount point under CHECKOUT, then do the same in each nested
 # repository inside an ignored folder, by that repository's own rules
-# (docs/workspace-storage.md "Ignored files at stop"). The server runs it when a workspace stops, inside the workspace,
-# and again as root on the checkout of one where that did not succeed.
+# (docs/workspace-storage.md "Ignored files at stop"). The server runs it
+# when a workspace stops, inside the workspace, once for each of its
+# checkouts, and again as root on the checkouts of one where that did not
+# succeed.
 #
 # Exits nonzero only when something could not be removed, which running as
 # root may fix. A repository git cannot read is skipped with a note on

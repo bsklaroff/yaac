@@ -208,8 +208,8 @@ describe('reapOrphanNodeLocal', () => {
   // This layer only hands over the live set: recorded project ids,
   // workspaces, stray units and in-flight creates.
   it('hands the runtime the live project ids and workspaces, and removes no node-local dir itself', async () => {
-    await recordProject({ id: PROJ_A, name: 'demo', remoteUrl: 'https://x/proj-a', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
-    await recordProject({ id: PROJ_B, name: 'demo', remoteUrl: 'https://x/proj-b', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    await recordProject({ id: PROJ_A, name: 'demo', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    await recordProject({ id: PROJ_B, name: 'demo', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
     const ids = (await listProjectRows()).map((r) => r.id)
     const live = await seedModulesDir(ids[0], 'live-1')
     const dead = await seedModulesDir(ids[0], 'dead-1')
@@ -273,19 +273,23 @@ describe('reconcileIgnoredFileCleans', () => {
         await promisify(execFile)('sh', ['-c', script, 'sh', workspaceDir(projectId, workspaceId), ...args])
       },
     })
-    await recordProject({ id: PROJ_A, name: 'demo', remoteUrl: 'https://x/proj-a', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    await recordProject({ id: PROJ_A, name: 'demo', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
   })
   afterEach(tearDownSweep)
 
-  /** A stopped workspace whose checkout holds an ignored, a kept and an
-   *  untracked file. */
-  async function stoppedWithBuildOutput(workspaceId: string): Promise<string> {
-    const dir = workspaceDir(PROJ_A, workspaceId)
+  /** A checkout at `dir` holding an ignored, a kept and an untracked file. */
+  async function buildOutput(dir: string): Promise<void> {
     await fs.mkdir(path.join(dir, 'out'), { recursive: true })
     await fs.writeFile(path.join(dir, '.gitignore'), 'out/\n.env\n')
     execFileSync('git', ['init', '-q'], { cwd: dir })
     for (const rel of ['out/bundle.js', '.env', 'notes.txt']) await fs.writeFile(path.join(dir, rel), '')
-    await recordWorkspaceCreated({ projectId: PROJ_A, workspaceId })
+  }
+
+  /** A stopped workspace with such a checkout at its root. */
+  async function stoppedWithBuildOutput(workspaceId: string): Promise<string> {
+    const dir = workspaceDir(PROJ_A, workspaceId)
+    await buildOutput(dir)
+    await recordWorkspaceCreated({ projectId: PROJ_A, workspaceId, repos: [{ repoId: PROJ_A, path: '' }] })
     await recordWorkspaceStopped(PROJ_A, workspaceId)
     return dir
   }
@@ -320,6 +324,33 @@ describe('reconcileIgnoredFileCleans', () => {
     await reconcileIgnoredFileCleans(view)
     expect(runs.map((r) => r.workspaceId)).toEqual(['dead'])
     for (const id of ['stuck', 'restarting', 'deleting']) expect(await cleaned(id), id).toBe(false)
+  })
+
+  it('cleans each checkout of a workspace with several by the kept paths, and runs nothing for one with none', async () => {
+    await setProjectKeptIgnoredPaths(PROJ_A, ['.env'])
+    const root = workspaceDir(PROJ_A, 'multi')
+    for (const folder of ['api', 'web']) await buildOutput(path.join(root, folder))
+    // Outside the checkouts nothing is git's to ignore.
+    await fs.mkdir(path.join(root, 'out'))
+    await recordWorkspaceCreated({
+      projectId: PROJ_A,
+      workspaceId: 'multi',
+      repos: [{ repoId: PROJ_A, path: 'api' }, { repoId: PROJ_B, path: 'web' }],
+    })
+    await recordWorkspaceStopped(PROJ_A, 'multi')
+    await reconcileIgnoredFileCleans(view)
+    await vi.waitFor(async () => { expect(await cleaned('multi')).toBe(true) }, { timeout: 30_000 })
+    for (const folder of ['api', 'web']) {
+      expect((await fs.readdir(path.join(root, folder))).sort(), folder).toEqual(['.env', '.git', '.gitignore', 'notes.txt'])
+    }
+    expect((await fs.readdir(root)).sort()).toEqual(['api', 'out', 'web'])
+
+    await fs.mkdir(workspaceDir(PROJ_A, 'bare'), { recursive: true })
+    await recordWorkspaceCreated({ projectId: PROJ_A, workspaceId: 'bare' })
+    await recordWorkspaceStopped(PROJ_A, 'bare')
+    await reconcileIgnoredFileCleans(view)
+    await vi.waitFor(async () => { expect(await cleaned('bare')).toBe(true) }, { timeout: 30_000 })
+    expect(runs.map((r) => r.workspaceId)).toEqual(['multi'])
   })
 
   // The fallback runs as root on what the agent wrote, so the repository's

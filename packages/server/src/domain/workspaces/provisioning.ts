@@ -17,7 +17,7 @@ import { getWorkspaceRow } from '#db'
 import { authorizeProject, type Actor } from '#domain/access'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import { ServerError, type ErrorCode } from '@yaac/shared/errors'
-import type { AgentTool, ProvisioningWorkspaceEntry } from '@yaac/shared/types'
+import type { AgentTool, ProvisioningWorkspaceEntry, RepoSelection } from '@yaac/shared/types'
 
 export type ProvisioningKind = 'create' | 'restart'
 
@@ -41,9 +41,9 @@ interface ProvisioningEntry {
   modelName?: string
   /** The spare this create claimed (a different id). */
   claimedId?: string
-  /** The requested base branch; a workspace queued after this one defaults
-   *  to it before the row exists. Not sent to clients. */
-  branch?: string
+  /** What it starts with; a workspace queued after this one defaults to it
+   *  before the row exists. Not sent to clients. */
+  selection?: RepoSelection
   /** Set by `stopProvisioning`; the next checkpoint throws. */
   stopping?: boolean
   startedAt: number
@@ -74,7 +74,7 @@ interface ProvisioningInput {
   prompt?: string
   model?: string
   modelName?: string
-  branch?: string
+  selection?: RepoSelection
 }
 
 /**
@@ -136,7 +136,7 @@ export function registerProvisioning(input: ProvisioningInput): void {
     ...(input.prompt !== undefined ? { prompt: input.prompt } : {}),
     ...(input.model !== undefined ? { model: input.model } : {}),
     ...(input.modelName !== undefined ? { modelName: input.modelName } : {}),
-    ...(input.branch !== undefined ? { branch: input.branch } : {}),
+    ...(input.selection !== undefined ? { selection: input.selection } : {}),
     startedAt: Date.now(),
     seq: nextSeq++,
   })
@@ -372,7 +372,7 @@ export function inFlightCreate(workspaceId: string): {
   projectId: string
   tool?: AgentTool
   model?: string
-  branch?: string
+  selection?: RepoSelection
   groupId?: string
 } | undefined {
   const e = entries.get(workspaceId)
@@ -383,7 +383,7 @@ export function inFlightCreate(workspaceId: string): {
     projectId: e.projectId,
     ...(e.tool !== undefined ? { tool: e.tool } : {}),
     ...(e.model !== undefined ? { model: e.model } : {}),
-    ...(e.branch !== undefined ? { branch: e.branch } : {}),
+    ...(e.selection !== undefined ? { selection: e.selection } : {}),
     ...(e.groupId !== undefined ? { groupId: e.groupId } : {}),
   }
 }

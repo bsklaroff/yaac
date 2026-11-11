@@ -29,7 +29,6 @@ import {
   SERVER_MAMA_PORT,
   SERVER_MAMA_SERVICE_NAME,
   SERVER_SA_NAME,
-  SSH_AGENT_PORT,
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_TUNNEL_PORT,
@@ -100,7 +99,6 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
                 { containerPort: TRANSPARENT_HTTP_PORT },
                 { containerPort: TRANSPARENT_TUNNEL_PORT },
                 { containerPort: RELAY_PORT },
-                { containerPort: SSH_AGENT_PORT },
                 { containerPort: DNS_STUB_PORT, protocol: 'UDP' },
               ],
               env: [
@@ -114,9 +112,6 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
                 { name: 'POD_STREAM_PORT', value: String(POD_STREAM_PORT) },
                 { name: 'DNS_STUB_PORT', value: String(DNS_STUB_PORT) },
                 { name: 'DNS_SINKHOLE', value: DNS_SINKHOLE },
-                // ssh-agent forwarding for entitled workspace pods, which expose
-                // it in-pod as SSH_AUTH_SOCK.
-                { name: 'SSH_AGENT_PORT', value: String(SSH_AGENT_PORT) },
                 // Where in-workspace yaac-mama calls are relayed to.
                 {
                   name: 'MAMA_RELAY_URL',
@@ -130,8 +125,7 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
                   },
                 },
                 // The host uid may not own /home/node, so HOME is a writable
-                // emptyDir (for the ssh-agent socket and known_hosts). ssh-add
-                // ignores $HOME, so the proxy passes the file with -H.
+                // emptyDir.
                 { name: 'HOME', value: '/home/proxy' },
                 ...(env.useTor ? [{ name: 'USE_TOR', value: '1' }] : []),
               ],
@@ -151,8 +145,7 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
           volumes: [
             // Tor's state, rebuilt per pod.
             { name: 'proxy-data', emptyDir: {} },
-            // Writable HOME (see above). Workspace pods reach the agent over
-            // SSH_AGENT_PORT, not this socket.
+            // Writable HOME (see above).
             { name: 'home', emptyDir: {} },
           ],
         },
@@ -290,9 +283,9 @@ function assertProxyOwnerKey(owner: string): void {
 
 /**
  * The credentials Secret: per owner, each signed-in tool's credential file,
- * plus `git-tokens.json` (`[{token, projects}]`) and `ssh-keys.json`
- * (`[{privateKey, publicKey, projects: [{projectId, host, knownHostsEntry}]}]`),
- * each key prefixed `<owner>.`. The opencode, pi and omp files also carry
+ * plus `git-tokens.json` (`[{token, grants}]`) and `ssh-keys.json`
+ * (`[{privateKey, publicKey, grants}]`), each grant a `RepoGrant` (an ssh
+ * one with its `knownHostsEntry`), each key prefixed `<owner>.`. The opencode, pi and omp files also carry
  * `apiHost`, the provider's host the proxy swaps the key in on (a custom
  * endpoint's own host); a provider with no known host gets no file, so the
  * key goes nowhere. Replaced whole
@@ -467,9 +460,6 @@ export function buildProxyServiceManifest(): Record<string, unknown> {
         { name: 'transparent-https', port: TRANSPARENT_HTTPS_PORT, targetPort: TRANSPARENT_HTTPS_PORT },
         { name: 'transparent-http', port: TRANSPARENT_HTTP_PORT, targetPort: TRANSPARENT_HTTP_PORT },
         { name: 'transparent-tunnel', port: TRANSPARENT_TUNNEL_PORT, targetPort: TRANSPARENT_TUNNEL_PORT },
-        // ssh-agent forwarding; workspace pods dial the ClusterIP they
-        // already use for DNS.
-        { name: 'ssh-agent', port: SSH_AGENT_PORT, targetPort: SSH_AGENT_PORT },
         { name: 'dns', port: DNS_STUB_PORT, targetPort: DNS_STUB_PORT, protocol: 'UDP' },
       ],
     },

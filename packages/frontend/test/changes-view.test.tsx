@@ -9,7 +9,9 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { IS_MAC } from '#lib/platform'
 import { MAX_COUNTED } from '#lib/matchCount'
 import { paneViewKey, useUiStore } from '#lib/store'
-import { mockFetch, renderWithClient, serverError, testQueryClient, type FetchMock } from './harness'
+import {
+  mockFetch, renderWithClient, serverError, serverSnapshot, testQueryClient, TEST_REPO_ID, workspaceEntry, type FetchMock,
+} from './harness'
 import { intersect, intersection, observedElements } from './setup'
 
 /**
@@ -86,20 +88,28 @@ const reply = (payload: WorkspaceChanges) => ({ query }: { query: URLSearchParam
   return query.get('listing') && query.get('known') !== LISTING.version ? { ...answer, listing: LISTING } : answer
 }
 
+/** Give the workspace one checkout at its root, with this base. */
+const checkout = (base: { baseBranch?: string; startCommit?: string }): void => {
+  useUiStore.getState().receiveSnapshot(serverSnapshot({
+    workspaces: [workspaceEntry({ repos: [{ repoId: TEST_REPO_ID, path: '', ...base }] })],
+  }))
+}
+
 beforeEach(() => {
   server = mockFetch({
     [CHANGES]: reply(PAYLOAD),
   })
+  checkout({ baseBranch: 'main' })
 })
 
 afterEach(() => {
   cleanup()
-  useUiStore.setState({ paneView: {}, layouts: {}, activeTabs: {}, findPending: null, filesFontSize: 12 })
+  useUiStore.setState({ paneView: {}, layouts: {}, activeTabs: {}, findPending: null, filesFontSize: 12, snapshot: undefined })
   localStorage.clear()
 })
 
-const explorer = <WorkspaceFiles workspaceId="s1" projectId="proj" baseBranch="main" />
-const changesPane = <WorkspaceFiles workspaceId="s1" projectId="proj" baseBranch="main" changedOnly />
+const explorer = <WorkspaceFiles workspaceId="s1" />
+const changesPane = <WorkspaceFiles workspaceId="s1" changedOnly />
 const renderExplorer = (): void => { renderWithClient(explorer) }
 const renderChanges = (): void => { renderWithClient(changesPane) }
 /** Every changed file, to open all their diffs. */
@@ -252,7 +262,8 @@ describe('WorkspaceFiles changes', () => {
   // commit, named by its short sha.
   it('names a commit base by its short sha', async () => {
     const start = 'c0ffee'.padEnd(40, '0')
-    renderWithClient(<WorkspaceFiles workspaceId="s1" projectId="proj" startCommit={start} changedOnly />)
+    checkout({ startCommit: start })
+    renderWithClient(changesPane)
     await waitFor(() => expect(screen.getByTitle(BASE).textContent).toBe('c0ffee0'))
   })
 
@@ -592,12 +603,12 @@ describe('a Changes pane on a range', () => {
     const target = changesTarget(range)
     useUiStore.setState({ layouts: { s1: [{ tabs: [target], active: target }] } })
     useUiStore.getState().setPaneView(paneViewKey('s1', target), { openDiffs: ['src/app.ts'] })
-    renderWithClient(<><GitStatusBar workspaceId="s1" /><WorkspaceFiles workspaceId="s1" projectId="proj" changedOnly range={range} /></>)
+    renderWithClient(<><GitStatusBar workspaceId="s1" /><WorkspaceFiles workspaceId="s1" changedOnly range={range} /></>)
   }
   const tabs = (): string[] => useUiStore.getState().layouts.s1.flatMap((g) => g.tabs)
   beforeEach(() => {
     server.route(COMPARE, comparison())
-    server.route('GET /api/project/proj/branches', { branches: ['main', 'dev'], defaultBranch: 'main' })
+    server.route('GET /api/repo/repo-1/branches', { branches: ['main', 'dev'], defaultBranch: 'main' })
   })
 
   // Two refs compare through their own route, and the status bar's poll
@@ -651,3 +662,78 @@ describe('a Changes pane on a range', () => {
   })
 })
 
+
+// A workspace with several checkouts (docs/project-repos.md): its git views
+// describe the one a switcher picks, whose changes are relative to it while
+// the tree is of the whole workspace dir.
+describe('git views by checkout', () => {
+  const NESTED: WorkspaceFilesData = {
+    ...LISTING,
+    paths: ['notes.md', 'api/main.go', 'web/README.md', 'web/src/app.ts', 'web/src/new.ts', 'web/src/same.ts'],
+    conflicted: ['web/README.md'],
+  }
+  /** Each checkout's own answer: `web` has the fixture's changes, `api` none. */
+  const byRepo = ({ query }: { query: URLSearchParams }): WorkspaceChanges => {
+    const payload = query.get('repo') === 'web' ? { ...PAYLOAD, branch: 'web-base' } : { ...PAYLOAD, branch: 'api-base', files: [], diff: '' }
+    const { diff, ...bare } = payload
+    const answer = query.get('diff') === '0' ? bare : { ...bare, diff }
+    return query.get('listing') && query.get('known') !== NESTED.version ? { ...answer, listing: NESTED } : answer
+  }
+  const nested = (cwd: string): void => {
+    useUiStore.getState().receiveSnapshot(serverSnapshot({
+      workspaces: [workspaceEntry({
+        repos: [{ repoId: 'repo-api', path: 'api', baseBranch: 'main' }, { repoId: 'repo-web', path: 'web', baseBranch: 'dev' }],
+        cwd,
+      })],
+    }))
+  }
+  const switcher = (): HTMLSelectElement => screen.getAllByRole<HTMLSelectElement>('combobox', { name: 'Repo' })[0]
+  beforeEach(() => {
+    server.route(CHANGES, byRepo)
+    useUiStore.setState({ checkoutPicks: {} })
+  })
+
+  it('shows the checkout the workspace\'s cwd is in, and switches every view together', async () => {
+    nested('web')
+    renderWithClient(<><GitStatusBar workspaceId="s1" />{changesPane}</>)
+    await waitFor(() => expect(row('web/src/app.ts')).toBeTruthy())
+    // Asked of the one checkout, and placed under its folder.
+    expect(server.called(CHANGES).every((c) => c.query.get('repo') === 'web')).toBe(true)
+    expect(screen.getByTitle(BASE).textContent).toBe('origin/dev')
+    expect([...switcher().options].map((o) => o.textContent)).toEqual(['api/', 'web/'])
+    expect(screen.getAllByRole('combobox', { name: 'Repo' })).toHaveLength(2)
+
+    // A file opens by its place in the workspace; its diff is loaded by its
+    // place in the checkout.
+    useUiStore.getState().setPaneView(CHANGES_VIEW, { openDiffs: ['web/src/app.ts'] })
+    await waitFor(() => expect(screen.getByText('needle1')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Open web/src/app.ts'))
+    expect(useUiStore.getState().layouts.s1.flatMap((g) => g.tabs)).toContain('file:web/src/app.ts')
+
+    fireEvent.change(switcher(), { target: { value: 'api' } })
+    await waitFor(() => expect(screen.getByText('No changes yet')).toBeTruthy())
+    expect(server.called(CHANGES).at(-1)?.query.get('repo')).toBe('api')
+    expect(screen.getByTitle(BASE).textContent).toBe('origin/main')
+  })
+
+  it('colors the whole workspace\'s tree with the shown checkout\'s changes', async () => {
+    nested('web')
+    useUiStore.getState().setPaneView(VIEW, { expanded: ['web', 'web/src'] })
+    renderExplorer()
+    await waitFor(() => expect(within(row('web/src/app.ts')).getByText('+2')).toBeTruthy())
+    expect(within(row('web/src/app.ts')).getByText('app.ts').className).toContain('text-warning')
+    expect(within(row('web/README.md')).getByTitle('Conflicted').textContent).toBe('!')
+    // Outside the shown checkout nothing is marked.
+    expect(within(row('notes.md')).queryByTitle(/./)).toBeNull()
+    expect(within(row('api')).queryByLabelText('modified')).toBeNull()
+  })
+
+  it('says a workspace with no repos has none, in the bar and the Changes pane', async () => {
+    useUiStore.getState().receiveSnapshot(serverSnapshot({ workspaces: [workspaceEntry({ repos: [] })] }))
+    renderWithClient(<><GitStatusBar workspaceId="s1" />{changesPane}</>)
+    expect(screen.getByText('No repos')).toBeTruthy()
+    await waitFor(() => expect(screen.getByText('This workspace has no repos')).toBeTruthy())
+    expect(screen.queryByRole('combobox', { name: 'Repo' })).toBeNull()
+    expect(server.called(CHANGES).every((c) => !c.query.has('repo'))).toBe(true)
+  })
+})

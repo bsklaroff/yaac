@@ -71,6 +71,7 @@ export function toSessionEntry(
     ordinal: s.ordinal,
     ...(s.effort !== undefined ? { effort: s.effort } : {}),
     agentOptions: s.agentOptions,
+    cwd: s.cwd,
     ...(model !== undefined ? { model } : {}),
     ...(modelName !== undefined ? { modelName } : {}),
     ...(title !== undefined ? { title } : {}),

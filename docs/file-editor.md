@@ -42,7 +42,9 @@ second.
 
 Every file route resolves the workspace's record (`resolveWorkspaceRecord`),
 so a stopped workspace's files open and save like a running one's
-(docs/workspace-storage.md). The exceptions are the changes (which carry the
+(docs/workspace-storage.md). A path is relative to the workspace dir, so in
+a workspace whose repos sit in folders (docs/project-repos.md) it starts
+with the checkout's folder, and each checkout's `.git` is out of reach. The exceptions are the changes (which carry the
 listing and the status bar's counts) and a file's text at the diff base,
 which run git inside the workspace. For a stopped workspace they return
 `CONFLICT`, shown as "Start the workspace to browse its files" (or "to
@@ -62,23 +64,34 @@ macOS virtiofs, the same process user under containerless).
 | `POST /workspace/:id/folder` | creates a folder and its missing parents; 409 if taken |
 | `POST /workspace/:id/rename` | moves a file, folder or symlink; 409 if the destination exists |
 | `DELETE /workspace/:id/file?path=` | deletes a file, a link (never its target) or a folder, recursively |
-| `GET /workspace/:id/changes?base=&diff=&listing=&known=` | `WorkspaceChanges`: `{ base, work, baseResolved, files, diff, truncated, branch, comparison, listing?, readMs }`; `diff=0` leaves the `diff` field out, `listing=paths\|full` adds `WorkspaceFiles` unless its version is `known` |
-| `POST /workspace/:id/changes/diff` `{ base, work, files, skip? }` | `{ diff }`: more of the reading `base` and `work` name — the parts of `files` (each `{ path, oldPath? }`, at most 200), or with `skip` one file's part after its first `skip` lines; 404 once either tree is gone |
-| `GET /workspace/:id/compare?from=&to=` | `WorkspaceComparison`: `{ base, work, baseResolved, files, diff, truncated, commit? }`, the diff from the merge base of `from` and `to` to `to`, or with no `from`, `to` as `git show` shows it (see "Ranges"); 400 when a ref does not resolve or the two share no history |
-| `GET /workspace/:id/file-at?path=&rev=` | `{ exists, content }`: the file at commit `rev` (a full object id), `content` null when binary or over 1 MiB |
+| `GET /workspace/:id/changes?repo=&base=&diff=&listing=&known=` | `WorkspaceChanges`: `{ base, work, baseResolved, files, diff, truncated, branch, comparison, listing?, readMs }`; `diff=0` leaves the `diff` field out, `listing=paths\|full` adds `WorkspaceFiles` unless its version is `known` |
+| `POST /workspace/:id/changes/diff` `{ base, work, files, skip?, repo? }` | `{ diff }`: more of the reading `base` and `work` name — the parts of `files` (each `{ path, oldPath? }`, at most 200), or with `skip` one file's part after its first `skip` lines; 404 once either tree is gone |
+| `GET /workspace/:id/compare?from=&to=&repo=` | `WorkspaceComparison`: `{ base, work, baseResolved, files, diff, truncated, commit? }`, the diff from the merge base of `from` and `to` to `to`, or with no `from`, `to` as `git show` shows it (see "Ranges"); 400 when a ref does not resolve or the two share no history |
+| `GET /workspace/:id/file-at?path=&rev=` | `{ exists, content }`: the file at commit `rev` (a full object id) of the checkout its path is in, `content` null when binary or over 1 MiB |
+
+The git reads (`changes`, `changes/diff`, `compare`, `commits`, and
+`POST /workspace/:id/base`) are of one checkout. `repo` names it by its
+path under the workspace dir or its repo's id; a workspace with one
+checkout needs none, and one with several is refused without it. A diff's
+paths are relative to its checkout. The listing covers the whole workspace
+whichever checkout is named: each checkout's gitignore-aware listing under
+its folder, and in a workspace whose root is no checkout, whatever else is
+there, found by a plain walk. A workspace with no repos answers no changes
+and no commits.
 
 ### Changes
 
 The webapp polls one route per workspace, `changes`, for the diff, the
 status bar's counts and the explorer's listing. The changes are everything
 that differs from the **diff base**: the merge
-base of HEAD with the workspace's base branch (`workspaces.baseBranch`, as
-`origin/<base>`: every way of setting it checks origin has it, and a local
-copy is never kept current), else, for a workspace created at a commit with
-no base branch, that commit (`workspaces.startCommit`,
-docs/workspace-steps.md). The base branch is the one the workspace forked
+base of HEAD with the checkout's base branch (`workspace_repos.baseBranch`,
+as `origin/<base>`: every way of setting it checks origin has it, and a
+local copy is never kept current), else, for a checkout created at a commit
+with no base branch, that commit (`workspace_repos.startCommit`,
+docs/workspace-steps.md). The base branch is the one the checkout forked
 from until the Commits pane's picker or `yaac-mama set-base` moves it
-(`setWorkspaceBase`). A read is two scripts (`changes.ts` in
+(`setWorkspaceBase`). Each checkout has a private index and held state of
+its own, so reads of two checkouts never wait on each other. A read is two scripts (`changes.ts` in
 `#domain/workspaces`) run inside the workspace through the driver's `exec`,
 under either driver. The first, the **scan**, runs `git add -A` into a
 private index at a stable scratch path, so the

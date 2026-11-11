@@ -26,6 +26,8 @@ const session = (over: Partial<WorkspaceListEntry> = {}): WorkspaceListEntry => 
   forwardedPorts: [],
   unforwardedPorts: [],
   conversations: [],
+  repos: [],
+  cwd: '',
   ...over,
 })
 

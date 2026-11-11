@@ -1,5 +1,5 @@
-import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileConversations, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileRevokedShares, reconcileSessions, reconcileSteps, reconcileStoppedConversations, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, reconcileVolumeLeases, collectDeletedVolumes, startScheduledWorkspaces } from '#domain/workspaces'
-import { refreshProjectOrigins } from '#domain/projects'
+import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileConversations, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileRevokedShares, collectDeletedRepos, reconcileSessions, reconcileSteps, reconcileStoppedConversations, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, reconcileVolumeLeases, collectDeletedVolumes, startScheduledWorkspaces } from '#domain/workspaces'
+import { refreshRepoOrigins } from '#domain/repos'
 import { reconcileSites } from '#domain/sites'
 import { adoptRefreshedToolCredentials, syncToolCredentials } from '#domain/auth'
 import { workspaceDriver } from '#drivers/driver'
@@ -63,11 +63,15 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // in-pod verdict, and a failed probe keeps the workspace.
     { name: 'stale-workspaces', triggers: ['workspaces', 'units', 'status-streams'],
       run: (ctx) => reconcileStaleWorkspaces(ctx.snapshot()) },
-    // A removed share runs nothing (docs/hosted-projects.md "Sharing"):
-    // removing it stops its workspaces, and this stops any that a failed
-    // stop or a create already past its owner check left running.
+    // A repo whose share ended runs in none of that user's workspaces
+    // (docs/hosted-projects.md "Sharing"): ending it stops them, and this
+    // stops any that a failed stop or a create already past its check left
+    // running.
     { name: 'revoked-shares', triggers: ['workspaces'],
       run: (ctx) => reconcileRevokedShares(ctx.snapshot()) },
+    // A deleted repo's main clone goes with the last workspace that held a
+    // checkout of it (docs/hosted-projects.md "Deleting a repo").
+    { name: 'deleted-repos', triggers: [], every: 10 * 60_000, run: () => collectDeletedRepos() },
     // Timeouts, routine ticks and scheduled starts all run on the resync,
     // whose minute is the resolution they promise (docs/routines.md). In
     // this order, so a routine's previous run is stopped in the pass that
@@ -132,9 +136,9 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     ...credentialSync,
     ...volumes,
     // Keep running workspaces' `origin/*` within minutes of origin
-    // (docs/server-git.md); nothing else fetches a project with no new
-    // creates. Throttled per project and detached.
-    { name: 'origin-refresh', triggers: [], run: (ctx) => refreshProjectOrigins(ctx.snapshot()) },
+    // (docs/server-git.md); nothing else fetches a repo with no new
+    // creates. Throttled per repo and detached.
+    { name: 'origin-refresh', triggers: [], run: (ctx) => refreshRepoOrigins(ctx.snapshot()) },
     // Generated titles, after the session sweep so a just-captured prompt
     // is eligible the same pass (hence the same triggers).
     { name: 'generated-titles', triggers: ['workspaces', 'live-agents'],

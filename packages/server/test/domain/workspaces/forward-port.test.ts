@@ -5,8 +5,8 @@ import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-dr
 import { dismissWorkspacePort, forwardWorkspacePort, offeredForwards, unforwardWorkspacePort } from '#domain/workspaces/forward-port'
 import { ServerError } from '@yaac/shared/errors'
 import type { PortMapping } from '@yaac/shared/types'
-import { BUILT_IN_USER_ID, getProjectRow, insertSite, recordProject, setProjectConfig, updateSite } from '#db'
-import { DEMO_PROJECT_ID as PROJ } from '@yaac/test-utils/project-fixture'
+import { BUILT_IN_USER_ID, getProjectRow, insertSite, setProjectConfig, updateSite } from '#db'
+import { recordTestProject, DEMO_PROJECT_ID as PROJ } from '@yaac/test-utils/project-fixture'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -29,7 +29,8 @@ const HANDLE = handleFixture({
 
 beforeEach(async () => {
   vi.clearAllMocks()
-  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://github.com/o/r', addedAt: 'now' }, BUILT_IN_USER_ID)
+  // The suite shares one database, so the project is recorded once.
+  if (!await getProjectRow(PROJ)) await recordTestProject(PROJ, { remoteUrl: 'https://github.com/o/r' })
   await setProjectConfig(PROJ, { portForwards: [] })
   mockUnforwarded.mockResolvedValue([8090])
   mockForwardPort.mockResolvedValue({ containerPort: 8090, hostPort: 8090 })
@@ -198,7 +199,7 @@ describe('offeredForwards', () => {
     expect(await offeredForwards([], undefined)).toEqual([])
 
     const site = await insertSite({
-      projectId: PROJ, name: 'shop', hostname: 'shop.example.com', port: 3000, adminPort: 3001, namedWorkflowId: await namedWorkflowFor(PROJ),
+      projectId: PROJ, repoId: PROJ, name: 'shop', hostname: 'shop.example.com', port: 3000, adminPort: 3001, namedWorkflowId: await namedWorkflowFor(PROJ),
     })
     expect(await offeredForwards(ports, site.id)).toEqual([{ containerPort: 3001, hostPortStart: 3001 }])
     await updateSite(site.id, { adminPort: null })

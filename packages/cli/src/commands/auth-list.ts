@@ -11,8 +11,8 @@ export async function authList(): Promise<void> {
     console.log('  (none configured — add one in the web app\'s Settings)')
   } else {
     const width = Math.max(...result.gitCredentials.map((c) => c.name.length))
-    for (const { name, kind, preview, projects } of result.gitCredentials) {
-      const used = projects.length > 0 ? `  (${projects.join(', ')})` : ''
+    for (const { name, kind, preview, repos } of result.gitCredentials) {
+      const used = repos.length > 0 ? `  (${repos.join(', ')})` : ''
       console.log(`  ${name.padEnd(width)}  ${kind.padEnd(5)}  ${preview}${used}`)
     }
   }

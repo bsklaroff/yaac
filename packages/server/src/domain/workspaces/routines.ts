@@ -15,7 +15,7 @@
 import { resolveParentlessSettings, runQueuedWorkspace, type QueueSource } from './queued-workspaces'
 import { authorizeProject, type Actor } from '#domain/access'
 import { getDefaultBranch } from '#domain/git'
-import { approveWorkflowRef } from '#domain/projects'
+import { approveWorkflowRef, RUN_SECRETS_NEED_ONE_REPO } from '#domain/projects'
 import { modelDisplayName } from '#domain/auth'
 import {
   deleteQueuedWorkspace,
@@ -25,7 +25,6 @@ import {
   getTimeZone,
   insertRoutine,
   insertRoutineRun,
-  listProjectRows,
   listQueuedWorkspaceRows,
   listRoutineRows,
   listRoutineRuns,
@@ -45,6 +44,7 @@ import { formatUtcTimestamp } from '@yaac/shared/time'
 import { repoDir } from '@yaac/shared/project-paths'
 import {
   ROUTINE_RUNS_PAGE_MAX,
+  type RepoSelection,
   type RoutineEntry,
   type RoutineRunEntry,
   type RoutineRunPage,
@@ -81,8 +81,6 @@ export async function updateRoutine(
   const retooled = patch.tool !== undefined && patch.tool !== row.tool
   const nonInteractive = patch.nonInteractive ?? row.nonInteractive
   const prompt = nonInteractive ? undefined : patch.prompt ?? row.prompt
-  const commit = patch.branch !== undefined ? undefined : patch.commit ?? row.commit
-  const branch = commit !== undefined ? undefined : patch.branch ?? row.branch
   const workflow = patch.workflow !== undefined ? patch.workflow
     : row.namedWorkflowId !== undefined ? (await getNamedWorkflow(row.namedWorkflowId))?.name
     : undefined
@@ -93,8 +91,11 @@ export async function updateRoutine(
     ...(prompt !== undefined ? { prompt } : {}),
     tool: patch.tool ?? row.tool,
     mode: patch.mode ?? row.mode,
-    ...(branch !== undefined ? { branch } : {}),
-    ...(commit !== undefined ? { commit } : {}),
+    ...(patch.repos !== undefined ? { repos: patch.repos } : {}),
+    ...(patch.nested !== undefined ? { nested: patch.nested } : {}),
+    ...(patch.cwd !== undefined ? { cwd: patch.cwd } : {}),
+    ...(patch.branch !== undefined ? { branch: patch.branch } : {}),
+    ...(patch.commit !== undefined ? { commit: patch.commit } : {}),
     ...(typeof workflow === 'string' ? { workflow } : {}),
     ...(nonInteractive ? { nonInteractive } : {}),
     group: patch.group !== undefined ? patch.group : row.groupId ?? null,
@@ -107,7 +108,7 @@ export async function updateRoutine(
       : !retooled && patch.model === undefined && row.effort !== undefined ? { effort: row.effort } : {}),
     ...(retooled ? patch.agentOptions !== undefined ? { agentOptions: patch.agentOptions } : {}
       : { agentOptions: { ...row.agentOptions, ...patch.agentOptions } }),
-  }, source)
+  }, source, { repos: row.repos, nested: row.nested, cwd: row.cwd })
   const rescheduled = fields.cron !== row.cron || fields.timeZone !== row.timeZone
   const updated = await updateRoutineRow(id, fields,
     rescheduled && !row.paused ? nextTick(fields.cron, fields.timeZone, new Date()) : undefined)
@@ -179,13 +180,12 @@ export async function listRoutineRunPage(
 /**
  * Fire every routine whose tick has come, on the reconciler's resync. Runs
  * before the queue's step, which launches what this inserts in the same
- * pass. A routine in a removed share runs nothing.
+ * pass.
  */
 export async function reconcileRoutines(): Promise<void> {
   const now = new Date()
-  const revoked = new Set((await listProjectRows()).filter((p) => p.shareRevoked).map((p) => p.id))
   for (const row of await listRoutineRows()) {
-    if (row.paused || row.nextRunAt === undefined || row.nextRunAt > now || revoked.has(row.projectId)) continue
+    if (row.paused || row.nextRunAt === undefined || row.nextRunAt > now) continue
     await fire(row, row.nextRunAt, now)
       .catch((err: unknown) => serverLog(`[routines] firing ${row.name} (${row.id.slice(0, 8)}) failed: ${String(err)}`))
   }
@@ -226,8 +226,9 @@ async function insertRun(
     permissionMode: row.permissionMode,
     ...(row.effort !== undefined ? { effort: row.effort } : {}),
     agentOptions: row.agentOptions,
-    ...(row.branch !== undefined ? { branch: row.branch } : {}),
-    ...(row.commit !== undefined ? { commit: row.commit } : {}),
+    repos: row.repos,
+    nested: row.nested,
+    cwd: row.cwd,
     ...(row.namedWorkflowId !== undefined ? { namedWorkflowId: row.namedWorkflowId } : {}),
     ...(row.nonInteractive ? { nonInteractive: true } : {}),
     title: `${row.name} · ${formatInZone(slot, row.timeZone)}`,
@@ -261,13 +262,15 @@ function nextTick(cron: string, timeZone: string, from: Date): Date | null {
  * owner's, else UTC; a create that names no group files runs under one
  * named after the routine, made if need be. Its named workflow's current
  * graph is checked as its runs' steps, and the commit or branch the runs
- * start at approved for it (`approveWorkflowRef`).
+ * start their one repo at approved for it (`approveWorkflowRef`). On an
+ * edit, `own` is what its runs start with now.
  */
 async function resolveRoutine(
   principal: Actor,
   projectId: string,
   request: RoutineSettings,
   source: QueueSource,
+  own?: RepoSelection,
 ): Promise<RoutineFields> {
   const cron = request.cron.trim()
   const invalid = cronError(cron)
@@ -277,6 +280,9 @@ async function resolveRoutine(
   const name = request.name.trim()
   const settings = await resolveParentlessSettings(projectId, {
     ...(request.prompt !== undefined ? { prompt: request.prompt } : {}),
+    ...(request.repos !== undefined ? { repos: request.repos } : {}),
+    ...(request.nested !== undefined ? { nested: request.nested } : {}),
+    ...(request.cwd !== undefined ? { cwd: request.cwd } : {}),
     ...(request.commit !== undefined ? { commit: request.commit } : {}),
     ...(typeof request.workflow === 'string' ? { workflow: request.workflow } : {}),
     ...(request.nonInteractive === true ? { nonInteractive: true } : {}),
@@ -288,7 +294,7 @@ async function resolveRoutine(
     ...(request.agentOptions !== undefined ? { agentOptions: request.agentOptions } : {}),
     ...(request.branch !== undefined ? { branch: request.branch } : {}),
     group: request.group !== undefined ? request.group : name,
-  }, source)
+  }, source, own)
   const fields: RoutineFields = {
     name,
     cron,
@@ -300,17 +306,26 @@ async function resolveRoutine(
     permissionMode: settings.permissionMode,
     ...(settings.effort !== undefined ? { effort: settings.effort } : {}),
     agentOptions: settings.agentOptions ?? {},
-    ...(settings.branch !== undefined ? { branch: settings.branch } : {}),
-    ...(settings.commit !== undefined ? { commit: settings.commit } : {}),
+    repos: settings.repos,
+    nested: settings.nested,
+    cwd: settings.cwd,
     ...(settings.namedWorkflowId !== undefined ? { namedWorkflowId: settings.namedWorkflowId } : {}),
     ...(settings.nonInteractive === true ? { nonInteractive: true } : {}),
     ...(settings.groupId !== undefined ? { groupId: settings.groupId } : {}),
     ...(request.timeout != null ? { timeoutMinutes: request.timeout } : {}),
   }
-  if (settings.namedWorkflowId !== undefined) {
-    await approveWorkflowRef(principal, settings.namedWorkflowId, settings.commit !== undefined
-      ? { commit: settings.commit }
-      : { branch: settings.branch ?? await getDefaultBranch(repoDir(projectId)) })
+  // Run secrets reach only a workspace of one repo, so only such a start
+  // has a commit or branch to approve, and a non-interactive routine that
+  // names them with any other start would fail at every tick.
+  const [lone] = settings.repos.length === 1 ? settings.repos : []
+  if (settings.namedWorkflowId !== undefined && lone === undefined && settings.nonInteractive === true
+    && ((await getNamedWorkflow(settings.namedWorkflowId))?.workflow.secrets.length ?? 0) > 0) {
+    throw new ServerError('VALIDATION', RUN_SECRETS_NEED_ONE_REPO)
+  }
+  if (settings.namedWorkflowId !== undefined && lone !== undefined) {
+    await approveWorkflowRef(principal, settings.namedWorkflowId, lone.commit !== undefined
+      ? { commit: lone.commit }
+      : { branch: lone.branch ?? await getDefaultBranch(repoDir(lone.repo)), repoId: lone.repo })
   }
   return fields
 }
@@ -375,8 +390,7 @@ async function toEntries(rows: RoutineRow[]): Promise<RoutineEntry[]> {
       permissionMode: r.permissionMode,
       ...(r.effort !== undefined ? { effort: r.effort } : {}),
       agentOptions: r.agentOptions,
-      ...(r.branch !== undefined ? { branch: r.branch } : {}),
-      ...(r.commit !== undefined ? { commit: r.commit } : {}),
+      selection: { repos: r.repos, nested: r.nested, cwd: r.cwd },
       ...(workflow !== undefined ? { workflow: workflow.name } : {}),
       ...(r.nonInteractive ? { nonInteractive: true as const } : {}),
       ...(r.groupId !== undefined ? { groupId: r.groupId } : {}),

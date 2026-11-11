@@ -34,6 +34,7 @@ import {
   listDraftWorkspaceRows,
   updateDraftWorkspace,
   updateQueuedWorkspace,
+  type QueuedWorkspaceSettings,
 } from '#db'
 import type * as storeModule from '#db/workspace-store'
 import { closeDb } from '#db/client'
@@ -438,8 +439,8 @@ describe('reconcileGeneratedTitles', () => {
   it('titles a queued workspace, and again once its prompt is edited', async () => {
     await seedCache()
     const settings = {
-      prompt: PROMPT, tool: 'claude', model: 'opus', mode: 'tui', permissionMode: 'manual', branch: 'main',
-    } as const
+      prompt: PROMPT, tool: 'claude', model: 'opus', mode: 'tui', permissionMode: 'manual', repos: [], nested: false, cwd: '.',
+    } satisfies QueuedWorkspaceSettings
     const entry = await insertQueuedWorkspace(P, { parentWorkspaceId: 'w' }, settings)
     await insertQueuedWorkspace(P, { parentWorkspaceId: 'w' }, { ...settings, title: 'Mine' })
     await reconcileGeneratedTitles()

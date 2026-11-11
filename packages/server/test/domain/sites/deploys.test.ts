@@ -35,14 +35,14 @@ import {
   findVolumeByName,
   findWorkspaceRow,
   getSiteRow,
+  listWorkspaceRepos,
   listWorkspaceSteps,
   findSiteByName,
   seeTailnetUser,
-  setProjectShareRevoked,
   setUserRole,
 } from '#db'
 import { closeDb, getDb } from '#db/client'
-import { projects } from '#db/schema'
+import { repos } from '#db/schema'
 import { eq } from 'drizzle-orm'
 import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
 import { git } from '@yaac/test-utils/git'
@@ -191,7 +191,10 @@ describe('deploySite', () => {
     expect(spec.mounts.find((m) => m.mountPath === `${repoDir(DEMO_PROJECT_ID)}/.git`)?.readOnly).toBe(true)
     expect(spec.mounts.filter((m) => m.mountPath.startsWith('/usr/local/bin/')).every((m) => m.readOnly === true)).toBe(true)
     expect(spec.mounts).toContainEqual(expect.objectContaining({ mountPath: '/home/yaac/volume' }))
-    expect(await findWorkspaceRow(first.workspaceId)).toMatchObject({ siteId: (await site()).id, startCommit: head })
+    expect(await findWorkspaceRow(first.workspaceId)).toMatchObject({ siteId: (await site()).id, cwd: '' })
+    // The site's repo alone, at the workspace root, at the commit.
+    expect(await listWorkspaceRepos(first.workspaceId))
+      .toEqual([{ workspaceId: first.workspaceId, repoId: DEMO_PROJECT_ID, path: '', startCommit: head }])
 
     await reconcileSites(snapshot(), false)
     expect((await site()).deployPhase).toBe('building')
@@ -239,11 +242,11 @@ describe('deploySite', () => {
 
   // A release runs no git of its own: the server makes its checkout.
   it('deploys a project with no git credential, whose release is given none', async () => {
-    await (await getDb()).update(projects).set({ gitCredentialId: null }).where(eq(projects.id, DEMO_PROJECT_ID))
+    await (await getDb()).update(repos).set({ gitCredentialId: null }).where(eq(repos.id, DEMO_PROJECT_ID))
     await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, workflow: 'app' })
     const deploy = await deploySite(local, DEMO_PROJECT_ID, 'shop')
     await created(deploy.workspaceId)
-    expect(launched.at(-1)?.gitCredential).toBeUndefined()
+    expect(launched.at(-1)?.gitCredentials).toEqual([])
     expect(launched.at(-1)?.env.some((e) => e.startsWith('GH_TOKEN='))).toBe(false)
   })
 
@@ -390,20 +393,6 @@ describe('reconcileSites', () => {
     await push()
     await reconcileSites(snapshot(), false)
     expect((await site()).deployWorkspaceId).toBeUndefined()
-  })
-
-  // docs/hosted-projects.md "Sharing": a removed share runs nothing.
-  it('leaves a revoked share\'s site alone, replacing nothing', async () => {
-    await createSite(local, DEMO_PROJECT_ID, { name: 'shop', hostname: 'shop.example.com', port: 3000, workflow: 'app' })
-    const first = await deploySite(local, DEMO_PROJECT_ID, 'shop')
-    await created(first.workspaceId)
-    await stepsAre(first.workspaceId, { app: 'ready' })
-    await reconcileSites(snapshot(), false)
-    await setProjectShareRevoked(DEMO_PROJECT_ID, true)
-    running.delete(first.workspaceId)
-    await reconcileSites(snapshot(), true)
-    expect((await site()).replaceAfter).toBeUndefined()
-    expect(routed.at(-1)).toEqual([])
   })
 })
 

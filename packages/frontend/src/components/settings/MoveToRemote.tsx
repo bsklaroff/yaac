@@ -3,27 +3,25 @@ import { useQuery } from '@tanstack/react-query'
 import { GitCredentialPicker, INPUT, remoteKind } from '#components/GitCredentialPicker'
 import { SectionLabel } from '#components/settings/Field'
 import { BUTTON } from '#components/ui/button'
-import { api } from '#lib/api'
+import { moveRepo, previewRepoMove } from '#lib/repoApi'
 import { WarningIcon } from '#lib/icons'
 import { useSnapshot } from '#lib/useSnapshot'
 
-const move = api.project[':projectId'].move
-
 /**
- * Move a project yaac hosts, and every share of it, to an empty repository
- * elsewhere (docs/hosted-projects.md "Moving to a git host"). The warning
- * comes from the server's preview, read when the form opens, since the move
- * stops other users' workspaces too. Once it lands, the snapshot carries
- * the project as no longer hosted, and this section goes away with the rest
- * of the hosted settings.
+ * Move a repo yaac hosts to an empty repository elsewhere
+ * (docs/hosted-projects.md "Moving to a git host"). The warning comes from
+ * the server's preview, read when the form opens, since the move stops
+ * other users' workspaces too. Once it lands, the repo list carries it as
+ * no longer hosted (`onMoved`), and this section goes away with the rest of
+ * the hosted settings. `name` seeds the new credential's name.
  */
-export function MoveToRemote({ projectId, name }: { projectId: string; name: string }): JSX.Element {
+export function MoveToRemote({ repoId, name, onMoved }: { repoId: string; name: string; onMoved: () => void }): JSX.Element {
   const [open, setOpen] = useState(false)
   const [url, setUrl] = useState('')
   const remoteUrl = url.trim()
   const preview = useQuery({
-    queryKey: ['project-move', projectId],
-    queryFn: () => move.$get({ param: { projectId } }),
+    queryKey: ['repo-move', repoId],
+    queryFn: () => previewRepoMove(repoId),
     enabled: open,
     staleTime: 0,
   })
@@ -32,8 +30,9 @@ export function MoveToRemote({ projectId, name }: { projectId: string; name: str
   const running = preview.data?.runningWorkspaces ?? 0
   const sharedWith = preview.data?.sharedWith ?? []
 
-  const submit = async (gitCredentialId: string): Promise<void> => {
-    await move.$post({ param: { projectId }, json: { remoteUrl, gitCredentialId } })
+  const submit = async (credentialId: string): Promise<void> => {
+    await moveRepo(repoId, remoteUrl, credentialId)
+    onMoved()
   }
 
   return (
@@ -49,19 +48,19 @@ export function MoveToRemote({ projectId, name }: { projectId: string; name: str
             <WarningIcon size={14} className="mt-0.5 shrink-0 text-warning" />
             <ul className="list-disc space-y-0.5 pl-4">
               <li>
-                {preview.isPending ? 'Every running workspace' : `${running} running workspace${running === 1 ? '' : 's'}`} on
-                this project stop first, whoever owns them. Their checkouts are kept, and push to the new
+                {preview.isPending ? 'Every running workspace' : `${running} running workspace${running === 1 ? '' : 's'}`} with
+                a checkout of this repo stop first, whoever owns them. Their checkouts are kept, and push to the new
                 remote once restarted. Nothing can start until the move is done.
               </li>
               {sharedWith.length > 0 && (
                 <li>
-                  It is shared with {sharedWith.join(', ')}. Each keeps their copy, but needs a git credential of
-                  their own for the new remote before they can start a workspace.
+                  It is shared with {sharedWith.join(', ')}. Sharing ends: each gets a repo of their own for the new
+                  remote, and needs a git credential for it before they can start a workspace with it.
                 </li>
               )}
               <li>The repository must be empty: create it with no README, license or .gitignore.</li>
               {mediatedEgress && (
-                <li>Its host must be in this project&apos;s egress allowlist, below, so workspaces can reach it.</li>
+                <li>Its host must be in the egress allowlist of every project that links it, so workspaces can reach it.</li>
               )}
               <li>yaac keeps its own copy, read-only, until you have checked the new remote and remove it here.</li>
             </ul>

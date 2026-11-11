@@ -52,7 +52,7 @@ function emptySnapshot(): ServerSnapshot {
 function snapshotWithProject(projectId: string): ServerSnapshot {
   return {
     ...emptySnapshot(),
-    projects: [{ id: projectId, name: 'demo', remoteUrl: 'https://example.com/r.git', addedAt: '2026-01-01', owner: 'u1', workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true, scratchDirs: { dirs: [], ignoredTracked: [] }, initSteps: {}, portForwards: [], cacheVolumes: {}, nestedContainers: false, npmCache: true }],
+    projects: [{ id: projectId, name: 'demo', addedAt: '2026-01-01', owner: 'u1', workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [], scratchDirs: { dirs: [], ignoredTracked: [] }, initSteps: {}, portForwards: [], cacheVolumes: {}, nestedContainers: false, npmCache: true }],
   }
 }
 
@@ -253,7 +253,7 @@ describe('buildSnapshot provisioning', () => {
       workspaces: [{
         workspaceId: 'prov-2', projectId: 'p',
         status: 'waiting', createdAt: '2026-01-01 00:00:00', sessions: [], conversations: [],
-        blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
+        repos: [], cwd: '', blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
       gitAuthFailures: {},
@@ -283,7 +283,7 @@ describe('buildSnapshot provisioning', () => {
       workspaces: [{
         workspaceId: 'spare-1', projectId: 'p',
         status: 'waiting', createdAt: '2026-01-01 00:00:00', sessions: [], conversations: [],
-        blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
+        repos: [], cwd: '', blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
       gitAuthFailures: {},
@@ -303,7 +303,7 @@ describe('buildSnapshot provisioning', () => {
       workspaces: [{
         workspaceId: 'spare-2', projectId: 'p',
         status: 'waiting', createdAt: '2026-01-01 00:00:00', sessions: [], conversations: [],
-        blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
+        repos: [], cwd: '', blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
       gitAuthFailures: {},
@@ -322,7 +322,7 @@ describe('buildSnapshot provisioning', () => {
       workspaces: [{
         workspaceId: 'prov-3', projectId: 'p',
         status: 'waiting', createdAt: '2026-01-01 00:00:00', sessions: [], conversations: [],
-        blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
+        repos: [], cwd: '', blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
       gitAuthFailures: {},
@@ -353,7 +353,7 @@ describe('buildSnapshot prompts', () => {
         workspaceId: 'w-1', projectId: 'p', prompt: long,
         status: 'running', createdAt: '2026-01-01 00:00:00', sessions: [],
         conversations: [{ conversationId: 'a-1', tool: 'claude', ordinal: 0, active: true, prompt: conversationPrompt }],
-        blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
+        repos: [], cwd: '', blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
       gitAuthFailures: {},
@@ -363,7 +363,7 @@ describe('buildSnapshot prompts', () => {
     }])
     registerProvisioning({ workspaceId: 'req-1', projectId: 'p', tool: 'claude', kind: 'create', prompt: long })
     await insertQueuedWorkspace(PROJ, { parentWorkspaceId: 'w-1' }, {
-      prompt: long, tool: 'claude', model: 'opus', mode: 'tui', permissionMode: 'manual', branch: 'main',
+      prompt: long, tool: 'claude', model: 'opus', mode: 'tui', permissionMode: 'manual', repos: [], nested: false, cwd: '.',
     })
     await insertDraftWorkspace(PROJ, { prompt: long, tool: 'claude', mode: 'tui', permissionMode: 'manual' })
 
@@ -400,7 +400,7 @@ describe('buildSnapshot stopped counts', () => {
       workspaces: [{
         workspaceId: 'stopping', projectId: PROJ, groupId,
         status: 'running', stopping: true, createdAt: '2026-01-01 00:00:00', sessions: [], conversations: [],
-        blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
+        repos: [], cwd: '', blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
       gitAuthFailures: {},

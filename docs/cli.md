@@ -6,6 +6,12 @@ prefix of the id; `yaac project list` shows both. Names need not be unique
 (adding a remote twice makes two projects), so a shared name is refused with
 the candidates' ids.
 
+A project links zero or more git repos (docs/project-repos.md). In it a repo
+is named by its folder (`yaac project repo list`), or its id. A command
+about one repo of a project takes `--repo <dir>`, which a project with one
+repo does not need. `yaac repo` names a repo on its own: by id or unique id
+prefix, by remote URL, or as `<project>/<folder>`.
+
 ## Whose projects
 
 On an install with several users (docs/multi-user.md), a project's name or
@@ -15,8 +21,7 @@ display name or user id, before or after the command) points all of that at
 a teammate's projects instead: `yaac workspace list --user ada@example.com`.
 A full project id names anyone's project either way. The CLI resolves the
 project itself and sends the server its id, so two users each holding a
-project of the same name (a hosted project and its share,
-docs/hosted-projects.md) never collide. Workspace ids are unaffected.
+project of the same name never collide. Workspace ids are unaffected.
 
 ```
 yaac --user <user> <command>    Mean this user's projects rather than your own
@@ -63,19 +68,61 @@ yaac user                       The install's users (multi-user.md "Roles")
                                 admin's)
 
 yaac project
-  list                          Your projects (or --user's)
-  add <remote-url> <credential> Clone a project (https://, ssh:// or
-                                git@host:path) with the named git credential
-                                (see `yaac auth list`)
-  create <name>                 Create an empty project whose git remote yaac
-                                hosts (docs/hosted-projects.md)
-  clone <project> [dir]         Clone a hosted project's remote to this machine
+  list                          Your projects (or --user's), each with its repos
+  add <remote-url> <credential> Add a project around one git remote (https://,
+                                ssh:// or git@host:path), cloned with the named
+                                git credential (see `yaac auth list`); a remote
+                                you already have a repo for reuses it
+  create <name>                 Create a project with one empty repo whose git
+                                remote yaac hosts (docs/hosted-projects.md)
+  clone <project> [dir]         Clone a project's hosted repo to this machine
+    --repo <dir>                Which repo, in a project with several
+  move <project> <remote-url> <credential>
+                                Move a hosted repo to an empty remote elsewhere,
+                                stopping every workspace holding a checkout of
+                                it; asks first, on a terminal
+    --repo <dir>                Which repo, in a project with several
+  repo list <project>           The repos a project links: folder, credential,
+                                remote, and under k8s its two flags
+  repo add <project> [remote-url] [credential]
+                                Link a repo: a remote and the credential to
+                                clone it with (reusing a repo you already have
+                                for it), or one of:
+    --repo-id <id>              A repo of yours, or one shared with you
+    --hosted                    A new, empty repo yaac hosts
+    --dir <name>                Its folder in a workspace with several repos
+                                (default: the repo's name)
+  repo remove <project> <repo>  Unlink it; the repo and every workspace's
+                                checkout of it stay
+  repo rename <project> <repo> <dir>
+                                The folder its checkout takes from now on
+  repo read-only <project> <repo> [on|off]
+                                Show or set whether the project's workspaces
+                                may only read it (k8s only; project-repos.md)
+  repo gh-token <project> <repo> [on|off]
+                                Show or set whether its token may be the
+                                workspaces' GH_TOKEN (k8s only)
+
+yaac repo                       Your git repos, whatever projects link them
+  list                          Yours (or --user's) and those shared with you;
+                                unlinked ones first, deleted ones still held
+                                by workspaces last
+  share <repo> <user>           Share a repo yaac hosts with another user, who
+                                can link it into their projects
+  unshare <repo> <user>         End the share, stopping their running
+                                workspaces that hold a checkout of it
+  delete <repo>                 Unlink it from every project, end its shares
+                                and delete a hosted repository; no workspace
+                                is deleted, and its clone stays on the server
+                                while any holds a checkout (it lists them)
+    -y, --yes                   Without the confirmation prompt
 
 yaac workspace
   create [project]              Create a workspace and attach to its session
     -w, --workspace <id>        Open the session in this running workspace
                                 instead (no project, and none of the workspace
-                                options: --branch, --group, --timeout, --start-*)
+                                options: --repo, --branch, --group, --timeout,
+                                --start-*); --cwd names one of its checkouts
     --resume <conversation>     With --workspace: on one of its conversations
     --no-session                A workspace with no agent session
     --non-interactive           Run --steps untouched, with no session, and
@@ -92,9 +139,21 @@ yaac workspace
                                 approves its commit (workflows.md)
     -t, --tool <tool>           claude, codex, opencode, pi or omp (default: the
                                 project's last, else claude)
-    -b, --branch <branch>       Base branch (default: the remote's default)
-    --commit <sha>              Start at this full commit instead; no base
-                                branch then (not with --branch)
+    --repo <dir>[@<branch>]     A repo the workspace starts with, at this
+                                branch, or at a full commit given in its
+                                place; repeatable (default: the repos the
+                                project's last create included, each at its
+                                default branch; project-repos.md)
+    --no-repos                  Start with no repos: an empty workspace dir
+    --nested | --no-nested      Put a lone repo in a folder named for it, or
+                                at the workspace root (default: the project's
+                                last choice); several always sit in folders
+    --cwd <dir>                 Where the agent starts: a selected repo's
+                                folder, or . for the workspace root
+    -b, --branch <branch>       Base branch of a workspace that starts with
+                                one repo (default: the remote's default)
+    --commit <sha>              Start that one repo at this full commit
+                                instead; no base branch then (not with --branch)
     -p, --prompt <text>         Initial prompt for the agent
     -m, --model <model>         Model id or alias (provider/model for opencode, pi, omp)
     -e, --effort <level>        Effort level the model offers (effort-levels.md)
@@ -166,6 +225,7 @@ yaac routine                    Workspaces started on a cron schedule (routines.
     --timeout <duration|next>   Stop each run this long after it starts;
                                 next (the default) stops it at the next tick
     -t/-m/-e/-b, --agent-option, --mode, --permission-mode,
+    --repo, --no-repos, --nested, --no-nested, --cwd,
     --commit, --non-interactive As for workspace create
     --workflow <name>           The named workflow each run starts with;
                                 saving approves the commit or branch it runs
@@ -199,6 +259,8 @@ yaac site                       A project's public sites, each served by a
                                 included, publishes; a tip that fails is not
                                 retried, and the last good release keeps
                                 serving
+    --repo <dir>                (create) The repo its releases are built
+                                from, in a project with several
   edit <project> <name>         The same options; the next deploy uses them,
                                 but the hostname and admin port move at once
     --no-admin-port             Offer no admin port
@@ -329,14 +391,17 @@ yaac config                     Each setting prints given no value, and is
                                 keeps
     --none                      Keep none
   default-branch <project> [branch]
-                                Show the default branch, or set a hosted
-                                project's (docs/hosted-projects.md)
+                                Show a repo's default branch, or set a hosted
+                                repo's (docs/hosted-projects.md)
   default-branch-guard <project> [on|off]
-                                Show or set whether a hosted project refuses
+                                Show or set whether a hosted repo refuses
                                 pushes that delete or rewind it
   git-credential <project> [credential]
-                                Show or assign the project's git credential,
-                                by its `yaac auth list` name
+                                Show or assign a repo's git credential, by its
+                                `yaac auth list` name; every project linking
+                                the repo uses it
+    --repo <dir>                (all three) Which repo, in a project with
+                                several
   time-zone [zone]              Show the time zone workspaces launch in, or
                                 pin it to an IANA zone
     --follow-device             Unpin it, following the last device to connect

@@ -1,9 +1,9 @@
 import { getDefaultBranch, isGitAuthError, listRemoteBranches } from '#domain/git'
-import { fetchProjectOrigin } from './origin'
+import { fetchRepoOrigin } from './origin'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 
-export interface ProjectBranches {
+export interface RepoBranches {
   /** Remote-tracking branch names (no `origin/` prefix), newest-committed
    *  first — the order the picker shows. */
   branches: string[]
@@ -18,23 +18,23 @@ export interface ProjectBranches {
  * CLI or `yaac-mama --branch` need not be listed, since create fetches and
  * validates it.
  */
-export async function getProjectBranches(projectId: string, opts: { refresh?: boolean } = {}): Promise<ProjectBranches> {
-  const repo = repoDir(projectId)
+export async function getRepoBranches(repoId: string, opts: { refresh?: boolean } = {}): Promise<RepoBranches> {
+  const repo = repoDir(repoId)
 
   if (opts.refresh) {
     // With no credential (or a local-path remote in tests) the fetch is
     // unauthenticated.
     try {
-      await fetchProjectOrigin(projectId)
+      await fetchRepoOrigin(repoId)
     } catch (err) {
-      // A refusal (a removed share fetches nothing) keeps its own code.
+      // A refusal keeps its own code.
       if (err instanceof ServerError) throw err
       const msg = err instanceof Error ? err.message : String(err)
       if (isGitAuthError(msg)) {
         throw new ServerError(
           'VALIDATION',
-          'git authentication failed — the project\'s credential was rejected. '
-          + 'Assign it a new one in Settings → Git credentials, then retry.',
+          'git authentication failed — the repo\'s credential was rejected. '
+          + 'Assign it a new one in Settings → Repos, then retry.',
         )
       }
       throw new ServerError('INTERNAL', `could not fetch from remote: ${msg}`)

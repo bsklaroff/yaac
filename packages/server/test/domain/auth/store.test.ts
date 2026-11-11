@@ -62,7 +62,7 @@ describe('loadToolAuthEntry', () => {
 describe('customEndpointFor', () => {
   it('looks up the project owner\'s endpoint only for one of its custom models', async () => {
     const project = '00000000-0000-4000-8000-0000000000f1'
-    await recordProject({ id: project, name: 'p', remoteUrl: 'https://github.com/acme/p', addedAt: 'x' }, BUILT_IN_USER_ID)
+    await recordProject({ id: project, name: 'p', addedAt: 'x' }, BUILT_IN_USER_ID)
     const { id } = await addEndpoint(BUILT_IN_USER_ID, { name: 'pi-box', baseUrl: 'https://pi-box/v1', models: [{ id: 'llama' }] })
     await setToolCredential(BUILT_IN_USER_ID, 'pi', { kind: 'api-key', provider: 'custom', savedAt: 's', apiKey: '', endpointId: id })
 

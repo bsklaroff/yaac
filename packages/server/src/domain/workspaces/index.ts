@@ -33,14 +33,17 @@ export {
   listDraftWorkspaces,
   saveDraftWorkspace,
 } from './drafts'
+export { removeProject } from './project-teardown'
 export {
-  moveProjectToRemote,
-  previewProjectMove,
+  collectDeletedRepos,
+  deleteRepo,
+  moveRepoToRemote,
+  previewRepoDelete,
+  previewRepoMove,
   reconcileRevokedShares,
-  removeProject,
-  unshareProject,
-  type ProjectMovePreview,
-} from './project-teardown'
+  unshareRepo,
+} from './repo-teardown'
+export { propagateOrigin } from './origin-fanout'
 export { reconcilePrewarmPool } from './prewarm-reconcile'
 export { dismissProvisioning, listProvisioning } from './provisioning'
 export {

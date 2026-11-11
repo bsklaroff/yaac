@@ -9,7 +9,6 @@ import {
   deleteWorkspaceRecords,
   findWorkspaceRow,
   listLiveWorkspaceRows,
-  setWorkspaceBaseBranch,
   getProjectWorkspaceRows,
   getWorkspaceRow,
   countStoppedWorkspaces,
@@ -17,7 +16,6 @@ import {
   listUncleanedStoppedWorkspaces,
   recordIgnoredFilesCleaned,
   listWorkspaceRows,
-  listProjectWorkspaceIds,
   listOverdueWorkspaceRows,
   recordDeathSeen,
   recordWorkspaceCreated,
@@ -31,6 +29,7 @@ import {
   type StoppedRowCursor,
 } from '#db/workspace-store'
 import { createWorkspaceGroup, deleteWorkspaceGroup } from '#db/group-store'
+import { listWorkspaceRepos } from '#db/repo-store'
 import { listWorkspaceConversations, recordConversations } from '#db/conversation-store'
 import { insertSession, markSessionsLaunched } from '#db/session-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
@@ -63,15 +62,16 @@ describe('session store', () => {
 
   describe('recordWorkspaceCreated', () => {
     it('stores the row', async () => {
-      await create('sid-1', { baseBranch: 'main' })
+      await create('sid-1', { repos: [{ repoId: PROJ, path: '', baseBranch: 'main' }], cwd: '' })
 
       const row = (await getProjectWorkspaceRows(PROJ)).get('sid-1')
       expect(row).toMatchObject({
         projectId: PROJ,
         workspaceId: 'sid-1',
-        baseBranch: 'main',
+        cwd: '',
         deathSeenBy: [],
       })
+      expect(await listWorkspaceRepos('sid-1')).toEqual([{ workspaceId: 'sid-1', repoId: PROJ, path: '', baseBranch: 'main' }])
       expect(row?.stoppedAt).toBeUndefined()
     })
 
@@ -226,31 +226,16 @@ describe('session store', () => {
     })
   })
 
-  describe('setWorkspaceBaseBranch', () => {
-    it('stamps the branch after the row exists, without touching anything else', async () => {
-      await create('sid-1')
-      await setWorkspaceBaseBranch(PROJ, 'sid-1', 'release/2.x')
-      expect((await getProjectWorkspaceRows(PROJ)).get('sid-1')).toMatchObject({
-        baseBranch: 'release/2.x',
-      })
-    })
-
-    it('no-ops for an unrecorded session rather than creating one', async () => {
-      await setWorkspaceBaseBranch(PROJ, 'ghost', 'main')
-      expect(await listWorkspaceRows(PROJ)).toEqual([])
-    })
-  })
-
   describe('listLiveWorkspaceRows', () => {
     it('excludes stopped workspaces and reports whether each ever ran', async () => {
       // Only a live agent names a conversation, so any recorded one proves a
       // start; so does a session whose window was launched.
       await create('never-ran')
-      await insertSession(PROJ, 'never-ran', { tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
+      await insertSession(PROJ, 'never-ran', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
       await create('conversed')
       await recordConversations(PROJ, 'conversed', [{ tool: 'opencode', conversationId: 'ses_1' }])
       await create('launched')
-      const s = await insertSession(PROJ, 'launched', { tool: 'claude', mode: 'acp', permissionMode: 'bypass' })
+      const s = await insertSession(PROJ, 'launched', { cwd: '', tool: 'claude', mode: 'acp', permissionMode: 'bypass' })
       await markSessionsLaunched([s.id])
       await create('gone')
       await recordWorkspaceStopped(PROJ, 'gone')
@@ -427,16 +412,6 @@ describe('session store', () => {
       expect(await findWorkspaceRow('abcdef')).toBeUndefined()
       expect(await findWorkspaceRow('nope')).toBeUndefined()
       expect(await findWorkspaceRow('')).toBeUndefined()
-    })
-  })
-
-  describe('listProjectWorkspaceIds', () => {
-    it('lists one project\'s ids', async () => {
-      await create('sid-1')
-      await create('sid-2')
-      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'zzz' })
-
-      expect((await listProjectWorkspaceIds(PROJ)).sort()).toEqual(['sid-1', 'sid-2'])
     })
   })
 })

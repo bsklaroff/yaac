@@ -6,10 +6,10 @@ import {
   getProjectRow,
   getWorkflow,
   insertNamedWorkflow,
-  listProjectRows,
   listNamedWorkflows,
   listProjectSites,
   listQueuedWorkspaceRows,
+  listRepoShares,
   listRoutineRows,
   listRunSecrets,
   listWorkflowApprovals,
@@ -27,11 +27,11 @@ import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { WorkflowEntry } from '@yaac/shared/types'
 import { authorizeProject, type Actor } from '#domain/access'
 import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
+import { fetchRepoOrigin } from '#domain/repos'
 import { testEnv } from '@yaac/shared/env'
 import { repoDir } from '@yaac/shared/project-paths'
 import { assertProjectExists } from './detail'
 import { pushProjectSecrets } from './env'
-import { fetchProjectOrigin } from './origin'
 
 /**
  * Workflows (docs/workflows.md): a project's step graphs, each with the run
@@ -50,27 +50,49 @@ import { fetchProjectOrigin } from './origin'
  * - A launch gets the secrets on a commit approved for a named workflow that
  *   points at its workflow now, or on one that workflow already ran on with
  *   them.
+ * - "The commit" is one repo's, so the secrets reach only a workspace that
+ *   starts with exactly one repo, and a branch is approved for that repo.
  */
 
 /** A name a workflow is known by on the command line. */
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
-/** The prefix an approved branch is stored under, beside approved commits. */
-const BRANCH_REF = 'refs/heads/'
+/** Why a launch that gets run secrets, or a routine of such launches, is
+ *  refused when it starts with no repo or several. */
+export const RUN_SECRETS_NEED_ONE_REPO = 'this workflow is given run secrets, which reach only a workspace that '
+  + 'starts with exactly one repo'
+
+/** What an approved branch of a repo is stored as, beside approved commits. */
+function branchRef(repoId: string, branch: string): string {
+  return `${repoId}:refs/heads/${branch}`
+}
+
+/** A commit, or a branch of one of the project's repos, that a workflow is
+ *  approved on. */
+export type WorkflowRef = { commit: string } | { branch: string; repoId: string }
 
 /** A request's principal, as opposed to the server or a workspace's agent. */
 const isPerson = (actor: Actor): boolean => actor.kind === 'local' || actor.kind === 'tailnet'
 
+/** A workflow as listed. An approved branch of a repo that is not the
+ *  project's only one reads `<repo's folder>:<branch>`. */
 async function entry(w: NamedWorkflowRow): Promise<WorkflowEntry> {
   const approvals = await listWorkflowApprovals(w.id)
+  const repos = (await getProjectRow(w.projectId))?.repos ?? []
+  const branches = approvals.flatMap((a) => {
+    const m = /^([^:]+):refs\/heads\/(.+)$/.exec(a)
+    if (!m) return []
+    const dir = repos.find((l) => l.repo.id === m[1])?.dir
+    return [repos.length === 1 || dir === undefined ? m[2] : `${dir}:${m[2]}`]
+  })
   return {
     id: w.id,
     projectId: w.projectId,
     name: w.name,
     steps: w.workflow.steps,
     secrets: w.workflow.secrets,
-    approvedCommits: approvals.filter((a) => !a.startsWith(BRANCH_REF)),
-    approvedBranches: approvals.filter((a) => a.startsWith(BRANCH_REF)).map((a) => a.slice(BRANCH_REF.length)),
+    approvedCommits: approvals.filter((a) => !a.includes('refs/heads/')),
+    approvedBranches: branches,
     createdAt: formatUtcTimestamp(w.createdAt.getTime()),
   }
 }
@@ -202,51 +224,61 @@ export async function initWorkflowOf(projectId: string): Promise<{ workflow: Wor
  * Whether a routine or site may run a named workflow on the commit or
  * branch its setup or a deploy names, refusing before anything is written.
  * A branch is refused for a workflow that names secrets when another user
- * can push the remote; and since nothing an agent does approves, an
+ * can push the repo's remote; and since nothing an agent does approves, an
  * agent's must be approved already when the workflow names secrets.
  */
-export async function checkWorkflowRef(actor: Actor, namedWorkflowId: string, on: { commit: string } | { branch: string }): Promise<void> {
+export async function checkWorkflowRef(actor: Actor, namedWorkflowId: string, on: WorkflowRef): Promise<void> {
+  await approvalRef(actor, namedWorkflowId, on)
+}
+
+/** `checkWorkflowRef`, answering what the ref is stored as; undefined for a
+ *  workflow that names no secrets, which needs no approval. */
+async function approvalRef(actor: Actor, namedWorkflowId: string, on: WorkflowRef): Promise<string | undefined> {
   const named = await getNamedWorkflow(namedWorkflowId)
-  if (named === undefined || named.workflow.secrets.length === 0) return
-  if ('branch' in on && await remoteShared(named.projectId)) throw sharedBranchRefusal(named.name)
-  const ref = 'commit' in on ? on.commit : `${BRANCH_REF}${on.branch}`
+  if (named === undefined || named.workflow.secrets.length === 0) return undefined
+  let ref: string
+  if ('commit' in on) ref = on.commit
+  else {
+    if (await remoteShared(on.repoId)) throw sharedBranchRefusal(named.name)
+    ref = branchRef(on.repoId, on.branch)
+  }
   if (!isPerson(actor) && !(await listWorkflowApprovals(namedWorkflowId)).includes(ref)) {
     throw new ServerError('FORBIDDEN', `workflow "${named.name}" is given run secrets, and no person has run it on `
       + `${'commit' in on ? on.commit.slice(0, 12) : `branch ${on.branch}`}`)
   }
+  return ref
 }
 
 /** `checkWorkflowRef`, then a person's action approves the commit or
  *  branch: once what names it is written, for a caller that checked first. */
-export async function approveWorkflowRef(actor: Actor, namedWorkflowId: string, on: { commit: string } | { branch: string }): Promise<void> {
-  await checkWorkflowRef(actor, namedWorkflowId, on)
-  if (isPerson(actor)) await addWorkflowApproval(namedWorkflowId, 'commit' in on ? on.commit : `${BRANCH_REF}${on.branch}`)
+export async function approveWorkflowRef(actor: Actor, namedWorkflowId: string, on: WorkflowRef): Promise<void> {
+  const ref = await approvalRef(actor, namedWorkflowId, on)
+  if (ref !== undefined && isPerson(actor)) await addWorkflowApproval(namedWorkflowId, ref)
 }
 
 /**
- * Whether another user can push to the project's remote: a hosted project
- * shared out, or a share of one (docs/hosted-projects.md "Sharing"). A
- * branch approval gives its run secrets to whoever can push the branch, so
- * none applies there.
+ * Whether another user can push to a repo's remote: a hosted repo its owner
+ * shared with anyone (docs/hosted-projects.md "Sharing"). A branch approval
+ * gives its run secrets to whoever can push the branch, so none applies
+ * there.
  */
-async function remoteShared(projectId: string): Promise<boolean> {
-  const rows = await listProjectRows()
-  return rows.some((p) => (p.id === projectId && p.sharedFrom !== undefined)
-    || (p.sharedFrom === projectId && !p.shareRevoked))
+async function remoteShared(repoId: string): Promise<boolean> {
+  return (await listRepoShares()).some((s) => s.repoId === repoId)
 }
 
 function sharedBranchRefusal(what: string): ServerError {
   return new ServerError('FORBIDDEN', `${what === 'this workflow' ? what : `workflow "${what}"`} is given run secrets, `
-    + 'and another user can push to this project\'s remote through a share, so a branch cannot be approved for it; '
+    + 'and another user can push to this repo through a share, so a branch cannot be approved for it; '
     + 'run it at a commit instead')
 }
 
 /**
  * The values of the run secrets a launch of `workflowId` gets, when
  * `secrets` (a non-interactive launch or a site's release). They reach it
- * only at a commit, so a launch with `commit` unset runs at the tip of
- * `branch` (else the default), resolved here; with `commit` set, `branch`
- * says it is that branch's tip. A person's launch through a named workflow
+ * only at a commit of the one repo it starts with (`repoId`; a launch with
+ * none or several is refused), so a launch with `commit` unset runs at the
+ * tip of `branch` (else the default), resolved here; with `commit` set,
+ * `branch` says it is that branch's tip. A person's launch through a named workflow
  * approves its commit for it first. A launch the secrets may not reach is
  * refused rather than run without them; one that gets them is recorded, so
  * that workflow may run on that commit again.
@@ -254,6 +286,7 @@ function sharedBranchRefusal(what: string): ServerError {
 export async function workflowLaunch(actor: Actor, projectId: string, opts: {
   workflowId: string
   namedWorkflowId?: string
+  repoId?: string
   commit?: string
   branch?: string
   secrets: boolean
@@ -261,18 +294,22 @@ export async function workflowLaunch(actor: Actor, projectId: string, opts: {
   const workflow = await getWorkflow(opts.workflowId)
   if (workflow?.projectId !== projectId) throw new ServerError('NOT_FOUND', 'that workflow is gone')
   if (!opts.secrets || workflow.secrets.length === 0) return { runSecrets: {} }
-  const branch = opts.commit === undefined ? opts.branch ?? await getDefaultBranch(repoDir(projectId)) : opts.branch
+  const { repoId } = opts
+  if (repoId === undefined) throw new ServerError('VALIDATION', RUN_SECRETS_NEED_ONE_REPO)
+  const main = repoDir(repoId)
+  const branch = opts.commit === undefined ? opts.branch ?? await getDefaultBranch(main) : opts.branch
   let commit = opts.commit
   if (commit === undefined) {
-    if (!testEnv.e2eSkipFetch) await fetchProjectOrigin(projectId)
-    commit = await resolveRemoteRef(repoDir(projectId), branch as string).catch(() => {
+    if (!testEnv.e2eSkipFetch) await fetchRepoOrigin(repoId)
+    commit = await resolveRemoteRef(main, branch as string).catch(() => {
       throw new ServerError('VALIDATION', `branch "${branch ?? ''}" not found on origin.`)
     })
   }
   if (isPerson(actor) && opts.namedWorkflowId !== undefined) await addWorkflowApproval(opts.namedWorkflowId, commit)
   const byCommit = await workflowApproved(workflow.id, [commit]) || await workflowRan(workflow.id, commit)
-  const byBranch = !byCommit && branch !== undefined && await workflowApproved(workflow.id, [`${BRANCH_REF}${branch}`])
-  if (byBranch && await remoteShared(projectId)) throw sharedBranchRefusal('this workflow')
+  const byBranch = !byCommit && branch !== undefined
+    && await workflowApproved(workflow.id, [branchRef(repoId, branch)])
+  if (byBranch && await remoteShared(repoId)) throw sharedBranchRefusal('this workflow')
   if (!byCommit && !byBranch) {
     throw new ServerError('FORBIDDEN', 'this workflow is given run secrets, and no person has run it on '
       + `${commit.slice(0, 12)}; launch it yourself, or from a routine or site you set up`)

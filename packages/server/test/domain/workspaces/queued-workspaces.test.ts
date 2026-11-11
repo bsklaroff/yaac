@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { recordTestProject } from '@yaac/test-utils/project-fixture'
 import fs from 'node:fs/promises'
 import type * as createModule from '#domain/workspaces/create'
 import type * as generatedModule from '@yaac/shared/tool-providers.generated'
@@ -58,9 +59,10 @@ import {
   releaseQueuedWorkspace,
   setQueuedWorkspaceTitle,
 } from '#db/queued-workspace-store'
-import { recordProject, recordProjectCreate } from '#db/project-store'
+import { recordProjectCreate } from '#db/project-store'
 import { withProjectsHeld } from '#domain/access'
 import { insertRoutine } from '#db/routine-store'
+import { insertRepo, linkProjectRepo, unlinkProjectRepo } from '#db/repo-store'
 import { getProjectWorkspaceRows, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir, createTestRepo } from '@yaac/test-utils/setup'
@@ -68,7 +70,7 @@ import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from 
 import { projectDir, repoDir } from '@yaac/shared/project-paths'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 import { EFFORTS } from '@yaac/shared/tool-providers.generated'
-import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
+import type { AgentMode, AgentTool, PermissionMode, RepoSelection } from '@yaac/shared/types'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -89,7 +91,7 @@ beforeEach(async () => {
   clearQueuedLaunchesForTests()
   await fs.mkdir(projectDir(PROJ), { recursive: true })
   await createTestRepo(repoDir(PROJ))
-  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
+  await recordTestProject(PROJ, { name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
   // Record the row as the real create does; a launched entry has a foreign
   // key to it.
   mockCreate.mockReset().mockImplementation(async (projectId, opts) => {
@@ -120,9 +122,10 @@ async function workspace(
   await recordWorkspaceCreated({
     projectId: PROJ,
     workspaceId,
-    ...(over.baseBranch !== null ? { baseBranch: over.baseBranch ?? 'develop' } : {}),
+    repos: [{ repoId: PROJ, path: '', ...(over.baseBranch !== null ? { baseBranch: over.baseBranch ?? 'develop' } : {}) }],
   })
   await insertSession(PROJ, workspaceId, {
+    cwd: '',
     tool: over.tool ?? 'claude',
     mode: over.mode ?? 'tui',
     permissionMode: over.permissionMode ?? 'auto',
@@ -130,6 +133,10 @@ async function workspace(
     prompt: `founding ask of ${workspaceId}`,
   })
 }
+
+/** What an entry or a workspace's row says it starts with: the project's
+ *  one repo, at the root, at `branch`. */
+const startsAt = (branch: string): RepoSelection => ({ repos: [{ repo: PROJ, branch }], nested: false, cwd: PROJ })
 
 /** Wait for every detached launch to have reached the create. */
 const launched = (n: number): Promise<void> =>
@@ -155,14 +162,14 @@ describe('queueWorkspace', () => {
       model: 'gpt-5.5',
       mode: 'tui',
       permissionMode: 'accept-edits',
-      branch: 'develop',
+      selection: startsAt('develop'),
       prompt: 'follow up',
     })
 
     // A different tool takes the create defaults for that tool instead,
     // bar the UI mode, which is not tool-specific.
     const other = await queueWorkspace(local, PROJ, { parent: 'parent', prompt: 'x', tool: 'claude' }, 'user')
-    expect(other).toMatchObject({ tool: 'claude', model: FALLBACK_MODELS.claude, mode: 'tui', branch: 'develop' })
+    expect(other).toMatchObject({ tool: 'claude', model: FALLBACK_MODELS.claude, mode: 'tui', selection: startsAt('develop') })
     // A prefix names the parent like an id does.
     expect(other.parentWorkspaceId).toBe('parent-1')
   })
@@ -199,23 +206,58 @@ describe('queueWorkspace', () => {
   it('stores a branch for a parent still provisioning and for one whose row predates it', async () => {
     // Mid-create there is no conversation yet, so the provisioning row
     // supplies the tool.
-    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'booting', baseBranch: 'main' })
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'booting', repos: [{ repoId: PROJ, path: '', baseBranch: 'main' }] })
     registerProvisioning({ workspaceId: 'booting', projectId: PROJ, tool: 'opencode', kind: 'create' })
     const early = await queueWorkspace(local, PROJ, { parent: 'booting', prompt: 'x' }, 'user')
-    expect(early).toMatchObject({ tool: 'opencode', permissionMode: 'bypass', branch: 'main' })
+    expect(early).toMatchObject({ tool: 'opencode', permissionMode: 'bypass', selection: startsAt('main') })
     expect(early.model).not.toBe('')
 
     // No recorded base: origin's default branch is stored.
     await workspace('old', { baseBranch: null })
     const fromOld = await queueWorkspace(local, PROJ, { parent: 'old', prompt: 'x' }, 'user')
-    expect(fromOld.branch).toMatch(/^(main|master)$/)
+    expect(fromOld.selection.repos[0].branch).toMatch(/^(main|master)$/)
+  })
+
+  // What an entry starts with is resolved when it is queued, like its
+  // other settings: its parent's repos, layout and cwd, unless it names
+  // repos of its own (docs/project-repos.md).
+  it('takes its parent\'s repos, layout and cwd unless it names its own, and fails its launch once one is unlinked', async () => {
+    const WEB = '6d0f7c2e-3a4b-4c5d-9e6f-7a8b9c0d1e2f'
+    const COMMIT = 'a'.repeat(40)
+    await insertRepo({ id: WEB, owner: BUILT_IN_USER_ID, remoteUrl: 'https://example.com/web' })
+    await linkProjectRepo(PROJ, WEB, 'web')
+    await recordWorkspaceCreated({
+      projectId: PROJ,
+      workspaceId: 'both',
+      cwd: 'web',
+      repos: [{ repoId: PROJ, path: 'demo', baseBranch: 'develop' }, { repoId: WEB, path: 'web', startCommit: COMMIT }],
+    })
+
+    const child = await queueWorkspace(local, PROJ, { parent: 'both', prompt: 'x' }, 'user')
+    const inherited = { repos: [{ repo: PROJ, branch: 'develop' }, { repo: WEB, commit: COMMIT }], nested: true, cwd: WEB }
+    expect(child.selection).toEqual(inherited)
+    // A branch on its own names the start of one repo, which this is not.
+    await expect(queueWorkspace(local, PROJ, { parent: 'both', prompt: 'x', branch: 'main' }, 'user'))
+      .rejects.toThrow(/names the start of exactly one repo/)
+    // Naming repos replaces the parent's, and its layout and cwd with them.
+    const own = await queueWorkspace(local, PROJ, { parent: child.id, prompt: 'y', repos: [{ repo: 'web', branch: 'main' }] }, 'user')
+    expect(own.selection).toEqual({ repos: [{ repo: WEB, branch: 'main' }], nested: false, cwd: WEB })
+
+    // An edit keeps what the entry starts with where it names nothing else.
+    expect((await updateQueuedWorkspace(local, own.id, { branch: 'dev' }, 'user')).selection.repos).toEqual([{ repo: WEB, branch: 'dev' }])
+    expect((await updateQueuedWorkspace(local, child.id, { cwd: '.' }, 'user')).selection).toEqual({ ...inherited, cwd: '.' })
+
+    await unlinkProjectRepo(WEB, PROJ)
+    await runQueuedWorkspace(local, child.id)
+    await vi.waitFor(async () => expect((await getQueuedWorkspaceRow(child.id))?.launchError).toMatch(/has no repo/))
+    expect(mockCreate).not.toHaveBeenCalled()
   })
 
   it('chains under an entry, defaulting from its stored settings', async () => {
     await workspace('top')
     const b = await queueWorkspace(local, PROJ, { parent: 'top', prompt: 'b', tool: 'codex', branch: 'feature' }, 'user')
     const c = await queueWorkspace(local, PROJ, { parent: b.id.slice(0, 8), prompt: 'c' }, 'user')
-    expect(c).toMatchObject({ parentQueuedId: b.id, tool: 'codex', model: b.model, branch: 'feature' })
+    expect(c).toMatchObject({ parentQueuedId: b.id, tool: 'codex', model: b.model, selection: startsAt('feature') })
     expect(c.parentWorkspaceId).toBeUndefined()
   })
 
@@ -242,9 +284,9 @@ describe('queueWorkspace', () => {
   it('queues under a create still in flight, before its row exists, by its full id', async () => {
     // `id=$(yaac-mama create …); yaac-mama queue --parent-workspace "$id"`:
     // the id comes back before the create has recorded anything.
-    registerProvisioning({ workspaceId: 'spawned', projectId: PROJ, tool: 'codex', kind: 'create', branch: 'feature' })
+    registerProvisioning({ workspaceId: 'spawned', projectId: PROJ, tool: 'codex', kind: 'create', selection: startsAt('feature') })
     const entry = await queueWorkspace(local, PROJ, { parent: 'spawned', prompt: 'x' }, 'user')
-    expect(entry).toMatchObject({ parentWorkspaceId: 'spawned', tool: 'codex', branch: 'feature' })
+    expect(entry).toMatchObject({ parentWorkspaceId: 'spawned', tool: 'codex', selection: startsAt('feature') })
     expect((await listQueuedWorkspaces())[0].orphaned).toBeUndefined()
     // Another project's create is not a parent here.
     registerProvisioning({ workspaceId: 'theirs', projectId: OTHER, tool: 'codex', kind: 'create' })
@@ -357,10 +399,10 @@ describe('updateQueuedWorkspace', () => {
   it('leaves a routine\'s run alone: it starts with its routine\'s settings', async () => {
     const routine = await insertRoutine(PROJ, {
       name: 'r', cron: '@daily', timeZone: 'UTC', prompt: 'p', tool: 'claude', model: 'claude-sonnet-5',
-      mode: 'tui', permissionMode: 'auto', branch: 'main',
+      mode: 'tui', permissionMode: 'auto', ...startsAt('main'),
     }, null)
     const run = await insertRoutineRun(routine.id, PROJ, new Date(Date.now() + 60 * 60_000), {
-      prompt: 'p', tool: 'claude', model: 'claude-sonnet-5', mode: 'tui', permissionMode: 'auto', branch: 'main',
+      prompt: 'p', tool: 'claude', model: 'claude-sonnet-5', mode: 'tui', permissionMode: 'auto', ...startsAt('main'),
     })
     await expect(updateQueuedWorkspace(local, run!.id, { prompt: 'changed' }, 'user')).rejects.toMatchObject({ code: 'CONFLICT' })
   })
@@ -380,7 +422,7 @@ describe('updateQueuedWorkspace', () => {
     expect(entry.permissionMode).toBe('plan')
 
     const edited = await updateQueuedWorkspace(local, entry.id, { prompt: 'edited', branch: OTHER }, 'user')
-    expect(edited).toMatchObject({ prompt: 'edited', branch: OTHER, model: 'claude-sonnet-5', permissionMode: 'plan' })
+    expect(edited).toMatchObject({ prompt: 'edited', selection: startsAt(OTHER), model: 'claude-sonnet-5', permissionMode: 'plan' })
 
     // A stored effort stays for a model that has it and is re-resolved for
     // one that does not (docs/effort-levels.md).
@@ -524,7 +566,7 @@ describe('runQueuedWorkspace', () => {
       session: expect.objectContaining({
         tool: 'codex', model: 'gpt-5.5', permissionMode: 'accept-edits', prompt: 'go',
       }) as unknown,
-      branch: 'develop',
+      start: expect.objectContaining({ repos: [expect.objectContaining({ path: '', branch: 'develop' })], cwd: '' }) as unknown,
       title: 'Named',
       groupId: group.groupId,
     })])
@@ -590,9 +632,9 @@ describe('runQueuedWorkspace on a scheduled entry', () => {
   it('counts a routine\'s run from its tick, so a late run never outlives the next one', async () => {
     const routine = await insertRoutine(PROJ, {
       name: 'r', cron: '*/30 * * * *', timeZone: 'UTC', prompt: 'p', tool: 'claude', model: 'claude-sonnet-5',
-      mode: 'tui', permissionMode: 'auto', branch: 'main', timeoutMinutes: 30,
+      mode: 'tui', permissionMode: 'auto', ...startsAt('main'), timeoutMinutes: 30,
     }, null)
-    const settings = { prompt: 'late run', tool: 'claude', model: 'claude-sonnet-5', mode: 'tui', permissionMode: 'auto', branch: 'main' } as const
+    const settings = { prompt: 'late run', tool: 'claude', model: 'claude-sonnet-5', mode: 'tui', permissionMode: 'auto', ...startsAt('main') } as const
     const tick = new Date(Date.now() - 10 * 60_000)
     const run = await insertRoutineRun(routine.id, PROJ, tick, { ...settings, timeoutMinutes: 30 })
     await runQueuedWorkspace(local, run!.id)

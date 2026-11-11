@@ -7,6 +7,20 @@ prints the setting given no value and replaces it given one (docs/cli.md);
 `yaac config show <project>` prints them all. They apply to workspaces
 created afterwards unless a section says otherwise.
 
+## Repos
+
+Which repos a project links, from none to several, is a setting too
+(docs/project-repos.md): Settings → Project Config → Repos adds one by its
+remote and a git credential, by picking one of your repos or one shared
+with you, or as a new repo yaac hosts, and unlinks one, which deletes
+neither the repo nor any workspace's checkout of it. Each link has the
+folder its checkout takes in a workspace that keeps its repos in folders,
+and its place in the project's order. Under k8s it has two more, which the
+egress proxy enforces and a containerless server refuses: whether the
+project's workspaces may only read the repo, and whether the repo's token
+may be their `GH_TOKEN`. Which of its repos a workspace starts with is
+chosen per create and remembered as the next create's default.
+
 ## Forwarded ports
 
 `yaac config port-forwards <project> [ports...]`, each port `3000` or
@@ -52,7 +66,8 @@ Init steps, or with `yaac config init-steps <project> --file <path>`. See [works
 ## Scratch directories
 
 A project's scratch directories are dirs of installed packages and build
-output, relative to the checkout, that each workspace keeps off the shared
+output, relative to each checkout (`node_modules` applies in every repo a
+workspace starts with), that each workspace keeps off the shared
 checkout and empties when it stops
 ([workspace-storage.md](workspace-storage.md) "Package installs"). Each has a
 cap: under k8s a write past it fails, and under containerless it is not
@@ -88,8 +103,10 @@ the workspace gets a placeholder, and the proxy swaps in the real value on
 requests matching the rule you give (hosts, an optional path glob, and where
 it goes: a header, `authorization` with a `Bearer ` prefix by default, or a
 form/JSON body field). Under containerless the real value goes into the
-environment. GitHub access comes from the project's HTTPS git credential, so
-you don't need a `GITHUB_TOKEN` secret.
+environment. GitHub access comes from the HTTPS git credential of one of
+the project's GitHub repos (docs/project-repos.md "GH_TOKEN"), so you
+don't need a `GITHUB_TOKEN` secret; a `GH_TOKEN` variable of the project's
+own wins over it.
 
 ### Run secrets
 
@@ -150,8 +167,8 @@ matches, not only build output: `.env` files, local databases, editor and
 agent settings, and any new file in an ignored folder. Files git lists as
 untracked stay. Under Settings
 → Project Config → Kept ignored files, or with `yaac config
-kept-ignored-paths <project> [paths...]`, list paths relative to the
-repository root to keep anyway, each a file or a folder and everything in
+kept-ignored-paths <project> [paths...]`, list paths relative to each
+checkout's root to keep anyway, each a file or a folder and everything in
 it (`.env`, `data/dev.db`). Changes apply from the next stop. See
 [workspace-storage.md](workspace-storage.md) "Ignored files at stop".
 

@@ -18,14 +18,16 @@ const TMUX = `tmux -S ${PATHS.tmuxSock}`
 const run = promisify(execFile)
 
 describe('buildWindowsExec', () => {
-  const claude = { tool: 'claude' as const, mode: 'tui' as const, window: 'claude-aaaa', cmd: 'claude --session-id x' }
+  const claude = { tool: 'claude' as const, mode: 'tui' as const, window: 'claude-aaaa', cwd: PATHS.workspaceDir, cmd: 'claude --session-id x' }
 
   // A session's window keeps its pane when the agent exits, for a resume.
-  it('opens each session in a window of its own, in the workspace, keeping its pane on exit', () => {
+  it('opens each session in a window of its own, in its own cwd, keeping its pane on exit', () => {
     expect(buildWindowsExec([claude], PATHS)).toBe(
       `${TMUX} new-window -d -t yaac -n claude-aaaa -c ${PATHS.workspaceDir} 'claude --session-id x'`
       + ' \\; set-option -t =yaac:=claude-aaaa remain-on-exit on',
     )
+    expect(buildWindowsExec([{ ...claude, cwd: `${PATHS.workspaceDir}/web` }], PATHS))
+      .toContain(`-n claude-aaaa -c ${PATHS.workspaceDir}/web 'claude`)
   })
 
   it('opens nothing for no sessions', () => {
@@ -36,8 +38,8 @@ describe('buildWindowsExec', () => {
     // One command, so no pane listing sees a window before it names what it
     // resumes (codex reports that only at its next turn).
     const cmd = buildWindowsExec([
-      { tool: 'codex', mode: 'tui', window: 'codex-bbbb', cmd: 'codex resume t-1', resumes: 't-1' },
-      { tool: 'opencode', mode: 'tui', window: 'opencode-cccc', cmd: 'opencode --standalone --session ses_2', resumes: 'ses_2' },
+      { tool: 'codex', mode: 'tui', window: 'codex-bbbb', cwd: PATHS.workspaceDir, cmd: 'codex resume t-1', resumes: 't-1' },
+      { tool: 'opencode', mode: 'tui', window: 'opencode-cccc', cwd: PATHS.workspaceDir, cmd: 'opencode --standalone --session ses_2', resumes: 'ses_2' },
     ], PATHS)
     expect(cmd).toBe(
       `${TMUX} new-window -d -t yaac -n codex-bbbb -c ${PATHS.workspaceDir} 'codex resume t-1'`
@@ -71,11 +73,11 @@ describe('buildWindowsExec', () => {
         }
         return log(name)
       }
-      const acp = { tool: 'claude' as const, mode: 'acp' as const, window: 'claude-acp1', cmd: 'echo first; sleep 0.2' }
+      const acp = { tool: 'claude' as const, mode: 'acp' as const, window: 'claude-acp1', cwd: dir, cmd: 'echo first; sleep 0.2' }
       try {
         await sh(`tmux -S ${paths.tmuxSock} -f /dev/null new-session -d -s yaac -n keeper`
           + ` \\; set-option -g @yaac-log-dir ${dir}`)
-        await sh(buildWindowsExec([acp, { tool: 'claude', mode: 'tui', window: 'claude-tui1', cmd: 'echo tui' }], paths))
+        await sh(buildWindowsExec([acp, { tool: 'claude', mode: 'tui', window: 'claude-tui1', cwd: dir, cmd: 'echo tui' }], paths))
         expect(await until('claude-acp1', 'first')).toBe('first\n')
         await sh(buildRespawnExec({ ...acp, cmd: 'echo second; sleep 0.2' }, paths))
         expect(await until('claude-acp1', 'second')).toBe('first\nsecond\n')
@@ -142,8 +144,8 @@ describe('yaac-workspace-init script', () => {
     // /workspace repo, even for `config --global`.
     expect(body.indexOf('\ncd /\n')).toBeGreaterThan(-1)
     expect(body.indexOf('\ncd /\n')).toBeLessThan(body.indexOf('git config --global'))
-    // Windows still start in /workspace.
-    expect(body).toMatch(/new-session[^\n]* -c \/workspace/)
+    // Windows still start in the workspace's cwd, under /workspace.
+    expect(body).toContain('new-session -d -s yaac -n _yaac-starting -x 500 -y 200 -c "/workspace${YAAC_CWD:+/$YAAC_CWD}"')
   })
 
   it('starts streamd last, from the path the self-heal exec also uses', async () => {

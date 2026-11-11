@@ -24,6 +24,8 @@ const snap = (entries: Array<Partial<WorkspaceListEntry>>): ServerSnapshot => ({
     unforwardedPorts: [],
     sessions: [],
     conversations: [],
+    repos: [],
+    cwd: '',
     ...s,
   })),
   stale: [],

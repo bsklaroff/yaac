@@ -334,7 +334,8 @@ class AcpConnection extends ControlModeConnection {
     entry.conversation = new AcpConversation({
       transport: ctrlTransport(child),
       queue,
-      cwd: workspaceDriver().workspacePaths(this.session.jobName).workspaceDir,
+      cwd: path.posix.join(workspaceDriver().workspacePaths(this.session.jobName).workspaceDir, session.cwd),
+      sessionCwd: session.cwd,
       tailFile: async (file, bytes) => (await workspaceDriver().exec(
         this.session.jobName,
         `tail -c ${String(bytes)} -- ${shellQuote(file)}`,
@@ -532,7 +533,7 @@ export const acpDriver: AgentDriver = {
     // holds several conversations over its life. A fresh one starts under its
     // session's id and is renamed once `session/new` answers (see
     // `adoptLog`). `--cwd` is
-    // passed because acpd cannot know the checkout path. The conversation,
+    // passed because acpd cannot know where the session runs. The conversation,
     // model and posture come over the protocol, so the pane reporters the
     // tool's hooks run are told to skip (`YAAC_NO_PANE_REPORT`), since claude
     // waits on its hooks at startup and around every turn.
@@ -542,8 +543,8 @@ export const acpDriver: AgentDriver = {
       `exec node ${spec.paths.acpdEntry}`,
       `--sock ${acpSockPath(spec.paths, spec.windowName)}`,
       `--log ${acpLogPath(spec.paths, spec.conversationId)}`,
-      `--cwd ${spec.paths.workspaceDir}`,
-      ...(spec.beforeCheckout === true ? [`--wait-for ${spec.paths.workspaceDir}/.git`] : []),
+      `--cwd ${spec.cwd}`,
+      ...(spec.waitFor ?? []).map((gitDir) => `--wait-for ${gitDir}`),
       '--',
       ...adapter.argv(spec),
     ].join(' ')

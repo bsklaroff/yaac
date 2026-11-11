@@ -28,7 +28,8 @@ import { requireDriverFeature } from '#api/http/driver-features'
 import type { IdentityEnv } from '#api/http/web-auth'
 import { authorizeProject } from '#domain/access'
 import { workspaceDriver } from '#drivers/driver'
-import { MAX_ICON_BYTES, serveHostedRepo } from '#domain/projects'
+import { MAX_ICON_BYTES } from '#domain/projects'
+import { serveHostedRepo } from '#domain/repos'
 import { ServerError } from '@yaac/shared/errors'
 import { MAX_TEXT_FILE_BYTES } from '#lib/text-file'
 import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
@@ -155,8 +156,8 @@ function mamaRoute(identifyCaller: IdentifyCaller) {
   }
   const hostedGit = (pathInfo: string) => async (c: Context): Promise<Response> => {
     const caller = await callerOf(c)
-    const projectId = (c.req.param('repo') ?? '').replace(/\.git$/, '')
-    return serveHostedRepo(projectId, c.req.raw, pathInfo, { kind: 'workspace', projectId: caller.projectId })
+    const repoId = (c.req.param('repo') ?? '').replace(/\.git$/, '')
+    return serveHostedRepo(repoId, c.req.raw, pathInfo, { kind: 'workspace', projectId: caller.projectId })
   }
   return new Hono().post(
     '/mama',
@@ -310,6 +311,9 @@ export const workspaceApp = new Hono<IdentityEnv>()
         ...(body.effort !== undefined ? { effort: body.effort } : {}),
         ...(body.agentOptions !== undefined ? { agentOptions: body.agentOptions } : {}),
         ...(body.mode !== undefined ? { mode: body.mode } : {}),
+        ...(body.repos !== undefined ? { repos: body.repos } : {}),
+        ...(body.nested !== undefined ? { nested: body.nested } : {}),
+        ...(body.cwd !== undefined ? { cwd: body.cwd } : {}),
         ...(body.branch !== undefined ? { branch: body.branch } : {}),
         ...(body.commit !== undefined ? { commit: body.commit } : {}),
         ...(body.steps !== undefined ? { steps: body.steps } : {}),
@@ -678,11 +682,16 @@ export const workspaceApp = new Hono<IdentityEnv>()
     await dismissProvisioning(c.get('principal'), c.req.param('id'))
     return c.body(null, 204)
   })
-  // Base the workspace on another branch on origin, from the Commits pane.
+  // Base one of the workspace's checkouts on another branch on its origin,
+  // from the Commits pane: the one `repo` names by its path under the
+  // workspace root or its repo's id, or the workspace's only one.
   .post(
     '/:id/base',
-    zv('json', z.object({ branch: z.string().max(500) })),
-    async (c) => c.json(await setWorkspaceBase(c.get('principal'), c.req.param('id'), c.req.valid('json').branch)),
+    zv('json', z.object({ branch: z.string().max(500), repo: z.string().max(255).optional() })),
+    async (c) => {
+      const { branch, repo } = c.req.valid('json')
+      return c.json(await setWorkspaceBase(c.get('principal'), c.req.param('id'), branch, repo))
+    },
   )
   .post(
     '/:id/title',
@@ -723,6 +732,10 @@ export const workspaceApp = new Hono<IdentityEnv>()
       agentOptions: queuedSettings.agentOptions,
       prompt: queuedSettings.prompt.optional(),
       title: queuedSettings.title,
+      // Where its agent runs: `.` for the workspace root, or one of the
+      // workspace's checkouts by path or repo id. Unnamed is the
+      // workspace's cwd.
+      cwd: queuedSettings.cwd,
       // One of the workspace's earlier conversations to resume.
       resume: z.string().min(1).max(256).optional(),
     })),
@@ -737,6 +750,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
         ...(body.agentOptions !== undefined ? { agentOptions: body.agentOptions } : {}),
         ...(body.prompt !== undefined ? { prompt: body.prompt } : {}),
         ...(body.title !== undefined ? { title: body.title } : {}),
+        ...(body.cwd !== undefined ? { cwd: body.cwd } : {}),
         ...(body.resume !== undefined ? { resume: body.resume } : {}),
         rememberDefaults: true,
       })
@@ -806,25 +820,28 @@ export const workspaceApp = new Hono<IdentityEnv>()
     c.header('X-Content-Type-Options', 'nosniff')
     return c.body(new Uint8Array(bytes))
   })
-  // Everything the webapp polls about a running workspace's checkout
-  // (docs/file-editor.md): the review diff against its base branch, how far
-  // HEAD is from that branch, and with `listing` the explorer's paths
-  // (`full` adds ignored entries and empty folders). `base` overrides the
-  // branch; `diff=0` leaves out the diff body; `known` omits a listing the
-  // caller already holds. A client that hangs up leaves the read, which
-  // stops once no request wants it.
+  // Everything the webapp polls about a running workspace
+  // (docs/file-editor.md): the review diff of one checkout against its base
+  // branch, how far its HEAD is from that branch, and with `listing` the
+  // explorer's paths for the whole workspace (`full` adds ignored entries
+  // and empty folders). `repo` names the checkout by its path under the
+  // workspace root or its repo's id, which a workspace with one checkout
+  // needs not. `base` overrides the branch; `diff=0` leaves out the diff
+  // body; `known` omits a listing the caller already holds. A client that
+  // hangs up leaves the read, which stops once no request wants it.
   .get(
     '/:id/changes',
     zv('query', z.object({
+      repo: z.string().max(255).optional(),
       base: z.string().min(1).max(255).optional(),
       diff: z.enum(['0', '1']).optional(),
       listing: z.enum(['paths', 'full']).optional(),
       known: z.string().max(128).optional(),
     })),
     async (c) => {
-      const { base, diff, listing, known } = c.req.valid('query')
+      const { repo, base, diff, listing, known } = c.req.valid('query')
       return c.json(await getWorkspaceChanges(c.req.param('id'), base, {
-        diff: diff !== '0', listing, known, signal: c.req.raw.signal,
+        repo, diff: diff !== '0', listing, known, signal: c.req.raw.signal,
       }))
     },
   )
@@ -841,22 +858,34 @@ export const workspaceApp = new Hono<IdentityEnv>()
       files: z.array(z.object({ path: z.string().min(1).max(4096), oldPath: z.string().min(1).max(4096).optional() }))
         .min(1).max(200),
       skip: z.number().int().min(1).optional(),
+      /** The checkout the reading was of, as `/changes` takes it. */
+      repo: z.string().max(255).optional(),
     }).refine((r) => r.skip === undefined || r.files.length === 1, 'skip reads one file')),
     async (c) => c.json(await getWorkspaceChangeDiffs(c.req.param('id'), c.req.valid('json'))),
   )
-  // The diff between two refs, for a Changes pane showing a range or, with
-  // no `from`, one commit.
+  // The diff between two refs of one checkout (`repo`, as `/changes` takes
+  // it), for a Changes pane showing a range or, with no `from`, one commit.
   .get(
     '/:id/compare',
-    zv('query', z.object({ from: z.string().min(1).max(255).optional(), to: z.string().min(1).max(255) })),
+    zv('query', z.object({
+      from: z.string().min(1).max(255).optional(),
+      to: z.string().min(1).max(255),
+      repo: z.string().max(255).optional(),
+    })),
     async (c) => c.json(await getWorkspaceComparison(c.req.param('id'), c.req.valid('query'))),
   )
-  // The Commits pane's history: HEAD's commits and the base branch's,
-  // newest `limit` of them.
+  // The Commits pane's history of one checkout (`repo`, as `/changes` takes
+  // it): HEAD's commits and the base branch's, newest `limit` of them.
   .get(
     '/:id/commits',
-    zv('query', z.object({ limit: z.coerce.number().int().min(1).max(MAX_LOG_COMMITS).optional() })),
-    async (c) => c.json(await getWorkspaceGitLog(c.req.param('id'), c.req.valid('query').limit ?? 200)),
+    zv('query', z.object({
+      limit: z.coerce.number().int().min(1).max(MAX_LOG_COMMITS).optional(),
+      repo: z.string().max(255).optional(),
+    })),
+    async (c) => {
+      const { limit, repo } = c.req.valid('query')
+      return c.json(await getWorkspaceGitLog(c.req.param('id'), limit ?? 200, repo))
+    },
   )
   // The file editor (docs/file-editor.md). Served from the server's view of
   // the checkout, so stopped workspaces work too, under either driver.

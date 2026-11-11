@@ -116,9 +116,13 @@ describe('createRoutine on a workflow', () => {
     await createWorkflow(local, PROJ, { name: 'relay', steps: { t: { run: 'true' } }, secrets: ['P8_KEY'] })
     await expect(relayRoutine(agent, { branch: 'main' })).rejects.toMatchObject({ code: 'FORBIDDEN' })
     const r = await relayRoutine(local, { branch: 'main' })
-    expect(r).toMatchObject({ workflow: 'relay', branch: 'main' })
+    expect(r).toMatchObject({ workflow: 'relay', selection: { repos: [{ repo: PROJ, branch: 'main' }], nested: false, cwd: PROJ } })
     expect((await listProjectWorkflows(PROJ))[0].approvedBranches).toEqual(['main'])
     expect((await relayRoutine(agent, { name: 'Again', branch: 'main' })).workflow).toBe('relay')
+    // Its secrets reach a run only at a commit of the one repo it starts
+    // with, so one that starts with none would fail at every tick.
+    await expect(relayRoutine(local, { name: 'Bare', repos: [] }))
+      .rejects.toMatchObject({ code: 'VALIDATION', message: /exactly one repo/ })
     await expect(relayRoutine(local, { workflow: 'nope' })).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 })
@@ -136,6 +140,13 @@ describe('updateRoutine', () => {
     expect((await getRoutineRow(r.id))!.nextRunAt).toEqual(nextCronRuns('30 6 * * 1', 'Europe/Paris', new Date(), 1)[0])
     expect(moved.cron).toBe('30 6 * * 1')
     await expect(updateRoutine(local, r.id, { cron: '61 * * * *' }, 'user')).rejects.toMatchObject({ code: 'VALIDATION' })
+
+    // What its runs start with is kept where an edit names nothing else; a
+    // branch on its own restarts its one repo, and its runs copy the result.
+    const dev = { repos: [{ repo: PROJ, branch: 'dev' }], nested: false, cwd: PROJ }
+    expect((await updateRoutine(local, r.id, { branch: 'dev' }, 'user')).selection).toEqual(dev)
+    expect((await updateRoutine(local, r.id, { name: 'Again' }, 'user')).selection).toEqual(dev)
+    expect((await updateRoutine(local, r.id, { repos: [] }, 'user')).selection).toEqual({ repos: [], nested: false, cwd: '.' })
   })
 
   it('keeps its named workflow until an edit names another, or none for the init steps', async () => {

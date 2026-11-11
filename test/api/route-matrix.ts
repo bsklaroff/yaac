@@ -93,6 +93,8 @@ const ID = {
 } as const
 
 const P = `/api/project/${ID.project}`
+/** The fixture project's one repo, which carries its id. */
+const R = `/api/repo/${ID.project}`
 const W = `/api/workspace/${ID.workspace}`
 
 /**
@@ -107,6 +109,25 @@ const ROUTE_MATRIX: RouteCase[] = [
   // setup sets it so no test reaches yaac.dev.
   { method: 'POST', path: '/api/feedback', body: { message: 'x' }, access: 'reader', k8s: UNSUPPORTED, containerless: UNSUPPORTED },
 
+  // ── repos ─────────────────────────────────────────────────────────────
+  { method: 'GET', path: '/api/repo/list', access: 'reader', k8s: 200, containerless: 200 },
+  { method: 'PUT', path: '/api/repo/:repoId/git-credential', request: `${R}/git-credential`, body: { credentialId: ID.credential }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'PUT', path: '/api/repo/:repoId/default-branch', request: `${R}/default-branch`, body: { branch: 'main' }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'PUT', path: '/api/repo/:repoId/default-branch-guard', request: `${R}/default-branch-guard`, body: { enabled: false }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'GET', path: '/api/repo/:repoId/branches', request: `${R}/branches`, access: 'reader', k8s: MISSING, containerless: MISSING },
+  // A hosted repo's remote, for the user's own git; a push is its owner's,
+  // or a user's it is shared with.
+  { method: 'GET', path: '/api/repo/:repoId/git/info/refs', request: `${R}/git/info/refs`, access: 'reader', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/repo/:repoId/git/git-upload-pack', request: `${R}/git/git-upload-pack`, access: 'reader', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/repo/:repoId/git/git-receive-pack', request: `${R}/git/git-receive-pack`, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/repo/:repoId/share', request: `${R}/share`, body: { userId: ID.user }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/repo/:repoId/unshare', request: `${R}/unshare`, body: { userId: ID.user }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'GET', path: '/api/repo/:repoId/move-preview', request: `${R}/move-preview`, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/repo/:repoId/move', request: `${R}/move`, body: { remoteUrl: 'https://github.com/acme/widgets.git', credentialId: ID.credential }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'DELETE', path: '/api/repo/:repoId/kept-hosted-repo', request: `${R}/kept-hosted-repo`, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'GET', path: '/api/repo/:repoId/delete-preview', request: `${R}/delete-preview`, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'DELETE', path: '/api/repo/:repoId', request: R, access: 'owner', k8s: MISSING, containerless: MISSING },
+
   // ── projects ──────────────────────────────────────────────────────────
   { method: 'GET', path: '/api/project/list', access: 'reader', k8s: 200, containerless: 200 },
   { method: 'PUT', path: '/api/project/order', body: { projectIds: [] }, access: 'owner', callerScoped: true, k8s: 204, containerless: 204 },
@@ -116,8 +137,6 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/project/create', body: {}, access: 'owner', callerScoped: true, k8s: 400, containerless: 400 },
   { method: 'GET', path: '/api/project/:projectId', request: P, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'DELETE', path: '/api/project/:projectId', request: P, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/project/:projectId/shares', request: `${P}/shares`, body: { userId: ID.user }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'DELETE', path: '/api/project/:projectId/shares/:userId', request: `${P}/shares/${ID.user}`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/project/:projectId/workspace-auto-delete', request: `${P}/workspace-auto-delete?days=30`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/workspace-auto-delete', request: `${P}/workspace-auto-delete`, body: { days: 30 }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/project/:projectId/icon', request: `${P}/icon`, access: 'reader', k8s: MISSING, containerless: MISSING },
@@ -126,17 +145,17 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'PUT', path: '/api/project/:projectId/kept-ignored-paths', request: `${P}/kept-ignored-paths`, body: { paths: ['.env'] }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/init-steps', request: `${P}/init-steps`, body: { steps: {} }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/scratch-dirs', request: `${P}/scratch-dirs`, body: { dirs: [] }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'GET', path: '/api/project/:projectId/move', request: `${P}/move`, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/project/:projectId/move', request: `${P}/move`, body: { remoteUrl: 'https://github.com/acme/widgets.git', gitCredentialId: ID.credential }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'DELETE', path: '/api/project/:projectId/hosted-repo', request: `${P}/hosted-repo`, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'PUT', path: '/api/project/:projectId/default-branch', request: `${P}/default-branch`, body: { branch: 'main' }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'PUT', path: '/api/project/:projectId/default-branch-guard', request: `${P}/default-branch-guard`, body: { enabled: false }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  // A hosted project's remote, for the user's own git; a push is the
-  // owner's.
+  // The repos a project links (docs/project-repos.md). The two access
+  // settings are the egress proxy's to enforce.
+  { method: 'POST', path: '/api/project/:projectId/repo', request: `${P}/repo`, body: { hosted: true }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/project/:projectId/git/info/refs', request: `${P}/git/info/refs`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/project/:projectId/git/git-upload-pack', request: `${P}/git/git-upload-pack`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/project/:projectId/git/git-receive-pack', request: `${P}/git/git-receive-pack`, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'PUT', path: '/api/project/:projectId/git-credential', request: `${P}/git-credential`, body: { credentialId: ID.credential }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'PUT', path: '/api/project/:projectId/repo-order', request: `${P}/repo-order`, body: { repos: [] }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'PATCH', path: '/api/project/:projectId/repo/:repo', request: `${P}/repo/demo`, body: { dir: 'other' }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'DELETE', path: '/api/project/:projectId/repo/:repo', request: `${P}/repo/demo`, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'PUT', path: '/api/project/:projectId/repo/:repo/read-only', request: `${P}/repo/demo/read-only`, body: { enabled: true }, access: 'owner', why: 'limits no repo\'s credential', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'PUT', path: '/api/project/:projectId/repo/:repo/gh-token', request: `${P}/repo/demo/gh-token`, body: { enabled: false }, access: 'owner', why: 'limits no repo\'s credential', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'PUT', path: '/api/project/:projectId/port-forwards', request: `${P}/port-forwards`, body: { ports: [] }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/cache-volumes', request: `${P}/cache-volumes`, body: { volumes: {} }, access: 'owner', why: 'mounts no cache volumes', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'PUT', path: '/api/project/:projectId/nested-containers', request: `${P}/nested-containers`, body: { enabled: true }, access: 'owner', why: 'runs no container engine in a workspace', k8s: MISSING, containerless: UNSUPPORTED },
@@ -149,7 +168,6 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'DELETE', path: '/api/project/:projectId/run-secrets/:id', request: `${P}/run-secrets/abc`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/project/:projectId/allowlist', request: `${P}/allowlist`, access: 'reader', why: 'mediates no egress', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'PUT', path: '/api/project/:projectId/allowlist', request: `${P}/allowlist`, body: { hosts: [], defaults: true }, access: 'owner', why: 'mediates no egress', k8s: MISSING, containerless: UNSUPPORTED },
-  { method: 'GET', path: '/api/project/:projectId/branches', request: `${P}/branches`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/project/:projectId/skills', request: `${P}/skills`, access: 'reader', k8s: OK_OR_MISSING, containerless: OK_OR_MISSING },
   { method: 'GET', path: '/api/project/:projectId/skills/body', request: `${P}/skills/body?path=x`, access: 'reader', k8s: [200, 400, 404], containerless: [200, 400, 404] },
 
@@ -212,7 +230,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/workspace/mama', body: { command: 'list' }, access: 'public',
     why: 'the egress proxy relays a pod\'s yaac-mama calls to a listener of their own',
     k8s: UNSUPPORTED, containerless: 401 },
-  // A hosted project's remote as a workspace reaches it, identified like
+  // A hosted repo's remote as a workspace reaches it, identified like
   // yaac-mama.
   { method: 'GET', path: '/api/workspace/git/:repo/info/refs', request: `/api/workspace/git/${ID.project}.git/info/refs`, access: 'public',
     why: 'the egress proxy relays a pod\'s git to the yaac-mama listener', k8s: UNSUPPORTED, containerless: 401 },
@@ -418,15 +436,16 @@ async function seedOwnedFixtures(): Promise<void> {
   await recordTestProject(ID.project)
   await recordWorkspaceCreated({ projectId: ID.project, workspaceId: ID.workspace })
   const settings = { prompt: 'p', tool: 'claude', mode: 'tui', permissionMode: 'manual' } as const
+  const start = { repos: [{ repo: ID.project, branch: 'main' }], nested: false, cwd: ID.project }
   const db = await getDb()
-  const session = await insertSession(ID.project, ID.workspace, settings)
+  const session = await insertSession(ID.project, ID.workspace, { ...settings, cwd: '' })
   await db.update(sessions).set({ id: ID.session }).where(eq(sessions.id, session.id))
-  const queued = await insertQueuedWorkspace(ID.project, { parentWorkspaceId: ID.workspace }, { ...settings, model: 'm', branch: 'main' })
+  const queued = await insertQueuedWorkspace(ID.project, { parentWorkspaceId: ID.workspace }, { ...settings, model: 'm', ...start })
   await db.update(queuedWorkspaces).set({ id: ID.queued }).where(eq(queuedWorkspaces.id, queued.id))
   const draft = await insertDraftWorkspace(ID.project, settings)
   await db.update(draftWorkspaces).set({ id: ID.draft }).where(eq(draftWorkspaces.id, draft.id))
   const routine = await insertRoutine(ID.project, {
-    ...settings, name: 'n', cron: '@daily', timeZone: 'UTC', model: 'm', branch: 'main',
+    ...settings, name: 'n', cron: '@daily', timeZone: 'UTC', model: 'm', ...start,
   }, null)
   await db.update(routines).set({ id: ID.routine }).where(eq(routines.id, routine.id))
   const credential = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'gh', kind: 'https', secret: 'ghp_x' })

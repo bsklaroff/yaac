@@ -7,8 +7,9 @@ import { promisify } from 'node:util'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { recordConversations } from '#db/conversation-store'
+import { insertSession } from '#db/session-store'
 import { closeDb } from '#db/client'
-import { acpLogDir, agentHistoryDir, claudeDir, opencodeCheckpointDir } from '@yaac/shared/project-paths'
+import { acpLogDir, agentHistoryDir, claudeDir, claudeProjectDirName, opencodeCheckpointDir, workspaceDir } from '@yaac/shared/project-paths'
 import { getAcpStoredImage, getConversationTranscript, recordOrigin } from '#domain/workspaces/transcript'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 import type { AcpEvent } from '@yaac/shared/acp'
@@ -404,14 +405,25 @@ describe('getConversationTranscript', () => {
     }
   })
 
+  it('finds a claude transcript in the folder of the checkout its session runs in', async () => {
+    // No path is recorded, so it is computed from the session's cwd.
+    const session = await insertSession(PROJECT, WORKSPACE, { tool: 'claude', mode: 'tui', permissionMode: 'bypass', cwd: 'web' })
+    await recordConversations(PROJECT, WORKSPACE, [{ tool: 'claude', conversationId: TUI_SESSION, sessionId: session.id }])
+    await writeClaudeTranscript(TUI_SESSION, path.join(
+      agentHistoryDir(PROJECT, WORKSPACE, 'claude'), '-workspace-web', `${TUI_SESSION}.jsonl`,
+    ))
+
+    expect((await getConversationTranscript(PROJECT, WORKSPACE, TUI_SESSION)).events.map((e) => e.type))
+      .toEqual(['user', 'agent'])
+  })
+
   it('finds a claude transcript filed under a cwd that is not the pod\'s', async () => {
     // A containerless workspace runs claude in the host checkout, not
     // `/workspace`, so claude files the conversation under a directory named
     // for that path.
     await seedSession(TUI_SESSION)
     await writeClaudeTranscript(TUI_SESSION, path.join(
-      claudeDir(PROJECT), 'projects', `-home-yaac--yaac-projects-${PROJECT}-workspaces-wt-1`,
-      `${TUI_SESSION}.jsonl`,
+      claudeDir(PROJECT), 'projects', claudeProjectDirName(workspaceDir(PROJECT, WORKSPACE)), `${TUI_SESSION}.jsonl`,
     ))
 
     expect((await getConversationTranscript(PROJECT, WORKSPACE, TUI_SESSION)).events.map((e) => e.type))

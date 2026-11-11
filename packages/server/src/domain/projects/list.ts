@@ -1,6 +1,6 @@
 import { countStoppedWorkspaces, listProjectIconHashes, listProjectRows, type StoppedCount } from '#db'
 import { workspaceDriver } from '#drivers/driver'
-import { projectCredentialNames } from './credentials'
+import { repoCredentialNames } from '#domain/repos'
 import { initWorkflowOf } from './workflows'
 import type { ProjectSummary } from '@yaac/shared/types'
 
@@ -31,12 +31,11 @@ export async function listProjects(
     }
     return total
   }
-  const credentials = await projectCredentialNames(rows)
+  const credentials = await repoCredentialNames(rows.flatMap((r) => r.repos.map((l) => l.repo)))
   const inits = new Map(await Promise.all(rows.map(async (r) => [r.id, await initWorkflowOf(r.id)] as const)))
   return rows.map((meta) => ({
     id: meta.id,
     name: meta.name,
-    remoteUrl: meta.remoteUrl,
     addedAt: meta.addedAt,
     owner: meta.owner,
     ...(iconHashes.has(meta.id) ? { iconHash: iconHashes.get(meta.id) } : {}),
@@ -45,14 +44,23 @@ export async function listProjects(
     // Remembered create defaults, so the create form opens on what an
     // untouched create would run (see `resolveToolCreateDefaults`).
     ...(meta.lastTool !== undefined ? { lastTool: meta.lastTool } : {}),
-    ...(meta.lastBranch !== undefined ? { lastBranch: meta.lastBranch } : {}),
     createDefaults: meta.createDefaults,
-    gitCredential: credentials.get(meta.id) ?? null,
-    hosted: meta.hosted,
-    ...(meta.keepsHostedRepo ? { keepsHostedRepo: true } : {}),
-    // A share pushes under the guard of the project it was shared from.
-    guardDefaultBranch: (rows.find((r) => r.id === meta.sharedFrom) ?? meta).guardDefaultBranch,
-    ...(meta.sharedFrom !== undefined ? { sharedFrom: { projectId: meta.sharedFrom, revoked: meta.shareRevoked } } : {}),
+    repos: meta.repos.map((l) => ({
+      id: l.repo.id,
+      dir: l.dir,
+      remoteUrl: l.repo.remoteUrl,
+      owner: l.repo.owner,
+      hosted: l.repo.hosted,
+      guardDefaultBranch: l.repo.guardDefaultBranch,
+      ...(l.repo.keepsHostedRepo ? { keepsHostedRepo: true as const } : {}),
+      gitCredential: credentials.get(l.repo.id) ?? null,
+      readOnly: l.readOnly,
+      ghToken: l.ghToken,
+      lastIncluded: l.lastIncluded,
+      ...(l.lastBranch !== undefined ? { lastBranch: l.lastBranch } : {}),
+    })),
+    ...(meta.lastNested !== undefined ? { lastNested: meta.lastNested } : {}),
+    ...(meta.lastCwd !== undefined ? { lastCwd: meta.lastCwd } : {}),
     ...(meta.stoppedWorkspaceRetentionDays !== undefined
       ? { stoppedWorkspaceRetentionDays: meta.stoppedWorkspaceRetentionDays } : {}),
     ...(meta.keptIgnoredPaths.length > 0 ? { keptIgnoredPaths: meta.keptIgnoredPaths } : {}),

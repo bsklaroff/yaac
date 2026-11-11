@@ -3,7 +3,9 @@ import { durationText } from '#lib/time'
 import type {
   AgentTool,
   DraftWorkspaceSettings,
+  ProjectRepo,
   QueuedWorkspaceEntry,
+  RepoStart,
   ServerSnapshot,
   ToolCreateDefaults,
 } from '@yaac/shared/types'
@@ -51,7 +53,17 @@ export interface NewWorkspaceForm {
   /** Model, mode, posture, effort and agent option picks, which apply only
    *  to the agent they were made for. */
   picked?: { tool: AgentTool; picks: ToolCreateDefaults }
-  branch?: string
+  /** What the workspace starts with, where the form was touched
+   *  (docs/project-repos.md): per repo id, whether it is included and its
+   *  base branch or full commit id; whether a lone repo sits in a folder of
+   *  its own; and where the agent starts, a repo id or `.` for the
+   *  workspace root. */
+  repos?: Record<string, RepoPick>
+  nested?: boolean
+  cwd?: string
+  /** With `inWorkspace`: the checkout path the session starts in, `''` for
+   *  the workspace root. */
+  sessionCwd?: string
   /** null is no group. */
   groupId?: string | null
   /** The project volume a create now attaches (docs/workspace-volumes.md). */
@@ -66,6 +78,24 @@ export interface NewWorkspaceForm {
   savedPrompt?: string
   /** The routine it edits. */
   editRoutineId?: string
+}
+
+/** The form's pick for one of the project's repos. */
+export interface RepoPick {
+  included?: boolean
+  /** A branch, or a full commit id to start at instead. */
+  branch?: string
+}
+
+/** A stored selection as the form's picks: every repo of the project is
+ *  either in it, with its start, or left out. A selection names a repo by
+ *  its id or its folder. */
+export function selectionPicks(repos: ProjectRepo[], selected: RepoStart[]): Record<string, RepoPick> {
+  return Object.fromEntries(repos.map((r) => {
+    const start = selected.find((s) => s.repo === r.id || s.repo === r.dir)
+    const at = start?.branch ?? start?.commit
+    return [r.id, { included: start !== undefined, ...(at !== undefined ? { branch: at } : {}) }]
+  }))
 }
 
 /** Start's value for an entry with no parent, which waits for room in a
@@ -158,6 +188,10 @@ export function seedNewWorkspace(opts: NewWorkspaceOpts, snapshot: ServerSnapsho
     timeout = routine.timeoutMinutes
   }
   const timeZone = routine?.timeZone ?? draft?.timeZone
+  const projectRepos = snapshot?.projects.find((p) => p.id === opts.projectId)?.repos ?? []
+  // A draft keeps what the dialog had resolved; an entry or routine its
+  // whole selection.
+  const selection = 'selection' in from ? from.selection : draft
   return {
     projectId: opts.projectId,
     prompt: from.prompt ?? '',
@@ -178,10 +212,11 @@ export function seedNewWorkspace(opts: NewWorkspaceOpts, snapshot: ServerSnapsho
         agentOptions: from.agentOptions ?? {},
       },
     },
-    // A start at a commit shows in the Base branch field, which sends a full
-    // commit id as one.
-    ...(from.branch !== undefined ? { branch: from.branch }
-      : 'commit' in from && from.commit !== undefined ? { branch: from.commit } : {}),
+    // A start at a commit shows in the repo's Base branch field, which sends
+    // a full commit id as one.
+    ...(selection?.repos !== undefined ? { repos: selectionPicks(projectRepos, selection.repos) } : {}),
+    ...(selection?.nested !== undefined ? { nested: selection.nested } : {}),
+    ...(selection?.cwd !== undefined ? { cwd: selection.cwd } : {}),
     ...(groupId !== undefined ? { groupId } : {}),
     ...(entry !== undefined ? { editId: entry.id } : routine !== undefined ? { editRoutineId: routine.id } : { draftId: from.id }),
   }

@@ -152,8 +152,6 @@ export interface WorkspaceRegistration {
   owner: string
   config: ProjectConfig
   allowlist: EgressAllowlist
-  /** The project's `origin` remote, as the workspace will see it. */
-  remoteUrl: string
   /**
    * The project's proxied secrets as injection rules (hosts, paths,
    * headers), never values. Only secrets that have a value are included.
@@ -164,25 +162,42 @@ export interface WorkspaceRegistration {
 }
 
 /**
- * One HTTPS token and the projects it is assigned to
- * (docs/git-credentials.md). Only those projects' workspaces get it.
+ * One use of a git credential: a repo a project links, which that
+ * project's workspaces may reach with it (docs/project-repos.md
+ * "Credentials per repo"). The egress path uses a credential for the repos
+ * it is granted for and nothing else.
  */
+export interface RepoGrant {
+  projectId: string
+  repoId: string
+  /** The remote's host, and the repo's path there (`owner/repo`, no
+   *  leading slash or `.git`). */
+  host: string
+  path: string
+  /** Refuse every git write to the repo from this project's workspaces. */
+  readOnly: boolean
+  /** An https GitHub repo's token may be the project's `GH_TOKEN`; never
+   *  honored while `readOnly`. */
+  ghToken: boolean
+}
+
+/** One HTTPS token and the repos it is granted for (docs/git-credentials.md). */
 export interface HttpsCredentialEntry {
   token: string
-  projects: string[]
+  grants: RepoGrant[]
 }
 
 /**
- * One SSH key and the projects it is assigned to, each with its remote host
- * and trusted host key. Carries the key material itself: keys live
- * encrypted in the database, and the driver loads them into an ssh-agent
- * (the proxy's, or a per-workspace one under containerless).
+ * One SSH key and the repos it is granted for, each with its remote's
+ * trusted host key. Carries the key material itself: keys live encrypted in
+ * the database, and the driver hands them to whatever logs in (the proxy,
+ * or a per-workspace ssh-agent under containerless).
  */
 export interface SshCredentialEntry {
   privateKey: string
   /** The public key, one OpenSSH line. */
   publicKey: string
-  projects: Array<{ projectId: string; host: string; knownHostsEntry: string }>
+  grants: Array<RepoGrant & { knownHostsEntry: string }>
 }
 
 /**
@@ -257,8 +272,6 @@ export interface SubstrateIntent {
   owner: string
   config: ProjectConfig
   allowlist: EgressAllowlist
-  /** The project's `origin` remote, as the workspace will see it. */
-  remoteUrl: string
   nestedContainers: boolean
   /** Injection rules for the project's proxied secrets. Values travel
    *  separately (`syncProjectSecrets`). */
@@ -277,18 +290,20 @@ export interface WorkspaceSubstrate {
 }
 
 /**
- * The project's git credential in the form the workspace's own git needs.
+ * One repo's git credential in the form the workspace's own git needs.
  * Only given to a driver without mediated egress, whose workspace must hold
- * the real credential (docs/containerless-driver.md). The SSH variant is the
- * OpenSSH private key `ssh-add -` reads; containerless loads it into a
+ * the real credentials (docs/containerless-driver.md), one per checkout.
+ * `host` and `path` name the repo (`path` as `owner/repo`), so git picks
+ * each repo's own credential. The SSH variant is the OpenSSH private key
+ * `ssh-add -` reads, with its public key; containerless loads it into a
  * per-workspace ssh-agent so the workspace never holds a copy. The hosted
- * variant is for a remote the server hosts (docs/hosted-projects.md): the
- * server's loopback origin and the workspace's yaac-mama token, which is
- * its identity there.
+ * variant is for the remotes the server hosts (docs/hosted-projects.md):
+ * the server's loopback origin and the workspace's yaac-mama token, which
+ * is its identity there; one covers every hosted repo.
  */
 export type WorkspaceGitCredential =
-  | { kind: 'https'; host: string; token: string }
-  | { kind: 'ssh'; privateKey: string }
+  | { kind: 'https'; host: string; path: string; token: string }
+  | { kind: 'ssh'; host: string; path: string; privateKey: string; publicKey: string }
   | { kind: 'hosted'; origin: string; token: string }
 
 /** A scratch dir as the workspace sees it, and its cap. */
@@ -346,12 +361,20 @@ export interface WorkspaceSpec {
   /** The workspace runs its own container engine. */
   nestedContainers: boolean
   /**
-   * Set for an SSH remote: the host path of the project's known_hosts. The
-   * driver decides how the key and tunnel reach the workspace.
+   * Where its shells and steps start, relative to the workspace dir: `''`
+   * or one checkout's path, which the caller has created.
+   */
+  cwd: string
+  /**
+   * Set when a checkout's remote is SSH: the host path of a known_hosts
+   * file holding each such remote's trusted host key. The driver decides
+   * how keys and tunnel reach the workspace, and which host keys the
+   * workspace itself must trust.
    */
   ssh?: { knownHostsFile: string }
-  /** The real git credential; set only without mediated egress. */
-  gitCredential?: WorkspaceGitCredential
+  /** The real git credentials, one per checkout that needs one; set only
+   *  without mediated egress. */
+  gitCredentials: WorkspaceGitCredential[]
   /** The receipt from this workspace's `prepareSubstrate`. */
   substrate: WorkspaceSubstrate
   /**
@@ -550,7 +573,9 @@ export type { DriverKind }
 export interface WorkspacePaths {
   /** The tmux socket, passed to every tmux call as `-S`. */
   tmuxSock: string
-  /** The checkout: a window's cwd, and what `git -C` addresses. */
+  /** The workspace root, which its checkouts sit in or under. A window's
+   *  cwd and what `git -C` addresses are this joined with a checkout's or
+   *  session's relative path. */
   workspaceDir: string
   /** Workspace-private scratch: prompt scripts, their logs, diff indexes. */
   scratchDir: string

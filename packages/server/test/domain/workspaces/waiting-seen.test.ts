@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { recordTestProject } from '@yaac/test-utils/project-fixture'
 import { markWaitingSeen } from '#domain/workspaces'
 import { BUILT_IN_USER_ID, getSessionRow, insertSession, type SessionRow } from '#db'
-import { recordProject } from '#db/project-store'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { closeDb } from '#db/client'
 import {
@@ -23,10 +23,10 @@ let other: SessionRow
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
   _resetWorkspaceStatusStoreForTests()
-  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
+  await recordTestProject(PROJ, { name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
   await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'w1' })
-  session = await insertSession(PROJ, 'w1', { tool: 'claude', mode: 'acp', permissionMode: 'bypass' })
-  other = await insertSession(PROJ, 'w1', { tool: 'codex', mode: 'tui', permissionMode: 'bypass' })
+  session = await insertSession(PROJ, 'w1', { cwd: '', tool: 'claude', mode: 'acp', permissionMode: 'bypass' })
+  other = await insertSession(PROJ, 'w1', { cwd: '', tool: 'codex', mode: 'tui', permissionMode: 'bypass' })
 })
 
 afterEach(async () => {

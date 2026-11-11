@@ -1,7 +1,7 @@
 import { getApiClient } from '@yaac/shared/server-api'
 import { ServerError } from '@yaac/shared/errors'
 import { resolveProjectRef } from '@yaac/shared/project-name'
-import type { ProjectSummary, User } from '@yaac/shared/types'
+import type { ProjectRepo, ProjectSummary, RepoSummary, User } from '@yaac/shared/types'
 
 /**
  * The API client every command uses. The server target resolves on the first
@@ -84,4 +84,49 @@ export async function resolveGitCredentialId(name: string): Promise<string> {
   const id = gitCredentials.find((c) => c.name === name)?.id
   if (id === undefined) throw new Error(`No git credential named "${name}". Run \`yaac auth list\` to see them.`)
   return id
+}
+
+/**
+ * The repo of a project a repo-scoped command means: the one `--repo`
+ * names, by its folder or its id, else the project's only repo. A project
+ * with several needs the name.
+ */
+export function projectRepoOf(project: ProjectSummary, repo: string | undefined): ProjectRepo {
+  if (repo !== undefined) {
+    const found = project.repos.find((r) => r.dir === repo) ?? project.repos.find((r) => r.id === repo)
+    if (found === undefined) {
+      throw new Error(`Project "${project.name}" has no repo "${repo}"; `
+        + (project.repos.length > 0 ? `its repos are ${project.repos.map((r) => r.dir).join(', ')}.` : 'it has none.'))
+    }
+    return found
+  }
+  if (project.repos.length === 1) return project.repos[0]
+  throw new Error(project.repos.length === 0
+    ? `Project "${project.name}" has no repos; add one with \`yaac project repo add\`.`
+    : `Project "${project.name}" has several repos; name one with --repo: ${project.repos.map((r) => r.dir).join(', ')}.`)
+}
+
+/**
+ * The repo `ref` names among those the user in scope owns or has been
+ * shared: a full id (anyone's), a unique id prefix, a remote URL, or
+ * `<project>/<folder>` for a repo one of their projects links.
+ */
+export async function resolveRepo(ref: string): Promise<RepoSummary> {
+  const wanted = ref.trim()
+  const [scope, repos] = await Promise.all([projectScope(), api.repo.list.$get()])
+  const byId = repos.find((r) => r.id === wanted.toLowerCase())
+  if (byId !== undefined) return byId
+  const slash = wanted.indexOf('/')
+  const linked = slash > 0 && !wanted.includes('://')
+    ? scope.projects.filter((p) => p.name === wanted.slice(0, slash) || p.id === wanted.slice(0, slash))
+      .flatMap((p) => p.repos.filter((r) => r.dir === wanted.slice(slash + 1)))
+    : []
+  const mine = repos.filter((r) => r.owner === scope.userId || r.sharedWith.includes(scope.userId))
+  const matches = linked.length > 0
+    ? repos.filter((r) => linked.some((l) => l.id === r.id))
+    : mine.filter((r) => r.remoteUrl === wanted || (wanted.length >= 4 && r.id.startsWith(wanted.toLowerCase())))
+  if (matches.length === 1) return matches[0]
+  throw new Error(matches.length === 0
+    ? `No repo "${wanted}". Run \`yaac repo list\` to see them.`
+    : `"${wanted}" names more than one repo; use an id: ${matches.map((r) => r.id).join(', ')}.`)
 }

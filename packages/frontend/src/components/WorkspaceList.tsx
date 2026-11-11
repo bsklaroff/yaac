@@ -15,7 +15,7 @@ import { shownGroups } from '#lib/groups'
 import { queuedChildren, queuedParentId, queuedTitle, roomKey } from '#lib/queued'
 import { useStoppedEntry, useStoppedMatch, useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
 import { useIsMobile } from '#lib/viewport'
-import { useReadOnly, useTeammateView, useViewedUserId, useWhoami } from '#lib/viewer'
+import { useReadOnly, useViewedUserId, useWhoami } from '#lib/viewer'
 import { unseenDeaths, useUiStore, type SidebarStatus } from '#lib/store'
 import type {
   DraftWorkspaceEntry,
@@ -127,7 +127,8 @@ export interface ProjectScope {
   held: HeldWorkspaceEntry[]
   drafts: DraftWorkspaceEntry[]
   routines: RoutineEntry[]
-  /** Hosts that rejected the project's git credential (project-wide). */
+  /** Hosts that rejected a git credential of one of the project's repos
+   *  (project-wide). */
   gitAuthFailures: GitAuthFailure[]
 }
 
@@ -386,7 +387,6 @@ export function WorkspaceList({
   // For the empty-state text: there's no project rail on a phone.
   const isMobile = useIsMobile()
   const readOnly = useReadOnly()
-  const teammateView = useTeammateView()
   const viewedUserId = useViewedUserId()
   const whoami = useWhoami()
   const me = whoami?.userId
@@ -684,9 +684,7 @@ export function WorkspaceList({
         <div className="flex-1 overflow-y-auto py-1">
           {readOnly && (
             <p className="mx-3 mb-1 rounded-md bg-surface-2 px-2.5 py-1.5 text-[11px] text-text-dim">
-              {teammateView
-                ? <>{viewedName}&apos;s workspaces, read-only</>
-                : 'No longer shared with you, so read-only'}
+              {viewedName}&apos;s workspaces, read-only
             </p>
           )}
           {!projectId && (

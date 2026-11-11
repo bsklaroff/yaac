@@ -19,6 +19,7 @@ import { diffExtensions, setOriginal } from '#lib/diffEditor'
 import { CHANGE_STAGES } from '#lib/gitStatus'
 import { languageForPath } from '#lib/highlight'
 import { CHANGES_POLL_MS, useWorkspaceChanges } from '#lib/useWorkspaceChanges'
+import { useCheckout } from '#lib/checkouts'
 import { chordMatches, findChord, formatChord, saveChord, textSizeStep } from '#lib/shortcuts'
 import { IS_MAC } from '#lib/platform'
 import { usePinchSize, type TouchHandlers } from '#lib/usePinchSize'
@@ -254,14 +255,24 @@ class Saver {
  * The text a diff mode compares the working copy against: the file at the
  * diff base (under its old name, if renamed), empty for a file the base
  * lacks, and null while loading or when there is nothing to compare (no
- * change, or a binary or oversized original).
+ * change, or a binary or oversized original). `change` is of the checkout
+ * `repo` names, its paths relative to that checkout.
  */
-function useOriginal(workspaceId: string, change: WorkspaceChange | undefined, rev: string | undefined, on: boolean): string | null {
+function useOriginal(
+  workspaceId: string,
+  repo: string | undefined,
+  change: WorkspaceChange | undefined,
+  rev: string | undefined,
+  on: boolean,
+): string | null {
   const path = change?.oldPath ?? change?.path ?? ''
   const fetches = on && change !== undefined && change.status !== 'added' && rev !== undefined
   const { data } = useQuery({
-    queryKey: ['file-at', workspaceId, path, rev],
-    queryFn: () => api.workspace[':id']['file-at'].$get({ param: { id: workspaceId }, query: { path, rev: rev! } }),
+    queryKey: ['file-at', workspaceId, repo ?? null, path, rev],
+    queryFn: () => api.workspace[':id']['file-at'].$get({
+      param: { id: workspaceId },
+      query: { path, rev: rev!, ...repo !== undefined ? { repo } : {} },
+    }),
     enabled: fetches,
     // A file at a commit never changes.
     staleTime: Infinity,
@@ -379,11 +390,14 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
 
   // The file's changes since the diff base, and the diff mode showing them.
   // A hidden pane keeps its last answer without polling.
+  // The changes are of the checkout the workspace's git views show, so a
+  // file outside it has none.
+  const { repo, prefix } = useCheckout(workspaceId)
   const { data: changes } = useWorkspaceChanges(workspaceId, { poll: visible && CHANGES_POLL_MS })
-  const change = changes?.files.find((f) => f.path === path)
+  const change = changes?.files.find((f) => `${prefix}${f.path}` === path)
   const diffMode = useUiStore((s) => s.fileDiffMode)
   const setDiffMode = useUiStore((s) => s.setFileDiffMode)
-  const original = useOriginal(workspaceId, change, changes?.base, diffMode !== 'plain')
+  const original = useOriginal(workspaceId, repo, change, changes?.base, diffMode !== 'plain')
   const kind = previewKind(path)
   const preview = useUiStore((s) => s.filePreview)
   const setPreview = useUiStore((s) => s.setFilePreview)

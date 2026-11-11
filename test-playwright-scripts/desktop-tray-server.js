@@ -149,7 +149,7 @@ async function addProject() {
   fs.mkdirSync(paths.claude, { recursive: true })
   await api('/project/register', { method: 'POST', body: JSON.stringify({ id, name: 'tray-demo', remoteUrl: 'https://github.com/test/tray-demo.git' }) })
   const { id: credentialId } = await api('/auth/git/credentials', { method: 'POST', body: JSON.stringify({ name: 'tray token', token: 'ghp_tray_test' }) })
-  await api(`/project/${id}/git-credential`, { method: 'PUT', body: JSON.stringify({ credentialId }) })
+  await api(`/repo/${id}/git-credential`, { method: 'PUT', body: JSON.stringify({ credentialId }) })
   yaac('auth', 'fake', 'claude-oauth')
   const bin = path.join(paths.bin, 'bin', 'claude')
   fs.mkdirSync(path.dirname(bin), { recursive: true })

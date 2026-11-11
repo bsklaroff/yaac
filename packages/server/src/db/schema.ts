@@ -6,6 +6,7 @@ import type {
   EgressAllowlist,
   PermissionMode,
   PortForwardConfig,
+  RepoStart,
   ScratchDirSettings,
   SiteDeployPhase,
   UserRole,
@@ -100,10 +101,9 @@ export const projects = snakeCase.table('projects', {
   id: uuid().primaryKey().defaultRandom(),
   /** The user who added it; only they create workspaces in it. */
   owner: uuid().notNull().references(() => users.id),
-  /** Display name derived from the repo path (`projectNameFor`). Not
-   *  unique: the same remote can be added twice. */
+  /** Display name, by default derived from its first repo's path
+   *  (`projectNameFor`). Not unique. */
   name: text().notNull(),
-  remoteUrl: text().notNull(),
   addedAt: text().notNull(),
   /** Where its owner placed it in their project list (`setProjectOrder`).
    *  Null until they reorder; unplaced projects follow in `addedAt` order. */
@@ -116,46 +116,16 @@ export const projects = snakeCase.table('projects', {
    */
   lastTool: text().$type<AgentTool>(),
   /**
-   * The branch the last create named, which the create form opens on. A
-   * create naming no branch uses the remote's default.
+   * The layout and cwd the last create chose (docs/project-repos.md
+   * "Remembered create settings"): whether a lone repo sat in its own folder,
+   * and where the agent started, as a repo id or `.` for the workspace root.
+   * Null until a create chooses.
    */
-  lastBranch: text(),
-  /**
-   * The git credential this project uses; one credential may serve many
-   * projects (docs/git-credentials.md). Null until assigned, and a project
-   * without one cannot create workspaces. Deleting a credential clears this
-   * (and the host key) first; the foreign key is a backstop.
-   */
-  gitCredentialId: uuid().references(() => gitCredentials.id, { onDelete: 'restrict' }),
-  /**
-   * The remote's host key (one known_hosts line) for an SSH credential,
-   * fetched on first use when the key is assigned. Cleared or replaced in the
-   * same statement whenever the credential or the remote changes.
-   */
-  knownHostsEntry: text(),
+  lastNested: boolean(),
+  lastCwd: text(),
   /** Which hosts the project's workspaces may reach through the egress
    *  proxy (docs/workspace-egress.md). */
   egressAllowlist: jsonb().$type<EgressAllowlist>().notNull().default({ hosts: [], defaults: true }),
-  /** Whether the server hosts the remote itself (docs/hosted-projects.md).
-   *  Such a project has no git credential and needs none. */
-  hosted: boolean().notNull().default(false),
-  /** For a hosted project: refuse pushes that delete or rewind the default
-   *  branch. */
-  guardDefaultBranch: boolean().notNull().default(true),
-  /** For a project that moved off yaac to another git host: yaac still
-   *  keeps the repository it hosted, read-only, until the owner removes it
-   *  (docs/hosted-projects.md "Moving to a git host"). */
-  keepsHostedRepo: boolean().notNull().default(false),
-  /**
-   * For a project shared with its owner (docs/hosted-projects.md "Sharing"):
-   * the hosted project it was shared from, whose repository it reads and
-   * pushes. Null for every other project. Removing a project removes its
-   * shares first; the foreign key is a backstop.
-   */
-  sharedFrom: uuid().references((): AnyPgColumn => projects.id),
-  /** Set when the source project's owner removes the share. The row, its
-   *  workspaces and its sessions stay; its owner can no longer use them. */
-  shareRevoked: boolean().notNull().default(false),
   /** Days a stopped workspace is kept before the server deletes it for
    *  good (#domain/workspaces retention). Null keeps them forever. Set by
    *  the project's owner, so it covers only their own workspaces. */
@@ -187,7 +157,78 @@ export const projects = snakeCase.table('projects', {
   cacheVolumes: jsonb().$type<Record<string, string>>().notNull().default({}),
   nestedContainers: boolean().notNull().default(false),
   npmCache: boolean().notNull().default(true),
-}, (t) => [uniqueIndex().on(t.sharedFrom, t.owner)])
+})
+
+/**
+ * Git repos (docs/project-repos.md): one remote as one user reaches it. Its
+ * main clone is `repoDir(id)`, and a hosted one's bare repository
+ * `hostedRepoDir(id)`. Projects link repos through `project_repos`; a repo no
+ * project links stays among its owner's until they delete it.
+ */
+export const repos = snakeCase.table('repos', {
+  id: uuid().primaryKey().defaultRandom(),
+  owner: uuid().notNull().references(() => users.id),
+  remoteUrl: text().notNull(),
+  addedAt: text().notNull(),
+  /**
+   * The git credential that authenticates to it; one credential may serve
+   * many repos (docs/git-credentials.md). Null until assigned, and a
+   * workspace cannot start with a repo that has none. Deleting a credential
+   * clears this (and the host key) first; the foreign key is a backstop.
+   */
+  gitCredentialId: uuid().references(() => gitCredentials.id, { onDelete: 'restrict' }),
+  /**
+   * The remote's host key (one known_hosts line) for an SSH credential,
+   * fetched on first use when the key is assigned. Cleared or replaced in the
+   * same statement whenever the credential or the remote changes.
+   */
+  knownHostsEntry: text(),
+  /** Whether the server hosts the remote itself (docs/hosted-projects.md).
+   *  Such a repo has no git credential and needs none. */
+  hosted: boolean().notNull().default(false),
+  /** For a hosted repo: refuse pushes that delete or rewind the default
+   *  branch. */
+  guardDefaultBranch: boolean().notNull().default(true),
+  /** For a repo that moved off yaac to another git host: yaac still keeps
+   *  the repository it hosted, read-only, until the owner removes it
+   *  (docs/hosted-projects.md "Moving to a git host"). */
+  keepsHostedRepo: boolean().notNull().default(false),
+  /** Set when its owner deleted it while workspaces still held checkouts,
+   *  which borrow the main clone's objects. No project can link it, and it
+   *  goes for good with the last such workspace. */
+  deletedAt: timestamp({ withTimezone: true }),
+}, (t) => [index().on(t.owner)])
+
+/** The users a hosted repo's owner shared it with, who may link it into
+ *  their own projects (docs/hosted-projects.md "Sharing"). */
+export const repoShares = snakeCase.table('repo_shares', {
+  repoId: uuid().notNull().references(() => repos.id, { onDelete: 'cascade' }),
+  userId: uuid().notNull().references(() => users.id),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.repoId, t.userId] })])
+
+/** The repos a project links, in `position` order. */
+export const projectRepos = snakeCase.table('project_repos', {
+  projectId: uuid().notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  repoId: uuid().notNull().references(() => repos.id),
+  /** The folder its checkout takes in a workspace that nests its repos:
+   *  one path segment, unique in the project. */
+  dir: text().notNull(),
+  position: integer().notNull().default(0),
+  /** k8s only: the proxy refuses this project's workspaces any git write to
+   *  the repo, and its token is never `GH_TOKEN`. */
+  readOnly: boolean().notNull().default(false),
+  /** k8s only, for an https GitHub repo: its token may be `GH_TOKEN`. */
+  ghToken: boolean().notNull().default(true),
+  /** Whether the last create included it, and the branch it named for it,
+   *  which the next create starts from. */
+  lastIncluded: boolean().notNull().default(true),
+  lastBranch: text(),
+}, (t) => [
+  primaryKey({ columns: [t.projectId, t.repoId] }),
+  uniqueIndex().on(t.projectId, t.dir),
+  index().on(t.repoId),
+])
 
 /**
  * Remembered create defaults per (project, agent): the model, permission
@@ -255,14 +296,9 @@ export const workspaces = snakeCase.table('workspaces', {
    *  workspace whose agent titles nothing, or carried over from the draft or
    *  queued entry it was created from. */
   generatedTitle: text(),
-  /** The branch its work is measured against (no `origin/` prefix): the
-   *  branch it was created from, or the one `yaac-mama set-base` named.
-   *  Null for a workspace created at a commit until it is given one
-   *  (docs/workspace-steps.md "Start point and base branch"). */
-  baseBranch: text(),
-  /** The commit its checkout was created at. Null for a workspace created
-   *  before this was recorded, which always has a base branch. */
-  startCommit: text(),
+  /** Where its shells, steps and sessions opened without a choice start,
+   *  relative to the workspace root: `''` or one checkout's path. */
+  cwd: text().notNull().default(''),
   /** The workflow each of its lives starts with when its create brought
    *  one (docs/workflows.md), which a rerun or a site's replacement launches
    *  again; null runs the project's current init steps. */
@@ -335,6 +371,31 @@ export const workspaces = snakeCase.table('workspaces', {
 }, (t) => [index().on(t.projectId)])
 
 /**
+ * A workspace's checkouts, one per repo it was created with
+ * (docs/project-repos.md "Workspace layout"). A workspace with none is an
+ * empty dir. Rows outlive the project's link to the repo, since the checkout
+ * stays on disk.
+ */
+export const workspaceRepos = snakeCase.table('workspace_repos', {
+  workspaceId: text().notNull().references(() => workspaces.workspaceId, { onDelete: 'cascade' }),
+  repoId: uuid().notNull(),
+  /** Where the checkout sits under the workspace root: `''` for the root
+   *  itself, else the link's `dir` as it was at create. */
+  path: text().notNull(),
+  /** The branch its work is measured against (no `origin/` prefix): the
+   *  branch it was created from, or the one `yaac-mama set-base` named.
+   *  Null for a checkout created at a commit until it is given one
+   *  (docs/workspace-steps.md "Start point and base branch"). */
+  baseBranch: text(),
+  /** The commit the checkout was created at. Null for one created before
+   *  this was recorded, which always has a base branch. */
+  startCommit: text(),
+}, (t) => [
+  primaryKey({ columns: [t.workspaceId, t.repoId] }),
+  index().on(t.repoId),
+])
+
+/**
  * Named volumes: app data one running workspace at a time mounts
  * (docs/workspace-volumes.md). `holderWorkspaceId` is the lease; the
  * substrate's directory or claim is keyed by `id`.
@@ -382,6 +443,9 @@ export const sites = snakeCase.table('sites', {
   namedWorkflowId: uuid().notNull().references((): AnyPgColumn => namedWorkflows.id),
   /** No foreign key; deleting a volume a site names is refused. */
   volumeId: uuid(),
+  /** The repo its releases are built from: `followBranch` and the commits
+   *  below are this repo's. */
+  repoId: uuid().notNull(),
   /** A branch on origin whose tip a serving site deploys whenever it moves. */
   followBranch: text(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
@@ -499,6 +563,10 @@ export const sessions = snakeCase.table('sessions', {
   effort: text(),
   /** Each option its tool has (`AGENT_OPTIONS`), as last set. */
   agentOptions: jsonb().$type<AgentOptions>().notNull().default({}),
+  /** Where its agent runs, relative to the workspace root (`''` or one
+   *  checkout's path), for its whole life: claude and codex find a
+   *  conversation by the directory it started in. */
+  cwd: text().notNull().default(''),
   /** Display and restore order within its workspace. */
   ordinal: integer().notNull(),
   /** The tmux window it runs in, which is also its handle: the status
@@ -567,9 +635,8 @@ export const workspaceSteps = snakeCase.table('workspace_steps', {
  * workspace accumulates many (every `/clear`, `/resume`, `/compact`, or a
  * second `claude` in another terminal).
  *
- * Project-scoped because the tool homes are per project, so any workspace of
- * a project can resume any of its conversations; hence the many-to-many
- * link table below.
+ * Project-scoped because the tool homes are per project. Each belongs to
+ * one workspace, named by the link table below.
  *
  * The registry records conversations from the live agents: a `tui` tool
  * names its session on its tmux pane, and an `acp` id comes from
@@ -612,9 +679,8 @@ export const conversations = snakeCase.table('conversations', {
 }, (t) => [primaryKey({ columns: [t.projectId, t.tool, t.conversationId] })])
 
 /**
- * Which conversations belong to which workspace (many-to-many: a
- * conversation can be resumed into another workspace), and which session
- * held each.
+ * Which workspace each conversation belongs to (the one that first recorded
+ * it), and which session held it.
  *
  * `active`: the conversation had a live agent the last time the workspace was
  * observed running. Maintained from the live agents while running and left
@@ -822,11 +888,13 @@ export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
   /** Null when its model has no effort setting. */
   effort: text(),
   agentOptions: jsonb().$type<AgentOptions>().notNull().default({}),
-  /** The branch to fork from (no `origin/` prefix), fetched at launch so the
-   *  child starts from its latest tip; null when it starts at `commit`. */
-  branch: text(),
-  /** A full commit to start at instead of a branch's tip. */
-  commit: text(),
+  /** The repos it starts with, by repo id, each at a branch (no `origin/`
+   *  prefix, fetched at launch so the child starts from its latest tip) or a
+   *  full commit; whether a lone one sits in its own folder; and where its
+   *  agent starts (docs/project-repos.md). */
+  repos: jsonb().$type<RepoStart[]>().notNull().default([]),
+  nested: boolean().notNull().default(false),
+  cwd: text().notNull().default(''),
   /** What it starts with in place of the project's init steps
    *  (docs/workflows.md): a workflow its `steps` gave, or a named workflow
    *  whose current one it takes at launch. Neither runs the project's. */
@@ -884,9 +952,10 @@ export const routines = snakeCase.table('routines', {
   permissionMode: text().$type<PermissionMode>().notNull(),
   effort: text(),
   agentOptions: jsonb().$type<AgentOptions>().notNull().default({}),
-  /** Null when its runs start at `commit`. */
-  branch: text(),
-  commit: text(),
+  /** What each run starts with, as on a queued entry. */
+  repos: jsonb().$type<RepoStart[]>().notNull().default([]),
+  nested: boolean().notNull().default(false),
+  cwd: text().notNull().default(''),
   /** The named workflow whose current workflow each run starts with, fixed
    *  as it is queued; null runs the project's init steps. */
   namedWorkflowId: uuid().references((): AnyPgColumn => namedWorkflows.id),
@@ -928,7 +997,11 @@ export const draftWorkspaces = snakeCase.table('draft_workspaces', {
   /** Null when the model has no effort setting, or none was resolved. */
   effort: text(),
   agentOptions: jsonb().$type<AgentOptions>().notNull().default({}),
-  branch: text(),
+  /** The dialog's repo rows, layout and cwd; null where it had not
+   *  resolved one. */
+  repos: jsonb().$type<RepoStart[]>(),
+  nested: boolean(),
+  cwd: text(),
   /** The dialog's Start field: the workspace or queued entry to wait on, or
    *  null for "Now". Not a live reference; a parent that is gone when the
    *  draft reopens falls back to "Now". */

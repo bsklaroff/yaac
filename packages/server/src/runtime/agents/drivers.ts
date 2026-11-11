@@ -59,6 +59,9 @@ export interface WatchedSession {
   /** Its effort level, which `acp` puts a new or loaded conversation at
    *  (`session/set_config_option`). `tui` passes it at launch. */
   effort?: string
+  /** Where its agent runs, relative to the workspace dir, which `acp`
+   *  opens its conversation in. */
+  cwd: string
   /** The model it launched with, which `acp` tells an adapter that takes it
    *  no other way, once, after `session/new`. */
   model?: string
@@ -156,6 +159,9 @@ export interface AgentLaunchSpec {
    * the spec (which is how it is tested).
    */
   paths: WorkspacePaths
+  /** The directory the agent runs in, as the workspace sees it: the
+   *  workspace dir or one checkout's. */
+  cwd: string
   /**
    * The conversation to create or resume. For `tui`, the id passed to the
    * tool's `--session-id`/resume flag. For `acp`, what its record is named
@@ -177,11 +183,11 @@ export interface AgentLaunchSpec {
   /** The permission posture to launch in. See `AgentCmdSpec`. */
   permissionMode: PermissionMode
   /**
-   * `acp` only: the launch runs before the checkout is complete, so the
-   * conversation must not open until its `.git` lands (acpd's `--wait-for`).
-   * The adapter boots meanwhile.
+   * `acp` only: the launch runs before the checkouts are complete, so the
+   * conversation must not open until each of these paths, their `.git`s,
+   * lands (acpd's `--wait-for`). The adapter boots meanwhile.
    */
-  beforeCheckout?: boolean
+  waitFor?: string[]
   /** `tui` only: launch a fresh agent with the opening message
    *  `buildOpeningWrite` left. An `acp` one's is sent over the protocol. */
   opening?: true

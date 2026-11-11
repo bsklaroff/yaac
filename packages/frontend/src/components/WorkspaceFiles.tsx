@@ -25,6 +25,7 @@ import { CHANGE_STAGES, ROW_STATUS, pathStatuses, type RowStatus } from '#lib/gi
 import { languageForPath } from '#lib/highlight'
 import { chordMatches, findChord, formatChord, textSizeStep } from '#lib/shortcuts'
 import { CHANGES_POLL_MS, useComparison, useWorkspaceChanges, useWorkspaceFiles } from '#lib/useWorkspaceChanges'
+import { useCheckout } from '#lib/checkouts'
 import { useDiffFind, type DiffMatch } from '#lib/useDiffFind'
 import { usePinchSize } from '#lib/usePinchSize'
 import { IS_MAC } from '#lib/platform'
@@ -152,13 +153,8 @@ function isStopped(err: unknown): boolean {
  * pinch over the list set it. A pinch anywhere else in the pane zooms the
  * page.
  */
-export function WorkspaceFiles({ workspaceId, projectId, baseBranch, startCommit, changedOnly = false, range }: {
+export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
   workspaceId: string
-  projectId: string
-  /** The branch the workspace is based on, which changes are compared against. */
-  baseBranch?: string
-  /** The commit it was created at, the base when it has no branch. */
-  startCommit?: string
   changedOnly?: boolean
   /** With `changedOnly`, the range shown instead of the workspace's own
    *  changes. */
@@ -217,7 +213,15 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, startCommit
   })
   const compared = useComparison(workspaceId, live ? undefined : range)
   const changes: UseQueryResult<WorkspaceDiff> = live ? worktree : compared
-  const changed = useMemo(() => changes.data?.files ?? [], [changes.data?.files])
+  // Changes are of the checkout the workspace's switcher picks, with paths
+  // relative to it; the tree is of the whole workspace dir, so each takes
+  // the checkout's folder in front.
+  const { known, repos, prefix } = useCheckout(workspaceId)
+  const changed = useMemo(() => (changes.data?.files ?? []).map((c) => (prefix === '' ? c : {
+    ...c,
+    path: `${prefix}${c.path}`,
+    ...(c.oldPath !== undefined ? { oldPath: `${prefix}${c.oldPath}` } : {}),
+  })), [changes.data?.files, prefix])
   const changeByPath = useMemo(() => new Map(changed.map((c) => [c.path, c])), [changed])
   const conflicted = range ? undefined : data?.conflicted
   const statuses = useMemo(() => pathStatuses(changed, conflicted ?? []), [changed, conflicted])
@@ -760,6 +764,9 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, startCommit
   const changesNotice = ((): JSX.Element | null => {
     if (!changedOnly) return null
     const center = 'flex min-h-0 flex-1 flex-col items-center justify-center gap-1 px-4 text-center'
+    if (known && repos.length === 0) {
+      return <div className={center}><p className="text-xs text-text-dim">This workspace has no repos</p></div>
+    }
     if (!changes.data) {
       return changes.isError ? (
         <div className={clsx(center, 'gap-2 text-xs text-text-dim')}>
@@ -836,9 +843,6 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, startCommit
       {changedOnly && (
         <ChangesStrip
           workspaceId={workspaceId}
-          projectId={projectId}
-          baseBranch={baseBranch}
-          startCommit={startCommit}
           range={range}
           data={changes.data}
           files={visibleChanged}
@@ -933,7 +937,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, startCommit
               return (
                 <div key={path} className="flex items-center gap-1.5 px-2 py-0.5 text-xs">
                   <Icon size={13} className={clsx('shrink-0', className)} />
-                  <span className={clsx('shrink-0', ROW_STATUS.added)}>{path}</span>
+                  <span className={clsx('shrink-0', ROW_STATUS.added)}>{prefix}{path}</span>
                   <span className="min-w-0 flex-1 truncate text-[11px] text-text-faint">
                     {dir ? 'over 2,000 files' : 'over 10 MB'}, not diffed
                   </span>

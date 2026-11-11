@@ -120,17 +120,25 @@ export function imageStoreDir(projectId: string): string {
 }
 
 /**
- * SERVER-LOCAL: a yaac-hosted project's remote, a bare repository only the
+ * SERVER-LOCAL: a yaac-hosted repo's remote, a bare repository only the
  * server opens (docs/hosted-projects.md). Outside the GLOBAL tree so no
  * workspace pod can mount it; workspaces push through the server.
  */
-export function hostedRepoDir(projectId: string): string {
-  return serverLocalPath('hosted-repos', `${projectId}.git`)
+export function hostedRepoDir(repoId: string): string {
+  return serverLocalPath('hosted-repos', `${repoId}.git`)
 }
 
-/** GLOBAL: the project's main clone. Its `.git` is mounted read-only into
- *  every workspace pod, whose checkout borrows its objects. */
-export function repoDir(projectId: string): string {
+/** GLOBAL: a repo's main clone, shared by every project that links the
+ *  repo. Its `.git` is mounted read-only into every workspace pod that has
+ *  a checkout of it, which borrows its objects. */
+export function repoDir(repoId: string): string {
+  return globalPath('repos', repoId)
+}
+
+/** GLOBAL: where a project kept its one main clone before repos were rows
+ *  of their own (docs/legacy-compat-shims.md "Main clones under the project
+ *  dir"). */
+export function legacyRepoDir(projectId: string): string {
   return globalProjectPath(projectId, 'repo')
 }
 
@@ -326,17 +334,32 @@ export function claudeProjectDirName(cwd: string): string {
   return `${munged.slice(0, 200)}-${Math.abs(hash).toString(36)}`
 }
 
-/**
- * The cwd claude runs in inside a pod, and so the directory a workspace's
- * history keeps every conversation in.
- */
-export const CLAUDE_POD_CWD = claudeProjectDirName('/workspace')
+/** Where a pod sees its workspace dir. */
+export const POD_WORKSPACE_DIR = '/workspace'
 
-/** The project's shared auto-memory dir in the shared `projects/`, named as
- *  claude would for a `/repo` cwd. It is mounted (or linked) over each
- *  workspace's own `memory` folder, since claude keys memory on the
- *  checkout's git root. */
-export const CLAUDE_POD_REPO = claudeProjectDirName('/repo')
+/**
+ * The folder a workspace's history keeps the claude conversations of one
+ * cwd in, named as claude names it inside a pod. `cwd` is relative to the
+ * workspace root: `''` or one checkout's path.
+ */
+export function claudePodCwd(cwd: string): string {
+  return claudeProjectDirName(path.posix.join(POD_WORKSPACE_DIR, cwd))
+}
+
+/**
+ * The folder in the project's shared claude `projects/` that holds one
+ * auto-memory: a repo's, or with no repo the one for a workspace root that
+ * is no checkout (docs/project-repos.md "Agent history by cwd"). It is
+ * mounted (or linked) over the `memory` folder of every cwd it applies to,
+ * since claude keys memory on the git root it starts in.
+ */
+export function claudeMemoryDirName(repoId?: string): string {
+  return repoId === undefined ? '-workspace-root' : `-repo-${repoId}`
+}
+
+/** The memory folder every project had while it had exactly one repo
+ *  (docs/legacy-compat-shims.md "Claude memory under `-repo`"). */
+export const LEGACY_CLAUDE_MEMORY_DIR = '-repo'
 
 /**
  * The thread id from a codex rollout's filename,

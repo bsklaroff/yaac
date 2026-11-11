@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { claudeProjectDirName, codexRolloutParent, codexRolloutThreadId } from '#project-paths'
+import { claudeMemoryDirName, claudePodCwd, claudeProjectDirName, codexRolloutParent, codexRolloutThreadId } from '#project-paths'
 
 /** Opens `file` for reading, as a caller hands `codexRolloutParent`. */
 const opener = (file: string) => () => fs.open(file, 'r')
@@ -20,6 +20,21 @@ describe('claudeProjectDirName', () => {
     expect(claudeProjectDirName(cwd)).toBe(
       `-tmp-claude-1000--workspace-26a9c9fd-de5b-4db5-a741-c3522285d032-scratchpad-cc-${'a'.repeat(120)}--yck5ws`,
     )
+  })
+})
+
+describe('claudePodCwd', () => {
+  it('names the folder claude files a cwd under inside a pod', () => {
+    expect(claudePodCwd('')).toBe('-workspace')
+    expect(claudePodCwd('web.app')).toBe('-workspace-web-app')
+  })
+})
+
+describe('claudeMemoryDirName', () => {
+  it('gives each repo a memory of its own, and a root that is no checkout another', () => {
+    const repo = '11111111-2222-4333-8444-555555555555'
+    expect(claudeMemoryDirName(repo)).toBe(`-repo-${repo}`)
+    expect(claudeMemoryDirName()).toBe('-workspace-root')
   })
 })
 

@@ -7,9 +7,12 @@
  *
  * - Serves the CA from the `yaac-proxy-ca` Secret, minting it the first time.
  * - Reads per-workspace rules and allowlists from registration ConfigMaps,
- *   secret values from per-project Secrets, and tool credentials plus ssh
- *   keys from the credentials Secret. Changes apply on the next request.
+ *   secret values from per-project Secrets, and tool credentials plus git
+ *   tokens and ssh keys from the credentials Secret. Changes apply on the
+ *   next request.
  * - MITMs TLS when rules match a host, and tunnels it otherwise.
+ * - Ends ssh sessions to a project's git hosts itself, logging in with the
+ *   key of the repo each one names (ssh-session.ts).
  * - Refuses a non-public destination unless an exact allowlist entry names
  *   it, and every IPv6 destination (upstream.ts).
  * - Swaps placeholder tokens for real OAuth credentials and saves refreshed
@@ -19,7 +22,8 @@
  *
  * This module reads the environment and runs the listeners; what they do
  * with a connection lives in importable modules (dispatch.ts, upstream.ts,
- * mitm.ts, injection.ts, oauth-swap.ts, observed-state.ts).
+ * mitm.ts, injection.ts, repo-grants.ts, ssh-session.ts, oauth-swap.ts,
+ * observed-state.ts).
  */
 
 import http from 'node:http'
@@ -38,6 +42,7 @@ import {
   STATE_CONFIGMAP_NAME,
   decodeCa,
   decodeRefreshed,
+  decodeSshHostKey,
   decodeState,
   encodeCa,
   encodeRefreshed,
@@ -54,11 +59,9 @@ import {
   writeRefreshed,
   writeState,
 } from './object-watch'
-import { createAgentKeyLoader } from './agent-keys'
 import { DNS_QTYPE_A, buildDnsResponse, isInternalName, parseDnsQuery } from './dns-stub'
 import { PodWorkspaceIndex, fetchPodIpByWorkspaceId, fetchWorkspaceByPodIp, startPodWatch } from './pod-watch'
 import { SYSTEM_ROOTS_PATH, combineCaBundle } from './ca-bundle'
-import { createSshAgentServer } from './ssh-agent-relay'
 import { timingSafeStrEqual } from './secure-compare'
 import { RefreshFlights } from './refresh-flight'
 import { LiveTunnels } from './live-tunnels'
@@ -66,6 +69,7 @@ import { admissionFor, isHostAllowed } from './injection'
 import { errorReply, type TokenReply } from './oauth-swap'
 import { ObservedState } from './observed-state'
 import { generateCA, type CA } from './mitm'
+import { generateSshHostKey } from './ssh-session'
 import { dispatchToUpstream, forwardPlainHttp, type DispatchContext } from './dispatch'
 import { MAMA_MAGIC_HOST, MAMA_PATH, relayHeaders, relayTarget } from './yaac-relay'
 
@@ -83,21 +87,19 @@ const TRANSPARENT_TUNNEL_PORT = process.env.TRANSPARENT_TUNNEL_PORT
 // (docs/stream-relay.md).
 const RELAY_PORT = process.env.RELAY_PORT
 const POD_STREAM_PORT = process.env.POD_STREAM_PORT
-// UDP/53 DNS stub (see dns-stub.ts) and ssh-agent relay
-// (see ssh-agent-relay.ts) for workspace pods.
+// UDP/53 DNS stub (see dns-stub.ts) for workspace pods.
 const DNS_STUB_PORT = process.env.DNS_STUB_PORT
 // The answer for external names. The address is never dialed through; see
 // dns-stub.ts.
 const DNS_SINKHOLE = process.env.DNS_SINKHOLE
-const SSH_AGENT_PORT = process.env.SSH_AGENT_PORT
 // The server's yaac-mama listener, which workspaces' calls are relayed to.
 const MAMA_RELAY_URL = process.env.MAMA_RELAY_URL
 if (!API_PORT || !PROXY_AUTH_SECRET || !TRANSPARENT_HTTPS_PORT || !TRANSPARENT_HTTP_PORT
   || !TRANSPARENT_TUNNEL_PORT || !RELAY_PORT || !POD_STREAM_PORT || !DNS_STUB_PORT || !DNS_SINKHOLE
-  || !SSH_AGENT_PORT || !MAMA_RELAY_URL) {
+  || !MAMA_RELAY_URL) {
   console.error('[proxy] API_PORT, PROXY_AUTH_SECRET, TRANSPARENT_HTTPS_PORT, '
     + 'TRANSPARENT_HTTP_PORT, TRANSPARENT_TUNNEL_PORT, RELAY_PORT, POD_STREAM_PORT, '
-    + 'DNS_STUB_PORT, DNS_SINKHOLE, SSH_AGENT_PORT and MAMA_RELAY_URL environment variables are required')
+    + 'DNS_STUB_PORT, DNS_SINKHOLE and MAMA_RELAY_URL environment variables are required')
   process.exit(1)
 }
 
@@ -158,12 +160,15 @@ const torAgent = USE_TOR ? new SocksProxyAgent('socks5h://127.0.0.1:9050') : nul
 // ── CA ─────────────────────────────────────────────────────────────────
 
 /**
- * Load the CA from the `yaac-proxy-ca` Secret, minting it the first time so
- * later pods keep the same root. The combined trust bundle is rewritten every
- * time, since an image upgrade may change the system roots.
+ * Load the CA and the ssh host key from the `yaac-proxy-ca` Secret, minting
+ * each the first time so later pods keep the same root and the same host
+ * key. The combined trust bundle is rewritten every time, since an image
+ * upgrade may change the system roots.
  */
-async function loadOrGenerateCA(): Promise<CA> {
-  const stored = decodeCa(await readOutputObject('secret', CA_SECRET_NAME))
+async function loadOrGenerateCA(): Promise<{ ca: CA; sshHostKey: string }> {
+  const secret = await readOutputObject('secret', CA_SECRET_NAME)
+  const stored = decodeCa(secret)
+  const sshHostKey = decodeSshHostKey(secret) ?? generateSshHostKey()
   if (stored) console.log('[proxy] Loaded existing CA')
   const result = stored
     ? {
@@ -176,9 +181,10 @@ async function loadOrGenerateCA(): Promise<CA> {
     keyPem: forge.pki.privateKeyToPem(result.key),
     certPem: result.pem,
     bundlePem: combineCaBundle(fs.readFileSync(SYSTEM_ROOTS_PATH, 'utf8'), result.pem),
+    sshHostKey,
   }))
   console.log(`[proxy] CA saved to ${CA_SECRET_NAME}`)
-  return result
+  return { ca: result, sshHostKey: sshHostKey.privateKey }
 }
 
 // ── Watched objects ──────────────────────────────────────────────────
@@ -187,7 +193,6 @@ async function loadOrGenerateCA(): Promise<CA> {
 // object-watch.ts and are read per request, so edits apply immediately.
 
 const objects = new ProxyObjects({
-  loadSshKeys: (entries) => agentKeys.reload(entries),
   // Drop tunnels the new registration no longer admits, and clear
   // newly allowed hosts from the blocked record.
   onRegistration: (workspaceId, registration) => {
@@ -269,31 +274,10 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
   res.end('Not found')
 }
 
-// ── ssh-agent identities ──────────────────────────────────────────────
-//
-// Keys are loaded into the agent by agent-keys.ts and live only in its
-// memory. Which workspaces may use each one is decided by the relay.
-
-/** Read env the deployment always sets; throw if it is missing. */
-function requireEnv(name: string): string {
-  const value = process.env[name]
-  if (!value) throw new Error(`proxy: required env ${name} is not set`)
-  return value
-}
-
-// HOME is a writable mount, since the proxy's uid need not own /home/node.
-// ssh-add is given this path with -H (see agent-keys.ts).
-const KNOWN_HOSTS_FILE = path.join(requireEnv('HOME'), '.ssh', 'known_hosts')
-
-// Created by entrypoint.sh. Workspace pods reach it via SSH_AGENT_PORT.
-const AGENT_SOCK = requireEnv('SSH_AUTH_SOCK')
-
-const agentKeys = createAgentKeyLoader({ agentSock: AGENT_SOCK, knownHostsFile: KNOWN_HOSTS_FILE })
-
 // ── Server ─────────────────────────────────────────────────────────────
 
 const dispatchContext: DispatchContext = {
-  ca: await loadOrGenerateCA(),
+  ...await loadOrGenerateCA(),
   objects,
   torAgent,
   refreshFlights,
@@ -549,7 +533,9 @@ const CONNECT_TIMEOUT_MS = 10_000
 
 /**
  * Read the `CONNECT host:port` that ssh's ncat proxy command sends, then
- * dispatch it like a CONNECT tunnel. The allowlist applies to that host.
+ * dispatch it like a CONNECT tunnel. The allowlist applies to that host,
+ * and an ssh session to a host the project has an ssh repo on ends here
+ * (dispatch.ts).
  */
 function readConnectAndDispatch(socket: net.Socket, workspaceId: string, initial: Buffer): void {
   const peer = socket.remoteAddress ?? '(unknown)'
@@ -752,26 +738,6 @@ relayServer.listen(parseInt(RELAY_PORT, 10), '0.0.0.0', () => {
   console.log(`[proxy] stream relay listener on port ${RELAY_PORT}`)
 })
 
-// ── ssh-agent forwarding (workspace pod to this pod's agent) ─────────────────
-//
-// A workspace pod's forwarder splices its SSH_AUTH_SOCK to this listener,
-// which relays to the agent, exposing only the project's keys. See
-// ssh-agent-relay.ts for the checks.
-
-const sshAgentServer = createSshAgentServer({
-  agentSock: AGENT_SOCK,
-  resolveWorkspace,
-  repoUrlFor: (workspaceId) => objects.registration(workspaceId)?.repoUrl,
-  // Read live per message.
-  grantsFor: (workspaceId) => objects.sshGrants(workspaceId),
-})
-sshAgentServer.on('error', (err: Error) => {
-  console.error('[proxy] ssh-agent server error:', err)
-})
-sshAgentServer.listen(parseInt(SSH_AGENT_PORT, 10), '0.0.0.0', () => {
-  console.log(`[proxy] ssh-agent listener on port ${SSH_AGENT_PORT}`)
-})
-
 // ── DNS stub (UDP/53), split-horizon ───────────────────────────────────────
 // See dns-stub.ts: internal names resolve against the cluster DNS, every
 // other name gets the sinkhole address.
@@ -812,7 +778,6 @@ process.on('SIGTERM', () => {
   transparentHttpServer.close()
   transparentTunnelServer.close()
   relayServer.close()
-  sshAgentServer.close()
   dnsServer.close()
   server.close(() => process.exit(0))
 })

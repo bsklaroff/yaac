@@ -21,6 +21,18 @@ remote.origin.url` starts with `http://yaac.internal/`, yaac hosts this
 project's remote, which has no pull requests. Tell the user this skill does
 not apply there, and stop.
 
+**In a workspace with several repos**, each repo sits in its own folder
+under the workspace dir (`$YAAC_CHECKOUTS` lists the folders, colon-separated),
+and this skill works on **one** of them: `cd` into that repo's folder and
+run every `git`, `gh` and `yaac-watch-prs` command from there. `GH_TOKEN`
+is the token of the repo your session started in, so when you work on
+another one, run each `gh` call (and `yaac-watch-prs`) as
+`yaac-mama as-repo <folder> -- gh …`, which gives it that repo's token.
+Coverage is per repo: one watcher per repo you cover, each started from its
+folder. Start each reviewer with that repo alone and say so in its prompt
+(`yaac-mama create --repo <folder> …`), so it has one checkout, at its
+workspace root.
+
 ## The reviewer argument
 
 One **required argument** names the agent: `<model>` (you resolve the tool),

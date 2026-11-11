@@ -153,7 +153,8 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     }
     const projectId = crypto.randomUUID()
     const projectPath = path.join(testEnv.dataDir, 'global', 'projects', projectId)
-    const repoPath = path.join(projectPath, 'repo')
+    // The main clone of the project's repo, which carries the project's id.
+    const repoPath = path.join(testEnv.dataDir, 'global', 'repos', projectId)
     await fs.mkdir(path.join(projectPath, 'claude'), { recursive: true })
     await cloneRepo(path.join(mockGit!.reposDir, `${name}.git`), repoPath, null)
     const fakeRemote = `https://github.com/test-org/${name}.git`

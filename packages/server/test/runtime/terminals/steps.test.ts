@@ -24,14 +24,16 @@ afterEach(async () => {
 })
 
 /**
- * Run a step's script for real, in `dir`, with a `tmux` on PATH that
- * records how it was called. Resolves with the exit status, what the script
+ * Run a step's script for real, with a `tmux` on PATH that records how it
+ * was called. Resolves with the exit status, what the script
  * printed, its events and the tmux calls.
  */
 async function runScript(script: string, shell = '/bin/sh'): Promise<{ status: number; out: string; events: string[]; tmux: string[] }> {
   const bin = path.join(dir, 'bin')
   await fs.mkdir(bin, { recursive: true })
-  await fs.writeFile(path.join(bin, 'tmux'), `#!/bin/sh\necho "$*" >> ${dir}/tmux.calls\n`, { mode: 0o755 })
+  // It answers the session's directory, where a step starts, with `dir`.
+  await fs.writeFile(path.join(bin, 'tmux'), '#!/bin/sh\n'
+    + `case "$1" in display-message) echo ${dir}; exit 0 ;; esac\necho "$*" >> ${dir}/tmux.calls\n`, { mode: 0o755 })
   await fs.writeFile(path.join(dir, 'step.sh'), script)
   const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}`, TMUX_PANE: '%9', SHELL: shell }
   delete env.YAAC_STEP_SHELL
@@ -44,17 +46,15 @@ async function runScript(script: string, shell = '/bin/sh'): Promise<{ status: n
 }
 
 describe('stepScript', () => {
-  const paths = (): typeof PATHS => ({ ...PATHS, workspaceDir: dir })
-
   it('runs the commands in order in one shell, stopping at the first failure, with an event around each', async () => {
     const run = ['export GREETING=hi', 'cd sub 2>/dev/null || mkdir sub && cd sub', 'echo "$GREETING from $(basename "$PWD")"', 'false', 'echo never']
-    const done = await runScript(stepScript('build', { run }, paths(), path.join(dir, 'step.events')))
+    const done = await runScript(stepScript('build', { run }, path.join(dir, 'step.events')))
     expect(done.status).toBe(1)
     expect(done.out).toBe('hi from sub\n')
     expect(done.events).toEqual(['start 0', 'end 0 0', 'start 1', 'end 1 0', 'start 2', 'end 2 0', 'start 3', 'end 3 1'])
 
     // A command that exits the script itself still closes its own event.
-    const exits = await runScript(stepScript('exits', { run: ['echo about to', 'exit 7', 'echo never'] }, paths(), path.join(dir, 'exits.events')))
+    const exits = await runScript(stepScript('exits', { run: ['echo about to', 'exit 7', 'echo never'] }, path.join(dir, 'exits.events')))
     expect(exits.status).toBe(7)
     const events = (await fs.readFile(path.join(dir, 'exits.events'), 'utf8')).trim().split('\n').map((l) => l.replace(/ \S+$/, ''))
     expect(events).toEqual(['start 0', 'end 0 0', 'start 1', 'end 1 7'])
@@ -62,18 +62,18 @@ describe('stepScript', () => {
 
   it('runs the commands in the workspace\'s POSIX-family $SHELL, else bash', async () => {
     const which = { run: ['echo "${BASH_VERSION:+bash}${ZSH_VERSION:+zsh}"'] }
-    expect((await runScript(stepScript('a', which, paths(), path.join(dir, 'a.events')), '/bin/bash')).out).toBe('bash\n')
-    expect((await runScript(stepScript('b', which, paths(), path.join(dir, 'b.events')), '/usr/bin/fish')).out).toBe('bash\n')
+    expect((await runScript(stepScript('a', which, path.join(dir, 'a.events')), '/bin/bash')).out).toBe('bash\n')
+    expect((await runScript(stepScript('b', which, path.join(dir, 'b.events')), '/usr/bin/fish')).out).toBe('bash\n')
   })
 
   it('marks a service ready once its check passes, just before its last command, and re-lists its window', async () => {
     const done = await runScript(stepScript('db', {
       run: ['touch setup-done', 'sleep 1'], service: true, ready: 'test -f setup-done',
-    }, paths(), path.join(dir, 'step.events')))
+    }, path.join(dir, 'step.events')))
     expect(done.status).toBe(0)
     expect(done.tmux).toEqual(['set-option -w -t %9 @yaac-step-ready 1', 'rename-window -t %9 db'])
     // With no check, it is ready as its last command starts.
-    const plain = await runScript(stepScript('dev', { run: ['true'], service: true }, paths(), path.join(dir, 'step.events')))
+    const plain = await runScript(stepScript('dev', { run: ['true'], service: true }, path.join(dir, 'step.events')))
     expect(plain.tmux.slice(-2)).toEqual(['set-option -w -t %9 @yaac-step-ready 1', 'rename-window -t %9 dev'])
   })
 })
@@ -81,7 +81,7 @@ describe('stepScript', () => {
 describe('stepWindowExec', () => {
   it('replaces any window of the step\'s name with one running its script, keeping its pane on exit', () => {
     expect(stepWindowExec('build', PATHS, '/home/yaac/.yaac-logs/L/build.sh')).toBe(
-      `${TMUX} kill-window -t =yaac:=build 2>/dev/null; ${TMUX} new-window -d -t yaac -n 'build' -c '${PATHS.workspaceDir}' `
+      `${TMUX} kill-window -t =yaac:=build 2>/dev/null; ${TMUX} new-window -d -t yaac -n 'build' -c '#{session_path}' `
       + `'sh '\\''/home/yaac/.yaac-logs/L/build.sh'\\''' \\; set-option -t =yaac:=build remain-on-exit on`,
     )
   })

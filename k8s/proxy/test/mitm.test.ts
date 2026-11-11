@@ -11,9 +11,10 @@ import { errorReply, type TokenReply } from 'yaac-proxy-sidecar/oauth-swap'
 import { generateCA, handleMitm, type MitmContext } from 'yaac-proxy-sidecar/mitm'
 
 /**
- * A MITM'd claude token refresh, end to end: a TLS client speaks to
- * `handleMitm`, whose upstream is redirected to a plain-HTTP mock standing
- * in for platform.claude.com.
+ * MITM'd requests, end to end: a TLS client speaks to `handleMitm`, whose
+ * upstream is redirected to a plain-HTTP mock standing in for
+ * platform.claude.com (a claude token refresh) or for github.com (git over
+ * https to the project's repos).
  */
 
 const b64 = (v: unknown): string => Buffer.from(JSON.stringify(v)).toString('base64')
@@ -24,6 +25,9 @@ let captured: Array<{ owner: string; bundles: RefreshedBundles }>
 const mitmPorts: Record<string, number> = {}
 let ctx: MitmContext
 const servers: net.Server[] = []
+/** What the mock git host saw, and the port of alice's MITM listener for it. */
+let gitRequests: Array<{ method: string; url: string; authorization?: string; body: string }>
+let gitPort = 0
 
 beforeAll(async () => {
   const upstream = http.createServer((req, res) => {
@@ -38,13 +42,21 @@ beforeAll(async () => {
   await new Promise<void>((r) => upstream.listen(0, '127.0.0.1', r))
   servers.push(upstream)
 
-  const objects = new ProxyObjects({ loadSshKeys: () => Promise.resolve(), log: () => {} })
-  await objects.applyCredentials({
+  const objects = new ProxyObjects({ log: () => {} })
+  const grant = (path: string, readOnly: boolean) =>
+    ({ projectId: 'demo', repoId: `repo-${path}`, host: 'github.com', path, readOnly, ghToken: true })
+  objects.applyCredentials({
     metadata: { name: 'yaac-proxy-credentials' },
-    data: Object.fromEntries(['alice', 'bob'].map((owner) => [`${owner}.claude.json`, b64({
-      kind: 'oauth',
-      claudeAiOauth: { accessToken: `${owner}-access`, refreshToken: `${owner}-refresh`, expiresAt: 1, scopes: [] },
-    })])),
+    data: {
+      ...Object.fromEntries(['alice', 'bob'].map((owner) => [`${owner}.claude.json`, b64({
+        kind: 'oauth',
+        claudeAiOauth: { accessToken: `${owner}-access`, refreshToken: `${owner}-refresh`, expiresAt: 1, scopes: [] },
+      })])),
+      'alice.git-tokens.json': b64([
+        { token: 'ghp_rw', grants: [grant('acme/repo', false)] },
+        { token: 'ghp_ro', grants: [grant('acme/ro', true)] },
+      ]),
+    },
   })
   for (const [ws, owner] of [['wa', 'alice'], ['wb', 'bob']]) {
     objects.applyRegistration({
@@ -69,6 +81,23 @@ beforeAll(async () => {
     servers.push(mitm)
     mitmPorts[ws] = (mitm.address() as AddressInfo).port
   }
+
+  const gitHost = http.createServer((req, res) => {
+    let body = ''
+    req.on('data', (c: Buffer) => { body += c.toString() })
+    req.on('end', () => {
+      gitRequests.push({ method: req.method ?? '', url: req.url ?? '', authorization: req.headers.authorization, body })
+      res.end('ok')
+    })
+  })
+  await new Promise<void>((r) => gitHost.listen(0, '127.0.0.1', r))
+  servers.push(gitHost)
+  const gitMitm = net.createServer((socket) => {
+    handleMitm(ctx, socket, 'github.com', '443', 'wa', [], { host: '127.0.0.1', port: (gitHost.address() as AddressInfo).port }, null)
+  })
+  await new Promise<void>((r) => gitMitm.listen(0, '127.0.0.1', r))
+  servers.push(gitMitm)
+  gitPort = (gitMitm.address() as AddressInfo).port
 }, 60_000)
 
 afterAll(() => {
@@ -126,7 +155,83 @@ function send(path: string, host: string, upgrade = false): Promise<{ status: nu
   })
 }
 
+/** A request from alice's workspace to github.com; resolves with the
+ *  status and body the workspace reads. */
+function git(method: string, path: string, body?: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      host: '127.0.0.1', port: gitPort, servername: 'github.com', ca: ctx.ca.pem, method, path,
+      headers: { host: 'github.com', ...(body !== undefined ? { 'content-type': 'application/vnd.git-lfs+json' } : {}) },
+    }, (res) => {
+      let text = ''
+      res.on('data', (c: Buffer) => { text += c.toString() })
+      res.on('end', () => { resolve({ status: res.statusCode ?? 0, body: text }) })
+    })
+    req.on('error', reject)
+    req.end(body)
+  })
+}
+
 describe('handleMitm', () => {
+  it('sends each repo\'s token under its own path only, and refuses a read-only repo every git write', async () => {
+    gitRequests = []
+    const basic = (t: string): string => `Basic ${Buffer.from(`x-access-token:${t}`).toString('base64')}`
+    const download = JSON.stringify({ operation: 'download', objects: [{ oid: 'a', size: 1 }] })
+    const upload = JSON.stringify({ operation: 'upload', objects: [{ oid: 'a', size: 1 }] })
+
+    // What passes, each with the token the host sees.
+    const passes: Array<[method: string, path: string, token: string | undefined, body?: string]> = [
+      ['GET', '/acme/repo.git/info/refs?service=git-receive-pack', 'ghp_rw'],
+      ['POST', '/acme/repo.git/git-receive-pack', 'ghp_rw', 'pack'],
+      ['POST', '/acme/repo.git/info/lfs/objects/batch', 'ghp_rw', upload],
+      // The read-only repo still fetches, and downloads from LFS: the
+      // batch body reaches the host as it was sent.
+      ['GET', '/acme/ro.git/info/refs?service=git-upload-pack', 'ghp_ro'],
+      ['POST', '/acme/ro.git/git-upload-pack', 'ghp_ro', 'wants'],
+      ['POST', '/acme/ro.git/info/lfs/objects/batch', 'ghp_ro', download],
+      ['POST', '/acme/ro.git/info/lfs/locks/verify', 'ghp_ro', '{}'],
+      ['GET', '/acme/ro.git/info/lfs/locks', 'ghp_ro'],
+      // A repo the project does not link passes with no token.
+      ['GET', '/acme/elsewhere.git/info/refs?service=git-upload-pack', undefined],
+    ]
+    for (const [method, path, token, body] of passes) {
+      expect(await git(method, path, body), path).toEqual({ status: 200, body: 'ok' })
+      expect(gitRequests.at(-1), path).toEqual({
+        method, url: path, authorization: token === undefined ? undefined : basic(token), body: body ?? '',
+      })
+    }
+
+    // What a read-only repo refuses, under every spelling of its path:
+    // everything but the reads above. None of it reaches the host.
+    const seen = gitRequests.length
+    const refused: Array<[method: string, path: string, body?: string]> = [
+      ['GET', '/acme/ro.git/info/refs?service=git-receive-pack'],
+      ['POST', '/acme/ro.git/git-receive-pack', 'pack'],
+      ['POST', '/acme/ro/git-receive-pack', 'pack'],
+      ['POST', '/Acme/RO.git/git-receive-pack', 'pack'],
+      ['POST', '/acme/%72o.git/git-receive-pack', 'pack'],
+      ['POST', '/acme/repo.git/../ro.git/git-receive-pack', 'pack'],
+      ['POST', '/acme//ro.git/git-receive-pack', 'pack'],
+      // A spelling of the request a host might still route to a push.
+      ['POST', '/acme/ro/Git-Receive-Pack', 'pack'],
+      ['POST', '/acme/ro/git-receive-pack;x', 'pack'],
+      ['GET', '/acme/ro/info/refs?service=GIT-RECEIVE-PACK'],
+      // Nothing but the known reads passes.
+      ['POST', '/acme/ro/anything-else', '{}'],
+      ['PUT', '/acme/ro.git/info/lfs/objects/abc', 'bytes'],
+      ['POST', '/acme/ro.git/info/lfs/objects/batch', upload],
+      ['POST', '/acme/ro.git/info/lfs/objects/batch', 'not json'],
+      ['POST', '/acme/ro.git/info/lfs/locks', '{}'],
+      ['POST', '/acme/ro.git/info/lfs/locks/7/unlock', '{}'],
+    ]
+    for (const [method, path, body] of refused) {
+      const answer = await git(method, path, body)
+      expect(answer.status, path).toBe(403)
+      expect(answer.body, path).toContain('github.com/acme/ro is read-only in this project')
+    }
+    expect(gitRequests).toHaveLength(seen)
+  })
+
   it('refuses every request on a connection that names another host than the connection\'s', async () => {
     // Credentials are chosen for platform.claude.com; a Host header or an
     // absolute-form target naming a CDN neighbor must not carry them there,

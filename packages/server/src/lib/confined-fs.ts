@@ -68,7 +68,7 @@ export interface ConfinedRoot {
   /** The root with every link resolved. */
   real: string
   /** Where a real path sits under the root, or null outside it (or in an
-   *  excluded top-level name). */
+   *  excluded entry). */
   contains(real: string): string | null
   /** The lexical half: a non-empty relative path with no NUL, no `..` once
    *  normalized, and not under an excluded name. Returns it normalized. */
@@ -187,8 +187,9 @@ async function exactDir(parent: PinnedDir, name: string, rel: string): Promise<P
 }
 
 /**
- * Open `root` for confined I/O. `exclude` names top-level entries treated as
- * outside it (a checkout's `.git`). `base`, a directory under the root,
+ * Open `root` for confined I/O. `exclude` names entries, each relative to
+ * the root, treated as outside it with everything below them (a checkout's
+ * `.git`). `base`, a directory under the root,
  * is what relative paths are taken from — for a tree confined to a larger
  * one than the one it names paths in.
  */
@@ -198,7 +199,10 @@ export async function openRoot(
   opts: { exclude?: string[]; base?: string } = {},
 ): Promise<ConfinedRoot> {
   const real = await fs.realpath(root)
-  const exclude = new Set(opts.exclude)
+  const excluded = (segments: string[]): string | undefined => {
+    const rel = segments.join('/')
+    return opts.exclude?.find((e) => rel === e || rel.startsWith(`${e}/`))
+  }
   const base = opts.base === undefined ? [] : path.relative(root, opts.base).split(path.sep).filter(Boolean)
 
   const contains = (at: string): string | null => {
@@ -209,7 +213,7 @@ export async function openRoot(
     if (rel === '') return rel
     if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) return null
     const segments = rel.split(path.sep)
-    return exclude.has(segments[0]) ? null : segments.join('/')
+    return excluded(segments) !== undefined ? null : segments.join('/')
   }
 
   const normalize = (rel: string): string => {
@@ -220,9 +224,8 @@ export async function openRoot(
     if (segments.includes('..') || segments[0] === '.') {
       throw new ConfinedPathError(rel, 'invalid', `path escapes its root: ${JSON.stringify(rel)}`)
     }
-    if (exclude.has(segments[0])) {
-      throw new ConfinedPathError(rel, 'invalid', `${segments[0]} is not reachable here`)
-    }
+    const out = excluded(segments)
+    if (out !== undefined) throw new ConfinedPathError(rel, 'invalid', `${out} is not reachable here`)
     return segments.join('/')
   }
 

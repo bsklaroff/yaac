@@ -134,7 +134,8 @@ describe('yaac site (real CLI + real server)', () => {
     // Staged as `yaac project add` would stage github.com/test-org/<NAME>.
     await seedMockGitRepo(mockGit, NAME, { files: { 'README.md': '# site\n' } })
     projectId = randomUUID()
-    repoPath = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'repo')
+    // The main clone of the project's repo, which carries the project's id.
+    repoPath = path.join(testEnv.dataDir, 'global', 'repos', projectId)
     await cloneRepo(path.join(mockGit.reposDir, `${NAME}.git`), repoPath, null)
     const remote = `https://github.com/test-org/${NAME}.git`
     await git(repoPath, ['remote', 'set-url', 'origin', remote])
@@ -166,10 +167,13 @@ describe('yaac site (real CLI + real server)', () => {
       .toContain('is not a hostname')
     expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--workflow', steps, '--follow', 'a..b'))
       .toContain('is not a branch name')
+    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--workflow', steps, '--repo', 'nope'))
+      .toContain('has no repo "nope"')
     expect(await yaac('site', 'list', NAME)).toContain(`No sites in ${NAME}`)
 
+    // --repo names the repo its releases are built from, by its folder.
     const created = await yaac('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000',
-      '--admin-port', '3002', '--workflow', steps, '--volume', 'data')
+      '--admin-port', '3002', '--workflow', steps, '--volume', 'data', '--repo', NAME)
     expect(created).toContain('Created site "web"')
     expect(created).toContain(`hostname  app.${DOMAIN}`)
     expect(created).toContain('service   http://yaac-site-router:8080')

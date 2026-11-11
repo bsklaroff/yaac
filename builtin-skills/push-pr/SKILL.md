@@ -32,6 +32,16 @@ project's remote, which has no pull requests. Tell the user this skill does
 not apply there, and stop. To land the work, rebase onto the default branch
 and push to it instead.
 
+**In a workspace with several repos**, each repo sits in its own folder
+under the workspace dir (`$YAAC_CHECKOUTS` lists the folders, colon-separated),
+and this skill works on **one** of them: `cd` into that repo's folder and
+run every `git`, `gh` and `yaac-watch-prs` command from there. `GH_TOKEN`
+is the token of the repo your session started in, so when you work on
+another one, run each `gh` call (and `yaac-watch-prs`) as
+`yaac-mama as-repo <folder> -- gh …`, which gives it that repo's token.
+If the changes span several repos, each repo gets a PR of its own: run the
+steps once per repo.
+
 ## When this branch sits on top of another PR
 
 A workspace is usually cut from `main`, but the work in it often isn't: a

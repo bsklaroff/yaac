@@ -35,9 +35,11 @@ too.
 
 Agents inside a workspace are separate rows. `conversations` has one row per
 tool-native conversation (a claude, codex, pi or opencode session, keyed by the
-id the tool chose). `workspace_conversations` links the two, so a workspace
-can accumulate conversations and one conversation can be resumed into a second
-workspace. See "Agent workspaces" below.
+id the tool chose). `workspace_conversations` links the two: a workspace
+accumulates conversations, and each conversation belongs to the workspace
+that first recorded it (a report of it from another workspace, which only an
+agent resumed by hand can make, is ignored and logged). See "Agent
+workspaces" below.
 
 `db/workspace-store.ts` owns the `workspaces` table and
 `db/conversation-store.ts` the other two. They are the only writers.
@@ -98,13 +100,12 @@ running workspace at a time mounts, on a cluster.
   - `project remove`, which also removes the checkouts and transcripts (a
     leftover row would list a workspace whose checkout no longer exists).
   - `yaac workspace delete` (`deleteWorkspace`), for one stopped workspace
-    with no unfinished teardown or queued entry waiting on it, and no
-    conversation it started that a sibling has resumed (the transcript
-    lives in this workspace's history). The delete holds the id from before it reads the
+    with no unfinished teardown or queued entry waiting on it. The delete
+    holds the id from before it reads the
     workspace's state until its rows are gone, so a restart or queue
     arriving meanwhile is refused rather than started on files being
-    removed. The checkout goes first (its `.git` last), then the history,
-    then the rows. Under k8s a root-owned file a workspace's `sudo` left in
+    removed. The workspace dir goes first (each checkout's `.git` last),
+    then the history, then the rows. Under k8s a root-owned file a workspace's `sudo` left in
     the checkout is handed to a root pod (docs/server-in-cluster.md "The uid
     everything runs as"), so it fails the delete only if that pod does. A
     `.git` the server cannot remove all of goes to that pod whole, so a
@@ -433,7 +434,10 @@ shared home, following links so a host workspace's row names the real file. A
 path that resolves outside the project, into a sibling's history, or to nothing
 yet is skipped (the next tick retries). pi writes only to the history, and
 its reporter names no path, so its conversations are found there by the id
-in the log's filename, as omp's are (see "Agent history").
+in the log's filename, as omp's are (see "Agent history"). A claude
+conversation driven over `acp` reports no path either: its transcript is
+looked for where claude files it for its session's cwd, and recorded like a
+reported one once claude has written it.
 
 `toProjectRelative` / `resolveProjectPath` in `runtime/agents/transcripts.ts`
 convert between the two forms. Disk code works with `SandboxFile`s (a dir plus
@@ -447,11 +451,16 @@ path only under the recording tool's shared home or that tool's part of the
 reading workspace's own history, so a pane naming `known_hosts`,
 `repo/.git/config` or a sibling's history resolves to no transcript.
 
-Readers without a recorded path (`sessionTranscriptPath`) search the same
-places in the same order. codex is why the path is recorded at all: claude's
-transcript is named by conversation id and pi's contains the id in its
-filename, but codex names rollouts by timestamp plus thread id, so a conversation
-id alone is not enough to find one.
+A reader without a recorded path (`sessionTranscriptPath`) computes one;
+it never searches. claude names a transcript for its conversation id and
+files it under a folder named for the directory it ran in, and yaac chose
+both at launch: the directory is the session's cwd (`sessions.cwd`). So the
+reader looks in that cwd's folder, then the workspace's default cwd's (a
+conversation started by hand in a terminal has no session), then the
+workspace's other cwds (`conversationCwds`): a short list, each tried in the
+history and then the shared home. pi's log contains the id in its filename.
+codex is why the path is recorded at all: it names rollouts by timestamp
+plus thread id, so a conversation id alone is not enough to find one.
 
 ## Agent history
 
@@ -468,7 +477,7 @@ not (checked against omp 18.18.6).
 
 | `history/<id>/…` | Holds | k8s | containerless |
 |---|---|---|---|
-| `claude/` | claude's `projects/` (transcripts, subagent logs, tool results) | mounted at `~/.claude/projects` | the folder claude files this checkout under, linked to `claude/-workspace` |
+| `claude/` | claude's `projects/` (transcripts, subagent logs, tool results), one folder per cwd | mounted at `~/.claude/projects` | the folder claude files each cwd under, linked to that cwd's folder here |
 | `claude-file-history/` | claude's `file-history/<sid>/` (what `/rewind` restores) | mounted at `~/.claude/file-history` | one link per conversation in the shared `file-history/` |
 | `codex/` | codex's `sessions/` rollouts | mounted at `~/.codex/sessions` | one link per rollout in the shared `sessions/` |
 | `codex-sqlite/` | codex's SQLite state | mounted at `~/.codex-sqlite`, named by `CODEX_SQLITE_HOME` | the same variable, pointing at it |
@@ -478,9 +487,15 @@ not (checked against omp 18.18.6).
 Where a tool has an env override, the directory sits outside every tool home
 and both drivers use it directly. claude's and codex's are nested inside a
 shared home. A pod mounts them over it, but a host has no mount namespace, so
-a host create plants links in the shared homes instead. On both drivers every
-claude conversation is filed under `-workspace` (a pod's cwd), which is why
-one folder link is enough on a host.
+a host create plants links in the shared homes instead.
+
+claude files a conversation under a folder named for the directory it runs
+in, and an agent runs in the workspace root or in one checkout's root
+(docs/project-repos.md "The agent's cwd"). So `claude/` holds one folder per
+cwd, named on both drivers as a pod names it (`claudePodCwd`): `-workspace`
+for the root, `-workspace-web` for a checkout in `web`. On a host, where
+claude names the folder for the cwd's host path, each spelling of that path
+is linked to the cwd's folder.
 
 omp has an override, but its acp server ignores it when it looks a
 conversation up to load, and searches only its agent dir's `sessions/`. So
@@ -489,11 +504,21 @@ mounts the history over it. A host leaves them in the project's omp home,
 one folder per checkout, found by conversation id; deleting a workspace does
 not delete them.
 
-Auto-memory stays shared. claude keys it on the checkout's git root, which is
-the checkout itself (`/workspace` in a pod). So the project's
-`claude/projects/-repo/memory` is mounted over the `projects/` overlay as
-`-workspace/memory`. On a host, create links the history's `-workspace/memory`
-to it instead. The folder-name munging is claude's own rule
+Auto-memory stays shared, per repo. claude keys it on the git root it starts
+in, which is the cwd itself: a checkout's root, or a workspace root with no
+repository above it. The project keeps one memory per repo and one for a
+root that is no checkout, each a folder of the shared `claude/projects/`
+(`claudeMemoryDirName`):
+
+| Session's cwd | Memory |
+|---|---|
+| the root, with repo X checked out there | X's |
+| X's folder | X's, the same one |
+| the root of a workspace with several repos or none | the project's root memory |
+
+Each is mounted over the `projects/` overlay as the `memory` folder of every
+cwd it applies to. On a host, create links each cwd folder's `memory` to it
+instead. The folder-name munging is claude's own rule
 (`claudeProjectDirName`, pinned against the binary by a test).
 
 claude's `sessions/` is not history but is per-pod too. claude keeps a
@@ -561,25 +586,21 @@ immutable, so no lock file or sidecar appears beside it.
 ### Converging at create
 
 Every create and restart runs `convergeAgentHistory` (`#domain/workspaces`)
-before launch. Under k8s it only creates every mount source and nested
-mountpoint, so the kubelet never creates one owned by root: a pod writes its
-history through those mounts and never into the shared homes. Under
-containerless, where a host run writes into the shared homes, it moves every
-conversation the workspace has held out of them into its history. That set
-is every id its rows name (active or not), every ACP record in `acp/<id>/` (an
-ACP conversation fires no hook, but claude still writes a transcript), and the
-workspace id itself.
-
-A conversation that a sibling workspace's rows also name is excluded. It has no
-single owner, and moving it would orphan it in the other workspace. It stays in
-the shared home, readable by both through the fallback, but a pod of either
-can no longer resume it.
+before launch, with the workspace's cwds. Under k8s it only creates every
+mount source and nested mountpoint, so the kubelet never creates one owned
+by root: a pod writes its history through those mounts and never into the
+shared homes. Under containerless, where a host run writes into the shared
+homes, it moves every conversation the workspace has held out of them into
+its history. That set is every id its rows name (active or not), every ACP
+record in `acp/<id>/` (an ACP conversation fires no hook, but claude still
+writes a transcript), and the workspace id itself. A claude conversation
+goes to the folder of the cwd it was filed under, or to the root's when that
+was no cwd of the workspace (a host run started in a subdirectory).
 
 Subagents move with their parent. claude files them inside the conversation's
 `<sid>/` dir. A codex `spawn_agent` child or fork is its own thread and may fire
 no hook, so the set also includes rollouts whose first line (`session_meta`)
-names a thread already in the set, unless a sibling's rows name that thread
-(a host codex can fork any thread linked into the shared home).
+names a thread already in the set.
 
 Moves are `rename`s under the project dir through a `no-links` root. They never
 overwrite and leave links alone. A row whose file is gone from the shared home
@@ -587,13 +608,13 @@ and present in the history is repointed with a `conversations-discovered` event.
 This is decided from the disk, not from the moves just made, so a converge
 interrupted between a rename and the row write is repaired by the next one.
 Create then plants the links above, first emptying a real
-folder where the checkout's link belongs (a folder still holding a shared
-conversation stays as it is).
+folder where a cwd's link belongs.
 
 This step is permanent, not a one-off migration: a host run can always leave
-new files in the shared homes, and the next create moves them. Readers search
-the history and then the shared homes, so a file is readable wherever it is;
-only resuming needs the move.
+new files in the shared homes, and the next create moves them. Readers look
+in the history and then the shared home, under each cwd's folder, so a file
+filed under a cwd of the workspace is readable wherever it is; only resuming
+needs the move.
 
 A stop keeps the history. `deleteWorkspaceState` removes it along with every
 link in the shared homes that points into it, and the `session-env/<id>` dir
@@ -704,9 +725,11 @@ on every backend:
 
 ## Ignored files at stop
 
-A stop removes the checkout's gitignored files, so a stopped workspace does
+A stop removes the gitignored files of each of the workspace's checkouts
+(`yaac-clean-ignored`, run once per checkout), so a stopped workspace does
 not hold build output and caches (`target/`, `.next/`, `dist/`) until it is
-deleted. The restart's init steps rebuild them. Untracked files that are
+deleted. Files outside every checkout, in a workspace whose root is none,
+are no repository's to ignore and stay. The restart's init steps rebuild them. Untracked files that are
 not ignored stay, as does everything tracked. The rules are the repository's
 own: every `.gitignore` in the tree and `.git/info/exclude`, applied by
 `git clean -fdX`. A global excludes file does not count.
@@ -723,8 +746,8 @@ Two kinds of path are kept anyway:
 
 - **The project's kept paths** (`projects.keptIgnoredPaths`, set under
   Settings → Project Config → Kept ignored files). Each is a literal path
-  relative to the checkout: a file, or a folder and everything in it, even
-  one inside an ignored folder.
+  relative to a checkout, kept in every checkout that has it: a file, or a
+  folder and everything in it, even one inside an ignored folder.
 - **Every mount point under the checkout**, read from
   `/proc/self/mountinfo` rather than the project config, which may have
   changed since the workspace started. In a k8s pod those are the module
@@ -802,11 +825,13 @@ Two limits remain:
 
 A workspace's installed packages and build output (its project's scratch
 dirs, `node_modules` and cargo's `target` by default; docs/project-config.md)
-live and die with its runtime, not in the shared checkout. `prepareScratchDirs`
-creates each one in the checkout and passes them to the driver as the spec's
-`scratchDirs`. A stop removes the ones the workspace started with from the
-checkout, files git tracks in them included (docs/project-config.md "Scratch
-directories"), and a restart's init steps rebuild them.
+live and die with its runtime, not in the shared checkout. The project's
+list is relative to a checkout and applies in each one: `prepareScratchDirs`
+creates each dir in every checkout and passes them to the driver as the
+spec's `scratchDirs`, and the workspace's row records them relative to the
+workspace dir (`web/node_modules`). A stop removes the ones the workspace
+started with, files git tracks in them included (docs/project-config.md
+"Scratch directories"), and a restart's init steps rebuild them.
 
 ### Under k8s
 

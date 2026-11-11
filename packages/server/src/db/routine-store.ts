@@ -4,7 +4,7 @@ import { queuedWorkspaces, routines, workspaces } from './schema'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { isUuid } from '#lib/uuid'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
-import type { AgentMode, AgentOptions, AgentTool, PermissionMode, WorkspaceDeathReason } from '@yaac/shared/types'
+import type { AgentMode, AgentOptions, AgentTool, PermissionMode, RepoStart, WorkspaceDeathReason } from '@yaac/shared/types'
 
 /**
  * Routines: cron-scheduled workspaces (docs/routines.md). Nothing observes a
@@ -28,9 +28,10 @@ export interface RoutineFields {
   permissionMode: PermissionMode
   effort?: string
   agentOptions?: AgentOptions
-  /** Exactly one of a branch and a full commit. */
-  branch?: string
-  commit?: string
+  /** What each run starts with (`routines.repos`). */
+  repos: RepoStart[]
+  nested: boolean
+  cwd: string
   /** The named workflow each run starts with; absent runs the project's
    *  init steps. */
   namedWorkflowId?: string
@@ -50,8 +51,6 @@ function columns(f: RoutineFields): Omit<typeof routines.$inferInsert, 'projectI
   return {
     ...f,
     prompt: f.prompt ?? null,
-    branch: f.branch ?? null,
-    commit: f.commit ?? null,
     namedWorkflowId: f.namedWorkflowId ?? null,
     nonInteractive: f.nonInteractive === true,
     effort: f.effort ?? null,

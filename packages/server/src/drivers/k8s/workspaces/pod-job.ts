@@ -8,7 +8,6 @@ import {
   NESTED_GRAPHROOT_PATH,
   NESTED_GRAPHROOT_VOLUME,
   PRIORITY_CLASS_WORKSPACE,
-  SSH_AGENT_MOUNT,
   installSecurityContext,
   runtimeClassSpec,
   sentryTmpfsAnnotations,
@@ -235,10 +234,6 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
     configMap: { name: CA_CONFIGMAP_NAME },
   })
   volumeMounts.push({ name: 'proxy-ca', mountPath: CA_MOUNT_DIR, readOnly: true })
-
-  // Always mounted, so the forwarder never needs root to create it.
-  volumes.push({ name: 'ssh-agent', emptyDir: {} })
-  volumeMounts.push({ name: 'ssh-agent', mountPath: SSH_AGENT_MOUNT })
 
   const initContainers: Array<Record<string, unknown>> = []
   if (p.nodeLocalDirs && p.nodeLocalDirs.length > 0) {

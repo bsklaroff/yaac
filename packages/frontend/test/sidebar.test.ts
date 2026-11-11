@@ -25,6 +25,8 @@ const entry = (
   blockedHosts: [],
   forwardedPorts: [],
   unforwardedPorts: [],
+  repos: [],
+  cwd: '',
   ...extra,
 })
 
@@ -68,7 +70,7 @@ const queued = (id: string, extra: Partial<QueuedWorkspaceEntry> = {}): QueuedWo
   mode: 'tui',
   permissionMode: 'bypass',
   agentOptions: {},
-  branch: 'main',
+  selection: { repos: [{ repo: 'repo-1', branch: 'main' }], nested: false, cwd: 'repo-1' },
   createdAt: '2026-01-01 00:00:00',
   ...extra,
 })

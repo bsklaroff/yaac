@@ -181,7 +181,7 @@ describe('workspace death read-marks', () => {
 /** A session of `workspaceId` whose agent waits now, and its spell's start. */
 async function waitingSession(projectId: string, workspaceId: string): Promise<{ id: string; waitingSinceMs: number }> {
   await recordWorkspaceCreated({ projectId, workspaceId })
-  const session = await insertSession(projectId, workspaceId, { tool: 'claude', mode: 'acp', permissionMode: 'bypass' })
+  const session = await insertSession(projectId, workspaceId, { cwd: '', tool: 'claude', mode: 'acp', permissionMode: 'bypass' })
   setAgentStatus(projectId, workspaceId, session.window, 'waiting')
   return { id: session.id, waitingSinceMs: readAgentStatus(projectId, workspaceId, session.window)!.waitingSinceMs! }
 }
@@ -209,8 +209,8 @@ describe('session routes', () => {
   it("closes and names a workspace's own session, and answers 404 for another's or a malformed id", async () => {
     await recordWorkspaceCreated({ projectId: ONE, workspaceId: 'mine-workspace' })
     await recordWorkspaceCreated({ projectId: ONE, workspaceId: 'theirs-workspace' })
-    const mine = await insertSession(ONE, 'mine-workspace', { tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
-    const theirs = await insertSession(ONE, 'theirs-workspace', { tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
+    const mine = await insertSession(ONE, 'mine-workspace', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
+    const theirs = await insertSession(ONE, 'theirs-workspace', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
     const app = buildApp({ buildId: 'test' })
     const post = async (path: string, body?: unknown): Promise<number> => (await app.request(`/api/workspace/${path}`, {
       method: 'POST',

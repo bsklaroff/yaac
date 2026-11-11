@@ -1,3 +1,4 @@
+import { posix } from 'node:path'
 import { workspaceDriver } from '#drivers/driver'
 import { shellQuote } from '#lib/shell'
 import type { WorkspaceGitLog } from '@yaac/shared/types'
@@ -5,25 +6,32 @@ import { RESOLVE_BASE_SH } from './changes'
 
 /**
  * Git reads for the file editor and the Commits pane, run inside the
- * running workspace (docs/file-editor.md). The checkout's git dir belongs to the workspace (the
- * agent can edit its config), so the server never runs git against it on the
- * host (docs/server-git.md).
+ * running workspace (docs/file-editor.md). A checkout's git dir belongs to
+ * the workspace (the agent can edit its config), so the server never runs
+ * git against it on the host (docs/server-git.md). Each read names its
+ * checkout by its path under the workspace root (`''` for one at the root).
  */
 
+/** A checkout of a running workspace, as the workspace sees it. */
+function checkoutSeenAt(jobName: string, checkout: string): string {
+  return posix.join(workspaceDriver().workspacePaths(jobName).workspaceDir, checkout)
+}
+
 /**
- * A blob's bytes at `rev:path` in a running workspace's checkout, or what
+ * A blob's bytes at `rev:path` in one checkout of a running workspace, or what
  * stands in for them: `absent` when that commit has no file there, `large`
  * when it is over `maxBytes`. The bytes cross `exec` as base64, since its
  * stdout is decoded as text.
  */
 export async function checkoutBlobAt(
   jobName: string,
+  checkout: string,
   rev: string,
   relPath: string,
   maxBytes: number,
 ): Promise<Buffer | 'absent' | 'large'> {
   const driver = workspaceDriver()
-  const script = `cd ${driver.workspacePaths(jobName).workspaceDir} || exit 3; `
+  const script = `cd ${checkoutSeenAt(jobName, checkout)} || exit 3; `
     + 'obj="$1:$2"; '
     + '[ "$(git cat-file -t "$obj" 2>/dev/null)" = blob ] || { echo absent; exit 0; }; '
     + 'size=$(git cat-file -s "$obj") || exit 4; '
@@ -64,8 +72,8 @@ const CUT_BODIES = 'index($0, r) == 1 && match($0, /^.[0-9a-f]+/) && (RLENGTH ==
   + '{ k = m - n; if (t - b < k) k = t - b; if (k > 1) print substr($0, 1, k - 1); print "…"; c = 1; if (k > 0) b += k }'
 
 /**
- * The Commits pane's history (`WorkspaceGitLog`): up to `limit` commits
- * reachable from HEAD or the base ref, each with its message's body. The
+ * The Commits pane's history of one checkout (`WorkspaceGitLog`): up to
+ * `limit` commits reachable from HEAD or the base ref, each with its message's body. The
  * ref is checked by the changes script's own `RESOLVE_BASE_SH`, so the pane
  * and the git status strip always name the same one; a base that shares no
  * history with HEAD leaves the log to HEAD alone. Bodies are cut inside the
@@ -73,11 +81,11 @@ const CUT_BODIES = 'index($0, r) == 1 && match($0, /^.[0-9a-f]+/) && (RLENGTH ==
  */
 export async function checkoutLog(
   jobName: string,
-  { defaultBase, limit }: { defaultBase?: string; limit: number },
+  { checkout, defaultBase, limit }: { checkout: string; defaultBase?: string; limit: number },
 ): Promise<WorkspaceGitLog> {
   const driver = workspaceDriver()
-  const { workspaceDir, scratchDir } = driver.workspacePaths(jobName)
-  const script = `cd ${workspaceDir} || exit 3; ${RESOLVE_BASE_SH}`
+  const { scratchDir } = driver.workspacePaths(jobName)
+  const script = `cd ${checkoutSeenAt(jobName, checkout)} || exit 3; ${RESOLVE_BASE_SH}`
     + 'sha=; [ -z "$ref" ] || sha=$(git rev-parse -q --verify "$ref^{commit}") || exit 5; '
     // An unborn HEAD (a new orphan branch) has no history of its own.
     + 'head=$(git rev-parse -q --verify HEAD); '

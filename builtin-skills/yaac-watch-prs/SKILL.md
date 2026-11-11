@@ -105,13 +105,20 @@ with [`yaac-mama`](../yaac-mama/SKILL.md), whatever the task calls for.
   inferred from its git remote, auth via this session's `GH_TOKEN`) — so it
   works both in a container, where that is `/workspace`, and on a containerless
   workspace, whose checkout is an arbitrary host path. Point it elsewhere with
-  `YAAC_WATCH_PRS_WORKDIR`. `gh` is the only dependency — the JSON
+  `YAAC_WATCH_PRS_WORKDIR`. **In a workspace with several repos** it
+  watches the repo whose folder you start it from (started outside every
+  repo, it refuses and says so). `GH_TOKEN` is the token of the repo your
+  session started in, so to watch another repo of the workspace, start it
+  from that repo's folder as `yaac-mama as-repo <folder> -- yaac-watch-prs …`.
+  `gh` is the only dependency — the JSON
   filtering goes through gh's built-in `--jq`, never a `| jq` pipe, so the
   watcher runs on a containerless workspace whose host has no `jq` installed.
   The command fails fast if `gh` is missing. There are **no yaac-specific
   dependencies**.
 - **Seen state** persists in `$YAAC_WATCH_PRS_STATE`, or
-  `$HOME/.yaac-watch-prs-seen` where that is unset, keyed per event so each
+  `$HOME/.yaac-watch-prs-seen` where that is unset (with `-<folder>` added
+  for a repo in a folder, so each repo of a workspace has its own), keyed
+  per event so each
   comment/commit/PR fires at most once. On the **first run** every current
   PR/comment/commit is recorded as seen *without emitting* — only updates
   that land while the watcher runs are surfaced. Delete a key from the file

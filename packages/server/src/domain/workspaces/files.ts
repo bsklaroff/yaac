@@ -34,21 +34,23 @@ import { createKeyedMutex } from '#lib/keyed-mutex'
 import { shellQuote } from '#lib/shell'
 import { serverLog } from '#lib/log'
 import { MAX_TEXT_FILE_BYTES, isBinaryContent } from '#lib/text-file'
-import { getWorkspaceRow } from '#db'
+import { getWorkspaceRow, listWorkspaceRepos, type WorkspaceRepoRow } from '#db'
 import { checkoutBlobAt, checkoutLog } from './checkout-git'
+import { checkoutAt } from './checkouts'
 import { resolveWorkspaceContainer, resolveWorkspaceRecord } from './resolve'
 
 /**
- * The webapp file editor's access to a workspace checkout
+ * The webapp file editor's access to a workspace's files
  * (docs/file-editor.md). Reads and writes use plain `fs` on the server's view
- * of the checkout, so they work for stopped workspaces too. The changes,
- * the ahead/behind count, the listing and the commit log need the
+ * of the workspace dir, so they work for stopped workspaces too, and every
+ * path is relative to that dir, whichever checkout it falls in. The
+ * changes, the ahead/behind count, the listing and the commit log need a
  * checkout's git, which runs inside the workspace, so they require it to be
- * running.
+ * running, and each names the checkout it reads (`checkoutOf`).
  *
- * The checkout is agent-controlled, so every access goes through a confined
- * root (`#lib/confined-fs`) that follows symlinks only while they stay
- * inside the checkout.
+ * The workspace dir is agent-controlled, so every access goes through a
+ * confined root (`#lib/confined-fs`) that follows symlinks only while they
+ * stay inside it.
  */
 
 /** The listing's cap on `paths`. */
@@ -67,23 +69,42 @@ interface Checkout {
   /** The workspace's runtime unit, when it has one. */
   jobName?: string
   dir: string
-  /** The confined checkout. Its `.git` counts as outside, so the editor
-   *  cannot plant a hook or config there. */
+  /** The confined workspace dir. Each checkout's `.git` counts as outside,
+   *  so the editor cannot plant a hook or config there. */
   root: ConfinedRoot
+  /** Its checkouts, as its rows record them. */
+  repos: WorkspaceRepoRow[]
 }
 
-/** Open a workspace's checkout. A write passes its caller, who must own
- *  the workspace. */
+/** Open a workspace's dir. A write passes its caller, who must own the
+ *  workspace. */
 async function openCheckout(idOrName: string, writer?: Actor): Promise<Checkout> {
   const { projectId, workspaceId, jobName } = await resolveWorkspaceRecord(idOrName)
   if (writer !== undefined) await authorizeProject(writer, projectId)
   const dir = workspaceDir(projectId, workspaceId)
+  const repos = await listWorkspaceRepos(workspaceId)
   try {
-    return { workspaceId, projectId, jobName, dir, root: await openRoot(dir, 'inside', { exclude: ['.git'] }) }
+    const exclude = repos.map((r) => path.posix.join(r.path, '.git'))
+    return { workspaceId, projectId, jobName, dir, repos, root: await openRoot(dir, 'inside', { exclude }) }
   } catch {
     throw new ServerError('NOT_FOUND', `workspace ${idOrName} has no checkout`)
   }
 }
+
+/**
+ * The checkout a repo-scoped read means: the one `at` names, by its path
+ * under the workspace root or its repo's id, or with no `at` the
+ * workspace's only one (`checkoutAt`). Undefined for a workspace with no
+ * repos when none is named, which has nothing to read.
+ */
+function checkoutOf(repos: WorkspaceRepoRow[], at: string | undefined): WorkspaceRepoRow | undefined {
+  if (repos.length === 0 && at === undefined) return undefined
+  const { path: found } = checkoutAt(repos.map((r) => ({ path: r.path, repo: { id: r.repoId } })), at)
+  return repos.find((r) => r.path === found)
+}
+
+/** `rel`, a path in the checkout at `checkout`, as a path in the workspace. */
+const underCheckout = (checkout: string, rel: string): string => (checkout === '' ? rel : `${checkout}/${rel}`)
 
 /**
  * The running workspace to run a git read in. `CONFLICT` if it exists but is
@@ -245,9 +266,9 @@ async function findEmptyDirs(
 }
 
 /**
- * The ref a workspace is compared against unless one is picked: origin's
+ * The ref a checkout is compared against unless one is picked: origin's
  * copy of the branch it forked from, which every way of setting that branch
- * checks exists there. A workspace created at a commit has no such branch,
+ * checks exists there. A checkout created at a commit has no such branch,
  * and is compared against that commit. A local copy of the fork branch is
  * never used, since nothing keeps it current.
  */
@@ -256,9 +277,12 @@ function forkBase(row: { baseBranch?: string; startCommit?: string } | undefined
 }
 
 /**
- * Everything the webapp polls about a running workspace's checkout: the
- * diff against its base, how far HEAD is from the base branch, and, when
- * `listing` is asked for, every path for the explorer's tree.
+ * Everything the webapp polls about a running workspace: the diff of one
+ * checkout (`repo`, see `checkoutOf`) against its base, how far its HEAD is
+ * from the base branch, and, when `listing` is asked for, every path of the
+ * workspace for the explorer's tree. The diff's paths are relative to its
+ * checkout, the listing's to the workspace dir. A workspace with no repos
+ * answers no changes.
  *
  * An explicit `base` wins; otherwise it is compared against `forkBase`.
  * `diff: false` leaves the diff body out.
@@ -272,17 +296,26 @@ function forkBase(row: { baseBranch?: string; startCommit?: string } | undefined
 export async function getWorkspaceChanges(
   idOrName: string,
   base?: string,
-  opts: { diff?: boolean; listing?: 'paths' | 'full'; known?: string; signal?: AbortSignal } = {},
+  opts: { repo?: string; diff?: boolean; listing?: 'paths' | 'full'; known?: string; signal?: AbortSignal } = {},
 ): Promise<WorkspaceChanges> {
   const { jobName, projectId, workspaceId } = await runningWorkspace(idOrName)
   const row = await getWorkspaceRow(projectId, workspaceId)
+  const repos = await listWorkspaceRepos(workspaceId)
+  const checkout = checkoutOf(repos, opts.repo)
   // The runtime treats a blank `base` as unset.
   const named = base?.trim()
-  let reading: ChangesReading
+  // The listing covers every checkout, so each is read; the diff only one.
+  const read = (r: WorkspaceRepoRow): Promise<ChangesReading> => readWorkspaceChanges(jobName, {
+    checkout: r.path,
+    ...(r === checkout ? { base } : {}),
+    defaultBase: forkBase(r),
+    diff: r === checkout && (opts.diff ?? true),
+    listing: opts.listing,
+  }, opts.signal)
+  let readings: Array<{ repo: WorkspaceRepoRow; reading: ChangesReading }>
   try {
-    reading = await readWorkspaceChanges(jobName, {
-      base, defaultBase: forkBase(row), diff: opts.diff ?? true, listing: opts.listing,
-    }, opts.signal)
+    readings = await Promise.all((opts.listing !== undefined ? repos : repos.filter((r) => r === checkout))
+      .map(async (r) => ({ repo: r, reading: await read(r) })))
   } catch (err) {
     if (named && err instanceof WorkspaceExecError && err.code === CHANGES_BASE_UNRESOLVED) {
       // The ref may exist but share no history with the workspace.
@@ -293,28 +326,28 @@ export async function getWorkspaceChanges(
     }
     throw err
   }
-  const { ref } = reading
+  const reading = readings.find((r) => r.repo === checkout)?.reading
   let comparison: BranchComparison | null = null
-  if (ref) {
+  if (reading?.ref && checkout) {
+    const { ref } = reading
     comparison = { ref: ref.name, ahead: ref.ahead, behind: ref.behind }
     const fetchedAtMs = ref.name.startsWith('origin/')
       ? await lastFetchedAtMs(
-        repoDir(projectId), ref.name.slice('origin/'.length), path.join(workspaceDir(projectId, workspaceId), '.git'),
+        repoDir(checkout.repoId), ref.name.slice('origin/'.length),
+        path.join(workspaceDir(projectId, workspaceId), checkout.path, '.git'),
       )
       : null
     if (fetchedAtMs !== null) comparison.fetchedAt = formatUtcTimestamp(fetchedAtMs)
   }
-  const listing = reading.listing && await finishListing(
-    await openCheckout(idOrName), jobName, reading.listing,
-    { dirs: row?.scratchDirs ?? [], changed: reading.changes.files.map((f) => f.path) },
-    (reading.changes.skipped ?? []).filter((d) => d.endsWith('/')).map((d) => d.slice(0, -1)),
-  )
+  const listing = opts.listing !== undefined
+    ? await workspaceListing(await openCheckout(idOrName), jobName, readings, row?.scratchDirs ?? [], opts.listing)
+    : undefined
   return {
-    ...reading.changes,
-    branch: named || row?.baseBranch || row?.startCommit || null,
+    ...(reading?.changes ?? { base: '', work: '', baseResolved: true, files: [], truncated: false, ...(opts.diff ?? true ? { diff: '' } : {}) }),
+    branch: named || checkout?.baseBranch || checkout?.startCommit || null,
     comparison,
     ...(listing && listing.version !== opts.known ? { listing } : {}),
-    readMs: reading.readMs,
+    readMs: reading?.readMs ?? 0,
   }
 }
 
@@ -325,11 +358,13 @@ export async function getWorkspaceChanges(
  * the caller polls again for a current one.
  */
 export async function getWorkspaceChangeDiffs(
-  idOrName: string, request: Parameters<typeof readChangeDiffs>[1],
+  idOrName: string, { repo, ...request }: Omit<Parameters<typeof readChangeDiffs>[1], 'checkout'> & { repo?: string },
 ): Promise<{ diff: string }> {
-  const { jobName } = await runningWorkspace(idOrName)
+  const { jobName, workspaceId } = await runningWorkspace(idOrName)
+  const checkout = checkoutOf(await listWorkspaceRepos(workspaceId), repo)
+  if (!checkout) throw new ServerError('NOT_FOUND', 'that reading of the changes is gone; read them again')
   try {
-    return { diff: await readChangeDiffs(jobName, request) }
+    return { diff: await readChangeDiffs(jobName, { ...request, checkout: checkout.path }) }
   } catch (err) {
     if (err instanceof WorkspaceExecError && err.code === CHANGES_READING_GONE) {
       throw new ServerError('NOT_FOUND', 'that reading of the changes is gone; read them again')
@@ -339,14 +374,21 @@ export async function getWorkspaceChangeDiffs(
 }
 
 /**
- * The diff between two refs of a running workspace's checkout, for a
- * Changes pane showing a range or one commit (`readComparison`). A ref that
- * does not resolve, or a pair sharing no history, is a VALIDATION error.
+ * The diff between two refs of one checkout of a running workspace (`repo`,
+ * see `checkoutOf`), for a Changes pane showing a range or one commit
+ * (`readComparison`). A ref that does not resolve, or a pair sharing no
+ * history, is a VALIDATION error, as is any ref in a workspace with no
+ * repos.
  */
-export async function getWorkspaceComparison(idOrName: string, range: { from?: string; to: string }): Promise<WorkspaceComparison> {
-  const { jobName } = await runningWorkspace(idOrName)
+export async function getWorkspaceComparison(
+  idOrName: string,
+  { repo, ...range }: { from?: string; to: string; repo?: string },
+): Promise<WorkspaceComparison> {
+  const { jobName, workspaceId } = await runningWorkspace(idOrName)
+  const checkout = checkoutOf(await listWorkspaceRepos(workspaceId), repo)
+  if (!checkout) throw new ServerError('VALIDATION', 'this workspace has no repos')
   try {
-    return await readComparison(jobName, range)
+    return await readComparison(jobName, { ...range, checkout: checkout.path })
   } catch (err) {
     if (err instanceof WorkspaceExecError && err.code === CHANGES_BASE_UNRESOLVED) {
       const pair = range.from ? `"${range.from}" and "${range.to}"` : `"${range.to}"`
@@ -357,12 +399,15 @@ export async function getWorkspaceComparison(idOrName: string, range: { from?: s
 }
 
 /**
- * The Commits pane's history: HEAD's commits and those of the branch the
- * workspace is based on, as the changes read resolves it.
+ * The Commits pane's history of one checkout (`repo`, see `checkoutOf`):
+ * HEAD's commits and those of the branch the checkout is based on, as the
+ * changes read resolves it. A workspace with no repos has none.
  */
-export async function getWorkspaceGitLog(idOrName: string, limit: number): Promise<WorkspaceGitLog> {
-  const { jobName, projectId, workspaceId } = await runningWorkspace(idOrName)
-  return await checkoutLog(jobName, { defaultBase: forkBase(await getWorkspaceRow(projectId, workspaceId)), limit })
+export async function getWorkspaceGitLog(idOrName: string, limit: number, repo?: string): Promise<WorkspaceGitLog> {
+  const { jobName, workspaceId } = await runningWorkspace(idOrName)
+  const checkout = checkoutOf(await listWorkspaceRepos(workspaceId), repo)
+  if (!checkout) return { ref: null, head: null, commits: [], more: false }
+  return await checkoutLog(jobName, { checkout: checkout.path, defaultBase: forkBase(checkout), limit })
 }
 
 /** Whether `rel` is a path the file routes would accept as written. */
@@ -375,9 +420,86 @@ function isListable(co: Checkout, rel: string): boolean {
 }
 
 /**
- * The explorer's listing from what the script read: capped, with where each
+ * The explorer's listing of a whole workspace, rooted at its dir: each
+ * checkout's gitignore-aware listing under the checkout's folder, and, in a
+ * workspace whose root is no checkout, whatever else is there, which git
+ * lists nowhere, found by a plain walk (`walkOutside`). A checkout holding
+ * no listed path still shows as a folder.
+ */
+async function workspaceListing(
+  co: Checkout, jobName: string, readings: Array<{ repo: WorkspaceRepoRow; reading: ChangesReading }>,
+  scratchDirs: string[], kind: 'paths' | 'full',
+): Promise<WorkspaceFiles> {
+  const outside = co.repos.some((r) => r.path === '') ? undefined : await walkOutside(co)
+  const merged = { paths: outside?.paths ?? [], links: outside?.links ?? [], conflicted: [] as string[] }
+  const ignored: string[] = []
+  const untrackedDirs = outside?.dirs ?? []
+  const skippedDirs: string[] = []
+  const changed: string[] = []
+  for (const { repo, reading } of readings) {
+    const under = (list: string[] | undefined): string[] => (list ?? []).map((p) => underCheckout(repo.path, p))
+    merged.paths.push(...under(reading.listing?.paths))
+    merged.links.push(...under(reading.listing?.links))
+    merged.conflicted.push(...under(reading.listing?.conflicted))
+    ignored.push(...under(reading.listing?.ignored))
+    untrackedDirs.push(...under(reading.listing?.untrackedDirs))
+    skippedDirs.push(...under(reading.changes.skipped).filter((d) => d.endsWith('/')).map((d) => d.slice(0, -1)))
+    changed.push(...under(reading.changes.files.map((f) => f.path)))
+  }
+  return finishListing(
+    co, jobName, { ...merged, ...(kind === 'full' ? { ignored, untrackedDirs } : {}) },
+    { dirs: scratchDirs, changed }, skippedDirs,
+    { folders: co.repos.map((r) => r.path).filter((p) => p !== ''), truncated: outside?.truncated === true },
+  )
+}
+
+/**
+ * Every file of a workspace outside its checkouts, and the top-level
+ * folders holding them. Links are listed and not followed, and a `.git` is
+ * git's own, not a folder to show. Stops at the listing's caps.
+ */
+async function walkOutside(co: Checkout): Promise<{ paths: string[]; links: string[]; dirs: string[]; truncated: boolean }> {
+  const checkouts = new Set(co.repos.map((r) => r.path))
+  const out = { paths: [] as string[], links: [] as string[], dirs: [] as string[], truncated: false }
+  let visits = 0
+  const visit = async (dir: PinnedDir, rel: string): Promise<void> => {
+    for (const entry of await fs.readdir(dir.self, { withFileTypes: true })) {
+      const child = rel === '' ? entry.name : `${rel}/${entry.name}`
+      if (entry.name === '.git' || (rel === '' && checkouts.has(entry.name))) continue
+      if (!entry.isDirectory()) {
+        if (out.paths.length >= MAX_LISTED_PATHS) out.truncated = true
+        else out.paths.push(child)
+        if (entry.isSymbolicLink()) out.links.push(child)
+        continue
+      }
+      if (rel === '') out.dirs.push(child)
+      if (++visits > MAX_EMPTY_DIR_VISITS) {
+        out.truncated = true
+        continue
+      }
+      const sub = await openExactDir(dir, entry.name)
+      if (!sub) continue
+      try {
+        await visit(sub, child)
+      } finally {
+        await sub.close()
+      }
+    }
+  }
+  const root = await co.root.dir('')
+  try {
+    await visit(root, '')
+  } finally {
+    await root.close()
+  }
+  return out
+}
+
+/**
+ * The explorer's listing from what the scripts read: capped, with where each
  * symlink leads and, for a `full` listing, the folders holding no file. Its
- * `root` is where the workspace sees the checkout.
+ * `root` is where the workspace sees its dir. `extra.folders` are shown even
+ * when no listed path is in them.
  *
  * A `full` listing also reports each of the workspace's scratch dirs
  * (docs/project-config.md "Scratch directories") as a wholly ignored
@@ -394,6 +516,7 @@ function isListable(co: Checkout, rel: string): boolean {
 async function finishListing(
   co: Checkout, jobName: string, read: NonNullable<ChangesReading['listing']>,
   scratch: { dirs: string[]; changed: string[] }, skippedDirs: string[],
+  extra: { folders: string[]; truncated: boolean },
 ): Promise<WorkspaceFiles> {
   // The script runs in the workspace, so every list may name anything. Only
   // paths the file routes accept are kept, before any is opened or resolved.
@@ -401,14 +524,17 @@ async function finishListing(
   const listed = listable(read.paths)
   const listedIgnored = listable(read.ignored ?? [])
   // One cap for every list, so no checkout makes the answer unbounded.
-  const truncated = listed.length > MAX_LISTED_PATHS || listedIgnored.length > MAX_LISTED_PATHS
+  const truncated = extra.truncated || listed.length > MAX_LISTED_PATHS || listedIgnored.length > MAX_LISTED_PATHS
   const paths = listed.slice(0, MAX_LISTED_PATHS)
   let ignored = listedIgnored.slice(0, MAX_LISTED_PATHS)
   const skipped = listable(skippedDirs)
   const untracked = listable(read.untrackedDirs ?? []).filter((d) => !skipped.some((s) => `${d}/`.startsWith(`${s}/`)))
-  let emptyDirs = read.untrackedDirs
-    ? await findEmptyDirs(co, untracked, paths, [...ignored, ...skipped.map((d) => `${d}/`)])
-    : []
+  let emptyDirs = [
+    ...extra.folders.filter((dir) => !listed.some((p) => p.startsWith(`${dir}/`))),
+    ...read.untrackedDirs
+      ? await findEmptyDirs(co, untracked, paths, [...ignored, ...skipped.map((d) => `${d}/`)])
+      : [],
+  ]
   // Sorted, so a dir inside another scratch dir is already under its entry.
   for (const dir of [...scratch.dirs].sort()) {
     const inDir = (p: string): boolean => p === dir || p.startsWith(`${dir}/`)
@@ -551,9 +677,10 @@ export async function readWorkspaceMedia(idOrName: string, relPath: string, rang
 }
 
 /**
- * One file's text at commit `rev` (the fork base the changes diff reports),
- * which the editor's diff modes compare the working copy against. Read with
- * the workspace's git, so it must be running.
+ * One file's text at commit `rev` (the fork base the changes diff reports)
+ * of the checkout its path is in, which the editor's diff modes compare the
+ * working copy against. Read with the workspace's git, so it must be
+ * running.
  */
 export async function readWorkspaceFileAtRev(
   idOrName: string,
@@ -563,8 +690,12 @@ export async function readWorkspaceFileAtRev(
   // A full object id, so it can be neither an option nor a revision range.
   if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(rev)) throw new ServerError('VALIDATION', `${rev} is not a commit id`)
   const { jobName } = await runningWorkspace(idOrName)
-  const rel = checkPath(await openCheckout(idOrName), relPath)
-  const blob = await checkoutBlobAt(jobName, rev, rel, MAX_TEXT_FILE_BYTES)
+  const co = await openCheckout(idOrName)
+  const rel = checkPath(co, relPath)
+  // The checkout whose folder the file is in; a file in none is in no commit.
+  const checkout = co.repos.find((r) => r.path === '' || rel.startsWith(`${r.path}/`))
+  if (!checkout) return { exists: false, content: null }
+  const blob = await checkoutBlobAt(jobName, checkout.path, rev, path.posix.relative(checkout.path, rel), MAX_TEXT_FILE_BYTES)
   if (blob === 'absent') return { exists: false, content: null }
   if (blob === 'large' || isBinaryContent(blob)) return { exists: true, content: null }
   return { exists: true, content: blob.toString('utf8') }

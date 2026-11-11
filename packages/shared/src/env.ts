@@ -81,6 +81,12 @@ export const env = {
     return true
   },
 
+  /** `GH_TOKEN` as this process was given it: in a yaac workspace, the
+   *  placeholder (or token) of the repo its cwd is in. */
+  get ghToken(): string | undefined {
+    return process.env.GH_TOKEN
+  },
+
   /** `YAAC_HOST_TOR_SOCKS_URL` — host-side Tor SOCKS endpoint. */
   get torSocksUrl(): string {
     return process.env.YAAC_HOST_TOR_SOCKS_URL ?? 'socks5h://127.0.0.1:9050'

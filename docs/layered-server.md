@@ -144,8 +144,10 @@ happens a layer up, in `recordedTranscript`.
   checkout seeding, each workspace's conversations on disk, generated
   titles, `yaac-mama`'s commands and spawn policy, and the file editor's
   reads and writes of a checkout), `projects/` (which projects exist
-  and what each keeps on disk: the clone's branches, the two config
-  layers, which git credential it uses, Dockerfiles and build files), `git/`
+  and what each keeps on disk: the repos it links, the two config layers,
+  Dockerfiles and build files), `repos/` (each user's git repos: the main
+  clone and its branches, the remote of a repo the server hosts, which git
+  credential it uses and who may use it; docs/project-repos.md), `git/`
   (domain's one process boundary onto git; docs/server-git.md),
   `auth/` (each user's tool sign-ins and git credentials), `skills/`,
   `sites/` (public sites' settings, deploys and the replacement of a

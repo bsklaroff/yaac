@@ -25,6 +25,7 @@ yaac-mama edit-queued [--parent-workspace W | --no-parent | --start-at T | --sta
 yaac-mama run-queued <queued>                       # start a queued one now
 yaac-mama delete-queued <queued>                    # discard a queued one
   # opts: [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B | --commit C] [--group G] [--title T] [--timeout D]
+  #       [--repo DIR[@BRANCH]]... [--no-repos] [--nested | --no-nested] [--cwd DIR]
   #       [--steps F | --no-steps] [--non-interactive]
 yaac-mama routine create --name N --cron C [--tz Z] [opts] "<prompt>"
 yaac-mama routine edit [--name N] [--cron C] [--tz Z] [opts] <routine> ["<prompt>"]
@@ -34,6 +35,8 @@ yaac-mama send [--session S | --conversation C] <workspace> "<message>"  # to on
   # any "<prompt>" or "<message>": also - (stdin) or --prompt-file F before the arguments
 yaac-mama rename [<workspace>] "<title>"            # omit the workspace to rename yourself
 yaac-mama set-base <branch>                         # your base branch, on origin
+yaac-mama set-base --repo DIR <branch>              # that of the checkout in folder DIR
+yaac-mama as-repo <repo> -- <command>...            # run a command with another repo's GH_TOKEN
 yaac-mama icon get <file>                           # save the project's sidebar icon
 yaac-mama icon set <file>                           # replace it
 yaac-mama icon remove                               # back to the project's initial
@@ -81,7 +84,8 @@ pass — the server resolves who is calling and answers for that project only.
   agent sessions (a workspace can run none, one or several), with the
   session ids `send --session` and `stop --session` take; your own session
   is marked `(you)`. Then a line naming the project's groups, each with its workspace
-  limit if it has one (`Workers (limit 3)`). This is how you find a
+  limit if it has one (`Workers (limit 3)`), and for a project with several
+  repos a `Repos:` line naming the folders `--repo` and `--cwd` take. This is how you find a
   workspace id to pass to `group move`; ids print as their first 8 characters,
   and that prefix is what the other commands accept. A last line counts the
   project's stopped workspaces. `list <workspace>...` (running, queued or
@@ -129,8 +133,11 @@ pass — the server resolves who is calling and answers for that project only.
     workspace** instead, on its checkout: your own (`"$YAAC_WORKSPACE_ID"`)
     for a helper beside you, or a sibling's. It takes the agent options
     (`--tool`, `--model`, `--effort`, `--permission-mode`, `--ui-mode`, and
-    `--title` for the session) but not a workspace's (`--branch`, `--group`,
-    `--timeout`), and prints the new session's id. With
+    `--title` for the session) and **`--cwd <dir>`** (one of that
+    workspace's repo folders, or `.` for its root; omitted, the workspace's
+    own), but not a workspace's (`--repo`, `--branch`, `--group`,
+    `--timeout`), and prints the new session's id. A session keeps its
+    directory for life, so open another to work in another repo. With
     **`--resume <conversation>`** it opens on one of that workspace's
     earlier conversations (see `history`), and the prompt is optional.
     Two agents on one checkout share its files and git index, so give them
@@ -198,6 +205,24 @@ pass — the server resolves who is calling and answers for that project only.
     Omitted, origin's default branch. Push a branch first to hand a
     sibling work from here. A branch that is not on origin is not caught
     here: the id comes back and the workspace then fails to provision.
+    It names the start of a workspace with **one** repo; with several, give
+    each repo's with `--repo`.
+  - **`--repo <dir>[@<branch>]`**: in a project with several repos, which
+    of them the new workspace starts with, each by its folder name, at that
+    branch (or at a full commit given in the branch's place); repeat it for
+    several.
+    This workspace's own repo folders are in `$YAAC_CHECKOUTS`
+    (colon-separated; `.` is a repo at the workspace root). Omitted, the
+    new workspace gets the repos the project's last create included, each
+    at its default branch. **`--no-repos`** starts with none: an empty
+    workspace dir.
+  - **`--nested`** / **`--no-nested`**: whether a lone repo sits in a folder
+    named for it or at the workspace root. Several repos always sit in
+    folders, one each, under the workspace dir. Omitted, the project's last
+    choice.
+  - **`--cwd <dir>`**: where the new agent starts, a selected repo's folder
+    or `.` for the workspace root. Omitted, the project's last choice where
+    that repo is selected, else a lone repo, else the root.
   - **`--group`**: file the new workspace in this group, creating the group
     if it does not exist. Good for a fan-out you want kept together. A
     group with a **workspace limit** runs at most that many workspaces at
@@ -366,14 +391,27 @@ pass — the server resolves who is calling and answers for that project only.
   was stored. Renaming a sibling works the same way.
 
 - **`set-base <branch>`** — make `<branch>`, a branch on origin, this
-  workspace's base: the branch the webapp's diff view compares it against,
+  checkout's base: the branch the webapp's diff view compares it against,
   and the one a workspace you queue under it from then on forks from. Use it
   when your work builds on another PR's branch, so the diff shows only your
   own commits. It changes only that setting, never your checkout: rebase
   onto `origin/<branch>` yourself (`git fetch origin <branch>` first if your
   git does not have it yet). A branch not yet on the server's copy of origin
   is fetched for; one origin lacks is refused. Run it again with the
-  default branch to undo it.
+  default branch to undo it. In a workspace with several repos each
+  checkout has its own base: it acts on the one your current directory is
+  in, or the one `--repo <dir>` names.
+
+- **`as-repo <repo> -- <command>...`** — run one command with `GH_TOKEN`
+  set to the token of another repo of this workspace, named by its folder:
+  `yaac-mama as-repo web -- gh pr create`. In a workspace with several
+  repos, `GH_TOKEN` is the token of the repo your session started in, and
+  `gh` infers *which repo* from the directory it runs in but *whose
+  credential* from `GH_TOKEN`. So to use `gh` on another repo, `cd` into
+  its folder and wrap the command in `as-repo`. It is refused for a repo
+  that is not an https GitHub one, and for one the project made read-only
+  or keeps from being `GH_TOKEN`. `git` needs none of this: every checkout
+  fetches and pushes with its own repo's credential.
 
 - **`icon get <file>`** — save the picture this project's chip shows in
   the yaac sidebar to `<file>` (`-` for stdout), byte for byte as it was
@@ -483,7 +521,9 @@ pass — the server resolves who is calling and answers for that project only.
   `git log yaac/peers/<id8>/HEAD`, `git diff HEAD...yaac/peers/<id8>/HEAD`,
   `git for-each-ref --contains <sha> refs/yaac/peers/`. Only **committed** work travels — not
   its uncommitted changes, stash or config. Run it from inside this
-  checkout. Fetching again replaces that workspace's refs; nothing is ever
+  checkout. With several repos, run it inside the repo's folder you want to
+  fetch into: it reads the other workspace's checkout of that same repo.
+  Fetching again replaces that workspace's refs; nothing is ever
   written to the other workspace.
 
 - **`history <workspace>`** — read another workspace's agent conversations,

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
+import { recordTestProject } from '@yaac/test-utils/project-fixture'
 import { namedWorkflowFor } from '#test/support/workflows'
 import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
@@ -22,10 +23,13 @@ vi.mock('#domain/workspaces/cleanup', () => ({
 import type * as createModule from '#domain/workspaces/create'
 import { createWorkspace } from '#domain/workspaces/create'
 import { cleanupWorkspaceDetached } from '#domain/workspaces/cleanup'
-import { closeDb } from '#db/client'
+import { eq } from 'drizzle-orm'
+import { closeDb, getDb } from '#db/client'
+import { repos } from '#db/schema'
+import { listWorkspaceRepos, updateProjectRepo } from '#db/repo-store'
+import { ghTokenPlaceholder } from '@yaac/shared/tool-auth'
 import { createWorkspaceGroup, listWorkspaceGroupRows, setWorkspaceGroupLimit } from '#db/group-store'
 import { getProjectWorkspaceRows, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
-import { recordProject } from '#db/project-store'
 import { listQueuedWorkspaceRows } from '#db/queued-workspace-store'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { _clearListActiveInflightForTests } from '#domain/workspaces/list'
@@ -94,11 +98,15 @@ async function callerFor(over: Partial<MamaCaller> = {}): Promise<MamaCaller> {
 /** A workspace as a create leaves it: its row, and a session (claude in a
  *  terminal unless named) in `session`'s posture. */
 async function created(
-  input: Parameters<typeof recordWorkspaceCreated>[0],
+  { baseBranch, ...input }: Parameters<typeof recordWorkspaceCreated>[0] & { baseBranch?: string },
   session: Partial<SessionLaunchSettings> & Pick<SessionLaunchSettings, 'permissionMode'>,
 ): Promise<SessionRow> {
-  await recordWorkspaceCreated(input)
-  return await insertSession(input.projectId, input.workspaceId, { tool: 'claude', mode: 'tui', ...session })
+  await recordWorkspaceCreated({
+    ...input,
+    // Its project's one repo, at the root.
+    ...(baseBranch !== undefined ? { repos: [{ repoId: input.projectId, path: '', baseBranch }] } : {}),
+  })
+  return await insertSession(input.projectId, input.workspaceId, { cwd: '', tool: 'claude', mode: 'tui', ...session })
 }
 
 let tmpDir: string
@@ -122,8 +130,8 @@ beforeEach(async () => {
     exec,
   })
   // The caller's project always exists, since the caller runs in it.
-  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
-  await recordProject({ id: OTHER, name: 'demo', remoteUrl: 'https://example.com/other', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
+  await recordTestProject(PROJ, { name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
+  await recordTestProject(OTHER, { name: 'demo', remoteUrl: 'https://example.com/other', addedAt: '2026-01-01T00:00:00.000Z' })
   // Spawns run on the project owner's sign-ins.
   await setToolCredential(BUILT_IN_USER_ID, 'claude', { kind: 'api-key', savedAt: 'x', apiKey: 'k' })
   await setToolCredential(BUILT_IN_USER_ID, 'codex', { kind: 'api-key', savedAt: 'x', apiKey: 'k' })
@@ -166,8 +174,8 @@ describe('mamaCaller', () => {
   it("holds a session's agent to its own session's posture, and anyone else to the strictest open one", async () => {
     const loose = await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { tool: 'codex', mode: 'acp', permissionMode: 'bypass' })
     await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: PROJ, workspaceId: 'caller-workspace', at: new Date(), startSteps: {} })
-    const plan = await insertSession(PROJ, 'caller-workspace', { tool: 'claude', mode: 'tui', permissionMode: 'plan' })
-    const edits = await insertSession(PROJ, 'caller-workspace', { tool: 'claude', mode: 'acp', permissionMode: 'accept-edits' })
+    const plan = await insertSession(PROJ, 'caller-workspace', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'plan' })
+    const edits = await insertSession(PROJ, 'caller-workspace', { cwd: '', tool: 'claude', mode: 'acp', permissionMode: 'accept-edits' })
     const elsewhere = await created({ projectId: PROJ, workspaceId: 'other-workspace' }, { permissionMode: 'bypass' })
 
     expect(await mamaCaller(at, loose.id)).toEqual({
@@ -196,11 +204,12 @@ describe('mamaCaller', () => {
 
     // A posture this build does not rank counts as the strictest, wherever
     // it falls among the others.
-    await insertSession(PROJ, 'caller-workspace', { tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
+    await insertSession(PROJ, 'caller-workspace', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
     const unranked = await insertSession(PROJ, 'caller-workspace', {
+      cwd: '',
       tool: 'claude', mode: 'tui', permissionMode: 'dontAsk' as PermissionMode,
     })
-    await insertSession(PROJ, 'caller-workspace', { tool: 'claude', mode: 'tui', permissionMode: 'plan' })
+    await insertSession(PROJ, 'caller-workspace', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'plan' })
     expect((await mamaCaller(at, undefined)).permissionMode).toBe('dontAsk')
     expect((await mamaCaller(at, unranked.id)).sessionId).toBe(unranked.id)
   })
@@ -382,7 +391,7 @@ describe('runMamaCommand', () => {
           vi.setSystemTime(Date.UTC(2026, 9, 20 + i, 12))
           await recordWorkspaceCreated({ projectId: PROJ, workspaceId: id })
           await recordConversations(PROJ, id, [{ tool: 'claude', conversationId: `${id}-conv`, firstPrompt: prompt }])
-          await insertSession(PROJ, id, { tool: 'claude', mode: 'tui', permissionMode: 'bypass', conversationId: `${id}-conv` })
+          await insertSession(PROJ, id, { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'bypass', conversationId: `${id}-conv` })
           await recordWorkspaceStopped(PROJ, id, cause)
         }
       } finally {
@@ -446,8 +455,8 @@ describe('runMamaCommand', () => {
     })
 
     it('marks a workspace pinned to a commit, and a site\'s release with its site, role and address', async () => {
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', baseBranch: 'main' })
-      const site = await insertSite({ projectId: PROJ, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(PROJ) })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', repos: [{ repoId: PROJ, path: '', baseBranch: 'main' }] })
+      const site = await insertSite({ projectId: PROJ, repoId: PROJ, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(PROJ) })
       const pins: Array<[string, string, string?]> = [
         ['caller-workspace', 'd'.repeat(40)],
         ['live-rel', 'a'.repeat(40), site.id],
@@ -456,8 +465,8 @@ describe('runMamaCommand', () => {
         ['at-commit', 'c'.repeat(40)],
       ]
       for (const [id, commit, siteId] of pins) {
-        if (id !== 'caller-workspace') await recordWorkspaceCreated({ projectId: PROJ, workspaceId: id, ...(siteId !== undefined ? { siteId } : {}) })
-        await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId: PROJ, workspaceId: id, startCommit: commit })
+        if (id !== 'caller-workspace') await recordWorkspaceCreated({ projectId: PROJ, workspaceId: id, repos: [{ repoId: PROJ, path: '' }], ...(siteId !== undefined ? { siteId } : {}) })
+        await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId: PROJ, workspaceId: id, repoId: PROJ, startCommit: commit })
       }
       await recordWorkspaceStopped(PROJ, 'old-rel')
       await updateSite(site.id, { liveWorkspaceId: 'live-rel', deployWorkspaceId: 'next-rel', deployPhase: 'building' })
@@ -516,6 +525,24 @@ describe('runMamaCommand', () => {
       const [opts] = await createdWith()
       return { ...opts, ...opts.session }
     }
+
+    // `--repo`, `--no-repos`, `--nested` and `--cwd`: what the new workspace
+    // starts with, each left out as the project's last create had it.
+    it('starts the workspace with the repos, layout and cwd named, and refuses what contradicts itself', async () => {
+      const sha = 'c'.repeat(40)
+      expect(await spawn({ repos: `["demo@${sha}"]`, nested: '1', cwd: '.' }))
+        .toMatchObject({ start: { repos: [{ path: 'demo', commit: sha }], nested: true, cwd: '' }, cwd: '' })
+      expect(await spawn({ repos: '["demo@feature/x"]', 'no-nested': '1', cwd: 'demo' }))
+        .toMatchObject({ start: { repos: [{ path: '', branch: 'feature/x' }], nested: false, cwd: '' } })
+      expect(await spawn({ 'no-repos': '1' })).toMatchObject({ start: { repos: [], nested: false, cwd: '' } })
+      for (const [args, error] of [
+        [{ repos: '["demo"]', 'no-repos': '1' }, 'give --repo or --no-repos, not both'],
+        [{ nested: '1', 'no-nested': '1' }, 'give --nested or --no-nested, not both'],
+        [{ repos: 'demo' }, '--repo is not a JSON list of repos'],
+        [{ repos: '["nope"]' }, 'project "demo" has no repo "nope"'],
+        [{ workspace: 'caller-workspace', 'no-repos': '1' }, "--no-repos is a workspace's setting, which --workspace (a session in a running one) does not take"],
+      ] as const) expect(await spawn(args)).toEqual({ ok: false, error })
+    })
 
     it('gives the workspace a timeout from now, and refuses one under a minute', async () => {
       const before = Date.now()
@@ -576,7 +603,8 @@ describe('runMamaCommand', () => {
         tool: 'claude', model: 'opus', 'permission-mode': 'accept-edits', 'ui-mode': 'acp', branch: 'feature/x',
         title: '  Port   the lexer ',
       })).toMatchObject({
-        tool: 'claude', model: 'opus', permissionMode: 'accept-edits', mode: 'acp', branch: 'feature/x',
+        tool: 'claude', model: 'opus', permissionMode: 'accept-edits', mode: 'acp',
+        start: { repos: [{ path: '', branch: 'feature/x' }], nested: false, cwd: '' },
         title: 'Port the lexer',
       })
       // A provider/model for a non-claude tool, and a named effort, refused
@@ -840,7 +868,7 @@ describe('runMamaCommand', () => {
 
       const rows = await listQueuedWorkspaceRows(PROJ)
       expect(rows.find((r) => r.id === first)).toMatchObject({
-        parentWorkspaceId: 'caller-workspace', prompt: 'step 2', permissionMode: 'accept-edits', branch: 'main',
+        parentWorkspaceId: 'caller-workspace', prompt: 'step 2', permissionMode: 'accept-edits', repos: [{ repo: PROJ, branch: 'main' }],
       })
       expect(rows.find((r) => r.id === second)).toMatchObject({ parentQueuedId: first, prompt: 'step 3' })
       // Nothing starts until the parent stops.
@@ -862,7 +890,7 @@ describe('runMamaCommand', () => {
       const group = (await listWorkspaceGroupRows(PROJ)).find((g) => g.name === 'follow-ups')
       expect((await listQueuedWorkspaceRows(PROJ)).find((r) => r.id === id)).toMatchObject({
         tool: 'claude', model: 'opus', permissionMode: 'manual', mode: 'acp',
-        branch: 'feature/x', groupId: group?.groupId, title: 'Step two',
+        repos: [{ repo: PROJ, branch: 'feature/x' }], groupId: group?.groupId, title: 'Step two',
       })
     })
 
@@ -961,7 +989,7 @@ describe('runMamaCommand', () => {
     beforeEach(async () => {
       await created({ projectId: PROJ, workspaceId: 'caller-workspace', baseBranch: 'main' }, { permissionMode: 'accept-edits' })
       await created({ projectId: PROJ, workspaceId: 'loose-sibling', baseBranch: 'main' }, { permissionMode: 'bypass' })
-      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', baseBranch: 'main' })
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', repos: [{ repoId: OTHER, path: '', baseBranch: 'main' }] })
     })
 
     const ME = { 'parent-workspace': 'caller-workspace' }
@@ -987,7 +1015,7 @@ describe('runMamaCommand', () => {
       const group = (await listWorkspaceGroupRows(PROJ)).find((g) => g.name === 'later')
       expect(await rowOf(id)).toMatchObject({
         prompt: 'step 2, but also run the linter', parentWorkspaceId: 'loose-sibling', model: 'sonnet',
-        permissionMode: 'plan', mode: 'acp', branch: 'feature/y', groupId: group?.groupId, title: 'Lint too',
+        permissionMode: 'plan', mode: 'acp', repos: [{ repo: PROJ, branch: 'feature/y' }], groupId: group?.groupId, title: 'Lint too',
       })
     })
 
@@ -1034,7 +1062,7 @@ describe('runMamaCommand', () => {
   describe('edit-queued --no-parent', () => {
     beforeEach(async () => {
       await created({ projectId: PROJ, workspaceId: 'caller-workspace', baseBranch: 'main' }, { permissionMode: 'accept-edits' })
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'busy', baseBranch: 'main' })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'busy', repos: [{ repoId: PROJ, path: '', baseBranch: 'main' }] })
     })
 
     it('has it wait for room in a group with a workspace limit instead of its parent', async () => {
@@ -1088,7 +1116,7 @@ describe('runMamaCommand', () => {
   describe('delete-queued', () => {
     beforeEach(async () => {
       await created({ projectId: PROJ, workspaceId: 'caller-workspace', baseBranch: 'main' }, { permissionMode: 'accept-edits' })
-      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', baseBranch: 'main' })
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', repos: [{ repoId: OTHER, path: '', baseBranch: 'main' }] })
     })
 
     it('discards one by short id, whatever its posture, moving its children up', async () => {
@@ -1206,7 +1234,7 @@ describe('runMamaCommand', () => {
     })
 
     it('reaches only the caller\'s project\'s routines', async () => {
-      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', baseBranch: 'main' })
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', repos: [{ repoId: OTHER, path: '', baseBranch: 'main' }] })
       const foreign = await createRoutine(local, OTHER, {
         name: 'Theirs', cron: '@daily', prompt: 'theirs', tool: 'claude', branch: 'main',
       }, 'user')
@@ -1280,6 +1308,34 @@ describe('runMamaCommand', () => {
     })
   })
 
+  // `yaac-mama as-repo <repo> -- <command>`: the script runs the command
+  // with the value this answers as its GH_TOKEN.
+  describe('as-repo', () => {
+    const link = async (set: { readOnly?: boolean; ghToken?: boolean }): Promise<void> => {
+      await updateProjectRepo(PROJ, PROJ, set)
+    }
+
+    it('answers the placeholder that stands for a GitHub repo\'s token, only while the project\'s link allows it', async () => {
+      expect(await run('as-repo', '', { repo: 'demo' })).toEqual({
+        ok: false, error: 'demo is not an https GitHub repo, so it has no token gh could use',
+      })
+      await (await getDb()).update(repos).set({ remoteUrl: 'https://github.com/acme/demo.git' }).where(eq(repos.id, PROJ))
+
+      // By its folder in the project, its id, or its checkout's path here.
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', repos: [{ repoId: PROJ, path: 'app' }] })
+      for (const repo of ['demo', PROJ, 'app']) expect(await output('as-repo', '', { repo })).toBe(ghTokenPlaceholder(PROJ))
+
+      await link({ ghToken: false })
+      expect(await run('as-repo', '', { repo: 'demo' })).toEqual({ ok: false, error: "this project does not allow demo's token as GH_TOKEN" })
+      await link({ ghToken: true, readOnly: true })
+      expect(await run('as-repo', '', { repo: 'demo' })).toEqual({
+        ok: false, error: 'demo is read-only in this project, so its token is never GH_TOKEN',
+      })
+      expect(await run('as-repo', '', { repo: 'nope' })).toEqual({ ok: false, error: 'this project has no repo "nope"' })
+      expect(await run('as-repo', '', {})).toEqual({ ok: false, error: 'as-repo needs a repo' })
+    })
+  })
+
   describe('set-base', () => {
     let origin: string
     beforeEach(async () => {
@@ -1288,14 +1344,14 @@ describe('runMamaCommand', () => {
       await fs.mkdir(origin)
       await git(origin, ['init', '-q', '-b', 'main'])
       await git(origin, ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', 'init'])
-      await recordProject({ id: PROJ, name: 'demo', remoteUrl: origin, addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
+      await (await getDb()).update(repos).set({ remoteUrl: origin }).where(eq(repos.id, PROJ))
       await cloneRepo(origin, repoDir(PROJ), null)
       await created({ projectId: PROJ, workspaceId: 'caller-workspace', baseBranch: 'main' }, { permissionMode: 'accept-edits' })
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace', baseBranch: 'main' })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace', repos: [{ repoId: PROJ, path: '', baseBranch: 'main' }] })
     })
 
     const baseOf = async (id: string): Promise<string | undefined> =>
-      (await getWorkspaceRow(PROJ, id))?.baseBranch
+      (await listWorkspaceRepos(id))[0]?.baseBranch
 
     it('bases the caller on a just-pushed branch, which what it queues then forks from', async () => {
       await git(origin, ['branch', 'pr/stacked'])
@@ -1306,7 +1362,7 @@ describe('runMamaCommand', () => {
       expect(text).toContain('rebase onto origin/pr/stacked yourself')
 
       const queued = await output('queue', 'follow-up', { 'parent-workspace': 'caller-workspace', tool: 'claude' })
-      expect((await listQueuedWorkspaceRows(PROJ)).find((r) => r.id === queued)?.branch).toBe('pr/stacked')
+      expect((await listQueuedWorkspaceRows(PROJ)).find((r) => r.id === queued)?.repos).toEqual([{ repo: PROJ, branch: 'pr/stacked' }])
     })
 
     it('refuses a blank and another workspace', async () => {
@@ -1417,7 +1473,7 @@ describe('runMamaCommand', () => {
 
     it("closes one session with --session, by default the caller's own, leaving its workspace running", async () => {
       exec.mockResolvedValue({ stdout: '', stderr: '' })
-      const claude = { tool: 'claude', mode: 'tui', permissionMode: 'bypass' } as const
+      const claude = { tool: 'claude', mode: 'tui', permissionMode: 'bypass', cwd: '' } as const
       const mine = await insertSession(PROJ, 'caller-workspace', claude)
       const target = await insertSession(PROJ, 'sibling-workspace', claude)
       await insertSession(PROJ, 'sibling-workspace', claude)
@@ -1476,7 +1532,7 @@ describe('runMamaCommand', () => {
       expect(made).toMatchObject({ ok: true })
       await vi.waitFor(() => { expect(vi.mocked(createWorkspace).mock.calls.length).toBeGreaterThanOrEqual(2) })
       expect(vi.mocked(createWorkspace).mock.calls.at(-1)?.[1]).toMatchObject({
-        nonInteractive: true, commit: sha, workflow: { steps: { test: { run: ['pnpm test'] } } },
+        nonInteractive: true, start: { repos: [{ path: '', commit: sha }] }, workflow: { steps: { test: { run: ['pnpm test'] } } },
       })
       expect(vi.mocked(createWorkspace).mock.calls.at(-1)?.[1].session).toBeUndefined()
 
@@ -1520,14 +1576,14 @@ describe('runMamaCommand', () => {
     it('reruns a non-interactive workspace at its start commit, refusing any other', async () => {
       await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { permissionMode: 'accept-edits' })
       await recordWorkspaceCreated({
-        projectId: PROJ, workspaceId: 'ci-run', nonInteractive: true,
+        projectId: PROJ, workspaceId: 'ci-run', nonInteractive: true, repos: [{ repoId: PROJ, path: '' }],
         workflowId: (await storeWorkflow(PROJ, { steps: { test: { run: ['pnpm test'] } }, secrets: [] })).id,
       })
-      await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId: PROJ, workspaceId: 'ci-run', startCommit: 'b'.repeat(40) })
+      await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId: PROJ, workspaceId: 'ci-run', repoId: PROJ, startCommit: 'b'.repeat(40) })
       const id = await output('rerun', '', { workspace: 'ci-run' })
       await vi.waitFor(() => { expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1) })
       expect(vi.mocked(createWorkspace).mock.calls[0]?.[1]).toMatchObject({
-        workspaceId: id, nonInteractive: true, rerunOf: 'ci-run', commit: 'b'.repeat(40), workflow: { steps: { test: { run: ['pnpm test'] } } },
+        workspaceId: id, nonInteractive: true, rerunOf: 'ci-run', start: { repos: [{ path: '', commit: 'b'.repeat(40) }] }, workflow: { steps: { test: { run: ['pnpm test'] } } },
       })
       expect(await run('rerun', '', { workspace: 'caller-workspace' })).toMatchObject({
         ok: false, error: expect.stringContaining('not a non-interactive workspace') as string,
@@ -1544,7 +1600,7 @@ describe('runMamaCommand', () => {
         { tool: 'claude', conversationId: 'second-conv' },
       ])
       await created({ projectId: PROJ, workspaceId: 'sibling-workspace' }, { permissionMode: 'manual', model: 'opus', conversationId: 'first-conv' })
-      await insertSession(PROJ, 'sibling-workspace', { tool: 'claude', mode: 'tui', permissionMode: 'manual', conversationId: 'second-conv' })
+      await insertSession(PROJ, 'sibling-workspace', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'manual', conversationId: 'second-conv' })
       await recordWorkspaceStopped(PROJ, 'sibling-workspace')
       running = [podFor('caller-workspace')]
     })
@@ -1643,7 +1699,7 @@ describe('runMamaCommand', () => {
       // Recorded as `manual`, but pi has only `bypass`, which its session
       // would come back in.
       await created({ projectId: PROJ, workspaceId: 'pi-workspace' }, { permissionMode: 'manual' })
-      await insertSession(PROJ, 'pi-workspace', { tool: 'pi', mode: 'tui', permissionMode: 'manual' })
+      await insertSession(PROJ, 'pi-workspace', { cwd: '', tool: 'pi', mode: 'tui', permissionMode: 'manual' })
       await recordWorkspaceStopped(PROJ, 'pi-workspace')
       // An agent run by hand in a terminal comes back as a session of its
       // own, in the first session's posture (the nearest pi has, `bypass`),
@@ -1711,7 +1767,7 @@ describe('runMamaCommand', () => {
         { tool: 'claude', conversationId: 'second-conv' },
       ])
       first = await created({ projectId: PROJ, workspaceId: 'sibling-workspace' }, { permissionMode: 'manual', conversationId: 'first-conv' })
-      second = await insertSession(PROJ, 'sibling-workspace', { tool: 'claude', mode: 'tui', permissionMode: 'manual', conversationId: 'second-conv' })
+      second = await insertSession(PROJ, 'sibling-workspace', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'manual', conversationId: 'second-conv' })
       running = [podFor('caller-workspace'), podFor('sibling-workspace')]
       exec.mockReset().mockResolvedValue({ stdout: '', stderr: '' })
       _resetWorkspaceStatusStoreForTests()
@@ -2121,9 +2177,11 @@ describe('runMamaCommand', () => {
     beforeAll(async () => { setPeerReaderEntry(await buildPeerReader()) })
 
     it('bundles a stopped sibling\'s branches by short id, and nothing of another project\'s', async () => {
+      // The caller fetches into its one checkout, of the project's repo.
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', repos: [{ repoId: PROJ, path: '' }] })
       // A stopped workspace: a row and a checkout, no unit.
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace' })
-      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace' })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace', repos: [{ repoId: PROJ, path: '' }] })
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', repos: [{ repoId: OTHER, path: '' }] })
       const checkout = workspaceDir(PROJ, 'sibling-workspace')
       await fs.mkdir(checkout, { recursive: true })
       await git(checkout, ['init', '-q', '-b', 'agent/sibling'])
@@ -2141,6 +2199,28 @@ describe('runMamaCommand', () => {
       expect(await run('fetch', '', { workspace: 'foreign-workspace' }))
         .toEqual({ ok: false, error: `no workspace 'foreign-workspace' in ${PROJ}` })
       expect(await run('fetch')).toEqual({ ok: false, error: 'fetch needs a workspace id' })
+    })
+
+    it('bundles the sibling\'s checkout of the repo the caller names, among several', async () => {
+      const WEB = '11111111-2222-4333-8444-555555555555'
+      await recordWorkspaceCreated({
+        projectId: PROJ, workspaceId: 'caller-workspace', repos: [{ repoId: PROJ, path: 'api' }, { repoId: WEB, path: 'web' }],
+      })
+      // The sibling holds the same repos under other folders, and one only.
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace', repos: [{ repoId: WEB, path: 'site' }] })
+      const checkout = path.join(workspaceDir(PROJ, 'sibling-workspace'), 'site')
+      await fs.mkdir(checkout, { recursive: true })
+      await git(checkout, ['init', '-q', '-b', 'agent/sibling'])
+      await git(checkout, ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', 'work'])
+      const tip = (await git(checkout, ['rev-parse', 'HEAD'])).trim()
+
+      const outcome = await run('fetch', '', { workspace: 'sibling', repo: 'web' })
+      if (!outcome.ok || !('body' in outcome)) throw new Error(`expected a bundle, got ${JSON.stringify(outcome)}`)
+      expect(Buffer.from(await new Response(outcome.body).arrayBuffer()).toString('latin1')).toContain(`${tip} HEAD\n`)
+      expect(await run('fetch', '', { workspace: 'sibling', repo: 'api' }))
+        .toEqual({ ok: false, error: 'sibling- has no checkout of this repo' })
+      expect(await run('fetch', '', { workspace: 'sibling' }))
+        .toMatchObject({ ok: false, error: expect.stringContaining('several repos') as string })
     })
   })
 

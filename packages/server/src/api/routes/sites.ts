@@ -51,6 +51,9 @@ export const siteApp = new Hono<IdentityEnv>()
       adminPort: port.optional(),
       workflow: z.string().min(1),
       volume: z.string().min(1).optional(),
+      // The repo its releases are built from, by its folder or id; a
+      // project with one repo needs none.
+      repo: z.string().min(1).max(255).optional(),
       followBranch: z.string().min(1).optional(),
     })),
     async (c) => {

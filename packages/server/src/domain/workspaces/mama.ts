@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import path from 'node:path'
 /**
  * Runs in-workspace `yaac-mama` commands. Both ways in (the k8s proxy relay
  * and the containerless route) end here, so `MAMA_COMMANDS` is enforced for
@@ -64,6 +65,8 @@ import {
   listProjectSites,
   listQueuedWorkspaceRows,
   listWorkspaceConversations,
+  listWorkspaceRepos,
+  listWorkspaceReposFor,
   listWorkspaceSessions,
   listWorkspaceSteps,
   setWorkspaceTitle,
@@ -72,7 +75,12 @@ import {
 import { ServerError } from '@yaac/shared/errors'
 import { stripAnsi, stripControlChars } from '@yaac/shared/ansi'
 import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
-import { stepSettled } from '@yaac/shared/steps'
+import { FULL_COMMIT_PATTERN, stepSettled } from '@yaac/shared/steps'
+import { parseGitRemote } from '@yaac/shared/git-remote'
+import { ghApiHostForGitHost } from '@yaac/shared/credentials'
+import { ghTokenPlaceholder } from '@yaac/shared/tool-auth'
+import { workspacesSandboxed } from '#drivers/driver'
+import { canUseRepo, resolveRepoCredential } from '#domain/repos'
 import { formatDuration, formatInZone, minutesUntil, parseDuration } from '@yaac/shared/schedule'
 import {
   AGENT_MODES,
@@ -91,6 +99,7 @@ import {
   type AgentTool,
   type PermissionMode,
   type MamaCommand,
+  type RepoStart,
   type RoutineEntry,
   type RoutineSettings,
   type StoppedWorkspaceEntry,
@@ -112,9 +121,10 @@ import {
   type HistoryConversation,
 } from './history-export'
 import { workspacePrincipal, type Actor } from '#domain/access'
-import type { SessionRow, SiteRow, WorkspaceRow } from '#db'
+import type { SessionRow, SiteRow, WorkspaceRepoRow, WorkspaceRow } from '#db'
 import { resolveCreate } from './create'
 import { setWorkspaceBase } from './base-branch'
+import { checkoutAt } from './checkouts'
 
 /** Who is asking — resolved by the transport and `mamaCaller`. */
 export interface MamaCaller {
@@ -218,7 +228,7 @@ const STOPPED_PAGE_MAX = 200
 /** The options every command that makes a workspace takes. */
 const CREATE_ARGS = [
   'tool', 'model', 'effort', 'permission-mode', 'ui-mode', 'branch', 'commit', 'group', 'title', 'timeout',
-  'steps', 'no-steps', 'workflow', 'non-interactive',
+  'steps', 'no-steps', 'workflow', 'non-interactive', 'repos', 'no-repos', 'nested', 'no-nested', 'cwd',
 ] as const
 
 /** What `create --workspace` takes to add a step rather than a session. */
@@ -238,7 +248,8 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   rerun: ['workspace', 'interactive'],
   status: ['workspace', 'step'],
   rename: ['workspace'],
-  'set-base': [],
+  'set-base': ['repo'],
+  'as-repo': ['repo'],
   'icon-get': [],
   'icon-set': [],
   'icon-remove': [],
@@ -258,7 +269,7 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   'routine-resume': ['routine'],
   'routine-run': ['routine'],
   'routine-delete': ['routine'],
-  fetch: ['workspace'],
+  fetch: ['workspace', 'repo'],
   history: ['workspace', 'conversation', 'files', 'file'],
   send: ['workspace', 'session', 'conversation'],
   volumes: [],
@@ -305,6 +316,7 @@ export async function runMamaCommand(
       case 'status': return await runStatus(caller, request)
       case 'rename': return await runRename(caller, request)
       case 'set-base': return await runSetBase(caller, request)
+      case 'as-repo': return await runAsRepo(caller, request)
       case 'icon-get': return await runIconGet(caller)
       case 'icon-set': return await runIconSet(caller, request)
       case 'icon-remove': return await runIconRemove(caller)
@@ -359,7 +371,7 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
     projectRoutines(caller.projectId),
     listProjectSites(caller.projectId),
   ])
-  const placed = placements(rows, sites)
+  const placed = placements(rows, sites, await listWorkspaceReposFor([...rows.keys()]))
   const clock = { zone, now: new Date() }
   let workspaces = active.workspaces
   let queued = allQueued
@@ -428,6 +440,9 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
   lines.push(groups.length === 0
     ? 'No groups yet. Make one with: yaac-mama group create "<name>"'
     : `Groups: ${groups.map((g) => g.workspaceLimit !== undefined ? `${g.name} (limit ${g.workspaceLimit})` : g.name).join(', ')}`)
+  // The folders `--repo` and `--cwd` take, where there is a choice to make.
+  const repos = (await getProjectRow(caller.projectId))?.repos ?? []
+  if (repos.length > 1) lines.push(`Repos: ${repos.map((l) => l.dir).join(', ')}`)
   // Every prompt line is indented, so a prompt cannot fake another's header.
   for (const p of prompts) {
     const body = p.prompt === '' ? ['(none yet)'] : p.prompt.split('\n')
@@ -474,7 +489,8 @@ async function runListStopped(caller: MamaCaller, request: MamaRequestInput): Pr
   const lines = [
     `Stopped workspaces in this project${matching} (${page.entries.length} of ${page.total}, newest stop first):`,
     '',
-    ...renderStopped(page.entries, new Map(groups.map((g) => [g.groupId, g.name])), placements(rows, sites)),
+    ...renderStopped(page.entries, new Map(groups.map((g) => [g.groupId, g.name])),
+      placements(rows, sites, await listWorkspaceReposFor(page.entries.map((e) => e.workspaceId)))),
     '',
   ]
   if (page.nextCursor !== undefined) {
@@ -542,8 +558,9 @@ function renderWorkspaces(
 
 /**
  * What `list` shows of where a workspace stands in the code and on the
- * internet: the commit it is pinned to, when it was made at one and has no
- * base branch, and for a public site's release (docs/public-sites.md) its
+ * internet: the commit a checkout is pinned to, when it was made at one and
+ * has no base branch (with its folder, where it has one), and for a public
+ * site's release (docs/public-sites.md) its
  * site, whether the hostname points at it, and the site's address.
  */
 interface Placement {
@@ -552,11 +569,19 @@ interface Placement {
   url: string
 }
 
-function placements(rows: Map<string, WorkspaceRow>, sites: SiteRow[]): (workspaceId: string) => Placement {
+function placements(
+  rows: Map<string, WorkspaceRow>,
+  sites: SiteRow[],
+  checkouts: Map<string, WorkspaceRepoRow[]>,
+): (workspaceId: string) => Placement {
   const byId = new Map(sites.map((s) => [s.id, s]))
   return (workspaceId) => {
     const row = rows.get(workspaceId)
-    const commit = row?.baseBranch === undefined && row?.startCommit !== undefined ? row.startCommit.slice(0, 12) : ''
+    const commit = (checkouts.get(workspaceId) ?? [])
+      .flatMap((c) => (c.baseBranch === undefined && c.startCommit !== undefined
+        ? [`${c.path !== '' ? `${c.path}@` : ''}${c.startCommit.slice(0, 12)}`]
+        : []))
+      .join(' ')
     if (row?.siteId === undefined) return { commit, site: '', url: '' }
     const site = byId.get(row.siteId)
     if (site === undefined) return { commit, site: '(deleted site)', url: '' }
@@ -748,8 +773,10 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
     if (request.body.trim() !== '') return { ok: false, error: `${flag} takes no prompt: a workspace with no session runs no agent` }
   }
   if (workspace !== undefined) {
-    const stray = ['branch', 'commit', 'group', 'timeout', 'volume', 'steps', 'no-steps', 'workflow', 'non-interactive']
-      .find((a) => request.args[a] !== undefined)
+    const stray = [
+      'branch', 'commit', 'group', 'timeout', 'volume', 'steps', 'no-steps', 'workflow', 'non-interactive',
+      'repos', 'no-repos', 'nested', 'no-nested',
+    ].find((a) => request.args[a] !== undefined)
     if (stray !== undefined) {
       return { ok: false, error: `--${stray} is a workspace's setting, which --workspace (a session in a running one) does not take` }
     }
@@ -1276,7 +1303,7 @@ async function runSend(caller: MamaCaller, request: MamaRequestInput): Promise<M
 type CreateSettings = Pick<
   SpawnRequest,
   'tool' | 'model' | 'permissionMode' | 'effort' | 'uiMode' | 'branch' | 'commit' | 'group' | 'title' | 'timeout'
-  | 'steps' | 'workflow' | 'nonInteractive'
+  | 'steps' | 'workflow' | 'nonInteractive' | 'repos' | 'nested' | 'cwd'
 >
 
 /**
@@ -1324,9 +1351,12 @@ function createSettings(
   if (title === '') return { ok: false, error: 'title must not be empty' }
   const timeout = parseTimeout(args.timeout)
   if (timeout === null) return timeoutRefusal(args.timeout, clear)
+  const selection = selectionArgs(args)
+  if (!selection.ok) return selection
   return {
     ok: true,
     settings: {
+      ...selection.selection,
       ...(tool !== undefined ? { tool: tool as AgentTool } : {}),
       ...(model !== undefined ? { model } : {}),
       ...(permissionMode !== undefined ? { permissionMode: permissionMode as PermissionMode } : {}),
@@ -1342,6 +1372,79 @@ function createSettings(
       ...(timeout !== undefined ? { timeout } : {}),
     },
   }
+}
+
+/**
+ * What a new workspace starts with, from the options the script sends:
+ * `repos`, a JSON list of `<folder>[@<branch or full commit>]` it builds
+ * from each `--repo` (`no-repos` for none), `nested` or `no-nested`, and
+ * `cwd` (a repo's folder, or `.`).
+ */
+function selectionArgs(
+  args: Record<string, string>,
+): { ok: true; selection: Pick<CreateSettings, 'repos' | 'nested' | 'cwd'> } | { ok: false; error: string } {
+  if (args.repos !== undefined && args['no-repos'] !== undefined) return { ok: false, error: 'give --repo or --no-repos, not both' }
+  if (args.nested !== undefined && args['no-nested'] !== undefined) return { ok: false, error: 'give --nested or --no-nested, not both' }
+  let named: unknown
+  try {
+    named = args.repos !== undefined ? JSON.parse(args.repos) : undefined
+  } catch {
+    return { ok: false, error: '--repo is not a JSON list of repos' }
+  }
+  if (named !== undefined && !(Array.isArray(named) && named.every((r) => typeof r === 'string' && r !== ''))) {
+    return { ok: false, error: '--repo is not a JSON list of repos' }
+  }
+  const repos = args['no-repos'] !== undefined ? [] : (named as string[] | undefined)?.map((entry): RepoStart => {
+    const at = entry.indexOf('@')
+    const ref = at === -1 ? '' : entry.slice(at + 1)
+    return {
+      repo: at === -1 ? entry : entry.slice(0, at),
+      ...(ref === '' ? {} : FULL_COMMIT_PATTERN.test(ref) ? { commit: ref } : { branch: ref }),
+    }
+  })
+  const cwd = args.cwd?.trim()
+  if (cwd === '') return { ok: false, error: 'cwd must not be empty' }
+  return {
+    ok: true,
+    selection: {
+      ...(repos !== undefined ? { repos } : {}),
+      ...(args.nested !== undefined ? { nested: true } : args['no-nested'] !== undefined ? { nested: false } : {}),
+      ...(cwd !== undefined ? { cwd } : {}),
+    },
+  }
+}
+
+/**
+ * The `GH_TOKEN` value that stands for one of the project's repos, which
+ * `yaac-mama as-repo <repo> -- <command>` runs one command with
+ * (docs/project-repos.md "GH_TOKEN"): the repo `repo` names by its folder in
+ * the project, its id, or its checkout's path in the caller's workspace.
+ * With a sandbox it is that repo's placeholder, which the proxy swaps only
+ * while the project's link allows it, so one that does not is refused here;
+ * without one it is the repo's token, since the workspace holds every
+ * credential anyway. Only an https GitHub repo has one.
+ */
+async function runAsRepo(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const ref = request.args.repo?.trim() ?? ''
+  if (ref === '') return { ok: false, error: 'as-repo needs a repo' }
+  const project = await getProjectRow(caller.projectId)
+  const checkedOut = (await listWorkspaceRepos(caller.workspaceId)).find((c) => c.path === ref)
+  const link = project?.repos.find((l) => l.dir === ref) ?? project?.repos.find((l) => l.repo.id === ref)
+    ?? project?.repos.find((l) => l.repo.id === checkedOut?.repoId)
+  if (project === undefined || link === undefined) return { ok: false, error: `this project has no repo "${ref}"` }
+  const { repo } = link
+  if (repo.hosted || parseGitRemote(repo.remoteUrl).scheme !== 'https'
+    || ghApiHostForGitHost(parseGitRemote(repo.remoteUrl).host) === null) {
+    return { ok: false, error: `${link.dir} is not an https GitHub repo, so it has no token gh could use` }
+  }
+  if (workspacesSandboxed()) {
+    if (link.readOnly) return { ok: false, error: `${link.dir} is read-only in this project, so its token is never GH_TOKEN` }
+    if (!link.ghToken) return { ok: false, error: `this project does not allow ${link.dir}'s token as GH_TOKEN` }
+    return { ok: true, output: ghTokenPlaceholder(repo.id) }
+  }
+  const credential = await canUseRepo(project.owner, repo) ? await resolveRepoCredential(repo) : null
+  if (credential?.kind !== 'https') return { ok: false, error: `${link.dir} has no git credential` }
+  return { ok: true, output: credential.token }
 }
 
 /**
@@ -1424,15 +1527,19 @@ async function runRename(caller: MamaCaller, request: MamaRequestInput): Promise
 }
 
 /**
- * Point the caller's base branch at another branch on origin
- * (`setWorkspaceBase`), as when its work is stacked on another PR's.
+ * Point the base branch of one of the caller's checkouts at another branch
+ * on its origin (`setWorkspaceBase`), as when its work is stacked on
+ * another PR's: the checkout `repo` names by its path, which the script
+ * sends for the one the caller's cwd is in, or the workspace's only one.
  */
 async function runSetBase(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   if (request.body.trim() === '') return { ok: false, error: 'set-base needs a branch' }
-  const { baseBranch: branch } = await setWorkspaceBase(caller.principal, caller.workspaceId, request.body)
+  const { baseBranch: branch, repo } = await setWorkspaceBase(
+    caller.principal, caller.workspaceId, request.body, request.args.repo,
+  )
   return {
     ok: true,
-    output: `${caller.workspaceId.slice(0, 8)} is now based on ${branch}: the webapp diffs it `
+    output: `${caller.workspaceId.slice(0, 8)}${repo === '' ? '' : `'s ${repo}`} is now based on ${branch}: the webapp diffs it `
       + `against origin/${branch}, and what is queued under it from now on forks from there. `
       + `Your commits have not moved; rebase onto origin/${branch} yourself if they should.`,
   }
@@ -1624,15 +1731,23 @@ async function runGroupSetLimit(caller: MamaCaller, request: MamaRequestInput): 
 
 /**
  * A git bundle of another workspace's branches and HEAD, running or stopped,
- * for the caller to fetch into its own checkout. Its git dir is read as
- * data, never run (`bundleCheckout`), and nothing is written to it.
+ * for the caller to fetch into one of its own checkouts: the one `repo`
+ * names by its path, which the script sends for the one the caller's cwd is
+ * in, or its only one. The bundle is of the other workspace's checkout of
+ * that same repo. Its git dir is read as data, never run
+ * (`bundleCheckout`), and nothing is written to it.
  */
 async function runFetch(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const workspace = request.args.workspace?.trim() ?? ''
   if (workspace === '') return { ok: false, error: 'fetch needs a workspace id' }
   const workspaceId = await resolveProjectWorkspace(workspace, caller.projectId)
+  const mine = checkoutAt((await listWorkspaceRepos(caller.workspaceId)).map((r) => ({ ...r, repo: { id: r.repoId } })), request.args.repo)
+  const theirs = (await listWorkspaceRepos(workspaceId)).find((r) => r.repoId === mine.repoId)
+  if (!theirs) return { ok: false, error: `${workspaceId.slice(0, 8)} has no checkout of this repo` }
   try {
-    const bundle = await bundleCheckout(workspaceDir(caller.projectId, workspaceId), repoDir(caller.projectId))
+    const bundle = await bundleCheckout(
+      path.join(workspaceDir(caller.projectId, workspaceId), theirs.path), repoDir(mine.repoId),
+    )
     return { ok: true, body: bundle, contentType: 'application/x-git-bundle', workspaceId }
   } catch (err) {
     return { ok: false, error: `cannot read ${workspaceId.slice(0, 8)}'s git: ${(err as Error).message}` }

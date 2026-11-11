@@ -1,8 +1,10 @@
+import path from 'node:path'
 import { workspaceDriver } from '#drivers/driver'
 import { customEndpointFor, loadToolAuthEntry, modelEfforts } from '#domain/auth'
 import {
   getProjectRow,
   listWorkspaceConversations,
+  listWorkspaceRepos,
   markSessionsLaunched,
   type SessionRow,
 } from '#db'
@@ -20,6 +22,7 @@ import { markOpening } from '#runtime/status'
 import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
 import { projectDir } from '@yaac/shared/project-paths'
+import { ghTokenEnvName } from '@yaac/shared/tool-auth'
 import {
   effortFor,
   launchableModel,
@@ -74,8 +77,9 @@ export async function sessionLaunches(
   workspaceId: string,
   sessions: SessionRow[],
   paths: WorkspacePaths,
-  opts: { beforeCheckout?: boolean } = {},
+  opts: { waitFor?: string[] } = {},
 ): Promise<SessionLaunch[]> {
+  const ghRepos = await sessionGhRepos(workspaceId)
   const plans = await planSessionResumes(projectId, workspaceId, sessions)
   const piProvider = sessions.some((s) => s.tool === 'pi') ? await piProviderFor(projectId) : undefined
   const endpoints = await Promise.all(plans.map(({ session: s }) => customEndpointFor(projectId, s.tool, s.model)))
@@ -89,33 +93,53 @@ export async function sessionLaunches(
       throw new ServerError('VALIDATION', `${PROMPT_TOO_LONG}, the most one launch argument holds; it was `
         + 'saved by an older yaac, which allowed more. Shorten it to start this session.')
     }
+    const cwd = path.posix.join(paths.workspaceDir, s.cwd)
+    const ghToken = ghRepos.get(s.cwd)
     return {
       session: s,
       tool: s.tool,
       mode: s.mode,
       window: s.window,
+      cwd,
       resume,
       ...(resume ? { resumes: conversationId } : {}),
       ...(opening !== undefined ? { opening } : {}),
       // `YAAC_SESSION_ID` tells the agent's own commands which session they
       // run in, which `yaac-mama` reports (`mamaCaller`).
       // The window options carry its agent options (`agentOptionsCmd`).
-      cmd: `export YAAC_SESSION_ID=${s.id}; ${setOptions === '' ? '' : `${setOptions}; `}` + agentDriver(s.mode).launchCmd({
+      // A session in a checkout whose repo's token may be `GH_TOKEN` takes
+      // that one, from the variable the launch left it in.
+      cmd: `export YAAC_SESSION_ID=${s.id}; `
+        + (ghToken !== undefined ? `[ -z "\${${ghToken}:-}" ] || export GH_TOKEN="\$${ghToken}"; ` : '')
+        + (setOptions === '' ? '' : `${setOptions}; `) + agentDriver(s.mode).launchCmd({
         tool: s.tool,
         conversationId,
         resume,
         windowName: s.window,
         paths,
+        cwd,
         permissionMode: launchablePermissionMode(s.tool, s.permissionMode),
         ...(s.tool === 'pi' && piProvider !== undefined ? { piProvider } : {}),
         ...(model !== undefined ? { model } : {}),
         ...(effort !== undefined ? { effort } : {}),
         agentOptions,
-        ...(opts.beforeCheckout === true && s.mode === 'acp' ? { beforeCheckout: true } : {}),
+        ...(opts.waitFor !== undefined && s.mode === 'acp' ? { waitFor: opts.waitFor } : {}),
         ...(opening !== undefined ? { opening: true } : {}),
       }),
     }
   })
+}
+
+/**
+ * For each checkout of a workspace whose repo has a `GH_TOKEN` variable in
+ * the workspace's environment (`ghTokenEnvName`, set by the create for the
+ * repos allowed one), that variable's name, by the checkout's path. A
+ * project that sets its own `GH_TOKEN` gets none.
+ */
+async function sessionGhRepos(workspaceId: string): Promise<Map<string, string>> {
+  const rows = await listWorkspaceRepos(workspaceId)
+  if (rows.length < 2) return new Map()
+  return new Map(rows.map((r) => [r.path, ghTokenEnvName(r.repoId)]))
 }
 
 /**
@@ -134,7 +158,7 @@ export async function planSessionResumes(
     const named = s.conversationId
     const candidate = named ?? (s.mode === 'tui' && !SELF_NAMING_TOOLS.includes(s.tool) ? s.id : undefined)
     const resume = candidate !== undefined
-      && await hasConversationHistory(projectId, workspaceId, { tool: s.tool, conversationId: candidate })
+      && await hasConversationHistory(projectId, workspaceId, { tool: s.tool, conversationId: candidate, cwd: s.cwd })
     if (named !== undefined && !resume) {
       const link = links.find((l) => l.tool === s.tool && l.conversationId === named)
       const wrote = s.mode === 'acp' ? link?.firstPrompt !== undefined

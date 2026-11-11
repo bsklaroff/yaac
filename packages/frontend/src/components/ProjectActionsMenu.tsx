@@ -6,20 +6,17 @@ import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { removeProjectInBackground } from '#lib/projectOps'
 import { useReadOnly } from '#lib/viewer'
-import { useSnapshot } from '#lib/useSnapshot'
 import { useVolumes } from '#lib/volumes'
 import type { ProjectSummary } from '@yaac/shared/types'
 
 /** The project name as a menu trigger. The only action is Remove, which
  *  asks for confirmation and then runs in the background (#lib/projectOps).
  *  The confirmation names the project's volumes, whose data goes with it
- *  though no workspace holds them. A teammate's project shows its plain
- *  name. */
+ *  though no workspace holds them, and says its repos stay. A teammate's
+ *  project shows its plain name. */
 export function ProjectActionsMenu({ project }: { project: ProjectSummary }): JSX.Element {
   const [confirm, setConfirm] = useState(false)
-  const { id: projectId, name, remoteUrl } = project
-  const hosted = project.hosted === true
-  const shares = (useSnapshot()?.projects ?? []).filter((p) => p.sharedFrom?.projectId === projectId).length
+  const { id: projectId, name } = project
   const readOnly = useReadOnly()
   const volumes = useVolumes(confirm ? projectId : null) ?? []
   if (readOnly) return <span className="truncate font-semibold tracking-tight">{name}</span>
@@ -46,22 +43,18 @@ export function ProjectActionsMenu({ project }: { project: ProjectSummary }): JS
         open={confirm}
         onOpenChange={setConfirm}
         title="Remove project?"
-        description={(project.sharedFrom
-          ? `Removes "${name}" and all its workspaces. Its repository stays with the project it was shared from. `
-          : hosted
-            ? `Removes "${name}", all its workspaces, and its git repository, which yaac hosts and `
-              + 'which is the only copy of its code. To keep the code, first run '
-              + `"yaac project clone ${name}". `
-              + (shares > 0 ? 'Everyone it is shared with loses their copy too. ' : '')
-            : `Removes "${name}" and all its workspaces. `)
+        description={`Removes "${name}" and all its workspaces, with their uncommitted and unpushed work. `
+          + (project.repos.length > 0
+            ? `Its ${project.repos.length === 1 ? 'repo stays' : 'repos stay'} in Settings → Repos, to link again or delete. `
+            : '')
           + (volumes.length > 0
             ? `Its ${volumes.length === 1 ? 'volume' : `${String(volumes.length)} volumes`} `
               + `(${volumes.map((v) => v.name).join(', ')}) and all their data go too. `
             : '')
           + 'This can\'t be undone.'}
-        confirmText={hosted ? name : remoteUrl}
+        confirmText={name}
         confirmLabel="Remove"
-        onConfirm={() => { setConfirm(false); removeProjectInBackground(projectId, name, remoteUrl) }}
+        onConfirm={() => { setConfirm(false); removeProjectInBackground(projectId, name) }}
       />
     </>
   )

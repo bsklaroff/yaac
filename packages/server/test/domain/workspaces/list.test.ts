@@ -67,7 +67,7 @@ describe('listActiveWorkspaces', () => {
   it('renders a stopping pod as a non-interactive stopping row, not stale', async () => {
     await recordTestProject(DEMO_PROJECT_ID)
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'dying' })
-    await insertSession(DEMO_PROJECT_ID, 'dying', { tool: 'claude', mode: 'tui', permissionMode: 'bypass', model: 'claude-sonnet-5' })
+    await insertSession(DEMO_PROJECT_ID, 'dying', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'bypass', model: 'claude-sonnet-5' })
     running([live('dying', { running: false, terminating: true })])
     const result = await listActiveWorkspaces()
     expect(result.stale).toEqual([])
@@ -143,16 +143,16 @@ describe('listActiveWorkspaces', () => {
     vi.setSystemTime(created)
     await recordTestProject(DEMO_PROJECT_ID)
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'held' })
-    const held = await insertSession(DEMO_PROJECT_ID, 'held', { tool: 'claude', mode: 'acp', permissionMode: 'bypass', prompt: 'fix the lexer' })
+    const held = await insertSession(DEMO_PROJECT_ID, 'held', { cwd: '', tool: 'claude', mode: 'acp', permissionMode: 'bypass', prompt: 'fix the lexer' })
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'term' })
-    await insertSession(DEMO_PROJECT_ID, 'term', { tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
+    await insertSession(DEMO_PROJECT_ID, 'term', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
     await recordConversations(DEMO_PROJECT_ID, 'term', [{ tool: 'claude', conversationId: 'term', firstPrompt: 'port the parser' }])
     // A spare warmed and attached now, and claimed once 'held' is up.
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'claimed' })
     setWorkspaceStreamHealth(DEMO_PROJECT_ID, 'claimed', true)
     running([live('held', { createdAtMs: booted }), live('term'), live('claimed', { createdAtMs: created })])
     vi.setSystemTime(booted)
-    await insertSession(DEMO_PROJECT_ID, 'claimed', { tool: 'claude', mode: 'acp', permissionMode: 'bypass', prompt: 'tidy the docs' })
+    await insertSession(DEMO_PROJECT_ID, 'claimed', { cwd: '', tool: 'claude', mode: 'acp', permissionMode: 'bypass', prompt: 'tidy the docs' })
     const list = async (): Promise<unknown[][]> => {
       _clearListActiveInflightForTests()
       return (await listActiveWorkspaces(DEMO_PROJECT_ID)).workspaces.map((w) => [
@@ -208,8 +208,8 @@ describe('listActiveWorkspaces', () => {
   it('lists a terminal session as opening and working until its agent starts on its message', async () => {
     await recordTestProject(DEMO_PROJECT_ID)
     for (const workspaceId of ['opening', 'died']) await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId })
-    const session = await insertSession(DEMO_PROJECT_ID, 'opening', { tool: 'claude', mode: 'tui', permissionMode: 'bypass', prompt: 'port the parser' })
-    const died = await insertSession(DEMO_PROJECT_ID, 'died', { tool: 'codex', mode: 'tui', permissionMode: 'bypass', prompt: 'go' })
+    const session = await insertSession(DEMO_PROJECT_ID, 'opening', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'bypass', prompt: 'port the parser' })
+    const died = await insertSession(DEMO_PROJECT_ID, 'died', { cwd: '', tool: 'codex', mode: 'tui', permissionMode: 'bypass', prompt: 'go' })
     running([live('opening'), live('died')])
     markOpening(DEMO_PROJECT_ID, 'opening', session.window)
     markOpening(DEMO_PROJECT_ID, 'died', died.window)
@@ -240,8 +240,8 @@ describe('listActiveWorkspaces', () => {
   it("joins each session's status by its window, and lists the other windows as terminals", async () => {
     await recordTestProject(DEMO_PROJECT_ID)
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'w1' })
-    const a = await insertSession(DEMO_PROJECT_ID, 'w1', { tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
-    const b = await insertSession(DEMO_PROJECT_ID, 'w1', { tool: 'codex', mode: 'acp', permissionMode: 'bypass' })
+    const a = await insertSession(DEMO_PROJECT_ID, 'w1', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
+    const b = await insertSession(DEMO_PROJECT_ID, 'w1', { cwd: '', tool: 'codex', mode: 'acp', permissionMode: 'bypass' })
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'empty' })
     setLiveAgents(DEMO_PROJECT_ID, 'w1', [{ handle: a.window, tool: 'claude' }])
     setAgentStatus(DEMO_PROJECT_ID, 'w1', a.window, 'running')
@@ -277,23 +277,29 @@ describe('listActiveWorkspaces', () => {
     expect((await list()).get('w1')).toMatchObject({ status: 'running' })
   })
 
-  it('surfaces the base branch recorded at create time', async () => {
+  it('surfaces the checkouts and cwd recorded at create time', async () => {
     await recordTestProject(DEMO_PROJECT_ID)
     await recordWorkspaceCreated({
-      projectId: DEMO_PROJECT_ID, workspaceId: 'tracked', baseBranch: 'release/2.x',
+      projectId: DEMO_PROJECT_ID,
+      workspaceId: 'tracked',
+      repos: [{ repoId: DEMO_PROJECT_ID, path: 'api', baseBranch: 'release/2.x', startCommit: 'abc' }],
+      cwd: 'api',
     })
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'norecord' })
 
     running([live('tracked'), live('norecord')])
     const result = await listActiveWorkspaces(DEMO_PROJECT_ID)
     const bySession = new Map(result.workspaces.map((s) => [s.workspaceId, s]))
-    expect(bySession.get('tracked')?.baseBranch).toBe('release/2.x')
-    expect(bySession.get('norecord')?.baseBranch).toBeUndefined()
+    expect(bySession.get('tracked')).toMatchObject({
+      repos: [{ repoId: DEMO_PROJECT_ID, path: 'api', baseBranch: 'release/2.x', startCommit: 'abc' }],
+      cwd: 'api',
+    })
+    expect(bySession.get('norecord')).toMatchObject({ repos: [], cwd: '' })
   })
 
   it('names the site a running release serves, which makes the webapp show it read-only', async () => {
     await recordTestProject(DEMO_PROJECT_ID)
-    const site = await insertSite({ projectId: DEMO_PROJECT_ID, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(DEMO_PROJECT_ID) })
+    const site = await insertSite({ projectId: DEMO_PROJECT_ID, repoId: DEMO_PROJECT_ID, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(DEMO_PROJECT_ID) })
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'rel-1', siteId: site.id })
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'dev' })
     running([live('rel-1'), live('dev')])
@@ -317,7 +323,7 @@ describe('listActiveWorkspaces', () => {
   it('stamps a waiting workspace with when its wait began', async () => {
     await recordTestProject(DEMO_PROJECT_ID)
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 's1' })
-    const { window } = await insertSession(DEMO_PROJECT_ID, 's1', { tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
+    const { window } = await insertSession(DEMO_PROJECT_ID, 's1', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
     running([live('s1')])
     /** The entry's status and stamp, with the single-flight slot cleared so
      *  the listing sees the store as it is now. */

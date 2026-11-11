@@ -15,9 +15,11 @@ import { setDataDir } from '@yaac/shared/project-paths'
 import type { SkillSummary } from '@yaac/shared/types'
 import { builtinSkillsDir, getProjectSkills, getSkillDetail, stageBuiltinSkills } from '#domain/skills'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
+import { DEMO_PROJECT_ID, recordTestProject } from '@yaac/test-utils/project-fixture'
+import { closeDb } from '#db'
 
-// A project with nothing on disk, so discovery finds only the packaged tier.
-const projectId = 'shipped-skills'
+// A project with no repos, so discovery finds only the packaged tier.
+const projectId = DEMO_PROJECT_ID
 
 let tmp: string
 let staged: string[]
@@ -30,11 +32,13 @@ beforeAll(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-shipped-skills-'))
   setDataDir(tmp)
   installFakeWorkspaceDriver()
+  await recordTestProject(projectId, { repo: false })
   staged = await stageBuiltinSkills(builtinSkillsDir(), path.join(tmp, 'stage'))
   shipped = (await getProjectSkills(projectId)).skills
 })
 
 afterAll(async () => {
+  await closeDb()
   await fs.rm(tmp, { recursive: true, force: true })
 })
 

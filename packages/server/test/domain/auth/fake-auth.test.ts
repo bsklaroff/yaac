@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { assignProjectCredential, resolveProjectCredential } from '#domain/projects'
+import { assignRepoCredential, resolveRepoCredential } from '#domain/repos'
+import { DEMO_PROJECT_ID, recordTestProject } from '@yaac/test-utils/project-fixture'
 import { listAuth, seedFakeAuth } from '#domain/auth'
-import { BUILT_IN_USER_ID, closeDb, getToolCredential, recordProject, setToolCredential } from '#db'
+import { BUILT_IN_USER_ID, closeDb, getRepo, getToolCredential, recordProject, setToolCredential } from '#db'
 import { buildFakeClaudeOAuthBundle } from '#domain/auth/fake-auth'
 import {
   PLACEHOLDER_ACCESS_TOKEN,
@@ -34,6 +34,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await closeDb()
   await cleanupTempDir(tmpDir)
 })
@@ -56,7 +57,7 @@ describe('seedFakeAuth', () => {
   })
 
   it('fans the claude bundle out to the user\'s projects added before the seed', async () => {
-    await recordProject({ id: DEMO_PROJECT_ID, name: 'demo', remoteUrl: 'https://github.com/acme/demo', addedAt: 'x' }, ME)
+    await recordProject({ id: DEMO_PROJECT_ID, name: 'demo', addedAt: 'x' }, ME)
 
     await seedFakeAuth(['claude-oauth'], BUILT_IN_USER_ID)
 
@@ -82,7 +83,16 @@ describe('seedFakeAuth', () => {
     }
   })
 
+  it('seeds github with the placeholder this workspace\'s own GH_TOKEN holds', async () => {
+    const placeholder = `${PLACEHOLDER_GH_TOKEN}-7d4e2a1c-5b3f-4e8a-9c6d-1f2e3a4b5c6d`
+    vi.stubEnv('GH_TOKEN', placeholder)
+    await seedFakeAuth(['github'], BUILT_IN_USER_ID)
+    expect((await listAuth(BUILT_IN_USER_ID)).gitCredentials[0]?.preview).toBe(`***${placeholder.slice(-4)}`)
+  })
+
   it('seeds github as the fake-github token credential, once', async () => {
+    // A real token is never copied into the fake credential.
+    vi.stubEnv('GH_TOKEN', 'ghp_real')
     await seedFakeAuth(['github'], BUILT_IN_USER_ID)
     await seedFakeAuth(['github'], BUILT_IN_USER_ID)
 
@@ -92,12 +102,12 @@ describe('seedFakeAuth', () => {
       name: 'fake-github',
       kind: 'https',
       preview: `***${PLACEHOLDER_GH_TOKEN.slice(-4)}`,
-      projects: [],
+      repos: [],
     }])
     // A project added with it clones with the placeholder a parent proxy swaps.
-    await recordProject({ id: WEB, name: 'demo', remoteUrl: 'https://github.com/acme/web', addedAt: 'x' }, BUILT_IN_USER_ID)
-    await assignProjectCredential(local, WEB, listing[0].id)
-    expect(await resolveProjectCredential(WEB)).toEqual({ kind: 'https', token: PLACEHOLDER_GH_TOKEN })
+    await recordTestProject(WEB, { remoteUrl: 'https://github.com/acme/web' })
+    await assignRepoCredential(local, WEB, listing[0].id)
+    expect(await resolveRepoCredential((await getRepo(WEB))!)).toEqual({ kind: 'https', token: PLACEHOLDER_GH_TOKEN })
   })
 
   it('refuses, seeding nothing, over a real credential — and re-seeds over a fake', async () => {

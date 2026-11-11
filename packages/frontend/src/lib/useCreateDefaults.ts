@@ -36,13 +36,8 @@ export interface CreateDefaults {
    *  snapshot, a containerless server would look sandboxed and get
    *  `bypass`). */
   ready: boolean
-  /** The project has a git credential, which creating requires, or is
-   *  hosted by yaac and needs none. */
-  hasGitCredential: boolean
   /** The agent this project was last created with, else claude. */
   lastTool: AgentTool
-  /** The branch this project was last created from, if a create named one. */
-  lastBranch?: string
   /** The agents with a stored credential; only these can create. */
   configured: ReadonlySet<AgentTool>
   /** The settings an unedited create for `tool` would use, resolved as the
@@ -61,9 +56,7 @@ export function useCreateDefaults(projectId: string | null): CreateDefaults {
   const driver = snapshot?.driver
   return {
     ready: driver !== undefined && driver !== null && auth !== undefined,
-    hasGitCredential: project?.hosted === true || (project?.gitCredential ?? null) !== null,
     lastTool: project?.lastTool ?? 'claude',
-    ...(project?.lastBranch !== undefined ? { lastBranch: project.lastBranch } : {}),
     configured: configuredTools(auth),
     forTool: (tool) => {
       const summary = auth?.toolAuth.find((t) => t.tool === tool)

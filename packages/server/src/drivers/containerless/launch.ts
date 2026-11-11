@@ -103,7 +103,19 @@ function stateEnv(projectId: string, workspaceId: string, paths: WorkspacePaths)
     // user's files.
     BASH_ENV: path.join(dir, 'shell-env'),
     YAAC_WORKSPACE_DIR: paths.workspaceDir,
+    // A workspace dir that is no checkout (no repos, or each in a folder)
+    // must not read as part of a repository that encloses the data dir.
+    GIT_CEILING_DIRECTORIES: path.dirname(paths.workspaceDir),
   }
+}
+
+/**
+ * The workspace's checkouts as it sees them, from the caller's
+ * `YAAC_CHECKOUTS` entry: paths relative to the workspace dir, `.` for one
+ * at its root, separated by `:`. Empty for a workspace with no repos.
+ */
+function checkoutDirs(listed: string | undefined, paths: WorkspacePaths): string[] {
+  return (listed ?? '').split(':').filter((rel) => rel !== '').map((rel) => path.join(paths.workspaceDir, rel))
 }
 
 /** opencode's XDG dirs (`opencodeWrapper`): `config` and `data` hold links
@@ -436,7 +448,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   const priorAgentPid = sshAgentPidOf(spec.workspaceId)
   const gitAuth = await realizeGitAuth({
     dir: stateDir,
-    credential: spec.gitCredential,
+    credentials: spec.gitCredentials,
     knownHostsFile: spec.ssh?.knownHostsFile,
     agentSock: paths.sshAgentSock,
     ...(priorAgentPid !== undefined ? { priorAgentPid } : {}),
@@ -448,7 +460,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     ...(gitName !== undefined ? [`\tname = ${gitConfigValue(gitName)}`] : []),
     ...(gitEmail !== undefined ? [`\temail = ${gitConfigValue(gitEmail)}`] : []),
     '[safe]',
-    `\tdirectory = ${paths.workspaceDir}`,
+    ...checkoutDirs(env.YAAC_CHECKOUTS, paths).map((dir) => `\tdirectory = ${dir}`),
     ...gitAuth.gitconfig,
     '',
   ].join('\n')
@@ -476,8 +488,9 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
 
   spec.onProgress?.('Starting the workspace session...')
   // One tmux call, since each costs a process start. It opens on the keeper
-  // window, as the pod's init script does (`KEEPER_STARTING`); sessions get
-  // windows of their own after setup. macOS's sleep has no `infinity`. A
+  // window, as the pod's init script does (`KEEPER_STARTING`), in the
+  // workspace's default cwd, which shell and step windows take from the
+  // session; agent sessions get windows of their own after setup. macOS's sleep has no `infinity`. A
   // large -x/-y lets tmux shrink to the client on attach, which TUIs handle
   // better than growing.
   //
@@ -500,7 +513,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     'set-option', '-g', 'default-shell', startup.defaultShell, ';',
     'set-option', '-g', 'default-command', startup.command, ';',
     'new-session', '-d', '-s', 'yaac', '-n', KEEPER_STARTING,
-    '-x', '500', '-y', '200', '-c', paths.workspaceDir,
+    '-x', '500', '-y', '200', '-c', path.join(paths.workspaceDir, spec.cwd),
     'sleep 2147483647', ';',
     'set-option', '-g', 'update-environment', '', ';',
     'set-option', '-sq', 'escape-time', '10', ';',

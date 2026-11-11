@@ -1,6 +1,7 @@
-import { asc, eq, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { getDb } from './client'
-import { projectIcons, projects, projectToolDefaults } from './schema'
+import { projectIcons, projectRepos, projects, projectToolDefaults } from './schema'
+import { listAllProjectRepos, listProjectRepos, type ProjectRepoLink } from './repo-store'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { nullsToUndefined } from '#lib/nulls'
 import type { AgentTool, EgressAllowlist, ProjectConfig, ProjectMeta, ScratchDirSettings, ToolCreateDefaults } from '@yaac/shared/types'
@@ -11,118 +12,28 @@ import type { AgentTool, EgressAllowlist, ProjectConfig, ProjectMeta, ScratchDir
  * without reading a filesystem it may not share (docs/layered-server.md).
  */
 
-/** Record a project, owned by `owner` if new; a known id keeps its
- *  owner. `sharedFrom` names the project a share uses the repository of. */
-export async function recordProject(
-  meta: ProjectMeta & { hosted?: boolean; sharedFrom?: string },
-  owner: string,
-  gitCredential?: { id: string; knownHostsEntry: string | null },
-): Promise<void> {
+/** Record a new project, owned by `owner`. */
+export async function recordProject(meta: ProjectMeta, owner: string): Promise<void> {
   const db = await getDb()
-  await db.insert(projects).values({
-    ...meta,
-    owner,
-    gitCredentialId: gitCredential?.id ?? null,
-    knownHostsEntry: gitCredential?.knownHostsEntry ?? null,
-  }).onConflictDoUpdate({
-    target: projects.id,
-    set: {
-      remoteUrl: meta.remoteUrl,
-      // A trusted host key belongs to one remote; a new remote needs its own.
-      knownHostsEntry: sql`case when ${projects.remoteUrl} = excluded.remote_url
-        then ${projects.knownHostsEntry} end`,
-    },
-  })
+  await db.insert(projects).values({ ...meta, owner })
   notifyWorkspaceListChanged()
-}
-
-/**
- * Assign the project's git credential together with its trusted host key
- * (null for an https token); each assignment fetches its own host key.
- * False when there is no such project.
- */
-export async function setProjectGitCredential(
-  projectId: string,
-  gitCredentialId: string,
-  knownHostsEntry: string | null,
-): Promise<boolean> {
-  const db = await getDb()
-  const rows = await db.update(projects).set({ gitCredentialId, knownHostsEntry })
-    .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
-  notifyWorkspaceListChanged()
-  return rows.length > 0
-}
-
-/**
- * Point a project the server hosts, and every share of it, at a remote
- * elsewhere (docs/hosted-projects.md "Moving to a git host"), in one
- * transaction. The project takes `gitCredential`, and is recorded as still
- * keeping the repository it was hosted in (`clearProjectKeepsHostedRepo`).
- * Each share needs its own owner's credential, so it starts with none, and
- * stops being a share unless it was removed, which keeps it read-only.
- * False when there is no such project.
- */
-export async function setProjectRemote(
-  projectId: string,
-  remoteUrl: string,
-  gitCredential: { id: string; knownHostsEntry: string | null },
-): Promise<boolean> {
-  const db = await getDb()
-  const rows = await db.transaction(async (tx) => {
-    await tx.update(projects).set({
-      remoteUrl,
-      hosted: false,
-      gitCredentialId: null,
-      knownHostsEntry: null,
-      sharedFrom: sql`case when ${projects.shareRevoked} then ${projects.sharedFrom} end`,
-    }).where(eq(projects.sharedFrom, projectId))
-    return tx.update(projects).set({
-      remoteUrl,
-      hosted: false,
-      keepsHostedRepo: true,
-      gitCredentialId: gitCredential.id,
-      knownHostsEntry: gitCredential.knownHostsEntry,
-    }).where(eq(projects.id, projectId)).returning({ projectId: projects.id })
-  })
-  notifyWorkspaceListChanged()
-  return rows.length > 0
-}
-
-/** Record that yaac no longer keeps the repository of a project that
- *  moved off it. False when there is no such project. */
-export async function clearProjectKeepsHostedRepo(projectId: string): Promise<boolean> {
-  const db = await getDb()
-  const rows = await db.update(projects).set({ keepsHostedRepo: false })
-    .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
-  notifyWorkspaceListChanged()
-  return rows.length > 0
 }
 
 /**
  * A project row: the wire `ProjectMeta` plus server-only state (remembered
- * create-form defaults and the git credential).
+ * create-form defaults) and the repos it links.
  */
 export interface ProjectRow extends ProjectMeta, ProjectConfig {
   /** The owning user's id. */
   owner: string
   lastTool?: AgentTool
-  lastBranch?: string
+  /** The layout and cwd the last create chose (`projects.lastNested`). */
+  lastNested?: boolean
+  lastCwd?: string
   createDefaults: Partial<Record<AgentTool, ToolCreateDefaults>>
-  gitCredentialId: string | null
-  /** The remote's host key for an SSH credential. Null for a token, and
-   *  after the remote changes until the key is assigned again. */
-  knownHostsEntry: string | null
+  /** The repos it links, in order. */
+  repos: ProjectRepoLink[]
   egressAllowlist: EgressAllowlist
-  /** Whether the server hosts the remote (docs/hosted-projects.md). */
-  hosted: boolean
-  guardDefaultBranch: boolean
-  /** Whether yaac still keeps the repository it hosted before the project
-   *  moved to another git host. */
-  keepsHostedRepo: boolean
-  /** The project this one was shared from (docs/hosted-projects.md
-   *  "Sharing"). */
-  sharedFrom?: string
-  shareRevoked: boolean
   /** Days a stopped workspace is kept; absent keeps them forever. */
   stoppedWorkspaceRetentionDays?: number
   /** Gitignored checkout paths a stop keeps. */
@@ -137,17 +48,13 @@ export interface ProjectRow extends ProjectMeta, ProjectConfig {
 function toProjectRow(
   r: typeof projects.$inferSelect,
   defaults: Array<typeof projectToolDefaults.$inferSelect>,
+  links: ProjectRepoLink[],
 ): ProjectRow {
   const createDefaults: Partial<Record<AgentTool, ToolCreateDefaults>> = {}
   for (const { tool, model, permissionMode, mode, effort, agentOptions } of defaults) {
     createDefaults[tool] = { ...nullsToUndefined({ model, permissionMode, mode, effort }), agentOptions }
   }
-  return {
-    ...nullsToUndefined(r),
-    createDefaults,
-    gitCredentialId: r.gitCredentialId,
-    knownHostsEntry: r.knownHostsEntry,
-  }
+  return { ...nullsToUndefined(r), createDefaults, repos: links }
 }
 
 /** Replace the project's egress allowlist. False when there is no such
@@ -159,16 +66,6 @@ export async function setProjectEgressAllowlist(
   const db = await getDb()
   const rows = await db.update(projects).set({ egressAllowlist })
     .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
-  return rows.length > 0
-}
-
-/** Turn a hosted project's default-branch guard on or off. False when
- *  there is no such project. */
-export async function setProjectDefaultBranchGuard(projectId: string, enabled: boolean): Promise<boolean> {
-  const db = await getDb()
-  const rows = await db.update(projects).set({ guardDefaultBranch: enabled })
-    .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
-  notifyWorkspaceListChanged()
   return rows.length > 0
 }
 
@@ -259,16 +156,6 @@ export async function setProjectConfig(
   return row
 }
 
-/** Remove a share from its owner, or give it back. False when there is no
- *  such project. */
-export async function setProjectShareRevoked(projectId: string, revoked: boolean): Promise<boolean> {
-  const db = await getDb()
-  const rows = await db.update(projects).set({ shareRevoked: revoked })
-    .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
-  notifyWorkspaceListChanged()
-  return rows.length > 0
-}
-
 /** A project's chip picture: its bytes, their type, and a hash of them. */
 export interface ProjectIcon {
   mimeType: string
@@ -309,25 +196,27 @@ export async function getProjectRow(projectId: string): Promise<ProjectRow | und
   if (rows[0] === undefined) return undefined
   const defaults = await db.select().from(projectToolDefaults)
     .where(eq(projectToolDefaults.projectId, projectId))
-  return toProjectRow(rows[0], defaults)
+  return toProjectRow(rows[0], defaults, await listProjectRepos(projectId))
 }
 
 /** Every project, in the order their owners placed them. */
 export async function listProjectRows(): Promise<ProjectRow[]> {
   const db = await getDb()
-  const [rows, defaults] = await Promise.all([
+  const [rows, defaults, links] = await Promise.all([
     // Ascending puts nulls last: projects never placed follow the placed.
     db.select().from(projects).orderBy(asc(projects.position), asc(projects.addedAt)),
     db.select().from(projectToolDefaults),
+    listAllProjectRepos(),
   ])
-  return rows.map((r) => toProjectRow(r, defaults.filter((d) => d.projectId === r.id)))
+  return rows.map((r) => toProjectRow(r, defaults.filter((d) => d.projectId === r.id), links.get(r.id) ?? []))
 }
 
 /**
- * Remember a create's choices as the project's next defaults: the tool, the
- * branch if named, and whichever of model, permission mode, agent mode,
- * effort and agent options were given (for that tool). Omitted fields are
- * left unchanged.
+ * Remember a create's choices as the project's next defaults: the tool,
+ * whichever of model, permission mode, agent mode, effort and agent options
+ * were given (for that tool), and what the workspace started with (which
+ * repos, each one's branch if named, the layout and the cwd). Omitted
+ * fields are left unchanged.
  *
  * Only the create route calls this, since only there is the choice known to
  * be the user's (not a restart, prewarm or spawn policy).
@@ -336,7 +225,13 @@ export async function recordProjectCreate(
   projectId: string,
   tool: AgentTool,
   picked: ToolCreateDefaults,
-  branch?: string,
+  started?: {
+    /** The repos included, by id, with the branch named for each. */
+    repos: Array<{ repoId: string; branch?: string }>
+    nested: boolean
+    /** A repo id, or `.` for the workspace root. */
+    cwd: string
+  },
 ): Promise<void> {
   const db = await getDb()
   const set = {
@@ -350,10 +245,21 @@ export async function recordProjectCreate(
   }
   await db.transaction(async (tx) => {
     const updated = await tx.update(projects)
-      .set({ lastTool: tool, ...(branch !== undefined ? { lastBranch: branch } : {}) })
+      .set({ lastTool: tool, ...(started !== undefined ? { lastNested: started.nested, lastCwd: started.cwd } : {}) })
       .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
     // No such project: skip rather than leave an orphan defaults row.
     if (updated.length === 0) return
+    if (started !== undefined) {
+      const included = started.repos.map((r) => r.repoId)
+      await tx.update(projectRepos)
+        .set({ lastIncluded: included.length > 0 ? inArray(projectRepos.repoId, included) : sql`false` })
+        .where(eq(projectRepos.projectId, projectId))
+      for (const { repoId, branch } of started.repos) {
+        if (branch === undefined) continue
+        await tx.update(projectRepos).set({ lastBranch: branch })
+          .where(and(eq(projectRepos.projectId, projectId), eq(projectRepos.repoId, repoId)))
+      }
+    }
     const insert = tx.insert(projectToolDefaults).values({
       projectId,
       tool,
@@ -376,6 +282,7 @@ export async function deleteProjectRow(projectId: string): Promise<void> {
   const db = await getDb()
   await db.transaction(async (tx) => {
     await tx.delete(projectToolDefaults).where(eq(projectToolDefaults.projectId, projectId))
+    await tx.delete(projectRepos).where(eq(projectRepos.projectId, projectId))
     await tx.delete(projects).where(eq(projects.id, projectId))
   })
   notifyWorkspaceListChanged()

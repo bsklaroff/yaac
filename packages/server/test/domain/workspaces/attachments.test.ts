@@ -5,8 +5,8 @@ import { setDataDir, workspaceAttachmentsDir } from '@yaac/shared/project-paths'
 import { testTmpBase } from '@yaac/test-utils/tmp'
 import { handleFixture, installFakeWorkspaceDriver, workspacePathsFixture } from '#test/support/fake-driver'
 import { saveWorkspaceAttachment } from '#domain/workspaces'
-import { BUILT_IN_USER_ID, closeDb, recordProject } from '#db'
-import { DEMO_PROJECT_ID as PROJ } from '@yaac/test-utils/project-fixture'
+import { BUILT_IN_USER_ID, closeDb } from '#db'
+import { recordTestProject, DEMO_PROJECT_ID as PROJ } from '@yaac/test-utils/project-fixture'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -18,7 +18,7 @@ let dataDir: string
 beforeEach(async () => {
   dataDir = await fs.mkdtemp(path.join(testTmpBase(), 'yaac-attachments-'))
   setDataDir(dataDir)
-  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://github.com/o/r', addedAt: 'now' }, BUILT_IN_USER_ID)
+  await recordTestProject(PROJ, { name: 'demo', remoteUrl: 'https://github.com/o/r', addedAt: 'now' })
   // A launch creates this directory along with its mount into the workspace.
   await fs.mkdir(workspaceAttachmentsDir(PROJ, 'wt-1'), { recursive: true })
   installFakeWorkspaceDriver({

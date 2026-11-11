@@ -24,9 +24,8 @@ Some names are not the repo's to choose, so they keep their spelling:
 - **The on-disk layout.** A workspace's state tree lives under
   `projects/<project id>/sessions/<id>`. The helper is `workspaceStateDir`,
   but the path segment stays because it names data already on users' disks.
-- **Protocol fields.** `legacy_session_id` in a TLS ClientHello (RFC 8446) and
-  `session-bind@openssh.com` in the ssh-agent protocol are other people's wire
-  formats, parsed by the proxy.
+- **Protocol fields.** `legacy_session_id` in a TLS ClientHello (RFC 8446) is
+  someone else's wire format, parsed by the proxy.
 - **Agent-facing names.** `--session-id`, the `SessionStart` hook and the
   `@yaac-session` pane option it sets, pi's and opencode's session logs, and
   the ACP protocol's `sessionId` are the tools' vocabulary, where a session

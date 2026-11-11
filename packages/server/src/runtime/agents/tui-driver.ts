@@ -309,7 +309,7 @@ export const tuiDriver: AgentDriver = {
       workspaceId: spec.conversationId,
       resume: spec.resume,
       permissionMode: spec.permissionMode,
-      paths: spec.paths,
+      cwd: spec.cwd,
       ...(spec.piProvider !== undefined ? { piProvider: spec.piProvider } : {}),
       ...(spec.model !== undefined ? { model: spec.model } : {}),
       ...(spec.effort !== undefined ? { effort: spec.effort } : {}),

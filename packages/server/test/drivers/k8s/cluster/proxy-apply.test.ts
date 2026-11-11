@@ -51,7 +51,6 @@ import {
   RELAY_PORT,
   WORKSPACE_EGRESS_NP_NAME,
   WORKSPACE_INGRESS_LOCK_NP_NAME,
-  SSH_AGENT_PORT,
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_TUNNEL_PORT,
@@ -350,7 +349,6 @@ describe('ensureProxyResources', () => {
       { containerPort: TRANSPARENT_HTTP_PORT },
       { containerPort: TRANSPARENT_TUNNEL_PORT },
       { containerPort: RELAY_PORT },
-      { containerPort: SSH_AGENT_PORT },
       { containerPort: DNS_STUB_PORT, protocol: 'UDP' },
     ])
     // NET_BIND_SERVICE lets the non-root proxy bind udp/53 for the DNS stub.
@@ -413,16 +411,18 @@ describe('ensureProxyResources', () => {
       (r.ports ?? []).some((p) => p.port === TRANSPARENT_HTTPS_PORT))
     expect(JSON.stringify(transparent?.from)).toContain(NODE_IP)
 
-    // ssh-agent: workspace pods dial the proxy directly, and the port
-    // admits only workspace pods, never node addresses.
-    const agentEgress = egress.egress.find((r) =>
-      (r.ports ?? []).some((p) => p.port === SSH_AGENT_PORT))
-    expect(JSON.stringify(agentEgress?.to)).toContain(PROXY_APP_NAME)
-    const agentIngress = proxyIngress.ingress.filter((r) =>
-      (r.ports ?? []).some((p) => p.port === SSH_AGENT_PORT))
-    expect(agentIngress).toHaveLength(1)
-    expect(JSON.stringify(agentIngress[0].from)).toContain(LABEL_WORKSPACE_ID)
-    expect(JSON.stringify(agentIngress[0].from)).not.toContain(NODE_IP)
+    // The DNS stub is the one proxy port a workspace pod dials directly,
+    // and it admits only workspace pods, never node addresses.
+    const dnsEgress = egress.egress.find((r) =>
+      (r.ports ?? []).some((p) => p.port === DNS_STUB_PORT))
+    expect(JSON.stringify(dnsEgress?.to)).toContain(PROXY_APP_NAME)
+    expect(dnsEgress?.ports).toHaveLength(1)
+    const dnsIngress = proxyIngress.ingress.filter((r) =>
+      (r.ports ?? []).some((p) => p.port === DNS_STUB_PORT))
+    expect(dnsIngress).toHaveLength(1)
+    expect(dnsIngress[0].ports).toHaveLength(1)
+    expect(JSON.stringify(dnsIngress[0].from)).toContain(LABEL_WORKSPACE_ID)
+    expect(JSON.stringify(dnsIngress[0].from)).not.toContain(NODE_IP)
 
     // Proxy egress never reaches the kind fronting's node port, where a
     // CONNECT would reach the server as if it were the node.
@@ -550,42 +550,56 @@ describe('ensureCaConfigMap', () => {
     if (configMap) fakeCluster.seed(obj('ConfigMap', configMap))
   }
 
-  it('skips the apply only when both the CA and the bundle already match', async () => {
-    stage({ 'ca.pem': b64('PEM-CONTENT'), 'ca-bundle.pem': b64('BUNDLE') },
-      { 'proxy-ca.pem': 'PEM-CONTENT', 'ca-bundle.pem': 'BUNDLE' })
+  /** The proxy's Secret: its CA, the trust bundle, and its ssh host key. */
+  const secretOf = (ca: string, bundle: string, sshKey = 'ssh-ed25519 AAAA'): Record<string, string> => ({
+    'ca.pem': b64(ca), 'ca-bundle.pem': b64(bundle), 'ssh-host-key': b64('PRIVATE'), 'ssh-host-key.pub': b64(sshKey),
+  })
+  const KNOWN_HOSTS = 'yaac-proxy ssh-ed25519 AAAA\n'
+
+  it('skips the apply only when the CA, the bundle and the ssh host key already match', async () => {
+    stage(secretOf('PEM-CONTENT', 'BUNDLE'),
+      { 'proxy-ca.pem': 'PEM-CONTENT', 'ca-bundle.pem': 'BUNDLE', ssh_known_hosts: KNOWN_HOSTS })
     await ensureCaConfigMap()
     expect(applied()).toEqual([])
   })
 
-  it('applies the ConfigMap with both keys, from the proxy’s Secret, when absent or stale', async () => {
-    stage({ 'ca.pem': b64('NEW-PEM'), 'ca-bundle.pem': b64('NEW-BUNDLE') }, null)
+  it('applies the ConfigMap with the public parts of the proxy’s Secret, when absent or stale', async () => {
+    stage(secretOf('NEW-PEM', 'NEW-BUNDLE'), null)
     await ensureCaConfigMap()
+    // The proxy's key under the one name every workspace's ssh checks it
+    // by, and neither private key.
     expect(applied()).toEqual([{
       apiVersion: 'v1',
       kind: 'ConfigMap',
       metadata: { name: 'yaac-proxy-ca', namespace: 'test-ns' },
-      data: { 'proxy-ca.pem': 'NEW-PEM', 'ca-bundle.pem': 'NEW-BUNDLE' },
+      data: { 'proxy-ca.pem': 'NEW-PEM', 'ca-bundle.pem': 'NEW-BUNDLE', ssh_known_hosts: KNOWN_HOSTS },
     }])
 
-    stage({ 'ca.pem': b64('NEW-PEM'), 'ca-bundle.pem': b64('NEW-BUNDLE') }, { 'proxy-ca.pem': 'OLD-PEM' })
+    stage(secretOf('NEW-PEM', 'NEW-BUNDLE'), { 'proxy-ca.pem': 'OLD-PEM' })
     await ensureCaConfigMap()
     expect(applied()).toHaveLength(1)
   })
 
-  it('re-applies when the CA matches but the bundle drifted (e.g. roots refresh)', async () => {
-    stage({ 'ca.pem': b64('SAME'), 'ca-bundle.pem': b64('NEW-BUNDLE') },
-      { 'proxy-ca.pem': 'SAME', 'ca-bundle.pem': 'OLD-BUNDLE' })
+  it('re-applies when the CA matches but the bundle or the ssh host key drifted', async () => {
+    stage(secretOf('SAME', 'NEW-BUNDLE'),
+      { 'proxy-ca.pem': 'SAME', 'ca-bundle.pem': 'OLD-BUNDLE', ssh_known_hosts: KNOWN_HOSTS })
+    await ensureCaConfigMap()
+    expect(applied()).toHaveLength(1)
+
+    stage(secretOf('SAME', 'BUNDLE', 'ssh-ed25519 BBBB'),
+      { 'proxy-ca.pem': 'SAME', 'ca-bundle.pem': 'BUNDLE', ssh_known_hosts: KNOWN_HOSTS })
     await ensureCaConfigMap()
     expect(applied()).toHaveLength(1)
   })
 
-  it('waits for a freshly rolled proxy to have written its CA', async () => {
+  it('waits for a freshly rolled proxy to have written its CA and ssh host key', async () => {
     vi.useFakeTimers()
     try {
-      stage({}, null)
+      // A Secret from a proxy that has yet to write its ssh host key.
+      stage({ 'ca.pem': b64('P'), 'ca-bundle.pem': b64('B') }, null)
       fakeCluster.intercept((call) => {
         if (call.verb === 'read' && call.kind === 'Secret' && fakeCluster.callsOf('read', 'Secret').length === 3) {
-          stage({ 'ca.pem': b64('P'), 'ca-bundle.pem': b64('B') }, null)
+          stage(secretOf('P', 'B'), null)
         }
       })
       const done = ensureCaConfigMap()
@@ -599,8 +613,10 @@ describe('ensureCaConfigMap', () => {
 })
 
 describe('syncProxyCredentials', () => {
-  it('renders every owner\'s host-store files and ssh keys into one Secret, and logs no value', async () => {
+  it('renders every owner\'s host-store files, tokens and ssh keys with their repo grants into one Secret, and logs no value', async () => {
     const empty = { claude: null, codex: null, opencode: null, pi: null, omp: null, git: [], ssh: [] }
+    const grant = (projectId: string, readOnly = false) =>
+      ({ projectId, repoId: `repo-of-${projectId}`, host: 'g.example', path: 'acme/repo', readOnly, ghToken: true })
     await syncProxyCredentials({
       alice: {
         claude: { kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant-secret' },
@@ -611,13 +627,13 @@ describe('syncProxyCredentials', () => {
           endpoint: { baseUrl: 'https://llm.example.com/v1', models: ['llama'] },
         },
         omp: { kind: 'api-key', provider: 'anthropic', savedAt: 'x', apiKey: 'sk-omp-secret' },
-        git: [{ token: 'ghp-secret', projects: ['acme'] }],
+        git: [{ token: 'ghp-secret', grants: [grant('acme')] }],
         ssh: [{
           privateKey: 'KEY-secret', publicKey: 'ssh-ed25519 AAAA yaac',
-          projects: [{ projectId: 'acme', host: 'g.example', knownHostsEntry: 'g.example ssh-ed25519 A' }],
+          grants: [{ ...grant('acme', true), knownHostsEntry: 'g.example ssh-ed25519 A' }],
         }],
       },
-      bob: { ...empty, git: [{ token: 'ghp-bob-secret', projects: ['bobs'] }] },
+      bob: { ...empty, git: [{ token: 'ghp-bob-secret', grants: [grant('bobs')] }] },
     })
     const secret = applied()[0]
     expect(secret.kind).toBe('Secret')
@@ -637,11 +653,13 @@ describe('syncProxyCredentials', () => {
     // A custom endpoint's key goes to the endpoint's own host.
     expect(JSON.parse(b64d(secret.data!['alice.pi.json']))).toMatchObject({ apiKey: 'sk-self-secret', apiHost: 'llm.example.com' })
     expect(JSON.parse(b64d(secret.data!['alice.omp.json']))).toMatchObject({ apiKey: 'sk-omp-secret', apiHost: 'api.anthropic.com' })
-    expect(JSON.parse(b64d(secret.data!['alice.git-tokens.json']))).toEqual([{ token: 'ghp-secret', projects: ['acme'] }])
-    expect(JSON.parse(b64d(secret.data!['bob.git-tokens.json']))).toEqual([{ token: 'ghp-bob-secret', projects: ['bobs'] }])
+    // Each credential carries the repos it is granted for, which is all
+    // the proxy uses it for.
+    expect(JSON.parse(b64d(secret.data!['alice.git-tokens.json']))).toEqual([{ token: 'ghp-secret', grants: [grant('acme')] }])
+    expect(JSON.parse(b64d(secret.data!['bob.git-tokens.json']))).toEqual([{ token: 'ghp-bob-secret', grants: [grant('bobs')] }])
     expect(JSON.parse(b64d(secret.data!['alice.ssh-keys.json']))).toEqual([{
       privateKey: 'KEY-secret', publicKey: 'ssh-ed25519 AAAA yaac',
-      projects: [{ projectId: 'acme', host: 'g.example', knownHostsEntry: 'g.example ssh-ed25519 A' }],
+      grants: [{ ...grant('acme', true), knownHostsEntry: 'g.example ssh-ed25519 A' }],
     }])
     for (const [msg] of vi.mocked(serverLog).mock.calls) expect(msg).not.toContain('secret')
 

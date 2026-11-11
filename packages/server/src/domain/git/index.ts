@@ -24,6 +24,7 @@ export {
 } from './transport'
 export { startGitSshAgent, stopGitSshAgent } from './agent'
 export {
+  absorbClone,
   cloneRepo,
   createCheckout,
   fetchCommit,

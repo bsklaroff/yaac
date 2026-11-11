@@ -34,6 +34,8 @@ import { claudeDir, codexDir, ompDir, opencodeConfigDir, piDir, projectDir, repo
 import { ServerError } from '@yaac/shared/errors'
 import { AGENT_TOOLS, type AgentTool, type ProjectSkills, type SkillDetail, type SkillSummary } from '@yaac/shared/types'
 import { getDefaultBranch, listTreeSubdirs, readBlobAt, remoteBranchExists } from '#domain/git'
+import { projectRepo } from '#domain/projects'
+import { getProjectRow } from '#db'
 import { workspacesSandboxed } from '#drivers/driver'
 import { openAgentDir, openRoot, type ConfinedRoot } from '#lib/confined-fs'
 import { builtinSkillsDir, isBuiltinSkillLink } from './builtin'
@@ -116,11 +118,18 @@ function personalReader(tool: AgentTool, root: HostRoot, homeDir: string, rel: s
   }
 }
 
+/** The repo whose tiers are read: its main clone, and the `origin/<branch>`
+ *  ref to read them at, or null to read the clone's working tree. Null for
+ *  a project with no repos, which has no repo tiers. */
+type RepoTier = { path: string; ref: string | null } | null
+
 /** A repo tier over `<treePath>/<name>/SKILL.md`: read at `origin/<branch>`
  *  when `ref` resolves, else from the on-disk working tree (local-only or
  *  unfetched repos). */
-function repoReader(repoPath: string, ref: string | null, treePath: string): SkillReader {
+function repoReader(repo: RepoTier, treePath: string): SkillReader {
   const meta: ReaderMeta = { key: `repo/${treePath}`, source: 'repo', sourceLabel: treePath }
+  if (repo === null) return { ...meta, list: () => Promise.resolve([]), read: () => Promise.resolve(null) }
+  const { path: repoPath, ref } = repo
   if (ref) {
     return {
       ...meta,
@@ -138,10 +147,11 @@ function repoReader(repoPath: string, ref: string | null, treePath: string): Ski
 
 /** Read a repo file from `origin/<branch>` when `ref` is set, else
  *  from the working tree; null when absent. */
-async function readRepoFile(repoPath: string, ref: string | null, relPath: string): Promise<string | null> {
-  return ref
-    ? readBlobAt(repoPath, ref, relPath)
-    : readText(await hostDir(repoPath), relPath, MAX_SETTINGS_BYTES)
+async function readRepoFile(repo: RepoTier, relPath: string): Promise<string | null> {
+  if (repo === null) return null
+  return repo.ref
+    ? readBlobAt(repo.path, repo.ref, relPath)
+    : readText(await hostDir(repo.path), relPath, MAX_SETTINGS_BYTES)
 }
 
 /** More than any settings file or `config.toml` a person writes. */
@@ -173,12 +183,11 @@ function parseEnabledPlugins(raw: string | null): Record<string, unknown> {
  *  user, project and local settings (local wins, as in Claude). The user tier
  *  is the host `settings.json`; project and local are read from `ref` like
  *  project skills. */
-async function claudeEnabledPluginIds(projectId: string, claude: HostRoot, ref: string | null): Promise<Set<string>> {
-  const repo = repoDir(projectId)
+async function claudeEnabledPluginIds(claude: HostRoot, repo: RepoTier): Promise<Set<string>> {
   const [user, project, local] = await Promise.all([
     readText(claude, 'settings.json', MAX_SETTINGS_BYTES),
-    readRepoFile(repo, ref, '.claude/settings.json'),
-    readRepoFile(repo, ref, '.claude/settings.local.json'),
+    readRepoFile(repo, '.claude/settings.json'),
+    readRepoFile(repo, '.claude/settings.local.json'),
   ])
   const merged = Object.assign(
     {},
@@ -243,83 +252,80 @@ async function codexPluginReaders(codex: HostRoot, enabledNames: Set<string>): P
   return out
 }
 
-async function claudeReaders(projectId: string, ref: string | null): Promise<SkillReader[]> {
+async function claudeReaders(projectId: string, repo: RepoTier): Promise<SkillReader[]> {
   const dir = claudeDir(projectId)
   const claude = await toolHome(projectId, dir)
   return [
     personalReader('claude', claude, dir, 'skills'),
-    ...(await claudePluginReaders(claude, await claudeEnabledPluginIds(projectId, claude, ref))),
-    repoReader(repoDir(projectId), ref, '.claude/skills'),
+    ...(await claudePluginReaders(claude, await claudeEnabledPluginIds(claude, repo))),
+    repoReader(repo, '.claude/skills'),
   ]
 }
 
-async function codexReaders(projectId: string, ref: string | null): Promise<SkillReader[]> {
+async function codexReaders(projectId: string, repo: RepoTier): Promise<SkillReader[]> {
   const dir = codexDir(projectId)
   const codex = await toolHome(projectId, dir)
   return [
     personalReader('codex', codex, dir, 'skills'),
     ...(await codexPluginReaders(codex, await codexEnabledPluginNames(codex))),
-    repoReader(repoDir(projectId), ref, '.agents/skills'),
+    repoReader(repo, '.agents/skills'),
   ]
 }
 
-async function opencodeReaders(projectId: string, ref: string | null): Promise<SkillReader[]> {
+async function opencodeReaders(projectId: string, repo: RepoTier): Promise<SkillReader[]> {
   const cfgDir = opencodeConfigDir(projectId)
   const cfg = await toolHome(projectId, cfgDir)
   const claudeHome = claudeDir(projectId)
   const claude = await toolHome(projectId, claudeHome)
-  const repo = repoDir(projectId)
   // No plugin tier (opencode plugins are JS modules). It reads `skill/` and
   // `skills/` in its own config dirs plus the Claude- and agents-compatible
   // locations, the last loaded of a name winning: `skills/` after `skill/`,
   // the repo after the home, `.agents` after `.claude`.
   return [
-    repoReader(repo, ref, '.opencode/skills'),
-    repoReader(repo, ref, '.opencode/skill'),
+    repoReader(repo, '.opencode/skills'),
+    repoReader(repo, '.opencode/skill'),
     personalReader('opencode', cfg, cfgDir, 'skills'),
     personalReader('opencode', cfg, cfgDir, 'skill'),
-    repoReader(repo, ref, '.agents/skills'),
-    repoReader(repo, ref, '.claude/skills'),
+    repoReader(repo, '.agents/skills'),
+    repoReader(repo, '.claude/skills'),
     personalReader('claude', claude, claudeHome, 'skills'),
   ]
 }
 
-async function piReaders(projectId: string, ref: string | null): Promise<SkillReader[]> {
-  const repo = repoDir(projectId)
+async function piReaders(projectId: string, repo: RepoTier): Promise<SkillReader[]> {
   const dir = piDir(projectId)
   // pi's `~/.pi` is per project (piDir), so `agent/skills` is readable;
   // `~/.agents/skills` is not mounted. No plugin tier. A trusted project's
   // dirs come first, as the launch's `--approve` makes it.
   return [
-    repoReader(repo, ref, '.pi/skills'),
-    repoReader(repo, ref, '.agents/skills'),
+    repoReader(repo, '.pi/skills'),
+    repoReader(repo, '.agents/skills'),
     personalReader('pi', await toolHome(projectId, dir), dir, 'agent/skills'),
   ]
 }
 
-async function ompReaders(projectId: string, ref: string | null): Promise<SkillReader[]> {
-  const repo = repoDir(projectId)
+async function ompReaders(projectId: string, repo: RepoTier): Promise<SkillReader[]> {
   const dir = ompDir(projectId)
   const claudeHome = claudeDir(projectId)
   // Like pi's, with omp's own dirs, plus Claude's: the repo's by default, and
   // Claude's home because omp reads it whenever `CLAUDE_CONFIG_DIR` is set,
   // as every workspace sets it (checked against 18.18.6). No plugin tier.
   return [
-    repoReader(repo, ref, '.omp/skills'),
+    repoReader(repo, '.omp/skills'),
     personalReader('omp', await toolHome(projectId, dir), dir, 'agent/skills'),
-    repoReader(repo, ref, '.agents/skills'),
-    repoReader(repo, ref, '.claude/skills'),
+    repoReader(repo, '.agents/skills'),
+    repoReader(repo, '.claude/skills'),
     personalReader('claude', await toolHome(projectId, claudeHome), claudeHome, 'skills'),
   ]
 }
 
-async function readersFor(tool: AgentTool, projectId: string, ref: string | null): Promise<SkillReader[]> {
+async function readersFor(tool: AgentTool, projectId: string, repo: RepoTier): Promise<SkillReader[]> {
   switch (tool) {
-    case 'claude': return claudeReaders(projectId, ref)
-    case 'codex': return codexReaders(projectId, ref)
-    case 'opencode': return opencodeReaders(projectId, ref)
-    case 'pi': return piReaders(projectId, ref)
-    case 'omp': return ompReaders(projectId, ref)
+    case 'claude': return claudeReaders(projectId, repo)
+    case 'codex': return codexReaders(projectId, repo)
+    case 'opencode': return opencodeReaders(projectId, repo)
+    case 'pi': return piReaders(projectId, repo)
+    case 'omp': return ompReaders(projectId, repo)
   }
 }
 
@@ -375,12 +381,16 @@ function groupRank(s: SkillSummary): number {
  * overridden, except for codex and omp, which load them all; plugin and yaac
  * skills never collide.
  */
-async function discover(projectId: string, branch?: string): Promise<DiscoveredSkill[]> {
-  const ref = await resolveRepoRef(repoDir(projectId), branch)
+async function discover(projectId: string, { branch, repo: named }: SkillsQuery): Promise<DiscoveredSkill[]> {
+  const project = await getProjectRow(projectId)
+  if (!project) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
+  const link = named !== undefined ? projectRepo(project, named) : project.repos.at(0)
+  const main = link && repoDir(link.repo.id)
+  const repo: RepoTier = main === undefined ? null : { path: main, ref: await resolveRepoRef(main, branch) }
   // yaac's built-ins, read from the install dir since in-pod mounts aren't
   // visible here.
   const yaac = fsReader(await hostDir(builtinSkillsDir()), '', { key: 'yaac', source: 'yaac' })
-  const perTool = await Promise.all(AGENT_TOOLS.map(async (tool) => [...await readersFor(tool, projectId, ref), yaac]))
+  const perTool = await Promise.all(AGENT_TOOLS.map(async (tool) => [...await readersFor(tool, projectId, repo), yaac]))
   const reads = new Map<string, Promise<DiscoveredSkill[]>>()
   const lists = await Promise.all(perTool.map((readers) => Promise.all(readers.map((r) => {
     if (!reads.has(r.key)) reads.set(r.key, readSkills(r))
@@ -404,19 +414,26 @@ async function discover(projectId: string, branch?: string): Promise<DiscoveredS
     || dir(a).localeCompare(dir(b)) || a.name.localeCompare(b.name))
 }
 
-/** Every skill any of a project's agents can use. `branch` picks the origin
- *  branch for repo tiers (default: the remote's default branch). */
-export async function getProjectSkills(projectId: string, branch?: string): Promise<ProjectSkills> {
-  const discovered = await discover(projectId, branch)
+/** Which repo's tiers a skills read takes: `repo` names one of the
+ *  project's repos by its folder or id (default: its first), and `branch`
+ *  the origin branch to read it at (default: the remote's default branch). */
+export interface SkillsQuery {
+  repo?: string
+  branch?: string
+}
+
+/** Every skill any of a project's agents can use. */
+export async function getProjectSkills(projectId: string, query: SkillsQuery = {}): Promise<ProjectSkills> {
+  const discovered = await discover(projectId, query)
   const skills: SkillSummary[] = discovered.map(({ raw: _raw, ...summary }) => summary)
   return { skills }
 }
 
 /** The full `SKILL.md` for one skill, found by re-running discovery and
- *  matching the id, so the client never supplies a path. `branch` must match
+ *  matching the id, so the client never supplies a path. `query` must match
  *  the listing's. */
-export async function getSkillDetail(projectId: string, id: string, branch?: string): Promise<SkillDetail> {
-  const match = (await discover(projectId, branch)).find((s) => s.id === id)
+export async function getSkillDetail(projectId: string, id: string, query: SkillsQuery = {}): Promise<SkillDetail> {
+  const match = (await discover(projectId, query)).find((s) => s.id === id)
   if (!match) throw new ServerError('NOT_FOUND', `skill "${id}" not found`)
   const { frontmatter, body } = parseSkillMd(match.raw)
   return {

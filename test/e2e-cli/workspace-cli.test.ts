@@ -302,7 +302,7 @@ describe('with seeded projects', () => {
       await recordConversations(projectId, workspaceId, [
         { tool: 'claude', conversationId, ...(firstPrompt !== undefined ? { firstPrompt } : {}) },
       ])
-      await insertSession(projectId, workspaceId, { tool: 'claude', mode: 'tui', permissionMode: 'bypass', conversationId })
+      await insertSession(projectId, workspaceId, { tool: 'claude', mode: 'tui', permissionMode: 'bypass', cwd: '', conversationId })
       await recordWorkspaceStopped(projectId, workspaceId)
     }
 
@@ -756,9 +756,16 @@ describe('with seeded projects', () => {
       }
       await refused([], 'Name the project to create the workspace in, or --workspace to open a session in a running one.')
       await refused(['some-project', '--workspace', 'abc123'], 'Give a project or --workspace, not both')
-      for (const [flag, value] of [['--branch', 'main'], ['--group', 'g'], ['--timeout', '1h'], ['--start-at', '10:00'], ['--start-in', '5m']]) {
-        await refused(['--workspace', 'abc123', flag, value], `${flag} is a workspace's setting, which --workspace (a session in a running one) does not take.`)
+      for (const [flag, ...value] of [['--branch', 'main'], ['--group', 'g'], ['--timeout', '1h'], ['--start-at', '10:00'], ['--start-in', '5m'],
+        ['--repo', 'lib'], ['--no-repos'], ['--nested'], ['--no-nested']]) {
+        await refused(['--workspace', 'abc123', flag, ...value], `${flag} is a workspace's setting, which --workspace (a session in a running one) does not take.`)
       }
+      // What a workspace starts with: no repos takes no repo, start or layout.
+      for (const [flag, ...value] of [['--repo', 'lib'], ['--branch', 'main'], ['--commit', 'abc'], ['--nested']]) {
+        await refused(['some-project', '--no-repos', flag, ...value], `--no-repos starts with no checkout, so it does not take ${flag}.`)
+      }
+      await refused(['some-project', '--repo', '@main'], 'expected <dir> or <dir>@<branch>')
+      await refused(['some-project', '--repo', 'lib@'], 'expected <dir> or <dir>@<branch>')
       await refused(['--workspace', 'abc123', '--no-session'], '--no-session starts a new workspace; it does not take --workspace.')
       await refused(['some-project', '--resume', 'conv-1'], '--resume needs --workspace: a conversation resumes in the workspace that holds it.')
       await refused(['some-project', '--agent-option', 'idle-compaction'], 'expected <name>=<on|off>, with a name of idle-compaction, idle-cache-warming')
@@ -824,10 +831,12 @@ describe('with seeded projects', () => {
   // containerless workspace suite.
   describe('yaac routine and scheduled workspaces (real CLI + real server)', () => {
     const NAME = 'repo-routines'
+    /** The project's one repo, which carries the project's id. */
+    let repoId: string
     beforeAll(async () => {
       const repo = path.join(testEnv.scratchDir, NAME)
       await createTestRepo(repo)
-      await addTestProject(server, repo)
+      repoId = await addTestProject(server, repo)
     })
 
     it('queues a workspace for a time, lists it as scheduled, and discards it by prefix', async () => {
@@ -872,14 +881,17 @@ describe('with seeded projects', () => {
       const id = /Created routine ([0-9a-f-]{36})/.exec(created.stdout)?.[1] ?? ''
       type Listed = {
         id: string; cron: string; timeZone: string; groupId?: string; timeoutMinutes?: number; paused: boolean
-        nextRuns: string[]; name: string; prompt: string; branch: string; tool: string; model: string; effort?: string
+        nextRuns: string[]; name: string; prompt: string; tool: string; model: string; effort?: string
         mode: string; permissionMode: string; agentOptions: Record<string, boolean>
+        selection: { repos: Array<{ repo: string; branch?: string; commit?: string }>; nested: boolean; cwd: string }
       }
       const routines = async (): Promise<Listed[]> =>
         await (await fetch(`http://127.0.0.1:${server.lock.port}/api/routine/list`)).json() as Listed[]
       const routineOf = async (): Promise<Listed | undefined> => (await routines()).find((r) => r.id === id)
+      // --branch is the start of the one repo its runs start with.
       expect(await routineOf()).toMatchObject({
-        timeoutMinutes: 120, branch: 'master', model: 'opus', effort: 'high', agentOptions: { idleCompaction: true },
+        timeoutMinutes: 120, model: 'opus', effort: 'high', agentOptions: { idleCompaction: true },
+        selection: { repos: [{ repo: repoId, branch: 'master' }], nested: false },
       })
       const groupOf = async (): Promise<string | undefined> => {
         const groupId = (await routineOf())?.groupId
@@ -975,10 +987,11 @@ describe('with seeded projects', () => {
       expect(queued.exitCode, queued.stderr).toBe(0)
       const queuedId = /Queued workspace ([0-9a-f-]{36})/.exec(queued.stdout)?.[1] ?? ''
       const entries = await (await fetch(`http://127.0.0.1:${server.lock.port}/api/workspace/queue/list`)).json() as Array<{
-        id: string; prompt?: string; commit?: string; branch?: string; nonInteractive?: boolean; steps?: unknown
+        id: string; prompt?: string; nonInteractive?: boolean; steps?: unknown
+        selection: { repos: Array<{ repo: string; branch?: string; commit?: string }> }
       }>
       expect(entries.find((e) => e.id === queuedId)).toMatchObject({
-        commit: sha, nonInteractive: true, steps: { check: { run: ['true'] } },
+        selection: { repos: [{ repo: repoId, commit: sha }] }, nonInteractive: true, steps: { check: { run: ['true'] } },
       })
       expect(entries.find((e) => e.id === queuedId)?.prompt).toBeUndefined()
       expect((await runYaac(testEnv.env, 'workspace', 'delete', queuedId)).exitCode).toBe(0)
@@ -986,14 +999,19 @@ describe('with seeded projects', () => {
       // A routine runs a named workflow.
       expect((await runYaac(testEnv.env, 'workflow', 'create', NAME, 'ci', '--file', stepsFile)).exitCode).toBe(0)
       expect((await runYaac(testEnv.env, 'workflow', 'create', NAME, 'lint', '--file', otherSteps)).exitCode).toBe(0)
-      type Listed = { id: string; prompt?: string; commit?: string; branch?: string; nonInteractive?: boolean; workflow?: string }
+      type Listed = {
+        id: string; prompt?: string; nonInteractive?: boolean; workflow?: string
+        selection: { repos: Array<{ repo: string; branch?: string; commit?: string }> }
+      }
       const routines = async (): Promise<Listed[]> =>
         await (await fetch(`http://127.0.0.1:${server.lock.port}/api/routine/list`)).json() as Listed[]
       const created = await runYaac(testEnv.env, 'routine', 'create', NAME, '--name', 'CI', '--cron', '@daily',
         '--non-interactive', '--workflow', 'ci', '--commit', sha)
       expect(created.exitCode, created.stderr).toBe(0)
       const id = /Created routine ([0-9a-f-]{36})/.exec(created.stdout)?.[1] ?? ''
-      expect((await routines()).find((r) => r.id === id)).toMatchObject({ commit: sha, nonInteractive: true, workflow: 'ci' })
+      expect((await routines()).find((r) => r.id === id)).toMatchObject({
+        selection: { repos: [{ repo: repoId, commit: sha }] }, nonInteractive: true, workflow: 'ci',
+      })
       const prompted = await runYaac(testEnv.env, 'routine', 'create', NAME, '--name', 'CI', '--cron', '@daily',
         '--non-interactive', '--workflow', 'ci', '--prompt', 'x')
       expect(prompted.exitCode).not.toBe(0)
@@ -1003,8 +1021,110 @@ describe('with seeded projects', () => {
       const edited = await runYaac(testEnv.env, 'routine', 'edit', id, '--workflow', 'lint', '--branch', 'master')
       expect(edited.exitCode, edited.stderr).toBe(0)
       const after = (await routines()).find((r) => r.id === id)
-      expect(after).toMatchObject({ branch: 'master', workflow: 'lint' })
-      expect(after?.commit).toBeUndefined()
+      expect(after).toMatchObject({ workflow: 'lint' })
+      expect(after?.selection.repos).toEqual([{ repo: repoId, branch: 'master' }])
+      await runYaac(testEnv.env, 'routine', 'delete', id)
+    })
+  })
+
+  /**
+   * What a scheduled workspace or a routine's runs start with, in a project
+   * with two repos (docs/project-repos.md): which repos, each one's start,
+   * the layout and the cwd, as the queue and the routine record them. A
+   * workspace started now with them is in workspace-create-suite.test.ts.
+   */
+  describe('yaac workspace create and routine: --repo, --no-repos, --nested and --cwd (real CLI + real server)', () => {
+    const NAME = 'repo-sel'
+    /** The project's own repo and the one it links in the folder `lib`;
+     *  a staged project's repo carries the project's id. */
+    let ownRepo: string
+    let libRepo: string
+    /** The branch the test repos are on, which a repo with no start named
+     *  is recorded at. */
+    let main: string
+    type Selection = { repos: Array<{ repo: string; branch?: string; commit?: string }>; nested: boolean; cwd: string }
+    const listed = async (route: string, id: string): Promise<Selection | undefined> =>
+      (await (await fetch(`http://127.0.0.1:${server.lock.port}/api${route}`)).json() as Array<{ id: string; selection: Selection }>)
+        .find((e) => e.id === id)?.selection
+
+    beforeAll(async () => {
+      const seed = async (name: string): Promise<string> => {
+        const repo = path.join(testEnv.scratchDir, name)
+        await createTestRepo(repo)
+        return await addTestProject(server, repo)
+      }
+      ownRepo = await seed(NAME)
+      libRepo = await seed('repo-sel-lib')
+      main = (await git(path.join(testEnv.scratchDir, NAME), ['rev-parse', '--abbrev-ref', 'HEAD'])).trim()
+      // A branch origin "has", planted where a fetch would put it.
+      await git(path.join(testEnv.dataDir, 'global', 'repos', libRepo), ['update-ref', 'refs/remotes/origin/dev', 'HEAD'])
+      const linked = await runYaac(testEnv.env, 'project', 'repo', 'add', NAME, '--repo-id', libRepo, '--dir', 'lib')
+      expect(linked.exitCode, linked.stderr).toBe(0)
+    })
+
+    it('queues a workspace with the repos, starts, layout and cwd it names', async () => {
+      const queue = async (...args: string[]): Promise<Selection | undefined> => {
+        const queued = await runYaac(testEnv.env, 'workspace', 'create', NAME, '--prompt', 'later', '--start-in', '2h', ...args)
+        expect(queued.exitCode, `${args.join(' ')}: ${queued.stderr}`).toBe(0)
+        const id = /Queued workspace ([0-9a-f-]{36})/.exec(queued.stdout)?.[1] ?? ''
+        const selection = await listed('/workspace/queue/list', id)
+        expect((await runYaac(testEnv.env, 'workspace', 'delete', id)).exitCode).toBe(0)
+        return selection
+      }
+      // Named by no option, it takes every repo the project links, each in
+      // its folder, with the agent at the workspace root.
+      expect(await queue())
+        .toEqual({ repos: [{ repo: ownRepo, branch: main }, { repo: libRepo, branch: main }], nested: true, cwd: '.' })
+      expect(await queue('--repo', 'lib@dev', '--repo', NAME, '--cwd', 'lib'))
+        .toEqual({ repos: [{ repo: libRepo, branch: 'dev' }, { repo: ownRepo, branch: main }], nested: true, cwd: libRepo })
+      // One repo sits at the root unless asked into its folder, and is where
+      // the agent starts.
+      const sha = (await git(path.join(testEnv.scratchDir, NAME), ['rev-parse', 'HEAD'])).trim()
+      expect(await queue('--repo', `${NAME}@${sha}`, '--no-nested'))
+        .toEqual({ repos: [{ repo: ownRepo, commit: sha }], nested: false, cwd: ownRepo })
+      expect(await queue('--repo', 'lib', '--nested', '--cwd', '.'))
+        .toEqual({ repos: [{ repo: libRepo, branch: main }], nested: true, cwd: '.' })
+      // --branch is the start of a selection of one repo.
+      expect((await queue('--repo', 'lib', '--branch', 'dev'))?.repos).toEqual([{ repo: libRepo, branch: 'dev' }])
+      expect(await queue('--no-repos')).toEqual({ repos: [], nested: false, cwd: '.' })
+
+      const refusals: Array<[string[], RegExp]> = [
+        [['--repo', 'nope'], /has no repo "nope"/],
+        [['--repo', 'lib', '--repo', 'lib'], /selected twice/],
+        [['--repo', 'lib', '--repo', NAME, '--no-nested'], /several repos always sit in folders of their own/],
+        [['--repo', 'lib', '--repo', NAME, '--branch', 'dev'], /names the start of exactly one repo/],
+        [['--repo', 'lib', '--cwd', NAME], /is not "\." or a repo this workspace starts with/],
+      ]
+      for (const [args, error] of refusals) {
+        const { stderr, exitCode } = await runYaac(testEnv.env, 'workspace', 'create', NAME, '--prompt', 'x', '--start-in', '2h', ...args)
+        expect(exitCode, args.join(' ')).not.toBe(0)
+        expect(stderr, args.join(' ')).toMatch(error)
+      }
+    })
+
+    it('creates and edits a routine whose runs start with the repos, layout and cwd it names', async () => {
+      const created = await runYaac(testEnv.env, 'routine', 'create', NAME, '--name', 'Lib only', '--cron', '@daily',
+        '--prompt', 'p', '--repo', 'lib@dev', '--nested', '--cwd', 'lib')
+      expect(created.exitCode, created.stderr).toBe(0)
+      const id = /Created routine ([0-9a-f-]{36})/.exec(created.stdout)?.[1] ?? ''
+      expect(await listed('/routine/list', id)).toEqual({ repos: [{ repo: libRepo, branch: 'dev' }], nested: true, cwd: libRepo })
+
+      const both = await runYaac(testEnv.env, 'routine', 'edit', id, '--repo', NAME, '--repo', 'lib', '--cwd', '.')
+      expect(both.exitCode, both.stderr).toBe(0)
+      expect(await listed('/routine/list', id))
+        .toEqual({ repos: [{ repo: ownRepo, branch: main }, { repo: libRepo, branch: main }], nested: true, cwd: '.' })
+      const flat = await runYaac(testEnv.env, 'routine', 'edit', id, '--repo', NAME, '--no-nested')
+      expect(flat.exitCode, flat.stderr).toBe(0)
+      expect(await listed('/routine/list', id)).toMatchObject({ repos: [{ repo: ownRepo, branch: main }], nested: false })
+      const none = await runYaac(testEnv.env, 'routine', 'edit', id, '--no-repos')
+      expect(none.exitCode, none.stderr).toBe(0)
+      expect(await listed('/routine/list', id)).toMatchObject({ repos: [], nested: false })
+
+      const bad = await runYaac(testEnv.env, 'routine', 'edit', id, '--repo', 'nope')
+      expect(bad.exitCode).not.toBe(0)
+      expect(bad.stderr).toContain('has no repo "nope"')
+      expect((await runYaac(testEnv.env, 'routine', 'edit', id, '--no-repos', '--repo', 'lib')).stderr)
+        .toContain('--no-repos starts with no checkout, so it does not take --repo.')
       await runYaac(testEnv.env, 'routine', 'delete', id)
     })
   })

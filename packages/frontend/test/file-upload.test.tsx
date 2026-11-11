@@ -92,7 +92,7 @@ function dirEntry(name: string, children: FileSystemEntry[]): FileSystemDirector
 
 describe('WorkspaceFiles uploads', () => {
   it('uploads picked files into the root, and replaces one already there once confirmed', async () => {
-    renderWithClient(<WorkspaceFiles workspaceId="s1" projectId="proj" />)
+    renderWithClient(<WorkspaceFiles workspaceId="s1" />)
     await screen.findByText('README.md')
     expect(screen.getByLabelText('Upload files')).toBeTruthy()
     const input = document.querySelector<HTMLInputElement>('input[type=file][multiple]')!
@@ -106,7 +106,7 @@ describe('WorkspaceFiles uploads', () => {
   })
 
   it('uploads a folder dropped on a row into that folder, keeping its empty folders and past unreadable entries', async () => {
-    renderWithClient(<WorkspaceFiles workspaceId="s1" projectId="proj" />)
+    renderWithClient(<WorkspaceFiles workspaceId="s1" />)
     const src = await screen.findByText('src')
     const kit = dirEntry('kit', [fileEntry('a.txt'), dirEntry('empty', []), dirEntry('deep', [fileEntry('b.txt')]), fileEntry('bad.bin'), brokenEntry('dangling')])
     const dataTransfer = {

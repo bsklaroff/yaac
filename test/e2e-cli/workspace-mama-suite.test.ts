@@ -81,7 +81,8 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     // a github-shaped remote.
     await seedMockGitRepo(mockGit, NAME, { files: { 'README.md': '# demo\n' } })
     const projectPath = path.join(testEnv.dataDir, 'global', 'projects', PROJECT_ID)
-    const repoPath = path.join(projectPath, 'repo')
+    // The main clone of the project's repo, which carries the project's id.
+    const repoPath = path.join(testEnv.dataDir, 'global', 'repos', PROJECT_ID)
     await fs.mkdir(path.join(projectPath, 'claude'), { recursive: true })
     await cloneRepo(path.join(mockGit.reposDir, `${NAME}.git`), repoPath, null)
     const fakeRemote = `https://github.com/test-org/${NAME}.git`
@@ -379,6 +380,11 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     expect(hostedId).not.toBe('')
     const made = await runYaac(serverEnv, 'workspace', 'create', 'mama-hosted')
     expect(made.exitCode, made.stderr).toBe(0)
+    // The project's id names its pods, its repo's id the remote and main clone.
+    const projects = await (await fetch(`http://127.0.0.1:${String(server!.lock.port)}/api/project/list`))
+      .json() as Array<{ id: string; repos: Array<{ id: string }> }>
+    const hostedRepo = projects.find((p) => p.id === hostedId)?.repos[0]?.id ?? ''
+    expect(hostedRepo).not.toBe('')
     const [pod] = await listWorkspacePods(hostedId)
     try {
       const pushed = await execInJob(pod.jobName, ['sh', '-c',
@@ -386,7 +392,7 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
       { timeout: 120_000 })
       const tip = pushed.stdout.trim().split('\n').pop() ?? ''
       // The push lands in the main clone, which the server fetches at once.
-      const mainClone = path.join(testEnv.dataDir, 'global', 'projects', hostedId, 'repo')
+      const mainClone = path.join(testEnv.dataDir, 'global', 'repos', hostedRepo)
       for (let i = 0; i < 60; i += 1) {
         if ((await git(mainClone, ['rev-parse', 'refs/remotes/origin/main']).catch(() => '')).trim() === tip) break
         await sleep(500)
@@ -395,7 +401,7 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
 
       // A pod of another project is refused, by the server, as itself.
       const { stdout } = await execInJob(jobA, ['sh', '-c',
-        `git ls-remote http://yaac.internal/api/workspace/git/${hostedId}.git 2>&1; echo "EXIT:$?"`])
+        `git ls-remote http://yaac.internal/api/workspace/git/${hostedRepo}.git 2>&1; echo "EXIT:$?"`])
       expect(stdout).toMatch(/403/)
       expect(stdout).not.toContain('EXIT:0')
     } finally {

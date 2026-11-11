@@ -95,6 +95,41 @@ describe('openSession', () => {
     expect(execs.join('\n')).toContain(`-- "$(cat ${opening}; rm -f ${opening}) "'`)
   })
 
+  // Each session runs where it is told, the workspace root or a checkout's,
+  // and keeps that for life: its window, its agent and a resume of its
+  // conversation all start there.
+  it('runs its agent in the cwd named, by default the workspace\'s, and resumes a conversation only where it ran', async () => {
+    const TWO = 'ws-two'
+    const WEB = '6d0f7c2e-3a4b-4c5d-9e6f-7a8b9c0d1e2f'
+    await recordWorkspaceCreated({
+      projectId: DEMO_PROJECT_ID, workspaceId: TWO, cwd: 'web',
+      repos: [{ repoId: DEMO_PROJECT_ID, path: 'api' }, { repoId: WEB, path: 'web' }],
+    })
+    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: TWO, at: new Date(), startSteps: {} })
+    installFakeWorkspaceDriver({
+      find: (id) => Promise.resolve(id === TWO ? { ...unit, workspaceId: TWO } : undefined),
+      exec: (_job, cmd) => { execs.push(cmd); return Promise.resolve({ stdout: '', stderr: '' }) },
+    })
+    const open = (request: Parameters<typeof openSession>[2] = {}) => openSession(local, TWO, { tool: 'claude', mode: 'tui', ...request })
+
+    const inDefault = await open()
+    expect(inDefault.cwd).toBe('web')
+    expect(execs.join('\n')).toContain(`-n ${inDefault.window} -c /workspace/web `)
+    expect((await open({ cwd: '.' })).cwd).toBe('')
+    expect((await open({ cwd: 'api' })).cwd).toBe('api')
+    expect((await open({ cwd: WEB })).cwd).toBe('web')
+    await expect(open({ cwd: 'docs' })).rejects.toThrow(/not "\." or one of this workspace's checkouts \(api, web\)/)
+
+    // claude and codex find a conversation by the directory it started in.
+    const inApi = await open({ cwd: 'api' })
+    await applyWorkspaceEvent({
+      type: 'conversations-discovered', projectId: DEMO_PROJECT_ID, workspaceId: TWO,
+      sessions: [{ tool: 'claude', conversationId: 'conv-api', sessionId: inApi.id }],
+    })
+    expect((await open({ resume: 'conv-api' })).cwd).toBe('api')
+    await expect(open({ resume: 'conv-api', cwd: 'web' })).rejects.toThrow(/ran in "api", and resumes only there/)
+  })
+
   it('opens each session with every agent option its tool has, a named one remembered as the project\'s next', async () => {
     const claude = await openSession(local, WS, { tool: 'claude', mode: 'tui', agentOptions: { idleCompaction: true }, rememberDefaults: true })
     expect(claude.agentOptions).toEqual({ idleCompaction: true })
@@ -194,7 +229,7 @@ describe('renameSession', () => {
 })
 
 describe('reconcileSessions', () => {
-  const claude = { tool: 'claude', mode: 'tui', permissionMode: 'bypass' } as const
+  const claude = { tool: 'claude', mode: 'tui', permissionMode: 'bypass', cwd: '' } as const
 
   // One opened while the workspace was stopped, or whose launch a server
   // restart cut off, has no window in this life.

@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray, isNull, ne } from 'drizzle-orm'
 import { getDb } from './client'
-import { sites, workspaces } from './schema'
+import { sites, workspaceRepos, workspaces } from './schema'
 import { isUuid } from '#lib/uuid'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
 import { ServerError } from '@yaac/shared/errors'
@@ -31,6 +31,7 @@ export async function insertSite(values: {
   adminPort?: number
   namedWorkflowId: string
   volumeId?: string
+  repoId: string
   followBranch?: string
 }): Promise<SiteRow> {
   const db = await getDb()
@@ -134,12 +135,15 @@ export async function listSiteReleases(siteId: string, limit: number): Promise<A
   rerunOf?: string
 }>> {
   const db = await getDb()
+  // A release has exactly one checkout.
   const rows = await db.select({
     workspaceId: workspaces.workspaceId,
-    startCommit: workspaces.startCommit,
+    startCommit: workspaceRepos.startCommit,
     createdAt: workspaces.createdAt,
     stoppedAt: workspaces.stoppedAt,
     rerunOf: workspaces.rerunOf,
-  }).from(workspaces).where(eq(workspaces.siteId, siteId)).orderBy(desc(workspaces.createdAt)).limit(limit)
+  }).from(workspaces)
+    .leftJoin(workspaceRepos, eq(workspaceRepos.workspaceId, workspaces.workspaceId))
+    .where(eq(workspaces.siteId, siteId)).orderBy(desc(workspaces.createdAt)).limit(limit)
   return rows.map((r) => nullsToUndefined(r))
 }

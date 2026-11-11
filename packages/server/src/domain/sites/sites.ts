@@ -17,7 +17,6 @@ import {
   getVolumeRow,
   getNamedWorkflow,
   insertSite,
-  listProjectRows,
   listProjectSites,
   listSiteReleases,
   listSites,
@@ -28,7 +27,8 @@ import {
 } from '#db'
 import { authorizeProject, isProjectHeld, requireAdmin, type Actor } from '#domain/access'
 import { remoteBranchExists, resolveRemoteRef } from '#domain/git'
-import { approveWorkflowRef, checkWorkflowRef, fetchProjectOrigin, resolveWorkflow } from '#domain/projects'
+import { approveWorkflowRef, checkWorkflowRef, repoOfProject, resolveWorkflow } from '#domain/projects'
+import { fetchRepoOrigin } from '#domain/repos'
 import { VOLUME_NEED } from '#domain/workspaces'
 import { isInfraPort } from '#lib/port-policy'
 import { testEnv } from '@yaac/shared/env'
@@ -57,17 +57,14 @@ export async function authorizeSitePublish(principal: Actor, projectId: string):
 
 /**
  * Authorize stopping or deleting a site: any admin, or its project's owner
- * even once they are not one, or the project is a share its source's owner
- * removed, so a site can always be taken down and its hostname freed.
+ * even once they are not one, so a site can always be taken down and its
+ * hostname freed.
  */
 export async function authorizeSiteEnd(principal: Actor, projectId: string): Promise<void> {
   const project = await getProjectRow(projectId)
   const admin = await requireAdmin(principal).then(() => true, () => false)
   if (project && admin && !isProjectHeld(projectId)) return
-  if (project?.shareRevoked !== true) return await authorizeProject(principal, projectId)
-  if (principal.kind !== 'system' && principal.userId !== project.owner) {
-    throw new ServerError('FORBIDDEN', 'only the owner of this project may do that')
-  }
+  await authorizeProject(principal, projectId)
 }
 
 export async function requireSite(projectId: string, name: string): Promise<SiteRow> {
@@ -120,18 +117,18 @@ async function reofferAdminPort(row: SiteRow, adminPort: number | undefined): Pr
 }
 
 /**
- * A branch to follow, which must be on origin now. A name that reads as a
+ * A branch of the site's repo to follow, which must be on origin now. A name that reads as a
  * ref (`origin/main`, `refs/heads/main`) would follow a branch literally so
  * named, which anyone who may push can create, and `agent/*` branches are
  * each a workspace's own; both are refused.
  */
-async function checkBranch(projectId: string, branch: string): Promise<string> {
+async function checkBranch(repoId: string, branch: string): Promise<string> {
   if (!isBranchName(branch)) throw new ServerError('VALIDATION', `"${branch}" is not a branch name`)
   if (/^(?:origin|refs|agent)\//.test(branch)) {
     throw new ServerError('VALIDATION', `"${branch}" names a branch to follow by its own name on origin, like main`)
   }
-  if (!testEnv.e2eSkipFetch) await fetchProjectOrigin(projectId)
-  if (!await remoteBranchExists(repoDir(projectId), branch)) {
+  if (!testEnv.e2eSkipFetch) await fetchRepoOrigin(repoId)
+  if (!await remoteBranchExists(repoDir(repoId), branch)) {
     throw new ServerError('VALIDATION', `"${branch}" is not a branch on origin`)
   }
   return branch
@@ -166,6 +163,11 @@ async function volumeId(projectId: string, name: string, siteId?: string): Promi
   return row.id
 }
 
+/**
+ * Create a site. Its releases are built from one of the project's repos,
+ * each a workspace holding that repo alone: the one `repo` names by its
+ * folder or id, or the project's only one.
+ */
 export async function createSite(principal: Actor, projectId: string, input: {
   name: string
   hostname: string
@@ -173,20 +175,25 @@ export async function createSite(principal: Actor, projectId: string, input: {
   adminPort?: number
   workflow: string
   volume?: string
+  repo?: string
   followBranch?: string
 }): Promise<void> {
   await authorizeSitePublish(principal, projectId)
+  const project = await getProjectRow(projectId)
+  if (!project) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
+  const repoId = repoOfProject(project, input.repo).repo.id
   if (!SITE_NAME.test(input.name)) {
     throw new ServerError('VALIDATION', `"${input.name}" is not a site name: use 1-40 of a-z, 0-9 and -`)
   }
   checkPorts(input.port, input.adminPort)
   const namedWorkflowId = await siteWorkflow(projectId, input.workflow, input.volume !== undefined)
-  const followBranch = input.followBranch !== undefined ? await checkBranch(projectId, input.followBranch) : undefined
+  const followBranch = input.followBranch !== undefined ? await checkBranch(repoId, input.followBranch) : undefined
   // Following a branch approves it for the workflow (docs/workflows.md
   // "Approvals"): refused, if at all, before the site exists.
-  if (followBranch !== undefined) await checkWorkflowRef(principal, namedWorkflowId, { branch: followBranch })
+  if (followBranch !== undefined) await checkWorkflowRef(principal, namedWorkflowId, { branch: followBranch, repoId })
   await insertSite({
     projectId,
+    repoId,
     name: input.name,
     hostname: checkHostname(input.hostname),
     port: input.port,
@@ -195,7 +202,7 @@ export async function createSite(principal: Actor, projectId: string, input: {
     ...(input.volume !== undefined ? { volumeId: await volumeId(projectId, input.volume) } : {}),
     ...(followBranch !== undefined ? { followBranch } : {}),
   })
-  if (followBranch !== undefined) await approveWorkflowRef(principal, namedWorkflowId, { branch: followBranch })
+  if (followBranch !== undefined) await approveWorkflowRef(principal, namedWorkflowId, { branch: followBranch, repoId })
   await syncSiteRoutes()
 }
 
@@ -223,8 +230,8 @@ export async function editSite(principal: Actor, projectId: string, name: string
     return
   }
   await authorizeSitePublish(principal, projectId)
-  const { id } = await requireSite(projectId, name)
-  const follow = typeof input.followBranch === 'string' ? await checkBranch(projectId, input.followBranch) : input.followBranch
+  const { id, repoId } = await requireSite(projectId, name)
+  const follow = typeof input.followBranch === 'string' ? await checkBranch(repoId, input.followBranch) : input.followBranch
   await withSiteLock(id, async () => {
     const row = await getSiteRow(id)
     if (!row) throw new ServerError('NOT_FOUND', `this project has no site named "${name}"`)
@@ -248,9 +255,9 @@ export async function editSite(principal: Actor, projectId: string, name: string
     // (docs/workflows.md "Approvals"), refused before anything is written.
     const branch = follow === undefined ? row.followBranch : follow ?? undefined
     const approves = branch !== undefined && (follow !== undefined || input.workflow !== undefined)
-    if (approves) await checkWorkflowRef(principal, patch.namedWorkflowId, { branch })
+    if (approves) await checkWorkflowRef(principal, patch.namedWorkflowId, { branch, repoId })
     await updateSite(id, patch)
-    if (approves) await approveWorkflowRef(principal, patch.namedWorkflowId, { branch })
+    if (approves) await approveWorkflowRef(principal, patch.namedWorkflowId, { branch, repoId })
     await reofferAdminPort(row, adminPort)
   })
   await syncSiteRoutes()
@@ -298,7 +305,7 @@ async function toSiteEntry(row: SiteRow): Promise<SiteEntry> {
   const live = row.liveWorkspaceId !== undefined ? await findWorkspaceRow(row.liveWorkspaceId) : undefined
   const paused = row.followBranch !== undefined ? await followPause(row) : undefined
   const tip = row.followBranch !== undefined && row.failedCommit !== undefined
-    ? await resolveRemoteRef(repoDir(row.projectId), row.followBranch).catch(() => undefined)
+    ? await resolveRemoteRef(repoDir(row.repoId), row.followBranch).catch(() => undefined)
     : undefined
   const workflow = await getNamedWorkflow(row.namedWorkflowId)
   return {
@@ -352,13 +359,10 @@ async function toSiteEntry(row: SiteRow): Promise<SiteEntry> {
 /**
  * Hand the driver every site's route: its hostname, the port its live
  * release serves on, and that release, which is absent while none is
- * meant to serve. A revoked share's sites are left out, so their
- * hostnames answer 404.
+ * meant to serve.
  */
 export async function syncSiteRoutes(): Promise<void> {
-  const revoked = new Set((await listProjectRows()).filter((p) => p.shareRevoked).map((p) => p.id))
-  const served = (await listSites()).filter((row) => !revoked.has(row.projectId))
-  const routes: SiteRoute[] = served.map((row) => ({
+  const routes: SiteRoute[] = (await listSites()).map((row) => ({
     siteId: row.id,
     hostname: row.hostname,
     port: row.livePort ?? row.port,

@@ -7,6 +7,7 @@ import { fetchSiteCheck, hostHeaderCheck, identify, originHeaderCheck, type Iden
 import { registerStaticRoutes } from '#api/http/static'
 import { toErrorBody } from '#api/http/errors'
 import { projectApp } from '#routes/projects'
+import { repoApp } from '#routes/repos'
 import { mamaRelayApp, workspaceApp } from '#routes/workspaces'
 import { authApp } from '#routes/auth'
 import { shortcutsApp } from '#routes/shortcuts'
@@ -171,6 +172,7 @@ function apiRoutes(
       },
     )
     .route('/project', projectApp)
+    .route('/repo', repoApp)
     .route('/workspace', workspaceApp)
     .route('/auth', authApp)
     .route('/shortcuts', shortcutsApp)

@@ -40,11 +40,30 @@ export const PLACEHOLDER_OPENCODE_API_KEY = 'yaac-ph-opencode-api-key'
 export const PLACEHOLDER_PI_API_KEY = 'yaac-ph-pi-api-key'
 export const PLACEHOLDER_OMP_API_KEY = 'yaac-ph-omp-api-key'
 /**
- * Placeholder GH_TOKEN seeded into workspace containers so `gh` treats itself
- * as logged in. The proxy swaps it for the real HTTPS git token on
- * api.github.com; a user-supplied token passes through unchanged.
+ * Prefix of the placeholder GH_TOKEN seeded into workspace containers so
+ * `gh` treats itself as logged in (`ghTokenPlaceholder`). The proxy has its
+ * own copy; keep them in sync.
  */
 export const PLACEHOLDER_GH_TOKEN = 'yaac-ph-gh-token'
+
+/**
+ * The placeholder `GH_TOKEN` that stands for one repo's HTTPS git token.
+ * The proxy swaps it for that token toward the GitHub API host, when the
+ * workspace's project is granted the repo with `ghToken` and not
+ * `readOnly`; a user-supplied token passes through unchanged.
+ */
+export function ghTokenPlaceholder(repoId: string): string {
+  return `${PLACEHOLDER_GH_TOKEN}-${repoId}`
+}
+
+/**
+ * The workspace variable holding the `GH_TOKEN` value for one repo (the
+ * placeholder, or without mediated egress the token), which a session
+ * running in that repo's checkout takes as its `GH_TOKEN`.
+ */
+export function ghTokenEnvName(repoId: string): string {
+  return `YAAC_GH_TOKEN_${repoId.replace(/-/g, '')}`
+}
 
 /**
  * Write a credentials file atomically (temp file, then rename). These files

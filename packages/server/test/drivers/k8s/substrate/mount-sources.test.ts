@@ -45,7 +45,7 @@ describe('resolveMountSource', () => {
     })
     // Only the checkout itself: the main clone stays on the global claim.
     const repo: PodMount = { source: { kind: 'hostPath', path: `${repoDir('demo')}/.git` }, mountPath: '/r', readOnly: true }
-    expect(resolveMountSource(repo).source).toEqual({ kind: 'pvc', claimName: 'yaac-global', subPath: 'projects/demo/repo/.git' })
+    expect(resolveMountSource(repo).source).toEqual({ kind: 'pvc', claimName: 'yaac-global', subPath: 'repos/demo/.git' })
   })
 
   it('turns a global File into a subPath to that file, keeping readOnly', () => {
@@ -115,8 +115,8 @@ describe('resolveMountSource', () => {
     vi.stubEnv('YAAC_NODE_LOCAL_ROOT', '/yaac/node-local')
     try {
       expect(resolveMountSource({
-        source: { kind: 'hostPath', path: '/yaac/global/projects/demo/repo/.git' }, mountPath: '/repo/.git',
-      }).source).toEqual({ kind: 'pvc', claimName: 'yaac-global', subPath: 'projects/demo/repo/.git' })
+        source: { kind: 'hostPath', path: '/yaac/global/repos/demo/.git' }, mountPath: '/repo/.git',
+      }).source).toEqual({ kind: 'pvc', claimName: 'yaac-global', subPath: 'repos/demo/.git' })
       expect(resolveMountSource({
         source: { kind: 'hostPath', path: '/yaac/node-local/projects/demo/.cached-packages' }, mountPath: '/c',
       }).source).toMatchObject({ kind: 'hostPath', path: `${NODE_ROOT}/projects/demo/.cached-packages` })

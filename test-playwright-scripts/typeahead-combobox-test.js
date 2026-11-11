@@ -25,7 +25,8 @@ import { api, check, finish, origin, requirePlaywright, SHOTS, resolveProject, u
 
 if (!process.env.PROJECT) throw new Error('set PROJECT=<name or id>')
 const PROJECT = (await resolveProject(process.env.PROJECT)).id
-const { branches } = await api(`/project/${PROJECT}/branches`)
+const [repo] = (await api('/project/list')).find((p) => p.id === PROJECT).repos
+const { branches } = await api(`/repo/${repo.id}/branches`)
 
 const { chromium } = requirePlaywright()
 const browser = await chromium.launch()

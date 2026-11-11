@@ -6,7 +6,7 @@ import { sniffImage } from '@yaac/shared/attachments'
 import { ACP_RECORD_NAME, ClaudeTranscriptReplay, acpPage, activityStarts, acpStoredImage, openSandboxDir, openSandboxFile, readAcpLife, readAcpPage, claudeSubagentThreads, claudeTranscriptAsAcp, codexTranscriptAsAcp, conversationFiles, ompTranscriptAsAcp, opencodeTranscriptAsAcp, piTranscriptAsAcp, sessionTranscriptPath, readSandboxFile, type AcpLife, type RecordOrigin, type SandboxFile } from '#runtime/agents'
 import { listWorkspaceConversations, type ConversationLinkRow } from '#db'
 import { serverLog } from '#lib/log'
-import { recordedTranscript } from './conversation-paths'
+import { conversationCwds, recordedTranscript, withCwds } from './conversation-paths'
 import { ACP_PAGE_SPAN, acpPageOf, type AcpEvent, type AcpTranscriptPage } from '@yaac/shared/acp'
 
 /**
@@ -112,7 +112,8 @@ export async function conversation(projectId: string, workspaceId: string, conve
  *  the conventional one. */
 export async function claudeTranscript(projectId: string, workspaceId: string, session: ConversationLinkRow): Promise<SandboxFile | undefined> {
   return session.tool !== 'claude' ? undefined
-    : recordedTranscript(session) ?? await sessionTranscriptPath(projectId, workspaceId, session.tool, session.conversationId)
+    : recordedTranscript(session)
+      ?? await sessionTranscriptPath(projectId, workspaceId, session.tool, session.conversationId, await conversationCwds(session))
 }
 
 /**
@@ -249,7 +250,7 @@ export async function historyFiles(
   workspaceId: string,
   session: ConversationLinkRow,
 ): Promise<Array<{ file: SandboxFile; thread: boolean }>> {
-  const files = (await conversationFiles(projectId, workspaceId, [session])).get(session.conversationId) ?? []
+  const files = (await conversationFiles(projectId, workspaceId, await withCwds([session]))).get(session.conversationId) ?? []
   return files.flatMap(({ name, file }, i): Array<{ file: SandboxFile; thread: boolean }> => {
     if (name === ACP_RECORD_NAME) return []
     if (session.tool === 'opencode') return [{ file, thread: false }, { file: { ...file, rel: `${file.rel}-wal` }, thread: false }]
@@ -300,11 +301,11 @@ async function ownHistory(
       return { events: raws.length === 0 ? [] : codexTranscriptAsAcp(raws, ended), budget: 0 }
     }
     case 'pi': {
-      const raw = await readTranscript(await sessionTranscriptPath(projectId, workspaceId, session.tool, id), before)
+      const raw = await readTranscript(await sessionTranscriptPath(projectId, workspaceId, session.tool, id, []), before)
       return { events: raw === null ? [] : piTranscriptAsAcp(raw), budget: 0 }
     }
     case 'omp': {
-      const raw = await readTranscript(await sessionTranscriptPath(projectId, workspaceId, session.tool, id), before)
+      const raw = await readTranscript(await sessionTranscriptPath(projectId, workspaceId, session.tool, id, []), before)
       return { events: raw === null ? [] : await ompTranscriptAsAcp(projectId, raw, MAX_TRANSCRIPT_BYTES), budget: 0 }
     }
     case 'opencode':

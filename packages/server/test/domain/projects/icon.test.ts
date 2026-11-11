@@ -28,8 +28,8 @@ let tmpDir: string
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
   installFakeWorkspaceDriver()
-  await recordProject({ id: projectId, name: 'demo', remoteUrl: 'https://example.com/demo.git', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
-  await recordProject({ id: OTHER, name: 'other', remoteUrl: 'https://example.com/other.git', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
+  await recordProject({ id: projectId, name: 'demo', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
+  await recordProject({ id: OTHER, name: 'other', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
 })
 
 afterEach(async () => {

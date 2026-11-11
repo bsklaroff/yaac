@@ -143,20 +143,6 @@ describe('deleteWorkspace', () => {
     expect(appliedRootPods()).toEqual([{ subPath: path.relative(globalRoot(), checkout), names: ['.git'], runAsUser: 0 }])
   })
 
-  it('refuses the workspace a sibling-resumed conversation started in, but not the one that resumed it', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] })
-    await stoppedWorkspace('wt-a')
-    vi.setSystemTime(Date.now() + 60_000)
-    await stoppedWorkspace('wt-b')
-    await recordConversations(PROJ, 'wt-b', [{ tool: 'claude', conversationId: 'conv-wt-a' }])
-    await expect(deleteWorkspace(local, 'wt-a')).rejects.toMatchObject({ code: 'CONFLICT', message: /resumed in workspace wt-b/ })
-    expect(await exists(agentHistoryDir(PROJ, 'wt-a'))).toBe(true)
-
-    expect(await deleteWorkspace(local, 'wt-b')).toBe('wt-b')
-    // Its link gone, the conversation's own workspace can go too.
-    expect(await deleteWorkspace(local, 'wt-a')).toBe('wt-a')
-  })
-
   it('unlinks a checkout that is a link, leaving what it points at', async () => {
     await stoppedWorkspace('wt-linked')
     const target = path.join(tmpDir, 'elsewhere')

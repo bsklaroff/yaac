@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { recordTestProject } from '@yaac/test-utils/project-fixture'
 import { claimDraft, discardDraftWorkspace, listDraftWorkspaces, saveDraftWorkspace } from '#domain/workspaces'
 import { BUILT_IN_USER_ID, setDraftWorkspaceTitle } from '#db'
-import { recordProject } from '#db/project-store'
 import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import type { DraftWorkspaceSettings } from '@yaac/shared/types'
@@ -16,7 +16,7 @@ let tmpDir: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
+  await recordTestProject(PROJ, { name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
 })
 
 afterEach(async () => {
@@ -34,16 +34,18 @@ describe('saveDraftWorkspace', () => {
     expect(saved.createdAt).toMatch(STAMP)
 
     const replaced = await saveDraftWorkspace(local, PROJ, {
-      ...SETTINGS, prompt: 'a better idea', branch: 'dev', title: '  My   idea ', groupId: 'g1',
+      ...SETTINGS, prompt: 'a better idea', repos: [{ repo: 'api', branch: 'dev' }], nested: true, cwd: 'api', title: '  My   idea ', groupId: 'g1',
     }, saved.id)
-    expect(replaced).toMatchObject({ id: saved.id, prompt: 'a better idea', branch: 'dev', title: 'My idea', groupId: 'g1' })
+    expect(replaced).toMatchObject({
+      id: saved.id, prompt: 'a better idea', repos: [{ repo: 'api', branch: 'dev' }], nested: true, cwd: 'api', title: 'My idea', groupId: 'g1',
+    })
     // A blank title is none, leaving the draft to be auto-titled.
     expect(await saveDraftWorkspace(local, PROJ, { ...SETTINGS, title: ' ' }, saved.id)).not.toHaveProperty('title')
 
     await expect(saveDraftWorkspace(local, '00000000-0000-4000-8000-000000000000', SETTINGS)).rejects.toMatchObject({ code: 'NOT_FOUND' })
     await expect(saveDraftWorkspace(local, PROJ, SETTINGS, 'gone')).rejects.toMatchObject({ code: 'NOT_FOUND' })
     // An update is scoped to the project it names.
-    await recordProject({ id: OTHER, name: 'demo', remoteUrl: 'https://example.com/other', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
+    await recordTestProject(OTHER, { name: 'demo', remoteUrl: 'https://example.com/other', addedAt: '2026-01-01T00:00:00.000Z' })
     await expect(saveDraftWorkspace(local, OTHER, SETTINGS, saved.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 })

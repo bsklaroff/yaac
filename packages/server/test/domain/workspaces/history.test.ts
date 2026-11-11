@@ -26,6 +26,12 @@ import { convergeAgentHistory, removeAgentHistory } from '#domain/workspaces'
 const SLUG = '7d4e2a1c-5b3f-4e8a-9c6d-1f2e3a4b5c6d'
 const WT = 'wt-a'
 const SIBLING = 'wt-b'
+/** One repo, the project's own, checked out at the workspace root. */
+const FLAT = [{ cwd: '', repoId: SLUG }]
+/** Two other repos, each in a folder, under a root that is no checkout. */
+const API = '11111111-2222-4333-8444-555555555555'
+const WEB = '66666666-7777-4888-8999-aaaaaaaaaaaa'
+const NESTED = [{ cwd: '' }, { cwd: 'api', repoId: API }, { cwd: 'web', repoId: WEB }]
 
 let tmpDir: string
 
@@ -87,29 +93,19 @@ describe('convergeAgentHistory', () => {
     await rollout(shared('codex', 'sessions'), 't2', 't1')
     await rollout(shared('codex', 'sessions'), 't3', 't2')
     await rollout(shared('codex', 'sessions'), 'u1')
-    // A sibling's conversation; one both workspaces link (resumed from one in
-    // the other, back when the folder was shared); and the sibling's fork of
-    // our codex thread. None of them is ours alone.
+    // A sibling's conversations stay.
     await write(path.join(projects, 's1.jsonl'))
-    await write(path.join(projects, 'x1.jsonl'))
     await rollout(shared('codex', 'sessions'), 'tx')
-    await recordConversations(SLUG, WT, [
-      { tool: 'claude', conversationId: 'x1' },
-      { tool: 'codex', conversationId: 'tx', transcriptPath: `codex/sessions/${ROLLOUT_REL('tx')}` },
-    ])
-    await rollout(shared('codex', 'sessions'), 'tf', undefined, 't1')
     await recordConversations(SLUG, SIBLING, [
       { tool: 'claude', conversationId: 's1' },
-      { tool: 'claude', conversationId: 'x1', transcriptPath: 'claude/projects/-workspace/x1.jsonl' },
       { tool: 'codex', conversationId: 'tx', transcriptPath: `codex/sessions/${ROLLOUT_REL('tx')}` },
-      { tool: 'codex', conversationId: 'tf' },
     ])
     const elsewhere = await write(path.join(tmpDir, 'elsewhere.jsonl'))
     await fs.symlink(elsewhere, path.join(projects, 'c2.jsonl'))
     // A name already taken in the history is never overwritten.
     await write(history('claude', '-workspace', 'a1.jsonl'), 'kept\n')
 
-    await convergeAgentHistory(SLUG, WT, { layers: false })
+    await convergeAgentHistory(SLUG, WT, FLAT, { layers: false })
 
     for (const moved of [
       history('claude', '-workspace', 'c1.jsonl'),
@@ -123,8 +119,6 @@ describe('convergeAgentHistory', () => {
     ]) expect(await exists(moved), moved).toBe(true)
     for (const stayed of [
       path.join(projects, 's1.jsonl'),
-      path.join(projects, 'x1.jsonl'),
-      shared('codex', 'sessions', ROLLOUT_REL('tf')),
       shared('codex', 'sessions', ROLLOUT_REL('tx')),
       path.join(projects, 'a1.jsonl'),
       shared('codex', 'sessions', ROLLOUT_REL('u1')),
@@ -139,11 +133,9 @@ describe('convergeAgentHistory', () => {
       .toBe(path.join('history', WT, 'claude', '-workspace', 'c1.jsonl'))
     expect(rows.find((r) => r.conversationId === 't1')?.transcriptPath)
       .toBe(path.join('history', WT, 'codex', ROLLOUT_REL('t1')))
-    expect(rows.find((r) => r.conversationId === 'tx')?.transcriptPath)
-      .toBe(`codex/sessions/${ROLLOUT_REL('tx')}`)
 
     // A second pass finds nothing left to do.
-    await convergeAgentHistory(SLUG, WT, { layers: false })
+    await convergeAgentHistory(SLUG, WT, FLAT, { layers: false })
     expect(await exists(history('claude', '-workspace', 'c1.jsonl'))).toBe(true)
   })
 
@@ -153,12 +145,12 @@ describe('convergeAgentHistory', () => {
   it('creates every mount source and nested mountpoint, and moves nothing, under a runtime that layers', async () => {
     const left = await write(shared('claude', 'projects', '-workspace', `${WT}.jsonl`))
 
-    await convergeAgentHistory(SLUG, WT, { layers: true })
+    await convergeAgentHistory(SLUG, WT, FLAT, { layers: true })
 
     for (const dir of [
       history('codex-sqlite'),
       history('claude', '-workspace', 'memory'),
-      shared('claude', 'projects', '-repo', 'memory'),
+      shared('claude', 'projects', `-repo-${SLUG}`, 'memory'),
       shared('claude', 'file-history'),
       shared('codex', 'sessions'),
     ]) expect(await exists(dir), dir).toBe(true)
@@ -173,7 +165,7 @@ describe('convergeAgentHistory', () => {
     ])
     await write(history('claude', '-workspace', 'y1.jsonl'))
 
-    await convergeAgentHistory(SLUG, WT, { layers: false })
+    await convergeAgentHistory(SLUG, WT, FLAT, { layers: false })
 
     const rows = await listWorkspaceConversations(SLUG, WT)
     expect(rows.map((r) => r.transcriptPath)).toEqual([
@@ -194,9 +186,9 @@ describe('convergeAgentHistory', () => {
       { tool: 'claude', conversationId: 'h1', transcriptPath: path.relative(projectDir(SLUG), path.join(checkout, 'h1.jsonl')) },
     ])
     // The project's shared memory.
-    await write(path.join(projects, '-repo', 'memory', 'MEMORY.md'), 'remember\n')
+    await write(path.join(projects, `-repo-${SLUG}`, 'memory', 'MEMORY.md'), 'remember\n')
 
-    await convergeAgentHistory(SLUG, WT, { layers: false })
+    await convergeAgentHistory(SLUG, WT, FLAT, { layers: false })
 
     // The checkout's folder now IS the history's, earlier host files and all.
     expect((await fs.lstat(checkout)).isSymbolicLink()).toBe(true)
@@ -215,24 +207,56 @@ describe('convergeAgentHistory', () => {
     // Idempotent, and a link someone re-pointed is put back.
     await fs.unlink(checkout)
     await fs.symlink(tmpDir, checkout)
-    await convergeAgentHistory(SLUG, WT, { layers: false })
+    await convergeAgentHistory(SLUG, WT, FLAT, { layers: false })
     expect(await fs.realpath(checkout)).toBe(await fs.realpath(history('claude', '-workspace')))
   })
 
-  it('keeps a checkout folder real while it holds a conversation a sibling shares', async () => {
-    const checkout = path.join(shared('claude', 'projects'), claudeProjectDirName(workspaceDir(SLUG, WT)))
-    const stored = path.relative(projectDir(SLUG), path.join(checkout, 'x1.jsonl'))
-    await write(path.join(checkout, 'x1.jsonl'))
-    await write(path.join(checkout, 'own.jsonl'))
-    await recordConversations(SLUG, WT, [{ tool: 'claude', conversationId: 'x1', transcriptPath: stored }])
-    await recordConversations(SLUG, SIBLING, [{ tool: 'claude', conversationId: 'x1', transcriptPath: stored }])
+  it('creates a claude folder and a memory mount per cwd, under a runtime that layers', async () => {
+    await convergeAgentHistory(SLUG, WT, NESTED, { layers: true })
 
-    await convergeAgentHistory(SLUG, WT, { layers: false })
+    for (const dir of [
+      history('claude', '-workspace', 'memory'),
+      history('claude', '-workspace-api', 'memory'),
+      history('claude', '-workspace-web', 'memory'),
+      shared('claude', 'projects', '-workspace-root', 'memory'),
+      shared('claude', 'projects', `-repo-${API}`, 'memory'),
+      shared('claude', 'projects', `-repo-${WEB}`, 'memory'),
+    ]) expect(await exists(dir), dir).toBe(true)
+  })
 
-    expect((await fs.lstat(checkout)).isDirectory()).toBe(true)
-    expect(await exists(path.join(checkout, 'x1.jsonl'))).toBe(true)
-    expect(await exists(history('claude', '-workspace', 'own.jsonl'))).toBe(true)
-    expect((await listWorkspaceConversations(SLUG, WT))[0]?.transcriptPath).toBe(stored)
+  it('files each conversation under the cwd it ran in, and links each cwd to its memory, under a runtime that cannot layer', async () => {
+    const projects = shared('claude', 'projects')
+    const folder = (cwd: string): string => path.join(projects, claudeProjectDirName(path.join(workspaceDir(SLUG, WT), cwd)))
+    // What host runs left in real folders: one in `web`, one at the root,
+    // and one under a directory that is no cwd of the workspace.
+    await recordConversations(SLUG, WT, [
+      { tool: 'claude', conversationId: 'w1', transcriptPath: path.relative(projectDir(SLUG), path.join(folder('web'), 'w1.jsonl')) },
+      { tool: 'claude', conversationId: 'r1' },
+      { tool: 'claude', conversationId: 'd1' },
+    ])
+    await write(path.join(folder('web'), 'w1.jsonl'))
+    await write(path.join(folder(''), 'r1.jsonl'))
+    await write(path.join(folder('web/src'), 'd1.jsonl'))
+    await write(path.join(projects, `-repo-${WEB}`, 'memory', 'MEMORY.md'), 'web\n')
+    await write(path.join(projects, '-workspace-root', 'memory', 'MEMORY.md'), 'root\n')
+
+    await convergeAgentHistory(SLUG, WT, NESTED, { layers: false })
+
+    for (const moved of [
+      history('claude', '-workspace-web', 'w1.jsonl'),
+      history('claude', '-workspace', 'r1.jsonl'),
+      history('claude', '-workspace', 'd1.jsonl'),
+    ]) expect(await exists(moved), moved).toBe(true)
+    expect((await listWorkspaceConversations(SLUG, WT)).find((r) => r.conversationId === 'w1')?.transcriptPath)
+      .toBe(path.join('history', WT, 'claude', '-workspace-web', 'w1.jsonl'))
+    // Each cwd's folder is the history's, and its memory the one for it.
+    for (const cwd of ['', 'api', 'web']) expect((await fs.lstat(folder(cwd))).isSymbolicLink(), cwd).toBe(true)
+    expect(await fs.readFile(path.join(folder('web'), 'memory', 'MEMORY.md'), 'utf8')).toBe('web\n')
+    expect(await fs.readFile(path.join(folder(''), 'memory', 'MEMORY.md'), 'utf8')).toBe('root\n')
+
+    await removeAgentHistory(SLUG, WT)
+    for (const cwd of ['', 'api', 'web']) expect(await exists(folder(cwd)), cwd).toBe(false)
+    expect(await exists(path.join(projects, `-repo-${WEB}`, 'memory', 'MEMORY.md'))).toBe(true)
   })
 })
 
@@ -246,7 +270,7 @@ describe('removeAgentHistory', () => {
     // claude's per-conversation env dirs: the pinned first conversation's,
     // one with a transcript in the history, and a sibling's.
     for (const sid of [WT, 'k1', 'theirs']) await fs.mkdir(shared('claude', 'session-env', sid), { recursive: true })
-    await convergeAgentHistory(SLUG, WT, { layers: false })
+    await convergeAgentHistory(SLUG, WT, FLAT, { layers: false })
     const checkout = path.join(shared('claude', 'projects'), claudeProjectDirName(workspaceDir(SLUG, WT)))
     expect(await exists(checkout)).toBe(true)
     // A name another workspace's history has since taken over is its link now.

@@ -10,7 +10,10 @@ import {
   defaultPermissionMode,
   normalizeTool,
   PERMISSION_MODES,
+  queuedWorkspaceSettingsSchema,
+  REPO_DIR_RE,
   resolveToolCreateDefaults,
+  routineSettingsSchema,
   SUPPORTED_PERMISSION_MODES,
   toolSupportsPermissionMode,
   type PermissionMode,
@@ -242,5 +245,31 @@ describe('customEndpointCreateSchema', () => {
     expect(efforts({ levels: ['ultra'], default: 'ultra' })).toBe(false)
     expect(efforts({ levels: [], default: 'low' })).toBe(false)
     expect(efforts({ levels: ['low', 'low'], default: 'low' })).toBe(false)
+  })
+})
+
+describe('REPO_DIR_RE', () => {
+  it('takes one path segment a checkout can sit in: nothing that could leave the workspace, shadow its .git or read as an option', () => {
+    for (const dir of ['api', 'Web-App', 'docs_v2.x', '.github', 'a', 'x'.repeat(100)]) expect(REPO_DIR_RE.test(dir), dir).toBe(true)
+    for (const dir of ['', '.', '..', '.git', '.GIT', '-rf', 'a/b', '/abs', 'with space', 'tab\t', 'x'.repeat(101), 'a\nb']) {
+      expect(REPO_DIR_RE.test(dir), JSON.stringify(dir)).toBe(false)
+    }
+  })
+})
+
+describe('the repo selection of a create-shaped request', () => {
+  it('takes repos each at a branch or commit, a layout and a cwd, on a queued entry and a routine alike', () => {
+    const selection = {
+      repos: [{ repo: 'api', branch: 'dev' }, { repo: 'web', commit: 'a'.repeat(40) }, { repo: 'docs' }],
+      nested: true,
+      cwd: 'web',
+    }
+    expect(queuedWorkspaceSettingsSchema.parse({ prompt: 'go', ...selection })).toMatchObject(selection)
+    expect(routineSettingsSchema.parse({ name: 'nightly', cron: '0 3 * * *', prompt: 'go', ...selection })).toMatchObject(selection)
+    // No repos is a selection too; a branch on its own is shorthand the server resolves.
+    expect(queuedWorkspaceSettingsSchema.parse({ prompt: 'go', repos: [] }).repos).toEqual([])
+    expect(queuedWorkspaceSettingsSchema.parse({ prompt: 'go', branch: 'dev' })).toMatchObject({ branch: 'dev' })
+    expect(queuedWorkspaceSettingsSchema.safeParse({ prompt: 'go', repos: [{ branch: 'dev' }] }).success).toBe(false)
+    expect(queuedWorkspaceSettingsSchema.safeParse({ prompt: 'go', cwd: '' }).success).toBe(false)
   })
 })

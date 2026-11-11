@@ -70,11 +70,14 @@ Other exits keep the prompt too:
 ## What a draft holds
 
 Every field as the pane showed it: prompt, title, agent, model, effort, UI
-mode, permission mode, reference branch, group, and **Start**. Reopening the draft
-restores the screen.
+mode, permission mode, the repo rows (which repos, each one's branch), the
+nested toggle, the cwd, group, and **Start**. Reopening the draft restores
+the screen.
 
-- Model and branch are empty if the pane had not loaded them yet; reopening
-  then uses the default, as a fresh form does.
+- Model, the repo rows, the layout and the cwd are empty if the pane had
+  not loaded them yet; reopening then uses the default, as a fresh form
+  does. A repo row naming a repo the project has since unlinked is dropped
+  the same way.
 - Start is the id of the workspace or queued entry the create would wait on.
   If that parent is gone when the draft reopens, Start falls back to now.
 - Deleting the draft's group clears the field. A name typed into the "+ New

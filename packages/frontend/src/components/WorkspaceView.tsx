@@ -898,20 +898,12 @@ export function WorkspaceView({
                 </div>
               ) : commits ? (
                 <div className="h-full w-full overflow-hidden rounded-md">
-                  <WorkspaceCommits
-                    workspaceId={id}
-                    projectId={owner?.projectId ?? ''}
-                    baseBranch={owner?.baseBranch}
-                    startCommit={owner?.startCommit}
-                  />
+                  <WorkspaceCommits workspaceId={id} />
                 </div>
               ) : explorer ? (
                 <div className="h-full w-full overflow-hidden rounded-md">
                   <WorkspaceFiles
                     workspaceId={id}
-                    projectId={owner?.projectId ?? ''}
-                    baseBranch={owner?.baseBranch}
-                    startCommit={owner?.startCommit}
                     changedOnly={isChangesTarget(target)}
                     range={changesRange(target)}
                   />

@@ -153,7 +153,7 @@ describe('workspace group store', () => {
       await recordWorkspaceStopped(PROJ, 'dead')
       const settings = { prompt: 'p', tool: 'claude', mode: 'tui', permissionMode: 'bypass', groupId: group.groupId } as const
       const queued = await insertQueuedWorkspace(PROJ, { parentWorkspaceId: 'live' }, {
-        ...settings, model: 'opus', branch: 'main',
+        ...settings, model: 'opus', repos: [], nested: false, cwd: '.',
       })
       await insertDraftWorkspace(PROJ, settings)
 

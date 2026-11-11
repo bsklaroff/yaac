@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm'
 import { getDb } from './client'
-import { gitCredentials, projects } from './schema'
+import { gitCredentials, repos } from './schema'
 import { secretConfig } from './secret-key'
 import { symmetricDecrypt, symmetricEncrypt } from 'better-auth/crypto'
 import { ServerError } from '@yaac/shared/errors'
@@ -123,14 +123,14 @@ export async function renameGitCredential(
 
 /**
  * Remove a credential, unassigning it (and its trusted host key) from every
- * project. Allowed while in use, so a leaked credential can be removed at
+ * repo. Allowed while in use, so a leaked credential can be removed at
  * once. False when there was no such credential.
  */
 export async function deleteGitCredential(id: string): Promise<boolean> {
   const db = await getDb()
   const deleted = await db.transaction(async (tx) => {
-    await tx.update(projects).set({ gitCredentialId: null, knownHostsEntry: null })
-      .where(eq(projects.gitCredentialId, id))
+    await tx.update(repos).set({ gitCredentialId: null, knownHostsEntry: null })
+      .where(eq(repos.gitCredentialId, id))
     const rows = await tx.delete(gitCredentials).where(eq(gitCredentials.id, id))
       .returning({ id: gitCredentials.id })
     return rows.length > 0
@@ -142,7 +142,7 @@ export async function deleteGitCredential(id: string): Promise<boolean> {
 
 /**
  * Replace a credential's secret. In one transaction: insert a new row under
- * the same name, move every project onto it (keeping its trusted host key),
+ * the same name, move every repo onto it (keeping its trusted host key),
  * and delete the old row. A new id means nothing holding the old id silently
  * uses the new secret. Undefined when there is no such credential.
  */
@@ -162,7 +162,7 @@ export async function replaceGitCredential(
       sealedSecret,
       publicKey: next.publicKey ?? null,
     }).returning()
-    await tx.update(projects).set({ gitCredentialId: fresh.id }).where(eq(projects.gitCredentialId, id))
+    await tx.update(repos).set({ gitCredentialId: fresh.id }).where(eq(repos.gitCredentialId, id))
     await tx.delete(gitCredentials).where(eq(gitCredentials.id, id))
     const [renamed] = await tx.update(gitCredentials).set({ name: old.name })
       .where(eq(gitCredentials.id, fresh.id)).returning()

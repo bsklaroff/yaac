@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { recordTestProject } from '@yaac/test-utils/project-fixture'
 import { Hono } from 'hono'
 import { MAMA_BODY_LIMIT, mamaRelayApp, workspaceApp } from '#routes/workspaces'
 import { toErrorBody } from '#api/http/errors'
-import { BUILT_IN_USER_ID } from '#db'
-import { recordProject } from '#db/project-store'
 import { insertQueuedWorkspace } from '#db/queued-workspace-store'
 import { insertDraftWorkspace } from '#db/draft-workspace-store'
 import { closeDb } from '#db/client'
@@ -44,7 +43,7 @@ let tmpDir: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
+  await recordTestProject(PROJ, { name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
 })
 
 afterEach(async () => {
@@ -102,16 +101,18 @@ describe('GET /prompt', () => {
   // conversation's, as the snapshot shows it.
   it('returns a queued entry\'s, draft\'s or session\'s whole prompt', async () => {
     const queued = await insertQueuedWorkspace(PROJ, { parentWorkspaceId: 'w-1' }, {
-      prompt: LONG, tool: 'claude', model: 'opus', mode: 'tui', permissionMode: 'manual', branch: 'main',
+      prompt: LONG, tool: 'claude', model: 'opus', mode: 'tui', permissionMode: 'manual', repos: [], nested: false, cwd: '.',
     })
     const draft = await insertDraftWorkspace(PROJ, { prompt: `${LONG.slice(1)}!`, tool: 'claude', mode: 'tui', permissionMode: 'manual' })
     const workspaceId = '6f2a1d3b-8c4e-4f9a-8b7d-1e2f3a4b5c6d'
     await recordWorkspaceCreated({ projectId: PROJ, workspaceId })
     const session = await insertSession(PROJ, workspaceId, {
+      cwd: '',
       tool: 'claude', mode: 'acp', permissionMode: 'manual', prompt: `${LONG.slice(2)}?`,
     })
     await recordConversations(PROJ, workspaceId, [{ tool: 'claude', conversationId: 'conv-1', firstPrompt: `${LONG.slice(4)};` }])
     const resumed = await insertSession(PROJ, workspaceId, {
+      cwd: '',
       tool: 'claude', mode: 'acp', permissionMode: 'manual', conversationId: 'conv-1',
     })
     const creating = '0b6a1f4e-2c3d-4e5f-8a9b-1c2d3e4f5a6b'

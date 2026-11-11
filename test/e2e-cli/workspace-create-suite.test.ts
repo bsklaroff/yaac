@@ -241,7 +241,8 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     const projectId = randomUUID()
     projectIds.set(name, projectId)
     const projectPath = path.join(testEnv.dataDir, 'global', 'projects', projectId)
-    const repoPath = path.join(projectPath, 'repo')
+    // The main clone of the project's repo, which carries the project's id.
+    const repoPath = path.join(testEnv.dataDir, 'global', 'repos', projectId)
     await fs.mkdir(path.join(projectPath, 'claude'), { recursive: true })
     await cloneRepo(path.join(mockGit!.reposDir, `${name}.git`), repoPath, null)
     const fakeRemote = `https://github.com/test-org/${name}.git`
@@ -1585,8 +1586,8 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     }
 
     beforeAll(async () => {
-      const projectPath = await setupProject(NAME, { files: { 'version.txt': 'one\n' } })
-      sha = (await git(path.join(projectPath, 'repo'), ['rev-parse', 'HEAD'])).trim()
+      await setupProject(NAME, { files: { 'version.txt': 'one\n' } })
+      sha = (await git(path.join(testEnv.dataDir, 'global', 'repos', idOf(NAME)), ['rev-parse', 'HEAD'])).trim()
       const graph = await stepsFile('steps.json', {
         install: { run: ['echo installed', 'touch /tmp/installed'] },
         web: { run: 'sleep 600', service: true, needs: ['install'], ready: 'test -f /tmp/installed' },
@@ -2023,14 +2024,15 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       // restart must rewrite it to the pod's mount of the main clone
       // (buildCloneLinkExec).
       const alternates = path.join(projectPath, 'workspaces', workspaceId, '.git', 'objects', 'info', 'alternates')
-      await fs.writeFile(alternates, `${path.join(projectPath, 'repo', '.git', 'objects')}\n`)
+      const hostObjects = path.join(testEnv.dataDir, 'global', 'repos', idOf('oc-demo'), '.git', 'objects')
+      await fs.writeFile(alternates, `${hostObjects}\n`)
 
       const restarted = await runYaac(serverEnv, 'workspace', 'restart', workspaceId)
       expect(restarted.exitCode, restarted.stderr).toBe(0)
       jobName = (await findWorkspacePod('oc-demo')).jobName
       const line = (await fs.readFile(alternates, 'utf8')).trim()
-      expect(line).toMatch(new RegExp(`/projects/${idOf('oc-demo')}/repo/\\.git/objects$`))
-      expect(line).not.toBe(path.join(projectPath, 'repo', '.git', 'objects'))
+      expect(line).toMatch(new RegExp(`/repos/${idOf('oc-demo')}/\\.git/objects$`))
+      expect(line).not.toBe(hostObjects)
       await execInJob(jobName, ['git', '-C', '/workspace', 'status', '--porcelain'])
       // The main clone is read-only.
       await expect(execInJob(jobName, ['touch', path.join(path.dirname(line), 'planted')])).rejects.toThrow()
@@ -2052,6 +2054,144 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
   /** --prompt, --model, --effort, --permission-mode and --branch on one
    *  workspace. */
+  /**
+   * A project with several repos (docs/project-repos.md): which of them a
+   * workspace starts with, where each checkout sits under /workspace, where
+   * its agent and shells run, and whose token is GH_TOKEN. The queue and
+   * routine forms of the options are in workspace-cli.test.ts, and the
+   * proxy's use of each repo's credential in proxy-credentials-suite.test.ts.
+   */
+  describe('a project with several repos (--repo, --no-repos, --nested, --cwd)', () => {
+    const NAME = 'multi-app'
+    const LIB = 'multi-lib'
+    let jobName = ''
+    let workspaceId = ''
+    type Listed = {
+      workspaceId: string
+      cwd: string
+      repos: Array<{ repoId: string; path: string; baseBranch?: string }>
+      sessions: Array<{ cwd: string; window: string }>
+    }
+    const listed = async (id: string): Promise<Listed | undefined> =>
+      (await (await fetch(`${base}/api/workspace/list?project=${idOf(NAME)}`)).json() as { workspaces: Listed[] })
+        .workspaces.find((w) => w.workspaceId === id)
+    const inPod = async (job: string, script: string): Promise<string> => (await execInJob(job, ['sh', '-c', script])).stdout.trim()
+    const yaac = async (...args: string[]): Promise<string> => {
+      const { stdout, stderr, exitCode } = await runYaac(serverEnv, ...args)
+      if (exitCode !== 0) throw new Error(`yaac ${args.join(' ')} failed (exit ${exitCode}):\n${stderr}`)
+      return stdout
+    }
+
+    beforeAll(async () => {
+      await skipClaudeOnboarding(await setupProject(NAME))
+      await setupProject(LIB, { extraBranches: { dev: { 'dev-only.txt': 'dev content\n' } } })
+      await yaac('project', 'repo', 'add', NAME, '--repo-id', idOf(LIB), '--dir', 'lib')
+      jobName = (await createWorkspace(NAME, '--tool', 'claude', '--repo', NAME, '--repo', 'lib@dev', '--cwd', 'lib')).jobName
+      workspaceId = (await findWorkspacePod(NAME)).workspaceId
+    }, 300_000)
+
+    afterAll(() => stopWorkspace(workspaceId))
+
+    /** Where a window's process runs, read from /proc: tmux's own
+     *  `pane_current_path` is empty in a sandboxed pod. */
+    const paneCwd = (target: string): Promise<string> =>
+      inPod(jobName, `readlink /proc/$(tmux -S ${CONTAINER_TMUX_SOCK} display -p -t ${target} "#{pane_pid}")/cwd`)
+
+    it('checks each repo out in its folder, and starts the agent and shells where --cwd says', async () => {
+      expect(await listed(workspaceId)).toMatchObject({
+        cwd: 'lib',
+        // In path order.
+        repos: [{ repoId: idOf(LIB), path: 'lib', baseBranch: 'dev' }, { repoId: idOf(NAME), path: NAME }],
+        sessions: [{ cwd: 'lib' }],
+      })
+      // The workspace dir is no checkout; each folder under it is one, on
+      // the workspace's branch, and git trusts each.
+      expect(await inPod(jobName, 'test -e /workspace/.git && echo checkout || echo plain')).toBe('plain')
+      expect(await inPod(jobName, `git -C /workspace/${NAME} rev-parse --abbrev-ref HEAD`)).toBe(`agent/${workspaceId}`)
+      expect(await inPod(jobName, 'git -C /workspace/lib rev-parse --abbrev-ref --symbolic-full-name @{u}')).toBe('origin/dev')
+      expect(await inPod(jobName, 'cat /workspace/lib/dev-only.txt')).toBe('dev content')
+      expect(await inPod(jobName, 'git -C /workspace/lib status --porcelain')).toBe('')
+      expect(await inPod(jobName, 'printenv YAAC_CHECKOUTS')).toBe(`${NAME}:lib`)
+      expect(await inPod(jobName, 'printenv YAAC_WORKSPACE_DIR')).toBe('/workspace')
+
+      // The tmux session, and so every shell and step, starts in the cwd;
+      // so does the agent, whose GH_TOKEN stands for that checkout's repo.
+      expect(await inPod(jobName, `tmux -S ${CONTAINER_TMUX_SOCK} display -p -t yaac "#{session_path}"`)).toBe('/workspace/lib')
+      expect(await paneCwd('yaac:claude')).toBe('/workspace/lib')
+      expect(await inPod(jobName, 'printenv GH_TOKEN')).toBe(`yaac-ph-gh-token-${idOf(LIB)}`)
+    }, 120_000)
+
+    it('opens a session in another checkout with --workspace --cwd, under that repo\'s GH_TOKEN', async () => {
+      await yaac('workspace', 'create', '--workspace', workspaceId, '--tool', 'claude', '--mode', 'tui', '--cwd', NAME)
+      const session = await vi.waitFor(async () => {
+        const found = (await listed(workspaceId))?.sessions.find((s) => s.cwd === NAME)
+        expect(found).toBeDefined()
+        return found!
+      }, { timeout: 60_000, interval: 1000 })
+      const target = `yaac:${session.window}`
+      expect(await paneCwd(target)).toBe(`/workspace/${NAME}`)
+      await vi.waitFor(async () => {
+        expect(await inPod(jobName, `tr '\\0' '\\n' < /proc/$(tmux -S ${CONTAINER_TMUX_SOCK} display -p -t ${target} "#{pane_pid}")/environ | grep '^GH_TOKEN='`))
+          .toBe(`GH_TOKEN=yaac-ph-gh-token-${idOf(NAME)}`)
+      }, { timeout: 30_000, interval: 1000 })
+
+      const elsewhere = await runYaac(serverEnv, 'workspace', 'create', '--workspace', workspaceId, '--tool', 'claude', '--cwd', 'nope')
+      expect(elsewhere.exitCode).not.toBe(0)
+    }, 180_000)
+
+    it('yaac-mama acts on the checkout it runs in, and as-repo answers only a repo the project lets be GH_TOKEN', async () => {
+      const mama = async (dir: string, args: string): Promise<string> =>
+        await inPod(jobName, `cd ${dir} && yaac-mama ${args} 2>&1; echo "EXIT:$?"`)
+      // set-base moves the base of the checkout it runs in, and no other.
+      const main = (await listed(workspaceId))?.repos.find((r) => r.path === NAME)?.baseBranch ?? ''
+      expect(await mama('/workspace/lib', `set-base ${main}`)).toMatch(/EXIT:0$/)
+      expect((await listed(workspaceId))?.repos.map((r) => [r.path, r.baseBranch])).toEqual([['lib', main], [NAME, main]])
+      expect(await mama('/workspace/lib', 'set-base dev')).toMatch(/EXIT:0$/)
+      expect((await listed(workspaceId))?.repos.find((r) => r.path === 'lib')?.baseBranch).toBe('dev')
+      // Outside every checkout it needs the repo named.
+      expect(await mama('/workspace', 'set-base dev')).toMatch(/EXIT:1$/)
+
+      // as-repo: the other repo's placeholder, which the proxy swaps only
+      // while the link allows it; a read-only link, or one kept from being
+      // GH_TOKEN, is refused here too.
+      const asRepo = `as-repo ${NAME} -- sh -c 'printf %s "$GH_TOKEN"'`
+      expect(await mama('/workspace/lib', asRepo)).toBe(`yaac-ph-gh-token-${idOf(NAME)}EXIT:0`)
+      await yaac('project', 'repo', 'read-only', NAME, NAME, 'on')
+      expect(await mama('/workspace/lib', asRepo)).toMatch(/is read-only in this project.*EXIT:1$/s)
+      await yaac('project', 'repo', 'read-only', NAME, NAME, 'off')
+      await yaac('project', 'repo', 'gh-token', NAME, NAME, 'off')
+      expect(await mama('/workspace/lib', asRepo)).toMatch(/does not allow .* token as GH_TOKEN.*EXIT:1$/s)
+      await yaac('project', 'repo', 'gh-token', NAME, NAME, 'on')
+      expect(await mama('/workspace', 'as-repo nope -- true')).toMatch(/has no repo "nope".*EXIT:1$/s)
+    }, 180_000)
+
+    it('--no-nested puts a lone repo at the workspace root, and --no-repos starts an empty workspace', async () => {
+      const known = new Set([workspaceId])
+      const start = async (...args: string[]): Promise<PodInfo> => {
+        await yaac('workspace', 'create', NAME, '--no-session', ...args)
+        const pod = await findWorkspacePod(NAME, known)
+        known.add(pod.workspaceId)
+        return pod
+      }
+      const flat = await start('--repo', 'lib', '--no-nested')
+      try {
+        expect(await listed(flat.workspaceId)).toMatchObject({ cwd: '', repos: [{ repoId: idOf(LIB), path: '' }] })
+        expect(await inPod(flat.jobName, 'git -C /workspace config remote.origin.url')).toBe(`https://github.com/test-org/${LIB}.git`)
+        expect(await inPod(flat.jobName, 'printenv YAAC_CHECKOUTS')).toBe('.')
+      } finally {
+        await stopWorkspace(flat.workspaceId)
+      }
+      const empty = await start('--no-repos')
+      try {
+        expect(await listed(empty.workspaceId)).toMatchObject({ cwd: '', repos: [] })
+        expect(await inPod(empty.jobName, 'ls -A /workspace')).toBe('')
+        expect(await inPod(empty.jobName, 'echo "[${YAAC_CHECKOUTS-unset}][${GH_TOKEN-unset}]"')).toBe('[][unset]')
+      } finally {
+        await stopWorkspace(empty.workspaceId)
+      }
+    }, 480_000)
+  })
+
   describe('create-time overrides (--prompt, --model, --effort, --branch)', () => {
     const NAME = 'overridden'
     let jobName = ''
@@ -2659,16 +2799,26 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     // Last in the file: it stops bob's workspace.
     it('scopes the CLI to the caller\'s projects, and to a teammate\'s with --user', async () => {
       const [alice, bob] = await Promise.all([cliAs(ALICE), cliAs(BOB)])
-      const bobId = (await (await as(BOB, '/whoami')).json() as { userId: string }).userId
       const bobWorkspace = (await findWorkspacePod(BOB_PROJECT)).workspaceId
 
-      // Alice's hosted project and bob's share of it: one name, two projects.
-      const created = await as(ALICE, '/project/create', { method: 'POST', body: JSON.stringify({ name: 'shared-app' }) })
-      expect(created.status).toBe(200)
-      const source = (await created.json() as { id: string }).id
-      const shared = await as(ALICE, `/project/${source}/shares`, { method: 'POST', body: JSON.stringify({ userId: bobId }) })
-      expect(shared.status).toBe(200)
-      const share = (await shared.json() as { id: string }).id
+      // Alice's hosted project, whose repo she shares with bob, who links it
+      // into a project of his own under the same name.
+      expect((await runYaac(alice, 'project', 'create', 'shared-app')).exitCode).toBe(0)
+      const projects = await (await as(ALICE, '/project/list')).json() as Array<{ name: string; repos: Array<{ id: string }> }>
+      const repoId = projects.find((p) => p.name === 'shared-app')!.repos[0].id
+      const shared = await runYaac(alice, 'repo', 'share', 'shared-app/shared-app', 'bob@example.com')
+      expect(shared.exitCode, shared.stderr).toBe(0)
+      expect(shared.stdout).toContain(`Repo ${repoId.slice(0, 8)} is now shared with bob@example.com`)
+      // The table cuts its last column to the terminal's width, so only the
+      // start of the login is sure to show.
+      expect((await runYaac(alice, 'repo', 'list')).stdout).toMatch(new RegExp(`${repoId.slice(0, 8)}.*with bob@`))
+      expect((await runYaac(bob, 'repo', 'list')).stdout).toMatch(new RegExp(`${repoId.slice(0, 8)}.*by alice@`))
+      // Only its owner shares it on.
+      expect((await runYaac(bob, 'repo', 'share', repoId, 'alice@example.com')).exitCode).not.toBe(0)
+      expect((await runYaac(bob, 'project', 'create', 'shared-app')).exitCode).toBe(0)
+      const linked = await runYaac(bob, 'project', 'repo', 'add', 'shared-app', '--repo-id', repoId, '--dir', 'upstream')
+      expect(linked.exitCode, linked.stderr).toBe(0)
+      expect(linked.stdout).toContain(`Project "shared-app" now links repo ${repoId} in the folder upstream.`)
 
       const own = await runYaac(alice, 'project', 'list')
       expect(own.stdout).toContain('acped')
@@ -2681,13 +2831,21 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         expect(bobs.stdout).not.toContain('acped')
       }
 
-      // The name picks each caller's own copy.
-      for (const [env, id, who] of [[alice, source, 'alice'], [bob, share, 'bob']] as const) {
+      // The name picks each caller's own project; in bob's, --repo names
+      // alice's repo beside his own.
+      for (const [env, who, repo] of [[alice, 'alice', []], [bob, 'bob', ['--repo', 'upstream']]] as const) {
         const dir = path.join(testEnv.scratchDir, `shared-app-${who}`)
-        const cloned = await runYaac(env, 'project', 'clone', 'shared-app', dir)
+        const cloned = await runYaac(env, 'project', 'clone', 'shared-app', dir, ...repo)
         expect(cloned.exitCode, cloned.stderr).toBe(0)
-        expect((await git(dir, ['remote', 'get-url', 'origin'])).trim()).toContain(`/api/project/${id}/git`)
+        expect((await git(dir, ['remote', 'get-url', 'origin'])).trim()).toContain(`/api/repo/${repoId}/git`)
       }
+
+      // Unsharing ends bob's use of the repo; his project keeps its link.
+      const unshared = await runYaac(alice, 'repo', 'unshare', repoId, 'bob')
+      expect(unshared.exitCode, unshared.stderr).toBe(0)
+      expect(unshared.stdout).toContain(`Repo ${repoId.slice(0, 8)} is no longer shared with bob`)
+      expect((await runYaac(bob, 'repo', 'list')).stdout).not.toContain(repoId.slice(0, 8))
+      expect((await runYaac(bob, 'project', 'repo', 'list', 'shared-app')).stdout).toMatch(/upstream\s+\S+\s+\(none needed\)/)
 
       const group = await as(BOB, '/workspace/group/create', {
         method: 'POST', body: JSON.stringify({ projectId: idOf(BOB_PROJECT), name: 'bob-group' }),

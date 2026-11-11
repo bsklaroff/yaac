@@ -64,7 +64,7 @@ so the commit is checked too. Only running something approves it, and only
 a person's action:
 
 - A person saving a routine approves the commit it starts at, or its branch
-  (the project's default when it names none). Every agent of the project
+  (the repo's default when it names none). Every agent of the project
   can push to a branch with the project's git credential, so approving one
   approves whatever is pushed there.
 - A person deploying a site, or launching a named workflow
@@ -72,6 +72,12 @@ a person's action:
 - A person setting a site to follow a branch (docs/public-sites.md
   "Following a branch"), or deploying a site that follows one, approves the
   branch, so each follow deploy passes as its tip.
+
+The commit is one repo's, so run secrets reach only a workspace that starts
+with exactly one repo (docs/project-repos.md): a launch with none or several
+that would get them is refused. A branch is approved for that repo, so in a
+project with several repos the same branch name in another repo is not
+approved by it.
 
 Nothing an agent does approves anything, and no verb approves on its own.
 An approval reaches only the workflow its named workflow points at now, but
@@ -84,10 +90,10 @@ create --workflow` included, and can print them into its step logs, which
 the project's agents read. That includes the project's agents themselves,
 which push with its git credential, so approve a branch only where an agent
 reading the secret is acceptable, or protect the branch on the remote. On a
-hosted project whose remote another user can push through a share
-(docs/hosted-projects.md "Sharing"), that would be another person, so there
-no branch is approved for a workflow that names secrets, and a launch that
-would rely on one is refused; such a workflow runs at commits.
+hosted repo its owner shared with another user (docs/hosted-projects.md
+"Sharing"), that would be another person, so there no branch is approved
+for a workflow that names secrets, and a launch that would rely on one is
+refused; such a workflow runs at commits.
 
 **The launch check** (`workflowLaunch` in `#domain/projects`). A
 non-interactive launch, or a site's release, of workflow W at commit C gets

@@ -32,7 +32,7 @@ export async function createShellWindow(jobName: string): Promise<WorkspaceTermi
     jobName,
     `names=$(${tmux} list-windows -t yaac -F '#{window_name}'); n=shell; i=2; `
     + `while printf '%s\\n' "$names" | grep -qxF "$n"; do n=shell-$i; i=$((i+1)); done; `
-    + `${tmux} new-window -d -P -F '#{window_id} #{window_name}' -t yaac -n "$n" -c ${paths.workspaceDir}`,
+    + `${tmux} new-window -d -P -F '#{window_id} #{window_name}' -t yaac -n "$n" -c '#{session_path}'`,
     { maxAttempts: 1 },
   )
   const m = CREATED.exec(stdout.trim())

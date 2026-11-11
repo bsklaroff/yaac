@@ -826,10 +826,149 @@ export type ToolAuthEntry =
 export interface ProjectMeta {
   /** The project's immutable id, which names it in every route and row. */
   id: string
-  /** Display name derived from the repo path; not unique. */
+  /** Display name, by default derived from its first repo's path; not
+   *  unique. */
   name: string
-  remoteUrl: string
   addedAt: string
+}
+
+/**
+ * One repo of a create's selection (docs/project-repos.md): which repo, and
+ * the branch (no `origin/` prefix) or full commit its checkout starts at;
+ * neither starts at the remote's default branch. A request names the repo
+ * by its folder in the project (`ProjectRepo.dir`) or its id; stored and
+ * answered selections name it by id.
+ */
+export interface RepoStart {
+  repo: string
+  branch?: string
+  commit?: string
+}
+
+export const repoStartSchema = z.object({
+  repo: z.string().min(1).max(255),
+  branch: z.string().min(1).max(255).optional(),
+  commit: z.string().min(1).max(64).optional(),
+})
+
+/** Most repos one project links. */
+export const MAX_PROJECT_REPOS = 32
+
+/**
+ * What a create starts with, as every create-shaped request takes it: the
+ * repos (absent takes the ones the project last included, `[]` none),
+ * whether a lone repo sits in a folder of its own rather than at the
+ * workspace root, and where the agent starts (`.` for the workspace root,
+ * else a selected repo). `branch` and `commit` are shorthand for the
+ * start of a selection of exactly one repo.
+ */
+export const repoSelectionShape = {
+  repos: z.array(repoStartSchema).max(MAX_PROJECT_REPOS).optional(),
+  nested: z.boolean().optional(),
+  cwd: z.string().min(1).max(255).optional(),
+  branch: z.string().min(1).max(255).optional(),
+  commit: z.string().min(1).max(64).optional(),
+}
+
+/** A resolved selection, as queued entries, routines and drafts answer it. */
+export interface RepoSelection {
+  repos: RepoStart[]
+  nested: boolean
+  /** Relative to the workspace root: `''` or one checkout's path. */
+  cwd: string
+}
+
+/** A folder name a repo's checkout can take: one path segment that is not
+ *  `.`, `..` or `.git`, and does not read as an option. */
+export const REPO_DIR_RE = /^(?!\.{1,2}$)(?!\.[gG][iI][tT]$)(?!-)[A-Za-z0-9._-]{1,100}$/
+
+/** One repo a project links, as `ProjectSummary` lists it. */
+export interface ProjectRepo {
+  /** The repo's id. */
+  id: string
+  /** The folder its checkout takes in a workspace that nests its repos. */
+  dir: string
+  remoteUrl: string
+  /** The repo's owner, who differs from the project's for a repo shared
+   *  with them. */
+  owner: string
+  /** Whether the server hosts the remote (docs/hosted-projects.md). */
+  hosted: boolean
+  /** For a hosted repo, whether pushes may not delete or rewind the
+   *  default branch. */
+  guardDefaultBranch: boolean
+  /** Set when the repo moved off yaac to another git host and yaac still
+   *  keeps the repository it hosted. */
+  keepsHostedRepo?: true
+  /** Its git credential. Without one no workspace can start with it,
+   *  unless it is hosted, which needs none. */
+  gitCredential: { id: string; name: string } | null
+  /** k8s only (docs/project-repos.md "Read-only repos"). */
+  readOnly: boolean
+  /** k8s only: whether its token may be `GH_TOKEN`. */
+  ghToken: boolean
+  /** Whether the last create included it, and the branch it named for it
+   *  while origin still has it; the create form opens on both. */
+  lastIncluded: boolean
+  lastBranch?: string
+}
+
+/** One of a user's repos, as Settings → Repos lists it. */
+export interface RepoSummary {
+  id: string
+  owner: string
+  remoteUrl: string
+  hosted: boolean
+  guardDefaultBranch: boolean
+  keepsHostedRepo?: true
+  gitCredential: { id: string; name: string } | null
+  /** The projects that link it, any user's. */
+  projects: Array<{ id: string; name: string; owner: string }>
+  /** The users it is shared with, by id. */
+  sharedWith: string[]
+  /** Set once its owner deleted it: the workspaces that still hold a
+   *  checkout of it, with the last of which it goes for good. */
+  deleted?: { heldBy: RepoHolder[] }
+}
+
+/** A workspace holding a checkout of a repo. */
+export interface RepoHolder {
+  workspaceId: string
+  projectId: string
+  projectName: string
+  owner: string
+}
+
+/** What deleting a repo would reach, for the confirmation (`GET
+ *  /repo/:repoId/delete-preview`): whether yaac holds the only copy of its
+ *  code, the projects it is unlinked from, and the workspaces whose
+ *  checkouts keep its main clone on disk until they are deleted. */
+export interface RepoDeletePreview {
+  hosted: boolean
+  projects: Array<{ id: string; name: string; owner: string }>
+  heldBy: RepoHolder[]
+}
+
+/** What moving a hosted repo to a git host stops and hands over, for the
+ *  warning a client shows before it confirms (`GET
+ *  /repo/:repoId/move-preview`). */
+export interface RepoMovePreview {
+  /** Running workspaces holding a checkout of it, every user's. */
+  runningWorkspaces: number
+  /** The users it is shared with, by login or name, who each need a
+   *  credential of their own for the new remote. */
+  sharedWith: string[]
+}
+
+/** One checkout of a workspace. */
+export interface WorkspaceRepo {
+  repoId: string
+  /** Where it sits under the workspace root: `''` for the root itself. */
+  path: string
+  /** The branch its work is measured against, as its row records it. */
+  baseBranch?: string
+  /** The commit it was created at. */
+  startCommit?: string
 }
 
 export interface PortForwardConfig {
@@ -959,8 +1098,8 @@ export interface GitCredentialSummary {
   preview: string
   /** ssh only: the public key line, for the user to register with the host. */
   publicKey?: string
-  /** The projects that authenticate with it. */
-  projects: string[]
+  /** The repos that authenticate with it, by remote URL. */
+  repos: string[]
 }
 
 export interface ToolAuthSummary {
@@ -1172,6 +1311,8 @@ export interface SessionEntry {
   effort?: string
   /** Each option its tool has (`AGENT_OPTIONS`). */
   agentOptions: AgentOptions
+  /** Where its agent runs, relative to the workspace root. */
+  cwd: string
   /** The model it runs, in the tool's spelling, and its display name. */
   model?: string
   modelName?: string
@@ -1254,8 +1395,10 @@ export interface WorkspaceListEntry {
   /** The name of the public site it is a release of (docs/public-sites.md),
    *  which makes it read-only. */
   site?: string
-  /** The commit its checkout was created at. */
-  startCommit?: string
+  /** Its checkouts, and where its shells and steps start relative to the
+   *  workspace root (`''`, or one checkout's path). */
+  repos: WorkspaceRepo[]
+  cwd: string
   blockedHosts: string[]
   /** Live host→container forwards. Briefly empty after a server restart,
    *  until the restore pass runs. */
@@ -1264,9 +1407,6 @@ export interface WorkspaceListEntry {
    *  dismissed, sensitive or infra. Drives the "forward this port?"
    *  badge. */
   unforwardedPorts: number[]
-  /** The branch this workspace forked from (its reference branch), as its
-   *  row records it. Unset when the row records none. */
-  baseBranch?: string
   /** Its scratch dirs that git tracks, found when it started: their
    *  tracked files show as deleted in it. Absent when there are none. */
   trackedScratchDirs?: string[]
@@ -1717,7 +1857,6 @@ export interface WorkspaceTerminalEntry {
 export interface ProjectSummary extends ProjectConfig {
   id: string
   name: string
-  remoteUrl: string
   addedAt: string
   /** The owning user's id (`User.id`). Every other snapshot row belongs to
    *  its project's owner. */
@@ -1736,28 +1875,16 @@ export interface ProjectSummary extends ProjectConfig {
   /** The agent last created with; the create form opens on it. Absent
    *  before the first create (claude is assumed). */
   lastTool?: AgentTool
-  /** The branch last named by a create; the create form's Branch field
-   *  opens on it while origin still has it. */
-  lastBranch?: string
   /** Per agent, what it was last created with here (see
    *  `resolveToolCreateDefaults`). */
   createDefaults: Partial<Record<AgentTool, ToolCreateDefaults>>
-  /** The project's git credential. Without one it can't create
-   *  workspaces, unless the project is hosted, which needs none. */
-  gitCredential: { id: string; name: string } | null
-  /** Whether the server hosts the remote (docs/hosted-projects.md). */
-  hosted: boolean
-  /** For a hosted project, whether pushes may not delete or rewind the
-   *  default branch. */
-  guardDefaultBranch: boolean
-  /** Set when the project moved off yaac to another git host and yaac
-   *  still keeps the repository it hosted, for the owner to compare with
-   *  the new remote before removing it. */
-  keepsHostedRepo?: true
-  /** For a project shared with its owner (docs/hosted-projects.md
-   *  "Sharing"): the hosted project it was shared from, and whether that
-   *  project's owner has since removed the share. */
-  sharedFrom?: { projectId: string; revoked: boolean }
+  /** The repos it links, in order (docs/project-repos.md). */
+  repos: ProjectRepo[]
+  /** The layout and cwd the last create chose, which the create form opens
+   *  on: whether a lone repo was nested, and the repo id (or `.` for the
+   *  workspace root) the agent started in. Absent before a create chose. */
+  lastNested?: boolean
+  lastCwd?: string
   /** Days a stopped workspace is kept before the server deletes it, set by
    *  the owner; absent keeps them forever. */
   stoppedWorkspaceRetentionDays?: number
@@ -1868,10 +1995,9 @@ export interface QueuedWorkspaceEntry {
   /** The effort it launches at; absent when its model has none. */
   effort?: string
   agentOptions: AgentOptions
-  /** The reference branch it forks from, fetched fresh at launch, or the
-   *  full commit it starts at instead (docs/workspace-steps.md). */
-  branch?: string
-  commit?: string
+  /** What it starts with: each repo at a branch, fetched fresh at launch,
+   *  or at a full commit (docs/project-repos.md). */
+  selection: RepoSelection
   /** The step graph it would start with in place of the project's init
    *  steps, and the named workflow it follows until it launches
    *  (docs/workflows.md). */
@@ -1946,8 +2072,7 @@ export const timeoutMinutesSchema = z.number().int().min(1).max(525_600)
  */
 export const queuedWorkspaceSettingsSchema = z.object({
   prompt: promptText.min(1),
-  /** A full commit to start at, in place of `branch`. */
-  commit: z.string().min(1).max(64).optional(),
+  ...repoSelectionShape,
   /** The step graph to start with, checked by the server; null for none
    *  (docs/workspace-steps.md). */
   steps: z.unknown().optional(),
@@ -1963,7 +2088,6 @@ export const queuedWorkspaceSettingsSchema = z.object({
   effort: effortSchema.optional(),
   /** Options the tool lacks are refused. Unnamed ones resolve as a create's. */
   agentOptions: agentOptionsSchema.optional(),
-  branch: z.string().min(1).max(255).optional(),
   title: z.string().max(500).optional(),
   /** Minutes until the server stops the workspace. */
   timeout: timeoutMinutesSchema.optional(),
@@ -1985,7 +2109,7 @@ export const routineSettingsSchema = z.object({
   timeZone: z.string().min(1).max(64).optional(),
   /** Absent only for a non-interactive routine. */
   prompt: promptText.min(1).optional(),
-  commit: z.string().min(1).max(64).optional(),
+  ...repoSelectionShape,
   /** A named workflow each run starts with (docs/workflows.md); null on an
    *  edit runs the project's init steps instead. */
   workflow: z.string().min(1).max(200).nullable().optional(),
@@ -1997,7 +2121,6 @@ export const routineSettingsSchema = z.object({
   effort: effortSchema.optional(),
   /** Options the tool lacks are refused. Unnamed ones resolve as a create's. */
   agentOptions: agentOptionsSchema.optional(),
-  branch: z.string().min(1).max(255).optional(),
   group: z.string().min(1).max(500).nullable().optional(),
   timeout: timeoutMinutesSchema.nullable().optional(),
 })
@@ -2087,9 +2210,8 @@ export interface RoutineEntry {
   permissionMode: PermissionMode
   effort?: string
   agentOptions: AgentOptions
-  /** Its runs start at this branch's tip, or at this full commit. */
-  branch?: string
-  commit?: string
+  /** What each run starts with. */
+  selection: RepoSelection
   /** The named workflow its runs start with; absent runs the project's
    *  init steps. */
   workflow?: string
@@ -2135,11 +2257,12 @@ export interface RoutineRunPage {
 
 /**
  * The new-workspace pane's fields as a draft keeps them
- * (docs/draft-workspaces.md). `model` and `branch` are absent if the pane
+ * (docs/draft-workspaces.md). `model`, and `repos` (each row's repo, by id
+ * or folder, with its branch), `nested` and `cwd`, are absent if the pane
  * hadn't resolved them; `startAfter` is the parent workspace or queued entry
  * id, absent for "Now"; `title` is absent if left blank.
  */
-export const draftWorkspaceSettingsSchema = queuedWorkspaceSettingsSchema.omit({ commit: true, steps: true, nonInteractive: true }).extend({
+export const draftWorkspaceSettingsSchema = queuedWorkspaceSettingsSchema.omit({ branch: true, commit: true, steps: true, nonInteractive: true }).extend({
   tool: z.enum(AGENT_TOOLS),
   mode: z.enum(AGENT_MODES),
   permissionMode: z.enum(PERMISSION_MODES),
@@ -2600,7 +2723,9 @@ export const MAX_MODEL_LENGTH = 128
  * `fetch` reads another workspace's branches into the caller's checkout, and
  * `history` its conversations, never writing to theirs. `send` messages a
  * running one's agent, held to the caller's permission mode. `set-base`
- * changes only the caller's own reference branch. `icon-get` reads the
+ * changes only the caller's own reference branch. `as-repo` answers the
+ * `GH_TOKEN` value that stands for another of the project's repos, which
+ * the project's link must allow (docs/project-repos.md). `icon-get` reads the
  * project's one picture, and `icon-set` and `icon-remove` replace or drop
  * it, which every viewer of the project sees and whose previous version is
  * not kept; like a `rename` title, it changes what people see and nothing
@@ -2613,6 +2738,7 @@ export const MAMA_COMMANDS = [
   'create',
   'rename',
   'set-base',
+  'as-repo',
   'icon-get',
   'icon-set',
   'icon-remove',

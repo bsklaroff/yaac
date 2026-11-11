@@ -20,7 +20,7 @@ let tmpDir: string
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
   for (const [id, name] of [[projectId, 'demo'], [OTHER, 'other']]) {
-    await recordProject({ id, name, remoteUrl: 'https://example.com/foo', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
+    await recordProject({ id, name, addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
   }
 })
 

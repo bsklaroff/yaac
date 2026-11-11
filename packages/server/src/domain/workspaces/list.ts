@@ -5,6 +5,7 @@ import {
   conversationTitle,
   listOpenSessionsFor,
   listStepsFor,
+  listWorkspaceReposFor,
   openingPrompt,
   routineRunWorkspaces,
   siteNames,
@@ -125,7 +126,9 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       ? agentsByProject.get(w.projectId)?.get(w.workspaceId)
       : undefined) ?? []
   const ids = report.workspaces.map((w) => w.workspaceId).filter((v) => !!v)
-  const [sessionsByWorkspace, stepsByWorkspace] = await Promise.all([listOpenSessionsFor(ids), listStepsFor(ids)])
+  const [sessionsByWorkspace, stepsByWorkspace, reposByWorkspace] = await Promise.all([
+    listOpenSessionsFor(ids), listStepsFor(ids), listWorkspaceReposFor(ids),
+  ])
 
   const workspaces = report.workspaces.map((w): WorkspaceListEntry => {
     const row = rowFor(w)
@@ -146,7 +149,8 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       ...(routineRuns.has(w.workspaceId) ? { routineId: routineRuns.get(w.workspaceId) } : {}),
       ...(row?.nonInteractive === true ? { nonInteractive: true as const } : {}),
       ...(row?.siteId !== undefined && sitesById.has(row.siteId) ? { site: sitesById.get(row.siteId) } : {}),
-      ...(row?.startCommit !== undefined ? { startCommit: row.startCommit } : {}),
+      repos: (reposByWorkspace.get(w.workspaceId) ?? []).map(({ workspaceId: _, ...repo }) => repo),
+      cwd: row?.cwd ?? '',
     }
     if (w.phase === 'terminating') {
       // Non-interactive placeholder: no ports, and `running` so no attention
@@ -186,7 +190,6 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       blockedHosts: w.blockedHosts,
       forwardedPorts: w.forwardedPorts,
       unforwardedPorts: w.unforwardedPorts,
-      baseBranch: row?.baseBranch,
       ...(row !== undefined && row.trackedScratchDirs.length > 0 ? { trackedScratchDirs: row.trackedScratchDirs } : {}),
     }
   })

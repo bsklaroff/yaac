@@ -140,6 +140,9 @@ export interface AcpConversationDeps {
   transport: JsonRpcTransport
   /** The agent's working directory. */
   cwd: string
+  /** That directory relative to the workspace root, which names where the
+   *  tool files the conversation on the host; the root when absent. */
+  sessionCwd?: string
   /**
    * The ACP session id to resume, when one is already recorded (after a
    * restart). Absent for a new conversation.
@@ -374,6 +377,11 @@ export class AcpConversation {
       this.queueShown = true
       void this.drain()
     }
+  }
+
+  /** Where its agent runs, relative to the workspace root. */
+  get sessionCwd(): string {
+    return this.deps.sessionCwd ?? ''
   }
 
   /** The ACP session id, once the handshake has produced one. */

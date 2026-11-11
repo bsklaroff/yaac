@@ -8,14 +8,14 @@ import { repoDir, setDataDir, workspaceDir } from '@yaac/shared/project-paths'
 import { testTmpBase } from '@yaac/test-utils/tmp'
 import { handleFixture, installFakeWorkspaceDriver, workspacePathsFixture } from '#test/support/fake-driver'
 import { closeDb } from '#db/client'
-import { recordWorkspaceCreated, setWorkspaceStartCommit } from '#db/workspace-store'
+import { recordWorkspaceCreated } from '#db/workspace-store'
 import { createCheckout } from '#domain/git'
 import { execFileAsync } from '#lib/shell'
 import { createWorkspaceFolder, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, getWorkspaceComparison, getWorkspaceGitLog, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, uploadWorkspaceFile, writeWorkspaceFile } from '#domain/workspaces'
 import { git } from '@yaac/test-utils/git'
 import { CHANGES_BASE_UNRESOLVED, CHANGES_BUSY, forgetWorkspaceChanges } from '#domain/workspaces/changes'
 import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
-import { BUILT_IN_USER_ID, recordProject } from '#db'
+import { applyWorkspaceEvent, BUILT_IN_USER_ID, recordProject } from '#db'
 import type { WorkspaceFiles } from '@yaac/shared/types'
 
 /** The caller of every user-caused write here. */
@@ -33,10 +33,28 @@ let tmp: string
 /** A folder outside the data dir, the target of escaping symlinks. */
 let outside: string
 
-async function makeCheckout(id: string): Promise<string> {
+/** A workspace with one checkout at its root, as its rows record it. */
+async function makeCheckout(id: string, row: { baseBranch?: string; scratchDirs?: string[] } = {}): Promise<string> {
   const dir = workspaceDir(PROJECT, id)
-  await createCheckout(repoDir(PROJECT), dir, { branch: `agent/${id}`, baseBranch: 'main', remoteUrl: 'https://example.invalid/r.git' })
+  await checkOut(id, dir)
+  const { baseBranch, ...workspace } = row
+  await recordWorkspaceCreated({
+    projectId: PROJECT,
+    workspaceId: id,
+    ...workspace,
+    repos: [{ repoId: PROJECT, path: '', ...(baseBranch !== undefined ? { baseBranch } : {}) }],
+  })
   return dir
+}
+
+/** A checkout of the project's repo at `dir`, for workspace `id`. */
+async function checkOut(id: string, dir: string): Promise<void> {
+  await createCheckout(repoDir(PROJECT), dir, {
+    branch: `agent/${id}`,
+    baseBranch: 'main',
+    remoteUrl: 'https://example.invalid/r.git',
+    staging: path.join(tmp, 'staging', `${id}-${path.basename(dir)}`),
+  })
 }
 
 function wtGit(id: string): (args: string[]) => Promise<string> {
@@ -69,7 +87,7 @@ async function write(dir: string, rel: string, content: string | Buffer = ''): P
 beforeAll(async () => {
   tmp = await fs.mkdtemp(path.join(testTmpBase(), 'yaac-files-'))
   setDataDir(path.join(tmp, 'data'))
-  await recordProject({ id: PROJECT, name: 'demo', remoteUrl: 'https://github.com/o/r', addedAt: 'now' }, BUILT_IN_USER_ID)
+  await recordProject({ id: PROJECT, name: 'demo', addedAt: 'now' }, BUILT_IN_USER_ID)
   outside = path.join(tmp, 'outside')
   await write(outside, 'secret.txt', 'secret\n')
 
@@ -263,9 +281,7 @@ describe('getWorkspaceChanges', () => {
   })
 
   it('reports the scratch dirs as wholly ignored folders unless one holds a path git lists or a change', async () => {
-    const scratch = await makeCheckout('scratch')
-    await recordWorkspaceCreated({
-      projectId: PROJECT, workspaceId: 'scratch',
+    const scratch = await makeCheckout('scratch', {
       scratchDirs: ['target', 'out', 'node_modules', 'node_modules/.cache', 'vendor', 'gone', 'src/lib', 'cache.log'],
     })
     await fs.mkdir(path.join(scratch, 'target'))
@@ -374,7 +390,7 @@ describe('getWorkspaceChanges', () => {
     await git(repoDir(PROJECT), ['commit', '--allow-empty', '-m', 'landed on main'])
     await git(repoDir(PROJECT), ['update-ref', 'refs/remotes/origin/main', 'main'])
     await run(['fetch', '-q', path.join(repoDir(PROJECT), '.git'), 'refs/remotes/origin/*:refs/remotes/origin/*'])
-    await recordWorkspaceCreated({ projectId: PROJECT, workspaceId: 'gs', baseBranch: 'main' })
+    await applyWorkspaceEvent({ type: 'base-branch-resolved', projectId: PROJECT, workspaceId: 'gs', repoId: PROJECT, baseBranch: 'main' })
 
     const fork = await getWorkspaceChanges('gs', undefined, { diff: false })
     expect(fork).toMatchObject({ branch: 'main', comparison: { ref: 'origin/main', ahead: 1, behind: 1 } })
@@ -392,6 +408,63 @@ describe('getWorkspaceChanges', () => {
       expect(err.code).toBe('VALIDATION')
       expect(err.message).toContain(bad)
     }
+  })
+
+  it('reads the checkout named in a workspace with several, and lists the whole workspace', async () => {
+    const root = workspaceDir(PROJECT, 'multi')
+    // A second repo, with the same history, in a folder beside the first.
+    const WEB = '11111111-2222-4333-8444-555555555555'
+    await fs.symlink(repoDir(PROJECT), repoDir(WEB))
+    await checkOut('multi', path.join(root, 'api'))
+    await checkOut('multi', path.join(root, 'web'))
+    await recordWorkspaceCreated({
+      projectId: PROJECT,
+      workspaceId: 'multi',
+      repos: [{ repoId: PROJECT, path: 'api', baseBranch: 'main' }, { repoId: WEB, path: 'web', baseBranch: 'main' }],
+    })
+    await write(root, 'api/a.txt', 'api edit\n')
+    await write(root, 'web/b.txt', 'web edit\n')
+    // Outside both checkouts, where git lists nothing.
+    await write(root, 'notes.md', 'n\n')
+    await write(root, 'scratch/x.txt', 'x\n')
+    await fs.mkdir(path.join(root, 'empty'))
+
+    expect((await refusal(getWorkspaceChanges('multi'))).message).toMatch(/several repos; name one of: api, web/)
+    const web = await getWorkspaceChanges('multi', undefined, { repo: 'web', listing: 'full' })
+    expect(web.files.map((f) => f.path)).toEqual(['b.txt'])
+    expect(web.comparison?.ref).toBe('origin/main')
+    expect(web.listing?.root).toBe(root)
+    expect(web.listing?.paths).toEqual(expect.arrayContaining(['api/a.txt', 'web/b.txt', 'web/src/lib/util.ts', 'notes.md', 'scratch/x.txt']))
+    expect(web.listing?.paths.some((p) => p.includes('.git/'))).toBe(false)
+    expect(web.listing?.emptyDirs).toContain('empty')
+    // By its repo's id too.
+    expect((await getWorkspaceChanges('multi', undefined, { repo: PROJECT, diff: false })).files.map((f) => f.path)).toEqual(['a.txt'])
+    expect((await getWorkspaceChangeDiffs('multi', { repo: 'web', base: web.base, work: web.work, files: [{ path: 'b.txt' }] })).diff)
+      .toContain('+web edit')
+    expect((await getWorkspaceGitLog('multi', 5, 'api')).head).toBe(web.base)
+    expect((await getWorkspaceComparison('multi', { to: 'HEAD', repo: 'web' })).commit?.sha).toBe(web.base)
+
+    // A file is read at a commit of the checkout it is in.
+    expect(await readWorkspaceFileAtRev('multi', 'web/b.txt', web.base)).toEqual({ exists: true, content: 'bravo\n' })
+    expect(await readWorkspaceFileAtRev('multi', 'notes.md', web.base)).toEqual({ exists: false, content: null })
+    // Each checkout's `.git` is out of the editor's reach.
+    expect((await refusal(writeWorkspaceFile(local, 'multi', 'web/.git/config', 'x', null))).code).toBe('VALIDATION')
+    expect((await refusal(readWorkspaceFile('multi', 'api/.git/HEAD'))).code).toBe('VALIDATION')
+  })
+
+  it('answers no changes, and what a plain walk finds, for a workspace with no repos', async () => {
+    const root = workspaceDir(PROJECT, 'bare')
+    await recordWorkspaceCreated({ projectId: PROJECT, workspaceId: 'bare' })
+    await write(root, 'notes.md', 'n\n')
+    await write(root, 'sub/deep/x.txt', 'x\n')
+    await fs.symlink('notes.md', path.join(root, 'link'))
+
+    const bare = await getWorkspaceChanges('bare', undefined, { listing: 'full' })
+    expect(bare).toMatchObject({ files: [], diff: '', branch: null, comparison: null, baseResolved: true })
+    expect(bare.listing?.paths.sort()).toEqual(['link', 'notes.md', 'sub/deep/x.txt'])
+    expect(bare.listing?.symlinks).toEqual({ link: { target: 'notes.md', dir: false } })
+    expect(await getWorkspaceGitLog('bare', 5)).toEqual({ ref: null, head: null, commits: [], more: false })
+    expect((await refusal(getWorkspaceComparison('bare', { to: 'HEAD' }))).code).toBe('VALIDATION')
   })
 
   it('answers only while the workspace runs', async () => {
@@ -416,7 +489,7 @@ describe('getWorkspaceChanges', () => {
     expect(await asked('gs', 'agent/gs')).toBe("yaac-changes 'agent/gs' 'origin/main' ''")
     // Nothing records a fork branch or a start commit for this one.
     expect(await asked('list', undefined, { diff: false })).toBe("yaac-changes '' '' ''")
-    await setWorkspaceStartCommit(PROJECT, 'scratch', 'c0ffee')
+    await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId: PROJECT, workspaceId: 'scratch', repoId: PROJECT, startCommit: 'c0ffee' })
     expect(await asked('scratch', undefined, { diff: false })).toBe("yaac-changes '' 'c0ffee' ''")
   })
 
@@ -481,8 +554,7 @@ describe('getWorkspaceGitLog', () => {
   let ours: string[]
   let theirs: string
   beforeAll(async () => {
-    await makeCheckout('log')
-    await recordWorkspaceCreated({ projectId: PROJECT, workspaceId: 'log', baseBranch: 'main' })
+    await makeCheckout('log', { baseBranch: 'main' })
     const run = wtGit('log')
     fork = (await run(['rev-parse', 'HEAD'])).trim()
     ours = [await commit(run, 'first of ours'), await commit(run, 'second of ours')]
@@ -549,8 +621,7 @@ describe('getWorkspaceGitLog', () => {
   // Past the 512 KB of bodies the whole log may carry, a body is `…` alone,
   // while a commit with none still has none.
   it('spends the bodies\u2019 budget newest first, leaving body-less commits bare', async () => {
-    const dir = await makeCheckout('budget')
-    await recordWorkspaceCreated({ projectId: PROJECT, workspaceId: 'budget', baseBranch: 'main' })
+    const dir = await makeCheckout('budget', { baseBranch: 'main' })
     const body = 'b'.repeat(1100)
     // Oldest first, alternating, so body-less commits sit on both sides of
     // where the budget runs out.

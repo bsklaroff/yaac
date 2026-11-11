@@ -9,6 +9,7 @@ import {
   PLACEHOLDER_PI_API_KEY,
 } from '@yaac/shared/tool-auth'
 import { getGitCredentialByName, getToolCredential, insertGitCredential, setToolCredential } from '#db'
+import { env } from '@yaac/shared/env'
 import { ServerError } from '@yaac/shared/errors'
 import type { ClaudeOAuthBundle, FakeAuthKind } from '@yaac/shared/types'
 import { fanOutToolCredentials } from './credential-sync'
@@ -61,13 +62,15 @@ async function seedFakeClaudeOAuth(owner: string): Promise<void> {
 
 /**
  * Create the `fake-github` HTTPS credential unless it exists, for `yaac
- * project add <url> fake-github`. Its token is the proxy placeholder
- * (`yaac-ph-gh-token`), which an outer yaac's proxy swaps for the real
- * GitHub token.
+ * project add <url> fake-github`. Its token is the placeholder this
+ * server's own `GH_TOKEN` holds when it runs in a yaac workspace
+ * (`yaac-ph-gh-token-<repo id>`), which the outer yaac's proxy swaps for
+ * that repo's GitHub token; else the bare prefix, which nothing swaps.
  */
 async function seedFakeGithubCredential(owner: string): Promise<void> {
   if (await getGitCredentialByName(owner, FAKE_GITHUB_CREDENTIAL_NAME)) return
-  await insertGitCredential({ owner, name: FAKE_GITHUB_CREDENTIAL_NAME, kind: 'https', secret: PLACEHOLDER_GH_TOKEN })
+  const secret = env.ghToken?.startsWith(PLACEHOLDER_GH_TOKEN) === true ? env.ghToken : PLACEHOLDER_GH_TOKEN
+  await insertGitCredential({ owner, name: FAKE_GITHUB_CREDENTIAL_NAME, kind: 'https', secret })
 }
 
 /**

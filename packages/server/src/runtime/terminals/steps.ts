@@ -62,7 +62,6 @@ export function sourceHooksCommand(paths: WorkspacePaths, configPath: string): s
 export function stepScript(
   name: string,
   spec: StepSpec,
-  paths: WorkspacePaths,
   eventsPath: string,
   env: string[] = [],
 ): string {
@@ -81,7 +80,8 @@ export function stepScript(
       const at = entry.indexOf('=')
       return `export ${entry.slice(0, at)}=${shellQuote(entry.slice(at + 1))}`
     }),
-    `cd ${shellQuote(paths.workspaceDir)} || exit 1`,
+    // The workspace's default cwd, which its tmux session was started in.
+    'cd "$(tmux display-message -p \'#{session_path}\')" || exit 1',
     `yaac_mark() { printf '%s %s\\n' "$*" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ${shellQuote(eventsPath)}; }`,
     'yaac_i=; yaac_probe=',
     'trap \'yaac_rc=$?; [ -z "$yaac_i" ] || yaac_mark end "$yaac_i" "$yaac_rc"; [ -z "$yaac_probe" ] || kill "$yaac_probe" 2>/dev/null\' EXIT',
@@ -107,7 +107,7 @@ export function stepWindowExec(name: string, paths: WorkspacePaths, scriptPath: 
   const tmux = tmuxCmd(paths)
   const target = windowTarget(name)
   return `${tmux} kill-window -t ${target} 2>/dev/null; `
-    + `${tmux} new-window -d -t yaac -n ${shellQuote(name)} -c ${shellQuote(paths.workspaceDir)} `
+    + `${tmux} new-window -d -t yaac -n ${shellQuote(name)} -c '#{session_path}' `
     + `${shellQuote(`sh ${shellQuote(scriptPath)}`)} \\; set-option -t ${target} remain-on-exit on`
 }
 

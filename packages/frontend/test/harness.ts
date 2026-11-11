@@ -8,7 +8,8 @@ import type { XtermCore } from '#lib/xterm-internals'
 import type { Terminal } from '@xterm/xterm'
 import type { AcpEvent } from '@yaac/shared/acp'
 import type {
-  ConversationEntry, ProvisioningWorkspaceEntry, ServerSnapshot, SessionEntry, Whoami, WorkspaceListEntry,
+  ConversationEntry, ProjectRepo, ProvisioningWorkspaceEntry, RepoSummary, ServerSnapshot, SessionEntry, Whoami,
+  WorkspaceListEntry,
 } from '@yaac/shared/types'
 
 /**
@@ -128,7 +129,42 @@ export function renderWithClient(ui: ReactElement, client = testQueryClient()): 
  * whatever a case is about.
  */
 
-/** A running workspace with no sessions, ports or blocked hosts. */
+/** The id of the repo the fixture project links and the fixture workspace
+ *  has its one checkout of, at its root. */
+export const TEST_REPO_ID = 'repo-1'
+
+/** A project's link to a repo: an https GitHub remote with a credential,
+ *  in a folder named for it. */
+export const projectRepo = (over: Partial<ProjectRepo> = {}): ProjectRepo => ({
+  id: TEST_REPO_ID,
+  dir: 'widgets',
+  remoteUrl: 'https://github.com/acme/widgets.git',
+  owner: TEST_USER_ID,
+  hosted: false,
+  guardDefaultBranch: true,
+  gitCredential: { id: 'cred-1', name: 'gh' },
+  readOnly: false,
+  ghToken: true,
+  lastIncluded: true,
+  ...over,
+})
+
+/** A repo as `GET /api/repo/list` answers it: the caller's, linked by no
+ *  project and shared with no one. */
+export const repoSummary = (over: Partial<RepoSummary> = {}): RepoSummary => ({
+  id: TEST_REPO_ID,
+  owner: TEST_USER_ID,
+  remoteUrl: 'https://github.com/acme/widgets.git',
+  hosted: false,
+  guardDefaultBranch: true,
+  gitCredential: { id: 'cred-1', name: 'gh' },
+  projects: [],
+  sharedWith: [],
+  ...over,
+})
+
+/** A running workspace with no sessions, ports or blocked hosts, and one
+ *  checkout at its root. */
 export const workspaceEntry = (over: Partial<WorkspaceListEntry> = {}): WorkspaceListEntry => ({
   workspaceId: 's1',
   projectId: 'proj',
@@ -136,6 +172,8 @@ export const workspaceEntry = (over: Partial<WorkspaceListEntry> = {}): Workspac
   createdAt: '2026-08-10 00:00:00',
   sessions: [],
   conversations: [],
+  repos: [{ repoId: TEST_REPO_ID, path: '' }],
+  cwd: '',
   blockedHosts: [],
   forwardedPorts: [],
   unforwardedPorts: [],
@@ -155,7 +193,7 @@ export const provisioningEntry = (over: Partial<ProvisioningWorkspaceEntry> = {}
 
 /** An open session: a claude chat agent, not yet holding a conversation. */
 export const sessionEntry = (over: Partial<SessionEntry> = {}): SessionEntry => ({
-  sessionId: 'sess-1', tool: 'claude', mode: 'acp', window: 'claude-sess1', permissionMode: 'bypass', ordinal: 0, agentOptions: {}, ...over,
+  sessionId: 'sess-1', tool: 'claude', mode: 'acp', window: 'claude-sess1', permissionMode: 'bypass', ordinal: 0, agentOptions: {}, cwd: '', ...over,
 })
 
 /** A workspace's first, active agent conversation. */
