@@ -47,6 +47,16 @@ const REQUIRED: Array<{ binary: string; why: string; fix: string }> = [
   },
 ]
 
+/**
+ * The oldest tmux release yaac works on, as [major, minor]. Webapp terminals
+ * size each window with `refresh-client -C @<window>:<cols>x<rows>`, which
+ * 3.2 rejects, so no terminal attaches there. The status watcher's format
+ * subscriptions and client flags need 3.2. `yaac host check` reports an
+ * older tmux and a create refuses one. The "Host requirements" section of
+ * docs/containerless-driver.md states the same floor.
+ */
+const MIN_TMUX = [3, 3] as const
+
 /** What degrades a feature rather than breaking the mode. */
 const OPTIONAL: Array<{ binary: string; why: string; fix: string }> = [
   {
@@ -73,7 +83,8 @@ const OPTIONAL: Array<{ binary: string; why: string; fix: string }> = [
  * makes the agent window exit instantly after a create reported success.
  *
  * Every launch needs tmux, git and node on PATH (node runs npm, acpd, codex
- * and pi). `acp` also needs socat, which the chat transport uses to reach
+ * and pi), and a tmux no older than `MIN_TMUX`: on an older one the create
+ * would succeed and its webapp terminal stay blank. `acp` also needs socat, which the chat transport uses to reach
  * acpd's socket; without it the pane just hangs. The agent CLI (or ACP
  * adapter, plus the CLI it drives) is installed on first use
  * (`ensureAgentBinary`), and so is bun for omp, which runs under it. `onPath` uses the same environment the workspace's
@@ -88,6 +99,10 @@ export async function assertHostCanLaunch(opts: {
   // In dependency order, so a host missing several is fixed bottom-up.
   await requireBinary('tmux', 'every workspace here is a tmux session on this host',
     'apt install tmux / brew install tmux', null)
+  const tmux = await checkTmuxVersion()
+  if (tmux !== null && tmux.fix !== null) {
+    throw new ServerError('MISSING_TOOL', `This host's tmux is ${tmux.version}. ${tmux.fix}`)
+  }
   await requireBinary('git', "it makes and reads the workspace's checkout",
     'apt install git / brew install git', null)
   await requireBinary('node', 'npm installs the agents under it, and acpd, codex and pi run under it',
@@ -292,17 +307,13 @@ export async function runHostCheck(): Promise<CheckResult[]> {
     })
   }
 
-  // Webapp terminals use `window-size latest`, which needs tmux 3.1.
-  const version = await tmuxVersion()
-  if (version !== null) {
-    // A dev build (`next-3.6`, `master`) passes.
-    const m = /(\d+)\.(\d+)/.exec(version)
-    const ok = !m || Number(m[1]) > 3 || (Number(m[1]) === 3 && Number(m[2]) >= 1)
+  const tmux = await checkTmuxVersion()
+  if (tmux !== null) {
     results.push({
       name: 'tmux version',
-      status: ok ? 'pass' : 'fail',
-      detail: `tmux ${version}`,
-      ...(ok ? {} : { fix: 'yaac\'s terminals need tmux 3.1 or newer; upgrade tmux.' }),
+      status: tmux.fix === null ? 'pass' : 'fail',
+      detail: `tmux ${tmux.version}`,
+      ...(tmux.fix === null ? {} : { fix: tmux.fix }),
     })
   }
 
@@ -363,11 +374,26 @@ export async function runHostCheck(): Promise<CheckResult[]> {
   return results
 }
 
-async function tmuxVersion(): Promise<string | null> {
+/**
+ * The host's tmux version, with how to fix it when it is older than
+ * `MIN_TMUX`; null when `tmux -V` reports none. A version with no `X.Y` in
+ * it (a `master` build) is taken as new enough.
+ */
+async function checkTmuxVersion(): Promise<{ version: string; fix: string | null } | null> {
+  let version: string | undefined
   try {
     const { stdout } = await runHost(['tmux', '-V'], { timeoutMs: 5_000 })
-    return /tmux\s+(\S+)/.exec(stdout.trim())?.[1] ?? null
+    version = /tmux\s+(\S+)/.exec(stdout.trim())?.[1]
   } catch {
     return null
+  }
+  if (version === undefined) return null
+  const m = /(\d+)\.(\d+)/.exec(version)
+  const [major, minor] = MIN_TMUX
+  const ok = !m || Number(m[1]) > major || (Number(m[1]) === major && Number(m[2]) >= minor)
+  return {
+    version,
+    fix: ok ? null : `yaac's terminals need tmux ${major}.${minor} or newer; upgrade tmux. Where the `
+      + 'distribution\'s own is older (Ubuntu 22.04 has 3.2a), build it from source or use Homebrew.',
   }
 }

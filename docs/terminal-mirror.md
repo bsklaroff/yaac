@@ -106,10 +106,13 @@ with `%end` too.
   (tmux home-expands a leading `~` even in quotes).
 - **Size.** A viewer sizes its own window for the control client
   (`refresh-client -C @<window>:<cols>x<rows>`), since tiled panes differ in
-  size. A control client's size for a window overrides every other client's,
-  so it is held only while a browser views the window: when the last viewer
-  leaves it is cleared (`refresh-client -C '@<window>:'`), and when another
-  viewer remains, the latest one's size is applied. Every other window gets
+  size. tmux has that per-window form from 3.3, which is why 3.3 is the
+  oldest tmux yaac runs on (docs/containerless-driver.md "Host
+  requirements"). A control client's size for a window overrides every
+  other client's, so it is held only while a browser views the window: when
+  the last viewer leaves it is cleared (`refresh-client -C '@<window>:'`),
+  and when another viewer remains, the latest one's size is applied. Every
+  other window gets
   the client's default size, 80x24 unless set, so the mirror's first viewer
   also sets that default; it competes under `window-size latest` like any
   client's. Between browsers on one window the most recent to resize or
@@ -132,6 +135,10 @@ with `%end` too.
   (`history-limit 200000`) and is not fetched.
 - Modes tmux keeps but does not expose (focus reporting) come back only
   when the app sets them again.
+- The cursor's shape and blink are read from the `cursor_shape` and
+  `cursor_blinking` formats, which tmux has from 3.6. On an older tmux they
+  expand to nothing, so a snapshot leaves the terminal's default cursor
+  until the app sets its own again.
 - Sequences an app wraps in tmux's DCS passthrough reach the browser
   wrapped, and xterm ignores them; nothing in the webapp consumes them.
 - A window target shows its active pane only. yaac's windows hold one pane.

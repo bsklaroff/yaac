@@ -32,6 +32,8 @@ For k8s, add swap before the first install; see
 ```sh
 sudo apt install podman aardvark-dns nftables acl libgomp1
 sudo apt install tmux socat fd-find ripgrep   # for the containerless driver
+# tmux must be 3.3 or newer. Ubuntu 22.04's is 3.2a: build tmux from its
+# release tarball or use Homebrew there.
 
 # Node from nvm: apt's build lacks the type stripping `vite build` needs.
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.6/install.sh | bash
