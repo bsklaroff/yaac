@@ -12,7 +12,7 @@ import {
   type ObjectRef,
 } from '#drivers/k8s/substrate'
 import { buildRegistrationConfigMapManifest, proxyRegistrationName } from '#drivers/k8s/cluster'
-import { NESTED_PULL_HOSTS, resolveAllowedHosts } from '#lib/allowed-hosts'
+import { NESTED_PULL_HOSTS, resolveAllowedHosts } from '@yaac/shared/allowed-hosts'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'

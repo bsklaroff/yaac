@@ -15,7 +15,7 @@ import {
   registerWorkspaceEgress,
   type ProxyRegistration,
 } from '#drivers/k8s/egress/proxy-registration'
-import { DEFAULT_ALLOWED_HOSTS, NESTED_PULL_HOSTS } from '#lib/allowed-hosts'
+import { DEFAULT_ALLOWED_HOSTS, NESTED_PULL_HOSTS } from '@yaac/shared/allowed-hosts'
 import {
   LABEL_INSTALL_ID,
   installId,

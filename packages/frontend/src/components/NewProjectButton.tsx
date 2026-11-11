@@ -2,7 +2,9 @@ import { useState, type FormEvent, type JSX } from 'react'
 import clsx from 'clsx'
 import { Dialog } from '@base-ui/react/dialog'
 import { useQueryClient } from '@tanstack/react-query'
-import { GitCredentialPicker, remoteKind, remoteProjectName, TrustedHostKey } from '#components/GitCredentialPicker'
+import {
+  AllowlistAddNotice, GitCredentialPicker, remoteKind, remoteProjectName, TrustedHostKey,
+} from '#components/GitCredentialPicker'
 import { AddIcon } from '#lib/icons'
 import { addProjectInBackground, createProjectInBackground } from '#lib/projectOps'
 import { BUTTON } from '#components/ui/button'
@@ -118,6 +120,9 @@ export function AddProjectDialog(): JSX.Element {
   )
 }
 
+/** The allowlist a project starts with: the defaults and nothing added. */
+const NEW_PROJECT_ALLOWLIST = { hosts: [], defaults: true }
+
 function CloneForm({ initialUrl, onDone }: { initialUrl: string; onDone: () => void }): JSX.Element {
   const queryClient = useQueryClient()
   const [url, setUrl] = useState(initialUrl)
@@ -140,6 +145,7 @@ function CloneForm({ initialUrl, onDone }: { initialUrl: string; onDone: () => v
         className="rounded-md border border-border bg-bg px-3 py-2 font-mono text-xs text-text outline-none
           focus:border-border-strong"
       />
+      <AllowlistAddNotice remoteUrl={remoteUrl} allowlist={NEW_PROJECT_ALLOWLIST} />
       <GitCredentialPicker
         kind={remoteKind(remoteUrl)}
         projectName={remoteProjectName(remoteUrl)}

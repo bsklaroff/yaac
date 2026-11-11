@@ -20,10 +20,10 @@ import { ownRepo } from './access'
 
 /**
  * Validate a git remote URL and return it parsed: one of the
- * `parseGitRemote` forms (https://, ssh:// or SCP-style). Also rejects an
- * https URL carrying a user or token: the URL is stored on the row, shown
- * to every user and written into checkouts, so a secret belongs in a git
- * credential instead.
+ * `parseGitRemote` forms (https://, ssh:// or SCP-style). That refuses an
+ * https URL carrying a user or token, which matters here: the URL is
+ * stored on the row, shown to every user and written into checkouts, so a
+ * secret belongs in a git credential instead.
  */
 export function validateGitRemoteUrl(url: string): ReturnType<typeof parseGitRemote> {
   let parsed: ReturnType<typeof parseGitRemote>
@@ -34,13 +34,6 @@ export function validateGitRemoteUrl(url: string): ReturnType<typeof parseGitRem
       'VALIDATION',
       err instanceof Error ? err.message : `Invalid git remote URL: "${url}"`,
     )
-  }
-  if (parsed.scheme === 'https') {
-    const { username, password } = new URL(url)
-    if (username !== '' || password !== '') {
-      throw new ServerError('VALIDATION', 'A remote URL must not carry a user or token; '
-        + 'leave it out of the URL and add it as a git credential instead.')
-    }
   }
   return parsed
 }

@@ -221,6 +221,7 @@ describe('write routes', () => {
       mockAddProject.mockResolvedValue({
         project: { id: DEMO, name: 'foo', addedAt: 'now' },
         knownHostsEntry: null,
+        allowedHost: null,
       })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const id = '00000000-0000-4000-8000-000000000001'

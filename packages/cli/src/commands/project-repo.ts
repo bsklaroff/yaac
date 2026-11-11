@@ -42,6 +42,9 @@ export async function projectRepoAdd(
   console.log(`Project "${summary.name}" now links repo ${added.repoId} in the folder ${added.dir}. `
     + 'Workspaces created from now on can start with it.')
   if (added.knownHostsEntry !== null) console.log(`Host key trusted: ${added.knownHostsEntry}`)
+  if (added.allowedHost !== null) {
+    console.log(`Added ${added.allowedHost} to the project's egress allowlist, so its workspaces can reach the repo.`)
+  }
 }
 
 /** Unlink a repo from a project. */

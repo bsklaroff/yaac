@@ -38,7 +38,7 @@ import {
   type ProxyRegistration,
 } from '#drivers/k8s/egress'
 import { ensureNodeImageStore, nodeImageStoreMount } from '#drivers/k8s/images'
-import { hostMatchesPattern } from '#lib/allowed-hosts'
+import { hostMatchesPattern } from '@yaac/shared/allowed-hosts'
 import type { SecretProxyRule, ProjectConfig } from '@yaac/shared/types'
 import type {
   RuntimeHandle,

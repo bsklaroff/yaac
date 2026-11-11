@@ -79,7 +79,7 @@ const claudeOauth = (accessToken: string, expiresAt = 1) => ({
   claudeAiOauth: { accessToken, refreshToken: `${accessToken}-r`, expiresAt, scopes: [] },
 })
 
-// Mirrors packages/server/test/lib/allowed-hosts.test.ts; keep the two tables equal.
+// Mirrors packages/shared/test/allowed-hosts.test.ts; keep the two tables equal.
 const LABEL_CASES: [host: string, pattern: string, expected: boolean][] = [
   ['productionresultssa42.blob.core.windows.net', 'productionresultssa*.blob.core.windows.net', true],
   ['productionresultssa.blob.core.windows.net', 'productionresultssa*.blob.core.windows.net', true],

@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto, { createHash } from 'node:crypto'
-import { allowlistAllows } from '#lib/allowed-hosts'
+import { allowlistAllows } from '@yaac/shared/allowed-hosts'
 import { buildStatusRight } from '#lib/status-right'
 import { mergeEnvEntries } from '#lib/env-entries'
 import { testEnv } from '@yaac/shared/env'

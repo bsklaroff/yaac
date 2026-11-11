@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 
 // Only the clone and the host-key fetch (the two process boundaries) are
 // mocked. Credential lookup, name derivation, rollback and isGitAuthError
@@ -54,6 +55,7 @@ let token: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
+  installFakeWorkspaceDriver()
   token = (await addHttpsCredential(BUILT_IN_USER_ID, { name: 'default', token: 'ghp_default' })).id
   mockClone.mockReset()
   // Leave a repo behind, as a real clone does, for rollback to remove.
@@ -71,7 +73,7 @@ describe('addProject', () => {
   it('clones with the credential it is given and records the project around that repo', async () => {
     const { id } = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_secret' })
 
-    const { project, knownHostsEntry } = await addProject('https://github.com/acme/Widgets.git', id, BUILT_IN_USER_ID)
+    const { project, knownHostsEntry, allowedHost } = await addProject('https://github.com/acme/Widgets.git', id, BUILT_IN_USER_ID)
 
     expect(project.id).toMatch(UUID)
     expect(project.name).toBe('widgets')
@@ -95,6 +97,9 @@ describe('addProject', () => {
       { kind: 'https', token: 'ghp_secret' },
     )
     expect(knownHostsEntry).toBeNull()
+    // github.com is a default host, so the allowlist is left as it starts.
+    expect(allowedHost).toBeNull()
+    expect(row?.egressAllowlist).toEqual({ hosts: [], defaults: true })
     expect(await resolveRepoCredential(repo)).toEqual({ kind: 'https', token: 'ghp_secret' })
   })
 
@@ -117,12 +122,15 @@ describe('addProject', () => {
   it('clones an SCP-style remote with an ssh key, trusting the host key it fetched', async () => {
     const key = await generateSshCredential(BUILT_IN_USER_ID, { name: 'deploy' })
 
-    const { project, knownHostsEntry } = await addProject(
+    const { project, knownHostsEntry, allowedHost } = await addProject(
       'git@git.example.com:group/sub/Repo.git', key.id, BUILT_IN_USER_ID,
     )
 
     expect(project.name).toBe('repo')
     expect(knownHostsEntry).toBe(HOST_KEY)
+    // The defaults leave the host out, so it is added.
+    expect(allowedHost).toBe('git.example.com')
+    expect((await getProjectRow(project.id))?.egressAllowlist).toEqual({ hosts: ['git.example.com'], defaults: true })
     // The clone gets only the public key; the ssh-agent signs.
     const credential = { kind: 'ssh', id: key.id, publicKey: key.publicKey, knownHostsEntry: HOST_KEY }
     const repo = await repoOf(project.id)

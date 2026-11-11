@@ -3,8 +3,11 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
 import { api } from '#lib/api'
 import { AUTH_LIST_KEY, useAuthList } from '#lib/useAuthList'
+import { useSnapshot } from '#lib/useSnapshot'
+import { repoHostToAllow } from '@yaac/shared/allowed-hosts'
 import { parseGitRemote } from '@yaac/shared/git-remote'
 import { projectNameFor } from '@yaac/shared/project-name'
+import type { EgressAllowlist } from '@yaac/shared/types'
 
 export type GitCredentialKind = 'https' | 'ssh'
 
@@ -254,6 +257,27 @@ export function TrustedHostKey({ entry }: { entry: string }): JSX.Element {
   return (
     <p className="break-all font-mono text-[11px] text-text-faint">
       <span className="font-sans text-text-dim">Host key trusted: </span>{entry}
+    </p>
+  )
+}
+
+/**
+ * Warns that adding a repo will add its host to the project's egress
+ * allowlist, as the server does (`repoHostToAllow`). Shows nothing without
+ * an egress proxy, until the allowlist is known, or for a remote whose host
+ * the server would not add. `remoteUrl` is '' for a repo yaac hosts.
+ */
+export function AllowlistAddNotice({ remoteUrl, allowlist }: {
+  remoteUrl: string
+  allowlist: EgressAllowlist | undefined
+}): JSX.Element | null {
+  const mediatedEgress = useSnapshot()?.driver !== 'containerless'
+  const host = mediatedEgress && allowlist ? repoHostToAllow(allowlist, remoteUrl) : null
+  if (host === null) return null
+  return (
+    <p className="text-[11px] text-text-dim">
+      <span className="font-mono">{host}</span> is not in the project&apos;s egress allowlist. Adding the repo adds
+      it, so workspaces can reach the repo.
     </p>
   )
 }

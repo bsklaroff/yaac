@@ -78,7 +78,10 @@ selection of exactly one repo (`resolveStart`).
 
 Each selected repo must be usable by the project's owner (`canUseRepo`),
 have a credential, and behind the proxy have its host in the egress
-allowlist. A workspace with no repos needs none of that.
+allowlist. A workspace with no repos needs none of that. Linking a repo
+(adding a project around it, or adding it to one) adds its host to the
+project's allowlist when the list leaves it out, and the webapp and CLI
+say so, so the check only refuses a host someone removed afterwards.
 
 ## Remembered create settings
 

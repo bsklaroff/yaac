@@ -70,6 +70,20 @@ export async function setProjectEgressAllowlist(
 }
 
 /**
+ * Append `host` to the project's egress allowlist unless it is listed. One
+ * statement, so two writers never drop each other's host and an append
+ * never writes back a host a concurrent save removed.
+ */
+export async function addProjectEgressHost(projectId: string, host: string): Promise<void> {
+  const db = await getDb()
+  const hosts = sql`${projects.egressAllowlist} -> 'hosts'`
+  const entry = sql`jsonb_build_array(${host}::text)`
+  await db.update(projects)
+    .set({ egressAllowlist: sql`jsonb_set(${projects.egressAllowlist}, '{hosts}', ${hosts} || ${entry})` })
+    .where(and(eq(projects.id, projectId), sql`NOT (${hosts} @> ${entry})`))
+}
+
+/**
  * Place `owner`'s projects in the order `projectIds` lists them. Any of
  * theirs it leaves out lose their place and follow in `addedAt` order, so a
  * project added while the list was being dragged lands last; ids of other

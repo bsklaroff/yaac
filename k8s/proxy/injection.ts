@@ -100,7 +100,7 @@ function pathMatches(requestPath: string, pattern: string): boolean {
   return requestPath === pattern
 }
 
-/** Same rules as `hostMatchesPattern` in packages/server/src/lib/allowed-hosts.ts,
+/** Same rules as `hostMatchesPattern` in packages/shared/src/allowed-hosts.ts,
  *  which this package cannot import: a label may hold `*` (`productionresultssa*`),
  *  standing for `[a-z0-9_-]*`. The match is linear, not a regex, since patterns
  *  reach it unvalidated and the label is chosen by the workspace. Change both together. */
