@@ -125,10 +125,5 @@ export function clusterArgError(opts: ClusterInstallArgs): string | null {
   }
 }
 
-/**
- * The macOS install of everything `yaac cluster install` runs: podman,
- * kind, kubectl and the tap's patched krunkit. yaac-libkrun depends on the
- * libkrun/krun tap, which brew will not tap or trust on its own.
- */
-export const YAAC_CLUSTER_INSTALL = '  brew trust libkrun/krun && brew tap libkrun/krun\n'
-  + '  brew install bsklaroff/yaac/yaac-cluster'
+/** The macOS install of everything `yaac cluster install` runs: podman, krunkit, kind and kubectl. */
+export const YAAC_CLUSTER_INSTALL = '  brew install bsklaroff/yaac/yaac-cluster'

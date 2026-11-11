@@ -8,7 +8,7 @@
  * module's fixed table, so web content can never choose what runs, and the
  * main process confirms each run in a native dialog (`setupConfirmation`).
  * Each Homebrew step first checks whether its effect is already in place (a
- * formula installed, a tap trusted or added) and skips itself if so.
+ * formula installed, a tap trusted) and skips itself if so.
  * `yaac cluster install` always runs: it converges whatever an earlier,
  * interrupted install left. Homebrew itself is never installed here: a
  * setup that needs it and finds none fails, pointing at https://brew.sh.
@@ -16,9 +16,9 @@
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import { findExecutable, pathDirs } from '@yaac/shared/executables'
-import { trustSentence } from '@yaac/shared/setup-copy'
+import { TAP_TRUST_NOTE } from '@yaac/shared/setup-copy'
 import type {
-  DesktopLocalState, DesktopSetupChoice, DesktopSetupRun, DesktopSetupStep, TrustedTap,
+  DesktopLocalState, DesktopSetupChoice, DesktopSetupRun, DesktopSetupStep,
 } from '@yaac/shared/types'
 import {
   ACTION_TIMEOUT_MS, failedChecks, installOrigin, installState, READ_TIMEOUT_MS,
@@ -26,12 +26,12 @@ import {
 } from '#server-control'
 
 const MINUTE = 60_000
-/** `brew install` may build from source (yaac-cluster's krunkit and libkrun). */
+/** `brew install` builds from source on a Mac with no bottle for a dependency. */
 const BREW_INSTALL_TIMEOUT_MS = 90 * MINUTE
 /** `yaac cluster install` creates a podman VM and a kind cluster and builds every image. */
 const CLUSTER_INSTALL_TIMEOUT_MS = 90 * MINUTE
 const BREW_TAP_TIMEOUT_MS = 5 * MINUTE
-/** A probe: `brew list`, `brew tap`, `brew trust --json`. */
+/** A probe: `brew list`, `brew trust --json`. */
 const PROBE_TIMEOUT_MS = MINUTE
 /** How long a cancelled or timed-out command has to exit before it is killed. */
 const KILL_GRACE_MS = 5000
@@ -49,7 +49,6 @@ interface Probes {
   onPath(name: string): Promise<boolean>
   formula(name: string): Promise<boolean>
   trusted(tap: string): Promise<boolean>
-  tapped(tap: string): Promise<boolean>
 }
 
 interface StepDef {
@@ -93,24 +92,6 @@ const STEPS = {
     timeoutMs: READ_TIMEOUT_MS,
     advisory: true,
   },
-  trustKrun: {
-    label: 'Trust the libkrun tap',
-    argv: ['brew', 'trust', 'libkrun/krun'],
-    timeoutMs: BREW_TAP_TIMEOUT_MS,
-    skip: async (p, scope) => {
-      if (!await needsClusterFormula(p, scope)) return 'nothing to install from it'
-      return await p.trusted('libkrun/krun') ? 'already trusted' : null
-    },
-  },
-  tapKrun: {
-    label: 'Add the libkrun tap',
-    argv: ['brew', 'tap', 'libkrun/krun'],
-    timeoutMs: BREW_TAP_TIMEOUT_MS,
-    skip: async (p, scope) => {
-      if (!await needsClusterFormula(p, scope)) return 'nothing to install from it'
-      return await p.tapped('libkrun/krun') ? 'already added' : null
-    },
-  },
   installCluster: {
     label: 'Install the cluster tools',
     argv: ['brew', 'install', 'bsklaroff/yaac/yaac-cluster'],
@@ -132,7 +113,7 @@ type StepId = keyof typeof STEPS
  */
 const PLANS: Record<ServerScope, StepId[]> = {
   server: ['trustYaac', 'installServer', 'startServer', 'hostCheck'],
-  cluster: ['trustYaac', 'installServer', 'trustKrun', 'tapKrun', 'installCluster', 'clusterInstall'],
+  cluster: ['trustYaac', 'installServer', 'installCluster', 'clusterInstall'],
 }
 
 /**
@@ -152,11 +133,9 @@ function setupCommands(scope: ServerScope, cli: boolean): string[] {
   return shownSteps(scope, cli).map((step) => step.argv.join(' '))
 }
 
-/** The taps a setup trusts; any but yaac's own is a third party's. */
-function trustedTaps(scope: ServerScope, cli: boolean): TrustedTap[] {
-  return shownSteps(scope, cli).map((step) => step.argv)
-    .filter((argv) => argv[0] === 'brew' && argv[1] === 'trust')
-    .map((argv) => ({ tap: argv[2], thirdParty: !argv[2].startsWith('bsklaroff/') }))
+/** Whether a setup trusts yaac's tap. */
+function trustsTap(scope: ServerScope, cli: boolean): boolean {
+  return shownSteps(scope, cli).includes(STEPS.trustYaac)
 }
 
 /**
@@ -164,11 +143,10 @@ function trustedTaps(scope: ServerScope, cli: boolean): TrustedTap[] {
  * ask for a setup but cannot answer this.
  */
 export function setupConfirmation(scope: ServerScope, cli: boolean): { message: string, detail: string } {
-  const taps = trustedTaps(scope, cli)
   return {
     message: scope === 'server' ? 'Set up a containerless server on this Mac?' : 'Set up a local kubernetes cluster on this Mac?',
     detail: [
-      ...taps.length > 0 ? [trustSentence(taps)] : [],
+      ...trustsTap(scope, cli) ? [TAP_TRUST_NOTE] : [],
       ['These commands run, skipping any that are already done:', ...setupCommands(scope, cli).map((c) => `  ${c}`)].join('\n'),
     ].join('\n\n'),
   }
@@ -287,10 +265,6 @@ function createProbes(signal: AbortSignal): Probes & { forget(): void } {
       } catch {
         return false
       }
-    }),
-    tapped: (tap) => once(`tapped:${tap}`, async () => {
-      const r = await read('brew', 'tap')
-      return r.ok && r.out.split('\n').some((l) => l.trim() === tap)
     }),
     forget: () => memo.clear(),
   }
@@ -420,7 +394,7 @@ export function createSetupRunner(onChange: () => void, unfinishedFile: string):
   }
 }
 
-/** Whether this Mac can run a local kind cluster: the tap's krunkit is Apple silicon only. */
+/** Whether this Mac can run a local kind cluster: krunkit is Apple silicon only. */
 export const CLUSTER_SUPPORTED = process.platform === 'darwin' && process.arch === 'arm64'
 
 /**
@@ -445,7 +419,7 @@ export function localView(input: {
   const choice = (scope: ServerScope): DesktopSetupChoice => ({
     scope,
     commands: setupCommands(scope, cli),
-    trusts: trustedTaps(scope, cli),
+    trustsTap: trustsTap(scope, cli),
     blocked: scope === 'cluster' && !clusterSupported
       ? 'unsupported'
       : !brew && (scope === 'cluster' || !cli) ? 'no-brew' : null,

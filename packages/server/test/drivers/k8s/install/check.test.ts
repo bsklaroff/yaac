@@ -67,16 +67,21 @@ function appliedPodCommand(name: string): string {
  * <args>`), which is how the fakes learn the nonce a peer pod publishes.
  */
 function appliedPodArgs(name: string): string[] {
-  const pod = applied()
-    .map((c) => c[0] as {
-      kind?: string
-      metadata?: { name?: string }
-      spec?: { containers?: Array<{ command?: string[] }> }
-    })
+  const command = appliedPod(name)?.spec?.containers?.[0]?.command ?? []
+  return command.slice(command.indexOf('--') + 1)
+}
+
+interface AppliedPod {
+  kind?: string
+  metadata?: { name?: string }
+  spec?: { containers?: Array<{ command?: string[] }>; securityContext?: { runAsUser?: number } }
+}
+
+/** The last probe pod applied under `name`. */
+function appliedPod(name: string): AppliedPod | undefined {
+  return applied().map((c) => c[0] as AppliedPod)
     .filter((m) => m.kind === 'Pod' && m.metadata?.name === name)
     .pop()
-  const command = pod?.spec?.containers?.[0]?.command ?? []
-  return command.slice(command.indexOf('--') + 1)
 }
 
 interface LivePriorityClass {
@@ -227,6 +232,8 @@ let datapathReady: Record<'calico-node' | 'yaac-netd', string | null> = { 'calic
 let calicoNamespace = 'kube-system'
 /** netd's pods' container statuses; a case edits. */
 let netdContainerStatuses: unknown[] = []
+/** The uid the probe sees owning its peer's directory, when not the peer's own; a case edits. */
+let probeOwner: number | undefined
 /** Pod name -> what its log says, over the healthy defaults; a case edits. */
 let podLogs: Record<string, string> = {}
 /** Further objects the cluster holds; a case edits. */
@@ -251,7 +258,8 @@ function logsFor(name: string): string {
     case 'yaac-cluster-check-nested': return 'NESTED_MOUNT_OK\n'
     case 'yaac-cluster-check': {
       const [, nonce] = appliedPodArgs('yaac-cluster-check-peer')
-      return `PROBE_NODE=yaac-control-plane\nPROBE_READ=${nonce}\n`
+      const uid = appliedPod('yaac-cluster-check')?.spec?.securityContext?.runAsUser
+      return `PROBE_NODE=yaac-control-plane\nPROBE_READ=${nonce}\nPROBE_OWNER=${probeOwner ?? uid}\n`
     }
     default: return ''
   }
@@ -468,6 +476,7 @@ describe('runClusterCheck', () => {
     installerStale = 0
     installerDeployed = true
     peerSawWrite = true
+    probeOwner = undefined
     podEvents = {}
     storageClaims = {
       'yaac-global': { spec: { volumeName: 'yaac-global-vol' }, status: { phase: 'Bound' } },
@@ -1849,6 +1858,18 @@ describe('runClusterCheck', () => {
     expect(probe).toMatchObject({ status: 'fail' })
     expect(probe?.detail).toContain('never reached its peer')
     expect(probe?.fix).toContain('uid')
+  })
+
+  it('fails the probe when the claim reports the reader as a file\'s owner', async () => {
+    // What a macOS podman machine started without the krunkit wrapper shows
+    // the root gofer, even where the write itself would get through.
+    probeOwner = 0
+    stage()
+    const { ok, results } = await check()
+    expect(ok).toBe(false)
+    const probe = byName(results, 'probe')
+    expect(probe?.detail).toContain('as owned by uid 0')
+    expect(probe?.fix).toContain('krunkit wrapper')
   })
 
   it('fails the probe, naming the peer, when the pod never sees the peer\'s nonce', async () => {

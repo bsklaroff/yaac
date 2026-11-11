@@ -39,8 +39,8 @@ yet.
 
 Each package but the keyring is built for amd64 and arm64. They are published in the apt
 repository and also attached to the `v<VERSION>` GitHub Release beside the
-`.dmg`. There is no counterpart of `yaac-libkrun`/`yaac-krunkit`, because on
-Linux the cluster runs on the host's rootful podman with no VM
+`.dmg`. Nothing stands in for `yaac-cluster`'s krunkit dependency, because
+on Linux the cluster runs on the host's rootful podman with no VM
 (docs/cluster-setup.md "Linux: rootful podman").
 
 Supported releases are Debian 13 (trixie) and Ubuntu 24.04 LTS and later.
@@ -237,9 +237,8 @@ This makes Debian vendoring and `update-alternatives` unnecessary, so a
 distro `kubectl` can never conflict with ours. It also works on every install
 route: the `.deb`, Homebrew, and a source build. `Formula/yaac-cluster.rb`
 drops its `kind` and `kubernetes-cli` dependencies and keeps podman and
-`yaac-krunkit`. podman and krunkit are not fetched on macOS because they need
-the VM helpers and the patched, source-built libkrun that Homebrew already
-assembles.
+krunkit. podman and krunkit are not fetched on macOS because they need
+the VM helpers and libkrun that Homebrew already assembles.
 
 Dev and test hosts keep their own `kind` and `kubectl` on PATH, because the
 test harness (`test/global-setup.ts`) calls them

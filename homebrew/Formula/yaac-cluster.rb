@@ -18,12 +18,11 @@ class YaacCluster < Formula
   depends_on "podman"
 
   on_macos do
-    # The podman machine runs on the tap's patched krunkit, the only macOS
-    # VM stack whose virtiofs reports real file ownership to gVisor session
-    # pods (see Formula/yaac-krunkit.rb and "macOS: the podman machine" in
-    # docs/cluster-setup.md). krunkit/libkrun are arm64-only.
+    # The podman machine runs on krunkit, the macOS VM stack whose virtiofs
+    # can report real file ownership to gVisor session pods ("macOS: the
+    # podman machine" in docs/cluster-setup.md). krunkit is arm64-only.
     depends_on arch: :arm64
-    depends_on "bsklaroff/yaac/yaac-krunkit"
+    depends_on "krunkit"
   end
 
   def install

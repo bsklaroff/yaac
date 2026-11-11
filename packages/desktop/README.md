@@ -93,21 +93,18 @@ never stops a server.
   and **Local kubernetes cluster** (kind), gVisor-sandboxed pods behind
   the egress proxy, which needs a podman VM, several GB of disk and memory,
   and an Apple silicon Mac (it is disabled elsewhere). Each shows its
-  commands to copy, says which Homebrew taps it trusts (`libkrun/krun` is
-  a third party's), and has a button that runs them in the background
-  (`src/local-setup.ts`):
+  commands to copy, says which Homebrew tap it trusts, and has a button
+  that runs them in the background (`src/local-setup.ts`):
 
   | Containerless | Cluster |
   |---|---|
   | `brew trust bsklaroff/yaac` | `brew trust bsklaroff/yaac` |
   | `brew install bsklaroff/yaac/yaac-server` | `brew install bsklaroff/yaac/yaac-server` |
-  | `yaac server start` | `brew trust libkrun/krun` |
-  | `yaac host check` | `brew tap libkrun/krun` |
-  | | `brew install bsklaroff/yaac/yaac-cluster` |
-  | | `yaac cluster install` |
+  | `yaac server start` | `brew install bsklaroff/yaac/yaac-cluster` |
+  | `yaac host check` | `yaac cluster install` |
 
   Each Homebrew step first checks whether it is already done (the formula
-  installed or `yaac` already on PATH, the tap trusted or added) and skips
+  installed or `yaac` already on PATH, the tap trusted) and skips
   itself, so only the missing work runs and a source-built `yaac` needs no
   Homebrew for the containerless setup. With `yaac` already on PATH, as
   the cask leaves it, the page and the confirmation leave out the steps

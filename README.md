@@ -34,12 +34,9 @@ brew install --cask bsklaroff/yaac/yaac-desktop
 This installs the desktop app and the `yaac` CLI it runs (the `yaac-server`
 formula). For the CLI alone, `brew install bsklaroff/yaac/yaac-server`.
 
-To run a local kubernetes cluster, add its tools, including a patched
-`krunkit`/`libkrun` pair ([why](docs/cluster-setup.md#macos-the-podman-machine)):
+To run a local kubernetes cluster, add its tools:
 
 ```sh
-brew trust libkrun/krun
-brew tap libkrun/krun
 brew install bsklaroff/yaac/yaac-cluster
 yaac cluster install
 ```

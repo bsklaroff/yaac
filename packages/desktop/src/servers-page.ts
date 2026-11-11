@@ -28,7 +28,7 @@
  * after a reload. The servers' health is asked for once the page has loaded,
  * so a server that does not answer never holds the page up.
  */
-import { SETUP_COPY, trustSentence } from '@yaac/shared/setup-copy'
+import { SETUP_COPY, TAP_TRUST_NOTE } from '@yaac/shared/setup-copy'
 import { isLoopbackOrigin } from '@yaac/shared/server-api'
 import type { DesktopInstallState, DesktopLocalState, DesktopServerTargets } from '@yaac/shared/types'
 import type { LaunchError } from '#messages'
@@ -75,7 +75,7 @@ function escapeHtml(text: string): string {
 
 /** A missing install's setup: what it means, its commands, and a button that runs them. */
 function choiceHtml(local: DesktopLocalState, scope: ServerScope, open: boolean): string {
-  const { commands, blocked, trusts } = local.choices[scope]
+  const { commands, blocked, trustsTap } = local.choices[scope]
   const { summary, reach } = SETUP_COPY[scope]
   const why = blocked === 'unsupported'
     ? '<p class="note blocked">This Mac cannot run it: it needs macOS on Apple silicon.</p>'
@@ -89,7 +89,7 @@ function choiceHtml(local: DesktopLocalState, scope: ServerScope, open: boolean)
           <p class="note">${escapeHtml(summary)}</p>
           ${reach ? `<p class="note">An agent can reach everything your account can:</p>
           <ul class="note">${reach.map((r) => `<li>${escapeHtml(r)}</li>`).join('')}</ul>` : ''}
-          ${trusts.length > 0 ? `<p class="note">${escapeHtml(trustSentence(trusts))}</p>` : ''}
+          ${trustsTap ? `<p class="note">${escapeHtml(TAP_TRUST_NOTE)}</p>` : ''}
           <pre class="commands" id="commands-${scope}">${commands.map(escapeHtml).join('\n')}</pre>
           <p class="actions">
             <button class="copy" data-scope="${scope}">Copy commands</button>

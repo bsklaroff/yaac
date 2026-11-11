@@ -1,6 +1,9 @@
+import { execFileSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
+import { parse as parseToml } from 'smol-toml'
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import type * as apiModule from '#drivers/k8s/substrate/api'
 import type * as clusterBarrel from '#drivers/k8s/cluster'
@@ -308,6 +311,7 @@ function happyRun(file: string, args: string[]): Promise<{ stdout: string; stder
   if (file === 'kind' && args[0] === 'version') {
     return Promise.resolve({ stdout: 'kind v0.33.0 go1.24.4 linux/arm64\n', stderr: '' })
   }
+  if (file === 'which') return Promise.resolve({ stdout: `/opt/homebrew/bin/${args.at(-1)}\n`, stderr: '' })
   if (file === 'kind' && args[0] === 'get' && args[1] === 'clusters') {
     return Promise.resolve({ stdout: '', stderr: '' })
   }
@@ -1388,55 +1392,6 @@ describe('runClusterInstall', () => {
     expect([pair(args, '--cpus'), pair(args, '--memory')]).toEqual(['2', '4096'])
   })
 
-  it('resolves the machine provider across containers.conf and its drop-ins', async () => {
-    const withSources = async (
-      sources: Record<string, string>,
-      dropIns: string[] = [],
-    ): Promise<boolean> => {
-      const run = vi.fn(async (file: string, args: string[]) => {
-        if (file === 'podman' && args[0] === 'machine' && args[1] === 'list') {
-          return { stdout: '[]', stderr: '' }
-        }
-        return happyRun(file, args)
-      }) as RunMock
-      const deps = makeDeps({
-        platform: 'darwin', run,
-        listDir: vi.fn().mockResolvedValue(dropIns),
-        readTextFile: vi.fn((path: string) => {
-          const isDropIn = path.includes('containers.conf.d/')
-          for (const [frag, body] of Object.entries(sources)) {
-            const fragIsDropIn = frag !== 'containers.conf'
-            if (fragIsDropIn !== isDropIn) continue
-            if (path.includes(frag)) return Promise.resolve(body)
-          }
-          // Unstaged paths are absent.
-          if (path.includes('containers.conf')) return Promise.resolve(null)
-          return fakeCalicoReadTextFile(path)
-        }),
-      })
-      await runClusterInstall({}, deps)
-      // A drop-in is written only when the provider is not already libkrun.
-      return vi.mocked(deps.writeTextFile).mock.calls
-        .some(([p]) => String(p).includes('99-yaac-machine-provider.conf'))
-    }
-
-    // No config, or no provider set: yaac pins one.
-    expect(await withSources({})).toBe(true)
-    expect(await withSources({ 'containers.conf': '[engine]\nfoo = "bar"\n' })).toBe(true)
-    // Already libkrun: nothing to write.
-    expect(await withSources({ 'containers.conf': '[machine]\nprovider = "libkrun"\n' })).toBe(false)
-    // A later drop-in overrides an earlier source...
-    expect(await withSources(
-      { 'containers.conf': '[machine]\nprovider = "applehv"\n', '10-x.conf': '[machine]\nprovider = "libkrun"\n' },
-      ['10-x.conf'],
-    )).toBe(false)
-    // ...and an unparseable drop-in is skipped.
-    expect(await withSources(
-      { 'containers.conf': '[machine]\nprovider = "libkrun"\n', '10-x.conf': 'not [ valid toml' },
-      ['10-x.conf'],
-    )).toBe(false)
-  })
-
   function darwinDeps(
     overrides: Omit<Partial<ClusterInstallDeps>, 'run' | 'runStreaming'> & {
       run?: RunMock
@@ -1464,44 +1419,114 @@ describe('runClusterInstall', () => {
     })
   }
 
-  it('writes the libkrun drop-in and inits a rootful machine when none exists', async () => {
+  it('routes a new rootful machine through a krunkit wrapper that asks for real file ownership', async () => {
     const run = machineRun([], [{ Name: 'podman-machine-default', Running: false, Default: true }])
     const deps = darwinDeps({ run })
     await runClusterInstall({}, deps)
 
-    const write = vi.mocked(deps.writeTextFile).mock.calls[0]
-    expect(write[0]).toContain('containers.conf.d/99-yaac-machine-provider.conf')
-    expect(write[1]).toContain('provider = "libkrun"')
+    const [wrapper, dropIn] = vi.mocked(deps.writeTextFile).mock.calls
+    expect(wrapper[0]).toBe('/home/tester/.config/containers/yaac-helpers/krunkit')
+    expect(wrapper[2]).toBe(0o755)
+    // The script podman runs, fed the arguments podman passes krunkit.
+    const real = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'krunkit-')), 'krunkit')
+    await fs.writeFile(real, '#!/bin/sh\nprintf "%s\\n" "$@"\n', { mode: 0o755 })
+    const script = path.join(path.dirname(real), 'wrapper')
+    await fs.writeFile(script, wrapper[1].replace('/opt/homebrew/bin/krunkit', real), { mode: 0o755 })
+    const passed = execFileSync(script, [
+      '--cpus', '4', '--device', 'virtio-fs,sharedDir=/Users/a b,mountTag=x', '--device', 'virtio-net,fd=3',
+    ], { encoding: 'utf8' })
+    expect(passed.trim().split('\n')).toEqual([
+      '--cpus', '4', '--device', 'virtio-fs,sharedDir=/Users/a b,mountTag=x,permissionSemantics=complete',
+      '--device', 'virtio-net,fd=3',
+    ])
+
+    expect(dropIn[0]).toBe('/home/tester/.config/containers/containers.conf.d/99-yaac-machine-provider.conf')
+    const conf = parseToml(dropIn[1]) as { machine: { provider: string }; engine: { helper_binaries_dir: string[] } }
+    expect(conf.machine.provider).toBe('libkrun')
+    // The wrapper's directory comes ahead of the one holding the real krunkit.
+    expect(conf.engine.helper_binaries_dir[0]).toBe('/home/tester/.config/containers/yaac-helpers')
+    expect(conf.engine.helper_binaries_dir).toContain('/opt/homebrew/bin')
 
     const init = deps.runStreaming.mock.calls.find(([, a]) => a[1] === 'init')
     expect(init?.[1]).toContain('--rootful')
     expect(run.mock.calls.some(([f, a]) => f === 'podman' && a[1] === 'start')).toBe(true)
   })
 
-  it('does not write a drop-in when the provider is already libkrun', async () => {
-    const run = machineRun(
-      [{ Name: 'podman-machine-default', Running: true, Default: true, VMType: 'libkrun' }],
-      [{ Name: 'podman-machine-default', Running: true, Default: true, VMType: 'libkrun' }],
-      (file, args) => {
-        if (file === 'podman' && args[1] === 'inspect') {
-          return Promise.resolve({ stdout: JSON.stringify([{ Rootful: true }]), stderr: '' })
-        }
-        return null
-      },
-    )
+  it('writes the machine config where podman reads it, around what the user already set', async () => {
+    vi.stubEnv('XDG_CONFIG_HOME', '/xdg')
+    // A PATH that lists the wrapper's own directory first.
+    const run = vi.fn((file: string, args: string[]) => (file === 'which'
+      ? Promise.resolve({ stdout: '/xdg/containers/yaac-helpers/krunkit\n/opt/homebrew/bin/krunkit\n', stderr: '' })
+      : happyRun(file, args))) as RunMock
+    const conf: Record<string, string> = {
+      '/xdg/containers/containers.conf': '[engine]\nhelper_binaries_dir = ["/mine"]\n',
+      '/xdg/containers/containers.conf.d/50-more.conf': '[engine]\nhelper_binaries_dir = ["/more", {append=true}]\n',
+      // yaac's own drop-in from an earlier run is not read back.
+      '/xdg/containers/containers.conf.d/99-yaac-machine-provider.conf': '[engine]\nhelper_binaries_dir = ["/stale"]\n',
+    }
     const deps = darwinDeps({
       run,
-      readTextFile: vi.fn((p: string) => Promise.resolve(
-        p.endsWith('containers.conf')
-          ? '[machine]\nprovider = "libkrun"\n'
-          : p.includes('containers.conf.d')
-            ? null
-            : fakeCalicoReadTextFile(p),
-      )) as unknown as ClusterInstallDeps['readTextFile'],
+      listDir: vi.fn().mockResolvedValue(['50-more.conf', '99-yaac-machine-provider.conf']),
+      readTextFile: vi.fn((p: string) => Promise.resolve(conf[p] ?? fakeCalicoReadTextFile(p))) as unknown as
+        ClusterInstallDeps['readTextFile'],
     })
     await runClusterInstall({}, deps)
-    expect(deps.writeTextFile).not.toHaveBeenCalled()
-    expect(run.mock.calls.some(([f, a]) => f === 'podman' && a[1] === 'start')).toBe(false)
+
+    const [wrapper, dropIn] = vi.mocked(deps.writeTextFile).mock.calls
+    expect(wrapper[0]).toBe('/xdg/containers/yaac-helpers/krunkit')
+    expect(wrapper[1]).toContain('exec \'/opt/homebrew/bin/krunkit\' "$@"')
+    expect(dropIn[0]).toBe('/xdg/containers/containers.conf.d/99-yaac-machine-provider.conf')
+    expect((parseToml(dropIn[1]) as { engine: { helper_binaries_dir: string[] } }).engine.helper_binaries_dir)
+      .toEqual(['/xdg/containers/yaac-helpers', '/mine', '/more'])
+  })
+
+  it('restarts a running machine only when its shared folders misreport file ownership', async () => {
+    /** A running rootful libkrun machine whose home dir root sees as owned by each of `owners` in turn. */
+    const machineCalls = async (owners: string[]): Promise<string[] | Error> => {
+      const up = [{ Name: 'podman-machine-default', Running: true, Default: true, VMType: 'libkrun' }]
+      let stopped = false
+      const run = vi.fn(async (file: string, args: string[]) => {
+        if (file !== 'podman' || args[0] !== 'machine') return happyRun(file, args)
+        if (args[1] === 'list') return { stdout: JSON.stringify([{ ...up[0], Running: !stopped }]), stderr: '' }
+        if (args[1] === 'inspect') return { stdout: JSON.stringify([{ Rootful: true }]), stderr: '' }
+        if (args[1] === 'ssh') return { stdout: `${owners.shift()}\n`, stderr: '' }
+        stopped = args[1] === 'stop'
+        return { stdout: '', stderr: '' }
+      }) as RunMock
+      try {
+        await runClusterInstall({}, darwinDeps({ run }))
+      } catch (err) {
+        return err as Error
+      }
+      return run.mock.calls.filter(([f, a]) => f === 'podman' && a[0] === 'machine' && a[1] !== 'list')
+        .map(([, a]) => a.slice(1).join(' '))
+    }
+
+    // Root sees the user's uid: the machine is left running.
+    expect(await machineCalls(['501'])).toEqual([
+      'inspect podman-machine-default', 'ssh podman-machine-default sudo stat -c %u \'/home/tester\'',
+    ])
+    // Root sees itself as the owner, so the machine predates the wrapper.
+    expect(await machineCalls(['0', '501'])).toEqual(expect.arrayContaining(['stop podman-machine-default', 'start']))
+    // Still wrong after a restart: the wrapper is not what podman started.
+    const err = await machineCalls(['0', '0'])
+    expect(err).toBeInstanceOf(ClusterInstallError)
+    expect((err as Error).message).toContain('yaac-helpers/krunkit')
+    expect((err as Error).message).toContain('CONTAINERS_HELPER_BINARY_DIR')
+  })
+
+  it('refuses a Mac with no krunkit but the wrapper, naming the formula that brings it', async () => {
+    for (const which of [
+      (): Promise<never> => Promise.reject(new Error('exit 1')),
+      () => Promise.resolve({ stdout: '/home/tester/.config/containers/yaac-helpers/krunkit\n', stderr: '' }),
+    ]) {
+      const run = vi.fn((file: string, args: string[]) => (file === 'which' ? which() : happyRun(file, args))) as RunMock
+      const deps = darwinDeps({ run })
+      const err = await runClusterInstall({}, deps).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(ClusterInstallError)
+      expect((err as Error).message).toContain('brew install bsklaroff/yaac/yaac-cluster')
+      expect(deps.writeTextFile).not.toHaveBeenCalled()
+    }
   })
 
   it('stops, sets --rootful, and restarts a rootless machine', async () => {
@@ -1567,8 +1592,6 @@ describe('runClusterInstall', () => {
     const err = await runClusterInstall({}, deps).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ClusterInstallError)
     expect((err as Error).message).toContain('krunkit crashed')
-    // The machine exists, so this is where an upgrade that lost krunkit fails.
-    expect((err as Error).message).toContain('brew install bsklaroff/yaac/yaac-cluster')
     expect(deps.confirm).not.toHaveBeenCalled()
   })
 

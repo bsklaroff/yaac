@@ -97,24 +97,43 @@ Linux filesystem does. On macOS this constrains the VM stack.
 
 ## macOS: the podman machine
 
-On macOS podman runs in a VM, and yaac needs two non-default machine
-settings: **rootful** (kind requires it) and the **libkrun provider** with
-the patched `yaac-krunkit` that yaac's `yaac-cluster` formula installs.
+On macOS podman runs in a VM, and yaac needs three machine settings:
+**rootful** (kind requires it), the **libkrun provider**, and krunkit's
+**complete permission mode** on every folder the VM shares with the Mac.
 
-The provider choice is about virtiofs ownership. Apple's
+The last two are about virtiofs ownership. Apple's
 Virtualization.framework (applehv/vz) reports the accessing process as the
 owner of every file ([lima#1513](https://github.com/lima-vm/lima/issues/1513)).
 gVisor's root gofer then sees root-owned files, and workspace uids can never
 write hostPath mounts. chown is silently ignored and idmapped mounts fail
-with EINVAL, so there is no remapping workaround. Stock krunkit (<= 1.3.x)
-fails the same way, because it hardcodes libkrun's `Simplified` virtiofs
-mode, which also reports the accessor as owner. `yaac-krunkit` is upstream
-krunkit built against a patched `yaac-libkrun` that forces `LinuxComplete`
-mode, which reports real host ownership.
+with EINVAL, so there is no remapping workaround. krunkit, which runs a
+libkrun machine, behaves the same way by default: its `simplified` mode
+suits containers that run as arbitrary users. Its `complete` mode reports
+real host ownership, and is chosen per shared folder with
+`permissionSemantics=complete` on the `virtio-fs` device.
 
-Install writes a `containers.conf.d` drop-in selecting libkrun, then runs
-`podman machine init --rootful` and starts the machine. An existing machine
-on another provider is removed and re-created after a confirmation prompt.
+podman has no setting that passes that option, so install puts a wrapper
+between the two. It writes `~/.config/containers/yaac-helpers/krunkit`, a
+shell script that appends the option to each `virtio-fs` device and then
+runs the real krunkit with podman's arguments otherwise unchanged. A
+`containers.conf.d` drop-in selects libkrun and lists that directory first
+in `helper_binaries_dir`, where podman looks for the programs it starts, so
+every `podman machine start` goes through the wrapper, whoever runs it. The
+setting replaces the list rather than adding to the front of it, so the
+drop-in restates the rest: the directories your own containers.conf and
+drop-ins name, else podman's defaults. Both files go where podman reads
+your configuration, `$XDG_CONFIG_HOME/containers` when that is set.
+
+Install then runs `podman machine init --rootful` and starts the machine.
+An existing machine on another provider is removed and re-created after a
+confirmation prompt. One that is already running is checked: if root in the
+VM sees itself as the owner of your home directory, the machine started
+without the wrapper, and install restarts it.
+
+To check ownership without a cluster, run
+`podman run --rm --user 12345 -v $HOME:/mnt:ro alpine stat -c %u /mnt`. It
+prints your real uid (e.g. `501`) through the wrapper and `12345` without
+it.
 
 Use podman 6.0 or newer. It passes krunkit's `--timesync` flag itself
 ([podman#28527](https://github.com/containers/podman/pull/28527)) and its
@@ -918,7 +937,9 @@ order:
   registry, mounts `yaac-global`, and **writes** at the workspace uid. A
   peer pod on runc at the install uid, with the claim mounted whole (as the
   server has it), writes a nonce the probe must read, checks the probe's
-  write arrived, and times a second round trip while both run. The two
+  write arrived, and times a second round trip while both run. The probe
+  must also see the peer's directory as owned by that uid, which is what
+  fails on a macOS podman machine started without the krunkit wrapper. The two
   prefer different nodes, so on a multi-node cluster the reported round
   trip is cross-node: the coherence figure an NFS class is judged by. The
   check never touches this machine's copy of the data dir, so it works the

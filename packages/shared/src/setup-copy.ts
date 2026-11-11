@@ -4,8 +4,6 @@
  * its tray and the containerless workspace badge say the same thing
  * (docs/containerless-driver.md).
  */
-import type { TrustedTap } from '#types'
-
 /** What an agent in a containerless workspace can reach, beyond its checkout. */
 export const CONTAINERLESS_REACH = [
   'it can read and change any file that account can, not just its own checkout',
@@ -29,9 +27,6 @@ export const SETUP_COPY: Record<'server' | 'cluster', { title: string; summary: 
   },
 }
 
-/** The sentence saying which taps a setup trusts, and what trusting one allows. */
-export function trustSentence(taps: TrustedTap[]): string {
-  const names = taps.map((t) => (t.thirdParty ? `${t.tap} (third-party, not yaac's)` : t.tap))
-  return `Running it trusts the Homebrew tap${taps.length > 1 ? 's' : ''} ${names.join(' and ')}, `
-    + 'which lets Homebrew run their formula code on this Mac.'
-}
+/** What a setup that trusts yaac's Homebrew tap allows. */
+export const TAP_TRUST_NOTE = 'Running it trusts the Homebrew tap bsklaroff/yaac, '
+  + 'which lets Homebrew run its formula code on this Mac.'

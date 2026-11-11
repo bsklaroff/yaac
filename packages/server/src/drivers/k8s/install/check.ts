@@ -1076,9 +1076,10 @@ const PEER_PROBE_SCRIPT = [
 ].join('\n')
 
 /**
- * The probe's half: wait for the peer's nonce, print it, write a marker for
- * the peer, signal the beacon, and acknowledge the second nonce. It runs at
- * the workspace uid under gVisor, like workspace setup.
+ * The probe's half: wait for the peer's nonce, print it and who it sees as
+ * the owner of the peer's directory, write a marker for the peer, signal
+ * the beacon, and acknowledge the second nonce. It runs at the workspace
+ * uid under gVisor, like workspace setup.
  */
 const PROBE_SCRIPT = [
   'd="/probe/$1"',
@@ -1086,6 +1087,7 @@ const PROBE_SCRIPT = [
   'i=0; while [ $i -lt 3000 ] && [ ! -f "$d/nonce" ]; do sleep 0.02; i=$((i+1)); done',
   'echo "PROBE_READ=$(cat "$d/nonce" 2>/dev/null)"',
   '[ -f "$d/nonce" ] || exit 0',
+  'echo "PROBE_OWNER=$(stat -c %u "$d" 2>/dev/null)"',
   'echo ok > "$d/write" || exit 1',
   'echo > "$d/beacon"',
   'i=0; while [ $i -lt 1500 ] && [ ! -f "$d/nonce2" ]; do sleep 0.02; i=$((i+1)); done',
@@ -1130,6 +1132,19 @@ async function runEndToEndProbe(identity: InstallIdentity): Promise<CheckResult>
       if (r.phase !== 'Succeeded') await releasePeer(PEER_POD_NAME)
     }, () => { /* reported below */ })
     const [{ phase, logs }, peer] = await Promise.all([probeRun, peerRun])
+    // The peer runs at the same uid, so its directory is the probe's own.
+    const owner = reported(logs, 'PROBE_OWNER')
+    if (owner !== undefined && owner !== String(runAsUser)) {
+      return {
+        name: 'probe', status: 'fail',
+        detail: `probe pod sees the directory its peer made at uid ${runAsUser} as owned by `
+          + `uid ${owner || 'unknown'}`,
+        fix: 'The global claim does not report real file ownership to a gVisor pod, so no '
+          + 'workspace can rely on a file\'s permissions. On macOS the podman machine did '
+          + 'not start through yaac\'s krunkit wrapper; `yaac cluster install` restarts it '
+          + 'through it (docs/cluster-setup.md "macOS: the podman machine").',
+      }
+    }
     if (phase !== 'Succeeded') {
       return {
         name: 'probe', status: 'fail',

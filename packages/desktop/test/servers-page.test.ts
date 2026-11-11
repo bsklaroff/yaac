@@ -190,19 +190,18 @@ describe('serversPageHtml', () => {
     // With no CLI, each setup installs it first, and says which taps it trusts.
     const bare = serversPageHtml({ ...STATE, local: view(NO_CLI) })
     expect(bare).toContain('Running it trusts the Homebrew tap bsklaroff/yaac, which lets Homebrew run')
-    expect(bare).toContain('Running it trusts the Homebrew taps bsklaroff/yaac and libkrun/krun (third-party, not yaac\'s)')
     expect(bare).toContain([
       'brew trust bsklaroff/yaac', 'brew install bsklaroff/yaac/yaac-server', 'yaac server start', 'yaac host check',
     ].join('\n'))
     expect(bare).toContain([
-      'brew trust bsklaroff/yaac', 'brew install bsklaroff/yaac/yaac-server', 'brew trust libkrun/krun',
-      'brew tap libkrun/krun', 'brew install bsklaroff/yaac/yaac-cluster', 'yaac cluster install',
+      'brew trust bsklaroff/yaac', 'brew install bsklaroff/yaac/yaac-server',
+      'brew install bsklaroff/yaac/yaac-cluster', 'yaac cluster install',
     ].join('\n'))
     // With the CLI already installed (the cask), the server's setup only starts it.
     const cask = serversPageHtml({ ...unselected, local: view({ server: NONE, cluster: NONE }) })
     expect(cask).toContain('<pre class="commands" id="commands-server">yaac server start\nyaac host check</pre>')
-    expect(cask).toContain('Running it trusts the Homebrew taps bsklaroff/yaac and libkrun/krun')
-    expect(cask).not.toContain('Running it trusts the Homebrew tap bsklaroff/yaac,')
+    // Only the cluster's setup still installs from the tap.
+    expect(cask.match(/Running it trusts the Homebrew tap bsklaroff\/yaac,/g)).toHaveLength(1)
     expect(cask).not.toContain('brew install bsklaroff/yaac/yaac-server')
     expect(cask).toContain('brew install bsklaroff/yaac/yaac-cluster\nyaac cluster install</pre>')
     // With no saved server either, it is a welcome rather than an error.

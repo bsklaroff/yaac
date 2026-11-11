@@ -161,6 +161,11 @@ export const env = {
     return process.env.YAAC_LEGACY_NAMES === '1'
   },
 
+  /** `XDG_CONFIG_HOME` — where podman reads the user's configuration from, in place of `~/.config`. */
+  get xdgConfigHome(): string | undefined {
+    return nonEmpty(process.env.XDG_CONFIG_HOME)
+  },
+
   /** `YAAC_KIND_CLUSTER` — name of the kind cluster `yaac cluster install` manages. */
   get kindCluster(): string {
     return process.env.YAAC_KIND_CLUSTER ?? 'yaac'
