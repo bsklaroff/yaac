@@ -29,35 +29,45 @@ const SAMPLES = 4
 /**
  * The left half of logo.svg, in its 540-unit grid: each stroke is a run of
  * line and arc pieces with butt ends, `HALF_WIDTH` either side of the line.
- * The right half mirrors it about x = 269.5, and the two halves sit `SPREAD`
- * units further apart each than in the logo. A glyph `SPAN` units across,
- * centered on the strokes, fills the tray icon. The strokes are thinner than
- * the logo's 43.75 and the halves spread so each gap between stems keeps two
- * clear pixels at 36px; at the logo's proportions the four stems blur into
- * one block.
+ * The right half mirrors it about x = 269.5. A glyph `SPAN` units across,
+ * centered on the strokes, fills the tray icon. The geometry matches the
+ * yaac-site favicon: strokes thinner than the logo's 43.75, and each stroke
+ * moved `shift` units outward, so every gap between stems keeps two clear
+ * pixels at 36px. At the logo's proportions the four stems blur into one
+ * block.
  */
 type Piece = { line: [number, number, number, number] } | { arc: [number, number, number, number, number, number, number] }
-const STROKES: Piece[] = [
-  { line: [113.4, 73, 113.4, 96.25] },
-  { arc: [196.24, 96.25, 82.84, 113.4, 96.25, 148.12, 163.68] },
-  { line: [148.12, 163.68, 211.22, 208.71] },
-  { arc: [170.47, 265.82, 70.16, 211.22, 208.71, 240.63, 265.82] },
-  { line: [240.63, 265.82, 240.63, 491.5] },
-  { line: [115.75, 245.875, 144.16, 245.875] },
-  { arc: [144.16, 284.35, 38.47, 144.16, 245.875, 182.625, 284.35] },
-  { line: [182.625, 284.35, 182.625, 437.5] },
+const STROKES: { shift: number; pieces: Piece[] }[] = [
+  {
+    shift: 10,
+    pieces: [
+      { line: [113.4, 73, 113.4, 96.25] },
+      { arc: [196.24, 96.25, 82.84, 113.4, 96.25, 148.12, 163.68] },
+      { line: [148.12, 163.68, 211.22, 208.71] },
+      { arc: [170.47, 265.82, 70.16, 211.22, 208.71, 240.63, 265.82] },
+      { line: [240.63, 265.82, 240.63, 491.5] },
+    ],
+  },
+  {
+    shift: 24,
+    pieces: [
+      { line: [115.75, 245.875, 144.16, 245.875] },
+      { arc: [144.16, 284.35, 38.47, 144.16, 245.875, 182.625, 284.35] },
+      { line: [182.625, 284.35, 182.625, 437.5] },
+    ],
+  },
 ]
-const HALF_WIDTH = 14.5
+const HALF_WIDTH = 19.5
 const MIRROR_X = 269.5
-const SPREAD = 5
 const CENTER_Y = 282.25
 const SPAN = 440
 
 /** Whether a point in unit coordinates (0..1, y down) is on the mark. */
 function inMark(u: number, v: number): boolean {
-  const x = MIRROR_X + SPREAD - Math.abs((u - 0.5) * SPAN)
+  const x = MIRROR_X - Math.abs((u - 0.5) * SPAN)
   const y = CENTER_Y + (v - 0.5) * SPAN
-  return STROKES.some((p) => ('line' in p ? onLine(x, y, ...p.line) : onArc(x, y, ...p.arc)))
+  return STROKES.some(({ shift, pieces }) => pieces.some((p) =>
+    'line' in p ? onLine(x + shift, y, ...p.line) : onArc(x + shift, y, ...p.arc)))
 }
 
 function onLine(x: number, y: number, x1: number, y1: number, x2: number, y2: number): boolean {
