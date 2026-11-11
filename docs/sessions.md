@@ -60,7 +60,13 @@ for a subcommand or an attached file. One an older install stored over the
 cap is refused at launch (docs/legacy-compat-shims.md). Until the status
 watcher first sees the agent working, or for at most `OPENING_TIMEOUT_MS`,
 the session lists as `opening`, so its pane shows the message rather than
-the agent starting up.
+the agent starting up. omp shows its busy title from boot when launched
+with a message, seconds before it draws the message, so yaac's omp
+extension holds that title back from the watcher until omp's first message
+(`OMP_FIRST_MESSAGE_OPTION`). Its idle title still passes, since omp shows
+it only once the message has been dispatched, and omp's title showing at
+all ends `opening`. That covers a first turn that has already failed, and
+one omp refused before drawing the message, such as for a missing API key.
 
 ## Launching
 

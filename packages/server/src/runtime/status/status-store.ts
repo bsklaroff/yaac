@@ -76,7 +76,8 @@ const windows = new Map<string, ObservedWindow[]>()
  * each with the timer that gives up on it. The webapp shows such a
  * session's message and a spinner rather than its terminal
  * (`SessionEntry.opening`). The agent starts on the message as soon as its
- * TUI is up, so any status but `waiting` clears it. The timer covers one
+ * TUI is up, so any status but `waiting` clears it, as does an observation
+ * showing the message drawn (`setAgentStatus`'s `opened`). The timer covers one
  * that never does, such as one stopped on a startup dialog, which the user
  * must then see.
  */
@@ -227,12 +228,15 @@ export function isWorkspaceStreamHealthy(projectId: string, workspaceId: string)
  * notifies when anything clients see changed. That includes per-
  * conversation status and spells (shown as per-tab dots via
  * `agentLiveness`), not just the aggregate. A true no-op does not notify.
+ * `opened` says the agent has taken its opening message whatever its
+ * status, which clears its `opening` mark as any status but `waiting` does.
  */
 export function setAgentStatus(
   projectId: string,
   workspaceId: string,
   handle: string,
   status: AgentStatus,
+  opened = false,
 ): void {
   const k = key(projectId, workspaceId)
   const before = readWorkspaceStatus(projectId, workspaceId)
@@ -254,7 +258,7 @@ export function setAgentStatus(
   })
   // A real classification supersedes the boot-time spell.
   delete e.attachedWaitingSinceMs
-  if (status !== 'waiting') clearOpening(`${k}/${handle}`)
+  const openingCleared = (status !== 'waiting' || opened) && clearOpening(`${k}/${handle}`)
   e.streamHealthy = true
   e.updatedAtMs = Date.now()
   if ((prev === undefined || needsUser(prev.status)) && !needsUser(status)) {
@@ -266,7 +270,7 @@ export function setAgentStatus(
     || prev.status !== status
     || prev.waitingSinceMs !== waitingSinceMs
   const after = readWorkspaceStatus(projectId, workspaceId)
-  if (entryChanged || !hadEntry || !wasHealthy || after !== before) {
+  if (entryChanged || openingCleared || !hadEntry || !wasHealthy || after !== before) {
     notifyWorkspaceListChanged()
   }
 }

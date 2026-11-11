@@ -23,7 +23,7 @@ import {
   getOpencodeSessionTitle,
   opencodePermissionMode,
 } from './opencode'
-import { classifyOmpTitle, getOmpSessionTitle, ompPermissionMode } from './omp'
+import { OMP_STATUS_FORMAT, classifyOmpTitle, getOmpSessionTitle, ompPermissionMode, ompTitleShown } from './omp'
 import { PI_BUSY_MARKERS, getPiFirstUserMessage } from './pi'
 import type { SandboxFile } from './sandbox-fs'
 
@@ -253,13 +253,15 @@ function busyStatusFormat(markers: readonly string[]): string {
 
 /**
  * The tmux status format a tool's watcher subscribes to. claude, codex and
- * omp show busy/idle in the OSC title, so the format is `#{pane_title}`,
- * classified server-side (`classifyAgentObservation`). opencode/pi draw it
- * in the pane, so the format resolves `running`/`waiting` inside tmux.
+ * omp show busy/idle in the OSC title, so the format is `#{pane_title}`
+ * (gated for omp, `OMP_STATUS_FORMAT`), classified server-side
+ * (`classifyAgentObservation`). opencode/pi draw it in the pane, so the
+ * format resolves `running`/`waiting` inside tmux.
  */
 export function agentStatusFormat(tool: AgentTool): string {
   if (tool === 'opencode') return busyStatusFormat(OPENCODE_BUSY_MARKERS)
   if (tool === 'pi') return busyStatusFormat(PI_BUSY_MARKERS)
+  if (tool === 'omp') return OMP_STATUS_FORMAT
   return '#{pane_title}'
 }
 
@@ -272,5 +274,16 @@ export function classifyAgentObservation(tool: AgentTool, observed: string): Age
   if (tool === 'omp') return classifyOmpTitle(observed)
   if (tool === 'opencode' || tool === 'pi') return observed.trim() === 'running' ? 'running' : 'waiting'
   return classifyClaudeTitle(observed)
+}
+
+/**
+ * Whether a pushed status value shows the agent is past its opening message,
+ * having drawn it or refused it, even while it reads idle. Only omp's can,
+ * since its format holds its title back until then (`OMP_STATUS_FORMAT`).
+ * This matters for a first turn that fails at once: tmux checks
+ * subscriptions once a second, so its busy title can come and go unseen.
+ */
+export function agentShowsOpened(tool: AgentTool, observed: string): boolean {
+  return tool === 'omp' && ompTitleShown(observed)
 }
 

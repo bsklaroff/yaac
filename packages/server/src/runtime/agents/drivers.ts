@@ -118,7 +118,9 @@ export type AgentObservation =
   | { kind: 'down'; reason: string }
   /** The agents running now, emitted after each listing of the windows. */
   | { kind: 'live-agents'; agents: LiveAgent[] }
-  | { kind: 'status'; handle: string; status: AgentStatus }
+  /** `opened`: it shows the agent has taken its opening message, which an
+   *  idle status alone does not (`agentShowsOpened`). */
+  | { kind: 'status'; handle: string; status: AgentStatus; opened?: true }
   /**
    * A read-only command channel into the workspace, or null when it goes
    * away. Both drivers publish their control-mode client, which the status

@@ -162,7 +162,7 @@ export class WorkspaceStatusWatcher {
         this.publishHealth()
         return
       case 'status':
-        setAgentStatus(projectId, workspaceId, obs.handle, obs.status)
+        setAgentStatus(projectId, workspaceId, obs.handle, obs.status, obs.opened === true)
         return
       case 'live-agents':
         lane.agents = obs.agents

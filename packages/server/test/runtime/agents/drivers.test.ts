@@ -551,9 +551,11 @@ describe('agentDriver', () => {
       waiting: ['waiting'],
     },
     // omp swaps the `>` after its π for a spinner frame during a turn, and
-    // for `!` while it asks.
+    // for `!` while it asks. yaac's extension holds all but its idle title
+    // back until it draws its first message, so its title shows that message
+    // drawn, or refused.
     omp: {
-      format: '#{pane_title}',
+      format: '#{?#{&&:#{==:#{@yaac-omp-first-message},pending},#{!=:#{=3:pane_title},π >}},,#{pane_title}}',
       running: ['π ⠧ proj', 'π ⠋ yaac', 'π ⣿ edge'],
       waiting: ['π > proj', 'π ! proj', HOSTNAME, '', '⠋ proj', 'proj π ⠋'],
     },
@@ -584,8 +586,9 @@ describe('agentDriver', () => {
       return seen.at(-1)
     }
     // Under its session's window, not its pane.
-    for (const t of running) expect(classified(t), t).toEqual({ kind: 'status', handle: `${tool}-2`, status: 'running' })
-    for (const t of waiting) expect(classified(t), t).toEqual({ kind: 'status', handle: `${tool}-2`, status: 'waiting' })
+    const opened = (t: string) => (tool === 'omp' && t.startsWith('π ') ? { opened: true } : {})
+    for (const t of running) expect(classified(t), t).toEqual({ kind: 'status', handle: `${tool}-2`, status: 'running', ...opened(t) })
+    for (const t of waiting) expect(classified(t), t).toEqual({ kind: 'status', handle: `${tool}-2`, status: 'waiting', ...opened(t) })
   })
 
   it('observes a tui conversation through tmux control mode', async () => {

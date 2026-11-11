@@ -7,8 +7,10 @@
  * at its first ~1s check and on every change (an idle pane emits no output,
  * so this is the only signal for idleness):
  *
- *  - claude / codex put busy/idle in the OSC title; the format is
- *    `#{pane_title}`, classified server-side (`classifyAgentObservation`).
+ *  - claude / codex / omp put busy/idle in the OSC title; the format is
+ *    `#{pane_title}` (omp's held back until it draws its first message,
+ *    `OMP_STATUS_FORMAT`), classified server-side
+ *    (`classifyAgentObservation`).
  *  - opencode / pi draw it in the pane; `agentStatusFormat` searches the
  *    visible grid (`#{C/ri:}`) inside tmux and pushes `running`/`waiting`.
  *
@@ -29,6 +31,7 @@ import { ControlModeConnection, type ControlModeNotification } from './control-m
 import {
   PANE_SESSION_FORMAT,
   agentReportFormat,
+  agentShowsOpened,
   agentStatusFormat,
   classifyAgentObservation,
   parsePaneSession,
@@ -271,6 +274,7 @@ class TuiConnection extends ControlModeConnection {
       kind: 'status',
       handle: agent.window,
       status: classifyAgentObservation(agent.tool, n.value),
+      ...(agentShowsOpened(agent.tool, n.value) ? { opened: true as const } : {}),
     })
   }
 

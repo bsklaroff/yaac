@@ -107,11 +107,38 @@ export function ompPermissionMode(mode: string, current: PermissionMode): Permis
 }
 
 /**
- * Classify an omp pane title. omp titles the pane `π > <dir>` when idle and
- * puts a braille spinner frame in place of the `>` during a turn.
+ * The pane option yaac's extension sets to `pending` as omp loads it and to
+ * `drawn` at omp's first message (`message_start`), which is when it draws
+ * the opening one. Launched with an opening message, omp shows its busy
+ * title from boot, seconds before that, and starts its run (`agent_start`)
+ * most of a second before it. So only its idle title passes while this is
+ * `pending` (`OMP_STATUS_FORMAT`); read sooner, the session would stop
+ * showing as opening over a terminal still blank. omp shows that idle title
+ * only once the opening message has been dispatched, including when omp
+ * refuses it before drawing it (no model, no API key), so the session stops
+ * showing as opening over that error too. An omp running an older extension
+ * never sets the option, and its title passes as it is.
+ */
+export const OMP_FIRST_MESSAGE_OPTION = '@yaac-omp-first-message'
+
+/** The tmux format omp's status watcher subscribes to: its title, or
+ *  nothing (`waiting`) for any but its idle `π >` title while
+ *  `OMP_FIRST_MESSAGE_OPTION` is `pending`. */
+export const OMP_STATUS_FORMAT = `#{?#{&&:#{==:#{${OMP_FIRST_MESSAGE_OPTION}},pending},#{!=:#{=3:pane_title},π >}},,#{pane_title}}`
+
+/**
+ * Classify an omp pane title (`OMP_STATUS_FORMAT`). omp titles the pane
+ * `π > <dir>` when idle and puts a braille spinner frame in place of the `>`
+ * during a turn.
  */
 export function classifyOmpTitle(title: string): AgentStatus {
   return /^π [⠀-⣿]/.test(title.trim()) ? 'running' : 'waiting'
+}
+
+/** Whether a status value is omp's own title rather than the format's
+ *  empty hold or the pane's default title. */
+export function ompTitleShown(title: string): boolean {
+  return title.trim().startsWith('π ')
 }
 
 /** The title omp gave a conversation, from its log's first line, or
