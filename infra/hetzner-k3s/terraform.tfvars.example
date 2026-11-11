@@ -25,3 +25,8 @@ tailscale_oauth_client_secret = "tskey-client-..."
 
 # Autoscaled pools. [] turns the autoscaler off.
 # autoscale_pools = [{ name = "workspaces", server_type = "cx43", max = 3 }]
+
+# MagicDNS zones the cluster resolves through the control node's tailscaled,
+# so workspaces can reach tailnet hosts (docs/workspace-egress.md "A model
+# server on a tailnet").
+# tailnet_dns_zones = ["tail1234.ts.net"]

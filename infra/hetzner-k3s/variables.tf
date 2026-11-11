@@ -110,6 +110,12 @@ variable "tailscale_auth_key" {
   sensitive   = true
 }
 
+variable "tailnet_dns_zones" {
+  description = "MagicDNS zones (e.g. tail1234.ts.net) the cluster resolves through the control node's tailscaled, so workspaces can reach tailnet hosts their project allowlists and an operator NetworkPolicy open."
+  type        = list(string)
+  default     = []
+}
+
 variable "yaac_repo" {
   description = "Git URL the control node clones yaac from."
   type        = string

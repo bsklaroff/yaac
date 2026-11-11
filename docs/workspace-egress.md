@@ -651,10 +651,21 @@ addresses. Port 8080 needs nothing more, by the sinkhole rule above. yaac
 never writes CoreDNS, so on kind the edit survives `yaac cluster install`.
 k3s re-applies its packaged CoreDNS on restart; put the block in the
 `coredns-custom` ConfigMap there instead, under a key like `tailnet.server`.
-With `infra/hetzner-k3s`, add it as another key of the `coredns-custom`
-ConfigMap in its `cluster.tf`, which owns that ConfigMap. With
-`infra/aws-eks`, add it to the `corefile` its `main.tf` gives the CoreDNS
-add-on, which replaces any edit made in the cluster.
+With `infra/hetzner-k3s`, list the zone in its `tailnet_dns_zones`
+variable, which writes that key into the ConfigMap its `cluster.tf` owns.
+With `infra/aws-eks`, add it to the `corefile` its `main.tf` gives the
+CoreDNS add-on, which replaces any edit made in the cluster.
+
+Where `tailscaled` runs on the node itself rather than outside it (as it
+does for kind, through the machine hosting it), Calico's iptables mark bits
+must stay off `0xff0000`, which tailscaled claims. With Felix's default mask
+(`0xffff0000`), a scratch bit Calico leaves on a pod's packet matches
+Tailscale's bypass rule (`fwmark 0x80000/0xff0000 lookup main`), and the
+pod's traffic to the tailnet leaves by the public interface and times out.
+Set `iptablesMarkMask` on the `default` FelixConfiguration to bits nothing
+else on the node uses and that clear bit 31, which the CRD's int32
+validation rejects: `infra/hetzner-k3s` sets `0x7f000f00`
+(`felix_manifest` in its `cluster.tf`).
 
 The e2e suites open their mock pods to the proxy the same way
 (`openToProxy` in `test/support/cluster.ts`).

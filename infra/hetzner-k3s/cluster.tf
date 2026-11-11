@@ -185,12 +185,22 @@ locals {
       # Answers the cluster's own names without CoreDNS's cache, so the site
       # router sees a deploy's flip at once (docs/cluster-setup.md "Uncached
       # cluster DNS"). k3s's Corefile imports `*.server` keys of this
-      # ConfigMap as extra server blocks.
+      # ConfigMap as extra server blocks. A key per `tailnet_dns_zones` entry
+      # sends that zone to MagicDNS, which answers only on a node running
+      # tailscaled, as the control node does (docs/workspace-egress.md "A
+      # model server on a tailnet").
       {
         apiVersion = "v1"
         kind       = "ConfigMap"
         metadata   = { name = "coredns-custom", namespace = "kube-system" }
-        data = {
+        data = merge({ for z in var.tailnet_dns_zones : "${z}.server" => <<-EOT
+          ${z}:53 {
+              errors
+              cache 30
+              forward . 100.100.100.100
+          }
+        EOT
+          }, {
           "yaac.server" = <<-EOT
             cluster.local:53 {
                 errors
@@ -202,7 +212,7 @@ locals {
                 loadbalance
             }
           EOT
-        }
+        })
       },
     ],
     [for name, c in local.charts : {
@@ -235,4 +245,18 @@ locals {
   )
 
   manifests = join("---\n", [for m in local.manifest_objects : yamlencode(m)])
+
+  # Moves Felix's iptables mark bits off 0xff0000, which tailscaled claims:
+  # a Calico scratch bit left on a pod's packet matches Tailscale's bypass
+  # rule (`fwmark 0x80000/0xff0000 lookup main`), so pod traffic to the
+  # tailnet leaves by the public interface. 0x7f000f00 also avoids
+  # kube-proxy's 0x4000 and 0x8000, and leaves bit 31 clear because the
+  # CRD validates the field as int32. Its own manifest file, since its CRD
+  # comes from a chart in `manifests` and k3s retries a failed file whole.
+  felix_manifest = yamlencode({
+    apiVersion = "crd.projectcalico.org/v1"
+    kind       = "FelixConfiguration"
+    metadata   = { name = "default" }
+    spec       = { iptablesMarkMask = 2130710272 }
+  })
 }

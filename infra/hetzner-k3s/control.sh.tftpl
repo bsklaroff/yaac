@@ -22,6 +22,9 @@ EOF
 cat > /var/lib/rancher/k3s/server/manifests/yaac-prereqs.yaml <<'EOF'
 ${manifests}
 EOF
+cat > /var/lib/rancher/k3s/server/manifests/yaac-felix.yaml <<'EOF'
+${felix_manifest}
+EOF
 umask 022
 
 # Not `install /dev/stdin`: tofu's remote-exec runs this under a pty, where

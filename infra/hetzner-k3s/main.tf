@@ -240,6 +240,7 @@ locals {
     k3s_install_url    = local.k3s_install_url
     k3s_config         = yamlencode(local.k3s_server_config)
     manifests          = local.manifests
+    felix_manifest     = local.felix_manifest
     tailscale_auth_key = var.tailscale_auth_key
     host_name          = "${var.name}-control"
     node_memory        = local.node_memory
