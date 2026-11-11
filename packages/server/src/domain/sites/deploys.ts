@@ -1,11 +1,11 @@
 /**
  * Deploys of public sites (docs/public-sites.md "Deploys"). A deploy starts
- * a release workspace at a commit, waits for it to be ready, points the
- * hostname at it and drains the old release. It is a state on the site's
- * row, advanced by `reconcileSites`, so a server restart mid-deploy resumes
- * it. A live release whose runtime is gone is replaced by a deploy of the
- * same commit and image, with backoff, and a site that follows a branch
- * deploys its tip when it moves.
+ * a release workspace with each of the site's repos at a commit, waits for
+ * it to be ready, points the hostname at it and drains the old release. It
+ * is a state on the site's row, advanced by `reconcileSites`, so a server
+ * restart mid-deploy resumes it. A live release whose runtime is gone is
+ * replaced by a deploy of the same commits and image, with backoff, and a
+ * following site deploys its target when a branch of it moves.
  */
 import { randomUUID } from 'node:crypto'
 import type { RuntimeSnapshot } from '#drivers/contract'
@@ -28,12 +28,13 @@ import {
   type StepRow,
 } from '#db'
 import { isProjectHeld, systemPrincipal, type Actor } from '#domain/access'
-import { approveWorkflowRef } from '#domain/projects'
-import { fetchRepoOrigin } from '#domain/repos'
+import { approveWorkflowStart, projectRepo } from '#domain/projects'
+import { fetchRepoOrigin, freshenOrigin } from '#domain/repos'
 import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
 import {
   listProvisioning,
   prepareStart,
+  startOf,
   stopWorkspace,
   volumeUsers,
   workspacesAlive,
@@ -44,8 +45,9 @@ import { notifyWorkspaceListChanged } from '#lib/notify'
 import { testEnv } from '@yaac/shared/env'
 import { ServerError } from '@yaac/shared/errors'
 import { repoDir } from '@yaac/shared/project-paths'
-import { FULL_COMMIT_PATTERN } from '@yaac/shared/steps'
-import { authorizeSiteEnd, authorizeSitePublish, requireSite, syncSiteRoutes } from './sites'
+import { FULL_COMMIT_PATTERN, formatCommits, stepFullName } from '@yaac/shared/steps'
+import type { RepoCommits, RepoStart, SiteCommit } from '@yaac/shared/types'
+import { authorizeSiteEnd, authorizeSitePublish, requireSite, siteCommits, syncSiteRoutes } from './sites'
 
 /** How long a deploy may take to be ready, unless it names its own. */
 const DEFAULT_DEPLOY_TIMEOUT_MS = 15 * 60_000
@@ -80,27 +82,59 @@ function wakeAt(at: number): void {
 
 const replaceDelay = (failures: number): number => Math.min(REPLACE_MAX_MS, REPLACE_FIRST_MS * 2 ** failures)
 
-/** A branch's tip on the origin of a site's repo, or a full commit as given. */
-async function resolveDeployCommit(repoId: string, ref: string | undefined): Promise<string> {
-  if (ref !== undefined && FULL_COMMIT_PATTERN.test(ref)) return ref
+/** Whether two sets of commits are the same: equal maps over the same
+ *  repos. */
+export function sameCommits(a: RepoCommits | undefined, b: RepoCommits | undefined): boolean {
+  if (a === undefined || b === undefined) return false
+  const keys = Object.keys(a)
+  return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k])
+}
+
+/** A branch's tip on the origin of a repo, after a fetch, or a full commit
+ *  as given. */
+async function resolveDeployCommit(repoId: string, ref: string): Promise<string> {
+  if (FULL_COMMIT_PATTERN.test(ref)) return ref
   if (!testEnv.e2eSkipFetch) {
     await fetchRepoOrigin(repoId).catch((err: unknown) => {
       throw new ServerError('INTERNAL', `could not fetch from remote: ${err instanceof Error ? err.message : String(err)}`)
     })
   }
-  const branch = ref ?? await getDefaultBranch(repoDir(repoId))
-  return await resolveRemoteRef(repoDir(repoId), branch).catch(() => {
-    throw new ServerError('VALIDATION', `"${branch}" is neither a branch on origin nor a full commit id`)
+  return await resolveRemoteRef(repoDir(repoId), ref).catch(() => {
+    throw new ServerError('VALIDATION', `"${ref}" is neither a branch on origin nor a full commit id`)
   })
 }
 
-/** What a release runs with besides its commit and image: its named
+/** What a site's repo is set to: its branch or its commit. A repo left
+ *  with neither by the upgrade before the backfill names one deploys its
+ *  default branch, as it did (docs/legacy-compat-shims.md "A site's repo
+ *  with no branch"). */
+async function settingOf(r: RepoStart): Promise<string> {
+  return r.commit ?? r.branch ?? await getDefaultBranch(repoDir(r.repo))
+}
+
+/**
+ * A site's target: each repo's branch tip in its main clone, or the commit
+ * it names. Undefined when a branch has no tip there.
+ */
+export async function siteTarget(site: SiteRow): Promise<RepoCommits | undefined> {
+  const target: RepoCommits = {}
+  for (const r of site.repos) {
+    const commit = r.commit ?? await resolveRemoteRef(repoDir(r.repo), await settingOf(r)).catch(() => undefined)
+    if (commit === undefined) return undefined
+    target[r.repo] = commit
+  }
+  return target
+}
+
+/** What a release runs with besides its commits and image: its named
  *  workflow's current workflow, or the workflow a release ran, by id with
- *  the name it was chosen through (docs/workflows.md). */
+ *  the name it had there (docs/workflows.md); and how its repos sit, where
+ *  it repeats a release. */
 interface ReleaseConfig {
   workflow: { name: string } | { id: string; name?: string }
   port: number
   volumeId?: string
+  start?: { repos: RepoStart[]; nested: boolean; cwd: string }
 }
 
 /** The site's current settings, which a new deploy runs with. */
@@ -116,9 +150,9 @@ async function siteConfig(site: SiteRow): Promise<ReleaseConfig> {
 
 /**
  * What the site's last release ran with, so a replacement or `site start`
- * runs as it did rather than with edits made since: its workflow and
- * volume, and the port it served on. The site's current settings where that
- * release's row is gone.
+ * runs as it did rather than with edits made since: its workflow, volume,
+ * repos at their start commits in its layout, and the port it served on.
+ * The site's current settings where that release's row is gone.
  */
 async function lastReleaseConfig(site: SiteRow): Promise<ReleaseConfig> {
   const release = site.releaseWorkspaceId !== undefined ? await findWorkspaceRow(site.releaseWorkspaceId) : undefined
@@ -127,6 +161,7 @@ async function lastReleaseConfig(site: SiteRow): Promise<ReleaseConfig> {
     workflow: { id: release.workflowId, ...(release.workflowName !== undefined ? { name: release.workflowName } : {}) },
     port: site.livePort ?? site.port,
     ...(release.volumeId !== undefined ? { volumeId: release.volumeId } : {}),
+    start: await startOf(release, 'commit'),
   }
 }
 
@@ -139,54 +174,72 @@ async function lockedSite(id: string, name: string): Promise<SiteRow> {
 }
 
 /**
- * Deploy a site at a branch's tip (the branch it follows, else the
- * project's default, unless named) or a full commit. A site that follows a
- * branch deploys nothing else, which the next reconcile would replace with
- * the tip. A deploy of the commit already deploying, as following may have
- * started on the fetch this one made, is that deploy. Resolves with its
- * release and commit.
+ * Deploy a site: each repo at the ref `refs` names for it (by folder or
+ * id; `ref` alone for a site of one repo), else at its setting, its
+ * branch's tip or its commit. A following site deploys only its target,
+ * which the next reconcile would put back over anything else. A deploy of
+ * the commits already deploying, as following may have started on the
+ * fetch this one made, is that deploy. Resolves with its release and
+ * commits.
  */
 export async function deploySite(
   principal: Actor,
   projectId: string,
   name: string,
-  opts: { ref?: string; timeoutMinutes?: number } = {},
-): Promise<{ workspaceId: string; commit: string }> {
+  opts: { ref?: string; refs?: Record<string, string>; timeoutMinutes?: number } = {},
+): Promise<{ workspaceId: string; commits: SiteCommit[] }> {
   await authorizeSitePublish(principal, projectId)
-  const { id, followBranch, repoId } = await requireSite(projectId, name)
-  if (followBranch !== undefined && opts.ref !== undefined && opts.ref !== followBranch) {
-    throw new ServerError('CONFLICT', `site "${name}" follows ${followBranch}, so it deploys only that branch's tip; `
-      + 'stop following it to deploy anything else')
+  const found = await requireSite(projectId, name)
+  const project = await getProjectRow(projectId)
+  const named = new Map<string, string>()
+  if (opts.ref !== undefined) {
+    if (found.repos.length !== 1) {
+      throw new ServerError('VALIDATION', `site "${name}" has several repos; name a ref per repo, as <dir>@<ref>`)
+    }
+    named.set(found.repos[0].repo, opts.ref)
   }
-  const commit = await resolveDeployCommit(repoId, opts.ref ?? followBranch)
+  for (const [repo, ref] of Object.entries(opts.refs ?? {})) {
+    const id = project !== undefined ? projectRepo(project, repo).repo.id : repo
+    if (!found.repos.some((r) => r.repo === id)) throw new ServerError('VALIDATION', `site "${name}" does not start with ${repo}`)
+    named.set(id, ref)
+  }
+  if (found.follow) {
+    for (const r of found.repos) {
+      const ref = named.get(r.repo)
+      if (ref !== undefined && ref !== (r.branch ?? r.commit)) {
+        throw new ServerError('CONFLICT', `site "${name}" follows its repos' branches, so it deploys only what they `
+          + 'name; stop following it to deploy anything else')
+      }
+    }
+  }
+  const commits: RepoCommits = {}
+  for (const r of found.repos) commits[r.repo] = await resolveDeployCommit(r.repo, named.get(r.repo) ?? await settingOf(r))
   const timeoutMs = opts.timeoutMinutes !== undefined ? opts.timeoutMinutes * 60_000 : DEFAULT_DEPLOY_TIMEOUT_MS
-  return await withSiteLock(id, async () => {
-    const site = await lockedSite(id, name)
-    if (site.deployWorkspaceId !== undefined && site.deployCommit === commit && !site.deployReplacing) {
-      return { workspaceId: site.deployWorkspaceId, commit }
+  return await withSiteLock(found.id, async () => {
+    const site = await lockedSite(found.id, name)
+    if (site.deployWorkspaceId !== undefined && sameCommits(site.deployCommits, commits) && !site.deployReplacing) {
+      return { workspaceId: site.deployWorkspaceId, commits: siteCommits(project, commits) }
     }
-    // A person deploying a site that follows a branch approves the branch
-    // for its workflow, as its setup does.
-    if (site.followBranch !== undefined) {
-      await approveWorkflowRef(principal, site.namedWorkflowId, { branch: site.followBranch, repoId: site.repoId })
-    }
-    return await startDeploy(principal, site, { ...await siteConfig(site), commit, timeoutMs })
+    // A person deploying a following site approves what it follows for its
+    // workflow, as setting it to follow does.
+    if (site.follow) await approveWorkflowStart(principal, site.namedWorkflowId, site.repos)
+    return await startDeploy(principal, site, { ...await siteConfig(site), commits, timeoutMs })
   })
 }
 
 /** Serve a stopped site again: a deploy of the release it last ran, at
- *  its commit and image, with its graph and volume. */
-export async function startSite(principal: Actor, projectId: string, name: string): Promise<{ workspaceId: string; commit: string }> {
+ *  its commits and image, with its graph and volume. */
+export async function startSite(principal: Actor, projectId: string, name: string): Promise<{ workspaceId: string; commits: SiteCommit[] }> {
   await authorizeSitePublish(principal, projectId)
   const { id } = await requireSite(projectId, name)
   return await withSiteLock(id, async () => {
     const site = await lockedSite(id, name)
     if (site.liveWorkspaceId !== undefined) throw new ServerError('CONFLICT', `site "${name}" is already serving`)
-    const commit = site.releaseCommit
-    if (commit === undefined) throw new ServerError('CONFLICT', `site "${name}" has never been deployed; deploy it`)
+    const commits = site.releaseCommits
+    if (commits === undefined) throw new ServerError('CONFLICT', `site "${name}" has never been deployed; deploy it`)
     return await startDeploy(principal, site, {
       ...await lastReleaseConfig(site),
-      commit,
+      commits,
       ...(site.releaseImage !== undefined ? { image: site.releaseImage } : {}),
       timeoutMs: DEFAULT_DEPLOY_TIMEOUT_MS,
     })
@@ -250,7 +303,7 @@ async function unstageRelease(workspaceId: string): Promise<void> {
 
 const clearedDeploy: SitePatch = {
   deployWorkspaceId: null,
-  deployCommit: null,
+  deployCommits: null,
   deployImage: null,
   deployPort: null,
   deployPhase: null,
@@ -264,7 +317,7 @@ const clearedDeploy: SitePatch = {
 function lastDeploy(row: SiteRow, outcome: 'succeeded' | 'failed', error?: string): SitePatch {
   return {
     lastDeployWorkspaceId: row.deployWorkspaceId ?? null,
-    lastDeployCommit: row.deployCommit ?? null,
+    lastDeployCommits: row.deployCommits ?? null,
     lastDeployOutcome: outcome,
     lastDeployError: error?.replace(/\.+$/, '') ?? null,
     lastDeployFinishedAt: new Date(),
@@ -272,28 +325,32 @@ function lastDeploy(row: SiteRow, outcome: 'succeeded' | 'failed', error?: strin
 }
 
 /**
- * Start a deploy's release, refusing while another deploy runs. Its volume
- * is mounted as next holder, and on the node of the release holding it.
- * The create runs detached; its outcome is the reconcile step's to read.
+ * Start a deploy's release, refusing while another deploy runs. Its repos
+ * start at `commits`, in the layout `start` repeats or else the one their
+ * count gives: one at the root, several in their folders. Its volume is
+ * mounted as next holder, and on the node of the release holding it. The
+ * create runs detached; its outcome is the reconcile step's to read.
  * Called holding the site's lock.
  */
 async function startDeploy(
   principal: Actor,
   site: SiteRow,
   opts: ReleaseConfig & {
-    commit: string
-    /** The followed branch whose tip `commit` is. */
-    fromBranch?: string
+    commits: RepoCommits
     image?: string
     timeoutMs: number
     replacing?: { rerunOf: string }
   },
-): Promise<{ workspaceId: string; commit: string }> {
+): Promise<{ workspaceId: string; commits: SiteCommit[] }> {
   const workspaceId = randomUUID()
   const now = Date.now()
+  const project = await getProjectRow(site.projectId)
+  const repos = Object.entries(opts.commits).map(([repo, commit]) => ({ repo, commit }))
+  const start = opts.start ?? { repos, nested: repos.length > 1, cwd: '.' }
+  const commits = siteCommits(project, opts.commits)
   const begun = await beginSiteDeploy(site.id, {
     deployWorkspaceId: workspaceId,
-    deployCommit: opts.commit,
+    deployCommits: opts.commits,
     deployImage: opts.image ?? null,
     deployPort: opts.port,
     deployPhase: 'launching',
@@ -308,16 +365,12 @@ async function startDeploy(
     const run = await prepareStart(principal, {
       projectId: site.projectId,
       workspaceId,
-      // The site's repo alone, at the workspace root.
-      repos: [{ repo: site.repoId, commit: opts.commit }],
-      nested: false,
-      cwd: '.',
+      ...start,
       ...('id' in opts.workflow
         ? { workflowId: opts.workflow.id, ...(opts.workflow.name !== undefined ? { workflowName: opts.workflow.name } : {}) }
         : { workflow: opts.workflow.name }),
-      ...(opts.fromBranch !== undefined ? { fromBranch: opts.fromBranch } : {}),
       noSession: true,
-      title: `${site.name} @ ${opts.commit.slice(0, 8)}`,
+      title: `${site.name} @ ${formatCommits(commits, 8)}`,
       siteId: site.id,
       ...(opts.image !== undefined ? { image: opts.image } : {}),
       ...(opts.volumeId !== undefined ? { stageVolumeId: opts.volumeId } : {}),
@@ -341,29 +394,30 @@ async function startDeploy(
     throw err
   }
   notifyWorkspaceListChanged()
-  return { workspaceId, commit: opts.commit }
+  return { workspaceId, commits }
 }
 
 /**
  * End a deploy that failed: its release stops, and the site keeps the
  * release it had. If the deploy had stopped that release to hand over the
  * volume, the live one is now gone, so the supervisor replaces it. A failed
- * replacement backs off before the next; any other failed commit is one
- * following the branch does not deploy again.
+ * replacement backs off before the next; any other failed commits are ones
+ * following does not deploy again.
  */
 async function failDeploy(siteId: string, workspaceId: string, error: string): Promise<void> {
   const row = await getSiteRow(siteId)
   if (row?.deployWorkspaceId !== workspaceId) return
   // Kept until its release stops, so the next pass fails it again.
   if (!await stopRelease(workspaceId)) return
-  serverLog(`[sites] deploy of ${row.name} at ${row.deployCommit?.slice(0, 12) ?? '?'} failed: ${error}`)
+  const at = row.deployCommits !== undefined ? formatCommits(siteCommits(undefined, row.deployCommits)) : '?'
+  serverLog(`[sites] deploy of ${row.name} at ${at} failed: ${error}`)
   await unstageRelease(workspaceId)
   await updateSite(siteId, {
     ...clearedDeploy,
     ...lastDeploy(row, 'failed', error),
     ...(row.deployReplacing
       ? { replaceFailures: row.replaceFailures + 1, replaceAfter: new Date(Date.now() + replaceDelay(row.replaceFailures)) }
-      : { failedCommit: row.deployCommit ?? null }),
+      : { failedCommits: row.deployCommits ?? null }),
   })
   if (row.deployReplacing) wakeAt(Date.now() + replaceDelay(row.replaceFailures))
   notifyWorkspaceListChanged()
@@ -400,7 +454,7 @@ async function reconcileSite(siteId: string, alive: (id: string) => boolean): Pr
     await updateSite(siteId, { drainWorkspaceId: null, drainUntil: null })
   }
   if (row.deployWorkspaceId !== undefined) return await advanceDeploy(row, row.deployWorkspaceId, alive)
-  if (await superviseLive(row, alive)) await followBranch(row)
+  if (await superviseLive(row, alive)) await followSite(row)
   return false
 }
 
@@ -443,14 +497,14 @@ async function advanceDeploy(row: SiteRow, releaseId: string, alive: (id: string
   const broken = steps.find((s) => s.state === 'failed' || s.state === 'cancelled'
     || s.state === 'skipped' || s.state === 'interrupted')
   if (broken !== undefined) {
-    return await fail(`step "${broken.name}" ${broken.state}${broken.exitCode !== undefined ? ` (exit ${String(broken.exitCode)})` : ''}`)
+    return await fail(`step "${stepFullName(broken.workflowName, broken.name)}" ${broken.state}${broken.exitCode !== undefined ? ` (exit ${String(broken.exitCode)})` : ''}`)
   }
   if (release.volumeId !== undefined) {
     const volume = await getVolumeRow(release.volumeId)
     if (volume === undefined) return await fail('its volume was deleted')
     if (volume.holderWorkspaceId !== releaseId) {
       const users = volumeUsers(steps)
-      if (!steps.filter((s) => !users.has(s.name)).every(stepReady)) {
+      if (!steps.filter((s) => !users.has(stepFullName(s.workflowName, s.name))).every(stepReady)) {
         await setPhase(row, 'building')
         return false
       }
@@ -492,7 +546,7 @@ async function advanceDeploy(row: SiteRow, releaseId: string, alive: (id: string
     releaseWorkspaceId: releaseId,
     liveSince: new Date(now),
     livePort: row.deployPort ?? row.port,
-    releaseCommit: row.deployCommit ?? null,
+    releaseCommits: row.deployCommits ?? null,
     releaseImage: row.deployImage ?? null,
     drainWorkspaceId: drain ?? null,
     drainUntil: drain !== undefined ? new Date(now + DRAIN_MS) : null,
@@ -511,7 +565,7 @@ async function advanceDeploy(row: SiteRow, releaseId: string, alive: (id: string
  */
 async function superviseLive(row: SiteRow, alive: (id: string) => boolean): Promise<boolean> {
   const live = row.liveWorkspaceId
-  if (live === undefined || row.releaseCommit === undefined) return false
+  if (live === undefined || row.releaseCommits === undefined) return false
   const release = await findWorkspaceRow(live)
   if (release !== undefined && release.stoppedAt === undefined && alive(live)) return true
   const now = Date.now()
@@ -528,7 +582,7 @@ async function superviseLive(row: SiteRow, alive: (id: string) => boolean): Prom
   await updateSite(row.id, { replaceAfter: null })
   await startDeploy(systemPrincipal, row, {
     ...await lastReleaseConfig(row),
-    commit: row.releaseCommit,
+    commits: row.releaseCommits,
     ...(row.releaseImage !== undefined ? { image: row.releaseImage } : {}),
     timeoutMs: DEFAULT_DEPLOY_TIMEOUT_MS,
     replacing: { rerunOf: live },
@@ -536,13 +590,18 @@ async function superviseLive(row: SiteRow, alive: (id: string) => boolean): Prom
   return false
 }
 
+/** When each following site first saw the target it would deploy now, by
+ *  site, keyed by that target. In memory: a server restart only fetches
+ *  each branch once more. */
+const targetSeen = new Map<string, { target: string; at: number }>()
+
 /** The sites whose paused following has been logged, so it is logged once. */
 const pauseLogged = new Set<string>()
 
 /**
- * Why a site that follows a branch deploys nothing now, if it does not:
- * following publishes as the project's owner, who must be an admin, as for
- * a deploy they start.
+ * Why a following site deploys nothing now, if it does not: following
+ * publishes as the project's owner, who must be an admin, as for a deploy
+ * they start.
  */
 export async function followPause(row: SiteRow): Promise<string | undefined> {
   const owner = (await getProjectRow(row.projectId))?.owner
@@ -550,26 +609,59 @@ export async function followPause(row: SiteRow): Promise<string | undefined> {
 }
 
 /**
- * Deploy the tip of the branch a serving site follows once it differs from
- * what the site serves (docs/public-sites.md "Following a branch"). A tip
- * whose deploy failed is not tried again, so the site keeps serving the
- * last release that worked until the branch moves on. Not while following
- * is paused (`followPause`), nor while the project is held, which would
- * fail the deploy.
+ * Deploy a serving site's target once it differs from what the site
+ * serves (docs/public-sites.md "Following"). Targets whose deploy failed
+ * are not tried again, so the site keeps serving the last release that
+ * worked until a branch moves on. Before a deploy starts, each repo at a
+ * branch must have been fetched by a fetch that started after this target
+ * was first seen; one that was not is fetched in the background, whose
+ * landing runs this again, so a refresh that fetches every repo deploys
+ * once. Not while following is paused
+ * (`followPause`), nor while the project is held, which would fail the
+ * deploy.
  */
-async function followBranch(row: SiteRow): Promise<void> {
-  if (row.followBranch === undefined || isProjectHeld(row.projectId)) return
+async function followSite(row: SiteRow): Promise<void> {
+  if (!row.follow || isProjectHeld(row.projectId)) return
   const paused = await followPause(row)
   if (paused !== undefined) {
-    if (!pauseLogged.has(row.id)) serverLog(`[sites] ${row.name}: not following ${row.followBranch}: ${paused}`)
+    if (!pauseLogged.has(row.id)) serverLog(`[sites] ${row.name}: not following: ${paused}`)
     pauseLogged.add(row.id)
     return
   }
   pauseLogged.delete(row.id)
-  const tip = await resolveRemoteRef(repoDir(row.repoId), row.followBranch).catch(() => undefined)
-  if (tip === undefined || tip === row.releaseCommit || tip === row.failedCommit) return
-  serverLog(`[sites] ${row.name}: ${row.followBranch} is at ${tip.slice(0, 12)}; deploying it`)
-  await startDeploy(systemPrincipal, row, {
-    ...await siteConfig(row), commit: tip, fromBranch: row.followBranch, timeoutMs: DEFAULT_DEPLOY_TIMEOUT_MS,
-  })
+  const target = await siteTarget(row)
+  if (target === undefined || sameCommits(target, row.releaseCommits) || sameCommits(target, row.failedCommits)) return
+  const key = JSON.stringify(target)
+  let seen = targetSeen.get(row.id)
+  if (seen?.target !== key) {
+    seen = { target: key, at: Date.now() }
+    targetSeen.set(row.id, seen)
+  }
+  const since = seen.at
+  const stale = testEnv.e2eSkipFetch ? [] : row.repos.filter((r) => r.commit === undefined && !freshenOrigin(r.repo, since))
+  if (stale.length > 0) return
+  targetSeen.delete(row.id)
+  const at = formatCommits(siteCommits(await getProjectRow(row.projectId), target))
+  serverLog(`[sites] ${row.name}: following, deploying ${at}`)
+  await startDeploy(systemPrincipal, row, { ...await siteConfig(row), commits: target, timeoutMs: DEFAULT_DEPLOY_TIMEOUT_MS })
+}
+
+/**
+ * Give each site repo that names neither a branch nor a commit its main
+ * clone's default branch (docs/legacy-compat-shims.md "A site's repo with
+ * no branch"): the upgrade that gave sites their repos could not name the
+ * default branch a site that followed nothing deployed. Run once at server
+ * start.
+ */
+export async function backfillSiteBranches(): Promise<void> {
+  for (const site of await listSites()) {
+    if (site.repos.every((r) => r.branch !== undefined || r.commit !== undefined)) continue
+    try {
+      const repos = await Promise.all(site.repos.map(async (r) => (r.branch !== undefined || r.commit !== undefined
+        ? r : { repo: r.repo, branch: await getDefaultBranch(repoDir(r.repo)) })))
+      await withSiteLock(site.id, () => updateSite(site.id, { repos }))
+    } catch (err) {
+      serverLog(`[sites] ${site.name}: naming its repo's default branch failed: ${String(err)}`)
+    }
+  }
 }

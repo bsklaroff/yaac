@@ -8,12 +8,14 @@ import { cleanupWorkspaceDetached } from './cleanup'
 import {
   deleteRepoRow,
   insertRepo,
+  listNamedWorkflows,
   listProjectRows,
   listReleasedDeletedRepos,
   listRepoHolders,
   listRepos,
   listRepoShares,
   listSites,
+  siteBuiltFrom,
   listUsers,
   listWorkspaceReposFor,
   markRepoDeleted,
@@ -320,7 +322,8 @@ export async function previewRepoDelete(principal: Actor, repoId: string): Promi
 
 /**
  * Delete a repo, the one way a repo goes (docs/hosted-projects.md "Deleting
- * a repo"). Only its owner may. It is unlinked from every project, other
+ * a repo"). Only its owner may, and not while a site is built from it or a
+ * named workflow runs in it. It is unlinked from every project, other
  * users' included, its shares end, and a hosted repo's bare repository, the
  * only copy of its code, is deleted. No workspace is deleted or stopped:
  * one holding a checkout keeps its files and commits, with no remote to
@@ -334,12 +337,21 @@ export async function previewRepoDelete(principal: Actor, repoId: string): Promi
  */
 export async function deleteRepo(principal: Actor, repoId: string): Promise<{ heldBy: RepoHolder[] }> {
   await ownRepo(principal, repoId)
-  const sites = (await listSites()).filter((s) => s.repoId === repoId)
+  const sites = (await listSites()).filter((s) => siteBuiltFrom(s, repoId))
   if (sites.length > 0) {
     throw new ServerError('CONFLICT', `site ${sites.map((s) => `"${s.name}"`).join(', ')} is built from this repo; `
       + 'delete the site first')
   }
-  const projectIds = new Set((await projectsLinking(repoId)).map((p) => p.id))
+  const linking = await projectsLinking(repoId)
+  // A workflow that runs in it would be refused at every launch, or as an
+  // init workflow skipped in every workspace.
+  const flows = (await Promise.all(linking.map((p) => listNamedWorkflows(p.id)))).flat()
+    .filter((w) => w.workflow.repos.includes(repoId))
+  if (flows.length > 0) {
+    throw new ServerError('CONFLICT', `workflow ${flows.map((w) => `"${w.name}"`).join(', ')} runs in this repo; `
+      + 'edit or delete the workflow first')
+  }
+  const projectIds = new Set(linking.map((p) => p.id))
   return withRepoHeld(repoId, 'this repo is being deleted', async () => {
     await unlinkProjectRepo(repoId)
     await removeRepoShares(repoId)

@@ -8,7 +8,7 @@ import { hostedRepoDir, repoDir } from '@yaac/shared/project-paths'
 import { closeDb } from '#db/client'
 import { applyWorkspaceEvent, BUILT_IN_USER_ID, insertRepo, markRepoDeleted } from '#db'
 import { cloneRepo, hostedDefaultBranch, initHostedRepo } from '#domain/git'
-import { fetchRepoCommit, fetchRepoOrigin, onOriginFetched, refreshRepoOrigins, seedRepoOrigin } from '#domain/repos'
+import { fetchRepoCommit, fetchRepoOrigin, freshenOrigin, onOriginFetched, refreshRepoOrigins, seedRepoOrigin } from '#domain/repos'
 
 /**
  * Fixture: a repo whose remote is a local repository, with a main clone,
@@ -86,6 +86,28 @@ describe('fetchRepoOrigin', () => {
     await cloneRepo(source, repoDir(deleted), null)
     await markRepoDeleted(deleted)
     await expect(fetchRepoOrigin(deleted)).rejects.toMatchObject({ code: 'VALIDATION' })
+  })
+})
+
+describe('freshenOrigin', () => {
+  it('answers whether a fetch started since a time landed, else fetches in the background and tells the listeners', async () => {
+    const fetched = vi.fn()
+    onOriginFetched(fetched)
+    const before = Date.now()
+    await fetchRepoOrigin(IDLE_REPO)
+    expect(freshenOrigin(IDLE_REPO, before)).toBe(true)
+    await commit('moved')
+    // Nothing fetched since now: a fetch starts, and lands for the listeners.
+    fetched.mockClear()
+    const since = Date.now() + 1
+    await new Promise((r) => setTimeout(r, 5))
+    expect(freshenOrigin(IDLE_REPO, since)).toBe(false)
+    // Under way, it is still not fresh.
+    expect(freshenOrigin(IDLE_REPO, since)).toBe(false)
+    await vi.waitFor(() => expect(fetched).toHaveBeenCalledWith(IDLE_REPO))
+    expect(await tip(repoDir(IDLE_REPO), 'origin/main')).toBe(await tip(source, 'main'))
+    // However long that fetch took, it started after `since`.
+    expect(freshenOrigin(IDLE_REPO, since)).toBe(true)
   })
 })
 

@@ -373,8 +373,10 @@ keys are `portForward`, `cacheVolumes`, `nestedContainers` and `npmCache`,
 plus three that older files carry: `ephemeralModulesPaths` (the scratch
 dirs, each with no cap of its own, also filling the project's running
 workspace rows, see the next entry), and `initCommands` and `hideInitPane`
-(converted to the init steps they ran as, unless the project has init steps
-of its own). The converted steps run in the workspace's `$SHELL` when it is
+(converted to the steps they ran as and written as an init workflow, unless
+the project has init workflows already; it is named `init`, else
+`init-steps` where the project has an `init`, as the migration names one). The
+converted steps run in the workspace's `$SHELL` when it is
 a POSIX-family one, as `initCommands` did, so a fish user's now run in bash.
 Under containerless the three pod settings are dropped, as they never
 applied there and the routes refuse them.
@@ -719,3 +721,63 @@ restart points such a checkout's `origin` at the repo's own URL
   a share before the upgrade has been restarted or deleted. No row records
   which projects those were; a checkout whose `remote.origin.url` names an
   id that is no repo's is one that has not.
+
+## Step rows with an empty workflow name
+
+Every step belongs to a workflow and is known as `<workflow>.<step>`
+(docs/workspace-steps.md "Workflow names"). The `key_steps_by_workflow`
+migration gave each step row of a life already running an empty workflow
+name, since its window and log files run under its bare name, and a site's
+release runs for months. An empty name reads as "known by the bare name":
+`stepFullName` (`@yaac/shared/steps`) answers the bare name for it, a need
+in a graph beside it falls back to a bare step of that name (`needsOf` in
+`#domain/workspaces` `steps.ts`), and `addSteps` lets a step added to such a
+life need one by its bare name. Every life started since names its
+workflows, so a restart replaces a workspace's start rows. The rest stay
+with an empty name for as long as their workspace exists: the steps added
+to a life from before the upgrade, kept as history, and every row of a
+workspace stopped at the upgrade and never restarted. Those are what the
+shim keeps readable afterwards: the webapp's step list and `yaac workspace
+logs` / `yaac-mama logs` of those lives, whose log files carry bare names.
+
+- **What it reads.** `workspace_steps.workflow_name = ''`.
+- **What breaks silently if it goes too early.** A workspace or release
+  running since before the upgrade loses track of its steps: their windows
+  are looked for under `<workflow>.<step>`, found nowhere, and its running
+  steps are marked cancelled after the launch grace, a release's deploy
+  failing or its service never restarting. On a stopped workspace, the
+  steps of its old lives no longer line up with their bare-named logs.
+- **When it is safe to remove.** Once no workspace that still exists, and
+  whose old logs still matter, has a step row with an empty workflow name
+  (`SELECT DISTINCT workspace_id FROM workspace_steps WHERE workflow_name =
+  ''` lists them). The count does not reach 0 by itself: restarts replace
+  only start rows, so deleting the workspaces it lists (or accepting their
+  old lives' steps read oddly) is what clears it.
+
+## A site's repo with no branch
+
+Sites name their repos, each at a branch or a commit
+(docs/public-sites.md "Sites and releases"). The `add_site_repos` migration
+moved each site's one repo into `sites.repos` at the branch it followed; a
+site that followed nothing deployed its repo's default branch, which only
+the main clone knows, so the migration left that repo with neither branch
+nor commit. At start, after the main clones are where they belong,
+`backfillSiteBranches` (`#domain/sites`, `deploys.ts`) writes each such
+repo's main clone default branch into it. Until it has, a deploy reads the
+default branch itself (`settingOf`). No new site can name a repo without a
+branch or commit.
+
+- **What it reads.** `sites.repos` entries with neither `branch` nor
+  `commit`.
+- **What breaks silently if it goes too early.** Removing the backfill and
+  `settingOf`'s fallback together leaves such a site with a repo naming
+  nothing, so its next deploy, replacement or follow pass fails to resolve a
+  commit and the site stops deploying. Removing only the backfill leaves it
+  deploying the remote's current default branch, so a default branch
+  renamed on the remote changes what the site serves without a word.
+- **When it is safe to remove.** Once every install has started a server
+  with the backfill since the migration, and its log shows no "naming its
+  repo's default branch failed": then no site row has a repo with neither
+  (`SELECT name FROM sites, jsonb_array_elements(repos) r WHERE NOT (r ? 'branch' OR r ? 'commit')`
+  answers nothing). Remove the backfill and `settingOf`'s fallback to
+  `getDefaultBranch` together.

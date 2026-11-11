@@ -33,7 +33,7 @@ built-in one is not delivered.
 
 - **`yaac-autoconfig`**: generate an init-steps template for the repo
   (install, build and start the project) and the ports to forward, for the
-  user to apply.
+  user to apply as an init workflow.
 - **`yaac-mama`**: ask the yaac server running this workspace to list the
   project's workspaces, start or queue a sibling, edit a queued one, retitle,
   stop, or group workspaces, through the in-workspace `yaac-mama` command.

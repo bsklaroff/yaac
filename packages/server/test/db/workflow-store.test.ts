@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
+import { createHash } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getDb, closeDb } from '#db/client'
 import { namedWorkflows, workflows, workspaces } from '#db/schema'
 import { insertAddedSteps } from '#db/step-store'
 import { recordWorkspaceCreated } from '#db/workspace-store'
+import { setWorkspaceRepoStart } from '#db/repo-store'
 import {
   addWorkflowApproval,
   deleteNamedWorkflow,
@@ -16,11 +18,11 @@ import {
   insertNamedWorkflow,
   listNamedWorkflows,
   listWorkflowApprovals,
-  pointNamedWorkflow,
-  recordWorkflowRun,
+  setInitWorkflows,
   storeWorkflow,
+  updateNamedWorkflow,
   workflowApproved,
-  workflowRan,
+  workflowRanAt,
 } from '#db'
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
@@ -54,12 +56,20 @@ beforeEach(async () => {
 const none = { steps: CI, secrets: [] }
 
 describe('storeWorkflow', () => {
-  it('stores each content once per project, its secrets part of it', async () => {
+  it('stores each content once per project, its secrets and repos part of it', async () => {
     const a = await storeWorkflow(PROJ, none)
-    expect(a).toMatchObject({ projectId: PROJ, steps: CI, secrets: [] })
+    expect(a).toMatchObject({ projectId: PROJ, steps: CI, secrets: [], repos: [] })
     expect((await storeWorkflow(PROJ, none)).id).toBe(a.id)
     expect((await storeWorkflow(PROJ, { steps: CI, secrets: ['KEY'] })).id).not.toBe(a.id)
     expect((await storeWorkflow(OTHER, none)).id).not.toBe(a.id)
+    // Repos are content, in any order; none hashes as a workflow stored
+    // before workflows had repos did.
+    const web = await storeWorkflow(PROJ, { ...none, repos: [OTHER, PROJ] })
+    expect(web.id).not.toBe(a.id)
+    expect(web.repos).toEqual([PROJ, OTHER].sort())
+    expect((await storeWorkflow(PROJ, { ...none, repos: [PROJ, OTHER] })).id).toBe(web.id)
+    const [row] = await (await getDb()).select({ hash: workflows.hash }).from(workflows).where(eq(workflows.id, a.id))
+    expect(row.hash).toBe(createHash('sha256').update(`${JSON.stringify(CI)}\n`).digest('hex'))
   })
 })
 
@@ -107,15 +117,33 @@ describe('listNamedWorkflows', () => {
   })
 })
 
-describe('pointNamedWorkflow', () => {
-  it('points a name at another workflow, leaving the first stored', async () => {
+describe('updateNamedWorkflow', () => {
+  it('points a name at another workflow, leaving the first stored, and marks it init or not', async () => {
     const a = await storeWorkflow(PROJ, none)
     const b = await storeWorkflow(PROJ, { steps: {}, secrets: [] })
     await insertNamedWorkflow(PROJ, 'ci', a.id)
     const named = await findNamedWorkflow(PROJ, 'ci')
-    await pointNamedWorkflow(named!.id, b.id)
+    expect(named?.init).toBe(false)
+    await updateNamedWorkflow(named!.id, { workflowId: b.id })
     expect((await findNamedWorkflow(PROJ, 'ci'))?.workflow.id).toBe(b.id)
     expect(await getWorkflow(a.id)).toBeDefined()
+    await updateNamedWorkflow(named!.id, { init: true })
+    expect(await findNamedWorkflow(PROJ, 'ci')).toMatchObject({ init: true, workflow: { id: b.id } })
+  })
+})
+
+describe('setInitWorkflows', () => {
+  it('makes exactly the named ones a project\'s init workflows', async () => {
+    const a = await storeWorkflow(PROJ, none)
+    for (const name of ['web', 'api', 'ci']) await insertNamedWorkflow(PROJ, name, a.id, name === 'ci')
+    await insertNamedWorkflow(OTHER, 'web', a.id, true)
+    const id = async (name: string): Promise<string> => (await findNamedWorkflow(PROJ, name))!.id
+    await setInitWorkflows(PROJ, [await id('web'), await id('api')])
+    const init = async (project: string): Promise<string[]> => (await listNamedWorkflows(project)).filter((w) => w.init).map((w) => w.name)
+    expect(await init(PROJ)).toEqual(['api', 'web'])
+    await setInitWorkflows(PROJ, [])
+    expect(await init(PROJ)).toEqual([])
+    expect(await init(OTHER)).toEqual(['web'])
   })
 })
 
@@ -143,22 +171,20 @@ describe('deleteProjectWorkflows', () => {
 })
 
 describe('deleteUnnamedWorkflows', () => {
-  it('deletes the workflows nothing names once an hour old, with their runs', async () => {
+  it('deletes the workflows nothing names once an hour old', async () => {
     const named = await storeWorkflow(PROJ, none)
     await insertNamedWorkflow(PROJ, 'ci', named.id)
     const loose = await storeWorkflow(PROJ, { steps: {}, secrets: [] })
     const fresh = await storeWorkflow(PROJ, { steps: { x: { run: ['true'] } }, secrets: [] })
     const added = await storeWorkflow(PROJ, { steps: { y: { run: ['true'] } }, secrets: [] })
     await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'w1' })
-    await insertAddedSteps(PROJ, 'w1', new Date(), added.steps, { id: added.id, name: 'gone' })
-    await recordWorkflowRun(loose.id, COMMIT)
+    await insertAddedSteps(PROJ, 'w1', new Date(), { id: added.id, name: 'gone' }, added.steps)
     const db = await getDb()
     for (const id of [named.id, loose.id, added.id]) {
       await db.update(workflows).set({ createdAt: new Date(Date.now() - 2 * 60 * 60_000) }).where(eq(workflows.id, id))
     }
     expect(await deleteUnnamedWorkflows()).toBe(1)
     expect(await getWorkflow(loose.id)).toBeUndefined()
-    expect(await workflowRan(loose.id, COMMIT)).toBe(false)
     expect(await getWorkflow(named.id)).toBeDefined()
     expect(await getWorkflow(fresh.id)).toBeDefined()
     expect(await getWorkflow(added.id)).toBeDefined()
@@ -194,26 +220,30 @@ describe('workflowApproved', () => {
     await addWorkflowApproval(named!.id, COMMIT)
     expect(await workflowApproved(a.id, [COMMIT])).toBe(true)
     expect(await workflowApproved(a.id, ['refs/heads/main'])).toBe(false)
-    await pointNamedWorkflow(named!.id, b.id)
+    await updateNamedWorkflow(named!.id, { workflowId: b.id })
     expect(await workflowApproved(a.id, [COMMIT])).toBe(false)
     expect(await workflowApproved(b.id, [])).toBe(false)
   })
 })
 
-describe('recordWorkflowRun', () => {
-  it('records a workflow and commit once', async () => {
+describe('workflowRanAt', () => {
+  it('answers for a non-interactive workspace or release of the workflow that started the repo at the commit', async () => {
     const a = await storeWorkflow(PROJ, none)
-    await recordWorkflowRun(a.id, COMMIT)
-    await recordWorkflowRun(a.id, COMMIT)
-    expect(await workflowRan(a.id, COMMIT)).toBe(true)
-  })
-})
-
-describe('workflowRan', () => {
-  it('answers for that workflow and commit only', async () => {
-    const a = await storeWorkflow(PROJ, none)
-    await recordWorkflowRun(a.id, COMMIT)
-    expect(await workflowRan((await storeWorkflow(PROJ, { steps: {}, secrets: [] })).id, COMMIT)).toBe(false)
-    expect(await workflowRan(a.id, 'b'.repeat(40))).toBe(false)
+    const run = async (workspaceId: string, row: { nonInteractive?: boolean; siteId?: string }, workflowId = a.id): Promise<void> => {
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId, workflowId, workflowName: 'ci', ...row, repos: [{ repoId: PROJ, path: '' }] })
+      await setWorkspaceRepoStart(workspaceId, PROJ, { startCommit: COMMIT })
+    }
+    expect(await workflowRanAt(a.id, PROJ, COMMIT)).toBe(false)
+    // An interactive workspace of the workflow never counts.
+    await run('w-interactive', {})
+    expect(await workflowRanAt(a.id, PROJ, COMMIT)).toBe(false)
+    await run('w-ci', { nonInteractive: true })
+    expect(await workflowRanAt(a.id, PROJ, COMMIT)).toBe(true)
+    expect(await workflowRanAt(a.id, OTHER, COMMIT)).toBe(false)
+    expect(await workflowRanAt(a.id, PROJ, 'b'.repeat(40))).toBe(false)
+    expect(await workflowRanAt((await storeWorkflow(PROJ, { steps: {}, secrets: [] })).id, PROJ, COMMIT)).toBe(false)
+    // Deleting the workspace takes the record with it.
+    await (await getDb()).delete(workspaces).where(eq(workspaces.workspaceId, 'w-ci'))
+    expect(await workflowRanAt(a.id, PROJ, COMMIT)).toBe(false)
   })
 })

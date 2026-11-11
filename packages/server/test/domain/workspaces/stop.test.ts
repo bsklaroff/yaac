@@ -542,7 +542,7 @@ describe('stopWorkspace', () => {
   // only its site (the system) stops one. A release its site no longer
   // tracks is the owner's to stop, so a leak always has a way out.
   it('refuses a site\'s tracked release unless the server stops it, and lets an untracked one go', async () => {
-    const site = await insertSite({ projectId: PROJ, repoId: PROJ, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(PROJ) })
+    const site = await insertSite({ projectId: PROJ, repos: [{ repo: PROJ, branch: 'main' }], follow: false, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(PROJ) })
     await updateSite(site.id, { liveWorkspaceId: 'parent' })
     await (await getDb()).update(workspaces).set({ siteId: site.id }).where(eq(workspaces.workspaceId, 'parent'))
     await expect(stopWorkspace(local, 'parent')).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('yaac site stop') as unknown })

@@ -34,6 +34,29 @@ export function foldSteps<S extends Pick<WorkspaceStep, 'state'>>(steps: S[]): {
   return { shown: steps.filter((s) => !done.includes(s)), done }
 }
 
+/**
+ * Items grouped by the workflow their full name (`<workflow>.<step>`)
+ * starts with, in order of first appearance; a name with no `.` (a shell's
+ * window, a step of a life from before steps had workflows) is in the ''
+ * group.
+ */
+export function byWorkflow<T>(items: T[], nameOf: (item: T) => string): Array<{ workflow: string; items: T[] }> {
+  const groups: Array<{ workflow: string; items: T[] }> = []
+  for (const item of items) {
+    const name = nameOf(item)
+    const workflow = name.includes('.') ? name.slice(0, name.indexOf('.')) : ''
+    const group = groups.find((g) => g.workflow === workflow)
+    if (group !== undefined) group.items.push(item)
+    else groups.push({ workflow, items: [item] })
+  }
+  return groups
+}
+
+/** A step's name within its workflow. */
+export function stepShortName(step: Pick<WorkspaceStep, 'name' | 'workflow'>): string {
+  return step.workflow === '' ? step.name : step.name.slice(step.workflow.length + 1)
+}
+
 /** Whether a step's log may still grow, so its pane follows it. */
 export function stepLive(step: Pick<WorkspaceStep, 'state'>): boolean {
   return !stepSettled(step.state)

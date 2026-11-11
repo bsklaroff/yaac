@@ -119,7 +119,7 @@ describe('deleteVolume', () => {
   it('refuses while a site keeps its data there', async () => {
     await createVolume(local, DEMO_PROJECT_ID, 'data')
     const v = (await findVolumeByName(DEMO_PROJECT_ID, 'data'))!
-    const site = await insertSite({ projectId: DEMO_PROJECT_ID, repoId: DEMO_PROJECT_ID, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(DEMO_PROJECT_ID), volumeId: v.id })
+    const site = await insertSite({ projectId: DEMO_PROJECT_ID, repos: [{ repo: DEMO_PROJECT_ID, branch: 'main' }], follow: false, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(DEMO_PROJECT_ID), volumeId: v.id })
     await expect(deleteVolume(local, DEMO_PROJECT_ID, 'data')).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('"shop"') as unknown })
     await updateSite(site.id, { volumeId: null })
     await deleteVolume(local, DEMO_PROJECT_ID, 'data')

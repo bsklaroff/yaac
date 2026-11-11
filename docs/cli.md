@@ -132,11 +132,11 @@ yaac workspace
     --wait                      With --non-interactive: wait for its steps,
                                 exiting non-zero unless they all succeeded
     --steps <file>              JSON file of the steps to start with, in
-                                place of the project's init steps
+                                place of the project's init workflows
     --no-steps                  Start with no steps
     --workflow <name>           Start with this named workflow; non-interactive,
                                 it gets its run secrets, and this launch
-                                approves its commit (workflows.md)
+                                approves each repo's commit (workflows.md)
     -t, --tool <tool>           claude, codex, opencode, pi or omp (default: the
                                 project's last, else claude)
     --repo <dir>[@<branch>]     A repo the workspace starts with, at this
@@ -190,20 +190,29 @@ yaac workspace
     --interactive               An interactive workspace there instead, to
                                 reproduce a failure in
     --wait                      As for workspace create
-  step add <workspace-id>       Add a step to a running workspace; prints its name
+  step add <workspace-id>       Add a step to a running workspace, a workflow of
+                                its own with a short name; prints its full
+                                name, <workflow>.<step>
     --run <command>             A command (repeatable; run in order in one shell)
-    --name <name>               Its name (default: run-<8 hex>)
-    --needs <a,b>               Steps that must succeed (or be ready) first
+    --name <name>               Its name in its workflow (default: run)
+    --needs <a,b>               Steps that must succeed (or be ready) first,
+                                each <workflow>.<step>, or a bare name while
+                                one workflow has it
+    --repo <dir>                Run in this repo's checkout (repeatable:
+                                several run at the workspace root)
     --service [--ready <cmd>]   It keeps running; steps needing it wait for the
                                 ready check, if any
-    --workflow <name>           Add a named workflow's steps instead
+    --workflow <name>           Add a named workflow's steps instead, refused
+                                where it runs already or lacks its repos
   step rerun <workspace-id> <name>
                                 Run a finished step again, with the steps it
-                                caused to be skipped
+                                caused to be skipped; <name> is a full name,
+                                or a bare one while one workflow has it
   step cancel <workspace-id> <name>
                                 Stop an unfinished step; its dependents are skipped
   logs <workspace-id> [window]  List a life's terminal logs, or print one
-                                window's (a step's name, or `shell`, …), running
+                                window's (a step's full name, a bare one while
+                                one workflow has it, or `shell`, …), running
                                 or stopped (workspace-steps.md "Logs")
     --life <n|name>             Which life: 1 (the default) is the newest
     --raw                       Keep the terminal escape codes
@@ -228,8 +237,10 @@ yaac routine                    Workspaces started on a cron schedule (routines.
     --repo, --no-repos, --nested, --no-nested, --cwd,
     --commit, --non-interactive As for workspace create
     --workflow <name>           The named workflow each run starts with;
-                                saving approves the commit or branch it runs
-                                on for its run secrets (workflows.md)
+                                saving approves the commit or branch each
+                                repo runs on for its run secrets, and is
+                                refused if its runs lack a repo the workflow
+                                names (workflows.md)
     -g, --group <group>         Group runs are filed under (default: one named
                                 after the routine)
     --no-group                  File runs in the default list
@@ -244,40 +255,51 @@ yaac site                       A project's public sites, each served by a
                                 locked workspace, its release (cluster servers
                                 only; public-sites.md). Only an admin creates,
                                 edits, deploys or starts one
-  create <project> <name>       --hostname, --port and --workflow required;
-                                prints what to add to the Cloudflare tunnel
+  create <project> <name>       --hostname, --port, --workflow and --repo
+                                required; prints what to add to the
+                                Cloudflare tunnel
     --hostname <host>           Public hostname the tunnel routes
     --port <n>                  Port its releases serve on
     --workflow <name>           The named workflow each release runs; a deploy
-                                approves its commit, following a branch the
-                                branch (workflows.md)
+                                approves its commits, following its branches
+                                (workflows.md)
+    --repo <dir>@<ref>          A repo each release starts with, at a branch
+                                on origin or a full commit (repeatable: one
+                                sits at the release's root, several in their
+                                folders); must include the workflow's repos.
+                                A --repo with no ref is refused, as is
+                                --no-repos
     --admin-port <n>            Port of each release only its owner reaches,
                                 by `yaac forward` or a preview
     --volume <name>             Volume each release mounts (see `yaac volume`)
-    --follow <branch>           Deploy each new tip of the branch while the
-                                site serves, so whoever can push it, agents
-                                included, publishes; a tip that fails is not
+    --follow                    Deploy whenever a branch in --repo moves while
+                                the site serves, so whoever can push one,
+                                agents included, publishes; what fails is not
                                 retried, and the last good release keeps
                                 serving
-    --repo <dir>                (create) The repo its releases are built
-                                from, in a project with several
-  edit <project> <name>         The same options; the next deploy uses them,
-                                but the hostname and admin port move at once
+  edit <project> <name>         The same options (--repo is the whole list);
+                                the next deploy uses them, but the hostname
+                                and admin port move at once
     --no-admin-port             Offer no admin port
     --no-volume                 Mount no volume
-    --no-follow                 Follow no branch; allowed mid-deploy, to
-                                whoever may stop the site
-  list <project>                Sites with their live release and last deploy
-  show <project> <name>         A site and its recent releases
+    --no-follow                 Deploy only when asked; allowed mid-deploy,
+                                to whoever may stop the site
+  list <project>                Sites with their live release and last
+                                deploy, commits per repo
+  show <project> <name>         A site, each repo's branch or commit, and its
+                                recent releases with their commits
   deploy <project> <name>       Start a release; once ready the hostname moves
                                 to it and the old one stops
-    --ref <branch|sha>          What to deploy (default: the followed branch,
-                                else the default branch)
+    --ref [<dir>@]<ref>         A branch or full commit to deploy a repo at
+                                (repeatable; bare for a site of one repo); a
+                                repo not named deploys at its --repo setting.
+                                A following site deploys only those
     --timeout <duration>        Fail unless ready this long after it starts
                                 (default 15m)
     --wait                      Wait for it, exiting non-zero unless it succeeded
   stop <project> <name>         Stop the live release; the hostname answers 503
-  start <project> <name>        Start a replacement of the last release
+  start <project> <name>        Start a replacement of the last release, at
+                                its commits
   delete <project> <name>       Delete the site and stop its release
 
 yaac workflow                   A project's named workflows, which routines,
@@ -286,14 +308,25 @@ yaac workflow                   A project's named workflows, which routines,
   create <project> <name>       A workflow from --file
     --file <path>               JSON file of its steps
     --secret <name>             A run secret its runs get (repeatable)
-  edit <project> <name>         New steps or secrets; workspaces started keep
-                                what they started with
+    --repo <dir>                A repo its steps are written for (repeatable):
+                                they start in its checkout (the root for
+                                several), and it runs only where each is
+    --init                      Make it an init workflow: every workspace that
+                                brings no steps and has its repos starts it
+  edit <project> <name>         New steps, secrets or repos, or init or not;
+                                workspaces started keep what they started with
     --file <path>               Its new steps; needed to give it run secrets
     --secret <name>             Run secrets it gets, replacing its own
     --no-secrets                Give it none
-  list <project>                Workflows with their steps and run secrets
-  show <project> <name>         Steps, run secrets and approvals
-  delete <project> <name>       Refused while anything follows it
+    --repo <dir>                Repos it names, replacing its own (repeatable)
+    --no-repos                  Name none: its steps start in the cwd
+    --init / --no-init          Mark or unmark it as an init workflow
+  list <project>                Workflows with their steps, repos, run
+                                secrets, and which are init workflows
+  show <project> <name>         Steps, repos, run secrets and approvals (a
+                                branch as <dir>@<branch>)
+  delete <project> <name>       Refused while a routine, site or queued
+                                workspace follows it
 
 yaac volume                     A project's volumes, one running workspace at a
                                 time (cluster servers only; workspace-volumes.md)
@@ -361,11 +394,11 @@ yaac config                     Each setting prints given no value, and is
                                 off its checkout, each `path` or `path:GiB`
                                 (docs/project-config.md)
     --none                      Keep every dir in the checkout
-  init-steps <project>          Print the steps every workspace runs at start,
-                                as JSON (docs/workspace-steps.md)
-    --file <path>               Replace them with a JSON file's
-    --workflow <name>           Follow a named workflow instead
-    --none                      Remove them
+  init-workflows <project> [workflows...]
+                                Print the init workflows, each with its repos
+                                and steps, or make exactly the named ones the
+                                project's init workflows (docs/workflows.md)
+    --none                      Make none of them init workflows
   env <project> [NAME=value...] List the project's variables and secrets
                                 (secrets masked, with their proxy rule), or
                                 set plain variables

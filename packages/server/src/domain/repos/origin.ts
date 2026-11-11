@@ -26,6 +26,11 @@ const lastFetchMs = new Map<string, number>()
 /** The fetches whose follow-up is already scheduled. */
 const followedUp = new WeakSet<Promise<void>>()
 
+/** The repos with a fetch under way, and each one's last fetch to end:
+ *  when it started and ended, and whether it succeeded. */
+const fetching = new Set<string>()
+const lastFetchEnd = new Map<string, { startedAt: number; at: number; ok: boolean }>()
+
 const fetchedListeners: Array<(repoId: string) => void> = []
 
 /** Register what runs after each fetch of a repo's origin succeeds. */
@@ -58,14 +63,38 @@ export async function fetchRepoOrigin(repoId: string, opts: { unlessWithinMs?: n
   // Once per fetch; concurrent callers share one.
   if (!followedUp.has(fetched)) {
     followedUp.add(fetched)
+    fetching.add(repoId)
     fetched.then(() => {
+      fetching.delete(repoId)
+      lastFetchEnd.set(repoId, { startedAt: now, at: Date.now(), ok: true })
       maintainRepo(dir).catch((err: unknown) => {
         serverLog(`[git] maintenance of ${repoId}: ${(err as Error).message}`)
       })
       for (const fn of fetchedListeners) fn(repoId)
-    }, () => { /* the caller sees it */ })
+    }, () => {
+      // The caller sees the error.
+      fetching.delete(repoId)
+      lastFetchEnd.set(repoId, { startedAt: now, at: Date.now(), ok: false })
+    })
   }
   await fetched
+}
+
+/**
+ * Whether a repo's main clone is as new as `sinceMs`: its last fetch
+ * started then or later, and none is under way. Measured from the fetch's
+ * start, so it holds however long fetches take. A fetch that failed counts
+ * for the whole origin refresh period, so a remote that is down holds
+ * nothing up for long. Otherwise a fetch is started in the background,
+ * whose success tells the listeners, so a caller can act once it lands
+ * rather than wait on the network.
+ */
+export function freshenOrigin(repoId: string, sinceMs: number): boolean {
+  if (fetching.has(repoId)) return false
+  const end = lastFetchEnd.get(repoId)
+  if (end !== undefined && (end.ok ? end.startedAt >= sinceMs : Date.now() - end.at < ORIGIN_REFRESH_MS)) return true
+  void fetchRepoOrigin(repoId).catch((err: unknown) => serverLog(`[git] fetching ${repoId}: ${String(err)}`))
+  return false
 }
 
 /** Make sure a repo's main clone has a commit, fetching it from origin by

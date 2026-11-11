@@ -15,6 +15,7 @@ import type * as gitModule from '#domain/git'
 import {
   addProjectRepo,
   createWorkflow,
+  deleteWorkflow,
   projectRepo,
   removeProjectRepo,
   reorderProjectRepos,
@@ -33,10 +34,12 @@ import {
   getRepo,
   insertRepo,
   insertSite,
+  listProjectSites,
   listRepos,
   listWorkspaceRepos,
   markRepoDeleted,
   seeTailnetUser,
+  updateSite,
   type ProjectRow,
 } from '#db'
 import { MAX_PROJECT_REPOS } from '@yaac/shared/types'
@@ -188,11 +191,16 @@ describe('removeProjectRepo', () => {
     // have nothing to start with.
     await createWorkflow(local, PROJECT, { name: 'serve', steps: {} })
     const site = await insertSite({
-      projectId: PROJECT, name: 'www', hostname: 'www.example.com', port: 80, repoId,
+      projectId: PROJECT, name: 'www', hostname: 'www.example.com', port: 80, repos: [{ repo: repoId, branch: 'main' }], follow: false,
       namedWorkflowId: (await resolveWorkflow(PROJECT, 'serve')).id,
     })
     await expect(removeProjectRepo(local, PROJECT, 'web')).rejects.toMatchObject({ code: 'CONFLICT', message: /site "www"/ })
     await deleteSiteRow(site.id)
+    // So does a named workflow that runs in it: every later launch of it
+    // would be refused, an init workflow's skipped.
+    await createWorkflow(local, PROJECT, { name: 'web-init', steps: {}, repos: ['web'], init: true })
+    await expect(removeProjectRepo(local, PROJECT, 'web')).rejects.toMatchObject({ code: 'CONFLICT', message: /workflow "web-init"/ })
+    await deleteWorkflow(local, PROJECT, 'web-init')
 
     await removeProjectRepo(local, PROJECT, 'web')
     await removeProjectRepo(local, PROJECT, PROJECT)
@@ -230,6 +238,26 @@ describe('updateProjectRepoLink', () => {
     }
     await updateProjectRepoLink(local, PROJECT, 'api', { dir: 'backend' })
     expect((await project()).repos[0]).toMatchObject({ dir: 'backend', readOnly: false, ghToken: true })
+
+    // A site of several repos keeps each in its folder, which its steps
+    // name, so the folder is not renamed under it.
+    await createWorkflow(local, PROJECT, { name: 'serve', steps: {} })
+    await insertSite({
+      projectId: PROJECT, name: 'www', hostname: 'www.example.com', port: 80, follow: false,
+      repos: [{ repo: PROJECT, branch: 'main' }, { repo: (await project()).repos[1].repo.id, branch: 'main' }],
+      namedWorkflowId: (await resolveWorkflow(PROJECT, 'serve')).id,
+    })
+    await expect(updateProjectRepoLink(local, PROJECT, 'backend', { dir: 'server' })).rejects.toMatchObject({ code: 'CONFLICT', message: /site "www"/ })
+    // Edited down to one repo, its last release still nests the repo, which
+    // a replacement repeats.
+    const www = (await listProjectSites(PROJECT))[0]
+    await updateSite(www.id, {
+      repos: [{ repo: PROJECT, branch: 'main' }],
+      releaseCommits: { [PROJECT]: 'a'.repeat(40), [(await project()).repos[1].repo.id]: 'b'.repeat(40) },
+    })
+    await expect(updateProjectRepoLink(local, PROJECT, 'backend', { dir: 'server' })).rejects.toMatchObject({ code: 'CONFLICT', message: /site "www"/ })
+    await updateSite(www.id, { releaseCommits: { [PROJECT]: 'a'.repeat(40) } })
+    await updateProjectRepoLink(local, PROJECT, 'backend', { dir: 'server' })
   })
 })
 

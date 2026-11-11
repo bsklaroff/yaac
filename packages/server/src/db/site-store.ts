@@ -1,9 +1,11 @@
 import { and, asc, desc, eq, inArray, isNull, ne } from 'drizzle-orm'
 import { getDb } from './client'
-import { sites, workspaceRepos, workspaces } from './schema'
+import { sites, workspaces } from './schema'
+import { listWorkspaceReposFor, type WorkspaceRepoRow } from './repo-store'
 import { isUuid } from '#lib/uuid'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
 import { ServerError } from '@yaac/shared/errors'
+import type { RepoStart } from '@yaac/shared/types'
 
 /**
  * Public sites (docs/public-sites.md). Everything here is the domain's own
@@ -21,6 +23,12 @@ export type SitePatch = Partial<Omit<typeof sites.$inferInsert, 'id' | 'projectI
 
 const toRow = (r: Row): SiteRow => nullsToUndefined(r)
 
+/** Whether a site is built from a repo: named in its repos, or among the
+ *  commits its last release ran, which a replacement starts again. */
+export function siteBuiltFrom(site: SiteRow, repoId: string): boolean {
+  return site.repos.some((r) => r.repo === repoId) || site.releaseCommits?.[repoId] !== undefined
+}
+
 /** Insert a site, refusing a name its project uses or a hostname any site
  *  uses. */
 export async function insertSite(values: {
@@ -31,8 +39,8 @@ export async function insertSite(values: {
   adminPort?: number
   namedWorkflowId: string
   volumeId?: string
-  repoId: string
-  followBranch?: string
+  repos: RepoStart[]
+  follow: boolean
 }): Promise<SiteRow> {
   const db = await getDb()
   const [row] = await db.insert(sites).values(values).onConflictDoNothing().returning()
@@ -126,24 +134,21 @@ export async function listVolumeSites(volumeId: string): Promise<SiteRow[]> {
   return (await db.select().from(sites).where(eq(sites.volumeId, volumeId))).map(toRow)
 }
 
-/** A site's newest releases, newest first. */
+/** A site's newest releases, newest first, each with its checkouts. */
 export async function listSiteReleases(siteId: string, limit: number): Promise<Array<{
   workspaceId: string
-  startCommit?: string
+  checkouts: WorkspaceRepoRow[]
   createdAt: Date
   stoppedAt?: Date
   rerunOf?: string
 }>> {
   const db = await getDb()
-  // A release has exactly one checkout.
   const rows = await db.select({
     workspaceId: workspaces.workspaceId,
-    startCommit: workspaceRepos.startCommit,
     createdAt: workspaces.createdAt,
     stoppedAt: workspaces.stoppedAt,
     rerunOf: workspaces.rerunOf,
-  }).from(workspaces)
-    .leftJoin(workspaceRepos, eq(workspaceRepos.workspaceId, workspaces.workspaceId))
-    .where(eq(workspaces.siteId, siteId)).orderBy(desc(workspaces.createdAt)).limit(limit)
-  return rows.map((r) => nullsToUndefined(r))
+  }).from(workspaces).where(eq(workspaces.siteId, siteId)).orderBy(desc(workspaces.createdAt)).limit(limit)
+  const checkouts = await listWorkspaceReposFor(rows.map((r) => r.workspaceId))
+  return rows.map((r) => ({ ...nullsToUndefined(r), checkouts: checkouts.get(r.workspaceId) ?? [] }))
 }

@@ -55,13 +55,19 @@ A containerless server refuses these, since its workspaces run on the host.
   Off, pnpm goes to npmjs through the proxy. A project's own `.npmrc`
   `registry=` wins either way.
 
-## Init steps
+## Init workflows
 
 What every workspace runs when it starts (install, build, start the dev
-server) is the project's init steps: a graph of named steps, each a list of
-commands run in a tmux window of its own after the steps it `needs`, with
-long-running ones as services. Edit them under Settings → Project Config →
-Init steps, or with `yaac config init-steps <project> --file <path>`. See [workspace-steps.md](workspace-steps.md).
+server) is the project's init workflows: named workflows marked to run at
+workspace start, each a graph of named steps, each a list of commands run in
+a tmux window of its own after the steps it `needs`, with long-running ones
+as services. Each names the repos its steps are written for, starts in
+their checkout, and runs only in a workspace that has them, so a project of
+several repos keeps one per repo. Make one under Settings → Project Config →
+Init workflows, or from a file with `yaac workflow create <project> <name>
+--file <path> [--repo <dir>]… --init`; `yaac config init-workflows
+<project> [workflows...] [--none]` sets the whole list. See
+[workflows.md](workflows.md) and [workspace-steps.md](workspace-steps.md).
 
 ## Scratch directories
 
@@ -114,7 +120,7 @@ A **run secret** is a value a workspace needs as it is, under k8s too: a
 key it signs with, say, which no proxy swap can stand in for. Run secrets
 are kept apart from the secrets above (`project_run_secrets`), encrypted
 the same way, and reach a workspace only through a named workflow that
-names them, on a commit a person ran it on
+names them, when each repo it starts with is at a commit a person ran it on
 (docs/workflows.md). An interactive workspace never gets one. Only a person
 sets them, under Settings → Project Config → Run secrets or with `yaac
 config env <project> NAME --run-secret`, the value on stdin (`--unset NAME`

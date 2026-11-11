@@ -2,8 +2,10 @@ import {
   getProjectRow,
   getRepo,
   linkProjectRepo,
+  listNamedWorkflows,
   listProjectSites,
   setProjectRepoOrder,
+  siteBuiltFrom,
   unlinkProjectRepo,
   updateProjectRepo,
   type ProjectRepoLink,
@@ -122,14 +124,20 @@ export async function addProjectRepo(
  * Unlink a repo from a project. The repo stays among its owner's, and every
  * workspace keeps its checkout of it, though the project's workspaces can
  * no longer fetch or push it. Refused while a site of the project is built
- * from the repo, since every later release would fail to start.
+ * from the repo or a named workflow names it, since every later release or
+ * launch would be refused (an init workflow's skipped without a word).
  */
 export async function removeProjectRepo(principal: Actor, projectId: string, ref: string): Promise<void> {
   const link = projectRepo(await ownProject(principal, projectId), ref)
-  const sites = (await listProjectSites(projectId)).filter((s) => s.repoId === link.repo.id)
+  const sites = (await listProjectSites(projectId)).filter((s) => siteBuiltFrom(s, link.repo.id))
   if (sites.length > 0) {
     throw new ServerError('CONFLICT', `site ${sites.map((s) => `"${s.name}"`).join(', ')} is built from `
       + `${link.dir}; delete the site first`)
+  }
+  const flows = (await listNamedWorkflows(projectId)).filter((w) => w.workflow.repos.includes(link.repo.id))
+  if (flows.length > 0) {
+    throw new ServerError('CONFLICT', `workflow ${flows.map((w) => `"${w.name}"`).join(', ')} runs in `
+      + `${link.dir}; edit or delete the workflow first`)
   }
   await unlinkProjectRepo(link.repo.id, projectId)
 }
@@ -152,7 +160,19 @@ export async function updateProjectRepoLink(
     throw new ServerError('NOT_SUPPORTED', 'read-only repos and the GH_TOKEN setting need the k8s driver: '
       + 'without a sandbox a workspace holds every credential')
   }
-  if (set.dir !== undefined && set.dir !== link.dir) checkDir(project, set.dir)
+  if (set.dir !== undefined && set.dir !== link.dir) {
+    checkDir(project, set.dir)
+    // A replacement release is a fresh checkout under the folder's current
+    // name, and the site's steps name its folders. A replacement repeats
+    // the last release's layout, so a site edited down to one repo still
+    // nests it until it deploys again.
+    const nesting = (await listProjectSites(projectId)).filter((s) => siteBuiltFrom(s, link.repo.id)
+      && (s.repos.length > 1 || Object.keys(s.releaseCommits ?? {}).length > 1))
+    if (nesting.length > 0) {
+      throw new ServerError('CONFLICT', `site ${nesting.map((s) => `"${s.name}"`).join(', ')} keeps ${link.dir} in its `
+        + 'folder; take the repo off the site first')
+    }
+  }
   await updateProjectRepo(projectId, link.repo.id, set)
 }
 

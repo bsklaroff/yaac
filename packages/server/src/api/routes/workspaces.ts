@@ -1100,11 +1100,15 @@ export const workspaceApp = new Hono<IdentityEnv>()
     },
   )
   // Steps added to a running workspace (docs/workspace-steps.md): a graph,
-  // or a named workflow's (docs/workflows.md). Their `needs` may name its
-  // steps. A non-interactive one refuses.
+  // run in the checkout of the repos it names, or a named workflow's
+  // (docs/workflows.md). Their `needs` may name its steps. A
+  // non-interactive one refuses.
   .post(
     '/:id/steps',
-    zv('json', z.union([z.object({ steps: z.unknown() }), z.object({ workflow: z.string().min(1) })])),
+    zv('json', z.union([
+      z.object({ steps: z.unknown(), repos: z.array(z.string().min(1).max(255)).optional() }),
+      z.object({ workflow: z.string().min(1) }),
+    ])),
     async (c) => c.json(await addSteps(c.get('principal'), c.req.param('id'), c.req.valid('json'))),
   )
   .post('/:id/steps/:name/rerun', async (c) =>

@@ -54,9 +54,9 @@ export interface WorkspaceCreatedInput {
   deadline?: Date
   /** The scratch dirs it is started with (see `workspaces.scratchDirs`). */
   scratchDirs?: string[]
-  /** The workflow it brought in place of the project's init steps. */
+  /** The workflow it brought in place of the project's init workflows. */
   workflowId?: string
-  /** The named workflow it was chosen through: a record. */
+  /** The name that workflow has in it, which its steps are known by. */
   workflowName?: string
   nonInteractive?: boolean
   /** The workspace it reruns: a non-interactive one, or a site's release

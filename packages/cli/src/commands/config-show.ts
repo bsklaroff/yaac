@@ -10,10 +10,11 @@ import { DEFAULT_SCRATCH_DIR_GIB } from '@yaac/shared/types'
 export async function configShow(project: string): Promise<void> {
   const p = await resolveProject(project)
   const projectId = p.id
-  const [{ driver }, { vars }, { secrets: runSecrets }] = await Promise.all([
+  const [{ driver }, { vars }, { secrets: runSecrets }, workflows] = await Promise.all([
     api.health.$get(),
     api.project[':projectId'].env.$get({ param: { projectId } }),
     api.project[':projectId']['run-secrets'].$get({ param: { projectId } }),
+    api.workflow.list.$get({ query: { project: projectId } }),
   ])
   const k8s = driver === 'k8s'
   const [allowlist, dockerfile] = k8s
@@ -43,7 +44,7 @@ export async function configShow(project: string): Promise<void> {
     ['port-forwards', formatPortForwards(p.portForwards)],
     ['scratch-dirs', list(p.scratchDirs.dirs.map((d) => `${d.path} (${d.sizeGiB ?? DEFAULT_SCRATCH_DIR_GIB} GiB)`))],
     ['kept-ignored-paths', list(p.keptIgnoredPaths ?? [])],
-    ['init-steps', list(Object.keys(p.initSteps))],
+    ['init-workflows', list(workflows.filter((w) => w.init).map((w) => (w.repos.length > 0 ? `${w.name} (${w.repos.join(', ')})` : w.name)))],
     ['workspace-auto-delete', p.stoppedWorkspaceRetentionDays === undefined ? 'off' : `${p.stoppedWorkspaceRetentionDays} days`],
     k8s && ['cache-volumes', formatCacheVolumes(p.cacheVolumes)],
     k8s && ['nested-containers', onOff(p.nestedContainers)],

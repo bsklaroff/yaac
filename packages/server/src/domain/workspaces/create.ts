@@ -201,11 +201,11 @@ export interface WorkspaceCreateOptions {
    */
   start?: WorkspaceStart
   /**
-   * A fresh create's start workflow (docs/workflows.md), with the named
-   * workflow it was chosen through: absent runs the project's init steps. A
+   * A fresh create's start workflow (docs/workflows.md), with the name it
+   * has in the workspace: absent runs the project's init workflows. A
    * resume starts what its row names.
    */
-  workflow?: { id: string; steps: StepGraph; name?: string }
+  workflow?: { id: string; steps: StepGraph; name: string }
   /** Run `steps` untouched and stop when they settle. */
   nonInteractive?: boolean
   /** The non-interactive workspace this one reruns. */
@@ -864,8 +864,7 @@ export async function createWorkspace(
       ...(options.generatedTitle !== undefined ? { generatedTitle: options.generatedTitle } : {}),
       ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
       ...(options.deadline !== undefined ? { deadline: options.deadline } : {}),
-      ...(options.workflow !== undefined ? { workflowId: options.workflow.id } : {}),
-      ...(options.workflow?.name !== undefined ? { workflowName: options.workflow.name } : {}),
+      ...(options.workflow !== undefined ? { workflowId: options.workflow.id, workflowName: options.workflow.name } : {}),
       ...(options.nonInteractive === true ? { nonInteractive: true } : {}),
       ...(options.rerunOf !== undefined ? { rerunOf: options.rerunOf } : {}),
       ...(options.siteId !== undefined ? { siteId: options.siteId } : {}),
@@ -890,9 +889,13 @@ export async function createWorkspace(
   let sessions: SessionRow[] = []
   let life: Date | undefined
   if (options.prewarm !== true) {
-    life = await recordLife(projectId, workspaceId, options.resume === true
-      ? await startStepsOf(projectId, resumedRow)
-      : options.workflow?.steps ?? await startStepsOf(projectId, undefined))
+    const lifeStart = options.workflow !== undefined && options.resume !== true
+      ? { flows: [{ id: options.workflow.id, name: options.workflow.name, steps: options.workflow.steps }], skipped: [] }
+      : await startStepsOf(projectId, resumedRow, checkouts.map((c) => c.repo.id))
+    for (const s of lifeStart.skipped) {
+      emit(`Init workflow "${s.name}" skipped: this workspace has no ${s.missing.join(', ')}`, options)
+    }
+    life = await recordLife(projectId, workspaceId, lifeStart.flows)
     sessions = options.session !== undefined
       ? [await insertSession(projectId, workspaceId, options.session)]
       : resumed

@@ -107,8 +107,10 @@ project has since unlinked fails its launch, saying so, and waits for the
 user like any failed launch.
 
 An entry may also bring its own step graph (`steps`, `{}` for none) in
-place of the project's init steps, and be non-interactive, which takes no
-prompt and opens no session (docs/workspace-steps.md).
+place of the project's init workflows, and be non-interactive, which takes no
+prompt and opens no session (docs/workspace-steps.md). One naming a workflow
+whose repos its selection lacks is refused when saved (docs/workflows.md
+"Repos").
 
 Choosing a different tool than the parent's takes that tool's create
 defaults (`resolveCreate`) for the tool-dependent fields. A model the catalog

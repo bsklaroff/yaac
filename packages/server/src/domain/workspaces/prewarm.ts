@@ -518,9 +518,12 @@ export async function tryClaimPrewarmed(
       ...(warmed?.scratchDirs !== undefined ? { scratchDirs: warmed.scratchDirs } : {}),
     })
     inserted = true
-    // A spare runs only the project's init steps, so a create bringing its
-    // own graph never claims one.
-    const life = await recordLife(projectId, claimedId, await startStepsOf(projectId, undefined))
+    // A spare runs only the project's init workflows, so a create bringing
+    // its own graph never claims one. They are the ones that apply to the
+    // claim's selection, which is the one the spare was warmed with.
+    const lifeStart = await startStepsOf(projectId, undefined, branches.map((c) => c.repoId))
+    for (const s of lifeStart.skipped) emit(`Init workflow "${s.name}" skipped: this workspace has no ${s.missing.join(', ')}`)
+    const life = await recordLife(projectId, claimedId, lifeStart.flows)
     // Recorded now, so a server that dies before the launch below leaves it
     // for `reconcileSessions` to launch.
     const opened = session !== undefined ? await insertSession(projectId, claimedId, session) : undefined

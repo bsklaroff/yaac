@@ -5,12 +5,15 @@ import { DeleteIcon } from '#lib/icons'
 import { relativeAge } from '#lib/time'
 import { useVolumes } from '#lib/volumes'
 import { useIsAdmin } from '#lib/viewer'
+import { useStartSelection } from '#lib/useStartSelection'
+import type { RepoPick } from '#lib/newWorkspace'
 import { SectionLabel } from '#components/settings/Field'
 import { INPUT, WorkspaceLink } from '#components/settings/Volumes'
 import { useWorkflows } from '#components/settings/Workflows'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
-import type { SiteDeployPhase, SiteEntry } from '@yaac/shared/types'
+import { formatCommits } from '@yaac/shared/steps'
+import type { ProjectSummary, SiteCommit, SiteDeployPhase, SiteEntry } from '@yaac/shared/types'
 
 /** How often the list is refetched while a deploy runs. */
 const DEPLOY_POLL_MS = 3000
@@ -24,7 +27,8 @@ const PHASE: Record<SiteDeployPhase, string> = {
 
 type Action = 'deploy' | 'stop' | 'start' | 'delete'
 
-const short = (commit: string): string => commit.slice(0, 7)
+/** Commits per repo: `<dir>@<short>` each, bare for a lone repo. */
+const short = (commits: SiteCommit[]): string => formatCommits(commits, 8)
 
 /**
  * A project's public sites (docs/public-sites.md): the install's edge, then
@@ -35,7 +39,8 @@ const short = (commit: string): string => commit.slice(0, 7)
  * admin, who may stop and delete any site; a member may only stop and delete
  * their own.
  */
-export function Sites({ projectId, readOnly }: { projectId: string; readOnly: boolean }): JSX.Element {
+export function Sites({ project, readOnly }: { project: ProjectSummary; readOnly: boolean }): JSX.Element {
+  const projectId = project.id
   const queryClient = useQueryClient()
   const admin = useIsAdmin()
   const canPublish = admin && !readOnly
@@ -50,15 +55,21 @@ export function Sites({ projectId, readOnly }: { projectId: string; readOnly: bo
   const [form, setForm] = useState<SiteEntry | 'new' | null>(null)
   const [created, setCreated] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<{ action: Action; site: string } | null>(null)
-  const [ref, setRef] = useState('')
+  // The ref the deploy dialog names per repo, by folder.
+  const [refs, setRefs] = useState<Record<string, string>>({})
   const onSettled = (): Promise<void> => queryClient.invalidateQueries({ queryKey: key })
-  const following = sites?.find((s) => s.name === confirm?.site)?.followBranch
+  const confirmed = sites?.find((s) => s.name === confirm?.site)
 
   const act = useMutation({
     mutationFn: async ({ action, site }: { action: Action; site: string }): Promise<void> => {
       const json = { project: projectId, name: site }
       switch (action) {
-        case 'deploy': await api.site.deploy.$post({ json: { ...json, ...(ref.trim() !== '' ? { ref: ref.trim() } : {}) } }); return
+        case 'deploy': {
+          const named: Record<string, string> = {}
+          for (const [dir, ref] of Object.entries(refs)) if (ref.trim() !== '') named[dir] = ref.trim()
+          await api.site.deploy.$post({ json: { ...json, ...(Object.keys(named).length > 0 ? { refs: named } : {}) } })
+          return
+        }
         case 'start': await api.site.start.$post({ json }); return
         case 'stop': await api.site.stop.$post({ json }); return
         case 'delete': await api.site.delete.$post({ json })
@@ -69,7 +80,7 @@ export function Sites({ projectId, readOnly }: { projectId: string; readOnly: bo
   })
   const ask = (action: Action, site: string): void => {
     act.reset()
-    setRef('')
+    setRefs({})
     setConfirm({ action, site })
   }
 
@@ -78,7 +89,8 @@ export function Sites({ projectId, readOnly }: { projectId: string; readOnly: bo
       <SectionLabel>Sites</SectionLabel>
       <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
         A site publishes the project&apos;s app at a hostname on the internet. Each deploy starts a release: a
-        workspace that runs the site&apos;s workflow at one commit and, once ready, takes over the hostname.
+        workspace that runs the site&apos;s workflow with each of its repos at a commit and, once ready, takes over
+        the hostname.
       </p>
       <EdgeStatus />
 
@@ -121,7 +133,7 @@ export function Sites({ projectId, readOnly }: { projectId: string; readOnly: bo
       ) : (
         <SiteForm
           key={form === 'new' ? '' : form.name}
-          projectId={projectId}
+          project={project}
           {...(form !== 'new' ? { site: form } : {})}
           onDone={(hostname) => {
             setForm(null)
@@ -140,18 +152,19 @@ export function Sites({ projectId, readOnly }: { projectId: string; readOnly: bo
         error={act.error?.message}
         onConfirm={() => { if (confirm !== null) act.mutate(confirm) }}
       >
-        {confirm?.action === 'deploy' && following !== undefined && (
-          <p className="mt-3 text-[11px] text-text-faint">It follows {following}, so it deploys that branch&apos;s tip.</p>
+        {confirm?.action === 'deploy' && confirmed?.follow === true && (
+          <p className="mt-3 text-[11px] text-text-faint">It follows its branches, so it deploys their tips.</p>
         )}
-        {confirm?.action === 'deploy' && following === undefined && (
+        {confirm?.action === 'deploy' && confirmed?.follow === false && confirmed.repos.map((r) => (
           <input
-            aria-label="Ref to deploy"
-            value={ref}
-            onChange={(e) => setRef(e.target.value)}
-            placeholder="branch or commit (default: the default branch)"
+            key={r.dir}
+            aria-label={`Ref to deploy ${r.dir} at`}
+            value={refs[r.dir] ?? ''}
+            onChange={(e) => setRefs({ ...refs, [r.dir]: e.target.value })}
+            placeholder={`${r.dir}: branch or commit (default: ${r.branch ?? r.commit?.slice(0, 8) ?? ''})`}
             className={`${INPUT} mt-3 w-full`}
           />
-        )}
+        ))}
       </ConfirmDialog>
     </div>
   )
@@ -168,7 +181,7 @@ function confirmText(confirm: { action: Action; site: string } | null): {
   switch (confirm?.action) {
     case 'deploy': return {
       title: `Deploy “${site}”?`,
-      description: 'A new release runs the site’s workflow at this commit and takes over the hostname once it is ready.',
+      description: 'A new release runs the site’s workflow at these commits and takes over the hostname once it is ready.',
       confirmLabel: 'Deploy',
       destructive: false,
     }
@@ -216,8 +229,8 @@ function SiteRow({ projectId, site, canEnd, canPublish, onAction, onEdit }: {
   onEdit: () => void
 }): JSX.Element {
   const { live, deploy, lastDeploy } = site
-  const release = (workspaceId: string, commit: string): JSX.Element => (
-    <span className="font-mono"><WorkspaceLink projectId={projectId} workspaceId={workspaceId} title={short(commit)} /></span>
+  const release = (workspaceId: string, commits: SiteCommit[]): JSX.Element => (
+    <span className="font-mono"><WorkspaceLink projectId={projectId} workspaceId={workspaceId} title={short(commits)} /></span>
   )
   return (
     <div className="rounded-md bg-bg px-2.5 py-1.5 text-xs">
@@ -234,7 +247,8 @@ function SiteRow({ projectId, site, canEnd, canPublish, onAction, onEdit }: {
         <span className="shrink-0 font-mono text-[11px] text-text-faint">
           :{site.port}{site.adminPort !== undefined && ` · admin :${site.adminPort}`}
           {site.volume !== undefined && ` · ${site.volume}`}
-          {site.followBranch !== undefined && ` · follows ${site.followBranch}`}
+          {` · ${site.repos.map((r) => `${r.dir}@${r.branch ?? r.commit?.slice(0, 8) ?? '?'}`).join(' ')}`}
+          {site.follow && ' · follows'}
         </span>
         {canEnd && (
           <>
@@ -259,12 +273,12 @@ function SiteRow({ projectId, site, canEnd, canPublish, onAction, onEdit }: {
       <div className="mt-0.5 space-y-0.5 text-[11px] text-text-faint">
         <div>
           {live !== undefined ? (
-            <>Live {release(live.workspaceId, live.commit)} · {live.running ? `running, deployed ${relativeAge(live.since)}` : 'replacing'}</>
+            <>Live {release(live.workspaceId, live.commits)} · {live.running ? `running, deployed ${relativeAge(live.since)}` : 'replacing'}</>
           ) : 'Not serving'}
         </div>
         {deploy !== undefined && (
           <div>
-            {deploy.replacing ? 'Replacing the release at ' : 'Deploying '}{release(deploy.workspaceId, deploy.commit)} · {PHASE[deploy.phase]}
+            {deploy.replacing ? 'Replacing the release at ' : 'Deploying '}{release(deploy.workspaceId, deploy.commits)} · {PHASE[deploy.phase]}
           </div>
         )}
         {site.followPaused !== undefined && <div className="text-warning">Not following: {site.followPaused}</div>}
@@ -273,7 +287,7 @@ function SiteRow({ projectId, site, canEnd, canPublish, onAction, onEdit }: {
         )}
         {lastDeploy !== undefined && (
           <div className={lastDeploy.outcome === 'failed' ? 'text-danger' : undefined}>
-            Last deploy {release(lastDeploy.workspaceId, lastDeploy.commit)} {lastDeploy.outcome}{' '}
+            Last deploy {release(lastDeploy.workspaceId, lastDeploy.commits)} {lastDeploy.outcome}{' '}
             {relativeAge(lastDeploy.finishedAt)}{lastDeploy.error !== undefined && `: ${lastDeploy.error}`}
           </div>
         )}
@@ -283,15 +297,18 @@ function SiteRow({ projectId, site, canEnd, canPublish, onAction, onEdit }: {
 }
 
 /**
- * Create a site, or edit `site`. Its releases run one of the project's
- * workflows. `onDone` gets a created site's hostname.
+ * Create a site, or edit `site`. Its releases start with the repos ticked,
+ * each at the branch or full commit its field names, which starts empty:
+ * which branch is published is the owner's choice. They run one of the
+ * project's workflows. `onDone` gets a created site's hostname.
  */
-function SiteForm({ projectId, site, onDone, onCancel }: {
-  projectId: string
+function SiteForm({ project, site, onDone, onCancel }: {
+  project: ProjectSummary
   site?: SiteEntry
   onDone: (createdHostname?: string) => void
   onCancel: () => void
 }): JSX.Element {
+  const projectId = project.id
   const volumes = useVolumes(projectId)
   const { data: workflows } = useWorkflows(projectId)
   const [name, setName] = useState('')
@@ -299,23 +316,33 @@ function SiteForm({ projectId, site, onDone, onCancel }: {
   const [port, setPort] = useState(site !== undefined ? String(site.port) : '')
   const [adminPort, setAdminPort] = useState(site?.adminPort !== undefined ? String(site.adminPort) : '')
   const [volume, setVolume] = useState(site?.volume ?? '')
-  const [follow, setFollow] = useState(site?.followBranch ?? '')
+  const [follow, setFollow] = useState(site?.follow ?? false)
   const [workflow, setWorkflow] = useState(site?.workflow ?? '')
+  const [picks, setPicks] = useState<Record<string, RepoPick>>({})
+  // What it starts with now, by repo id; a new site of a lone repo ticks it.
+  const idOf = (dir: string): string => project.repos.find((p) => p.dir === dir)?.id ?? dir
+  const seed = {
+    repos: site !== undefined
+      ? site.repos.map(({ dir, ...at }) => ({ repo: idOf(dir), ...at }))
+      : project.repos.length === 1 ? [{ repo: project.repos[0].id }] : [],
+    nested: false,
+    cwd: '.',
+  }
+  const selection = useStartSelection(project, { repos: picks }, seed, {}, false)
+  const pick = (id: string, change: RepoPick): void => setPicks({ ...picks, [id]: { ...picks[id], ...change } })
+  const blocked = selection.included.length === 0 ? 'Tick a repo'
+    : selection.included.some((r) => r.branch.trim() === '') ? 'Give each repo a branch or a full commit' : null
 
   const save = useMutation({
     mutationFn: async () => {
-      const body = { project: projectId, hostname: hostname.trim(), port: Number(port), workflow }
+      const repos = selection.request.repos
+      const body = { project: projectId, hostname: hostname.trim(), port: Number(port), workflow, repos, follow }
       const admin = adminPort.trim() === '' ? null : Number(adminPort)
-      const branch = follow.trim() === '' ? null : follow.trim()
       if (site !== undefined) {
-        await api.site.edit.$post({ json: {
-          ...body, name: site.name, adminPort: admin, volume: volume === '' ? null : volume,
-          ...(branch !== (site.followBranch ?? null) ? { followBranch: branch } : {}),
-        } })
+        await api.site.edit.$post({ json: { ...body, name: site.name, adminPort: admin, volume: volume === '' ? null : volume } })
       } else {
         await api.site.create.$post({ json: {
           ...body, name: name.trim(), ...(admin !== null ? { adminPort: admin } : {}), ...(volume !== '' ? { volume } : {}),
-          ...(branch !== null ? { followBranch: branch } : {}),
         } })
       }
     },
@@ -372,15 +399,40 @@ function SiteForm({ projectId, site, onDone, onCancel }: {
           <option value="">No volume</option>
           {volumes?.map((v) => <option key={v.name} value={v.name}>{v.name}</option>)}
         </select>
-        <input
-          aria-label="Follow branch"
-          value={follow}
-          onChange={(e) => setFollow(e.target.value)}
-          placeholder="follow branch"
-          title="Deploy each new tip of this branch while the site serves: whoever can push it publishes"
-          className={`${INPUT} w-28`}
-        />
       </div>
+      <fieldset className="space-y-1">
+        <legend className="text-[11px] text-text-faint">Repos each release starts with: one at its root, several in their folders</legend>
+        {selection.rows.map((row) => (
+          <div key={row.repo.id} className="flex items-center gap-2">
+            <label className="flex w-28 shrink-0 items-center gap-1.5 truncate font-mono text-xs text-text">
+              <input
+                type="checkbox"
+                aria-label={`Include ${row.repo.dir}`}
+                checked={row.included}
+                onChange={(e) => pick(row.repo.id, { included: e.target.checked })}
+              />
+              {row.repo.dir}
+            </label>
+            {row.included && <>
+              <input
+                aria-label={`Branch or commit of ${row.repo.dir}`}
+                value={row.branch}
+                onChange={(e) => pick(row.repo.id, { branch: e.target.value })}
+                placeholder="branch or full commit"
+                list={`site-branches-${row.repo.id}`}
+                className={`${INPUT} min-w-0 flex-1`}
+              />
+              <datalist id={`site-branches-${row.repo.id}`}>
+                {row.branches?.map((b) => <option key={b} value={b} />)}
+              </datalist>
+            </>}
+          </div>
+        ))}
+      </fieldset>
+      <label className="flex items-center gap-2 text-xs text-text">
+        <input type="checkbox" role="switch" checked={follow} onChange={() => setFollow(!follow)} />
+        Follow: deploy whenever a branch above moves
+      </label>
       <select
         aria-label="Workflow"
         value={workflow}
@@ -398,8 +450,8 @@ function SiteForm({ projectId, site, onDone, onCancel }: {
         <code className="text-text-dim">{'"service": true'}</code> serving the port. Steps that use the volume
         need <code className="text-text-dim">{'"volume"'}</code>, and run only once the old release has let it go.
         An admin port is one only you can open, as the release&apos;s preview; the internet never reaches it.
-        A followed branch is deployed whenever its tip moves, so whoever can push it, the project&apos;s agents
-        included, publishes the site unless the remote&apos;s branch protection stops them. A tip that fails to
+        A following site deploys whenever one of its branches moves, so whoever can push one, the project&apos;s
+        agents included, publishes the site unless the remote&apos;s branch protection stops them. What fails to
         deploy leaves the last good release serving.
       </p>
       {save.error && <p className="text-xs text-red-400">{save.error.message}</p>}
@@ -407,7 +459,9 @@ function SiteForm({ projectId, site, onDone, onCancel }: {
         <button type="button" onClick={onCancel} className={TEXT_BUTTON}>Cancel</button>
         <button
           type="submit"
-          disabled={save.isPending || hostname.trim() === '' || workflow === '' || (site === undefined && name.trim() === '')}
+          disabled={save.isPending || blocked !== null || hostname.trim() === '' || workflow === ''
+            || (site === undefined && name.trim() === '')}
+          title={blocked ?? undefined}
           className={BUTTON}
         >
           {save.isPending ? 'Saving…' : site !== undefined ? 'Save' : 'Create'}

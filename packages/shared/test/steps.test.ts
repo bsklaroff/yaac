@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { FULL_COMMIT_PATTERN, graphHasTask, lifeDirName, parseStepGraph, stepSatisfiesNeeds, stepSettled } from '@yaac/shared/steps'
+import {
+  FULL_COMMIT_PATTERN, findCycle, formatCommits, fullNeed, graphHasTask, isAgentWindow, isStepName, lifeDirName, parseStepGraph,
+  stepFullName, stepSatisfiesNeeds, stepSettled,
+} from '@yaac/shared/steps'
 
 describe('parseStepGraph', () => {
   it('normalizes each step, a single command becoming a list', () => {
@@ -24,22 +27,27 @@ describe('parseStepGraph', () => {
     expect(() => parseStepGraph({ a: { run: 'x', service: 'yes' } })).toThrow('step "a".service: must be a boolean')
   })
 
-  it('refuses a name a session window, the keeper, a scratch shell or a tmux target could clash with', () => {
-    for (const name of ['claude', 'pi-1', 'codex-c09f7077', 'yaac', 'shell', 'shell-2', '_yaac', 'a:b', 'a.b', '-x', 'x'.repeat(49)]) {
+  it('refuses a name holding a "." or a tmux target character, and takes a tool\'s or a shell\'s', () => {
+    for (const name of ['_yaac', 'a:b', 'a.b', '-x', 'x'.repeat(49)]) {
       expect(() => parseStepGraph({ [name]: { run: 'x' } }), name).toThrow(`step "${name}"`)
     }
-    expect(Object.keys(parseStepGraph({ pip: { run: 'x' }, shellcheck: { run: 'x' }, a_b: { run: 'x' } })))
-      .toEqual(['pip', 'shellcheck', 'a_b'])
+    expect(Object.keys(parseStepGraph({ claude: { run: 'x' }, shell: { run: 'x' }, yaac: { run: 'x' }, a_b: { run: 'x' } })))
+      .toEqual(['claude', 'shell', 'yaac', 'a_b'])
   })
 
-  it('refuses needs that name no step or form a cycle, but takes a workspace\'s existing steps', () => {
+  it('refuses a bare need on no step of the graph, or a cycle, and takes a need on another workflow\'s step', () => {
     expect(() => parseStepGraph({ a: { run: 'x', needs: ['b'] } })).toThrow('step "a" needs "b", which is not a step')
     expect(() => parseStepGraph({ a: { run: 'x', needs: ['a'] } })).toThrow('needs itself')
     expect(() => parseStepGraph({
       a: { run: 'x', needs: ['c'] }, b: { run: 'x', needs: ['a'] }, c: { run: 'x', needs: ['b'] },
     })).toThrow('steps form a cycle: a -> c -> b -> a')
-    expect(parseStepGraph({ e2e: { run: 'x', needs: ['build'] } }, new Set(['build']))).toEqual({ e2e: { run: ['x'], needs: ['build'] } })
-    expect(() => parseStepGraph({ build: { run: 'x' } }, new Set(['build']))).toThrow('already exists')
+    // `volume` names no step of a site release's graph.
+    expect(parseStepGraph({ app: { run: 'x', needs: ['volume'] } }, new Set(['volume']))).toEqual({ app: { run: ['x'], needs: ['volume'] } })
+    // A step of another workflow is checked only when placed in a life.
+    expect(parseStepGraph({ migrate: { run: 'x', needs: ['db-init.postgres'] } })).toEqual({ migrate: { run: ['x'], needs: ['db-init.postgres'] } })
+    for (const need of ['a.b.c', '.b', 'a.', 'a b.c']) {
+      expect(() => parseStepGraph({ x: { run: 'x', needs: [need] } }), need).toThrow('not a step name or <workflow>.<step>')
+    }
   })
 })
 
@@ -72,5 +80,43 @@ describe('FULL_COMMIT_PATTERN', () => {
     expect(FULL_COMMIT_PATTERN.test('a'.repeat(64))).toBe(true)
     expect(FULL_COMMIT_PATTERN.test('abc123')).toBe(false)
     expect(FULL_COMMIT_PATTERN.test('A'.repeat(40))).toBe(false)
+  })
+})
+
+describe('isStepName', () => {
+  it('takes letters, digits, - and _, at most 48, and no "."', () => {
+    expect(['web-init', 'a_1', 'x'.repeat(48)].every(isStepName)).toBe(true)
+    expect(['web.init', '-x', '', 'x'.repeat(49)].some(isStepName)).toBe(false)
+  })
+})
+
+describe('stepFullName and fullNeed', () => {
+  it('join a workflow to its step, bare for a step of no workflow, a full need as given', () => {
+    expect(stepFullName('web-init', 'install')).toBe('web-init.install')
+    expect(stepFullName('', 'install')).toBe('install')
+    expect(fullNeed('web-init', 'install')).toBe('web-init.install')
+    expect(fullNeed('web-init', 'api-init.migrate')).toBe('api-init.migrate')
+  })
+})
+
+describe('findCycle', () => {
+  it('finds a cycle through several workflows, passing over needs on no step', () => {
+    expect(findCycle({ 'a.x': ['b.y'], 'b.y': ['a.x'] })).toEqual(['a.x', 'b.y', 'a.x'])
+    expect(findCycle({ 'a.x': ['gone.y'] })).toBeUndefined()
+  })
+})
+
+describe('isAgentWindow', () => {
+  it('is a session\'s window, never a step\'s, which holds a "."', () => {
+    expect(isAgentWindow('claude-c09f7077')).toBe(true)
+    expect(isAgentWindow('claude-review.lint')).toBe(false)
+    expect(isAgentWindow('shell')).toBe(false)
+  })
+})
+
+describe('formatCommits', () => {
+  it('prints <dir>@<short> each, bare for a checkout at the root', () => {
+    expect(formatCommits([{ dir: '', commit: 'a'.repeat(40) }], 8)).toBe('aaaaaaaa')
+    expect(formatCommits([{ dir: 'web', commit: 'a'.repeat(40) }, { dir: 'api', commit: 'b'.repeat(40) }])).toBe(`web@${'a'.repeat(12)} api@${'b'.repeat(12)}`)
   })
 })

@@ -845,6 +845,9 @@ export interface RepoStart {
   commit?: string
 }
 
+/** Full commit by repo id: what a release or a secret-bearing run is at. */
+export type RepoCommits = Record<string, string>
+
 export const repoStartSchema = z.object({
   repo: z.string().min(1).max(255),
   branch: z.string().min(1).max(255).optional(),
@@ -1069,6 +1072,12 @@ export interface WorkflowEntry {
   name: string
   steps: StepGraph
   secrets: string[]
+  /** The repos its steps are written for, by folder (docs/workflows.md
+   *  "Repos"). */
+  repos: string[]
+  /** Started by every workspace that brings no graph of its own and has
+   *  its repos. */
+  init: boolean
   approvedCommits: string[]
   approvedBranches: string[]
   createdAt: string
@@ -1892,11 +1901,6 @@ export interface ProjectSummary extends ProjectConfig {
    *  removes the rest; absent when there are none. */
   keptIgnoredPaths?: string[]
   scratchDirs: ScratchDirSettings
-  /** The steps every workspace runs at start unless its create brings its
-   *  own (docs/workspace-steps.md), and the named workflow they follow, if
-   *  any (docs/workflows.md). */
-  initSteps: StepGraph
-  initWorkflow?: string
 }
 
 /**
@@ -2151,6 +2155,13 @@ export interface VolumeEntry {
  */
 export type SiteDeployPhase = 'launching' | 'building' | 'handoff' | 'starting'
 
+/** A commit of one checkout of a release: `dir` is where the checkout sat,
+ *  '' for a lone repo at the root. */
+export interface SiteCommit {
+  dir: string
+  commit: string
+}
+
 /** A public site as `GET /site/list` answers it. */
 export interface SiteEntry {
   name: string
@@ -2165,27 +2176,30 @@ export interface SiteEntry {
   steps: StepGraph
   /** Its volume's name. */
   volume?: string
-  /** The branch whose tip it deploys whenever it moves, while serving. */
-  followBranch?: string
+  /** The repos its releases start with, by folder, each at a branch or a
+   *  full commit. */
+  repos: Array<{ dir: string; branch?: string; commit?: string }>
+  /** It deploys whenever a branch in `repos` moves, while serving. */
+  follow: boolean
   /** Why following deploys nothing now: its owner is not an admin. */
   followPaused?: string
-  /** The branch's tip, whose deploy failed, which following does not try
-   *  again; a deploy by hand does. */
-  followSkipped?: string
+  /** The commits whose deploy failed, which following does not try again;
+   *  a deploy by hand does. */
+  followSkipped?: SiteCommit[]
   createdAt: string
   /** The release the hostname points at, while one is meant to serve.
    *  `running` is false while a crashed one is being replaced. */
-  live?: { workspaceId: string; commit: string; since: string; running: boolean }
+  live?: { workspaceId: string; commits: SiteCommit[]; since: string; running: boolean }
   /** A deploy in progress. `replacing`: it replaces a release that died,
-   *  at that release's commit. */
-  deploy?: { workspaceId: string; commit: string; startedAt: string; phase: SiteDeployPhase; replacing?: true }
+   *  at that release's commits. */
+  deploy?: { workspaceId: string; commits: SiteCommit[]; startedAt: string; phase: SiteDeployPhase; replacing?: true }
   /** How the last deploy that finished ended. */
-  lastDeploy?: { workspaceId: string; commit: string; outcome: 'succeeded' | 'failed'; error?: string; finishedAt: string }
+  lastDeploy?: { workspaceId: string; commits: SiteCommit[]; outcome: 'succeeded' | 'failed'; error?: string; finishedAt: string }
 }
 
 /** A site with its recent releases, newest first, for `GET /site/show`. */
 export interface SiteDetail extends SiteEntry {
-  releases: Array<{ workspaceId: string; commit?: string; createdAt: string; stoppedAt?: string; rerunOf?: string }>
+  releases: Array<{ workspaceId: string; commits: SiteCommit[]; createdAt: string; stoppedAt?: string; rerunOf?: string }>
 }
 
 /** What `GET /site/edge` answers: whether the install's tunnel holds a

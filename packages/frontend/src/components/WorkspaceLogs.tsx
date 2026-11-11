@@ -3,12 +3,13 @@ import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '#lib/api'
 import { StepLog } from '#components/StepLog'
+import { byWorkflow } from '#lib/steps'
 
 /**
  * A stopped workspace's terminal logs (docs/workspace-steps.md "Logs"):
- * each window of its last run, a step's included, as a tab, the picked one
- * replayed in a read-only terminal. The logs outlive the workspace's
- * runtime until it is deleted.
+ * each window of its last run, a step's included, as a tab, steps grouped
+ * under their workflow, the picked one replayed in a read-only terminal.
+ * The logs outlive the workspace's runtime until it is deleted.
  */
 export function WorkspaceLogs({ workspaceId }: { workspaceId: string }): JSX.Element {
   const { data, isError } = useQuery({
@@ -29,16 +30,21 @@ export function WorkspaceLogs({ workspaceId }: { workspaceId: string }): JSX.Ele
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto px-1.5 py-1">
-        {logs.map((name) => (
-          <button
-            key={name}
-            type="button"
-            onClick={() => setPicked(name)}
-            className={clsx('rounded px-2 py-0.5 font-mono text-[11px] transition',
-              name === file ? 'bg-surface-3 text-text' : 'text-text-faint hover:text-text-dim')}
-          >
-            {name.replace(/\.log$/, '')}
-          </button>
+        {byWorkflow(logs, (name) => name.replace(/\.log$/, '')).map((g) => (
+          <div key={g.workflow} className="flex shrink-0 items-center gap-0.5" role="group" aria-label={g.workflow || 'Windows'}>
+            {g.workflow !== '' && <span className="pl-1 font-mono text-[10px] text-text-faint">{g.workflow}</span>}
+            {g.items.map((name) => (
+              <button
+                key={name}
+                type="button"
+                onClick={() => setPicked(name)}
+                className={clsx('rounded px-2 py-0.5 font-mono text-[11px] transition',
+                  name === file ? 'bg-surface-3 text-text' : 'text-text-faint hover:text-text-dim')}
+              >
+                {name.replace(/\.log$/, '').slice(g.workflow === '' ? 0 : g.workflow.length + 1)}
+              </button>
+            ))}
+          </div>
         ))}
       </div>
       <div className="min-h-0 flex-1 bg-bg px-2.5 py-1.5">

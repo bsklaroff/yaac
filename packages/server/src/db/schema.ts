@@ -6,6 +6,7 @@ import type {
   EgressAllowlist,
   PermissionMode,
   PortForwardConfig,
+  RepoCommits,
   RepoStart,
   ScratchDirSettings,
   SiteDeployPhase,
@@ -145,12 +146,6 @@ export const projects = snakeCase.table('projects', {
     dirs: [{ path: 'node_modules' }, { path: 'target' }],
     ignoredTracked: [],
   }),
-  /** The steps every workspace runs at start unless its create brings its
-   *  own graph (docs/workspace-steps.md): a workflow, or a named workflow
-   *  whose current one each launch takes (docs/workflows.md). Neither runs
-   *  none. */
-  initWorkflowId: uuid().references((): AnyPgColumn => workflows.id),
-  initNamedWorkflowId: uuid().references((): AnyPgColumn => namedWorkflows.id),
   /** What workspaces launch with besides their checkout (`ProjectConfig`,
    *  docs/project-config.md). */
   portForwards: jsonb().$type<PortForwardConfig[]>().notNull().default([]),
@@ -301,9 +296,11 @@ export const workspaces = snakeCase.table('workspaces', {
   cwd: text().notNull().default(''),
   /** The workflow each of its lives starts with when its create brought
    *  one (docs/workflows.md), which a rerun or a site's replacement launches
-   *  again; null runs the project's current init steps. */
+   *  again; null runs the project's init workflows. */
   workflowId: uuid().references((): AnyPgColumn => workflows.id),
-  /** The named workflow it was chosen through, as named then: a record. */
+  /** The name that workflow has in this workspace, which its steps are
+   *  known by: a named workflow's, else a short random one. Set exactly
+   *  when `workflowId` is. */
   workflowName: text(),
   /** Runs one graph untouched and stops when it settles
    *  (docs/workspace-steps.md "Non-interactive workspaces"). */
@@ -443,11 +440,12 @@ export const sites = snakeCase.table('sites', {
   namedWorkflowId: uuid().notNull().references((): AnyPgColumn => namedWorkflows.id),
   /** No foreign key; deleting a volume a site names is refused. */
   volumeId: uuid(),
-  /** The repo its releases are built from: `followBranch` and the commits
-   *  below are this repo's. */
-  repoId: uuid().notNull(),
-  /** A branch on origin whose tip a serving site deploys whenever it moves. */
-  followBranch: text(),
+  /** The repos its releases start with, by id, each at a branch on origin
+   *  or at a full commit. One sits at the release's root, several in their
+   *  folders. */
+  repos: jsonb().$type<RepoStart[]>().notNull().default([]),
+  /** Deploy whenever a branch in `repos` moves, while serving. */
+  follow: boolean().notNull().default(false),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   /** The release the hostname points at, while one is meant to serve; null
    *  once the site is stopped. A live release whose runtime is gone is
@@ -458,16 +456,16 @@ export const sites = snakeCase.table('sites', {
   liveSince: timestamp({ withTimezone: true }),
   livePort: integer(),
   /** The live release, or the last one, with its commit and image: a
-   *  replacement and `site start` launch that commit and image again with
+   *  replacement and `site start` launch those commits and image again with
    *  the graph and volume that release ran. */
   releaseWorkspaceId: text(),
-  releaseCommit: text(),
+  releaseCommits: jsonb().$type<RepoCommits>(),
   releaseImage: text(),
-  /** The deploy in progress: its release, commit, image once known, the
+  /** The deploy in progress: its release, commits, image once known, the
    *  port it was started for, where it is, its start and deadline, and
    *  whether it replaces a release that died. */
   deployWorkspaceId: text(),
-  deployCommit: text(),
+  deployCommits: jsonb().$type<RepoCommits>(),
   deployImage: text(),
   deployPort: integer(),
   deployPhase: text().$type<SiteDeployPhase>(),
@@ -482,13 +480,13 @@ export const sites = snakeCase.table('sites', {
   drainUntil: timestamp({ withTimezone: true }),
   /** How the last deploy that finished ended. */
   lastDeployWorkspaceId: text(),
-  lastDeployCommit: text(),
+  lastDeployCommits: jsonb().$type<RepoCommits>(),
   lastDeployOutcome: text().$type<'succeeded' | 'failed'>(),
   lastDeployError: text(),
   lastDeployFinishedAt: timestamp({ withTimezone: true }),
-  /** The commit of the last deploy that failed, replacements aside, which
-   *  following the branch does not retry. */
-  failedCommit: text(),
+  /** The commits of the last deploy that failed, replacements aside, which
+   *  following does not retry. */
+  failedCommits: jsonb().$type<RepoCommits>(),
   /** Live releases that died soon after taking the hostname in a row, and
    *  the earliest the next replacement may start, for backoff. */
   replaceFailures: integer().notNull().default(0),
@@ -601,20 +599,24 @@ export const sessions = snakeCase.table('sessions', {
 
 /**
  * A workspace's steps (docs/workspace-steps.md): each runs in the tmux
- * window named after it. A start step's row is replaced at every start of
- * its workspace; an added one runs once. Rows change only through
- * `applyWorkspaceEvent`, from what the step reconcile observes.
+ * window named by its full name, `<workflow>.<step>`. A start step's row is
+ * replaced at every start of its workspace; an added one runs once. Rows
+ * change only through `applyWorkspaceEvent`, from what the step reconcile
+ * observes.
  */
 export const workspaceSteps = snakeCase.table('workspace_steps', {
   workspaceId: text().notNull().references(() => workspaces.workspaceId, { onDelete: 'cascade' }),
+  /** The name its workflow has in this workspace. '' is a step of a life
+   *  started before steps had workflows, known by its bare name
+   *  (docs/legacy-compat-shims.md). */
+  workflowName: text().notNull().default(''),
   name: text().notNull(),
   projectId: uuid().notNull(),
   origin: text().$type<StepOrigin>().notNull(),
   spec: jsonb().$type<StepSpec>().notNull(),
-  /** For a step added from a named workflow, the workflow it pointed at
-   *  then and its name: a record. */
+  /** The workflow it came from, whose repos say where it starts. Null only
+   *  on a row of such an old life. */
   workflowId: uuid().references((): AnyPgColumn => workflows.id),
-  workflowName: text(),
   state: text().$type<StepState>().notNull(),
   /** Its window's exit status, once it exited. */
   exitCode: integer(),
@@ -628,7 +630,7 @@ export const workspaceSteps = snakeCase.table('workspace_steps', {
   startedAt: timestamp({ withTimezone: true }),
   readyAt: timestamp({ withTimezone: true }),
   finishedAt: timestamp({ withTimezone: true }),
-}, (t) => [primaryKey({ columns: [t.workspaceId, t.name] })])
+}, (t) => [primaryKey({ columns: [t.workspaceId, t.workflowName, t.name] })])
 
 /**
  * One row per agent conversation, keyed by the tool's own session id. A
@@ -766,7 +768,11 @@ export const workflows = snakeCase.table('workflows', {
   steps: json().$type<StepGraph>().notNull(),
   /** Only a person's edit of a named workflow names any. */
   secrets: text().array().notNull().default([]),
-  /** Of `steps` and `secrets` (`workflowHash`). */
+  /** The project's repos its steps are written for, by id: they start in
+   *  that repo's checkout when it names one, and it runs only in a
+   *  workspace with every one (docs/workflows.md "Repos"). */
+  repos: uuid().array().notNull().default([]),
+  /** Of `steps`, `secrets` and `repos` (`workflowHash`). */
   hash: text().notNull(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 }, (t) => [uniqueIndex().on(t.projectId, t.hash)])
@@ -777,6 +783,10 @@ export const namedWorkflows = snakeCase.table('named_workflows', {
   projectId: uuid().notNull(),
   name: text().notNull(),
   workflowId: uuid().notNull().references(() => workflows.id),
+  /** An init workflow: every workspace that brings no graph of its own and
+   *  has its workflow's repos starts it at each life (docs/workflows.md
+   *  "Init workflows"). */
+  init: boolean().notNull().default(false),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 }, (t) => [uniqueIndex().on(t.projectId, t.name)])
 
@@ -788,12 +798,6 @@ export const workflowApprovals = snakeCase.table('workflow_approvals', {
   ref: text().notNull(),
 }, (t) => [primaryKey({ columns: [t.namedWorkflowId, t.ref] })])
 
-/** Each (workflow, commit) that ran with the workflow's secrets, which may
- *  from then on. */
-export const workflowRuns = snakeCase.table('workflow_runs', {
-  workflowId: uuid().notNull().references(() => workflows.id, { onDelete: 'cascade' }),
-  commit: text().notNull(),
-}, (t) => [primaryKey({ columns: [t.workflowId, t.commit] })])
 
 /**
  * Named git credentials: an HTTPS token the user pasted, or an SSH key the

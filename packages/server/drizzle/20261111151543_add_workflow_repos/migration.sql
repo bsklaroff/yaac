@@ -1,0 +1,1 @@
+ALTER TABLE "workflows" ADD COLUMN "repos" uuid[] DEFAULT '{}'::uuid[] NOT NULL;

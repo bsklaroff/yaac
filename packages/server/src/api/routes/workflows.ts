@@ -7,6 +7,8 @@ import type { IdentityEnv } from '#api/http/web-auth'
 /** Workflows (docs/workflows.md): a project's named step graphs. */
 const workflowRef = z.object({ project: projectRef, name: z.string().min(1) })
 const secrets = z.array(z.string().min(1))
+/** The repos its steps are written for, by folder or id. */
+const repos = z.array(z.string().min(1).max(255))
 
 export const workflowApp = new Hono<IdentityEnv>()
   .get(
@@ -24,7 +26,7 @@ export const workflowApp = new Hono<IdentityEnv>()
   )
   .post(
     '/create',
-    zv('json', workflowRef.extend({ steps: z.unknown(), secrets: secrets.optional() })),
+    zv('json', workflowRef.extend({ steps: z.unknown(), secrets: secrets.optional(), repos: repos.optional(), init: z.boolean().optional() })),
     async (c) => {
       const { project, ...input } = c.req.valid('json')
       return c.json(await createWorkflow(c.get('principal'), project, input))
@@ -32,7 +34,12 @@ export const workflowApp = new Hono<IdentityEnv>()
   )
   .post(
     '/edit',
-    zv('json', workflowRef.extend({ steps: z.unknown().optional(), secrets: secrets.optional() })),
+    zv('json', workflowRef.extend({
+      steps: z.unknown().optional(),
+      secrets: secrets.optional(),
+      repos: repos.optional(),
+      init: z.boolean().optional(),
+    })),
     async (c) => {
       const { project, name, ...input } = c.req.valid('json')
       return c.json(await editWorkflow(c.get('principal'), project, name, input))

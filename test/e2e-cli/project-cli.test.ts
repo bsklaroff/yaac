@@ -201,39 +201,36 @@ describe('yaac config (real CLI + real server)', () => {
     return await addTestProject(server, repo)
   }
 
-  it('config init-steps prints, replaces from a file, refuses a bad graph, and clears a project\'s init steps', async () => {
+  it('config init-workflows prints, sets the whole list, refuses an unknown workflow, and clears it', async () => {
     await seedProject('demo-steps')
-    const show = async (): Promise<unknown> => {
-      const { stdout, exitCode, stderr } = await runYaac(testEnv.env, 'config', 'init-steps', 'demo-steps')
+    const show = async (): Promise<string> => {
+      const { stdout, exitCode, stderr } = await runYaac(testEnv.env, 'config', 'init-workflows', 'demo-steps')
       expect(exitCode, stderr).toBe(0)
-      return JSON.parse(stdout)
+      return stdout
     }
-    expect(await show()).toEqual({})
+    expect(await show()).toContain('has no init workflows')
 
     const file = path.join(testEnv.scratchDir, 'init-steps.json')
     await fs.writeFile(file, JSON.stringify({
       install: { run: 'pnpm install' },
       server: { run: ['pnpm build', 'pnpm start'], needs: ['install'], service: true, ready: 'curl -sf localhost:3000' },
     }))
-    const set = await runYaac(testEnv.env, 'config', 'init-steps', 'demo-steps', '--file', file)
+    for (const name of ['setup', 'lint']) expect((await runYaac(testEnv.env, 'workflow', 'create', 'demo-steps', name, '--file', file)).exitCode).toBe(0)
+    const set = await runYaac(testEnv.env, 'config', 'init-workflows', 'demo-steps', 'setup')
     expect(set.exitCode, set.stderr).toBe(0)
-    expect(set.stdout).toContain('install, server')
-    expect(await show()).toEqual({
-      install: { run: ['pnpm install'] },
-      server: { run: ['pnpm build', 'pnpm start'], needs: ['install'], service: true, ready: 'curl -sf localhost:3000' },
-    })
+    expect(set.stdout).toContain('are now: setup')
+    expect(await show()).toContain('setup  repos none')
 
-    await fs.writeFile(file, JSON.stringify({ a: { run: 'x', needs: ['b'] }, b: { run: 'y', needs: ['a'] } }))
-    const cyclic = await runYaac(testEnv.env, 'config', 'init-steps', 'demo-steps', '--file', file)
-    expect(cyclic.exitCode).not.toBe(0)
-    expect(cyclic.stderr).toContain('cycle')
-    // The refused graph left the stored one alone.
-    expect(Object.keys(await show() as object)).toEqual(['install', 'server'])
+    const unknown = await runYaac(testEnv.env, 'config', 'init-workflows', 'demo-steps', 'nope')
+    expect(unknown.exitCode).not.toBe(0)
+    expect(unknown.stderr).toContain('no workflow named "nope"')
+    // The refused list left the stored one alone.
+    expect(await show()).toContain('setup')
 
-    const cleared = await runYaac(testEnv.env, 'config', 'init-steps', 'demo-steps', '--none')
+    const cleared = await runYaac(testEnv.env, 'config', 'init-workflows', 'demo-steps', '--none')
     expect(cleared.exitCode, cleared.stderr).toBe(0)
     expect(cleared.stdout).toContain('are now: none')
-    expect(await show()).toEqual({})
+    expect(await show()).toContain('has no init workflows')
   })
 
   // Adding the same remote twice gives two projects with one name.

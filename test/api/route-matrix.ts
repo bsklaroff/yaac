@@ -143,7 +143,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'PUT', path: '/api/project/:projectId/icon', request: `${P}/icon`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'DELETE', path: '/api/project/:projectId/icon', request: `${P}/icon`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/kept-ignored-paths', request: `${P}/kept-ignored-paths`, body: { paths: ['.env'] }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'PUT', path: '/api/project/:projectId/init-steps', request: `${P}/init-steps`, body: { steps: {} }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'PUT', path: '/api/project/:projectId/init-workflows', request: `${P}/init-workflows`, body: { workflows: [] }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/scratch-dirs', request: `${P}/scratch-dirs`, body: { dirs: [] }, access: 'owner', k8s: MISSING, containerless: MISSING },
   // The repos a project links (docs/project-repos.md). The two access
   // settings are the egress proxy's to enforce.
@@ -256,7 +256,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'GET', path: '/api/site/edge', access: 'reader', why: 'sites need a sandbox between the internet and the host', k8s: 200, containerless: UNSUPPORTED },
   { method: 'GET', path: '/api/site/list', request: `/api/site/list?project=${ID.project}`, access: 'reader', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'GET', path: '/api/site/show', request: `/api/site/show?project=${ID.project}&name=s`, access: 'reader', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
-  { method: 'POST', path: '/api/site/create', body: { project: ID.project, name: 's', hostname: 's.example.com', port: 3000, workflow: 'w' }, access: 'admin', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/site/create', body: { project: ID.project, name: 's', hostname: 's.example.com', port: 3000, workflow: 'w', repos: [{ repo: 'r', branch: 'main' }] }, access: 'admin', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/site/edit', body: { project: ID.project, name: 's', port: 3001 }, access: 'admin', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/site/delete', body: { project: ID.project, name: 's' }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/site/deploy', body: { project: ID.project, name: 's' }, access: 'admin', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },

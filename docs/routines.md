@@ -115,11 +115,12 @@ launches with (resolved when saved, as a queued entry's are), an optional
 stored as a queued entry's is (docs/queued-workspaces.md): each repo at a
 branch's tip or at a fixed commit, the layout and the cwd. Its runs may run a
 named workflow
-(docs/workflows.md) in place of the init steps, non-interactive, which makes
-a routine a nightly CI run (docs/workspace-steps.md). A person saving the
-routine approves the commit or branch its one repo starts at for the
-workflow's run secrets, which reach only a workspace of one repo; a branch approval gives them to whoever can push the branch, the
-project's agents included (docs/workflows.md "Run secrets"). A run copies its routine's settings at its tick and follows its
+(docs/workflows.md) in place of the init workflows, non-interactive, which
+makes a routine a nightly CI run (docs/workspace-steps.md). Saving one whose
+runs lack a repo its workflow names is refused. A person saving the routine
+approves the commit or branch each repo its runs start with is at for the
+workflow's run secrets; a branch approval gives them to whoever can push the
+branch, the project's agents included (docs/workflows.md "Run secrets"). A run copies its routine's settings at its tick and follows its
 named workflow until it launches; it cannot be edited.
 
 **Firing.** The `routines` step takes each unpaused routine whose

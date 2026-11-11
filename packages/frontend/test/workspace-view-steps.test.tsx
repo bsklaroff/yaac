@@ -28,7 +28,7 @@ import { mockFetch, renderWithClient, serverSnapshot, workspaceEntry, type Fetch
 
 const LIFE = '2026-11-03T01:00:00.000Z'
 const step = (name: string, state: WorkspaceStep['state'], over: Partial<WorkspaceStep & { target: string }> = {}) => ({
-  name, origin: 'start' as const, spec: { run: [`echo ${name}`] }, state, life: LIFE, ...over,
+  name: `ci.${name}`, workflow: 'ci', origin: 'start' as const, spec: { run: [`echo ${name}`] }, state, life: LIFE, ...over,
 })
 const STEPS = [
   step('install', 'succeeded', { exitCode: 0 }),
@@ -46,8 +46,8 @@ beforeEach(() => {
       base: 'abc', baseResolved: true, files: [], diff: '', truncated: false, branch: 'main', comparison: null,
       listing: { version: 'v1', paths: [], symlinks: {}, ignored: [], emptyDirs: [], conflicted: [], truncated: false },
     },
-    'POST /api/workspace/s1/steps/build/rerun': step('build', 'pending'),
-    'POST /api/workspace/s1/steps/server/cancel': undefined,
+    'POST /api/workspace/s1/steps/ci.build/rerun': step('build', 'pending'),
+    'POST /api/workspace/s1/steps/ci.server/cancel': undefined,
   })
 })
 afterEach(() => {
@@ -64,6 +64,8 @@ describe('WorkspaceView steps', () => {
   it('lists running and failed steps, folds finished ones, and opens a step\'s pane only when picked', async () => {
     show({ steps: STEPS })
     const bar = screen.getByLabelText('Steps')
+    // Grouped under their workflow, each by its name in it.
+    expect(within(bar).getByRole('group', { name: 'Workflow ci' }).textContent?.startsWith('ci')).toBe(true)
     expect(within(bar).getAllByRole('button').map((b) => b.textContent)).toEqual(['build2', 'server', '2 done'])
     // No pane opens by itself.
     expect(screen.queryByTestId('terminal')).toBeNull()
@@ -77,11 +79,11 @@ describe('WorkspaceView steps', () => {
     fireEvent.click(within(bar).getByRole('button', { name: 'server' }))
     expect((await screen.findByTestId('terminal')).textContent).toBe('window:@4')
     fireEvent.click(within(bar).getByRole('button', { name: /^build/ }))
-    expect((await screen.findByTestId('log')).textContent).toBe('2026-11-03T01-00-00.000Z/build.log')
+    expect((await screen.findByTestId('log')).textContent).toBe('2026-11-03T01-00-00.000Z/ci.build.log')
     expect(screen.getByText('failed (exit 2)')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Rerun' }))
-    await waitFor(() => expect(server.called('POST /api/workspace/s1/steps/build/rerun')).toHaveLength(1))
+    await waitFor(() => expect(server.called('POST /api/workspace/s1/steps/ci.build/rerun')).toHaveLength(1))
   })
 
   it('offers no shell, session or step action in a non-interactive workspace, and follows a running step\'s log', async () => {
@@ -91,7 +93,7 @@ describe('WorkspaceView steps', () => {
     expect(screen.getByText('This workspace runs its steps untouched')).toBeTruthy()
 
     fireEvent.click(within(screen.getByLabelText('Steps')).getByRole('button', { name: 'server' }))
-    expect((await screen.findByTestId('log')).textContent).toBe('2026-11-03T01-00-00.000Z/server.log following')
+    expect((await screen.findByTestId('log')).textContent).toBe('2026-11-03T01-00-00.000Z/ci.server.log following')
     expect(screen.queryByTestId('terminal')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull()
   })
@@ -103,7 +105,7 @@ describe('WorkspaceView steps', () => {
     expect(screen.getByText('This workspace serves the site “web”')).toBeTruthy()
 
     fireEvent.click(within(screen.getByLabelText('Steps')).getByRole('button', { name: 'server' }))
-    expect((await screen.findByTestId('log')).textContent).toBe('2026-11-03T01-00-00.000Z/server.log following')
+    expect((await screen.findByTestId('log')).textContent).toBe('2026-11-03T01-00-00.000Z/ci.server.log following')
     expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'release of web' }))

@@ -27,6 +27,7 @@ import { startMockGit, seedMockGitRepo, cleanupMocks, type MockGit } from '#supp
  */
 
 const NAME = 'site-demo'
+const DOCS = 'site-demo-docs'
 const DOMAIN = 'example.test'
 
 /** GET `/` from the router at `origin` as `host`: status and body. */
@@ -69,6 +70,8 @@ describe('yaac site (real CLI + real server)', () => {
   let sha = ''
   let projectId = ''
   let repoPath = ''
+  /** The project's second repo, linked in the folder `docs`, at its head. */
+  let docsSha = ''
 
   const yaac = async (...args: string[]): Promise<string> => {
     const { stdout, stderr, exitCode } = await runYaac(serverEnv, ...args)
@@ -143,6 +146,18 @@ describe('yaac site (real CLI + real server)', () => {
     await assignTestGitCredential(server, projectId, 'fake-ghp-token')
     sha = (await git(repoPath, ['rev-parse', 'HEAD'])).trim()
 
+    // A second repo, linked as `docs`: a staged project's repo carries the
+    // project's id.
+    await seedMockGitRepo(mockGit, DOCS, { files: { 'docs.md': '# docs\n' } })
+    const docsId = randomUUID()
+    const docsPath = path.join(testEnv.dataDir, 'global', 'repos', docsId)
+    await cloneRepo(path.join(mockGit.reposDir, `${DOCS}.git`), docsPath, null)
+    await git(docsPath, ['remote', 'set-url', 'origin', `https://github.com/test-org/${DOCS}.git`])
+    await registerTestProject(server, docsId, DOCS, `https://github.com/test-org/${DOCS}.git`)
+    await assignTestGitCredential(server, docsId, 'fake-ghp-token')
+    await yaac('project', 'repo', 'add', NAME, '--repo-id', docsId.slice(0, 8), '--dir', 'docs')
+    docsSha = (await git(docsPath, ['rev-parse', 'HEAD'])).trim()
+
     await yaac('volume', 'create', NAME, 'data', '--size', '1Gi')
   }, 300_000)
 
@@ -155,25 +170,34 @@ describe('yaac site (real CLI + real server)', () => {
     await testEnv.cleanup()
   })
 
-  it('create needs --hostname, --port and --workflow, refuses a malformed hostname or port, and prints the tunnel\'s settings', async () => {
+  it('create needs --hostname, --port, --workflow and --repo, refuses a malformed hostname, port or repo, and prints the tunnel\'s settings', async () => {
     const steps = await workflowOf('v1', serving(3000, 'v1'))
-    expect(await refused('site', 'create', NAME, 'web', '--port', '3000', '--workflow', steps))
+    const repo = ['--repo', `${NAME}@main`]
+    expect(await refused('site', 'create', NAME, 'web', '--port', '3000', '--workflow', steps, ...repo))
       .toContain('--hostname <host>')
-    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', 'http', '--workflow', steps))
+    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', 'http', '--workflow', steps, ...repo))
       .toContain('--port takes a port number')
-    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--admin-port', 'x', '--workflow', steps))
+    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--admin-port', 'x', '--workflow', steps, ...repo))
       .toContain('--admin-port takes a port number')
-    expect(await refused('site', 'create', NAME, 'web', '--hostname', `https://app.${DOMAIN}`, '--port', '3000', '--workflow', steps))
+    expect(await refused('site', 'create', NAME, 'web', '--hostname', `https://app.${DOMAIN}`, '--port', '3000', '--workflow', steps, ...repo))
       .toContain('is not a hostname')
-    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--workflow', steps, '--follow', 'a..b'))
+    // Its repos are required, each at a branch or commit, and none falls
+    // back to a default branch.
+    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--workflow', steps))
+      .toContain('Name the repos')
+    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--workflow', steps, '--repo', NAME))
+      .toContain('--repo takes <dir>@<branch or full commit>')
+    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--workflow', steps, '--no-repos'))
+      .toContain('at least one repo')
+    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--workflow', steps, '--repo', `${NAME}@a..b`))
       .toContain('is not a branch name')
-    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--workflow', steps, '--repo', 'nope'))
+    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--workflow', steps, '--repo', 'nope@main'))
       .toContain('has no repo "nope"')
     expect(await yaac('site', 'list', NAME)).toContain(`No sites in ${NAME}`)
 
-    // --repo names the repo its releases are built from, by its folder.
+    // --repo names a repo its releases start with, by its folder.
     const created = await yaac('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000',
-      '--admin-port', '3002', '--workflow', steps, '--volume', 'data', '--repo', NAME)
+      '--admin-port', '3002', '--workflow', steps, '--volume', 'data', ...repo)
     expect(created).toContain('Created site "web"')
     expect(created).toContain(`hostname  app.${DOMAIN}`)
     expect(created).toContain('service   http://yaac-site-router:8080')
@@ -188,6 +212,8 @@ describe('yaac site (real CLI + real server)', () => {
     expect(shown).toMatch(/admin port\s+3002/)
     expect(shown).toMatch(/workflow\s+v1 \(server\)/)
     expect(shown).toMatch(/volume\s+data/)
+    expect(shown).toMatch(new RegExp(`repos\\s+${NAME}@main`))
+    expect(shown).toMatch(/follow\s+no/)
   })
 
   it('edit changes --hostname, --port, --workflow and --volume, and --no-admin-port and --no-volume drop theirs', async () => {
@@ -222,12 +248,12 @@ describe('yaac site (real CLI + real server)', () => {
     await yaac('site', 'edit', NAME, 'web', '--admin-port', '3002', '--workflow', 'web')
     const deployed = await runYaac(serverEnv, 'site', 'deploy', NAME, 'web', '--ref', sha, '--timeout', '10m', '--wait')
     expect(deployed.exitCode, deployed.stderr).toBe(0)
-    expect(deployed.stdout).toContain(`Deploying ${sha.slice(0, 7)} to site "web"`)
-    expect(deployed.stdout).toContain(`Deployed: https://www.${DOMAIN} serves ${sha.slice(0, 7)}.`)
-    expect(await yaac('site', 'list', NAME)).toMatch(new RegExp(`web\\s+www\\.example\\.test\\s+3001\\s+${sha.slice(0, 7)} running`))
+    expect(deployed.stdout).toContain(`Deploying ${sha.slice(0, 8)} to site "web"`)
+    expect(deployed.stdout).toContain(`Deployed: https://www.${DOMAIN} serves ${sha.slice(0, 8)}.`)
+    expect(await yaac('site', 'list', NAME)).toMatch(new RegExp(`web\\s+www\\.example\\.test\\s+3001\\s+${sha.slice(0, 8)} running`))
     const shown = await yaac('site', 'show', NAME, 'web')
-    expect(shown).toMatch(/RELEASE\s+COMMIT\s+STARTED\s+STOPPED/)
-    expect(shown).toContain(sha.slice(0, 7))
+    expect(shown).toMatch(/RELEASE\s+COMMITS\s+STARTED\s+STOPPED/)
+    expect(shown).toContain(sha.slice(0, 8))
 
     // The router serves the release at its hostname (a new route reaches it
     // within the kubelet's ConfigMap sync), and nothing at any other.
@@ -277,32 +303,46 @@ describe('yaac site (real CLI + real server)', () => {
     }
   }, 600_000)
 
-  it('stop takes the live release down, and start brings one back at its commit', async () => {
+  it('stop takes the live release down, and start brings one back at its commits', async () => {
     expect(await yaac('site', 'stop', NAME, 'web')).toContain('Stopped site "web"')
     expect(await yaac('site', 'list', NAME)).toMatch(/web\s+www\.example\.test\s+3001\s+-\s/)
-    expect(await yaac('site', 'start', NAME, 'web')).toMatch(new RegExp(`Starting site "web" at ${sha.slice(0, 7)} in release \\S+`))
+    expect(await yaac('site', 'start', NAME, 'web')).toMatch(new RegExp(`Starting site "web" at ${sha.slice(0, 8)} in release \\S+`))
     await vi.waitFor(async () => {
-      expect(await yaac('site', 'list', NAME)).toContain(`${sha.slice(0, 7)} running`)
+      expect(await yaac('site', 'list', NAME)).toContain(`${sha.slice(0, 8)} running`)
     }, { timeout: 300_000, interval: 2_000 })
   }, 360_000)
 
   // The server here never fetches, so the tip moves in the main clone as a
   // fetch would move it, and the next reconcile pass sees it.
-  it('edit --follow deploys each new tip of the branch, deploy refuses another ref, and --no-follow stops following', async () => {
-    expect(await refused('site', 'edit', NAME, 'web', '--follow', 'origin/main')).toContain('by its own name')
-    expect(await yaac('site', 'edit', NAME, 'web', '--follow', 'main')).toContain('it deploys each new tip of main')
-    expect(await yaac('site', 'show', NAME, 'web')).toMatch(/follows\s+main/)
-    expect(await refused('site', 'deploy', NAME, 'web', '--ref', sha)).toContain('follows main')
+  it('edit --follow deploys each move of its branch, deploy refuses another ref, and --no-follow stops following', async () => {
+    expect(await refused('site', 'edit', NAME, 'web', '--repo', `${NAME}@origin/main`)).toContain('by its own name')
+    expect(await yaac('site', 'edit', NAME, 'web', '--follow')).toContain('it deploys whenever one of its branches moves')
+    expect(await yaac('site', 'show', NAME, 'web')).toMatch(/follow\s+yes/)
+    expect(await refused('site', 'deploy', NAME, 'web', '--ref', sha)).toContain('follows its repos\' branches')
 
     const next = (await git(repoPath, ['commit-tree', `${sha}^{tree}`, '-p', sha, '-m', 'next'])).trim()
     await git(repoPath, ['update-ref', 'refs/remotes/origin/main', next])
     await vi.waitFor(async () => {
-      expect(await yaac('site', 'list', NAME)).toContain(`${next.slice(0, 7)} running`)
+      expect(await yaac('site', 'list', NAME)).toContain(`${next.slice(0, 8)} running`)
     }, { timeout: 300_000, interval: 2_000 })
 
     await yaac('site', 'edit', NAME, 'web', '--no-follow')
-    expect(await yaac('site', 'show', NAME, 'web')).toMatch(/follows\s+-/)
+    expect(await yaac('site', 'show', NAME, 'web')).toMatch(/follow\s+no/)
   }, 360_000)
+
+  it('deploys a release of two repos, each in its folder, at a --ref per repo, and shows its commits', async () => {
+    await yaac('site', 'edit', NAME, 'web', '--repo', `${NAME}@main`, '--repo', `docs@${docsSha}`)
+    expect(await yaac('site', 'show', NAME, 'web')).toMatch(new RegExp(`repos\\s+${NAME}@main docs@${docsSha}`))
+    const deployed = await runYaac(serverEnv, 'site', 'deploy', NAME, 'web', '--ref', `${NAME}@${sha}`, '--timeout', '10m', '--wait')
+    expect(deployed.exitCode, deployed.stderr).toBe(0)
+    const commits = `docs@${docsSha.slice(0, 8)} ${NAME}@${sha.slice(0, 8)}`
+    expect(deployed.stdout).toContain(`Deploying ${commits} to site "web"`)
+    const shown = await yaac('site', 'show', NAME, 'web')
+    expect(shown).toContain(`live         ${commits} running`)
+    expect(shown).toMatch(new RegExp(`\\S+\\s+${commits}\\s`))
+    // Back to its one repo for the cases after.
+    await yaac('site', 'edit', NAME, 'web', '--repo', `${NAME}@main`)
+  }, 600_000)
 
   // The staged handoff (docs/public-sites.md "Volumes: a staged handoff"):
   // the second release mounts the volume while the first holds it, waits
@@ -347,7 +387,7 @@ describe('yaac site (real CLI + real server)', () => {
       const shown = await (await api.site.show.$get({ query: { project: projectId, name: 'web' } })).json()
       const stoppedAt = shown.releases.find((r) => r.workspaceId === firstRelease)?.stoppedAt
       const { workspaces } = await (await api.workspace.list.$get({ query: { project: projectId } })).json()
-      const startedAt = workspaces.find((w) => w.workspaceId === secondRelease)?.steps?.find((st) => st.name === 'server')?.startedAt
+      const startedAt = workspaces.find((w) => w.workspaceId === secondRelease)?.steps?.find((st) => st.name === 'vol2.server')?.startedAt
       expect(stoppedAt).toBeDefined()
       expect(new Date(startedAt!).getTime()).toBeGreaterThan(new Date(stoppedAt!).getTime())
     } finally {

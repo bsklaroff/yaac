@@ -54,7 +54,7 @@ import {
 import { stopWorkspace } from './stop'
 import { prepareRerun } from './restart'
 import { serverLog } from '#lib/log'
-import { addSteps } from './steps'
+import { addSteps, findStep, stepName } from './steps'
 import { READ_LIMIT, readWindowLogEnd, windowLogSizes } from './logs'
 import { closeSession } from './sessions'
 import {
@@ -75,7 +75,7 @@ import {
 import { ServerError } from '@yaac/shared/errors'
 import { stripAnsi, stripControlChars } from '@yaac/shared/ansi'
 import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
-import { FULL_COMMIT_PATTERN, stepSettled } from '@yaac/shared/steps'
+import { FULL_COMMIT_PATTERN, formatCommits, stepSettled } from '@yaac/shared/steps'
 import { parseGitRemote } from '@yaac/shared/git-remote'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { ghTokenPlaceholder } from '@yaac/shared/tool-auth'
@@ -577,11 +577,8 @@ function placements(
   const byId = new Map(sites.map((s) => [s.id, s]))
   return (workspaceId) => {
     const row = rows.get(workspaceId)
-    const commit = (checkouts.get(workspaceId) ?? [])
-      .flatMap((c) => (c.baseBranch === undefined && c.startCommit !== undefined
-        ? [`${c.path !== '' ? `${c.path}@` : ''}${c.startCommit.slice(0, 12)}`]
-        : []))
-      .join(' ')
+    const commit = formatCommits((checkouts.get(workspaceId) ?? [])
+      .flatMap((c) => (c.baseBranch === undefined && c.startCommit !== undefined ? [{ dir: c.path, commit: c.startCommit }] : [])))
     if (row?.siteId === undefined) return { commit, site: '', url: '' }
     const site = byId.get(row.siteId)
     if (site === undefined) return { commit, site: '(deleted site)', url: '' }
@@ -814,14 +811,18 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
 /**
  * Add a step to a running workspace of the project, the caller's own
  * included (docs/workspace-steps.md): `--run`, a JSON list of its commands
- * the script builds, under `--name` (else a fresh `run-…` name), after the
- * steps `--needs` lists. Prints the step's name.
+ * the script builds, under `--name` (else `run`), after the steps `--needs`
+ * lists (each a full name, or a bare one while only one workflow has it),
+ * in the checkout of the repos `--repo` names (`repos`, a JSON list of
+ * folders). It is a
+ * workflow of its own, with a short name of its own. Prints the step's
+ * full name.
  */
 async function runAddStep(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const { args } = request
   const target = args.workspace?.trim() ?? ''
   if (target === '') return { ok: false, error: '--run needs --workspace: a step runs in a running workspace' }
-  const stray = Object.keys(args).find((a) => a !== 'workspace' && !(STEP_ARGS as readonly string[]).includes(a))
+  const stray = Object.keys(args).find((a) => a !== 'workspace' && a !== 'repos' && !(STEP_ARGS as readonly string[]).includes(a))
   if (stray !== undefined) return { ok: false, error: `--run does not take --${stray}` }
   if (request.body.trim() !== '') return { ok: false, error: '--run takes no prompt' }
   const refused = refuseCommands(caller, '--run')
@@ -832,18 +833,30 @@ async function runAddStep(caller: MamaCaller, request: MamaRequestInput): Promis
   } catch {
     return { ok: false, error: '--run is not a JSON list of commands' }
   }
-  const name = args.name?.trim() || `run-${crypto.randomUUID().slice(0, 8)}`
+  const name = args.name?.trim() || 'run'
   const needs = args.needs?.split(',').map((n) => n.trim()).filter((n) => n !== '')
+  let repos: unknown
+  try {
+    repos = args.repos !== undefined ? JSON.parse(args.repos) : undefined
+  } catch {
+    return { ok: false, error: '--repo is not a JSON list of repos' }
+  }
+  if (repos !== undefined && !(Array.isArray(repos) && repos.every((r) => typeof r === 'string' && /^[^@]+$/.test(r)))) {
+    return { ok: false, error: 'with --run, --repo takes a repo\'s folder: the checkout the step runs in' }
+  }
   const workspaceId = await resolveProjectWorkspace(target, caller.projectId)
-  await addSteps(caller.principal, workspaceId, { steps: {
-    [name]: {
-      run,
-      ...(needs !== undefined && needs.length > 0 ? { needs } : {}),
-      ...(args.service !== undefined ? { service: true } : {}),
-      ...(args.ready !== undefined ? { ready: args.ready } : {}),
+  const [added] = await addSteps(caller.principal, workspaceId, {
+    steps: {
+      [name]: {
+        run,
+        ...(needs !== undefined && needs.length > 0 ? { needs } : {}),
+        ...(args.service !== undefined ? { service: true } : {}),
+        ...(args.ready !== undefined ? { ready: args.ready } : {}),
+      },
     },
-  } })
-  return { ok: true, output: name }
+    ...(repos !== undefined ? { repos: repos as string[] } : {}),
+  })
+  return { ok: true, output: added.name }
 }
 
 /**
@@ -899,8 +912,8 @@ async function runStatus(caller: MamaCaller, request: MamaRequestInput): Promise
     if (row.stepsOutcome !== undefined) return { ok: true, output: row.stepsOutcome }
     return { ok: true, output: stoppedSinceLife(row) ? 'stopped' : 'running' }
   }
-  const found = (await listWorkspaceSteps(workspaceId))
-    .find((s) => s.name === step && s.life.getTime() === row.lifeStartedAt?.getTime())
+  const found = findStep((await listWorkspaceSteps(workspaceId))
+    .filter((s) => s.life.getTime() === row.lifeStartedAt?.getTime()), step)
   if (found === undefined) return { ok: false, error: `workspace ${workspaceId.slice(0, 8)} has no step "${step}"` }
   return { ok: true, output: found.exitCode !== undefined ? `${found.state}\n${found.exitCode}` : found.state }
 }
@@ -1908,11 +1921,14 @@ async function runVolumes(caller: MamaCaller): Promise<MamaOutcome> {
 }
 
 /** The project's named workflows (docs/workflows.md), each with its
- *  steps and the run secrets it names. */
+ *  steps, the repos it runs in, whether it is an init workflow, and the
+ *  run secrets it names. */
 async function runWorkflowList(caller: MamaCaller): Promise<MamaOutcome> {
   const workflows = await listProjectWorkflows(caller.projectId)
   if (workflows.length === 0) return { ok: true, output: 'This project has no workflows.' }
   return { ok: true, output: workflows.map((w) => `${w.name.padEnd(20)} steps ${Object.keys(w.steps).join(',')}`
+    + (w.repos.length > 0 ? `  repos ${w.repos.join(',')}` : '')
+    + (w.init ? '  init' : '')
     + (w.secrets.length > 0 ? `  run secrets ${w.secrets.join(',')}` : '')).join('\n') }
 }
 
@@ -1923,8 +1939,9 @@ async function runWorkflowShow(caller: MamaCaller, request: MamaRequestInput): P
   if (name === '') return { ok: false, error: 'workflow show needs a workflow name' }
   const w = await showWorkflow(caller.projectId, name)
   return { ok: true, output: [
-    `workflow ${w.name}`,
+    `workflow ${w.name}${w.init ? ' (init: started by every workspace that has its repos)' : ''}`,
     JSON.stringify(w.steps, null, 2),
+    `repos: ${w.repos.join(', ') || 'none (its steps start in the workspace\'s cwd)'}`,
     `run secrets: ${w.secrets.join(', ') || 'none'}`,
     `approved commits: ${w.approvedCommits.join(', ') || 'none'}`,
     `approved branches: ${w.approvedBranches.join(', ') || 'none'}`,
@@ -1957,7 +1974,7 @@ async function runLogs(caller: MamaCaller, request: MamaRequestInput): Promise<M
     if (steps.length === 0) return { ok: true, output: `${short} has no steps.` }
     const row = await getWorkspaceRow(caller.projectId, workspaceId)
     const stopped = row !== undefined && stoppedSinceLife(row)
-    const sizes = await windowLogSizes(caller.projectId, workspaceId, steps)
+    const sizes = await windowLogSizes(caller.projectId, workspaceId, steps.map((s) => ({ life: s.life, name: stepName(s) })))
     return {
       ok: true,
       output: [
@@ -1966,7 +1983,7 @@ async function runLogs(caller: MamaCaller, request: MamaRequestInput): Promise<M
         ...table(['STEP', 'STATE', 'EXIT', 'NEEDS', 'LOG'], steps.map((s, i) => {
           const state = stopped && !stepSettled(s.state) ? 'stopped' : s.state
           return [
-            s.name,
+            stepName(s),
             s.spec.service === true ? `${state} (service)` : state,
             s.exitCode !== undefined ? String(s.exitCode) : '',
             (s.spec.needs ?? []).join(','),
@@ -1978,11 +1995,13 @@ async function runLogs(caller: MamaCaller, request: MamaRequestInput): Promise<M
       ].join('\n'),
     }
   }
-  const step = steps.find((s) => s.name === name)
+  // The latest life's step of that name, else an earlier one's.
+  const lifeOf = steps.reduce((at, s) => Math.max(at, s.life.getTime()), 0)
+  const step = findStep(steps.filter((s) => s.life.getTime() === lifeOf), name) ?? findStep(steps, name)
   if (step === undefined) return { ok: false, error: `workspace ${short} has no step "${name}" (see: yaac-mama logs ${short})` }
   if (step.startedAt === undefined) return { ok: false, error: `step "${name}" of ${short} has not run yet (it is ${step.state})` }
   const lines = tail !== undefined ? Number(tail) : undefined
-  const log = await readWindowLogEnd(caller.projectId, workspaceId, step, lines)
+  const log = await readWindowLogEnd(caller.projectId, workspaceId, { life: step.life, name: stepName(step) }, lines)
   if (log === undefined) return { ok: false, error: `step "${name}" of ${short} has logged nothing` }
   // A cut start falls mid-line, so the rest of that line goes too.
   const from = log.skipped > 0 ? log.data.indexOf(0x0a) + 1 : 0

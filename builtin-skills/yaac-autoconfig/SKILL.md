@@ -24,9 +24,10 @@ The job has three parts:
 ## How the project config actually behaves (read this first)
 
 - **The template is not the live config.** yaac keeps each
-  project's settings on the server, set **only** with `yaac config` commands
-  or the web app's Settings → Project Config: init steps with
-  `yaac config init-steps <project> --file <file>`, forwarded ports with
+  project's settings on the server, set **only** with the `yaac` CLI or the
+  web app's Settings → Project Config: init steps as an init workflow with
+  `yaac workflow create <project> <name> --file <file> --init`, forwarded
+  ports with
   `yaac config port-forwards <project> <port>...`. The file you write in the
   repo is **never read automatically** by session create. It's the handoff:
   you can't apply it from in here, so it carries the steps you proved to the
@@ -112,7 +113,10 @@ Keep it minimal — only what this project needs.
   step starts once every step its `needs` lists has succeeded, so shared
   setup runs once and the rest wait on it. A long-running server is a
   `service`: its last command keeps running, and the steps that need it wait
-  for its `ready` check (any command that exits 0 once it serves):
+  for its `ready` check (any command that exits 0 once it serves). The
+  steps start in the workspace's cwd; in a project of several repos, give
+  the workflow the repo it is written for (`--repo <dir>` below), and its
+  steps start in that repo's checkout wherever it sits:
   ```json
   {
     "install": { "run": "pnpm install" },
@@ -139,7 +143,9 @@ Tell the user:
 - what you wrote and why (the detected stack + commands),
 - **how to apply them** — the template does nothing
   until applied. On the host, run
-  `yaac config init-steps <project> --file .yaac/init-steps.json` and
+  `yaac workflow create <project> init --file .yaac/init-steps.json --init`
+  (with `--repo <dir>` for the repo it is written for, in a project of
+  several; `yaac workflow edit <project> init --file …` once it exists) and
   `yaac config port-forwards <project> <port>...` (plus any of
   `yaac config nested-containers <project> on` or
   `yaac config cache-volumes <project> <name>=<path>` the project needs), or
@@ -188,10 +194,10 @@ an in-container proxy.
 
 A step in `.yaac/init-steps.json` takes `run` (a command or a list), `needs`
 (step names), `service` (`true` for a long-running one) and `ready` (a
-service's readiness check). Its name must not be an agent tool's (`claude`,
-`codex`, `opencode`, `pi`, `omp`, or one of those followed by `-`), `yaac`, or
-`shell`/`shell-<n>`. Every step's output is kept in its log
-(`yaac workspace logs <workspace> <step>`).
+service's readiness check). Its name is letters, digits, `-` and `_`, with no
+`.`: once applied it is known as `<workflow>.<step>` (`init.install`). Every
+step's output is kept in its log (`yaac workspace logs <workspace>
+init.<step>`).
 
 The other project settings the user may need, each a `yaac config` command
 (`yaac config show <project>` lists them all). Suggest only what the project
@@ -210,7 +216,8 @@ key: Settings → Project Config, or `yaac config scratch-dirs`.
 ## Gotchas
 
 - **The template is just a file — yaac never auto-loads it.** It only
-  takes effect once applied (`yaac config init-steps`, or the web app). Even then they apply to the *next* session, not the current one —
+  takes effect once applied (`yaac workflow create … --init`, or the web
+  app). Even then they apply to the *next* session, not the current one —
   validate commands/port here; forwarding happens at the next boot.
 - **Init steps run on every start** — make them idempotent.
 - **A step's commands stop at the first non-zero exit.** Put a service's

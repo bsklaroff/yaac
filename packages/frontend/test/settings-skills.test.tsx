@@ -19,7 +19,7 @@ function setMobileViewport(): void {
 }
 
 const project = (name: string): ProjectSummary =>
-  ({ id: `id-${name}`, name, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [projectRepo({ id: `repo-${name}`, dir: name, remoteUrl: `https://github.com/o/${name}.git` })], scratchDirs: { dirs: [], ignoredTracked: [] }, initSteps: {}, portForwards: [], cacheVolumes: {}, nestedContainers: false, npmCache: true })
+  ({ id: `id-${name}`, name, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [projectRepo({ id: `repo-${name}`, dir: name, remoteUrl: `https://github.com/o/${name}.git` })], scratchDirs: { dirs: [], ignoredTracked: [] }, portForwards: [], cacheVolumes: {}, nestedContainers: false, npmCache: true })
 
 const skill = (over: Partial<SkillSummary> & Pick<SkillSummary, 'id' | 'name' | 'source'>): SkillSummary =>
   ({ description: '', agents: [], overriddenFor: [], userInvocable: true, modelInvocable: true, ...over })

@@ -6,17 +6,39 @@ graph through `needs`. A workspace gets its steps from one of these:
 
 | Source | Example |
 |---|---|
-| The project's init steps | every workspace installs, builds and starts its dev server |
+| The project's init workflows | every workspace installs, builds and starts its dev server |
 | A create that brings its own graph instead | `yaac workspace create --steps ci.json --non-interactive --wait` |
 | A step added to a running workspace | `yaac-mama create --workspace "$YAAC_WORKSPACE_ID" --run 'pnpm test' --needs build --wait` |
 | A named workflow (docs/workflows.md) | `yaac workspace create --workflow ci --non-interactive --wait` |
 
-A create runs the project's init steps, or brings its own graph, which
+A create runs the project's init workflows, or brings its own graph, which
 replaces them entirely (`--no-steps` for none): a file (`--steps`), or a
 named workflow (`--workflow`). Every graph is stored as a workflow, once per
 content, and only a named workflow may be given run secrets; routines and
 sites run named workflows only (docs/workflows.md). Steps run commands only;
 an agent is a session, which opens beside the steps.
+
+## Workflow names
+
+Every step belongs to a workflow, and every workflow in a workspace has a
+name there: a named workflow its own, and an anonymous one (a create's
+`--steps`, a `step add --run` or `--steps`) a short random one such as
+`k3f9`, unique among the workspace's workflows and the project's workflow
+names. A create's is kept for every life of the workspace and copied by a
+rerun, so logs line up. The name belongs to the step rows, not to the
+stored workflow, which is one row per content: running `pnpm test` ten
+times is one workflow under ten names. A step added with `--run` and no
+`--name` is called `run`.
+
+A step's **full name** is `<workflow>.<step>`, such as `web-init.install`.
+It names the step's window, its pane in the webapp (`step:<full name>`), its
+log and events files (`web-init.install.log`), and is what every command
+takes. So two workflows of one life may both have an `install`. Commands
+that address a step of a running workspace (`step rerun`, `step cancel`,
+`workspace logs`, `yaac-mama logs` and `status`, and `--needs` on `step add
+--run`) also take a bare name while only one workflow of the life has that
+step; graphs get no such lookup, so a typo in a stored graph is caught when
+it is saved.
 
 A workspace is **interactive**, running until someone or its timeout stops
 it, or **non-interactive**: it runs one graph on one commit, untouched,
@@ -43,25 +65,46 @@ records an outcome and stops (see below).
   shell, so a step that needs another's exports repeats them.
 - **`needs`**: steps that must succeed first, or, for a service, be ready. A
   step whose need fails, is cancelled or is skipped is itself `skipped`;
-  branches of the graph that do not depend on it carry on.
+  branches of the graph that do not depend on it carry on. A bare name is a
+  step of the same workflow, checked when the graph is parsed;
+  `<workflow>.<step>` is a step of another workflow of the same life,
+  checked when the step is placed in a life, since a stored workflow cannot
+  know what runs beside it. A launch or `step add` is refused when such a
+  need names nothing there, or closes a cycle through several workflows;
+  an init workflow's step is `skipped` instead, since which init workflows
+  start depends on the workspace's repos.
 - **`service`**: the step is long-running. Its last command is the process
   and the commands before it its setup. It never succeeds: it is `ready` once
   its `ready` check passes (at once with none) and `failed` if it exits.
 - **`ready`**: a service's check, run every two seconds until it exits 0.
 
-A name is letters, digits, `-` and `_`. It may not be an agent tool's name or
-start with one and a `-` (a session's window looks like that, and the log
-hook leaves it unlogged), `yaac`, or a scratch shell's (`shell`, `shell-2`),
-whose window a step's launch would kill. `parseStepGraph` in
+A step's name and a workflow's follow one rule: letters, digits, `-` and
+`_`, starting with a letter or digit, at most 48 long. Neither can hold the
+`.` that joins them, so a full name splits one way, and a step's window
+always holds a `.`, which no session's, shell's or keeper's does: a step may
+take any name, an agent tool's or `shell` included. `parseStepGraph` in
 `@yaac/shared/steps` is the one parser for every source; it also refuses a
-`needs` naming no step, and a cycle.
+bare `needs` naming no step of the graph, and a cycle within it.
 
-## Init steps
+## Where a step starts
 
-A project's init steps are a column of its row (`projects.initSteps`), like
-its scratch dirs. Set them with
-`PUT /project/:projectId/init-steps`, `yaac config init-steps <project>
-[--file <path> | --none]`, or Settings → Project Config → Init steps.
+A step starts in the checkout of the one repo its workflow names, at the
+workspace root or in its folder; in the workspace root when it names
+several; and in the workspace's cwd when it names none (docs/workflows.md
+"Repos"). The directory is read off the step row's workflow and the
+workspace's checkouts when its window opens. Neither changes while the
+workspace lives, so a rerun starts where the step did.
+
+## Init workflows
+
+A project's init steps are its init workflows: named workflows marked
+`init` (docs/workflows.md "Init workflows"). A workspace that brings no
+graph of its own starts, at each life, every init workflow whose repos it
+has, each under its name, and its create's progress says which it skipped
+for lack of a repo. Mark them with `yaac workflow create|edit --init`, set
+the whole list with `yaac config init-workflows <project> [workflows...]
+[--none]` (`PUT /project/:projectId/init-workflows`), or in Settings →
+Project Config → Init workflows.
 
 ## Running a step
 
@@ -74,14 +117,23 @@ met. A step added, rerun or cancelled through the API runs a pass at once.
 
 To open one, the server writes the step's script into the life's log dir,
 where the workspace sees it at `WorkspacePaths.terminalLogDir`, and opens the
-window running it, `remain-on-exit` so the dead pane keeps its exit status.
-The script (`stepScript` in `#runtime/terminals`) appends
-`start <i> <time>` and `end <i> <status> <time>` to `<step>.events` around
+window running it. The script (`stepScript` in `#runtime/terminals`) first
+sets `remain-on-exit` on its own pane (`$TMUX_PANE`), so the dead pane keeps
+its exit status, then appends `start <i> <time>` and
+`end <i> <status> <time>` to `<full name>.events` around
 each command, which the webapp may show as progress. A service's script
 starts its ready check in the background before its last command; when it
 passes, the check sets the window option `@yaac-step-ready`. An EXIT trap
 writes the `end` of a command that exits the script itself; a command that
 `exec`s another process writes none, since the script is gone.
+
+**tmux addresses a step's window by id, never by name.** tmux reads a `.`
+in a target as the pane separator: `-t =yaac:=web-init.install` resolves to
+a window named `web-init` if there is one, with no error. So killing a
+step's window (a cancel, a rerun's dead window) finds its id by name in the
+window listing first, and `windowTarget` refuses a name holding a `.`.
+Reading goes the other way and is unaffected: the watcher's listing carries
+each window's name and id, and the webapp attaches by id.
 
 The log dir is writable by the workspace (under k8s, by any of its pods), so
 the server only touches it as a confined root (`openTerminalLogs`, the same
@@ -97,9 +149,12 @@ the ready check renames its window, and a `pane-died` hook renames any
 window whose pane died. A step's window that vanishes for a minute after it
 opened was killed by hand, and the step is `cancelled`.
 
-Rows are `workspace_steps`, keyed by workspace and name. Observed changes
-arrive as `step-changed` events, applied only to the life they were seen in,
-and never to a settled step.
+Rows are `workspace_steps`, keyed by workspace, workflow name and step name,
+each with the stored workflow it came from. Observed changes arrive as
+`step-changed` events, applied only to the life they were seen in, and never
+to a settled step. A row of a life started before steps had workflows has an
+empty workflow name and is known by its bare name, under which its window
+and logs run (docs/legacy-compat-shims.md).
 
 ## Lives
 
@@ -107,14 +162,17 @@ A workspace's **life** is one run of it, from a start or restart to its stop
 (`workspaces.lifeStartedAt`). Each life starts its graph afresh, steps that
 succeeded before included: a stop empties the scratch dirs and the
 checkout's ignored files, so what `install` or `build` made is gone. The
-graph is the one its create brought (`workspaces.startSteps`), else its
-project's current init steps. A step added to a running workspace runs once:
+graph is the workflow its create brought (`workspaces.workflowId`, under
+`workflowName`), else its project's current init workflows that apply to its
+repos. The workflows of one life are independent graphs started together.
+A step added to a running workspace runs once:
 one not settled at a stop becomes `interrupted`. A step whose output survives
 a stop checks for it itself (`test -f model.bin || ./download`).
 
 A prewarmed spare runs no steps; a claim starts the life with the project's
-init steps. A create that brings its own graph, or starts at a commit, never
-claims one.
+init workflows that apply to the claim's selection, which is the one the
+spare was warmed with. A create that brings its own graph, or starts at a
+commit, never claims one.
 
 ## Start point and base branch
 
@@ -158,9 +216,9 @@ own graph, with a step that is not a service, and opens no session.
   start steps, to reproduce a failure in.
 
 A non-interactive workspace, or a site's release, gets the run secrets its
-workflow names (docs/workflows.md) on a commit a person ran it on, and is
-refused on any other. A rerun runs the same workflow, so it gets them again
-on the commit it reruns.
+workflow names (docs/workflows.md) when every repo it starts with is at a
+commit that passes, and is refused otherwise. A rerun runs the same workflow
+under the same name, so it gets them again at the commits it reruns.
 
 `--wait` on a create or rerun blocks until the outcome and exits non-zero
 unless it succeeded. `yaac-mama create --workspace … --run … --wait` waits
@@ -189,12 +247,13 @@ so through `yaac-mama` a create or queue with `--steps`, and `--run` on any
 workspace, the caller's own included, are refused unless the caller's
 ceiling is `bypass` (docs/permission-modes.md). `--no-steps` is always
 allowed, and so is `--workflow`, a named workflow being written through the
-user's surfaces; the project's own init steps run in every create, being
+user's surfaces; the project's own init workflows run in every create, being
 the user's setting. The webapp and CLI are the user's and have no ceiling.
 
 ## Logs
 
-Every window that is not a `tui` session's is logged: steps, the webapp's
+Every window that is not a `tui` session's is logged: steps (under their full
+names), the webapp's
 terminals, windows opened by hand inside tmux, and `acp` sessions' windows,
 which hold acpd's own lines (the agent's exits and restarts) and the
 adapter's whole stderr. The chat pane offers that log once its agent exits,
@@ -206,7 +265,8 @@ full-screen redraws, and its conversation is already recorded.
 Each life sources a tmux config the server writes into its log dir
 (`lifeHooksConfig`), which names the dir in the global option
 `@yaac-log-dir` and sets an `after-new-window` hook piping every new window
-whose name is not a session's into `workspace-bin/yaac-log-writer`; an
+whose name is not a session's (a step's holds a `.`, so a workflow named
+after a tool is still logged) into `workspace-bin/yaac-log-writer`; an
 `acp` session's window is piped the same way by the command that opens it
 (`buildWindowsExec`), and the pipe outlives a resume's respawn. The
 writer appends to `<window>.log` and at 64 MiB moves it to `<window>.log.1`,
@@ -238,9 +298,11 @@ the webapp's New shell says the shell is logged.
 ## The webapp
 
 Step windows are not terminal tabs, and no step pane opens by itself. The
-workspace bar lists running, pending, failed and cancelled steps one by one,
-a failed one with its exit code; steps that succeeded or were skipped fold
-into one "N done" entry. A step pane (`step:<name>`) shows the live window
+workspace bar groups steps under their workflow, and lists running, pending,
+failed and cancelled steps one by one, a failed one with its exit code;
+steps of a workflow that succeeded or were skipped fold into one "N done"
+entry. The logs view groups its tabs the same way. A step pane
+(`step:<workflow>.<step>`) shows the live window
 while its step runs in an interactive workspace, and its log otherwise,
 followed while it can still grow; one opened by hand stays open when its
 step finishes. A stopped non-interactive workspace shows its outcome on its
@@ -255,6 +317,6 @@ row, its last run's logs, and Rerun.
 | Reconcile, add, rerun, cancel, the non-interactive lock | `packages/server/src/domain/workspaces/steps.ts` |
 | Logs | `packages/server/src/domain/workspaces/logs.ts`, `workspace-bin/yaac-log-writer` |
 | Scripts and hooks | `packages/server/src/runtime/terminals/steps.ts` |
-| Init steps | `packages/server/src/domain/projects/init-steps.ts` |
+| A life's start workflows | `startStepsOf` in `packages/server/src/domain/workspaces/life.ts` |
 | Rerun | `prepareRerun` in `packages/server/src/domain/workspaces/restart.ts` |
 | Webapp | `packages/frontend/src/components/StepsBar.tsx`, `StepPane.tsx`, `StepLog.tsx`, `WorkspaceLogs.tsx` |

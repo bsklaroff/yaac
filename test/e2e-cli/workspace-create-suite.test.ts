@@ -458,10 +458,10 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
       await skipClaudeOnboarding(projectPath)
 
-      // Init steps are a project setting the CLI sets (docs/workspace-steps.md).
+      // Init steps are an init workflow the CLI makes (docs/workflows.md).
       const initSteps = path.join(testEnv.scratchDir, 'kitchen-init-steps.json')
       await fs.writeFile(initSteps, JSON.stringify({ init: { run: ['echo init-ran', 'touch /tmp/init-ran'] } }))
-      const set = await runYaac(serverEnv, 'config', 'init-steps', 'kitchen', '--file', initSteps)
+      const set = await runYaac(serverEnv, 'workflow', 'create', 'kitchen', 'init', '--file', initSteps, '--init')
       expect(set.exitCode, set.stderr).toBe(0)
 
       // An install provides the npm cache; this namespace needs its own for
@@ -1573,7 +1573,8 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     const stateOf = async (id: string, name: string): Promise<string | undefined> => {
       const res = await fetch(`${base}/api/workspace/list?project=${NAME}`)
       const { workspaces } = await res.json() as { workspaces: Array<{ workspaceId: string; steps?: Array<{ name: string; state: string }> }> }
-      return workspaces.find((w) => w.workspaceId === id)?.steps?.find((s) => s.name === name)?.state
+      // By full name, or bare while one workflow has the step.
+      return workspaces.find((w) => w.workspaceId === id)?.steps?.find((s) => s.name === name || s.name.endsWith(`.${name}`))?.state
     }
     const waitForState = (id: string, name: string, state: string): Promise<void> =>
       vi.waitFor(async () => { expect(await stateOf(id, name)).toBe(state) }, { timeout: 60_000, interval: 500 })
@@ -1612,15 +1613,15 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     it('adds a step with step add, run in one shell after what it needs, and prints its log', async () => {
       const name = (await yaac('workspace', 'step', 'add', workspaceId, '--run', 'export WORD=two', '--run', 'echo one $WORD',
         '--name', 'extra', '--needs', 'install')).trim()
-      expect(name).toBe('extra')
+      expect(name).toMatch(/^[a-z][a-z0-9]{3}\.extra$/)
       await waitForState(workspaceId, 'extra', 'succeeded')
       expect(await yaac('workspace', 'logs', workspaceId, 'extra')).toContain('one two')
       expect(await yaac('workspace', 'logs', workspaceId, 'extra', '--raw', '--life', '1')).toContain('one two')
       const listed = await yaac('workspace', 'logs', workspaceId)
-      for (const file of ['install.log', 'extra.log', 'extra.events']) expect(listed).toContain(file)
-      // A default name, printed for whoever reruns or cancels it.
+      for (const file of ['.install.log', `${name}.log`, `${name}.events`]) expect(listed).toContain(file)
+      // A default name, printed in full for whoever reruns or cancels it.
       const unnamed = (await yaac('workspace', 'step', 'add', workspaceId, '--run', 'true')).trim()
-      expect(unnamed).toMatch(/^run-[0-9a-f]{8}$/)
+      expect(unnamed).toMatch(/^[a-z][a-z0-9]{3}\.run$/)
       await waitForState(workspaceId, unnamed, 'succeeded')
     }, 120_000)
 
@@ -1636,9 +1637,9 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       expect(ready.stderr).toContain('--ready goes with --service')
     }, 120_000)
 
-    it('starts a workspace with --no-steps in place of the project\'s init steps', async () => {
+    it('starts a workspace with --no-steps in place of the project\'s init workflows', async () => {
       const init = await stepsFile('steps-init.json', { marker: { run: 'touch /tmp/init-marker' } })
-      await yaac('config', 'init-steps', NAME, '--file', init)
+      await yaac('workflow', 'create', NAME, 'init', '--file', init, '--init')
       const stdout = await yaac('workspace', 'create', NAME, '--no-session', '--no-steps')
       const bare = /Workspace (\S+) is running/.exec(stdout)?.[1] ?? ''
       try {
@@ -1651,7 +1652,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         expect(await stateOf(bare, 'marker')).toBeUndefined()
       } finally {
         await stopWorkspace(bare)
-        await yaac('config', 'init-steps', NAME, '--none')
+        await yaac('workflow', 'delete', NAME, 'init')
       }
     }, 240_000)
 

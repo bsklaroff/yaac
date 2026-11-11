@@ -8,10 +8,11 @@ import type { WorkspaceLogLife } from '@yaac/shared/types'
  * `yaac workspace logs <id> [window]`: a workspace's terminal logs
  * (docs/workspace-steps.md "Logs"), kept for every life until it is
  * deleted, so a stopped workspace's read the same. With no window it lists
- * one life's files; with one (a step's name, or any logged window's) it
- * prints that window's log, the rotated-out part first. An agent session's
- * window is left out of the listing (`isAgentWindow`) but still read by
- * name, its current file only.
+ * one life's files; with one (a step's full name `<workflow>.<step>`, a
+ * bare one while only one workflow of the life has it, or any logged
+ * window's) it prints that window's log, the rotated-out part first. An
+ * agent session's window is left out of the listing (`isAgentWindow`) but
+ * still read by name, its current file only.
  */
 export async function workspaceLogs(
   workspace: string,
@@ -30,7 +31,8 @@ export async function workspaceLogs(
     printTable([{ header: 'FILE' }, { header: 'BYTES' }], life.files.map((f) => [f.name, String(f.size)]))
     return
   }
-  const listed = [`${window}.log.1`, `${window}.log`].filter((f) => life.files.some((l) => l.name === f))
+  const named = stepWindow(life, window)
+  const listed = [`${named}.log.1`, `${named}.log`].filter((f) => life.files.some((l) => l.name === f))
   const files = listed.length > 0 ? listed : isAgentWindow(window) ? [`${window}.log`] : []
   if (files.length === 0) throw new Error(`No log for "${window}" in life ${life.life}; run without it to list the logs there.`)
   for (const file of files) {
@@ -54,4 +56,14 @@ function pickLife(lives: WorkspaceLogLife[], wanted: string | undefined): Worksp
   if (wanted === undefined) return lives[0]
   if (/^\d+$/.test(wanted)) return lives[Number(wanted) - 1]
   return lives.find((l) => l.life === wanted)
+}
+
+/** The window a name means in a life: itself if it logged, else the one
+ *  step of that bare name, refused when several workflows have one. */
+function stepWindow(life: WorkspaceLogLife, window: string): string {
+  const windows = life.files.filter((f) => f.name.endsWith('.log')).map((f) => f.name.slice(0, -'.log'.length))
+  if (windows.includes(window) || window.includes('.')) return window
+  const steps = windows.filter((w) => w.endsWith(`.${window}`) && w.indexOf('.') === w.length - window.length - 1)
+  if (steps.length > 1) throw new Error(`"${window}" is a step of several workflows: ${steps.join(', ')}; give its full name.`)
+  return steps[0] ?? window
 }

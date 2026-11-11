@@ -21,6 +21,7 @@ import {
   listQueuedWorkspaces,
   prepareStart,
   queueWorkspace,
+  startOf,
   reconcilePrewarmPool,
   saveDraftWorkspace,
   stopWorkspace,
@@ -31,7 +32,7 @@ import { clearPrewarmStateForTests, refreshing } from '#domain/workspaces/prewar
 import { setWorkspaceBinDir } from '#domain/workspaces/workspace-bin'
 import type { StartWorkspaceRequest } from '#domain/workspaces/start'
 import type { WorkspaceCreateResult } from '#domain/workspaces/create'
-import { createWorkflow, resolveWorkflow, setInitSteps, setProjectEnvVar, setRunSecret, setScratchDirs } from '#domain/projects'
+import { createWorkflow, resolveWorkflow, setProjectEnvVar, setRunSecret, setScratchDirs, showWorkflow } from '#domain/projects'
 import { _clearTmuxAliveCacheForTests } from '#runtime/status/liveness'
 import { _resetAcpRegistryForTests, registerAcpConversation } from '#runtime/agents/acp-registry'
 import type { AcpConversation } from '#runtime/agents'
@@ -284,6 +285,21 @@ describe('prepareStart', () => {
    * that agent, else the fallback. No credentials are stored, so the model
    * falls back to the tool's default.
    */
+  describe('startOf', () => {
+    it('answers what a workspace started with, each repo at its start commit or base branch, in its layout', async () => {
+      const web = await seedSecondRepo('web')
+      const both = await start({ noSession: true, repos: [{ repo: 'demo', commit: head }, { repo: 'web', branch: 'dev' }], cwd: 'web' })
+      const row = (await getWorkspaceRow(DEMO_PROJECT_ID, both.workspaceId))!
+      const webStart = (await listWorkspaceRepos(both.workspaceId)).find((c) => c.repoId === web)?.startCommit
+      expect(await startOf(row, 'commit')).toEqual({
+        repos: [{ repo: DEMO_PROJECT_ID, commit: head }, { repo: web, commit: webStart }], nested: true, cwd: web,
+      })
+      expect(await startOf(row, 'branch')).toEqual({
+        repos: [{ repo: DEMO_PROJECT_ID, commit: head }, { repo: web, branch: 'dev' }], nested: true, cwd: web,
+      })
+    })
+  })
+
   describe('settings', () => {
     /** What a start resolved to, as its session records it. The create
      *  stops at its first runtime call after opening the session. */
@@ -731,6 +747,21 @@ describe('prepareStart', () => {
       await expect(start({ ...ci, steps: { t: { run: 'true' } } })).rejects.toThrow('not both')
     })
 
+    it('pins every repo of a secret-bearing start to the commit it was approved at', async () => {
+      const web = await seedSecondRepo('web')
+      await setRunSecret(local, DEMO_PROJECT_ID, { name: 'P8_KEY', value: 'pem' })
+      await createWorkflow(local, DEMO_PROJECT_ID, { name: 'relay', steps: { t: { run: 'true' } }, secrets: ['P8_KEY'] })
+      const webHead = (await git(repoDir(web), ['rev-parse', 'origin/dev'])).trim()
+      // A person's launch at branches resolves each tip and approves it.
+      const { workspaceId } = await start({
+        nonInteractive: true, noSession: true, workflow: 'relay', repos: [{ repo: 'demo', branch: 'main' }, { repo: 'web', branch: 'dev' }],
+      })
+      expect((await listWorkspaceRepos(workspaceId)).map((c) => [c.repoId, c.startCommit, c.baseBranch])).toEqual([
+        [DEMO_PROJECT_ID, head, undefined], [web, webHead, undefined],
+      ])
+      expect((await showWorkflow(DEMO_PROJECT_ID, 'relay')).approvedCommits.sort()).toEqual([head, webHead].sort())
+    })
+
     it('gives opencode, pi and omp each their own key for one provider, in the config each tool reads', async () => {
       installDriver({ kind: 'containerless' })
       await saveToolAuth('opencode', 'sk-or-oc', 'openrouter')
@@ -1009,12 +1040,12 @@ describe('prepareStart', () => {
       expect(listProvisioning()).toEqual([])
     })
 
-    it('starts its life with the project\'s init steps and log hooks, and declares the forwards, before the agent', async () => {
+    it('starts its life with the project\'s init workflows and log hooks, and declares the forwards, before the agent', async () => {
       await setProjectConfig(DEMO_PROJECT_ID, { portForwards: [{ containerPort: 3000, hostPortStart: 3000 }] })
-      await setInitSteps(local, DEMO_PROJECT_ID, {
+      await createWorkflow(local, DEMO_PROJECT_ID, { name: 'init', init: true, steps: {
         install: { run: 'pnpm install' },
         dev: { run: 'pnpm dev', service: true, needs: ['install'] },
-      })
+      } })
 
       const result = await start({ tool: 'claude', model: 'claude-opus-4-5' })
 
@@ -1028,12 +1059,43 @@ describe('prepareStart', () => {
       expect(setup).toContain('claude --permission-mode bypassPermissions --model claude-opus-4-5 '
         + `--settings "{\\"idleCompaction\\":false}" --session-id ${result.sessionId}`)
       const steps = await listWorkspaceSteps(result.workspaceId)
-      expect(steps.map((s) => [s.name, s.origin, s.state])).toEqual([['install', 'start', 'pending'], ['dev', 'start', 'pending']])
-      // A create bringing its own graph replaces them; one with none, none.
+      expect(steps.map((s) => [s.workflowName, s.name, s.origin, s.state])).toEqual([
+        ['init', 'install', 'start', 'pending'], ['init', 'dev', 'start', 'pending'],
+      ])
+      // A create bringing its own graph replaces them, under a short name of
+      // its own kept for every life; one with none, none.
       const own = await start({ noSession: true, steps: { lint: { run: ['pnpm lint', 'pnpm test'] } } })
-      expect((await listWorkspaceSteps(own.workspaceId)).map((s) => [s.name, s.spec.run])).toEqual([['lint', ['pnpm lint', 'pnpm test']]])
+      const ownName = (await getWorkspaceRow(DEMO_PROJECT_ID, own.workspaceId))?.workflowName
+      expect(ownName).toMatch(/^[a-z][a-z0-9]{3}$/)
+      expect((await listWorkspaceSteps(own.workspaceId)).map((s) => [s.workflowName, s.name, s.spec.run]))
+        .toEqual([[ownName, 'lint', ['pnpm lint', 'pnpm test']]])
       const none = await start({ noSession: true, steps: null })
       expect(await listWorkspaceSteps(none.workspaceId)).toEqual([])
+    })
+
+    it('starts each init workflow whose repos the workspace has, saying which it skips', async () => {
+      await seedSecondRepo('api')
+      await createWorkflow(local, DEMO_PROJECT_ID, { name: 'web-init', init: true, repos: ['demo'], steps: {
+        install: { run: 'pnpm install' },
+        serve: { run: 'pnpm dev', service: true, needs: ['install', 'api-init.migrate'] },
+      } })
+      await createWorkflow(local, DEMO_PROJECT_ID, { name: 'api-init', init: true, repos: ['api'], steps: {
+        install: { run: 'pip install' },
+        migrate: { run: 'alembic upgrade', needs: ['install'] },
+      } })
+      // A workspace of both starts both graphs, a step of the same name in each.
+      const both = await start({ noSession: true, repos: [{ repo: 'demo' }, { repo: 'api' }] })
+      expect((await listWorkspaceSteps(both.workspaceId)).map((s) => `${s.workflowName}.${s.name}`).sort())
+        .toEqual(['api-init.install', 'api-init.migrate', 'web-init.install', 'web-init.serve'])
+      // A workspace of one starts only its own, and says the other was skipped.
+      const progress: string[] = []
+      const web = await start({ noSession: true, repos: [{ repo: 'demo' }], onProgress: (m) => progress.push(m) })
+      expect((await listWorkspaceSteps(web.workspaceId)).map((s) => `${s.workflowName}.${s.name}`))
+        .toEqual(['web-init.install', 'web-init.serve'])
+      expect(progress).toContain('Init workflow "api-init" skipped: this workspace has no api')
+      // A named launch without the repo its workflow names is refused.
+      await expect(start({ noSession: true, repos: [{ repo: 'demo' }], workflow: 'api-init' }))
+        .rejects.toThrow('workflow "api-init" runs in api, which this start does not include')
     })
 
     it('starts a containerless chat agent alongside its checkout, holding its conversation until the checkout lands', async () => {
@@ -1059,7 +1121,10 @@ describe('prepareStart', () => {
     })
 
     it('refuses a bad start, before provisioning', async () => {
-      await expect(start({ noSession: true, steps: { claude: { run: 'echo hi' } } })).rejects.toThrow('"claude": the name is reserved')
+      await expect(start({ noSession: true, steps: { 'a.b': { run: 'echo hi' } } })).rejects.toThrow('step "a.b": a name is')
+      // Nothing runs beside a start's own graph, so a need on another
+      // workflow's step names nothing.
+      await expect(start({ noSession: true, steps: { t: { run: 'true', needs: ['other.build'] } } })).rejects.toThrow('not a step of this workspace')
       await expect(start({ branch: 'main', commit: 'a'.repeat(40) })).rejects.toThrow('not both')
       await expect(start({ commit: 'abc123' })).rejects.toThrow('not a full commit id')
       // A non-interactive workspace brings a graph that ends, and no session.
@@ -1469,7 +1534,7 @@ describe('prepareStart', () => {
     it('brings a spare whose branch moved on origin up to its tip before opening the session there', async () => {
       const spare = await warm()
       head = 'an-older-commit'
-      await setInitSteps(local, DEMO_PROJECT_ID, { install: { run: 'pnpm install' } })
+      await createWorkflow(local, DEMO_PROJECT_ID, { name: 'init', steps: { install: { run: 'pnpm install' } }, init: true })
 
       expect((await start({ claimSpare: true })).workspaceId).toBe(spare.workspaceId)
 
@@ -1477,12 +1542,12 @@ describe('prepareStart', () => {
       const reset = ran.findIndex((c) => c.includes('reset --hard'))
       expect(reset).toBeGreaterThanOrEqual(0)
       // The claim starts its life after the reset, with the project's init
-      // steps, and sources its log hooks before the session opens.
+      // workflows, and sources its log hooks before the session opens.
       const after = ran.slice(reset)
       const hooks = after.findIndex((c) => c.includes('hooks.conf'))
       expect(hooks).toBeGreaterThan(0)
       expect(after.findIndex((c) => SESSION_WINDOW.test(c))).toBeGreaterThan(hooks)
-      expect((await listWorkspaceSteps(spare.workspaceId)).map((s) => s.name)).toEqual(['install'])
+      expect((await listWorkspaceSteps(spare.workspaceId)).map((s) => `${s.workflowName}.${s.name}`)).toEqual(['init.install'])
     })
 
     it('waits out a background refresh, then claims the refreshed spare', async () => {

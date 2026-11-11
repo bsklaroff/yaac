@@ -2,8 +2,8 @@
 
 A **site** is a project's app published on the public internet at a
 hostname, served by a locked, supervised workspace called a **release**. A
-deploy starts a new release at a commit, waits for it to be ready, points
-the hostname at it and stops the old one. Sites exist only under the k8s
+deploy starts a new release with each of the site's repos at a commit, waits
+for it to be ready, points the hostname at it and stops the old one. Sites exist only under the k8s
 driver, on kind and on byo, with Cloudflare Tunnel as the edge. An edge
 that owns its own TLS and DNS is docs/plans/self-hosted-site-edge.md.
 
@@ -161,17 +161,32 @@ on it, and the tunnel already routes it, so admins who share an install
 share its hostnames too.
 
 A site names its hostname, the port its releases serve on, the named
-workflow each release runs (docs/workflows.md), the repo its releases are
-built from (`sites.repoId`: the one named at create, else the project's only
-one), and optionally a volume, which no other site may name and which cannot
-be deleted while named, and a branch of that repo to follow (see "Following
-a branch"). Each release is a workspace holding that repo alone, at its
-root. Editing the
-hostname moves it at once; the port, workflow and volume apply from the next
-deploy, and an edit is refused while a deploy runs.
+workflow each release runs (docs/workflows.md), its repos (`sites.repos`),
+optionally a volume, which no other site may name and which cannot be
+deleted while named, and whether it follows (see "Following").
+
+**Repos.** A site names at least one repo, each at a branch on origin or at
+a full commit, given when the repo is added. Nothing falls back to a default
+branch: which branch is published is the owner's choice, and a default
+branch renamed on the remote would otherwise change what the site serves.
+The layout follows from the count, as for any workspace: one repo sits at
+the release's root, several in their folders. A site has no cwd of its own:
+a release runs no agent, and its workflow says where its steps start
+(docs/workflows.md "Repos"). The site's repos must include every repo its
+workflow names. Every branch named is checked as for following: on origin
+now, and not `origin/…`, `refs/…` or `agent/…`.
+
+Editing the hostname moves it at once; the port, workflow, volume and repos
+apply from the next deploy, and an edit is refused while a deploy runs. "Built
+from a repo" means named in the site's repos or in the commits its last
+release ran: unlinking or deleting such a repo is refused, and so is
+renaming the folder of one a site of several repos keeps in its folder,
+since a replacement is a fresh checkout under the folder's current name and
+the steps name folders.
 
 A **release** is a workspace with `workspaces.siteId` set, started by a
-deploy at one commit. It differs from an ordinary workspace in these ways:
+deploy with each repo at a commit. It differs from an ordinary workspace in
+these ways:
 
 - **Locked.** `assertInteractive` refuses it: no sessions, terminals, added
   steps, file writes or allow-host, and no forward but to its admin port
@@ -180,9 +195,9 @@ deploy at one commit. It differs from an ordinary workspace in these ways:
   the server stops one, unless its site no longer names it (a stop that
   failed, a site deleted under it), when its owner may. `yaac-mama` has no
   site verbs, so an agent can neither deploy nor stop production, except
-  by pushing to a branch a site follows (see "Following a branch"). It can
+  by pushing to a branch a following site names (see "Following"). It can
   watch one: `yaac-mama list` shows each release with its site, whether
-  the hostname points at it, the site's address and its commit, and
+  the hostname points at it, the site's address and its commits, and
   `yaac-mama logs` reads its steps' logs.
 - **Mounts nothing shared.** It runs no agent and faces the internet, so it
   gets only its own checkout, the main clone's `.git` read-only, its own
@@ -202,8 +217,8 @@ deploy at one commit. It differs from an ordinary workspace in these ways:
   credential either, so a project needs none to deploy. The project's
   environment and secrets apply as for any workspace, and the run secrets
   its workflow names arrive as their real values (docs/workflows.md), for
-  a key the app signs with: its owner's deploy approves the commit, and
-  setting it to follow a branch the branch.
+  a key the app signs with: its owner's deploy approves the commits, and
+  setting it to follow its branches and commits.
 - **One image.** A deploy records the image its release launched, and every
   replacement launches that image again, so a release never changes under
   a later image config edit. The registry GC keeps a site's images though
@@ -222,8 +237,9 @@ deploy at one commit. It differs from an ordinary workspace in these ways:
   and its log keeps the crash above the new run. In a deploy's new
   release, a service that exits fails the deploy at once.
 - **A live release whose runtime is gone** (an evicted pod, a node restart)
-  is replaced, not restarted: a deploy of the same commit and image, with
-  the graph, volume and port that release ran rather than edits made since,
+  is replaced, not restarted: a deploy of the same commits and image, with
+  the graph, volume, port and repo layout that release ran rather than edits
+  made since,
   whose release is `rerunOf` the dead one, in a fresh checkout, as a
   Deployment replaces a failed pod from its spec. The dead release keeps its logs and
   its volume lease is taken over. Replacements back off the same way while
@@ -274,9 +290,10 @@ site's lock, and a stop or delete ends what the site runs before letting
 go of it, so no release outlives the row that names it. A release is
 forgotten only once its stop succeeds, so a failed stop is retried.
 
-1. **Launch.** Resolve the ref (a branch on origin, unless named the one
-   the site follows or else the project's default, or a full commit) and
-   start a release there.
+1. **Launch.** Resolve a commit per repo (the ref the deploy names for it,
+   else its setting: its branch's tip on origin, or its commit) and start a
+   release there, titled with them (`shop @ 1a2b3c4d` for one repo at the
+   root, `shop @ web@1a2b3c4d api@5e6f7a8b` otherwise).
 2. **Build.** The release runs the steps that do not need the volume.
 3. **Hand over** (sites with a volume; see below).
 4. **Ready.** Wait for every step, up to the deploy's timeout (15 minutes
@@ -291,56 +308,81 @@ forgotten only once its stop succeeds, so a failed stop is retried.
 
 A deploy that fails or times out stops its release, which keeps its logs,
 and the site keeps the release it had. A second deploy while one runs is a
-`CONFLICT`, unless it is of the same commit, when it is that deploy, with
-that deploy's deadline. Rolling back is deploying an earlier commit;
-`yaac site show` lists recent releases. `yaac site stop` stops the live
-release and the router answers 503; `yaac site start` deploys the last
-release's commit and image again. Without a volume, a flip has no gap.
+`CONFLICT`, unless it is of the same commits (equal maps over the same
+repos), when it is that deploy, with that deploy's deadline. Rolling back is
+deploying earlier commits; `yaac site show` lists recent releases with their
+commits. `yaac site stop` stops the live release and the router answers
+503; `yaac site start` deploys the last release's commits and image again,
+in its layout. Without a volume, a flip has no gap.
 
-### Following a branch
+What a release ran is kept per repo, by repo id, in four maps on the site's
+row (`releaseCommits`, `deployCommits`, `lastDeployCommits`,
+`failedCommits`), so a deploy stays one compare-and-set and single-row
+patches, and the record survives an edit that takes a repo off the site.
 
-A site may follow a branch on origin (`--follow <branch>`): while it
-serves, the `sites` reconcile step deploys the branch's tip whenever it is
-not the commit the site serves, as its project's owner, and only while
-that owner is an admin. While they are not, following is paused, and
-`site show` and the webapp say so. The step runs after every fetch of the
-project's origin, so a push to a hosted project deploys within seconds,
-and any other remote within the five-minute origin refresh
-(docs/server-git.md), which fetches every project with a running
-workspace, a live release included. Public traffic never reaches the
-server, so there are no webhooks. A push during a deploy is deployed
-once that deploy ends.
+### Following
 
-A tip whose deploy fails is not tried again: the site keeps serving the
-last release that worked, as after any failed deploy, until the branch
-moves on or the owner deploys it by hand, and `site show` names the tip
-it is not retrying. That matters most with a volume,
-where each attempt takes the site down for the handoff. A failure after the
-handoff leaves the old release replaced at its own commit, against what
-the migration left (see "Migrations").
+A site may follow (`--follow`): while it serves, the `sites` reconcile step
+computes its **target**, each repo's branch tip in its main clone or the
+commit it names, and deploys it whenever it differs from what the site
+serves and from what last failed, as its project's owner, and only while
+that owner is an admin. While they are not, following is paused, and `site
+show` and the webapp say so. A repo at a commit never moves, so following
+some repos and not others is naming a commit for the others; the flag is
+the site's rather than each repo's, so what a site serves reads off its
+settings.
 
-**Whoever may push the branch publishes the site.** That includes the
-project's agents, which push with its credential, and on a hosted project
-every workspace of it and of every share of it, since a push fans out to
-each. yaac does not stop them: the branch's protection is the remote's to
-set. A hosted remote has none beyond the default-branch guard, and agents
-land work by pushing to the default branch (docs/hosted-projects.md), so
-follow a branch there only if an agent publishing is acceptable. Following
-a branch also approves it for the run secrets of the site's workflow, so
-whoever may push it gets those values too, and can print them into the
+The step runs after every fetch of any repo, so a push to a hosted project
+deploys within seconds, and any other remote within the five-minute origin
+refresh (docs/server-git.md), which fetches every repo a running workspace,
+a live release included, has a checkout of. Before a follow deploy starts,
+each of the site's repos at a branch must have been fetched by a fetch that
+started after the step first saw this target; one that was not is fetched
+in the background, whose landing runs the step again, so the pass never
+waits on the network and a refresh, whose fetches land at different times,
+deploys once rather than once per repo that moved. Measured from each
+fetch's start, it converges however long fetches take. A fetch that failed
+counts for the whole refresh period, so a remote that is down holds the
+others up only that long; its repo deploys at its last fetched tip, which
+`releaseCommits` shows. Pushes to two repos seconds apart can still deploy the first
+without the second, then both: a change that spans repos must work in that
+order, or the site is taken off `follow` while it lands. Public traffic
+never reaches the server, so there are no webhooks. A push during a deploy
+is deployed once that deploy ends.
+
+A target whose deploy fails is not tried again: the site keeps serving the
+last release that worked, as after any failed deploy, until a branch moves
+on or the owner deploys by hand, and `site show` names the commits it is
+not retrying. That matters most with a volume, where each attempt takes the
+site down for the handoff. A failure after the handoff leaves the old
+release replaced at its own commits, against what the migration left (see
+"Migrations").
+
+**Whoever may push a branch the site names publishes the site.** That
+includes the project's agents, which push with its credential, and on a
+hosted project every workspace of it and of every share of it, since a push
+fans out to each. yaac does not stop them: the branch's protection is the
+remote's to set. A hosted remote has none beyond the default-branch guard,
+and agents land work by pushing to the default branch
+(docs/hosted-projects.md), so follow a branch there only if an agent
+publishing is acceptable. A person setting a site to follow, or changing the
+repos or workflow of a following site, approves each branch and each commit
+it names for the run secrets of its workflow, refused before anything is
+written; a follow deploy runs as the server and passes on those. So whoever
+may push a branch gets those values too, and can print them into the
 release's step logs, which the project's agents read (docs/workflows.md
-"Run secrets"). A site whose repo is hosted by yaac and shared with another
-user follows no branch with a workflow that names secrets.
+"Run secrets"); on a hosted repo shared with another user, that includes
+them.
 
-The branch must exist on origin when it is named, by its own name: one
-that reads as a ref (`origin/main`, `refs/heads/main`) would follow a
-branch so named, which anyone who may push could create, and `agent/*`
-branches are each one workspace's, so all three are refused.
+A branch must exist on origin when it is named, by its own name: one that
+reads as a ref (`origin/main`, `refs/heads/main`) would follow a branch so
+named, which anyone who may push could create, and `agent/*` branches are
+each one workspace's, so all three are refused.
 
-A following site deploys only the branch's tip: `site deploy` without
-`--ref` deploys it, and a deploy of any other ref is a `CONFLICT`, since
-the next pass would deploy the tip over it. To roll back, stop following
-(`--no-follow`), then deploy the commit. Stopping following publishes
+A following site deploys only its target: `site deploy` without `--ref`
+deploys it, and a deploy naming any other ref is a `CONFLICT`, since the
+next pass would deploy the target over it. To roll back, stop following
+(`--no-follow`), then deploy the commits. Stopping following publishes
 nothing, so it is taken mid-deploy too, and from anyone who may stop the
 site. A stopped site follows nothing until it is started.
 
@@ -403,11 +445,17 @@ never overlap, so migrations never race. A rollback does not undo a schema.
 
 - **API**: `/api/site/edge`, `/list`, `/show` (readers), `/create`,
   `/edit`, `/deploy`, `/start` (the project's owner, while an admin) and
-  `/stop`, `/delete` (the project's owner, or any admin).
+  `/stop`, `/delete` (the project's owner, or any admin). `/create` and
+  `/edit` take `repos` (each a folder or id at a branch or commit; on edit
+  the whole list) and `follow`; `/deploy` takes `refs` (folder or id to
+  branch or commit) beside `ref`, the form for a site of one repo. Commits
+  are answered per repo, `{ dir, commit }`.
 - **CLI**: `yaac site create|edit|list|show|deploy|stop|start|delete`, the
   project first, and `yaac cluster install` for the tunnel (docs/cli.md).
 - **Webapp**: a Sites section in project settings, with the tunnel's state
-  at its top; a release's workspace view is
+  at its top, a form with a row per repo (include, branch or commit,
+  starting empty) and a Follow switch, and a deploy dialog with a ref per
+  repo; a release's workspace view is
   read-only, with "release of `<site>`" on its header.
 - **Modules**: `#domain/sites` (settings, deploys, supervision),
   `cluster/site-edge.ts` (every edge object), the `sites` reconcile step.

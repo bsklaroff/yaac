@@ -1,7 +1,8 @@
 import { api, resolveProjectId } from '#commands/api'
 import { printTable } from '#commands/table'
 import { durationOption } from '#commands/workspace-create'
-import type { SiteEntry } from '@yaac/shared/types'
+import { FULL_COMMIT_PATTERN, formatCommits } from '@yaac/shared/steps'
+import type { RepoStart, SiteCommit, SiteEntry } from '@yaac/shared/types'
 
 /**
  * `yaac site …`: a project's public sites (docs/public-sites.md), each a
@@ -25,12 +26,26 @@ export interface SiteOptions {
   workflow?: string
   /** A volume name; false (`--no-volume`) for none. */
   volume?: string | false
-  /** A branch whose tip it deploys whenever it moves; false (`--no-follow`)
-   *  for none. */
-  follow?: string | false
-  /** On create: the repo its releases are built from, in a project with
-   *  several. */
-  repo?: string
+  /** Deploy whenever a branch in its repos moves (`--follow`), or not
+   *  (`--no-follow`). */
+  follow?: boolean
+  /** Each repo its releases start with, as `<dir>@<branch or commit>`. */
+  repo: string[]
+  /** False when `--no-repos` was given, which a site refuses. */
+  repos?: boolean
+}
+
+/** The `--repo` values as a site's repos, each naming a branch or commit. */
+function siteRepos(opts: SiteOptions): RepoStart[] {
+  if (opts.repos === false) throw new Error('A site starts with at least one repo; name each with --repo <dir>@<branch or commit>.')
+  return opts.repo.map((entry) => {
+    const at = entry.indexOf('@')
+    if (at <= 0 || at === entry.length - 1) {
+      throw new Error(`--repo takes <dir>@<branch or full commit> (got "${entry}"): a site names what each repo deploys.`)
+    }
+    const ref = entry.slice(at + 1)
+    return { repo: entry.slice(0, at), ...(FULL_COMMIT_PATTERN.test(ref) ? { commit: ref } : { branch: ref }) }
+  })
 }
 
 export async function siteCreate(
@@ -38,6 +53,8 @@ export async function siteCreate(
   name: string,
   opts: SiteOptions & { hostname: string; port: string; workflow: string },
 ): Promise<void> {
+  const repos = siteRepos(opts)
+  if (repos.length === 0) throw new Error('Name the repos its releases start with: --repo <dir>@<branch or commit>, repeatable.')
   await api.site.create.$post({ json: {
     project: await resolveProjectId(project),
     name,
@@ -46,8 +63,8 @@ export async function siteCreate(
     ...(typeof opts.adminPort === 'string' ? { adminPort: portOption('--admin-port', opts.adminPort) } : {}),
     workflow: opts.workflow,
     ...(typeof opts.volume === 'string' ? { volume: opts.volume } : {}),
-    ...(typeof opts.follow === 'string' ? { followBranch: opts.follow } : {}),
-    ...(opts.repo !== undefined ? { repo: opts.repo } : {}),
+    repos,
+    ...(opts.follow === true ? { follow: true } : {}),
   } })
   const { tunnel } = await api.site.edge.$get()
   console.log(`Created site "${name}". In Cloudflare, add a public hostname to the install's tunnel:`)
@@ -62,6 +79,7 @@ export async function siteCreate(
 }
 
 export async function siteEdit(project: string, name: string, opts: SiteOptions): Promise<void> {
+  const repos = siteRepos(opts)
   const patch = {
     ...(opts.hostname !== undefined ? { hostname: opts.hostname } : {}),
     ...(opts.port !== undefined ? { port: portOption('--port', opts.port) } : {}),
@@ -70,16 +88,17 @@ export async function siteEdit(project: string, name: string, opts: SiteOptions)
       : {}),
     ...(opts.workflow !== undefined ? { workflow: opts.workflow } : {}),
     ...(opts.volume !== undefined ? { volume: opts.volume === false ? null : opts.volume } : {}),
-    ...(opts.follow !== undefined ? { followBranch: opts.follow === false ? null : opts.follow } : {}),
+    ...(repos.length > 0 ? { repos } : {}),
+    ...(opts.follow !== undefined ? { follow: opts.follow } : {}),
   }
   if (Object.keys(patch).length === 0) throw new Error('Nothing to change: give an option to edit.')
   await api.site.edit.$post({ json: { project: await resolveProjectId(project), name, ...patch } })
-  const later = Object.keys(patch).some((k) => k !== 'hostname' && k !== 'adminPort' && k !== 'followBranch')
+  const later = Object.keys(patch).some((k) => k !== 'hostname' && k !== 'adminPort' && k !== 'follow')
   console.log(`Updated site "${name}"`
     + (opts.hostname !== undefined ? `; it answers at ${opts.hostname} now` : '')
     + (later ? `${opts.hostname !== undefined ? ', and' : ';'} its next deploy uses the rest` : '') + '.')
-  if (typeof opts.follow === 'string') {
-    console.log(`While it serves, it deploys each new tip of ${opts.follow}: whoever can push that branch, `
+  if (opts.follow === true) {
+    console.log('While it serves, it deploys whenever one of its branches moves: whoever can push one, '
       + 'the project\'s agents included, now publishes the site, unless the remote\'s branch protection stops them.')
   }
 }
@@ -105,7 +124,8 @@ export async function siteShow(project: string, name: string): Promise<void> {
   console.log(`  admin port   ${site.adminPort ?? '-'}`)
   console.log(`  workflow     ${site.workflow} (${Object.keys(site.steps).join(', ')})`)
   console.log(`  volume       ${site.volume ?? '-'}`)
-  console.log(`  follows      ${site.followBranch ?? '-'}${site.followPaused !== undefined ? ` (paused: ${site.followPaused})` : ''}`)
+  console.log(`  repos        ${site.repos.map((r) => `${r.dir}@${r.branch ?? r.commit ?? '?'}`).join(' ')}`)
+  console.log(`  follow       ${site.follow ? 'yes' : 'no'}${site.followPaused !== undefined ? ` (paused: ${site.followPaused})` : ''}`)
   if (site.followSkipped !== undefined) {
     console.log(`  not retrying ${short(site.followSkipped)}, whose deploy failed; \`yaac site deploy\` retries it`)
   }
@@ -114,9 +134,9 @@ export async function siteShow(project: string, name: string): Promise<void> {
   if (site.lastDeploy !== undefined) console.log(`  last deploy  ${lastDeployOf(site)} (${site.lastDeploy.finishedAt})`)
   if (site.releases.length === 0) return
   printTable(
-    [{ header: 'RELEASE' }, { header: 'COMMIT' }, { header: 'STARTED' }, { header: 'STOPPED' }, { header: 'REPLACED', optional: true }],
+    [{ header: 'RELEASE' }, { header: 'COMMITS' }, { header: 'STARTED' }, { header: 'STOPPED' }, { header: 'REPLACED', optional: true }],
     site.releases.map((r) => [
-      r.workspaceId, short(r.commit), r.createdAt, r.stoppedAt ?? '-', r.rerunOf ?? '',
+      r.workspaceId, short(r.commits), r.createdAt, r.stoppedAt ?? '-', r.rerunOf ?? '',
     ]),
   )
 }
@@ -127,16 +147,20 @@ const WAIT_POLL_MS = 2_000
 export async function siteDeploy(
   project: string,
   name: string,
-  opts: { ref?: string; timeout?: string; wait?: boolean },
+  opts: { ref: string[]; timeout?: string; wait?: boolean },
 ): Promise<void> {
   const projectId = await resolveProjectId(project)
-  const { workspaceId, commit } = await api.site.deploy.$post({ json: {
+  const bare = opts.ref.filter((r) => !r.includes('@'))
+  if (bare.length > 1) throw new Error('Give one bare --ref, for a site of one repo; name each repo\'s as --ref <dir>@<ref>.')
+  const refs = Object.fromEntries(opts.ref.filter((r) => r.includes('@')).map((r) => [r.slice(0, r.indexOf('@')), r.slice(r.indexOf('@') + 1)]))
+  const { workspaceId, commits } = await api.site.deploy.$post({ json: {
     project: projectId,
     name,
-    ...(opts.ref !== undefined ? { ref: opts.ref } : {}),
+    ...(bare.length === 1 ? { ref: bare[0] } : {}),
+    ...(Object.keys(refs).length > 0 ? { refs } : {}),
     ...(opts.timeout !== undefined ? { timeoutMinutes: durationOption('--timeout', opts.timeout) } : {}),
   } })
-  console.log(`Deploying ${short(commit)} to site "${name}" in release ${workspaceId}.`)
+  console.log(`Deploying ${short(commits)} to site "${name}" in release ${workspaceId}.`)
   if (!opts.wait) {
     console.log(`Follow it with \`yaac site show ${project} ${name}\`, and its steps with \`yaac workspace logs ${workspaceId}\`.`)
     return
@@ -147,7 +171,7 @@ export async function siteDeploy(
     if (site.deploy?.workspaceId !== workspaceId) {
       const last = site.lastDeploy?.workspaceId === workspaceId ? site.lastDeploy : undefined
       if (last?.outcome === 'succeeded') {
-        console.log(`Deployed: https://${site.hostname} serves ${short(commit)}.`)
+        console.log(`Deployed: https://${site.hostname} serves ${short(commits)}.`)
         return
       }
       console.log(last !== undefined
@@ -170,8 +194,8 @@ export async function siteStop(project: string, name: string): Promise<void> {
 }
 
 export async function siteStart(project: string, name: string): Promise<void> {
-  const { workspaceId, commit } = await api.site.start.$post({ json: { project: await resolveProjectId(project), name } })
-  console.log(`Starting site "${name}" at ${short(commit)} in release ${workspaceId}.`)
+  const { workspaceId, commits } = await api.site.start.$post({ json: { project: await resolveProjectId(project), name } })
+  console.log(`Starting site "${name}" at ${short(commits)} in release ${workspaceId}.`)
 }
 
 export async function siteDelete(project: string, name: string): Promise<void> {
@@ -186,22 +210,24 @@ function portOption(flag: string, text: string): number {
   return port
 }
 
-function short(commit: string | undefined): string {
-  return commit?.slice(0, 7) ?? '-'
+/** Commits per repo, `<dir>@<short>` each, bare for a lone repo at the
+ *  root. */
+function short(commits: SiteCommit[]): string {
+  return commits.length > 0 ? formatCommits(commits, 8) : '-'
 }
 
 function liveOf(site: SiteEntry): string {
   if (site.live === undefined) return '-'
-  return `${short(site.live.commit)} ${site.live.running ? 'running' : 'replacing'}`
+  return `${short(site.live.commits)} ${site.live.running ? 'running' : 'replacing'}`
 }
 
 function deployOf(site: SiteEntry): string {
   if (site.deploy === undefined) return ''
-  return `${short(site.deploy.commit)} ${site.deploy.phase}${site.deploy.replacing ? ' (replacement)' : ''}`
+  return `${short(site.deploy.commits)} ${site.deploy.phase}${site.deploy.replacing ? ' (replacement)' : ''}`
 }
 
 function lastDeployOf(site: SiteEntry): string {
   const last = site.lastDeploy
   if (last === undefined) return '-'
-  return `${last.outcome} at ${short(last.commit)}${last.error !== undefined ? `: ${last.error}` : ''}`
+  return `${last.outcome} at ${short(last.commits)}${last.error !== undefined ? `: ${last.error}` : ''}`
 }

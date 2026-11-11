@@ -67,7 +67,7 @@ beforeEach(async () => {
   })
   await seedProject()
   await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: WS })
-  await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS, at: new Date(), startSteps: {} })
+  await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS, at: new Date(), startSteps: [] })
 })
 
 afterEach(async () => {
@@ -105,7 +105,7 @@ describe('openSession', () => {
       projectId: DEMO_PROJECT_ID, workspaceId: TWO, cwd: 'web',
       repos: [{ repoId: DEMO_PROJECT_ID, path: 'api' }, { repoId: WEB, path: 'web' }],
     })
-    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: TWO, at: new Date(), startSteps: {} })
+    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: TWO, at: new Date(), startSteps: [] })
     installFakeWorkspaceDriver({
       find: (id) => Promise.resolve(id === TWO ? { ...unit, workspaceId: TWO } : undefined),
       exec: (_job, cmd) => { execs.push(cmd); return Promise.resolve({ stdout: '', stderr: '' }) },
@@ -277,7 +277,7 @@ describe('reconcileSessions', () => {
     expect(opened()).toEqual([])
     // Past the stop's millisecond, so the life is strictly newer.
     await new Promise((resolve) => setTimeout(resolve, 2))
-    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS, at: new Date(), startSteps: {} })
+    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS, at: new Date(), startSteps: [] })
     await reconcileSessions(view)
     expect(opened()).toEqual([session.window])
   })
