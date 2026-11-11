@@ -36,7 +36,7 @@ import {
   splitAgentReport,
   type PaneSession,
 } from './agent-tools'
-import { assertLaunchableModel, buildAgentCmd, buildMessageCmd, buildPromptPasteBgCmd, windowTarget } from './agent-command'
+import { assertLaunchableModel, buildAgentCmd, buildMessageCmd, openingFile, windowTarget } from './agent-command'
 import { workspaceDriver } from '#drivers/driver'
 import type {
   AgentConnectDeps,
@@ -314,6 +314,7 @@ export const tuiDriver: AgentDriver = {
       ...(spec.model !== undefined ? { model: spec.model } : {}),
       ...(spec.effort !== undefined ? { effort: spec.effort } : {}),
       ...(spec.agentOptions !== undefined ? { agentOptions: spec.agentOptions } : {}),
+      ...(spec.opening === true ? { opening: openingFile(spec.paths, spec.windowName) } : {}),
     })
   },
 
@@ -321,18 +322,12 @@ export const tuiDriver: AgentDriver = {
     return new TuiConnection(session, sink, deps)
   },
 
-  async deliverPrompt(session: DrivenWorkspace, handle: string, text: string, opts = {}): Promise<void> {
+  async deliverPrompt(session: DrivenWorkspace, handle: string, text: string, running): Promise<void> {
     // A session's handle is its window, which pastes into the window's
     // active pane; a terminal's agent is addressed by its pane id.
     const target = handle.startsWith('%') ? handle : windowTarget(handle)
     const driver = workspaceDriver()
-    const paths = driver.workspacePaths(session.jobName)
-    if (opts.running === undefined) {
-      const { cmd, stdin } = buildPromptPasteBgCmd(target, text, paths)
-      await driver.exec(session.jobName, cmd, { maxAttempts: 1, timeout: 15_000, stdin })
-      return
-    }
-    const { cmd, stdin } = buildMessageCmd(target, text, paths, opts.running)
+    const { cmd, stdin } = buildMessageCmd(target, text, driver.workspacePaths(session.jobName), running)
     await driver.exec(session.jobName, cmd, {
       maxAttempts: 1,
       timeout: 30_000,

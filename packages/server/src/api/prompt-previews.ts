@@ -8,7 +8,7 @@ import {
 /**
  * Prompts cut short for the reads that carry many rows at once: the
  * `/events` snapshot and the stopped list. A prompt can run to
- * `MAX_PROMPT_LENGTH`, and those reads only display and search it.
+ * `MAX_PROMPT_BYTES`, and those reads only display and search it.
  */
 
 /** `entry` with its prompt cut to `max` characters, never ending in half a

@@ -21,7 +21,7 @@ import {
 import { builtinSkillsDir, sharedSkillRoots } from '@yaac/server/domain/skills'
 import { defaultModelFor } from '@yaac/server/domain/auth'
 import { AGENT_PACKAGES, agentPackagePrefix } from '@yaac/shared/tool-install'
-import { ACP_ADAPTERS, AGENT_TOOLS, MAX_PROMPT_LENGTH } from '@yaac/shared/types'
+import { ACP_ADAPTERS, AGENT_TOOLS, MAX_PROMPT_BYTES, promptFits } from '@yaac/shared/types'
 import { lifeDirName } from '@yaac/shared/steps'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { FALLBACK_MODELS, PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
@@ -97,10 +97,18 @@ const CAN_RUN_PORTS = CAN_RUN
   && await execFileAsync('sh', ['-c', 'command -v lsof']).then(() => true, () => false)
 
 /**
+ * The first lines of each fake terminal agent: one handed an opening
+ * message off a terminal runs it once and exits, as pi does, so a launch
+ * that takes the pane's terminal from its agent fails here rather than only
+ * with the real tool.
+ */
+const OPENING_GUARD = 'case " $* " in *" -- "*|*" --prompt="*) [ -t 0 ] && [ -t 1 ] || exit 0 ;; esac'
+
+/**
  * A fake codex that mimics what yaac sees from codex-cli. On the first
- * prompt it reports the conversation (with its rollout path) through the
- * SessionStart hook, then the throwaway title session (no rollout). A resume
- * reports nothing. Each launch's arguments are logged per workspace for the
+ * prompt, its launch argument or else its first line of input, it reports
+ * the conversation (with its rollout path) through the SessionStart hook,
+ * then the throwaway title session (no rollout). A resume reports nothing. Each launch's arguments are logged per workspace for the
  * restart case, and each later line it is sent for `yaac-mama send`. It keeps
  * reading, as a real TUI does: some terminals echo nothing typed behind an
  * unread line, and the paste submits only once it sees its text. Below each
@@ -113,12 +121,11 @@ const CAN_RUN_PORTS = CAN_RUN
  */
 const FAKE_CODEX = [
   '#!/bin/sh',
+  OPENING_GUARD,
   'case " $* " in *" --model sick "*) echo "codex: cannot execute" >&2; exit 127 ;; esac',
   'printf \'%s\\n\' "$*" >> "$CODEX_HOME/launches-${PWD##*/}"',
-  // The alternate screen is the readiness signal the prompt paste waits for.
-  "printf '\\033[?1049h'",
   'case " $* " in *" resume "*) exec sleep 2147483647 ;; esac',
-  'read -r _ || exec sleep 2147483647',
+  'case " $* " in *" -- "*) ;; *) read -r _ || exec sleep 2147483647 ;; esac',
   'mkdir -p "$CODEX_HOME/sessions"',
   'rollout="$CODEX_HOME/sessions/rollout-2026-10-03T12-00-00-thread-$$.jsonl"',
   ': > "$rollout"',
@@ -146,9 +153,10 @@ const managedBin = (binary: string): string =>
  */
 async function installFakeAgents(): Promise<void> {
   await fs.mkdir(agentEnvDir(), { recursive: true })
-  const reportEnv = `env > '${agentEnvDir()}'/$$.env\n`
+  const reportEnv = `env > '${agentEnvDir()}'/$$.env; printf '%s\\0' "$@" > '${agentEnvDir()}'/\${YAAC_SESSION_ID:-$$}.argv\n`
   // `dir`: the binary whose install dir the file goes in. A shell agent
-  // reports its environment first (`processEnv`).
+  // reports its environment and arguments first (`processEnv`,
+  // `sessionArgv`).
   const write = async (name: string, body: string, dir = name): Promise<string> => {
     const file = path.join(path.dirname(managedBin(dir)), name)
     await fs.mkdir(path.dirname(file), { recursive: true })
@@ -156,9 +164,10 @@ async function installFakeAgents(): Promise<void> {
     await fs.chmod(file, 0o755)
     return file
   }
-  for (const tool of ['claude', 'pi', 'bun']) {
-    await write(tool, '#!/bin/sh\nexec sleep 2147483647\n')
+  for (const tool of ['claude', 'pi']) {
+    await write(tool, `#!/bin/sh\n${OPENING_GUARD}\nexec sleep 2147483647\n`)
   }
+  await write('bun', '#!/bin/sh\nexec sleep 2147483647\n')
   await write('codex', FAKE_CODEX)
 
   for (const tool of AGENT_TOOLS) {
@@ -173,7 +182,7 @@ async function installFakeAgents(): Promise<void> {
       tool,
       '#!/bin/sh\n'
       + `if [ "$1" = "acp" ]; then shift; exec ${tool}-acp-impl "$@"; fi\n`
-      + 'exec sleep 2147483647\n',
+      + `${OPENING_GUARD}\nexec sleep 2147483647\n`,
     )
   }
 }
@@ -476,6 +485,14 @@ async function paneEnv(id: string): Promise<Record<string, string>> {
     expect(Object.keys(env)).not.toHaveLength(0)
   }, { timeout: 30_000, interval: 250 })
   return env
+}
+
+/** The arguments workspace `id`'s first session's agent was launched with,
+ *  which the fake agent dumps under its session as it starts, whatever
+ *  process it runs under. */
+async function sessionArgv(id: string): Promise<string[]> {
+  const file = path.join(agentEnvDir(), `${(await firstSession(id)).sessionId}.argv`)
+  return (await fs.readFile(file, 'utf8').catch(() => '')).split('\0').slice(0, -1)
 }
 
 /** A process's direct children. */
@@ -1421,11 +1438,17 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(await runMama('icon', 'get', out)).toEqual({ code: 0, out: `Saved the project's icon (image/png, ${bytes.length} bytes) to ${out}.\n` })
     expect(await fs.readFile(out)).toEqual(bytes)
 
+    // The largest icon the server takes gets there whole, though its base64
+    // runs far past the prompt cap; one byte more is refused before sending.
     const big = path.join(testEnv.scratchDir, 'mama-icon-big.png')
-    await fs.writeFile(big, Buffer.alloc(150_001))
+    const largest = Buffer.concat([bytes, Buffer.alloc(512 * 1024 - bytes.length)])
+    await fs.writeFile(big, largest)
+    expect((await runMama('icon', 'set', big)).code).toBe(0)
+    expect(Buffer.from(await (await fetch(`${origin()}/api/project/${projectId}/icon`)).arrayBuffer()).equals(largest)).toBe(true)
+    await fs.writeFile(big, Buffer.concat([largest, Buffer.alloc(1)]))
     const refused = await runMama('icon', 'set', big)
     expect(refused.code).toBe(2)
-    expect(refused.out).toContain('over the 150000 bytes an icon may be')
+    expect(refused.out).toContain('over the 512 KiB an icon may be')
     const dir = await runMama('icon', 'set', testEnv.scratchDir)
     expect(dir).toEqual({ code: 2, out: `yaac-mama: cannot read ${testEnv.scratchDir}\n` })
 
@@ -1475,9 +1498,11 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(unoffered.code).toBe(1)
     expect(unoffered.out).toContain('no "xhigh" effort')
 
-    // A brief past what an argument holds, multibyte, from a file.
-    const brief = `plan the work\n${'Pläase ✓ the 🙂 step\n'.repeat(7_000)}`
-    expect(Buffer.byteLength(brief)).toBeGreaterThan(128 * 1024)
+    // A brief near the prompt cap, multibyte, from a file, which the agent
+    // is launched with.
+    const brief = `plan the work\n${'Pläase ✓ the 🙂 step\n'.repeat(4_900)}`
+    expect(Buffer.byteLength(brief)).toBeGreaterThan(120 * 1024)
+    expect(promptFits(brief)).toBe(true)
     const briefFile = path.join(testEnv.dataDir, 'sibling-brief.md')
     await fs.writeFile(briefFile, brief)
     const made = await runMama(
@@ -1929,6 +1954,25 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
   }, 180_000)
 
+  // In the scheduling project, since a create remembers its tool's mode
+  // and the acp cases rely on nothing here having made pi a terminal agent.
+  it('launches a terminal agent with its opening message, on the pane\'s terminal', async () => {
+    const before = new Set((await listWorkspaces()).map((w) => w.workspaceId))
+    const made = await runYaac(cliEnv(), 'workspace', 'create', SCHED, '--tool', 'pi', '--mode', 'tui', '--prompt', '@notes say hi')
+    expect(made.exitCode, made.stderr).toBe(0)
+    const id = (await listWorkspaces()).find((w) => !before.has(w.workspaceId))?.workspaceId ?? ''
+    try {
+      // A leading space, so pi does not read the message as a file to attach.
+      await vi.waitFor(async () => expect((await sessionArgv(id)).slice(-2)).toEqual(['--', ' @notes say hi']),
+        { timeout: 30_000, interval: 250 })
+      await new Promise((r) => setTimeout(r, 1000))
+      expect((await tmux(id, 'display-message', '-p', '-t', `yaac:${(await firstSession(id)).window}`, '#{pane_dead}')).trim())
+        .toBe('0')
+    } finally {
+      await runYaac(serverEnv, 'workspace', 'stop', id)
+    }
+  }, 120_000)
+
   /**
    * The permission mode a TUI agent reports: claude's prompt hook sets a
    * pane option, which the server records. Checked through the
@@ -2170,8 +2214,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       expect(exitCode, `${stdout}\n${stderr}`).toBe(0)
     }
 
+    // Launched with its prompt, whose first turn reports the conversation.
     const prompted = await createWorkspaceWith('codex', '--prompt', 'hello')
-    // The first turn reports the conversation.
     let thread = ''
     await vi.waitFor(async () => {
       thread = (await codexSessions(prompted)).find((s) => s.conversationId.startsWith('thread-'))?.conversationId ?? ''
@@ -2182,7 +2226,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // launch must record the conversation itself for the second restart to
     // find it. The title session must not take its place. Each resume keeps
     // the model the workspace launched on.
-    const model = (await launches(prompted))[0]?.match(/ --model (\S+)$/)?.[1] ?? ''
+    const model = (await launches(prompted))[0]?.match(/ --model (\S+) -- hello$/)?.[1] ?? ''
     expect(model).not.toBe('')
     for (const n of [2, 3]) {
       await restart(prompted)
@@ -2789,9 +2833,10 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
       // and logs its launch arguments. All of these come from the edit.
       const child = await mamaAs(parent, 'queue', '--parent-workspace', parent, 'draft')
 
-      // A prompt longer than any argument can hold travels by file or stdin,
-      // whole and multibyte, and reads back in full.
-      const long = 'Pläase ✓ the 🙂 "brief"\\n\n'.repeat(MAX_PROMPT_LENGTH).slice(0, MAX_PROMPT_LENGTH)
+      // A prompt of the maximum size travels by file or stdin, whole and
+      // multibyte (16 bytes a repeat, which divides the cap), and reads back
+      // in full.
+      const long = 'é✓🙂"fi"\\n\n'.repeat(MAX_PROMPT_BYTES / 16)
       const brief = path.join(testEnv.dataDir, 'brief.md')
       await fs.writeFile(brief, long)
       const fullPrompt = async (id: string): Promise<string> =>
@@ -2807,7 +2852,7 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
         .rejects.toThrow(/not both/)
       await fs.writeFile(brief, `${long}!`)
       await expect(mamaFrom(parent, brief, 'queue', '--parent-workspace', parent, '-'))
-        .rejects.toThrow(/yaac-mama: body: the prompt is over the 200,000-character limit \(HTTP 400\)/)
+        .rejects.toThrow(/yaac-mama: the prompt is over the 130 KB limit \(HTTP 422\)/)
       await fs.writeFile(brief, '')
       await expect(mamaAs(parent, 'queue', '--parent-workspace', parent, '--prompt-file', brief))
         .rejects.toThrow(/the prompt from .* is empty/)
@@ -2862,18 +2907,19 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
       try {
         const child = childWorkspace!
         const sent = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'codex', `sent-${child}`)
-        // One past what an argument holds, multibyte, from a file; each of
-        // its lines reaches the agent as typed. The fake codex echoes a paste
+        // Near the prompt cap, multibyte, from a file; each of its lines
+        // reaches the agent as typed. The fake codex echoes a paste
         // line by line, reprinting its prompt after each, where the real
         // tools collapse it. So the message is a few long lines, which the
         // fake keeps up with, ending in one holding the 20 characters a send
         // looks for on screen; and it goes first, before an earlier header
         // on screen could scroll off and hide that it showed.
         const message = [
-          ...Array.from({ length: 40 }, (_, i) => `${'Pläase ✓ the 🙂 brief '.repeat(125)}line ${String(i)}`),
+          ...Array.from({ length: 38 }, (_, i) => `${'Pläase ✓ the 🙂 brief '.repeat(125)}line ${String(i)}`),
           'that-is-the-whole-brief-✓',
         ].join('\n')
-        expect(Buffer.byteLength(message)).toBeGreaterThan(128 * 1024)
+        expect(Buffer.byteLength(message)).toBeGreaterThan(125 * 1024)
+        expect(promptFits(message)).toBe(true)
         const messageFile = path.join(testEnv.dataDir, 'message.md')
         await fs.writeFile(messageFile, message)
         expect(await mamaAs(sender, 'send', '--prompt-file', messageFile, child.slice(0, 8)))

@@ -63,7 +63,7 @@ import { isWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/stat
 import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#runtime/status/liveness'
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
 import { _resetAcpRegistryForTests } from '#runtime/agents/acp-registry'
-import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
+import { MAX_PROMPT_BYTES, type AgentMode, type AgentTool, type PermissionMode } from '@yaac/shared/types'
 import type { ServerError } from '@yaac/shared/errors'
 import { BUILT_IN_USER_ID } from '#db'
 import { createWorkflow, editWorkflow, resolveWorkflow, setRunSecret } from '#domain/projects'
@@ -283,8 +283,24 @@ describe('prepareRestart', () => {
 
     await restart('wt-spare')
 
-    expect(windowOf(session)).toMatch(new RegExp(`--session-id ${session.id}'$`))
+    // Its agent never launched, so it starts on the message it was opened
+    // with.
+    const opening = `/tmp/.yaac-opening-${session.window}`
+    expect(windowOf(session)).toContain(`--session-id ${session.id} -- "$(cat ${opening}; rm -f ${opening}) "'`)
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-spare'))?.stoppedAt).toBeUndefined()
+  })
+
+  // An older install capped prompts at 200,000 characters. A terminal
+  // session it stored over today's cap cannot be a launch argument, so its
+  // launch is refused with what to do, rather than dying on the argument
+  // and losing the message (docs/legacy-compat-shims.md).
+  it('refuses to launch a terminal session whose stored opening message is over the cap', async () => {
+    await applyWorkspaceEvent({ type: 'workspace-created', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-old', resume: false })
+    await beside('wt-old', { prompt: 'a'.repeat(MAX_PROMPT_BYTES + 1) })
+    await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-old' })
+
+    await expect(restart('wt-old')).rejects.toThrow(/the prompt is over the 130 KB limit.*Shorten it to start this session/)
+    expect(windowsExec()).toBeUndefined()
   })
 
   // A chat conversation that connected but was never sent anything has no

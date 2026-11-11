@@ -206,8 +206,8 @@ but --title, --steps and --no-steps):
   --prompt-file <path>
                    read the prompt from this file (relative to the current
                    directory), in place of the "<prompt>" argument. The way to
-                   hand over a long brief: an argument holds at most 128 KiB,
-                   and a prompt can be up to 200,000 characters. A prompt of
+                   hand over a long brief: a prompt can be up to 130 KB, which
+                   one argument barely holds. A prompt of
                    - reads it from stdin instead. An empty or unreadable file
                    is an error.
   --timeout <d>    stop the new workspace this long after it starts, in whole
@@ -374,7 +374,7 @@ icon get saves the picture this project's chip shows in the yaac sidebar
 to a file (- for stdout), as it was uploaded, and says its type.
 icon set makes an image file the picture this project's chip shows in the
 yaac sidebar in place of its initial: a square PNG, JPEG, GIF or WebP of at
-most 150000 bytes (256px is plenty). An SVG is refused; draw it to a PNG
+most 512 KiB (256px is plenty). An SVG is refused; draw it to a PNG
 first. It replaces any icon already set, which is not kept, and everyone
 who views the project sees it. icon remove puts the initial back.
 
@@ -1102,11 +1102,11 @@ EOF
           echo 'usage: yaac-mama icon set <file>' >&2
           exit 2
         fi
-        # The envelope is JSON, so the image goes as base64 in the body,
-        # which holds 200000 characters: 150000 bytes once encoded.
+        # The envelope is JSON, so the image goes as base64 in the body. The
+        # server takes an icon of up to 512 KiB, however it arrives.
         [ -f "$2" ] && [ -r "$2" ] || { echo "yaac-mama: cannot read $2" >&2; exit 2; }
-        [ "$(wc -c < "$2")" -le 150000 ] \
-          || { echo "yaac-mama: $2 is over the 150000 bytes an icon may be; shrink it (256px is plenty)" >&2; exit 2; }
+        [ "$(wc -c < "$2")" -le 524288 ] \
+          || { echo "yaac-mama: $2 is over the 512 KiB an icon may be; shrink it (256px is plenty)" >&2; exit 2; }
         scratch
         base64 < "$2" | tr -d '\n' > "$tmp/icon"
         body_file=$tmp/icon

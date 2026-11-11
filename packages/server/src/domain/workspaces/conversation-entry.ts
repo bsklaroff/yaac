@@ -40,15 +40,15 @@ export function toConversationEntry(l: ConversationLinkRow): ConversationEntry {
  * One session in wire form, for every surface that lists one. It lives in
  * domain, not `#db`, because it joins the stored row with what the runtime
  * observed just now (docs/layered-server.md): its agent's status, by its
- * window, and whether that window's agent has exited. An exited session
- * waits on the user to resume or close it, in a spell that began when its
- * agent was first seen dead. Its title and prompt fall back to its
- * conversation's own.
+ * window, whether that window's agent has exited, and whether it has yet to
+ * start on its opening message. An exited session waits on the user to
+ * resume or close it, in a spell that began when its agent was first seen
+ * dead. Its title and prompt fall back to its conversation's own.
  */
 export function toSessionEntry(
   s: SessionRow,
   links: ConversationLinkRow[],
-  live?: { agents: AgentLiveness[]; windows?: ObservedWindow[] },
+  live?: { agents: AgentLiveness[]; windows?: ObservedWindow[]; opening?: string[] },
 ): SessionEntry {
   const conversation = s.conversationId === undefined
     ? undefined
@@ -80,5 +80,6 @@ export function toSessionEntry(
     ...(agent?.waitingSinceMs !== undefined ? { waitingSinceMs: agent.waitingSinceMs } : {}),
     ...(s.waitingSeenBy.length > 0 ? { waitingSeenBy: s.waitingSeenBy } : {}),
     ...(exited ? { exited: true as const } : {}),
+    ...(!exited && live?.opening?.includes(s.window) === true ? { opening: true as const } : {}),
   }
 }

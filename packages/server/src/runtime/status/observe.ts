@@ -4,6 +4,7 @@ import { classifyWorkspaces, watcherDisplayLiveness } from './classify'
 import {
   liveAgents,
   readAgentStatus,
+  readOpening,
   readWorkspaceStatus,
   readWorkspaceWaitingSince,
   readWorkspaceWindows,
@@ -49,6 +50,9 @@ export interface WorkspaceRuntimeReport {
   agents: AgentLiveness[]
   /** Its tmux windows; absent until the watcher first lists them. */
   windows?: ObservedWindow[]
+  /** The session windows whose agent has not started on its opening
+   *  message yet (`markOpening`). */
+  opening: string[]
   blockedHosts: string[]
   forwardedPorts: PortMapping[]
   unforwardedPorts: number[]
@@ -113,6 +117,7 @@ async function observeRunning(w: RuntimeHandle): Promise<WorkspaceRuntimeReport>
     ...(waitingSinceMs !== undefined ? { waitingSinceMs } : {}),
     agents: agentLiveness(w.projectId, w.workspaceId),
     ...(windows !== undefined ? { windows } : {}),
+    opening: readOpening(w.projectId, w.workspaceId),
     blockedHosts: await driver.blockedHosts(w.workspaceId),
     forwardedPorts: await driver.forwardedPorts(w.workspaceId),
     unforwardedPorts: await driver.unforwardedPorts(w.workspaceId),
@@ -127,6 +132,7 @@ function emptyReport(w: RuntimeHandle, phase: 'running' | 'terminating'): Worksp
     createdAtMs: w.createdAtMs,
     status: 'running',
     agents: [],
+    opening: [],
     blockedHosts: [],
     forwardedPorts: [],
     unforwardedPorts: [],

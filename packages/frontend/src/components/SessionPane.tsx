@@ -25,11 +25,14 @@ export function sessionPtyTarget(session: Pick<SessionEntry, 'window'>): string 
  * One session's pane (docs/sessions.md), in its mode's renderer: a chat for
  * `acp`, the agent's terminal for `tui`. An `acp` session whose agent has
  * not named a conversation yet is drawn starting, with its opening message,
- * which its chat then keeps showing until the agent echoes it. One whose
- * agent exited keeps what it showed, under a bar that resumes or closes it
- * and, for `acp`, switches to the agent's log; the chat stays mounted under
- * the log, since re-attaching is slow on a bad link. A resume goes back to
- * the chat.
+ * which its chat then keeps showing until the agent echoes it. A `tui`
+ * session whose agent has not started on its opening message (`opening`)
+ * is drawn starting the same way, over its terminal, which attaches
+ * meanwhile and takes focus once shown, so no stray key reaches the agent
+ * as it starts. One whose agent exited keeps what it showed, under a bar
+ * that resumes or closes it and, for `acp`, switches to the agent's log;
+ * the chat stays mounted under the log, since re-attaching is slow on a bad
+ * link. A resume goes back to the chat.
  */
 export function SessionPane({ workspace, session, paneTarget, visible, focused, focusKey, nonce }: {
   workspace: WorkspaceListEntry
@@ -51,12 +54,14 @@ export function SessionPane({ workspace, session, paneTarget, visible, focused, 
   if (session.mode === 'acp' && session.conversationId === undefined && conversations.length === 0) {
     markDrawnStarting(session.sessionId)
   }
+  const tuiStarting = session.mode === 'tui' && session.opening === true
   const opening = useOpening(
     session.sessionId,
-    session.mode === 'acp' && conversations.length <= 1 && wasDrawnStarting(session.sessionId)
+    tuiStarting || (session.mode === 'acp' && conversations.length <= 1 && wasDrawnStarting(session.sessionId))
       ? session.prompt : undefined,
     CONVERSATION_PROMPT_PREVIEW_LENGTH,
   )
+  const column = useChatColumn()
   const onLog = view === 'log'
   if (onLog && session.exited !== true) setView('chat')
   const body = session.mode === 'tui' ? (
@@ -69,7 +74,7 @@ export function SessionPane({ workspace, session, paneTarget, visible, focused, 
           workspaceId={workspaceId}
           target={sessionPtyTarget(session)}
           visible={visible}
-          {...(focusKey !== undefined ? { focusKey } : {})}
+          {...(focusKey !== undefined && !tuiStarting ? { focusKey } : {})}
         />
       </ErrorBoundary>
       <TuiTranscriptSearch
@@ -79,6 +84,13 @@ export function SessionPane({ workspace, session, paneTarget, visible, focused, 
         visible={visible}
         focused={focused}
       />
+      {tuiStarting && (
+        <div className="absolute inset-0 overflow-y-auto bg-bg px-4 py-4">
+          <div className={column}>
+            <Launching {...opening} caption={`Starting ${TOOL_LABELS[session.tool]}…`} />
+          </div>
+        </div>
+      )}
     </div>
   ) : (
     <div className="relative h-full w-full">

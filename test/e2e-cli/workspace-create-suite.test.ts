@@ -21,7 +21,7 @@ import { requirePodman, execInJob, cleanupWorkspaceJobs } from '#support/cluster
 import { k8sNamespace, readObject } from '@yaac/server/drivers/k8s/substrate/api'
 import { nodeLocalNodePath } from '@yaac/server/drivers/k8s/substrate/mount-sources'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
-import { AGENT_CLIS } from '@yaac/shared/types'
+import { AGENT_CLIS, promptFits } from '@yaac/shared/types'
 import type { ProjectConfig, ProjectSummary, ResourceReport, SessionEntry } from '@yaac/shared/types'
 import { KEEPER_WINDOW } from '@yaac/server/drivers/contract'
 import {
@@ -2075,8 +2075,8 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
     afterAll(() => stopWorkspace(workspaceId))
 
-    it('types the prompt into the agent pane and submits it, no attach needed', async () => {
-      // The server pastes and submits the prompt (buildPromptPasteBgCmd); the
+    it('launches the agent with the prompt, which it submits, no attach needed', async () => {
+      // The agent takes the prompt as a launch argument (`openingArg`); the
       // mock's reply in the pane shows it was sent.
       await vi.waitFor(async () => {
         const { stdout: pane } = await execInJob(jobName, [
@@ -2159,12 +2159,12 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     }, 240_000)
   })
   /**
-   * A prompt past what one argument holds (Linux: 128 KiB), multibyte, from
-   * a file and from stdin. It reaches the agent whole: in the pod over the
-   * exec stream's stdin, and on to the model.
+   * A prompt near the cap, multibyte, from a file and from stdin. It reaches
+   * the agent whole: into the pod over the exec stream's stdin, to the agent
+   * as its launch argument, and on to the model.
    */
   describe('long prompts (--prompt-file, --prompt -)', () => {
-    const brief = (tag: string): string => `${tag}\n${'Pläase ✓ the 🙂 "brief" line\n'.repeat(5_000)}${tag} ends`
+    const brief = (tag: string): string => `${tag}\n${'Pläase ✓ the 🙂 "brief" line\n'.repeat(3_800)}${tag} ends`
     const workspaceIds: string[] = []
     const outputs: Record<string, string> = {}
 
@@ -2172,7 +2172,8 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       const dir = path.join(testEnv.dataDir, `brief-${randomUUID().slice(0, 8)}`)
       await fs.mkdir(dir, { recursive: true })
       await fs.writeFile(path.join(dir, 'brief.md'), brief('from-file'))
-      expect(Buffer.byteLength(brief('from-file'))).toBeGreaterThan(128 * 1024)
+      expect(Buffer.byteLength(brief('from-file'))).toBeGreaterThan(120 * 1024)
+      expect(promptFits(brief('from-stdin'))).toBe(true)
       await Promise.all(['brief-file', 'brief-stdin'].map(async (name) => skipClaudeOnboarding(await setupProject(name))))
       // Relative to the CLI's working directory.
       const runs = await Promise.all([

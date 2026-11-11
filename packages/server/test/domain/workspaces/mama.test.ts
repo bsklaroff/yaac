@@ -59,9 +59,9 @@ import {
   type SessionRow,
 } from '#db'
 import { formatInZone } from '@yaac/shared/schedule'
-import type { PermissionMode } from '@yaac/shared/types'
+import { MAX_PROMPT_BYTES, PROMPT_TOO_LONG, type PermissionMode } from '@yaac/shared/types'
 import { cloneRepo } from '#domain/git'
-import { createWorkflow, listProjects, readProjectIcon } from '#domain/projects'
+import { MAX_ICON_BYTES, createWorkflow, listProjects, readProjectIcon } from '#domain/projects'
 import { _resetWorkspaceStatusStoreForTests, setLiveAgents } from '#runtime/status/status-store'
 import { WorkspaceExecError, type RuntimeHandle, type WorkspaceDriver } from '#drivers/contract'
 import { git } from '@yaac/test-utils/git'
@@ -252,6 +252,14 @@ describe('runMamaCommand', () => {
     expect((await run('create', P, {
       tool: 'claude', model: 'opus', 'permission-mode': 'plan', 'ui-mode': 'acp', branch: 'b', group: 'g', title: 't',
     })).ok).toBe(true)
+  })
+
+  // Counted in UTF-8 bytes, as the launch argument a prompt may become is.
+  it('holds every body but an icon to the prompt cap', async () => {
+    for (const body of ['a'.repeat(MAX_PROMPT_BYTES + 1), 'é'.repeat(MAX_PROMPT_BYTES / 2 + 1)]) {
+      expect(await run('queue', body)).toEqual({ ok: false, error: PROMPT_TOO_LONG })
+      expect(await run('rename', body)).toEqual({ ok: false, error: PROMPT_TOO_LONG })
+    }
   })
 
   it('answers rather than throws when a command fails', async () => {
@@ -1323,6 +1331,12 @@ describe('runMamaCommand', () => {
       const svg = await run('icon-set', Buffer.from('<svg/>').toString('base64'))
       expect(svg).toEqual({ ok: false, error: 'the icon must be a PNG, JPEG, GIF or WebP image' })
       expect((await readProjectIcon(PROJ)).bytes).toEqual(PNG)
+
+      // Bounded as an icon, though its base64 runs far past the prompt cap.
+      const largest = Buffer.concat([PNG, Buffer.alloc(MAX_ICON_BYTES - PNG.length)])
+      expect(await output('icon-set', largest.toString('base64'))).toContain('Set the project\'s icon')
+      expect(await run('icon-set', Buffer.concat([largest, Buffer.alloc(1)]).toString('base64')))
+        .toEqual({ ok: false, error: 'the icon is over the 512 KB limit' })
 
       expect(await output('icon-remove')).toContain('Removed the project\'s icon')
       expect(await iconHash()).toBeUndefined()

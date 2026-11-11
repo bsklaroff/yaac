@@ -186,7 +186,7 @@ needs a cluster.
 yaac-mama create --tool <tool> --model <model> --group "PR <n>" "<prompt>"
 ```
 
-One quoted argument, max 200,000 characters (a long one goes in a file,
+One quoted argument, max 130 KB (a long one goes in a file,
 passed with `--prompt-file`). It opens by handing the whole
 procedure to the skill, whatever the PR:
 

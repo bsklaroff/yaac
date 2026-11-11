@@ -94,6 +94,51 @@ export interface AgentCmdSpec {
   /** codex only — the workspace to run it in and launch it trusting
    *  (`codexLaunchConfig`). */
   paths: Pick<WorkspacePaths, 'workspaceDir'>
+  /** The file holding the opening message a fresh agent is launched with
+   *  (`openingFile`). */
+  opening?: string
+}
+
+/**
+ * Where a session's opening message waits for its agent's launch, which
+ * reads it as an argument (`openingArg`) and deletes it. Written over exec
+ * stdin (`buildOpeningWrite`) rather than embedded in the launch command,
+ * since tmux caps the commands it is sent far below the prompt cap.
+ */
+export function openingFile(paths: Pick<WorkspacePaths, 'scratchDir'>, window: string): string {
+  return `${paths.scratchDir}/.yaac-opening-${window}`
+}
+
+/**
+ * In-workspace command that leaves a session's opening message for its
+ * agent's launch (`openingFile`). A message is never empty, so an empty file
+ * means a pod whose streamd hands the command no stdin, which is refused
+ * rather than launching the agent without it (docs/legacy-compat-shims.md).
+ */
+export function buildOpeningWrite(paths: WorkspacePaths, window: string, prompt: string): StdinScript {
+  const file = openingFile(paths, window)
+  return {
+    cmd: `cat > ${file} && [ -s ${file} ] || { echo "the opening message did not arrive on stdin" >&2; exit 2; }`,
+    stdin: prompt,
+  }
+}
+
+/**
+ * The opening message as a launch command's prompt argument, read from its
+ * file. Every tool takes it as a message it submits once its TUI is up, but
+ * claude runs a subcommand for a one-word prompt naming one (`update`), even
+ * after `--`, and pi and omp attach a file for a prompt starting with `@`
+ * and run a subcommand for one naming one. So claude's gets a trailing
+ * space and pi's and omp's a leading one, which each trims. codex's follows
+ * `--` and opencode's is glued to its flag, so neither reads one starting
+ * with `-` as a flag. What this adds, at most `--prompt=`, fits in the room
+ * `MAX_PROMPT_BYTES` leaves under the 128 KiB one argument holds.
+ */
+function openingArg(tool: AgentTool, file: string): string {
+  const text = `$(cat ${file}; rm -f ${file})`
+  if (tool === 'opencode') return `"--prompt=${text}"`
+  if (tool === 'codex') return `-- "${text}"`
+  return tool === 'claude' ? `-- "${text} "` : `-- " ${text}"`
 }
 
 /**
@@ -277,6 +322,7 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
       posture,
       resume ? `resume ${workspaceId}` : '',
       model ? `--model ${model}` : '',
+      spec.opening !== undefined ? openingArg(tool, spec.opening) : '',
     ].filter(Boolean).join(' ')
   }
   if (tool === 'pi') {
@@ -288,26 +334,16 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // error. `--session-id` creates or resumes the session by id, so resume
     // needs no branch. `--tui-mode fullscreen` because its regular mode
     // leaves the mouse to the terminal, so a tool call cannot be clicked open
-    // there (docs/terminal-mirror.md).
+    // there (docs/terminal-mirror.md); it also hides the warning a fresh
+    // `--session-id` prints before the TUI starts. stdout and stdin stay the
+    // terminal: on anything else pi takes its opening message as a one-shot
+    // run and exits.
     const piModel = model ?? piProviderInfo(piProvider ?? PI_DEFAULT_PROVIDER).defaultModel
     // Guard against a provider with no default model.
     const modelFlag = piModel ? ` --model ${piModel}` : ''
     const thinkingFlag = effort !== undefined ? ` --thinking ${effort}` : ''
-    const pi = `pi --approve --tui-mode fullscreen${modelFlag}${thinkingFlag} --session-id ${workspaceId}`
-    // On a fresh run pi warns on stderr that no session with this id exists
-    // and it is creating one. The id is chosen by yaac on purpose (pi embeds
-    // it in its JSONL filename; see transcripts.ts), so this always fires
-    // and would linger at the top of the pane.
-    //
-    // Filter stderr through sed to delete only the first such line. The
-    // regex allows leading SGR color codes (pi colors it because stdout is a
-    // TTY) and requires the full message tail, so real errors pass through.
-    // `sed -u` keeps other lines unbuffered. Only stderr goes through the
-    // pipe (fd 3 carries the terminal to pi's stdout), in POSIX sh, since
-    // containerless runs launches under /bin/sh. The string has no single
-    // quotes so it survives the `respawn-window '<cmd>'` wrapper.
-    const warn = 'Warning: No project session found with id .*creating a new session with that id\\.'
-    return `{ ${pi} 2>&1 1>&3 3>&- | sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*${warn}/{//d}" >&2 3>&-; } 3>&1`
+    const openingFlag = spec.opening !== undefined ? ` ${openingArg(tool, spec.opening)}` : ''
+    return `exec pi --approve --tui-mode fullscreen${modelFlag}${thinkingFlag} --session-id ${workspaceId}${openingFlag}`
   }
   if (tool === 'omp') {
     // omp takes no conversation id for a new conversation (it names its
@@ -318,6 +354,7 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
       'exec omp',
       ...ompLaunchArgs(mode, model, effort),
       resume ? `--resume ${workspaceId}` : '',
+      spec.opening !== undefined ? openingArg(tool, spec.opening) : '',
     ].filter(Boolean).join(' ')
   }
   if (tool === 'opencode') {
@@ -330,6 +367,7 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
       envJsonAssignment('OPENCODE_CLI_CONFIG_CONTENT', { keybinds: OPENCODE_TUI_KEYBINDS }),
       'exec opencode --standalone',
       resume ? `--session ${workspaceId}` : '',
+      spec.opening !== undefined ? openingArg(tool, spec.opening) : '',
     ].filter(Boolean).join(' ')
   }
   // claude takes every posture on `--permission-mode`
@@ -367,53 +405,14 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
       ? `--settings ${doubleQuoted(JSON.stringify({ idleCompaction: spec.agentOptions.idleCompaction }))}`
       : '',
     resume ? `--resume ${workspaceId}` : `--session-id ${workspaceId}`,
+    spec.opening !== undefined ? openingArg(tool, spec.opening) : '',
   ].filter(Boolean).join(' ')
 }
 
 /**
- * Shell script that pastes an initial prompt into a fresh agent's
- * TUI and submits it. A prompt pasted while the TUI is starting is silently
- * lost (seen with claude in the create e2e suite), and no user is attached
- * to resend it, so:
- *
- *  1. Wait for `#{alternate_on}`, the earliest tool-agnostic sign the TUI
- *     accepts input; give up waiting after 60s and paste anyway, since
- *     claude's startup dialogs never set it.
- *  2. Paste, then check `capture-pane` until the paste shows, re-pasting
- *     if it doesn't (`pasteParts`). If it never shows, stop without pressing
- *     Enter: the pane is showing something other than an input box, such as
- *     claude's folder-trust dialog.
- *  3. Send Enter separately, then again after a moment, since a TUI
- *     finishing startup can drop the first one; a repeat on an empty input
- *     does nothing.
- *
- * Exits 1 when the paste never showed. `paneTarget` is any tmux target: a
- * window (`yaac:claude`) or a pane id (`%3`).
- */
-function promptPasteScript(
-  paneTarget: string,
-  prompt: string,
-  paths: WorkspacePaths,
-): string {
-  const TMUX = tmuxCmd(paths)
-  const target = `-t ${paneTarget}`
-  const { paste, copies } = pasteParts(paneTarget, prompt, TMUX)
-  return `i=0; while [ $i -lt 120 ]; do [ "$(${TMUX} display -p ${target} "#{alternate_on}")" = "1" ] && break; i=$((i+1)); sleep 0.5; done; `
-    + 'sleep 1; '
-    + (copies === undefined
-      ? `${paste}; `
-      : `${copies}before=$(copies); `
-        + 'i=0; while [ "$(copies)" -le "$before" ]; do '
-        + '[ $i -ge 10 ] && { echo "prompt never appeared in the pane; not submitting" >&2; exit 1; }; '
-        + `${paste}; i=$((i+1)); sleep 2; done; `)
-    + `${TMUX} send-keys ${target} Enter; sleep 2; ${TMUX} send-keys ${target} Enter`
-}
-
-/**
- * The shell pieces both pastes share: `paste`, which pastes the prompt, and
- * `copies`, a function counting how many copies of it the pane shows (absent
- * for a whitespace-only prompt, which has nothing to match and is pasted
- * blind).
+ * The shell pieces a message's paste is made of: `paste`, which pastes it,
+ * and `copies`, a function counting how many copies of it the pane shows
+ * (absent for a whitespace-only message, which has nothing to match).
  *
  * A paste counts as shown when the pane holds MORE copies of the prompt's
  * first or last 20 visible characters (an input box scrolls to its last
@@ -737,40 +736,13 @@ export const OPENCODE_TUI_KEYBINDS = { 'prompt.stash': 'f9', 'prompt.stash.pop':
 
 /**
  * A command run in a workspace with a script on its stdin. A script holding
- * a prompt (up to `MAX_PROMPT_LENGTH`) can pass the 128 KiB a single
+ * a prompt (up to `MAX_PROMPT_BYTES`) can pass the 128 KiB a single
  * argument may hold on Linux, and the command line is one argument of
  * `sh -c`. Pass `stdin` to `WorkspaceDriver.exec`.
  */
 export interface StdinScript {
   cmd: string
   stdin: string
-}
-
-/**
- * In-workspace command that runs `promptPasteScript` detached: write the
- * script from stdin to a workspace-local file and setsid it, so the exec
- * returns at once instead of waiting through the script's polling (5s+ on
- * a fresh agent). The script survives the exec stream closing and logs to
- * `yaac-prompt-<target>.log` in the scratch dir. macOS has no setsid, so a
- * containerless host there detaches it with nohup.
- */
-export function buildPromptPasteBgCmd(
-  target: string,
-  prompt: string,
-  paths: WorkspacePaths,
-): StdinScript {
-  // Per target, since two sessions can be handed prompts at once.
-  const name = target.replace(/[^\w-]/g, '_')
-  const script = `${paths.scratchDir}/.yaac-prompt-${name}.sh`
-  const log = `${paths.scratchDir}/yaac-prompt-${name}.log`
-  return {
-    // `cat` stays out of the backgrounded list, whose stdin sh replaces with
-    // /dev/null.
-    cmd: `cat > ${script} || exit 1; `
-      + `{ if command -v setsid >/dev/null; then setsid sh ${script}; else nohup sh ${script}; fi; }`
-      + ` >${log} 2>&1 </dev/null &`,
-    stdin: promptPasteScript(target, prompt, paths),
-  }
 }
 
 /**

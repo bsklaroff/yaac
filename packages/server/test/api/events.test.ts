@@ -34,7 +34,7 @@ import { createWorkspaceGroup } from '#db'
 import { insertQueuedWorkspace } from '#db/queued-workspace-store'
 import { insertDraftWorkspace } from '#db/draft-workspace-store'
 import {
-  CONVERSATION_PROMPT_PREVIEW_LENGTH, MAX_PROMPT_LENGTH, PROMPT_PREVIEW_LENGTH, type ServerSnapshot,
+  CONVERSATION_PROMPT_PREVIEW_LENGTH, MAX_PROMPT_BYTES, PROMPT_PREVIEW_LENGTH, type ServerSnapshot,
 } from '@yaac/shared/types'
 
 function emptySnapshot(): ServerSnapshot {
@@ -344,7 +344,7 @@ describe('buildSnapshot prompts', () => {
 
   it('carries only a preview of every prompt, never cutting a character in half', async () => {
     // An emoji straddles the cut, so a plain slice would end in half of it.
-    const cutAt = (n: number): string => `${'x'.repeat(n - 1)}🙂${'y'.repeat(MAX_PROMPT_LENGTH - n - 1)}`
+    const cutAt = (n: number): string => `${'x'.repeat(n - 1)}🙂${'y'.repeat(MAX_PROMPT_BYTES - n - 4)}`
     const long = cutAt(PROMPT_PREVIEW_LENGTH)
     const preview = 'x'.repeat(PROMPT_PREVIEW_LENGTH - 1)
     const conversationPrompt = cutAt(CONVERSATION_PROMPT_PREVIEW_LENGTH)

@@ -333,24 +333,29 @@ started under an older yaac keeps running that opencode until it restarts.
   restarted or been deleted since. A stopped workspace's view reads its last
   life's record directly, and it may never be restarted.
 
-## A `yaac-mama send` script that arrives empty
+## A `yaac-mama send` script or opening message that arrives empty
 
 A `yaac-mama send` to a `tui` agent runs a delivery script the server writes
 to the exec's stdin (`buildMessageCmd` in
-`packages/server/src/runtime/agents/agent-command.ts`). Under k8s, a pod's
-streamd only passes stdin on since exec learned its `stdin` byte count
+`packages/server/src/runtime/agents/agent-command.ts`), and a `tui`
+session's opening message is written to a file the same way before its
+agent is launched with it (`buildOpeningWrite`). Under k8s, a pod's streamd
+only passes stdin on since exec learned its `stdin` byte count
 (docs/stream-relay.md). An older streamd, baked into the base image of a pod
 started before then, ignores the count and runs the command with an empty
-stdin, so the command checks that a script arrived and exits 2 if none did.
+stdin, so each command checks that something arrived and exits 2 if not.
 
-Only `send` needs it. A create's initial prompt never reaches an older pod:
-it gets a fresh pod, or a spare, and a spare warmed before the server
-restarted is stale and never claimed.
+Only `send` and a session opened with a message in a running workspace
+need it. A create's opening message never reaches an older pod: it gets a
+fresh pod, or a spare, and a spare warmed before the server restarted is
+stale and never claimed.
 
-- **What it reads.** The script the command read from stdin.
+- **What it reads.** The script, or the message, the command read from
+  stdin.
 - **What breaks silently if it goes too early.** A `send` to a workspace
   still running a pod started before the upgrade runs an empty script and
-  exits 0, so the sender is told "Sent to …" and the agent gets nothing.
+  exits 0, so the sender is told "Sent to …" and the agent gets nothing; a
+  session opened there launches its agent without its message.
 - **When it is safe to remove.** Once no running workspace pod predates the
   streamd that reads exec stdin. A restart moves a workspace onto the
   current base image, so it suffices that every workspace running at the
@@ -576,3 +581,27 @@ pieces cover it, and they go together:
   has an inline `endpoint` without an `endpointId`. Remove the importer
   first or together with narrowing the schema's `models` field, never the
   schema first, since the importer cannot read what the schema refuses.
+
+## An opening message stored over the 130 KB prompt cap
+
+A `tui` agent takes its opening message as one command-line argument, so
+prompts are capped at what one holds (`MAX_PROMPT_BYTES`, 130,000 UTF-8
+bytes). Every write checks that, but an older install capped prompts at
+200,000 characters, and what it stored can still be launched: a queued
+entry, a routine, or a session a restart launches for the first time.
+`sessionLaunches` in `packages/server/src/domain/workspaces/session-launch.ts`
+refuses a `tui` opening message over the cap with a message saying to
+shorten it, so the create or queued run fails visibly. An `acp` one goes
+over the protocol whole, so it needs no check.
+
+- **What it reads.** A session's stored opening message as it launches,
+  which comes from a `sessions`, `queued_workspaces`, `routines` or
+  `draft_workspaces` row's `prompt`.
+- **What breaks silently if it goes too early.** The agent's launch fails
+  on a too-long argument (`E2BIG`): its pane dies at once, the session
+  lists as exited, and the message is gone, since the launch has already
+  deleted the file it was read from.
+- **When it is safe to remove.** Once no stored prompt is over the cap:
+  `octet_length` of `sessions.first_prompt` (for sessions not yet
+  launched), `queued_workspaces.prompt`, `routines.prompt` and
+  `draft_workspaces.prompt` is at most 130000 in every install's database.

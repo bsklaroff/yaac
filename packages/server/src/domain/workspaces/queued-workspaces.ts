@@ -67,8 +67,8 @@ import { normalizeTitle } from '@yaac/shared/titles'
 import { nextCronRuns, resolveStartAt } from '@yaac/shared/schedule'
 import {
   agentPermissionMode,
-  MAX_PROMPT_LENGTH,
   PROMPT_TOO_LONG,
+  promptFits,
   launchableModel,
   toolSupportsPermissionMode,
   type AgentMode,
@@ -554,7 +554,7 @@ function checkPrompt(prompt: string | undefined, nonInteractive: boolean | undef
   if (prompt === undefined || prompt.trim() === '') {
     throw new ServerError('VALIDATION', 'a queued workspace needs a prompt — nobody is watching it start')
   }
-  if (prompt.length > MAX_PROMPT_LENGTH) {
+  if (!promptFits(prompt)) {
     throw new ServerError('VALIDATION', PROMPT_TOO_LONG)
   }
 }

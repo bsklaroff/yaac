@@ -128,7 +128,7 @@ async function saveToolAuth(tool: AgentTool, apiKey: string, provider?: string):
 describe('prepareStart', () => {
   let tmpDir: string
   let specs: WorkspaceSpec[]
-  let execs: Array<{ jobName: string; cmd: string }>
+  let execs: Array<{ jobName: string; cmd: string; stdin?: string }>
   /** Each teardown's `unitOnly`: true keeps the prepared substrate. */
   let destroys: boolean[]
   let deregistered: string[]
@@ -164,8 +164,8 @@ describe('prepareStart', () => {
         const u = units.find((x) => x.workspaceId === id)
         return Promise.resolve(u && { workspaceId: u.workspaceId, projectId: u.projectId, unitName: u.jobName })
       },
-      exec: (jobName, cmd) => {
-        execs.push({ jobName, cmd })
+      exec: (jobName, cmd, opts) => {
+        execs.push({ jobName, cmd, ...(opts?.stdin !== undefined ? { stdin: opts.stdin } : {}) })
         // An acp agent's conversation is up as soon as a create looks for it,
         // so the create's watch on its window settles.
         const window = /display-message -p -t yaac:(\S+) '#\{pane_pid\}'/.exec(cmd)?.[1]
@@ -467,7 +467,6 @@ describe('prepareStart', () => {
       expect((await listWorkspaceSessions(workspaceId))[0]?.launchedAt).toBeInstanceOf(Date)
       expect(progress).toEqual(expect.arrayContaining([
         'image ready', 'substrate ready', 'launching', 'Creating workspace from dev...', 'Starting Codex...',
-        'Sending initial prompt...',
       ]))
       // No spare was looked for.
       expect(claims).toEqual([])
@@ -522,7 +521,15 @@ describe('prepareStart', () => {
         `YAAC_WORKSPACE_ID=${workspaceId}`, 'YAAC_GIT_NAME=Ada', 'YAAC_GIT_EMAIL=ada@example.com',
         `YAAC_STATUS_RIGHT= ${workspaceId.slice(0, 8)} `,
       ]))
-      expect(sessionExec()).toMatch(/ -n codex-[0-9a-f]{8} [^']*'[^']*exec codex .* --yolo --model gpt-6-sol'/)
+      // The opening message is left for the agent before its window opens,
+      // and the agent is launched with it.
+      const opening = `/tmp/.yaac-opening-${session.window}`
+      const write = execs.findIndex((e) => e.cmd.startsWith(`cat > ${opening} `))
+      expect(execs[write]?.stdin).toBe('ship it')
+      expect(write).toBeLessThan(execs.findIndex((e) => SESSION_WINDOW.test(e.cmd)))
+      expect(sessionExec()).toContain(`'export YAAC_SESSION_ID=${session.id}; `)
+      expect(sessionExec()).toContain(' exec codex -C ')
+      expect(sessionExec()).toContain(` --yolo --model gpt-6-sol -- "$(cat ${opening}; rm -f ${opening})"'`)
       // The workspace runs as the server's uid, so a chown would only corrupt
       // host-side ownership.
       expect(cmds().some((c) => c.includes('chown') || c.startsWith('sudo '))).toBe(false)
@@ -779,31 +786,18 @@ describe('prepareStart', () => {
     })
 
     // The window probe is not awaited, so a dead agent's verdict can land
-    // after the create resolved. It waits for the create's run and then
-    // files a failed row, which leaves the workspace to the reaper.
+    // before or after the create resolved. It waits for the create's run,
+    // whose success would erase it, and then files a failed row, which
+    // leaves the workspace to the reaper.
     it('reports an agent that died right after launch as a failed row, once the create has settled', async () => {
-      // The create is held at its prompt delivery, after the probe fired.
-      let probed = false
-      let release!: () => void
-      const held = new Promise<void>((resolve) => { release = resolve })
       installDriver({
-        exec: async (_jobName, cmd) => {
-          if (cmd.includes('list-windows -t =yaac')) {
-            probed = true
-            throw new WorkspaceExecError('probe', 1, '', 'codex')
-          }
-          if (cmd.includes('.yaac-prompt-')) await held
-          return { stdout: '', stderr: '' }
+        exec: (_jobName, cmd) => {
+          if (cmd.includes('list-windows -t =yaac')) return Promise.reject(new WorkspaceExecError('probe', 1, '', 'codex'))
+          return Promise.resolve({ stdout: '', stderr: '' })
         },
       })
 
-      const run = start({ workspaceId: 'wt-dead', tool: 'codex', prompt: 'go' })
-      // Filed now, the verdict would be erased by the create's success.
-      await vi.waitFor(() => { expect(probed).toBe(true) }, { timeout: 30_000 })
-      await new Promise((r) => setTimeout(r, 50))
-      expect(listProvisioning()[0]?.error).toBeUndefined()
-      release()
-      await run
+      await start({ workspaceId: 'wt-dead', tool: 'codex', prompt: 'go' })
 
       await vi.waitFor(() => {
         expect(listProvisioning()).toMatchObject([{ workspaceId: 'wt-dead', kind: 'create' }])
@@ -1219,15 +1213,15 @@ describe('prepareStart', () => {
       })])
       expect(ranIn(spare)).toContain("git config --global user.name 'Ada' && git config --global user.email 'ada@example.com'")
       // Recorded as a cold create records it: filed, titled, its session
-      // holding the prompt, which is pasted into the agent of the window it
-      // opens.
+      // holding the prompt, which the agent of the window it opens is
+      // launched with.
       expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toMatchObject({
         groupId: group.groupId, title: 'Bug fix', baseBranch: 'main',
       })
       expect(session).toMatchObject({ tool: 'claude', mode: 'tui', permissionMode: 'bypass', firstPrompt: 'fix the bug' })
       expect(session.launchedAt).toBeInstanceOf(Date)
       expect(ranIn(spare)).toContainEqual(expect.stringContaining(`new-window -d -t yaac -n ${session.window} `))
-      expect(ranIn(spare).some((c) => c.includes(`.yaac-prompt-_yaac__${session.window}.sh`))).toBe(true)
+      expect(ranIn(spare).some((c) => c.startsWith(`cat > /tmp/.yaac-opening-${session.window} `))).toBe(true)
       expect(listProvisioning()).toEqual([])
     })
 

@@ -6,6 +6,7 @@ import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-dr
 // observation.
 import { markWorkspaceTerminating, isWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import {
+  markOpening,
   setAgentStatus,
   setLiveAgents,
   setWorkspaceStreamHealth,
@@ -198,6 +199,37 @@ describe('listActiveWorkspaces', () => {
     expect(await list()).toContainEqual(
       ['held', ['acp'], 'fix the lexer', 'waiting', attached, true, [['waiting', attached]]],
     )
+  })
+
+  // A terminal session launched with its opening message shows the message
+  // until its agent starts on it, and lists as working meanwhile, since the
+  // waiting its booting TUI reads as is no reply. An exited one shows its
+  // pane however it got there.
+  it('lists a terminal session as opening and working until its agent starts on its message', async () => {
+    await recordTestProject(DEMO_PROJECT_ID)
+    for (const workspaceId of ['opening', 'died']) await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId })
+    const session = await insertSession(DEMO_PROJECT_ID, 'opening', { tool: 'claude', mode: 'tui', permissionMode: 'bypass', prompt: 'port the parser' })
+    const died = await insertSession(DEMO_PROJECT_ID, 'died', { tool: 'codex', mode: 'tui', permissionMode: 'bypass', prompt: 'go' })
+    running([live('opening'), live('died')])
+    markOpening(DEMO_PROJECT_ID, 'opening', session.window)
+    markOpening(DEMO_PROJECT_ID, 'died', died.window)
+    setWorkspaceWindows(DEMO_PROJECT_ID, 'died', [{ id: '@1', name: died.window, dead: true, exitStatus: 1 }])
+    setLiveAgents(DEMO_PROJECT_ID, 'opening', [{ handle: session.window, tool: 'claude' }])
+    setAgentStatus(DEMO_PROJECT_ID, 'opening', session.window, 'waiting')
+    const list = async (): Promise<unknown[][]> => {
+      _clearListActiveInflightForTests()
+      return (await listActiveWorkspaces(DEMO_PROJECT_ID)).workspaces.map((w) => [
+        w.workspaceId, w.status, w.sessions.map((s) => [s.opening, s.status, s.prompt]),
+      ])
+    }
+    expect(await list()).toEqual(expect.arrayContaining([
+      ['opening', 'running', [[true, 'running', 'port the parser']]],
+      ['died', 'waiting', [[undefined, 'waiting', 'go']]],
+    ]))
+
+    setAgentStatus(DEMO_PROJECT_ID, 'opening', session.window, 'running')
+    setAgentStatus(DEMO_PROJECT_ID, 'opening', session.window, 'waiting')
+    expect(await list()).toContainEqual(['opening', 'waiting', [[undefined, 'waiting', 'port the parser']]])
   })
 
   // Status comes from each session's window. A dead pane is an exited

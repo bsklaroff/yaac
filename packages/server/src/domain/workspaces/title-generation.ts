@@ -34,7 +34,7 @@ import { env } from '@yaac/shared/env'
 const attempted = new Set<string>()
 
 /** A draft's or entry's key: its id and a hash of its prompt, which can run
- *  to `MAX_PROMPT_LENGTH` and would otherwise be held here for good. */
+ *  to `MAX_PROMPT_BYTES` and would otherwise be held here for good. */
 const promptKey = (kind: string, id: string, prompt: string): string =>
   `${kind}:${id}:${createHash('sha256').update(prompt).digest('base64url')}`
 

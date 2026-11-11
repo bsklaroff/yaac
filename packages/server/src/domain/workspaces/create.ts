@@ -82,7 +82,7 @@ import {
   type SessionRow,
   type VolumeLease,
 } from '#db'
-import { deliverTuiPrompt, sessionLaunches, typesOpeningMessage, type SessionLaunch } from './session-launch'
+import { leaveOpenings, sessionLaunches } from './session-launch'
 import { reportAgentLaunchFailure, throwIfProvisionStopped } from './provisioning'
 import { recordTrackedScratchDirs } from './tracked-scratch-dirs'
 import { spareSettings } from './prewarm'
@@ -353,9 +353,9 @@ interface WorkspaceSetupParams {
  * Launch the workspace's runtime and run the in-workspace setup, which opens
  * its sessions' windows. On failure the caller tears down what was launched.
  * Everything here goes through the driver contract. Resolves with the
- * runtime and how each session was launched.
+ * runtime.
  */
-async function launchWithSetup(params: WorkspaceSetupParams): Promise<{ handle: RuntimeHandle; launches: SessionLaunch[] }> {
+async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHandle> {
   const {
     spec, projectId, workspaceId, sessions, life, onLaunched, options, workspace, reusedCheckout, remoteUrl,
   } = params
@@ -442,6 +442,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<{ handle: 
     finishSetupCommand(paths),
   ]
   if (!early) announceAgents()
+  await leaveOpenings({ projectId, workspaceId, jobName }, launches)
   await runtime.exec(jobName, setup.join(' && '))
   await markSessionsLaunched(launches.map((l) => l.session.id))
 
@@ -482,7 +483,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<{ handle: 
     })
   }
 
-  return { handle, launches }
+  return handle
 }
 
 /**
@@ -1422,7 +1423,7 @@ export async function createWorkspace(
 
   // What a teardown must address, once the runtime has launched.
   let target: TeardownTarget | undefined
-  let launched: { handle: RuntimeHandle; launches: SessionLaunch[] }
+  let handle: RuntimeHandle
   let attached: { volumeId: string; lease: VolumeLease } | undefined
   let staged: string | undefined
   try {
@@ -1440,7 +1441,7 @@ export async function createWorkspace(
       ? `the project's environment variable ${name} conflicts with the value yaac sets for it; rename or remove it`
       : `environment variable ${name} is set to two different values`)
     throwIfProvisionStopped(workspaceId)
-    launched = await launchWithSetup({
+    handle = await launchWithSetup({
       spec, projectId, workspaceId, sessions, life,
       onLaunched: (h) => {
         target = { projectId, workspaceId: workspaceId, unitName: h.jobName }
@@ -1501,12 +1502,6 @@ export async function createWorkspace(
     }
     throw err
   }
-
-  // A new `tui` session's opening message is typed in; an `acp` one's is
-  // already held for its conversation.
-  const { handle, launches } = launched
-  if (launches.some(typesOpeningMessage)) emit('Sending initial prompt...', options)
-  await Promise.all(launches.map((l) => deliverTuiPrompt({ projectId, workspaceId, jobName: handle.jobName }, l)))
 
   return {
     workspaceId,

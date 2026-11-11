@@ -732,7 +732,9 @@ until its chat sees the conversation start. Any other
 chat pane, such as one opened on an existing conversation after a reload,
 connects under a bare spinner, because the prompt would flash there until
 the history replaced it. A `tui` create's provisioning pane is the same,
-and the terminal replaces it once the prompt is typed in.
+and its session's pane carries the prompt and spinner on while the session
+lists as `opening` (docs/sessions.md), then shows the terminal, which the
+agent is already working in.
 
 The snapshot cuts prompts short, so these panes show the opening message
 whole (`useOpening`): the text the tab sent, when it created the workspace,

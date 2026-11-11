@@ -182,6 +182,9 @@ export interface AgentLaunchSpec {
    * The adapter boots meanwhile.
    */
   beforeCheckout?: boolean
+  /** `tui` only: launch a fresh agent with the opening message
+   *  `buildOpeningWrite` left. An `acp` one's is sent over the protocol. */
+  opening?: true
 }
 
 /** The driver for a mode, chosen per session. */
@@ -206,18 +209,16 @@ export interface AgentDriver {
     deps?: AgentConnectDeps,
   ): AgentConnection
   /**
-   * Deliver a user message to a live conversation, addressed by handle.
-   * `tui` pastes it into the pane and submits; `acp` sends `session/prompt`.
-   * `running` is for an agent already past its startup, in the conversation
-   * named, whose user may be someone else: `tui` then pastes in the
-   * foreground, refuses while the agent shows a dialog the text could answer
-   * (`agentAtInputTest`), submits with one Enter, and rejects when nothing
-   * was submitted.
+   * Deliver a message from someone other than its user to a running agent,
+   * addressed by handle, in the conversation `running` names. `acp` sends
+   * `session/prompt`; `tui` pastes it into the pane, refuses while the agent
+   * shows a dialog the text could answer (`agentAtInputTest`), submits with
+   * one Enter, and rejects when nothing was submitted.
    */
   deliverPrompt(
     session: DrivenWorkspace,
     handle: string,
     text: string,
-    opts?: { running?: { tool: AgentTool; conversationId: string } },
+    running: { tool: AgentTool; conversationId: string },
   ): Promise<void>
 }

@@ -70,6 +70,21 @@ export interface ObservedWindow extends WorkspaceWindow {
  *  apart from `store`, whose entry creation marks an attach. */
 const windows = new Map<string, ObservedWindow[]>()
 
+/**
+ * Session windows whose agent was launched with its opening message and
+ * has not been seen working on it yet, keyed `<project>/<workspace>/<window>`,
+ * each with the timer that gives up on it. The webapp shows such a
+ * session's message and a spinner rather than its terminal
+ * (`SessionEntry.opening`). The agent starts on the message as soon as its
+ * TUI is up, so any status but `waiting` clears it. The timer covers one
+ * that never does, such as one stopped on a startup dialog, which the user
+ * must then see.
+ */
+const opening = new Map<string, ReturnType<typeof setTimeout>>()
+
+/** How long a session can show as opening. Well above an agent's boot. */
+export const OPENING_TIMEOUT_MS = 20_000
+
 let liveAgentsListener: (() => void) | null = null
 let windowsListener: (() => void) | null = null
 let streamHealthLostListener: (() => void) | null = null
@@ -239,6 +254,7 @@ export function setAgentStatus(
   })
   // A real classification supersedes the boot-time spell.
   delete e.attachedWaitingSinceMs
+  if (status !== 'waiting') clearOpening(`${k}/${handle}`)
   e.streamHealthy = true
   e.updatedAtMs = Date.now()
   if ((prev === undefined || needsUser(prev.status)) && !needsUser(status)) {
@@ -253,6 +269,33 @@ export function setAgentStatus(
   if (entryChanged || !hadEntry || !wasHealthy || after !== before) {
     notifyWorkspaceListChanged()
   }
+}
+
+/**
+ * Mark a session's window as opening (see `opening`), as its agent is
+ * launched with its opening message.
+ */
+export function markOpening(projectId: string, workspaceId: string, handle: string): void {
+  const k = `${key(projectId, workspaceId)}/${handle}`
+  clearTimeout(opening.get(k))
+  const timer = setTimeout(() => {
+    if (opening.delete(k)) notifyWorkspaceListChanged()
+  }, OPENING_TIMEOUT_MS)
+  timer.unref()
+  opening.set(k, timer)
+  notifyWorkspaceListChanged()
+}
+
+/** The workspace's windows marked opening. */
+export function readOpening(projectId: string, workspaceId: string): string[] {
+  const prefix = `${key(projectId, workspaceId)}/`
+  return [...opening.keys()].filter((k) => k.startsWith(prefix)).map((k) => k.slice(prefix.length))
+}
+
+/** Drop a mark, reporting whether there was one. */
+function clearOpening(k: string): boolean {
+  clearTimeout(opening.get(k))
+  return opening.delete(k)
 }
 
 /**
@@ -333,13 +376,14 @@ export function readWorkspaceWindows(projectId: string, workspaceId: string): Ob
 }
 
 /**
- * Drop a workspace's entry and windows, on teardown (`#domain/workspaces` cleanup) and
+ * Drop a workspace's entry, windows and opening marks, on teardown (`#domain/workspaces` cleanup) and
  * when the watcher manager retires a workspace, so a reused id never sees
  * the previous status.
  */
 export function evictWorkspaceStatus(projectId: string, workspaceId: string): void {
   const k = key(projectId, workspaceId)
   const hadWindows = windows.delete(k)
+  for (const handle of readOpening(projectId, workspaceId)) clearOpening(`${k}/${handle}`)
   if (store.delete(k) || hadWindows) notifyWorkspaceListChanged()
 }
 
@@ -347,6 +391,7 @@ export function evictWorkspaceStatus(projectId: string, workspaceId: string): vo
 export function _resetWorkspaceStatusStoreForTests(): void {
   store.clear()
   windows.clear()
+  for (const k of [...opening.keys()]) clearOpening(k)
   liveAgentsListener = null
   windowsListener = null
   streamHealthLostListener = null

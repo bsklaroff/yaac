@@ -166,8 +166,8 @@ pass — the server resolves who is calling and answers for that project only.
   - **`--prompt-file <path>`** in place of `"<prompt>"`: read the prompt from
     a file (relative to your working directory). **Hand over a long brief
     this way** — write it to a file, then `yaac-mama create --prompt-file
-    brief.md` — since one argument holds at most 128 KiB, so
-    `"$(cat brief.md)"` fails for a long one before yaac-mama even runs. A
+    brief.md` — since a prompt can be up to 130 KB, which one argument
+    barely holds, and a file needs no quoting. A
     prompt of `-` reads it from stdin instead. `queue`, `edit-queued` and
     `send` take both forms too. An empty or unreadable file is an error.
   - **`--tool`**: `claude`, `codex`, `opencode`, `pi`, or `omp`. Omitted, it
@@ -382,7 +382,7 @@ pass — the server resolves who is calling and answers for that project only.
 
 - **`icon set <file>` / `icon remove`** — set the picture this project's
   chip shows in the yaac sidebar in place of its initial, or put the initial
-  back. The file must be a PNG, JPEG, GIF or WebP of at most 150000 bytes,
+  back. The file must be a PNG, JPEG, GIF or WebP of at most 512 KiB,
   ideally square and around 256px; an SVG is refused, so draw one to a PNG
   first (with whatever converter the workspace has). It replaces any icon
   already set, which is not kept, so don't overwrite one the user chose
@@ -558,9 +558,9 @@ pass a lower `--permission-mode` rather than retrying the same request.
 
 ## Limits and errors
 
-- Prompt: non-empty, ≤ 200,000 characters, counted as UTF-16 units (an
-  emoji counts as two). Pass a long one with `--prompt-file` (or `-` and
-  stdin) rather than as an argument.
+- Prompt: non-empty, at most 130 KB, counted in UTF-8 bytes (an emoji
+  counts as four). Pass a long one with `--prompt-file` (or `-` and stdin)
+  rather than as an argument.
 - At most 8 requests queued per workspace (and 32 in total), and at most 8
   workspaces you created or restarted provisioning at once — over that is
   refused with an **HTTP 422** saying so; wait and retry.

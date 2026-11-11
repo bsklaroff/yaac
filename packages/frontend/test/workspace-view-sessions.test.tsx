@@ -6,7 +6,9 @@ import type { WorkspaceListEntry } from '@yaac/shared/types'
 // No xterm, no sockets: the terminal, chat and log panes are stubs naming
 // what they were given.
 vi.mock('#components/WorkspaceTerminal', () => ({
-  WorkspaceTerminal: ({ target }: { target: string }) => <div data-testid="terminal">{target}</div>,
+  WorkspaceTerminal: ({ target, focusKey }: { target: string; focusKey?: number }) => (
+    <div data-testid="terminal" data-focus-key={focusKey}>{target}</div>
+  ),
 }))
 vi.mock('#components/WorkspaceChat', () => ({
   WorkspaceChat: ({ conversationId }: { conversationId: string }) => <div data-testid="chat">{conversationId}</div>,
@@ -86,6 +88,23 @@ describe('WorkspaceView sessions', () => {
     expect(screen.getByTestId('terminal').textContent).toBe('session:codex-sb')
     expect(screen.getByRole('button', { name: 'Close session Claude' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Close session Codex' })).toBeTruthy()
+  })
+
+  // Its terminal mounts at once, so it is attached by the time it shows,
+  // but is not focused until then.
+  it('draws a terminal session starting, with its opening message, until its agent starts on it', () => {
+    const starting = sessionEntry({ sessionId: 'sa', mode: 'tui', window: 'claude-sa', prompt: 'port the parser', opening: true })
+    const view = show({ sessions: [starting] })
+    expect(screen.getByText('port the parser')).toBeTruthy()
+    expect(screen.getByText('Starting Claude Code')).toBeTruthy()
+    expect(screen.getByTestId('terminal').textContent).toBe('session:claude-sa')
+    expect(screen.getByTestId('terminal').dataset.focusKey).toBeUndefined()
+
+    const { opening: _, ...started } = starting
+    show({ sessions: [{ ...started, status: 'running' }] }, view)
+    expect(screen.queryByText('port the parser')).toBeNull()
+    expect(screen.queryByText('Starting Claude Code')).toBeNull()
+    expect(screen.getByTestId('terminal').dataset.focusKey).toBeDefined()
   })
 
   it('asks before closing a session, warning about one mid-turn', async () => {
