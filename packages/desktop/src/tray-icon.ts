@@ -29,10 +29,12 @@ const SAMPLES = 4
 /**
  * The left half of logo.svg, in its 540-unit grid: each stroke is a run of
  * line and arc pieces with butt ends, `HALF_WIDTH` either side of the line.
- * The right half mirrors it about x = 269.5. A glyph `SPAN` units across,
+ * The right half mirrors it about x = 269.5, and the two halves sit `SPREAD`
+ * units further apart each than in the logo. A glyph `SPAN` units across,
  * centered on the strokes, fills the tray icon. The strokes are thinner than
- * the logo's 43.75 so each gap between them keeps a clear pixel at 36px;
- * at full width the four stems blur into one block.
+ * the logo's 43.75 and the halves spread so each gap between stems keeps two
+ * clear pixels at 36px; at the logo's proportions the four stems blur into
+ * one block.
  */
 type Piece = { line: [number, number, number, number] } | { arc: [number, number, number, number, number, number, number] }
 const STROKES: Piece[] = [
@@ -45,14 +47,15 @@ const STROKES: Piece[] = [
   { arc: [144.16, 284.35, 38.47, 144.16, 245.875, 182.625, 284.35] },
   { line: [182.625, 284.35, 182.625, 437.5] },
 ]
-const HALF_WIDTH = 16
+const HALF_WIDTH = 14.5
 const MIRROR_X = 269.5
+const SPREAD = 5
 const CENTER_Y = 282.25
 const SPAN = 440
 
 /** Whether a point in unit coordinates (0..1, y down) is on the mark. */
 function inMark(u: number, v: number): boolean {
-  const x = MIRROR_X - Math.abs((u - 0.5) * SPAN)
+  const x = MIRROR_X + SPREAD - Math.abs((u - 0.5) * SPAN)
   const y = CENTER_Y + (v - 0.5) * SPAN
   return STROKES.some((p) => ('line' in p ? onLine(x, y, ...p.line) : onArc(x, y, ...p.arc)))
 }

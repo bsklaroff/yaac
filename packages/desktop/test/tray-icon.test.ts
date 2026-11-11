@@ -19,7 +19,7 @@ describe('buildTrayBitmap', () => {
     expect(alphaAt(b, 25, 26)).toBe(255) // outer right stroke
     expect(alphaAt(b, 15, 33)).toBe(255) // the inner strokes run longer
     expect(alphaAt(b, 10, 33)).toBe(0)
-    for (const x of [13, 17, 18, 22]) expect(alphaAt(b, x, 22)).toBe(0) // between the stems
+    for (const x of [12, 13, 17, 18, 22, 23]) expect(alphaAt(b, x, 22)).toBe(0) // between the stems
     expect(alphaAt(b, 17, 3)).toBe(0) // between the arms
     expect(alphaAt(b, 0, 0)).toBe(0)
     expect(alphaAt(b, 35, 35)).toBe(0)
