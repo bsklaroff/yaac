@@ -1,12 +1,12 @@
 /**
  * A workspace life's start (docs/workspace-steps.md "Lives"): the graph it
- * starts, its record, and the log hooks its windows are opened under. Apart
- * from the step reconcile so a create can start a life without importing
- * what the reconcile drives.
+ * starts and the log hooks its windows are opened under. Apart from the
+ * step reconcile so a create can start a life without importing what the
+ * reconcile drives.
  */
 import fs from 'node:fs/promises'
 import type { WorkspacePaths } from '#drivers/contract'
-import { applyWorkspaceEvent, getWorkflow, type LifeWorkflow, type WorkspaceRow } from '#db'
+import { getWorkflow, type LifeWorkflow, type WorkspaceRow } from '#db'
 import { listInitWorkflows, missingRepos } from '#domain/projects'
 import { openSandboxDir } from '#runtime/agents'
 import { lifeHooksConfig, sourceHooksCommand } from '#runtime/terminals'
@@ -18,7 +18,7 @@ import { findCycle, fullNeed, lifeDirName, stepFullName } from '@yaac/shared/ste
  *  of a repo, with the folders it lacks. */
 export interface LifeStart {
   flows: LifeWorkflow[]
-  skipped: Array<{ name: string; missing: string[] }>
+  skipped: Array<{ id: string; name: string; missing: string[] }>
 }
 
 /**
@@ -38,7 +38,7 @@ export async function startStepsOf(
   const skipped: LifeStart['skipped'] = []
   for (const w of await listInitWorkflows(projectId)) {
     const missing = await missingRepos(projectId, w.workflow.repos, repoIds)
-    if (missing.length > 0) skipped.push({ name: w.name, missing })
+    if (missing.length > 0) skipped.push({ id: w.workflow.id, name: w.name, missing })
     else flows.push({ id: w.workflow.id, name: w.name, steps: w.workflow.steps })
   }
   return { flows: skipCycles(flows), skipped }
@@ -63,14 +63,6 @@ function skipCycles(flows: LifeWorkflow[]): LifeWorkflow[] {
   }
   if (cyclic.size === 0) return flows
   return flows.map((f) => ({ ...f, skip: Object.keys(f.steps).filter((n) => cyclic.has(stepFullName(f.name, n))) }))
-}
-
-/** Record a new life starting `flows`, before any window of it opens.
- *  Resolves with when it started, which names its log dir. */
-export async function recordLife(projectId: string, workspaceId: string, flows: LifeWorkflow[]): Promise<Date> {
-  const at = new Date()
-  await applyWorkspaceEvent({ type: 'workspace-life-started', projectId, workspaceId, at, startSteps: flows })
-  return at
 }
 
 /**

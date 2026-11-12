@@ -492,7 +492,7 @@ async function advanceDeploy(row: SiteRow, releaseId: string, alive: (id: string
   if (release === undefined || release.stoppedAt !== undefined || !alive(releaseId)) {
     return await fail(release?.deathDetail !== undefined ? `its release stopped: ${release.deathDetail}` : 'its release stopped')
   }
-  const life = release.lifeStartedAt?.getTime()
+  const life = release.lifeStartedAt.getTime()
   const steps = (await listWorkspaceSteps(releaseId)).filter((s) => s.life.getTime() === life)
   const broken = steps.find((s) => s.state === 'failed' || s.state === 'cancelled'
     || s.state === 'skipped' || s.state === 'interrupted')

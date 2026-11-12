@@ -155,10 +155,8 @@ interface LiveWorkspace {
  *  has none running. */
 async function liveWorkspace(p: { projectId: string; workspaceId: string; jobName: string }): Promise<LiveWorkspace | undefined> {
   const row = await findWorkspaceRow(p.workspaceId)
-  const life = row?.lifeStartedAt
-  if (row === undefined || life === undefined) return undefined
-  // A stop record older than the life is one a restart failed to clear.
-  if (row.stoppedAt !== undefined && row.stoppedAt >= life) return undefined
+  if (row === undefined || row.stoppedAt !== undefined) return undefined
+  const life = row.lifeStartedAt
   const steps = (await listWorkspaceSteps(p.workspaceId)).filter((s) => s.life.getTime() === life.getTime())
   return { ...p, row, life, steps }
 }
@@ -534,7 +532,7 @@ async function reconcilePass(p: { projectId: string; workspaceId: string; jobNam
  * cwd.
  */
 async function stepDir(step: StepRow, root: string, checkouts: Array<{ repoId: string; path: string }>): Promise<string | undefined> {
-  const repos = step.workflowId !== undefined ? (await getWorkflow(step.workflowId))?.repos ?? [] : []
+  const repos = (await getWorkflow(step.workflowId))?.repos ?? []
   if (repos.length === 0) return undefined
   const checkout = repos.length === 1 ? checkouts.find((c) => c.repoId === repos[0]) : undefined
   return checkout !== undefined && checkout.path !== '' ? path.posix.join(root, checkout.path) : root

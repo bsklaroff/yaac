@@ -54,7 +54,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
   // exist; hiding it until the route drops the entry swaps the row for a ready
   // workspace in one snapshot, and no id appears in both lists. A spare
   // claimed by a create is hidden the same way, and so is a held row for a
-  // workspace mid-restart, which keeps its stop until the restart succeeds.
+  // workspace mid-restart, which keeps its stop until its next life starts.
   const hidden = new Set(provisioning.flatMap((p) => [p.workspaceId, p.claimedId]))
   return {
     driver: workspaceDriver().kind,

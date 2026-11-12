@@ -160,8 +160,9 @@ the ready check renames its window, and a `pane-died` hook renames any
 window whose pane died. A step's window that vanishes for a minute after it
 opened was killed by hand, and the step is `cancelled`.
 
-Rows are `workspace_steps`, keyed by workspace, workflow name and step name,
-each with the stored workflow it came from. Observed changes arrive as
+Rows are `workspace_steps`, keyed by workspace, life, workflow name and step
+name, so every life keeps its own. The stored workflow a step came from is
+on its life's workflow row (see "Lives"). Observed changes arrive as
 `step-changed` events, applied only to the life they were seen in, and never
 to a settled step. A row of a life started before steps had workflows has an
 empty workflow name and is known by its bare name, under which its window
@@ -169,16 +170,56 @@ and logs run (docs/legacy-compat-shims.md).
 
 ## Lives
 
-A workspace's **life** is one run of it, from a start or restart to its stop
-(`workspaces.lifeStartedAt`). Each life starts its graph afresh, steps that
-succeeded before included: a stop empties the scratch dirs and the
-checkout's ignored files, so what `install` or `build` made is gone. The
-graph is the workflow its create brought (`workspaces.workflowId`, under
-`workflowName`), else its project's current init workflows that apply to its
-repos. The workflows of one life are independent graphs started together.
-A step added to a running workspace runs once:
-one not settled at a stop becomes `interrupted`. A step whose output survives
-a stop checks for it itself (`test -f model.bin || ./download`).
+A workspace's **life** is one run of it, from a start or restart to its
+stop. Each life starts its graph afresh, steps that succeeded before
+included: a stop empties the scratch dirs and the checkout's ignored files,
+so what `install` or `build` made is gone. The graph is the workflow its
+create brought (`workspaces.workflowId`, under `workflowName`), else its
+project's current init workflows that apply to its repos. The workflows of
+one life are independent graphs started together. A step added to a running
+workspace runs once. A step not settled when the next life starts becomes
+`interrupted`. A step whose output survives a stop checks for it itself
+(`test -f model.bin || ./download`).
+
+Every life is a row of `workspace_lives`, keyed by the workspace and when
+the life started, which also names its log dir (`lifeDirName`). The row
+holds what the life launched with (its zone, scratch dirs and deadline) and
+how it ended: when its stop was recorded, the death reason and detail when
+the reaper stopped it, who has seen that death, a non-interactive
+workspace's outcome, and when its ignored files were cleaned. A fresh create
+inserts the workspace and its first life together, and a restart adds the
+next, so earlier lives keep what they recorded. A restart's life starts
+later than the one before it even if the clock has gone back since.
+
+`launchedAt` is when the life's runtime came up, stamped once its create,
+claim or restart finishes. A restart that fails after starting its life
+removes that life again, and the workspace reads as the restart found it. A
+server that dies partway through a restart cannot do that, so the stale
+reaper does it on the next server: a current life that is a restart, never
+came up, has no runtime on two passes running and is no create of this
+process loses that life the same way, with no death recorded. That is a
+restart killed before any runtime existed. One found running instead (under
+k8s a pod outlives a server that is rolled) is recorded as launched, so
+losing its runtime later is a death; if its setup never finished, the
+reaper tears it down as `never-started`, as it does a create.
+
+The newest life is the workspace's **current life**: the only one that can
+be running, and the one every stop, deadline and listing reads and writes.
+A null `stoppedAt` on it means the workspace is running. On an earlier life
+it means no stop was recorded (the runtime vanished and the restart came
+before the reaper noticed, or the stop's write failed); nothing fills it in
+afterwards, since nobody saw when that life ended.
+
+A life's workflows are rows of `workspace_life_workflows`: each one it
+started, each added while it ran, and each init workflow it skipped for lack
+of a repo (`skipped`), under the name the workflow has in the workspace and
+with the stored workflow's id. An init workflow with no steps has a row
+too. The repos a skipped one lacked are not stored: they are those of the
+workflow's `repos` the workspace has no checkout of. A step row names its
+life and its workflow's name, so the workflow's id is held once. A named
+workflow already run in a life cannot be added to it again; one whose row
+has no steps (skipped, or empty when the life started) has not run, so
+adding it takes that row.
 
 A prewarmed spare runs no steps; a claim starts the life with the project's
 init workflows that apply to the claim's selection, which is the one the
@@ -215,8 +256,8 @@ own graph, with a step that is not a service, and opens no session.
   under containerless, or a cluster admin with `kubectl exec`, can still
   reach its tmux. Its steps are followed through their logs.
 - **It stops when done.** Once every step that is not a service has settled,
-  `stepsOutcome` records `succeeded` if every step succeeded and `failed`
-  otherwise, and the workspace stops; its services stop with it. A hung step
+  its life's `stepsOutcome` records `succeeded` if every step succeeded and
+  `failed` otherwise, and the workspace stops; its services stop with it. A hung step
   runs until the workspace's timeout, so a routine that starts these should
   set one.
 - **It is rerun, never restarted**, since a restart would reuse a checkout
@@ -290,9 +331,10 @@ one subdir per life named after its start time, mounted in a pod at
 reads it from the host, so a stopped workspace's logs read the same
 (`GET /workspace/:id/logs`, then `GET /workspace/:id/logs/:life/:file` from a
 byte offset, which a client following a running log asks again from;
-`yaac workspace logs`). Its project's agents read the end of a step's log
-through `yaac-mama logs`, at most 4 MiB of it, and only once the step has
-started: the log file is named after the window, and the server clears
+`yaac workspace logs`). Its project's agents list its current life's steps
+with `yaac-mama logs <workspace>` and read the end of a step's log, from
+the newest life that has the step, at most 4 MiB of it, and only once the
+step has started: the log file is named after the window, and the server clears
 and recreates a step's file as it starts the step, so before then a window
 opened by hand under the step's name would be writing it. A window opened
 by hand under the name of a step that has already run appends to that
@@ -324,7 +366,8 @@ row, its last run's logs, and Rerun.
 | Concern | Path |
 |---|---|
 | Step shape and parser | `packages/shared/src/steps.ts` |
-| Step rows | `packages/server/src/db/step-store.ts` |
+| Step rows and a life's workflows | `packages/server/src/db/step-store.ts` |
+| Life rows and the current life | `packages/server/src/db/workspace-store.ts`, `current-life.ts` |
 | Reconcile, add, rerun, cancel, the non-interactive lock | `packages/server/src/domain/workspaces/steps.ts` |
 | Logs | `packages/server/src/domain/workspaces/logs.ts`, `workspace-bin/yaac-log-writer` |
 | Scripts and hooks | `packages/server/src/runtime/terminals/steps.ts` |

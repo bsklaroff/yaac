@@ -4,6 +4,8 @@ import { closeDb } from '#db/client'
 import { desiredWorkspaces } from '#db/desired-workspaces'
 import {
   recordWorkspaceCreated,
+  recordWorkspaceLaunched,
+  recordWorkspaceLife,
   recordWorkspaceStopped,
 } from '#db/workspace-store'
 import { recordConversations } from '#db/conversation-store'
@@ -47,6 +49,23 @@ describe('desiredWorkspaces', () => {
 
     expect((await desiredWorkspaces()).live.map((w) => [w.workspaceId, w.ran]))
       .toEqual([['wt-1', true], ['wt-2', true], ['wt-3', false]])
+  })
+
+  // A restart's life that has not come up is one a create of this process
+  // is starting, or one the server died under. A first life, and a restart
+  // that came up, are neither.
+  it('names the life before, for a workspace whose restart has not come up', async () => {
+    const first = new Date(Date.now() - 60_000)
+    for (const id of ['fresh', 'restarting', 'restarted']) await recordWorkspaceCreated({ projectId: PROJ, workspaceId: id, at: first })
+    for (const id of ['restarting', 'restarted']) {
+      await recordWorkspaceLaunched(PROJ, id)
+      await recordWorkspaceStopped(PROJ, id)
+      await recordWorkspaceLife(PROJ, id, { at: new Date() })
+    }
+    await recordWorkspaceLaunched(PROJ, 'restarted')
+
+    expect((await desiredWorkspaces()).live.map((w) => [w.workspaceId, w.restartedFrom]).sort())
+      .toEqual([['fresh', undefined], ['restarted', undefined], ['restarting', first]])
   })
 
   // A whole set every time, straight off the rows — a workspace recorded as

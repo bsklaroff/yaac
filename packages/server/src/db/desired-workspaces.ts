@@ -18,6 +18,9 @@ export interface DesiredWorkspace {
   /** Whether its agent ever started: separates an interrupted create
    *  (`never-started`) from a workspace whose runtime vanished (`orphaned`). */
   ran: boolean
+  /** Set while its current life is a restart that has not come up: when the
+   *  life before it began. */
+  restartedFrom?: Date
 }
 
 export async function desiredWorkspaces(): Promise<DesiredWorkspaces> {

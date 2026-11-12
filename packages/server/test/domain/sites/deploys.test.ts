@@ -140,7 +140,7 @@ async function stepsAre(workspaceId: string, states: Record<string, 'running' | 
   const row = await findWorkspaceRow(workspaceId)
   for (const [name, state] of Object.entries(states)) {
     await applyWorkspaceEvent({
-      type: 'step-changed', projectId: DEMO_PROJECT_ID, workspaceId, life: row!.lifeStartedAt!, workflowName: row!.workflowName ?? '', name, state,
+      type: 'step-changed', projectId: DEMO_PROJECT_ID, workspaceId, life: row!.lifeStartedAt, workflowName: row!.workflowName ?? '', name, state,
       ...(state === 'failed' ? { exitCode: 2 } : {}),
     })
   }

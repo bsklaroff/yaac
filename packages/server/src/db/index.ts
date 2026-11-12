@@ -282,7 +282,6 @@ export {
 } from './user-store'
 export {
   backfillWorkspaceScratchDirs,
-  clearWorkspaceStopped,
   countStoppedWorkspaces,
   forgetWorkspaceScratchDirs,
   deleteProjectWorkspaces,

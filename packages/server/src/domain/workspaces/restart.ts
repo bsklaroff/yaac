@@ -7,7 +7,7 @@ import { readGroupRoom, refuseFullGroup } from './group-limits'
 import { planSessionResumes } from './session-launch'
 import { releaseWorkspaceVolumes, volumeForLaunch } from './volumes'
 import {
-  clearWorkspaceStopped,
+  applyWorkspaceEvent,
   findWorkspaceRow,
   insertSession,
   listActiveConversations,
@@ -16,8 +16,8 @@ import {
   type SessionLaunchSettings,
 } from '#db'
 import { authorizeProject, type Actor } from '#domain/access'
-import { workspaceDriver } from '#drivers/driver'
 import { serverLog } from '#lib/log'
+import { workspaceDriver } from '#drivers/driver'
 import { ServerError } from '@yaac/shared/errors'
 import { defaultPermissionMode } from '@yaac/shared/types'
 
@@ -113,20 +113,21 @@ export async function prepareRestart(
     const sessions = await listWorkspaceSessions(workspaceId)
     if (sessions.length > 1) onProgress(`Restoring ${sessions.length} sessions...`)
 
-    const result = await createWorkspace(projectId, {
-      workspaceId,
-      resume: true,
-      ...(opts.deadline !== undefined ? { deadline: opts.deadline } : {}),
-      ...(volume !== undefined ? { volumeId: volume.id } : {}),
-      onProgress,
-    })
-
-    // Only after success, so a failed restart keeps its stop record. The
-    // workspace is running either way, so a lost clear is only logged.
-    await clearWorkspaceStopped(projectId, workspaceId).catch((err: unknown) => {
-      serverLog(`[server] restart ${projectId}/${workspaceId}: clear stop: ${String(err)}`)
-    })
-    return result
+    try {
+      return await createWorkspace(projectId, {
+        workspaceId,
+        resume: true,
+        ...(opts.deadline !== undefined ? { deadline: opts.deadline } : {}),
+        ...(volume !== undefined ? { volumeId: volume.id } : {}),
+        onProgress,
+      })
+    } catch (err) {
+      // Wherever it failed, the life it may have started never came up. The
+      // workspace keeps its row and reads as stopped as it was.
+      await applyWorkspaceEvent({ type: 'workspace-create-failed', projectId, workspaceId, lifeBefore: row.lifeStartedAt })
+        .catch((e: unknown) => serverLog(`[server] restart ${projectId}/${workspaceId}: undoing its life: ${String(e)}`))
+      throw err
+    }
   })
 }
 

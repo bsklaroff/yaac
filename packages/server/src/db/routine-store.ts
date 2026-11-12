@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, isNotNull, isNull, lt, or } from 'drizzle-orm'
 import { getDb } from './client'
-import { queuedWorkspaces, routines, workspaces } from './schema'
+import { queuedWorkspaces, routines, workspaceLives, workspaces } from './schema'
+import { currentLife } from './current-life'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { isUuid } from '#lib/uuid'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
@@ -133,11 +134,11 @@ export interface RoutineRunRow {
   title?: string
   /** Why its launch failed; set only while it has not launched. */
   launchError?: string
-  /** The workspace it became, once launched, and that workspace's state. */
+  /** The workspace it became, once launched, and its current life's state. */
   workspaceId?: string
   stoppedAt?: Date
   deadline?: Date
-  /** `workspaces.deadlineIsNextRun`. */
+  /** `workspaceLives.deadlineIsNextRun`. */
   deadlineIsNextRun?: boolean
   deathReason?: WorkspaceDeathReason
 }
@@ -159,13 +160,14 @@ export async function listRoutineRuns(
     title: queuedWorkspaces.title,
     launchError: queuedWorkspaces.launchError,
     workspaceId: workspaces.workspaceId,
-    stoppedAt: workspaces.stoppedAt,
-    deadline: workspaces.deadline,
-    deadlineIsNextRun: workspaces.deadlineIsNextRun,
-    deathReason: workspaces.deathReason,
+    stoppedAt: workspaceLives.stoppedAt,
+    deadline: workspaceLives.deadline,
+    deadlineIsNextRun: workspaceLives.deadlineIsNextRun,
+    deathReason: workspaceLives.deathReason,
   })
     .from(queuedWorkspaces)
     .leftJoin(workspaces, eq(workspaces.workspaceId, queuedWorkspaces.launchedWorkspaceId))
+    .leftJoin(workspaceLives, currentLife)
     .where(and(
       eq(queuedWorkspaces.routineId, routineId),
       before === undefined ? undefined : or(

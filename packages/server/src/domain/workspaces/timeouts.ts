@@ -1,8 +1,8 @@
 /**
  * Workspace timeouts (docs/routines.md "Timeouts"): the server stops a
- * workspace once `workspaces.deadline` passes. The stop is the ordinary
- * natural stop, so it releases the workspace's queued children and keeps its
- * checkout, as a user stop does.
+ * workspace once its life's deadline (`workspaceLives.deadline`) passes.
+ * The stop is the ordinary natural stop, so it releases the workspace's
+ * queued children and keeps its checkout, as a user stop does.
  */
 import { listProvisioning } from './provisioning'
 import { resolveWorkspaceId } from './resolve'

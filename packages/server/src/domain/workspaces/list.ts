@@ -134,8 +134,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
     const row = rowFor(w)
     const links = agentsFor(w)
     const sessions = sessionsByWorkspace.get(w.workspaceId) ?? []
-    const life = row?.lifeStartedAt?.getTime()
-    const steps = (stepsByWorkspace.get(w.workspaceId) ?? []).filter((s) => s.life.getTime() === life)
+    const steps = stepsByWorkspace.get(w.workspaceId) ?? []
     const base = {
       workspaceId: w.workspaceId,
       projectId: w.projectId,
@@ -186,7 +185,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       sessions: entries,
       ...(w.windows !== undefined ? { terminals: terminalsOf(w.windows, sessions, steps.map(stepName)) } : {}),
       ...(steps.length > 0 ? { steps: steps.map((s) => toStepEntry(s, w.windows)) } : {}),
-      ...(row?.lifeStartedAt !== undefined ? { life: row.lifeStartedAt.toISOString() } : {}),
+      ...(row !== undefined ? { life: row.lifeStartedAt.toISOString() } : {}),
       blockedHosts: w.blockedHosts,
       forwardedPorts: w.forwardedPorts,
       unforwardedPorts: w.unforwardedPorts,

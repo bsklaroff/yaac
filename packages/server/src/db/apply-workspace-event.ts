@@ -5,10 +5,11 @@ import {
 } from './conversation-store'
 import {
   recordWorkspaceCreated,
+  recordWorkspaceLaunched,
   recordWorkspaceLife,
-  recordWorkspaceResumed,
   recordIgnoredFilesCleaned,
   recordWorkspaceStopped,
+  removeWorkspaceLivesAfter,
   removeWorkspaceRecords,
   setWorkspaceStepsOutcome,
   setWorkspaceTrackedScratchDirs,
@@ -18,7 +19,7 @@ import { setWorkspaceRepoStart } from './repo-store'
 import { closeSessionRow, recordSessionReport, recordSessionWaitingUnseen } from './session-store'
 import { markVolumesPinned, releaseVolume } from './volume-store'
 import { notifyWorkspaceListChanged } from '#lib/notify'
-import type { WorkspaceEvent, WorkspaceCreateFailed, WorkspaceCreated } from './events'
+import type { WorkspaceEvent, WorkspaceCreateFailed } from './events'
 
 /**
  * Persist an observed fact. This is the only way observed facts become rows:
@@ -35,15 +36,21 @@ export async function applyWorkspaceEvent(event: WorkspaceEvent): Promise<void> 
 
 async function applyEvent(event: WorkspaceEvent): Promise<void> {
   switch (event.type) {
-    case 'workspace-created':
-      await applyCreated(event)
+    case 'workspace-created': {
+      const at = event.at ?? new Date()
+      await recordWorkspaceCreated({ ...event, at })
+      await startLifeSteps(event.projectId, event.workspaceId, at, event.startSteps ?? [], event.skipped)
       return
+    }
     case 'workspace-create-failed':
       await applyCreateFailed(event)
       return
     case 'workspace-life-started':
-      await recordWorkspaceLife(event.projectId, event.workspaceId, event.at)
-      await startLifeSteps(event.projectId, event.workspaceId, event.at, event.startSteps)
+      await recordWorkspaceLife(event.projectId, event.workspaceId, event)
+      await startLifeSteps(event.projectId, event.workspaceId, event.at, event.startSteps, event.skipped)
+      return
+    case 'workspace-launched':
+      await recordWorkspaceLaunched(event.projectId, event.workspaceId)
       return
     case 'start-commit-resolved':
       await setWorkspaceRepoStart(event.workspaceId, event.repoId, { startCommit: event.startCommit })
@@ -96,45 +103,12 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
   }
 }
 
-async function applyCreated(event: WorkspaceCreated): Promise<void> {
-  const {
-    projectId, workspaceId, repos, cwd, title, generatedTitle, groupId, resume, timeZone, deadline, scratchDirs,
-    workflowId, workflowName, nonInteractive, rerunOf, siteId,
-  } = event
-  const launch = {
-    ...(deadline !== undefined ? { deadline } : {}),
-    ...(scratchDirs !== undefined ? { scratchDirs } : {}),
-    ...(timeZone !== undefined ? { timeZone } : {}),
-  }
-  // A fresh create inserts the row (refusing a taken id); a resume updates
-  // the existing row.
-  if (resume) {
-    await recordWorkspaceResumed({ projectId, workspaceId, ...launch })
-    return
-  }
-  await recordWorkspaceCreated({
-    projectId,
-    workspaceId,
-    ...(repos !== undefined ? { repos } : {}),
-    ...(cwd !== undefined ? { cwd } : {}),
-    ...(title !== undefined ? { title } : {}),
-    ...(generatedTitle !== undefined ? { generatedTitle } : {}),
-    ...(groupId !== undefined ? { groupId } : {}),
-    ...(workflowId !== undefined ? { workflowId } : {}),
-    ...(workflowName !== undefined ? { workflowName } : {}),
-    ...(nonInteractive === true ? { nonInteractive } : {}),
-    ...(rerunOf !== undefined ? { rerunOf } : {}),
-    ...(siteId !== undefined ? { siteId } : {}),
-    ...launch,
-  })
-}
-
 /**
  * Undo a create that never came up, so it leaves nothing behind (nothing else
- * prunes these). A failed resume needs no undo: its row keeps the stop it
- * had until the restart succeeds.
+ * prunes these). A failed restart keeps the workspace and loses only the
+ * life it had started, if it got that far.
  */
-async function applyCreateFailed({ projectId, workspaceId, resume }: WorkspaceCreateFailed): Promise<void> {
-  if (resume) return
-  await removeWorkspaceRecords(projectId, workspaceId)
+async function applyCreateFailed({ projectId, workspaceId, lifeBefore }: WorkspaceCreateFailed): Promise<void> {
+  if (lifeBefore === undefined) await removeWorkspaceRecords(projectId, workspaceId)
+  else await removeWorkspaceLivesAfter(workspaceId, lifeBefore)
 }

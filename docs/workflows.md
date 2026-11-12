@@ -94,7 +94,7 @@ running.
 | Queued entry | `workflowId` (its `--steps`) or `namedWorkflowId` (`--workflow`) | a named one at launch; its own steps are fixed |
 | Workspace | `workflowId`, and `workflowName`, the name it has there | fixed for every life; none starts the project's init workflows |
 | Rerun, a site's replacement, `site start` | the original's `workflowId` and `workflowName` | fixed |
-| A step added to a running workspace | its own spec, its row's `workflowId` and `workflowName` | once, in that life |
+| A step added to a running workspace | its own spec, and its life's workflow row (`workspace_life_workflows`: the name and `workflowId`) | once, in that life |
 
 So an edit never changes what is running, or a rerun or replacement of it,
 only what the next launch takes up. A routine's run copies its routine's

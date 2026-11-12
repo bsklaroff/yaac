@@ -265,10 +265,12 @@ Re-reporting must be safe, which the event types (`db/events.ts`) ensure:
 - **Fill-only capture.** An opening message is only ever added, so
   re-reading a compacted transcript cannot rewrite it, and a restart's
   re-report changes nothing.
-- **Rollback.** A failed create deletes a fresh workspace but restores a
-  resumed one exactly as the restart found it, including its death cause
-  and dismissal. The `workspace-created` handler reads and clears the
-  prior stop together.
+- **Rollback.** A failed create deletes a fresh workspace. A failed restart
+  removes only the life it had started (`workspace-life-started`), so the
+  workspace reads exactly as the restart found it, including its death
+  cause and dismissal. The stale reaper reports the same failure for a
+  restart whose server died before its life came up
+  (`workspace-launched`).
 
 ## Pushing changes to clients
 

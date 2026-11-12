@@ -501,7 +501,7 @@ pass — the server resolves who is calling and answers for that project only.
   the user (`yaac volume`, or the webapp's project settings), and exist
   only on a cluster.
 
-- **`logs <workspace>`** — a workspace's steps, running or stopped (a CI
+- **`logs <workspace>`** — the steps of a workspace's current life, running or stopped (a CI
   run's, a site release's, or ones added with `--run`), in order: each one's
   full name (`<workflow>.<step>`), state (`(service)` marks a long-running one), exit code, the steps it
   needs, and how much it has logged. A stopped workspace's unfinished

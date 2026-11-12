@@ -118,6 +118,7 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<v
   // stopped. Timed from when the pod was first seen missing, not the row's
   // age, so one empty or partial listing cannot condemn every workspace.
   const livePodIds = new Set(pods.map((p) => p.workspaceId))
+  const runningIds = new Set(running.map((p) => p.workspaceId))
   {
     const seen = new Set<string>()
     for (const row of desired.live) {
@@ -125,11 +126,35 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<v
       seen.add(rowKey)
       if (livePodIds.has(row.workspaceId) || provisioningIds.has(row.workspaceId)) {
         missingSince.delete(rowKey)
+        // A restart found running that no create of this process is
+        // starting came up under a server that died before recording it.
+        // Recorded now, so its runtime going away later is a death rather
+        // than a restart that never came up.
+        if (row.restartedFrom !== undefined && runningIds.has(row.workspaceId) && !provisioningIds.has(row.workspaceId)) {
+          await applyWorkspaceEvent({ type: 'workspace-launched', projectId: row.projectId, workspaceId: row.workspaceId })
+            .catch((err: unknown) => {
+              serverLog(`[server] stale-reaper: recording the launch of workspace=${row.workspaceId} failed: ${String(err)}`)
+            })
+        }
         continue
       }
       const since = missingSince.get(rowKey)
       if (since === undefined) {
         missingSince.set(rowKey, nowMs)
+        continue
+      }
+      // A restart whose life never came up, with no runtime on two passes
+      // and no create of this process behind it, died with the server that
+      // was running it. Its life is forgotten, as its failure would have
+      // done, so the workspace reads as stopped as it was.
+      if (row.restartedFrom !== undefined) {
+        missingSince.delete(rowKey)
+        serverLog(`[server] stale-reaper: forgetting the life an interrupted restart of workspace=${row.workspaceId} started`)
+        await applyWorkspaceEvent({
+          type: 'workspace-create-failed', projectId: row.projectId, workspaceId: row.workspaceId, lifeBefore: row.restartedFrom,
+        }).catch((err: unknown) => {
+          serverLog(`[server] stale-reaper: forgetting it for workspace=${row.workspaceId} failed: ${String(err)}`)
+        })
         continue
       }
       if (nowMs - since < PODLESS_ROW_GRACE_MS) continue

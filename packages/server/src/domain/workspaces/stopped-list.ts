@@ -42,7 +42,8 @@ export interface StoppedListQuery {
 
 /**
  * Recorded workspaces with a recorded stop and nothing running (a restart
- * keeps its stop until it succeeds), one page at a time, newest stop first.
+ * keeps its stop until its next life starts), one page at a time, newest
+ * stop first.
  * Built from rows alone: the sidebar asks for this on every search and every
  * stop, so it never touches a transcript. The prompt and last activity are
  * what the conversation registry captured while the workspace ran.
@@ -115,8 +116,7 @@ export async function toStoppedEntries(rows: WorkspaceRow[]): Promise<StoppedWor
 }
 
 /** Stopped by its timeout: a natural stop (no death reason) recorded at or
- *  after its deadline. A restart replaces the deadline, so it is always the
- *  last life's. */
+ *  after its life's deadline. */
 function timedOut(r: WorkspaceRow): boolean {
   return r.deathReason === undefined && r.deadline !== undefined && r.stoppedAt !== undefined && r.stoppedAt >= r.deadline
 }

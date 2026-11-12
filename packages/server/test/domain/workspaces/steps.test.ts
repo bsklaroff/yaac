@@ -20,7 +20,6 @@ import {
   type LifeWorkflow,
 } from '#db'
 import { createWorkflow, editWorkflow, resolveWorkflow } from '#domain/projects'
-import { recordWorkspaceCreated } from '#db/workspace-store'
 import { closeDb } from '#db/client'
 import { setWorkspaceWindows, _resetWorkspaceStatusStoreForTests } from '#runtime/status/status-store'
 import { _clearTerminatingForTests } from '#runtime/status/terminating'
@@ -72,11 +71,11 @@ async function startFlows(
     const steps = parseStepGraph(f.steps, new Set(row.siteId !== undefined ? ['volume'] : []))
     return { id: (await storeWorkflow(DEMO_PROJECT_ID, { steps, secrets: [], repos: f.repos ?? [] })).id, name: f.name, steps }
   }))
-  await recordWorkspaceCreated({
-    projectId: DEMO_PROJECT_ID, workspaceId: WS, workflowId: stored[0].id, workflowName: stored[0].name, ...row,
-  })
   life = new Date()
-  await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS, at: life, startSteps: stored })
+  await applyWorkspaceEvent({
+    type: 'workspace-created', projectId: DEMO_PROJECT_ID, workspaceId: WS, workflowId: stored[0].id, workflowName: stored[0].name,
+    ...row, at: life, startSteps: stored,
+  })
   return stored
 }
 
@@ -214,10 +213,9 @@ describe('reconcileSteps', () => {
   })
 
   it('finds a step of a life from before steps had workflows under its bare window', async () => {
-    await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: WS })
     life = new Date()
     await applyWorkspaceEvent({
-      type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS, at: life,
+      type: 'workspace-created', projectId: DEMO_PROJECT_ID, workspaceId: WS, at: life,
       startSteps: [{ id: (await storeWorkflow(DEMO_PROJECT_ID, { steps: {}, secrets: [] })).id, name: '', steps: parseStepGraph({ build: { run: 'make' } }) }],
     })
     listed()
@@ -377,13 +375,15 @@ describe('addSteps', () => {
 
     // A new life reruns the start steps but not an added one; one that had
     // not settled is interrupted.
+    const next = new Date(Date.now() + 1000)
     await applyWorkspaceEvent({
-      type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS, at: new Date(),
+      type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS, at: next,
       startSteps: [{ id: lint, name: 'ci', steps: parseStepGraph({ install: { run: 'pnpm install' } }) }],
     })
     const after = await listWorkspaceSteps(WS)
     expect(after.filter((s) => s.origin === 'added').every((s) => s.state === 'interrupted')).toBe(true)
-    expect(after.filter((s) => s.origin === 'start').map((s) => [s.workflowName, s.name, s.state])).toEqual([['ci', 'install', 'pending']])
+    expect(after.filter((s) => s.life.getTime() === next.getTime()).map((s) => [s.workflowName, s.name, s.state]))
+      .toEqual([['ci', 'install', 'pending']])
 
     // A minted name never repeats in the workspace's history: two adds at
     // once take two numbers, and a new life goes on past every earlier one.

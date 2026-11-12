@@ -21,12 +21,11 @@ vi.mock('node:child_process', async (importOriginal) => {
   }
 })
 
-// Real, but a case can make a read or the stop's clearing fail.
+// Real, but a case can make a read fail.
 vi.mock('#db', async (importOriginal) => {
   const actual = await importOriginal<typeof dbModule>()
   return {
     ...actual,
-    clearWorkspaceStopped: vi.fn(actual.clearWorkspaceStopped),
     findWorkspaceRow: vi.fn(actual.findWorkspaceRow),
     listActiveConversations: vi.fn(actual.listActiveConversations),
   }
@@ -35,7 +34,6 @@ import { createVolume, keepScratchDirsInCheckout, listProvisioning, prepareRerun
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import {
   applyWorkspaceEvent,
-  clearWorkspaceStopped,
   createWorkspaceGroup,
   findWorkspaceRow,
   getSessionRow,
@@ -56,7 +54,7 @@ import {
 import { eq } from 'drizzle-orm'
 import { closeDb, getDb } from '#db/client'
 import { recordConversations } from '#db/conversation-store'
-import { workspaceRepos, workspaces } from '#db/schema'
+import { workspaceLives, workspaceRepos } from '#db/schema'
 import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
 import { git } from '@yaac/test-utils/git'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
@@ -280,7 +278,7 @@ describe('prepareRestart', () => {
   it('refuses an unclaimed spare, and restarts a claimed one that never got a conversation', async () => {
     await expect(prepareRestart(local, 'wt-spare')).rejects.toMatchObject({ code: 'NOT_FOUND' })
 
-    await applyWorkspaceEvent({ type: 'workspace-created', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-spare', resume: false })
+    await applyWorkspaceEvent({ type: 'workspace-created', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-spare' })
     const session = await beside('wt-spare', { prompt: 'fix the bug' })
     await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-spare' })
 
@@ -298,7 +296,7 @@ describe('prepareRestart', () => {
   // launch is refused with what to do, rather than dying on the argument
   // and losing the message (docs/legacy-compat-shims.md).
   it('refuses to launch a terminal session whose stored opening message is over the cap', async () => {
-    await applyWorkspaceEvent({ type: 'workspace-created', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-old', resume: false })
+    await applyWorkspaceEvent({ type: 'workspace-created', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-old' })
     await beside('wt-old', { prompt: 'a'.repeat(MAX_PROMPT_BYTES + 1) })
     await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-old' })
 
@@ -320,15 +318,6 @@ describe('prepareRestart', () => {
     expect((await getSessionRow(chat.id))?.pendingPrompt).toBe('add shared projects')
   })
 
-  // The workspace is running by then, so a lost clear must not report it
-  // as failed.
-  it('succeeds when clearing the stop record fails', async () => {
-    await stoppedWorkspace('wt-clear')
-    vi.mocked(clearWorkspaceStopped).mockRejectedValueOnce(new Error('db write failed'))
-    expect(await restart('wt-clear')).toMatchObject({ workspaceId: 'wt-clear' })
-    expect(listProvisioning()).toEqual([])
-  })
-
   it('relaunches a stopped workspace with no unit to tear down, each session in its recorded posture and effort', async () => {
     await stoppedWorkspace('wt-2', { permissionMode: 'plan', model: 'claude-opus-4-7', effort: 'max' })
     // The agent moved itself since; the restart follows it.
@@ -344,7 +333,24 @@ describe('prepareRestart', () => {
       /^printf .*\/\.git\/objects\/info\/alternates && case .* esac && \{ git -C \S+ fetch /)
     expect(windowsExec()).toContain('--permission-mode plan')
     expect(windowsExec()).toContain('--effort low')
-    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-2'))?.stoppedAt).toBeUndefined()
+    // Its next life is the current one, with no stop, and has come up.
+    const row = await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-2')
+    expect(row?.stoppedAt).toBeUndefined()
+    expect(row?.launchedAt).toBeInstanceOf(Date)
+  })
+
+  // The newest life is the current one, so a restart's must be newer than
+  // the life it restarts from even when the clock now reads earlier.
+  it('starts a life newer than the last one, even with the clock behind it', async () => {
+    await stoppedWorkspace('wt-clock')
+    const ahead = new Date(Date.now() + 10 * 60_000)
+    await (await getDb()).update(workspaceLives).set({ startedAt: ahead }).where(eq(workspaceLives.workspaceId, 'wt-clock'))
+
+    await restart('wt-clock')
+
+    const row = await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-clock')
+    expect(row?.lifeStartedAt.getTime()).toBeGreaterThan(ahead.getTime())
+    expect(row?.stoppedAt).toBeUndefined()
   })
 
   // A launch naming no model would take whatever the shared tool home holds.
@@ -621,11 +627,14 @@ describe('prepareRestart', () => {
   // erase it.
   it('keeps the stop record, the checkout and a failed provisioning row when the relaunch fails', async () => {
     await stoppedWorkspace('wt-3')
+    const before = await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-3')
     installDriver({ awaitReady: () => Promise.reject(new Error('image pull failed')) })
 
     await expect(restart('wt-3')).rejects.toThrow('image pull failed')
 
-    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-3'))?.stoppedAt).toBeInstanceOf(Date)
+    // The life the restart started is gone, so it reads as it was found.
+    expect(before?.stoppedAt).toBeInstanceOf(Date)
+    expect(await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-3')).toEqual(before)
     await expect(fs.access(workspaceDir(DEMO_PROJECT_ID, 'wt-3'))).resolves.toBeUndefined()
     // Its row survives, so the teardown keeps the substrate for the
     // runtime's own sweeps.
@@ -716,6 +725,9 @@ describe('prepareRestart', () => {
     // The relaunch then refuses the link, which only the teardown may skip.
     await expect(restart('wt-dirs')).rejects.toThrow(/web\/node_modules points outside its root/)
 
+    // It failed after its next life began and before anything launched: the
+    // life goes, and the stop its teardown recorded stands.
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-dirs'))?.stoppedAt).toBeInstanceOf(Date)
     expect(presentAtDestroy).toBe(true)
     await expect(fs.access(path.join(checkout, 'node_modules', 'left-pad'))).rejects.toThrow()
     await expect(fs.access(path.join(workspaceStateDir(DEMO_PROJECT_ID, 'wt-dirs'), 'scratch'))).rejects.toThrow()
@@ -773,8 +785,8 @@ describe('prepareRestart', () => {
   // was node_modules alone: its `target/` is real content.
   it('removes only node_modules for an old unit started before scratch dirs were recorded', async () => {
     await stoppedWorkspace('wt-legacy')
-    await (await getDb()).update(workspaces).set({ scratchDirs: null })
-      .where(eq(workspaces.workspaceId, 'wt-legacy'))
+    await (await getDb()).update(workspaceLives).set({ scratchDirs: null })
+      .where(eq(workspaceLives.workspaceId, 'wt-legacy'))
     const checkout = workspaceDir(DEMO_PROJECT_ID, 'wt-legacy')
     await fs.mkdir(path.join(checkout, 'node_modules', 'left-pad'), { recursive: true })
     await fs.writeFile(path.join(checkout, 'target', 'out.bin'), 'built\n')

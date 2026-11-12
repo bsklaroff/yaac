@@ -16,7 +16,7 @@ import type {
 import type { StepGraph, StepOrigin, StepSpec, StepState, StepsOutcome } from '@yaac/shared/steps'
 import type { EndpointModel } from '@yaac/shared/tool-providers'
 import { sql } from 'drizzle-orm'
-import { boolean, bytea, index, integer, json, jsonb, primaryKey, snakeCase, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core'
+import { boolean, bytea, foreignKey, index, integer, json, jsonb, primaryKey, snakeCase, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core'
 
 /**
  * Drizzle schema for the server's PGlite database, opened only by the server
@@ -262,18 +262,15 @@ export const projectIcons = snakeCase.table('project_icons', {
  * Every workspace yaac has created (see workspace-store.ts). The runtime is
  * authoritative for whether it is running; this table for whether it exists.
  * A prewarmed spare has no row until a claim inserts one. A stop never
- * deletes the row:
- * rows with `stoppedAt` are the stopped listing, and a restart reuses the id
- * and clears it. A row matches a checkout that stays on disk while stopped.
+ * deletes the row. A row matches a checkout that stays on disk while stopped.
+ *
+ * The row holds what belongs to the workspace as a whole. Each run of it,
+ * with what it launched with and how it ended, is a row of `workspaceLives`;
+ * every workspace has at least one.
  *
  * What its agents run with is on its sessions (`sessions`), and its founding
  * prompt is its first session's, so it survives a `/clear` (which starts a
  * second conversation).
- *
- * Every stop sets `stoppedAt`; `deathReason`/`deathDetail` are set only when
- * the stale reaper (not the user) stopped it. `deathSeenBy` lists the users
- * who viewed that detail, each of whom no longer gets the "Stopped
- * workspaces" dot for it.
  */
 export const workspaces = snakeCase.table('workspaces', {
   projectId: uuid().notNull(),
@@ -305,34 +302,11 @@ export const workspaces = snakeCase.table('workspaces', {
   /** Runs one graph untouched and stops when it settles
    *  (docs/workspace-steps.md "Non-interactive workspaces"). */
   nonInteractive: boolean().notNull().default(false),
-  /** How a non-interactive workspace's graph ended; null until it did. */
-  stepsOutcome: text().$type<StepsOutcome>(),
   /** The non-interactive workspace this one reruns. */
   rerunOf: text(),
   /** The sidebar group it is filed under; null means ungrouped. Survives a
    *  stop and restart. */
   groupId: text(),
-  stoppedAt: timestamp({ withTimezone: true }),
-  deathReason: text().$type<WorkspaceDeathReason>(),
-  deathDetail: text(),
-  deathSeenBy: uuid().array().notNull().default([]),
-  /** When the current runtime (a "life") came up; null when none is
-   *  running. A session launched before it has no window in this life. */
-  lifeStartedAt: timestamp({ withTimezone: true }),
-  /**
-   * The IANA zone it launched with as `TZ`, null when none was set.
-   */
-  timeZone: text(),
-  /** When the server stops it (docs/routines.md "Timeouts"); null for no
-   *  timeout. A restart replaces it. A stopped workspace whose `stoppedAt`
-   *  is at or after it was timed out. */
-  deadline: timestamp({ withTimezone: true }),
-  /** How long the timeout that set `deadline` ran for, in minutes, so an
-   *  agent's restart can keep it (docs/routines.md "Timeouts"). */
-  timeoutMinutes: integer(),
-  /** The deadline is a routine's next tick, which the next run takes over
-   *  from, rather than a timeout; a stop there ended at the next run. */
-  deadlineIsNextRun: boolean().notNull().default(false),
   /**
    * SHA-256 of the bearer token this workspace's `yaac-mama` presents, for
    * containerless workspaces that reach the server directly. Null under k8s,
@@ -342,22 +316,6 @@ export const workspaces = snakeCase.table('workspaces', {
    * outlives the server process; a workspace restart gets a new one.
    */
   mamaTokenHash: text(),
-  /** When a removal of the checkout's gitignored files that began after the
-   *  last stop finished (docs/workspace-storage.md "Ignored files at stop").
-   *  A stopped row without one is still to be cleaned. */
-  ignoredCleanedAt: timestamp({ withTimezone: true }),
-  /**
-   * The scratch dirs its current or last runtime was started with, which its
-   * stop removes from the checkout. Recorded at start rather than read from
-   * the project at stop, so a later edit of the project's list never deletes
-   * a dir this workspace keeps in its checkout. Null for a workspace started
-   * before this was recorded (docs/legacy-compat-shims.md).
-   */
-  scratchDirs: text().array(),
-  /** The project's scratch dirs that git tracks at this workspace's base
-   *  branch (or its own pushed branch), found when it last started. Their
-   *  tracked files show as deleted inside it, which the webapp warns about. */
-  trackedScratchDirs: text().array().notNull().default([]),
   /** The volume it was last launched with (docs/workspace-volumes.md). Kept
    *  while it is stopped, so a restart attaches it again. No foreign key;
    *  deleting a volume clears it here (volume-store.ts). */
@@ -366,6 +324,83 @@ export const workspaces = snakeCase.table('workspaces', {
    *  it read-only. No foreign key; a deleted site's releases keep it. */
   siteId: uuid(),
 }, (t) => [index().on(t.projectId)])
+
+/**
+ * A workspace's lives (docs/workspace-steps.md "Lives"): one row per run of
+ * it, from a start or restart to its stop, keyed by when it started, which
+ * also names its log dir. The newest is the workspace's current life, the
+ * only one that can be running.
+ */
+export const workspaceLives = snakeCase.table('workspace_lives', {
+  workspaceId: text().notNull().references(() => workspaces.workspaceId, { onDelete: 'cascade' }),
+  startedAt: timestamp({ withTimezone: true }).notNull(),
+  /** When its runtime came up. Null while it is starting, and on a life
+   *  whose start never finished. */
+  launchedAt: timestamp({ withTimezone: true }),
+  /** The IANA zone it launched with as `TZ`, null when none was set. */
+  timeZone: text(),
+  /**
+   * The scratch dirs it was started with, which its stop removes from the
+   * checkout. Recorded at start rather than read from the project at stop,
+   * so a later edit of the project's list never deletes a dir the workspace
+   * keeps in its checkout. Null for a life started before this was recorded
+   * (docs/legacy-compat-shims.md).
+   */
+  scratchDirs: text().array(),
+  /** The project's scratch dirs that git tracks at the workspace's base
+   *  branch (or its own pushed branch), found as it started. Their tracked
+   *  files show as deleted inside it, which the webapp warns about. */
+  trackedScratchDirs: text().array().notNull().default([]),
+  /** When the server stops it (docs/routines.md "Timeouts"); null for no
+   *  timeout. A life stopped at or after it was timed out. */
+  deadline: timestamp({ withTimezone: true }),
+  /** How long the timeout that set `deadline` ran for, in minutes, so an
+   *  agent's restart can keep it (docs/routines.md "Timeouts"). */
+  timeoutMinutes: integer(),
+  /** The deadline is a routine's next tick, which the next run takes over
+   *  from, rather than a timeout; a stop there ended at the next run. */
+  deadlineIsNextRun: boolean().notNull().default(false),
+  /** When its stop was recorded. Null on the current life while it runs,
+   *  and on an earlier one whose stop was never recorded. */
+  stoppedAt: timestamp({ withTimezone: true }),
+  /** Set only when the stale reaper, not the user, stopped it. */
+  deathReason: text().$type<WorkspaceDeathReason>(),
+  deathDetail: text(),
+  /** The users who viewed that death's detail, each of whom no longer gets
+   *  the "Stopped workspaces" dot for it. */
+  deathSeenBy: uuid().array().notNull().default([]),
+  /** How a non-interactive workspace's graph ended; null until it did. */
+  stepsOutcome: text().$type<StepsOutcome>(),
+  /** When a removal of the checkout's gitignored files that began after its
+   *  stop finished (docs/workspace-storage.md "Ignored files at stop"). A
+   *  stopped current life without one is still to be cleaned. */
+  ignoredCleanedAt: timestamp({ withTimezone: true }),
+}, (t) => [primaryKey({ columns: [t.workspaceId, t.startedAt] })])
+
+/**
+ * The workflows of a life: each one it started, each added while it ran, and
+ * each init workflow it skipped, under the name the workflow has in the
+ * workspace. Its steps are the `workspaceSteps` rows of that life and name.
+ */
+export const workspaceLifeWorkflows = snakeCase.table('workspace_life_workflows', {
+  workspaceId: text().notNull(),
+  life: timestamp({ withTimezone: true }).notNull(),
+  /** '' is the workflow of a life started before steps had workflows
+   *  (docs/legacy-compat-shims.md). */
+  name: text().notNull(),
+  /** The stored workflow, whose repos say where its steps start. */
+  workflowId: uuid().notNull().references((): AnyPgColumn => workflows.id),
+  /** An init workflow the life did not start, for lack of a repo it names:
+   *  those of the workflow's `repos` the workspace has no checkout of. */
+  skipped: boolean().notNull().default(false),
+}, (t) => [
+  primaryKey({ columns: [t.workspaceId, t.life, t.name] }),
+  foreignKey({
+    name: 'workspace_life_workflows_life_fkey',
+    columns: [t.workspaceId, t.life],
+    foreignColumns: [workspaceLives.workspaceId, workspaceLives.startedAt],
+  }).onDelete('cascade'),
+])
 
 /**
  * A workspace's checkouts, one per repo it was created with
@@ -573,7 +608,7 @@ export const sessions = snakeCase.table('sessions', {
   openedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   closedAt: timestamp({ withTimezone: true }),
   /** When its window was last launched. One launched before the workspace's
-   *  current life (`lifeStartedAt`) has no window yet in this one. */
+   *  current life began has no window yet in this one. */
   launchedAt: timestamp({ withTimezone: true }),
   /** The message it was opened with, shown until its agent names a
    *  conversation that records its own. */
@@ -599,13 +634,15 @@ export const sessions = snakeCase.table('sessions', {
 
 /**
  * A workspace's steps (docs/workspace-steps.md): each runs in the tmux
- * window named by its full name, `<workflow>.<step>`. A start step's row is
- * replaced at every start of its workspace; an added one runs once. Rows
+ * window named by its full name, `<workflow>.<step>`. Every life keeps its
+ * own rows: a start step has one per life, an added one runs once. Rows
  * change only through `applyWorkspaceEvent`, from what the step reconcile
  * observes.
  */
 export const workspaceSteps = snakeCase.table('workspace_steps', {
-  workspaceId: text().notNull().references(() => workspaces.workspaceId, { onDelete: 'cascade' }),
+  workspaceId: text().notNull(),
+  /** The life it belongs to, which names its log dir. */
+  life: timestamp({ withTimezone: true }).notNull(),
   /** The name its workflow has in this workspace. '' is a step of a life
    *  started before steps had workflows, known by its bare name
    *  (docs/legacy-compat-shims.md). */
@@ -614,15 +651,9 @@ export const workspaceSteps = snakeCase.table('workspace_steps', {
   projectId: uuid().notNull(),
   origin: text().$type<StepOrigin>().notNull(),
   spec: jsonb().$type<StepSpec>().notNull(),
-  /** The workflow it came from, whose repos say where it starts. Null only
-   *  on a row of such an old life. */
-  workflowId: uuid().references((): AnyPgColumn => workflows.id),
   state: text().$type<StepState>().notNull(),
   /** Its window's exit status, once it exited. */
   exitCode: integer(),
-  /** The life (`workspaces.lifeStartedAt`) it belongs to, which names its
-   *  log dir. */
-  life: timestamp({ withTimezone: true }).notNull(),
   /** Display order within its workspace. */
   ordinal: integer().notNull(),
   /** When the server last opened its window in this life; kept by a reset
@@ -630,7 +661,14 @@ export const workspaceSteps = snakeCase.table('workspace_steps', {
   startedAt: timestamp({ withTimezone: true }),
   readyAt: timestamp({ withTimezone: true }),
   finishedAt: timestamp({ withTimezone: true }),
-}, (t) => [primaryKey({ columns: [t.workspaceId, t.workflowName, t.name] })])
+}, (t) => [
+  primaryKey({ columns: [t.workspaceId, t.life, t.workflowName, t.name] }),
+  foreignKey({
+    name: 'workspace_steps_life_workflow_fkey',
+    columns: [t.workspaceId, t.life, t.workflowName],
+    foreignColumns: [workspaceLifeWorkflows.workspaceId, workspaceLifeWorkflows.life, workspaceLifeWorkflows.name],
+  }).onDelete('cascade'),
+])
 
 /**
  * One row per agent conversation, keyed by the tool's own session id. A

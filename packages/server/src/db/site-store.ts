@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, inArray, isNull, ne } from 'drizzle-orm'
 import { getDb } from './client'
-import { sites, workspaces } from './schema'
+import { sites, workspaceLives, workspaces } from './schema'
+import { currentLife } from './current-life'
 import { listWorkspaceReposFor, type WorkspaceRepoRow } from './repo-store'
 import { isUuid } from '#lib/uuid'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
@@ -146,9 +147,9 @@ export async function listSiteReleases(siteId: string, limit: number): Promise<A
   const rows = await db.select({
     workspaceId: workspaces.workspaceId,
     createdAt: workspaces.createdAt,
-    stoppedAt: workspaces.stoppedAt,
+    stoppedAt: workspaceLives.stoppedAt,
     rerunOf: workspaces.rerunOf,
-  }).from(workspaces).where(eq(workspaces.siteId, siteId)).orderBy(desc(workspaces.createdAt)).limit(limit)
+  }).from(workspaces).innerJoin(workspaceLives, currentLife).where(eq(workspaces.siteId, siteId)).orderBy(desc(workspaces.createdAt)).limit(limit)
   const checkouts = await listWorkspaceReposFor(rows.map((r) => r.workspaceId))
   return rows.map((r) => ({ ...nullsToUndefined(r), checkouts: checkouts.get(r.workspaceId) ?? [] }))
 }

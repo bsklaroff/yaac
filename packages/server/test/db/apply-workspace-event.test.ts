@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { closeDb } from '#db/client'
+import { asc, eq } from 'drizzle-orm'
+import { closeDb, getDb } from '#db/client'
+import { workspaceLifeWorkflows, workspaceLives } from '#db/schema'
 import { applyWorkspaceEvent } from '#db/apply-workspace-event'
+import { listWorkspaceSteps } from '#db/step-store'
+import { storeWorkflow } from '#db/workflow-store'
 import {
-  clearWorkspaceStopped,
   getProjectWorkspaceRows,
   recordWorkspaceCreated,
   setWorkspaceTitle,
@@ -14,6 +17,7 @@ import { listWorkspaceRepos } from '#db/repo-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
 import { listWorkspaceConversations } from '#db/conversation-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
+import type { StepGraph } from '@yaac/shared/steps'
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
 const ELSEWHERE = '916a4314-2e8d-4811-8766-75eeedc5ae4a'
@@ -48,6 +52,18 @@ describe('applyWorkspaceEvent', () => {
       type: 'workspace-created', projectId: PROJ, workspaceId, ...extra,
     })
 
+  /** A restart: the workspace's next life, each later than any before it. */
+  let ahead = 0
+  const restarted = (workspaceId: string, extra = {}): Promise<void> =>
+    applyWorkspaceEvent({
+      type: 'workspace-life-started', projectId: PROJ, workspaceId, at: new Date(Date.now() + (ahead += 1000)), startSteps: [],
+      ...extra,
+    })
+
+  /** A workspace's lives, oldest first. */
+  const livesOf = async (workspaceId: string) => (await getDb()).select().from(workspaceLives)
+    .where(eq(workspaceLives.workspaceId, workspaceId)).orderBy(asc(workspaceLives.startedAt))
+
   const stopped = (workspaceId: string, extra = {}): Promise<void> =>
     applyWorkspaceEvent({
       type: 'workspace-stopped', projectId: PROJ, workspaceId, ...extra,
@@ -68,11 +84,52 @@ describe('applyWorkspaceEvent', () => {
     ])
   })
 
-  // What its runtime launched with, which a restart replaces.
-  it('records the zone and scratch dirs it was created with', async () => {
-    await created('wt-launch', { timeZone: 'Europe/Paris', scratchDirs: ['node_modules'] })
+  // Its first life starts with it, holding what its runtime launched with.
+  it('records the life it was created with: when it began, its zone, scratch dirs and deadline', async () => {
+    const at = new Date(Date.now() - 5_000)
+    await created('wt-launch', {
+      at, timeZone: 'Europe/Paris', scratchDirs: ['node_modules'], deadline: new Date(Date.now() + 30 * 60_000),
+    })
 
-    expect(await rowOf('wt-launch')).toMatchObject({ timeZone: 'Europe/Paris', scratchDirs: ['node_modules'] })
+    expect(await rowOf('wt-launch')).toMatchObject({
+      lifeStartedAt: at, timeZone: 'Europe/Paris', scratchDirs: ['node_modules'], timeoutMinutes: 30, deathSeenBy: [],
+    })
+    expect(await livesOf('wt-launch')).toHaveLength(1)
+
+    // Its runtime coming up is stamped once, on that life.
+    expect((await rowOf('wt-launch'))?.launchedAt).toBeUndefined()
+    const launched = (): Promise<void> => applyWorkspaceEvent({ type: 'workspace-launched', projectId: PROJ, workspaceId: 'wt-launch' })
+    await launched()
+    const launchedAt = (await rowOf('wt-launch'))?.launchedAt
+    expect(launchedAt).toBeInstanceOf(Date)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    await launched()
+    expect((await rowOf('wt-launch'))?.launchedAt).toEqual(launchedAt)
+  })
+
+  // A life's workflows are its own rows: the ones it starts, with their
+  // steps pending, one with no steps, and an init workflow it skipped.
+  it('records the workflows a life starts and the init workflows it skips', async () => {
+    const graphs: StepGraph[] = [{ install: { run: ['pnpm install'] } }, {}, { test: { run: ['pytest'] } }]
+    const [web, empty, api] = await Promise.all(graphs
+      .map(async (steps) => ({ id: (await storeWorkflow(PROJ, { steps, secrets: [] })).id, steps })))
+    const at = new Date(Date.now() - 5_000)
+    await created('wt-flows', {
+      at,
+      startSteps: [{ ...web, name: 'web-init' }, { ...empty, name: 'noop' }],
+      skipped: [{ id: api.id, name: 'api-init' }],
+    })
+
+    const flows = await (await getDb()).select().from(workspaceLifeWorkflows)
+      .where(eq(workspaceLifeWorkflows.workspaceId, 'wt-flows')).orderBy(asc(workspaceLifeWorkflows.name))
+    expect(flows).toEqual([
+      { workspaceId: 'wt-flows', life: at, name: 'api-init', workflowId: api.id, skipped: true },
+      { workspaceId: 'wt-flows', life: at, name: 'noop', workflowId: empty.id, skipped: false },
+      { workspaceId: 'wt-flows', life: at, name: 'web-init', workflowId: web.id, skipped: false },
+    ])
+    expect(await listWorkspaceSteps('wt-flows')).toMatchObject([
+      { life: at, workflowName: 'web-init', workflowId: web.id, name: 'install', origin: 'start', state: 'pending' },
+    ])
   })
 
   // A session's row is what its agent is doing: each reported move lands,
@@ -101,7 +158,7 @@ describe('applyWorkspaceEvent', () => {
     const a = await insertSession(PROJ, 'wt-w', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
     const b = await insertSession(PROJ, 'wt-w', { cwd: '', tool: 'codex', mode: 'tui', permissionMode: 'bypass' })
     for (const s of [a, b]) await recordSessionWaitingSeen(s.id, BUILT_IN_USER_ID)
-    await created('wt-w', { resume: true })
+    await restarted('wt-w')
     expect((await getSessionRow(a.id))?.waitingSeenBy).toEqual([BUILT_IN_USER_ID])
     await applyWorkspaceEvent({ type: 'waiting-ended', projectId: PROJ, workspaceId: 'wt-w', window: a.window })
     expect((await getSessionRow(a.id))?.waitingSeenBy).toEqual([])
@@ -127,24 +184,32 @@ describe('applyWorkspaceEvent', () => {
     expect((await getProjectWorkspaceRows(ELSEWHERE)).size).toBe(0)
   })
 
-  it('re-stamps a resumed workspace\'s live fields, keeping what belongs to the workspace', async () => {
+  // A restart is the workspace's next life: the workspace keeps what is
+  // its own, and the life before keeps how it ended.
+  it('starts a restarted workspace\'s next life, keeping the workspace and the life before it', async () => {
     await applyWorkspaceEvent({ type: 'base-branch-resolved', projectId: PROJ, workspaceId: 'wt-1', repoId: REPO, baseBranch: 'main' })
     await setWorkspaceTitle(PROJ, 'wt-1', 'my workspace')
     const group = await createWorkspaceGroup(PROJ, 'release', 'wt-1')
     await stopped('wt-1', { cause: { reason: 'oom', detail: 'exit code 137' } })
     const before = await rowOf('wt-1')
 
-    await created('wt-1', { resume: true, timeZone: 'Asia/Tokyo' })
+    await restarted('wt-1', { timeZone: 'Asia/Tokyo', scratchDirs: ['target'] })
 
-    expect(await rowOf('wt-1')).toMatchObject({
+    const row = await rowOf('wt-1')
+    expect(row).toMatchObject({
       createdAt: before?.createdAt,
       title: 'my workspace',
       groupId: group.groupId,
       timeZone: 'Asia/Tokyo',
-      // The stop stays until the restart succeeds (`clearWorkspaceStopped`).
-      stoppedAt: before?.stoppedAt,
-      deathReason: 'oom',
+      scratchDirs: ['target'],
+      deathSeenBy: [],
     })
+    expect(row?.stoppedAt).toBeUndefined()
+    expect(row?.deathReason).toBeUndefined()
+    expect(await livesOf('wt-1')).toMatchObject([
+      { startedAt: before?.lifeStartedAt, stoppedAt: before?.stoppedAt, deathReason: 'oom', deathDetail: 'exit code 137' },
+      { startedAt: row?.lifeStartedAt, stoppedAt: null },
+    ])
     expect(await listWorkspaceRepos('wt-1')).toMatchObject([{ repoId: REPO, baseBranch: 'main' }])
   })
 
@@ -152,7 +217,7 @@ describe('applyWorkspaceEvent', () => {
   // restored DB) can reach a resume without one — and minting a row for it
   // would be making a record up.
   it('refuses to resume a workspace with no row', async () => {
-    await expect(created('wt-ghost', { resume: true })).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await expect(restarted('wt-ghost')).rejects.toMatchObject({ code: 'NOT_FOUND' })
     expect(await rowOf('wt-ghost')).toBeUndefined()
   })
 
@@ -266,7 +331,7 @@ describe('applyWorkspaceEvent', () => {
 
   // A reaper pass that probed a workspace mid-stop reports a death after the
   // user's stop; it must not relabel it, nor a later stop wipe a death.
-  it('keeps the first stop recorded until a restart clears it', async () => {
+  it('keeps the first stop recorded in a life', async () => {
     await stopped('wt-1')
     const stoppedAt = (await rowOf('wt-1'))?.stoppedAt
     await stopped('wt-1', { cause: { reason: 'agent-exited' } })
@@ -278,7 +343,7 @@ describe('applyWorkspaceEvent', () => {
     await stopped('wt-2')
     expect(await rowOf('wt-2')).toMatchObject({ deathReason: 'oom', deathDetail: 'exit code 137' })
 
-    await clearWorkspaceStopped(PROJ, 'wt-2')
+    await restarted('wt-2')
     await stopped('wt-2')
     expect((await rowOf('wt-2'))?.deathReason).toBeUndefined()
   })
@@ -330,16 +395,23 @@ describe('applyWorkspaceEvent', () => {
     expect(await listWorkspaceConversations(PROJ, 'wt-fresh')).toEqual([])
   })
 
-  // The row keeps its stop until a restart succeeds, so a failed resume
-  // leaves it exactly as the restart found it, death cause and all.
+  // A failed restart loses only the life it had started, steps and all,
+  // so the workspace reads as the restart found it, death cause and all.
   it('leaves a failed resume as the restart found it', async () => {
     await stopped('wt-1', { cause: { reason: 'oom', detail: 'exit code 137' } })
     const before = await rowOf('wt-1')
+    const workflow = await storeWorkflow(PROJ, { steps: { install: { run: ['pnpm install'] } }, secrets: [] })
 
-    await created('wt-1', { resume: true })
-    await failed('wt-1', { resume: true })
+    // One that failed before its life began has none to lose.
+    await failed('wt-1', { lifeBefore: before?.lifeStartedAt })
+    expect(await rowOf('wt-1')).toEqual(before)
+
+    await restarted('wt-1', { startSteps: [{ id: workflow.id, name: 'ci', steps: workflow.steps }] })
+    expect((await rowOf('wt-1'))?.stoppedAt).toBeUndefined()
+    await failed('wt-1', { lifeBefore: before?.lifeStartedAt })
 
     expect(await rowOf('wt-1')).toEqual(before)
+    expect(await listWorkspaceSteps('wt-1')).toEqual([])
   })
 
   // Rows are a snapshot input and this is the only door they change

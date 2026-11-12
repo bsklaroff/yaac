@@ -371,7 +371,7 @@ describe('openDb', () => {
       INSERT INTO workspaces (project_id, workspace_id, workflow_id, workflow_name) VALUES
         ('${P}', 'w-named', '${F1}', 'web.init'), ('${P}', 'w-own', '${F1}', NULL), ('${P}', 'w-init', NULL, NULL);
       INSERT INTO workspace_steps (workspace_id, name, project_id, origin, spec, state, life, ordinal, workflow_id, workflow_name)
-        VALUES ('w-named', 'build', '${P}', 'start', '{"run":["make"]}', 'running', now(), 0, NULL, NULL),
+        VALUES ('w-named', 'build', '${P}', 'start', '{"run":["make"]}', 'running', now(), 0, '${F1}', NULL),
           ('w-named', 'lint', '${P}', 'added', '{"run":["lint"]}', 'pending', now(), 1, '${F1}', 'ci');
     `)
     try {
@@ -456,6 +456,74 @@ describe('openDb', () => {
           deploy_commits: { [REPO]: B }, last_deploy_commits: { [REPO]: A }, failed_commits: null,
         },
       ])
+    } finally {
+      await db.$client.close()
+    }
+  })
+
+  // Each workspace's launch and stop facts become its current life, begun
+  // when it was created where no life was recorded. An earlier life is known
+  // only by the steps it left and has no recorded stop. A life's workflows
+  // are the ones its steps name, a step of no stored workflow goes, and a
+  // clean that predates the stop is not one of that stop.
+  it('moves each workspace\'s life onto life rows, with the workflows its steps name', async () => {
+    const [P, F1, F2] = [1, 2, 3].map((n) => `0e0e0e0e-0000-4000-8000-00000000000${n}`)
+    const [L1, L2, STOP, DEADLINE, CREATED] = [1, 2, 3, 4, 5].map((d) => `2026-11-0${d}T00:00:00.000Z`)
+    const step = (workspace: string, life: string, ordinal: number, flow: string, name: string, origin: string, state: string, id: string | null): string =>
+      `('${workspace}', '${name}', '${P}', '${origin}', '{"run":["true"]}', '${state}', '${life}', ${ordinal}, ${id === null ? 'NULL' : `'${id}'`}, '${flow}')`
+    const db = await seedBefore('add_workspace_lives', `
+      INSERT INTO projects (id, owner, name, added_at) VALUES ('${P}', (SELECT id FROM users LIMIT 1), 'p', '2026-01-01');
+      INSERT INTO workflows (id, project_id, steps, hash) VALUES ('${F1}', '${P}', '{}', 'h1'), ('${F2}', '${P}', '{}', 'h2');
+      INSERT INTO workspaces (project_id, workspace_id, created_at, life_started_at, time_zone, scratch_dirs,
+        tracked_scratch_dirs, deadline, timeout_minutes, deadline_is_next_run) VALUES
+        ('${P}', 'w-run', '${CREATED}', '${L2}', 'Europe/Paris', '{node_modules}', '{target}', '${DEADLINE}', 30, true);
+      INSERT INTO workspaces (project_id, workspace_id, created_at, life_started_at, stopped_at, death_reason,
+        death_detail, death_seen_by, steps_outcome, ignored_cleaned_at) VALUES
+        ('${P}', 'w-dead', '${CREATED}', '${L1}', '${STOP}', 'oom', 'exit code 137', ARRAY(SELECT id FROM users LIMIT 1),
+          'failed', '${DEADLINE}'),
+        ('${P}', 'w-old', '${CREATED}', NULL, '${STOP}', NULL, NULL, '{}', NULL, '${L1}');
+      INSERT INTO workspace_steps (workspace_id, name, project_id, origin, spec, state, life, ordinal, workflow_id, workflow_name) VALUES
+        ${step('w-run', L1, 0, 'k3f9', 'lint', 'added', 'interrupted', F2)},
+        ${step('w-run', L2, 1, 'web', 'install', 'start', 'succeeded', F1)},
+        ${step('w-run', L2, 2, 'web', 'build', 'start', 'running', F1)},
+        ${step('w-dead', L1, 0, '', 'install', 'start', 'failed', F1)},
+        ${step('w-dead', L1, 1, '', 'test', 'added', 'failed', F2)},
+        ${step('w-dead', L1, 2, '', 'ancient', 'added', 'failed', null)};
+    `)
+    try {
+      const lives = await db.$client.query<Record<string, unknown>>(
+        `SELECT workspace_id, started_at, launched_at, time_zone, scratch_dirs, tracked_scratch_dirs, deadline, timeout_minutes,
+          deadline_is_next_run, stopped_at, death_reason, death_detail, cardinality(death_seen_by) AS seen, steps_outcome,
+          ignored_cleaned_at FROM workspace_lives ORDER BY workspace_id, started_at`)
+      const none = {
+        time_zone: null, scratch_dirs: null, tracked_scratch_dirs: [], deadline: null, timeout_minutes: null,
+        deadline_is_next_run: false, stopped_at: null, death_reason: null, death_detail: null, seen: 0, steps_outcome: null,
+        ignored_cleaned_at: null,
+      }
+      expect(lives.rows).toEqual([
+        {
+          ...none, workspace_id: 'w-dead', started_at: new Date(L1), stopped_at: new Date(STOP), death_reason: 'oom',
+          death_detail: 'exit code 137', seen: 1, steps_outcome: 'failed', ignored_cleaned_at: new Date(DEADLINE),
+        },
+        { ...none, workspace_id: 'w-old', started_at: new Date(CREATED), stopped_at: new Date(STOP) },
+        { ...none, workspace_id: 'w-run', started_at: new Date(L1) },
+        {
+          ...none, workspace_id: 'w-run', started_at: new Date(L2), time_zone: 'Europe/Paris', scratch_dirs: ['node_modules'],
+          tracked_scratch_dirs: ['target'], deadline: new Date(DEADLINE), timeout_minutes: 30, deadline_is_next_run: true,
+        },
+        // Each is taken to have come up as it started.
+      ].map((life) => ({ ...life, launched_at: life.started_at })))
+      const flows = await db.$client.query(
+        'SELECT workspace_id, life, name, workflow_id, skipped FROM workspace_life_workflows ORDER BY workspace_id, life')
+      expect(flows.rows).toEqual([
+        { workspace_id: 'w-dead', life: new Date(L1), name: '', workflow_id: F1, skipped: false },
+        { workspace_id: 'w-run', life: new Date(L1), name: 'k3f9', workflow_id: F2, skipped: false },
+        { workspace_id: 'w-run', life: new Date(L2), name: 'web', workflow_id: F1, skipped: false },
+      ])
+      const steps = await db.$client.query<{ workspace_id: string; name: string }>(
+        'SELECT workspace_id, name FROM workspace_steps ORDER BY workspace_id, ordinal')
+      expect(steps.rows.map((r) => `${r.workspace_id}/${r.name}`))
+        .toEqual(['w-dead/install', 'w-dead/test', 'w-run/lint', 'w-run/install', 'w-run/build'])
     } finally {
       await db.$client.close()
     }

@@ -320,13 +320,6 @@ export async function repointProjectRepos(owner: string, fromRepoId: string, toR
   notifyWorkspaceListChanged()
 }
 
-/** Record a workspace's checkouts as it is created. */
-export async function insertWorkspaceRepos(rows: WorkspaceRepoRow[]): Promise<void> {
-  if (rows.length === 0) return
-  const db = await getDb()
-  await db.insert(workspaceRepos).values(rows)
-}
-
 /** A workspace's checkouts, the one at its root (or the first folder) first. */
 export async function listWorkspaceRepos(workspaceId: string): Promise<WorkspaceRepoRow[]> {
   return (await listWorkspaceReposFor([workspaceId])).get(workspaceId) ?? []
