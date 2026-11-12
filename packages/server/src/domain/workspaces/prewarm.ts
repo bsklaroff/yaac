@@ -24,7 +24,7 @@ import { cleanupWorkspace, deleteWorkspaceState } from './cleanup'
 import { claimProvisioning, spawningSpares } from './provisioning'
 import { rebranchSpare } from './spare-pool'
 import { storedSelection, type WorkspaceStart } from './checkouts'
-import { lifeHooksExec, recordLife, startStepsOf } from './life'
+import { lifeHooksExec, startStepsOf } from './life'
 import { recordTrackedScratchDirs } from './tracked-scratch-dirs'
 import { launchSessions } from './session-launch'
 import {
@@ -501,6 +501,12 @@ export async function tryClaimPrewarmed(
     // sidebar does not show both.
     const claimedId = chosen.workspaceId
     claimProvisioning(requestId, claimedId)
+    // A spare runs only the project's init workflows, so a create bringing
+    // its own graph never claims one. They are the ones that apply to the
+    // claim's selection, which is the one the spare was warmed with.
+    const lifeStart = await startStepsOf(projectId, undefined, branches.map((c) => c.repoId))
+    for (const s of lifeStart.skipped) emit(`Init workflow "${s.name}" skipped: this workspace has no ${s.missing.join(', ')}`)
+    const life = new Date()
     await applyWorkspaceEvent({
       type: 'workspace-created',
       projectId,
@@ -516,14 +522,11 @@ export async function tryClaimPrewarmed(
       ...(request.deadline !== undefined ? { deadline: request.deadline } : {}),
       ...(timeZone !== undefined ? { timeZone } : {}),
       ...(warmed?.scratchDirs !== undefined ? { scratchDirs: warmed.scratchDirs } : {}),
+      at: life,
+      startSteps: lifeStart.flows,
+      skipped: lifeStart.skipped,
     })
     inserted = true
-    // A spare runs only the project's init workflows, so a create bringing
-    // its own graph never claims one. They are the ones that apply to the
-    // claim's selection, which is the one the spare was warmed with.
-    const lifeStart = await startStepsOf(projectId, undefined, branches.map((c) => c.repoId))
-    for (const s of lifeStart.skipped) emit(`Init workflow "${s.name}" skipped: this workspace has no ${s.missing.join(', ')}`)
-    const life = await recordLife(projectId, claimedId, lifeStart.flows)
     // Recorded now, so a server that dies before the launch below leaves it
     // for `reconcileSessions` to launch.
     const opened = session !== undefined ? await insertSession(projectId, claimedId, session) : undefined
@@ -608,6 +611,7 @@ export async function tryClaimPrewarmed(
     await runtime.claimSpare(claimedId)
     claimed = true
     spareSettings.delete(claimedId)
+    await applyWorkspaceEvent({ type: 'workspace-launched', projectId, workspaceId: claimedId })
 
     // The life's log hooks, before any window of it opens, and the commit
     // each checkout now starts at, one per line.

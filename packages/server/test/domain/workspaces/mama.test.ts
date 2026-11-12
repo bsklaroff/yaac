@@ -174,7 +174,6 @@ describe('mamaCaller', () => {
   // held to the strictest of the workspace's open sessions.
   it("holds a session's agent to its own session's posture, and anyone else to the strictest open one", async () => {
     const loose = await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { tool: 'codex', mode: 'acp', permissionMode: 'bypass' })
-    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: PROJ, workspaceId: 'caller-workspace', at: new Date(), startSteps: [] })
     const plan = await insertSession(PROJ, 'caller-workspace', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'plan' })
     const edits = await insertSession(PROJ, 'caller-workspace', { cwd: '', tool: 'claude', mode: 'acp', permissionMode: 'accept-edits' })
     const elsewhere = await created({ projectId: PROJ, workspaceId: 'other-workspace' }, { permissionMode: 'bypass' })
@@ -1553,7 +1552,6 @@ describe('runMamaCommand', () => {
 
     it('adds a step to a running workspace with --run, and reads where it stands', async () => {
       await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { permissionMode: 'bypass' })
-      await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: PROJ, workspaceId: 'caller-workspace', at: new Date(), startSteps: [] })
       running = [podFor('caller-workspace')]
       // It is a workflow of its own, `_added-N`, and prints its full name; a
       // bare name reads where it stands while it is unambiguous.
@@ -1679,16 +1677,14 @@ describe('runMamaCommand', () => {
       // Registered before the reply, so the sidebar shows it at once.
       expect(listProvisioning()).toMatchObject([{ workspaceId: 'sibling-workspace', kind: 'restart', tool: 'claude' }])
       await vi.waitFor(() => { expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1) })
-      // It keeps its stop until the relaunch succeeds, but is no longer
-      // listed as stopped, so an agent watching does not restart it again.
+      // Its stop stands until the relaunch starts its next life, but it is
+      // no longer listed as stopped, so an agent watching does not restart
+      // it again.
       expect((await getWorkspaceRow(PROJ, 'sibling-workspace'))?.stoppedAt).toBeInstanceOf(Date)
       expect(await output('list', '', { stopped: '1' })).toBe('No stopped workspaces in this project.')
       expect(await output('list')).not.toContain('stopped workspace')
       release()
       expect(vi.mocked(createWorkspace).mock.calls[0]).toMatchObject([PROJ, { workspaceId: 'sibling-workspace', resume: true }])
-      await vi.waitFor(async () => {
-        expect((await getWorkspaceRow(PROJ, 'sibling-workspace'))?.stoppedAt).toBeUndefined()
-      })
       await vi.waitFor(() => { expect(listProvisioning()).toEqual([]) })
     })
 
@@ -1938,9 +1934,8 @@ describe('runMamaCommand', () => {
     })
 
     it('lists a workspace\'s steps and prints the end of a started one\'s log, never a window that only shares its name', async () => {
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'ci-run', nonInteractive: true })
       await applyWorkspaceEvent({
-        type: 'workspace-life-started', projectId: PROJ, workspaceId: 'ci-run', at: life,
+        type: 'workspace-created', projectId: PROJ, workspaceId: 'ci-run', nonInteractive: true, at: life,
         startSteps: [{ id: (await storeWorkflow(PROJ, { steps: {}, secrets: [] })).id, name: 'ci', steps: {
           build: { run: ['make'] },
           noisy: { run: ['gen'] },

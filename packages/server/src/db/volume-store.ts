@@ -1,6 +1,7 @@
 import { and, asc, eq, inArray, isNotNull, isNull, or, type SQL } from 'drizzle-orm'
 import { getDb } from './client'
-import { deletedVolumes, volumes, workspaces } from './schema'
+import { deletedVolumes, volumes, workspaceLives, workspaces } from './schema'
+import { currentLife } from './current-life'
 import { isUuid } from '#lib/uuid'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
 import { ServerError } from '@yaac/shared/errors'
@@ -209,8 +210,8 @@ export async function listVolumeWorkspaces(
     workspaceId: workspaces.workspaceId,
     title: workspaces.title,
     generatedTitle: workspaces.generatedTitle,
-    stoppedAt: workspaces.stoppedAt,
-  }).from(workspaces).where(inArray(workspaces.volumeId, volumeIds))
+    stoppedAt: workspaceLives.stoppedAt,
+  }).from(workspaces).innerJoin(workspaceLives, currentLife).where(inArray(workspaces.volumeId, volumeIds))
   return rows.flatMap((r) => r.volumeId === null ? [] : [{
     volumeId: r.volumeId,
     workspaceId: r.workspaceId,

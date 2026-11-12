@@ -7,6 +7,7 @@ import type {
 } from '@yaac/shared/types'
 import type { StepState, StepsOutcome } from '@yaac/shared/steps'
 import type { LifeWorkflow } from './step-store'
+import type { LifeLaunch } from './workspace-store'
 
 /**
  * Facts that substrate- and disk-observing code reports to db, applied by
@@ -22,6 +23,7 @@ export type WorkspaceEvent =
   | WorkspaceCreated
   | WorkspaceCreateFailed
   | WorkspaceLifeStarted
+  | WorkspaceLaunched
   | BaseBranchResolved
   | StartCommitResolved
   | StepChanged
@@ -38,39 +40,35 @@ export type WorkspaceEvent =
   | VolumeReleased
   | VolumesPinned
 
+/** A life as it starts: what it launches with, the workflows it starts, and
+ *  the init workflows it skips for lack of a repo they name. */
+export interface LifeStart extends LifeLaunch {
+  startSteps: LifeWorkflow[]
+  skipped?: Array<{ id: string; name: string }>
+}
+
 /**
- * Provisioning has begun, emitted before anything is built so every user
- * workspace's runtime has a row; or a prewarmed spare was claimed, which is
- * the claim's commit point (a spare has no row until then).
+ * Provisioning of a new workspace has begun, emitted before anything is
+ * built so every user workspace's runtime has a row; or a prewarmed spare
+ * was claimed, which is the claim's commit point (a spare has no row until
+ * then). Its first life starts with it, now unless `at` says when, so none
+ * of its sessions has a window yet.
  */
-export interface WorkspaceCreated {
+export interface WorkspaceCreated extends Partial<LifeStart> {
   type: 'workspace-created'
   projectId: string
   workspaceId: string
   /** Its checkouts, each with the branch it forks from when that is
-   *  resolved before provisioning, and where its shells and steps start.
-   *  Absent on a resume, which keeps what its rows record. */
+   *  resolved before provisioning, and where its shells and steps start. */
   repos?: Array<{ repoId: string; path: string; baseBranch?: string }>
   cwd?: string
-  /** An existing workspace is being restarted. Its row has history (title,
-   *  founding prompt, how it last died), so a failed resume leaves the row
-   *  as it was rather than erasing it. */
-  resume?: boolean
   /** The user's title, the title generated for the draft or queued entry it
-   *  was created from, and its sidebar group, on a fresh create. */
+   *  was created from, and its sidebar group. */
   title?: string
   generatedTitle?: string
   groupId?: string
-  /** The zone it launches with as `TZ` (see `workspaces.timeZone`). */
-  timeZone?: string
-  /** When the server stops it (see `workspaces.deadline`). A resume without
-   *  one clears the deadline. */
-  deadline?: Date
-  /** The scratch dirs it is started with (see `workspaces.scratchDirs`). */
-  scratchDirs?: string[]
-  /** On a fresh create: the graph it brought in place of the project's
-   *  init steps, whether it is non-interactive, and the non-interactive
-   *  workspace it reruns. */
+  /** The graph it brought in place of the project's init steps, whether it
+   *  is non-interactive, and the non-interactive workspace it reruns. */
   workflowId?: string
   /** The named workflow it was chosen through: a record. */
   workflowName?: string
@@ -81,30 +79,38 @@ export interface WorkspaceCreated {
 }
 
 /**
- * Provisioning failed; undoes `workspace-created`. The handler decides what
- * that means: a fresh workspace's row is erased, a resumed one is left as
- * the restart found it.
+ * Provisioning failed; undoes what the create recorded. A fresh workspace's
+ * row is erased. A restart's workspace has history (title, founding prompt,
+ * how it last died), so it loses only the life the restart had started, if
+ * it got that far, and reads as the restart found it.
  */
 export interface WorkspaceCreateFailed {
   type: 'workspace-create-failed'
   projectId: string
   workspaceId: string
-  resume?: boolean
+  /** On a failed restart: when the life it restarted from began. */
+  lifeBefore?: Date
 }
 
 /**
- * A new runtime life is starting for this workspace, so none of its sessions
- * has a window in it yet. Emitted after the row exists and before any
- * session is launched.
+ * A workspace is restarting: its next life starts, so none of its sessions
+ * has a window in it yet. Emitted before any session is launched.
  */
-export interface WorkspaceLifeStarted {
+export interface WorkspaceLifeStarted extends LifeStart {
   type: 'workspace-life-started'
   projectId: string
   workspaceId: string
-  /** When it started, which names its log dir and its steps' life. */
-  at: Date
-  /** The workflows this life starts, replacing the last life's start steps. */
-  startSteps: LifeWorkflow[]
+}
+
+/**
+ * The runtime of a workspace's current life came up: its create, claim or
+ * restart finished. A current life without this, whose runtime is gone and
+ * which no create in this process is starting, never came up.
+ */
+export interface WorkspaceLaunched {
+  type: 'workspace-launched'
+  projectId: string
+  workspaceId: string
 }
 
 /** The commit one of a workspace's checkouts was created at. */
@@ -287,9 +293,8 @@ export interface WaitingEnded {
 
 
 /**
- * A workspace's runtime went away (user stop, project teardown, or reaper).
- * `cause` is set only by a reaper, so a plain stop can't inherit an earlier
- * death's reason.
+ * A workspace's runtime went away (user stop, project teardown, or reaper),
+ * which ends its current life. `cause` is set only by a reaper.
  */
 export interface WorkspaceStopped {
   type: 'workspace-stopped'

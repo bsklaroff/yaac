@@ -20,10 +20,8 @@ import {
   recordDeathSeen,
   recordWorkspaceCreated,
   recordWorkspaceLife,
-  recordWorkspaceResumed,
   recordWorkspaceStopped,
   setWorkspaceDeadline,
-  clearWorkspaceStopped,
   setWorkspaceGeneratedTitle,
   setWorkspaceTitle,
   type StoppedRowCursor,
@@ -56,6 +54,11 @@ describe('session store', () => {
     await closeDb()
     await cleanupTempDir(tmpDir)
   })
+
+  /** A restart: the workspace's next life, each later than any before it. */
+  let ahead = 0
+  const restart = (workspaceId: string, extra = {}): Promise<void> =>
+    recordWorkspaceLife(PROJ, workspaceId, { at: new Date(Date.now() + (ahead += 1000)), ...extra })
 
   const create = (workspaceId: string, extra = {}): Promise<void> =>
     recordWorkspaceCreated({ projectId: PROJ, workspaceId, ...extra })
@@ -110,30 +113,29 @@ describe('session store', () => {
       await recordWorkspaceStopped(PROJ, 'timed')
       expect((await listOverdueWorkspaceRows(later)).map((r) => r.workspaceId)).toEqual(['untimed'])
       expect(await setWorkspaceDeadline(PROJ, 'timed', null)).toBe(false)
-      await recordWorkspaceResumed({ projectId: PROJ, workspaceId: 'timed' })
+      await restart('timed')
       expect((await getWorkspaceRow(PROJ, 'timed'))?.deadline).toBeUndefined()
-      await recordWorkspaceResumed({ projectId: PROJ, workspaceId: 'timed', deadline: later })
+      await restart('timed', { deadline: later })
       expect((await getWorkspaceRow(PROJ, 'timed'))?.deadline).toEqual(later)
     })
   })
 
   describe('deletion', () => {
-    it('records the deletion time and clears it again on restart', async () => {
+    it('records the deletion time on the current life, which a restart leaves behind', async () => {
       await create('sid-1')
       await recordWorkspaceStopped(PROJ, 'sid-1')
       expect((await getProjectWorkspaceRows(PROJ)).get('sid-1')?.stoppedAt).toBeInstanceOf(Date)
 
-      await clearWorkspaceStopped(PROJ, 'sid-1')
+      await restart('sid-1')
       expect((await getProjectWorkspaceRows(PROJ)).get('sid-1')?.stoppedAt).toBeUndefined()
     })
 
-    it('keeps the first stop of a life, but replaces one recorded before the current life', async () => {
+    it('keeps the first stop of a life, and gives the next life its own', async () => {
       const stoppedAt = async () => (await getProjectWorkspaceRows(PROJ)).get('sid-1')?.stoppedAt?.getTime()
       vi.useFakeTimers({ toFake: ['Date'] })
       try {
         vi.setSystemTime(1_000_000)
         await create('sid-1')
-        await recordWorkspaceLife(PROJ, 'sid-1', new Date())
         vi.setSystemTime(2_000_000)
         await recordWorkspaceStopped(PROJ, 'sid-1')
         // A second stop in the same life (a reaper probing a user stop).
@@ -141,9 +143,9 @@ describe('session store', () => {
         await recordWorkspaceStopped(PROJ, 'sid-1', { reason: 'crashed' })
         expect(await stoppedAt()).toBe(2_000_000)
 
-        // A restart whose clear of the stop was lost, then a stop much later.
         vi.setSystemTime(4_000_000)
-        await recordWorkspaceLife(PROJ, 'sid-1', new Date())
+        await recordWorkspaceLife(PROJ, 'sid-1', { at: new Date() })
+        expect(await stoppedAt()).toBeUndefined()
         vi.setSystemTime(9_000_000)
         await recordWorkspaceStopped(PROJ, 'sid-1')
         expect(await stoppedAt()).toBe(9_000_000)
@@ -163,7 +165,7 @@ describe('session store', () => {
       await recordDeathSeen(PROJ, 'sid-1', TEAMMATE)
       expect(await seen()).toEqual([TEAMMATE, BUILT_IN_USER_ID])
 
-      await clearWorkspaceStopped(PROJ, 'sid-1')
+      await restart('sid-1')
       await recordWorkspaceStopped(PROJ, 'sid-1', { reason: 'evicted' })
       expect(await seen()).toEqual([])
     })
@@ -335,7 +337,7 @@ describe('session store', () => {
       }
       const db = await getDb()
       for (const [i, id] of ids.entries()) {
-        await db.execute(sql`update workspaces set stopped_at = ${`2026-07-01 00:00:00.000${i + 1}00+00`}::timestamptz
+        await db.execute(sql`update workspace_lives set stopped_at = ${`2026-07-01 00:00:00.000${i + 1}00+00`}::timestamptz
           where workspace_id = ${id}`)
       }
       const seen: string[] = []
@@ -365,7 +367,7 @@ describe('session store', () => {
       ])
 
       // A later stop needs another clean.
-      await clearWorkspaceStopped(PROJ, 'cleaned')
+      await restart('cleaned')
       await recordWorkspaceStopped(PROJ, 'cleaned')
       expect((await listUncleanedStoppedWorkspaces()).map((w) => w.workspaceId)).toEqual(['first', 'second', 'cleaned'])
     })

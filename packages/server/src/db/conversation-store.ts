@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm'
 import { getDb } from './client'
-import { conversations, workspaceConversations, workspaces } from './schema'
+import { conversations, workspaceConversations, workspaceLives, workspaces } from './schema'
+import { currentLife } from './current-life'
 import type { CapturedConversation } from './events'
 import { MAX_MODEL_LENGTH, MAX_PROMPT_BYTES } from '@yaac/shared/types'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
@@ -366,8 +367,9 @@ export async function listUncapturedStoppedConversations(limit: number): Promise
       eq(workspaces.projectId, workspaceConversations.projectId),
       eq(workspaces.workspaceId, workspaceConversations.workspaceId),
     ))
-    .where(and(isNotNull(workspaces.stoppedAt), isNull(conversations.lastActiveAt)))
-    .orderBy(desc(workspaces.stoppedAt), asc(workspaceConversations.ordinal))
+    .innerJoin(workspaceLives, currentLife)
+    .where(and(isNotNull(workspaceLives.stoppedAt), isNull(conversations.lastActiveAt)))
+    .orderBy(desc(workspaceLives.stoppedAt), asc(workspaceConversations.ordinal))
     .limit(limit)
   return rows.map(nullsToUndefined)
 }

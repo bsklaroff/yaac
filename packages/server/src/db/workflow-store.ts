@@ -3,7 +3,7 @@ import { and, eq, exists, inArray, isNotNull, lt, notExists, or, sql } from 'dri
 import type { AnyPgColumn } from 'drizzle-orm/pg-core'
 import { getDb } from './client'
 import {
-  namedWorkflows, queuedWorkspaces, workflowApprovals, workflows, workspaceRepos, workspaceSteps, workspaces,
+  namedWorkflows, queuedWorkspaces, workflowApprovals, workflows, workspaceLifeWorkflows, workspaceRepos, workspaces,
 } from './schema'
 import { ServerError } from '@yaac/shared/errors'
 import { isUuid } from '#lib/uuid'
@@ -142,12 +142,12 @@ export async function deleteProjectWorkflows(projectId: string): Promise<void> {
 
 /**
  * Delete every workflow nothing names: no named workflow, queued entry,
- * workspace or step (routines and sites name named workflows).
+ * workspace or life of one (routines and sites name named workflows).
  */
 export async function deleteUnnamedWorkflows(): Promise<number> {
   const db = await getDb()
   const unused = (
-    table: typeof namedWorkflows | typeof queuedWorkspaces | typeof workspaces | typeof workspaceSteps,
+    table: typeof namedWorkflows | typeof queuedWorkspaces | typeof workspaces | typeof workspaceLifeWorkflows,
     column: AnyPgColumn) => notExists(db.select({ one: sql`1` }).from(table).where(eq(column, workflows.id)))
   const rows = await db.delete(workflows).where(and(
     // One stored a moment ago may not be named yet by what stored it.
@@ -155,7 +155,7 @@ export async function deleteUnnamedWorkflows(): Promise<number> {
     unused(namedWorkflows, namedWorkflows.workflowId),
     unused(queuedWorkspaces, queuedWorkspaces.workflowId),
     unused(workspaces, workspaces.workflowId),
-    unused(workspaceSteps, workspaceSteps.workflowId),
+    unused(workspaceLifeWorkflows, workspaceLifeWorkflows.workflowId),
   )).returning({ id: workflows.id })
   return rows.length
 }

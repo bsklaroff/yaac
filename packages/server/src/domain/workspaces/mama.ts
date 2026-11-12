@@ -376,8 +376,8 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
   let workspaces = active.workspaces
   let queued = allQueued
   let routines = allRoutines
-  // A restart keeps its stop until it succeeds, so one under way is left
-  // out as the webapp's sidebar leaves it out.
+  // A restart keeps its stop until its next life starts, so one under way
+  // is left out as the webapp's sidebar leaves it out.
   const notStopped = new Set([...workspaces.map((w) => w.workspaceId), ...inFlightWorkspaceIds(Date.now())])
   const allStopped = [...rows.values()].filter((r) => r.stoppedAt !== undefined && !notStopped.has(r.workspaceId))
   let stopped: StoppedWorkspaceEntry[] = []
@@ -895,11 +895,6 @@ async function runRerun(caller: MamaCaller, request: MamaRequestInput): Promise<
  * workspace's outcome, else `stopped`; a step's state), and for a settled
  * step its exit code on a second.
  */
-/** Stopped since its current life began. */
-function stoppedSinceLife(row: WorkspaceRow): boolean {
-  return row.stoppedAt !== undefined && (row.lifeStartedAt === undefined || row.stoppedAt >= row.lifeStartedAt)
-}
-
 async function runStatus(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const target = request.args.workspace?.trim() ?? ''
   if (target === '') return { ok: false, error: 'status needs a workspace id' }
@@ -909,10 +904,10 @@ async function runStatus(caller: MamaCaller, request: MamaRequestInput): Promise
   const step = request.args.step?.trim()
   if (step === undefined || step === '') {
     if (row.stepsOutcome !== undefined) return { ok: true, output: row.stepsOutcome }
-    return { ok: true, output: stoppedSinceLife(row) ? 'stopped' : 'running' }
+    return { ok: true, output: row.stoppedAt !== undefined ? 'stopped' : 'running' }
   }
   const found = findStep((await listWorkspaceSteps(workspaceId))
-    .filter((s) => s.life.getTime() === row.lifeStartedAt?.getTime()), step)
+    .filter((s) => s.life.getTime() === row.lifeStartedAt.getTime()), step)
   if (found === undefined) return { ok: false, error: `workspace ${workspaceId.slice(0, 8)} has no step "${step}"` }
   return { ok: true, output: found.exitCode !== undefined ? `${found.state}\n${found.exitCode}` : found.state }
 }
@@ -1948,7 +1943,8 @@ async function runWorkflowShow(caller: MamaCaller, request: MamaRequestInput): P
 }
 
 /**
- * A workspace's steps, or the end of one step's log with terminal escapes
+ * The steps of a workspace's current life, or the end of one step's log (the
+ * newest life's that has it) with terminal escapes
  * and control characters stripped, for an agent following a CI run or a
  * site's release (docs/workspace-steps.md "Logs"). A step's log is served
  * only once the step has started in the life its row names: the server
@@ -1966,13 +1962,14 @@ async function runLogs(caller: MamaCaller, request: MamaRequestInput): Promise<M
   if (tail !== undefined && !/^[1-9]\d{0,8}$/.test(tail)) return { ok: false, error: '--tail must be a whole number of lines' }
   const workspaceId = await resolveProjectWorkspace(target, caller.projectId)
   const short = workspaceId.slice(0, 8)
-  const steps = await listWorkspaceSteps(workspaceId)
+  const every = await listWorkspaceSteps(workspaceId)
   const name = request.args.step?.trim() ?? ''
   if (name === '') {
     if (tail !== undefined) return { ok: false, error: '--tail goes with a step' }
-    if (steps.length === 0) return { ok: true, output: `${short} has no steps.` }
     const row = await getWorkspaceRow(caller.projectId, workspaceId)
-    const stopped = row !== undefined && stoppedSinceLife(row)
+    const steps = every.filter((s) => s.life.getTime() === row?.lifeStartedAt.getTime())
+    if (steps.length === 0) return { ok: true, output: `${short} has no steps.` }
+    const stopped = row?.stoppedAt !== undefined
     const sizes = await windowLogSizes(caller.projectId, workspaceId, steps.map((s) => ({ life: s.life, name: stepName(s) })))
     return {
       ok: true,
@@ -1994,9 +1991,10 @@ async function runLogs(caller: MamaCaller, request: MamaRequestInput): Promise<M
       ].join('\n'),
     }
   }
-  // The latest life's step of that name, else an earlier one's.
-  const lifeOf = steps.reduce((at, s) => Math.max(at, s.life.getTime()), 0)
-  const step = findStep(steps.filter((s) => s.life.getTime() === lifeOf), name) ?? findStep(steps, name)
+  // The latest life's step of that name that has one, else an earlier
+  // life's.
+  const lives = [...new Set(every.map((s) => s.life.getTime()))].sort((a, b) => b - a)
+  const step = lives.map((life) => findStep(every.filter((s) => s.life.getTime() === life), name)).find((s) => s !== undefined)
   if (step === undefined) return { ok: false, error: `workspace ${short} has no step "${name}" (see: yaac-mama logs ${short})` }
   if (step.startedAt === undefined) return { ok: false, error: `step "${name}" of ${short} has not run yet (it is ${step.state})` }
   const lines = tail !== undefined ? Number(tail) : undefined

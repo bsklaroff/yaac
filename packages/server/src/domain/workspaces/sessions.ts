@@ -264,9 +264,7 @@ async function reconcileWorkspaceSessions(p: { projectId: string; workspaceId: s
   // A runtime with no keeper predates sessions (docs/legacy-compat-shims.md).
   if (windows?.some((w) => w.name === KEEPER_WINDOW) !== true) return
   const row = await findWorkspaceRow(p.workspaceId)
-  if (row?.lifeStartedAt === undefined) return
-  // A stop record older than the life is one a restart failed to clear.
-  if (row.stoppedAt !== undefined && row.stoppedAt >= row.lifeStartedAt) return
+  if (row === undefined || row.stoppedAt !== undefined) return
   const life = row.lifeStartedAt.getTime()
   let mark = seen.get(p.workspaceId)
   if (mark?.life !== life) {

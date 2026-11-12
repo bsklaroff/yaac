@@ -403,24 +403,24 @@ sets the same values.
   user's to read and delete; nothing reads it, so it does not hold the shim
   back.
 
-## A workspace row with no `scratchDirs`
+## A workspace life with no `scratchDirs`
 
 A stop removes the scratch dirs a workspace was started with, recorded on its
-row (`workspaces.scratchDirs`) by the create, restart or spare claim. A
-workspace whose runtime started before that column existed has it null. Two
-pieces cover it, and both go together:
+life (`workspace_lives.scratchDirs`) by the create, restart or spare claim.
+A workspace whose runtime started before that was recorded has it null on
+its current life. Two pieces cover it, and both go together:
 
 - `importProjectConfigFiles` (see the entry above), when it moves a
-  project's `ephemeralModulesPaths`, also fills that project's null rows with
-  the moved list (`backfillWorkspaceScratchDirs` in `#db`), since every null
-  row then is a workspace started with it.
-- `checkoutScratchDirs` (`#domain/workspaces` cleanup) treats a row still
+  project's `ephemeralModulesPaths`, also fills that project's null current
+  lives with the moved list (`backfillWorkspaceScratchDirs` in `#db`), since
+  every null one then is a workspace started with it.
+- `checkoutScratchDirs` (`#domain/workspaces` cleanup) treats a life still
   null as started with the old default, `node_modules` alone. It never reads
   the project's current list, which the migration set to `node_modules` and
   `target` and which says nothing about what an older runtime mounted.
 
 - **What it reads.** Each project's config file at start; at stop, the
-  workspace row's null `scratchDirs`.
+  workspace's current life's null `scratchDirs`.
 - **What breaks silently if it goes too early.** A workspace running at the
   upgrade is stopped without its scratch dirs being removed: under k8s that
   leaves empty mount points, under containerless a full copy of every
@@ -429,7 +429,8 @@ pieces cover it, and both go together:
 - **When it is safe to remove.** Once no running workspace has a null
   `scratchDirs`, that is once every workspace running at the upgrade has
   stopped:
-  `SELECT count(*) FROM workspaces WHERE scratch_dirs IS NULL AND stopped_at IS NULL`
+  `SELECT count(*) FROM workspace_lives l WHERE scratch_dirs IS NULL AND stopped_at IS NULL
+  AND started_at = (SELECT max(started_at) FROM workspace_lives WHERE workspace_id = l.workspace_id)`
   is zero. A stopped one restarted later without the fallback only keeps its
   old `node_modules` contents, which its init steps install over.
 
@@ -733,14 +734,14 @@ release runs for months. An empty name reads as "known by the bare name":
 in a graph beside it falls back to a bare step of that name (`needsOf` in
 `#domain/workspaces` `steps.ts`), and `addSteps` lets a step added to such a
 life need one by its bare name. Every life started since names its
-workflows, so a restart replaces a workspace's start rows. The rest stay
-with an empty name for as long as their workspace exists: the steps added
-to a life from before the upgrade, kept as history, and every row of a
-workspace stopped at the upgrade and never restarted. Those are what the
-shim keeps readable afterwards: the webapp's step list and `yaac workspace
-logs` / `yaac-mama logs` of those lives, whose log files carry bare names.
+workflows. The rows of a life from before the upgrade keep the empty name
+for as long as their workspace exists, as its history, and so does that
+life's workflow row. Those are what the shim keeps readable afterwards: the
+webapp's step list and `yaac workspace logs` / `yaac-mama logs` of those
+lives, whose log files carry bare names.
 
-- **What it reads.** `workspace_steps.workflow_name = ''`.
+- **What it reads.** `workspace_steps.workflow_name = ''`, and the
+  `workspace_life_workflows` row named `''` those steps belong to.
 - **What breaks silently if it goes too early.** A workspace or release
   running since before the upgrade loses track of its steps: their windows
   are looked for under `<workflow>.<step>`, found nowhere, and its running
@@ -750,9 +751,9 @@ logs` / `yaac-mama logs` of those lives, whose log files carry bare names.
 - **When it is safe to remove.** Once no workspace that still exists, and
   whose old logs still matter, has a step row with an empty workflow name
   (`SELECT DISTINCT workspace_id FROM workspace_steps WHERE workflow_name =
-  ''` lists them). The count does not reach 0 by itself: restarts replace
-  only start rows, so deleting the workspaces it lists (or accepting their
-  old lives' steps read oddly) is what clears it.
+  ''` lists them). The count does not reach 0 by itself: every life keeps
+  its rows, so deleting the workspaces it lists (or accepting their old
+  lives' steps read oddly) is what clears it.
 
 ## A site's repo with no branch
 

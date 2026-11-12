@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto'
-import { and, count, desc, eq, exists, ilike, inArray, isNotNull, isNull, lt, lte, notInArray, or, sql, type AnyColumn, type SQL } from 'drizzle-orm'
+import { and, count, desc, eq, exists, getTableColumns, gt, ilike, inArray, isNotNull, isNull, lt, lte, notInArray, or, sql, type AnyColumn, type SQL } from 'drizzle-orm'
 import { getDb } from './client'
-import { conversations, sessions, workspaceConversations, workspaceGroups, workspaces } from './schema'
+import { conversations, sessions, workspaceConversations, workspaceGroups, workspaceLives, workspaceRepos, workspaces } from './schema'
 import { deleteWorkspaceConversations } from './conversation-store'
-import { insertWorkspaceRepos, type WorkspaceRepoRow } from './repo-store'
+import { currentLife, isCurrentLife } from './current-life'
+import type { WorkspaceRepoRow } from './repo-store'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { normalizeTitle } from '@yaac/shared/titles'
 import { ServerError } from '@yaac/shared/errors'
@@ -12,21 +13,25 @@ import type { WorkspaceDeathCause } from '@yaac/shared/types'
 import type { StepsOutcome } from '@yaac/shared/steps'
 
 /**
- * One row per workspace yaac has created. The runtime is authoritative for
- * whether a workspace is running; the conversation store holds its
- * conversations, and the session store its agents.
+ * One row per workspace yaac has created, and one per life of it. The
+ * runtime is authoritative for whether a workspace is running; the
+ * conversation store holds its conversations, and the session store its
+ * agents.
  *
  * Write rules:
- *  - `recordWorkspaceCreated` is the only INSERT and never upserts: an id is
- *    claimed once across all projects. A restart is
- *    `recordWorkspaceResumed`, an UPDATE.
+ *  - `recordWorkspaceCreated` is the only INSERT of a workspace and never
+ *    upserts: an id is claimed once across all projects. It inserts the
+ *    first life with the row, so every workspace has one; a restart adds the
+ *    next (`recordWorkspaceLife`).
+ *  - What a life launched with and how it ended is written to the current
+ *    life, the workspace's newest. An earlier life is never written again.
  *  - Everything else is an UPDATE, which no-ops for a missing row, so
  *    workspaces from a foreign data dir stay invisible without checks.
  *  - The row is written before the runtime starts, so every user workspace
  *    has one. A prewarmed spare has none until a claim inserts it
  *    (docs/workspace-storage.md).
- *  - A stop never deletes a row: rows with `stoppedAt` are the stopped
- *    listing, and a restart clears it. Rows are deleted only when the project
+ *  - A stop never deletes a row: the workspaces whose current life has a
+ *    stop are the stopped listing. Rows are deleted only when the project
  *    is removed (`deleteProjectWorkspaces`), or one workspace is deleted or
  *    its create rolls back (`deleteWorkspaceRecords`).
  *
@@ -34,8 +39,21 @@ import type { StepsOutcome } from '@yaac/shared/steps'
  * teardown) catches them itself.
  */
 
-/** Fields `recordWorkspaceCreated` stamps on a fresh workspace. */
-export interface WorkspaceCreatedInput {
+/** What a life launches with. */
+export interface LifeLaunch {
+  /** When it starts, which names its log dir and its steps' life. */
+  at: Date
+  /** The zone it launches with as `TZ`. */
+  timeZone?: string
+  /** When the server stops it. */
+  deadline?: Date
+  /** The scratch dirs it is started with (see `workspaceLives.scratchDirs`). */
+  scratchDirs?: string[]
+}
+
+/** Fields `recordWorkspaceCreated` stamps on a fresh workspace and its
+ *  first life, which starts now unless `at` says when. */
+export interface WorkspaceCreatedInput extends Partial<LifeLaunch> {
   projectId: string
   workspaceId: string
   /** Its checkouts, each with the branch it forks from if known yet. */
@@ -48,12 +66,6 @@ export interface WorkspaceCreatedInput {
   generatedTitle?: string
   /** The sidebar group; left ungrouped if the group no longer exists. */
   groupId?: string
-  /** The zone it launches with as `TZ`. */
-  timeZone?: string
-  /** When the server stops it. */
-  deadline?: Date
-  /** The scratch dirs it is started with (see `workspaces.scratchDirs`). */
-  scratchDirs?: string[]
   /** The workflow it brought in place of the project's init workflows. */
   workflowId?: string
   /** The name that workflow has in it, which its steps are known by. */
@@ -66,123 +78,147 @@ export interface WorkspaceCreatedInput {
   siteId?: string
 }
 
-type Row = typeof workspaces.$inferSelect
+/** The current lives of a project's workspaces, or of one of them, for a
+ *  write to them. */
+const currentLifeOf = (projectId: string, workspaceId?: string): SQL | undefined => and(
+  workspaceId !== undefined ? eq(workspaceLives.workspaceId, workspaceId) : undefined,
+  isCurrentLife,
+  sql`${workspaceLives.workspaceId} in (select workspace_id from workspaces where project_id = ${projectId})`,
+)
 
-/** A workspace row as the display paths consume it (columns documented in
- *  schema.ts). */
+const { workspaceId: _lifeWorkspaceId, startedAt: lifeStartedAt, ...lifeColumns } = getTableColumns(workspaceLives)
+const rowColumns = { ...getTableColumns(workspaces), ...lifeColumns, lifeStartedAt }
+
+type Row = typeof workspaces.$inferSelect
+  & Omit<typeof workspaceLives.$inferSelect, 'workspaceId' | 'startedAt'>
+  & { lifeStartedAt: Date }
+
+/**
+ * A workspace with its current life, as the display paths consume it
+ * (columns documented in schema.ts): `lifeStartedAt` is when that life
+ * began, and the stop, deadline and launch fields are that life's.
+ */
 export type WorkspaceRow = NullsToUndefined<Omit<Row, 'mamaTokenHash'>>
 
 function toRow({ mamaTokenHash: _, ...r }: Row): WorkspaceRow {
   return nullsToUndefined(r)
 }
 
+/** Every workspace with its current life, for a read to narrow. Not
+ *  async: awaiting the query would run it. */
+function selectRows(db: Awaited<ReturnType<typeof getDb>>) {
+  return db.select(rowColumns).from(workspaces).innerJoin(workspaceLives, currentLife)
+}
+
 const key = (projectId: string, workspaceId: string) =>
   and(eq(workspaces.projectId, projectId), eq(workspaces.workspaceId, workspaceId))
 
+/** A life's row, as it starts. */
+function lifeValues(workspaceId: string, launch: LifeLaunch): typeof workspaceLives.$inferInsert {
+  return {
+    workspaceId,
+    startedAt: launch.at,
+    ...(launch.timeZone !== undefined ? { timeZone: launch.timeZone } : {}),
+    ...(launch.scratchDirs !== undefined ? { scratchDirs: launch.scratchDirs } : {}),
+    ...(launch.deadline !== undefined ? timeoutColumns(launch.deadline) : {}),
+  }
+}
+
 /**
- * Record a workspace as created: a plain INSERT, since an id is claimed once.
- * An id already taken in any project is a `CONFLICT` that leaves the existing
- * row alone (an upsert would let the failing create tear down the existing
- * workspace as its own).
+ * Record a workspace as created, with its checkouts and its first life: a
+ * plain INSERT, since an id is claimed once. An id already taken in any
+ * project is a `CONFLICT` that leaves the existing row alone (an upsert
+ * would let the failing create tear down the existing workspace as its own).
  *
  * Throws on failure; callers must treat that as a failed create.
  */
 export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Promise<void> {
   const db = await getDb()
   const title = input.title === undefined ? '' : normalizeTitle(input.title)
-  const rows = await db.insert(workspaces)
-    .values({
-      projectId: input.projectId,
-      workspaceId: input.workspaceId,
-      ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-      ...(title !== '' ? { title } : {}),
-      ...(input.generatedTitle !== undefined ? { generatedTitle: input.generatedTitle } : {}),
-      // A subquery, so a group deleted since the request was resolved
-      // leaves the workspace ungrouped rather than filed under nothing.
-      ...(input.groupId !== undefined
-        ? {
-          groupId: sql`(${db.select({ groupId: workspaceGroups.groupId }).from(workspaceGroups)
-            .where(and(
-              eq(workspaceGroups.projectId, input.projectId),
-              eq(workspaceGroups.groupId, input.groupId),
-            ))})`,
-        }
-        : {}),
-      ...(input.timeZone !== undefined ? { timeZone: input.timeZone } : {}),
-      ...(input.deadline !== undefined ? timeoutColumns(input.deadline) : {}),
-      ...(input.scratchDirs !== undefined ? { scratchDirs: input.scratchDirs } : {}),
-      ...(input.workflowId !== undefined ? { workflowId: input.workflowId } : {}),
-      ...(input.workflowName !== undefined ? { workflowName: input.workflowName } : {}),
-      ...(input.nonInteractive === true ? { nonInteractive: true } : {}),
-      ...(input.rerunOf !== undefined ? { rerunOf: input.rerunOf } : {}),
-      ...(input.siteId !== undefined ? { siteId: input.siteId } : {}),
-    })
-    .onConflictDoNothing({ target: workspaces.workspaceId })
-    .returning({ workspaceId: workspaces.workspaceId })
-  if (!rows[0]) {
-    throw new ServerError('CONFLICT', `workspace id ${input.workspaceId} is already in use`)
-  }
-  await insertWorkspaceRepos((input.repos ?? []).map((r) => ({ ...r, workspaceId: input.workspaceId })))
+  await db.transaction(async (tx) => {
+    const rows = await tx.insert(workspaces)
+      .values({
+        projectId: input.projectId,
+        workspaceId: input.workspaceId,
+        ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+        ...(title !== '' ? { title } : {}),
+        ...(input.generatedTitle !== undefined ? { generatedTitle: input.generatedTitle } : {}),
+        // A subquery, so a group deleted since the request was resolved
+        // leaves the workspace ungrouped rather than filed under nothing.
+        ...(input.groupId !== undefined
+          ? {
+            groupId: sql`(${db.select({ groupId: workspaceGroups.groupId }).from(workspaceGroups)
+              .where(and(
+                eq(workspaceGroups.projectId, input.projectId),
+                eq(workspaceGroups.groupId, input.groupId),
+              ))})`,
+          }
+          : {}),
+        ...(input.workflowId !== undefined ? { workflowId: input.workflowId } : {}),
+        ...(input.workflowName !== undefined ? { workflowName: input.workflowName } : {}),
+        ...(input.nonInteractive === true ? { nonInteractive: true } : {}),
+        ...(input.rerunOf !== undefined ? { rerunOf: input.rerunOf } : {}),
+        ...(input.siteId !== undefined ? { siteId: input.siteId } : {}),
+      })
+      .onConflictDoNothing({ target: workspaces.workspaceId })
+      .returning({ workspaceId: workspaces.workspaceId })
+    if (!rows[0]) {
+      throw new ServerError('CONFLICT', `workspace id ${input.workspaceId} is already in use`)
+    }
+    if (input.repos?.length) {
+      await tx.insert(workspaceRepos).values(input.repos.map((r) => ({ ...r, workspaceId: input.workspaceId })))
+    }
+    await tx.insert(workspaceLives).values(lifeValues(input.workspaceId, { ...input, at: input.at ?? new Date() }))
+  })
 }
 
 /**
- * Record a stopped workspace as restarting: update the launch fields.
- * `createdAt`, title and group are kept, so the workspace returns to its
- * group. The stop stays until the restart succeeds (`clearWorkspaceStopped`),
- * so a failed restart leaves the row as it found it.
+ * Record a restart: the workspace's next life, with what it launches with.
+ * The workspace row, its title and group are kept, and so is every earlier
+ * life, with the stop it recorded.
  *
- * Never inserts. Stopped workspaces keep their rows, so a missing row (for
- * example after a DB reset) is `NOT_FOUND`.
+ * Stopped workspaces keep their rows, so a missing row (for example after a
+ * DB reset) is `NOT_FOUND`.
  */
-export async function recordWorkspaceResumed(
-  input: Pick<
-    WorkspaceCreatedInput,
-    'projectId' | 'workspaceId' | 'timeZone' | 'deadline' | 'scratchDirs'
-  >,
-): Promise<void> {
+export async function recordWorkspaceLife(projectId: string, workspaceId: string, launch: LifeLaunch): Promise<void> {
   const db = await getDb()
-  const rows = await db.update(workspaces).set({
-    ...(input.scratchDirs !== undefined ? { scratchDirs: input.scratchDirs } : {}),
-    // A resume launches a new process, in the zone the create read now.
-    timeZone: input.timeZone ?? null,
-    // A restart stops only at a timeout the restart itself set.
-    ...timeoutColumns(input.deadline ?? null),
-  }).where(key(input.projectId, input.workspaceId))
-    .returning({ workspaceId: workspaces.workspaceId })
-  if (!rows[0]) {
-    throw new ServerError('NOT_FOUND', `workspace ${input.workspaceId} has no record to resume`)
+  const [row] = await db.select({ workspaceId: workspaces.workspaceId }).from(workspaces).where(key(projectId, workspaceId))
+  if (!row) {
+    throw new ServerError('NOT_FOUND', `workspace ${workspaceId} has no record to resume`)
   }
+  await db.insert(workspaceLives).values(lifeValues(workspaceId, launch))
 }
 
-/** Record that a new runtime (a "life") has come up at `at`, so none of
- *  the workspace's sessions has a window in it yet. */
-export async function recordWorkspaceLife(
-  projectId: string,
-  workspaceId: string,
-  at: Date,
-): Promise<void> {
+/** Stamp the current life as up, once. */
+export async function recordWorkspaceLaunched(projectId: string, workspaceId: string): Promise<void> {
   const db = await getDb()
-  await db.update(workspaces)
-    .set({ lifeStartedAt: at })
-    .where(key(projectId, workspaceId))
+  await db.update(workspaceLives).set({ launchedAt: new Date() })
+    .where(and(currentLifeOf(projectId, workspaceId), isNull(workspaceLives.launchedAt)))
+}
+
+/** Forget the life started after the one that began at `after`, by a
+ *  restart that never came up, so the workspace reads as that restart found
+ *  it. */
+export async function removeWorkspaceLivesAfter(workspaceId: string, after: Date): Promise<void> {
+  const db = await getDb()
+  await db.delete(workspaceLives)
+    .where(and(eq(workspaceLives.workspaceId, workspaceId), gt(workspaceLives.startedAt, after)))
 }
 
 /** Record how a non-interactive workspace's graph ended; the first one
  *  recorded stands. */
 export async function setWorkspaceStepsOutcome(projectId: string, workspaceId: string, outcome: StepsOutcome): Promise<void> {
   const db = await getDb()
-  await db.update(workspaces).set({ stepsOutcome: outcome })
-    .where(and(key(projectId, workspaceId), isNull(workspaces.stepsOutcome)))
+  await db.update(workspaceLives).set({ stepsOutcome: outcome })
+    .where(and(currentLifeOf(projectId, workspaceId), isNull(workspaceLives.stepsOutcome)))
 }
 
 /**
- * Stamp the stop time, plus the cause when a reaper (not the user) stopped
- * it. Only a live row is written: the first stop recorded in a life stands.
- * A stale-reaper pass that probed the workspace while a user stop was
- * killing it would otherwise relabel that stop as a death, and a resumed
- * teardown would wipe the cause it is resuming. A stop recorded before the
- * current life began is overwritten: a restart whose clear of it was lost
- * would otherwise keep the old date, which retention ages the workspace by.
+ * Stamp the stop time on the current life, plus the cause when a reaper (not
+ * the user) stopped it. Only a life with no stop is written: the first stop
+ * recorded in a life stands. A stale-reaper pass that probed the workspace
+ * while a user stop was killing it would otherwise relabel that stop as a
+ * death, and a resumed teardown would wipe the cause it is resuming.
  *
  * Leaves its sessions open and `workspace_conversations.active` alone: they
  * are what a restart brings back.
@@ -193,21 +229,19 @@ export async function recordWorkspaceStopped(
   cause?: WorkspaceDeathCause,
 ): Promise<void> {
   const db = await getDb()
-  await db.update(workspaces).set({
+  await db.update(workspaceLives).set({
     stoppedAt: new Date(),
     deathReason: cause?.reason ?? null,
     deathDetail: cause?.detail ?? null,
-    deathSeenBy: [],
-  }).where(and(key(projectId, workspaceId),
-    or(isNull(workspaces.stoppedAt), lt(workspaces.stoppedAt, workspaces.lifeStartedAt))))
+  }).where(and(currentLifeOf(projectId, workspaceId), isNull(workspaceLives.stoppedAt)))
 }
 
 /** Stamp a stopped workspace's ignored files as removed by a clean that
  *  began at `at`, unless its stop came later. */
 export async function recordIgnoredFilesCleaned(projectId: string, workspaceId: string, at: Date): Promise<void> {
   const db = await getDb()
-  await db.update(workspaces).set({ ignoredCleanedAt: at })
-    .where(and(key(projectId, workspaceId), lte(workspaces.stoppedAt, at)))
+  await db.update(workspaceLives).set({ ignoredCleanedAt: at })
+    .where(and(currentLifeOf(projectId, workspaceId), lte(workspaceLives.stoppedAt, at)))
 }
 
 /** Stopped workspaces whose ignored files no clean has removed since the
@@ -215,46 +249,31 @@ export async function recordIgnoredFilesCleaned(projectId: string, workspaceId: 
 export async function listUncleanedStoppedWorkspaces(): Promise<Array<{ projectId: string; workspaceId: string }>> {
   const db = await getDb()
   return await db.select({ projectId: workspaces.projectId, workspaceId: workspaces.workspaceId })
-    .from(workspaces)
-    .where(and(isNotNull(workspaces.stoppedAt),
-      or(isNull(workspaces.ignoredCleanedAt), lt(workspaces.ignoredCleanedAt, workspaces.stoppedAt))))
-    .orderBy(workspaces.stoppedAt)
-}
-
-/** Clear a workspace's stop (its id is live again after a restart). */
-export async function clearWorkspaceStopped(
-  projectId: string,
-  workspaceId: string,
-): Promise<void> {
-  const db = await getDb()
-  await db.update(workspaces).set({
-    stoppedAt: null,
-    deathReason: null,
-    deathDetail: null,
-    deathSeenBy: [],
-  }).where(key(projectId, workspaceId))
+    .from(workspaces).innerJoin(workspaceLives, currentLife)
+    .where(and(isNotNull(workspaceLives.stoppedAt), isNull(workspaceLives.ignoredCleanedAt)))
+    .orderBy(workspaceLives.stoppedAt)
 }
 
 /** Mark an abnormal death as seen by `userId` (they opened its detail).
  *  Notifies, since the snapshot counts who has seen each death. */
 export async function recordDeathSeen(projectId: string, workspaceId: string, userId: string): Promise<void> {
   const db = await getDb()
-  await db.update(workspaces).set({ deathSeenBy: appendUser(workspaces.deathSeenBy, userId) })
-    .where(and(key(projectId, workspaceId), lacksUser(workspaces.deathSeenBy, userId)))
+  await db.update(workspaceLives).set({ deathSeenBy: appendUser(workspaceLives.deathSeenBy, userId) })
+    .where(and(currentLifeOf(projectId, workspaceId), lacksUser(workspaceLives.deathSeenBy, userId)))
   notifyWorkspaceListChanged()
 }
 
 /**
  * Mark every recorded abnormal death in a project as seen by `userId`
- * ("mark all as read"). Only rows that actually died are touched.
+ * ("mark all as read"). Only current lives that died are touched.
  * Notifies, like `recordDeathSeen`.
  */
 export async function recordAllDeathsSeen(projectId: string, userId: string): Promise<void> {
   const db = await getDb()
-  await db.update(workspaces).set({ deathSeenBy: appendUser(workspaces.deathSeenBy, userId) }).where(and(
-    eq(workspaces.projectId, projectId),
-    isNotNull(workspaces.deathReason),
-    lacksUser(workspaces.deathSeenBy, userId),
+  await db.update(workspaceLives).set({ deathSeenBy: appendUser(workspaceLives.deathSeenBy, userId) }).where(and(
+    currentLifeOf(projectId),
+    isNotNull(workspaceLives.deathReason),
+    lacksUser(workspaceLives.deathSeenBy, userId),
   ))
   notifyWorkspaceListChanged()
 }
@@ -291,8 +310,7 @@ export async function setWorkspaceMamaTokenHash(
 export async function findWorkspaceByMamaToken(token: string): Promise<WorkspaceRow | undefined> {
   if (token === '') return undefined
   const hash = createHash('sha256').update(token).digest('hex')
-  const db = await getDb()
-  const rows = await db.select().from(workspaces).where(eq(workspaces.mamaTokenHash, hash))
+  const rows = await selectRows(await getDb()).where(eq(workspaces.mamaTokenHash, hash))
   return rows[0] ? toRow(rows[0]) : undefined
 }
 
@@ -311,13 +329,13 @@ export async function setWorkspaceTitle(projectId: string, workspaceId: string, 
 
 /** Set (or, with null, clear) when the server stops a workspace. A no-op
  *  for a stopped one, whose next deadline only a restart sets. Returns
- *  whether a running workspace's row changed. */
+ *  whether a running workspace's life changed. */
 export async function setWorkspaceDeadline(projectId: string, workspaceId: string, deadline: Date | null): Promise<boolean> {
   const db = await getDb()
-  const rows = await db.update(workspaces)
+  const rows = await db.update(workspaceLives)
     .set(timeoutColumns(deadline))
-    .where(and(key(projectId, workspaceId), isNull(workspaces.stoppedAt)))
-    .returning({ workspaceId: workspaces.workspaceId })
+    .where(and(currentLifeOf(projectId, workspaceId), isNull(workspaceLives.stoppedAt)))
+    .returning({ workspaceId: workspaceLives.workspaceId })
   if (rows.length > 0) notifyWorkspaceListChanged()
   return rows.length > 0
 }
@@ -333,17 +351,16 @@ function timeoutColumns(deadline: Date | null): { deadline: Date | null; timeout
 }
 
 /** Mark a routine run's deadline as its routine's next tick
- *  (`workspaces.deadlineIsNextRun`). A later deadline write clears it. */
+ *  (`workspaceLives.deadlineIsNextRun`). A later deadline write clears it. */
 export async function markDeadlineIsNextRun(projectId: string, workspaceId: string): Promise<void> {
   const db = await getDb()
-  await db.update(workspaces).set({ deadlineIsNextRun: true }).where(key(projectId, workspaceId))
+  await db.update(workspaceLives).set({ deadlineIsNextRun: true }).where(currentLifeOf(projectId, workspaceId))
 }
 
 /** Rows not recorded as stopped whose deadline is at or before `now`. */
 export async function listOverdueWorkspaceRows(now: Date): Promise<WorkspaceRow[]> {
-  const db = await getDb()
-  const rows = await db.select().from(workspaces)
-    .where(and(isNull(workspaces.stoppedAt), lte(workspaces.deadline, now)))
+  const rows = await selectRows(await getDb())
+    .where(and(isNull(workspaceLives.stoppedAt), lte(workspaceLives.deadline, now)))
   return rows.map(toRow)
 }
 
@@ -362,18 +379,13 @@ export async function setWorkspaceGeneratedTitle(projectId: string, workspaceId:
 export async function getProjectWorkspaceRows(
   projectId: string,
 ): Promise<Map<string, WorkspaceRow>> {
-  const db = await getDb()
-  const rows = await db.select().from(workspaces)
-    .where(eq(workspaces.projectId, projectId))
+  const rows = await selectRows(await getDb()).where(eq(workspaces.projectId, projectId))
   return new Map(rows.map((r) => [r.workspaceId, toRow(r)]))
 }
 
 /** Rows across every project (or one), for the stopped-workspace listing. */
 export async function listWorkspaceRows(projectId?: string): Promise<WorkspaceRow[]> {
-  const db = await getDb()
-  const rows = projectId === undefined
-    ? await db.select().from(workspaces)
-    : await db.select().from(workspaces).where(eq(workspaces.projectId, projectId))
+  const rows = await selectRows(await getDb()).where(projectId === undefined ? undefined : eq(workspaces.projectId, projectId))
   return rows.map(toRow)
 }
 
@@ -382,7 +394,7 @@ export interface StoppedRowFilter {
   /** Only these projects' rows; an empty list matches none. */
   projectIds?: string[]
   /** Ids to leave out: the ones the runtime reports running, since a
-   *  restart keeps its stop until it succeeds. */
+   *  restart keeps its stop until its next life starts. */
   excludeIds?: string[]
   /** Matched case-insensitively against the user and generated titles, and
    *  the first prompt, agent title and tool of each of the workspace's
@@ -401,7 +413,7 @@ export interface StoppedRowCursor {
 }
 
 /**
- * Rows with a recorded stop, newest stop first (the id breaks ties), one
+ * Workspaces whose current life has a recorded stop, newest stop first (the id breaks ties), one
  * page at a time, plus how many match in all. Paging is by keyset, so a stop
  * landing between two pages neither repeats nor skips a row. `limit`
  * undefined returns every row after the cursor.
@@ -416,7 +428,7 @@ export async function listStoppedWorkspaceRows(
   page: { limit?: number; after?: StoppedRowCursor } = {},
 ): Promise<{ rows: WorkspaceRow[]; total: number }> {
   const db = await getDb()
-  const conds: (SQL | undefined)[] = [isNotNull(workspaces.stoppedAt)]
+  const conds: (SQL | undefined)[] = [isNotNull(workspaceLives.stoppedAt)]
   if (filter.projectIds !== undefined) {
     conds.push(filter.projectIds.length > 0 ? inArray(workspaces.projectId, filter.projectIds) : sql`false`)
   }
@@ -451,16 +463,16 @@ export async function listStoppedWorkspaceRows(
   }
   const where = and(...conds)
   const after = page.after
-  const stoppedMs = sql`date_trunc('milliseconds', ${workspaces.stoppedAt})`
+  const stoppedMs = sql`date_trunc('milliseconds', ${workspaceLives.stoppedAt})`
   const afterMs = after && sql`${after.stoppedAt.toISOString()}::timestamptz`
-  const rows = await db.select().from(workspaces)
+  const rows = await selectRows(await getDb())
     .where(after === undefined ? where : and(where, or(
       sql`${stoppedMs} < ${afterMs}`,
       and(sql`${stoppedMs} = ${afterMs}`, lt(workspaces.workspaceId, after.workspaceId)),
     )))
     .orderBy(desc(stoppedMs), desc(workspaces.workspaceId))
     .limit(page.limit ?? Number.MAX_SAFE_INTEGER)
-  const [counted] = await db.select({ n: count() }).from(workspaces).where(where)
+  const [counted] = await db.select({ n: count() }).from(workspaces).innerJoin(workspaceLives, currentLife).where(where)
   return { rows: rows.map(toRow), total: counted?.n ?? 0 }
 }
 
@@ -481,16 +493,16 @@ export interface StoppedCount {
 export async function countStoppedWorkspaces(excludeIds: string[] = []): Promise<StoppedCount[]> {
   const db = await getDb()
   const counted = excludeIds.length > 0 ? notInArray(workspaces.workspaceId, excludeIds) : sql`true`
-  const died = sql`${workspaces.deathReason} is not null`
+  const died = sql`${workspaceLives.deathReason} is not null`
   const rows = await db.select({
     projectId: workspaces.projectId,
     groupId: workspaces.groupId,
     stopped: sql<number>`count(*) filter (where ${counted})`.mapWith(Number),
     deaths: sql<number>`count(*) filter (where ${died})`.mapWith(Number),
-    seenBy: sql<string[][] | null>`jsonb_agg(${workspaces.deathSeenBy})
-      filter (where ${died} and cardinality(${workspaces.deathSeenBy}) > 0)`,
-  }).from(workspaces)
-    .where(isNotNull(workspaces.stoppedAt))
+    seenBy: sql<string[][] | null>`jsonb_agg(${workspaceLives.deathSeenBy})
+      filter (where ${died} and cardinality(${workspaceLives.deathSeenBy}) > 0)`,
+  }).from(workspaces).innerJoin(workspaceLives, currentLife)
+    .where(isNotNull(workspaceLives.stoppedAt))
     .groupBy(workspaces.projectId, workspaces.groupId)
   return rows.map(({ seenBy, ...r }) => {
     const deathsSeenBy: Record<string, number> = {}
@@ -506,9 +518,7 @@ export async function countStoppedWorkspaces(excludeIds: string[] = []): Promise
  */
 export async function findWorkspaceRow(workspaceId: string): Promise<WorkspaceRow | undefined> {
   if (workspaceId === '') return undefined
-  const db = await getDb()
-  const rows = await db.select().from(workspaces)
-    .where(eq(workspaces.workspaceId, workspaceId))
+  const rows = await selectRows(await getDb()).where(eq(workspaces.workspaceId, workspaceId))
   return rows[0] ? toRow(rows[0]) : undefined
 }
 
@@ -517,8 +527,7 @@ export async function getWorkspaceRow(
   projectId: string,
   workspaceId: string,
 ): Promise<WorkspaceRow | undefined> {
-  const db = await getDb()
-  const rows = await db.select().from(workspaces).where(key(projectId, workspaceId))
+  const rows = await selectRows(await getDb()).where(key(projectId, workspaceId))
   return rows[0] ? toRow(rows[0]) : undefined
 }
 
@@ -549,21 +558,23 @@ export async function removeWorkspaceRecords(
 }
 
 /** Take `paths` off the scratch dirs a workspace was started with, so its
- *  stop leaves them in its checkout. A row recording none is left as is. */
+ *  stop leaves them in its checkout. A life recording none is left as is. */
 export async function forgetWorkspaceScratchDirs(projectId: string, workspaceId: string, paths: string[]): Promise<void> {
   const db = await getDb()
-  const [row] = await db.select({ scratchDirs: workspaces.scratchDirs }).from(workspaces).where(key(projectId, workspaceId))
-  if (!row?.scratchDirs) return
-  await db.update(workspaces).set({ scratchDirs: row.scratchDirs.filter((d) => !paths.includes(d)) })
-    .where(key(projectId, workspaceId))
+  const [life] = await db.select({ scratchDirs: workspaceLives.scratchDirs }).from(workspaceLives)
+    .where(currentLifeOf(projectId, workspaceId))
+  if (!life?.scratchDirs) return
+  await db.update(workspaceLives).set({ scratchDirs: life.scratchDirs.filter((d) => !paths.includes(d)) })
+    .where(currentLifeOf(projectId, workspaceId))
 }
 
-/** Record `scratchDirs` for each of the project's workspaces that has none
- *  recorded, all of which predate the column (docs/legacy-compat-shims.md). */
+/** Record `scratchDirs` for each of the project's workspaces whose current
+ *  life has none recorded, all of which predate the column
+ *  (docs/legacy-compat-shims.md). */
 export async function backfillWorkspaceScratchDirs(projectId: string, scratchDirs: string[]): Promise<void> {
   const db = await getDb()
-  await db.update(workspaces).set({ scratchDirs })
-    .where(and(eq(workspaces.projectId, projectId), isNull(workspaces.scratchDirs)))
+  await db.update(workspaceLives).set({ scratchDirs })
+    .where(and(currentLifeOf(projectId), isNull(workspaceLives.scratchDirs)))
 }
 
 export async function setWorkspaceTrackedScratchDirs(
@@ -572,25 +583,31 @@ export async function setWorkspaceTrackedScratchDirs(
   trackedScratchDirs: string[],
 ): Promise<void> {
   const db = await getDb()
-  await db.update(workspaces).set({ trackedScratchDirs }).where(key(projectId, workspaceId))
+  await db.update(workspaceLives).set({ trackedScratchDirs }).where(currentLifeOf(projectId, workspaceId))
 }
 
 /**
- * Workspaces with no recorded stop, which the reaper checks for a missing
- * runtime. `ran` is true if the agent ever started (a captured opening
- * message or transcript exists), separating an interrupted create from a
- * workspace whose runtime was removed out-of-band.
+ * Workspaces whose current life has no recorded stop, which the reaper
+ * checks for a missing runtime. `ran` is true if the agent ever started (a
+ * captured opening message or transcript exists), separating an interrupted
+ * create from a workspace whose runtime was removed out-of-band.
+ * `restartedFrom` is set while the current life is a restart that has not
+ * come up: when the life before it began.
  */
 export async function listLiveWorkspaceRows(): Promise<Array<{
   projectId: string
   workspaceId: string
   ran: boolean
+  restartedFrom?: Date
 }>> {
   const db = await getDb()
   const rows = await db.select({
     projectId: workspaces.projectId,
     workspaceId: workspaces.workspaceId,
-  }).from(workspaces).where(isNull(workspaces.stoppedAt))
+    launchedAt: workspaceLives.launchedAt,
+    lifeBefore: sql<string | null>`(select max(p.started_at) from workspace_lives p
+      where p.workspace_id = workspace_lives.workspace_id and p.started_at < workspace_lives.started_at)`,
+  }).from(workspaces).innerJoin(workspaceLives, currentLife).where(isNull(workspaceLives.stoppedAt))
   // A conversation proves its agent started, since only a live agent
   // names one, and a launched session proves the create got that far.
   const conversed = await db.selectDistinct({
@@ -604,6 +621,7 @@ export async function listLiveWorkspaceRows(): Promise<Array<{
     projectId: r.projectId,
     workspaceId: r.workspaceId,
     ran: ran.has(`${r.projectId}/${r.workspaceId}`),
+    ...(r.launchedAt === null && r.lifeBefore !== null ? { restartedFrom: new Date(r.lifeBefore) } : {}),
   }))
 }
 

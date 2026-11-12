@@ -57,14 +57,19 @@ running workspace at a time mounts, on a cluster.
   workspace nor tear it down on failure. The provisioning and runtime
   registries, proxy registration and relay identity are keyed on the id alone,
   which is why it is global.
-- **`recordWorkspaceCreated` is the only INSERT, and it runs first**, together
-  with the first agent session (the conversation create is about to launch;
-  without it the workspace has no tool or label). It runs before the Job in
-  `createWorkspace`, so no user workspace's pod exists without a row, and it
-  carries the title and sidebar group (a group deleted meanwhile leaves the
-  workspace ungrouped). A create that fails afterwards deletes its row; a
-  failed restart marks the row stopped instead, keeping the workspace's
-  history.
+- **`recordWorkspaceCreated` is the only INSERT of a workspace, and it runs
+  first**, together with the first agent session (the conversation create is
+  about to launch; without it the workspace has no tool or label). It runs
+  before the Job in `createWorkspace`, so no user workspace's pod exists
+  without a row, and it carries the title and sidebar group (a group deleted
+  meanwhile leaves the workspace ungrouped). It inserts the workspace's first
+  life in the same transaction, so every workspace has one
+  (docs/workspace-steps.md "Lives"). A create that fails afterwards deletes
+  its row; a failed restart removes only the life it had started, keeping
+  the workspace's history.
+- **A restart inserts the workspace's next life** (`recordWorkspaceLife`).
+  What a run launched with and how it ended is written to the current life,
+  the newest, and an earlier life is never written again.
 - **Everything else is an UPDATE**, which does nothing when the row does not
   exist. That keeps workspaces from another data dir invisible without any
   existence check.
@@ -93,10 +98,11 @@ running workspace at a time mounts, on a cluster.
   lives in the cluster, a database restored from before a claim cannot make
   the claimed workspace look reapable. (A workspace an older server claimed
   kept the label on its Job; see docs/legacy-compat-shims.md.)
-- **No stop deletes a row.** A row with `stoppedAt` set is a stopped
-  workspace. A restart reuses the id and, once the new runtime is up, clears
-  `stoppedAt` and any death cause, but keeps the title and sidebar group. Only
-  three paths delete rows:
+- **No stop deletes a row.** A workspace whose current life has `stoppedAt`
+  set is a stopped workspace. A restart reuses the id and starts its next
+  life, which has no stop; the workspace keeps its title and sidebar group,
+  and the life before keeps its stop and any death cause. Only three paths
+  delete rows:
   - `project remove`, which also removes the checkouts and transcripts (a
     leftover row would list a workspace whose checkout no longer exists).
   - `yaac workspace delete` (`deleteWorkspace`), for one stopped workspace
@@ -114,26 +120,25 @@ running workspace at a time mounts, on a cluster.
     Stopped-workspace auto-delete makes the same delete (see "Retention"
     below).
   - A fresh create or a spare claim rolling back its own insert. A fresh
-    create also removes its staged checkout. A failed restart leaves the row
-    stopped as it found it, since its checkout is the work the user came back
-    for.
+    create also removes its staged checkout. A failed restart leaves the
+    workspace stopped as it found it, since its checkout is the work the
+    user came back for.
 - Reads and writes propagate errors. A teardown logs a failed stop write and
   carries on, since a lost stop stamp degrades a listing while a skipped
   teardown leaks a runtime.
 
-`stoppedAt` and the death columns are separate on purpose. Every stop sets
-`stoppedAt`. Only a stop performed by the reaper sets `deathReason` /
+A life's `stoppedAt` and death columns are separate on purpose. Every stop
+sets `stoppedAt`. Only a stop performed by the reaper sets `deathReason` /
 `deathDetail`. That is how the UI tells "you stopped it" from "it ran out of
 memory".
 
-A stop is written only to a live row, so the first stop recorded in a life
-stands. A reaper pass can probe a workspace while a user stop is killing it,
-find tmux gone, and tear it down again with `agent-exited`; the user's stop
-must not be relabelled a death. A teardown resumed after a lost terminating
-mark keeps its recorded cause the same way. A stop recorded before the
-current life began (`lifeStartedAt`) is overwritten, so a restart whose
-clear of it was lost does not leave the old date for retention to age the
-workspace by.
+A stop is written only to a current life with none, so the first stop
+recorded in a life stands. A reaper pass can probe a workspace while a user
+stop is killing it, find tmux gone, and tear it down again with
+`agent-exited`; the user's stop must not be relabelled a death. A teardown
+resumed after a lost terminating mark keeps its recorded cause the same way.
+Each life has its own stop, so retention ages a workspace by its last
+life's.
 
 ### Terminal logs
 
@@ -195,7 +200,9 @@ The stale reaper handles a workspace recorded as live whose pod never appeared
 (a create killed between the row write and the Job). Once it is older than any
 normal cold create, it is recorded as a `never-started` death, which also makes
 it restartable. Creates still in flight in this process are exempt via the
-provisioning registry.
+provisioning registry. A restart killed the same way is not a death: the
+life it started is removed, and the workspace is stopped as it was
+(docs/workspace-steps.md "Lives").
 
 ## Agent workspaces
 
@@ -296,12 +303,12 @@ pane names) restores it. Nesting is one level deep. A nested agent that dies
 without ending leaves the pane on its conversation until the parent's next
 start (a `/clear` or resume).
 
-Handles are scoped to a **life**: one pod, stamped on the workspace row at each
-create. `recordWorkspaceLife` sets `lifeStartedAt` and clears every recorded
-`paneId` in one transaction, because handles restart with the pod (tmux pane
-ids from `%0`, acpd sockets at the tool's name) and the ACP driver addresses a
-conversation by its recorded handle. The life also separates a permission mode
-reported by this pod from one a previous pod left.
+Handles are scoped to a **life**: one pod, a row of `workspace_lives` added
+at each create and restart (docs/workspace-steps.md "Lives"), because
+handles restart with the pod (tmux pane ids from `%0`, acpd sockets at the
+tool's name). A session whose window was launched before the current life
+began has none in it yet. The life also separates a permission mode reported
+by this pod from one a previous pod left.
 
 `active` is frozen at teardown and not recomputed while a workspace is stopped.
 A restart brings back exactly the sessions open at stop, each in its own
@@ -785,9 +792,9 @@ remote's upload-pack or ssh command; and `core.excludesFile`.
 The server never runs git against a checkout itself (docs/server-git.md).
 A stop first runs the clean inside the workspace through `exec`, beside the
 image salvage and as the workspace's user. When that succeeds, the
-`ignored-files-cleaned` event stamps the row's `ignoredCleanedAt` with the
-time the clean began. A stamp older than the row's stop counts for nothing,
-so a clean that outlived a restart does not answer for the next stop.
+`ignored-files-cleaned` event stamps the current life's `ignoredCleanedAt`
+with the time the clean began, unless that life's stop came later, so a
+clean that outlived a restart does not answer for the next stop.
 
 The `ignored-file-clean` reconcile step picks up every stopped row with no
 later stamp. That covers a runtime that had already died (an OOM-killed or
@@ -828,7 +835,7 @@ dirs, `node_modules` and cargo's `target` by default; docs/project-config.md)
 live and die with its runtime, not in the shared checkout. The project's
 list is relative to a checkout and applies in each one: `prepareScratchDirs`
 creates each dir in every checkout and passes them to the driver as the
-spec's `scratchDirs`, and the workspace's row records them relative to the
+spec's `scratchDirs`, and the workspace's life records them relative to the
 workspace dir (`web/node_modules`). A stop removes the ones the workspace
 started with, files git tracks in them included (docs/project-config.md
 "Scratch directories"), and a restart's init steps rebuild them.

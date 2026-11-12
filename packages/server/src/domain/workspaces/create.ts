@@ -104,7 +104,7 @@ import {
 import { convergeAgentHistory } from './history'
 import { deleteWorkspaceState } from './cleanup'
 import { attachVolume, stageVolume } from './volumes'
-import { lifeHooksExec, recordLife, startStepsOf } from './life'
+import { lifeHooksExec, startStepsOf } from './life'
 import { offeredForwards } from './forward-port'
 import type { StepGraph } from '@yaac/shared/steps'
 import { ACP_CONVERSATION_WAIT_MS } from './conversation-registry'
@@ -239,8 +239,8 @@ export interface WorkspaceCreateOptions {
   title?: string
   /** The title generated for the draft or queued entry it is created from. */
   generatedTitle?: string
-  /** When the server stops it (`workspaces.deadline`). A resume without one
-   *  clears the deadline the workspace had. */
+  /** When the server stops it (`workspaceLives.deadline`). A resume
+   *  without one has no deadline. */
   deadline?: Date
   /** The volume it mounts, already checked by `volumeForLaunch`; its
    *  lease is taken just before launch (docs/workspace-volumes.md). */
@@ -511,20 +511,11 @@ export function failedCreateCollectsCheckout(
 }
 
 /**
- * Report that a create gave up so the matching `workspace-created` can be
- * undone. `#db` decides what undo means for a resume (apply-workspace-event.ts).
+ * Report that a fresh create gave up, so the row it inserted is erased. A
+ * restart's caller reports its own failure, which keeps the row.
  */
-async function reportCreateFailed(
-  projectId: string,
-  workspaceId: string,
-  options: WorkspaceCreateOptions,
-): Promise<void> {
-  await applyWorkspaceEvent({
-    type: 'workspace-create-failed',
-    projectId,
-    workspaceId,
-    resume: options.resume !== undefined,
-  }).catch(() => {
+async function reportCreateFailed(projectId: string, workspaceId: string): Promise<void> {
+  await applyWorkspaceEvent({ type: 'workspace-create-failed', projectId, workspaceId }).catch(() => {
     // Best-effort: the reaper also handles a row whose pod never arrived.
   })
 }
@@ -853,22 +844,40 @@ export async function createWorkspace(
     ...(c.refBranch !== undefined ? { baseBranch: c.refBranch } : {}),
   }))
   throwIfProvisionStopped(workspaceId)
+  // A life starts with the workspace's row, or as a restart's next one,
+  // before any session is launched in it. A spare has neither.
+  let life: Date | undefined
   if (options.prewarm !== true) {
-    await applyWorkspaceEvent({
-      type: 'workspace-created',
+    const lifeStart = options.workflow !== undefined && options.resume !== true
+      ? { flows: [{ id: options.workflow.id, name: options.workflow.name, steps: options.workflow.steps }], skipped: [] }
+      : await startStepsOf(projectId, resumedRow, checkouts.map((c) => c.repo.id))
+    for (const s of lifeStart.skipped) {
+      emit(`Init workflow "${s.name}" skipped: this workspace has no ${s.missing.join(', ')}`, options)
+    }
+    // Never at or before the life it restarts from, whatever the clock has
+    // done since: the newest life is the current one.
+    life = new Date(Math.max(Date.now(), (resumedRow?.lifeStartedAt.getTime() ?? 0) + 1))
+    const started = {
       projectId,
       workspaceId,
+      at: life,
+      startSteps: lifeStart.flows,
+      skipped: lifeStart.skipped,
       ...launch,
-      ...(options.resume === true ? {} : { repos: recordedRepos, cwd }),
+      ...(options.deadline !== undefined ? { deadline: options.deadline } : {}),
+    }
+    await applyWorkspaceEvent(options.resume === true ? { type: 'workspace-life-started', ...started } : {
+      type: 'workspace-created',
+      ...started,
+      repos: recordedRepos,
+      cwd,
       ...(options.title !== undefined ? { title: options.title } : {}),
       ...(options.generatedTitle !== undefined ? { generatedTitle: options.generatedTitle } : {}),
       ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
-      ...(options.deadline !== undefined ? { deadline: options.deadline } : {}),
       ...(options.workflow !== undefined ? { workflowId: options.workflow.id, workflowName: options.workflow.name } : {}),
       ...(options.nonInteractive === true ? { nonInteractive: true } : {}),
       ...(options.rerunOf !== undefined ? { rerunOf: options.rerunOf } : {}),
       ...(options.siteId !== undefined ? { siteId: options.siteId } : {}),
-      resume: options.resume === true,
     })
   }
 
@@ -882,24 +891,11 @@ export async function createWorkspace(
   const scratchDirs = (await Promise.all(checkouts.map((c) =>
     prepareScratchDirs(c.dir, c.path, projectRow.scratchDirs.dirs)))).flat()
 
-  // A new life starts once the row exists, before any session is launched
-  // in it. A fresh create's session is recorded with its prompt; an `acp`
-  // one's waits on the row for its conversation, which the registry's sweep
-  // sends it (`reconcileWorkspaceConversations`). A spare has neither.
-  let sessions: SessionRow[] = []
-  let life: Date | undefined
-  if (options.prewarm !== true) {
-    const lifeStart = options.workflow !== undefined && options.resume !== true
-      ? { flows: [{ id: options.workflow.id, name: options.workflow.name, steps: options.workflow.steps }], skipped: [] }
-      : await startStepsOf(projectId, resumedRow, checkouts.map((c) => c.repo.id))
-    for (const s of lifeStart.skipped) {
-      emit(`Init workflow "${s.name}" skipped: this workspace has no ${s.missing.join(', ')}`, options)
-    }
-    life = await recordLife(projectId, workspaceId, lifeStart.flows)
-    sessions = options.session !== undefined
-      ? [await insertSession(projectId, workspaceId, options.session)]
-      : resumed
-  }
+  // A fresh create's session is recorded with its prompt; an `acp` one's
+  // waits on the row for its conversation, which the registry's sweep sends
+  // it (`reconcileWorkspaceConversations`).
+  const sessions: SessionRow[] = options.prewarm === true ? []
+    : options.session !== undefined ? [await insertSession(projectId, workspaceId, options.session)] : resumed
 
   // ── Concurrent provisioning ─────────────────────────────────────────
   // Image, checkouts, substrate and host fs prep run concurrently. The
@@ -1535,13 +1531,19 @@ export async function createWorkspace(
         .catch(() => { /* the failure is already the caller's */ })
         .then(() => podGone && deleteWorkspaceState(projectId, workspaceId))
         .then((removed) => (removed && options.prewarm !== true
-          ? reportCreateFailed(projectId, workspaceId, options)
+          ? reportCreateFailed(projectId, workspaceId)
           : undefined))
         .catch(() => { /* best-effort; nothing else can retry it */ })
-    } else {
-      await reportCreateFailed(projectId, workspaceId, options)
     }
     throw err
+  }
+
+  // The life is up. A lost write only matters if its runtime vanishes
+  // while no server watches, which then reads as a restart that never came
+  // up.
+  if (options.prewarm !== true) {
+    await applyWorkspaceEvent({ type: 'workspace-launched', projectId, workspaceId })
+      .catch((err: unknown) => serverLog(`[server] create ${workspaceId}: recording its launch: ${String(err)}`))
   }
 
   return {

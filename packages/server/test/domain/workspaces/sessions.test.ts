@@ -67,7 +67,6 @@ beforeEach(async () => {
   })
   await seedProject()
   await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: WS })
-  await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS, at: new Date(), startSteps: [] })
 })
 
 afterEach(async () => {
@@ -105,7 +104,6 @@ describe('openSession', () => {
       projectId: DEMO_PROJECT_ID, workspaceId: TWO, cwd: 'web',
       repos: [{ repoId: DEMO_PROJECT_ID, path: 'api' }, { repoId: WEB, path: 'web' }],
     })
-    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: TWO, at: new Date(), startSteps: [] })
     installFakeWorkspaceDriver({
       find: (id) => Promise.resolve(id === TWO ? { ...unit, workspaceId: TWO } : undefined),
       exec: (_job, cmd) => { execs.push(cmd); return Promise.resolve({ stdout: '', stderr: '' }) },
@@ -269,15 +267,15 @@ describe('reconcileSessions', () => {
 
   // A restart that could not clear the stop record leaves it older than the
   // life; one newer than the life is a stop.
-  it('reconciles a workspace whose stop record predates its life, and not one stopped since', async () => {
+  it('leaves a stopped workspace alone, and reconciles it once a restart starts its next life', async () => {
     const session = await insertSession(DEMO_PROJECT_ID, WS, claude)
     listed(KEEPER_WINDOW)
     await recordWorkspaceStopped(DEMO_PROJECT_ID, WS)
     await reconcileSessions(view)
     expect(opened()).toEqual([])
-    // Past the stop's millisecond, so the life is strictly newer.
-    await new Promise((resolve) => setTimeout(resolve, 2))
-    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS, at: new Date(), startSteps: [] })
+    await applyWorkspaceEvent({
+      type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS, at: new Date(Date.now() + 1000), startSteps: [],
+    })
     await reconcileSessions(view)
     expect(opened()).toEqual([session.window])
   })

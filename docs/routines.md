@@ -71,9 +71,9 @@ on from its start time, so a long wait can use it up.
 
 ## Timeouts
 
-`workspaces.deadline` is when the server stops a workspace; null means
-never, and `timeoutMinutes` beside it is how long the timeout that set it
-ran for. It counts from when the workspace was meant to start: an entry's
+`workspace_lives.deadline` is when the server stops a workspace in that
+life; null means never, and `timeoutMinutes` beside it is how long the
+timeout that set it ran for. It counts from when the workspace was meant to start: an entry's
 `startAt` if it has one, otherwise when it is created. Run now on a
 scheduled entry counts from now, but a routine's run always counts from its
 tick, so even one run late stops at the next tick. `prepareStart` takes the
@@ -154,7 +154,7 @@ its runs go in a group named after it (made if need be); `null` is the
 default list. Renaming the routine does not move it.
 
 **History.** A run launched with the next tick as its deadline is marked so
-(`workspaces.deadlineIsNextRun`, cleared by any later deadline write), and a
+(`workspace_lives.deadlineIsNextRun`, cleared by any later deadline write), and a
 stop there reads "ended at next run" everywhere a stop is listed, since the
 next run began; one stopped by the routine's own timeout reads "timed out".
 The mark is the run's own, so giving the routine a timeout later does not

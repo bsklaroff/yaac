@@ -59,7 +59,7 @@ const stopsReported = (): Array<[string, string, unknown]> => appliedEvents
 /** What the reaper's DB read returns, plus which creates are in flight
  *  (registered in the real provisioning registry). */
 interface DesiredSetup {
-  live: Array<{ projectId: string; workspaceId: string; ran: boolean }>
+  live: Array<{ projectId: string; workspaceId: string; ran: boolean; restartedFrom?: Date }>
   provisioning: string[]
 }
 let lastDesired: DesiredSetup = { live: [], provisioning: [] }
@@ -455,6 +455,47 @@ describe('reconcileStaleWorkspaces', () => {
       expect(stopsReported()).toEqual([
           ['proj', 'had-history', { reason: 'orphaned', detail: 'Job and pod deleted out-of-band' }],
         ])
+    })
+
+    // The server died while restarting it, so nothing rolled the restart
+    // back: its next life never came up. It goes on the second podless
+    // pass, with no wait and no death, and the workspace reads as stopped
+    // as it was.
+    it('forgets the life an interrupted restart started, recording no death', async () => {
+      const lifeBefore = new Date('2026-11-01T00:00:00Z')
+      mockWorkspaces.mockResolvedValue([])
+      setDesired({ live: [{ ...row('restarting', true), restartedFrom: lifeBefore }] })
+
+      await reconcileStaleWorkspaces(view)
+      expect(appliedEvents).toEqual([])
+      await reconcileStaleWorkspaces(view)
+
+      expect(appliedEvents).toEqual([
+        { type: 'workspace-create-failed', projectId: 'proj', workspaceId: 'restarting', lifeBefore },
+      ])
+      // A restart this process is running is left to it.
+      appliedEvents.length = 0
+      setDesired({ live: [{ ...row('restarting', true), restartedFrom: lifeBefore }], provisioning: ['restarting'] })
+      await reconcileStaleWorkspaces(view)
+      await tickPastGrace()
+      expect(appliedEvents).toEqual([])
+    })
+
+    // The server died after its runtime was up and before saying so (under
+    // k8s the pod outlives a server that is rolled). Found running, the
+    // life is recorded as up, so losing its runtime later is a death.
+    it('records an interrupted restart found running as launched, and keeps its life', async () => {
+      mockWorkspaces.mockResolvedValue([pod('came-up')])
+      mockProbe.mockResolvedValue('alive')
+      const unlaunched = { ...row('came-up', true), restartedFrom: new Date('2026-11-01T00:00:00Z') }
+      setDesired({ live: [unlaunched], provisioning: ['came-up'] })
+      await reconcileStaleWorkspaces(view)
+      expect(appliedEvents).toEqual([])
+
+      setDesired({ live: [unlaunched] })
+      await reconcileStaleWorkspaces(view)
+      await tickPastGrace()
+      expect(appliedEvents.map((e) => e.type)).toEqual(['workspace-launched', 'workspace-launched'])
     })
 
     it('a single empty-but-successful pod listing condemns nothing', async () => {

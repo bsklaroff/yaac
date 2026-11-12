@@ -191,8 +191,8 @@ export function failProvisioning(workspaceId: string, error: string, errorCode?:
  *
  * Not for an agent the user stopped, whose stop takes its windows down
  * too: one still being torn down is marked terminating, and after that the
- * stop is on the row with no death cause (a death the server observed
- * records one). A restart clears its stop record at the end of its run, so
+ * stop is on its current life with no death cause (a death the server
+ * observed records one). A restart starts the next life during its run, so
  * the row is read once that has settled.
  */
 export async function reportAgentLaunchFailure(input: {

@@ -15,7 +15,7 @@ import { applyWorkspaceEvent, getSessionRow, holdSessionPrompt, insertSession, t
 import { _resetPromptCaptureForTests } from '#domain/workspaces/prompt-capture'
 import { _resetTitleCaptureForTests } from '#domain/workspaces/title-capture'
 import { claiming } from '#domain/workspaces/prewarm'
-import { recordWorkspaceCreated, recordWorkspaceLife } from '#db/workspace-store'
+import { recordWorkspaceCreated } from '#db/workspace-store'
 import { _resetCodexRolloutReadsForTests } from '#runtime/agents/codex'
 import { _resetAcpRegistryForTests, registerAcpConversation } from '#runtime/agents/acp-registry'
 import { PromptNotRunError, type AcpConversation } from '#runtime/agents/acp-client'
@@ -52,7 +52,6 @@ describe('reconcileConversations', () => {
     _resetCodexRolloutReadsForTests()
     _resetAcpRegistryForTests()
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1' })
-    await recordWorkspaceLife(DEMO_PROJECT_ID, 'wt-1', new Date())
   })
 
   afterEach(async () => {

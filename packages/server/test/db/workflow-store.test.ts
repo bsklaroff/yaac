@@ -177,8 +177,9 @@ describe('deleteUnnamedWorkflows', () => {
     const loose = await storeWorkflow(PROJ, { steps: {}, secrets: [] })
     const fresh = await storeWorkflow(PROJ, { steps: { x: { run: ['true'] } }, secrets: [] })
     const added = await storeWorkflow(PROJ, { steps: { y: { run: ['true'] } }, secrets: [] })
-    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'w1' })
-    await insertAddedSteps(PROJ, 'w1', new Date(), { id: added.id, name: 'gone' }, added.steps)
+    const life = new Date()
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'w1', at: life })
+    await insertAddedSteps(PROJ, 'w1', life, { id: added.id, name: 'gone' }, added.steps)
     const db = await getDb()
     for (const id of [named.id, loose.id, added.id]) {
       await db.update(workflows).set({ createdAt: new Date(Date.now() - 2 * 60 * 60_000) }).where(eq(workflows.id, id))

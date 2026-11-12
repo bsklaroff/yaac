@@ -360,7 +360,7 @@ async function withRolloutReports(
   observed: LiveAgent[],
   links: ConversationLinkRow[],
 ): Promise<LiveAgent[]> {
-  const life = row.lifeStartedAt?.getTime() ?? 0
+  const life = row.lifeStartedAt.getTime()
   return Promise.all(observed.map(async (a) => {
     const recorded = links.find((l) => l.tool === a.tool && l.conversationId === a.conversationId)
     const transcript = a.transcriptPath ?? recorded?.transcriptPath

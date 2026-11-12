@@ -35,7 +35,7 @@ import { clearQueuedLaunchesForTests } from '#domain/workspaces/queued-workspace
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { getQueuedWorkspaceRow } from '#db/queued-workspace-store'
 import { createWorkspaceGroup, getWorkspaceRow, insertSession, insertSite, updateSite, listWorkspaceRepos, listWorkspaceSessions, setProjectKeptIgnoredPaths, setWorkspaceGroup, setWorkspaceGroupLimit } from '#db'
-import { clearWorkspaceStopped, recordWorkspaceCreated } from '#db/workspace-store'
+import { recordWorkspaceCreated, recordWorkspaceLife } from '#db/workspace-store'
 import { closeDb, getDb } from '#db/client'
 import { workspaces } from '#db/schema'
 import { eq } from 'drizzle-orm'
@@ -188,7 +188,7 @@ describe('stopWorkspace', () => {
       expect((await listQueuedWorkspaces()).find((e) => e.id === child.id)).toMatchObject({ waitingForRoom: true })
 
       // The parent coming back does not put it back to waiting on its stop.
-      await clearWorkspaceStopped(PROJ, 'parent')
+      await recordWorkspaceLife(PROJ, 'parent', { at: new Date(Date.now() + 1000) })
       await stopWorkspace(local, 'other')
       await vi.waitFor(async () => { expect(await launchedWith('child')).toBeDefined() }, { timeout: 60_000 })
       expect(launched).toHaveLength(1)

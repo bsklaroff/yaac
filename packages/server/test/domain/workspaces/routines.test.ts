@@ -38,9 +38,9 @@ import { BUILT_IN_USER_ID, getWorkspaceRow, insertRepo, linkProjectRepo, listWor
 import fs from 'node:fs/promises'
 import { git } from '@yaac/test-utils/git'
 import { repoDir } from '@yaac/shared/project-paths'
-import { clearWorkspaceStopped, recordWorkspaceStopped, setWorkspaceDeadline } from '#db/workspace-store'
+import { recordWorkspaceLife, recordWorkspaceStopped, setWorkspaceDeadline } from '#db/workspace-store'
 import { closeDb, getDb } from '#db/client'
-import { workspaces } from '#db/schema'
+import { workspaceLives } from '#db/schema'
 import { eq } from 'drizzle-orm'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
@@ -352,16 +352,16 @@ describe('listRoutineRunPage', () => {
     // says so too. With a timeout of its own, the stop timed out. One that
     // died after its deadline died.
     const db = await getDb()
-    await db.update(workspaces).set({ deadline: new Date(Date.now() - 60_000) }).where(eq(workspaces.workspaceId, workspaceId))
+    await db.update(workspaceLives).set({ deadline: new Date(Date.now() - 60_000) }).where(eq(workspaceLives.workspaceId, workspaceId))
     await recordWorkspaceStopped(PROJ, workspaceId)
     await updateRoutine(local, r.id, { timeout: 30 }, 'user')
     expect((await listRoutineRunPage(r.id, { limit: 1 })).runs[0]).toMatchObject({ state: 'ended' })
     expect((await listStoppedWorkspaces({ project: PROJ })).entries[0]).toMatchObject({ timedOut: true, endedAtNextRun: true })
-    await clearWorkspaceStopped(PROJ, workspaceId)
+    await recordWorkspaceLife(PROJ, workspaceId, { at: new Date(Date.now() + 1000) })
     await setWorkspaceDeadline(PROJ, workspaceId, new Date(Date.now() - 60_000))
     await recordWorkspaceStopped(PROJ, workspaceId)
     expect((await listRoutineRunPage(r.id, { limit: 1 })).runs[0]).toMatchObject({ state: 'timed-out' })
-    await clearWorkspaceStopped(PROJ, workspaceId)
+    await recordWorkspaceLife(PROJ, workspaceId, { at: new Date(Date.now() + 2000) })
 
     await setWorkspaceDeadline(PROJ, workspaceId, new Date(Date.now() - 60_000))
     await recordWorkspaceStopped(PROJ, workspaceId, { reason: 'oom' })

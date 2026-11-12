@@ -29,8 +29,8 @@ let tmpDir: string
  *  - wt-old, stopped 10 days ago;
  *  - wt-old-parent, the same, with an entry queued after it, so its delete
  *    is refused;
- *  - wt-ran-since, stopped 10 days ago, restarted without the stop being
- *    cleared (a lost write), run for 8 days and stopped 2 days ago;
+ *  - wt-ran-since, stopped 10 days ago, restarted, run for 8 days and
+ *    stopped 2 days ago;
  *  - wt-recent, stopped 2 days ago;
  *  - wt-running, never stopped;
  * and OTHER holds wt-other-old, stopped 10 days ago.
@@ -47,7 +47,7 @@ beforeEach(async () => {
   await stopped(OTHER, 'wt-other-old')
   await queueWorkspace(local, PROJ, { parent: 'wt-old-parent', prompt: 'next', tool: 'claude' }, 'user')
   vi.setSystemTime(Date.now() + 1)
-  await recordWorkspaceLife(PROJ, 'wt-ran-since', new Date())
+  await recordWorkspaceLife(PROJ, 'wt-ran-since', { at: new Date() })
   vi.setSystemTime(now - 2 * DAY_MS)
   await stopped(PROJ, 'wt-recent')
   await recordWorkspaceStopped(PROJ, 'wt-ran-since')
