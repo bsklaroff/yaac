@@ -111,6 +111,22 @@ describe('groupEvents', () => {
     ])).toEqual([{ kind: 'agent', seq: 1, text: 'hi', images: [] }])
   })
 
+  it('marks a model switch in the main conversation, by the adapter\'s name for the model or else its id shortened', () => {
+    const events: AcpEvent[] = [
+      agent(0, 'one'),
+      { type: 'model-switch', seq: 1, model: 'opus', name: 'Opus 5.5' },
+      agent(2, 'two'),
+      { type: 'model-switch', seq: 3, model: 'anthropic/claude-sonnet-5-5' },
+    ]
+    expect(groupEvents(events)).toEqual([
+      { kind: 'agent', seq: 0, text: 'one', images: [] },
+      { kind: 'model-switch', seq: 1, label: 'Opus 5.5' },
+      { kind: 'agent', seq: 2, text: 'two', images: [] },
+      { kind: 'model-switch', seq: 3, label: 'Sonnet 5.5' },
+    ])
+    expect(groupEvents(events, 'sub-1')).toEqual([])
+  })
+
   it('drops a turn start, which drives the indicator rather than the transcript', () => {
     // A turn start renders nothing.
     expect(groupEvents([{ type: 'turn-start', seq: 0 }, agent(1, 'hi')]))

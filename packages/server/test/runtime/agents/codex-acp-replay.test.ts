@@ -33,10 +33,11 @@ function toolCalls(events: AcpEvent[]): Map<string, AcpToolCall & { output: stri
   return calls
 }
 
-/** The conversation's text and turn boundaries, in order. */
+/** The conversation's text, turn boundaries and model switches, in order. */
 function conversation(events: AcpEvent[]): string[] {
   return events.flatMap((e) => {
     if (e.type === 'agent-turn') return ['--']
+    if (e.type === 'model-switch') return [`model: ${e.model}`]
     if (e.type !== 'user' && e.type !== 'agent' && e.type !== 'thought') return []
     const text = e.content.map((c) => (c.type === 'text' ? c.text : `[${c.mimeType}]`)).join('')
     const thread = e.thread === undefined ? '' : ' (subagent)'
@@ -216,6 +217,25 @@ describe('codexTranscriptAsAcp', () => {
     expect(events.filter((e) => e.type === 'tool').at(-1)).toMatchObject({
       call: { title: 'mcp.playwright.browser_take_screenshot', status: 'completed', content: [{ type: 'image', mimeType: 'image/png', data: png }] },
     })
+  })
+
+  it('shows a model switch before the turn that first ran the new model', () => {
+    // The fixture is cut to the lines the replay read before it read models,
+    // so each turn's context goes back in as codex 0.166 writes it, after
+    // the turn starts: the first turn on one model, every later one on
+    // another.
+    const [main, review] = SESSION
+    let turns = 0
+    const lines = main.trimEnd().split('\n').flatMap((line) => {
+      const { timestamp, payload } = JSON.parse(line) as { timestamp: string; payload: { type?: string; turn_id?: string } }
+      if (payload.type !== 'task_started') return [line]
+      const model = turns++ === 0 ? 'gpt-a' : 'gpt-b'
+      return [line, JSON.stringify({ timestamp, type: 'turn_context', payload: { turn_id: payload.turn_id, model } })]
+    })
+    const shown = conversation(codexTranscriptAsAcp([lines.join('\n'), review]))
+    expect(shown.filter((l) => l.startsWith('model:'))).toEqual(['model: gpt-b'])
+    expect(shown.slice(shown.indexOf('model: gpt-b') - 1, shown.indexOf('model: gpt-b') + 2))
+      .toEqual(['agent: Done with basics.', 'model: gpt-b', 'user: t-multi please'])
   })
 
   it('stays linear on a crafted rollout of many turns and unfinished commands', () => {

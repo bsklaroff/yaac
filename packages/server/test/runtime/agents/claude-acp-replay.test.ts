@@ -143,6 +143,27 @@ describe('claudeTranscriptAsAcp', () => {
     expect(said.type === 'agent' && said.content).toEqual([{ type: 'text', text: 'the real answer' }])
   })
 
+  it('shows a model switch before the first reply the new model wrote', async () => {
+    const reply = (model: string, text: string): unknown =>
+      turn('assistant', { role: 'assistant', model, content: [{ type: 'text', text }] })
+    const file = await transcript([
+      user('first'),
+      reply('claude-fable-5', 'one'),
+      // A `/model` in the TUI, whose bookkeeping says nothing a pane shows.
+      user('<local-command-caveat>Caveat: …</local-command-caveat>', { isMeta: true }),
+      user('<command-name>/model</command-name>'),
+      user('<local-command-stdout>Set model to Opus 5.5</local-command-stdout>'),
+      user('second'),
+      reply('claude-opus-5-5', 'two'),
+      reply('claude-opus-5-5', 'still two'),
+    ])
+
+    const events = await claudeTranscriptAsAcp(await fs.readFile(file, 'utf8'), SESSION)
+
+    expect(events.map((e) => (e.type === 'model-switch' ? `model: ${e.model}` : e.type)))
+      .toEqual(['user', 'agent', 'user', 'model: claude-opus-5-5', 'agent', 'agent'])
+  })
+
   it('shows a stopped prompt as its own message and a cancelled turn, apart from the next', async () => {
     const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } }
     const file = await transcript([

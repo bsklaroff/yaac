@@ -19,7 +19,10 @@
  * A `!command` the user ran (a `shell` row), which only the TUI writes, is
  * rendered as the closest thing a client could have sent: the prompt they
  * typed plus the shell call with its output. A compaction is shown with its
- * summary, after the `/compact` prompt that started a manual one.
+ * summary, after the `/compact` prompt that started a manual one. A model
+ * switch, and the model each reply came from, are reported as the reply to
+ * a switch (`AcpRecordWriter.model`): opencode writes no switch row for the
+ * model a session starts on, so its replies name that one.
  *
  * Dropped, because neither the live stream nor yaac's projection renders
  * them: the text a slash command expands into is shown in place of the
@@ -27,7 +30,7 @@
  * reply to a command at all), and these are not shown:
  *  - a failed step's error and a turn's stop reason, which live arrive as the
  *    prompt's reply, and replay never reads;
- *  - synthetic and system messages, skills, and agent, model and directory
+ *  - synthetic and system messages, skills, and agent and directory
  *    switches, which the model sees but the stream skips;
  *  - token usage, retries and models, which need the model catalog or are
  *    session state rather than conversation;
@@ -231,6 +234,10 @@ function synthesizeAcpRecord(rows: Row[], rootId: string): AcpRecordWriter {
   }
 
   let compactions = 0
+  const noteModel = (data: Row): void => {
+    const model = asRecord(data.model)
+    record.model(asString(model?.id), asString(model?.providerID))
+  }
 
   const play = (s: Session, child?: Child): void => {
     const update = (u: Row): void => {
@@ -301,7 +308,10 @@ function synthesizeAcpRecord(rows: Row[], rootId: string): AcpRecordWriter {
           ...(summary !== undefined && summary !== '' ? { summary: [{ type: 'text', text: summary }] } : {}),
           _meta: { [COMPACTION_META]: { trigger: data.reason === 'manual' ? 'manual' : 'auto' } },
         })
+      } else if (type === 'model-switched' && child === undefined) {
+        noteModel(data)
       } else if (type === 'assistant') {
+        if (child === undefined) noteModel(data)
         if (!running) status('running')
         running = true
         for (const raw of Array.isArray(data.content) ? data.content : []) {

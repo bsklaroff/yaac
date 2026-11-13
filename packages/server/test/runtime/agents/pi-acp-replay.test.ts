@@ -29,10 +29,11 @@ function toolCalls(events: AcpEvent[]): Map<string, AcpToolCall & { output: stri
   return calls
 }
 
-/** The conversation's text and turn boundaries, in order. */
+/** The conversation's text, turn boundaries and model switches, in order. */
 function conversation(events: AcpEvent[]): string[] {
   return events.flatMap((e) => {
     if (e.type === 'agent-turn') return ['--']
+    if (e.type === 'model-switch') return [`model: ${e.model}`]
     if (e.type !== 'user' && e.type !== 'agent' && e.type !== 'thought') return []
     const text = e.content.map((c) => (c.type === 'text' ? c.text : `[${c.mimeType}]`)).join('')
     return [`${e.type}${e.type === 'user' && e.steered ? ' (steered)' : ''}: ${text.split('\n')[0]}`]
@@ -52,7 +53,8 @@ describe('piTranscriptAsAcp', () => {
     expect(events.map((e) => e.seq)).toEqual(events.map((_, i) => (i < compacted ? i : ACP_PAGE_SPAN + i - compacted)))
 
     // The failed request shows nothing, as live; the aborted one keeps what
-    // streamed. The system prompt, model and thinking changes, the
+    // streamed. The model switch shows where it was made, but not the model
+    // the session started on. The system prompt, thinking changes, the
     // extension's state and its hidden message stay out.
     expect(conversation(events)).toEqual([
       'user: TOOLS please', '--',
@@ -63,7 +65,7 @@ describe('piTranscriptAsAcp', () => {
       'user: ERROR trigger', '--',
       'user: ABORT this', '--', 'thought: Thinking slowly.', 'agent: Partial answer',
       'user: AFTER compaction', '--', 'thought: Brief.', 'agent: Continuing after compaction.',
-      'user: MODEL switched', '--', 'agent: Now on the other model.',
+      'model: fake/fake-model-2', 'user: MODEL switched', '--', 'agent: Now on the other model.',
       'user: STEER now', '--', 'agent: Sleeping.',
       'user (steered): NUDGE extra', 'agent: Got the steer.',
       '--', 'agent: Status: all good',

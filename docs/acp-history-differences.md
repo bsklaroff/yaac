@@ -28,6 +28,11 @@ that mapping cannot bring back.
 - **Queued messages.** A message waiting for the turn to end lives in the
   server's memory and is dropped at a stop. Only one that was sent shows in
   the history.
+- **How a model switch names the model.** Live, a "Switched to" divider
+  names the model as the adapter displays it (`6 Astra`). No history keeps
+  that name, so a restored divider names it by its id (`gpt-6-astra`), with
+  only a claude id shortened to a readable name (`claude-haiku-5-5` →
+  `Haiku 5.5`, which matches what claude's adapter shows).
 - **A page break where the current life began.** The tool's history before
   the life and the record of it are paged separately, so a page ends there.
   Earlier restarts leave no break: the tool's history is one stream, and a
@@ -79,6 +84,11 @@ that mapping cannot bring back.
   timestamp of the transcript entry that launched it, which can be a moment
   before the live record saw the launch, so it too can read a minute
   earlier than it did live.
+- **Model switches.** claude's transcript records no switch, only the model
+  each reply came from, so a restored "Switched to" divider sits before the
+  first reply from the new model, after the message that prompted it,
+  rather than where the user switched. A switch that no reply followed
+  before the restart is not shown.
 
 ## codex
 
@@ -96,6 +106,10 @@ that mapping cannot bring back.
 - **File citations.** Live, codex-acp rewrites the model's
   `:codex-file-citation{path=…}` markers into Markdown links to the file. The
   rollout keeps the markers as written, and the replay shows them raw.
+- **Model switches** are read from the model each turn records, so a
+  restored "Switched to" divider sits before the first turn on the new
+  model, not where the user switched (mid-turn, say). A switch that no turn
+  followed before the restart is not shown.
 
 ## pi
 
@@ -142,6 +156,12 @@ compactions, and nothing else:
 - **Message times.** The replay carries none, so the messages of earlier
   lives show undated, and a subagent or task launched in one shows no
   "Started" time.
+- **Model switches** are not replayed, so a "Switched to" divider from an
+  earlier life is gone. opencode's own rows hold each switch (a `tui`
+  transcript shows them), but are not merged into the replay: a sandboxed
+  workspace's export of them lags a running pod by up to the five-minute
+  checkpoint interval, so an agent restarted inside one would miss its
+  latest switches.
 
 A `tui` conversation's transcript is read from opencode's database:
 

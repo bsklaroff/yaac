@@ -3,6 +3,7 @@ import clsx from 'clsx'
 import { CodeView, DiffView } from '#components/DiffView'
 import { FileLink, FileLinksContext, Linked, Markdown } from '#components/Markdown'
 import { PathLabel } from '#components/ui/PathLabel'
+import { formatModel } from '#lib/agentLabel'
 import { useImageSrc } from '#lib/attachments'
 import { codeLines, unfence } from '#lib/code'
 import { diffTextPair, type DiffLine } from '#lib/diff'
@@ -57,6 +58,8 @@ export type Group = ({ turn?: true; woken?: AcpWake[]; at?: number } & (
   | { kind: 'task'; seq: number; task: AcpTask }
   /** A compaction, where it started, with its latest state. */
   | { kind: 'compaction'; seq: number; compaction: AcpCompaction }
+  /** The model changed here; `label` is the model as shown. */
+  | { kind: 'model-switch'; seq: number; label: string }
   | { kind: 'error'; seq: number; message: string }
   | { kind: 'turn-end'; seq: number; stopReason: string }
   /** A permission ask, merged with its answer once one arrives. `toolCall`
@@ -138,7 +141,8 @@ export function active(item: AcpSubagent | AcpTask): boolean {
  *   call's latest state and output from whichever thread ran it, marking a
  *   call this thread shows itself;
  * - `turn-end` is kept only for an unusual stop reason, and `turn-start`
- *   and the session's `commands` and `models` are dropped;
+ *   and the session's `commands` and `models` are dropped (a model switch
+ *   is its own event, kept in the main conversation);
  * - `agent-turn` (a run the agent may have started itself) keeps the text
  *   after it from joining the text before, and marks the group after it as
  *   a turn's first. `woken` marks that same group, whenever it arrives.
@@ -284,6 +288,10 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
       groups.push({ kind: 'error', seq: e.seq, message: e.message })
       continue
     }
+    if (e.type === 'model-switch') {
+      if (main) groups.push({ kind: 'model-switch', seq: e.seq, label: e.name ?? formatModel(e.model) })
+      continue
+    }
     if (e.type === 'plan') {
       groups.push({ kind: 'plan', seq: e.seq, entries: e.entries })
       continue
@@ -382,6 +390,7 @@ export function groupFindText(g: Group): [string, string] {
     case 'subagent': return [`${g.subagent.name}\n${g.subagent.task}`, '']
     case 'task': return [`${g.task.name}\n${g.task.summary ?? ''}`, '']
     case 'compaction': return [compactionLabel(g.compaction, true), g.compaction.summary ?? '']
+    case 'model-switch': return [modelSwitchLabel(g.label), '']
     case 'error': return [g.message, '']
     case 'turn-end': return [g.stopReason, '']
     case 'permission': {
@@ -402,10 +411,11 @@ interface Folded {
 }
 
 /** Groups the condensed view never hides: the user's prompts, what woke the
- *  agent into a run, compactions, subagent and task cards (the way into
- *  their own views), and what the user must see or answer. */
+ *  agent into a run, compactions and model switches, subagent and task cards
+ *  (the way into their own views), and what the user must see or answer. */
 function alwaysShown(g: Group): boolean {
-  return g.kind === 'user' || g.kind === 'error' || g.kind === 'turn-end' || g.kind === 'compaction' || g.woken !== undefined
+  return g.kind === 'user' || g.kind === 'error' || g.kind === 'turn-end' || g.kind === 'compaction'
+    || g.kind === 'model-switch' || g.woken !== undefined
     || g.kind === 'subagent' || g.kind === 'task' || (g.kind === 'permission' && g.decided === undefined)
 }
 
@@ -921,6 +931,22 @@ function CompactionRow({ compaction: c, live, reveal }: {
           <Markdown>{detail}</Markdown>
         </div>
       )}
+    </div>
+  )
+}
+
+function modelSwitchLabel(label: string): string {
+  return `Switched to ${label}`
+}
+
+/** A line of faint text across the column, between what came before it
+ *  and what follows. */
+function Divider({ children }: { children: ReactNode }): JSX.Element {
+  return (
+    <div className="flex items-center gap-2 text-[11px] text-text-faint">
+      <span className="h-px flex-1 bg-hairline" />
+      {children}
+      <span className="h-px flex-1 bg-hairline" />
     </div>
   )
 }
@@ -1463,15 +1489,8 @@ function GroupView({
       />
     )
   }
-  if (g.kind === 'turn-end') {
-    return (
-      <div className="flex items-center gap-2 text-[11px] text-text-faint">
-        <span className="h-px flex-1 bg-hairline" />
-        turn ended: {g.stopReason.replace(/_/g, ' ')}
-        <span className="h-px flex-1 bg-hairline" />
-      </div>
-    )
-  }
+  if (g.kind === 'turn-end') return <Divider>turn ended: {g.stopReason.replace(/_/g, ' ')}</Divider>
+  if (g.kind === 'model-switch') return <Divider>{modelSwitchLabel(g.label)}</Divider>
   return (
     <div className="flex items-start gap-1.5 rounded-lg border border-error/40 bg-error/5 px-3 py-2 text-xs text-error">
       <WarningIcon size={13} className="mt-px shrink-0" />

@@ -214,9 +214,17 @@ describe('opencodeTranscriptAsAcp', () => {
     expect(events.filter((e) => e.type === 'tool')).toHaveLength(2 * n)
   })
 
-  it('renders what only the TUI writes, and places a subagent at the call still running it', async () => {
+  it('renders what only the TUI writes, shows a model switch, and places a subagent at the call still running it', async () => {
     installFakeWorkspaceDriver({ kind: 'k8s' })
     const rows = await rowsOf('tui-rows.jsonl')
+    // The session runs on mock-1, which opencode 2.2.6 names only on its
+    // replies (it writes no switch row for a session's first model), then
+    // switches to mock-2 before the last prompt, whose reply mock-2 writes.
+    const last = rows.findIndex((r) => (r.data as { text?: string } | undefined)?.text === 'after compact')
+    const created = (rows[last].data as { time: { created: number } }).time.created
+    rows.splice(last, 0, { session: TUI_ROOT, type: 'model-switched', seq: 0, data: { time: { created }, model: { id: 'mock-2', providerID: 'mock' } } })
+    const reply = rows.findIndex((r, i) => i > last && r.session === TUI_ROOT && r.type === 'assistant')
+    rows[reply] = { ...rows[reply], data: { ...(rows[reply].data as object), model: { id: 'mock-2', providerID: 'mock' } } }
     await writeExport(TUI_ROOT, rows.map((r) => JSON.stringify(r)).join('\n'))
     const events = rendered(await opencodeTranscriptAsAcp(projectId, ws, TUI_ROOT))
     const child = 'ses_ebbc52032ffej3i8JvksILESSo'
@@ -240,6 +248,7 @@ describe('opencodeTranscriptAsAcp', () => {
       { type: 'tool', call: { title: 'sleep 30', status: 'failed', content: [{ type: 'text', text: 'Tool execution interrupted' }] } },
       { type: 'user', content: [{ type: 'text', text: '/compact' }] },
       { type: 'compaction', compaction: { trigger: 'manual', status: 'failed', error: 'Compaction summary did not match the required template' } },
+      { type: 'model-switch', model: 'mock/mock-2' },
       { type: 'user', content: [{ type: 'text', text: 'after compact' }] },
       { type: 'agent', content: [{ type: 'text', text: 'Hello from the mock.' }] },
     ])

@@ -30,6 +30,8 @@
  *    commands' ends.
  *  - `update_plan` calls: plans. `token_count`: usage. Turn starts and ends:
  *    the thread status reports; a failed turn's error as message text.
+ *    `turn_context`: the turn's model, as a model switch's reply
+ *    (`AcpRecordWriter.model`) before the turn's prompt.
  *
  * Dropped on purpose:
  *  - DynamicToolCall: only an app-server client registers dynamic tools, and
@@ -40,8 +42,8 @@
  *  - What codex never persists: an item that has not ended (a running
  *    command, or a wait cut short by a stop), a plan set from code mode's
  *    `exec` cell, warnings and notices, a TUI slash command (`/review`,
- *    `/compact`) as a user message, and session state (models, commands,
- *    modes).
+ *    `/compact`) as a user message, and session state (the models offered,
+ *    commands, modes).
  *  - Exchanges only an ACP client has: permission asks, plan approval.
  *  - Rollouts from before codex persisted `item_completed` show nothing but
  *    their usage and turn reports.
@@ -127,10 +129,14 @@ function synthesizeAcpRecord(rollouts: string[]): AcpRecordWriter {
    *  attached file only as its path; the data is in the model input
    *  recorded just before it. */
   const images = new Map<Json, string[]>()
+  /** The model each main-thread turn ran (`turn_context`), noted before the
+   *  turn's prompt, where a switch made between turns sits live. */
+  const models = new Map<string, string | undefined>()
   let sent: string[] = []
   for (const { thread, turn, item, line } of entries) {
     if (thread !== main) continue
     const payload = asRecord(line?.payload)
+    if (line?.type === 'turn_context' && turn !== undefined) models.set(turn, asString(payload?.model))
     if (line?.type === 'response_item' && payload?.type === 'message' && payload.role === 'user') {
       sent = (Array.isArray(payload.content) ? payload.content : []).map(asRecord)
         .flatMap((c) => (c?.type === 'input_image' ? [asString(c.image_url) ?? ''] : []))
@@ -283,6 +289,7 @@ function synthesizeAcpRecord(rollouts: string[]): AcpRecordWriter {
     const payload = asRecord(line?.payload) ?? {}
     switch (line?.type === 'event_msg' ? payload.type : line?.type) {
       case 'task_started': {
+        if (thread === main && turn !== undefined) record.model(models.get(turn))
         const opening = turn === undefined ? undefined : prompts.get(turn)
         if (opening !== undefined && !begun.has(opening)) {
           begun.add(opening)
