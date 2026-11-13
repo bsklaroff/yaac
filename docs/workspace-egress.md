@@ -168,12 +168,13 @@ carries no token, so nothing ambiguous is authenticated.
 
 A workspace's `GH_TOKEN` is a placeholder naming a repo,
 `yaac-ph-gh-token-<repo id>`. The proxy swaps it, keeping `gh`'s scheme, for
-that repo's token on requests to the API host of the repo's git host
-(`api.github.com` for `github.com`), when the workspace's project holds a
-grant for the repo with `ghToken` and without `readOnly`. Any other
-`Authorization` passes as it came, a user's own token included. Through the
-API a token reaches whatever it can at the host, so this is the one place a
-token leaves its repo's path, and a read-only repo's never does.
+that repo's token on requests to the API hosts of the repo's git host
+(`api.github.com` and `uploads.github.com` for `github.com`), when the
+workspace's project holds a grant for the repo with `ghToken` and without
+`readOnly`. Any other `Authorization` passes as it came, a user's own token
+included. Through the API a token reaches whatever it can at the host, so
+this is the one place a token leaves its repo's path, and a read-only repo's
+never does.
 
 ### Read-only repos
 

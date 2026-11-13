@@ -309,7 +309,8 @@ export function hostNeedsDynamicMitm(
   // A host the project has an https repo on, whose requests get that
   // repo's token under its path and are refused writes when read-only.
   if (hasHttpsGrantOnHost(objects, workspaceId, hostname)) return true
-  // gh CLI talks to api.github.com, not the git remote host.
+  // gh talks to its API hosts (api.github.com, uploads.github.com), not
+  // the git remote host.
   if (isGhApiHostFor(objects, workspaceId, hostname)) return true
   return false
 }

@@ -15,7 +15,7 @@ import {
 import { useUiStore } from '#lib/store'
 import { useInlineEdit } from '#lib/useInlineRename'
 import { useSnapshot } from '#lib/useSnapshot'
-import { ghApiHostForGitHost } from '@yaac/shared/credentials'
+import { isGitHubHost } from '@yaac/shared/credentials'
 import { parseGitRemote } from '@yaac/shared/git-remote'
 import { REPO_DIR_RE, type ProjectRepo, type ProjectSummary } from '@yaac/shared/types'
 
@@ -24,7 +24,7 @@ import { REPO_DIR_RE, type ProjectRepo, type ProjectSummary } from '@yaac/shared
 function isGithubHttps(remoteUrl: string): boolean {
   try {
     const { scheme, host } = parseGitRemote(remoteUrl)
-    return scheme === 'https' && ghApiHostForGitHost(host) !== null
+    return scheme === 'https' && isGitHubHost(host)
   } catch {
     return false
   }

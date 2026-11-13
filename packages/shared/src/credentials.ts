@@ -1,10 +1,9 @@
 /**
- * The API host `gh` authenticates against for a git host, or null for
- * anything but github.com (GitHub Enterprise is not supported).
- *
- * The proxy (k8s/proxy) has its own copy of this mapping; keep them in sync.
+ * Whether a git host is github.com, the one host whose https repos are
+ * offered to `gh` as `GH_TOKEN` (GitHub Enterprise is not supported). Which
+ * API hosts the proxy sends that token to is `ghApiHostsForGitHost` in
+ * k8s/proxy/repo-grants.ts.
  */
-export function ghApiHostForGitHost(host: string): string | null {
-  if (host === 'github.com') return 'api.github.com'
-  return null
+export function isGitHubHost(host: string): boolean {
+  return host === 'github.com'
 }

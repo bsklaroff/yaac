@@ -77,7 +77,7 @@ import { stripAnsi, stripControlChars } from '@yaac/shared/ansi'
 import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
 import { FULL_COMMIT_PATTERN, formatCommits, stepSettled } from '@yaac/shared/steps'
 import { parseGitRemote } from '@yaac/shared/git-remote'
-import { ghApiHostForGitHost } from '@yaac/shared/credentials'
+import { isGitHubHost } from '@yaac/shared/credentials'
 import { ghTokenPlaceholder } from '@yaac/shared/tool-auth'
 import { workspacesSandboxed } from '#drivers/driver'
 import { canUseRepo, resolveRepoCredential } from '#domain/repos'
@@ -1498,7 +1498,7 @@ async function runAsRepo(caller: MamaCaller, request: MamaRequestInput): Promise
   if (project === undefined || link === undefined) return { ok: false, error: `this project has no repo "${ref}"` }
   const { repo } = link
   if (repo.hosted || parseGitRemote(repo.remoteUrl).scheme !== 'https'
-    || ghApiHostForGitHost(parseGitRemote(repo.remoteUrl).host) === null) {
+    || !isGitHubHost(parseGitRemote(repo.remoteUrl).host)) {
     return { ok: false, error: `${link.dir} is not an https GitHub repo, so it has no token gh could use` }
   }
   if (workspacesSandboxed()) {

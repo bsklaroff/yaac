@@ -18,11 +18,12 @@ export const PLACEHOLDER_GH_TOKEN = 'yaac-ph-gh-token'
 const GH_PLACEHOLDER = new RegExp(`${PLACEHOLDER_GH_TOKEN}-([0-9a-f-]{36})`)
 
 /**
- * The API host `gh` uses for a git host. Mirrors ghApiHostForGitHost in
- * packages/shared/src/credentials.ts.
+ * The API hosts `gh` sends `GH_TOKEN` to for a git host: the REST API and
+ * the host that takes release assets and attachments. Null for anything but
+ * github.com (GitHub Enterprise is not supported).
  */
-function ghApiHostForGitHost(host: string): string | null {
-  if (host === 'github.com') return 'api.github.com'
+function ghApiHostsForGitHost(host: string): string[] | null {
+  if (host === 'github.com') return ['api.github.com', 'uploads.github.com']
   return null
 }
 
@@ -174,7 +175,7 @@ export function ghTokenSwap(
   if (!match) return null
   const found = httpsGrants(objects, workspaceId).find(({ grant }) =>
     grant.repoId === match[1] && grant.ghToken && !grant.readOnly
-    && ghApiHostForGitHost(grant.host) === hostname)
+    && ghApiHostsForGitHost(grant.host)?.includes(hostname))
   return found ? { placeholder: match[0], token: found.token } : null
 }
 
@@ -182,7 +183,7 @@ export function ghTokenSwap(
  *  may use a repo's token on as `GH_TOKEN`. */
 export function isGhApiHostFor(objects: ProxyObjects, workspaceId: string, hostname: string): boolean {
   return httpsGrants(objects, workspaceId).some(({ grant }) =>
-    grant.ghToken && !grant.readOnly && ghApiHostForGitHost(grant.host) === hostname)
+    grant.ghToken && !grant.readOnly && ghApiHostsForGitHost(grant.host)?.includes(hostname))
 }
 
 /** Whether a workspace's project has an ssh repo on `hostname`, so its ssh

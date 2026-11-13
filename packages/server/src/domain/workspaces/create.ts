@@ -48,7 +48,7 @@ import { buildCloneLinkExec, buildStatusWarmupExec } from '@yaac/shared/git'
 import { parseGitRemote } from '@yaac/shared/git-remote'
 import { resolveProjectEnv } from '#domain/projects'
 import { assertCanUseRepo, fetchRepoOrigin, missingCredentialError, resolveRepoCredential, sshKeyMaterial } from '#domain/repos'
-import { ghApiHostForGitHost } from '@yaac/shared/credentials'
+import { isGitHubHost } from '@yaac/shared/credentials'
 import { readLock } from '@yaac/shared/lock'
 import {
   ghTokenEnvName,
@@ -1235,7 +1235,7 @@ export async function createWorkspace(
   // could switch codex to api-key mode.
 
   // For each HTTPS GitHub repo whose link allows it, a variable holding its
-  // git token (a placeholder the proxy swaps on api.github.com, if
+  // git token (a placeholder the proxy swaps on gh's API hosts, if
   // mediated), so `gh` is logged in: `GH_TOKEN` is the one of the repo the
   // workspace's cwd is in, else the first, and a session running in another
   // repo's checkout takes that repo's (`sessionLaunches`). Skipped if the
@@ -1249,7 +1249,7 @@ export async function createWorkspace(
     const credential = credentials.get(c.repo.id)
     const host = remoteOf(c)?.host
     const link = projectRow.repos.find((l) => l.repo.id === c.repo.id)
-    if (credential?.kind !== 'https' || host === undefined || ghApiHostForGitHost(host) === null) return []
+    if (credential?.kind !== 'https' || host === undefined || !isGitHubHost(host)) return []
     if (sandboxed && (link === undefined || !link.ghToken || link.readOnly)) return []
     return [{ path: c.path, repoId: c.repo.id, value: sandboxed ? ghTokenPlaceholder(c.repo.id) : credential.token }]
   })
