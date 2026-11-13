@@ -20,7 +20,8 @@ import {
 } from '#db'
 import type { Actor } from '#domain/access'
 import { ServerError } from '@yaac/shared/errors'
-import type { RepoSummary } from '@yaac/shared/types'
+import type { GitProgress, RepoSummary } from '@yaac/shared/types'
+import { createKeyedMutex } from '#lib/keyed-mutex'
 import { repoCredentialNames, resolveCredentialForRemote, validateGitRemoteUrl } from './credentials'
 import { ownRepo } from './access'
 
@@ -29,44 +30,55 @@ import { ownRepo } from './access'
  * a hosted one, and the listing (docs/project-repos.md).
  */
 
+/** Serializes `addRepo` per owner and remote. */
+const perRemote = createKeyedMutex()
+
 /**
  * The repo `owner` reaches `remoteUrl` through, cloning it with the named
- * credential if they have none yet (docs/git-credentials.md). One they
- * already have is answered as it is, taking the credential only if it has
- * none, so two projects of one user on one remote share a main clone, a
- * credential and every fetch. User-facing failures throw `ServerError`.
+ * credential if they have none yet (docs/git-credentials.md), with git's
+ * progress reported to `onProgress`. One they already have is answered as
+ * it is, taking the credential only if it has none, so two projects of one
+ * user on one remote share a main clone, a credential and every fetch. Two
+ * calls for one owner and remote run one at a time, so the second finds the
+ * repo the first cloned rather than cloning it again. User-facing failures
+ * throw `ServerError`.
  */
 export async function addRepo(
   owner: string,
   remoteUrl: string,
   gitCredentialId: string,
+  onProgress?: (progress: GitProgress) => void,
 ): Promise<{ repo: RepoRow; knownHostsEntry: string | null }> {
   const parsed = validateGitRemoteUrl(remoteUrl)
   await ensureDataDir()
   const { credential, knownHostsEntry } = await resolveCredentialForRemote(owner, gitCredentialId, remoteUrl)
-  const existing = await findOwnerRepo(owner, remoteUrl)
-  if (existing) {
-    if (existing.gitCredentialId !== null) return { repo: existing, knownHostsEntry: existing.knownHostsEntry }
-    await setRepoGitCredential(existing.id, gitCredentialId, knownHostsEntry)
-    return { repo: { ...existing, gitCredentialId, knownHostsEntry }, knownHostsEntry }
-  }
-  const id = crypto.randomUUID()
-  try {
-    await fs.mkdir(path.dirname(repoDir(id)), { recursive: true })
-    await cloneRepo(remoteUrl, repoDir(id), credential)
-  } catch (err) {
-    await fs.rm(repoDir(id), { recursive: true, force: true })
-    const message = err instanceof Error ? err.message : String(err)
-    if (isGitAuthError(message)) {
-      throw new ServerError(
-        'VALIDATION',
-        `git authentication failed for ${parsed.host} — the credential was rejected `
-        + '(a revoked token, or a key not yet registered with the host?).',
-      )
+  return perRemote(`${owner} ${remoteUrl}`, async () => {
+    const existing = await findOwnerRepo(owner, remoteUrl)
+    if (existing) {
+      if (existing.gitCredentialId !== null) return { repo: existing, knownHostsEntry: existing.knownHostsEntry }
+      await setRepoGitCredential(existing.id, gitCredentialId, knownHostsEntry)
+      return { repo: { ...existing, gitCredentialId, knownHostsEntry }, knownHostsEntry }
     }
-    throw new ServerError('INTERNAL', `Failed to clone: ${message}`)
-  }
-  return { repo: await insertRepo({ id, owner, remoteUrl }, { id: gitCredentialId, knownHostsEntry }), knownHostsEntry }
+    const id = crypto.randomUUID()
+    try {
+      await fs.mkdir(path.dirname(repoDir(id)), { recursive: true })
+      await cloneRepo(remoteUrl, repoDir(id), credential, onProgress)
+    } catch (err) {
+      await fs.rm(repoDir(id), { recursive: true, force: true })
+      // Git's "Cloning into '<path>'..." names a server path, which the
+      // error shown to clients has no use for.
+      const message = (err instanceof Error ? err.message : String(err)).replace(/^Cloning into .*\n?/m, '')
+      if (isGitAuthError(message)) {
+        throw new ServerError(
+          'VALIDATION',
+          `git authentication failed for ${parsed.host} — the credential was rejected `
+          + '(a revoked token, or a key not yet registered with the host?).',
+        )
+      }
+      throw new ServerError('INTERNAL', `Failed to clone: ${message}`)
+    }
+    return { repo: await insertRepo({ id, owner, remoteUrl }, { id: gitCredentialId, knownHostsEntry }), knownHostsEntry }
+  })
 }
 
 /**

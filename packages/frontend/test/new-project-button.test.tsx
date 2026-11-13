@@ -59,7 +59,7 @@ describe('NewProjectButton', () => {
     server.route(NEW_KEY, { id: 'c-key', publicKey: 'ssh-ed25519 AAAAkey yaac repo-key' })
     let finishClone = (): void => {}
     server.route(ADD, () => new Promise((resolve) => {
-      finishClone = () => resolve({ project: { id: 'id-repo', name: 'repo' }, knownHostsEntry: 'github.com ssh-ed25519 HOSTKEY' })
+      finishClone = () => resolve({ project: { name: 'repo' }, knownHostsEntry: 'github.com ssh-ed25519 HOSTKEY' })
     }))
     await openWith('git@github.com:o/repo.git')
 
@@ -75,14 +75,16 @@ describe('NewProjectButton', () => {
     expect(server.called(ADD)).toHaveLength(0)
 
     fireEvent.click(addButton())
-    await waitFor(() => expect(server.called(ADD).map((c) => c.body)).toEqual([
-      { remoteUrl: 'git@github.com:o/repo.git', gitCredentialId: 'c-key' },
-    ]))
+    await waitFor(() => expect(server.called(ADD)).toHaveLength(1))
     // The dialog closes while the clone runs, and its pending entry is
-    // selected, showing progress.
+    // selected, showing progress. It carries the id the project will take,
+    // which the add names so the server lists it under that id.
     expect(screen.queryByLabelText('Repository URL')).toBeNull()
     expect(screen.getByText('Adding repo')).toBeTruthy()
     const pending = useUiStore.getState().activeProjectId
+    expect(server.called(ADD).map((c) => c.body)).toEqual([
+      { remoteUrl: 'git@github.com:o/repo.git', gitCredentialId: 'c-key', projectId: pending },
+    ])
     expect(useUiStore.getState().projectOps.map((o) => o.id)).toEqual([pending])
 
     // The user starts a second add before the first finishes. Its host key
@@ -99,9 +101,9 @@ describe('NewProjectButton', () => {
     // The pending entry stays selected until the snapshot lists the
     // project, so the shell never shows an unknown one.
     snapshotLists('alpha')
+    expect(useUiStore.getState().projectOps).toHaveLength(1)
+    snapshotLists('alpha', pending ?? '')
     expect(useUiStore.getState().activeProjectId).toBe(pending)
-    snapshotLists('alpha', 'id-repo')
-    expect(useUiStore.getState().activeProjectId).toBe('id-repo')
     expect(useUiStore.getState().projectOps).toEqual([])
   })
 
@@ -110,7 +112,7 @@ describe('NewProjectButton', () => {
     let adds = 0
     server.route(ADD, () => (adds++ === 0
       ? serverError('VALIDATION', 'git authentication failed for github.com', 400)
-      : { project: { id: 'id-repo', name: 'repo' }, knownHostsEntry: null }))
+      : { project: { name: 'repo' }, knownHostsEntry: null }))
     await openWith('https://github.com/o/Repo.git/')
 
     // A matching token exists, so nothing is preselected.
@@ -130,20 +132,26 @@ describe('NewProjectButton', () => {
     expect(screen.getByText("Couldn't add repo")).toBeTruthy()
     expect(server.called(NEW_TOKEN).map((c) => c.body)).toEqual([{ name: 'repo-token-2', token: 'ghp_x' }])
 
-    // Try again reopens the dialog on the same remote, where the stored
-    // token is now an existing credential.
+    // Try again clears the failed add, here and on the server, and reopens
+    // the dialog on the same remote, where the stored token is now an
+    // existing credential.
+    const failed = useUiStore.getState().activeProjectId
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(screen.getByLabelText<HTMLInputElement>('Repository URL').value).toBe('https://github.com/o/Repo.git/')
     expect(useUiStore.getState().projectOps).toEqual([])
+    await waitFor(() => expect(server.calls.filter((c) => c.method === 'POST' && c.path === `/api/project/add/${failed}/dismiss`))
+      .toHaveLength(1))
     fireEvent.change(await screen.findByLabelText('Git credential'), { target: { value: 'c-new' } })
     fireEvent.click(addButton())
     await waitFor(() => expect(server.called(ADD)).toHaveLength(2))
-    await waitFor(() => expect(useUiStore.getState().projectOps[0]?.doneId).toBe('id-repo'))
-    snapshotLists('id-repo')
-    expect(useUiStore.getState().activeProjectId).toBe('id-repo')
+    // A retry is a new add, under an id of its own.
+    const retry = useUiStore.getState().activeProjectId
+    expect(retry).not.toBe(failed)
+    snapshotLists(retry ?? '')
+    expect(useUiStore.getState().projectOps).toEqual([])
     expect(server.called(NEW_TOKEN)).toHaveLength(1)
     const retried = { remoteUrl: 'https://github.com/o/Repo.git/', gitCredentialId: 'c-new' }
-    expect(server.called(ADD).map((c) => c.body)).toEqual([retried, retried])
+    expect(server.called(ADD).map((c) => c.body)).toEqual([{ ...retried, projectId: failed }, { ...retried, projectId: retry }])
     // No host key to show: the dialog stays closed.
     expect(screen.queryByLabelText('Repository URL')).toBeNull()
   })
@@ -168,14 +176,16 @@ describe('NewProjectButton', () => {
 
     fireEvent.click(create)
     expect(await screen.findByText("Couldn't create my-app")).toBeTruthy()
-    expect(server.called(CREATE).map((c) => c.body)).toEqual([{ name: 'My App' }])
+    expect(server.called(CREATE).map((c) => c.body)).toEqual([{ name: 'My App', projectId: useUiStore.getState().activeProjectId }])
     expect(server.called(ADD)).toHaveLength(0)
 
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(screen.getByLabelText<HTMLInputElement>('Project name').value).toBe('my-app')
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
-    await waitFor(() => expect(useUiStore.getState().projectOps[0]?.doneId).toBe('id-my-app'))
-    snapshotLists('id-my-app')
-    expect(useUiStore.getState().activeProjectId).toBe('id-my-app')
+    await waitFor(() => expect(server.called(CREATE)).toHaveLength(2))
+    const created = useUiStore.getState().activeProjectId
+    expect(useUiStore.getState().projectOps.map((o) => o.id)).toEqual([created])
+    snapshotLists(created ?? '')
+    expect(useUiStore.getState().projectOps).toEqual([])
   })
 })

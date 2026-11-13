@@ -10,6 +10,7 @@ import { insertQueuedWorkspace } from '@yaac/server/db/queued-workspace-store'
 import { insertDraftWorkspace } from '@yaac/server/db/draft-workspace-store'
 import { BUILT_IN_USER_ID, insertGitCredential, insertSession } from '@yaac/server/db'
 import { clearAllProvisioningForTests, registerProvisioning } from '@yaac/server/domain/workspaces/provisioning'
+import { trackProjectAdd } from '@yaac/server/domain/projects/adding'
 import { registerImageBuild } from '@yaac/server/drivers/k8s/images/image-builds'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
 import { asTailnet } from '@yaac/test-utils/api'
@@ -84,6 +85,7 @@ const ID = {
   draft: '8b4c3f5d-0e6a-4b1c-9d9f-3a4b5c6d7e8f',
   routine: 'c3d4e5f6-a7b8-4c9d-8e1f-2a3b4c5d6e7f',
   provisioning: '9c5d4a6e-1f7b-4c2d-8e0a-4b5c6d7e8f9a',
+  projectAdd: 'e5f6a7b8-c9d0-4e1f-8a2b-3c4d5e6f7a8b',
   session: 'd4e5f6a7-b8c9-4d0e-8f1a-2b3c4d5e6f7a',
   group: 'g1',
   credential: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
@@ -135,6 +137,8 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/project/add', body: { url: 'not a url' }, access: 'owner', callerScoped: true, k8s: 400, containerless: 400 },
   { method: 'POST', path: '/api/project/register', body: {}, access: 'owner', callerScoped: true, k8s: 400, containerless: 400 },
   { method: 'POST', path: '/api/project/create', body: {}, access: 'owner', callerScoped: true, k8s: 400, containerless: 400 },
+  // Idempotent: dismissing no failed add is a no-op.
+  { method: 'POST', path: '/api/project/add/:projectId/dismiss', request: `/api/project/add/${ID.projectAdd}/dismiss`, access: 'owner', k8s: 204, containerless: 204 },
   { method: 'GET', path: '/api/project/:projectId', request: P, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'DELETE', path: '/api/project/:projectId', request: P, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/project/:projectId/workspace-auto-delete', request: `${P}/workspace-auto-delete?days=30`, access: 'reader', k8s: MISSING, containerless: MISSING },
@@ -451,6 +455,11 @@ async function seedOwnedFixtures(): Promise<void> {
   const credential = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'gh', kind: 'https', secret: 'ghp_x' })
   await db.update(gitCredentials).set({ id: ID.credential }).where(eq(gitCredentials.id, credential.id))
   registerProvisioning({ workspaceId: ID.provisioning, projectId: ID.project, tool: 'claude', kind: 'create' })
+  await trackProjectAdd(
+    { id: ID.projectAdd, owner: BUILT_IN_USER_ID, name: 'failed', remoteUrl: '', hosted: true },
+    true,
+    () => Promise.reject(new Error('failed')),
+  ).catch(() => undefined)
   // Only a k8s server lists it; a containerless one never asks.
   expect(registerImageBuild({ tag: `yaac-proj-${ID.project}:x`, layer: 'project', projectId: ID.project, reason: 'prewarm' }))
     .toBe(ID.build)

@@ -8,7 +8,7 @@ import {
   listWorkspaceGroups,
 } from '#domain/workspaces'
 import { countStoppedWorkspaces } from '#db'
-import { listProjects } from '#domain/projects'
+import { listProjectAdds, listProjects } from '#domain/projects'
 import { workspaceDriver } from '#drivers/driver'
 import { planUsageForSnapshot } from '#domain/auth'
 import { feedbackHost } from '#domain/feedback'
@@ -64,6 +64,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     stale: active.stale,
     projects,
     provisioning: provisioning.map((p) => previewed(p)),
+    projectAdds: listProjectAdds(),
     queuedWorkspaces: queuedWorkspaces.map((e) => previewed(e)),
     heldWorkspaces: heldWorkspaces.filter((w) => !hidden.has(w.workspaceId)).map((h) => previewed(h)),
     draftWorkspaces: draftWorkspaces.map((d) => previewed(d)),

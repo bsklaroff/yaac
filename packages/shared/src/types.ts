@@ -832,6 +832,33 @@ export interface ProjectMeta {
   addedAt: string
 }
 
+/** How far a git clone has got, from the progress git prints. */
+export interface GitProgress {
+  /** Git's phase name, such as "Receiving objects" or "Resolving deltas". */
+  phase: string
+  /** Null for a phase that reports only a count. */
+  percent: number | null
+  /** What git prints after the count, such as "1.20 MiB | 2.00 MiB/s". */
+  detail?: string
+}
+
+/**
+ * A project being added or created, tracked in server memory so every
+ * client shows it until it is listed (docs/project-repos.md "Adding a
+ * project"). A failed one stays until its owner dismisses it.
+ */
+export interface ProjectAddEntry {
+  /** The id the project takes once added. */
+  id: string
+  owner: string
+  name: string
+  /** Empty for a project whose remote yaac hosts. */
+  remoteUrl: string
+  hosted: boolean
+  progress?: GitProgress
+  error?: string
+}
+
 /**
  * One repo of a create's selection (docs/project-repos.md): which repo, and
  * the branch (no `origin/` prefix) or full commit its checkout starts at;
@@ -2552,6 +2579,8 @@ export interface ServerSnapshot {
   stale: StaleWorkspaceInfo[]
   projects: ProjectSummary[]
   provisioning: ProvisioningWorkspaceEntry[]
+  /** Every user's project adds in flight or failed, oldest first. */
+  projectAdds: ProjectAddEntry[]
   /** Every project's queued workspaces not currently launching, oldest
    *  first. A launching one appears as a provisioning row. */
   queuedWorkspaces: QueuedWorkspaceEntry[]

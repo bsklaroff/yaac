@@ -17,7 +17,8 @@ vi.mock('#domain/git', async (importOriginal) => ({
 import { cloneRepo } from '#domain/git'
 import type * as gitModule from '#domain/git'
 import crypto from 'node:crypto'
-import { addProject, createHostedProject, registerStagedProject } from '#domain/projects'
+import { addProject, createHostedProject, dismissProjectAdd, listProjectAdds, registerStagedProject } from '#domain/projects'
+import { systemPrincipal } from '#domain/access'
 import { resolveRepoCredential } from '#domain/repos'
 import { addHttpsCredential, generateSshCredential } from '#domain/auth'
 import { BUILT_IN_USER_ID, closeDb, getProjectRow, listProjectRows, listRepos, recordProject, setToolCredential, type RepoRow } from '#db'
@@ -65,6 +66,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  for (const add of listProjectAdds()) dismissProjectAdd(systemPrincipal, add.id)
   await closeDb()
   await cleanupTempDir(tmpDir)
 })
@@ -95,6 +97,7 @@ describe('addProject', () => {
       'https://github.com/acme/Widgets.git',
       repoDir(repo.id),
       { kind: 'https', token: 'ghp_secret' },
+      expect.any(Function),
     )
     expect(knownHostsEntry).toBeNull()
     // github.com is a default host, so the allowlist is left as it starts.
@@ -119,6 +122,32 @@ describe('addProject', () => {
     expect(await listRepos()).toHaveLength(1)
   })
 
+  it('takes the id it is given, and refuses one already taken or a remote its owner is already adding', async () => {
+    const url = 'https://github.com/acme/widgets.git'
+    let finish = (): void => {}
+    mockClone.mockImplementationOnce(async (_url, dest) => {
+      await fs.mkdir(path.join(dest, '.git'), { recursive: true })
+      await new Promise<void>((resolve) => { finish = resolve })
+    })
+    const first = addProject(url, token, BUILT_IN_USER_ID, STAGED)
+    await vi.waitFor(() => expect(mockClone).toHaveBeenCalledTimes(1))
+
+    // A second add of the remote while the first clones would only be a
+    // duplicate project, under either id.
+    await expect(addProject(url, token, BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(addProject('https://github.com/acme/other.git', token, BUILT_IN_USER_ID, STAGED))
+      .rejects.toMatchObject({ code: 'CONFLICT' })
+    finish()
+    expect((await first).project.id).toBe(STAGED)
+    expect(mockClone).toHaveBeenCalledTimes(1)
+
+    // Once it is a project, its id is taken; its remote may be added again.
+    await expect(addProject('https://github.com/acme/other.git', token, BUILT_IN_USER_ID, STAGED))
+      .rejects.toMatchObject({ code: 'CONFLICT' })
+    expect((await addProject(url, token, BUILT_IN_USER_ID)).project.id).not.toBe(STAGED)
+    expect(await listRepos()).toHaveLength(1)
+  })
+
   it('clones an SCP-style remote with an ssh key, trusting the host key it fetched', async () => {
     const key = await generateSshCredential(BUILT_IN_USER_ID, { name: 'deploy' })
 
@@ -134,7 +163,7 @@ describe('addProject', () => {
     // The clone gets only the public key; the ssh-agent signs.
     const credential = { kind: 'ssh', id: key.id, publicKey: key.publicKey, knownHostsEntry: HOST_KEY }
     const repo = await repoOf(project.id)
-    expect(mockClone).toHaveBeenCalledWith('git@git.example.com:group/sub/Repo.git', repoDir(repo.id), credential)
+    expect(mockClone).toHaveBeenCalledWith('git@git.example.com:group/sub/Repo.git', repoDir(repo.id), credential, expect.any(Function))
     expect(await resolveRepoCredential(repo)).toEqual(credential)
   })
 
@@ -233,17 +262,33 @@ describe('addProject', () => {
   it('maps any other clone failure to INTERNAL and leaves no project', async () => {
     mockClone.mockRejectedValue(new Error('fatal: repository not found'))
 
-    const attempt = addProject('https://github.com/acme/repo.git', token, BUILT_IN_USER_ID)
+    const attempt = addProject('https://github.com/acme/repo.git', token, BUILT_IN_USER_ID, STAGED)
     await expect(attempt).rejects.toMatchObject({ code: 'INTERNAL' })
     await expect(attempt).rejects.toThrow(/Failed to clone: fatal: repository not found/)
     expect(await projectDirs()).toEqual([])
+    // Listed as failed, for whoever did not see the request answer.
+    expect(listProjectAdds()).toEqual([{
+      id: STAGED, owner: BUILT_IN_USER_ID, name: 'repo', remoteUrl: 'https://github.com/acme/repo.git', hosted: false,
+      error: 'Failed to clone: fatal: repository not found',
+    }])
+    // Adding the remote again is a retry, which replaces the failure even
+    // under another id.
+    mockClone.mockResolvedValueOnce(undefined)
+    expect((await addProject('https://github.com/acme/repo.git', token, BUILT_IN_USER_ID, LOCAL)).project.id).toBe(LOCAL)
+    expect(listProjectAdds()).toEqual([])
+
+    // A caller that picked no id has the error from its own request, so
+    // nothing stays listed.
+    mockClone.mockRejectedValueOnce(new Error('fatal: repository not found'))
+    await expect(addProject('https://github.com/acme/other.git', token, BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'INTERNAL' })
+    expect(listProjectAdds()).toEqual([])
   })
 
   it('rolls the project dir back when anything after the clone fails, keeping the repo', async () => {
     // A file where the claude home goes makes setup after the clone fail.
     // A leftover dir with no row could not be listed, removed or re-added.
-    // The ids are pinned (the repo's, then the project's) to know where.
-    const ids = vi.spyOn(crypto, 'randomUUID').mockReturnValueOnce(LOCAL).mockReturnValueOnce(STAGED)
+    // The ids are pinned (the project's, then the repo's) to know where.
+    const ids = vi.spyOn(crypto, 'randomUUID').mockReturnValueOnce(STAGED).mockReturnValueOnce(LOCAL)
     mockClone.mockImplementation(async (_url, dest) => {
       await fs.mkdir(path.join(dest, '.git'), { recursive: true })
       await fs.mkdir(path.join(getProjectsDir(), STAGED), { recursive: true })

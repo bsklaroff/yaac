@@ -7,6 +7,7 @@ import {
   addProjectRepo,
   cacheVolumesSchema,
   createHostedProject,
+  dismissProjectAdd,
   getProjectAllowlist,
   getProjectDetail,
   listProjectEnv,
@@ -93,17 +94,19 @@ export const projectApp = new Hono<IdentityEnv>()
   // A project around one git repo, cloned with the named credential unless
   // its owner has it. Answers the project, with the host key trusted for an
   // ssh clone and the repo's host if it was added to the project's egress
-  // allowlist.
+  // allowlist. `projectId` lets the client name the project it is adding,
+  // to follow the add in the snapshot's `projectAdds`.
   .post(
     '/add',
     zv('json', z.object({
       remoteUrl: z.string().min(1),
       /** The credential to clone with and assign. */
       gitCredentialId: z.uuid(),
+      projectId: z.uuid().optional(),
     })),
     async (c) => {
-      const { remoteUrl, gitCredentialId } = c.req.valid('json')
-      const result = await addProject(remoteUrl, gitCredentialId, c.get('principal').userId)
+      const { remoteUrl, gitCredentialId, projectId } = c.req.valid('json')
+      const result = await addProject(remoteUrl, gitCredentialId, c.get('principal').userId, projectId)
       await pushCredentialsToRuntime()
       return c.json(result)
     },
@@ -112,9 +115,17 @@ export const projectApp = new Hono<IdentityEnv>()
   // (docs/hosted-projects.md).
   .post(
     '/create',
-    zv('json', z.object({ name: z.string().min(1).max(200) })),
-    async (c) => c.json(await createHostedProject(c.req.valid('json').name, c.get('principal').userId)),
+    zv('json', z.object({ name: z.string().min(1).max(200), projectId: z.uuid().optional() })),
+    async (c) => {
+      const { name, projectId } = c.req.valid('json')
+      return c.json(await createHostedProject(name, c.get('principal').userId, projectId))
+    },
   )
+  // Clear a failed add from `projectAdds`.
+  .post('/add/:projectId/dismiss', (c) => {
+    dismissProjectAdd(c.get('principal'), c.req.param('projectId'))
+    return c.body(null, 204)
+  })
   // Record a project whose repo's main clone is already staged in the data
   // dir under the project's id, without cloning. Tests use this to add a
   // local repo.

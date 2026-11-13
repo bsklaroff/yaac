@@ -25,6 +25,7 @@ import {
   setOriginHead,
 } from '#domain/git'
 import { git, stagingBeside } from '@yaac/test-utils/git'
+import type { GitProgress } from '@yaac/shared/types'
 
 let tmpDir: string
 let sourceRepo: string
@@ -67,6 +68,38 @@ describe('cloneRepo', () => {
     // Even git run without the server's pins must not prune objects the
     // checkouts borrow.
     expect((await git(dest, ['config', 'gc.pruneExpire'])).trim()).toBe('never')
+  })
+
+  it('reports git\'s progress, parsed, and keeps it out of a failure\'s message', async () => {
+    const seen: GitProgress[] = []
+    await cloneRepo(`file://${sourceRepo}`, path.join(tmpDir, 'clone'), null, (p) => seen.push(p))
+    // `remote: ` lines are the server side's phases.
+    expect(seen).toContainEqual({ phase: 'Enumerating objects', percent: null })
+    expect(seen).toContainEqual({ phase: 'Counting objects', percent: 100 })
+    expect(seen).toContainEqual({ phase: 'Receiving objects', percent: 100 })
+
+    // A failure partway reads as git's error alone, every line of it kept
+    // whatever it looks like.
+    const bin = path.join(tmpDir, 'bin')
+    await fs.mkdir(bin)
+    await fs.writeFile(path.join(bin, 'git'), [
+      '#!/bin/sh',
+      'printf "Cloning into \'x\'...\\nReceiving objects:  10%% (1/10)\\rReceiving objects:  20%% (2/10), 1.00 KiB | 1.00 KiB/s\\r" >&2',
+      'printf "remote: Error: 403\\r\\nfatal: early EOF\\n" >&2',
+      'exit 128',
+    ].join('\n'), { mode: 0o755 })
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH ?? ''}`)
+    const failed: GitProgress[] = []
+    try {
+      await expect(cloneRepo('https://git.example.com/a.git', path.join(tmpDir, 'clone2'), null, (p) => failed.push(p)))
+        .rejects.toThrow(/^Cloning into 'x'...\nremote: Error: 403\nfatal: early EOF$/)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+    expect(failed).toEqual([
+      { phase: 'Receiving objects', percent: 10 },
+      { phase: 'Receiving objects', percent: 20, detail: '1.00 KiB | 1.00 KiB/s' },
+    ])
   })
 
   // In-cluster, the server's egress policy drops a dial to a private

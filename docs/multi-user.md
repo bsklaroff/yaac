@@ -299,8 +299,14 @@ dismissed only by its owner; shared-image builds are open to every user.
 ## Snapshot and webapp
 
 The snapshot is not filtered by audience: it carries every user's rows.
-`ProjectSummary.owner` is its only owner field, since every other row
-belongs to its project's owner. The webapp
+Rows carry no owner of their own, since each belongs to its project's
+owner; the owner fields are `ProjectSummary.owner` and
+`ProjectAddEntry.owner`, for a project still being added, which has no
+project yet. So every user receives every other user's adds in flight or
+failed: the remote URL, even of one that never becomes a project, and a
+failed clone's error. No credential is in either: a remote URL can carry
+no userinfo, and a token or key reaches git only through its environment.
+The webapp
 (`packages/frontend/src/lib/viewer.ts`) cuts it to one user at a time with
 `ownedBy(snapshot, userId)`;
 install-wide fields (image builds, plan usage, driver) pass through.

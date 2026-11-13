@@ -31,6 +31,7 @@ const snap = (entries: Array<Partial<WorkspaceListEntry>>): ServerSnapshot => ({
   stale: [],
   projects: [],
   provisioning: [],
+  projectAdds: [],
   gitAuthFailures: {},
   imageBuilds: [],
   planUsage: {},

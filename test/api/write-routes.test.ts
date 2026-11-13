@@ -227,7 +227,11 @@ describe('write routes', () => {
       const id = '00000000-0000-4000-8000-000000000001'
       const res = await client.project.add.$post({ json: { remoteUrl: 'x/foo', gitCredentialId: id } })
       expect(res.status).toBe(200)
-      expect(mockAddProject).toHaveBeenCalledWith('x/foo', id, BUILT_IN_USER_ID)
+      expect(mockAddProject).toHaveBeenCalledWith('x/foo', id, BUILT_IN_USER_ID, undefined)
+
+      // The id a client picks to follow the add reaches addProject.
+      await client.project.add.$post({ json: { remoteUrl: 'x/foo', gitCredentialId: id, projectId: DEMO } })
+      expect(mockAddProject).toHaveBeenLastCalledWith('x/foo', id, BUILT_IN_USER_ID, DEMO)
     })
   })
 
