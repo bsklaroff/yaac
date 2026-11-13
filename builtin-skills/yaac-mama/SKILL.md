@@ -13,6 +13,7 @@ same project**. Use it directly — this skill is just the manual.
 yaac-mama list                                    # workspaces + groups here
 yaac-mama list <workspace>...                     # just those, with full prompts
 yaac-mama list --stopped [--search S] [--group G] [--limit N] [--cursor C]
+yaac-mama list --json [<workspace>...]            # a JSON array, for scripts
 yaac-mama create [opts] "<prompt>"
 yaac-mama create --volume V [opts] "<prompt>"         # mounting one of the project's volumes
 yaac-mama create --workspace W [session opts] ["<prompt>"]  # another session in a running workspace
@@ -113,6 +114,24 @@ pass — the server resolves who is calling and answers for that project only.
     zone, when it next runs (or `paused`), when each run stops, and an
     ERROR column when a run failed to start. `list <routine>` shows its
     full prompt.
+
+- **`list --json [<workspace>...]`** — the same workspaces as a JSON array,
+  for a script to read instead of the table. It exits non-zero with a
+  message on stderr on any error, so a caller can fail closed; no
+  workspaces is `[]`. It takes no other `list` option (`--stopped`,
+  `--search`, …) and refuses a routine id. Routines and prompts are left
+  out. Rows run in order: running (by creation time), then queued, then
+  stopped, which appear only when named by id. Every row has:
+  - `id` (full), `status` (`running`, `queued` or `stopped`), `tools`
+    (the distinct tools of its sessions, `[]` for none), `title` (`null`
+    if none; a queued row falls back to its generated title), `group`
+    (name, or `null`), `stopsAt` (ISO time of its deadline, else `null`),
+    `you` (this workspace), and `sessions` (`[]` for queued and stopped
+    rows; otherwise `id`, `tool`, `model`, `status`, `title`, `you`).
+  - Running rows also have `activity` (`idle`, `busy`, …).
+  - Queued rows also have `queueState` (`queued`, `waiting-for-room`,
+    `launching` or `failed`), `launchWorkspaceId` (full id once
+    launching, else `null`) and `launchError` (full text, else `null`).
 
 - **`list --stopped`** — this project's stopped workspaces, newest stop
   first, 25 to a page. Use it to find earlier work by what it was about,

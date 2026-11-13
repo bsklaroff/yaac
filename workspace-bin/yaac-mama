@@ -2,7 +2,7 @@
 # yaac-mama — ask the yaac server that runs this workspace to do something.
 #
 # Usage:
-#   yaac-mama list [<workspace>...]
+#   yaac-mama list [--json] [<workspace>...]
 #   yaac-mama list --stopped [--search S] [--group G] [--limit N] [--cursor C]
 #   yaac-mama create [opts] "<prompt>"
 #   yaac-mama create --workspace W [session opts] ["<prompt>"]
@@ -113,6 +113,8 @@ Usage:
   yaac-mama list <workspace>...                    # just those, full prompts
   yaac-mama list --stopped [--search <text>] [--group <name>] [--limit <n>]
                                                    # stopped ones, newest first
+  yaac-mama list --json [<workspace>...]           # a JSON array: id, tools,
+                                                   # status, title, group, ...
 @u create
   yaac-mama create [opts] "<prompt>"               # start another workspace
   yaac-mama create --workspace <id> [opts] "<prompt>"
@@ -827,10 +829,11 @@ fi
 case "$1" in
   list)
     shift
-    ids=""; stopped=""; search=""; group=""; limit=""; cursor=""
+    ids=""; stopped=""; json=""; search=""; group=""; limit=""; cursor=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --stopped) stopped=1; shift; continue ;;
+        --json) json=1; shift; continue ;;
         --search|--group|--limit|--cursor)
           [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a value" >&2; exit 2; } ;;
         *) ids="$ids $1"; shift; continue ;;
@@ -843,7 +846,15 @@ case "$1" in
       esac
       shift 2
     done
-    run list "$ids" stopped "$stopped" search "$search" group "$group" limit "$limit" cursor "$cursor"
+    ask list "$ids" stopped "$stopped" json "$json" search "$search" group "$group" limit "$limit" cursor "$cursor"
+    if [ -n "$json" ]; then
+      case "$text" in
+        '['*']') ;;
+        *) echo 'yaac-mama: the server did not answer list --json with a JSON array' >&2; exit 1 ;;
+      esac
+    fi
+    printf '%s\n' "$text"
+    exit 0
     ;;
 
   models) run models '' ;;

@@ -262,6 +262,16 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     expect(output).toContain('Groups: release train')
   }, 120_000)
 
+  it('lists workspaces as JSON, with the caller marked and group and title set', async () => {
+    const { exitCode, output } = await runMama('list --json')
+    expect(exitCode).toBe(0)
+    const rows = JSON.parse(output) as Array<{ id: string; status: string; group: string | null; you: boolean }>
+    expect(rows.filter((r) => r.you)).toHaveLength(1)
+    expect(rows.some((r) => r.status === 'running' && r.group === 'release train')).toBe(true)
+    const bad = await runMama('list --json --stopped')
+    expect(bad.exitCode).not.toBe(0)
+  }, 120_000)
+
   it('makes a group and files a workspace into it, by name and short id', async () => {
     const made = await runMama('group create "review queue"')
     expect(made.exitCode).toBe(0)
