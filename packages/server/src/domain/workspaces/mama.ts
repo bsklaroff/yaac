@@ -243,7 +243,7 @@ const ROUTINE_ARGS = ['name', 'cron', 'tz', ...CREATE_ARGS.filter((a) => a !== '
  * transports behave the same.
  */
 const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
-  list: ['stopped', ...STOPPED_ARGS],
+  list: ['stopped', 'json', ...STOPPED_ARGS],
   create: [...CREATE_ARGS, ...STEP_ARGS, 'workspace', 'no-session', 'resume', 'volume'],
   rerun: ['workspace', 'interactive'],
   status: ['workspace', 'step'],
@@ -358,7 +358,10 @@ export async function runMamaCommand(
  * stopped ones instead.
  */
 async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
-  if (request.args.stopped !== undefined) return await runListStopped(caller, request)
+  if (request.args.stopped !== undefined) {
+    if (request.args.json !== undefined) return { ok: false, error: "list takes '--json' only without --stopped" }
+    return await runListStopped(caller, request)
+  }
   const stray = STOPPED_ARGS.find((a) => request.args[a] !== undefined)
   if (stray !== undefined) return { ok: false, error: `list takes '--${stray}' only with --stopped` }
 
@@ -407,6 +410,55 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
     for (const p of picked) {
       prompts.push({ id: p.id, prompt: p.prompt ?? stopped.find((e) => e.workspaceId === p.id)?.prompt ?? '' })
     }
+  }
+
+  if (request.args.json !== undefined) {
+    if (routines.length > 0 && wanted.length > 0) {
+      return { ok: false, error: 'list --json does not list routines (give it workspace ids only)' }
+    }
+    const groupName = (id: string | undefined): string | null => (id !== undefined ? names.get(id) ?? null : null)
+    const out = [
+      ...[...workspaces].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map((w) => ({
+        id: w.workspaceId,
+        tools: [...new Set(w.sessions.map((s) => s.tool))],
+        status: 'running',
+        activity: w.status,
+        title: w.title ?? null,
+        group: groupName(w.groupId),
+        stopsAt: w.deadline !== undefined ? new Date(w.deadline).toISOString() : null,
+        you: w.workspaceId === caller.workspaceId,
+        sessions: w.sessions.map((s) => ({
+          id: s.sessionId, tool: s.tool, model: s.modelName ?? null,
+          status: s.exited === true ? 'exited' : s.status ?? 'starting',
+          title: s.title ?? null, you: s.sessionId === caller.sessionId,
+        })),
+      })),
+      ...queued.map((r) => ({
+        id: r.id,
+        tools: [r.tool],
+        status: 'queued',
+        queueState: r.launchWorkspaceId !== undefined ? 'launching' : r.launchError !== undefined ? 'failed'
+          : queuedState(r) === 'queued' ? 'queued' : 'waiting-for-room',
+        launchWorkspaceId: r.launchWorkspaceId ?? null,
+        launchError: r.launchError ?? null,
+        title: r.title ?? r.generatedTitle ?? null,
+        group: groupName(r.groupId),
+        stopsAt: null,
+        you: false,
+        sessions: [],
+      })),
+      ...stopped.map((e) => ({
+        id: e.workspaceId,
+        tools: [...new Set(e.sessions.map((s) => s.tool))],
+        status: 'stopped',
+        title: e.title ?? null,
+        group: groupName(e.groupId),
+        stopsAt: null,
+        you: false,
+        sessions: [],
+      })),
+    ]
+    return { ok: true, output: JSON.stringify(out) }
   }
 
   const lines: string[] = []
@@ -672,6 +724,15 @@ function renderRoutines(routines: RoutineEntry[], clock: ListClock): string[] {
   )
 }
 
+/** A queued entry's state as the listing words it. */
+function queuedState(r: QueuedWorkspaceRow, errorChars = 200): string {
+  return r.launchWorkspaceId !== undefined ? `launching as ${r.launchWorkspaceId.slice(0, 8)}`
+    : r.launchError !== undefined ? `failed: ${flatten(r.launchError, errorChars)}`
+    : r.releasedAt !== undefined || (r.parentWorkspaceId ?? r.parentQueuedId ?? r.startAt) === undefined
+      ? 'waiting for room'
+      : 'queued'
+}
+
 /** Queued entries as a tree under the workspace each waits on, or under
  *  the group one with no parent waits for room in, with a scheduled entry
  *  heading its own tree. */
@@ -695,11 +756,7 @@ function renderQueued(
   const ids = new Set(rows.map((r) => r.id))
   const lines: string[] = []
   const line = (r: QueuedWorkspaceRow): string => {
-    const status = r.launchWorkspaceId !== undefined ? `launching as ${r.launchWorkspaceId.slice(0, 8)}`
-      : r.launchError !== undefined ? `failed: ${flatten(r.launchError, 60)}`
-      : r.releasedAt !== undefined || (r.parentWorkspaceId ?? r.parentQueuedId ?? r.startAt) === undefined
-        ? 'waiting for room'
-        : 'queued'
+    const status = queuedState(r, 60)
     const stops = r.timeoutMinutes !== undefined ? `  stops after ${formatDuration(r.timeoutMinutes)}` : ''
     return `${r.id.slice(0, 8)}  ${r.tool}  ${status}${stops}  ${flatten(r.prompt ?? '(non-interactive)', 60)}`
   }

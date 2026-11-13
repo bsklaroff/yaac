@@ -296,6 +296,33 @@ describe('runMamaCommand', () => {
       expect(group.name).toBe('review')
     })
 
+    it('lists running and queued workspaces as JSON, with group and title on both', async () => {
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace' })
+      await createWorkspaceGroup(PROJ, 'crew', 'caller-workspace')
+      running = [podFor('caller-workspace')]
+      const queuedId = await output('queue', 'later', {
+        'parent-workspace': 'caller-workspace', tool: 'claude', group: 'crew', title: 'Later job',
+      })
+
+      const rows = JSON.parse(await output('list', '', { json: '1' })) as Array<Record<string, unknown>>
+
+      expect(rows).toEqual([
+        expect.objectContaining({ id: 'caller-workspace', status: 'running', tools: [], group: 'crew', you: true }),
+        expect.objectContaining({
+          id: queuedId, tools: ['claude'], status: 'queued', queueState: 'queued', launchWorkspaceId: null,
+          group: 'crew', title: 'Later job', you: false,
+        }),
+      ])
+
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'old-workspace' })
+      await recordWorkspaceStopped(PROJ, 'old-workspace')
+      const named = JSON.parse(await output('list', 'old-workspace', { json: '1' })) as Array<Record<string, unknown>>
+      expect(named).toEqual([expect.objectContaining({ id: 'old-workspace', status: 'stopped', tools: [], group: null })])
+      expect(await run('list', '', { json: '1', stopped: '1' })).toEqual({
+        ok: false, error: "list takes '--json' only without --stopped",
+      })
+    })
+
     it('shows deadlines in the owner\'s zone, scheduled workspaces under their time, and timeouts', async () => {
       await setTimeZone(BUILT_IN_USER_ID, 'Asia/Tokyo', true)
       const soon = new Date(Date.now() + 38 * 60_000 + 30_000)
