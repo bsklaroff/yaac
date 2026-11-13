@@ -266,6 +266,14 @@ ssh agent's identities all resolve through the workspace's owner, so a
 refresh in one user's workspace updates only that user's bundle; the
 server adopts each key's captures into its user's store.
 
+A registration also carries `identity`, the project owner's tailnet login
+and name, which the proxy stamps on the workspace's requests to a tailnet
+site (docs/workspace-egress.md "Tailnet sites"). An agent therefore reaches
+a tailnet site as its project's owner, and an app sees the same login from
+that person's browser and from their agents. A release carries none, and
+neither does a workspace whose owner has no login (the built-in user of a
+`local` install), so the proxy refuses their requests to tailnet sites.
+
 The owner key is opaque to the driver. `credentialOwnerKey` in
 `#domain/auth` makes it the user's id, except for the built-in user, whose
 key is `install`. Running workspaces' registrations name that key, so

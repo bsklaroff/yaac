@@ -21,6 +21,8 @@ import {
   SERVER_FRONT_PORT,
   SERVER_INGRESS_NP_NAME,
   SERVER_MAMA_PORT,
+  SITE_ROUTER_APP_NAME,
+  SITE_ROUTER_TAILNET_PORT,
   SERVER_POD_PORT,
   WORKSPACE_EGRESS_NP_NAME,
   WORKSPACE_INGRESS_LOCK_NP_NAME,
@@ -254,6 +256,9 @@ export function wideEgress(nodeAddrs: string[], dnsCidrs: string[]): Array<Recor
  * (the stream relay), and the apiserver its watches read, at its real
  * endpoints (`apiserverEndpoints`).
  *
+ * It also reaches the site router's tailnet listener, for the site route
+ * (docs/workspace-egress.md "Tailnet sites").
+ *
  * It also reaches every node address, since a project's allowlist may name
  * one exactly and the proxy dials it for the workspace. Two ports are cut.
  * The kind fronting's node port, because that forwarder's dial into the
@@ -280,6 +285,9 @@ export function buildProxyEgressNpManifest(
       },
       { to: [{ podSelector: { matchLabels: { app: SERVER_APP_NAME } } }], ports: [tcp(SERVER_MAMA_PORT)] },
       { to: [{ podSelector: workspacePodSelector }], ports: [tcp(POD_STREAM_PORT)] },
+      // Workspaces' requests to tailnet sites, stamped with their owner's
+      // login; the proxy refuses any other dial to this port.
+      { to: [{ podSelector: { matchLabels: { app: SITE_ROUTER_APP_NAME } } }], ports: [tcp(SITE_ROUTER_TAILNET_PORT)] },
       ...(apiserver.cidrs.length > 0 ? [{ to: ipBlocks(apiserver.cidrs), ports: apiserver.ports.map(tcp) }] : []),
     ],
   })

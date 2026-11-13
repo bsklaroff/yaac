@@ -12,7 +12,9 @@ import {
   registryHost,
   registryReachable,
   servingNpmCacheUrl,
-  siteTunnelStatus,
+  siteCloudflareStatus,
+  siteTailnetDevice,
+  siteTailnetStatus,
   vapAvailable,
 } from '#drivers/k8s/cluster'
 import crypto from 'node:crypto'
@@ -39,7 +41,10 @@ import {
   PROXY_PORT,
   SERVER_APP_NAME,
   SITE_ROUTER_APP_NAME,
-  SITE_TUNNEL_APP_NAME,
+  SITE_ROUTER_TAILNET_PORT,
+  SITE_TUNNEL_CLOUDFLARE_APP_NAME,
+  SITE_TUNNEL_TAILNET_APP_NAME,
+  SITE_TUNNEL_TAILNET_TLS_SECRET_NAME,
   SERVER_FRONT_INGRESS_NP_NAME,
   SERVER_INGRESS_NP_NAME,
   PROXY_EGRESS_NP_NAME,
@@ -1882,19 +1887,25 @@ async function runNpmCacheProbe(): Promise<CheckResult> {
 const SITES_PROBE_POD_NAME = 'yaac-cluster-check-sites'
 
 /**
- * The sites gate: public traffic flows through the tunnel and the router,
- * so neither may reach the server (which treats a loopback `Host` as its
- * owner), the proxy's control port, or a workspace that is not a release
- * (docs/server-in-cluster.md "The site edge"). A probe pod labelled as
- * each, held to its policies, must fail to dial all three. With a tunnel
- * installed, a tunnel holding no connection to Cloudflare is a warn.
+ * The sites gate: site traffic flows through the two tunnels and the
+ * router, so none of them may reach the server (which treats a loopback
+ * `Host` as its owner), the proxy's control port, or a workspace that is
+ * not a release (docs/server-in-cluster.md "The site edge"). A probe pod
+ * labelled as each, held to its policies, must fail to dial all three. One
+ * labelled as a Cloudflare pod must also fail to dial the router's tailnet
+ * listener, which trusts the login a request carries.
+ *
+ * With a Cloudflare tunnel installed, one holding no connection is a warn.
+ * With a tailnet tunnel, one not joined or with no certificate is a warn,
+ * and so, where this machine is on the tailnet, is a site domain that does
+ * not resolve to the tunnel.
  *
  * The workspace dialed is a real one (carrying the install id, which the
  * other probes' pods lack), on streamd's port, which always listens.
  */
 async function runSitesProbe(): Promise<CheckResult> {
   const ns = k8sNamespace()
-  const fix = 'The edge\'s NetworkPolicies must admit nothing but Cloudflare, DNS, the router '
+  const fix = 'The edge\'s NetworkPolicies must admit nothing but the tunnels\' outside peers, DNS, the router '
     + 'and release pods. Re-run `yaac cluster install`, which re-applies them.'
   try {
     const workspace = (await listObjects<{ status?: { podIP?: string } }>('v1', 'Pod', {
@@ -1913,16 +1924,27 @@ async function runSitesProbe(): Promise<CheckResult> {
         detail: 'no server, proxy or workspace is running to dial — the site edge\'s wall is unverified',
       }
     }
-    const script = targets.map((t) => `nc -w 4 ${t.ip} ${String(t.port)} </dev/null >/dev/null 2>&1`
-      + ` && echo SITE_${t.key}_OPEN || echo SITE_${t.key}_LOCKED; `).join('') + 'echo SITES_DONE'
+    const routerIp = await serviceIp(SITE_ROUTER_APP_NAME, ns)
+    const routerTailnet = routerIp === null ? [] : [{
+      key: 'ROUTER_TAILNET', ip: routerIp, port: SITE_ROUTER_TAILNET_PORT, what: 'the router\'s tailnet listener',
+    }]
+    const probes = [
+      { app: SITE_TUNNEL_CLOUDFLARE_APP_NAME, suffix: 'cloudflare', targets: [...targets, ...routerTailnet] },
+      { app: SITE_TUNNEL_TAILNET_APP_NAME, suffix: 'tailnet', targets },
+      { app: SITE_ROUTER_APP_NAME, suffix: 'router', targets },
+    ]
     const image = await ensureProbeImage()
-    const runs = await Promise.all([SITE_TUNNEL_APP_NAME, SITE_ROUTER_APP_NAME].map(async (app) => ({
-      app,
-      ...await runProbePod(`${SITES_PROBE_POD_NAME}-${app === SITE_TUNNEL_APP_NAME ? 'tunnel' : 'router'}`, {
+    const runs = await Promise.all(probes.map(async (probe) => ({
+      ...probe,
+      ...await runProbePod(`${SITES_PROBE_POD_NAME}-${probe.suffix}`, {
         timeoutMs: 60_000,
         // Runs on runc, as the edge does, and never matches its Services.
-        labels: { app },
-        container: { image, command: ['sh', '-c', script] },
+        labels: { app: probe.app },
+        container: {
+          image,
+          command: ['sh', '-c', probe.targets.map((t) => `nc -w 4 ${t.ip} ${String(t.port)} </dev/null >/dev/null 2>&1`
+            + ` && echo SITE_${t.key}_OPEN || echo SITE_${t.key}_LOCKED; `).join('') + 'echo SITES_DONE'],
+        },
       }),
     })))
     const stalled = runs.find((r) => r.phase !== 'Succeeded' || !r.logs.includes('SITES_DONE'))
@@ -1933,32 +1955,79 @@ async function runSitesProbe(): Promise<CheckResult> {
         fix: KIND_SETUP_FIX,
       }
     }
-    const open = runs.flatMap((r) => targets
+    const open = runs.flatMap((r) => r.targets
       .filter((t) => r.logs.includes(`SITE_${t.key}_OPEN`))
       .map((t) => `a pod labelled as ${r.app} reached ${t.what}`))
     if (open.length > 0) {
       return {
         name: 'sites', status: 'fail',
-        detail: `${open.join('; ')} — public traffic passes through these pods`,
+        detail: `${open.join('; ')} — site traffic passes through these pods`,
         fix,
       }
     }
-    const detail = `the site tunnel and router cannot dial ${targets.map((t) => t.what).join(', nor ')}`
-    const tunnel = await siteTunnelStatus()
-    if (tunnel === 'disconnected') {
+    const notes = [`the site tunnels and router cannot dial ${targets.map((t) => t.what).join(', nor ')}`]
+    const warns: Array<{ detail: string; fix: string }> = []
+    const cloudflare = await siteCloudflareStatus()
+    if (cloudflare === 'disconnected') {
+      warns.push({
+        detail: 'the Cloudflare tunnel holds no connection, so no public site is reachable',
+        fix: 'Check the tunnel token (re-run `yaac cluster install` with CF_TUNNEL_TOKEN) and that this '
+          + `network lets out TCP and UDP 7844. Inspect with \`kubectl -n ${ns} logs deploy/${SITE_TUNNEL_CLOUDFLARE_APP_NAME}\`.`,
+      })
+    } else if (cloudflare === 'connected') {
+      notes.push('the Cloudflare tunnel is connected')
+    }
+    const tailnet = await siteTailnetStatus()
+    if (tailnet === 'joining') {
+      warns.push({
+        detail: 'the tailnet tunnel has not joined the tailnet, so no tailnet site is reachable',
+        fix: 'Check its auth key (re-run `yaac cluster install` with TS_SITE_AUTHKEY) and inspect with '
+          + `\`kubectl -n ${ns} logs deploy/${SITE_TUNNEL_TAILNET_APP_NAME} -c tailscaled\`.`,
+      })
+    } else if (tailnet === 'no-certificate') {
+      warns.push({
+        detail: 'the tailnet tunnel has no certificate, so no tailnet site answers',
+        fix: `Put a wildcard certificate for the site domain in the Secret ${SITE_TUNNEL_TAILNET_TLS_SECRET_NAME} `
+          + 'in this namespace, by hand or as a cert-manager Certificate\'s secretName with a DNS-01 issuer.',
+      })
+    } else if (tailnet === 'ready') {
+      const dnsWarn = await siteDomainResolution()
+      if (dnsWarn) warns.push(dnsWarn)
+      else notes.push('the tailnet tunnel is serving')
+    }
+    if (warns.length > 0) {
       return {
         name: 'sites', status: 'warn',
-        detail: `${detail}, but the tunnel holds no connection to Cloudflare, so no site is reachable`,
-        fix: 'Check the tunnel token (re-run `yaac cluster install` with CF_TUNNEL_TOKEN) and that this '
-          + `network lets out TCP and UDP 7844. Inspect with \`kubectl -n ${ns} logs deploy/${SITE_TUNNEL_APP_NAME}\`.`,
+        detail: `${notes[0]}, but ${warns.map((w) => w.detail).join('; ')}`,
+        fix: warns.map((w) => w.fix).join(' '),
       }
     }
-    return {
-      name: 'sites', status: 'pass',
-      detail: tunnel === 'connected' ? `${detail}; the tunnel is connected to Cloudflare` : detail,
-    }
+    return { name: 'sites', status: 'pass', detail: notes.join('; ') }
   } catch (err) {
     return { name: 'sites', status: 'fail', detail: `sites probe errored (${k8sErrorSummary(err)})`, fix }
+  }
+}
+
+/**
+ * A warn when this machine is on the tailnet and a name under the site
+ * domain does not resolve to the tailnet tunnel, which is what the
+ * tailnet's split DNS setting does. Null when it resolves, when there is
+ * no tunnel, or when this machine is off the tailnet and cannot tell.
+ */
+async function siteDomainResolution(): Promise<{ detail: string; fix: string } | null> {
+  const device = await siteTailnetDevice()
+  if (!device || device.addresses.length === 0) return null
+  const onTailnet = await execFileAsync('tailscale', ['status', '--json'], { timeout: 5_000 })
+    .then(({ stdout }) => (JSON.parse(stdout) as { BackendState?: string }).BackendState === 'Running')
+    .catch(() => false)
+  if (!onTailnet) return null
+  const name = `yaac-cluster-check.${device.siteDomain}`
+  const resolved = await dns.resolve4(name).catch(() => [] as string[])
+  if (resolved.some((ip) => device.addresses.includes(ip))) return null
+  return {
+    detail: `${name} does not resolve to the tailnet tunnel (${device.addresses.join(', ')})`,
+    fix: `In the Tailscale admin console's DNS settings, add ${device.addresses[0]} as a nameserver restricted `
+      + `to ${device.siteDomain} (split DNS).`,
   }
 }
 

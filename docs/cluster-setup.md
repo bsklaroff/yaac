@@ -951,11 +951,14 @@ order:
 - `npm-cache`: a workspace-labelled pod fetches a package through the
   cache. Warns when there is no ready cache pod; fails when a ready one
   does not serve.
-- `sites`: pods labelled as the site tunnel and router cannot dial the
+- `sites`: pods labelled as each site tunnel and the router cannot dial the
   server, the proxy's control port or a running workspace that is not a
-  release (docs/server-in-cluster.md "The site edge"). Warns when none of
-  those is running to dial, or when an installed tunnel holds no connection
-  to Cloudflare.
+  release, and one labelled as a Cloudflare pod not the router's tailnet
+  listener (docs/server-in-cluster.md "The site edge"). Warns when none of
+  those is running to dial, when an installed Cloudflare tunnel holds no
+  connection, when an installed tailnet tunnel has not joined or has no
+  certificate, and, on a machine on the tailnet, when the site domain does
+  not resolve to the tailnet tunnel.
 - `datapath`: calico-node and netd are Ready, meaning policy is enforced
   and a redirect exists.
 - `veth-source`: runs in each netd pod against that node's routing table

@@ -10,9 +10,10 @@ import http from 'node:http'
 import net from 'node:net'
 import type { LookupAddress } from 'node:dns'
 import type { Duplex } from 'node:stream'
-import { admissionFor, findRulesForHost, hostNeedsDynamicMitm, isHostNamedExactly } from './injection'
+import { admissionFor, findRulesForHost, hostNeedsDynamicMitm, isHostNamedByEntry, isHostNamedExactly } from './injection'
 import type { LiveTunnels } from './live-tunnels'
 import type { UpstreamRedirect } from './objects'
+import type { ProxyObjects } from './object-watch'
 import { dialUpstream, handleMitm, handleTunnel, type MitmContext } from './mitm'
 import { hasSshGrantOnHost, sshAccessAt } from './repo-grants'
 import { serveSshSession } from './ssh-session'
@@ -34,16 +35,38 @@ export interface DispatchContext extends MitmContext {
   lookup: (hostname: string) => Promise<LookupAddress[]>
   /** The proxy's private ssh host key (ssh-session.ts). */
   sshHostKey: string
+  /** The site router's tailnet listener, and the install's site domain,
+   *  whose names are routed there (null when it has none). */
+  sites: { router: UpstreamRedirect; domain: string | null }
+}
+
+/** True for a name under the site domain (null for none): a tailnet site's. */
+function isSiteHost(domain: string | null, hostname: string): boolean {
+  return domain !== null && hostname.endsWith(`.${domain}`)
 }
 
 /**
- * The checked addresses for a direct dial to `hostname`, or null for one
- * Tor carries: Tor resolves at the exit, off the cluster's network, and
- * resolving here would leak the name to the local resolver.
+ * How the allowlist admits `hostname` (`admissionFor`), or null when it does
+ * not. A tailnet site needs an entry naming it or its zone: `*` alone does
+ * not send the owner's login there. A live tunnel is dropped when this
+ * changes, so it is the one test for both.
  */
-function directUpstream(ctx: DispatchContext, workspaceId: string, hostname: string): Promise<DirectUpstream | null> {
+export function admission(objects: ProxyObjects, siteDomain: string | null, workspaceId: string, hostname: string): string | null {
+  if (isSiteHost(siteDomain, hostname) && !isHostNamedByEntry(objects, workspaceId, hostname)) return null
+  return admissionFor(objects, workspaceId, hostname)
+}
+
+/**
+ * The checked addresses for a direct dial to `hostname:port`, or null for
+ * one Tor carries: Tor resolves at the exit, off the cluster's network,
+ * and resolving here would leak the name to the local resolver.
+ */
+function directUpstream(ctx: DispatchContext, workspaceId: string, hostname: string, port: number): Promise<DirectUpstream | null> {
   if (ctx.torAgent !== null && !isInternalUpstream(hostname)) return Promise.resolve(null)
-  return resolveUpstream(hostname, isHostNamedExactly(ctx.objects, workspaceId, hostname), ctx.lookup)
+  return resolveUpstream(hostname, port, {
+    admitNonPublic: isHostNamedExactly(ctx.objects, workspaceId, hostname),
+    reservedPort: ctx.sites.router.port,
+  }, ctx.lookup)
 }
 
 const STATUS_TEXT: Record<number, string> = { 403: 'Forbidden', 502: 'Bad Gateway' }
@@ -72,6 +95,11 @@ function dialRedirect(redirect: UpstreamRedirect): Promise<net.Socket> {
  * MITM applies when the workspace has rules for the host, the proxy injects
  * credentials there, or a redirect is registered for it. A redirect's
  * target is named by the server, not the workspace, so it is not checked.
+ *
+ * A name under the site domain, a tailnet site's, is always MITM'd and its
+ * requests sent to the site router's tailnet listener, whatever port the
+ * connection named, stamped with the workspace owner's login
+ * (docs/workspace-egress.md "Tailnet sites"). It never takes a direct dial.
  *
  * A connection to the ssh port of a host the workspace's project has an ssh
  * repo on is neither: the proxy ends the ssh session itself and logs in to
@@ -119,21 +147,31 @@ export async function dispatchToUpstream(
     return
   }
 
-  const admission = admissionFor(ctx.objects, workspaceId, hostname)
-  if (admission === null) {
+  const admitted = admission(ctx.objects, ctx.sites.domain, workspaceId, hostname)
+  if (admitted === null) {
     console.log(`[proxy] BLOCKED ${label} to ${hostname}:${port ?? '443'} (not in allowlist)`)
     ctx.recordBlockedHost(workspaceId, hostname)
     refuse(403, `${hostname} is not in the allowed hosts`)
     return
   }
   // Tracked before the lookup, so a registration change meanwhile drops it.
-  ctx.liveTunnels.add(workspaceId, clientSocket, hostname, admission)
+  ctx.liveTunnels.add(workspaceId, clientSocket, hostname, admitted)
 
+  if (isSiteHost(ctx.sites.domain, hostname)) {
+    if (opts.writeConnectOk) clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+    if (opts.head && opts.head.length > 0) clientSocket.unshift(opts.head)
+    const identity = ctx.objects.registration(workspaceId)?.identity ?? null
+    handleMitm(ctx, clientSocket, hostname, port, workspaceId, findRulesForHost(ctx.objects, workspaceId, hostname),
+      ctx.sites.router, null, { identity })
+    return
+  }
+
+  const destPort = parseInt(port ?? '', 10) || 443
   const redirect = ctx.objects.registration(workspaceId)?.upstreamRedirects?.[hostname] ?? null
   let direct: DirectUpstream | null = null
   if (redirect === null) {
     try {
-      direct = await directUpstream(ctx, workspaceId, hostname)
+      direct = await directUpstream(ctx, workspaceId, hostname, destPort)
     } catch (err) {
       const reason = (err as Error).message
       console.log(`[proxy] REFUSED ${label} to ${hostname}:${port ?? '443'}: ${reason}`)
@@ -143,7 +181,6 @@ export async function dispatchToUpstream(
     if (clientSocket.destroyed) return
   }
 
-  const destPort = parseInt(port ?? '', 10) || 443
   if (destPort === SSH_PORT && hasSshGrantOnHost(ctx.objects, workspaceId, hostname)) {
     if (opts.writeConnectOk) clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
     if (opts.head && opts.head.length > 0) clientSocket.unshift(opts.head)
@@ -199,6 +236,11 @@ export async function forwardPlainHttp(
     refuse(403, (err as Error).message)
     return
   }
+  // The login a site request carries would travel unencrypted.
+  if (isSiteHost(ctx.sites.domain, hostname)) {
+    refuse(403, `${hostname} is a tailnet site, served only over https: use https://${hostname}${target.path}`)
+    return
+  }
   const admission = admissionFor(ctx.objects, workspaceId, hostname)
   if (admission === null) {
     console.log(`[proxy] BLOCKED HTTP forward to ${hostname} (not in allowlist)`)
@@ -215,7 +257,7 @@ export async function forwardPlainHttp(
 
   let direct: DirectUpstream | null
   try {
-    direct = await directUpstream(ctx, workspaceId, hostname)
+    direct = await directUpstream(ctx, workspaceId, hostname, target.port)
   } catch (err) {
     refuse(err instanceof UpstreamRefused ? 403 : 502, (err as Error).message)
     return

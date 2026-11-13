@@ -782,3 +782,54 @@ branch or commit.
   (`SELECT name FROM sites, jsonb_array_elements(repos) r WHERE NOT (r ? 'branch' OR r ? 'commit')`
   answers nothing). Remove the backfill and `settingOf`'s fallback to
   `getDefaultBranch` together.
+
+## The unsuffixed Cloudflare tunnel
+
+The Cloudflare tunnel's Deployment, Secret, two NetworkPolicies and `app`
+label are `yaac-site-tunnel-cloudflare`. Older installs named them
+`yaac-site-tunnel`. Two pieces of `cluster/site-edge.ts` carry an install
+across, and go together:
+
+- `ensureSiteEdge` copies the token from the Secret `yaac-site-tunnel` to
+  the new Secret when only the old one exists, rolls out the new
+  Deployment, and then deletes the four old objects (on every run, so the
+  old policies an install without a tunnel kept also go).
+- The router's ingress policy admits pods labelled `app: yaac-site-tunnel`
+  as well as the new label, so the old cloudflared replicas keep reaching
+  the router while the new ones roll out.
+
+- **What it reads.** The Secret `yaac-site-tunnel` in the install's
+  namespace, and the `app: yaac-site-tunnel` pod label.
+- **What breaks silently if it goes too early.** An install that has not
+  run `yaac cluster install` since the rename keeps its token only under
+  the old name, so the next install without `CF_TUNNEL_TOKEN` finds no
+  Secret and removes the tunnel: every public site goes down until someone
+  supplies the token again. Without the second label, the old replicas are
+  cut off from the router the moment install re-applies its policy, before
+  the new ones are ready.
+- **When it is safe to remove.** Once no supported upgrade starts from a
+  version that applied `yaac-site-tunnel`; on a given cluster, once
+  `kubectl get secret,deploy,networkpolicy -l app=yaac-site-tunnel` finds
+  nothing.
+
+## A route table without the tailnet file
+
+The site router's bootstrap names three route files in the ConfigMap
+`yaac-site-routes`: `rds.json`, `rds-tailnet.json` and `cds.json`. A server
+from before tailnet sites wrote only the first and last. Install creates the
+table empty only when absent, since the server owns it, and the new server
+rewrites it only once it is deployed, after the site edge. So
+`ensureRouteFiles` in `cluster/site-edge.ts` adds any file the table lacks,
+empty, and keeps the files the server wrote.
+
+- **What it reads.** The keys of the `yaac-site-routes` ConfigMap.
+- **What breaks silently if it goes too early.** The first `yaac cluster
+  install` over an older install leaves the new router crash-looping
+  (Envoy will not start while a file it names is missing), logs only a
+  note, and skips both site tunnels for that run, so a `--site-domain` with
+  `TS_SITE_AUTHKEY` deploys no tailnet tunnel until install runs again.
+  The old router keeps serving meanwhile.
+- **When it is safe to remove.** Once every install's server has run a
+  version with tailnet sites, which rewrites the table with all three files;
+  on a given cluster, once `kubectl get configmap yaac-site-routes -o
+  jsonpath='{.data}'` names `rds-tailnet.json`.

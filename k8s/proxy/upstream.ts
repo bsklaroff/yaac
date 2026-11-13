@@ -75,13 +75,22 @@ export interface DirectUpstream {
 
 /**
  * Resolve `host` (an `upstreamHost`) once through `lookup` for a direct
- * dial, keeping its IPv4 addresses. Throws UpstreamRefused when any is
- * non-public and `admitNonPublic` (an exact allowlist entry for the host) is
- * false.
+ * dial to `port`, keeping its IPv4 addresses. Throws UpstreamRefused when
+ * any is non-public and `admitNonPublic` (an exact allowlist entry for the
+ * host) is false.
+ *
+ * A non-public address on `reservedPort`, the site router's tailnet
+ * listener, is refused whatever the allowlist says. That listener trusts
+ * the login on each request, and the proxy is admitted to it to carry
+ * workspaces' requests to tailnet sites with their owner's login, so a
+ * direct dial there could send any login. Only the site route, whose
+ * target the proxy names itself, reaches it (docs/workspace-egress.md
+ * "Tailnet sites").
  */
 export async function resolveUpstream(
   host: string,
-  admitNonPublic: boolean,
+  port: number,
+  opts: { admitNonPublic: boolean; reservedPort: number },
   lookup: (hostname: string) => Promise<LookupAddress[]>,
 ): Promise<DirectUpstream> {
   const addrs = net.isIPv4(host)
@@ -89,7 +98,11 @@ export async function resolveUpstream(
     : (await lookup(host)).filter((a) => net.isIPv4(a.address))
   if (addrs.length === 0) throw new Error(`${host} has no IPv4 address`)
   const nonPublic = addrs.find((a) => !isPublicAddress(a.address))?.address ?? null
-  if (nonPublic !== null && !admitNonPublic) {
+  if (nonPublic !== null && port === opts.reservedPort) {
+    throw new UpstreamRefused(`${named(host, nonPublic)}:${String(port)} is the site router's tailnet listener, `
+      + 'which workspaces reach only by naming a tailnet site')
+  }
+  if (nonPublic !== null && !opts.admitNonPublic) {
     throw new UpstreamRefused(`${named(host, nonPublic)} is a non-public address, which only an `
       + 'exact allowlist entry for it admits, not * or a wildcard')
   }

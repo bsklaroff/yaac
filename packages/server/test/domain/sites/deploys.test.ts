@@ -221,7 +221,7 @@ describe('deploySite', () => {
     expect(await site()).toMatchObject({
       liveWorkspaceId: first.workspaceId, releaseCommits: { [DEMO_PROJECT_ID]: head }, releaseImage: 'registry.test/proj:1', livePort: 3000,
     })
-    expect(lastRoute()).toEqual({ siteId: (await site()).id, hostname: 'shop.example.com', port: 3000, liveWorkspaceId: first.workspaceId })
+    expect(lastRoute()).toEqual({ siteId: (await site()).id, hostname: 'shop.example.com', edge: 'public', port: 3000, liveWorkspaceId: first.workspaceId })
     expect((await showSite(DEMO_PROJECT_ID, 'shop')).lastDeploy).toMatchObject({ outcome: 'succeeded', commits: [{ dir: '', commit: head }] })
     expect((await findWorkspaceRow(first.workspaceId))?.title).toBe(`shop @ ${head.slice(0, 8)}`)
 
@@ -511,7 +511,7 @@ describe('stopSite', () => {
     await expect(stopSite(stranger, DEMO_PROJECT_ID, 'shop')).rejects.toMatchObject({ code: 'FORBIDDEN' })
     await stopSite(local, DEMO_PROJECT_ID, 'shop')
     await stopsSpawned(1)
-    expect(lastRoute()).toEqual({ siteId: (await site()).id, hostname: 'shop.example.com', port: 3000 })
+    expect(lastRoute()).toEqual({ siteId: (await site()).id, hostname: 'shop.example.com', edge: 'public', port: 3000 })
     expect(await site()).toMatchObject({ releaseCommits: { [DEMO_PROJECT_ID]: expect.any(String) as unknown }, releaseImage: 'registry.test/proj:1' })
     expect((await site()).liveWorkspaceId).toBeUndefined()
   })

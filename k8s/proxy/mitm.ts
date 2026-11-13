@@ -14,7 +14,7 @@ import type { Duplex } from 'node:stream'
 import forge from 'node-forge'
 import { SocksClient } from 'socks'
 import type { ProxyObjects } from './object-watch'
-import type { HostInjectionRule, RefreshedBundles, UpstreamRedirect } from './objects'
+import type { EgressIdentity, HostInjectionRule, RefreshedBundles, UpstreamRedirect } from './objects'
 import type { RefreshFlights } from './refresh-flight'
 import { dialOptions, failFastIfNonPublic, pinnedLookup, upstreamHost, type DirectUpstream } from './upstream'
 import {
@@ -154,9 +154,43 @@ function leafCert(ca: CA, hostname: string): { key: string; cert: string } {
 }
 
 /**
+ * A header value as Tailscale's own proxies send one: plain when it is
+ * printable ASCII, else RFC 2047 Q-encoded UTF-8, since header values are
+ * Latin-1 on the wire.
+ */
+export function encodeHeaderValue(value: string): string {
+  if (/^[\x20-\x7e]*$/.test(value)) return value
+  const q = [...Buffer.from(value, 'utf8')]
+    .map((b) => (/[A-Za-z0-9!*+\-/]/.test(String.fromCharCode(b)) ? String.fromCharCode(b)
+      : b === 0x20 ? '_' : `=${b.toString(16).toUpperCase().padStart(2, '0')}`))
+    .join('')
+  return `=?utf-8?q?${q}?=`
+}
+
+/**
+ * A tailnet site request's identity: every `Tailscale-*` and
+ * `X-Forwarded-*` header the workspace sent or a rule injected is dropped,
+ * app capabilities included, then the owner's login and name are set, so
+ * neither can choose who the site sees or what it may do.
+ */
+function stampIdentity(headers: http.OutgoingHttpHeaders, identity: EgressIdentity): void {
+  for (const name of Object.keys(headers)) {
+    const lower = name.toLowerCase()
+    if (lower.startsWith('tailscale-') || lower.startsWith('x-forwarded-')) delete headers[name]
+  }
+  headers['tailscale-user-login'] = encodeHeaderValue(identity.login)
+  headers['tailscale-user-name'] = encodeHeaderValue(identity.name)
+}
+
+/**
  * Terminate a workspace's TLS with a leaf for `hostname` and forward each
  * request upstream: to `upstreamRedirect` when one is registered, else to
  * `direct`, the addresses upstream.ts checked, else (null) through Tor.
+ *
+ * `site` marks a tailnet site's connection, whose redirect is the site
+ * router: each request is stamped with the workspace owner's identity, and
+ * answered 403 without a dial when the workspace has none (a release, or
+ * an owner with no tailnet login).
  */
 export function handleMitm(
   ctx: MitmContext,
@@ -167,6 +201,7 @@ export function handleMitm(
   rules: HostInjectionRule[],
   upstreamRedirect: UpstreamRedirect | null,
   direct: DirectUpstream | null,
+  site?: { identity: EgressIdentity | null },
 ): void {
   const { ca, objects } = ctx
   const leaf = leafCert(ca, hostname)
@@ -195,6 +230,7 @@ export function handleMitm(
     const projectId = objects.registration(workspaceId)?.projectId
     const allRules = [...resolveRegisteredRules(objects, rules, projectId), ...dynamicRules]
     const headerCount = applyInjections(headers, reqPath, allRules)
+    if (site?.identity) stampIdentity(headers, site.identity)
     const bodyInjections = withBody ? collectBodyInjections(reqPath, allRules) : []
     if (headerCount + bodyInjections.length > 0) {
       const dynSuffix = dynamicRules.length > 0 ? ` + dynamic(${dynamicRules.length})` : ''
@@ -204,8 +240,8 @@ export function handleMitm(
     return { path: reqPath, headers, bodyInjections }
   }
 
-  // A registered redirect (a test mock) is plain HTTP unless it says
-  // otherwise.
+  // A registered redirect (the site router, a test mock) is plain HTTP
+  // unless it says otherwise.
   const useHttp = upstreamRedirect !== null && upstreamRedirect.tls !== true
   const route = direct !== null ? dialOptions(direct)
     : upstreamRedirect !== null ? {} : { agent: ctx.torAgent ?? undefined }
@@ -231,11 +267,21 @@ export function handleMitm(
     return upstreamReq
   }
 
+  const noIdentity = site !== undefined && site.identity === null
+    ? `yaac: ${hostname} is a tailnet site, and this workspace acts for no tailnet user`
+    : null
+  if (noIdentity !== null) console.log(`[proxy] REFUSED ${workspaceId}'s connection to tailnet site ${hostname}: no identity`)
+
   const mitmServer = http.createServer((req, res) => {
     const misdirect = misdirected(req, hostname, workspaceId)
     if (misdirect !== null) {
       res.writeHead(421, { 'Content-Type': 'text/plain' })
       res.end(misdirect)
+      return
+    }
+    if (noIdentity !== null) {
+      res.writeHead(403, { 'Content-Type': 'text/plain', Connection: 'close' })
+      res.end(`${noIdentity}\n`)
       return
     }
     const { path: reqPath, headers, bodyInjections } = prepare(req, `${req.method} https://`, true)
@@ -367,15 +413,19 @@ export function handleMitm(
     })
   })
 
-  // WebSocket upgrades (e.g. Codex's responses websocket). Without this
-  // handler Node stalls upgrades until a timeout. Headers get the same
-  // injections as plain requests, then the sockets are piped raw. Mocks do
-  // not speak WS, so behind a redirect the client gets a plain response and
-  // falls back to HTTP.
+  // WebSocket upgrades (e.g. Codex's responses websocket, or a tailnet
+  // site's). Without this handler Node stalls upgrades until a timeout.
+  // Headers get the same injections as plain requests, then the sockets are
+  // piped raw. An upstream that does not speak WS (a test mock) answers a
+  // plain response, which the client falls back to HTTP on.
   mitmServer.on('upgrade', (req: http.IncomingMessage, wsClientSocket: Duplex, head: Buffer) => {
     const misdirect = misdirected(req, hostname, workspaceId)
     if (misdirect !== null) {
       wsClientSocket.end(`HTTP/1.1 421 Misdirected Request\r\nContent-Type: text/plain\r\n\r\n${misdirect}\n`)
+      return
+    }
+    if (noIdentity !== null) {
+      wsClientSocket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n${noIdentity}\n`)
       return
     }
     const { path: reqPath, headers } = prepare(req, 'UPGRADE wss://', false)

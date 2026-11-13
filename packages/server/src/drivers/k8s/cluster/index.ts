@@ -119,7 +119,13 @@ export {
 export {
   CLOUDFLARED_MIRROR_TAG,
   CLOUDFLARED_UPSTREAM_IMAGE,
+  TAILSCALE_MIRROR_TAG,
+  TAILSCALE_UPSTREAM_IMAGE,
+  resolveTailgateImageTag,
+  installedSiteDomain,
+  siteTailnetDevice,
+  siteTailnetStatus,
   ensureSiteEdge,
-  siteTunnelStatus,
+  siteCloudflareStatus,
   syncSiteObjects,
 } from './site-edge'

@@ -41,7 +41,8 @@ yaac cluster                    The Kubernetes cluster (k8s driver only)
   check                         Verify prerequisites and wiring
   install                       Create or converge the cluster, images and server.
                                 Safe to re-run; never destructive. CF_TUNNEL_TOKEN
-                                gives public sites a Cloudflare tunnel
+                                gives public sites a Cloudflare tunnel, and
+                                TS_SITE_AUTHKEY tailnet sites a tailnet tunnel
                                 (public-sites.md)
     --nodes <count>             kind nodes to create (default 1, max 5;
                                 ignored if the cluster exists)
@@ -57,6 +58,10 @@ yaac cluster                    The Kubernetes cluster (k8s driver only)
                                 shared claim
     --rwo-storage-class <name>  With --byo: class for the server's own claim
                                 (default: the cluster's default class)
+    --site-domain <zone>        With --tailnet or --byo: a zone you own whose
+                                names are tailnet sites. Needs TS_SITE_AUTHKEY
+                                the first time; both are kept for later
+                                installs, and the zone is fixed once set
   delete [-y]                   Delete the kind cluster and its registry; keeps
                                 workspaces' checkouts. Refused on a --byo install
 
@@ -251,14 +256,16 @@ yaac routine                    Workspaces started on a cron schedule (routines.
   run <routine-id>              Start a run now, stopped at the next tick
   delete <routine-id>           Running runs keep going until their stop time
 
-yaac site                       A project's public sites, each served by a
+yaac site                       A project's sites, each served by a
                                 locked workspace, its release (cluster servers
                                 only; public-sites.md). Only an admin creates,
                                 edits, deploys or starts one
   create <project> <name>       --hostname, --port, --workflow and --repo
                                 required; prints what to add to the
-                                Cloudflare tunnel
-    --hostname <host>           Public hostname the tunnel routes
+                                Cloudflare tunnel, or, for a tailnet site,
+                                its address and what its tunnel lacks
+    --hostname <host>           Hostname: one under the site domain is a
+                                tailnet site, any other public
     --port <n>                  Port its releases serve on
     --workflow <name>           The named workflow each release runs; a deploy
                                 approves its commits, following its branches

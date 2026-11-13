@@ -401,6 +401,12 @@ importers:
         specifier: 1.15.6
         version: 1.15.6
 
+  k8s/tailgate:
+    dependencies:
+      tsx:
+        specifier: 4.23.15
+        version: 4.23.15
+
   packages/auth-daemon:
     dependencies:
       '@lydell/node-pty':

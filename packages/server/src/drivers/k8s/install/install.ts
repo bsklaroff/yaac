@@ -5,6 +5,8 @@ import {
   ensureNetd,
   ensureNpmCache,
   ensureSiteEdge,
+  installedSiteDomain,
+  siteTailnetStatus,
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,
   registryHost,
@@ -26,6 +28,8 @@ import {
   NODE_LOCAL_NODE_ROOT,
   NPM_CACHE_APP_NAME,
   SERVER_APP_NAME,
+  SITE_TUNNEL_TAILNET_APP_NAME,
+  SITE_TUNNEL_TAILNET_TLS_SECRET_NAME,
   bindInstall,
   deleteObject,
   ensurePriorityClasses,
@@ -48,6 +52,7 @@ import {
   ClusterInstallError,
   YAAC_CLUSTER_INSTALL,
   resolveNodeCount,
+  siteDomainArg,
   tailnetServeHost,
 } from './arg-guards'
 import { assessCniAdoption, gatherCniFacts } from './cni-adopt'
@@ -148,6 +153,12 @@ export interface ClusterInstallOptions {
    * accepted so the error can quote the raw `--nodes` text.
    */
   nodes?: number | string
+  /**
+   * The zone whose names are tailnet sites' (docs/public-sites.md "Tailnet
+   * sites"). Needs the tailnet fronting. Kept for later installs, which may
+   * name it again but not change it.
+   */
+  siteDomain?: string
 }
 
 export interface ClusterInstallDeps {
@@ -248,6 +259,7 @@ export async function runClusterInstall(
 ): Promise<void> {
 
   const nodeCount = resolveNodeCount(opts)
+  const givenSiteDomain = siteDomainArg(opts)
   const recorded = await readInstallRecord()
   refuseByoSwitch(recorded, opts)
   refuseTorHostName()
@@ -324,6 +336,7 @@ export async function runClusterInstall(
     bindInstall(installId, legacy)
   }
   // Before any layer is applied.
+  const siteDomain = await resolveSiteDomain(givenSiteDomain)
   if (opts.tailnet === true && !opts.byo) await ensureTailnetOperator(deps)
 
   // A pod naming a missing PriorityClass is rejected and its Job hangs.
@@ -352,9 +365,9 @@ export async function runClusterInstall(
   deps.log('Deploying the netd egress redirect (DaemonSet)...')
   await ensureNetd()
   await deployNpmCache(deps)
-  await deploySiteEdge(deps)
+  await deploySiteEdge(deps, siteDomain)
   // Last: the server depends on every layer above.
-  await deployServer(deps, opts, byoStorage)
+  await deployServer(deps, opts, byoStorage, siteDomain)
   if (opts.byo && legacy.hash && !legacy.names) await retireLegacyNames(deps, legacy.hash)
 }
 
@@ -1194,9 +1207,11 @@ async function deployServer(
   deps: ClusterInstallDeps,
   opts: ClusterInstallOptions,
   byoStorage: { rwx: string; rwo: string } | undefined,
+  siteDomain: string | undefined,
 ): Promise<void> {
   if (byoStorage) {
     const origin = await deployServerWorkload({
+      siteDomain,
       fronting: tailnetFronting({ hostname: TAILNET_HOSTNAME }),
       identity: BYO_INSTALL_IDENTITY,
       admin: opts.admin,
@@ -1224,7 +1239,7 @@ async function deployServer(
   // machine's data dir (docs/server-in-cluster.md).
   const identity = processIdentity()
   const origin = await deployServerWorkload({
-    fronting, identity, storage: { kind: 'static' }, torHostAddr, admin: opts.admin, yes: opts.yes, log: deps.log,
+    fronting, identity, storage: { kind: 'static' }, torHostAddr, siteDomain, admin: opts.admin, yes: opts.yes, log: deps.log,
   })
   deps.log(`The yaac server is serving at ${origin}`)
 }
@@ -1246,19 +1261,73 @@ async function hostAddrOnKindNetwork(deps: ClusterInstallDeps): Promise<string |
 }
 
 /**
- * Deploy the public-site edge, with the tunnel when `CF_TUNNEL_TOKEN` is
- * set or an earlier install left its Secret. Failure only logs: nothing
- * but public sites depends on it, and `cluster check` reports it.
+ * The install's site domain: the one `--site-domain` names, else the one
+ * the tailnet tunnel's Secret records from an earlier install. The tunnel
+ * needs a domain and an auth key (`TS_SITE_AUTHKEY`, kept in the same
+ * Secret), so a run that would leave it with only one is refused.
+ *
+ * A recorded domain is fixed. A site's edge follows from its hostname and
+ * the domain, so another domain would silently turn the old one's tailnet
+ * sites public and pull any public site under the new one onto the
+ * tailnet; changing it is a deliberate step the refusal spells out.
  */
-async function deploySiteEdge(deps: ClusterInstallDeps): Promise<void> {
-  deps.log('Deploying the public-site edge (router, and tunnel when configured)...')
+async function resolveSiteDomain(given: string | undefined): Promise<string | undefined> {
+  const stored = await installedSiteDomain()
+  if (given !== undefined && stored !== undefined && given !== stored) {
+    throw new ClusterInstallError(
+      `This install's site domain is ${stored}, and a site's edge follows from its hostname and the domain, so `
+      + `another domain would make ${stored}'s tailnet sites public. To change it, move or delete those sites, `
+      + `delete the Secret ${SITE_TUNNEL_TAILNET_APP_NAME} (\`kubectl -n ${k8sNamespace()} delete secret `
+      + `${SITE_TUNNEL_TAILNET_APP_NAME}\`), then run install with the new --site-domain and TS_SITE_AUTHKEY.`,
+    )
+  }
+  const siteDomain = given ?? stored
+  if (siteDomain !== undefined && stored === undefined && env.siteTailnetAuthKey === undefined) {
+    throw new ClusterInstallError(
+      '--site-domain needs TS_SITE_AUTHKEY, a Tailscale auth key for a tag, the first time: it joins the '
+      + 'tunnel that serves the domain\'s sites to the tailnet. Later installs keep both.',
+    )
+  }
+  if (siteDomain === undefined && env.siteTailnetAuthKey !== undefined) {
+    throw new ClusterInstallError(
+      'TS_SITE_AUTHKEY joins the tunnel that serves tailnet sites, so it needs --site-domain <zone>: '
+      + 'the domain whose names are those sites\'.',
+    )
+  }
+  return siteDomain
+}
+
+/**
+ * Deploy the site edge: the router, the Cloudflare tunnel when
+ * `CF_TUNNEL_TOKEN` is set or an earlier install left its Secret, and the
+ * tailnet tunnel likewise with `TS_SITE_AUTHKEY`. Failure only logs:
+ * nothing but sites depends on it, and `cluster check` reports it.
+ */
+async function deploySiteEdge(deps: ClusterInstallDeps, siteDomain: string | undefined): Promise<void> {
+  deps.log('Deploying the site edge (router, and tunnels when configured)...')
   try {
-    await ensureSiteEdge({ tunnelToken: env.siteTunnelToken })
+    const tailnet = await ensureSiteEdge({
+      tunnelToken: env.siteTunnelToken, tailnetAuthKey: env.siteTailnetAuthKey, siteDomain,
+    })
+    if (tailnet && siteDomain) {
+      deps.log(
+        `The tailnet tunnel is on the tailnet at ${tailnet.addresses.join(', ')}. If you have not yet, `
+        + `add ${tailnet.addresses[0]} in the Tailscale admin console's DNS settings as a nameserver `
+        + `restricted to ${siteDomain} (split DNS), so tailnet devices resolve its sites.`,
+      )
+      if (await siteTailnetStatus() === 'no-certificate') {
+        deps.log(
+          `note: no certificate yet, so tailnet sites do not answer. Put a wildcard certificate for *.${siteDomain} `
+          + `in the Secret ${SITE_TUNNEL_TAILNET_TLS_SECRET_NAME} (by hand, or as a cert-manager Certificate's `
+          + 'secretName with a DNS-01 issuer); the tunnel picks it up without a restart.',
+        )
+      }
+    }
   } catch (err) {
     deps.log(
-      'note: could not deploy the public-site edge '
+      'note: could not deploy the site edge '
       + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}) — `
-      + 'public sites are unreachable until a re-run of `yaac cluster install` succeeds.',
+      + 'sites are unreachable until a re-run of `yaac cluster install` succeeds.',
     )
   }
 }

@@ -234,16 +234,28 @@ export const BUILDER_ROLE_GUARD_NAME = 'yaac-builder-role-guard'
  * server: cloudflared dials out to Cloudflare, and hands each request to
  * the router, an Envoy that picks the site by `Host`.
  */
-export const SITE_TUNNEL_APP_NAME = 'yaac-site-tunnel'
+export const SITE_TUNNEL_CLOUDFLARE_APP_NAME = 'yaac-site-tunnel-cloudflare'
 export const SITE_ROUTER_APP_NAME = 'yaac-site-router'
-/** The Secret holding the tunnel's token, key `token`. */
-export const SITE_TUNNEL_SECRET_NAME = 'yaac-site-tunnel'
+/** The Secret holding the Cloudflare tunnel's token, key `token`. */
+export const SITE_TUNNEL_CLOUDFLARE_SECRET_NAME = 'yaac-site-tunnel-cloudflare'
 /** cloudflared's metrics listener, whose `/ready` answers 200 while the
  *  tunnel holds a connection to Cloudflare. */
-export const SITE_TUNNEL_METRICS_PORT = 2000
+export const SITE_TUNNEL_CLOUDFLARE_METRICS_PORT = 2000
 /** The router's listener (container and Service port), the origin every
  *  public hostname points at in the Cloudflare dashboard. */
 export const SITE_ROUTER_PORT = 8080
+/**
+ * The router's tailnet listener, which serves only tailnet sites and only
+ * requests carrying a tailnet login: from the tailnet tunnel, and from the
+ * egress proxy on a workspace owner's behalf (docs/public-sites.md
+ * "Tailnet sites"). The proxy refuses any other dial to it.
+ */
+export const SITE_ROUTER_TAILNET_PORT = 8081
+/** The tailnet tunnel: tailscaled and tailgate in one pod, one tailnet device. */
+export const SITE_TUNNEL_TAILNET_APP_NAME = 'yaac-site-tunnel-tailnet'
+/** The Secret holding the site domain's wildcard certificate, which the
+ *  admin or cert-manager fills (keys `tls.crt`, `tls.key`). */
+export const SITE_TUNNEL_TAILNET_TLS_SECRET_NAME = 'yaac-site-tunnel-tailnet-tls'
 /** The router's Envoy admin listener, for its readiness probe. */
 export const SITE_ROUTER_ADMIN_PORT = 9901
 /** The ConfigMap of the router's route table, which the server writes. */

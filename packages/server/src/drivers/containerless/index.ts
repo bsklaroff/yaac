@@ -146,7 +146,8 @@ export function createContainerlessDriver(): WorkspaceDriver {
     runInStoppedCheckout: (target, script, args, opts) => runInStoppedCheckout(target, script, args, opts),
     // No public sites here: the site routes refuse before reaching these.
     syncSites: () => Promise.resolve(),
-    siteTunnelStatus: () => Promise.resolve('absent'),
+    siteCloudflareStatus: () => Promise.resolve('absent'),
+    siteTailnetStatus: () => Promise.resolve('absent'),
 
     // yaac-mama posts directly to `/workspace/mama` here.
     mamaRelay: null,

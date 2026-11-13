@@ -65,12 +65,12 @@ import { SYSTEM_ROOTS_PATH, combineCaBundle } from './ca-bundle'
 import { timingSafeStrEqual } from './secure-compare'
 import { RefreshFlights } from './refresh-flight'
 import { LiveTunnels } from './live-tunnels'
-import { admissionFor, isHostAllowed } from './injection'
+import { isHostAllowed } from './injection'
 import { errorReply, type TokenReply } from './oauth-swap'
 import { ObservedState } from './observed-state'
 import { generateCA, type CA } from './mitm'
 import { generateSshHostKey } from './ssh-session'
-import { dispatchToUpstream, forwardPlainHttp, type DispatchContext } from './dispatch'
+import { admission, dispatchToUpstream, forwardPlainHttp, type DispatchContext } from './dispatch'
 import { MAMA_MAGIC_HOST, MAMA_PATH, relayHeaders, relayTarget } from './yaac-relay'
 
 // Control API: the health probe. All input from the server arrives as
@@ -94,12 +94,17 @@ const DNS_STUB_PORT = process.env.DNS_STUB_PORT
 const DNS_SINKHOLE = process.env.DNS_SINKHOLE
 // The server's yaac-mama listener, which workspaces' calls are relayed to.
 const MAMA_RELAY_URL = process.env.MAMA_RELAY_URL
+// The site router's tailnet listener (`host:port`), where requests to a
+// name under the site domain go; the domain is unset on an install with
+// none (docs/workspace-egress.md "Tailnet sites").
+const SITE_ROUTER = process.env.SITE_ROUTER
+const SITE_DOMAIN = process.env.SITE_DOMAIN?.toLowerCase() || null
 if (!API_PORT || !PROXY_AUTH_SECRET || !TRANSPARENT_HTTPS_PORT || !TRANSPARENT_HTTP_PORT
   || !TRANSPARENT_TUNNEL_PORT || !RELAY_PORT || !POD_STREAM_PORT || !DNS_STUB_PORT || !DNS_SINKHOLE
-  || !MAMA_RELAY_URL) {
+  || !MAMA_RELAY_URL || !SITE_ROUTER) {
   console.error('[proxy] API_PORT, PROXY_AUTH_SECRET, TRANSPARENT_HTTPS_PORT, '
     + 'TRANSPARENT_HTTP_PORT, TRANSPARENT_TUNNEL_PORT, RELAY_PORT, POD_STREAM_PORT, '
-    + 'DNS_STUB_PORT, DNS_SINKHOLE and MAMA_RELAY_URL environment variables are required')
+    + 'DNS_STUB_PORT, DNS_SINKHOLE, MAMA_RELAY_URL and SITE_ROUTER environment variables are required')
   process.exit(1)
 }
 
@@ -196,7 +201,7 @@ const objects = new ProxyObjects({
   // Drop tunnels the new registration no longer admits, and clear
   // newly allowed hosts from the blocked record.
   onRegistration: (workspaceId, registration) => {
-    const dropped = liveTunnels.revoke(workspaceId, registration && ((host) => admissionFor(objects, workspaceId, host)))
+    const dropped = liveTunnels.revoke(workspaceId, registration && ((host) => admission(objects, SITE_DOMAIN, workspaceId, host)))
     if (dropped.length > 0) {
       console.log(`[proxy] dropped ${dropped.length} tunnel(s) of ${workspaceId.slice(0, 8)}... `
         + `the registration no longer admits: ${[...new Set(dropped)].join(', ')}`)
@@ -287,6 +292,10 @@ const dispatchContext: DispatchContext = {
   liveTunnels,
   recordBlockedHost: (workspaceId, hostname) => observed.recordBlockedHost(workspaceId, hostname),
   lookup: (hostname) => dns.promises.lookup(hostname, { all: true, family: 4 }),
+  sites: {
+    router: { host: SITE_ROUTER.slice(0, SITE_ROUTER.lastIndexOf(':')), port: Number(SITE_ROUTER.slice(SITE_ROUTER.lastIndexOf(':') + 1)) },
+    domain: SITE_DOMAIN,
+  },
 }
 // Restore what the previous pod left: its observed state, and any token
 // rotation the server has not picked up yet.

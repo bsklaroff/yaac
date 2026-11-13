@@ -61,6 +61,7 @@ import {
   ENVOY_MIRROR_TAG,
   NGINX_MIRROR_TAG,
   REGISTRY_MIRROR_TAG,
+  TAILSCALE_MIRROR_TAG,
   VERDACCIO_MIRROR_TAG,
   ensureBuilderImage,
   registryRef,
@@ -115,7 +116,7 @@ function holdsEverything(): void {
   fakeRegistry.holdsAll = true
   fakeRegistry.mirror(
     REGISTRY_MIRROR_TAG, ENVOY_MIRROR_TAG, BUILDER_MIRROR_TAG,
-    GVISOR_INSTALLER_MIRROR_TAG, VERDACCIO_MIRROR_TAG, NGINX_MIRROR_TAG, CLOUDFLARED_MIRROR_TAG,
+    GVISOR_INSTALLER_MIRROR_TAG, VERDACCIO_MIRROR_TAG, NGINX_MIRROR_TAG, CLOUDFLARED_MIRROR_TAG, TAILSCALE_MIRROR_TAG,
   )
 }
 
@@ -168,12 +169,13 @@ describe('buildBuiltinImages', () => {
     }
   })
 
-  it('builds the proxy and netd images, and mirrors every pinned upstream', async () => {
+  it('builds the proxy, netd and tailgate images, and mirrors every pinned upstream', async () => {
     await buildBuiltinImages({ log: vi.fn() })
 
     // The other yaac-built images, also content-hash tagged.
     expect(built().some((t) => t.startsWith('yaac-proxy:'))).toBe(true)
     expect(built().some((t) => t.startsWith('yaac-netd:'))).toBe(true)
+    expect(built().some((t) => t.startsWith('yaac-tailgate:'))).toBe(true)
     // Digest-pinned upstreams are pulled, retagged and pushed, so nodes
     // never pull from upstream.
     const pulls = podmanCalls('pull').map((a) => a[1])
@@ -181,6 +183,7 @@ describe('buildBuiltinImages', () => {
     expect(pulls.some((r) => r.includes('envoyproxy/envoy@sha256:'))).toBe(true)
     expect(pulls.some((r) => r.includes('podman/stable@sha256:'))).toBe(true)
     expect(pulls.some((r) => r.includes('curlimages/curl@sha256:'))).toBe(true)
+    expect(pulls.some((r) => r.includes('tailscale/tailscale@sha256:'))).toBe(true)
     expect(podmanCalls('tag').map((a) => a[2])).toContain(BUILDER_MIRROR_TAG)
     expect(pushes().map((p) => p.tag)).toContain(BUILDER_MIRROR_TAG)
     // Root pods run the builder by the digest the push landed as.

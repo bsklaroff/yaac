@@ -85,6 +85,7 @@ import {
   setRepoGitCredential,
   setTimeZone,
   setWorkspaceGroupLimit,
+  recordAccessMode,
   seeTailnetUser,
   setToolCredential,
   type SessionRow,
@@ -1376,6 +1377,8 @@ describe('prepareStart', () => {
       expect(await listWorkspaceSessions(spare.workspaceId, { all: true })).toEqual([])
       expect(specs.at(-1)?.prewarm).toBe(true)
       registrations = []
+      // A tailnet owner's login goes with the registration, for tailnet sites.
+      await recordAccessMode('tailnet', { claim: 'ada@example.com' })
 
       const group = await createWorkspaceGroup(DEMO_PROJECT_ID, 'Reviews', null)
       const result = await start({
@@ -1390,6 +1393,7 @@ describe('prepareStart', () => {
       // git identity.
       expect(registrations).toEqual([expect.objectContaining({
         workspaceId: spare.workspaceId, projectId: DEMO_PROJECT_ID, owner: 'install',
+        identity: { login: 'ada@example.com', name: 'ada@example.com' },
       })])
       expect(ranIn(spare)).toContain("git config --global user.name 'Ada' && git config --global user.email 'ada@example.com'")
       // Recorded as a cold create records it: filed, titled, its session

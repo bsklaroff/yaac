@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import dnsPromises from 'node:dns/promises'
 import { apiError, fakeCluster, type FakeObject } from '@yaac/test-utils/k8s-stub'
 import type * as apiModule from '#drivers/k8s/substrate/api'
 import type * as registryModule from '#drivers/k8s/cluster/registry'
@@ -252,7 +253,8 @@ function logsFor(name: string): string {
     case 'yaac-cluster-check-egress': return 'NP_BLOCKED\n'
     case 'yaac-cluster-check-server-egress': return 'SRV_API_OPEN\nSRV_KUBELET_LOCKED\nSRV_METADATA_LOCKED\nSRV_DNS_OK\n'
     case 'yaac-cluster-check-npm-cache': return 'NPM_CACHE_OK\n'
-    case 'yaac-cluster-check-sites-tunnel':
+    case 'yaac-cluster-check-sites-cloudflare':
+    case 'yaac-cluster-check-sites-tailnet':
     case 'yaac-cluster-check-sites-router':
       return 'SITES_DONE\n'
     case 'yaac-cluster-check-nested': return 'NESTED_MOUNT_OK\n'
@@ -1217,11 +1219,14 @@ describe('runClusterCheck', () => {
     expect(egress?.fix).toContain('yaac cluster restart')
   })
 
-  // Public traffic flows through the tunnel and router, so pods labelled as
-  // either must not reach the server, the proxy's API or a dev workspace.
+  // Site traffic flows through the tunnels and the router, so pods labelled
+  // as any of them must not reach the server, the proxy's API or a dev
+  // workspace, and one labelled as a Cloudflare pod not the router's
+  // tailnet listener.
   it('dials the server, the proxy and a dev workspace from pods labelled as the site edge', async () => {
     serviceIps['yaac-server'] = '10.96.7.1'
     serviceIps['yaac-proxy'] = '10.96.7.2'
+    serviceIps['yaac-site-router'] = '10.96.7.3'
     const pod = (name: string, ip: string, labels: Record<string, string>): FakeObject => ({
       apiVersion: 'v1', kind: 'Pod', metadata: { name, namespace: NS, labels }, status: { phase: 'Running', podIP: ip },
     })
@@ -1236,45 +1241,88 @@ describe('runClusterCheck', () => {
     let { results } = await check()
     expect(byName(results, 'sites')).toMatchObject({
       status: 'pass',
-      detail: 'the site tunnel and router cannot dial the yaac server, nor the proxy\'s control port, '
+      detail: 'the site tunnels and router cannot dial the yaac server, nor the proxy\'s control port, '
         + 'nor a workspace that is not a release',
     })
-    for (const role of ['tunnel', 'router']) {
+    for (const [role, app] of [
+      ['cloudflare', 'yaac-site-tunnel-cloudflare'], ['tailnet', 'yaac-site-tunnel-tailnet'], ['router', 'yaac-site-router'],
+    ]) {
       const probe = applied().map((c) => c[0] as {
         metadata?: { name?: string; labels?: Record<string, string> }
         spec?: { runtimeClassName?: string; containers?: Array<{ command: string[] }> }
       }).find((m) => m.metadata?.name === `yaac-cluster-check-sites-${role}`)
       // Held to the edge's policies, on runc like the edge.
-      expect(probe?.metadata?.labels).toEqual({ app: `yaac-site-${role}` })
+      expect(probe?.metadata?.labels).toEqual({ app })
       expect(probe?.spec?.runtimeClassName).toBeUndefined()
       const script = probe?.spec?.containers?.[0].command[2] ?? ''
       expect(script).toContain('nc -w 4 10.96.7.1 8787 ')
       expect(script).toContain('nc -w 4 10.244.0.9 ')
       expect(script).not.toMatch(/10\.244\.0\.[78]/)
+      expect(script.includes('nc -w 4 10.96.7.3 8081 '), role).toBe(role === 'cloudflare')
     }
 
     podLogs['yaac-cluster-check-sites-router'] = 'SITE_SERVER_OPEN\nSITES_DONE\n'
     ;({ results } = await check())
     expect(byName(results, 'sites')).toMatchObject({ status: 'fail' })
     expect(byName(results, 'sites')?.detail).toContain('a pod labelled as yaac-site-router reached the yaac server')
-
-    // With a tunnel, whether it holds a connection to Cloudflare.
     delete podLogs['yaac-cluster-check-sites-router']
-    const tunnel = (readyReplicas: number): void => {
-      extraObjects = extraObjects.filter((o) => o.kind !== 'Deployment')
-      extraObjects.push({
-        apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: 'yaac-site-tunnel', namespace: NS },
-        status: { readyReplicas },
-      })
+    podLogs['yaac-cluster-check-sites-cloudflare'] = 'SITE_ROUTER_TAILNET_OPEN\nSITES_DONE\n'
+    ;({ results } = await check())
+    expect(byName(results, 'sites')?.detail)
+      .toContain('a pod labelled as yaac-site-tunnel-cloudflare reached the router\'s tailnet listener')
+    delete podLogs['yaac-cluster-check-sites-cloudflare']
+
+    // With a Cloudflare tunnel, whether it holds a connection.
+    const put = (obj: FakeObject): void => {
+      extraObjects = extraObjects.filter((o) => o.kind !== obj.kind || o.metadata.name !== obj.metadata.name)
+      extraObjects.push(obj)
     }
-    tunnel(0)
+    const deployment = (name: string, readyReplicas: number, env: Array<{ name: string; value: string }> = []): FakeObject => ({
+      apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name, namespace: NS },
+      spec: { template: { spec: { containers: [{ env }] } } }, status: { readyReplicas },
+    })
+    put(deployment('yaac-site-tunnel-cloudflare', 0))
     ;({ results } = await check())
     expect(byName(results, 'sites')).toMatchObject({ status: 'warn' })
-    expect(byName(results, 'sites')?.detail).toContain('no connection to Cloudflare')
-    tunnel(2)
+    expect(byName(results, 'sites')?.detail).toContain('the Cloudflare tunnel holds no connection')
+    put(deployment('yaac-site-tunnel-cloudflare', 2))
     ;({ results } = await check())
     expect(byName(results, 'sites')).toMatchObject({ status: 'pass' })
-    expect(byName(results, 'sites')?.detail).toContain('the tunnel is connected to Cloudflare')
+    expect(byName(results, 'sites')?.detail).toContain('the Cloudflare tunnel is connected')
+
+    // With a tailnet tunnel: joined, holding a certificate, and resolving.
+    const secret = (name: string, data: Record<string, string>): FakeObject => ({
+      apiVersion: 'v1', kind: 'Secret', metadata: { name, namespace: NS }, data,
+    })
+    put(deployment('yaac-site-tunnel-tailnet', 0))
+    put(secret('yaac-site-tunnel-tailnet', { domain: Buffer.from('apps.example.com').toString('base64') }))
+    put(secret('yaac-site-tunnel-tailnet-state', {}))
+    ;({ results } = await check())
+    expect(byName(results, 'sites')).toMatchObject({ status: 'warn' })
+    expect(byName(results, 'sites')?.detail).toContain('the tailnet tunnel has not joined the tailnet')
+    put(secret('yaac-site-tunnel-tailnet-state', { device_ips: Buffer.from('["100.64.0.9"]').toString('base64') }))
+    ;({ results } = await check())
+    expect(byName(results, 'sites')?.detail).toContain('the tailnet tunnel has no certificate')
+    expect(byName(results, 'sites')?.fix).toContain('yaac-site-tunnel-tailnet-tls')
+    put(secret('yaac-site-tunnel-tailnet-tls', {}))
+    put(deployment('yaac-site-tunnel-tailnet', 1))
+    // Off the tailnet this machine cannot tell whether the zone resolves.
+    ;({ results } = await check())
+    expect(byName(results, 'sites')).toMatchObject({ status: 'pass' })
+    expect(byName(results, 'sites')?.detail).toContain('the tailnet tunnel is serving')
+    // On it, a zone the tailnet's DNS does not send to the tunnel is a warn.
+    stage({ run: vi.fn((file: string, args: string[]) => (file === 'tailscale'
+      ? Promise.resolve({ stdout: '{"BackendState":"Running"}', stderr: '' })
+      : happyResponses(file, args))) as unknown as RunMock })
+    const resolve4 = vi.spyOn(dnsPromises, 'resolve4').mockResolvedValue(['203.0.113.7'])
+    ;({ results } = await check())
+    expect(byName(results, 'sites')).toMatchObject({ status: 'warn' })
+    expect(byName(results, 'sites')?.detail).toContain('yaac-cluster-check.apps.example.com does not resolve to the tailnet tunnel')
+    expect(byName(results, 'sites')?.fix).toContain('add 100.64.0.9 as a nameserver restricted to apps.example.com')
+    resolve4.mockResolvedValue(['100.64.0.9'])
+    ;({ results } = await check())
+    expect(byName(results, 'sites')).toMatchObject({ status: 'pass' })
+    resolve4.mockRestore()
   })
 
   // A workspace pod fetching through the Service checks the egress rule,
