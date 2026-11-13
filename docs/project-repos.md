@@ -57,6 +57,32 @@ hosted repo its owner shared: the grant is explicit, and yaac is the host.
 The credential belongs to the repo, so one user cannot use two credentials
 for one URL in two projects.
 
+Adds of one URL by one owner run one at a time (`addRepo`), so two that
+race clone once: the second finds the repo the first made. Linking a repo
+into a project checks the folder and the link before the clone, to fail
+fast, and again on the project as it is after the clone, under a lock per
+project, since another link may have landed meanwhile.
+
+## Adding a project
+
+A clone can take minutes, so the server lists every add in flight, with
+git's progress (`--progress`, parsed by `runGit`), in the snapshot's
+`projectAdds` (`domain/projects/adding.ts`). That list, not the tab that
+started the add, is what the webapp's rail and progress pane show, so an
+add survives a reload and shows in every client, a CLI add included. The
+client picks the project's id and sends it with the add, so the listed
+add, the selected rail chip and the project it becomes share one id. A
+failed add with a client-picked id stays listed with its error until its
+owner dismisses it (`POST /project/add/:projectId/dismiss`) or adds the
+same remote (the same name, for a hosted project) again, which replaces
+it. One without, such as a CLI add, is dropped when it fails: its caller
+already has the error.
+
+An add of a URL its owner is already adding is refused rather than queued:
+it would only make a second project on the same repo. Adding a URL again
+once the first add is done makes a second project, since names need not be
+unique.
+
 ## Workspace layout
 
 The workspace dir (`workspaces/<id>`, `/workspace` in a pod) holds the

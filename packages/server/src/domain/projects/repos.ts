@@ -20,6 +20,7 @@ import { parseGitRemote } from '@yaac/shared/git-remote'
 import { projectNameFor } from '@yaac/shared/project-name'
 import { MAX_PROJECT_REPOS, REPO_DIR_RE } from '@yaac/shared/types'
 import { isUuid } from '#lib/uuid'
+import { createKeyedMutex } from '#lib/keyed-mutex'
 import { allowRepoHost } from './allowlist'
 
 /*
@@ -81,10 +82,31 @@ function freeDir(project: ProjectRow, wanted: string): string {
 }
 
 /**
+ * Refuse a link the project has no room for: one past `MAX_PROJECT_REPOS`,
+ * one into a folder a repo already takes, or one to a repo it already
+ * links (`linked`).
+ */
+function checkLinkable(project: ProjectRow, dir: string | undefined, linked: (l: ProjectRepoLink) => boolean): void {
+  if (project.repos.length >= MAX_PROJECT_REPOS) {
+    throw new ServerError('VALIDATION', `a project links at most ${MAX_PROJECT_REPOS} repos`)
+  }
+  if (dir !== undefined) checkDir(project, dir)
+  if (project.repos.some(linked)) throw new ServerError('CONFLICT', `project "${project.name}" already links that repo`)
+}
+
+/** Serializes the last check and the write of each link's folder in a
+ *  project. */
+const perProject = createKeyedMutex()
+
+/**
  * Link a repo into a project under `dir`, by default the repo's name, and
  * add its host to the project's allowlist when the list leaves it out.
  * Answers the link, with the host key trusted for a fresh ssh clone and the
  * host added to the allowlist, if any.
+ *
+ * A clone can take minutes, in which another link may land, so the link is
+ * checked before the repo is cloned or made (to fail fast) and again, on
+ * the project as it then is, under a per-project lock before it is written.
  */
 export async function addProjectRepo(
   principal: Actor,
@@ -93,10 +115,9 @@ export async function addProjectRepo(
   dir?: string,
 ): Promise<{ repoId: string; dir: string; knownHostsEntry: string | null; allowedHost: string | null }> {
   const project = await ownProject(principal, projectId)
-  if (project.repos.length >= MAX_PROJECT_REPOS) {
-    throw new ServerError('VALIDATION', `a project links at most ${MAX_PROJECT_REPOS} repos`)
-  }
-  if (dir !== undefined) checkDir(project, dir)
+  checkLinkable(project, dir, (l) => 'remoteUrl' in what
+    ? l.repo.owner === project.owner && l.repo.remoteUrl === what.remoteUrl
+    : 'repoId' in what && l.repo.id === what.repoId)
   let knownHostsEntry: string | null = null
   let repo: RepoRow
   if ('remoteUrl' in what) {
@@ -111,13 +132,14 @@ export async function addProjectRepo(
   } else {
     repo = await createHostedRepo(project.owner)
   }
-  if (project.repos.some((l) => l.repo.id === repo.id)) {
-    throw new ServerError('CONFLICT', `project "${project.name}" already links that repo`)
-  }
-  const named = repo.hosted ? project.name : projectNameFor(parseGitRemote(repo.remoteUrl).path) || 'repo'
-  const at = dir ?? freeDir(project, named)
-  await linkProjectRepo(projectId, repo.id, at)
-  return { repoId: repo.id, dir: at, knownHostsEntry, allowedHost: await allowRepoHost(projectId, repo) }
+  return perProject(projectId, async () => {
+    const current = await ownProject(principal, projectId)
+    checkLinkable(current, dir, (l) => l.repo.id === repo.id)
+    const named = repo.hosted ? current.name : projectNameFor(parseGitRemote(repo.remoteUrl).path) || 'repo'
+    const at = dir ?? freeDir(current, named)
+    await linkProjectRepo(projectId, repo.id, at)
+    return { repoId: repo.id, dir: at, knownHostsEntry, allowedHost: await allowRepoHost(projectId, repo) }
+  })
 }
 
 /**
@@ -146,7 +168,9 @@ export async function removeProjectRepo(principal: Actor, projectId: string, ref
  * Change a link: the folder its checkout takes in workspaces created from
  * now on, or the k8s-only `readOnly` and `ghToken` flags, which a
  * containerless install refuses since a workspace there holds every
- * credential (docs/project-repos.md "Read-only repos").
+ * credential (docs/project-repos.md "Read-only repos"). Runs under the
+ * lock `addProjectRepo` takes, so a rename and a link cannot both take one
+ * folder.
  */
 export async function updateProjectRepoLink(
   principal: Actor,
@@ -154,26 +178,28 @@ export async function updateProjectRepoLink(
   ref: string,
   set: { dir?: string; readOnly?: boolean; ghToken?: boolean },
 ): Promise<void> {
-  const project = await ownProject(principal, projectId)
-  const link = projectRepo(project, ref)
-  if ((set.readOnly !== undefined || set.ghToken !== undefined) && workspaceDriver().kind === 'containerless') {
-    throw new ServerError('NOT_SUPPORTED', 'read-only repos and the GH_TOKEN setting need the k8s driver: '
-      + 'without a sandbox a workspace holds every credential')
-  }
-  if (set.dir !== undefined && set.dir !== link.dir) {
-    checkDir(project, set.dir)
-    // A replacement release is a fresh checkout under the folder's current
-    // name, and the site's steps name its folders. A replacement repeats
-    // the last release's layout, so a site edited down to one repo still
-    // nests it until it deploys again.
-    const nesting = (await listProjectSites(projectId)).filter((s) => siteBuiltFrom(s, link.repo.id)
-      && (s.repos.length > 1 || Object.keys(s.releaseCommits ?? {}).length > 1))
-    if (nesting.length > 0) {
-      throw new ServerError('CONFLICT', `site ${nesting.map((s) => `"${s.name}"`).join(', ')} keeps ${link.dir} in its `
-        + 'folder; take the repo off the site first')
+  await perProject(projectId, async () => {
+    const project = await ownProject(principal, projectId)
+    const link = projectRepo(project, ref)
+    if ((set.readOnly !== undefined || set.ghToken !== undefined) && workspaceDriver().kind === 'containerless') {
+      throw new ServerError('NOT_SUPPORTED', 'read-only repos and the GH_TOKEN setting need the k8s driver: '
+        + 'without a sandbox a workspace holds every credential')
     }
-  }
-  await updateProjectRepo(projectId, link.repo.id, set)
+    if (set.dir !== undefined && set.dir !== link.dir) {
+      checkDir(project, set.dir)
+      // A replacement release is a fresh checkout under the folder's current
+      // name, and the site's steps name its folders. A replacement repeats
+      // the last release's layout, so a site edited down to one repo still
+      // nests it until it deploys again.
+      const nesting = (await listProjectSites(projectId)).filter((s) => siteBuiltFrom(s, link.repo.id)
+        && (s.repos.length > 1 || Object.keys(s.releaseCommits ?? {}).length > 1))
+      if (nesting.length > 0) {
+        throw new ServerError('CONFLICT', `site ${nesting.map((s) => `"${s.name}"`).join(', ')} keeps ${link.dir} in its `
+          + 'folder; take the repo off the site first')
+      }
+    }
+    await updateProjectRepo(projectId, link.repo.id, set)
+  })
 }
 
 /** List a project's repos in the order `refs` names them. */

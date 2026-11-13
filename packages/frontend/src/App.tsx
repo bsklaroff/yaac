@@ -29,6 +29,7 @@ import { isElectron } from './lib/platform'
 import { LeaveNewWorkspaceDialog } from './components/NewWorkspacePane'
 import { AddProjectDialog } from './components/NewProjectButton'
 import { ProjectOpPane } from './components/ProjectOpPane'
+import { mergeProjectOps } from './lib/projectOps'
 import { WelcomePane } from './components/WelcomePane'
 import { MobileHeader } from './components/mobile/MobileHeader'
 import { StopWorkspaceDialog } from './components/StopWorkspaceDialog'
@@ -149,12 +150,15 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
 
   // A layout effect, so a finished add never paints as both its pending chip
   // and the listed project. Settled against every user's projects, since a
-  // teammate may be in view. Ops are the caller's own, so a teammate's view
-  // shows none.
+  // teammate may be in view. A teammate's view shows no ops, since only
+  // their owner can act on them.
   useLayoutEffect(() => {
     if (all) settleProjectOps(all.projects.map((p) => p.id))
   }, [all, projectOps, settleProjectOps])
-  const ops = teammateView ? [] : projectOps
+  const ops = useMemo(
+    () => (teammateView ? [] : mergeProjectOps(snapshot?.projectAdds ?? [], projectOps)),
+    [teammateView, snapshot, projectOps],
+  )
   const projectOp = ops.find((o) => o.id === activeProjectId)
 
   // An active project of another user's (a link, or a reload) switches to

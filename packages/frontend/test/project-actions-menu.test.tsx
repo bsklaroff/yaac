@@ -62,7 +62,7 @@ describe('ProjectActionsMenu', () => {
     expect(screen.queryByRole('textbox')).toBeNull()
     expect(screen.getByText('Removing widgets')).toBeTruthy()
     act(() => finishRemove())
-    await waitFor(() => expect(useUiStore.getState().projectOps[0]?.doneId).toBe(ID))
+    await waitFor(() => expect(useUiStore.getState().projectOps[0]?.done).toBe(true))
     act(() => useUiStore.getState().settleProjectOps([ID]))
     expect(useUiStore.getState().activeProjectId).toBe(ID)
     act(() => useUiStore.getState().settleProjectOps([]))

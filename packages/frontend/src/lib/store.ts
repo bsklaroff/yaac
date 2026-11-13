@@ -12,7 +12,7 @@ import {
   isNewWorkspaceForm, seedNewWorkspace, type NewWorkspaceForm, type NewWorkspaceOpts, type PendingDraft,
 } from '#lib/newWorkspace'
 import type {
-  AgentTool, ProjectSummary, ProvisioningWorkspaceEntry, ServerSnapshot, SessionEntry, StoppedWorkspaceEntry,
+  AgentTool, GitProgress, ProjectSummary, ProvisioningWorkspaceEntry, ServerSnapshot, SessionEntry, StoppedWorkspaceEntry,
   WorkspaceListEntry,
 } from '@yaac/shared/types'
 import type { ErrorCode } from '@yaac/shared/errors'
@@ -456,19 +456,22 @@ export function resolveVacantSelection(args: {
 export type SettingsSection =
   | 'general' | 'shortcuts' | 'credentials' | 'repos' | 'project' | 'skills' | 'userDockerfile' | 'users'
 
-/**
- * A project add or remove this tab started, shown in the rail and in place
- * of the sidebar and pane while its request runs. It lasts until the
- * snapshot agrees (`settleProjectOps`), so the rail never flickers between
- * the request finishing and the snapshot listing the change.
- */
 /** Which add-project form is open: clone a remote, or create a project
  *  whose remote yaac hosts. */
 export type AddProjectForm = { remoteUrl: string } | { name: string }
 
+/**
+ * A project add or remove, shown in the rail and in place of the sidebar
+ * and pane while it runs. Adds are the server's (the snapshot's
+ * `projectAdds`, merged by `mergeProjectOps`), so they outlive a reload;
+ * the op this tab keeps for its own add stands in until the snapshot lists
+ * it. Removes are only this tab's. A tab's op lasts until the snapshot
+ * agrees (`settleProjectOps`), so the rail never flickers between the
+ * request finishing and the snapshot listing the change.
+ */
 export interface ProjectOp {
-  /** For a remove, the project's id. For an add, a client key, since the
-   *  server assigns the id. Selectable as `activeProjectId`. */
+  /** The project's id; for an add, the one the tab picked for it.
+   *  Selectable as `activeProjectId`. */
   id: string
   kind: 'add' | 'remove'
   name: string
@@ -476,8 +479,10 @@ export interface ProjectOp {
   remoteUrl: string
   /** An add that creates a hosted project rather than cloning one. */
   hosted?: boolean
-  /** The project's id, once the request has succeeded. */
-  doneId?: string
+  /** How far an add's clone has got. */
+  progress?: GitProgress
+  /** Set once a remove's request has succeeded. */
+  done?: true
   error?: string
 }
 
@@ -719,9 +724,9 @@ interface UiState {
   putProjectOp: (op: ProjectOp) => void
   patchProjectOp: (id: string, patch: Partial<ProjectOp>) => void
   dropProjectOp: (id: string) => void
-  /** Drop the ops the snapshot's project list now reflects. A finished add
-   *  being viewed hands the selection to the new project; a finished remove
-   *  being viewed clears it. */
+  /** Drop the ops the snapshot's project list now reflects: an add whose
+   *  project is listed, and a finished remove whose project is not. A
+   *  finished remove being viewed clears the selection. */
   settleProjectOps: (projectIds: string[]) => void
   /** A queued entry just created or moved from the new-workspace pane, and its
    *  new parent. The sidebar expands its set once the snapshot shows it
@@ -994,14 +999,14 @@ export const useUiStore = create<UiState>((set, get) => ({
   })),
   dropProjectOp: (id) => set((s) => ({ projectOps: s.projectOps.filter((o) => o.id !== id) })),
   settleProjectOps: (projectIds) => set((s) => {
-    const settled = s.projectOps.filter((o) => o.doneId !== undefined
-      && projectIds.includes(o.doneId) === (o.kind === 'add'))
+    const settled = s.projectOps.filter((o) => (o.kind === 'add'
+      ? projectIds.includes(o.id)
+      : o.done === true && !projectIds.includes(o.id)))
     if (settled.length === 0) return s
-    const viewed = settled.find((o) => o.id === s.activeProjectId)
+    const viewedRemove = settled.some((o) => o.kind === 'remove' && o.id === s.activeProjectId)
     return {
       projectOps: s.projectOps.filter((o) => !settled.includes(o)),
-      ...(viewed?.kind === 'add' && { activeProjectId: viewed.doneId, selectedWorkspaceId: null }),
-      ...(viewed?.kind === 'remove' && { activeProjectId: null, selectedWorkspaceId: null, mobileScreen: 'projects' }),
+      ...(viewedRemove && { activeProjectId: null, selectedWorkspaceId: null, mobileScreen: 'projects' as const }),
     }
   }),
   revealQueued: null,

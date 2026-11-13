@@ -83,7 +83,7 @@ describe('addProjectRepo', () => {
     const added = await addProjectRepo(local, PROJECT, { remoteUrl: 'https://github.com/acme/Web-App.git', credentialId: token })
 
     expect(added).toMatchObject({ dir: 'web-app', knownHostsEntry: null })
-    expect(mockClone).toHaveBeenCalledWith('https://github.com/acme/Web-App.git', repoDir(added.repoId), { kind: 'https', token: 'ghp_default' })
+    expect(mockClone).toHaveBeenCalledWith('https://github.com/acme/Web-App.git', repoDir(added.repoId), { kind: 'https', token: 'ghp_default' }, undefined)
     expect(await dirs()).toEqual(['api', 'web-app'])
     expect((await project()).repos[1]).toMatchObject({
       readOnly: false, ghToken: true, lastIncluded: true, repo: { id: added.repoId, gitCredentialId: token },
@@ -96,6 +96,34 @@ describe('addProjectRepo', () => {
     // A project links a repo once.
     await expect(addProjectRepo(local, PROJECT, { remoteUrl: 'https://github.com/acme/Web-App.git', credentialId: token }))
       .rejects.toMatchObject({ code: 'CONFLICT' })
+  })
+
+  it('refuses a folder or a repo another link took while it cloned, rather than failing on the insert', async () => {
+    // Two links into one project, each holding its clone open until let go.
+    const finish = new Map<string, () => void>()
+    mockClone.mockImplementation(async (url, dest) => {
+      await fs.mkdir(path.join(dest, '.git'), { recursive: true })
+      await new Promise<void>((resolve) => { finish.set(url, resolve) })
+    })
+    const web = addProjectRepo(local, EMPTY, { remoteUrl: 'https://github.com/acme/web.git', credentialId: token }, 'app')
+    const lib = addProjectRepo(local, EMPTY, { remoteUrl: 'https://github.com/acme/lib.git', credentialId: token }, 'app')
+    await vi.waitFor(() => expect(finish.size).toBe(2))
+    // The same remote again shares the first clone, so it waits for it.
+    const webAgain = addProjectRepo(local, EMPTY, { remoteUrl: 'https://github.com/acme/web.git', credentialId: token })
+    finish.get('https://github.com/acme/web.git')?.()
+    expect(await web).toMatchObject({ dir: 'app' })
+    finish.get('https://github.com/acme/lib.git')?.()
+    await expect(lib).rejects.toThrow(/already has a repo in "app"/)
+    await expect(webAgain).rejects.toThrow(/already links that repo/)
+    expect(await dirs(EMPTY)).toEqual(['app'])
+    expect(mockClone).toHaveBeenCalledTimes(2)
+
+    // Either refusal comes before any clone when the project already shows it.
+    await expect(addProjectRepo(local, EMPTY, { remoteUrl: 'https://github.com/acme/docs.git', credentialId: token }, 'app'))
+      .rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(addProjectRepo(local, EMPTY, { remoteUrl: 'https://github.com/acme/web.git', credentialId: token }))
+      .rejects.toMatchObject({ code: 'CONFLICT' })
+    expect(mockClone).toHaveBeenCalledTimes(2)
   })
 
   it('adds a repo\'s host to the allowlist when the list leaves it out, and only behind an egress proxy', async () => {

@@ -12,6 +12,7 @@
 // packages/server/test/domain/projects/.
 
 export { addProject, createHostedProject, registerStagedProject } from './add'
+export { dismissProjectAdd, listProjectAdds } from './adding'
 export {
   addProjectRepo,
   projectRepo,

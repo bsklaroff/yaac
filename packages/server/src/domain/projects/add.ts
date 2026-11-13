@@ -11,6 +11,7 @@ import { ServerError } from '@yaac/shared/errors'
 import type { ProjectMeta } from '@yaac/shared/types'
 import { projectNameFor } from '@yaac/shared/project-name'
 import { allowRepoHost } from './allowlist'
+import { trackProjectAdd } from './adding'
 
 export interface AddProjectResult {
   project: ProjectMeta
@@ -26,30 +27,43 @@ export interface AddProjectResult {
  * Add a yaac project owned by `owner` around one git repo: the repo they
  * already have for `remoteUrl`, or a fresh clone of it under the named
  * credential (`addRepo`, docs/git-credentials.md), with its host added to
- * the allowlist when the defaults leave it out. User-facing failures throw
- * `ServerError`.
+ * the allowlist when the defaults leave it out. Listed as an add in flight
+ * until it settles (`trackProjectAdd`), under `projectId` when the client
+ * picks it to follow the add before the request answers. User-facing
+ * failures throw `ServerError`.
  */
 export async function addProject(
   remoteUrl: string,
   gitCredentialId: string,
   owner: string,
+  projectId?: string,
 ): Promise<AddProjectResult> {
   const name = projectNameFor(validateGitRemoteUrl(remoteUrl).path)
   if (!name) throw new ServerError('VALIDATION', `no project name can be derived from "${remoteUrl}"`)
-  const { repo, knownHostsEntry } = await addRepo(owner, remoteUrl, gitCredentialId)
-  const project = await setUpProject(crypto.randomUUID(), name, owner, repo.id)
-  return { project, knownHostsEntry, allowedHost: await allowRepoHost(project.id, repo) }
+  const id = projectId ?? crypto.randomUUID()
+  return trackProjectAdd({ id, owner, name, remoteUrl, hosted: false }, projectId !== undefined, async (onProgress) => {
+    const { repo, knownHostsEntry } = await addRepo(owner, remoteUrl, gitCredentialId, onProgress)
+    const project = await setUpProject(id, name, owner, repo.id)
+    return { project, knownHostsEntry, allowedHost: await allowRepoHost(project.id, repo) }
+  })
 }
 
 /**
  * Create a project with one empty repo whose remote the server hosts
- * (docs/hosted-projects.md).
+ * (docs/hosted-projects.md), listed as an add in flight like `addProject`.
  */
-export async function createHostedProject(rawName: string, owner: string): Promise<ProjectMeta> {
+export async function createHostedProject(
+  rawName: string,
+  owner: string,
+  projectId?: string,
+): Promise<ProjectMeta> {
   const name = projectNameFor(rawName.trim())
   if (!name) throw new ServerError('VALIDATION', `"${rawName}" is not a usable project name`)
-  const repo = await createHostedRepo(owner)
-  return setUpProject(crypto.randomUUID(), name, owner, repo.id)
+  const id = projectId ?? crypto.randomUUID()
+  return trackProjectAdd({ id, owner, name, remoteUrl: '', hosted: true }, projectId !== undefined, async () => {
+    const repo = await createHostedRepo(owner)
+    return setUpProject(id, name, owner, repo.id)
+  })
 }
 
 /**

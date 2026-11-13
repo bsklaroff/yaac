@@ -336,32 +336,38 @@ describe('optimistic provisioning tracking', () => {
 })
 
 describe('settleProjectOps', () => {
-  it('settles an add on the id the server assigned, never its name or remote', () => {
+  it('settles an add once its id is listed, never on its name or remote', () => {
     const s = useUiStore.getState()
     // An add of a remote already listed as 'existing', under the same name.
-    s.putProjectOp({ id: 'adding-0', kind: 'add', name: 'repo', remoteUrl: 'https://h/o/repo.git' })
-    s.setActiveProject('adding-0')
+    s.putProjectOp({ id: 'new', kind: 'add', name: 'repo', remoteUrl: 'https://h/o/repo.git' })
+    s.setActiveProject('new')
     s.settleProjectOps(['existing'])
     expect(useUiStore.getState().projectOps).toHaveLength(1)
-
-    // Done, but the snapshot doesn't list the new id yet.
-    s.patchProjectOp('adding-0', { doneId: 'new' })
-    s.settleProjectOps(['existing'])
-    expect(useUiStore.getState().activeProjectId).toBe('adding-0')
 
     s.settleProjectOps(['existing', 'new'])
     expect(useUiStore.getState().projectOps).toEqual([])
     expect(useUiStore.getState().activeProjectId).toBe('new')
   })
 
-  it('leaves the selection alone when the settled op is not being viewed', () => {
+  it('settles a remove once done and unlisted, clearing the selection only if it was viewed', () => {
     const s = useUiStore.getState()
-    s.putProjectOp({ id: 'adding-0', kind: 'add', name: 'repo', remoteUrl: 'r', doneId: 'new' })
-    s.putProjectOp({ id: 'gone', kind: 'remove', name: 'gone', remoteUrl: 'r', doneId: 'gone' })
+    s.putProjectOp({ id: 'gone', kind: 'remove', name: 'gone', remoteUrl: '' })
+    s.putProjectOp({ id: 'viewed', kind: 'remove', name: 'viewed', remoteUrl: '' })
     s.setActiveProject('other')
-    s.settleProjectOps(['other', 'new'])
-    expect(useUiStore.getState().projectOps).toEqual([])
+    // Not done yet, though a snapshot may already leave it out.
+    s.settleProjectOps(['other'])
+    expect(useUiStore.getState().projectOps).toHaveLength(2)
+
+    s.patchProjectOp('gone', { done: true })
+    s.settleProjectOps(['other', 'viewed'])
+    expect(useUiStore.getState().projectOps.map((o) => o.id)).toEqual(['viewed'])
     expect(useUiStore.getState().activeProjectId).toBe('other')
+
+    s.setActiveProject('viewed')
+    s.patchProjectOp('viewed', { done: true })
+    s.settleProjectOps(['other'])
+    expect(useUiStore.getState().projectOps).toEqual([])
+    expect(useUiStore.getState().activeProjectId).toBeNull()
   })
 })
 

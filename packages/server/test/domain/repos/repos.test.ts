@@ -72,7 +72,7 @@ describe('addRepo', () => {
     })
     expect(Date.parse(repo.addedAt)).not.toBeNaN()
     expect(knownHostsEntry).toBeNull()
-    expect(mockClone).toHaveBeenCalledWith('https://github.com/acme/Widgets.git', repoDir(repo.id), { kind: 'https', token: 'ghp_default' })
+    expect(mockClone).toHaveBeenCalledWith('https://github.com/acme/Widgets.git', repoDir(repo.id), { kind: 'https', token: 'ghp_default' }, undefined)
     expect(await getRepo(repo.id)).toEqual(repo)
 
     // An ssh remote trusts the host key it fetched; the clone gets only the
@@ -84,7 +84,24 @@ describe('addRepo', () => {
     expect(mockClone).toHaveBeenLastCalledWith(
       'git@git.example.com:group/sub/Repo.git', repoDir(ssh.repo.id),
       { kind: 'ssh', id: key.id, publicKey: key.publicKey, knownHostsEntry: HOST_KEY },
+      undefined,
     )
+  })
+
+  it('clones a remote once when two adds of it race, the second answering the first one\'s repo', async () => {
+    const url = 'https://github.com/acme/widgets.git'
+    let finish = (): void => {}
+    mockClone.mockImplementationOnce(async (_url, dest) => {
+      await fs.mkdir(path.join(dest, '.git'), { recursive: true })
+      await new Promise<void>((resolve) => { finish = resolve })
+    })
+    const first = addRepo(BUILT_IN_USER_ID, url, token)
+    const second = addRepo(BUILT_IN_USER_ID, url, token)
+    await vi.waitFor(() => expect(mockClone).toHaveBeenCalledTimes(1))
+    finish()
+    expect((await second).repo).toEqual((await first).repo)
+    expect(mockClone).toHaveBeenCalledTimes(1)
+    expect(await listRepos()).toHaveLength(1)
   })
 
   it('answers the repo its owner already has for the remote, which takes the credential only if it has none', async () => {

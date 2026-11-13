@@ -83,5 +83,6 @@ export function ownedBy(snapshot: ServerSnapshot, userId: string): ServerSnapsho
     heldWorkspaces: theirs(snapshot.heldWorkspaces),
     draftWorkspaces: theirs(snapshot.draftWorkspaces),
     routines: theirs(snapshot.routines),
+    projectAdds: snapshot.projectAdds.filter((a) => a.owner === userId),
   }
 }

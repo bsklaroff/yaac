@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { env as serverEnv } from '@yaac/shared/env'
 import { serverLocalPath } from '@yaac/shared/paths'
+import type { GitProgress } from '@yaac/shared/types'
 
 /**
  * The only way the server starts git (docs/server-git.md). Every call pins
@@ -27,6 +28,9 @@ export interface GitRunOptions {
   /** The remote this call talks to, if any. Only its transport is allowed;
    *  without it, no transport is. */
   remoteUrl?: string
+  /** Called with each progress line git prints to stderr (with
+   *  `--progress`), parsed. */
+  onProgress?: (progress: GitProgress) => void
 }
 
 /** Set on the command line for every call, overriding any config. */
@@ -63,7 +67,7 @@ export async function runGit(target: GitTarget, args: string[], opts: GitRunOpti
   }
   const pins = [...PINS]
   if (opts.remoteUrl !== undefined) pins.push(`protocol.${transportOf(opts.remoteUrl)}.allow=always`)
-  const run = execGit([...pins.flatMap((p) => ['-c', p]), ...args], cwd, env)
+  const run = execGit([...pins.flatMap((p) => ['-c', p]), ...args], cwd, env, opts.onProgress)
   if (opts.remoteUrl === undefined) return run
   return run.catch((err: Error) => {
     err.message = withEgressHint(err.message)
@@ -133,12 +137,49 @@ function gitEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return env
 }
 
-function execGit(args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<string> {
+/**
+ * A progress line, such as `Receiving objects:  45% (556/1234), 1.20 MiB |
+ * 2.00 MiB/s` or `remote: Enumerating objects: 1234, done.`, parsed; null
+ * for any other line. A count needs its `, done.`, so a host's free-text
+ * `remote: Error: 403` is not taken for a phase.
+ */
+function parseProgress(line: string): GitProgress | null {
+  const m = /^(?:remote: )?([A-Z][A-Za-z ]+):\s+(?:(\d+)% \(\d+\/\d+\)(?:, (.+?))?(?:, done\.)?|\d+, done\.)\s*$/.exec(line)
+  if (!m) return null
+  return {
+    phase: m[1],
+    percent: m[2] === undefined ? null : Number(m[2]),
+    ...(m[3] !== undefined && m[3] !== 'done.' ? { detail: m[3] } : {}),
+  }
+}
+
+/**
+ * Run git, rejecting with its stderr minus progress. Git redraws a progress
+ * line in place, ending each version with a carriage return, so of each
+ * line only what follows the last one is kept (a CRLF ending aside).
+ */
+function execGit(
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  onProgress?: (progress: GitProgress) => void,
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd, env, maxBuffer: 64 << 20 }, (err, stdout, stderr) => {
+    const child = execFile('git', args, { cwd, env, maxBuffer: 64 << 20 }, (err, stdout, stderr) => {
       if (!err) return resolve(stdout)
-      const message = stderr.trim() || err.message
+      const lines = stderr.split(/\r?\n/).map((l) => l.slice(l.lastIndexOf('\r') + 1))
+      const message = lines.join('\n').trim() || err.message
       reject(Object.assign(new Error(message), { code: err.code }))
+    })
+    if (onProgress === undefined) return
+    let partial = ''
+    child.stderr?.on('data', (chunk: Buffer) => {
+      const lines = (partial + chunk.toString()).split(/[\r\n]/)
+      partial = lines.pop() ?? ''
+      for (const line of lines) {
+        const progress = parseProgress(line)
+        if (progress) onProgress(progress)
+      }
     })
   })
 }

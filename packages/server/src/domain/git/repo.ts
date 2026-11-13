@@ -4,6 +4,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { gitConfigValue } from '@yaac/shared/git'
 import { serverLocalPath } from '@yaac/shared/paths'
+import type { GitProgress } from '@yaac/shared/types'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { runGit } from './run'
 import type { GitTarget } from './run'
@@ -19,14 +20,18 @@ import type { ResolvedGitCredential } from './transport'
 
 const repo = (repoPath: string): GitTarget => ({ kind: 'repo', repoPath })
 
+/** Clone `remoteUrl` to `destPath`, reporting git's progress to
+ *  `onProgress`. */
 export async function cloneRepo(
   remoteUrl: string,
   destPath: string,
   credential: ResolvedGitCredential | null,
+  onProgress?: (progress: GitProgress) => void,
 ): Promise<void> {
-  await runGit({ kind: 'none' }, ['clone', remoteUrl, destPath], {
+  await runGit({ kind: 'none' }, ['clone', ...(onProgress ? ['--progress'] : []), remoteUrl, destPath], {
     env: await gitEnvForCredential(credential, remoteUrl),
     remoteUrl,
+    onProgress,
   })
   const config = path.join(destPath, '.git', 'config')
   // Git run directly in the main clone (by a user or a containerless agent,

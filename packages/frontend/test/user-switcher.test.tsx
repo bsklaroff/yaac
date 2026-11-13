@@ -50,6 +50,7 @@ describe('ownedBy', () => {
       workspaces: [row('mine'), row('hers')], workspaceGroups: [row('hers')], stale: [row('mine')],
       provisioning: [row('hers')], queuedWorkspaces: [row('hers')], heldWorkspaces: [row('mine')],
       draftWorkspaces: [row('hers')], routines: [row('mine'), row('hers')],
+      projectAdds: [{ id: 'adding-mine', owner: 'u-me' }, { id: 'adding-hers', owner: 'u-ada' }],
     } as unknown as ServerSnapshot
     const hers = ownedBy(all, 'u-ada')
     expect(hers.projects.map((p) => p.id)).toEqual(['hers'])
@@ -58,6 +59,8 @@ describe('ownedBy', () => {
     }
     expect(hers.stale).toEqual([])
     expect(hers.heldWorkspaces).toEqual([])
+    // An add has no project yet, so it is cut by its owner.
+    expect(hers.projectAdds.map((a) => a.id)).toEqual(['adding-hers'])
     expect(hers.imageBuilds).toBe(all.imageBuilds)
   })
 })
