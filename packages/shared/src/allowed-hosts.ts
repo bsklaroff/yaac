@@ -403,13 +403,15 @@ const CRITICAL_HOSTS = [
   { host: 'github.com', label: 'GitHub' },
 ]
 
-/** Resolve a project's allowlist to the patterns the proxy enforces. */
+/**
+ * Resolve a project's allowlist to the patterns the proxy enforces. A list
+ * holding `*` keeps its other entries, since only an exact entry admits a
+ * non-public destination (k8s/proxy/upstream.ts) and `*` never does.
+ */
 export function resolveAllowedHosts(allowlist: EgressAllowlist): string[] {
   const resolved = allowlist.defaults
     ? [...DEFAULT_ALLOWED_HOSTS, ...allowlist.hosts.filter((h) => !DEFAULT_ALLOWED_HOSTS.includes(h))]
     : [...allowlist.hosts]
-  if (resolved.includes('*')) return ['*']
-
   for (const { host, label } of missingCriticalHosts(allowlist)) {
     console.warn(
       `Warning: ${label} (${host}) is not in the allowed URL list. ` +
