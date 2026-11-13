@@ -25,7 +25,7 @@ const stream = {
   taskOutputs: {} as Record<string, { text?: string; error?: string }>,
   subagentTranscripts: {} as Record<string, { events?: AcpEventInit[]; error?: string }>,
   permissionModes: { available: [] } as { current?: PermissionMode; available: PermissionMode[] },
-  efforts: { available: [] } as { current?: string; available: Array<{ value: string; name: string }> },
+  efforts: { available: [] } as { current?: string; available: string[] },
 }
 
 vi.mock('#lib/acp', () => ({ useAcpStream: () => stream }))
@@ -410,35 +410,50 @@ describe('WorkspaceChat permission mode', () => {
     expect(screen.getByText('Accept edits')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Permission mode' })).toBeNull()
   })
-})
 
-// docs/effort-levels.md. The levels and names are the adapter's own, for
-// the conversation's current model.
+  // pi under containerless: an icon-only pill with no menu to show the
+  // warning in, so its text carries it (visually hidden when narrow).
+  it('names a containerless bypass with no menu, warning included', () => {
+    snapshot.mockReturnValue({ driver: 'containerless', workspaces: [] })
+    stream.permissionModes = { current: 'bypass', available: [] }
+    show()
+    const pill = screen.getByTitle(/No sandbox — acts as you\./)
+    expect(pill.textContent).toBe('Bypass (No sandbox — acts as you.)')
+  })
+})
+// docs/effort-levels.md. The levels are the adapter's own, for the
+// conversation's current model; the names are the shared catalog's.
 describe('WorkspaceChat effort', () => {
   afterEach(() => {
     cleanup()
     stream.efforts = { available: [] }
   })
 
-  it("shows the level by the agent's name for it and switches it from the menu", async () => {
+  it('names the level and switches it from the settings pill', async () => {
     stream.send.mockClear()
     stream.efforts = {
       current: 'xhigh',
-      available: [{ value: 'high', name: 'High' }, { value: 'xhigh', name: 'Xhigh' }, { value: 'max', name: 'Max' }],
+      available: ['high', 'xhigh', 'max'],
     }
     show()
-    const trigger = screen.getByRole('button', { name: 'Effort' })
+    const trigger = screen.getByRole('button', { name: 'Agent settings' })
+    // Named as the create form names it, not as each adapter does.
     expect(trigger.textContent).toContain('Xhigh effort')
     fireEvent.click(trigger)
-    const items = await screen.findAllByRole('menuitemradio')
-    expect(items.map((i) => i.getAttribute('aria-checked'))).toEqual(['false', 'true', 'false'])
-    fireEvent.click(items[2])
+    const levels = within(await screen.findByRole('radiogroup', { name: 'Effort' })).getAllByRole('radio')
+    expect(levels.map((i) => i.getAttribute('aria-checked'))).toEqual(['false', 'true', 'false'])
+    fireEvent.click(levels[2])
     expect(stream.send).toHaveBeenCalledWith({ type: 'effort', effort: 'max' })
+    // A radio group from the keyboard too: one tab stop, arrows move and pick.
+    expect(levels.map((i) => i.tabIndex)).toEqual([-1, 0, -1])
+    levels[1].focus()
+    fireEvent.keyDown(levels[1], { key: 'ArrowLeft' })
+    await waitFor(() => expect(stream.send).toHaveBeenCalledWith({ type: 'effort', effort: 'high' }))
   })
 
-  it('shows nothing for an agent with no effort option', () => {
+  it('shows no settings pill for an agent with no models, effort or options', () => {
     show()
-    expect(screen.queryByRole('button', { name: 'Effort' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Agent settings' })).toBeNull()
   })
 })
 
@@ -457,10 +472,9 @@ describe('WorkspaceChat agent options', () => {
     const server = mockFetch({ 'POST /api/workspace/w1/sessions/sess-1/agent-options': undefined })
     holding({ agentOptions: { idleCompaction: false } })
     show()
-    fireEvent.click(screen.getByRole('button', { name: 'Agent options' }))
-    const [item] = await screen.findAllByRole('menuitemcheckbox')
-    expect(item.textContent).toContain('Compact when idle')
-    expect(item.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(screen.getByRole('button', { name: 'Agent settings' }))
+    const item = await screen.findByRole<HTMLInputElement>('checkbox', { name: /Compact when idle/ })
+    expect(item.checked).toBe(false)
     fireEvent.click(item)
     await waitFor(() => expect(server.called('POST /api/workspace/w1/sessions/sess-1/agent-options')[0]?.body)
       .toEqual({ idleCompaction: true }))
@@ -472,15 +486,15 @@ describe('WorkspaceChat agent options', () => {
     })
     holding({ agentOptions: { idleCompaction: false } })
     show()
-    fireEvent.click(screen.getByRole('button', { name: 'Agent options' }))
-    fireEvent.click((await screen.findAllByRole('menuitemcheckbox'))[0])
+    fireEvent.click(screen.getByRole('button', { name: 'Agent settings' }))
+    fireEvent.click((await screen.findAllByRole('checkbox'))[0])
     expect(await screen.findByText('Option not changed: claude has no agent option x')).toBeTruthy()
   })
 
   it('shows nothing for a session with no options it can change while running', () => {
     holding({ tool: 'codex', agentOptions: {} })
     show()
-    expect(screen.queryByRole('button', { name: 'Agent options' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Agent settings' })).toBeNull()
   })
 })
 
@@ -783,6 +797,7 @@ describe('WorkspaceChat composer menu', () => {
     cleanup()
     flushTypedText()
     vi.unstubAllGlobals()
+    stream.efforts = { available: [] }
   })
 
   it('lists matching commands on /, prefix matches first, and runs one that takes no argument', () => {
@@ -873,6 +888,30 @@ describe('WorkspaceChat composer menu', () => {
     key('Enter')
     expect(stream.send).toHaveBeenCalledWith({ type: 'model', modelId: 'sonnet' })
     expect(box().value).toBe('')
+  })
+
+  it('switches the model from the settings pill by search, and follows a switch the history reports', async () => {
+    stream.efforts = { current: 'high', available: ['high'] }
+    show()
+    const pill = (): HTMLElement => screen.getByRole('button', { name: 'Agent settings' })
+    expect(pill().textContent).toMatch(/^Opus 5\.5\s*· High$/)
+    fireEvent.click(pill())
+    const search = await screen.findByRole('combobox', { name: 'Search models' })
+    expect(labels()).toEqual(['Default', 'Opus 5.5', 'Sonnet 5'])
+    expect(rows()[1]).toContain('current')
+    expect(within(screen.getByRole('listbox')).getAllByRole('option')[1].getAttribute('aria-selected')).toBe('true')
+
+    fireEvent.change(search, { target: { value: 'son' } })
+    expect(labels()).toEqual(['Sonnet 5'])
+    fireEvent.keyDown(search, { key: 'Enter' })
+    expect(stream.send).toHaveBeenCalledWith({ type: 'model', modelId: 'sonnet' })
+    await waitFor(() => expect(screen.queryByRole('combobox', { name: 'Search models' })).toBeNull())
+
+    // A restored history reports a switch with no new list.
+    cleanup()
+    stream.events = [...session, { type: 'model-switch', seq: 2, model: 'sonnet', name: 'Sonnet 5' }]
+    show()
+    expect(pill().textContent).toContain('Sonnet 5')
   })
 
   it('offers codex skills on $ and inserts the mention for the message to follow', () => {

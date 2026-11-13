@@ -8,8 +8,11 @@
  *     page on focus.
  *  3. The page itself never scrolls; only panes inside it do.
  *  4. The input box grows with a multi-line message, up to its max-height.
- *  5. The composer's footer (attach, toggles, permission and effort menus,
- *     context meter, Send) sits on one line inside the card.
+ *  5. The composer's footer (attach, toggles, the permission and settings
+ *     pills, context meter, Send) sits on one line inside the card.
+ *  6. The settings pill opens a popover inside the screen listing the
+ *     models, without focusing its search box (which would raise the
+ *     keyboard).
  *
  * Needs a running `yaac server` with a live ACP workspace (`yaac workspace
  * create <project> --tool claude --mode acp`), and sends it one small
@@ -141,6 +144,28 @@ try {
   const out = footer.controls.filter((c) => c.right > footer.cardRight)
   check('every footer control sits inside the card', out.length === 0,
     out.map((c) => `${c.name}+${Math.round(c.right - footer.cardRight)}px`).join(' '))
+
+  // ---- 6. the settings pill's popover fits and keeps the keyboard down ----
+  await page.getByRole('button', { name: 'Agent settings' }).tap()
+  const search = page.getByRole('combobox', { name: 'Search models' })
+  await search.waitFor({ state: 'visible', timeout: 10_000 })
+  await page.waitForTimeout(300)
+  await page.screenshot({ path: path.join(SHOTS, 'acp-mobile-3-settings.png') })
+  const popover = await page.evaluate(() => {
+    const r = document.querySelector('[role="dialog"]').getBoundingClientRect()
+    return {
+      left: r.left, right: r.right, top: r.top, width: innerWidth,
+      models: document.querySelectorAll('[role="dialog"] [role="option"]').length,
+      searchFocused: document.activeElement?.getAttribute('aria-label') === 'Search models',
+    }
+  })
+  console.log('  settings popover:', JSON.stringify(popover))
+  check('the settings popover sits inside the screen',
+    popover.left >= 0 && popover.right <= popover.width && popover.top >= 0, JSON.stringify(popover))
+  check('it lists the models', popover.models > 0, `${popover.models} rows`)
+  check('a tap open leaves the search box unfocused', !popover.searchFocused)
+  await page.keyboard.press('Escape')
+  await search.waitFor({ state: 'detached' })
 
   // ---- 2. the input is big enough that iOS won't zoom the page ----
   check('the input is at least 16px at phone width, so a focus cannot zoom the page',

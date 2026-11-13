@@ -8,8 +8,7 @@
  *     highlight and a click picks it; text matching nothing says "No
  *     matches" and Enter neither picks nor creates; Tab moves on to the
  *     next field and closes the list; aria-expanded follows the list.
- *  2. Model: typing a name and Enter picks that model.
- *  3. Settings → Credentials, opencode's provider picker (opencode is
+ *  2. Settings → Credentials, opencode's provider picker (opencode is
  *     shown signed out by rewriting /auth/list): a capped list with a
  *     "+N more" hint; ↓ keeps the highlighted row scrolled into view;
  *     typing filters and ↓ Enter picks, which retitles the key box and tags
@@ -112,19 +111,7 @@ try {
   check('Tab moves on to the next field and closes the list', next !== 'Base branch' && await list.count() === 0,
     String(next))
 
-  // (2) Model.
-  const model = pane.getByLabel('Model', { exact: true })
-  if (await model.count()) {
-    await model.click()
-    await model.press('Control+a')
-    await page.keyboard.type('sonnet')
-    const want = label(await page.getByRole('listbox').getByRole('option').first().innerText())
-    await page.keyboard.press('Enter')
-    check('Model: typing and Enter picks the top match', await model.inputValue() === want,
-      `${await model.inputValue()} vs ${want}`)
-  }
-
-  // (3) Provider picker.
+  // (2) Provider picker.
   await page.getByTitle('Settings').first().click()
   await page.getByRole('button', { name: 'Credentials' }).click()
   const row = page.locator('div.rounded-md', { has: page.getByText(/^opencode/) }).first()

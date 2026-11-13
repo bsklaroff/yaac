@@ -1613,13 +1613,14 @@ export function sessionModel(state: unknown): { id: string; name?: string } | un
 
 /**
  * A session's effort setting (docs/effort-levels.md): the config option that
- * holds it, the level it is at, and the levels it can be set to, each with
- * the adapter's display name.
+ * holds it, the level it is at, and the levels it can be set to. The
+ * adapter's display names are dropped: the pane names every level with
+ * `effortLabel`, as the create form must before any adapter is running.
  */
 export interface AcpEffort {
   configId: string
   current?: string
-  options: Array<{ value: string; name: string }>
+  options: string[]
 }
 
 /** The ids each pinned adapter gives its effort option, for one that does
@@ -1644,7 +1645,7 @@ export function sessionEffort(state: unknown): AcpEffort | undefined {
     ...(current !== undefined ? { current } : {}),
     options: selectChoices(option.options).flatMap((c) => {
       const value = asString(c.value)
-      return value === undefined ? [] : [{ value, name: asString(c.name) ?? value }]
+      return value === undefined ? [] : [value]
     }),
   }
 }

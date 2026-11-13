@@ -935,7 +935,7 @@ describe('attachAcp', () => {
       recover: () => Promise.resolve({
         inFlight: { prompt: false },
         pendingPermissions: [],
-        effort: { configId: 'effort', current: 'high', options: [{ value: 'high', name: 'High' }, { value: 'max', name: 'Max' }] },
+        effort: { configId: 'effort', current: 'high', options: ['high', 'max'] },
       }),
       onEffort: (effort) => reported.push(effort),
     })
@@ -944,9 +944,7 @@ describe('attachAcp', () => {
     await waitForHello(sock)
     const efforts = (): AcpServerMessage[] => sock.sent.filter((m) => m.type === 'effort')
     await waitFor(() => efforts().some((m) => (m as { current?: string }).current === 'high'))
-    expect(efforts().at(-1)).toEqual({
-      type: 'effort', current: 'high', available: [{ value: 'high', name: 'High' }, { value: 'max', name: 'Max' }],
-    })
+    expect(efforts().at(-1)).toEqual({ type: 'effort', current: 'high', available: ['high', 'max'] })
 
     for (const effort of ['ultra', '', null, 42, ['max']]) sock.clientSend({ type: 'effort', effort })
     sock.clientSend({ type: 'effort', effort: 'max' })

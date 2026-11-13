@@ -44,7 +44,7 @@ export function suggestionId(listId: string, index: number): string {
 
 /**
  * A text input over a filtered suggestion list (branch pickers, the create
- * form's model and branch fields, the provider picker), on Base UI's
+ * form's branch fields, the provider picker), on Base UI's
  * Combobox with the list rendered inline below the input. The parent owns
  * the query, the items and what a selection does, so the combobox never
  * holds a value, and only typing (not Base UI syncing the input to a pick)

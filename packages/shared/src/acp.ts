@@ -382,9 +382,10 @@ export type AcpServerMessage =
    * The conversation's effort level (docs/effort-levels.md), sent after
    * `hello` and whenever it changes, replacing what the pane held.
    * `available` is the adapter's list for the current model, in the tool's
-   * words with its display names; empty when the agent has no effort option.
+   * words (`effortLabel` names them); empty when the agent has no effort
+   * option.
    */
-  | { type: 'effort'; current?: string; available: Array<{ value: string; name: string }> }
+  | { type: 'effort'; current?: string; available: string[] }
 
 /** Pane → server. */
 export type AcpClientMessage =

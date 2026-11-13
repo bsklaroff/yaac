@@ -102,7 +102,7 @@ They are stored as one JSON object (`agentOptions`) on the session, and on
 each place a launch's settings are kept (queued workspaces, routines,
 drafts), so an option can be added without a migration. A create, a
 session opened in a running workspace, a queued workspace or a routine
-takes them as `agentOptions`, from the webapp's Options menu or
+takes them as `agentOptions`, from the composer's settings pill or
 `--agent-option <name>=<on|off>`; one the tool lacks is refused. An unnamed
 option is the project's last choice for that tool (`project_tool_defaults`,
 as model and effort are), else off.
@@ -112,7 +112,7 @@ Every agent reads its options from its tmux window, as the window options
 launch sets them before the agent starts (`agentOptionsCmd`), and a running
 session's change sets them again (`POST
 /api/workspace/:id/sessions/:sessionId/agent-options`), after recording it
-on the row. Only the chat pane's Options menu offers that change, so a
+on the row. Only the chat pane's settings pill offers that change, so a
 `tui` pi or omp session, which could take it, is changed mid-run only
 through the route itself. Each tool reads them where
 its own decision is made:

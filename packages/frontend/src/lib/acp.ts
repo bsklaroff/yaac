@@ -48,7 +48,7 @@ export interface AcpStream {
   /** The conversation's posture and the ones it can be switched to. */
   permissionModes: { current?: PermissionMode; available: PermissionMode[] }
   /** The conversation's effort level and the ones its model offers. */
-  efforts: { current?: string; available: Array<{ value: string; name: string }> }
+  efforts: { current?: string; available: string[] }
 }
 
 /** The end of a background task's output, or why it could not be read. */

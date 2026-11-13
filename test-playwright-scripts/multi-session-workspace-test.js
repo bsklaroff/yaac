@@ -11,7 +11,7 @@
  *  4. The new-workspace pane: Where lists the running workspaces, and aiming
  *     it at one hides the workspace-only rows (Start, Group, Timeout, Base
  *     branch) and drops Agent's "None"; with Where on "New workspace", Agent
- *     "None" hides Start, Model and UI.
+ *     "None" hides Start, UI and the composer's settings pill.
  *
  * Needs a running `yaac server` with project PROJECT (default `yaac`), a
  * running workspace MULTI (id prefix) holding at least one `acp` and one
@@ -81,7 +81,7 @@ const where = page.getByLabel('Where')
 check('Where is shown', await where.count() === 1)
 const options = await where.locator('option').allTextContents()
 check(`Where lists "${nameOf(multi)}"`, options.some((o) => o.includes(nameOf(multi).slice(0, 12))))
-const agentOptions = async () => page.getByLabel('Agent').locator('option').allTextContents()
+const agentOptions = async () => page.getByLabel('Agent', { exact: true }).locator('option').allTextContents()
 check('Agent offers None for a new workspace', (await agentOptions()).includes('None'))
 await where.selectOption(multi.workspaceId)
 await page.waitForTimeout(500)
@@ -90,10 +90,10 @@ check('aimed at a workspace, Base branch is hidden', await page.getByText('Base 
 check('aimed at a workspace, Agent has no None', !(await agentOptions()).includes('None'))
 await page.screenshot({ path: path.join(SHOTS, 'multi-session-create-where.png') })
 await where.selectOption('')
-await page.getByLabel('Agent').selectOption('')
+await page.getByLabel('Agent', { exact: true }).selectOption('')
 await page.waitForTimeout(500)
 for (const row of ['Start', 'UI']) check(`Agent None hides ${row}`, await page.getByLabel(row, { exact: true }).count() === 0)
-check('Agent None hides Model', await page.getByText('Model', { exact: true }).count() === 0)
+check('Agent None hides the settings pill', await page.getByRole('button', { name: 'Agent settings' }).count() === 0)
 await page.screenshot({ path: path.join(SHOTS, 'multi-session-create-none.png') })
 
 

@@ -1143,7 +1143,7 @@ export class AcpConversation {
     const option = this.effortOption
     if (wanted === undefined || option === undefined || option.current === wanted) return
     try {
-      if (!option.options.some((o) => o.value === wanted)) throw new Error('not offered for this model')
+      if (!option.options.includes(wanted)) throw new Error('not offered for this model')
       await this.requestEffort(option.configId, wanted)
       this.notices.delete('effort')
     } catch (err) {
