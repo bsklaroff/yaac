@@ -543,6 +543,15 @@ describe('WorkspaceChat condensed view', () => {
   })
 
 
+  it('keeps a model switch in view between the steps it folds', () => {
+    stream.events = [user(0, 'ask'), tool(1, 'ls'), { type: 'model-switch', seq: 2, model: 'claude-opus-5-5' }, tool(3, 'cat a'), agent(4, 'answer')]
+    stream.busy = false
+    show()
+    expect(screen.getByText('Switched to Opus 5.5')).toBeTruthy()
+    expect(screen.queryByText('ls')).toBeNull()
+    expect(screen.queryByText('cat a')).toBeNull()
+  })
+
   it('folds all but the prompts, each turn’s last message and the live activity, and remembers the choice', () => {
     show()
     for (const shown of ['first ask', 'first answer', 'second ask', 'now editing', 'edit c', 'run tests']) {

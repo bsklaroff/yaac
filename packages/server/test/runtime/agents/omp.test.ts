@@ -89,6 +89,24 @@ describe('ompTranscriptAsAcp', () => {
     ])
   })
 
+  it('shows a model switch from the one-field model change omp writes, but not the model it started on', async () => {
+    const change = (id: string, parentId: string | null, model: string, role?: string): string =>
+      JSON.stringify({ type: 'model_change', id, parentId, model, ...(role !== undefined ? { role } : {}) })
+    const switched = [
+      JSON.stringify({ type: 'session', version: 3, id: 'o-2', cwd: '/w' }),
+      // omp notes the starting model once per role it fills.
+      change('m1', null, 'anthropic/claude-fable-5'),
+      change('m2', 'm1', 'anthropic/claude-fable-5', 'smol'),
+      message('u1', 'm2', { role: 'user', content: 'first' }),
+      message('a1', 'u1', { role: 'assistant', content: [{ type: 'text', text: 'one' }] }),
+      change('m3', 'a1', 'anthropic/claude-opus-5-5'),
+      message('u2', 'm3', { role: 'user', content: 'second' }),
+    ].join('\n')
+    const events = await ompTranscriptAsAcp(PROJECT, switched, 1024)
+    expect(events.map((e) => (e.type === 'model-switch' ? `model: ${e.model}` : e.type)))
+      .toEqual(['user', 'agent-turn', 'agent', 'model: anthropic/claude-opus-5-5', 'user', 'agent-turn'])
+  })
+
   it('stops putting images back once they would pass the cap', async () => {
     const shown = images(await ompTranscriptAsAcp(PROJECT, log, 'jpeg-bytes'.length))
       .map((i) => (i as { data: string }).data.startsWith('blob:'))

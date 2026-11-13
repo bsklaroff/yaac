@@ -18,13 +18,15 @@
  *  - What only pi's TUI shows is rendered too: a branch summary and an
  *    extension's visible message as agent text, a user `!` command as a
  *    shell call.
+ *  - A model change is reported as a model switch's reply
+ *    (`AcpRecordWriter.model`), so the pane shows where the model changed.
  *
  * Dropped, since nothing in a transcript renders them or the log does not
  * hold them: pi-acp's startup banner, failed requests' error text (pi-acp
- * shows none either), system prompts, model, thinking-level and usage
- * entries (the projection keeps only the latest model and usage, for the
- * composer), labels, session names, context edits, extension state, hidden
- * extension messages, and every entry off the active branch.
+ * shows none either), system prompts, thinking-level and usage entries (the
+ * projection keeps only the latest usage, for the composer), labels,
+ * session names, context edits, extension state, hidden extension
+ * messages, and every entry off the active branch.
  */
 
 import { isAbsolute, resolve } from 'node:path'
@@ -77,6 +79,9 @@ export function piTranscriptAsAcp(raw: string): AcpEvent[] {
       agentRun(text(`**Branch Summary**\n\n${asString(entry.summary) ?? ''}`))
     } else if (entry.type === 'custom_message') {
       if (entry.display === true) agentRun(blocks(entry.content))
+    } else if (entry.type === 'model_change') {
+      // pi names the model in two fields, omp as one `provider/model`.
+      record.model(asString(entry.modelId) ?? asString(entry.model), asString(entry.provider))
     }
     const m = entry.type === 'message' ? asRecord(entry.message) : undefined
     if (m === undefined) continue

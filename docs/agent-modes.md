@@ -822,6 +822,18 @@ config option: codex sends both, and its block's ids carry a reasoning effort
 the row through the same `onModel` path as a model the adapter reports itself
 (see "State").
 
+Each switch also shows in the conversation, as a "Switched to <model>"
+divider (a `model-switch` event). The record projection emits one wherever
+the reported model changes once the conversation is under way, after a
+message or a `session/load`, so the model a fresh session is set to before
+its opening prompt is not one. A restored history marks switches the same
+way: each translator writes the model its tool's history shows, as a
+switch's reply naming the model but listing none
+(`AcpRecordWriter.model`), and a report without a list leaves the
+composer's alone. pi, omp and opencode record each switch, codex the model of
+each turn, and claude only the model of each reply, so where a restored
+divider lands differs by tool (docs/acp-history-differences.md).
+
 ## Context usage
 
 Beside Send, the composer shows how full the context window is, as a ring

@@ -581,6 +581,43 @@ describe('replayAcpLog', () => {
     expect(texts(events.filter((e) => acpPageOf(e.seq) === 0))).toEqual(['build it', 'compacting now'])
   })
 
+  it('shows a model switch once the conversation is under way, and not the model a fresh session starts on', () => {
+    const options = (current: string): Record<string, unknown> => ({
+      configOptions: [{
+        id: 'model', type: 'select', currentValue: current,
+        options: [{ value: 'default', name: 'Default' }, { value: 'opus', name: 'Opus 5.5' }, { value: 'haiku', name: 'Haiku 5.5' }],
+      }],
+    })
+    const request = (id: number, method: string, params: unknown = {}): string => line({ jsonrpc: '2.0', id, method, params })
+    const reply = (id: number, result: unknown): string => line({ jsonrpc: '2.0', id, result })
+    const setModel = (id: number, value: string): string => request(id, 'session/set_config_option', { configId: 'model', value })
+    const shown = (lines: string[]): string[] => replayAcpLog(lines.join('\n') + '\n').map((e) => {
+      if (e.type === 'model-switch') return `switch: ${e.name ?? e.model}`
+      return e.type === 'models' ? `models: ${e.current ?? ''}` : e.type
+    })
+
+    // Set to its launch model before the opening prompt, then switched by
+    // the user; a later report of the same model is no switch.
+    expect(shown([
+      life('l1'),
+      request(1, 'session/new'), reply(1, { sessionId: 's1', ...options('default') }),
+      setModel(2, 'haiku'), reply(2, options('haiku')),
+      prompt('hi'),
+      setModel(3, 'opus'), reply(3, options('opus')),
+      update({ sessionUpdate: 'config_option_update', ...options('opus') }),
+    ])).toEqual(['models: default', 'models: haiku', 'user', 'models: opus', 'switch: Opus 5.5', 'models: opus'])
+
+    // A loaded session is already under way. A report naming a model but
+    // listing none, as a translated history writes one, switches without
+    // replacing the composer's list.
+    expect(shown([
+      life('l2'),
+      request(1, 'session/load', { sessionId: 's1' }), reply(1, options('opus')),
+      setModel(2, 'haiku'), reply(2, options('haiku')),
+      reply(3, { configOptions: [{ id: 'model', currentValue: 'opus' }] }),
+    ])).toEqual(['models: opus', 'models: haiku', 'switch: Haiku 5.5', 'switch: opus'])
+  })
+
   it('reads a compaction an adapter reported as a tool call, as records before session.compaction hold', () => {
     const events = replayAcpLog([
       prompt('/compact'),

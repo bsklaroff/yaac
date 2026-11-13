@@ -264,6 +264,10 @@ export type AcpEvent =
   /** The models this session offers and the one it runs, pushed by the
    *  handshake and again whenever the model changes. */
   | { type: 'models'; seq: number; current?: string; models: AcpModel[] }
+  /** The session's model changed once the conversation was under way,
+   *  whether the user switched it or the history shows a new one answering.
+   *  `name` is the adapter's display name, when it gave one. */
+  | { type: 'model-switch'; seq: number; model: string; name?: string }
   /** How full the context window is, in tokens, as the agent last reported.
    *  A subagent's own window carries its `thread`. */
   | { type: 'usage'; seq: number; thread?: string; used: number; size: number }

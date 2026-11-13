@@ -236,6 +236,8 @@ export class AcpRecordWriter {
   private left = MAX_ACP_RECORD_BYTES
   private full = false
   private marked: number | undefined
+  private lastModel: string | undefined
+  private models = 0
 
   /** Note when what follows happened, as acpd's time marks do. A time
    *  within a second of the last one noted is left out, as acpd leaves it. */
@@ -244,6 +246,19 @@ export class AcpRecordWriter {
     if (this.marked !== undefined && Math.abs(at - this.marked) < TIME_MARK_MS) return
     this.marked = at
     this.write({ method: ACPD.time, params: { at } })
+  }
+
+  /** Note the model answering from here on, as a model switch's reply
+   *  names it; the projection shows each change (`RecordProjection`). A
+   *  `provider` makes it `provider/model`, as opencode and pi name models.
+   *  A history names a model but not the list a live session offers, so the
+   *  reply carries none. A repeat of the last model writes nothing. */
+  model(id: string | undefined, provider?: string): void {
+    if (id === undefined || id === '') return
+    const model = provider !== undefined && provider !== '' ? `${provider}/${id}` : id
+    if (model === this.lastModel) return
+    this.lastModel = model
+    this.write({ id: `model-${String(this.models++)}`, result: { configOptions: [{ id: 'model', currentValue: model }] } })
   }
 
   write(msg: Record<string, unknown>): void {
@@ -512,6 +527,10 @@ export class RecordProjection {
   /** Each subagent's and task's start, by `activityKey`: the history's, or
    *  else its first event's time here, undefined when that was undated. */
   private readonly starts: Map<string, number | undefined>
+  /** The model last reported, and whether the conversation is under way
+   *  (`switched`). */
+  private model: string | undefined
+  private begun = false
 
   constructor(origin: RecordOrigin = NO_HISTORY) {
     this.starts = new Map(origin.starts)
@@ -532,10 +551,32 @@ export class RecordProjection {
       events = events.filter((e) => STATE_EVENTS.has(e.type))
       if (msg.method === undefined && lineId(msg) === this.skipping) this.skipping = undefined
     }
+    if (msg.method === ACP.sessionLoad) this.begun = true
+    events = events.flatMap((e) => this.switched(e))
     if (msg.method === undefined && lineId(msg) === this.load?.id) this.load = undefined
     const at = this.time()
     if (at !== undefined) events = events.map((e) => (DATED_EVENTS.has(e.type) ? { ...e, at } : e))
     return this.pager.number(events.map((e) => this.started(e, at)), line.length + 1)
+  }
+
+  /**
+   * An event, followed by a `model-switch` when it reports a model other
+   * than the last one. A switch is shown only once there is a conversation
+   * for it to divide (a message, or a loaded session), so the model a
+   * fresh session is set to before its first prompt is not one. A report
+   * that names a model but lists none (a history's, `AcpRecordWriter.model`)
+   * leaves the composer's list alone.
+   */
+  private switched(e: AcpEventInit): AcpEventInit[] {
+    if (e.type === 'user') this.begun = true
+    if (e.type !== 'models') return [e]
+    const shown = e.models.length > 0 ? [e] : []
+    const previous = this.model
+    if (e.current === undefined || e.current === previous) return shown
+    this.model = e.current
+    if (!this.begun || previous === undefined) return shown
+    const name = e.models.find((m) => m.id === e.current)?.name
+    return [...shown, { type: 'model-switch', model: e.current, ...(name !== undefined ? { name } : {}) }]
   }
 
   /** A subagent's or task's event recorded at `at`, with its start if that

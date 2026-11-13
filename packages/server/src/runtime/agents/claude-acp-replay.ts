@@ -303,7 +303,7 @@ export class ClaudeTranscriptReplay {
   /** One message as the adapter's `replaySessionHistory` loop writes it,
    *  minus its live-session parts. */
   private translate(sdk: Sdk, message: SessionMessage): void {
-    const api = (message as { message?: { role?: unknown; content?: unknown } }).message
+    const api = (message as { message?: { role?: unknown; content?: unknown; model?: unknown } }).message
     const role = api?.role
     if (role !== 'assistant' && role !== 'user') return
     if (isSummary(message) || sdk.isReplayHiddenMetaMessage(message)) return
@@ -325,6 +325,10 @@ export class ClaudeTranscriptReplay {
       if (content === null) return
     }
     this.record.time(Date.parse(asString(this.byUuid.get(message.uuid)?.timestamp) ?? ''))
+    // claude records no switch, only the model each reply came from, so a
+    // switch shows at the first reply after it. A subagent's model is its
+    // own, not the conversation's.
+    if (role === 'assistant' && api?.model !== '<synthetic>' && !this.subagent) this.record.model(asString(api?.model))
     for (const notification of sdk.toAcpNotifications(
       content as never, role, this.sessionId, this.toolUseCache, ACP_CLIENT_UNUSED, SILENT_LOGGER,
       // With hooks off, the adapter returns notifications instead of pushing
