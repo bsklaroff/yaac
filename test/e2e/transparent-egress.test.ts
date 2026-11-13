@@ -374,7 +374,7 @@ describe('node-level transparent egress (source-IP identity)', () => {
     expect(r.out).toContain('TUNNEL_OK')
   }, 120_000)
 
-  it('split-horizon DNS: external → sinkhole, internal .svc → live ClusterIP', async () => {
+  it('split-horizon DNS: install-namespace Service → live ClusterIP, every other name → sinkhole', async () => {
     // External names resolve to a sinkhole; the proxy routes by SNI/Host,
     // not by the dialed IP.
     const ext = await execInPod(podA, [
@@ -382,8 +382,8 @@ describe('node-level transparent egress (source-IP identity)', () => {
     ], { timeout: 20_000 })
     expect(ext.stdout).toContain('198.18.0.1')
 
-    // `*.cluster.local` is forwarded to cluster DNS, so the pod gets the
-    // echo Service's real ClusterIP.
+    // A Service in the install namespace is resolved by cluster DNS, so the
+    // pod gets the echo Service's real ClusterIP.
     const svc = await readObject<{ spec?: { clusterIP?: string } }>({
       apiVersion: 'v1', kind: 'Service', name: echoName, namespace: k8sNamespace(),
     })
@@ -400,6 +400,20 @@ describe('node-level transparent egress (source-IP identity)', () => {
       'sh', '-c', `getent hosts ${echoName}.${k8sNamespace()}.svc || true`,
     ], { timeout: 20_000 })
     expect(bareSvc.stdout).not.toContain(echoClusterIp)
+
+    // Another namespace's Service is sinkholed, so a request for it goes
+    // through the proxy's allowlist (docs/workspace-egress.md "In-cluster
+    // names"). kube-dns exists on every cluster the suite runs on.
+    const dnsSvc = await readObject<{ spec?: { clusterIP?: string } }>({
+      apiVersion: 'v1', kind: 'Service', name: 'kube-dns', namespace: 'kube-system',
+    })
+    const dnsClusterIp = dnsSvc?.spec?.clusterIP
+    expect(dnsClusterIp, 'kube-dns Service should have a ClusterIP').toBeTruthy()
+    const otherNs = await execInPod(podA, [
+      'sh', '-c', 'getent hosts kube-dns.kube-system.svc.cluster.local || true',
+    ], { timeout: 20_000 })
+    expect(otherNs.stdout).toContain('198.18.0.1')
+    expect(otherNs.stdout).not.toContain(dnsClusterIp)
   }, 60_000)
 
   it('refuses a direct dial to a transparent listener (the forgery lock)', async () => {

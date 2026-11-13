@@ -51,16 +51,20 @@ PROXY protocol v2 header carrying the pod's real source IP. The proxy maps that
 IP to a workspace through its pod watch, then routes by TLS SNI or Host header.
 
 The last rule is for plain HTTP on other ports (`http://box:8080`). The
-proxy's DNS stub answers every outside name with the sinkhole `198.18.0.1`
-(`DNS_SINKHOLE`), a benchmark-range address nothing lives at, so a pod dials
-a name on any port as a connection to the sinkhole. The rule sends that to
-the plain-HTTP listener, which takes its destination, port included, from
+proxy's DNS stub answers every name but the install's own Services
+("In-cluster names" below) with the sinkhole `198.18.0.1` (`DNS_SINKHOLE`),
+a benchmark-range address nothing lives at, so a pod dials a name on any
+port as a connection to the sinkhole. The rule sends that to the plain-HTTP
+listener, which takes its destination, port included, from
 the Host header, exactly as for port 80. It adds no reach: a request on port
 80 with `Host: box:8080` already gets there, and the allowlist and the
 non-public guard apply unchanged. It comes after the 443 and 80 rules, so
 those ports still reach their own listeners. A connection to a real address
-on another port matches nothing and is dropped as before, and anything other
-than HTTP sent to the sinkhole fails at the listener.
+on another port matches nothing and is dropped as before. Anything other
+than HTTP sent to the sinkhole fails at the listener when the client speaks
+first. A client that waits for the server to speak first, as ssh, MySQL and
+SMTP do, hangs until it gives up: the listener sets no headers timeout, and
+netd's Envoy closes an idle connection only after an hour.
 
 Identity comes from **which veth the packet arrived on**, not its source IP,
 because a sandboxed workload cannot forge the interface. A gVisor guest cannot
@@ -567,13 +571,18 @@ the destination after kube-proxy's DNAT. The gateway Calico gives every pod
 (169.254.1.1, and an fe80:: address on IPv6) is a next hop, not a
 destination, so the floor does not affect it.
 
-The proxy's two allowances above that are not selectors are where "takes
-both" does not hold. An exact allowlist entry naming a node address reaches it, on any
-port but NFS and the fronting's, with no operator opening; a CONNECT on the
-SSH tunnel listener chooses its port, so that includes the kubelet and, on
-kind and k3s, the apiserver. An exact entry naming a DNS address reaches
-port 53 on it. Under `*` the proxy refuses both, as it does every non-public
-address.
+The proxy's three allowances above that are not selectors are where
+"takes both" does not hold. An exact allowlist entry naming a node address
+reaches it, on any port but NFS and the fronting's, with no operator
+opening; a CONNECT on the SSH tunnel listener chooses its port, so that
+includes the kubelet and, on kind and k3s, the apiserver. An exact entry
+naming the apiserver reaches it on its port wherever it runs, off the nodes
+too (as on EKS): its Service name (`kubernetes.default.svc.cluster.local`),
+its ClusterIP or one of its endpoint addresses, since policy sees the
+endpoint after kube-proxy's rewrite. A workspace holds no API
+credential, so it reaches the apiserver only as an anonymous client. An
+exact entry naming a DNS address reaches port 53 on it. Under `*` the proxy
+refuses all three, as it does every non-public address.
 
 **What this changes for an existing install.** A `*` workspace is refused a
 public name that resolves privately, and builders can no longer reach
@@ -604,6 +613,26 @@ the proxy's DNS, and use that name.
 An allowlist entry and the destination are compared in one spelling: the
 destination is read as a URL parser reads it, so `0x0a.20.0.5` or
 `169082885` match the entry `10.20.0.5`, and names are lowercased.
+
+### In-cluster names
+
+The proxy's DNS stub resolves a real address for one set of names: Services
+in the install's own namespace (`<name>.<namespace>.svc.cluster.local`).
+The server hands workspaces two of them, the npm cache and the project
+registry, which a workspace dials directly under their own label-scoped
+policies. Every Service there is yaac's, and a dial to one no such policy
+admits is dropped.
+
+Every other name gets the sinkhole, in-cluster names included. So
+`http://internal-web.other.svc.cluster.local/` goes through the proxy like
+`git.corp.example`: refused and recorded as a blocked host when no entry
+covers it, refused as non-public under `*` or a wildcard, and dialed under
+an exact entry, reaching the Service once the operator opens it to the
+proxy (below). A real ClusterIP would be dialed past the proxy instead:
+kube-proxy rewrites it to a pod address, which netd does not redirect, and
+the workspace's egress policy drops it, a timeout no allowlist entry could
+fix. As for any name, only HTTP on any port, HTTPS on 443 and SSH through
+the tunnel listener get through; a database on its own protocol does not.
 
 ### Opening an internal destination
 
@@ -648,6 +677,26 @@ server, the same policy must also select `app: yaac-server`: use
 internal package mirror get the same kind of policy with `podSelector:
 {matchLabels: {yaac.role: builder}}`. Builds do not pass through the proxy,
 so the opening alone admits them.
+
+An in-cluster Service is opened the same way. Policy sees the destination
+after kube-proxy's rewrite, so the opening names the Service's pods and
+their port, not its ClusterIP and Service port:
+
+```yaml
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: internal
+          podSelector:
+            matchLabels:
+              app: internal-web
+      ports:
+        - protocol: TCP
+          port: 8080
+```
+
+with `internal-web.internal.svc.cluster.local` in the allowlist.
 
 On GCP, a project whose workspaces need the metadata server (for workload
 credentials, say) opens it for the proxy:

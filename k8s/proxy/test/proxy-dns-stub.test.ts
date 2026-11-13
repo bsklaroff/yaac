@@ -45,29 +45,29 @@ describe('parseDnsQuery', () => {
 })
 
 describe('isInternalName', () => {
-  it('matches only .cluster.local names (the zone CoreDNS owns authoritatively)', () => {
-    expect(isInternalName('yaac-reg-foo.ns.svc.cluster.local')).toBe(true)
-    expect(isInternalName('foo.bar.cluster.local')).toBe(true)
-    expect(isInternalName('YAAC-Reg-Foo.NS.svc.cluster.local')).toBe(true) // case-insensitive
-    expect(isInternalName('yaac-reg-foo.ns.svc.cluster.local.')).toBe(true) // trailing dot
+  it('matches only Services in the install namespace, the ones workspaces dial directly', () => {
+    for (const name of [
+      'yaac-reg-foo.ns.svc.cluster.local',
+      'yaac-npm-cache.ns.svc.cluster.local',
+      'YAAC-Reg-Foo.NS.svc.cluster.local', // case-insensitive
+      'yaac-reg-foo.ns.svc.cluster.local.', // trailing dot
+    ]) expect(isInternalName(name, 'ns'), name).toBe(true)
   })
 
-  it('sinkholes bare *.svc — out of zone, would leak to the upstream resolver', () => {
-    // CoreDNS forwards names outside cluster.local upstream, so a bare *.svc
-    // must not be forwarded (a DNS exfiltration channel). The server always
-    // uses FQDNs.
-    expect(isInternalName('yaac-reg-foo.ns.svc')).toBe(false)
-    expect(isInternalName('evil.attacker.svc')).toBe(false)
-  })
-
-  it('sinkholes external names', () => {
-    expect(isInternalName('api.anthropic.com')).toBe(false)
-    expect(isInternalName('github.com')).toBe(false)
-    expect(isInternalName('a.example')).toBe(false)
-  })
-
-  it('excludes the host API server even though it is in-zone', () => {
-    expect(isInternalName('kubernetes.default.svc.cluster.local')).toBe(false)
+  it('sinkholes every other name, other cluster names included, so it goes through the proxy', () => {
+    for (const name of [
+      // Another namespace's Service, the API server, a pod record: the
+      // proxy applies the allowlist and non-public guard to them.
+      'internal-web.other.svc.cluster.local',
+      'kubernetes.default.svc.cluster.local',
+      '169-254-169-254.ns.pod.cluster.local',
+      'foo.ns.cluster.local',
+      'evil.ns.svc.cluster.local.attacker.example',
+      'xns.svc.cluster.local',
+      // Out of cluster DNS's zone, so CoreDNS would forward it upstream.
+      'yaac-reg-foo.ns.svc',
+      'api.anthropic.com',
+    ]) expect(isInternalName(name, 'ns'), name).toBe(false)
   })
 })
 

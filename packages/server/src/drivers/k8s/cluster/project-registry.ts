@@ -55,8 +55,9 @@ export function projectRegistryName(projectId: string): string {
 
 /**
  * The registry's full `.svc.cluster.local` name. Workspaces resolve it via
- * the proxy's DNS, which forwards only `.cluster.local` to CoreDNS. Nothing
- * on the node pulls by it: the image-store writer dials the ClusterIP.
+ * the proxy's DNS, which resolves only the install namespace's Services.
+ * Nothing on the node pulls by it: the image-store writer dials the
+ * ClusterIP.
  */
 export function projectRegistryHostname(projectId: string): string {
   return `${projectRegistryName(projectId)}.${k8sNamespace()}.svc.cluster.local`

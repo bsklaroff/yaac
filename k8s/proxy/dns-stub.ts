@@ -2,11 +2,12 @@
  * DNS wire-format helpers for the proxy's UDP/53 stub. Workspace pods use the
  * proxy as their resolver, and main.ts answers split-horizon:
  *
- *   - External names get a fixed sinkhole IP. netd redirects egress by port
+ *   - Names of Services in the proxy's own namespace (see isInternalName)
+ *     are resolved by the cluster DNS, so pods find the npm cache and their
+ *     project's registry, which they dial directly.
+ *   - Every other name gets a fixed sinkhole IP. netd redirects egress by port
  *     and the proxy routes by SNI / Host, so the address never matters, and
  *     resolving nothing real keeps DNS tunnelling closed.
- *   - Internal names (see isInternalName) are resolved by the cluster DNS so
- *     pods find in-cluster Services such as the per-project registry.
  *
  * Anything other than IN/A (including AAAA) gets an empty NOERROR rather than
  * NXDOMAIN, so dual-query resolvers fall through to the A answer. The TC bit
@@ -32,16 +33,21 @@ export interface DnsQuery {
 
 /**
  * True for names the proxy resolves against the cluster DNS instead of
- * sinkholing. Security-relevant: only `.cluster.local` qualifies, because
- * CoreDNS answers that zone itself. Any other name would be forwarded to an
- * outside resolver and open a DNS exfiltration channel, so the server always
- * uses `.svc.cluster.local` FQDNs. The API server's name is excluded, since
- * workspaces have no reason to reach it.
+ * sinkholing: Services in `namespace`, the install's own, whose
+ * `.svc.cluster.local` names the server hands to workspaces. Those Services
+ * are yaac's, and a workspace reaches one only where a label-scoped policy
+ * admits it.
+ *
+ * Every other name, other `.cluster.local` names included, is sinkholed, so
+ * a workspace's request for it goes through the proxy and its allowlist and
+ * non-public guard like any host. A real ClusterIP for such a name would be
+ * dialed past the proxy and dropped by the workspace's egress policy, a
+ * timeout no allowlist entry could fix (docs/workspace-egress.md
+ * "In-cluster names"). Resolving nothing outside cluster DNS's own zone
+ * also keeps DNS from carrying data out.
  */
-export function isInternalName(name: string): boolean {
-  const n = name.toLowerCase().replace(/\.$/, '')
-  if (n === 'kubernetes.default.svc.cluster.local') return false
-  return n.endsWith('.cluster.local')
+export function isInternalName(name: string, namespace: string): boolean {
+  return name.toLowerCase().replace(/\.$/, '').endsWith(`.${namespace}.svc.cluster.local`)
 }
 
 /**

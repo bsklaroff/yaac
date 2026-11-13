@@ -218,8 +218,8 @@ export const TAILSCALE_PARENT_NAMESPACE_LABEL = 'tailscale.com/parent-resource-n
 
 /**
  * `host:port` of the proxy's Service in cluster DNS, used for the server's
- * control API and stream relay dials. The name is fully qualified because
- * the proxy's DNS stub forwards only `.cluster.local` names to CoreDNS.
+ * control API and stream relay dials. The name is fully qualified so it
+ * resolves whatever the dialing pod's DNS search path.
  */
 export function proxyServiceHost(namespace: string, port: number): string {
   return `${PROXY_APP_NAME}.${namespace}.svc.cluster.local:${String(port)}`

@@ -84,7 +84,8 @@ function npmCachePvcName(): string {
 const NPM_CACHE_STORAGE_SIZE = '20Gi'
 
 /** The registry URL for workspaces: the Service's `.svc.cluster.local`
- *  name (resolved via the proxy's DNS), with npm's trailing slash. */
+ *  name (the proxy's DNS resolves the install namespace's Services), with
+ *  npm's trailing slash. */
 function npmCacheRegistryUrl(): string {
   return `http://${NPM_CACHE_APP_NAME}.${k8sNamespace()}.svc.cluster.local:${NPM_CACHE_PORT}/`
 }
