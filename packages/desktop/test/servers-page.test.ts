@@ -110,9 +110,10 @@ describe('serversPageHtml', () => {
     expect(html).toContain('bridge.switchTo({ url:')
     expect(html).toContain('bridge.addRemote(url)')
     expect(html).toContain('bridge.disconnect()')
-    // The native traffic lights are hidden, so the page provides its own.
-    expect(html).toContain('window.yaacWindow.close()')
+    // The native title bar is hidden, so the page provides a drag strip, but
+    // no close button to hit by accident.
     expect(html).toContain('-webkit-app-region: drag')
+    expect(html).not.toContain('id="close"')
   })
 
   it('escapes server-supplied text rather than letting it close a tag', () => {
@@ -262,7 +263,7 @@ describe('serversPageUrl', () => {
 /** The page's inline script, run against jsdom and a stub preload bridge. */
 describe('serversPageHtml (running in a document)', () => {
   interface Calls {
-    switchTo: unknown[]; addRemote: unknown[][]; removed: unknown[]; disconnects: number; closed: number; back: number
+    switchTo: unknown[]; addRemote: unknown[][]; removed: unknown[]; disconnects: number; back: number
     started: unknown[]; stopped: unknown[]; setups: unknown[]; cancels: number
   }
 
@@ -274,7 +275,7 @@ describe('serversPageHtml (running in a document)', () => {
   function mount(state: ServersPageState, outcome: unknown = { ok: false, error: 'cannot reach it' }) {
     polled = state.local
     const calls: Calls = {
-      switchTo: [], addRemote: [], removed: [], disconnects: 0, closed: 0, back: 0, started: [], stopped: [], setups: [], cancels: 0,
+      switchTo: [], addRemote: [], removed: [], disconnects: 0, back: 0, started: [], stopped: [], setups: [], cancels: 0,
     }
     const w = window as unknown as Record<string, unknown>
     w.yaacServer = {
@@ -317,7 +318,6 @@ describe('serversPageHtml (running in a document)', () => {
         return Promise.resolve({ ok: true })
       },
     }
-    w.yaacWindow = { close: () => { calls.closed += 1 } }
     render(state)
     return calls
   }
@@ -508,16 +508,9 @@ describe('serversPageHtml (running in a document)', () => {
     expect(document.getElementById('run')!.hidden).toBe(true)
   })
 
-  it('the close button drives the window bridge (the traffic lights are hidden)', () => {
-    const calls = mount(STATE)
-    document.getElementById('close')?.click()
-    expect(calls.closed).toBe(1)
-  })
-
   it('says so, and disables the buttons, when no bridge is present', () => {
     const w = window as unknown as Record<string, unknown>
     delete w.yaacServer
-    delete w.yaacWindow
     render(STATE)
     expect(document.getElementById('status')?.textContent).toMatch(/unavailable/)
     expect(document.querySelector<HTMLButtonElement>('button.connect')?.disabled).toBe(true)

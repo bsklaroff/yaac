@@ -63,7 +63,7 @@ function visibleSections(buildsImages: boolean, multiUser: boolean): typeof SECT
 }
 
 /**
- * The settings button and its full-screen modal: a left nav of sections
+ * The settings button and its modal: a left nav of sections
  * beside the content pane. Open state lives in the store so other surfaces
  * (e.g. the new-workspace menu's "Sign in") can open it on a given section.
  */
@@ -111,7 +111,7 @@ export function SettingsButton(
       <Modal
         open={open}
         onOpenChange={(next) => { if (next) openSettings(); else closeSettings() }}
-        variant="full"
+        variant="split"
         className="max-md:flex-col"
       >
         <div className="flex w-52 shrink-0 flex-col gap-0.5 border-r border-hairline-soft bg-bg/50 p-2

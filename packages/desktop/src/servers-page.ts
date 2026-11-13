@@ -235,18 +235,10 @@ export function serversPageHtml(state: ServersPageState): string {
         color: light-dark(#222, #ddd);
         font-size: 13px;
       }
-      /* The native title bar is hidden, so provide a drag strip and close. */
-      .titlebar {
-        height: 38px; -webkit-app-region: drag;
-        display: flex; align-items: center; justify-content: flex-end;
-        padding: 0 10px;
-      }
-      .titlebar button {
-        -webkit-app-region: no-drag;
-        border: 0; background: transparent; cursor: pointer; font-size: 15px;
-        color: light-dark(#888, #888); padding: 2px 6px; border-radius: 5px;
-      }
-      .titlebar button:hover { background: light-dark(#e6e6e6, #262626); }
+      /* The native title bar is hidden, so provide a drag strip. It has no
+         close button, which is too easy to hit by accident; the Window menu's
+         Close (Cmd-W) still closes the window. */
+      .titlebar { height: 38px; -webkit-app-region: drag; }
       main { max-width: 560px; margin: 0 auto; padding: 6px 24px 40px; }
       h1 { font-size: 15px; margin: 0 0 6px; }
       h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
@@ -309,7 +301,7 @@ export function serversPageHtml(state: ServersPageState): string {
     </style>
   </head>
   <body>
-    <div class="titlebar"><button id="close" title="Close">✕</button></div>
+    <div class="titlebar"></div>
     <main>
       <h1>${escapeHtml(heading.title)}</h1>
       ${heading.detail ? `<p class="detail">${escapeHtml(heading.detail)}</p>` : ''}
@@ -348,7 +340,7 @@ export function serversPageHtml(state: ServersPageState): string {
           statusEl.className = 'status' + (kind ? ' ' + kind : '')
         }
         function busy(on) {
-          buttons.forEach(function (b) { if (b.id !== 'close') b.disabled = on || b.hasAttribute('data-blocked') })
+          buttons.forEach(function (b) { b.disabled = on || b.hasAttribute('data-blocked') })
         }
         // On success the shell replaces this page, so only failures update it.
         function handle(promise, busyText) {
@@ -368,9 +360,6 @@ export function serversPageHtml(state: ServersPageState): string {
             btn.addEventListener('click', function () { onClick(btn) })
           })
         }
-        document.getElementById('close').addEventListener('click', function () {
-          if (window.yaacWindow) window.yaacWindow.close()
-        })
         if (!bridge) {
           setStatus('This page is unavailable in this window.', 'error')
           busy(true)

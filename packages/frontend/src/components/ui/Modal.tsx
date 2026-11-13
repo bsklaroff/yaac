@@ -11,6 +11,12 @@ import { useOpenerFocus } from '#lib/useOpenerFocus'
  * and the desktop shapes, which a notched phone gets in landscape, by widening
  * their margins.
  */
+const SHEET = [
+  'inset-[max(1rem,env(safe-area-inset-top))_max(1rem,env(safe-area-inset-right))_max(1rem,env(safe-area-inset-bottom))_max(1rem,env(safe-area-inset-left))]',
+  'flex rounded-xl border border-hairline bg-surface',
+  'max-md:inset-0 max-md:rounded-none max-md:safe-area-inset',
+]
+
 const VARIANT = {
   // A card the caller sizes; full-screen on small screens.
   card: [
@@ -23,13 +29,10 @@ const VARIANT = {
   ],
   // The whole window but a margin, for master/detail overlays and editors;
   // full-screen on small screens.
-  sheet: [
-    'inset-[max(1rem,env(safe-area-inset-top))_max(1rem,env(safe-area-inset-right))_max(1rem,env(safe-area-inset-bottom))_max(1rem,env(safe-area-inset-left))]',
-    'flex flex-col gap-3 rounded-xl border border-hairline bg-surface p-4',
-    'max-md:inset-0 max-md:rounded-none max-md:safe-area-inset',
-  ],
-  // The whole window, edge to edge, for settings.
-  full: 'inset-0 flex bg-surface safe-area-inset',
+  sheet: [SHEET, 'flex-col gap-3 p-4'],
+  // The sheet's shape left unpadded, for a nav beside a content pane
+  // (settings).
+  split: [SHEET, 'overflow-hidden'],
   // A small form the caller sizes, like a confirm dialog; a card on every
   // screen.
   form: 'left-1/2 top-1/2 max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 rounded-lg '
