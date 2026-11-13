@@ -13,6 +13,9 @@ export interface GitStatusSummary {
   comparison: BranchComparison | null
   /** The changed lines in all; null when no file differs. */
   counts: LineCounts | null
+  /** The checkout this describes (`useCheckout`'s `repo`): absent for a
+   *  workspace's only one. */
+  repo?: string
 }
 
 const KEY = 'yaac.gitstatus.v1'
@@ -32,6 +35,7 @@ export function lastGitStatus(workspaceId: string): GitStatusSummary | undefined
   const s = load()[workspaceId] as Partial<GitStatusSummary> | undefined
   const objectOrNull = (v: unknown): boolean => v === null || (typeof v === 'object' && !Array.isArray(v))
   return s && (s.branch === null || typeof s.branch === 'string') && objectOrNull(s.comparison) && objectOrNull(s.counts)
+    && (s.repo === undefined || typeof s.repo === 'string')
     ? s as GitStatusSummary
     : undefined
 }

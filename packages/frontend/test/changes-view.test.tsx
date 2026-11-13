@@ -716,6 +716,24 @@ describe('git views by checkout', () => {
     expect(screen.getByTitle(BASE).textContent).toBe('origin/main')
   })
 
+  // The answer saved across a reload describes one checkout, so it is not
+  // shown for another.
+  it('empties the bar on a switch until the picked checkout answers', async () => {
+    nested('web')
+    renderWithClient(<GitStatusBar workspaceId="s1" />)
+    await screen.findByTitle('Review changes')
+    cleanup()
+
+    renderWithClient(<GitStatusBar workspaceId="s1" />)
+    expect(screen.getByTitle('Review commits').textContent).toContain('web-base')
+    await waitFor(() => expect(screen.getByTitle('Review changes').parentElement!.className).not.toContain('opacity-60'))
+    server.route(CHANGES, () => new Promise(() => {}))
+    fireEvent.change(switcher(), { target: { value: 'api' } })
+    expect(switcher().value).toBe('api')
+    expect(screen.queryByTitle('Review commits')).toBeNull()
+    expect(screen.queryByTitle('Review changes')).toBeNull()
+  })
+
   it('colors the whole workspace\'s tree with the shown checkout\'s changes', async () => {
     nested('web')
     useUiStore.getState().setPaneView(VIEW, { expanded: ['web', 'web/src'] })

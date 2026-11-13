@@ -31,7 +31,9 @@ const BAR = 'flex h-5 shrink-0 items-start px-2 text-[11px] leading-4 md:-mt-1.5
  *
  * Until the first answer lands it shows the last one saved for the
  * workspace (`lastGitStatus`), muted since it may be days old, so a reload
- * does not blank it for the length of a read.
+ * does not blank it for the length of a read. A saved answer for another
+ * checkout is not shown, so switching checkouts empties the strip until the
+ * picked one answers.
  *
  * The strip always takes its height, even when empty: a row appearing later
  * would resize the panes below and send a SIGWINCH to the agent's TUI.
@@ -47,12 +49,12 @@ export function GitStatusBar({ workspaceId }: { workspaceId: string }): JSX.Elem
   )
   const openChanges = useUiStore((s) => s.openChanges)
   const openCommits = useUiStore((s) => s.openCommits)
-  const { known, repos } = useCheckout(workspaceId)
+  const { known, repos, repo } = useCheckout(workspaceId)
   const [saved] = useState(() => lastGitStatus(workspaceId))
   useEffect(() => {
-    if (data) saveGitStatus(workspaceId, summarize(data))
-  }, [workspaceId, data])
-  const shown = data ? summarize(data) : saved
+    if (data) saveGitStatus(workspaceId, summarize(data, repo))
+  }, [workspaceId, repo, data])
+  const shown = data ? summarize(data, repo) : saved?.repo === repo ? saved : undefined
   if (known && repos.length === 0) return <div className={clsx(BAR, 'px-3 text-text-faint')}>No repos</div>
   // A failed poll leaves the last answer in `data`; show why instead of it.
   // A stopped workspace has nothing to say.
@@ -93,8 +95,8 @@ export function GitStatusBar({ workspaceId }: { workspaceId: string }): JSX.Elem
   )
 }
 
-function summarize({ branch, comparison, files }: WorkspaceChanges): GitStatusSummary {
-  return { branch, comparison, counts: files.length > 0 ? lineTotals(files) : null }
+function summarize({ branch, comparison, files }: WorkspaceChanges, repo: string | undefined): GitStatusSummary {
+  return { branch, comparison, counts: files.length > 0 ? lineTotals(files) : null, ...repo !== undefined ? { repo } : {} }
 }
 
 function commits(n: number): string {
