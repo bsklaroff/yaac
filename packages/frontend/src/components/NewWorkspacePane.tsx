@@ -4,7 +4,7 @@ import clsx from 'clsx'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChatIcon, CloseIcon, RenameIcon, SendIcon, TerminalIcon, TOOL_LABEL } from '#lib/icons'
 import { BranchPicker } from '#components/BranchPicker'
-import { AgentOptionsMenu, EffortSelect, PermissionModeSelect } from '#components/ComposerSelect'
+import { AgentSettings, PermissionModeSelect } from '#components/ComposerSettings'
 import { ChatBottomBar, COMPOSER_INPUT, ROUND_BUTTON } from '#components/ConversationView'
 import { ContainerlessBadge } from '#components/ContainerlessBadge'
 import { PaneBarActions, PaneOverflowMenu } from '#components/PaneBar'
@@ -33,8 +33,8 @@ import {
   AGENT_TOOLS,
   SUPPORTED_PERMISSION_MODES,
   effortFor,
-  effortLabel,
   resolveAgentOptions,
+  toolAgentOptions,
   toolSupportsPermissionMode,
 } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
@@ -227,14 +227,12 @@ export function NewWorkspacePane({ projectId, bar }: {
   const newGroupRef = useRef<HTMLInputElement>(null)
   const naming = newGroup !== null
   useEffect(() => { if (naming) newGroupRef.current?.focus() }, [naming])
-  // What is being typed into each repo's branch field, by repo id, and into
-  // the model's; absent or null = not typing, and the field shows the
-  // chosen branch or model.
+  // What is being typed into each repo's branch field, by repo id; absent =
+  // not typing, and the field shows the chosen branch.
   const [branchQueries, setBranchQueries] = useState<Record<string, string>>({})
   const setBranchQuery = (repoId: string, query: string | null): void => setBranchQueries(({ [repoId]: _, ...rest }) => (
     query === null ? rest : { ...rest, [repoId]: query }
   ))
-  const [modelQuery, setModelQuery] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -462,14 +460,13 @@ export function NewWorkspacePane({ projectId, bar }: {
   pendingRef.current = pending
   useEffect(() => guardNewWorkspace(() => pendingRef.current), [])
 
-  // Why nothing can be started, or null. Half-typed model/branch text is a
+  // Why nothing can be started, or null. Half-typed branch text is a
   // search, not a pick, so it blocks. A queued entry stores concrete
   // settings, so it also needs a model and a branch.
   const storesEntry = queued || editing !== undefined
   const blocked = !defaults.ready || loadingPrompt ? 'Loading…'
     : needsGitAuth !== undefined && !inWorkspace ? 'Add git authentication first'
     : !noAgent && !signedIn ? `Sign in to ${TOOL_LABEL[tool]} first`
-    : !noAgent && modelQuery !== null ? 'Pick a model from the list'
     : !inWorkspace && selection.blocked(false) !== null ? selection.blocked(false)
     : !noAgent && !toolSupportsPermissionMode(tool, permissionMode) ? 'Pick a permission mode this agent offers'
     : storesEntry && model === '' ? 'Pick a model'
@@ -961,7 +958,6 @@ export function NewWorkspacePane({ projectId, bar }: {
                 // A different agent brings its own remembered defaults.
                 const next = e.target.value as AgentTool
                 update({ noAgent: undefined, tool: next, picked: { tool: next, picks: {} } })
-                setModelQuery(null)
               }}
               className={SELECT}
             >
@@ -981,38 +977,16 @@ export function NewWorkspacePane({ projectId, bar }: {
               onClick={() => openSettings('repos', undefined, needsGitAuth.id)}
             />
           ) : !defaults.ready || signedIn ? (
-            <>
-              <Row label="Model">
-                <div className="min-w-0 flex-1">
-                  <Typeahead
-                    items={base.models.map((m) => ({
-                      value: m.id,
-                      label: m.name ?? m.id,
-                      ...(m.name !== undefined ? { detail: m.id } : {}),
-                    }))}
-                    query={modelQuery ?? modelName ?? model}
-                    onQueryChange={setModelQuery}
-                    onSelect={(id) => { setPicks({ model: id }); setModelQuery(null) }}
-                    showList={modelQuery !== null}
-                    ariaLabel="Model"
-                    autoHighlight
-                    tag={(item) => item.value === base.defaultModel && <span>default</span>}
-                    onBlur={() => setModelQuery(null)}
-                    onDismiss={() => setModelQuery(null)}
-                  />
-                </div>
-              </Row>
-              <Row label="UI" title={MODE_HELP[mode]}>
-                <select
-                  aria-label="UI"
-                  value={mode}
-                  onChange={(e) => setPicks({ mode: e.target.value as AgentMode })}
-                  className={SELECT}
-                >
-                  {(['tui', 'acp'] as const).map((m) => <option key={m} value={m}>{MODE_COPY[m]}</option>)}
-                </select>
-              </Row>
-            </>
+            <Row label="UI" title={MODE_HELP[mode]}>
+              <select
+                aria-label="UI"
+                value={mode}
+                onChange={(e) => setPicks({ mode: e.target.value as AgentMode })}
+                className={SELECT}
+              >
+                {(['tui', 'acp'] as const).map((m) => <option key={m} value={m}>{MODE_COPY[m]}</option>)}
+              </select>
+            </Row>
           ) : (
             <Notice
               text={`${TOOL_LABEL[tool]} has no credentials`}
@@ -1078,20 +1052,25 @@ export function NewWorkspacePane({ projectId, bar }: {
                 onSelect={(m) => setPicks({ permissionMode: m })}
               />
             )}
-            {signedIn && !noAgent && efforts !== undefined && effort !== undefined && (
-              <EffortSelect
-                current={effort}
-                available={efforts.levels.map((l) => ({ value: l, name: effortLabel(l) }))}
-                disabled={false}
-                onSelect={(e) => setPicks({ effort: e })}
-              />
-            )}
             {signedIn && !noAgent && (
-              <AgentOptionsMenu
-                tool={tool}
-                value={agentOptions}
+              <AgentSettings
                 disabled={false}
-                onChange={(o) => setPicks({ agentOptions: { ...picks.agentOptions, ...o } })}
+                model={base.models.length > 0
+                  ? {
+                    current: model !== '' ? model : undefined,
+                    items: base.models,
+                    onSelect: (id) => setPicks({ model: id }),
+                    tag: (id) => id === base.defaultModel && 'default',
+                  }
+                  : undefined}
+                effort={efforts !== undefined && effort !== undefined
+                  ? { current: effort, available: efforts.levels, onSelect: (e) => setPicks({ effort: e }) }
+                  : undefined}
+                options={{
+                  list: toolAgentOptions(tool),
+                  value: agentOptions,
+                  onChange: (o) => setPicks({ agentOptions: { ...picks.agentOptions, ...o } }),
+                }}
               />
             )}
             {routineMode && (

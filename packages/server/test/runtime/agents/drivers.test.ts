@@ -2071,10 +2071,8 @@ describe('agentDriver', () => {
     expect(setEffort.params).toEqual({ sessionId: 'pi-1', configId: 'thought_level', value: 'high' })
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: setEffort.id, result: { configOptions: [thoughtLevel('high')] } })}\n`)
     const conversation = acpConversationByHandle('demo', 'wt-1', 'pi')!
-    await vi.waitFor(() => expect(conversation.efforts).toEqual({
-      current: 'high',
-      available: [{ value: 'low', name: 'Thinking: low' }, { value: 'high', name: 'Thinking: high' }],
-    }))
+    // The adapter's display names are dropped; the pane names each level.
+    await vi.waitFor(() => expect(conversation.efforts).toEqual({ current: 'high', available: ['low', 'high'] }))
 
     // The user moves it in the agent's own UI; the update is the report.
     stream.feed(updateLine('pi-1', { sessionUpdate: 'config_option_update', configOptions: [thoughtLevel('low')] }))

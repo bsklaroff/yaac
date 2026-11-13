@@ -3,14 +3,14 @@ import clsx from 'clsx'
 import { useAcpStream } from '#lib/acp'
 import type { Opening } from '#lib/opening'
 import { ActivityBar } from '#components/AcpActivity'
-import { useComposerMenu } from '#components/ComposerMenu'
+import { sessionModels, useComposerMenu } from '#components/ComposerMenu'
 import { tokenCount } from '#components/AcpTranscript'
 import {
   ChatBottomBar, ChatViewToggles, COMPOSER_INPUT, JumpButtons, Launching, PageFailed, PageLoading, ROUND_BUTTON, useChatColumn,
   useConversationView, useFollowTail,
 } from '#components/ConversationView'
 import { FileLinksContext, useFileLinks } from '#components/Markdown'
-import { AgentOptionsMenu, EffortSelect, PermissionModeSelect } from '#components/ComposerSelect'
+import { AgentSettings, PermissionModeSelect } from '#components/ComposerSettings'
 import { imageFiles, useDraftImages } from '#lib/attachments'
 import { DraftImage } from '#components/ui/DraftImage'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
@@ -268,6 +268,7 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
     }
   }
 
+  const models = sessionModels(events)
   const { menu, inputProps: menuInputProps, onKeyDown: menuKeyDown } = useComposerMenu({
     inputRef,
     draft,
@@ -397,7 +398,7 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
                 <AttachImageIcon size={16} />
               </button>
               <ChatViewToggles />
-              <div className="mr-auto flex items-center">
+              <div className="mr-auto flex min-w-0 items-center">
                 {permissionModes.current !== undefined && (
                   <PermissionModeSelect
                     current={permissionModes.current}
@@ -406,28 +407,32 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
                     onSelect={(mode) => send({ type: 'permission-mode', mode })}
                   />
                 )}
-                {efforts.current !== undefined && efforts.available.length > 0 && (
-                  <EffortSelect
-                    current={efforts.current}
-                    available={efforts.available}
-                    disabled={!connected}
-                    onSelect={(effort) => send({ type: 'effort', effort })}
-                  />
-                )}
-                {session !== undefined && (
-                  <AgentOptionsMenu
-                    tool={session.tool}
-                    options={toolAgentOptions(session.tool).filter((o) => agentOptionIsLive(o, session.mode))}
-                    value={session.agentOptions}
-                    disabled={!connected}
-                    onChange={(o) => {
-                      setSessionAgentOptions(workspaceId, session.sessionId, o).then(
-                        () => setOptionError(null),
-                        (err: unknown) => setOptionError(err instanceof Error ? err.message : String(err)),
-                      )
-                    }}
-                  />
-                )}
+                <AgentSettings
+                  disabled={!connected}
+                  model={models.models.length > 0
+                    ? {
+                      current: models.current,
+                      items: models.models,
+                      onSelect: (modelId) => send({ type: 'model', modelId }),
+                      tag: (id) => id === models.current && 'current',
+                    }
+                    : undefined}
+                  effort={efforts.current !== undefined && efforts.available.length > 0
+                    ? { current: efforts.current, available: efforts.available, onSelect: (effort) => send({ type: 'effort', effort }) }
+                    : undefined}
+                  options={session !== undefined
+                    ? {
+                      list: toolAgentOptions(session.tool).filter((o) => agentOptionIsLive(o, session.mode)),
+                      value: session.agentOptions,
+                      onChange: (o) => {
+                        setSessionAgentOptions(workspaceId, session.sessionId, o).then(
+                          () => setOptionError(null),
+                          (err: unknown) => setOptionError(err instanceof Error ? err.message : String(err)),
+                        )
+                      },
+                    }
+                    : undefined}
+                />
               </div>
               <input
                 ref={fileInputRef}
@@ -504,7 +509,7 @@ function ContextMeter({ used, size }: { used: number; size: number }): JSX.Eleme
       aria-expanded={expanded}
       onClick={() => setExpanded((e) => !e)}
       className={clsx(
-        'mr-2 flex items-center gap-1 whitespace-nowrap rounded-md px-1 py-0.5 text-xs tabular-nums',
+        'mr-1 flex items-center gap-1 whitespace-nowrap rounded-md px-1 py-0.5 text-xs tabular-nums @min-[30rem]:mr-2',
         'hover:bg-surface-2',
         percent >= 90 ? 'text-error' : percent >= 75 ? 'text-warning' : 'text-text-faint',
       )}

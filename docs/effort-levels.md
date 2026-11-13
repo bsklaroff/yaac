@@ -1,13 +1,13 @@
 # Effort levels
 
 Effort is how hard a session's model thinks. It is a session setting beside
-model and permission mode: the effort menu in the new-workspace pane's
+model and permission mode: the settings pill in the new-workspace pane's
 composer (beside its permission mode, as in a chat), `yaac workspace create
 --effort`, and `yaac-mama create | queue | edit-queued --effort`. It is
 remembered per (project, agent) like the others, carried by drafts and
 queued entries, passed at every launch in both agent modes, and followed
 when the agent changes it. The chat pane
-shows it beside the permission posture and can switch it. Nothing else
+shows it in its settings pill, after the model, and can switch it there. Nothing else
 shows it: not the sidebar, and not a running `tui` workspace, whose agent
 shows its own.
 
@@ -34,7 +34,7 @@ variant, so the provider's own default applies.
 `pnpm gen:providers` bakes each model's levels and default into
 `tool-providers.generated.ts` (`EFFORTS`, keyed like the model catalogs). A
 model without an entry has no effort setting: it launches with none and the
-new-workspace pane offers no effort menu. Each tool's own catalog is the source, since models.dev
+new-workspace pane's settings pill offers no effort levels. Each tool's own catalog is the source, since models.dev
 lists what a vendor's API accepts, which is not what each CLI offers:
 
 - **claude**: the model table built into the pinned binary. No public source
@@ -147,10 +147,13 @@ covers an adapter re-seeding effort after a model switch. A reattach runs no
 handshake, so it reads the last option back from acpd's record, with the
 session's mode and model (`readAcpRecovery`).
 
-The pane gets an `effort` frame (current level, the adapter's levels and
-names for the current model) and answers with `{ type: 'effort', effort }`,
-which the bridge accepts only for an offered level. The composer's menu is
-hidden when the adapter has no effort option.
+The pane gets an `effort` frame (current level and the adapter's levels for
+the current model) and answers with `{ type: 'effort', effort }`, which the
+bridge accepts only for an offered level. The pill leaves effort out when
+the adapter has no effort option. Every level is named by `effortLabel`
+rather than by the adapter's own display name, so a level reads the same in
+a chat as in the new-workspace pane, which has no adapter to ask, and the
+same across tools (pi's adapter calls them "Thinking: low" and so on).
 
 ## Under `tui`
 

@@ -98,7 +98,7 @@ const EFFORT_COPY: Record<string, string> = {
   low: 'Low',
   medium: 'Medium',
   high: 'High',
-  xhigh: 'Extra high',
+  xhigh: 'Xhigh',
   max: 'Max',
   ultra: 'Ultra',
   thinking: 'Thinking',

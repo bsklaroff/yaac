@@ -794,9 +794,12 @@ starts idle.
 
 A chat pane's composer completes what a TUI's prompt would. Typing `/` lists
 the slash commands the session advertises (`available_commands_update`, a
-`commands` event), and `/model ` lists the models it can switch to. Both lists
-are projected from the record, like the rest of the conversation, so a pane
-that attaches late or after a server restart has them too.
+`commands` event), and `/model ` lists the models it can switch to. The same
+model list is searchable from the composer's settings pill, which shows the
+running model and effort and also holds the effort levels and agent options;
+the permission posture is a pill of its own beside it, so it stays in view.
+Both lists are projected from the record, like the rest of the conversation,
+so a pane that attaches late or after a server restart has them too.
 
 Skills arrive as commands, spelled as each tool's TUI spells them: claude's as
 plain `/name`, pi's as `/skill:name`, and codex's as `$name`, a mention codex
@@ -815,7 +818,7 @@ The model list is the session's `model` config option, read from the
 `session/new` or `session/load` reply, from any `session/set_config_option`
 reply, and from `config_option_update` (each a `models` event). Every adapter
 yaac runs advertises that option and accepts `session/set_config_option` for
-it, so `/model` sends that rather than a prompt. claude's own `/model` command
+it, so `/model` and the pill send that rather than a prompt. claude's own `/model` command
 is replaced by the picker. A `models` block is read only when there is no
 config option: codex sends both, and its block's ids carry a reasoning effort
 (`gpt-6-astra[low]`) that the option's values do not. The new model reaches

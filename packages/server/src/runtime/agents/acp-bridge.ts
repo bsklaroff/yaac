@@ -279,7 +279,7 @@ function bridgeAcp(
       void conversation.switchPermissionMode(msg.mode)
       return
     }
-    if (msg.type === 'effort' && conversation.efforts.available.some((o) => o.value === msg.effort)) {
+    if (msg.type === 'effort' && conversation.efforts.available.includes(msg.effort)) {
       void conversation.switchEffort(msg.effort)
       return
     }

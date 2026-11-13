@@ -129,7 +129,7 @@ agents already running keep the list they started with until restarted.
 ## Reasoning levels in each tool
 
 The endpoint's levels become each tool's own (`endpointEfforts` in
-`@yaac/shared/tool-providers`), which is what the effort menu, `--effort`
+`@yaac/shared/tool-providers`), which is what the settings pill's effort levels, `--effort`
 and the launch use (docs/effort-levels.md):
 
 | Tool | Levels offered | Config written (`ensureToolApiKeyConfig`) |
@@ -138,7 +138,7 @@ and the launch use (docs/effort-levels.md):
 | pi | `none` becomes `off`, the rest as named | `reasoning: true` and a `thinkingLevelMap` from each pi level to the endpoint's word, every level the model lacks mapped to `null` (pi would otherwise send its provider default for it) |
 | omp | `off`, then the rest | `reasoning: true` and `thinking: { mode: effort, efforts, defaultLevel }` |
 
-A model without levels gets no effort menu and launches with none (pi's
+A model without levels offers no effort levels in the settings pill and launches with none (pi's
 `reasoning: false`). The config shapes were checked against pi 1.4.0, omp
 18.18.3 and opencode 2.1.4 (opencode's `/api/model` lists exactly the
 variants written).

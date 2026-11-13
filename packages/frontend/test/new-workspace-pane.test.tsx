@@ -1,6 +1,6 @@
 import { useState, type JSX } from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { act, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
 import type {
   AuthListResult, DraftWorkspaceEntry, ProjectRepo, QueuedWorkspaceEntry, ServerSnapshot, WorkspaceListEntry,
 } from '@yaac/shared/types'
@@ -208,16 +208,31 @@ const emptyButton = (): HTMLButtonElement =>
 const barButton = (name: 'New Shell' | 'Browse files' | 'Show changes'): HTMLButtonElement =>
   screen.getByRole<HTMLButtonElement>('button', { name })
 const branchInput = (): HTMLInputElement => screen.getByLabelText<HTMLInputElement>('Base branch')
-const modelInput = (): HTMLInputElement => screen.getByLabelText<HTMLInputElement>('Model')
+const settingsPill = (): HTMLElement => screen.getByRole('button', { name: 'Agent settings' })
+/** The model the settings pill shows (its first part, before the effort). */
+const modelShown = (): string => settingsPill().firstElementChild?.textContent ?? ''
 const select = (label: string): HTMLSelectElement => screen.getByLabelText<HTMLSelectElement>(label)
 const option = (label: string, text: string): HTMLOptionElement =>
   [...select(label).options].find((o) => o.textContent?.startsWith(text))!
 const heading = (): string => screen.getByRole('heading').textContent ?? ''
 const posture = (): string => screen.getByRole('button', { name: 'Permission mode' }).textContent ?? ''
-const effortShown = (): string => screen.getByRole('button', { name: 'Effort' }).textContent ?? ''
+/** The effort the settings pill shows, after the model; '' for none. */
+const effortShown = (): string => settingsPill().textContent?.split('· ')[1] ?? ''
 
-/** The items of the composer's posture or effort menu, by name, closing it. */
-async function menuItems(menu: 'Permission mode' | 'Effort'): Promise<string[]> {
+/** The effort levels in the composer's settings pill, by name. */
+async function effortLevels(): Promise<string[]> {
+  fireEvent.click(settingsPill())
+  const group = await screen.findByRole('radiogroup', { name: 'Effort' })
+  return within(group).getAllByRole('radio').map((r) => r.textContent ?? '')
+}
+
+/** Pick an effort level from the open settings pill. */
+function pickEffort(name: string): void {
+  fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Effort' })).getByRole('radio', { name }))
+}
+
+/** The items of the composer's posture menu, by name, closing it. */
+async function menuItems(menu: 'Permission mode'): Promise<string[]> {
   fireEvent.click(screen.getByRole('button', { name: menu }))
   const items = await screen.findAllByRole('menuitemradio')
   const names = items.map((i) => i.querySelector('.text-text')?.textContent ?? '')
@@ -226,17 +241,26 @@ async function menuItems(menu: 'Permission mode' | 'Effort'): Promise<string[]> 
   return names
 }
 
-/** Pick from the composer's posture or effort menu. */
-async function pick(menu: 'Permission mode' | 'Effort', name: string): Promise<void> {
+/** Pick from the composer's posture menu. */
+async function pick(menu: 'Permission mode', name: string): Promise<void> {
   fireEvent.click(screen.getByRole('button', { name: menu }))
   const items = await screen.findAllByRole('menuitemradio')
   fireEvent.click(items.find((i) => i.querySelector('.text-text')?.textContent === name)!)
   await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
 }
 
-function pickModel(text: string): void {
-  typeInto(modelInput(), text)
-  fireEvent.keyDown(modelInput(), { key: 'Enter' })
+/** The settings pill's model search, opening the pill. */
+async function modelSearch(): Promise<HTMLInputElement> {
+  if (screen.queryByRole('combobox', { name: 'Search models' }) === null) fireEvent.click(settingsPill())
+  return screen.findByRole<HTMLInputElement>('combobox', { name: 'Search models' })
+}
+
+/** Search the settings pill's models and pick the top match. */
+async function pickModel(text: string): Promise<void> {
+  const search = await modelSearch()
+  typeInto(search, text)
+  fireEvent.keyDown(search, { key: 'Enter' })
+  await waitFor(() => expect(screen.queryByRole('combobox', { name: 'Search models' })).toBeNull())
 }
 
 /** Rename through the heading's pencil, as every other rename is done. */
@@ -262,7 +286,7 @@ describe('NewWorkspacePane', () => {
     expect(select('Agent').value).toBe('codex')
     expect(branchInput().value).toBe('dev')
     // Shown by name, sent by id.
-    expect(modelInput().value).toBe('GPT-5.5')
+    expect(modelShown()).toBe('GPT-5.5')
     expect(posture()).toBe('Read-only')
     expect(select('UI').value).toBe('acp')
     // A chat starts from a prompt.
@@ -296,7 +320,7 @@ describe('NewWorkspacePane', () => {
   it('falls back per field, and offers no create before the snapshot lands', async () => {
     setSnapshot(undefined)
     mount()
-    await waitFor(() => expect(modelInput().value).toBe('Opus 5.5'))
+    await waitFor(() => expect(modelShown()).toBe('Opus 5.5'))
     typePrompt('x')
     expect(sendButton().disabled).toBe(true)
     expect(sendButton().title).toBe('Loading…')
@@ -304,7 +328,7 @@ describe('NewWorkspacePane', () => {
     act(() => setSnapshot(project({}, 'containerless')))
     await waitFor(() => expect(sendButton().disabled).toBe(false))
     expect(select('Agent').value).toBe('claude')
-    expect(modelInput().value).toBe('Opus 5.5')
+    expect(modelShown()).toBe('Opus 5.5')
     expect(posture()).toBe('Accept edits')
     expect(select('UI').value).toBe('acp')
     // Bypass can still be picked there, with a warning.
@@ -321,18 +345,18 @@ describe('NewWorkspacePane', () => {
       },
     }))
     await openReady()
-    expect(modelInput().value).toBe('Sonnet 5')
-    expect(posture()).toBe('Manual permissions')
+    expect(modelShown()).toBe('Sonnet 5')
+    expect(posture()).toBe('Manual')
 
     fireEvent.change(select('Agent'), { target: { value: 'codex' } })
-    expect(modelInput().value).toBe('GPT-5.5')
-    expect(posture()).toBe('Bypass permissions')
+    expect(modelShown()).toBe('GPT-5.5')
+    expect(posture()).toBe('Bypass')
     expect(select('UI').value).toBe('acp')
 
     // pi has no permission system, so bypass is all it offers.
     fireEvent.change(select('Agent'), { target: { value: 'pi' } })
     expect(await menuItems('Permission mode')).toEqual(['Bypass permissions'])
-    expect(modelInput().value).toBe('Claude Opus 4.8')
+    expect(modelShown()).toBe('Claude Opus 4.8')
   })
 
   // docs/effort-levels.md. Levels are the model's own; a pick or the
@@ -349,23 +373,24 @@ describe('NewWorkspacePane', () => {
     server.route(AUTH_LIST, { gitCredentials: [], toolAuth: [efforts], customEndpoints: [] })
     setSnapshot(project({ createDefaults: { claude: { effort: 'max' } } }))
     await openReady()
-    expect(effortShown()).toBe('Max effort')
-    expect(await menuItems('Effort')).toEqual(['Low', 'Medium', 'High', 'Max'])
+    expect(effortShown()).toBe('Max')
+    expect(await effortLevels()).toEqual(['Low', 'Medium', 'High', 'Max'])
 
     // Sonnet has no max: its default instead. A pick it has then stays.
-    pickModel('claude-sonnet')
-    expect(effortShown()).toBe('High effort')
-    await pick('Effort', 'Low')
-    pickModel('claude-opus')
-    expect(effortShown()).toBe('Low effort')
+    await pickModel('claude-sonnet')
+    expect(effortShown()).toBe('High')
+    await effortLevels()
+    pickEffort('Low')
+    await pickModel('claude-opus')
+    expect(effortShown()).toBe('Low')
     typePrompt('go')
     fireEvent.click(sendButton())
     expect(sent(CREATE).at(-1)).toMatchObject({ model: 'claude-opus-5-5', effort: 'low' })
 
     // A model with no levels has no effort to send.
     forget()
-    pickModel('claude-haiku')
-    expect(screen.queryByRole('button', { name: 'Effort' })).toBeNull()
+    await pickModel('claude-haiku')
+    expect(effortShown()).toBe('')
     typePrompt('go')
     fireEvent.click(sendButton())
     expect(sent(CREATE).at(-1)).not.toHaveProperty('effort')
@@ -376,34 +401,36 @@ describe('NewWorkspacePane', () => {
   it("offers the agent's options at their remembered values and sends them", async () => {
     setSnapshot(project({ createDefaults: { claude: { agentOptions: { idleCompaction: true } } } }))
     await openReady()
-    fireEvent.click(screen.getByRole('button', { name: 'Agent options' }))
-    const [item] = await screen.findAllByRole('menuitemcheckbox')
-    expect(item.textContent).toContain('Compact when idle')
-    expect(item.getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: 'Agent settings' }))
+    const item = await screen.findByRole<HTMLInputElement>('checkbox', { name: /Compact when idle/ })
+    expect(item.checked).toBe(true)
     fireEvent.click(item)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Agent options' }).textContent).toBe('Options'))
+    await waitFor(() => expect(item.checked).toBe(false))
     typePrompt('go')
     fireEvent.click(sendButton())
     expect(sent(CREATE).at(-1)).toMatchObject({ tool: 'claude', agentOptions: { idleCompaction: false } })
   })
 
-  it('searches models by name or id, and Enter picks before it creates', async () => {
+  it('searches models by name or id in the settings pill, as a chat does, and creates with the pick', async () => {
     await openReady()
     typePrompt('go')
 
-    typeInto(modelInput(), 'sonnet')
-    expect(screen.getByText('Sonnet 5')).toBeTruthy()
-    expect(screen.queryByText('Opus 5.5')).toBeNull()
-    // Mid-edit text is a search, not a pick.
-    expect(sendButton().disabled).toBe(true)
-    expect(sendButton().title).toBe('Pick a model from the list')
+    const search = await modelSearch()
+    const rows = (): string[] => within(screen.getByRole('dialog')).getAllByRole('option').map((o) => o.textContent ?? '')
+    // The project's default is marked.
+    expect(rows().find((r) => r.startsWith('Opus 5.5'))).toContain('default')
+    typeInto(search, 'sonnet')
+    expect(rows().map((r) => r.split('claude-')[0])).toEqual(['Sonnet 5'])
+    typeInto(search, 'claude-next')
+    expect(screen.getByText('No matches')).toBeTruthy()
+    // Enter has nothing to pick.
+    fireEvent.keyDown(search, { key: 'Enter' })
+    expect(modelShown()).toBe('Opus 5.5')
 
-    typeInto(modelInput(), 'claude-sonnet')
-    fireEvent.keyDown(modelInput(), { key: 'Enter' })
-    expect(modelInput().value).toBe('Sonnet 5')
+    await pickModel('claude-sonnet')
+    expect(modelShown()).toBe('Sonnet 5')
     expect(sent(CREATE)).toHaveLength(0)
-
-    fireEvent.keyDown(modelInput(), { key: 'Enter' })
+    fireEvent.click(sendButton())
     expect(sent(CREATE).at(-1)).toMatchObject({ project: 'proj', tool: 'claude', model: 'claude-sonnet-5' })
   })
 
@@ -411,48 +438,38 @@ describe('NewWorkspacePane', () => {
     await openReady()
     typePrompt('keep me')
 
-    typeInto(modelInput(), 'sonnet')
-    expect(screen.getByText('Sonnet 5')).toBeTruthy()
-    fireEvent.keyDown(modelInput(), { key: 'Escape' })
-    expect(screen.queryByText('Sonnet 5')).toBeNull()
-
     typeInto(branchInput(), 're')
     expect(screen.getByText('release/2.x')).toBeTruthy()
     fireEvent.keyDown(branchInput(), { key: 'Escape' })
     expect(screen.queryByText('release/2.x')).toBeNull()
 
     // With no list open, Escape has nothing to close: the pane is no dialog.
-    fireEvent.keyDown(modelInput(), { key: 'Escape' })
+    fireEvent.keyDown(branchInput(), { key: 'Escape' })
     expect(promptInput().value).toBe('keep me')
     expect(useUiStore.getState().newWorkspace).toMatchObject({ prompt: 'keep me' })
     expect(screen.queryByText('Save as a draft?')).toBeNull()
   })
 
-  it('takes only models and branches the lists have', async () => {
+  it('takes only branches the list has', async () => {
     await openReady()
     await waitFor(() => expect(branchInput().value).toBe('main'))
     typePrompt('go')
 
-    for (const [input, typed, shown] of [
-      [modelInput, 'claude-next', 'Opus 5.5'],
-      [branchInput, 'no-such-branch', 'main'],
-    ] as const) {
-      typeInto(input(), typed)
-      expect(screen.getByText('No matches')).toBeTruthy()
-      // Enter has nothing to pick, and the unpicked text cannot create.
-      fireEvent.keyDown(input(), { key: 'Enter' })
-      expect(sendButton().disabled).toBe(true)
-      expect(sent(CREATE)).toHaveLength(0)
-      // Escape reverts to the chosen value.
-      fireEvent.keyDown(input(), { key: 'Escape' })
-      expect(input().value).toBe(shown)
-    }
+    typeInto(branchInput(), 'no-such-branch')
+    expect(screen.getByText('No matches')).toBeTruthy()
+    // Enter has nothing to pick, and the unpicked text cannot create.
+    fireEvent.keyDown(branchInput(), { key: 'Enter' })
+    expect(sendButton().disabled).toBe(true)
+    expect(sent(CREATE)).toHaveLength(0)
+    // Escape reverts to the chosen value.
+    fireEvent.keyDown(branchInput(), { key: 'Escape' })
+    expect(branchInput().value).toBe('main')
   })
 
   it('creates on Enter in the prompt, a newline on Shift+Enter, and nothing from a button or without a prompt', async () => {
     await openReady()
     await waitFor(() => expect(branchInput().value).toBe('main'))
-    // As in the model field, Enter picks the top match rather than creating.
+    // Enter picks the top branch match rather than creating.
     typeInto(branchInput(), 'de')
     fireEvent.keyDown(branchInput(), { key: 'Enter' })
     expect(branchInput().value).toBe('dev')
@@ -525,9 +542,9 @@ describe('NewWorkspacePane', () => {
 
     // What blocks a create blocks them too.
     forget()
-    typeInto(modelInput(), 'sonn')
+    typeInto(branchInput(), 'no-such-branch')
     expect(barButton('Show changes').disabled).toBe(true)
-    expect(barButton('Show changes').title).toBe('Pick a model from the list')
+    expect(barButton('Show changes').title).toBe('Pick a branch from the list, or give a full commit id')
   })
 
   it('sends a credential-less agent to settings → credentials, keeping the prompt', async () => {
@@ -536,7 +553,7 @@ describe('NewWorkspacePane', () => {
     fireEvent.change(select('Agent'), { target: { value: 'codex' } })
 
     expect(screen.getByText('Codex has no credentials')).toBeTruthy()
-    expect(screen.queryByLabelText('Model')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Agent settings' })).toBeNull()
     expect(sendButton().disabled).toBe(true)
     expect(sendButton().title).toBe('Sign in to Codex first')
     fireEvent.keyDown(promptInput(), { key: 'Enter' })
@@ -778,7 +795,7 @@ describe('NewWorkspacePane', () => {
       expect(select('Start').value).toBe('w-parent')
       expect(select('Group').value).toBe('g-review')
       expect(select('Agent').value).toBe('codex')
-      expect(modelInput().value).toBe('GPT-5.5')
+      expect(modelShown()).toBe('GPT-5.5')
       expect(posture()).toBe('Accept edits')
       await waitFor(() => expect(branchInput().value).toBe('dev'))
       expect(screen.getByText('latest from origin when it starts')).toBeTruthy()
@@ -911,8 +928,8 @@ describe('NewWorkspacePane', () => {
       expect(heading()).toBe('Second')
       expect(select('Group').value).toBe('g-review')
       expect(select('Start').value).toBe('q1')
-      expect(modelInput().value).toBe('Sonnet 5')
-      expect(posture()).toBe('Manual permissions')
+      expect(modelShown()).toBe('Sonnet 5')
+      expect(posture()).toBe('Manual')
       expect(branchInput().value).toBe('release/2.x')
       // Itself and its descendants would form a chain that never starts.
       const offered = [...select('Start').options].map((o) => o.value)
@@ -1096,7 +1113,7 @@ describe('NewWorkspacePane', () => {
       expect(heading()).toBe('New workspace')
       expect(select('Start').value).toBe('')
       expect(select('Agent').value).toBe('codex')
-      expect(modelInput().value).toBe('GPT-5.5')
+      expect(modelShown()).toBe('GPT-5.5')
       expect(posture()).toBe('Read-only')
       await waitFor(() => expect(branchInput().value).toBe('dev'))
       // Its prompt is its own, so no bare terminal.
@@ -1476,8 +1493,8 @@ describe('NewWorkspacePane sessions', () => {
     await openReady()
     fireEvent.change(select('Agent'), { target: { value: '' } })
     expect(promptInput().readOnly).toBe(true)
-    for (const label of ['Model', 'UI', 'Start']) expect(screen.queryByLabelText(label)).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Permission mode' })).toBeNull()
+    for (const label of ['UI', 'Start']) expect(screen.queryByLabelText(label)).toBeNull()
+    for (const name of ['Permission mode', 'Agent settings']) expect(screen.queryByRole('button', { name })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Start without a prompt' })).toBeNull()
 
     expect(sendButton().disabled).toBe(false)

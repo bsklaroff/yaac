@@ -61,6 +61,22 @@ function latest<T extends AcpEvent['type']>(
   return undefined
 }
 
+/**
+ * The models a conversation can switch to, from its latest `models` event,
+ * and the one it runs. A switch a history reports arrives as a
+ * `model-switch` with no new list, so the running model is whichever of the
+ * two came last.
+ */
+export function sessionModels(events: readonly AcpEvent[]): { current: string | undefined; models: AcpModel[] } {
+  let current: string | undefined
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]
+    if (e.type === 'model-switch') current ??= e.model
+    else if (e.type === 'models') return { current: current ?? e.current, models: e.models }
+  }
+  return { current, models: [] }
+}
+
 const MODEL_COMMAND: AcpCommand = { name: 'model', description: 'Switch the model' }
 
 /** A command as a row. Its value drops a `$`, so the typed query ranks it as
@@ -74,7 +90,7 @@ function commandItem(c: AcpCommand): TypeaheadItem {
   }
 }
 
-function modelItem(m: AcpModel): TypeaheadItem {
+export function modelItem(m: AcpModel): TypeaheadItem {
   const detail = m.name !== undefined ? m.id : m.description
   return { value: m.id, label: m.name ?? m.id, ...(detail !== undefined ? { detail } : {}) }
 }
@@ -127,8 +143,8 @@ export function useComposerMenu({
     placeRef.current = null
   }, [selection, inputRef])
 
-  const models = latest(events, 'models')
-  const hasModels = (models?.models.length ?? 0) > 0
+  const models = sessionModels(events)
+  const hasModels = models.models.length > 0
   const commands = latest(events, 'commands')?.commands ?? []
   const offered = hasModels ? [...commands.filter((c) => c.name !== 'model'), MODEL_COMMAND] : commands
   const at = disabled || dismissed === draft ? undefined : menuFor(draft, caret, hasModels)
@@ -136,7 +152,7 @@ export function useComposerMenu({
     ? []
     : filterSuggestions(
       at.kind === 'model'
-        ? (models?.models ?? []).map(modelItem)
+        ? models.models.map(modelItem)
         : offered
           // The model picker opens only from the start of the message.
           .filter((c) => commandText(c.name).startsWith(at.sigil) && (at.from === 0 || c !== MODEL_COMMAND))
@@ -148,7 +164,7 @@ export function useComposerMenu({
     )
   const key = at === undefined ? '' : `${at.kind}:${String(at.from)}:${at.query}`
   // The model list opens on the running model, as a TUI's picker does.
-  const start = at?.kind === 'model' ? Math.max(0, rows.findIndex((r) => r.value === models?.current)) : 0
+  const start = at?.kind === 'model' ? Math.max(0, rows.findIndex((r) => r.value === models.current)) : 0
   const active = highlight.key === key && highlight.index < rows.length ? highlight.index : start
   const open = at !== undefined && rows.length > 0
   /** The word is the whole message, so Enter may act on it unprompted. */
@@ -207,7 +223,7 @@ export function useComposerMenu({
           active={active}
           onSelect={pick}
           onHover={(index) => setHighlight({ key, index })}
-          {...(at.kind === 'model' ? { tag: (item: TypeaheadItem) => item.value === models?.current && 'current' } : {})}
+          {...(at.kind === 'model' ? { tag: (item: TypeaheadItem) => item.value === models.current && 'current' } : {})}
           className="max-h-60"
         />
       </div>
