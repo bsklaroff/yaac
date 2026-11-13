@@ -39,9 +39,9 @@ export const REGISTRY_NAMESPACE = 'yaac'
 const REGISTRY_FORWARD_KEY = 'main-registry'
 
 /**
- * The host:port in image refs: a full `.svc.cluster.local` name, which the
- * proxy's DNS forwards to CoreDNS. Node containerd matches it against the
- * hosts.toml main-registry.ts writes instead of resolving it.
+ * The host:port in image refs: a full `.svc.cluster.local` name, which
+ * builder pods resolve through cluster DNS. Node containerd matches it
+ * against the hosts.toml main-registry.ts writes instead of resolving it.
  */
 export function registryHost(): string {
   return `${REGISTRY_SERVICE_NAME}.${REGISTRY_NAMESPACE}.svc.cluster.local:${REGISTRY_SERVICE_PORT}`

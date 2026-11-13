@@ -343,11 +343,12 @@ the MITM proxy, not this registry.
 
 The proxy and project registry Services keep their allocator-assigned
 ClusterIPs because they are never deleted (server-side apply updates them in
-place). Workspace pods reach them by service-DNS name through the proxy's
-DNS, which forwards `*.cluster.local` to CoreDNS and blocks bare `.svc`
-names so DNS cannot carry data out. Nothing on the node pulls from a
-project registry by name: the image-store writer, a host-network pod with
-no cluster DNS, dials the live ClusterIP.
+place). Workspace pods reach the project registry by service-DNS name
+through the proxy's DNS, which resolves the install namespace's Services
+through CoreDNS and answers every other name with the sinkhole, so DNS
+cannot carry data out (docs/workspace-egress.md "In-cluster names").
+Nothing on the node pulls from a project registry by name: the image-store
+writer, a host-network pod with no cluster DNS, dials the live ClusterIP.
 
 ## Egress
 

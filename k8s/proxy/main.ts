@@ -60,7 +60,9 @@ import {
   writeState,
 } from './object-watch'
 import { DNS_QTYPE_A, buildDnsResponse, isInternalName, parseDnsQuery } from './dns-stub'
-import { PodWorkspaceIndex, fetchPodIpByWorkspaceId, fetchWorkspaceByPodIp, startPodWatch } from './pod-watch'
+import {
+  PodWorkspaceIndex, fetchPodIpByWorkspaceId, fetchWorkspaceByPodIp, inClusterClient, startPodWatch,
+} from './pod-watch'
 import { SYSTEM_ROOTS_PATH, combineCaBundle } from './ca-bundle'
 import { timingSafeStrEqual } from './secure-compare'
 import { RefreshFlights } from './refresh-flight'
@@ -748,8 +750,8 @@ relayServer.listen(parseInt(RELAY_PORT, 10), '0.0.0.0', () => {
 })
 
 // ── DNS stub (UDP/53), split-horizon ───────────────────────────────────────
-// See dns-stub.ts: internal names resolve against the cluster DNS, every
-// other name gets the sinkhole address.
+// See dns-stub.ts: Services in this install's namespace resolve against the
+// cluster DNS, every other name gets the sinkhole address.
 const dnsServer = dgram.createSocket('udp4')
 dnsServer.on('message', (msg, rinfo) => {
   const query = parseDnsQuery(msg)
@@ -757,7 +759,7 @@ dnsServer.on('message', (msg, rinfo) => {
   const reply = (ip: string | null): void => {
     dnsServer.send(buildDnsResponse(query, ip), rinfo.port, rinfo.address)
   }
-  if (!isInternalName(query.name)) {
+  if (!isInternalName(query.name, inClusterClient().namespace)) {
     reply(DNS_SINKHOLE)
     return
   }
