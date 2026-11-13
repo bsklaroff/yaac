@@ -58,6 +58,10 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'avatars.githubusercontent.com',
   'camo.githubusercontent.com',
   'gist.github.com',
+  // Sigstore trust roots `gh attestation verify` fetches over TUF: GitHub's
+  // own instance (private-repo attestations) and the public-good instance
+  'tuf-repo.github.com',
+  'tuf-repo-cdn.sigstore.dev',
   // Actions blob storage (job summaries and logs)
   'productionresultssa*.blob.core.windows.net',
 
