@@ -211,24 +211,37 @@ describe('ghTokenSwap', () => {
     expect(swap(`token ${PLACEHOLDER_GH_TOKEN}-${RO_REPO}`, 'other')?.token).toBe('ghp_repo')
   })
 
-  it('stops as soon as the grant says so', () => {
+  it('stops as soon as the grant says so, on every GitHub API host', () => {
     const placeholder = `token ${PLACEHOLDER_GH_TOKEN}-${REPO}`
-    const swap = (flags: Record<string, unknown>) =>
-      ghTokenSwap(load({ 'git-tokens.json': [{ token: 't', grants: [grant(flags)] }] }), 'ws', 'api.github.com', placeholder)
-    expect(swap({})?.token).toBe('t')
-    expect(swap({ ghToken: false })).toBeNull()
-    expect(swap({ readOnly: true })).toBeNull()
+    for (const host of ['api.github.com', 'uploads.github.com']) {
+      const swap = (flags: Record<string, unknown>, at = host) =>
+        ghTokenSwap(load({ 'git-tokens.json': [{ token: 't', grants: [grant(flags)] }] }), 'ws', at, placeholder)
+      expect(swap({})?.token, host).toBe('t')
+      expect(swap({ ghToken: false }), host).toBeNull()
+      expect(swap({ readOnly: true }), host).toBeNull()
+      // A grant on any other git host, GitHub Enterprise included, has no API host.
+      expect(swap({ host: 'github.acme.com' }), host).toBeNull()
+      expect(swap({ host: 'gitlab.com' }), host).toBeNull()
+      // Matched exactly, never as a suffix or another spelling.
+      for (const spelled of [host.toUpperCase(), `${host}.`, `${host}.evil.example`, `x.${host}`]) {
+        expect(swap({}, spelled), spelled).toBeNull()
+      }
+    }
   })
 })
 
 describe('isGhApiHostFor', () => {
-  it('is true for api.github.com while a GitHub grant may be GH_TOKEN', () => {
+  it('is true for the GitHub API hosts while a GitHub grant may be GH_TOKEN', () => {
     const objects = load(HTTPS)
-    expect(isGhApiHostFor(objects, 'ws', 'api.github.com')).toBe(true)
-    expect(isGhApiHostFor(objects, 'ws', 'github.com')).toBe(false)
-    expect(isGhApiHostFor(objects, 'stranger', 'api.github.com')).toBe(false)
     const readOnly = load({ 'git-tokens.json': [{ token: 't', grants: [grant({ readOnly: true })] }] })
-    expect(isGhApiHostFor(readOnly, 'ws', 'api.github.com')).toBe(false)
+    const noGhToken = load({ 'git-tokens.json': [{ token: 't', grants: [grant({ ghToken: false })] }] })
+    for (const host of ['api.github.com', 'uploads.github.com']) {
+      expect(isGhApiHostFor(objects, 'ws', host), host).toBe(true)
+      expect(isGhApiHostFor(objects, 'stranger', host), host).toBe(false)
+      expect(isGhApiHostFor(readOnly, 'ws', host), host).toBe(false)
+      expect(isGhApiHostFor(noGhToken, 'ws', host), host).toBe(false)
+    }
+    expect(isGhApiHostFor(objects, 'ws', 'github.com')).toBe(false)
   })
 })
 

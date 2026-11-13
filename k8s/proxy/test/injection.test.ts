@@ -211,6 +211,7 @@ describe('buildDynamicRules', () => {
     // gh keeps its own scheme.
     expect(gh(`token ${PH_GH}`)).toBe('token ghp_repo')
     expect(gh(`Bearer ${PH_GH}`)).toBe('Bearer ghp_repo')
+    expect(gh(`token ${PH_GH}`, 'ws', 'uploads.github.com')).toBe('token ghp_repo')
     expect(gh('token mine')).toBe('token mine')
     expect(gh(undefined)).toBeUndefined()
     // Not to the git host, where the token rides only under the repo's path.
@@ -357,6 +358,7 @@ describe('hostNeedsDynamicMitm', () => {
     expect(hostNeedsDynamicMitm(objects, 'cl', 'groq.com', 443)).toBe(false)
     expect(hostNeedsDynamicMitm(objects, 'oc', 'github.com', 443)).toBe(true)
     expect(hostNeedsDynamicMitm(objects, 'oc', 'api.github.com', 443)).toBe(true)
+    expect(hostNeedsDynamicMitm(objects, 'oc', 'uploads.github.com', 443)).toBe(true)
     expect(hostNeedsDynamicMitm(objects, 'cl', 'github.com', 443)).toBe(false)
     expect(hostNeedsDynamicMitm(objects, 'oc', 'github.com', 22)).toBe(false)
   })

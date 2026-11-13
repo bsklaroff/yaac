@@ -47,6 +47,7 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'github.com',
   'www.github.com',
   'api.github.com',
+  'uploads.github.com',
   'cli.github.com',
   'npm.pkg.github.com',
   'raw.githubusercontent.com',
