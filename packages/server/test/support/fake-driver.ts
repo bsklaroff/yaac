@@ -205,7 +205,8 @@ function defaultRuntime(): WorkspaceDriver {
     reapNodeLocal: () => Promise.resolve(),
     removeAsRoot: () => Promise.resolve(false),
     syncSites: () => Promise.resolve(),
-    siteTunnelStatus: () => Promise.resolve('absent'),
+    siteCloudflareStatus: () => Promise.resolve('absent'),
+    siteTailnetStatus: () => Promise.resolve('absent'),
     mamaRelay: null,
   }
 }

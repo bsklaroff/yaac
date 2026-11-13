@@ -215,9 +215,9 @@ function kubeSystem(uid: string): FakeObject {
   return { apiVersion: 'v1', kind: 'Namespace', metadata: { name: 'kube-system', uid } }
 }
 
-/** The server Deployment's pod spec as applied. */
+/** The server Deployment's pod spec as last applied. */
 function serverPod(): { securityContext?: Record<string, number>; containers: Array<{ env: Array<{ name: string; value: string }> }> } {
-  const dep = appliedOf('Deployment', SERVER_APP_NAME)[0] as unknown as {
+  const dep = appliedOf('Deployment', SERVER_APP_NAME).at(-1) as unknown as {
     spec: { template: { spec: ReturnType<typeof serverPod> } }
   }
   return dep.spec.template.spec
@@ -684,14 +684,48 @@ describe('runClusterInstall', () => {
     await expect(runClusterInstall({}, deps)).resolves.toBeUndefined()
     expect(ran('deployServerWorkload')).toBe(1)
     expect(log).toHaveBeenCalledWith(expect.stringContaining('could not deploy the npm cache (claim Pending)'))
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('could not deploy the public-site edge (rollout timed out)'))
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('could not deploy the site edge (rollout timed out)'))
   })
 
   it('hands CF_TUNNEL_TOKEN to the site edge before the server deploys', async () => {
     vi.stubEnv('CF_TUNNEL_TOKEN', 'tunnel-token')
     await runClusterInstall({}, makeDeps())
-    expect(ensureSiteEdge).toHaveBeenCalledWith({ tunnelToken: 'tunnel-token' })
+    expect(ensureSiteEdge).toHaveBeenCalledWith({ tunnelToken: 'tunnel-token', tailnetAuthKey: undefined, siteDomain: undefined })
     expect(order('ensureSiteEdge')).toBeLessThan(order('deployServerWorkload'))
+  })
+
+  it('--site-domain hands the domain and TS_SITE_AUTHKEY to the edge and the domain to the server, and a later install keeps the domain the tunnel recorded', async () => {
+    vi.stubEnv('TS_SITE_AUTHKEY', 'tskey-1')
+    await runClusterInstall({ tailnet: true, siteDomain: 'Apps.Example.com' }, makeDeps({ run: tailnetRun('present') }))
+    expect(ensureSiteEdge).toHaveBeenCalledWith({ tunnelToken: undefined, tailnetAuthKey: 'tskey-1', siteDomain: 'apps.example.com' })
+    expect(serverPod().containers[0].env).toContainEqual({ name: 'YAAC_SITE_DOMAIN', value: 'apps.example.com' })
+
+    // The edge records the domain in the tunnel's Secret (faked here), and a
+    // later install naming neither keeps it for the server too.
+    vi.stubEnv('TS_SITE_AUTHKEY', undefined)
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Secret', metadata: { name: 'yaac-site-tunnel-tailnet', namespace: 'test-ns' },
+      data: { authkey: Buffer.from('tskey-1').toString('base64'), domain: Buffer.from('apps.example.com').toString('base64') },
+    })
+    await runClusterInstall({ tailnet: true }, makeDeps({ run: tailnetRun('present') }))
+    expect(ensureSiteEdge).toHaveBeenLastCalledWith({ tunnelToken: undefined, tailnetAuthKey: undefined, siteDomain: 'apps.example.com' })
+    expect(serverPod().containers[0].env).toContainEqual({ name: 'YAAC_SITE_DOMAIN', value: 'apps.example.com' })
+    // Naming it again is fine; naming another, which would turn its tailnet
+    // sites public, is refused with how to change it.
+    await runClusterInstall({ tailnet: true, siteDomain: 'apps.example.com' }, makeDeps({ run: tailnetRun('present') }))
+    await expect(runClusterInstall({ tailnet: true, siteDomain: 'sites.example.com' }, makeDeps({ run: tailnetRun('present') })))
+      .rejects.toThrow(/site domain is apps\.example\.com.*delete the Secret yaac-site-tunnel-tailnet/)
+  })
+
+  it('refuses --site-domain without the tailnet fronting, a malformed one, one with no auth key yet, and TS_SITE_AUTHKEY with no domain', async () => {
+    await expect(runClusterInstall({ siteDomain: 'apps.example.com' }, makeDeps())).rejects.toThrow(/needs --tailnet/)
+    await expect(runClusterInstall({ tailnet: true, siteDomain: 'not a zone' }, makeDeps())).rejects.toThrow(/takes a DNS zone/)
+    await expect(runClusterInstall({ tailnet: true, siteDomain: 'apps.example.com' }, makeDeps({ run: tailnetRun('present') })))
+      .rejects.toThrow(/--site-domain needs TS_SITE_AUTHKEY/)
+    vi.stubEnv('TS_SITE_AUTHKEY', 'tskey-1')
+    await expect(runClusterInstall({ tailnet: true }, makeDeps({ run: tailnetRun('present') })))
+      .rejects.toThrow(/TS_SITE_AUTHKEY .* needs --site-domain/)
+    expect(events).toEqual([])
   })
 
   // A restart policy brings the cluster back after a host reboot. Only a

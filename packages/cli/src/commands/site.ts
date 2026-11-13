@@ -2,12 +2,14 @@ import { api, resolveProjectId } from '#commands/api'
 import { printTable } from '#commands/table'
 import { durationOption } from '#commands/workspace-create'
 import { FULL_COMMIT_PATTERN, formatCommits } from '@yaac/shared/steps'
-import type { RepoStart, SiteCommit, SiteEntry } from '@yaac/shared/types'
+import { siteEdgeOf } from '@yaac/shared/site-edge'
+import type { RepoStart, SiteCommit, SiteEntry, SiteTailnetState } from '@yaac/shared/types'
 
 /**
- * `yaac site …`: a project's public sites (docs/public-sites.md), each a
- * hostname served by a locked workspace, its release. Cluster servers
- * only; a containerless one refuses every route with `NOT_SUPPORTED`.
+ * `yaac site …`: a project's sites (docs/public-sites.md), each a hostname
+ * served by a locked workspace, its release, on the internet or, under the
+ * install's site domain, only on its tailnet. Cluster servers only; a
+ * containerless one refuses every route with `NOT_SUPPORTED`.
  */
 
 /**
@@ -66,16 +68,32 @@ export async function siteCreate(
     repos,
     ...(opts.follow === true ? { follow: true } : {}),
   } })
-  const { tunnel } = await api.site.edge.$get()
-  console.log(`Created site "${name}". In Cloudflare, add a public hostname to the install's tunnel:`)
-  console.log(`  hostname  ${opts.hostname}`)
-  console.log(`  service   ${ROUTER_URL}`)
-  if (tunnel === 'absent') {
-    console.log('This install has no tunnel yet: run `CF_TUNNEL_TOKEN=<token> yaac cluster install`.')
-  } else if (tunnel === 'disconnected') {
-    console.log('The tunnel holds no connection to Cloudflare; check its token and the yaac-site-tunnel pods.')
+  const edge = await api.site.edge.$get()
+  if (siteEdgeOf(opts.hostname, edge.siteDomain) === 'tailnet') {
+    console.log(`Created site "${name}", a tailnet site: https://${opts.hostname.trim().toLowerCase()} answers only users on this install's tailnet.`)
+    const state = tailnetStateNote(edge.tailnet, edge.siteDomain ?? '')
+    if (state) console.log(state)
+  } else {
+    console.log(`Created site "${name}", a public site. In Cloudflare, add a public hostname to the install's tunnel:`)
+    console.log(`  hostname  ${opts.hostname}`)
+    console.log(`  service   ${ROUTER_URL}`)
+    if (edge.cloudflare === 'absent') {
+      console.log('This install has no tunnel yet: run `CF_TUNNEL_TOKEN=<token> yaac cluster install`.')
+    } else if (edge.cloudflare === 'disconnected') {
+      console.log('The tunnel holds no connection to Cloudflare; check its token and the yaac-site-tunnel-cloudflare pods.')
+    }
   }
   console.log(`Then publish it with: yaac site deploy ${project} ${name}`)
+}
+
+/** What keeps the tailnet tunnel from serving, or null while it serves. */
+function tailnetStateNote(state: SiteTailnetState, siteDomain: string): string | null {
+  switch (state) {
+    case 'ready': return null
+    case 'absent': return `This install has no tailnet tunnel yet: run \`TS_SITE_AUTHKEY=<key> yaac cluster install --site-domain ${siteDomain}\`.`
+    case 'joining': return 'The tailnet tunnel has not joined the tailnet; check its auth key and the yaac-site-tunnel-tailnet pod.'
+    case 'no-certificate': return `The tailnet tunnel has no certificate yet: put one for *.${siteDomain} in the Secret yaac-site-tunnel-tailnet-tls.`
+  }
 }
 
 export async function siteEdit(project: string, name: string, opts: SiteOptions): Promise<void> {
@@ -111,16 +129,17 @@ export async function siteList(project: string): Promise<void> {
   }
   printTable(
     [
-      { header: 'NAME' }, { header: 'HOSTNAME' }, { header: 'PORT' }, { header: 'LIVE' },
+      { header: 'NAME' }, { header: 'HOSTNAME' }, { header: 'EDGE' }, { header: 'PORT' }, { header: 'LIVE' },
       { header: 'DEPLOYING', optional: true }, { header: 'LAST DEPLOY' },
     ],
-    sites.map((s) => [s.name, s.hostname, String(s.port), liveOf(s), deployOf(s), lastDeployOf(s)]),
+    sites.map((s) => [s.name, s.hostname, s.edge, String(s.port), liveOf(s), deployOf(s), lastDeployOf(s)]),
   )
 }
 
 export async function siteShow(project: string, name: string): Promise<void> {
   const site = await api.site.show.$get({ query: { project: await resolveProjectId(project), name } })
   console.log(`Site "${site.name}": https://${site.hostname} -> port ${site.port}`)
+  console.log(`  edge         ${site.edge === 'tailnet' ? 'tailnet (only tailnet users reach it)' : 'public (the internet, once the tunnel routes it)'}`)
   console.log(`  admin port   ${site.adminPort ?? '-'}`)
   console.log(`  workflow     ${site.workflow} (${Object.keys(site.steps).join(', ')})`)
   console.log(`  volume       ${site.volume ?? '-'}`)
@@ -199,8 +218,10 @@ export async function siteStart(project: string, name: string): Promise<void> {
 }
 
 export async function siteDelete(project: string, name: string): Promise<void> {
-  await api.site.delete.$post({ json: { project: await resolveProjectId(project), name } })
-  console.log(`Deleted site "${name}". Remove its public hostname from the Cloudflare tunnel too.`)
+  const projectId = await resolveProjectId(project)
+  const { edge } = await api.site.show.$get({ query: { project: projectId, name } })
+  await api.site.delete.$post({ json: { project: projectId, name } })
+  console.log(`Deleted site "${name}".${edge === 'public' ? ' Remove its public hostname from the Cloudflare tunnel too.' : ''}`)
 }
 
 /** A port option's value, refusing anything but a TCP port number. */

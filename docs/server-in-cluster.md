@@ -357,30 +357,35 @@ netd); it only dials one ClusterIP.
 
 ## The site edge
 
-Public sites (docs/public-sites.md) reach the internet through objects
-that never pass through the server, all in `cluster/site-edge.ts`:
+Sites (docs/public-sites.md) reach the internet, or the install's tailnet,
+through objects that never pass through the server, all in
+`cluster/site-edge.ts`:
 
 | Object | Applied by |
 |---|---|
 | Deployment and Service `yaac-site-router` (stock Envoy, 2 replicas), its bootstrap ConfigMap | install, always |
-| Secret and Deployment `yaac-site-tunnel` (cloudflared, 2 replicas) | install, while it has a token (`CF_TUNNEL_TOKEN`, kept in the Secret) |
-| the tunnel's and router's four NetworkPolicies | install, and the server whenever the node set changes |
-| ConfigMap `yaac-site-routes`, the router's route table | install creates it empty; the server writes it |
+| Secret and Deployment `yaac-site-tunnel-cloudflare` (cloudflared, 2 replicas) | install, while it has a token (`CF_TUNNEL_TOKEN`, kept in the Secret) |
+| Secret and Deployment `yaac-site-tunnel-tailnet` (tailscaled and tailgate, 1 replica), its account, serve config and state Secret | install, while it has an auth key and a site domain (`TS_SITE_AUTHKEY` and `--site-domain`, kept in the Secret) |
+| the tunnels' and router's six NetworkPolicies | install, and the server whenever the node set changes |
+| ConfigMap `yaac-site-routes`, the router's two route tables | install creates it empty; the server writes it |
 | per site, headless Service and NetworkPolicy `yaac-site-<id>` | the server (`syncSites`) |
 
-The router's listener is static and reads its routes and clusters from the
-routes ConfigMap's files, so a site change never drains another site's
-connections. Each site's cluster resolves its headless Service, so Envoy
+The router's two listeners, public and tailnet, are static and read their
+routes and clusters from the routes ConfigMap's files, so a site change
+never drains another site's connections. Each site's cluster resolves its headless Service, so Envoy
 dials the live release's pod IP and a deploy's selector change moves new
 requests as soon as DNS shows it.
 
 The wall stands as it is: no edge policy adds a peer to the server's
 ingress, and the edge pods' egress (under the namespace's world-deny) reaches
-only Cloudflare on 7844 and DNS (the tunnel), the router (the tunnel), and
-pods labelled `yaac.site-id` (the router). `yaac cluster check`'s `sites`
-gate runs a probe pod labelled as each and fails if either reaches the
-server's API, the proxy's control port or a workspace that is not a
-release. The probes carry only the `app` label the policies select on;
+only Cloudflare on 7844, DNS and the router's public port (the Cloudflare
+tunnel), public addresses, DNS, the router's tailnet port and the apiserver
+(the tailnet tunnel), and pods labelled `yaac.site-id` (the router). The
+egress proxy is admitted to the router's tailnet port, which carries
+workspaces' requests to tailnet sites. `yaac cluster check`'s `sites` gate
+runs a probe pod labelled as each and fails if one reaches the server's API,
+the proxy's control port or a workspace that is not a release, or the
+Cloudflare one reaches the router's tailnet port. The probes carry only the `app` label the policies select on;
 the edge's Deployments and the router Service also select a replica label,
 so a probe never receives public traffic.
 

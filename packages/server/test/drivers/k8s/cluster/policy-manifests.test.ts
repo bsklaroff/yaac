@@ -262,6 +262,8 @@ describe('buildProxyEgressNpManifest', () => {
         to: [{ podSelector: { matchExpressions: [{ key: LABEL_WORKSPACE_ID, operator: 'Exists' }] } }],
         ports: [{ protocol: 'TCP', port: POD_STREAM_PORT }],
       },
+      // The site route to tailnet sites.
+      { to: [{ podSelector: { matchLabels: { app: 'yaac-site-router' } } }], ports: [{ protocol: 'TCP', port: 8081 }] },
     ])
   })
 

@@ -26,6 +26,8 @@ export interface ClusterInstallArgs {
   /** `--yes`: revoke admin from the logins `--admin` leaves out without asking. */
   yes?: boolean
   nodes?: number | string
+  /** `--site-domain`: the zone whose names are tailnet sites'. */
+  siteDomain?: string
 }
 
 /**
@@ -79,7 +81,27 @@ export function tailnetServeHost(opts: ClusterInstallArgs): string | undefined {
 }
 
 /**
- * Validate `--nodes` (and the `--byo`, `--tailnet` and `--admin` flags)
+ * The site domain `--site-domain` gives, lowercased, or undefined for none
+ * (docs/public-sites.md "Tailnet sites"). Its sites stamp each request
+ * with the caller's tailnet login, so it needs a tailnet install.
+ */
+export function siteDomainArg(opts: ClusterInstallArgs): string | undefined {
+  if (opts.siteDomain === undefined) return undefined
+  const domain = opts.siteDomain.trim().toLowerCase()
+  if (!/^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/.test(domain)) {
+    throw new ClusterInstallError(`--site-domain takes a DNS zone you own, e.g. apps.example.com (got "${opts.siteDomain}").`)
+  }
+  if (!opts.tailnet && !opts.byo) {
+    throw new ClusterInstallError(
+      '--site-domain gives sites seen only on the tailnet, with each caller\'s tailnet login, so it '
+      + 'needs --tailnet: a local install has no logins to give them.',
+    )
+  }
+  return domain
+}
+
+/**
+ * Validate `--nodes` (and the `--byo`, `--tailnet`, `--admin` and `--site-domain` flags)
  * and return the node count to build. The count applies only to a cluster this
  * run creates; install never recreates one, so an existing cluster ignores
  * it with a note.
@@ -87,6 +109,7 @@ export function tailnetServeHost(opts: ClusterInstallArgs): string | undefined {
 export function resolveNodeCount(opts: ClusterInstallArgs): number {
   checkByoFlags(opts)
   tailnetServeHost(opts)
+  siteDomainArg(opts)
   if (opts.admin?.length && !opts.tailnet && !opts.byo) {
     throw new ClusterInstallError(
       '--admin names tailnet logins, so it needs --tailnet: a local install\'s one user is '

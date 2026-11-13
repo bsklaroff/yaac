@@ -10,7 +10,7 @@ import {
   mirrorPinnedUpstreams,
 } from '@yaac/server/drivers/k8s/install/builtin-images'
 import { registryReachable } from '@yaac/server/drivers/k8s/cluster/registry'
-import { NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
+import { NETD_DIR, PROXY_DIR, TAILGATE_DIR } from '@yaac/shared/project-paths'
 import { buildCliBundle } from '#support/cli-bundle'
 import { buildTestServerImage, testServerImageTag } from '#support/deployed-server'
 import { testContainerOwnerLabel } from '@yaac/test-utils/setup'
@@ -144,6 +144,9 @@ export async function setup(): Promise<void> {
   const netdTag = `yaac-test-netd:${netdHash}`
   await ensureImageByTag(netdTag, path.join(NETD_DIR, 'Dockerfile'), NETD_DIR)
 
+  const tailgateTag = `yaac-test-tailgate:${await contextHash(TAILGATE_DIR)}`
+  await ensureImageByTag(tailgateTag, path.join(TAILGATE_DIR, 'Dockerfile'), TAILGATE_DIR)
+
   // Pods pull from the local registry. Push up front so workers never race
   // a push; already-present tags are skipped.
   if (await registryReachable()) {
@@ -152,11 +155,11 @@ export async function setup(): Promise<void> {
     for (const tag of [base.tag, tools.tag, nestable.tag]) {
       await pushImageToRegistry(tag, { compressionFormat: TRUSTED_PARENT_COMPRESSION })
     }
-    for (const tag of [proxyTag, netdTag]) {
+    for (const tag of [proxyTag, netdTag, tailgateTag]) {
       await pushImageToRegistry(tag)
     }
     // Digest-pinned upstreams every install mirrors (registry:2, Envoy,
-    // podman, curl, Verdaccio, nginx). curl is unused by e2e today but mirrored so
+    // podman, curl, Verdaccio, nginx, cloudflared, tailscale). curl is unused by e2e today but mirrored so
     // a future installer test does not fail on a missing image.
     await mirrorPinnedUpstreams()
     // The k8s tiers' server runs as a Deployment (docs/server-in-cluster.md).
@@ -171,7 +174,7 @@ export async function setup(): Promise<void> {
   // they are not the newest). Skipped on a shared engine, where the host
   // runs `pnpm gc:test-images` while every rig is idle.
   if (process.env.YAAC_TEST_SHARED_ENGINE !== '1') {
-    const ownTags = [base.tag, tools.tag, nestable.tag, proxyTag, netdTag, await testServerImageTag()]
+    const ownTags = [base.tag, tools.tag, nestable.tag, proxyTag, netdTag, tailgateTag, await testServerImageTag()]
     const retired = await gcTestImages(ownTags).catch((err: unknown) => {
       console.log(`[global-setup] could not sweep stale test images: ${String(err)}`)
       return []

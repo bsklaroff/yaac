@@ -27,6 +27,8 @@ import {
   RUNTIME_CLASS_GVISOR,
   SERVER_APP_NAME,
   SERVER_MAMA_PORT,
+  SITE_ROUTER_APP_NAME,
+  SITE_ROUTER_TAILNET_PORT,
   SERVER_MAMA_SERVICE_NAME,
   SERVER_SA_NAME,
   TRANSPARENT_HTTPS_PORT,
@@ -118,6 +120,13 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
                   value: `http://${SERVER_MAMA_SERVICE_NAME}.${k8sNamespace()}.svc.cluster.local:`
                     + `${String(SERVER_MAMA_PORT)}/api/workspace/mama`,
                 },
+                // Where requests to a tailnet site go, and the domain whose
+                // names are those sites' (docs/workspace-egress.md "Tailnet sites").
+                {
+                  name: 'SITE_ROUTER',
+                  value: `${SITE_ROUTER_APP_NAME}.${k8sNamespace()}.svc.cluster.local:${String(SITE_ROUTER_TAILNET_PORT)}`,
+                },
+                ...(env.siteDomain !== undefined ? [{ name: 'SITE_DOMAIN', value: env.siteDomain }] : []),
                 {
                   name: 'PROXY_AUTH_SECRET',
                   valueFrom: {

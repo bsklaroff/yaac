@@ -8,6 +8,9 @@ import {
   BUILDER_UPSTREAM_IMAGE,
   CLOUDFLARED_MIRROR_TAG,
   CLOUDFLARED_UPSTREAM_IMAGE,
+  TAILSCALE_MIRROR_TAG,
+  TAILSCALE_UPSTREAM_IMAGE,
+  resolveTailgateImageTag,
   ENVOY_MIRROR_TAG,
   ENVOY_UPSTREAM_IMAGE,
   NGINX_MIRROR_TAG,
@@ -24,7 +27,7 @@ import {
   VERDACCIO_MIRROR_TAG,
   VERDACCIO_UPSTREAM_IMAGE,
 } from '#drivers/k8s/cluster'
-import { NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
+import { NETD_DIR, PROXY_DIR, TAILGATE_DIR } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 import {
   GVISOR_INSTALLER_MIRROR_TAG,
@@ -105,7 +108,7 @@ async function mirrorPinnedImage(upstream: string, mirrorTag: string): Promise<v
 /**
  * Mirror every digest-pinned upstream yaac runs: `registry:2`, Envoy, the
  * builder pods' podman, the gVisor installer's curl, the npm cache's
- * Verdaccio and nginx, and the site tunnel's cloudflared. The e2e global
+ * Verdaccio and nginx, and the site tunnels' cloudflared and tailscaled. The e2e global
  * setup also calls this.
  */
 export async function mirrorPinnedUpstreams(): Promise<void> {
@@ -116,6 +119,7 @@ export async function mirrorPinnedUpstreams(): Promise<void> {
   await mirrorPinnedImage(VERDACCIO_UPSTREAM_IMAGE, VERDACCIO_MIRROR_TAG)
   await mirrorPinnedImage(NGINX_UPSTREAM_IMAGE, NGINX_MIRROR_TAG)
   await mirrorPinnedImage(CLOUDFLARED_UPSTREAM_IMAGE, CLOUDFLARED_MIRROR_TAG)
+  await mirrorPinnedImage(TAILSCALE_UPSTREAM_IMAGE, TAILSCALE_MIRROR_TAG)
 }
 
 /**
@@ -147,6 +151,8 @@ export async function buildBuiltinImages(deps: BuiltinImageDeps): Promise<void> 
   await buildShippedImage(await resolveProxyImageTag(testEnv.proxyImage), PROXY_DIR)
   deps.log('Ensuring the netd image...')
   await buildShippedImage(await resolveNetdImageTag(testEnv.netdImage), NETD_DIR)
+  deps.log('Ensuring the tailgate image...')
+  await buildShippedImage(await resolveTailgateImageTag(), TAILGATE_DIR)
 
   deps.log('Ensuring the pinned upstream mirrors...')
   await mirrorPinnedUpstreams()

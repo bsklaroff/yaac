@@ -2189,10 +2189,22 @@ export interface SiteCommit {
   commit: string
 }
 
-/** A public site as `GET /site/list` answers it. */
+/** Which edge serves a site, derived from its hostname (`siteEdgeOf`). */
+export type SiteEdge = 'public' | 'tailnet'
+
+/**
+ * The tailnet tunnel's state: `absent` with no Tailscale auth key given to
+ * install (or under containerless), `joining` until its device is on the
+ * tailnet, `no-certificate` until the site domain's certificate is in its
+ * Secret, `ready` while it serves.
+ */
+export type SiteTailnetState = 'absent' | 'joining' | 'no-certificate' | 'ready'
+
+/** A site, public or tailnet, as `GET /site/list` answers it. */
 export interface SiteEntry {
   name: string
   hostname: string
+  edge: SiteEdge
   /** The port its releases serve on. */
   port: number
   /** The port of its releases that its owner may forward or preview, for
@@ -2229,10 +2241,13 @@ export interface SiteDetail extends SiteEntry {
   releases: Array<{ workspaceId: string; commits: SiteCommit[]; createdAt: string; stoppedAt?: string; rerunOf?: string }>
 }
 
-/** What `GET /site/edge` answers: whether the install's tunnel holds a
- *  connection to Cloudflare (`absent`: install was given no tunnel token). */
+/** What `GET /site/edge` answers: the state of the install's two site
+ *  tunnels, and the site domain whose names are tailnet sites'. */
 export interface SiteEdgeStatus {
-  tunnel: 'connected' | 'disconnected' | 'absent'
+  /** `absent`: install was given no Cloudflare tunnel token. */
+  cloudflare: 'connected' | 'disconnected' | 'absent'
+  tailnet: SiteTailnetState
+  siteDomain?: string
 }
 
 /** A routine as the snapshot carries it. */

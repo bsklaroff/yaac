@@ -52,6 +52,7 @@ array target, so `.tsx` would break).
 | `packages/shared` (`@yaac/shared`) | wire types + cross-cutting utils | nothing (type-only from others OK) |
 | `packages/test-utils` (`@yaac/test-utils`) | shared test helpers + fixtures | server, shared |
 | `k8s/proxy` (`yaac-proxy-sidecar`) | egress proxy sidecar | self only |
+| `k8s/tailgate` (`yaac-tailgate`) | the tailnet site tunnel's gateway (TLS, DNS, caller identity) | self only |
 | `ios/` (not a pnpm package) | the iPhone app: a server switcher around the webapp (ios/README.md), built with Xcode on a Mac | nothing |
 
 Boundaries are enforced by pnpm strict `node_modules` (an undeclared package
@@ -118,6 +119,7 @@ All container images used by e2e tests are pre-built in `test/global-setup.ts` b
 | `yaac-test-nestable:<hash>` | `dockerfiles/Dockerfile.nestable` (layered on tools) |
 | `yaac-test-proxy:<hash>` | `k8s/proxy/` (files not listed in its `.containerignore`) |
 | `yaac-test-netd:<hash>` | `k8s/netd/` (files not listed in its `.containerignore`) |
+| `yaac-test-tailgate:<hash>` | `k8s/tailgate/` (files not listed in its `.containerignore`) |
 
 The global setup also mirrors digest-pinned upstream images into the local
 registry (no content hash — the digest IS the pin): `registry:2` for
@@ -129,7 +131,7 @@ sandboxed builder pods (`packages/server/src/drivers/k8s/cluster/builder-image.t
 the gVisor installer (`packages/server/src/drivers/k8s/install/gvisor-installer.ts`),
 `verdaccio/verdaccio` plus `nginxinc/nginx-unprivileged` for the npm cache
 (`packages/server/src/drivers/k8s/cluster/npm-cache.ts`), and
-`cloudflare/cloudflared` for the public-site tunnel
+`cloudflare/cloudflared` and `tailscale/tailscale` for the site tunnels
 (`packages/server/src/drivers/k8s/cluster/site-edge.ts`).
 
 **Rules:**

@@ -226,6 +226,7 @@ cluster
   .option('--tailnet [host]', 'Publish the server on your Tailscale tailnet instead of at 127.0.0.1, at an https origin whose callers are identified by their tailnet user. With <host> (this machine\'s MagicDNS name), through this machine\'s own `tailscale serve`; without, through the Tailscale Kubernetes operator, which install sets up from TS_OAUTH_CLIENT_ID / TS_OAUTH_CLIENT_SECRET when the cluster lacks it')
   .option('--admin <login>', 'With --tailnet (or --byo): make exactly these tailnet logins (repeat the flag for several) the install\'s admins, who alone publish sites and set roles. A fresh install needs at least one; switching a local install to tailnet takes exactly one, who gets its projects and settings. Asks before revoking anyone else\'s', collect, [])
   .option('-y, --yes', 'Revoke admin from logins --admin leaves out without asking')
+  .option('--site-domain <zone>', 'With --tailnet (or --byo): a DNS zone you own whose names are tailnet sites, served only to your tailnet with each caller\'s tailnet login. TS_SITE_AUTHKEY (a Tailscale auth key for a tag) joins the tunnel that serves them; the zone\'s wildcard certificate goes in the Secret yaac-site-tunnel-tailnet-tls. Both are kept for later installs; the zone is fixed once set (change it by deleting that Secret, after moving its sites)')
   // `--nodes` stays a string so the install reports what the user typed
   // rather than `NaN`. A failed finishing check exits 1.
   .action(async (options: ClusterInstallArgs) => {

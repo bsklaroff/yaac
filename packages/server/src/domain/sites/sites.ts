@@ -31,10 +31,11 @@ import { approveWorkflowStart, checkWorkflowStart, missingRepos, projectRepo, re
 import { fetchRepoOrigin } from '#domain/repos'
 import { VOLUME_NEED } from '#domain/workspaces'
 import { isInfraPort } from '#lib/port-policy'
-import { testEnv } from '@yaac/shared/env'
+import { env, testEnv } from '@yaac/shared/env'
 import { ServerError } from '@yaac/shared/errors'
 import { isBranchName } from '@yaac/shared/git'
 import { repoDir } from '@yaac/shared/project-paths'
+import { siteEdgeOf } from '@yaac/shared/site-edge'
 import { FULL_COMMIT_PATTERN, parseStepGraph } from '@yaac/shared/steps'
 import type { ProjectRow } from '#db'
 import type { RepoCommits, RepoStart, SiteCommit, SiteDetail, SiteEdgeStatus, SiteEntry } from '@yaac/shared/types'
@@ -75,13 +76,31 @@ export async function requireSite(projectId: string, name: string): Promise<Site
 }
 
 /**
- * A hostname, lowercased. Any name is accepted: it only receives traffic
- * once the install's Cloudflare tunnel routes it, which is decided in the
- * Cloudflare account (docs/public-sites.md "The edge").
+ * A hostname, lowercased. A name under the install's site domain is a
+ * tailnet site's (docs/public-sites.md "Tailnet sites"): it must be one
+ * label under the domain, which is what a wildcard certificate covers, and
+ * needs a `tailnet` install, since a `local` one has no logins to stamp.
+ * Any other name is public and accepted: it only receives traffic once the
+ * install's Cloudflare tunnel routes it, which is decided in the Cloudflare
+ * account (docs/public-sites.md "The edge").
  */
 function checkHostname(raw: string): string {
   const hostname = raw.trim().toLowerCase()
   if (!DNS_NAME.test(hostname)) throw new ServerError('VALIDATION', `"${raw}" is not a hostname like shop.example.com`)
+  const domain = env.siteDomain
+  if (hostname === domain) {
+    throw new ServerError('VALIDATION', `${domain} is the site domain itself: name a site under it, like shop.${domain}`)
+  }
+  if (domain === undefined || siteEdgeOf(hostname, domain) === 'public') return hostname
+  if (hostname.slice(0, -domain.length - 1).includes('.')) {
+    throw new ServerError('VALIDATION', `a tailnet site's hostname is one label under ${domain}, like shop.${domain}`)
+  }
+  if (env.accessMode !== 'tailnet') {
+    throw new ServerError(
+      'VALIDATION',
+      `${hostname} is under the site domain, so it would be a tailnet site, which needs a tailnet install: this one is local and has no logins to give it`,
+    )
+  }
   return hostname
 }
 
@@ -336,9 +355,11 @@ export async function showSite(projectId: string, name: string): Promise<SiteDet
   }
 }
 
-/** Whether the install's tunnel is connected. */
+/** The state of the install's two site tunnels, and its site domain. */
 export async function getSiteEdge(): Promise<SiteEdgeStatus> {
-  return { tunnel: await workspaceDriver().siteTunnelStatus() }
+  const driver = workspaceDriver()
+  const [cloudflare, tailnet] = await Promise.all([driver.siteCloudflareStatus(), driver.siteTailnetStatus()])
+  return { cloudflare, tailnet, ...(env.siteDomain !== undefined ? { siteDomain: env.siteDomain } : {}) }
 }
 
 /**
@@ -364,6 +385,7 @@ async function toSiteEntry(row: SiteRow): Promise<SiteEntry> {
   return {
     name: row.name,
     hostname: row.hostname,
+    edge: siteEdgeOf(row.hostname, env.siteDomain),
     port: row.port,
     ...(row.adminPort !== undefined ? { adminPort: row.adminPort } : {}),
     workflow: workflow?.name ?? '',
@@ -424,6 +446,7 @@ export async function syncSiteRoutes(): Promise<void> {
   const routes: SiteRoute[] = (await listSites()).map((row) => ({
     siteId: row.id,
     hostname: row.hostname,
+    edge: siteEdgeOf(row.hostname, env.siteDomain),
     port: row.livePort ?? row.port,
     ...(row.liveWorkspaceId !== undefined ? { liveWorkspaceId: row.liveWorkspaceId } : {}),
   }))

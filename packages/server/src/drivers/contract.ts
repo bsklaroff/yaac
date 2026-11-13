@@ -18,6 +18,8 @@ import type {
   WorkspaceDeathCause,
   WorkspaceResourceUse,
   ProjectConfig,
+  SiteEdge,
+  SiteTailnetState,
 } from '@yaac/shared/types'
 
 /**
@@ -139,6 +141,12 @@ export interface RuntimeSnapshot {
   strayUnits(): Promise<StrayUnit[]>
 }
 
+/** A tailnet user, as a request to a tailnet site names them. */
+export interface EgressIdentity {
+  login: string
+  name: string
+}
+
 /**
  * What the egress path must know about a workspace before it may reach
  * anything. The caller resolves these inputs; the driver turns them into
@@ -150,6 +158,13 @@ export interface WorkspaceRegistration {
   /** The credential owner whose bundle the workspace spends (see
    *  `syncCredentials`). */
   owner: string
+  /**
+   * The project owner's tailnet login and name, which the egress proxy
+   * stamps on the workspace's requests to a tailnet site (docs/public-sites.md
+   * "Tailnet sites"). Absent for a release, and for an owner with no login,
+   * as on a local install; the proxy then refuses those requests.
+   */
+  identity?: EgressIdentity
   config: ProjectConfig
   allowlist: EgressAllowlist
   /**
@@ -270,6 +285,8 @@ export interface SubstrateIntent {
   /** The credential owner whose bundle the workspace spends (see
    *  `syncCredentials`). */
   owner: string
+  /** See `WorkspaceRegistration.identity`. */
+  identity?: EgressIdentity
   config: ProjectConfig
   allowlist: EgressAllowlist
   nestedContainers: boolean
@@ -980,9 +997,12 @@ export interface WorkspaceDriver {
    * without sites (containerless), whose site routes refuse first.
    */
   syncSites(sites: SiteRoute[]): Promise<void>
-  /** Whether the install's public edge holds a connection to the internet;
-   *  `absent` where it has none (no tunnel installed, or containerless). */
-  siteTunnelStatus(): Promise<'connected' | 'disconnected' | 'absent'>
+  /** Whether the install's Cloudflare tunnel holds a connection; `absent`
+   *  where it has none (no tunnel installed, or containerless). */
+  siteCloudflareStatus(): Promise<'connected' | 'disconnected' | 'absent'>
+  /** The tailnet tunnel's state; `absent` where it has none (no auth key
+   *  given to install, or containerless). */
+  siteTailnetStatus(): Promise<SiteTailnetState>
   /**
    * Where a sandboxed workspace's `yaac-mama` calls arrive, or null when
    * workspaces call the API themselves (containerless). Under k8s the egress
@@ -996,6 +1016,8 @@ export interface WorkspaceDriver {
 export interface SiteRoute {
   siteId: string
   hostname: string
+  /** Which edge serves it: a router listener serves only its own edge's sites. */
+  edge: SiteEdge
   /** The port its releases serve on. */
   port: number
   /** The release its hostname reaches; absent while none is live. */

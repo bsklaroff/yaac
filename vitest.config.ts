@@ -117,6 +117,7 @@ export default defineConfig({
       unitProject('test/support'),
       unitProject('k8s/proxy'),
       unitProject('k8s/netd'),
+      unitProject('k8s/tailgate'),
       // streamd (in-pod stream daemon), acpd (in-pod ACP supervisor) and
       // the agent patches are plain JS shipped in dockerfiles/ and outside
       // the root tsconfig, so these tests are their only check.

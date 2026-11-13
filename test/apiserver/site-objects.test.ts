@@ -38,17 +38,18 @@ afterAll(() => {
 
 describe('site objects', () => {
   it('applies, flips and prunes each site\'s Service and policy, and the edge policies', async () => {
-    await syncSiteEdgeNodes(['172.18.0.2/32'], ['10.96.0.10/32'])
+    await syncSiteEdgeNodes(['172.18.0.2/32'], ['10.96.0.10/32'], { cidrs: ['172.18.0.2/32'], ports: [6443] })
     expect(names('networkpolicy')).toEqual([
-      'yaac-site-router-egress', 'yaac-site-router-ingress', 'yaac-site-tunnel-egress', 'yaac-site-tunnel-ingress',
+      'yaac-site-router-egress', 'yaac-site-router-ingress', 'yaac-site-tunnel-cloudflare-egress',
+      'yaac-site-tunnel-cloudflare-ingress', 'yaac-site-tunnel-tailnet-egress', 'yaac-site-tunnel-tailnet-ingress',
     ])
     type Rule = { from?: unknown[]; to?: unknown[]; ports?: unknown[] }
-    const tunnelEgress = get<{ spec: { egress: Rule[] } }>('networkpolicy', 'yaac-site-tunnel-egress')
+    const tunnelEgress = get<{ spec: { egress: Rule[] } }>('networkpolicy', 'yaac-site-tunnel-cloudflare-egress')
     expect(tunnelEgress.spec.egress[0].ports).toEqual([{ protocol: 'TCP', port: 7844 }, { protocol: 'UDP', port: 7844 }])
     expect(tunnelEgress.spec.egress.every((r) => r.to)).toBe(true)
 
     // A headless Service with no live release, whose selector matches no pod.
-    await syncSiteObjects([{ siteId: 'blog', hostname: 'blog.example.com', port: 3000 }])
+    await syncSiteObjects([{ siteId: 'blog', hostname: 'blog.example.com', edge: 'public', port: 3000 }])
     type Svc = { spec: { clusterIP: string; selector: Record<string, string> } }
     expect(get<Svc>('service', 'yaac-site-blog').spec).toMatchObject({
       clusterIP: 'None', selector: { 'yaac.site-id': 'blog', 'yaac.workspace-id': '' },
@@ -56,10 +57,10 @@ describe('site objects', () => {
     const ingress = get<{ spec: { ingress: Rule[] } }>('networkpolicy', 'yaac-site-blog').spec.ingress
     expect(ingress[0].from).toEqual([{ podSelector: { matchLabels: { app: 'yaac-site-router' } } }])
 
-    await syncSiteObjects([{ siteId: 'blog', hostname: 'blog.example.com', port: 3000, liveWorkspaceId: 'ws-1' }])
+    await syncSiteObjects([{ siteId: 'blog', hostname: 'blog.example.com', edge: 'public', port: 3000, liveWorkspaceId: 'ws-1' }])
     expect(get<Svc>('service', 'yaac-site-blog').spec.selector).toEqual({ 'yaac.site-id': 'blog', 'yaac.workspace-id': 'ws-1' })
     expect(Object.keys(get<{ data: Record<string, string> }>('configmap', 'yaac-site-routes').data).sort())
-      .toEqual(['cds.json', 'rds.json'])
+      .toEqual(['cds.json', 'rds-tailnet.json', 'rds.json'])
 
     await syncSiteObjects([])
     expect(names('service')).toEqual([])

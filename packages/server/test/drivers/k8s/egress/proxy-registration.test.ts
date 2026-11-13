@@ -240,6 +240,7 @@ describe('registerWorkspaceEgress', () => {
       workspaceId: 'w1',
       projectId: 'demo',
       owner: 'o',
+      identity: { login: 'alice@example.com', name: 'Alice' },
       config: PROJECT_CONFIG_DEFAULTS,
       allowlist: { hosts: ['api.example.com'], defaults: true },
       proxySecretRules: {},
@@ -251,6 +252,8 @@ describe('registerWorkspaceEgress', () => {
     const state = payloadOf(cm)
     expect(state.projectId).toBe('demo')
     expect(state.owner).toBe('o')
+    // Stamped on the workspace's requests to a tailnet site.
+    expect(state.identity).toEqual({ login: 'alice@example.com', name: 'Alice' })
     expect(state.allowedHosts).toContain('api.example.com')
     // A registration is the whole allowlist, not a patch, so it must
     // include the defaults.

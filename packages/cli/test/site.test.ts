@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from 'vitest'
-import { siteDeploy, siteEdit } from '#commands/site'
+import { siteCreate, siteDeploy, siteEdit } from '#commands/site'
 import type { SiteDetail } from '@yaac/shared/types'
 import { serveProjects, startFakeApi, type FakeApi } from './fake-api'
 
 /*
- * `yaac site deploy` and `site edit` against a fake server: what they send,
- * and how `--wait` reads the site until its deploy ends.
+ * `yaac site create`, `deploy` and `edit` against a fake server: what they
+ * send, what create says to do next for each edge, and how `--wait` reads
+ * the site until its deploy ends.
  */
 let api: FakeApi
 let logged: string[]
@@ -14,6 +15,7 @@ const SITE: SiteDetail = {
   name: 'web',
   workflow: 'web',
   hostname: 'app.example.com',
+  edge: 'public',
   port: 3000,
   steps: { server: { run: ['pnpm start'], service: true } },
   repos: [{ dir: 'demo', branch: 'main' }],
@@ -59,6 +61,25 @@ const deploying = (phase: 'building' | 'starting'): SiteDetail => ({
 const finished = (outcome: 'succeeded' | 'failed', error?: string): SiteDetail => ({
   ...SITE,
   lastDeploy: { workspaceId: 'ws-new', commits: COMMITS, outcome, finishedAt: SITE.createdAt, ...(error ? { error } : {}) },
+})
+
+describe('siteCreate', () => {
+  it('says where a site under the site domain answers and what the tailnet tunnel lacks, and the Cloudflare route for any other', async () => {
+    api.on('POST /api/site/create', { json: {} })
+    api.on('GET /api/site/edge', { json: { cloudflare: 'connected', tailnet: 'no-certificate', siteDomain: 'apps.example.com' } })
+    const opts = { hostname: 'Kanban.apps.example.com', port: '3000', workflow: 'web', repo: ['demo@main'] }
+    await siteCreate('demo', 'kanban', opts)
+    expect(logged).toEqual([
+      'Created site "kanban", a tailnet site: https://kanban.apps.example.com answers only users on this install\'s tailnet.',
+      'The tailnet tunnel has no certificate yet: put one for *.apps.example.com in the Secret yaac-site-tunnel-tailnet-tls.',
+      'Then publish it with: yaac site deploy demo kanban',
+    ])
+
+    logged = []
+    await siteCreate('demo', 'web', { ...opts, hostname: 'app.example.com' })
+    expect(logged[0]).toBe('Created site "web", a public site. In Cloudflare, add a public hostname to the install\'s tunnel:')
+    expect(logged).toContain('  service   http://yaac-site-router:8080')
+  })
 })
 
 describe('siteDeploy', () => {

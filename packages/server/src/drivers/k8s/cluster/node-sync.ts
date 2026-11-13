@@ -67,7 +67,7 @@ export async function reconcileNodeSet(projectIds: string[]): Promise<void> {
       ...(serverEgress ? [serverEgress] : []),
     ]) await applyObject(manifest)
     await syncNpmCacheNodes(nodeCidrs)
-    await syncSiteEdgeNodes(nodeCidrs, dnsCidrs)
+    await syncSiteEdgeNodes(nodeCidrs, dnsCidrs, apiserver)
     await applyMainRegistryIngress(nodeCidrs)
     for (const projectId of projectIds) await applyProjectRegistryIngress(projectId, nodeCidrs)
     // Unset after a failed server render, so the next pass retries it.

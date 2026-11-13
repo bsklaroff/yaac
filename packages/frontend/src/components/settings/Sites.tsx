@@ -12,8 +12,11 @@ import { INPUT, WorkspaceLink } from '#components/settings/Volumes'
 import { useWorkflows } from '#components/settings/Workflows'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
+import { siteEdgeOf } from '@yaac/shared/site-edge'
 import { formatCommits } from '@yaac/shared/steps'
-import type { ProjectSummary, SiteCommit, SiteDeployPhase, SiteEntry } from '@yaac/shared/types'
+import type {
+  ProjectSummary, SiteCommit, SiteDeployPhase, SiteEdge, SiteEdgeStatus, SiteEntry, SiteTailnetState,
+} from '@yaac/shared/types'
 
 /** How often the list is refetched while a deploy runs. */
 const DEPLOY_POLL_MS = 3000
@@ -26,6 +29,24 @@ const PHASE: Record<SiteDeployPhase, string> = {
 }
 
 type Action = 'deploy' | 'stop' | 'start' | 'delete'
+
+/** Who reaches a site of each edge, for the form, the note after creating
+ *  and the deploy dialog. */
+const EDGE_REACH: Record<SiteEdge, string> = {
+  tailnet: 'A tailnet site: only users on this install’s tailnet reach it, each request carrying their login.',
+  public: 'A public site: the internet reaches it once the Cloudflare tunnel routes its hostname.',
+}
+
+const TAILNET_STATE: Record<SiteTailnetState, string> = {
+  absent: 'no tailnet tunnel',
+  joining: 'tailnet tunnel joining the tailnet',
+  'no-certificate': 'tailnet tunnel has no certificate',
+  ready: 'tailnet tunnel ready',
+}
+
+function useSiteEdge(): SiteEdgeStatus | undefined {
+  return useQuery({ queryKey: ['site-edge'], queryFn: () => api.site.edge.$get() }).data
+}
 
 /** Commits per repo: `<dir>@<short>` each, bare for a lone repo. */
 const short = (commits: SiteCommit[]): string => formatCommits(commits, 8)
@@ -54,6 +75,7 @@ export function Sites({ project, readOnly }: { project: ProjectSummary; readOnly
   // created, until its Cloudflare note is dismissed.
   const [form, setForm] = useState<SiteEntry | 'new' | null>(null)
   const [created, setCreated] = useState<string | null>(null)
+  const edge = useSiteEdge()
   const [confirm, setConfirm] = useState<{ action: Action; site: string } | null>(null)
   // The ref the deploy dialog names per repo, by folder.
   const [refs, setRefs] = useState<Record<string, string>>({})
@@ -88,11 +110,12 @@ export function Sites({ project, readOnly }: { project: ProjectSummary; readOnly
     <div>
       <SectionLabel>Sites</SectionLabel>
       <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
-        A site publishes the project&apos;s app at a hostname on the internet. Each deploy starts a release: a
+        A site publishes the project&apos;s app at a hostname: on the internet, or, under the install&apos;s site
+        domain, only on its tailnet. Each deploy starts a release: a
         workspace that runs the site&apos;s workflow with each of its repos at a commit and, once ready, takes over
         the hostname.
       </p>
-      <EdgeStatus />
+      <EdgeStatus edge={edge} />
 
       {sites !== undefined && (
         <div className="mt-3 space-y-1">
@@ -114,11 +137,19 @@ export function Sites({ project, readOnly }: { project: ProjectSummary; readOnly
 
       {created !== null && (
         <div role="note" className="mt-3 flex items-start gap-2 rounded-md bg-bg px-2.5 py-1.5 text-[11px] text-text-dim">
-          <p className="flex-1 leading-relaxed">
-            To make it public, add a public hostname <code className="text-text">{created}</code> to the
-            install&apos;s Cloudflare tunnel, whose service is the router (
-            <code className="text-text">yaac-site-router</code>, port 8080).
-          </p>
+          {siteEdgeOf(created, edge?.siteDomain) === 'tailnet' ? (
+            <p className="flex-1 leading-relaxed">
+              <code className="text-text">https://{created}</code> is a tailnet site: only users on this
+              install&apos;s tailnet reach it.
+              {edge !== undefined && edge.tailnet !== 'ready' && ` It does not answer yet: ${TAILNET_STATE[edge.tailnet]}.`}
+            </p>
+          ) : (
+            <p className="flex-1 leading-relaxed">
+              To make it public, add a public hostname <code className="text-text">{created}</code> to the
+              install&apos;s Cloudflare tunnel, whose service is the router (
+              <code className="text-text">yaac-site-router</code>, port 8080).
+            </p>
+          )}
           <button type="button" onClick={() => setCreated(null)} className={TEXT_BUTTON}>Dismiss</button>
         </div>
       )}
@@ -152,6 +183,9 @@ export function Sites({ project, readOnly }: { project: ProjectSummary; readOnly
         error={act.error?.message}
         onConfirm={() => { if (confirm !== null) act.mutate(confirm) }}
       >
+        {confirm?.action === 'deploy' && confirmed !== undefined && (
+          <p className="mt-3 text-[11px] text-text-faint">{EDGE_REACH[confirmed.edge]}</p>
+        )}
         {confirm?.action === 'deploy' && confirmed?.follow === true && (
           <p className="mt-3 text-[11px] text-text-faint">It follows its branches, so it deploys their tips.</p>
         )}
@@ -200,22 +234,27 @@ function confirmText(confirm: { action: Action; site: string } | null): {
   }
 }
 
-/** Whether the install's tunnel to Cloudflare is connected. */
-function EdgeStatus(): JSX.Element | null {
-  const { data: edge } = useQuery({ queryKey: ['site-edge'], queryFn: () => api.site.edge.$get() })
+/** The state of the install's two site tunnels, and its site domain. */
+function EdgeStatus({ edge }: { edge: SiteEdgeStatus | undefined }): JSX.Element | null {
   if (edge === undefined) return null
-  if (edge.tunnel === 'absent') {
-    return (
-      <p className="mt-2 text-[11px] leading-relaxed text-warning">
-        This install has no tunnel, so no site is reachable from the internet. Set one up with{' '}
-        <code className="text-text-dim">CF_TUNNEL_TOKEN=… yaac cluster install</code>.
-      </p>
-    )
-  }
   return (
-    <p className={`mt-2 text-[11px] ${edge.tunnel === 'connected' ? 'text-text-faint' : 'text-danger'}`}>
-      Cloudflare tunnel {edge.tunnel}
-    </p>
+    <>
+      {edge.cloudflare === 'absent' ? (
+        <p className="mt-2 text-[11px] leading-relaxed text-warning">
+          This install has no tunnel, so no site is reachable from the internet. Set one up with{' '}
+          <code className="text-text-dim">CF_TUNNEL_TOKEN=… yaac cluster install</code>.
+        </p>
+      ) : (
+        <p className={`mt-2 text-[11px] ${edge.cloudflare === 'connected' ? 'text-text-faint' : 'text-danger'}`}>
+          Cloudflare tunnel {edge.cloudflare}
+        </p>
+      )}
+      {edge.siteDomain !== undefined && (
+        <p className={`text-[11px] ${edge.tailnet === 'ready' ? 'text-text-faint' : 'text-warning'}`}>
+          Site domain <code className="text-text-dim">{edge.siteDomain}</code>: {TAILNET_STATE[edge.tailnet]}
+        </p>
+      )}
+    </>
   )
 }
 
@@ -244,6 +283,12 @@ function SiteRow({ projectId, site, canEnd, canPublish, onAction, onEdit }: {
         >
           {site.hostname}
         </a>
+        <span
+          className={`shrink-0 text-[10px] uppercase ${site.edge === 'tailnet' ? 'text-accent' : 'text-text-faint'}`}
+          title={EDGE_REACH[site.edge]}
+        >
+          {site.edge}
+        </span>
         <span className="shrink-0 font-mono text-[11px] text-text-faint">
           :{site.port}{site.adminPort !== undefined && ` · admin :${site.adminPort}`}
           {site.volume !== undefined && ` · ${site.volume}`}
@@ -311,6 +356,7 @@ function SiteForm({ project, site, onDone, onCancel }: {
   const projectId = project.id
   const volumes = useVolumes(projectId)
   const { data: workflows } = useWorkflows(projectId)
+  const siteDomain = useSiteEdge()?.siteDomain
   const [name, setName] = useState('')
   const [hostname, setHostname] = useState(site?.hostname ?? '')
   const [port, setPort] = useState(site !== undefined ? String(site.port) : '')
@@ -370,7 +416,7 @@ function SiteForm({ project, site, onDone, onCancel }: {
           aria-label="Hostname"
           value={hostname}
           onChange={(e) => setHostname(e.target.value)}
-          placeholder="app.example.com"
+          placeholder={siteDomain !== undefined ? `app.${siteDomain}` : 'app.example.com'}
           className={`${INPUT} min-w-0 flex-1`}
         />
         <input
@@ -400,6 +446,9 @@ function SiteForm({ project, site, onDone, onCancel }: {
           {volumes?.map((v) => <option key={v.name} value={v.name}>{v.name}</option>)}
         </select>
       </div>
+      {hostname.trim() !== '' && (
+        <p className="text-[11px] text-text-faint">{EDGE_REACH[siteEdgeOf(hostname.trim(), siteDomain)]}</p>
+      )}
       <fieldset className="space-y-1">
         <legend className="text-[11px] text-text-faint">Repos each release starts with: one at its root, several in their folders</legend>
         {selection.rows.map((row) => (

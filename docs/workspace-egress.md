@@ -268,7 +268,7 @@ objects the server watches. All live in the install namespace, are labelled
 |---|---|---|---|---|
 | `yaac-proxy-credentials` | Secret | server | proxy informer | per owner, keys prefixed `<owner>.`: `claude.json`, `codex.json`, `opencode.json`, `pi.json`, `omp.json` (each tool's host-store file verbatim, plus `apiHost` for opencode, pi and omp: the provider host the key is swapped in on; a signed-out tool has no key), `git-tokens.json` (`[{token, grants}]`) and `ssh-keys.json` (`[{privateKey, publicKey, grants}]`, the private key OpenSSH-encoded from the sealed seed). Each grant is `{projectId, repoId, host, path, readOnly, ghToken}`, an ssh key's with its `knownHostsEntry` (see "Git credentials") |
 | `yaac-proxy-secrets-<project id>` | Secret, one per project | server | proxy informer | `values.json`: `{ "<project id>/<NAME>": value }`, the secret values behind that project's `secretRef` rules |
-| `yaac-proxy-reg-<workspaceId>` | ConfigMap, one per workspace | server | proxy informer | `registration.json`: rules with `secretRef`s (never values), allowed hosts, project, owner, test redirects |
+| `yaac-proxy-reg-<workspaceId>` | ConfigMap, one per workspace | server | proxy informer | `registration.json`: rules with `secretRef`s (never values), allowed hosts, project, owner, `identity` (the project owner's tailnet login and name; see "Tailnet sites"), test redirects |
 | `yaac-proxy-refreshed` | Secret | proxy | server informer | `<owner>.claude.json`, `<owner>.codex.json`: OAuth bundles the proxy captured from a workspace's token refresh, in the credentials-file shape |
 | `yaac-proxy-ca` | Secret | proxy | server (one get) | `ca.key`, `ca.pem`, `ca-bundle.pem`, and the proxy's ssh host key, `ssh-host-key` and `ssh-host-key.pub`. The server copies the public parts into the `yaac-proxy-ca` ConfigMap pods mount |
 | `yaac-proxy-state` | ConfigMap | proxy | server informer | `blocked-hosts.json`, `git-auth-failures.json` |
@@ -429,6 +429,52 @@ A public site's release reaches neither. The proxy answers 403 to any
 `yaac.internal` request from a pod labelled `yaac.site-id`, and the server
 refuses a relayed call naming a release, so code facing the internet never
 acts on yaac (docs/public-sites.md).
+
+## Tailnet sites
+
+A tailnet site (docs/public-sites.md "Tailnet sites") is served under the
+install's site domain, which a workspace pod can neither resolve nor reach:
+it is not on the tailnet. The proxy carries its requests to the site
+router's tailnet listener instead and says who the workspace's owner is,
+so an agent reaches the same URL a person opens and acts as its owner. The
+server hands the proxy the domain and the listener's address (`SITE_DOMAIN`,
+`SITE_ROUTER`) when it deploys it.
+
+For a name under the domain the proxy (`k8s/proxy/dispatch.ts`):
+
+1. checks the allowlist. A project reaches a tailnet site only if an entry
+   names it or the whole zone (`*.apps.example.com`), because the request
+   will carry its owner's identity: the entry is the owner's consent, as
+   allowing `github.com` is consent to spend their git credential there. A
+   bare `*` is not such an entry, so an unrestricted project reaches the
+   internet but not its owner's tailnet apps. A refused attempt shows on the
+   blocked-hosts badge, where one click allows it.
+2. ends the workspace's TLS with a leaf for the hostname, on whatever port
+   the connection named, and sends each request and WebSocket upgrade as
+   plain HTTP to the router's 8081 with `Host` unchanged. The destination
+   is the server's choice, so the non-public guard does not apply, as for
+   the mama relay. It never takes a direct dial.
+3. drops every `Tailscale-*` and `X-Forwarded-*` header the workspace
+   sent, then sets `Tailscale-User-Login` and `Tailscale-User-Name` from the
+   registration's `identity`. It does this after every injection, so a
+   project secret's rule naming one of these headers cannot override it.
+
+A workspace with no identity (a release, or a workspace whose owner has no
+tailnet login) gets a 403 from the proxy, which dials nothing. A plain-HTTP
+request to a tailnet site is refused with a 403 naming its `https://` URL,
+since the login would travel unencrypted. `#domain/workspaces` hands the
+identity down with the rest of the registration, and a workspace
+registered before an owner had a login gets it at its next restart.
+
+**The reserved port.** The proxy is admitted to the router's 8081 (its
+egress policy names router pods there by selector), and it also dials
+whatever a workspace's allowlist names. A project whose allowlist held an
+exact entry for the router's address could otherwise dial `<router>:8081`
+itself and send any `Host` and any login, and policy cannot tell that dial
+from the site route, since both come from the proxy. So `resolveUpstream`
+refuses a non-public address on that port whatever the allowlist says, on
+every dial path. Only the site route, whose target the proxy names itself,
+reaches it.
 
 ## One host per MITM'd connection
 

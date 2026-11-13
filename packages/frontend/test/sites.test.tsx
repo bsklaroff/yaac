@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
+import { siteEdgeOf } from '@yaac/shared/site-edge'
 import type { ProjectSummary, SiteEdgeStatus, SiteEntry, VolumeEntry, WorkflowEntry } from '@yaac/shared/types'
 import { Sites } from '#components/settings/Sites'
 import {
@@ -32,10 +33,10 @@ let edge: SiteEdgeStatus
 let server: FetchMock
 const site = (name: string): SiteEntry => sites.find((s) => s.name === name) as SiteEntry
 beforeEach(() => {
-  edge = { tunnel: 'connected' }
+  edge = { cloudflare: 'connected', tailnet: 'absent' }
   sites = [
     {
-      name: 'web', hostname: 'app.example.com', port: 3000, adminPort: 3001, workflow: 'release', steps: SERVE, volume: 'db',
+      name: 'web', hostname: 'app.example.com', edge: 'public', port: 3000, adminPort: 3001, workflow: 'release', steps: SERVE, volume: 'db',
       repos: [{ dir: 'web', branch: 'main' }, { dir: 'api', commit: 'c'.repeat(40) }], follow: false, createdAt: ago(60),
       live: {
         workspaceId: 'w-live0001', commits: [{ dir: 'api', commit: 'c'.repeat(40) }, { dir: 'web', commit: 'abcdef1234567' }],
@@ -47,7 +48,7 @@ beforeEach(() => {
       },
     },
     {
-      name: 'docs', hostname: 'docs.example.com', port: 8080, workflow: 'release', steps: SERVE, createdAt: ago(60),
+      name: 'docs', hostname: 'docs.example.com', edge: 'public', port: 8080, workflow: 'release', steps: SERVE, createdAt: ago(60),
       repos: [{ dir: 'web', branch: 'docs' }], follow: true,
       lastDeploy: { workspaceId: 'w-docs0001', commits: commits('1111111222'), outcome: 'succeeded', finishedAt: ago(90) },
     },
@@ -72,7 +73,7 @@ beforeEach(() => {
       if (!Object.values(steps).some((s) => s.service === true)) {
         return serverError('VALIDATION', `workflow "${wf}" has no service step`, 400)
       }
-      sites = [...sites, { name, hostname, port, workflow: wf, steps, ...(volume !== undefined ? { volume } : {}), repos: [], follow, createdAt: '' }]
+      sites = [...sites, { name, hostname, edge: siteEdgeOf(hostname, edge.siteDomain), port, workflow: wf, steps, ...(volume !== undefined ? { volume } : {}), repos: [], follow, createdAt: '' }]
       return undefined
     },
     'POST /api/site/edit': () => undefined,
@@ -115,14 +116,15 @@ describe('Sites settings', () => {
     expect(server.called(LIST)[0].query.get('project')).toBe('proj')
     expect(await screen.findByText('Cloudflare tunnel connected')).toBeTruthy()
     expect(screen.getByText('app.example.com').getAttribute('href')).toBe('https://app.example.com')
-    expect(row('app.example.com')).toBe(`webapp.example.com:3000 · admin :3001 · db · web@main api@${'c'.repeat(8)}DeployStopEdit`
+    expect(row('app.example.com')).toBe(`webapp.example.compublic:3000 · admin :3001 · db · web@main api@${'c'.repeat(8)}DeployStopEdit`
       + `Live api@${'c'.repeat(8)} web@abcdef12 · running, deployed 5m ago`
       + 'Last deploy 98765432 failed 2m ago: step "build" failed (exit 2)')
-    expect(row('docs.example.com')).toBe('docsdocs.example.com:8080 · web@docs · followsDeployStartEdit'
+    expect(row('docs.example.com')).toBe('docsdocs.example.compublic:8080 · web@docs · followsDeployStartEdit'
       + 'Not servingLast deploy 11111112 succeeded 1h ago')
 
     // Deploy a ref per repo; while it runs the site offers no second one.
     fireEvent.click(screen.getAllByRole('button', { name: 'Deploy' })[0])
+    expect(dialog().getByText(/^A public site: the internet reaches it/)).toBeTruthy()
     fireEvent.change(dialog().getByLabelText('Ref to deploy web at'), { target: { value: ' v2 ' } })
     expect(dialog().getByLabelText('Ref to deploy api at')).toBeTruthy()
     fireEvent.click(dialog().getByRole('button', { name: 'Deploy' }))
@@ -189,6 +191,37 @@ describe('Sites settings', () => {
     expect(screen.getByRole('note').textContent).toContain('the router (yaac-site-router, port 8080)')
   })
 
+  it('says which edge the hostname being typed belongs to, and follows it after creating and when deploying', async () => {
+    edge = { cloudflare: 'connected', tailnet: 'no-certificate', siteDomain: 'apps.example.com' }
+    renderWithClient(<Sites project={PROJECT} readOnly={false} />, client())
+    expect((await screen.findByText(/^Site domain/)).textContent).toBe('Site domain apps.example.com: tailnet tunnel has no certificate')
+    fireEvent.click(screen.getByRole('button', { name: 'New site' }))
+    const hostname = screen.getByLabelText<HTMLInputElement>('Hostname')
+    expect(hostname.placeholder).toBe('app.apps.example.com')
+    fireEvent.change(hostname, { target: { value: 'kanban.apps.example.co' } })
+    expect(screen.getByText(/^A public site/)).toBeTruthy()
+    fireEvent.change(hostname, { target: { value: 'kanban.apps.example.com' } })
+    expect(screen.getByText(/^A tailnet site: only users on this install’s tailnet reach it/)).toBeTruthy()
+
+    fireEvent.change(screen.getByLabelText('Site name'), { target: { value: 'kanban' } })
+    fireEvent.change(screen.getByLabelText('Port'), { target: { value: '3000' } })
+    await screen.findByRole('option', { name: 'Workflow release' })
+    fireEvent.change(screen.getByLabelText('Workflow'), { target: { value: 'release' } })
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Include web' }))
+    fireEvent.change(screen.getByLabelText('Branch or commit of web'), { target: { value: 'main' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    expect(await screen.findByRole('link', { name: 'kanban.apps.example.com' })).toBeTruthy()
+    expect(screen.getByRole('note').textContent).toBe(
+      'https://kanban.apps.example.com is a tailnet site: only users on this install\'s tailnet reach it. '
+      + 'It does not answer yet: tailnet tunnel has no certificate.Dismiss',
+    )
+    expect(row('kanban.apps.example.com')).toContain('tailnet:3000')
+
+    fireEvent.click(within(screen.getByText('kanban.apps.example.com').closest('.rounded-md') as HTMLElement)
+      .getByRole('button', { name: 'Deploy' }))
+    expect(dialog().getByText(/^A tailnet site/)).toBeTruthy()
+  })
+
   it('edits a site, switching its workflow and dropping its admin port and volume', async () => {
     renderWithClient(<Sites project={PROJECT} readOnly={false} />, client())
     fireEvent.click((await screen.findAllByRole('button', { name: 'Edit' }))[0])
@@ -220,7 +253,7 @@ describe('Sites settings', () => {
   })
 
   it('says how to set up a tunnel on an install without one, and only lists a teammate\'s sites to a member', async () => {
-    edge = { tunnel: 'absent' }
+    edge = { cloudflare: 'absent', tailnet: 'absent' }
     renderWithClient(<Sites project={PROJECT} readOnly />, testQueryClient(MEMBER, serverSnapshot({ driver: 'k8s' })))
     expect((await screen.findByText(/^This install has no tunnel/)).textContent)
       .toContain('CF_TUNNEL_TOKEN=… yaac cluster install.')

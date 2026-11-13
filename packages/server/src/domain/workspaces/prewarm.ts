@@ -33,6 +33,7 @@ import {
   getGitIdentity,
   getTimeZone,
   getProjectRow,
+  getUser,
   insertSession,
   type ProjectRow,
   type SessionLaunchSettings,
@@ -48,7 +49,7 @@ import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#lib/log'
-import type { RuntimeHandle } from '#drivers/contract'
+import type { EgressIdentity, RuntimeHandle } from '#drivers/contract'
 import type { RepoSelection } from '@yaac/shared/types'
 
 /**
@@ -115,6 +116,16 @@ export function spareMatches(warmed: SpareSettings, start: WorkspaceStart): bool
  * stale, and is reaped and rewarmed.
  */
 export const spareSettings = new Map<string, SpareSettings>()
+
+/**
+ * The tailnet login and name of the user a workspace acts for, which the
+ * egress proxy stamps on its requests to a tailnet site (docs/public-sites.md
+ * "Tailnet sites"). None for a user with no login, as on a local install.
+ */
+export async function egressIdentity(userId: string): Promise<EgressIdentity | undefined> {
+  const user = await getUser(userId)
+  return user?.login ? { login: user.login, name: user.name || user.login } : undefined
+}
 
 /** Test helper: reset all shared prewarm state. */
 export function clearPrewarmStateForTests(): void {
@@ -565,6 +576,7 @@ export async function tryClaimPrewarmed(
       workspaceId: claimedId,
       projectId,
       owner: credentialOwnerKey(owner),
+      identity: await egressIdentity(owner),
       config,
       allowlist,
       proxySecretRules: Object.fromEntries(

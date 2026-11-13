@@ -1,11 +1,14 @@
 # Public sites
 
-A **site** is a project's app published on the public internet at a
-hostname, served by a locked, supervised workspace called a **release**. A
-deploy starts a new release with each of the site's repos at a commit, waits
-for it to be ready, points the hostname at it and stops the old one. Sites exist only under the k8s
-driver, on kind and on byo, with Cloudflare Tunnel as the edge. An edge
-that owns its own TLS and DNS is docs/plans/self-hosted-site-edge.md.
+A **site** is a project's app published at a hostname, served by a locked,
+supervised workspace called a **release**. A deploy starts a new release
+with each of the site's repos at a commit, waits for it to be ready, points
+the hostname at it and stops the old one. Sites exist only under the k8s
+driver, on kind and on byo, with two edges: Cloudflare Tunnel publishes a
+site on the internet, and a tailnet site under the install's site domain is
+served only to its tailnet, each request carrying the caller's tailnet login
+(see "Tailnet sites"). Everything behind the router is the same for both.
+An edge that owns its own TLS and DNS is docs/plans/self-hosted-site-edge.md.
 
 Under `containerless` every `/api/site` route answers `NOT_SUPPORTED`. A
 containerless workspace runs unsandboxed with real credentials, so
@@ -22,10 +25,12 @@ pod, and none of the pods on that path may dial the server. A server
 restart or upgrade never drops a site either.
 
 ```
-internet ─► Cloudflare ─► yaac-site-tunnel (cloudflared, outbound on 7844)
+internet ─► Cloudflare ─► yaac-site-tunnel-cloudflare (cloudflared, outbound on 7844)
+                              │
+tailnet device ─► yaac-site-tunnel-tailnet (tailscaled + tailgate; see "Tailnet sites")
                               │
                               ▼
-                          yaac-site-router (Envoy; routes by Host)
+                          yaac-site-router (Envoy; a listener per edge, routes by Host)
                               │
                               ▼
                           Service yaac-site-<site id>  (headless, selects the live release)
@@ -80,23 +85,30 @@ with sites is the server's, under the `yaac` field manager
 
 | Object | Applied by | What it is |
 |---|---|---|
-| Secret `yaac-site-tunnel` | install | the tunnel token |
-| Deployment `yaac-site-tunnel` | install, only with the Secret | cloudflared, 2 replicas, `tunnel --no-autoupdate --metrics 0.0.0.0:2000 run`; ready (`/ready`) while it holds a connection to Cloudflare |
+| Secret `yaac-site-tunnel-cloudflare` | install | the tunnel token |
+| Deployment `yaac-site-tunnel-cloudflare` | install, only with the Secret | cloudflared, 2 replicas, `tunnel --no-autoupdate --metrics 0.0.0.0:2000 run`; ready (`/ready`) while it holds a connection to Cloudflare |
+| Secret `yaac-site-tunnel-tailnet` | install | the tailnet tunnel's auth key and the site domain |
+| Deployment `yaac-site-tunnel-tailnet`, its ServiceAccount, Role and serve-config ConfigMap; Secret `yaac-site-tunnel-tailnet-state` | install, only while that Secret holds both | tailscaled and tailgate, 1 replica; see "Tailnet sites" |
+| Secret `yaac-site-tunnel-tailnet-tls` | the admin, or cert-manager | the site domain's wildcard certificate |
 | Deployment + Service `yaac-site-router` | install | stock Envoy (the image netd pins), 2 replicas |
-| the tunnel's and router's NetworkPolicies | install | see "Network policy"; their node-address halves are re-rendered when nodes change |
-| ConfigMap `yaac-site-routes` | server | the router's route table |
+| the tunnels' and router's NetworkPolicies | install | see "Network policy"; their node-address halves are re-rendered when nodes change |
+| ConfigMap `yaac-site-routes` | server | the router's route tables |
 | Service and NetworkPolicy `yaac-site-<site id>`, per site | server | the headless Service selecting the live release, and the policy admitting the router to it |
 
-Both Deployments run at the `yaac-infra` priority. Without a token the
+Every edge Deployment runs at the `yaac-infra` priority. Without a token the
 router is still applied, so the e2e harness and the self-hosted edge use
 it. The e2e harness applies it beside the server Deployment it deploys per
 file.
 
-**The router.** Its listener is static; the route table is the routes
-ConfigMap's RDS and CDS files, read through Envoy's filesystem dynamic
-config with `watched_directory`, which picks up a ConfigMap's atomic
-symlink swap without restarting Envoy or draining the listener, so adding
-a site never cuts another site's WebSockets. Each site is a virtual host
+**The router.** It has a static listener per edge, 8080 for public sites
+and 8081 for tailnet ones. Each reads its own route table, the routes
+ConfigMap's `rds.json` and `rds-tailnet.json`, and both share its CDS
+file, all read through Envoy's filesystem dynamic config with
+`watched_directory`, which picks up a ConfigMap's atomic symlink swap
+without restarting Envoy or draining a listener, so adding a site never
+cuts another site's WebSockets. A site is a virtual host only in its own
+edge's table, so no `Host` the Cloudflare tunnel could be configured to
+send reaches a tailnet site. Each site is a virtual host
 for its hostname whose cluster is its Service by absolute name, resolved as
 `STRICT_DNS` every second. The Service is headless, so the name resolves to
 the live release's pod IP. A ClusterIP would hide a flip from Envoy: pooled
@@ -107,21 +119,153 @@ its cache (kind and the `infra/` clusters; docs/cluster-setup.md "Uncached
 cluster DNS"), the router sees a flip within about a second. An unknown
 `Host` gets a 404 and a site with no live release a 503. WebSocket upgrades
 are on and the route timeout is off.
-Envoy appends to `X-Forwarded-For`, trusting cloudflared as one hop.
+Envoy appends to `X-Forwarded-For`, trusting the tunnel in front (cloudflared
+or tailgate) as one hop.
 
 The kubelet can take up to about a minute to deliver a ConfigMap change,
 so a new site routes within a minute. Only site create, edit and delete
 change the table; a deploy changes the Service's selector.
 
+## Tailnet sites
+
+A site whose hostname is under the install's **site domain** (a DNS zone
+its admin owns, `apps.example.com`, given to `yaac cluster install
+--site-domain`) is a tailnet site; any other is public. There is no edge
+setting: the hostname says which, `siteEdgeOf` in `@yaac/shared/site-edge`
+derives it for the server, the CLI and the webapp, and every site entry
+carries it. A tailnet site's hostname must be exactly one label under the
+domain, which is what a wildcard certificate covers, and needs a `tailnet`
+install (docs/remote-hosting.md "Access modes"), since a `local` one has no
+logins to stamp. It is published under the same roles as a public site.
+
+The domain is kept with the tunnel's auth key in the Secret
+`yaac-site-tunnel-tailnet`, as the Cloudflare tunnel's Secret keeps its
+token, and install sets it on the server Deployment from there, so a later
+install need not name `--site-domain` again. Without that record, a re-run
+that left the flag out would drop the domain and turn every tailnet site
+public. A domain needs an auth key the first time, and a key needs a
+domain, so install refuses a run that would leave the tunnel with only one.
+
+Once recorded, the domain is fixed: install refuses another, since a site's
+edge follows from its hostname, and a new domain would turn the old one's
+tailnet sites public and pull any public site under the new one onto the
+tailnet. To change it, move or delete the sites under the old domain,
+delete the Secret, and install with the new domain and an auth key.
+Deleting the Secret alone removes the domain and the tunnel.
+
+The app decides what a login may do. yaac only guarantees that the
+`Tailscale-User-Login` header a tailnet site receives is true.
+
+**The names resolve only on the tailnet.** The tailnet's split DNS sends
+the zone to the tailnet tunnel, which answers every name under it with its
+own tailnet address. No site has a record in public DNS. The zone must still
+be a real domain, because browsers trust only certificates a public
+authority issued, which a DNS-01 challenge proves ownership for.
+
+**The tailnet tunnel** (`yaac-site-tunnel-tailnet`) is one pod with one
+replica, since it is one tailnet device with one address; while it
+restarts no tailnet site answers. A site adds nothing to it, to Tailscale
+or to DNS. Install applies it only once given an auth key
+(`TS_SITE_AUTHKEY`, kept in the Secret with the domain, so a later install
+without either keeps the tunnel), waits for it to join and prints its
+tailnet address. Neither container has privilege:
+
+- **tailscaled** is Tailscale's stock image, digest-pinned and mirrored like
+  cloudflared, in userspace networking mode. It joins once as a tagged
+  device and keeps its state in the Secret `yaac-site-tunnel-tailnet-state`,
+  so the device and its address survive a restart. It runs as uid 1000 and
+  is the only container given an API token, by a projected volume, whose
+  Role may write only that Secret. Its serve config forwards 443 and 80 to
+  tailgate as raw TCP behind a PROXY v1 header naming the caller's tailnet
+  address, and userspace mode delivers every other port of the device, 53
+  among them, to the same port on 127.0.0.1.
+- **tailgate** (`k8s/tailgate`, an image of yaac's own, shares nothing with
+  the egress proxy, so a proxy change never rolls the tunnel) runs as uid
+  1001, so tailscaled's local API, which gives write access to a peer of its
+  own uid, gives tailgate only reads. It answers A
+  and AAAA for every name under the zone with the device's addresses and
+  refuses other names, binding 53 through the `ip_unprivileged_port_start`
+  sysctl. Its 443 and 80 listeners bind 127.0.0.2, where serve forwards and
+  the forward of other ports never dials, so the PROXY header they believe
+  can only have come from serve: a peer dialing the device's 8443 directly
+  reaches nothing. The tailnet ACL's port list (below) is defence in depth,
+  not what identity depends on. On 443 it ends TLS with
+  `yaac-site-tunnel-tailnet-tls`, reloading it when the Secret changes and
+  the new certificate matches its key, and asks tailscaled's local API who
+  holds the caller's address. A caller with no user (a tagged device, or an
+  address the tailnet does not know) gets a 403. Otherwise it drops every
+  `Tailscale-*` and `X-Forwarded-*` header the client sent (app
+  capabilities included), sets
+  `Tailscale-User-Login`, `Tailscale-User-Name` (Q-encoded when not
+  ASCII, as Tailscale's own proxies do), `X-Forwarded-For` and
+  `X-Forwarded-Proto: https`, and forwards the request, its body still
+  framed, to the router's 8081 with `Host` unchanged. An upgrade's two
+  connections are joined only once the router answers 101; any other answer
+  is relayed and the connection closed. On 80 it redirects to
+  `https://`. It holds no list of sites: a name no site has resolves, and
+  the router answers 404.
+
+**The certificate** is a wildcard for the site domain in the Secret
+`yaac-site-tunnel-tailnet-tls`, which yaac neither obtains nor renews. The
+admin creates it by hand, or points a cert-manager Certificate at that name
+with a DNS-01 issuer, the only challenge that works for names the internet
+cannot reach. Without it tailgate is not ready, and install, `GET
+/site/edge` and the check say so.
+
+**The router's tailnet listener** answers 403 to a request without
+`Tailscale-User-Login` (an RBAC filter), so an app sees only requests with
+a login, whatever sent them. The public listener drops the
+`Tailscale-User-Login`, `-Name`, `-Profile-Pic`, `Tailscale-App-Capabilities`
+and `Tailscale-Headers-Info` request headers (Envoy removes headers only by
+name), so an app written for the tailnet edge and published on the public
+one by mistake sees no identity or capability rather than one the internet
+chose.
+
+**Who may reach a site.** Every tailnet site is behind one device, so the
+tailnet's ACLs decide who reaches the tunnel, not which site: a grant to its
+tag on TCP 443 and 80 and on port 53 admits a user to all of them. Telling
+sites apart is the app's job.
+
+**Agents** reach a tailnet site at the same URL and act as their
+workspace's owner: the egress proxy carries the request to the router's
+8081 and stamps the project owner's login, if the project's allowlist names
+the host or the zone; `*` does not count (docs/workspace-egress.md "Tailnet sites",
+docs/multi-user.md "Credentials"). An app cannot tell a person's request
+from their agent's. A release has no identity, so its requests to a tailnet
+site are refused.
+
+**Setup.**
+
+1. Pick the site domain and put a wildcard certificate for it in the
+   Secret `yaac-site-tunnel-tailnet-tls`.
+2. Create a Tailscale auth key for a tag (`tag:yaac-sites`), and grant the
+   users who should reach sites access to that tag on 443, 80 and 53.
+3. `TS_SITE_AUTHKEY=… yaac cluster install --tailnet --site-domain
+   apps.example.com`.
+4. In the Tailscale admin console's DNS settings, add the address install
+   prints as a nameserver restricted to the site domain. yaac holds no
+   Tailscale API credential, so it cannot do this itself.
+
+No Tailscale operator is involved, so this works whichever way the server
+itself is fronted.
+
 ## Network policy
 
 None of these adds a peer to the server's ingress, which admits no pod.
 
-- **Tunnel**: egress to public addresses on TCP and UDP 7844 only, DNS, and
-  the router's port. Ingress only from node addresses on its metrics port,
-  for the kubelet's probe.
-- **Router**: ingress from tunnel pods on 8080, and from node addresses on
-  its readiness port. Egress to DNS and to pods labelled `yaac.site-id`.
+- **Cloudflare tunnel**: egress to public addresses on TCP and UDP 7844
+  only, DNS, and the router's 8080. Ingress only from node addresses on its
+  metrics port, for the kubelet's probe.
+- **Tailnet tunnel**: egress to public addresses on any port (Tailscale's
+  coordination and relay servers, and peers; one on a private address is
+  reached through a relay, since the floor cuts those ranges), DNS, the
+  router's 8081, and the apiserver for tailscaled's state Secret. Ingress
+  only from node addresses on its two health ports; tailnet traffic arrives
+  inside connections tailscaled dialed out.
+- **Router**: ingress from Cloudflare tunnel pods on 8080, from tailnet
+  tunnel pods and the egress proxy (see "Agents") on 8081, and from node
+  addresses on its readiness port. Egress to DNS and to pods labelled
+  `yaac.site-id`.
 - **Per site**: pods labelled `yaac.site-id=<id>` admit router pods on the
   site's port. Every release of the site carries the label from launch, so
   the policy does not change across deploys. It is unioned with the
@@ -135,11 +279,13 @@ own step logs: the project's agents read those with `yaac-mama logs`, so
 whatever a release prints, including what the internet got it to print,
 reaches their context as untrusted text.
 
-`yaac cluster check`'s `sites` gate holds probe pods carrying the tunnel's
+`yaac cluster check`'s `sites` gate holds probe pods carrying each tunnel's
 and the router's labels to the same policies, and requires that they fail
 to dial the server's API, the proxy's control port and a workspace pod that
-is not a release. With a tunnel installed it reports whether it is
-connected.
+is not a release, and the Cloudflare one the router's 8081. With a
+Cloudflare tunnel installed it reports whether it is connected; with a
+tailnet one, whether it has joined and holds a certificate, and, where the
+checking machine is on the tailnet, whether the zone resolves to it.
 
 ## Sites and releases
 
@@ -450,15 +596,25 @@ never overlap, so migrations never race. A rollback does not undo a schema.
   the whole list) and `follow`; `/deploy` takes `refs` (folder or id to
   branch or commit) beside `ref`, the form for a site of one repo. Commits
   are answered per repo, `{ dir, commit }`.
+  `/edge` answers both tunnels' state and the site domain, and every site
+  entry its edge.
 - **CLI**: `yaac site create|edit|list|show|deploy|stop|start|delete`, the
-  project first, and `yaac cluster install` for the tunnel (docs/cli.md).
-- **Webapp**: a Sites section in project settings, with the tunnel's state
-  at its top, a form with a row per repo (include, branch or commit,
-  starting empty) and a Follow switch, and a deploy dialog with a ref per
-  repo; a release's workspace view is
+  project first, and `yaac cluster install` for the tunnels and
+  `--site-domain` (docs/cli.md). What `site create` prints follows the
+  edge: the Cloudflare route to add, or the `https://` address and what the
+  tailnet tunnel still lacks. `list` and `show` print the edge.
+- **Webapp**: a Sites section in project settings, with both tunnels' state
+  and the site domain at its top, a form with a row per repo (include,
+  branch or commit, starting empty) and a Follow switch, and a deploy
+  dialog with a ref per repo. The edge is in view while naming a site (a
+  line under the form that follows the hostname being typed), after
+  creating it, on its row and when deploying it, which is what stands in
+  for an explicit choice: a hostname mistyped out of the site domain reads
+  as public before anything is deployed. A release's workspace view is
   read-only, with "release of `<site>`" on its header.
-- **Modules**: `#domain/sites` (settings, deploys, supervision),
-  `cluster/site-edge.ts` (every edge object), the `sites` reconcile step.
+- **Modules**: `#domain/sites` (settings, the hostname rule, deploys,
+  supervision), `cluster/site-edge.ts` (every edge object), the `sites`
+  reconcile step, `k8s/tailgate`, and in `k8s/proxy` the site route.
 
 ## Not yet
 
@@ -468,5 +624,14 @@ never overlap, so migrations never race. A rollback does not undo a schema.
   it would also let every admin of the install publish any name under the
   zone.
 - **A release's own egress allowlist.** A release uses its project's.
+- **Per-site access lists** for tailnet sites: which users may reach a site
+  (a router rule on the login) and which projects' workspaces may. One
+  device means the tailnet's ACLs cannot separate sites.
+- **`ts.net` names** for tailnet sites, which would need a Tailscale
+  Service or operator proxy per site, a **second replica** of the tailnet
+  tunnel (a second device and address), and **more than one site domain**.
+- **Marking agent requests** to a tailnet site with a header naming the
+  workspace. People and agents share one listener, so a person could send
+  it too; an app could use it to attribute, never to authorize.
 - **A stateful deploy with no gap**, which needs the state in a long-lived
   workspace that releases reach over the network.

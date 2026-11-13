@@ -257,6 +257,8 @@ interface ServerEnvOptions {
    *  absent on kind, whose volumes are directories of `yaac-volumes`
    *  (docs/workspace-volumes.md). */
   volumeStorageClass?: string
+  /** `--site-domain`: the zone whose names are tailnet sites'. */
+  siteDomain?: string
 }
 
 /**
@@ -314,6 +316,7 @@ function buildServerEnv(opts: ServerEnvOptions = {}): ServerEnvVar[] {
     // The access mode the server checks against the one it recorded.
     ['YAAC_ACCESS_MODE', hosting.accessMode],
     ['YAAC_ALLOWED_HOSTS', hosting.allowedHosts.join(',')],
+    ['YAAC_SITE_DOMAIN', opts.siteDomain],
     ['YAAC_USE_TOR', env.useTor ? '1' : undefined],
     ['YAAC_HOST_TOR_SOCKS_URL', env.useTor ? torSocksUrlForPod(opts.torHostAddr) : undefined],
     // Datapath settings the server applies on every start.

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import http from 'node:http'
 import https from 'node:https'
 import net from 'node:net'
+import tls from 'node:tls'
 import { once } from 'node:events'
 import type { AddressInfo } from 'node:net'
 import ssh2 from 'ssh2'
@@ -19,7 +20,8 @@ import { generateSshHostKey } from 'yaac-proxy-sidecar/ssh-session'
  * transparent TLS tunnel, the MITM'd TLS path, a CONNECT (the SSH tunnel
  * listener's) and plain HTTP. DNS is stubbed, since it is what a rebinding
  * name lies through; upstreams are loopback servers, which only an explicit
- * allowlist entry or a server-named redirect may reach.
+ * allowlist entry or a server-named redirect may reach. A stand-in for the
+ * site router's tailnet listener echoes what reaches it.
  */
 
 /** Each name's answers, in order; the last repeats. */
@@ -40,6 +42,10 @@ const servers: net.Server[] = []
 /** A raw TCP upstream that greets and hangs up, and a plain-HTTP one. */
 let tcpPort = 0
 let httpPort = 0
+/** What reached the site router stand-in. */
+const routerSaw: Array<{ url?: string; headers: http.IncomingHttpHeaders }> = []
+let routerPort = 0
+const SITE = 'kanban.apps.example.com'
 
 const listen = async <T extends net.Server>(server: T): Promise<T> => {
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
@@ -51,6 +57,16 @@ const portOf = (server: net.Server): number => (server.address() as AddressInfo)
 beforeAll(async () => {
   tcpPort = portOf(await listen(net.createServer((s) => s.end('hello'))))
   httpPort = portOf(await listen(http.createServer((req, res) => res.end(`upstream saw ${req.url}`))))
+  const router = http.createServer((req, res) => {
+    routerSaw.push({ url: req.url, headers: req.headers })
+    res.end(JSON.stringify(req.headers))
+  })
+  router.on('upgrade', (req: http.IncomingMessage, socket: net.Socket) => {
+    routerSaw.push({ url: req.url, headers: req.headers })
+    socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n')
+    socket.pipe(socket)
+  })
+  routerPort = portOf(await listen(router))
 
   const objects = new ProxyObjects({ log: () => {} })
   const register = (ws: string, reg: Record<string, unknown>): void => objects.applyRegistration({
@@ -65,6 +81,22 @@ beforeAll(async () => {
   // `*` beside the exact entries: it admits no non-public address itself,
   // and must not stop the exact entries from admitting theirs.
   register('named', { allowedHosts: ['*', '127.0.0.1', 'git.corp.test', '192.0.2.1', 'pool.test', '*.corp.test'] })
+  // Tailnet sites: an owner's workspace whose project allows the zone and
+  // whose secret rule names the login header, a release (no identity), and
+  // a project that has not allowed the site.
+  const site = { allowedHosts: ['*.apps.example.com'], identity: { login: 'alice@example.com', name: 'Alice Ünal' } }
+  register('owner', {
+    ...site,
+    rules: [{
+      hostPattern: '*.apps.example.com', pathPattern: '/*',
+      injections: [{ action: 'set_header', name: 'Tailscale-User-Login', value: 'rule@example.com' }],
+    }],
+  })
+  register('release', { allowedHosts: ['*.apps.example.com'] })
+  register('elsewhere', { allowedHosts: ['github.com'], identity: site.identity })
+  register('everywhere', { allowedHosts: ['*'], identity: site.identity })
+  // An unrestricted project that has allowed the site from the blocked-hosts badge.
+  register('everywhere-allowed', { allowedHosts: ['*', 'kanban.apps.example.com'], identity: site.identity })
   // A project with an ssh repo on a git host, here an ssh server that
   // answers each command with its own text.
   const gitHostKey = generateSshHostKey()
@@ -122,6 +154,7 @@ beforeAll(async () => {
       counts.set(hostname, n + 1)
       return Promise.resolve([{ address: answers[Math.min(n, answers.length - 1)], family: 4 }])
     },
+    sites: { router: { host: '127.0.0.1', port: routerPort }, domain: 'apps.example.com' },
   }
 }, 60_000)
 
@@ -304,5 +337,105 @@ describe('dispatchToUpstream and forwardPlainHttp', () => {
     expect((await run('cat /etc/passwd')).stderr).toContain('carries only git commands')
     entry.close()
     expect(lookups).toEqual([])
+  }, 30_000)
+
+  it('send a tailnet site\'s requests to the site router on any port, stamped with the owner\'s login over anything the workspace or a rule sent', async () => {
+    const entry = await listen(net.createServer((socket) => {
+      void dispatchToUpstream(ctx, socket, SITE, '8443', 'owner', { writeConnectOk: false })
+    }))
+    /** TLS to the site through the proxy, as the workspace's client sees it. */
+    const open = (): Promise<tls.TLSSocket> => new Promise((resolve, reject) => {
+      const socket = tls.connect({ host: '127.0.0.1', port: portOf(entry), servername: SITE, ca: ctx.ca.pem }, () => resolve(socket))
+      socket.on('error', reject)
+    })
+    const read = (socket: net.Socket, until: (out: string) => boolean): Promise<string> => new Promise((resolve) => {
+      let out = ''
+      socket.on('data', (c: Buffer) => {
+        out += c.toString()
+        if (until(out)) resolve(out)
+      })
+      socket.on('close', () => resolve(out))
+    })
+
+    const get = await open()
+    get.write([
+      'GET /board HTTP/1.1', `Host: ${SITE}`, 'Tailscale-User-Login: mallory@example.com',
+      'tailscale-user-profile-pic: https://evil', 'Tailscale-App-Capabilities: {"example.com/cap/admin":[{}]}',
+      'X-Forwarded-For: 203.0.113.9', 'Connection: close', '', '',
+    ].join('\r\n'))
+    const reply = await read(get, () => false)
+    expect(reply).toMatch(/^HTTP\/1\.1 200/)
+    expect(routerSaw.at(-1)?.url).toBe('/board')
+    expect(routerSaw.at(-1)?.headers).toMatchObject({
+      host: SITE, 'tailscale-user-login': 'alice@example.com', 'tailscale-user-name': '=?utf-8?q?Alice_=C3=9Cnal?=',
+    })
+    expect(routerSaw.at(-1)?.headers).not.toHaveProperty('tailscale-user-profile-pic')
+    expect(routerSaw.at(-1)?.headers).not.toHaveProperty('tailscale-app-capabilities')
+    expect(routerSaw.at(-1)?.headers).not.toHaveProperty('x-forwarded-for')
+
+    // A WebSocket upgrade reaches the router stamped too, and the sockets join.
+    const ws = await open()
+    const upgraded = read(ws, (out) => out.includes('ping'))
+    ws.write(['GET /live HTTP/1.1', `Host: ${SITE}`, 'Upgrade: websocket', 'Connection: Upgrade', '', ''].join('\r\n'))
+    await new Promise((r) => setTimeout(r, 200))
+    ws.write('ping')
+    expect(await upgraded).toMatch(/^HTTP\/1\.1 101[^]*ping$/)
+    expect(routerSaw.at(-1)?.headers['tailscale-user-login']).toBe('alice@example.com')
+    ws.destroy()
+    entry.close()
+    // Never a direct dial.
+    expect(lookups).toEqual([])
+  }, 30_000)
+
+  it('refuse a tailnet site to a workspace with no identity without dialing, to a project that has not allowed it, and over plain HTTP', async () => {
+    const seen = routerSaw.length
+    const entry = await listen(net.createServer((socket) => {
+      void dispatchToUpstream(ctx, socket, SITE, '443', 'release', { writeConnectOk: false })
+    }))
+    const status = await new Promise<number>((resolve, reject) => {
+      https.get({ host: '127.0.0.1', port: portOf(entry), servername: SITE, ca: ctx.ca.pem, headers: { host: SITE } }, (res) => {
+        res.resume()
+        resolve(res.statusCode ?? 0)
+      }).on('error', reject)
+    })
+    entry.close()
+    expect(status).toBe(403)
+    expect(routerSaw.length).toBe(seen)
+
+    // An entry naming the site or its zone is the owner's consent to send
+    // their login there; `*` is not.
+    for (const ws of ['elsewhere', 'everywhere']) {
+      expect(await exchange(ws, SITE, 443, true), ws).toMatch(/^HTTP\/1\.1 403 Forbidden\r\n[^]*not in the allowed hosts/)
+    }
+    expect(blocked).toEqual([SITE, SITE])
+
+    const plain = await plainGet('owner', SITE, 80)
+    expect(plain.status).toBe(403)
+    expect(plain.body).toContain(`use https://${SITE}/x`)
+    expect(routerSaw.length).toBe(seen)
+
+    // Allowing the site beside `*` is consent.
+    const allowedEntry = await listen(net.createServer((socket) => {
+      void dispatchToUpstream(ctx, socket, SITE, '443', 'everywhere-allowed', { writeConnectOk: false })
+    }))
+    const login = await new Promise<string>((resolve, reject) => {
+      https.get({ host: '127.0.0.1', port: portOf(allowedEntry), servername: SITE, ca: ctx.ca.pem, headers: { host: SITE } }, (res) => {
+        let body = ''
+        res.on('data', (c: Buffer) => { body += c.toString() })
+        res.on('end', () => resolve((JSON.parse(body) as Record<string, string>)['tailscale-user-login']))
+      }).on('error', reject)
+    })
+    allowedEntry.close()
+    expect(login).toBe('alice@example.com')
+  }, 30_000)
+
+  it('refuse any direct dial to the router\'s tailnet port, even one an exact entry admits', async () => {
+    for (const ws of ['named', 'star']) {
+      const reply = await exchange(ws, '127.0.0.1', routerPort, true)
+      expect(reply, ws).toMatch(/^HTTP\/1\.1 403 Forbidden\r\n[^]*site router's tailnet listener/)
+      expect((await plainGet(ws, '127.0.0.1', routerPort)).status, ws).toBe(403)
+    }
+    // Another port of the same address is still the exact entry's.
+    expect(await exchange('named', '127.0.0.1', tcpPort, true)).toBe('HTTP/1.1 200 Connection Established\r\n\r\nhello')
   }, 30_000)
 })

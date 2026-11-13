@@ -135,11 +135,16 @@ export type HostInjectionRule = {
 }
 
 /**
- * Test-only upstream redirect: when the proxy MITMs a hostname, forward the
- * decrypted request here instead (e.g. "api.anthropic.com" to a mock pod).
- * The client still sees TLS for the original host, and injection still runs.
+ * Where a MITM'd hostname's decrypted requests go instead of the host
+ * itself: a tailnet site's to the site router, and in tests a mocked host's
+ * to its mock pod. The client still sees TLS for the original host, and
+ * injection still runs.
  */
 export type UpstreamRedirect = { host: string; port: number; tls?: boolean }
+
+/** The tailnet login and name stamped on a workspace's requests to a
+ *  tailnet site: its project owner's. */
+export type EgressIdentity = { login: string; name: string }
 
 /** One workspace's registration — the payload of its ConfigMap. */
 export type ProxyRegistration = {
@@ -150,6 +155,8 @@ export type ProxyRegistration = {
   projectId: string
   /** The owner key whose credentials this workspace spends. */
   owner: string
+  /** Absent for a release, and for an owner with no tailnet login. */
+  identity?: EgressIdentity
   upstreamRedirects?: Record<string, UpstreamRedirect>
 }
 
@@ -407,6 +414,12 @@ export function decodeProjectSecrets(secret: RawObject): Record<string, string> 
   return out
 }
 
+function decodeIdentity(raw: unknown): EgressIdentity | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const { login, name } = raw as Record<string, unknown>
+  return typeof login === 'string' && login !== '' && typeof name === 'string' ? { login, name } : undefined
+}
+
 function decodeRedirects(raw: unknown): Record<string, UpstreamRedirect> | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const parsed: Record<string, UpstreamRedirect> = {}
@@ -443,6 +456,7 @@ export function decodeRegistration(
       allowedHosts: (o.allowedHosts as unknown[]).filter((h): h is string => typeof h === 'string'),
       projectId: o.projectId,
       owner: o.owner,
+      identity: decodeIdentity(o.identity),
       upstreamRedirects: decodeRedirects(o.upstreamRedirects),
     },
   }

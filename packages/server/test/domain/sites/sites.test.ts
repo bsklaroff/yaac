@@ -3,7 +3,7 @@
  * (docs/public-sites.md). The driver is the fake, recording the routes it
  * is handed; deploys are deploys.test.ts.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   createSite,
   deleteSite,
@@ -48,7 +48,7 @@ beforeEach(async () => {
   offered = new Map([['rel-1', [3001]]])
   installFakeWorkspaceDriver({
     syncSites: (sites) => { routed.push(sites); return Promise.resolve() },
-    siteTunnelStatus: () => Promise.resolve('connected'),
+    siteCloudflareStatus: () => Promise.resolve('connected'),
     find: (id) => Promise.resolve(offered.has(id) ? handleFixture({ workspaceId: id, jobName: `yaac-${id}` }) : undefined),
     unforwardPort: ({ workspaceId }, port) => {
       offered.set(workspaceId, (offered.get(workspaceId) ?? []).filter((p) => p !== port))
@@ -62,6 +62,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   resetWorkspaceDriver()
   await closeDb()
   await cleanupTempDir(tmpDir)
@@ -94,7 +95,7 @@ describe('createSite', () => {
   it('routes a new site with no release, refusing bad settings, a taken name or hostname and a non-owner', async () => {
     await create()
     const row = await findSiteByName(DEMO_PROJECT_ID, 'shop')
-    expect(routed.at(-1)).toEqual([{ siteId: row!.id, hostname: 'shop.example.com', port: 3000 }])
+    expect(routed.at(-1)).toEqual([{ siteId: row!.id, hostname: 'shop.example.com', edge: 'public', port: 3000 }])
     // A domain's apex is a hostname too, lowercased.
     await create({ name: 'apex', hostname: 'SHOP.test' })
     expect((await findSiteByName(DEMO_PROJECT_ID, 'apex'))?.hostname).toBe('shop.test')
@@ -156,6 +157,28 @@ describe('createSite', () => {
       follow: true, repos: [{ dir: 'demo', branch: 'dev' }, { dir: 'docs', commit: COMMIT }],
     })
   })
+
+  it('makes a hostname under the site domain a tailnet site, one label under it, on a tailnet install only', async () => {
+    vi.stubEnv('YAAC_SITE_DOMAIN', 'Apps.Example.com')
+    await expect(create({ hostname: 'kanban.apps.example.com' })).rejects.toMatchObject({
+      code: 'VALIDATION', message: expect.stringContaining('needs a tailnet install') as unknown,
+    })
+    vi.stubEnv('YAAC_ACCESS_MODE', 'tailnet')
+    await create({ hostname: 'Kanban.apps.example.com' })
+    await create({ name: 'blog', hostname: 'blog.example.com' })
+    expect(routed.at(-1)?.map((r) => [r.hostname, r.edge]).sort()).toEqual([
+      ['blog.example.com', 'public'], ['kanban.apps.example.com', 'tailnet'],
+    ])
+    expect((await listProjectSiteEntries(DEMO_PROJECT_ID)).map((e) => [e.name, e.edge]).sort())
+      .toEqual([['blog', 'public'], ['shop', 'tailnet']])
+    // A wildcard certificate covers one label, and the zone itself is no site.
+    for (const hostname of ['a.b.apps.example.com', 'apps.example.com']) {
+      await expect(create({ name: 'x', hostname }), hostname).rejects.toMatchObject({ code: 'VALIDATION' })
+    }
+    // An edit into the zone makes a public site a tailnet one.
+    await editSite(local, DEMO_PROJECT_ID, 'blog', { hostname: 'blog.apps.example.com' })
+    expect(routed.at(-1)?.find((r) => r.hostname === 'blog.apps.example.com')?.edge).toBe('tailnet')
+  })
 })
 
 describe('editSite', () => {
@@ -166,7 +189,7 @@ describe('editSite', () => {
     await updateSite(row.id, { liveWorkspaceId: 'rel-1', livePort: 3000 })
 
     await editSite(local, DEMO_PROJECT_ID, 'shop', { hostname: 'www.example.com', port: 4000, adminPort: 4001 })
-    expect(routed.at(-1)).toEqual([{ siteId: row.id, hostname: 'www.example.com', port: 3000, liveWorkspaceId: 'rel-1' }])
+    expect(routed.at(-1)).toEqual([{ siteId: row.id, hostname: 'www.example.com', edge: 'public', port: 3000, liveWorkspaceId: 'rel-1' }])
     expect(await findSiteByName(DEMO_PROJECT_ID, 'shop')).toMatchObject({ port: 4000, adminPort: 4001 })
     // The live release offers the new admin port in place of the old, as a
     // server restart would.
@@ -309,7 +332,9 @@ describe('showSite', () => {
 })
 
 describe('getSiteEdge', () => {
-  it('answers the install\'s tunnel\'s state', async () => {
-    expect(await getSiteEdge()).toEqual({ tunnel: 'connected' })
+  it('answers both tunnels\' state and the site domain', async () => {
+    expect(await getSiteEdge()).toEqual({ cloudflare: 'connected', tailnet: 'absent' })
+    vi.stubEnv('YAAC_SITE_DOMAIN', 'apps.example.com')
+    expect(await getSiteEdge()).toEqual({ cloudflare: 'connected', tailnet: 'absent', siteDomain: 'apps.example.com' })
   })
 })

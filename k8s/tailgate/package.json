@@ -1,0 +1,12 @@
+{
+  "name": "yaac-tailgate",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./*": "./*.js"
+  },
+  "dependencies": {
+    "tsx": "4.23.15"
+  }
+}

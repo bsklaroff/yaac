@@ -145,6 +145,17 @@ export function isHostAllowed(objects: ProxyObjects, workspaceId: string, hostna
 }
 
 /**
+ * True when an allowlist entry other than a bare `*` covers `hostname`. A
+ * tailnet site's requests carry the workspace owner's login, so only an
+ * entry naming the site or its zone is taken as the owner's consent; `*`
+ * is not (docs/workspace-egress.md "Tailnet sites").
+ */
+export function isHostNamedByEntry(objects: ProxyObjects, workspaceId: string, hostname: string): boolean {
+  return (objects.registration(workspaceId)?.allowedHosts ?? [])
+    .some((pattern) => pattern !== '*' && hostMatches(hostname, pattern))
+}
+
+/**
  * True when an allowlist entry is exactly `hostname`. Only such an entry
  * admits a non-public destination (upstream.ts): a wildcard covers names in
  * zones others control, any of which may answer with a private address.

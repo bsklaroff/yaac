@@ -358,6 +358,10 @@ describe('ensureProxyResources', () => {
     expect(c.env).toContainEqual({
       name: 'MAMA_RELAY_URL', value: 'http://yaac-server-mama.test-ns.svc.cluster.local:8788/api/workspace/mama',
     })
+    // The site route, always to the router's tailnet listener; a name under
+    // the site domain only on an install with one.
+    expect(c.env).toContainEqual({ name: 'SITE_ROUTER', value: 'yaac-site-router.test-ns.svc.cluster.local:8081' })
+    expect(c.env.some((e) => e.name === 'SITE_DOMAIN')).toBe(false)
     expect(c.env).toContainEqual({
       name: 'PROXY_AUTH_SECRET',
       valueFrom: { secretKeyRef: { name: PROXY_AUTH_SECRET_NAME, key: 'secret' } },

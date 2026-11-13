@@ -151,12 +151,13 @@ describe('reconcileNodeSet', () => {
     // none gets a hosts.toml.
     for (const policy of [
       'yaac-server-ingress', 'yaac-proxy-ingress', 'yaac-npm-cache-ingress', 'yaac-registry-ingress',
-      'yaac-site-tunnel-ingress', 'yaac-site-router-ingress',
+      'yaac-site-tunnel-cloudflare-ingress', 'yaac-site-tunnel-tailnet-ingress', 'yaac-site-router-ingress',
     ]) {
       expect(admittedNodes(policy), policy).toEqual(['10.0.1.5/32'])
     }
     expect(applied().map((m) => m.metadata.name)).toEqual(expect.arrayContaining([
-      'yaac-workspace-egress', 'yaac-proxy-egress', 'yaac-npm-cache-egress', 'yaac-site-tunnel-egress',
+      'yaac-workspace-egress', 'yaac-proxy-egress', 'yaac-npm-cache-egress', 'yaac-site-tunnel-cloudflare-egress',
+      'yaac-site-tunnel-tailnet-egress',
     ]))
     expect(hostsWrites()).toEqual(['node-a yaac-registry.yaac.svc.cluster.local:5000'])
     // The apiserver at its real endpoint, and DNS at the kube-dns Service.

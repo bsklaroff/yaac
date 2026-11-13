@@ -98,6 +98,7 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     YAAC_IMAGE_PREFIX: 'yaac-test',
     YAAC_PROXY_IMAGE: 'yaac-test-proxy',
     YAAC_NETD_IMAGE: 'yaac-test-netd',
+    YAAC_TAILGATE_IMAGE: 'yaac-test-tailgate',
     YAAC_K8S_NAMESPACE: TEST_NAMESPACE,
     YAAC_REQUIRE_PREBUILT_IMAGES: '1',
     // A spare pool would waste cluster resources and disturb assertions.

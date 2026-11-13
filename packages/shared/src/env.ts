@@ -377,6 +377,27 @@ export const env = {
   },
 
   /**
+   * `TS_SITE_AUTHKEY` — the Tailscale auth key `yaac cluster install` joins
+   * the install's tailnet site tunnel with. Undefined when unset or empty.
+   */
+  get siteTailnetAuthKey(): string | undefined {
+    const raw = process.env.TS_SITE_AUTHKEY?.trim()
+    return raw === undefined || raw === '' ? undefined : raw
+  },
+
+  /**
+   * `YAAC_SITE_DOMAIN` — the zone whose names are tailnet sites'
+   * (docs/public-sites.md "Tailnet sites"), lowercased. `yaac cluster
+   * install` sets it on the server Deployment, from `--site-domain` or the
+   * domain the tailnet tunnel's Secret records, and the server hands it to
+   * the egress proxy. Undefined when unset or empty.
+   */
+  get siteDomain(): string | undefined {
+    const raw = process.env.YAAC_SITE_DOMAIN?.trim().toLowerCase()
+    return raw === undefined || raw === '' ? undefined : raw
+  },
+
+  /**
    * `YAAC_BUNDLED` — set to `'true'` by tsup in the shipped bundle (a build
    * define, not a runtime var). In the bundle static assets live in `dist/`;
    * in dev/test it is unset.
@@ -446,6 +467,11 @@ export const testEnv = {
   /** `YAAC_NETD_IMAGE` — netd image tag override. Production uses `yaac-netd`. */
   get netdImage(): string {
     return process.env.YAAC_NETD_IMAGE ?? 'yaac-netd'
+  },
+
+  /** `YAAC_TAILGATE_IMAGE` — tailgate image tag override. Production uses `yaac-tailgate`. */
+  get tailgateImage(): string {
+    return process.env.YAAC_TAILGATE_IMAGE ?? 'yaac-tailgate'
   },
 
 
