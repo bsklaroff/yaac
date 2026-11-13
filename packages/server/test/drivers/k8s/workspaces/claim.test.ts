@@ -220,9 +220,9 @@ describe('registerWorkspace', () => {
 
   // If the cache still applies, only the registration is rewritten.
   it('writes the registration from the allowlist it is handed', async () => {
-    await registerWorkspace(reg({ allowlist: { hosts: ['*'], defaults: false } }))
+    await registerWorkspace(reg({ allowlist: { hosts: ['*', 'api.example.com'], defaults: false } }))
 
-    expect(registeredHosts()).toEqual(['*'])
+    expect(registeredHosts()).toEqual(['*', 'api.example.com'])
     expect(fakeCluster.callsOf('list')).toEqual([])
     expect(execArgs).toEqual([])
   })

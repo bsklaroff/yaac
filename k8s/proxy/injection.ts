@@ -141,8 +141,7 @@ export function findRulesForHost(objects: ProxyObjects, workspaceId: string, hos
 export function isHostAllowed(objects: ProxyObjects, workspaceId: string, hostname: string): boolean {
   const allowed = objects.registration(workspaceId)?.allowedHosts
   if (!allowed) return false
-  if (allowed.length === 1 && allowed[0] === '*') return true
-  return allowed.some((pattern) => hostMatches(hostname, pattern))
+  return allowed.includes('*') || allowed.some((pattern) => hostMatches(hostname, pattern))
 }
 
 /**

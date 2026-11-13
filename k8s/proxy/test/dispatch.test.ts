@@ -62,7 +62,9 @@ beforeAll(async () => {
     rules: [{ hostPattern: 'mitm.test', pathPattern: '/*', injections: [] }],
     upstreamRedirects: { 'redirected.test': { host: '127.0.0.1', port: httpPort } },
   })
-  register('named', { allowedHosts: ['127.0.0.1', 'git.corp.test', '192.0.2.1', 'pool.test', '*.corp.test'] })
+  // `*` beside the exact entries: it admits no non-public address itself,
+  // and must not stop the exact entries from admitting theirs.
+  register('named', { allowedHosts: ['*', '127.0.0.1', 'git.corp.test', '192.0.2.1', 'pool.test', '*.corp.test'] })
   // A project with an ssh repo on a git host, here an ssh server that
   // answers each command with its own text.
   const gitHostKey = generateSshHostKey()
@@ -209,6 +211,15 @@ describe('dispatchToUpstream and forwardPlainHttp', () => {
     expect(wild.status).toBe(403)
     expect(wild.body).toContain('only an exact allowlist entry')
   }, 60_000)
+
+  it('refuse a non-public destination the `*` beside exact entries admits', async () => {
+    for (const host of ['rebind.test', '169.254.169.254', '10.1.2.3']) {
+      const reply = await exchange('named', host, tcpPort, true)
+      expect(reply, host).toMatch(/^HTTP\/1\.1 403 Forbidden\r\n/)
+      expect(reply, host).toContain('non-public address')
+    }
+    expect(blocked).toEqual([])
+  }, 30_000)
 
   it('keep an admitted non-public socket out of the pool other workspaces draw from', async () => {
     expect(await plainGet('named', 'pool.test', httpPort)).toEqual({ status: 200, body: 'upstream saw /x' })

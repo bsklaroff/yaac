@@ -161,7 +161,7 @@ export function buildProxyRegistration(input: {
   const allowedHosts = resolveAllowedHosts(input.allowlist)
   // Nested workspaces need the registry pull hosts, unless the project
   // turned the defaults off to pin an exact list.
-  if (input.config.nestedContainers && input.allowlist.defaults && allowedHosts[0] !== '*') {
+  if (input.config.nestedContainers && input.allowlist.defaults) {
     allowedHosts.push(...NESTED_PULL_HOSTS.filter((h) => !allowedHosts.includes(h)))
   }
   return {

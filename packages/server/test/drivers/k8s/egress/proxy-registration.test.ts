@@ -175,6 +175,14 @@ describe('buildProxyRegistration', () => {
     expect(reg.allowedHosts).toContain('registry-1.docker.io')
   })
 
+  it('appends the pull hosts beside * with the defaults on', () => {
+    const reg = buildProxyRegistration({
+      config: { ...PROJECT_CONFIG_DEFAULTS, nestedContainers: true }, allowlist: { hosts: ['*'], defaults: true }, projectId: 'p', owner: 'o', secretRules: {}, env: {},
+    })
+    expect(reg.allowedHosts).toContain('*')
+    expect(reg.allowedHosts).toEqual(expect.arrayContaining(NESTED_PULL_HOSTS))
+  })
+
   it('does NOT append the pull hosts with the defaults off (exact list)', () => {
     const reg = buildProxyRegistration({
       config: { ...PROJECT_CONFIG_DEFAULTS, nestedContainers: true }, allowlist: { hosts: ['only.example.com'], defaults: false }, projectId: 'p', owner: 'o', secretRules: {}, env: {},

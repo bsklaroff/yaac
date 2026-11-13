@@ -168,9 +168,8 @@ describe('resolveAllowedHosts', () => {
     expect(result).not.toContain('api.anthropic.com')
   })
 
-  it('collapses any list holding * to ["*"]', () => {
-    expect(only(['*'])).toEqual(['*'])
-    expect(resolveAllowedHosts({ hosts: ['a.com', '*'], defaults: true })).toEqual(['*'])
+  it('keeps the other entries of a list holding *', () => {
+    expect(only(['*', '100.64.0.7'])).toEqual(['*', '100.64.0.7'])
   })
 
   it('returns an empty list with the defaults off and nothing added', () => {

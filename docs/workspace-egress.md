@@ -470,6 +470,8 @@ IPv4 address. Neither `*` nor a wildcard such as `*.corp.example` or
 zones others control, and plenty of public names answer privately (an AWS
 internal load balancer under `*.amazonaws.com`, or CoreDNS's
 `169-254-169-254.default.pod.cluster.local`).
+An exact entry works beside `*`: a list holding both `*` and
+`git.corp.example` admits any public destination and that one internal one.
 A dial admitted this way:
 
 - has a 5-second connect timeout, because the floor below drops it silently
@@ -569,8 +571,8 @@ removes it with the namespace). Creating one takes kubectl access to the
 namespace, which no workspace has.
 
 An opening admits nothing on its own: the project's allowlist must still
-hold an exact entry for the destination, not `*` or a wildcard. For an
-internal git server at `git.corp.example` (10.20.0.5):
+hold an exact entry for the destination, which may sit beside `*` but is
+not replaced by it or a wildcard. For an internal git server at `git.corp.example` (10.20.0.5):
 
 ```yaml
 apiVersion: networking.k8s.io/v1

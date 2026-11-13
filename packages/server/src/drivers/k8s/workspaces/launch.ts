@@ -201,7 +201,7 @@ export function npmCacheApplies(
   secretRules: Record<string, SecretProxyRule>,
 ): boolean {
   if (config.npmCache === false) return false
-  const allowed = (allowedHosts.length === 1 && allowedHosts[0] === '*')
+  const allowed = allowedHosts.includes('*')
     || allowedHosts.some((pattern) => hostMatchesPattern(NPMJS_HOST, pattern))
   const authenticated = Object.values(secretRules)
     .some((rule) => rule.hosts.some((pattern) => hostMatchesPattern(NPMJS_HOST, pattern)))

@@ -107,6 +107,11 @@ describe('isHostAllowed', () => {
     expect(isHostAllowed(objects, 'ws', host)).toBe(expected)
   })
 
+  it('admits any host when * sits beside other entries', () => {
+    const objects = load({}, { ws: { allowedHosts: ['*', '10.0.0.5', '*.corp.test'] } })
+    expect(isHostAllowed(objects, 'ws', 'api.example.com')).toBe(true)
+  })
+
   it('answers quickly for many wildcards in one label', () => {
     const objects = load({}, { ws: { allowedHosts: ['*a*a*a*a*a*a*b.example.com'] } })
     const start = Date.now()
