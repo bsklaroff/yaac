@@ -2547,6 +2547,8 @@ export interface NodeDisk {
   sharesKubeletDisk: boolean
   /** Largest first; read only while the node is under its warn floor. */
   trees?: NodeDiskTree[]
+  /** The tree sizes are incomplete: the walk ran out of its budget. */
+  truncated?: boolean
   /** The node's disk pod could not be asked. */
   error?: string
 }

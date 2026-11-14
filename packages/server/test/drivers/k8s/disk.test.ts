@@ -21,6 +21,8 @@ let tmp: string
 let root: string
 let port: number
 let disk: ChildProcess
+/** Whether this filesystem reports a sparse file's holes as unallocated. */
+let holes = true
 
 async function freePort(): Promise<number> {
   return new Promise((resolve) => {
@@ -39,9 +41,12 @@ beforeAll(async () => {
   await fs.writeFile(path.join(tree('w-big'), 'big.bin'), Buffer.alloc(3 * 1024 * 1024, 1))
   await fs.mkdir(path.join(tree('w-sparse'), 'deep', 'er'), { recursive: true })
   // A sparse file is measured by what it allocates, not its length.
-  const fh = await fs.open(path.join(tree('w-sparse'), 'deep', 'er', 'sparse'), 'w')
+  const sparse = path.join(tree('w-sparse'), 'deep', 'er', 'sparse')
+  const fh = await fs.open(sparse, 'w')
   await fh.truncate(GiB)
   await fh.close()
+  // Some filesystems (gVisor's overlay) report a hole as allocated.
+  holes = (await fs.stat(sparse)).blocks * 512 < GiB / 2
   port = await freePort()
   // `--kubelet` is the root itself, so trees count as on kubelet's disk.
   disk = spawn('node', [await buildDiskProgram(), '--root', root, '--kubelet', root, '--port', String(port)], { stdio: 'ignore' })
@@ -96,10 +101,14 @@ describe('readNodeDisks', () => {
     expect(byNode.get('node-empty')).toMatchObject({ error: 'no disk pod is running on this node' })
 
     const trees = (await readNodeDisks({ trees: true })).find((d) => d.node === 'node-a')!.trees!
-    expect(trees.map((t) => t.workspaceId)).toEqual(['w-big', 'w-sparse'])
-    expect(trees[0]).toMatchObject({ projectId: 'p1', life: 'L1' })
-    expect(trees[0].bytes).toBeGreaterThanOrEqual(3 * 1024 * 1024)
-    expect(trees[1].bytes).toBeLessThan(1024 * 1024)
+    expect(trees.map((t) => t.workspaceId).sort()).toEqual(['w-big', 'w-sparse'])
+    const big = trees.find((t) => t.workspaceId === 'w-big')!
+    expect(big).toMatchObject({ projectId: 'p1', life: 'L1' })
+    expect(big.bytes).toBeGreaterThanOrEqual(3 * 1024 * 1024)
+    if (holes) {
+      expect(trees[0].workspaceId).toBe('w-big')
+      expect(trees[1].bytes).toBeLessThan(1024 * 1024)
+    }
   })
 
   it('puts the floors above kubelet\'s own threshold where trees share its disk on a byo node', async () => {
@@ -125,7 +134,9 @@ describe('watchNodeDisks', () => {
     await new Promise((r) => setTimeout(r, 6_000))
     stop()
     expect(raised).toEqual([])
-    vi.stubEnv('YAAC_DISK_WARN_FLOOR_GIB', String(1024 * 1024))
+    // Just above what the disk has free, whatever it reports.
+    const free = (await readNodeDisks({ trees: false })).find((d) => d.node === 'node-a')!.freeBytes
+    vi.stubEnv('YAAC_DISK_WARN_FLOOR_GIB', String(Math.ceil(free / GiB) + 1))
     stop = watchNodeDisks((s) => raised.push(s))
     await vi.waitFor(() => { expect(raised).toContain('disk-low') }, { timeout: 8_000, interval: 200 })
     stop()

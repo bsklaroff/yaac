@@ -193,8 +193,9 @@ function workspaceSpreadSpec(labels: Record<string, string>): Record<string, unk
 const TREE_TRIGGER_FILE = k8sWorkspacePaths().treeTrigger as string
 const TREE_TRIGGER_DIR = path.posix.dirname(TREE_TRIGGER_FILE)
 /** How long the tree container may take to fill the tree: a restore of a
- *  large repository the agent cloned takes minutes. */
-const TREE_STARTUP_SECONDS = 4 * 60 * 60
+ *  large repository the agent cloned takes minutes. The server's wait for
+ *  the pod is as long (`readyTimeoutMs`). */
+export const TREE_STARTUP_SECONDS = 4 * 60 * 60
 const TREE_PROBE_PERIOD_SECONDS = 2
 
 export interface TreeContainerParams {
@@ -204,6 +205,13 @@ export interface TreeContainerParams {
   /** Its mounts: the tree, scratch repository, checkpoint log, each git
    *  dir, the main clones and the program. */
   mounts: PodMount[]
+}
+
+/** What the tree container, and a salvage or import pod doing its work,
+ *  may use. Limits on every container are what give the pod a memory cap. */
+export const TREE_RESOURCES = {
+  requests: { cpu: '50m', memory: '128Mi' },
+  limits: { cpu: '1', memory: '1Gi' },
 }
 
 /**
@@ -234,10 +242,7 @@ function treeContainer(t: TreeContainerParams, volumeMounts: Array<Record<string
       runAsGroup: 0,
       capabilities: { drop: ['ALL'], add: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETUID', 'SETGID'] },
     },
-    resources: {
-      requests: { cpu: '50m', memory: '128Mi' },
-      limits: { cpu: '1', memory: '1Gi' },
-    },
+    resources: TREE_RESOURCES,
     volumeMounts,
   }
 }

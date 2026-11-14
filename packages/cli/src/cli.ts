@@ -551,7 +551,7 @@ workspace
   .option('--timeout <duration>', 'Stop it this long after the restart, like 2h; without one the restart clears any timeout it had')
   .option('--volume <name>', 'Attach this volume instead of the one it last held')
   .option('--no-volume', 'Restart without the volume it last held, and forget it')
-  .option('--restore-newest', 'If its last checkpoint is unreadable, restore the newest state that is, rather than refuse (cluster servers only)')
+  .option('--restore-newest', 'If its last checkpoint is unreadable or its files on a node cannot be saved, restore the newest readable state rather than refuse (cluster servers only)')
   .action(workspaceRestart)
 
 workspace

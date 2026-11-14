@@ -111,12 +111,22 @@ export async function writeStartInstruction(projectId: string, workspaceId: stri
 }
 
 /** A life's manifest, read as agent-written data: no links followed,
- *  size-capped, checked against its schema. Null when there is none. */
-export async function readLifeManifest(projectId: string, workspaceId: string, life: string): Promise<Manifest | null> {
+ *  size-capped, checked against its schema. `unreadable` when a file is
+ *  there that is not a manifest. */
+async function lifeManifest(projectId: string, workspaceId: string, life: string): Promise<Manifest | 'absent' | 'unreadable'> {
   const root = await openRoot(workspaceCheckpointsDir(projectId, workspaceId), 'no-links').catch(() => null)
-  if (!root) return null
-  const bytes = await root.readFile(`${LIVES_DIR}/${life}/${MANIFEST_FILE}`, { maxBytes: MAX_MANIFEST_BYTES }).catch(() => null)
-  return bytes === null ? null : parseManifest(bytes.toString('utf8'))
+  if (!root) return 'absent'
+  const bytes = await root.readFile(`${LIVES_DIR}/${life}/${MANIFEST_FILE}`, { maxBytes: MAX_MANIFEST_BYTES })
+    .catch(() => 'unreadable' as const)
+  if (bytes === null) return 'absent'
+  if (bytes === 'unreadable') return bytes
+  return parseManifest(bytes.toString('utf8')) ?? 'unreadable'
+}
+
+/** A life's manifest, or null when it has none it can read. */
+export async function readLifeManifest(projectId: string, workspaceId: string, life: string): Promise<Manifest | null> {
+  const m = await lifeManifest(projectId, workspaceId, life)
+  return typeof m === 'string' ? null : m
 }
 
 /** Why a restart cannot read its checkpoint, if the tree container said so. */
@@ -134,13 +144,27 @@ export async function restoreFailure(projectId: string, workspaceId: string, lif
 
 /**
  * The manifest a new life restores, relative to the checkpoint dir: the
- * newest earlier life's that was saved, or lost with its node after a
- * pass. A life that had nothing to save is passed over for the one before.
+ * newest earlier life's, passing over only lives that have none. After
+ * them comes the import of the workspace's files from the shared tier, if
+ * there was one. A manifest that is there but unreadable refuses the
+ * restart, unless `newestReadable` asks to pass over it too
+ * (docs/node-local-workspaces.md "Restore").
  */
-export async function restorePointer(projectId: string, workspaceId: string): Promise<string | undefined> {
-  for (const life of await listTreeLives(workspaceId)) {
-    if (life.checkpointOutcome === 'nothing') continue
-    if (await readLifeManifest(projectId, workspaceId, life.treeDir)) return `${LIVES_DIR}/${life.treeDir}/${MANIFEST_FILE}`
+export async function restorePointer(
+  projectId: string, workspaceId: string, opts: { newestReadable?: boolean } = {},
+): Promise<string | undefined> {
+  const imports = (await fs.readdir(path.join(workspaceCheckpointsDir(projectId, workspaceId), LIVES_DIR)).catch(() => []))
+    .filter((n) => n.startsWith('import-')).sort().reverse()
+  const candidates = [...(await listTreeLives(workspaceId)).map((l) => l.treeDir), ...imports]
+  for (const life of candidates) {
+    const m = await lifeManifest(projectId, workspaceId, life)
+    if (m === 'absent') continue
+    if (m === 'unreadable') {
+      if (opts.newestReadable === true) continue
+      throw new ServerError('CONFLICT', `${workspaceId.slice(0, 8)}'s checkpoint ${LIVES_DIR}/${life}/${MANIFEST_FILE} is unreadable, `
+        + 'so work saved after the checkpoint before it would be missing. Restart with --restore-newest to restore the newest state that is readable')
+    }
+    return `${LIVES_DIR}/${life}/${MANIFEST_FILE}`
   }
   return undefined
 }
@@ -166,8 +190,13 @@ async function stampLife(life: TreeLife): Promise<void> {
   const { projectId, workspaceId, treeDir } = life
   const own = await readLifeManifest(projectId, workspaceId, treeDir)
   if (own?.final && own.life === treeDir) return stamp(life, 'final')
-  // A pod never scheduled left no tree anywhere.
-  if (life.node === undefined) return stamp(life, 'nothing')
+  if (life.node === undefined) {
+    // A pod never scheduled left no tree anywhere. One whose node went
+    // unrecorded did, somewhere salvage cannot be sent; its last pass stands.
+    return own
+      ? stamp(life, 'lost', `the node its files were on is unknown; its last checkpoint was taken at ${own.takenAt}`)
+      : stamp(life, 'nothing')
+  }
   const checkouts = (await workspaceCheckouts(projectId, workspaceId))
     .map((c) => ({ id: c.repo.id, path: c.path, dir: c.dir, mainGitDir: c.mainGitDir }))
   const tree = await treeOf(projectId, workspaceId, treeDir, { checkouts, restoring: false })
@@ -179,15 +208,22 @@ async function stampLife(life: TreeLife): Promise<void> {
       : `its node ${life.node} is gone, before any checkpoint of it was taken`)
   }
   const after = await readLifeManifest(projectId, workspaceId, treeDir)
-  return stamp(life, after?.final && after.life === treeDir ? 'salvaged' : 'nothing')
+  if (after?.final && after.life === treeDir) return stamp(life, 'salvaged')
+  // A tree that never finished filling saves nothing over the checkpoint
+  // before it; a pass that did happen still stands.
+  return after
+    ? stamp(life, 'lost', `its files could not be saved on node ${life.node}; its last checkpoint was taken at ${after.takenAt}`)
+    : stamp(life, 'nothing')
 }
 
 /**
  * Make sure the workspace's current life, if its tree was on a node, is
  * stamped before a restart or delete goes on, salvaging it now if need be.
- * `CONFLICT` while that cannot be done.
+ * `CONFLICT` while that cannot be done, unless `abandon` gives the tree up
+ * (a salvage can keep failing, as on a node whose disk is full): the life
+ * is then stamped lost and its last checkpoint stands.
  */
-export async function ensureLifeStamped(workspaceId: string): Promise<void> {
+export async function ensureLifeStamped(workspaceId: string, opts: { abandon?: boolean } = {}): Promise<void> {
   const [life] = await listTreeLives(workspaceId)
   if (!life || life.checkpointedAt !== undefined) return
   await stamping(workspaceId, async () => {
@@ -196,8 +232,16 @@ export async function ensureLifeStamped(workspaceId: string): Promise<void> {
     try {
       await stampLife(now)
     } catch (err) {
+      const why = err instanceof Error ? err.message : String(err)
+      if (opts.abandon === true) {
+        const last = (await readLifeManifest(now.projectId, workspaceId, now.treeDir))?.takenAt
+        serverLog(`[tree-salvage] ${workspaceId.slice(0, 8)}: giving up its files on node ${now.node ?? '?'}: ${why}`)
+        return stamp(now, 'lost', `its files on node ${now.node ?? '?'} were given up unsaved (${why}); `
+          + (last !== undefined ? `its last checkpoint was taken at ${last}` : 'no checkpoint of it was taken'))
+      }
       throw new ServerError('CONFLICT', `${workspaceId.slice(0, 8)}'s files are still on node ${now.node ?? '?'} `
-        + `and could not be saved yet (${err instanceof Error ? err.message : String(err)}); try again shortly`)
+        + `and could not be saved yet (${why}). Try again shortly, or restart with --restore-newest to restart `
+        + 'from the last checkpoint and give those files up')
     }
   })
 }
@@ -212,9 +256,18 @@ const RETRY_MS = 60_000
  * one workspace at a time each.
  */
 export async function reconcileTreeSalvage(view: RuntimeSnapshot): Promise<void> {
-  const lives = await listUnstampedTreeLives()
-  if (lives.length === 0) return
+  const unstamped = await listUnstampedTreeLives({ stopped: false })
+  if (unstamped.length === 0) return
   const [units, strays] = await Promise.all([view.workspaces(), view.strayUnits()])
+  // The node a life runs on, from the runtime's own view, so a life whose
+  // pod never reported ready, or whose report was missed, still names it.
+  for (const u of units) {
+    const life = unstamped.find((l) => l.workspaceId === u.workspaceId && l.stoppedAt === undefined && l.node === undefined)
+    if (life && u.node !== undefined && !u.terminating) {
+      await applyWorkspaceEvent({ type: 'life-node-found', projectId: life.projectId, workspaceId: life.workspaceId, node: u.node })
+    }
+  }
+  const lives = unstamped.filter((l) => l.stoppedAt !== undefined)
   const live = new Set([...units.map((u) => u.workspaceId), ...strays.map((s) => s.workspaceId)])
   const now = Date.now()
   for (const life of lives) {
@@ -233,9 +286,9 @@ export async function reconcileTreeSalvage(view: RuntimeSnapshot): Promise<void>
 }
 
 /** Workspaces whose tree may still be on a node, for the node-local sweep
- *  to leave alone. */
+ *  to leave alone: every current life not yet stamped, stopped or not. */
 export async function unsalvagedWorkspaceIds(): Promise<string[]> {
-  return (await listUnstampedTreeLives()).map((l) => l.workspaceId)
+  return (await listUnstampedTreeLives({ stopped: false })).map((l) => l.workspaceId)
 }
 
 /** The commit a checkout's git dir has as HEAD, read as data rather than
@@ -293,10 +346,12 @@ const COLLECT_AFTER_MS = 60 * 60_000
 /**
  * Remove the bundles no kept manifest names, and the temp files a pass
  * that died left (docs/node-local-workspaces.md "The log"). The kept
- * manifests are the two newest of each workspace (the current life's, and
- * the one it restored from until it has its own) and those of lives lost
- * with their node, in case their tree turns up. A tree container deletes
- * nothing there, so this is the only collection.
+ * manifests are the two newest lives' of each workspace (the current
+ * life's, and the one it restored from until it has its own), an import's
+ * until a life has saved, and those of lives lost with their node, in case their tree turns up. A
+ * workspace with a manifest that cannot be read keeps everything, for a
+ * `--restore-newest` to work from. A tree container deletes nothing there,
+ * so this is the only collection.
  */
 export async function collectCheckpointBundles(): Promise<void> {
   for (const projectId of await fs.readdir(globalPath('projects')).catch(() => [])) {
@@ -312,13 +367,22 @@ export async function collectCheckpointBundles(): Promise<void> {
 async function collectWorkspace(projectId: string, workspaceId: string): Promise<void> {
   const dir = workspaceCheckpointsDir(projectId, workspaceId)
   const lifeNames = await fs.readdir(path.join(dir, LIVES_DIR)).catch(() => [])
-  const manifests = (await Promise.all(lifeNames.map(async (life) => ({ life, m: await readLifeManifest(projectId, workspaceId, life) }))))
-    .filter((x): x is { life: string; m: Manifest } => x.m !== null)
-    .sort((a, b) => b.m.takenAt.localeCompare(a.m.takenAt))
-  const lost = new Set((await listTreeLives(workspaceId)).filter((l) => l.checkpointOutcome === 'lost').map((l) => l.treeDir))
-  const kept = new Set(manifests.filter((x, i) => i < 2 || lost.has(x.life)).flatMap((x) => x.m.bundles))
+  const read = await Promise.all(lifeNames.map(async (life) => ({ life, m: await lifeManifest(projectId, workspaceId, life) })))
+  if (read.some((x) => x.m === 'unreadable')) {
+    serverLog(`[checkpoint-gc] ${workspaceId.slice(0, 8)} has an unreadable manifest; collecting none of its bundles`)
+    return
+  }
+  const manifests = read.filter((x): x is { life: string; m: Manifest } => typeof x.m !== 'string')
   // With no manifest at all there is nothing to judge by yet.
   if (manifests.length === 0) return
+  // Newest by the lives' own start times, which no node's clock wrote.
+  const lives = await listTreeLives(workspaceId)
+  const newest = new Set(lives.slice(0, 2).map((l) => l.treeDir))
+  const lost = new Set(lives.filter((l) => l.checkpointOutcome === 'lost').map((l) => l.treeDir))
+  // An import is kept until a life has a checkpoint of its own.
+  const lifeSaved = manifests.some((x) => lives.some((l) => l.treeDir === x.life))
+  const kept = new Set(manifests.filter((x) => newest.has(x.life) || lost.has(x.life) || (!lifeSaved && x.life.startsWith('import-')))
+    .flatMap((x) => x.m.bundles))
   const now = Date.now()
   for (const name of await fs.readdir(path.join(dir, BUNDLES_DIR)).catch(() => [])) {
     if (kept.has(`${BUNDLES_DIR}/${name}`) || name.endsWith('.unreadable')) continue

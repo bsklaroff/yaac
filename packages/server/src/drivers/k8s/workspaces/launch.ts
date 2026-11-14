@@ -19,7 +19,7 @@ import {
   workspaceIdLabels,
   workspaceJobName,
 } from '#drivers/k8s/substrate'
-import { PRE_STOP_GRACE_SECONDS, TREE_FINAL_PASS_SECONDS, buildPodJobManifest } from './pod-job'
+import { PRE_STOP_GRACE_SECONDS, TREE_FINAL_PASS_SECONDS, TREE_STARTUP_SECONDS, buildPodJobManifest } from './pod-job'
 import { treeMounts, treeImage } from './tree-mounts'
 import {
   ensureBuilderImage,
@@ -189,7 +189,7 @@ export function npmCacheApplies(
  *  large repository can take minutes to do. */
 const treeJobs = new Set<string>()
 const READY_TIMEOUT_MS = 180_000
-const TREE_READY_TIMEOUT_MS = 30 * 60_000
+const TREE_READY_TIMEOUT_MS = TREE_STARTUP_SECONDS * 1000
 
 /** How long `awaitReady` waits for a job's pod. */
 export function readyTimeoutMs(jobName: string): number {

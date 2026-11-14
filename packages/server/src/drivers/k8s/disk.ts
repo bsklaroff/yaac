@@ -47,7 +47,10 @@ function parseReading(body: unknown): Omit<NodeDisk, 'node' | 'warnBytes' | 'sto
         : []
     })
     : undefined
-  return { totalBytes: o.totalBytes, freeBytes: o.freeBytes, sharesKubeletDisk: o.sharesKubeletDisk, ...(trees ? { trees } : {}) }
+  return {
+    totalBytes: o.totalBytes, freeBytes: o.freeBytes, sharesKubeletDisk: o.sharesKubeletDisk,
+    ...(trees ? { trees } : {}), ...(o.truncated === true ? { truncated: true } : {}),
+  }
 }
 
 /** The floors a node's reading is held to. */

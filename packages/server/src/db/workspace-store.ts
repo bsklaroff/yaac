@@ -298,12 +298,15 @@ function toTreeLife(r: { treeDir: string | null } & Record<string, unknown>): Tr
   return nullsToUndefined(r) as unknown as TreeLife
 }
 
-/** Current lives whose tree was on a node, stopped and not yet stamped,
- *  oldest stop first. */
-export async function listUnstampedTreeLives(): Promise<TreeLife[]> {
+/** Current lives whose tree was on a node and that are not yet stamped:
+ *  stopped ones only, unless `stopped: false`; oldest stop first. */
+export async function listUnstampedTreeLives(opts: { stopped?: boolean } = {}): Promise<TreeLife[]> {
   const db = await getDb()
   const rows = await db.select(treeLifeColumns).from(workspaces).innerJoin(workspaceLives, currentLife)
-    .where(and(isNotNull(workspaceLives.treeDir), isNotNull(workspaceLives.stoppedAt), isNull(workspaceLives.checkpointedAt)))
+    .where(and(
+      isNotNull(workspaceLives.treeDir), isNull(workspaceLives.checkpointedAt),
+      opts.stopped === false ? undefined : isNotNull(workspaceLives.stoppedAt),
+    ))
     .orderBy(workspaceLives.stoppedAt)
   return rows.map(toTreeLife)
 }

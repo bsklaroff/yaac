@@ -889,7 +889,7 @@ export async function createWorkspace(
       ],
     })
   } else if (treeLife && options.resume === true) {
-    restore = await restorePointer(projectId, workspaceId)
+    restore = await restorePointer(projectId, workspaceId, { newestReadable: options.restoreNewest === true })
   }
   // A life starts with the workspace's row, or as a restart's next one,
   // before any session is launched in it. A spare has neither.

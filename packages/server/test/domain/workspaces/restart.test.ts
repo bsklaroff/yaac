@@ -44,6 +44,7 @@ import {
   listWorkspaceSessions,
   getWorkspaceRow,
   findVolumeByName,
+  listTreeLives,
   markRepoDeleted,
   unlinkProjectRepo,
   type SessionRow,
@@ -59,7 +60,7 @@ import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
 import { git } from '@yaac/test-utils/git'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
 import { DEMO_PROJECT_ID, seedProject } from '@yaac/test-utils/project-fixture'
-import { claudePodCwd, projectDir, repoDir, workspaceDir, workspaceStateDir } from '@yaac/shared/project-paths'
+import { claudePodCwd, projectDir, repoDir, workspaceCheckpointsDir, workspaceDir, workspaceStateDir } from '@yaac/shared/project-paths'
 import { isWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#runtime/status/liveness'
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
@@ -970,6 +971,60 @@ describe('prepareRestart', () => {
     installDriver({ find: () => Promise.reject(new Error('connection refused')) })
     await expect(prepareRestart(local, 'wt-x')).rejects.toThrow('connection refused')
     expect(listProvisioning()).toEqual([])
+  })
+
+  // A k8s workspace's files are restored from its checkpoint log
+  // (docs/node-local-workspaces.md "Restore", "Life cycle").
+  it('restores the newest saved checkpoint, refusing an unreadable one or an unsaved tree until asked to pass over it', async () => {
+    const ckpt = (id: string): string => workspaceCheckpointsDir(DEMO_PROJECT_ID, id)
+    const manifest = async (id: string, life: string, body?: string): Promise<void> => {
+      await fs.mkdir(path.join(ckpt(id), 'lives', life), { recursive: true })
+      await fs.writeFile(path.join(ckpt(id), 'lives', life, 'manifest.json'), body ?? JSON.stringify({
+        version: 1, life, takenAt: new Date().toISOString(), final: false, pass: 'a'.repeat(40),
+        bundles: [`bundles/${life}.bundle`], units: [{ kind: 'root' }], unsaved: [],
+      }))
+    }
+    const lifeOf = async (id: string): Promise<string> => (await listTreeLives(id))[0].treeDir
+    const restoredFrom = async (id: string): Promise<{ restore?: string; restoreNewestReadable?: boolean }> =>
+      JSON.parse(await fs.readFile(path.join(ckpt(id), 'lives', await lifeOf(id), 'start.json'), 'utf8')) as { restore?: string }
+    const restartNewest = async (id: string): Promise<void> => { await (await prepareRestart(local, id, { restoreNewest: true }))() }
+
+    // A life whose node went unrecorded still restores from its own pass.
+    await stoppedWorkspace('wt-tree')
+    const l1 = await lifeOf('wt-tree')
+    await manifest('wt-tree', l1)
+    await restart('wt-tree')
+    expect((await restoredFrom('wt-tree')).restore).toBe(`lives/${l1}/manifest.json`)
+    expect((await listTreeLives('wt-tree'))[1].checkpointOutcome).toBe('lost')
+
+    // An unreadable manifest refuses the restart, naming it, until asked.
+    await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-tree' })
+    const l2 = await lifeOf('wt-tree')
+    await manifest('wt-tree', l2, '{ not a manifest')
+    await expect(restart('wt-tree')).rejects.toThrow(new RegExp(`lives/${l2}/manifest.json is unreadable.*--restore-newest`))
+    await restartNewest('wt-tree')
+    expect(await restoredFrom('wt-tree')).toMatchObject({ restore: `lives/${l1}/manifest.json`, restoreNewestReadable: true })
+
+    // A first node-local life that saved nothing falls back to the import
+    // of the files it had on the shared tier.
+    await stoppedWorkspace('wt-imp')
+    await manifest('wt-imp', 'import-20260101T000000Z')
+    await restart('wt-imp')
+    expect((await restoredFrom('wt-imp')).restore).toBe('lives/import-20260101T000000Z/manifest.json')
+
+    // A tree that cannot be salvaged blocks the restart until it is given
+    // up, its last pass then standing.
+    await created('wt-full')
+    await applyWorkspaceEvent({ type: 'life-node-found', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-full', node: 'node-a' })
+    await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-full' })
+    const full = await lifeOf('wt-full')
+    await manifest('wt-full', full)
+    installDriver({ salvageTree: () => Promise.reject(new Error('no space left on device')) })
+    await expect(restart('wt-full')).rejects.toThrow(/could not be saved yet \(no space left on device\).*--restore-newest/)
+    await restartNewest('wt-full')
+    expect((await restoredFrom('wt-full')).restore).toBe(`lives/${full}/manifest.json`)
+    const given = (await listTreeLives('wt-full'))[1]
+    expect(given.checkpointOutcome).toBe('lost')
   })
 
   // A site replaces its release in a fresh checkout rather than restarting

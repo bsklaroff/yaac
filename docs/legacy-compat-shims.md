@@ -944,12 +944,18 @@ alone on the shared tier (docs/node-local-workspaces.md). A life
 started before that kept the whole tree on the shared tier, and its row
 says so with a null `workspace_lives.tree_dir`; the `add_node_local_trees`
 migration leaves every existing life that way. Such a life keeps running
-as it is, and is never waited on for a checkpoint stamp. At its next
+as it is, and is never waited on for a checkpoint stamp. Its file routes
+are served from the server's view of the shared directory, as before,
+since its pod has no `yaac-files` helper (`openCheckout` in
+`domain/workspaces/files.ts`). At its next
 restart `createWorkspace` sees the null `tree_dir` and runs
 `importSharedFiles` (`domain/workspaces/trees.ts`): the driver's
 `importTree` verb starts a one-shot `yaac-tree import` pod that takes an
 ordinary checkpoint of the shared directory, leaving the files there, and
-the new node-local life restores from it.
+the new node-local life restores from it. The import's manifest lives
+under an `import-<time>` folder no life row names, so `restorePointer`
+falls back to it when no life has a manifest, which covers a first
+node-local life that ended before it saved anything.
 
 - **What it reads.** A null `tree_dir` on the current life of a k8s
   workspace, and the files of `projects/<p>/workspaces/<w>/` on the GLOBAL
@@ -959,9 +965,11 @@ the new node-local life restores from it.
   its uncommitted edits, untracked files and any repository the agent
   cloned stay on the shared tier, unmounted, and look lost.
 - **When it is safe to remove.** Once no k8s workspace's current life has a
-  null `tree_dir` and shared files beyond each `.git`. Delete
-  `importSharedFiles`, the `importTree` verb, `yaac-tree import` and the
-  `sharedLife` branch in `createWorkspace` together; the shared files of a
+  null `tree_dir` and shared files beyond each `.git`, and every
+  workspace imported has a life with a checkpoint of its own. Delete
+  `importSharedFiles`, the `importTree` verb, `yaac-tree import`, the
+  `sharedLife` branch in `createWorkspace`, the `import-*` fallback in
+  `restorePointer` and the shared-tier path in `openCheckout` together; the shared files of a
   workspace imported earlier stay until it is deleted either way.
 
 ## The yaac-checkouts claim

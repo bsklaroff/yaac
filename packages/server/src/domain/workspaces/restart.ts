@@ -46,7 +46,8 @@ export async function prepareRestart(
    *  clears. `volume`: a volume to attach by name, `null` for none (which
    *  forgets the one it had), absent for the one it last held
    *  (docs/workspace-volumes.md). `restoreNewest`: restore the newest
-   *  readable state if its last checkpoint is unreadable, rather than refuse. */
+   *  readable state if its last checkpoint is unreadable, and give up files
+   *  left on a node that cannot be saved, rather than refuse. */
   opts: { stoppedOnly?: boolean; deadline?: Date; volume?: string | null; restoreNewest?: boolean } = {},
 ): Promise<ProvisionRun<WorkspaceCreateResult>> {
   // The runtime is asked directly, never skipped when unreachable: a unit
@@ -106,7 +107,7 @@ export async function prepareRestart(
     await teardownForRestart({ jobName: jobName ?? null, projectId, workspaceId })
     // A life whose files were on its node is saved before the next starts.
     onProgress('Saving the last checkpoint...')
-    await ensureLifeStamped(workspaceId)
+    await ensureLifeStamped(workspaceId, { abandon: opts.restoreNewest === true })
     // The old pod is gone, so a volume it held that this launch does not
     // attach is free; `--no-volume` also forgets it for later restarts.
     await releaseWorkspaceVolumes(workspaceId, volume?.id)

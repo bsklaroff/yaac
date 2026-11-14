@@ -17,15 +17,13 @@ import {
  * else may dial it, with the free space of the node's node-local root and
  * the size of each workspace tree there. It runs as root with only
  * `DAC_READ_SEARCH`, so it can measure folders an agent's `sudo` hid, and
- * mounts the root read-only; it runs no workspace's code. Its egress is
+ * mounts only the root, read-only; it runs no workspace's code. Its egress is
  * denied by the namespace's `yaac-egress-world-deny`.
  */
 
 /** Where the program is in the server image, whose build context is the
  *  bundle (`dist/` in a source checkout). */
 const DISK_PROGRAM = '/opt/yaac/yaac-disk.mjs'
-/** kubelet's own folder, read to tell whether trees share its filesystem. */
-const KUBELET_DIR = '/var/lib/kubelet'
 
 const labels = (): Record<string, string> => ({ app: DISK_APP_NAME, [LABEL_INSTALL_ID]: installId() })
 
@@ -48,7 +46,7 @@ export function buildDiskDaemonSetManifest(serverImage: string): Record<string, 
             name: 'disk',
             image: serverImage,
             imagePullPolicy: 'IfNotPresent',
-            command: ['node', DISK_PROGRAM, '--root', '/node-local', '--kubelet', '/kubelet', '--port', String(DISK_PORT)],
+            command: ['node', DISK_PROGRAM, '--root', '/node-local', '--port', String(DISK_PORT)],
             ports: [{ name: 'disk', containerPort: DISK_PORT }],
             securityContext: {
               runAsUser: 0,
@@ -61,15 +59,9 @@ export function buildDiskDaemonSetManifest(serverImage: string): Record<string, 
               requests: { cpu: '10m', memory: '32Mi' },
               limits: { cpu: '500m', memory: '128Mi' },
             },
-            volumeMounts: [
-              { name: 'node-local', mountPath: '/node-local', readOnly: true },
-              { name: 'kubelet', mountPath: '/kubelet', readOnly: true },
-            ],
+            volumeMounts: [{ name: 'node-local', mountPath: '/node-local', readOnly: true }],
           }],
-          volumes: [
-            { name: 'node-local', hostPath: { path: nodeLocalNodePath(), type: 'DirectoryOrCreate' } },
-            { name: 'kubelet', hostPath: { path: KUBELET_DIR, type: 'Directory' } },
-          ],
+          volumes: [{ name: 'node-local', hostPath: { path: nodeLocalNodePath(), type: 'DirectoryOrCreate' } }],
         },
       },
     },

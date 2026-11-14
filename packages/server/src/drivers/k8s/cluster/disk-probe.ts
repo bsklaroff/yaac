@@ -6,12 +6,13 @@
  * life's tree there in allocated blocks, so a sparse file is not blamed for
  * space it does not use.
  *
- *   node yaac-disk.mjs --root /node-local --kubelet /kubelet --port 8790
+ *   node yaac-disk.mjs --root /node-local --port 8790
  *
  * It runs as root with the root mounted read-only, since an agent's `sudo`
  * can put gigabytes in a folder another uid cannot list, and runs no
- * workspace's code. `--kubelet` is kubelet's own folder, mounted to tell
- * whether trees share its filesystem.
+ * workspace's code. Whether trees share kubelet's filesystem it tells from
+ * `/etc/hosts`, a file kubelet keeps for the container in its own folder,
+ * so nothing of kubelet's needs mounting; `--kubelet` names another file.
  */
 import fs from 'node:fs/promises'
 import http from 'node:http'
@@ -26,6 +27,8 @@ export interface DiskReading {
   /** Whether the node-local root is on kubelet's own filesystem. */
   sharesKubeletDisk: boolean
   trees?: TreeSize[]
+  /** The walk ran out of its budget, so some trees are undercounted. */
+  truncated?: boolean
 }
 
 /** Walking the trees stops after this many entries, a bound on one answer's time. */
@@ -50,10 +53,10 @@ async function allocated(dir: string, seen: Set<string>, budget: { left: number 
   return total
 }
 
-export async function readDisk(root: string, kubelet: string | undefined, withTrees: boolean): Promise<DiskReading> {
+export async function readDisk(root: string, kubelet: string, withTrees: boolean): Promise<DiskReading> {
   const s = await fs.statfs(root)
   const rootDev = (await fs.stat(root)).dev
-  const kubeletDev = kubelet ? (await fs.stat(kubelet).catch(() => null))?.dev : undefined
+  const kubeletDev = (await fs.stat(kubelet).catch(() => null))?.dev
   const reading: DiskReading = {
     totalBytes: s.blocks * s.bsize,
     freeBytes: s.bavail * s.bsize,
@@ -71,7 +74,7 @@ export async function readDisk(root: string, kubelet: string | undefined, withTr
       }
     }
   }
-  return { ...reading, trees: trees.sort((a, b) => b.bytes - a.bytes) }
+  return { ...reading, trees: trees.sort((a, b) => b.bytes - a.bytes), ...(budget.left < 0 ? { truncated: true } : {}) }
 }
 
 function flags(argv: string[]): Record<string, string> {
@@ -89,7 +92,7 @@ function main(): void {
       res.writeHead(404).end()
       return
     }
-    readDisk(f.root, f.kubelet, url.searchParams.get('trees') === '1').then((r) => {
+    readDisk(f.root, f.kubelet ?? '/etc/hosts', url.searchParams.get('trees') === '1').then((r) => {
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(r))
     }, (err: unknown) => {
       res.writeHead(500).end(err instanceof Error ? err.message : String(err))

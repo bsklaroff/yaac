@@ -337,8 +337,9 @@ export async function runClusterCheck(
  * node"). On kubelet's filesystem the full-node guard is a race a fast
  * writer can win, and kubelet's own eviction gives no grace period, so a
  * node sharing it is a warning. kind's trees are on the host's disk either
- * way, so it is skipped there. One pod per node compares the two folders'
- * devices.
+ * way, so it is skipped there. One pod per node compares the root's
+ * device with that of its `/etc/hosts`, a file kubelet keeps in its own
+ * folder, so nothing of kubelet's is mounted.
  */
 async function runNodeLocalFsCheck(): Promise<CheckResult> {
   const name = 'node-local-fs'
@@ -353,16 +354,13 @@ async function runNodeLocalFsCheck(): Promise<CheckResult> {
       timeoutMs: 120_000,
       pod: () => ({
         image,
-        command: ['sh', '-c', '[ "$(stat -c %d /node)" = "$(stat -c %d /kubelet)" ] && echo shared || echo own'],
+        command: ['sh', '-c', '[ "$(stat -c %d /node)" = "$(stat -c %d /etc/hosts)" ] && echo shared || echo own'],
         container: {
           securityContext: { runAsUser: 0 },
-          volumeMounts: [{ name: 'node', mountPath: '/node', readOnly: true }, { name: 'kubelet', mountPath: '/kubelet', readOnly: true }],
+          volumeMounts: [{ name: 'node', mountPath: '/node', readOnly: true }],
         },
         spec: {
-          volumes: [
-            { name: 'node', hostPath: { path: nodeLocalNodePath(), type: 'DirectoryOrCreate' } },
-            { name: 'kubelet', hostPath: { path: '/var/lib/kubelet', type: 'Directory' } },
-          ],
+          volumes: [{ name: 'node', hostPath: { path: nodeLocalNodePath(), type: 'DirectoryOrCreate' } }],
         },
       }),
     })

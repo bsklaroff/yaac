@@ -127,6 +127,13 @@ async function writeDurably(c: TreeContext, file: string, write: (tmp: string) =
   }
   await own(c, tmp)
   await fs.rename(tmp, file)
+  // The new name is durable only once its folder is synced too.
+  const dir = await fs.open(path.dirname(file), 'r')
+  try {
+    await dir.sync()
+  } finally {
+    await dir.close()
+  }
 }
 
 /** The commit a git dir's HEAD names, read as data, or null. */
@@ -377,11 +384,14 @@ export async function takePass(c: TreeContext, opts: { final?: boolean } = {}): 
   const units: SavedUnit[] = []
   const entries: string[] = []
   const unsaved: string[] = []
-  const prevEntry = async (u: SavedUnit, suffix = ''): Promise<string | null> => {
+  /** A unit's entry in the previous pass, with the record it was saved
+   *  under, whose HEAD is the one those files sit on. */
+  const prevEntry = async (u: SavedUnit, suffix = ''): Promise<{ entry: string; unit: SavedUnit } | null> => {
     if (!prev) return null
     const i = prev.units.findIndex((p) => p.kind === u.kind && ('path' in p ? p.path : '') === ('path' in u ? u.path : ''))
     if (i < 0) return null
-    return git(c, ['rev-parse', '--verify', '-q', `${prev.pass}^{tree}:${String(i)}${suffix}`]).then((s) => s.trim(), () => null)
+    const entry = await git(c, ['rev-parse', '--verify', '-q', `${prev.pass}^{tree}:${String(i)}${suffix}`]).then((s) => s.trim(), () => null)
+    return entry === null ? null : { entry, unit: prev.units[i] }
   }
   for (let q = 0; q < queue.length && q < 10_000; q++) {
     const u = queue[q]
@@ -390,6 +400,7 @@ export async function takePass(c: TreeContext, opts: { final?: boolean } = {}): 
     if (u.unit.kind === 'submodule') await prepareScratch(c, objectDirs)
     let files: string | null
     let gitTree: string | null = null
+    let saved = u.unit
     try {
       files = await stageFiles(c, u, skip)
       if (u.unit.kind === 'repo') gitTree = await stageGitDir(c, upath, path.join(u.worktree, '.git'))
@@ -397,20 +408,26 @@ export async function takePass(c: TreeContext, opts: { final?: boolean } = {}): 
       // A repository changing under the pass (a gc, a repack) keeps its
       // last saved state, and the next pass tries again.
       process.stderr.write(`yaac-tree: could not save ${upath || 'the root'}: ${err instanceof Error ? err.message : String(err)}\n`)
-      files = await prevEntry(u.unit)
-      if (u.unit.kind === 'repo') gitTree = await prevEntry(u.unit, '.git')
-      if (files === null || (u.unit.kind === 'repo' && gitTree === null)) {
+      const before = await prevEntry(u.unit)
+      const beforeGit = u.unit.kind === 'repo' ? await prevEntry(u.unit, '.git') : null
+      if (before === null || (u.unit.kind === 'repo' && beforeGit === null)) {
         unsaved.push(upath)
         continue
       }
+      files = before.entry
+      gitTree = beforeGit?.entry ?? null
+      saved = before.unit
     }
     const n = units.length
-    units.push(u.unit)
+    units.push(saved)
     entries.push(`040000 tree ${files}\t${String(n)}`)
     if (gitTree !== null) entries.push(`040000 tree ${gitTree}\t${String(n)}.git`)
+    // What this unit leaves out: excluded paths, and the checkouts inside
+    // it, which are units of their own; never the unit's own path.
+    const leftOut = skip.filter((s) => s !== upath && under(s, upath))
     for (const link of await gitlinks(c, u).catch(() => [])) {
       const treePath = upath === '' ? link : `${upath}/${link}`
-      if (skip.some((s) => under(treePath, s))) continue
+      if (leftOut.some((s) => under(treePath, s))) continue
       const child = await childUnit(c, treePath)
       if (child) queue.push(child)
     }
@@ -429,9 +446,12 @@ export async function takePass(c: TreeContext, opts: { final?: boolean } = {}): 
       return m
     }
   }
+  // The previous pass is the only parent. Each checkout's HEAD is recorded
+  // in the units, not as a parent: those commits live in the agent's own
+  // .git, which may rewrite and prune them, and a chain that named them
+  // could no longer be walked.
   const parents = []
   if (prev && await has(c, prev.pass)) parents.push(prev.pass)
-  for (const h of heads) if (await has(c, h)) parents.push(h)
   const pass = (await git(c, ['commit-tree', tree, ...parents.flatMap((p) => ['-p', p])], {
     // The units go with the pass, so a restore that can read only part of a
     // chain knows what an earlier pass's entries are.
@@ -447,9 +467,20 @@ export async function takePass(c: TreeContext, opts: { final?: boolean } = {}): 
     version: 1, life: c.start.life, takenAt: new Date().toISOString(), final: opts.final === true, pass,
     bundles: [...(prev?.bundles ?? []), bundle], units, unsaved,
   }
-  const written = m.bundles.length > MAX_CHAIN ? await compactChain(c, m) : m
+  const written = m.bundles.length > MAX_CHAIN ? await compactQuietly(c, m) : m
   await writeManifest(c, written)
   return written
+}
+
+/** Compact, keeping the chain as it is if that fails: a longer chain
+ *  restores the same, while a failed compaction must not stop the pass. */
+async function compactQuietly(c: TreeContext, m: Manifest): Promise<Manifest> {
+  try {
+    return await compactChain(c, m)
+  } catch (err) {
+    process.stderr.write(`yaac-tree: could not compact the chain: ${err instanceof Error ? err.message : String(err)}\n`)
+    return m
+  }
 }
 
 /** The prerequisite commits a bundle's header names. */
@@ -482,6 +513,10 @@ async function compactChain(c: TreeContext, m: Manifest): Promise<Manifest> {
     i--
   }
   if (m.bundles.length - i < 2) return m
+  // A pass stores no object git found in a borrowed object dir (a
+  // checkout's own .git), which the agent may since have pruned; the
+  // bundles hold every one, so take them from there.
+  for (const b of m.bundles.slice(i)) await git(c, ['bundle', 'unbundle', path.join(c.ckpt, b)])
   const not = await prerequisites(path.join(c.ckpt, m.bundles[i]))
   const merged = await writeBundle(c, m.pass, not)
   return { ...m, bundles: [...m.bundles.slice(0, i), merged] }
@@ -491,7 +526,7 @@ async function compactChain(c: TreeContext, m: Manifest): Promise<Manifest> {
 export async function finish(c: TreeContext): Promise<Manifest | null> {
   const m = await takePass(c, { final: true })
   if (!m) return null
-  const compacted = await compactChain(c, m)
+  const compacted = await compactQuietly(c, m)
   if (compacted !== m) await writeManifest(c, compacted)
   return compacted
 }

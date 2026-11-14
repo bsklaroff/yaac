@@ -482,7 +482,6 @@ describe('runClusterCheck', () => {
     storageClaims = {
       'yaac-global': { spec: { volumeName: 'yaac-global-vol' }, status: { phase: 'Bound' } },
       'yaac-server-local': { spec: { volumeName: 'yaac-server-local-vol' }, status: { phase: 'Bound' } },
-      'yaac-checkouts': { spec: { volumeName: 'yaac-checkouts-vol' }, status: { phase: 'Bound' } },
       'yaac-volumes': { spec: { volumeName: 'yaac-volumes-vol' }, status: { phase: 'Bound' } },
     }
     volumes = {}

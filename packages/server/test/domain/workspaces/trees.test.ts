@@ -7,7 +7,7 @@ import { applyWorkspaceEvent, getWorkspaceRow, listTreeLives } from '#db'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { installFakeWorkspaceDriver, resetWorkspaceDriver, snapshotFixture } from '#test/support/fake-driver'
+import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver, snapshotFixture } from '#test/support/fake-driver'
 import { seedProject } from '@yaac/test-utils/project-fixture'
 import type { WorkspaceDriver } from '#drivers/contract'
 
@@ -67,18 +67,30 @@ describe('reconcileTreeSalvage', () => {
     await stoppedTreeWorkspace('lost', 'L1', 'gone')
     await writeManifest('lost', 'L1', { final: false, bundles: ['bundles/l.bundle'], takenAt: '2026-11-14T00:00:00.000Z' })
     await stoppedTreeWorkspace('unscheduled', 'L1')
+    // A life whose node was never recorded, though it took a pass.
+    await stoppedTreeWorkspace('unrecorded', 'L1')
+    await writeManifest('unrecorded', 'L1', { final: false, bundles: ['bundles/u.bundle'], takenAt: '2026-11-14T01:00:00.000Z' })
     // A workspace whose unit is still there is left alone.
     await stoppedTreeWorkspace('busy', 'L1', 'node-a')
+    // A running one gets the node the runtime shows its pod on.
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'running', repos: [], treeDir: 'L1' })
 
-    await reconcileTreeSalvage(snapshotFixture([], [{ workspaceId: 'busy', unitName: 'u', projectId: PROJ, createdAtMs: 1, prewarmed: false }]))
+    await reconcileTreeSalvage(snapshotFixture(
+      [handleFixture({ workspaceId: 'running', projectId: PROJ, node: 'node-b' })],
+      [{ workspaceId: 'busy', unitName: 'u', projectId: PROJ, createdAtMs: 1, prewarmed: false }],
+    ))
     await vi.waitFor(async () => {
-      for (const id of ['clean', 'killed', 'lost', 'unscheduled']) expect((await listTreeLives(id))[0].checkpointedAt).toBeDefined()
+      for (const id of ['clean', 'killed', 'lost', 'unscheduled', 'unrecorded']) expect((await listTreeLives(id))[0].checkpointedAt).toBeDefined()
     })
+    const running = (await listTreeLives('running'))[0]
+    expect(running.node).toBe('node-b')
+    expect(running.checkpointedAt).toBeUndefined()
     const outcome = async (id: string): Promise<string | undefined> => (await listTreeLives(id))[0].checkpointOutcome
     expect(await outcome('clean')).toBe('final')
     expect(await outcome('killed')).toBe('salvaged')
     expect(await outcome('lost')).toBe('lost')
     expect(await outcome('unscheduled')).toBe('nothing')
+    expect(await outcome('unrecorded')).toBe('lost')
     expect((await listTreeLives('busy'))[0].checkpointedAt).toBeUndefined()
     expect(salvaged.sort()).toEqual(['killed', 'lost'])
     const lostRow = await getWorkspaceRow(PROJ, 'lost')
@@ -88,27 +100,49 @@ describe('reconcileTreeSalvage', () => {
 })
 
 describe('collectCheckpointBundles', () => {
-  it('removes old bundles no kept manifest names, keeping the two newest manifests\' and a lost life\'s', async () => {
-    const dir = workspaceCheckpointsDir(PROJ, 'w')
-    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'w', repos: [], at: new Date(1), treeDir: 'L0' })
-    await applyWorkspaceEvent({ type: 'life-checkpointed', projectId: PROJ, workspaceId: 'w', life: new Date(1), outcome: 'lost' })
-    await writeManifest('w', 'L0', { final: false, bundles: ['bundles/lost.bundle'], takenAt: '2026-01-01T00:00:00.000Z' })
-    await writeManifest('w', 'L1', { final: true, bundles: ['bundles/a.bundle'], takenAt: '2026-01-02T00:00:00.000Z' })
-    await writeManifest('w', 'L2', { final: true, bundles: ['bundles/a.bundle', 'bundles/b.bundle'], takenAt: '2026-01-03T00:00:00.000Z' })
-    await writeManifest('w', 'L3', { final: false, bundles: ['bundles/a.bundle', 'bundles/c.bundle'], takenAt: '2026-01-04T00:00:00.000Z' })
-    await fs.mkdir(path.join(dir, 'bundles'), { recursive: true })
+  /** Lives L0 to L3 of `id`, started in that order, L0 lost with its node. */
+  async function fourLives(id: string): Promise<void> {
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: id, repos: [], at: new Date(1000), treeDir: 'L0' })
+    await applyWorkspaceEvent({ type: 'life-checkpointed', projectId: PROJ, workspaceId: id, life: new Date(1000), outcome: 'lost' })
+    for (const [i, life] of ['L1', 'L2', 'L3'].entries()) {
+      await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: PROJ, workspaceId: id, at: new Date(2000 + i * 1000), treeDir: life, startSteps: [] })
+    }
+  }
+  async function bundles(id: string, names: string[]): Promise<void> {
+    const dir = path.join(workspaceCheckpointsDir(PROJ, id), 'bundles')
+    await fs.mkdir(dir, { recursive: true })
     const old = new Date(Date.now() - 2 * 60 * 60_000)
-    for (const name of ['lost', 'a', 'b', 'c', 'stray', 'x.bundle.tmp-1']) {
-      const file = path.join(dir, 'bundles', name.includes('.') ? name : `${name}.bundle`)
+    for (const name of names) {
+      const file = path.join(dir, name.includes('.') ? name : `${name}.bundle`)
       await fs.writeFile(file, '')
       await fs.utimes(file, old, old)
     }
+  }
+  const left = async (id: string): Promise<string[]> => (await fs.readdir(path.join(workspaceCheckpointsDir(PROJ, id), 'bundles'))).sort()
+
+  it('removes old bundles no kept manifest names, keeping the two newest lives\', a lost life\'s, and an unreadable one\'s whole workspace', async () => {
+    await fourLives('w')
+    await writeManifest('w', 'L0', { final: false, bundles: ['bundles/lost.bundle'], takenAt: '2026-01-01T00:00:00.000Z' })
+    // Its node's clock ran ahead: newest by takenAt, but not by its start.
+    await writeManifest('w', 'L1', { final: true, bundles: ['bundles/a.bundle'], takenAt: '2027-01-01T00:00:00.000Z' })
+    await writeManifest('w', 'L2', { final: true, bundles: ['bundles/a.bundle', 'bundles/b.bundle'], takenAt: '2026-01-03T00:00:00.000Z' })
+    await writeManifest('w', 'L3', { final: false, bundles: ['bundles/a.bundle', 'bundles/c.bundle'], takenAt: '2026-01-04T00:00:00.000Z' })
+    // An import, superseded once a life has saved.
+    await writeManifest('w', 'import-20260101T000000Z', { final: true, bundles: ['bundles/imp.bundle'] })
+    await bundles('w', ['lost', 'a', 'b', 'c', 'imp', 'stray', 'x.bundle.tmp-1'])
     // Written moments ago: maybe a pass's whose manifest is not in yet.
-    await fs.writeFile(path.join(dir, 'bundles', 'fresh.bundle'), '')
-    await fs.writeFile(path.join(dir, 'bundles', 'bad.bundle.unreadable'), '')
+    await fs.writeFile(path.join(workspaceCheckpointsDir(PROJ, 'w'), 'bundles', 'fresh.bundle'), '')
+    await fs.writeFile(path.join(workspaceCheckpointsDir(PROJ, 'w'), 'bundles', 'bad.bundle.unreadable'), '')
+
+    // A workspace whose manifest is damaged keeps everything.
+    await fourLives('u')
+    await writeManifest('u', 'L2', { final: true, bundles: ['bundles/a.bundle'] })
+    await fs.mkdir(path.join(workspaceCheckpointsDir(PROJ, 'u'), 'lives', 'L3'), { recursive: true })
+    await fs.writeFile(path.join(workspaceCheckpointsDir(PROJ, 'u'), 'lives', 'L3', 'manifest.json'), '{ damaged')
+    await bundles('u', ['a', 'b', 'stray'])
 
     await collectCheckpointBundles()
-    expect((await fs.readdir(path.join(dir, 'bundles'))).sort())
-      .toEqual(['a.bundle', 'b.bundle', 'bad.bundle.unreadable', 'c.bundle', 'fresh.bundle', 'lost.bundle'])
+    expect(await left('w')).toEqual(['a.bundle', 'b.bundle', 'bad.bundle.unreadable', 'c.bundle', 'fresh.bundle', 'lost.bundle'])
+    expect(await left('u')).toEqual(['a.bundle', 'b.bundle', 'stray.bundle'])
   })
 })

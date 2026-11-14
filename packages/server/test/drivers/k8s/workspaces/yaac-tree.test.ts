@@ -198,10 +198,21 @@ describe('yaac-tree', () => {
     await put(lib, 'lib.c', 'int stashed;\n')
     await git(lib, ['stash', '-q'])
     await put(lib, 'lib.c', 'int y;\n')
+    // And one inside the checkout's folder: committed, dirty, untracked.
+    const nested = path.join(app, 'vendor2')
+    await fs.mkdir(nested, { recursive: true })
+    await git(nested, ['init', '-q', '-b', 'main'])
+    await git(nested, ['config', 'user.email', 't@t'])
+    await git(nested, ['config', 'user.name', 'T'])
+    await put(nested, 'n.c', 'int n;\n')
+    await git(nested, ['add', '-A'])
+    await git(nested, ['commit', '-qm', 'nested one'])
+    await put(nested, 'n.c', 'int dirty;\n')
+    await put(nested, 'untracked-in-nested', 'u\n')
 
     const libIndex = (await fs.stat(path.join(lib, '.git/index'))).mtimeMs
     const first = await passNow(ws, one)
-    expect(first.units.map((u) => `${u.kind}:${u.path ?? ''}`)).toEqual(['root:', 'checkout:app', 'repo:vendor/lib'])
+    expect(first.units.map((u) => `${u.kind}:${u.path ?? ''}`)).toEqual(['root:', 'checkout:app', 'repo:vendor/lib', 'repo:app/vendor2'])
     // A pass with nothing changed writes nothing.
     const count = (await fs.readdir(path.join(ws.ckpt, 'bundles'))).length
     await fs.utimes(one.trigger, new Date(), new Date(Date.now() + 5000))
@@ -235,11 +246,15 @@ describe('yaac-tree', () => {
     expect(after.filter((l) => !l.startsWith('F app/cache/tracked.txt '))).toEqual(before)
     expect(await fs.readFile(path.join(two.tree, 'app', 'cache', 'tracked.txt'), 'utf8')).toBe('tracked in a mounted folder\n')
     expect((await inCheckout(ws, two, ['status', '--porcelain'])).split('\n').filter(Boolean).sort())
-      .toEqual([' D src/a.ts', ' M README.md', '?? l2', '?? new.txt', '?? tool.sh'].sort())
+      .toEqual([' D src/a.ts', ' M README.md', '?? l2', '?? new.txt', '?? tool.sh', '?? vendor2/'].sort())
     const lib2 = path.join(two.tree, 'vendor', 'lib')
     expect((await git(lib2, ['log', '--format=%s'])).trim()).toBe('lib one')
     expect((await git(lib2, ['stash', 'list'])).trim()).toMatch(/^stash@\{0\}/)
     expect(await fs.readFile(path.join(lib2, 'lib.c'), 'utf8')).toBe('int y;\n')
+    const nested2 = path.join(two.tree, 'app', 'vendor2')
+    expect((await git(nested2, ['log', '--format=%s'])).trim()).toBe('nested one')
+    expect((await git(nested2, ['status', '--porcelain'])).split('\n').filter(Boolean).sort())
+      .toEqual([' M n.c', '?? untracked-in-nested'])
     // The new life starts from the chain it restored, so it rewrites none
     // of it, and adds its own bundle only for what it changes.
     expect((await manifest(ws, 'L2'))?.bundles).toEqual(last?.bundles)
@@ -278,6 +293,42 @@ describe('yaac-tree', () => {
     run2.kill('SIGTERM')
     expect(await exited(run2)).toBe(0)
   }, 120_000)
+
+  it('keeps checkpointing, compacting and stopping after the agent rewrites and prunes a commit a pass saw', async () => {
+    const ws = await workspace('pruned')
+    const one = await life(ws, 'L1')
+    const run = start(one)
+    await waitFor(() => probe(one))
+    const app = path.join(one.tree, 'app')
+    await put(app, 'secret.txt', 'oops\n')
+    await inCheckout(ws, one, ['add', 'secret.txt'])
+    await inCheckout(ws, one, ['commit', '-qm', 'c1'])
+    await passNow(ws, one)
+    await fs.rm(path.join(app, 'secret.txt'))
+    await put(app, 'fine.txt', 'fine\n')
+    await inCheckout(ws, one, ['add', '-A'])
+    await inCheckout(ws, one, ['commit', '-q', '--amend', '-m', 'c1 without the secret'])
+    await execFileAsync('git', ['--git-dir', ws.gitDir, 'reflog', 'expire', '--expire=now', '--all'])
+    await execFileAsync('git', ['--git-dir', ws.gitDir, 'gc', '-q', '--prune=now'])
+    // Past the chain bound, so a pass compacts.
+    for (let i = 0; i < 21; i++) {
+      await put(app, 'counter.txt', `${String(i)}\n`)
+      await passNow(ws, one)
+    }
+    expect((await manifest(ws, 'L1'))!.bundles.length).toBeLessThan(5)
+    run.kill('SIGTERM')
+    expect(await exited(run)).toBe(0)
+    expect((await manifest(ws, 'L1'))?.final).toBe(true)
+    expect(await fs.readdir(one.tree)).toEqual([])
+
+    const two = await life(ws, 'L2', 'lives/L1/manifest.json')
+    const run2 = start(two)
+    await waitFor(() => probe(two))
+    expect(await fs.readFile(path.join(two.tree, 'app', 'counter.txt'), 'utf8')).toBe('20\n')
+    expect(await fs.stat(path.join(two.tree, 'app', 'secret.txt')).catch(() => null)).toBeNull()
+    run2.kill('SIGTERM')
+    expect(await exited(run2)).toBe(0)
+  }, 180_000)
 
   it('salvages a killed life\'s tree, and leaves one that never started', async () => {
     const ws = await workspace('salvage')

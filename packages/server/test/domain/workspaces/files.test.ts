@@ -38,14 +38,17 @@ let helperDir: string
 /** A folder outside the data dir, the target of escaping symlinks. */
 let outside: string
 
-/** A workspace with one checkout at its root, as its rows record it. */
-async function makeCheckout(id: string, row: { baseBranch?: string; scratchDirs?: string[] } = {}): Promise<string> {
+/** A workspace with one checkout at its root, as its rows record it: its
+ *  files on its node (the checkout standing in for its tree), unless
+ *  `shared` makes it a life from before, whose files are on the shared tier. */
+async function makeCheckout(id: string, row: { baseBranch?: string; scratchDirs?: string[]; shared?: boolean } = {}): Promise<string> {
   const dir = workspaceDir(PROJECT, id)
   await checkOut(id, dir)
-  const { baseBranch, ...workspace } = row
+  const { baseBranch, shared, ...workspace } = row
   await recordWorkspaceCreated({
     projectId: PROJECT,
     workspaceId: id,
+    ...(shared === true ? {} : { treeDir: 'L1' }),
     ...workspace,
     repos: [{ repoId: PROJECT, path: '', ...(baseBranch !== undefined ? { baseBranch } : {}) }],
   })
@@ -981,22 +984,25 @@ describe('writeWorkspaceFile', () => {
     expect(await read('a.txt')).toBe('one\n')
   })
 
-  it('reads and saves on the server for a containerless or a stopped workspace, running nothing in it', async () => {
+  it('reads and saves on the server for a containerless workspace, or a k8s one whose files are on the shared tier, running nothing in it', async () => {
+    const legacy = await makeCheckout('legacy', { shared: true })
+    await fs.symlink(path.relative(legacy, path.join(outside, 'secret.txt')), path.join(legacy, 'up'))
     const cases = [
-      { kind: 'containerless' as const, handle: {} },
-      { kind: 'k8s' as const, handle: { running: false, state: 'stopped' as const } },
+      { kind: 'containerless' as const, id: 'write', handle: {} },
+      { kind: 'k8s' as const, id: 'legacy', handle: {} },
+      { kind: 'k8s' as const, id: 'legacy', handle: { running: false, state: 'stopped' as const } },
     ]
-    for (const { kind, handle } of cases) {
+    for (const { kind, id, handle } of cases) {
       execs = []
       installFakeWorkspaceDriver({
         kind,
         find: (id) => Promise.resolve(handleFixture({ workspaceId: id, projectId: PROJECT, jobName: id, ...handle })),
         exec: (_jobName, cmd) => { execs.push({ cmd }); return Promise.resolve({ stdout: '', stderr: '' }) },
       })
-      const now = (await readWorkspaceFile('write', 'a.txt')).version
-      expect(await writeWorkspaceFile(local, 'write', 'a.txt', `${kind}\n`, now)).toMatchObject({ saved: { path: 'a.txt' } })
-      expect(await read('a.txt')).toBe(`${kind}\n`)
-      expect(await refusal(writeWorkspaceFile(local, 'write', 'up', 'x', 'any')))
+      const now = (await readWorkspaceFile(id, 'a.txt')).version
+      expect(await writeWorkspaceFile(local, id, 'a.txt', `${kind}\n`, now)).toMatchObject({ saved: { path: 'a.txt' } })
+      expect(await fs.readFile(path.join(workspaceDir(PROJECT, id), 'a.txt'), 'utf8')).toBe(`${kind}\n`)
+      expect(await refusal(writeWorkspaceFile(local, id, 'up', 'x', 'any')))
         .toEqual({ code: 'VALIDATION', message: 'up points outside the workspace' })
       expect(execs).toEqual([])
     }

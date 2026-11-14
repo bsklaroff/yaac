@@ -20,7 +20,7 @@ each checkout's `.git`, and a checkpoint of the work git does not hold yet.
 - A pod killed without warning leaves its tree on the node, and a one-shot
   pod on that node takes the final checkpoint.
 - A node whose disk is filling is noticed before kubelet acts, and the
-  workspace holding the most of it is stopped cleanly.
+  workspace filling the most of it is stopped.
 
 Under `containerless` none of this applies: the files are already on local
 disk, and a stop removes a checkout's ignored files instead
@@ -200,21 +200,26 @@ restored, so a new life writes only what changes.
 Each pass appends one bundle with only the objects the new checkpoint adds;
 a pass in which nothing changed writes nothing. Compaction merges a life's
 small bundles into one at stop and when the chain passes 20, leaving large
-ones as they are.
+ones as they are. It works from the bundles themselves, and a compaction
+that fails leaves the chain as it is rather than failing the pass.
 
 Only the server deletes a bundle (the hourly `checkpoint-gc` step), and
-only an old one no kept manifest names. It keeps the newest two manifests
-and any lost life's.
+only an old one no kept manifest names. It keeps the manifests of the two
+newest lives (by their start, not a node's clock), any lost life's, and an
+import's until a life has saved. A workspace with a manifest it cannot
+read keeps every bundle, for a `--restore-newest` to work from.
 
 A node dying mid-write cannot leave a log that does not restore:
 
 - **Bytes before names.** A bundle and a manifest are each written to a
   temporary name, `fsync`ed, then renamed, so a manifest never names bytes
   that never left the node.
-- **A checkpoint leans only on the main clones.** Its chain holds every
-  object no main clone has, the agent's unpushed commits included. A main
-  clone never deletes an object (docs/server-git.md), so nothing in the
-  agent's `.git` can leave a checkpoint without its base.
+- **A chain leans only on the main clones.** A pass's only parent is the
+  previous pass; each checkout's HEAD is recorded in its units, not as a
+  parent. So the chain holds every object of the saved files that no main
+  clone has, and a main clone never deletes an object (docs/server-git.md).
+  The agent's commits stay in its `.git`, durable as made; a rewrite and
+  prune there cannot leave the chain unwalkable.
 - **A pass that dies leaves the old checkpoint.** What it leaves behind,
   the server removes.
 
@@ -223,22 +228,27 @@ A node dying mid-write cannot leave a log that does not restore:
 Each bundle of the chain is verified and unpacked into the scratch
 repository; then the root's tree is written, each checkout's and
 submodule's on top of its HEAD (merged onto HEAD with `git merge-tree`,
-HEAD winning, if the agent committed after the last checkpoint), and each
-other repository's files and git dir, outermost first. The agent's own
+HEAD winning, if the agent committed after the last checkpoint; the saved
+files as they are if the agent pruned the HEAD they were saved on), and
+each other repository's files and git dir, outermost first. The agent's own
 index is not touched; the launch's detached `git status` refreshes its stat
 data.
 
-A chain that does not verify means the shared tier lost or damaged a file.
-The restart then fails once, naming the unreadable bundle and when the
-newest readable checkpoint was taken, and the unreadable file is renamed
-aside. `yaac workspace restart --restore-newest` restarts from the longest
-readable prefix of the chain, else each checkout's HEAD alone. That is a
-choice, never a silent fallback.
+A restart restores the newest life's manifest, passing over only lives
+that have none, and after them a shared-tier import's ("Workspaces from
+before"). A chain that does not verify, or a manifest that does not parse,
+means the shared tier lost or damaged a file. The restart then fails once,
+naming it, and an unreadable bundle is renamed aside. `yaac workspace
+restart --restore-newest` restarts from the newest readable state: the
+longest readable prefix of the chain, an older life's manifest past an
+unreadable one, else each checkout's HEAD alone. That is a choice, never a
+silent fallback.
 
 ## Life cycle
 
 - **Create.** The server writes each `.git` and the start instruction; the
-  tree container checks out. The life records the node it runs on.
+  tree container checks out. The life records the node its pod runs on, as
+  the runtime reports it.
 - **Spare.** A pod with its tree on its node; a claim re-branches it inside
   the workspace container.
 - **Stop, drain, an eviction with its grace period.** The final pass. The
@@ -248,7 +258,8 @@ choice, never a silent fallback.
   the tree on its node. Once the unit is gone, the `tree-salvage` step
   (which under `k8s` takes the place of `ignored-file-clean`) runs the final
   pass in a one-shot gVisor pod pinned to that node, then stamps the life
-  `salvaged`.
+  `salvaged`. The pod is named for the workspace and life, so a new one
+  first removes any earlier one still at work and two never share a tree.
 - **Node unreachable.** Nothing is timed out. A restart is refused while
   the old unit can be found, because its pod may still be writing the
   workspace's `.git`; yaac never force-deletes it.
@@ -256,7 +267,10 @@ choice, never a silent fallback.
   step stamps the life `lost` with the time of its last checkpoint, and the
   death detail says unsaved work after it is missing.
 - **Restart and delete** first wait for the stamp (or take it, for a life
-  that left nothing to save).
+  that left nothing to save). A salvage can keep failing, as on a node
+  whose disk is full; `--restore-newest` then gives the tree up, stamping
+  the life `lost` so its last checkpoint stands, and a delete gives it up
+  without asking.
 - **Delete.** Removes each `.git` and the checkpoints.
 
 The node-local sweep removes whatever trees a tree container left (one cut
@@ -288,24 +302,31 @@ straight to failing every write.
 So yaac acts first:
 
 - **Measure.** The `yaac-disk` DaemonSet (`cluster/disk-pod.ts`) runs the
-  server image on every node, as root with only `DAC_READ_SEARCH` and the
-  node-local root mounted read-only, so it can size a `0700` folder an
-  agent's `sudo` made. It answers the node-local root's free space and,
+  server image on every node, as root with only `DAC_READ_SEARCH` and only
+  the node-local root mounted, read-only, so it can size a `0700` folder an
+  agent's `sudo` made. Whether that root shares kubelet's filesystem it
+  tells from its own `/etc/hosts`, which kubelet keeps in its folder. It answers the node-local root's free space and,
   under the warn floor, each tree's allocated size. Only the server may dial
   it, and the server asks every 5 seconds. The numbers never come from a
   tree container, which could get a neighbour stopped by lying.
 - **Warn.** Under the warn floor the health report names the node and its
   largest trees (docs/server-health.md "Node disks").
-- **Stop.** Under the stop floor the `disk-guard` step stops the workspace
-  with the largest tree on that node, at least 1 GiB, with death reason
-  `disk-full`. With no large tree it stops nothing, since something else
-  filled the disk.
+- **Stop.** Under the stop floor the `disk-guard` step stops the running
+  workspace filling the largest tree on that node, at least 1 GiB, with
+  death reason `disk-full`: only a tree of its current life, on the node it
+  runs on, since stopping it for one an earlier life left would free
+  nothing. One stop at a time per node, until the last has landed. It stops
+  nothing with no large tree, since something else filled the disk, or when
+  the trees could not all be measured.
 
 The floors are 5 GiB (stop) and 10 GiB (warn) free by default
 (`YAAC_DISK_STOP_FLOOR_GIB`, `YAAC_DISK_WARN_FLOOR_GIB`). Where trees share
 kubelet's disk on a byo node they must sit above kubelet's own threshold
 (10%, 5% on k3s). The guard races the writer, since a fast disk takes
-gigabytes during a stop. Where yaac provisions nodes (`infra/hetzner-k3s`,
+gigabytes during a stop, and the stopped workspace's final pass needs room
+for what it changed last. If that pass fails for want of space, so does its
+salvage, and the tree stays until a restart with `--restore-newest` or a
+delete gives it up, which frees the node. Where yaac provisions nodes (`infra/hetzner-k3s`,
 `infra/aws-eks`), the bootstrap puts the node-local root on a filesystem of
 its own, so a tree write past it fails with `ENOSPC` while kubelet and
 containerd never see pressure. `yaac cluster check`'s `node-local-fs` gate
@@ -321,8 +342,9 @@ answer `CONFLICT` ("Start the workspace to browse its files").
 ## Workspaces from before
 
 A life started on the shared-tier layout runs on as it is and has no tree
-to salvage. A stopped workspace whose files are still on the shared tier is
-imported at its next restart: a tree pod runs a pass over the shared
-directory, and the restart restores from that checkpoint. The import never
-rewrites or removes the old files. docs/legacy-compat-shims.md tracks both
+to salvage; its file routes are still served from the shared directory. A
+stopped workspace whose files are still on the shared tier is imported at
+its next restart: a tree pod runs a pass over the shared directory, and the
+restart restores from that checkpoint, which stays findable until a life
+has saved its own. The import never rewrites or removes the old files. docs/legacy-compat-shims.md tracks both
 this and the retired `yaac-checkouts` claim.

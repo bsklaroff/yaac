@@ -1,4 +1,4 @@
-import crypto from 'node:crypto'
+import { createHash } from 'node:crypto'
 import type { WorkspaceMount, WorkspaceTree } from '#drivers/contract'
 import {
   LABEL_INSTALL_ID,
@@ -11,6 +11,7 @@ import {
   resolveMountSource,
   runPodToCompletion,
 } from '#drivers/k8s/substrate'
+import { TREE_RESOURCES } from './pod-job'
 import { treeImage, treeMounts } from './tree-mounts'
 
 /**
@@ -38,7 +39,7 @@ export async function salvageTree(target: {
   if (node.status?.conditions?.find((c) => c.type === 'Ready')?.status !== 'True') {
     throw new Error(`node ${target.node} is not ready`)
   }
-  await runTreePod('salvage', target.tree, treeMounts(target.tree).container, target.node)
+  await runTreePod('salvage', target.workspaceId, target.tree, treeMounts(target.tree).container, target.node)
   return 'saved'
 }
 
@@ -59,12 +60,17 @@ export async function importTree(target: {
     if (m.mountPath === '/scratch') return [{ source: { kind: 'emptyDir' }, mountPath: '/scratch' }]
     return [m]
   })
-  await runTreePod('import', target.tree, mounts)
+  await runTreePod('import', target.workspaceId, target.tree, mounts)
 }
 
 /** Run `yaac-tree <command>` for a life's tree in a one-shot pod, pinned to
- *  `node` when given. Rejects unless it succeeds. */
-async function runTreePod(command: 'salvage' | 'import', tree: WorkspaceTree, declared: WorkspaceMount[], node?: string): Promise<void> {
+ *  `node` when given. Rejects unless it succeeds. The pod is named for the
+ *  workspace and life, so starting one first removes any earlier pod still
+ *  working on that tree (one a restarted server left), and two never run
+ *  on it at once. */
+async function runTreePod(
+  command: 'salvage' | 'import', workspaceId: string, tree: WorkspaceTree, declared: WorkspaceMount[], node?: string,
+): Promise<void> {
   const mounts = declared.map(resolveMountSource)
   const volumes = mounts.map((m, i) => ({
     name: `tree-${String(i)}`,
@@ -81,7 +87,7 @@ async function runTreePod(command: 'salvage' | 'import', tree: WorkspaceTree, de
     ...(m.readOnly ? { readOnly: true } : {}),
   }))
   const { runAsUser, runAsGroup } = installSecurityContext()
-  const name = `yaac-tree-${command}-${crypto.randomBytes(6).toString('hex')}`
+  const name = `yaac-tree-${command}-${createHash('sha256').update(`${workspaceId}/${tree.life}`).digest('hex').slice(0, 16)}`
   const { phase, logs } = await runPodToCompletion({
     apiVersion: 'v1',
     kind: 'Pod',
@@ -106,6 +112,7 @@ async function runTreePod(command: 'salvage' | 'import', tree: WorkspaceTree, de
           runAsGroup: 0,
           capabilities: { drop: ['ALL'], add: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER'] },
         },
+        resources: TREE_RESOURCES,
         volumeMounts,
       }],
       volumes,

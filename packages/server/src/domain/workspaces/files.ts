@@ -86,17 +86,20 @@ async function openCheckout(idOrName: string, writer?: Actor): Promise<Checkout>
   const repos = await listWorkspaceRepos(workspaceId)
   const exclude = repos.map((r) => path.posix.join(r.path, '.git'))
   const driver = workspaceDriver()
-  const inside = running && jobName !== undefined && driver.kind === 'k8s' ? jobName : undefined
-  // A stopped workspace whose files were on its node has them nowhere the
-  // server can read (docs/node-local-workspaces.md "File routes").
-  const treeDir = (await getWorkspaceRow(projectId, workspaceId))?.treeDir
-  if (inside === undefined && treeDir !== undefined) {
+  // A workspace whose files are on its node is reached through its pod. A
+  // life from before that keeps them on the shared tier, read here, and its
+  // pod has no helper (docs/legacy-compat-shims.md).
+  const onNode = driver.kind === 'k8s' && (await getWorkspaceRow(projectId, workspaceId))?.treeDir !== undefined
+  const inside = running && jobName !== undefined && onNode ? jobName : undefined
+  // A stopped one has them nowhere the server can read
+  // (docs/node-local-workspaces.md "File routes").
+  if (inside === undefined && onNode) {
     throw new ServerError('CONFLICT', 'Start the workspace to browse its files')
   }
   const paths = inside !== undefined ? driver.workspacePaths(inside) : undefined
   const root = paths?.workspaceDir ?? workspaceDir(projectId, workspaceId)
   // A change made through the helper asks the tree container for a pass.
-  const trigger = treeDir !== undefined ? paths?.treeTrigger : undefined
+  const trigger = paths?.treeTrigger
   const call = async <K extends TreeOp>(op: K, args: TreeArgs<K>): Promise<TreeResult<K>> => {
     const req: TreeRequest<K> = { root, exclude, op, args, ...(trigger !== undefined && !READ_OPS.has(op) ? { trigger } : {}) }
     try {

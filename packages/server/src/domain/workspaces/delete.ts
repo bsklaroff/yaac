@@ -49,8 +49,9 @@ export async function deleteWorkspace(principal: Actor, idOrPrefix: string): Pro
         + 'discard or run them first')
     }
     // Its tree, if still on a node, is salvaged first, so nothing is lost
-    // that a delete refused for a reason would have kept.
-    await ensureLifeStamped(workspaceId)
+    // that a delete refused for a reason would have kept; one that cannot
+    // be saved does not stop the delete.
+    await ensureLifeStamped(workspaceId, { abandon: true })
     if (!await deleteWorkspaceState(projectId, workspaceId)) {
       throw new ServerError('INTERNAL', `could not remove all of workspace ${short}'s files (see the server log); `
         + 'its record is kept so the delete can be retried, and a restart '
