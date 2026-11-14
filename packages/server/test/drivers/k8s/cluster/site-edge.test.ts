@@ -434,6 +434,7 @@ describe('ensureSiteEdge', () => {
     expect(tailgate.env).toEqual(expect.arrayContaining([
       { name: 'TAILGATE_SITE_DOMAIN', value: 'apps.example.com' },
       { name: 'TAILGATE_ROUTER', value: 'yaac-site-router.test-ns.svc.cluster.local:8081' },
+      { name: 'TAILGATE_IDLE_SECONDS', value: '3600' },
     ]))
     // Its serve config forwards 443 and 80 to tailgate behind a PROXY header.
     expect(JSON.parse(stored('ConfigMap', 'yaac-site-tunnel-tailnet-serve')?.data?.['serve.json'] ?? '')).toEqual({

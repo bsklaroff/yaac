@@ -18,6 +18,9 @@ const ZONE = 'apps.example.com'
 const SITE = `shop.${ZONE}`
 const ALICE = '100.64.0.1'
 const TAGGED = '100.64.0.2'
+/** Short, so the idle timeout can be watched; long enough that no other
+ *  case's connection sits quiet that long. */
+const IDLE_MS = 1000
 
 let dir: string
 let tlsDir: string
@@ -146,6 +149,7 @@ beforeAll(async () => {
     httpPort: 0,
     dnsPort: 0,
     healthPort: 0,
+    idleMs: IDLE_MS,
     pollMs: 20,
   })
 })
@@ -274,6 +278,44 @@ describe('startTailgate', () => {
     expect(redirected).toContain(`location: https://${SITE}/a?b=1`)
     const other = await exchange(await dialAs(ALICE, gate.ports.http), 'GET / HTTP/1.1\r\nHost: example.org\r\n\r\n')
     expect(other).toMatch(/^HTTP\/1\.1 404/)
+  })
+
+  it('closes a connection once no bytes have moved for the idle timeout, however long it has been open', async () => {
+    // One that never finishes a request, and so has no HTTP timeout of
+    // Node's to end it: on 443 a client stalled mid request head after the
+    // handshake, on 80 one that sends nothing after the PROXY line.
+    const midHead = async (): Promise<net.Socket> => {
+      const socket = await tlsAs(ALICE)
+      socket.on('data', () => {})
+      socket.write(`GET /x HTTP/1.1\r\nHost: ${SITE}\r\nX-Partial: `)
+      return socket
+    }
+    for (const open of [midHead, () => dialAs(ALICE, gate.ports.http)]) {
+      const stalled = await open()
+      const opened = Date.now()
+      await new Promise((resolve) => stalled.on('close', resolve))
+      expect(Date.now() - opened).toBeGreaterThanOrEqual(IDLE_MS - 100)
+    }
+
+    // A WebSocket that keeps talking outlives it, then goes once it falls quiet.
+    const socket = await tlsAs(ALICE)
+    socket.setEncoding('utf8')
+    let got = ''
+    socket.on('data', (chunk: string) => { got += chunk })
+    const closed = new Promise((resolve) => socket.on('close', resolve))
+    socket.write(['GET /live HTTP/1.1', `Host: ${SITE}`, 'Upgrade: websocket', 'Connection: Upgrade', '', ''].join('\r\n'))
+    await until(() => Promise.resolve(got.includes('\r\n\r\n')))
+    for (let i = 1; i <= 4; i++) {
+      await new Promise((resolve) => setTimeout(resolve, IDLE_MS / 2))
+      socket.write('ping')
+      await until(() => Promise.resolve(got.split('ping').length - 1 === i))
+    }
+    expect(socket.destroyed).toBe(false)
+    const quiet = Date.now()
+    await closed
+    expect(Date.now() - quiet).toBeGreaterThanOrEqual(IDLE_MS - 100)
+    // The router's end of the joined pair is let go with it.
+    await until(() => Promise.resolve(upgraded.at(-1)?.destroyed === true))
   })
 
   it('answers DNS for names under the zone with its own tailnet addresses, over UDP and TCP, and refuses other names', async () => {
