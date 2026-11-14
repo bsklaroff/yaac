@@ -51,7 +51,20 @@ interface GitOpts {
   asOwner?: boolean
   /** Exit codes that are answers, not failures. */
   ok?: number[]
+  /** Whether a failed exit, with what git printed, is an answer after all. */
+  okWhen?: (code: number, stderr: string) => boolean
 }
+
+/**
+ * Whether `git add` failed only to report that a pathspec names an ignored
+ * path, which it does for an excluded path the unit's rules also ignore (a
+ * scratch dir under `node_modules/`, say). It has staged everything else by
+ * then, so that is no failure; a warning (an embedded repository) may come
+ * with it.
+ */
+const onlyIgnoredReport = (code: number, stderr: string): boolean =>
+  code === 1 && stderr.startsWith('The following paths are ignored')
+  && !/^(fatal|error):/m.test(stderr)
 
 /**
  * Run git on the scratch repository. Config is pinned over whatever the
@@ -62,6 +75,7 @@ async function git(c: TreeContext, args: string[], opts: GitOpts = {}): Promise<
   const full = [
     '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-c', 'protocol.allow=never',
     '-c', 'safe.directory=*', '-c', 'core.quotePath=false', '-c', 'advice.addEmbeddedRepo=false',
+    '-c', 'advice.addIgnoredFile=false',
     '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', ...args,
   ]
   const env = {
@@ -86,8 +100,9 @@ async function git(c: TreeContext, args: string[], opts: GitOpts = {}): Promise<
     child.stderr?.on('data', (b: Buffer) => err.push(b))
     child.on('error', reject)
     child.on('close', (code) => {
-      if (code === 0 || (code !== null && opts.ok?.includes(code))) resolve(Buffer.concat(out).toString('utf8'))
-      else reject(new Error(`git ${args.slice(0, 2).join(' ')}: exit ${String(code)}: ${Buffer.concat(err).toString('utf8').trim()}`))
+      const stderr = Buffer.concat(err).toString('utf8')
+      if (code === 0 || (code !== null && (opts.ok?.includes(code) || opts.okWhen?.(code, stderr)))) resolve(Buffer.concat(out).toString('utf8'))
+      else reject(new Error(`git ${args.slice(0, 2).join(' ')}: exit ${String(code)}: ${stderr.trim()}`))
     })
     // git may exit before reading all its input (a failed bundle verify).
     child.stdin?.on('error', () => {})
@@ -218,7 +233,7 @@ async function stageFiles(c: TreeContext, u: LiveUnit, skip: string[]): Promise<
   await pinGitlinks(c, env, u.worktree)
   const excludes = skip.filter((p) => p !== upath && under(p, upath)).map((p) => `:(exclude,literal)${relTo(p, upath)}`)
   const base = ['-c', `core.excludesFile=${u.excludesFile ?? '/dev/null'}`, `--attr-source=${EMPTY_TREE}`]
-  await git(c, [...base, 'add', '-A', ...(u.unit.kind === 'root' ? ['-f'] : []), '--', '.', ...excludes], { env })
+  await git(c, [...base, 'add', '-A', ...(u.unit.kind === 'root' ? ['-f'] : []), '--', '.', ...excludes], { env, okWhen: onlyIgnoredReport })
   const kept = []
   for (const k of u.kept) {
     if (await fs.lstat(path.join(u.worktree, k)).then(() => true, () => false)) kept.push(k)
@@ -432,6 +447,8 @@ export async function takePass(c: TreeContext, opts: { final?: boolean } = {}): 
       if (child) queue.push(child)
     }
   }
+  // Nothing could be saved this time: the checkpoint before stands.
+  if (entries.length === 0) return prev
   const tree = (await git(c, ['mktree'], { input: `${entries.join('\n')}\n` })).trim()
   const heads = [...new Set(units.flatMap((u) => ('head' in u ? [u.head] : [])))]
   if (prev) {

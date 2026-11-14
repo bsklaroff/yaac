@@ -52,7 +52,10 @@ describe('workspace trees on the node', () => {
     testEnv = await createYaacTestEnv()
     mockLLM = await startMockLLM()
     mockGit = await startMockGit()
-    await seedMockGitRepo(mockGit, 'tree-demo', { files: { 'README.md': '# demo\n', 'src/a.ts': 'export const a = 1\n' } })
+    // Its rules ignore the default scratch dir, as most JS repos' do.
+    await seedMockGitRepo(mockGit, 'tree-demo', {
+      files: { 'README.md': '# demo\n', 'src/a.ts': 'export const a = 1\n', '.gitignore': 'node_modules/\n' },
+    })
     const repoDir = path.join(testEnv.dataDir, 'global', 'repos', PROJECT_ID)
     await fs.mkdir(path.join(testEnv.dataDir, 'global', 'projects', PROJECT_ID, 'claude'), { recursive: true })
     await cloneRepo(path.join(mockGit.reposDir, 'tree-demo.git'), repoDir, null)
@@ -212,7 +215,8 @@ describe('workspace trees on the node', () => {
     // so write what crosses the floor now, plus a margin.
     const fillMiB = Math.ceil((await hostFreeGiB() - stopFloorGiB + 0.75) * 1024)
     expect(fillMiB, 'the host freed too much disk since the suite started').toBeLessThan(6 * 1024)
-    await sh(`dd if=/dev/zero of=/workspace/big.bin bs=1M count=${String(Math.max(fillMiB, 1100))} status=none || true`)
+    // The stop it causes can kill the write, and the exec with it.
+    await sh(`dd if=/dev/zero of=/workspace/big.bin bs=1M count=${String(Math.max(fillMiB, 1100))} status=none || true`).catch(() => '')
     await vi.waitFor(async () => {
       expect((await listWorkspacePods(PROJECT_ID)).filter((p) => p.workspaceId === workspaceId && p.running)).toEqual([])
     }, { timeout: 180_000, interval: 2_000 })

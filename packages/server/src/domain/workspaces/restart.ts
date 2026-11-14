@@ -106,8 +106,7 @@ export async function prepareRestart(
     // Always: it also clears a leftover terminating mark.
     await teardownForRestart({ jobName: jobName ?? null, projectId, workspaceId })
     // A life whose files were on its node is saved before the next starts.
-    onProgress('Saving the last checkpoint...')
-    await ensureLifeStamped(workspaceId, { abandon: opts.restoreNewest === true })
+    await ensureLifeStamped(workspaceId, { abandon: opts.restoreNewest === true, onProgress })
     // The old pod is gone, so a volume it held that this launch does not
     // attach is free; `--no-volume` also forgets it for later restarts.
     await releaseWorkspaceVolumes(workspaceId, volume?.id)

@@ -221,11 +221,15 @@ async function stampLife(life: TreeLife): Promise<void> {
  * stamped before a restart or delete goes on, salvaging it now if need be.
  * `CONFLICT` while that cannot be done, unless `abandon` gives the tree up
  * (a salvage can keep failing, as on a node whose disk is full): the life
- * is then stamped lost and its last checkpoint stands.
+ * is then stamped lost and its last checkpoint stands. `onProgress` hears
+ * when there is a life to wait for.
  */
-export async function ensureLifeStamped(workspaceId: string, opts: { abandon?: boolean } = {}): Promise<void> {
+export async function ensureLifeStamped(
+  workspaceId: string, opts: { abandon?: boolean; onProgress?: (message: string) => void } = {},
+): Promise<void> {
   const [life] = await listTreeLives(workspaceId)
   if (!life || life.checkpointedAt !== undefined) return
+  opts.onProgress?.('Saving the last checkpoint...')
   await stamping(workspaceId, async () => {
     const [now] = await listTreeLives(workspaceId)
     if (!now || now.checkpointedAt !== undefined) return

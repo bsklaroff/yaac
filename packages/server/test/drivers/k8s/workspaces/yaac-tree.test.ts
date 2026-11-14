@@ -32,7 +32,8 @@ beforeAll(async () => {
   await git(src, ['init', '-q', '-b', 'main'])
   await git(src, ['config', 'user.email', 't@t'])
   await git(src, ['config', 'user.name', 'T'])
-  await put(src, '.gitignore', 'dist/\n*.log\n')
+  // A scratch dir its own rules ignore too, as most JS repos' do.
+  await put(src, '.gitignore', 'dist/\n*.log\nnode_modules/\n')
   await put(src, 'README.md', 'line one\nline two\n')
   await put(src, 'src/a.ts', 'export const a = 1\n')
   await put(src, 'run.sh', '#!/bin/sh\necho run\n', 0o755)
@@ -85,7 +86,7 @@ async function life(
   await put(path.join(ws.ckpt, 'lives', name), 'start.json', JSON.stringify({
     version: 1, life: name, uid, gid,
     checkouts: [{ id: 'repo1', path: 'app', gitDir: ws.gitDir, commit: base, kept: ['dist/keep.txt'] }],
-    excluded: ['app/cache', 'scratchdir'],
+    excluded: ['app/cache', 'app/node_modules', 'scratchdir'],
     ...(restore !== undefined ? { restore } : {}),
     ...(newestReadable ? { restoreNewestReadable: true } : {}),
   }))
