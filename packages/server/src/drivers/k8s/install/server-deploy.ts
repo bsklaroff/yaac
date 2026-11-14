@@ -52,6 +52,8 @@ import { waitFor } from '@yaac/shared/wait-for'
 import { ensureStorageClaims, type StorageShape } from './storage'
 import {
   apiserverEndpoints,
+  buildDiskDaemonSetManifest,
+  buildDiskIngressNpManifest,
   buildServerEgressNpManifest,
   buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
@@ -322,6 +324,10 @@ function buildServerEnv(opts: ServerEnvOptions = {}): ServerEnvVar[] {
     ['YAAC_CNI_VETH_PREFIX', env.cniVethPrefix],
     ['YAAC_POD_CIDRS', env.podCidrs.length > 0 ? env.podCidrs.join(',') : undefined],
     ['YAAC_KUBE_PROXY_EXTERNAL', env.kubeProxyExternal ? '1' : undefined],
+    // The full-node guard's floors (docs/node-local-workspaces.md
+    // "A full node"), as this machine's environment sets them.
+    ['YAAC_DISK_WARN_FLOOR_GIB', String(env.diskWarnFloorGiB)],
+    ['YAAC_DISK_STOP_FLOOR_GIB', String(env.diskStopFloorGiB)],
     ['YAAC_E2E_SKIP_FETCH', testEnv.e2eSkipFetch ? '1' : undefined],
     // Encryption keys for stored secrets, when the operator sets them.
     ['YAAC_SECRETS', env.secrets === null
@@ -481,6 +487,10 @@ async function ensureServerDeployment(
     await waitForDeployment((manifest.metadata as { name: string }).name, 120)
   }
   await waitForDeployment(SERVER_APP_NAME)
+  // The per-node disk pod runs the same image; the server asks it for each
+  // node's free space, and only the server may.
+  await applyObject(buildDiskIngressNpManifest())
+  await applyObject(buildDiskDaemonSetManifest(imageRef))
   return origin
 }
 

@@ -243,6 +243,24 @@ export function opencodeDataDir(projectId: string, workspaceId: string): string 
 }
 
 /**
+ * GLOBAL. A k8s workspace's checkpoint log: `bundles/`, every bundle of its
+ * checkpoints, and `lives/<life>/`, each life's start instruction and
+ * manifest (docs/node-local-workspaces.md "Layout").
+ */
+export function workspaceCheckpointsDir(projectId: string, workspaceId: string): string {
+  return globalProjectPath(projectId, 'checkpoints', workspaceId)
+}
+
+/**
+ * NODE-LOCAL. One life's tree (`tree/`, all of `/workspace` but each
+ * checkout's `.git`) and the tree container's scratch repository
+ * (`scratch/`), on the node the life ran on.
+ */
+export function workspaceTreeDir(projectId: string, workspaceId: string, life: string): string {
+  return nodeLocalProjectPath(projectId, 'trees', workspaceId, life)
+}
+
+/**
  * GLOBAL. The project's pi home, mounted at `/home/yaac/.pi/`, so settings
  * and extensions are shared by all its workspaces. Session logs go to
  * each workspace's own {@link agentHistoryDir}.
@@ -281,9 +299,9 @@ export function workspacesDir(projectId: string): string {
 }
 
 /**
- * GLOBAL. The workspace's checkout, mounted at `/workspace`. A pod mounts
- * it through the `yaac-checkouts` claim, which caches file attributes
- * longer than the rest of the tier (docs/nfs-checkout-performance.md).
+ * GLOBAL. The workspace's checkouts: each one's `.git`, and under
+ * containerless (or a k8s life from before trees moved to node disk) the
+ * files too (docs/node-local-workspaces.md "Layout").
  */
 export function workspaceDir(projectId: string, workspaceId: string): string {
   return path.join(workspacesDir(projectId), workspaceId)

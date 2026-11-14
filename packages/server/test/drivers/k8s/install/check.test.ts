@@ -545,6 +545,8 @@ describe('runClusterCheck', () => {
       ['per-node', 'skip'],
       ['storage-semantics', 'pass'],
       ['vap', 'pass'],
+      // kind: trees are on the host's disk either way.
+      ['node-local-fs', 'skip'],
     ])
     expect(ok).toBe(true)
     expect(byName(results, 'datapath')?.detail).toContain('calico-node and yaac-netd ready')
@@ -1603,47 +1605,6 @@ describe('runClusterCheck', () => {
     expect(storage.detail).toContain('does not carry this install\'s labels')
     expect(storage.detail).toContain('class byo-nfs (ebs.csi.aws.com) is not NFS-family')
     expect(storage.detail).toContain('actimeo=30, not actimeo<=1')
-  })
-
-  it('judges the checkouts volume as a copy of the global one with second-long directory caching', async () => {
-    volumes['yaac-global-vol'] = byoGlobalVolume()
-    storageClassProvisioner = 'nfs.csi.k8s.io'
-    const copy = {
-      metadata: { labels: { 'yaac.install-id': 'test-install', 'yaac.claim': 'yaac-checkouts' } },
-      spec: {
-        persistentVolumeReclaimPolicy: 'Retain',
-        storageClassName: '',
-        csi: { driver: 'nfs.csi.k8s.io', volumeHandle: 'h#checkouts', volumeAttributes: { server: '10.96.5.5' } },
-        mountOptions: ['nfsvers=4.1', 'acregmin=3', 'acregmax=60', 'acdirmin=1', 'acdirmax=1'],
-      },
-    }
-    volumes['yaac-global-vol'].spec.csi = { driver: 'nfs.csi.k8s.io', volumeHandle: 'h', volumeAttributes: { server: '10.96.5.5' } }
-    volumes['yaac-checkouts-vol'] = copy
-    stage()
-    let { results } = await check()
-    expect(byName(results, 'storage')).toMatchObject({ status: 'pass' })
-
-    // Another directory, the global volume's own handle, no labels and a
-    // minute of directory caching are each named.
-    volumes['yaac-checkouts-vol'] = {
-      metadata: { labels: {} },
-      spec: {
-        ...copy.spec,
-        csi: { driver: 'nfs.csi.k8s.io', volumeHandle: 'h', volumeAttributes: { server: '10.96.9.9' } },
-        mountOptions: ['acdirmax=60'],
-      },
-    }
-    ;({ results } = await check())
-    const storage = byName(results, 'storage')!
-    expect(storage.status).toBe('fail')
-    expect(storage.detail).toContain('yaac-checkouts: volume yaac-checkouts-vol is not a copy of the yaac-global volume yaac-global-vol')
-    expect(storage.detail).toContain('yaac-checkouts: volume yaac-checkouts-vol does not carry this install\'s labels')
-    expect(storage.detail).toContain('caches directories for longer than a second')
-
-    // On kind it is a hostPath, which must be the global tier's directory.
-    volumes['yaac-checkouts-vol'] = { spec: { persistentVolumeReclaimPolicy: 'Retain', hostPath: { path: '/elsewhere' } } }
-    ;({ results } = await check())
-    expect(byName(results, 'storage')?.detail).toContain('yaac-checkouts: volume yaac-checkouts-vol is /elsewhere')
   })
 
   it('tells a provisioned hostPath volume (local-path) from kind\'s static one by its class', async () => {

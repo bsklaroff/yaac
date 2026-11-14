@@ -1,5 +1,7 @@
 import { isIP } from 'node:net'
 import {
+  DISK_APP_NAME,
+  DISK_PORT,
   DNS_STUB_PORT,
   EGRESS_WORLD_DENY_NAME,
   LABEL_ROLE,
@@ -367,6 +369,8 @@ export function buildServerEgressNpManifest(
     egress: [
       ...builderEgress(nodeAddrs, dnsCidrs),
       { to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }], ports: [tcp(PROXY_PORT), tcp(RELAY_PORT)] },
+      // Each node's disk pod (disk-pod.ts), asked for its free space.
+      { to: [{ podSelector: { matchLabels: { app: DISK_APP_NAME } } }], ports: [tcp(DISK_PORT)] },
       { to: ipBlocks(apiserver.cidrs), ports: apiserver.ports.map(tcp) },
       ...torEgress(torSocksUrl),
     ],

@@ -186,6 +186,30 @@ async function exactDir(parent: PinnedDir, name: string, rel: string): Promise<P
   return pinned(expected, fh)
 }
 
+/** The entry of `exclude` that `segments` is at or under, if any. */
+function excludedBy(segments: string[], exclude: string[] | undefined): string | undefined {
+  const rel = segments.join('/')
+  return exclude?.find((e) => rel === e || rel.startsWith(`${e}/`))
+}
+
+/**
+ * `ConfinedRoot.normalize` without a root: a non-empty relative path with no
+ * NUL, no `..` once normalized, and not under an entry of `exclude`, returned
+ * normalized. For a caller that checks paths of a tree it cannot open.
+ */
+export function normalizeRel(rel: string, exclude?: string[]): string {
+  if (rel === '' || rel.includes('\0') || path.posix.isAbsolute(rel)) {
+    throw new ConfinedPathError(rel, 'invalid', `invalid path ${JSON.stringify(rel)}`)
+  }
+  const segments = path.posix.normalize(rel).replace(/\/+$/, '').split('/')
+  if (segments.includes('..') || segments[0] === '.') {
+    throw new ConfinedPathError(rel, 'invalid', `path escapes its root: ${JSON.stringify(rel)}`)
+  }
+  const out = excludedBy(segments, exclude)
+  if (out !== undefined) throw new ConfinedPathError(rel, 'invalid', `${out} is not reachable here`)
+  return segments.join('/')
+}
+
 /**
  * Open `root` for confined I/O. `exclude` names entries, each relative to
  * the root, treated as outside it with everything below them (a checkout's
@@ -199,10 +223,7 @@ export async function openRoot(
   opts: { exclude?: string[]; base?: string } = {},
 ): Promise<ConfinedRoot> {
   const real = await fs.realpath(root)
-  const excluded = (segments: string[]): string | undefined => {
-    const rel = segments.join('/')
-    return opts.exclude?.find((e) => rel === e || rel.startsWith(`${e}/`))
-  }
+  const excluded = (segments: string[]): string | undefined => excludedBy(segments, opts.exclude)
   const base = opts.base === undefined ? [] : path.relative(root, opts.base).split(path.sep).filter(Boolean)
 
   const contains = (at: string): string | null => {
@@ -216,18 +237,7 @@ export async function openRoot(
     return excluded(segments) !== undefined ? null : segments.join('/')
   }
 
-  const normalize = (rel: string): string => {
-    if (rel === '' || rel.includes('\0') || path.posix.isAbsolute(rel)) {
-      throw new ConfinedPathError(rel, 'invalid', `invalid path ${JSON.stringify(rel)}`)
-    }
-    const segments = path.posix.normalize(rel).replace(/\/+$/, '').split('/')
-    if (segments.includes('..') || segments[0] === '.') {
-      throw new ConfinedPathError(rel, 'invalid', `path escapes its root: ${JSON.stringify(rel)}`)
-    }
-    const out = excluded(segments)
-    if (out !== undefined) throw new ConfinedPathError(rel, 'invalid', `${out} is not reachable here`)
-    return segments.join('/')
-  }
+  const normalize = (rel: string): string => normalizeRel(rel, opts.exclude)
 
   /** Every segment from the root to `rel`. */
   const segmentsOf = (rel: string): string[] => [...base, ...(rel === '' ? [] : normalize(rel).split('/'))]

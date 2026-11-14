@@ -50,8 +50,10 @@ function sweepLabels(): Record<string, string> {
  * The in-pod script. Argv is `<cutoff epoch seconds> <kept names>
  * <live workspace ids> <mounted image stores>` (lists comma-separated).
  * Removes each unkept `/node/projects/<x>` and each
- * `/node/projects/<x>/opencode-data/<id>` of a non-live workspace, when
- * older than the cutoff, and each unmounted `/node/shared-images/<x>`.
+ * `/node/projects/<x>/{opencode-data,trees}/<id>` of a non-live workspace,
+ * when older than the cutoff, and each unmounted `/node/shared-images/<x>`.
+ * A workspace whose tree is still to be salvaged counts as live
+ * (docs/node-local-workspaces.md "Life cycle").
  *
  * Symlinks are always skipped: workspace pods can write this tree, so a
  * link could point anywhere on the node and this runs as root.
@@ -71,14 +73,16 @@ export function buildNodeLocalSweepScript(): string {
     'done',
     'for projdir in /node/projects/*; do',
     '  [ -d "$projdir" ] && [ ! -L "$projdir" ] || continue',
-    '  kinddir="$projdir/opencode-data"',
+    '  for kind in opencode-data trees; do',
+    '  kinddir="$projdir/$kind"',
     '  [ -d "$kinddir" ] && [ ! -L "$kinddir" ] || continue',
     '  for entry in "$kinddir"/*; do',
     '    [ -e "$entry" ] && [ ! -L "$entry" ] || continue',
     '    id=$(basename "$entry")',
     '    case "$LIVE" in *",$id,"*) continue;; esac',
     '    fresh "$entry" && continue',
-    '    rm -rf "$entry" && removed=$((removed+1)) && echo "removed $(basename "$projdir")/opencode-data/$id"',
+    '    rm -rf "$entry" && removed=$((removed+1)) && echo "removed $(basename "$projdir")/$kind/$id"',
+    '  done',
     '  done',
     'done',
     'if [ -d /node/shared-images ] && [ ! -L /node/shared-images ]; then',

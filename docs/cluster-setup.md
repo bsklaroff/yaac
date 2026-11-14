@@ -315,13 +315,13 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
    Secret `yaac-registry-grant-key` in its own `yaac-registry-keys`
    namespace.
 2. **Two extraMounts per node.** The data dir, at the same path: the
-   storage claims (`yaac-global`, `yaac-server-local`, and `yaac-checkouts`
-   over `global/` again) bind static hostPath volumes onto the data dir's
+   storage claims (`yaac-global` and `yaac-server-local`) bind static
+   hostPath volumes onto the data dir's
    `global/` and `server-local/` folders, and a hostPath resolves on the node, so this mount is what makes
    the volume the host's bytes (docs/server-in-cluster.md "Storage
    claims"). And `<dataDir>/node-local` at `/var/lib/yaac/node/<install id>`,
-   holding the node-local tier (package caches, opencode working
-   copies). On kind that tier is therefore host disk and survives a
+   holding the node-local tier (workspace trees, package caches, opencode
+   working copies). On kind that tier is therefore host disk and survives a
    cluster delete. Both mounts are on every node and fixed when the cluster
    is created, so a cluster serves the data dir that created it, and install
    refuses one whose nodes do not mount its own. Nothing else of the host is
@@ -523,8 +523,9 @@ A byo install also follows four rules:
 - **One architecture per install**, the CLI machine's. Mixed pools would
   need per-architecture images published each release.
 - **Backups are the operator's.** Snapshot the `yaac-global` and
-  `yaac-server-local` volumes with the provider's tools (`yaac-checkouts`
-  is a second view of the first). The second holds the database and the
+  `yaac-server-local` volumes with the provider's tools. A running
+  workspace's unsaved files are on its node until its next checkpoint
+  (docs/node-local-workspaces.md). The second holds the database and the
   only copy of every project whose remote yaac hosts
   (docs/hosted-projects.md).
 
@@ -590,10 +591,9 @@ the node usually needs a reboot, or to be cordoned and replaced. `soft`
 turns the hang into EIO after retries, which a git checkout or half-written
 file then has to survive. yaac always sets `actimeo=1` on the volume: one
 attribute check per file per second (billed latency on EFS) bounds how long
-a workspace can act on a file the server has already changed. Checkouts are
-mounted through a copy of the volume (`yaac-checkouts`) that caches file
-attributes for up to a minute instead, so a `git status` does not re-check
-every file (docs/nfs-checkout-performance.md).
+a workspace can act on a file the server has already changed. A
+workspace's working tree is on its node rather than this volume
+(docs/node-local-workspaces.md).
 
 **`yaac cluster delete` refuses on a byo install**, since the cluster is not
 yaac's. It prints the uninstall steps instead: the install's namespaces (the
@@ -913,11 +913,10 @@ order:
   workspaces, and whether they are Ready), then `architecture` and
   `node-os` (the byo node gates), `podman`, `registry` and `namespace`.
 - `storage`: every claim is Bound and every volume is `Retain`. On kind
-  each volume is a static one pointing at the data dir's own tier folder
-  (`yaac-checkouts` at the global one). On byo each is labelled with this
-  install's id, the global one is NFS-family and mounted with `actimeo` of
-  at most 1, and the checkouts one is a copy of it that caches directories
-  for at most a second. A missing claim fails and points at install.
+  each volume is a static one pointing at the data dir's own tier folder.
+  On byo each is labelled with this install's id, and the global one is
+  NFS-family and mounted with `actimeo` of at most 1. A missing claim fails
+  and points at install.
 - `priority-classes` and `node-fixups` (kind only, warn).
 - `gvisor`: the RuntimeClass exists, at least one node has the
   `yaac.gvisor` label, and a `gvisor`-class pod really runs inside the

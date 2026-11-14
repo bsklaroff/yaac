@@ -19,7 +19,8 @@ import {
   workspaceIdLabels,
   workspaceJobName,
 } from '#drivers/k8s/substrate'
-import { PRE_STOP_GRACE_SECONDS, buildPodJobManifest } from './pod-job'
+import { PRE_STOP_GRACE_SECONDS, TREE_FINAL_PASS_SECONDS, buildPodJobManifest } from './pod-job'
+import { treeMounts, treeImage } from './tree-mounts'
 import {
   ensureBuilderImage,
   proxyServiceClusterIp,
@@ -184,6 +185,17 @@ export function npmCacheApplies(
  * The handle is built from the values just written; the pod does not exist
  * yet (`awaitReady` waits for it).
  */
+/** Jobs whose pod fills a tree before it is ready, which a restore of a
+ *  large repository can take minutes to do. */
+const treeJobs = new Set<string>()
+const READY_TIMEOUT_MS = 180_000
+const TREE_READY_TIMEOUT_MS = 30 * 60_000
+
+/** How long `awaitReady` waits for a job's pod. */
+export function readyTimeoutMs(jobName: string): number {
+  return treeJobs.has(jobName) ? TREE_READY_TIMEOUT_MS : READY_TIMEOUT_MS
+}
+
 export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandle> {
   const substrate = narrow(spec.substrate)
   const jobName = workspaceJobName(spec.workspaceId)
@@ -219,9 +231,13 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   // Where the init script starts the keeper tmux session, relative to the
   // workspace dir.
   env.push(`YAAC_CWD=${spec.cwd}`)
+  // A tree on the node is the workspace root, with each checkout's git dir
+  // from the shared tier mounted into it.
+  const tree = spec.tree ? treeMounts(spec.tree) : undefined
   // Map each declared host path to its cluster source (a subPath of the
   // global claim, or the node's tree); see mount-sources.ts.
-  const mounts = spec.mounts.map(resolveMountSource)
+  const mounts = [...(tree?.workspace ?? []), ...spec.mounts].map(resolveMountSource)
+  const sidecarMounts = tree?.container.map(resolveMountSource) ?? []
 
   const labels: Record<string, string> = {
     [LABEL_PROJECT_ID]: spec.projectId,
@@ -267,18 +283,23 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     // In-pod setup (git identity, tmux, streamd) runs as postStart, so
     // kubelet holds Ready until it finishes.
     postStartExec: spec.postStartExec,
-    // preStop runs within the grace period, so size it for the hook.
-    ...(spec.preStopExec
-      ? { preStopExec: spec.preStopExec, terminationGracePeriodSeconds: PRE_STOP_GRACE_SECONDS }
+    // preStop runs within the grace period, so size it for the hook, and
+    // the tree container's final pass, which spends the same budget.
+    ...(spec.preStopExec ? { preStopExec: spec.preStopExec } : {}),
+    ...(spec.preStopExec || tree
+      ? { terminationGracePeriodSeconds: (spec.preStopExec ? PRE_STOP_GRACE_SECONDS : 0) + (tree ? TREE_FINAL_PASS_SECONDS : 0) }
       : {}),
+    ...(spec.tree ? { treeContainer: { image: await treeImage(), life: spec.tree.life, mounts: sidecarMounts } } : {}),
     // Created on the node by the pod's own init container.
-    nodeLocalDirs: nodeLocalDirsOf(mounts),
+    nodeLocalDirs: nodeLocalDirsOf([...mounts, ...sidecarMounts]),
     nodeLocalRoot: nodeLocalNodePath(),
     nodeDirsImage: await ensureBuilderImage(),
     ...(spec.siteId !== undefined ? { priorityClassName: PRIORITY_CLASS_RELEASE } : {}),
     ...(nodeName !== undefined ? { nodeName } : {}),
   })
 
+  if (spec.tree) treeJobs.add(jobName)
+  else treeJobs.delete(jobName)
   spec.onProgress?.(`Creating session job ${jobName}...`)
 
   // Idempotent, so a relaunch rewrites the same object.

@@ -52,6 +52,8 @@ export interface ResolvedWorkspaceRecord {
   workspaceId: string
   /** Absent when resolved from the row only (nothing running). */
   jobName?: string
+  /** Whether its runtime unit is running. */
+  running: boolean
 }
 
 /**
@@ -70,10 +72,11 @@ export async function resolveWorkspaceRecord(
       projectId: match.projectId,
       workspaceId: match.workspaceId,
       jobName: match.jobName,
+      running: match.state === 'running',
     }
   }
   const row = await findWorkspaceRow(id)
-  if (row) return { projectId: row.projectId, workspaceId: row.workspaceId }
+  if (row) return { projectId: row.projectId, workspaceId: row.workspaceId, running: false }
   throw new ServerError('NOT_FOUND', `workspace ${idOrPrefix} not found`)
 }
 

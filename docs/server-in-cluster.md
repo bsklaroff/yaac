@@ -649,8 +649,9 @@ Workspace pods mount **subPaths** of `yaac-global`, never the whole claim,
 and never the server's claim. The k8s driver maps each declared mount by
 the tier its path is under (`resolveMountSource`): a GLOBAL path becomes a
 claim subPath, a NODE-LOCAL path the matching path under the node's
-directory, and a SERVER-LOCAL path is an error. A checkout is the one GLOBAL
-path mounted through a third claim, `yaac-checkouts` (below). A `File` mount is a subPath
+directory, and a SERVER-LOCAL path is an error. A workspace's files are a
+node-local tree, with each checkout's `.git` a subPath of `yaac-global`
+(docs/node-local-workspaces.md). A `File` mount is a subPath
 to that file, so every global file a pod mounts must exist before its Job
 is applied; kubelet would otherwise create it as a root-owned directory.
 The node-local directories a pod mounts are chowned to the pod's uid by its
@@ -672,24 +673,12 @@ its PV `Retain` and re-binds it after a namespace delete, which is the only
 reason a byo server has PersistentVolume access (`get`, `list`, `patch`;
 docs/workspace-volumes.md says how far that reaches).
 
-**`yaac-checkouts`** is a second volume over the same `global/` directory,
-which workspace pods mount their checkout through. It exists for its mount
-options: a checkout's mount caches file attributes for up to a minute and
-directory attributes for a second, where the shared tier's `actimeo=1`
-caches both for a second, which makes every `git status` re-stat the whole
-tree over the network (docs/nfs-checkout-performance.md). Kubernetes sets
-mount options per volume, never per pod, so a second volume is the only way
-to mount one directory two ways. The server never mounts it. On kind it is
-one more static hostPath volume to `<dataDir>/global`, which caches nothing
-either way. On byo it is a static copy of the bound global volume (below).
-
 ### Claims on byo
 
 Install applies the claims after stopping the running server, through one
 of two storage shapes (`ensureStorageClaims`): kind's static volumes above,
 or on byo, claims provisioned from named StorageClasses. The class path
-makes each provisioned volume belong to this install, in three steps, then
-binds `yaac-checkouts` (step 4):
+makes each provisioned volume belong to this install, in three steps:
 
 1. **Re-adopt first.** `Retain` only helps if a later install can find the
    data again. A namespace delete leaves both volumes `Released`, so before
@@ -724,16 +713,6 @@ binds `yaac-checkouts` (step 4):
    rather than required of the operator's class. The class's other options
    (`soft` or `hard` included) stay. A PV's options are read at each mount,
    and the binder has unmounted before any real pod mounts.
-4. **Copy the global volume for checkouts.** `yaac-checkouts` binds a static
-   PV named `<global PV>-checkouts`: the global volume's CSI block with the
-   checkout caching options (`acregmin=3,acregmax=60,acdirmin=1,acdirmax=1`)
-   in place of `actimeo=1`. kubelet treats two CSI volumes with the same
-   driver and handle as one mount within a pod, so the copy gets a handle of
-   its own that its driver reads as the same directory: a suffix for
-   csi-driver-nfs (which mounts from the attributes), `/` for an empty EFS
-   path (or a trailing slash toggled), and the free uuid field for Azure
-   Files. The copy holds no data, so one whose source changed is replaced.
-
 A claim's class cannot be changed, so a re-install naming a different class
 is refused. The RWX class must be NFS-family (csi-driver-nfs, EFS, or Azure
 Files over NFS), because that is what was measured. `cluster check`'s

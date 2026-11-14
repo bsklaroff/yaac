@@ -15,6 +15,7 @@ import {
 } from '#drivers/k8s/workspaces'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { serverLog } from '#lib/log'
+import { DISK_LOW_TRIGGER, watchNodeDisks } from '#drivers/k8s/disk'
 import {
   MEDIATOR_TRIGGERS,
   type DriverSinks,
@@ -28,9 +29,10 @@ import {
  */
 
 /**
- * Every trigger this driver can raise: the mediators' triggers and
+ * Every trigger this driver can raise: the mediators' triggers,
  * `proxy-refreshed` (a credential rotation the proxy captured, which the
- * `credential-adopt` step waits on).
+ * `credential-adopt` step waits on) and `disk-low` (a node under its warn
+ * floor, which the `disk-guard` step waits on).
  *
  * `ReconcileTrigger` is an open string type, so a misspelled trigger would
  * silently never fire. Raise sites are typed against this list instead.
@@ -38,6 +40,7 @@ import {
 export const K8S_TRIGGERS = [
   ...MEDIATOR_TRIGGERS,
   'proxy-refreshed',
+  DISK_LOW_TRIGGER,
 ] as const
 
 type K8sTrigger = typeof K8S_TRIGGERS[number]
@@ -53,6 +56,7 @@ export function triggerFor(source: WorkspaceDeltaSource): K8sTrigger {
 
 let clusterCache: ClusterCache | null = null
 let portDetector: PortDetectorManager | null = null
+let stopDiskWatch: (() => void) | null = null
 
 /** See `WorkspaceDriver.start`. */
 export async function startK8sDriver(sinks: DriverSinks): Promise<void> {
@@ -118,6 +122,7 @@ export async function startK8sDriver(sinks: DriverSinks): Promise<void> {
   })
   cache.start()
   setActiveClusterCache(cache)
+  stopDiskWatch = watchNodeDisks(sinks.trigger)
   // In the background: it waits on a rollout, and nothing here needs it.
   void proxyClient.rollIfStale()
     .catch((err: unknown) => serverLog(`[server] proxy redeploy failed: ${String(err)}`))
@@ -134,6 +139,8 @@ export function stopK8sDriver(): void {
   clusterCache = null
   portDetector?.stopAll()
   portDetector = null
+  stopDiskWatch?.()
+  stopDiskWatch = null
 }
 
 /** See `WorkspaceDriver.release`. */

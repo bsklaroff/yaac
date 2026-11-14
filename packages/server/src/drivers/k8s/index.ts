@@ -17,6 +17,9 @@ import {
   getUnforwardedPorts,
   getWorkspacePorts,
   launchWorkspace,
+  readyTimeoutMs,
+  salvageTree,
+  importTree,
   listWorkspaces,
   pinVolumes,
   prepareWorkspaceSubstrate,
@@ -25,7 +28,6 @@ import {
   removeAsRoot,
   removeWorkspaceForwarder,
   resizeVolume,
-  runInStoppedCheckout,
   volumeStorage,
 } from '#drivers/k8s/workspaces'
 import {
@@ -59,6 +61,7 @@ import {
 import { k8sReconcileSteps } from '#drivers/k8s/steps'
 import { releaseK8sDriver, startK8sDriver, stopK8sDriver } from '#drivers/k8s/lifecycle'
 import { k8sUsage } from '#drivers/k8s/usage'
+import { readNodeDisks } from '#drivers/k8s/disk'
 import type { WorkspaceDriver } from '#drivers/contract'
 
 /**
@@ -97,6 +100,7 @@ export function createK8sDriver(): WorkspaceDriver {
     unforwardPort: (target, port) => removeWorkspaceForwarder(target.workspaceId, target.jobName, port),
     dismissPort: (workspaceId, port) => dismissWorkspacePort(workspaceId, port),
     resourceUsage: (opts) => k8sUsage(opts),
+    nodeDisks: (opts) => readNodeDisks(opts),
 
     listImageBuilds: () => listImageBuilds(),
     imageBuildLog: (id) => getImageBuildLog(id),
@@ -124,7 +128,9 @@ export function createK8sDriver(): WorkspaceDriver {
     syncProjectSecrets: (projectId, values, runValues) => syncProjectSecrets(projectId, values, runValues),
     refreshedCredentials: () => refreshedCredentials(),
     launch: (spec) => launchWorkspace(spec),
-    awaitReady: (handle) => waitForJobPodReady(handle.jobName),
+    awaitReady: (handle) => waitForJobPodReady(handle.jobName, readyTimeoutMs(handle.jobName)),
+    salvageTree: (target) => salvageTree(target),
+    importTree: (target) => importTree(target),
     declareForwards: (workspaceId, forwards) => Promise.resolve(declareWorkspaceForwards(workspaceId, forwards)),
     dialPort: (workspaceId, containerPort) => dialWorkspacePort(workspaceId, containerPort),
 
@@ -140,7 +146,8 @@ export function createK8sDriver(): WorkspaceDriver {
     volumeStorage: () => volumeStorage(),
     reapNodeLocal: (live) => reapNodeLocal(live),
     removeAsRoot: (dir, names) => removeAsRoot(dir, names),
-    runInStoppedCheckout: (target, script, args, opts) => runInStoppedCheckout(target, script, args, opts),
+    // A k8s workspace's files are on its node, never in a stopped checkout.
+    runInStoppedCheckout: () => Promise.reject(new Error('a k8s workspace keeps no files in a stopped checkout')),
     syncSites: (sites) => syncSiteObjects(sites),
     siteCloudflareStatus: () => siteCloudflareStatus(),
     siteTailnetStatus: () => siteTailnetStatus(),

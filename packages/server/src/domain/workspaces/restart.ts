@@ -20,6 +20,7 @@ import { serverLog } from '#lib/log'
 import { workspaceDriver } from '#drivers/driver'
 import { ServerError } from '@yaac/shared/errors'
 import { defaultPermissionMode } from '@yaac/shared/types'
+import { ensureLifeStamped } from './trees'
 
 /**
  * Check a restart of a workspace id or prefix, running or stopped, and
@@ -44,8 +45,9 @@ export async function prepareRestart(
   /** `deadline`: when the server stops it, which a restart otherwise
    *  clears. `volume`: a volume to attach by name, `null` for none (which
    *  forgets the one it had), absent for the one it last held
-   *  (docs/workspace-volumes.md). */
-  opts: { stoppedOnly?: boolean; deadline?: Date; volume?: string | null } = {},
+   *  (docs/workspace-volumes.md). `restoreNewest`: restore the newest
+   *  readable state if its last checkpoint is unreadable, rather than refuse. */
+  opts: { stoppedOnly?: boolean; deadline?: Date; volume?: string | null; restoreNewest?: boolean } = {},
 ): Promise<ProvisionRun<WorkspaceCreateResult>> {
   // The runtime is asked directly, never skipped when unreachable: a unit
   // this missed would keep running beside the relaunch.
@@ -102,6 +104,9 @@ export async function prepareRestart(
     if (jobName) onProgress(`Stopping session job ${jobName}...`)
     // Always: it also clears a leftover terminating mark.
     await teardownForRestart({ jobName: jobName ?? null, projectId, workspaceId })
+    // A life whose files were on its node is saved before the next starts.
+    onProgress('Saving the last checkpoint...')
+    await ensureLifeStamped(workspaceId)
     // The old pod is gone, so a volume it held that this launch does not
     // attach is free; `--no-volume` also forgets it for later restarts.
     await releaseWorkspaceVolumes(workspaceId, volume?.id)
@@ -119,6 +124,7 @@ export async function prepareRestart(
         resume: true,
         ...(opts.deadline !== undefined ? { deadline: opts.deadline } : {}),
         ...(volume !== undefined ? { volumeId: volume.id } : {}),
+        ...(opts.restoreNewest === true ? { restoreNewest: true } : {}),
         onProgress,
       })
     } catch (err) {

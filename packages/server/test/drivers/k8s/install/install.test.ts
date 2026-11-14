@@ -1850,7 +1850,7 @@ describe('runClusterInstall', () => {
     // block class, and a new install id recorded before anything is applied.
     expect(appliedOf('Ingress')).toHaveLength(1)
     expect(serverPod().securityContext).toMatchObject({ runAsUser: 1000, runAsGroup: 1000 })
-    expect(claimClasses()).toEqual({ 'yaac-global': 'byo-nfs', 'yaac-server-local': 'standard', 'yaac-checkouts': '' })
+    expect(claimClasses()).toEqual({ 'yaac-global': 'byo-nfs', 'yaac-server-local': 'standard' })
     // The binder stamps the volumes with the id recorded before anything
     // was applied.
     const binderArgs = (appliedOf('Pod')[0] as unknown as {
@@ -1978,7 +1978,7 @@ describe('runClusterInstall', () => {
     const classes = [...BYO_CLASSES, { metadata: { name: 'fast-ssd' }, provisioner: 'pd.csi.storage.gke.io' }]
     const deps = makeDeps({ run: adoptRun({ kind: false, classes }) })
     await expect(runClusterInstall({ ...BYO, rwoStorageClass: 'fast-ssd' }, deps)).resolves.toBeUndefined()
-    expect(claimClasses()).toEqual({ 'yaac-global': 'byo-nfs', 'yaac-server-local': 'fast-ssd', 'yaac-checkouts': '' })
+    expect(claimClasses()).toEqual({ 'yaac-global': 'byo-nfs', 'yaac-server-local': 'fast-ssd' })
   })
 
   it('--byo refuses the flag combinations it cannot honor, before touching anything', async () => {

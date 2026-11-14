@@ -1,10 +1,7 @@
-import { createHash, randomBytes } from 'node:crypto'
-import { constants as C, type Stats } from 'node:fs'
-import fs, { type FileHandle } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import path from 'node:path'
-import { Readable } from 'node:stream'
 import { repoDir, workspaceDir } from '@yaac/shared/project-paths'
-import { ServerError } from '@yaac/shared/errors'
+import { ServerError, type ErrorCode } from '@yaac/shared/errors'
 import { mediaType } from '@yaac/shared/media-types'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type {
@@ -13,7 +10,6 @@ import type {
   WorkspaceFile,
   WorkspaceFileAtRev,
   WorkspaceFiles,
-  WorkspaceFileSaved,
   BranchComparison,
   WorkspaceChanges,
   WorkspaceComparison,
@@ -27,38 +23,45 @@ import {
 } from './changes'
 import { lastFetchedAtMs } from '#domain/git'
 import { authorizeProject, type Actor } from '#domain/access'
-import {
-  ConfinedPathError, openExactDir, openRoot, type ConfinedRoot, type PinnedDir,
-} from '#lib/confined-fs'
+import { ConfinedPathError, normalizeRel } from '#lib/confined-fs'
 import { createKeyedMutex } from '#lib/keyed-mutex'
-import { shellQuote } from '#lib/shell'
-import { serverLog } from '#lib/log'
 import { MAX_TEXT_FILE_BYTES, isBinaryContent } from '#lib/text-file'
 import { getWorkspaceRow, listWorkspaceRepos, type WorkspaceRepoRow } from '#db'
 import { checkoutBlobAt, checkoutLog } from './checkout-git'
 import { checkoutAt } from './checkouts'
 import { resolveWorkspaceContainer, resolveWorkspaceRecord } from './resolve'
+import {
+  MAX_LISTED_PATHS, NoTreeError, runTreeRequest,
+  type TreeArgs, type TreeOp, type TreeRequest, type TreeResult, type WorkspaceFileWrite,
+} from './tree-ops'
+
+export type { WorkspaceFileWrite } from './tree-ops'
 
 /**
  * The webapp file editor's access to a workspace's files
- * (docs/file-editor.md). Reads and writes use plain `fs` on the server's view
- * of the workspace dir, so they work for stopped workspaces too, and every
- * path is relative to that dir, whichever checkout it falls in. The
- * changes, the ahead/behind count, the listing and the commit log need a
- * checkout's git, which runs inside the workspace, so they require it to be
- * running, and each names the checkout it reads (`checkoutOf`).
- *
- * The workspace dir is agent-controlled, so every access goes through a
- * confined root (`#lib/confined-fs`) that follows symlinks only while they
- * stay inside it.
+ * (docs/file-editor.md). Every path is relative to the workspace dir,
+ * whichever checkout it falls in. The operations themselves are in
+ * `tree-ops.ts`, and run wherever the files can be reached as they are now:
+ * inside a running k8s workspace, through its `yaac-files` helper, and
+ * otherwise on the server's own view of the workspace dir, which is how a
+ * containerless workspace and a stopped k8s one are read. The changes, the
+ * ahead/behind count, the listing and the commit log need a checkout's git,
+ * which runs inside the workspace, so they require it to be running, and
+ * each names the checkout it reads (`checkoutOf`).
  */
 
-/** The listing's cap on `paths`. */
-const MAX_LISTED_PATHS = 50_000
-/** The folder route's cap on entries. */
-const MAX_DIR_ENTRIES = 5_000
-/** How many untracked folders the empty-folder search may open. */
-const MAX_EMPTY_DIR_VISITS = 5_000
+/** The workspace's helper that runs `tree-ops.ts` inside it. */
+const FILES_HELPER = 'yaac-files'
+/** A helper call's deadline: one walk of a large tree at most. */
+const HELPER_TIMEOUT_MS = 60_000
+/** Bytes per helper call when streaming a file in or out. Base64 of a page
+ *  stays well under an exec's 4 MiB output cap. */
+const PAGE_BYTES = 2 * 1024 * 1024
+/** Operations that change nothing, so a call that lost its transport may
+ *  be sent again. */
+const READ_OPS = new Set<TreeOp>(['dir', 'read', 'mediaSize', 'range', 'walkOutside', 'emptyDirs', 'locate'])
+/** The refusals the helper may carry back; anything else is a fault. */
+const REFUSALS = new Set<ErrorCode>(['NOT_FOUND', 'CONFLICT', 'VALIDATION', 'TOO_LARGE'])
 
 /** Mutations of one workspace's checkout run one at a time. */
 const mutate = createKeyedMutex()
@@ -66,29 +69,65 @@ const mutate = createKeyedMutex()
 interface Checkout {
   workspaceId: string
   projectId: string
-  /** The workspace's runtime unit, when it has one. */
-  jobName?: string
-  dir: string
-  /** The confined workspace dir. Each checkout's `.git` counts as outside,
-   *  so the editor cannot plant a hook or config there. */
-  root: ConfinedRoot
+  /** Each checkout's `.git`, which counts as outside the workspace, so the
+   *  editor cannot plant a hook or config there. */
+  exclude: string[]
   /** Its checkouts, as its rows record them. */
   repos: WorkspaceRepoRow[]
+  /** Run one operation on the workspace's files. */
+  call<K extends TreeOp>(op: K, args: TreeArgs<K>): Promise<TreeResult<K>>
 }
 
 /** Open a workspace's dir. A write passes its caller, who must own the
  *  workspace. */
 async function openCheckout(idOrName: string, writer?: Actor): Promise<Checkout> {
-  const { projectId, workspaceId, jobName } = await resolveWorkspaceRecord(idOrName)
+  const { projectId, workspaceId, jobName, running } = await resolveWorkspaceRecord(idOrName)
   if (writer !== undefined) await authorizeProject(writer, projectId)
-  const dir = workspaceDir(projectId, workspaceId)
   const repos = await listWorkspaceRepos(workspaceId)
-  try {
-    const exclude = repos.map((r) => path.posix.join(r.path, '.git'))
-    return { workspaceId, projectId, jobName, dir, repos, root: await openRoot(dir, 'inside', { exclude }) }
-  } catch {
-    throw new ServerError('NOT_FOUND', `workspace ${idOrName} has no checkout`)
+  const exclude = repos.map((r) => path.posix.join(r.path, '.git'))
+  const driver = workspaceDriver()
+  const inside = running && jobName !== undefined && driver.kind === 'k8s' ? jobName : undefined
+  // A stopped workspace whose files were on its node has them nowhere the
+  // server can read (docs/node-local-workspaces.md "File routes").
+  const treeDir = (await getWorkspaceRow(projectId, workspaceId))?.treeDir
+  if (inside === undefined && treeDir !== undefined) {
+    throw new ServerError('CONFLICT', 'Start the workspace to browse its files')
   }
+  const paths = inside !== undefined ? driver.workspacePaths(inside) : undefined
+  const root = paths?.workspaceDir ?? workspaceDir(projectId, workspaceId)
+  // A change made through the helper asks the tree container for a pass.
+  const trigger = treeDir !== undefined ? paths?.treeTrigger : undefined
+  const call = async <K extends TreeOp>(op: K, args: TreeArgs<K>): Promise<TreeResult<K>> => {
+    const req: TreeRequest<K> = { root, exclude, op, args, ...(trigger !== undefined && !READ_OPS.has(op) ? { trigger } : {}) }
+    try {
+      return inside !== undefined ? await callHelper(inside, req) : await runTreeRequest(req)
+    } catch (err) {
+      if (err instanceof NoTreeError) throw new ServerError('NOT_FOUND', `workspace ${idOrName} has no checkout`)
+      throw err
+    }
+  }
+  return { workspaceId, projectId, repos, exclude, call }
+}
+
+/** Run one operation in a workspace through its helper (`tree-helper.ts`),
+ *  whose answer is agent-written. */
+async function callHelper<K extends TreeOp>(jobName: string, req: TreeRequest<K>): Promise<TreeResult<K>> {
+  const { stdout } = await workspaceDriver().exec(jobName, FILES_HELPER, {
+    stdin: JSON.stringify(req),
+    timeout: HELPER_TIMEOUT_MS,
+    ...(READ_OPS.has(req.op) ? {} : { maxAttempts: 1 }),
+  })
+  let answer: { result?: TreeResult<K>; error?: { code?: unknown; message?: unknown }; noTree?: boolean; fault?: unknown }
+  try {
+    answer = JSON.parse(stdout) as typeof answer
+  } catch {
+    throw new Error(`${FILES_HELPER} ${req.op}: no answer`)
+  }
+  if (answer.noTree === true) throw new NoTreeError(req.root)
+  const { code, message } = answer.error ?? {}
+  if (REFUSALS.has(code as ErrorCode) && typeof message === 'string') throw new ServerError(code as ErrorCode, message)
+  if ('result' in answer) return answer.result as TreeResult<K>
+  throw new Error(`${FILES_HELPER} ${req.op}: ${typeof answer.fault === 'string' ? answer.fault : 'no answer'}`)
 }
 
 /**
@@ -116,153 +155,18 @@ async function runningWorkspace(idOrName: string): Promise<{ jobName: string; pr
   return resolveWorkspaceContainer(idOrName, { requireRunning: true })
 }
 
-/** `ConfinedRoot.normalize`, with a caller-facing error. */
+/** The lexical check every path gets before it is used, with a
+ *  caller-facing error. */
 function checkPath(co: Checkout, rel: string): string {
   try {
-    return co.root.normalize(rel)
+    return normalizeRel(rel, co.exclude)
   } catch (err) {
-    throw fsFailure(err, rel)
-  }
-}
-
-/** Turn an fs failure into the answer a caller can act on. */
-function fsFailure(err: unknown, rel: string): unknown {
-  if (err instanceof ServerError) return err
-  if (err instanceof ConfinedPathError) {
-    return new ServerError('VALIDATION', err.reason === 'outside' ? `${rel} points outside the workspace` : err.message)
-  }
-  switch ((err as NodeJS.ErrnoException).code) {
-    case 'ENOENT':
-    case 'ENOTDIR': return new ServerError('NOT_FOUND', `no such file: ${rel}`)
-    case 'EEXIST':
-    case 'ENOTEMPTY': return new ServerError('CONFLICT', `${rel} already exists`)
-    case 'EISDIR': return new ServerError('VALIDATION', `${rel} is a folder`)
-    case 'ELOOP': return new ServerError('VALIDATION', `${rel} is a symlink loop`)
-    case 'ENAMETOOLONG': return new ServerError('VALIDATION', `${rel}: name too long`)
-    case 'EINVAL': return new ServerError('VALIDATION', `can't move ${rel} into itself`)
-    case 'EACCES':
-    case 'EPERM': return new ServerError('VALIDATION', `permission denied: ${rel}`)
-    default: return err
-  }
-}
-
-/** Open a regular file, following links only as far as they stay inside. */
-async function openFile(co: Checkout, rel: string, flags: number): Promise<FileHandle> {
-  try {
-    return await co.root.open(rel, flags)
-  } catch (err) {
-    throw fsFailure(err, rel)
-  }
-}
-
-/** Pin the directory `rel` is in, as a caller's error. */
-async function openParent(co: Checkout, rel: string, create: boolean): Promise<{ dir: PinnedDir; name: string }> {
-  try {
-    return await co.root.parent(rel, { create })
-  } catch (err) {
-    throw fsFailure(err, rel)
+    throw err instanceof ConfinedPathError ? new ServerError('VALIDATION', err.message) : err
   }
 }
 
 function hash(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex')
-}
-
-/** A file too large to edit is not hashed; its version is size and mtime. */
-function largeVersion(st: Stats): string {
-  return `${st.size}:${st.mtimeMs}`
-}
-
-/**
- * A file's bytes, or null if over the editable size. Reads into a fixed
- * buffer, since the file may grow after `fstat`.
- */
-async function readEditable(fh: FileHandle): Promise<Buffer | null> {
-  const buf = Buffer.alloc(MAX_TEXT_FILE_BYTES + 1)
-  let at = 0
-  for (;;) {
-    const { bytesRead } = await fh.read(buf, at, buf.length - at, at)
-    if (bytesRead === 0) break
-    at += bytesRead
-    if (at === buf.length) return null
-  }
-  return buf.subarray(0, at)
-}
-
-/** Write all of `data` at file offset `start`. */
-async function writeAll(fh: FileHandle, data: Uint8Array, start = 0): Promise<void> {
-  let at = 0
-  while (at < data.length) {
-    at += (await fh.write(data, at, data.length - at, start + at)).bytesWritten
-  }
-}
-
-/** Where a symlink leads, as the listing reports it. */
-async function linkTarget(co: Checkout, rel: string): Promise<SymlinkTarget> {
-  const to = await co.root.locate(rel)
-  return to === null ? { target: null, dir: false } : { target: to.rel, dir: to.dir }
-}
-
-/**
- * Folders with no listed file, which git does not report. Walks each
- * untracked folder git collapsed (not following links, skipping ignored
- * folders) to find the folders inside it.
- */
-async function findEmptyDirs(
-  co: Checkout,
-  untrackedDirs: string[],
-  paths: string[],
-  ignored: string[],
-): Promise<string[]> {
-  const occupied = new Set<string>()
-  for (const p of paths) {
-    for (let i = p.lastIndexOf('/'); i > 0; i = p.lastIndexOf('/', i - 1)) {
-      const dir = p.slice(0, i)
-      if (occupied.has(dir)) break
-      occupied.add(dir)
-    }
-  }
-  const ignoredDirs = new Set(ignored.filter((p) => p.endsWith('/')).map((p) => p.slice(0, -1)))
-  const out: string[] = []
-  let visits = 0
-  const visit = async (dir: PinnedDir, rel: string): Promise<void> => {
-    if (++visits > MAX_EMPTY_DIR_VISITS) return
-    if (!occupied.has(rel)) out.push(rel)
-    for (const entry of await fs.readdir(dir.self, { withFileTypes: true })) {
-      const child = `${rel}/${entry.name}`
-      // A nested repository's `.git` is git's own, not a folder to show.
-      if (!entry.isDirectory() || entry.name === '.git' || ignoredDirs.has(child)) continue
-      const sub = await openExactDir(dir, entry.name)
-      if (!sub) continue
-      try {
-        await visit(sub, child)
-      } finally {
-        await sub.close()
-      }
-    }
-  }
-  const root = await co.root.dir('')
-  try {
-    for (const top of untrackedDirs) {
-      if (ignoredDirs.has(top)) continue
-      // Skip a root that is no longer a real folder all the way down.
-      let dir: PinnedDir | null = root
-      const opened: PinnedDir[] = []
-      for (const segment of top.split('/')) {
-        dir = await openExactDir(dir, segment)
-        if (!dir) break
-        opened.push(dir)
-      }
-      try {
-        if (dir) await visit(dir, top)
-      } finally {
-        for (const d of opened) await d.close()
-      }
-    }
-  } finally {
-    await root.close()
-  }
-  return out
 }
 
 /**
@@ -413,7 +317,7 @@ export async function getWorkspaceGitLog(idOrName: string, limit: number, repo?:
 /** Whether `rel` is a path the file routes would accept as written. */
 function isListable(co: Checkout, rel: string): boolean {
   try {
-    return co.root.normalize(rel) === rel
+    return normalizeRel(rel, co.exclude) === rel
   } catch {
     return false
   }
@@ -430,7 +334,9 @@ async function workspaceListing(
   co: Checkout, jobName: string, readings: Array<{ repo: WorkspaceRepoRow; reading: ChangesReading }>,
   scratchDirs: string[], kind: 'paths' | 'full',
 ): Promise<WorkspaceFiles> {
-  const outside = co.repos.some((r) => r.path === '') ? undefined : await walkOutside(co)
+  const outside = co.repos.some((r) => r.path === '')
+    ? undefined
+    : await co.call('walkOutside', { checkouts: co.repos.map((r) => r.path) })
   const merged = { paths: outside?.paths ?? [], links: outside?.links ?? [], conflicted: [] as string[] }
   const ignored: string[] = []
   const untrackedDirs = outside?.dirs ?? []
@@ -451,48 +357,6 @@ async function workspaceListing(
     { dirs: scratchDirs, changed }, skippedDirs,
     { folders: co.repos.map((r) => r.path).filter((p) => p !== ''), truncated: outside?.truncated === true },
   )
-}
-
-/**
- * Every file of a workspace outside its checkouts, and the top-level
- * folders holding them. Links are listed and not followed, and a `.git` is
- * git's own, not a folder to show. Stops at the listing's caps.
- */
-async function walkOutside(co: Checkout): Promise<{ paths: string[]; links: string[]; dirs: string[]; truncated: boolean }> {
-  const checkouts = new Set(co.repos.map((r) => r.path))
-  const out = { paths: [] as string[], links: [] as string[], dirs: [] as string[], truncated: false }
-  let visits = 0
-  const visit = async (dir: PinnedDir, rel: string): Promise<void> => {
-    for (const entry of await fs.readdir(dir.self, { withFileTypes: true })) {
-      const child = rel === '' ? entry.name : `${rel}/${entry.name}`
-      if (entry.name === '.git' || (rel === '' && checkouts.has(entry.name))) continue
-      if (!entry.isDirectory()) {
-        if (out.paths.length >= MAX_LISTED_PATHS) out.truncated = true
-        else out.paths.push(child)
-        if (entry.isSymbolicLink()) out.links.push(child)
-        continue
-      }
-      if (rel === '') out.dirs.push(child)
-      if (++visits > MAX_EMPTY_DIR_VISITS) {
-        out.truncated = true
-        continue
-      }
-      const sub = await openExactDir(dir, entry.name)
-      if (!sub) continue
-      try {
-        await visit(sub, child)
-      } finally {
-        await sub.close()
-      }
-    }
-  }
-  const root = await co.root.dir('')
-  try {
-    await visit(root, '')
-  } finally {
-    await root.close()
-  }
-  return out
 }
 
 /**
@@ -531,8 +395,8 @@ async function finishListing(
   const untracked = listable(read.untrackedDirs ?? []).filter((d) => !skipped.some((s) => `${d}/`.startsWith(`${s}/`)))
   let emptyDirs = [
     ...extra.folders.filter((dir) => !listed.some((p) => p.startsWith(`${dir}/`))),
-    ...read.untrackedDirs
-      ? await findEmptyDirs(co, untracked, paths, [...ignored, ...skipped.map((d) => `${d}/`)])
+    ...read.untrackedDirs && untracked.length > 0
+      ? await co.call('emptyDirs', { untrackedDirs: untracked, paths, ignored: [...ignored, ...skipped.map((d) => `${d}/`)] })
       : [],
   ]
   // Sorted, so a dir inside another scratch dir is already under its entry.
@@ -547,7 +411,7 @@ async function finishListing(
   // git records a link as one entry and never lists what is behind it.
   // Built in path order, so an unchanged listing hashes the same.
   const links = listable(read.links).slice(0, MAX_LISTED_PATHS)
-  const targets = await Promise.all(links.map((p) => linkTarget(co, p)))
+  const targets = links.length > 0 ? await co.call('locate', { rels: links }) : []
   const symlinks: Record<string, SymlinkTarget> = Object.fromEntries(links.map((p, i) => [p, targets[i]]))
   const body = {
     root: workspaceDriver().workspacePaths(jobName).workspaceDir,
@@ -569,58 +433,16 @@ async function finishListing(
  */
 export async function listWorkspaceDir(idOrName: string, relPath: string): Promise<WorkspaceDir> {
   const co = await openCheckout(idOrName)
-  const rel = checkPath(co, relPath)
-  let dir: PinnedDir
-  try {
-    dir = await co.root.dir(rel)
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOTDIR') {
-      throw new ServerError('VALIDATION', `${rel} is not a folder`)
-    }
-    throw fsFailure(err, rel)
-  }
-  try {
-    const all = await fs.readdir(dir.self, { withFileTypes: true })
-    const entries = await Promise.all(all.slice(0, MAX_DIR_ENTRIES).map(async (e) => (
-      e.isSymbolicLink()
-        ? { name: e.name, dir: false, symlink: await linkTarget(co, `${rel}/${e.name}`) }
-        : { name: e.name, dir: e.isDirectory() }
-    )))
-    return { entries, truncated: all.length > MAX_DIR_ENTRIES }
-  } finally {
-    await dir.close()
-  }
+  return co.call('dir', { rel: checkPath(co, relPath) })
 }
 
 /**
  * Read one file. `content` is omitted when `known` is still the file's
  * version, and null when it is binary or over the editable size.
  */
-export async function readWorkspaceFile(
-  idOrName: string,
-  relPath: string,
-  known?: string,
-): Promise<WorkspaceFile> {
+export async function readWorkspaceFile(idOrName: string, relPath: string, known?: string): Promise<WorkspaceFile> {
   const co = await openCheckout(idOrName)
-  const rel = checkPath(co, relPath)
-  const fh = await openFile(co, rel, C.O_RDONLY)
-  try {
-    const bytes = await readEditable(fh)
-    if (bytes === null) {
-      const st = await fh.stat()
-      const head = Buffer.alloc(8192)
-      const { bytesRead } = await fh.read(head, 0, head.length, 0)
-      const binary = isBinaryContent(head.subarray(0, bytesRead), true)
-      return { path: rel, version: largeVersion(st), size: st.size, binary, content: null }
-    }
-    const version = hash(bytes)
-    const binary = isBinaryContent(bytes)
-    const file = { path: rel, version, size: bytes.length, binary }
-    if (known === version) return file
-    return { ...file, content: binary ? null : bytes.toString('utf8') }
-  } finally {
-    await fh.close()
-  }
+  return co.call('read', { rel: checkPath(co, relPath), ...(known !== undefined ? { known } : {}) })
 }
 
 /** A media file's bytes, as the file pane's media view reads them. */
@@ -648,34 +470,34 @@ function byteRange(header: string | undefined, size: number): { start: number; e
 /**
  * Stream an image, video, audio or PDF file (by extension, `mediaType`),
  * or the byte range `range` asks for, so a video can seek. Any other file is
- * refused, so a browser is never handed bytes it might run as a page.
+ * refused, so a browser is never handed bytes it might run as a page. The
+ * bytes are read a page at a time as the stream is pulled, and the end is
+ * fixed by the size read first, so a file growing mid-read cannot overrun
+ * the declared length.
  */
 export async function readWorkspaceMedia(idOrName: string, relPath: string, range?: string): Promise<WorkspaceMedia> {
   const co = await openCheckout(idOrName)
   const rel = checkPath(co, relPath)
   const type = mediaType(rel)
   if (type === null) throw new ServerError('VALIDATION', `${rel} is not an image, video, audio or PDF file`)
-  const fh = await openFile(co, rel, C.O_RDONLY)
-  let size: number
-  try {
-    size = (await fh.stat()).size
-  } catch (err) {
-    await fh.close()
-    throw err
-  }
+  const size = await co.call('mediaSize', { rel })
   const slice = byteRange(range, size)
-  // The end is fixed even for the whole file, so a file growing mid-read
-  // cannot overrun the declared length. The stream closes the handle.
-  let stream: Readable
-  if (size === 0) {
-    await fh.close()
-    stream = Readable.from([])
-  } else {
-    stream = fh.createReadStream({ start: slice?.start ?? 0, end: slice?.end ?? size - 1 })
-  }
-  return { type, size, range: slice, body: Readable.toWeb(stream) as ReadableStream<Uint8Array<ArrayBuffer>> }
+  const end = slice?.end ?? size - 1
+  let at = slice?.start ?? 0
+  const body = new ReadableStream<Uint8Array<ArrayBuffer>>({
+    async pull(controller) {
+      if (at > end) {
+        controller.close()
+        return
+      }
+      const page = Buffer.from(await co.call('range', { rel, start: at, length: Math.min(PAGE_BYTES, end - at + 1) }), 'base64')
+      if (page.length === 0) throw new Error(`${rel} ended before its ${String(size)} bytes`)
+      at += page.length
+      controller.enqueue(new Uint8Array(page))
+    },
+  })
+  return { type, size, range: slice, body }
 }
-
 /**
  * One file's text at commit `rev` (the fork base the changes diff reports)
  * of the checkout its path is in, which the editor's diff modes compare the
@@ -701,21 +523,7 @@ export async function readWorkspaceFileAtRev(
   return { exists: true, content: blob.toString('utf8') }
 }
 
-/** A save either lands, or is refused naming the version the file has now
- *  (null: there is no file any more). */
-export type WorkspaceFileWrite = { saved: WorkspaceFileSaved } | { conflict: string | null }
-
-/**
- * Save one file against the version the editor last saw.
- *
- * A non-null `baseVersion` updates the file IN PLACE, through the descriptor
- * its version was checked on: that keeps its mode, inode, links and owner,
- * and saving through a symlink updates what it points to. It never creates:
- * a file that is gone is a conflict, which is what stops an autosave from
- * bringing back a file something else deleted. A null `baseVersion` creates,
- * making any missing parent folders, and conflicts with anything already
- * there.
- */
+/** Save one file against the version the editor last saw (`TreeOps.write`). */
 export async function writeWorkspaceFile(
   principal: Actor,
   idOrName: string,
@@ -729,122 +537,36 @@ export async function writeWorkspaceFile(
   if (data.length > MAX_TEXT_FILE_BYTES) {
     throw new ServerError('TOO_LARGE', `${rel} is over the ${MAX_TEXT_FILE_BYTES / 1024 ** 2} MiB editable size`)
   }
-  const saved = { saved: { path: rel, version: hash(data), size: data.length } }
-  const result = await mutate(co.workspaceId, async (): Promise<WorkspaceFileWrite> => {
-    if (baseVersion === null) {
-      const { dir, name } = await openParent(co, rel, true)
-      let fh: FileHandle
-      try {
-        // O_EXCL never creates through a link, dangling or not.
-        fh = await fs.open(dir.child(name), C.O_WRONLY | C.O_CREAT | C.O_EXCL | C.O_NOFOLLOW, 0o666)
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw fsFailure(err, rel)
-        return { conflict: await existingVersion(co, rel) }
-      } finally {
-        await dir.close()
-      }
-      try {
-        await writeAll(fh, data)
-      } finally {
-        await fh.close()
-      }
-      return saved
-    }
-    let fh: FileHandle
-    try {
-      fh = await openFile(co, rel, C.O_RDWR)
-    } catch (err) {
-      if (err instanceof ServerError && err.code === 'NOT_FOUND') return { conflict: null }
-      throw err
-    }
-    try {
-      const bytes = await readEditable(fh)
-      const current = bytes === null ? largeVersion(await fh.stat()) : hash(bytes)
-      if (current !== baseVersion) return { conflict: current }
-      await fh.truncate(0)
-      await writeAll(fh, data)
-    } finally {
-      await fh.close()
-    }
-    return saved
-  })
-  // Outside the lock: a stuck workspace must not hold up the next edit.
-  if (baseVersion !== null && 'saved' in result) await reopenInWorkspace(co, rel)
-  return result
+  return mutate(co.workspaceId, () => co.call('write', { rel, data: data.toString('base64'), baseVersion }))
 }
 
-/**
- * Open a file the editor overwrote from inside its running pod. A pod
- * mounts its checkout with file attributes cached for up to a minute, so
- * its `git status` (the changes view, the agent's own) could miss the edit
- * until then; an open revalidates them (docs/nfs-checkout-performance.md).
- * A new, deleted or renamed file needs nothing: directories are cached for
- * a second. A host checkout caches nothing, so containerless skips it.
- *
- * The open reads nothing and gives up after a few seconds (a FIFO blocks
- * an open), and a failure is logged rather than retried.
- */
-async function reopenInWorkspace(co: Checkout, rel: string): Promise<void> {
-  const driver = workspaceDriver()
-  if (co.jobName === undefined || driver.kind !== 'k8s') return
-  const script = `cd ${shellQuote(driver.workspacePaths(co.jobName).workspaceDir)} && timeout 5 sh -c ': < "$1"' yaac "$1"`
-  try {
-    await driver.exec(co.jobName, `sh -c ${shellQuote(script)} yaac ${shellQuote(rel)}`, { maxAttempts: 1, timeout: 10_000 })
-  } catch (err) {
-    serverLog(`[files] ${co.workspaceId}: could not open ${rel} in the workspace after saving it, `
-      + `so its git may not see the edit for up to a minute: ${err instanceof Error ? err.message : String(err)}`)
-  }
-}
-
-/** The version of what a create found in its way. */
-async function existingVersion(co: Checkout, rel: string): Promise<string> {
-  try {
-    return (await readWorkspaceFile(co.workspaceId, rel)).version
-  } catch (err) {
-    if (err instanceof ServerError && err.code === 'NOT_FOUND') {
-      throw new ServerError('VALIDATION', `${rel} is a broken symlink`)
-    }
-    throw err
-  }
-}
-
-/** Write a request body into `fh` from its start, returning its size. */
-async function writeBody(fh: FileHandle, body: ReadableStream<Uint8Array> | null): Promise<number> {
+/** A request body cut into pages of `PAGE_BYTES`. */
+async function* pagesOf(body: ReadableStream<Uint8Array> | null): AsyncGenerator<Buffer> {
+  let held: Buffer[] = []
   let size = 0
   for await (const chunk of body ?? []) {
-    await writeAll(fh, chunk, size)
+    held.push(Buffer.from(chunk))
     size += chunk.length
+    while (size >= PAGE_BYTES) {
+      const all = Buffer.concat(held)
+      yield all.subarray(0, PAGE_BYTES)
+      held = [all.subarray(PAGE_BYTES)]
+      size -= PAGE_BYTES
+    }
   }
-  return size
-}
-
-/**
- * Take a request body into a file in `dir` that is unlinked as soon as it
- * is made, so the agent cannot reach or swap it and a crash leaves nothing
- * behind. Read it back through the returned handle, which the caller closes.
- */
-async function stageBody(dir: PinnedDir, body: ReadableStream<Uint8Array> | null): Promise<{ fh: FileHandle; size: number }> {
-  const tmp = dir.child(`.yaac-upload-${randomBytes(8).toString('hex')}`)
-  const fh = await fs.open(tmp, C.O_RDWR | C.O_CREAT | C.O_EXCL | C.O_NOFOLLOW, 0o600)
-  try {
-    await fs.unlink(tmp)
-    return { fh, size: await writeBody(fh, body) }
-  } catch (err) {
-    await fh.close()
-    throw err
-  }
+  if (size > 0) yield Buffer.concat(held)
 }
 
 /**
  * Write a file the webapp uploads, making any missing parent folders. A
  * conflict if something is already there, unless `replace`.
  *
- * A new file is streamed into place as the request arrives, and removed if
- * the upload fails partway. A replacement is staged in full first
- * (`stageBody`), so a dropped upload leaves the original untouched. Only
- * then, under the edit lock so two replaces never interleave, are the bytes
- * copied into the target in place, as a save writes it: following a link
- * while it stays inside, keeping the mode and inode.
+ * A new file is made empty and filled as the request arrives, and removed if
+ * the upload fails partway. A replacement is taken in full into a staging
+ * file beside it first, so a dropped upload leaves the original untouched.
+ * Only then, under the edit lock so two replaces never interleave, are the
+ * bytes copied into the target in place, as a save writes it: following a
+ * link while it stays inside, keeping the mode and inode.
  */
 export async function uploadWorkspaceFile(
   principal: Actor,
@@ -855,80 +577,34 @@ export async function uploadWorkspaceFile(
 ): Promise<{ path: string }> {
   const co = await openCheckout(idOrName, principal)
   const rel = checkPath(co, relPath)
-  const { dir, name } = await openParent(co, rel, true)
-  // O_EXCL never creates through a link, dangling or not.
-  const create = (): Promise<FileHandle> =>
-    fs.open(dir.child(name), C.O_WRONLY | C.O_CREAT | C.O_EXCL | C.O_NOFOLLOW, 0o666)
+  const into = replace ? await co.call('stage', { rel }) : rel
+  if (!replace) await co.call('create', { rel })
   try {
-    if (!replace) {
-      const fh = await create().catch((err: unknown) => { throw fsFailure(err, rel) })
-      try {
-        await writeBody(fh, body)
-      } catch (err) {
-        await fs.unlink(dir.child(name)).catch(() => {})
-        throw err
-      } finally {
-        await fh.close()
-      }
-      return { path: rel }
+    let offset = 0
+    for await (const page of pagesOf(body)) {
+      await co.call('append', { rel: into, offset, data: page.toString('base64') })
+      offset += page.length
     }
-    const staged = await stageBody(dir, body)
-    try {
-      await mutate(co.workspaceId, async () => {
-        const fh = await create().catch((err: unknown) => {
-          if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw fsFailure(err, rel)
-          return openFile(co, rel, C.O_WRONLY)
-        })
-        try {
-          // Truncated only once open, after the descriptor is known to be inside.
-          await fh.truncate(0)
-          const buf = Buffer.alloc(1 << 20)
-          for (let at = 0; at < staged.size;) {
-            const { bytesRead } = await staged.fh.read(buf, 0, buf.length, at)
-            if (bytesRead === 0) break
-            await writeAll(fh, buf.subarray(0, bytesRead), at)
-            at += bytesRead
-          }
-        } finally {
-          await fh.close()
-        }
-      })
-    } finally {
-      await staged.fh.close()
-    }
-  } finally {
-    await dir.close()
+    if (replace) await mutate(co.workspaceId, () => co.call('replace', { rel, from: into }))
+  } catch (err) {
+    await co.call('remove', { rel: into }).catch(() => {})
+    throw err
   }
-  await reopenInWorkspace(co, rel)
   return { path: rel }
 }
 
 /** Create a folder and any missing parents; a conflict if anything is
  *  already there. */
-export async function createWorkspaceFolder(
-  principal: Actor,
-  idOrName: string,
-  relPath: string,
-): Promise<{ path: string }> {
+export async function createWorkspaceFolder(principal: Actor, idOrName: string, relPath: string): Promise<{ path: string }> {
   const co = await openCheckout(idOrName, principal)
   const rel = checkPath(co, relPath)
-  return mutate(co.workspaceId, async () => {
-    const { dir, name } = await openParent(co, rel, true)
-    try {
-      await fs.mkdir(dir.child(name))
-    } catch (err) {
-      throw fsFailure(err, rel)
-    } finally {
-      await dir.close()
-    }
-    return { path: rel }
-  })
+  await mutate(co.workspaceId, () => co.call('mkdir', { rel }))
+  return { path: rel }
 }
 
 /**
  * Move a file, folder or symlink (the link itself), creating missing parent
- * folders. A conflict if the destination exists (checked just before the
- * rename, so a narrow race remains).
+ * folders. A conflict if the destination exists.
  */
 export async function renameWorkspaceEntry(
   principal: Actor,
@@ -940,25 +616,8 @@ export async function renameWorkspaceEntry(
   const from = checkPath(co, fromPath)
   const to = checkPath(co, toPath)
   if (to.startsWith(`${from}/`)) throw new ServerError('VALIDATION', `can't move ${from} into itself`)
-  return mutate(co.workspaceId, async () => {
-    const src = await openParent(co, from, false)
-    try {
-      await fs.lstat(src.dir.child(src.name)).catch((err: unknown) => { throw fsFailure(err, from) })
-      const dst = await openParent(co, to, true)
-      try {
-        const taken = await fs.lstat(dst.dir.child(dst.name)).then(() => true, () => false)
-        if (taken) throw new ServerError('CONFLICT', `${to} already exists`)
-        await fs.rename(src.dir.child(src.name), dst.dir.child(dst.name))
-      } catch (err) {
-        throw fsFailure(err, to)
-      } finally {
-        await dst.dir.close()
-      }
-    } finally {
-      await src.dir.close()
-    }
-    return { from, to }
-  })
+  await mutate(co.workspaceId, () => co.call('rename', { from, to }))
+  return { from, to }
 }
 
 /**
@@ -968,11 +627,5 @@ export async function renameWorkspaceEntry(
 export async function deleteWorkspaceEntry(principal: Actor, idOrName: string, relPath: string): Promise<void> {
   const co = await openCheckout(idOrName, principal)
   const rel = checkPath(co, relPath)
-  await mutate(co.workspaceId, async () => {
-    try {
-      await co.root.removeTree(rel)
-    } catch (err) {
-      throw fsFailure(err, rel)
-    }
-  })
+  await mutate(co.workspaceId, () => co.call('remove', { rel }))
 }

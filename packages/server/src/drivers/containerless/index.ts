@@ -87,6 +87,12 @@ export function createContainerlessDriver(): WorkspaceDriver {
     unforwardPort: () => unsupported('stopping a forward'),
     dismissPort: () => false,
     resourceUsage: (opts) => containerlessUsage(opts),
+    // A containerless workspace's files are the host's own; there is no
+    // node disk to guard.
+    nodeDisks: () => Promise.resolve([]),
+    // Its workspaces' files are on the host, never left on a node.
+    salvageTree: () => Promise.resolve('saved'),
+    importTree: () => Promise.resolve(),
     declareForwards: (workspaceId, forwards) => declareWorkspacePorts(workspaceId, forwards),
     // For a client on another machine; local clients dial directly.
     dialPort: (workspaceId, port) => dialWorkspacePort(workspaceId, port),

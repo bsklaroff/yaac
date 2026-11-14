@@ -8,7 +8,7 @@ import {
 } from '#db'
 import { workspaceDriver } from '#drivers/driver'
 import { usageHistory } from '#runtime/usage'
-import type { ResourceReport, UsagePoint, WorkspaceUsageRow } from '@yaac/shared/types'
+import type { NodeDisk, ResourceReport, UsagePoint, WorkspaceUsageRow } from '@yaac/shared/types'
 
 /**
  * The server health report (docs/server-health.md): the driver's full
@@ -19,11 +19,14 @@ import type { ResourceReport, UsagePoint, WorkspaceUsageRow } from '@yaac/shared
  * or OOM kill.
  */
 export async function serverUsageReport(): Promise<ResourceReport> {
-  const [usage, projects, users] = await Promise.all([
+  const [usage, projects, users, disks] = await Promise.all([
     workspaceDriver().resourceUsage({ full: true }),
     listProjectRows(),
     listUsers(),
+    nodeDisksForReport(),
   ])
+  const treeBytes = new Map<string, number>()
+  for (const t of disks.flatMap((d) => d.trees ?? [])) treeBytes.set(t.workspaceId, (treeBytes.get(t.workspaceId) ?? 0) + t.bytes)
   const sampledAt = Date.now()
   const history = usageHistory()
   const projectById = new Map(projects.map((p) => [p.id, p]))
@@ -60,6 +63,7 @@ export async function serverUsageReport(): Promise<ResourceReport> {
       peakMemoryBytes: Math.max(live?.memoryBytes ?? 0, ...series.map((p) => p.memoryBytes)),
       history: series,
       ...(live?.node !== undefined ? { node: live.node } : {}),
+      ...(treeBytes.has(workspaceId) ? { treeBytes: treeBytes.get(workspaceId) } : {}),
       ...(title !== undefined ? { title } : {}),
       ...(row ? { projectId: row.projectId } : {}),
       ...(project ? { projectName: project.name } : {}),
@@ -72,10 +76,24 @@ export async function serverUsageReport(): Promise<ResourceReport> {
   const withHistory = <T>(item: T, series: UsagePoint[] | undefined) => ({ ...item, history: series ?? [] })
   return {
     driver: workspaceDriver().kind,
+    ...(disks.length > 0 ? { nodeDisks: disks } : {}),
     sampledAt,
     totals: withHistory(usage.totals, history.totals),
     nodes: usage.nodes.map((n) => withHistory(n, history.nodes.get(n.name))),
     components: usage.components.map((c) => withHistory(c, history.components.get(c.key))),
     workspaces,
   }
+}
+
+/**
+ * Each node's disk for the report: free space only, and each tree's size
+ * too while any node is under its warn floor, so the report can name the
+ * largest trees (docs/node-local-workspaces.md "A full node").
+ */
+async function nodeDisksForReport(): Promise<NodeDisk[]> {
+  const driver = workspaceDriver()
+  const quick = await driver.nodeDisks({ trees: false }).catch(() => [])
+  return quick.some((d) => d.error === undefined && d.freeBytes < d.warnBytes)
+    ? driver.nodeDisks({ trees: true }).catch(() => quick)
+    : quick
 }

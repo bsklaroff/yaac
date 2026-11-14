@@ -106,7 +106,8 @@ import { deleteWorkspaceState } from './cleanup'
 import { attachVolume, stageVolume } from './volumes'
 import { lifeHooksExec, startStepsOf } from './life'
 import { offeredForwards } from './forward-port'
-import type { StepGraph } from '@yaac/shared/steps'
+import { lifeDirName, type StepGraph } from '@yaac/shared/steps'
+import { gitHead, importSharedFiles, prepareCheckpoints, relinkAlternates, restoreFailure, restorePointer, treeOf, treesApply, writeStartInstruction } from './trees'
 import { ACP_CONVERSATION_WAIT_MS } from './conversation-registry'
 import {
   OPENCODE_CHECKPOINT_SCRIPT,
@@ -121,6 +122,7 @@ import {
   ACP_ADAPTERS,
   AGENT_CLIS,
   DEFAULT_AGENT_MODE,
+  DEFAULT_SCRATCH_DIR_GIB,
   defaultPermissionMode,
   effortFor,
   launchablePermissionMode,
@@ -188,6 +190,10 @@ function emit(message: string, options: WorkspaceCreateOptions): void {
 
 export interface WorkspaceCreateOptions {
   workspaceId: string
+  /** A restart whose last checkpoint is unreadable restores the newest
+   *  state that is, rather than refuse (docs/node-local-workspaces.md
+   *  "Restore"). */
+  restoreNewest?: boolean
   /**
    * The session a fresh create opens, its settings resolved and checked;
    * absent for a workspace that runs no agent, and for a resume, which
@@ -356,7 +362,35 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   // as an unhandled rejection.
   const podReady = runtime.awaitReady(handle)
   podReady.catch(() => { /* observed via race */ })
-  await Promise.race([podReady, workspaceFailure])
+  // A restore that cannot read its checkpoint never reports ready; the tree
+  // container says why beside the start instruction.
+  let restoreWatch = true
+  const restoreFailed = new Promise<never>((_, reject) => {
+    const tree = spec.tree
+    if (!tree?.restoring) return
+    const poll = (): void => {
+      if (!restoreWatch) return
+      void restoreFailure(projectId, workspaceId, tree.life).then((why) => {
+        if (why !== null) {
+          reject(new ServerError('CONFLICT', `the restart cannot restore its files: ${why}. Work after the newest `
+            + 'readable checkpoint is missing; restart with --restore-newest to start from it'))
+        }
+        else setTimeout(poll, 3_000)
+      }, () => setTimeout(poll, 3_000))
+    }
+    poll()
+  })
+  restoreFailed.catch(() => { /* observed via race */ })
+  try {
+    await Promise.race([podReady, workspaceFailure, restoreFailed])
+  } finally {
+    restoreWatch = false
+  }
+  // Where its tree is, for a salvage after a stop with no final pass.
+  if (spec.tree && life !== undefined) {
+    const node = (await runtime.find(workspaceId).catch(() => undefined))?.node
+    if (node !== undefined) await applyWorkspaceEvent({ type: 'life-node-found', projectId, workspaceId, node })
+  }
 
   const transportReady = runtime.awaitAgentTransport(jobName)
   transportReady.catch(() => { /* observed via race */ })
@@ -692,6 +726,11 @@ export async function createWorkspace(
   const wtDir = workspaceDir(projectId, workspaceId)
   const resumedRow = options.resume === true ? await getWorkspaceRow(projectId, workspaceId) : undefined
   if (options.resume !== true && options.start === undefined) throw new Error('a fresh create names what it starts with')
+  // A k8s workspace's files live on its node, its checkouts' `.git` alone on
+  // the shared tier (docs/node-local-workspaces.md). A restart of a
+  // life whose files were on the shared tier moves them there first.
+  const treeLife = treesApply(options.siteId !== undefined)
+  const sharedLife = options.resume === true && resumedRow?.treeDir === undefined
   const cwd = options.resume === true ? resumedRow?.cwd ?? '' : options.start?.cwd ?? ''
   const checkouts: PlannedCheckout[] = options.resume === true
     ? await Promise.all((await workspaceCheckouts(projectId, workspaceId)).map(async (c) => {
@@ -702,12 +741,13 @@ export async function createWorkspace(
           throw err
         },
       )
-      if (!reuse) await refuseCheckingOutOver(c.dir)
+      if (!reuse && (!treeLife || sharedLife)) await refuseCheckingOutOver(c.dir)
       return {
         repo: c.repo,
         path: c.path,
         dir: c.dir,
         reuse,
+        ...(c.startCommit !== undefined ? { startCommit: c.startCommit } : {}),
         ...(c.baseBranch !== undefined ? { branch: c.baseBranch } : {}),
         ...(c.baseBranch === undefined && c.startCommit !== undefined ? { commit: c.startCommit } : {}),
       }
@@ -828,6 +868,29 @@ export async function createWorkspace(
     ...(c.refBranch !== undefined ? { baseBranch: c.refBranch } : {}),
   }))
   throwIfProvisionStopped(workspaceId)
+  // Never at or before the life it restarts from, whatever the clock has
+  // done since: the newest life is the current one. A spare's tree is
+  // named for when it was warmed, and its life starts at its claim.
+  const lifeAt = new Date(Math.max(Date.now(), (resumedRow?.lifeStartedAt.getTime() ?? 0) + 1))
+  const treeName = treeLife ? lifeDirName(lifeAt) : undefined
+  let restore: string | undefined
+  if (treeLife && sharedLife) {
+    emit('Moving the workspace\'s files to its node...', options)
+    for (const c of checkouts.filter((x) => x.reuse)) await relinkAlternates(path.join(c.dir, '.git'), path.join(repoDir(c.repo.id), '.git'))
+    restore = await importSharedFiles(projectId, workspaceId, wtDir, {
+      checkouts: await Promise.all(checkouts.map(async (c) => ({
+        id: c.repo.id, path: c.path, dir: c.dir, mainGitDir: path.join(repoDir(c.repo.id), '.git'),
+        commit: c.startCommit ?? c.commit ?? await gitHead(path.join(c.dir, '.git')) ?? '',
+        kept: projectRow.keptIgnoredPaths,
+      }))),
+      excluded: [
+        ...(resumedRow?.scratchDirs ?? launch.scratchDirs),
+        ...Object.values(cacheVolumes).filter((p) => p.startsWith(`${POD_WORKSPACE_DIR}/`)).map((p) => p.slice(POD_WORKSPACE_DIR.length + 1)),
+      ],
+    })
+  } else if (treeLife && options.resume === true) {
+    restore = await restorePointer(projectId, workspaceId)
+  }
   // A life starts with the workspace's row, or as a restart's next one,
   // before any session is launched in it. A spare has neither.
   let life: Date | undefined
@@ -838,9 +901,7 @@ export async function createWorkspace(
     for (const s of lifeStart.skipped) {
       emit(`Init workflow "${s.name}" skipped: this workspace has no ${s.missing.join(', ')}`, options)
     }
-    // Never at or before the life it restarts from, whatever the clock has
-    // done since: the newest life is the current one.
-    life = new Date(Math.max(Date.now(), (resumedRow?.lifeStartedAt.getTime() ?? 0) + 1))
+    life = lifeAt
     const started = {
       projectId,
       workspaceId,
@@ -848,6 +909,7 @@ export async function createWorkspace(
       startSteps: lifeStart.flows,
       skipped: lifeStart.skipped,
       ...launch,
+      ...(treeName !== undefined ? { treeDir: treeName } : {}),
       ...(options.deadline !== undefined ? { deadline: options.deadline } : {}),
     }
     await applyWorkspaceEvent(options.resume === true ? { type: 'workspace-life-started', ...started } : {
@@ -872,8 +934,17 @@ export async function createWorkspace(
   // 0700. createCheckout copes with the non-empty destination.
   await fs.mkdir(wtDir, { recursive: true })
   for (const c of checkouts) await fs.mkdir(c.dir, { recursive: true })
-  const scratchDirs = (await Promise.all(checkouts.map((c) =>
-    prepareScratchDirs(c.dir, c.path, projectRow.scratchDirs.dirs)))).flat()
+  // A tree on the node gets its mount points from the tree container; here
+  // only each `.git` and the checkpoint log, which the pod mounts.
+  if (treeName !== undefined) {
+    for (const c of checkouts) await fs.mkdir(path.join(c.dir, '.git'), { recursive: true })
+    await prepareCheckpoints(projectId, workspaceId, treeName)
+  }
+  const scratchDirs = treeName !== undefined
+    ? checkouts.flatMap((c) => projectRow.scratchDirs.dirs.map(({ path: d, sizeGiB = DEFAULT_SCRATCH_DIR_GIB }) => ({
+      path: path.posix.join(POD_WORKSPACE_DIR, c.path, d), sizeBytes: sizeGiB * 1024 ** 3,
+    })))
+    : (await Promise.all(checkouts.map((c) => prepareScratchDirs(c.dir, c.path, projectRow.scratchDirs.dirs)))).flat()
 
   // A fresh create's session is recorded with its prompt; an `acp` one's
   // waits on the row for its conversation, which the registry's sweep sends
@@ -909,13 +980,31 @@ export async function createWorkspace(
       fetched: fetches.get(c.repo.id) ?? Promise.resolve(),
       gitUser,
       emit: (m) => emit(m, options),
+      ...(treeName !== undefined ? { gitOnly: true } : {}),
     })
     // A spare's are read when it is claimed, against the branch it is
     // claimed for.
     if (options.prewarm !== true && startCommit !== undefined) {
       await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId, workspaceId, repoId: c.repo.id, startCommit })
     }
-  })).then(async () => {
+    return { c, startCommit: startCommit ?? c.startCommit ?? c.commit ?? await gitHead(path.join(c.dir, '.git')) }
+  })).then(async (made) => {
+    // Every `.git` is in place: the tree container may fill the tree.
+    if (treeName !== undefined) {
+      for (const { c } of made) await relinkAlternates(path.join(c.dir, '.git'), path.join(repoDir(c.repo.id), '.git'))
+      emit(restore !== undefined ? 'Restoring the workspace\'s files...' : 'Checking out the workspace\'s files...', options)
+      await writeStartInstruction(projectId, workspaceId, treeName, {
+        checkouts: made.map(({ c, startCommit }) => ({
+          id: c.repo.id, path: c.path, commit: startCommit ?? '', kept: projectRow.keptIgnoredPaths,
+        })),
+        excluded: [
+          ...launch.scratchDirs,
+          ...Object.values(cacheVolumes).filter((p) => p.startsWith(`${POD_WORKSPACE_DIR}/`)).map((p) => p.slice(POD_WORKSPACE_DIR.length + 1)),
+        ],
+        ...(restore !== undefined ? { restore } : {}),
+        ...(options.restoreNewest === true ? { restoreNewestReadable: true } : {}),
+      })
+    }
     if (options.prewarm === true) return
     await recordTrackedScratchDirs(projectId, workspaceId, checkouts.map((c) => ({
       repoId: c.repo.id,
@@ -1101,6 +1190,7 @@ export async function createWorkspace(
   if (options.prewarm === true && options.start !== undefined) {
     spareSettings.set(workspaceId, {
       ...launch,
+      ...(treeName !== undefined ? { treeDir: treeName } : {}),
       selection: storedSelection(options.start),
       repos: recordedRepos,
       ...(imageRef !== undefined ? { image: imageRef } : {}),
@@ -1322,7 +1412,8 @@ export async function createWorkspace(
   const history = (part: AgentHistoryPart): string => agentHistoryDir(projectId, workspaceId, part)
   const binMounts = workspaceBinMounts(workspaceBinStaging, workspaceBinNames)
   const allMounts: WorkspaceMount[] = [
-    { source: { kind: 'hostPath', path: wtDir }, mountPath: POD_WORKSPACE_DIR },
+    // A tree on the node is mounted by the runtime, from `spec.tree`.
+    ...(treeName === undefined ? [{ source: { kind: 'hostPath', path: wtDir }, mountPath: POD_WORKSPACE_DIR } as WorkspaceMount] : []),
     ...repoMounts.map((m): WorkspaceMount => ({ source: { kind: 'hostPath', path: m }, mountPath: m, readOnly: true })),
     { source: { kind: 'hostPath', path: claude }, mountPath: '/home/yaac/.claude' },
     { source: { kind: 'hostPath', path: acpLogs }, mountPath: CONTAINER_ACP_LOG_DIR },
@@ -1419,6 +1510,14 @@ export async function createWorkspace(
     ...(sandboxed && runSecrets.length > 0 ? { runSecrets: runSecrets.map(([name]) => name) } : {}),
     mounts,
     scratchDirs,
+    ...(treeName !== undefined
+      ? {
+        tree: await treeOf(projectId, workspaceId, treeName, {
+          checkouts: checkouts.map((c) => ({ id: c.repo.id, path: c.path, dir: c.dir, mainGitDir: path.join(repoDir(c.repo.id), '.git') })),
+          restoring: restore !== undefined,
+        }),
+      }
+      : {}),
     resources: WORKSPACE_RESOURCES,
     // In-workspace setup (git identity, tmux, agent transport); the runtime
     // reports ready only after it finishes.

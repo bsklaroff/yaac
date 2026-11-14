@@ -6,6 +6,7 @@ import path from 'node:path'
 import { ServerError } from '@yaac/shared/errors'
 import { repoDir, setDataDir, workspaceDir } from '@yaac/shared/project-paths'
 import { testTmpBase } from '@yaac/test-utils/tmp'
+import { buildFilesHelper } from '@yaac/test-utils/workspace-bin-helpers'
 import { handleFixture, installFakeWorkspaceDriver, workspacePathsFixture } from '#test/support/fake-driver'
 import { closeDb } from '#db/client'
 import { recordWorkspaceCreated } from '#db/workspace-store'
@@ -23,13 +24,17 @@ const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 
 /**
  * Real checkouts made by `createCheckout` from a local main clone. Only the
- * driver is faked: `find` returns a running handle (a stopped one for
- * `stopped`), and commands, the changes script among them, run in a host
- * shell in the checkout, as they do for a containerless workspace.
+ * driver is faked: a k8s one whose `find` returns a running handle (a
+ * stopped one for `stopped`), and whose commands, the changes script and the
+ * file editor's `yaac-files` helper among them, run in a host shell in the
+ * checkout. So a running workspace's files are read and written by the
+ * helper, built as a release builds it.
  */
 
 const PROJECT = '7d4e2a1c-5b3f-4e8a-9c6d-1f2e3a4b5c6d'
 let tmp: string
+/** Where the built `yaac-files` is, put on every command's PATH. */
+let helperDir: string
 /** A folder outside the data dir, the target of escaping symlinks. */
 let outside: string
 
@@ -85,6 +90,7 @@ async function write(dir: string, rel: string, content: string | Buffer = ''): P
 }
 
 beforeAll(async () => {
+  helperDir = await buildFilesHelper()
   tmp = await fs.mkdtemp(path.join(testTmpBase(), 'yaac-files-'))
   setDataDir(path.join(tmp, 'data'))
   await recordProject({ id: PROJECT, name: 'demo', addedAt: 'now' }, BUILT_IN_USER_ID)
@@ -138,7 +144,10 @@ function hostPaths(jobName: string): ReturnType<WorkspaceDriver['workspacePaths'
 
 /** A command run in a host shell, failing as a driver's exec does. */
 async function hostExec(_jobName: string, cmd: string, stdin = ''): Promise<{ stdout: string; stderr: string }> {
-  const run = execFileAsync('sh', ['-c', cmd], { maxBuffer: 64 << 20 })
+  const run = execFileAsync('sh', ['-c', cmd], {
+    maxBuffer: 64 << 20,
+    env: { ...process.env, PATH: `${helperDir}${path.delimiter}${process.env.PATH ?? ''}` },
+  })
   run.child.stdin?.end(stdin)
   return run.catch((err: unknown) => {
     const { code } = err as { code?: number }
@@ -221,11 +230,14 @@ describe('getWorkspaceChanges', () => {
       const entry = (mode: string, p: string): string => `${mode} ${'0'.repeat(40)} 0\t${p}`
       const splice = (out: string, marker: string, entries: string[]): string =>
         out.replace(`${marker}\n`, `${marker}\n${entries.map((e) => `${e}\0`).join('')}`)
+      // Containerless, so the listing's own reads run in this process, where
+      // the spy below sees every folder a link is resolved from.
       installFakeWorkspaceDriver({
+        kind: 'containerless',
         find: (id) => Promise.resolve(handleFixture({ workspaceId: id, projectId: PROJECT, jobName: id })),
         workspacePaths: hostPaths,
-        exec: async (jobName, cmd) => {
-          const { stdout, stderr } = await hostExec(jobName, cmd)
+        exec: async (jobName, cmd, opts) => {
+          const { stdout, stderr } = await hostExec(jobName, cmd, opts?.stdin)
           let out = splice(stdout, '@@PATHS@@', [...crafted, 'outdir/secret.txt'].map((p) => entry('120000', p)))
           out = splice(out, '@@CONFLICTED@@', crafted.map((p) => entry('100644', p)))
           out = splice(out, '@@IGNORED@@', crafted.map((p) => `${p}/`))
@@ -960,26 +972,34 @@ describe('writeWorkspaceFile', () => {
     expect(saved.saved).toMatchObject({ path: 'a.txt', size: 4 })
     expect(saved.saved.version).not.toBe(version)
     expect(await read('a.txt')).toBe('one\n')
-    // The pod opens what was overwritten, once and briefly, so its cached
-    // attributes catch up; a refused save opens nothing.
-    expect(execs).toHaveLength(1)
-    expect(execs[0].cmd).toContain('timeout 5 sh -c')
-    expect(execs[0].cmd).toMatch(/ yaac 'a\.txt'$/)
-    expect(execs[0].opts).toEqual({ maxAttempts: 1, timeout: 10_000 })
+    // A running k8s workspace's files are written inside it, by one helper
+    // call that is never sent twice.
+    expect(execs.map((e) => e.cmd)).toEqual(['yaac-files', 'yaac-files'])
+    expect(execs[1].opts).toMatchObject({ maxAttempts: 1 })
     expect(await writeWorkspaceFile(local, 'write', 'a.txt', 'two\n', version))
       .toEqual({ conflict: saved.saved.version })
     expect(await read('a.txt')).toBe('one\n')
-    expect(execs).toHaveLength(1)
+  })
 
-    // A host checkout caches nothing, so containerless opens nothing.
-    installFakeWorkspaceDriver({
-      kind: 'containerless',
-      find: (id) => Promise.resolve(handleFixture({ workspaceId: id, projectId: PROJECT, jobName: id })),
-      exec: (_jobName, cmd) => { execs.push({ cmd }); return Promise.resolve({ stdout: '', stderr: '' }) },
-    })
-    const now = (await readWorkspaceFile('write', 'a.txt')).version
-    expect(await writeWorkspaceFile(local, 'write', 'a.txt', 'three\n', now)).toMatchObject({ saved: { path: 'a.txt' } })
-    expect(execs).toHaveLength(1)
+  it('reads and saves on the server for a containerless or a stopped workspace, running nothing in it', async () => {
+    const cases = [
+      { kind: 'containerless' as const, handle: {} },
+      { kind: 'k8s' as const, handle: { running: false, state: 'stopped' as const } },
+    ]
+    for (const { kind, handle } of cases) {
+      execs = []
+      installFakeWorkspaceDriver({
+        kind,
+        find: (id) => Promise.resolve(handleFixture({ workspaceId: id, projectId: PROJECT, jobName: id, ...handle })),
+        exec: (_jobName, cmd) => { execs.push({ cmd }); return Promise.resolve({ stdout: '', stderr: '' }) },
+      })
+      const now = (await readWorkspaceFile('write', 'a.txt')).version
+      expect(await writeWorkspaceFile(local, 'write', 'a.txt', `${kind}\n`, now)).toMatchObject({ saved: { path: 'a.txt' } })
+      expect(await read('a.txt')).toBe(`${kind}\n`)
+      expect(await refusal(writeWorkspaceFile(local, 'write', 'up', 'x', 'any')))
+        .toEqual({ code: 'VALIDATION', message: 'up points outside the workspace' })
+      expect(execs).toEqual([])
+    }
   })
 
   it('creates a file and its folders, and a create conflicts with what is there', async () => {
@@ -1011,16 +1031,20 @@ describe('writeWorkspaceFile', () => {
     await expect(fs.stat(path.join(dir, 'doomed.txt'))).rejects.toThrow()
   })
 
-  it('writes in place, keeping the mode and inode', async () => {
+  it('replaces the file whole, keeping its mode, and leaves nothing beside it', async () => {
     await write(dir, 'run.sh', '#!/bin/sh\n')
     await fs.chmod(path.join(dir, 'run.sh'), 0o755)
+    await fs.link(path.join(dir, 'run.sh'), path.join(dir, 'hard.sh'))
     const before = await fs.stat(path.join(dir, 'run.sh'))
     const { version } = await readWorkspaceFile('write', 'run.sh')
     await writeWorkspaceFile(local, 'write', 'run.sh', '#!/bin/sh\necho hi\n', version)
     const after = await fs.stat(path.join(dir, 'run.sh'))
-    expect(after.ino).toBe(before.ino)
+    // A new file renamed into place, so no reader sees it half written.
+    expect(after.ino).not.toBe(before.ino)
     expect(after.mode).toBe(before.mode)
     expect(await read('run.sh')).toBe('#!/bin/sh\necho hi\n')
+    expect(await read('hard.sh')).toBe('#!/bin/sh\n')
+    expect((await fs.readdir(dir)).filter((n) => n.includes('.yaac-save-'))).toEqual([])
   })
 
   it('saves through a link to the file it points to, leaving the link', async () => {
@@ -1079,21 +1103,19 @@ describe('uploadWorkspaceFile', () => {
     expect(await read('in/deep/f.bin')).toBe('one two three')
     await uploadWorkspaceFile(local, 'upload', 'empty', null, false)
     expect(await read('empty')).toBe('')
-    expect(execs).toEqual([])
   })
 
-  it('conflicts with what is there unless replacing, which writes in place through a link', async () => {
+  it('conflicts with what is there unless replacing, which replaces a link\'s target whole', async () => {
     expect(await refusal(uploadWorkspaceFile(local, 'upload', 'a.txt', body(['x']), false)))
       .toEqual({ code: 'CONFLICT', message: 'a.txt already exists' })
     expect(await read('a.txt')).toBe('alpha\n')
     const before = await fs.stat(path.join(dir, 'sub/t.txt'))
     await uploadWorkspaceFile(local, 'upload', 'link.txt', body(['new']), true)
     expect(await read('sub/t.txt')).toBe('new')
-    expect((await fs.stat(path.join(dir, 'sub/t.txt'))).ino).toBe(before.ino)
+    const after = await fs.stat(path.join(dir, 'sub/t.txt'))
+    expect(after.ino).not.toBe(before.ino)
+    expect(after.mode).toBe(before.mode)
     expect((await fs.lstat(path.join(dir, 'link.txt'))).isSymbolicLink()).toBe(true)
-    // The pod opens the replaced file, as after a save.
-    expect(execs).toHaveLength(1)
-    expect(execs[0].cmd).toMatch(/ yaac 'link\.txt'$/)
     // Replacing a missing file creates it.
     await uploadWorkspaceFile(local, 'upload', 'fresh.txt', body(['f']), true)
     expect(await read('fresh.txt')).toBe('f')
@@ -1105,7 +1127,7 @@ describe('uploadWorkspaceFile', () => {
     await expect(fs.lstat(path.join(dir, 'cut/new.txt'))).rejects.toThrow()
     await expect(uploadWorkspaceFile(local, 'upload', 'b.txt', body(['part'], true), true)).rejects.toThrow('connection reset')
     expect(await read('b.txt')).toBe('bravo\n')
-    // The staged copy was never reachable by name, so nothing is left over.
+    // The staging file goes with the failed upload.
     expect((await fs.readdir(dir)).filter((n) => n.startsWith('.yaac-upload-'))).toEqual([])
   })
 

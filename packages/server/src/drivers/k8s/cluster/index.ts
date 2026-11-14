@@ -55,6 +55,7 @@ export {
   ensureNetd,
   resolveNetdImageTag,
 } from './netd'
+export { buildDiskDaemonSetManifest, buildDiskIngressNpManifest } from './disk-pod'
 export {
   buildBuilderRoleGuardBindingManifest,
   buildBuilderRoleGuardPolicyManifest,

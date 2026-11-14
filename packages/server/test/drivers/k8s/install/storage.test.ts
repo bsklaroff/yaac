@@ -150,8 +150,14 @@ describe('ensureStorageClaims', () => {
   }
 
   it('static: makes the host dirs, binds a retained hostPath volume per tier, claim-bound by name', async () => {
+    // A claim workspaces mounted their checkout through before trees moved
+    // to node disk goes (docs/legacy-compat-shims.md "The yaac-checkouts claim").
+    put({ kind: 'PersistentVolumeClaim', metadata: { name: 'yaac-checkouts', namespace: 'test-ns' }, spec: {} })
+    put({ kind: 'PersistentVolume', metadata: { name: 'yaac-checkouts-test-install' }, spec: {} })
     const log = vi.fn()
     await ensureStorageClaims({ shape: staticShape(), log })
+    expect(claim('yaac-checkouts')).toBeUndefined()
+    expect(volume('yaac-checkouts-test-install')).toBeUndefined()
 
     for (const dir of ['global', 'server-local', 'node-local', 'volumes']) {
       expect((await fs.stat(path.join(tmpDir, dir))).isDirectory()).toBe(true)
@@ -161,12 +167,10 @@ describe('ensureStorageClaims', () => {
       'PersistentVolumeClaim/yaac-global',
       'PersistentVolume/yaac-server-local-test-install',
       'PersistentVolumeClaim/yaac-server-local',
-      'PersistentVolume/yaac-checkouts-test-install',
-      'PersistentVolumeClaim/yaac-checkouts',
       'PersistentVolume/yaac-volumes-test-install',
       'PersistentVolumeClaim/yaac-volumes',
     ])
-    const [globalPv, globalPvc, localPv, , checkoutsPv, , volumesPv] = applied()
+    const [globalPv, globalPvc, localPv, , volumesPv] = applied()
     expect(globalPv.metadata.labels).toEqual({
       app: 'yaac-server', 'yaac.install-namespace': 'test-ns',
       'yaac.install-id': 'test-install', 'yaac.claim': 'yaac-global',
@@ -184,13 +188,6 @@ describe('ensureStorageClaims', () => {
     expect(localPv.spec).toMatchObject({
       accessModes: ['ReadWriteOnce'],
       hostPath: { path: path.join(tmpDir, 'server-local'), type: 'Directory' },
-    })
-    // Checkouts are the global directory again; a hostPath caches nothing,
-    // so it needs no options of its own.
-    expect(checkoutsPv.spec).toMatchObject({
-      accessModes: ['ReadWriteMany'],
-      hostPath: { path: path.join(tmpDir, 'global'), type: 'Directory' },
-      claimRef: { namespace: 'test-ns', name: 'yaac-checkouts' },
     })
     // Workspace volumes get a directory of their own, beside the tiers.
     expect(volumesPv.spec).toMatchObject({
@@ -269,6 +266,8 @@ describe('ensureStorageClaims', () => {
     // A typical class: `Delete`, and a long attribute cache.
     classOptions = ['nfsvers=4.1', 'soft', 'actimeo=30']
     binderLogs = 'BIND_CHOWNED=/claims/global\nBIND_CHOWNED=/claims/server-local\n'
+    put({ kind: 'PersistentVolumeClaim', metadata: { name: 'yaac-checkouts', namespace: 'test-ns' }, spec: {} })
+    put({ kind: 'PersistentVolume', metadata: { name: 'pvc-yaac-global-provisioned-checkouts' }, spec: {} })
     const log = vi.fn()
     await ensureStorageClaims({ shape: classShape, log })
 
@@ -301,54 +300,9 @@ describe('ensureStorageClaims', () => {
       'yaac.install-id': 'test-install', 'yaac.install-namespace': 'test-ns', 'yaac.claim': 'yaac-global',
     })
 
-    // Checkouts bind a static copy of the global volume: the same driver
-    // and attributes under a handle of its own, with checkout caching in
-    // place of actimeo=1.
-    const checkoutsPv = volume('pvc-yaac-global-provisioned-checkouts')!
-    expect(checkoutsPv.spec).toMatchObject({
-      accessModes: ['ReadWriteMany'],
-      persistentVolumeReclaimPolicy: 'Retain',
-      storageClassName: '',
-      claimRef: { namespace: 'test-ns', name: 'yaac-checkouts' },
-      csi: {
-        driver: 'nfs.csi.k8s.io',
-        volumeHandle: 'nfs.example#export#pvc-1###checkouts',
-        volumeAttributes: { server: 'nfs.example', share: '/export' },
-      },
-    })
-    expect(checkoutsPv.spec.mountOptions)
-      .toEqual(['nfsvers=4.1', 'soft', 'acregmin=3', 'acregmax=60', 'acdirmin=1', 'acdirmax=1'])
-    expect(checkoutsPv.metadata.labels).toMatchObject({ 'yaac.install-id': 'test-install', 'yaac.claim': 'yaac-checkouts' })
-    expect(claim('yaac-checkouts')?.spec).toMatchObject({
-      volumeName: 'pvc-yaac-global-provisioned-checkouts', storageClassName: '',
-    })
-    expect(claim('yaac-checkouts')?.status?.phase).toBe('Bound')
-  })
-
-  it('classes: gives the checkouts copy a handle each NFS-family driver reads as the same directory', async () => {
-    const copyHandle = async (driver: string, volumeHandle: string): Promise<string | undefined> => {
-      wipe()
-      rwxCsi = { driver, volumeHandle }
-      await ensureStorageClaims({ shape: classShape })
-      return volume('pvc-yaac-global-provisioned-checkouts')?.spec.csi?.volumeHandle
-    }
-    // EFS: an empty path and `/` are the same directory, as are `/x` and
-    // `/x/`; the optional `efs:` prefix shifts the fields.
-    expect(await copyHandle('efs.csi.aws.com', 'fs-0123::fsap-9')).toBe('fs-0123:/:fsap-9')
-    expect(await copyHandle('efs.csi.aws.com', 'fs-0123')).toBe('fs-0123:/')
-    expect(await copyHandle('efs.csi.aws.com', 'fs-0123:/data')).toBe('fs-0123:/data/')
-    expect(await copyHandle('efs.csi.aws.com', 'efs:fs-0123:/data/:fsap-9')).toBe('efs:fs-0123:/data:fsap-9')
-    // Azure Files: the fifth field is a free-form uuid.
-    expect(await copyHandle('file.csi.azure.com', 'rg#acct#share')).toBe('rg#acct#share##checkouts')
-    expect(await copyHandle('file.csi.azure.com', 'rg#acct#share#disk#u1#ns')).toBe('rg#acct#share#disk#u1checkouts#ns')
-    // Without a resource group the fifth field is a secret namespace.
-    await expect(copyHandle('file.csi.azure.com', '#acct#share#disk#ns')).rejects.toThrow(/names no resource group/)
-
-
-    // A driver yaac cannot mount a second way stops the install.
-    wipe()
-    rwxCsi = { driver: 'example.com/other', volumeHandle: 'x' }
-    await expect(ensureStorageClaims({ shape: classShape })).rejects.toThrow(/example.com\/other is not an NFS-family CSI driver/)
+    // The checkouts copy of the global volume an older install made goes.
+    expect(volume('pvc-yaac-global-provisioned-checkouts')).toBeUndefined()
+    expect(claim('yaac-checkouts')).toBeUndefined()
   })
 
   /** A volume that outlived its claim. */

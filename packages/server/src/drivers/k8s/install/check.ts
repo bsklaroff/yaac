@@ -23,7 +23,6 @@ import { isIP } from 'node:net'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
-  CHECKOUTS_CLAIM_NAME,
   GLOBAL_CLAIM_NAME,
   LABEL_CLAIM,
   LABEL_INSTALL_ID,
@@ -72,6 +71,8 @@ import {
   workspaceIdLabels,
   GVISOR_NODE_LABEL,
   WORKSPACE_POOL_KEY,
+  nodeLocalNodePath,
+  runOnEachNode,
 } from '#drivers/k8s/substrate'
 import type { InstallIdentity, NodeTaint, PodToleration } from '#drivers/k8s/substrate'
 import { CALICO_NAMESPACES, assessVethSource, probeWorkloadVeths, readCalicoNode } from './cni-adopt'
@@ -252,7 +253,7 @@ export async function runClusterCheck(
 
   const PROBE_GATES = [
     'node-fixups', 'gvisor', 'gvisor-installer', 'probe', 'egress', 'npm-cache', 'sites',
-    'datapath', 'veth-source', 'per-node', 'storage-semantics', 'vap',
+    'datapath', 'veth-source', 'per-node', 'storage-semantics', 'vap', 'node-local-fs',
   ] as const
   const skipFrom = (from: (typeof PROBE_GATES)[number], detail: string): void => {
     for (const name of PROBE_GATES.slice(PROBE_GATES.indexOf(from))) {
@@ -325,8 +326,64 @@ export async function runClusterCheck(
   add(perNodeResult)
   add(semanticsResult)
   add(await runVapAvailabilityCheck())
+  add(await runNodeLocalFsCheck())
 
   return { ok: !results.some((r) => r.status === 'fail'), results }
+}
+
+/**
+ * Whether each byo node's node-local root, where workspace trees live, has
+ * a filesystem of its own (docs/node-local-workspaces.md "A full
+ * node"). On kubelet's filesystem the full-node guard is a race a fast
+ * writer can win, and kubelet's own eviction gives no grace period, so a
+ * node sharing it is a warning. kind's trees are on the host's disk either
+ * way, so it is skipped there. One pod per node compares the two folders'
+ * devices.
+ */
+async function runNodeLocalFsCheck(): Promise<CheckResult> {
+  const name = 'node-local-fs'
+  if ((await readInstallRecord())?.byo !== true) {
+    return { name, status: 'skip', detail: 'skipped — kind keeps workspace trees on the host disk' }
+  }
+  try {
+    const image = await ensureBuilderImage()
+    const runs = await runOnEachNode({
+      name: 'yaac-nlfs-check',
+      labels: { app: 'yaac-node-local-fs-check', [LABEL_INSTALL_ID]: installId() },
+      timeoutMs: 120_000,
+      pod: () => ({
+        image,
+        command: ['sh', '-c', '[ "$(stat -c %d /node)" = "$(stat -c %d /kubelet)" ] && echo shared || echo own'],
+        container: {
+          securityContext: { runAsUser: 0 },
+          volumeMounts: [{ name: 'node', mountPath: '/node', readOnly: true }, { name: 'kubelet', mountPath: '/kubelet', readOnly: true }],
+        },
+        spec: {
+          volumes: [
+            { name: 'node', hostPath: { path: nodeLocalNodePath(), type: 'DirectoryOrCreate' } },
+            { name: 'kubelet', hostPath: { path: '/var/lib/kubelet', type: 'Directory' } },
+          ],
+        },
+      }),
+    })
+    const shared = runs.filter((r) => r.phase === 'Succeeded' && r.logs.trim().endsWith('shared')).map((r) => r.node)
+    const unread = runs.filter((r) => r.phase !== 'Succeeded').map((r) => r.node)
+    if (shared.length === 0 && unread.length === 0) {
+      return { name, status: 'pass', detail: `workspace trees have a filesystem of their own on all ${String(runs.length)} node(s)` }
+    }
+    return {
+      name,
+      status: 'warn',
+      detail: [
+        shared.length > 0 ? `workspace trees share kubelet's filesystem on ${shared.join(', ')}` : '',
+        unread.length > 0 ? `could not tell on ${unread.join(', ')}` : '',
+      ].filter(Boolean).join('; '),
+      fix: 'Mount a filesystem of its own at /var/lib/yaac/node on each node (the infra/ modules do), '
+        + 'so a full workspace tree cannot fill the disk kubelet and containerd use.',
+    }
+  } catch (err) {
+    return { name, status: 'warn', detail: `could not check the node-local filesystem (${k8sErrorSummary(err)})` }
+  }
 }
 
 /**
@@ -551,7 +608,7 @@ async function runStorageCheck(): Promise<CheckResult> {
     const bound: string[] = []
     const ours = (name: string, labels: Record<string, string>): boolean =>
       labels[LABEL_INSTALL_ID] === installId() && labels[LABEL_CLAIM] === name
-    const claims = [GLOBAL_CLAIM_NAME, SERVER_LOCAL_CLAIM_NAME, CHECKOUTS_CLAIM_NAME]
+    const claims = [GLOBAL_CLAIM_NAME, SERVER_LOCAL_CLAIM_NAME]
     for (const name of claims) {
       const pvc = await readObject<RawPvcRead>({ apiVersion: 'v1', kind: 'PersistentVolumeClaim', name, namespace: ns })
       if (!pvc) {
@@ -568,11 +625,6 @@ async function runStorageCheck(): Promise<CheckResult> {
       const reclaim = pv?.spec?.persistentVolumeReclaimPolicy
       if (reclaim !== 'Retain') {
         problems.push(`${name}: volume ${volumeName} reclaims by ${reclaim ?? 'an unknown policy'}, not Retain`)
-      }
-      if (name === CHECKOUTS_CLAIM_NAME) {
-        problems.push(...await checkoutsVolumeProblems(volumeName, pv, ours(name, pv?.metadata?.labels ?? {})))
-        bound.push(`${name} → ${volumeName}`)
-        continue
       }
       if (!pv?.spec?.storageClassName) {
         // A static global volume means kind, which has the volumes claim too.
@@ -631,42 +683,6 @@ async function sharedVolumeProblems(volumeName: string, pv: RawPvRead | null): P
     problems.push(`${GLOBAL_CLAIM_NAME}: volume ${volumeName} is mounted with `
       + `${actimeo === undefined ? 'no actimeo' : `actimeo=${actimeo}`}, not actimeo<=1 — another `
       + 'pod\'s writes could stay invisible for up to a minute')
-  }
-  return problems
-}
-
-/**
- * What the checkouts volume must be: the global tier's directory again. On
- * kind that is a hostPath to it. On byo it is a copy of the global volume
- * (same driver and attributes, its own handle), labelled as this install's,
- * whose mounts see another machine's new, deleted and renamed files within
- * a second (`acdirmax<=1`): the server writes a checkout's `.git` while its
- * pod may already be looking.
- */
-async function checkoutsVolumeProblems(volumeName: string, pv: RawPvRead | null, labelled: boolean): Promise<string[]> {
-  const hostPath = pv?.spec?.hostPath?.path
-  if (hostPath !== undefined) {
-    return hostPath === globalRoot() ? [] : [`${CHECKOUTS_CLAIM_NAME}: volume ${volumeName} is ${hostPath}, not ${globalRoot()}`]
-  }
-  const problems: string[] = []
-  const globalVolume = (await readObject<RawPvcRead>({
-    apiVersion: 'v1', kind: 'PersistentVolumeClaim', name: GLOBAL_CLAIM_NAME, namespace: k8sNamespace(),
-  }))?.spec?.volumeName
-  const source = globalVolume ? (await readPv(globalVolume))?.spec?.csi : undefined
-  const csi = pv?.spec?.csi
-  if (!csi || !source || csi.driver !== source.driver || csi.volumeHandle === source.volumeHandle
-    || JSON.stringify(csi.volumeAttributes ?? {}) !== JSON.stringify(source.volumeAttributes ?? {})) {
-    problems.push(`${CHECKOUTS_CLAIM_NAME}: volume ${volumeName} is not a copy of the ${GLOBAL_CLAIM_NAME} `
-      + `volume ${globalVolume ?? '<unbound>'} under a handle of its own`)
-  }
-  if (!labelled) {
-    problems.push(`${CHECKOUTS_CLAIM_NAME}: volume ${volumeName} does not carry this install's labels`)
-  }
-  const dirCache = (pv?.spec?.mountOptions ?? [])
-    .map((o) => /^(?:acdirmax|actimeo)=(\d+)$/.exec(o)?.[1]).filter((v) => v !== undefined)
-  if (dirCache.length === 0 || dirCache.some((v) => Number(v) > 1)) {
-    problems.push(`${CHECKOUTS_CLAIM_NAME}: volume ${volumeName} caches directories for longer than a `
-      + 'second — a .git the server writes could stay invisible to the workspace')
   }
   return problems
 }

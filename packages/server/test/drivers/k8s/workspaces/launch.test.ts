@@ -421,7 +421,7 @@ describe('launchWorkspace', () => {
     const volume = (name: string) => pod.volumes.find((v) => v.name === name)
     // GLOBAL: subPaths of the global claim, including a file; the checkout
     // goes through the checkouts claim, at the same subPath.
-    expect(volume(byMount['/workspace'].name)?.persistentVolumeClaim).toEqual({ claimName: 'yaac-checkouts' })
+    expect(volume(byMount['/workspace'].name)?.persistentVolumeClaim).toEqual({ claimName: 'yaac-global' })
     expect(byMount['/workspace'].subPath).toBe(`projects/${PROJECT_ID}/workspaces/s1`)
     expect(volume(byMount['/home/yaac/.claude/settings.json'].name)?.persistentVolumeClaim).toEqual({ claimName: 'yaac-global' })
     expect(byMount['/home/yaac/.claude/settings.json'].subPath).toBe(`projects/${PROJECT_ID}/claude/settings.json`)
