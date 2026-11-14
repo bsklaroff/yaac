@@ -24,6 +24,9 @@ import type { NodeLocalLiveSet, RuntimeSnapshot, StrayUnit, RuntimeHandle } from
 import { BUILT_IN_USER_ID, applyWorkspaceEvent, closeDb, getWorkspaceRow, listProjectRows, setProjectKeptIgnoredPaths } from '#db'
 import { recordIgnoredFilesCleaned, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { recordProject } from '#db/project-store'
+import { getDb } from '#db/client'
+import { workspaceLives } from '#db/schema'
+import { eq } from 'drizzle-orm'
 import {
   claimDeletion,
   clearAllProvisioningForTests,
@@ -217,10 +220,15 @@ describe('reapOrphanNodeLocal', () => {
     const strayOnly = await seedModulesDir(ids[1], 'job-only-1')
     const orphan = await seedModulesDir('removed-project', 'x')
     publishInFlight(['creating-1'])
-    // live-1 runs a second life; its first one's tree was given up.
+    // live-1 runs a third life. Its second one's tree was given up; its
+    // first one's was stamped over a week ago, so a sweep since removed it.
     await recordWorkspaceCreated({ projectId: PROJ_A, workspaceId: 'live-1', repos: [], at: new Date(1000), treeDir: 'L0' })
-    await applyWorkspaceEvent({ type: 'life-checkpointed', projectId: PROJ_A, workspaceId: 'live-1', life: new Date(1000), outcome: 'lost' })
+    await applyWorkspaceEvent({ type: 'life-checkpointed', projectId: PROJ_A, workspaceId: 'live-1', life: new Date(1000), outcome: 'final' })
     await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: PROJ_A, workspaceId: 'live-1', at: new Date(2000), treeDir: 'L1', startSteps: [] })
+    await applyWorkspaceEvent({ type: 'life-checkpointed', projectId: PROJ_A, workspaceId: 'live-1', life: new Date(2000), outcome: 'lost' })
+    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: PROJ_A, workspaceId: 'live-1', at: new Date(3000), treeDir: 'L2', startSteps: [] })
+    await (await getDb()).update(workspaceLives).set({ checkpointedAt: new Date(Date.now() - 8 * 24 * 60 * 60_000) })
+      .where(eq(workspaceLives.treeDir, 'L0'))
 
     seeRunning(
       [handleFixture({ workspaceId: 'live-1', projectId: PROJ_A })],
@@ -234,7 +242,7 @@ describe('reapOrphanNodeLocal', () => {
     expect(reaped).toEqual([{
       projectIds: new Set(ids),
       workspaceIds: new Set(['live-1', 'job-only-1', 'creating-1']),
-      doneTrees: new Set(['live-1/L0']),
+      doneTrees: new Set(['live-1/L1']),
     }])
     for (const dir of [live, dead, strayOnly, orphan]) {
       await expect(fs.access(dir)).resolves.toBeUndefined()

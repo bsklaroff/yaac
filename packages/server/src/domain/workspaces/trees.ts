@@ -291,13 +291,22 @@ export async function unsalvagedWorkspaceIds(): Promise<string[]> {
   return (await listUnstampedTreeLives({ stopped: false })).map((l) => l.workspaceId)
 }
 
-/** `<workspace id>/<life>` of every stamped life of these workspaces: trees
- *  nothing will save again, as one a `--restore-newest` gave up, which the
- *  node-local sweep may remove while the workspace runs on. */
+/** How long after its stamp a life's tree is still named to the sweep:
+ *  the first sweep after the stamp removes it, and this leaves room for
+ *  sweeps that failed, while keeping the list (one argument) bounded. */
+const DONE_TREE_WINDOW_MS = 7 * 24 * 60 * 60_000
+
+/** `<workspace id>/<life>` of each life of these workspaces stamped in the
+ *  last week: trees nothing will save again, as one a `--restore-newest`
+ *  gave up, which the node-local sweep may remove while the workspace runs
+ *  on. */
 export async function doneTrees(workspaceIds: Iterable<string>): Promise<Set<string>> {
+  const since = Date.now() - DONE_TREE_WINDOW_MS
   const done = new Set<string>()
   for (const id of workspaceIds) {
-    for (const l of await listTreeLives(id)) if (l.checkpointedAt !== undefined) done.add(`${id}/${l.treeDir}`)
+    for (const l of await listTreeLives(id)) {
+      if (l.checkpointedAt !== undefined && l.checkpointedAt.getTime() >= since) done.add(`${id}/${l.treeDir}`)
+    }
   }
   return done
 }
