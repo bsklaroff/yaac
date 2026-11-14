@@ -8,6 +8,7 @@ import { Sparkline } from '#components/ui/Sparkline'
 import { api } from '#lib/api'
 import type {
   ComponentUsage,
+  NodeDisk,
   ResourceReport,
   UsagePoint,
   VolumeUsage,
@@ -198,6 +199,30 @@ function Totals({ report }: { report: ResourceReport }): JSX.Element {
   )
 }
 
+/**
+ * A node's node-local disk, where workspace trees live: free space against
+ * the floors under which yaac warns and then stops the largest tree's
+ * workspace, and that node's largest trees once it is under the first.
+ */
+function NodeDiskCell({ disk, titles }: { disk: NodeDisk | undefined; titles: Map<string, string> }): JSX.Element {
+  if (disk === undefined) return <span className="text-text-faint">—</span>
+  if (disk.error !== undefined) return <span className="text-warning">{disk.error}</span>
+  const tone = disk.freeBytes < disk.stopBytes ? 'text-danger' : disk.freeBytes < disk.warnBytes ? 'text-warning' : 'text-text-dim'
+  return (
+    <span className="flex flex-col">
+      <span className={clsx('tabular-nums', tone)}>{formatBytes(disk.freeBytes)} free of {formatBytes(disk.totalBytes)}</span>
+      {disk.freeBytes < disk.warnBytes && (
+        <span className="text-[11px] text-text-faint">
+          {disk.freeBytes < disk.stopBytes ? `under the ${formatBytes(disk.stopBytes)} stop floor` : `under the ${formatBytes(disk.warnBytes)} warn floor`}
+          {(disk.trees ?? []).slice(0, 3).map((t) => (
+            <span key={`${t.workspaceId}/${t.life}`} className="block">{titles.get(t.workspaceId) ?? t.workspaceId.slice(0, 8)}: {formatBytes(t.bytes)}</span>
+          ))}
+        </span>
+      )}
+    </span>
+  )
+}
+
 const ROLE_LABEL = {
   infrastructure: 'infrastructure only',
   workspaces: 'workspaces',
@@ -210,6 +235,8 @@ function Nodes({ report }: { report: ResourceReport }): JSX.Element {
   for (const w of report.workspaces) {
     if (w.running && w.node !== undefined) running.set(w.node, (running.get(w.node) ?? 0) + 1)
   }
+  const disks = new Map((report.nodeDisks ?? []).map((d) => [d.node, d]))
+  const titles = new Map(report.workspaces.map((w) => [w.workspaceId, w.title ?? w.workspaceId.slice(0, 8)]))
   return (
     <details open={report.nodes.length <= 3} className="flex flex-col gap-2">
       <summary className="cursor-pointer text-xs font-semibold text-text-dim">
@@ -225,6 +252,7 @@ function Nodes({ report }: { report: ResourceReport }): JSX.Element {
               <th className="font-normal">CPU</th>
               <th className="font-normal">Memory</th>
               <th className="font-normal">Swap</th>
+              {disks.size > 0 && <th className="font-normal">Trees disk</th>}
               <th className="font-normal">Conditions</th>
               <th className="font-normal">Sample</th>
             </tr>
@@ -235,7 +263,7 @@ function Nodes({ report }: { report: ResourceReport }): JSX.Element {
                 <td className="py-1.5 pr-2 font-mono text-[11px]">{n.name}</td>
                 <td className="pr-2 text-text-dim">{ROLE_LABEL[n.role]}</td>
                 {n.error !== undefined
-                  ? <td colSpan={6} className="text-warning">{n.error}</td>
+                  ? <td colSpan={disks.size > 0 ? 7 : 6} className="text-warning">{n.error}</td>
                   : (
                     <>
                       <td className="pr-2 tabular-nums text-text-dim">{running.get(n.name) ?? 0}</td>
@@ -252,6 +280,7 @@ function Nodes({ report }: { report: ResourceReport }): JSX.Element {
                           ? `${formatBytes(n.swapBytes)} / ${formatBytes(n.swapCapacityBytes)}`
                           : <span className="text-text-faint">none</span>}
                       </td>
+                      {disks.size > 0 && <td className="pr-2"><NodeDiskCell disk={disks.get(n.name)} titles={titles} /></td>}
                       <td className="pr-2">
                         {n.conditions.length === 0
                           ? <span className="text-text-faint">healthy</span>

@@ -29,8 +29,9 @@ dir bound as `/workspace`. Plain `git clone` can't do this: it refuses a
 non-empty destination, copies local branches rather than remote-tracking
 ones, and writes its own alternates path. The tree is written by eight
 processes at once (`checkout.workers`, which a workspace's own git also
-gets), since each file on NFS costs network round trips
-(docs/nfs-checkout-performance.md).
+gets). Under k8s the server builds only the `.git`, in place, and the
+workspace's tree container checks the tree out on its node
+(docs/node-local-workspaces.md).
 
 The git dir comes from one `git init`, kept because it probes the filesystem
 for settings such as macOS's `core.ignorecase`, with the files ref format

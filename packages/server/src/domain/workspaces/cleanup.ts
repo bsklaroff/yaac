@@ -5,6 +5,7 @@ import path from 'node:path'
 import { workspaceDriver } from '#drivers/driver'
 import { forgetWorkspaceChanges } from './changes'
 import { removeAgentHistory } from './history'
+import { unsalvagedWorkspaceIds } from './trees'
 import { deletionHeld, inFlightWorkspaceIds } from './provisioning'
 import { workspaceBinDir } from './workspace-bin'
 import { applyWorkspaceEvent, getProjectRow, getWorkspaceRow, listProjectRows, listUncleanedStoppedWorkspaces, listWorkspaceRepos } from '#db'
@@ -20,6 +21,7 @@ import {
   getProjectsDir,
   globalProjectPath,
   opencodeCheckpointDir,
+  workspaceCheckpointsDir,
   workspaceDir,
   workspaceStateDir,
 } from '@yaac/shared/project-paths'
@@ -268,6 +270,7 @@ export async function deleteWorkspaceState(
   if (!await removed(removeEntries(path.dirname(root), [path.basename(root)]))) return false
   const outcomes = await Promise.all([
     fs.rm(opencodeCheckpointDir(projectId, workspaceId), { recursive: true, force: true }),
+    fs.rm(workspaceCheckpointsDir(projectId, workspaceId), { recursive: true, force: true }),
     fs.rm(acpLogDir(projectId, workspaceId), { recursive: true, force: true }),
     fs.rm(terminalLogDir(projectId, workspaceId), { recursive: true, force: true }),
     removeAgentHistory(projectId, workspaceId),
@@ -320,8 +323,9 @@ export async function cleanupWorkspace(params: {
   // leave a spare fully alive and claimable). The driver's sweep and the
   // orphan sweep remove them later.
   if (runtimeGone) {
-    // Best-effort: a node still unmounting answers EBUSY.
-    for (const p of await checkoutScratchDirs(projectId, workspaceId)) {
+    // Best-effort: a node still unmounting answers EBUSY. A k8s workspace's
+    // scratch dirs are in its tree on its node, which goes with its pod.
+    for (const p of workspaceDriver().kind === 'containerless' ? await checkoutScratchDirs(projectId, workspaceId) : []) {
       await p.remove().catch((err: unknown) => {
         serverLog(`[server] remove ${p.abs} at stop: ${String(err)}`)
       })
@@ -366,7 +370,7 @@ export async function cleanupWorkspaceDetached(params: {
     // cannot reach.
     await runtime.deregisterWorkspace(workspaceId)
 
-    const scratchDirRms = (await checkoutScratchDirs(projectId, workspaceId))
+    const scratchDirRms = (runtime.kind === 'containerless' ? await checkoutScratchDirs(projectId, workspaceId) : [])
       .map((p) => `rm -rf ${shellQuote(p.abs)} 2>/dev/null || true`)
 
     const workspaceDirRm =
@@ -395,9 +399,11 @@ export async function cleanupWorkspaceDetached(params: {
     // the teardown. If the server dies meanwhile, the stale reaper resumes
     // the teardown. A site's release skips it: it keeps serving until the
     // teardown signals it, so it must not lose its build meanwhile, and it
-    // never runs in its checkout again.
+    // never runs in its checkout again. A k8s workspace's files are on its
+    // node and need no clean: its stop's final checkpoint leaves ignored
+    // files out, and the tree goes with it.
     const release = (await getWorkspaceRow(projectId, workspaceId))?.siteId !== undefined
-    void (release ? Promise.resolve() : removeIgnoredFiles(target))
+    void (release || runtime.kind !== 'containerless' ? Promise.resolve() : removeIgnoredFiles(target))
       .then(() => { spawnDetachedTeardown() })
   } catch (err) {
     settle()
@@ -450,6 +456,8 @@ export async function reapOrphanNodeLocal(view: RuntimeSnapshot): Promise<void> 
   const workspaceIds = await liveWorkspaceIds(view)
   const projectIds = new Set((await listProjectRows()).map((r) => r.id))
   for (const id of inFlightWorkspaceIds(view.takenAtMs)) workspaceIds.add(id)
+  // A tree still to be salvaged is the only copy of its unsaved work.
+  for (const id of await unsalvagedWorkspaceIds()) workspaceIds.add(id)
   await workspaceDriver().reapNodeLocal({ projectIds, workspaceIds })
 }
 

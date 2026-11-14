@@ -936,3 +936,53 @@ version.
 - **When it is safe to remove.** Once every install's server has run a main
   registry GC since its last nested workspace stopped; on a given install,
   once the registry has no `yaac-nestable` repository.
+
+## A k8s life whose files are on the shared tier
+
+A k8s workspace keeps its files on its node, with each checkout's `.git`
+alone on the shared tier (docs/node-local-workspaces.md). A life
+started before that kept the whole tree on the shared tier, and its row
+says so with a null `workspace_lives.tree_dir`; the `add_node_local_trees`
+migration leaves every existing life that way. Such a life keeps running
+as it is, and is never waited on for a checkpoint stamp. At its next
+restart `createWorkspace` sees the null `tree_dir` and runs
+`importSharedFiles` (`domain/workspaces/trees.ts`): the driver's
+`importTree` verb starts a one-shot `yaac-tree import` pod that takes an
+ordinary checkpoint of the shared directory, leaving the files there, and
+the new node-local life restores from it.
+
+- **What it reads.** A null `tree_dir` on the current life of a k8s
+  workspace, and the files of `projects/<p>/workspaces/<w>/` on the GLOBAL
+  tier.
+- **What breaks silently if it goes too early.** A workspace stopped
+  before the upgrade restarts on node disk from its checkouts' HEADs alone:
+  its uncommitted edits, untracked files and any repository the agent
+  cloned stay on the shared tier, unmounted, and look lost.
+- **When it is safe to remove.** Once no k8s workspace's current life has a
+  null `tree_dir` and shared files beyond each `.git`. Delete
+  `importSharedFiles`, the `importTree` verb, `yaac-tree import` and the
+  `sharedLife` branch in `createWorkspace` together; the shared files of a
+  workspace imported earlier stay until it is deleted either way.
+
+## The yaac-checkouts claim
+
+Workspace pods mounted their checkout through `yaac-checkouts`, a second
+volume over the global tier's directory with longer attribute caching.
+Trees now live on node disk, so install no longer makes it:
+`retireCheckoutsClaim` in `install/storage.ts` deletes the claim and its
+volume (the static `yaac-checkouts-<install>` on kind, the
+`<global volume>-checkouts` copy on byo) on every `yaac cluster install`. A
+pod started before the upgrade still mounts it, and Kubernetes' protection
+finalizers keep both until that pod ends. `claimKey` in
+`drivers/k8s/usage.ts` folds the claim into `yaac-global` in the health
+report meanwhile, and `CHECKOUTS_CLAIM_NAME` is kept for both.
+
+- **What it reads.** A `yaac-checkouts` claim in the install's namespace
+  and its volume.
+- **What breaks silently if it goes too early.** Nothing breaks: a claim
+  left behind is only a stale object, and a running old pod keeps its mount
+  either way. The health report would show it as a volume of its own.
+- **When it is safe to remove.** Once no install's namespace holds a
+  `yaac-checkouts` claim, which `kubectl get pvc -A` shows. Remove after
+  the shared-tier lives above are gone, since a pod running one of them is
+  what keeps the claim.

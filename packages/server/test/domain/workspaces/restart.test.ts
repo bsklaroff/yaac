@@ -87,8 +87,12 @@ let calls: string[]
 let destroys: boolean[]
 let deregistered: string[]
 
+/** The runtime a case's driver says it is, until the case ends. */
+let driverKind: WorkspaceDriver['kind'] = 'k8s'
+
 function installDriver(overrides: Partial<WorkspaceDriver> = {}): void {
   installFakeWorkspaceDriver({
+    kind: driverKind,
     find: (id) => Promise.resolve(live?.workspaceId === id ? live : undefined),
     findForTeardown: (id) => Promise.resolve(live?.workspaceId === id
       ? { workspaceId: id, projectId: live.projectId, unitName: live.jobName }
@@ -192,6 +196,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  driverKind = 'k8s'
   vi.unstubAllEnvs()
   // A restart that stops before create returns leaves its mark behind.
   clearAllProvisioningForTests()
@@ -543,6 +548,10 @@ describe('prepareRestart', () => {
   // out the base branch over it would overwrite every tracked file, so any
   // file, however deep, refuses; a dir it cannot read fails without one.
   it('refuses to check out over a checkout that has files but no .git, keeping it stopped', async () => {
+    // A checkout on the server's disk: a k8s workspace keeps its tree on
+    // its node instead (docs/node-local-workspaces.md).
+    driverKind = 'containerless'
+    installDriver()
     await stoppedWorkspace('wt-nogit')
     const checkout = workspaceDir(DEMO_PROJECT_ID, 'wt-nogit')
     const [tracked] = (await git(checkout, ['ls-files'])).split('\n')
@@ -626,6 +635,10 @@ describe('prepareRestart', () => {
   // The user came back for this workspace, so a failed restart must not
   // erase it.
   it('keeps the stop record, the checkout and a failed provisioning row when the relaunch fails', async () => {
+    // A checkout on the server's disk: a k8s workspace keeps its tree on
+    // its node instead (docs/node-local-workspaces.md).
+    driverKind = 'containerless'
+    installDriver()
     await stoppedWorkspace('wt-3')
     const before = await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-3')
     installDriver({ awaitReady: () => Promise.reject(new Error('image pull failed')) })
@@ -699,6 +712,10 @@ describe('prepareRestart', () => {
   // The unit's mount sources go only once it is confirmed gone, and a
   // checkout path reached through a link is never followed out of it.
   it('removes the old unit\'s scratch dirs only once it is gone, leaving what a link points at', async () => {
+    // A checkout on the server's disk: a k8s workspace keeps its tree on
+    // its node instead (docs/node-local-workspaces.md).
+    driverKind = 'containerless'
+    installDriver()
     await setProjectScratchDirs(DEMO_PROJECT_ID, { dirs: [{ path: 'node_modules', sizeGiB: 8 }, { path: 'web/node_modules', sizeGiB: 8 }, { path: 'vendor', sizeGiB: 8 }] })
     await stoppedWorkspace('wt-dirs')
     const checkout = workspaceDir(DEMO_PROJECT_ID, 'wt-dirs')
@@ -738,6 +755,7 @@ describe('prepareRestart', () => {
   // A dir the project lists only since the workspace started is real
   // content in its checkout, so it stays.
   it('removes the scratch dirs the old unit was started with, not ones the project lists since', async () => {
+    driverKind = 'containerless'
     await stoppedWorkspace('wt-listed')
     const checkout = workspaceDir(DEMO_PROJECT_ID, 'wt-listed')
     await fs.mkdir(path.join(checkout, 'node_modules', 'left-pad'), { recursive: true })
@@ -759,6 +777,10 @@ describe('prepareRestart', () => {
   // stay in its history. "Keep in the checkout and restart" first takes the
   // dir off the workspace's own list, so that restart's stop keeps it.
   it('empties a scratch dir git tracks, unless it was kept in the checkout first', async () => {
+    // A checkout on the server's disk: a k8s workspace keeps its tree on
+    // its node instead (docs/node-local-workspaces.md).
+    driverKind = 'containerless'
+    installDriver()
     const tracked = async (workspaceId: string): Promise<string> => {
       await stoppedWorkspace(workspaceId)
       await applyWorkspaceEvent({ type: 'tracked-scratch-dirs-found', projectId: DEMO_PROJECT_ID, workspaceId, paths: ['target'] })
@@ -784,6 +806,10 @@ describe('prepareRestart', () => {
   // One started before its list was recorded, by a release whose default
   // was node_modules alone: its `target/` is real content.
   it('removes only node_modules for an old unit started before scratch dirs were recorded', async () => {
+    // A checkout on the server's disk: a k8s workspace keeps its tree on
+    // its node instead (docs/node-local-workspaces.md).
+    driverKind = 'containerless'
+    installDriver()
     await stoppedWorkspace('wt-legacy')
     await (await getDb()).update(workspaceLives).set({ scratchDirs: null })
       .where(eq(workspaceLives.workspaceId, 'wt-legacy'))

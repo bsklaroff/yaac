@@ -212,6 +212,20 @@ export const env = {
   },
 
   /**
+   * `YAAC_DISK_WARN_FLOOR_GIB` / `YAAC_DISK_STOP_FLOOR_GIB` — free space on a
+   * node's node-local root under which the server warns, then stops the
+   * workspace holding the largest tree (docs/node-local-workspaces.md
+   * "A full node"). Defaults 10 and 5. Where trees share kubelet's disk on a
+   * byo node, kubelet's own eviction threshold is added to each.
+   */
+  get diskWarnFloorGiB(): number {
+    return positiveNumber(process.env.YAAC_DISK_WARN_FLOOR_GIB, 10)
+  },
+  get diskStopFloorGiB(): number {
+    return positiveNumber(process.env.YAAC_DISK_STOP_FLOOR_GIB, 5)
+  },
+
+  /**
    * `YAAC_PREWARM_POOL_SIZE` — prewarmed workspaces per active project (`0`
    * disables). Default 1; a non-integer or negative value falls back to 1.
    */
@@ -550,6 +564,13 @@ export const testEnv = {
 }
 
 /** A set-but-empty variable reads as unset. */
+/** `raw` as a non-negative number, or `fallback` when unset or not one. */
+function positiveNumber(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw === '') return fallback
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 0 ? n : fallback
+}
+
 function nonEmpty(raw: string | undefined): string | undefined {
   return raw === undefined || raw.trim() === '' ? undefined : raw
 }

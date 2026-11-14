@@ -1,7 +1,6 @@
 /**
  * One-shot root pods, each mounting one GLOBAL directory and nothing else:
- * the root remover, which deletes entries the server pod cannot, and runs
- * of a script on a stopped workspace's checkout. gVisor has no user
+ * the root remover, which deletes entries the server pod cannot. gVisor has no user
  * namespace, so what a workspace's agent writes through `sudo` lands on the
  * claim as real uid 0, and the server runs as the install uid
  * (docs/server-in-cluster.md "The uid everything runs as"). The server
@@ -30,18 +29,15 @@ import {
   GLOBAL_CLAIM_NAME,
   LABEL_INSTALL_ID,
   PRIORITY_CLASS_INFRA,
-  RUNTIME_CLASS_GVISOR,
   VOLUMES_CLAIM_NAME,
   deleteObjects,
   installId,
   k8sNamespace,
-  k8sWorkspacePaths,
   runPodToCompletion,
 } from '#drivers/k8s/substrate'
-import { ensureBuilderImage, registryRef, resolveTrustedLayers } from '#drivers/k8s/cluster'
+import { ensureBuilderImage } from '#drivers/k8s/cluster'
 import { isEntryName } from '#lib/confined-fs'
 import { globalRoot, volumesRoot } from '@yaac/shared/paths'
-import { workspaceDir } from '@yaac/shared/project-paths'
 
 /** Where the root remover mounts the directory whose entries it removes. */
 const TARGET_POD_PATH = '/target'
@@ -68,9 +64,6 @@ async function runRootPod(dir: string, pod: {
   prefix: string
   container: string
   image: string
-  /** Set for a pod that reads what a workspace wrote, as the builder pods
-   *  do; the remover only unlinks, under runc. */
-  runtimeClassName?: string
   mountPath: string
   command: string[]
   timeoutMs: number
@@ -104,7 +97,6 @@ async function runRootPod(dir: string, pod: {
       automountServiceAccountToken: false,
       enableServiceLinks: false,
       priorityClassName: PRIORITY_CLASS_INFRA,
-      ...(pod.runtimeClassName !== undefined ? { runtimeClassName: pod.runtimeClassName } : {}),
       containers: [{
         name: pod.container,
         image: pod.image,
@@ -158,31 +150,5 @@ export async function removeVolumeDirAsRoot(volumeId: string): Promise<void> {
     mountPath: TARGET_POD_PATH,
     command: ['sh', '-c', `cd ${TARGET_POD_PATH} && find . -mindepth 1 -delete`],
     timeoutMs: ROOT_REMOVE_TIMEOUT_MS,
-  })
-}
-
-/**
- * See `WorkspaceDriver.runInStoppedCheckout`. The pod runs the yaac base
- * image, which has git and a shell whatever image the project builds, under
- * gVisor, since the script reads files the workspace wrote. gVisor's root
- * is real root on the claim, so it removes what the agent wrote through
- * `sudo`.
- */
-export async function runInStoppedCheckout(
-  target: { projectId: string; workspaceId: string },
-  script: string,
-  args: string[],
-  opts: { timeoutMs: number },
-): Promise<void> {
-  const mountPath = k8sWorkspacePaths().workspaceDir
-  await runRootPod(workspaceDir(target.projectId, target.workspaceId), {
-    app: 'yaac-root-run',
-    prefix: 'yaac-root-run',
-    container: 'run',
-    image: registryRef((await resolveTrustedLayers()).base.tag),
-    runtimeClassName: RUNTIME_CLASS_GVISOR,
-    mountPath,
-    command: ['sh', '-c', script, 'sh', mountPath, ...args],
-    timeoutMs: opts.timeoutMs,
   })
 }

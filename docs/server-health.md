@@ -25,7 +25,11 @@ already collects, so watching it adds almost no load to the nodes.
   Infrastructure), any condition that is not as it should be (`NotReady`,
   `MemoryPressure`, …), and the age of the kubelet's sample.
   A node whose stats cannot be read shows why instead. Swap is shown only
-  here and in the totals (see "What it does not do").
+  here and in the totals (see "What it does not do"). **Trees disk** is the
+  free space of the node's node-local root, where workspace trees live,
+  against the full-node guard's floors (see "Node disks"); under the warn
+  floor it names the node's largest trees, and each of those workspaces'
+  rows shows how much its tree holds.
 - **Infrastructure.** One row per component, with its CPU, memory, an
   hour of memory, and the volumes it owns.
 
@@ -89,8 +93,9 @@ included, and the overlay says how many that is.
 - **A node's workspace count** comes from the workspace rows, which need the
   kubelet's stats, so a node whose stats are missing shows no count.
 - **Volumes.** Each claim is listed once, under the first component that
-  mounts it. `yaac-checkouts` is a second mount of `yaac-global`
-  (`substrate/storage-constants.ts`) and is merged into it. hostPath and
+  mounts it. An install from before node-local trees can still have
+  `yaac-checkouts`, a second mount of `yaac-global`, which is merged into
+  it (docs/legacy-compat-shims.md "The yaac-checkouts claim"). hostPath and
   local-path volumes (kind) report no usage: for the two the server mounts
   itself it uses `statfs`, and any other shows its capacity only. Nothing
   walks a directory, since walking the shared volume on NFS would load the
@@ -102,6 +107,23 @@ included, and the overlay says how many that is.
   read barely less; containerd's share grows with the pods on the node,
   since it asks each pod's runtime shim. At one read a minute that is well
   under 0.1% of a core.
+
+#### Node disks
+
+Each node runs a disk pod (`cluster/disk-pod.ts`), a DaemonSet of the
+server image running `yaac-disk`, which answers only the server. It reads
+the node-local root's free space with `statfs`, and on request walks every
+tree there, counting allocated blocks, each inode once, never following a
+link; it runs as root with only `DAC_READ_SEARCH`, so a folder an agent's
+`sudo` hid is counted too. The server reads every node's free space every
+5 seconds and asks for tree sizes only while a node is under its warn
+floor. The floors are `YAAC_DISK_WARN_FLOOR_GIB` and
+`YAAC_DISK_STOP_FLOOR_GIB` (10 and 5 by default), plus kubelet's own
+eviction threshold (10%, 5% on k3s) on a byo node whose trees share
+kubelet's filesystem. Under the stop floor the `disk-guard` step stops the
+workspace with the largest tree on that node, one per pass, with the death
+reason `disk-full`; a node whose largest tree is under 1 GiB is left
+alone and logged, since something else filled it.
 
 ### `containerless`
 

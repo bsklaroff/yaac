@@ -35,14 +35,15 @@ describe('resolveMountSource', () => {
     })
   })
 
-  it('mounts a checkout through the checkouts claim, at the same subPath', () => {
+  it('mounts a checkout\'s folder and its .git through the global claim, at the same subPath', () => {
     setDataDir('/data/yaac')
     const m: PodMount = { source: { kind: 'hostPath', path: workspaceDir('demo', 'ws1') }, mountPath: '/workspace' }
     expect(resolveMountSource(m)).toEqual({
-      source: { kind: 'pvc', claimName: 'yaac-checkouts', subPath: 'projects/demo/workspaces/ws1' },
+      source: { kind: 'pvc', claimName: 'yaac-global', subPath: 'projects/demo/workspaces/ws1' },
       mountPath: '/workspace',
     })
-    // Only the checkout itself: the main clone stays on the global claim.
+    const gitDir: PodMount = { source: { kind: 'hostPath', path: `${workspaceDir('demo', 'ws1')}/.git` }, mountPath: '/workspace/.git' }
+    expect(resolveMountSource(gitDir).source).toEqual({ kind: 'pvc', claimName: 'yaac-global', subPath: 'projects/demo/workspaces/ws1/.git' })
     const repo: PodMount = { source: { kind: 'hostPath', path: `${repoDir('demo')}/.git` }, mountPath: '/r', readOnly: true }
     expect(resolveMountSource(repo).source).toEqual({ kind: 'pvc', claimName: 'yaac-global', subPath: 'repos/demo/.git' })
   })

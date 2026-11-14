@@ -28,5 +28,7 @@ export function k8sWorkspacePaths(): WorkspacePaths {
     terminalLogDir: CONTAINER_TERMINAL_LOG_DIR,
     attachmentsDir: CONTAINER_ATTACHMENTS_DIR,
     acpdEntry: '/opt/yaac/acpd/main.js',
+    // On a volume the tree container shares (workspaces/pod-job.ts).
+    treeTrigger: '/yaac-trigger/save',
   }
 }

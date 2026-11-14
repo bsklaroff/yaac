@@ -542,4 +542,41 @@ describe('buildPodJobManifest', () => {
       expect(build().spec.template.metadata.annotations).toEqual(WORKSPACE_POD_ANNOTATIONS)
     })
   })
+
+  // docs/node-local-workspaces.md "The tree container".
+  it('runs the tree container last of the init containers, as a sidecar that holds the workspace back until its tree is filled', () => {
+    const m = build({
+      treeContainer: {
+        image: 'base:1',
+        life: '2026-11-14T00-00-00.000Z',
+        mounts: [
+          { source: { kind: 'hostPath', path: '/var/lib/yaac/node/i/projects/p/trees/w/L/tree' }, mountPath: '/tree' },
+          { source: { kind: 'pvc', claimName: 'yaac-global', subPath: 'projects/p/checkpoints/w' }, mountPath: '/ckpt' },
+        ],
+      },
+    })
+    const spec = m.spec.template.spec as unknown as {
+      initContainers: Array<Record<string, unknown> & { name: string; volumeMounts: Array<{ name: string; mountPath: string; subPath?: string }> }>
+      containers: Array<{ volumeMounts: Array<{ mountPath: string }> }>
+      volumes: Array<{ name: string; emptyDir?: unknown }>
+    }
+    const tree = spec.initContainers.at(-1)!
+    expect(tree).toMatchObject({
+      name: 'tree',
+      image: 'base:1',
+      restartPolicy: 'Always',
+      securityContext: { runAsUser: 0, capabilities: { drop: ['ALL'], add: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETUID', 'SETGID'] } },
+      startupProbe: { exec: { command: ['yaac-tree', 'probe', '--scratch', '/scratch', '--life', '2026-11-14T00-00-00.000Z'] } },
+    })
+    expect(tree.command).toContain('--life')
+    expect(tree.volumeMounts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ mountPath: '/tree' }),
+      expect.objectContaining({ mountPath: '/ckpt', subPath: 'projects/p/checkpoints/w' }),
+      expect.objectContaining({ name: 'tree-trigger', mountPath: '/yaac-trigger' }),
+    ]))
+    // Both containers share the trigger, the workspace touching it after a save.
+    expect(spec.containers[0].volumeMounts).toContainEqual(expect.objectContaining({ mountPath: '/yaac-trigger' }))
+    expect(spec.volumes.find((v) => v.name === 'tree-trigger')?.emptyDir).toBeDefined()
+    expect(build().spec.template.spec).not.toHaveProperty('initContainers')
+  })
 })

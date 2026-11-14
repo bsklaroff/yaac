@@ -50,7 +50,10 @@ locals {
       http_tokens                 = "required"
       http_put_response_hop_limit = 1
     }
-    block_device_mappings = {
+    # A second volume holds the node-local root (docs/node-local-workspaces.md
+    # "A full node"), so a workspace tree that fills it gets ENOSPC there and
+    # kubelet, containerd and scratch dirs on the root disk never see it.
+    block_device_mappings = merge({
       root = {
         device_name = "/dev/xvda"
         ebs = {
@@ -60,8 +63,32 @@ locals {
           delete_on_termination = true
         }
       }
-    }
-    cloudinit_pre_nodeadm = [{
+      }, var.node_local_disk_gb > 0 ? {
+      node_local = {
+        device_name = "/dev/xvdb"
+        ebs = {
+          volume_size           = var.node_local_disk_gb
+          volume_type           = "gp3"
+          encrypted             = true
+          delete_on_termination = true
+        }
+      }
+    } : {})
+    cloudinit_pre_nodeadm = concat(var.node_local_disk_gb > 0 ? [{
+      # AL2023's udev rules name the volume /dev/xvdb whatever NVMe name it
+      # gets. Formatted once; in fstab, so it is mounted again after a reboot.
+      content_type = "text/x-shellscript"
+      content      = <<-EOT
+        #!/bin/bash
+        set -euxo pipefail
+        dev=/dev/xvdb
+        for _ in $(seq 60); do [ -e "$dev" ] && break; sleep 2; done
+        blkid "$dev" || mkfs.ext4 -q -m 0 "$dev"
+        mkdir -p /var/lib/yaac/node
+        grep -q ' /var/lib/yaac/node ' /etc/fstab || echo "$dev /var/lib/yaac/node ext4 defaults,nofail 0 2" >> /etc/fstab
+        mountpoint -q /var/lib/yaac/node || mount /var/lib/yaac/node
+      EOT
+    }] : [], [{
       content_type = "application/node.eks.aws"
       content      = <<-EOT
         ---
@@ -77,7 +104,7 @@ locals {
                 nodefs.available: 10%
                 nodefs.inodesFree: 5%
       EOT
-    }]
+    }])
   }
 
   # A new workspace node takes no pod until yaac's gVisor installer has put

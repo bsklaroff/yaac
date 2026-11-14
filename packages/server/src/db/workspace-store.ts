@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { and, count, desc, eq, exists, getTableColumns, gt, ilike, inArray, isNotNull, isNull, lt, lte, notInArray, or, sql, type AnyColumn, type SQL } from 'drizzle-orm'
 import { getDb } from './client'
-import { conversations, sessions, workspaceConversations, workspaceGroups, workspaceLives, workspaceRepos, workspaces } from './schema'
+import { conversations, sessions, workspaceConversations, workspaceGroups, workspaceLives, workspaceRepos, workspaces, type CheckpointOutcome } from './schema'
 import { deleteWorkspaceConversations } from './conversation-store'
 import { currentLife, isCurrentLife } from './current-life'
 import type { WorkspaceRepoRow } from './repo-store'
@@ -49,6 +49,8 @@ export interface LifeLaunch {
   deadline?: Date
   /** The scratch dirs it is started with (see `workspaceLives.scratchDirs`). */
   scratchDirs?: string[]
+  /** Its tree's directory on its node (see `workspaceLives.treeDir`). */
+  treeDir?: string
 }
 
 /** Fields `recordWorkspaceCreated` stamps on a fresh workspace and its
@@ -120,6 +122,7 @@ function lifeValues(workspaceId: string, launch: LifeLaunch): typeof workspaceLi
     startedAt: launch.at,
     ...(launch.timeZone !== undefined ? { timeZone: launch.timeZone } : {}),
     ...(launch.scratchDirs !== undefined ? { scratchDirs: launch.scratchDirs } : {}),
+    ...(launch.treeDir !== undefined ? { treeDir: launch.treeDir } : {}),
     ...(launch.deadline !== undefined ? timeoutColumns(launch.deadline) : {}),
   }
 }
@@ -244,13 +247,85 @@ export async function recordIgnoredFilesCleaned(projectId: string, workspaceId: 
     .where(and(currentLifeOf(projectId, workspaceId), lte(workspaceLives.stoppedAt, at)))
 }
 
+/** Record the node the current life's pod runs on, once. */
+export async function recordLifeNode(projectId: string, workspaceId: string, node: string): Promise<void> {
+  const db = await getDb()
+  await db.update(workspaceLives).set({ node })
+    .where(and(currentLifeOf(projectId, workspaceId), isNull(workspaceLives.node)))
+}
+
+/** Stamp the node-local life that began at `life` as checkpointed, once.
+ *  A life lost with its node is that life's death too, with `detail`. */
+export async function recordLifeCheckpointed(
+  workspaceId: string, life: Date, outcome: CheckpointOutcome, detail?: string,
+): Promise<void> {
+  const db = await getDb()
+  await db.update(workspaceLives).set({
+    checkpointedAt: new Date(),
+    checkpointOutcome: outcome,
+    ...(outcome === 'lost' ? { deathReason: 'node-lost' as const, deathDetail: detail ?? null } : {}),
+  })
+    .where(and(
+      eq(workspaceLives.workspaceId, workspaceId), eq(workspaceLives.startedAt, life),
+      isNull(workspaceLives.checkpointedAt),
+    ))
+}
+
+/** A node-local life, as the tree steps read it. */
+export interface TreeLife {
+  projectId: string
+  workspaceId: string
+  startedAt: Date
+  treeDir: string
+  node?: string
+  stoppedAt?: Date
+  checkpointedAt?: Date
+  checkpointOutcome?: CheckpointOutcome
+}
+
+const treeLifeColumns = {
+  projectId: workspaces.projectId,
+  workspaceId: workspaceLives.workspaceId,
+  startedAt: workspaceLives.startedAt,
+  treeDir: workspaceLives.treeDir,
+  node: workspaceLives.node,
+  stoppedAt: workspaceLives.stoppedAt,
+  checkpointedAt: workspaceLives.checkpointedAt,
+  checkpointOutcome: workspaceLives.checkpointOutcome,
+}
+
+function toTreeLife(r: { treeDir: string | null } & Record<string, unknown>): TreeLife {
+  return nullsToUndefined(r) as unknown as TreeLife
+}
+
+/** Current lives whose tree was on a node, stopped and not yet stamped,
+ *  oldest stop first. */
+export async function listUnstampedTreeLives(): Promise<TreeLife[]> {
+  const db = await getDb()
+  const rows = await db.select(treeLifeColumns).from(workspaces).innerJoin(workspaceLives, currentLife)
+    .where(and(isNotNull(workspaceLives.treeDir), isNotNull(workspaceLives.stoppedAt), isNull(workspaceLives.checkpointedAt)))
+    .orderBy(workspaceLives.stoppedAt)
+  return rows.map(toTreeLife)
+}
+
+/** Every node-local life of a workspace, newest first. */
+export async function listTreeLives(workspaceId: string): Promise<TreeLife[]> {
+  const db = await getDb()
+  const rows = await db.select(treeLifeColumns).from(workspaceLives)
+    .innerJoin(workspaces, eq(workspaces.workspaceId, workspaceLives.workspaceId))
+    .where(and(eq(workspaceLives.workspaceId, workspaceId), isNotNull(workspaceLives.treeDir)))
+    .orderBy(desc(workspaceLives.startedAt))
+  return rows.map(toTreeLife)
+}
+
 /** Stopped workspaces whose ignored files no clean has removed since the
  *  stop, oldest stop first. */
 export async function listUncleanedStoppedWorkspaces(): Promise<Array<{ projectId: string; workspaceId: string }>> {
   const db = await getDb()
   return await db.select({ projectId: workspaces.projectId, workspaceId: workspaces.workspaceId })
     .from(workspaces).innerJoin(workspaceLives, currentLife)
-    .where(and(isNotNull(workspaceLives.stoppedAt), isNull(workspaceLives.ignoredCleanedAt)))
+    // A life whose files were on its node has no checkout to clean.
+    .where(and(isNotNull(workspaceLives.stoppedAt), isNull(workspaceLives.ignoredCleanedAt), isNull(workspaceLives.treeDir)))
     .orderBy(workspaceLives.stoppedAt)
 }
 

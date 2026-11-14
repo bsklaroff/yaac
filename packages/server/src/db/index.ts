@@ -291,6 +291,9 @@ export {
   getWorkspaceRow,
   listStoppedWorkspaceRows,
   listUncleanedStoppedWorkspaces,
+  listUnstampedTreeLives,
+  listTreeLives,
+  type TreeLife,
   listOverdueWorkspaceRows,
   listWorkspaceRows,
   recordAllDeathsSeen,
@@ -305,3 +308,4 @@ export {
   type StoppedRowCursor,
   type WorkspaceRow,
 } from './workspace-store'
+export type { CheckpointOutcome } from './schema'

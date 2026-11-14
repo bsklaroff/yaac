@@ -10,6 +10,7 @@ import {
   listQueuedWorkspaceRows,
 } from '#db'
 import { ServerError } from '@yaac/shared/errors'
+import { ensureLifeStamped } from './trees'
 
 /**
  * Delete a stopped workspace by id or prefix: its checkout (with its local
@@ -47,6 +48,9 @@ export async function deleteWorkspace(principal: Actor, idOrPrefix: string): Pro
       throw new ServerError('CONFLICT', `workspace ${short} has ${queued.length} queued workspace(s) waiting on it; `
         + 'discard or run them first')
     }
+    // Its tree, if still on a node, is salvaged first, so nothing is lost
+    // that a delete refused for a reason would have kept.
+    await ensureLifeStamped(workspaceId)
     if (!await deleteWorkspaceState(projectId, workspaceId)) {
       throw new ServerError('INTERNAL', `could not remove all of workspace ${short}'s files (see the server log); `
         + 'its record is kept so the delete can be retried, and a restart '

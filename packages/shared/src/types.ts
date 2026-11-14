@@ -1732,6 +1732,8 @@ export type WorkspaceDeathReason =
   | 'agent-exited'   // pod alive but the in-pod tmux server was gone
   | 'never-started'  // session create was interrupted before the agent ran
   | 'orphaned'       // Job/pod deleted out-of-band
+  | 'disk-full'      // stopped for the node disk its tree held
+  | 'node-lost'      // its node went away before its tree was saved
 
 export interface WorkspaceDeathCause {
   reason: WorkspaceDeathReason
@@ -2512,13 +2514,47 @@ export interface WorkspaceUsageRow extends WorkspaceResourceUse {
   /** The owning user's display name. */
   owner?: string
   peakMemoryBytes: number
+  /** Bytes its tree holds on its node, while that node is under its warn
+   *  floor (docs/node-local-workspaces.md "A full node"). */
+  treeBytes?: number
   deathReason?: WorkspaceDeathReason
   deathDetail?: string
   history: UsagePoint[]
 }
 
+/** One workspace life's tree on a node, as the node's disk pod measured it. */
+export interface NodeDiskTree {
+  projectId: string
+  workspaceId: string
+  /** The life's tree directory name. */
+  life: string
+  /** Allocated bytes. */
+  bytes: number
+}
+
+/**
+ * The free space of a node's node-local root, where workspace trees live
+ * (docs/node-local-workspaces.md "A full node"), against the two
+ * floors under which yaac warns and then stops the largest tree's workspace.
+ */
+export interface NodeDisk {
+  node: string
+  totalBytes: number
+  freeBytes: number
+  warnBytes: number
+  stopBytes: number
+  /** Whether the trees share kubelet's own filesystem. */
+  sharesKubeletDisk: boolean
+  /** Largest first; read only while the node is under its warn floor. */
+  trees?: NodeDiskTree[]
+  /** The node's disk pod could not be asked. */
+  error?: string
+}
+
 export interface ResourceReport {
   driver: DriverKind
+  /** Each node's node-local disk; absent where trees are not on nodes. */
+  nodeDisks?: NodeDisk[]
   /** Epoch ms. */
   sampledAt: number
   totals: WithHistory<UsageTotals>

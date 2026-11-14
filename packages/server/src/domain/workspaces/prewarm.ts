@@ -97,6 +97,9 @@ export interface SpareSettings {
   /** The scratch dirs its checkouts were prepared with, relative to the
    *  workspace root. */
   scratchDirs?: string[]
+  /** Its tree's directory on its node, named when it was warmed; the life a
+   *  claim starts records it. */
+  treeDir?: string
 }
 
 /**
@@ -532,11 +535,15 @@ export async function tryClaimPrewarmed(
       ...(request.deadline !== undefined ? { deadline: request.deadline } : {}),
       ...(timeZone !== undefined ? { timeZone } : {}),
       ...(warmed?.scratchDirs !== undefined ? { scratchDirs: warmed.scratchDirs } : {}),
+      ...(warmed?.treeDir !== undefined ? { treeDir: warmed.treeDir } : {}),
       at: life,
       startSteps: lifeStart.flows,
       skipped: lifeStart.skipped,
     })
     inserted = true
+    if (warmed?.treeDir !== undefined && chosen.node !== undefined) {
+      await applyWorkspaceEvent({ type: 'life-node-found', projectId, workspaceId: claimedId, node: chosen.node })
+    }
     // Recorded now, so a server that dies before the launch below leaves it
     // for `reconcileSessions` to launch.
     const opened = session !== undefined ? await insertSession(projectId, claimedId, session) : undefined

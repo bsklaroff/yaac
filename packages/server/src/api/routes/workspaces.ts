@@ -376,14 +376,18 @@ export const workspaceApp = new Hono<IdentityEnv>()
       // A volume to attach by name, or null to restart without the one it
       // had; absent attaches the one it last held (docs/workspace-volumes.md).
       volume: z.string().min(1).nullable().optional(),
+      // If its last checkpoint is unreadable, restore the newest state that
+      // is rather than refuse (docs/node-local-workspaces.md "Restore").
+      restoreNewest: z.literal(true).optional(),
     })),
     // Checked and registered before streaming, so an unknown workspace, one
     // already provisioning, or a volume another holds is a plain error.
     async (c) => {
-      const { workspaceId, timeout, volume } = c.req.valid('json')
+      const { workspaceId, timeout, volume, restoreNewest } = c.req.valid('json')
       return streamProvisioned(c, await prepareRestart(c.get('principal'), workspaceId, {
         ...(timeout !== undefined ? { deadline: minutesFromNow(timeout) } : {}),
         ...(volume !== undefined ? { volume } : {}),
+        ...(restoreNewest === true ? { restoreNewest } : {}),
       }))
     },
   )
@@ -887,8 +891,9 @@ export const workspaceApp = new Hono<IdentityEnv>()
       return c.json(await getWorkspaceGitLog(c.req.param('id'), limit ?? 200, repo))
     },
   )
-  // The file editor (docs/file-editor.md). Served from the server's view of
-  // the checkout, so stopped workspaces work too, under either driver.
+  // The file editor (docs/file-editor.md). Served from inside a running k8s
+  // workspace, and from the server's view of the checkout otherwise, so
+  // stopped workspaces work too.
   .get(
     '/:id/dir',
     zv('query', z.object({ path: z.string().min(1) })),

@@ -163,8 +163,9 @@ function badConditions(node: NodeObject): string[] {
   })
 }
 
-/** A volume merged with others on one backing store: the checkouts claim is
- *  a second mount of the global one (storage-constants.ts). */
+/** A volume merged with others on one backing store: the checkouts claim a
+ *  pod started before trees moved to node disk may still mount is a second
+ *  mount of the global one (docs/legacy-compat-shims.md "The yaac-checkouts claim"). */
 function claimKey(claim: string): string {
   return claim === CHECKOUTS_CLAIM_NAME ? GLOBAL_CLAIM_NAME : claim
 }

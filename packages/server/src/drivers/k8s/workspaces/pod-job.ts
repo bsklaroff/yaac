@@ -7,6 +7,7 @@ import {
   PRIORITY_CLASS_WORKSPACE,
   RUNTIME_CLASS_GVISOR,
   installSecurityContext,
+  k8sWorkspacePaths,
   sentryTmpfsAnnotations,
   volumeClaimName,
   type MountSource,
@@ -156,6 +157,12 @@ export interface PodJobParams {
   nodeDirsImage?: string
   /** Defaults to 5 seconds. */
   terminationGracePeriodSeconds?: number
+  /**
+   * The tree container (docs/node-local-workspaces.md "The tree
+   * container"): a native sidecar that fills the workspace's tree on its
+   * node before the workspace container starts, and checkpoints it.
+   */
+  treeContainer?: TreeContainerParams
   /** Defaults to the workspace tier. */
   priorityClassName?: string
   /** A node the pod must run on, by name. */
@@ -179,6 +186,59 @@ function workspaceSpreadSpec(labels: Record<string, string>): Record<string, unk
       whenUnsatisfiable: 'ScheduleAnyway',
       labelSelector: { matchLabels: { [LABEL_INSTALL_ID]: labels[LABEL_INSTALL_ID] } },
     }],
+  }
+}
+
+/** Where both containers see the tree container's trigger file. */
+const TREE_TRIGGER_FILE = k8sWorkspacePaths().treeTrigger as string
+const TREE_TRIGGER_DIR = path.posix.dirname(TREE_TRIGGER_FILE)
+/** How long the tree container may take to fill the tree: a restore of a
+ *  large repository the agent cloned takes minutes. */
+const TREE_STARTUP_SECONDS = 4 * 60 * 60
+const TREE_PROBE_PERIOD_SECONDS = 2
+
+export interface TreeContainerParams {
+  image: string
+  /** The life's name, which names its start instruction and manifest. */
+  life: string
+  /** Its mounts: the tree, scratch repository, checkpoint log, each git
+   *  dir, the main clones and the program. */
+  mounts: PodMount[]
+}
+
+/**
+ * The tree container. It runs as root inside the sandbox with only the
+ * file-permission and identity capabilities, so it reads what an agent's
+ * `sudo` hid and writes checked-out files as the install uid. Its startup
+ * probe, which passes once the tree is filled, is what holds the workspace
+ * container back.
+ */
+function treeContainer(t: TreeContainerParams, volumeMounts: Array<Record<string, unknown>>): Record<string, unknown> {
+  return {
+    name: 'tree',
+    image: t.image,
+    imagePullPolicy: 'IfNotPresent',
+    restartPolicy: 'Always',
+    command: [
+      'yaac-tree', 'run', '--tree', '/tree', '--scratch', '/scratch', '--ckpt', '/ckpt',
+      '--life', t.life, '--trigger', TREE_TRIGGER_FILE,
+    ],
+    startupProbe: {
+      exec: { command: ['yaac-tree', 'probe', '--scratch', '/scratch', '--life', t.life] },
+      periodSeconds: TREE_PROBE_PERIOD_SECONDS,
+      timeoutSeconds: 10,
+      failureThreshold: TREE_STARTUP_SECONDS / TREE_PROBE_PERIOD_SECONDS,
+    },
+    securityContext: {
+      runAsUser: 0,
+      runAsGroup: 0,
+      capabilities: { drop: ['ALL'], add: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETUID', 'SETGID'] },
+    },
+    resources: {
+      requests: { cpu: '50m', memory: '128Mi' },
+      limits: { cpu: '1', memory: '1Gi' },
+    },
+    volumeMounts,
   }
 }
 
@@ -209,6 +269,22 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
   volumeMounts.push({ name: 'proxy-ca', mountPath: CA_MOUNT_DIR, readOnly: true })
 
   const initContainers: Array<Record<string, unknown>> = []
+  const treeMounts: Array<Record<string, unknown>> = []
+  if (p.treeContainer) {
+    p.treeContainer.mounts.forEach((m, i) => {
+      const name = `tree-${String(i)}`
+      volumes.push({ name, ...volumeSourceSpec(m.source) })
+      treeMounts.push({
+        name,
+        mountPath: m.mountPath,
+        ...(m.source.kind === 'pvc' && m.source.subPath ? { subPath: m.source.subPath } : {}),
+        ...(m.readOnly ? { readOnly: true } : {}),
+      })
+    })
+    volumes.push({ name: 'tree-trigger', emptyDir: { sizeLimit: '1Mi' } })
+    treeMounts.push({ name: 'tree-trigger', mountPath: TREE_TRIGGER_DIR })
+    volumeMounts.push({ name: 'tree-trigger', mountPath: TREE_TRIGGER_DIR })
+  }
   if (p.nodeLocalDirs && p.nodeLocalDirs.length > 0) {
     if (!p.nodeLocalRoot || !p.nodeDirsImage) {
       throw new Error('nodeLocalDirs given without nodeLocalRoot and nodeDirsImage')
@@ -230,6 +306,8 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
     if (!p.nodeDirsImage) throw new Error('a volume claim mounted without nodeDirsImage')
     initContainers.push(volumeRootInitContainer(p.nodeDirsImage, volumeRoots))
   }
+  // Last, so the dirs it fills exist and belong to the install uid.
+  if (p.treeContainer) initContainers.push(treeContainer(p.treeContainer, treeMounts))
 
   // One volume per dir (see sentryTmpfsAnnotations). A tmpfs root is
   // world-writable, so the workspace user can install into it.
@@ -351,6 +429,15 @@ const NODE_ROOT_MOUNT = '/node'
  * pod's file-mount sources (workspaces/teardown.ts).
  */
 export const PRE_STOP_GRACE_SECONDS = 60
+
+/**
+ * Grace period (seconds) the tree container's final pass adds: Kubernetes
+ * counts one budget from the deletion, so the preStop hook, the workspace
+ * container's exit and the final pass all spend it. On kind an ordinary
+ * final pass and the tree's removal took 3 to 5 seconds; one cut off leaves
+ * its tree for salvage (docs/node-local-workspaces.md "Stop").
+ */
+export const TREE_FINAL_PASS_SECONDS = 30
 
 /**
  * The `volume-root` init container, run as root: hands each byo volume's

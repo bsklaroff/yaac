@@ -1,5 +1,6 @@
 import type { Duplex } from 'node:stream'
 import type {
+  NodeDisk,
   AgentMode,
   AgentStatus,
   AgentTool,
@@ -65,6 +66,32 @@ export interface RuntimeHandle {
    * reaper reads it before its teardown destroys the evidence.
    */
   deathCause: WorkspaceDeathCause
+  /** The node it runs on, once scheduled, where a runtime has nodes. */
+  node?: string
+}
+
+/**
+ * A life's files on its node (docs/node-local-workspaces.md "Layout"),
+ * as the server names them: the runtime mounts these into the workspace and
+ * its tree container, and a salvage pod.
+ */
+export interface WorkspaceTree {
+  /** The life's name: its tree dir's and its checkpoint folder's. */
+  life: string
+  /** The life's dir on the NODE-LOCAL tier, holding `tree/` and `scratch/`. */
+  lifeDir: string
+  /** The workspace's checkpoint log on the GLOBAL tier. */
+  checkpointsDir: string
+  /** Each checkout: its repo's id, its folder under the workspace root, and
+   *  its git dir on the GLOBAL tier, mounted there in the workspace. */
+  checkouts: Array<{ id: string; path: string; gitDir: string }>
+  /** Main clones a checkout borrows objects from, mounted read-only at
+   *  their own paths. */
+  mainClones: string[]
+  /** The staged `yaac-tree` program the tree container runs. */
+  program: string
+  /** The start restores a checkpoint, which can take minutes. */
+  restoring: boolean
 }
 
 export interface AgentLiveness {
@@ -365,6 +392,12 @@ export interface WorkspaceSpec {
    * package store goes, since it must share their filesystem to hardlink.
    */
   scratchDirs: ScratchDirMount[]
+  /**
+   * Where the workspace's files live when they are on its node rather than
+   * among `mounts` (docs/node-local-workspaces.md). A runtime whose
+   * workspaces run on the host ignores it, as it ignores `scratchDirs`.
+   */
+  tree?: WorkspaceTree
   resources: WorkspaceResources
   /** Setup command run inside the workspace before it is reported ready. */
   postStartExec: string[]
@@ -600,6 +633,9 @@ export interface WorkspacePaths {
   attachmentsDir: string
   /** acpd's entry module, used in the acp launch command. */
   acpdEntry: string
+  /** The file whose touch asks the tree container for a checkpoint pass,
+   *  where workspaces have one. */
+  treeTrigger?: string
 }
 
 /**
@@ -732,6 +768,14 @@ export interface WorkspaceDriver {
    * sampler takes: disks, volumes and the scheduling totals are left empty.
    */
   resourceUsage(opts: { full: boolean }): Promise<SubstrateUsage>
+
+  /**
+   * Each node's node-local disk, where workspace trees live, against the
+   * floors of the full-node guard (docs/node-local-workspaces.md
+   * "A full node"); with `trees`, also each tree's size. Empty where trees
+   * are not on nodes (containerless).
+   */
+  nodeDisks(opts: { trees: boolean }): Promise<NodeDisk[]>
 
   /**
    * Run a shell command inside a workspace and collect its output. Rejects
@@ -970,6 +1014,24 @@ export interface WorkspaceDriver {
     args: string[],
     opts: { timeoutMs: number },
   ): Promise<void>
+
+  /**
+   * Take the final checkpoint of a life whose pod is gone but whose tree is
+   * still on `node`, in a one-shot pod there, and remove the tree
+   * (docs/node-local-workspaces.md "Life cycle"). `node-gone` when no
+   * such node exists any more; rejects when the pod could not run (the node
+   * is not ready, or the pass failed), to be tried again. A runtime with no
+   * nodes never has such a life.
+   */
+  salvageTree(target: { projectId: string; workspaceId: string; node: string; tree: WorkspaceTree }): Promise<'saved' | 'node-gone'>
+
+  /**
+   * Take a checkpoint, under `tree.life`, of a workspace whose files are
+   * still on the shared tier at `sharedDir`, leaving them as they are, for
+   * its next life to restore (docs/node-local-workspaces.md
+   * "Workspaces from before"). Rejects unless it succeeds.
+   */
+  importTree(target: { projectId: string; workspaceId: string; sharedDir: string; tree: WorkspaceTree }): Promise<void>
 
   /**
    * Converge the substrate's objects for the install's public sites

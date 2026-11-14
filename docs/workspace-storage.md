@@ -689,8 +689,9 @@ empty rather than mounting the old one's caches.
 
 The node-local sweep (`reapNodeLocal`) collects by the same key. It is given the
 live project ids and workspace ids, and removes any project tree no live id
-holds (unless a live pod still mounts it) and any opencode working copy whose
-workspace is gone. If the project list cannot be read, the sweep does nothing
+holds (unless a live pod still mounts it), and any opencode working copy or
+workspace tree (docs/node-local-workspaces.md) whose workspace is neither
+running nor waiting for its tree to be salvaged. If the project list cannot be read, the sweep does nothing
 rather than treating the list as empty.
 
 ## The shared tier on a network filesystem
@@ -714,24 +715,25 @@ on every backend:
   node may rename the file under it, which neither the old path nor, under
   gVisor, `/dev/fd/<fd>` follows. Files a workspace's own processes hold open
   (a build log, say) follow no such rule, so a reader on another node, such as
-  the server's file editor, can see them up to 30 s behind.
+  the server reading a stopped workspace's files, can see them up to 30 s
+  behind.
 - **Every path stored in a row is relative** to the data dir or a directory
   under it (see "Transcript paths"), so the data dir can move.
-- **Checkouts are the one exception to `actimeo=1`.** A pod mounts its
-  checkout through `yaac-checkouts`, which caches file attributes for up to
-  a minute and directories for a second, so a warm `git status` stats from
-  memory. Only the workspace writes its checkout while it runs; the file
-  editor, the one other writer, opens what it overwrites inside the pod. An
-  edit made while the workspace is stopped needs nothing: a new pod's
-  sandbox revalidates each file the first time it opens it
-  (docs/nfs-checkout-performance.md).
+- **A k8s workspace's working tree is not on the shared tier.** It is on
+  its node, with only each checkout's `.git` and the checkpoint log on the
+  shared tier (docs/node-local-workspaces.md).
 - **The node-local tier is disposable.** It holds re-derivable caches and
   working copies of a shared checkpoint, as opencode's database is.
   Checkouts stay on the shared tier.
 
 ## Ignored files at stop
 
-A stop removes the gitignored files of each of the workspace's checkouts
+Under k8s a stop removes the workspace's whole tree from its node, and its
+checkpoint keeps no ignored file but the project's kept paths
+(docs/node-local-workspaces.md "What is saved"). The rest of this section
+is `containerless`, whose files stay on the host's disk.
+
+A containerless stop removes the gitignored files of each of the workspace's checkouts
 (`yaac-clean-ignored`, run once per checkout), so a stopped workspace does
 not hold build output and caches (`target/`, `.next/`, `dist/`) until it is
 deleted. Files outside every checkout, in a workspace whose root is none,
@@ -755,11 +757,8 @@ Two kinds of path are kept anyway:
   relative to a checkout, kept in every checkout that has it: a file, or a
   folder and everything in it, even one inside an ignored folder.
 - **Every mount point under the checkout**, read from
-  `/proc/self/mountinfo` rather than the project config, which may have
-  changed since the workspace started. In a k8s pod those are the module
-  dirs and any cache volume mounted there, whose contents are shared with
-  other workspaces. Containerless realizes no mounts into the checkout
-  (docs/containerless-driver.md), so there a cache volume under
+  `/proc/self/mountinfo`. Containerless realizes no mounts into the
+  checkout (docs/containerless-driver.md), so a cache volume under
   `/workspace` is a plain directory, removed like any other if ignored.
 
 Git never enters a nested repository. Under `-X` it reports only one inside
@@ -801,18 +800,8 @@ evicted pod, an orphaned Job, a lost node), a clean that failed (on a file
 the agent wrote through `sudo`, say, or a project config that could not be
 read), and a server that went away mid-teardown. It cleans one such
 workspace per pass, in the background, through the driver's
-`runInStoppedCheckout`:
-
-- **Under k8s**, a one-shot root pod on the yaac base image, under gVisor
-  since git reads what the agent wrote. It mounts only the checkout, at
-  `/workspace` as the workspace saw it, so a claude worktree's git dir
-  still resolves. gVisor's root is real root on the claim, so files written
-  through `sudo` go too.
-- **Under containerless**, the host shell as the server's user, which is
-  what the workspace's own processes ran as.
-
-With the pod gone nothing is mounted under the checkout, so that run keeps
-only the kept paths. It skips a workspace the runtime still holds, or one
+`runInStoppedCheckout`: the host shell as the server's user, which is what
+the workspace's own processes ran as. That run keeps only the kept paths. It skips a workspace the runtime still holds, or one
 being created, restarted or deleted. While it runs, a restart waits for it
 and a delete is refused, as for any teardown. A failure is tried again after an hour. A checkout that is
 gone is stamped without a run. Workspaces already stopped when the column
@@ -823,8 +812,7 @@ Two limits remain:
 
 - the agent's processes are still running during the in-workspace clean,
   so a file one writes then can outlive it;
-- each run gets five minutes, since unlinking a large build tree on NFS
-  from inside gVisor is slow. git removes as it goes, so a run that times
+- each run gets five minutes. git removes as it goes, so a run that times
   out leaves the rest to the next.
 
 ## Package installs
@@ -936,10 +924,9 @@ they are all processes on one kernel (docs/containerless-driver.md).
 Claude puts the worktrees it makes (`EnterWorktree`, or a subagent run with
 worktree isolation) under `<checkout>/.claude/worktrees/`. Each one is a fresh
 checkout with no scratch dirs, so its agent installs packages into it. Under
-k8s that install lands on the shared tier: pnpm cannot hardlink from a store
-on tmpfs, so it copies tens of thousands of files onto the network filesystem,
-and a few at once slow every read in the pod
-(docs/nfs-checkout-performance.md). So under k8s `seedClaudeSettings` adds
+k8s it lives in the workspace's tree under a folder `createCheckout` ignores,
+which no checkpoint saves, so its uncommitted work would be gone after a stop
+(docs/node-local-workspaces.md). So under k8s `seedClaudeSettings` adds
 deny rules for both ways in (`EnterWorktree` and `Agent(isolation:worktree)`)
 to the project's claude settings. A custom agent whose definition sets
 `isolation: worktree` matches neither rule.

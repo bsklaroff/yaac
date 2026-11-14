@@ -1,5 +1,5 @@
 import { execFileAsync, JOB_NAME_LABEL, k8sNamespace } from '#drivers/k8s/substrate'
-import { PRE_STOP_GRACE_SECONDS } from './pod-job'
+import { PRE_STOP_GRACE_SECONDS, TREE_FINAL_PASS_SECONDS } from './pod-job'
 import { deregisterWorkspaceEgress } from '#drivers/k8s/egress'
 import { stopWorkspaceForwarders } from './port-forwarders'
 import { removeProjectSecrets } from '#drivers/k8s/cluster'
@@ -30,8 +30,8 @@ export async function deregisterWorkspace(workspaceId: string): Promise<void> {
 }
 
 /** Deadline for the Job delete to report its pod actually gone: past a
- *  hooked pod's grace period, with room. */
-const UNIT_DELETE_TIMEOUT = `${String(PRE_STOP_GRACE_SECONDS + 30)}s`
+ *  hooked pod's grace period and the tree container's final pass, with room. */
+const UNIT_DELETE_TIMEOUT = `${String(PRE_STOP_GRACE_SECONDS + TREE_FINAL_PASS_SECONDS + 30)}s`
 
 /**
  * Tear down a workspace's runtime and wait until it is gone. In order:

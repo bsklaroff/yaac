@@ -92,11 +92,12 @@ locals {
       token       = random_password.agent_token.result
       node-taint  = [local.workspace_pool_taint, "${local.gvisor_pending_taint}=true:NoSchedule"]
     }))
-    nfs_device  = ""
-    nfs_export  = ""
-    yaac_repo   = ""
-    yaac_ref    = ""
-    node_memory = local.node_memory
+    nfs_device         = ""
+    nfs_export         = ""
+    yaac_repo          = ""
+    yaac_ref           = ""
+    node_memory        = local.node_memory
+    node_local_percent = var.node_local_disk_percent
   })
 
   # Swap, zswap and the kubelet's memory settings, run on every node
@@ -177,7 +178,8 @@ resource "hcloud_server" "control" {
     nfs_export      = local.nfs_export
     yaac_repo       = var.yaac_repo
     yaac_ref        = var.yaac_ref
-    node_memory     = ""
+    node_memory        = ""
+    node_local_percent = var.node_local_disk_percent
   })
 
   # The control node holds the cluster's datastore and the install's

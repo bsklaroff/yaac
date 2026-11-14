@@ -12,6 +12,8 @@ import {
 } from '@yaac/server/drivers/k8s/substrate'
 import {
   apiserverEndpoints,
+  buildDiskDaemonSetManifest,
+  buildDiskIngressNpManifest,
   buildServerEgressNpManifest,
   buildServerIngressNpManifest,
   clusterDnsCidrs,
@@ -61,6 +63,7 @@ const execFileAsync = promisify(execFile)
  *    file's own data dir's tiers, plus one extra mount of the scratch base
  *    (`testTmpBase()`) at its own path, since test repos and mock-remote
  *    stores live beside the data dir rather than in a tier.
+ *  - **The per-node disk pod**, which the full-node guard reads.
  *  - **The site router**, as install applies it but with no tunnel, so a
  *    test reaches a site through a port-forward to the router's Service
  *    with the site's `Host`.
@@ -121,6 +124,9 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
     await nodeAddressBlocks(), await clusterDnsCidrs(), await apiserverEndpoints(), null,
   ))
   await applyObject(testServerDeploymentManifest(imageRef, opts.env))
+  // The per-node disk pod, as install applies it beside the server.
+  await applyObject(buildDiskIngressNpManifest())
+  await applyObject(buildDiskDaemonSetManifest(imageRef))
   // The router rolls out while the server does.
   await Promise.all([
     waitForRollout({ workload: `deployment/${SERVER_APP_NAME}`, namespace: k8sNamespace(), timeoutMs: 300_000 })
@@ -192,7 +198,8 @@ async function requirePrebuiltServerImage(): Promise<string> {
  * file asks for `tailnet` with `YAAC_ACCESS_MODE`, `YAAC_ALLOWED_HOSTS` and
  * `YAAC_ACCESS_ADMINS`, as `yaac cluster install --tailnet --admin` would.
  * The admins are passed as a value rather than through the bootstrap
- * ConfigMap the production manifest names.
+ * ConfigMap the production manifest names. The full-node guard's floors,
+ * which the builder always sets, take the file's values when it sets them.
  */
 function testServerDeploymentManifest(
   imageRef: string,
@@ -216,7 +223,11 @@ function testServerDeploymentManifest(
   }
   const podSpec = manifest.spec.template.spec
   const container = podSpec.containers[0]
-  container.env = mergeEnv(testPassThrough(env), container.env.filter((e) => e.name !== 'YAAC_ACCESS_ADMINS'))
+  const fileWins = ['YAAC_DISK_WARN_FLOOR_GIB', 'YAAC_DISK_STOP_FLOOR_GIB'].flatMap((name) => {
+    const value = env[name]
+    return value === undefined ? [] : [{ name, value }]
+  })
+  container.env = mergeEnv(testPassThrough(env), container.env.filter((e) => e.name !== 'YAAC_ACCESS_ADMINS'), fileWins)
   // Several files' namespaces can be alive at once on one node, so a
   // production-sized request would exhaust the scheduler. The limit is
   // unchanged.
