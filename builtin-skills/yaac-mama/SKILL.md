@@ -209,7 +209,13 @@ pass — the server resolves who is calling and answers for that project only.
     claude/codex (e.g. `opus`), `provider/model` for opencode, pi and omp (e.g.
     `anthropic/claude-opus-5`), where the provider must be the one that tool
     is authed for. There is no fixed list yaac enforces, only a shape check,
-    so a typo'd id spawns and fails at the vendor.
+    so a typo'd id spawns and fails at the vendor. Omitted on your own tool,
+    it is the model your session runs now (after any `/model` switch; omp's
+    reaches yaac only with its next prompt), as
+    long as it is one `--model` would take: an id outside that shape (say a
+    `~`-prefixed alias such as `openrouter/~anthropic/claude-sonnet-latest`)
+    falls back silently, like another tool, to the project's last choice,
+    else the tool's default.
   - **`--effort`**: how hard the new agent's model thinks, in the tool's own
     words (`low`, `high`, `xhigh`, opencode's `default`, …). `yaac-mama
     models` lists each model's levels and stars its default; one the model

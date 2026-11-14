@@ -700,6 +700,45 @@ describe('runMamaCommand', () => {
       })
     })
 
+    // The caller's model is its session row's, which follows what its agent
+    // reports, so a `/model` switch after launch is what the spawn runs.
+    it('runs the model the caller runs now on the caller\'s tool, unless another is named', async () => {
+      exec.mockResolvedValue({ stdout: '', stderr: '' })
+      running = [podFor('caller-workspace')]
+      await recordProjectCreate(PROJ, 'claude', { model: 'claude-sonnet-4-6' })
+      const [session] = await listWorkspaceSessions('caller-workspace')
+      await applyWorkspaceEvent({
+        type: 'session-reported', projectId: PROJ, workspaceId: 'caller-workspace', sessionId: session.id,
+        model: 'claude-opus-4-7[1m]',
+      })
+      const caller = await mamaCaller({ workspaceId: 'caller-workspace', projectId: PROJ }, session.id)
+      expect(caller).toMatchObject({ tool: 'claude', model: 'claude-opus-4-7[1m]' })
+
+      expect(await spawn({}, caller)).toMatchObject({ tool: 'claude', model: 'claude-opus-4-7[1m]' })
+      expect(await spawn({ model: 'opus' }, caller)).toMatchObject({ model: 'opus' })
+      // Another tool takes its own default, not a claude model.
+      expect(await spawn({ tool: 'codex' }, caller)).toMatchObject({ tool: 'codex', model: FALLBACK_MODELS.codex })
+      // A session opened in a running workspace inherits it too, but a
+      // resumed conversation keeps its own.
+      const as = async (command: string, args: Record<string, string>, body = 'x'): Promise<string> => {
+        const outcome = await runMamaCommand(caller, { command, args, body })
+        if (!outcome.ok || !('output' in outcome)) throw new Error(JSON.stringify(outcome))
+        return outcome.output
+      }
+      expect(await getSessionRow(await as('create', { workspace: 'caller' }))).toMatchObject({ model: 'claude-opus-4-7[1m]' })
+      await recordConversations(PROJ, 'caller-workspace', [{ tool: 'claude', conversationId: 'old', mode: 'tui', model: 'haiku' }])
+      expect(await getSessionRow(await as('create', { workspace: 'caller', resume: 'old' }, ''))).toMatchObject({ model: 'haiku' })
+      // A queue with no parent and a routine take it as create does.
+      const workers = await createWorkspaceGroup(PROJ, 'Workers', null)
+      await setWorkspaceGroupLimit(PROJ, workers.groupId, 1)
+      const queued = await as('queue', { group: 'Workers', branch: 'main' })
+      expect((await listQueuedWorkspaceRows(PROJ)).find((r) => r.id === queued))
+        .toMatchObject({ tool: 'claude', model: 'claude-opus-4-7[1m]' })
+      const routine = (await as('routine-create', { name: 'nightly', cron: '0 3 * * *', branch: 'main' })).split('\n')[0]
+      expect((await listRoutines()).find((r) => r.id === routine))
+        .toMatchObject({ tool: 'claude', model: 'claude-opus-4-7[1m]' })
+    })
+
     it('grants a named posture up to the caller\'s own, and refuses anything else loudly', async () => {
       const at = async (permissionMode: MamaCaller['permissionMode'], asked: string, args: Record<string, string> = { tool: 'claude' }): Promise<unknown> => {
         const result = await spawn({ ...args, 'permission-mode': asked }, { permissionMode })

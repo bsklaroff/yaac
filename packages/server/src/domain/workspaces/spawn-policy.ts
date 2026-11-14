@@ -29,6 +29,8 @@ export interface SpawnRequest {
   callerProjectId: string
   /** The caller's own tool, if known; second in the tool precedence. */
   callerTool?: AgentTool
+  /** The caller's current model: the default for a spawn on its tool. */
+  callerModel?: string
   /** The caller's permission mode: the default, and the most it may
    *  grant. */
   callerPermissionMode: PermissionMode
@@ -44,6 +46,8 @@ export interface SpawnRequest {
   resume?: string
   prompt: string
   tool?: AgentTool
+  /** Unnamed is the caller's model when the spawn runs the caller's tool,
+   *  else the project's remembered one. */
   model?: string
   permissionMode?: PermissionMode
   /** Unnamed is the project's remembered effort where the model has it,
@@ -153,7 +157,7 @@ export async function decideSpawn(request: SpawnRequest): Promise<SpawnDecision>
         permissionMode: admitted.permissionMode,
         prompt: request.prompt,
       }),
-      ...(request.model !== undefined ? { model: request.model } : {}),
+      ...(admitted?.model !== undefined ? { model: admitted.model } : {}),
       ...(request.effort !== undefined ? { effort: request.effort } : {}),
       ...(request.repos !== undefined ? { repos: request.repos } : {}),
       ...(request.nested !== undefined ? { nested: request.nested } : {}),
@@ -284,7 +288,7 @@ export async function decideRestart(request: RestartRequest): Promise<RestartDec
 
 /** What `admit` decided: the spawn's tool and posture, or why it is refused. */
 type Admission =
-  | { ok: true; tool: AgentTool; permissionMode: PermissionMode }
+  | { ok: true; tool: AgentTool; model?: string; permissionMode: PermissionMode }
   | { ok: false; error: string }
 
 /**
@@ -306,7 +310,7 @@ async function spawnSession(request: SpawnRequest, target: string): Promise<Spaw
       mode: request.uiMode ?? request.callerMode,
       permissionMode: admitted.permissionMode,
       ...(request.prompt.trim() !== '' ? { prompt: request.prompt } : {}),
-      ...(request.model !== undefined ? { model: request.model } : {}),
+      ...(admitted.model !== undefined ? { model: admitted.model } : {}),
       ...(request.effort !== undefined ? { effort: request.effort } : {}),
       ...(request.resume !== undefined ? { resume: request.resume } : {}),
       ...(request.cwd !== undefined ? { cwd: request.cwd } : {}),
@@ -324,7 +328,9 @@ async function spawnSession(request: SpawnRequest, target: string): Promise<Spaw
 /**
  * Pick a spawn's tool, refuse one the project owner has not signed in to
  * (the spawn runs on their credentials, so its agent could not
- * authenticate), and settle its posture.
+ * authenticate), and settle its model and posture. A spawn on the caller's
+ * tool runs the caller's current model unless it names one; a resumed
+ * conversation keeps its own.
  */
 async function admit(request: SpawnRequest): Promise<Admission> {
   const project = await getProjectRow(request.callerProjectId)
@@ -334,6 +340,10 @@ async function admit(request: SpawnRequest): Promise<Admission> {
   if (project === undefined || !await loadToolAuthEntry(project.owner, tool)) {
     return { ok: false, error: `${tool} is not signed in for this project's owner (see \`yaac-mama models\`)` }
   }
+  const model = request.model
+    ?? (request.resume === undefined && tool === request.callerTool ? request.callerModel : undefined)
   const posture = agentPermissionMode(tool, request.callerPermissionMode, request.permissionMode)
-  return posture.ok ? { ok: true, tool, permissionMode: posture.permissionMode } : posture
+  return posture.ok
+    ? { ok: true, tool, ...(model !== undefined ? { model } : {}), permissionMode: posture.permissionMode }
+    : posture
 }

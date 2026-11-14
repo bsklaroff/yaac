@@ -92,6 +92,7 @@ import {
   MODEL_RE,
   PERMISSION_MODES,
   isRankedPermissionMode,
+  launchableModel,
   morePermissive,
   routineSettingsSchema,
   timeoutMinutesSchema,
@@ -139,6 +140,9 @@ export interface MamaCaller {
   /** The tool it runs, if known; used in the spawned workspace's tool
    *  precedence. */
   tool?: AgentTool
+  /** The model it runs now, as its agent last reported it; what a
+   *  workspace or session it starts on the same tool defaults to. */
+  model?: string
   /** Its permission mode, the most anything it starts or messages may run
    *  in. */
   permissionMode: PermissionMode
@@ -170,12 +174,16 @@ export async function mamaCaller(
   const closedThisLife = sessions.filter((s) =>
     s.closedAt !== undefined && lifeStarted !== undefined && s.closedAt >= lifeStarted)
   const lead = own ?? strictest(open) ?? strictest(closedThisLife) ?? await resolveCreate(projectId, {})
+  // Anything in the workspace can set a reported model, so only a
+  // launchable one is passed on.
+  const model = lead.model !== undefined ? launchableModel(lead.tool, lead.model) : undefined
   return {
     workspaceId,
     projectId,
     principal: await workspacePrincipal(workspaceId, projectId),
     ...(own !== undefined ? { sessionId: own.id } : {}),
     tool: lead.tool,
+    ...(model !== undefined ? { model } : {}),
     permissionMode: lead.permissionMode,
     mode: lead.mode,
   }
@@ -841,6 +849,7 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
     callerWorkspaceId: caller.workspaceId,
     callerProjectId: caller.projectId,
     ...(caller.tool !== undefined ? { callerTool: caller.tool } : {}),
+    ...(caller.model !== undefined ? { callerModel: caller.model } : {}),
     callerPermissionMode: caller.permissionMode,
     callerMode: caller.mode,
     prompt: request.body,
@@ -985,9 +994,7 @@ async function runQueue(caller: MamaCaller, request: MamaRequestInput): Promise<
   const entry = await queueWorkspace(caller.principal, caller.projectId, {
     ...(start.start !== undefined ? { start: start.start } : {}),
     ...(request.body !== '' ? { prompt: request.body } : {}),
-    ...(parent !== ''
-      ? { parent }
-      : { ...(caller.tool !== undefined ? { tool: caller.tool } : {}), mode: caller.mode }),
+    ...(parent !== '' ? { parent } : callerDefaults(caller, settings.settings.tool)),
     ...queueFields(settings.settings),
   }, { ceiling: caller.permissionMode })
   if (entry.startAt !== undefined) {
@@ -1169,8 +1176,7 @@ async function runRoutineCreate(caller: MamaCaller, request: MamaRequestInput): 
     return { ok: false, error: 'routine-create needs --name, --cron and a prompt (or --non-interactive)' }
   }
   const routine = await createRoutine(caller.principal, caller.projectId, {
-    ...(caller.tool !== undefined ? { tool: caller.tool } : {}),
-    mode: caller.mode,
+    ...callerDefaults(caller, parsed.fields.tool),
     ...parsed.fields,
     name,
     cron,
@@ -1576,6 +1582,23 @@ function takeCleared(
 /** The same settings in the shape a queue write takes. */
 function queueFields({ uiMode, ...rest }: CreateSettings): Partial<QueueRequest> {
   return { ...rest, ...(uiMode !== undefined ? { mode: uiMode } : {}) }
+}
+
+/**
+ * What a workspace started later with no parent (a parentless queue, a
+ * routine) takes from its caller, as `create` does: its tool, its agent mode,
+ * and its current model when the entry runs the caller's tool (`tool`, the
+ * one named, if any).
+ */
+function callerDefaults(
+  caller: MamaCaller,
+  tool: AgentTool | undefined,
+): { tool?: AgentTool; model?: string; mode: AgentMode } {
+  return {
+    ...(caller.tool !== undefined ? { tool: caller.tool } : {}),
+    ...(caller.model !== undefined && (tool ?? caller.tool) === caller.tool ? { model: caller.model } : {}),
+    mode: caller.mode,
+  }
 }
 
 /** Retitle a workspace, by default the caller itself. */

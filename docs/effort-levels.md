@@ -170,8 +170,9 @@ same filtered subscription as `@yaac-model` and `@yaac-permission-mode`
 - **opencode**: the plugin reports the model's `variant` (`default` when it
   names none) with the model.
 - **pi** and **omp**: the extension reports `getThinkingLevel()` with the
-  model and each `thinking_level_select` (omp reports none until one is
-  set).
+  model, and pi's each `thinking_level_select`. omp has no such event, so
+  its changes arrive with the model at the next prompt (`agent_start`), and
+  it reports no level until one is set.
 
 Anything in the workspace can set a pane option, so a reported level that
 is not one word, or not one the agent's model has, is dropped (`default` is

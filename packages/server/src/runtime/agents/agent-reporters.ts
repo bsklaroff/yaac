@@ -74,8 +74,11 @@ const CODEX_HOOKS: Hooks = [
  * pi's and omp's extension, auto-discovered from
  * `$PI_CODING_AGENT_DIR/extensions` (omp loads pi extensions as its own).
  * `session_start` (startup, resume, `/new`) gives the session id, log,
- * model and thinking level; `model_select` and `thinking_level_select` fire
- * on any change to those; `session_shutdown` fires as a session ends.
+ * model and thinking level; pi's `model_select` and `thinking_level_select`
+ * fire on any change to those; `session_shutdown` fires as a session ends.
+ * omp has neither select event, so each run's start (`agent_start`) reports
+ * the model and level again when they changed, which is how an omp `/model`
+ * reaches yaac: at the next prompt.
  *
  * It also takes `yaac-mama send` messages (`buildMessageCmd`): on
  * `PI_MESSAGE_KEY` it submits the file left for its conversation, queued
@@ -113,8 +116,13 @@ export default function (pi) {
     reported = reported.then(() => pi.exec(cmd, args)).catch(() => {})
     return reported
   }
+  let last = ''
   const report = (model) => {
-    if (model !== undefined) run('yaac-agent-report', [model.provider + '/' + model.id, '', pi.getThinkingLevel() ?? ''])
+    if (model === undefined) return
+    const args = [model.provider + '/' + model.id, '', pi.getThinkingLevel() ?? '']
+    if (args.join('|') === last) return
+    last = args.join('|')
+    run('yaac-agent-report', args)
   }
   let session = ''
   pi.on('session_start', (_event, ctx) => {
@@ -139,7 +147,10 @@ export default function (pi) {
     // Only the latest read counts, however the reads finish.
     if (read === reads) warmWhenIdle = on
   }
-  pi.on('agent_start', () => { running = true })
+  pi.on('agent_start', (_event, ctx) => {
+    running = true
+    report(ctx?.model)
+  })
   pi.on('agent_end', () => {
     running = false
     return readWarming()
