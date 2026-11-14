@@ -23,22 +23,12 @@ vi.mock('#drivers/k8s/egress/proxy-client', () => ({
 
 // Mock the cluster barrel, which runs pods of its own.
 const mockProxyClusterIp = vi.hoisted(() => vi.fn().mockResolvedValue('10.96.0.5'))
-const mockEnsureProjectRegistry = vi.hoisted(() => vi.fn())
 const mockNpmCacheUrl = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/cluster', async (importOriginal) => ({
   ...(await importOriginal<typeof clusterModule>()),
   proxyServiceClusterIp: mockProxyClusterIp,
-  ensureProjectRegistry: mockEnsureProjectRegistry,
   servingNpmCacheUrl: mockNpmCacheUrl,
   ensureBuilderImage: () => Promise.resolve('registry.local/podman-stable:v5.5'),
-}))
-
-// Mock the node image store, which runs pods of its own.
-const mockStoreMount = vi.hoisted(() => vi.fn())
-const mockEnsureStore = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/images/store-writer', () => ({
-  nodeImageStoreMount: mockStoreMount,
-  ensureNodeImageStore: mockEnsureStore,
 }))
 
 vi.mock('node:fs/promises', () => ({
@@ -59,7 +49,6 @@ import {
   cachedPackagesDir,
   opencodeDataDir,
   claudeDir,
-  imageStoreDir,
   projectDir,
   secretKeyPath,
   workspaceDir,
@@ -77,7 +66,6 @@ const INTENT = {
   tool: 'claude' as const,
   config: PROJECT_CONFIG_DEFAULTS,
   allowlist: { hosts: [], defaults: true },
-  nestedContainers: false,
   proxySecretRules: {},
 }
 
@@ -100,7 +88,6 @@ function specOf(
       ephemeralStorageRequestBytes: 5, ephemeralStorageLimitBytes: 6,
     },
     postStartExec: ['/usr/local/bin/yaac-workspace-init'],
-    nestedContainers: false,
     cwd: '',
     gitCredentials: [],
     substrate,
@@ -153,7 +140,6 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockProxyClusterIp.mockResolvedValue('10.96.0.5')
   mockEnsureRunning.mockResolvedValue(undefined)
-  mockStoreMount.mockResolvedValue(undefined)
   mockNpmCacheUrl.mockResolvedValue(null)
 })
 
@@ -199,41 +185,6 @@ describe('prepareWorkspaceSubstrate', () => {
       injections: [{ action: 'set_header', name: 'Authorization', secretRef: `${PROJECT_ID}/TOKEN` }],
     }])
   })
-
-  it('skips the project registry and its image store for a plain workspace', async () => {
-    await prepareWorkspaceSubstrate(INTENT)
-
-    expect(mockEnsureProjectRegistry).not.toHaveBeenCalled()
-    expect(mockStoreMount).not.toHaveBeenCalled()
-  })
-
-  it('gives a nested workspace the project registry and this node\'s image store', async () => {
-    mockStoreMount.mockResolvedValue({
-      source: { kind: 'hostPath', path: path.join(imageStoreDir(PROJECT_ID), 'gen-7'), type: 'Directory' },
-      mountPath: '/var/lib/shared-images',
-      readOnly: true,
-    })
-
-    const substrate = await prepareWorkspaceSubstrate({ ...INTENT, nestedContainers: true })
-    await launchWorkspace(specOf(substrate, { nestedContainers: true }))
-
-    expect(mockEnsureProjectRegistry).toHaveBeenCalledWith(PROJECT_ID)
-    expect(mockStoreMount).toHaveBeenCalledWith(PROJECT_ID)
-    // A refresh for the next workspace runs in the background.
-    expect(mockEnsureStore).toHaveBeenCalledWith(PROJECT_ID)
-    const mounts = appliedJob().spec.template.spec.containers[0].volumeMounts
-    const store = mounts.find((m) => m.mountPath === '/var/lib/shared-images')
-    expect(store).toMatchObject({ readOnly: true })
-    expect(appliedJob().spec.template.spec.volumes.find((v) => v.name === store?.name)?.hostPath)
-      .toEqual({ path: `${NODE_ROOT}/shared-images/${PROJECT_ID}/gen-7`, type: 'Directory' })
-    // The project registry is plain HTTP, so the engine needs this config.
-    expect(Buffer.from(containerEnv().YAAC_REGISTRY_CONF_B64, 'base64').toString())
-      .toContain(`location = "yaac-reg-${PROJECT_ID}.yaac.svc.cluster.local:5000"`)
-    // Labelled on the pod too: image salvage selects workspaces from pods.
-    const podLabels = appliedJob().spec.template.metadata.labels
-    expect(podLabels['yaac.nested']).toBe('true')
-  })
-
 })
 
 describe('launchWorkspace', () => {
@@ -250,8 +201,6 @@ describe('launchWorkspace', () => {
       'yaac.install-id': installId(),
     })
     expect(job.metadata.labels['yaac.prewarmed']).toBeUndefined()
-    // Absent means no nested engine, so salvage skips the pod.
-    expect(job.metadata.labels['yaac.nested']).toBeUndefined()
 
     expect(handle).toMatchObject({
       workspaceId: 's1', projectId: PROJECT_ID, jobName: 'yaac-s1',

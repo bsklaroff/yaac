@@ -43,7 +43,7 @@ export const PROXY_CA_PATH = '/etc/yaac/certs/proxy-ca.pem'
 /**
  * In-container path of the combined trust bundle (public roots plus the
  * proxy CA), for tools that ignore SSL_CERT_FILE. See
- * docs/nested-containers.md.
+ * docs/workspace-egress.md "CA trust in a workspace".
  */
 export const PROXY_CA_BUNDLE_PATH = '/etc/yaac/certs/ca-bundle.pem'
 
@@ -101,7 +101,7 @@ export class ProxyClient {
    *  - CURL_CA_BUNDLE, REQUESTS_CA_BUNDLE, CARGO_HTTP_CAINFO and
    *    GIT_SSL_CAINFO replace the default roots, so they get the combined
    *    bundle, or they would reject hosts the proxy tunnels untouched.
-   * See docs/nested-containers.md.
+   * See docs/workspace-egress.md "CA trust in a workspace".
    */
   getCaTrustEnv(): string[] {
     return [

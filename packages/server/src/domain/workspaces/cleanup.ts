@@ -390,16 +390,14 @@ export async function cleanupWorkspaceDetached(params: {
       child.unref()
     }
 
-    // The salvage and the ignored-file clean first, since both reach into
-    // the workspace the script destroys. Each has its own deadline, and a
-    // failure of either never stops the teardown. If the server dies
-    // meanwhile, the stale reaper resumes the teardown. A site's release
-    // skips both: it keeps serving until the teardown signals it, so it must
-    // not lose its build meanwhile, and it never runs in its checkout again.
+    // The ignored-file clean first, since it reaches into the workspace the
+    // script destroys. It has its own deadline, and a failure never stops
+    // the teardown. If the server dies meanwhile, the stale reaper resumes
+    // the teardown. A site's release skips it: it keeps serving until the
+    // teardown signals it, so it must not lose its build meanwhile, and it
+    // never runs in its checkout again.
     const release = (await getWorkspaceRow(projectId, workspaceId))?.siteId !== undefined
-    void (release
-      ? Promise.resolve()
-      : Promise.all([runtime.salvageImages(target).catch(() => undefined), removeIgnoredFiles(target)]))
+    void (release ? Promise.resolve() : removeIgnoredFiles(target))
       .then(() => { spawnDetachedTeardown() })
   } catch (err) {
     settle()

@@ -1,15 +1,8 @@
-import {
-  findWorkspacePod,
-  execFileAsync,
-  JOB_NAME_LABEL,
-  k8sNamespace,
-  readWorkspacePods,
-} from '#drivers/k8s/substrate'
+import { execFileAsync, JOB_NAME_LABEL, k8sNamespace } from '#drivers/k8s/substrate'
 import { PRE_STOP_GRACE_SECONDS } from './pod-job'
 import { deregisterWorkspaceEgress } from '#drivers/k8s/egress'
 import { stopWorkspaceForwarders } from './port-forwarders'
-import { salvageJobImages } from '#drivers/k8s/images'
-import { removeProjectRegistry, removeProjectSecrets } from '#drivers/k8s/cluster'
+import { removeProjectSecrets } from '#drivers/k8s/cluster'
 import type { TeardownTarget } from '#drivers/contract'
 
 /**
@@ -36,26 +29,6 @@ export async function deregisterWorkspace(workspaceId: string): Promise<void> {
   await deregisterWorkspaceEgress(workspaceId)
 }
 
-/**
- * Push a nested workspace's image layers to its project's registry before
- * the pod and its graphroot tmpfs are destroyed.
- *
- * Best-effort and never throws: a lost salvage only costs a rebuild. The
- * in-pod survey decides whether there is anything to do (a pod with no
- * engine costs one probe), so unlike the periodic salvage this does not
- * check the nested label. The registry is named by the pod's project id.
- */
-export async function salvageWorkspaceImages(target: TeardownTarget): Promise<void> {
-  const pods = await readWorkspacePods().catch(() => [])
-  const pod = findWorkspacePod(pods, target.workspaceId, { spares: true })
-  if (!pod) return
-  await salvageJobImages({
-    jobName: target.unitName,
-    projectId: target.projectId,
-    workspaceId: target.workspaceId,
-  }).then(() => undefined, () => undefined)
-}
-
 /** Deadline for the Job delete to report its pod actually gone: past a
  *  hooked pod's grace period, with room. */
 const UNIT_DELETE_TIMEOUT = `${String(PRE_STOP_GRACE_SECONDS + 30)}s`
@@ -64,14 +37,13 @@ const UNIT_DELETE_TIMEOUT = `${String(PRE_STOP_GRACE_SECONDS + 30)}s`
  * Tear down a workspace's runtime and wait until it is gone. In order:
  *
  * 1. Deregister, so nothing routes to or holds ports for the dying pod.
- * 2. Salvage images, which execs into the pod that step 3 deletes.
- * 3. Delete the Job with `kubectl delete --cascade=foreground --wait`. Both
+ * 2. Delete the Job with `kubectl delete --cascade=foreground --wait`. Both
  *    flags are needed: with the default background cascade, `--wait`
  *    returns once the Job is gone while the pod keeps running (and writing
  *    to /workspace) through its grace period. It stays kubectl so it is the
  *    same command `detachedTeardownCommand` hands to a shell.
  *
- * Resolves `false` if step 3 could not confirm the pod is gone. Callers
+ * Resolves `false` if step 2 could not confirm the pod is gone. Callers
  * about to remove the workspace's files check this; the stale reaper later
  * resumes the teardown for the leftover Job.
  *
@@ -79,18 +51,16 @@ const UNIT_DELETE_TIMEOUT = `${String(PRE_STOP_GRACE_SECONDS + 30)}s`
  * create reuses one substrate receipt across attempts, so its registration
  * must survive.
  *
- * `keepRecord` deletes only the Job's pod in step 3, leaving the Job (and
+ * `keepRecord` deletes only the Job's pod in step 2, leaving the Job (and
  * its `yaac.prewarmed` label) for a spare reap to delete after the files.
  * With `backoffLimit: 0` the Job counts the deleted pod as its one failure
  * and starts no other.
  */
 export async function destroyWorkspace(
   target: TeardownTarget,
-  opts: { salvageImages?: boolean; unitOnly?: boolean; keepRecord?: boolean } = {},
+  opts: { unitOnly?: boolean; keepRecord?: boolean } = {},
 ): Promise<boolean> {
   if (!opts.unitOnly) await deregisterWorkspace(target.workspaceId)
-
-  if (opts.salvageImages !== false) await salvageWorkspaceImages(target)
 
   let unitGone = true
   try {
@@ -113,7 +83,7 @@ export async function destroyWorkspace(
  * The Job delete as a shell command, for callers that must return before
  * it finishes. Idempotent and error-tolerant, so the reaper can resume a
  * lost teardown by re-issuing it. The caller appends its own removals and
- * must first await `deregisterWorkspace` and `salvageWorkspaceImages`.
+ * must first await `deregisterWorkspace`.
  */
 export function detachedTeardownCommand(target: TeardownTarget): string {
   // Wait for the pod itself, through its preStop grace period: the caller
@@ -127,16 +97,10 @@ export function detachedTeardownCommand(target: TeardownTarget): string {
 
 /**
  * Remove what the runtime holds for a project once its workspaces are gone:
- * the push registry and the egress proxy's secret values. Each step is
- * best-effort on its own, since they fail for unrelated reasons. The
- * node-local sweep reaps the project's node-local data and image stores.
+ * the egress proxy's secret values. Best-effort. The node-local sweep reaps
+ * the project's node-local data.
  */
 export async function destroyProjectSubstrate(projectId: string): Promise<void> {
-  try {
-    await removeProjectRegistry(projectId)
-  } catch {
-    // Unreachable cluster — the orphan registry GC collects it by id.
-  }
   try {
     await removeProjectSecrets(projectId)
   } catch (err) {

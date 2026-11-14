@@ -100,7 +100,6 @@ export function createContainerlessDriver(): WorkspaceDriver {
     ensureRuntimeReachable: () => Promise.resolve(),
     prepareImage: () => unsupported('building a workspace image'),
     currentImage: () => unsupported('resolving a workspace image'),
-    salvageImages: () => Promise.resolve(),
 
     exec: (jobName, cmd, opts) => execInWorkspace(jobName, cmd, opts),
     // `exec` is a host shell, so there is no transport to wait for.

@@ -42,7 +42,6 @@ spec:
   tool: claude
   image: <registry>/yaac-proj-<id>:<hash>   # built before the CR is written
   branch: {base: main, agent: agent/<id>}
-  nestedContainers: true
   prewarm: false
   steps: {...}
   memory: {requestBytes: ..., limitBytes: ...}
@@ -56,23 +55,22 @@ status:
 ```
 
 A `Project` CR probably sits beside it (prewarm pool size, image-chain
-state) so the prewarm pool is declarative too. The per-project registry,
-the workspace's egress-proxy registration ConfigMap, and image-salvage pods
-become owned children of the Session instead of objects that separate
-sweeps collect.
+state) so the prewarm pool is declarative too. The workspace's egress-proxy
+registration ConfigMap becomes an owned child of the Session instead of an
+object a separate sweep collects.
 
 ## Controller responsibilities
 
-Converge spec to status per Session: ensure the registry and the egress
-registration, create the Job, run the tmux/agent bootstrap, watch the pod,
+Converge spec to status per Session: ensure the egress registration, create
+the Job, run the tmux/agent bootstrap, watch the pod,
 and record status and death cause. Standard machinery replaces hand-written
 code:
 
 - **ownerReferences and cascading GC** replace the orphan-Job and
   stuck-terminating sweeps in `reconcileStaleWorkspaces` and their grace
   windows.
-- **Finalizers** replace ordered teardown (image salvage before the Job
-  goes).
+- **Finalizers** replace ordered teardown (the ignored-file clean before
+  the Job goes).
 - **Per-object rate-limited workqueues** replace tick throttles. Leader
   election and `/metrics` come with controller-runtime.
 - **Level-based reconciliation** removes the half-provisioned cleanup
@@ -123,10 +121,9 @@ builder-role guard already uses (`buildBuilderRoleGuardPolicyManifest`).
 1. **Shadow mode.** Define the CRD. The server writes a Session alongside
    today's flow, and a read-only controller records status. No behavior
    change; this validates the model against real lifecycles, including
-   prewarm claim and nested containers.
-2. **GC and teardown.** ownerReferences on registry, salvage pods and
-   egress objects; a finalizer for ordered teardown. Delete the matching
-   sweeps from the reconcile step list.
+   prewarm claim.
+2. **GC and teardown.** ownerReferences on egress objects; a finalizer for
+   ordered teardown. Delete the matching sweeps from the reconcile step list.
 3. **Provisioning.** The controller creates the Job and runs bootstrap.
    The server's create path becomes build, write CR, watch status.
 4. **Gateway.** The server stops writing cluster state. CLI, desktop and
@@ -135,7 +132,7 @@ builder-role guard already uses (`buildBuilderRoleGuardPolicyManifest`).
 ## Open questions
 
 - **Bootstrap:** does the controller exec into the pod (tmux setup, agent
-  respawn, nested podman service), or does an in-pod supervisor do it so
+  respawn), or does an in-pod supervisor do it so
   the controller only creates the Job? `streamd` and `acpd` already run in
   the pod and are candidates to grow into that supervisor.
 - **Prewarm claim:** a claim rewrites the checkout's branch and upstream
@@ -156,8 +153,8 @@ is a SIG-Apps project for "isolated, stateful, singleton workloads, ideal
 for AI agent runtimes". Its API is at `v1beta1` (`agents.x-k8s.io`) with a
 controller-runtime controller. It already covers the generic half of this
 plan (pod lifecycle, GC, TTL, warm pools). It has nothing for the
-yaac-specific half: per-project registries, the netd egress redirect and
-proxy registrations, image salvage. So this plan's real decision is build
+yaac-specific half: the netd egress redirect and proxy registrations. So
+this plan's real decision is build
 versus adopt for the generic layer.
 
 ### What it provides
@@ -196,7 +193,7 @@ These were checked against its source, not just its README:
 | `Project` CR prewarm pool | `SandboxWarmPool` + `SandboxClaim` | partial (claim caveat below) |
 | Time-based reaping | `lifecycle.shutdownTime` | yes; death-cause reaping stays ours |
 | Job per workspace (`buildPodJobManifest`) | bare Pod | migration point |
-| per-project registry, egress registration, image salvage | none | stays yaac |
+| egress registration | none | stays yaac |
 
 ### Recommended shape
 
@@ -207,11 +204,8 @@ Keep a yaac `Session` CRD as the root: it carries the domain spec and gives
    `buildPodJobManifest` (`drivers/k8s/substrate/pod-spec.ts`) into a
    `podTemplate`. Per-workspace mounts and env are too dynamic for a static
    `SandboxTemplate`.
-2. the children agent-sandbox has no model for: the per-project registry
-   (`drivers/k8s/cluster/project-registry.ts`), the egress proxy
-   registration (`drivers/k8s/egress/proxy-registration.ts`), and image
-   salvage (`drivers/k8s/images/image-promoter.ts`,
-   `drivers/k8s/workspaces/salvage-reconcile.ts`).
+2. the child agent-sandbox has no model for: the egress proxy
+   registration (`drivers/k8s/egress/proxy-registration.ts`).
 
 This removes most of phases 1–3's generic work and leaves only
 yaac-specific convergence. It costs a second resident controller.
@@ -253,7 +247,7 @@ yaac-specific convergence. It costs a second resident controller.
 - Two controllers and three CRD bundles: agent-sandbox's two plus yaac's
   `Session`. `yaac cluster install` applies all of them.
 - The agent-sandbox controller image joins the digest-pinned upstream
-  mirror set in `test/global-setup.ts`, like `registry:2`.
+  mirror set in `test/global-setup.ts`, like Envoy.
 - Both controllers must agree on the CR-scope open question for e2e
   namespace isolation.
 - The server writes `Session` objects with kubectl and watches them
@@ -263,8 +257,8 @@ yaac-specific convergence. It costs a second resident controller.
 
 ### Bottom line
 
-Adopt `Sandbox` for pod, TTL and suspend under a yaac `Session`
-controller. Write our own convergence only for the registry, egress,
-salvage, and sticky death. The open risks are the prewarm claim and the
-missing suspend/resume state model. Both depend on the in-pod supervisor
-question, so settle that before adopting the warm-pool or suspend parts.
+Adopt `Sandbox` for pod, TTL and suspend under a yaac `Session` controller.
+Write our own convergence only for egress and sticky death. The open risks are
+the prewarm claim and the missing suspend/resume state model. Both depend on
+the in-pod supervisor question, so settle that before adopting the warm-pool or
+suspend parts.

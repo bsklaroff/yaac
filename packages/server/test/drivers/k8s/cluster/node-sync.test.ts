@@ -9,7 +9,6 @@ import { reconcileNodeSet } from '#drivers/k8s/cluster'
 // Test hooks, not units under test.
 import { _nodeSyncSettledForTests, _resetNodeSyncForTests } from '#drivers/k8s/cluster/node-sync'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
-import { projectRegistryName } from '#drivers/k8s/cluster/project-registry'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 interface Applied {
@@ -25,15 +24,13 @@ interface Applied {
 
 interface FakeNode { ip: string; externalIp?: string; uid: string; ready: boolean }
 
-const PROJECTS = ['p1', 'p2']
-
 /** The cluster's nodes by name, and which nodes' writer pods fail. */
 let nodes: Record<string, FakeNode> = {}
 let failingNodes = new Set<string>()
 
 /**
- * Stage the cluster: the nodes, the main registry's Service and p1's (p2 has
- * no registry), plus what the API server fills in on read: each Service's
+ * Stage the cluster: the nodes and the main registry's Service, plus what
+ * the API server fills in on read: each Service's
  * ClusterIP and each writer pod's terminal phase.
  */
 function serveCluster(): void {
@@ -41,10 +38,6 @@ function serveCluster(): void {
   seedNodes()
   fakeCluster.seed(
     { apiVersion: 'v1', kind: 'Service', metadata: { name: 'yaac-registry', namespace: 'yaac' }, spec: { clusterIP: '10.96.0.50' } },
-    {
-      apiVersion: 'v1', kind: 'Service',
-      metadata: { name: projectRegistryName('p1'), namespace: 'test-ns' }, spec: { clusterIP: '10.96.0.61' },
-    },
   )
   seedApiserver('172.20.0.10')
   fakeCluster.seed({
@@ -123,7 +116,7 @@ function clearCalls(): void {
 
 async function pass(): Promise<void> {
   seedNodes()
-  await reconcileNodeSet(PROJECTS)
+  await reconcileNodeSet()
   await _nodeSyncSettledForTests()
 }
 
@@ -147,8 +140,7 @@ describe('reconcileNodeSet', () => {
   it('admits a joining node at once, and writes its registry hosts once it is Ready', async () => {
     await pass()
     // Every node-address policy admits the node, and its containerd learns
-    // the main registry. Project registries are reached by ClusterIP, so
-    // none gets a hosts.toml.
+    // the main registry.
     for (const policy of [
       'yaac-server-ingress', 'yaac-proxy-ingress', 'yaac-npm-cache-ingress', 'yaac-registry-ingress',
       'yaac-site-tunnel-cloudflare-ingress', 'yaac-site-tunnel-tailnet-ingress', 'yaac-site-router-ingress',
@@ -236,7 +228,7 @@ describe('reconcileNodeSet', () => {
     nodes['node-b'] = { ip: '10.0.2.9', uid: 'u-b', ready: true }
     failingNodes = new Set(['node-b'])
     seedNodes()
-    await expect(reconcileNodeSet(PROJECTS)).resolves.toBeUndefined()
+    await expect(reconcileNodeSet()).resolves.toBeUndefined()
     await _nodeSyncSettledForTests()
     // The healthy node is done; the broken one is not recorded as done.
     failingNodes = new Set()

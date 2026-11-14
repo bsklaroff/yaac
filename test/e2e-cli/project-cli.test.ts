@@ -444,11 +444,10 @@ describe('yaac config project and user settings (real CLI + real server)', () =>
     expect((await config('port-forwards', 'demo-settings', '--none')).stdout).toContain('are now: none.')
   })
 
-  it('config cache-volumes, nested-containers and npm-cache show and set the pod settings; k8s only', async () => {
+  it('config cache-volumes and npm-cache show and set the pod settings; k8s only', async () => {
     if (!buildsImages) {
       for (const [args, why] of [
         [['cache-volumes', 'demo-settings', 'pip=/p'], 'keeps no cache volumes'],
-        [['nested-containers', 'demo-settings', 'on'], 'runs no container engine in a workspace'],
         [['npm-cache', 'demo-settings', 'off'], 'runs no npm cache'],
       ] as const) {
         const refused = await config(...args)
@@ -466,12 +465,9 @@ describe('yaac config project and user settings (real CLI + real server)', () =>
     expect((await config('cache-volumes', 'demo-settings', 'a=/x', '--none')).stderr).toContain('Pass volumes or --none, not both.')
     expect((await config('cache-volumes', 'demo-settings', '--none')).stdout).toContain('are now: none.')
 
-    expect((await config('nested-containers', 'demo-settings')).stdout).toContain('Nested containers in demo-settings: off')
-    expect((await config('nested-containers', 'demo-settings', 'on')).stdout).toContain('Nested containers in demo-settings are now on.')
-    expect((await config('nested-containers', 'demo-settings', 'maybe')).stderr).toContain('Allowed choices are on, off')
     expect((await config('npm-cache', 'demo-settings')).stdout).toContain('npm cache in demo-settings: on')
     expect((await config('npm-cache', 'demo-settings', 'off')).stdout).toContain('npm cache in demo-settings is now off.')
-    expect((await config('nested-containers', 'demo-settings', 'off')).exitCode).toBe(0)
+    expect((await config('npm-cache', 'demo-settings', 'maybe')).stderr).toContain('Allowed choices are on, off')
     expect((await config('npm-cache', 'demo-settings', 'on')).exitCode).toBe(0)
   })
 
@@ -522,7 +518,7 @@ describe('yaac config project and user settings (real CLI + real server)', () =>
     expect(stdout).toContain('Change one with `yaac config <setting>`.')
     if (buildsImages) {
       expect(stdout).toMatch(/\n {2}egress-allowlist +the defaults\n/)
-      expect(stdout).toMatch(/\n {2}nested-containers +off\n {2}npm-cache +on\n {2}dockerfile +none\n/)
+      expect(stdout).toMatch(/\n {2}npm-cache +on\n {2}dockerfile +none\n/)
     } else {
       expect(stdout).not.toContain('egress-allowlist')
       expect(stdout).not.toContain('cache-volumes')

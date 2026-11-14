@@ -30,7 +30,7 @@ import {
   MAIN_REGISTRY_APP_LABEL,
   ensureMainRegistry,
 } from '@yaac/server/drivers/k8s/cluster/main-registry'
-import { LABEL_REGISTRY_SERVES } from '@yaac/server/drivers/k8s/cluster/project-registry'
+import { LABEL_REGISTRY_SERVES } from '@yaac/server/drivers/k8s/cluster/main-registry'
 import { RUNTIME_CLASS_GVISOR } from '@yaac/server/drivers/k8s/substrate/pod-spec'
 import { runPodToCompletion } from '@yaac/server/drivers/k8s/substrate/one-shot-pods'
 import { applyObject, deleteObject, k8sNamespace, listObjects, readObject } from '@yaac/server/drivers/k8s/substrate/api'

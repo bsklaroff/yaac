@@ -182,7 +182,7 @@ describe('reconcilePrewarmPool', () => {
     expect(order).toEqual(['teardown-started', 'teardown-done', 'state-deleted', 'job-deleted'])
     expect(mockDeleteState).toHaveBeenCalledWith('p', 's2')
     expect(destroy).toHaveBeenCalledWith(
-      { projectId: 'p', workspaceId: 's2', unitName: 'yaac-p-spare' }, { salvageImages: false },
+      { projectId: 'p', workspaceId: 's2', unitName: 'yaac-p-spare' },
     )
   })
 

@@ -481,6 +481,40 @@ refuses a non-public address on that port whatever the allowlist says, on
 every dial path. Only the site route, whose target the proxy names itself,
 reaches it.
 
+## CA trust in a workspace
+
+A workspace must trust the proxy's MITM CA for the hosts it intercepts, and
+the real public roots for the hosts it tunnels untouched. CA settings come in
+two incompatible shapes, and `getCaTrustEnv`
+(`drivers/k8s/egress/proxy-client.ts`) sets both on every workspace pod:
+
+- **Additive** variables add the proxy CA to the image's roots:
+  `SSL_CERT_FILE` (OpenSSL still reads `/etc/ssl/certs`) and
+  `NODE_EXTRA_CA_CERTS`. They point at the bare proxy CA.
+- **Replacing** variables name a single file that becomes the tool's whole
+  trust set: `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `CARGO_HTTP_CAINFO`,
+  `GIT_SSL_CAINFO`. These are the only settings curl, Python `requests`,
+  Cargo and git honor.
+
+Pointing a replacing variable at the proxy CA alone breaks every tunnelled
+host (npm, PyPI, crates.io, distro mirrors). Pointing it at the public roots
+alone breaks every intercepted host. It needs the union, so the replacing
+variables point at a combined bundle of `{public roots} + {proxy CA}`:
+
+- The roots come from the proxy image's `ca-certificates` package, so they
+  stay current with no separate upkeep. `combineCaBundle(roots, ca)`
+  (`k8s/proxy/ca-bundle.ts`) concatenates them, and the proxy writes the
+  result as `ca-bundle.pem` next to its CA in the `yaac-proxy-ca` Secret on
+  every boot.
+- The server copies `proxy-ca.pem` (bare CA) and `ca-bundle.pem` (combined)
+  from that Secret into the `yaac-proxy-ca` ConfigMap that workspace pods
+  mount at `/etc/yaac/certs`, skipping the write when nothing changed. A
+  roots update needs no image rebuild.
+
+Tools that ignore both the OS store and every CA variable need their own
+import: Java (its own `cacerts` keystore), rustls-based clients, and GnuTLS
+`wget`.
+
 ## One host per MITM'd connection
 
 A MITM'd connection is admitted, and has its credentials chosen, for one
@@ -619,10 +653,9 @@ destination is read as a URL parser reads it, so `0x0a.20.0.5` or
 
 The proxy's DNS stub resolves a real address for one set of names: Services
 in the install's own namespace (`<name>.<namespace>.svc.cluster.local`).
-The server hands workspaces two of them, the npm cache and the project
-registry, which a workspace dials directly under their own label-scoped
-policies. Every Service there is yaac's, and a dial to one no such policy
-admits is dropped.
+The server hands workspaces one of them, the npm cache, which a workspace
+dials directly under its own label-scoped policies. Every Service there is
+yaac's, and a dial to one no such policy admits is dropped.
 
 Every other name gets the sinkhole, in-cluster names included. So
 `http://internal-web.other.svc.cluster.local/` goes through the proxy like

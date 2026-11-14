@@ -3,7 +3,6 @@ import {
   GVISOR_NODE_LABEL,
   RUNTIME_CLASS_GVISOR,
   GVISOR_PENDING_TAINT,
-  RUNTIME_CLASS_GVISOR_NESTED,
   WORKSPACE_POOL_KEY,
   type PodToleration,
 } from '#drivers/k8s/substrate'
@@ -15,7 +14,7 @@ import { NODE_SYSTEMD_CONF_DIR, nodeTuningScript } from './node-tuning'
  * passwordless sudo. The gVisor sentry contains that root and shields the
  * host kernel.
  *
- * Trusted infrastructure (the proxy, project registries, node-write pods,
+ * Trusted infrastructure (the proxy, the registry, node-write pods,
  * the installer) runs on runc. It only runs yaac's own code, and gVisor is
  * costly: each sandbox adds hundreds of threads, and many of them can
  * overload a node.
@@ -24,7 +23,7 @@ import { NODE_SYSTEMD_CONF_DIR, nodeTuningScript } from './node-tuning'
  * config the install produces, the install shell script, and the
  * RuntimeClass objects. A privileged DaemonSet (gvisor-installer.ts) runs
  * the script on every node. The RuntimeClass names a pod selects are
- * `#drivers/k8s/substrate`'s, since the server stamps them too.
+ * `#drivers/k8s/substrate`'s, since the server stamps it too.
  */
 
 /** Pinned gVisor release installed on every node (runsc, its shim and its
@@ -57,9 +56,8 @@ export function gvisorNodeLabels(): Record<string, string> {
   }
 }
 
-/** containerd runtime handler names the RuntimeClasses map to. */
+/** containerd runtime handler name the RuntimeClass maps to. */
 const RUNSC_HANDLER = 'runsc'
-const RUNSC_NESTED_HANDLER = 'runsc-nested'
 
 /** Node directories the installer writes, and where its pod sees them. */
 const INSTALLER_HOST_PREFIX = '/host'
@@ -69,9 +67,8 @@ export const NODE_CONTAINERD_DIR = '/etc/containerd'
  *  marker, so a restarted installer need not download again. */
 export const NODE_GVISOR_CACHE_DIR = '/var/lib/yaac/gvisor'
 
-/** Node paths the runsc configs land at. */
+/** Node path the runsc config lands at. */
 export const NODE_RUNSC_CONFIG_PATH = `${NODE_CONTAINERD_DIR}/runsc.toml`
-export const NODE_RUNSC_NESTED_CONFIG_PATH = `${NODE_CONTAINERD_DIR}/runsc-nested.toml`
 export const NODE_CONTAINERD_CONFIG_PATH = `${NODE_CONTAINERD_DIR}/config.toml`
 
 /** Readiness marker in a pod-local emptyDir: written after a successful
@@ -158,11 +155,10 @@ export const SANDBOX_DENTRY_CACHE = 200_000
  *    the shared tier would look each file up over NFS again
  *    (docs/nfs-checkout-performance.md). The value is a string: the shim
  *    rejects a TOML integer.
- *  - nested only: raw/packet sockets for the in-sandbox container engine.
  */
-function runscShimConfigToml(handler: 'gvisor' | 'gvisor-nested'): string {
-  const lines = [
-    `# Written by the yaac gVisor installer — runsc flags for the "${handler}"`,
+function runscShimConfigToml(): string {
+  return [
+    `# Written by the yaac gVisor installer — runsc flags for the "${RUNTIME_CLASS_GVISOR}"`,
     '# RuntimeClass handler. Managed; do not edit.',
     '[runsc_config]',
     '  platform = "systrap"',
@@ -170,12 +166,7 @@ function runscShimConfigToml(handler: 'gvisor' | 'gvisor-nested'): string {
     '  allow-suid = "true"',
     '  overlay2 = "root:self"',
     `  dcache = "${String(SANDBOX_DENTRY_CACHE)}"`,
-  ]
-  if (handler === 'gvisor-nested') {
-    lines.push('  net-raw = "true"')
-    lines.push('  allow-packet-socket-write = "true"')
-  }
-  return `${lines.join('\n')}\n`
+  ].join('\n') + '\n'
 }
 
 /**
@@ -201,32 +192,26 @@ function registryConfigPathToml(pluginKey: string): string {
 }
 
 /**
- * containerd config block registering both runsc handlers, appended once
+ * containerd config block registering the runsc handler, appended once
  * (guarded by a marker). Passing through `dev.gvisor.*` pod annotations lets
- * manifests set per-mount runsc options, such as the nested graphroot tmpfs.
+ * manifests set per-mount runsc options, such as a scratch dir's tmpfs.
  */
 export function gvisorContainerdRuntimesToml(pluginKey: string): string {
-  const rt = (handler: string): string =>
-    `plugins."${pluginKey}".containerd.runtimes.${handler}`
-  const entry = (handler: string, configPath: string): string[] => [
-    `[${rt(handler)}]`,
-    '  runtime_type = "io.containerd.runsc.v1"',
-    '  pod_annotations = ["dev.gvisor.*"]',
-    `  [${rt(handler)}.options]`,
-    '    TypeUrl = "io.containerd.runsc.v1.options"',
-    `    ConfigPath = "${configPath}"`,
-  ]
+  const rt = `plugins."${pluginKey}".containerd.runtimes.${RUNSC_HANDLER}`
   return [
     `${GVISOR_CONTAINERD_MARKER} v${GVISOR_VERSION} (written by the yaac gVisor installer; do not edit)`,
-    ...entry(RUNSC_HANDLER, NODE_RUNSC_CONFIG_PATH),
-    ...entry(RUNSC_NESTED_HANDLER, NODE_RUNSC_NESTED_CONFIG_PATH),
+    `[${rt}]`,
+    '  runtime_type = "io.containerd.runsc.v1"',
+    '  pod_annotations = ["dev.gvisor.*"]',
+    `  [${rt}.options]`,
+    '    TypeUrl = "io.containerd.runsc.v1.options"',
+    `    ConfigPath = "${NODE_RUNSC_CONFIG_PATH}"`,
   ].join('\n') + '\n'
 }
 
 /**
- * The RuntimeClasses. They are cluster-scoped and shared by every install on
- * the cluster, so they carry no install labels and teardown never deletes
- * them.
+ * The RuntimeClass. It is cluster-scoped and shared by every install on the
+ * cluster, so it carries no install labels and teardown never deletes it.
  *
  * Kubernetes merges `scheduling` into every pod that names the class. The
  * `nodeSelector` keeps sandboxed pods on nodes where the installer
@@ -237,19 +222,16 @@ export function gvisorContainerdRuntimesToml(pluginKey: string): string {
  * check reads the same field to find usable nodes.
  */
 export function buildRuntimeClassManifests(): Array<Record<string, unknown>> {
-  return [
-    { name: RUNTIME_CLASS_GVISOR, handler: RUNSC_HANDLER },
-    { name: RUNTIME_CLASS_GVISOR_NESTED, handler: RUNSC_NESTED_HANDLER },
-  ].map(({ name, handler }) => ({
+  return [{
     apiVersion: 'node.k8s.io/v1',
     kind: 'RuntimeClass',
-    metadata: { name },
-    handler,
+    metadata: { name: RUNTIME_CLASS_GVISOR },
+    handler: RUNSC_HANDLER,
     scheduling: {
       nodeSelector: { [GVISOR_NODE_LABEL]: 'true' },
       tolerations: [WORKSPACE_POOL_TOLERATION],
     },
-  }))
+  }]
 }
 
 /**
@@ -475,11 +457,10 @@ export function gvisorInstallScript(): string {
     '  fi',
     '  prune_cache',
     '',
-    `  if write_if_changed ${q(host(NODE_RUNSC_CONFIG_PATH))} ${q(runscShimConfigToml('gvisor'))}; then changed=1; fi`,
-    `  if write_if_changed ${q(host(NODE_RUNSC_NESTED_CONFIG_PATH))} ${q(runscShimConfigToml('gvisor-nested'))}; then changed=1; fi`,
+    `  if write_if_changed ${q(host(NODE_RUNSC_CONFIG_PATH))} ${q(runscShimConfigToml())}; then changed=1; fi`,
     '',
     '  if [ ! -f "$cfg" ]; then',
-    '    echo "yaac-gvisor: no $cfg on this node — cannot register the runsc handlers" >&2',
+    '    echo "yaac-gvisor: no $cfg on this node — cannot register the runsc handler" >&2',
     '    exit 1',
     '  fi',
     `  if ! grep -qF ${q(GVISOR_CONTAINERD_MARKER)} "$cfg"; then`,
@@ -535,7 +516,7 @@ export function gvisorInstallScript(): string {
     '  fi',
     '',
     '  if [ "$changed" = 1 ] || [ ! -f "$state/installed-$version" ]; then',
-    '    echo "yaac-gvisor: restarting containerd to pick up the runsc handlers and registry config"',
+    '    echo "yaac-gvisor: restarting containerd to pick up the runsc handler and registry config"',
     // Use the node's systemctl via PID 1's mount namespace. Running
     // containers survive a containerd restart.
     '    nsenter -t 1 -m -- systemctl restart containerd',

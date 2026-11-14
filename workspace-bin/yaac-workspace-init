@@ -19,9 +19,8 @@
 # YAAC_GIT_EMAIL, YAAC_STATUS_RIGHT, YAAC_CHECKOUTS (the workspace's
 # checkouts, relative to /workspace, `.` for one at its root, separated by
 # `:`; empty with no repos), YAAC_CWD (where the tmux session starts,
-# relative to /workspace; empty for /workspace itself), for installs through
-# the npm cache YAAC_NPM_REGISTRY, and for nested-containers sessions
-# YAAC_NESTED_ENGINE=1 plus optional YAAC_REGISTRY_CONF_B64.
+# relative to /workspace; empty for /workspace itself), and for installs
+# through the npm cache YAAC_NPM_REGISTRY.
 set -eu
 
 # Give the running uid the image's `yaac` identity, before anything that
@@ -37,15 +36,16 @@ set -eu
 # precisely so this can happen.
 #
 # Runs here rather than in the image ENTRYPOINT for two reasons: the kubelet
-# orders a container's entrypoint and its postStart hook not at all, and this
-# hook's own `sudo -n` (the nested engine, below) would race it; and staging
-# it with the rest of workspace-bin makes it independent of which image a
-# workspace runs, including a standalone Dockerfile.yaac with an entrypoint of
-# its own. Same rewrite, same two rules as dockerfiles/server-entrypoint.sh:
+# orders a container's entrypoint and its postStart hook not at all, so the
+# setup below could run before it; and staging it with the rest of
+# workspace-bin makes it independent of which image a workspace runs,
+# including a standalone Dockerfile.yaac with an entrypoint of its own. Same
+# rewrite, same two rules as dockerfiles/server-entrypoint.sh:
 #
 #   REPLACE the entry, never append a second one. getpwnam("yaac") and
-#   getpwuid(running uid) have to resolve to each other, or the engine start
-#   below chowns the podman socket to uid 1000 instead of to us.
+#   getpwuid(running uid) have to resolve to each other, or anything that
+#   names `yaac` (`chown yaac`, `sudo -u yaac`) acts as uid 1000 instead of
+#   as us.
 #
 #   Truncate in place rather than `sed -i`, which renames a temp file over
 #   /etc/passwd and so needs write permission on /etc, which we lack.
@@ -207,66 +207,6 @@ $TMUX \
   set-option -t yaac status-right-length 80 \; \
   set-option -t yaac status-right "$YAAC_STATUS_RIGHT" \; \
   bind-key k confirm-before -p 'kill this yaac session? (y/n)' kill-server
-
-# Nested sessions: start the in-pod ROOTFUL podman engine (it serves the
-# Docker Engine API on the socket DOCKER_HOST points at). Backgrounded so
-# pod readiness isn't held on the engine's multi-second boot — the server
-# gates on `docker version` over the relay before anything needs it, and a
-# dead-on-arrival engine surfaces its log tail there.
-if [ "${YAAC_NESTED_ENGINE:-}" = "1" ]; then
-  # Drop a registries.conf.d entry marking the per-project registry (plain
-  # HTTP on :5000) insecure, so user-driven `docker push` and the server's
-  # image-cache push/pull work without --tls-verify gymnastics. Written
-  # before the engine starts; per-project host, so it can't live in the
-  # shared nestable image layer. Rootful engine reads /etc/containers — sudo.
-  if [ -n "${YAAC_REGISTRY_CONF_B64:-}" ]; then
-    sudo -n mkdir -p /etc/containers/registries.conf.d
-    printf %s "$YAAC_REGISTRY_CONF_B64" | base64 -d \
-      | sudo -n tee /etc/containers/registries.conf.d/yaac-project-registry.conf >/dev/null
-  fi
-
-  # The engine runs as real root inside the sentry; the socket it creates
-  # under root-owned /run/podman is opened to the yaac user (who runs the
-  # agent + docker CLI). On timeout the script exits 1 with the engine log
-  # tail so the server-side `docker version` gate can point at it.
-  #
-  # SSL_CERT_FILE must be set INSIDE the sudo'd shell: the engine (a Go
-  # binary) trusts the MITM proxy CA for registry pulls via this var, but
-  # sudo's env_reset strips the pod env. It points at the combined bundle
-  # ({public roots} ∪ {proxy CA}) so both MITM'd and tunnelled registries
-  # verify — keep the path in sync with PROXY_CA_BUNDLE_PATH
-  # (packages/server/src/drivers/k8s/egress/proxy-client.ts).
-  #
-  # BUILDAH_ISOLATION=chroot: under buildah's default oci isolation the
-  # sentry breaks the RUN-step stdio relay after a few tens of KB of output.
-  # chroot isolation streams fine, keeps RUN on the pod netns, and holds
-  # setcap file caps on the tmpfs graphroot. Remote builds resolve isolation
-  # SERVER-side, so the service env covers every client.
-  cat > /tmp/yaac-engine-start.sh <<'EOF'
-export SSL_CERT_FILE=/etc/yaac/certs/ca-bundle.pem BUILDAH_ISOLATION=chroot
-podman system service --time=0 >/tmp/podman-service.log 2>&1 &
-i=0
-while [ $i -lt 120 ] && ! [ -S /run/podman/podman.sock ]; do i=$((i+1)); sleep 0.5; done
-if ! [ -S /run/podman/podman.sock ]; then
-  echo "yaac: in-pod podman engine did not create /run/podman/podman.sock within 60s; engine log tail:" >&2
-  tail -n 20 /tmp/podman-service.log >&2 || true
-  exit 1
-fi
-chmod 0755 /run/podman && chown yaac /run/podman/podman.sock
-# Warm the daemon's view of the node-local image store (the read-only
-# additionalimagestores lower at /var/lib/shared-images) before the agent
-# can ask for it. c/storage loads an additional store ONCE per engine and
-# afterwards revalidates by statting its lockfile, so this single walk —
-# the store's metadata plus a stat per layer directory, all of it across
-# the gVisor gofer — is the only cold cost there is; every later `podman
-# image ls` / `docker image ls` is answered from the daemon's memory.
-# Cheap and harmless when nothing is mounted (an empty store is no images).
-podman image ls -a >/dev/null 2>&1 || true
-EOF
-  # setsid + full redirection so the hook's exec stream can close while the
-  # engine keeps running, reparented to the container's catatonit init.
-  setsid sudo -n sh /tmp/yaac-engine-start.sh >/tmp/yaac-engine-setup.log 2>&1 </dev/null &
-fi
 
 # streamd LAST: its reachability over the stream relay is the server's
 # "in-pod setup done" signal — anything the relay can exec is guaranteed to

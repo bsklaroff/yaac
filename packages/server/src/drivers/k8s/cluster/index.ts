@@ -2,7 +2,7 @@
 // SEALED_FOLDERS).
 //
 // This feature owns the in-cluster datapath (egress proxy, netd, the main
-// and per-project registries, the npm cache, the public-site edge), the main registry's client
+// registry, the npm cache, the public-site edge), the main registry's client
 // and write grants, and the tag or digest of every image yaac ships.
 // Building and pushing those images is `#drivers/k8s/install`'s job.
 //
@@ -31,20 +31,7 @@ export {
   resetClusterCidrCache,
 } from './cluster-cidrs'
 export { reconcileNodeSet } from './node-sync'
-export {
-  PROJECT_REGISTRY_PORT,
-  REGISTRY_APP_LABEL,
-  REGISTRY_MIRROR_TAG,
-  REGISTRY_UPSTREAM_IMAGE,
-  buildRegistryRetentionScript,
-  ensureProjectRegistry,
-  gcOrphanProjectRegistries,
-  projectRegistryClusterIp,
-  projectRegistryConfDropIn,
-  projectRegistryHost,
-  reconcileProjectRegistryGc,
-  removeProjectRegistry,
-} from './project-registry'
+export { sweepProjectRegistries } from './project-registry-sweep'
 export {
   ensureBuilderRoleGuard,
   ensureCaConfigMap,
@@ -88,6 +75,7 @@ export {
 } from './image-tags'
 export {
   MAIN_REGISTRY_APP_LABEL,
+  REGISTRY_UPSTREAM_IMAGE,
   ensureMainRegistry,
   mainRegistryExec,
 } from './main-registry'

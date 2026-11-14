@@ -6,13 +6,12 @@ vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
   ...(await importOriginal<typeof apiModule>()),
 }))
 
-import { nodeLocalDirsOf, nodeLocalHostPath, resolveMountSource } from '#drivers/k8s/substrate'
+import { nodeLocalDirsOf, resolveMountSource } from '#drivers/k8s/substrate'
 import type { PodMount } from '#drivers/k8s/substrate'
 import { getDataDir, setDataDir } from '@yaac/shared/paths'
 import {
   cachedPackagesDir,
   claudeDir,
-  imageStoreDir,
   repoDir,
   workspaceDir,
 } from '@yaac/shared/project-paths'
@@ -70,13 +69,13 @@ describe('resolveMountSource', () => {
       mountPath: '/home/yaac/.cached-packages',
     })
     // A declared type survives.
-    const gen: PodMount = {
-      source: { kind: 'hostPath', path: path.join(imageStoreDir('demo'), 'gen-1'), type: 'DirectoryOrCreate' },
-      mountPath: '/var/lib/shared-images',
+    const typed: PodMount = {
+      source: { kind: 'hostPath', path: path.join(cachedPackagesDir('demo'), 'store'), type: 'Directory' },
+      mountPath: '/store',
       readOnly: true,
     }
-    expect(resolveMountSource(gen).source).toEqual({
-      kind: 'hostPath', path: `${NODE_ROOT}/shared-images/demo/gen-1`, type: 'DirectoryOrCreate',
+    expect(resolveMountSource(typed).source).toEqual({
+      kind: 'hostPath', path: `${NODE_ROOT}/projects/demo/.cached-packages/store`, type: 'Directory',
     })
   })
 
@@ -126,14 +125,6 @@ describe('resolveMountSource', () => {
   })
 })
 
-describe('nodeLocalHostPath', () => {
-  it('maps a node-local server path onto the install\'s node tree, and refuses others', () => {
-    setDataDir('/data/yaac')
-    expect(nodeLocalHostPath(imageStoreDir('demo'))).toBe(`${NODE_ROOT}/shared-images/demo`)
-    expect(() => nodeLocalHostPath(claudeDir('demo'))).toThrow(/not under the node-local root/)
-  })
-})
-
 describe('nodeLocalDirsOf', () => {
   it('lists the node-local directory mounts the pod writes, once each; files and read-only mounts excluded', () => {
     setDataDir('/data/yaac')
@@ -142,8 +133,8 @@ describe('nodeLocalDirsOf', () => {
       { source: { kind: 'hostPath', path: path.join(cachedPackagesDir('demo'), 'modules', 'w1', 'node_modules') }, mountPath: '/workspace/node_modules' },
       { source: { kind: 'hostPath', path: cachedPackagesDir('demo') }, mountPath: '/twice' },
       { source: { kind: 'hostPath', path: path.join(claudeDir('demo'), 'settings.json'), type: 'File' }, mountPath: '/f' },
-      // An image store generation, mounted read-only.
-      { source: { kind: 'hostPath', path: path.join(imageStoreDir('demo'), 'gen-1'), type: 'DirectoryOrCreate' }, mountPath: '/var/lib/shared-images', readOnly: true },
+      // Read-only.
+      { source: { kind: 'hostPath', path: path.join(cachedPackagesDir('demo'), 'store'), type: 'DirectoryOrCreate' }, mountPath: '/store', readOnly: true },
       { source: { kind: 'emptyDir' }, mountPath: '/tmp/yaac-tmux' },
     ].map((m) => resolveMountSource(m as PodMount))
     expect(nodeLocalDirsOf(resolved)).toEqual([

@@ -12,14 +12,13 @@ import {
   buildServerIngressNpManifest,
   buildWorkspaceEgressNpManifest,
 } from './policy-manifests'
-import { applyProjectRegistryIngress } from './project-registry'
 import { syncSiteEdgeNodes } from './site-edge'
 
 /**
  * Keeps per-node state current as nodes join, as they do when an autoscaler
  * adds one (docs/cluster-setup.md "Bring your own cluster"). Install and the
- * registries' ensures cover only the nodes that exist when they run, so a
- * later node would lack two things:
+ * main registry's ensure cover only the nodes that exist when they run, so
+ * a later node would lack two things:
  *  - its addresses in every NetworkPolicy that names nodes: those admitting
  *    them (kubelet probes, containerd pulls, netd's Envoy) and the egress
  *    that cuts them from the public block. These are re-applied whenever
@@ -50,7 +49,7 @@ interface RawNode {
  * changed, and start writing hosts.toml to Ready nodes that do not have it
  * yet.
  */
-export async function reconcileNodeSet(projectIds: string[]): Promise<void> {
+export async function reconcileNodeSet(): Promise<void> {
   const nodeCidrs = await nodeIpBlocks({ fresh: true })
   const nodeAddrs = await nodeAddressBlocks()
   const dnsCidrs = await clusterDnsCidrs()
@@ -69,7 +68,6 @@ export async function reconcileNodeSet(projectIds: string[]): Promise<void> {
     await syncNpmCacheNodes(nodeCidrs)
     await syncSiteEdgeNodes(nodeCidrs, dnsCidrs, apiserver)
     await applyMainRegistryIngress(nodeCidrs)
-    for (const projectId of projectIds) await applyProjectRegistryIngress(projectId, nodeCidrs)
     // Unset after a failed server render, so the next pass retries it.
     renderedAddresses = serverEgress ? addresses : null
   }

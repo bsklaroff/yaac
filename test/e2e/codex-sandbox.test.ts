@@ -21,19 +21,16 @@ import { kubectl } from '@yaac/test-utils/kubectl'
  * own. A broken sandbox fails closed, so without this test it would only
  * show up as codex quietly reporting failed commands.
  *
- * Both gVisor tiers run the real workspace pod spec (`buildPodJobManifest`)
- * with the checkout mounted at /workspace and one shared codex home
- * (`codexHomeMounts`). `codex sandbox` takes the same code path as an
+ * Two pods run the real workspace pod spec (`buildPodJobManifest`) with the
+ * checkout mounted at /workspace and one shared codex home
+ * (`codexHomeMounts`), as two workspaces of one project do. `codex sandbox` takes the same code path as an
  * agent's commands and needs no credentials.
  */
 
 const WORKSPACE = k8sWorkspacePaths().workspaceDir
 const RUN = crypto.randomBytes(4).toString('hex')
 
-const TIERS = [
-  { tier: 'gvisor', nested: false, pod: `yaac-codex-sandbox-${RUN}` },
-  { tier: 'gvisor-nested', nested: true, pod: `yaac-codex-sandbox-nested-${RUN}` },
-]
+const PODS = [`yaac-codex-sandbox-a-${RUN}`, `yaac-codex-sandbox-b-${RUN}`]
 
 let restoreNamespace: (() => void) | null = null
 /** The project's codex home, shared by both pods. */
@@ -77,9 +74,8 @@ async function inSandbox(pod: string, profile: string): Promise<string> {
  * ConfigMap lives in the install namespace and would leave the pod stuck in
  * ContainerCreating.
  */
-async function workspacePod(pod: string, nested: boolean): Promise<Record<string, unknown>> {
-  const { tools, nestable } = await resolveTrustedLayers('yaac-test')
-  const tag = nested ? nestable.tag : tools.tag
+async function workspacePod(pod: string): Promise<Record<string, unknown>> {
+  const { tag } = (await resolveTrustedLayers('yaac-test')).tools
   if (await registryTagState(tag) !== 'present') {
     throw new Error(`${tag} is not in the local registry — did test/global-setup.ts run?`)
   }
@@ -108,7 +104,6 @@ async function workspacePod(pod: string, nested: boolean): Promise<Record<string
     ephemeralStorageRequestBytes: 1024 ** 3,
     ephemeralStorageLimitBytes: 4 * 1024 ** 3,
     proxyHost: '10.96.0.10',
-    nested,
   }) as unknown as { spec: { template: Template } }
   const { metadata, spec } = job.spec.template
   spec.volumes = spec.volumes.filter((v) => v.name !== 'proxy-ca')
@@ -131,8 +126,8 @@ beforeAll(async () => {
   codexDir = await e2eMkdtemp('yaac-codex-home-')
 
   const probe = Buffer.from(PROBE).toString('base64')
-  await Promise.all(TIERS.map(async ({ pod, nested }) => {
-    await applyObject(await workspacePod(pod, nested))
+  await Promise.all(PODS.map(async (pod) => {
+    await applyObject(await workspacePod(pod))
     await kubectl(
       ['wait', '--for=condition=Ready', `pod/${pod}`, '-n', k8sNamespace(), '--timeout=300s'],
       { timeout: 320_000 },
@@ -143,12 +138,14 @@ beforeAll(async () => {
 }, 600_000)
 
 afterAll(async () => {
-  await Promise.all(TIERS.map(({ pod }) =>
+  await Promise.all(PODS.map((pod) =>
     deleteObject({ apiVersion: 'v1', kind: 'Pod', name: pod, namespace: k8sNamespace() }).catch(() => undefined)))
   restoreNamespace?.()
 })
 
-describe.each(TIERS)("codex's sandbox in a $tier workspace pod", ({ pod }) => {
+describe("codex's sandbox in a workspace pod", () => {
+  const pod = PODS[0]
+
   it('runs read-only commands, and refuses every write and the network', async () => {
     const out = await inSandbox(pod, ':read-only')
     expect(out).toContain('ran')
@@ -191,7 +188,7 @@ describe('a project\'s codex pods', () => {
     // home the other pod would delete this one's dir unless tmp is
     // pod-local. The long-running app-server (what codex-acp drives) holds
     // the lock here.
-    const [a, b] = TIERS.map((t) => t.pod)
+    const [a, b] = PODS
     const arg0 = `${CODEX_CONTAINER_HOME}/tmp/arg0-linux`
     // Clear the unlocked dirs the cases above left behind.
     const started = await sh(a, `rm -rf ${arg0}/*; `

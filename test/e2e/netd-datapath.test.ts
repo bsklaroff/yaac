@@ -488,9 +488,9 @@ describe('netd datapath gates', () => {
   it('cannot borrow another session\'s identity by forging a source IP', async () => {
     // The redirect is keyed on the arriving veth and Envoy records the
     // observed address, so a spoofed source IP cannot borrow another
-    // workspace's allowlist. The forger needs NET_RAW/NET_ADMIN and the
-    // gvisor-nested tier, hence its own pod.
-    await startWorkspacePod(podRaw, sessionRaw, proxyHost, { netRaw: true })
+    // workspace's allowlist. The forger needs NET_ADMIN, which no real
+    // workspace holds, hence its own pod.
+    await startWorkspacePod(podRaw, sessionRaw, proxyHost, { netAdmin: true })
     await focusNetdOnPod(podRaw)
 
     // The forger cannot reach the host legitimately...
@@ -504,9 +504,17 @@ describe('netd datapath gates', () => {
     // ...while the victim can.
     expect(await egressWorks(podA)).toBe(true)
 
+    // The forger must really hold the victim's address, or the spoof below
+    // fails without netd refusing anything. The pod's net-admin container
+    // adds it; the session container, which curls, must then see it.
+    await kubectl(['exec', '-n', k8sNamespace(), podRaw, '-c', 'net-admin', '--',
+      'ip', 'addr', 'add', `${victimIp}/32`, 'dev', 'eth0'])
+    const held = await shInPod(podRaw,
+      'node -e "console.log(JSON.stringify(require(\'os\').networkInterfaces()))"')
+    expect(held.out, 'the forger does not hold the victim\'s address').toContain(`"${victimIp}"`)
+
     const spoofed = await shInPod(podRaw,
-      `ip addr add ${victimIp}/32 dev eth0 2>/dev/null; `
-      + `curl -sS --max-time 12 --interface ${victimIp} --cacert ${CA_PATH} `
+      `curl -sS --max-time 12 --interface ${victimIp} --cacert ${CA_PATH} `
       + `--resolve ${MITM_HOST}:443:${FAKE_IP} https://${MITM_HOST}/v1/test -o /dev/null`)
     expect(spoofed.exit, 'a pod reached a host only the VICTIM session is allowed — '
       + `source-IP attribution was forged (out: ${spoofed.out.slice(0, 200)})`).not.toBe(0)

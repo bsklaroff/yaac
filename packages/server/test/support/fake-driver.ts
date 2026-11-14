@@ -191,7 +191,6 @@ function defaultRuntime(): WorkspaceDriver {
     dialPort: () => Promise.reject(new Error('fake driver has no port to dial')),
     registerWorkspace: () => Promise.resolve(),
     deregisterWorkspace: () => Promise.resolve(),
-    salvageImages: () => Promise.resolve(),
     runInStoppedCheckout: () => Promise.resolve(),
     // Defaults to "it really went away"; timeout cases override it.
     destroy: () => Promise.resolve(true),

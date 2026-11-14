@@ -15,7 +15,7 @@ import {
   registerWorkspaceEgress,
   type ProxyRegistration,
 } from '#drivers/k8s/egress/proxy-registration'
-import { DEFAULT_ALLOWED_HOSTS, NESTED_PULL_HOSTS } from '@yaac/shared/allowed-hosts'
+import { DEFAULT_ALLOWED_HOSTS } from '@yaac/shared/allowed-hosts'
 import {
   LABEL_INSTALL_ID,
   installId,
@@ -76,7 +76,6 @@ const DEFAULTS = { hosts: [], defaults: true }
 describe('buildProxyRegistration', () => {
   it('builds secret-free, project-scoped reference rules from the secrets', () => {
     const reg = buildProxyRegistration({
-      config: PROJECT_CONFIG_DEFAULTS,
       allowlist: DEFAULTS,
       projectId: 'acme-repo',
       owner: 'o',
@@ -130,9 +129,8 @@ describe('buildProxyRegistration', () => {
     expect(reg.projectId).toBe('acme-repo')
   })
 
-  it('resolves the default allowlist when config has no overrides', () => {
+  it('resolves the default allowlist when the project adds nothing', () => {
     const reg = buildProxyRegistration({
-      config: PROJECT_CONFIG_DEFAULTS,
       allowlist: DEFAULTS,
       projectId: 'acme-repo',
       owner: 'o',
@@ -145,64 +143,15 @@ describe('buildProxyRegistration', () => {
 
   it('honors the project allowlist, with or without the defaults', () => {
     expect(buildProxyRegistration({
-      config: PROJECT_CONFIG_DEFAULTS, allowlist: { hosts: ['only.example.com'], defaults: false }, projectId: 'p', owner: 'o', secretRules: {}, env: {},
+      allowlist: { hosts: ['only.example.com'], defaults: false }, projectId: 'p', owner: 'o', secretRules: {}, env: {},
     }).allowedHosts).toEqual(['only.example.com'])
     expect(buildProxyRegistration({
-      config: PROJECT_CONFIG_DEFAULTS, allowlist: { hosts: ['extra.example.com'], defaults: true }, projectId: 'p', owner: 'o', secretRules: {}, env: {},
+      allowlist: { hosts: ['extra.example.com'], defaults: true }, projectId: 'p', owner: 'o', secretRules: {}, env: {},
     }).allowedHosts).toContain('extra.example.com')
-  })
-
-  it('auto-appends the registry/CDN pull hosts for nestedContainers sessions', () => {
-    const reg = buildProxyRegistration({
-      config: { ...PROJECT_CONFIG_DEFAULTS, nestedContainers: true }, allowlist: DEFAULTS, projectId: 'p', owner: 'o', secretRules: {}, env: {},
-    })
-    for (const host of NESTED_PULL_HOSTS) {
-      expect(reg.allowedHosts).toContain(host)
-    }
-    // The pull hosts are not in the base list, so they appear exactly once.
-    expect(
-      reg.allowedHosts.filter((h) => h === 'registry-1.docker.io'),
-    ).toHaveLength(1)
-    // The shared default list is not mutated.
-    expect(DEFAULT_ALLOWED_HOSTS).not.toContain('cdn01.quay.io')
-  })
-
-  it('still appends the pull hosts on top of added hosts', () => {
-    const reg = buildProxyRegistration({
-      config: { ...PROJECT_CONFIG_DEFAULTS, nestedContainers: true }, allowlist: { hosts: ['extra.example.com'], defaults: true }, projectId: 'p', owner: 'o', secretRules: {}, env: {},
-    })
-    expect(reg.allowedHosts).toContain('extra.example.com')
-    expect(reg.allowedHosts).toContain('registry-1.docker.io')
-  })
-
-  it('appends the pull hosts beside * with the defaults on', () => {
-    const reg = buildProxyRegistration({
-      config: { ...PROJECT_CONFIG_DEFAULTS, nestedContainers: true }, allowlist: { hosts: ['*'], defaults: true }, projectId: 'p', owner: 'o', secretRules: {}, env: {},
-    })
-    expect(reg.allowedHosts).toContain('*')
-    expect(reg.allowedHosts).toEqual(expect.arrayContaining(NESTED_PULL_HOSTS))
-  })
-
-  it('does NOT append the pull hosts with the defaults off (exact list)', () => {
-    const reg = buildProxyRegistration({
-      config: { ...PROJECT_CONFIG_DEFAULTS, nestedContainers: true }, allowlist: { hosts: ['only.example.com'], defaults: false }, projectId: 'p', owner: 'o', secretRules: {}, env: {},
-    })
-    expect(reg.allowedHosts).toEqual(['only.example.com'])
-  })
-
-  it('leaves the allowlist untouched when nestedContainers is off', () => {
-    const reg = buildProxyRegistration({
-      config: PROJECT_CONFIG_DEFAULTS,
-      allowlist: DEFAULTS, projectId: 'p', owner: 'o', secretRules: {}, env: {},
-    })
-    expect(reg.allowedHosts).toEqual([...DEFAULT_ALLOWED_HOSTS])
-    expect(reg.allowedHosts).not.toContain('cdn01.quay.io')
-    expect(reg.allowedHosts).not.toContain('registry-1.docker.io')
   })
 
   it('parses upstream redirects from the e2e env hook', () => {
     const reg = buildProxyRegistration({
-      config: PROJECT_CONFIG_DEFAULTS,
       allowlist: DEFAULTS,
       projectId: 'p',
       owner: 'o',
@@ -347,7 +296,6 @@ describe('reconcileRegistrationGc', () => {
         workspaces: () => Promise.resolve(live.map((workspaceId) => ({ workspaceId }))),
       }) as unknown as ReturnType<PassContext['snapshot']>,
       projectIds: () => Promise.resolve([]),
-      projectConfig: () => Promise.resolve(undefined),
       projectOwner: () => Promise.resolve('owner'),
       pinnedImages: () => Promise.resolve([]),
       terminating: (id) => terminating.includes(id),

@@ -1,12 +1,11 @@
 import { statfs } from 'node:fs/promises'
-import { MAIN_REGISTRY_APP_LABEL, REGISTRY_APP_LABEL } from '#drivers/k8s/cluster'
+import { MAIN_REGISTRY_APP_LABEL } from '#drivers/k8s/cluster'
 import {
   CHECKOUTS_CLAIM_NAME,
   GLOBAL_CLAIM_NAME,
   GVISOR_NODE_LABEL,
   GVISOR_PENDING_TAINT,
   LABEL_PREWARMED,
-  LABEL_PROJECT_ID,
   LABEL_ROLE,
   LABEL_WORKSPACE_ID,
   NETD_APP_NAME,
@@ -206,7 +205,6 @@ function bucketKey(pod: PodObject): string | undefined {
   switch (labels.app) {
     case SERVER_APP_NAME: return 'server'
     case MAIN_REGISTRY_APP_LABEL: return 'main-registry'
-    case REGISTRY_APP_LABEL: return 'project-registries'
     case NPM_CACHE_APP_NAME: return 'npm-cache'
     case PROXY_APP_NAME: return 'proxy'
     case NETD_APP_NAME: return 'netd'
@@ -220,7 +218,6 @@ function emptyBuckets(): Bucket[] {
   return [
     { key: 'server', label: 'yaac server', pods: [] },
     { key: 'main-registry', label: 'main registry', pods: [] },
-    { key: 'project-registries', label: 'project registries', counted: true, pods: [] },
     { key: 'npm-cache', label: 'npm cache', pods: [] },
     { key: 'proxy', label: 'egress proxy', pods: [] },
     { key: 'netd', label: 'netd', counted: true, pods: [] },
@@ -333,31 +330,13 @@ export async function k8sUsage(opts: { full: boolean }): Promise<SubstrateUsage>
 
   const sumOf = (members: Bucket['pods']): ResourceUse =>
     members.reduce((sum, { stats }) => (stats ? add(sum, podUse(stats)) : sum), ZERO)
-  const components: ComponentUsage[] = buckets.filter((b) => b.pods.length > 0).map((b) => {
-    const component: ComponentUsage = {
-      key: b.key,
-      label: b.label,
-      ...sumOf(b.pods),
-      ...(b.counted ? { count: b.pods.length } : {}),
-      volumes: b.key === 'project-registries' ? [] : volumesOf(b.pods.map(({ pod }) => pod)),
-    }
-    if (b.key !== 'project-registries') return component
-    const byProject = new Map<string, Bucket['pods']>()
-    for (const member of b.pods) {
-      const projectId = member.pod.metadata.labels?.[LABEL_PROJECT_ID] ?? ''
-      byProject.set(projectId, [...(byProject.get(projectId) ?? []), member])
-    }
-    return {
-      ...component,
-      children: [...byProject].map(([projectId, members]) => ({
-        key: `project-registry:${projectId}`,
-        label: projectId,
-        projectId,
-        ...sumOf(members),
-        volumes: volumesOf(members.map(({ pod }) => pod)),
-      })),
-    }
-  })
+  const components: ComponentUsage[] = buckets.filter((b) => b.pods.length > 0).map((b) => ({
+    key: b.key,
+    label: b.label,
+    ...sumOf(b.pods),
+    ...(b.counted ? { count: b.pods.length } : {}),
+    volumes: volumesOf(b.pods.map(({ pod }) => pod)),
+  }))
 
   // Totals cover the nodes that answered, capacity included, so a missing
   // node never reads as an idle one.

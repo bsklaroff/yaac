@@ -17,7 +17,6 @@ export {
   setActiveClusterCache,
 } from './cluster-cache'
 export type { WorkspaceDeltaSource } from './cluster-cache'
-export { containerExec } from './exec'
 export {
   apiStatus,
   applyObject,
@@ -41,7 +40,6 @@ export type { LegacyKeys } from './install-id'
 export { legacyHashOf, relabelLegacyObjects } from './legacy-labels'
 export {
   nodeLocalDirsOf,
-  nodeLocalHostPath,
   nodeLocalNodePath,
   resolveMountSource,
 } from './mount-sources'
@@ -53,14 +51,9 @@ export {
   CA_CONFIGMAP_NAME,
   GVISOR_NODE_LABEL,
   GVISOR_PENDING_TAINT,
-  NESTED_ENGINE_CAPS,
-  NESTED_GRAPHROOT_PATH,
-  NESTED_GRAPHROOT_VOLUME,
   CA_SSH_KNOWN_HOSTS_KEY,
   RUNTIME_CLASS_GVISOR,
-  RUNTIME_CLASS_GVISOR_NESTED,
   WORKSPACE_POOL_KEY,
-  runtimeClassSpec,
   sentryTmpfsAnnotations,
   installSecurityContext,
   processIdentity,
@@ -95,13 +88,11 @@ export {
   volumeClaimName,
 } from './storage-constants'
 export {
-  LABEL_NESTED,
   JOB_NAME_LABEL,
   LABEL_PREWARMED,
   LABEL_PROJECT_ID,
   LABEL_WORKSPACE_ID,
   findWorkspacePod,
-  isNested,
   isPrewarmed,
   listWorkspaceJobs,
   listWorkspacePods,

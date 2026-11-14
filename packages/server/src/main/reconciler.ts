@@ -7,11 +7,9 @@ import type {
 } from '#drivers/contract'
 import { defaultReconcileSteps } from '#main/reconcile-steps'
 import { listProjectRows, listSites } from '#db'
-import { resolveProjectConfig } from '#domain/projects'
 import { isWorkspaceTerminating } from '#runtime/status'
 import { onConvergenceChange, type ChangeSource } from '#main/convergence'
 import { errorText, serverLog } from '#lib/log'
-import type { ProjectConfig } from '@yaac/shared/types'
 
 /**
  * Event-driven reconciler. Two sources mark work dirty for one serialized
@@ -84,7 +82,6 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
       let snapshot: RuntimeSnapshot | null = null
       let projectRows: ReturnType<typeof listProjectRows> | null = null
       const rows = (): ReturnType<typeof listProjectRows> => (projectRows ??= listProjectRows())
-      const projectConfigs = new Map<string, Promise<ProjectConfig | undefined>>()
       const ctx: PassContext = {
         triggers,
         resync,
@@ -94,18 +91,6 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         // rejects rather than returning empty, because the orphan
         // collectors would treat an empty list as "collect everything".
         projectIds: () => rows().then((all) => all.map((r) => r.id)),
-        // Memoized per project. No catch: a failed read must reject, or a
-        // step could build and push the wrong image (a nestedContainers
-        // chain without its nestable layer). The step skips this pass and
-        // the next pass retries.
-        projectConfig: (projectId) => {
-          let pending = projectConfigs.get(projectId)
-          if (!pending) {
-            pending = resolveProjectConfig(projectId)
-            projectConfigs.set(projectId, pending)
-          }
-          return pending
-        },
         projectOwner: async (projectId) => {
           const row = (await rows()).find((r) => r.id === projectId)
           if (!row) throw new Error(`project ${projectId} no longer exists`)

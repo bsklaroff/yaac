@@ -12,7 +12,7 @@
 #      `yaac-server-local`, `yaac-checkouts`) bind static hostPath PVs into
 #      it, which resolve on the NODE, not the host; and
 #      `<dataDir>/node-local` → `/var/lib/yaac/node/<install id>`, so the
-#      node-local tier (pnpm stores, image stores) lives on the host disk
+#      node-local tier (pnpm stores) lives on the host disk
 #      too and survives a cluster delete. Only the data dir is mounted, so
 #      a process inside a node cannot read the rest of your home directory
 #      through it. The node is still a privileged container, so this narrows

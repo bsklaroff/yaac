@@ -75,8 +75,9 @@ afterEach(() => {
 
 describe('reapNodeLocal', () => {
   it('runs one root pod per node over the install\'s node tree, with the live set as argv', async () => {
-    // A pod mounting the slug-named `projects/demo` keeps that tree alive;
-    // a volume outside the node-local tree is ignored.
+    // A pod mounting the slug-named `projects/demo` keeps that tree alive,
+    // one still mounting an image store keeps that store; a volume outside
+    // the node-local tree is ignored.
     stageNodes(['n1', 'n2'], [
       `${NODE_TREE}/projects/demo/.cached-packages`,
       `${NODE_TREE}/shared-images/${LIVE}/gen-1`,
@@ -94,10 +95,11 @@ describe('reapNodeLocal', () => {
       expect(pod.spec.volumes[0].hostPath?.path).toBe(NODE_TREE)
       expect(pod.spec.containers[0].volumeMounts).toEqual([{ name: 'node', mountPath: '/node' }])
       const argv = pod.spec.containers[0].command.slice(4)
-      expect(argv).toHaveLength(3)
+      expect(argv).toHaveLength(4)
       expect(Number(argv[0])).toBeGreaterThan(0)
       expect(argv[1].split(',').sort()).toEqual([LIVE, 'demo'].sort())
       expect(argv[2]).toBe('a,b')
+      expect(argv[3]).toBe(LIVE)
     }
     await expect(execFileAsync('sh', ['-n', '-c', pods[0].spec.containers[0].command[2]])).resolves.toBeTruthy()
   })
@@ -152,9 +154,11 @@ describe('reapNodeLocal', () => {
     }
 
     /** Run the script with `root` standing in for the pod's /node mount. */
-    async function run(kept: string[], live: string[], cutoffEpoch: number): Promise<string> {
+    async function run(kept: string[], live: string[], cutoffEpoch: number, stores: string[] = []): Promise<string> {
       const script = buildNodeLocalSweepScript().replaceAll('/node/', `${root}/`)
-      const { stdout } = await execFileAsync('sh', ['-c', script, '--', String(cutoffEpoch), kept.join(','), live.join(',')])
+      const { stdout } = await execFileAsync('sh', [
+        '-c', script, '--', String(cutoffEpoch), kept.join(','), live.join(','), stores.join(','),
+      ])
       return stdout
     }
 
@@ -162,29 +166,37 @@ describe('reapNodeLocal', () => {
     const stale = (rel: string): Promise<void> => fs.utimes(path.join(root, rel), STALE, STALE)
 
     it('keeps live and mounted project trees, removes the rest whole, and honours the cutoff', async () => {
-      const liveStore = await seed(`shared-images/${LIVE}/gen-1`)
       const liveCache = await seed(`projects/${LIVE}/.cached-packages`)
       const mounted = await seed('projects/legacy-mounted/.cached-packages')
       const goneTree = await seed(`projects/${GONE}/.cached-packages`)
-      const goneStore = await seed(`shared-images/${GONE}/gen-1`)
-      const slugNamed = await seed('shared-images/old-slug/gen-1')
       const staging = await seed('projects/just-added/.cached-packages', new Date())
-      for (const rel of [`projects/${LIVE}`, 'projects/legacy-mounted', `projects/${GONE}`,
-        `shared-images/${GONE}`, 'shared-images/old-slug', `shared-images/${LIVE}`]) await stale(rel)
+      for (const rel of [`projects/${LIVE}`, 'projects/legacy-mounted', `projects/${GONE}`]) await stale(rel)
 
       const out = await run([LIVE, 'legacy-mounted'], [], Math.floor((Date.now() - 10_000) / 1000))
 
-      for (const kept of [liveStore, liveCache, mounted, staging]) {
+      for (const kept of [liveCache, mounted, staging]) {
         await expect(fs.access(kept)).resolves.toBeUndefined()
       }
-      for (const gone of [goneTree, goneStore, slugNamed]) {
-        await expect(fs.access(gone)).rejects.toThrow()
-      }
+      await expect(fs.access(goneTree)).rejects.toThrow()
       await expect(fs.access(path.join(root, 'projects', GONE))).rejects.toThrow()
       expect(out).toContain(`removed projects/${GONE}`)
+      expect(out.trim().endsWith('node-local-sweep removed 1')).toBe(true)
+    })
+
+    // Image stores of retired nested-container workspaces go whatever their
+    // age or project, except one a still-running pod mounts.
+    it('removes every image store no pod mounts, then their root once empty', async () => {
+      const mountedStore = await seed(`shared-images/${LIVE}/gen-1`)
+      const fresh = await seed(`shared-images/${GONE}/gen-1`, new Date())
+
+      const cutoff = Math.floor((Date.now() - 10_000) / 1000)
+      const out = await run([LIVE], [], cutoff, [LIVE])
+      await expect(fs.access(mountedStore)).resolves.toBeUndefined()
+      await expect(fs.access(fresh)).rejects.toThrow()
       expect(out).toContain(`removed shared-images/${GONE}`)
-      expect(out).toContain('removed shared-images/old-slug')
-      expect(out.trim().endsWith('node-local-sweep removed 3')).toBe(true)
+
+      await run([LIVE], [], cutoff)
+      await expect(fs.access(path.join(root, 'shared-images'))).rejects.toThrow()
     })
 
     it('inside a live project, spares live workspaces\' working copies and removes the rest', async () => {
@@ -218,7 +230,7 @@ describe('reapNodeLocal', () => {
 
       const future = Math.floor(Date.now() / 1000) + 60
       // `evil` is not live either, but a symlink is skipped entirely.
-      const out = await run(['demo', 'other'], [], future)
+      const out = await run(['demo', 'other'], [], future, ['nothing'])
 
       await expect(fs.access(victim)).resolves.toBeUndefined()
       await expect(fs.lstat(path.join(root, 'projects/evil'))).resolves.toBeTruthy()

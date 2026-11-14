@@ -6,7 +6,6 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import {
   CA_CONFIGMAP_NAME,
-  NESTED_GRAPHROOT_PATH,
   installSecurityContext,
   sentryTmpfsAnnotations,
 } from '#drivers/k8s/substrate'
@@ -16,8 +15,6 @@ import {
   CA_MOUNT_DIR,
   SCRATCH_REQUEST_BYTES,
   SCRATCH_SIZELIMIT_SLACK_BYTES,
-  NESTED_GRAPHROOT_SIZELIMIT_BYTES,
-  NESTED_GRAPHROOT_TMPFS_BYTES,
   WORKSPACE_POD_ANNOTATIONS,
   type PodJobParams,
 } from '#drivers/k8s/workspaces/pod-job'
@@ -158,8 +155,10 @@ describe('buildPodJobManifest', () => {
       runAsGroup: process.getgid?.(),
       supplementalGroups: [0],
     })
-    // No fsGroup: the nested engine's graphroot is root-owned.
+    // No fsGroup, which kubelet would apply to every volume, and no added
+    // capabilities.
     expect(spec.securityContext).not.toHaveProperty('fsGroup')
+    expect(spec.containers[0].securityContext).toBeUndefined()
   })
 
   it('host pod: stamps the gvisor RuntimeClass and no user namespace', () => {
@@ -498,133 +497,6 @@ describe('buildPodJobManifest', () => {
     })
   })
 
-  describe('nestedContainers', () => {
-    const nested = true
-
-    it('leaves the non-nested manifest byte-identical when nested is absent', () => {
-      const withoutField = buildPodJobManifest(params())
-      const withUndefined = buildPodJobManifest({ ...params(), nested: undefined })
-      expect(JSON.stringify(withUndefined)).toBe(JSON.stringify(withoutField))
-
-      const spec = build().spec.template.spec
-      // `nested` adds only the graphroot volume, annotations and capabilities.
-      expect(spec.securityContext).toEqual({
-        seccompProfile: { type: 'RuntimeDefault' },
-        runAsUser: process.getuid?.(),
-        runAsGroup: process.getgid?.(),
-        supplementalGroups: [0],
-      })
-      expect(spec.initContainers).toBeUndefined()
-      expect(spec.volumes.some((v) => v.name === 'podman-graphroot')).toBe(false)
-      expect(build().spec.template.metadata.annotations).toEqual(WORKSPACE_POD_ANNOTATIONS)
-      expect(spec.containers[0].resources).toEqual({
-        requests: {
-          cpu: '250m',
-          memory: String(1 * 1024 ** 3),
-          'ephemeral-storage': String(2 * 1024 ** 3),
-        },
-        limits: {
-          cpu: '8000m',
-          memory: String(8 * 1024 ** 3),
-          'ephemeral-storage': String(16 * 1024 ** 3),
-        },
-      })
-    })
-
-    it('nested host pod: maps to the gvisor-nested handler, no userns', () => {
-      const spec = build({ nested }).spec.template.spec
-      expect(spec.runtimeClassName).toBe('gvisor-nested')
-      expect(spec.hostUsers).toBeUndefined()
-    })
-
-    it('allows a graphroot cap at or above the pod memory limit (disk-backed)', () => {
-      // The graphroot is disk-backed, so it is not bounded by pod memory.
-      expect(() => buildPodJobManifest({
-        ...params(), nested, memoryLimitBytes: NESTED_GRAPHROOT_TMPFS_BYTES,
-      })).not.toThrow()
-    })
-
-    it('adds the rootful engine caps and no fsGroup on the session container', () => {
-      const spec = build({ nested }).spec.template.spec
-      // seccomp stays RuntimeDefault (runsc adds its own); no fsGroup, as
-      // the graphroot is root-owned.
-      expect(spec.securityContext).toEqual({
-        seccompProfile: { type: 'RuntimeDefault' },
-        runAsUser: process.getuid?.(),
-        runAsGroup: process.getgid?.(),
-        supplementalGroups: [0],
-      })
-      expect(spec.containers[0].securityContext).toEqual({
-        capabilities: {
-          add: [
-            'SYS_ADMIN', 'SYS_CHROOT', 'MKNOD', 'SETFCAP',
-            'NET_RAW', 'NET_ADMIN', 'SYS_PTRACE', 'SYS_RESOURCE',
-          ],
-        },
-      })
-    })
-
-    it('backs the graphroot with a disk emptyDir + gVisor disk-tmpfs annotations', () => {
-      const m = build({ nested })
-      const spec = m.spec.template.spec
-      // Pins how the cap relates across the sentry's `size=`, the emptyDir
-      // sizeLimit, and the slack between them.
-      const cap = NESTED_GRAPHROOT_TMPFS_BYTES
-      // Disk-backed emptyDir holding runsc's filestore. sizeLimit has slack
-      // above `size=` so the sentry hits ENOSPC before kubelet evicts.
-      expect(spec.volumes).toContainEqual({
-        name: 'podman-graphroot',
-        emptyDir: { sizeLimit: String(cap + 1024 ** 3) },
-      })
-      expect(spec.containers[0].volumeMounts).toContainEqual({
-        name: 'podman-graphroot',
-        mountPath: NESTED_GRAPHROOT_PATH,
-      })
-      // runsc annotations make it a disk-backed sentry tmpfs (see
-      // NESTED_GRAPHROOT_ANNOTATIONS).
-      expect(m.spec.template.metadata.annotations).toEqual({
-        ...WORKSPACE_POD_ANNOTATIONS,
-        'dev.gvisor.spec.mount.podman-graphroot.type': 'bind',
-        'dev.gvisor.spec.mount.podman-graphroot.share': 'container',
-        'dev.gvisor.spec.mount.podman-graphroot.options': `rw,size=${cap}`,
-      })
-    })
-
-    it('mounts nothing for the image cache — it rides the project registry', () => {
-      const plain = build().spec.template.spec
-      const spec = build({ nested }).spec.template.spec
-      // Image caching goes through the project registry, so nesting adds
-      // only the graphroot volume and nothing tied to a node.
-      expect(spec.volumes.map((v) => v.name))
-        .toEqual([...plain.volumes.map((v) => v.name), 'podman-graphroot'])
-      expect(JSON.stringify(spec)).not.toContain('shared-images')
-      expect(spec.initContainers).toBeUndefined()
-    })
-
-    it('adds the graphroot volume to the ephemeral-storage limit, nothing else', () => {
-      const resources = build({ nested }).spec.template.spec.containers[0].resources
-      // emptyDirs count against ephemeral storage, so the limit must exceed
-      // the graphroot's sizeLimit or a build would evict the workspace.
-      // Requests are unchanged.
-      expect(resources).toEqual({
-        requests: {
-          cpu: '250m',
-          memory: String(1 * 1024 ** 3),
-          'ephemeral-storage': String(2 * 1024 ** 3),
-        },
-        limits: {
-          cpu: '8000m',
-          memory: String(8 * 1024 ** 3),
-          'ephemeral-storage': String(16 * 1024 ** 3 + NESTED_GRAPHROOT_SIZELIMIT_BYTES),
-        },
-      })
-      const graphroot = build({ nested }).spec.template.spec.volumes
-        .find((v) => v.name === 'podman-graphroot')
-      expect(Number(resources.limits['ephemeral-storage']))
-        .toBeGreaterThan(Number(graphroot?.emptyDir?.sizeLimit))
-    })
-  })
-
   describe('scratchDirs', () => {
     const GIB = 1024 ** 3
     const scratchDirs = [
@@ -634,8 +506,8 @@ describe('buildPodJobManifest', () => {
 
     // One volume per dir: the tmpfs annotation applies per volume, not to
     // a subPath. Each is capped at its own size.
-    it('backs each dir with its own sentry-tmpfs emptyDir at its own cap, alongside the graphroot', () => {
-      const m = build({ scratchDirs, nested: true })
+    it('backs each dir with its own sentry-tmpfs emptyDir at its own cap', () => {
+      const m = build({ scratchDirs })
       const spec = m.spec.template.spec
       expect(spec.volumes).toContainEqual({
         name: 'scratch-0', emptyDir: { sizeLimit: String(8 * GIB + SCRATCH_SIZELIMIT_SLACK_BYTES) },
@@ -651,7 +523,6 @@ describe('buildPodJobManifest', () => {
       })
       expect(m.spec.template.metadata.annotations).toEqual({
         ...WORKSPACE_POD_ANNOTATIONS,
-        ...sentryTmpfsAnnotations('podman-graphroot', NESTED_GRAPHROOT_TMPFS_BYTES),
         ...sentryTmpfsAnnotations('scratch-0', 8 * GIB),
         ...sentryTmpfsAnnotations('scratch-1', 32 * GIB),
       })

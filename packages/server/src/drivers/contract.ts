@@ -289,7 +289,6 @@ export interface SubstrateIntent {
   identity?: EgressIdentity
   config: ProjectConfig
   allowlist: EgressAllowlist
-  nestedContainers: boolean
   /** Injection rules for the project's proxied secrets. Values travel
    *  separately (`syncProjectSecrets`). */
   proxySecretRules: Record<string, SecretProxyRule>
@@ -331,8 +330,8 @@ export interface ScratchDirMount {
 
 /**
  * A workspace to launch, in substrate-neutral terms. `env` and `mounts` are
- * the caller's; the driver adds its own (transport token, CA trust, nested
- * cluster needs).
+ * the caller's; the driver adds its own (transport token, CA trust, and
+ * what its cluster needs).
  */
 export interface WorkspaceSpec {
   projectId: string
@@ -375,8 +374,6 @@ export interface WorkspaceSpec {
    * copy). Containerless never receives one.
    */
   preStopExec?: string[]
-  /** The workspace runs its own container engine. */
-  nestedContainers: boolean
   /**
    * Where its shells and steps start, relative to the workspace dir: `''`
    * or one checkout's path, which the caller has created.
@@ -502,12 +499,6 @@ export interface PassContext {
    *  empty, which a garbage-collecting step would read as "collect
    *  everything". */
   projectIds: () => Promise<string[]>
-  /**
-   * One project's resolved config, memoized per project for the pass.
-   * Passed down so driver steps never read project rows themselves.
-   * `undefined` means the project no longer exists.
-   */
-  projectConfig: (projectId: string) => Promise<ProjectConfig | undefined>
   /** One project's owner, whose `Dockerfile.user` tops its image chain.
    *  Rejects for a project that no longer exists. */
   projectOwner: (projectId: string) => Promise<string>
@@ -523,7 +514,7 @@ export interface PassContext {
 }
 
 /** What an image build reads about each project it builds for. */
-export type ProjectReaders = Pick<PassContext, 'projectConfig' | 'projectOwner'>
+export type ProjectReaders = Pick<PassContext, 'projectOwner'>
 
 /**
  * A driver's only channel to the layers above it, which it cannot import.
@@ -570,8 +561,8 @@ export interface SubstrateUsage {
 
 /**
  * Which substrate this process runs on. A kind rather than feature flags:
- * every container feature (images, egress mediation, sandboxing, nested
- * engines, the spare pool) exists under `k8s` and not under
+ * every container feature (images, egress mediation, sandboxing, the spare
+ * pool) exists under `k8s` and not under
  * `containerless`. Callers may branch on it to decide WHETHER a feature
  * applies, never HOW it is done. Each verb below says what it answers when
  * its feature is absent, so most callers need no branch. Shared because the
@@ -808,7 +799,6 @@ export interface WorkspaceDriver {
   prepareImage(opts: {
     projectId: string
     owner: string
-    nestedContainers: boolean
     onProgress?: (message: string) => void
   }): Promise<string>
   /** The ref `prepareImage` would answer now, from the chain's build inputs
@@ -817,7 +807,6 @@ export interface WorkspaceDriver {
   currentImage(opts: {
     projectId: string
     owner: string
-    nestedContainers: boolean
   }): Promise<string>
   /**
    * Set up what a workspace needs around it; the result goes on the launch
@@ -894,18 +883,11 @@ export interface WorkspaceDriver {
    */
   deregisterWorkspace(workspaceId: string): Promise<void>
   /**
-   * Save images the workspace built before it is destroyed. Must finish
-   * before the unit is deleted: `destroy` handles that, and a caller using
-   * `detachedTeardownCommand` must await this first. Never throws.
-   */
-  salvageImages(target: TeardownTarget): Promise<void>
-  /**
    * Tear down a workspace and wait until it is gone. Resolves `false` if
    * that could not be confirmed; a unit still shutting down may still write
    * to the workspace's files, so a caller deleting them must check this.
    *
-   * `salvageImages` defaults on; pass `false` when the salvage destination
-   * is also being destroyed. `unitOnly` tears down only the running unit and
+   * `unitOnly` tears down only the running unit and
    * keeps what `prepareSubstrate` set up, for a create retrying its launch
    * or giving up while its row survives. Ordinary stops never pass it.
    *
@@ -916,12 +898,12 @@ export interface WorkspaceDriver {
    */
   destroy(
     target: TeardownTarget,
-    opts?: { salvageImages?: boolean; unitOnly?: boolean; keepRecord?: boolean },
+    opts?: { unitOnly?: boolean; keepRecord?: boolean },
   ): Promise<boolean>
   /**
    * The same teardown as an idempotent shell command, for a detached script
    * that outlives the caller (and may be re-run to resume). The caller may
-   * append commands and must let `salvageImages` finish first.
+   * append commands.
    */
   detachedTeardownCommand(target: TeardownTarget): string
   /** Destroy everything the driver holds for a project besides its

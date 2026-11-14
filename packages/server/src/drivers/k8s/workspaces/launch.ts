@@ -1,6 +1,5 @@
 import {
   LABEL_INSTALL_ID,
-  LABEL_NESTED,
   LABEL_NPM_CACHE,
   LABEL_PREWARMED,
   LABEL_PROJECT_ID,
@@ -19,13 +18,10 @@ import {
   volumeClaimName,
   workspaceIdLabels,
   workspaceJobName,
-  type PodMount,
 } from '#drivers/k8s/substrate'
 import { PRE_STOP_GRACE_SECONDS, buildPodJobManifest } from './pod-job'
 import {
   ensureBuilderImage,
-  ensureProjectRegistry,
-  projectRegistryConfDropIn,
   proxyServiceClusterIp,
   runSecretsName,
   servingNpmCacheUrl,
@@ -37,13 +33,11 @@ import {
   workspaceSshEnv,
   type ProxyRegistration,
 } from '#drivers/k8s/egress'
-import { ensureNodeImageStore, nodeImageStoreMount } from '#drivers/k8s/images'
 import { hostMatchesPattern } from '@yaac/shared/allowed-hosts'
 import type { SecretProxyRule, ProjectConfig } from '@yaac/shared/types'
 import type {
   RuntimeHandle,
   SubstrateIntent,
-  WorkspaceMount,
   WorkspaceSpec,
   WorkspaceSubstrate,
 } from '#drivers/contract'
@@ -53,7 +47,7 @@ import type {
  *
  * Two halves with different lifetimes, which makes retries safe.
  * `prepareWorkspaceSubstrate` runs once per create and sets up things the
- * workspace owns (proxy registration, project registry). `launchWorkspace`
+ * workspace owns (its proxy registration). `launchWorkspace`
  * runs per attempt and applies only a Job, so a failed attempt leaves just
  * a Job to delete (`destroyWorkspace` with `unitOnly`).
  *
@@ -70,11 +64,6 @@ interface K8sWorkspaceSubstrate extends WorkspaceSubstrate {
   proxyHost: string
   /** The per-workspace token streamd's handshake requires. */
   streamToken: string
-  /** Read-only lower of this node's image store, when the project has one. */
-  storeMounts: PodMount[]
-  /** The project has its own push registry, so the in-pod engine needs its
-   *  registries.conf drop-in. */
-  projectRegistry: boolean
   /** The pod is labelled for npm-cache access, whether or not the cache is
    *  serving right now. */
   npmCacheAllowed: boolean
@@ -108,10 +97,7 @@ function narrow(substrate: WorkspaceSubstrate): K8sWorkspaceSubstrate {
   return substrate as K8sWorkspaceSubstrate
 }
 
-/**
- * Set up what a workspace needs around it: its egress registration and the
- * image plumbing its engine pulls through.
- */
+/** Set up what a workspace needs around it: its egress registration. */
 export async function prepareWorkspaceSubstrate(
   intent: SubstrateIntent,
 ): Promise<WorkspaceSubstrate> {
@@ -123,25 +109,6 @@ export async function prepareWorkspaceSubstrate(
   // first and never misses the registration object.
   emit('Ensuring proxy deployment...')
   await proxyClient.ensureRunning()
-
-  // Nested workspaces get the per-project push registry, which carries the
-  // cross-workspace image cache (see image-promoter.ts).
-  const projectRegistry = intent.nestedContainers
-  const storeMounts: PodMount[] = []
-  if (projectRegistry) {
-    emit('Ensuring project registry...')
-    await ensureProjectRegistry(projectId)
-
-    // Mount the node-local image store read-only at /var/lib/shared-images
-    // so the project's warm layers are available without a pull
-    // (store-writer.ts). The generation is pinned at pod create, which lets
-    // the builder's GC tell in-use stores from stale ones; a cold node
-    // mounts nothing. The refresh runs detached and benefits the project's
-    // next workspace, since this pod's mount is already chosen.
-    const storeMount = await nodeImageStoreMount(projectId)
-    if (storeMount) storeMounts.push(storeMount)
-    void ensureNodeImageStore(projectId)
-  }
 
   // netd's per-pod DNAT rules (k8s/netd) redirect the pod's outbound 443/80
   // to the proxy, which identifies the workspace by source pod IP. The pod
@@ -160,7 +127,6 @@ export async function prepareWorkspaceSubstrate(
   // their values, which already sit in the project's secrets object
   // (`syncProjectSecrets`).
   const registration = buildProxyRegistration({
-    config,
     allowlist: intent.allowlist,
     projectId,
     owner: intent.owner,
@@ -176,8 +142,6 @@ export async function prepareWorkspaceSubstrate(
     kind: 'workspace-substrate',
     proxyHost,
     streamToken,
-    storeMounts,
-    projectRegistry,
     npmCacheAllowed,
     npmRegistry,
     registration,
@@ -212,8 +176,8 @@ export function npmCacheApplies(
 /**
  * Apply the workspace's Job and return a handle for it.
  *
- * Adds what the caller cannot name: stream token, CA trust, the nested
- * engine's registries.conf drop-in, and SSH transport. The spec's env and
+ * Adds what the caller cannot name: stream token, CA trust, and SSH
+ * transport. The spec's env and
  * mounts are copied, not appended to, because the same spec is relaunched
  * after a failed attempt.
  *
@@ -247,17 +211,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   // The init script writes this into the user-level `~/.npmrc`, not env,
   // because env would override a registry named in the project's `.npmrc`.
   if (substrate.npmRegistry) env.push(`YAAC_NPM_REGISTRY=${substrate.npmRegistry}`)
-  if (spec.nestedContainers && substrate.projectRegistry) {
-    // Written by the in-pod init script before the engine starts. Base64
-    // avoids quoting issues. Needed because the registry is plain HTTP.
-    const conf = Buffer.from(projectRegistryConfDropIn(spec.projectId), 'utf8')
-      .toString('base64')
-    env.push(`YAAC_REGISTRY_CONF_B64=${conf}`)
-  }
 
-  const declared: Array<PodMount | WorkspaceMount> = [...spec.mounts]
-  // Read-only node-local image store.
-  declared.push(...substrate.storeMounts)
   // The proxy ends ssh sessions to the project's git hosts and checks their
   // host keys itself, so the workspace needs neither `spec.ssh`'s file nor
   // a key: only an ssh that reaches the proxy and trusts it.
@@ -267,7 +221,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   env.push(`YAAC_CWD=${spec.cwd}`)
   // Map each declared host path to its cluster source (a subPath of the
   // global claim, or the node's tree); see mount-sources.ts.
-  const mounts = declared.map(resolveMountSource)
+  const mounts = spec.mounts.map(resolveMountSource)
 
   const labels: Record<string, string> = {
     [LABEL_PROJECT_ID]: spec.projectId,
@@ -275,9 +229,6 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     [LABEL_INSTALL_ID]: installId(),
     // Removed on claim, turning the spare into a normal workspace.
     ...(spec.prewarm ? { [LABEL_PREWARMED]: 'true' } : {}),
-    // Lets image salvage tell from the pod alone whether there is anything
-    // to salvage; the reconciler never sees the spec's env.
-    ...(spec.nestedContainers ? { [LABEL_NESTED]: 'true' } : {}),
     // Both of the npm cache's workspace policies select on this.
     ...(substrate.npmCacheAllowed ? { [LABEL_NPM_CACHE]: 'true' } : {}),
     // A site's release: its ingress policy admits the router, the router
@@ -312,10 +263,9 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     ephemeralStorageRequestBytes: spec.resources.ephemeralStorageRequestBytes,
     ephemeralStorageLimitBytes: spec.resources.ephemeralStorageLimitBytes,
     proxyHost: substrate.proxyHost,
-    nested: spec.nestedContainers,
     scratchDirs: spec.scratchDirs,
-    // In-pod setup (git identity, tmux, streamd, nested engine) runs as
-    // postStart, so kubelet holds Ready until it finishes.
+    // In-pod setup (git identity, tmux, streamd) runs as postStart, so
+    // kubelet holds Ready until it finishes.
     postStartExec: spec.postStartExec,
     // preStop runs within the grace period, so size it for the hook.
     ...(spec.preStopExec

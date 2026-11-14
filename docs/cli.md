@@ -379,9 +379,6 @@ yaac config                     Each setting prints given no value, and is
                                 Show or replace the dirs kept across workspaces
                                 (k8s only)
     --none                      Keep none
-  nested-containers <project> [on|off]
-                                Show or set whether workspaces run a container
-                                engine of their own (k8s only)
   npm-cache <project> [on|off]  Show or set whether workspaces use the
                                 install's npm cache (k8s only)
   dockerfile <project>          Print the project's Dockerfile.yaac (k8s only)

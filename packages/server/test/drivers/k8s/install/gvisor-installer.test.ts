@@ -33,7 +33,6 @@ import {
   GVISOR_NODE_LABEL,
   GVISOR_PENDING_TAINT,
   RUNTIME_CLASS_GVISOR,
-  RUNTIME_CLASS_GVISOR_NESTED,
   WORKSPACE_POOL_KEY,
 } from '#drivers/k8s/substrate'
 import {
@@ -53,7 +52,6 @@ import {
   NODE_CONTAINERD_DIR,
   NODE_GVISOR_CACHE_DIR,
   NODE_RUNSC_CONFIG_PATH,
-  NODE_RUNSC_NESTED_CONFIG_PATH,
   REGISTRY_CONFIG_MARKER,
   SANDBOX_DENTRY_CACHE,
 } from '#drivers/k8s/install/gvisor-runtime'
@@ -141,12 +139,11 @@ afterEach(() => {
 })
 
 describe('ensureGvisorRuntime', () => {
-  it('applies the installer DaemonSet, waits for it, then applies the RuntimeClasses', async () => {
+  it('applies the installer DaemonSet, waits for it, then applies the RuntimeClass', async () => {
     await ensureGvisorRuntime()
 
     expect(applied().map((m) => m.kind)).toEqual([
-      'ServiceAccount', 'ClusterRole', 'ClusterRoleBinding', 'DaemonSet',
-      'RuntimeClass', 'RuntimeClass',
+      'ServiceAccount', 'ClusterRole', 'ClusterRoleBinding', 'DaemonSet', 'RuntimeClass',
     ])
 
     const ds = ofKind('DaemonSet')[0] as unknown as {
@@ -237,7 +234,7 @@ describe('ensureGvisorRuntime', () => {
       { kind: 'ServiceAccount', name: GVISOR_INSTALLER_APP_NAME, namespace: 'test-ns' },
     ])
 
-    // RuntimeClasses select on the label the DaemonSet adds, so they are
+    // The RuntimeClass selects on the label the DaemonSet adds, so it is
     // applied after the rollout; otherwise gVisor pods would sit Pending.
     expect(mockExec).toHaveBeenCalledWith(
       'kubectl',
@@ -259,9 +256,8 @@ describe('ensureGvisorRuntime', () => {
       handler: string
       scheduling: { nodeSelector: Record<string, string> }
     }>
-    expect(classes.map((c) => c.metadata.name))
-      .toEqual([RUNTIME_CLASS_GVISOR, RUNTIME_CLASS_GVISOR_NESTED])
-    expect(classes.map((c) => c.handler)).toEqual(['runsc', 'runsc-nested'])
+    expect(classes.map((c) => c.metadata.name)).toEqual([RUNTIME_CLASS_GVISOR])
+    expect(classes.map((c) => c.handler)).toEqual(['runsc'])
     for (const c of classes) {
       expect(c.scheduling.nodeSelector).toEqual({ [GVISOR_NODE_LABEL]: 'true' })
     }
@@ -300,7 +296,7 @@ describe('ensureGvisorRuntime', () => {
     expect(applied()).toHaveLength(0)
   })
 
-  it('maps both classes to their runsc handlers and schedules them on installed nodes only', async () => {
+  it('maps the class to the runsc handler and schedules it on installed nodes only', async () => {
     await ensureGvisorRuntime()
     const manifests = ofKind('RuntimeClass') as unknown as Array<{
       apiVersion: string
@@ -310,9 +306,8 @@ describe('ensureGvisorRuntime', () => {
       scheduling: { nodeSelector: Record<string, string>; tolerations: unknown }
     }>
 
-    expect(manifests.map((m) => m.metadata.name))
-      .toEqual([RUNTIME_CLASS_GVISOR, RUNTIME_CLASS_GVISOR_NESTED])
-    expect(manifests.map((m) => m.handler)).toEqual(['runsc', 'runsc-nested'])
+    expect(manifests.map((m) => m.metadata.name)).toEqual([RUNTIME_CLASS_GVISOR])
+    expect(manifests.map((m) => m.handler)).toEqual(['runsc'])
     expect(manifests.every((m) => m.apiVersion === 'node.k8s.io/v1' && m.kind === 'RuntimeClass'))
       .toBe(true)
     // Admission adds both to every pod using the class: a sandboxed pod
@@ -407,24 +402,18 @@ describe('ensureGvisorRuntime', () => {
       expect(script).toContain('    install_release\n    changed=1\n  fi\n  prune_cache\n')
       expect(script).toContain(`bin='/host${NODE_BIN_DIR}'`)
 
-      // Handler flag files: systrap, host-uds for hostPath unix sockets, suid,
-      // a rootfs-only overlay (overlay on everything would drop workspace dir
-      // writes) and a dentry cache bigger than a checkout, written as the
-      // string the shim requires. Only the nested handler gets raw/packet
-      // sockets.
-      const [defaultCfg, nestedCfg] = [NODE_RUNSC_CONFIG_PATH, NODE_RUNSC_NESTED_CONFIG_PATH]
-        .map((p) => shellLiteralAfter(script, `write_if_changed '/host${p}' `))
-      for (const cfg of [defaultCfg, nestedCfg]) {
-        expect(cfg).toContain('[runsc_config]')
-        expect(cfg).toContain('platform = "systrap"')
-        expect(cfg).toContain('host-uds = "all"')
-        expect(cfg).toContain('allow-suid = "true"')
-        expect(cfg).toContain('overlay2 = "root:self"')
-        expect(cfg).toContain(`dcache = "${String(SANDBOX_DENTRY_CACHE)}"`)
-      }
-      expect(defaultCfg).not.toContain('net-raw')
-      expect(nestedCfg).toContain('net-raw = "true"')
-      expect(nestedCfg).toContain('allow-packet-socket-write = "true"')
+      // The handler's flag file: systrap, host-uds for hostPath unix
+      // sockets, suid, a rootfs-only overlay (overlay on everything would
+      // drop workspace dir writes) and a dentry cache bigger than a checkout,
+      // written as the string the shim requires. No raw sockets.
+      const cfg = shellLiteralAfter(script, `write_if_changed '/host${NODE_RUNSC_CONFIG_PATH}' `)
+      expect(cfg).toContain('[runsc_config]')
+      expect(cfg).toContain('platform = "systrap"')
+      expect(cfg).toContain('host-uds = "all"')
+      expect(cfg).toContain('allow-suid = "true"')
+      expect(cfg).toContain('overlay2 = "root:self"')
+      expect(cfg).toContain(`dcache = "${String(SANDBOX_DENTRY_CACHE)}"`)
+      expect(cfg).not.toContain('net-raw')
 
       // A marker-guarded append to the node's containerd config, choosing the
       // plugin key from the config's version (kind uses 2; containerd 2.x
@@ -448,12 +437,10 @@ describe('ensureGvisorRuntime', () => {
         const block = appended.find((b) => b.includes(`plugins."${key}"`))!
         expect(block).toContain(GVISOR_CONTAINERD_MARKER)
         expect(block).toContain(`[plugins."${key}".containerd.runtimes.runsc]`)
-        expect(block).toContain(`[plugins."${key}".containerd.runtimes.runsc-nested]`)
         expect(block).toContain(`ConfigPath = "${NODE_RUNSC_CONFIG_PATH}"`)
-        expect(block).toContain(`ConfigPath = "${NODE_RUNSC_NESTED_CONFIG_PATH}"`)
-        // dev.gvisor.* annotations pass through for graphroot mount options.
+        // dev.gvisor.* annotations pass through for scratch-dir mount options.
         expect(block).toContain('pod_annotations = ["dev.gvisor.*"]')
-        expect(block.match(/runtime_type = "io\.containerd\.runsc\.v1"/g)).toHaveLength(2)
+        expect(block.match(/runtime_type = "io\.containerd\.runsc\.v1"/g)).toHaveLength(1)
       }
     })
 
@@ -472,12 +459,12 @@ describe('ensureGvisorRuntime', () => {
       expect(script).toContain('    return 1\n  fi\n  mv "$1.yaac-new" "$1" || exit 1\n}')
       expect(script).toContain(
         `if write_if_changed '/host${NODE_RUNSC_CONFIG_PATH}' `)
-      expect(script.match(/; then changed=1; fi$/gm)).toHaveLength(2)
+      expect(script.match(/; then changed=1; fi$/gm)).toHaveLength(1)
       // A node with no containerd config is unsupported; writing a fresh one
       // would lose its defaults.
-      expect(script).toContain('cannot register the runsc handlers')
+      expect(script).toContain('cannot register the runsc handler')
 
-      // The node label the RuntimeClasses select on, patched via the
+      // The node label the RuntimeClass selects on, patched via the
       // apiserver's service IP so no cluster DNS is needed.
       expect(script).toContain('-X PATCH')
       expect(script).toContain(JSON.stringify({

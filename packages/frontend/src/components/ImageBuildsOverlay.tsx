@@ -43,7 +43,7 @@ export function ImageBuildsOverlay({
   const isMobile = useIsMobile()
   const projectName = useProjectName()
   // A project chain's build is its owner's to retry or dismiss; a shared
-  // image's (base, tools, nestable) is anyone's.
+  // image's (base, tools) is anyone's.
   const me = useWhoami()?.userId
   const mine = new Set(projectsOf(useSnapshot()?.projects ?? [], me).map((p) => p.id))
   const canAct = (b: ImageBuildEntry): boolean =>

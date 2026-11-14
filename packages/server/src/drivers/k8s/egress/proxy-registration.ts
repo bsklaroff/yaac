@@ -12,11 +12,11 @@ import {
   type ObjectRef,
 } from '#drivers/k8s/substrate'
 import { buildRegistrationConfigMapManifest, proxyRegistrationName } from '#drivers/k8s/cluster'
-import { NESTED_PULL_HOSTS, resolveAllowedHosts } from '@yaac/shared/allowed-hosts'
+import { resolveAllowedHosts } from '@yaac/shared/allowed-hosts'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
-import type { EgressAllowlist, SecretProxyRule, ProjectConfig } from '@yaac/shared/types'
+import type { EgressAllowlist, SecretProxyRule } from '@yaac/shared/types'
 import type { EgressIdentity, PassContext, WorkspaceRegistration } from '#drivers/contract'
 
 /**
@@ -151,7 +151,6 @@ export function parseUpstreamRedirectsEnv(
  * e2e upstream redirects.
  */
 export function buildProxyRegistration(input: {
-  config: ProjectConfig
   allowlist: EgressAllowlist
   projectId: string
   owner: string
@@ -161,15 +160,9 @@ export function buildProxyRegistration(input: {
 }): ProxyRegistration {
   // eslint-disable-next-line no-process-env -- DI seam: tests pass input.env.
   const env = input.env ?? process.env
-  const allowedHosts = resolveAllowedHosts(input.allowlist)
-  // Nested workspaces need the registry pull hosts, unless the project
-  // turned the defaults off to pin an exact list.
-  if (input.config.nestedContainers && input.allowlist.defaults) {
-    allowedHosts.push(...NESTED_PULL_HOSTS.filter((h) => !allowedHosts.includes(h)))
-  }
   return {
     rules: buildRulesFromSecrets(input.projectId, input.secretRules),
-    allowedHosts,
+    allowedHosts: resolveAllowedHosts(input.allowlist),
     projectId: input.projectId,
     owner: input.owner,
     ...(input.identity !== undefined ? { identity: input.identity } : {}),
@@ -197,7 +190,6 @@ export async function registerWorkspaceEgress(
   reg: WorkspaceRegistration,
 ): Promise<ProxyRegistration> {
   const registration = buildProxyRegistration({
-    config: reg.config,
     allowlist: reg.allowlist,
     projectId: reg.projectId,
     owner: reg.owner,

@@ -480,7 +480,7 @@ describe('ensureImage', () => {
   })
 
   it('refuses a yaac-shipped layer the registry does not have, naming the install', async () => {
-    // The server cannot build base/tools/nestable, so the error names the
+    // The server cannot build base/tools, so the error names the
     // command that does.
     chain([layer('yaac-base:missing')])
     await expect(ensureImage(PROJ, OWNER)).rejects.toThrow(

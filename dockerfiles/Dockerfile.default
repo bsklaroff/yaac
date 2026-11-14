@@ -169,7 +169,6 @@ EOF
 RUN umask 002 && zsh -c 'autoload -Uz compinit && compinit && zcompile ~/.zcompdump'
 
 WORKDIR /workspace
-# catatonit is PID 1: it reaps zombies and forwards signals. Without it, a
-# nested workspace's engine (Dockerfile.nestable) leaks zombie conmon
-# processes until it hits RLIMIT_NPROC.
+# catatonit is PID 1: it reaps zombies and forwards signals, which `sleep`
+# would not, so orphaned daemons never pile up as zombies.
 ENTRYPOINT ["catatonit", "--", "sleep", "infinity"]

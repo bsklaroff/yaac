@@ -2,7 +2,7 @@ import { api, resolveProject } from '#commands/api'
 import type { PortForwardConfig } from '@yaac/shared/types'
 
 /*
- * `yaac config port-forwards|cache-volumes|nested-containers|npm-cache`:
+ * `yaac config port-forwards|cache-volumes|npm-cache`:
  * the settings a project's workspaces launch with besides their checkout
  * (docs/project-config.md). Each prints the setting given no value, or
  * replaces it and prints what was stored. They apply to workspaces created
@@ -58,19 +58,6 @@ export async function configCacheVolumes(project: string, volumes: string[], opt
   }))
   const stored = await api.project[':projectId']['cache-volumes'].$put({ param: { projectId: summary.id }, json: { volumes: wanted } })
   console.log(`Cache volumes in ${summary.name} are now: ${formatCacheVolumes(stored.cacheVolumes)}. ${APPLIES}`)
-}
-
-export async function configNestedContainers(project: string, state: 'on' | 'off' | undefined): Promise<void> {
-  const summary = await resolveProject(project)
-  if (state === undefined) {
-    console.log(`Nested containers in ${summary.name}: ${onOff(summary.nestedContainers)}`)
-    return
-  }
-  const stored = await api.project[':projectId']['nested-containers'].$put({
-    param: { projectId: summary.id },
-    json: { enabled: state === 'on' },
-  })
-  console.log(`Nested containers in ${summary.name} are now ${onOff(stored.nestedContainers)}. ${APPLIES}`)
 }
 
 export async function configNpmCache(project: string, state: 'on' | 'off' | undefined): Promise<void> {

@@ -15,11 +15,11 @@ import {
 
 /**
  * `yaac-gvisor-install`: the privileged DaemonSet that installs the gVisor
- * runtime on nodes, plus the RuntimeClasses that use it.
+ * runtime on nodes, plus the RuntimeClass that uses it.
  *
- * On each node it installs the pinned runsc and shim, registers the two
- * runsc handlers in containerd's config, restarts containerd, and labels
- * the node so the RuntimeClasses' `nodeSelector` lets sandboxed pods land
+ * On each node it installs the pinned runsc and shim, registers the runsc
+ * handler in containerd's config, restarts containerd, and labels the node
+ * so the RuntimeClass's `nodeSelector` lets sandboxed pods land
  * there. The script, node paths and label are defined in
  * gvisor-runtime.ts; this module owns the Kubernetes objects.
  *
@@ -189,7 +189,7 @@ const ROLLOUT_PER_NODE_MS = 300_000
 
 /**
  * Set up gVisor on the cluster: the installer DaemonSet on every node, then
- * (after its rollout, so labeled nodes exist) the RuntimeClasses.
+ * (after its rollout, so labeled nodes exist) the RuntimeClass.
  *
  * `yaac cluster install` runs this every time; a runsc version bump rolls
  * node by node.

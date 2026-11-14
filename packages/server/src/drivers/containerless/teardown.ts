@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { imageStoreDir, nodeLocalPath, nodeLocalProjectPath } from '@yaac/shared/project-paths'
+import { nodeLocalPath, nodeLocalProjectPath } from '@yaac/shared/project-paths'
 import { serverLog } from '#lib/log'
 import { shellQuote } from '#lib/shell'
 import { waitFor } from '@yaac/shared/wait-for'
@@ -126,11 +126,10 @@ export function detachedTeardownCommand(target: TeardownTarget): string {
 /** See `WorkspaceDriver.destroyProjectSubstrate`. Only the project's
  *  node-local dirs on this host. */
 export async function destroyProjectSubstrate(projectId: string): Promise<void> {
-  for (const dir of [nodeLocalProjectPath(projectId), imageStoreDir(projectId)]) {
-    await fs.rm(dir, { recursive: true, force: true }).catch((err: unknown) => {
-      serverLog(`[server] containerless: remove ${dir}: ${String(err)}`)
-    })
-  }
+  const dir = nodeLocalProjectPath(projectId)
+  await fs.rm(dir, { recursive: true, force: true }).catch((err: unknown) => {
+    serverLog(`[server] containerless: remove ${dir}: ${String(err)}`)
+  })
 }
 
 /** A node-local tree written this recently is skipped (a create may be
@@ -139,22 +138,21 @@ const REAP_SLACK_MS = 10_000
 
 /**
  * See `WorkspaceDriver.reapNodeLocal`. Removes project trees on this host
- * not named by a live project id; cheap enough to run every pass. Symlinked
- * roots and entries are left alone. There are no per-workspace leftovers
+ * not named by a live project id; cheap enough to run every pass. A symlinked
+ * root or entry is left alone. There are no per-workspace leftovers
  * (opencode uses its checkpoint directly).
  */
 export async function reapNodeLocal(live: NodeLocalLiveSet): Promise<void> {
   const cutoff = Date.now() - REAP_SLACK_MS
-  for (const root of [nodeLocalPath('projects'), nodeLocalPath('shared-images')]) {
-    if (!(await fs.lstat(root).catch(() => null))?.isDirectory()) continue
-    for (const name of await fs.readdir(root).catch((): string[] => [])) {
-      if (live.projectIds.has(name)) continue
-      const dir = path.join(root, name)
-      const stat = await fs.lstat(dir).catch(() => null)
-      if (!stat?.isDirectory() || stat.mtimeMs > cutoff) continue
-      await fs.rm(dir, { recursive: true, force: true }).catch((err: unknown) => {
-        serverLog(`[server] containerless: reap ${dir}: ${String(err)}`)
-      })
-    }
+  const root = nodeLocalPath('projects')
+  if (!(await fs.lstat(root).catch(() => null))?.isDirectory()) return
+  for (const name of await fs.readdir(root).catch((): string[] => [])) {
+    if (live.projectIds.has(name)) continue
+    const dir = path.join(root, name)
+    const stat = await fs.lstat(dir).catch(() => null)
+    if (!stat?.isDirectory() || stat.mtimeMs > cutoff) continue
+    await fs.rm(dir, { recursive: true, force: true }).catch((err: unknown) => {
+      serverLog(`[server] containerless: reap ${dir}: ${String(err)}`)
+    })
   }
 }

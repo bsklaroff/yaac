@@ -90,9 +90,9 @@ describe('updateProjectConfig', () => {
     const ports = [{ containerPort: 3000, hostPortStart: 3000 }]
     expect(await updateProjectConfig(OWNER, FOO, { portForwards: ports, npmCache: false }))
       .toEqual({ ...PROJECT_CONFIG_DEFAULTS, portForwards: ports, npmCache: false })
-    expect(await updateProjectConfig(OWNER, FOO, { nestedContainers: true, cacheVolumes: { pip: '/p' } }))
-      .toEqual({ portForwards: ports, cacheVolumes: { pip: '/p' }, nestedContainers: true, npmCache: false })
-    expect(await resolveProjectConfig(FOO)).toEqual({ portForwards: ports, cacheVolumes: { pip: '/p' }, nestedContainers: true, npmCache: false })
+    expect(await updateProjectConfig(OWNER, FOO, { cacheVolumes: { pip: '/p' } }))
+      .toEqual({ portForwards: ports, cacheVolumes: { pip: '/p' }, npmCache: false })
+    expect(await resolveProjectConfig(FOO)).toEqual({ portForwards: ports, cacheVolumes: { pip: '/p' }, npmCache: false })
   })
 
   it('refuses anyone but the owner, and an unknown project', async () => {

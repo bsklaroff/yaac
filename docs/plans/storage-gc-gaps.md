@@ -1,11 +1,11 @@
 # Storage GC: remaining gaps
 
 [image-gc.md](../image-gc.md) covers the image stores collected today: the
-host engine, the main and per-project registries, and each node's containerd
-store. This plan lists what still grows without bound, or fills without
-warning: §1–6 on a `k8s` install, §7 on either driver, §8 under
-`containerless`. Most urgent first within each group. The last section
-proposes how to keep new stores from leaking.
+host engine, the main registry, and each node's containerd store. This
+plan lists what still grows without bound, or fills without warning: §1–5
+on a `k8s` install, §6 on either driver, §7 under `containerless`. Most
+urgent first within each group. The last section proposes how to keep new
+stores from leaking.
 
 ## 1. The main-registry collect can be skipped indefinitely
 
@@ -39,52 +39,7 @@ Before relying on it:
 Fix the stale comment, and give the test that stands down a second pass
 that collects. Update step 6 of image-gc.md.
 
-## 2. Node-local image stores keep every image they ever pulled
-
-A project's node-local image store
-([nested-containers.md](../nested-containers.md) "The node-local image store")
-builds each generation by hardlinking the previous one (`cp -al` in
-`buildStoreWriterScript`) and then pulling the current working set. Nothing
-removes an image that has left the working set. Deleting old generation
-directories frees only what the newest one does not also link. So a node's
-store for a project holds every image it has ever pulled, until the project is
-removed. `rankedRegistryTagsScript` decides what to pull, not what to keep.
-The commonest case is a re-pointed tag: the store pulls the new image and
-keeps the old one forever as a dangling image.
-
-A failed run leaks too. Under `set -eu`, a failure after the seed skips the
-generation cleanup, and the next run removes only its own new directory, so
-incomplete generations pile up until a run succeeds.
-
-Proposal:
-
-- At the start of the script, delete every generation without the done
-  marker. The per-project mutex makes that safe.
-- After the pull loop, record the image id of each ref in the working set in
-  a per-generation file, carried forward from the previous generation's.
-  Chain-cache images have no name in the store, so the file is the only way
-  to find the previous generation's copy when a pull fails. Write it as a new
-  file, never by appending, since a hardlinked file is shared with the
-  previous generation.
-- `rankedRegistryTagsScript` treats a repo whose tag listing fails as empty.
-  It must report the failure instead, and the writer keeps every id the
-  previous generation recorded for that repo. Otherwise a transient registry
-  error would cost the node images it still wants.
-- Then `podman rmi -f --no-prune` every other image in the new generation,
-  repeating until nothing changes (a parent cannot go before its child).
-  Without `--no-prune`, podman also removes untagged parents, which the
-  chain-cache images are. Check that every kept id still exists, and fail
-  the run if one does not.
-- Also remove the store's `layers.lock` and `images.lock` after the seed.
-  podman writes them in place, so today they are shared with the previous
-  generation.
-
-Removing images only unlinks that generation's hardlinks, so workspaces
-still mounting the previous generation are unaffected. Run the
-nested-containers e2e before landing it, because the opaque-directory
-markers live inside layer directories.
-
-## 3. The npm cache is never pruned
+## 2. The npm cache is never pruned
 
 The Verdaccio cache keeps every tarball any workspace ever fetched
 (`npm-cache.ts` says so in its header), and one `package.json` of metadata
@@ -101,7 +56,7 @@ Confirm that with an e2e that deletes a tarball and reinstalls. Access
 times are only as good as the host's mount options; fall back to
 modification time under `noatime`.
 
-## 4. No disk-pressure signal and no low-space mode
+## 3. No disk-pressure signal and no low-space mode
 
 kind's default kubelet config turns off image GC and sets every `evictionHard`
 threshold to 0%, so a full node never reports `DiskPressure`. Nothing warns
@@ -124,7 +79,7 @@ the user: not node conditions, not `yaac cluster check`, not the webapp.
   One 5 GB image chain is nothing on a 2 TB host and a crisis on a 100 GB
   laptop.
 
-## 5. Nothing retires `yaac-test-*` images in the main registry
+## 4. Nothing retires `yaac-test-*` images in the main registry
 
 The main-registry GC skips the e2e suite's repos (`TEST_IMAGE_REPOS` in
 `main-registry-gc.ts`). A run uses them by tag from its global setup to its
@@ -141,18 +96,18 @@ fresh id each run. The orphan sweep matches only `yaac-proj-*` and
 `yaac-user-*`, and keeping the newest two per repo never removes a repo.
 
 The suite knows when no worker is using them. Its global setup could retire
-them the way `gcTestImages` does on the host engine, keeping the newest two
-per repo, by running `buildRegistryRetentionScript` for the `yaac-test-*`
-repos inside the registry pod before workers start. But rigs are not one per
-cluster: rigs sharing a podman engine (`YAAC_TEST_SHARED_ENGINE`) normally
-share its kind cluster, and with it the main registry. So the retention must
-protect every rig's tags, not just this run's, which means each rig has to
-record the tags it uses where the others can read them. Blob reclaim and the
-node copies then follow from the next main-registry GC pass, once §1 makes
-that pass collect whatever is untagged. That needs a server running on the
-cluster, which the k8s tiers already require.
+them the way `gcTestImages` does on the host engine, keeping the newest two per
+repo, by running a retention pass like the main registry GC's over the
+`yaac-test-*` repos inside the registry pod before workers start. But rigs are
+not one per cluster: rigs sharing a podman engine (`YAAC_TEST_SHARED_ENGINE`)
+normally share its kind cluster, and with it the main registry. So the
+retention must protect every rig's tags, not just this run's, which means each
+rig has to record the tags it uses where the others can read them. Blob reclaim
+and the node copies then follow from the next main-registry GC pass, once §1
+makes that pass collect whatever is untagged. That needs a server running on
+the cluster, which the k8s tiers already require.
 
-## 6. E2e node-local trees leak inside the kind node
+## 5. E2e node-local trees leak inside the kind node
 
 Each install's node-local tree is `/var/lib/yaac/node/<install id>`
 (`nodeLocalNodePath`), and only the real install's is bind-mounted to the
@@ -164,7 +119,7 @@ vitest does not run the teardown when a run is interrupted, so the pod
 should remove every `test-*` tree no live pod is using, not just this
 run's, the way the namespace sweep catches an interrupted run's leftovers.
 
-## 7. `server.log` is never rotated
+## 6. `server.log` is never rotated
 
 `serverLog` (`#lib/log`) appends every line to `server.log` in the
 server-local tier, and `pipeToServerLog` appends the full output of every
@@ -178,7 +133,7 @@ size every few hundred lines rather than on every append. `yaac server logs`
 prints `server.log.1` before `server.log` when asked for more lines than the
 current file holds.
 
-## 8. The containerless pnpm store is never pruned
+## 7. The containerless pnpm store is never pruned
 
 Under `containerless`, each project's workspaces share one pnpm store in
 `cachedPackagesDir` (node-local), so `node_modules` hardlinks into it. pnpm
@@ -216,11 +171,11 @@ the route matrix does not name.
 - **Check cluster storage in unit tests.** The fake cluster stub fails a
   test that applies a PVC, or a pod with a `hostPath` volume or an
   `emptyDir` without `sizeLimit`, that the table does not name. That covers
-  what lives outside the data dir: the registries and the npm cache.
+  what lives outside the data dir: the main registry and the npm cache.
 - **A CLAUDE.md rule**, like the one for legacy-compat shims: a new store
   gets its row in the same change.
 
 The table records that someone decided, not that the collector works.
-§4's free-space check is the backstop: `yaac cluster check` can report the
+§3's free-space check is the backstop: `yaac cluster check` can report the
 size of each store in the table, so one that grows anyway shows up before
 the disk fills.

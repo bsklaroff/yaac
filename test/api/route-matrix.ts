@@ -162,7 +162,6 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'PUT', path: '/api/project/:projectId/repo/:repo/gh-token', request: `${P}/repo/demo/gh-token`, body: { enabled: false }, access: 'owner', why: 'limits no repo\'s credential', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'PUT', path: '/api/project/:projectId/port-forwards', request: `${P}/port-forwards`, body: { ports: [] }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/cache-volumes', request: `${P}/cache-volumes`, body: { volumes: {} }, access: 'owner', why: 'mounts no cache volumes', k8s: MISSING, containerless: UNSUPPORTED },
-  { method: 'PUT', path: '/api/project/:projectId/nested-containers', request: `${P}/nested-containers`, body: { enabled: true }, access: 'owner', why: 'runs no container engine in a workspace', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'PUT', path: '/api/project/:projectId/npm-cache', request: `${P}/npm-cache`, body: { enabled: false }, access: 'owner', why: 'runs no npm cache', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'GET', path: '/api/project/:projectId/env', request: `${P}/env`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/env', request: `${P}/env`, body: { name: 'A', value: '1' }, access: 'owner', k8s: MISSING, containerless: MISSING },

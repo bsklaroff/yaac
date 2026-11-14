@@ -474,7 +474,7 @@ node that falls under kubelet's free-space threshold:
 At no free space at all, every write on that disk fails: the agents', the
 tree containers' own scratch repositories (so passes stop), containerd's,
 and the files that back scratch dirs, which can take a sandbox down. kind
-sets kubelet's thresholds to zero (docs/plans/storage-gc-gaps.md §4), so a
+sets kubelet's thresholds to zero (docs/plans/storage-gc-gaps.md §3), so a
 kind node goes straight to this.
 
 Nothing already in the log is at risk in any of this, and a tree on the

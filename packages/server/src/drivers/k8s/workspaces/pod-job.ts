@@ -4,12 +4,9 @@ import type { ScratchDirMount } from '#drivers/contract'
 import {
   CA_CONFIGMAP_NAME,
   LABEL_INSTALL_ID,
-  NESTED_ENGINE_CAPS,
-  NESTED_GRAPHROOT_PATH,
-  NESTED_GRAPHROOT_VOLUME,
   PRIORITY_CLASS_WORKSPACE,
+  RUNTIME_CLASS_GVISOR,
   installSecurityContext,
-  runtimeClassSpec,
   sentryTmpfsAnnotations,
   volumeClaimName,
   type MountSource,
@@ -26,25 +23,6 @@ import {
 export const CA_MOUNT_DIR = '/etc/yaac/certs'
 
 /**
- * Size cap of the graphroot tmpfs, enforced by the sentry, so an oversized
- * build fails with ENOSPC instead of filling node disk. It is ephemeral
- * storage, not pod memory.
- *
- * Sized to hold the yaac image chain (~6.5GiB unique) plus upstream
- * mirrors, with room to build on top; 8GiB was too small for the e2e image
- * builds. It is added to the ephemeral-storage limit but not the request,
- * so it does not reduce scheduling density.
- */
-export const NESTED_GRAPHROOT_TMPFS_BYTES = 12 * 1024 ** 3
-
-/**
- * emptyDir sizeLimit for the graphroot: the tmpfs cap plus 1GiB slack. The
- * backing file can exceed the cap slightly, and hitting the sizeLimit
- * evicts the whole workspace, whereas the tmpfs cap only fails the write.
- */
-export const NESTED_GRAPHROOT_SIZELIMIT_BYTES = NESTED_GRAPHROOT_TMPFS_BYTES + 1024 ** 3
-
-/**
  * Every workspace pod's annotations: a workspace keeps live state in its
  * sandbox, so a cluster autoscaler must never evict one to drain a node it
  * thinks is underused. The node stays until the workspace stops.
@@ -52,10 +30,6 @@ export const NESTED_GRAPHROOT_SIZELIMIT_BYTES = NESTED_GRAPHROOT_TMPFS_BYTES + 1
 export const WORKSPACE_POD_ANNOTATIONS: Record<string, string> = {
   'cluster-autoscaler.kubernetes.io/safe-to-evict': 'false',
 }
-
-/** Pod annotations making the graphroot a disk-backed sentry tmpfs. */
-export const NESTED_GRAPHROOT_ANNOTATIONS: Record<string, string> =
-  sentryTmpfsAnnotations(NESTED_GRAPHROOT_VOLUME, NESTED_GRAPHROOT_TMPFS_BYTES)
 
 /**
  * Volume-name prefix of a workspace's scratch dirs (`PodJobParams.scratchDirs`),
@@ -65,7 +39,9 @@ const SCRATCH_VOLUME_PREFIX = 'scratch'
 
 /**
  * How far a scratch-dir volume's emptyDir sizeLimit sits above its tmpfs
- * cap, the dir's own `sizeBytes` (see NESTED_GRAPHROOT_SIZELIMIT_BYTES).
+ * cap, the dir's own `sizeBytes`. The backing file can exceed the cap
+ * slightly, and hitting the sizeLimit evicts the whole workspace, whereas
+ * the tmpfs cap only fails the write.
  */
 export const SCRATCH_SIZELIMIT_SLACK_BYTES = 1024 ** 3
 
@@ -141,14 +117,11 @@ export interface PodJobParams {
   ephemeralStorageRequestBytes: number
   /**
    * Ephemeral-storage limit; kubelet evicts the pod past it, which protects
-   * other pods on the node. The graphroot and scratch-dir sizeLimits are
-   * added on top when present.
+   * other pods on the node. The scratch dirs' sizeLimits are added on top.
    */
   ephemeralStorageLimitBytes: number
   /** Pinned proxy Service ClusterIP, used as the pod's DNS resolver. */
   proxyHost: string
-  /** Run the in-pod rootful podman: adds its graphroot, caps and gVisor handler. */
-  nested?: boolean
   /**
    * The workspace's scratch dirs, each its own disk-backed sentry tmpfs
    * capped at its `sizeBytes`, so pnpm's file traffic stays inside the
@@ -258,22 +231,10 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
     initContainers.push(volumeRootInitContainer(p.nodeDirsImage, volumeRoots))
   }
 
-  if (p.nested) {
-    // See NESTED_GRAPHROOT_PATH. Root-owned; the engine runs as root.
-    volumes.push({
-      name: NESTED_GRAPHROOT_VOLUME,
-      emptyDir: { sizeLimit: String(NESTED_GRAPHROOT_SIZELIMIT_BYTES) },
-    })
-    volumeMounts.push({ name: NESTED_GRAPHROOT_VOLUME, mountPath: NESTED_GRAPHROOT_PATH })
-  }
-
   // One volume per dir (see sentryTmpfsAnnotations). A tmpfs root is
   // world-writable, so the workspace user can install into it.
   const scratchDirs = p.scratchDirs ?? []
-  let annotations: Record<string, string> = {
-    ...WORKSPACE_POD_ANNOTATIONS,
-    ...(p.nested ? NESTED_GRAPHROOT_ANNOTATIONS : {}),
-  }
+  let annotations: Record<string, string> = { ...WORKSPACE_POD_ANNOTATIONS }
   scratchDirs.forEach((dir, i) => {
     const name = `${SCRATCH_VOLUME_PREFIX}-${i}`
     volumes.push({ name, emptyDir: { sizeLimit: String(dir.sizeBytes + SCRATCH_SIZELIMIT_SLACK_BYTES) } })
@@ -335,7 +296,7 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
           },
           // gVisor contains in-container root (the image has passwordless
           // sudo).
-          ...runtimeClassSpec({ nested: !!p.nested }),
+          runtimeClassName: RUNTIME_CLASS_GVISOR,
           // The proxy's DNS stub is the only resolver. It forwards cluster
           // names to CoreDNS and answers external names with a sinkhole IP,
           // since netd redirects egress and the proxy routes by SNI/Host.
@@ -357,13 +318,6 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
                   ...(p.preStopExec ? { preStop: { exec: { command: p.preStopExec } } } : {}),
                 },
               } : {}),
-              // No allowPrivilegeEscalation: it is implied by CAP_SYS_ADMIN,
-              // and false would be rejected.
-              ...(p.nested ? {
-                securityContext: {
-                  capabilities: { add: NESTED_ENGINE_CAPS },
-                },
-              } : {}),
               resources: {
                 requests: {
                   cpu: `${p.cpuRequestMillis}m`,
@@ -376,11 +330,7 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
                   memory: String(p.memoryLimitBytes),
                   // kubelet counts emptyDir volumes against this limit, so
                   // add their sizeLimits or a big build evicts the workspace.
-                  'ephemeral-storage': String(
-                    p.ephemeralStorageLimitBytes
-                    + (p.nested ? NESTED_GRAPHROOT_SIZELIMIT_BYTES : 0)
-                    + scratchLimit,
-                  ),
+                  'ephemeral-storage': String(p.ephemeralStorageLimitBytes + scratchLimit),
                 },
               },
             },

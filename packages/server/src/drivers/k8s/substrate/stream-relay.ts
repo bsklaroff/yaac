@@ -1,11 +1,12 @@
 import net from 'node:net'
+import { exec } from 'node:child_process'
+import { promisify } from 'node:util'
 import crypto from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { WorkspaceExecError, type StreamChild } from '#drivers/contract'
 import { FRAME_DATA, FRAME_EXIT, FRAME_RESIZE, FRAME_SIGNAL, FrameParser, encodeFrame } from '@yaac/shared/stream-frames'
 import { k8sNamespace, readObject } from './api'
 import { workspaceIdFromJobName } from './pods'
-import { containerExec } from './exec'
 import {
   PROXY_AUTH_SECRET_NAME,
   RELAY_PORT,
@@ -18,8 +19,7 @@ import {
  * watcher's tmux control stream, forwarded TCP, one-shot commands) goes over
  * a plain TCP connection through the proxy's relay listener to the pod's
  * streamd, bypassing the apiserver. kubectl exec is used only where
- * streamd may not be running (`bootStreamd`, the teardown-time image-salvage
- * survey) and for non-workspace pods.
+ * streamd may not be running (`bootStreamd`) and for non-workspace pods.
  *
  * Each stream starts with a relay auth line
  * `{token: <proxyAuthSecret>, workspaceId}` and a streamd handshake line
@@ -525,9 +525,10 @@ export async function bootStreamd(
   /** Deadline for the kubectl exec; waitForStreamd passes its remaining budget. */
   opts: { timeout?: number } = {},
 ): Promise<void> {
-  await containerExec(
-    jobName,
-    `sh -c 'setsid node /opt/yaac/streamd/main.js >>/tmp/streamd.log 2>&1 </dev/null &'`,
+  // `job/<name>` lets kubectl resolve the Job's pod.
+  await promisify(exec)(
+    `kubectl exec -n ${k8sNamespace()} job/${jobName} -- `
+    + `sh -c 'setsid node /opt/yaac/streamd/main.js >>/tmp/streamd.log 2>&1 </dev/null &'`,
     { timeout: opts.timeout ?? 15_000 },
   )
 }

@@ -1,7 +1,7 @@
 // Barrel for the k8s driver's per-workspace half: locating and describing
 // workspaces as contract `RuntimeHandle`s, launch, prewarm claim, teardown,
-// the image-salvage sweep, the node-local orphan sweep, the root remover
-// for files a workspace's root left, volumes, and port forwards.
+// the node-local orphan sweep, the root remover for files a workspace's
+// root left, volumes, and port forwards.
 //
 // Port forwards: this folder decides which of a workspace's ports are
 // offered and at which host port, and detects new listeners inside the
@@ -37,13 +37,11 @@ export {
   stopAllWorkspaceForwarders,
 } from './port-forwarders'
 export { removeAsRoot, runInStoppedCheckout } from './root-pod'
-export { reconcileImageSalvage } from './salvage-reconcile'
 export { createRuntimeSnapshot } from './snapshot'
 export {
   deregisterWorkspace,
   destroyProjectSubstrate,
   destroyWorkspace,
   detachedTeardownCommand,
-  salvageWorkspaceImages,
 } from './teardown'
 export { deleteVolume, ensureVolume, pinVolumes, resizeVolume, volumeStorage } from './volumes'

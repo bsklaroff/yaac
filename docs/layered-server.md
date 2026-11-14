@@ -194,10 +194,10 @@ happens a layer up, in `recordedTranscript`.
 
   `k8s/`'s barrel is its assembly (`createK8sDriver`) over five sealed
   folders: `workspaces` (launch and the Job manifest, locate, claim,
-  teardown, image salvage, port forwards, the
+  teardown, port forwards, the
   node-local orphan sweep, the per-pass snapshot, and the mapping from a
   pod to a `RuntimeHandle`), `images` (builder pods, the build coordinator
-  and its build rows, prewarm, node image stores, main registry GC),
+  and its build rows, prewarm, main registry GC),
   `egress`, `cluster` (the in-cluster datapath, the main registry and its
   client, and every image tag), and `substrate` (client, informers, exec,
   pod-spec fragments, the streaming child-process runner, the datapath's

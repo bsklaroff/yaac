@@ -1027,7 +1027,7 @@ export interface SecretProxyRule {
 /**
  * The project settings a workspace launches with besides its checkout
  * (docs/project-config.md), each a column of the project's row. The last
- * three apply under k8s only: a containerless server refuses to set them.
+ * two apply under k8s only: a containerless server refuses to set them.
  */
 export interface ProjectConfig {
   /** Ports forwarded from every workspace, each offered at a host port from
@@ -1036,9 +1036,6 @@ export interface ProjectConfig {
   /** Named directories that persist across workspaces, by name: the
    *  absolute path each is mounted at. */
   cacheVolumes: Record<string, string>
-  /** Run an in-pod rootful podman so `docker` commands work inside
-   *  workspaces (docs/nested-containers.md). */
-  nestedContainers: boolean
   /** Whether workspaces may use the install's npm cache. When false, one
    *  fetches from npmjs through the egress proxy. */
   npmCache: boolean
@@ -2369,7 +2366,7 @@ export interface HeldWorkspaceEntry {
 }
 
 /** Named step in a project's image chain, in build order. */
-export type ImageLayerName = 'base' | 'tools' | 'nestable' | 'project' | 'user'
+export type ImageLayerName = 'base' | 'tools' | 'project' | 'user'
 
 /**
  * An image build tracked in server memory. The snapshot
@@ -2493,8 +2490,6 @@ export interface ComponentUsage extends ResourceUse {
   /** The volumes it owns. A volume several components mount is listed
    *  under the first. */
   volumes: VolumeUsage[]
-  /** Per-project rows, under the project registries. */
-  children?: Array<ComponentUsage & { projectId: string }>
 }
 
 /** What the substrate reports for one workspace. */

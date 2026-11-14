@@ -2,11 +2,10 @@
  * The install's main OCI registry as an in-cluster workload: the one image
  * bus (docs/trust-split-builds.md). Host `podman build` and sandboxed
  * builder pods push to it, and node containerd pulls every workspace image
- * from it. Same shape as the per-project registries (project-registry.ts):
- * digest-pinned `registry:2`, a Recreate Deployment, a ClusterIP Service,
- * an RWO PVC, and per-node containerd `hosts.toml` written by one-shot pods.
+ * from it: digest-pinned `registry:2`, a Recreate Deployment, a ClusterIP
+ * Service, an RWO PVC, and per-node containerd `hosts.toml` written by
+ * one-shot pods.
  *
- * Differences, since this one is install-wide:
  *  - It lives in the default namespace (`REGISTRY_NAMESPACE`), so per-run
  *    e2e namespaces share one image store.
  *  - Its pods use upstream digest refs, since it cannot pull its own images.
@@ -51,7 +50,6 @@ import {
   registryReachable,
 } from './registry'
 import { registryGrantPublicKey } from './registry-grant'
-import { LABEL_REGISTRY_SERVES, REGISTRY_UPSTREAM_IMAGE } from './project-registry'
 import { ENVOY_UPSTREAM_IMAGE } from './netd'
 import {
   REGISTRY_BACKEND_PORT,
@@ -60,9 +58,21 @@ import {
 } from './registry-gate'
 import { serverLog } from '#lib/log'
 
-/** `app` label for the main registry's objects, distinct from the project
- *  registries' so neither's selectors match the other. */
+/** `app` label for the main registry's objects. */
 export const MAIN_REGISTRY_APP_LABEL = 'yaac-main-registry'
+
+/**
+ * On the registry's serving pods only, and in its Service's selector. The
+ * one-shot node-write pods share its other labels, so its policies cover
+ * them, but must never become Service endpoints: none listens on the port,
+ * so a share of every dial to the registry would land on one and hang.
+ */
+export const LABEL_REGISTRY_SERVES = 'yaac.registry-serves'
+
+/** registry:2 pinned by multi-arch index digest. */
+export const REGISTRY_IMAGE_DIGEST =
+  'sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373'
+export const REGISTRY_UPSTREAM_IMAGE = `docker.io/library/registry@${REGISTRY_IMAGE_DIGEST}`
 
 /** Label on the one-shot node-write pods, so the stray sweep never selects
  *  the registry's own pod. */

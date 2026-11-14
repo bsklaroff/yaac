@@ -24,7 +24,7 @@ const commits = (commit: string) => [{ dir: '', commit }]
 const PROJECT: ProjectSummary = {
   id: 'proj', name: 'proj', addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {},
   createDefaults: {}, repos: [projectRepo({ id: 'r-web', dir: 'web' }), projectRepo({ id: 'r-api', dir: 'api' })],
-  scratchDirs: { dirs: [], ignoredTracked: [] }, portForwards: [], cacheVolumes: {}, nestedContainers: false, npmCache: true,
+  scratchDirs: { dirs: [], ignoredTracked: [] }, portForwards: [], cacheVolumes: {}, npmCache: true,
 }
 
 let sites: SiteEntry[]

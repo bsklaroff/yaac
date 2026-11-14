@@ -626,14 +626,12 @@ host process never sets these variables, so under containerless the tiers
 are just three folders of one directory.
 
 NODE-LOCAL holds nothing durable: per project, the pnpm store and the
-per-workspace scratch dirs, the image-store generations
-(docs/nested-containers.md), and each opencode workspace's working copy
-(docs/workspace-storage.md "opencode"). On a multi-node cluster those bytes
-are on whichever node the workspace ran on, so the server never touches them
-through its own filesystem. A pod's init container creates and chowns what
-the pod mounts, a node-side writer pod fills the image store, and
-`reapNodeLocal` runs one root pod per node to remove what no live workspace
-owns.
+per-workspace scratch dirs, and each opencode workspace's working copy
+(docs/workspace-storage.md "opencode"). On a multi-node cluster those bytes are
+on whichever node the workspace ran on, so the server never touches them
+through its own filesystem. A pod's init container creates and chowns what the
+pod mounts, and `reapNodeLocal` runs one root pod per node to remove what no
+live workspace owns.
 
 The claims have **fixed names** and the volumes have **install-keyed names**. A
 claim is namespaced and belongs to one install, so every install namespace

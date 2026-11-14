@@ -198,7 +198,7 @@ describe('stopWorkspace', () => {
   /**
    * The teardown runs detached, so the stop returns at once: routing stops
    * in-process, then the runtime's teardown and this layer's dirs go in one
-   * script, once anything the workspace holds has been salvaged.
+   * script, once the workspace's ignored files are cleaned.
    */
   describe('the teardown it schedules', () => {
     const TEARDOWN = 'runtime-teardown-here'
@@ -218,7 +218,6 @@ describe('stopWorkspace', () => {
       })
 
     function installTeardown(
-      salvage: () => Promise<void> = () => Promise.resolve(),
       exec: typeof inCheckout = () => Promise.resolve({ stdout: '', stderr: '' }),
     ): void {
       installFakeWorkspaceDriver({
@@ -226,7 +225,6 @@ describe('stopWorkspace', () => {
           ? { workspaceId: 'parent', projectId: PROJ, unitName: 'yaac-proj-parent' }
           : undefined),
         deregisterWorkspace: (id) => { calls.push(`deregister ${id}`); return Promise.resolve() },
-        salvageImages: (target) => { calls.push(`salvage ${target.unitName}`); return salvage() },
         workspacePaths: () => workspacePathsFixture({ workspaceDir: workspaceDir(PROJ, 'parent') }),
         exec: (_job, cmd, opts) => exec(cmd, opts),
         detachedTeardownCommand: () => TEARDOWN,
@@ -242,16 +240,17 @@ describe('stopWorkspace', () => {
       const modules = path.join(workspaceDir(PROJ, 'parent'), 'node_modules')
       await fs.mkdir(modules, { recursive: true })
       let release!: () => void
-      installTeardown(() => new Promise((resolve) => { release = resolve }))
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      installTeardown(() => gate.then(() => ({ stdout: '', stderr: '' })))
       vi.mocked(serverLog).mockClear()
 
       await stopWorkspace(local, 'parent')
 
       expect(isWorkspaceTerminating('parent')).toBe(true)
       expect((await getWorkspaceRow(PROJ, 'parent'))?.stoppedAt).toBeInstanceOf(Date)
-      // Routing stops in-process, and the salvage reads from the workspace,
-      // so nothing is spawned until both are done.
-      expect(calls).toEqual(['deregister parent', 'salvage yaac-proj-parent'])
+      // Routing stops in-process, and the clean reads from the workspace, so
+      // nothing is spawned until both are done.
+      expect(calls).toEqual(['deregister parent'])
       expect(teardowns.spawned).toEqual([])
       // The detached script's output is discarded, so the teardown is
       // logged here.
@@ -267,8 +266,8 @@ describe('stopWorkspace', () => {
       expect(script.indexOf(TEARDOWN)).toBeLessThan(script.indexOf('rm -rf'))
     })
 
-    it('spawns the teardown even when the salvage fails and the workspace cannot be reached', async () => {
-      installTeardown(() => Promise.reject(new Error('registry down')), () => Promise.reject(new Error('pod gone')))
+    it('spawns the teardown even when the workspace cannot be reached', async () => {
+      installTeardown(() => Promise.reject(new Error('pod gone')))
       await stopWorkspace(local, 'parent')
       await vi.waitFor(() => { expect(teardowns.spawned).toHaveLength(1) })
       // Left for the fallback, which looks for stopped rows without a clean.
@@ -302,7 +301,7 @@ describe('stopWorkspace', () => {
         await fs.writeFile(path.join(checkout, rel), '')
       }
       await setProjectKeptIgnoredPaths(PROJ, ['.env', 'target/release'])
-      installTeardown(undefined, inCheckout)
+      installTeardown(inCheckout)
 
       await stopWorkspace(local, 'parent')
       // The clean runs real git first.
@@ -325,7 +324,7 @@ describe('stopWorkspace', () => {
       execFileSync('git', ['init', '-q'], { cwd: checkout })
       await fs.chmod(locked, 0o555)
       vi.mocked(serverLog).mockClear()
-      installTeardown(undefined, inCheckout)
+      installTeardown(inCheckout)
       try {
         await stopWorkspace(local, 'parent')
         await vi.waitFor(() => { expect(teardowns.spawned).toHaveLength(1) }, { timeout: 30_000 })
@@ -352,7 +351,7 @@ describe('stopWorkspace', () => {
       await fs.writeFile(path.join(checkout, '.gitignore'), 'cache/\n*.log\n')
       await fs.writeFile(path.join(checkout, 'app.log'), '')
       execFileSync('git', ['init', '-q'], { cwd: checkout })
-      installTeardown(undefined, (cmd, opts) => inCheckout(
+      installTeardown((cmd, opts) => inCheckout(
         `unshare -rm sh -c 'mount --bind "$1" "$2" && exec sh -c "$3"' sh ${shellQuote(shared)} ${shellQuote(path.join(checkout, 'cache'))} ${shellQuote(cmd)}`,
         opts,
       ))

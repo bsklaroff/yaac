@@ -24,14 +24,7 @@ function usage(workspaces: SubstrateUsage['workspaces']): SubstrateUsage {
       swapBytes: 0, swapCapacityBytes: 0, disks: [{ name: 'node-a root', usedBytes: 1, capacityBytes: 2 }],
     },
     nodes: [],
-    components: [{
-      key: 'project-registries', label: 'project registries', cpuCores: 0, memoryBytes: GIB,
-      count: 1, volumes: [],
-      children: [{
-        key: `project-registry:${DEMO_PROJECT_ID}`, label: DEMO_PROJECT_ID, projectId: DEMO_PROJECT_ID,
-        cpuCores: 0, memoryBytes: GIB, volumes: [],
-      }],
-    }],
+    components: [{ key: 'proxy', label: 'egress proxy', cpuCores: 0, memoryBytes: GIB, volumes: [] }],
     workspaces,
   }
 }
@@ -79,8 +72,6 @@ describe('serverUsageReport', () => {
     expect(report.driver).toBe('k8s')
     expect(report.totals.history).toHaveLength(2)
     expect(report.totals.disks).toEqual([{ name: 'node-a root', usedBytes: 1, capacityBytes: 2 }])
-    // Per-project registry rows are named for the project.
-    expect(report.components[0].children?.[0].label).toBe('demo-project')
     expect(report.components[0].history).toHaveLength(2)
 
     // Sorted by memory now; the stopped one keeps its last hour.

@@ -85,9 +85,8 @@ out of the picture.
   uses.
 - **Traffic without a rule goes nowhere.** `203.0.113.7:80`, with no rule,
   failed to connect and put no packets on the wire.
-- **Raw sockets give no bypass, even for nested workspaces.** With
-  `net-raw` and `allow-packet-socket-write` on (the settings of the
-  `gvisor-nested` runtime handler) and `CAP_NET_RAW` granted, a
+- **Raw sockets give no bypass.** With `net-raw` and
+  `allow-packet-socket-write` on and `CAP_NET_RAW` granted, a
   hand-crafted SYN on a `SOCK_RAW`/`IP_HDRINCL` socket got `ENETUNREACH`
   for both external and on-link destinations. An `AF_PACKET` `SOCK_DGRAM`
   write could only reach `lo`; `eth0` was not exposed. The same dead ends
@@ -97,9 +96,6 @@ out of the picture.
 Not verified, and each one blocks adoption:
 
 - a real gVisor pod on managed Cilium, end to end;
-- a nested workspace's in-pod container engine, which drives netstack
-  interfaces for its own containers and exposes far more than the direct
-  `AF_PACKET` write tested here;
 - an explicit netstack default-deny filter (the failure above was "no
   route", not an installed DROP);
 - an in-sandbox iptables write, to confirm the `CAP_NET_ADMIN` gate.
@@ -127,25 +123,6 @@ direct mode that identifies the workspace by the socket's peer address,
 plus a guarantee that it refuses PP2 on pod-sourced connections. Separate
 listener ports per mode is the cleanest way to get that.
 
-### Nested workspaces can delete their own rule
-
-`NESTED_ENGINE_CAPS` gives nested workspaces `NET_ADMIN`, which is exactly
-what netstack requires for iptables writes. So a nested workspace can
-remove its DNAT rule. Containment still holds: NetworkPolicy denies the
-world, so a rule-less packet keeps its real destination and is dropped.
-But interception would then rely only on "the proxy is the only reachable
-thing", not on a rule the workload cannot touch.
-
-### Nested containers stop getting egress
-
-Today in-pod podman shares the workspace pod's netns, so `docker
-pull`/`build` traffic is redirected at the veth like everything else. A
-`nat OUTPUT` rule only catches packets generated locally. Traffic podman
-forwards off an in-sandbox bridge goes through FORWARD and is never
-DNAT'd. It is dropped rather than leaked, but nested egress stops
-working. Fixing that needs a PREROUTING rule inside a netns that netavark
-also programs and rewrites. This is the largest unverified gap.
-
 ### A second test matrix
 
 `test/e2e/netd-datapath.test.ts` asserts host-side iptables. A second
@@ -163,15 +140,14 @@ iptables, and netlink writes need `CAP_NET_ADMIN`.
 
 It is rejected because it gives the guest the host kernel's socket API,
 which is the attack surface netstack exists to remove. gVisor describes
-hostinet as for "semi-trusted" workloads. It also hurts nested workspaces
-specifically: under hostinet, `net-raw` grants real raw IP sockets in the
-pod netns, weakening both interception and spoofing resistance. Netstack
-DNAT keeps full isolation, which is why it is the variant written up here.
+hostinet as for "semi-trusted" workloads. Netstack DNAT keeps full
+isolation, which is why it is the variant written up here.
 
 ## If this is ever revived
 
-Scope it to non-nested workspace pods and turn nested workspaces off on a
-Cilium backend. That removes the two hardest problems above (the
-deletable rule and nested container egress) and leaves a datapath that is
-plausibly a week's work rather than a quarter's. Nested workspaces would
-stay a feature of CNIs that pass traffic through host netfilter.
+Workspace pods are granted no added capabilities, so even root in the
+sandbox lacks the `CAP_NET_ADMIN` netstack requires to delete the rule, and
+every packet a workspace sends is generated locally, so a `nat OUTPUT` rule
+catches all of it. What remains is getting the rule into every pod, the
+proxy's direct mode and a second test matrix: plausibly a week's work
+rather than a quarter's.

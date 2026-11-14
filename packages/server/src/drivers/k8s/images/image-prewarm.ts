@@ -32,22 +32,17 @@ const prewarming = new Set<string>()
  * Ensure one project's chain is built. When all is
  * warm this is a few registry HEADs, so a pruned image is rebuilt on the
  * next sweep (or, for a yaac-shipped layer, reports `yaac cluster install`).
- *
- * An unreadable config rejects rather than defaulting: a default would
- * silently build the default chain, dropping the nestable layer for a
- * `nestedContainers` project.
  */
 export async function prewarmProjectImage(
   projectId: string,
   projects: ProjectReaders,
 ): Promise<void> {
-  const nestedContainers = (await projects.projectConfig(projectId))?.nestedContainers === true
   const owner = await projects.projectOwner(projectId)
 
-  const { layers } = await resolveImageChain(projectId, owner, nestedContainers)
+  const { layers } = await resolveImageChain(projectId, owner)
   if (hasBlockingFailure(layers.map((l) => l.tag), FAILED_RETRY_MS)) return
 
-  await ensureImage(projectId, owner, { nestedContainers, reason: 'prewarm' })
+  await ensureImage(projectId, owner, { reason: 'prewarm' })
 }
 
 /**

@@ -681,12 +681,11 @@ second per pass, so an upgraded install's backlog drains within a few passes.
 
 ## The node-local tree
 
-The node-local tier (`node-local/projects/<project id>/…` and
-`node-local/shared-images/<project id>/…`) is keyed, like the global tree, by
-the project's immutable id (`projects.id`, never reused). A node's copy cannot
-be removed reliably, since the node may be gone when the project is removed;
-because ids are never reused, a project added again starts empty rather than
-mounting the old one's caches and image store.
+The node-local tier (`node-local/projects/<project id>/…`) is keyed, like the
+global tree, by the project's immutable id (`projects.id`, never reused). A
+node's copy cannot be removed reliably, since the node may be gone when the
+project is removed; because ids are never reused, a project added again starts
+empty rather than mounting the old one's caches.
 
 The node-local sweep (`reapNodeLocal`) collects by the same key. It is given the
 live project ids and workspace ids, and removes any project tree no live id
@@ -790,8 +789,8 @@ remote's upload-pack or ssh command; and `core.excludesFile`.
 ### Where it runs
 
 The server never runs git against a checkout itself (docs/server-git.md).
-A stop first runs the clean inside the workspace through `exec`, beside the
-image salvage and as the workspace's user. When that succeeds, the
+A stop first runs the clean inside the workspace through `exec`, as the
+workspace's user. When that succeeds, the
 `ignored-files-cleaned` event stamps the current life's `ignoredCleanedAt`
 with the time the clean began, unless that life's stop came later, so a
 clean that outlived a restart does not answer for the next stop.

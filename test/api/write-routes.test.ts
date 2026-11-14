@@ -271,13 +271,12 @@ describe('write routes', () => {
       const ports = [{ containerPort: 3000, hostPortStart: 13000 }]
 
       expect(await (await project['port-forwards'].$put({ param, json: { ports } })).json())
-        .toEqual({ portForwards: ports, cacheVolumes: {}, nestedContainers: false, npmCache: true })
+        .toEqual({ portForwards: ports, cacheVolumes: {}, npmCache: true })
       await project['cache-volumes'].$put({ param, json: { volumes: { pip: '/home/yaac/.cache/pip' } } })
-      await project['nested-containers'].$put({ param, json: { enabled: true } })
       expect(await (await project['npm-cache'].$put({ param, json: { enabled: false } })).json()).toEqual({
-        portForwards: ports, cacheVolumes: { pip: '/home/yaac/.cache/pip' }, nestedContainers: true, npmCache: false,
+        portForwards: ports, cacheVolumes: { pip: '/home/yaac/.cache/pip' }, npmCache: false,
       })
-      expect(await getProjectRow(DEMO)).toMatchObject({ portForwards: ports, nestedContainers: true, npmCache: false })
+      expect(await getProjectRow(DEMO)).toMatchObject({ portForwards: ports, npmCache: false })
 
       const bad = await project['port-forwards'].$put({ param, json: { ports: [{ containerPort: 10300, hostPortStart: 1 }] } })
       expect(bad.status).toBe(400)

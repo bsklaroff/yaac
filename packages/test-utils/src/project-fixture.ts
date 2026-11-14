@@ -15,7 +15,7 @@ import { git } from './git.js'
 import { createTestRepo } from './setup.js'
 
 /** A new project's settings, as its row's column defaults give them. */
-export const PROJECT_CONFIG_DEFAULTS: ProjectConfig = { portForwards: [], cacheVolumes: {}, nestedContainers: false, npmCache: true }
+export const PROJECT_CONFIG_DEFAULTS: ProjectConfig = { portForwards: [], cacheVolumes: {}, npmCache: true }
 
 /** The project id unit tests use when one project is enough. */
 export const DEMO_PROJECT_ID = '7d4e2a1c-5b3f-4e8a-9c6d-1f2e3a4b5c6d'

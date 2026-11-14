@@ -22,7 +22,6 @@ const project = (ignoredTracked: string[] = []): ProjectSummary => ({
   scratchDirs: { dirs: [{ path: 'node_modules', sizeGiB: 8 }, { path: 'target', sizeGiB: 32 }], ignoredTracked },
   portForwards: [],
   cacheVolumes: {},
-  nestedContainers: false,
   npmCache: true,
 })
 

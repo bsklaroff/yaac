@@ -215,7 +215,7 @@ covers every install created since.
   Service, claim and NetworkPolicy in the install's namespace whose legacy
   label equals the hash. Objects a later apply re-sends pick the new label
   up anyway; this covers the ones nothing re-applies (workspace Jobs and
-  pods, prewarmed spares, builder, store-writer and sweep pods). It runs on
+  pods, prewarmed spares, builder and sweep pods). It runs on
   every start while the hash is recorded, since a Deployment that is not
   re-applied (a project registry, the proxy) recreates its pods from a
   template that carries only the old label. A failure fails the server's
@@ -229,7 +229,8 @@ covers every install created since.
   cluster check` fails a kind install's storage gate.
 - **When it is safe to remove.** Once every legacy install has started an
   upgraded server, so every object that predates the upgrade carries the
-  install id or is gone.
+  install id or is gone. Not before "Project registries" below: that sweep
+  finds a registry only by its install id.
 
 ### 2. Legacy names and node path
 
@@ -369,8 +370,8 @@ held is a column of its row now (docs/project-config.md), and nothing reads
 the file. At start, before any create, the server runs
 `importProjectConfigFiles` (`#domain/projects`, `config-import.ts`): for
 each project that still has the file, it stores each key on the row. The
-keys are `portForward`, `cacheVolumes`, `nestedContainers` and `npmCache`,
-plus three that older files carry: `ephemeralModulesPaths` (the scratch
+keys are `portForward`, `cacheVolumes` and `npmCache`, plus three that older
+files carry: `ephemeralModulesPaths` (the scratch
 dirs, each with no cap of its own, also filling the project's running
 workspace rows, see the next entry), and `initCommands` and `hideInitPane`
 (converted to the steps they ran as and written as an init workflow, unless
@@ -378,8 +379,9 @@ the project has init workflows already; it is named `init`, else
 `init-steps` where the project has an `init`, as the migration names one). The
 converted steps run in the workspace's `$SHELL` when it is
 a POSIX-family one, as `initCommands` did, so a fish user's now run in bash.
-Under containerless the three pod settings are dropped, as they never
-applied there and the routes refuse them.
+Under containerless the two pod settings are dropped, as they never applied
+there and the routes refuse them. A `nestedContainers` key, a setting yaac
+no longer has, imports as nothing.
 
 A file that wholly imports is deleted. One with a value that does not
 validate or an unknown key, or that is not a JSON object, is renamed
@@ -391,8 +393,8 @@ sets the same values.
 
 - **What it reads.** Every project's `yaac-config.json` under its config dir.
 - **What breaks silently if it goes too early.** An install upgraded past
-  the import without running it loses its forwarded ports, cache volumes,
-  nested containers and npm-cache choice, and, for an older file, its
+  the import without running it loses its forwarded ports, cache volumes
+  and npm-cache choice, and, for an older file, its
   scratch dirs and init steps: workspaces then start on the defaults with
   no error anywhere.
 - **When it is safe to remove.** Once every install has started a server
@@ -833,3 +835,104 @@ empty, and keeps the files the server wrote.
   version with tailnet sites, which rewrites the table with all three files;
   on a given cluster, once `kubectl get configmap yaac-site-routes -o
   jsonpath='{.data}'` names `rds-tailnet.json`.
+
+## Project registries
+
+A server with nested-container workspaces gave each project that used them
+a push registry in the install namespace: a `yaac-reg-<project id>`
+Deployment, Service, NetworkPolicies and one-shot pods, and a 50Gi PVC, all
+labelled `app=yaac-registry`. Nothing creates or reads one any more, and
+project removal no longer deletes one. So `sweepProjectRegistries`
+(`cluster/project-registry-sweep.ts`), the k8s `project-registry-sweep`
+maintenance step, deletes every object of this install with that label,
+hourly. A workspace still running from before the upgrade loses the
+registry its `docker push` targets; its engine keeps working.
+
+- **What it reads.** Objects labelled `app=yaac-registry` and this install's
+  `yaac.install-id`, of the five kinds a registry was made of.
+- **What breaks silently if it goes too early.** An install upgraded past
+  the sweep without running it keeps each registry pod and its claim
+  forever: on a cloud provider, a billed 50Gi volume per project that ever
+  used nested containers.
+- **When it is safe to remove.** Once every install's server has run the
+  sweep; on a given cluster, once `kubectl get deploy,svc,networkpolicy,pod,pvc
+  -A -l app=yaac-registry` finds nothing.
+- **Order.** It depends on the startup relabel ("Cluster objects keyed by a
+  data-dir hash"): a registry from before install ids carries only
+  `yaac.registry-data-dir-hash` until the relabel adds `yaac.install-id`.
+  Remove the relabel only after this sweep, or once no `app=yaac-registry`
+  object lacks `yaac.install-id`.
+
+## Node-local image stores
+
+Nested-container workspaces mounted a read-only image store from their
+node, written under `shared-images/<project id>/` in the install's
+node-local tree by root pods the server can no longer remove. The node-local
+sweep (`buildNodeLocalSweepScript` in `workspaces/node-local-sweep.ts`)
+removes every `shared-images/<x>` no live pod mounts, whatever its age or
+project, and then the `shared-images` directory once it is empty. The
+mounted set comes from the same pod listing that keeps live project trees.
+
+- **What it reads.** `/var/lib/yaac/node/<install id>/shared-images/` on
+  every node, and the hostPath volumes of this install's workspace pods.
+- **What breaks silently if it goes too early.** An upgraded node keeps
+  several GB of image layers per project that used nested containers until
+  it is replaced; nothing else ever removes them.
+- **When it is safe to remove.** Once every node of every install has run a
+  sweep since its last nested-container workspace stopped; on a given node,
+  once no `shared-images` directory is left under the install's node-local
+  tree.
+
+## The gvisor-nested RuntimeClass
+
+An install that offered nested containers also applied a `gvisor-nested`
+RuntimeClass and registered a `runsc-nested` containerd handler, with its
+own `/etc/containerd/runsc-nested.toml`, on each node. Install no longer
+applies either, but deletes neither: the class is cluster-scoped and an
+older install sharing the cluster may still schedule on it, and the
+installer appends its containerd block once, guarded by a marker, so a node
+that has the old two-handler block keeps it. Nodes added since get only
+`runsc`. Nothing yaac runs names the class, so the leftover is inert, but on
+a mixed node pool it points at a handler that newer nodes lack. The one
+piece of code is the byo uninstall hint (`byoUninstall` in
+`install/delete.ts`), which names `gvisor-nested` with `--ignore-not-found`.
+
+- **What it reads.** Nothing at runtime; the hint names the class.
+- **What breaks silently if it goes too early.** A byo user following the
+  uninstall hint leaves `gvisor-nested` behind on a cluster yaac no longer
+  uses.
+- **When it is safe to remove.** Once no supported upgrade starts from a
+  version that applied `gvisor-nested`; on a given cluster, once `kubectl
+  get runtimeclass gvisor-nested` finds nothing. An operator can delete the
+  class whenever no install on the cluster predates this change. The node
+  handler and its config go when the node is replaced.
+
+## The yaac-nestable image
+
+The retired `nestable` layer left its last generations in the main
+registry's `yaac-nestable` repo, on every node that ran a nested workspace,
+and in the host podman store. The main registry GC's orphan sweep
+(`orphanProjectRepoSweepScript` in `images/main-registry-gc.ts`) removes the
+repo unless a running pod still names one of its tags; the node image GC
+then drops each node's copy once the registry no longer serves it. The host
+store keeps its copies, since the host GC keeps two generations per
+`yaac-*` repo: remove them by hand with `podman rmi` on the
+`localhost/yaac-nestable` tags.
+
+Rolling back to a version that ships the nestable layer after this GC has
+run makes that version's `yaac cluster install` rebuild `yaac-nestable`
+`FROM` its `yaac-tools` generation. Its install skips layers the registry
+already holds without pulling them, so when the host podman store no longer
+has that tools image, the build fails ("short-name … did not resolve") and
+the server is left down. Pull the tools image from the registry onto the
+host and tag it `localhost/yaac-tools:<hash>` before installing the older
+version.
+
+- **What it reads.** The `yaac-nestable` repo in the main registry's
+  storage.
+- **What breaks silently if it goes too early.** An upgraded install keeps
+  two nestable generations (the podman and docker layers over tools) in its
+  registry and on every node that pulled them, with nothing to reclaim them.
+- **When it is safe to remove.** Once every install's server has run a main
+  registry GC since its last nested workspace stopped; on a given install,
+  once the registry has no `yaac-nestable` repository.

@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import fsp from 'node:fs/promises'
 import { setDataDir } from '@yaac/shared/paths'
-import { imageStoreDir, nodeLocalProjectPath } from '@yaac/shared/project-paths'
+import { nodeLocalProjectPath } from '@yaac/shared/project-paths'
 import { WorkspaceExecError } from '#drivers/contract'
 
 import type * as hostModule from '#drivers/containerless/host'
@@ -220,17 +220,14 @@ const DEMO = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d'
 const KEEPER_ID = '1f2e3d4c-5b6a-4978-8a6b-5c4d3e2f1a0b'
 
 describe('destroyProjectSubstrate', () => {
-  it('removes the project\'s node-local tree and image store on this host, by id', async () => {
+  it('removes the project\'s node-local tree on this host, by id', async () => {
     const tree = nodeLocalProjectPath(DEMO)
-    const store = imageStoreDir(DEMO)
     await fsp.mkdir(path.join(tree, '.cached-packages', 'pnpm-store'), { recursive: true })
-    await fsp.mkdir(path.join(store, 'gen-1'), { recursive: true })
     await fsp.mkdir(nodeLocalProjectPath(KEEPER_ID), { recursive: true })
 
     await destroyProjectSubstrate(DEMO)
 
     await expect(fsp.access(tree)).rejects.toThrow()
-    await expect(fsp.access(store)).rejects.toThrow()
     await expect(fsp.access(nodeLocalProjectPath(KEEPER_ID))).resolves.toBeUndefined()
   })
 })
@@ -247,19 +244,17 @@ describe('reapNodeLocal', () => {
   // tree written since the sweep began.
   it('removes node-local trees no live project id owns', async () => {
     const live = await seed(nodeLocalProjectPath(DEMO))
-    const liveStore = await seed(imageStoreDir(DEMO))
     const removed = await seed(nodeLocalProjectPath(KEEPER_ID))
-    const removedStore = await seed(imageStoreDir(KEEPER_ID))
     const unknown = await seed(nodeLocalProjectPath('other'))
     const fresh = nodeLocalProjectPath('staging')
     await fsp.mkdir(fresh, { recursive: true })
 
     await reapNodeLocal({ projectIds: new Set([DEMO]), workspaceIds: new Set([UUID]) })
 
-    for (const dir of [live, liveStore, fresh]) {
+    for (const dir of [live, fresh]) {
       await expect(fsp.access(dir)).resolves.toBeUndefined()
     }
-    for (const dir of [removed, removedStore, unknown]) {
+    for (const dir of [removed, unknown]) {
       await expect(fsp.access(dir)).rejects.toThrow()
     }
   })
@@ -270,11 +265,13 @@ describe('reapNodeLocal', () => {
     try {
       const entryVictim = await seed(path.join(victims, 'entry-target'))
       const rootVictim = await seed(path.join(victims, 'root-target', 'not-an-id'))
-      await fsp.mkdir(path.dirname(nodeLocalProjectPath('x')), { recursive: true })
+      const root = path.dirname(nodeLocalProjectPath('x'))
+      await fsp.mkdir(root, { recursive: true })
       await fsp.symlink(entryVictim, nodeLocalProjectPath('linked'))
-      await fsp.rm(path.dirname(imageStoreDir('x')), { recursive: true, force: true })
-      await fsp.symlink(path.dirname(rootVictim), path.dirname(imageStoreDir('x')))
+      await reapNodeLocal({ projectIds: new Set(), workspaceIds: new Set() })
 
+      await fsp.rm(root, { recursive: true, force: true })
+      await fsp.symlink(path.dirname(rootVictim), root)
       await reapNodeLocal({ projectIds: new Set(), workspaceIds: new Set() })
 
       for (const dir of [entryVictim, rootVictim]) {

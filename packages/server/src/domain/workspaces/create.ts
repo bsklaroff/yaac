@@ -392,22 +392,6 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   // Everything below reads the checkout, so join it now.
   await workspace
 
-  // yaac-workspace-init starts the in-pod engine in the background. Wait for
-  // it so a broken engine fails the create with a clear error.
-  if (spec.nestedContainers) {
-    emit('Waiting for the in-pod container engine...', options)
-    let lastErr: unknown
-    const engineUp = await waitFor(() => runtime.exec(jobName, 'docker version', { maxAttempts: 1, timeout: 10_000 })
-      .then(() => true, (err: unknown) => { lastErr = err; return false }), { timeoutMs: 60_000, intervalMs: 500 })
-    if (!engineUp) {
-      throw new Error(
-        'in-pod podman did not become ready within 60s — check '
-        + `/tmp/podman-service.log and /tmp/yaac-engine-setup.log in session ${workspaceId} `
-        + `(${String(lastErr)})`,
-      )
-    }
-  }
-
   // Then the life's log hooks and the sessions, unless they opened early,
   // in one command with the checkout's own setup to save round
   // trips, ending with the mark that setup is done, which lets the step
@@ -692,7 +676,7 @@ export async function createWorkspace(
     )
   }
 
-  const { portForwards, cacheVolumes, nestedContainers, npmCache } = projectRow
+  const { portForwards, cacheVolumes, npmCache } = projectRow
 
   // Plain variables plus the secrets the egress path injects. Stored as rows,
   // since a remote client cannot set the server's own environment
@@ -907,7 +891,6 @@ export async function createWorkspace(
     : runtime.prepareImage({
       projectId,
       owner,
-      nestedContainers,
       onProgress: (m) => emit(m, options),
     })
   imageTask.catch(() => { /* awaited at the join */ })
@@ -948,9 +931,8 @@ export async function createWorkspace(
     workspaceId: workspaceId,
     owner: options.siteId !== undefined ? NO_CREDENTIALS_OWNER_KEY : credentialOwnerKey(owner),
     ...(options.siteId === undefined ? { identity: await egressIdentity(owner) } : {}),
-    config: { portForwards, cacheVolumes, nestedContainers, npmCache },
+    config: { portForwards, cacheVolumes, npmCache },
     allowlist,
-    nestedContainers,
     proxySecretRules: Object.fromEntries(
       Object.entries(projectEnv.secrets).map(([name, { rule }]) => [name, rule]),
     ),
@@ -1321,7 +1303,6 @@ export async function createWorkspace(
   env.push(`YAAC_GIT_NAME=${gitUser.name}`)
   env.push(`YAAC_GIT_EMAIL=${gitUser.email}`)
   env.push(`YAAC_STATUS_RIGHT=${buildStatusRight(workspaceId, forwardedPorts)}`)
-  if (nestedContainers) env.push('YAAC_NESTED_ENGINE=1')
 
   // Mounts are declared against host paths; each driver realizes them its
   // own way (k8s: subPaths of the global claim or node-local dirs;
@@ -1439,15 +1420,14 @@ export async function createWorkspace(
     mounts,
     scratchDirs,
     resources: WORKSPACE_RESOURCES,
-    // In-workspace setup (git identity, tmux, agent transport, nested
-    // engine); the runtime reports ready only after it finishes.
+    // In-workspace setup (git identity, tmux, agent transport); the runtime
+    // reports ready only after it finishes.
     postStartExec: [`/usr/local/bin/${WORKSPACE_INIT_SCRIPT}`],
     // A pod checkpoints and clears its opencode working copy on stop, so it
     // leaves nothing on its node. Containerless keeps no working copy.
     ...(runtime.kind === 'containerless'
       ? {}
       : { preStopExec: [`/usr/local/bin/${OPENCODE_CHECKPOINT_SCRIPT}`, 'stop'] }),
-    nestedContainers,
     cwd,
     ...(sshKnownHostsFile !== undefined
       ? { ssh: { knownHostsFile: sshKnownHostsFile } }
@@ -1503,7 +1483,7 @@ export async function createWorkspace(
       if (target !== undefined && target.projectId !== projectId) target = undefined
       podGone = target === undefined
         ? true
-        : await workspaceDriver().destroy(target, { salvageImages: false, unitOnly })
+        : await workspaceDriver().destroy(target, { unitOnly })
     } catch {
       podGone = false
     }

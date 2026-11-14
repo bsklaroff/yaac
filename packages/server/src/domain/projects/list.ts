@@ -65,7 +65,6 @@ export async function listProjects(
     scratchDirs: meta.scratchDirs,
     portForwards: meta.portForwards,
     cacheVolumes: meta.cacheVolumes,
-    nestedContainers: meta.nestedContainers,
     npmCache: meta.npmCache,
   }))
 }

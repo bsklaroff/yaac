@@ -1,6 +1,6 @@
 /**
  * Contract tests for the shipped Dockerfiles in DOCKERFILES_DIR: the trusted
- * `base` / `tools` / `nestable` layers and the server image. They test files,
+ * `base` / `tools` layers and the server image. They test files,
  * not a module, so the one-describe-per-barrel-function rule does not apply.
  */
 import { describe, it, expect } from 'vitest'
@@ -41,7 +41,7 @@ function runSteps(content: string): Array<{ user: string; line: string }> {
 
 /** Every shipped Dockerfile, in the order a chain builds them. */
 const SHIPPED = [
-  'Dockerfile.default', 'Dockerfile.tools', 'Dockerfile.nestable', 'Dockerfile.server',
+  'Dockerfile.default', 'Dockerfile.tools', 'Dockerfile.server',
 ] as const
 
 describe('Dockerfile.default', () => {
@@ -50,11 +50,9 @@ describe('Dockerfile.default', () => {
     expect(content).toContain('FROM docker.io/ubuntu:26.04')
     expect(content).toContain('gh')
     expect(content).toContain('tmux')
-    // podman belongs only in the nestable layer. In the base image it could
-    // not work, yet probes that check "is podman installed?" would treat a
-    // plain workspace as having an engine (salvage's `sudo podman` would then
-    // leave root-owned files in the user's checkout). This checks the
-    // Dockerfile text only, not transitive package dependencies.
+    // A workspace pod holds none of the capabilities a container engine
+    // needs, so one could not work there. This checks the Dockerfile text
+    // only, not transitive package dependencies.
     expect(content).not.toContain('podman')
   })
 
@@ -96,71 +94,6 @@ describe('Dockerfile.tools', () => {
     expect(content).toContain('downloads.claude.ai/claude-code-releases/')
     expect(content).toContain('@openai/codex')
     expect(content).toContain('@opencode/cli')
-  })
-})
-
-describe('Dockerfile.nestable', () => {
-  it('layers rootful in-pod podman with the docker CLI on the tools image', async () => {
-    const content = await read('Dockerfile.nestable')
-    expect(content).toMatch(/^ARG BASE_IMAGE\n/m)
-    expect(content).toMatch(/^FROM \$\{BASE_IMAGE\}/m)
-    expect(content).toContain('podman')
-    expect(content).toContain('skopeo')
-    expect(content).toContain('docker-compose')
-    // Only host networking is supported in-pod, so no userspace network
-    // helper is installed.
-    expect(content).not.toContain('default_rootless_network_cmd')
-    // The yaac user drives a rootful engine over its socket, started by
-    // `sudo podman system service` at workspace create. docker uses
-    // DOCKER_HOST, podman uses CONTAINER_HOST (which enables remote mode).
-    expect(content).toContain('DOCKER_HOST=unix:///run/podman/podman.sock')
-    expect(content).toContain('CONTAINER_HOST=unix:///run/podman/podman.sock')
-    // Nested containers share the pod's network so egress still goes
-    // through the pod's redirect.
-    expect(content).toContain('netns="host"')
-    // No rootless setup under gVisor: no subuid maps, no newuidmap caps,
-    // no keyring/pivot_root workarounds (they work as root in the sandbox).
-    expect(content).not.toContain('subuid')
-    expect(content).not.toContain('newuidmap')
-    expect(content).not.toContain('keyring=false')
-    expect(content).not.toContain('no_pivot_root=true')
-    expect(content).toContain('/etc/containers/containers.conf')
-    expect(content).toContain('/etc/containers/storage.conf')
-    // Graphroot at podman's default; the pod spec mounts a tmpfs there so
-    // setcap builds keep their file caps.
-    expect(content).toContain('graphroot = "/var/lib/containers/storage"')
-    // One read-only image store: the node-local store written by
-    // store-writer.ts and hostPath-mounted here. The directory is created
-    // empty so a workspace with nothing to mount still starts.
-    expect(content).toContain('additionalimagestores = ["/var/lib/shared-images"]')
-    expect(content).toContain('mkdir -p /var/lib/containers /var/lib/shared-images')
-  })
-
-  it('auto-trusts the session MITM CA in both trust shapes', async () => {
-    const content = await read('Dockerfile.nestable')
-    // Additive vars (OpenSSL, Node) point at the bare proxy CA. Vars that
-    // replace the trust set (curl, requests, cargo, git) point at the
-    // combined bundle of public roots plus the proxy CA.
-    expect(content).toContain('SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem')
-    expect(content).toContain('NODE_EXTRA_CA_CERTS=/etc/yaac/certs/proxy-ca.pem')
-    expect(content).toContain('CURL_CA_BUNDLE=/etc/yaac/certs/ca-bundle.pem')
-    expect(content).toContain('REQUESTS_CA_BUNDLE=/etc/yaac/certs/ca-bundle.pem')
-    expect(content).toContain('CARGO_HTTP_CAINFO=/etc/yaac/certs/ca-bundle.pem')
-    expect(content).toContain('GIT_SSL_CAINFO=/etc/yaac/certs/ca-bundle.pem')
-    // Both are mounted into nested containers and build RUN steps.
-    expect(content).toContain('/etc/yaac/certs/ca-bundle.pem:/etc/yaac/certs/ca-bundle.pem:ro')
-    // The proxy CA also goes in the ca-certificates source dir. Volumes
-    // (unlike env) reach `docker build` RUN steps, so installing
-    // ca-certificates adds it to the image's roots.
-    expect(content).toContain('/etc/yaac/certs/proxy-ca.pem:/usr/local/share/ca-certificates/yaac-proxy-ca.crt:ro')
-    // Never bind-mount over the managed bundle: rename() onto a mountpoint
-    // fails with EBUSY and breaks `update-ca-certificates`.
-    expect(content).not.toContain(':/etc/ssl/certs/ca-certificates.crt:ro')
-    // Pointing a replace var at the bare CA would break tunnelled hosts.
-    expect(content).not.toContain('CURL_CA_BUNDLE=/etc/yaac/certs/proxy-ca.pem')
-    // The server starts the engine with a detached exec, so the image keeps
-    // the base catatonit entrypoint.
-    expect(content).not.toMatch(/^ENTRYPOINT/m)
   })
 })
 

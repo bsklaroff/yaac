@@ -108,20 +108,6 @@ export function projectDir(projectId: string): string {
 }
 
 /**
- * NODE-LOCAL. Parent of a project's image store generations: the read-only
- * image store every nested-container workspace mounts at
- * `/var/lib/shared-images` (docs/nested-containers.md). It caches the
- * project registry, so a node without one mounts nothing.
- *
- * Outside the project tree because a root pod writes it, so the server's
- * user could not delete it when removing the project; a node-side pod
- * removes it instead.
- */
-export function imageStoreDir(projectId: string): string {
-  return nodeLocalPath('shared-images', projectId)
-}
-
-/**
  * SERVER-LOCAL: a yaac-hosted repo's remote, a bare repository only the
  * server opens (docs/hosted-projects.md). Outside the GLOBAL tree so no
  * workspace pod can mount it; workspaces push through the server.

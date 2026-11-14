@@ -89,7 +89,7 @@ get the real credentials. See
 ## Reference
 
 - [Project configuration](docs/project-config.md): initialization commands,
-  port forwarding, cache volumes, the egress allowlist, nested containers,
+  port forwarding, cache volumes, the egress allowlist,
   environment variables and secrets, and custom images
 - [CLI](docs/cli.md): every `yaac` command and option
 - [Environment variables](docs/environment-variables.md): server settings

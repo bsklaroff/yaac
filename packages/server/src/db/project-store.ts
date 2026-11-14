@@ -143,7 +143,6 @@ export async function setProjectConfig(
     .returning({
       portForwards: projects.portForwards,
       cacheVolumes: projects.cacheVolumes,
-      nestedContainers: projects.nestedContainers,
       npmCache: projects.npmCache,
     })
   notifyWorkspaceListChanged()

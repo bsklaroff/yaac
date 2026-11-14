@@ -1,8 +1,8 @@
 /**
  * `ensureImage` over real chains: which layers it builds, and where.
  *
- * `yaac cluster install` builds the yaac-shipped layers (base/tools/
- * nestable); here they are only looked up in the registry. The remaining
+ * `yaac cluster install` builds the yaac-shipped layers (base and tools);
+ * here they are only looked up in the registry. The remaining
  * layers build in sandboxed pods. Chain composition (tags, build args,
  * order) is asserted in cluster/image-tags-stacking.test.ts.
  */
@@ -16,19 +16,18 @@ const PROJECT = '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f'
 const OWNER = 'a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d'
 
 /** The layers `yaac cluster install` produces, by name. */
-const PREBUILT = new Set(['base', 'tools', 'nestable'])
+const PREBUILT = new Set(['base', 'tools'])
 
 describe('ensureImage', () => {
   const h = setupStackingHarness()
 
   /** Put every yaac-shipped layer of this project's chain in the registry. */
   async function stagePrebuilt(
-    resolveImageChain: (projectId: string, owner: string, nested?: boolean) => Promise<{
+    resolveImageChain: (projectId: string, owner: string) => Promise<{
       layers: Array<{ name: string; tag: string }>
     }>,
-    nested = false,
   ): Promise<void> {
-    const { layers } = await resolveImageChain(PROJECT, OWNER, nested)
+    const { layers } = await resolveImageChain(PROJECT, OWNER)
     h.stageRegistry(layers.filter((l) => PREBUILT.has(l.name)).map((l) => l.tag))
   }
 
@@ -73,28 +72,6 @@ describe('ensureImage', () => {
     const { ensureImage } = await h.load()
     await expect(ensureImage(PROJECT, OWNER)).rejects.toThrow(/yaac cluster install/)
     expect(h.operations).toEqual([])
-  })
-
-  it('layers a project Dockerfile on nestable when nestedContainers is set', async () => {
-    const buildDir = path.join(h.dataDir, 'global', 'projects', PROJECT, 'config', 'build')
-    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', PROJECT, 'repo'), { recursive: true })
-    await fs.mkdir(buildDir, { recursive: true })
-    await fs.writeFile(
-      path.join(buildDir, 'Dockerfile.yaac'),
-      'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n',
-    )
-
-    const { ensureImage, resolveImageChain } = await h.load()
-    await stagePrebuilt(resolveImageChain, true)
-    await ensureImage(PROJECT, OWNER, { nestedContainers: true })
-
-    // The project layer builds on nestable, not tools, so the workspace
-    // image carries the in-pod container engine.
-    expect(h.operations).toEqual([
-      expect.stringMatching(
-        new RegExp(`^build yaac-proj-${PROJECT}:${HASH_RE} \\[BASE_IMAGE=yaac-nestable:${HASH_RE}\\]$`),
-      ),
-    ])
   })
 
   it('realizes a standalone Dockerfile.yaac with no prebuilt layer at all', async () => {

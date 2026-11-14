@@ -371,7 +371,7 @@ describe('reconcileStaleWorkspaces', () => {
       expect(cleanupWorkspace).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: id, keepRecord: true }))
       expect(deleteWorkspaceState).toHaveBeenCalledWith('proj', id)
       expect(destroy).toHaveBeenCalledWith(
-        { projectId: 'proj', workspaceId: id, unitName: `yaac-proj-${id}` }, { salvageImages: false },
+        { projectId: 'proj', workspaceId: id, unitName: `yaac-proj-${id}` },
       )
     }
     expect(loggedLines()).toContain('reaping spare=spare-2')

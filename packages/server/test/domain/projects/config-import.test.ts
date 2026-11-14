@@ -75,7 +75,6 @@ describe('importProjectConfigFiles', () => {
     expect(await resolveProjectConfig(FOO)).toEqual({
       portForwards: [{ containerPort: 3000, hostPortStart: 13000 }],
       cacheVolumes: { pip: '/home/yaac/.cache/pip' },
-      nestedContainers: true,
       npmCache: false,
     })
     const foo = await getProjectRow(FOO)

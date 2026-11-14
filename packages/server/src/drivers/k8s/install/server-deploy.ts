@@ -133,8 +133,8 @@ function serverPodLabels(): Record<string, string> {
 }
 
 /**
- * ServiceAccount the server acts as: it creates workspace Jobs, applies
- * the datapath, and creates per-project registry namespaces.
+ * ServiceAccount the server acts as: it creates workspace Jobs and applies
+ * the datapath.
  */
 export function buildServerServiceAccountManifest(): Record<string, unknown> {
   return {
@@ -166,9 +166,8 @@ function serverClusterScopedLabels(): Record<string, string> {
 }
 
 /**
- * The server's permissions. Cluster-scoped because per-project registries
- * live in namespaces the server creates at runtime, and because it applies
- * the cluster-scoped builder-role admission guard. Full access to what it
+ * The server's permissions. Cluster-scoped because it applies the
+ * cluster-scoped builder-role admission guard. Full access to what it
  * owns, read-only on what it only observes. `byoVolumes` adds what a byo
  * install's volumes need of their PVs (docs/workspace-volumes.md).
  */

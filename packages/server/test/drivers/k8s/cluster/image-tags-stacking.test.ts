@@ -20,8 +20,8 @@ describe('resolveImageChain', () => {
     await fs.writeFile(path.join(h.dataDir, 'server-local', 'users', OWNER, 'build', 'Dockerfile.user'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n')
 
     const { resolveImageChain } = await h.load()
-    const { layers } = await resolveImageChain(PROJECT, OWNER, true)
-    expect(layers.map((l) => l.name)).toEqual(['base', 'tools', 'nestable', 'project', 'user'])
+    const { layers } = await resolveImageChain(PROJECT, OWNER)
+    expect(layers.map((l) => l.name)).toEqual(['base', 'tools', 'project', 'user'])
   })
 
   it('composes each step\'s tag and build args from the one above it', async () => {
@@ -41,7 +41,7 @@ describe('resolveImageChain', () => {
     )
 
     const { resolveImageChain } = await h.load()
-    const { layers, finalTag } = await resolveImageChain(PROJECT, OWNER, true)
+    const { layers, finalTag } = await resolveImageChain(PROJECT, OWNER)
 
     const described = layers.map((l) => {
       const args = Object.entries(l.buildArgs ?? {}).map(([k, v]) => `${k}=${v}`).join(',')
@@ -52,13 +52,10 @@ describe('resolveImageChain', () => {
       // reaches an image (docs/arbitrary-uid-images.md).
       expect.stringMatching(new RegExp(`^yaac-base:${HASH_RE}$`)),
       expect.stringMatching(new RegExp(`^yaac-tools:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`)),
-      expect.stringMatching(
-        new RegExp(`^yaac-nestable:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE}\\]$`),
-      ),
       // Project layers use repos named by project id, apart from the
       // trusted chain.
       expect.stringMatching(
-        new RegExp(`^yaac-proj-${PROJECT}:${HASH_RE} \\[BASE_IMAGE=yaac-nestable:${HASH_RE}\\]$`),
+        new RegExp(`^yaac-proj-${PROJECT}:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE}\\]$`),
       ),
       expect.stringMatching(new RegExp(
         `^yaac-user-${PROJECT}:${HASH_RE} \\[BASE_IMAGE=yaac-proj-${PROJECT}:${HASH_RE}\\]$`,
@@ -68,8 +65,8 @@ describe('resolveImageChain', () => {
   })
 
   it('skips the shipped layers entirely for a standalone Dockerfile.yaac', async () => {
-    // It replaces the base and brings its own toolchain, so neither tools
-    // nor nestable applies, even with nestedContainers on.
+    // It replaces the base and brings its own toolchain, so tools does not
+    // apply.
     const buildDir = path.join(h.dataDir, 'global', 'projects', PROJECT, 'config', 'build')
     await fs.mkdir(path.join(h.dataDir, 'global', 'projects', PROJECT, 'repo'), { recursive: true })
     await fs.mkdir(buildDir, { recursive: true })
@@ -79,7 +76,7 @@ describe('resolveImageChain', () => {
     )
 
     const { resolveImageChain } = await h.load()
-    const { layers } = await resolveImageChain(PROJECT, OWNER, true)
+    const { layers } = await resolveImageChain(PROJECT, OWNER)
     expect(layers.map((l) => l.name)).toEqual(['project'])
     // A standalone Dockerfile.yaac sets up its own user, so it gets no
     // build args, not even a uid.
