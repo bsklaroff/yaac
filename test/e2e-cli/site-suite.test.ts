@@ -597,6 +597,7 @@ describe('yaac site (real CLI + real server)', () => {
         '-e', `TAILGATE_SITE_DOMAIN=${ZONE}`, '-e', 'TAILGATE_TAILSCALE_SOCKET=/tmp/ts/tailscaled.sock',
         '-e', 'TAILGATE_ROUTER=127.0.0.1:9000', '-e', 'TAILGATE_TLS_DIR=/work',
         '-e', 'TAILGATE_SERVE_HOST=127.0.0.2', '-e', 'TAILGATE_HTTPS_PORT=8443', '-e', 'TAILGATE_HTTP_PORT=8080', '-e', 'TAILGATE_HEALTH_PORT=9003',
+        '-e', 'TAILGATE_IDLE_SECONDS=3600',
         image, 'sh', '-c', script,
       ], { timeout: 120_000 })
       const [body, dns] = stdout.trim().split('\n').slice(-2)

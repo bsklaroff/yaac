@@ -103,6 +103,14 @@ const TAILGATE_HEALTH_PORT = 9003
 const TAILGATE_SERVE_HOST = '127.0.0.2'
 const TAILGATE_HTTPS_PORT = 8443
 const TAILGATE_HTTP_PORT = 8080
+/**
+ * How long a site connection may go with no bytes moving before it is
+ * closed: the router's stream idle timeout, and tailgate's for each tailnet
+ * connection, so both hops let go of a vanished client at the same point.
+ * It has no overall deadline, so a long upload or a quiet WebSocket that
+ * still sends now and then stays open.
+ */
+const SITE_IDLE_TIMEOUT_SECONDS = 3600
 
 /** The tailnet tunnel's Secret: its auth key (`authkey`) and the install's
  *  site domain (`domain`). */
@@ -217,7 +225,7 @@ function routerListener(
           rds: { route_config_name: table.name, config_source: routesFileSource(table.file) },
           use_remote_address: true,
           xff_num_trusted_hops: 1,
-          stream_idle_timeout: '3600s',
+          stream_idle_timeout: `${String(SITE_IDLE_TIMEOUT_SECONDS)}s`,
           upgrade_configs: [{ upgrade_type: 'websocket' }],
           http_filters: [...filters, httpFilter('envoy.filters.http.router', 'envoy.extensions.filters.http.router.v3.Router')],
         },
@@ -781,6 +789,7 @@ function buildTailnetManifests(opts: {
                   { name: 'TAILGATE_HTTPS_PORT', value: String(TAILGATE_HTTPS_PORT) },
                   { name: 'TAILGATE_HTTP_PORT', value: String(TAILGATE_HTTP_PORT) },
                   { name: 'TAILGATE_HEALTH_PORT', value: String(TAILGATE_HEALTH_PORT) },
+                  { name: 'TAILGATE_IDLE_SECONDS', value: String(SITE_IDLE_TIMEOUT_SECONDS) },
                 ],
                 readinessProbe: {
                   httpGet: { path: '/ready', port: TAILGATE_HEALTH_PORT },

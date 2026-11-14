@@ -15,6 +15,8 @@
  *    unchanged, stamped with the caller's login. A tagged device, which
  *    acts for no user, gets a 403.
  *  - On 80 it redirects to `https://`.
+ *  - On both it closes a connection once no bytes have moved for `idleMs`,
+ *    with no overall deadline, so long uploads and WebSockets stay up.
  *  - It answers DNS for the zone (dns.ts) and a readiness probe.
  *
  * It holds no list of sites: the router answers 404 for a name no site has.
@@ -45,6 +47,9 @@ export interface TailgateConfig {
   dnsPort: number
   /** The readiness probe's listener, on every address for the kubelet. */
   healthPort: number
+  /** How long a connection on 443 or 80 may go with no bytes moving before
+   *  it is closed. */
+  idleMs: number
   /** How often the certificate and the device's addresses are re-read. */
   pollMs: number
 }
@@ -230,11 +235,18 @@ export async function startTailgate(config: TailgateConfig): Promise<{
     upstream.end()
   })
 
-  /** Every open connection, destroyed on close. */
+  /**
+   * Every open connection, destroyed on close, and once it has gone
+   * `idleMs` with no bytes moving. Node's own HTTP timeouts for an unfinished
+   * request head run only on a server that listens, which `app` never does,
+   * so without this a client that vanished before finishing a request would
+   * hold its connection for good.
+   */
   const open = new Set<net.Socket>()
   const track = (raw: net.Socket): void => {
     open.add(raw)
     raw.on('close', () => open.delete(raw))
+    raw.setTimeout(config.idleMs, () => raw.destroy())
   }
 
   const https = net.createServer((raw) => {

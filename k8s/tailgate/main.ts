@@ -10,6 +10,13 @@ function required(name: string): string {
   return value
 }
 
+/** Checked here, since `socket.setTimeout` would throw on the first
+ *  connection rather than at start, and 0 would turn the timeout off. */
+const idleSeconds = Number(required('TAILGATE_IDLE_SECONDS'))
+if (!Number.isFinite(idleSeconds) || idleSeconds <= 0) {
+  throw new Error('TAILGATE_IDLE_SECONDS must be a positive number')
+}
+
 const router = required('TAILGATE_ROUTER')
 const colon = router.lastIndexOf(':')
 await startTailgate({
@@ -23,6 +30,7 @@ await startTailgate({
   httpPort: Number(required('TAILGATE_HTTP_PORT')),
   dnsPort: 53,
   healthPort: Number(required('TAILGATE_HEALTH_PORT')),
+  idleMs: idleSeconds * 1000,
   pollMs: 10_000,
 })
 console.log('[tailgate] serving')

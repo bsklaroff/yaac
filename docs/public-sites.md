@@ -202,7 +202,10 @@ tailnet address. Neither container has privilege:
   framed, to the router's 8081 with `Host` unchanged. An upgrade's two
   connections are joined only once the router answers 101; any other answer
   is relayed and the connection closed. On 80 it redirects to
-  `https://`. It holds no list of sites: a name no site has resolves, and
+  `https://`. On both it closes a connection once no bytes have moved for
+  the router's stream idle timeout (an hour), with no overall deadline, so a
+  long upload or a WebSocket stays up while a client that vanished
+  mid-request is let go. It holds no list of sites: a name no site has resolves, and
   the router answers 404.
 
 **The certificate** is a wildcard for the site domain in the Secret
