@@ -1704,11 +1704,20 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     await execFileAsync('git', ['-C', doomedCheckout, '-c', 'user.email=t@t', '-c', 'user.name=T',
       'commit', '--allow-empty', '-qm', 'left behind'])
     const mine = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', workspaceId)
+    // As the workspace's agent runs it: with its own YAAC_WORKSPACE_DIR,
+    // which tells yaac-mama that `mine` is one of its checkouts.
     const creds = await mamaCreds()
-    const { stdout } = await execFileAsync(path.join(process.cwd(), 'workspace-bin', 'yaac-mama'),
-      ['fetch', doomed.slice(0, 8)],
-      { cwd: mine, env: { ...process.env, YAAC_MAMA_URL: creds.YAAC_MAMA_URL, YAAC_MAMA_TOKEN: creds.YAAC_MAMA_TOKEN } })
+    const mama = (...args: string[]) => execFileAsync(path.join(process.cwd(), 'workspace-bin', 'yaac-mama'), args, {
+      cwd: mine,
+      env: {
+        ...process.env,
+        YAAC_MAMA_URL: creds.YAAC_MAMA_URL,
+        YAAC_MAMA_TOKEN: creds.YAAC_MAMA_TOKEN,
+        YAAC_WORKSPACE_DIR: creds.YAAC_WORKSPACE_DIR,
+      },
+    })
     const short = doomed.slice(0, 8)
+    const { stdout } = await mama('fetch', short)
     expect(stdout).toContain(`yaac/peers/${short}/HEAD`)
     const { stdout: subject } = await execFileAsync('git', ['-C', mine, 'log', '-1', '--format=%s', `yaac/peers/${short}/HEAD`])
     expect(subject.trim()).toBe('left behind')
@@ -1719,8 +1728,6 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     await fs.mkdir(path.join(conversations, conv, 'subagents'), { recursive: true })
     await fs.appendFile(path.join(conversations, `${conv}.jsonl`), '{"left":"behind"}\n')
     await fs.writeFile(path.join(conversations, conv, 'subagents', 'agent-e2e.jsonl'), '{"sub":"agent"}\n')
-    const mama = (...args: string[]) => execFileAsync(path.join(process.cwd(), 'workspace-bin', 'yaac-mama'), args,
-      { cwd: mine, env: { ...process.env, YAAC_MAMA_URL: creds.YAAC_MAMA_URL, YAAC_MAMA_TOKEN: creds.YAAC_MAMA_TOKEN } })
     expect((await mama('history', short)).stdout).toMatch(new RegExp(`${conv}\\s+claude\\s+tui`))
     const printed = (await mama('history', short, conv.slice(0, 12))).stdout
     expect(printed).toContain('{"left":"behind"}\n')
