@@ -18,11 +18,16 @@ delete process.env.GIT_WORK_TREE
 //   install the Tailscale operator.
 // - YAAC_NO_PANE_REPORT, set for an outer ACP agent, makes the pane
 //   reporting scripts under test exit without reporting.
+// - YAAC_WORKSPACE_DIR tells `yaac-mama` which checkouts are its own, so a
+//   test running it from a workspace under test would be refused.
+// - GH_TOKEN is the token `auth fake github` copies into the credential it
+//   seeds, in place of the placeholder tests expect.
 // Stripped for every project, since e2e/api servers inherit process.env.
 // Tests that exercise these stub them per case.
 for (const key of [
   'YAAC_ALLOWED_HOSTS', 'YAAC_ACCESS_MODE', 'YAAC_ACCESS_ADMINS', 'YAAC_WORKSPACE_ID',
   'YAAC_SECRET', 'YAAC_SECRETS', 'TS_OAUTH_CLIENT_ID', 'TS_OAUTH_CLIENT_SECRET', 'YAAC_NO_PANE_REPORT',
+  'YAAC_WORKSPACE_DIR', 'GH_TOKEN',
 ] as const) {
   delete process.env[key]
 }

@@ -20,12 +20,11 @@
  *        node test-playwright-scripts/typeahead-combobox-test.js
  */
 import path from 'node:path'
-import { api, check, finish, origin, requirePlaywright, SHOTS, resolveProject, until } from './lib.js'
+import { api, check, finish, origin, requirePlaywright, SHOTS, resolveProject } from './lib.js'
 
 if (!process.env.PROJECT) throw new Error('set PROJECT=<name or id>')
 const PROJECT = (await resolveProject(process.env.PROJECT)).id
 const [repo] = (await api('/project/list')).find((p) => p.id === PROJECT).repos
-const { branches } = await api(`/repo/${repo.id}/branches`)
 
 const { chromium } = requirePlaywright()
 const browser = await chromium.launch()
@@ -44,9 +43,12 @@ try {
   await page.goto(`${origin}/?project=${PROJECT}`)
 
   const pane = page.locator('main')
+  // Ready once the remote's branch list has replaced the local one: it can
+  // land while the list is open, changing its rows and so the highlight.
+  // Through a workspace's proxy that fetch can take a while.
+  const refreshed = page.waitForResponse((r) => r.url().includes(`/repo/${repo.id}/branches?refresh=1`), { timeout: 60_000 })
   await page.locator('aside').getByRole('button', { name: 'New workspace', exact: true }).click()
-  // Ready once the branch list has filled the field.
-  await until(page, () => document.querySelector('input[aria-label="Base branch"]')?.value !== '', undefined, 15_000)
+  await refreshed
 
   // (1) Base branch.
   const branch = pane.getByLabel('Base branch', { exact: true })
