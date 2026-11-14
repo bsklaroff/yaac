@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   DEFAULT_ALLOWED_HOSTS,
-  NESTED_PULL_HOSTS,
   allowlistAllows,
   hostMatchesPattern,
   missingCriticalHosts,
@@ -22,25 +21,6 @@ describe('DEFAULT_ALLOWED_HOSTS', () => {
     expect(DEFAULT_ALLOWED_HOSTS).toContain('api.anthropic.com')
     expect(DEFAULT_ALLOWED_HOSTS).toContain('github.com')
     expect(DEFAULT_ALLOWED_HOSTS).toContain('api.github.com')
-  })
-
-  it('excludes the docker.io image-pull hosts (moved to NESTED_PULL_HOSTS)', () => {
-    for (const host of ['registry-1.docker.io', 'auth.docker.io', 'index.docker.io']) {
-      expect(DEFAULT_ALLOWED_HOSTS).not.toContain(host)
-      expect(NESTED_PULL_HOSTS).toContain(host)
-    }
-  })
-})
-
-describe('NESTED_PULL_HOSTS', () => {
-  it('holds the registry pull hosts not already covered by the base list', () => {
-    expect(NESTED_PULL_HOSTS).toContain('registry-1.docker.io')
-    expect(NESTED_PULL_HOSTS).toContain('quay.io')
-    // ghcr.io is already in the base list.
-    expect(NESTED_PULL_HOSTS).not.toContain('ghcr.io')
-    for (const host of NESTED_PULL_HOSTS) {
-      expect(DEFAULT_ALLOWED_HOSTS).not.toContain(host)
-    }
   })
 })
 

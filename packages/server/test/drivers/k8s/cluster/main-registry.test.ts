@@ -38,9 +38,10 @@ import {
   MAIN_REGISTRY_APP_LABEL,
   MAIN_REGISTRY_STORAGE_SIZE,
   mainRegistryPvcName,
+  LABEL_REGISTRY_SERVES,
+  REGISTRY_UPSTREAM_IMAGE,
 } from '#drivers/k8s/cluster/main-registry'
 import { ROLE_BUILDER } from '#drivers/k8s/substrate/proxy-constants'
-import { LABEL_REGISTRY_SERVES, REGISTRY_UPSTREAM_IMAGE } from '#drivers/k8s/cluster/project-registry'
 import { ENVOY_UPSTREAM_IMAGE } from '#drivers/k8s/cluster/netd'
 import { registryAuthFile } from '#drivers/k8s/cluster'
 import { _resetRegistryGrantKeyForTests, mintRegistryGrant } from '#drivers/k8s/cluster/registry-grant'

@@ -55,8 +55,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  * reserves") lets a 16 GB node schedule only a handful at once, and the
  * rest would sit Pending.
  *
- * Not covered here: nestedContainers (nested-containers.test.ts), and a
- * full opencode turn through the mock LLM.
+ * Not covered here: a full opencode turn through the mock LLM.
  */
 
 const execFileAsync = promisify(execFile)
@@ -1030,6 +1029,26 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       expect(probeCall).toBeDefined()
       expect(probeCall!.headers['x-api-key']).toBe('sk-ant-fake-real-key')
       expect(probeCall!.body).toContain('claude-sonnet-4-6')
+    }, 60_000)
+
+    // curl, requests, cargo and git take one file as their whole trust set,
+    // so CURL_CA_BUNDLE and its kin name the combined bundle: the public
+    // roots plus the proxy CA (docs/workspace-egress.md "CA trust in a
+    // workspace").
+    it('verifies the proxy\'s certificates through the combined bundle', async () => {
+      const { stdout: curlOut } = await execInJob(jobName, [
+        'curl', '-sS', '--max-time', '10', '-X', 'POST',
+        '-H', 'x-api-key: yaac-ph-api-key', '-H', 'content-type: application/json',
+        '-d', '{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"ca-probe"}]}',
+        'https://api.anthropic.com/v1/messages',
+      ], { timeout: 20_000 })
+      expect(curlOut).toContain('Hello from mock')
+
+      const { stdout: subjects } = await execInJob(jobName, [
+        'sh', '-c', 'openssl crl2pkcs7 -nocrl -certfile "$CURL_CA_BUNDLE" | openssl pkcs7 -print_certs -noout',
+      ], { timeout: 30_000 })
+      expect((subjects.match(/^subject/gm) ?? []).length).toBeGreaterThan(100)
+      expect(subjects).toContain('yaac Proxy CA')
     }, 60_000)
 
     it('swaps in a credential updated through the running server, with no restart', async () => {

@@ -1,15 +1,15 @@
 import { applyObject } from './api'
 
 /**
- * Scheduling priority tiers for yaac pods. Infra pods (the egress proxy and
- * per-project registries) serve every workspace, so they outrank
+ * Scheduling priority tiers for yaac pods. Infra pods (the egress proxy, the
+ * main registry, the npm cache) serve every workspace, so they outrank
  * workspaces and node-pressure eviction picks a workspace first. Builders
  * sit between, but may not preempt a workspace. netd uses
  * `system-node-critical` because it is node infrastructure, like
  * kube-proxy.
  */
 
-/** Long-lived trusted infrastructure: the proxy and per-project registries. */
+/** Long-lived trusted infrastructure, such as the proxy and main registry. */
 export const PRIORITY_CLASS_INFRA = 'yaac-infra'
 /**
  * Ephemeral builder pods. They outrank workspaces under node pressure but

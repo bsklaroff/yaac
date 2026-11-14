@@ -75,12 +75,7 @@ export async function serverUsageReport(): Promise<ResourceReport> {
     sampledAt,
     totals: withHistory(usage.totals, history.totals),
     nodes: usage.nodes.map((n) => withHistory(n, history.nodes.get(n.name))),
-    components: usage.components.map((c) => withHistory({
-      ...c,
-      ...(c.children
-        ? { children: c.children.map((child) => ({ ...child, label: projectById.get(child.projectId)?.name ?? child.label })) }
-        : {}),
-    }, history.components.get(c.key))),
+    components: usage.components.map((c) => withHistory(c, history.components.get(c.key))),
     workspaces,
   }
 }

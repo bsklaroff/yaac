@@ -10,19 +10,8 @@ import { stageWorkspaceBin, workspaceBinDir, WORKSPACE_INIT_SCRIPT }
 import { resolveTrustedLayers } from '@yaac/server/drivers/k8s/cluster/image-tags'
 import { ensureNamespace } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { registryRef, registryTagState } from '@yaac/server/drivers/k8s/cluster/registry'
-import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/pod-spec'
+import { RUNTIME_CLASS_GVISOR } from '@yaac/server/drivers/k8s/substrate/pod-spec'
 import { installSecurityContext } from '@yaac/server/drivers/k8s/substrate'
-// The nested tier's volume, path and caps, so this pod matches what
-// buildPodJobManifest emits.
-import {
-  NESTED_ENGINE_CAPS,
-  NESTED_GRAPHROOT_PATH,
-  NESTED_GRAPHROOT_VOLUME,
-} from '@yaac/server/drivers/k8s/substrate/pod-spec'
-import {
-  NESTED_GRAPHROOT_ANNOTATIONS,
-  NESTED_GRAPHROOT_SIZELIMIT_BYTES,
-} from '@yaac/server/drivers/k8s/workspaces/pod-job'
 import { applyObject, deleteObject, k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
 import { kubectl } from '@yaac/test-utils/kubectl'
 
@@ -37,9 +26,6 @@ import { kubectl } from '@yaac/test-utils/kubectl'
  *
  * The pod runs the shipped `yaac-workspace-init` as its postStart hook, and
  * the script's `set -eu` keeps the pod from reaching Ready if any step fails.
- * It uses the nested engine because the engine start chowns the podman
- * socket to `yaac` by name, which only lands on this uid if the init script
- * replaced the image's passwd entry rather than appending one.
  */
 
 const ARBITRARY_UID = 4321
@@ -69,18 +55,18 @@ async function ok(script: string, timeout?: number): Promise<string> {
 }
 
 /**
- * The prebuilt nestable image, from the registry the node pulls from —
- * never a build. `test/global-setup.ts` puts it there under the same
- * content-hash tag this resolves.
+ * The prebuilt tools image, from the registry the node pulls from — never
+ * a build. `test/global-setup.ts` puts it there under the same content-hash
+ * tag this resolves.
  */
-async function nestableImageRef(): Promise<string> {
-  const { nestable } = await resolveTrustedLayers('yaac-test')
-  if (await registryTagState(nestable.tag) !== 'present') {
+async function toolsImageRef(): Promise<string> {
+  const { tools } = await resolveTrustedLayers('yaac-test')
+  if (await registryTagState(tools.tag) !== 'present') {
     throw new Error(
-      `${nestable.tag} is not in the local registry — did test/global-setup.ts run?`,
+      `${tools.tag} is not in the local registry — did test/global-setup.ts run?`,
     )
   }
-  return registryRef(nestable.tag)
+  return registryRef(tools.tag)
 }
 
 beforeAll(async () => {
@@ -101,28 +87,25 @@ beforeAll(async () => {
       name: POD,
       namespace: k8sNamespace(),
       labels: { 'yaac.test': 'true' },
-      annotations: NESTED_GRAPHROOT_ANNOTATIONS,
     },
     spec: {
       restartPolicy: 'Never',
       automountServiceAccountToken: false,
       enableServiceLinks: false,
-      ...runtimeClassSpec({ nested: true }),
+      runtimeClassName: RUNTIME_CLASS_GVISOR,
       securityContext: {
         seccompProfile: { type: 'RuntimeDefault' },
         ...installSecurityContext({ uid: ARBITRARY_UID, gid: ARBITRARY_GID }),
       },
       containers: [{
         name: 'workspace',
-        image: await nestableImageRef(),
+        image: await toolsImageRef(),
         imagePullPolicy: 'IfNotPresent',
-        securityContext: { capabilities: { add: NESTED_ENGINE_CAPS } },
         env: [
           { name: 'YAAC_TOOL', value: 'claude' },
           { name: 'YAAC_GIT_NAME', value: 'Arbitrary Uid' },
           { name: 'YAAC_GIT_EMAIL', value: 'arbitrary@example.com' },
           { name: 'YAAC_STATUS_RIGHT', value: 'arbitrary-uid' },
-          { name: 'YAAC_NESTED_ENGINE', value: '1' },
         ],
         lifecycle: {
           postStart: { exec: { command: [`/usr/local/bin/${WORKSPACE_INIT_SCRIPT}`] } },
@@ -133,7 +116,6 @@ beforeAll(async () => {
             mountPath: `/usr/local/bin/${WORKSPACE_INIT_SCRIPT}`,
             readOnly: true,
           },
-          { name: NESTED_GRAPHROOT_VOLUME, mountPath: NESTED_GRAPHROOT_PATH },
           { name: 'tmux', mountPath: '/tmp/yaac-tmux' },
         ],
       }],
@@ -141,10 +123,6 @@ beforeAll(async () => {
         {
           name: 'workspace-bin',
           hostPath: { path: path.join(binDir, WORKSPACE_INIT_SCRIPT), type: 'File' },
-        },
-        {
-          name: NESTED_GRAPHROOT_VOLUME,
-          emptyDir: { sizeLimit: String(NESTED_GRAPHROOT_SIZELIMIT_BYTES) },
         },
         // Stands in for the server's pre-created hostPath. The kubelet
         // creates it 0777, so no fsGroup is needed.
@@ -207,17 +185,5 @@ describe('a workspace pod running as a uid no image knows', () => {
       120_000,
     )
     expect(stuck).toBe('')
-  })
-
-  it('runs the nested engine, whose socket it is handed by name', async () => {
-    // The hook starts the engine in the background. Use `break`, not
-    // `exit`: the exec wrapper prints an exit-code marker after the script.
-    await ok(
-      'for i in $(seq 1 60); do docker version >/dev/null 2>&1 && break; sleep 2; done; '
-      + 'docker version >/dev/null',
-      180_000,
-    )
-    // The engine start script runs `chown yaac` on the socket by name.
-    expect(await ok('stat -c %u /run/podman/podman.sock')).toBe(String(ARBITRARY_UID))
   })
 })

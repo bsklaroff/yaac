@@ -85,7 +85,6 @@ describe('image routes', () => {
     expect(res.status).toBe(202)
     // The mediator's project readers travel with the id.
     expect(mockRetry).toHaveBeenCalledWith('b1', {
-      projectConfig: expect.any(Function) as unknown,
       projectOwner: expect.any(Function) as unknown,
     })
   })

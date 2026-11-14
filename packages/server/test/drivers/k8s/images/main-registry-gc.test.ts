@@ -5,7 +5,6 @@
  * the tests assert which tags survive.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { PROJECT_CONFIG_DEFAULTS } from '@yaac/test-utils/project-fixture'
 import type * as childProcessModule from 'node:child_process'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -165,7 +164,7 @@ function stage(f: Fixture = {}): void {
 /** Drive one reconcile and wait out the detached pass it starts. */
 async function runPass(pinned: string[] = []): Promise<void> {
   await reconcileMainRegistryGc([DEMO], {
-    projectConfig: () => Promise.resolve(PROJECT_CONFIG_DEFAULTS), projectOwner: () => Promise.resolve(OWNER), pinnedImages: () => Promise.resolve(pinned),
+    projectOwner: () => Promise.resolve(OWNER), pinnedImages: () => Promise.resolve(pinned),
   })
   await _mainRegistryGcSettledForTests()
 }
@@ -265,6 +264,8 @@ describe('reconcileMainRegistryGc', () => {
       `yaac-buildcache-${gone}:${'a'.repeat(64)}`,
       // Named by slug, from before projects had ids.
       `yaac-user-demo:${hex('1')}`, `yaac-buildcache-demo:${'a'.repeat(64)}`,
+      // The retired nestable layer, which no chain names any more.
+      `yaac-nestable:${hex('1')}`,
       // Removed, but a pod still uses its image.
       `yaac-proj-${stillRunning}:${hex('1')}`,
       // The e2e suite's and yaac's own chain are never swept here.
@@ -288,7 +289,7 @@ describe('reconcileMainRegistryGc', () => {
     ].sort())
     // Removed repos also need a collect to free their blobs.
     expect(collected()).toBe(true)
-    expect(logged('retired 5 stale tag(s) and collected their blobs')).toBe(true)
+    expect(logged('retired 6 stale tag(s) and collected their blobs')).toBe(true)
   })
 
   it('retires no generation while any project\'s chain cannot be resolved', async () => {
@@ -396,7 +397,7 @@ describe('reconcileMainRegistryGc', () => {
     await pushTag(`yaac-tools:${hex('a')}`, 30)
     await pushTag(`yaac-tools:${hex('9')}`, 20)
     await pushTag(`yaac-tools:${hex('8')}`, 10)
-    stage({ beforeExec: (argv) => argv[2]?.includes('retired-generations') ? startUpload() : undefined })
+    stage({ beforeExec: (argv) => argv[2]?.includes('PROTECT=') ? startUpload() : undefined })
 
     await runPass()
 
@@ -427,10 +428,10 @@ describe('reconcileMainRegistryGc', () => {
 
     // Reconcile steps run in sequence, so this returns while the collect
     // runs, and a tick meanwhile does not start a second pass.
-    await reconcileMainRegistryGc([DEMO], { projectConfig: () => Promise.resolve(PROJECT_CONFIG_DEFAULTS), projectOwner: () => Promise.resolve(OWNER), pinnedImages: () => Promise.resolve([]) })
+    await reconcileMainRegistryGc([DEMO], { projectOwner: () => Promise.resolve(OWNER), pinnedImages: () => Promise.resolve([]) })
     await reachedCollect
     const before = execs.length
-    await reconcileMainRegistryGc([DEMO], { projectConfig: () => Promise.resolve(PROJECT_CONFIG_DEFAULTS), projectOwner: () => Promise.resolve(OWNER), pinnedImages: () => Promise.resolve([]) })
+    await reconcileMainRegistryGc([DEMO], { projectOwner: () => Promise.resolve(OWNER), pinnedImages: () => Promise.resolve([]) })
     expect(execs).toHaveLength(before)
 
     release()

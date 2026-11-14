@@ -60,14 +60,14 @@ afterEach(async () => {
 
 describe('findWorkspace', () => {
   it('describes a match in the server’s vocabulary, not the substrate’s', async () => {
-    mockList.mockResolvedValue([pod({ labels: { 'yaac.nested': 'true' } })])
+    mockList.mockResolvedValue([pod({ labels: { 'yaac.npm-cache': 'true' } })])
     expect(await findWorkspace('abc123def456')).toEqual({
       workspaceId: 'abc123def456',
       projectId: 'proj',
       jobName: 'yaac-proj-abc123',
       running: true,
       state: 'running',
-      labels: { 'yaac.nested': 'true' },
+      labels: { 'yaac.npm-cache': 'true' },
       createdAtMs: 1_700_000_000_000,
       prewarmed: false,
       terminating: false,

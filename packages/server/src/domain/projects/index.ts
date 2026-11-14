@@ -5,8 +5,7 @@
 // Dockerfile and build-dir files, the picture its chip shows, and the
 // project lifecycle verbs.
 // Nothing below this layer reads project state; a driver that needs a
-// project's config is handed it (`PassContext.projectConfig`, a launch
-// intent).
+// project's config is handed it in a launch intent.
 //
 // Adding a name here widens the interface and requires a unit test in
 // packages/server/test/domain/projects/.

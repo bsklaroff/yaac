@@ -11,8 +11,6 @@ until the disk fills, and on kind that disk is the host's, with no warning.
 | Main registry, images | one tagged generation per source change | main-registry GC | reconcile, every 6 h |
 | Main registry, project repos | the repos of removed projects | main-registry GC | reconcile, every 6 h |
 | Node containerd store | every image the node ever pulled, unpacked | main-registry GC, node half | same pass |
-| Per-project registries | superseded generations, re-pointed tags | `reconcileProjectRegistryGc` (docs/nested-containers.md "Registry GC") | reconcile, every 6 h per project |
-| Node-local image stores | whole generations of a project's store | the store writer drops old ones (docs/nested-containers.md) | each store build |
 
 The e2e suite's `yaac-test-*` images belong to the suite, not the install.
 `gcTestImages` retires them on the host engine. Nothing retires them in the
@@ -50,14 +48,12 @@ started by one of them could delete a blob another run is pushing. One pass:
    and `yaac-buildcache-<id>` whose id belongs to no live project, unless a
    workload still names one of their tags. Repos younger than 10 minutes
    are skipped, since a newly added project may be pushing its first image.
-5. **Retires old content-hash generations** of every `yaac-*` repo with
-   `buildRegistryRetentionScript` (the retention the project registries
-   use), passing the live set as tags it must never retire. Beyond the live
-   set, the newest two per repo are kept for rollback (project registries
-   keep 8, because they have to guess what is live). Mirrors carry no
-   16-hex tag, so they are never candidates. Neither are `yaac-test-*`
-   repos: an e2e run uses them from its global setup to its last file,
-   often with no pod naming them.
+5. **Retires old content-hash generations** of every `yaac-*` repo with a
+   retention script (`registryRetentionScript` in `main-registry-gc.ts`),
+   passing the live set as tags it must never retire. Beyond the live set, the
+   newest two per repo are kept for rollback. Mirrors carry no 16-hex tag, so
+   they are never candidates. Neither are `yaac-test-*` repos: an e2e run uses
+   them from its global setup to its last file, often with no pod naming them.
 6. **Collects** blobs with the registry's `garbage-collect
    --delete-untagged`, but only if something was retired and the push
    signals and this server's own builds are still quiet.

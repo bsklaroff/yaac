@@ -3,10 +3,10 @@ export const CA_CONFIGMAP_NAME = 'yaac-proxy-ca'
 /** Key inside the CA ConfigMap / filename inside the mount dir. */
 export const CA_CONFIGMAP_KEY = 'proxy-ca.pem'
 /**
- * Second key in the CA ConfigMap: public roots plus the proxy CA. Tools in
- * nested containers that use their own bundle (curl, requests, cargo, git)
+ * Second key in the CA ConfigMap: public roots plus the proxy CA. Tools
+ * that take one file as their whole trust set (curl, requests, cargo, git)
  * point `CURL_CA_BUNDLE` and similar at it, so they trust both intercepted
- * and tunnelled hosts (docs/nested-containers.md).
+ * and tunnelled hosts (docs/workspace-egress.md "CA trust in a workspace").
  */
 export const CA_BUNDLE_KEY = 'ca-bundle.pem'
 /**
@@ -15,19 +15,6 @@ export const CA_BUNDLE_KEY = 'ca-bundle.pem'
  * every ssh remote.
  */
 export const CA_SSH_KNOWN_HOSTS_KEY = 'ssh_known_hosts'
-
-/**
- * In-container directory of the nested rootful podman graphroot. It is a
- * sentry-internal tmpfs (NESTED_GRAPHROOT_ANNOTATIONS) because gVisor's
- * gofer filesystem rejects `security.*` xattr writes, so `setcap` in a
- * `docker build` step would fail on a hostPath or plain emptyDir. The tmpfs
- * is paged to a file in the emptyDir on node disk, so layers do not count
- * against pod memory.
- */
-export const NESTED_GRAPHROOT_PATH = '/var/lib/containers'
-
-/** Graphroot volume name; the gVisor mount annotations key on it. */
-export const NESTED_GRAPHROOT_VOLUME = 'podman-graphroot'
 
 /**
  * Pod annotations that turn emptyDir `volume` into a sentry-internal tmpfs
@@ -46,20 +33,6 @@ export function sentryTmpfsAnnotations(volume: string, sizeBytes: number): Recor
     [`dev.gvisor.spec.mount.${volume}.options`]: `rw,size=${sizeBytes}`,
   }
 }
-
-/**
- * In-sandbox capabilities the rootful nested engine needs. Under gVisor they
- * grant no host authority:
- *  - SYS_ADMIN, SYS_CHROOT: mounts and pivot_root for container rootfs.
- *  - MKNOD: device nodes in containers.
- *  - SETFCAP: `setcap` in `docker build` steps.
- *  - NET_RAW, NET_ADMIN: raw sockets and route/iptables config.
- *  - SYS_PTRACE, SYS_RESOURCE: debuggers and rlimit raises.
- */
-export const NESTED_ENGINE_CAPS = [
-  'SYS_ADMIN', 'SYS_CHROOT', 'MKNOD', 'SETFCAP',
-  'NET_RAW', 'NET_ADMIN', 'SYS_PTRACE', 'SYS_RESOURCE',
-]
 
 /**
  * hostPath `type` check. Defaults to 'Directory'. Use 'File' for
@@ -146,18 +119,14 @@ export function installSecurityContext(identity: InstallIdentity = processIdenti
 }
 
 /**
- * RuntimeClass names. Every untrusted pod sets one; infra pods set none and
- * get runc.
- *  - `gvisor`: the default sandbox (runsc with systrap).
- *  - `gvisor-nested`: also allows raw sockets, for the container engine
- *    that nested workspaces run.
+ * The RuntimeClass every untrusted pod sets: the gVisor sandbox (runsc with
+ * systrap). Infra pods set none and get runc.
  */
 export const RUNTIME_CLASS_GVISOR = 'gvisor'
-export const RUNTIME_CLASS_GVISOR_NESTED = 'gvisor-nested'
 
 /**
  * Node label the gVisor installer sets once the runtime works on a node;
- * the RuntimeClasses schedule only on it. A node labelled
+ * the RuntimeClass schedules only on it. A node labelled
  * `yaac.workspaces=false` never gets it (see WORKSPACE_POOL_KEY).
  */
 export const GVISOR_NODE_LABEL = 'yaac.gvisor'
@@ -181,16 +150,3 @@ export const GVISOR_PENDING_TAINT = 'yaac.gvisor/pending'
  *    installer leaves such a node without the gVisor labels.
  */
 export const WORKSPACE_POOL_KEY = 'yaac.workspaces'
-
-/**
- * Pod-spec fragment choosing the RuntimeClass for a pod that runs untrusted
- * code (workspace pods and the check probes that mimic them): `gvisor`, or
- * `gvisor-nested` when the pod runs a container engine.
- */
-export function runtimeClassSpec(
-  opts: { nested?: boolean } = {},
-): { runtimeClassName?: string } {
-  return {
-    runtimeClassName: opts.nested ? RUNTIME_CLASS_GVISOR_NESTED : RUNTIME_CLASS_GVISOR,
-  }
-}

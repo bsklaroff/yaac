@@ -3,8 +3,8 @@
  * proxy as their resolver, and main.ts answers split-horizon:
  *
  *   - Names of Services in the proxy's own namespace (see isInternalName)
- *     are resolved by the cluster DNS, so pods find the npm cache and their
- *     project's registry, which they dial directly.
+ *     are resolved by the cluster DNS, so pods find the npm cache, which
+ *     they dial directly.
  *   - Every other name gets a fixed sinkhole IP. netd redirects egress by port
  *     and the proxy routes by SNI / Host, so the address never matters, and
  *     resolving nothing real keeps DNS tunnelling closed.

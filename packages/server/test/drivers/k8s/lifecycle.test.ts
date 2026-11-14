@@ -27,7 +27,6 @@ vi.mock('#drivers/k8s/substrate', async (importOriginal) => ({
 }))
 vi.mock('#drivers/k8s/cluster', () => ({
   ensureMainRegistry: vi.fn().mockResolvedValue(undefined),
-  gcOrphanProjectRegistries: vi.fn().mockResolvedValue(undefined),
 }))
 vi.mock('#drivers/k8s/images', () => ({
   deleteLeakedBuilderPods: vi.fn(() => { order.push('bootstrap'); return Promise.resolve() }),

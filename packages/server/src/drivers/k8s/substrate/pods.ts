@@ -7,10 +7,9 @@ import { serverLog } from '#lib/log'
 // Label keys attached to every workspace Job and its Pod.
 
 /**
- * The project's id, on workspace pods and on the project's registry,
- * image-store and egress proxy objects. Registry NetworkPolicies and the
- * orphan GCs key on it; ids are never reused, so a later project can never
- * claim an object.
+ * The project's id, on workspace pods and on the project's egress proxy
+ * objects. The orphan GCs key on it; ids are never reused, so a later
+ * project can never claim an object.
  */
 export const LABEL_PROJECT_ID = 'yaac.project-id'
 /**
@@ -26,12 +25,6 @@ export const LABEL_WORKSPACE_ID = 'yaac.workspace-id'
  * a spare whose pod is gone.
  */
 export const LABEL_PREWARMED = 'yaac.prewarmed'
-/**
- * Marks a workspace pod that runs the in-pod container engine
- * (`nestedContainers`). Absent otherwise. A label lets the image salvage
- * step pick nested workspaces from informer data, which lacks the pod spec.
- */
-export const LABEL_NESTED = 'yaac.nested'
 
 /** The workspace-id stamp, for a writer labelling a workspace Job or Pod. */
 export function workspaceIdLabels(workspaceId: string): Record<string, string> {
@@ -96,11 +89,6 @@ export interface PodInfo {
 /** True when a pod is a prewarmed spare (carries the `yaac.prewarmed` label). */
 export function isPrewarmed(pod: PodInfo): boolean {
   return pod.labels[LABEL_PREWARMED] === 'true'
-}
-
-/** True when a pod runs the in-pod engine (carries the `yaac.nested` label). */
-export function isNested(pod: PodInfo): boolean {
-  return pod.labels[LABEL_NESTED] === 'true'
 }
 
 /**

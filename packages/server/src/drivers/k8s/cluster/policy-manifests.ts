@@ -84,10 +84,7 @@ const workspacePodSelector = {
  *
  * Also allowed: the proxy pod's DNS stub (53/udp).
  *
- * The npm cache and per-project registries are allowed by their own
- * label-scoped policies. This install-wide policy cannot scope to one
- * project, and a blanket rule would let workspaces overwrite each other's
- * images (issue #17).
+ * The npm cache is allowed by its own label-scoped policies.
  */
 export function buildWorkspaceEgressNpManifest(nodeCidrs: string[]): Record<string, unknown> {
   return np(WORKSPACE_EGRESS_NP_NAME, k8sNamespace(), {

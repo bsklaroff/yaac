@@ -17,8 +17,6 @@ import {
   NGINX_UPSTREAM_IMAGE,
   mirrorMatchesRecord,
   recordMirrorDigest,
-  REGISTRY_MIRROR_TAG,
-  REGISTRY_UPSTREAM_IMAGE,
   registryRef,
   registryTagState,
   resolveTrustedLayers,
@@ -39,7 +37,7 @@ import { hostNodeArchitecture } from './byo-gates'
  * Builds and pushes every image yaac ships, as part of `yaac cluster
  * install` on the CLI's machine.
  *
- * yaac-built images (the base/tools/nestable workspace chain, the egress
+ * yaac-built images (the base/tools workspace chain, the egress
  * proxy, netd) are `podman build`s tagged by content hash, so an unchanged
  * source costs one registry HEAD. Digest-pinned upstream images are
  * mirrored into the registry so nodes need no upstream egress. Image names
@@ -106,13 +104,12 @@ async function mirrorPinnedImage(upstream: string, mirrorTag: string): Promise<v
 }
 
 /**
- * Mirror every digest-pinned upstream yaac runs: `registry:2`, Envoy, the
- * builder pods' podman, the gVisor installer's curl, the npm cache's
- * Verdaccio and nginx, and the site tunnels' cloudflared and tailscaled. The e2e global
- * setup also calls this.
+ * Mirror every digest-pinned upstream yaac runs: Envoy, the builder pods'
+ * podman, the gVisor installer's curl, the npm cache's Verdaccio and nginx,
+ * and the site tunnels' cloudflared and tailscaled. The e2e global setup
+ * also calls this.
  */
 export async function mirrorPinnedUpstreams(): Promise<void> {
-  await mirrorPinnedImage(REGISTRY_UPSTREAM_IMAGE, REGISTRY_MIRROR_TAG)
   await mirrorPinnedImage(ENVOY_UPSTREAM_IMAGE, ENVOY_MIRROR_TAG)
   await mirrorPinnedImage(BUILDER_UPSTREAM_IMAGE, BUILDER_MIRROR_TAG)
   await mirrorPinnedImage(GVISOR_INSTALLER_UPSTREAM_IMAGE, GVISOR_INSTALLER_MIRROR_TAG)
@@ -134,10 +131,10 @@ export async function buildBuiltinImages(deps: BuiltinImageDeps): Promise<void> 
     deps.log(`note: could not reap a previous install's podman processes: ${String(err)}`)
   })
 
-  const { base, tools, nestable } = await resolveTrustedLayers()
+  const { base, tools } = await resolveTrustedLayers()
 
-  deps.log('Ensuring the workspace image chain (base → tools → nestable)...')
-  for (const layer of [base, tools, nestable]) {
+  deps.log('Ensuring the workspace image chain (base → tools)...')
+  for (const layer of [base, tools]) {
     if (await registryTagState(layer.tag) === 'present') {
       deps.log(`  ${layer.tag} — already in the registry`)
       continue

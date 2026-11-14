@@ -58,7 +58,6 @@ describe('recordProject', () => {
       scratchDirs: { dirs: [{ path: 'node_modules' }, { path: 'target' }], ignoredTracked: [] },
       portForwards: [],
       cacheVolumes: {},
-      nestedContainers: false,
       npmCache: true,
     })
   })
@@ -128,7 +127,6 @@ describe('listProjectRows', () => {
         scratchDirs: { dirs: [{ path: 'node_modules' }, { path: 'target' }], ignoredTracked: [] },
         portForwards: [],
         cacheVolumes: {},
-        nestedContainers: false,
         npmCache: true,
       },
     ])
@@ -371,9 +369,9 @@ describe('setProjectConfig', () => {
     await recordProject({ id: P, name: 'p', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
     const ports = [{ containerPort: 3000, hostPortStart: 3000 }]
     expect(await setProjectConfig(P, { portForwards: ports, npmCache: false }))
-      .toEqual({ portForwards: ports, cacheVolumes: {}, nestedContainers: false, npmCache: false })
+      .toEqual({ portForwards: ports, cacheVolumes: {}, npmCache: false })
     expect(await setProjectConfig(P, { cacheVolumes: { pip: '/p' } }))
-      .toEqual({ portForwards: ports, cacheVolumes: { pip: '/p' }, nestedContainers: false, npmCache: false })
+      .toEqual({ portForwards: ports, cacheVolumes: { pip: '/p' }, npmCache: false })
     expect(await getProjectRow(P)).toMatchObject({ portForwards: ports, cacheVolumes: { pip: '/p' }, npmCache: false })
     expect(await setProjectConfig('0a0a0a0a-0000-4000-8000-0000000000ff', { npmCache: true })).toBeUndefined()
   })

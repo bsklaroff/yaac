@@ -353,7 +353,7 @@ export async function runClusterInstall(
   await buildBuiltinImages({ log: deps.log })
   // Fatal: nothing else installs the runtime, and without it every
   // workspace pod stays Pending.
-  deps.log('Installing the gVisor runtime (installer DaemonSet + RuntimeClasses)...')
+  deps.log('Installing the gVisor runtime (installer DaemonSet + RuntimeClass)...')
   await ensureGvisorRuntime().catch((err: unknown) => {
     throw new ClusterInstallError(
       'Could not install the gVisor runtime '

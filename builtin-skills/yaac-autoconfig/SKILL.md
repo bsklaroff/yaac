@@ -68,7 +68,7 @@ Read the manifests and docs — don't assume a stack:
 - **Go**: `go.mod` + `main.go`; **Rust**: `Cargo.toml`; **Ruby**: `Gemfile` +
   `Procfile`/`bin/rails s`.
 - **Container-native**: `docker-compose.yml` / `Dockerfile` — see the
-  `nestedContainers` note below.
+  docker-compose note below.
 - The **README / CONTRIBUTING** almost always state the dev command and the
   port. Prefer what the project documents.
 
@@ -141,15 +141,13 @@ Keep it minimal — only what this project needs.
 
 Tell the user:
 - what you wrote and why (the detected stack + commands),
-- **how to apply them** — the template does nothing
-  until applied. On the host, run
-  `yaac workflow create <project> init --file .yaac/init-steps.json --init`
-  (with `--repo <dir>` for the repo it is written for, in a project of
-  several; `yaac workflow edit <project> init --file …` once it exists) and
-  `yaac config port-forwards <project> <port>...` (plus any of
-  `yaac config nested-containers <project> on` or
-  `yaac config cache-volumes <project> <name>=<path>` the project needs), or
-  use the web app's Settings → Project Config.
+- **how to apply them** — the template does nothing until applied. On the host,
+  run `yaac workflow create <project> init --file .yaac/init-steps.json --init`
+  (with `--repo <dir>` for the repo it is written for, in a project of several;
+  `yaac workflow edit <project> init --file …` once it exists) and `yaac config
+  port-forwards <project> <port>...` (plus `yaac config cache-volumes <project>
+  <name>=<path>` if the project needs it), or use the web app's Settings →
+  Project Config.
 - that it then takes effect on the **next** session created for this project
   (not the current one),
 - how they'll reach the app: the Preview button in the desktop or iPhone app
@@ -207,7 +205,6 @@ needs.
 |---|---|
 | `port-forwards <project> <port>[:<host>]...` | Forward an in-container port to the host. The host port is the preferred one; yaac scans upward if it's busy. |
 | `cache-volumes <project> <name>=<path>...` | Per-project persistent caches that survive across sessions, each mounted at an absolute container path. (pnpm's store is already shared at `~/.cached-packages` — no entry needed.) |
-| `nested-containers <project> on` | Run an in-pod podman so `docker build`/`run`/`compose up` work inside the session (the `docker` CLI talks to podman's socket). Needed for docker-compose-based projects. |
 
 Dependency and build-output dirs each workspace keeps off its checkout
 (`node_modules` and `target` by default) are a project setting, not a config
@@ -234,4 +231,7 @@ key: Settings → Project Config, or `yaac config scratch-dirs`.
 - **There is no way to mount a host directory.** Use `cacheVolumes` for a
   directory that should persist across sessions, or bake the contents into the
   project image.
-- **docker-compose projects need `nestedContainers: true`**.
+- **There is no `docker` or `docker compose` inside a k8s workspace.** A
+  project that runs its services with docker-compose has to run them some
+  other way: install the services directly (in init steps, or in its
+  `Dockerfile.yaac`) and start them as `service` steps.

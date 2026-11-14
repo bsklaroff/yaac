@@ -4,10 +4,7 @@
  * kubernetes client.
  */
 
-/**
- * The rootful podman socket: systemd's `podman.socket` on a Linux host, or
- * the in-pod engine in a nested workspace (same path).
- */
+/** The rootful podman socket: systemd's `podman.socket` on a Linux host. */
 export const ROOTFUL_PODMAN_SOCKET = '/run/podman/podman.sock'
 
 /**

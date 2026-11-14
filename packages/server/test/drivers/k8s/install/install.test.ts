@@ -61,7 +61,7 @@ vi.mock('#drivers/k8s/cluster', async (importOriginal) => ({
   resolveTrustedLayers: vi.fn(() => {
     reach('buildBuiltinImages')
     const layer = (name: string): object => ({ tag: `yaac-${name}:0123456789abcdef`, name, dockerfile: '', context: '' })
-    return Promise.resolve({ base: layer('base'), tools: layer('tools'), nestable: layer('nestable') })
+    return Promise.resolve({ base: layer('base'), tools: layer('tools') })
   }),
 }))
 vi.mock('#drivers/k8s/substrate', async (importOriginal) => ({

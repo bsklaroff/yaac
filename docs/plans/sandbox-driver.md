@@ -224,7 +224,7 @@ every hostPath stays the host path. Grouped by what matters for mounting:
    `sandbox-fs.ts` already answers `no-links` for an isolated driver, and
    the `isolated` trait keeps that for this one. Every server-side reader
    of a workspace-written path goes through it.
-4. **No new capabilities for mounting.** A non-nested workspace gets no
+4. **No new capabilities for mounting.** A workspace gets no
    `CAP_SYS_ADMIN`, so the guest cannot rearrange its mounts. Everything
    is mounted by the engine at create.
 5. **No host socket in a mounted dir except the workspace's own.** runsc's
@@ -324,8 +324,6 @@ export interface DriverTraits {
   isolated: boolean
   /** Keeps prewarmed spares for fast creates. */
   sparePool: boolean
-  /** Can run a container engine inside a workspace. */
-  nestedContainers: boolean
   /** The checkout reaches the workspace through a filesystem that caches
    *  attributes, so a server-side edit must be reopened inside. */
   cachedCheckout: boolean
@@ -380,8 +378,8 @@ The proxy gains its local feed and per-listener identity.
 
 ## Phase 2: the gvisor backend
 
-gVisor comes first. It reuses the most (the sandbox, the mount annotations
-and the nested-container workarounds), and it runs on ordinary Linux CI
+gVisor comes first. It reuses the most (the sandbox and the mount
+annotations), and it runs on ordinary Linux CI
 machines. That proves the driver, the proxy's local feed, netshim and
 socket egress before the apple backend exists.
 
@@ -406,8 +404,8 @@ socket egress before the apple backend exists.
 - **Observation.** One `nerdctl events` stream filtered to the install
   label, plus `ps -a` on resync. Death cause comes from the exit status and
   OOM events.
-- **What phase 2 refuses.** Untrusted layers until phase 4, and
-  `nestedContainers` until phase 5. Their routes answer `NOT_SUPPORTED`.
+- **What phase 2 refuses.** Untrusted layers, until phase 4. Their routes
+  answer `NOT_SUPPORTED`.
 
 ## Phase 3: the apple backend
 
@@ -442,20 +440,7 @@ backend:
 
 Prewarm reuses `reconcileImagePrewarm`. GC keeps the live set plus the
 newest two generations per repo (docs/image-gc.md), deletes cache volumes
-of deleted projects and prunes. There is no registry, promoter or node
-store.
-
-## Phase 5: nested containers
-
-Rootful podman inside the workspace:
-
-- **gvisor:** the `gvisor-nested` settings as they are: a second runtime
-  handler with raw sockets, `NESTED_ENGINE_CAPS`, a sentry tmpfs graphroot.
-- **apple:** a real kernel, so the capabilities alone, and a plainer
-  `Dockerfile.nestable`.
-
-Salvage saves a workspace's built images into its project's build cache
-before teardown.
+of deleted projects and prunes. There is no registry.
 
 ## Spare pool
 
@@ -512,9 +497,8 @@ so gvisor covers them.
 - `docs/workspace-egress.md`: the local feed, socket identity and netshim.
 - `docs/workspace-storage.md`: the sandbox column of the mount mapping.
 - `docs/server-selection.md`, `docs/port-forward-tunnel.md`,
-  `docs/image-gc.md`, `docs/trust-split-builds.md`,
-  `docs/nested-containers.md`: their sandbox sections, as each phase
-  lands.
+  `docs/image-gc.md`, `docs/trust-split-builds.md`: their sandbox
+  sections, as each phase lands.
 
 No legacy-compat shim is needed: no existing install records `sandbox`.
 

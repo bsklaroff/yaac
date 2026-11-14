@@ -31,7 +31,6 @@ import {
   LABEL_ROLE,
   LABEL_SITE_ID,
   LABEL_WORKSPACE_ID,
-  NESTED_ENGINE_CAPS,
   NETD_APP_NAME,
   NFS_PORT,
   NPM_CACHE_APP_NAME,
@@ -54,7 +53,6 @@ import {
   VOLUMES_CLAIM_NAME,
   SERVER_POD_PORT,
   RUNTIME_CLASS_GVISOR,
-  RUNTIME_CLASS_GVISOR_NESTED,
   TRANSPARENT_HTTPS_PORT,
   applyObject,
   buildPriorityClassManifests,
@@ -69,7 +67,6 @@ import {
   listObjects,
   readObject,
   runPodToCompletion,
-  runtimeClassSpec,
   installSecurityContext,
   untoleratedTaints,
   workspaceIdLabels,
@@ -144,15 +141,14 @@ export const NODE_PIDS_LIMIT = 32768
  * - storage: every claim Bound, `Retain`, and the right backing.
  * - PriorityClasses present.
  * - node-fixups (kind only, warn): the node container's pids limit.
- * - gvisor: RuntimeClasses exist, a node is labeled, and a pod on the class
+ * - gvisor: the RuntimeClass exists, a node is labeled, and a pod on it
  *   really is sandboxed. gvisor-installer (warn): the installer DaemonSet
  *   is Ready on every node, which it only is once runsc and the node tuning
  *   are in place.
  * - Pod probes, run concurrently: the end-to-end probe (registry pull and
  *   the global claim shared with a peer pod), egress enforcement, the npm
  *   cache, the site edge's wall (and, with a tunnel, its connection), a pod
- *   on every node of a multi-node cluster (warn), nested-mount (warn), and
- *   storage semantics.
+ *   on every node of a multi-node cluster (warn), and storage semantics.
  * - datapath: Calico and netd Ready; veth-source: netd's pod-to-veth
  *   mapping resolves on every node.
  * - vap: ValidatingAdmissionPolicy available (builds need it).
@@ -256,7 +252,7 @@ export async function runClusterCheck(
 
   const PROBE_GATES = [
     'node-fixups', 'gvisor', 'gvisor-installer', 'probe', 'egress', 'npm-cache', 'sites',
-    'datapath', 'veth-source', 'per-node', 'nested-mount', 'storage-semantics', 'vap',
+    'datapath', 'veth-source', 'per-node', 'storage-semantics', 'vap',
   ] as const
   const skipFrom = (from: (typeof PROBE_GATES)[number], detail: string): void => {
     for (const name of PROBE_GATES.slice(PROBE_GATES.indexOf(from))) {
@@ -283,7 +279,7 @@ export async function runClusterCheck(
   let sandboxResults: CheckResult[]
   if (idlePool) {
     sandboxResults = [
-      'probe', 'egress', 'npm-cache', 'sites', 'nested-mount', 'per-node', 'storage-semantics',
+      'probe', 'egress', 'npm-cache', 'sites', 'per-node', 'storage-semantics',
     ].map(idleSkip)
   } else {
     // Probe pods run as the workspace uid/gid recorded on the server
@@ -308,13 +304,12 @@ export async function runClusterCheck(
       runNetworkPolicyProbe(),
       runNpmCacheProbe(),
       runSitesProbe(),
-      runNestedMountProbe(),
       runPerNodeProbe(nodes, gvisorScheduling, identity),
       runStorageSemanticsProbe(identity),
     ])
   }
   const [
-    probeResult, egressResult, npmCacheResult, sitesResult, nestedMountResult, perNodeResult, semanticsResult,
+    probeResult, egressResult, npmCacheResult, sitesResult, perNodeResult, semanticsResult,
   ] = sandboxResults
   add(probeResult)
   add(egressResult)
@@ -328,7 +323,6 @@ export async function runClusterCheck(
   // Reported after the datapath, which says whether a node has a redirect
   // at all.
   add(perNodeResult)
-  add(nestedMountResult)
   add(semanticsResult)
   add(await runVapAvailabilityCheck())
 
@@ -843,9 +837,9 @@ const GVISOR_PROBE_POD_NAME = 'yaac-cluster-check-gvisor'
 function gvisorFix(): string {
   return 'Install the gVisor runtime with: yaac cluster install\n'
     + '(applies the yaac-gvisor-install DaemonSet, which drops a pinned runsc, '
-    + 'its shim and its sidecars on every node, registers the runsc handlers in '
-    + 'its containerd and labels it, plus the gvisor/gvisor-nested '
-    + 'RuntimeClasses that schedule on that label)\n'
+    + 'its shim and its sidecars on every node, registers the runsc handler in '
+    + 'its containerd and labels it, plus the gvisor RuntimeClass that '
+    + 'schedules on that label)\n'
     + `Inspect it with: kubectl -n ${k8sNamespace()} logs -l app=yaac-gvisor-install`
 }
 
@@ -907,7 +901,7 @@ async function runPriorityClassCheck(): Promise<CheckResult> {
  * missing RuntimeClass, or a handler that silently runs runc, is unsafe.
  * Checks that:
  *
- * 1. both RuntimeClasses exist;
+ * 1. the RuntimeClass exists;
  * 2. at least one node has the installer's label (otherwise the probe pod
  *    would just sit Pending with a misleading error);
  * 3. a pod on the gvisor class is really sandboxed: gVisor's dmesg shows
@@ -917,12 +911,10 @@ async function runGvisorRuntimeCheck(nodes: RawNodeItem[] | null): Promise<Check
   try {
     const present = new Set((await listObjects('node.k8s.io/v1', 'RuntimeClass'))
       .map((rc) => rc.metadata?.name))
-    const missing = [RUNTIME_CLASS_GVISOR, RUNTIME_CLASS_GVISOR_NESTED]
-      .filter((n) => !present.has(n))
-    if (missing.length > 0) {
+    if (!present.has(RUNTIME_CLASS_GVISOR)) {
       return {
         name: 'gvisor', status: 'fail',
-        detail: `missing RuntimeClass(es): ${missing.join(', ')}`,
+        detail: `missing RuntimeClass: ${RUNTIME_CLASS_GVISOR}`,
         fix: gvisorFix(),
       }
     }
@@ -965,7 +957,7 @@ async function runGvisorRuntimeCheck(nodes: RawNodeItem[] | null): Promise<Check
     }
     return {
       name: 'gvisor', status: 'pass',
-      detail: 'RuntimeClasses present; gvisor pods run inside the sentry',
+      detail: 'RuntimeClass present; gvisor pods run inside the sentry',
     }
   } catch (err) {
     return {
@@ -1118,7 +1110,7 @@ async function runEndToEndProbe(identity: InstallIdentity): Promise<CheckResult>
       spec: {
         affinity: pairAntiAffinity('probe'),
         // Same runtime and uid as a workspace pod (buildPodJobManifest).
-        ...runtimeClassSpec(),
+        runtimeClassName: RUNTIME_CLASS_GVISOR,
         securityContext: workspaceSecurityContext(identity),
         volumes: GLOBAL_CLAIM_VOLUME.volumes,
       },
@@ -1221,9 +1213,8 @@ const FSPROBE_CONFIGMAP_NAME = 'yaac-cluster-check-fsprobe'
  * with the reason. Waived by name on every backend, never per backend.
  */
 const WAIVED_SEMANTICS: Record<string, string> = {
-  // NFS before 4.2 (e.g. EFS, Azure Files) has no xattrs. The only user.*
-  // xattr yaac writes (image-store overlay markers) is on the node-local
-  // tier.
+  // NFS before 4.2 (e.g. EFS, Azure Files) has no xattrs, and yaac writes
+  // no user.* xattr.
   'user.* xattr': 'nothing yaac keeps on the shared tier uses xattrs',
 }
 const FSPROBE_POD_NAME = 'yaac-cluster-check-fsprobe'
@@ -1254,7 +1245,7 @@ async function runStorageSemanticsProbe(identity: InstallIdentity): Promise<Chec
     const { phase, logs } = await runProbePod(FSPROBE_POD_NAME, {
       timeoutMs: 120_000,
       spec: {
-        ...runtimeClassSpec(),
+        runtimeClassName: RUNTIME_CLASS_GVISOR,
         securityContext: workspaceSecurityContext(identity),
         volumes: [
           ...GLOBAL_CLAIM_VOLUME.volumes,
@@ -2147,67 +2138,6 @@ async function runVethSourceCheck(): Promise<CheckResult> {
     }
   }
 }
-
-const NESTED_PROBE_POD_NAME = 'yaac-cluster-check-nested'
-
-/**
- * Warn-level gate for nestedContainers workspaces. Under gvisor-nested with
- * the engine's capabilities, in-sandbox root must be able to mount a tmpfs,
- * as every container start and `docker build` step does. Other engine
- * needs (setuid, file caps) are covered by the nested-containers e2e.
- */
-async function runNestedMountProbe(): Promise<CheckResult> {
-  try {
-    const { phase, logs } = await runProbePod(NESTED_PROBE_POD_NAME, {
-      timeoutMs: 60_000,
-      spec: {
-        runtimeClassName: RUNTIME_CLASS_GVISOR_NESTED,
-        securityContext: { seccompProfile: { type: 'RuntimeDefault' } },
-      },
-      container: {
-        image: await ensureProbeImage(),
-        // Root with the engine's caps; mount() needs SYS_ADMIN.
-        securityContext: { runAsUser: 0, capabilities: { add: NESTED_ENGINE_CAPS } },
-        command: [
-          'sh', '-c',
-          'mkdir -p /tmp/m && mount -t tmpfs none /tmp/m && echo NESTED_MOUNT_OK || echo NESTED_MOUNT_FAIL',
-        ],
-      },
-    })
-    if (phase !== 'Succeeded') {
-      return {
-        name: 'nested-mount', status: 'warn',
-        detail: `nested probe pod ended in phase ${phase} — nestedContainers sessions unverified`,
-        fix: NESTED_MOUNT_FIX,
-      }
-    }
-    if (logs.includes('NESTED_MOUNT_OK')) {
-      return {
-        name: 'nested-mount', status: 'pass',
-        detail: 'in-sandbox mount under gvisor-nested verified (nestedContainers ready)',
-      }
-    }
-    return {
-      name: 'nested-mount', status: 'warn',
-      detail: 'mounting tmpfs under the gvisor-nested sentry failed'
-        + ` (logs: ${logs.trim().slice(0, 80) || 'empty'})`,
-      fix: NESTED_MOUNT_FIX,
-    }
-  } catch (err) {
-    return {
-      name: 'nested-mount', status: 'warn',
-      detail: `nested sentry-mount probe errored (${k8sErrorSummary(err)})`,
-      fix: NESTED_MOUNT_FIX,
-    }
-  }
-}
-
-const NESTED_MOUNT_FIX =
-  'Only nestedContainers sessions are affected (docker build/run in-pod). '
-  + 'The gvisor-nested runsc handler is broken or the sentry refuses the '
-  + 'mount — run `yaac cluster install` to re-apply the runsc '
-  + 'installer DaemonSet, which reinstalls the binaries and rewrites the '
-  + 'handlers.'
 
 /**
  * The builder-pod guard is a ValidatingAdmissionPolicy, and

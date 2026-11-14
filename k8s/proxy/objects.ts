@@ -552,7 +552,7 @@ export function encodeRefreshed(bundles: OwnerRefreshedBundles): Record<string, 
 }
 
 /** The CA Secret's `data`: key, cert, the system roots plus the CA as one
- *  trust bundle for nested containers, and the ssh host key. The server
+ *  trust bundle for workspaces, and the ssh host key. The server
  *  copies the public parts into the ConfigMap workspace pods mount. */
 export function encodeCa(ca: CaMaterial & { bundlePem: string; sshHostKey: SshHostKey }): Record<string, string> {
   return secretData({

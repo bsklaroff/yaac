@@ -451,8 +451,8 @@ in the workspace cannot forge control-mode lines.
 
 ## Prewarmed spares
 
-A spare runs no session, so no posture is fixed at warm time: a claim opens
-its session with what was asked, as in any running workspace
-(docs/sessions.md). A spare running another image than the project now
-builds (a Dockerfile edit or a `nestedContainers` toggle since it was
-warmed) is skipped, since a pod's image is fixed, and the pool replaces it.
+A spare runs no session, so no posture is fixed at warm time: a claim opens its
+session with what was asked, as in any running workspace (docs/sessions.md). A
+spare running another image than the project now builds (a Dockerfile edit
+since it was warmed) is skipped, since a pod's image is fixed, and the pool
+replaces it.

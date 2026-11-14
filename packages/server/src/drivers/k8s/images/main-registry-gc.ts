@@ -18,7 +18,7 @@
  * repeated just before it runs. The registry keeps no blob-descriptor
  * cache (main-registry.ts), so it needs no restart afterwards.
  */
-import { buildRegistryRetentionScript, mainRegistryExec, resolveImageChain } from '#drivers/k8s/cluster'
+import { mainRegistryExec, resolveImageChain } from '#drivers/k8s/cluster'
 import { listObjects } from '#drivers/k8s/substrate'
 import { testEnv } from '@yaac/shared/env'
 import type { PassContext, ProjectReaders } from '#drivers/contract'
@@ -27,10 +27,7 @@ import { BUILD_CACHE_TTL } from './builder-pod'
 import { forgetVerifiedTags, imageWorkInFlight } from './build-coordinator'
 import { pruneNodeImages, registryGeneration } from './node-image-gc'
 
-/**
- * Generations kept per repo beyond the live set. Lower than the project
- * registries' 8 because here the live set is known and always protected.
- */
+/** Generations kept per repo beyond the live set, which is always protected. */
 const MAIN_REGISTRY_GENERATIONS_KEPT = 2
 
 /**
@@ -101,6 +98,35 @@ function registryQuietProbeScript(
 }
 
 /**
+ * Busybox script that untags all but the newest MAIN_REGISTRY_GENERATIONS_KEPT
+ * content-hash generations of each yaac-built repo, never touching a
+ * `protect`ed `repo:tag` (which still counts toward the kept number). Only
+ * `yaac-*` repos other than the e2e suite's, and tags of 16 hex chars, are
+ * candidates, so `latest` and step-cache tags never are. Newest is by tag
+ * directory mtime, i.e. creation time, which suits write-once tags. Prints
+ * `RETIRED <repo>:<tag>` per tag.
+ */
+function registryRetentionScript(protect: string[]): string {
+  return [
+    `[ -d ${REGISTRY_REPOS_DIR} ] || exit 0`,
+    // Image-name charset only, so single quotes are safe.
+    `PROTECT='${protect.join('\n')}'`,
+    `for tagdir in $(find ${REGISTRY_REPOS_DIR} -type d -path '*/_manifests/tags' 2>/dev/null); do`,
+    `  repo=\${tagdir#${REGISTRY_REPOS_DIR}/}; repo=\${repo%/_manifests/tags}`,
+    '  case "$repo" in',
+    `    ${TEST_IMAGE_REPOS}) continue;;`,
+    '    yaac-*) ;;',
+    '    *) continue;;',
+    '  esac',
+    `  for stale in $(ls -1t "$tagdir" 2>/dev/null | grep -Ex '[0-9a-f]{16}' | tail -n +${MAIN_REGISTRY_GENERATIONS_KEPT + 1}); do`,
+    '    printf \'%s\\n\' "$PROTECT" | grep -qxF "$repo:$stale" && continue',
+    '    rm -rf "$tagdir/$stale" && echo "RETIRED $repo:$stale"',
+    '  done',
+    'done',
+  ].join('\n')
+}
+
+/**
  * Busybox script that untags every `yaac-buildcache-*` entry whose tag link
  * is older than `days` (by removing `<repo>/_manifests/tags/<key>`) and
  * prints each as `RETIRED <key>`. A cache hit re-pushes the entry and
@@ -127,9 +153,10 @@ const ORPHAN_REPO_MIN_AGE_MINUTES = 10
 
 /**
  * Busybox script that removes every `yaac-{proj,user,buildcache}-<x>` repo
- * whose `x` is not a live project id, unless a workload still uses it
- * (`keepRepos`). Prints `RETIRED <repo>` for each. `yaac-test-*` repos
- * never match.
+ * whose `x` is not a live project id, and the retired `yaac-nestable` layer's
+ * repo (docs/legacy-compat-shims.md "The yaac-nestable image"), unless a
+ * workload still uses it (`keepRepos`). Prints `RETIRED <repo>` for each.
+ * `yaac-test-*` repos never match.
  */
 function orphanProjectRepoSweepScript(liveIds: string[], keepRepos: string[]): string {
   return [
@@ -139,7 +166,7 @@ function orphanProjectRepoSweepScript(liveIds: string[], keepRepos: string[]): s
     // Ids and repo names cannot contain quotes.
     `LIVE=',${liveIds.join(',')},'`,
     `KEEP='${keepRepos.join('\n')}'`,
-    'for dir in "$ROOT"/yaac-proj-* "$ROOT"/yaac-user-* "$ROOT"/yaac-buildcache-*; do',
+    'for dir in "$ROOT"/yaac-proj-* "$ROOT"/yaac-user-* "$ROOT"/yaac-buildcache-* "$ROOT"/yaac-nestable; do',
     '  [ -d "$dir" ] || continue',
     // Skip young repos: a just-added project may be pushing its first image.
     `  [ -n "$(find "$dir" -maxdepth 0 -mmin +${ORPHAN_REPO_MIN_AGE_MINUTES})" ] || continue`,
@@ -244,8 +271,7 @@ async function readLiveImages(
   let wanted: Set<string> | null = new Set<string>()
   for (const projectId of projectIds) {
     try {
-      const nested = (await projects.projectConfig(projectId))?.nestedContainers === true
-      const { layers } = await resolveImageChain(projectId, await projects.projectOwner(projectId), nested)
+      const { layers } = await resolveImageChain(projectId, await projects.projectOwner(projectId))
       for (const { tag } of layers) wanted.add(tag)
     } catch (err) {
       serverLog(`[main-registry-gc] ${projectId}: cannot resolve its image chain, `
@@ -271,11 +297,10 @@ async function gcMainRegistry(live: LiveImages): Promise<MainRegistryGcResult> {
     SWEEP_TIMEOUT_MS,
   )}`
   if (live.wanted) {
-    stdout += `\n${await mainRegistryExec(['sh', '-c', buildRegistryRetentionScript({
-      keep: MAIN_REGISTRY_GENERATIONS_KEPT,
-      protect: [...live.inUse, ...live.wanted],
-      skip: [TEST_IMAGE_REPOS],
-    })], SWEEP_TIMEOUT_MS)}`
+    stdout += `\n${await mainRegistryExec(
+      ['sh', '-c', registryRetentionScript([...live.inUse, ...live.wanted])],
+      SWEEP_TIMEOUT_MS,
+    )}`
   }
   const retired = stdout.split('\n')
     .map((l) => l.trim())

@@ -35,7 +35,6 @@ describe('createK8sDriver', () => {
       signal: new AbortController().signal,
       snapshot: () => snapshotFixture([]),
       projectIds: () => Promise.resolve([]),
-      projectConfig: () => Promise.resolve(undefined),
       projectOwner: () => Promise.reject(new Error('no projects')),
       pinnedImages: () => Promise.resolve([]),
       terminating: () => false,

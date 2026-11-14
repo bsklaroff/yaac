@@ -24,7 +24,7 @@ afterEach(() => {
 /** A project keyed by `id-<name>`, so a test can tell the key from the
  *  displayed name, linking one repo `repo-<name>` in a folder of its name. */
 const project = (name: string, remoteUrl: string): ProjectSummary =>
-  ({ id: `id-${name}`, name, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [projectRepo({ id: `repo-${name}`, dir: name, remoteUrl })], scratchDirs: { dirs: [], ignoredTracked: [] }, portForwards: [], cacheVolumes: {}, nestedContainers: false, npmCache: true })
+  ({ id: `id-${name}`, name, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [projectRepo({ id: `repo-${name}`, dir: name, remoteUrl })], scratchDirs: { dirs: [], ignoredTracked: [] }, portForwards: [], cacheVolumes: {}, npmCache: true })
 
 /** Show settings for `alpha` (and `beta`) on a containerless server, whose
  *  env routes keep `vars` in memory. */
@@ -173,7 +173,6 @@ describe('ProjectSettings', () => {
       'GET /api/project/id-alpha/build-files': { files: [] },
       'PUT /api/project/id-alpha/port-forwards': {},
       'PUT /api/project/id-alpha/cache-volumes': {},
-      'PUT /api/project/id-alpha/nested-containers': {},
       'PUT /api/project/id-alpha/npm-cache': {},
     })
     renderWithClient(<ProjectSettings />, testQueryClient(undefined, serverSnapshot({ driver: 'k8s', projects: [alpha] })))
@@ -205,17 +204,15 @@ describe('ProjectSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove pip' }))
     await waitFor(() => expect(bodies('cache-volumes')[1]).toEqual({ volumes: {} }))
 
-    fireEvent.click(screen.getByRole('checkbox', { name: /Nested containers/ }))
     fireEvent.click(screen.getByRole('checkbox', { name: /npm cache/ }))
-    await waitFor(() => expect([bodies('nested-containers'), bodies('npm-cache')])
-      .toEqual([[{ enabled: true }], [{ enabled: false }]]))
+    await waitFor(() => expect(bodies('npm-cache')).toEqual([{ enabled: false }]))
 
     // A containerless server has no pods to give either.
     cleanup()
     renderAlpha()
     expect(screen.getByRole('button', { name: 'Add forwarded port' })).toBeTruthy()
     expect(screen.queryByText('Cache volumes')).toBeNull()
-    expect(screen.queryByRole('checkbox', { name: /Nested containers/ })).toBeNull()
+    expect(screen.queryByRole('checkbox', { name: /npm cache/ })).toBeNull()
   })
 
   it('confirms a stopped-workspace auto-delete with the count it deletes at once, and turns it off without asking', async () => {

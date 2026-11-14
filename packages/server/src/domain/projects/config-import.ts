@@ -17,7 +17,7 @@ import { workspaceDriver } from '#drivers/driver'
 import { errorText, serverLog } from '#lib/log'
 import { cacheVolumesSchema, checkoutPathSchema, portForwardsSchema } from './config'
 
-const K8S_ONLY = ['cacheVolumes', 'nestedContainers', 'npmCache'] as const
+const K8S_ONLY = ['cacheVolumes', 'npmCache'] as const
 
 /**
  * The graph an `initCommands` value ran as: the string form's one `init`
@@ -84,11 +84,12 @@ function planImport(file: Record<string, unknown>): ImportPlan {
     if (containerless && (K8S_ONLY as readonly string[]).includes(key)) plan.leftOut.push(`${key} (applies under k8s only)`)
     else if (key === 'portForward') take(key, () => { plan.set.portForwards = portForwardsSchema.parse(value) })
     else if (key === 'cacheVolumes') take(key, () => { plan.set.cacheVolumes = cacheVolumesSchema.parse(value) })
-    else if (key === 'nestedContainers' || key === 'npmCache') take(key, () => { plan.set[key] = z.boolean().parse(value) })
+    else if (key === 'npmCache') take(key, () => { plan.set.npmCache = z.boolean().parse(value) })
     else if (key === 'ephemeralModulesPaths') {
       take(key, () => { plan.scratchDirs = [...new Set(z.array(checkoutPathSchema).parse(value))] })
     } else if (key === 'initCommands') take(key, () => { plan.initSteps = parseStepGraph(initCommandsGraph(value)) })
-    else if (key !== 'hideInitPane') {
+    // Settings yaac no longer has, which import as nothing.
+    else if (key !== 'hideInitPane' && key !== 'nestedContainers') {
       plan.leftOut.push(`${key} (not a setting)`)
       plan.keep = true
     }

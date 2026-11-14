@@ -1,7 +1,7 @@
 import { useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { ChevronIcon, HealthIcon, WarningIcon } from '#lib/icons'
+import { HealthIcon, WarningIcon } from '#lib/icons'
 import { Meter } from '#components/ui/Meter'
 import { Modal } from '#components/ui/Modal'
 import { Sparkline } from '#components/ui/Sparkline'
@@ -276,49 +276,29 @@ function Nodes({ report }: { report: ResourceReport }): JSX.Element {
   )
 }
 
-function ComponentRow({ c, depth = 0 }: {
-  c: ComponentUsage & { history?: UsagePoint[] }
-  depth?: number
-}): JSX.Element {
-  const [expanded, setExpanded] = useState(false)
-  const children = c.children ?? []
+function ComponentRow({ c }: { c: ComponentUsage & { history?: UsagePoint[] } }): JSX.Element {
   return (
-    <>
-      <tr className="border-t border-hairline align-middle">
-        <td className="py-1.5 pr-2" style={{ paddingLeft: depth * 16 }}>
-          {children.length > 0
-            ? (
-              <button
-                type="button"
-                onClick={() => setExpanded(!expanded)}
-                aria-expanded={expanded}
-                className="flex items-center gap-1 hover:text-text"
-              >
-                <ChevronIcon size={11} className={clsx('transition-transform', expanded && 'rotate-90')} />
-                {c.label}
-              </button>
-            )
-            : c.label}
-          {c.count !== undefined && <span className="ml-1 text-text-faint">({c.count} running)</span>}
-        </td>
-        <td className="pr-3 tabular-nums text-text-dim">{formatCores(c.cpuCores)}</td>
-        <td className="pr-3 tabular-nums text-text-dim">{formatBytes(c.memoryBytes)}</td>
-        <td className="pr-3">
-          {c.history && <Sparkline points={memoryPoints(c.history)} format={formatBytes} label={`${c.label} memory`} />}
-        </td>
-        <td className="min-w-64">
-          <div className="flex flex-col gap-1">
-            {c.volumes.map((v) => (
-              <div key={v.name} className="flex items-center gap-2">
-                <span className="w-40 shrink-0 truncate font-mono text-[11px]" title={v.name}>{v.name}</span>
-                <VolumeMeter volume={v} />
-              </div>
-            ))}
-          </div>
-        </td>
-      </tr>
-      {expanded && children.map((child) => <ComponentRow key={child.key} c={child} depth={depth + 1} />)}
-    </>
+    <tr className="border-t border-hairline align-middle">
+      <td className="py-1.5 pr-2">
+        {c.label}
+        {c.count !== undefined && <span className="ml-1 text-text-faint">({c.count} running)</span>}
+      </td>
+      <td className="pr-3 tabular-nums text-text-dim">{formatCores(c.cpuCores)}</td>
+      <td className="pr-3 tabular-nums text-text-dim">{formatBytes(c.memoryBytes)}</td>
+      <td className="pr-3">
+        {c.history && <Sparkline points={memoryPoints(c.history)} format={formatBytes} label={`${c.label} memory`} />}
+      </td>
+      <td className="min-w-64">
+        <div className="flex flex-col gap-1">
+          {c.volumes.map((v) => (
+            <div key={v.name} className="flex items-center gap-2">
+              <span className="w-40 shrink-0 truncate font-mono text-[11px]" title={v.name}>{v.name}</span>
+              <VolumeMeter volume={v} />
+            </div>
+          ))}
+        </div>
+      </td>
+    </tr>
   )
 }
 

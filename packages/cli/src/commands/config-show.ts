@@ -47,7 +47,6 @@ export async function configShow(project: string): Promise<void> {
     ['init-workflows', list(workflows.filter((w) => w.init).map((w) => (w.repos.length > 0 ? `${w.name} (${w.repos.join(', ')})` : w.name)))],
     ['workspace-auto-delete', p.stoppedWorkspaceRetentionDays === undefined ? 'off' : `${p.stoppedWorkspaceRetentionDays} days`],
     k8s && ['cache-volumes', formatCacheVolumes(p.cacheVolumes)],
-    k8s && ['nested-containers', onOff(p.nestedContainers)],
     k8s && ['npm-cache', onOff(p.npmCache)],
     dockerfile !== undefined && ['dockerfile', dockerfile.content.trim() === '' ? 'none' : 'set'],
   ] satisfies Array<[string, string] | false>).filter((row) => row !== false)

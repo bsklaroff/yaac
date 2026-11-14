@@ -68,7 +68,6 @@ function spec(overrides: Partial<WorkspaceSpec> = {}): WorkspaceSpec {
       cpuLimitMillis: 1, ephemeralStorageRequestBytes: 1, ephemeralStorageLimitBytes: 1,
     },
     postStartExec: [],
-    nestedContainers: false,
     cwd: '',
     gitCredentials: [],
     substrate: substrateFixture(),

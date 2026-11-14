@@ -220,7 +220,7 @@ write as `CONFLICT` (409), the server's own included.
 - `/project/add` and `/project/register` create a project the caller then
   owns.
 - The only writes open to every user are retrying and dismissing builds
-  of the shared images (base, tools, nestable, proxy, netd). Install
+  of the shared images (base, tools, proxy, netd). Install
   administration (upgrades, restarts, server env, `--admin`) happens
   through host or cluster access, outside the API.
 
@@ -279,7 +279,7 @@ The owner key is opaque to the driver. `credentialOwnerKey` in
 key is `install`. Running workspaces' registrations name that key, so
 changing it would strand them until they are recreated.
 
-Per-project registries, the build cache and the user-layer repo are keyed
+The project image repo, the build cache and the user-layer repo are keyed
 by project, hence by owner. Registry repositories stay one per project and
 layer, since builder-pod write grants are scoped per repository
 (docs/trust-split-builds.md "The write gate").

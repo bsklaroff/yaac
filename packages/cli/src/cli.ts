@@ -43,7 +43,7 @@ import { authClear } from '#commands/auth-clear'
 import { authList } from '#commands/auth-list'
 import { configDockerfile, configUserDockerfile } from '#commands/config-dockerfile'
 import { configIcon } from '#commands/config-icon'
-import { configCacheVolumes, configNestedContainers, configNpmCache, configPortForwards } from '#commands/config-launch-settings'
+import { configCacheVolumes, configNpmCache, configPortForwards } from '#commands/config-launch-settings'
 import { configShow } from '#commands/config-show'
 import { configGitIdentity } from '#commands/config-git-identity'
 import { feedback } from '#commands/feedback'
@@ -885,13 +885,6 @@ config
   .argument('[volumes...]', 'Volumes as <name>=<absolute path in the workspace>, e.g. pip=/home/yaac/.cache/pip')
   .option('--none', 'Keep no cache volumes')
   .action(configCacheVolumes)
-
-config
-  .command('nested-containers')
-  .description('Show whether a project\'s workspaces run a container engine of their own, so docker build, run and compose work, or turn it on or off (k8s only)')
-  .argument('<project>', 'Project name, id, or id prefix')
-  .addArgument(new Argument('[on|off]').choices(['on', 'off']))
-  .action(configNestedContainers)
 
 config
   .command('npm-cache')

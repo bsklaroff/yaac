@@ -88,18 +88,6 @@ export function resolveMountSource(m: PodMount | WorkspaceMount): PodMount {
 const CHECKOUT_SUBPATH = /^projects\/[^/]+\/workspaces\/[^/]+$/
 
 /**
- * The node path for a server-side node-local path, as mounted by the store
- * writer and sweep pods. Throws for a path outside the node-local root.
- */
-export function nodeLocalHostPath(serverPath: string): string {
-  const rel = under(serverPath, nodeLocalRoot())
-  if (rel === null) {
-    throw new Error(`${serverPath} is not under the node-local root ${nodeLocalRoot()}`)
-  }
-  return path.posix.join(nodeLocalNodePath(), rel)
-}
-
-/**
  * Node-local directories among already-resolved mounts that the pod
  * writes, for its init container to create and chown. Read-only and file
  * mounts are skipped.

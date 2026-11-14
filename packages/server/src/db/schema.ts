@@ -150,7 +150,6 @@ export const projects = snakeCase.table('projects', {
    *  docs/project-config.md). */
   portForwards: jsonb().$type<PortForwardConfig[]>().notNull().default([]),
   cacheVolumes: jsonb().$type<Record<string, string>>().notNull().default({}),
-  nestedContainers: boolean().notNull().default(false),
   npmCache: boolean().notNull().default(true),
 })
 

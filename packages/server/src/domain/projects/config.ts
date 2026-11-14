@@ -1,7 +1,7 @@
 /**
  * The project settings a workspace launches with besides its checkout
  * (`ProjectConfig`, docs/project-config.md): forwarded ports, cache
- * volumes, nested containers and the npm cache. Each is a column of the
+ * volumes and the npm cache. Each is a column of the
  * project's row, set on a route of its own.
  */
 import path from 'node:path'
@@ -61,8 +61,8 @@ export const cacheVolumesSchema = z.record(z.string(), z.unknown(), { error: 'mu
 export async function resolveProjectConfig(projectId: string): Promise<ProjectConfig | undefined> {
   const row = await getProjectRow(projectId)
   if (row === undefined) return undefined
-  const { portForwards, cacheVolumes, nestedContainers, npmCache } = row
-  return { portForwards, cacheVolumes, nestedContainers, npmCache }
+  const { portForwards, cacheVolumes, npmCache } = row
+  return { portForwards, cacheVolumes, npmCache }
 }
 
 /** Replace the settings `set` names, already validated, and answer them all

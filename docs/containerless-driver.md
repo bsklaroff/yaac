@@ -602,7 +602,7 @@ The webapp reads `snapshot.driver` and hides these features.
   set `ALL_PROXY` or an ssh ProxyCommand, which undici, raw sockets and the
   agent's shell would bypass. Silently leaking traffic is worse than a
   stated gap.
-- **Nested containers, cache volumes and the npm cache.** Their routes
+- **Cache volumes and the npm cache.** Their routes
   refuse with `NOT_SUPPORTED`, so a project here never has them.
 - **Prewarmed spare workspaces.** A tmux server in an existing checkout has
   no image pull or pod boot to save.

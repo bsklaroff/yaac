@@ -74,7 +74,7 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'www.bitbucket.org',
   'api.bitbucket.org',
 
-  // Container registries (docker.io pull hosts are in NESTED_PULL_HOSTS)
+  // Container registries
   'hub.docker.com',
   'www.docker.com',
   'download.docker.com',
@@ -317,29 +317,6 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
 
   // Container image storage
   'docker-images-prod.*.r2.cloudflarestorage.com',
-]
-
-/**
- * Registry and CDN hosts an in-pod `docker pull` reaches. Appended to the
- * allowlist only for `nestedContainers` workspaces (see
- * `buildProxyRegistration`), since other workspaces never pull images. Not
- * appended when the project turns the defaults off. ghcr.io and
- * pkg-containers.githubusercontent.com are already in the default list.
- */
-export const NESTED_PULL_HOSTS: string[] = [
-  // docker.io
-  'registry-1.docker.io',
-  'auth.docker.io',
-  'index.docker.io',
-  'production.cloudflare.docker.com',
-  'production.cloudfront.docker.com',
-  // quay.io
-  'quay.io',
-  'cdn01.quay.io',
-  'cdn02.quay.io',
-  'cdn03.quay.io',
-  // Alpine apk — `docker build` RUN steps on alpine-based images
-  'dl-cdn.alpinelinux.org',
 ]
 
 /**

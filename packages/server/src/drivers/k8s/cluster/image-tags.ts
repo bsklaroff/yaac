@@ -86,12 +86,11 @@ export interface ImageLayer {
 interface TrustedLayers {
   base: ImageLayer
   tools: ImageLayer
-  nestable: ImageLayer
 }
 
 /**
- * The three layers yaac ships: the Ubuntu+Node base, the agent CLIs, and
- * the optional in-pod container engine. `yaac cluster install` builds these
+ * The two layers yaac ships: the Ubuntu+Node base and the agent CLIs.
+ * `yaac cluster install` builds these
  * (docs/trust-split-builds.md), never the server. Both the install and
  * `resolveImageChain` take their tags from here, so they always agree.
  */
@@ -117,20 +116,7 @@ export async function resolveTrustedLayers(prefix = imagePrefix()): Promise<Trus
     contentHash: toolsHash,
   }
 
-  // In-pod rootful podman + docker CLI + compose, for `nestedContainers`
-  // workspaces.
-  const nestableDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
-  const nestableHash = stringHash(`${toolsHash}:${await fileHash(nestableDockerfile)}`)
-  const nestable: ImageLayer = {
-    tag: `${prefix}-nestable:${nestableHash}`,
-    name: 'nestable',
-    dockerfile: nestableDockerfile,
-    context: DOCKERFILES_DIR,
-    buildArgs: { BASE_IMAGE: tools.tag },
-    contentHash: nestableHash,
-  }
-
-  return { base, tools, nestable }
+  return { base, tools }
 }
 
 async function fileExists(filePath: string): Promise<boolean> {
@@ -145,12 +131,11 @@ async function fileExists(filePath: string): Promise<boolean> {
 /**
  * Resolve a project's ordered image layer chain without building anything.
  *
- * The chain is base, tools, optionally nestable (for `nestedContainers`),
- * then the project's Dockerfile.yaac and its owner's Dockerfile.user if
- * present. A standalone (non-layered) Dockerfile.yaac replaces base, tools
- * and nestable, and owns its own uid setup (docs/arbitrary-uid-images.md).
- * Each layer's build dir is its whole context, so support files count
- * toward its hash.
+ * The chain is base and tools, then the project's Dockerfile.yaac and its
+ * owner's Dockerfile.user if present. A standalone (non-layered)
+ * Dockerfile.yaac replaces base and tools, and owns its own uid setup
+ * (docs/arbitrary-uid-images.md). Each layer's build dir is its whole
+ * context, so support files count toward its hash.
  *
  * Project and user layers live in repos named by project id
  * (`<prefix>-proj-<id>`, `<prefix>-user-<id>`): a repo is what a registry
@@ -160,7 +145,6 @@ async function fileExists(filePath: string): Promise<boolean> {
 export async function resolveImageChain(
   projectId: string,
   owner: string,
-  nestedContainers = false,
 ): Promise<{ layers: ImageLayer[]; finalTag: string }> {
   const prefix = imagePrefix()
   const layers: ImageLayer[] = []
@@ -180,24 +164,9 @@ export async function resolveImageChain(
   const useDefaultBase = !yaacDockerfile || yaacIsLayered
   const trusted = useDefaultBase ? await resolveTrustedLayers(prefix) : null
 
-  let toolsTag: string | null = null
-  let toolsHash: string | null = null
-  if (trusted) {
-    layers.push(trusted.base, trusted.tools)
-    toolsTag = trusted.tools.tag
-    toolsHash = trusted.tools.contentHash
-  }
-
-  let nestableTag: string | null = null
-  let nestableHash: string | null = null
-  if (trusted && nestedContainers) {
-    layers.push(trusted.nestable)
-    nestableTag = trusted.nestable.tag
-    nestableHash = trusted.nestable.contentHash
-  }
-
-  const parentTag = nestableTag ?? toolsTag
-  const parentHash = nestableHash ?? toolsHash
+  if (trusted) layers.push(trusted.base, trusted.tools)
+  const parentTag = trusted?.tools.tag
+  const parentHash = trusted?.tools.contentHash
   const projectContextHash = yaacDockerfile ? await contextHash(projectBuild) : null
   const baseHash = yaacIsLayered
     ? stringHash(`${parentHash!}:${projectContextHash!}`)

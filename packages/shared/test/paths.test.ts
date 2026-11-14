@@ -41,7 +41,6 @@ import {
   workspaceStateDir,
   opencodeDataDir,
   cacheVolumeDir,
-  imageStoreDir,
 } from '#project-paths'
 import { ensureInstallTmpDir, installTmpDir, serverLogPath, expandTilde, findRepoRoot, hostDataDir, resetHostDataDir } from '#paths'
 
@@ -242,7 +241,6 @@ describe('storage tiers', () => {
     const node = '/tmp/yaac-test/node-local'
     expect(cachedPackagesDir(PROJECT_ID)).toBe(`${node}/projects/${PROJECT_ID}/.cached-packages`)
     expect(opencodeDataDir(PROJECT_ID, 'abc123')).toBe(`${node}/projects/${PROJECT_ID}/opencode-data/abc123`)
-    expect(imageStoreDir(PROJECT_ID)).toBe(`${node}/shared-images/${PROJECT_ID}`)
   })
 
   it('keeps the per-workspace state dir and the cache volumes global', () => {

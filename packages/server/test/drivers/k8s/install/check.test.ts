@@ -257,7 +257,6 @@ function logsFor(name: string): string {
     case 'yaac-cluster-check-sites-tailnet':
     case 'yaac-cluster-check-sites-router':
       return 'SITES_DONE\n'
-    case 'yaac-cluster-check-nested': return 'NESTED_MOUNT_OK\n'
     case 'yaac-cluster-check': {
       const [, nonce] = appliedPodArgs('yaac-cluster-check-peer')
       const uid = appliedPod('yaac-cluster-check')?.spec?.securityContext?.runAsUser
@@ -470,7 +469,7 @@ describe('runClusterCheck', () => {
     tmpDir = await createTempDataDir()
     resetClusterCidrCache()
     clusterNodes = [nodeItem('yaac-control-plane')]
-    runtimeClassNames = ['gvisor', 'gvisor-nested', 'runc']
+    runtimeClassNames = ['gvisor', 'runc']
     priorityClasses = livePriorityClasses()
     serverSecurityContext = null
     podPhases = {}
@@ -544,7 +543,6 @@ describe('runClusterCheck', () => {
       ['veth-source', 'pass'],
       // Skipped on one node; the checks above cover it.
       ['per-node', 'skip'],
-      ['nested-mount', 'pass'],
       ['storage-semantics', 'pass'],
       ['vap', 'pass'],
     ])
@@ -916,7 +914,7 @@ describe('runClusterCheck', () => {
     expect(byName(results, 'nodes')).toMatchObject({ status: 'warn' })
     expect(byName(results, 'nodes')?.detail).toContain('1 node(s), none taking workspaces')
     expect(byName(results, 'nodes')?.detail).toContain('the gates that run a sandboxed pod are skipped')
-    for (const gate of ['gvisor', 'probe', 'egress', 'npm-cache', 'sites', 'nested-mount', 'per-node', 'storage-semantics']) {
+    for (const gate of ['gvisor', 'probe', 'egress', 'npm-cache', 'sites', 'per-node', 'storage-semantics']) {
       expect(byName(results, gate)).toMatchObject({ status: 'skip' })
       expect(byName(results, gate)?.detail).toContain('no Ready node takes workspaces')
     }
@@ -989,7 +987,6 @@ describe('runClusterCheck', () => {
     expect(byName(results, 'probe')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'egress')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'datapath')).toMatchObject({ status: 'skip' })
-    expect(byName(results, 'nested-mount')).toMatchObject({ status: 'skip' })
     expect(deps.registryLookups).not.toHaveBeenCalled()
     // No probe object was applied (the namespace ensure may still have run).
     const appliedKinds = applied().map((c) => (c[0] as { kind: string }).kind)
@@ -1083,14 +1080,14 @@ describe('runClusterCheck', () => {
     expect(byName(results, 'probe')).toMatchObject({ status: 'pass' })
   })
 
-  it('fails gvisor (and skips the probes) when a RuntimeClass is missing', async () => {
+  it('fails gvisor (and skips the probes) when the RuntimeClass is missing', async () => {
     runtimeClassNames = ['runc']
     stage()
     const { ok, results } = await check()
     expect(ok).toBe(false)
     const gvisor = byName(results, 'gvisor')
     expect(gvisor).toMatchObject({ status: 'fail' })
-    expect(gvisor?.detail).toContain('gvisor-nested')
+    expect(gvisor?.detail).toContain('missing RuntimeClass: gvisor')
     expect(gvisor?.fix).toContain('yaac cluster install')
     // A gvisor pod would sit Pending, so the probes are skipped.
     expect(byName(results, 'probe')).toMatchObject({ status: 'skip' })
@@ -1496,45 +1493,6 @@ describe('runClusterCheck', () => {
     expect(datapath?.detail).toContain('not deployed')
   })
 
-  it('runs the nested-mount probe under the exact nested session securityContext', async () => {
-    stage()
-    const { results } = await check()
-    expect(byName(results, 'nested-mount')).toMatchObject({ status: 'pass' })
-
-    const probePod = applied()
-      .map((c) => c[0] as { kind: string; metadata?: { name?: string } })
-      .find((m) => m.kind === 'Pod' && m.metadata?.name === 'yaac-cluster-check-nested') as {
-      spec: {
-        hostUsers?: boolean
-        runtimeClassName?: string
-        securityContext: { seccompProfile: { type: string } }
-        containers: Array<{
-          securityContext?: Record<string, unknown>
-          command: string[]
-        }>
-      }
-    } | undefined
-    expect(probePod).toBeDefined()
-    // Like a nested workspace: gvisor-nested, no user namespace, root in the
-    // sandbox with the engine's caps.
-    expect(probePod?.spec.runtimeClassName).toBe('gvisor-nested')
-    expect(probePod?.spec.hostUsers).toBeUndefined()
-    expect(probePod?.spec.securityContext).toEqual({
-      seccompProfile: { type: 'RuntimeDefault' },
-    })
-    expect(probePod?.spec.containers[0].securityContext).toEqual({
-      runAsUser: 0,
-      capabilities: {
-        add: [
-          'SYS_ADMIN', 'SYS_CHROOT', 'MKNOD', 'SETFCAP',
-          'NET_RAW', 'NET_ADMIN', 'SYS_PTRACE', 'SYS_RESOURCE',
-        ],
-      },
-    })
-    // Root in the sandbox must be able to mount a tmpfs.
-    expect(probePod?.spec.containers[0].command.join(' ')).toContain('mount -t tmpfs')
-  })
-
   it('fails storage — and gates the probes — when a claim is absent or unbound', async () => {
     delete storageClaims['yaac-server-local']
     storageClaims['yaac-global'] = { spec: { volumeName: '' }, status: { phase: 'Pending' } }
@@ -1801,16 +1759,6 @@ describe('runClusterCheck', () => {
     const { results } = await check()
     expect(byName(results, 'node-fixups')).toMatchObject({ status: 'skip' })
     expect(deps.run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'inspect')).toBe(false)
-  })
-
-  it('warns (without failing) when the nested sentry mount fails', async () => {
-    podLogs['yaac-cluster-check-nested'] = 'NESTED_MOUNT_FAIL\n'
-    stage()
-    const { ok, results } = await check()
-    const nested = byName(results, 'nested-mount')
-    expect(nested).toMatchObject({ status: 'warn' })
-    expect(nested?.fix).toContain('cluster install')
-    expect(ok).toBe(true) // warn-only — only nestedContainers sessions are affected
   })
 
   it('fails on vap when the ValidatingAdmissionPolicy API is unavailable', async () => {

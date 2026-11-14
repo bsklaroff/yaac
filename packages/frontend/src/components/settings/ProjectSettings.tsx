@@ -131,7 +131,6 @@ export function ProjectSettings(): JSX.Element {
             <ContainerOptions
               key={`containers:${projectId}`}
               projectId={projectId}
-              nestedContainers={selected.nestedContainers}
               npmCache={selected.npmCache}
               readOnly={readOnly}
             />

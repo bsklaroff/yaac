@@ -1,6 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { PROJECT_CONFIG_DEFAULTS } from '@yaac/test-utils/project-fixture'
-import type { ProjectConfig } from '@yaac/shared/types'
 import type * as imageTagsModule from '#drivers/k8s/cluster/image-tags'
 
 vi.mock('#drivers/k8s/cluster/image-tags', async (importOriginal) => ({
@@ -31,11 +29,11 @@ import {
 import { _resetWorkspaceListChangedForTests } from '#lib/notify'
 import { serverLog } from '#lib/log'
 
-// The config reader the reconcile step is given in production.
-const mockResolveConfig = vi.fn<(projectId: string) => Promise<ProjectConfig | undefined>>()
-// Each project's owner, whose Dockerfile.user tops its chain.
+// Each project's owner, whose Dockerfile.user tops its chain, read as the
+// reconcile step is given it in production.
 const OWNER = 'a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d'
-const projects = { projectConfig: mockResolveConfig, projectOwner: () => Promise.resolve(OWNER) }
+const mockOwner = vi.fn<(projectId: string) => Promise<string>>()
+const projects = { projectOwner: mockOwner }
 const mockResolveChain = vi.mocked(resolveImageChain)
 const mockEnsureImage = vi.mocked(ensureImage)
 
@@ -43,7 +41,6 @@ const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
 const P = '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f'
 const PLAIN = '0b6f1d2c-3e4a-4b5c-8d9e-0f1a2b3c4d5e'
-const NESTED = 'c1d2e3f4-a5b6-4c7d-8e9f-a0b1c2d3e4f5'
 const PROJ_A = '7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d'
 const PROJ_B = 'e9f8a7b6-c5d4-4e3f-9a2b-1c0d9e8f7a6b'
 
@@ -56,7 +53,7 @@ describe('reconcileImagePrewarm', () => {
     vi.stubEnv('YAAC_IMAGE_PREWARM', undefined)
     vi.stubEnv('YAAC_REQUIRE_PREBUILT_IMAGES', undefined)
     vi.stubEnv('YAAC_IMAGE_PREFIX', undefined)
-    mockResolveConfig.mockResolvedValue(undefined)
+    mockOwner.mockResolvedValue(OWNER)
     mockResolveChain.mockResolvedValue({ layers: [], finalTag: 'yaac-tools:t' })
     mockEnsureImage.mockResolvedValue('yaac-tools:t')
   })
@@ -80,20 +77,16 @@ describe('reconcileImagePrewarm', () => {
     expect(mockEnsureImage).not.toHaveBeenCalled()
   })
 
-  it('ensures every project, threading nestedContainers from config', async () => {
-    mockResolveConfig.mockImplementation((projectId) =>
-      Promise.resolve(projectId === NESTED ? { ...PROJECT_CONFIG_DEFAULTS, nestedContainers: true } : undefined))
+  it('ensures every project, as its owner', async () => {
     mockResolveChain.mockImplementation((projectId) =>
       Promise.resolve({ layers: [], finalTag: `final-${projectId}:x` }))
     mockEnsureImage.mockImplementation((projectId) => Promise.resolve(`final-${projectId}:x`))
 
-    reconcileImagePrewarm([PLAIN, NESTED], projects)
+    reconcileImagePrewarm([PLAIN, P], projects)
     await flush()
 
-    expect(mockEnsureImage).toHaveBeenCalledWith(
-      PLAIN, OWNER, { nestedContainers: false, reason: 'prewarm' })
-    expect(mockEnsureImage).toHaveBeenCalledWith(
-      NESTED, OWNER, { nestedContainers: true, reason: 'prewarm' })
+    expect(mockEnsureImage).toHaveBeenCalledWith(PLAIN, OWNER, { reason: 'prewarm' })
+    expect(mockEnsureImage).toHaveBeenCalledWith(P, OWNER, { reason: 'prewarm' })
   })
 
   it('skips a project whose prewarm is still in flight, then resumes', async () => {
@@ -113,10 +106,10 @@ describe('reconcileImagePrewarm', () => {
     expect(mockEnsureImage).toHaveBeenCalledTimes(2)
   })
 
-  it('builds NOTHING for a project whose config cannot be read', async () => {
-    // A failed read skips the project rather than using defaults, which
-    // could build a nestedContainers project without its nestable layer.
-    mockResolveConfig.mockRejectedValueOnce(new Error('project row unreadable'))
+  it('builds NOTHING for a project whose owner cannot be read', async () => {
+    // A failed read skips the project rather than building another user's
+    // chain.
+    mockOwner.mockRejectedValueOnce(new Error('project row unreadable'))
 
     reconcileImagePrewarm([P], projects)
     await flush()
@@ -163,8 +156,8 @@ describe('retryImageBuild', () => {
     vi.clearAllMocks()
     clearAllImageBuildsForTests()
     // retry starts prewarmProjectImage without awaiting it. Its first step
-    // reads the project's config, which is what the test observes.
-    mockResolveConfig.mockResolvedValue(undefined)
+    // reads the project's owner, which is what the test observes.
+    mockOwner.mockResolvedValue(OWNER)
     mockResolveChain.mockResolvedValue({ layers: [], finalTag: 'yaac-tools:t' })
     mockEnsureImage.mockResolvedValue('yaac-tools:t')
   })
@@ -184,7 +177,7 @@ describe('retryImageBuild', () => {
     // The entry is forgotten, so it no longer blocks the prewarm sweep.
     expect(getImageBuild(id)).toBeUndefined()
     expect(hasBlockingFailure(['yaac-tools:abc'], 10 * 60_000)).toBe(false)
-    expect(mockResolveConfig).toHaveBeenCalledWith(PROJ_A)
+    expect(mockOwner).toHaveBeenCalledWith(PROJ_A)
   })
 
   it('re-triggers every owning project of a shared layer', async () => {
@@ -195,12 +188,12 @@ describe('retryImageBuild', () => {
     failImageBuild(id, 'boom')
 
     expect(retryImageBuild(id, projects)).toBe(true)
-    expect(mockResolveConfig).toHaveBeenCalledWith(PROJ_A)
-    expect(mockResolveConfig).toHaveBeenCalledWith(PROJ_B)
+    expect(mockOwner).toHaveBeenCalledWith(PROJ_A)
+    expect(mockOwner).toHaveBeenCalledWith(PROJ_B)
     // Each rebuild resolves its chain by the project's id.
     await flush()
-    expect(mockResolveChain).toHaveBeenCalledWith(PROJ_A, OWNER, false)
-    expect(mockResolveChain).toHaveBeenCalledWith(PROJ_B, OWNER, false)
+    expect(mockResolveChain).toHaveBeenCalledWith(PROJ_A, OWNER)
+    expect(mockResolveChain).toHaveBeenCalledWith(PROJ_B, OWNER)
   })
 
   it('no-ops (and rebuilds nothing) for an unknown id or a running build', () => {
@@ -211,6 +204,6 @@ describe('retryImageBuild', () => {
     })
     expect(retryImageBuild(running, projects)).toBe(false)
     expect(getImageBuild(running)?.status).toBe('running') // still tracked
-    expect(mockResolveConfig).not.toHaveBeenCalled()
+    expect(mockOwner).not.toHaveBeenCalled()
   })
 })

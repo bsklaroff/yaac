@@ -5,7 +5,6 @@ import {
   LABEL_INSTALL_ID,
   LABEL_INSTALL_NAMESPACE,
   RUNTIME_CLASS_GVISOR,
-  RUNTIME_CLASS_GVISOR_NESTED,
   buildPriorityClassManifests,
   execFileAsync,
   k8sNamespace,
@@ -109,7 +108,9 @@ export async function kindClusterExists(name = env.kindCluster): Promise<boolean
  * Manual uninstall steps printed for a byo install, whose cluster yaac
  * does not delete: this install's namespaces and cluster-scoped objects,
  * then the objects all installs on the cluster share, and last the
- * `Retain` volumes, selected by install id.
+ * `Retain` volumes, selected by install id. The shared RuntimeClasses
+ * include `gvisor-nested`, which an older install may have left
+ * (docs/legacy-compat-shims.md "The gvisor-nested RuntimeClass").
  */
 function byoUninstall(installId: string | undefined): string {
   const ns = k8sNamespace()
@@ -124,7 +125,7 @@ function byoUninstall(installId: string | undefined): string {
     `  kubectl delete namespace ${namespaces}`,
     `  kubectl delete clusterrole,clusterrolebinding -l ${LABEL_INSTALL_NAMESPACE}=${ns}`,
     'Then, only if no other yaac install uses this cluster, what every install on it shares:',
-    `  kubectl delete runtimeclass ${RUNTIME_CLASS_GVISOR} ${RUNTIME_CLASS_GVISOR_NESTED}`,
+    `  kubectl delete runtimeclass ${RUNTIME_CLASS_GVISOR} gvisor-nested --ignore-not-found`,
     `  kubectl delete priorityclass ${priorityClasses}`,
     `  kubectl delete validatingadmissionpolicy,validatingadmissionpolicybinding ${BUILDER_ROLE_GUARD_NAME}`,
     `  kubectl label nodes --all ${nodeLabels}`,

@@ -288,7 +288,6 @@ async function runPass(
     signal: new AbortController().signal,
     snapshot: () => snapshotFixture(),
     projectIds: () => Promise.resolve([]),
-    projectConfig: () => Promise.resolve(undefined),
     projectOwner: () => Promise.resolve('owner'),
     pinnedImages: () => Promise.resolve([]),
         terminating: () => false,
@@ -407,16 +406,6 @@ describe('defaultReconcileSteps', () => {
   // Its trigger must not also run the reaper.
   it('adopts a captured rotation on its own edge alone', async () => {
     await expectOnly(['proxy-refreshed'], [adoptRefreshedToolCredentials])
-  })
-
-  // After the salvage, so the rebuild picks up just-pushed images, and
-  // before the registry collect, which makes the registry read-only for
-  // minutes.
-  it('rebuilds the image store between the salvage and the registry collect', () => {
-    setWorkspaceDriver(createK8sDriver())
-    const names = defaultReconcileSteps().map((s) => s.name)
-    expect(names.filter((n) => ['image-salvage', 'image-store', 'registry-gc'].includes(n)))
-      .toEqual(['image-salvage', 'image-store', 'registry-gc'])
   })
 
   // The pool resolves each project's spare config itself.

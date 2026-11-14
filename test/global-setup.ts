@@ -22,8 +22,7 @@ const execFileAsync = promisify(execFile)
 
 /**
  * Remove podman containers this rig's tests started directly on the host
- * engine (e.g. nested-containers' mock upstream registry) and leaked when a
- * run was interrupted. Selected by `testContainerOwnerLabel`, not by name,
+ * engine and leaked when a run was interrupted. Selected by `testContainerOwnerLabel`, not by name,
  * because several rigs can share one engine.
  */
 async function pruneTestContainers(): Promise<void> {
@@ -128,11 +127,11 @@ export async function setup(): Promise<void> {
   // Leaked containers with dead conmons hang podman under build load.
   await pruneTestContainers()
 
-  // The trusted chain (base -> tools -> nestable), resolved by the same
+  // The trusted chain (base -> tools), resolved by the same
   // helper the server and `yaac cluster install` use, so the tags match what
   // test workers look up.
-  const { base, tools, nestable } = await resolveTrustedLayers('yaac-test')
-  for (const layer of [base, tools, nestable]) {
+  const { base, tools } = await resolveTrustedLayers('yaac-test')
+  for (const layer of [base, tools]) {
     await ensureImageByTag(layer.tag, layer.dockerfile, layer.context, layer.buildArgs)
   }
 
@@ -152,14 +151,14 @@ export async function setup(): Promise<void> {
   if (await registryReachable()) {
     // zstd for the builder pods' parent layers (see
     // TRUSTED_PARENT_COMPRESSION).
-    for (const tag of [base.tag, tools.tag, nestable.tag]) {
+    for (const tag of [base.tag, tools.tag]) {
       await pushImageToRegistry(tag, { compressionFormat: TRUSTED_PARENT_COMPRESSION })
     }
     for (const tag of [proxyTag, netdTag, tailgateTag]) {
       await pushImageToRegistry(tag)
     }
-    // Digest-pinned upstreams every install mirrors (registry:2, Envoy,
-    // podman, curl, Verdaccio, nginx, cloudflared, tailscale). curl is unused by e2e today but mirrored so
+    // Digest-pinned upstreams every install mirrors (Envoy, podman, curl,
+    // Verdaccio, nginx, cloudflared, tailscale). curl is unused by e2e today but mirrored so
     // a future installer test does not fail on a missing image.
     await mirrorPinnedUpstreams()
     // The k8s tiers' server runs as a Deployment (docs/server-in-cluster.md).
@@ -174,7 +173,7 @@ export async function setup(): Promise<void> {
   // they are not the newest). Skipped on a shared engine, where the host
   // runs `pnpm gc:test-images` while every rig is idle.
   if (process.env.YAAC_TEST_SHARED_ENGINE !== '1') {
-    const ownTags = [base.tag, tools.tag, nestable.tag, proxyTag, netdTag, tailgateTag, await testServerImageTag()]
+    const ownTags = [base.tag, tools.tag, proxyTag, netdTag, tailgateTag, await testServerImageTag()]
     const retired = await gcTestImages(ownTags).catch((err: unknown) => {
       console.log(`[global-setup] could not sweep stale test images: ${String(err)}`)
       return []

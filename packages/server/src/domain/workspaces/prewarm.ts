@@ -60,10 +60,10 @@ export const claiming = new Set<string>()
 
 /**
  * Workspace ids of spares the reconciler is reaping. The pod stays listed
- * and alive through the salvage, the Job delete and its grace period, so
- * this keeps it out of the pool's count and stops later ticks from reaping
- * it again (a second reap would exec into the dying pod and race the first
- * one's checkout removal). Claims and refreshes skip it through
+ * and alive through the Job delete and its grace period, so this keeps it
+ * out of the pool's count and stops later ticks from reaping it again (a
+ * second reap would exec into the dying pod and race the first one's
+ * checkout removal). Claims and refreshes skip it through
  * `freeSpare`.
  */
 export const reaping = new Set<string>()
@@ -151,14 +151,13 @@ export function freeSpare(spare: Pick<RuntimeHandle, 'jobName' | 'workspaceId'>)
 
 /**
  * The image a create in the project would launch on now, which a spare must
- * match to be claimed: a Dockerfile edit or a `nestedContainers` toggle
- * changes it, and a pod's image is fixed. Undefined for a driver that runs
- * none.
+ * match to be claimed: a Dockerfile edit changes it, and a pod's image is
+ * fixed. Undefined for a driver that runs none.
  */
-export async function currentSpareImage(project: Pick<ProjectRow, 'id' | 'owner' | 'nestedContainers'>): Promise<string | undefined> {
+export async function currentSpareImage(project: Pick<ProjectRow, 'id' | 'owner'>): Promise<string | undefined> {
   const runtime = workspaceDriver()
   if (runtime.kind === 'containerless') return undefined
-  return await runtime.currentImage({ projectId: project.id, owner: project.owner, nestedContainers: project.nestedContainers })
+  return await runtime.currentImage({ projectId: project.id, owner: project.owner })
 }
 
 /**
@@ -197,7 +196,7 @@ export function reapSpare(target: PrewarmReapTarget, { claimFailed = false } = {
     } else if (!await deleteWorkspaceState(projectId, workspaceId)) {
       return
     }
-    await workspaceDriver().destroy({ projectId, workspaceId, unitName: jobName }, { salvageImages: false })
+    await workspaceDriver().destroy({ projectId, workspaceId, unitName: jobName })
   })().catch((err: unknown) => {
     serverLog(`[prewarm] reaping spare ${workspaceId} failed: ${String(err)}`)
   }).finally(() => { reaping.delete(workspaceId) })

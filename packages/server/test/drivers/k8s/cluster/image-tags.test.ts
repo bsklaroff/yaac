@@ -115,30 +115,26 @@ describe('resolveTrustedLayers', () => {
     vi.restoreAllMocks()
   })
 
-  it('names the three yaac-shipped layers, each built FROM the one above it', async () => {
-    const { base, tools, nestable } = await resolveTrustedLayers('yaac')
+  it('names the two yaac-shipped layers, tools built FROM base', async () => {
+    const { base, tools } = await resolveTrustedLayers('yaac')
 
-    // The chain `yaac cluster install` builds, in order: each layer's
-    // parent is the previous layer.
+    // The chain `yaac cluster install` builds, in order.
     expect(base.name).toBe('base')
     expect(tools.name).toBe('tools')
-    expect(nestable.name).toBe('nestable')
     expect(tools.buildArgs?.BASE_IMAGE).toBe(base.tag)
-    expect(nestable.buildArgs?.BASE_IMAGE).toBe(tools.tag)
     // Real shipped build contexts, so the install's build and the server's
     // registry lookup agree on tags.
     expect(base.dockerfile).toBe(path.join(DOCKERFILES_DIR, 'Dockerfile.default'))
     expect(tools.dockerfile).toBe(path.join(DOCKERFILES_DIR, 'Dockerfile.tools'))
-    expect(nestable.dockerfile).toBe(path.join(DOCKERFILES_DIR, 'Dockerfile.nestable'))
-    for (const layer of [base, tools, nestable]) {
+    for (const layer of [base, tools]) {
       expect(layer.context).toBe(DOCKERFILES_DIR)
-      expect(layer.tag).toMatch(/^yaac-(base|tools|nestable):[0-9a-f]{16}$/)
+      expect(layer.tag).toMatch(/^yaac-(base|tools):[0-9a-f]{16}$/)
       expect(layer.tag.endsWith(layer.contentHash)).toBe(true)
     }
     // The parent tag is the only build arg; nothing about the building host
     // reaches an image (docs/arbitrary-uid-images.md).
     expect(base.buildArgs).toBeUndefined()
-    expect(nestable.buildArgs).toEqual({ BASE_IMAGE: tools.tag })
+    expect(tools.buildArgs).toEqual({ BASE_IMAGE: base.tag })
   })
 
   it('resolves the same chain whatever uid the builder runs as', async () => {
@@ -151,7 +147,6 @@ describe('resolveTrustedLayers', () => {
 
     expect(onMac.base.tag).toBe(onLinux.base.tag)
     expect(onMac.tools.tag).toBe(onLinux.tools.tag)
-    expect(onMac.nestable.tag).toBe(onLinux.nestable.tag)
   })
 
   it('scopes every tag to the prefix, so a test run never collides with the install', async () => {
@@ -162,7 +157,6 @@ describe('resolveTrustedLayers', () => {
 
     expect(test.base.tag.startsWith('yaac-test-base:')).toBe(true)
     expect(test.tools.tag.startsWith('yaac-test-tools:')).toBe(true)
-    expect(test.nestable.tag.startsWith('yaac-test-nestable:')).toBe(true)
     // Same content hash; only the repository differs.
     expect(test.base.contentHash).toBe(yaac.base.contentHash)
     expect(test.tools.buildArgs?.BASE_IMAGE).toBe(test.base.tag)

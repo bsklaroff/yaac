@@ -24,17 +24,10 @@ beforeEach(() => {
 describe('prepareWorkspaceImage', () => {
   it('answers with the registry ref, not the bare tag the build produced', async () => {
     // Nodes pull from the registry and cannot resolve a bare tag.
-    const ref = await prepareWorkspaceImage({ projectId: DEMO, owner: OWNER, nestedContainers: false })
+    const ref = await prepareWorkspaceImage({ projectId: DEMO, owner: OWNER })
 
     expect(ref).toBe('yaac-registry.yaac.svc.cluster.local:5000/yaac-demo:abc123')
-  })
-
-  it("builds the owner's nestable chain when the workspace runs its own engine", async () => {
-    await prepareWorkspaceImage({ projectId: DEMO, owner: OWNER, nestedContainers: true })
-
-    expect(mockEnsureImage).toHaveBeenCalledWith(
-      DEMO, OWNER, expect.objectContaining({ nestedContainers: true, reason: 'session' }),
-    )
+    expect(mockEnsureImage).toHaveBeenCalledWith(DEMO, OWNER, expect.objectContaining({ reason: 'session' }))
   })
 
   it('narrates the build to the caller, layer by layer', async () => {
@@ -50,7 +43,6 @@ describe('prepareWorkspaceImage', () => {
     await prepareWorkspaceImage({
       projectId: DEMO,
       owner: OWNER,
-      nestedContainers: false,
       onProgress: (m) => messages.push(m),
     })
 
@@ -67,13 +59,10 @@ describe('currentWorkspaceImage', () => {
   it('names the ref a create would launch on, and a new one once the chain changes', async () => {
     const dataDir = await createTempDataDir()
     try {
-      const opts = { projectId: DEMO, owner: OWNER, nestedContainers: false }
+      const opts = { projectId: DEMO, owner: OWNER }
       const plain = await currentWorkspaceImage(opts)
       expect(plain).toMatch(/^yaac-registry\.yaac\.svc\.cluster\.local:5000\/[\w-]+-tools:[0-9a-f]{16}$/)
       expect(await currentWorkspaceImage(opts)).toBe(plain)
-
-      const nested = await currentWorkspaceImage({ ...opts, nestedContainers: true })
-      expect(nested).toMatch(/-nestable:[0-9a-f]{16}$/)
 
       await fs.mkdir(projectBuildDir(DEMO), { recursive: true })
       const dockerfile = path.join(projectBuildDir(DEMO), PROJECT_DOCKERFILE)

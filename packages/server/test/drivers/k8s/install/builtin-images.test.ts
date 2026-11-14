@@ -60,7 +60,6 @@ import {
   CLOUDFLARED_MIRROR_TAG,
   ENVOY_MIRROR_TAG,
   NGINX_MIRROR_TAG,
-  REGISTRY_MIRROR_TAG,
   TAILSCALE_MIRROR_TAG,
   VERDACCIO_MIRROR_TAG,
   ensureBuilderImage,
@@ -115,7 +114,7 @@ function emptyEngine(file: string, args: string[]): Promise<ExecResult> {
 function holdsEverything(): void {
   fakeRegistry.holdsAll = true
   fakeRegistry.mirror(
-    REGISTRY_MIRROR_TAG, ENVOY_MIRROR_TAG, BUILDER_MIRROR_TAG,
+    ENVOY_MIRROR_TAG, BUILDER_MIRROR_TAG,
     GVISOR_INSTALLER_MIRROR_TAG, VERDACCIO_MIRROR_TAG, NGINX_MIRROR_TAG, CLOUDFLARED_MIRROR_TAG, TAILSCALE_MIRROR_TAG,
   )
 }
@@ -160,11 +159,11 @@ describe('buildBuiltinImages', () => {
     await buildBuiltinImages({ log: vi.fn() })
 
     // The tags a create looks up, derived from content alone.
-    const { base, tools, nestable } = await resolveTrustedLayers('yaac')
-    // In dependency order: each layer is the next one's FROM.
-    expect(built().slice(0, 3)).toEqual([base.tag, tools.tag, nestable.tag])
+    const { base, tools } = await resolveTrustedLayers('yaac')
+    // In dependency order: base is tools' FROM.
+    expect(built().slice(0, 2)).toEqual([base.tag, tools.tag])
     // Pushed with zstd, since builder pods pull these as parents.
-    for (const layer of [base, tools, nestable]) {
+    for (const layer of [base, tools]) {
       expect(pushes()).toContainEqual({ tag: layer.tag, compression: TRUSTED_PARENT_COMPRESSION })
     }
   })
@@ -179,7 +178,6 @@ describe('buildBuiltinImages', () => {
     // Digest-pinned upstreams are pulled, retagged and pushed, so nodes
     // never pull from upstream.
     const pulls = podmanCalls('pull').map((a) => a[1])
-    expect(pulls.some((r) => r.includes('library/registry@sha256:'))).toBe(true)
     expect(pulls.some((r) => r.includes('envoyproxy/envoy@sha256:'))).toBe(true)
     expect(pulls.some((r) => r.includes('podman/stable@sha256:'))).toBe(true)
     expect(pulls.some((r) => r.includes('curlimages/curl@sha256:'))).toBe(true)

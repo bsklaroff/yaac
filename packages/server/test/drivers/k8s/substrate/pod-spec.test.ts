@@ -1,10 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
-  RUNTIME_CLASS_GVISOR,
-  RUNTIME_CLASS_GVISOR_NESTED,
   installSecurityContext,
   processIdentity,
-  runtimeClassSpec,
   sentryTmpfsAnnotations,
 } from '#drivers/k8s/substrate'
 
@@ -59,13 +56,5 @@ describe('processIdentity', () => {
   it('refuses to invent a uid when the platform has none', () => {
     vi.spyOn(process, 'getuid').mockReturnValue(undefined as unknown as number)
     expect(() => processIdentity()).toThrow(/POSIX/)
-  })
-})
-
-describe('runtimeClassSpec', () => {
-  it('stamps gvisor by default and gvisor-nested for nested pods', () => {
-    expect(runtimeClassSpec({})).toEqual({ runtimeClassName: RUNTIME_CLASS_GVISOR })
-    expect(runtimeClassSpec({ nested: true }))
-      .toEqual({ runtimeClassName: RUNTIME_CLASS_GVISOR_NESTED })
   })
 })

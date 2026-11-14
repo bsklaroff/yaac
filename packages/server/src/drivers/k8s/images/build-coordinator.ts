@@ -43,7 +43,7 @@ interface BuildContext {
  * default; `resolveImageChain()` assigns these names only to the
  * yaac-shipped Dockerfiles.
  */
-const TRUSTED_LAYERS: ReadonlySet<ImageLayerName> = new Set(['base', 'tools', 'nestable'])
+const TRUSTED_LAYERS: ReadonlySet<ImageLayerName> = new Set(['base', 'tools'])
 
 const inflightBuilds = new Map<string, { id: string; promise: Promise<void> }>()
 
@@ -119,8 +119,6 @@ async function runBuild(
 }
 
 interface EnsureImageOpts {
-  /** Include the nestable layer. */
-  nestedContainers?: boolean
   /** What triggered the build; shown in the webapp's build list. */
   reason?: ImageBuildReason
   /** Fired before each missing layer starts building (1-based index). */
@@ -135,8 +133,6 @@ interface EnsureImageOpts {
  *   Skipped when Dockerfile.yaac is standalone (FROM isn't ${BASE_IMAGE}).
  * Layer 1a: yaac-tools (Dockerfile.tools: claude, codex, opencode, etc.),
  *   whenever the base is used.
- * Layer 1b (optional): yaac-nestable (Dockerfile.nestable: in-pod rootful
- *   podman and the docker CLI), only when `nestedContainers` is set.
  * Layer 2: yaac-proj-<id> from Dockerfile.yaac, when present: either layered
  *   on the layers above (`FROM ${BASE_IMAGE}`) or standalone.
  * Layer 3 (optional): yaac-user-<id> from the project owner's Dockerfile.user.
@@ -149,7 +145,7 @@ export async function ensureImage(
   owner: string,
   opts: EnsureImageOpts = {},
 ): Promise<string> {
-  const { layers, finalTag } = await resolveImageChain(projectId, owner, opts.nestedContainers)
+  const { layers, finalTag } = await resolveImageChain(projectId, owner)
   const reason = opts.reason ?? 'session'
 
   // One builder pod per call, created only if a layer needs building.

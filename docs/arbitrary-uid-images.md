@@ -27,8 +27,8 @@ Four things make this work:
 - **Primary group 0.** The user's primary group, not just the home
   directory's, is 0. So every file a later layer creates while running as
   `yaac` is already group 0, with no fix-up step. That covers
-  `Dockerfile.tools`, the nestable layer, a project's `Dockerfile.yaac` and
-  a user's `Dockerfile.user`.
+  `Dockerfile.tools`, a project's `Dockerfile.yaac` and a user's
+  `Dockerfile.user`.
 - **`umask 002` on every `RUN` that runs as `yaac`.** Group ownership is not
   enough; the group also needs write permission. The umask cannot be set
   once for the whole build, because podman builds OCI-format images, which
@@ -93,8 +93,8 @@ whose Deployment has no hook. Both must keep two properties:
 
 - **Replace the line; never add a second one.** `getpwnam("yaac")` and
   `getpwuid(<running uid>)` must resolve to each other. With two entries,
-  name lookups return the first one, and the nested engine's `chown yaac
-  /run/podman/podman.sock` would give the socket to uid 1000.
+  name lookups return the first one, so anything that resolves `yaac` by
+  name (`chown yaac`, `sudo -u yaac`) acts as uid 1000.
 - **Truncate the file in place; never use `sed -i`.** `sed -i` renames a
   temp file over `/etc/passwd`, which needs write permission on `/etc`. The
   pod can write the file but not the directory.

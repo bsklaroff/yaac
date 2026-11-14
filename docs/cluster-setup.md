@@ -62,9 +62,9 @@ Other flags:
 
 Every image yaac ships is built by `podman build` on the machine running
 the CLI and pushed to the in-cluster registry. That covers the
-base/tools/nestable workspace chain, the egress proxy, netd and the server.
+base/tools workspace chain, the egress proxy, netd and the server.
 Install also mirrors the digest-pinned upstream images yaac uses
-(registry:2, Envoy, podman-stable, curl for the gVisor installer, Verdaccio and
+(Envoy, podman-stable, curl for the gVisor installer, Verdaccio and
 nginx for the npm cache).
 Tags carry a content hash, so an unchanged source tree costs one registry
 HEAD per image and re-running install is cheap. The server image's hash is
@@ -297,10 +297,10 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
 ## What it wires up
 
 1. **The image registry**: a `registry:2` Deployment behind a ClusterIP
-   Service in the `yaac` namespace, the same shape as the per-project
-   registries. Pods, builder pods and the server pull and push through its
-   Service name (`yaac-registry.yaac.svc.cluster.local:5000`). The node is
-   not a cluster-DNS client, so a one-shot pod per node writes a containerd
+   Service in the `yaac` namespace. Pods, builder pods and the server pull
+   and push through its Service name
+   (`yaac-registry.yaac.svc.cluster.local:5000`). The node is not a
+   cluster-DNS client, so a one-shot pod per node writes a containerd
    `hosts.toml` mapping that name to the live ClusterIP. The CLI is outside
    the cluster, so it pushes through a `kubectl port-forward`. Neither path
    depends on host-to-cluster networking.
@@ -320,8 +320,8 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
    `global/` and `server-local/` folders, and a hostPath resolves on the node, so this mount is what makes
    the volume the host's bytes (docs/server-in-cluster.md "Storage
    claims"). And `<dataDir>/node-local` at `/var/lib/yaac/node/<install id>`,
-   holding the node-local tier (package caches, image stores, opencode
-   working copies). On kind that tier is therefore host disk and survives a
+   holding the node-local tier (package caches, opencode working
+   copies). On kind that tier is therefore host disk and survives a
    cluster delete. Both mounts are on every node and fixed when the cluster
    is created, so a cluster serves the data dir that created it, and install
    refuses one whose nodes do not mount its own. Nothing else of the host is
@@ -340,15 +340,13 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
    DaemonSet. On every node, a privileged pod installs a pinned `runsc`,
    `containerd-shim-runsc-v1` and the `gvisor-bin/` sidecar binaries runsc
    starts every sandbox from (all from the release's
-   `gvisor.tar.bz2`), registers two runsc handlers in containerd
-   (`runsc` and `runsc-nested`, each with its own
-   `/etc/containerd/runsc*.toml`), restarts containerd, and labels the node
-   `yaac.gvisor=true`. Both handlers set `allow-suid` so the image's
-   passwordless `sudo` works in the sandbox; `runsc-nested` also allows raw
-   and packet sockets for the in-pod container engine. Install waits for
-   the rollout, then applies the `gvisor` and `gvisor-nested`
-   RuntimeClasses. Their `scheduling.nodeSelector` is that label, so a
-   sandboxed pod can only land where the shim exists.
+   `gvisor.tar.bz2`), registers the `runsc` handler in containerd (with
+   its own `/etc/containerd/runsc.toml`), restarts containerd, and labels
+   the node `yaac.gvisor=true`. The handler sets `allow-suid` so the
+   image's passwordless `sudo` works in the sandbox. Install waits for the
+   rollout, then applies the `gvisor` RuntimeClass. Its
+   `scheduling.nodeSelector` is that label, so a sandboxed pod can only
+   land where the shim exists.
 
    Each pass first tunes the node: `vm.min_free_kbytes` and the two
    `fs.inotify` limits (raised to yaac's minimum, never lowered),
@@ -376,13 +374,12 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
    install refuses the pools where it cannot work (see "Bring your own
    cluster").
 
-   Every pod running untrusted code names a RuntimeClass: plain workspaces
-   use `gvisor`, and nested-containers workspaces run their rootful in-pod
-   engine on `gvisor-nested`. Trusted yaac infra (the proxy, registries,
+   Every pod running untrusted code (workspaces and builder pods) names
+   the `gvisor` RuntimeClass. Trusted yaac infra (the proxy, the registry,
    node-write pods) runs on runc, since a sandbox per infra pod costs CPU
    for no containment gain.
 5. **PriorityClasses**: `yaac-infra` (1000000) > `yaac-builder` (100000) >
-   `yaac-workspace` (1000). The proxy and registries use the infra tier,
+   `yaac-workspace` (1000). The proxy and the registry use the infra tier,
    image builder pods the builder tier, and workspaces the workspace tier.
    The order decides who is evicted first when a node fills up: losing the
    egress proxy cuts off every workspace, while losing one workspace costs
@@ -474,11 +471,11 @@ and is admitted by the node-address policies through the server's
 node-sync (see "Bring your own cluster"); DaemonSets (the gVisor
 installer, Calico, netd) cover it on their own.
 
-Both registries store blobs on RWO PVCs. Under kind's default `standard`
+The registry stores blobs on an RWO PVC. Under kind's default `standard`
 class (rancher local-path, `WaitForFirstConsumer`) the directory is on one
 node, but the bound volume carries node affinity, so a rescheduled registry
 pod returns to the same store. On a cluster whose default class is
-network-attached, the store follows the pod. The Deployments are not pinned
+network-attached, the store follows the pod. The Deployment is not pinned
 to a node: a `nodeSelector` would turn a self-healing reschedule into a
 single point of failure.
 
@@ -610,7 +607,7 @@ says how to remove them by install id.
 node needs the main registry's `hosts.toml` (or it cannot pull any yaac
 image, the gVisor installer's included) and its address in every policy
 that admits nodes (kubelet probes, containerd pulls, netd's Envoy). Install
-and the registries' ensures write both for the nodes that exist then. The
+and the registry's ensure write both for the nodes that exist then. The
 reconcile pass's `node-sync` step re-reads the node list on every resync
 (60s). When the address set has changed it re-applies the node-address
 policies (all but the builder's egress policy, which every build re-applies
@@ -639,10 +636,10 @@ Every node runs both workspaces and yaac's own infrastructure unless it
 says otherwise, through the `yaac.workspaces` key:
 
 - **A taint with that key** (conventionally `yaac.workspaces=true:NoSchedule`)
-  makes a node workspace-only. Both RuntimeClasses tolerate the key, with
+  makes a node workspace-only. The RuntimeClass tolerates the key, with
   any value or effect, and Kubernetes merges that toleration into every pod
-  naming them: workspace pods, builder pods and the check's probes, so
-  builds share the pool with workspaces. The server, registries, npm cache
+  naming it: workspace pods, builder pods and the check's probes, so
+  builds share the pool with workspaces. The server, the registry, npm cache
   and proxy declare no tolerations, so a rollout (an upgrade, `yaac server
   restart`) cannot move them onto a node an autoscaler may drain. Only
   per-node pods tolerate everything: the gVisor installer, netd and the
@@ -650,7 +647,7 @@ says otherwise, through the `yaac.workspaces` key:
 - **The label `yaac.workspaces=false`** makes a node infrastructure-only.
   The gVisor installer still runs there, since every node needs its
   containerd registry config to pull yaac's images, but it removes the
-  node's `yaac.gvisor` label instead of setting it, so the RuntimeClasses'
+  node's `yaac.gvisor` label instead of setting it, so the RuntimeClass's
   `nodeSelector` keeps workspaces off.
 
 A cluster that marks nothing runs everything everywhere. One with a
@@ -665,7 +662,7 @@ the check's `per-node` probe reports a pool node where one is missing.
 Ready node takes workspaces and at least one is infrastructure-only, as
 with an autoscaled pool at zero, the `nodes` gate warns and the gates that
 run a sandboxed pod (`gvisor`, `probe`, `egress`, `npm-cache`, `sites`,
-`nested-mount`, `per-node`, `storage-semantics`) skip rather than fail.
+`per-node`, `storage-semantics`) skip rather than fail.
 Re-run the check while a workspace node is up to cover them.
 
 ### The CNI gate
@@ -780,15 +777,13 @@ status.
 
 ## What a workspace reserves
 
-Each workspace container requests **500m cpu, 2Gi memory and 2Gi
-ephemeral storage**, and is limited to **8 cores, 16Gi memory and 16Gi
-ephemeral storage**. A nested-containers workspace adds its podman
-graphroot volume's size to the storage limit, since kubelet charges it
-there. A workspace with scratch dirs (by default `node_modules` and `target`)
-adds 2Gi to the storage request, the install it really holds, and each
-scratch dir's volume cap, its size plus 1Gi, to the limit. Requests are what the scheduler reserves, and
-they sit well under the limits: the node is deliberately overcommitted, to
-fit many mostly-idle workspaces.
+Each workspace container requests **500m cpu, 2Gi memory and 2Gi ephemeral
+storage**, and is limited to **8 cores, 16Gi memory and 16Gi ephemeral
+storage**. A workspace with scratch dirs (by default `node_modules` and
+`target`) adds 2Gi to the storage request, the install it really holds, and
+each scratch dir's volume cap, its size plus 1Gi, to the limit. Requests are
+what the scheduler reserves, and they sit well under the limits: the node is
+deliberately overcommitted, to fit many mostly-idle workspaces.
 
 On a cluster with several nodes, workspaces carry a soft topology spread
 constraint on the node hostname, so the scheduler places each one on the
@@ -896,13 +891,12 @@ nodes, which have no swap, through their nodeadm config.
 
 Root inside a gVisor sandbox has no authority outside it, which is why the
 image can grant passwordless sudo (so agents can `apt-get install`) and why
-nested-containers workspaces can run their engine as root on
-`gvisor-nested`. No user namespace or idmap is used, so files on the claims
-show their real uids, and every writer of a shared path must use the same
-one: **the install uid**. On kind it is the uid of the user who ran install
-(on macOS virtiofs allows nothing else); on byo it is a fixed 1000. Every
-yaac pod runs at it (docs/server-in-cluster.md "The uid everything runs
-as").
+builder pods can run their engine as root. No user namespace or idmap is used,
+so files on the claims show their real uids, and every writer of a shared path
+must use the same one: **the install uid**. On kind it is the uid of the user
+who ran install (on macOS virtiofs allows nothing else); on byo it is a fixed
+1000. Every yaac pod runs at it (docs/server-in-cluster.md "The uid everything
+runs as").
 
 The images work at any uid, so one image set serves every host
 (docs/arbitrary-uid-images.md). A standalone `Dockerfile.yaac` that creates
@@ -925,7 +919,7 @@ order:
   at most 1, and the checkouts one is a copy of it that caches directories
   for at most a second. A missing claim fails and points at install.
 - `priority-classes` and `node-fixups` (kind only, warn).
-- `gvisor`: the RuntimeClasses exist, at least one node has the
+- `gvisor`: the RuntimeClass exists, at least one node has the
   `yaac.gvisor` label, and a `gvisor`-class pod really runs inside the
   sandbox.
 - `gvisor-installer` (warn): the installer DaemonSet's current revision
@@ -966,8 +960,6 @@ order:
   Ready netd does not imply this: netd is Ready once Envoy accepts its
   config, even with no pod-to-veth mappings.
 - `per-node` (multi-node only, warn; below).
-- `nested-mount` (warn): a pod under the nested security context can mount
-  a tmpfs, which the in-pod engine needs.
 - `storage-semantics`: runs `k8s/probes/fsprobe.py` (ownership, O_EXCL,
   atomic rename, hardlinks, locks, fsync, mmap, append, xattrs) against the
   claim from a sandboxed pod. Fails on every backend, since workspaces run
@@ -987,9 +979,9 @@ class.
 A node labelled `yaac.workspaces=false` is not eligible either ("A
 dedicated workspace node pool" above). When no node qualifies, the check
 lists each node and what excluded it, and for a tainted pool suggests
-tainting it with the `yaac.workspaces` key, which the RuntimeClasses
-already tolerate, rather than removing the taint. yaac owns the
-RuntimeClasses' tolerations: every install replaces them, so a toleration
+tainting it with the `yaac.workspaces` key, which the RuntimeClass
+already tolerates, rather than removing the taint. yaac owns the
+RuntimeClass's tolerations: every install replaces them, so a toleration
 added by hand does not survive, and a pool tainted with a key of its own
 has to switch to `yaac.workspaces`.
 
@@ -1014,8 +1006,8 @@ yaac cluster delete        # prompts first; -y / --yes skips the prompt
 ```
 
 This runs `kind delete`, and that is all it needs to do: everything yaac
-deploys lives in the cluster, including Calico, netd, the main and
-per-project registries with every pushed image, and the storage claims and
+deploys lives in the cluster, including Calico, netd, the main
+registry with every pushed image, and the storage claims and
 their volumes. Running workspace pods stop, but nothing under the yaac
 data dir is touched. The volumes are `Retain` and their bytes are the data
 dir's own folders, so on-disk workspaces, the database and the node-local

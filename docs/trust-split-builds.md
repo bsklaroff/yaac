@@ -14,8 +14,8 @@ image chain can be edited by a user or an agent:
   project that user owns.
 
 A hostile step in either would get root-level code execution wherever it
-ran. The rest of the chain (`Dockerfile.default`, `Dockerfile.tools`,
-`Dockerfile.nestable`) is yaac's own content over pinned upstream images,
+ran. The rest of the chain (`Dockerfile.default`, `Dockerfile.tools`) is
+yaac's own content over pinned upstream images,
 as trusted as the tooling that manages the cluster.
 
 ## The split
@@ -25,11 +25,11 @@ Each layer is routed by trust, keyed on `ImageLayer.name` from
 
 | Layers | Trust | Built by |
 |---|---|---|
-| `base`, `tools`, `nestable` | trusted | `yaac cluster install`, on the machine running the CLI |
+| `base`, `tools` | trusted | `yaac cluster install`, on the machine running the CLI |
 | `project` (`Dockerfile.yaac`), `user` (`Dockerfile.user`) | untrusted | a short-lived gVisor builder pod, driven by the server |
 
 Routing is an allowlist and cannot be configured. Only the exact names
-`base`, `tools` and `nestable` are prebuilt; any other name, including a
+`base` and `tools` are prebuilt; any other name, including a
 future one, is sandboxed. The trusted names cannot be faked:
 `resolveImageChain()` is their only producer, and it assigns them to the
 yaac-shipped Dockerfiles regardless of file content. An untrusted layer
@@ -48,7 +48,7 @@ repos whose id no live project holds (docs/image-gc.md).
 in-cluster registry by content-hash tag. A missing tag produces an error
 telling the user to run `yaac cluster install`, not a build. This is what
 lets the server run with no container engine: every image yaac ships
-(these three, the egress proxy, netd, and the digest-pinned upstream
+(these two, the egress proxy, netd, and the digest-pinned upstream
 mirrors) is built on the CLI machine and pushed to the registry.
 
 ## Why only the untrusted layers are sandboxed
@@ -73,9 +73,10 @@ Pod spec (`drivers/k8s/images/builder-pod.ts`):
   install labels, in the yaac namespace. Image: the mirrored, digest-pinned
   `quay.io/podman/stable`, by its recorded digest (below).
 - `runtimeClassName: gvisor` (chroot isolation needs no raw sockets),
-  `NESTED_ENGINE_CAPS`, `automountServiceAccountToken: false`, seccomp
-  `RuntimeDefault`, an 8Gi memory limit, and `activeDeadlineSeconds`
-  bounding the pod's whole life.
+  `BUILDER_ENGINE_CAPS` (the capabilities a rootful engine needs inside the
+  sandbox, which grant nothing on the host), `automountServiceAccountToken:
+  false`, seccomp `RuntimeDefault`, an 8Gi memory limit, and
+  `activeDeadlineSeconds` bounding the pod's whole life.
 - Graphroot `/var/lib/containers` on a disk-backed tmpfs inside the gVisor
   sentry (16Gi cap), set up by the `dev.gvisor.spec.mount.*` annotations.
   Scratch that dies with the pod: no gofer I/O and nothing to GC.
@@ -171,16 +172,15 @@ mtime, which a cache hit refreshes when it re-pushes the entry, so
 retention is by last use, not first build.
 
 The GC untags by deleting the tag directory in the registry's storage and
-reclaims blobs with `registry garbage-collect --delete-untagged`, the same
-approach as the per-project registries. The collect is global, not limited
-to cache repos, so **nothing in this registry may be stored untagged or as
-a manifest list.** Blobs shared with a tagged image survive because the
-mark phase walks that manifest, and the digest-pinned mirrors are stored
-as single-arch images under tags of their own. A digest-only push or a
-manifest list would be collected out from under its users.
+reclaims blobs with `registry garbage-collect --delete-untagged`. The collect
+is global, not limited to cache repos, so **nothing in this registry may be
+stored untagged or as a manifest list.** Blobs shared with a tagged image
+survive because the mark phase walks that manifest, and the digest-pinned
+mirrors are stored as single-arch images under tags of their own. A digest-only
+push or a manifest list would be collected out from under its users.
 
-Unlike the per-project collect, this one takes no read-only maintenance
-window (adopting one is a possible follow-up). It handles the two hazards
+The collect takes no read-only maintenance window (adopting one is a
+possible follow-up). It handles the two hazards
 of collecting a live registry directly:
 
 - **A push racing the collect** can lose blobs between upload and manifest
@@ -325,27 +325,26 @@ Two kinds of grant are minted (`registry-grant.ts` in
   control.
 
 As a result, a builder cannot write the trusted chain
-(`yaac-base`/`yaac-tools`/`yaac-nestable`), any digest-pinned mirror
+(`yaac-base`/`yaac-tools`), any digest-pinned mirror
 (including images that privileged and node pods boot), the proxy, netd,
 the server image, or any other project's images and step cache. Nothing
 verifies the digest in a mirror's tag name; the gate is what keeps the
 bytes under it the ones install pushed.
 
-Two mirrors are not left to the gate alone: the builder image, which runs
-as root over node or shared data (builder pods, the image-store writer, the
-node-local sweep and root removals, the old-node-tree removal, a workspace
-Job's `node-dirs` init container), and the gVisor installer's curl, which
-is full node root. Install records the manifest digest podman reports for
-each mirror push in the `yaac-mirror-digests` ConfigMap beside the
-registry, and these pods pull `<repo>@<digest>` from that record, so
-containerd checks the bytes. That takes out of the trust path the parties
-with no API identity: a leaked admin push authfile, a bypass of the gate,
-or a compromised registry pod or its storage. It does not defend against
-anyone who can write the ConfigMap (a kubeconfig holder, or the server,
-whose ClusterRole covers ConfigMaps), since they can also mint `*` grants.
-Pods take images `IfNotPresent`, so by tag or by digest, this only
-matters on a node that has to pull. Envoy and the other mirrors, and the content-hash images
-(netd, proxy, server), are still pulled by tag.
+Two mirrors are not left to the gate alone: the builder image, which runs as
+root over node or shared data (builder pods, the node-local sweep and root
+removals, the old-node-tree removal, a workspace Job's `node-dirs` init
+container), and the gVisor installer's curl, which is full node root. Install
+records the manifest digest podman reports for each mirror push in the
+`yaac-mirror-digests` ConfigMap beside the registry, and these pods pull
+`<repo>@<digest>` from that record, so containerd checks the bytes. That takes
+out of the trust path the parties with no API identity: a leaked admin push
+authfile, a bypass of the gate, or a compromised registry pod or its storage.
+It does not defend against anyone who can write the ConfigMap (a kubeconfig
+holder, or the server, whose ClusterRole covers ConfigMaps), since they can
+also mint `*` grants. Pods take images `IfNotPresent`, so by tag or by digest,
+this only matters on a node that has to pull. Envoy and the other mirrors, and
+the content-hash images (netd, proxy, server), are still pulled by tag.
 
 The mirror tags carry their upstream pin, so re-pinning re-mirrors, and
 install also re-mirrors any tag that no longer names its recorded digest.
@@ -374,8 +373,8 @@ new key or gate also triggers a roll.
   can open one (docs/workspace-egress.md "Opening an internal
   destination"). That is still stricter than a local build's unfiltered
   host network. Builds could later be routed through the workspace proxy
-  using the combined CA bundle (docs/nested-containers.md), as nested
-  builds already are.
+  using the combined CA bundle (docs/workspace-egress.md "CA trust in a
+  workspace").
 - **The `yaac.role=builder` label** exempts a pod from the world-deny
   policy, so a cluster-wide ValidatingAdmissionPolicy
   (`yaac-builder-role-guard`) reserves it. Only a ServiceAccount named

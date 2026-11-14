@@ -21,7 +21,6 @@ import { POD_GLOBAL_ROOT, k8sNamespace } from '#drivers/k8s/substrate'
 
 const GIB = 2 ** 30
 const MIB = 2 ** 20
-const PROJECT = '5e1f0c2a-7b3d-4e8f-9a6c-0d1e2f3a4b5c'
 const WORKSPACE = '6f2a1d3b-8c4e-4f9a-8b7d-1e2f3a4b5c6d'
 const summaryPath = (node: string) => `/api/v1/nodes/${node}/proxy/stats/summary`
 
@@ -95,7 +94,6 @@ function seed(): void {
     node('node-d', { 'yaac.gvisor': 'true' }, { notReady: true }),
     pod('server-1', { app: 'yaac-server' }, { claims: ['yaac-global', 'yaac-server-local'], requests: { cpu: '250m', memory: '512Mi' } }),
     pod('registry-1', { app: 'yaac-main-registry' }, { claims: ['yaac-registry-storage'] }),
-    pod('reg-proj-1', { app: 'yaac-registry', 'yaac.project-id': PROJECT }, { claims: ['yaac-reg-storage'] }),
     pod('netd-a', { app: 'yaac-netd' }),
     pod('netd-b', { app: 'yaac-netd' }, { node: 'node-b' }),
     pod('builder-1', { 'yaac.role': 'builder' }),
@@ -111,7 +109,6 @@ function seed(): void {
     pvc('yaac-checkouts', '1Gi'),
     pvc('yaac-server-local', '1Gi'),
     pvc('yaac-registry-storage', '100Gi'),
-    pvc('yaac-reg-storage', '50Gi'),
   )
   fakeCluster.paths.set(summaryPath('node-a'), {
     node: {
@@ -127,7 +124,6 @@ function seed(): void {
       podStats('registry-1', 0.1, 100, {
         volume: [{ name: 'data', pvcRef: { name: 'yaac-registry-storage', namespace: k8sNamespace() }, usedBytes: 30 * GIB, capacityBytes: 100 * GIB }],
       }),
-      podStats('reg-proj-1', 0.05, 50),
       podStats('netd-a', 0.1, 200),
       podStats('builder-1', 1, 1000),
       podStats('gc-1', 0, 10),
@@ -210,12 +206,11 @@ describe('k8sUsage', () => {
       { name: 'yaac-global', usedBytes: 60 * GIB, capacityBytes: 100 * GIB },
       { name: 'yaac-server-local', usedBytes: null, capacityBytes: GIB },
       { name: 'yaac-registry-storage', usedBytes: 30 * GIB, capacityBytes: 100 * GIB },
-      { name: 'yaac-reg-storage', usedBytes: null, capacityBytes: 50 * GIB },
     ])
 
     const byKey = Object.fromEntries(usage.components.map((c) => [c.key, c]))
     expect(Object.keys(byKey)).toEqual([
-      'server', 'main-registry', 'project-registries', 'netd', 'builders', 'spares', 'maintenance', 'system',
+      'server', 'main-registry', 'netd', 'builders', 'spares', 'maintenance', 'system',
     ])
     expect(byKey.server).toMatchObject({ cpuCores: 0.5, memoryBytes: 400 * MIB })
     // The workspace mounts the global claim too; the server lists it.
@@ -223,18 +218,12 @@ describe('k8sUsage', () => {
     expect(byKey['main-registry'].volumes).toEqual([
       { name: 'yaac-registry-storage', usedBytes: 30 * GIB, capacityBytes: 100 * GIB },
     ])
-    expect(byKey['project-registries']).toMatchObject({ count: 1, memoryBytes: 50 * MIB, volumes: [] })
-    expect(byKey['project-registries'].children).toEqual([{
-      key: `project-registry:${PROJECT}`, label: PROJECT, projectId: PROJECT,
-      cpuCores: 0.05, memoryBytes: 50 * MIB,
-      volumes: [{ name: 'yaac-reg-storage', usedBytes: null, capacityBytes: 50 * GIB }],
-    }])
     expect(byKey.netd).toMatchObject({ count: 2, memoryBytes: 400 * MIB })
     expect(byKey.builders).toMatchObject({ count: 1, cpuCores: 1 })
     expect(byKey.spares).toMatchObject({ count: 1, memoryBytes: 300 * MIB })
     expect(byKey.maintenance).toMatchObject({ count: 1, memoryBytes: 10 * MIB })
     // What the nodes use beyond yaac's pods, kube-system's among it.
-    const yaacMib = 400 + 100 + 50 + 200 + 1000 + 10 + 200 + 2560 + 300
+    const yaacMib = 400 + 100 + 200 + 1000 + 10 + 200 + 2560 + 300
     expect(byKey.system.memoryBytes).toBe(10 * GIB - yaacMib * MIB)
 
     expect(usage.workspaces).toEqual({

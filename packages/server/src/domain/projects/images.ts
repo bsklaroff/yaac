@@ -4,7 +4,6 @@ import { workspaceDriver } from '#drivers/driver'
 import type { ProjectReaders } from '#drivers/contract'
 import { getProjectRow } from '#db'
 import { authorizeProject, type Actor } from '#domain/access'
-import { resolveProjectConfig } from './config'
 
 /**
  * The user's controls on the image build feed. A build of a project's own
@@ -31,7 +30,6 @@ async function authorizedImageBuild(principal: Actor, id: string): Promise<Image
 /** What a rebuild reads about each project, which the runtime may not read
  *  itself. */
 const projectReaders: ProjectReaders = {
-  projectConfig: resolveProjectConfig,
   projectOwner: async (projectId) => {
     const row = await getProjectRow(projectId)
     if (!row) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)

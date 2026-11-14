@@ -47,10 +47,6 @@ A containerless server refuses these, since its workspaces run on the host.
   absolute path given. There is no way to mount a host directory into a
   workspace, since a client on another machine can't name a path on the
   server: use a cache volume, or bake the files into the image.
-- **Nested containers:** `yaac config nested-containers <project> [on|off]`.
-  Runs a container engine inside the workspace so `docker build`, `docker
-  run` and `docker compose` work; see
-  [nested-containers.md](nested-containers.md).
 - **npm cache:** `yaac config npm-cache <project> [on|off]`, on by default.
   Off, pnpm goes to npmjs through the proxy. A project's own `.npmrc`
   `registry=` wins either way.
@@ -218,10 +214,9 @@ Two files customize it:
   every project you own, for things like editor or shell config. It must use the
   same `ARG BASE_IMAGE` / `FROM ${BASE_IMAGE}` header.
 
-Build order: default, then the agent CLI layer (`Dockerfile.tools`), then
-`Dockerfile.nestable` (only with nested containers on), then a layered
-`Dockerfile.yaac`, then `Dockerfile.user`. A standalone `Dockerfile.yaac`
-replaces the first three.
+Build order: default, then the agent CLI layer (`Dockerfile.tools`), then a
+layered `Dockerfile.yaac`, then `Dockerfile.user`. A standalone
+`Dockerfile.yaac` replaces the first two.
 
 The pod may run as a uid other than the image's `yaac` user (uid 1000,
 primary group 0), and reaches the image's files through group 0. So every

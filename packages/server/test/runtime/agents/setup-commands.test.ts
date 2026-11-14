@@ -8,7 +8,6 @@ import { describe, it, expect } from 'vitest'
 import { buildRespawnExec, buildWindowsExec, finishSetupCommand } from '#runtime/agents/setup-commands'
 import { KEEPER_STARTING, KEEPER_WINDOW } from '#drivers/contract'
 import { WORKSPACE_INIT_SCRIPT, workspaceBinDir } from '#domain/workspaces/workspace-bin'
-import { PROXY_CA_BUNDLE_PATH } from '#drivers/k8s/egress/proxy-client'
 
 import { workspacePathsFixture } from '#test/support/fake-driver'
 
@@ -125,17 +124,10 @@ describe('yaac-workspace-init script', () => {
     const body = await fs.readFile(scriptPath, 'utf8')
     for (const name of [
       'YAAC_GIT_NAME', 'YAAC_GIT_EMAIL', 'YAAC_STATUS_RIGHT',
-      'YAAC_NESTED_ENGINE', 'YAAC_REGISTRY_CONF_B64',
     ]) {
       // Both plain `$NAME` and defaulted `${NAME:-}` expansions count.
       expect(body).toMatch(new RegExp(`\\$\\{?${name}`))
     }
-  })
-
-  it('points the nested engine at the combined CA bundle (PROXY_CA_BUNDLE_PATH)', async () => {
-    // Hard-coded in the script because sudo strips the environment.
-    const body = await fs.readFile(scriptPath, 'utf8')
-    expect(body).toContain(`SSL_CERT_FILE=${PROXY_CA_BUNDLE_PATH}`)
   })
 
   it('never does git work from /workspace (the checkout races the hook)', async () => {

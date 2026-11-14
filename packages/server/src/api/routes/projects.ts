@@ -324,16 +324,6 @@ export const projectApp = new Hono<IdentityEnv>()
     },
   )
   .put(
-    '/:projectId/nested-containers',
-    zv('json', z.object({ enabled: z.boolean() })),
-    async (c) => {
-      requireDriverFeature('nestedContainers')
-      return c.json(await updateProjectConfig(
-        c.get('principal'), await resolveProjectId(c.req.param('projectId')), { nestedContainers: c.req.valid('json').enabled },
-      ))
-    },
-  )
-  .put(
     '/:projectId/npm-cache',
     zv('json', z.object({ enabled: z.boolean() })),
     async (c) => {

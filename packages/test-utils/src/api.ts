@@ -99,7 +99,6 @@ export async function setTestProjectConfig(
   const puts = [
     config.portForwards && project['port-forwards'].$put({ param, json: { ports: config.portForwards } }),
     config.cacheVolumes && project['cache-volumes'].$put({ param, json: { volumes: config.cacheVolumes } }),
-    config.nestedContainers !== undefined && project['nested-containers'].$put({ param, json: { enabled: config.nestedContainers } }),
     config.npmCache !== undefined && project['npm-cache'].$put({ param, json: { enabled: config.npmCache } }),
   ]
   for (const put of puts) {

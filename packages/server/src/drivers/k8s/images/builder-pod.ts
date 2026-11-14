@@ -31,9 +31,6 @@ import { BUILDER_CONTEXT_MAX_BYTES, collectContextFiles, parseContainerIgnore } 
 import {
   LABEL_INSTALL_ID,
   LABEL_ROLE,
-  NESTED_ENGINE_CAPS,
-  NESTED_GRAPHROOT_PATH,
-  NESTED_GRAPHROOT_VOLUME,
   PRIORITY_CLASS_BUILDER,
   ROLE_BUILDER,
   RUNTIME_CLASS_GVISOR,
@@ -72,9 +69,31 @@ interface EngineBuildContext {
 }
 
 /**
- * Sentry tmpfs cap for the builder graphroot. Larger than a workspace
- * pod's because a build holds the parent chain (~5GB), its product and
- * step-cache images at once.
+ * In-container directory of podman's graphroot, and its volume (the gVisor
+ * mount annotations key on the name). It must be a sentry-internal tmpfs:
+ * gVisor's gofer filesystem rejects `security.*` xattr writes, so a
+ * `setcap` build step fails on a plain emptyDir.
+ */
+const BUILDER_GRAPHROOT_PATH = '/var/lib/containers'
+const BUILDER_GRAPHROOT_VOLUME = 'podman-graphroot'
+
+/**
+ * In-sandbox capabilities podman needs to build. Under gVisor they grant no
+ * host authority:
+ *  - SYS_ADMIN, SYS_CHROOT: mounts and the chroot RUN steps run in.
+ *  - MKNOD: device nodes in image layers.
+ *  - SETFCAP: `setcap` in build steps.
+ *  - NET_RAW, NET_ADMIN: raw sockets and route config in RUN steps.
+ *  - SYS_PTRACE, SYS_RESOURCE: debuggers and rlimit raises.
+ */
+const BUILDER_ENGINE_CAPS = [
+  'SYS_ADMIN', 'SYS_CHROOT', 'MKNOD', 'SETFCAP',
+  'NET_RAW', 'NET_ADMIN', 'SYS_PTRACE', 'SYS_RESOURCE',
+]
+
+/**
+ * Sentry tmpfs cap for the builder graphroot. A build holds the parent
+ * chain (~5GB), its product and step-cache images at once.
  */
 export const BUILDER_GRAPHROOT_TMPFS_BYTES = 16 * 1024 ** 3
 
@@ -156,7 +175,7 @@ function builderPodName(seedTag: string): string {
 
 /**
  * Builder pod manifest: plain `gvisor` runtime (chroot builds need no raw
- * sockets), the nested-engine capabilities, no service account token, and
+ * sockets), the engine capabilities, no service account token, and
  * the graphroot on a sentry-internal tmpfs. The container just sleeps; the
  * server drives it with `kubectl exec` and streams the build logs.
  */
@@ -171,7 +190,7 @@ function buildBuilderPodManifest(name: string, imageRef: string): Record<string,
         [LABEL_INSTALL_ID]: installId(),
         [LABEL_ROLE]: ROLE_BUILDER,
       },
-      annotations: sentryTmpfsAnnotations(NESTED_GRAPHROOT_VOLUME, BUILDER_GRAPHROOT_TMPFS_BYTES),
+      annotations: sentryTmpfsAnnotations(BUILDER_GRAPHROOT_VOLUME, BUILDER_GRAPHROOT_TMPFS_BYTES),
     },
     spec: {
       restartPolicy: 'Never',
@@ -190,7 +209,7 @@ function buildBuilderPodManifest(name: string, imageRef: string): Record<string,
         imagePullPolicy: 'IfNotPresent',
         command: ['sleep', 'infinity'],
         securityContext: {
-          capabilities: { add: NESTED_ENGINE_CAPS },
+          capabilities: { add: BUILDER_ENGINE_CAPS },
         },
         resources: {
           requests: {
@@ -200,12 +219,12 @@ function buildBuilderPodManifest(name: string, imageRef: string): Record<string,
           limits: { memory: String(BUILDER_MEMORY_LIMIT_BYTES) },
         },
         volumeMounts: [{
-          name: NESTED_GRAPHROOT_VOLUME,
-          mountPath: NESTED_GRAPHROOT_PATH,
+          name: BUILDER_GRAPHROOT_VOLUME,
+          mountPath: BUILDER_GRAPHROOT_PATH,
         }],
       }],
       volumes: [{
-        name: NESTED_GRAPHROOT_VOLUME,
+        name: BUILDER_GRAPHROOT_VOLUME,
         emptyDir: { sizeLimit: String(BUILDER_GRAPHROOT_SIZELIMIT_BYTES) },
       }],
     },
@@ -266,7 +285,7 @@ function builderBuildArgs(
   const cacheRef = `${opts.clusterHost}/${opts.cacheRepo}`
   const args = [
     'build',
-    // RUN steps run in a chroot rather than a nested OCI runtime.
+    // RUN steps run in a chroot rather than an OCI runtime.
     '--isolation', 'chroot',
     '--tls-verify=false',
     '--authfile', BUILDER_AUTHFILE,

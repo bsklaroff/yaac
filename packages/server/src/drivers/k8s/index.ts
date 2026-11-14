@@ -26,7 +26,6 @@ import {
   removeWorkspaceForwarder,
   resizeVolume,
   runInStoppedCheckout,
-  salvageWorkspaceImages,
   volumeStorage,
 } from '#drivers/k8s/workspaces'
 import {
@@ -131,7 +130,6 @@ export function createK8sDriver(): WorkspaceDriver {
 
     registerWorkspace: (reg) => registerWorkspace(reg),
     deregisterWorkspace: (workspaceId) => deregisterWorkspace(workspaceId),
-    salvageImages: (target) => salvageWorkspaceImages(target),
     destroy: (target, opts) => destroyWorkspace(target, opts),
     detachedTeardownCommand: (target) => detachedTeardownCommand(target),
     destroyProjectSubstrate: (project) => destroyProjectSubstrate(project),

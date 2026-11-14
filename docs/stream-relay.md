@@ -19,8 +19,8 @@ first change, then does its re-branching and git-identity work over the
 relay.
 
 `kubectl exec` is used only where there is no stream to wait on: restarting
-streamd itself (`bootStreamd`), the image-salvage survey at teardown, and
-infrastructure pods that are not workspaces.
+streamd itself (`bootStreamd`), and infrastructure pods that are not
+workspaces.
 
 ## Architecture
 
