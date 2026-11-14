@@ -262,6 +262,11 @@ describe('ensureAgentReporters', () => {
       'await new Promise((done) => setTimeout(done, 700))',
       "emit('mode_changed', { state: { plan: { status: 'active' } } })",
       "emit('mode_changed', { state: { plan: { status: 'inactive' } } })",
+      // omp has no model_select: a `/model` is read as the next run starts,
+      // and an unchanged one is not reported again.
+      "emit('agent_start', {}, { model: { provider: 'openrouter', id: 'openai/gpt-5.5' } })",
+      "emit('agent_start', {}, { model: { provider: 'custom', id: 'mock-beta' } })",
+      "emit('agent_start', {}, { model: { provider: 'custom', id: 'mock-beta' } })",
       "await emit('session_shutdown', { reason: 'quit' })",
       "emit('message_start', { message: { role: 'user' } })",
       "emit('message_start', { message: { role: 'assistant' } })",
@@ -276,6 +281,7 @@ describe('ensureAgentReporters', () => {
       'set {"mode":"plan","action":"enter"}',
       'yaac-agent-report |plan||',
       'yaac-agent-report |default||',
+      'yaac-agent-report custom/mock-beta|||',
       'yaac-agent-links |omp|omp-1|--end',
     ])
     // Held as the extension loads, before omp's boot, then released once,

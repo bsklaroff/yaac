@@ -49,7 +49,8 @@ entry never counts as waiting for room before its time, and is always the
 top of a chain; entries queued under it follow the ordinary chain rules.
 There is no "after X stops, but not before T": a chain whose top is
 scheduled covers it. With no parent to inherit from, its settings come from
-the project's create defaults.
+the project's create defaults, after the caller's tool, current model and
+agent mode for one `yaac-mama` queues (docs/queued-workspaces.md).
 
 The `scheduled-workspaces` step (`startScheduledWorkspaces`) releases every
 due entry and launches it where its group has room, as any released entry.

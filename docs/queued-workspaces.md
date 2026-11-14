@@ -81,8 +81,8 @@ released by a stop. The parent pointer moves down the chain as it runs:
 Every setting is resolved to a concrete value when the entry is queued, so
 the sidebar and edit dialog show exactly what will run. With no parent,
 defaults come from where a create's would: the project's remembered create
-settings (and for `yaac-mama queue`, the caller's tool and agent mode, as
-`yaac-mama create` takes them). Otherwise they come from the parent:
+settings (and for `yaac-mama queue`, the caller's tool, current model and
+agent mode, as `yaac-mama create` takes them). Otherwise they come from the parent:
 
 - A **workspace** parent supplies its first session's tool, mode, *current*
   model (which follows a `/model` switch) and permission mode, its group,
