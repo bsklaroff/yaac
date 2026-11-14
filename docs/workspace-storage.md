@@ -691,7 +691,8 @@ The node-local sweep (`reapNodeLocal`) collects by the same key. It is given the
 live project ids and workspace ids, and removes any project tree no live id
 holds (unless a live pod still mounts it), and any opencode working copy or
 workspace tree (docs/node-local-workspaces.md) whose workspace is neither
-running nor waiting for its tree to be salvaged. If the project list cannot be read, the sweep does nothing
+running nor waiting for its tree to be salvaged, and the tree of any life
+already stamped. If the project list cannot be read, the sweep does nothing
 rather than treating the list as empty.
 
 ## The shared tier on a network filesystem

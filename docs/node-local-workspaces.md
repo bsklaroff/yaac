@@ -205,8 +205,8 @@ that fails leaves the chain as it is rather than failing the pass.
 
 Only the server deletes a bundle (the hourly `checkpoint-gc` step), and
 only an old one no kept manifest names. It keeps the manifests of the two
-newest lives (by their start, not a node's clock), any lost life's, and an
-import's until a life has saved. A workspace with a manifest it cannot
+newest lives that have one (by their start, not a node's clock), any lost
+life's, and an import's until a life has saved. A workspace with a manifest it cannot
 read keeps every bundle, for a `--restore-newest` to work from.
 
 A node dying mid-write cannot leave a log that does not restore:
@@ -273,9 +273,10 @@ silent fallback.
   without asking.
 - **Delete.** Removes each `.git` and the checkpoints.
 
-The node-local sweep removes whatever trees a tree container left (one cut
-off mid-removal, say) once their workspace is neither running nor waiting
-for salvage.
+The hourly node-local sweep removes whatever trees a tree container left
+(one cut off mid-removal, say) once their workspace is neither running nor
+waiting for salvage, and the tree of any stamped life even while its
+workspace runs again, as one a `--restore-newest` gave up.
 
 | Event | Unsaved work lost |
 |---|---|
@@ -326,7 +327,8 @@ kubelet's disk on a byo node they must sit above kubelet's own threshold
 gigabytes during a stop, and the stopped workspace's final pass needs room
 for what it changed last. If that pass fails for want of space, so does its
 salvage, and the tree stays until a restart with `--restore-newest` or a
-delete gives it up, which frees the node. Where yaac provisions nodes (`infra/hetzner-k3s`,
+delete gives it up; the next node-local sweep then removes it, freeing the
+node. Where yaac provisions nodes (`infra/hetzner-k3s`,
 `infra/aws-eks`), the bootstrap puts the node-local root on a filesystem of
 its own, so a tree write past it fails with `ENOSPC` while kubelet and
 containerd never see pressure. `yaac cluster check`'s `node-local-fs` gate

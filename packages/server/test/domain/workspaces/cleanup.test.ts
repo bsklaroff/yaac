@@ -21,7 +21,7 @@ import { promisify } from 'node:util'
 import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileIgnoredFileCleans } from '#domain/workspaces'
 import { setDataDir, workspaceDir } from '@yaac/shared/project-paths'
 import type { NodeLocalLiveSet, RuntimeSnapshot, StrayUnit, RuntimeHandle } from '#drivers/contract'
-import { BUILT_IN_USER_ID, closeDb, getWorkspaceRow, listProjectRows, setProjectKeptIgnoredPaths } from '#db'
+import { BUILT_IN_USER_ID, applyWorkspaceEvent, closeDb, getWorkspaceRow, listProjectRows, setProjectKeptIgnoredPaths } from '#db'
 import { recordIgnoredFilesCleaned, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { recordProject } from '#db/project-store'
 import {
@@ -206,8 +206,9 @@ describe('reapOrphanNodeLocal', () => {
 
   // Node-local dirs may live on another node, so the runtime removes them.
   // This layer only hands over the live set: recorded project ids,
-  // workspaces, stray units and in-flight creates.
-  it('hands the runtime the live project ids and workspaces, and removes no node-local dir itself', async () => {
+  // workspaces, stray units and in-flight creates, and the trees of lives
+  // already stamped.
+  it('hands the runtime the live project ids, workspaces and done trees, and removes no node-local dir itself', async () => {
     await recordProject({ id: PROJ_A, name: 'demo', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
     await recordProject({ id: PROJ_B, name: 'demo', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
     const ids = (await listProjectRows()).map((r) => r.id)
@@ -216,6 +217,10 @@ describe('reapOrphanNodeLocal', () => {
     const strayOnly = await seedModulesDir(ids[1], 'job-only-1')
     const orphan = await seedModulesDir('removed-project', 'x')
     publishInFlight(['creating-1'])
+    // live-1 runs a second life; its first one's tree was given up.
+    await recordWorkspaceCreated({ projectId: PROJ_A, workspaceId: 'live-1', repos: [], at: new Date(1000), treeDir: 'L0' })
+    await applyWorkspaceEvent({ type: 'life-checkpointed', projectId: PROJ_A, workspaceId: 'live-1', life: new Date(1000), outcome: 'lost' })
+    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: PROJ_A, workspaceId: 'live-1', at: new Date(2000), treeDir: 'L1', startSteps: [] })
 
     seeRunning(
       [handleFixture({ workspaceId: 'live-1', projectId: PROJ_A })],
@@ -229,6 +234,7 @@ describe('reapOrphanNodeLocal', () => {
     expect(reaped).toEqual([{
       projectIds: new Set(ids),
       workspaceIds: new Set(['live-1', 'job-only-1', 'creating-1']),
+      doneTrees: new Set(['live-1/L0']),
     }])
     for (const dir of [live, dead, strayOnly, orphan]) {
       await expect(fs.access(dir)).resolves.toBeUndefined()
@@ -238,7 +244,7 @@ describe('reapOrphanNodeLocal', () => {
   // No project is live, so every node-local tree is an orphan.
   it('with no projects, hands the runtime an empty live set', async () => {
     await reapOrphanNodeLocal(view)
-    expect(reaped).toEqual([{ projectIds: new Set(), workspaceIds: new Set() }])
+    expect(reaped).toEqual([{ projectIds: new Set(), workspaceIds: new Set(), doneTrees: new Set() }])
   })
 
   // An empty list would make every tree look orphaned, so an unreadable

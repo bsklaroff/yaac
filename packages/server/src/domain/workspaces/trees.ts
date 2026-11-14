@@ -291,6 +291,17 @@ export async function unsalvagedWorkspaceIds(): Promise<string[]> {
   return (await listUnstampedTreeLives({ stopped: false })).map((l) => l.workspaceId)
 }
 
+/** `<workspace id>/<life>` of every stamped life of these workspaces: trees
+ *  nothing will save again, as one a `--restore-newest` gave up, which the
+ *  node-local sweep may remove while the workspace runs on. */
+export async function doneTrees(workspaceIds: Iterable<string>): Promise<Set<string>> {
+  const done = new Set<string>()
+  for (const id of workspaceIds) {
+    for (const l of await listTreeLives(id)) if (l.checkpointedAt !== undefined) done.add(`${id}/${l.treeDir}`)
+  }
+  return done
+}
+
 /** The commit a checkout's git dir has as HEAD, read as data rather than
  *  through the agent's git; undefined when it names none. */
 export async function gitHead(gitDir: string): Promise<string | undefined> {
@@ -346,9 +357,9 @@ const COLLECT_AFTER_MS = 60 * 60_000
 /**
  * Remove the bundles no kept manifest names, and the temp files a pass
  * that died left (docs/node-local-workspaces.md "The log"). The kept
- * manifests are the two newest lives' of each workspace (the current
- * life's, and the one it restored from until it has its own), an import's
- * until a life has saved, and those of lives lost with their node, in case their tree turns up. A
+ * manifests are the two newest lives' that have one (what a restart
+ * restores, and the one before it), an import's until a life has saved,
+ * and those of lives lost with their node, in case their tree turns up. A
  * workspace with a manifest that cannot be read keeps everything, for a
  * `--restore-newest` to work from. A tree container deletes nothing there,
  * so this is the only collection.
@@ -375,9 +386,12 @@ async function collectWorkspace(projectId: string, workspaceId: string): Promise
   const manifests = read.filter((x): x is { life: string; m: Manifest } => typeof x.m !== 'string')
   // With no manifest at all there is nothing to judge by yet.
   if (manifests.length === 0) return
-  // Newest by the lives' own start times, which no node's clock wrote.
+  // The two newest lives that saved, by their own start times, which no
+  // node's clock wrote: what a restart restores and the one before it. A
+  // life that saved nothing (a restart that failed early) counts for none.
   const lives = await listTreeLives(workspaceId)
-  const newest = new Set(lives.slice(0, 2).map((l) => l.treeDir))
+  const saved = new Set(manifests.map((x) => x.life))
+  const newest = new Set(lives.filter((l) => saved.has(l.treeDir)).slice(0, 2).map((l) => l.treeDir))
   const lost = new Set(lives.filter((l) => l.checkpointOutcome === 'lost').map((l) => l.treeDir))
   // An import is kept until a life has a checkpoint of its own.
   const lifeSaved = manifests.some((x) => lives.some((l) => l.treeDir === x.life))

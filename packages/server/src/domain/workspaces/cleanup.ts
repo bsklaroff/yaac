@@ -5,7 +5,7 @@ import path from 'node:path'
 import { workspaceDriver } from '#drivers/driver'
 import { forgetWorkspaceChanges } from './changes'
 import { removeAgentHistory } from './history'
-import { unsalvagedWorkspaceIds } from './trees'
+import { doneTrees, unsalvagedWorkspaceIds } from './trees'
 import { deletionHeld, inFlightWorkspaceIds } from './provisioning'
 import { workspaceBinDir } from './workspace-bin'
 import { applyWorkspaceEvent, getProjectRow, getWorkspaceRow, listProjectRows, listUncleanedStoppedWorkspaces, listWorkspaceRepos } from '#db'
@@ -458,7 +458,7 @@ export async function reapOrphanNodeLocal(view: RuntimeSnapshot): Promise<void> 
   for (const id of inFlightWorkspaceIds(view.takenAtMs)) workspaceIds.add(id)
   // A tree still to be salvaged is the only copy of its unsaved work.
   for (const id of await unsalvagedWorkspaceIds()) workspaceIds.add(id)
-  await workspaceDriver().reapNodeLocal({ projectIds, workspaceIds })
+  await workspaceDriver().reapNodeLocal({ projectIds, workspaceIds, doneTrees: await doneTrees(workspaceIds) })
 }
 
 /** When each checkout the fallback failed on may be tried again. */

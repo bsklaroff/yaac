@@ -39,6 +39,9 @@ import type {
 export interface NodeLocalLiveSet {
   projectIds: ReadonlySet<string>
   workspaceIds: ReadonlySet<string>
+  /** `<workspace id>/<life>` of each life whose tree is done with (its
+   *  life stamped), removed even while its workspace is live again. */
+  doneTrees?: ReadonlySet<string>
 }
 
 /**

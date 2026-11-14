@@ -48,12 +48,13 @@ function sweepLabels(): Record<string, string> {
 
 /**
  * The in-pod script. Argv is `<cutoff epoch seconds> <kept names>
- * <live workspace ids> <mounted image stores>` (lists comma-separated).
- * Removes each unkept `/node/projects/<x>` and each
+ * <live workspace ids> <mounted image stores> <done trees>` (lists
+ * comma-separated). Removes each unkept `/node/projects/<x>` and each
  * `/node/projects/<x>/{opencode-data,trees}/<id>` of a non-live workspace,
  * when older than the cutoff, and each unmounted `/node/shared-images/<x>`.
  * A workspace whose tree is still to be salvaged counts as live
- * (docs/node-local-workspaces.md "Life cycle").
+ * (docs/node-local-workspaces.md "Life cycle"). Of a live workspace's
+ * trees, each `trees/<id>/<life>` named in the done trees goes too.
  *
  * Symlinks are always skipped: workspace pods can write this tree, so a
  * link could point anywhere on the node and this runs as root.
@@ -61,7 +62,7 @@ function sweepLabels(): Record<string, string> {
 export function buildNodeLocalSweepScript(): string {
   return [
     'set -u',
-    'CUTOFF="$1"; KEPT=",$2,"; LIVE=",$3,"; STORES=",$4,"',
+    'CUTOFF="$1"; KEPT=",$2,"; LIVE=",$3,"; STORES=",$4,"; DONE=",${5:-},"',
     'fresh() { [ -n "$(find "$1" -maxdepth 0 -newermt "@$CUTOFF" 2>/dev/null)" ]; }',
     'removed=0',
     'for dir in /node/projects/*; do',
@@ -79,7 +80,17 @@ export function buildNodeLocalSweepScript(): string {
     '  for entry in "$kinddir"/*; do',
     '    [ -e "$entry" ] && [ ! -L "$entry" ] || continue',
     '    id=$(basename "$entry")',
-    '    case "$LIVE" in *",$id,"*) continue;; esac',
+    '    if case "$LIVE" in *",$id,"*) true;; *) false;; esac; then',
+    '      [ "$kind" = trees ] && [ -d "$entry" ] || continue',
+    '      for lifedir in "$entry"/*; do',
+    '        [ -d "$lifedir" ] && [ ! -L "$lifedir" ] || continue',
+    '        life=$(basename "$lifedir")',
+    '        case "$DONE" in *",$id/$life,"*) ;; *) continue;; esac',
+    '        fresh "$lifedir" && continue',
+    '        rm -rf "$lifedir" && removed=$((removed+1)) && echo "removed $(basename "$projdir")/trees/$id/$life"',
+    '      done',
+    '      continue',
+    '    fi',
     '    fresh "$entry" && continue',
     '    rm -rf "$entry" && removed=$((removed+1)) && echo "removed $(basename "$projdir")/$kind/$id"',
     '  done',
@@ -147,7 +158,7 @@ export async function reapNodeLocal(live: NodeLocalLiveSet): Promise<void> {
         command: [
           'sh', '-c', `${buildNodeLocalSweepScript()}\n`, '--',
           String(cutoffEpoch), [...kept].join(','), [...live.workspaceIds].join(','),
-          [...mounted.stores].join(','),
+          [...mounted.stores].join(','), [...(live.doneTrees ?? [])].join(','),
         ],
         container: {
           securityContext: { runAsUser: 0 },
