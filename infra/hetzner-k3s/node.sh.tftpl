@@ -150,6 +150,23 @@ ${k3s_config}
 EOF
 echo "node-ip: $node_ip" >> /etc/rancher/k3s/config.yaml
 umask 022
+%{ if node_local_percent > 0 ~}
+# Workspace trees get a filesystem of their own at the node-local root
+# (docs/node-local-workspaces.md "A full node"): a file holding
+# ${node_local_percent}% of the root disk, mounted through a loop device, so a
+# tree that fills it gets ENOSPC there while kubelet, containerd and the
+# scratch dirs on the root filesystem never see it. In fstab, so it is
+# mounted again after a reboot; made once, so a rerun keeps its contents.
+nl=/var/lib/yaac/node
+img=/var/lib/yaac/node.img
+mkdir -p "$nl"
+if [ ! -e "$img" ]; then
+  fallocate -l "$(( $(df --output=size -B1 / | tail -1) * ${node_local_percent} / 100 ))" "$img"
+  mkfs.ext4 -q -m 0 "$img"
+fi
+grep -qF "$img" /etc/fstab || echo "$img $nl ext4 loop,defaults,nofail 0 2" >> /etc/fstab
+mountpoint -q "$nl" || mount "$nl"
+%{ endif ~}
 install -m 755 /dev/stdin /usr/local/sbin/yaac-node-memory <<'YAAC_NODE_MEMORY'
 ${node_memory}
 YAAC_NODE_MEMORY

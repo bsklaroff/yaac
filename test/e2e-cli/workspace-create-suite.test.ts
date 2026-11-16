@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, onTestFinished, vi } from 'vitest'
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { promisify } from 'node:util'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import fs from 'node:fs/promises'
 import http from 'node:http'
 import net from 'node:net'
@@ -526,10 +526,11 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         'test', '-f', '/tmp/yaac-prompt',
       ])).rejects.toThrow()
 
-      // Every volume is the global claim, the checkouts claim (the checkout
-      // alone), the node-local tree, an emptyDir or the CA ConfigMap; nothing
-      // is a hostPath into the data dir (docs/server-in-cluster.md, "Storage
-      // claims").
+      // Every volume is the global claim, the node-local tree, an emptyDir
+      // or the CA ConfigMap; nothing is a hostPath into the data dir
+      // (docs/server-in-cluster.md, "Storage claims"). The workspace's files
+      // are its tree on the node, with its `.git` from the global claim
+      // (docs/node-local-workspaces.md).
       const volumes = (await readObject<{
         spec: { template: { spec: {
           initContainers?: Array<{ name: string }>
@@ -537,18 +538,20 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
           volumes: Array<{ name: string; hostPath?: { path: string }; persistentVolumeClaim?: { claimName: string }; emptyDir?: unknown; configMap?: unknown }>
         } } }
       }>({ apiVersion: 'batch/v1', kind: 'Job', name: jobName, namespace: k8sNamespace() }))!.spec.template.spec
-      const checkoutVolume = volumes.containers[0].volumeMounts.find((m) => m.mountPath === '/workspace')?.name
-      expect(volumes.volumes.find((v) => v.name === checkoutVolume)?.persistentVolumeClaim?.claimName).toBe('yaac-checkouts')
+      const mountedAt = (at: string): typeof volumes.volumes[number] | undefined =>
+        volumes.volumes.find((v) => v.name === volumes.containers[0].volumeMounts.find((m) => m.mountPath === at)?.name)
+      expect(mountedAt('/workspace')?.hostPath?.path).toMatch(new RegExp(`/projects/${idOf('kitchen')}/trees/${workspaceId}/[^/]+/tree$`))
+      expect(mountedAt('/workspace/.git')?.persistentVolumeClaim?.claimName).toBe('yaac-global')
       // The workspace's own git writes big checkouts in parallel.
       expect((await execInJob(jobName, ['git', 'config', '--global', 'checkout.workers'])).stdout.trim()).toBe('8')
       for (const v of volumes.volumes) {
-        const ok = ['yaac-global', 'yaac-checkouts'].includes(v.persistentVolumeClaim?.claimName ?? '')
+        const ok = v.persistentVolumeClaim?.claimName === 'yaac-global'
           || v.hostPath?.path.startsWith(nodeLocalNodePath()) === true
           || v.emptyDir !== undefined || v.configMap !== undefined
         expect(ok, `volume ${v.name}: ${JSON.stringify(v)}`).toBe(true)
         expect(v.hostPath?.path.startsWith(testEnv.dataDir)).not.toBe(true)
       }
-      expect(volumes.initContainers?.map((c) => c.name)).toEqual(['node-dirs'])
+      expect(volumes.initContainers?.map((c) => c.name)).toEqual(['node-dirs', 'tree'])
     }, 60_000)
 
     it('mounts each builtin skill over a mountpoint the SERVER made', async () => {
@@ -795,11 +798,14 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       ])
     }, 60_000)
 
-    // The file editor works on the server pod's own mount of the checkout
-    // (docs/file-editor.md). Checks that a save is visible in the pod, an
-    // in-pod edit is visible to the next read, and git status stays clean
-    // although in-pod git wrote the index through a different mount.
-    it('edits the checkout from the server, visibly to the pod and back', async () => {
+    // The file editor's routes run inside the running workspace, through its
+    // `yaac-files` helper (docs/file-editor.md). Checks that a save is
+    // visible in the pod and an in-pod edit to the next read, that git status
+    // stays clean, that an upload over several of the helper's pages and a
+    // ranged media read come through whole, that a link written as the pod
+    // sees the checkout resolves (it would not on the server's view), and
+    // that rename and delete land.
+    it('edits the checkout through the workspace, visibly to the pod and back', async () => {
       const { listing } = await (
         await fetch(`${base}/api/workspace/${workspaceId}/changes?diff=0&listing=paths`)
       ).json() as { listing?: { paths: string[] } }
@@ -828,7 +834,34 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
       // Restore git state for later tests.
       await execInJob(jobName, ['sh', '-c', 'cd /workspace && git checkout -- README.md'])
-    }, 60_000)
+
+      const api = `${base}/api/workspace/${workspaceId}`
+      const big = randomBytes(5 * 1024 * 1024 + 123)
+      const up = await fetch(`${api}/upload?path=e2e-files/big.png`, { method: 'PUT', body: big })
+      expect(up.status).toBe(200)
+      const { stdout: sum } = await execInJob(jobName, ['sha256sum', '/workspace/e2e-files/big.png'])
+      expect(sum.split(' ')[0]).toBe(createHash('sha256').update(big).digest('hex'))
+      const ranged = await fetch(`${api}/raw?path=e2e-files/big.png`, { headers: { range: 'bytes=2097000-4194400' } })
+      expect(ranged.status).toBe(206)
+      expect(Buffer.from(await ranged.arrayBuffer()).equals(big.subarray(2097000, 4194401))).toBe(true)
+      const whole = await fetch(`${api}/raw?path=e2e-files/big.png`)
+      expect(Buffer.from(await whole.arrayBuffer()).equals(big)).toBe(true)
+
+      await execInJob(jobName, ['ln', '-s', '/workspace/README.md', '/workspace/e2e-files/abs-link'])
+      const dir = await (await fetch(`${api}/dir?path=e2e-files`)).json() as { entries: unknown[] }
+      expect(dir.entries).toContainEqual({ name: 'abs-link', dir: false, symlink: { target: 'README.md', dir: false } })
+
+      const moved = await fetch(`${api}/rename`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ from: 'e2e-files/big.png', to: 'e2e-files/moved.png' }),
+      })
+      expect(moved.status).toBe(200)
+      expect((await execInJob(jobName, ['ls', '/workspace/e2e-files'])).stdout.split('\n')).toContain('moved.png')
+      expect((await fetch(`${api}/file?path=e2e-files`, { method: 'DELETE' })).status).toBe(204)
+      const { stdout: gone } = await execInJob(jobName, ['sh', '-c', 'test -e /workspace/e2e-files && echo there || echo gone'])
+      expect(gone.trim()).toBe('gone')
+    }, 120_000)
 
     // An unknown base is a client error, not a server fault.
     it('answers 400 for a ?base= ref that resolves nowhere', async () => {
@@ -1329,9 +1362,10 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       const wtDir = path.join(projectPath, 'workspaces', workspaceId)
       await expect(fs.access(path.join(wtDir, 'node_modules', 'marker.txt'))).rejects.toThrow()
       await expect(fs.access(path.join(wtDir, 'frontends', 'node_modules', 'marker.txt'))).rejects.toThrow()
-      // The nested mount point exists before the checkout, which must still
-      // populate the tracked dir around it.
-      expect(await fs.readFile(path.join(wtDir, 'frontends', 'app.txt'), 'utf8')).toBe('app\n')
+      // The tracked dir around the nested mount point is checked out, in
+      // the tree on the node rather than on the global claim.
+      expect((await execInJob(jobName, ['cat', '/workspace/frontends/app.txt'])).stdout).toBe('app\n')
+      await expect(fs.access(path.join(wtDir, 'frontends', 'app.txt'))).rejects.toThrow()
       const { stdout: gitStatus } = await execInJob(jobName, [
         'sh', '-c', 'cd /workspace && git status --porcelain',
       ])

@@ -9,10 +9,9 @@
 #   2. extraMounts, which `yaac cluster install` renders onto the node
 #      entry below rather than this file naming them: the data dir at its
 #      own path, since the storage claims (`yaac-global`,
-#      `yaac-server-local`, `yaac-checkouts`) bind static hostPath PVs into
-#      it, which resolve on the NODE, not the host; and
+#      `yaac-server-local`) bind static hostPath PVs into it, which resolve on the NODE, not the host; and
 #      `<dataDir>/node-local` → `/var/lib/yaac/node/<install id>`, so the
-#      node-local tier (pnpm stores) lives on the host disk
+#      node-local tier (workspace trees, pnpm stores) lives on the host disk
 #      too and survives a cluster delete. Only the data dir is mounted, so
 #      a process inside a node cannot read the rest of your home directory
 #      through it. The node is still a privileged container, so this narrows

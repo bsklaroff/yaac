@@ -60,7 +60,18 @@ describe('serverUsageReport', () => {
     const resourceUsage = vi.fn((opts: { full: boolean }) => Promise.resolve(opts.full
       ? usage({ [LIVE]: use(2 * GIB), [NO_ROW]: use(GIB) })
       : usage({ [LIVE]: use(3 * GIB), [DEAD]: use(7 * GIB) })))
-    installFakeWorkspaceDriver({ kind: 'k8s', resourceUsage })
+    // Both nodes are under their warn floor, so the report asks for their
+    // trees; node-b's could not be measured in time.
+    const quickDisk = (node: string) => ({
+      node, totalBytes: 100 * GIB, freeBytes: 8 * GIB, warnBytes: 10 * GIB, stopBytes: 5 * GIB, sharesKubeletDisk: false,
+    })
+    const nodeDisks = (opts: { trees: boolean }) => Promise.resolve(opts.trees
+      ? [
+        { ...quickDisk('node-a'), trees: [{ projectId: DEMO_PROJECT_ID, workspaceId: LIVE, life: 'L1', bytes: 6 * GIB }] },
+        { ...quickDisk('node-b'), totalBytes: 0, freeBytes: 0, error: 'the disk pod could not be asked: timed out' },
+      ]
+      : [quickDisk('node-a'), quickDisk('node-b')])
+    installFakeWorkspaceDriver({ kind: 'k8s', resourceUsage, nodeDisks })
     startUsageSampler()
     await vi.waitFor(() => expect(resourceUsage).toHaveBeenCalledWith({ full: false }))
     await vi.advanceTimersByTimeAsync(60_000)
@@ -73,6 +84,9 @@ describe('serverUsageReport', () => {
     expect(report.totals.history).toHaveLength(2)
     expect(report.totals.disks).toEqual([{ name: 'node-a root', usedBytes: 1, capacityBytes: 2 }])
     expect(report.components[0].history).toHaveLength(2)
+    // A node whose trees could not be measured keeps its free space.
+    expect(report.nodeDisks?.map((d) => [d.node, d.freeBytes, d.trees?.length, d.error]))
+      .toEqual([['node-a', 8 * GIB, 1, undefined], ['node-b', 8 * GIB, undefined, undefined]])
 
     // Sorted by memory now; the stopped one keeps its last hour.
     expect(report.workspaces.map((w) => w.workspaceId)).toEqual([LIVE, NO_ROW, DEAD])

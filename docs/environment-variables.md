@@ -15,6 +15,7 @@ All yaac variables are read, with their defaults and validation, in
 | `YAAC_PREWARM_POOL_SIZE` | `1` | Workspaces kept started ahead of time per active project (`0` disables). |
 | `YAAC_IMAGE_PREWARM` | on | Build project images in the background. Off when empty, `0` or `false`. |
 | `YAAC_AUTO_TITLES` | on | Generate titles with a local model for drafts, queued entries and workspaces whose agent titles nothing (docs/workspace-titles.md). Off when empty, `0` or `false`. |
+| `YAAC_DISK_WARN_FLOOR_GIB` / `YAAC_DISK_STOP_FLOOR_GIB` | `10` / `5` | Under k8s, free space on a node's node-local disk below which the health report warns, and below which the workspace with the largest tree there is stopped (docs/node-local-workspaces.md "A full node"). `yaac cluster install` copies them to the server pod. |
 | `YAAC_FEEDBACK_URL` | `https://yaac.dev/api/feedback` | Endpoint the server forwards in-app feedback to, signed as this install (docs/feedback.md). `yaac cluster install` copies it to the server pod. Set empty to turn feedback off, which hides the webapp's form. Unset, the server keeps the value it was last started with. |
 
 Every workspace gets `YAAC_WORKSPACE_ID` set automatically, and

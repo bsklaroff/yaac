@@ -57,6 +57,16 @@ variable "node_disk_gb" {
   default     = 100
 }
 
+variable "node_local_disk_gb" {
+  description = "A second disk per node for workspace trees, mounted at the node-local root, so a full tree fills only it. 0 keeps trees on the root disk."
+  type        = number
+  default     = 50
+  validation {
+    condition     = var.node_local_disk_gb >= 0
+    error_message = "node_local_disk_gb cannot be negative."
+  }
+}
+
 variable "host_instance_type" {
   description = "Install host instance type. Defaults to m7i.xlarge (amd64) or m7g.xlarge (arm64)."
   type        = string

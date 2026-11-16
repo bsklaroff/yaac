@@ -151,8 +151,8 @@ export const SANDBOX_DENTRY_CACHE = 200_000
  *    for speed. Root only: `all:` would make hostPath volume writes
  *    ephemeral too.
  *  - dcache: how many unused file lookups the sandbox keeps. The default
- *    (1000 per mount) is smaller than a checkout, so every `git status` on
- *    the shared tier would look each file up over NFS again
+ *    (1000 per mount) is smaller than a large repository, so every
+ *    `git status` would look each file up through the file proxy again
  *    (docs/nfs-checkout-performance.md). The value is a string: the shim
  *    rejects a TOML integer.
  */

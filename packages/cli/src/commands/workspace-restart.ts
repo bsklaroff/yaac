@@ -12,13 +12,15 @@ import { ServerError } from '@yaac/shared/errors'
  */
 export async function workspaceRestart(
   workspaceId: string,
-  opts: { timeout?: string; volume?: string | false } = {},
+  opts: { timeout?: string; volume?: string | false; restoreNewest?: boolean } = {},
 ): Promise<void> {
   const timeout = opts.timeout !== undefined ? durationOption('--timeout', opts.timeout) : undefined
   // Commander's `--no-volume` sets `volume: false`.
   const volume = opts.volume === false ? null : opts.volume
   try {
-    await attachStarted(await api.workspace.restart.$post({ json: { workspaceId, timeout, volume } }))
+    await attachStarted(await api.workspace.restart.$post({
+      json: { workspaceId, timeout, volume, ...(opts.restoreNewest === true ? { restoreNewest: true } : {}) },
+    }))
   } catch (err) {
     if (err instanceof ServerError && err.code === 'VOLUME_HELD') {
       throw new Error(`${err.message}\nRestart it without the volume with: yaac workspace restart --no-volume ${workspaceId}`)

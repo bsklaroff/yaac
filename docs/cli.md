@@ -190,6 +190,10 @@ yaac workspace
   restart <workspace-id>        Restart, resuming the sessions it had open
     --timeout <duration>        Stop it this long after the restart (a restart
                                 otherwise clears its timeout)
+    --restore-newest            If its last checkpoint is unreadable or its
+                                files on a node cannot be saved, restore the
+                                newest readable state rather than refuse
+                                (cluster servers; node-local-workspaces.md)
   rerun <workspace-id>          Run a non-interactive workspace's steps again in
                                 a new one, at the commit it ran at
     --interactive               An interactive workspace there instead, to

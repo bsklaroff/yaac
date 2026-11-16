@@ -24,21 +24,27 @@ and on phones, the filter (quick-open) is the way to find a file.
 
 ## Server
 
-### Plain `fs` on the server's filesystem
+### Where the file routes run
 
-`#domain/workspaces` reads and writes the checkout with plain
-`fs` on `workspaceDir(projectId, id)`. Under k8s the server pod mounts that path;
-under containerless it is the host checkout. So there is no driver verb, and
-both drivers behave the same.
+The file routes' work is a set of operations on one directory tree
+(`tree-ops.ts` in `#domain/workspaces`), every path relative to the
+workspace dir. They run wherever the files are as they are now:
 
-A save that overwrites a file in a running k8s workspace then opens that
-file inside the pod, after releasing the workspace's edit lock: one exec,
-an open that reads nothing, bounded to a few seconds, logged if it fails. A pod mounts its checkout with file
-attributes cached for up to a minute, so without the open its `git status`
-(the changes view, the agent's own) could miss the edit for that long; an
-open always revalidates (docs/nfs-checkout-performance.md). Creating,
-renaming or deleting needs nothing, since the pod caches directories for a
-second.
+- **Inside a running k8s workspace**, through `yaac-files`, the same
+  operations built into a self-contained script that ships with the other
+  `workspace-bin` helpers. One exec per operation carries a JSON request on
+  stdin and a JSON answer back, bytes as base64; a large file streams in or
+  out in 2 MiB pages, one exec each, since an exec's output is capped at
+  4 MiB. The helper runs as the agent, in its sandbox, so the server treats
+  its answer as agent-written and passes on only the refusals it knows
+  (not found, conflict, validation, too large). An operation that changes
+  something is never resent when its exec fails.
+- **On the server's own view of the workspace dir** otherwise: a
+  containerless workspace, whose checkout is on the host, and a stopped k8s
+  one, whose files the server pod mounts from the shared tier.
+
+Since a running workspace's files are written from inside it, its sandbox
+sees every edit at once, and its `git status` needs nothing more.
 
 Every file route resolves the workspace's record (`resolveWorkspaceRecord`),
 so a stopped workspace's files open and save like a running one's
@@ -472,9 +478,11 @@ and checks it landed exactly there; anything else is unlinked by name.
 `O_DIRECTORY` is also set. Node's `fs.rm({ recursive })` walks by path, so a
 folder swapped for a link mid-walk could lead it out of the checkout.
 
-An absolute symlink resolves as the server sees it, so a link written in a
-pod as `/workspace/x` looks broken. Rewriting targets would mean resolving
-links by hand, which reopens the race the descriptor check closes.
+An absolute symlink resolves as whoever runs the operation sees it: inside
+a running workspace a link written as `/workspace/x` works, while on the
+server's view of a stopped one it looks broken. Rewriting targets would
+mean resolving links by hand, which reopens the race the descriptor check
+closes.
 
 ### Reads, writes and versions
 
@@ -484,18 +492,23 @@ the first 8,000 bytes, or invalid UTF-8, the rule in `#lib/text-file`) or one
 over 1 MiB, and omits `content` when the caller's `known` version is current.
 
 A save names the version it was based on. Under a per-workspace mutex, the
-server re-hashes the file through the descriptor it will write, and on a
-mismatch returns 409 `{ version }` (the one error body with more than a code,
-because the editor's next save uses it). Otherwise it truncates and writes
-through that descriptor. So the file keeps its mode, inode, links and owner,
-no inode is swapped under a gVisor pod's cached dentry, and saving through a
-symlink updates its target.
+file is re-hashed, and on a mismatch the save returns 409 `{ version }` (the
+one error body with more than a code, because the editor's next save uses
+it). Otherwise the new bytes go into a temp file beside the file the path
+leads to, which takes the old file's mode (and its owner, where the writer
+may give it), is synced, and is renamed over it. So a reader, git or a
+build watcher, sees the old bytes or the new ones and never a half-written
+file, and a save that fails partway leaves the old file. Saving through a
+symlink replaces its target and keeps the link. The cost is the inode: a
+hard link to the old file keeps the old bytes. The new mtime is what git
+sees, so the edit shows in `git status` and the changes as any edit does.
 
 ### Media files
 
 `@yaac/shared/media-types` maps extensions to the image, video, audio and
 PDF types a browser renders itself. The `raw` route streams such a file
-through the same confined descriptor, under that type with `nosniff`, and
+through the confined root a page at a time, its length fixed by the size
+read first, under that type with `nosniff`, and
 refuses every other file. So the route never serves HTML or SVG, which
 would run script on the app's origin; an SVG opens as text. As a second
 check, the response carries `Content-Security-Policy: default-src 'none';
@@ -515,20 +528,18 @@ in the pinned parent (making missing folders), never through a link.
 
 ### Uploads
 
-`upload` writes the request body to disk as it arrives, so a file of any
-size costs the server no memory (the server sets no request timeout, for
-long uploads). A new file is created the way a save creates one, with
-`O_CREAT | O_EXCL | O_NOFOLLOW` in the pinned parent, and removed if the
-upload fails partway; anything already there is a 409. With `replace=1` the
-body is staged first, in a file beside the target that is unlinked as soon
-as it is made, so the agent can never reach it and a crash leaves nothing
-behind. A dropped upload therefore leaves the original untouched. Once the
-body is complete, the server opens the target through the confined root
-(or creates it), truncates it only after the descriptor is verified, and
-copies the staged bytes in place under the edit mutex, so two replaces of
-one file never interleave. The file keeps its mode and inode, and the pod
-opens it afterwards as after a save. A new file's upload skips the mutex,
-so a long one never holds up a save.
+`upload` passes the request body on as it arrives, a page at a time, so a
+file of any size costs the server no memory (the server sets no request
+timeout, for long uploads). A new file is created the way a save creates
+one, with `O_CREAT | O_EXCL | O_NOFOLLOW` in the pinned parent, filled, and
+removed if the upload fails partway; anything already there is a 409. With
+`replace=1` the body is staged first, in a file beside the target named
+`.yaac-upload-<random>`, removed with a failed upload, so a dropped upload
+leaves the original untouched. Once the body is complete, under the edit
+mutex so two replaces of one file never interleave, an existing target is
+replaced whole as a save replaces it, and a missing one is linked into
+place from the staging file. A new file's upload skips the mutex, so a
+long one never holds up a save.
 
 Create, rename, delete and upload do not touch git. Their effect shows in the colors
 and the changes, as `mv` or `rm` in a terminal would.

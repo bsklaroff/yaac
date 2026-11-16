@@ -44,6 +44,7 @@ import {
   listWorkspaceSessions,
   getWorkspaceRow,
   findVolumeByName,
+  listTreeLives,
   markRepoDeleted,
   unlinkProjectRepo,
   type SessionRow,
@@ -59,7 +60,7 @@ import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
 import { git } from '@yaac/test-utils/git'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
 import { DEMO_PROJECT_ID, seedProject } from '@yaac/test-utils/project-fixture'
-import { claudePodCwd, projectDir, repoDir, workspaceDir, workspaceStateDir } from '@yaac/shared/project-paths'
+import { claudePodCwd, projectDir, repoDir, workspaceCheckpointsDir, workspaceDir, workspaceStateDir } from '@yaac/shared/project-paths'
 import { isWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#runtime/status/liveness'
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
@@ -87,8 +88,12 @@ let calls: string[]
 let destroys: boolean[]
 let deregistered: string[]
 
+/** The runtime a case's driver says it is, until the case ends. */
+let driverKind: WorkspaceDriver['kind'] = 'k8s'
+
 function installDriver(overrides: Partial<WorkspaceDriver> = {}): void {
   installFakeWorkspaceDriver({
+    kind: driverKind,
     find: (id) => Promise.resolve(live?.workspaceId === id ? live : undefined),
     findForTeardown: (id) => Promise.resolve(live?.workspaceId === id
       ? { workspaceId: id, projectId: live.projectId, unitName: live.jobName }
@@ -192,6 +197,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  driverKind = 'k8s'
   vi.unstubAllEnvs()
   // A restart that stops before create returns leaves its mark behind.
   clearAllProvisioningForTests()
@@ -543,6 +549,10 @@ describe('prepareRestart', () => {
   // out the base branch over it would overwrite every tracked file, so any
   // file, however deep, refuses; a dir it cannot read fails without one.
   it('refuses to check out over a checkout that has files but no .git, keeping it stopped', async () => {
+    // A checkout on the server's disk: a k8s workspace keeps its tree on
+    // its node instead (docs/node-local-workspaces.md).
+    driverKind = 'containerless'
+    installDriver()
     await stoppedWorkspace('wt-nogit')
     const checkout = workspaceDir(DEMO_PROJECT_ID, 'wt-nogit')
     const [tracked] = (await git(checkout, ['ls-files'])).split('\n')
@@ -626,6 +636,10 @@ describe('prepareRestart', () => {
   // The user came back for this workspace, so a failed restart must not
   // erase it.
   it('keeps the stop record, the checkout and a failed provisioning row when the relaunch fails', async () => {
+    // A checkout on the server's disk: a k8s workspace keeps its tree on
+    // its node instead (docs/node-local-workspaces.md).
+    driverKind = 'containerless'
+    installDriver()
     await stoppedWorkspace('wt-3')
     const before = await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-3')
     installDriver({ awaitReady: () => Promise.reject(new Error('image pull failed')) })
@@ -699,6 +713,10 @@ describe('prepareRestart', () => {
   // The unit's mount sources go only once it is confirmed gone, and a
   // checkout path reached through a link is never followed out of it.
   it('removes the old unit\'s scratch dirs only once it is gone, leaving what a link points at', async () => {
+    // A checkout on the server's disk: a k8s workspace keeps its tree on
+    // its node instead (docs/node-local-workspaces.md).
+    driverKind = 'containerless'
+    installDriver()
     await setProjectScratchDirs(DEMO_PROJECT_ID, { dirs: [{ path: 'node_modules', sizeGiB: 8 }, { path: 'web/node_modules', sizeGiB: 8 }, { path: 'vendor', sizeGiB: 8 }] })
     await stoppedWorkspace('wt-dirs')
     const checkout = workspaceDir(DEMO_PROJECT_ID, 'wt-dirs')
@@ -738,6 +756,7 @@ describe('prepareRestart', () => {
   // A dir the project lists only since the workspace started is real
   // content in its checkout, so it stays.
   it('removes the scratch dirs the old unit was started with, not ones the project lists since', async () => {
+    driverKind = 'containerless'
     await stoppedWorkspace('wt-listed')
     const checkout = workspaceDir(DEMO_PROJECT_ID, 'wt-listed')
     await fs.mkdir(path.join(checkout, 'node_modules', 'left-pad'), { recursive: true })
@@ -759,6 +778,10 @@ describe('prepareRestart', () => {
   // stay in its history. "Keep in the checkout and restart" first takes the
   // dir off the workspace's own list, so that restart's stop keeps it.
   it('empties a scratch dir git tracks, unless it was kept in the checkout first', async () => {
+    // A checkout on the server's disk: a k8s workspace keeps its tree on
+    // its node instead (docs/node-local-workspaces.md).
+    driverKind = 'containerless'
+    installDriver()
     const tracked = async (workspaceId: string): Promise<string> => {
       await stoppedWorkspace(workspaceId)
       await applyWorkspaceEvent({ type: 'tracked-scratch-dirs-found', projectId: DEMO_PROJECT_ID, workspaceId, paths: ['target'] })
@@ -784,6 +807,10 @@ describe('prepareRestart', () => {
   // One started before its list was recorded, by a release whose default
   // was node_modules alone: its `target/` is real content.
   it('removes only node_modules for an old unit started before scratch dirs were recorded', async () => {
+    // A checkout on the server's disk: a k8s workspace keeps its tree on
+    // its node instead (docs/node-local-workspaces.md).
+    driverKind = 'containerless'
+    installDriver()
     await stoppedWorkspace('wt-legacy')
     await (await getDb()).update(workspaceLives).set({ scratchDirs: null })
       .where(eq(workspaceLives.workspaceId, 'wt-legacy'))
@@ -944,6 +971,60 @@ describe('prepareRestart', () => {
     installDriver({ find: () => Promise.reject(new Error('connection refused')) })
     await expect(prepareRestart(local, 'wt-x')).rejects.toThrow('connection refused')
     expect(listProvisioning()).toEqual([])
+  })
+
+  // A k8s workspace's files are restored from its checkpoint log
+  // (docs/node-local-workspaces.md "Restore", "Life cycle").
+  it('restores the newest saved checkpoint, refusing an unreadable one or an unsaved tree until asked to pass over it', async () => {
+    const ckpt = (id: string): string => workspaceCheckpointsDir(DEMO_PROJECT_ID, id)
+    const manifest = async (id: string, life: string, body?: string): Promise<void> => {
+      await fs.mkdir(path.join(ckpt(id), 'lives', life), { recursive: true })
+      await fs.writeFile(path.join(ckpt(id), 'lives', life, 'manifest.json'), body ?? JSON.stringify({
+        version: 1, life, takenAt: new Date().toISOString(), final: false, pass: 'a'.repeat(40),
+        bundles: [`bundles/${life}.bundle`], units: [{ kind: 'root' }], unsaved: [],
+      }))
+    }
+    const lifeOf = async (id: string): Promise<string> => (await listTreeLives(id))[0].treeDir
+    const restoredFrom = async (id: string): Promise<{ restore?: string; restoreNewestReadable?: boolean }> =>
+      JSON.parse(await fs.readFile(path.join(ckpt(id), 'lives', await lifeOf(id), 'start.json'), 'utf8')) as { restore?: string }
+    const restartNewest = async (id: string): Promise<void> => { await (await prepareRestart(local, id, { restoreNewest: true }))() }
+
+    // A life whose node went unrecorded still restores from its own pass.
+    await stoppedWorkspace('wt-tree')
+    const l1 = await lifeOf('wt-tree')
+    await manifest('wt-tree', l1)
+    await restart('wt-tree')
+    expect((await restoredFrom('wt-tree')).restore).toBe(`lives/${l1}/manifest.json`)
+    expect((await listTreeLives('wt-tree'))[1].checkpointOutcome).toBe('lost')
+
+    // An unreadable manifest refuses the restart, naming it, until asked.
+    await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-tree' })
+    const l2 = await lifeOf('wt-tree')
+    await manifest('wt-tree', l2, '{ not a manifest')
+    await expect(restart('wt-tree')).rejects.toThrow(new RegExp(`lives/${l2}/manifest.json is unreadable.*--restore-newest`))
+    await restartNewest('wt-tree')
+    expect(await restoredFrom('wt-tree')).toMatchObject({ restore: `lives/${l1}/manifest.json`, restoreNewestReadable: true })
+
+    // A first node-local life that saved nothing falls back to the import
+    // of the files it had on the shared tier.
+    await stoppedWorkspace('wt-imp')
+    await manifest('wt-imp', 'import-20260101T000000Z')
+    await restart('wt-imp')
+    expect((await restoredFrom('wt-imp')).restore).toBe('lives/import-20260101T000000Z/manifest.json')
+
+    // A tree that cannot be salvaged blocks the restart until it is given
+    // up, its last pass then standing.
+    await created('wt-full')
+    await applyWorkspaceEvent({ type: 'life-node-found', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-full', node: 'node-a' })
+    await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-full' })
+    const full = await lifeOf('wt-full')
+    await manifest('wt-full', full)
+    installDriver({ salvageTree: () => Promise.reject(new Error('no space left on device')) })
+    await expect(restart('wt-full')).rejects.toThrow(/could not be saved yet \(no space left on device\).*--restore-newest/)
+    await restartNewest('wt-full')
+    expect((await restoredFrom('wt-full')).restore).toBe(`lives/${full}/manifest.json`)
+    const given = (await listTreeLives('wt-full'))[1]
+    expect(given.checkpointOutcome).toBe('lost')
   })
 
   // A site replaces its release in a fresh checkout rather than restarting

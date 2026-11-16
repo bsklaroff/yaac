@@ -319,6 +319,8 @@ describe('buildServerEgressNpManifest', () => {
         to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }],
         ports: [{ protocol: 'TCP', port: PROXY_PORT }, { protocol: 'TCP', port: RELAY_PORT }],
       },
+      // Each node's disk pod, which only the server may ask.
+      { to: [{ podSelector: { matchLabels: { app: 'yaac-disk' } } }], ports: [{ protocol: 'TCP', port: 8790 }] },
       { to: [{ ipBlock: { cidr: '172.18.0.2/32' } }], ports: [{ protocol: 'TCP', port: 6443 }] },
     ])
   })

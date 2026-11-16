@@ -16,7 +16,7 @@
 export { runtimeHandleFromPod } from './handle'
 export { claimSpareWorkspace, registerWorkspace, unmarkClaimedJobs } from './claim'
 export { dialWorkspacePort, forwardWorkspacePort } from './forward-port'
-export { launchWorkspace, prepareWorkspaceSubstrate } from './launch'
+export { launchWorkspace, prepareWorkspaceSubstrate, readyTimeoutMs } from './launch'
 export { buildPodJobManifest } from './pod-job'
 export {
   countWorkspaces,
@@ -36,7 +36,8 @@ export {
   removeWorkspaceForwarder,
   stopAllWorkspaceForwarders,
 } from './port-forwarders'
-export { removeAsRoot, runInStoppedCheckout } from './root-pod'
+export { removeAsRoot } from './root-pod'
+export { importTree, salvageTree } from './tree-salvage'
 export { createRuntimeSnapshot } from './snapshot'
 export {
   deregisterWorkspace,

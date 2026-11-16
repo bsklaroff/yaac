@@ -239,6 +239,8 @@ export interface PlannedCheckout {
    *  On a resume, the recorded start commit of a checkout with no base
    *  branch, used only if the checkout is gone. */
   commit?: string
+  /** On a resume, the commit it was first created at, whatever its base. */
+  startCommit?: string
 }
 
 /**
@@ -269,6 +271,8 @@ export async function provisionCheckout(args: {
   fetched: Promise<void>
   gitUser: { name: string; email: string }
   emit: (message: string) => void
+  /** Make only the `.git`; the tree is checked out on the node. */
+  gitOnly?: boolean
 }): Promise<string | undefined> {
   const { projectId, workspaceId, checkout, resume, fetched, gitUser, emit } = args
   const { repo, dir, refBranch } = checkout
@@ -304,6 +308,7 @@ export async function provisionCheckout(args: {
     remoteUrl: repo.remoteUrl,
     // Beside the workspace dir, where no workspace mounts it.
     staging: path.join(path.dirname(workspaceDir(projectId, workspaceId)), `.staging-${workspaceId}-${repo.id}`),
+    ...(args.gitOnly === true ? { gitOnly: true } : {}),
   }
   const { commit } = checkout
   if (commit !== undefined && (!resume || checkout.branch === undefined)) {

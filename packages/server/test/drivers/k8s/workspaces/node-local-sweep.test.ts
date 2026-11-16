@@ -83,7 +83,7 @@ describe('reapNodeLocal', () => {
       `${NODE_TREE}/shared-images/${LIVE}/gen-1`,
       `/var/lib/yaac/global/${installId()}/projects/elsewhere`,
     ])
-    await reapNodeLocal({ projectIds: new Set([LIVE]), workspaceIds: new Set(['a', 'b']) })
+    await reapNodeLocal({ projectIds: new Set([LIVE]), workspaceIds: new Set(['a', 'b']), doneTrees: new Set(['a/L1']) })
 
     const pods = appliedPods()
     expect(pods.map((p) => p.spec.nodeName)).toEqual(['n1', 'n2'])
@@ -95,11 +95,12 @@ describe('reapNodeLocal', () => {
       expect(pod.spec.volumes[0].hostPath?.path).toBe(NODE_TREE)
       expect(pod.spec.containers[0].volumeMounts).toEqual([{ name: 'node', mountPath: '/node' }])
       const argv = pod.spec.containers[0].command.slice(4)
-      expect(argv).toHaveLength(4)
+      expect(argv).toHaveLength(5)
       expect(Number(argv[0])).toBeGreaterThan(0)
       expect(argv[1].split(',').sort()).toEqual([LIVE, 'demo'].sort())
       expect(argv[2]).toBe('a,b')
       expect(argv[3]).toBe(LIVE)
+      expect(argv[4]).toBe('a/L1')
     }
     await expect(execFileAsync('sh', ['-n', '-c', pods[0].spec.containers[0].command[2]])).resolves.toBeTruthy()
   })
@@ -154,10 +155,10 @@ describe('reapNodeLocal', () => {
     }
 
     /** Run the script with `root` standing in for the pod's /node mount. */
-    async function run(kept: string[], live: string[], cutoffEpoch: number, stores: string[] = []): Promise<string> {
+    async function run(kept: string[], live: string[], cutoffEpoch: number, stores: string[] = [], done: string[] = []): Promise<string> {
       const script = buildNodeLocalSweepScript().replaceAll('/node/', `${root}/`)
       const { stdout } = await execFileAsync('sh', [
-        '-c', script, '--', String(cutoffEpoch), kept.join(','), live.join(','), stores.join(','),
+        '-c', script, '--', String(cutoffEpoch), kept.join(','), live.join(','), stores.join(','), done.join(','),
       ])
       return stdout
     }
@@ -212,6 +213,20 @@ describe('reapNodeLocal', () => {
       await expect(fs.access(stoppedCopy)).rejects.toThrow()
       expect(out).toContain(`removed ${LIVE}/opencode-data/stopped`)
       expect(out.trim().endsWith('node-local-sweep removed 1')).toBe(true)
+    })
+
+    it('removes a live workspace\'s tree of a life that is done with, keeping its current one', async () => {
+      const current = await seed(`projects/${LIVE}/trees/live/L2/tree`)
+      const givenUp = await seed(`projects/${LIVE}/trees/live/L1/tree`)
+      const stoppedTree = await seed(`projects/${LIVE}/trees/stopped/L1/tree`)
+      for (const rel of ['live/L1', 'live/L2', 'live', 'stopped']) await stale(`projects/${LIVE}/trees/${rel}`)
+
+      const out = await run([LIVE], ['live'], Math.floor((Date.now() - 10_000) / 1000), [], ['live/L1'])
+
+      await expect(fs.access(current)).resolves.toBeUndefined()
+      for (const gone of [givenUp, stoppedTree]) await expect(fs.access(gone)).rejects.toThrow()
+      expect(out).toContain(`removed ${LIVE}/trees/live/L1`)
+      expect(out).toContain(`removed ${LIVE}/trees/stopped`)
     })
 
     it('never walks through a symlink a pod planted, at any level', async () => {
