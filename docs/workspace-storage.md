@@ -80,9 +80,12 @@ running workspace at a time mounts, on a cluster.
   restart every spare counts as stale and is reaped and rewarmed. A claim's
   commit point is inserting the row (`workspace-created`, with the claimed
   settings, title, group and base branch), before it changes the spare; once
-  it has, it removes the label from the pod, then the Job. A claim that fails
-  before changing the spare deletes its row and the spare returns to the
-  pool. One that fails after deletes its row and reaps the spare.
+  it has, it removes the label from the pod, in one write the API server
+  refuses unless the pod still has it, then from the Job. The pod's write
+  wins the claim, so the session's window opens while the Job's is in
+  flight, but the claim is not done until both have landed. A claim that
+  fails before changing the spare deletes its row and the spare returns to
+  the pool. One that fails after deletes its row and reaps the spare.
 - **A spare's files are deleted only when its unit is labelled prewarmed and
   no row has its id** (`reapSpare`). A failed row lookup deletes nothing. A
   row always wins. The reap's listing may predate a claim that has since

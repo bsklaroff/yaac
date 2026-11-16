@@ -168,7 +168,7 @@ function defaultRuntime(): WorkspaceDriver {
     dialCtrl: () => deadStreamChild(),
     dialPty: () => deadStreamPty(),
     reviveStatusStream: () => Promise.resolve(),
-    claimSpare: () => Promise.resolve(),
+    claimSpare: () => Promise.resolve({ unmarked: Promise.resolve() }),
     assertCanLaunch: () => Promise.resolve(),
     ensureRuntimeReachable: () => Promise.resolve(),
     prepareImage: () => Promise.resolve('registry.test/fake-image:latest'),

@@ -159,6 +159,6 @@ describe('lifeHooksConfig', () => {
 
 describe('sourceHooksCommand', () => {
   it('sources the config at its path in the workspace', () => {
-    expect(sourceHooksCommand(PATHS, '/home/yaac/.yaac-logs/L/hooks.conf')).toBe(`${TMUX} source-file '/home/yaac/.yaac-logs/L/hooks.conf'`)
+    expect(sourceHooksCommand('/home/yaac/.yaac-logs/L/hooks.conf')).toBe("source-file '/home/yaac/.yaac-logs/L/hooks.conf'")
   })
 })

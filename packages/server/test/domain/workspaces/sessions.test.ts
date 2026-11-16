@@ -86,12 +86,12 @@ describe('openSession', () => {
     expect(execs.join('\n')).toContain(`export YAAC_SESSION_ID=${first.id}; `)
     expect((await getSessionRow(first.id))?.launchedAt).toBeInstanceOf(Date)
     // A tui session's agent is launched with its opening message, left for
-    // it before its window opens.
+    // it by the command that then opens its window.
     const opening = `/tmp/.yaac-opening-${first.window}`
-    const write = execs.findIndex((c) => c.startsWith(`cat > ${opening} `))
-    expect(write).toBeGreaterThanOrEqual(0)
-    expect(write).toBeLessThan(execs.findIndex((c) => c.includes(`-n ${first.window} `)))
-    expect(execs.join('\n')).toContain(`-- "$(cat ${opening}; rm -f ${opening}) "'`)
+    const launch = execs.find((c) => c.includes(`-n ${first.window} `))
+    expect(launch?.startsWith(`{ cat > ${opening} `)).toBe(true)
+    expect(execs.filter((c) => c.includes(`cat > ${opening} `))).toHaveLength(1)
+    expect(launch).toContain(`-- "$(cat ${opening}; rm -f ${opening}) "'`)
   })
 
   // Each session runs where it is told, the workspace root or a checkout's,

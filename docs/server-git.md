@@ -126,7 +126,9 @@ copies them over (`origin.ts` in `#domain/repos` fetches,
   `maintainRepo` and refreshes the checkout of the repo in every running
   workspace that has one, in any project, a few at a time, without making
   the caller wait. Fan-outs are coalesced per repo, so a burst of creates
-  costs at most two rounds.
+  costs at most two rounds. A spare that a create is claiming is refreshed
+  only once the claim is over: the claim waits on the same fetch, and the
+  command that opens its session would queue behind the refresh in the pod.
 - **A timer fetches.** The `origin-refresh` reconcile step fetches every
   repo that a running workspace has a checkout of and that was not fetched
   in the last five minutes. A failure is logged and retried next interval.

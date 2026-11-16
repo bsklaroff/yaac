@@ -818,12 +818,14 @@ export interface WorkspaceDriver {
   reviveStatusStream(jobName: string): Promise<void>
 
   /**
-   * Claim a spare as the caller's workspace: afterwards nothing in the
-   * runtime marks it a spare. Compare-and-swap: of concurrent claims exactly
-   * one resolves; the others (and a claim on a vanished spare) reject, and
-   * the caller creates a fresh workspace instead.
+   * Claim a spare as the caller's workspace. Compare-and-swap: of concurrent
+   * claims exactly one resolves; the others (and a claim on a vanished
+   * spare) reject, and the caller creates a fresh workspace instead. It
+   * resolves as soon as the claim is won, so the caller can go on working in
+   * the workspace; `unmarked` settles once nothing in the runtime marks it
+   * a spare any more, and a claim whose `unmarked` rejects has failed.
    */
-  claimSpare(workspaceId: string): Promise<void>
+  claimSpare(workspaceId: string): Promise<{ unmarked: Promise<void> }>
 
   /**
    * Check this driver can run the tool in this mode, installing what it

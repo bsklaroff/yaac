@@ -24,9 +24,9 @@ import { cleanupWorkspace, deleteWorkspaceState } from './cleanup'
 import { claimProvisioning, spawningSpares } from './provisioning'
 import { rebranchSpare } from './spare-pool'
 import { storedSelection, type WorkspaceStart } from './checkouts'
-import { lifeHooksExec, startStepsOf } from './life'
+import { lifeHooksCommand, startStepsOf } from './life'
 import { recordTrackedScratchDirs } from './tracked-scratch-dirs'
-import { launchSessions } from './session-launch'
+import { openWindows, prepareLaunches } from './session-launch'
 import {
   applyWorkspaceEvent,
   findWorkspaceRow,
@@ -39,7 +39,7 @@ import {
   type SessionLaunchSettings,
 } from '#db'
 import type { WorkspaceCreateResult } from './create'
-import { isTmuxSessionAlive } from '#runtime/status'
+import { tmuxCmd } from '#runtime/agents'
 import { getDefaultBranch, remoteBranchExists, resolveRemoteRef } from '#domain/git'
 import { credentialOwnerKey } from '#domain/auth'
 import { getProjectAllowlist, resolveProjectConfig, resolveProjectEnv } from '#domain/projects'
@@ -94,6 +94,9 @@ export interface SpareSettings {
   repos: Array<{ repoId: string; path: string; baseBranch?: string }>
   /** The image it runs; absent for a driver that runs none. */
   image?: string
+  /** The git identity it was launched with, which a claim sets again only
+   *  if it has changed since. */
+  gitIdentity?: { name: string; email: string }
   /** The scratch dirs its checkouts were prepared with, relative to the
    *  workspace root. */
   scratchDirs?: string[]
@@ -388,6 +391,28 @@ async function allSucceed(tasks: Array<Promise<unknown>>): Promise<void> {
 }
 
 /**
+ * Whether a reserved spare can take a claim: the commit each of its
+ * checkouts is at (empty for one with none), in order, or undefined for a
+ * spare whose tmux is gone or that cannot be reached. One command asks
+ * both, read fresh rather than from the liveness cache, so a spare that
+ * answers has a working agent transport for the commands that follow.
+ */
+async function probeSpare(spare: RuntimeHandle, checkoutPaths: string[]): Promise<string[] | undefined> {
+  const runtime = workspaceDriver()
+  const paths = runtime.workspacePaths(spare.jobName)
+  try {
+    const { stdout } = await runtime.exec(spare.jobName, [
+      `${tmuxCmd(paths)} has-session -t yaac`,
+      ...checkoutPaths.map((p) => `{ git -C ${path.posix.join(paths.workspaceDir, p)} rev-parse -q --verify HEAD || echo; }`),
+    ].join(' && '), { timeout: 10_000, maxAttempts: 1 })
+    const heads = stdout.split('\n')
+    return checkoutPaths.map((_, i) => heads[i]?.trim() ?? '')
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Try to claim a running spare for this create. Returns the claimed
  * workspace (with the spare's id), or `undefined` to fall back to a cold
  * create. Infra failures degrade to a cold create; only a VALIDATION error
@@ -402,6 +427,14 @@ async function allSucceed(tasks: Array<Promise<unknown>>): Promise<void> {
  * it is untouched, else reaps it. Once `claimSpare` has unmarked the
  * runtime, the workspace is the user's: its session is launched as in any
  * running workspace, and a failure is the create's own.
+ *
+ * Its round trips are grouped so that it waits three times: on the probe
+ * (`probeSpare`), on the egress registration beside the runtime's
+ * compare-and-swap, and on the one command that opens the session, beside
+ * the rest of the unmarking. What the server works out on its own (the
+ * fetch, the session's launch command) is started early enough to be ready
+ * by the wait that needs it. Each process a command starts in a gVisor pod
+ * costs tens of milliseconds, so the commands start as few as they can.
  */
 export async function tryClaimPrewarmed(
   projectId: string,
@@ -424,8 +457,12 @@ export async function tryClaimPrewarmed(
   // Whether this claim inserted the row a failure must delete.
   let inserted = false
   let claimed = false
+  /** The rest of the runtime's unmarking, in flight once the claim is won. */
+  let unmarked: Promise<void> = Promise.resolve()
   try {
-    const workspaces = await runtime.list(projectId)
+    // The informer's view will do: a spare it has not caught up on is
+    // passed over, or refused by the probe or the compare-and-swap.
+    const workspaces = await runtime.list(projectId, { preferCache: true })
     const launched = new Map(workspaces.flatMap((p) => {
       const settings = p.prewarmed && p.running ? freeSpare(p) : undefined
       return settings ? [[p.jobName, settings] as const] : []
@@ -435,9 +472,10 @@ export async function tryClaimPrewarmed(
     const row = await getProjectRow(projectId)
     if (row === undefined) return undefined
     const { owner } = row
-    const [timeZone, image] = await Promise.all([
+    const [timeZone, image, gitIdentity] = await Promise.all([
       getTimeZone(owner).then((z) => z.timeZone ?? undefined),
       currentSpareImage(row),
+      getGitIdentity(owner),
     ])
     const candidates = spares
       // Neither the zone nor the image can be converted: the pod spec is
@@ -449,6 +487,20 @@ export async function tryClaimPrewarmed(
       })
       .sort((a, b) => b.createdAtMs - a.createdAtMs)
 
+    if (candidates.length === 0) return undefined
+    // Start each fetch, and the read of each main clone's default branch,
+    // so they overlap the probe; awaited after it, and at the branch prep.
+    const origins = start.repos.map((r) => {
+      const fetched = fetchSpareOrigin(r.link.repo.id)
+      fetched.catch(() => { /* observed below */ })
+      return fetched
+    })
+    const defaults = Promise.all(start.repos.map((r) => getDefaultBranch(repoDir(r.link.repo.id))))
+    defaults.catch(() => { /* observed below */ })
+    /** The commit each of the chosen spare's checkouts is at. Nothing moves
+     *  them while the claim holds its reservation, so the branch prep and
+     *  the start commits below read them from here. */
+    let heads: string[] = []
     for (const c of candidates) {
       // A spare mid-refresh is about to be current, so it is worth a short
       // wait. Re-read after each wait: a new refresh can start before this
@@ -463,8 +515,10 @@ export async function tryClaimPrewarmed(
       // No await between the check and the add.
       claiming.add(c.jobName)
       reserved = c.jobName
-      if (await isTmuxSessionAlive(c)) {
+      const probed = await probeSpare(c, start.repos.map((r) => r.path))
+      if (probed !== undefined) {
         chosen = c
+        heads = probed
         break
       }
       // Stuck spare (tmux never came up): release it for the reaper.
@@ -475,29 +529,17 @@ export async function tryClaimPrewarmed(
     warmed = launched.get(chosen.jobName)
     const job = chosen.jobName
     const paths = runtime.workspacePaths(job)
-    // Start each fetch now so it overlaps the steps below; awaited at the
-    // branch prep.
-    const checkouts = start.repos.map((r) => {
-      const fetched = fetchSpareOrigin(r.link.repo.id)
-      fetched.catch(() => { /* observed below */ })
-      return {
-        repoId: r.link.repo.id,
-        path: r.path,
-        seenAt: path.posix.join(paths.workspaceDir, r.path),
-        repo: repoDir(r.link.repo.id),
-        requested: r.branch,
-        upstream: warmed?.repos.find((w) => w.repoId === r.link.repo.id)?.baseBranch ?? null,
-        fetched,
-      }
-    })
-
-    // The commands below need the agent transport. The liveness check above
-    // may be cached, so gate here, before any change: on failure the spare
-    // is untouched and the claim falls back to a cold create.
-    const [defaultBranches] = await Promise.all([
-      Promise.all(checkouts.map((c) => getDefaultBranch(c.repo))),
-      runtime.awaitAgentTransport(job, { timeoutMs: 10_000 }),
-    ])
+    const checkouts = start.repos.map((r, i) => ({
+      repoId: r.link.repo.id,
+      path: r.path,
+      seenAt: path.posix.join(paths.workspaceDir, r.path),
+      head: heads[i],
+      repo: repoDir(r.link.repo.id),
+      requested: r.branch,
+      upstream: warmed?.repos.find((w) => w.repoId === r.link.repo.id)?.baseBranch ?? null,
+      fetched: origins[i],
+    }))
+    const defaultBranches = await defaults
     const branches = checkouts.map((c, i) => ({
       ...c,
       defaultBranch: defaultBranches[i],
@@ -547,6 +589,11 @@ export async function tryClaimPrewarmed(
     // Recorded now, so a server that dies before the launch below leaves it
     // for `reconcileSessions` to launch.
     const opened = session !== undefined ? await insertSession(projectId, claimedId, session) : undefined
+    // The server's half of the launch, which touches nothing in the spare,
+    // is worked out while the waits below are out.
+    const workspace = { projectId, workspaceId: claimedId, jobName: job }
+    const launches = opened !== undefined ? prepareLaunches(workspace, [opened]) : Promise.resolve([])
+    launches.catch(() => { /* observed at the launch */ })
 
     // Branch prep happens before the session launches.
     const preps = await Promise.all(branches.map(async (c): Promise<{ seenAt: string; branch: string; sha: string } | null> => {
@@ -559,57 +606,17 @@ export async function tryClaimPrewarmed(
         emit(`Switching prewarmed session to branch ${c.rebranchTo}...`)
         return { seenAt: c.seenAt, branch: c.rebranchTo, sha: await resolveRemoteRef(c.repo, c.rebranchTo) }
       }
-      // Keep the branch, but move up to where origin now has it. HEAD is
-      // read inside the workspace; the server never runs git on its clone.
+      // Keep the branch, but move up to where origin now has it.
       const warmedBranch = c.upstream ?? c.defaultBranch
-      const head = async (): Promise<string> =>
-        (await runtime.exec(job, `git -C ${c.seenAt} rev-parse -q --verify HEAD || true`)).stdout.trim()
-      const sha = await refreshTarget(c.fetched, c.repo, warmedBranch, claimedId, head)
+      const sha = await refreshTarget(c.fetched, c.repo, warmedBranch, claimedId, () => Promise.resolve(c.head))
       if (sha === null) return null
       emit(`Updating prewarmed session to the latest ${warmedBranch}...`)
       return { seenAt: c.seenAt, branch: warmedBranch, sha }
     }))
-    // Re-register from the current config (allowlist, secrets), so project
-    // edits since warming apply. The allowlist is read fresh here so an
-    // allow-host during the fetch is not overwritten.
-    const [config, allowlist, projectEnv] = await Promise.all([
-      resolveProjectConfig(projectId),
-      getProjectAllowlist(projectId),
-      resolveProjectEnv(projectId),
-    ])
-    if (!config) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
-    const registration = {
-      workspaceId: claimedId,
-      projectId,
-      owner: credentialOwnerKey(owner),
-      identity: await egressIdentity(owner),
-      config,
-      allowlist,
-      proxySecretRules: Object.fromEntries(
-        Object.entries(projectEnv.secrets).map(([name, { rule }]) => [name, rule]),
-      ),
-    }
+    const spare = chosen
     // A re-branch makes the spare inconsistent if we fail.
     if (preps.some((p) => p !== null)) mutated = true
-    const spare = chosen
-    await allSucceed([
-      (async () => {
-        await runtime.registerWorkspace(registration)
-        for (const p of preps) if (p !== null) await rebranchSpare(spare, p.seenAt, p.branch, p.sha)
-      })(),
-      // Re-apply the current git identity, which may have changed since the
-      // spare was warmed. Non-fatal: the workspace is already usable.
-      getGitIdentity(owner).then((identity) => identity && runtime.exec(
-        spare.jobName,
-        `git config --global user.name '${shellEscape(identity.name)}'`
-        + ` && git config --global user.email '${shellEscape(identity.email)}'`,
-      )).catch((err: unknown) => {
-        console.warn(
-          `Git identity for claimed session ${claimedId} not applied `
-          + `(the warmed-in one stands): ${(err as Error).message}`,
-        )
-      }),
-    ])
+    for (const p of preps) if (p !== null) await rebranchSpare(spare, p.seenAt, p.branch, p.sha)
     // Not awaited: a claim never waits out a slow fetch. The scratch dirs
     // are the same in every checkout, so the first one's name them all.
     const under = branches[0] !== undefined && branches[0].path !== '' ? `${branches[0].path}/` : ''
@@ -622,30 +629,91 @@ export async function tryClaimPrewarmed(
       scratchDirs,
     )).catch(() => { /* a failed fetch is the branch prep's to report */ })
 
+    // Re-register from the current config (allowlist, secrets), so project
+    // edits since warming apply. The allowlist is read fresh here so an
+    // allow-host during the fetch is not overwritten.
+    const register = async (): Promise<void> => {
+      const [config, allowlist, projectEnv, identity] = await Promise.all([
+        resolveProjectConfig(projectId),
+        getProjectAllowlist(projectId),
+        resolveProjectEnv(projectId),
+        egressIdentity(owner),
+      ])
+      if (!config) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
+      await runtime.registerWorkspace({
+        workspaceId: claimedId,
+        projectId,
+        owner: credentialOwnerKey(owner),
+        identity,
+        config,
+        allowlist,
+        proxySecretRules: Object.fromEntries(
+          Object.entries(projectEnv.secrets).map(([name, { rule }]) => [name, rule]),
+        ),
+      })
+    }
     // Unmark the runtime. A lost race throws and falls back to a cold
     // create; so does a lost response to a claim that landed, which is why
-    // the spare counts as changed from here.
+    // the spare counts as changed from here. The registration is written
+    // beside it, since neither reads what the other writes, and both are
+    // done before the session's window opens: no agent starts in a spare
+    // another claim won, or under the egress rules it was warmed with. The
+    // life's hooks file is written beside them, since a failure from here
+    // reaps the spare and its log dir with it, and waited on with them, so
+    // a rollback never finds the write still under way.
     mutated = true
-    await runtime.claimSpare(claimedId)
+    const hooks = lifeHooksCommand(projectId, claimedId, life, paths)
+    await allSucceed([
+      register(),
+      runtime.claimSpare(claimedId).then((won) => {
+        unmarked = won.unmarked
+        // Held until the waits below read it, so a rejection must not count
+        // as unhandled meanwhile.
+        unmarked.catch(() => { /* read below, and by the rollback */ })
+      }),
+      hooks,
+    ])
+
+    // One command for the rest of what the workspace is told: the git
+    // identity, if it has changed since the spare was warmed with one, then
+    // the life's log hooks and the session's window, which must open under
+    // them. The identity is not worth failing a usable workspace over, so
+    // its failure is only printed, and nothing else prints.
+    const launch = async (): Promise<void> => {
+      const identity = gitIdentity !== null
+        && (gitIdentity.name !== warmed?.gitIdentity?.name || gitIdentity.email !== warmed.gitIdentity.email)
+        ? gitIdentity : undefined
+      const printed = await openWindows(workspace, await launches, {
+        shell: identity !== undefined ? [`{ said=$(git config --global user.name '${shellEscape(identity.name)}' 2>&1`
+          + ` && git config --global user.email '${shellEscape(identity.email)}' 2>&1)`
+          + ' || echo "${said:-git config failed}"; }'] : [],
+        tmux: [await hooks],
+      })
+      if (printed.trim() !== '') {
+        console.warn(`Git identity for claimed session ${claimedId} not applied (the warmed-in one stands): ${printed.trim()}`)
+      }
+    }
+    // The commit each checkout starts at: where the re-branch put it, else
+    // where the probe found it.
+    const record = async (): Promise<void> => {
+      await applyWorkspaceEvent({ type: 'workspace-launched', projectId, workspaceId: claimedId })
+      for (const [i, c] of branches.entries()) {
+        const startCommit = preps[i]?.sha ?? c.head
+        if (startCommit === '') continue
+        await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId, workspaceId: claimedId, repoId: c.repoId, startCommit })
+      }
+    }
+    emit('Using prewarmed session...')
+    // The pod is this claim's from here, so the window opens while the
+    // runtime finishes unmarking (under k8s, its Job). All of it settles
+    // before the outcome is read, so a rollback finds nothing still running
+    // in the spare. A failed unmarking fails the claim, window and all: a
+    // unit left marked would be reaped as a spare once its pod went.
+    const [unmarking, launching] = await Promise.allSettled([unmarked, allSucceed([launch(), record()])])
+    if (unmarking.status === 'rejected') throw unmarking.reason
     claimed = true
     spareSettings.delete(claimedId)
-    await applyWorkspaceEvent({ type: 'workspace-launched', projectId, workspaceId: claimedId })
-
-    // The life's log hooks, before any window of it opens, and the commit
-    // each checkout now starts at, one per line.
-    const { stdout } = await runtime.exec(job, [
-      await lifeHooksExec(projectId, claimedId, life, paths),
-      ...branches.map((c) => `{ git -C ${c.seenAt} rev-parse -q --verify HEAD || echo; }`),
-    ].filter((cmd) => cmd !== '').join(' && '))
-    const heads = stdout.split('\n')
-    for (const [i, c] of branches.entries()) {
-      const startCommit = heads[i]?.trim() ?? ''
-      if (startCommit === '') continue
-      await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId, workspaceId: claimedId, repoId: c.repoId, startCommit })
-    }
-
-    emit('Using prewarmed session...')
-    if (opened !== undefined) await launchSessions({ projectId, workspaceId: claimedId, jobName: chosen.jobName }, [opened])
+    if (launching.status === 'rejected') throw launching.reason
     return {
       workspaceId: chosen.workspaceId,
       jobName: chosen.jobName,
@@ -654,6 +722,9 @@ export async function tryClaimPrewarmed(
     }
   } catch (err) {
     if (claimed) throw err
+    // A registration that failed beside a claim that was won leaves the
+    // unmarking in flight, and the reap below must not race it.
+    await unmarked.catch(() => { /* this claim has already failed */ })
     // A VALIDATION error before any change propagates, but only after the
     // rollback below.
     const propagate = !mutated && err instanceof ServerError && err.code === 'VALIDATION'

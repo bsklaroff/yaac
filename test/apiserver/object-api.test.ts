@@ -15,6 +15,7 @@ import {
   listObjects,
   patchObject,
   readObject,
+  removeLabelIf,
 } from '@yaac/server/drivers/k8s/substrate/api'
 import {
   buildEgressWorldDenyNpManifest,
@@ -117,14 +118,21 @@ describe('object writes and reads', () => {
     expect(stored<{ metadata: { labels?: object } }>('configmap', 'prune').metadata.labels).toBeUndefined()
   })
 
-  // The spare claim's compare-and-swap: a merge patch carrying a stale
-  // resourceVersion must be refused, so a second claimer loses.
-  it('refuses a merge patch that carries a stale resourceVersion', async () => {
-    await applyObject(configMap('cas', {}))
-    const seen = (await readObject<{ metadata: { resourceVersion: string } }>(ref('ConfigMap', 'cas')))!
-    const claim = { metadata: { resourceVersion: seen.metadata.resourceVersion, labels: { claimed: 'yes' } } }
-    await patchObject(ref('ConfigMap', 'cas'), claim)
-    expect(apiStatus(await patchObject(ref('ConfigMap', 'cas'), claim).catch((e: unknown) => e))).toBe(409)
+  // The spare claim's compare-and-swap: one request that removes a label
+  // only while it holds the value, so a second claimer loses.
+  it('removes a label only while it holds the value, refusing a second caller and an object without it', async () => {
+    await applyObject(configMap('cas', {}, { 'yaac.prewarmed': 'true', 'example.com/kept': 'x' }))
+    const claim = (): Promise<unknown> =>
+      removeLabelIf(ref('ConfigMap', 'cas'), 'yaac.prewarmed', 'true').catch((e: unknown) => e)
+    const [first, second] = await Promise.all([claim(), claim()])
+    expect([apiStatus(first), apiStatus(second)].sort()).toEqual([422, undefined])
+    expect(stored<{ metadata: { labels: object } }>('configmap', 'cas').metadata.labels).toEqual({ 'example.com/kept': 'x' })
+
+    // Another value, a label with a `/`, and an object with no labels.
+    expect(apiStatus(await removeLabelIf(ref('ConfigMap', 'cas'), 'example.com/kept', 'y').catch((e: unknown) => e))).toBe(422)
+    await removeLabelIf(ref('ConfigMap', 'cas'), 'example.com/kept', 'x')
+    expect(stored<{ metadata: { labels?: object } }>('configmap', 'cas').metadata.labels).toBeUndefined()
+    expect(apiStatus(await claim())).toBe(422)
   })
 
   it('creates once, lists by selector, and deletes', async () => {

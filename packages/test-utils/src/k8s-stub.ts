@@ -94,6 +94,33 @@ function mergePatch(target: unknown, patch: unknown): unknown {
   return out
 }
 
+/**
+ * Apply a JSON patch (RFC 6902) of `test` and `remove` operations, the two
+ * the code sends. A failed `test`, or a path that is not there, is the API
+ * server's 422.
+ */
+function jsonPatch(target: FakeObject, ops: Array<{ op: string; path: string; value?: unknown }>): FakeObject {
+  const out = clone(target)
+  for (const { op, path, value } of ops) {
+    const keys = path.split('/').slice(1).map((k) => k.replaceAll('~1', '/').replaceAll('~0', '~'))
+    const last = keys.pop() ?? ''
+    let parent: unknown = out
+    for (const k of keys) parent = (parent as Record<string, unknown> | undefined)?.[k]
+    const holder = parent !== null && typeof parent === 'object' ? parent as Record<string, unknown> : {}
+    if (!(last in holder)) throw apiError(422, `the server rejected our request: no value at ${path}`)
+    if (op === 'test') {
+      if (JSON.stringify(holder[last]) !== JSON.stringify(value)) {
+        throw apiError(422, `the server rejected our request: test failed at ${path}`)
+      }
+    } else if (op === 'remove') {
+      delete holder[last]
+    } else {
+      unavailable(`a JSON patch "${op}"`)
+    }
+  }
+  return out
+}
+
 function matchesLabels(labels: Record<string, string>, selector: string): boolean {
   const terms = selector.match(/[^,(]+(\([^)]*\))?/g) ?? []
   return terms.map((t) => t.trim()).filter(Boolean).every((term) => {
@@ -236,7 +263,9 @@ class FakeCluster {
         return existing ? clone(existing) : notFound()
       case 'patch': {
         if (!existing) return notFound()
-        this.put(mergePatch(existing, call.body) as FakeObject)
+        this.put(Array.isArray(call.body)
+          ? jsonPatch(existing, call.body as Parameters<typeof jsonPatch>[1])
+          : mergePatch(existing, call.body) as FakeObject)
         return clone(this.store.get(key))
       }
       case 'delete':
@@ -316,7 +345,8 @@ function respond(req: FakeRequest): ReturnType<typeof response> {
   } else if (req.method === 'POST') {
     call = { verb: 'create', ...at, name: (body?.metadata as { name?: string } | undefined)?.name, body }
   } else if (req.method === 'PATCH') {
-    if (contentType !== PatchStrategy.ServerSideApply && contentType !== PatchStrategy.MergePatch) {
+    if (contentType !== PatchStrategy.ServerSideApply && contentType !== PatchStrategy.MergePatch
+      && contentType !== PatchStrategy.JsonPatch) {
       unavailable(`a ${String(contentType)} patch`)
     }
     call = { verb: contentType === PatchStrategy.ServerSideApply ? 'apply' : 'patch', ...at, body }

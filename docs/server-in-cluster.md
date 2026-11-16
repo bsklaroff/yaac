@@ -810,7 +810,8 @@ object (newest wins).
   config; `yaac cluster install` does not. Edit it in Settings → General
   or with `yaac config git-identity`; no re-install needed. A create for an
   owner without one is refused, with where to set it. A prewarmed spare has its identity baked
-  in when warmed, so claiming it re-applies the current identity.
+  in when warmed, so claiming it sets the current identity if it has changed
+  since.
 - **The time zone is a per-user setting on the server.** A pod runs in
   UTC, so every workspace launches with `TZ` set to a zone the clients
   report: the web app on load, the desktop app on start, and `yaac

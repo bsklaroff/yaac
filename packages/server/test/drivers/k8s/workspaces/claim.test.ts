@@ -75,7 +75,7 @@ function cacheSlice(ready: boolean): Parameters<typeof fakeCluster.seed>[0] {
   }
 }
 
-/** The merge patches written to pods. */
+/** The patches written to pods. */
 const podPatches = (): Array<{ name?: string; body?: Record<string, unknown> }> =>
   fakeCluster.callsOf('patch', 'Pod').map(({ name, body }) => ({ name, body }))
 
@@ -97,7 +97,7 @@ describe('claimSpareWorkspace', () => {
   // The Job's mark outlives a dead pod, and a spare reap deletes the files
   // of a unit it finds marked, so the Job must lose it too.
   it('finds the spare by workspace id and drops its prewarmed mark from pod and Job', async () => {
-    await claimSpareWorkspace('s1')
+    await (await claimSpareWorkspace('s1')).unmarked
     for (const kind of ['Pod', 'Job'] as const) {
       expect(labelsOf('s1', kind)).not.toHaveProperty(LABEL_PREWARMED)
       // The other spare is untouched.
@@ -115,28 +115,38 @@ describe('claimSpareWorkspace', () => {
   })
 
   // A selector only filters the listing, so two claimants could both win.
-  // The fresh read and its resourceVersion make the API server reject the
-  // second.
-  it('writes under a compare-and-swap on the spare still being one', async () => {
+  // The one request both tests the label and removes it, so the API server
+  // refuses the second.
+  it('writes under a compare-and-swap on the spare still being one, in one request', async () => {
     await claimSpareWorkspace('s1')
+    const path = `/metadata/labels/${LABEL_PREWARMED}`
     expect(podPatches()).toEqual([{
       name: 'yaac-proj-s1-abcde',
-      body: { metadata: { resourceVersion: '7', labels: { [LABEL_PREWARMED]: null } } },
+      body: [{ op: 'test', path, value: 'true' }, { op: 'remove', path }],
     }])
+    expect(fakeCluster.callsOf('read', 'Pod')).toEqual([])
   })
 
   // Losing the race fails the claim. It is not retried; the caller falls
-  // back to a cold create.
-  it('refuses a spare another claim took, whether before the read or at the write', async () => {
+  // back to a cold create. The Job keeps its mark, which is what a reap
+  // knows the spare by.
+  it('refuses a spare another claim took since it was listed, leaving its Job marked', async () => {
     fakeCluster.intercept((c) => {
-      if (c.verb === 'read') fakeCluster.seed(pod('s1'))
+      if (c.verb === 'patch' && c.kind === 'Pod') fakeCluster.seed(pod('s1'))
     })
-    await expect(claimSpareWorkspace('s1')).rejects.toThrow(/claimed by another caller/)
+    await expect(claimSpareWorkspace('s1')).rejects.toThrow(/422/)
+    expect(labelsOf('s1', 'Job')?.[LABEL_PREWARMED]).toBe('true')
+  })
 
-    fakeCluster.reset()
-    fakeCluster.seed(pod('s1', { [LABEL_PREWARMED]: 'true' }), job('s1'))
-    fakeCluster.intercept((c) => { if (c.verb === 'patch') throw apiError(409, 'the object has been modified') })
-    await expect(claimSpareWorkspace('s1')).rejects.toThrow(/409/)
+  // The claim is won with the pod's write, so the caller can go on; the
+  // Job's is reported apart.
+  it('resolves once the pod is claimed, reporting a Job it could not unmark through `unmarked`', async () => {
+    fakeCluster.intercept((c) => {
+      if (c.verb === 'patch' && c.kind === 'Job') throw apiError(403, 'forbidden')
+    })
+    const { unmarked } = await claimSpareWorkspace('s1')
+    expect(labelsOf('s1')).not.toHaveProperty(LABEL_PREWARMED)
+    await expect(unmarked).rejects.toThrow(/403/)
   })
 
   it('propagates a failed lookup', async () => {
@@ -161,47 +171,6 @@ describe('unmarkClaimedJobs', () => {
   })
 })
 
-describe('claimSpareWorkspace and the npm cache', () => {
-  /** Seed the spare's pod (on the cache or not) and the cache's readiness. */
-  function stage(opts: { admitted: boolean; serving: boolean }): void {
-    fakeCluster.reset()
-    execArgs.length = 0
-    fakeCluster.seed(pod('s1', {
-      [LABEL_PREWARMED]: 'true',
-      ...(opts.admitted ? { [LABEL_NPM_CACHE]: 'true' } : {}),
-    }), job('s1'), cacheSlice(opts.serving))
-  }
-  const execArgv = (): string[] | undefined => execArgs.find((a) => a[0] === 'exec')
-
-  // The cache may have gone down since the spare was warmed.
-  it('re-decides a spare\'s registry against the cache as it is at claim time', async () => {
-    stage({ admitted: true, serving: false })
-    await claimSpareWorkspace('s1')
-    // In the background, off the claim's path.
-    await vi.waitFor(() => expect(execArgv()).toBeDefined())
-    const down = execArgv()!
-    expect(down).toEqual(expect.arrayContaining(['exec', 'yaac-proj-s1-abcde', '--']))
-    // No URL: the script only removes the cache's line.
-    expect(down.at(-1)).toBe('')
-    expect(down.join(' ')).toContain('registry=http://yaac-npm-cache')
-
-    stage({ admitted: true, serving: true })
-    await claimSpareWorkspace('s1')
-    await vi.waitFor(() => expect(execArgv()!.at(-1)).toMatch(/^http:\/\/yaac-npm-cache\..*:4873\/$/))
-  })
-
-  it('leaves a spare the cache does not admit alone, and never fails a claim over it', async () => {
-    stage({ admitted: false, serving: true })
-    await claimSpareWorkspace('s1')
-    await new Promise((r) => setTimeout(r, 20))
-    expect(execArgv()).toBeUndefined()
-
-    stage({ admitted: true, serving: true })
-    execFailure.error = new Error('container not running')
-    await expect(claimSpareWorkspace('s1')).resolves.toBeUndefined()
-  })
-})
-
 describe('registerWorkspace', () => {
   const reg = (o: Partial<WorkspaceRegistration> = {}): WorkspaceRegistration => ({
     workspaceId: 's1',
@@ -218,13 +187,51 @@ describe('registerWorkspace', () => {
     return (JSON.parse(cm.data['registration.json']) as { allowedHosts: string[] }).allowedHosts
   }
 
-  // If the cache still applies, only the registration is rewritten.
+  /** Seed the spare's pod (on the cache or not) and the cache's readiness. */
+  function stage(opts: { admitted: boolean; serving: boolean }): void {
+    fakeCluster.reset()
+    execArgs.length = 0
+    fakeCluster.seed(pod('s1', {
+      [LABEL_PREWARMED]: 'true',
+      ...(opts.admitted ? { [LABEL_NPM_CACHE]: 'true' } : {}),
+    }), job('s1'), cacheSlice(opts.serving))
+  }
+  const execArgv = (): string[] | undefined => execArgs.find((a) => a[0] === 'exec')
+  const open = reg({ allowlist: { hosts: ['*', 'api.example.com'], defaults: false } })
+
+  // If the cache still applies, only the registration is rewritten, and a
+  // pod off the cache is left alone.
   it('writes the registration from the allowlist it is handed', async () => {
-    await registerWorkspace(reg({ allowlist: { hosts: ['*', 'api.example.com'], defaults: false } }))
+    stage({ admitted: false, serving: true })
+    await registerWorkspace(open)
+    await new Promise((r) => setTimeout(r, 20))
 
     expect(registeredHosts()).toEqual(['*', 'api.example.com'])
-    expect(fakeCluster.callsOf('list')).toEqual([])
+    expect(podPatches()).toEqual([])
     expect(execArgs).toEqual([])
+  })
+
+  // The cache may have gone down since the spare was warmed.
+  it('re-decides the registry of a pod that stays on the cache, against the cache as it is now', async () => {
+    stage({ admitted: true, serving: false })
+    await registerWorkspace(open)
+    // In the background, off the claim's path.
+    await vi.waitFor(() => expect(execArgv()).toBeDefined())
+    const down = execArgv()!
+    expect(down).toEqual(expect.arrayContaining(['exec', 'yaac-proj-s1-abcde', '--']))
+    // No URL: the script only removes the cache's line.
+    expect(down.at(-1)).toBe('')
+    expect(down.join(' ')).toContain('registry=http://yaac-npm-cache')
+    expect(labelsOf('s1')?.[LABEL_NPM_CACHE]).toBe('true')
+
+    stage({ admitted: true, serving: true })
+    await registerWorkspace(open)
+    await vi.waitFor(() => expect(execArgv()!.at(-1)).toMatch(/^http:\/\/yaac-npm-cache\..*:4873\/$/))
+
+    // It never fails a registration.
+    stage({ admitted: true, serving: true })
+    execFailure.error = new Error('container not running')
+    await expect(registerWorkspace(open)).resolves.toBeUndefined()
   })
 
   // The cache fetches outside the proxy, so a pod keeps npm access through
