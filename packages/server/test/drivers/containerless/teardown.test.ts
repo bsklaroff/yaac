@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import fsp from 'node:fs/promises'
 import { setDataDir } from '@yaac/shared/paths'
 import { nodeLocalProjectPath } from '@yaac/shared/project-paths'
@@ -15,6 +15,8 @@ const mockKillPids = vi.hoisted(() => vi.fn())
 const mockDescendants = vi.hoisted(() => vi.fn())
 const mockIsSshAgentFor = vi.hoisted(() => vi.fn())
 const mockLivePids = vi.hoisted(() => vi.fn())
+const mockCgroupDir = vi.hoisted(() => vi.fn())
+const mockCgroupPids = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/containerless/host', async (importOriginal) => ({
   ...(await importOriginal<typeof hostModule>()),
   runHost: mockRunHost,
@@ -23,6 +25,8 @@ vi.mock('#drivers/containerless/host', async (importOriginal) => ({
   processTable: () => Promise.resolve(null),
   isSshAgentFor: mockIsSshAgentFor,
   livePids: mockLivePids,
+  cgroupDir: mockCgroupDir,
+  cgroupPids: mockCgroupPids,
 }))
 import {
   destroyProjectSubstrate,
@@ -30,7 +34,7 @@ import {
   detachedTeardownCommand,
   reapNodeLocal,
 } from '#drivers/containerless/teardown'
-import { containerlessJobName, containerlessWorkspacePaths } from '#drivers/containerless/paths'
+import { containerlessJobName, containerlessWorkspacePaths, workspaceSliceName } from '#drivers/containerless/paths'
 import {
   _resetRegistryForTests,
   listWorkspaces,
@@ -47,9 +51,25 @@ const TARGET = {
 }
 let dataDir: string
 
+const USER_CGROUP = '/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service'
+
+/** Whether this host gives a process a systemd slice with a cgroup to read,
+ *  as a launch needs for the sweep. */
+const CAN_SLICE = fs.existsSync('/sys/fs/cgroup/cgroup.controllers')
+  && spawnSync('systemd-run', ['--user', '--scope', '--quiet', '--collect', 'true']).status === 0
+
+/** The cgroup a launch records for the workspace on a host with a systemd
+ *  user session. Read lazily: its name carries the data dir. */
+const sliceUnit = (): string => `${workspaceSliceName(UUID)}.slice`
+const cgroup = (): string => `${USER_CGROUP}/yaac.slice/${sliceUnit()}`
+
+/** Every pid sent `signal`, in order. */
+const signalled = (signal: string): number[] =>
+  mockKillPids.mock.calls.filter((c) => c[1] === signal).flatMap((c) => c[0] as number[])
+
 /** Register a workspace with a known tmux pid, as a launch does, plus an
- *  ssh-agent pid for a project with an SSH remote. */
-function registered(extra: { sshAgentPid?: number } = {}): void {
+ *  ssh-agent pid for a project with an SSH remote, or its cgroup. */
+function registered(extra: { sshAgentPid?: number; cgroup?: string } = {}): void {
   rememberWorkspace({
     projectId: 'demo', workspaceId: UUID,
     createdAtMs: 1_000, launchEnv: {}, tmuxPid: 4242, ...extra,
@@ -76,6 +96,9 @@ beforeEach(() => {
   mockDescendants.mockReturnValue([4242])
   mockIsSshAgentFor.mockReset()
   mockIsSshAgentFor.mockResolvedValue(true)
+  // This server runs in a login session, outside every workspace.
+  mockCgroupDir.mockReset().mockReturnValue('/sys/fs/cgroup/user.slice/user-1000.slice/session-3.scope')
+  mockCgroupPids.mockReset().mockResolvedValue([])
   sessionGone()
 })
 
@@ -110,7 +133,7 @@ describe('destroyWorkspace', () => {
     }
   })
 
-  it('never sweeps a dead workspace\'s recorded pid, which may have been recycled', async () => {
+  it('never signals a dead workspace\'s recorded pid, which may have been recycled', async () => {
     // A dead workspace (e.g. after a host reboot) may have a recycled pid
     // naming an unrelated user process, such as their editor.
     registered()
@@ -118,16 +141,96 @@ describe('destroyWorkspace', () => {
     mockDescendants.mockReturnValue([4242, 5150])
     await destroyWorkspace(TARGET)
     expect(mockDescendants).not.toHaveBeenCalled()
-    expect(mockKillPids).not.toHaveBeenCalled()
+    expect(mockKillPids.mock.calls.flatMap((c) => c[0] as number[])).toEqual([])
   })
 
-  it('sweeps what a pane double-forked away from tmux', async () => {
+  it('ends what is still running under the tmux server', async () => {
     registered()
     // Killing tmux does not reach a dev server that left its process group,
     // and it would hold its port forever.
     mockDescendants.mockReturnValue([4242, 5150, 5151])
     await destroyWorkspace(TARGET)
-    expect(mockKillPids).toHaveBeenCalledWith([5150, 5151], 'SIGTERM')
+    // Not the tmux server's own pid: by now it has exited, and the number
+    // could only be another process's.
+    expect(signalled('SIGTERM')).toEqual([5150, 5151])
+    expect(signalled('SIGKILL')).toEqual([])
+  })
+
+  // What a pane started and then detached from (a daemon, a tmux server of
+  // its own, a yaac server and its workspaces) is no descendant of tmux by
+  // the time of the stop, and is found only by the cgroup it stayed in.
+  it('ends everything in the workspace\'s cgroup, detached or not, and waits for it to empty', async () => {
+    registered({ cgroup: cgroup() })
+    mockCgroupPids.mockResolvedValueOnce([4242, 6001, 6002]).mockResolvedValueOnce([6002, 6003]).mockResolvedValue([])
+    await expect(destroyWorkspace(TARGET)).resolves.toBe(true)
+    expect(mockCgroupPids).toHaveBeenCalledWith(cgroup())
+    expect(mockCgroupPids).toHaveBeenCalledTimes(3)
+    // Each once, including one that appeared after the first signal, and
+    // none killed: they exited inside the grace. A tmux server the cgroup
+    // still lists is one that did not exit, so it is signalled too.
+    expect(signalled('SIGTERM')).toEqual([4242, 6001, 6002, 6003])
+    expect(signalled('SIGKILL')).toEqual([])
+    // The emptied slice would otherwise stay loaded in systemd.
+    expect(mockRunHost).toHaveBeenCalledWith(['systemctl', '--user', 'stop', sliceUnit()], expect.anything())
+
+    // The cgroup names the workspace, so unlike a recorded pid it is good
+    // for one whose tmux server died before this server saw it.
+    mockKillPids.mockClear()
+    restoreWorkspace({
+      projectId: 'demo', workspaceId: UUID, createdAtMs: 1_000, launchEnv: {}, tmuxPid: 4242, cgroup: cgroup(),
+    }, false, { reason: 'agent-exited' })
+    mockCgroupPids.mockResolvedValueOnce([6004]).mockResolvedValue([])
+    await expect(destroyWorkspace(TARGET)).resolves.toBe(true)
+    expect(signalled('SIGTERM')).toEqual([6004])
+  })
+
+  it('kills what ignores SIGTERM for the whole grace, and says so when even that leaves it running', async () => {
+    registered({ cgroup: cgroup() })
+    mockDescendants.mockReturnValue([4242, 5150])
+    mockLivePids.mockReturnValue([5150])
+    mockCgroupPids.mockResolvedValue([6001])
+    vi.useFakeTimers()
+    try {
+      const verdict = destroyWorkspace(TARGET)
+      await vi.advanceTimersByTimeAsync(9_000)
+      expect(signalled('SIGKILL')).toEqual([])
+      await vi.advanceTimersByTimeAsync(7_000)
+      await expect(verdict).resolves.toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(signalled('SIGTERM')).toEqual([5150, 6001])
+    // Only the cgroup's member: a pid from the earlier process table may
+    // be another process by now.
+    expect(new Set(signalled('SIGKILL'))).toEqual(new Set([6001]))
+  })
+
+  it('leaves alone a cgroup that is not this workspace\'s, and one this server may itself be in', async () => {
+    const sweeps = async (recorded: string): Promise<boolean> => {
+      registered({ cgroup: recorded })
+      const inScript = detachedTeardownCommand(TARGET).includes('cgroup.procs')
+      mockCgroupPids.mockClear()
+      await destroyWorkspace(TARGET)
+      expect(mockCgroupPids.mock.calls.length > 0).toBe(inScript)
+      return inScript
+    }
+    expect(await sweeps(cgroup())).toBe(true)
+    // A copied data dir's marker names the original install's cgroup.
+    expect(await sweeps(`${USER_CGROUP}/yaac.slice/yaac-0a0a0a0a_${UUID.replaceAll('-', '')}.slice`)).toBe(false)
+    // The sweep kills whatever a `cgroup.procs` under the dir lists, so the
+    // dir must be a cgroup, named plainly.
+    expect(await sweeps(`/home/u/${sliceUnit()}`)).toBe(false)
+    expect(await sweeps(`/sys/fs/cgroup/../../tmp/${sliceUnit()}`)).toBe(false)
+
+    // A server restarted from one of the workspace's own panes: sweeping
+    // the cgroup would end the server and everything it started since.
+    mockCgroupDir.mockReturnValue(`${cgroup()}/tmux-spawn-1.scope`)
+    expect(await sweeps(cgroup())).toBe(false)
+    // A server that cannot tell where it is.
+    mockCgroupDir.mockReturnValue(null)
+    expect(await sweeps(cgroup())).toBe(false)
+
+    expect(mockRunHost.mock.calls.filter((c) => (c[0] as string[])[0] === 'systemctl')).toHaveLength(1)
   })
 
   it('waits for every process under tmux to exit, and says so when one outlives the wait', async () => {
@@ -314,6 +417,62 @@ describe('detachedTeardownCommand', () => {
     expect(cmd).toContain('|| true')
     expect(cmd).toContain(UUID)
   })
+
+  // The script is what an ordinary stop runs, so it must reach the same
+  // processes as `destroyWorkspace`, and wait for them before the removals.
+  it('ends what is left in the workspace\'s cgroup, between the tmux wait and the removals', () => {
+    expect(detachedTeardownCommand(TARGET)).not.toContain('cgroup.procs')
+    registered({ cgroup: cgroup() })
+    const cmd = detachedTeardownCommand(TARGET)
+    const sweep = cmd.indexOf(`find '${cgroup()}' -name cgroup.procs`)
+    expect(sweep).toBeGreaterThan(cmd.indexOf('has-session'))
+    expect(cmd.indexOf(`systemctl --user stop '${sliceUnit()}'`)).toBeGreaterThan(sweep)
+    expect(cmd.indexOf('rm -')).toBeGreaterThan(cmd.indexOf('systemctl'))
+  })
+
+  /**
+   * Run for real, against a slice systemd makes for the test. A process
+   * that joins the cgroup after the first signal (one a SIGTERM handler
+   * forked, a watcher restarting its child) must still get SIGTERM, not
+   * only the SIGKILL at the end of the grace.
+   */
+  it.skipIf(!CAN_SLICE)('sends SIGTERM once to each process as it appears in the cgroup, and waits for the cgroup to empty', async () => {
+    const unit = sliceUnit()
+    const inSlice = (...argv: string[]): { pid: number; ended: Promise<NodeJS.Signals | null> } => {
+      const child = spawn('systemd-run', ['--user', '--scope', '--quiet', '--collect', `--slice=${unit}`, '--', ...argv], { stdio: 'ignore' })
+      return { pid: child.pid ?? 0, ended: new Promise((resolve) => child.once('exit', (_code, signal) => resolve(signal))) }
+    }
+    try {
+      // Ignores SIGTERM and ends by itself, so the cgroup is still occupied
+      // when the second process joins it.
+      const first = inSlice('sh', '-c', 'trap "" TERM; sleep 1.5; true')
+      let dir = ''
+      await vi.waitFor(() => {
+        dir = path.dirname(path.join('/sys/fs/cgroup', fs.readFileSync(`/proc/${String(first.pid)}/cgroup`, 'utf8').trim().slice('0::'.length)))
+        expect(path.basename(dir)).toBe(unit)
+      }, { timeout: 10_000, interval: 50 })
+      // The real one, for this case only: the server is outside the slice.
+      mockCgroupDir.mockReturnValue('/sys/fs/cgroup/user.slice')
+      registered({ cgroup: dir })
+
+      const state = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless')
+      fs.mkdirSync(state, { recursive: true })
+      const script = spawn('sh', ['-c', detachedTeardownCommand(TARGET)], { stdio: 'ignore' })
+      const done = new Promise((resolve) => script.once('exit', resolve))
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      const late = inSlice('sleep', '60')
+
+      expect(await late.ended).toBe('SIGTERM')
+      expect(await first.ended).toBeNull()
+      // The removals wait for the cgroup to empty.
+      expect(fs.existsSync(state)).toBe(true)
+      await done
+      expect(fs.existsSync(state)).toBe(false)
+      expect(fs.existsSync(dir)).toBe(false)
+    } finally {
+      spawnSync('systemctl', ['--user', 'stop', unit])
+    }
+  }, 30_000)
 
   it('removes the agent socket alongside the tmux one', () => {
     const cmd = detachedTeardownCommand(TARGET)

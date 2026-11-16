@@ -366,6 +366,10 @@ export async function cleanupWorkspaceDetached(params: {
     const target = await beginTeardown(params)
     const runtime = workspaceDriver()
 
+    // Composed before the deregistration below drops what the runtime
+    // knows about the workspace.
+    const runtimeTeardown = runtime.detachedTeardownCommand(target)
+
     // Forwards and egress registration are in-process state a shell script
     // cannot reach.
     await runtime.deregisterWorkspace(workspaceId)
@@ -379,7 +383,7 @@ export async function cleanupWorkspaceDetached(params: {
     // The runtime's teardown, then the workspace's own dirs. Every command is
     // idempotent, so a resumed teardown can re-run it all.
     const script = [
-      runtime.detachedTeardownCommand(target),
+      runtimeTeardown,
       ...scratchDirRms,
       workspaceDirRm,
     ].join('; ')

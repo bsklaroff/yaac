@@ -5,12 +5,12 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { setDataDir } from '@yaac/shared/paths'
+import { installTmpDir, setDataDir } from '@yaac/shared/paths'
 import { workspaceDir } from '@yaac/shared/project-paths'
 import { hostedRemoteUrl } from '@yaac/shared/hosted-git'
 import { agentBinDirs } from '@yaac/shared/tool-install'
 import { substrateFixture } from '#test/support/fake-driver'
-import { hostShellDir } from '#drivers/containerless/paths'
+import { containerlessJobName, containerlessWorkspacePaths, hostShellDir } from '#drivers/containerless/paths'
 import { KEEPER_STARTING, type WorkspaceMount, type WorkspaceSpec } from '#drivers/contract'
 
 // Only host process calls are mocked, so the launch's mkdirs, symlinks,
@@ -21,12 +21,16 @@ const mockRunHost = vi.hoisted(() => vi.fn())
 const mockOnPath = vi.hoisted(() => vi.fn())
 const mockSpawnSshAgent = vi.hoisted(() => vi.fn())
 const mockKillPids = vi.hoisted(() => vi.fn())
+const mockCgroupDir = vi.hoisted(() => vi.fn())
+const mockSpawnDetached = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/containerless/host', async (importOriginal) => ({
   ...(await importOriginal<typeof hostModule>()),
   runHost: mockRunHost,
   onPath: mockOnPath,
   spawnSshAgent: mockSpawnSshAgent,
   killPids: mockKillPids,
+  cgroupDir: mockCgroupDir,
+  spawnDetached: mockSpawnDetached,
 }))
 import { AGENT_SESSION_VARS, launchWorkspace } from '#drivers/containerless/launch'
 import { _resetRegistryForTests, listWorkspaces } from '#drivers/containerless/registry'
@@ -50,9 +54,12 @@ const stateDir = (): string => path.join(dataDir, 'global', 'projects', 'demo', 
 const sessionEnv = (): NodeJS.ProcessEnv => (mockRunHost.mock.calls
   .filter((c) => (c[0] as string[]).includes('new-session')).at(-1)?.[1] as { env: NodeJS.ProcessEnv }).env
 
-/** Every tmux invocation the launch made, as flat argv arrays. */
-const tmuxCalls = (): string[][] =>
-  mockRunHost.mock.calls.map((c) => c[0] as string[]).filter((a) => a[0] === 'tmux')
+/** Every tmux invocation the launch made, as flat argv arrays, less the
+ *  `systemd-run` a Linux launch starts its tmux server through. */
+const tmuxCalls = (): string[][] => mockRunHost.mock.calls
+  .map((c) => c[0] as string[])
+  .map((a) => (a[0] === 'systemd-run' ? a.slice(a.indexOf('--') + 1) : a))
+  .filter((a) => a[0] === 'tmux')
 
 function spec(overrides: Partial<WorkspaceSpec> = {}): WorkspaceSpec {
   return {
@@ -85,6 +92,9 @@ beforeEach(() => {
   mockSpawnSshAgent.mockReset()
   mockSpawnSshAgent.mockResolvedValue(4242)
   mockKillPids.mockReset()
+  // A host with no cgroup to read, unless a case gives it one.
+  mockCgroupDir.mockReset().mockReturnValue(null)
+  mockSpawnDetached.mockReset()
   mockOnPath.mockReset()
   mockOnPath.mockResolvedValue(true)
   fs.mkdirSync(workspaceDir('demo', UUID), { recursive: true })
@@ -608,6 +618,8 @@ describe('launchWorkspace', () => {
 
     vi.stubEnv('SHELL', path.join(bin, 'zsh'))
     vi.stubEnv('ZDOTDIR', path.join(dataDir, 'my-zsh'))
+    // Set only inside a workspace, which this test run may itself be in.
+    delete process.env.YAAC_USER_ZDOTDIR
     await launchWorkspace(spec({
       mounts: [{ source: { kind: 'hostPath', path: piSrc }, mountPath: '/home/yaac/.pi' }],
       env: ['PI_CODING_AGENT_DIR=/home/yaac/.pi/agent', 'GH_TOKEN=gho_project'],
@@ -694,6 +706,77 @@ describe('launchWorkspace', () => {
       }
     },
   )
+
+  // The slice is what a stop reads the workspace's processes from, so it is
+  // recorded only once tmux is seen in it: where systemd cannot make one,
+  // tmux runs beside the server and a stop must not sweep that cgroup.
+  it('starts tmux in a systemd slice of the workspace\'s own, and without one where the host has none to give', async () => {
+    const user = '/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service'
+    const own = path.basename(installTmpDir())
+    const leaf = `${own}_${UUID.replaceAll('-', '')}.slice`
+    const marker = async (): Promise<{ cgroup?: string }> =>
+      JSON.parse(await fsp.readFile(path.join(stateDir(), 'workspace.json'), 'utf8')) as { cgroup?: string }
+    /** Launch with this server in the cgroup `server`, and resolve the
+     *  `systemd-run` arguments tmux was started through. */
+    const knownHostsFile = path.join(dataDir, 'global', 'projects', 'demo', 'known_hosts')
+    const launchFrom = async (server: string, tmuxIn = (unit: string): string => `${user}/${unit}/run-1.scope`): Promise<string[]> => {
+      mockRunHost.mockClear()
+      mockCgroupDir.mockImplementation((pid?: number) => (pid === undefined
+        ? server
+        : tmuxIn(mockRunHost.mock.calls.flatMap((c) => c[0] as string[]).find((a) => a.startsWith('--slice='))?.slice(8) ?? '')))
+      await launchWorkspace(spec({ gitCredentials: [sshRepo()], ssh: { knownHostsFile } }))
+      const started = mockRunHost.mock.calls.map((c) => c[0] as string[]).find((a) => a.includes('new-session')) ?? []
+      return started.slice(0, started.indexOf('tmux'))
+    }
+    const through = (unit: string): string[] => ['systemd-run', '--user', '--scope', '--quiet', '--collect', `--slice=${unit}`, '--']
+
+    // A server in a login session: the slice sits in `yaac.slice`.
+    expect(await launchFrom('/sys/fs/cgroup/user.slice/user-1000.slice/session-3.scope')).toEqual(through(leaf))
+    expect((await marker()).cgroup).toBe(`${user}/${leaf}`)
+    // Its ssh-agent runs there too, not beside this server: a server in
+    // another workspace's pane would leave it in that workspace's cgroup,
+    // for a stop there to end.
+    expect(mockSpawnSshAgent).toHaveBeenLastCalledWith(expect.stringMatching(/-ssh\.sock$/), leaf)
+    // The tmux server no longer sits in this server's login session, so
+    // an idle client of it does: systemd ends a user's slices with their
+    // last session.
+    const sock = containerlessWorkspacePaths(containerlessJobName('demo', UUID)).tmuxSock
+    expect(mockSpawnDetached.mock.calls).toEqual([[['tmux', '-S', sock, 'wait-for', 'yaac-hold']]])
+
+    // A server in a pane of another install's workspace (the dev setup):
+    // below that workspace's slice, so stopping it reaches this one.
+    const outer = `${user}/yaac.slice/yaac-0a0a0a0a_outer.slice`
+    expect(await launchFrom(`${outer}/tmux-spawn-1.scope`)).toEqual(through(`yaac-0a0a0a0a_outer-${leaf}`))
+
+    // A server in a pane of one of its OWN workspaces (`yaac server
+    // restart` typed there): not below it, or stopping that workspace once
+    // the server has moved on would end this one. Alone, and inside another
+    // install's workspace.
+    expect(await launchFrom(`${user}/yaac.slice/${own}_other.slice/tmux-spawn-1.scope`)).toEqual(through(leaf))
+    expect(await launchFrom(`${outer}/yaac-0a0a0a0a_outer-yaac.slice/yaac-0a0a0a0a_outer-${own}_other.slice/tmux-spawn-1.scope`))
+      .toEqual(through(`yaac-0a0a0a0a_outer-${leaf}`))
+
+    // No user session: systemd-run fails, and tmux starts as the server's
+    // own child, in the server's cgroup, with nothing recorded to sweep.
+    mockSpawnDetached.mockClear()
+    mockRunHost.mockImplementation((argv: string[]) => (argv[0] === 'systemd-run'
+      ? Promise.reject(new Error('Failed to connect to bus'))
+      : Promise.resolve({ stdout: '4242', stderr: '' })))
+    await launchFrom('/sys/fs/cgroup/system.slice/yaac.service', () => '/sys/fs/cgroup/system.slice/yaac.service')
+    expect(mockRunHost.mock.calls.map((c) => c[0] as string[]).filter((a) => a.includes('new-session')).map((a) => a[0]))
+      .toEqual(['systemd-run', 'tmux'])
+    expect((await marker()).cgroup).toBeUndefined()
+
+    // No cgroup tree this server can read (macOS, cgroup v1 or v1 beside
+    // v2): no slice is asked for, since a stop could not read it either.
+    mockRunHost.mockReset().mockResolvedValue({ stdout: '4242', stderr: '' })
+    expect(await launchFrom(null as unknown as string)).toEqual([])
+    expect(mockRunHost.mock.calls.map((c) => (c[0] as string[])[0])).not.toContain('systemd-run')
+    expect((await marker()).cgroup).toBeUndefined()
+    expect(mockSpawnDetached).not.toHaveBeenCalled()
+    expect(mockSpawnSshAgent).toHaveBeenLastCalledWith(expect.stringMatching(/-ssh\.sock$/), undefined)
+    expect(listWorkspaces()).toHaveLength(1)
+  })
 
   it('tears down what it started when its tmux call fails', async () => {
     mockRunHost.mockImplementation((argv: string[]) => {

@@ -69,6 +69,9 @@ export async function realizeGitAuth(params: {
   knownHostsFile: string | undefined
   /** Where the ssh-agent binds, if one is needed. */
   agentSock: string
+  /** The workspace's systemd slice, where it has one, for the ssh-agent to
+   *  run in. */
+  slice?: string
   /** A previous launch's ssh-agent, to kill. */
   priorAgentPid?: number
 }): Promise<WorkspaceGitAuth> {
@@ -111,6 +114,7 @@ export async function realizeGitAuth(params: {
     dir,
     agentSock: params.agentSock,
     credentials: ssh,
+    ...(params.slice !== undefined ? { slice: params.slice } : {}),
     ...(params.priorAgentPid !== undefined ? { priorAgentPid: params.priorAgentPid } : {}),
   })
   return {
@@ -135,6 +139,7 @@ async function startWorkspaceSshAgent(params: {
   dir: string
   agentSock: string
   credentials: Ssh[]
+  slice?: string
   priorAgentPid?: number
 }): Promise<{ sock: string; pid: number; keyTable: string }> {
   const { dir, agentSock, credentials } = params
@@ -145,7 +150,7 @@ async function startWorkspaceSshAgent(params: {
   // ssh-agent will not bind over an existing socket.
   await fs.rm(agentSock, { force: true })
 
-  const pid = await spawnSshAgent(agentSock)
+  const pid = await spawnSshAgent(agentSock, params.slice)
   const env = { SSH_AUTH_SOCK: agentSock }
   try {
     const sshDir = path.join(dir, 'ssh')

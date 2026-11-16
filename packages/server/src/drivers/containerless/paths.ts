@@ -58,6 +58,17 @@ export function tmuxSockDir(): string {
 }
 
 /**
+ * The name of the systemd slice a workspace's processes are kept in, where
+ * the host has a systemd user session (`launchWorkspace`). It carries the
+ * install and the workspace, so no other workspace has the same one: not
+ * another install's, and not one in a copy of this data dir. systemd nests
+ * a slice at each `-` in its name, so this one sits directly in `yaac.slice`.
+ */
+export function workspaceSliceName(workspaceId: string): string {
+  return `${path.basename(installTmpDir())}_${workspaceId.replace(/[^A-Za-z0-9]/g, '')}`
+}
+
+/**
  * Characters that are unsafe in the unquoted paths the layers above embed in
  * shell commands. Pod paths are constants; these come from the temp and data
  * dirs, so they are checked.

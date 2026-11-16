@@ -53,6 +53,70 @@ stale reaper looks at, `sleep 2147483647` here because macOS's sleep has no
 `infinity`, docs/sessions.md; the tmux options the webapp terminal needs),
 because that machinery is shared by both drivers.
 
+### Stopping one
+
+A stop runs `tmux kill-server`, which hangs up every pane, waits for the
+server to exit, and then ends whatever the workspace started that is still
+running. Only after that does it remove what those processes write to: the
+sockets, the state dir, the scratch dirs.
+
+Killing tmux does not reach a process that detached from it: a dev server
+that double-forked, an agent's background task whose shell exited, a tmux
+server the workspace started for itself. Init adopts each one, so no parent
+link leads back to the workspace. They are found by cgroup instead. On a host
+with a systemd user session, a launch starts the tmux server through
+`systemd-run --user --scope` in a slice of the workspace's own,
+`yaac-<install hash>_<workspace id>.slice`. tmux puts each pane in a scope
+of its server's slice, and a process keeps its cgroup however it detaches,
+so the slice's cgroup holds everything the workspace started and nothing
+else. The launch records that cgroup's directory in the marker, and a stop
+reads its members from there.
+
+- **Signals.** Everything in the cgroup gets SIGTERM, so a build finishes
+  writing its output. What is still there ten seconds later gets SIGKILL: a
+  process that ignores SIGTERM would otherwise hold the workspace's files and
+  ports for good. The stop then removes the emptied slice from systemd.
+- **A server inside a workspace.** A launch names its slice below the slice
+  the server is in, so a yaac server started in another install's workspace
+  (this repo's dev setup) puts its workspaces inside that workspace's
+  cgroup, and stopping the outer workspace takes them down too. A server
+  inside one of its own workspaces, where a `yaac server restart` typed in a
+  pane puts it, does not nest under that workspace: stopping it later would
+  end every workspace launched meanwhile.
+- **What a stop will not sweep.** A stop ignores a recorded cgroup that is
+  not a directory under `/sys/fs/cgroup` named for its own workspace and
+  install: a copied data dir's markers name the original's. It also leaves
+  the cgroup alone unless the server can tell it is outside it. A server
+  restarted from one of the workspace's panes is inside. The idle clients
+  that server starts beside itself for other workspaces ("Lifetime") stay
+  in this workspace's cgroup, and end with it if the workspace is stopped
+  after the server has moved out; a server in a pane has no login session
+  for them to hold open.
+- **Lifetime.** Unless lingering is on (`loginctl enable-linger`), systemd
+  stops a user's manager, and every slice in it, when the user's last login
+  session ends, and a session lasts only while a process is in it. A tmux
+  server in a slice is not in the session the yaac server was started from,
+  so a launch leaves an idle client of it there (`tmux wait-for`), which
+  exits when the tmux server does. Workspaces therefore outlive a logout,
+  and a server that is down, as they do without a slice.
+- **Without a slice.** A launch asks for one only where the server can read
+  its own cgroup under `/sys/fs/cgroup`, which rules out macOS and a host on
+  cgroup v1, alone or with v2 mounted beside it. `systemd-run` then fails
+  where there is no user session to ask (a server started from cron or a
+  system unit, a container). In each case tmux starts as the server's own
+  child and a stop ends the tmux server only; what detached keeps running.
+  A tmux built without systemd support keeps its panes in the server's
+  scope, which is inside the slice all the same.
+- **What escapes the slice.** A process started through another service
+  manager is in that manager's cgroup, not the workspace's: a `systemd-run`
+  unit, a container (its runtime moves it to a scope of its own), anything a
+  daemon outside the workspace was asked to start.
+
+Both teardowns do this: `destroyWorkspace`, and the detached script an
+ordinary stop runs (`detachedTeardownCommand`). `destroyWorkspace` also
+sends one SIGTERM to the tmux server's descendants as a process table listed
+them when the stop began, which is all it can do without a slice.
+
 ## Paths
 
 Every tmux command, `git -C` call and prompt script written above the driver
@@ -447,7 +511,8 @@ one host each get their own. A repo on that host the workspace has no
 checkout of gets none.
 
 An SSH key is never written to disk. The launch starts an **ssh-agent per
-workspace**, detached beside the tmux server, and pipes each of yaac's
+workspace**, detached beside the tmux server and in the workspace's own
+slice where it has one ("Stopping one"), and pipes each of yaac's
 generated keys (docs/git-credentials.md) into `ssh-add -`. Only the public
 halves go in the state dir, with a table of host, repo path and public key
 file. `GIT_SSH_COMMAND` is `yaac-git-ssh` (staged with the other
@@ -638,6 +703,9 @@ startup.
 - **socat**: required for `--mode acp`, whose chat transport uses it to dial
   acpd; `yaac host check` only warns, and an acp-mode create refuses.
 - **lsof**: port detection. Without it workspaces report no ports.
+- **A systemd user session** (Linux): optional, and not checked. With one,
+  a stop also ends what a workspace's processes detached from it; without
+  one it ends the tmux server only ("Stopping one").
 - **curl**: used by `yaac-mama`.
 
 Tools the agents themselves use (`ripgrep`, `fd`, `gh`, `jq`) are not
@@ -700,3 +768,11 @@ agent behavior. The project also runs the `test/e2e-cli` files whose commands
 need no workspace runtime (`auth-cli`, `project-cli`, `workspace-cli`), so
 they are checked where there is no cluster as well as in the k8s tier. The
 driver's unit tests mock `host.ts`, its whole process boundary.
+
+Stopping a test's server leaves its workspaces running, as it would a
+user's. `createYaacTestEnv`'s cleanup therefore stops every workspace
+started under its scratch dir before removing it, and the tier's global
+setup does the same for scratch dirs whose owning process is gone, which is
+what an interrupted run leaves (`packages/test-utils/src/test-workspaces.ts`).
+A workspace is matched by the directory its tmux server was started in, so
+neither reaches another rig's workspaces or the developer's own.
