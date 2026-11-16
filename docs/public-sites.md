@@ -115,7 +115,7 @@ the live release's pod IP. A ClusterIP would hide a flip from Envoy: pooled
 keep-alive connections to it stay pinned to the old pod by conntrack. With
 pod IPs, new requests move as soon as DNS changes, and connections to the
 old release finish. Where CoreDNS answers `cluster.local` names without
-its cache (kind and the `infra/` clusters; docs/cluster-setup.md "Uncached
+its cache (kind and `infra/hetzner-k3s`; docs/cluster-setup.md "Uncached
 cluster DNS"), the router sees a flip within about a second. An unknown
 `Host` gets a 404 and a site with no live release a 503. WebSocket upgrades
 are on and the route timeout is off.

@@ -2204,8 +2204,8 @@ describe('runClusterInstall', () => {
   })
 
   it('--byo honors an explicit pod-CIDR and veth-prefix config', async () => {
-    // The EKS shape: operator-managed, policy-only Calico (in calico-system)
-    // over the VPC CNI, so pod IPs in no IPPool or podCIDR, and `eni*` veths.
+    // Operator-managed, policy-only Calico (in calico-system) over the AWS
+    // VPC CNI, so pod IPs in no IPPool or podCIDR, and `eni*` veths.
     // Whether the prefix matches the nodes' routes is the cluster check's
     // veth-source gate.
     vi.stubEnv('YAAC_POD_CIDRS', '172.31.0.0/16')
@@ -2320,7 +2320,7 @@ describe('runClusterInstall', () => {
   })
 
   it('--byo finds kube-proxy however the cluster labels it, and accepts a declared external one', async () => {
-    // kubeadm/EKS/kind label kube-proxy `k8s-app`; GKE and AKS use
+    // kubeadm/kind label kube-proxy `k8s-app`; GKE and AKS use
     // `component`.
     stageAdoptCidrs()
     const gke = makeDeps({ run: adoptRun({ kubeProxyLabel: 'component' }) })

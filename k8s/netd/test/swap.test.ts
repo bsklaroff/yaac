@@ -76,7 +76,7 @@ describe('applySwapBounds', () => {
 
   it('bounds each pod on whichever cgroup layout the node uses, then leaves a correct value alone', async () => {
     const fs = cgroups({
-      // k3s/EKS: systemd driver under kubepods.slice.
+      // k3s: systemd driver under kubepods.slice.
       'kubepods.slice/kubepods-burstable.slice/kubepods-burstable-poda1_b2.slice/memory.swap.max': 'max\n',
       // kind: kubelet nested under kubelet.slice.
       'kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-besteffort.slice/kubelet-kubepods-besteffort-podc3_d4.slice/memory.swap.max': 'max\n',

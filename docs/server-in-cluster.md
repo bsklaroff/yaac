@@ -327,7 +327,7 @@ drops its endpoint while it restarts), it keeps the last good policy and
 retries on the next pass, while the other policies still render.
 
 The server can still lose the apiserver if every endpoint moves at once
-where it cannot follow (an EKS control plane replacing its network
+where it cannot follow (a managed control plane replacing its network
 interfaces, say). Nothing in-cluster can repair that, so `yaac cluster
 start` and `yaac cluster restart` render the policy from this machine before
 they start the pod, and `yaac cluster check` points there.

@@ -46,11 +46,29 @@ token for it with read & write access. The autoscaler and the volume driver
 create servers and volumes in that project, so a dedicated one keeps
 teardown simple.
 
-In the Tailscale admin console, follow the four steps in
-`infra/aws-eks/README.md` "Before you apply": MagicDNS and HTTPS
-certificates, the operator's tag owners, an OAuth client for the operator,
-and optionally a user-owned (untagged) auth key, set as
-`tailscale_auth_key`, that joins the control node to your tailnet as you.
+In the Tailscale admin console:
+
+1. **DNS**: turn on MagicDNS and HTTPS certificates. The server's origin is
+   `https://yaac.<tailnet>.ts.net`, with a certificate the operator gets
+   for it.
+2. **Access controls**: let the operator own its tags.
+
+   ```json
+   "tagOwners": {
+     "tag:k8s-operator": [],
+     "tag:k8s": ["tag:k8s-operator"]
+   }
+   ```
+
+3. **Settings → OAuth clients**: create a client with write access to
+   *Devices Core*, *Auth Keys* and *Services*, tagged `tag:k8s-operator`.
+   Its ID and secret go in `terraform.tfvars`.
+4. Optionally, **Settings → Keys**: generate a one-off auth key **without**
+   tags, and set it as `tailscale_auth_key`. The control node then joins
+   the tailnet as you. It must be user-owned: the yaac server refuses
+   requests from tagged devices (docs/remote-hosting.md), and install
+   checks the server's origin from the control node. Without a key, you
+   log the node in yourself (below).
 
 ## Remote state
 
@@ -178,19 +196,27 @@ plans a new node from the labels and taints in its cluster config
 ## The control node is not disposable
 
 It holds the k3s datastore (`/var/lib/rancher/k3s/server/db`) and the
-install's identity (`~yaac/.yaac-client/server.json`, see
-`infra/aws-eks/README.md` "The host holds the install's identity"). tofu
-never replaces it on its own: later user-data and image changes are
-ignored. Back both up. The shared claim's bytes are on the NFS volume, which
+install's identity (`~yaac/.yaac-cluster/install.json`). tofu never
+replaces it on its own: later user-data and image changes are ignored.
+Back both up. The shared claim's bytes are on the NFS volume, which
 survives the server, but rebinding retained volumes into a new cluster is
 done by hand.
+
+Without `install.json`, install refuses the cluster as another install's
+("already runs the yaac server of another install"). To recover, write the
+file again with the install id the refusal names:
+
+```json
+{"driver": "k8s", "byo": true, "installId": "<id from the refusal>",
+ "clusterUid": "<kubectl get ns kube-system -o jsonpath={.metadata.uid}>"}
+```
 
 ## Upgrading
 
 - **yaac**: on the control node as `yaac`, `cd ~/yaac`, check out the new
   ref, `pnpm install && pnpm build && npm install -g .`, then re-run
   install.
-- **k3s**: bump `k3s_version` to the Kubernetes minor kind and EKS use
+- **k3s**: bump `k3s_version` to the Kubernetes minor kind uses
   (docs/cluster-setup.md "kind and Kubernetes versions"), and
   `autoscaler_version` with it once the autoscaler has released that minor,
   then apply. That re-runs the k3s installer on the control node. New

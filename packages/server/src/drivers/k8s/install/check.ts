@@ -376,8 +376,8 @@ async function runNodeLocalFsCheck(): Promise<CheckResult> {
         shared.length > 0 ? `workspace trees share kubelet's filesystem on ${shared.join(', ')}` : '',
         unread.length > 0 ? `could not tell on ${unread.join(', ')}` : '',
       ].filter(Boolean).join('; '),
-      fix: 'Mount a filesystem of its own at /var/lib/yaac/node on each node (the infra/ modules do), '
-        + 'so a full workspace tree cannot fill the disk kubelet and containerd use.',
+      fix: 'Mount a filesystem of its own at /var/lib/yaac/node on each node '
+        + '(as infra/hetzner-k3s does), so a full workspace tree cannot fill the disk kubelet and containerd use.',
     }
   } catch (err) {
     return { name, status: 'warn', detail: `could not check the node-local filesystem (${k8sErrorSummary(err)})` }

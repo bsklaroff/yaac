@@ -251,7 +251,6 @@ for a 550 GB install.
   first TB.
 - The README's "The control node is not disposable" section points at this
   instead of asking for a datastore backup.
-- infra/aws-eks/README.md gets the same section with an S3 bucket.
 
 ## Security
 

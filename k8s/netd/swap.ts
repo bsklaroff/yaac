@@ -72,7 +72,7 @@ export const KUBEPODS_CGROUPS = ['kubepods.slice', 'kubelet.slice/kubelet-kubepo
 
 /**
  * Candidate pod cgroups, relative to the cgroup root: the systemd driver's
- * slices as k3s and EKS lay them out, kind's (kubelet nested under
+ * slices as k3s lays them out, kind's (kubelet nested under
  * kubelet.slice), and the cgroupfs driver's directories.
  */
 export function podCgroupCandidates(uid: string): string[] {

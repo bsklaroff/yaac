@@ -792,7 +792,7 @@ describe('ensureGvisorRuntime', () => {
         const set = await run(`version = 2\n[plugins."${CRI_PLUGIN_KEY_V2}".registry]\n  config_path = "${NODE_CONTAINERD_CERTS_DIR}"\n`)
         expect(set.out).toContain('changed=0')
         expect(set.after).not.toContain(REGISTRY_CONFIG_MARKER)
-        // A list including it (EKS AL2023) or a TOML literal string: unchanged.
+        // A list including it or a TOML literal string: unchanged.
         for (const value of [`"${NODE_CONTAINERD_CERTS_DIR}:/etc/docker/certs.d"`, `'${NODE_CONTAINERD_CERTS_DIR}'`]) {
           const listed = await run(`version = 2\n[plugins."${CRI_PLUGIN_KEY_V2}".registry]\n  config_path = ${value}\n`)
           expect(listed.out).toContain('changed=0')

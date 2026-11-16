@@ -18,7 +18,7 @@ import { env } from '@yaac/shared/env'
 
 /**
  * The CNI gate for `--byo`: checks that a Calico yaac did not install
- * (self-managed, or provider-managed on GKE, AKS or EKS) can carry the
+ * (self-managed, or provider-managed on GKE or AKS) can carry the
  * netd egress redirect (docs/cluster-setup.md "The CNI gate",
  * docs/workspace-egress.md).
  *
@@ -399,7 +399,7 @@ function felixBool(raw: string): boolean {
 /**
  * Where calico-node runs: `kube-system` for a manifest install, and
  * `calico-system` for one the Tigera operator manages, which is how Calico
- * is installed on EKS and AKS.
+ * is installed on AKS.
  */
 export const CALICO_NAMESPACES = ['kube-system', 'calico-system']
 
@@ -428,7 +428,7 @@ export async function gatherCniFacts(): Promise<CniFacts> {
       readCalicoNode(),
       // All of them: per-node overrides count too.
       readList<RawFelixConfig>('crd.projectcalico.org/v1', 'FelixConfiguration'),
-      // kubeadm/EKS/kind label `k8s-app`; GKE and AKS label `component`.
+      // kubeadm/kind label `k8s-app`; GKE and AKS label `component`.
       kubeProxyPods('k8s-app=kube-proxy').then(async (byK8sApp) => {
         if (byK8sApp.kind === 'error') return byK8sApp
         if ((valueOf(byK8sApp)?.items ?? []).length > 0) return byK8sApp

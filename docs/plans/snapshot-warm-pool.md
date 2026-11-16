@@ -3,7 +3,7 @@
 **Blocked on upstream: do not implement until
 [KEP-5823](https://github.com/kubernetes/enhancements/issues/5823)
 (pod-level checkpoint/restore) ships at least alpha in a Kubernetes release
-we can run on kind and EKS.** The KEP owns the hard part, which is getting
+we can run on kind and k3s.** The KEP owns the hard part, which is getting
 kubelet and the runtime to create a pod *as a restore* of a checkpoint.
 Building that ourselves would mean driving `runsc` behind the kubelet's back,
 and that work would be thrown away once the KEP lands. The prep in
@@ -39,11 +39,7 @@ make sense once spare RAM, not claim time, is what limits pool size.
   and in the k3s component args (`infra/hetzner-k3s`), so both are usable
   from the first alpha release, once kind ships a node image and k3s a
   release for that minor. k3s runs on the host's containerd, so the shim
-  support restore needs is a host upgrade rather than a k3s release. EKS
-  does not enable alpha gates, so EKS has to wait for the gate to be on by
-  default, usually two or more releases after alpha. Every install runs one
-  Kubernetes minor (`docs/cluster-setup.md`), so using snapshots before
-  then means leaving the feature off on EKS.
+  support restore needs is a host upgrade rather than a k3s release.
 - **kubernetes-sigs/agent-sandbox** (v1.0.x): `SandboxWarmPool` keeps
   running pods. Its suspend/resume deletes the pod and keeps the PVCs, so
   memory is lost. Memory snapshots exist only as a client wrapper over

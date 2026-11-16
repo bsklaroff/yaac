@@ -11,7 +11,7 @@ A workspace runs on one of two drivers, decided by how you start the server:
   an egress proxy that holds your real credentials. One command installs it
   wherever you want it to run: a kind cluster on a single Linux or macOS
   machine, a self-managed multi-node cluster (on a few Hetzner boxes, say), or
-  a managed cloud such as AWS EKS
+  a cloud-managed one
   ([docs/cluster-setup.md](docs/cluster-setup.md#bring-your-own-cluster)).
 - **containerless** (`yaac server start`): agents run directly on your machine,
   each workspace in its own git checkout, like other multi-agent managers.

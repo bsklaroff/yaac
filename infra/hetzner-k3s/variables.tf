@@ -90,7 +90,7 @@ variable "ssh_source_cidrs" {
 }
 
 variable "k3s_version" {
-  description = "k3s release every node installs. Keep its Kubernetes minor equal to kind's and EKS's (docs/cluster-setup.md \"kind and Kubernetes versions\")."
+  description = "k3s release every node installs. Keep its Kubernetes minor equal to kind's (docs/cluster-setup.md \"kind and Kubernetes versions\")."
   type        = string
   default     = "v1.37.1+k3s1"
 }

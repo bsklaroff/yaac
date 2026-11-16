@@ -359,11 +359,11 @@ gigabytes during a stop, and the stopped workspace's final pass needs room
 for what it changed last. If that pass fails for want of space, so does its
 salvage, and the tree stays until a restart with `--restore-newest` or a
 delete gives it up; the next node-local sweep then removes it, freeing the
-node. Where yaac provisions nodes (`infra/hetzner-k3s`,
-`infra/aws-eks`), the bootstrap puts the node-local root on a filesystem of
-its own, so a tree write past it fails with `ENOSPC` while kubelet and
-containerd never see pressure. `yaac cluster check`'s `node-local-fs` gate
-warns on a byo node whose node-local root shares kubelet's filesystem.
+node. Where yaac provisions nodes (`infra/hetzner-k3s`), the bootstrap
+puts the node-local root on a filesystem of its own, so a tree write past
+it fails with `ENOSPC` while kubelet and containerd never see pressure.
+`yaac cluster check`'s `node-local-fs` gate warns on a byo node whose
+node-local root shares kubelet's filesystem.
 
 ## File routes
 

@@ -492,7 +492,7 @@ export function gvisorInstallScript(): string {
     '',
     `  certs=${q(NODE_CONTAINERD_CERTS_DIR)}`,
     `  if grep -qE '^[[:space:]]*config_path[[:space:]]*=' "$cfg"; then`,
-    // A `:`-separated list containing certs.d counts (EKS AL2023 ships
+    // A `:`-separated list containing certs.d counts (some distros ship
     // `certs.d:/etc/docker/certs.d`).
     `    if ! grep -qE ${q(`^[[:space:]]*config_path[[:space:]]*=[[:space:]]*["']([^"']*:)?${NODE_CONTAINERD_CERTS_DIR.replace(/\./g, '\\.')}/?(:[^"']*)?["']`)} "$cfg"; then`,
     '      echo "yaac-gvisor: $cfg sets a registry config_path other than $certs, where'
