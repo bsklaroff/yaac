@@ -74,8 +74,8 @@ async function workspace(name: string): Promise<{ ckpt: string; gitDir: string; 
 
 interface Life { name: string; tree: string; scratch: string; args: string[]; trigger: string }
 
-/** A life of the workspace: its start instruction written, its node dirs
- *  made, as the server and the node-dirs init container do. */
+/** A life of the workspace: its start instruction written as the server
+ *  does, its node dirs made as kubelet does. */
 async function life(
   ws: { ckpt: string; gitDir: string; root: string }, name: string, restore?: string, newestReadable = false,
 ): Promise<Life> {
@@ -95,9 +95,10 @@ async function life(
   return { name, tree, scratch, trigger, args: ['--tree', tree, '--scratch', scratch, '--ckpt', ws.ckpt, '--life', name] }
 }
 
-function start(l: Life): ChildProcess {
+function start(l: Life, own: string[] = []): ChildProcess {
   // Passes only on the trigger, so a test decides what each one sees.
-  const child = spawn(script, ['run', ...l.args, '--trigger', l.trigger, '--interval', '3600'], { stdio: ['ignore', 'ignore', 'pipe'] })
+  const args = ['run', ...l.args, '--trigger', l.trigger, '--interval', '3600', ...(own.length > 0 ? ['--own', own.join(':')] : [])]
+  const child = spawn(script, args, { stdio: ['ignore', 'ignore', 'pipe'] })
   child.stderr?.on('data', (b: Buffer) => { process.stderr.write(b) })
   return child
 }
@@ -365,6 +366,53 @@ describe('yaac-tree', () => {
     run2.kill('SIGTERM')
     expect(await exited(run2)).toBe(0)
   }, 180_000)
+
+  // kubelet makes a pod's missing node-local folders as root. This test
+  // has no root to stand in for it, so the folders start in another of its
+  // own groups, which the program may change without privilege.
+  const otherGid = process.getgroups?.().find((g) => g !== gid)
+  it.skipIf(otherGid === undefined)('hands its folders to the install uid once per life, and only the folders themselves', async () => {
+    const ws = await workspace('owned')
+    const one = await life(ws, 'L1')
+    const opencode = path.join(ws.root, 'node', 'opencode')
+    const victim = path.join(ws.root, 'victim')
+    const inside = path.join(opencode, 'inside')
+    for (const d of [victim, inside]) await fs.mkdir(d, { recursive: true })
+    await fs.symlink(victim, path.join(opencode, 'link'))
+    for (const d of [one.tree, one.scratch, opencode, inside, victim]) await fs.chown(d, uid, otherGid!)
+    const group = async (p: string): Promise<number> => (await fs.lstat(p)).gid
+
+    const run = start(one, [opencode])
+    await waitFor(() => probe(one))
+    // Ready means owned: the workspace container starts on folders it can write.
+    for (const d of [one.tree, one.scratch, opencode]) expect(await group(d), d).toBe(gid)
+    // Nothing below a folder, and nothing a link in it names.
+    expect(await group(inside)).toBe(otherGid)
+    expect(await group(victim)).toBe(otherGid)
+
+    // A restarted container goes straight to its passes: what the agent
+    // has since made of its root is left as it is.
+    run.kill('SIGKILL')
+    await exited(run)
+    await fs.chown(one.tree, uid, otherGid!)
+    const again = start(one, [opencode])
+    // Touched until a pass lands, since the program reads the trigger's
+    // first mtime only once it is up.
+    await waitFor(async () => {
+      await fs.utimes(one.trigger, new Date(), new Date())
+      return manifest(ws, 'L1')
+    })
+    expect(await group(one.tree)).toBe(otherGid)
+    again.kill('SIGKILL')
+    await exited(again)
+
+    // Nor does a salvage or an import, whose tree may be read-only.
+    await execFileAsync(script, ['import', ...one.args])
+    expect(await group(one.tree)).toBe(otherGid)
+    await execFileAsync(script, ['salvage', ...one.args])
+    expect(await fs.readdir(one.tree)).toEqual([])
+    expect(await group(one.tree)).toBe(otherGid)
+  }, 120_000)
 
   it('salvages a killed life\'s tree, and leaves one that never started', async () => {
     const ws = await workspace('salvage')

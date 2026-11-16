@@ -163,7 +163,7 @@ The data dir has the same three tiers on every substrate: `global/`,
 hostPath; here they are plain subdirectories, which a workspace reaches by
 path. The only difference: a node-local source dir that does not exist yet
 (the project's pnpm store, on its first workspace) is created by the driver,
-where a pod's init container would create it.
+where kubelet would create it for a pod.
 
 ## The workspace's environment
 

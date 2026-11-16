@@ -3,7 +3,7 @@ import { PROJECT_CONFIG_DEFAULTS } from '@yaac/test-utils/project-fixture'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 import { installId } from '#drivers/k8s/substrate'
 // A setup value, not a unit under test.
-import { PRE_STOP_GRACE_SECONDS } from '#drivers/k8s/workspaces/pod-job'
+import { PRE_STOP_GRACE_SECONDS, TREE_FINAL_PASS_SECONDS } from '#drivers/k8s/workspaces/pod-job'
 
 vi.mock('#drivers/k8s/substrate/stream-relay', async (importOriginal) => ({
   ...(await importOriginal<typeof streamRelayModule>()),
@@ -29,6 +29,8 @@ vi.mock('#drivers/k8s/cluster', async (importOriginal) => ({
   proxyServiceClusterIp: mockProxyClusterIp,
   servingNpmCacheUrl: mockNpmCacheUrl,
   ensureBuilderImage: () => Promise.resolve('registry.local/podman-stable:v5.5'),
+  // The tree container's image, which hashing the Dockerfiles would name.
+  resolveTrustedLayers: () => Promise.resolve({ base: { tag: 'yaac-base:abc' } }),
 }))
 
 vi.mock('node:fs/promises', () => ({
@@ -42,16 +44,17 @@ import type * as streamRelayModule from '#drivers/k8s/substrate/stream-relay'
 import type * as clusterModule from '#drivers/k8s/cluster'
 import { launchWorkspace, prepareWorkspaceSubstrate,
 } from '#drivers/k8s/workspaces/launch'
-import type { WorkspaceSpec, WorkspaceSubstrate } from '#drivers/contract'
+import type { WorkspaceSpec, WorkspaceSubstrate, WorkspaceTree } from '#drivers/contract'
 import path from 'node:path'
-import { setDataDir } from '@yaac/shared/paths'
+import { globalPath, setDataDir } from '@yaac/shared/paths'
 import {
-  cachedPackagesDir,
   opencodeDataDir,
   claudeDir,
   projectDir,
   secretKeyPath,
+  workspaceCheckpointsDir,
   workspaceDir,
+  workspaceTreeDir,
 } from '@yaac/shared/project-paths'
 
 // Mount sources depend on each path's tier, so paths must be real tier paths.
@@ -103,7 +106,7 @@ interface JobManifest {
       metadata: { labels: Record<string, string> }
       spec: {
         terminationGracePeriodSeconds?: number
-        initContainers?: Array<{ name: string; image: string; command: string[]; volumeMounts: Array<{ mountPath: string }> }>
+        initContainers?: Array<{ name: string; image: string; command: string[]; volumeMounts: Array<{ name: string; mountPath: string }> }>
         containers: Array<{
           image: string
           env: Array<{ name: string; value: string }>
@@ -118,6 +121,17 @@ interface JobManifest {
       }
     }
   }
+}
+
+/** A life's tree for workspace `s1`, with one checkout at its root. */
+const TREE: WorkspaceTree = {
+  life: 'L1',
+  lifeDir: workspaceTreeDir(PROJECT_ID, 's1', 'L1'),
+  checkpointsDir: workspaceCheckpointsDir(PROJECT_ID, 's1'),
+  checkouts: [{ id: 'r1', path: '', gitDir: path.join(workspaceDir(PROJECT_ID, 's1'), '.git') }],
+  mainClones: [],
+  program: globalPath('workspace-bin', 'yaac-tree'),
+  restoring: false,
 }
 
 /** The manifests applied, in order. */
@@ -400,53 +414,81 @@ describe('launchWorkspace', () => {
     expect(second.filter((e) => e.name === 'YAAC_STREAM_TOKEN')).toHaveLength(1)
   })
 
-  it('resolves every mount from its tier: global subPaths, node paths, the init container, and no hostPath under the data dir', async () => {
+  it('resolves every mount from its tier: global subPaths, node paths handed over by the tree container, and no hostPath under the data dir', async () => {
     const substrate = await prepareWorkspaceSubstrate(INTENT)
     await launchWorkspace(specOf(substrate, {
       mounts: [
-        { source: { kind: 'hostPath', path: workspaceDir(PROJECT_ID, 's1') }, mountPath: '/workspace' },
         {
           source: { kind: 'hostPath', path: path.join(claudeDir(PROJECT_ID), 'settings.json'), type: 'File' },
           mountPath: '/home/yaac/.claude/settings.json',
         },
-        { source: { kind: 'hostPath', path: cachedPackagesDir(PROJECT_ID) }, mountPath: '/home/yaac/.cached-packages' },
         { source: { kind: 'hostPath', path: opencodeDataDir(PROJECT_ID, 's1') }, mountPath: '/home/yaac/.local/share/opencode' },
         { source: { kind: 'emptyDir' }, mountPath: '/tmp/yaac-tmux' },
       ],
+      tree: TREE,
       preStopExec: ['/usr/local/bin/yaac-opencode-checkpoint', 'stop'],
     }))
 
     const pod = appliedJob().spec.template.spec
     const byMount = Object.fromEntries(pod.containers[0].volumeMounts.map((m) => [m.mountPath, m]))
     const volume = (name: string) => pod.volumes.find((v) => v.name === name)
-    // GLOBAL: subPaths of the global claim, including a file; the checkout
-    // goes through the checkouts claim, at the same subPath.
-    expect(volume(byMount['/workspace'].name)?.persistentVolumeClaim).toEqual({ claimName: 'yaac-global' })
-    expect(byMount['/workspace'].subPath).toBe(`projects/${PROJECT_ID}/workspaces/s1`)
+    // GLOBAL: subPaths of the global claim, including a file.
+    expect(volume(byMount['/workspace/.git'].name)?.persistentVolumeClaim).toEqual({ claimName: 'yaac-global' })
+    expect(byMount['/workspace/.git'].subPath).toBe(`projects/${PROJECT_ID}/workspaces/s1/.git`)
     expect(volume(byMount['/home/yaac/.claude/settings.json'].name)?.persistentVolumeClaim).toEqual({ claimName: 'yaac-global' })
     expect(byMount['/home/yaac/.claude/settings.json'].subPath).toBe(`projects/${PROJECT_ID}/claude/settings.json`)
-    // NODE-LOCAL: the pod's own node tree.
-    expect(volume(byMount['/home/yaac/.cached-packages'].name)?.hostPath)
-      .toEqual({ path: `${NODE_ROOT}/projects/${PROJECT_ID}/.cached-packages`, type: 'DirectoryOrCreate' })
-    // No hostPath under the data dir.
-    for (const v of pod.volumes) {
-      expect(v.hostPath?.path.startsWith('/data/yaac')).not.toBe(true)
-    }
-    // The init container creates exactly the node-local dirs.
-    const [init] = pod.initContainers ?? []
-    expect(init?.name).toBe('node-dirs')
-    // The pinned builder image, never the workspace's own.
-    expect(init?.image).toBe('registry.local/podman-stable:v5.5')
-    expect(init?.command.slice(-2)).toEqual([
-      `/node/projects/${PROJECT_ID}/.cached-packages`,
-      `/node/projects/${PROJECT_ID}/opencode-data/s1`,
-    ])
-    expect(volume('node-root')?.hostPath).toEqual({ path: NODE_ROOT, type: 'DirectoryOrCreate' })
-    // A grace period long enough for the preStop hook.
-    expect(pod.terminationGracePeriodSeconds).toBe(PRE_STOP_GRACE_SECONDS)
+    // NODE-LOCAL: the pod's own leaves of the node's directory.
+    const nodeTree = `${NODE_ROOT}/projects/${PROJECT_ID}/trees/s1/L1`
+    const opencode = `${NODE_ROOT}/projects/${PROJECT_ID}/opencode-data/s1`
+    expect(volume(byMount['/workspace'].name)?.hostPath).toEqual({ path: `${nodeTree}/tree`, type: 'DirectoryOrCreate' })
+    expect(volume(byMount['/home/yaac/.local/share/opencode'].name)?.hostPath).toEqual({ path: opencode, type: 'DirectoryOrCreate' })
+    // No hostPath under the data dir, and none above a leaf.
+    const hostPaths = pod.volumes.flatMap((v) => (v.hostPath ? [v.hostPath.path] : []))
+    expect([...new Set(hostPaths)].sort()).toEqual([opencode, `${nodeTree}/scratch`, `${nodeTree}/tree`])
+    // The tree container, the pod's one init container, mounts each
+    // node-local leaf and is told which the workspace alone uses, to hand
+    // them all to the install uid.
+    expect(pod.initContainers?.map((c) => c.name)).toEqual(['tree'])
+    const [tree] = pod.initContainers ?? []
+    expect(tree.image).toMatch(/yaac-base:abc$/)
+    const treeMount = (at: string) => volume(tree.volumeMounts.find((m) => m.mountPath === at)?.name ?? '')?.hostPath?.path
+    expect(treeMount('/tree')).toBe(`${nodeTree}/tree`)
+    expect(treeMount('/scratch')).toBe(`${nodeTree}/scratch`)
+    expect(treeMount('/own/0')).toBe(opencode)
+    expect(tree.command.slice(-2)).toEqual(['--own', '/own/0'])
+    // A grace period long enough for the preStop hook and the final pass.
+    expect(pod.terminationGracePeriodSeconds).toBe(PRE_STOP_GRACE_SECONDS + TREE_FINAL_PASS_SECONDS)
     expect(pod.containers[0].lifecycle?.preStop).toEqual({
       exec: { command: ['/usr/local/bin/yaac-opencode-checkpoint', 'stop'] },
     })
+  })
+
+  it('refuses a node-local mount inside another: kubelet follows a link there, and the tree container chowns what it finds', async () => {
+    const substrate = await prepareWorkspaceSubstrate(INTENT)
+    fakeCluster.calls = []
+    const opencode = opencodeDataDir(PROJECT_ID, 's1')
+    await expect(launchWorkspace(specOf(substrate, {
+      mounts: [
+        { source: { kind: 'hostPath', path: opencode }, mountPath: '/home/yaac/.local/share/opencode' },
+        { source: { kind: 'hostPath', path: path.join(opencode, 'planted') }, mountPath: '/home/yaac/inner' },
+      ],
+      tree: TREE,
+    }))).rejects.toThrow(/opencode-data\/s1\/planted is inside another/)
+    // One under the tree, which the workspace container writes, is the same.
+    await expect(launchWorkspace(specOf(substrate, {
+      mounts: [{ source: { kind: 'hostPath', path: path.join(TREE.lifeDir, 'tree', 'sub') }, mountPath: '/x' }],
+      tree: TREE,
+    }))).rejects.toThrow(/tree\/sub is inside another/)
+    expect(applied()).toEqual([])
+  })
+
+  it('refuses a node-local mount in a pod with no tree container, which nothing would hand to the install uid', async () => {
+    const substrate = await prepareWorkspaceSubstrate(INTENT)
+    fakeCluster.calls = []
+    await expect(launchWorkspace(specOf(substrate, {
+      mounts: [{ source: { kind: 'hostPath', path: opencodeDataDir(PROJECT_ID, 's1') }, mountPath: '/home/yaac/.local/share/opencode' }],
+    }))).rejects.toThrow(/no tree container/)
+    expect(applied()).toEqual([])
   })
 
   it('rejects a server-local mount before anything is applied', async () => {

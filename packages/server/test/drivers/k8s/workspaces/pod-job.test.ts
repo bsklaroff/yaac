@@ -1,9 +1,4 @@
 import { describe, it, expect } from 'vitest'
-import { execFile } from 'node:child_process'
-import fs from 'node:fs/promises'
-import os from 'node:os'
-import path from 'node:path'
-import { promisify } from 'node:util'
 import {
   CA_CONFIGMAP_NAME,
   installSecurityContext,
@@ -18,8 +13,6 @@ import {
   WORKSPACE_POD_ANNOTATIONS,
   type PodJobParams,
 } from '#drivers/k8s/workspaces/pod-job'
-
-const execFileAsync = promisify(execFile)
 
 function params(overrides: Partial<PodJobParams> = {}): PodJobParams {
   return {
@@ -41,7 +34,7 @@ function params(overrides: Partial<PodJobParams> = {}): PodJobParams {
     ephemeralStorageLimitBytes: 16 * 1024 ** 3,
     // The proxy Service's ClusterIP, never a DNS name.
     proxyHost: '10.96.0.179',
-    nodeDirsImage: 'registry.local/podman-stable:v5.5',
+    builderImage: 'registry.local/podman-stable:v5.5',
     ...overrides,
   }
 }
@@ -329,111 +322,16 @@ describe('buildPodJobManifest', () => {
     expect(only.lifecycle).toEqual({ preStop: { exec: { command: ['x'] } } })
   })
 
-  it('creates the node-local dirs with an init container: the pinned builder image, as root, chowning to the pod identity', () => {
-    const m = build({
-      nodeLocalRoot: '/var/lib/yaac/node/ddh',
-      nodeLocalDirs: [
-        '/var/lib/yaac/node/ddh/projects/demo/.cached-packages',
-        '/var/lib/yaac/node/ddh/projects/demo/opencode-data/abcd',
-      ],
-    })
-    const spec = m.spec.template.spec
-    const [init] = spec.initContainers ?? []
-    expect(init).toBeDefined()
-    expect(init.name).toBe('node-dirs')
-    // Never the workspace image, whose `sh` the project controls.
-    expect(init.image).toBe('registry.local/podman-stable:v5.5')
-    expect(init.securityContext).toEqual({ runAsUser: 0, runAsGroup: 0 })
-    expect(init.volumeMounts).toEqual([{ name: 'node-root', mountPath: '/node' }])
-    expect(spec.volumes.find((v) => v.name === 'node-root')).toEqual({
-      name: 'node-root', hostPath: { path: '/var/lib/yaac/node/ddh', type: 'DirectoryOrCreate' },
-    })
-    expect(init.command?.slice(0, 2)).toEqual(['sh', '-c'])
-    expect(init.command?.slice(-2)).toEqual([
-      '/node/projects/demo/.cached-packages',
-      '/node/projects/demo/opencode-data/abcd',
-    ])
-    // Chowned to the workspace's uid, since hostPath ignores fsGroup. Always
-    // chowned: kubelet has already created the leaf before the init runs.
-    const { runAsUser, runAsGroup } = installSecurityContext()
-    expect(init.command?.[2]).toContain('[ -d "$p" ] || mkdir "$p"')
-    expect(init.command?.[2]).toContain(`\n    chown -h ${String(runAsUser)}:${String(runAsGroup)} "$p"`)
-  })
-
   it('limits every container, init included, so kubelet caps the pod cgroup gVisor relies on', () => {
     const m = build({
-      nodeLocalRoot: '/var/lib/yaac/node/ddh',
-      nodeLocalDirs: ['/var/lib/yaac/node/ddh/projects/demo/.cached-packages'],
+      mounts: [{ source: { kind: 'pvc', claimName: 'yaac-volume-v1' }, mountPath: '/home/yaac/volume' }],
+      treeContainer: { image: 'base:1', life: 'L', mounts: [], own: [] },
     })
     const { initContainers = [], containers } = m.spec.template.spec
-    expect(initContainers).toHaveLength(1)
+    expect(initContainers.map((c) => c.name)).toEqual(['volume-root', 'tree'])
     for (const c of [...initContainers, ...containers]) {
       expect(Object.keys(c.resources?.limits ?? {}), c.name).toEqual(expect.arrayContaining(['memory', 'cpu']))
     }
-  })
-
-  it('runs the node-dirs script for real: a leaf kubelet already created is chowned, parents are made', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-node-dirs-'))
-    try {
-      // As with DirectoryOrCreate, the leaf already exists.
-      await fs.mkdir(path.join(root, 'projects/demo/opencode-data/abcd'), { recursive: true })
-      const m = build({
-        nodeLocalRoot: '/var/lib/yaac/node/ddh',
-        nodeLocalDirs: [
-          '/var/lib/yaac/node/ddh/projects/demo/opencode-data/abcd',
-          '/var/lib/yaac/node/ddh/projects/demo/.cached-packages/modules/abcd',
-        ],
-      })
-      const [init] = m.spec.template.spec.initContainers ?? []
-      const script = (init.command?.[2] ?? '').replaceAll('/node', root)
-      const args = (init.command ?? []).slice(4).map((d) => d.replace('/node', root))
-      await expect(execFileAsync('sh', ['-c', script, '--', ...args])).resolves.toBeTruthy()
-      const { uid, gid } = await fs.stat(path.join(root, 'projects/demo/opencode-data/abcd'))
-      const { runAsUser, runAsGroup } = installSecurityContext()
-      expect([uid, gid]).toEqual([runAsUser, runAsGroup])
-      await expect(fs.stat(path.join(root, 'projects/demo/.cached-packages/modules/abcd'))).resolves.toBeTruthy()
-    } finally {
-      await fs.rm(root, { recursive: true, force: true })
-    }
-  })
-
-  it('replaces a symlinked component a pod planted with a real directory, never following it', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-node-dirs-'))
-    try {
-      const victim = path.join(root, 'victim')
-      await fs.mkdir(path.join(victim, 'precious'), { recursive: true })
-      await fs.mkdir(path.join(root, 'projects/demo/.cached-packages'), { recursive: true })
-      await fs.symlink(victim, path.join(root, 'projects/demo/.cached-packages/modules'))
-      const m = build({
-        nodeLocalRoot: '/var/lib/yaac/node/ddh',
-        nodeLocalDirs: ['/var/lib/yaac/node/ddh/projects/demo/.cached-packages/modules/abcd'],
-      })
-      const [init] = m.spec.template.spec.initContainers ?? []
-      const script = (init.command?.[2] ?? '').replaceAll('/node', root)
-      const args = (init.command ?? []).slice(4).map((d) => d.replace('/node', root))
-      await expect(execFileAsync('sh', ['-c', script, '--', ...args])).resolves.toBeTruthy()
-      const modules = await fs.lstat(path.join(root, 'projects/demo/.cached-packages/modules'))
-      expect(modules.isSymbolicLink()).toBe(false)
-      expect(modules.isDirectory()).toBe(true)
-      await expect(fs.stat(path.join(root, 'projects/demo/.cached-packages/modules/abcd'))).resolves.toBeTruthy()
-      await expect(fs.stat(path.join(victim, 'precious'))).resolves.toBeTruthy()
-      expect(await fs.readdir(victim)).toEqual(['precious'])
-    } finally {
-      await fs.rm(root, { recursive: true, force: true })
-    }
-  })
-
-  it('renders no init container when there is nothing node-local to create', () => {
-    expect(build().spec.template.spec.initContainers).toBeUndefined()
-    expect(build({ nodeLocalDirs: [], nodeLocalRoot: '/x' }).spec.template.spec.initContainers).toBeUndefined()
-    expect(() => build({ nodeLocalDirs: ['/x/y'] })).toThrow(/nodeLocalRoot/)
-    expect(() => build({ nodeLocalDirs: ['/x/y'], nodeLocalRoot: '/x', nodeDirsImage: undefined }))
-      .toThrow(/nodeDirsImage/)
-    // The walk is safe only while no pod can write a component it visits.
-    expect(() => build({
-      nodeLocalRoot: '/x',
-      nodeLocalDirs: ['/x/projects/demo/.cached-packages', '/x/projects/demo/.cached-packages/modules/s1'],
-    })).toThrow(/inside another/)
   })
 
   it('hands a byo volume\'s fresh root to the pod\'s identity in an init container of its own, and nothing else', () => {
@@ -453,6 +351,11 @@ describe('buildPodJobManifest', () => {
     })])
     // Never fsGroup, which kubelet would apply to the shared tier too.
     expect(spec.securityContext.fsGroup).toBeUndefined()
+    // Root there runs the pinned builder image or nothing.
+    expect(() => build({
+      mounts: [{ source: { kind: 'pvc', claimName: 'yaac-volume-v1' }, mountPath: '/home/yaac/volume' }],
+      builderImage: undefined,
+    })).toThrow(/builderImage/)
   })
 
   it('emits no lifecycle block without postStartExec', () => {
@@ -544,7 +447,7 @@ describe('buildPodJobManifest', () => {
   })
 
   // docs/node-local-workspaces.md "The tree container".
-  it('runs the tree container last of the init containers, as a sidecar that holds the workspace back until its tree is filled', () => {
+  it('runs the tree container as the pod\'s one init container: a sidecar that owns the node-local folders and holds the workspace back until its tree is filled', () => {
     const m = build({
       treeContainer: {
         image: 'base:1',
@@ -552,7 +455,9 @@ describe('buildPodJobManifest', () => {
         mounts: [
           { source: { kind: 'hostPath', path: '/var/lib/yaac/node/i/projects/p/trees/w/L/tree' }, mountPath: '/tree' },
           { source: { kind: 'pvc', claimName: 'yaac-global', subPath: 'projects/p/checkpoints/w' }, mountPath: '/ckpt' },
+          { source: { kind: 'hostPath', path: '/var/lib/yaac/node/i/projects/p/opencode-data/w', type: 'DirectoryOrCreate' }, mountPath: '/own/0' },
         ],
+        own: ['/own/0'],
       },
     })
     const spec = m.spec.template.spec as unknown as {
@@ -560,7 +465,14 @@ describe('buildPodJobManifest', () => {
       containers: Array<{ volumeMounts: Array<{ mountPath: string }> }>
       volumes: Array<{ name: string; emptyDir?: unknown }>
     }
-    const tree = spec.initContainers.at(-1)!
+    // Nothing in the pod runs as root over more of the node than these
+    // mounts: no init container before it, and no volume above a leaf.
+    expect(spec.initContainers).toHaveLength(1)
+    expect((spec.volumes as Array<{ hostPath?: { path: string } }>).flatMap((v) => (v.hostPath ? [v.hostPath.path] : []))).toEqual([
+      '/var/lib/yaac/node/i/projects/p/trees/w/L/tree',
+      '/var/lib/yaac/node/i/projects/p/opencode-data/w',
+    ])
+    const tree = spec.initContainers[0]
     expect(tree).toMatchObject({
       name: 'tree',
       image: 'base:1',
@@ -569,8 +481,11 @@ describe('buildPodJobManifest', () => {
       startupProbe: { exec: { command: ['yaac-tree', 'probe', '--scratch', '/scratch', '--life', '2026-11-14T00-00-00.000Z'] } },
     })
     expect(tree.command).toContain('--life')
+    // The folders it hands to the install uid besides its own two.
+    expect((tree.command as string[]).slice(-2)).toEqual(['--own', '/own/0'])
     expect(tree.volumeMounts).toEqual(expect.arrayContaining([
       expect.objectContaining({ mountPath: '/tree' }),
+      expect.objectContaining({ mountPath: '/own/0' }),
       expect.objectContaining({ mountPath: '/ckpt', subPath: 'projects/p/checkpoints/w' }),
       expect.objectContaining({ name: 'tree-trigger', mountPath: '/yaac-trigger' }),
     ]))

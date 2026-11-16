@@ -390,7 +390,8 @@ a fresh session and the JSON stays on disk.
 SQLite does not work on a network filesystem, so a k8s pod runs opencode
 against a **node-local working copy**
 (`node-local/projects/<project id>/opencode-data/<id>`, mounted at
-`~/.local/share/opencode`). The durable copy is the **checkpoint** on the
+`~/.local/share/opencode`; the pod's tree container mounts it too, to hand
+it to the install uid before opencode starts). The durable copy is the **checkpoint** on the
 global tier, `global/projects/<project id>/opencode-data/<id>`
 (`opencodeCheckpointDir`, mounted at `~/.yaac/opencode-checkpoint`).
 

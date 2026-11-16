@@ -141,20 +141,9 @@ export interface PodJobParams {
    * checkpoint opencode's state here.
    */
   preStopExec?: string[]
-  /**
-   * Node-local directories (node paths under `nodeLocalRoot`) for the
-   * `node-dirs` init container to create and chown to the pod's identity.
-   * hostPath ignores `fsGroup` and `DirectoryOrCreate` creates root-owned
-   * dirs, so the pod must do it itself. None may be inside another; the
-   * build throws if one is.
-   */
-  nodeLocalDirs?: string[]
-  /** The node root the init container mounts to create `nodeLocalDirs`
-   *  under; required when they are given. */
-  nodeLocalRoot?: string
-  /** The init container's image (the pinned builder image); required when
-   *  `nodeLocalDirs` are given. */
-  nodeDirsImage?: string
+  /** The pinned builder image, which the `volume-root` init container
+   *  runs; required when a byo volume's claim is mounted. */
+  builderImage?: string
   /** Defaults to 5 seconds. */
   terminationGracePeriodSeconds?: number
   /**
@@ -203,8 +192,11 @@ export interface TreeContainerParams {
   /** The life's name, which names its start instruction and manifest. */
   life: string
   /** Its mounts: the tree, scratch repository, checkpoint log, each git
-   *  dir, the main clones and the program. */
+   *  dir, the main clones, the program, and the folders in `own`. */
   mounts: PodMount[]
+  /** Mount paths, besides the tree and scratch repository, of folders it
+   *  hands to the install uid before the workspace container starts. */
+  own: string[]
 }
 
 /** What the tree container, and a salvage or import pod doing its work,
@@ -217,9 +209,14 @@ export const TREE_RESOURCES = {
 /**
  * The tree container. It runs as root inside the sandbox with only the
  * file-permission and identity capabilities, so it reads what an agent's
- * `sudo` hid and writes checked-out files as the install uid. Its startup
- * probe, which passes once the tree is filled, is what holds the workspace
- * container back.
+ * `sudo` hid and writes checked-out files as the install uid. It is also
+ * what hands the pod's node-local folders to that uid: hostPath ignores
+ * `fsGroup`, and kubelet makes a missing one as root. It reaches only the
+ * folders mounted into it, none inside another (`launchWorkspace` refuses
+ * that), so the base image it runs is root over this workspace's
+ * node-local data and no other's. Its startup probe, which
+ * passes once the tree is filled, is what holds the workspace container
+ * back.
  */
 function treeContainer(t: TreeContainerParams, volumeMounts: Array<Record<string, unknown>>): Record<string, unknown> {
   return {
@@ -230,6 +227,7 @@ function treeContainer(t: TreeContainerParams, volumeMounts: Array<Record<string
     command: [
       'yaac-tree', 'run', '--tree', '/tree', '--scratch', '/scratch', '--ckpt', '/ckpt',
       '--life', t.life, '--trigger', TREE_TRIGGER_FILE,
+      ...(t.own.length > 0 ? ['--own', t.own.join(':')] : []),
     ],
     startupProbe: {
       exec: { command: ['yaac-tree', 'probe', '--scratch', '/scratch', '--life', t.life] },
@@ -290,28 +288,13 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
     treeMounts.push({ name: 'tree-trigger', mountPath: TREE_TRIGGER_DIR })
     volumeMounts.push({ name: 'tree-trigger', mountPath: TREE_TRIGGER_DIR })
   }
-  if (p.nodeLocalDirs && p.nodeLocalDirs.length > 0) {
-    if (!p.nodeLocalRoot || !p.nodeDirsImage) {
-      throw new Error('nodeLocalDirs given without nodeLocalRoot and nodeDirsImage')
-    }
-    const dirs = p.nodeLocalDirs
-    const nested = dirs.find((d) => dirs.some((o) => d.startsWith(`${o}/`)))
-    if (nested) throw new Error(`node-local dir ${nested} is inside another the pod mounts`)
-    volumes.push({
-      name: 'node-root',
-      hostPath: { path: p.nodeLocalRoot, type: 'DirectoryOrCreate' },
-    })
-    initContainers.push(nodeDirsInitContainer(p.nodeDirsImage, p.nodeLocalRoot, p.nodeLocalDirs))
-  }
-
   // A byo volume's claim is a fresh filesystem whose root belongs to root.
   const volumeRoots = p.mounts.flatMap((m, i) =>
     m.source.kind === 'pvc' && m.source.claimName.startsWith(volumeClaimName('')) ? [`pv-${String(i)}`] : [])
   if (volumeRoots.length > 0) {
-    if (!p.nodeDirsImage) throw new Error('a volume claim mounted without nodeDirsImage')
-    initContainers.push(volumeRootInitContainer(p.nodeDirsImage, volumeRoots))
+    if (!p.builderImage) throw new Error('a volume claim mounted without builderImage')
+    initContainers.push(volumeRootInitContainer(p.builderImage, volumeRoots))
   }
-  // Last, so the dirs it fills exist and belong to the install uid.
   if (p.treeContainer) initContainers.push(treeContainer(p.treeContainer, treeMounts))
 
   // One volume per dir (see sentryTmpfsAnnotations). A tmpfs root is
@@ -425,9 +408,6 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
   }
 }
 
-/** Where the init container sees the node root. */
-const NODE_ROOT_MOUNT = '/node'
-
 /**
  * Grace period (seconds) for a pod with a preStop hook, long enough for an
  * opencode checkpoint. Teardown waits longer than this before removing the
@@ -448,8 +428,12 @@ export const TREE_FINAL_PASS_SECONDS = 30
  * The `volume-root` init container, run as root: hands each byo volume's
  * root to the pod's identity, once (docs/workspace-volumes.md). Not
  * recursive, and not `fsGroup`, which kubelet would apply to every volume
- * in the pod, the shared tier included. Runs the pinned builder image, as
- * `node-dirs` does.
+ * in the pod, the shared tier included. It runs the digest-pinned builder
+ * image, never the workspace's own, which comes from an agent-editable
+ * Dockerfile whose `sh` would run here as root. It declares limits like
+ * every container in the pod: kubelet sets the pod cgroup's memory cap only
+ * when all of them do, and gVisor enforces no other (docs/cluster-setup.md
+ * "Memory pressure").
  */
 function volumeRootInitContainer(image: string, volumes: string[]): Record<string, unknown> {
   const { runAsUser, runAsGroup } = installSecurityContext()
@@ -469,69 +453,5 @@ function volumeRootInitContainer(image: string, volumes: string[]): Record<strin
       '--', ...volumes.map((v) => `/volumes/${v}`),
     ],
     volumeMounts: volumes.map((v) => ({ name: v, mountPath: `/volumes/${v}` })),
-  }
-}
-
-/**
- * The `node-dirs` init container, run as root. For each node-local
- * directory it walks the path one component at a time, creating missing
- * ones and chowning each (not recursively) to the pod's identity. The chown
- * is unconditional because kubelet has already created `DirectoryOrCreate`
- * leaves as root. The parents are chowned too: under rootful kind this tree
- * is the host's `<dataDir>/node-local`, which the host user must be able
- * to delete. A symlink found on the walk is replaced with a directory and
- * `chown -h` never follows one. That does not make the walk race-free; it
- * is safe because a workspace can write only inside the leaves it mounts,
- * and no leaf may be inside another (enforced by `buildPodJobManifest`), so
- * no workspace can write a component the walk visits.
- *
- * It runs the digest-pinned builder image, never the workspace's own: that
- * image comes from an agent-editable Dockerfile, so its `sh` could act as
- * root on every project's node-local data, and gVisor does not contain
- * hostPath writes.
- *
- * It declares limits like every container in the pod: kubelet sets the pod
- * cgroup's memory cap only when all of them do, and gVisor enforces no
- * other (docs/cluster-setup.md "Memory pressure").
- */
-function nodeDirsInitContainer(
-  image: string,
-  nodeRoot: string,
-  dirs: string[],
-): Record<string, unknown> {
-  const { runAsUser, runAsGroup } = installSecurityContext()
-  const script = [
-    'set -e',
-    'for d in "$@"; do',
-    `  case "$d" in ${NODE_ROOT_MOUNT}/*) ;; *) echo "not under ${NODE_ROOT_MOUNT}: $d" >&2; exit 1;; esac`,
-    `  p=${NODE_ROOT_MOUNT}`,
-    `  rel=\${d#${NODE_ROOT_MOUNT}/}`,
-    '  oldifs=$IFS; IFS=/',
-    '  for seg in $rel; do',
-    '    IFS=$oldifs',
-    '    p="$p/$seg"',
-    '    if [ -L "$p" ]; then rm -f "$p"; fi',
-    '    [ -d "$p" ] || mkdir "$p"',
-    `    chown -h ${String(runAsUser)}:${String(runAsGroup)} "$p"`,
-    '    IFS=/',
-    '  done',
-    '  IFS=$oldifs',
-    'done',
-  ].join('\n')
-  return {
-    name: 'node-dirs',
-    image,
-    imagePullPolicy: 'IfNotPresent',
-    securityContext: { runAsUser: 0, runAsGroup: 0 },
-    resources: {
-      requests: { cpu: '10m', memory: '16Mi' },
-      limits: { cpu: '100m', memory: '64Mi' },
-    },
-    command: [
-      'sh', '-c', `${script}
-`, '--',
-      ...dirs.map((d) => `${NODE_ROOT_MOUNT}/${path.posix.relative(nodeRoot, d)}`),
-    ],
-    volumeMounts: [{ name: 'node-root', mountPath: NODE_ROOT_MOUNT }],
   }
 }

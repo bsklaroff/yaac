@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises'
 import { kindEnv } from './install'
 import { confirmDefault } from '@yaac/shared/confirm'
 import {
@@ -13,14 +14,15 @@ import { gvisorNodeLabels } from './gvisor-runtime'
 import { REGISTRY_GRANT_NAMESPACE, REGISTRY_NAMESPACE } from '#drivers/k8s/cluster'
 import { readInstallRecord } from '@yaac/shared/install-record'
 import { env } from '@yaac/shared/env'
+import { nodeLocalRoot } from '@yaac/shared/paths'
 
 /**
  * `yaac cluster delete`: delete the local kind cluster that `yaac cluster
  * install` created. Every yaac workload and its node-local storage
  * (including registry image blobs) lives inside the cluster, so one
- * `kind delete` removes it all. The yaac data dir (projects, workspaces) is
- * untouched, and a later `yaac cluster install` recreates the cluster and
- * re-pushes the images.
+ * `kind delete` removes it all. The yaac data dir (projects, workspaces)
+ * keeps its contents, and a later `yaac cluster install` recreates the
+ * cluster and re-pushes the images.
  */
 
 /** A delete step failed in a way the user must resolve; message is the fix. */
@@ -55,6 +57,37 @@ async function listKindClusters(): Promise<string[]> {
 }
 
 /**
+ * Give everything under the data dir's node-local folder to that folder's
+ * own owner, whoever ran install, through a node while there still is one.
+ * kubelet makes a workspace's folders there as root and a tree container
+ * writes its scratch repository as root, and on a Linux host the node's
+ * root is the host's own, so the user could otherwise neither remove the
+ * data dir nor move it to another disk (docs/cluster-setup.md "Moving an
+ * install"). A node mounts the data dir at its own path, and every node
+ * the same folder, so one `chown` covers them all; `-h` keeps it off
+ * whatever a link an agent left names. The owner is read off the folder,
+ * not this process, so a delete run under `sudo` does not hand a
+ * workspace's files to root. A node that is not running cannot do it,
+ * which is said and does not stop the delete.
+ */
+async function handBackNodeLocal(cluster: string): Promise<void> {
+  const dir = nodeLocalRoot()
+  let owner = '<uid>:<gid>'
+  try {
+    const { uid, gid } = await fs.stat(dir)
+    owner = `${String(uid)}:${String(gid)}`
+    await execFileAsync('podman', ['exec', `${cluster}-control-plane`, 'chown', '-hR', owner, dir])
+  } catch (err) {
+    const detail = ((err as { stderr?: string })?.stderr ?? '').trim()
+      || (err instanceof Error ? err.message : String(err))
+    console.log(
+      `Could not hand ${dir} back to its owner, so folders the cluster made there may still belong to root `
+      + `(\`sudo chown -hR ${owner} ${dir}\` fixes that):\n  ${detail.split('\n')[0]}`,
+    )
+  }
+}
+
+/**
  * Delete the kind cluster, confirming first unless `yes`. Refuses on a byo
  * install; an absent cluster is a no-op. Throws ClusterDeleteError with a
  * user-actionable message when a step cannot proceed.
@@ -82,6 +115,7 @@ export async function runClusterDelete(
 
   if (exists) {
     console.log(`Deleting kind cluster "${cluster}"...`)
+    await handBackNodeLocal(cluster)
     await execFileAsync('kind', ['delete', 'cluster', '--name', cluster], { env: kindEnv() })
   } else {
     console.log(`No kind cluster "${cluster}" to delete.`)

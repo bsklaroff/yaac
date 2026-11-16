@@ -81,8 +81,8 @@ export function resolveMountSource(m: PodMount | WorkspaceMount): PodMount {
 
 /**
  * Node-local directories among already-resolved mounts that the pod
- * writes, for its init container to create and chown. Read-only and file
- * mounts are skipped.
+ * writes, which its tree container hands to the install uid. Read-only and
+ * file mounts are skipped.
  */
 export function nodeLocalDirsOf(mounts: PodMount[]): string[] {
   const dirs: string[] = []

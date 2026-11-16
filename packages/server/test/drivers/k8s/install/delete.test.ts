@@ -21,6 +21,7 @@ vi.mock('node:readline/promises', () => ({
 import { ClusterDeleteError, kindClusterExists, runClusterDelete } from '#drivers/k8s/install'
 import { execFileAsync } from '#drivers/k8s/substrate/api'
 import { installRecordPath, recordInstall } from '@yaac/shared/install-record'
+import { nodeLocalRoot } from '@yaac/shared/paths'
 import { serverConfigPath } from '@yaac/shared/server-config'
 import fs from 'node:fs/promises'
 
@@ -41,6 +42,11 @@ function stageClusters(stdout: string): void {
 function deleteCall(): [string, string[], unknown?] | undefined {
   return mockRun.mock.calls.find(([f, a]) =>
     f === 'kind' && (a as string[])[0] === 'delete') as [string, string[], unknown?] | undefined
+}
+
+/** The `podman exec` that hands node-local back, if any. */
+function handBackCall(): string[] | undefined {
+  return mockRun.mock.calls.find(([f, a]) => f === 'podman' && (a as string[])[0] === 'exec')?.[1] as string[] | undefined
 }
 
 const logged = (): string => logs.join('\n')
@@ -97,6 +103,34 @@ describe('runClusterDelete', () => {
     expect(mockQuestion).not.toHaveBeenCalled()
   })
 
+  it('hands what is under the node-local folder back to the folder\'s owner through the node, before the node goes', async () => {
+    // The owner is the folder's, not this process's: a delete under sudo
+    // must not hand a workspace's files to root. Shown with a group, which
+    // a test may change without privilege.
+    await fs.mkdir(nodeLocalRoot(), { recursive: true })
+    const otherGid = process.getgroups?.().find((g) => g !== process.getgid?.())
+    if (otherGid !== undefined) await fs.chown(nodeLocalRoot(), process.getuid?.() ?? 0, otherGid)
+    const { uid, gid } = await fs.stat(nodeLocalRoot())
+    await runClusterDelete({ yes: true })
+
+    // Its own folder, never what a link in it names.
+    expect(handBackCall()).toEqual(['exec', 'yaac-control-plane', 'chown', '-hR', `${String(uid)}:${String(gid)}`, nodeLocalRoot()])
+    const order = mockRun.mock.calls.map(([f, a]) => `${f} ${(a as string[])[0]}`)
+    expect(order.indexOf('podman exec')).toBeLessThan(order.indexOf('kind delete'))
+
+    // A node that is not running cannot: said, with the fix, and the
+    // cluster is deleted all the same.
+    vi.clearAllMocks()
+    mockRun.mockImplementation(((file: string, args: string[]) => {
+      if (file === 'podman') return Promise.reject(Object.assign(new Error('exit 255'), { stderr: 'container state improper\n' }))
+      return Promise.resolve({ stdout: args[1] === 'clusters' ? 'yaac\n' : '', stderr: '' })
+    }) as never)
+    await runClusterDelete({ yes: true })
+    expect(logged()).toContain(`sudo chown -hR ${String(uid)}:${String(gid)} ${nodeLocalRoot()}`)
+    expect(logged()).toMatch(/Could not hand .*node-local back to its owner[\s\S]*container state improper/)
+    expect(deleteCall()?.[1]).toEqual(['delete', 'cluster', '--name', 'yaac'])
+  })
+
   it('honors the YAAC_KIND_CLUSTER override', async () => {
     vi.stubEnv('YAAC_KIND_CLUSTER', 'yaac-alt')
     stageClusters('yaac-alt\n')
@@ -109,6 +143,7 @@ describe('runClusterDelete', () => {
     await runClusterDelete({ yes: true })
 
     expect(deleteCall()).toBeUndefined()
+    expect(handBackCall()).toBeUndefined()
     expect(logged()).toMatch(/No kind cluster "yaac" to delete/)
   })
 
@@ -125,6 +160,7 @@ describe('runClusterDelete', () => {
 
     expect(mockQuestion).toHaveBeenCalledOnce()
     expect(deleteCall()).toBeUndefined()
+    expect(handBackCall()).toBeUndefined()
     expect(logged()).toMatch(/Aborted/)
   })
 

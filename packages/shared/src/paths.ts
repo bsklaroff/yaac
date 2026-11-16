@@ -342,9 +342,9 @@ export function serverLogPath(): string {
 
 
 /**
- * Create the global project tree and the server-local root. The node-local
- * root is created by the driver (a pod's init container under k8s, lazily
- * under containerless).
+ * Create the global project tree and the server-local root. What exists
+ * under the node-local root is made where a workspace runs: by kubelet for
+ * a pod's mounts under k8s, lazily by the driver under containerless.
  */
 export async function ensureDataDir(): Promise<void> {
   await fs.mkdir(getProjectsDir(), { recursive: true })

@@ -1008,12 +1008,24 @@ This runs `kind delete`, and that is all it needs to do: everything yaac
 deploys lives in the cluster, including Calico, netd, the main
 registry with every pushed image, and the storage claims and
 their volumes. Running workspace pods stop, but nothing under the yaac
-data dir is touched. The volumes are `Retain` and their bytes are the data
+data dir is removed. The volumes are `Retain` and their bytes are the data
 dir's own folders, so on-disk workspaces, the database and the node-local
 caches all survive. A later `yaac cluster install` re-creates the cluster,
 re-binds the same folders, and re-pushes images as needed. The podman
 machine and its image store are left alone, since they are the build
 engine, not the cluster.
+
+Before the delete, the command changes the owner of everything under
+`<dataDir>/node-local` to that folder's own owner, the user who ran install
+(`chown -hR`, run in a node), so running it under `sudo` hands nothing to
+root.
+kubelet makes the folders above a workspace's node-local mounts as root, and
+a workspace still running writes its scratch repository as root; on Linux
+the node's root is the host's, so the data dir could otherwise be neither
+removed nor moved to another disk without `sudo`. If the node is not
+running, the command says so and prints the `sudo chown -hR` that does the
+same. A cluster removed some other way (`kind delete cluster`) leaves those
+folders root-owned.
 
 ## Moving an install
 
