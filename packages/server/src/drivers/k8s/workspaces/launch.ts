@@ -12,12 +12,12 @@ import {
   applyObject,
   listObjects,
   nodeLocalDirsOf,
-  nodeLocalNodePath,
   podStreamToken,
   resolveMountSource,
   volumeClaimName,
   workspaceIdLabels,
   workspaceJobName,
+  type PodMount,
 } from '#drivers/k8s/substrate'
 import { PRE_STOP_GRACE_SECONDS, TREE_FINAL_PASS_SECONDS, TREE_STARTUP_SECONDS, buildPodJobManifest } from './pod-job'
 import { treeMounts, treeImage } from './tree-mounts'
@@ -238,6 +238,23 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   // global claim, or the node's tree); see mount-sources.ts.
   const mounts = [...(tree?.workspace ?? []), ...spec.mounts].map(resolveMountSource)
   const sidecarMounts = tree?.container.map(resolveMountSource) ?? []
+  // The tree container chowns each node-local folder as root, and kubelet
+  // follows a link in a mount source. One inside a folder a workspace
+  // writes could be a link its agent planted, naming any folder on the node.
+  const nodeDirs = nodeLocalDirsOf([...mounts, ...sidecarMounts])
+  const nested = nodeDirs.find((dir) => nodeDirs.some((other) => dir.startsWith(`${other}/`)))
+  if (nested !== undefined) {
+    throw new Error(`launch ${jobName}: node-local mount ${nested} is inside another the pod mounts`)
+  }
+  // kubelet makes a missing node-local folder as root, so the tree
+  // container also mounts those only the workspace container uses
+  // (opencode's working copy), to hand them to the install uid.
+  const ownMounts = nodeLocalDirsOf(mounts)
+    .filter((dir) => !sidecarMounts.some((m) => m.source.kind === 'hostPath' && m.source.path === dir))
+    .map((dir, i): PodMount => ({ source: { kind: 'hostPath', path: dir, type: 'DirectoryOrCreate' }, mountPath: `/own/${String(i)}` }))
+  if (ownMounts.length > 0 && !tree) {
+    throw new Error(`launch ${jobName}: node-local mounts with no tree container to hand them to the install uid`)
+  }
 
   const labels: Record<string, string> = {
     [LABEL_PROJECT_ID]: spec.projectId,
@@ -255,9 +272,9 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   // handoff both releases mount it (docs/public-sites.md).
   // A holder not scheduled yet could still land elsewhere, so the launch is
   // refused rather than left to hang on the attach.
+  const volumeClaim = mounts.some((m) => m.source.kind === 'pvc' && m.source.claimName.startsWith(volumeClaimName('')))
   let nodeName: string | undefined
-  if (spec.colocateWith !== undefined
-    && mounts.some((m) => m.source.kind === 'pvc' && m.source.claimName.startsWith(volumeClaimName('')))) {
+  if (spec.colocateWith !== undefined && volumeClaim) {
     nodeName = await workspaceNode(spec.colocateWith)
     if (nodeName === undefined) {
       throw new Error(`workspace ${spec.colocateWith.slice(0, 8)}, which holds the volume, is not on a node yet; deploy again once it is`)
@@ -289,11 +306,17 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     ...(spec.preStopExec || tree
       ? { terminationGracePeriodSeconds: (spec.preStopExec ? PRE_STOP_GRACE_SECONDS : 0) + (tree ? TREE_FINAL_PASS_SECONDS : 0) }
       : {}),
-    ...(spec.tree ? { treeContainer: { image: await treeImage(), life: spec.tree.life, mounts: sidecarMounts } } : {}),
-    // Created on the node by the pod's own init container.
-    nodeLocalDirs: nodeLocalDirsOf([...mounts, ...sidecarMounts]),
-    nodeLocalRoot: nodeLocalNodePath(),
-    nodeDirsImage: await ensureBuilderImage(),
+    ...(spec.tree
+      ? {
+        treeContainer: {
+          image: await treeImage(),
+          life: spec.tree.life,
+          mounts: [...sidecarMounts, ...ownMounts],
+          own: ownMounts.map((m) => m.mountPath),
+        },
+      }
+      : {}),
+    ...(volumeClaim ? { builderImage: await ensureBuilderImage() } : {}),
     ...(spec.siteId !== undefined ? { priorityClassName: PRIORITY_CLASS_RELEASE } : {}),
     ...(nodeName !== undefined ? { nodeName } : {}),
   })

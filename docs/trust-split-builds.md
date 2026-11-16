@@ -333,7 +333,7 @@ bytes under it the ones install pushed.
 
 Two mirrors are not left to the gate alone: the builder image, which runs as
 root over node or shared data (builder pods, the node-local sweep and root
-removals, the old-node-tree removal, a workspace Job's `node-dirs` init
+removals, the old-node-tree removal, a workspace Job's `volume-root` init
 container), and the gVisor installer's curl, which is full node root. Install
 records the manifest digest podman reports for each mirror push in the
 `yaac-mirror-digests` ConfigMap beside the registry, and these pods pull

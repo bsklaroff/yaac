@@ -551,7 +551,13 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         expect(ok, `volume ${v.name}: ${JSON.stringify(v)}`).toBe(true)
         expect(v.hostPath?.path.startsWith(testEnv.dataDir)).not.toBe(true)
       }
-      expect(volumes.initContainers?.map((c) => c.name)).toEqual(['node-dirs', 'tree'])
+      // The tree container is the pod's one init container, and has handed
+      // the node-local folders kubelet made as root to the pod's own uid.
+      expect(volumes.initContainers?.map((c) => c.name)).toEqual(['tree'])
+      const { stdout: owners } = await execInJob(jobName, [
+        'sh', '-c', 'id -u && stat -c %u /workspace /home/yaac/.local/share/opencode && test -w /workspace -a -w /home/yaac/.local/share/opencode',
+      ])
+      expect(new Set(owners.trim().split('\n')).size).toBe(1)
     }, 60_000)
 
     it('mounts each builtin skill over a mountpoint the SERVER made', async () => {

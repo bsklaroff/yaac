@@ -75,7 +75,9 @@ has one, a workspace with no repos included, since its root is saved too.
 It runs as root inside the sandbox with every capability dropped but
 `DAC_OVERRIDE`, `CHOWN`, `FOWNER`, `SETUID` and `SETGID`. An agent has
 `sudo`, so it can leave files its own uid cannot read; as the install uid a
-pass would skip them and they would be gone after a stop. Checkout and
+pass would skip them and they would be gone after a stop. Root is also what
+lets it hand the pod's node-local folders, which kubelet makes root-owned,
+to the install uid. Checkout and
 restore run as the install uid through `setpriv`, so what they write is the
 agent's to edit. It mounts the tree and each git dir at separate paths and
 names them to git explicitly, each main clone read-only at its server path
@@ -114,10 +116,19 @@ Outside the sandbox:
 1. Wait for the start instruction, which the server writes beside the
    life's manifest once every `.git` is complete. It names each checkout's
    commit and, for a restart, the checkpoint to restore.
-2. With nothing to restore, check each commit out through the scratch
+2. Hand the pod's node-local folders to the install uid: the tree, the
+   scratch repository, and those only the workspace container uses
+   (opencode's working copy), which are mounted into the tree container for
+   this alone. hostPath ignores `fsGroup` and kubelet makes a missing one
+   as root. Only each mount's own root changes owner, so nothing an agent
+   left inside one is followed. A mount source that was itself a link would
+   be: kubelet resolves it, and the container sees a plain directory. So
+   the launch refuses a node-local source inside another, which leaves no
+   source whose parent a workspace can write.
+3. With nothing to restore, check each commit out through the scratch
    repository and copy the index that leaves into the `.git` as its first
    index; otherwise restore (below).
-3. Set `core.checkStat=minimal` in each `.git`. gVisor numbers each
+4. Set `core.checkStat=minimal` in each `.git`. gVisor numbers each
    container's mount's inodes on its own, so with git's default checks
    every entry the tree container wrote is stale in the workspace container
    and the first `git status` hashes every file. `minimal` compares only the
@@ -125,7 +136,7 @@ Outside the sandbox:
    size and restores the old mtime until the file changes again. The tree
    container's own indexes keep git's defaults, so a pass still saves such a
    rewrite.
-4. Create the mount points the workspace container needs inside the tree
+5. Create the mount points the workspace container needs inside the tree
    (each `.git`, scratch dir and volume under `/workspace`), then report
    ready through a startup probe, so the workspace container starts only on
    a filled tree. The probe allows hours, since a large restore takes
@@ -133,7 +144,9 @@ Outside the sandbox:
    the server's wait for the pod is as patient.
 
 A restarted sidecar finds its life's marker in the scratch repository and
-goes straight to its passes, never checking out over a tree in use.
+goes straight to its passes, never checking out over a tree in use or
+changing its owner. A salvage or import pod changes no owner either: the
+folders it mounts are a life's that has started, or the shared tier's.
 
 ### While running
 

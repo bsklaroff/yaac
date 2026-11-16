@@ -138,7 +138,7 @@ describe('paths', () => {
     await ensureDataDir()
     expect((await fs.stat(path.join(tmpDir, 'global', 'projects'))).isDirectory()).toBe(true)
     expect((await fs.stat(path.join(tmpDir, 'server-local'))).isDirectory()).toBe(true)
-    // Not the node-local root: each pod's init container creates it under
+    // Not the node-local root: kubelet creates what a pod mounts under
     // k8s, and the containerless driver creates what it links.
     await expect(fs.stat(path.join(tmpDir, 'node-local'))).rejects.toThrow()
     await fs.rm(tmpDir, { recursive: true, force: true })

@@ -3,23 +3,25 @@
  * "The tree container"), built into a self-contained script that ships with
  * the other `workspace-bin` helpers.
  *
- *   yaac-tree run      --tree T --scratch S --ckpt K --life L [--trigger F] [--interval SECONDS]
+ *   yaac-tree run      --tree T --scratch S --ckpt K --life L [--own D:D…] [--trigger F] [--interval SECONDS]
  *   yaac-tree salvage  --tree T --scratch S --ckpt K --life L
  *   yaac-tree pass     --tree T --scratch S --ckpt K --life L
  *   yaac-tree import   --tree T --scratch S --ckpt K --life L
  *   yaac-tree probe    --scratch S --life L
  *
- * `run` waits for the life's start instruction, checks the tree out or
- * restores it (once per life: a restarted container finds its marker and
- * goes straight to its passes), then takes a pass every 30 seconds and
- * whenever the trigger file's mtime moves. On TERM, which Kubernetes sends
- * once the workspace container has exited, it takes the final pass and
- * removes the tree and scratch repository. `salvage` does that last part
- * for a tree a killed pod left. A final pass that cannot save everything
- * fails instead, leaving the tree for a salvage to try again. `run` and
- * `salvage` first clear the locks a git killed mid-write left. `import` takes a checkpoint
- * of a workspace whose files are still on the shared tier, leaving them as
- * they are, for its next life to restore. `probe` is the startup probe.
+ * `run` waits for the life's start instruction, hands the tree, the scratch
+ * repository and each `--own` folder to the install uid, and checks the
+ * tree out or restores it (all once per life: a restarted container finds
+ * its marker and goes straight to its passes). It then takes a pass every
+ * 30 seconds and whenever the trigger file's mtime moves. On TERM, which
+ * Kubernetes sends once the workspace container has exited, it takes the
+ * final pass and removes the tree and scratch repository. `salvage` does
+ * that last part for a tree a killed pod left. A final pass that cannot
+ * save everything fails instead, leaving the tree for a salvage to try
+ * again. `run` and `salvage` first clear the locks a git killed mid-write
+ * left. `import` takes a checkpoint of a workspace whose files are still on
+ * the shared tier, leaving them as they are, for its next life to restore.
+ * `probe` is the startup probe.
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -64,12 +66,30 @@ async function context(f: Record<string, string>): Promise<TreeContext> {
   return { tree: f.tree, scratch: f.scratch, ckpt: f.ckpt, start: await awaitStart(f.ckpt, f.life) }
 }
 
-/** Check out or restore the tree, once per life. A restore that cannot
- *  read its chain says so beside the instruction and never reports ready,
- *  so the server can offer a restore from what does verify. */
-async function startLife(c: TreeContext): Promise<boolean> {
+/**
+ * Hand each folder to the install uid. They are the pod's node-local mount
+ * sources, which kubelet makes as root when missing. Only the folder
+ * itself changes owner. Each is a mount root here, the directory its
+ * source resolved to when the pod started, so `lchown` is no guard against
+ * a source that was a link. The guard is that no workspace can write a
+ * source's parent: `launchWorkspace` refuses a node-local source inside
+ * another.
+ */
+async function ownRoots(c: TreeContext, dirs: string[]): Promise<void> {
+  for (const dir of dirs) {
+    const st = await fs.lstat(dir)
+    if (st.uid !== c.start.uid || st.gid !== c.start.gid) await fs.lchown(dir, c.start.uid, c.start.gid)
+  }
+}
+
+/** Take ownership of the life's folders and check out or restore the tree,
+ *  once per life. A restore that cannot read its chain says so beside the
+ *  instruction and never reports ready, so the server can offer a restore
+ *  from what does verify. */
+async function startLife(c: TreeContext, own: string[]): Promise<boolean> {
   const marker = startedMarker(c.scratch, c.start.life)
   if (await exists(marker)) return true
+  await ownRoots(c, [c.tree, c.scratch, ...own])
   try {
     const restored = c.start.restore !== undefined
       ? await restore(c, c.start.restore, { newestReadable: c.start.restoreNewestReadable === true })
@@ -88,7 +108,7 @@ async function startLife(c: TreeContext): Promise<boolean> {
   return true
 }
 
-async function run(c: TreeContext, trigger: string | undefined, intervalS: number): Promise<void> {
+async function run(c: TreeContext, own: string[], trigger: string | undefined, intervalS: number): Promise<void> {
   let stopping = false
   let wake: () => void = () => {}
   process.on('SIGTERM', () => {
@@ -96,7 +116,7 @@ async function run(c: TreeContext, trigger: string | undefined, intervalS: numbe
     wake()
   })
   await clearStaleLocks(c)
-  if (!(await startLife(c))) {
+  if (!(await startLife(c, own))) {
     while (!stopping) await new Promise<void>((r) => { wake = r; setTimeout(r, 60_000) })
     return
   }
@@ -128,7 +148,7 @@ async function main(): Promise<void> {
       process.exit(await exists(startedMarker(f.scratch, f.life)) ? 0 : 1)
       break
     case 'run':
-      await run(await context(f), f.trigger, f.interval !== undefined ? Number(f.interval) : INTERVAL_S)
+      await run(await context(f), f.own?.split(':') ?? [], f.trigger, f.interval !== undefined ? Number(f.interval) : INTERVAL_S)
       break
     case 'pass':
       await takePass(await context(f))

@@ -19,7 +19,7 @@ type PodReadyVerdict =
  * Classify a workspace pod's status. The container has no readiness probe,
  * and its postStart hook (yaac-workspace-init) runs before it counts as
  * running, so ready means in-pod setup finished. Terminal phases and image
- * pull failures, the init container's included, are fatal: tags are content
+ * pull failures, an init container's included, are fatal: tags are content
  * hashes or pinned mirrors, so a failed pull will not fix itself.
  */
 function evaluatePodReady(pod: V1Pod): PodReadyVerdict {

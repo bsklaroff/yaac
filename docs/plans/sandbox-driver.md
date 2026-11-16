@@ -304,9 +304,9 @@ confirms that on Apple's virtiofs, which documents no cache settings.
 
 `resolveMountSource` gets a sandbox version: tier check, identity path,
 then the per-backend realization above. It reads only `hostPath` and
-`emptyDir`, which is all domain produces. The k8s Job's `node-dirs` init
-container has no counterpart; the server creates node-local dirs on the
-host, as containerless does.
+`emptyDir`, which is all domain produces. The k8s tree container's chown
+of its pod's node-local dirs has no counterpart; the server creates them on
+the host, as containerless does.
 
 ## Phase 0: make a third kind possible
 

@@ -629,9 +629,9 @@ NODE-LOCAL holds nothing durable: per project, the pnpm store and the
 per-workspace scratch dirs, and each opencode workspace's working copy
 (docs/workspace-storage.md "opencode"). On a multi-node cluster those bytes are
 on whichever node the workspace ran on, so the server never touches them
-through its own filesystem. A pod's init container creates and chowns what the
-pod mounts, and `reapNodeLocal` runs one root pod per node to remove what no
-live workspace owns.
+through its own filesystem. kubelet creates what a pod mounts, the pod's tree
+container hands it to the install uid, and `reapNodeLocal` runs one root pod
+per node to remove what no live workspace owns.
 
 The claims have **fixed names** and the volumes have **install-keyed names**. A
 claim is namespaced and belongs to one install, so every install namespace
@@ -655,13 +655,24 @@ node-local tree, with each checkout's `.git` a subPath of `yaac-global`
 to that file, so every global file a pod mounts must exist before its Job
 is applied; kubelet would otherwise create it as a root-owned directory.
 The node-local directories a pod mounts are chowned to the pod's uid by its
-own init container, running as root, because hostPath ignores `fsGroup` and
-kubelet creates each one root-owned before the init container runs. That
-container runs the digest-pinned builder image rather than the workspace's
-own, whose binaries the project controls: as root over the install's whole
-node directory, a planted `sh` could poison every project's node-local data.
-Like every pod that runs the builder image, it pulls it by the digest install
-recorded for the mirror, not by its tag (docs/trust-split-builds.md).
+own tree container, running as root (docs/node-local-workspaces.md "Start"),
+because hostPath ignores `fsGroup` and kubelet creates a missing one, and
+every missing folder above it, root-owned. The tree container mounts those
+directories and nothing above them, so it runs the yaac base image as root
+over one workspace's node-local data and no other's. It changes the owner of
+each mount's own root and of nothing below, where an agent may have left a
+link. kubelet follows a link in a mount source, so a launch whose node-local
+sources include one inside another is refused: no workspace can then write
+the parent of a folder that is chowned. A pod with no tree container (a
+site's release) mounts nothing node-local, and a launch that would is
+refused too.
+
+The folders above a pod's mounts stay root-owned. Nothing in the cluster
+needs them otherwise: every pod that removes node-local data runs as root.
+On a Linux kind host they are folders of the data dir, which the host user
+could then not remove or move to another disk, so `yaac cluster delete`
+hands the whole node-local folder back before the node goes
+(docs/cluster-setup.md "Deleting the cluster").
 
 **Workspace volumes** are stored apart from the tiers
 (docs/workspace-volumes.md). On kind, install makes a fourth static claim,

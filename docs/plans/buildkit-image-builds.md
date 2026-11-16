@@ -126,7 +126,7 @@ and `buildkitd.toml`. Builder pods pull it by recorded digest.
 
 With this and nested containers gone, nothing in the cluster runs podman as
 an engine. The mirrored podman image is left as the root utility image of
-the node sweeps, root removals and the `node-dirs` init container, none of
+the node sweeps, root removals and the `volume-root` init container, none of
 which needs podman, so it can be swapped for a smaller one.
 
 ### The pod
