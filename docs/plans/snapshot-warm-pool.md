@@ -87,6 +87,8 @@ These are worth doing on their own and shrink the later change:
 - **Move per-workspace identity out of the pod spec**, into something
   delivered at claim time (a file `yaac-workspace-init` reads, or a streamd
   call). This also simplifies `rebranchSpare` and `retoolSpare`.
+  docs/plans/generic-prewarm-pool.md plans this as its first phase, and goes
+  on to move the mounts out as well, which a restore would need too.
 - **Spike, measuring only, on a host kind cluster.** Run `runsc checkpoint`
   against a live spare and restore it by hand. Record the snapshot size,
   the restore time with and without `--background`, and whether claude,
