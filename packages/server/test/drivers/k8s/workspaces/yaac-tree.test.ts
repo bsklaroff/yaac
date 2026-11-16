@@ -113,8 +113,10 @@ async function waitFor<T>(fn: () => Promise<T | null | undefined | false>, ms = 
   }
 }
 
-const probe = (l: Life): Promise<boolean> =>
-  execFileAsync(script, ['probe', '--scratch', l.scratch, '--life', l.name]).then(() => true, () => false)
+/** One startup probe, which looks once unless told how long to wait. */
+const probe = (l: Life, waitS?: number): Promise<boolean> =>
+  execFileAsync(script, ['probe', '--scratch', l.scratch, '--life', l.name, ...(waitS !== undefined ? ['--wait', String(waitS)] : [])])
+    .then(() => true, () => false)
 
 interface ManifestLike {
   life: string; final: boolean; pass: string; bundles: string[]; units: Array<{ kind: string; path?: string }>; unsaved: string[]
@@ -178,8 +180,14 @@ describe('yaac-tree', () => {
   it('checks a life out, saves every kind of content, and restores it whole after a stop', async () => {
     const ws = await workspace('whole')
     const one = await life(ws, 'L1')
+    // A probe waits out its time on a life that has not started, and one
+    // already waiting passes when the life does.
+    const began = Date.now()
+    expect(await probe(one, 0.3)).toBe(false)
+    expect(Date.now() - began).toBeGreaterThanOrEqual(300)
+    const waiting = probe(one, 60)
     const run = start(one)
-    await waitFor(() => probe(one))
+    expect(await waiting).toBe(true)
 
     // The checkout is there with its first index current, and the mount
     // points the workspace container needs.

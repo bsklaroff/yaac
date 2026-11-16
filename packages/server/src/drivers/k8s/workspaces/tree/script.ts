@@ -7,7 +7,7 @@
  *   yaac-tree salvage  --tree T --scratch S --ckpt K --life L
  *   yaac-tree pass     --tree T --scratch S --ckpt K --life L
  *   yaac-tree import   --tree T --scratch S --ckpt K --life L
- *   yaac-tree probe    --scratch S --life L
+ *   yaac-tree probe    --scratch S --life L [--wait SECONDS]
  *
  * `run` waits for the life's start instruction, hands the tree, the scratch
  * repository and each `--own` folder to the install uid, and checks the
@@ -21,7 +21,8 @@
  * again. `run` and `salvage` first clear the locks a git killed mid-write
  * left. `import` takes a checkpoint of a workspace whose files are still on
  * the shared tier, leaving them as they are, for its next life to restore.
- * `probe` is the startup probe.
+ * `probe` is the startup probe: it passes once the life has started, and
+ * with `--wait` keeps looking that long before it fails.
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -32,6 +33,15 @@ import { LIVES_DIR, START_FILE, type StartInstruction } from '@yaac/shared/tree-
 const INTERVAL_S = 30
 /** Written beside the start instruction when a restore cannot proceed. */
 const RESTORE_FAILED_FILE = 'restore-failed.json'
+/** Between a waiting probe's looks for the life's marker. A probe is
+ *  running for the whole of a restore, and inside the sandbox a look costs
+ *  about a millisecond of the tree container's CPU, so looking more often
+ *  would slow the restore to save a delay too short to notice. */
+const PROBE_POLL_MS = 50
+/** Between reads of a start instruction that is not there yet, which is
+ *  while the server is still fetching a checkout. The file is on the shared
+ *  tier, so a read may be a round trip to its file server. */
+const START_POLL_MS = 100
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 const exists = (p: string): Promise<boolean> => fs.stat(p).then(() => true, () => false)
@@ -57,7 +67,7 @@ async function awaitStart(ckpt: string, life: string): Promise<StartInstruction>
         if (s.version === 1 && s.life === life && Array.isArray(s.checkouts) && Array.isArray(s.excluded)) return s
       } catch { /* written partway: read again */ }
     }
-    await sleep(1000)
+    await sleep(START_POLL_MS)
   }
 }
 
@@ -108,6 +118,20 @@ async function startLife(c: TreeContext, own: string[]): Promise<boolean> {
   return true
 }
 
+/** Whether the life has started, looking until it has or `waitS` seconds
+ *  have passed. The wait is in this one process because starting another
+ *  costs about a hundred looks inside the sandbox. */
+async function probe(scratch: string, life: string, waitS: number): Promise<boolean> {
+  const marker = startedMarker(scratch, life)
+  const until = Date.now() + waitS * 1000
+  while (!(await exists(marker))) {
+    // Written so that a wait that is no number looks once, not for ever.
+    if (!(Date.now() < until)) return false
+    await sleep(PROBE_POLL_MS)
+  }
+  return true
+}
+
 async function run(c: TreeContext, own: string[], trigger: string | undefined, intervalS: number): Promise<void> {
   let stopping = false
   let wake: () => void = () => {}
@@ -145,7 +169,7 @@ async function main(): Promise<void> {
   const f = flags(rest)
   switch (cmd) {
     case 'probe':
-      process.exit(await exists(startedMarker(f.scratch, f.life)) ? 0 : 1)
+      process.exit(await probe(f.scratch, f.life, Number(f.wait ?? 0)) ? 0 : 1)
       break
     case 'run':
       await run(await context(f), f.own?.split(':') ?? [], f.trigger, f.interval !== undefined ? Number(f.interval) : INTERVAL_S)

@@ -143,6 +143,15 @@ Outside the sandbox:
    minutes and a probe that gave up would restart the container mid-way;
    the server's wait for the pod is as patient.
 
+Kubernetes runs a probe at most once a second, and a filled tree waiting
+for the next one is start-up time spent on nothing. So each probe waits
+most of its period for the tree, inside its one process, and passes the
+moment the tree is filled; a loop of short commands would spend that time
+starting processes, which is slow inside the sandbox. Its timeout is far
+longer than its wait, for a process slow to start on a loaded node. A
+probe is not a `postStart` hook because a hook has no timeout, and kubelet
+does nothing else for the pod, deleting it included, while one runs.
+
 A restarted sidecar finds its life's marker in the scratch repository and
 goes straight to its passes, never checking out over a tree in use or
 changing its owner. A salvage or import pod changes no owner either: the

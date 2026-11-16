@@ -10,6 +10,7 @@ import {
   CA_MOUNT_DIR,
   SCRATCH_REQUEST_BYTES,
   SCRATCH_SIZELIMIT_SLACK_BYTES,
+  TREE_STARTUP_SECONDS,
   WORKSPACE_POD_ANNOTATIONS,
   type PodJobParams,
 } from '#drivers/k8s/workspaces/pod-job'
@@ -478,8 +479,18 @@ describe('buildPodJobManifest', () => {
       image: 'base:1',
       restartPolicy: 'Always',
       securityContext: { runAsUser: 0, capabilities: { drop: ['ALL'], add: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETUID', 'SETGID'] } },
-      startupProbe: { exec: { command: ['yaac-tree', 'probe', '--scratch', '/scratch', '--life', '2026-11-14T00-00-00.000Z'] } },
     })
+    // The probe waits for the tree inside one process for most of its
+    // period, with a timeout well past that, and puts up with hours of a
+    // restore before the container would be restarted.
+    const probe = tree.startupProbe as { exec: { command: string[] }; periodSeconds: number; timeoutSeconds: number; failureThreshold: number }
+    expect(probe.exec.command.slice(0, -1)).toEqual(['yaac-tree', 'probe', '--scratch', '/scratch', '--life', '2026-11-14T00-00-00.000Z', '--wait'])
+    const wait = Number(probe.exec.command.at(-1))
+    expect(wait).toBeGreaterThan(0)
+    expect(wait).toBeLessThan(probe.periodSeconds)
+    expect(probe.timeoutSeconds).toBeGreaterThanOrEqual(wait + 5)
+    expect(Number.isInteger(probe.periodSeconds)).toBe(true)
+    expect(probe.failureThreshold * probe.periodSeconds).toBe(TREE_STARTUP_SECONDS)
     expect(tree.command).toContain('--life')
     // The folders it hands to the install uid besides its own two.
     expect((tree.command as string[]).slice(-2)).toEqual(['--own', '/own/0'])
