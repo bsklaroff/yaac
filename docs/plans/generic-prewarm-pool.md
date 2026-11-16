@@ -10,8 +10,9 @@ spawn, a queued launch) starts about as fast as an agent opens in a running
 workspace, for any project. A restart gets a pod made on demand and a tree
 built on the node.
 
-Nothing here is built. The mechanism was tested by hand on a kind rig on
-2026-11-16, and "What the spike established" below records what was run.
+Nothing here is built. The mechanism was tested by hand on a kind rig in two
+runs on 2026-11-16, and "What the spike established" below records what was
+run.
 
 ## Why
 
@@ -103,6 +104,73 @@ node, whatever the repo's size. (The spike mounted an overlay over a kept
 tree, or bound in a copy; it did not build the rename described below.) When
 the tree was checked out inside the sandbox the same claim took 1.5 s and
 5.2 s.
+
+### The second run
+
+A second run tried the design's own pieces, on the same rig at host load 5
+to 30, with the same two repos (1,820 and 14,490 files). Times below are the
+low end of what it saw.
+
+| Finding | Result |
+|---|---|
+| `runsc exec --env` | adds to the environment: the image's `ENV` and the pod's variables still reach the process |
+| `runsc exec --process <spec> --exec-fd` | the process gets exactly the spec's environment (runsc adds `HOME`) and exactly its capabilities |
+| A static musl binary passed by `--exec-fd` | runs; `/proc/self/exe` reads `host:[n]` |
+| A static glibc binary passed the same way | aborts at startup in `_dl_get_origin`, since that path is not absolute |
+| Root with no extra capability, against the read-only node-mounts directory | cannot write it, rename an entry, move the directory (busy) or mount |
+| The same with `CAP_SYS_ADMIN` | a remount read-write "succeeds" and every write still fails; entries are not separate mounts in the sandbox, so they cannot be unmounted; unmounting `/node-mounts` itself shows the image's empty directory, and the node is untouched |
+| A container with `CAP_SYS_ADMIN` binding from its read-only node-mounts directory | works; after re-running itself with the capability out of its bounding set it can neither mount, unmount nor regain it; a restart of the container redoes the binds |
+| A single file bound into the node-mounts directory, then onto a file in the sandbox | works; writes on either side are seen on the other |
+| A node-built tree renamed into a workspace's tree directory and bound in | first `git status` clean |
+| containerd, then kubelet, restarted with node mounts and in-sandbox binds in place | no container restarts, every bind still works, the rig's own pods are unaffected; back in 2.2 s and 3.6 s |
+| A bind the agent pod makes from its own volume (host disk, and NFS mounted on the node) | reaches the sandbox, and outlives the agent pod's replacement |
+| A pod labelled as a workspace with no proxy registration | every host refused, allowlisted ones included; no DNS; no npm cache |
+
+Racy index entries. A node-built tree is written in well under a second, so
+every file's mtime falls in the same whole second as the index's, and git
+treats such entries as possibly changed and hashes each on the next read.
+On the big repo, a fresh pod's first `git status` took 6.7 s with the index
+moved as written, and 1.2 s with the index copied a second or more after the
+build (0.9 s for the second status either way). An index checked with git's
+default stat checks in the sandbox, as the tree program's is, took 5.6 s on
+its first status: gVisor numbers inodes itself, so every entry differs.
+
+Restores onto a built tree, big repo, `read-tree -u --reset` against the
+node-arborist's index under `core.checkStat=minimal`:
+
+| Checkpoint | Written | Time | Today's write into an empty dir |
+|---|---|---|---|
+| 30 modified, 20 deleted, 2 made executable, 21 added | 53 files; deletions removed | 0.57 to 0.80 s | 8.7 to 14.5 s |
+| 2,000 modified, the rest as above | 2,021 files | 7.7 s | 17 s |
+| 30 modified, with default stat checks | all 14,491 files | 12.9 s | 6.7 s |
+
+Each ended with the index equal to the checkpoint's tree and the work tree
+equal to the index. A file edited before the command with its size and
+whole-second mtime unchanged was not rewritten, and `git status` did not
+show it.
+
+A claim run as one script on the node, from the take to a tmux window open
+at the tree (no API calls, shared-tier work or streamd):
+
+| Step | Time |
+|---|---|
+| Build on demand in the node-arborist (runc, 4-core limit) | 0.14 s small, 0.30 to 0.52 s big |
+| Take (two renames, the `.git` mount point) and four mounts | 31 to 42 ms |
+| One `runsc exec` of the static helper making seven binds | 17 to 24 ms |
+| One `runsc exec` copying the index and opening a tmux window | 75 to 93 ms |
+| Window open, tree ready | 0.14 to 0.15 s |
+| Window open, tree built on demand | 0.29 s small, 0.65 s big |
+| First `git status` done, tree ready / built on demand | 0.37 / 1.26 s small, 1.3 / 3.7 s big |
+
+Simultaneous builds in one node-arborist limited to 4 cores and 1 GiB: ten of
+the small repo all finished in 0.76 to 0.83 s, four of the big one in 2.63 to
+2.66 s. Their memory was page cache, not process memory: 409 MiB and 897 MiB
+at peak, with almost no anonymous memory.
+
+On a loopback NFS share (a userspace server in a pod, mounted on the node at
+NFS 4.0), making a `.git` as `createCheckout` does, about 20 files, took 100
+to 119 ms against 25 to 31 ms on node disk; one file create took 0.9 ms
+against 0.2 ms.
 
 ## Design
 
@@ -209,8 +277,11 @@ with it requests 50m CPU and 128 MiB, as the tree container does, and is
 limited to 4 cores and 1 GiB. A build runs git with eight checkout workers,
 so 4 cores lets a burst finish quickly and leaves half of an 8-core node to
 running workspaces; past the limit simultaneous builds share the cores and
-each takes longer. A checkout streams files out of the main clone and should
-need tens of megabytes. Neither figure has been measured.
+each takes longer: under it, ten small builds at once all took about 0.8 s
+and four big ones about 2.65 s. A build needs almost no process memory. What
+the memory limit meets is the page cache of the files it writes, which the
+cgroup counts (897 MiB at peak for four big builds) and the kernel reclaims
+under the limit.
 
 Only the server may dial the agent, as with the disk pod
 (`cluster/disk-pod.ts`): a network policy admits the server alone, and each
@@ -274,8 +345,55 @@ differences to one. No tree is checked out from nothing inside a sandbox.
 
 The index is what makes the first `git status` find nothing to do. The
 workspace's `.git` sets `core.checkStat=minimal`, which compares
-whole-second mtime and size, and a rename changes neither. The spike's
-copies were clean on first status.
+whole-second mtime and size, and a rename changes neither. It does so
+today, since the workspace container sees the tree under other inode
+numbers than the tree container that wrote it.
+
+Minimal also ignores ctime, so it misses a same-size write that keeps the
+recorded whole-second mtime, which `cp -p`, `rsync -a` or an archive
+extraction can make; git's default checks see the changed ctime. In the
+workspace's `.git` that costs at most an agent's `git status` missing such a
+write, as it can today. Nothing durable depends on that index: checkpoints
+come from the tree program's own index, which keeps git's default checks.
+With those, the inode numbers on an index the node-arborist wrote never
+match, so the tree program's first pass hashes every file once (4.4 s of CPU
+on the big repo), as it already does after a restart of the tree container.
+That pass runs after the started marker, at a random point in the first pass
+interval, so it adds nothing to a start.
+
+The first status also hashes every file whose mtime falls in the same
+second as the index's own: git cannot tell such a file from one written
+after the index ("racy git"). A native build writes every file and the index
+within one second, so without care every entry is racy. On the big repo the
+first status took 6.7 s as built and 1.2 s with the index a second newer
+than the files. So the node-arborist, once git has written the tree, sets
+every file's mtime two seconds back and rewrites the stat fields of each
+index entry from a fresh `lstat`, leaving the object ids alone. Every entry
+is then older than the index, for a tree built on demand as much as one
+kept ready, and nothing waits. It reads no content: a Python prototype took
+0.17 to 0.19 s for 14,490 files, nearly all of it one `utimensat` and one
+`lstat` per file. It is sound for the reason a restore is ("Restores"
+below): git wrote every file from those object ids and nothing has touched
+them since.
+
+Git's own test suite backdates files the same way (`test-tool chmtime`) to
+keep entries out of the racy window. What git offers outside its tests is a
+refresh, which re-hashes every racy entry: 0.65 s natively on the big repo,
+no faster than waiting for the next second. Setting the index's mtime
+forward instead is what git's maintainers rule out, since a same-size edit
+in the skipped second would then go unseen. Rewriting the index means the
+node-arborist writes git's index format: fixed-size entries, extensions
+kept as they are, and the trailing checksum recomputed. It builds with
+`index.version=2`, since version 4 compresses paths and would have to be
+decoded.
+
+The prototype was checked with native git 2.53 on both repos, and on the
+small one in a SHA-256 repository. After the rewrite git accepted the
+index, `write-tree` gave the commit's tree, and the first status opened no
+tracked file (14,490 as built), clean under both minimal and default
+checks. A same-size edit at a new mtime showed as modified. A restore onto a
+rewritten tree wrote only the 51 changed files and read nothing from the
+tree but git objects.
 
 ### A claim
 
@@ -323,13 +441,13 @@ The node-mounter, for one request:
    never by name.
 3. Writes the list of entries into the node-mounts directory, where the tree
    container reads it.
-4. Enters the workspace container once (`runsc exec` as root with
-   `CAP_SYS_ADMIN`) and binds each node-mounts entry onto its path, parents
-   first, remounting the writable ones read-write. It also makes a folder in
-   the scratch volume for each scratch dir and binds it over that dir's
-   path, and binds each bundled skill into the tool homes' skills roots.
-   What it runs there is its own program, handed in by descriptor ("Entering
-   a container whose image is not trusted" below).
+4. Enters the workspace container once (`runsc exec` with a process spec:
+   root, `CAP_SYS_ADMIN`) and binds each node-mounts entry onto its path,
+   parents first, remounting the writable ones read-write. It also makes a
+   folder in the scratch volume for each scratch dir and binds it over that
+   dir's path, and binds each bundled skill into the tool homes' skills
+   roots. What it runs there is its own program, handed in by descriptor
+   ("Entering a container whose image is not trusted" below).
 
 The tree container holds `CAP_SYS_ADMIN` and makes its own binds from the
 list in its node-mounts directory: the tree, the scratch directory, the
@@ -356,9 +474,16 @@ node-arborist's index instead of an empty one, so git touches only the paths
 that differ from the start commit. That one command runs with
 `core.checkStat=minimal`: the node-arborist's index carries the node's inode
 numbers, which differ inside the sandbox, and with git's default checks
-every file would look changed and be written again. Trusting mtime and size
+every file would look changed and be written again (all 14,491 on the big
+repo, slower than writing into an empty directory). Trusting mtime and size
 is sound here because nothing has run on the tree between the
-node-arborist's build and this command.
+node-arborist's build and this command: the node-arborist builds under a
+name of its own, and the take moves the tree straight to a life no process
+has started in. That has to stay true. A file edited with its size and
+whole-second mtime unchanged before the command is left as it was, and git
+does not report it afterwards. With it true, a restore writes only what the
+checkpoint changed: 53 files in 0.57 to 0.80 s for a checkpoint of 73 paths
+on the big repo, against 8.7 to 14.5 s to write the whole tree.
 
 What `yaac-tree` keeps: verifying and unpacking the chain, working out each
 unit's tree, every refusal and `--restore-newest` rule, and writing in full
@@ -433,10 +558,17 @@ nothing it runs or reads there may come from the image:
   would not do, even a path on a read-only mount: root in the sandbox can
   rename the directory above the mount and put a program of its own at that
   path. A static binary also loads nothing from the container, where a
-  dynamic one would take the image's loader and libraries.
-- **The environment.** Given in full on the command line. Left out, the exec
-  inherits the image's `ENV`, where a Dockerfile can set `LD_PRELOAD` or
-  `PATH`.
+  dynamic one would take the image's loader and libraries. It must not
+  depend on `/proc/self/exe` being a path, which it is not under
+  `--exec-fd`: a static glibc binary aborts there, while a static musl one
+  runs, and so does Go's.
+- **The environment and capabilities.** Given in full in a process spec
+  (`runsc exec --process`), with the arguments, the numeric user, every
+  variable and the exact capability set. `--env` on the command line only
+  adds to the image's `ENV`, where a Dockerfile can set `LD_PRELOAD` or
+  `PATH`, and `--cap` only adds to the default set. The program gets
+  `CAP_SYS_ADMIN`, plus `CAP_CHOWN` for the scratch folders it makes, and
+  nothing else.
 - **The arguments.** The list of binds is passed as data, never through a
   shell, since scratch dir and cache volume paths come from project config.
   The uid is numeric, so no `/etc/passwd` is read.
@@ -456,11 +588,12 @@ If the image did get code running with the capability, it could mount and
 unmount inside its sandbox and reach more of the sentry's mount code. It
 could rearrange the binds, which reach nothing the node-mounts directory
 does not hold. It could not make a read-only source writable: those are
-read-only mounts on the node, whatever the sandbox's own flag says. Whether
-the same holds for the node-mounts directory itself has not been tested. If
-it does not, such code could rearrange the entries of its node-mounts
-directory, which is why the node-mounter never resolves a path under a
-node-mounts directory by name.
+read-only mounts on the node, whatever the sandbox's own flag says. The same
+holds for the node-mounts directory itself: with the capability, a remount
+of it read-write succeeds inside the sandbox and every write still fails,
+and unmounting it only uncovers the image's own empty directory. The
+node-mounter still never resolves a path under a node-mounts directory by
+name.
 
 The tree container holds the capability too, but runs the base image, which
 yaac builds, and never a project's.
@@ -657,20 +790,24 @@ ready:
 |---|---|---|
 | Pick and label patch | 20 ms | one API call |
 | Shared-tier work, overlapping the next two | 50 ms | 45 to 60 ms measured for a `.git` |
-| Agent request: take, mounts, enter | 40 ms | a rename, mount syscalls, one `runsc exec` at 25 to 29 ms |
-| Tree container: binds, index, marker | 40 ms | overlaps the agent request's end |
+| Agent request: take, mounts, enter | 60 ms | measured: take and four mounts 31 to 42 ms as commands, one `runsc exec` making seven binds 17 to 24 ms |
+| Tree container: binds, index, marker | 40 ms | overlaps the agent request's end; its binds took 0.14 s as shell commands, and are a few syscalls in its own program |
 | Claim call | 100 ms | one tmux at 70 to 115 ms; file writes in-process |
 | Windows | 100 ms | one tmux, as today's claim |
 
-That is about 0.35 s to an open window, against 0.26 to 0.32 s for a new
-session in a running workspace. A tree built on demand adds 0.12 to 0.45 s.
+That is about 0.37 s to an open window, against 0.26 to 0.32 s for a new
+session in a running workspace. The node's part of it, run as one script
+from the take to an open tmux window, took 0.14 to 0.15 s. A tree built on
+demand adds its build, 0.14 s and 0.30 to 0.52 s measured, and up to 0.2 s
+to take its index out of the racy window ("Trees" above).
 The window opening is not what the user waits for: claude's first paint
 takes a further 1.04 to 1.16 s under gVisor, so a claim shows a painted
 agent about 1.5 s after the request. A restart pays a pod start first, which
 today's parts put at 2.5 to 3 s (volumes, sandbox, container, init hook) and
 which has not been measured for a generic pod. Its tree is built meanwhile,
-and the checkpoint's unpacking and difference follow, also unmeasured;
-today's restore takes 4 to 10 s on a 16,500-file repo. These phases are
+and the checkpoint's difference then takes under a second for a typical
+checkpoint on a 14,500-file repo, against 4 to 10 s for today's restore on a
+16,500-file one; unpacking the checkpoint is not included. These phases are
 reported through the per-start timing line.
 
 ## Phases
@@ -699,9 +836,8 @@ Each phase ships on its own and leaves the suite green.
    is every checkout into an empty directory inside the sandbox (`checkOut`,
    and a restore's write of a checkout's unit), with no exception. The tree
    container's hand-over of its directories goes with them.
-5. **Tuning.** The CPU resize, and the node-arborist's limits: measure one
-   build's peak CPU and memory on a large repo, and how long the last of ten
-   simultaneous builds takes under the CPU limit.
+5. **Tuning.** The CPU resize, and the node-arborist's limits against real
+   repos and real bursts, starting from the second run's figures.
 
 Phase 2 does not make any start slower than today's: without a tree kept
 ready, a claim builds one natively, which is faster than the tree container
@@ -714,7 +850,9 @@ With one pod shape and no checkout inside the sandbox there is no other way
 to run a workspace, so phase 4 waits until the cluster check's gate and the
 e2e suite pass on each:
 
-- kind on Linux (the spike's rig);
+- kind on Linux (the spike's rig), where the three things below held, the
+  third for a shared tier on node disk and for one on NFS mounted on the
+  node;
 - kind in a podman machine on macOS, where the node-local root is a file
   share and the shared tier is too;
 - k3s (`infra/hetzner-k3s`), where containerd runs under k3s's own
@@ -763,41 +901,29 @@ outlives a restart of the agent's pod.
 
 ## Not yet verified
 
-- **NFS.** A kind rig has no NFS. Beyond the platform checks above, measure
-  what a claim's shared-tier work costs on a byo cluster: making a `.git` is
-  about 15 file creates, which at 30 ms each would be the largest part of a
-  claim. If it is, keep prepared git dirs per repo beside the trees.
-- **Restarts.** containerd and kubelet restarting while a workspace's mounts
-  are in place.
-- **The tree container binding for itself.** The spike made in-sandbox binds
-  only through `runsc exec`. A container that holds `CAP_SYS_ADMIN` making
-  the same binds from a read-only node-mounts directory uses the same calls,
-  but was not run.
-- **The take.** The spike bound in an overlay or a copy, not a renamed tree.
-- **Restoring onto a tree the tree program did not write.** Not run. To
-  check: that `read-tree -u --reset` against the node-arborist's index under
-  `core.checkStat=minimal` writes only the paths that differ, that it
-  removes files the agent deleted, that a file whose content changed while
-  its size and whole-second mtime did not cannot arise before the command
-  runs, and what a restore then costs on a large repo.
-- **The tree program on a tree it did not write.** Its own index keeps git's
-  default stat checks, and gVisor numbers inodes per container, so its first
-  pass on an index the node-arborist wrote hashes every file once. Measure
-  that pass on a large repo before deciding whether it needs anything.
-- **Entering by descriptor.** The spike entered with `sh -c` and the image's
-  own `mount`, which is the form this plan rules out. `--exec-fd` with a
-  static binary and an explicit environment was not run. Nor was a remount
-  of the read-only node-mounts directory from inside with `CAP_SYS_ADMIN`,
-  which should fail on the node's side.
-- **File mounts through the node-mounts directory.** The spike bound only
-  directories. The design avoids single-file binds by mounting the helpers
-  at creation.
-- **A spare's egress before its claim.** The proxy's code refuses a pod with
-  no registration; that was read, not run.
-- **Real parts.** The prototype used a small stand-in image, `runsc exec` in
-  place of streamd, and a shell as the agent.
+The second run closed the rest of what a single kind node could show:
+restarts of containerd and kubelet, the tree container binding for itself,
+the take, restores and the tree program on a node-built tree, entering by
+descriptor, file mounts, and a spare's egress. What is left:
+
+- **NFS at a real network's latency.** On loopback NFS a `.git` took about
+  0.1 s, at 0.9 ms a file create. On a byo cluster measure one create: a
+  `.git` is about 20 of them, so at 30 ms each it would be 0.6 s and the
+  largest part of a claim. If it is, keep prepared git dirs per repo beside
+  the trees.
+- **Real parts.** The claims used a small stand-in image, `runsc exec` in
+  place of streamd, and a shell as the agent, and left out the API calls and
+  the shared-tier work. The first real number comes from phase 2's timing
+  line.
+- **Backdating a built tree and rewriting its index inside a sandbox.**
+  Checked with native git only. gVisor reports the host's mtimes, which is
+  all git's racy check reads, so the first status in the sandbox should hash
+  nothing too; the first run on a rig confirms it.
+- **Unpacking a checkpoint** before a restore writes its difference, which
+  the run left out.
 - **More than one node.** How often a pod made on demand lands on a node
   with no tree, and whether that is worth a scheduling preference.
+- **The other platforms**: macOS under a podman machine, and k3s.
 
 ## Decisions
 
