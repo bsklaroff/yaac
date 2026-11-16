@@ -152,6 +152,24 @@ longer than its wait, for a process slow to start on a loaded node. A
 probe is not a `postStart` hook because a hook has no timeout, and kubelet
 does nothing else for the pod, deleting it included, while one runs.
 
+Two more steps lie between a passed probe and the workspace container, and
+both are kubelet's (read at v1.37):
+
+- **A wait of up to a second, half on average.** Kubelet creates the
+  container in the pod's next sync, and a sync waits for a listing of the
+  pod's containers newer than the sync before it. Kubelet lists a pod at
+  once after a sync that changed something, but the sync that follows the
+  tree container's start changes nothing, so the one the probe asks for
+  waits for kubelet's listing of every pod, which runs once a second. A
+  restore longer than that second waits for nothing. The period is a
+  constant with no setting, and the `EventedPLEG` feature gate lists a pod
+  early only when one of its containers stops.
+- **About 6 ms for each `subPath` mount of the workspace container**, which
+  kubelet binds one after another before it asks the runtime for the
+  container: about a third of a second for sixty. Two thirds of them are the
+  built-in skills, mounted once per skill per tool, and the helper commands,
+  mounted one file each.
+
 A restarted sidecar finds its life's marker in the scratch repository and
 goes straight to its passes, never checking out over a tree in use or
 changing its owner. A salvage or import pod changes no owner either: the
