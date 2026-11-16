@@ -887,7 +887,7 @@ describe('runClusterCheck', () => {
   })
 
   it('leaves infrastructure-only nodes out, and skips the sandboxed gates while no other node is up', async () => {
-    // An EKS-style system node labelled infrastructure-only beside a
+    // A system node labelled infrastructure-only beside a
     // tainted worker: only the worker is swept.
     clusterNodes = [
       nodeItem('system-1', { labels: { [WORKSPACE_POOL_KEY]: 'false' } }),
@@ -1386,7 +1386,7 @@ describe('runClusterCheck', () => {
       detail: expect.stringContaining('policy enforced, egress redirected') as string,
     })
 
-    // The Tigera operator (EKS, AKS) runs calico-node in calico-system.
+    // The Tigera operator (AKS) runs calico-node in calico-system.
     calicoNamespace = 'calico-system'
     stage()
     const operator = await check()

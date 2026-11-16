@@ -56,7 +56,7 @@ that already has cluster-wide `pods/exec`, and it should go if that ever
 does. `nodes/stats` would be narrower, but it only authorizes dialing a
 kubelet directly on its own port, which needs the server pod to reach every
 node and trust each kubelet's serving certificate. The metrics API is not
-installed on kind or EKS and has no disk figures.
+installed on kind and has no disk figures.
 
 A server whose role predates the rule gets a 403 for each node, and the
 overlay says so in the node's row until the next `yaac cluster install`.
@@ -197,4 +197,4 @@ reads.
 - A CLI command.
 - metrics-server. It scrapes every node every 15s whether or not anyone is
   looking, keeps only the latest point, reports neither disk nor volumes,
-  and kind and EKS do not ship it.
+  and kind does not ship it.

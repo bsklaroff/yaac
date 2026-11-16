@@ -13,7 +13,7 @@ an ordinary death with no explanation.
   workspace shows why it stopped and offers a restart.
 - Document what survives: the checkout, transcripts and opencode's last
   checkpoint are on the shared tier; in-flight scratch on the node is lost.
-- Run a full workspace life for every tool on `infra/aws-eks` (create,
+- Run a full workspace life for every tool on `infra/hetzner-k3s` (create,
   prewarm claim, drain the node, resume on another) and
   confirm the gVisor installer survives a node-pool upgrade.
 - A drain that moves the npm cache or a registry makes installs and pulls

@@ -279,14 +279,14 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
   clusters to another Kubernetes minor. kind only guarantees an image works
   with the release that published it, so bump the pin and the kind minimum
   together. Existing clusters keep the version they were created with.
-- **Every install runs the same minor.** kind's node image, Hetzner's
-  `k3s_version` and EKS's `kubernetes_version` share one Kubernetes minor,
-  as do the envtest binaries the apiserver tests run
-  (`test/apiserver/global-setup.ts`) and the server image's kubectl
+- **Every install runs the same minor.** kind's node image and Hetzner's
+  `k3s_version` share one Kubernetes minor, as do the envtest binaries the
+  apiserver tests run (`test/apiserver/global-setup.ts`) and the server
+  image's kubectl
   (`dockerfiles/Dockerfile.server`), so a behavior seen on one is the
   behavior of all. Patch releases differ where one lags: kind publishes
   node images only with its own releases. The cluster autoscaler
-  (`autoscaler_version` on Hetzner and EKS) may trail by a minor until it
+  (Hetzner's `autoscaler_version`) may trail by a minor until it
   releases the cluster's.
 - **podman 6 breaks older kind.** Podman 6.0 changed the container label
   format from a map to a slice, and kind <= v0.32.0 then fails to list its
@@ -416,11 +416,8 @@ come from CoreDNS's in-memory copy of the API, so that cache saves little.
 - **kind**: kubeadm's Corefile already turns the cache off for
   `cluster.local` (`disable success` and `disable denial` under `cache`),
   so install leaves CoreDNS alone.
-- **byo**: `infra/aws-eks` gives the CoreDNS add-on a `corefile` with the
-  same two lines. That pins the whole Corefile, so a later add-on's default
-  does not reach the cluster; re-diff it when bumping `kubernetes_version`.
-  k3s owns its default server block, so `infra/hetzner-k3s` adds a block
-  of its own under a `yaac.server` key of k3s's `coredns-custom`
+- **byo**: k3s owns its default server block, so `infra/hetzner-k3s` adds
+  a block of its own under a `yaac.server` key of k3s's `coredns-custom`
   ConfigMap:
 
   ```
@@ -489,9 +486,9 @@ Installs into the cluster the current kubeconfig points at: a self-managed
 pool, or a managed one on a mutable node OS. It applies the same
 in-cluster layers and server Deployment as a kind install. It creates no
 cluster, needs no `kind`, installs no CNI (it uses the cluster's existing
-Calico), and is re-runnable like every other mode. `infra/` has OpenTofu
-for two such clusters, EKS (`infra/aws-eks`) and k3s on Hetzner Cloud
-(`infra/hetzner-k3s`), each with a README that walks through the install.
+Calico), and is re-runnable like every other mode. `infra/hetzner-k3s` has
+OpenTofu for one such cluster, k3s on Hetzner Cloud, with a README that
+walks through the install.
 What differs:
 
 - **Storage** comes from storage classes instead of static volumes.
@@ -627,8 +624,7 @@ fit the pending pod, and from scaling up again. Every workspace pod carries
 `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, so scale-down
 removes only nodes with no running workspace. A pool that scales from zero
 also has to tell the autoscaler about the label and the node's ephemeral
-storage in its node template. `infra/aws-eks` and `infra/hetzner-k3s`
-do all of this.
+storage in its node template. `infra/hetzner-k3s` does all of this.
 
 ### A dedicated workspace node pool
 
@@ -650,13 +646,13 @@ says otherwise, through the `yaac.workspaces` key:
   node's `yaac.gvisor` label instead of setting it, so the RuntimeClass's
   `nodeSelector` keeps workspaces off.
 
-A cluster that marks nothing runs everything everywhere. One with a
-tainted pool and an infrastructure-only system node, as `infra/aws-eks`
-has, keeps the two apart; `infra/hetzner-k3s` taints only its workers, so
-its control node runs both. Cluster add-ons a workspace needs on its node
-must tolerate the taint: the CNI, kube-proxy and the CSI node plugin
-behind `yaac-global`. Most node DaemonSets tolerate every taint already;
-the check's `per-node` probe reports a pool node where one is missing.
+A cluster that marks nothing runs everything everywhere. One with a tainted
+pool and an infrastructure-only system node keeps the two apart;
+`infra/hetzner-k3s` taints only its workers, so its control node runs both.
+Cluster add-ons a workspace needs on its node must tolerate the taint: the
+CNI, kube-proxy and the CSI node plugin behind `yaac-global`. Most node
+DaemonSets tolerate every taint already; the check's `per-node` probe
+reports a pool node where one is missing.
 
 `yaac cluster check` reports infrastructure-only nodes as skipped. When no
 Ready node takes workspaces and at least one is infrastructure-only, as
@@ -669,7 +665,7 @@ Re-run the check while a workspace node is up to cover them.
 
 A byo cluster's Calico may be self-managed or provider-managed (GKE
 Dataplane V1, AKS `--network-policy calico`, Calico policy-only over the AWS
-VPC CNI on EKS). The netd redirect (docs/workspace-egress.md) works on any
+VPC CNI). The netd redirect (docs/workspace-egress.md) works on any
 CNI whose pod egress passes through host netfilter and that leaves
 ClusterIP translation to kube-proxy. On a kind cluster yaac installs, those
 properties hold by construction; on byo they are checked. Each check is a
@@ -691,7 +687,13 @@ kube-proxy loses egress while the rest work, which looks intermittent, so
 those nodes are named.
 
 The kube-proxy check runs **per node**. On a mixed fleet (several node
-pools or AMIs, common on EKS) one node says nothing about another.
+pools or OS images) one node says nothing about another.
+
+Over the AWS VPC CNI, enforce policy with Calico rather than AWS's own
+network-policy agent: that agent enforces in TC eBPF before netfilter,
+which would force allowing 443/80 to the internet in the workspace policy,
+and its default mode allows all traffic at pod birth, which the `egress`
+gate cannot see because it is a race at pod start.
 
 **NetworkPolicy enforcement is tested, not assumed.** Policy-only Calico
 over a foreign IPAM is a supported setup, and a misconfigured one looks the
@@ -739,8 +741,8 @@ Three environment variables cover what a foreign cluster does not expose:
 
 All three are read at apply time, so changing one on a live cluster needs a
 re-run. calico-node is found in `kube-system` (a manifest install) or
-`calico-system` (the Tigera operator, the usual install on EKS and AKS).
-kube-proxy pods are found by `k8s-app=kube-proxy` (kubeadm, EKS, kind) or
+`calico-system` (the Tigera operator, the usual install on AKS).
+kube-proxy pods are found by `k8s-app=kube-proxy` (kubeadm, kind) or
 `component=kube-proxy` (GKE, AKS).
 
 Out of scope: Cilium in any configuration, and policy for anyone else's
@@ -884,8 +886,7 @@ netd can be hours.
 
 kind sets the kubelet's part in `k8s/kind-config.yaml`, which applies only
 when kind creates the node. Hetzner nodes get it with an encrypted swap file
-the size of RAM behind zswap (`infra/hetzner-k3s/node-memory.sh`), and EKS
-nodes, which have no swap, through their nodeadm config.
+the size of RAM behind zswap (`infra/hetzner-k3s/node-memory.sh`).
 
 ## Runtimes and uids
 

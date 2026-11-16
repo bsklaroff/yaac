@@ -1,8 +1,0 @@
-.terraform/
-*.tfstate
-*.tfstate.*
-*.tfplan
-terraform.tfvars
-*.auto.tfvars
-*_override.tf
-backend.hcl

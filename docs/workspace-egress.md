@@ -571,20 +571,20 @@ destination Tor carries is not resolved locally, since that would leak the
 name, and Tor dials from its exit, off the cluster's network. Internal names
 and non-public addresses skip Tor and are checked like any direct dial.
 
-**The network floor** (`wideEgress` in `drivers/k8s/cluster/policy-manifests.ts`)
-is shared by the proxy's, the builder pods' and the server's egress policies
-(the server's peers are in docs/server-in-cluster.md "The server's own
-egress"). It allows
-public addresses only: 0.0.0.0/0 less the same special-purpose ranges and
+**The network floor** (`wideEgress` in
+`drivers/k8s/cluster/policy-manifests.ts`) is shared by the proxy's, the
+builder pods' and the server's egress policies (the server's peers are in
+docs/server-in-cluster.md "The server's own egress"). It allows public
+addresses only: 0.0.0.0/0 less the same special-purpose ranges and
 168.63.129.16, and IPv6 global unicast (2000::/3) less its special-purpose
-blocks. That leaves out ULA, where AWS (fd00:ec2::254, and EKS Pod Identity
-at fd00:ec2::23) and GCE (fd20:ce::254) serve IPv6 metadata, and
-link-local. Every address a node answers on is cut as well, each from its
-own family's block: its InternalIP, Calico tunnel address and ExternalIPs
-(`nodeAddressBlocks`). A cloud node's ExternalIP is public, and a pod
-dialing its own node's is delivered locally, past any cloud firewall. The
-policies are re-rendered as nodes join (node-sync). The floor allows back
-only what yaac needs:
+blocks. That leaves out ULA, where AWS (fd00:ec2::254) and GCE
+(fd20:ce::254) serve IPv6 metadata and the EKS Pod Identity agent answers
+at fd00:ec2::23, and link-local. Every address a node answers on is cut as
+well, each from its own family's block: its InternalIP, Calico tunnel
+address and ExternalIPs (`nodeAddressBlocks`). A cloud node's ExternalIP is
+public, and a pod dialing its own node's is delivered locally, past any
+cloud firewall. The policies are re-rendered as nodes join (node-sync). The
+floor allows back only what yaac needs:
 
 - DNS on port 53: the cluster resolver by selector (`k8s-app: kube-dns` in
   `kube-system`), that Service's own ClusterIP, and 169.254.0.0/16. The last
@@ -612,9 +612,10 @@ reaches it, on any port but NFS and the fronting's, with no operator
 opening; a CONNECT on the SSH tunnel listener chooses its port, so that
 includes the kubelet and, on kind and k3s, the apiserver. An exact entry
 naming the apiserver reaches it on its port wherever it runs, off the nodes
-too (as on EKS): its Service name (`kubernetes.default.svc.cluster.local`),
-its ClusterIP or one of its endpoint addresses, since policy sees the
-endpoint after kube-proxy's rewrite. A workspace holds no API
+too (as on a managed control plane): its Service name
+(`kubernetes.default.svc.cluster.local`), its ClusterIP or one of its
+endpoint addresses, since policy sees the endpoint after kube-proxy's
+rewrite. A workspace holds no API
 credential, so it reaches the apiserver only as an anonymous client. An
 exact entry naming a DNS address reaches port 53 on it. Under `*` the proxy
 refuses all three, as it does every non-public address.
@@ -784,8 +785,6 @@ k3s re-applies its packaged CoreDNS on restart; put the block in the
 `coredns-custom` ConfigMap there instead, under a key like `tailnet.server`.
 With `infra/hetzner-k3s`, list the zone in its `tailnet_dns_zones`
 variable, which writes that key into the ConfigMap its `cluster.tf` owns.
-With `infra/aws-eks`, add it to the `corefile` its `main.tf` gives the
-CoreDNS add-on, which replaces any edit made in the cluster.
 
 Where `tailscaled` runs on the node itself rather than outside it (as it
 does for kind, through the machine hosting it), Calico's iptables mark bits
@@ -869,7 +868,6 @@ netd is the same everywhere; what varies is who runs the policy engine.
 |---|---|---|
 | local kind | **our Calico** (CNI + policy) | what `yaac cluster install` installs |
 | GKE Standard, Dataplane V1 | **Google-managed Calico** (`--enable-network-policy`) | don't install our own. Dataplane V2 is opt-in at cluster creation, so a Standard cluster created without it uses the netfilter dataplane and works as-is |
-| EKS (AWS VPC CNI) | **our Calico, policy-only mode** | do *not* use AWS's network-policy agent: it enforces via TC eBPF before netfilter, which would force allowing 443/80 to the internet in the workspace policy and lose the guarantee that a late netd means no egress. Its default mode also allows all traffic at pod birth |
 | AKS (Azure CNI, non-Cilium) | **Microsoft-managed Calico** (`--network-policy calico`) | plain NetworkPolicy enforced natively |
 | GKE Dataplane V2 / Autopilot, AKS-Cilium, DOKS | none | **out of scope**: they require Cilium (DOKS's cannot be replaced), which breaks the veth redirect. Autopilot also blocks the privileged DaemonSet netd needs |
 

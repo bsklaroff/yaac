@@ -135,7 +135,7 @@ export const GVISOR_NODE_LABEL = 'yaac.gvisor'
  * node until the runtime is installed. The installer removes it after
  * labelling the node. A cluster autoscaler told it is a startup taint
  * counts the node as still starting until then, rather than scaling up
- * again for the pods it cannot yet take (infra/aws-eks, infra/hetzner-k3s).
+ * again for the pods it cannot yet take (infra/hetzner-k3s).
  */
 export const GVISOR_PENDING_TAINT = 'yaac.gvisor/pending'
 

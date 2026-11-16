@@ -15,8 +15,8 @@ Two sandboxes sit behind one driver, chosen by the host OS:
 | `gvisor` | Linux | gVisor's user-space kernel, as k8s pods use | containerd + nerdctl, `io.containerd.runsc.v1` |
 
 `k8s` stays for what only it provides: several nodes, shared network
-storage, and installs into a cluster yaac did not create (`--byo`, the
-`infra/` clusters). Kata is a later runtime for Linux hosts with KVM (see
+storage, and installs into a cluster yaac did not create (`--byo`,
+`infra/hetzner-k3s`). Kata is a later runtime for Linux hosts with KVM (see
 "Later: Kata").
 
 ## Why containerd on Linux

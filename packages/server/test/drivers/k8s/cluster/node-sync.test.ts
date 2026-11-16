@@ -216,8 +216,8 @@ describe('reconcileNodeSet', () => {
 
   it('writes to a replacement node that reuses a departed node\'s name and address', async () => {
     await pass()
-    // EKS names nodes after their private address, which the subnet hands
-    // out again: the set of addresses is unchanged, the node is not.
+    // A cloud may name nodes after their private address, which the subnet
+    // hands out again: the set of addresses is unchanged, the node is not.
     nodes['node-a'] = { ip: '10.0.1.5', uid: 'u-a2', ready: true }
     clearCalls()
     await pass()
