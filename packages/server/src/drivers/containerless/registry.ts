@@ -25,6 +25,9 @@ export interface WorkspaceMarker {
    *  key and is killed at teardown. Verified before signalling, since pids
    *  are recycled. */
   sshAgentPid?: number
+  /** The workspace's cgroup directory, on a host that gave it one
+   *  (`launchWorkspace`): where teardown finds every process it started. */
+  cgroup?: string
   /** The ports `declareForwards` allocated it, which its processes were
    *  told to bind (`declareWorkspacePorts`). */
   ports?: PortMapping[]
@@ -101,6 +104,10 @@ export function runningWorkspacePorts(): number[] {
 
 export function tmuxPidOf(workspaceId: string): number | undefined {
   return entries.get(workspaceId)?.marker.tmuxPid
+}
+
+export function cgroupOf(workspaceId: string): string | undefined {
+  return entries.get(workspaceId)?.marker.cgroup
 }
 
 function toHandle(entry: Entry): RuntimeHandle {

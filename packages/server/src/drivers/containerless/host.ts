@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { constants } from 'node:fs'
-import { access as fsAccess, readFile, stat, statfs } from 'node:fs/promises'
+import { constants, existsSync, readFileSync } from 'node:fs'
+import { access as fsAccess, readdir, readFile, stat, statfs } from 'node:fs/promises'
 import os from 'node:os'
 import { delimiter, isAbsolute, join } from 'node:path'
 import { WorkspaceExecError } from '#drivers/contract'
@@ -114,12 +114,33 @@ export function runHost(argv: string[], opts: RunOpts = {}): Promise<RunResult> 
 }
 
 /**
+ * `argv` as a command that runs in the systemd slice `slice`, in a scope of
+ * its own. `systemd-run` execs the command, so it keeps the pid, and fails
+ * where there is no user session to ask.
+ */
+export function sliceArgv(slice: string, argv: string[]): string[] {
+  return ['systemd-run', '--user', '--scope', '--quiet', '--collect', `--slice=${slice}`, '--', ...argv]
+}
+
+/**
  * Start a detached ssh-agent bound to `sock` (it must survive a server
  * restart, like tmux) and return its pid once the socket exists. `-D` keeps
  * the agent itself as the child, so the pid is the one teardown signals.
+ *
+ * With `slice`, the agent runs in that systemd slice, its workspace's, and
+ * not in this server's cgroup: a server started from another workspace's
+ * pane is in that workspace's cgroup, and a stop there would end the agent
+ * with it. Where systemd cannot place it, it starts beside the server.
  */
-export async function spawnSshAgent(sock: string): Promise<number> {
-  const child = spawn('ssh-agent', ['-D', '-a', sock], {
+export async function spawnSshAgent(sock: string, slice?: string): Promise<number> {
+  const agent = ['ssh-agent', '-D', '-a', sock]
+  return slice === undefined
+    ? await startSshAgent(agent, sock)
+    : await startSshAgent(sliceArgv(slice, agent), sock).catch(() => startSshAgent(agent, sock))
+}
+
+async function startSshAgent(argv: string[], sock: string): Promise<number> {
+  const child = spawn(argv[0], argv.slice(1), {
     detached: true,
     stdio: 'ignore',
   })
@@ -128,6 +149,7 @@ export async function spawnSshAgent(sock: string): Promise<number> {
   // (no ssh-agent installed) would crash the server.
   let spawnError: Error | undefined
   child.on('error', (err) => { spawnError = err })
+  child.on('exit', () => { spawnError ??= new Error(`${argv[0]} exited before binding ${sock}`) })
 
   const pid = child.pid
   if (pid === undefined) {
@@ -137,14 +159,24 @@ export async function spawnSshAgent(sock: string): Promise<number> {
   }
 
   const bound = await waitFor(async () => {
+    if (await fsAccess(sock).then(() => true, () => false)) return true
     if (spawnError) throw spawnError
-    return fsAccess(sock).then(() => true, () => false)
+    return false
   }, { timeoutMs: 5_000, intervalMs: 50 })
   if (bound) return pid
   try {
     process.kill(pid, 'SIGKILL')
   } catch { /* already gone */ }
   throw new Error(`ssh-agent did not bind ${sock} within 5s`)
+}
+
+/** Start a command that outlives this server, with nothing attached to it
+ *  and no word of how it ends. */
+export function spawnDetached(argv: string[]): void {
+  const child = spawn(argv[0], argv.slice(1), { detached: true, stdio: 'ignore' })
+  // A spawn failure would otherwise crash the server as an unhandled event.
+  child.on('error', () => { /* best-effort */ })
+  child.unref()
 }
 
 /**
@@ -243,6 +275,37 @@ export function descendantPids(table: ProcessTable | null, roots: number[]): num
     }
   }
   return [...seen]
+}
+
+/**
+ * The directory of the cgroup a process is in (this one by default), or null
+ * where there is none to read: macOS, a pid that is gone, a host whose
+ * cgroup v2 tree is not what `/sys/fs/cgroup` holds (cgroup v1, or v1 with
+ * v2 mounted beside it).
+ */
+export function cgroupDir(pid: number | 'self' = 'self'): string | null {
+  try {
+    const own = /^0::(\/.*)$/m.exec(readFileSync(`/proc/${String(pid)}/cgroup`, 'utf8'))
+    const dir = own ? join('/sys/fs/cgroup', own[1]) : null
+    return dir !== null && existsSync(join(dir, 'cgroup.procs')) ? dir : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Every process in the cgroup at `dir` and the cgroups below it, as the
+ * kernel lists them now. Unlike a parent link, membership survives a
+ * process detaching from whatever started it. Empty once the cgroup is
+ * gone.
+ */
+export async function cgroupPids(dir: string): Promise<number[]> {
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
+  const own = await readFile(join(dir, 'cgroup.procs'), 'utf8').catch(() => '')
+  const below = await Promise.all(
+    entries.filter((e) => e.isDirectory()).map((e) => cgroupPids(join(dir, e.name))),
+  )
+  return [...own.split('\n').filter(Boolean).map(Number), ...below.flat()]
 }
 
 /** The host's memory and swap. */

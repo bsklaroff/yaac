@@ -950,7 +950,8 @@ export interface WorkspaceDriver {
   /**
    * The same teardown as an idempotent shell command, for a detached script
    * that outlives the caller (and may be re-run to resume). The caller may
-   * append commands.
+   * append commands, and asks for it before `deregisterWorkspace`, which
+   * drops state a driver composes it from.
    */
   detachedTeardownCommand(target: TeardownTarget): string
   /** Destroy everything the driver holds for a project besides its

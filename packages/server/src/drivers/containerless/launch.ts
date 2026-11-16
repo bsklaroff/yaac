@@ -2,12 +2,12 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ServerError } from '@yaac/shared/errors'
 import { gitConfigValue } from '@yaac/shared/git'
-import { ensureInstallTmpDir } from '@yaac/shared/paths'
+import { ensureInstallTmpDir, installTmpDir } from '@yaac/shared/paths'
 import { AGENT_PACKAGES, agentBinDirs, agentPackagePrefix } from '@yaac/shared/tool-install'
 import { serverLog } from '#lib/log'
 import { shellQuote } from '#lib/shell'
 import { realizeGitAuth } from './git-auth'
-import { findOnPath, killPids, runHost } from './host'
+import { cgroupDir, findOnPath, killPids, runHost, sliceArgv, spawnDetached, type RunResult } from './host'
 import {
   assertShellSafePaths,
   assertSocketPathsFit,
@@ -16,6 +16,7 @@ import {
   hostShellDir,
   refFromJobName,
   containerlessStateDir,
+  workspaceSliceName,
 } from './paths'
 import {
   rememberWorkspace,
@@ -403,6 +404,41 @@ function fishEnvFile(stateDir: string): string {
   return path.join(stateDir, 'shell-env.fish')
 }
 
+/**
+ * The systemd slice unit a workspace's tmux server is started in, where
+ * there is a user session to make one: the workspace's own
+ * (`workspaceSliceName`), below the slice this server is in. tmux gives
+ * each pane a scope in its server's slice, so whatever the workspace starts
+ * stays in the slice's cgroup however it detaches, which is where a stop
+ * finds it (docs/containerless-driver.md "Stopping one").
+ *
+ * A server running inside another install's workspace (this repo's dev
+ * setup) so puts its workspaces inside that workspace's slice, and a stop
+ * of the outer one reaches them too. A server inside one of its OWN
+ * workspaces (a `yaac server restart` typed in a pane) does not nest under
+ * it: the name is cut where this install's begins, or stopping that
+ * workspace later would end every one launched meanwhile.
+ */
+function workspaceSliceUnit(workspaceId: string): string {
+  const below = (cgroupDir() ?? '').split(/\/user@\d+\.service\//)[1] ?? ''
+  const parent = below.split('/').filter((part) => part.endsWith('.slice')).pop()?.slice(0, -'.slice'.length) ?? ''
+  const own = parent.indexOf(`${path.basename(installTmpDir())}_`)
+  const outer = (own === -1 ? parent : parent.slice(0, own)).replace(/-$/, '')
+  return `${outer === '' ? '' : `${outer}-`}${workspaceSliceName(workspaceId)}.slice`
+}
+
+/**
+ * Keep the login session this server runs in open for as long as a
+ * workspace's tmux server lives. Unless lingering is on, systemd stops a
+ * user's manager, and every slice in it, when the user's last session ends,
+ * and a session lasts only while a process is in it. A tmux server started
+ * in this server's own cgroup is such a process; one in a slice is not, so
+ * an idle tmux client stands in for it, and exits when its server does.
+ */
+function holdLoginSession(tmuxSock: string): void {
+  spawnDetached(['tmux', '-S', tmuxSock, 'wait-for', 'yaac-hold'])
+}
+
 /** See `WorkspaceDriver.launch`. */
 export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandle> {
   const jobName = containerlessJobName(spec.projectId, spec.workspaceId)
@@ -445,12 +481,16 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
 
   // Git identity, trust and auth, as the pod's init script writes them
   // (auth only here; see `git-auth`).
+  // Asked for only where this server can read cgroups at all, since a stop
+  // could not read the slice's otherwise.
+  const slice = cgroupDir() === null ? undefined : workspaceSliceUnit(spec.workspaceId)
   const priorAgentPid = sshAgentPidOf(spec.workspaceId)
   const gitAuth = await realizeGitAuth({
     dir: stateDir,
     credentials: spec.gitCredentials,
     knownHostsFile: spec.ssh?.knownHostsFile,
     agentSock: paths.sshAgentSock,
+    ...(slice !== undefined ? { slice } : {}),
     ...(priorAgentPid !== undefined ? { priorAgentPid } : {}),
   })
   const gitName = env.YAAC_GIT_NAME ?? env.GIT_AUTHOR_NAME
@@ -506,7 +546,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   // these take `-q`: an option an older tmux lacks is skipped rather than
   // failing the create.
   // Last, the server's pid, the root of the port scan's process tree.
-  const { stdout } = await runHost([
+  const tmux = [
     'tmux', '-S', paths.tmuxSock, '-f', '/dev/null', '-u',
     'start-server', ';',
     'set-option', '-g', 'history-limit', '200000', ';',
@@ -530,20 +570,32 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     'set-option', '-q', '-t', 'yaac', 'status-right', env.YAAC_STATUS_RIGHT ?? '', ';',
     'bind-key', 'k', 'confirm-before', '-p', 'kill this yaac session? (y/n)', 'kill-server', ';',
     'display-message', '-p', '#{pid}',
-  ], { cwd: paths.workspaceDir, env, timeoutMs: 30_000 }).catch(async (err: unknown) => {
-    // The session may be up even though the call failed, and with no marker
-    // yet nothing would find it or the ssh-agent to tear them down.
-    await runHost(['tmux', '-S', paths.tmuxSock, 'kill-server'], { timeoutMs: 5_000 }).catch(() => {})
+  ]
+  // The session may be up even though the call failed, and with no marker
+  // yet nothing would find it or the ssh-agent to tear them down.
+  const start = (argv: string[]): Promise<RunResult> =>
+    runHost(argv, { cwd: paths.workspaceDir, env, timeoutMs: 30_000 }).catch(async (err: unknown) => {
+      await runHost(['tmux', '-S', paths.tmuxSock, 'kill-server'], { timeoutMs: 5_000 }).catch(() => {})
+      throw err
+    })
+  // Without a systemd user session `systemd-run` fails, and tmux starts in
+  // the server's own cgroup.
+  const sliced = slice === undefined ? undefined : await start(sliceArgv(slice, tmux)).catch(() => undefined)
+  const { stdout } = sliced ?? await start(tmux).catch((err: unknown) => {
     if (gitAuth.agentPid !== undefined) killPids([gitAuth.agentPid], 'SIGTERM')
     throw err
   })
   const tmuxPid = Number(stdout.trim())
+  // Recorded only when tmux is seen in the slice: a stop ends everything
+  // in this cgroup.
+  const cgroup = path.dirname(cgroupDir(tmuxPid) ?? '')
 
   const marker: WorkspaceMarker = {
     projectId: spec.projectId,
     workspaceId: spec.workspaceId,
     createdAtMs: Date.now(),
     ...(Number.isInteger(tmuxPid) && tmuxPid > 0 ? { tmuxPid } : {}),
+    ...(path.basename(cgroup) === slice ? { cgroup } : {}),
     // So teardown can kill the ssh-agent.
     ...(gitAuth.agentPid !== undefined ? { sshAgentPid: gitAuth.agentPid } : {}),
     launchEnv: persistableLaunchEnv(env, spec, added),
@@ -551,6 +603,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   const ports = allocatedPorts(spec.workspaceId)
   if (ports.length > 0) marker.ports = ports
   await writeMarker(marker)
+  if (sliced !== undefined) holdLoginSession(paths.tmuxSock)
   return rememberWorkspace(marker, env)
 }
 

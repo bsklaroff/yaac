@@ -83,7 +83,7 @@ export async function destroyWorkspace(
  * The Job delete as a shell command, for callers that must return before
  * it finishes. Idempotent and error-tolerant, so the reaper can resume a
  * lost teardown by re-issuing it. The caller appends its own removals and
- * must first await `deregisterWorkspace`.
+ * must await `deregisterWorkspace` before running it.
  */
 export function detachedTeardownCommand(target: TeardownTarget): string {
   // Wait for the pod itself, through its preStop grace period: the caller

@@ -5,6 +5,7 @@ import http from 'node:http'
 import { promisify } from 'node:util'
 import WebSocket from 'ws'
 import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { TEST_CLI_ENTRY, createYaacTestEnv, spawnYaacServer, runYaac, type RunYaacOptions, type YaacTestEnv } from '#support/cli'
@@ -153,6 +154,12 @@ const managedBin = (binary: string): string =>
  */
 async function installFakeAgents(): Promise<void> {
   await fs.mkdir(agentEnvDir(), { recursive: true })
+  // The fake adapters are CommonJS scripts with no extension. A package.json
+  // of their own stops node reading them as modules of whatever package the
+  // scratch dir sits in: this checkout's, when it is under a dev workspace.
+  const tools = path.dirname(agentPackagePrefix(AGENT_PACKAGES.claude))
+  await fs.mkdir(tools, { recursive: true })
+  await fs.writeFile(path.join(tools, 'package.json'), '{}')
   const reportEnv = `env > '${agentEnvDir()}'/$$.env; printf '%s\\0' "$@" > '${agentEnvDir()}'/\${YAAC_SESSION_ID:-$$}.argv\n`
   // `dir`: the binary whose install dir the file goes in. A shell agent
   // reports its environment and arguments first (`processEnv`,
@@ -2139,20 +2146,61 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   }, 120_000)
 
   // Destroys its subject — keep last.
-  it('stops the workspace by taking its tmux server down', async () => {
+  it('stops the workspace by taking its tmux server down, with what its panes started and detached from', async () => {
     // Here scratch dirs live in the checkout, and stop removes them
     // (checked in the next case).
     const checkout = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', workspaceId)
     await fs.mkdir(path.join(checkout, 'node_modules', 'left-pad'), { recursive: true })
-    const { exitCode } = await runYaac(serverEnv, 'workspace', 'stop', workspaceId)
-    expect(exitCode).toBe(0)
-    // Polled: teardown is detached, so the kill can land after `stop`
-    // returns.
-    await vi.waitFor(
-      async () => { await expect(tmux(workspaceId, 'has-session', '-t', 'yaac')).rejects.toThrow() },
-      { timeout: 20_000, interval: 250 },
-    )
-  }, 60_000)
+
+    // A window that leaves two things running after it closes: a daemon in
+    // a session of its own, and a tmux server of its own with a pane. Init
+    // adopts both, so no parent link leads back to the workspace.
+    const pidFile = path.join(testEnv.scratchDir, 'detached.pids')
+    // In the OS temp dir: the scratch dir is too long for a socket path.
+    const ownSockDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-own-tmux-'))
+    const ownSock = path.join(ownSockDir, 's')
+    let detached: number[] = []
+    const alive = (): number[] => detached.filter((pid) => {
+      try {
+        return process.kill(pid, 0)
+      } catch {
+        return false
+      }
+    })
+    try {
+      await tmux(workspaceId, 'new-window', '-d', '-t', 'yaac',
+        `setsid nohup sh -c 'echo $$ >> ${pidFile}; exec sleep 100000' >/dev/null 2>&1 & `
+        + `tmux -S ${ownSock} -f /dev/null new-session -d 'sleep 100001'; `
+        + `tmux -S ${ownSock} display-message -p '#{pid} #{pane_pid}' >> ${pidFile}`)
+      await vi.waitFor(async () => {
+        detached = (await fs.readFile(pidFile, 'utf8')).trim().split(/\s+/).map(Number)
+        expect(detached).toHaveLength(3)
+      }, { timeout: 20_000, interval: 250 })
+      expect(alive()).toEqual(detached)
+
+      const { exitCode } = await runYaac(serverEnv, 'workspace', 'stop', workspaceId)
+      expect(exitCode).toBe(0)
+      // Polled: teardown is detached, so the kill can land after `stop`
+      // returns.
+      await vi.waitFor(
+        async () => { await expect(tmux(workspaceId, 'has-session', '-t', 'yaac')).rejects.toThrow() },
+        { timeout: 20_000, interval: 250 },
+      )
+      // The teardown removes the scratch dirs last, so by then it has
+      // waited for everything the workspace started to exit. That needs
+      // the systemd slice a launch asks for, which not every host can give.
+      const contained = await execFileAsync('systemd-run', ['--user', '--scope', '--quiet', '--collect', 'true'])
+        .then(() => true, () => false)
+      await vi.waitFor(
+        async () => { await expect(fs.stat(path.join(checkout, 'node_modules'))).rejects.toThrow() },
+        { timeout: 20_000, interval: 50 },
+      )
+      if (contained) expect(alive()).toEqual([])
+    } finally {
+      for (const pid of alive()) process.kill(pid, 'SIGKILL')
+      await fs.rm(ownSockDir, { recursive: true, force: true })
+    }
+  }, 90_000)
 
   it('leaves the checkout behind, and stays stopped rather than flickering back', async () => {
     const dir = path.join(

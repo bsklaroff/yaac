@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { ensureDataDir, setDataDir } from '@yaac/shared/paths'
+import { ensureDataDir, installTmpDir, setDataDir } from '@yaac/shared/paths'
 import { registerServer } from '@yaac/shared/server-config'
 import { readLock } from '@yaac/shared/lock'
 import { isLockReady, type ServerLock } from '@yaac/shared/server-lock-file'
@@ -13,6 +13,7 @@ import { TEST_CLI_DIR, TEST_CLI_ENTRY } from '#support/cli-bundle'
 import { e2eMkdtemp, removeScratchTree, testTmpBase } from '@yaac/test-utils/tmp'
 import { freeLocalPort } from '@yaac/test-utils/kubectl-forward'
 import { claimPidFile } from '@yaac/test-utils/pid-file'
+import { claimTestScratch, stopTestWorkspaces } from '@yaac/test-utils/test-workspaces'
 
 export { TEST_CLI_DIR, TEST_CLI_ENTRY }
 
@@ -72,6 +73,7 @@ export interface YaacTestEnv {
  */
 export async function createYaacTestEnv(): Promise<YaacTestEnv> {
   const scratchDir = await e2eMkdtemp('yaac-e2ecli-')
+  await claimTestScratch(scratchDir)
   const dataDir = path.join(scratchDir, 'data')
   const gitConfigPath = path.join(scratchDir, 'gitconfig')
   await fs.writeFile(gitConfigPath, '')
@@ -112,6 +114,10 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
   }
 
   const cleanup = async (): Promise<void> => {
+    // The host workspaces this file's servers left running, before the
+    // dirs they write to go, and the dir their sockets were in.
+    await stopTestWorkspaces(scratchDir)
+    await fs.rm(installTmpDir(dataDir), { recursive: true, force: true })
     // A terminating pod or the detached teardown script may still be
     // writing here; removeScratchTree retries that and returns root-owned
     // leftovers.
