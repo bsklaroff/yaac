@@ -8,6 +8,8 @@ import {
   recordWorkspaceLaunched,
   recordWorkspaceLife,
   recordIgnoredFilesCleaned,
+  recordLifeCheckpointed,
+  recordLifeNode,
   recordWorkspaceStopped,
   removeWorkspaceLivesAfter,
   removeWorkspaceRecords,
@@ -93,6 +95,12 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
       return
     case 'ignored-files-cleaned':
       await recordIgnoredFilesCleaned(event.projectId, event.workspaceId, event.at)
+      return
+    case 'life-node-found':
+      await recordLifeNode(event.projectId, event.workspaceId, event.node)
+      return
+    case 'life-checkpointed':
+      await recordLifeCheckpointed(event.workspaceId, event.life, event.outcome, event.detail)
       return
     case 'volume-released':
       await releaseVolume(event.volumeId, event.lease)

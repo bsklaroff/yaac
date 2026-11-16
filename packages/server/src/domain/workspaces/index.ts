@@ -90,6 +90,8 @@ export {
   updateRoutine,
 } from './routines'
 export { reconcileWorkspaceTimeouts, setWorkspaceTimeout } from './timeouts'
+export { reconcileDiskGuard } from './disk-guard'
+export { collectCheckpointBundles, reconcileTreeSalvage } from './trees'
 export { setWorkspaceBase } from './base-branch'
 export { markWaitingSeen } from './waiting-seen'
 export { listStoppedWorkspaces } from './stopped-list'

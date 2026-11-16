@@ -374,7 +374,24 @@ export const workspaceLives = snakeCase.table('workspace_lives', {
    *  stop finished (docs/workspace-storage.md "Ignored files at stop"). A
    *  stopped current life without one is still to be cleaned. */
   ignoredCleanedAt: timestamp({ withTimezone: true }),
+  /**
+   * The name of its tree's directory on its node
+   * (docs/node-local-workspaces.md "Layout"), for a life whose files
+   * were on node disk; null for one whose files were on the shared tier (a
+   * containerless workspace, or a life started before trees moved).
+   */
+  treeDir: text(),
+  /** The node its pod ran on, recorded once it was ready. */
+  node: text(),
+  /** When its tree was found saved, or its loss recorded, after its stop. */
+  checkpointedAt: timestamp({ withTimezone: true }),
+  /** How: its own final pass, a salvage pod's, nothing to save (it never
+   *  started), or lost with its node. */
+  checkpointOutcome: text().$type<CheckpointOutcome>(),
 }, (t) => [primaryKey({ columns: [t.workspaceId, t.startedAt] })])
+
+/** How a node-local life's tree ended up saved (`workspaceLives.checkpointOutcome`). */
+export type CheckpointOutcome = 'final' | 'salvaged' | 'nothing' | 'lost'
 
 /**
  * The workflows of a life: each one it started, each added while it ran, and

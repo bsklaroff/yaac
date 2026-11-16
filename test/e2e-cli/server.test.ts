@@ -232,9 +232,9 @@ describe('yaac cluster start|stop|restart|logs|status against the in-cluster Dep
     const { stdout: pvcs } = await execFileAsync('kubectl', [
       'get', 'pvc', '-n', TEST_NAMESPACE, '-o', 'jsonpath={range .items[*]}{.metadata.name}={.status.phase}{"\\n"}{end}',
     ])
-    // The checkouts claim is for workspace pods; the server mounts the other three.
+    // The server mounts all three; no checkouts claim is made.
     expect(pvcs.trim().split('\n').sort()).toEqual([
-      'yaac-checkouts=Bound', 'yaac-global=Bound', 'yaac-server-local=Bound', 'yaac-volumes=Bound',
+      'yaac-global=Bound', 'yaac-server-local=Bound', 'yaac-volumes=Bound',
     ])
   })
 

@@ -5,7 +5,6 @@ import { installNameKey } from './install-id'
 import type { PodMount } from './pod-spec'
 import type { WorkspaceMount } from '#drivers/contract'
 import {
-  CHECKOUTS_CLAIM_NAME,
   GLOBAL_CLAIM_NAME,
   NODE_LOCAL_NODE_ROOT,
   VOLUMES_CLAIM_NAME,
@@ -31,10 +30,7 @@ export function nodeLocalNodePath(): string {
  * knows how each tier is stored.
  *
  * - Global root: a subPath of the `yaac-global` claim, which the server
- *   pod also mounts, so the pod sees what the server wrote. A checkout
- *   (`workspaceDir` in @yaac/shared/project-paths) is the same subPath of
- *   `yaac-checkouts` instead, the same directory mounted with longer
- *   attribute caching (docs/nfs-checkout-performance.md).
+ *   pod also mounts, so the pod sees what the server wrote.
  * - Node-local root: the matching path under this install's node directory.
  * - Server-local root, or no root at all: an error.
  * - A volume: its own claim on byo (`YAAC_VOLUME_STORAGE_CLASS` set), else
@@ -59,8 +55,7 @@ export function resolveMountSource(m: PodMount | WorkspaceMount): PodMount {
   if (source.kind !== 'hostPath') return m as PodMount
   const global = under(source.path, globalRoot())
   if (global !== null) {
-    const claimName = CHECKOUT_SUBPATH.test(global) ? CHECKOUTS_CLAIM_NAME : GLOBAL_CLAIM_NAME
-    return { ...m, source: { kind: 'pvc', claimName, subPath: global } }
+    return { ...m, source: { kind: 'pvc', claimName: GLOBAL_CLAIM_NAME, subPath: global } }
   }
   const nodeLocal = under(source.path, nodeLocalRoot())
   if (nodeLocal !== null) {
@@ -83,9 +78,6 @@ export function resolveMountSource(m: PodMount | WorkspaceMount): PodMount {
     + `(${globalRoot()}, ${nodeLocalRoot()}) — declare it through a tier helper`,
   )
 }
-
-/** A checkout, relative to the global root: `projects/<id>/workspaces/<id>`. */
-const CHECKOUT_SUBPATH = /^projects\/[^/]+\/workspaces\/[^/]+$/
 
 /**
  * Node-local directories among already-resolved mounts that the pod

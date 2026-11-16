@@ -371,10 +371,15 @@ const CHECKOUT_WORKERS = 8
  * `git add -A` cannot commit them. A project's `.gitignore` can re-include
  * either with a `!` pattern.
  *
- * The tree is written by `CHECKOUT_WORKERS` processes at once. Each file
- * on the shared tier costs a few network round trips, so overlapping them
- * cuts a large checkout's time about fourfold
- * (docs/nfs-checkout-performance.md).
+ * The tree is written by `CHECKOUT_WORKERS` processes at once, which cuts
+ * a large checkout's time about fourfold.
+ *
+ * With `gitOnly` no tree is written, only the `.git`, with the branch made
+ * at the start commit: a k8s workspace's tree is checked out on its node by
+ * its tree container (docs/node-local-workspaces.md "Start"). The
+ * `.git` is then filled where it stands, an empty folder the caller made
+ * before the pod that mounts it was applied, since a mount source must
+ * exist by then and a rename would swap it from under the mount.
  */
 export async function createCheckout(repoPath: string, workspacePath: string, params: {
   branch: string
@@ -383,6 +388,7 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
    *  workspace mounts, on the checkout's filesystem. */
   staging: string
   fetched?: Promise<void>
+  gitOnly?: boolean
 } & ({ baseBranch: string; commit?: undefined } | { commit: string; baseBranch?: undefined })): Promise<string> {
   // Awaited after the checkout; until then nothing would observe a rejection.
   params.fetched?.catch(() => { /* observed below */ })
@@ -402,9 +408,10 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
   let startSha = commit ?? remoteSha(main, baseBranch ?? '')
   if (startSha === undefined) throw new Error(`origin/${baseBranch ?? ''} does not exist in ${repoPath}`)
   const { staging } = params
-  const gitDir = path.join(staging, '.git')
+  const gitDir = params.gitOnly ? path.join(workspacePath, '.git') : path.join(staging, '.git')
   await fs.rm(staging, { recursive: true, force: true })
   await fs.mkdir(staging, { recursive: true })
+  if (params.gitOnly) await fs.mkdir(gitDir, { recursive: true })
   try {
     // The hash length names the object format; only a repo with no refs
     // has to ask.
@@ -418,7 +425,10 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
     // ref format is pinned over a user's default, since a reftable repo would
     // ignore the refs written below (`gitEnv` drops the variable that would
     // beat the pin). No template, so no sample hooks.
-    await runGit({ kind: 'private', gitDir, workTree: staging }, [
+    // A `.git` made where it stands gets its own checkout as its work tree,
+    // which git then records nowhere: any other would land in its config
+    // as `core.worktree`, a path only the server sees.
+    await runGit({ kind: 'private', gitDir, workTree: params.gitOnly ? workspacePath : staging }, [
       '-c', 'init.defaultRefFormat=files',
       'init', '--quiet', '--template=', `--object-format=${format}`,
     ])
@@ -442,8 +452,10 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
     await writeCheckoutRefs(gitDir, main)
     await fs.mkdir(workspacePath, { recursive: true })
     // `-B` points the branch at `sha` in the same process, with its reflog.
-    const checkOut = (sha: string): Promise<string> => runGit({ kind: 'private', gitDir, workTree: workspacePath },
-      ['-c', `checkout.workers=${String(CHECKOUT_WORKERS)}`, 'checkout', '--force', '--quiet', '-B', branch, sha])
+    const checkOut = (sha: string): Promise<string> => (params.gitOnly
+      ? runGit({ kind: 'private', gitDir, workTree: staging }, ['update-ref', '-m', `branch: Created from ${sha}`, `refs/heads/${branch}`, sha])
+      : runGit({ kind: 'private', gitDir, workTree: workspacePath },
+        ['-c', `checkout.workers=${String(CHECKOUT_WORKERS)}`, 'checkout', '--force', '--quiet', '-B', branch, sha]))
     await checkOut(startSha)
     // Checked out alongside the fetch; catch up with whatever it moved
     // before the checkout becomes visible.
@@ -460,7 +472,7 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
         startSha = sha
       }
     }
-    await fs.rename(gitDir, path.join(workspacePath, '.git'))
+    if (!params.gitOnly) await fs.rename(gitDir, path.join(workspacePath, '.git'))
   } finally {
     await fs.rm(staging, { recursive: true, force: true })
   }

@@ -1,4 +1,4 @@
-import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileConversations, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileRevokedShares, collectDeletedRepos, reconcileSessions, reconcileSteps, reconcileStoppedConversations, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, reconcileVolumeLeases, collectDeletedVolumes, startScheduledWorkspaces } from '#domain/workspaces'
+import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileConversations, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileRevokedShares, collectDeletedRepos, reconcileSessions, reconcileSteps, reconcileStoppedConversations, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, reconcileDiskGuard, reconcileTreeSalvage, collectCheckpointBundles, reconcileVolumeLeases, collectDeletedVolumes, startScheduledWorkspaces } from '#domain/workspaces'
 import { refreshRepoOrigins } from '#domain/repos'
 import { reconcileSites } from '#domain/sites'
 import { adoptRefreshedToolCredentials, syncToolCredentials } from '#domain/auth'
@@ -77,6 +77,9 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // this order, so a routine's previous run is stopped in the pass that
     // launches the next.
     { name: 'workspace-timeouts', triggers: [], run: (ctx) => reconcileWorkspaceTimeouts(ctx.snapshot()) },
+    // The driver raises `disk-low` while a node is under its warn floor;
+    // under containerless it never does, and the step finds no node.
+    { name: 'disk-guard', triggers: ['disk-low'], run: (ctx) => reconcileDiskGuard(ctx.snapshot()) },
     // Due routine ticks become scheduled entries, launched by the next step.
     { name: 'routines', triggers: [], run: () => reconcileRoutines() },
     // Due scheduled entries are released and launched where their groups
@@ -121,10 +124,17 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // In-flight creates are registered synchronously before staging, so
     // their dirs are never swept. Resync-only, and cheap.
     { name: 'orphan-modules-gc', triggers: [], run: (ctx) => gcOrphanScratchDirs(ctx.snapshot()) },
-    // Remove the ignored files of stopped workspaces whose stop could not,
-    // one per pass in the background, since under k8s each runs a pod.
-    { name: 'ignored-file-clean', triggers: ['workspaces'],
-      run: (ctx) => reconcileIgnoredFileCleans(ctx.snapshot()) },
+    // Under containerless, remove the ignored files of stopped workspaces
+    // whose stop could not, one per pass in the background. Under k8s a
+    // workspace's files are on its node instead: a life is stamped once its
+    // unit is gone, salvaging a tree whose pod took no final pass.
+    driver.kind === 'containerless'
+      ? { name: 'ignored-file-clean', triggers: ['workspaces'], run: (ctx) => reconcileIgnoredFileCleans(ctx.snapshot()) }
+      : { name: 'tree-salvage', triggers: ['workspaces'], run: (ctx) => reconcileTreeSalvage(ctx.snapshot()) },
+    // Bundles no kept manifest names, hourly. Only k8s keeps a checkpoint log.
+    ...(driver.kind === 'containerless' ? [] : [
+      { name: 'checkpoint-gc', triggers: [], every: 60 * 60_000, run: () => collectCheckpointBundles() } satisfies ReconcileStep,
+    ]),
     // The same for node-local leftovers. Hourly, since under k8s it runs a
     // pod per node.
     { name: 'node-local-gc', triggers: [], every: 60 * 60_000, run: (ctx) => reapOrphanNodeLocal(ctx.snapshot()) },

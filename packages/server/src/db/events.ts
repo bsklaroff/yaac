@@ -8,6 +8,7 @@ import type {
 import type { StepState, StepsOutcome } from '@yaac/shared/steps'
 import type { LifeWorkflow } from './step-store'
 import type { LifeLaunch } from './workspace-store'
+import type { CheckpointOutcome } from './schema'
 
 /**
  * Facts that substrate- and disk-observing code reports to db, applied by
@@ -37,6 +38,8 @@ export type WorkspaceEvent =
   | WaitingEnded
   | WorkspaceStopped
   | IgnoredFilesCleaned
+  | LifeNodeFound
+  | LifeCheckpointed
   | VolumeReleased
   | VolumesPinned
 
@@ -301,6 +304,30 @@ export interface WorkspaceStopped {
   projectId: string
   workspaceId: string
   cause?: WorkspaceDeathCause
+}
+
+/** The current life's pod is running on `node`, where its tree is. */
+export interface LifeNodeFound {
+  type: 'life-node-found'
+  projectId: string
+  workspaceId: string
+  node: string
+}
+
+/**
+ * The node-local life that began at `life` has its tree saved, or found
+ * nothing to save, or lost it with its node
+ * (docs/node-local-workspaces.md "Life cycle"). Restart and delete
+ * wait for this.
+ */
+export interface LifeCheckpointed {
+  type: 'life-checkpointed'
+  projectId: string
+  workspaceId: string
+  life: Date
+  outcome: CheckpointOutcome
+  /** For a lost life: when its last checkpoint was taken. */
+  detail?: string
 }
 
 /**

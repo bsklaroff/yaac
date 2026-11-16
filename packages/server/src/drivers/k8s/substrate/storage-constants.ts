@@ -9,9 +9,6 @@
  *
  *  - GLOBAL is the RWX claim `yaac-global`. The server pod mounts it whole
  *    at `POD_GLOBAL_ROOT`; every workspace pod mounts subPaths of it.
- *    Workspace pods mount their checkout through `yaac-checkouts` instead:
- *    a second volume over the same directory whose mounts cache file
- *    attributes longer (docs/nfs-checkout-performance.md).
  *  - SERVER-LOCAL is the RWO claim `yaac-server-local`, mounted by the
  *    server pod alone at `POD_SERVER_LOCAL_ROOT`. No workspace pod may
  *    mount it, and the resolver refuses a path under it.
@@ -25,6 +22,9 @@
 
 export const GLOBAL_CLAIM_NAME = 'yaac-global'
 export const SERVER_LOCAL_CLAIM_NAME = 'yaac-server-local'
+/** The claim workspace pods mounted their checkout through before their
+ *  files moved to node disk, which install now deletes
+ *  (docs/legacy-compat-shims.md "The yaac-checkouts claim"). */
 export const CHECKOUTS_CLAIM_NAME = 'yaac-checkouts'
 /** Workspace volumes on kind: one directory per volume, keyed by id
  *  (docs/workspace-volumes.md). A byo install has no such claim; each

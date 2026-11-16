@@ -108,7 +108,7 @@ describe('destroyWorkspace', () => {
 
     expect(jobDelete()).toEqual(expect.arrayContaining([
       'delete', 'job', 'yaac-proj-s1',
-      '--ignore-not-found', '--cascade=foreground', '--wait=true', '--timeout=90s',
+      '--ignore-not-found', '--cascade=foreground', '--wait=true', '--timeout=120s',
     ]))
   })
 
@@ -124,7 +124,7 @@ describe('destroyWorkspace', () => {
     expect(jobDelete()).toBeUndefined()
     expect(kubectlArgs).toContainEqual(expect.arrayContaining([
       'delete', 'pod', '-l', 'batch.kubernetes.io/job-name=yaac-proj-s1',
-      '--ignore-not-found', '--wait=true', '--timeout=90s',
+      '--ignore-not-found', '--wait=true', '--timeout=120s',
     ]))
   })
 })

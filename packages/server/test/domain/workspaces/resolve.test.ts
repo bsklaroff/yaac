@@ -150,6 +150,7 @@ describe('resolveWorkspaceRecord', () => {
       workspaceId: 'abc123def456',
       projectId: PROJ,
       jobName: 'yaac-proj-abc123',
+      running: true,
     })
   })
 
@@ -165,6 +166,7 @@ describe('resolveWorkspaceRecord', () => {
     expect(await resolveWorkspaceRecord('abc123')).toEqual({
       workspaceId: 'abc123def456',
       projectId: PROJ,
+      running: false,
     })
   })
 

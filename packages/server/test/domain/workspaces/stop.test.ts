@@ -220,7 +220,10 @@ describe('stopWorkspace', () => {
     function installTeardown(
       exec: typeof inCheckout = () => Promise.resolve({ stdout: '', stderr: '' }),
     ): void {
+      // The ignored-file clean and the server's removal of scratch dirs
+      // are containerless's: a k8s workspace's tree is on its node.
       installFakeWorkspaceDriver({
+        kind: 'containerless',
         findForTeardown: (id) => Promise.resolve(id === 'parent'
           ? { workspaceId: 'parent', projectId: PROJ, unitName: 'yaac-proj-parent' }
           : undefined),

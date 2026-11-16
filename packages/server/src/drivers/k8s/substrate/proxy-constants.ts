@@ -19,6 +19,12 @@ export const LABEL_NPM_CACHE = 'yaac.npm-cache'
  */
 export const NETD_APP_NAME = 'yaac-netd'
 export const NETD_SA_NAME = 'yaac-netd'
+/**
+ * The per-node disk pod (drivers/k8s/cluster/disk-pod.ts), which answers
+ * each node's free space and tree sizes, and the port it answers on.
+ */
+export const DISK_APP_NAME = 'yaac-disk'
+export const DISK_PORT = 8790
 /** Secret holding the server→proxy bearer secret. */
 export const PROXY_AUTH_SECRET_NAME = 'yaac-proxy-auth'
 /** Port the proxy serves inside the cluster (container + Service port). */

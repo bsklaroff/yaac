@@ -11,6 +11,8 @@ const DEATH_REASON_COPY: Record<WorkspaceDeathReason, string> = {
   'agent-exited': 'its tmux server exited',
   'never-started': 'its setup never finished',
   'orphaned': 'removed outside yaac',
+  'disk-full': 'stopped for the disk it used on a full node',
+  'node-lost': 'its node went away; unsaved work after its last checkpoint is missing',
 }
 
 export function describeWorkspaceDeathReason(

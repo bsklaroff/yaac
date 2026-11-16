@@ -82,6 +82,8 @@ export interface PodInfo {
   /** Pod creationTimestamp as epoch ms. */
   createdAtMs: number
   labels: Record<string, string>
+  /** The node it is scheduled on. */
+  node?: string
   /** Set only when the pod carries terminal-state evidence. */
   terminal?: PodTerminalState
 }
@@ -123,6 +125,7 @@ const podItemSchema = z.object({
     creationTimestamp: timestampSchema,
     deletionTimestamp: timestampSchema.optional(),
   }),
+  spec: z.object({ nodeName: z.string().optional() }).optional(),
   status: z.object({
     phase: z.string().min(1),
     // Terminal-state evidence: pod reason/message cover evictions, and
@@ -144,7 +147,7 @@ const podItemSchema = z.object({
 type PodItem = z.infer<typeof podItemSchema>
 
 /** Map a validated pod object to the PodInfo row the rest of yaac uses. */
-function mapPodItem({ metadata, status }: PodItem): PodInfo {
+function mapPodItem({ metadata, spec, status }: PodItem): PodInfo {
   const terminating = metadata.deletionTimestamp !== undefined
   const terminated = status.containerStatuses?.[0]?.state?.terminated
   const terminal: PodTerminalState | undefined =
@@ -169,6 +172,7 @@ function mapPodItem({ metadata, status }: PodItem): PodInfo {
     terminating,
     createdAtMs: toEpochMs(metadata.creationTimestamp),
     labels: metadata.labels,
+    ...(spec?.nodeName !== undefined ? { node: spec.nodeName } : {}),
     ...(terminal ? { terminal } : {}),
   }
 }

@@ -63,6 +63,16 @@ variable "autoscale_pools" {
   default = [{ name = "workspaces", server_type = "cx43", max = 3 }]
 }
 
+variable "node_local_disk_percent" {
+  description = "Share of each node's disk given to workspace trees, as a filesystem of their own at the node-local root, so a full tree fills only it. 0 keeps trees on the root filesystem."
+  type        = number
+  default     = 50
+  validation {
+    condition     = var.node_local_disk_percent >= 0 && var.node_local_disk_percent <= 90
+    error_message = "node_local_disk_percent must be between 0 and 90."
+  }
+}
+
 variable "nfs_volume_gb" {
   description = "Size of the volume the control node exports over NFS: the shared claim every workspace mounts (checkouts, the database, agent state)."
   type        = number
