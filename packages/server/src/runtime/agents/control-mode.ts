@@ -39,11 +39,12 @@ import type { WorkspaceWindow } from '#drivers/contract'
  * (state comes only from subscriptions and notifications). Not `read-only`:
  * from tmux 3.7, a `send-keys` run from the command line is refused while
  * any read-only client is attached, which would stop every prompt and
- * message yaac types into a pane.
+ * message yaac types into a pane. `-N`: a retry against a workspace whose
+ * tmux server is gone fails, rather than starting an empty server there.
  */
 function controlModeAttachArgv(paths: WorkspacePaths): string[] {
   return [
-    'tmux', '-S', paths.tmuxSock, '-C', 'attach-session', '-t', 'yaac',
+    'tmux', '-N', '-S', paths.tmuxSock, '-C', 'attach-session', '-t', 'yaac',
     '-f', 'ignore-size,no-output',
   ]
 }

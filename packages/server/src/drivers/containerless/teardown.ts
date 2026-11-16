@@ -6,6 +6,7 @@ import { shellQuote } from '#lib/shell'
 import { waitFor } from '@yaac/shared/wait-for'
 import { cgroupDir, cgroupPids, descendantPids, isSshAgentFor, killPids, livePids, processTable, runHost } from './host'
 import { tmuxAnswers } from './exec'
+import { dropWorkspace } from './lifecycle'
 import {
   containerlessWorkspacePaths,
   containerlessStateDir,
@@ -14,7 +15,6 @@ import {
 import {
   cgroupOf,
   findWorkspace,
-  forgetWorkspace,
   removeMarker,
   sshAgentPidOf,
   tmuxPidOf,
@@ -133,7 +133,7 @@ export async function destroyWorkspace(
     await fs.rm(paths.sshAgentSock, { force: true }).catch(() => { /* already gone */ })
     await fs.rm(paths.acpSockDir, { recursive: true, force: true })
       .catch(() => { /* already gone */ })
-    forgetWorkspace(workspaceId)
+    dropWorkspace(workspaceId)
   }
   return gone && exited
 }

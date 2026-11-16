@@ -88,7 +88,11 @@ reads from `deps.sessions` on every listing of the windows.
 they need: respawn, backoff, the streamd self-heal, merging their live
 agents, and the workspace's window listing, which it re-reads over a
 command channel whenever tmux adds, closes or renames a window or the live
-agents change, so the snapshot carries it.
+agents change, so the snapshot carries it. A watcher lives exactly as long
+as the driver reports its workspace running (`StatusWatcherManager.sync`
+over the driver's `workspacesChanged`): its retries assume the workspace is
+still there, so a driver that stops a workspace without reporting it leaves
+the watcher re-dialling a socket nothing serves.
 
 Content is not part of the interface. PTY bytes and ACP events have nothing
 in common, and the webapp already picks a renderer from a pane's target

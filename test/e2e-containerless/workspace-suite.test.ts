@@ -23,6 +23,7 @@ import { builtinSkillsDir, sharedSkillRoots } from '@yaac/server/domain/skills'
 import { defaultModelFor } from '@yaac/server/domain/auth'
 import { AGENT_PACKAGES, agentPackagePrefix } from '@yaac/shared/tool-install'
 import { ACP_ADAPTERS, AGENT_TOOLS, MAX_PROMPT_BYTES, promptFits } from '@yaac/shared/types'
+import { serverLogPath } from '@yaac/shared/paths'
 import { lifeDirName } from '@yaac/shared/steps'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { FALLBACK_MODELS, PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
@@ -2215,11 +2216,18 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     )
 
     // A workspace the driver failed to forget would reappear as
-    // "stopping…" on each stale-reaper pass.
+    // "stopping…" on each stale-reaper pass. A status watcher left running
+    // for it would keep re-dialling its socket, and an attach to a dead
+    // socket starts a tmux server there, leaving the socket file behind.
     for (let i = 0; i < 5; i++) {
       await new Promise((r) => setTimeout(r, 1_000))
       expect((await listWorkspaces()).map((w) => w.workspaceId)).not.toContain(workspaceId)
+      await expect(fs.stat(sockFor(workspaceId))).rejects.toThrow()
     }
+    const log = await fs.readFile(serverLogPath(), 'utf8')
+    const afterStop = log.slice(log.lastIndexOf(`session teardown: session=${workspaceId}`))
+    expect(afterStop).toContain(workspaceId)
+    expect(afterStop).not.toContain(`status-watcher ${workspaceId}`)
   }, 60_000)
 
   it('still reads the checkout\'s files once the workspace is stopped, but lists them only while it runs', async () => {

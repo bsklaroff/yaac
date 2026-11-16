@@ -238,7 +238,7 @@ class WorkspaceMirror {
 
   constructor(private readonly jobName: string, private readonly onDone: () => void) {
     const paths = workspaceDriver().workspacePaths(jobName)
-    this.child = workspaceDriver().dialCtrl(jobName, ['tmux', '-S', paths.tmuxSock, '-C', 'attach-session', '-t', 'yaac'])
+    this.child = workspaceDriver().dialCtrl(jobName, ['tmux', '-N', '-S', paths.tmuxSock, '-C', 'attach-session', '-t', 'yaac'])
     this.client = new ControlModeClient(
       (data) => this.child.stdin?.write(data),
       (n) => this.onNotification(n),

@@ -9,6 +9,7 @@ import { isSshAgentFor, killPids } from './host'
 import { tmuxAnswers } from './exec'
 import { containerlessJobName, containerlessStateDir, containerlessWorkspacePaths } from './paths'
 import {
+  forgetWorkspace,
   listWorkspaces,
   observeLiveness,
   readMarkers,
@@ -101,12 +102,13 @@ function socketAnswers(marker: WorkspaceMarker): Promise<boolean> {
  * open. tmux ends its clients when the server dies, so the client's exit
  * signals the workspace is gone. Not `read-only`: from tmux 3.7, a
  * command-line `send-keys` is refused while any read-only client is attached.
+ * `-N`, so a re-arm racing the workspace's death never starts a tmux server.
  */
 function watchWorkspace(workspaceId: string, jobName: string, sinks: DriverSinks): void {
   if (watches.has(workspaceId)) return
   const paths = containerlessWorkspacePaths(jobName)
   const child = spawn('tmux', [
-    '-S', paths.tmuxSock, '-C', 'attach-session', '-t', 'yaac',
+    '-N', '-S', paths.tmuxSock, '-C', 'attach-session', '-t', 'yaac',
     '-f', 'ignore-size,no-output',
   ], {
     // stdin must stay an open pipe: a control-mode client exits when its
@@ -178,6 +180,24 @@ export function watchNewWorkspace(workspaceId: string, jobName: string): void {
   const sinks = activeSinks
   if (!sinks) return
   watchWorkspace(workspaceId, jobName, sinks)
+  sinks.workspacesChanged(listWorkspaces())
+}
+
+/**
+ * Drop a workspace from the registry and report the smaller set, ending its
+ * liveness watch. The detached stop calls this before the workspace's tmux
+ * server dies, so the watch's exit finds nothing left to mark dead and
+ * reports nothing. `destroyWorkspace` calls it after, when that exit may or
+ * may not have reported the death already. Reporting here makes the smaller
+ * set certain on both paths; without it the status watchers can miss that
+ * the workspace is gone, and keep re-dialling its socket.
+ */
+export function dropWorkspace(workspaceId: string): void {
+  forgetWorkspace(workspaceId)
+  forgetPorts(workspaceId)
+  const sinks = activeSinks
+  if (!sinks) return
+  syncWatches(sinks)
   sinks.workspacesChanged(listWorkspaces())
 }
 

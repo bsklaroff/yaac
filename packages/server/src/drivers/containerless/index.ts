@@ -3,6 +3,7 @@ import { execInWorkspace, runInStoppedCheckout } from './exec'
 import { dialCtrlStream, dialPtyStream, reviveStatusStream } from './dial'
 import { awaitReady, launchWorkspace, prepareSubstrate } from './launch'
 import {
+  dropWorkspace,
   releaseContainerlessDriver,
   startContainerlessDriver,
   stopContainerlessDriver,
@@ -11,13 +12,12 @@ import {
 import { assertHostCanLaunch } from './check'
 import { containerlessWorkspacePaths } from './paths'
 import { containerlessUsage } from './usage'
-import { declareWorkspacePorts, dialWorkspacePort, forgetPorts, workspacePorts } from './ports'
+import { declareWorkspacePorts, dialWorkspacePort, workspacePorts } from './ports'
 import {
   countWorkspaces,
   createRuntimeSnapshot,
   findForTeardown,
   findWorkspace,
-  forgetWorkspace,
   listWorkspaces,
 } from './registry'
 import {
@@ -131,8 +131,7 @@ export function createContainerlessDriver(): WorkspaceDriver {
     // otherwise the stale reaper would reap it on every pass.
     registerWorkspace: () => Promise.resolve(),
     deregisterWorkspace: (workspaceId) => {
-      forgetWorkspace(workspaceId)
-      forgetPorts(workspaceId)
+      dropWorkspace(workspaceId)
       return Promise.resolve()
     },
 
