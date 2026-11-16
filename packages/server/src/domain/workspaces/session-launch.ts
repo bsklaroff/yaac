@@ -183,38 +183,75 @@ export async function planSessionResumes(
 export const launching = new Set<string>()
 
 /**
- * Open sessions' windows in a running workspace that has finished its
- * setup. Checks the agents came up without waiting on it: one that dies
- * leaves its session exited, for the user to resume or close.
+ * Sessions' launches, once the driver has agreed to run their tools: the
+ * server's half of a launch, which touches nothing in the workspace.
+ */
+export async function prepareLaunches(
+  workspace: { projectId: string; workspaceId: string; jobName: string },
+  sessions: SessionRow[],
+): Promise<SessionLaunch[]> {
+  const runtime = workspaceDriver()
+  for (const s of new Set(sessions.map((x) => `${x.tool}|${x.mode}`))) {
+    const [tool, mode] = s.split('|') as [AgentTool, SessionRow['mode']]
+    await runtime.assertCanLaunch({ tool, mode })
+  }
+  return await sessionLaunches(workspace.projectId, workspace.workspaceId, sessions, runtime.workspacePaths(workspace.jobName))
+}
+
+/**
+ * Open prepared launches' windows in a running workspace that has finished
+ * its setup, in one exec, and resolve with what it printed. `before` is
+ * what a caller needs run ahead of any window: shell commands, then tmux
+ * commands, which the invocation that opens the windows runs first. One
+ * opening message rides the exec's stdin, written before anything else can
+ * read it; a second session's goes by its own exec (`leaveOpenings`).
+ * Checks the agents came up without waiting on it: one that dies leaves its
+ * session exited, for the user to resume or close.
+ */
+export async function openWindows(
+  workspace: { projectId: string; workspaceId: string; jobName: string },
+  launches: SessionLaunch[],
+  before: { shell?: string[]; tmux?: string[] } = {},
+): Promise<string> {
+  const { projectId, workspaceId, jobName } = workspace
+  const runtime = workspaceDriver()
+  const paths = runtime.workspacePaths(jobName)
+  const [riding, ...rest] = launches.filter((l) => l.opening !== undefined)
+  await leaveOpenings(workspace, rest)
+  const write = riding?.opening !== undefined ? buildOpeningWrite(paths, riding.window, riding.opening) : undefined
+  if (riding !== undefined) markOpening(projectId, workspaceId, riding.window)
+  const cmds = [
+    ...(write !== undefined ? [`{ ${write.cmd}; }`] : []),
+    ...(before.shell ?? []),
+    buildWindowsExec(launches, paths, before.tmux),
+  ].filter((cmd) => cmd !== '')
+  if (cmds.length === 0) return ''
+  const { stdout } = await runtime.exec(jobName, cmds.join(' && '), write !== undefined ? { stdin: write.stdin } : {})
+  if (launches.length === 0) return stdout
+  await markSessionsLaunched(launches.map((l) => l.session.id))
+  void verifyAgentWindowAlive(jobName, launches.map((l) => l.window)).catch((err: unknown) => {
+    serverLog(`[server] sessions ${workspaceId}: ${err instanceof Error ? err.message : String(err)}`)
+  })
+  return stdout
+}
+
+/**
+ * Give sessions of a running workspace their windows (`prepareLaunches`,
+ * then `openWindows`), holding them in `launching` meanwhile.
  */
 export async function launchSessions(
   workspace: { projectId: string; workspaceId: string; jobName: string },
   sessions: SessionRow[],
 ): Promise<void> {
-  const { projectId, workspaceId, jobName } = workspace
-  const runtime = workspaceDriver()
-  const paths = runtime.workspacePaths(jobName)
   const ids = sessions.map((s) => s.id).filter((id) => !launching.has(id))
   if (ids.length === 0) return
   for (const id of ids) launching.add(id)
-  let launches: SessionLaunch[]
   try {
-    const mine = sessions.filter((s) => ids.includes(s.id))
-    for (const s of new Set(mine.map((x) => `${x.tool}|${x.mode}`))) {
-      const [tool, mode] = s.split('|') as [AgentTool, SessionRow['mode']]
-      await runtime.assertCanLaunch({ tool, mode })
-    }
-    launches = await sessionLaunches(projectId, workspaceId, mine, paths)
-    if (launches.length === 0) return
-    await leaveOpenings(workspace, launches)
-    await runtime.exec(jobName, buildWindowsExec(launches, paths))
-    await markSessionsLaunched(launches.map((l) => l.session.id))
+    const launches = await prepareLaunches(workspace, sessions.filter((s) => ids.includes(s.id)))
+    if (launches.length > 0) await openWindows(workspace, launches)
   } finally {
     for (const id of ids) launching.delete(id)
   }
-  void verifyAgentWindowAlive(jobName, launches.map((l) => l.window)).catch((err: unknown) => {
-    serverLog(`[server] sessions ${workspaceId}: ${err instanceof Error ? err.message : String(err)}`)
-  })
 }
 
 /**

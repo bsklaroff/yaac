@@ -29,8 +29,9 @@ describe('buildWindowsExec', () => {
       .toContain(`-n claude-aaaa -c ${PATHS.workspaceDir}/web 'claude`)
   })
 
-  it('opens nothing for no sessions', () => {
+  it('opens nothing for no sessions, still running what it is told to run first', () => {
     expect(buildWindowsExec([], PATHS)).toBe('')
+    expect(buildWindowsExec([], PATHS, ["source-file '/l/hooks.conf'"])).toBe(`${TMUX} source-file '/l/hooks.conf'`)
   })
 
   it('starts every session in one tmux command, each naming what it resumes', () => {
@@ -74,9 +75,13 @@ describe('buildWindowsExec', () => {
       }
       const acp = { tool: 'claude' as const, mode: 'acp' as const, window: 'claude-acp1', cwd: dir, cmd: 'echo first; sleep 0.2' }
       try {
-        await sh(`tmux -S ${paths.tmuxSock} -f /dev/null new-session -d -s yaac -n keeper`
-          + ` \\; set-option -g @yaac-log-dir ${dir}`)
-        await sh(buildWindowsExec([acp, { tool: 'claude', mode: 'tui', window: 'claude-tui1', cwd: dir, cmd: 'echo tui' }], paths))
+        await sh(`tmux -S ${paths.tmuxSock} -f /dev/null new-session -d -s yaac -n keeper`)
+        // What runs first takes effect before the windows open: the log
+        // dir it sets is where the acp window is piped.
+        await sh(buildWindowsExec(
+          [acp, { tool: 'claude', mode: 'tui', window: 'claude-tui1', cwd: dir, cmd: 'echo tui' }], paths,
+          [`set-option -g @yaac-log-dir ${dir}`],
+        ))
         expect(await until('claude-acp1', 'first')).toBe('first\n')
         await sh(buildRespawnExec({ ...acp, cmd: 'echo second; sleep 0.2' }, paths))
         expect(await until('claude-acp1', 'second')).toBe('first\nsecond\n')

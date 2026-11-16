@@ -3,7 +3,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver, workspacePathsFixture } from '#test/support/fake-driver'
 import type { RuntimeHandle } from '#drivers/contract'
 import { propagateOrigin } from '#domain/workspaces'
-import { clearPrewarmStateForTests, spareSettings } from '#domain/workspaces/prewarm'
+import { claiming, clearPrewarmStateForTests, spareSettings } from '#domain/workspaces/prewarm'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { closeDb } from '#db/client'
 import { repoDir } from '@yaac/shared/project-paths'
@@ -57,6 +57,23 @@ describe('propagateOrigin', () => {
       ['job-nested', refresh(API, '/api')],
       ['job-spare', refresh(API, '/backend')],
     ].sort())
+  })
+
+  // A claim waits on the fetch that starts a fan-out, and then opens its
+  // session in the spare, which the refresh would hold up.
+  it('leaves a spare that is being claimed until the claim is over, refreshing the others meanwhile', async () => {
+    await recordWorkspaceCreated({ projectId: P, workspaceId: 'flat', repos: [{ repoId: API, path: '' }] })
+    spareSettings.set('spare', { selection: { repos: [{ repo: API }], nested: false, cwd: '.' }, repos: [{ repoId: API, path: '' }] })
+    mockList.mockResolvedValue([{ ...running(P, 'spare'), prewarmed: true }, running(P, 'flat')])
+    claiming.add('job-spare')
+
+    propagateOrigin(API)
+    await vi.waitFor(() => expect(mockExec).toHaveBeenCalledTimes(1))
+    await new Promise((r) => setTimeout(r, 120))
+    expect(mockExec.mock.calls.map(([job]) => job)).toEqual(['job-flat'])
+
+    claiming.delete('job-spare')
+    await vi.waitFor(() => expect(mockExec.mock.calls.map(([job]) => job)).toEqual(['job-flat', 'job-spare']))
   })
 
   // A burst of fetches costs at most two rounds: the one running, and one

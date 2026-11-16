@@ -28,6 +28,7 @@ import {
   patchObject,
   readObject,
   readPath,
+  removeLabelIf,
 } from '#drivers/k8s/substrate'
 // A state-reset hook, to load the kubeconfig afresh.
 import { _resetK8sClientForTests } from '#drivers/k8s/substrate/client'
@@ -149,6 +150,20 @@ describe('patchObject', () => {
     await patchObject(ref('a'), { metadata: { labels: { drop: null, add: '2' } } })
     expect(fakeCluster.get<{ metadata: { labels: object } }>('ConfigMap', 'a', 'yaac')?.metadata.labels)
       .toEqual({ keep: '1', add: '2' })
+  })
+})
+
+describe('removeLabelIf', () => {
+  it('removes a label only from an object that holds the value, in one request', async () => {
+    fakeCluster.seed(cm('a', { keep: '1', 'example.com/spare': 'true' }))
+    await removeLabelIf(ref('a'), 'example.com/spare', 'true')
+    expect(fakeCluster.get<{ metadata: { labels: object } }>('ConfigMap', 'a', 'yaac')?.metadata.labels).toEqual({ keep: '1' })
+    expect(fakeCluster.calls.map((c) => c.verb)).toEqual(['patch'])
+
+    // A second caller, and one that expects another value, are refused.
+    expect(apiStatus(await removeLabelIf(ref('a'), 'example.com/spare', 'true').catch((e: unknown) => e))).toBe(422)
+    expect(apiStatus(await removeLabelIf(ref('a'), 'keep', '2').catch((e: unknown) => e))).toBe(422)
+    expect(fakeCluster.get<{ metadata: { labels: object } }>('ConfigMap', 'a', 'yaac')?.metadata.labels).toEqual({ keep: '1' })
   })
 })
 

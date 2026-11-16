@@ -213,7 +213,7 @@ describe('prepareStart', () => {
         claims.push(id)
         const unit = units.find((u) => u.workspaceId === id)
         if (unit) Object.assign(unit, { prewarmed: false })
-        return Promise.resolve()
+        return Promise.resolve({ unmarked: Promise.resolve() })
       },
       destroy: (target, opts) => {
         destroys.push(opts?.unitOnly === true)
@@ -1056,7 +1056,7 @@ describe('prepareStart', () => {
       // The life's hooks are sourced in the setup exec, before the agent's
       // window opens; its steps wait, pending, for the step reconcile.
       const setup = execOf('new-window')!
-      expect(setup).toMatch(/source-file '\/home\/yaac\/\.yaac-logs\/[\dT.-]+Z\/hooks\.conf' && .*new-window/)
+      expect(setup).toMatch(/source-file '\/home\/yaac\/\.yaac-logs\/[\dT.-]+Z\/hooks\.conf' \\; new-window/)
       expect(setup).toContain('claude --permission-mode bypassPermissions --model claude-opus-4-5 '
         + `--settings "{\\"idleCompaction\\":false}" --session-id ${result.sessionId}`)
       const steps = await listWorkspaceSteps(result.workspaceId)
@@ -1107,7 +1107,7 @@ describe('prepareStart', () => {
       // `.git` exists. The setup that reads the checkout follows it.
       const agents = execs.findIndex(({ cmd }) => SESSION_WINDOW.test(cmd))
       const setup = execs.findIndex(({ cmd }) => cmd.includes(`rename-window -t =yaac:=${KEEPER_STARTING}`))
-      expect(execs[agents].cmd).toMatch(/hooks\.conf' && .*--wait-for \/workspace\/\.git --/)
+      expect(execs[agents].cmd).toMatch(/hooks\.conf' \\; new-window.*--wait-for \/workspace\/\.git --/)
       expect(setup).toBeGreaterThan(agents)
       expect(execs[setup].cmd).not.toMatch(SESSION_WINDOW)
       expect(execs[setup].cmd).not.toContain('hooks.conf')
@@ -1379,6 +1379,8 @@ describe('prepareStart', () => {
       registrations = []
       // A tailnet owner's login goes with the registration, for tailnet sites.
       await recordAccessMode('tailnet', { claim: 'ada@example.com' })
+      // The owner's git identity has changed since the spare was warmed.
+      await setGitIdentity(BUILT_IN_USER_ID, { name: 'Ada L', email: 'ada@example.com' })
 
       const group = await createWorkspaceGroup(DEMO_PROJECT_ID, 'Reviews', null)
       const result = await start({
@@ -1395,7 +1397,10 @@ describe('prepareStart', () => {
         workspaceId: spare.workspaceId, projectId: DEMO_PROJECT_ID, owner: 'install',
         identity: { login: 'ada@example.com', name: 'ada@example.com' },
       })])
-      expect(ranIn(spare)).toContain("git config --global user.name 'Ada' && git config --global user.email 'ada@example.com'")
+      // The claim runs two commands in the spare. The first asks whether it
+      // can be claimed and where its checkout is.
+      const [probe, launch] = execs.filter((e) => e.jobName === spare.jobName)
+      expect(probe.cmd).toMatch(/has-session -t yaac && \{ git -C \/workspace rev-parse -q --verify HEAD \|\| echo; \}$/)
       // Recorded as a cold create records it: filed, titled, its session
       // holding the prompt, which the agent of the window it opens is
       // launched with.
@@ -1405,8 +1410,15 @@ describe('prepareStart', () => {
       expect(await checkout(spare.workspaceId)).toMatchObject({ repoId: DEMO_PROJECT_ID, path: '', baseBranch: 'main' })
       expect(session).toMatchObject({ tool: 'claude', mode: 'tui', permissionMode: 'bypass', firstPrompt: 'fix the bug' })
       expect(session.launchedAt).toBeInstanceOf(Date)
-      expect(ranIn(spare)).toContainEqual(expect.stringContaining(`new-window -d -t yaac -n ${session.window} `))
-      expect(ranIn(spare).some((c) => c.startsWith(`cat > /tmp/.yaac-opening-${session.window} `))).toBe(true)
+      // The second leaves the prompt, sets the changed identity, and has
+      // one tmux source the life's log hooks and then open the window.
+      expect(launch.stdin).toBe('fix the bug')
+      const at = (needle: string): number => launch.cmd.indexOf(needle)
+      expect(at(`{ cat > /tmp/.yaac-opening-${session.window} `)).toBe(0)
+      expect(at("git config --global user.name 'Ada L' 2>&1 && git config --global user.email 'ada@example.com' 2>&1")).toBeGreaterThan(0)
+      expect(at('hooks.conf')).toBeGreaterThan(at('git config --global'))
+      expect(launch.cmd).toMatch(new RegExp(`source-file '[^']*hooks\\.conf' \\\\; new-window -d -t yaac -n ${session.window} `))
+      expect((await checkout(spare.workspaceId))?.startCommit).toBe(head)
       expect(listProvisioning()).toEqual([])
     })
 
@@ -1545,11 +1557,12 @@ describe('prepareStart', () => {
       const reset = ran.findIndex((c) => c.includes('reset --hard'))
       expect(reset).toBeGreaterThanOrEqual(0)
       // The claim starts its life after the reset, with the project's init
-      // workflows, and sources its log hooks before the session opens.
-      const after = ran.slice(reset)
-      const hooks = after.findIndex((c) => c.includes('hooks.conf'))
-      expect(hooks).toBeGreaterThan(0)
-      expect(after.findIndex((c) => SESSION_WINDOW.test(c))).toBeGreaterThan(hooks)
+      // workflows, and sources its log hooks before the session opens. It
+      // starts at the tip the reset moved it to.
+      const launch = ran.slice(reset).find((c) => c.includes('hooks.conf'))
+      expect(launch?.indexOf('hooks.conf')).toBeLessThan(launch?.search(SESSION_WINDOW) ?? -1)
+      expect((await checkout(spare.workspaceId))?.startCommit)
+        .toBe((await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'origin/main'])).trim())
       expect((await listWorkspaceSteps(spare.workspaceId)).map((s) => `${s.workflowName}.${s.name}`)).toEqual(['init.install'])
     })
 
@@ -1625,11 +1638,46 @@ describe('prepareStart', () => {
       expect(units.some((u) => u.workspaceId === spare.workspaceId)).toBe(false)
 
       // A commit that lost a race looks like one whose response was lost
-      // after it landed, so that spare is reaped too.
-      installDriver({ claimSpare: () => Promise.reject(new Error('already claimed')) })
-      const next = await warm()
-      expect((await start({ claimSpare: true })).workspaceId).not.toBe(next.workspaceId)
-      await vi.waitFor(() => { expect(units.some((u) => u.workspaceId === next.workspaceId)).toBe(false) })
+      // after it landed, so that spare is reaped too. So is one whose commit
+      // landed beside a registration that failed, or whose unmarking could
+      // not finish, though by then its window has opened.
+      const won = (): Promise<{ unmarked: Promise<void> }> => Promise.resolve({ unmarked: Promise.resolve() })
+      for (const broken of [
+        { claimSpare: () => Promise.reject(new Error('already claimed')) },
+        { claimSpare: won, registerWorkspace: () => Promise.reject(new Error('apiserver down')) },
+        { claimSpare: () => Promise.resolve({ unmarked: Promise.reject(new Error('apiserver down')) }) },
+      ] satisfies Array<Partial<WorkspaceDriver>>) {
+        installDriver()
+        const next = await warm()
+        installDriver(broken)
+        expect((await start({ claimSpare: true })).workspaceId).not.toBe(next.workspaceId)
+        expect(await getWorkspaceRow(DEMO_PROJECT_ID, next.workspaceId)).toBeUndefined()
+        await vi.waitFor(() => { expect(units.some((u) => u.workspaceId === next.workspaceId)).toBe(false) })
+      }
+    })
+
+    // Once the claim is won the workspace is the user's, so a launch that
+    // fails is the create's own failure: nothing is reaped, and the session
+    // stays recorded for the next pass to launch.
+    it('fails the create, keeping the workspace, when the session cannot be opened in a spare it has claimed', async () => {
+      const spare = await warm()
+      installDriver({
+        exec: (jobName, cmd) => {
+          execs.push({ jobName, cmd })
+          if (cmd.includes('new-window')) return Promise.reject(new WorkspaceExecError('launch', 1, '', 'no server running'))
+          return Promise.resolve({ stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' })
+        },
+      })
+
+      await expect(start({ claimSpare: true, prompt: 'fix the bug' })).rejects.toThrow('launch')
+
+      expect(claims).toEqual([spare.workspaceId])
+      expect(specs.filter((s) => !s.prewarm)).toEqual([])
+      expect(destroys).toEqual([])
+      expect((await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId))?.stoppedAt).toBeUndefined()
+      const [session] = await listWorkspaceSessions(spare.workspaceId)
+      expect(session).toMatchObject({ firstPrompt: 'fix the bug' })
+      expect(session.launchedAt).toBeUndefined()
     })
 
     it('passes over a spare it cannot use, creating cold', async () => {
@@ -1641,21 +1689,19 @@ describe('prepareStart', () => {
         expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toBeUndefined()
       }
 
-      // Its agent transport never answers: left alone, before any change.
-      installDriver({ awaitAgentTransport: (jobName) => jobName === spare.jobName
-        ? Promise.reject(new Error('no transport'))
-        : Promise.resolve() })
-      await cold()
-      _clearTmuxAliveCacheForTests()
-      // Its tmux is gone.
-      installDriver({ exec: (jobName, cmd) => {
-        execs.push({ jobName, cmd })
-        return jobName === spare.jobName && cmd.includes('has-session')
-          ? Promise.reject(new WorkspaceExecError('probe', 1, '', 'no server'))
-          : Promise.resolve({ stdout: '', stderr: '' })
-      } })
-      await cold()
-      _clearTmuxAliveCacheForTests()
+      // It cannot be reached, or its tmux is gone: left alone, before any
+      // change.
+      for (const failure of [new Error('no transport'), new WorkspaceExecError('probe', 1, '', 'no server')]) {
+        installDriver({ exec: (jobName, cmd) => {
+          execs.push({ jobName, cmd })
+          return jobName === spare.jobName && cmd.includes('has-session')
+            ? Promise.reject(failure)
+            : Promise.resolve({ stdout: '', stderr: '' })
+        } })
+        await cold()
+        expect(ranIn(spare)).toHaveLength(1)
+        execs = []
+      }
       // An image the project no longer builds (its Dockerfile was edited).
       installDriver({ currentImage: () => Promise.resolve('registry.test/fake-image:edited') })
       await cold()
@@ -1668,21 +1714,24 @@ describe('prepareStart', () => {
     // The workspace is already usable, so neither is worth burning the spare.
     it('hands a spare over even when its git identity or group cannot be re-applied', async () => {
       const spare = await warm()
+      await setGitIdentity(BUILT_IN_USER_ID, { name: 'Ada L', email: 'ada@example.com' })
       const group = await createWorkspaceGroup(DEMO_PROJECT_ID, 'Gone soon', null)
       installDriver({
-        // The group goes after the start resolved it, before the claim
-        // records the row.
-        awaitAgentTransport: async () => { await deleteWorkspaceGroup(DEMO_PROJECT_ID, group.groupId) },
-        exec: (jobName, cmd) => cmd.includes('git config --global')
-          ? Promise.reject(new WorkspaceExecError('identity', 1, '', 'read-only home'))
-          : Promise.resolve({ stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' }),
+        exec: async (jobName, cmd) => {
+          // The group goes after the start resolved it, before the claim
+          // records the row.
+          if (cmd.includes('has-session')) await deleteWorkspaceGroup(DEMO_PROJECT_ID, group.groupId)
+          // The launch command prints only what the identity write failed with.
+          if (cmd.includes('git config --global')) return { stdout: 'error: could not lock config file\n', stderr: '' }
+          return { stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' }
+        },
       })
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
       expect((await start({ claimSpare: true, group: group.groupId })).workspaceId).toBe(spare.workspaceId)
 
       expect((await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId))?.groupId).toBeUndefined()
-      expect(warn.mock.calls.map(([m]) => String(m)).join('\n')).toContain('not applied')
+      expect(warn.mock.calls.map(([m]) => String(m)).join('\n')).toContain('not applied (the warmed-in one stands): error: could not lock')
       warn.mockRestore()
     })
 

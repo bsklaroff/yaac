@@ -42,10 +42,10 @@ export function lifeHooksConfig(paths: WorkspacePaths, logDir: string): string {
   ].join('\n')
 }
 
-/** The command that sources a life's hooks config, at its in-workspace
- *  path. */
-export function sourceHooksCommand(paths: WorkspacePaths, configPath: string): string {
-  return `${tmuxCmd(paths)} source-file ${shellQuote(configPath)}`
+/** The tmux command that sources a life's hooks config, at its
+ *  in-workspace path. */
+export function sourceHooksCommand(configPath: string): string {
+  return `source-file ${shellQuote(configPath)}`
 }
 
 /**

@@ -122,6 +122,21 @@ export async function patchObject(ref: ObjectRef, patch: { metadata?: object; [k
 }
 
 /**
+ * Remove `label` from the object only while it still holds `value`, in one
+ * request. It is a JSON patch (RFC 6902) whose `test` the API server checks
+ * against the object it writes, so of concurrent callers one succeeds and
+ * the others, like a caller whose object never had the value, are refused.
+ */
+export async function removeLabelIf(ref: ObjectRef, label: string, value: string): Promise<void> {
+  const path = `/metadata/labels/${label.replaceAll('~', '~0').replaceAll('/', '~1')}`
+  await getObjectApi().send(HttpMethod.PATCH, header(ref), 'read', {
+    query: { fieldManager: FIELD_MANAGER },
+    body: [{ op: 'test', path, value }, { op: 'remove', path }],
+    contentType: PatchStrategy.JsonPatch,
+  })
+}
+
+/**
  * Delete the object; absent is success. With `wait`, resolve only once it
  * is gone (finalizers run, pods terminated), so its name can be reused.
  */

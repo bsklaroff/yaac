@@ -104,7 +104,7 @@ import {
 import { convergeAgentHistory } from './history'
 import { deleteWorkspaceState } from './cleanup'
 import { attachVolume, stageVolume } from './volumes'
-import { lifeHooksExec, startStepsOf } from './life'
+import { lifeHooksCommand, startStepsOf } from './life'
 import { offeredForwards } from './forward-port'
 import { lifeDirName, type StepGraph } from '@yaac/shared/steps'
 import { gitHead, importSharedFiles, prepareCheckpoints, relinkAlternates, restoreFailure, restorePointer, treeOf, treesApply, writeStartInstruction } from './trees'
@@ -413,14 +413,13 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
     throwIfProvisionStopped(workspaceId)
     if (tools.length > 0) emit(`Starting ${tools.join(', ')}...`, options)
   }
-  const windows = [
-    ...(life !== undefined ? [await lifeHooksExec(projectId, workspaceId, life, paths)] : []),
-    buildWindowsExec(launches, paths),
-  ].filter((cmd) => cmd !== '')
+  const windows = buildWindowsExec(
+    launches, paths, life !== undefined ? [await lifeHooksCommand(projectId, workspaceId, life, paths)] : [],
+  )
   const opensEarly = early && launches.length > 0
   if (opensEarly) {
     announceAgents()
-    await runtime.exec(jobName, windows.join(' && '))
+    await runtime.exec(jobName, windows)
   }
 
   // Everything below reads the checkout, so join it now.
@@ -437,7 +436,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
     ...checkouts.filter((c) => c.reuse)
       .map((c) => buildCloneLinkExec(path.join(repoDir(c.repo.id), '.git'), seenAt(c), c.repo.remoteUrl)),
     ...(runtime.kind === 'containerless' ? [] : checkouts.map((c) => buildStatusWarmupExec(seenAt(c)))),
-    ...(opensEarly ? [] : windows),
+    ...(opensEarly || windows === '' ? [] : [windows]),
     finishSetupCommand(paths),
   ]
   if (!early) announceAgents()
@@ -1193,6 +1192,7 @@ export async function createWorkspace(
       ...(treeName !== undefined ? { treeDir: treeName } : {}),
       selection: storedSelection(options.start),
       repos: recordedRepos,
+      gitIdentity: gitUser,
       ...(imageRef !== undefined ? { image: imageRef } : {}),
     })
   }

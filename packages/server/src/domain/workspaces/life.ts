@@ -67,14 +67,14 @@ function skipCycles(flows: LifeWorkflow[]): LifeWorkflow[] {
 
 /**
  * Write the tmux config a life sources (`lifeHooksConfig`) into its log
- * dir, and resolve with the command that sources it, which the caller runs
- * before opening any window of the life.
+ * dir, and resolve with the tmux command that sources it, which the caller
+ * has tmux run before opening any window of the life.
  */
-export async function lifeHooksExec(projectId: string, workspaceId: string, life: Date, paths: WorkspacePaths): Promise<string> {
+export async function lifeHooksCommand(projectId: string, workspaceId: string, life: Date, paths: WorkspacePaths): Promise<string> {
   const dir = lifeDirName(life)
   const logs = await openTerminalLogs(projectId, workspaceId)
   await logs.writeAtomic(`${dir}/hooks.conf`, lifeHooksConfig(paths, `${paths.terminalLogDir}/${dir}`))
-  return sourceHooksCommand(paths, `${paths.terminalLogDir}/${dir}/hooks.conf`)
+  return sourceHooksCommand(`${paths.terminalLogDir}/${dir}/hooks.conf`)
 }
 
 /**

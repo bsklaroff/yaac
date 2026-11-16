@@ -7,9 +7,9 @@ import {
   k8sNamespace,
   NPM_CACHE_APP_NAME,
   patchObject,
-  readObject,
   readWorkspaceJobs,
   readWorkspacePods,
+  removeLabelIf,
 } from '#drivers/k8s/substrate'
 import { servingNpmCacheUrl } from '#drivers/k8s/cluster'
 import { registerWorkspaceEgress } from '#drivers/k8s/egress'
@@ -20,28 +20,29 @@ import { npmCacheApplies } from './launch'
 /**
  * Where a claimed spare stops being one in the cluster
  * (docs/layered-server.md): a conditional write on its pod that either
- * takes the spare or refuses, then the same labels on its Job.
+ * takes the spare or refuses, then the same label off its Job.
  */
 
 /**
- * Claim the spare holding `workspaceId`: unlabel its pod, then
- * its Job, so neither reads as a spare again. The Job's label is what
- * identifies a spare whose pod is gone, and a reap deletes such a spare's
- * files.
+ * Claim the spare holding `workspaceId`: unlabel its pod, which is the
+ * claim, then its Job, which the returned `unmarked` reports. The Job's
+ * label is what identifies a spare whose pod is gone, and a reap deletes
+ * such a spare's files, so the Job loses it only once the pod has, and a
+ * caller waits for `unmarked` before it counts the claim as done.
  *
- * The write is a compare-and-swap: the pod is read fresh, and the patch
- * carries the resourceVersion that read saw, so the API server rejects a
- * second concurrent claim with a 409. A label-selector bulk update would
+ * The pod's write is a compare-and-swap in one request (`removeLabelIf`):
+ * the API server removes the label only from a pod that still has it, so
+ * it refuses a second concurrent claim. A label-selector bulk update would
  * not do this, because it lists and then patches unconditionally. The
  * loser throws, which sends its claim down the cold-create path. The
  * prewarm mediator also reserves spares in-process, but this keeps the
  * verb safe for any caller.
  *
- * If a patch lands but its response is lost, a winning claim reports a
- * loss, so the caller reaps the spare rather than return it to the pool.
- *
+ * If the write lands but its response is lost, the client's retry is
+ * refused like a second claim, so a winning claim reports a loss and the
+ * caller reaps the spare rather than return it to the pool.
  */
-export async function claimSpareWorkspace(workspaceId: string): Promise<void> {
+export async function claimSpareWorkspace(workspaceId: string): Promise<{ unmarked: Promise<void> }> {
   // One pod per workspace id. A second match would be a Job mid-replacement,
   // which the pool planner reaps.
   const pod = findWorkspacePod(await readWorkspacePods(), workspaceId, { spares: true })
@@ -53,27 +54,12 @@ export async function claimSpareWorkspace(workspaceId: string): Promise<void> {
   }
 
   const { podName } = pod
-  const ref = { apiVersion: 'v1', kind: 'Pod', name: podName, namespace: k8sNamespace() }
-  const live = await readObject<{ metadata: { resourceVersion?: string; labels?: Record<string, string> } }>(ref)
-  if (live?.metadata.labels?.[LABEL_PREWARMED] !== 'true') {
-    throw new Error(`spare ${podName} for ${workspaceId} was claimed by another caller`)
-  }
-  const labels = { [LABEL_PREWARMED]: null }
-  await patchObject(ref, { metadata: { resourceVersion: live.metadata.resourceVersion, labels } })
-  await patchObject(
-    { apiVersion: 'batch/v1', kind: 'Job', name: pod.jobName, namespace: k8sNamespace() },
-    { metadata: { labels } },
-  )
-
-  // Re-decide the npm registry at claim time: the spare's init chose it
-  // long ago, and pnpm has no fallback if the cache has since gone down
-  // (`servingNpmCacheUrl`). Best-effort, and not awaited: the agent's first
-  // install follows at least one model round trip, far longer than this
-  // read and exec.
-  if (pod.labels[LABEL_NPM_CACHE] === 'true') {
-    void servingNpmCacheUrl().then((url) => writeNpmRegistry(podName, url)).catch((err: unknown) => {
-      serverLog(`[prewarm] could not re-decide the npm registry of ${podName}: ${String(err)}`)
-    })
+  await removeLabelIf({ apiVersion: 'v1', kind: 'Pod', name: podName, namespace: k8sNamespace() }, LABEL_PREWARMED, 'true')
+  return {
+    unmarked: patchObject(
+      { apiVersion: 'batch/v1', kind: 'Job', name: pod.jobName, namespace: k8sNamespace() },
+      { metadata: { labels: { [LABEL_PREWARMED]: null } } },
+    ),
   }
 }
 
@@ -96,8 +82,10 @@ export async function unmarkClaimedJobs(): Promise<void> {
 }
 
 /**
- * Apply a project's current egress config to a live workspace, e.g. when a
- * claim picks up a spare warmed long ago.
+ * Apply a project's current egress config to a live workspace: a spare
+ * being claimed, which may have been warmed long ago. Only a claim calls
+ * it, beside its `claimSpareWorkspace`, so everything a claim does to the
+ * pod's `~/.npmrc` is decided here, in one place.
  *
  * Besides the proxy registration, npm-cache access is a pod label set at
  * launch. The cache fetches outside the proxy, so if the allowlist no longer
@@ -106,15 +94,27 @@ export async function unmarkClaimedJobs(): Promise<void> {
  * a pod that can still reach the cache, and the next registration retries.
  * A widened allowlist is left alone; without the cache, npmjs is still
  * reachable through the proxy.
+ *
+ * A pod that stays on the cache has its registry decided again, since its
+ * init chose it at warm time and pnpm has no fallback if the cache has
+ * since gone down (`servingNpmCacheUrl`). Best-effort, and not awaited: the
+ * agent's first install follows at least one model round trip, far longer
+ * than this read and exec.
  */
 export async function registerWorkspace(reg: WorkspaceRegistration): Promise<void> {
   const registration = await registerWorkspaceEgress(reg)
-  if (npmCacheApplies(reg.config, registration.allowedHosts, reg.proxySecretRules)) return
   const pod = findWorkspacePod(await readWorkspacePods(), reg.workspaceId, { spares: true })
   if (pod?.labels[LABEL_NPM_CACHE] !== 'true') return
-  await writeNpmRegistry(pod.podName, null)
+  const { podName } = pod
+  if (npmCacheApplies(reg.config, registration.allowedHosts, reg.proxySecretRules)) {
+    void servingNpmCacheUrl().then((url) => writeNpmRegistry(podName, url)).catch((err: unknown) => {
+      serverLog(`[prewarm] could not re-decide the npm registry of ${podName}: ${String(err)}`)
+    })
+    return
+  }
+  await writeNpmRegistry(podName, null)
   await patchObject(
-    { apiVersion: 'v1', kind: 'Pod', name: pod.podName, namespace: k8sNamespace() },
+    { apiVersion: 'v1', kind: 'Pod', name: podName, namespace: k8sNamespace() },
     { metadata: { labels: { [LABEL_NPM_CACHE]: null } } },
   )
 }

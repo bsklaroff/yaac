@@ -54,7 +54,9 @@ export function buildRespawnExec(spec: SessionWindowSpec, paths: WorkspacePaths)
 }
 
 /**
- * Create the sessions' windows, in one exec; the empty string for none.
+ * Create the sessions' windows, in one exec; the empty string for nothing
+ * to run. `first` are tmux commands the same invocation runs ahead of them
+ * (a life's log hooks, which a window must open under).
  *
  * Each session's window keeps its pane when the agent exits
  * (`remain-on-exit`), so an agent that quits or crashes leaves its session
@@ -69,10 +71,11 @@ export function buildRespawnExec(spec: SessionWindowSpec, paths: WorkspacePaths)
 export function buildWindowsExec(
   sessions: SessionWindowSpec[],
   paths: WorkspacePaths,
+  first: string[] = [],
 ): string {
-  if (sessions.length === 0) return ''
-  // One tmux invocation for all session windows: tmux runs a client's
-  // command group to completion, so the watcher sees all of them or none.
+  // One tmux invocation for all of it: tmux runs a client's command group
+  // to completion, so the watcher sees all the windows or none, and each
+  // further start of tmux costs tens of milliseconds in a gVisor pod.
   const sessionCmds = sessions.map((spec) => {
     const target = windowTarget(spec.window)
     return `new-window -d -t yaac -n ${spec.window} -c ${spec.cwd} '${spec.cmd}'`
@@ -80,5 +83,6 @@ export function buildWindowsExec(
       + (spec.mode === 'acp' ? ` \\; ${pipeToLogCommand(target)}` : '')
       + (spec.resumes !== undefined ? ` \\; ${nameSessionCommand(target, spec.tool, spec.resumes)}` : '')
   })
-  return `${tmuxCmd(paths)} ${sessionCmds.join(' \\; ')}`
+  const cmds = [...first, ...sessionCmds]
+  return cmds.length === 0 ? '' : `${tmuxCmd(paths)} ${cmds.join(' \\; ')}`
 }

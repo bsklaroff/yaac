@@ -33,6 +33,7 @@ export {
   patchObject,
   readObject,
   readPath,
+  removeLabelIf,
 } from './api'
 export type { ObjectRef } from './api'
 export { bindInstall, installId, installNameKey, legacyDataDirHash, legacyNameKey } from './install-id'
