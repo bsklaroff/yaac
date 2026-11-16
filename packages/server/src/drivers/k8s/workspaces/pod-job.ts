@@ -185,7 +185,17 @@ const TREE_TRIGGER_DIR = path.posix.dirname(TREE_TRIGGER_FILE)
  *  large repository the agent cloned takes minutes. The server's wait for
  *  the pod is as long (`readyTimeoutMs`). */
 export const TREE_STARTUP_SECONDS = 4 * 60 * 60
-const TREE_PROBE_PERIOD_SECONDS = 2
+/**
+ * The startup probe's timing. Kubernetes takes the period in whole seconds,
+ * 1 at least, so each probe waits most of one for the tree inside its own
+ * process and passes the moment the tree is filled: checking more often by
+ * starting more processes would cost over 100 ms a start in the sandbox.
+ * The timeout is far above the wait, for a process slow to start on a
+ * loaded node.
+ */
+const TREE_PROBE_PERIOD_SECONDS = 1
+const TREE_PROBE_WAIT_SECONDS = 0.9
+const TREE_PROBE_TIMEOUT_SECONDS = 10
 
 export interface TreeContainerParams {
   image: string
@@ -230,9 +240,9 @@ function treeContainer(t: TreeContainerParams, volumeMounts: Array<Record<string
       ...(t.own.length > 0 ? ['--own', t.own.join(':')] : []),
     ],
     startupProbe: {
-      exec: { command: ['yaac-tree', 'probe', '--scratch', '/scratch', '--life', t.life] },
+      exec: { command: ['yaac-tree', 'probe', '--scratch', '/scratch', '--life', t.life, '--wait', String(TREE_PROBE_WAIT_SECONDS)] },
       periodSeconds: TREE_PROBE_PERIOD_SECONDS,
-      timeoutSeconds: 10,
+      timeoutSeconds: TREE_PROBE_TIMEOUT_SECONDS,
       failureThreshold: TREE_STARTUP_SECONDS / TREE_PROBE_PERIOD_SECONDS,
     },
     securityContext: {
