@@ -34,6 +34,7 @@ import {
   detachedTeardownCommand,
   reapNodeLocal,
 } from '#drivers/containerless/teardown'
+import { startContainerlessDriver, stopContainerlessDriver } from '#drivers/containerless/lifecycle'
 import { containerlessJobName, containerlessWorkspacePaths, workspaceSliceName } from '#drivers/containerless/paths'
 import {
   _resetRegistryForTests,
@@ -107,15 +108,27 @@ afterEach(() => {
 })
 
 describe('destroyWorkspace', () => {
-  it('kills the tmux server and confirms it is really gone', async () => {
-    registered()
-    await expect(destroyWorkspace(TARGET)).resolves.toBe(true)
-    const argvs = mockRunHost.mock.calls.map((c) => c[0] as string[])
-    expect(argvs.some((a) => a.includes('kill-server'))).toBe(true)
-    // The caller deletes the checkout on this result, so it must mean
-    // nothing is still writing there.
-    expect(argvs.some((a) => a.includes('has-session'))).toBe(true)
-    expect(listWorkspaces()).toHaveLength(0)
+  it('kills the tmux server, confirms it is really gone, and reports the set without it', async () => {
+    const workspacesChanged = vi.fn()
+    await startContainerlessDriver({
+      trigger: () => {}, workspacesChanged, recover: () => Promise.resolve(), attached: () => {},
+    })
+    try {
+      registered()
+      workspacesChanged.mockClear()
+      await expect(destroyWorkspace(TARGET)).resolves.toBe(true)
+      const argvs = mockRunHost.mock.calls.map((c) => c[0] as string[])
+      expect(argvs.some((a) => a.includes('kill-server'))).toBe(true)
+      // The caller deletes the checkout on this result, so it must mean
+      // nothing is still writing there.
+      expect(argvs.some((a) => a.includes('has-session'))).toBe(true)
+      expect(listWorkspaces()).toHaveLength(0)
+      // The status watchers stop on this report; without it they would
+      // keep re-dialling the dead socket.
+      expect(workspacesChanged).toHaveBeenLastCalledWith([])
+    } finally {
+      stopContainerlessDriver()
+    }
   })
 
   it('reports that it could not confirm when the session outlives the kill', async () => {

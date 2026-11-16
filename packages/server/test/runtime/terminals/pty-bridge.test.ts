@@ -251,7 +251,7 @@ describe('attachPty', () => {
     const tmux = tmuxes[0]
     // One read-write control client, attached to the session.
     expect(dialCtrlMock).toHaveBeenCalledWith(job(20), [
-      'tmux', '-S', '/tmp/yaac-tmux/server', '-C', 'attach-session', '-t', 'yaac',
+      'tmux', '-N', '-S', '/tmp/yaac-tmux/server', '-C', 'attach-session', '-t', 'yaac',
     ])
     expect(tmux.commands.slice(0, 5)).toEqual([
       // A session's window, by its exact name.

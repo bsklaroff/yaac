@@ -598,6 +598,17 @@ refused while any read-only client is attached. tmux ends every client when its
 server dies, so the client's exit is the workspace's death. Its stdin must be
 a pipe held open, because a control-mode client exits when stdin closes.
 
+A stop is reported differently. The detached stop drops the workspace from
+the registry before its tmux server dies, so by the time the liveness client
+exits there is nothing left to mark dead. The awaited teardown drops it
+after confirming tmux gone, when the liveness client may or may not have
+reported the death already. Dropping a workspace therefore ends its liveness
+client and reports the smaller workspace set itself, on both paths, which is
+what stops the workspace's status watcher. Every
+control-mode attach the server makes passes tmux `-N`, so an attach that
+races a stop fails rather than starting an empty tmux server on the dead
+socket and leaving its socket file behind.
+
 Recovery is the normal path. On start the server reads the marker files it
 wrote (`global/projects/<project-id>/sessions/<id>/containerless/workspace.json`,
 the equivalent of a Job object) and probes each socket. A live socket is a
@@ -687,7 +698,7 @@ startup.
   | Needs | For |
   |---|---|
   | 3.1 | `window-size latest`, set on every window a webapp terminal shows |
-  | 3.2 | client flags on attach (`attach-session -f ignore-size,no-output`), for the driver's liveness watch and the status watcher; the status watcher's format subscriptions (`refresh-client -B`); the terminal mirror's `refresh-client -A` pause and continue |
+  | 3.2 | client flags on attach (`attach-session -f ignore-size,no-output`), for the driver's liveness watch and the status watcher; `-N`, so those attaches never start a server; the status watcher's format subscriptions (`refresh-client -B`); the terminal mirror's `refresh-client -A` pause and continue |
   | 3.3 | per-window sizes for the terminal mirror's control client (`refresh-client -C @<window>:<cols>x<rows>`); an older tmux answers "bad size argument" and no webapp terminal attaches |
 
   Ubuntu 22.04's tmux (3.2a) is therefore too old; Debian 12's (3.3a) and
