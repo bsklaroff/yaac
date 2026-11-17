@@ -18,15 +18,14 @@ import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 beforeEach(() => { installFakeWorkspaceDriver() })
 
 const projectId = '7d4e2a1c-5b3f-4e8a-9c6d-1f2e3a4b5c6d'
-/** A project whose repo tiers are read from git, apart from `projectId`'s
- *  working-tree writes. */
+/** A second project, whose repo starts with nothing committed. */
 const GITPROJ = '59f56625-001b-4df1-8d07-9b32191dc0a0'
 
-/** Commit `files` (relPath → contents) onto `branch` of a repo at
- *  `repoDir(s)` and set the `origin/<branch>` ref discovery reads, with no
- *  network remote. Other working-tree files stay uncommitted, so a test can
- *  prove ref reads ignore the working copy. */
-async function commitRepoBranch(s: string, branch: string, files: Record<string, string>): Promise<void> {
+/** Commit `files` (relPath → contents, or null to delete) onto `branch`
+ *  of a repo at `repoDir(s)` and set the `origin/<branch>` ref discovery
+ *  reads, with no network remote. Each branch starts from the last one
+ *  committed. */
+async function commitRepoBranch(s: string, branch: string, files: Record<string, string | null>): Promise<void> {
   const repo = repoDir(s)
   await fs.mkdir(repo, { recursive: true })
   const initialized = await fs.access(path.join(repo, '.git')).then(() => true, () => false)
@@ -37,12 +36,16 @@ async function commitRepoBranch(s: string, branch: string, files: Record<string,
   const paths: string[] = []
   for (const [rel, contents] of Object.entries(files)) {
     const abs = path.join(repo, rel)
-    await fs.mkdir(path.dirname(abs), { recursive: true })
-    await fs.writeFile(abs, contents)
+    if (contents === null) {
+      await fs.rm(abs, { force: true })
+    } else {
+      await fs.mkdir(path.dirname(abs), { recursive: true })
+      await fs.writeFile(abs, contents)
+    }
     paths.push(rel)
   }
-  await git(repo, ['add', ...paths])
-  await git(repo, ['commit', '-m', `skills on ${branch}`])
+  await git(repo, ['add', '-A', '--', ...paths])
+  await git(repo, ['commit', '-q', '--allow-empty', '-m', `skills on ${branch}`])
   const sha = (await git(repo, ['rev-parse', 'HEAD'])).trim()
   await git(repo, ['update-ref', `refs/remotes/origin/${branch}`, sha])
   await git(repo, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
@@ -58,14 +61,10 @@ async function writeFile(file: string, contents: string): Promise<void> {
   await fs.writeFile(file, contents)
 }
 
-/** Seed a Claude settings.json's `enabledPlugins` map so its plugins pass the
- *  installed/enabled gate. Defaults to the project's user-tier settings. */
-async function seedClaudeEnabled(
-  s: string,
-  enabledPlugins: Record<string, boolean>,
-  file = path.join(claudeDir(s), 'settings.json'),
-): Promise<void> {
-  await writeFile(file, JSON.stringify({ enabledPlugins }))
+/** Seed the project's user-tier Claude settings.json `enabledPlugins` map
+ *  so its plugins pass the installed/enabled gate. */
+async function seedClaudeEnabled(s: string, enabledPlugins: Record<string, boolean>): Promise<void> {
+  await writeFile(path.join(claudeDir(s), 'settings.json'), JSON.stringify({ enabledPlugins }))
 }
 
 /** Seed a Codex config.toml `[plugins]` table entry for a `<plugin>@<mkt>` id. */
@@ -131,16 +130,11 @@ beforeEach(async () => {
     '---\ndescription: Review a PR\nallowed-tools: [Read, Grep]\n---\nbody-plugin\n',
   )
   await seedClaudeEnabled(projectId, { 'code-review@off': true, 'imessage@off': true })
-  // Repo (checkout)
-  await writeSkill(
-    path.join(repoDir(projectId), '.claude', 'skills', 'deploy'),
-    '---\nname: deploy\ndescription: Deploy it\nuser-invocable: false\n---\nbody-deploy\n',
-  )
-  // Repo skill whose name collides with the personal one → overridden
-  await writeSkill(
-    path.join(repoDir(projectId), '.claude', 'skills', 'push-branch'),
-    '---\nname: push-branch\ndescription: project override\n---\nbody-proj\n',
-  )
+  await commitRepoBranch(projectId, 'main', {
+    '.claude/skills/deploy/SKILL.md': '---\nname: deploy\ndescription: Deploy it\nuser-invocable: false\n---\nbody-deploy\n',
+    // Its name collides with the personal one, which overrides it.
+    '.claude/skills/push-branch/SKILL.md': '---\nname: push-branch\ndescription: project override\n---\nbody-proj\n',
+  })
 })
 
 afterEach(async () => {
@@ -283,20 +277,22 @@ describe('getProjectSkills', () => {
 
   it('resolves a name clash in each agent\'s own measured order, and codex loads every copy', async () => {
     const p = await freshProject()
-    const repo = repoDir(p)
-    /** Every dir an agent may read a `push` skill from, by its skill id. */
+    /** Every dir an agent may read a `push` skill from, by its skill id: a
+     *  host path, or a repo-relative one for a `repo/` id. */
     const dirs: Record<string, string> = {
       'claude/skills:push': path.join(claudeDir(p), 'skills', 'push'),
       'codex/skills:push': path.join(codexDir(p), 'skills', 'push'),
       'opencode/skills:push': path.join(opencodeConfigDir(p), 'skills', 'push'),
       'opencode/skill:push': path.join(opencodeConfigDir(p), 'skill', 'push'),
       'pi/agent/skills:push': path.join(piDir(p), 'agent', 'skills', 'push'),
-      'repo/.claude/skills:push': path.join(repo, '.claude', 'skills', 'push'),
-      'repo/.agents/skills:push': path.join(repo, '.agents', 'skills', 'push'),
-      'repo/.opencode/skills:push': path.join(repo, '.opencode', 'skills', 'push'),
-      'repo/.opencode/skill:push': path.join(repo, '.opencode', 'skill', 'push'),
-      'repo/.pi/skills:push': path.join(repo, '.pi', 'skills', 'push'),
+      'repo/.claude/skills:push': '.claude/skills/push',
+      'repo/.agents/skills:push': '.agents/skills/push',
+      'repo/.opencode/skills:push': '.opencode/skills/push',
+      'repo/.opencode/skill:push': '.opencode/skill/push',
+      'repo/.pi/skills:push': '.pi/skills/push',
     }
+    const md = '---\nname: push\n---\nb'
+    const inRepo = (id: string) => id.startsWith('repo/')
     // Highest first: each round drops the winner and expects the next.
     const order = {
       claude: ['claude/skills:push', 'repo/.claude/skills:push'],
@@ -307,7 +303,9 @@ describe('getProjectSkills', () => {
       pi: ['repo/.pi/skills:push', 'repo/.agents/skills:push', 'pi/agent/skills:push'],
     } as const
     const seedAll = async () => {
-      for (const dir of Object.values(dirs)) await writeSkill(dir, '---\nname: push\n---\nb')
+      for (const [id, dir] of Object.entries(dirs)) if (!inRepo(id)) await writeSkill(dir, md)
+      await commitRepoBranch(p, 'main', Object.fromEntries(Object.entries(dirs)
+        .filter(([id]) => inRepo(id)).map(([, dir]) => [`${dir}/SKILL.md`, md])))
     }
     const loadedBy = async (tool: string) => (await getProjectSkills(p)).skills
       .filter((s) => s.agents.includes(tool as never) && !s.overriddenFor.includes(tool as never)).map((s) => s.id)
@@ -316,7 +314,8 @@ describe('getProjectSkills', () => {
       await seedAll()
       for (const id of ids) {
         expect(await loadedBy(tool), `${tool} with ${id} highest left`).toEqual([id])
-        await fs.rm(dirs[id], { recursive: true })
+        if (inRepo(id)) await commitRepoBranch(p, 'main', { [`${dirs[id]}/SKILL.md`]: null })
+        else await fs.rm(dirs[id], { recursive: true })
       }
     }
     await seedAll()
@@ -348,11 +347,9 @@ describe('getProjectSkills', () => {
       path.join(claudeDir(projectId), 'plugins', 'marketplaces', 'off', 'plugins', 'ripgrep', 'skills', 'search'),
       '---\nname: search\ndescription: local-tier enabled\n---\nb',
     )
-    await seedClaudeEnabled(
-      projectId,
-      { 'ripgrep@off': true },
-      path.join(repoDir(projectId), '.claude', 'settings.local.json'),
-    )
+    await commitRepoBranch(projectId, 'main', {
+      '.claude/settings.local.json': JSON.stringify({ enabledPlugins: { 'ripgrep@off': true } }),
+    })
     const { skills } = await getProjectSkills(projectId)
     expect(skills.find((s) => s.name === 'search')).toBeDefined()
   })
@@ -361,8 +358,10 @@ describe('getProjectSkills', () => {
     // Unparseable JSON, valid JSON without the map, and a non-object map: each
     // tier degrades to "nothing enabled" rather than throwing.
     await writeFile(path.join(claudeDir(projectId), 'settings.json'), '{not json')
-    await writeFile(path.join(repoDir(projectId), '.claude', 'settings.json'), '{"other": 1}')
-    await writeFile(path.join(repoDir(projectId), '.claude', 'settings.local.json'), '{"enabledPlugins": 5}')
+    await commitRepoBranch(projectId, 'main', {
+      '.claude/settings.json': '{"other": 1}',
+      '.claude/settings.local.json': '{"enabledPlugins": 5}',
+    })
 
     const { skills } = await getProjectSkills(projectId)
     expect(skills.find((s) => s.source === 'plugin')).toBeUndefined()
@@ -421,8 +420,9 @@ describe('getProjectSkills', () => {
     // A catalog plugin cloned to disk but never installed → excluded.
     await writeSkill(path.join(codexDir(projectId), '.tmp', 'plugins', 'plugins', 'stripe', 'skills', 'stripe'),
       '---\nname: stripe\ndescription: cx uninstalled\n---\nb')
-    await writeSkill(path.join(repoDir(projectId), '.agents', 'skills', 'deploy'),
-      '---\nname: deploy\ndescription: cx project\n---\nb')
+    await commitRepoBranch(projectId, 'main', {
+      '.agents/skills/deploy/SKILL.md': '---\nname: deploy\ndescription: cx project\n---\nb',
+    })
     await seedCodexPlugins(projectId, { 'sentry@openai-curated': {} })
 
     const skills = (await getProjectSkills(projectId)).skills.filter((s) => s.agents.includes('codex'))
@@ -463,8 +463,9 @@ describe('getProjectSkills', () => {
       '---\nname: greet\ndescription: oc global singular\n---\nb')
     // Repo native `.opencode/skills/deploy`, same name as the beforeEach
     // `.claude/skills/deploy`: opencode loads its own, Claude the other.
-    await writeSkill(path.join(repoDir(projectId), '.opencode', 'skills', 'deploy'),
-      '---\nname: deploy\ndescription: oc project native\n---\nb')
+    await commitRepoBranch(projectId, 'main', {
+      '.opencode/skills/deploy/SKILL.md': '---\nname: deploy\ndescription: oc project native\n---\nb',
+    })
 
     const { skills } = await getProjectSkills(projectId)
     const credit = (id: string) => {
@@ -483,10 +484,10 @@ describe('getProjectSkills', () => {
     // on the host.
     await writeSkill(path.join(piDir(projectId), 'agent', 'skills', 'globby'),
       '---\nname: globby\ndescription: pi personal skill\n---\nb')
-    await writeSkill(path.join(repoDir(projectId), '.pi', 'skills', 'ship'),
-      '---\nname: ship\ndescription: pi project skill\n---\nb')
-    await writeSkill(path.join(repoDir(projectId), '.agents', 'skills', 'shared'),
-      '---\nname: shared\ndescription: agents-compat skill\n---\nb')
+    await commitRepoBranch(projectId, 'main', {
+      '.pi/skills/ship/SKILL.md': '---\nname: ship\ndescription: pi project skill\n---\nb',
+      '.agents/skills/shared/SKILL.md': '---\nname: shared\ndescription: agents-compat skill\n---\nb',
+    })
 
     const skills = (await getProjectSkills(projectId)).skills.filter((s) => s.agents.includes('pi'))
     expect(skills.map((s) => `${s.source}:${s.name}`)).toEqual([
@@ -501,8 +502,9 @@ describe('getProjectSkills', () => {
   it('reads omp personal skills from ompDir/agent/skills, keeping every copy of a name', async () => {
     await writeSkill(path.join(ompDir(projectId), 'agent', 'skills', 'deploy'),
       '---\nname: deploy\ndescription: omp personal skill\n---\nb')
-    await writeSkill(path.join(repoDir(projectId), '.omp', 'skills', 'ship'),
-      '---\nname: ship\ndescription: omp project skill\n---\nb')
+    await commitRepoBranch(projectId, 'main', {
+      '.omp/skills/ship/SKILL.md': '---\nname: ship\ndescription: omp project skill\n---\nb',
+    })
 
     const skills = (await getProjectSkills(projectId)).skills.filter((s) => s.agents.includes('omp'))
     const ids = skills.map((s) => s.id)
@@ -511,20 +513,6 @@ describe('getProjectSkills', () => {
     ]))
     // omp namespaces a second `deploy` rather than dropping it.
     expect(skills.filter((s) => s.name === 'deploy').map((s) => s.overriddenFor.includes('omp'))).toEqual([false, false])
-  })
-
-  // A separate slug so beforeEach's working-tree writes don't interfere.
-  it('reads repo skills from origin/<default>, ignoring uncommitted working-tree files', async () => {
-    await commitRepoBranch(GITPROJ, 'main', {
-      '.claude/skills/committed/SKILL.md': '---\nname: committed\ndescription: on main\n---\nb',
-    })
-    // A working-tree-only skill must NOT appear — the ref read ignores it.
-    await writeSkill(path.join(repoDir(GITPROJ), '.claude', 'skills', 'uncommitted'),
-      '---\nname: uncommitted\ndescription: working tree only\n---\nb')
-
-    const names = (await getProjectSkills(GITPROJ)).skills.map((s) => s.name)
-    expect(names).toContain('committed')
-    expect(names).not.toContain('uncommitted')
   })
 
   it('reads repo skills from an explicitly selected branch', async () => {
@@ -567,7 +555,7 @@ describe('getProjectSkills', () => {
     expect((await getProjectSkills(BARE)).skills.filter((s) => s.source === 'repo')).toEqual([])
   })
 
-  it('gates plugins on enabledPlugins committed to the branch, not the working tree', async () => {
+  it('gates plugins on enabledPlugins committed to the branch', async () => {
     // The plugin is cloned to the host claude dir (a host tier)...
     await writeSkill(
       path.join(claudeDir(GITPROJ), 'plugins', 'marketplaces', 'off', 'plugins', 'code-review', 'skills', 'review'),
@@ -582,11 +570,11 @@ describe('getProjectSkills', () => {
     expect(skills.find((s) => s.source === 'plugin' && s.name === 'review')).toBeDefined()
   })
 
-  it('falls back to the working tree when no origin ref exists (local-only repo)', async () => {
-    await writeSkill(path.join(repoDir(GITPROJ), '.claude', 'skills', 'wt'),
-      '---\nname: wt\ndescription: working tree\n---\nb')
-    const names = (await getProjectSkills(GITPROJ)).skills.map((s) => s.name)
-    expect(names).toContain('wt')
+  it('has no repo tiers for a branch origin lacks', async () => {
+    const repoSkills = async (branch?: string) => (await getProjectSkills(projectId, { branch })).skills
+      .filter((s) => s.source === 'repo').map((s) => s.name)
+    expect(await repoSkills()).toEqual(['deploy', 'push-branch'])
+    expect(await repoSkills('no-such-branch')).toEqual([])
   })
 })
 

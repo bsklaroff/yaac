@@ -59,12 +59,12 @@ async function subjectAt(repo: string, ref: string): Promise<string> {
 }
 
 describe('cloneRepo', () => {
-  it('clones a repo into a destination, pinned against pruning', async () => {
+  it('clones a repo into a destination, with no working tree, pinned against pruning', async () => {
     const dest = path.join(tmpDir, 'clone')
     await cloneRepo(sourceRepo, dest, null)
 
-    const cloned = await fs.readFile(path.join(dest, 'hello.txt'), 'utf8')
-    expect(cloned).toBe('hello world\n')
+    expect(await git(dest, ['cat-file', 'blob', 'origin/HEAD:hello.txt'])).toBe('hello world\n')
+    expect(await fs.readdir(dest)).toEqual(['.git'])
     // Even git run without the server's pins must not prune objects the
     // checkouts borrow.
     expect((await git(dest, ['config', 'gc.pruneExpire'])).trim()).toBe('never')
