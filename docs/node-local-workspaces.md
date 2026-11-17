@@ -283,8 +283,15 @@ A node dying mid-write cannot leave a log that does not restore:
 
 ### Restore
 
-Each bundle of the chain is verified and unpacked into the scratch
-repository; then the root's tree is written, each checkout's and
+Each bundle of the chain is checked and unpacked into the scratch
+repository by one `git index-pack`: a bundle has to lean on a pass already
+unpacked, and git checks every object in it and its pack's checksum. That
+is `git bundle unbundle` without its walk of everything each prerequisite
+reaches, which a chain does not need and which costs seconds a bundle on a
+shared tier that is a file server. While the chain is unpacked the scratch
+repository borrows from the main clones alone, all a chain leans on, so git
+does not look through the agent's object dirs for each object. Then the
+root's tree is written, each checkout's and
 submodule's on top of its HEAD (merged onto HEAD with `git merge-tree`,
 HEAD winning, if the agent committed after the last checkpoint; the saved
 files as they are if the agent pruned the HEAD they were saved on), and
