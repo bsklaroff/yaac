@@ -26,6 +26,7 @@
  */
 
 import { notifyWorkspaceListChanged } from '#lib/notify'
+import { timingOf } from '#lib/start-timing'
 import type { LiveAgent } from '#runtime/agents'
 import type { WorkspaceWindow } from '#drivers/contract'
 import type { AgentStatus } from '@yaac/shared/types'
@@ -258,6 +259,8 @@ export function setAgentStatus(
   })
   // A real classification supersedes the boot-time spell.
   delete e.attachedWaitingSinceMs
+  // At work on its opening message: the end of a starting agent's boot.
+  if (status !== 'waiting' || opened) timingOf(workspaceId)?.seen(handle)
   const openingCleared = (status !== 'waiting' || opened) && clearOpening(`${k}/${handle}`)
   e.streamHealthy = true
   e.updatedAtMs = Date.now()

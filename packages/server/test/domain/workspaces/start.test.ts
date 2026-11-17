@@ -1393,6 +1393,10 @@ describe('prepareStart', () => {
     const dirOf = (id: string, repo = ''): string => path.join(workspaceDir(DEMO_PROJECT_ID, id), repo)
     const rev = async (dir: string, what = 'HEAD'): Promise<string> => (await git(dir, ['rev-parse', what])).trim()
     const moves = (): string[] => cmds().filter((c) => c.includes('merge --ff-only'))
+    /** Wait for a start's timing line to say what its catch-up did. */
+    const caughtUp = (id: string, facts: string): Promise<void> => vi.waitFor(() => {
+      expect(logged()).toMatch(new RegExp(`\\[timing\\] ${id} create ok .* ${facts}$`, 'm'))
+    }, { timeout: 30_000 })
 
     function installRealCheckouts(overrides: Partial<WorkspaceDriver> = {}): void {
       installDriver({
@@ -1401,7 +1405,7 @@ describe('prepareStart', () => {
         exec: async (jobName, cmd) => {
           execs.push({ jobName, cmd })
           let stdout = ''
-          for (const move of cmd.match(/\{ git -C \S+ update-ref .*?echo "yaac-at:[^"]*"; \}/g) ?? []) {
+          for (const move of cmd.match(/\{ yaac_how=skipped; git -C \S+ update-ref .*?echo "yaac-at:[^"]*"; \}/g) ?? []) {
             stdout += await new Promise<string>((resolve, reject) => {
               execFile('sh', ['-c', move], (err, out) => { if (err) reject(new Error(err.message)); else resolve(out) })
             })
@@ -1444,6 +1448,7 @@ describe('prepareStart', () => {
       expect((await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD', '@{u}'])).trim().split('\n')).toEqual([`agent/${workspaceId}`, 'origin/main'])
       expect(await fs.readFile(path.join(dir, 'README.md'), 'utf8')).toBe('edited\n')
       expect((await fs.readdir(dir)).sort()).toEqual(['.git', 'README.md', 'late.txt', 'node_modules', 'notes.txt', 'target'])
+      await caughtUp(workspaceId, 'catchup=ff')
     })
 
     it('catches up ahead of the agent when the fetch has landed by the time its window opens, and runs nothing for a tip that has not moved', async () => {
@@ -1501,6 +1506,7 @@ describe('prepareStart', () => {
       expect(await rev(dirOf('wt-forced-early'))).toBe(rewritten)
       expect(await git(dirOf('wt-forced-early'), ['status', '--porcelain'])).toBe('')
       expect((await checkout('wt-forced-early'))?.startCommit).toBe(rewritten)
+      await caughtUp('wt-forced-early', 'catchup=reset')
 
       // A chat agent of a containerless workspace opens before its checkout
       // lands, so by this command it may be at work: fast-forward only.
@@ -1525,6 +1531,7 @@ describe('prepareStart', () => {
       await new Promise((r) => setTimeout(r, 300))
       expect(await rev(dirOf('wt-slow'))).toBe(head)
       expect(moves()).toEqual([])
+      await caughtUp('wt-slow', 'catchup=late')
     })
 
     it('leaves alone, once its agent is running, a checkout with work of its own or one git cannot fast-forward', async () => {
@@ -1572,6 +1579,7 @@ describe('prepareStart', () => {
       expect(await rev(forced)).toBe(second)
       expect(await rev(forced, 'origin/main')).toBe(rewritten)
       expect(moves().every((c) => !c.includes('reset --hard'))).toBe(true)
+      for (const id of ['wt-committed', 'wt-edited', 'wt-forced']) await caughtUp(id, 'catchup=skipped')
     })
 
     it('starts a named branch the main clone has at once, waits for the fetch only for one it lacks, and refuses one origin lacks too', async () => {
@@ -1638,6 +1646,7 @@ describe('prepareStart', () => {
       expect(await fs.readdir(dirOf(workspaceId, 'web'))).not.toContain('web.txt')
       releaseWeb()
       await vi.waitFor(async () => { expect(await rev(dirOf(workspaceId, 'web'))).toBe(webTip) }, { timeout: 30_000 })
+      await caughtUp(workspaceId, 'catchup.demo=ff catchup.web=ff')
       await vi.waitFor(async () => {
         expect((await listWorkspaceRepos(workspaceId)).map((c) => c.startCommit).sort()).toEqual([tip, webTip].sort())
       })

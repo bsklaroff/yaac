@@ -188,6 +188,11 @@ describe('yaac-tree', () => {
     const waiting = probe(one, 60)
     const run = start(one)
     expect(await waiting).toBe(true)
+    // It says when it started, read its instruction and filled the tree.
+    const timing = await waitFor(() => fs.readFile(path.join(ws.ckpt, 'lives', 'L1', 'timing.json'), 'utf8')
+      .then((t) => JSON.parse(t) as { process: number; instruction: number; filled: number }, () => null))
+    expect(began < timing.process && timing.process <= timing.instruction && timing.instruction <= timing.filled).toBe(true)
+    expect(timing.filled).toBeLessThanOrEqual(Date.now())
 
     // The checkout is there with its first index current, and the mount
     // points the workspace container needs.

@@ -174,6 +174,9 @@ both are kubelet's (read at v1.37):
   built-in skills, mounted once per skill per tool, and the helper commands,
   mounted one file each.
 
+Each start's `[timing]` line in the server log times these steps
+(docs/start-timing.md).
+
 A restarted sidecar finds its life's marker in the scratch repository and
 goes straight to its passes, never checking out over a tree in use or
 changing its owner. A salvage or import pod changes no owner either: the

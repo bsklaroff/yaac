@@ -23,6 +23,21 @@
 # through the npm cache YAAC_NPM_REGISTRY.
 set -eu
 
+# When this hook starts and ends, kept as the mtimes of two files in the
+# terminal log dir, which the server reads for its start timing
+# (docs/start-timing.md; keep the names in sync with
+# `timeInPod` in the server). Written by the shell itself, since a `date`
+# costs a process start inside the sandbox. Keep the dir in sync with
+# CONTAINER_TERMINAL_LOG_DIR (packages/shared/src/paths.ts).
+#
+# The dir is the workspace's own and outlives a pod, so an agent may have
+# left a link or a FIFO in a marker's place: a write would follow the link,
+# or block on the FIFO and hold the pod from ever being ready. Only a
+# regular file, or nothing, is written.
+TIMING_DIR=/home/yaac/.yaac-logs
+mark() { [ ! -h "$1" ] && { [ ! -e "$1" ] || [ -f "$1" ]; } && { echo > "$1"; } 2>/dev/null || true; }
+mark "$TIMING_DIR/.init-start"
+
 # Give the running uid the image's `yaac` identity, before anything that
 # depends on it.
 #
@@ -224,4 +239,5 @@ if [ -d "$OPENCODE_DATA" ] && [ -d "$OPENCODE_CHECKPOINT" ]; then
     >>/tmp/opencode-checkpoint.log 2>&1 </dev/null &
 fi
 
+mark "$TIMING_DIR/.init-end"
 exit 0
