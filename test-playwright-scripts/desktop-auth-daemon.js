@@ -1,14 +1,18 @@
 /*
  * Verifies the auth daemon the desktop shell bundles: the main process runs
  * dist/auth-daemon.js in an Electron utilityProcess, which connects to the
- * selected server and runs a browser sign-in under node-pty, and Quit stops
+ * selected server and catches a sign-in's loopback redirect, and Quit stops
  * it.
  *
- *  1. After launch the server reports an auth agent connected.
- *  2. A Claude sign-in started through the server's relay route (as the SPA
- *     card does) runs the stub login CLI in a PTY inside the daemon and
- *     lands an OAuth credential on the server.
- *  3. Quitting the shell disconnects the agent.
+ *  1. After launch the server reports an auth daemon connected.
+ *  2. A Claude sign-in started for the daemon (as the SPA card does in the
+ *     app) redirects, once the fake vendor approves it, to the daemon's
+ *     loopback listener, and the server stores an OAuth credential.
+ *  3. Quitting the shell disconnects the daemon.
+ *
+ * The server talks to the fake vendor of
+ * packages/test-utils/src/fake-vendor-oauth.ts, loaded through tsx, and the
+ * script plays the browser by fetching the authorize URL.
  *
  * Uses its own throwaway data dir and server, so it never touches your
  * install; export YAAC_SERVER_PORT to keep that server off the default port.
@@ -22,7 +26,7 @@
  *
  * Set YAAC_DESKTOP_APP to a packaged build's executable (e.g.
  * packages/desktop/dist-app/linux-unpacked/@yaacdesktop, or
- * yaac.app/Contents/MacOS/yaac) to check the asar and node-pty layout too.
+ * yaac.app/Contents/MacOS/yaac) to check the packaged layout too.
  */
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -34,16 +38,11 @@ import { check, finish, requirePlaywright } from './lib.js'
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const DESKTOP = path.join(REPO, 'packages', 'desktop')
 const CLI = path.join(REPO, 'dist', 'cli.js')
-const CLAUDE_STUB = path.join(REPO, 'packages', 'test-utils', 'src', 'fake-claude-login.cjs')
 
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-desktop-authd-'))
 const CLIENT_DIR = `${DATA_DIR}-client`
-const ENV = {
-  ...process.env,
-  YAAC_DATA_DIR: DATA_DIR,
-  // The daemon spawns this in place of `claude auth login`.
-  YAAC_E2E_CLAUDE_LOGIN_CLI: JSON.stringify([process.execPath, CLAUDE_STUB]),
-}
+const ENV = { ...process.env, YAAC_DATA_DIR: DATA_DIR }
+let vendor
 
 function yaac(...args) {
   return execFileSync('node', [CLI, ...args], { env: ENV, encoding: 'utf8' })
@@ -68,6 +67,10 @@ async function main() {
     if (!fs.existsSync(f)) throw new Error(`no ${f} — run \`pnpm build\` and \`pnpm desktop:build\``)
   }
   const { _electron: electron } = requirePlaywright()
+  const { tsImport } = await import(path.join(REPO, 'node_modules', 'tsx', 'dist', 'esm', 'api', 'index.mjs'))
+  const fake = await tsImport(path.join(REPO, 'packages', 'test-utils', 'src', 'fake-vendor-oauth.ts'), import.meta.url)
+  vendor = await fake.startFakeVendorOAuth()
+  ENV.YAAC_E2E_VENDOR_OAUTH_ORIGIN = vendor.origin
 
   yaac('server', 'start')
   const origin = JSON.parse(fs.readFileSync(path.join(CLIENT_DIR, 'server.json'), 'utf8')).url
@@ -81,10 +84,20 @@ async function main() {
 
   console.log('\n1. the bundled daemon connects')
   const connected = await poll(async () => (await get('/auth/agent')).connected, 30_000)
-  check('the server sees an auth agent', connected === true)
+  check('the server sees an auth daemon', connected === true)
 
-  console.log('\n2. a relayed Claude sign-in completes in the daemon')
-  const start = await (await fetch(`${origin}/api/auth/claude/login/start`, { method: 'POST' })).json()
+  console.log('\n2. a Claude sign-in comes back through the daemon')
+  const start = await (await fetch(`${origin}/api/auth/claude/login/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ callback: 'auth-daemon' }),
+  })).json()
+  check('the daemon catches the redirect, so no code is asked for', start.acceptsCode === false, JSON.stringify(start))
+  const page = await poll(async () => {
+    const text = await (await fetch(start.url)).text()
+    return text.includes('Signed in') ? text : undefined
+  }, 15_000)
+  check('the daemon answers the browser', page !== undefined)
   const done = await poll(async () => {
     const view = await get(`/auth/login/${start.id}`)
     return view.status === 'running' ? undefined : view
@@ -97,7 +110,7 @@ async function main() {
   await app.evaluate(({ app: a }) => a.quit())
   await app.waitForEvent('close').catch(() => {})
   const gone = await poll(async () => (await get('/auth/agent')).connected === false, 15_000)
-  check('the agent disconnected', gone === true)
+  check('the daemon disconnected', gone === true)
 }
 
 main()
@@ -107,6 +120,7 @@ main()
   })
   .finally(() => {
     try { yaac('server', 'stop') } catch { /* already stopped */ }
+    void vendor?.close()
     fs.rmSync(DATA_DIR, { recursive: true, force: true })
     fs.rmSync(CLIENT_DIR, { recursive: true, force: true })
     finish()

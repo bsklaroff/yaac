@@ -136,7 +136,7 @@ happens a layer up, in `recordedTranscript`.
 - **`api/`**: `routes/` (translation only; policy lives below), `http/`
   (auth middleware, the token store, the error envelope, static SPA
   serving), `events.ts` (the snapshot hub), `ws-routes.ts` (the WebSocket
-  routes: the events stream, the auth-daemon relay, and the pty, forward
+  routes: the events stream, the auth daemon's socket, and the pty, forward
   and acp attaches).
 - **`domain/`**: `workspaces/` (the lifecycle verbs: create, restart,
   stop, cleanup, list, detail, resolve; plus the prewarm pool, discovery

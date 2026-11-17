@@ -1,27 +1,15 @@
 import WebSocket from 'ws'
-import {
-  cancelToolLogin,
-  getToolLogin,
-  sendToolLoginInput,
-  startToolLogin,
-} from '#tool-login'
-import {
-  cancelToolInstall,
-  getToolInstall,
-  startToolInstall,
-} from '#tool-install'
-import type { AgentKind, AgentOp } from '@yaac/shared/auth-agent-protocol'
-import type { ToolInstallView, ToolLoginView } from '@yaac/shared/types'
+import { listenForRedirect, type RedirectListener } from '#oauth-callback'
+import type { AgentOp, AgentReport } from '@yaac/shared/auth-agent-protocol'
 
 /**
- * The auth daemon's side of the auth relay: one outbound WebSocket to the
- * server's /api/agent/auth. It runs start/input/cancel ops against the local
- * login and install managers, and samples their views every few hundred ms,
- * pushing each one that changed back to the server.
+ * The auth daemon's one outbound WebSocket to the server's /api/agent/sign-in.
+ * The server runs every sign-in; when one should come back to this machine
+ * it sends `listen`, and the daemon says once it holds the loopback port,
+ * then catches the vendor's redirect there and reports the code (or why it
+ * could not).
  */
 
-/** How often local flow views are sampled for changes. */
-const VIEW_SAMPLE_MS = 300
 /** Reconnect backoff bounds. */
 const BACKOFF_MIN_MS = 1000
 const BACKOFF_MAX_MS = 10_000
@@ -40,12 +28,10 @@ function parseAgentOp(raw: string): AgentOp | null {
     return null
   }
   if (!obj || typeof obj !== 'object') return null
-  const m = obj as { op?: unknown; id?: unknown; kind?: unknown; tool?: unknown; text?: unknown }
+  const m = obj as { op?: unknown; id?: unknown; url?: unknown }
   if (typeof m.id !== 'string') return null
-  if (m.op === 'start' && (m.kind === 'login' || m.kind === 'install')
-    && (m.tool === 'claude' || m.tool === 'codex')) return m as AgentOp
-  if (m.op === 'input' && typeof m.text === 'string') return m as AgentOp
-  if (m.op === 'cancel' && (m.kind === 'login' || m.kind === 'install')) return m as AgentOp
+  if (m.op === 'listen' && typeof m.url === 'string') return { op: 'listen', id: m.id, url: m.url }
+  if (m.op === 'cancel') return { op: 'cancel', id: m.id }
   return null
 }
 
@@ -60,73 +46,46 @@ export function connectAuthAgent(opts: {
   let stopped = false
   let ws: WebSocket | null = null
   let backoff = BACKOFF_MIN_MS
-  let sampler: NodeJS.Timeout | null = null
   let heartbeat: NodeJS.Timeout | null = null
   let reconnectTimer: NodeJS.Timeout | null = null
+  const listeners = new Map<string, RedirectListener>()
 
-  // Flows this connection pushes, and the last view sent for each.
-  const tracked = new Map<string, AgentKind>()
-  const lastSent = new Map<string, string>()
+  const report = (sock: WebSocket, msg: AgentReport): void => {
+    if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify(msg))
+  }
 
-  const readView = (id: string, kind: AgentKind): ToolLoginView | ToolInstallView | null => {
+  const stopListening = (id: string): void => {
+    listeners.get(id)?.close()
+    listeners.delete(id)
+  }
+
+  const listen = async (sock: WebSocket, id: string, url: string): Promise<void> => {
+    stopListening(id)
+    let listener: RedirectListener
     try {
-      return kind === 'login' ? getToolLogin(id) : getToolInstall(id)
-    } catch {
-      return null // cancelled or expired
-    }
-  }
-
-  const pushViews = (): void => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return
-    for (const [id, kind] of tracked) {
-      const view = readView(id, kind)
-      if (!view) {
-        tracked.delete(id)
-        lastSent.delete(id)
-        continue
-      }
-      const serialized = JSON.stringify({ op: 'view', kind, view })
-      if (lastSent.get(id) === serialized) continue
-      lastSent.set(id, serialized)
-      ws.send(serialized)
-      // A finished flow's view never changes again.
-      if (view.status !== 'running') {
-        tracked.delete(id)
-        lastSent.delete(id)
-      }
-    }
-  }
-
-  const handleOp = (op: AgentOp): void => {
-    if (op.op === 'start') {
-      tracked.set(op.id, op.kind)
-      if (op.kind === 'login') {
-        startToolLogin(op.tool, op.id).catch((err: unknown) =>
-          opts.log(`login start failed: ${String(err)}`))
-      } else {
-        startToolInstall(op.tool, op.id)
-      }
+      listener = await listenForRedirect(url)
+    } catch (err) {
+      report(sock, { op: 'listen-failed', id, error: err instanceof Error ? err.message : String(err) })
       return
     }
-    if (op.op === 'input') {
-      try {
-        sendToolLoginInput(op.id, op.text)
-      } catch (err) {
-        // The flow ended after the server validated; the next view shows it.
-        opts.log(`login input rejected: ${String(err)}`)
-      }
+    // The socket went away while binding; its flows already moved on.
+    if (sock !== ws) {
+      listener.close()
       return
     }
-    // cancel
-    if (op.kind === 'login') cancelToolLogin(op.id)
-    else cancelToolInstall(op.id)
-    tracked.delete(op.id)
-    lastSent.delete(op.id)
+    listeners.set(id, listener)
+    report(sock, { op: 'listening', id })
+    listener.result.then(
+      ({ code, state }) => report(sock, { op: 'callback', id, code, state }),
+      (err: unknown) => report(sock, { op: 'denied', id, error: err instanceof Error ? err.message : String(err) }),
+    ).finally(() => {
+      if (listeners.get(id) === listener) listeners.delete(id)
+    })
   }
 
   const connect = (): void => {
     if (stopped) return
-    const wsUrl = `${opts.baseUrl.replace(/^http/, 'ws')}/api/agent/auth`
+    const wsUrl = `${opts.baseUrl.replace(/^http/, 'ws')}/api/agent/sign-in`
     const sock = new WebSocket(wsUrl)
     ws = sock
 
@@ -138,8 +97,6 @@ export function connectAuthAgent(opts: {
     sock.on('open', () => {
       backoff = BACKOFF_MIN_MS
       opts.log(`connected to ${opts.baseUrl}`)
-      sampler = setInterval(pushViews, VIEW_SAMPLE_MS)
-      sampler.unref?.()
       heartbeat = setInterval(() => {
         if (!alive) {
           sock.terminate()
@@ -158,30 +115,21 @@ export function connectAuthAgent(opts: {
         ? Buffer.concat(data).toString('utf8')
         : data.toString('utf8')
       const op = parseAgentOp(text)
-      if (op) handleOp(op)
+      if (op?.op === 'listen') void listen(sock, op.id, op.url)
+      else if (op?.op === 'cancel') stopListening(op.id)
     })
 
-    const scheduleReconnect = (): void => {
-      if (sampler) clearInterval(sampler)
-      sampler = null
+    sock.on('close', () => {
+      opts.log('disconnected')
       if (heartbeat) clearInterval(heartbeat)
       heartbeat = null
-      // Kill flows that can no longer report, so vendor CLIs don't linger.
-      for (const [id, kind] of tracked) {
-        if (kind === 'login') cancelToolLogin(id)
-        else cancelToolInstall(id)
-      }
-      tracked.clear()
-      lastSent.clear()
+      // The server moves this socket's flows on without it.
+      for (const id of [...listeners.keys()]) stopListening(id)
+      if (ws === sock) ws = null
       if (stopped) return
       reconnectTimer = setTimeout(connect, backoff)
       reconnectTimer.unref?.()
       backoff = Math.min(backoff * 2, BACKOFF_MAX_MS)
-    }
-
-    sock.on('close', () => {
-      opts.log('disconnected')
-      scheduleReconnect()
     })
     sock.on('error', (err: Error) => {
       opts.log(`connection error: ${err.message}`)
@@ -194,11 +142,11 @@ export function connectAuthAgent(opts: {
   return {
     stop: () => {
       stopped = true
-      if (sampler) clearInterval(sampler)
       if (heartbeat) clearInterval(heartbeat)
       if (reconnectTimer) clearTimeout(reconnectTimer)
+      for (const id of [...listeners.keys()]) stopListening(id)
       try {
-        ws?.close(1000, 'auth server stopping')
+        ws?.close(1000, 'auth daemon stopping')
       } catch { /* already gone */ }
     },
   }

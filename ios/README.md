@@ -231,8 +231,7 @@ port, and the app covers the page with `PreviewView`:
   server would have to send them through Apple's push service.
 - **Standing forwards.** Only the port a preview shows is forwarded, and
   only while it shows (see "Previews"); Safari cannot reach it.
-- **Tool sign-in**, which needs the desktop app's auth daemon or `yaac auth
-  update` on a laptop, and **starting or setting up servers**.
+- **Starting or setting up servers.**
 - **iPad.** The target is iPhone only; on an iPad it runs scaled. The webapp
   gives an iPad width the desktop layout, so adding the iPad family is a
   build setting once checked on one.

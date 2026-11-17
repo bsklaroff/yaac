@@ -351,7 +351,7 @@ const ROUTE_MATRIX: RouteCase[] = [
 
   // ── auth: driver-neutral, and each caller's own credentials ───────────
   { method: 'GET', path: '/api/auth/list', access: 'owner', callerScoped: true, k8s: 200, containerless: 200 },
-  { method: 'GET', path: '/api/auth/agent', access: 'owner', callerScoped: true, k8s: [200, 503], containerless: [200, 503] },
+  { method: 'GET', path: '/api/auth/agent', access: 'owner', callerScoped: true, k8s: [200], containerless: [200] },
   { method: 'POST', path: '/api/auth/clear', body: {}, access: 'owner', callerScoped: true, k8s: [200, 204, 400], containerless: [200, 204, 400] },
   { method: 'POST', path: '/api/auth/fake', body: { kind: 'not-a-kind' }, access: 'owner', callerScoped: true, k8s: 400, containerless: 400 },
   { method: 'PUT', path: '/api/auth/:tool', request: '/api/auth/claude', body: {}, access: 'owner', callerScoped: true, k8s: 400, containerless: 400 },
@@ -365,13 +365,10 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'PATCH', path: '/api/auth/git/credentials/:id', request: `/api/auth/git/credentials/${ID.credential}`, body: { name: 'x' }, access: 'owner', callerScoped: true, k8s: 404, containerless: 404 },
   { method: 'POST', path: '/api/auth/git/credentials/:id/replace', request: `/api/auth/git/credentials/${ID.credential}/replace`, body: { token: 'x' }, access: 'owner', callerScoped: true, k8s: 404, containerless: 404 },
   { method: 'DELETE', path: '/api/auth/git/credentials/:id', request: `/api/auth/git/credentials/${ID.credential}`, access: 'owner', callerScoped: true, k8s: 404, containerless: 404 },
-  { method: 'POST', path: '/api/auth/:tool/login/start', request: '/api/auth/claude/login/start', body: {}, access: 'owner', callerScoped: true, k8s: [200, 400, 409, 503], containerless: [200, 400, 409, 503] },
+  { method: 'POST', path: '/api/auth/:tool/login/start', request: '/api/auth/claude/login/start', body: {}, access: 'owner', callerScoped: true, k8s: [200, 400], containerless: [200, 400] },
   { method: 'GET', path: '/api/auth/login/:id', request: '/api/auth/login/nope', access: 'owner', callerScoped: true, k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/auth/login/:id/input', request: '/api/auth/login/nope/input', body: { input: 'x' }, access: 'owner', callerScoped: true, k8s: [400, 404], containerless: [400, 404] },
+  { method: 'POST', path: '/api/auth/login/:id/input', request: '/api/auth/login/nope/input', body: { text: 'x' }, access: 'owner', callerScoped: true, k8s: [400, 404], containerless: [400, 404] },
   { method: 'POST', path: '/api/auth/login/:id/cancel', request: '/api/auth/login/nope/cancel', access: 'owner', callerScoped: true, k8s: [200, 204, 404], containerless: [200, 204, 404] },
-  { method: 'POST', path: '/api/auth/:tool/install/start', request: '/api/auth/claude/install/start', body: {}, access: 'owner', callerScoped: true, k8s: [200, 400, 409, 503], containerless: [200, 400, 409, 503] },
-  { method: 'GET', path: '/api/auth/install/:id', request: '/api/auth/install/nope', access: 'owner', callerScoped: true, k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/auth/install/:id/cancel', request: '/api/auth/install/nope/cancel', access: 'owner', callerScoped: true, k8s: [200, 204, 404], containerless: [200, 204, 404] },
 ]
 
 /**

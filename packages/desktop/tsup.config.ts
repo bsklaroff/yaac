@@ -13,11 +13,10 @@ export default defineConfig([{
   format: 'esm',
   platform: 'node',
   clean: true,
-  // Bundle everything except electron and node-pty's native module:
-  // workspace source can't run under raw node, since its imports maps use
-  // output-form .js targets.
-  external: ['electron', '@lydell/node-pty'],
-  noExternal: [/^(?!electron$|@lydell\/node-pty$)/],
+  // Bundle everything except electron: workspace source can't run under raw
+  // node, since its imports maps use output-form .js targets.
+  external: ['electron'],
+  noExternal: [/^(?!electron$)/],
   // The installed .app lives outside the repo, so shared's PACKAGE_ROOT must
   // take its bundled branch; the dev fallback throws when no
   // pnpm-workspace.yaml is found. Same define as the root config.

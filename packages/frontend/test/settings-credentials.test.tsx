@@ -202,95 +202,120 @@ describe('Settings → Credentials', () => {
 })
 
 describe('Settings → Credentials → web sign-in', () => {
-  it('starting a codex sign-in shows the finish-in-browser panel, then polls until it succeeds', async () => {
+  it('a codex sign-in in a browser shows the device code and its page, then polls until it succeeds', async () => {
     serveLogin('codex', {
-      id: 'l1', tool: 'codex', status: 'running',
-      output: 'If your browser did not open, navigate to this URL:\nhttps://auth.openai.com/oauth/authorize?state=x',
+      id: 'l1', tool: 'codex', status: 'running', url: 'https://auth.openai.com/codex/device', userCode: 'ABCD-1234',
     })
     await openCredentials()
 
     fireEvent.click(within(toolRow('codex')).getByRole('button', { name: 'Sign in' }))
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with ChatGPT' }))
 
-    expect(await screen.findByText(/Finish signing in from the browser window/)).toBeTruthy()
-    expect(server.called('POST /api/auth/codex/login/start')).toHaveLength(1)
-    // The CLI's printed URL renders as a clickable link…
-    const link = screen.getByRole('link', { name: 'https://auth.openai.com/oauth/authorize?state=x' })
-    expect(link.getAttribute('href')).toBe('https://auth.openai.com/oauth/authorize?state=x')
-    // …and codex flows take no stdin.
-    expect(screen.queryByPlaceholderText('paste code here if prompted')).toBeNull()
+    expect(await screen.findByText('ABCD-1234')).toBeTruthy()
+    // Outside the desktop app nothing catches a redirect, so none is asked for.
+    expect(server.called('POST /api/auth/codex/login/start').map((c) => c.body)).toEqual([{}])
+    const link = screen.getByRole('link', { name: 'the ChatGPT sign-in page' })
+    expect(link.getAttribute('href')).toBe('https://auth.openai.com/codex/device')
+    // A device flow takes no pasted code.
+    expect(screen.queryByPlaceholderText('paste the code here')).toBeNull()
 
-    // The next poll (every 1.5s) sees the browser flow finish.
+    // The next poll (every 1.5s) sees the code entered.
     server.route('GET /api/auth/login/l1', { id: 'l1', tool: 'codex', status: 'success' })
     expect(await screen.findByText('Signed in successfully.', {}, { timeout: 8000 })).toBeTruthy()
     expect(server.called('GET /api/auth/login/l1').length).toBeGreaterThan(1)
   }, 15_000)
 
-  it('the claude panel forwards a pasted code to the CLI stdin, and shows a rejected one inline', async () => {
+  it('the claude panel sends a pasted code, shows a rejected one inline, and confirms the sign-in it completes', async () => {
     authList = SIGNED_OUT
     serveLogin('claude', {
-      id: 'l4', tool: 'claude', status: 'running', output: 'If the browser didn\'t open, visit: https://claude.com/cai/oauth/authorize?state=x',
+      id: 'l4', tool: 'claude', status: 'running', url: 'https://claude.com/cai/oauth/authorize?state=x', acceptsCode: true,
     })
     server.route('POST /api/auth/login/l4/input', ({ body }: { body: unknown }) =>
       ((body as { text: string }).text === 'code#state'
-        ? { id: 'l4', tool: 'claude', status: 'running' }
-        : serverError('VALIDATION', 'Expected the code from the authorize page (letters, digits, "#", "-", "_" only).', 400)))
+        ? { id: 'l4', tool: 'claude', status: 'success' }
+        : serverError('VALIDATION', 'Expected the code from the authorize page.', 400)))
     await openCredentials()
 
     fireEvent.click(within(toolRow('claude')).getByRole('button', { name: 'Sign in' }))
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with Claude' }))
 
-    const input = await screen.findByPlaceholderText('paste code here if prompted')
+    const input = await screen.findByPlaceholderText('paste the code here')
+    expect(screen.getByRole('link', { name: 'the Claude sign-in page' }).getAttribute('href'))
+      .toBe('https://claude.com/cai/oauth/authorize?state=x')
     fireEvent.change(input, { target: { value: 'rm -rf /' } })
     fireEvent.submit(input.closest('form') as HTMLFormElement)
 
     await waitFor(() => expect(screen.getByText(/Expected the code from the authorize page/)).toBeTruthy())
     // After the rejection the paste box and Cancel are still shown.
-    expect(screen.getByPlaceholderText('paste code here if prompted')).toBeTruthy()
+    expect(screen.getByPlaceholderText('paste the code here')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
 
     fireEvent.change(input, { target: { value: 'code#state' } })
     fireEvent.submit(input.closest('form') as HTMLFormElement)
-    await waitFor(() => expect(server.called('POST /api/auth/login/l4/input').map((c) => c.body))
-      .toEqual([{ text: 'rm -rf /' }, { text: 'code#state' }]))
-  })
-
-  it('an immediately-successful claude sign-in refreshes the list and confirms in green', async () => {
-    authList = SIGNED_OUT
-    serveLogin('claude', { id: 'l2', tool: 'claude', status: 'success' })
-    await openCredentials()
-    const fetches = server.called('GET /api/auth/list').length
-
-    fireEvent.click(within(toolRow('claude')).getByRole('button', { name: 'Sign in' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in with Claude' }))
-
-    // Success refetches the credentials list.
-    await waitFor(() => expect(server.called('GET /api/auth/list').length).toBeGreaterThan(fetches))
     expect(await screen.findByText('Signed in successfully.')).toBeTruthy()
+    expect(server.called('POST /api/auth/login/l4/input').map((c) => c.body))
+      .toEqual([{ text: 'rm -rf /' }, { text: 'code#state' }])
   })
 
-  it('shows a failed start inline and offers a retry, cancelling nothing', async () => {
-    server.route('POST /api/auth/codex/login/start', serverError('AUTH_AGENT_OFFLINE', 'codex CLI not found on the server host'))
+  it('in the desktop app, asks its daemon to catch the redirect and opens the page in the system browser', async () => {
+    const openExternal = vi.fn()
+    vi.stubGlobal('yaacWindow', { openExternal, showServers: () => {} })
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 yaac Electron/44.4.5')
+    try {
+      authList = SIGNED_OUT
+      serveLogin('claude', {
+        id: 'l5', tool: 'claude', status: 'running', url: 'https://claude.com/cai/oauth/authorize?redirect_uri=local', acceptsCode: false,
+      })
+      await openCredentials()
+
+      fireEvent.click(within(toolRow('claude')).getByRole('button', { name: 'Sign in' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Sign in with Claude' }))
+
+      expect(await screen.findByText(/Finish signing in in your browser/)).toBeTruthy()
+      expect(server.called('POST /api/auth/claude/login/start').map((c) => c.body)).toEqual([{ callback: 'auth-daemon' }])
+      expect(openExternal).toHaveBeenCalledWith('https://claude.com/cai/oauth/authorize?redirect_uri=local')
+      expect(screen.queryByPlaceholderText('paste the code here')).toBeNull()
+    } finally {
+      vi.unstubAllGlobals()
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('cancels a running sign-in when the settings close, so the server stops on it', async () => {
+    serveLogin('codex', { id: 'l8', tool: 'codex', status: 'running', url: 'https://auth.openai.com/codex/device', userCode: 'Y' })
+    server.route('POST /api/auth/login/l8/cancel', undefined)
+    await openCredentials()
+    fireEvent.click(within(toolRow('codex')).getByRole('button', { name: 'Sign in' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in with ChatGPT' }))
+    await screen.findByText(/enter this code/)
+
+    act(() => { useUiStore.setState({ settingsOpen: false }) })
+    await waitFor(() => expect(server.called('POST /api/auth/login/l8/cancel')).toHaveLength(1))
+  })
+
+  it('shows a sign-in the server could not start inline and offers a retry, cancelling nothing', async () => {
+    serveLogin('codex', { id: 'l9', tool: 'codex', status: 'error', error: 'Requesting a Codex device code failed (HTTP 404)' })
     await openCredentials()
 
     fireEvent.click(within(toolRow('codex')).getByRole('button', { name: 'Sign in' }))
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with ChatGPT' }))
 
-    await waitFor(() => expect(screen.getByText('codex CLI not found on the server host')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('Requesting a Codex device code failed (HTTP 404)')).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(screen.getByRole('button', { name: 'Sign in with ChatGPT' })).toBeTruthy()
     expect(cancels()).toEqual([])
   })
 
   it('cancel aborts a live flow server-side and returns to the start button, reporting a failed abort', async () => {
-    serveLogin('codex', { id: 'l3', tool: 'codex', status: 'running' })
+    const running = { tool: 'codex', status: 'running', url: 'https://auth.openai.com/codex/device', userCode: 'X' } as const
+    serveLogin('codex', { id: 'l3', ...running })
     server.route('POST /api/auth/login/l3/cancel', undefined)
     await openCredentials()
 
     fireEvent.click(within(toolRow('codex')).getByRole('button', { name: 'Sign in' }))
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with ChatGPT' }))
-    await screen.findByText(/Finish signing in from the browser window/)
+    await screen.findByText(/enter this code/)
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(screen.getByRole('button', { name: 'Sign in with ChatGPT' })).toBeTruthy()
@@ -298,61 +323,13 @@ describe('Settings → Credentials → web sign-in', () => {
 
     // A second flow whose abort the server refuses: the panel still resets,
     // and the failure shows beside the start button.
-    serveLogin('codex', { id: 'l7', tool: 'codex', status: 'running' })
-    server.route('POST /api/auth/login/l7/cancel', serverError('INTERNAL', 'auth server gone'))
+    serveLogin('codex', { id: 'l7', ...running })
+    server.route('POST /api/auth/login/l7/cancel', serverError('INTERNAL', 'server gone'))
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with ChatGPT' }))
-    await screen.findByText(/Finish signing in from the browser window/)
+    await screen.findByText(/enter this code/)
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(await screen.findByText('Cancel failed: auth server gone')).toBeTruthy()
+    expect(await screen.findByText('Cancel failed: server gone')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Sign in with ChatGPT' })).toBeTruthy()
-  })
-})
-
-describe('Settings → Credentials → CLI install', () => {
-  /** Drive a codex sign-in into the cliMissing state. */
-  async function reachInstallOffer(): Promise<HTMLElement> {
-    authList = SIGNED_OUT
-    serveLogin('codex', {
-      id: 'l6', tool: 'codex', status: 'error',
-      error: 'Codex is not installed on this machine.', cliMissing: true,
-    })
-    await openCredentials()
-
-    fireEvent.click(within(toolRow('codex')).getByRole('button', { name: 'Sign in' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in with ChatGPT' }))
-    return screen.findByRole('button', { name: 'Install Codex' })
-  }
-
-  it('a cliMissing failure offers Install instead of retry and starts the install', async () => {
-    const running = { id: 'i1', tool: 'codex', status: 'running', output: 'Downloading installer…' } as const
-    server.route('POST /api/auth/codex/install/start', running)
-    server.route('GET /api/auth/install/i1', running)
-    const installButton = await reachInstallOffer()
-    expect(screen.getByText(/isn't installed on this machine/)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
-
-    fireEvent.click(installButton)
-    expect(await screen.findByText(/Installing Codex/)).toBeTruthy()
-    expect(server.called('POST /api/auth/codex/install/start')).toHaveLength(1)
-    expect(screen.getByText('Downloading installer…')).toBeTruthy()
-  })
-
-  it('a finished install returns to the sign-in button with a nudge', async () => {
-    server.route('POST /api/auth/codex/install/start', { id: 'i2', tool: 'codex', status: 'success' })
-    fireEvent.click(await reachInstallOffer())
-
-    expect(await screen.findByText(/Codex installed — try signing in again/)).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Sign in with ChatGPT' })).toBeTruthy()
-  })
-
-  it('a failed install surfaces the error and offers a retry', async () => {
-    server.route('POST /api/auth/codex/install/start', {
-      id: 'i3', tool: 'codex', status: 'error', error: 'install failed: no network',
-    })
-    fireEvent.click(await reachInstallOffer())
-
-    expect(await screen.findByText('install failed: no network')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
   })
 })
 

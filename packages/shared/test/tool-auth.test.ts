@@ -24,7 +24,6 @@ import {
 } from '#tool-auth'
 import {
   claudeKeychainService,
-  detectAuthKind,
   extractClaudeOAuthBundle,
 } from '#tool-auth-interactive'
 import type { ClaudeOAuthBundle, CodexOAuthBundle } from '#types'
@@ -46,24 +45,6 @@ describe('tool-auth', () => {
 
   afterEach(async () => {
     await cleanupTempDir(tmpDir)
-  })
-
-  describe('detectAuthKind', () => {
-    it('detects Anthropic API key', () => {
-      expect(detectAuthKind('claude', 'sk-ant-api03-abc123')).toBe('api-key')
-    })
-
-    it('detects Anthropic OAuth token', () => {
-      expect(detectAuthKind('claude', 'sk-ant-oat01-xyz789')).toBe('oauth')
-    })
-
-    it('defaults to api-key for unknown claude prefix', () => {
-      expect(detectAuthKind('claude', 'some-other-token')).toBe('api-key')
-    })
-
-    it('defaults to api-key for codex', () => {
-      expect(detectAuthKind('codex', 'sk-proj-abc123')).toBe('api-key')
-    })
   })
 
   describe('claudeKeychainService', () => {
@@ -170,22 +151,6 @@ describe('tool-auth', () => {
       await fs.mkdir(claudeDir('broken'), { recursive: true })
       await fs.writeFile(projectClaudeCredentialsFile('broken'), '{ not json')
       expect(await readProjectClaudeBundle('broken')).toBeNull()
-    })
-
-  })
-
-  describe('opencode (OpenRouter / NeuralWatt)', () => {
-    it('detectAuthKind always returns api-key for opencode', () => {
-      expect(detectAuthKind('opencode', 'sk-or-anything')).toBe('api-key')
-      expect(detectAuthKind('opencode', 'sk-ant-oat01-claude-looking')).toBe('api-key')
-    })
-
-  })
-
-  describe('pi (OpenRouter / Anthropic / OpenAI)', () => {
-    it('detectAuthKind always returns api-key for pi', () => {
-      expect(detectAuthKind('pi', 'sk-or-anything')).toBe('api-key')
-      expect(detectAuthKind('pi', 'sk-ant-oat01-claude-looking')).toBe('api-key')
     })
 
   })

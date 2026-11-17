@@ -155,10 +155,9 @@ export function registerWebSocketRoutes(app: Hono<IdentityEnv>, hub: EventHub): 
     }
   }))
 
-  // Auth-daemon relay: the login broker on each user's machine keeps one
-  // outbound socket here, as that user; their sign-in routes forward ops
-  // over it.
-  app.get('/api/agent/auth', upgradeWebSocket((c) => {
+  // The desktop auth daemon on each user's machine keeps one outbound socket
+  // here, as that user, and catches their sign-ins' loopback redirects.
+  app.get('/api/agent/sign-in', upgradeWebSocket((c) => {
     const owner = (c as Context<IdentityEnv>).get('principal').userId
     return {
       onOpen: (_evt, ws) => {

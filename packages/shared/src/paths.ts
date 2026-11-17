@@ -276,11 +276,6 @@ export function clientLocalPath(...rest: string[]): string {
   return path.join(clientLocalRoot(), ...rest)
 }
 
-/** Create the client-local root. Callers write into it directly. */
-export async function ensureClientLocalRoot(): Promise<void> {
-  await fs.mkdir(clientLocalRoot(), { recursive: true })
-}
-
 /** GLOBAL: parent of every project's state tree. */
 export function getProjectsDir(): string {
   return path.join(globalRoot(), 'projects')

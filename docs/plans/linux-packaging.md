@@ -285,12 +285,9 @@ profile is inert.
 update path, and a `.deb` installed from the Release page gets no updates
 until the repo is added.
 
-**node-pty.** The `asarUnpack` rule already covers it, and its Linux prebuilt
-needs no `spawn-helper`. Each arch's build must contain that arch's
-`@lydell/node-pty-linux-*` package. Adding `supportedArchitectures` (`os:
-[current, linux]`, `cpu: [current, x64, arm64]`) to pnpm-workspace.yaml makes
-one install hold both, and the release script fails if the unpacked `.node`
-for the target arch is missing (it checks the ELF machine with `file`).
+**No native modules.** The app bundles every dependency into `dist/` and
+packs no `node_modules`, so one build serves both arches' JavaScript and
+only Electron itself differs per arch.
 
 ## Shell changes for Linux
 

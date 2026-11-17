@@ -4,7 +4,8 @@ An Electron shell around the yaac webapp. It has no bundled frontend and no
 renderer code. At launch the main process:
 
 1. resolves the selected server from `~/.yaac-client/server.json`;
-2. starts its bundled auth daemon (the login broker), best effort;
+2. starts its bundled auth daemon, which catches tool sign-ins' redirects,
+   best effort;
 3. checks that the server answers and will identify this device
    (`GET /api/whoami`);
 4. loads the server origin into the window.
@@ -190,12 +191,14 @@ entry of `~/.yaac-client/server.json`, and run the same bundled daemon.
 
 The auth daemon (`packages/auth-daemon`) is bundled by tsup as
 `dist/auth-daemon.js` and runs in an Electron `utilityProcess`
-(`src/server-process.ts`), so it lives exactly as long as the app. It is the
-only daemon on the machine: `yaac auth update` signs in in-process and runs
-none. Each time the window opens the shell makes sure one runs for the
-resolved server, replacing one pointed at a different server. A failed start
-never blocks the window; the SPA's sign-in cards then say to use `yaac auth
-update`.
+(`src/server-process.ts`), so it lives exactly as long as the app. The
+server runs every Claude and Codex sign-in; when the SPA in this window
+starts one, the vendor redirects the system browser to a loopback port the
+daemon listens on, and the daemon hands the code back to the server
+(docs/tool-sign-in.md). Each time the window opens the shell makes sure one
+runs for the resolved server, replacing one pointed at a different server. A
+failed start never blocks the window; the SPA's sign-in cards then fall back
+to a pasted code (Claude) or a device code (Codex).
 
 `desktop:dev` loads the SPA the server serves, so frontend edits need a
 rebuild. `desktop:hot` (`scripts/dev-hot.sh`) starts the server if needed
@@ -223,12 +226,11 @@ pnpm desktop:install   # the above, then copy into /Applications
 pnpm desktop:release   # the .dmg the Homebrew cask downloads (signed, notarized app)
 ```
 
-The app carries no server and no Node of its own. Everything but
-`@lydell/node-pty` is bundled into `dist/`, so node-pty is the package's only
-runtime dependency. Its N-API binary loads under Electron's Node without a
-rebuild, and it ships outside the asar (`asarUnpack`) because a native module
-and node-pty's `spawn-helper` must be real files. A server on this Mac comes
-from the `yaac` on PATH.
+The app carries no server and no Node of its own. Every dependency is
+bundled into `dist/`, so the package has no runtime dependencies and no
+native modules, and `electron-builder.yml` packs no `node_modules` (with
+none of its own, electron-builder would otherwise pack the workspace
+root's). A server on this Mac comes from the `yaac` on PATH.
 
 `scripts/install-app.ts` installs with `ditto`, because a copy that follows
 symlinks breaks the Electron framework's `Versions/Current` links and
@@ -312,9 +314,9 @@ The auth daemon:
 - After launch, `GET /api/auth/agent` on the server answers
   `{"connected":true}`, and after Quit `false`.
 - Switching servers on the Servers page moves it to the new one.
-- For the packaged app, launch from Finder and complete a Claude and a Codex
-  sign-in from the SPA cards. Success shows the daemon found the CLIs on the
-  login-shell PATH.
+- Complete a Claude and a Codex sign-in from the SPA cards: the system
+  browser opens the vendor page, and approving it lands back on a "Signed
+  in" page served by the daemon, with no code to paste.
 
 `test-playwright-scripts/desktop-auth-daemon.js` checks the first point and a
-stubbed sign-in under node-pty, against a dev or a packaged build.
+sign-in against a fake vendor, against a dev or a packaged build.

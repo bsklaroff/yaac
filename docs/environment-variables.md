@@ -17,6 +17,7 @@ All yaac variables are read, with their defaults and validation, in
 | `YAAC_AUTO_TITLES` | on | Generate titles with a local model for drafts, queued entries and workspaces whose agent titles nothing (docs/workspace-titles.md). Off when empty, `0` or `false`. |
 | `YAAC_DISK_WARN_FLOOR_GIB` / `YAAC_DISK_STOP_FLOOR_GIB` | `10` / `5` | Under k8s, free space on a node's node-local disk below which the health report warns, and below which the workspace with the largest tree there is stopped (docs/node-local-workspaces.md "A full node"). `yaac cluster install` copies them to the server pod. |
 | `YAAC_FEEDBACK_URL` | `https://yaac.dev/api/feedback` | Endpoint the server forwards in-app feedback to, signed as this install (docs/feedback.md). `yaac cluster install` copies it to the server pod. Set empty to turn feedback off, which hides the webapp's form. Unset, the server keeps the value it was last started with. |
+| `BROWSER` | the platform's opener | Command `yaac auth update` opens a sign-in page with. Set, the CLI also takes it that a browser it opens runs on this machine, so the vendor's redirect can come back to it (docs/tool-sign-in.md). |
 
 Every workspace gets `YAAC_WORKSPACE_ID` set automatically, and
 `YAAC_PORT_<n>` for each forwarded port (docs/workspace-hostnames.md). The other variables

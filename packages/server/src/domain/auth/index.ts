@@ -2,8 +2,8 @@
 // credential here is a user's; callers name the owner (a route's caller, or
 // a project's owner):
 //  - the auth routes: masked credential list, sign-in and clearing,
-//    plan-usage refresh, and vendor sign-in via the per-user relay hub
-//    (whose WebSocket the server's upgrade handler also holds);
+//    plan-usage refresh, and the claude/codex OAuth sign-in flows (whose
+//    desktop auth daemon sockets the server's upgrade handler hands over);
 //  - the create path and `yaac-mama`: a user's sign-in for a tool, and the
 //    owner key their workspaces' egress registrations name;
 //  - the snapshot builder: the plan-usage slices, by user;
@@ -19,9 +19,8 @@
 //  - the runtime link: every writer of a store pushes every user's set to
 //    the runtime, each under its owner key, and the reconcile pass adopts
 //    tokens a mediating runtime captured from a workspace's refresh.
-// Usage/profile endpoints, OAuth refresh grants and masking are internal.
+// Usage/profile endpoints, OAuth grants and masking are internal.
 
-export { authAgentHub } from './agent'
 export { clearAuth } from './clear'
 export { addEndpoint, discoverEndpointModels, removeEndpoint, updateEndpoint } from './endpoints'
 export { importEmbeddedEndpoints } from './import-endpoints'
@@ -38,6 +37,7 @@ export { listAuth } from './list'
 export { catalogModel, defaultModelFor, isCatalogModel, modelDisplayName, modelEfforts, modelsForTool } from './models'
 export { adoptRefreshedToolCredentials, pushCredentialsToRuntime } from './runtime-push'
 export { signInTool } from './sign-in'
+export { authAgentHub, cancelToolLogin, getToolLogin, startToolLogin, submitToolLoginCode } from './tool-login'
 export { NO_CREDENTIALS_OWNER_KEY, authEntryEndpoint, authEntryProvider, credentialOwnerKey, customEndpointFor, loadToolAuthEntry } from './store'
 export { toolKeyProviders } from './tool-key-config'
 export {

