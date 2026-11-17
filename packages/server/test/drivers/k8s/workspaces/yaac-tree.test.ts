@@ -515,6 +515,21 @@ describe('yaac-tree', () => {
     const m = await manifest(ws, 'L2')
     expect(m!.bundles).toHaveLength(2)
     const last = path.join(ws.ckpt, m!.bundles[1])
+
+    // A header git would refuse is refused, though its pack is whole: the
+    // git commands that read a bundle whole could not read it later.
+    const whole = await fs.readFile(last)
+    const badHeader = Buffer.from(whole)
+    badHeader[whole.indexOf(' refs/yaac/pass') - 5] = '$'.charCodeAt(0)
+    await fs.writeFile(last, badHeader)
+    const header = await life(ws, 'L2h', 'lives/L2/manifest.json')
+    const runH = start(header)
+    const refused = await waitFor(() => fs.readFile(path.join(ws.ckpt, 'lives', 'L2h', 'restore-failed.json'), 'utf8').catch(() => null))
+    expect(JSON.parse(refused)).toMatchObject({ bundle: m!.bundles[1] })
+    runH.kill('SIGTERM')
+    expect(await exited(runH)).toBe(0)
+    await fs.writeFile(last, whole)
+
     await fs.truncate(last, (await fs.stat(last)).size - 10)
 
     const three = await life(ws, 'L3', 'lives/L2/manifest.json')

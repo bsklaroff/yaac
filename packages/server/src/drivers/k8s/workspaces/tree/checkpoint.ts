@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import fs from 'node:fs/promises'
+import fs, { type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import {
   BUNDLES_DIR, LIVES_DIR, MANIFEST_FILE, MAX_MANIFEST_BYTES, parseManifest,
@@ -47,6 +47,8 @@ const asOwnerNeeded = (c: TreeContext): boolean => process.getuid?.() !== c.star
 interface GitOpts {
   env?: Record<string, string>
   input?: string
+  /** An open file git reads as its stdin, from where the file stands. */
+  stdin?: number
   /** Run as the install uid (writing files the agent will own). */
   asOwner?: boolean
   /** Exit codes that are answers, not failures. */
@@ -93,7 +95,7 @@ async function git(c: TreeContext, args: string[], opts: GitOpts = {}): Promise<
     ? ['setpriv', ['--reuid', String(c.start.uid), '--regid', String(c.start.gid), '--clear-groups', 'git', ...full]]
     : ['git', full]
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, argv, { env, stdio: [opts.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] })
+    const child = spawn(cmd, argv, { env, stdio: [opts.stdin ?? (opts.input === undefined ? 'ignore' : 'pipe'), 'pipe', 'pipe'] })
     const out: Buffer[] = []
     const err: Buffer[] = []
     child.stdout?.on('data', (b: Buffer) => out.push(b))
@@ -104,7 +106,7 @@ async function git(c: TreeContext, args: string[], opts: GitOpts = {}): Promise<
       if (code === 0 || (code !== null && (opts.ok?.includes(code) || opts.okWhen?.(code, stderr)))) resolve(Buffer.concat(out).toString('utf8'))
       else reject(new Error(`git ${args.slice(0, 2).join(' ')}: exit ${String(code)}: ${stderr.trim()}`))
     })
-    // git may exit before reading all its input (a failed bundle verify).
+    // git may exit before reading all its input.
     child.stdin?.on('error', () => {})
     child.stdin?.end(opts.input)
   })
@@ -430,14 +432,20 @@ async function writeBundle(c: TreeContext, pass: string, not: string[]): Promise
   return rel
 }
 
-/** The tree of each start commit its checkout's main clone holds: the
- *  object dir its alternates name first, read without the scratch
- *  repository's own alternates, which reach the agent's objects too. */
+/** The object dir of a checkout's main clone, which its git dir's
+ *  alternates name first, or null when they name none. */
+async function mainObjects(co: StartCheckout): Promise<string | null> {
+  const alternates = await fs.readFile(path.join(co.gitDir, 'objects', 'info', 'alternates'), 'utf8').catch(() => '')
+  return alternates.split('\n')[0]?.trim() || null
+}
+
+/** The tree of each start commit its checkout's main clone holds, read
+ *  without the scratch repository's own alternates, which reach the
+ *  agent's objects too. */
 async function mainCloneTrees(c: TreeContext): Promise<string[]> {
   const trees: string[] = []
   for (const co of c.start.checkouts) {
-    const alternates = await fs.readFile(path.join(co.gitDir, 'objects', 'info', 'alternates'), 'utf8').catch(() => '')
-    const main = alternates.split('\n')[0]?.trim()
+    const main = await mainObjects(co)
     if (!main || !co.commit) continue
     const tree = `${co.commit}^{tree}`
     if (await git(c, ['cat-file', '-e', tree], { env: { GIT_OBJECT_DIRECTORY: main } }).then(() => true, () => false)) trees.push(tree)
@@ -596,16 +604,63 @@ async function compactQuietly(c: TreeContext, m: Manifest): Promise<Manifest> {
   }
 }
 
-/** The prerequisite commits a bundle's header names. */
-async function prerequisites(file: string): Promise<string[]> {
+/** A header line as git accepts it: a prerequisite is `-`, an object id
+ *  and an optional comment; a head is an object id and a ref name. */
+const BUNDLE_LINE = /^(?:-([0-9a-f]{40}(?:[0-9a-f]{24})?)(?: |$)|([0-9a-f]{40}(?:[0-9a-f]{24})?) )/
+
+/**
+ * What a bundle's header says: the commits it leans on, the commits it
+ * carries, and where its pack begins. A header git would refuse is refused
+ * here, so that a damaged one fails a restore at its own bundle and is
+ * never read again by the git commands that take a bundle whole.
+ */
+async function bundleHeader(fh: FileHandle): Promise<{ prerequisites: string[]; heads: string[]; packAt: number }> {
+  const buf = Buffer.alloc(256 * 1024)
+  const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
+  // One byte a character, so an index is an offset in the file.
+  const head = buf.subarray(0, bytesRead).toString('latin1')
+  const end = head.indexOf('\n\n')
+  const version = /^# v([23]) git bundle\n/.exec(head)?.[1]
+  if (end < 0 || version === undefined) throw new Error('not a bundle')
+  const prerequisites: string[] = []
+  const heads: string[] = []
+  for (const l of head.slice(0, end).split('\n').slice(1)) {
+    // Only a v3 header carries capability lines.
+    if (version === '3' && l.startsWith('@')) continue
+    const m = BUNDLE_LINE.exec(l)
+    if (!m) throw new Error(`not a bundle: unrecognized header line ${JSON.stringify(l.slice(0, 80))}`)
+    if (m[1] !== undefined) prerequisites.push(m[1])
+    else heads.push(m[2])
+  }
+  return { prerequisites, heads, packAt: end + 2 }
+}
+
+/**
+ * Unpack one bundle of a chain into the scratch repository and return the
+ * commits it carries. `have` holds the commits the bundles before it
+ * carried.
+ *
+ * The header is read here and git is given the pack, with the command
+ * `git bundle unbundle` itself ends in. `unbundle` would first walk
+ * everything each prerequisite reaches, for every bundle, which is most of
+ * a restore's time when the shared tier is a file server. A chain needs no
+ * such walk: a bundle's prerequisite is the pass the bundle before it
+ * carried in full. A damaged or cut-short file still fails here, since
+ * `index-pack` checks every object and the pack's checksum, and a lost
+ * bundle leaves the next one without its prerequisite.
+ */
+async function unpackBundle(c: TreeContext, file: string, have: Set<string>): Promise<string[]> {
   const fh = await fs.open(file, 'r')
   try {
-    const buf = Buffer.alloc(256 * 1024)
-    const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
-    const head = buf.subarray(0, bytesRead).toString('latin1')
-    const end = head.indexOf('\n\n')
-    return (end < 0 ? head : head.slice(0, end)).split('\n')
-      .filter((l) => l.startsWith('-')).map((l) => l.slice(1, 41))
+    const { prerequisites, heads, packAt } = await bundleHeader(fh)
+    for (const p of prerequisites) {
+      if (!have.has(p) && !(await has(c, p))) throw new Error(`the commit it leans on, ${p}, is missing`)
+    }
+    // A read with no position moves the descriptor, here to the pack,
+    // and git reads on from where it stands.
+    await fh.read(Buffer.alloc(packAt), 0, packAt, null)
+    await git(c, ['index-pack', '--fix-thin', '--stdin'], { stdin: fh.fd })
+    return heads
   } finally {
     await fh.close()
   }
@@ -627,7 +682,8 @@ async function compactChain(c: TreeContext, m: Manifest): Promise<Manifest> {
     i--
   }
   if (m.bundles.length - i < 2) return m
-  const not = await prerequisites(path.join(c.ckpt, m.bundles[i]))
+  const first = await fs.open(path.join(c.ckpt, m.bundles[i]), 'r')
+  const not = (await bundleHeader(first).finally(() => first.close())).prerequisites
   const merged = await writeBundle(c, m.pass, not).catch(async () => {
     // A pass stores no object git found in a borrowed object dir (a
     // checkout's own .git), which the agent may since have pruned; the
@@ -685,11 +741,16 @@ export async function restore(c: TreeContext, manifestRel: string, opts: { newes
     const co = c.start.checkouts.find((x) => x.id === u.checkout)
     if (co) objectDirs.push(path.join(co.gitDir, u.gitDir, 'objects'))
   }
-  await prepareScratch(c, objectDirs)
+  // A chain leans only on the main clones, so those are all the scratch
+  // repository borrows from while it is unpacked: git looks through every
+  // borrowed object dir for each object it unpacks, and each look into the
+  // agent's is a round trip to the shared tier.
+  const mains = await Promise.all(c.start.checkouts.map(mainObjects))
+  await prepareScratch(c, mains.filter((d) => d !== null))
+  const unpacked = new Set<string>()
   for (const [k, b] of m.bundles.entries()) {
     try {
-      await git(c, ['bundle', 'verify', '-q', path.join(c.ckpt, b)])
-      await git(c, ['bundle', 'unbundle', path.join(c.ckpt, b)])
+      for (const pass of await unpackBundle(c, path.join(c.ckpt, b), unpacked)) unpacked.add(pass)
     } catch (err) {
       if (!opts.newestReadable) throw new ChainError(b, err)
       // Asked for the newest state that verifies: the unreadable bundle is
@@ -702,6 +763,7 @@ export async function restore(c: TreeContext, manifestRel: string, opts: { newes
       break
     }
   }
+  await prepareScratch(c, objectDirs)
   for (const [n, u] of m.units.entries()) {
     const entry = `${m.pass}^{tree}:${String(n)}`
     switch (u.kind) {

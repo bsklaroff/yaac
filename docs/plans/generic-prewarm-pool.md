@@ -11,8 +11,8 @@ workspace, for any project. A restart gets a pod made on demand and a tree
 built on the node.
 
 Nothing here is built. The mechanism was tested by hand on a kind rig in two
-runs on 2026-11-16, and "What the spike established" below records what was
-run.
+runs on 2026-11-16 and on a two-node k3s cluster the same day, and "What the
+spike established" below records what was run.
 
 ## Why
 
@@ -54,6 +54,9 @@ landed:
   directories its pod mounts to the install uid when a life starts, and
   `yaac cluster delete` hands the data dir's node-local folder back to the
   user on a Linux kind host.
+- **A restore unpacks a chain with one git process a bundle.** One
+  `index-pack` each, borrowing only from the main clones, in place of
+  `git bundle verify` and `unbundle`.
 - **The tree container's probe notices a filled tree at once**, by waiting
   in-process for the started marker.
 - **Every start logs a per-phase timing line.**
@@ -171,6 +174,77 @@ On a loopback NFS share (a userspace server in a pod, mounted on the node at
 NFS 4.0), making a `.git` as `createCheckout` does, about 20 files, took 100
 to 119 ms against 25 to 31 ms on node disk; one file create took 0.9 ms
 against 0.2 ms.
+
+### The third run, on k3s
+
+A third run used a byo install (`infra/hetzner-k3s`: k3s v1.37.1 on the
+host's containerd 2.2.2, runsc release-20261005.0, a control node and one
+worker, the shared tier an NFS 4.2 export with `sync` on a Hetzner Cloud
+Volume). It ran in a namespace of its own beside the live install, with a
+privileged pod standing in for the node-mounter and a gVisor pod on the
+workspace image, on the worker. The repos were the install's own main
+clones, read over NFS: 1,810 and 16,512 files.
+
+| Finding | Result |
+|---|---|
+| A bind under a read-only `HostToContainer` node-mounts directory | reaches the sandbox, including a single file; read-only sources stay read-only |
+| `runsc exec --process <spec> --exec-fd` | works; state is under `/run/containerd/runsc/k8s.io`, since this k3s uses the host's containerd; the process gets exactly the spec's environment (and `HOME`) and capabilities |
+| Binds the agent pod made from its own NFS volumes | still read and write after the agent pod is deleted and after its replacement starts; kubelet cleans up the old pod's volumes |
+| A gVisor pod deleted with 17 node mounts in place | 2.0 s; afterwards every mount unmounts without `-l` |
+| One NFS create (create, write, close) | 22 ms from the worker, 19 ms on the NFS server's own node (where the server pod writes), 0.03 ms on the volume's ext4 directly |
+| A `.git` as `createCheckout` makes it, 25 entries | 0.60 to 0.78 s on NFS, 0.09 to 0.10 s on node disk |
+| A native build reading the main clone over NFS | 0.27 to 0.47 s small, 0.56 to 0.93 s big |
+| Backdating and rewriting the index | 0.02 s small, 0.19 s big |
+| First `git status` in the sandbox, `.git` on NFS, backdated / as built | 0.35 / 0.60 s small, 0.59 / 6.05 s big; the backdated index was not rewritten, the other was; both clean, `write-tree` equal to HEAD's tree |
+| The same with git's default stat checks | 5.45 s big |
+| A same-size edit at a new mtime on a backdated tree | shown as modified |
+| A take: four renames and the mount points | 55 ms |
+
+The NFS cost is the export's `sync` on a network volume, not the network:
+the server's own node pays nearly the same.
+
+Unpacking real checkpoints (verify then unbundle, as `restore` did then), the
+bundles on NFS and the scratch repository on node disk:
+
+| Chain | gVisor | runc, main clone on NFS | runc, main clone on node disk |
+|---|---|---|---|
+| 16 bundles, 51 KiB in all | 12 to 21 s across runs | 9.2 s | 2.9 s (2.4 s repacked from 49 packs to one) |
+| 1 bundle, 182 MB, no prerequisites | 10.1 to 11.0 s | 4.4 s | not run |
+
+Each verify of a small bundle runs `rev-list --objects --not --all
+--alternate-refs`, which starts a `for-each-ref` in each object store, and
+each unbundle runs the same check again before its `index-pack`. The
+scratch repository has no refs during a restore, so that walk covers every
+file of every earlier pass. Over NFS that is 0.25 to 0.6 s per step natively
+and 0.35 to 1 s in the sandbox, whatever the bundle's size.
+
+Other ways to unpack the 16-bundle chain, each ending with the same
+objects for the final pass, in gVisor (runc):
+
+| Way | Time |
+|---|---|
+| Verify and unbundle each bundle, as `restore` did then | 16.4 to 21.2 s (9.3 s) |
+| Unbundle only | 9.3 to 11.3 s (5.3 s) |
+| Unbundle, with a scratch ref put on each pass once unpacked | 6.0 s |
+| The same without the `for-each-ref` processes (`core.alternateRefsCommand`) | 3.3 s |
+| Read the header, check the prerequisite is a pass already unpacked, one `index-pack --fix-thin --stdin` a bundle | 1.8 to 1.9 s (1.3 s) |
+| The same, borrowing only from the main clones while unpacking | 1.5 s (1.05 s) |
+| Every bundle's pack spliced into one pack for a single `index-pack` | 0.47 s (0.47 s); 0.25 s borrowing only from the main clones |
+| The chain compacted to one bundle first (0.36 s, once) and that unpacked | 0.32 s |
+
+`restore` now unpacks as the sixth row does. Built that way, `yaac-tree`
+restored that workspace, from `run` to its started marker, in 3.1 s against
+17.2 to 18.4 s, to an identical tree, and the workspace with the 182 MB
+bundle in 14.4 s against 16.0 s. Of the 3.1 s, the sixteen `index-pack`
+runs are about 1.5 s and writing the two checkouts 1.2 s. Given fifteen
+kinds of damage to a copy of the chain (a bundle cut short, cut in its
+header, emptied, lost, left out or out of order, and single flipped bits in
+its header, pack and checksum), one `index-pack` a bundle and the two
+commands it replaced refused the same bundle every time. The 182 MB bundle
+is one `index-pack` either way: 8.6 to 10.5 s (4.1 to 4.5 s).
+
+Not run there: restarts of containerd or kubelet, which the live install's
+workspaces share.
 
 ## Design
 
@@ -855,9 +929,11 @@ e2e suite pass on each:
   node;
 - kind in a podman machine on macOS, where the node-local root is a file
   share and the shared tier is too;
-- k3s (`infra/hetzner-k3s`), where containerd runs under k3s's own
-  directories, so runsc's state directory has to be found, and where the
-  shared tier is NFS.
+- k3s (`infra/hetzner-k3s`), where the shared tier is NFS, and where the
+  three things below held in the third run. That install runs the host's
+  containerd; one on k3s's embedded containerd keeps its state under k3s's
+  own directories, so the node-mounter has to find runsc's state directory
+  rather than assume it.
 
 On each, three things have to hold: a mount under a node-mounts directory
 reaches a gVisor sandbox, the node-mounter finds runsc and its state
@@ -904,26 +980,34 @@ outlives a restart of the agent's pod.
 The second run closed the rest of what a single kind node could show:
 restarts of containerd and kubelet, the tree container binding for itself,
 the take, restores and the tree program on a node-built tree, entering by
-descriptor, file mounts, and a spare's egress. What is left:
+descriptor, file mounts, and a spare's egress. The third run proved k3s and
+backdating inside a sandbox. What is left:
 
-- **NFS at a real network's latency.** On loopback NFS a `.git` took about
-  0.1 s, at 0.9 ms a file create. On a byo cluster measure one create: a
-  `.git` is about 20 of them, so at 30 ms each it would be 0.6 s and the
-  largest part of a claim. If it is, keep prepared git dirs per repo beside
-  the trees.
+- **The `.git` on a byo shared tier.** It measured 0.6 to 0.8 s on NFS (22
+  ms a create), the largest part of a claim there, against a take of 55 ms
+  and a bind of under 0.1 s. So keep prepared git dirs per repo beside the
+  trees, made ahead of time like a kept tree, and have a claim only rename
+  one into place and write its branch. How a prepared `.git` gets its
+  workspace's refs and branch in a few writes is not yet designed.
+- **Unpacking a long or large checkpoint.** `restore` unpacks with one
+  `index-pack` a bundle, about 0.1 s each on NFS in the sandbox, so a chain
+  at its 20-bundle limit costs about 2 s, more than the write once that is
+  a difference. If that matters, splice the chain's packs into one for a
+  single `index-pack`, 0.25 to 0.5 s for any length, rather than compact
+  more often: a compaction rewrites its bundles on the shared tier, and one
+  from a chain's start stores every changed file whole (51 KiB became 473
+  KiB). A large bundle is not helped by either: 182 MB takes 9 to 10 s to
+  unpack, and only keeping packs where a restore can borrow them, with no
+  unpack, would change that.
 - **Real parts.** The claims used a small stand-in image, `runsc exec` in
   place of streamd, and a shell as the agent, and left out the API calls and
   the shared-tier work. The first real number comes from phase 2's timing
   line.
-- **Backdating a built tree and rewriting its index inside a sandbox.**
-  Checked with native git only. gVisor reports the host's mtimes, which is
-  all git's racy check reads, so the first status in the sandbox should hash
-  nothing too; the first run on a rig confirms it.
-- **Unpacking a checkpoint** before a restore writes its difference, which
-  the run left out.
-- **More than one node.** How often a pod made on demand lands on a node
-  with no tree, and whether that is worth a scheduling preference.
-- **The other platforms**: macOS under a podman machine, and k3s.
+- **More than one node.** On the k3s install, 3 of 11 running workspaces
+  were on the node that is not tainted for workspaces, so on-demand pods do
+  land on both. A pod on a node with no tree pays a build on demand, 0.3 to
+  0.9 s there, which bounds what a scheduling preference could save.
+- **macOS under a podman machine.**
 
 ## Decisions
 
