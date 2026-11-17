@@ -36,7 +36,7 @@ import {
   workspaceMediaUrl,
 } from '#lib/files'
 import {
-  CheckIcon, DiffIcon, FileCodeIcon, LoadingIcon, SaveIcon, SearchIcon, ShowIcon, WarningIcon,
+  CheckIcon, CopyIcon, DiffIcon, FileCodeIcon, LoadingIcon, SaveIcon, SearchIcon, ShowIcon, WarningIcon,
 } from '#lib/icons'
 
 /** Idle time after the last edit before autosave. */
@@ -580,6 +580,7 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
           )}
           <span className="shrink-0 text-text">{path.slice(slash + 1)}</span>
           {dirty && <span aria-label="Unsaved changes" className="ml-1.5 shrink-0 text-text-dim">●</span>}
+          <CopyPathButton path={path} />
         </span>
         {change && <ChangeSummary change={change} />}
         {statusLabel && (
@@ -643,6 +644,29 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
       )}
       {body}
     </div>
+  )
+}
+
+/** Copies the file's full path. The header truncates the folders with a
+ *  right-to-left trick that makes selecting the whole path by hand drop
+ *  characters, so this is the reliable way to get it. */
+function CopyPathButton({ path }: { path: string }): JSX.Element {
+  const [copied, setCopied] = useState(false)
+  const copy = (): void => {
+    void navigator.clipboard?.writeText(path)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+  return (
+    <button
+      onClick={copy}
+      title={copied ? 'Copied' : 'Copy path'}
+      aria-label="Copy path"
+      className="ml-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-faint transition
+        hover:bg-surface-2 hover:text-text"
+    >
+      {copied ? <CheckIcon size={11} /> : <CopyIcon size={11} />}
+    </button>
   )
 }
 

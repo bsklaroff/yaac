@@ -231,6 +231,16 @@ describe('WorkspaceFile', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
+  it('copies the full path from the header', async () => {
+    const writeText = vi.fn(() => Promise.resolve())
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+    await mount('src/deep/a.ts')
+    fireEvent.click(screen.getByRole('button', { name: 'Copy path' }))
+    expect(writeText).toHaveBeenCalledWith('src/deep/a.ts')
+    expect(screen.getByRole('button', { name: 'Copy path' }).title).toBe('Copied')
+    discardFileSavers([fileKey('w1', 'src/deep/a.ts')])
+  })
+
   it('autosaves once, a second after the last of a burst of edits', async () => {
     await mount()
     type('o')
