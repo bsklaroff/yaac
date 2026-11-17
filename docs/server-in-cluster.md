@@ -445,6 +445,10 @@ A pod reads a host server's lock by its lease alone, which is why a host
 server renews its lease too: it is what keeps a pod deployed onto its data
 dir from opening the same database. A server that finds it has lost the
 lease exits rather than keep writing a database another server now owns.
+So does one whose renewal is stuck on the disk, or has kept failing, until
+the lease is within a heartbeat of going stale: past that point a reader
+could take the lock while this server still writes. Renewals never overlap
+(`keepLease`), so a slow disk is not handed a second write meanwhile.
 On hostPath storage nothing prevents two mounts, so this lease is PGlite's
 only single-writer guard.
 

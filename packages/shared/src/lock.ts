@@ -4,7 +4,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { env } from '#env'
 import { serverLocalPath } from '#paths'
-import { SERVER_LOCK_FILENAME, isLockLive, parseServerLock, type ServerLock } from '#server-lock-file'
+import {
+  LEASE_HEARTBEAT_MS,
+  LEASE_STALE_MS,
+  SERVER_LOCK_FILENAME,
+  isLockLive,
+  parseServerLock,
+  type ServerLock,
+} from '#server-lock-file'
 
 /** SERVER-LOCAL: the lock is 1:1 with the server process. */
 export function serverLockPath(): string {
@@ -54,6 +61,54 @@ export async function renewLease(instance: string): Promise<boolean> {
   if (!cur || cur.instance !== instance) return false
   await writeLock({ ...cur, heartbeatAt: Date.now() })
   return true
+}
+
+/**
+ * Renew a held lease every {@link LEASE_HEARTBEAT_MS} for the life of the
+ * process, and exit once it is lost to another server or cannot be renewed
+ * before readers would see it as stale. Readers in another container judge
+ * the lock by this heartbeat alone, and on kind's hostPath storage the
+ * lease is PGlite's only single-writer guard, so a server that cannot keep
+ * it must stop writing.
+ *
+ * A tick is skipped while the last renewal is still running on a slow disk,
+ * since two at once would write the same temp file. The deadline is checked
+ * on the timer, which keeps firing while a stuck write holds a libuv
+ * thread. It applies only while a renewal is stuck or the last one failed:
+ * after the event loop itself was blocked (a long migration) the next tick
+ * just renews, and `renewLease` reports a lease taken meanwhile. Answers
+ * the timer, for shutdown to clear before it removes the lock.
+ */
+export function keepLease(
+  lease: Pick<ServerLock, 'instance' | 'heartbeatAt'>,
+  log: (message: string) => void,
+): NodeJS.Timeout {
+  let renewedAt = lease.heartbeatAt
+  let state: 'idle' | 'renewing' | 'failed' = 'idle'
+  const exit = (why: string): void => {
+    log(`[server] ${why}; exiting`)
+    process.exit(1)
+  }
+  return setInterval(() => {
+    if (state !== 'idle' && Date.now() - renewedAt >= LEASE_STALE_MS - LEASE_HEARTBEAT_MS) {
+      exit('could not renew the lock lease before it went stale')
+      return
+    }
+    if (state === 'renewing') return
+    state = 'renewing'
+    const started = Date.now()
+    renewLease(lease.instance).then((held) => {
+      if (!held) {
+        exit('lost the lock lease to another server')
+        return
+      }
+      renewedAt = started
+      state = 'idle'
+    }, (err: unknown) => {
+      log(`[server] lease renewal failed: ${err instanceof Error ? err.message : String(err)}`)
+      state = 'failed'
+    })
+  }, LEASE_HEARTBEAT_MS).unref()
 }
 
 /**

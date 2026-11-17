@@ -123,6 +123,20 @@ export function repoDir(repoId: string): string {
   return globalPath('repos', repoId)
 }
 
+/**
+ * GLOBAL and SERVER-LOCAL: each tier's trash, where a directory is renamed
+ * to be removed later in the background (`#lib/trash`). One per tier, since
+ * a rename cannot cross filesystems and in the cluster each tier is its own
+ * claim.
+ */
+export function globalTrashDir(): string {
+  return globalPath('trash')
+}
+
+export function serverLocalTrashDir(): string {
+  return serverLocalPath('trash')
+}
+
 /** GLOBAL: where a project kept its one main clone before repos were rows
  *  of their own (docs/legacy-compat-shims.md "Main clones under the project
  *  dir"). */

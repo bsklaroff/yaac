@@ -310,3 +310,14 @@ and Settings shows the repo with what still holds it. Once the last of them
 is deleted, the `deleted-repos` reconcile step (`collectDeletedRepos`)
 removes the main clone and the row. With no such workspace, everything goes
 at once.
+
+A repo's directories are large, and removing one on a slow disk (an NFS
+share) can take minutes, so neither the delete nor `removeKeptHostedRepo`
+waits for it. Each directory is renamed into a `trash/` folder in its own
+tier (GLOBAL for the main clone, SERVER-LOCAL for the bare repository),
+which is instant, and the request answers once the row is updated. A
+separate `rm -rf` process then empties the trash (`#lib/trash`). Removing
+the files in-process would tie up the server's small pool of file-I/O
+threads for as long as the disk takes, stalling every other file
+operation, the lock lease's renewal among them. The `deleted-repos` step
+also empties whatever a crash left in the trash.

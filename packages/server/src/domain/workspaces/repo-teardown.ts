@@ -3,7 +3,14 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { workspaceDriver } from '#drivers/driver'
 import type { RuntimeHandle, RuntimeSnapshot } from '#drivers/contract'
-import { claudeDir, claudeMemoryDirName, hostedRepoDir, repoDir } from '@yaac/shared/project-paths'
+import {
+  claudeDir,
+  claudeMemoryDirName,
+  globalTrashDir,
+  hostedRepoDir,
+  repoDir,
+  serverLocalTrashDir,
+} from '@yaac/shared/project-paths'
 import { cleanupWorkspaceDetached } from './cleanup'
 import {
   deleteRepoRow,
@@ -31,6 +38,7 @@ import { checkMoveTarget, isGitAuthError, pushHostedRepo } from '#domain/git'
 import { fetchRepoOrigin, ownRepo, resolveCredentialForRemote, withRepoHeld } from '#domain/repos'
 import { startWaitingWorkspaces } from './queued-workspaces'
 import { serverLog } from '#lib/log'
+import { emptyTrash, moveToTrash } from '#lib/trash'
 import { allowlistAllows } from '@yaac/shared/allowed-hosts'
 import { parseGitRemote } from '@yaac/shared/git-remote'
 import { inFlightCreate, listProvisioning, stopProvisioning } from './provisioning'
@@ -359,7 +367,7 @@ export async function deleteRepo(principal: Actor, repoId: string): Promise<{ he
     // a spare warmed with it can no longer be claimed.
     await stopProvisioningWith(repoId, projectIds)
     await reapSparesWith(repoId).catch(() => { /* the prewarm pool reaps a spare its project no longer matches */ })
-    await fs.rm(hostedRepoDir(repoId), { recursive: true, force: true })
+    await moveToTrash(hostedRepoDir(repoId), serverLocalTrashDir())
     const heldBy = await repoHolders(repoId)
     if (heldBy.length > 0) await markRepoDeleted(repoId)
     else await removeRepo(repoId)
@@ -367,17 +375,20 @@ export async function deleteRepo(principal: Actor, repoId: string): Promise<{ he
   })
 }
 
+/** Trash a repo's main clone, which `#lib/trash` removes in the background, then its row. */
 async function removeRepo(repoId: string): Promise<void> {
-  await fs.rm(repoDir(repoId), { recursive: true, force: true })
+  await moveToTrash(repoDir(repoId), globalTrashDir())
   await deleteRepoRow(repoId)
 }
 
 /**
  * The `deleted-repos` reconcile step: remove the main clone and row of each
- * deleted repo no workspace holds a checkout of any more.
+ * deleted repo no workspace holds a checkout of any more, and start
+ * emptying whatever a crash left in the trash.
  */
 export async function collectDeletedRepos(): Promise<void> {
   for (const repo of await listReleasedDeletedRepos()) {
     await removeRepo(repo.id).catch((err: unknown) => serverLog(`[git] removing deleted repo ${repo.id}: ${String(err)}`))
   }
+  void emptyTrash()
 }
