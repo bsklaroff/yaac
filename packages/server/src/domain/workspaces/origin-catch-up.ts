@@ -14,6 +14,7 @@ import { workspaceDriver } from '#drivers/driver'
 import { applyWorkspaceEvent, getProjectRow, type ProjectRow } from '#db'
 import { resolveRemoteRef } from '#domain/git'
 import { errorText, serverLog } from '#lib/log'
+import { ofCheckout, timingOf } from '#lib/start-timing'
 import { shellEscape, shellQuote } from '#lib/shell'
 import { repoDir } from '@yaac/shared/project-paths'
 
@@ -63,7 +64,8 @@ interface CheckoutMove {
   retrack?: boolean
 }
 
-/** Starts the line a move prints: the commit its checkout ended at. */
+/** Starts the line a move prints: the commit its checkout ended at, and
+ *  how it got there (`ff`, `reset`, or `skipped` where it was left). */
 const ENDED_AT = 'yaac-at:'
 
 /**
@@ -100,13 +102,13 @@ function moveCommand(move: CheckoutMove, exclusions: string): string {
   const head = `$(${git} rev-parse -q --verify HEAD)`
   const reset = `${git} reset --hard ${move.target} ${quiet}`
   const otherwise = move.otherwise === 'leave' ? ''
-    : move.otherwise === 'reset' ? ` || { ${reset} && ${git} clean -fd${exclusions} ${quiet}; }`
+    : move.otherwise === 'reset' ? ` || { ${reset} && ${git} clean -fd${exclusions} ${quiet} && yaac_how=reset; }`
       : ` || { [ "${head}" = ${move.otherwise.untouchedAt} ]`
-        + ` && [ -z "$(${git} status --porcelain --untracked-files=all --ignore-submodules=none 2>&1)" ] && ${reset}; }`
-  return `{ ${git} update-ref 'refs/remotes/${upstream}' ${move.target} ${quiet}; `
+        + ` && [ -z "$(${git} status --porcelain --untracked-files=all --ignore-submodules=none 2>&1)" ] && ${reset} && yaac_how=reset; }`
+  return `{ yaac_how=skipped; ${git} update-ref 'refs/remotes/${upstream}' ${move.target} ${quiet}; `
     + (move.retrack === true ? `${git} branch --set-upstream-to '${upstream}' ${quiet}; ` : '')
-    + `${git} -c core.hooksPath=/dev/null merge --ff-only ${move.target} ${quiet}${otherwise}; `
-    + `echo "${ENDED_AT}${head}"; }`
+    + `${git} -c core.hooksPath=/dev/null merge --ff-only ${move.target} ${quiet} && yaac_how=ff${otherwise}; `
+    + `echo "${ENDED_AT}${head} $yaac_how"; }`
 }
 
 /** Run moves in a workspace, in one exec, and answer what they printed. */
@@ -114,9 +116,13 @@ async function runMoves(jobName: string, cmds: string[]): Promise<string> {
   return (await workspaceDriver().exec(jobName, cmds.join('; '), { timeout: MOVE_TIMEOUT_MS })).stdout
 }
 
-/** The commit each move's checkout ended at, in the moves' order. */
-function endedAt(stdout: string): string[] {
-  return stdout.split('\n').flatMap((l) => (l.startsWith(ENDED_AT) ? [l.slice(ENDED_AT.length).trim()] : []))
+/** The commit each move's checkout ended at and how, in the moves' order. */
+function endedAt(stdout: string): Array<{ at: string; how: string }> {
+  return stdout.split('\n').flatMap((l) => {
+    if (!l.startsWith(ENDED_AT)) return []
+    const [at = '', how = ''] = l.slice(ENDED_AT.length).split(' ')
+    return [{ at, how }]
+  })
 }
 
 /**
@@ -132,7 +138,8 @@ export async function moveSpare(
   const project = await getProjectRow(spare.projectId)
   const ended = endedAt(await runMoves(spare.jobName, moves.map((m) => moveCommand({ ...m, otherwise: 'reset' }, mountExclusions(project, m.dir)))))
   for (const [i, m] of moves.entries()) {
-    if (ended[i] !== m.target) throw new Error(`the checkout at ${m.dir} is at ${ended[i] || 'no commit'}, not ${m.target}`)
+    const at = ended[i]?.at
+    if (at !== m.target) throw new Error(`the checkout at ${m.dir} is at ${at || 'no commit'}, not ${m.target}`)
   }
 }
 
@@ -161,6 +168,11 @@ export interface CatchUp {
  * Then a checkout is only ever fast-forwarded, and one git cannot
  * fast-forward (a force-pushed branch) is left behind origin. With nothing
  * running yet, such a checkout is reset if it is untouched.
+ *
+ * What it did with each checkout is noted in the start's timing line as
+ * `catchup[.<folder>]`: `none` (already current), `ff`, `reset`, `skipped`
+ * (left behind), `late` (no fetch in time), `failed` (the fetch) or `gone`
+ * (the branch).
  */
 export async function catchUp(
   workspace: { projectId: string; workspaceId: string; jobName: string },
@@ -170,19 +182,23 @@ export async function catchUp(
   { live }: { live: boolean },
 ): Promise<CatchUp> {
   const { projectId, workspaceId, jobName } = workspace
+  const note = (f: Following, how: string): void => { timingOf(workspaceId)?.note(ofCheckout('catchup', f.path), how) }
   const waiting: Following[] = []
   const due = (await Promise.all(following.map(async (f) => {
     const landed = await settledWithin(f.fetched, withinMs)
     if (landed === 'pending') {
+      if (withinMs > 0) note(f, 'late')
       waiting.push(f)
       return []
     }
     if (landed !== 'landed') {
+      note(f, 'failed')
       say(`${label(f)} starts from the last commit fetched: ${errorText(landed)}`)
       return []
     }
     const target = await resolveRemoteRef(repoDir(f.repoId), f.branch).catch(() => undefined)
     if (target === undefined) say(`${label(f)} stays on ${f.branch}, which origin no longer has`)
+    if (target === undefined || target === f.at) note(f, target === undefined ? 'gone' : 'none')
     return target === undefined || target === f.at ? [] : [{ f, target }]
   }))).flat()
   if (due.length === 0) return { cmds: [], settle: (stdout) => Promise.resolve(stdout), waiting }
@@ -195,8 +211,9 @@ export async function catchUp(
     settle: async (stdout) => {
       const ended = endedAt(stdout)
       for (const [i, { f, target }] of due.entries()) {
-        if (ended[i] !== target) {
-          say(`${label(f)} is left at ${(ended[i] || f.at).slice(0, 12)}, behind origin/${f.branch}: it could not be moved there safely`)
+        note(f, ended[i]?.at === target ? ended[i].how : 'skipped')
+        if (ended[i]?.at !== target) {
+          say(`${label(f)} is left at ${(ended[i]?.at || f.at).slice(0, 12)}, behind origin/${f.branch}: it could not be moved there safely`)
           continue
         }
         await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId, workspaceId, repoId: f.repoId, startCommit: target })
@@ -219,13 +236,14 @@ export function followOrigin(
 ): void {
   const say = (message: string): void => { serverLog(`[workspace] ${workspace.workspaceId}: ${message}`) }
   for (const f of following) {
+    const release = timingOf(workspace.workspaceId)?.hold()
     void (async () => {
       const { cmds, settle, waiting } = await catchUp(workspace, [f], CATCH_UP_WAIT_MS, say, { live: true })
       if (waiting.length > 0) {
         say(`${label(f)} is left behind origin/${f.branch}: the fetch took longer than ${String(CATCH_UP_WAIT_MS / 1000)}s`)
       }
       if (cmds.length > 0) await settle(await runMoves(workspace.jobName, cmds))
-    })().catch((err: unknown) => { say(`catching up with origin failed: ${errorText(err)}`) })
+    })().catch((err: unknown) => { say(`catching up with origin failed: ${errorText(err)}`) }).finally(release)
   }
 }
 

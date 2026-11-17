@@ -6,8 +6,8 @@ import { lifeDirName } from '@yaac/shared/steps'
 import { globalPath } from '@yaac/shared/paths'
 import { workspaceCheckpointsDir, workspaceTreeDir } from '@yaac/shared/project-paths'
 import {
-  BUNDLES_DIR, LIVES_DIR, MANIFEST_FILE, MAX_MANIFEST_BYTES, START_FILE, parseManifest,
-  type Manifest, type StartInstruction,
+  BUNDLES_DIR, LIVES_DIR, MANIFEST_FILE, MAX_MANIFEST_BYTES, START_FILE, TIMING_FILE, parseManifest,
+  type Manifest, type StartInstruction, type TreeTiming,
 } from '@yaac/shared/tree-records'
 import type { RuntimeSnapshot, WorkspaceTree } from '#drivers/contract'
 import { workspaceDriver } from '#drivers/driver'
@@ -127,6 +127,19 @@ async function lifeManifest(projectId: string, workspaceId: string, life: string
 export async function readLifeManifest(projectId: string, workspaceId: string, life: string): Promise<Manifest | null> {
   const m = await lifeManifest(projectId, workspaceId, life)
   return typeof m === 'string' ? null : m
+}
+
+/** When the life's tree container started, read its start instruction and
+ *  filled the tree, if it has said. */
+export async function readTreeTiming(projectId: string, workspaceId: string, life: string): Promise<TreeTiming | null> {
+  const root = await openRoot(workspaceCheckpointsDir(projectId, workspaceId), 'no-links').catch(() => null)
+  const bytes = await root?.readFile(`${LIVES_DIR}/${life}/${TIMING_FILE}`, { maxBytes: 1024 }).catch(() => null)
+  try {
+    const t = JSON.parse(bytes?.toString('utf8') ?? 'null') as Partial<TreeTiming> | null
+    return [t?.process, t?.instruction, t?.filled].every((n) => typeof n === 'number') ? t as TreeTiming : null
+  } catch {
+    return null
+  }
 }
 
 /** Why a restart cannot read its checkpoint, if the tree container said so. */

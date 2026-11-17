@@ -36,6 +36,7 @@ import {
 } from '@yaac/shared/types'
 import type { WorkspacePaths } from '#drivers/contract'
 import type { CustomEndpoint, PiProvider } from '@yaac/shared/tool-providers'
+import { timingOf } from '#lib/start-timing'
 
 /**
  * How a session's window is launched (docs/sessions.md): one builder shared
@@ -128,6 +129,19 @@ export async function sessionLaunches(
       }),
     }
   })
+}
+
+/**
+ * Hold a start's timing line open for each fresh session's agent until it
+ * is first seen at work on its opening message (`setAgentStatus`): the
+ * agent's own boot, timed from its window opening now. A session with no
+ * opening message gives no such sign, so it is not waited for.
+ */
+export function timeAgentBoots(workspaceId: string, launches: SessionLaunch[]): void {
+  const timing = timingOf(workspaceId)
+  for (const { session, window, tool } of launches) {
+    if (session.launchedAt === undefined && session.firstPrompt !== undefined) timing?.expect(window, `agent.${tool}`, Date.now())
+  }
 }
 
 /**

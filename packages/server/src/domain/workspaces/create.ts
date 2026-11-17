@@ -61,6 +61,7 @@ import {
 import { NO_CREDENTIALS_OWNER_KEY, authEntryEndpoint, authEntryProvider, credentialOwnerKey, defaultModelFor, isCatalogModel, loadToolAuthEntry, modelEfforts, seedProjectToolHome, toolKeyProviders } from '#domain/auth'
 import { getDefaultBranch, isGitAuthError, writeKnownHostsFile, type ResolvedGitCredential } from '#domain/git'
 import { serverLog } from '#lib/log'
+import { ofCheckout, startTiming, type StartTiming } from '#lib/start-timing'
 import type { AcpConversation } from '#runtime/agents'
 import { AgentLaunchDeadError, buildWindowsExec, ensureAgentReporters, ensureOmpSettings, ensureToolApiKeyConfig, finishSetupCommand, verifyAgentWindowAlive, whenAcpConversation, openSandboxDir } from '#runtime/agents'
 import {
@@ -78,7 +79,7 @@ import {
   type SessionRow,
   type VolumeLease,
 } from '#db'
-import { leaveOpenings, sessionLaunches } from './session-launch'
+import { leaveOpenings, sessionLaunches, timeAgentBoots } from './session-launch'
 import { reportAgentLaunchFailure, throwIfProvisionStopped } from './provisioning'
 import { recordTrackedScratchDirs } from './tracked-scratch-dirs'
 import { catchUp, followOrigin, MOVE_TIMEOUT_MS, type Following } from './origin-catch-up'
@@ -105,10 +106,10 @@ import {
 import { convergeAgentHistory } from './history'
 import { deleteWorkspaceState } from './cleanup'
 import { attachVolume, stageVolume } from './volumes'
-import { lifeHooksCommand, startStepsOf } from './life'
+import { lifeHooksCommand, openTerminalLogs, startStepsOf } from './life'
 import { offeredForwards } from './forward-port'
 import { lifeDirName, type StepGraph } from '@yaac/shared/steps'
-import { gitHead, importSharedFiles, prepareCheckpoints, relinkAlternates, restoreFailure, restorePointer, treeOf, treesApply, writeStartInstruction } from './trees'
+import { gitHead, importSharedFiles, prepareCheckpoints, readTreeTiming, relinkAlternates, restoreFailure, restorePointer, treeOf, treesApply, writeStartInstruction } from './trees'
 import { ACP_CONVERSATION_WAIT_MS } from './conversation-registry'
 import {
   OPENCODE_CHECKPOINT_SCRIPT,
@@ -333,6 +334,7 @@ interface WorkspaceSetupParams {
    *  must be relinked to its main clone and remote, and its `origin/*`
    *  brought up to date. */
   checkouts: PlannedCheckout[]
+  timing: StartTiming
 }
 
 /**
@@ -343,7 +345,7 @@ interface WorkspaceSetupParams {
  */
 async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHandle> {
   const {
-    spec, projectId, workspaceId, sessions, life, onLaunched, options, workspace, checkouts,
+    spec, projectId, workspaceId, sessions, life, onLaunched, options, workspace, checkouts, timing,
   } = params
   const runtime = workspaceDriver()
 
@@ -357,13 +359,17 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   // reads the real outcome.
   workspaceFailure.catch(() => { /* observed via race/join */ })
 
-  const handle = await runtime.launch(spec)
+  const handle = await timing.time('launch', runtime.launch(spec))
   onLaunched(handle)
+  // Containerless has no boot to wait for, so its starts have neither
+  // phase.
+  const booted = <T>(name: string, wait: Promise<T>): Promise<T> =>
+    (runtime.kind === 'containerless' ? wait : timing.time(name, wait))
   const jobName = handle.jobName
   const paths = runtime.workspacePaths(jobName)
   // Mark the waits handled so one abandoned by a race cannot surface later
   // as an unhandled rejection.
-  const podReady = runtime.awaitReady(handle)
+  const podReady = booted('ready', runtime.awaitReady(handle))
   podReady.catch(() => { /* observed via race */ })
   // A restore that cannot read its checkpoint never reports ready; the tree
   // container says why beside the start instruction.
@@ -395,7 +401,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
     if (node !== undefined) await applyWorkspaceEvent({ type: 'life-node-found', projectId, workspaceId, node })
   }
 
-  const transportReady = runtime.awaitAgentTransport(jobName)
+  const transportReady = booted('transport', runtime.awaitAgentTransport(jobName))
   transportReady.catch(() => { /* observed via race */ })
   await Promise.race([transportReady, workspaceFailure])
 
@@ -422,7 +428,8 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   const opensEarly = early && launches.length > 0
   if (opensEarly) {
     announceAgents()
-    await runtime.exec(jobName, windows)
+    await timing.time('windows', runtime.exec(jobName, windows))
+    timeAgentBoots(workspaceId, launches)
   }
 
   // Everything below reads the checkout, so join it now.
@@ -434,10 +441,10 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   // checkouts are only fast-forwarded. One whose fetch is still running
   // catches up after the launch, if it lands soon enough.
   const unit = { projectId, workspaceId, jobName }
-  const caught = await catchUp(unit, following, 0, (message) => {
+  const caught = await timing.time('origin', catchUp(unit, following, 0, (message) => {
     serverLog(`[workspace] ${workspaceId}: ${message}`)
     options.onProgress?.(`Note: ${message}`)
-  }, { live: opensEarly })
+  }, { live: opensEarly }))
   if (caught.cmds.length > 0) emit('Catching up with origin...', options)
 
   // Then the life's log hooks and the sessions, unless they opened early,
@@ -457,7 +464,9 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   ]
   if (!early) announceAgents()
   await leaveOpenings(unit, launches)
-  const { stdout } = await runtime.exec(jobName, setup.join(' && '), caught.cmds.length > 0 ? { timeout: MOVE_TIMEOUT_MS } : {})
+  const { stdout } = await timing.time(opensEarly || windows === '' ? 'setup' : 'windows',
+    runtime.exec(jobName, setup.join(' && '), caught.cmds.length > 0 ? { timeout: MOVE_TIMEOUT_MS } : {}))
+  if (!opensEarly) timeAgentBoots(workspaceId, launches)
   await markSessionsLaunched(launches.map((l) => l.session.id))
   await caught.settle(stdout)
   // An idle spare is kept current by the pool (`refreshSpares`).
@@ -533,6 +542,36 @@ export async function whenAcpAgentUp(
       + `${String(ACP_CONVERSATION_WAIT_MS / 1000)}s`)
   }
   return outcome
+}
+
+/**
+ * Time the phases of a pod's own start that its programs record: the tree
+ * container's wait for its start instruction and its fill, and the init
+ * hook's run, which leaves the mtimes of two files in the terminal log dir
+ * (keep their names in sync with workspace-bin/yaac-workspace-init). Files
+ * older than the launch are an earlier life's. A runtime that runs neither
+ * leaves none of them.
+ */
+async function timeInPod(
+  timing: StartTiming,
+  projectId: string,
+  workspaceId: string,
+  life: string | undefined,
+  launchedAt: number,
+): Promise<void> {
+  const logs = await openTerminalLogs(projectId, workspaceId).catch(() => null)
+  const mark = (name: string): Promise<number | undefined> => (logs?.stat(name) ?? Promise.resolve(null))
+    .then((st) => (st !== null && st.mtimeMs >= launchedAt ? st.mtimeMs : undefined), () => undefined)
+  const [tree, initStart, initEnd] = await Promise.all([
+    life !== undefined ? readTreeTiming(projectId, workspaceId, life) : null,
+    mark('.init-start'),
+    mark('.init-end'),
+  ])
+  if (tree !== null && tree.process >= launchedAt) {
+    timing.phase('tree.wait', tree.process, tree.instruction)
+    timing.phase('tree.fill', tree.instruction, tree.filled)
+  }
+  if (initStart !== undefined && initEnd !== undefined) timing.phase('init', initStart, initEnd)
 }
 
 /**
@@ -699,11 +738,28 @@ function namedEffort(tool: AgentTool, model: string, effort: string, endpoint: C
   return effort
 }
 
-export async function createWorkspace(
+/**
+ * Start a workspace from scratch: a fresh create, a restart, or the
+ * warming of a spare. Its phases are timed into the server log
+ * (#lib/start-timing).
+ */
+export function createWorkspace(
   projectId: string,
   options: WorkspaceCreateOptions,
 ): Promise<WorkspaceCreateResult> {
+  const timing = startTiming(options.prewarm === true ? 'warm' : options.resume === true ? 'restart' : 'create', options.workspaceId)
+  const created = provisionWorkspace(projectId, options, timing)
+  created.then(() => { timing.end('ok') }, () => { timing.end('failed') })
+  return created
+}
+
+async function provisionWorkspace(
+  projectId: string,
+  options: WorkspaceCreateOptions,
+  timing: StartTiming,
+): Promise<WorkspaceCreateResult> {
   const { workspaceId } = options
+  const startedAt = Date.now()
   const runtime = workspaceDriver()
   // Sandboxed, the workspace holds only placeholder credentials that the
   // proxy swaps, and per-workspace mounts sit over the shared tool homes.
@@ -831,6 +887,7 @@ export async function createWorkspace(
         throw new ServerError('INTERNAL', `could not fetch from ${c.repo.remoteUrl}: ${msg}`)
       })
     fetched.catch(() => { /* read by the checkout leg or the catch-up */ })
+    if (!testEnv.e2eSkipFetch) void timing.time(ofCheckout('fetch', c.path), fetched)
     return [c.repo.id, fetched] as const
   }))
 
@@ -976,14 +1033,15 @@ export async function createWorkspace(
   // Image, checkouts, substrate and host fs prep run concurrently. The
   // checkout leg is joined later, inside launchWithSetup, so it also
   // overlaps pod boot.
+  timing.phase('checks', startedAt)
 
   const imageTask: Promise<string | undefined> = runtime.kind === 'containerless' || options.image !== undefined
     ? Promise.resolve(options.image)
-    : runtime.prepareImage({
+    : timing.time('image', runtime.prepareImage({
       projectId,
       owner,
       onProgress: (m) => emit(m, options),
-    })
+    }))
   imageTask.catch(() => { /* awaited at the join */ })
 
   // The checkouts (`provisionCheckout`). A non-interactive run and a site's
@@ -1042,6 +1100,7 @@ export async function createWorkspace(
       : []))
   })
   workspaceTask.catch(() => { /* awaited later */ })
+  void timing.time('checkout', workspaceTask)
 
   // Egress registration and registry plumbing, owned by the workspace.
   const substrateTask = runtime.prepareSubstrate({
@@ -1057,6 +1116,7 @@ export async function createWorkspace(
     onProgress: (m) => emit(m, options),
   })
   substrateTask.catch(() => { /* awaited at the join */ })
+  void timing.time('substrate', substrateTask)
 
   // Each repo's main clone, mounted read-only at the server's own path: a
   // checkout's alternates file names this path (docs/server-git.md).
@@ -1213,7 +1273,9 @@ export async function createWorkspace(
     }
   })()
 
+  void timing.time('prep', prepTask)
   const [imageRef, substrate, prep] = await Promise.all([imageTask, substrateTask, prepTask])
+  const joinedAt = Date.now()
   // The image too, so a spare that outlives an image change is never
   // claimed, and what it started with, which a claim must ask for exactly.
   if (options.prewarm === true && options.start !== undefined) {
@@ -1588,13 +1650,16 @@ export async function createWorkspace(
       ? `the project's environment variable ${name} conflicts with the value yaac sets for it; rename or remove it`
       : `environment variable ${name} is set to two different values`)
     throwIfProvisionStopped(workspaceId)
+    timing.phase('spec', joinedAt)
+    const launchedAt = Date.now()
     handle = await launchWithSetup({
       spec, projectId, workspaceId, sessions, life,
       onLaunched: (h) => {
         target = { projectId, workspaceId: workspaceId, unitName: h.jobName }
       },
-      options, workspace: workspaceTask, checkouts,
+      options, workspace: workspaceTask, checkouts, timing,
     })
+    void timeInPod(timing, projectId, workspaceId, treeName, launchedAt).finally(timing.hold())
   } catch (err) {
     // Tear down the half-started unit, or it would list as a bogus
     // workspace and collide with a relaunch. Keep the prepared substrate

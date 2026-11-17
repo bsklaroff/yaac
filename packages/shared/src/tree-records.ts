@@ -13,6 +13,16 @@ export const LIVES_DIR = 'lives'
 export const BUNDLES_DIR = 'bundles'
 export const START_FILE = 'start.json'
 export const MANIFEST_FILE = 'manifest.json'
+/** When the tree container started, read its start instruction and
+ *  filled the tree, which it writes into the life's folder for the
+ *  server's start timing (docs/start-timing.md). */
+export const TIMING_FILE = 'timing.json'
+export interface TreeTiming {
+  /** Epoch ms. */
+  process: number
+  instruction: number
+  filled: number
+}
 /** A manifest larger than this is refused unread. */
 export const MAX_MANIFEST_BYTES = 1024 * 1024
 

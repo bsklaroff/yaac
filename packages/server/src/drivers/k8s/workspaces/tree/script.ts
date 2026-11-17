@@ -27,7 +27,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ChainError, checkOut, clearStaleLocks, finish, makeMountPoints, removeLife, restore, takePass, type TreeContext } from './checkpoint'
-import { LIVES_DIR, START_FILE, type StartInstruction } from '@yaac/shared/tree-records'
+import { LIVES_DIR, START_FILE, TIMING_FILE, type StartInstruction, type TreeTiming } from '@yaac/shared/tree-records'
 
 /** Seconds between passes, unless `--interval` says otherwise. */
 const INTERVAL_S = 30
@@ -71,9 +71,24 @@ async function awaitStart(ckpt: string, life: string): Promise<StartInstruction>
   }
 }
 
+/** When this process read its start instruction (epoch ms). */
+let instructionAt = 0
+
 async function context(f: Record<string, string>): Promise<TreeContext> {
   for (const k of ['tree', 'scratch', 'ckpt', 'life']) if (!f[k]) throw new Error(`--${k} is required`)
-  return { tree: f.tree, scratch: f.scratch, ckpt: f.ckpt, start: await awaitStart(f.ckpt, f.life) }
+  const start = await awaitStart(f.ckpt, f.life)
+  instructionAt = Date.now()
+  return { tree: f.tree, scratch: f.scratch, ckpt: f.ckpt, start }
+}
+
+/** Say when this process started, read its instruction and filled the
+ *  tree, for the server's start timing. After the marker, so the startup
+ *  probe never waits on it, and best-effort. */
+async function writeTiming(c: TreeContext, filled: number): Promise<void> {
+  const timing: TreeTiming = { process: Math.round(performance.timeOrigin), instruction: instructionAt, filled }
+  const file = path.join(c.ckpt, LIVES_DIR, c.start.life, TIMING_FILE)
+  await fs.writeFile(file, `${JSON.stringify(timing)}\n`)
+  await fs.chown(file, c.start.uid, c.start.gid)
 }
 
 /**
@@ -114,7 +129,9 @@ async function startLife(c: TreeContext, own: string[]): Promise<boolean> {
   }
   await makeMountPoints(c)
   await fs.mkdir(c.scratch, { recursive: true })
+  const filled = Date.now()
   await fs.writeFile(marker, '')
+  await writeTiming(c, filled).catch(() => { /* only the timing line misses it */ })
   return true
 }
 
