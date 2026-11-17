@@ -81,6 +81,7 @@ import {
 import { leaveOpenings, sessionLaunches } from './session-launch'
 import { reportAgentLaunchFailure, throwIfProvisionStopped } from './provisioning'
 import { recordTrackedScratchDirs } from './tracked-scratch-dirs'
+import { catchUp, followOrigin, MOVE_TIMEOUT_MS, type Following } from './origin-catch-up'
 import {
   checkoutDir,
   provisionCheckout,
@@ -321,11 +322,13 @@ interface WorkspaceSetupParams {
   onLaunched: (handle: RuntimeHandle) => void
   options: WorkspaceCreateOptions
   /**
-   * Host-side checkout provisioning (fetch, branch checks, `createCheckout`),
+   * Host-side checkout provisioning (branch checks, `createCheckout`),
    * started before launch so it overlaps pod boot. A rejection means bad
-   * input (bad branch, fetch failure).
+   * input (a bad branch, a commit origin lacks). Resolves with the checkouts
+   * it made from a branch, which catch up with origin once the workspace is
+   * up (`./origin-catch-up`).
    */
-  workspace: Promise<void>
+  workspace: Promise<Following[]>
   /** The workspace's checkouts. One that predates this launch (`reuse`)
    *  must be relinked to its main clone and remote, and its `origin/*`
    *  brought up to date. */
@@ -423,26 +426,42 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   }
 
   // Everything below reads the checkout, so join it now.
-  await workspace
+  const following = await workspace
+
+  // A checkout whose fetch has landed with a newer tip is moved to it here.
+  // That is ahead of the agents, which then never see the older tree,
+  // unless they opened early: those may already be at work, so their
+  // checkouts are only fast-forwarded. One whose fetch is still running
+  // catches up after the launch, if it lands soon enough.
+  const unit = { projectId, workspaceId, jobName }
+  const caught = await catchUp(unit, following, 0, (message) => {
+    serverLog(`[workspace] ${workspaceId}: ${message}`)
+    options.onProgress?.(`Note: ${message}`)
+  }, { live: opensEarly })
+  if (caught.cmds.length > 0) emit('Catching up with origin...', options)
 
   // Then the life's log hooks and the sessions, unless they opened early,
   // in one command with the checkout's own setup to save round
   // trips, ending with the mark that setup is done, which lets the step
   // reconcile open the life's steps. A checkout this create made already
-  // borrows from its main clone and holds its current refs; a reused one is
+  // borrows from its main clone and holds the refs it had; a reused one is
   // relinked so the agent starts current. A pod's file cache is warmed,
   // which a host's needs no help with.
   const setup = [
     ...checkouts.filter((c) => c.reuse)
       .map((c) => buildCloneLinkExec(path.join(repoDir(c.repo.id), '.git'), seenAt(c), c.repo.remoteUrl)),
+    ...caught.cmds,
     ...(runtime.kind === 'containerless' ? [] : checkouts.map((c) => buildStatusWarmupExec(seenAt(c)))),
     ...(opensEarly || windows === '' ? [] : [windows]),
     finishSetupCommand(paths),
   ]
   if (!early) announceAgents()
-  await leaveOpenings({ projectId, workspaceId, jobName }, launches)
-  await runtime.exec(jobName, setup.join(' && '))
+  await leaveOpenings(unit, launches)
+  const { stdout } = await runtime.exec(jobName, setup.join(' && '), caught.cmds.length > 0 ? { timeout: MOVE_TIMEOUT_MS } : {})
   await markSessionsLaunched(launches.map((l) => l.session.id))
+  await caught.settle(stdout)
+  // An idle spare is kept current by the pool (`refreshSpares`).
+  if (options.prewarm !== true) followOrigin(unit, caught.waiting)
 
   // Check the agents actually started: opening a window succeeds even when
   // its command dies instantly. Not awaited, since the probe must wait for a
@@ -790,9 +809,11 @@ export async function createWorkspace(
     }
   }
 
-  // Started before anything else, since the network is the slowest leg. Each
-  // checkout runs alongside its fetch (`createCheckout`'s `fetched`). e2e
-  // fixtures pre-populate the repo, so the fetch is skipped there.
+  // Started before anything else, since the network is the slowest leg. A
+  // fresh create from a branch does not wait for it: it starts at the commit
+  // the main clone has and catches up once the fetch lands
+  // (`./origin-catch-up`). e2e fixtures pre-populate the repo, so the fetch
+  // is skipped there.
   if (!testEnv.e2eSkipFetch && live.length > 0) emit('Fetching latest from remote...', options)
   const fetches = new Map(live.map((c) => {
     const fetched = testEnv.e2eSkipFetch
@@ -809,7 +830,7 @@ export async function createWorkspace(
         }
         throw new ServerError('INTERNAL', `could not fetch from ${c.repo.remoteUrl}: ${msg}`)
       })
-    fetched.catch(() => { /* awaited by the checkout leg */ })
+    fetched.catch(() => { /* read by the checkout leg or the catch-up */ })
     return [c.repo.id, fetched] as const
   }))
 
@@ -965,11 +986,14 @@ export async function createWorkspace(
     })
   imageTask.catch(() => { /* awaited at the join */ })
 
-  // The checkouts, each alongside its fetch (`provisionCheckout`). An empty
+  // The checkouts (`provisionCheckout`). A non-interactive run and a site's
+  // release are never moved once they run, so theirs wait for the fetch and
+  // start at origin's tip; any other fresh create follows its branch. An empty
   // origin's first push changes the remote, so they start only here, once
   // the checks above (credentials, egress allowlist, tool, the row claiming
   // the id) have passed. Only a provisioning failure can still refuse the
   // create after it.
+  const follows = options.nonInteractive !== true && options.siteId === undefined
   const workspaceTask = Promise.all(checkouts.map(async (c) => {
     const startCommit = await provisionCheckout({
       projectId,
@@ -980,6 +1004,7 @@ export async function createWorkspace(
       gitUser,
       emit: (m) => emit(m, options),
       ...(treeName !== undefined ? { gitOnly: true } : {}),
+      ...(follows ? {} : { settled: true }),
     })
     // A spare's are read when it is claimed, against the branch it is
     // claimed for.
@@ -1004,12 +1029,17 @@ export async function createWorkspace(
         ...(options.restoreNewest === true ? { restoreNewestReadable: true } : {}),
       })
     }
-    if (options.prewarm === true) return
-    await recordTrackedScratchDirs(projectId, workspaceId, checkouts.map((c) => ({
-      repoId: c.repo.id,
-      path: c.path,
-      base: c.refBranch ?? c.branch ?? c.commit,
-    })), scratchDirPaths)
+    if (options.prewarm !== true) {
+      await recordTrackedScratchDirs(projectId, workspaceId, checkouts.map((c) => ({
+        repoId: c.repo.id,
+        path: c.path,
+        base: c.refBranch ?? c.branch ?? c.commit,
+      })), scratchDirPaths)
+    }
+    // `refBranch` is a fresh create's from a branch.
+    return made.flatMap(({ c, startCommit }): Following[] => (follows && c.refBranch !== undefined && startCommit !== undefined
+      ? [{ repoId: c.repo.id, path: c.path, branch: c.refBranch, at: startCommit, fetched: fetches.get(c.repo.id) ?? Promise.resolve() }]
+      : []))
   })
   workspaceTask.catch(() => { /* awaited later */ })
 

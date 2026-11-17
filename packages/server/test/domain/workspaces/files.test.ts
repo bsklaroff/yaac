@@ -10,7 +10,7 @@ import { buildFilesHelper } from '@yaac/test-utils/workspace-bin-helpers'
 import { handleFixture, installFakeWorkspaceDriver, workspacePathsFixture } from '#test/support/fake-driver'
 import { closeDb } from '#db/client'
 import { recordWorkspaceCreated } from '#db/workspace-store'
-import { createCheckout } from '#domain/git'
+import { createCheckout, resolveRemoteRef } from '#domain/git'
 import { execFileAsync } from '#lib/shell'
 import { createWorkspaceFolder, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, getWorkspaceComparison, getWorkspaceGitLog, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, uploadWorkspaceFile, writeWorkspaceFile } from '#domain/workspaces'
 import { git } from '@yaac/test-utils/git'
@@ -60,6 +60,7 @@ async function checkOut(id: string, dir: string): Promise<void> {
   await createCheckout(repoDir(PROJECT), dir, {
     branch: `agent/${id}`,
     baseBranch: 'main',
+    commit: await resolveRemoteRef(repoDir(PROJECT), 'main'),
     remoteUrl: 'https://example.invalid/r.git',
     staging: path.join(tmp, 'staging', `${id}-${path.basename(dir)}`),
   })

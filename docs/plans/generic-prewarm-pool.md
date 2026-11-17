@@ -48,8 +48,8 @@ landed:
   server's main clone without waiting for the fetch, and catches up when the
   fetch lands through one operation run in the workspace: move this checkout
   to origin's tip if that is safe (a fast-forward, or a reset when the
-  checkout is untouched, with hooks off). It replaces `rebranchSpare` for
-  every caller.
+  checkout is untouched, with hooks off): the catch-up in
+  `origin-catch-up.ts`, whose `moveSpare` also moves a spare.
 - **No `node-dirs` init container.** The tree container hands the node-local
   directories its pod mounts to the install uid when a life starts, and
   `yaac cluster delete` hands the data dir's node-local folder back to the

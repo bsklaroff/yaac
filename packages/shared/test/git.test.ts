@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest'
-import { cloneRepo, createCheckout, fetchOrigin } from '@yaac/server/domain/git'
+import { cloneRepo, createCheckout, fetchOrigin, resolveRemoteRef } from '@yaac/server/domain/git'
 import { git, stagingBeside } from '@yaac/test-utils/git'
 import { buildCloneLinkExec, buildOriginRefreshExec, buildStatusWarmupExec, formatSshCommand, getGitUserConfig, gitConfigValue, torSshOpts } from '#git'
 
@@ -106,7 +106,7 @@ describe('clone refresh commands', () => {
     main = path.join(tmp, 'repo')
     await cloneRepo(source, main, null)
     wt = path.join(tmp, 'wt')
-    await createCheckout(main, wt, { staging: stagingBeside(wt), branch: 'agent/x', baseBranch: 'main', remoteUrl: source })
+    await createCheckout(main, wt, { staging: stagingBeside(wt), branch: 'agent/x', baseBranch: 'main', commit: await resolveRemoteRef(main, 'main'), remoteUrl: source })
   })
 
   afterAll(async () => {

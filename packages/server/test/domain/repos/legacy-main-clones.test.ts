@@ -7,7 +7,7 @@ import { recordTestProject } from '@yaac/test-utils/project-fixture'
 import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { claudeDir, legacyRepoDir, repoDir } from '@yaac/shared/project-paths'
 import { closeDb, linkProjectRepo } from '#db'
-import { cloneRepo, createCheckout } from '#domain/git'
+import { cloneRepo, createCheckout, resolveRemoteRef } from '#domain/git'
 import { moveLegacyMainClones } from '#domain/repos'
 
 /**
@@ -56,7 +56,7 @@ beforeAll(async () => {
   // A checkout made before the upgrade borrows through the old path.
   checkout = path.join(tmp, 'checkout')
   await createCheckout(legacyRepoDir(SOURCE), checkout, {
-    staging: stagingBeside(checkout), branch: 'agent/w', baseBranch: 'main', remoteUrl: remote,
+    staging: stagingBeside(checkout), branch: 'agent/w', baseBranch: 'main', commit: await resolveRemoteRef(legacyRepoDir(SOURCE), 'main'), remoteUrl: remote,
   })
 })
 

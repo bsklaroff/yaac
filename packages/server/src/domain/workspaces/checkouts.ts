@@ -12,7 +12,7 @@ import {
   type ProjectRow,
   type RepoRow,
 } from '#db'
-import { createCheckout, getDefaultBranch, isGitAuthError, remoteBranchExists } from '#domain/git'
+import { createCheckout, getDefaultBranch, isGitAuthError, remoteBranchExists, resolveRemoteRef } from '#domain/git'
 import { projectRepo } from '#domain/projects'
 import { fetchRepoCommit, seedRepoOrigin } from '#domain/repos'
 
@@ -229,8 +229,8 @@ export interface PlannedCheckout {
   dir: string
   /** A resume found its `.git`, so it is used as it stands. */
   reuse: boolean
-  /** The branch the user named, checked once the fetch lands. On a resume,
-   *  the recorded base branch, used only if the checkout is gone. */
+  /** The branch the user named. On a resume, the recorded base branch, used
+   *  only if the checkout is gone. */
   branch?: string
   /** The branch a fresh create forks from: `branch`, else the remote's
    *  default. Absent on a resume and at a commit. */
@@ -244,15 +244,40 @@ export interface PlannedCheckout {
 }
 
 /**
- * Make one checkout, or reuse it, once `fetched` (the fetch of its main
- * clone) allows. First it gives an origin with no branches its default one,
- * so no workspace's push picks it (`seedEmptyOrigin`); that push changes
- * the remote, so callers start this only once their own checks have passed.
+ * The commit a workspace starting from `branch` starts at: where the
+ * repo's main clone has origin's branch now, so a start never waits on the
+ * network for a branch the server has seen (docs/server-git.md "Starting a
+ * workspace"). Only a branch the clone lacks, one never fetched or an empty
+ * origin's, waits for `landed`, the start's fetch, and is refused if it is
+ * still missing then. A claim of a spare and a cold create both pick here.
+ */
+export async function pickStart(
+  repo: Pick<RepoRow, 'id' | 'remoteUrl'>,
+  branch: string,
+  landed: () => Promise<void>,
+): Promise<string> {
+  const main = repoDir(repo.id)
+  const seen = await resolveRemoteRef(main, branch).catch(() => undefined)
+  if (seen !== undefined) return seen
+  await landed()
+  return await resolveRemoteRef(main, branch).catch(() => {
+    throw new ServerError('VALIDATION', `branch "${branch}" not found on origin of ${repo.remoteUrl}.`)
+  })
+}
+
+/**
+ * Make one checkout, or reuse it. `fetched` is the fetch of its main clone,
+ * which only some legs wait for. An origin the fetch finds with no branches
+ * is given its default one, so no workspace's push picks it
+ * (`seedEmptyOrigin`); that push changes the remote, so callers start this
+ * only once their own checks have passed.
  *
- * - A reused checkout is left as it stands.
+ * - A reused checkout is left as it stands, once the fetch lands.
  * - At a commit, the commit is fetched if the main clone lacks it.
- * - From a branch, a fresh create checks out what the main clone has while
- *   the fetch runs, and checks a named branch once it lands.
+ * - From a branch, a fresh create starts at the commit the main clone has
+ *   (`pickStart`); the workspace catches up with the fetch once it is up
+ *   (`./origin-catch-up`). With `settled` it waits for the fetch instead and
+ *   starts at origin's tip: a workspace nothing may move once it runs.
  * - A resume whose checkout is gone recreates it from its recorded base
  *   branch, or from the default if origin no longer has that, which is then
  *   recorded as its base branch.
@@ -273,6 +298,9 @@ export async function provisionCheckout(args: {
   emit: (message: string) => void
   /** Make only the `.git`; the tree is checked out on the node. */
   gitOnly?: boolean
+  /** Wait for the fetch before a fresh create from a branch picks its
+   *  commit. */
+  settled?: boolean
 }): Promise<string | undefined> {
   const { projectId, workspaceId, checkout, resume, fetched, gitUser, emit } = args
   const { repo, dir, refBranch } = checkout
@@ -286,7 +314,7 @@ export async function provisionCheckout(args: {
     emit(`Reusing existing ${label} at ${dir}, whose repo was deleted`)
     return undefined
   }
-  const seeded = fetched.then(() => seedRepoOrigin(repo.id, gitUser).catch((err: unknown) => {
+  const seeded = (): Promise<void> => fetched.then(() => seedRepoOrigin(repo.id, gitUser).catch((err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err)
     if (isGitAuthError(msg)) {
       throw new ServerError(
@@ -299,7 +327,7 @@ export async function provisionCheckout(args: {
     throw new ServerError('INTERNAL', `could not give the empty remote its default branch: ${msg}`)
   }))
   if (checkout.reuse) {
-    await seeded
+    await seeded()
     emit(`Reusing existing ${label} at ${dir}`)
     return undefined
   }
@@ -312,36 +340,32 @@ export async function provisionCheckout(args: {
   }
   const { commit } = checkout
   if (commit !== undefined && (!resume || checkout.branch === undefined)) {
-    await seeded
+    await seeded()
     await fetchRepoCommit(repo.id, commit).catch((err: unknown) => {
       throw new ServerError('VALIDATION', err instanceof Error ? err.message : String(err))
     })
     if (resume) await refuseCheckingOutOver(dir)
     emit(`Creating ${label} at ${commit.slice(0, 12)}...`)
-    return createCheckout(main, dir, { ...params, commit })
+    await createCheckout(main, dir, { ...params, commit })
+    return commit
   }
-  if (refBranch !== undefined) {
-    emit(`Creating ${label} from ${refBranch}...`)
-    const named = checkout.branch
-    return createCheckout(main, dir, {
-      ...params,
-      baseBranch: refBranch,
-      fetched: seeded.then(async () => {
-        if (named === undefined || await remoteBranchExists(main, named)) return
-        throw new ServerError('VALIDATION', `branch "${named}" not found on origin of ${repo.remoteUrl}.`)
-      }),
-    })
+  let base = refBranch
+  if (base === undefined) {
+    await seeded()
+    base = checkout.branch !== undefined && await remoteBranchExists(main, checkout.branch)
+      ? checkout.branch
+      : await getDefaultBranch(main)
+    if (base !== checkout.branch) {
+      await applyWorkspaceEvent({ type: 'base-branch-resolved', projectId, workspaceId, repoId: repo.id, baseBranch: base })
+    }
+    // Again, since files may have landed while the fetch ran; the scratch
+    // dirs made since are empty, so they do not count.
+    await refuseCheckingOutOver(dir)
+  } else if (args.settled === true) {
+    await seeded()
   }
-  await seeded
-  const base = checkout.branch !== undefined && !(await remoteBranchExists(main, checkout.branch))
-    ? await getDefaultBranch(main)
-    : checkout.branch ?? await getDefaultBranch(main)
-  if (base !== checkout.branch) {
-    await applyWorkspaceEvent({ type: 'base-branch-resolved', projectId, workspaceId, repoId: repo.id, baseBranch: base })
-  }
-  // Again, since files may have landed while the fetch ran; the scratch
-  // dirs made since are empty, so they do not count.
-  await refuseCheckingOutOver(dir)
   emit(`Creating ${label} from ${base}...`)
-  return createCheckout(main, dir, { ...params, baseBranch: base })
+  const start = await pickStart(repo, base, seeded)
+  await createCheckout(main, dir, { ...params, baseBranch: base, commit: start })
+  return start
 }

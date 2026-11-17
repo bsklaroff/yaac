@@ -128,7 +128,7 @@ export async function readBlobAt(repoPath: string, ref: string, blobPath: string
 /**
  * Per-repo fetch lock. Concurrent fetches on one repo fail on git's ref locks
  * ("cannot lock ref 'refs/remotes/origin/<b>'"), which happens when a create,
- * a spare's re-branch and a branch listing fetch together. Different repos
+ * a claim of a spare and a branch listing fetch together. Different repos
  * still fetch in parallel.
  */
 const fetchOriginMutex = createKeyedMutex()
@@ -319,10 +319,6 @@ async function mainRefs(repoPath: string): Promise<MainRefs> {
   return { refs, originHead }
 }
 
-function remoteSha(main: MainRefs, branch: string): string | undefined {
-  return main.refs.find(([, ref]) => ref === `refs/remotes/origin/${branch}`)?.[0]
-}
-
 /**
  * Write a staged checkout's copy of the main clone's refs as `packed-refs`
  * (thousands of loose files per workspace otherwise), and `origin/HEAD` as
@@ -348,17 +344,13 @@ const CHECKOUT_WORKERS = 8
  * with entries (mount points for scratch dirs are created first).
  *
  * The checkout is its own clone (docs/server-git.md): a full `.git` with a
- * snapshot of the main clone's `origin/*` and tags, `branch` at
- * `origin/<baseBranch>` tracking it, and all objects borrowed via
- * alternates. It is built in `staging`, then renamed in as
- * `<workspacePath>/.git`, so the destination's inode never changes and a pod
- * can bind `/workspace` before this runs.
- *
- * `fetched`, a fetch of the main clone in flight, lets the checkout start
- * from the refs the main clone already has instead of waiting on the
- * network. The result still reflects the refs after the fetch: once it
- * settles, the staged refs are rewritten if any moved, and the tree is
- * updated if the base did. A rejected fetch fails the checkout.
+ * snapshot of the main clone's `origin/*` and tags, `branch` at `commit`
+ * tracking `origin/<baseBranch>` where one is named, and all objects
+ * borrowed via alternates. The caller picks the commit; the snapshot is
+ * taken after, so its `origin/<baseBranch>` may already be ahead of it. It
+ * is built in `staging`, then renamed in as `<workspacePath>/.git`, so the
+ * destination's inode never changes and a pod can bind `/workspace` before
+ * this runs.
  *
  * The checkout is forced: callers reuse a destination that already has a
  * `.git`, so anything else there is a crashed attempt's partial tree. A
@@ -387,27 +379,15 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
   /** Where the `.git` is assembled: a dir of the caller's that no
    *  workspace mounts, on the checkout's filesystem. */
   staging: string
-  fetched?: Promise<void>
+  commit: string
+  baseBranch?: string
   gitOnly?: boolean
-} & ({ baseBranch: string; commit?: undefined } | { commit: string; baseBranch?: undefined })): Promise<string> {
-  // Awaited after the checkout; until then nothing would observe a rejection.
-  params.fetched?.catch(() => { /* observed below */ })
+}): Promise<void> {
   if (await fs.lstat(path.join(repoPath, '.git', 'shallow')).then(() => true, () => false)) {
     throw new Error(`${repoPath} is a shallow clone, which a workspace cannot borrow from`)
   }
-  const { branch, baseBranch, commit } = params
-  let fetched = params.fetched
-  let main = await mainRefs(repoPath)
-  // A branch the fetch has yet to bring in cannot be checked out early, and
-  // a commit is checked out as it is.
-  if (fetched !== undefined && (baseBranch === undefined || remoteSha(main, baseBranch) === undefined)) {
-    await fetched
-    fetched = undefined
-    main = await mainRefs(repoPath)
-  }
-  let startSha = commit ?? remoteSha(main, baseBranch ?? '')
-  if (startSha === undefined) throw new Error(`origin/${baseBranch ?? ''} does not exist in ${repoPath}`)
-  const { staging } = params
+  const { branch, baseBranch, commit, staging } = params
+  const main = await mainRefs(repoPath)
   const gitDir = params.gitOnly ? path.join(workspacePath, '.git') : path.join(staging, '.git')
   await fs.rm(staging, { recursive: true, force: true })
   await fs.mkdir(staging, { recursive: true })
@@ -451,32 +431,16 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
     await fs.writeFile(path.join(gitDir, 'info', 'exclude'), '/.claude/worktrees/\n.nfs*\n')
     await writeCheckoutRefs(gitDir, main)
     await fs.mkdir(workspacePath, { recursive: true })
-    // `-B` points the branch at `sha` in the same process, with its reflog.
-    const checkOut = (sha: string): Promise<string> => (params.gitOnly
-      ? runGit({ kind: 'private', gitDir, workTree: staging }, ['update-ref', '-m', `branch: Created from ${sha}`, `refs/heads/${branch}`, sha])
+    // `-B` points the branch at the commit in the same process, with its
+    // reflog.
+    await (params.gitOnly
+      ? runGit({ kind: 'private', gitDir, workTree: staging }, ['update-ref', '-m', `branch: Created from ${commit}`, `refs/heads/${branch}`, commit])
       : runGit({ kind: 'private', gitDir, workTree: workspacePath },
-        ['-c', `checkout.workers=${String(CHECKOUT_WORKERS)}`, 'checkout', '--force', '--quiet', '-B', branch, sha]))
-    await checkOut(startSha)
-    // Checked out alongside the fetch; catch up with whatever it moved
-    // before the checkout becomes visible.
-    if (fetched !== undefined) {
-      await fetched
-      const after = await mainRefs(repoPath)
-      if (JSON.stringify(after) !== JSON.stringify(main)) {
-        const sha = remoteSha(after, baseBranch ?? '')
-        if (sha === undefined) throw new Error(`origin/${baseBranch ?? ''} was deleted on origin`)
-        await writeCheckoutRefs(gitDir, after)
-        // The index still holds the old tree, so only changed files are
-        // written, and files the new tree drops are deleted.
-        if (sha !== startSha) await checkOut(sha)
-        startSha = sha
-      }
-    }
+        ['-c', `checkout.workers=${String(CHECKOUT_WORKERS)}`, 'checkout', '--force', '--quiet', '-B', branch, commit]))
     if (!params.gitOnly) await fs.rename(gitDir, path.join(workspacePath, '.git'))
   } finally {
     await fs.rm(staging, { recursive: true, force: true })
   }
-  return startSha
 }
 
 /**

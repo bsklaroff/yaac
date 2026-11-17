@@ -4,9 +4,6 @@ import type * as dbModule from '#db'
 vi.mock('#domain/workspaces/create', () => ({
   createWorkspace: vi.fn(),
 }))
-vi.mock('#domain/workspaces/spare-pool', () => ({
-  rebranchSpare: vi.fn(),
-}))
 vi.mock('#domain/workspaces/cleanup', () => ({
   // The awaited teardown. The reap removes the spare's checkout after it, so
   // it must not resolve before the Job is gone.
@@ -38,7 +35,6 @@ import {
   type SpareSettings,
 } from '#domain/workspaces/prewarm'
 import { spawningSpares } from '#domain/workspaces/provisioning'
-import { rebranchSpare } from '#domain/workspaces/spare-pool'
 import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
 import { LABEL_PREWARMED, type PodInfo } from '#drivers/k8s/substrate/pods'
 import { runtimeHandleFromPod } from '#drivers/k8s/workspaces'
@@ -66,8 +62,16 @@ const REPO = 'r'
 const project = (id: string): ProjectRow => ({
   id,
   createDefaults: {},
+  scratchDirs: { dirs: [] },
+  cacheVolumes: {},
   repos: [{ projectId: id, dir: 'r', readOnly: false, ghToken: true, lastIncluded: true, repo: { id: REPO } }],
 }) as unknown as ProjectRow
+
+/** Where a move leaves a spare's checkout, as its exec reports it: at the
+ *  move's target unless a case says otherwise. */
+let left: string | undefined
+const exec = vi.fn((_jobName: string, cmd: string) =>
+  Promise.resolve({ stdout: `yaac-at:${left ?? /merge --ff-only (\S+)/.exec(cmd)?.[1] ?? ''}\n`, stderr: '' }))
 
 /** A spare warmed with that. */
 const WARMED: Pick<SpareSettings, 'selection' | 'repos'> = {
@@ -129,7 +133,11 @@ describe('reconcilePrewarmPool', () => {
     vi.mocked(getProjectRow).mockImplementation((id) => Promise.resolve(project(id)))
     vi.mocked(getTimeZone).mockResolvedValue({ timeZone: null, pinned: false })
     vi.mocked(findWorkspaceRow).mockResolvedValue(undefined)
-    installFakeWorkspaceDriver({ destroy })
+    left = undefined
+    exec.mockClear()
+    installFakeWorkspaceDriver({ exec, destroy })
+    vi.mocked(getDefaultBranch).mockResolvedValue('main')
+    vi.mocked(resolveRemoteRef).mockResolvedValue('tip')
     destroy.mockClear()
     mockCreate.mockResolvedValue({ workspaceId: 's', jobName: 'yaac-p-s', forwardedPorts: [] })
     // Default to success: each reap step waits on the previous one, so a
@@ -496,10 +504,6 @@ describe('reconcilePrewarmPool', () => {
   })
 
   describe('keeping spares on their base branch\'s tip', () => {
-    /** The spare's checkout HEAD, as an exec into it reads it. */
-    let head: string
-    const mockRebranch = vi.mocked(rebranchSpare)
-    const exec = vi.fn(() => Promise.resolve({ stdout: `${head}\n`, stderr: '' }))
     const active = (): RuntimeHandle[] => [
       pod({ jobName: 'yaac-p-real', workspaceId: 'r1' }),
       pod({
@@ -511,42 +515,40 @@ describe('reconcilePrewarmPool', () => {
     ]
 
     beforeEach(() => {
-      head = 'old'
-      exec.mockClear()
-      installFakeWorkspaceDriver({ exec, destroy })
-      vi.mocked(getDefaultBranch).mockResolvedValue('main')
       vi.mocked(resolveRemoteRef).mockResolvedValue('new')
-      mockRebranch.mockResolvedValue(undefined)
       mockWorkspaces.mockResolvedValue(active())
     })
 
-    // So a claim finds it current instead of resetting it, rerunning the
-    // its steps and restarting the agent while the user waits.
+    // So a claim finds it current instead of moving it while the user
+    // waits.
     it('moves a spare to its base\'s new tip in the background, as warmed, once per tip', async () => {
       await pass()
       await flush()
-      expect(mockRebranch).toHaveBeenCalledWith(
-        expect.objectContaining({ workspaceId: 's2' }), '/workspace', 'dev', 'new',
-      )
-      // Already at that tip: no further exec, let alone a move.
-      head = 'new'
+      // One command: `origin/dev` set to the tip, a fast-forward with hooks
+      // off, and for a spare, which nothing has touched, a reset where git
+      // cannot fast-forward.
+      expect(exec).toHaveBeenCalledTimes(1)
+      const [job, cmd] = exec.mock.calls[0]
+      expect(job).toBe('yaac-p-spare')
+      expect(cmd).toContain("git -C '/workspace' update-ref 'refs/remotes/origin/dev' new")
+      expect(cmd).toMatch(/-c core\.hooksPath=\/dev\/null merge --ff-only new .*\|\| \{ git -C '\/workspace' reset --hard new .*clean -fd/)
+      expect(cmd).not.toContain('status --porcelain')
+      // Already at that tip: no further exec.
       await pass()
       await flush()
       expect(exec).toHaveBeenCalledTimes(1)
-      expect(mockRebranch).toHaveBeenCalledTimes(1)
 
-      // A spare already at the tip is only read.
+      // A tip not seen by this process is moved to again, which a checkout
+      // already there makes a no-op.
       spareHeads.clear()
       await pass()
       await flush()
       expect(exec).toHaveBeenCalledTimes(2)
-      expect(mockRebranch).toHaveBeenCalledTimes(1)
     })
 
     // A claim that finishes while the refresh reads the base's tip leaves no
     // claim reservation behind, only the spare's settings gone. Moving the
-    // checkout then would reset the user's new workspace and restart its
-    // agent.
+    // checkout then would move the user's new workspace under its agent.
     it('leaves alone a spare claimed while its base was being read', async () => {
       vi.mocked(resolveRemoteRef).mockImplementation(() => {
         spareSettings.delete('s2')
@@ -555,13 +557,12 @@ describe('reconcilePrewarmPool', () => {
       await pass()
       await flush()
       expect(exec).not.toHaveBeenCalled()
-      expect(mockRebranch).not.toHaveBeenCalled()
       expect(refreshing.size).toBe(0)
     })
 
     it('keeps a spare mid-refresh in the pool without reaping it, and reaps one a refresh broke', async () => {
       let finish = (): void => {}
-      mockRebranch.mockReturnValue(new Promise((resolve) => { finish = resolve }))
+      exec.mockReturnValueOnce(new Promise((resolve) => { finish = () => { resolve({ stdout: 'yaac-at:new\n', stderr: '' }) } }))
       await pass()
       await flush()
       expect(refreshing.has('yaac-p-spare')).toBe(true)
@@ -574,9 +575,10 @@ describe('reconcilePrewarmPool', () => {
       await flush()
       expect(refreshing.size).toBe(0)
 
+      // A spare its move did not bring to the tip is no use to a claim.
       clearPrewarmStateForTests()
       mockWorkspaces.mockResolvedValue(active())
-      mockRebranch.mockRejectedValue(new Error('reset failed'))
+      left = 'old'
       await pass()
       await flush()
       expect(mockCleanup).toHaveBeenCalledWith(expect.objectContaining({ jobName: 'yaac-p-spare', workspaceId: 's2' }))

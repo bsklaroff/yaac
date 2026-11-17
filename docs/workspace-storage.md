@@ -79,7 +79,11 @@ running workspace at a time mounts, on a cluster.
   the pool match on, is held in the server's memory, so after a server
   restart every spare counts as stale and is reaped and rewarmed. A claim's
   commit point is inserting the row (`workspace-created`, with the claimed
-  settings, title, group and base branch), before it changes the spare; once
+  settings, title, group and base branch), before it changes the spare. It
+  never waits for its fetch of origin: the workspace starts at the commit
+  the main clone has, a spare on another commit or branch is moved there
+  first, and the checkout catches up once the fetch lands (docs/server-git.md
+  "Starting a workspace"). Once
   it has, it removes the label from the pod, in one write the API server
   refuses unless the pod still has it, then from the Job. The pod's write
   wins the claim, so the session's window opens while the Job's is in

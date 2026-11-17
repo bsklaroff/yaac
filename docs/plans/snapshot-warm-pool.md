@@ -12,7 +12,7 @@ snapshots.
 
 ## Goal
 
-A prewarmed spare (`domain/workspaces/prewarm.ts`, `spare-pool.ts`) is a
+A prewarmed spare (`domain/workspaces/prewarm.ts`) is a
 fully booted workspace pod with its agent running, so every spare costs the
 RAM and CPU of a live workspace. A pool of memory snapshots would cost disk
 instead. A claim restores the snapshot into a new pod with the agent already
@@ -82,7 +82,7 @@ These are worth doing on their own and shrink the later change:
 
 - **Move per-workspace identity out of the pod spec**, into something
   delivered at claim time (a file `yaac-workspace-init` reads, or a streamd
-  call). This also simplifies `rebranchSpare` and `retoolSpare`.
+  call). This also simplifies `moveSpare`.
   docs/plans/generic-prewarm-pool.md plans this as its first phase, and goes
   on to move the mounts out as well, which a restore would need too.
 - **Spike, measuring only, on a host kind cluster.** Run `runsc checkpoint`

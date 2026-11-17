@@ -20,9 +20,9 @@ A containerless workspace sees the server's paths unchanged.
 **The checkout's git dir** (`createCheckout` in `#domain/git`) holds no
 objects. It starts with the main clone's `origin/*` refs and tags written as
 `packed-refs` (so thousands of branches do not become thousands of files),
-`agent/<id>` checked out at `origin/<base>`, and a server-written config: the
-object format, `remote.origin` (the repo row's URL, without a token), and
-`agent/<id>`'s upstream. It is built in a staging dir beside the workspace
+`agent/<id>` checked out at the commit the start picked (below), and a
+server-written config: the object format, `remote.origin` (the repo row's
+URL, without a token), and `agent/<id>`'s upstream. It is built in a staging dir beside the workspace
 dir, where no workspace mounts it, and renamed in as `.git`, so the checkout
 directory itself is never replaced; a pod may already have the workspace
 dir bound as `/workspace`. Plain `git clone` can't do this: it refuses a
@@ -38,17 +38,8 @@ for settings such as macOS's `core.ignorecase`, with the files ref format
 pinned over the user's default: a reftable repo would ignore the refs written
 beside it. Its `origin/*` refs, tags, `HEAD` and remaining config are then
 written as files, and a `checkout -B` sets `agent/<id>` with its reflog and
-writes the tree. So a checkout costs three git processes (the `init`, the
-`for-each-ref` that reads the main clone's refs, and the `checkout`), plus a
-second `for-each-ref` once a fetch it overlapped lands.
-
-A create's checkout does not wait for the create's fetch from origin. It
-starts from the refs the main clone already has, and once the fetch lands,
-the staged refs are rewritten if any moved, and the tree is moved forward if
-the base did, before `.git` is renamed in. The fetch is usually a no-op, since
-the branch picker and the origin-refresh timer fetch too, so the checkout
-costs the create nothing beyond the fetch's own round trip. A base the main
-clone does not have yet waits for the fetch.
+writes the tree. So a checkout costs three git processes: the `init`, the
+`for-each-ref` that reads the main clone's refs, and the `checkout`.
 
 **An empty origin gets its default branch from the server.** A just-created
 remote has no branches, and a host such as GitHub makes the first branch
@@ -87,6 +78,91 @@ workspace must push it. Under k8s this is enforced, since a pod sees only its
 checkout and a read-only main clone. Under containerless it is not: every
 workspace runs as the server's user, so an agent can write the main clone and
 other checkouts directly (docs/containerless-driver.md).
+
+## Starting a workspace
+
+A start fetches origin, but nothing on its way to the agent's window waits
+for that fetch, whether it claims a prewarmed spare or provisions cold. Both
+follow one sequence (`pickStart` in `checkouts.ts` and `origin-catch-up.ts`,
+in `#domain/workspaces`):
+
+1. **Pick the start commit** from the main clone: the tip it has for the
+   base branch, or for the branch the create names. Only a branch the clone
+   lacks (one never fetched, or an empty origin's) waits for the fetch, and
+   the start is refused if the branch is still missing then. So a branch
+   that does not exist is refused before anything launches.
+2. **Get a workspace at that commit.** A cold create writes the checkout's
+   `.git` there and, under k8s, the tree container's start instruction at
+   once. A claim takes a spare, moving it first if it stands on another
+   commit or branch.
+3. **Launch the agent.**
+4. **Catch up** once the workspace is up and the fetch has landed, whichever
+   comes later. A fetch that has landed by the time the agent's window is
+   about to open is caught up with in the command that opens it, ahead of
+   the window, so the agent never sees the older tree. That is the usual
+   case for a cold create, whose pod takes longer to boot than a fetch. A
+   fetch that lands within five seconds after the launch is caught up with
+   then. A later one leaves the workspace behind origin, like any workspace
+   whose base moved after it started, and the server logs it.
+
+   One launch opens its windows before that command: a containerless
+   workspace's chat agents start while the checkout is still being
+   written, their conversations held until it lands. Their catch-up counts
+   as after the launch.
+
+Catching up is one command, run inside the workspace as the agent's own
+user. The server resolves the target commit from the main clone, and the
+command moves the checkout to it only where that is safe:
+
+- It fast-forwards (`git merge --ff-only`). Git refuses when the checkout
+  has commits of its own, or a change the incoming commits would overwrite.
+- Where a fast-forward is impossible (origin's branch was force-pushed),
+  the checkout is reset to the target only ahead of the launch, while
+  nothing runs in the workspace, and only if it is untouched: still on the
+  commit it started at, with nothing modified or untracked
+  (`git status --porcelain --untracked-files=all --ignore-submodules=none`,
+  which no git config can narrow). The test and the reset are separate
+  processes, so after the launch a file written between them would be
+  lost; there the checkout is left behind origin instead.
+- Any other checkout is left as it is, and the server logs it.
+
+Either way the checkout's `origin/<branch>` is set to the target, so its
+ahead and behind counts are right, and a checkout that moved has its
+recorded start commit moved with it. The command runs with the repo's hooks
+off, so a `post-merge` hook (a package install, say) does not fire because
+the server moved the checkout. Each checkout of a workspace with several
+repos catches up on its own repo's fetch.
+
+The same command moves a spare: to a new tip in the background, so a claim
+finds it current (`refreshSpares`), and to the commit or branch a claim
+starts at. Nothing has touched a spare, so it is reset wherever a
+fast-forward is refused, its untracked files removed but for the mount
+points (scratch dirs and cache volumes), and a spare that still does not
+reach its target is reaped.
+
+What this costs:
+
+- An agent launched before the catch-up read its instructions
+  (`CLAUDE.md`) and took its git snapshot at the older commit, and an init
+  step already running saw the older tree.
+- A fast-forward after the launch moves the tree under a running agent.
+  Git checks the working tree first and then rewrites files, so a change
+  made in between to a file the incoming commits also change is
+  overwritten. What the agent changes elsewhere stays.
+- The untouched test trusts `git status`, which does not report a change
+  to an entry marked `assume-unchanged` or `skip-worktree`, and a reset
+  overwrites an ignored file at a path the target starts tracking.
+- A fetch that fails does not fail a start whose branch the main clone
+  has: the workspace starts from the last commit fetched, and the server
+  logs why. A create that needs the fetch (a branch the clone lacks, a
+  commit, an empty origin) still fails with it.
+- A named branch origin has deleted, which the main clone still has until
+  the fetch prunes it, starts and is logged.
+
+Some starts wait for the fetch instead and are never moved afterwards: a
+create at a commit, which has no branch to follow; a restart, which reuses
+its checkout; and a non-interactive run or a site's release, which nothing
+may change once it runs, so it starts at origin's tip.
 
 ## The main clone never deletes an object
 
@@ -127,15 +203,16 @@ copies them over (`origin.ts` in `#domain/repos` fetches,
   workspace that has one, in any project, a few at a time, without making
   the caller wait. Fan-outs are coalesced per repo, so a burst of creates
   costs at most two rounds. A spare that a create is claiming is refreshed
-  only once the claim is over: the claim waits on the same fetch, and the
-  command that opens its session would queue behind the refresh in the pod.
+  only once the claim is over, so the command that opens its session never
+  queues behind the refresh in the pod.
 - **A timer fetches.** The `origin-refresh` reconcile step fetches every
   repo that a running workspace has a checkout of and that was not fetched
   in the last five minutes. A failure is logged and retried next interval.
 - **A launch that reuses a checkout refreshes**, right after rewriting the
   alternates line, in the same exec that starts the agents. A checkout the
-  launch made was copied from the main clone after the create's fetch, so
-  it is current already. In a pod that exec also starts a detached
+  launch made holds the refs the main clone had then, and catches up with
+  the create's fetch ("Starting a workspace"). In a pod that exec also
+  starts a detached
   `git --no-optional-locks status` (`buildStatusWarmupExec`), which fills
   the sandbox's file cache before anything else asks
   (docs/nfs-checkout-performance.md).
@@ -159,6 +236,10 @@ An agent's own `git fetch origin` goes to the network, but because the pod
 also mounts the main clone's refs, git offers their tips as haves and
 downloads only what the main clone lacks.
 
+A start's catch-up ("Starting a workspace") is the one place a checkout's
+`origin/<branch>` is set outright rather than fast-forwarded, which is how
+it follows a force-push.
+
 ## Where the server runs git
 
 - **Against the main clone**, trusted because only the server writes it:
@@ -171,8 +252,9 @@ downloads only what the main clone lacks.
 - **Never against a checkout's git dir after that.** Anything that needs a
   checkout's state runs inside the workspace, in that checkout's directory,
   so only while it runs: the changes diff, the file explorer, the git status
-  bar's ahead/behind count (docs/file-editor.md), a spare's HEAD and its move to a new base
-  tip, a stop's removal of ignored files, and the refresh above. The one
+  bar's ahead/behind count (docs/file-editor.md), a spare's HEAD, the move
+  of a spare or a starting workspace to its branch's tip, a stop's removal
+  of ignored files, and the refresh above. The one
   exception is that removal's fallback for a stopped workspace, which runs
   git on the checkout as root in a one-shot gVisor pod that mounts nothing
   else, or as the server's user under containerless, with the

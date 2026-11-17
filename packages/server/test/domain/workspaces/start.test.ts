@@ -1,14 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type * as childProcessModule from 'node:child_process'
+import { execFile, type default as childProcessModule } from 'node:child_process'
 
-/** While set, a `git fetch` never answers: an origin too slow to wait on. */
-const slowOrigin = vi.hoisted(() => ({ hang: false }))
+/** While `hold` answers a promise for a `git fetch`'s arguments, that fetch
+ *  starts only once it resolves: an origin a case keeps slow. */
+const slowOrigin = vi.hoisted(() => ({ hold: undefined as ((argv: string[]) => Promise<void> | undefined) | undefined }))
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof childProcessModule>()
   const execFile = (...args: Parameters<typeof actual.execFile>): ReturnType<typeof actual.execFile> => {
     const [file, argv] = args as unknown as [string, string[] | undefined]
-    if (slowOrigin.hang && file === 'git' && argv?.includes('fetch')) return {} as ReturnType<typeof actual.execFile>
-    return actual.execFile(...args)
+    const held = file === 'git' && argv?.includes('fetch') === true ? slowOrigin.hold?.(argv) : undefined
+    if (held === undefined) return actual.execFile(...args)
+    void held.then(() => actual.execFile(...args))
+    return {} as ReturnType<typeof actual.execFile>
   }
   return { ...actual, execFile }
 })
@@ -46,6 +49,7 @@ import {
   resetWorkspaceDriver,
   snapshotFixture,
   substrateFixture,
+  workspacePathsFixture,
 } from '#test/support/fake-driver'
 import {
   agentHistoryDir,
@@ -169,6 +173,79 @@ describe('prepareStart', () => {
   /** What `rev-parse HEAD` reads in a workspace; origin's main unless a case
    *  moves it. */
   let head: string
+  /** Where a move leaves its checkout, for a case in which it does not
+   *  reach its target. */
+  let stuck: string | undefined
+
+  /**
+   * What a command prints in a workspace of the fake runtime. A move
+   * (`./origin-catch-up`) leaves its checkout at its target, as a
+   * fast-forward does, and says so; anything else that reads HEAD gets it.
+   */
+  function answer(cmd: string): string {
+    const targets = [...cmd.matchAll(/merge --ff-only (\w+)/g)].map((m) => m[1])
+    if (targets.length === 0) return cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : ''
+    if (stuck === undefined) head = targets[targets.length - 1]
+    return targets.map((t) => `yaac-at:${stuck ?? t}\n`).join('')
+  }
+
+  /** Settle `started` with fake time, which has to pass while it also
+   *  waits on real disk and git work. */
+  async function settleWithFakeTime<T>(started: Promise<T>): Promise<T> {
+    let done = false
+    void started.finally(() => { done = true }).catch(() => {})
+    for (let i = 0; i < 200 && !done; i++) {
+      await vi.advanceTimersByTimeAsync(250)
+      await new Promise((r) => setImmediate(r))
+    }
+    return await started
+  }
+
+  /** What the server has logged, one message a line. */
+  const logged = (): string => vi.mocked(serverLog).mock.calls.map(([m]) => m).join('\n')
+
+  /**
+   * Give a repo an origin a fetch really reads: it becomes one the server
+   * hosts, whose bare repository on disk holds the main clone's `main` and
+   * a `dev` beside it. Fetches run from here on, and `hold` keeps this
+   * repo's back until the function it answers is called.
+   */
+  async function slowRealOrigin(repoId = DEMO_PROJECT_ID): Promise<{ origin: string; hold: () => () => void }> {
+    const origin = hostedRepoDir(repoId)
+    await fs.mkdir(path.dirname(origin), { recursive: true })
+    await git(tmpDir, ['clone', '-q', '--bare', repoDir(repoId), origin])
+    await git(origin, ['branch', 'dev', 'main'])
+    await (await getDb()).update(repos).set({ remoteUrl: `http://yaac.internal/${repoId}.git`, hosted: true }).where(eq(repos.id, repoId))
+    vi.stubEnv('YAAC_E2E_SKIP_FETCH', '')
+    let held: Promise<void> | undefined
+    const others = slowOrigin.hold
+    slowOrigin.hold = (argv) => (argv.includes(origin) ? held : others?.(argv))
+    return {
+      origin,
+      hold: () => {
+        let release = (): void => {}
+        held = new Promise<void>((r) => { release = r })
+        return release
+      },
+    }
+  }
+
+  /** Commit `file` to a branch of `origin`: on its tip, or with `rewrite`
+   *  in place of it, as a force-push leaves it. Answers the new tip. */
+  async function pushTo(origin: string, branch: string, file: string, opts: { rewrite?: boolean } = {}): Promise<string> {
+    const work = path.join(tmpDir, `push-${randomUUID()}`)
+    await git(tmpDir, ['clone', '-q', '-b', branch, origin, work])
+    await fs.writeFile(path.join(work, file), `${file}\n`)
+    await git(work, ['add', '-A'])
+    await git(work, ['-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '-q', ...(opts.rewrite === true ? ['--amend'] : []), '-m', file])
+    await git(work, ['push', '-q', '-f', 'origin', `HEAD:refs/heads/${branch}`])
+    return (await git(work, ['rev-parse', 'HEAD'])).trim()
+  }
+
+  /** Resolves once a main clone has `commit` as `origin/<branch>`. */
+  const fetched = (branch: string, commit: string, repoId = DEMO_PROJECT_ID): Promise<void> => vi.waitFor(async () => {
+    expect((await git(repoDir(repoId), ['rev-parse', `origin/${branch}`])).trim()).toBe(commit)
+  }, { timeout: 30_000 })
 
   /** The conversation an acp agent brings up, for cases about other things. */
   const upConversation = { whenReady: () => Promise.resolve(), prompt: () => Promise.resolve() } as unknown as AcpConversation
@@ -205,8 +282,7 @@ describe('prepareStart', () => {
           registerAcpConversation(DEMO_PROJECT_ID, workspaceId, { handle: window, conversationId: `acp-${workspaceId}`, panePid: '42' }, upConversation)
           return Promise.resolve({ stdout: '42\n', stderr: '' })
         }
-        const stdout = cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : ''
-        return Promise.resolve({ stdout, stderr: '' })
+        return Promise.resolve({ stdout: answer(cmd), stderr: '' })
       },
       registerWorkspace: (registration) => { registrations.push(registration); return Promise.resolve() },
       claimSpare: (id) => {
@@ -258,6 +334,7 @@ describe('prepareStart', () => {
     tmpDir = await createTempDataDir()
     await seedProject()
     head = (await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'origin/main'])).trim()
+    stuck = undefined
     specs = []
     execs = []
     destroys = []
@@ -273,6 +350,7 @@ describe('prepareStart', () => {
   })
 
   afterEach(async () => {
+    slowOrigin.hold = undefined
     vi.unstubAllEnvs()
     setWorkspaceBinDir(null)
     clearAllProvisioningForTests()
@@ -1147,19 +1225,21 @@ describe('prepareStart', () => {
       await expect(start({ noSession: true, commit: 'f'.repeat(40) })).rejects.toThrow(/origin has no commit/)
     })
 
-    it('fails fast, rolling the row back, when origin cannot be fetched', async () => {
+    // A start never waits on the network for a branch the main clone has.
+    it('starts from the last commit fetched when origin cannot be reached, saying so', async () => {
       // Nothing listens on this host's 443, so the fetch fails at once.
       vi.stubEnv('YAAC_E2E_SKIP_FETCH', '')
       await setRemote('https://127.0.0.1/o/r.git')
       await setProjectEgressAllowlist(DEMO_PROJECT_ID, { hosts: ['127.0.0.1'], defaults: true })
 
-      await expect(start({ workspaceId: 'wt-nofetch' })).rejects.toThrow(/could not fetch from https:\/\/127\.0\.0\.1\/o\/r\.git/)
+      await start({ workspaceId: 'wt-nofetch' })
 
-      // A bad input is not retried.
-      expect(specs).toHaveLength(1)
-      await vi.waitFor(async () => {
-        expect(await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-nofetch')).toBeUndefined()
+      expect((await checkout('wt-nofetch'))?.startCommit).toBe(head)
+      await vi.waitFor(() => {
+        expect(logged()).toMatch(/wt-nofetch: the checkout starts from the last commit fetched: .*could not fetch from https:\/\/127\.0\.0\.1\/o\/r\.git/)
       }, { timeout: 30_000 })
+      // A branch the clone has never seen needs the fetch, and fails with it.
+      await expect(start({ workspaceId: 'wt-unseen', branch: 'unseen' })).rejects.toThrow(/could not fetch from/)
     })
 
     it('hands an SSH remote the host key it was assigned with, and no GH_TOKEN', async () => {
@@ -1300,6 +1380,270 @@ describe('prepareStart', () => {
   // A failed create rolls back. Its prompt survives as a draft, updating
   // the one it came from, only for a caller that asked; the error is the
   // create's own, so its code stands.
+  /**
+   * A start does not wait for its fetch of origin: it begins at the commit
+   * the main clone has and catches up once the fetch lands. Origin here is
+   * a real repository whose fetch a case holds back, and the runtime's
+   * workspaces are their real checkouts, in which it runs each move.
+   */
+  describe('catching up with origin', () => {
+    let origin: string
+    let hold: () => () => void
+    let release: () => void
+    const dirOf = (id: string, repo = ''): string => path.join(workspaceDir(DEMO_PROJECT_ID, id), repo)
+    const rev = async (dir: string, what = 'HEAD'): Promise<string> => (await git(dir, ['rev-parse', what])).trim()
+    const moves = (): string[] => cmds().filter((c) => c.includes('merge --ff-only'))
+
+    function installRealCheckouts(overrides: Partial<WorkspaceDriver> = {}): void {
+      installDriver({
+        kind: 'containerless',
+        workspacePaths: (jobName) => workspacePathsFixture({ workspaceDir: dirOf(jobName.slice('yaac-demo-'.length)) }),
+        exec: async (jobName, cmd) => {
+          execs.push({ jobName, cmd })
+          let stdout = ''
+          for (const move of cmd.match(/\{ git -C \S+ update-ref .*?echo "yaac-at:[^"]*"; \}/g) ?? []) {
+            stdout += await new Promise<string>((resolve, reject) => {
+              execFile('sh', ['-c', move], (err, out) => { if (err) reject(new Error(err.message)); else resolve(out) })
+            })
+          }
+          return { stdout, stderr: '' }
+        },
+        ...overrides,
+      })
+    }
+
+    beforeEach(async () => {
+      ({ origin, hold } = await slowRealOrigin())
+      release = hold()
+      installRealCheckouts()
+    })
+    afterEach(() => { release() })
+
+    it('launches the agent on the commit the main clone has, then fast-forwards its checkout when the fetch lands', async () => {
+      const tip = await pushTo(origin, 'main', 'late.txt')
+
+      const { workspaceId } = await start({ workspaceId: 'wt-late' })
+
+      // The agent's window is open, and the fetch has not answered.
+      const dir = dirOf(workspaceId)
+      expect(sessionExec()).toBeDefined()
+      expect(await rev(dir)).toBe(head)
+      expect((await checkout(workspaceId))?.startCommit).toBe(head)
+      expect(moves()).toEqual([])
+      // What the agent did meanwhile, where the incoming commits change
+      // nothing, stays. A hook of its repo is not run on the server's say-so.
+      await fs.writeFile(path.join(dir, 'README.md'), 'edited\n')
+      await fs.writeFile(path.join(dir, 'notes.txt'), 'mine\n')
+      await fs.mkdir(path.join(dir, '.git', 'hooks'), { recursive: true })
+      await fs.writeFile(path.join(dir, '.git', 'hooks', 'post-merge'), '#!/bin/sh\ntouch hook-ran\n', { mode: 0o755 })
+
+      release()
+      await vi.waitFor(async () => { expect((await checkout(workspaceId))?.startCommit).toBe(tip) }, { timeout: 30_000 })
+      expect(await rev(dir)).toBe(tip)
+      expect(await rev(dir, 'origin/main')).toBe(tip)
+      expect((await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD', '@{u}'])).trim().split('\n')).toEqual([`agent/${workspaceId}`, 'origin/main'])
+      expect(await fs.readFile(path.join(dir, 'README.md'), 'utf8')).toBe('edited\n')
+      expect((await fs.readdir(dir)).sort()).toEqual(['.git', 'README.md', 'late.txt', 'node_modules', 'notes.txt', 'target'])
+    })
+
+    it('catches up ahead of the agent when the fetch has landed by the time its window opens, and runs nothing for a tip that has not moved', async () => {
+      const tip = await pushTo(origin, 'main', 'early.txt')
+      // The runtime comes up only after the checkout is made and the fetch
+      // has then landed.
+      installRealCheckouts({
+        awaitReady: async (unit) => {
+          await vi.waitFor(() => fs.access(path.join(dirOf(unit.workspaceId), '.git')), { timeout: 30_000 })
+          release()
+          await fetched('main', tip)
+        },
+      })
+
+      const { workspaceId } = await start({ workspaceId: 'wt-early' })
+
+      const launch = sessionExec() ?? ''
+      expect(launch.indexOf(`merge --ff-only ${tip}`)).toBeGreaterThanOrEqual(0)
+      expect(launch.indexOf(`merge --ff-only ${tip}`)).toBeLessThan(launch.search(SESSION_WINDOW))
+      expect(await rev(dirOf(workspaceId))).toBe(tip)
+      expect((await checkout(workspaceId))?.startCommit).toBe(tip)
+
+      // The next start picks that tip, and its fetch brings nothing newer.
+      execs = []
+      const next = await start()
+      await new Promise((r) => setTimeout(r, 300))
+      expect(await rev(dirOf(next.workspaceId))).toBe(tip)
+      expect(moves()).toEqual([])
+    })
+
+    // Nothing runs in a workspace before its windows open, so a checkout
+    // that cannot be fast-forwarded can be reset there without losing a
+    // write.
+    it('resets a checkout to a force-pushed branch only ahead of the agent, and never one whose agent opened early', async () => {
+      /** A runtime that comes up once the checkout is made and the fetch,
+       *  released then, has landed. */
+      const upAfterFetch = (tip: string): Partial<WorkspaceDriver> => ({
+        awaitReady: async (unit) => {
+          await vi.waitFor(() => fs.access(path.join(dirOf(unit.workspaceId), '.git')), { timeout: 30_000 })
+          release()
+          await fetched('main', tip)
+        },
+      })
+      const rewritten = await pushTo(origin, 'main', 'rewritten.txt', { rewrite: true })
+      installRealCheckouts(upAfterFetch(rewritten))
+
+      await start({ workspaceId: 'wt-forced-early' })
+
+      // The untouched test is one no git config can narrow, and removes
+      // nothing: with nothing untracked there is nothing to clean.
+      const launch = sessionExec() ?? ''
+      expect(launch).toContain('status --porcelain --untracked-files=all --ignore-submodules=none')
+      expect(launch).not.toContain('clean -fd')
+      expect(launch.indexOf(`reset --hard ${rewritten}`)).toBeLessThan(launch.search(SESSION_WINDOW))
+      expect(await rev(dirOf('wt-forced-early'))).toBe(rewritten)
+      expect(await git(dirOf('wt-forced-early'), ['status', '--porcelain'])).toBe('')
+      expect((await checkout('wt-forced-early'))?.startCommit).toBe(rewritten)
+
+      // A chat agent of a containerless workspace opens before its checkout
+      // lands, so by this command it may be at work: fast-forward only.
+      release = hold()
+      const again = await pushTo(origin, 'main', 'again.txt', { rewrite: true })
+      installDriver({ kind: 'containerless', ...upAfterFetch(again) })
+      execs = []
+      await start({ workspaceId: 'wt-chat', mode: 'acp' })
+      const [move] = moves()
+      expect(move).toContain(`merge --ff-only ${again} `)
+      expect(move).not.toContain('reset --hard')
+    })
+
+    it('leaves a workspace behind origin when the fetch outlasts the wait after its launch', async () => {
+      const tip = await pushTo(origin, 'main', 'too-late.txt')
+      await start({ workspaceId: 'wt-slow' })
+      await vi.waitFor(() => {
+        expect(logged()).toMatch(/wt-slow: the checkout is left behind origin\/main: the fetch took longer than 5s/)
+      }, { timeout: 30_000 })
+      release()
+      await fetched('main', tip)
+      await new Promise((r) => setTimeout(r, 300))
+      expect(await rev(dirOf('wt-slow'))).toBe(head)
+      expect(moves()).toEqual([])
+    })
+
+    it('leaves alone, once its agent is running, a checkout with work of its own or one git cannot fast-forward', async () => {
+      /** Start a workspace while the fetch is held, let its agent act in
+       *  the checkout, then let the fetch land. */
+      const startThen = async (id: string, agent: (dir: string) => Promise<unknown>): Promise<string> => {
+        release()
+        release = hold()
+        await start({ workspaceId: id })
+        await agent(dirOf(id))
+        release()
+        return dirOf(id)
+      }
+      const leftAlone = (id: string): Promise<void> => vi.waitFor(() => {
+        expect(logged()).toMatch(new RegExp(`${id}: the checkout is left at \\w{12}, behind origin/main: it could not be moved there safely`))
+      }, { timeout: 30_000 })
+
+      // The agent committed: git cannot fast-forward, and the checkout is
+      // not where it started.
+      const first = await pushTo(origin, 'main', 'a.txt')
+      const committed = await startThen('wt-committed', (dir) =>
+        git(dir, ['-c', 'user.name=A', '-c', 'user.email=a@a', 'commit', '-q', '--allow-empty', '-m', 'mine']))
+      await leftAlone('wt-committed')
+      expect(await git(committed, ['log', '-1', '--format=%s'])).toBe('mine\n')
+      // Its `origin/main` is origin's all the same, and its row keeps the
+      // commit it started at.
+      expect(await rev(committed, 'origin/main')).toBe(first)
+      expect((await checkout('wt-committed'))?.startCommit).toBe(head)
+
+      // The agent changed a file the incoming commits change: git refuses.
+      await fetched('main', first)
+      const second = await pushTo(origin, 'main', 'README.md')
+      const edited = await startThen('wt-edited', (dir) => fs.writeFile(path.join(dir, 'README.md'), 'mine\n'))
+      await leftAlone('wt-edited')
+      expect(await rev(edited)).toBe(first)
+      expect(await fs.readFile(path.join(edited, 'README.md'), 'utf8')).toBe('mine\n')
+
+      // Origin's branch was rewritten. The agent is running, and a reset
+      // could lose what it writes meanwhile, so even an untouched checkout
+      // stays where it is.
+      await fetched('main', second)
+      const rewritten = await pushTo(origin, 'main', 'b.txt', { rewrite: true })
+      const forced = await startThen('wt-forced', () => Promise.resolve())
+      await leftAlone('wt-forced')
+      expect(await rev(forced)).toBe(second)
+      expect(await rev(forced, 'origin/main')).toBe(rewritten)
+      expect(moves().every((c) => !c.includes('reset --hard'))).toBe(true)
+    })
+
+    it('starts a named branch the main clone has at once, waits for the fetch only for one it lacks, and refuses one origin lacks too', async () => {
+      // `dev` is in the main clone, so its start does not wait.
+      expect((await checkout((await start({ branch: 'dev' })).workspaceId))?.baseBranch).toBe('dev')
+
+      // `fresh` is only on origin: the start waits for the fetch to bring it.
+      const fresh = await pushTo(origin, 'dev', 'fresh.txt')
+      await git(origin, ['branch', 'fresh', fresh])
+      await git(origin, ['update-ref', 'refs/heads/dev', head])
+      let started = false
+      const waiting = start({ workspaceId: 'wt-fresh', branch: 'fresh' }).finally(() => { started = true })
+      await new Promise((r) => setTimeout(r, 300))
+      expect(started).toBe(false)
+      release()
+      await waiting
+      expect(await rev(dirOf('wt-fresh'))).toBe(fresh)
+      expect(await checkout('wt-fresh')).toMatchObject({ baseBranch: 'fresh', startCommit: fresh })
+
+      // `ghost` is on neither.
+      await expect(start({ branch: 'ghost' })).rejects.toThrow(/branch "ghost" not found on origin/)
+
+      // `dev` is gone from origin but still in the main clone: it starts,
+      // and stays on the branch once the fetch says so.
+      await git(origin, ['branch', '-D', 'dev'])
+      release = hold()
+      await start({ workspaceId: 'wt-gone', branch: 'dev' })
+      release()
+      await vi.waitFor(() => {
+        expect(logged()).toMatch(/wt-gone: the checkout stays on dev, which origin no longer has/)
+      }, { timeout: 30_000 })
+      expect(await rev(dirOf('wt-gone'))).toBe(head)
+    })
+
+    // Nothing may change such a run once it starts, so it never begins on
+    // an older commit to be moved later.
+    it('holds a non-interactive run for its fetch, starting it at origin\'s tip', async () => {
+      const tip = await pushTo(origin, 'main', 'ci.txt')
+      let started = false
+      const run = start({ workspaceId: 'wt-ci', nonInteractive: true, noSession: true, steps: { t: { run: 'true' } } })
+        .finally(() => { started = true })
+      await new Promise((r) => setTimeout(r, 300))
+      expect(started).toBe(false)
+      release()
+      await run
+      expect(await rev(dirOf('wt-ci'))).toBe(tip)
+      expect((await checkout('wt-ci'))?.startCommit).toBe(tip)
+      await new Promise((r) => setTimeout(r, 300))
+      expect(moves()).toEqual([])
+    })
+
+    it('catches each checkout up on its own repo\'s fetch', async () => {
+      const web = await seedSecondRepo('web')
+      const other = await slowRealOrigin(web)
+      const releaseWeb = other.hold()
+      const tip = await pushTo(origin, 'main', 'demo.txt')
+      const webTip = await pushTo(other.origin, 'main', 'web.txt')
+
+      const { workspaceId } = await start({ repos: [{ repo: 'demo' }, { repo: 'web' }] })
+
+      // The demo repo's fetch lands first: only its checkout moves.
+      release()
+      await vi.waitFor(async () => { expect(await rev(dirOf(workspaceId, 'demo'))).toBe(tip) }, { timeout: 30_000 })
+      expect(await fs.readdir(dirOf(workspaceId, 'web'))).not.toContain('web.txt')
+      releaseWeb()
+      await vi.waitFor(async () => { expect(await rev(dirOf(workspaceId, 'web'))).toBe(webTip) }, { timeout: 30_000 })
+      await vi.waitFor(async () => {
+        expect((await listWorkspaceRepos(workspaceId)).map((c) => c.startCommit).sort()).toEqual([tip, webTip].sort())
+      })
+    })
+  })
+
   it('keeps a failed create\'s prompt as a draft only when asked, leaving no workspace', async () => {
     // One error for every launch, as concurrent creates sharing a build or
     // install see; neither create may change what the other reports.
@@ -1459,11 +1803,19 @@ describe('prepareStart', () => {
       expect(result).toMatchObject({ workspaceId: spare.workspaceId })
       expect(claims).toEqual([spare.workspaceId])
       const ran = ranIn(spare)
-      // The checkout is reset to dev's tip, keeping mount points, and the
-      // branch becomes its upstream.
+      // One command moves the checkout to dev's tip before the session
+      // opens: `origin/dev` is set and made its upstream, then a
+      // fast-forward, or for a spare, which nothing has touched, a reset
+      // that keeps the mount points.
       const tip = (await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'origin/dev'])).trim()
-      expect(ran).toContainEqual(expect.stringMatching(new RegExp(`reset --hard ${tip} && git -C /workspace clean -fd -e 'node_modules'`)))
-      expect(ran).toContainEqual(expect.stringContaining("update-ref 'refs/remotes/origin/dev'"))
+      const move = ran.findIndex((c) => c.includes('merge --ff-only'))
+      expect(ran[move]).toContain(`git -C '/workspace' update-ref 'refs/remotes/origin/dev' ${tip}`)
+      expect(ran[move]).toContain("git -C '/workspace' branch --set-upstream-to 'origin/dev'")
+      expect(ran[move]).toMatch(new RegExp(
+        `-c core\\.hooksPath=/dev/null merge --ff-only ${tip} .*\\|\\| \\{ git -C '/workspace' reset --hard ${tip} .*clean -fd -e 'node_modules'`,
+      ))
+      expect(ran[move]).not.toContain('status --porcelain')
+      expect(move).toBeLessThan(ran.findIndex((c) => SESSION_WINDOW.test(c)))
       const [session] = await listWorkspaceSessions(spare.workspaceId)
       expect(session).toMatchObject({ tool: 'codex', permissionMode: 'read-only', model: FALLBACK_MODELS.codex })
       expect(ran.filter((c) => SESSION_WINDOW.test(c))).toEqual([
@@ -1490,50 +1842,56 @@ describe('prepareStart', () => {
       expect(ranIn(spare).find((c) => SESSION_WINDOW.test(c))).toMatch(/ -n pi-[0-9a-f]{8} [^']*'.*openrouter/)
     })
 
-    /** Settle `claim` with fake time, which has to pass while the claim also
-     *  waits on real disk and git work. */
-    async function settleWithFakeTime<T>(claim: Promise<T>): Promise<T> {
-      let done = false
-      void claim.finally(() => { done = true }).catch(() => {})
-      for (let i = 0; i < 200 && !done; i++) {
-        await vi.advanceTimersByTimeAsync(250)
-        await new Promise((r) => setImmediate(r))
-      }
-      return await claim
-    }
-
-    // A refresh is only worth it while cheap: a slow origin leaves the
-    // spare on the commit it was warmed at rather than holding the user.
-    it('hands a spare over on its warmed base when the fetch outlasts the wait', async () => {
+    // Nothing on a claim's path waits on the network.
+    it('hands a spare over without waiting for the fetch, then catches the workspace up when it lands', async () => {
       const spare = await warm()
-      head = 'an-older-commit'
-      vi.stubEnv('YAAC_E2E_SKIP_FETCH', '')
-      slowOrigin.hang = true
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-      try {
-        expect((await settleWithFakeTime(start({ claimSpare: true }))).workspaceId).toBe(spare.workspaceId)
-      } finally {
-        vi.useRealTimers()
-        slowOrigin.hang = false
-      }
-      expect(ranIn(spare).some((c) => c.includes('reset --hard'))).toBe(false)
+      const warmedAt = head
+      const { origin, hold } = await slowRealOrigin()
+      const release = hold()
+      const tip = await pushTo(origin, 'main', 'late.txt')
+
+      expect((await start({ claimSpare: true })).workspaceId).toBe(spare.workspaceId)
+
+      // The session is open where the spare stood, and nothing has moved.
+      expect(ranIn(spare).some((c) => SESSION_WINDOW.test(c))).toBe(true)
+      expect(ranIn(spare).some((c) => c.includes('merge --ff-only'))).toBe(false)
+      expect((await checkout(spare.workspaceId))?.startCommit).toBe(warmedAt)
+
+      release()
+      await vi.waitFor(async () => { expect((await checkout(spare.workspaceId))?.startCommit).toBe(tip) }, { timeout: 30_000 })
+      // An agent may be at work in it by now, so the move only
+      // fast-forwards.
+      const move = ranIn(spare).find((c) => c.includes('merge --ff-only')) ?? ''
+      expect(move).toContain(`merge --ff-only ${tip} `)
+      expect(move).not.toContain('reset --hard')
+    })
+
+    it('leaves a claimed spare behind origin when the fetch outlasts the wait after its launch', async () => {
+      const spare = await warm()
+      const { origin, hold } = await slowRealOrigin()
+      hold()
+      await pushTo(origin, 'main', 'too-late.txt')
+      expect((await start({ claimSpare: true })).workspaceId).toBe(spare.workspaceId)
+      await vi.waitFor(() => {
+        expect(logged()).toMatch(new RegExp(`${spare.workspaceId}: the checkout is left behind origin/main: the fetch took longer than 5s`))
+      }, { timeout: 30_000 })
+      expect(ranIn(spare).some((c) => c.includes('merge --ff-only'))).toBe(false)
     })
 
     // A background refresh can take minutes (a slow reset, init windows);
     // a cold create beats waiting that long.
     it('creates cold rather than wait out a refresh that outlasts the wait', async () => {
       const spare = await warm()
-      head = 'an-older-commit'
       installDriver({
         exec: (jobName, cmd) => {
           execs.push({ jobName, cmd })
-          // The pool's refresh never finishes its reset.
-          if (cmd.includes('reset --hard')) return new Promise(() => { /* held */ })
-          return Promise.resolve({ stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' })
+          // The pool's refresh never finishes its move.
+          if (cmd.includes('merge --ff-only')) return new Promise(() => { /* held */ })
+          return Promise.resolve({ stdout: answer(cmd), stderr: '' })
         },
       })
       await reconcilePrewarmPool(snapshotFixture([user, ...units]))
-      await vi.waitFor(() => { expect(ranIn(spare).some((c) => c.includes('reset --hard'))).toBe(true) })
+      await vi.waitFor(() => { expect(ranIn(spare).some((c) => c.includes('merge --ff-only'))).toBe(true) })
 
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
       let result: WorkspaceCreateResult
@@ -1546,7 +1904,7 @@ describe('prepareStart', () => {
       expect(claims).toEqual([])
     })
 
-    it('brings a spare whose branch moved on origin up to its tip before opening the session there', async () => {
+    it('moves a spare that is behind the main clone\'s tip up to it before opening the session there', async () => {
       const spare = await warm()
       head = 'an-older-commit'
       await createWorkflow(local, DEMO_PROJECT_ID, { name: 'init', steps: { install: { run: 'pnpm install' } }, init: true })
@@ -1554,12 +1912,12 @@ describe('prepareStart', () => {
       expect((await start({ claimSpare: true })).workspaceId).toBe(spare.workspaceId)
 
       const ran = ranIn(spare)
-      const reset = ran.findIndex((c) => c.includes('reset --hard'))
-      expect(reset).toBeGreaterThanOrEqual(0)
-      // The claim starts its life after the reset, with the project's init
+      const move = ran.findIndex((c) => c.includes('merge --ff-only'))
+      expect(move).toBeGreaterThanOrEqual(0)
+      // The claim starts its life after the move, with the project's init
       // workflows, and sources its log hooks before the session opens. It
-      // starts at the tip the reset moved it to.
-      const launch = ran.slice(reset).find((c) => c.includes('hooks.conf'))
+      // starts at the tip the move took it to.
+      const launch = ran.slice(move + 1).find((c) => c.includes('hooks.conf'))
       expect(launch?.indexOf('hooks.conf')).toBeLessThan(launch?.search(SESSION_WINDOW) ?? -1)
       expect((await checkout(spare.workspaceId))?.startCommit)
         .toBe((await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'origin/main'])).trim())
@@ -1574,16 +1932,13 @@ describe('prepareStart', () => {
       installDriver({
         exec: async (jobName, cmd) => {
           execs.push({ jobName, cmd })
-          if (cmd.includes('reset --hard')) {
-            await held
-            head = (await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'origin/main'])).trim()
-          }
-          return { stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' }
+          if (cmd.includes('merge --ff-only')) await held
+          return { stdout: answer(cmd), stderr: '' }
         },
       })
       // The pool starts moving the spare to the tip in the background.
       await reconcilePrewarmPool(snapshotFixture([user, ...units]))
-      await vi.waitFor(() => { expect(ranIn(spare).some((c) => c.includes('reset --hard'))).toBe(true) })
+      await vi.waitFor(() => { expect(ranIn(spare).some((c) => c.includes('merge --ff-only'))).toBe(true) })
 
       let claimed = false
       const claim = start({ claimSpare: true }).finally(() => { claimed = true })
@@ -1592,8 +1947,8 @@ describe('prepareStart', () => {
       release()
 
       expect((await claim).workspaceId).toBe(spare.workspaceId)
-      // Already current, so the claim reset it no further.
-      expect(ranIn(spare).filter((c) => c.includes('reset --hard'))).toHaveLength(1)
+      // Already current, so the claim moved it no further.
+      expect(ranIn(spare).filter((c) => c.includes('merge --ff-only'))).toHaveLength(1)
     })
 
     it('refuses a branch missing from origin, putting the spare back untouched', async () => {
@@ -1613,15 +1968,15 @@ describe('prepareStart', () => {
       expect((await start({ claimSpare: true })).workspaceId).toBe(spare.workspaceId)
     })
 
-    it('reaps a spare a failed rebranch or commit left half-changed, and creates cold instead', async () => {
+    it('reaps a spare a failed move or commit left half-changed, and creates cold instead', async () => {
       const spare = await warm()
       installDriver({
         exec: (jobName, cmd) => {
           execs.push({ jobName, cmd })
-          if (cmd.includes('reset --hard') && jobName === spare.jobName) {
+          if (cmd.includes('merge --ff-only') && jobName === spare.jobName) {
             return Promise.reject(new WorkspaceExecError('reset', 1, '', 'disk full'))
           }
-          return Promise.resolve({ stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' })
+          return Promise.resolve({ stdout: answer(cmd), stderr: '' })
         },
       })
 
@@ -1654,6 +2009,14 @@ describe('prepareStart', () => {
         expect(await getWorkspaceRow(DEMO_PROJECT_ID, next.workspaceId)).toBeUndefined()
         await vi.waitFor(() => { expect(units.some((u) => u.workspaceId === next.workspaceId)).toBe(false) })
       }
+
+      // So is one its move left short of the commit the claim starts at.
+      installDriver()
+      const short = await warm()
+      head = 'an-older-commit'
+      stuck = head
+      expect((await start({ claimSpare: true })).workspaceId).not.toBe(short.workspaceId)
+      await vi.waitFor(() => { expect(units.some((u) => u.workspaceId === short.workspaceId)).toBe(false) })
     })
 
     // Once the claim is won the workspace is the user's, so a launch that
@@ -1665,7 +2028,7 @@ describe('prepareStart', () => {
         exec: (jobName, cmd) => {
           execs.push({ jobName, cmd })
           if (cmd.includes('new-window')) return Promise.reject(new WorkspaceExecError('launch', 1, '', 'no server running'))
-          return Promise.resolve({ stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' })
+          return Promise.resolve({ stdout: answer(cmd), stderr: '' })
         },
       })
 
@@ -1723,7 +2086,7 @@ describe('prepareStart', () => {
           if (cmd.includes('has-session')) await deleteWorkspaceGroup(DEMO_PROJECT_ID, group.groupId)
           // The launch command prints only what the identity write failed with.
           if (cmd.includes('git config --global')) return { stdout: 'error: could not lock config file\n', stderr: '' }
-          return { stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' }
+          return { stdout: answer(cmd), stderr: '' }
         },
       })
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -1735,20 +2098,18 @@ describe('prepareStart', () => {
       warn.mockRestore()
     })
 
-    // A refresh is only worth it while cheap.
-    it('hands a spare over on its warmed base when the fetch of origin fails', async () => {
+    it('hands a spare over where it stands when the fetch of origin fails, saying so', async () => {
       const spare = await warm()
-      head = 'an-older-commit'
       // Nothing listens on this host's 443, so the fetch fails at once.
       vi.stubEnv('YAAC_E2E_SKIP_FETCH', '')
       await setRemote('https://127.0.0.1/o/r.git')
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
       expect((await start({ claimSpare: true })).workspaceId).toBe(spare.workspaceId)
 
-      expect(ranIn(spare).some((c) => c.includes('reset --hard'))).toBe(false)
-      expect(warn.mock.calls.map(([m]) => String(m)).join('\n')).toContain('kept its warmed base')
-      warn.mockRestore()
+      await vi.waitFor(() => {
+        expect(logged()).toMatch(new RegExp(`${spare.workspaceId}: the checkout starts from the last commit fetched: `))
+      }, { timeout: 30_000 })
+      expect(ranIn(spare).some((c) => c.includes('merge --ff-only'))).toBe(false)
     })
 
     // A claim that waits (here, out a refresh) can find its first choice

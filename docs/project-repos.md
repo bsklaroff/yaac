@@ -123,8 +123,8 @@ the next create starts from it.
   `lastCwd` (a repo id, or `.` for the root).
 - A queued child takes its parent's.
 - Spares are warmed with the remembered selection, layout and cwd, and
-  claimed only by a create asking for exactly that; the claim rebranches
-  each checkout.
+  claimed only by a create asking for exactly that; the claim moves each
+  checkout to the branch it starts on.
 
 ## The agent's cwd
 

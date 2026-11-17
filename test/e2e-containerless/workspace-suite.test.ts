@@ -2775,6 +2775,71 @@ describe.skipIf(!CAN_RUN)('containerless recovery across a server restart', () =
 
     await runYaac(serverEnv, 'workspace', 'stop', id)
   }, 180_000)
+
+  // The rest of the file skips the fetch of origin. Here the server fetches
+  // for real, from a local repository standing in for the project's remote
+  // and slowed by a hook, so the start cannot have waited for it.
+  it('starts a workspace on the commit the main clone has, then catches it up when its slow fetch lands', async () => {
+    const run = async (cwd: string, ...args: string[]): Promise<string> =>
+      (await execFileAsync('git', ['-c', 'user.name=T', '-c', 'user.email=t@t', ...args], { cwd })).stdout.trim()
+    // Origin as the main clone last saw it, plus one commit.
+    const main = path.join(testEnv.dataDir, 'global', 'repos', projectId)
+    const branch = (await run(main, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD')).replace(/^origin\//, '')
+    const remote = path.join(testEnv.scratchDir, 'catch-up-origin.git')
+    await run(testEnv.scratchDir, 'init', '-q', '--bare', '-b', branch, remote)
+    await run(main, 'push', '-q', remote, `refs/remotes/origin/${branch}:refs/heads/${branch}`)
+    const work = path.join(testEnv.scratchDir, 'catch-up-push')
+    await run(testEnv.scratchDir, 'clone', '-q', remote, work)
+    await fs.writeFile(path.join(work, 'late.txt'), 'pushed after the main clone was made\n')
+    await run(work, 'add', '-A')
+    await run(work, 'commit', '-q', '-m', 'late')
+    await run(work, 'push', '-q', 'origin', 'HEAD')
+    const tip = await run(work, 'rev-parse', 'HEAD')
+
+    // The server's git reads its remote from this config: the URL is
+    // rewritten to the local repository, and packing what the fetch asks
+    // for takes three seconds.
+    const hook = path.join(testEnv.scratchDir, 'slow-pack.sh')
+    await fs.writeFile(hook, '#!/bin/sh\nsleep 3\nexec "$@"\n', { mode: 0o755 })
+    const gitConfig = serverEnv.GIT_CONFIG_GLOBAL as string
+    const before = await fs.readFile(gitConfig, 'utf8')
+    await fs.appendFile(gitConfig, [
+      `[url "${remote}"]`, `\tinsteadOf = https://github.com/test/${NAME}.git`,
+      '[protocol "file"]', '\tallow = always',
+      '[uploadpack]', `\tpackObjectsHook = ${hook}`, '',
+    ].join('\n'))
+    // A restarted server recovers the workspaces still running after it
+    // starts answering. `createWorkspace` finds its workspace as the one
+    // newly listed, so every restart here waits for them to be listed.
+    const restart = async (env: NodeJS.ProcessEnv): Promise<void> => {
+      const running = (await listWorkspaces()).map((w) => w.workspaceId)
+      await server.stop()
+      server = await spawnYaacServer(env)
+      await vi.waitFor(
+        async () => expect((await listWorkspaces()).map((w) => w.workspaceId)).toEqual(expect.arrayContaining(running)),
+        { timeout: 30_000, interval: 250 },
+      )
+    }
+    await restart({ ...serverEnv, YAAC_E2E_SKIP_FETCH: '0' })
+    try {
+      const id = await createWorkspace()
+      const checkout = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', id)
+      await vi.waitFor(async () => { expect(await run(checkout, 'rev-parse', 'HEAD')).toBe(tip) }, { timeout: 30_000, interval: 250 })
+      expect(await fs.readFile(path.join(checkout, 'late.txt'), 'utf8')).toBe('pushed after the main clone was made\n')
+      expect(await run(checkout, 'rev-parse', 'origin/HEAD')).toBe(tip)
+      expect(await run(checkout, 'status', '--porcelain')).toBe('')
+      await vi.waitFor(async () => {
+        const listed = await (await fetch(`${origin()}/api/workspace/list`)).json() as {
+          workspaces: Array<{ workspaceId: string; repos: Array<{ startCommit?: string }> }>
+        }
+        expect(listed.workspaces.find((w) => w.workspaceId === id)?.repos[0]?.startCommit).toBe(tip)
+      }, { timeout: 15_000, interval: 250 })
+      await runYaac(serverEnv, 'workspace', 'stop', id)
+    } finally {
+      await fs.writeFile(gitConfig, before)
+      await restart(serverEnv)
+    }
+  }, 240_000)
 })
 
 describe.skipIf(!CAN_RUN)('yaac forward against a containerless server on this machine', () => {
