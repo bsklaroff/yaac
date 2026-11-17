@@ -115,7 +115,11 @@ Outside the sandbox:
 
 1. Wait for the start instruction, which the server writes beside the
    life's manifest once every `.git` is complete. It names each checkout's
-   commit and, for a restart, the checkpoint to restore.
+   commit and, for a restart, the checkpoint to restore. A fresh create's
+   commit is the one its main clone already has, so the instruction never
+   waits for the create's fetch of origin; the workspace container moves
+   the checkout to a newer tip once the fetch lands (docs/server-git.md
+   "Starting a workspace").
 2. Hand the pod's node-local folders to the install uid: the tree, the
    scratch repository, and those only the workspace container uses
    (opencode's working copy), which are mounted into the tree container for
@@ -303,8 +307,8 @@ silent fallback.
 - **Create.** The server writes each `.git` and the start instruction; the
   tree container checks out. The life records the node its pod runs on, as
   the runtime reports it.
-- **Spare.** A pod with its tree on its node; a claim re-branches it inside
-  the workspace container.
+- **Spare.** A pod with its tree on its node; the pool and a claim move its
+  checkouts to another commit or branch inside the workspace container.
 - **Stop, drain, an eviction with its grace period.** The final pass. The
   `tree-salvage` step stamps the life `final` (`checkpointedAt`) when it
   finds its manifest final.

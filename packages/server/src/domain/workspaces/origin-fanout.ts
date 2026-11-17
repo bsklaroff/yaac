@@ -64,9 +64,8 @@ async function fanOut(repoId: string): Promise<void> {
   const worker = async (): Promise<void> => {
     for (let h = queue.shift(); h !== undefined; h = queue.shift()) {
       // A spare being claimed is refreshed once its claim is over. The claim
-      // waits on the same fetch that started this fan-out, so the command
-      // that opens its session would otherwise queue behind the refresh in
-      // the pod.
+      // starts the fetch that starts this fan-out, so the command that opens
+      // its session could otherwise queue behind the refresh in the pod.
       while (claiming.has(h.jobName)) await new Promise((r) => setTimeout(r, 50))
       const cmd = buildOriginRefreshExec(repoGitDir, path.posix.join(driver.workspacePaths(h.jobName).workspaceDir, h.at))
       // A failure is retried by the next fetch's fan-out.

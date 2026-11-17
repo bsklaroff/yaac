@@ -137,8 +137,8 @@ builder-role guard already uses (`buildBuilderRoleGuardPolicyManifest`).
   the pod and are candidates to grow into that supervisor.
 - **Prewarm claim:** a claim rewrites the checkout's branch and upstream
   and retools the agent (`tryClaimPrewarmed` in
-  `domain/workspaces/prewarm.ts`, `rebranchSpare`/`retoolSpare` in
-  `spare-pool.ts`). Most likely it stays a server action that patches the
+  `domain/workspaces/prewarm.ts`, `moveSpare` in
+  `origin-catch-up.ts`). Most likely it stays a server action that patches the
   spec, with the controller converging the retool.
 - **CR scope:** one namespace per install (matching today's
   `YAAC_K8S_NAMESPACE` scoping) or cluster-scoped with install labels.

@@ -15,7 +15,8 @@ Workspace setup uses the relay too. The pod's postStart hook
 (`workspace-bin/yaac-workspace-init`) starts streamd before the container
 reports Ready, so every setup command the server runs after that is a
 relay exec. Claiming a prewarmed spare probes it with one relay exec before
-its first change, then re-branches it and opens its session over the relay.
+its first change, then moves its checkouts where needed and opens its
+session over the relay.
 
 `kubectl exec` is used only where there is no stream to wait on: restarting
 streamd itself (`bootStreamd`), and infrastructure pods that are not

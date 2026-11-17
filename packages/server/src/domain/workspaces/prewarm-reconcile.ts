@@ -27,7 +27,7 @@ import {
   type SpareSettings,
 } from './prewarm'
 import { resolveStart } from './checkouts'
-import { rebranchSpare } from './spare-pool'
+import { moveSpare } from './origin-catch-up'
 import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
 import path from 'node:path'
 import { getProjectRow, getTimeZone, listProjectRows } from '#db'
@@ -83,10 +83,10 @@ export async function reconcilePrewarmPool(view: RuntimeSnapshot): Promise<void>
 
 /**
  * Move each spare checkout whose base branch has a new tip up to it, in the
- * background (`rebranchSpare`), so a claim finds it current instead of
- * doing that work while the user waits. The tips are read from the main
- * clones, which `origin-refresh` and every create keep fetched. A spare
- * left half-moved by a failure is reaped.
+ * background (`moveSpare`), so a claim finds it current instead of doing
+ * that work while the user waits. The tips are read from the main clones,
+ * which `origin-refresh` and every create keep fetched. A spare whose move
+ * fails is reaped.
  */
 async function refreshSpares(spares: RuntimeHandle[]): Promise<void> {
   const runtime = workspaceDriver()
@@ -99,31 +99,25 @@ async function refreshSpares(spares: RuntimeHandle[]): Promise<void> {
   await Promise.all(spares.map(async (spare) => {
     const warmed = free(spare)
     if (!warmed) return
-    let targets: Array<{ path: string; branch: string; tip: string }>
+    const { workspaceDir } = runtime.workspacePaths(spare.jobName)
+    let targets: Array<{ dir: string; branch: string; target: string }>
     try {
       targets = await Promise.all(warmed.repos.map(async (r) => {
         const repo = repoDir(r.repoId)
         const branch = r.baseBranch ?? await getDefaultBranch(repo)
-        return { path: r.path, branch, tip: await resolveRemoteRef(repo, branch) }
+        return { dir: path.posix.join(workspaceDir, r.path), branch, target: await resolveRemoteRef(repo, branch) }
       }))
     } catch (err) {
       serverLog(`[prewarm] reading spare ${spare.workspaceId}'s base failed: ${String(err)}`)
       return
     }
-    const tips = targets.map((t) => t.tip).join(',')
+    const tips = targets.map((t) => t.target).join(',')
     if (spareHeads.get(spare.workspaceId) === tips || free(spare) !== warmed) return
     let changed = false
     const refresh = (async () => {
       await runtime.awaitAgentTransport(spare.jobName, { timeoutMs: 10_000 })
-      const { workspaceDir } = runtime.workspacePaths(spare.jobName)
-      for (const target of targets) {
-        const checkout = path.posix.join(workspaceDir, target.path)
-        const head = (await runtime.exec(spare.jobName, `git -C ${checkout} rev-parse -q --verify HEAD || true`))
-          .stdout.trim()
-        if (head === target.tip) continue
-        changed = true
-        await rebranchSpare(spare, checkout, target.branch, target.tip)
-      }
+      changed = true
+      await moveSpare(spare, targets)
       spareHeads.set(spare.workspaceId, tips)
     })().catch((err: unknown) => {
       serverLog(`[prewarm] refreshing spare ${spare.workspaceId} failed: ${String(err)}`)

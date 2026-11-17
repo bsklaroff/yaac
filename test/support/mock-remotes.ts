@@ -5,6 +5,7 @@ import os from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { applyObject, deleteObject, k8sNamespace, readObject } from '@yaac/server/drivers/k8s/substrate/api'
+import { LABEL_ROLE, ROLE_SERVER } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
 import { e2eMkdtemp } from '@yaac/test-utils/tmp'
 import { kubectl } from '@yaac/test-utils/kubectl'
 import { resolveTestBaseImageRef, waitForPod } from '#support/test-pods'
@@ -24,6 +25,8 @@ const execFileAsync = promisify(execFile)
 
 const MOCK_LLM_PORT = 9100
 const MOCK_GIT_PORT = 9101
+/** In the mock git server's repo store: how long it holds each fetch. */
+const DELAY_FILE = '.fetch-delay-ms'
 
 export interface MockLLM {
   readonly podName: string
@@ -49,6 +52,16 @@ export interface MockGit {
   readonly port: number
   /** Host-side directory containing one bare repo per test (e.g. `repo-demo.git`). */
   readonly reposDir: string
+  /** Hold every fetch for this long from now on, before it is told the
+   *  repo's refs. */
+  delayFetches(ms: number): Promise<void>
+  /**
+   * Have this server's own git fetch `remoteBase` (`https://github.com/org/`)
+   * from the mock, as a workspace's does through the proxy's redirect: a
+   * rewrite in the git config `env` names, which the server pod reads too,
+   * and an opening in the pod's egress, which stops at public addresses.
+   */
+  serveServerFetches(env: NodeJS.ProcessEnv, remoteBase: string): Promise<void>
   stop(): Promise<void>
 }
 
@@ -326,7 +339,9 @@ export async function startMockLLM(): Promise<MockLLM> {
 /**
  * Start a read-only mock git server speaking the "dumb HTTP" protocol
  * (fetch and clone, no push). Bare repos live in `reposDir`, a host dir
- * under testTmpBase() mounted read-only at /srv/git; seeding runs host-side.
+ * under testTmpBase() mounted read-only at /srv/git; seeding and pushing
+ * run host-side. A fetch starts by asking for `info/refs`, which waits the
+ * milliseconds `DELAY_FILE` holds, so a test can keep origin slow.
  */
 const MOCK_GIT_SCRIPT = `
   const http = require('http');
@@ -340,14 +355,16 @@ const MOCK_GIT_SCRIPT = `
   };
 
   http.createServer((req, res) => {
-    const url = req.url || '/';
+    const [url, query = ''] = (req.url || '/').split('?');
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.writeHead(405);
       res.end();
       return;
     }
-    // Block smart-protocol probes so the client falls through to dumb HTTP.
-    if (url.includes('/info/refs?service=')) {
+    // A fetch's smart-protocol probe gets the plain file, as a static server
+    // gives it, which tells the client to speak dumb HTTP. Some gits do not
+    // ask again after a 404. A push's probe is refused.
+    if (query.includes('service=') && !query.includes('service=git-upload-pack')) {
       res.writeHead(404);
       res.end();
       return;
@@ -358,7 +375,11 @@ const MOCK_GIT_SCRIPT = `
       res.end();
       return;
     }
-    fs.stat(filePath, (err, st) => {
+    let delay = 0;
+    if (url.endsWith('/info/refs')) {
+      try { delay = Number(fs.readFileSync(path.join(ROOT, '${DELAY_FILE}'), 'utf8')) || 0; } catch {}
+    }
+    setTimeout(() => fs.stat(filePath, (err, st) => {
       if (err || !st.isFile()) {
         res.writeHead(404);
         res.end();
@@ -370,7 +391,7 @@ const MOCK_GIT_SCRIPT = `
         'Content-Length': st.size,
       });
       fs.createReadStream(filePath).pipe(res);
-    });
+    }), delay);
   }).listen(${MOCK_GIT_PORT}, '0.0.0.0', () => console.log('mock-git ready'));
 `
 
@@ -387,6 +408,31 @@ export async function startMockGit(): Promise<MockGit> {
     host: clusterIp,
     port: MOCK_GIT_PORT,
     reposDir,
+    async delayFetches(ms) {
+      await fs.writeFile(path.join(reposDir, DELAY_FILE), String(ms), { mode: 0o644 })
+    },
+    async serveServerFetches(env, remoteBase) {
+      if (env.GIT_CONFIG_GLOBAL === undefined) throw new Error('the test env names no git config')
+      await fs.appendFile(env.GIT_CONFIG_GLOBAL, [
+        `[url "http://${clusterIp}:${String(MOCK_GIT_PORT)}/"]`,
+        `\tinsteadOf = ${remoteBase}`,
+        // The server's runner allows only the transport its remote's URL
+        // names, which is https.
+        '[protocol "http"]',
+        '\tallow = always',
+        '',
+      ].join('\n'))
+      await applyObject({
+        apiVersion: 'networking.k8s.io/v1',
+        kind: 'NetworkPolicy',
+        metadata: { name: 'e2e-server-to-mock-git', namespace: k8sNamespace() },
+        spec: {
+          podSelector: { matchLabels: { [LABEL_ROLE]: ROLE_SERVER } },
+          policyTypes: ['Egress'],
+          egress: [{ to: [{ podSelector: { matchLabels: { app: podName } } }] }],
+        },
+      })
+    },
     async stop() {
       await deleteMockPod(podName)
       await fs.rm(reposDir, { recursive: true, force: true })
@@ -419,17 +465,7 @@ export async function seedMockGitRepo(
 
   const workdir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-mock-git-seed-'))
   try {
-    const runGit = (cwd: string, args: string[]): Promise<{ stdout: string; stderr: string }> =>
-      execFileAsync('git', args, {
-        cwd,
-        env: {
-          ...process.env,
-          GIT_AUTHOR_NAME: opts.authorName ?? 'yaac test',
-          GIT_AUTHOR_EMAIL: opts.authorEmail ?? 'yaac-test@example.com',
-          GIT_COMMITTER_NAME: opts.authorName ?? 'yaac test',
-          GIT_COMMITTER_EMAIL: opts.authorEmail ?? 'yaac-test@example.com',
-        },
-      })
+    const runGit = gitAs(opts.authorName, opts.authorEmail)
 
     await runGit(workdir, ['init', '-b', branch])
     for (const [relPath, content] of Object.entries(opts.files)) {
@@ -461,6 +497,51 @@ export async function seedMockGitRepo(
 
     // Ensure mock-git's pod user can read everything
     await execFileAsync('chmod', ['-R', 'a+rX', bareDir])
+  } finally {
+    await fs.rm(workdir, { recursive: true, force: true })
+  }
+}
+
+/** Host git with a commit identity, for seeding and pushing. */
+function gitAs(name = 'yaac test', email = 'yaac-test@example.com') {
+  return (cwd: string, args: string[]): Promise<{ stdout: string; stderr: string }> =>
+    execFileAsync('git', args, {
+      cwd,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: name,
+        GIT_AUTHOR_EMAIL: email,
+        GIT_COMMITTER_NAME: name,
+        GIT_COMMITTER_EMAIL: email,
+      },
+    })
+}
+
+/**
+ * Commit `files` to a branch of a seeded repo, as a push to origin would:
+ * on the branch's tip, with `rewrite` in place of it (a force-push), or
+ * with `from` as a new branch forked from that one. Answers the new tip.
+ */
+export async function pushMockGitCommit(
+  mockGit: MockGit,
+  name: string,
+  opts: { branch: string; files: Record<string, string>; rewrite?: boolean; from?: string },
+): Promise<string> {
+  const bareDir = path.join(mockGit.reposDir, `${name}.git`)
+  const workdir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-mock-git-push-'))
+  try {
+    const runGit = gitAs()
+    await runGit(workdir, ['clone', '-q', '-b', opts.from ?? opts.branch, bareDir, '.'])
+    for (const [relPath, content] of Object.entries(opts.files)) {
+      await fs.mkdir(path.dirname(path.join(workdir, relPath)), { recursive: true })
+      await fs.writeFile(path.join(workdir, relPath), content)
+    }
+    await runGit(workdir, ['add', '-A'])
+    await runGit(workdir, ['commit', '-q', ...(opts.rewrite === true ? ['--amend'] : []), '-m', `push to ${opts.branch}`])
+    await runGit(workdir, ['push', '-q', '-f', 'origin', `HEAD:refs/heads/${opts.branch}`])
+    await execFileAsync('git', ['update-server-info'], { cwd: bareDir })
+    await execFileAsync('chmod', ['-R', 'a+rX', bareDir])
+    return (await runGit(workdir, ['rev-parse', 'HEAD'])).stdout.trim()
   } finally {
     await fs.rm(workdir, { recursive: true, force: true })
   }

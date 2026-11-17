@@ -194,7 +194,7 @@ describe('createCheckout', () => {
     await fs.mkdir(path.join(wtPath, 'frontends', 'node_modules'), { recursive: true })
     const inode = (await fs.stat(wtPath)).ino
 
-    await createCheckout(main, wtPath, { staging: stagingBeside(wtPath), branch: 'agent/wt', baseBranch: base, remoteUrl: sourceRepo })
+    await createCheckout(main, wtPath, { staging: stagingBeside(wtPath), branch: 'agent/wt', baseBranch: base, commit: await resolveRemoteRef(main, base), remoteUrl: sourceRepo })
 
     expect((await fs.stat(wtPath)).ino).toBe(inode)
     expect((await fs.stat(path.join(wtPath, '.git'))).isDirectory()).toBe(true)
@@ -222,7 +222,7 @@ describe('createCheckout', () => {
     await git(wtPath, ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '--allow-empty', '-m', 'mine'])
     await git(wtPath, ['config', 'core.hooksPath', '/nowhere'])
     const sibling = path.join(tmpDir, 'sibling')
-    await createCheckout(main, sibling, { staging: stagingBeside(sibling), branch: 'agent/sib', baseBranch: base, remoteUrl: sourceRepo })
+    await createCheckout(main, sibling, { staging: stagingBeside(sibling), branch: 'agent/sib', baseBranch: base, commit: await resolveRemoteRef(main, base), remoteUrl: sourceRepo })
     expect(await git(sibling, ['branch', '--list', 'agent/wt'])).toBe('')
     await expect(git(sibling, ['config', 'core.hooksPath'])).rejects.toThrow()
   })
@@ -231,7 +231,7 @@ describe('createCheckout', () => {
     const main = path.join(tmpDir, 'main')
     await cloneRepo(sourceRepo, main, null)
     const wtPath = path.join(tmpDir, 'workspace')
-    await createCheckout(main, wtPath, { staging: stagingBeside(wtPath), branch: 'agent/x', baseBranch: await getDefaultBranch(main), remoteUrl: sourceRepo })
+    await createCheckout(main, wtPath, { staging: stagingBeside(wtPath), branch: 'agent/x', baseBranch: await getDefaultBranch(main), commit: await resolveRemoteRef(main, (await getDefaultBranch(main))), remoteUrl: sourceRepo })
     await git(wtPath, ['worktree', 'add', '-q', '-b', 'sub', path.join(wtPath, '.claude', 'worktrees', 'sub')])
     await fs.mkdir(path.join(wtPath, 'build'))
     await fs.writeFile(path.join(wtPath, 'build', '.nfs000000000123abcd00000001'), 'held open')
@@ -242,7 +242,7 @@ describe('createCheckout', () => {
     const main = path.join(tmpDir, 'main')
     await cloneRepo(sourceRepo, main, null)
     const wtPath = path.join(tmpDir, 'workspace')
-    await expect(createCheckout(main, wtPath, { staging: stagingBeside(wtPath), branch: 'agent/r', baseBranch: 'no-such-branch', remoteUrl: sourceRepo }))
+    await expect(createCheckout(main, wtPath, { staging: stagingBeside(wtPath), branch: 'agent/r', commit: 'f'.repeat(40), remoteUrl: sourceRepo }))
       .rejects.toThrow()
     await expect(fs.access(path.join(wtPath, '.git'))).rejects.toThrow()
     expect(await fs.readdir(tmpDir)).not.toContain('workspace.staging')
@@ -251,53 +251,34 @@ describe('createCheckout', () => {
     // to a new index, which an unforced checkout would refuse.
     await fs.mkdir(wtPath, { recursive: true })
     await fs.writeFile(path.join(wtPath, 'hello.txt'), 'half-written\n')
-    await createCheckout(main, wtPath, { staging: stagingBeside(wtPath), branch: 'agent/r', baseBranch: await getDefaultBranch(main), remoteUrl: sourceRepo })
+    await createCheckout(main, wtPath, { staging: stagingBeside(wtPath), branch: 'agent/r', baseBranch: await getDefaultBranch(main), commit: await resolveRemoteRef(main, (await getDefaultBranch(main))), remoteUrl: sourceRepo })
     expect(await fs.readFile(path.join(wtPath, 'hello.txt'), 'utf8')).toBe('hello world\n')
   })
 
-  it('checks out alongside a fetch, and ends on the refs the fetch brought', async () => {
+  it('starts at the commit it is given, with the refs the main clone has by then', async () => {
     const main = path.join(tmpDir, 'main')
     await cloneRepo(sourceRepo, main, null)
     const base = await getDefaultBranch(main)
-    const refs = (repo: string): Promise<string> =>
-      git(repo, ['for-each-ref', '--format=%(objectname) %(refname)', 'refs/remotes/origin', 'refs/tags'])
+    const picked = await resolveRemoteRef(main, base)
 
-    // The base moves on in the fetch: one file goes, one arrives, and a new
-    // branch and tag appear.
-    await git(sourceRepo, ['rm', '-q', 'hello.txt'])
+    // Origin moves on and is fetched between the pick and the checkout.
     await commitToSource('moved.txt', 'moved')
-    await git(sourceRepo, ['branch', 'pushed-later'])
-    await git(sourceRepo, ['tag', 'v2'])
-    const moved = path.join(tmpDir, 'moved')
-    await createCheckout(main, moved, {
-      staging: stagingBeside(moved), branch: 'agent/m', baseBranch: base, remoteUrl: sourceRepo, fetched: fetchOrigin(main, sourceRepo, null),
-    })
-    expect((await fs.readdir(moved)).sort()).toEqual(['.git', 'moved.txt'])
-    expect(await refs(moved)).toBe(await refs(main))
-    expect(await subjectAt(moved, 'HEAD')).toBe('moved')
-    expect((await git(moved, ['status', '--porcelain'])).trim()).toBe('')
+    await fetchOrigin(main, sourceRepo, null)
+    const behind = path.join(tmpDir, 'behind')
+    await createCheckout(main, behind, { staging: stagingBeside(behind), branch: 'agent/b', baseBranch: base, commit: picked, remoteUrl: sourceRepo })
 
-    // A base only the fetch brings in waits for it.
-    await git(sourceRepo, ['branch', 'brand-new'])
-    const waited = path.join(tmpDir, 'waited')
-    await createCheckout(main, waited, {
-      staging: stagingBeside(waited), branch: 'agent/w', baseBranch: 'brand-new', remoteUrl: sourceRepo, fetched: fetchOrigin(main, sourceRepo, null),
-    })
-    expect((await git(waited, ['rev-parse', '--abbrev-ref', '@{u}'])).trim()).toBe('origin/brand-new')
+    // The checkout is at the pick, behind its own `origin/<base>`, which a
+    // fast-forward then reaches.
+    expect(await subjectAt(behind, 'HEAD')).toBe('initial')
+    expect((await git(behind, ['rev-list', '--count', `HEAD..origin/${base}`])).trim()).toBe('1')
+    expect((await git(behind, ['status', '--porcelain'])).trim()).toBe('')
+    await git(behind, ['merge', '--ff-only', '@{u}'])
+    expect(await subjectAt(behind, 'HEAD')).toBe('moved')
 
-    // A base the fetch deletes, or a fetch that fails, leaves no `.git`.
-    await git(sourceRepo, ['branch', '-D', 'brand-new'])
-    const deleted = path.join(tmpDir, 'deleted')
-    await expect(createCheckout(main, deleted, {
-      staging: stagingBeside(deleted), branch: 'agent/d', baseBranch: 'brand-new', remoteUrl: sourceRepo, fetched: fetchOrigin(main, sourceRepo, null),
-    })).rejects.toThrow(/deleted on origin/)
-    await expect(fs.access(path.join(deleted, '.git'))).rejects.toThrow()
-    const failed = path.join(tmpDir, 'failed')
-    await expect(createCheckout(main, failed, {
-      staging: stagingBeside(failed), branch: 'agent/f', baseBranch: base, remoteUrl: sourceRepo, fetched: Promise.reject(new Error('offline')),
-    })).rejects.toThrow('offline')
-    await expect(fs.access(path.join(failed, '.git'))).rejects.toThrow()
-    expect((await fs.readdir(tmpDir)).filter((name) => name.endsWith('.staging'))).toEqual([])
+    // At a commit with no base branch it tracks nothing.
+    const pinned = path.join(tmpDir, 'pinned')
+    await createCheckout(main, pinned, { staging: stagingBeside(pinned), branch: 'agent/p', commit: picked, remoteUrl: sourceRepo })
+    await expect(git(pinned, ['rev-parse', '--abbrev-ref', '@{u}'])).rejects.toThrow()
   })
 
   it('builds a files-format checkout git can reconfigure, whatever the user\'s git defaults to', async () => {
@@ -312,7 +293,7 @@ describe('createCheckout', () => {
       await cloneRepo(sourceRepo, main, null)
       const base = await getDefaultBranch(main)
       const wtPath = path.join(tmpDir, 'workspace')
-      await createCheckout(main, wtPath, { staging: stagingBeside(wtPath), branch: 'agent/rt', baseBranch: base, remoteUrl: sourceRepo })
+      await createCheckout(main, wtPath, { staging: stagingBeside(wtPath), branch: 'agent/rt', baseBranch: base, commit: await resolveRemoteRef(main, base), remoteUrl: sourceRepo })
 
       expect((await git(wtPath, ['rev-parse', '--show-ref-format'])).trim()).toBe('files')
       expect(await subjectAt(wtPath, 'HEAD')).toBe('initial')
@@ -334,7 +315,7 @@ describe('createCheckout', () => {
     const workspace = path.join(tmpDir, 'workspace')
     const nested = path.join(workspace, 'api')
     const staging = path.join(tmpDir, '.staging-ws-api')
-    await createCheckout(main, nested, { staging, branch: 'agent/n', baseBranch: base, remoteUrl: sourceRepo })
+    await createCheckout(main, nested, { staging, branch: 'agent/n', baseBranch: base, commit: await resolveRemoteRef(main, base), remoteUrl: sourceRepo })
 
     // Only the checkout's folder is in the workspace dir.
     expect(await fs.readdir(workspace)).toEqual(['api'])
@@ -348,7 +329,7 @@ describe('createCheckout', () => {
     await commitToSource('second.txt', 'second')
     await git(tmpDir, ['clone', '-q', '--depth', '1', `file://${sourceRepo}`, main])
     await expect(createCheckout(main, path.join(tmpDir, 'wt'), {
-      staging: stagingBeside(path.join(tmpDir, 'wt')), branch: 'agent/s', baseBranch: await getDefaultBranch(main), remoteUrl: sourceRepo,
+      staging: stagingBeside(path.join(tmpDir, 'wt')), branch: 'agent/s', commit: (await git(main, ['rev-parse', 'HEAD'])).trim(), remoteUrl: sourceRepo,
     })).rejects.toThrow(/shallow/)
   })
 })
@@ -531,7 +512,7 @@ describe('seedEmptyOrigin', () => {
     expect(await getDefaultBranch(main)).toBe('trunk')
 
     const wtPath = path.join(tmpDir, 'workspace')
-    await createCheckout(main, wtPath, { staging: stagingBeside(wtPath), branch: 'agent/e', baseBranch: 'trunk', remoteUrl: remote })
+    await createCheckout(main, wtPath, { staging: stagingBeside(wtPath), branch: 'agent/e', baseBranch: 'trunk', commit: await resolveRemoteRef(main, 'trunk'), remoteUrl: remote })
     expect((await git(wtPath, ['rev-parse', '--abbrev-ref', '@{u}'])).trim()).toBe('origin/trunk')
   })
 
@@ -617,7 +598,7 @@ describe('maintainRepo', () => {
     const main = path.join(tmpDir, 'main')
     await cloneRepo(sourceRepo, main, null)
     const wtPath = path.join(tmpDir, 'wt')
-    await createCheckout(main, wtPath, { staging: stagingBeside(wtPath), branch: 'agent/m', baseBranch: 'feature', remoteUrl: sourceRepo })
+    await createCheckout(main, wtPath, { staging: stagingBeside(wtPath), branch: 'agent/m', baseBranch: 'feature', commit: await resolveRemoteRef(main, 'feature'), remoteUrl: sourceRepo })
     await git(sourceRepo, ['branch', '-f', 'feature', base])
 
     // Enough fetched packs that `gc --auto` has work to do.
@@ -692,7 +673,7 @@ describe('lastFetchedAtMs', () => {
     await cloneRepo(sourceRepo, main, null)
     const base = await getDefaultBranch(main)
     const wtPath = path.join(tmpDir, 'wt')
-    await createCheckout(main, wtPath, { staging: stagingBeside(wtPath), branch: 'agent/f', baseBranch: base, remoteUrl: sourceRepo })
+    await createCheckout(main, wtPath, { staging: stagingBeside(wtPath), branch: 'agent/f', baseBranch: base, commit: await resolveRemoteRef(main, base), remoteUrl: sourceRepo })
     const gitDir = path.join(wtPath, '.git')
 
     const before = Date.now()

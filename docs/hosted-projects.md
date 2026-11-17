@@ -143,7 +143,7 @@ changes it, whoever it is shared with.
 What has already chosen a branch keeps it: a running or stopped workspace's
 checkout stays on the base branch it was created on. What resolves the default
 only when it launches takes the new one: a queued workspace or routine
-that names no branch, and a prewarmed spare, which is rebranched to the
+that names no branch, and a prewarmed spare, which is moved onto the
 current default when claimed.
 
 **The `pre-receive` hook** refuses a branch named `HEAD`, which every clone

@@ -10,8 +10,8 @@ import { FULL_COMMIT_PATTERN } from '@yaac/shared/steps'
 /**
  * Record which of a starting workspace's scratch dirs git tracks, in each
  * checkout: at its base branch (or the commit it was created at) or at the
- * workspace's own branch once pushed, as the main clone has them after the
- * start's fetch. Those paths' tracked files show as deleted in the
+ * workspace's own branch once pushed, as the main clone has them when it
+ * starts. Those paths' tracked files show as deleted in the
  * workspace, which the webapp warns about. The server never runs git on the
  * checkout itself, so the workspace's unpushed commits are not seen.
  * `dirs` are relative to each checkout; what is recorded is relative to
