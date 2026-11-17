@@ -213,7 +213,7 @@ write as `CONFLICT` (409), the server's own included.
   `/acp/observe` checks only that the workspace exists and runs.
 - Routes that act only on the caller's own data need no check, and a
   second user gets their own answer rather than a 403: `/auth/*` and the
-  `/agent/auth` socket, `/config/*`, `/shortcuts/*`. A git credential is
+  `/agent/sign-in` socket, `/config/*`, `/shortcuts/*`. A git credential is
   its owner's alone: renaming, replacing or deleting another user's reads
   as missing, and a repo is assigned (or cloned with) only its owner's
   credential (`resolveCredentialForRemote`).
@@ -239,11 +239,12 @@ registered in `server-run`, outside `buildApp`, so
 - **Tool sign-ins** are `tool_credentials` rows, encrypted, one per user
   and tool. `/auth/*` acts on the caller's own: `/auth/list` lists only
   theirs and `/auth/clear` with `service: all` clears only theirs.
-- **The desktop app's auth daemon** holds one socket per user in
-  `authAgentHub`, and a connection replaces only its own user's socket.
-  Login and install flows carry their owner and answer 404 to anyone else,
-  so no user can receive an OAuth code another user pastes. The daemon
-  seeds the connecting user's git identity.
+- **Tool sign-in flows** (docs/tool-sign-in.md) carry their owner and
+  answer 404 to anyone else, so no user can finish or read another's. The
+  desktop app's auth daemon holds one socket per user in `authAgentHub`, a
+  connection replaces only its own user's socket, and a daemon's reports
+  reach only its user's flows. The daemon seeds the connecting user's git
+  identity.
 - **Plan usage** is looked up per user: the snapshot's `planUsage` and
   `codexPlanUsage` map a user id to that user's readout (a user with no
   sign-in is absent), and the webapp's badge shows the caller's own entry,

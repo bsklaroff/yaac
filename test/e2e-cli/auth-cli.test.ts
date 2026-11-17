@@ -5,9 +5,9 @@ import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { createRequire } from 'node:module'
 import path from 'node:path'
-import { createYaacTestEnv, spawnYaacServer, runYaac, type YaacTestEnv } from '#support/cli'
+import { TEST_CLI_ENTRY, createYaacTestEnv, spawnYaacServer, runYaac, type YaacTestEnv } from '#support/cli'
 import { makeServerApiClient, signInTestTool, type SpawnedServer } from '@yaac/test-utils/api'
-import { CLAUDE_STUB, CODEX_STUB } from '@yaac/test-utils/fixtures'
+import { FAKE_BROWSER, codeFor, startFakeVendorOAuth, type FakeVendorOAuth } from '@yaac/test-utils/fake-vendor-oauth'
 import type { AgentTool, CustomEndpointSummary, ToolAuthSummary } from '@yaac/shared/types'
 
 /**
@@ -21,23 +21,40 @@ import type { AgentTool, CustomEndpointSummary, ToolAuthSummary } from '@yaac/sh
  * reset. What is stored is read back through `GET /auth/list`, masked to a
  * key's last four characters.
  *
- * The stub vendor CLIs of YAAC_E2E_*_LOGIN_CLI are read by the CLI process,
- * which runs the browser sign-in itself, not the server, so they are passed
- * per runYaac call.
+ * Claude and Codex sign-ins run against one fake vendor OAuth server
+ * (@yaac/test-utils/fake-vendor-oauth), which the server dials in place of
+ * the vendors. A sign-in's browser is `BROWSER` set to a fake that fetches
+ * the authorize URL, or, with an SSH login standing in for a headless
+ * machine, the test answering the CLI's prompts.
+ *
+ * The containerless tier's server runs on this host and can reach a stub
+ * here (the fake vendor, an endpoint's /models); a cluster's server pod
+ * cannot, so the cases that need one run in that tier only. Run elsewhere,
+ * they would send a k8s tier's sign-ins to the real vendors.
  */
+const reachesHost = process.env.YAAC_DRIVER === 'containerless'
+
 describe('yaac auth (real CLI + shared server)', () => {
   let testEnv: YaacTestEnv
   let server: SpawnedServer
+  let vendor: FakeVendorOAuth
 
   beforeAll(async () => {
+    vendor = await startFakeVendorOAuth()
     testEnv = await createYaacTestEnv()
+    testEnv.env.YAAC_E2E_VENDOR_OAUTH_ORIGIN = vendor.origin
     server = await spawnYaacServer(testEnv.env)
   })
 
   afterAll(async () => {
     await server.stop()
     await testEnv.cleanup()
+    await vendor.close()
   })
+
+  /** A CLI env whose browser is the fake, or (headless) none at all. */
+  const withBrowser = (): NodeJS.ProcessEnv => ({ ...testEnv.env, BROWSER: FAKE_BROWSER })
+  const headless = (): NodeJS.ProcessEnv => ({ ...testEnv.env, BROWSER: '', SSH_CONNECTION: '127.0.0.1 50000 127.0.0.1 22' })
 
   /** The server's masked summary of the caller's sign-in for a tool. */
   async function stored(tool: AgentTool): Promise<ToolAuthSummary | undefined> {
@@ -283,27 +300,37 @@ describe('yaac auth (real CLI + shared server)', () => {
       expect(listed).toContain(publicKey)
     })
 
-    it('signs Claude in in-process and seeds an unset git identity from git config', async () => {
+    it.runIf(reachesHost)('signs Claude in through a loopback redirect to the CLI and seeds an unset git identity from git config', async () => {
       const identity = async (): Promise<unknown> =>
         (await (await makeServerApiClient(server).config['git-identity'].$get()).json()).identity
       const gitConfig = testEnv.env.GIT_CONFIG_GLOBAL!
       await fs.writeFile(gitConfig, '[user]\n\tname = Seeded User\n\temail = seeded@example.com\n')
       try {
         expect(await identity()).toBeNull()
-        const env = { ...testEnv.env, YAAC_E2E_CLAUDE_LOGIN_CLI: JSON.stringify([process.execPath, CLAUDE_STUB]) }
-        const res = await runYaac(env, 'auth', 'update', { stdin: '2\n' })
+        const res = await runYaac(withBrowser(), 'auth', 'update', {
+          stdinOnPrompt: [
+            { when: /Choice \[1-6\]: /, send: '2\n' },
+            { when: /\[B\/k\]: /, send: '\n' },
+          ],
+        })
         expect(res.exitCode, res.stderr).toBe(0)
-        // The vendor CLI's output, sign-in URL included, is relayed.
-        expect(res.stdout).toMatch(/claude\.com\/cai\/oauth/)
+        // The authorize URL is printed beside the browser it opens.
+        expect(res.stdout).toMatch(/\/cai\/oauth\/authorize\?.*redirect_uri=http%3A%2F%2Flocalhost/)
         expect(res.stdout).toContain('Claude Code credentials saved.')
         expect(await stored('claude')).toMatchObject({ kind: 'oauth', keyPreview: '***ogin' })
         expect(await identity()).toEqual({ name: 'Seeded User', email: 'seeded@example.com' })
 
-        // A second machine's git config never replaces an identity.
+        // A second machine's git config never replaces an identity. With no
+        // browser here, Codex signs in with a device code.
         await fs.writeFile(gitConfig, '[user]\n\tname = Other User\n\temail = other@example.com\n')
-        const codexEnv = { ...testEnv.env, YAAC_E2E_CODEX_LOGIN_CLI: JSON.stringify([process.execPath, CODEX_STUB]) }
-        const codex = await runYaac(codexEnv, 'auth', 'update', { stdin: '3\n' })
+        const codex = await runYaac(headless(), 'auth', 'update', {
+          stdinOnPrompt: [
+            { when: /Choice \[1-6\]: /, send: '3\n' },
+            { when: /\[B\/k\]: /, send: 'b\n' },
+          ],
+        })
         expect(codex.exitCode, codex.stderr).toBe(0)
+        expect(codex.stdout).toMatch(/\/codex\/device .*enter this code: FAKE-0001/)
         expect(codex.stdout).toContain('Codex credentials saved.')
         expect(await stored('codex')).toMatchObject({ kind: 'oauth' })
         expect(await identity()).toEqual({ name: 'Seeded User', email: 'seeded@example.com' })
@@ -312,15 +339,81 @@ describe('yaac auth (real CLI + shared server)', () => {
       }
     })
 
-    it('exits 1 with the vendor CLI\'s error when its sign-in fails', async () => {
-      const env = {
-        ...testEnv.env,
-        YAAC_E2E_CODEX_LOGIN_CLI: JSON.stringify([process.execPath, CODEX_STUB]),
-        FAKE_LOGIN_MODE: 'fail',
-      }
-      const res = await runYaac(env, 'auth', 'update', { stdin: '3\n' })
+    it.runIf(reachesHost)('signs Claude in on a headless machine with the code its page shows, asking again after a mistyped one', async () => {
+      await resetCreds()
+      const res = await runYaac(headless(), 'auth', 'update', {
+        stdinOnPrompt: [
+          { when: /Choice \[1-6\]: /, send: '2\n' },
+          { when: /\[B\/k\]: /, send: '\n' },
+          { when: /Paste the code the page shows: /, send: 'not a code\n' },
+          {
+            when: /Paste the code the page shows: /,
+            send: (out) => `${codeFor(/https?:\/\/\S+\/cai\/oauth\/authorize\S+/.exec(out)?.[0] ?? '')}\n`,
+          },
+        ],
+      })
+      expect(res.exitCode, res.stderr).toBe(0)
+      expect(res.stderr).toContain('Expected the code from the authorize page')
+      expect(res.stdout).toContain('Claude Code credentials saved.')
+      expect(await stored('claude')).toMatchObject({ kind: 'oauth' })
+    })
+
+    it.runIf(reachesHost)('exits 1 with the vendor\'s reason when it rejects the code', async () => {
+      const res = await runYaac(headless(), 'auth', 'update', {
+        stdinOnPrompt: [
+          { when: /Choice \[1-6\]: /, send: '2\n' },
+          { when: /\[B\/k\]: /, send: '\n' },
+          { when: /Paste the code the page shows: /, send: 'fake-code.wrong\n' },
+        ],
+      })
       expect(res.exitCode).toBe(1)
-      expect(res.stderr).toContain('Login was not completed.')
+      expect(res.stderr).toContain('Claude sign-in failed (HTTP 400): Invalid authorization code')
+    })
+
+    it.runIf(reachesHost)('cancels its sign-in on Ctrl-C, so the server stops polling the vendor', async () => {
+      vendor.setPendingPolls(Number.MAX_SAFE_INTEGER)
+      const deviceAuthPolls = (): number => vendor.requests.filter((r) => r.path === '/api/accounts/deviceauth/token').length
+      try {
+        const child = spawn(process.execPath, [TEST_CLI_ENTRY, 'auth', 'update'], { env: headless(), stdio: ['pipe', 'pipe', 'pipe'] })
+        let out = ''
+        child.stdout.on('data', (d: Buffer) => {
+          out += d.toString()
+          if (out.endsWith('Choice [1-6]: ')) child.stdin.write('3\n')
+          if (out.endsWith('[B/k]: ')) child.stdin.write('\n')
+        })
+        await vi.waitFor(() => { expect(out).toContain('enter this code: FAKE-0001') }, { timeout: 30_000 })
+        await vi.waitFor(() => { expect(deviceAuthPolls()).toBeGreaterThan(0) })
+        const exited = new Promise<number | null>((resolve) => child.once('exit', resolve))
+        child.kill('SIGINT')
+        expect(await exited).toBe(130)
+        const polls = deviceAuthPolls()
+        await new Promise((r) => setTimeout(r, 1000))
+        expect(deviceAuthPolls()).toBe(polls)
+      } finally {
+        vendor.setPendingPolls(1)
+      }
+    })
+
+    it('takes answers piped in all at once, and fails when stdin ends before an answer', async () => {
+      const piped = await runYaac(testEnv.env, 'auth', 'update', { stdin: '2\nk\nsk-ant-api03-piped-5678\n' })
+      expect(piped.exitCode, piped.stderr).toBe(0)
+      expect(await stored('claude')).toMatchObject({ kind: 'api-key', keyPreview: '***5678' })
+
+      const closed = await runYaac(testEnv.env, 'auth', 'update', { stdin: '2\n' })
+      expect(closed.exitCode).toBe(1)
+      expect(closed.stderr).toContain('stdin closed with no answer to "Sign in with your browser, or paste an API key? [B/k]:"')
+    })
+
+    it('saves a pasted Anthropic API key when asked for one instead of the browser', async () => {
+      const res = await runYaac(testEnv.env, 'auth', 'update', {
+        stdinOnPrompt: [
+          { when: /Choice \[1-6\]: /, send: '2\n' },
+          { when: /\[B\/k\]: /, send: 'k\n' },
+          { when: /Paste your Anthropic API key or OAuth token: /, send: 'sk-ant-api03-pasted-1234\n' },
+        ],
+      })
+      expect(res.exitCode, res.stderr).toBe(0)
+      expect(await stored('claude')).toMatchObject({ kind: 'api-key', keyPreview: '***1234' })
     })
 
     /** `yaac auth update` for an api-key tool, answering its prompts. */
@@ -369,10 +462,6 @@ describe('yaac auth (real CLI + shared server)', () => {
   })
 
   describe('auth endpoint', () => {
-    // The containerless tier's server runs on this host and can reach a stub
-    // here; a cluster's server pod cannot, so the cases that fetch /models
-    // run in that tier only.
-    const reachesHost = process.env.YAAC_DRIVER === 'containerless'
     /** What the stub endpoint's /models lists next. */
     let listed: unknown[] = []
     let stub: http.Server
@@ -567,8 +656,8 @@ describe('yaac auth (real CLI + shared server)', () => {
   // The daemon the desktop app bundles, run from source as its
   // utilityProcess would run the bundle.
   describe('the desktop app\'s auth daemon', () => {
-    it('relays a webapp sign-in to the server it was started for, and drops off when stopped', async () => {
-      // An earlier case stored the same stub credential.
+    it.runIf(reachesHost)('catches a webapp sign-in\'s redirect for the server it was started for, and drops off when stopped', async () => {
+      // An earlier case stored the same credential.
       await resetCreds()
       const serverJson = path.join(`${testEnv.dataDir}-client`, 'server.json')
       const selected = await fs.readFile(serverJson, 'utf8')
@@ -578,22 +667,23 @@ describe('yaac auth (real CLI + shared server)', () => {
 
       const tsx = createRequire(import.meta.url).resolve('tsx/cli')
       const entry = path.resolve(import.meta.dirname, '../../packages/desktop/src/auth-daemon.ts')
-      const daemon = spawn(process.execPath, [tsx, entry, origin], {
-        env: {
-          ...testEnv.env,
-          YAAC_E2E_CLAUDE_LOGIN_CLI: JSON.stringify([process.execPath, CLAUDE_STUB]),
-          FAKE_LOGIN_DELAY_MS: '1500',
-        },
-        stdio: 'ignore',
-      })
+      const daemon = spawn(process.execPath, [tsx, entry, origin], { env: testEnv.env, stdio: 'ignore' })
       try {
         await vi.waitFor(async () => { expect(await connected()).toBe(true) }, { timeout: 30_000, interval: 250 })
 
-        const start = await fetch(`${origin}/api/auth/claude/login/start`, { method: 'POST' })
-        const { id } = await start.json() as { id: string }
-        // Selecting another server mid-flow must not move where the
-        // credential is saved.
+        const start = await fetch(`${origin}/api/auth/claude/login/start`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ callback: 'auth-daemon' }),
+        })
+        const { id, url, acceptsCode } = await start.json() as { id: string; url: string; acceptsCode: boolean }
+        expect(acceptsCode).toBe(false)
+        // Selecting another server mid-flow must not move where the code
+        // is reported.
         await fs.writeFile(serverJson, JSON.stringify({ ...JSON.parse(selected) as object, url: 'http://127.0.0.1:1' }))
+        // The browser, opened as soon as the start answers: approving
+        // redirects it to the daemon, which is already listening.
+        expect(await (await fetch(url)).text()).toContain('Signed in')
         await vi.waitFor(async () => {
           expect((await get<{ status: string }>(`/auth/login/${id}`)).status).toBe('success')
         }, { timeout: 30_000, interval: 250 })

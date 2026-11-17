@@ -7,7 +7,6 @@ export type ErrorCode =
   | 'VALIDATION'
   | 'CONFLICT'
   | 'RUNTIME_UNAVAILABLE'
-  | 'AUTH_AGENT_DISCONNECTED'
   | 'UNAUTHENTICATED'
   | 'FORBIDDEN'
   | 'BAD_HOST'
@@ -41,7 +40,6 @@ export function defaultStatus(code: ErrorCode): number {
     case 'VALIDATION': return 400
     case 'CONFLICT': return 409
     case 'RUNTIME_UNAVAILABLE': return 503
-    case 'AUTH_AGENT_DISCONNECTED': return 503
     case 'UNAUTHENTICATED': return 401
     // The caller is known but does not own the resource.
     case 'FORBIDDEN': return 403

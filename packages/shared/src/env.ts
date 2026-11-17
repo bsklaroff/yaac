@@ -1,4 +1,4 @@
-import type { AccessMode, AgentTool } from '#types'
+import type { AccessMode } from '#types'
 
 /**
  * The one place under `src/` that reads yaac's own environment variables
@@ -441,6 +441,24 @@ export const env = {
   get desktopRendererUrl(): string | undefined {
     return process.env.YAAC_DESKTOP_RENDERER_URL
   },
+
+  /** `BROWSER` — the command the CLI opens a sign-in page with, by the
+   *  convention other CLIs follow. Unset → the platform's opener. */
+  get browser(): string | undefined {
+    return nonEmpty(process.env.BROWSER)
+  },
+
+  /**
+   * Whether a browser this process opens runs on this machine, so a vendor
+   * redirect to a loopback listener here can arrive: `BROWSER` is set, or
+   * this is macOS or a Linux desktop session and not an SSH login (whose
+   * user sees a browser on another machine).
+   */
+  get canOpenLocalBrowser(): boolean {
+    if (this.browser) return true
+    if (process.env.SSH_CONNECTION || process.env.SSH_TTY) return false
+    return process.platform === 'darwin' || !!process.env.DISPLAY || !!process.env.WAYLAND_DISPLAY
+  },
 }
 
 /** Set only by the test harness (a few are read in prod via their defaults). */
@@ -537,29 +555,14 @@ export const testEnv = {
   },
 
   /**
-   * `YAAC_E2E_{CLAUDE,CODEX}_LOGIN_CLI` — replaces the vendor CLI argv the
-   * server's web sign-in flow spawns (`claude setup-token` / `codex login
-   * --device-auth`) with a stub, so tests can script the whole interaction
-   * without a real OAuth round trip. Value is a JSON argv array.
+   * `YAAC_E2E_VENDOR_OAUTH_ORIGIN` — an origin (e.g. `http://127.0.0.1:4567`)
+   * that stands in for every vendor host the tool sign-in flows talk to
+   * (Claude's and Codex's authorize, token, device-code and profile
+   * endpoints), keeping their paths, so tests run the whole OAuth exchange
+   * against packages/test-utils/src/fake-vendor-oauth.ts.
    */
-  toolLoginCliHook(tool: AgentTool): string[] | undefined {
-    const raw = tool === 'claude'
-      ? process.env.YAAC_E2E_CLAUDE_LOGIN_CLI
-      : tool === 'codex' ? process.env.YAAC_E2E_CODEX_LOGIN_CLI : undefined
-    return parseArgvHook(raw)
-  },
-
-  /**
-   * `YAAC_E2E_{CLAUDE,CODEX}_INSTALL_CLI` — replaces the installer argv the
-   * auth daemon's install flow spawns (the vendors' `curl | bash`
-   * installers) with a stub, so tests never install real software. Value is
-   * a JSON argv array.
-   */
-  toolInstallCliHook(tool: AgentTool): string[] | undefined {
-    const raw = tool === 'claude'
-      ? process.env.YAAC_E2E_CLAUDE_INSTALL_CLI
-      : tool === 'codex' ? process.env.YAAC_E2E_CODEX_INSTALL_CLI : undefined
-    return parseArgvHook(raw)
+  get vendorOAuthOrigin(): string | undefined {
+    return nonEmpty(process.env.YAAC_E2E_VENDOR_OAUTH_ORIGIN)
   },
 }
 
@@ -573,18 +576,4 @@ function positiveNumber(raw: string | undefined, fallback: number): number {
 
 function nonEmpty(raw: string | undefined): string | undefined {
   return raw === undefined || raw.trim() === '' ? undefined : raw
-}
-
-/** Parse a JSON argv-array hook value; malformed → undefined (real CLI used). */
-function parseArgvHook(raw: string | undefined): string[] | undefined {
-  if (!raw) return undefined
-  try {
-    const parsed = JSON.parse(raw) as unknown
-    if (Array.isArray(parsed) && parsed.length > 0 && parsed.every((p) => typeof p === 'string')) {
-      return parsed
-    }
-  } catch {
-    // malformed hook → ignored, real CLI is used
-  }
-  return undefined
 }

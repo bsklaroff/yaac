@@ -1,16 +1,12 @@
+import { spawn } from 'node:child_process'
 import readline from 'node:readline/promises'
 import { getApiClient } from '@yaac/shared/server-api'
 import { seedGitIdentityFromShell } from '@yaac/shared/git-identity-seed'
-import {
-  getToolLogin,
-  killAllToolLogins,
-  sendToolLoginInput,
-  setToolLoginPersistence,
-  startToolLogin,
-} from '@yaac/auth-daemon/tool-login'
+import { env } from '@yaac/shared/env'
+import { ServerError } from '@yaac/shared/errors'
+import { listenForRedirect, type RedirectListener } from '@yaac/auth-daemon/oauth-callback'
 import {
   buildAuthPayload,
-  detectAuthKind,
   type ToolLoginResult,
 } from '@yaac/shared/tool-auth-interactive'
 import {
@@ -31,10 +27,46 @@ import {
   type ToolProviderInfo,
 } from '@yaac/shared/tool-providers'
 import { describeEndpointModel } from '@yaac/shared/endpoint-models'
-import { TOOL_LABELS, type AgentTool } from '@yaac/shared/types'
+import { TOOL_LABELS, type AgentTool, type LoginTool, type ToolLoginView } from '@yaac/shared/types'
+
+/**
+ * One reader for every prompt of an `auth update`, so answers piped in all
+ * at once each reach their own prompt: a reader per prompt would swallow the
+ * rest of the pipe. A stdin that ends before an answer fails the command.
+ */
+let reader: { rl: readline.Interface; lines: AsyncIterator<string> } | null = null
+
+/** What Ctrl-C does before exiting: cancels the sign-in in progress, so the
+ *  server stops on it rather than waiting out its timeout. */
+let onInterrupt: () => Promise<unknown> = () => Promise.resolve()
+
+function interrupt(): void {
+  void onInterrupt().catch(() => {}).finally(() => process.exit(130))
+}
+
+async function ask(query: string): Promise<string> {
+  if (!reader) {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+    rl.on('SIGINT', interrupt)
+    reader = { rl, lines: rl[Symbol.asyncIterator]() }
+  }
+  reader.rl.setPrompt(query)
+  reader.rl.prompt()
+  const next = await reader.lines.next()
+  if (next.done) throw new Error(`stdin closed with no answer to "${query.trim()}"`)
+  return next.value.trim()
+}
 
 export async function authUpdate(): Promise<void> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    await runUpdate()
+  } finally {
+    reader?.rl.close()
+    reader = null
+  }
+}
+
+async function runUpdate(): Promise<void> {
   console.log('What would you like to authenticate?')
   console.log('  1) Git credential (HTTPS token or SSH key)')
   console.log('  2) Claude Code (Anthropic)')
@@ -42,8 +74,7 @@ export async function authUpdate(): Promise<void> {
   console.log('  4) OpenCode (any supported provider)')
   console.log('  5) Pi (any supported provider)')
   console.log('  6) Oh My Pi (any supported provider)')
-  const answer = (await rl.question('Choice [1-6]: ')).trim()
-  rl.close()
+  const answer = await ask('Choice [1-6]: ')
 
   if (answer === '1') {
     await runGitUpdate()
@@ -64,16 +95,14 @@ export async function authUpdate(): Promise<void> {
  * takes; Enter accepts a default no other credential has.
  */
 async function runGitUpdate(): Promise<void> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
   console.log('Credential type:')
   console.log('  a) HTTPS (personal access token)')
   console.log('  b) SSH (a key yaac generates)')
-  const kindAnswer = (await rl.question('Choice [a/b]: ')).trim().toLowerCase()
+  const kindAnswer = (await ask('Choice [a/b]: ')).toLowerCase()
   const kind = kindAnswer === 'a' || kindAnswer === 'https' ? 'https'
     : kindAnswer === 'b' || kindAnswer === 'ssh' ? 'ssh'
     : null
   if (kind === null) {
-    rl.close()
     console.log('Cancelled.')
     return
   }
@@ -83,16 +112,14 @@ async function runGitUpdate(): Promise<void> {
   const base = kind === 'https' ? 'git-token' : 'git-key'
   let fallback = base
   for (let n = 2; taken.includes(fallback); n++) fallback = `${base}-${n}`
-  const name = (await rl.question(`Name [${fallback}]: `)).trim() || fallback
+  const name = await ask(`Name [${fallback}]: `) || fallback
 
   if (kind === 'https') {
-    const token = (await rl.question('Token (PAT): ')).trim()
-    rl.close()
+    const token = await ask('Token (PAT): ')
     if (!token) throw new Error('Token cannot be empty.')
     await client.auth.git.credentials.$post({ json: { name, token } })
     console.log(`Git credential "${name}" saved.`)
   } else {
-    rl.close()
     const { publicKey } = await client.auth.git['ssh-keys'].$post({ json: { name } })
     console.log(`SSH key "${name}" generated. The server keeps the private key encrypted and never`)
     console.log('shows it. Register this public key with your git host, as a deploy key or on your account:')
@@ -102,21 +129,19 @@ async function runGitUpdate(): Promise<void> {
 }
 
 /**
- * Sign a tool in: claude and codex through their vendor CLI's browser
- * sign-in when it is installed here, else (and always for the api-key
- * tools) with a pasted api key.
+ * Sign a tool in: claude and codex through the vendor's browser sign-in (or a
+ * pasted key, if asked for), the api-key tools with a pasted key.
  */
 async function runToolUpdate(tool: AgentTool): Promise<void> {
   const label = TOOL_LABELS[tool]
 
   if (tool === 'claude' || tool === 'codex') {
-    const outcome = await runBrowserLogin(tool)
-    if (outcome === 'success') {
+    const how = (await ask('Sign in with your browser, or paste an API key? [B/k]: ')).toLowerCase()
+    if (how !== 'k') {
+      if (!await runBrowserLogin(tool)) process.exit(1)
       console.log(`${label} credentials saved.`)
       return
     }
-    if (outcome === 'error') process.exit(1)
-    console.log(`The ${label} CLI is not installed on this machine — enter an API key instead.`)
   }
   const result = await promptForApiKey(tool)
 
@@ -126,77 +151,95 @@ async function runToolUpdate(tool: AgentTool): Promise<void> {
   console.log(`${label} credentials saved.`)
 }
 
-const POLL_MS = 500
+const POLL_MS = 1000
+
+/** Open a URL in this machine's browser, best effort: the URL is printed
+ *  beside it. */
+function openBrowser(url: string): void {
+  const opener = env.browser ?? (process.platform === 'darwin' ? 'open' : 'xdg-open')
+  const child = spawn(opener, [url], { stdio: 'ignore', detached: true })
+  child.on('error', () => { /* no opener; the user follows the printed URL */ })
+  child.unref()
+}
 
 /**
- * Run the vendor CLI's browser sign-in in this process, where the browser
- * and its localhost OAuth callback are, and save the result to the (possibly
- * remote) server. Prints the CLI's output, which carries the sign-in URL when
- * no browser opened, and forwards a pasted authorize code. A machine with no
- * git identity on the server gets one from the local git config first.
+ * Run the server's OAuth sign-in for claude or codex (docs/tool-sign-in.md),
+ * saving the tokens on the (possibly remote) server. When a browser opened
+ * here runs on this machine, the vendor redirects to a loopback listener in
+ * this process, which hands the code to the server. Otherwise (an SSH
+ * login) the user pastes Claude's code or enters Codex's device code. A
+ * machine with no git identity on the server gets one from the local git
+ * config first.
  */
-async function runBrowserLogin(tool: 'claude' | 'codex'): Promise<'success' | 'cli-missing' | 'error'> {
+async function runBrowserLogin(tool: LoginTool): Promise<boolean> {
   const client = getApiClient()
-  setToolLoginPersistence(async (t, result) => {
-    await client.auth[':tool'].$put({ param: { tool: t }, json: buildAuthPayload(t, result) })
-  })
   try {
     await seedGitIdentityFromShell()
   } catch (err) {
     console.error(`Could not set the git identity: ${err instanceof Error ? err.message : String(err)}`)
   }
+  const start = (callback?: 'caller'): Promise<ToolLoginView> =>
+    client.auth[':tool'].login.start.$post({ param: { tool }, json: callback ? { callback } : {} })
+  const submit = (id: string, text: string): Promise<ToolLoginView> =>
+    client.auth.login[':id'].input.$post({ param: { id }, json: { text } })
 
-  // However this process ends, the vendor CLI and its scratch config home,
-  // which holds a live refresh token, go with it.
-  process.once('exit', killAllToolLogins)
-  const abort = (): never => process.exit(130)
-  process.once('SIGTERM', abort)
-  process.once('SIGHUP', abort)
-
-  let view = await startToolLogin(tool)
-  if (view.status === 'error' && view.cliMissing) return 'cli-missing'
-  console.log('Complete the sign-in in your browser — vendor CLI output follows.')
-
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-  rl.on('SIGINT', abort)
-  let pasted: string | null = null
-  void rl.question('Paste the authorize code here if the page shows one (Enter to skip): ')
-    .then((answer) => { pasted = answer.trim() })
-    .catch(() => { /* rl closed when the flow ended */ })
-
-  // Print only new lines. The output usually grows by appending; if the
-  // dedupe in presentableOutput shrinks it, resync without reprinting.
-  let seenLines = 0
-  const printNew = (output?: string): void => {
-    if (!output) return
-    const lines = output.split('\n')
-    if (lines.length < seenLines) seenLines = lines.length
-    for (; seenLines < lines.length; seenLines++) console.log(`  ${lines[seenLines]}`)
+  const local = env.canOpenLocalBrowser
+  let view = await start(local ? 'caller' : undefined)
+  // Ctrl-C reaches the reader while a prompt is open, else the process.
+  onInterrupt = () => client.auth.login[':id'].cancel.$post({ param: { id: view.id } })
+  process.on('SIGINT', interrupt)
+  let listener: RedirectListener | null = null
+  if (local && view.status === 'running' && view.url) {
+    try {
+      listener = await listenForRedirect(view.url)
+    } catch (err) {
+      console.log(`${err instanceof Error ? err.message : String(err)} Finishing with a code instead.`)
+      await client.auth.login[':id'].cancel.$post({ param: { id: view.id } })
+      view = await start()
+    }
   }
-  printNew(view.output)
+  if (view.status === 'error' || !view.url) {
+    console.error(view.error ?? 'Sign-in failed.')
+    return false
+  }
 
-  try {
+  if (listener) {
+    console.log('Finish signing in in the browser window that opens. If none does, open:')
+    console.log(`  ${view.url}`)
+    openBrowser(view.url)
+    try {
+      const { code, state } = await listener.result
+      view = await submit(view.id, `${code}#${state}`)
+    } catch (err) {
+      await client.auth.login[':id'].cancel.$post({ param: { id: view.id } })
+      console.error(err instanceof Error ? err.message : String(err))
+      return false
+    }
+  } else if (view.userCode) {
+    console.log(`Open ${view.url} in a browser, sign in, and enter this code: ${view.userCode}`)
     while (view.status === 'running') {
       await new Promise((r) => setTimeout(r, POLL_MS))
-      if (pasted) {
-        try {
-          sendToolLoginInput(view.id, pasted)
-        } catch (err) {
-          console.error(err instanceof Error ? err.message : String(err))
-        }
-      }
-      pasted = null
-      view = getToolLogin(view.id)
-      printNew(view.output)
+      view = await client.auth.login[':id'].$get({ param: { id: view.id } })
     }
-  } finally {
-    rl.close()
+  } else {
+    console.log('Open this page in a browser and sign in:')
+    console.log(`  ${view.url}`)
+    while (view.status === 'running') {
+      const text = await ask('Paste the code the page shows: ')
+      if (!text) continue
+      try {
+        view = await submit(view.id, text)
+      } catch (err) {
+        // A mistyped code is refused before it is spent; ask again.
+        if (!(err instanceof ServerError && err.code === 'VALIDATION')) throw err
+        console.error(err.message)
+      }
+    }
   }
 
-  if (view.status === 'success') return 'success'
-  if (view.cliMissing) return 'cli-missing'
+  if (view.status === 'success') return true
   console.error(view.error ?? 'Sign-in failed.')
-  return 'error'
+  return false
 }
 
 /**
@@ -205,14 +248,13 @@ async function runBrowserLogin(tool: 'claude' | 'codex'): Promise<'success' | 'c
  * the default. Re-prompts on an unknown id.
  */
 async function promptForProvider<T extends string>(
-  rl: readline.Interface,
   tool: ApiKeyTool,
   list: readonly ToolProviderInfo[],
   defaultId: T,
 ): Promise<T> {
   console.log(`Which ${tool} provider? Type its id, "?" to list all ${list.length}, or Enter for "${defaultId}".`)
   for (;;) {
-    const answer = (await rl.question(`Provider [${defaultId}]: `)).trim()
+    const answer = await ask(`Provider [${defaultId}]: `)
     if (!answer) return defaultId
     if (answer === '?') {
       for (const p of list) console.log(`  ${p.id}  —  ${p.label}`)
@@ -230,23 +272,21 @@ async function promptForProvider<T extends string>(
  * endpoints instead, which holds its own key.
  */
 async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
   let opencodeProvider: OpencodeProvider | undefined
   let piProvider: PiProvider | undefined
   let ompProvider: OmpProvider | undefined
   if (tool === 'opencode') {
-    opencodeProvider = await promptForProvider(rl, 'opencode', OPENCODE_PROVIDERS, OPENCODE_DEFAULT_PROVIDER)
+    opencodeProvider = await promptForProvider('opencode', OPENCODE_PROVIDERS, OPENCODE_DEFAULT_PROVIDER)
   }
   if (tool === 'pi') {
-    piProvider = await promptForProvider(rl, 'pi', PI_PROVIDERS, PI_DEFAULT_PROVIDER)
+    piProvider = await promptForProvider('pi', PI_PROVIDERS, PI_DEFAULT_PROVIDER)
   }
   if (tool === 'omp') {
-    ompProvider = await promptForProvider(rl, 'omp', OMP_PROVIDERS, OMP_DEFAULT_PROVIDER)
+    ompProvider = await promptForProvider('omp', OMP_PROVIDERS, OMP_DEFAULT_PROVIDER)
   }
   if ((opencodeProvider ?? piProvider ?? ompProvider) === CUSTOM_PROVIDER) {
-    const endpointId = await promptForEndpoint(rl)
-    rl.close()
-    return { apiKey: '', kind: 'api-key', opencodeProvider, piProvider, ompProvider, endpointId }
+    const endpointId = await promptForEndpoint()
+    return { apiKey: '', opencodeProvider, piProvider, ompProvider, endpointId }
   }
   const label =
     tool === 'claude' ? 'Anthropic API key or OAuth token' :
@@ -255,32 +295,31 @@ async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult> {
     tool === 'pi' && piProvider ? `${piProviderInfo(piProvider).label} API key` :
     tool === 'omp' && ompProvider ? `${ompProviderInfo(ompProvider).label} API key` :
     'API key'
-  const key = (await rl.question(`Paste your ${label}: `)).trim()
-  rl.close()
+  const key = await ask(`Paste your ${label}: `)
   if (!key) {
     console.error('Key cannot be empty.')
     process.exit(1)
   }
-  return { apiKey: key, kind: detectAuthKind(tool, key), opencodeProvider, piProvider, ompProvider }
+  return { apiKey: key, opencodeProvider, piProvider, ompProvider }
 }
 
 /**
  * Pick one of the caller's custom endpoints by name, or add one under a new
  * name: its URL and key, then the models its /models lists.
  */
-async function promptForEndpoint(rl: readline.Interface): Promise<string> {
+async function promptForEndpoint(): Promise<string> {
   const client = getApiClient()
   const { customEndpoints } = await client.auth.list.$get()
   const names = customEndpoints.map((e) => e.name)
   console.log(names.length > 0
     ? `Your custom endpoints: ${names.join(', ')}. Type one, or a new name to add one.`
     : 'You have no custom endpoints yet. Name one to add it.')
-  const name = (await rl.question('Custom endpoint: ')).trim()
+  const name = await ask('Custom endpoint: ')
   if (!name) throw new Error('No custom endpoint named.')
   const existing = customEndpoints.find((e) => e.name === name)
   if (existing) return existing.id
-  const baseUrl = (await rl.question('Endpoint URL (e.g. http://my-box:8080/v1): ')).trim()
-  const apiKey = (await rl.question('API key (Enter for none): ')).trim()
+  const baseUrl = await ask('Endpoint URL (e.g. http://my-box:8080/v1): ')
+  const apiKey = await ask('API key (Enter for none): ')
   const found = await client.auth.endpoints.discover.$post({ json: { baseUrl, ...(apiKey ? { apiKey } : {}) } })
   if (found.models.length === 0) {
     throw new Error(`${baseUrl} listed no usable models. Add it with \`yaac auth endpoint add --models-file\`.`)

@@ -7,9 +7,11 @@ import {
   addEndpoint,
   addHttpsCredential,
   authAgentHub,
+  cancelToolLogin,
   clearAuth,
   discoverEndpointModels,
   generateSshCredential,
+  getToolLogin,
   listAuth,
   pushCredentialsToRuntime,
   removeCredential,
@@ -19,11 +21,15 @@ import {
   requestPlanUsageRefresh,
   seedFakeAuth,
   signInTool,
+  startToolLogin,
+  submitToolLoginCode,
   updateEndpoint,
 } from '#domain/auth'
 import {
   AGENT_TOOLS,
   FAKE_AUTH_KINDS,
+  LOGIN_CALLBACKS,
+  LOGIN_TOOLS,
   customEndpointCreateSchema,
   customEndpointPatchSchema,
   endpointDiscoverSchema,
@@ -128,38 +134,24 @@ export const authApp = new Hono<IdentityEnv>()
       return c.body(null, 204)
     },
   )
-  // Whether an auth server (the login broker on the user's machine) is
-  // connected.
+  // Whether the caller's desktop auth daemon is connected.
   .get('/agent', (c) => c.json({ connected: authAgentHub.connected(c.get('principal').userId) }))
-  // Web-driven sign-in, relayed to the auth server on the user's machine
-  // (where the browser and the vendors' localhost callbacks are). Clients
-  // poll these routes for the state the auth server pushes.
+  // Claude and Codex sign-in, run here as an OAuth grant
+  // (docs/tool-sign-in.md). Clients poll the flow until it ends.
   .post(
     '/:tool/login/start',
-    zv('param', z.object({ tool: z.enum(['claude', 'codex']) })),
-    (c) => c.json(authAgentHub.startLogin(c.get('principal').userId, c.req.valid('param').tool)),
+    zv('param', z.object({ tool: z.enum(LOGIN_TOOLS) })),
+    zv('json', z.object({ callback: z.enum(LOGIN_CALLBACKS).optional() })),
+    async (c) => c.json(await startToolLogin(c.get('principal').userId, c.req.valid('param').tool, c.req.valid('json').callback)),
   )
-  .get('/login/:id', (c) => c.json(authAgentHub.getLogin(c.get('principal').userId, c.req.param('id'))))
+  .get('/login/:id', (c) => c.json(getToolLogin(c.get('principal').userId, c.req.param('id'))))
   .post(
     '/login/:id/input',
-    // Cap generously pre-trim; the hub enforces the real alphabet/length.
-    zv('json', z.object({ text: z.string().min(1).max(1024) })),
-    (c) => c.json(authAgentHub.sendLoginInput(c.get('principal').userId, c.req.param('id'), c.req.valid('json').text)),
+    zv('json', z.object({ text: z.string().min(1).max(2048) })),
+    async (c) => c.json(await submitToolLoginCode(c.get('principal').userId, c.req.param('id'), c.req.valid('json').text)),
   )
   .post('/login/:id/cancel', (c) => {
-    authAgentHub.cancelLogin(c.get('principal').userId, c.req.param('id'))
-    return c.body(null, 204)
-  })
-  // Web-driven CLI install: offered when a sign-in fails with cliMissing.
-  // Same relay + poll shape as login.
-  .post(
-    '/:tool/install/start',
-    zv('param', z.object({ tool: z.enum(['claude', 'codex']) })),
-    (c) => c.json(authAgentHub.startInstall(c.get('principal').userId, c.req.valid('param').tool)),
-  )
-  .get('/install/:id', (c) => c.json(authAgentHub.getInstall(c.get('principal').userId, c.req.param('id'))))
-  .post('/install/:id/cancel', (c) => {
-    authAgentHub.cancelInstall(c.get('principal').userId, c.req.param('id'))
+    cancelToolLogin(c.get('principal').userId, c.req.param('id'))
     return c.body(null, 204)
   })
   // The caller's custom endpoints (docs/custom-endpoints.md).

@@ -286,6 +286,21 @@ describe('env (configuration)', () => {
       expect(env.secret).toBeUndefined()
     })
   })
+
+  describe('canOpenLocalBrowser', () => {
+    it('trusts BROWSER, refuses an SSH login, and otherwise needs a desktop session on Linux', () => {
+      for (const name of ['BROWSER', 'SSH_CONNECTION', 'SSH_TTY', 'DISPLAY', 'WAYLAND_DISPLAY']) vi.stubEnv(name, undefined)
+      const desktop = process.platform === 'darwin'
+      expect(env.canOpenLocalBrowser).toBe(desktop)
+      vi.stubEnv('DISPLAY', ':0')
+      expect(env.canOpenLocalBrowser).toBe(true)
+      vi.stubEnv('SSH_CONNECTION', '10.0.0.1 5000 10.0.0.2 22')
+      expect(env.canOpenLocalBrowser).toBe(false)
+      vi.stubEnv('BROWSER', '/usr/bin/firefox')
+      expect(env.canOpenLocalBrowser).toBe(true)
+      expect(env.browser).toBe('/usr/bin/firefox')
+    })
+  })
 })
 
 describe('testEnv (test-harness hooks)', () => {
@@ -406,43 +421,12 @@ describe('testEnv (test-harness hooks)', () => {
     })
   })
 
-  describe('toolLoginCliHook', () => {
-    it('parses a JSON argv array and rejects malformed or non-argv values', () => {
-      vi.stubEnv('YAAC_E2E_CLAUDE_LOGIN_CLI', undefined)
-      expect(testEnv.toolLoginCliHook('claude')).toBeUndefined()
-      vi.stubEnv('YAAC_E2E_CLAUDE_LOGIN_CLI', '["node","/stubs/claude.cjs"]')
-      expect(testEnv.toolLoginCliHook('claude')).toEqual(['node', '/stubs/claude.cjs'])
-      vi.stubEnv('YAAC_E2E_CLAUDE_LOGIN_CLI', '{not json')
-      expect(testEnv.toolLoginCliHook('claude')).toBeUndefined()
-      vi.stubEnv('YAAC_E2E_CLAUDE_LOGIN_CLI', '[]')
-      expect(testEnv.toolLoginCliHook('claude')).toBeUndefined()
-      vi.stubEnv('YAAC_E2E_CLAUDE_LOGIN_CLI', '[1,2]')
-      expect(testEnv.toolLoginCliHook('claude')).toBeUndefined()
-    })
-
-    it('reads the per-tool variable and has no opencode hook', () => {
-      vi.stubEnv('YAAC_E2E_CODEX_LOGIN_CLI', '["codex-stub"]')
-      expect(testEnv.toolLoginCliHook('codex')).toEqual(['codex-stub'])
-      expect(testEnv.toolLoginCliHook('opencode')).toBeUndefined()
-    })
-  })
-
-  describe('toolInstallCliHook', () => {
-    it('parses a JSON argv array and rejects malformed or non-argv values', () => {
-      vi.stubEnv('YAAC_E2E_CLAUDE_INSTALL_CLI', undefined)
-      expect(testEnv.toolInstallCliHook('claude')).toBeUndefined()
-      vi.stubEnv('YAAC_E2E_CLAUDE_INSTALL_CLI', '["node","/stubs/install.cjs"]')
-      expect(testEnv.toolInstallCliHook('claude')).toEqual(['node', '/stubs/install.cjs'])
-      vi.stubEnv('YAAC_E2E_CLAUDE_INSTALL_CLI', '{not json')
-      expect(testEnv.toolInstallCliHook('claude')).toBeUndefined()
-      vi.stubEnv('YAAC_E2E_CLAUDE_INSTALL_CLI', '[]')
-      expect(testEnv.toolInstallCliHook('claude')).toBeUndefined()
-    })
-
-    it('reads the per-tool variable and has no opencode hook', () => {
-      vi.stubEnv('YAAC_E2E_CODEX_INSTALL_CLI', '["codex-install-stub"]')
-      expect(testEnv.toolInstallCliHook('codex')).toEqual(['codex-install-stub'])
-      expect(testEnv.toolInstallCliHook('opencode')).toBeUndefined()
+  describe('vendorOAuthOrigin', () => {
+    it('reads the origin, treating blank as unset', () => {
+      vi.stubEnv('YAAC_E2E_VENDOR_OAUTH_ORIGIN', 'http://127.0.0.1:4567')
+      expect(testEnv.vendorOAuthOrigin).toBe('http://127.0.0.1:4567')
+      vi.stubEnv('YAAC_E2E_VENDOR_OAUTH_ORIGIN', ' ')
+      expect(testEnv.vendorOAuthOrigin).toBeUndefined()
     })
   })
 })

@@ -3,15 +3,13 @@ productName: yaac
 directories:
   output: dist-app
 npmRebuild: false
-# tsup bundles the main process and the auth daemon into dist/. The only
-# runtime dependency left is node-pty, whose N-API binary loads under
-# Electron's Node without a rebuild.
+# tsup bundles the main process and the auth daemon, with every dependency,
+# into dist/. With no dependencies of its own, electron-builder would look up
+# the tree and pack the workspace root's node_modules, so none are taken.
 files:
   - dist/**
   - package.json
-# Native modules and node-pty's spawn-helper must be real files on disk.
-asarUnpack:
-  - node_modules/@lydell/**
+  - "!node_modules/**"
 mac:
   target:
     - dir

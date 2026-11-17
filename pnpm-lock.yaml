@@ -409,9 +409,6 @@ importers:
 
   packages/auth-daemon:
     dependencies:
-      '@lydell/node-pty':
-        specifier: 'catalog:'
-        version: 1.1.0
       '@yaac/shared':
         specifier: workspace:*
         version: link:../shared
@@ -458,10 +455,6 @@ importers:
         version: link:../test-utils
 
   packages/desktop:
-    dependencies:
-      '@lydell/node-pty':
-        specifier: 'catalog:'
-        version: 1.1.0
     devDependencies:
       '@types/node':
         specifier: 'catalog:'

@@ -1228,31 +1228,39 @@ export type PlanUsageResult =
     limits: PlanUsageLimit[]
   }
 
-// --- web-driven tool sign-in (auth-daemon/src/tool-login.ts) ---
+// --- tool sign-in (server domain/auth/tool-login.ts) ---
 
 export type ToolLoginStatus = 'running' | 'success' | 'error'
 
-/** A vendor-CLI browser login in progress (never carries tokens). */
+/** The tools whose vendor OAuth sign-in the server runs. */
+export const LOGIN_TOOLS = ['claude', 'codex'] as const
+export type LoginTool = typeof LOGIN_TOOLS[number]
+
+/**
+ * Who catches the vendor's redirect back from its authorize page, for
+ * `POST /auth/:tool/login/start`. Unset, the flow needs no loopback: the user
+ * pastes the code the page shows (claude) or enters a device code (codex).
+ *  - `auth-daemon`: the caller's desktop app, whose daemon listens on the
+ *    loopback port of the machine the browser opens on. Without a connected
+ *    daemon the flow starts as if unset.
+ *  - `caller`: the client itself (the CLI), which posts the code it caught
+ *    to `POST /auth/login/:id/input`.
+ */
+export const LOGIN_CALLBACKS = ['auth-daemon', 'caller'] as const
+export type LoginCallback = typeof LOGIN_CALLBACKS[number]
+
+/** A vendor OAuth sign-in the server is running (never carries tokens). */
 export interface ToolLoginView {
   id: string
-  tool: AgentTool
+  tool: LoginTool
   status: ToolLoginStatus
-  /** The CLI's output so far (ANSI-stripped, tail-capped), so the user can
-   *  copy the sign-in URL if no browser opened. */
-  output?: string
-  error?: string
-  /** The vendor CLI is not installed; the webapp offers to install it. */
-  cliMissing?: boolean
-}
-
-/** A vendor-CLI install started from the webapp after a `cliMissing`
- *  sign-in. */
-export interface ToolInstallView {
-  id: string
-  tool: AgentTool
-  status: ToolLoginStatus
-  /** Installer output so far (ANSI-stripped, tail-capped). */
-  output?: string
+  /** The vendor page to open in a browser. */
+  url?: string
+  /** Codex's device flow: the one-time code to enter on `url`. */
+  userCode?: string
+  /** Whether the flow takes the authorize page's code through
+   *  `POST /auth/login/:id/input`. */
+  acceptsCode?: boolean
   error?: string
 }
 

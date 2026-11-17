@@ -11,7 +11,6 @@ vi.mock('node:child_process', async (importOriginal) => {
 import {
   claudeKeychainService,
   deleteScopedClaudeKeychainItem,
-  readClaudeKeychainPayload,
   readScopedClaudeKeychainPayload,
 } from '#tool-auth-interactive'
 
@@ -24,43 +23,6 @@ describe('claude keychain access', () => {
   afterEach(() => {
     setPlatform(realPlatform)
     execFileSyncMock.mockReset()
-  })
-
-  describe('readClaudeKeychainPayload', () => {
-    it('reads the default host service and trims the payload', () => {
-      setPlatform('darwin')
-      execFileSyncMock.mockReturnValue('{"claudeAiOauth":{}}\n')
-      expect(readClaudeKeychainPayload()).toBe('{"claudeAiOauth":{}}')
-      expect(execFileSyncMock).toHaveBeenCalledWith(
-        'security',
-        ['find-generic-password', '-s', 'Claude Code-credentials', '-w'],
-        expect.anything(),
-      )
-    })
-
-    it('reads a config-dir-scoped service when one is given', () => {
-      setPlatform('darwin')
-      execFileSyncMock.mockReturnValue('payload')
-      const service = claudeKeychainService('/tmp/scratch')
-      expect(readClaudeKeychainPayload(service)).toBe('payload')
-      expect(execFileSyncMock).toHaveBeenCalledWith(
-        'security',
-        ['find-generic-password', '-s', service, '-w'],
-        expect.anything(),
-      )
-    })
-
-    it('is null on non-darwin without shelling out', () => {
-      setPlatform('linux')
-      expect(readClaudeKeychainPayload()).toBeNull()
-      expect(execFileSyncMock).not.toHaveBeenCalled()
-    })
-
-    it('is null when the item is missing (security exits nonzero)', () => {
-      setPlatform('darwin')
-      execFileSyncMock.mockImplementation(() => { throw new Error('not found') })
-      expect(readClaudeKeychainPayload()).toBeNull()
-    })
   })
 
   describe('readScopedClaudeKeychainPayload', () => {

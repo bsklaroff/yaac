@@ -754,8 +754,8 @@ the stored credentials, in the database, are readable only by the server.
 
 The pod mounts the tiers, so anything inside them is visible to the pod and
 owned by its uid. Some files belong to the user's machine, not the server:
-`server.json` (the origin this machine's clients dial), the `login-*`
-scratch of a tool sign-in, and the installer's caches (the Calico manifest,
+`server.json` (the origin this machine's clients dial) and the installer's
+caches (the Calico manifest,
 the podman-pid file). Only processes on the user's machine
 read and write them: the CLI, the desktop app and its auth daemon, and
 `yaac cluster install`.

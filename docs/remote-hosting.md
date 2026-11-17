@@ -18,10 +18,10 @@ LAPTOP (on the tailnet, logged in as a tailnet user)
   yaac CLI          ── RPC + terminal WebSockets ─► server
   browser           ── https://srv.<tailnet>.ts.net
   desktop app       ── the webapp, plus its auth daemon's outbound WS ─► server
-                       (runs the webapp's tool sign-ins locally)
+                       (catches tool sign-ins' redirects on the laptop)
 
-PHONE: browser or the iPhone app (ios/README.md). Full webapp, but no tool
-       sign-in (that needs a laptop).
+PHONE: browser or the iPhone app (ios/README.md). Full webapp, tool
+       sign-in included.
 ```
 
 No client holds a credential. The server works out who is calling from the
@@ -262,13 +262,12 @@ against a local or remote server:
   uses the server's PTY WebSocket (`C-b d` detaches).
 - **Settings**: each `yaac config` command reads and writes its setting
   through the server, a Dockerfile from a local file or stdin.
-- **Tool credentials**: `yaac auth update` runs the Claude/Codex browser
-  sign-in on your machine, then sends the result to the server. The
-  webapp's sign-in cards relay the same sign-in to the desktop app's auth
-  daemon (a helper inside the app that runs the vendors' login CLIs), so
-  they work only while the desktop app runs on the machine with the
-  browser. In a plain browser without it, sign in with `yaac auth update`
-  or paste a token.
+- **Tool credentials**: the server runs the Claude/Codex OAuth sign-in for
+  every client (docs/tool-sign-in.md). In the desktop app and from `yaac
+  auth update` on a laptop, the vendor sends the browser back to a loopback
+  listener on that machine and nothing needs pasting. Anywhere else (a
+  plain browser, the iPhone app, the CLI over SSH) the user pastes the code
+  Claude's page shows, or enters Codex's device code.
 - **Dev-server previews**: the desktop app and the iPhone app (ios/README.md)
   each forward a workspace's port to their own loopback, over a WebSocket
   through `serve` that only the workspace's owner may open, and show it in
@@ -304,8 +303,6 @@ Things to keep in mind:
   report wins, unless a zone is pinned in Settings → General.
 - **Machine-scoped commands** act on the machine they run on and ignore the
   remote setting: `yaac server *` and `yaac cluster *`.
-- **A phone alone cannot sign in to tools**, since that needs the desktop
-  app or the CLI. Set credentials up from a laptop once.
 - A client/server version mismatch prints a one-time warning (the server
   reports its build id on every response). Upgrade whichever side is behind.
 

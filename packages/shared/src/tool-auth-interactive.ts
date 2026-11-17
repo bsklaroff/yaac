@@ -5,19 +5,9 @@ import {
   type AgentTool,
   type ClaudeOAuthBundle,
   type CodexOAuthBundle,
-  type ToolAuthKind,
   type ToolAuthPayload,
 } from '#types'
 import { isApiKeyTool, type OmpProvider, type OpencodeProvider, type PiProvider } from '#tool-providers'
-
-/** A claude token starting with "sk-ant-oat" is OAuth; anything else is an api key. */
-export function detectAuthKind(tool: AgentTool, token: string): ToolAuthKind {
-  if (tool === 'claude') {
-    if (token.startsWith('sk-ant-oat')) return 'oauth'
-    return 'api-key'
-  }
-  return 'api-key'
-}
 
 /**
  * Parse a raw blob of Claude Code's native `.credentials.json` (or the
@@ -53,13 +43,13 @@ export function claudeKeychainService(configDir?: string): string {
 }
 
 /**
- * Read a claude Keychain item via `security find-generic-password`. Null
- * when missing or not on macOS.
+ * Read a Keychain item created by one of yaac's own claude invocations, via
+ * `security find-generic-password`. Refuses the unsuffixed service, which
+ * belongs to the user's own claude install. Null when missing or not on
+ * macOS.
  */
-export function readClaudeKeychainPayload(
-  service: string = CLAUDE_KEYCHAIN_SERVICE,
-): string | null {
-  if (process.platform !== 'darwin') return null
+export function readScopedClaudeKeychainPayload(service: string): string | null {
+  if (service === CLAUDE_KEYCHAIN_SERVICE || process.platform !== 'darwin') return null
   try {
     const out = execFileSync(
       'security',
@@ -70,16 +60,6 @@ export function readClaudeKeychainPayload(
   } catch {
     return null
   }
-}
-
-/**
- * Read a Keychain item created by one of yaac's own claude invocations.
- * Refuses the unsuffixed service, which belongs to the user's own claude
- * install. Null when missing or not on macOS.
- */
-export function readScopedClaudeKeychainPayload(service: string): string | null {
-  if (service === CLAUDE_KEYCHAIN_SERVICE) return null
-  return readClaudeKeychainPayload(service)
 }
 
 /**
@@ -170,12 +150,9 @@ export function extractCodexOAuthBundle(raw: string): CodexOAuthBundle | null {
   }
 }
 
-/** Credentials captured by a tool login. */
+/** A pasted api key, or a custom endpoint, as `yaac auth update` takes it. */
 export interface ToolLoginResult {
   apiKey: string
-  kind: ToolAuthKind
-  claudeBundle?: ClaudeOAuthBundle
-  codexBundle?: CodexOAuthBundle
   /** opencode only: the provider the api key is for. */
   opencodeProvider?: OpencodeProvider
   /** pi only: the provider the api key is for. */
@@ -186,16 +163,10 @@ export interface ToolLoginResult {
   endpointId?: string
 }
 
-/** Shape a login result into the `PUT /auth/:tool` body. */
+/** Shape a pasted credential into the `PUT /auth/:tool` body. */
 export function buildAuthPayload(tool: AgentTool, result: ToolLoginResult): ToolAuthPayload {
-  if (tool === 'claude' && result.kind === 'oauth' && result.claudeBundle) {
-    return { kind: 'oauth', bundle: result.claudeBundle }
-  }
-  if (tool === 'codex' && result.kind === 'oauth' && result.codexBundle) {
-    return { kind: 'oauth', bundle: result.codexBundle }
-  }
   if (!result.apiKey && !result.endpointId) {
-    throw new Error('No credentials captured from tool login.')
+    throw new Error('No api key or custom endpoint given.')
   }
   if (isApiKeyTool(tool)) {
     return {

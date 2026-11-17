@@ -312,8 +312,8 @@ export default tseslint.config(
   ]),
 
   // commands: thin RPC/presentation. They may import sibling commands,
-  // @yaac/shared, the auth daemon's tool-login (`yaac auth update` signs in
-  // in-process), and three host-side server modules: k8s substrate/exec
+  // @yaac/shared, the auth daemon's oauth-callback (`yaac auth update`
+  // catches a sign-in's loopback redirect itself), and three host-side server modules: k8s substrate/exec
   // (`kubectl exec -it` streams), k8s/install (cluster administration,
   // which runs before any server exists), and containerless/check. The
   // negation chain re-includes each parent dir, since gitignore semantics
@@ -323,7 +323,7 @@ export default tseslint.config(
       group: [
         '@yaac/*',
         '!@yaac/shared', '!@yaac/shared/*',
-        '!@yaac/auth-daemon', '@yaac/auth-daemon/*', '!@yaac/auth-daemon/tool-login',
+        '!@yaac/auth-daemon', '@yaac/auth-daemon/*', '!@yaac/auth-daemon/oauth-callback',
         '!@yaac/server', '@yaac/server/*',
         '!@yaac/server/drivers', '@yaac/server/drivers/*',
         '!@yaac/server/drivers/k8s', '@yaac/server/drivers/k8s/*',
@@ -333,7 +333,7 @@ export default tseslint.config(
         '!@yaac/server/drivers/containerless', '@yaac/server/drivers/containerless/*',
         '!@yaac/server/drivers/containerless/check',
       ],
-      message: 'commands may only import #commands/…, @yaac/shared, @yaac/auth-daemon/tool-login, and @yaac/server/drivers/{k8s/{substrate/exec,install},containerless/check}.',
+      message: 'commands may only import #commands/…, @yaac/shared, @yaac/auth-daemon/oauth-callback, and @yaac/server/drivers/{k8s/{substrate/exec,install},containerless/check}.',
     },
   ]),
 

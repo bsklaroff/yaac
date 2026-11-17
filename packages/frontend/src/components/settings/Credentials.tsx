@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '#lib/api'
 import { AUTH_LIST_KEY, useAuthList } from '#lib/useAuthList'
 import { useUiStore } from '#lib/store'
+import { isElectron, windowApi } from '#lib/platform'
 import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
 import { CustomEndpoints } from '#components/settings/CustomEndpoints'
 import { GitCredentials } from '#components/settings/GitCredentials'
@@ -18,7 +19,7 @@ import {
   PI_DEFAULT_PROVIDER,
   PI_PROVIDERS,
 } from '@yaac/shared/tool-providers'
-import { AGENT_TOOLS, TOOL_LABELS, type AgentTool, type CustomEndpointSummary, type ToolAuthSummary, type ToolInstallView, type ToolLoginView } from '@yaac/shared/types'
+import { AGENT_TOOLS, type AgentTool, type CustomEndpointSummary, type LoginTool, type ToolAuthSummary, type ToolLoginView } from '@yaac/shared/types'
 
 /**
  * Provider choices for the API-key-only tools: which backend the pasted key
@@ -218,7 +219,7 @@ function ToolAuthRow({ tool, summary, endpoints, autoExpand, onChanged }: {
         <div className="mt-2 flex flex-col gap-2 border-t border-hairline-soft pt-2">
           {!providerOptions && (
             <>
-              <CliSignIn tool={tool} onDone={() => { setJustSignedIn(true); onChanged() }} />
+              <VendorSignIn tool={tool} onDone={() => { setJustSignedIn(true); onChanged() }} />
               <p className="text-[11px] text-text-faint">
                 …or paste an API key:
               </p>
@@ -263,22 +264,23 @@ function ToolAuthRow({ tool, summary, endpoints, autoExpand, onChanged }: {
   )
 }
 
-type FlowView = ToolLoginView | ToolInstallView
+const LINK = 'break-all font-medium text-accent underline decoration-accent/40 hover:decoration-accent'
 
 /**
- * A command the server runs for a tool (its sign-in or its install), polled
- * every 1.5s while it runs. `flow` is null until started. Starting one that
- * fails to start yields an error view with no id. A flow the server no
- * longer knows (restart, expiry) resets to null.
+ * Browser sign-in through the vendor's OAuth page, which the server runs
+ * (docs/tool-sign-in.md). In the desktop app the page redirects back to its
+ * auth daemon, so the page opens straight away and nothing needs pasting.
+ * Anywhere else (a browser, the iPhone app) the user pastes the code
+ * Claude's page shows, or enters on Codex's page the device code shown here.
+ * The flow is polled every 1.5s while it runs.
  */
-function useCliFlow(kind: 'login' | 'install', tool: AgentTool, start: () => Promise<FlowView>) {
-  const [started, setStarted] = useState<FlowView | null>(null)
+function VendorSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): JSX.Element {
+  const loginTool = tool as LoginTool
+  const [started, setStarted] = useState<ToolLoginView | null>(null)
   const queryClient = useQueryClient()
   const poll = useQuery({
-    queryKey: ['cli-flow', kind, started?.id],
-    queryFn: () => (kind === 'login'
-      ? api.auth.login[':id'].$get({ param: { id: started?.id ?? '' } })
-      : api.auth.install[':id'].$get({ param: { id: started?.id ?? '' } })),
+    queryKey: ['tool-login', started?.id],
+    queryFn: () => api.auth.login[':id'].$get({ param: { id: started?.id ?? '' } }),
     enabled: started?.status === 'running',
     staleTime: 0,
     // Stop once the flow ends, or once the server no longer knows it.
@@ -287,236 +289,122 @@ function useCliFlow(kind: 'login' | 'install', tool: AgentTool, start: () => Pro
   })
   const flow = poll.isError ? null : poll.data ?? started
   const begin = useMutation({
-    mutationFn: start,
-    onSuccess: setStarted,
-    onError: (err) => setStarted({ id: '', tool, status: 'error', error: err.message }),
+    mutationFn: () => api.auth[':tool'].login.start.$post({
+      param: { tool: loginTool },
+      json: isElectron() ? { callback: 'auth-daemon' } : {},
+    }),
+    onSuccess: (view) => {
+      setStarted(view)
+      if (view.url && !view.acceptsCode && !view.userCode) windowApi()?.openExternal(view.url)
+    },
+    onError: (err) => setStarted({ id: '', tool: loginTool, status: 'error', error: err.message }),
   })
-  // Aborting a running flow; the panel resets at once, and a failed abort
-  // shows beside the start button.
+  // A failed abort shows beside the start button; the panel resets at once.
   const abort = useMutation({
-    mutationFn: (id: string) => (kind === 'login'
-      ? api.auth.login[':id'].cancel.$post({ param: { id } })
-      : api.auth.install[':id'].cancel.$post({ param: { id } })),
+    mutationFn: (id: string) => api.auth.login[':id'].cancel.$post({ param: { id } }),
+  })
+  const sendCode = useMutation({
+    mutationFn: (text: string) => api.auth.login[':id'].input.$post({ param: { id: flow?.id ?? '' }, json: { text } }),
+    onSuccess: (view) => queryClient.setQueryData(['tool-login', view.id], view),
   })
   const reset = (): void => {
     if (flow?.status === 'running') abort.mutate(flow.id)
+    sendCode.reset()
     setStarted(null)
   }
-  /** Replace the polled view, e.g. with an input's reply. */
-  const replace = (view: FlowView): void => {
-    queryClient.setQueryData(['cli-flow', kind, view.id], view)
-  }
-  return { flow, begin, abort, reset, replace, clear: () => setStarted(null) }
-}
 
-/**
- * Browser sign-in: the server runs the vendor's login command
- * (`claude auth login` / `codex login`), which opens a browser and completes
- * through its localhost callback. A missing CLI can be installed from here.
- */
-function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): JSX.Element {
-  const cliTool = tool as 'claude' | 'codex'
-  const login = useCliFlow('login', tool, () => api.auth[':tool'].login.start.$post({ param: { tool: cliTool } }))
-  const install = useCliFlow('install', tool, () => api.auth[':tool'].install.start.$post({ param: { tool: cliTool } }))
-  const [justInstalled, setJustInstalled] = useState(false)
-  const sendInput = useMutation({
-    mutationFn: (text: string) => api.auth.login[':id'].input.$post({ param: { id: login.flow?.id ?? '' }, json: { text } }),
-    onSuccess: login.replace,
-  })
-  const label = tool === 'claude' ? 'Sign in with Claude' : 'Sign in with ChatGPT'
-  const toolName = TOOL_LABELS[tool]
-  const busy = login.begin.isPending || install.begin.isPending
+  // Closing the panel abandons a running flow, so the server stops on it
+  // rather than waiting out its timeout.
+  const liveRef = useRef<string | null>(null)
+  liveRef.current = flow?.status === 'running' && flow.id ? flow.id : null
+  useEffect(() => () => {
+    if (liveRef.current) void api.auth.login[':id'].cancel.$post({ param: { id: liveRef.current } }).catch(() => {})
+  }, [])
 
   // `onDone` is a new closure each render; fire it only once per success.
   const doneRef = useRef(false)
-  const succeeded = login.flow?.status === 'success'
+  const succeeded = flow?.status === 'success'
   useEffect(() => {
     if (!succeeded || doneRef.current) return
     doneRef.current = true
     onDone()
   }, [succeeded, onDone])
 
-  // A finished install returns to the start button with a "try again" nudge.
-  const installed = install.flow?.status === 'success'
-  const { clear: clearInstall } = install
-  const { clear: clearLogin } = login
-  useEffect(() => {
-    if (!installed) return
-    clearInstall()
-    clearLogin()
-    setJustInstalled(true)
-  }, [installed, clearInstall, clearLogin])
-
-  const start = (): void => {
-    doneRef.current = false
-    login.begin.mutate()
-  }
-  const installCli = (): void => {
-    login.clear()
-    install.begin.mutate()
-  }
-
-  const abortError = login.abort.error ?? install.abort.error
-
-  if (install.flow) {
-    if (install.flow.status === 'error') {
-      return (
-        <div className="flex flex-col gap-1.5">
-          <p className="text-[11px] text-red-400">{install.flow.error ?? 'install failed'}</p>
-          <div className="flex gap-2">
-            <button onClick={installCli} className={BUTTON}>
-              Try again
-            </button>
-            <button onClick={install.reset} className={BUTTON}>
-              Cancel
-            </button>
-          </div>
-        </div>
-      )
-    }
-    return (
-      <div className="flex flex-col gap-2 rounded-md border border-accent/20 bg-accent/5 p-2.5">
-        <div className="flex items-center gap-2.5">
-          <p className="flex-1 text-[11px] leading-relaxed text-text-dim">
-            Installing {toolName}…
-          </p>
-          <button onClick={install.reset} className={BUTTON}>
-            Cancel
-          </button>
-        </div>
-        {install.flow.output && <CliOutput text={install.flow.output} />}
-      </div>
-    )
-  }
-
-  if (!login.flow) {
+  if (!flow) {
     return (
       <div className="flex flex-col gap-1">
-        {justInstalled && (
-          <p className="text-[11px] text-emerald-400">{toolName} installed — try signing in again.</p>
-        )}
-        <button onClick={start} disabled={busy} className={BUTTON}>
-          {busy ? 'Starting…' : label}
+        <button
+          onClick={() => { doneRef.current = false; begin.mutate() }}
+          disabled={begin.isPending}
+          className={BUTTON}
+        >
+          {begin.isPending ? 'Starting…' : tool === 'claude' ? 'Sign in with Claude' : 'Sign in with ChatGPT'}
         </button>
-        <p className="text-[11px] text-text-faint">
-          Opens a browser window on this machine to authorize. Needs the yaac
-          desktop app running here; without it, run <code>yaac auth update</code> in
-          a terminal.
-        </p>
-        {abortError && <p className="text-[11px] text-red-400">Cancel failed: {abortError.message}</p>}
+        {abort.error && <p className="text-[11px] text-red-400">Cancel failed: {abort.error.message}</p>}
       </div>
     )
   }
 
-  if (login.flow.status === 'error') {
-    if ('cliMissing' in login.flow && login.flow.cliMissing) {
-      return (
-        <div className="flex flex-col gap-1.5">
-          <p className="text-[11px] text-text-dim">{toolName} isn't installed on this machine.</p>
-          <div className="flex gap-2">
-            <button onClick={installCli} disabled={busy} className={BUTTON}>
-              {busy ? 'Starting…' : `Install ${toolName}`}
-            </button>
-            <button onClick={login.reset} className={BUTTON}>
-              Cancel
-            </button>
-          </div>
-        </div>
-      )
-    }
+  if (flow.status === 'error') {
     return (
       <div className="flex flex-col gap-1.5">
-        <p className="text-[11px] text-red-400">{login.flow.error ?? 'sign-in failed'}</p>
-        <button onClick={login.reset} className={BUTTON}>
+        <p className="text-[11px] text-red-400">{flow.error ?? 'sign-in failed'}</p>
+        <button onClick={reset} className={BUTTON}>
           Try again
         </button>
       </div>
     )
   }
 
-  // The server rejects codes with unexpected characters; the flow stays open
-  // so the user can paste again.
-  const submitInput = (event: FormEvent<HTMLFormElement>): void => {
+  // The server refuses a code with unexpected characters before spending
+  // it, so the user can paste again.
+  const submitCode = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault()
     const formElement = event.currentTarget
     const raw = new FormData(formElement).get('text')
     const text = (typeof raw === 'string' ? raw : '').trim()
     if (!text) return
-    sendInput.mutate(text, { onSuccess: () => formElement.reset() })
+    sendCode.mutate(text, { onSuccess: () => formElement.reset() })
   }
+  const link = (text: string): JSX.Element => (
+    <a href={flow.url} target="_blank" rel="noreferrer" className={LINK}>{text}</a>
+  )
 
   return (
     <div className="flex flex-col gap-2 rounded-md border border-accent/20 bg-accent/5 p-2.5">
-      <div className="flex items-center gap-2.5">
+      <div className="flex items-start gap-2.5">
         <p className="flex-1 text-[11px] leading-relaxed text-text-dim">
-          Finish signing in from the browser window that just opened. No window? Use
-          the sign-in link the CLI printed below.
+          {flow.userCode ? (
+            <>Open {link('the ChatGPT sign-in page')}, sign in, and enter this code:</>
+          ) : flow.acceptsCode ? (
+            <>Open {link('the Claude sign-in page')}, approve, then paste the code it shows below.</>
+          ) : (
+            <>Finish signing in in your browser. No window? {link('Open the sign-in page')}.</>
+          )}
         </p>
-        <button onClick={login.reset} className={BUTTON}>
+        <button onClick={reset} className={BUTTON}>
           Cancel
         </button>
       </div>
-      {login.flow.output && <CliOutput text={login.flow.output} />}
-      {tool === 'claude' && (
+      {flow.userCode && (
+        <p className="select-all text-center font-mono text-base tracking-widest text-text">{flow.userCode}</p>
+      )}
+      {flow.acceptsCode && (
         <>
-          <form onSubmit={submitInput} className="flex items-center gap-2">
+          <form onSubmit={submitCode} className="flex items-center gap-2">
             <input
               name="text"
               autoComplete="off"
-              placeholder="paste code here if prompted"
-              className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono
-                text-xs text-text outline-none focus:border-border-strong"
+              placeholder="paste the code here"
+              className={clsx(INPUT, 'min-w-0 flex-1')}
             />
-            <button type="submit" className={BUTTON}>
-              Send
+            <button type="submit" disabled={sendCode.isPending} className={BUTTON}>
+              {sendCode.isPending ? 'Signing in…' : 'Send'}
             </button>
           </form>
-          {sendInput.error && <p className="text-[11px] text-red-400">{sendInput.error.message}</p>}
+          {sendCode.error && <p className="text-[11px] text-red-400">{sendCode.error.message}</p>}
         </>
       )}
     </div>
-  )
-}
-
-const URL_RE = /https:\/\/[^\s"'<>]+/g
-
-/**
- * The login command's live output with clickable URLs, for when the server
- * could not open a browser itself.
- */
-function CliOutput({ text }: { text: string }): JSX.Element {
-  const boxRef = useRef<HTMLPreElement>(null)
-  useEffect(() => {
-    const el = boxRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [text])
-
-  const parts: (string | JSX.Element)[] = []
-  let last = 0
-  for (const m of text.matchAll(URL_RE)) {
-    parts.push(text.slice(last, m.index))
-    parts.push(
-      <a
-        key={m.index}
-        href={m[0]}
-        target="_blank"
-        rel="noreferrer"
-        className="break-all font-medium text-accent underline decoration-accent/40 hover:decoration-accent"
-      >
-        {m[0]}
-      </a>,
-    )
-    last = m.index + m[0].length
-  }
-  parts.push(text.slice(last))
-
-  return (
-    <pre
-      ref={boxRef}
-      className="max-h-36 overflow-y-auto whitespace-pre-wrap break-words rounded bg-bg/80 p-2 font-mono
-        text-[10px] leading-relaxed text-text-dim"
-    >
-      {parts}
-    </pre>
   )
 }

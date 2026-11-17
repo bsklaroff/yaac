@@ -297,9 +297,11 @@ export interface RunYaacOptions {
   /**
    * Write each `send` once its `when` pattern appears in stdout after the
    * previous match. The prompt is printed by the readline that will read
-   * the answer, so there is no race. Stdin closes after the last send.
+   * the answer, so there is no race. Stdin closes after the last send. A
+   * function `send` is given the stdout so far, for an answer that depends
+   * on what the command printed.
    */
-  stdinOnPrompt?: Array<{ when: RegExp; send: string }>
+  stdinOnPrompt?: Array<{ when: RegExp; send: string | ((stdout: string) => string) }>
   /** Working directory (default: the test process's). */
   cwd?: string
   /**
@@ -351,7 +353,8 @@ export async function runYaac(
       const m = steps[promptIdx].when.exec(stdout.slice(promptScanFrom))
       if (!m) return
       promptScanFrom += m.index + m[0].length
-      child.stdin.write(steps[promptIdx].send)
+      const { send } = steps[promptIdx]
+      child.stdin.write(typeof send === 'function' ? send(stdout) : send)
       promptIdx += 1
       if (promptIdx === steps.length) child.stdin.end()
     }

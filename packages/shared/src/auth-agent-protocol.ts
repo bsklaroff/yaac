@@ -1,14 +1,24 @@
 /**
- * Wire protocol between the server (`domain/auth/agent.ts`) and the auth
- * server ("agent") on the user's machine (`auth-daemon/src/connection.ts`),
- * over the agent's one WebSocket. No request/response correlation:
- *  - server → agent: {op:'start'|'input'|'cancel', id, ...}
- *  - agent → server: {op:'view', kind, view} on every change
+ * Wire protocol between the server (`domain/auth/tool-login.ts`) and the
+ * auth daemon on the user's machine (`auth-daemon/src/connection.ts`), over
+ * the daemon's one WebSocket. The server runs every sign-in; the daemon only
+ * catches a vendor's redirect to a loopback address on that machine.
+ *  - server → daemon: `listen` for the redirect of the authorize URL `url`
+ *    (its `redirect_uri` names the port), or `cancel` that listener.
+ *  - daemon → server: that it is `listening` (the server answers the start
+ *    only then); the `callback` it caught; that it could not listen (the
+ *    server carries on without it); or that the redirect brought no code
+ *    (the sign-in fails).
+ * The socket's path (`/api/agent/sign-in`) names this protocol, so a daemon
+ * and a server built for different ones never pair up: the server sees no
+ * daemon, and its sign-ins carry on without a loopback listener.
  */
-export type AgentKind = 'login' | 'install'
-export type AgentTool2 = 'claude' | 'codex'
-
 export type AgentOp =
-  | { op: 'start'; id: string; kind: AgentKind; tool: AgentTool2 }
-  | { op: 'input'; id: string; text: string }
-  | { op: 'cancel'; id: string; kind: AgentKind }
+  | { op: 'listen'; id: string; url: string }
+  | { op: 'cancel'; id: string }
+
+export type AgentReport =
+  | { op: 'listening'; id: string }
+  | { op: 'callback'; id: string; code: string; state: string }
+  | { op: 'listen-failed'; id: string; error: string }
+  | { op: 'denied'; id: string; error: string }
