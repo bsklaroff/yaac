@@ -6,6 +6,12 @@ checkout of it in a workspace is a separate clone that borrows the main
 clone's objects. The server owns the main clone; each workspace owns its
 checkouts: none, one at its root, or one per repo in a folder each.
 
+The main clone has no working tree (`cloneRepo` passes `--no-checkout`),
+since every read of it goes through its `.git`. Checking one out would
+write every file of the default branch onto the global tier, which on a
+network filesystem costs more than the download
+(docs/nfs-checkout-performance.md).
+
 ## The layout
 
 | Path (server view) | What it is | Who writes it | In a k8s pod |

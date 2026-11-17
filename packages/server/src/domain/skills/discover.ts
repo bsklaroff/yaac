@@ -19,9 +19,9 @@
  * records enabled plugins in `enabledPlugins` across its settings.json tiers;
  * Codex in the `[plugins]` table of `config.toml`.
  *
- * Repo tiers are read from `origin/<branch>` (the main clone's
- * working tree is stale), falling back to the working tree when no such ref
- * exists. Host tiers always read from disk.
+ * Repo tiers are read from `origin/<branch>` in the main clone, which has
+ * no working tree; a branch origin lacks has no repo tiers. Host tiers
+ * always read from disk.
  *
  * yaac's own built-ins are listed too. The agents' bundled skills are not:
  * Claude's live in its binary, and readSkills skips Codex's dot-dir
@@ -47,7 +47,7 @@ type ReaderMeta = Pick<SkillSummary, 'source' | 'home' | 'sourceLabel'> & { key:
 
 /**
  * A source of `<name>/SKILL.md` skill dirs, backed by a host directory
- * (`fsReader`) or a git ref (`gitReader`). `list()` yields skill-dir names;
+ * (`fsReader`) or a git ref (`repoReader`). `list()` yields skill-dir names;
  * `read(name)` yields that dir's `SKILL.md` or null.
  */
 interface SkillReader extends ReaderMeta {
@@ -119,50 +119,35 @@ function personalReader(tool: AgentTool, root: HostRoot, homeDir: string, rel: s
 }
 
 /** The repo whose tiers are read: its main clone, and the `origin/<branch>`
- *  ref to read them at, or null to read the clone's working tree. Null for
- *  a project with no repos, which has no repo tiers. */
-type RepoTier = { path: string; ref: string | null } | null
+ *  ref to read them at. Null when there are no repo tiers: the project has
+ *  no repos, or origin has no such branch. */
+type RepoTier = { path: string; ref: string } | null
 
-/** A repo tier over `<treePath>/<name>/SKILL.md`: read at `origin/<branch>`
- *  when `ref` resolves, else from the on-disk working tree (local-only or
- *  unfetched repos). */
+/** A repo tier over `<treePath>/<name>/SKILL.md` at `origin/<branch>`. */
 function repoReader(repo: RepoTier, treePath: string): SkillReader {
   const meta: ReaderMeta = { key: `repo/${treePath}`, source: 'repo', sourceLabel: treePath }
   if (repo === null) return { ...meta, list: () => Promise.resolve([]), read: () => Promise.resolve(null) }
   const { path: repoPath, ref } = repo
-  if (ref) {
-    return {
-      ...meta,
-      list: () => listTreeSubdirs(repoPath, ref, treePath),
-      read: (name) => readBlobAt(repoPath, ref, `${treePath}/${name}/SKILL.md`),
-    }
-  }
-  const root = hostDir(repoPath)
   return {
     ...meta,
-    list: async () => subdirs(await root, treePath),
-    read: async (name) => readText(await root, `${treePath}/${name}/SKILL.md`, MAX_SKILL_MD_BYTES),
+    list: () => listTreeSubdirs(repoPath, ref, treePath),
+    read: (name) => readBlobAt(repoPath, ref, `${treePath}/${name}/SKILL.md`),
   }
 }
 
-/** Read a repo file from `origin/<branch>` when `ref` is set, else
- *  from the working tree; null when absent. */
+/** A repo file at `origin/<branch>`; null when absent. */
 async function readRepoFile(repo: RepoTier, relPath: string): Promise<string | null> {
-  if (repo === null) return null
-  return repo.ref
-    ? readBlobAt(repo.path, repo.ref, relPath)
-    : readText(await hostDir(repo.path), relPath, MAX_SETTINGS_BYTES)
+  return repo === null ? null : readBlobAt(repo.path, repo.ref, relPath)
 }
 
 /** More than any settings file or `config.toml` a person writes. */
 const MAX_SETTINGS_BYTES = 1024 * 1024
 
-/** The `origin/<branch>` ref for repo tiers (`branch` defaults to the
- *  remote default), or null to use the working tree when there is no such
- *  remote-tracking ref. */
-async function resolveRepoRef(repoPath: string, branch?: string): Promise<string | null> {
+/** The repo tier of the main clone at `repoPath` (`branch` defaults to
+ *  the remote default), or null when origin has no such branch. */
+async function repoTier(repoPath: string, branch?: string): Promise<RepoTier> {
   const target = branch?.trim() || (await getDefaultBranch(repoPath).catch(() => ''))
-  if (target && (await remoteBranchExists(repoPath, target))) return `origin/${target}`
+  if (target && (await remoteBranchExists(repoPath, target))) return { path: repoPath, ref: `origin/${target}` }
   return null
 }
 
@@ -386,7 +371,7 @@ async function discover(projectId: string, { branch, repo: named }: SkillsQuery)
   if (!project) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
   const link = named !== undefined ? projectRepo(project, named) : project.repos.at(0)
   const main = link && repoDir(link.repo.id)
-  const repo: RepoTier = main === undefined ? null : { path: main, ref: await resolveRepoRef(main, branch) }
+  const repo = main === undefined ? null : await repoTier(main, branch)
   // yaac's built-ins, read from the install dir since in-pod mounts aren't
   // visible here.
   const yaac = fsReader(await hostDir(builtinSkillsDir()), '', { key: 'yaac', source: 'yaac' })

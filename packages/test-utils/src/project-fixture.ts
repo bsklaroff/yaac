@@ -49,8 +49,8 @@ export async function recordTestProject(
 
 /**
  * A project a create can run to completion against with no network, under
- * the current temp data dir: a main clone whose `origin/main` and
- * `origin/dev` are set locally, an HTTPS GitHub remote with a credential,
+ * the current temp data dir: a main clone with no working tree, whose
+ * `origin/main` and `origin/dev` are set locally, an HTTPS GitHub remote with a credential,
  * and a server git identity. Stubs `YAAC_E2E_SKIP_FETCH`, so the caller's
  * teardown must call `vi.unstubAllEnvs()`.
  */
@@ -63,6 +63,12 @@ export async function seedProject(projectId = DEMO_PROJECT_ID): Promise<void> {
     await git(repo, ['update-ref', `refs/remotes/origin/${branch}`, 'HEAD'])
   }
   await git(repo, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+  // A real main clone has no working tree or index (`cloneRepo`), so a read
+  // of one cannot pass here either.
+  for (const entry of await fs.readdir(repo)) {
+    if (entry !== '.git') await fs.rm(`${repo}/${entry}`, { recursive: true })
+  }
+  await fs.rm(`${repo}/.git/index`)
   await recordTestProject(projectId, { remoteUrl: 'https://github.com/o/r.git' })
   await setGitIdentity(BUILT_IN_USER_ID, { name: 'Ada', email: 'ada@example.com' })
   const cred = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'gh', kind: 'https', secret: 'ghp_x' })

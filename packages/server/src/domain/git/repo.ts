@@ -20,15 +20,21 @@ import type { ResolvedGitCredential } from './transport'
 
 const repo = (repoPath: string): GitTarget => ({ kind: 'repo', repoPath })
 
-/** Clone `remoteUrl` to `destPath`, reporting git's progress to
- *  `onProgress`. */
+/**
+ * Clone `remoteUrl` to `destPath`, reporting git's progress to
+ * `onProgress`. Nothing reads a main clone's working tree (every read goes
+ * through its `.git`), so none is checked out: on a network filesystem
+ * writing one costs tens of milliseconds a file
+ * (docs/nfs-checkout-performance.md), which for a large repo dwarfs the
+ * download.
+ */
 export async function cloneRepo(
   remoteUrl: string,
   destPath: string,
   credential: ResolvedGitCredential | null,
   onProgress?: (progress: GitProgress) => void,
 ): Promise<void> {
-  await runGit({ kind: 'none' }, ['clone', ...(onProgress ? ['--progress'] : []), remoteUrl, destPath], {
+  await runGit({ kind: 'none' }, ['clone', '--no-checkout', ...(onProgress ? ['--progress'] : []), remoteUrl, destPath], {
     env: await gitEnvForCredential(credential, remoteUrl),
     remoteUrl,
     onProgress,
