@@ -38,7 +38,8 @@ import { clearAllProvisioningForTests, listProvisioning, provision } from '#doma
 import { getProjectRow } from '#db/project-store'
 import { getRepo, linkProjectRepo, listRepoShares, listWorkspaceRepos, type RepoRow } from '#db/repo-store'
 import { closeDb } from '#db/client'
-import { hostedRepoDir, repoDir } from '@yaac/shared/project-paths'
+import { globalTrashDir, hostedRepoDir, repoDir } from '@yaac/shared/project-paths'
+import { emptyTrash } from '#lib/trash'
 import { git } from '@yaac/test-utils/git'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
 import { BUILT_IN_USER_ID, deleteNamedWorkflow, deleteSiteRow, findNamedWorkflow, insertNamedWorkflow, insertSite, seeTailnetUser, storeWorkflow } from '#db'
@@ -429,6 +430,9 @@ describe('deleteRepo', () => {
     expect(await deleteRepo(local, repo.id)).toEqual({ heldBy: [] })
     expect(await getRepo(repo.id)).toBeUndefined()
     await expect(fs.access(repoDir(repo.id))).rejects.toThrow()
+    // The clone was moved to the trash, which empties in the background.
+    await emptyTrash()
+    expect(await fs.readdir(globalTrashDir())).toEqual([])
     await expect(deleteRepo(local, repo.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 })

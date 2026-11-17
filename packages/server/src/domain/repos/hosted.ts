@@ -1,6 +1,5 @@
-import fs from 'node:fs/promises'
 import { ServerError } from '@yaac/shared/errors'
-import { hostedRepoDir, repoDir } from '@yaac/shared/project-paths'
+import { hostedRepoDir, repoDir, serverLocalTrashDir } from '@yaac/shared/project-paths'
 import {
   clearRepoKeepsHostedRepo,
   getProjectRow,
@@ -12,6 +11,7 @@ import { hostedDefaultBranch, serveGitHttp, setHostedDefaultBranch, setOriginHea
 import { isUuid } from '#lib/uuid'
 import { authorizeProject, systemPrincipal, type Actor } from '#domain/access'
 import { serverLog } from '#lib/log'
+import { moveToTrash } from '#lib/trash'
 import { fetchRepoOrigin } from './origin'
 import { canUseRepo, ownRepo } from './access'
 
@@ -174,6 +174,6 @@ export async function setDefaultBranchGuard(principal: Actor, repoId: string, en
 export async function removeKeptHostedRepo(principal: Actor, repoId: string): Promise<void> {
   const repo = await ownRepo(principal, repoId)
   if (!repo.keepsHostedRepo) throw new ServerError('VALIDATION', `yaac keeps no old repository for ${repo.remoteUrl}.`)
-  await fs.rm(hostedRepoDir(repoId), { recursive: true, force: true })
+  await moveToTrash(hostedRepoDir(repoId), serverLocalTrashDir())
   await clearRepoKeepsHostedRepo(repoId)
 }

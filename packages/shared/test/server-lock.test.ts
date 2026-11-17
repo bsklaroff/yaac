@@ -5,6 +5,7 @@ import os from 'node:os'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import {
   acquireLock,
+  keepLease,
   newLeaseFields,
   renewLease,
   serverLockPath,
@@ -316,6 +317,49 @@ describe('server lock', () => {
 
     it('reports the loss when the lock is gone entirely', async () => {
       expect(await renewLease('whatever')).toBe(false)
+    })
+  })
+
+  describe('keepLease', () => {
+    async function held(): Promise<ReturnType<typeof newLeaseFields>> {
+      const lease = newLeaseFields()
+      await writeLock({ pid: process.pid, port: 1, startedAt: 0, buildId: 'b', ...lease })
+      return lease
+    }
+
+    afterEach(() => {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+      vi.restoreAllMocks()
+    })
+
+    it('renews while the disk answers, and exits once a renewal hangs until the lease would go stale', async () => {
+      vi.useFakeTimers({ toFake: ['setInterval', 'Date'] })
+      const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never)
+      const lease = await held()
+      const log = vi.fn()
+      keepLease(lease, log)
+
+      vi.advanceTimersByTime(LEASE_HEARTBEAT_MS)
+      await vi.waitFor(async () => expect((await readLock())!.heartbeatAt).toBeGreaterThan(lease.heartbeatAt))
+
+      // A write that never settles holds a thread; the timer still fires.
+      vi.spyOn(fs, 'readFile').mockReturnValue(new Promise<never>(() => {}))
+      vi.advanceTimersByTime(LEASE_STALE_MS - 2 * LEASE_HEARTBEAT_MS)
+      expect(exit).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(LEASE_HEARTBEAT_MS)
+      expect(exit).toHaveBeenCalledWith(1)
+      expect(log).toHaveBeenCalledWith(expect.stringMatching(/before it went stale/))
+    })
+
+    it('exits when another server has taken the lock', async () => {
+      vi.useFakeTimers({ toFake: ['setInterval'] })
+      const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never)
+      const lease = await held()
+      await writeLock({ pid: 2, port: 1, startedAt: 0, buildId: 'b', ...newLeaseFields() })
+      keepLease(lease, () => {})
+      vi.advanceTimersByTime(LEASE_HEARTBEAT_MS)
+      await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1))
     })
   })
 

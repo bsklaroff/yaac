@@ -15,12 +15,12 @@ import { readBuildId } from '@yaac/shared/build-id'
 import {
   acquireLock,
   newLeaseFields,
-  renewLease,
+  keepLease,
   serverLockPath,
   readLock,
   removeLock,
 } from '@yaac/shared/lock'
-import { LEASE_HEARTBEAT_MS, isLockLive } from '@yaac/shared/server-lock-file'
+import { isLockLive } from '@yaac/shared/server-lock-file'
 import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-port'
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { TmpDirRefusal } from '@yaac/shared/paths'
@@ -195,21 +195,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // Under the lock, so a losing start never overwrites the record, and
   // before any route but `/health` is served.
   await rememberFeedbackUrl()
-  // Renew the lease while we hold it. Readers in another container judge
-  // the lock by this heartbeat, since our pid and port mean nothing there.
-  // On kind the data dir is a hostPath with no attach exclusivity, so the
-  // lease is PGlite's only single-writer guard: losing it means exiting.
-  const leaseTimer = setInterval(() => {
-    void renewLease(lease.instance).then((held) => {
-      if (held) return
-      serverLog('[server] lost the lock lease to another server — exiting')
-      process.exit(1)
-    }).catch((err: unknown) => {
-      // A failed renewal is not a lost lease; the next tick retries.
-      serverLog(`[server] lease renewal failed: ${errorText(err)}`)
-    })
-  }, LEASE_HEARTBEAT_MS)
-  leaseTimer.unref?.()
+  const leaseTimer = keepLease(lease, serverLog)
   // A refused start stays up answering `/health` with the reason, which
   // `yaac server start` and `yaac cluster install` print, and serves
   // nothing else.
