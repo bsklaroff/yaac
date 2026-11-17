@@ -17,12 +17,19 @@ if (!Number.isFinite(idleSeconds) || idleSeconds <= 0) {
   throw new Error('TAILGATE_IDLE_SECONDS must be a positive number')
 }
 
-const router = required('TAILGATE_ROUTER')
-const colon = router.lastIndexOf(':')
+/** A `host:port` address. */
+function address(raw: string): { host: string; port: number } {
+  const colon = raw.lastIndexOf(':')
+  return { host: raw.slice(0, colon), port: Number(raw.slice(colon + 1)) }
+}
+
+/** The server upstream exists only while the install names a server name. */
+const serverName = process.env.TAILGATE_SERVER_NAME?.toLowerCase()
 await startTailgate({
   siteDomain: required('TAILGATE_SITE_DOMAIN').toLowerCase(),
   tailscaleSocket: required('TAILGATE_TAILSCALE_SOCKET'),
-  router: { host: router.slice(0, colon), port: Number(router.slice(colon + 1)) },
+  router: address(required('TAILGATE_ROUTER')),
+  server: serverName ? { name: serverName, ...address(required('TAILGATE_SERVER')) } : undefined,
   tlsDir: required('TAILGATE_TLS_DIR'),
   serveHost: required('TAILGATE_SERVE_HOST'),
   dnsHost: '127.0.0.1',

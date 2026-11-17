@@ -5,8 +5,9 @@ import {
   ensureNetd,
   ensureNpmCache,
   ensureSiteEdge,
-  installedSiteDomain,
+  installedTailnetNames,
   siteTailnetStatus,
+  tailnetSiteHostnames,
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,
   registryHost,
@@ -51,7 +52,9 @@ import { buildBuiltinImages } from './builtin-images'
 import {
   ClusterInstallError,
   YAAC_CLUSTER_INSTALL,
+  checkServerName,
   resolveNodeCount,
+  serverNameArg,
   siteDomainArg,
   tailnetServeHost,
 } from './arg-guards'
@@ -159,6 +162,12 @@ export interface ClusterInstallOptions {
    * name it again but not change it.
    */
   siteDomain?: string
+  /**
+   * The server's own name, one label under the site domain, which the
+   * tailnet tunnel serves beside the fronting's origin (docs/remote-hosting.md
+   * "A name of your own"). Kept for later installs; `false` drops it.
+   */
+  serverName?: string | false
 }
 
 export interface ClusterInstallDeps {
@@ -260,6 +269,7 @@ export async function runClusterInstall(
 
   const nodeCount = resolveNodeCount(opts)
   const givenSiteDomain = siteDomainArg(opts)
+  const givenServerName = serverNameArg(opts)
   const recorded = await readInstallRecord()
   refuseByoSwitch(recorded, opts)
   refuseTorHostName()
@@ -337,6 +347,7 @@ export async function runClusterInstall(
   }
   // Before any layer is applied.
   const siteDomain = await resolveSiteDomain(givenSiteDomain)
+  const serverName = await resolveServerName(givenServerName, siteDomain)
   if (opts.tailnet === true && !opts.byo) await ensureTailnetOperator(deps)
 
   // A pod naming a missing PriorityClass is rejected and its Job hangs.
@@ -365,9 +376,9 @@ export async function runClusterInstall(
   deps.log('Deploying the netd egress redirect (DaemonSet)...')
   await ensureNetd()
   await deployNpmCache(deps)
-  await deploySiteEdge(deps, siteDomain)
+  await deploySiteEdge(deps, siteDomain, serverName)
   // Last: the server depends on every layer above.
-  await deployServer(deps, opts, byoStorage, siteDomain)
+  await deployServer(deps, opts, byoStorage, siteDomain, serverName)
   if (opts.byo && legacy.hash && !legacy.names) await retireLegacyNames(deps, legacy.hash)
 }
 
@@ -1208,10 +1219,12 @@ async function deployServer(
   opts: ClusterInstallOptions,
   byoStorage: { rwx: string; rwo: string } | undefined,
   siteDomain: string | undefined,
+  serverName: string | undefined,
 ): Promise<void> {
   if (byoStorage) {
     const origin = await deployServerWorkload({
       siteDomain,
+      serverName,
       fronting: tailnetFronting({ hostname: TAILNET_HOSTNAME }),
       identity: BYO_INSTALL_IDENTITY,
       admin: opts.admin,
@@ -1239,7 +1252,7 @@ async function deployServer(
   // machine's data dir (docs/server-in-cluster.md).
   const identity = processIdentity()
   const origin = await deployServerWorkload({
-    fronting, identity, storage: { kind: 'static' }, torHostAddr, siteDomain, admin: opts.admin, yes: opts.yes, log: deps.log,
+    fronting, identity, storage: { kind: 'static' }, torHostAddr, siteDomain, serverName, admin: opts.admin, yes: opts.yes, log: deps.log,
   })
   deps.log(`The yaac server is serving at ${origin}`)
 }
@@ -1272,7 +1285,7 @@ async function hostAddrOnKindNetwork(deps: ClusterInstallDeps): Promise<string |
  * tailnet; changing it is a deliberate step the refusal spells out.
  */
 async function resolveSiteDomain(given: string | undefined): Promise<string | undefined> {
-  const stored = await installedSiteDomain()
+  const stored = (await installedTailnetNames()).siteDomain
   if (given !== undefined && stored !== undefined && given !== stored) {
     throw new ClusterInstallError(
       `This install's site domain is ${stored}, and a site's edge follows from its hostname and the domain, so `
@@ -1298,16 +1311,49 @@ async function resolveSiteDomain(given: string | undefined): Promise<string | un
 }
 
 /**
+ * The install's server name: the one `--server-name` names, else the one
+ * the tailnet tunnel's Secret records, or none after `--no-server-name`.
+ * It must be one label under the site domain, and no tailnet site may
+ * hold it, since the tunnel would send that site's requests to the server.
+ */
+async function resolveServerName(
+  given: string | null | undefined,
+  siteDomain: string | undefined,
+): Promise<string | undefined> {
+  if (given === null) return undefined
+  const name = given ?? (await installedTailnetNames()).serverName
+  if (name === undefined) return undefined
+  if (siteDomain === undefined) {
+    throw new ClusterInstallError(
+      '--server-name is a name under the site domain, served by the tailnet tunnel, so it needs '
+      + '--site-domain <zone> (and TS_SITE_AUTHKEY the first time).',
+    )
+  }
+  checkServerName(name, siteDomain)
+  if ((await tailnetSiteHostnames()).includes(name)) {
+    throw new ClusterInstallError(
+      `A tailnet site already serves ${name}, and the tailnet tunnel would send its requests to the server `
+      + 'instead. Move or delete that site, or pick another --server-name.',
+    )
+  }
+  return name
+}
+
+/**
  * Deploy the site edge: the router, the Cloudflare tunnel when
  * `CF_TUNNEL_TOKEN` is set or an earlier install left its Secret, and the
  * tailnet tunnel likewise with `TS_SITE_AUTHKEY`. Failure only logs:
  * nothing but sites depends on it, and `cluster check` reports it.
  */
-async function deploySiteEdge(deps: ClusterInstallDeps, siteDomain: string | undefined): Promise<void> {
+async function deploySiteEdge(
+  deps: ClusterInstallDeps,
+  siteDomain: string | undefined,
+  serverName: string | undefined,
+): Promise<void> {
   deps.log('Deploying the site edge (router, and tunnels when configured)...')
   try {
     const tailnet = await ensureSiteEdge({
-      tunnelToken: env.siteTunnelToken, tailnetAuthKey: env.siteTailnetAuthKey, siteDomain,
+      tunnelToken: env.siteTunnelToken, tailnetAuthKey: env.siteTailnetAuthKey, siteDomain, serverName: serverName ?? null,
     })
     if (tailnet && siteDomain) {
       deps.log(
@@ -1321,6 +1367,9 @@ async function deploySiteEdge(deps: ClusterInstallDeps, siteDomain: string | und
           + `in the Secret ${SITE_TUNNEL_TAILNET_TLS_SECRET_NAME} (by hand, or as a cert-manager Certificate's `
           + 'secretName with a DNS-01 issuer); the tunnel picks it up without a restart.',
         )
+      }
+      if (serverName) {
+        deps.log(`The server also answers at https://${serverName} on tailnet devices that resolve ${siteDomain}.`)
       }
     }
   } catch (err) {

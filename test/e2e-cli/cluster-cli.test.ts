@@ -10,7 +10,7 @@ import { TAILSCALE_OPERATOR_NAMESPACE } from '@yaac/server/drivers/k8s/substrate
 /**
  * The `yaac cluster` commands: `check`, `install` (with `--nodes`, `--byo`,
  * `--rwx-storage-class`, `--rwo-storage-class`, `--tailnet [host]`, `--admin`, `--yes`,
- * `--site-domain`)
+ * `--site-domain`, `--server-name`, `--no-server-name`)
  * and `delete` (with `-y/--yes`). They are host-side commands that never talk to the
  * server, so no server is spawned and no cluster is needed: each case breaks
  * the environment (PATH stripping, a bogus KUBECONFIG, a kubectl shim) and
@@ -111,7 +111,7 @@ describe('yaac cluster install (real CLI)', () => {
   }, 60_000)
 
   // These option checks also run before the binary preflight.
-  it('rejects --byo with --nodes, --byo without an RWX class, either class flag without --byo, --admin or --site-domain without --tailnet, and a --tailnet host or site domain it cannot serve', async () => {
+  it('rejects --byo with --nodes, --byo without an RWX class, either class flag without --byo, --admin, --site-domain or --[no-]server-name without --tailnet, and a --tailnet host, site domain or server name it cannot serve', async () => {
     const env: NodeJS.ProcessEnv = { ...testEnv.env }
     const cases: Array<[string[], RegExp]> = [
       [['--byo', '--rwx-storage-class', 'nfs', '--nodes', '3'], /--nodes cannot be combined with --byo/],
@@ -123,6 +123,10 @@ describe('yaac cluster install (real CLI)', () => {
       [['--tailnet', 'https://srv.tail.ts.net'], /--tailnet takes the bare MagicDNS name/],
       [['--site-domain', 'apps.example.com'], /--site-domain .* needs --tailnet/],
       [['--tailnet', 'srv.tail.ts.net', '--site-domain', 'https://apps.example.com'], /--site-domain takes a DNS zone/],
+      [['--server-name', 'yaac.apps.example.com'], /--server-name .* needs --tailnet/],
+      [['--no-server-name'], /--server-name .* needs --tailnet/],
+      [['--tailnet', 'srv.tail.ts.net', '--server-name', 'https://yaac'], /--server-name takes a hostname/],
+      [['--tailnet', 'srv.tail.ts.net', '--site-domain', 'apps.example.com', '--server-name', 'yaac.example.com'], /--server-name must be one label under the site domain apps\.example\.com/],
     ]
     for (const [args, message] of cases) {
       const { stdout, stderr, exitCode } = await runYaac(env, 'cluster', 'install', ...args)

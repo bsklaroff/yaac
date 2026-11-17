@@ -28,6 +28,9 @@ export interface ClusterInstallArgs {
   nodes?: number | string
   /** `--site-domain`: the zone whose names are tailnet sites'. */
   siteDomain?: string
+  /** `--server-name`: the server's own name under the site domain;
+   *  `--no-server-name` (false) drops a recorded one. */
+  serverName?: string | false
 }
 
 /**
@@ -101,7 +104,44 @@ export function siteDomainArg(opts: ClusterInstallArgs): string | undefined {
 }
 
 /**
- * Validate `--nodes` (and the `--byo`, `--tailnet`, `--admin` and `--site-domain` flags)
+ * The server name `--server-name` gives, lowercased; null for
+ * `--no-server-name`, which drops a recorded one; undefined for neither
+ * (docs/remote-hosting.md "A name of your own"). The tailnet tunnel serves
+ * it, stamping each caller's login, so it needs a tailnet install, and it
+ * must be one label under the site domain, which is what the tunnel's
+ * wildcard certificate covers. A site domain this run does not name is
+ * checked against the recorded one by install.
+ */
+export function serverNameArg(opts: ClusterInstallArgs): string | null | undefined {
+  if (opts.serverName === undefined) return undefined
+  if (!opts.tailnet && !opts.byo) {
+    throw new ClusterInstallError(
+      '--server-name publishes the server to tailnet users under the site domain, so it (and '
+      + '--no-server-name) needs --tailnet: a local install is reached only at loopback.',
+    )
+  }
+  if (opts.serverName === false) return null
+  const name = opts.serverName.trim().toLowerCase()
+  if (!/^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/.test(name)) {
+    throw new ClusterInstallError(`--server-name takes a hostname, e.g. yaac.apps.example.com (got "${opts.serverName}").`)
+  }
+  const domain = siteDomainArg(opts)
+  if (domain !== undefined) checkServerName(name, domain)
+  return name
+}
+
+/** Refuse a server name that is not one label under the site domain. */
+export function checkServerName(name: string, siteDomain: string): void {
+  if (!name.endsWith(`.${siteDomain}`) || name.slice(0, -siteDomain.length - 1).includes('.')) {
+    throw new ClusterInstallError(
+      `--server-name must be one label under the site domain ${siteDomain}, like yaac.${siteDomain}: `
+      + 'the tailnet tunnel serves it with the domain\'s wildcard certificate (got "' + name + '").',
+    )
+  }
+}
+
+/**
+ * Validate `--nodes` (and the `--byo`, `--tailnet`, `--admin`, `--site-domain` and `--server-name` flags)
  * and return the node count to build. The count applies only to a cluster this
  * run creates; install never recreates one, so an existing cluster ignores
  * it with a note.
@@ -110,6 +150,7 @@ export function resolveNodeCount(opts: ClusterInstallArgs): number {
   checkByoFlags(opts)
   tailnetServeHost(opts)
   siteDomainArg(opts)
+  serverNameArg(opts)
   if (opts.admin?.length && !opts.tailnet && !opts.byo) {
     throw new ClusterInstallError(
       '--admin names tailnet logins, so it needs --tailnet: a local install\'s one user is '

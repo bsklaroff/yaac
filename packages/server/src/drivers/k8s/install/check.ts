@@ -1898,7 +1898,9 @@ const SITES_PROBE_POD_NAME = 'yaac-cluster-check-sites'
  * not a release (docs/server-in-cluster.md "The site edge"). A probe pod
  * labelled as each, held to its policies, must fail to dial all three. One
  * labelled as a Cloudflare pod must also fail to dial the router's tailnet
- * listener, which trusts the login a request carries.
+ * listener, which trusts the login a request carries. The tailnet tunnel
+ * is the exception for the server while the install names a server name,
+ * since it fronts the server at that name, so its probe skips the server.
  *
  * With a Cloudflare tunnel installed, one holding no connection is a warn.
  * With a tailnet tunnel, one not joined or with no certificate is a warn,
@@ -1933,9 +1935,14 @@ async function runSitesProbe(): Promise<CheckResult> {
     const routerTailnet = routerIp === null ? [] : [{
       key: 'ROUTER_TAILNET', ip: routerIp, port: SITE_ROUTER_TAILNET_PORT, what: 'the router\'s tailnet listener',
     }]
+    const serverName = (await siteTailnetDevice())?.serverName
     const probes = [
       { app: SITE_TUNNEL_CLOUDFLARE_APP_NAME, suffix: 'cloudflare', targets: [...targets, ...routerTailnet] },
-      { app: SITE_TUNNEL_TAILNET_APP_NAME, suffix: 'tailnet', targets },
+      {
+        app: SITE_TUNNEL_TAILNET_APP_NAME,
+        suffix: 'tailnet',
+        targets: serverName ? targets.filter((t) => t.key !== 'SERVER') : targets,
+      },
       { app: SITE_ROUTER_APP_NAME, suffix: 'router', targets },
     ]
     const image = await ensureProbeImage()
@@ -1970,7 +1977,8 @@ async function runSitesProbe(): Promise<CheckResult> {
         fix,
       }
     }
-    const notes = [`the site tunnels and router cannot dial ${targets.map((t) => t.what).join(', nor ')}`]
+    const notes = [`the site tunnels and router cannot dial ${targets.map((t) => t.what).join(', nor ')}`
+      + (serverName ? ` (bar the tailnet tunnel to the server, which it fronts at ${serverName})` : '')]
     const warns: Array<{ detail: string; fix: string }> = []
     const cloudflare = await siteCloudflareStatus()
     if (cloudflare === 'disconnected') {

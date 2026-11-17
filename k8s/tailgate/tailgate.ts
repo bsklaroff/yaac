@@ -12,7 +12,10 @@
  *  - On 443 it ends TLS with the site domain's wildcard certificate, asks
  *    tailscaled who holds the caller's address, and forwards each request
  *    and WebSocket upgrade to the router's tailnet listener with `Host`
- *    unchanged, stamped with the caller's login. A tagged device, which
+ *    unchanged, stamped with the caller's login. A request for the install's
+ *    server name goes to the yaac server instead, stamped the same way, so
+ *    the server identifies its caller as it does behind `tailscale serve`
+ *    (docs/remote-hosting.md "A name of your own"). A tagged device, which
  *    acts for no user, gets a 403.
  *  - On 80 it redirects to `https://`.
  *  - On both it closes a connection once no bytes have moved for `idleMs`,
@@ -35,6 +38,9 @@ export interface TailgateConfig {
   siteDomain: string
   tailscaleSocket: string
   router: { host: string; port: number }
+  /** The yaac server, and the one name under the zone that reaches it
+   *  rather than the router; absent when the install names none. */
+  server?: { name: string; host: string; port: number }
   /** A mounted `kubernetes.io/tls` Secret: `tls.crt` and `tls.key`. */
   tlsDir: string
   /** Where tailscaled's serve forwards 443 and 80, behind a PROXY header:
@@ -80,10 +86,11 @@ export function encodeHeaderValue(value: string): string {
 }
 
 /**
- * The headers forwarded to the router: the client's, minus hop-by-hop ones
+ * The headers forwarded upstream: the client's, minus hop-by-hop ones
  * (bar `keepHop`, for an upgrade) and every `Tailscale-*` and forwarding
- * header it sent, plus the caller's login and address. tailgate is the router's
- * one trusted hop, so the `X-Forwarded-For` it sets is the client address.
+ * header it sent, plus the caller's login and address. tailgate is the
+ * upstream's one trusted hop, so the `X-Forwarded-For` it sets is the client
+ * address.
  */
 function stampedHeaders(
   raw: string[],
@@ -118,6 +125,11 @@ function responseHead(res: http.IncomingMessage): string {
   }
   if (res.statusCode !== 101) lines.push('connection: close')
   return `${lines.join('\r\n')}\r\n\r\n`
+}
+
+/** A request's `Host`, lowercased and without a port. */
+function hostOf(raw: string | undefined): string {
+  return (raw ?? '').trim().toLowerCase().replace(/:\d+$/, '')
 }
 
 function refuse(res: http.ServerResponse, status: number, message: string): void {
@@ -165,18 +177,23 @@ export async function startTailgate(config: TailgateConfig): Promise<{
   await Promise.all([refreshCert(), refreshAddresses()])
   const poll = setInterval(() => { void refreshCert(); void refreshAddresses() }, config.pollMs)
 
+  /** Where a request goes: the server for its name, else the router. */
+  const upstreamFor = (host: string | undefined): { host: string; port: number } => {
+    const { host: to, port } = config.server && hostOf(host) === config.server.name ? config.server : config.router
+    return { host: to, port }
+  }
+
   /** The caller of each TLS connection, null when it acts for no user. */
   const callers = new WeakMap<net.Socket, { caller: ProxyHeader; user: TailnetUser | null }>()
 
   const app = http.createServer((req, res) => {
     const who = callers.get(req.socket)
     if (!who?.user) {
-      refuse(res, 403, 'Tailnet sites answer only tailnet users; this device acts for no user.')
+      refuse(res, 403, 'This answers only tailnet users; this device acts for no user.')
       return
     }
     const upstream = http.request({
-      host: config.router.host,
-      port: config.router.port,
+      ...upstreamFor(req.headers.host),
       method: req.method,
       path: req.url,
       headers: stampedHeaders(req.rawHeaders, who.user, who.caller, false).flat(),
@@ -189,14 +206,14 @@ export async function startTailgate(config: TailgateConfig): Promise<{
       up.pipe(res)
     })
     upstream.on('error', () => {
-      if (!res.headersSent) refuse(res, 502, 'The site router did not answer.')
+      if (!res.headersSent) refuse(res, 502, 'The upstream did not answer.')
       else res.destroy()
     })
     req.pipe(upstream)
   })
   // A WebSocket (or any) upgrade goes up stamped. The two sockets are
-  // joined only once the router answers 101: any other answer is relayed
-  // and the connection closed, so no unparsed byte reaches the router.
+  // joined only once the upstream answers 101: any other answer is relayed
+  // and the connection closed, so no unparsed byte reaches the upstream.
   app.on('upgrade', (req: http.IncomingMessage, socket: net.Socket, head: Buffer) => {
     const who = callers.get(socket)
     if (!who?.user) {
@@ -204,13 +221,12 @@ export async function startTailgate(config: TailgateConfig): Promise<{
       return
     }
     const upstream = http.request({
-      host: config.router.host,
-      port: config.router.port,
+      ...upstreamFor(req.headers.host),
       method: req.method,
       path: req.url,
       headers: stampedHeaders(req.rawHeaders, who.user, who.caller, true).flat(),
       // A connection of its own, never pooled: after a refused upgrade the
-      // router may still be reading it as a stream.
+      // upstream may still be reading it as a stream.
       agent: false,
     })
     upstream.on('upgrade', (res, upSocket, upHead) => {
@@ -283,7 +299,7 @@ export async function startTailgate(config: TailgateConfig): Promise<{
           return
         }
         const target = /^[A-Z]+ (\/\S*) HTTP\//.exec(head)?.[1] ?? '/'
-        const host = (/\r\nhost:[ \t]*([^\r\n]+)/i.exec(head)?.[1] ?? '').trim().replace(/:\d+$/, '')
+        const host = hostOf(/\r\nhost:[ \t]*([^\r\n]+)/i.exec(head)?.[1])
         const ok = host === config.siteDomain || host.endsWith(`.${config.siteDomain}`)
         stream.end(ok
           ? `HTTP/1.1 308 Permanent Redirect\r\nlocation: https://${host}${target}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n`

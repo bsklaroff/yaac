@@ -266,6 +266,7 @@ import {
   RUNTIME_CLASS_GVISOR,
   SERVER_APP_NAME,
   SERVER_FRONT_PORT,
+  SERVER_POD_PORT,
   TAILSCALE_OPERATOR_NAMESPACE,
   nodeLocalNodePath,
 } from '#drivers/k8s/substrate'
@@ -690,14 +691,18 @@ describe('runClusterInstall', () => {
   it('hands CF_TUNNEL_TOKEN to the site edge before the server deploys', async () => {
     vi.stubEnv('CF_TUNNEL_TOKEN', 'tunnel-token')
     await runClusterInstall({}, makeDeps())
-    expect(ensureSiteEdge).toHaveBeenCalledWith({ tunnelToken: 'tunnel-token', tailnetAuthKey: undefined, siteDomain: undefined })
+    expect(ensureSiteEdge).toHaveBeenCalledWith({
+      tunnelToken: 'tunnel-token', tailnetAuthKey: undefined, siteDomain: undefined, serverName: null,
+    })
     expect(order('ensureSiteEdge')).toBeLessThan(order('deployServerWorkload'))
   })
 
   it('--site-domain hands the domain and TS_SITE_AUTHKEY to the edge and the domain to the server, and a later install keeps the domain the tunnel recorded', async () => {
     vi.stubEnv('TS_SITE_AUTHKEY', 'tskey-1')
     await runClusterInstall({ tailnet: true, siteDomain: 'Apps.Example.com' }, makeDeps({ run: tailnetRun('present') }))
-    expect(ensureSiteEdge).toHaveBeenCalledWith({ tunnelToken: undefined, tailnetAuthKey: 'tskey-1', siteDomain: 'apps.example.com' })
+    expect(ensureSiteEdge).toHaveBeenCalledWith({
+      tunnelToken: undefined, tailnetAuthKey: 'tskey-1', siteDomain: 'apps.example.com', serverName: null,
+    })
     expect(serverPod().containers[0].env).toContainEqual({ name: 'YAAC_SITE_DOMAIN', value: 'apps.example.com' })
 
     // The edge records the domain in the tunnel's Secret (faked here), and a
@@ -708,13 +713,76 @@ describe('runClusterInstall', () => {
       data: { authkey: Buffer.from('tskey-1').toString('base64'), domain: Buffer.from('apps.example.com').toString('base64') },
     })
     await runClusterInstall({ tailnet: true }, makeDeps({ run: tailnetRun('present') }))
-    expect(ensureSiteEdge).toHaveBeenLastCalledWith({ tunnelToken: undefined, tailnetAuthKey: undefined, siteDomain: 'apps.example.com' })
+    expect(ensureSiteEdge).toHaveBeenLastCalledWith({
+      tunnelToken: undefined, tailnetAuthKey: undefined, siteDomain: 'apps.example.com', serverName: null,
+    })
     expect(serverPod().containers[0].env).toContainEqual({ name: 'YAAC_SITE_DOMAIN', value: 'apps.example.com' })
     // Naming it again is fine; naming another, which would turn its tailnet
     // sites public, is refused with how to change it.
     await runClusterInstall({ tailnet: true, siteDomain: 'apps.example.com' }, makeDeps({ run: tailnetRun('present') }))
     await expect(runClusterInstall({ tailnet: true, siteDomain: 'sites.example.com' }, makeDeps({ run: tailnetRun('present') })))
       .rejects.toThrow(/site domain is apps\.example\.com.*delete the Secret yaac-site-tunnel-tailnet/)
+  })
+
+  it('--server-name has the tailnet tunnel serve the server at a name under the site domain beside the fronting\'s, kept until --no-server-name', async () => {
+    // A tunnel an earlier install recorded, with one tailnet site.
+    const b64 = (v: string): string => Buffer.from(v).toString('base64')
+    const tunnelSecret = (data: Record<string, string>): FakeObject => ({
+      apiVersion: 'v1', kind: 'Secret', metadata: { name: 'yaac-site-tunnel-tailnet', namespace: 'test-ns' },
+      data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, b64(v)])),
+    })
+    fakeCluster.seed(tunnelSecret({ authkey: 'tskey-1', domain: 'apps.example.com' }), {
+      apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'yaac-site-routes', namespace: 'test-ns' },
+      data: { 'rds-tailnet.json': JSON.stringify({ resources: [{ virtual_hosts: [{ domains: ['shop.apps.example.com'] }] }] }) },
+    })
+    const deps = makeDeps({ run: tailnetRun('absent') })
+    await runClusterInstall({ tailnet: 'srv.tail.ts.net', serverName: 'Yaac.Apps.Example.com' }, deps)
+    expect(ensureSiteEdge).toHaveBeenLastCalledWith(expect.objectContaining({ serverName: 'yaac.apps.example.com' }))
+    // The fronting's name stays first, where `yaac cluster start` reads it.
+    expect(serverPod().containers[0].env)
+      .toContainEqual({ name: 'YAAC_ALLOWED_HOSTS', value: 'srv.tail.ts.net,yaac.apps.example.com' })
+    const frontPeers = (): unknown => fakeCluster.get<{ spec: { ingress: unknown[] } }>(
+      'NetworkPolicy', 'yaac-server-ingress-front', 'test-ns',
+    )?.spec.ingress
+    expect(frontPeers()).toEqual([{
+      from: [{ podSelector: { matchLabels: { app: 'yaac-site-tunnel-tailnet' } } }],
+      ports: [{ protocol: 'TCP', port: SERVER_POD_PORT }],
+    }])
+    // The origin clients register is still the fronting's.
+    expect(await readServerConfig()).toMatchObject({ url: 'https://srv.tail.ts.net' })
+
+    // The edge records it (faked here), and a later install naming none keeps it.
+    fakeCluster.seed(tunnelSecret({ authkey: 'tskey-1', domain: 'apps.example.com', server: 'yaac.apps.example.com' }))
+    await runClusterInstall({ tailnet: 'srv.tail.ts.net' }, makeDeps({ run: tailnetRun('absent') }))
+    expect(ensureSiteEdge).toHaveBeenLastCalledWith(expect.objectContaining({ serverName: 'yaac.apps.example.com' }))
+    expect(serverPod().containers[0].env)
+      .toContainEqual({ name: 'YAAC_ALLOWED_HOSTS', value: 'srv.tail.ts.net,yaac.apps.example.com' })
+
+    // --no-server-name drops it, and with it the tunnel's way to the server.
+    await runClusterInstall({ tailnet: 'srv.tail.ts.net', serverName: false }, makeDeps({ run: tailnetRun('absent') }))
+    expect(ensureSiteEdge).toHaveBeenLastCalledWith(expect.objectContaining({ serverName: null }))
+    expect(serverPod().containers[0].env).toContainEqual({ name: 'YAAC_ALLOWED_HOSTS', value: 'srv.tail.ts.net' })
+    expect(frontPeers()).toEqual([])
+
+    // A name off the domain, or one a tailnet site holds, is refused before
+    // anything is applied.
+    events.length = 0
+    await expect(runClusterInstall({ tailnet: 'srv.tail.ts.net', serverName: 'yaac.example.com' }, makeDeps({ run: tailnetRun('absent') })))
+      .rejects.toThrow(/one label under the site domain apps\.example\.com/)
+    await expect(runClusterInstall({ tailnet: 'srv.tail.ts.net', serverName: 'shop.apps.example.com' }, makeDeps({ run: tailnetRun('absent') })))
+      .rejects.toThrow(/A tailnet site already serves shop\.apps\.example\.com/)
+    expect(events).toEqual([])
+  })
+
+  it('refuses --server-name without the tailnet fronting, a malformed one, one off the --site-domain it names, and one with no site domain', async () => {
+    await expect(runClusterInstall({ serverName: 'yaac.apps.example.com' }, makeDeps())).rejects.toThrow(/needs --tailnet/)
+    await expect(runClusterInstall({ serverName: false }, makeDeps())).rejects.toThrow(/needs --tailnet/)
+    await expect(runClusterInstall({ tailnet: true, serverName: 'https://yaac' }, makeDeps())).rejects.toThrow(/takes a hostname/)
+    await expect(runClusterInstall({ tailnet: true, siteDomain: 'apps.example.com', serverName: 'a.b.apps.example.com' }, makeDeps()))
+      .rejects.toThrow(/one label under the site domain/)
+    await expect(runClusterInstall({ tailnet: 'srv.tail.ts.net', serverName: 'yaac.apps.example.com' }, makeDeps({ run: tailnetRun('absent') })))
+      .rejects.toThrow(/needs --site-domain/)
+    expect(events).toEqual([])
   })
 
   it('refuses --site-domain without the tailnet fronting, a malformed one, one with no auth key yet, and TS_SITE_AUTHKEY with no domain', async () => {

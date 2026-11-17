@@ -151,7 +151,56 @@ server's device (or the operator's Ingress device) becomes a user of the
 install on their first request. On a tailnet that is yours alone, there is
 nothing to do. On a shared one, add an ACL grant that lets only the intended
 users reach that device (or its tag) on port 443. That grant is the whole
-access list.
+access list, together with the site tunnel's grant once the server has a
+name of its own (below).
+
+## A name of your own
+
+A k8s install with tailnet sites (docs/public-sites.md "Tailnet sites") can
+also serve the server at a name under its site domain, such as
+`yaac.apps.example.com`, still only to the tailnet:
+
+```sh
+yaac cluster install --tailnet --site-domain apps.example.com \
+  --server-name yaac.apps.example.com
+yaac remote add https://yaac.apps.example.com      # on a client
+```
+
+Tailscale cannot do this itself: `serve` and the operator's Ingress get
+certificates only for `*.ts.net` names, and exposing the server at layer 4
+behind a proxy of one's own would carry no identity. The tailnet site
+tunnel already does what the name needs. It answers DNS for every name
+under the domain on the tailnet and holds the domain's wildcard
+certificate. For each request, tailgate asks tailscaled who holds the
+caller's address and stamps the headers `serve` stamps
+(`Tailscale-User-Login`, `Tailscale-User-Name`, `X-Forwarded-For`,
+`X-Forwarded-Proto: https`), replacing any the client sent. It sends
+requests for the server name to the server's Service rather than to the
+site router. The server admits the name beside its fronting's
+(`YAAC_ALLOWED_HOSTS`), and its ingress policy admits the tunnel's pod
+(docs/server-in-cluster.md "The ingress policy is the wall"). The server
+identifies callers there exactly as it does behind `serve`.
+
+- **The fronting's origin keeps working**, and stays the origin install
+  registers on its own machine. The name is an extra way in.
+- **The name is one label under the site domain**, which is what the
+  wildcard certificate covers, and no site may hold it: install refuses a
+  name a tailnet site serves, and site create refuses every name the server
+  answers at. The tunnel's Secret records the name, so later installs keep
+  it; `--no-server-name` drops it.
+- **Anyone the tailnet lets reach the site tunnel can reach the server at
+  this name.** The tunnel's ACL grant (its tag on 443) is part of the
+  server's access list from then on.
+- **The tunnel is one replica.** While it restarts, the name does not
+  answer; the fronting's origin does.
+- **The server is same-site with every tailnet site.** Under `*.ts.net`
+  each name is its own site, since `ts.net` is a public suffix. Under the
+  site domain, a site's page is same-site with the server. Both guards (see
+  "Security model") still refuse its calls: `Origin` must match exactly,
+  and `Sec-Fetch-Site` admits only `same-origin` (bar top-level
+  navigations, which cross-site pages may make too). What remains is that
+  browsers isolate processes by site, so a site's page may share a renderer
+  process with the server's.
 
 ## Client setup
 
@@ -295,10 +344,13 @@ Things to keep in mind:
   so the guards below refuse its calls to the API.
 - **There is no "this server is fronted" switch to forget.** The access mode
   is recorded, not configured per start. A non-loopback name is admitted
-  only if it is the install's tailnet name, and every request to such a name
-  must carry serve's identity headers. Any other front (an nginx that sets
+  only if it is the install's tailnet name (or its server name, see "A name
+  of your own"), and every request to such a name must carry serve's
+  identity headers. Any other front (an nginx that sets
   no identity, a plain TCP exposure, Funnel) is refused.
-- **The only ways to reach the server are loopback and `serve`.** In a
+- **The only ways to reach the server are loopback and `serve`**, plus the
+  tailnet site tunnel for a server name, which stamps identity as `serve`
+  does. In a
   `local` install a request that did not come through serve and names a
   loopback Host is treated as the owner, so no other path may exist. A host server refuses to start with
   a non-loopback `YAAC_BIND_ADDR`. For the in-cluster server, the ingress
@@ -326,7 +378,8 @@ Things to keep in mind:
     reach the system resolver.
   - `Origin` must exactly match the origin the request was sent to: scheme,
     host and port.
-  - `Sec-Fetch-Site` must not be `cross-site`.
+  - `Sec-Fetch-Site` must be `same-origin` or `none`, unless the request is
+    a top-level `GET` navigation.
 
   The port check matters because some pages share the server's hostname
   and run untrusted repo code: a workspace's forwarded dev server (at

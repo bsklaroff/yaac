@@ -413,8 +413,10 @@ export function buildServerIngressNpManifest(nodeCidrs: string[]): Record<string
 
 /**
  * Server-pod ingress, fronting half: the API from whatever fronts the
- * Service (the tailnet operator's proxy pod). Empty on kind (the node half
- * covers it), but still applied so a re-install replaces an old peer.
+ * Service (the tailnet operator's proxy pod, and the tailnet site tunnel
+ * while the install names a server name). Empty on kind with no server
+ * name (the node half covers it), but still applied so a re-install
+ * replaces an old peer.
  */
 export function buildServerFrontIngressNpManifest(
   peers: Array<Record<string, unknown>>,

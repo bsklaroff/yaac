@@ -1320,6 +1320,24 @@ describe('runClusterCheck', () => {
     resolve4.mockResolvedValue(['100.64.0.9'])
     ;({ results } = await check())
     expect(byName(results, 'sites')).toMatchObject({ status: 'pass' })
+
+    // While the tunnel fronts a server name it may reach the server, so its
+    // probe dials only the rest.
+    put(secret('yaac-site-tunnel-tailnet', {
+      domain: Buffer.from('apps.example.com').toString('base64'),
+      server: Buffer.from('yaac.apps.example.com').toString('base64'),
+    }))
+    ;({ results } = await check())
+    expect(byName(results, 'sites')).toMatchObject({ status: 'pass' })
+    expect(byName(results, 'sites')?.detail).toContain('bar the tailnet tunnel to the server, which it fronts at yaac.apps.example.com')
+    const scripts: Record<string, string> = {}
+    for (const call of applied()) {
+      const m = call[0] as { metadata?: { name?: string }; spec?: { containers?: Array<{ command: string[] }> } }
+      if (m.metadata?.name?.startsWith('yaac-cluster-check-sites-')) scripts[m.metadata.name] = m.spec?.containers?.[0].command[2] ?? ''
+    }
+    expect(scripts['yaac-cluster-check-sites-tailnet']).not.toContain('10.96.7.1 8787')
+    expect(scripts['yaac-cluster-check-sites-tailnet']).toContain('nc -w 4 10.244.0.9 ')
+    expect(scripts['yaac-cluster-check-sites-router']).toContain('10.96.7.1 8787')
     resolve4.mockRestore()
   })
 

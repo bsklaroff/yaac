@@ -16,6 +16,8 @@ import { startTailgate } from 'yaac-tailgate/tailgate'
 
 const ZONE = 'apps.example.com'
 const SITE = `shop.${ZONE}`
+/** The install's server name, which tailgate sends to the yaac server. */
+const SERVER_NAME = `yaac.${ZONE}`
 const ALICE = '100.64.0.1'
 const TAGGED = '100.64.0.2'
 /** Short, so the idle timeout can be watched; long enough that no other
@@ -28,6 +30,9 @@ let gate: Awaited<ReturnType<typeof startTailgate>>
 let tailscaled: http.Server
 let router: http.Server
 const routerHits: Array<{ url?: string; headers: http.IncomingHttpHeaders }> = []
+/** Stands in for the yaac server, echoing what reaches it. */
+let server: http.Server
+const serverHits: Array<{ url?: string; headers: http.IncomingHttpHeaders }> = []
 /** Bytes that reached the router on an upgrade it refused. */
 let afterRefusal = ''
 /** The router's upgraded sockets, which closing its server leaves open. */
@@ -138,10 +143,23 @@ beforeAll(async () => {
   })
   await new Promise<void>((resolve) => router.listen(0, '127.0.0.1', resolve))
 
+  server = http.createServer((req, res) => {
+    serverHits.push({ url: req.url, headers: req.headers })
+    res.end('server')
+  })
+  server.on('upgrade', (req: http.IncomingMessage, socket: net.Socket) => {
+    upgraded.push(socket)
+    serverHits.push({ url: req.url, headers: req.headers })
+    socket.write('HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\n\r\n')
+    socket.pipe(socket)
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+
   gate = await startTailgate({
     siteDomain: ZONE,
     tailscaleSocket: socketPath,
     router: { host: '127.0.0.1', port: (router.address() as net.AddressInfo).port },
+    server: { name: SERVER_NAME, host: '127.0.0.1', port: (server.address() as net.AddressInfo).port },
     tlsDir,
     serveHost: '127.0.0.2',
     dnsHost: '127.0.0.1',
@@ -159,6 +177,8 @@ afterAll(async () => {
   router.closeAllConnections()
   for (const socket of upgraded) socket.destroy()
   await new Promise((resolve) => router.close(resolve))
+  server.closeAllConnections()
+  await new Promise((resolve) => server.close(resolve))
   await new Promise((resolve) => tailscaled.close(resolve))
   await fs.rm(dir, { recursive: true, force: true })
 })
@@ -270,6 +290,44 @@ describe('startTailgate', () => {
     socket.write('ping')
     await until(() => Promise.resolve(got.endsWith('ping')))
     socket.destroy()
+  })
+
+  it('sends the server name\'s requests and upgrades to the yaac server, stamped like a site\'s, and keeps every other name on the router', async () => {
+    const routed = routerHits.length
+    // Any case and an explicit port name the server, one request at a time
+    // on a kept-alive connection.
+    const socket = await tlsAs(ALICE)
+    const replies = await exchange(socket, [
+      `GET /api/whoami HTTP/1.1\r\nHost: YAAC.${ZONE}:443\r\nTailscale-User-Login: mallory@example.com\r\n\r\n`,
+      `GET /cart HTTP/1.1\r\nHost: ${SITE}\r\nConnection: close\r\n\r\n`,
+    ].join(''))
+    expect(replies.match(/HTTP\/1\.1 200/g)).toHaveLength(2)
+    expect(serverHits.at(-1)?.url).toBe('/api/whoami')
+    expect(serverHits.at(-1)?.headers).toMatchObject({
+      host: `YAAC.${ZONE}:443`,
+      'tailscale-user-login': 'alice@example.com',
+      'x-forwarded-for': ALICE,
+      'x-forwarded-proto': 'https',
+    })
+    expect(routerHits.slice(routed).map((h) => h.url)).toEqual(['/cart'])
+
+    const ws = await tlsAs(ALICE)
+    ws.setEncoding('utf8')
+    let got = ''
+    ws.on('data', (chunk: string) => { got += chunk })
+    ws.write(['GET /api/events HTTP/1.1', `Host: ${SERVER_NAME}`, 'Upgrade: websocket', 'Connection: Upgrade', '', ''].join('\r\n'))
+    await until(() => Promise.resolve(got.includes('\r\n\r\n')))
+    expect(got).toMatch(/^HTTP\/1\.1 101/)
+    expect(serverHits.at(-1)).toMatchObject({ url: '/api/events', headers: { 'tailscale-user-login': 'alice@example.com' } })
+    ws.write('ping')
+    await until(() => Promise.resolve(got.endsWith('ping')))
+    ws.destroy()
+
+    // A tagged device reaches the server no more than a site.
+    const hits = serverHits.length
+    const refused = await exchange(await tlsAs(TAGGED), `GET / HTTP/1.1\r\nHost: ${SERVER_NAME}\r\nConnection: close\r\n\r\n`)
+    expect(refused).toMatch(/^HTTP\/1\.1 403/)
+    expect(serverHits.length).toBe(hits)
   })
 
   it('redirects plain HTTP under the zone to https, and nothing else', async () => {

@@ -189,7 +189,8 @@ export function identify(
 
 /**
  * Allow only a loopback `Host`, or a hostname listed in `YAAC_ALLOWED_HOSTS`
- * (the tailnet name `tailscale serve` forwards). This defeats DNS rebinding,
+ * (the fronting's tailnet name, and any server name the tailnet site tunnel
+ * serves). This defeats DNS rebinding,
  * where an attacker domain resolves to 127.0.0.1 but the browser still sends
  * the attacker's hostname. Loopback is always allowed. So is a server's own
  * workspace hostname when it runs inside that workspace (`namesWorkspace`),

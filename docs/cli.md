@@ -62,6 +62,11 @@ yaac cluster                    The Kubernetes cluster (k8s driver only)
                                 names are tailnet sites. Needs TS_SITE_AUTHKEY
                                 the first time; both are kept for later
                                 installs, and the zone is fixed once set
+    --server-name <host>        Also serve the server to tailnet users at this
+                                name, one label under the site domain, through
+                                the tailnet tunnel; kept for later installs
+                                (remote-hosting.md "A name of your own")
+    --no-server-name            Drop the name --server-name recorded
   delete [-y]                   Delete the kind cluster and its registry; keeps
                                 workspaces' checkouts. Refused on a --byo install
 

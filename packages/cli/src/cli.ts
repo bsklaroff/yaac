@@ -227,6 +227,8 @@ cluster
   .option('--admin <login>', 'With --tailnet (or --byo): make exactly these tailnet logins (repeat the flag for several) the install\'s admins, who alone publish sites and set roles. A fresh install needs at least one; switching a local install to tailnet takes exactly one, who gets its projects and settings. Asks before revoking anyone else\'s', collect, [])
   .option('-y, --yes', 'Revoke admin from logins --admin leaves out without asking')
   .option('--site-domain <zone>', 'With --tailnet (or --byo): a DNS zone you own whose names are tailnet sites, served only to your tailnet with each caller\'s tailnet login. TS_SITE_AUTHKEY (a Tailscale auth key for a tag) joins the tunnel that serves them; the zone\'s wildcard certificate goes in the Secret yaac-site-tunnel-tailnet-tls. Both are kept for later installs; the zone is fixed once set (change it by deleting that Secret, after moving its sites)')
+  .option('--server-name <host>', 'With --site-domain (given now or by an earlier install): also serve the yaac server to tailnet users at this name, one label under the site domain (e.g. yaac.apps.example.com), through the tailnet site tunnel and its certificate. Kept for later installs; the --tailnet origin keeps working beside it')
+  .option('--no-server-name', 'Stop serving the yaac server at the name an earlier --server-name recorded')
   // `--nodes` stays a string so the install reports what the user typed
   // rather than `NaN`. A failed finishing check exits 1.
   .action(async (options: ClusterInstallArgs) => {
