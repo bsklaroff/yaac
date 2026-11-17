@@ -21,7 +21,9 @@ and did not come through `tailscale serve` is the owner
 (docs/remote-hosting.md), and the ingress policies are what make that safe
 (docs/server-in-cluster.md "The ingress policy is the wall"). So public
 traffic takes a path that never passes through the server's listener or
-pod, and none of the pods on that path may dial the server. A server
+pod, and none of the pods on that path may dial the server. (The tailnet
+tunnel, which carries no public traffic, may dial it while the install
+names a server name; docs/remote-hosting.md "A name of your own".) A server
 restart or upgrade never drops a site either.
 
 ```
@@ -87,7 +89,7 @@ with sites is the server's, under the `yaac` field manager
 |---|---|---|
 | Secret `yaac-site-tunnel-cloudflare` | install | the tunnel token |
 | Deployment `yaac-site-tunnel-cloudflare` | install, only with the Secret | cloudflared, 2 replicas, `tunnel --no-autoupdate --metrics 0.0.0.0:2000 run`; ready (`/ready`) while it holds a connection to Cloudflare |
-| Secret `yaac-site-tunnel-tailnet` | install | the tailnet tunnel's auth key and the site domain |
+| Secret `yaac-site-tunnel-tailnet` | install | the tailnet tunnel's auth key, the site domain and any server name |
 | Deployment `yaac-site-tunnel-tailnet`, its ServiceAccount, Role and serve-config ConfigMap; Secret `yaac-site-tunnel-tailnet-state` | install, only while that Secret holds both | tailscaled and tailgate, 1 replica; see "Tailnet sites" |
 | Secret `yaac-site-tunnel-tailnet-tls` | the admin, or cert-manager | the site domain's wildcard certificate |
 | Deployment + Service `yaac-site-router` | install | stock Envoy (the image netd pins), 2 replicas |
@@ -199,9 +201,11 @@ tailnet address. Neither container has privilege:
   `Tailscale-User-Login`, `Tailscale-User-Name` (Q-encoded when not
   ASCII, as Tailscale's own proxies do), `X-Forwarded-For` and
   `X-Forwarded-Proto: https`, and forwards the request, its body still
-  framed, to the router's 8081 with `Host` unchanged. An upgrade's two
-  connections are joined only once the router answers 101; any other answer
-  is relayed and the connection closed. On 80 it redirects to
+  framed, to the router's 8081 with `Host` unchanged. A request for the
+  install's server name goes to the yaac server instead, stamped the same
+  way (docs/remote-hosting.md "A name of your own"). An upgrade's two
+  connections are joined only once the upstream answers 101; any other
+  answer is relayed and the connection closed. On 80 it redirects to
   `https://`. On both it closes a connection once no bytes have moved for
   the router's stream idle timeout (an hour), with no overall deadline, so a
   long upload or a WebSocket stays up while a client that vanished
@@ -254,7 +258,9 @@ itself is fronted.
 
 ## Network policy
 
-None of these adds a peer to the server's ingress, which admits no pod.
+None of these adds a peer to the server's ingress, which admits no pod but
+the tailnet tunnel's while the install names a server name (install writes
+that peer with the server's fronting).
 
 - **Cloudflare tunnel**: egress to public addresses on TCP and UDP 7844
   only, DNS, and the router's 8080. Ingress only from node addresses on its
@@ -262,7 +268,8 @@ None of these adds a peer to the server's ingress, which admits no pod.
 - **Tailnet tunnel**: egress to public addresses on any port (Tailscale's
   coordination and relay servers, and peers; one on a private address is
   reached through a relay, since the floor cuts those ranges), DNS, the
-  router's 8081, and the apiserver for tailscaled's state Secret. Ingress
+  router's 8081, the server's API port (which the server admits it to only
+  for a server name), and the apiserver for tailscaled's state Secret. Ingress
   only from node addresses on its two health ports; tailnet traffic arrives
   inside connections tailscaled dialed out.
 - **Router**: ingress from Cloudflare tunnel pods on 8080, from tailnet
@@ -284,8 +291,9 @@ reaches their context as untrusted text.
 
 `yaac cluster check`'s `sites` gate holds probe pods carrying each tunnel's
 and the router's labels to the same policies, and requires that they fail
-to dial the server's API, the proxy's control port and a workspace pod that
-is not a release, and the Cloudflare one the router's 8081. With a
+to dial the server's API (bar the tailnet one while it fronts a server
+name), the proxy's control port and a workspace pod that is not a release,
+and the Cloudflare one the router's 8081. With a
 Cloudflare tunnel installed it reports whether it is connected; with a
 tailnet one, whether it has joined and holds a certificate, and, where the
 checking machine is on the tailnet, whether the zone resolves to it.

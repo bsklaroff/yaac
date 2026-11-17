@@ -27,6 +27,7 @@ import {
   PRIORITY_CLASS_INFRA,
   ROLE_SERVER,
   SERVER_APP_NAME,
+  SITE_TUNNEL_TAILNET_APP_NAME,
   SERVER_LOCAL_CLAIM_NAME,
   VOLUMES_CLAIM_NAME,
   SERVER_POD_PORT,
@@ -260,6 +261,13 @@ interface ServerEnvOptions {
   volumeStorageClass?: string
   /** `--site-domain`: the zone whose names are tailnet sites'. */
   siteDomain?: string
+  /**
+   * `--server-name`: a name of the server's own under the site domain,
+   * which the tailnet tunnel serves (docs/remote-hosting.md "A name of your
+   * own"). The server admits it after the fronting's names, and its ingress
+   * admits the tunnel.
+   */
+  serverName?: string
 }
 
 /**
@@ -316,7 +324,8 @@ function buildServerEnv(opts: ServerEnvOptions = {}): ServerEnvVar[] {
     ['YAAC_LEGACY_NAMES', legacyNameKey() ? '1' : undefined],
     // The access mode the server checks against the one it recorded.
     ['YAAC_ACCESS_MODE', hosting.accessMode],
-    ['YAAC_ALLOWED_HOSTS', hosting.allowedHosts.join(',')],
+    // The fronting's name first: `liveFronting` reads the first entry back.
+    ['YAAC_ALLOWED_HOSTS', [...hosting.allowedHosts, ...opts.serverName ? [opts.serverName] : []].join(',')],
     ['YAAC_SITE_DOMAIN', opts.siteDomain],
     ['YAAC_USE_TOR', env.useTor ? '1' : undefined],
     ['YAAC_HOST_TOR_SOCKS_URL', env.useTor ? torSocksUrlForPod(opts.torHostAddr) : undefined],
@@ -468,7 +477,12 @@ async function ensureServerDeployment(
   await applyObject(buildServerClusterRoleManifest({ byoVolumes: envOpts.volumeStorageClass !== undefined }))
   await applyObject(buildServerClusterRoleBindingManifest())
   await applyObject(buildServerIngressNpManifest(await nodeIpBlocks()))
-  await applyObject(buildServerFrontIngressNpManifest(fronting.ingressPeers()))
+  await applyObject(buildServerFrontIngressNpManifest([
+    ...fronting.ingressPeers(),
+    // It selects on `app` alone, as the edge's own policies do, so the
+    // `sites` gate's probe pod is held to it too.
+    ...envOpts.serverName ? [{ podSelector: { matchLabels: { app: SITE_TUNNEL_TAILNET_APP_NAME } } }] : [],
+  ]))
   await applyObject(egress)
   // Wait, so `installedFronting` never reads a retired Ingress that is
   // still terminating behind the tailnet operator's finalizer.

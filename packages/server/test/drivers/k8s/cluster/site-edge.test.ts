@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type * as childProcess from 'node:child_process'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 import { fakeRegistry } from '#test/support/fake-registry'
+import { SERVER_POD_PORT } from '#drivers/k8s/substrate'
 
 // The cluster and `kubectl rollout status` are the boundaries.
 const rollouts = vi.hoisted((): string[] => [])
@@ -30,12 +31,13 @@ import {
   ENVOY_MIRROR_TAG,
   TAILSCALE_MIRROR_TAG,
   ensureSiteEdge,
-  installedSiteDomain,
+  installedTailnetNames,
   registryRef,
   resolveTailgateImageTag,
   siteCloudflareStatus,
   siteTailnetStatus,
   syncSiteObjects,
+  tailnetSiteHostnames,
 } from '#drivers/k8s/cluster'
 
 interface Manifest {
@@ -176,6 +178,17 @@ describe('syncSiteObjects', () => {
   })
 })
 
+describe('tailnetSiteHostnames', () => {
+  it('lists the tailnet sites the router serves, and nothing before it has a table', async () => {
+    await expect(tailnetSiteHostnames()).resolves.toEqual([])
+    await syncSiteObjects([
+      { siteId: 'blog', hostname: 'blog.example.com', edge: 'public', port: 3000 },
+      { siteId: 'kanban', hostname: 'kanban.apps.example.com', edge: 'tailnet', port: 3000 },
+    ])
+    await expect(tailnetSiteHostnames()).resolves.toEqual(['kanban.apps.example.com'])
+  })
+})
+
 describe('ensureSiteEdge', () => {
   it('stands up the router, walled off from everything but the tunnel and releases, with no tunnel', async () => {
     await ensureSiteEdge({})
@@ -268,14 +281,17 @@ describe('ensureSiteEdge', () => {
       expect.objectContaining({ ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }] }),
       { to: [{ podSelector: { matchExpressions: [{ key: 'yaac.site-id', operator: 'Exists' }] } }] },
     ])
-    // No edge policy names the server or workspaces at large, and only the
-    // router's ingress names the proxy, as a peer admitted in.
+    // No edge policy names workspaces at large, only the router's ingress
+    // names the proxy, as a peer admitted in, and only the tailnet tunnel's
+    // egress names the server, which admits it only for a server name.
     for (const name of [
       'yaac-site-router-ingress', 'yaac-site-router-egress', 'yaac-site-tunnel-cloudflare-ingress',
       'yaac-site-tunnel-cloudflare-egress', 'yaac-site-tunnel-tailnet-ingress', 'yaac-site-tunnel-tailnet-egress',
     ]) {
-      expect(JSON.stringify(peerSelectors(stored('NetworkPolicy', name))), name)
-        .not.toMatch(name === 'yaac-site-router-ingress' ? /yaac-server|yaac\.workspace-id/ : /yaac-server|yaac-proxy|yaac\.workspace-id/)
+      const forbidden = name === 'yaac-site-router-ingress' ? /yaac-server|yaac\.workspace-id/
+        : name === 'yaac-site-tunnel-tailnet-egress' ? /yaac-proxy|yaac\.workspace-id/
+          : /yaac-server|yaac-proxy|yaac\.workspace-id/
+      expect(JSON.stringify(peerSelectors(stored('NetworkPolicy', name))), name).not.toMatch(forbidden)
     }
 
     expect(stored('Secret', 'yaac-site-tunnel-cloudflare')).toBeUndefined()
@@ -447,25 +463,52 @@ describe('ensureSiteEdge', () => {
     expect(fakeCluster.get<{ rules: unknown[] }>('Role', 'yaac-site-tunnel-tailnet', 'test-ns')?.rules).toEqual([{
       apiGroups: [''], resources: ['secrets'], resourceNames: ['yaac-site-tunnel-tailnet-state'], verbs: ['get', 'update', 'patch'],
     }])
-    // Out to public addresses, DNS, the router's tailnet port and the apiserver.
+    // Out to public addresses, DNS, the router's tailnet port, the server
+    // (whose own ingress decides whether it admits the tunnel) and the
+    // apiserver.
     const egress = stored('NetworkPolicy', 'yaac-site-tunnel-tailnet-egress')?.spec.egress as Array<Record<string, unknown>>
     expect(egress[0]).not.toHaveProperty('ports')
     expect(egress.slice(2)).toEqual([
       { to: [{ podSelector: { matchLabels: { app: 'yaac-site-router' } } }], ports: [{ protocol: 'TCP', port: 8081 }] },
+      { to: [{ podSelector: { matchLabels: { app: 'yaac-server' } } }], ports: [{ protocol: 'TCP', port: SERVER_POD_PORT }] },
       { to: [{ ipBlock: { cidr: '10.89.0.7/32' } }], ports: [{ protocol: 'TCP', port: 6443 }] },
     ])
 
     // A later install naming neither keeps both, and one naming a domain
     // moves the tunnel to it, keeping the key.
-    await expect(installedSiteDomain()).resolves.toBe('apps.example.com')
+    await expect(installedTailnetNames()).resolves.toEqual({ siteDomain: 'apps.example.com' })
     await expect(ensureSiteEdge({})).resolves.toBeDefined()
     expect(secretData()).toEqual({ authkey: 'tskey-1', domain: 'apps.example.com' })
     await ensureSiteEdge({ siteDomain: 'sites.example.com' })
     expect(secretData()).toEqual({ authkey: 'tskey-1', domain: 'sites.example.com' })
-    const tailgateEnv = (): unknown => (stored('Deployment', 'yaac-site-tunnel-tailnet')?.spec as unknown as {
-      template: { spec: { containers: Array<{ env: unknown[] }> } }
+    const tailgateEnv = (): Array<{ name: string }> => (stored('Deployment', 'yaac-site-tunnel-tailnet')?.spec as unknown as {
+      template: { spec: { containers: Array<{ env: Array<{ name: string }> }> } }
     }).template.spec.containers[1].env
     expect(tailgateEnv()).toContainEqual({ name: 'TAILGATE_SITE_DOMAIN', value: 'sites.example.com' })
+
+    // A server name has tailgate send that name to the server's Service, is
+    // kept by an install naming none, and is dropped by null.
+    const serverEnv = [
+      { name: 'TAILGATE_SERVER_NAME', value: 'yaac.sites.example.com' },
+      { name: 'TAILGATE_SERVER', value: `yaac-server.test-ns.svc.cluster.local:${String(SERVER_POD_PORT)}` },
+    ]
+    await ensureSiteEdge({ serverName: 'yaac.sites.example.com' })
+    expect(secretData()).toEqual({ authkey: 'tskey-1', domain: 'sites.example.com', server: 'yaac.sites.example.com' })
+    expect(tailgateEnv()).toEqual(expect.arrayContaining(serverEnv))
+    await expect(installedTailnetNames()).resolves.toEqual({ siteDomain: 'sites.example.com', serverName: 'yaac.sites.example.com' })
+    await ensureSiteEdge({})
+    expect(tailgateEnv()).toEqual(expect.arrayContaining(serverEnv))
+    await ensureSiteEdge({ serverName: null })
+    expect(secretData()).toEqual({ authkey: 'tskey-1', domain: 'sites.example.com' })
+    expect(tailgateEnv().map((e) => e.name)).not.toContain('TAILGATE_SERVER_NAME')
+
+    // A Secret with no auth key records nothing an install could keep, since
+    // the converge deletes it.
+    const { authkey: _key, ...keylessData } = stored('Secret', 'yaac-site-tunnel-tailnet')?.data ?? {}
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Secret', metadata: { name: 'yaac-site-tunnel-tailnet', namespace: 'test-ns' }, data: keylessData,
+    })
+    await expect(installedTailnetNames()).resolves.toEqual({})
 
     // Without the Secret there is no tunnel.
     fakeCluster.request({ verb: 'delete', apiVersion: 'v1', kind: 'Secret', name: 'yaac-site-tunnel-tailnet', namespace: 'test-ns' })

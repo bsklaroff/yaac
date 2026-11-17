@@ -171,8 +171,11 @@ describe('createSite', () => {
     ])
     expect((await listProjectSiteEntries(DEMO_PROJECT_ID)).map((e) => [e.name, e.edge]).sort())
       .toEqual([['blog', 'public'], ['shop', 'tailnet']])
-    // A wildcard certificate covers one label, and the zone itself is no site.
-    for (const hostname of ['a.b.apps.example.com', 'apps.example.com']) {
+    // A wildcard certificate covers one label, the zone itself is no site,
+    // and nor is a name the server answers at, which the tailnet tunnel
+    // sends to the server.
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tail.ts.net,yaac.apps.example.com')
+    for (const hostname of ['a.b.apps.example.com', 'apps.example.com', 'Yaac.apps.example.com', 'srv.tail.ts.net']) {
       await expect(create({ name: 'x', hostname }), hostname).rejects.toMatchObject({ code: 'VALIDATION' })
     }
     // An edit into the zone makes a public site a tailnet one.

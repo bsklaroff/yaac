@@ -10,16 +10,19 @@
  *    once given a token.
  *  - The tailnet tunnel, tailscaled and tailgate, one device on the
  *    install's tailnet that hands each request for a name under the site
- *    domain to the tailnet listener with the caller's login. Install
- *    applies it only once given an auth key.
+ *    domain to the tailnet listener with the caller's login, or to the
+ *    yaac server for the install's server name. Install applies it only
+ *    once given an auth key.
  *  - Per site, a headless Service selecting the live release and a policy
  *    admitting the router to the site's release pods. The server applies
  *    these (`syncSiteObjects`).
  *
- * No policy here admits an edge pod to the server, the proxy or a workspace
- * that is not a release, and `yaac cluster check`'s `sites` gate dials them
- * to prove it. The proxy is admitted to the router's tailnet listener, the
- * one way in from the cluster side.
+ * No policy here admits an edge pod to the proxy or a workspace that is
+ * not a release, nor the router or the Cloudflare tunnel to the server, and
+ * `yaac cluster check`'s `sites` gate dials them to prove it. The tailnet
+ * tunnel may dial the server, which admits it only while the install names
+ * a server name (install's `ensureServerDeployment`). The proxy is admitted to the
+ * router's tailnet listener, the one way in from the cluster side.
  */
 import crypto from 'node:crypto'
 import {
@@ -27,6 +30,8 @@ import {
   LABEL_WORKSPACE_ID,
   PRIORITY_CLASS_INFRA,
   PROXY_APP_NAME,
+  SERVER_APP_NAME,
+  SERVER_POD_PORT,
   SITE_ROUTER_ADMIN_PORT,
   SITE_ROUTER_APP_NAME,
   SITE_ROUTER_PORT,
@@ -112,8 +117,9 @@ const TAILGATE_HTTP_PORT = 8080
  */
 const SITE_IDLE_TIMEOUT_SECONDS = 3600
 
-/** The tailnet tunnel's Secret: its auth key (`authkey`) and the install's
- *  site domain (`domain`). */
+/** The tailnet tunnel's Secret: its auth key (`authkey`), the install's
+ *  site domain (`domain`) and, when it names one, the server's name under
+ *  that domain (`server`). */
 const TAILNET_AUTH_SECRET_NAME = SITE_TUNNEL_TAILNET_APP_NAME
 /** tailscaled's state, which keeps its device and address across restarts. */
 const TAILNET_STATE_SECRET_NAME = `${SITE_TUNNEL_TAILNET_APP_NAME}-state`
@@ -429,7 +435,9 @@ function networkPolicy(name: string, app: string, spec: Record<string, unknown>)
  *  - Cloudflare tunnel ingress: the node (kubelet probe) on the metrics port;
  *  - tailnet tunnel egress: public addresses on any port (Tailscale's
  *    coordination and relay servers, and peers), DNS, the router's tailnet
- *    port, and the apiserver for tailscaled's state Secret;
+ *    port, the server's API port (which the server's own ingress admits only
+ *    while the install names a server name), and the apiserver for
+ *    tailscaled's state Secret;
  *  - tailnet tunnel ingress: the node on its two health ports;
  *  - router ingress: the Cloudflare tunnel on the public port (by its
  *    current and its legacy label), the tailnet tunnel and the egress
@@ -493,6 +501,7 @@ function buildSiteEdgePolicies(
           to: [{ podSelector: { matchLabels: { app: SITE_ROUTER_APP_NAME } } }],
           ports: [tcp(SITE_ROUTER_TAILNET_PORT)],
         },
+        { to: [{ podSelector: { matchLabels: { app: SERVER_APP_NAME } } }], ports: [tcp(SERVER_POD_PORT)] },
         // tailscaled keeps its state in a Secret.
         ...(apiserver.cidrs.length > 0
           ? [{ to: apiserver.cidrs.map((cidr) => ({ ipBlock: { cidr } })), ports: apiserver.ports.map(tcp) }]
@@ -682,12 +691,14 @@ const TAILNET_SERVE_CONFIG = JSON.stringify({
  * zone on port 53, which the `ip_unprivileged_port_start` sysctl lets a
  * non-root process bind, ends TLS with the certificate Secret, which is
  * optional so the pod runs without it, and stamps each request with the
- * caller's login (k8s/tailgate).
+ * caller's login (k8s/tailgate). Given a server name, it sends that name's
+ * requests to the server's Service instead of the router.
  */
 function buildTailnetManifests(opts: {
   tailscaleImage: string
   tailgateImage: string
   siteDomain: string
+  serverName?: string
 }): Array<Record<string, unknown>> {
   const app = SITE_TUNNEL_TAILNET_APP_NAME
   const socket = `${TAILSCALE_SOCKET_DIR}/tailscaled.sock`
@@ -790,6 +801,13 @@ function buildTailnetManifests(opts: {
                   { name: 'TAILGATE_HTTP_PORT', value: String(TAILGATE_HTTP_PORT) },
                   { name: 'TAILGATE_HEALTH_PORT', value: String(TAILGATE_HEALTH_PORT) },
                   { name: 'TAILGATE_IDLE_SECONDS', value: String(SITE_IDLE_TIMEOUT_SECONDS) },
+                  ...(opts.serverName === undefined ? [] : [
+                    { name: 'TAILGATE_SERVER_NAME', value: opts.serverName },
+                    {
+                      name: 'TAILGATE_SERVER',
+                      value: `${SERVER_APP_NAME}.${k8sNamespace()}.svc.cluster.local:${String(SERVER_POD_PORT)}`,
+                    },
+                  ]),
                 ],
                 readinessProbe: {
                   httpGet: { path: '/ready', port: TAILGATE_HEALTH_PORT },
@@ -860,46 +878,66 @@ async function tailnetAddresses(): Promise<string[]> {
 const TAILNET_JOIN_TIMEOUT_MS = 180_000
 
 /** What the tailnet tunnel's Secret holds. */
-async function storedTailnetSite(): Promise<{ authKey?: string; siteDomain?: string }> {
+async function storedTailnetSite(): Promise<{ authKey?: string; siteDomain?: string; serverName?: string }> {
   const secret = await readObject<{ data?: Record<string, string> }>(tailnetRef('v1', 'Secret', TAILNET_AUTH_SECRET_NAME))
   const read = (key: string): string | undefined => {
     const value = secret?.data?.[key]
     return value ? Buffer.from(value, 'base64').toString('utf8') : undefined
   }
-  return { authKey: read('authkey'), siteDomain: read('domain') }
+  return { authKey: read('authkey'), siteDomain: read('domain'), serverName: read('server') }
 }
 
-/** The site domain the tailnet tunnel's Secret records, which an install
- *  that names none keeps. */
-export async function installedSiteDomain(): Promise<string | undefined> {
-  return (await storedTailnetSite()).siteDomain
+/** The site domain and server name the tailnet tunnel's Secret records,
+ *  which an install that names neither keeps. A Secret with no auth key
+ *  records none: the tunnel converge deletes it. */
+export async function installedTailnetNames(): Promise<{ siteDomain?: string; serverName?: string }> {
+  const { authKey, siteDomain, serverName } = await storedTailnetSite()
+  return authKey === undefined ? {} : { siteDomain, serverName }
+}
+
+/** The hostnames of the tailnet sites the router serves, from its route
+ *  table, so install can refuse a server name a site already holds. */
+export async function tailnetSiteHostnames(): Promise<string[]> {
+  const live = await readObject<{ data?: Record<string, string> }>({
+    apiVersion: 'v1', kind: 'ConfigMap', name: SITE_ROUTES_CONFIGMAP_NAME, namespace: k8sNamespace(),
+  })
+  const raw = live?.data?.[ROUTE_TABLES.tailnet.file]
+  if (!raw) return []
+  const rds = JSON.parse(raw) as { resources?: Array<{ virtual_hosts?: Array<{ domains?: string[] }> }> }
+  return (rds.resources ?? []).flatMap((r) => r.virtual_hosts ?? []).flatMap((h) => h.domains ?? [])
+    .filter((domain) => domain !== '*')
 }
 
 /**
  * Converge the tailnet tunnel (docs/public-sites.md "Tailnet sites"). Its
- * Secret records the auth key and the site domain, each replaced only when
- * given, so a later install that names neither keeps the tunnel as it is,
- * as the Cloudflare tunnel keeps its token. The tunnel exists exactly while
- * the Secret holds both. Waits for the device to join and returns its
- * tailnet addresses, or undefined with no tunnel.
+ * Secret records the auth key, the site domain and the server name, each
+ * replaced only when given (`null` drops the server name), so a later
+ * install that names none keeps the tunnel as it is, as the Cloudflare
+ * tunnel keeps its token. The tunnel exists exactly while the Secret holds
+ * a key and a domain. Waits for the device to join and returns its tailnet
+ * addresses, or undefined with no tunnel.
  */
 async function ensureTailnetTunnel(
   givenKey: string | undefined,
   givenDomain: string | undefined,
+  givenServerName: string | null | undefined,
 ): Promise<{ addresses: string[] } | undefined> {
   const app = SITE_TUNNEL_TAILNET_APP_NAME
   const stored = await storedTailnetSite()
   const authKey = givenKey ?? stored.authKey
   const siteDomain = givenDomain ?? stored.siteDomain
+  const serverName = givenServerName === null ? undefined : givenServerName ?? stored.serverName
   if (authKey === undefined || siteDomain === undefined) {
     for (const ref of tailnetRefs()) await deleteObject(ref)
     return undefined
   }
-  if (authKey !== stored.authKey || siteDomain !== stored.siteDomain) {
+  if (authKey !== stored.authKey || siteDomain !== stored.siteDomain || serverName !== stored.serverName) {
     const b64 = (value: string): string => Buffer.from(value, 'utf8').toString('base64')
+    // Server-side apply drops a `server` key this manager wrote before and
+    // now leaves out.
     await applyObject({
       apiVersion: 'v1', kind: 'Secret', metadata: metadata(TAILNET_AUTH_SECRET_NAME, app), type: 'Opaque',
-      data: { authkey: b64(authKey), domain: b64(siteDomain) },
+      data: { authkey: b64(authKey), domain: b64(siteDomain), ...(serverName ? { server: b64(serverName) } : {}) },
     })
   }
   // Created empty, and only when absent: tailscaled owns what is in it.
@@ -912,7 +950,9 @@ async function ensureTailnetTunnel(
     prebuiltRef('tailscale', TAILSCALE_MIRROR_TAG),
     resolveTailgateImageTag().then((tag) => prebuiltRef('tailgate', tag)),
   ])
-  for (const manifest of buildTailnetManifests({ tailscaleImage, tailgateImage, siteDomain })) await applyObject(manifest)
+  for (const manifest of buildTailnetManifests({ tailscaleImage, tailgateImage, siteDomain, serverName })) {
+    await applyObject(manifest)
+  }
   const addresses = await waitFor(async () => {
     const ips = await tailnetAddresses()
     return ips.length > 0 ? ips : null
@@ -927,11 +967,17 @@ async function ensureTailnetTunnel(
   return { addresses }
 }
 
-/** The tailnet tunnel's site domain and tailnet addresses, or null with no
- *  tunnel; `yaac cluster check` resolves a name under the one to the other. */
-export async function siteTailnetDevice(): Promise<{ siteDomain: string; addresses: string[] } | null> {
-  const { siteDomain } = await storedTailnetSite()
-  return siteDomain ? { siteDomain, addresses: await tailnetAddresses() } : null
+/** The tailnet tunnel's site domain, server name and tailnet addresses, or
+ *  null with no tunnel; `yaac cluster check` resolves a name under the
+ *  domain to the addresses, and lets the tunnel reach the server only while
+ *  it fronts a server name. */
+export async function siteTailnetDevice(): Promise<{
+  siteDomain: string
+  serverName?: string
+  addresses: string[]
+} | null> {
+  const { siteDomain, serverName } = await storedTailnetSite()
+  return siteDomain ? { siteDomain, serverName, addresses: await tailnetAddresses() } : null
 }
 
 /**
@@ -995,6 +1041,8 @@ export async function ensureSiteEdge(opts: {
   tunnelToken?: string
   tailnetAuthKey?: string
   siteDomain?: string
+  /** The server's name under the site domain; `null` drops a recorded one. */
+  serverName?: string | null
 }): Promise<{ addresses: string[] } | undefined> {
   await ensureNamespace()
   const envoy = await prebuiltRef('Envoy', ENVOY_MIRROR_TAG)
@@ -1008,7 +1056,7 @@ export async function ensureSiteEdge(opts: {
     hint: `Inspect with \`kubectl -n ${k8sNamespace()} get pods -l app=${SITE_ROUTER_APP_NAME}\` and its logs.`,
   })
   await ensureCloudflareTunnel(opts.tunnelToken)
-  return ensureTailnetTunnel(opts.tailnetAuthKey, opts.siteDomain)
+  return ensureTailnetTunnel(opts.tailnetAuthKey, opts.siteDomain, opts.serverName)
 }
 
 /**

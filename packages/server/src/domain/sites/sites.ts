@@ -82,11 +82,16 @@ export async function requireSite(projectId: string, name: string): Promise<Site
  * needs a `tailnet` install, since a `local` one has no logins to stamp.
  * Any other name is public and accepted: it only receives traffic once the
  * install's Cloudflare tunnel routes it, which is decided in the Cloudflare
- * account (docs/public-sites.md "The edge").
+ * account (docs/public-sites.md "The edge"). A name the server itself
+ * answers at is refused, since the tailnet tunnel sends the server's name
+ * to the server.
  */
 function checkHostname(raw: string): string {
   const hostname = raw.trim().toLowerCase()
   if (!DNS_NAME.test(hostname)) throw new ServerError('VALIDATION', `"${raw}" is not a hostname like shop.example.com`)
+  if (env.allowedHosts.includes(hostname)) {
+    throw new ServerError('VALIDATION', `${hostname} is where this yaac server answers, so no site may take it`)
+  }
   const domain = env.siteDomain
   if (hostname === domain) {
     throw new ServerError('VALIDATION', `${domain} is the site domain itself: name a site under it, like shop.${domain}`)
