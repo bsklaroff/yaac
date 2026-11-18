@@ -205,6 +205,14 @@ export function lifeDirName(life: Date | string): string {
 /** A full commit id: 40 hex digits, or 64 in a SHA-256 repository. */
 export const FULL_COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
 
+/** Whether two lists of commits by folder name the same commit for each
+ *  folder, in any order: what a person reviewed against what would run. */
+export function sameCommitList(a: Array<{ dir: string; commit: string }>, b: Array<{ dir: string; commit: string }>): boolean {
+  const key = (list: Array<{ dir: string; commit: string }>): string =>
+    list.map((c) => `${c.dir}@${c.commit}`).sort().join(' ')
+  return a.length === b.length && key(a) === key(b)
+}
+
 /** Commits as one line: `<dir>@<short>` each, bare for a checkout at the
  *  workspace root, joined by spaces. */
 export function formatCommits(commits: Array<{ dir: string; commit: string }>, length = 12): string {

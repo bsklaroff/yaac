@@ -9,9 +9,11 @@ import {
   editSite,
   getSiteEdge,
   listProjectSiteEntries,
+  publishSite,
   showSite,
   startSite,
   stopSite,
+  unpublishSite,
 } from '#domain/sites'
 import { requireDriverFeature } from '#api/http/driver-features'
 import type { IdentityEnv } from '#api/http/web-auth'
@@ -22,6 +24,8 @@ import type { IdentityEnv } from '#api/http/web-auth'
  * `NOT_SUPPORTED` on a containerless server.
  */
 const siteRef = z.object({ project: projectRef, name: z.string().min(1) })
+/** Commits by folder, as a review showed them. */
+const shownCommits = z.array(z.object({ dir: z.string().max(255), commit: z.string().min(1).max(64) })).max(100)
 const port = z.number().int()
 
 export const siteApp = new Hono<IdentityEnv>()
@@ -47,7 +51,6 @@ export const siteApp = new Hono<IdentityEnv>()
   .post(
     '/create',
     zv('json', siteRef.extend({
-      hostname: z.string().min(1),
       port,
       adminPort: port.optional(),
       workflow: z.string().min(1),
@@ -66,7 +69,6 @@ export const siteApp = new Hono<IdentityEnv>()
   .post(
     '/edit',
     zv('json', siteRef.extend({
-      hostname: z.string().min(1).optional(),
       port: port.optional(),
       adminPort: port.nullable().optional(),
       workflow: z.string().min(1).optional(),
@@ -78,6 +80,29 @@ export const siteApp = new Hono<IdentityEnv>()
     async (c) => {
       const { project, name, ...input } = c.req.valid('json')
       await editSite(c.get('principal'), project, name, input)
+      return c.body(null, 204)
+    },
+  )
+  .post(
+    '/publish',
+    zv('json', siteRef.extend({
+      hostname: z.string().min(1),
+      // The release the person previewed, by id or prefix, which must be
+      // the one serving.
+      release: z.string().min(1).optional(),
+    })),
+    async (c) => {
+      const { project, name, ...input } = c.req.valid('json')
+      await publishSite(c.get('principal'), project, name, input)
+      return c.body(null, 204)
+    },
+  )
+  .post(
+    '/unpublish',
+    zv('json', siteRef),
+    async (c) => {
+      const { project, name } = c.req.valid('json')
+      await unpublishSite(c.get('principal'), project, name)
       return c.body(null, 204)
     },
   )
@@ -98,6 +123,9 @@ export const siteApp = new Hono<IdentityEnv>()
       ref: z.string().min(1).optional(),
       refs: z.record(z.string().min(1).max(255), z.string().min(1)).optional(),
       timeoutMinutes: z.number().int().positive().optional(),
+      // Deploy the site's requested deploy as the person was shown it, its
+      // workflow and commits (docs/workflows.md "Approvals").
+      approve: z.object({ workflowId: z.string().min(1), commits: shownCommits }).optional(),
     })),
     async (c) => {
       const { project, name, ...opts } = c.req.valid('json')

@@ -1102,6 +1102,10 @@ export interface WorkflowEntry {
   /** Started by every workspace that brings no graph of its own and has
    *  its repos. */
   init: boolean
+  /** Its current content was written by an agent and no person has
+   *  approved it, so only a person's review lets it run with secrets
+   *  (docs/workflows.md "Approvals"). */
+  writtenByAgent?: true
   approvedCommits: string[]
   approvedBranches: string[]
   createdAt: string
@@ -2064,12 +2068,30 @@ export interface QueuedWorkspaceEntry {
   createdAt: string
   /** Why its last launch failed; it is back in the queue until run again. */
   launchError?: string
+  /** That launch needs a person's approval (docs/workflows.md "Approvals"):
+   *  what it would run, which a person approves by running the entry with
+   *  its workflow id. */
+  awaitingApproval?: LaunchApprovalRequest
   /** Its parent workspace has no row (its create failed), so it renders at
    *  the top level. */
   orphaned?: boolean
   /** It starts as soon as its group has room: its parent has released it,
    *  or it has no parent. */
   waitingForRoom?: boolean
+}
+
+/**
+ * A privileged launch awaiting a person's approval (docs/workflows.md
+ * "Approvals"), as the person reviewing it is shown it: the workflow's
+ * content by id, the run secrets it names, whether an agent wrote it, and
+ * each repo's commit by folder ('' for a lone repo at the root).
+ */
+export interface LaunchApprovalRequest {
+  workflowId: string
+  steps: StepGraph
+  secrets: string[]
+  writtenByAgent?: true
+  commits: Array<{ dir: string; commit: string }>
 }
 
 /**
@@ -2221,8 +2243,12 @@ export type SiteTailnetState = 'absent' | 'joining' | 'no-certificate' | 'ready'
 /** A site, public or tailnet, as `GET /site/list` answers it. */
 export interface SiteEntry {
   name: string
-  hostname: string
-  edge: SiteEdge
+  /** Routed at `hostname` on `edge`; an unpublished site has neither, and
+   *  only its owner's forward reaches it (docs/public-sites.md
+   *  "Publishing"). */
+  published: boolean
+  hostname?: string
+  edge?: SiteEdge
   /** The port its releases serve on. */
   port: number
   /** The port of its releases that its owner may forward or preview, for
@@ -2252,14 +2278,28 @@ export interface SiteEntry {
   deploy?: { workspaceId: string; commits: SiteCommit[]; startedAt: string; phase: SiteDeployPhase; replacing?: true }
   /** How the last deploy that finished ended. */
   lastDeploy?: { workspaceId: string; commits: SiteCommit[]; outcome: 'succeeded' | 'failed'; error?: string; finishedAt: string }
+  /** A deploy waiting for a person's approval (docs/workflows.md
+   *  "Approvals"), which a person gives by deploying it with its workflow
+   *  id: who asked (an agent, with its workspace; following; or a person
+   *  whose deploy ran content no person approved), what it would run, and
+   *  which of the live release's settings it changes. */
+  requested?: LaunchApprovalRequest & {
+    at: string
+    from: 'agent' | 'following' | 'person'
+    workspaceId?: string
+    changes: Array<'workflow' | 'port' | 'volume'>
+  }
 }
 
 /** A site as the snapshot carries it, read from its row alone; the rest
  *  of `SiteEntry` comes from `/site/show`. `id` is what owns its group. */
-export type SiteSummary = Pick<SiteEntry, 'name' | 'hostname' | 'edge' | 'workflow' | 'follow' | 'deploy' | 'lastDeploy'> & {
+export type SiteSummary = Pick<SiteEntry, 'name' | 'published' | 'hostname' | 'edge' | 'workflow' | 'follow' | 'deploy' | 'lastDeploy'> & {
   id: string
   projectId: string
   live?: Omit<NonNullable<SiteEntry['live']>, 'running'>
+  /** It has a deploy awaiting a person's approval, which `/site/show`
+   *  details. */
+  awaitingApproval?: true
 }
 
 /** A site with its recent releases, newest first, for `GET /site/show`. */
@@ -2319,10 +2359,12 @@ export interface RoutineRunEntry {
   /** The tick it was for (ISO). */
   startAt?: string
   title?: string
-  /** `waiting`: not launched yet. `failed`: its launch failed. The rest
-   *  describe the workspace it became: `ended` was stopped at the next tick
-   *  (a routine with no timeout), `timed-out` at the routine's timeout. */
-  state: 'waiting' | 'failed' | 'running' | 'stopped' | 'ended' | 'timed-out' | 'died'
+  /** `waiting`: not launched yet. `failed`: its launch failed.
+   *  `awaiting-approval`: its launch needs a person's approval, which a
+   *  person's review of it gives. The rest describe the workspace it became:
+   *  `ended` was stopped at the next tick (a routine with no timeout),
+   *  `timed-out` at the routine's timeout. */
+  state: 'waiting' | 'failed' | 'awaiting-approval' | 'running' | 'stopped' | 'ended' | 'timed-out' | 'died'
   launchError?: string
   workspaceId?: string
   /** When the server stops it (ISO), while running. */
@@ -2843,9 +2885,12 @@ export const MAX_MODEL_LENGTH = 128
  * project's one picture, and `icon-set` and `icon-remove` replace or drop
  * it, which every viewer of the project sees and whose previous version is
  * not kept; like a `rename` title, it changes what people see and nothing
- * that runs. `workflow-list` and `workflow-show` read the project's
- * workflows (docs/workflows.md), which `create` and `routine-*` may run by
- * name; no command edits one.
+ * that runs. `workflow-*` read and write the project's workflows
+ * (docs/workflows.md), which `create` and `routine-*` may run by name, and
+ * `site-*` its sites (docs/public-sites.md), short of publishing one or
+ * stopping or deleting a published one: what a workflow or site an agent
+ * wrote would run with run secrets, or in front of a published site's
+ * visitors, waits for a person's approval (docs/workflows.md "Approvals").
  */
 export const MAMA_COMMANDS = [
   'list',
@@ -2881,5 +2926,16 @@ export const MAMA_COMMANDS = [
   'logs',
   'workflow-list',
   'workflow-show',
+  'workflow-create',
+  'workflow-edit',
+  'workflow-delete',
+  'site-list',
+  'site-show',
+  'site-create',
+  'site-edit',
+  'site-deploy',
+  'site-start',
+  'site-stop',
+  'site-delete',
 ] as const
 export type MamaCommand = (typeof MAMA_COMMANDS)[number]

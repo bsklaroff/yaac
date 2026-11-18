@@ -144,6 +144,8 @@ export interface RoutineRunRow {
   title?: string
   /** Why its launch failed; set only while it has not launched. */
   launchError?: string
+  /** What that launch would have run, waiting for a person's approval. */
+  approvalRequest?: { workflowId: string; commits: Record<string, string> }
   /** The workspace it became, once launched, and its current life's state. */
   workspaceId?: string
   stoppedAt?: Date
@@ -169,6 +171,7 @@ export async function listRoutineRuns(
     startAt: queuedWorkspaces.startAt,
     title: queuedWorkspaces.title,
     launchError: queuedWorkspaces.launchError,
+    approvalRequest: queuedWorkspaces.approvalRequest,
     workspaceId: workspaces.workspaceId,
     stoppedAt: workspaceLives.stoppedAt,
     deadline: workspaceLives.deadline,

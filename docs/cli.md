@@ -194,6 +194,11 @@ yaac workspace
   delete <workspace-id>         Delete a stopped workspace's checkout and history,
                                 or discard a queued one
     -y, --yes                   Without the confirmation prompt
+  run-queued <queued-id>        Run a queued workspace now, as the webapp's
+                                Run now; for one awaiting approval, prints what
+                                it would run and asks before approving exactly
+                                that (workflows.md "Approvals")
+    -y, --yes                   Approve without asking
   restart <workspace-id>        Restart, resuming the sessions it had open
     --timeout <duration>        Stop it this long after the restart (a restart
                                 otherwise clears its timeout)
@@ -270,18 +275,15 @@ yaac routine                    Workspaces started on a cron schedule (routines.
 
 yaac site                       A project's sites, each served by a
                                 locked workspace, its release (cluster servers
-                                only; public-sites.md). Only an admin creates,
-                                edits, deploys or starts one
-  create <project> <name>       --hostname, --port, --workflow and --repo
-                                required; prints what to add to the
-                                Cloudflare tunnel, or, for a tailnet site,
-                                its address and what its tunnel lacks
-    --hostname <host>           Hostname: one under the site domain is a
-                                tailnet site, any other public
+                                only; public-sites.md). Its owner builds one;
+                                only an admin publishes one, or deploys or
+                                starts it once published
+  create <project> <name>       --port, --workflow and --repo required; makes
+                                it unpublished, reached only by your forward
     --port <n>                  Port its releases serve on
-    --workflow <name>           The named workflow each release runs; a deploy
-                                approves its commits, following its branches
-                                (workflows.md)
+    --workflow <name>           The named workflow each release runs; your
+                                deploy approves its commits, following its
+                                branches (workflows.md "Approvals")
     --repo <dir>@<ref>          A repo each release starts with, at a branch
                                 on origin or a full commit (repeatable: one
                                 sits at the release's root, several in their
@@ -297,18 +299,32 @@ yaac site                       A project's sites, each served by a
                                 retried, and the last good release keeps
                                 serving
   edit <project> <name>         The same options (--repo is the whole list);
-                                the next deploy uses them, but the hostname
-                                and admin port move at once
+                                the next deploy uses them, but the admin port
+                                moves at once
     --no-admin-port             Offer no admin port
     --no-volume                 Mount no volume
     --no-follow                 Deploy only when asked; allowed mid-deploy,
                                 to whoever may stop the site
+  publish <project> <name>      Route it at a hostname, or move it; approves
+                                the release it serves and the branches it
+                                follows; prints what to add to the Cloudflare
+                                tunnel, or, for a tailnet site, its address
+                                and what its tunnel lacks
+    --hostname <host>           Required. One under the site domain is a
+                                tailnet site, any other public
+    --release <id>              The release you previewed; refused unless it
+                                is the one serving
+  unpublish <project> <name>    Stop routing it and let its hostname go; its
+                                release keeps running for your forward
   list <project>                Sites with their live release and last
                                 deploy, commits per repo
-  show <project> <name>         A site, each repo's branch or commit, and its
-                                recent releases with their commits
-  deploy <project> <name>       Start a release; once ready the hostname moves
-                                to it and the old one stops
+  show <project> <name>         A site, each repo's branch or commit, its
+                                recent releases with their commits, and a
+                                requested deploy with the graph it would run
+  deploy <project> <name>       Start a release; once ready the site moves to
+                                it and the old one stops. Approves what it
+                                deploys; anyone else's unapproved deploy of a
+                                published site waits as its requested deploy
     --ref [<dir>@]<ref>         A branch or full commit to deploy a repo at
                                 (repeatable; bare for a site of one repo); a
                                 repo not named deploys at its --repo setting.
@@ -316,7 +332,13 @@ yaac site                       A project's sites, each served by a
     --timeout <duration>        Fail unless ready this long after it starts
                                 (default 15m)
     --wait                      Wait for it, exiting non-zero unless it succeeded
-  stop <project> <name>         Stop the live release; the hostname answers 503
+    --approve <workflow-id>     Deploy the requested deploy, printed again and
+                                asked about first, approving that workflow's
+                                content and exactly its commits; refused if
+                                either changed since
+    -y, --yes                   With --approve, without asking
+  stop <project> <name>         Stop the live release; a published site's
+                                hostname answers 503
   start <project> <name>        Start a replacement of the last release, at
                                 its commits
   delete <project> <name>       Delete the site and stop its release
@@ -326,7 +348,8 @@ yaac workflow                   A project's named workflows, which routines,
                                 the run secrets each gets (workflows.md)
   create <project> <name>       A workflow from --file
     --file <path>               JSON file of its steps
-    --secret <name>             A run secret its runs get (repeatable)
+    --secret <name>             A run secret its runs get, once a person
+                                approved what they run (repeatable)
     --repo <dir>                A repo its steps are written for (repeatable):
                                 they start in its checkout (the root for
                                 several), and it runs only where each is
@@ -334,7 +357,7 @@ yaac workflow                   A project's named workflows, which routines,
                                 brings no steps and has its repos starts it
   edit <project> <name>         New steps, secrets or repos, or init or not;
                                 workspaces started keep what they started with
-    --file <path>               Its new steps; needed to give it run secrets
+    --file <path>               Its new steps
     --secret <name>             Run secrets it gets, replacing its own
     --no-secrets                Give it none
     --repo <dir>                Repos it names, replacing its own (repeatable)
@@ -342,8 +365,9 @@ yaac workflow                   A project's named workflows, which routines,
     --init / --no-init          Mark or unmark it as an init workflow
   list <project>                Workflows with their steps, repos, run
                                 secrets, and which are init workflows
-  show <project> <name>         Steps, repos, run secrets and approvals (a
-                                branch as <dir>@<branch>)
+  show <project> <name>         Steps, repos, run secrets and what its current
+                                content is approved on (a branch as
+                                <dir>@<branch>)
   delete <project> <name>       Refused while a routine, site or queued
                                 workspace follows it
 

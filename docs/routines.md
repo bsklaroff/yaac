@@ -120,9 +120,14 @@ named workflow
 makes a routine a nightly CI run (docs/workspace-steps.md). Saving one whose
 runs lack a repo its workflow names is refused. A person saving an
 unattended routine's workflow or start approves the commit or branch each
-repo its runs start with is at for the workflow's run secrets; a branch approval gives them to whoever can push the
-branch, the project's agents included (docs/workflows.md "Run secrets"). A run copies its routine's settings at its tick and follows its
-named workflow until it launches; it cannot be edited.
+repo its runs start with is at for the workflow's current content, where a
+person wrote it; a branch approval gives the run secrets to whoever can push
+the branch, the project's agents included (docs/workflows.md "Approvals").
+An agent's save approves nothing. A run copies its routine's settings at its
+tick and follows its named workflow until it launches; it cannot be edited.
+A run of content no person approved (after an agent's edit to its workflow,
+say) waits, `awaiting approval`, until a person reviews what it would run
+and approves exactly that.
 
 **Firing.** The `routines` step takes each unpaused routine whose
 `nextRunAt` has passed, skipping one in a removed share. In one transaction
@@ -144,8 +149,8 @@ stopped in the pass that starts the next. An explicit timeout longer
 than the gap lets runs overlap, which is what it asks for.
 
 **Failures show once.** A tick's run replaces the routine's runs that never
-launched, so a broken routine shows one failed run (the routine's
-`lastError`) rather than one per tick. Anything queued after a replaced run
+launched, so a broken routine, or one awaiting approval, shows one such
+run (the routine's `lastError`) rather than one per tick. Anything queued after a replaced run
 moves onto the new one, and the new run takes the oldest replaced one's
 place in line, so a run waiting for room in a busy group is not sent to the
 back each tick.

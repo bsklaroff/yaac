@@ -195,7 +195,7 @@ export {
   type RunSecretRow,
 } from './run-secret-store'
 export {
-  addWorkflowApproval,
+  addApprovals,
   deleteNamedWorkflow,
   deleteProjectWorkflows,
   deleteUnnamedWorkflows,
@@ -203,13 +203,13 @@ export {
   getNamedWorkflow,
   getWorkflow,
   insertNamedWorkflow,
+  listApprovals,
   listNamedWorkflows,
-  listWorkflowApprovals,
+  markPersonWritten,
   setInitWorkflows,
   storeWorkflow,
   updateNamedWorkflow,
-  workflowApproved,
-  workflowRanAt,
+  type LaunchSpec,
   type NamedWorkflowRow,
   type WorkflowRow,
 } from './workflow-store'

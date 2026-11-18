@@ -193,16 +193,20 @@ describe('dismissWorkspacePort', () => {
 })
 
 describe('offeredForwards', () => {
-  it('offers the project\'s ports, and a release only its site\'s admin port', async () => {
+  it('offers the project\'s ports, and a release only the ports its site serves on and its admin port', async () => {
     const ports = [{ containerPort: 3000, hostPortStart: 3000 }]
     expect(await offeredForwards(ports, undefined)).toEqual(ports)
     expect(await offeredForwards([], undefined)).toEqual([])
 
     const site = await insertSite({
-      projectId: PROJ, repos: [{ repo: PROJ, branch: 'main' }], follow: false, name: 'shop', hostname: 'shop.example.com', port: 3000, adminPort: 3001, namedWorkflowId: await namedWorkflowFor(PROJ),
+      projectId: PROJ, repos: [{ repo: PROJ, branch: 'main' }], follow: false, name: 'shop', port: 8080, adminPort: 3001, namedWorkflowId: await namedWorkflowFor(PROJ),
     })
-    expect(await offeredForwards(ports, site.id)).toEqual([{ containerPort: 3001, hostPortStart: 3001 }])
-    await updateSite(site.id, { adminPort: null })
-    expect(await offeredForwards(ports, site.id)).toEqual([])
+    const offer = (port: number) => ({ containerPort: port, hostPortStart: port })
+    expect(await offeredForwards(ports, site.id)).toEqual([offer(8080), offer(3001)])
+    // The live release serves on the port it started with until the next
+    // deploy takes the new one.
+    await updateSite(site.id, { adminPort: null, livePort: 8000 })
+    expect(await offeredForwards(ports, site.id)).toEqual([offer(8000), offer(8080)])
+    expect(await offeredForwards(ports, '0a0a0a0a-0000-4000-8000-0000000000ff')).toEqual([])
   })
 })

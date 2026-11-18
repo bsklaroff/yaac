@@ -176,9 +176,12 @@ export async function deleteVolume(principal: Actor, projectId: string, name: st
  * The volume a launch of `workspaceId` would attach, checked before
  * anything is torn down or created: `name` given, else (`name` undefined)
  * the one it last held. Throws `VOLUME_HELD` when a running workspace has
- * it. Resolves undefined for no volume.
+ * it. A published site's volume holds its live data, so an agent's launch
+ * may not attach one (docs/public-sites.md "Publishing"). Resolves
+ * undefined for no volume.
  */
 export async function volumeForLaunch(
+  actor: Actor,
   projectId: string,
   workspaceId: string,
   name: string | null | undefined,
@@ -190,6 +193,13 @@ export async function volumeForLaunch(
   } else if (name === undefined) {
     const id = (await findWorkspaceRow(workspaceId))?.volumeId
     row = id !== undefined ? await getVolumeRow(id) : undefined
+  }
+  if (row && actor.kind === 'workspace') {
+    const live = (await listVolumeSites(row.id)).find((site) => site.published)
+    if (live !== undefined) {
+      throw new ServerError('FORBIDDEN', `volume "${row.name}" holds the data of published site "${live.name}", `
+        + 'so only a person may attach it')
+    }
   }
   const holder = row?.holderWorkspaceId
   if (row && holder !== undefined && holder !== workspaceId && !await holderGone(holder)) {

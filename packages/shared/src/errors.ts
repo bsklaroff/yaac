@@ -9,6 +9,7 @@ export type ErrorCode =
   | 'RUNTIME_UNAVAILABLE'
   | 'UNAUTHENTICATED'
   | 'FORBIDDEN'
+  | 'APPROVAL_REQUIRED'
   | 'BAD_HOST'
   | 'NOT_SUPPORTED'
   | 'MISSING_TOOL'
@@ -43,6 +44,9 @@ export function defaultStatus(code: ErrorCode): number {
     case 'UNAUTHENTICATED': return 401
     // The caller is known but does not own the resource.
     case 'FORBIDDEN': return 403
+    // A privileged launch no person has approved (docs/workflows.md
+    // "Approvals"): a person launching it approves it.
+    case 'APPROVAL_REQUIRED': return 403
     case 'BAD_HOST': return 403
     // This server's driver lacks the feature (e.g. image builds under
     // containerless).

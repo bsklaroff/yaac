@@ -219,7 +219,7 @@ describe('removeProjectRepo', () => {
     // have nothing to start with.
     await createWorkflow(local, PROJECT, { name: 'serve', steps: {} })
     const site = await insertSite({
-      projectId: PROJECT, name: 'www', hostname: 'www.example.com', port: 80, repos: [{ repo: repoId, branch: 'main' }], follow: false,
+      projectId: PROJECT, name: 'www', port: 80, repos: [{ repo: repoId, branch: 'main' }], follow: false,
       namedWorkflowId: (await resolveWorkflow(PROJECT, 'serve')).id,
     })
     await expect(removeProjectRepo(local, PROJECT, 'web')).rejects.toMatchObject({ code: 'CONFLICT', message: /site "www"/ })
@@ -271,7 +271,7 @@ describe('updateProjectRepoLink', () => {
     // name, so the folder is not renamed under it.
     await createWorkflow(local, PROJECT, { name: 'serve', steps: {} })
     await insertSite({
-      projectId: PROJECT, name: 'www', hostname: 'www.example.com', port: 80, follow: false,
+      projectId: PROJECT, name: 'www', port: 80, follow: false,
       repos: [{ repo: PROJECT, branch: 'main' }, { repo: (await project()).repos[1].repo.id, branch: 'main' }],
       namedWorkflowId: (await resolveWorkflow(PROJECT, 'serve')).id,
     })

@@ -6,9 +6,8 @@ import { getDb, closeDb } from '#db/client'
 import { namedWorkflows, workflows, workspaces } from '#db/schema'
 import { insertAddedSteps } from '#db/step-store'
 import { recordWorkspaceCreated } from '#db/workspace-store'
-import { setWorkspaceRepoStart } from '#db/repo-store'
 import {
-  addWorkflowApproval,
+  addApprovals,
   deleteNamedWorkflow,
   deleteProjectWorkflows,
   deleteUnnamedWorkflows,
@@ -16,13 +15,11 @@ import {
   getNamedWorkflow,
   getWorkflow,
   insertNamedWorkflow,
+  listApprovals,
   listNamedWorkflows,
-  listWorkflowApprovals,
   setInitWorkflows,
   storeWorkflow,
   updateNamedWorkflow,
-  workflowApproved,
-  workflowRanAt,
 } from '#db'
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
@@ -32,7 +29,7 @@ const COMMIT = 'a'.repeat(40)
 
 /**
  * Workflow rows: one per project and content, never changed; names that
- * point at them; and what a named workflow's current one is approved for.
+ * point at them; and what each spec is approved for.
  */
 
 let tmpDir: string
@@ -148,15 +145,15 @@ describe('setInitWorkflows', () => {
 })
 
 describe('deleteNamedWorkflow', () => {
-  it('drops the name and its approvals, not the workflow', async () => {
+  it('drops the name, not the workflow or its approvals', async () => {
     const a = await storeWorkflow(PROJ, none)
     await insertNamedWorkflow(PROJ, 'ci', a.id)
     const named = await findNamedWorkflow(PROJ, 'ci')
-    await addWorkflowApproval(named!.id, COMMIT)
+    await addApprovals({ spec: a.id, workflowId: a.id }, [COMMIT])
     await deleteNamedWorkflow(named!.id)
     expect(await findNamedWorkflow(PROJ, 'ci')).toBeUndefined()
-    expect(await listWorkflowApprovals(named!.id)).toEqual([])
     expect(await getWorkflow(a.id)).toBeDefined()
+    expect(await listApprovals(a.id)).toEqual([COMMIT])
   })
 })
 
@@ -192,59 +189,25 @@ describe('deleteUnnamedWorkflows', () => {
   })
 })
 
-describe('addWorkflowApproval', () => {
-  it('records a commit or branch once', async () => {
-    await insertNamedWorkflow(PROJ, 'ci', (await storeWorkflow(PROJ, none)).id)
-    const named = await findNamedWorkflow(PROJ, 'ci')
-    await addWorkflowApproval(named!.id, COMMIT)
-    await addWorkflowApproval(named!.id, COMMIT)
-    expect(await listWorkflowApprovals(named!.id)).toEqual([COMMIT])
-  })
-})
-
-describe('listWorkflowApprovals', () => {
-  it('lists commits and branches in order', async () => {
-    await insertNamedWorkflow(PROJ, 'ci', (await storeWorkflow(PROJ, none)).id)
-    const named = await findNamedWorkflow(PROJ, 'ci')
-    await addWorkflowApproval(named!.id, 'refs/heads/main')
-    await addWorkflowApproval(named!.id, COMMIT)
-    expect(await listWorkflowApprovals(named!.id)).toEqual([COMMIT, 'refs/heads/main'])
-  })
-})
-
-describe('workflowApproved', () => {
-  it('answers for a workflow some named workflow points at now', async () => {
+describe('addApprovals', () => {
+  it('records each ref once per spec, and they go with their workflow or site', async () => {
     const a = await storeWorkflow(PROJ, none)
-    const b = await storeWorkflow(PROJ, { steps: {}, secrets: [] })
-    await insertNamedWorkflow(PROJ, 'ci', a.id)
-    const named = await findNamedWorkflow(PROJ, 'ci')
-    await addWorkflowApproval(named!.id, COMMIT)
-    expect(await workflowApproved(a.id, [COMMIT])).toBe(true)
-    expect(await workflowApproved(a.id, ['refs/heads/main'])).toBe(false)
-    await updateNamedWorkflow(named!.id, { workflowId: b.id })
-    expect(await workflowApproved(a.id, [COMMIT])).toBe(false)
-    expect(await workflowApproved(b.id, [])).toBe(false)
+    const spec = { spec: a.id, workflowId: a.id }
+    await addApprovals(spec, [COMMIT, COMMIT])
+    await addApprovals(spec, [])
+    await addApprovals({ spec: `site:${a.id}`, workflowId: a.id }, [COMMIT])
+    expect(await listApprovals(a.id)).toEqual([COMMIT])
+    await (await getDb()).delete(workflows).where(eq(workflows.id, a.id))
+    expect(await listApprovals(a.id)).toEqual([])
+    expect(await listApprovals(`site:${a.id}`)).toEqual([])
   })
 })
 
-describe('workflowRanAt', () => {
-  it('answers for a non-interactive workspace or release of the workflow that started the repo at the commit', async () => {
+describe('listApprovals', () => {
+  it('lists a spec\'s commits and branches in order', async () => {
     const a = await storeWorkflow(PROJ, none)
-    const run = async (workspaceId: string, row: { nonInteractive?: boolean; siteId?: string }, workflowId = a.id): Promise<void> => {
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId, workflowId, workflowName: 'ci', ...row, repos: [{ repoId: PROJ, path: '' }] })
-      await setWorkspaceRepoStart(workspaceId, PROJ, { startCommit: COMMIT })
-    }
-    expect(await workflowRanAt(a.id, PROJ, COMMIT)).toBe(false)
-    // An interactive workspace of the workflow never counts.
-    await run('w-interactive', {})
-    expect(await workflowRanAt(a.id, PROJ, COMMIT)).toBe(false)
-    await run('w-ci', { nonInteractive: true })
-    expect(await workflowRanAt(a.id, PROJ, COMMIT)).toBe(true)
-    expect(await workflowRanAt(a.id, OTHER, COMMIT)).toBe(false)
-    expect(await workflowRanAt(a.id, PROJ, 'b'.repeat(40))).toBe(false)
-    expect(await workflowRanAt((await storeWorkflow(PROJ, { steps: {}, secrets: [] })).id, PROJ, COMMIT)).toBe(false)
-    // Deleting the workspace takes the record with it.
-    await (await getDb()).delete(workspaces).where(eq(workspaces.workspaceId, 'w-ci'))
-    expect(await workflowRanAt(a.id, PROJ, COMMIT)).toBe(false)
+    await addApprovals({ spec: a.id, workflowId: a.id }, [`${PROJ}:refs/heads/main`, COMMIT])
+    expect(await listApprovals(a.id)).toEqual([`${PROJ}:refs/heads/main`, COMMIT])
+    expect(await listApprovals('other')).toEqual([])
   })
 })

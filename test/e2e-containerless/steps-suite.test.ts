@@ -230,7 +230,7 @@ describe.skipIf(!CAN_RUN)('workspace steps (containerless)', () => {
     }, { timeout: 30_000, interval: 500 })
   }, 60_000)
 
-  it('gives a workflow\'s run secret only on commits a person ran it on, through the CLI and yaac-mama', async () => {
+  it('gives a workflow\'s run secret only on commits a person approved for its content, through the CLI and yaac-mama', async () => {
     const head = (await execFileAsync('git', ['-C', repoPath, 'rev-parse', 'HEAD'])).stdout.trim()
     const libHead = (await execFileAsync('git', ['-C', libPath, 'rev-parse', 'HEAD'])).stdout.trim()
     const set = await runYaac(serverEnv, 'config', 'env', NAME, 'RELAY_KEY', '--run-secret', { stdin: 'relay-key-value\n' })
@@ -238,23 +238,35 @@ describe.skipIf(!CAN_RUN)('workspace steps (containerless)', () => {
     expect((await yaac('config', 'env', NAME)).stdout).toMatch(/Run secrets in cl-steps:\n {2}RELAY_KEY {2}\*{8}/)
 
     const stepsFile = await graphFile('relay-ci', { check: { run: 'test "$RELAY_KEY" = "relay-key-value"' } })
-    const made = await yaac('workflow', 'create', NAME, 'relay', '--file', stepsFile, '--secret', 'RELAY_KEY')
+    const made = await yaac('workflow', 'create', NAME, 'relay', '--file', stepsFile)
     expect(made.exitCode, made.stderr).toBe(0)
-    expect(made.stdout).toContain('workflow "relay" (check), given RELAY_KEY')
+    // Naming a secret approves nothing, so it needs no graph beside it.
+    const keyed = await yaac('workflow', 'edit', NAME, 'relay', '--secret', 'RELAY_KEY')
+    expect(keyed.exitCode, keyed.stderr).toBe(0)
+    expect(keyed.stdout).toContain('workflow "relay" (check), given RELAY_KEY')
     expect((await yaac('workflow', 'list', NAME)).stdout).toMatch(/relay\s+check\s+-\s+-\s+RELAY_KEY/)
-    // Secrets go only with the graph they reach.
-    expect((await yaac('workflow', 'edit', NAME, 'relay', '--secret', 'RELAY_KEY')).stderr).toContain('carries its whole graph')
 
-    // No person has run it yet, so an agent's launch is refused; the agent
-    // never sees the value either way.
+    // No person has approved it on any commit, so an agent's launch is
+    // refused, and so is one of a workflow the agent writes itself with no
+    // repos; the agent never sees the value either way.
+    const leak = await graphFile('leak', { leak: { run: 'printf %s "$RELAY_KEY" | base64' } })
     const refused = await mamaStep(workspaceId, 'mama-workflow',
       'yaac-mama workflow list',
       `yaac-mama create --non-interactive --workflow relay --repo ${NAME}@${head}; echo "refused=$?"`,
+      `yaac-mama workflow create leak --file ${leak} --secret RELAY_KEY`,
+      'yaac-mama create --no-repos --workflow leak --non-interactive; echo "leak=$?"',
       'echo "key=[${RELAY_KEY:-}]"')
     expect(refused).toMatch(/relay\s+steps check {2}run secrets RELAY_KEY/)
-    expect(refused).toContain('no person has run it')
+    expect(refused).toContain(`no person has approved this on ${NAME}@${head.slice(0, 12)}`)
     expect(refused).toContain('refused=1')
+    expect(refused).toContain('no person has approved this workflow')
+    expect(refused).toContain('leak=1')
     expect(refused).toContain('key=[]')
+    // A person's launch of what an agent wrote approves nothing either.
+    const personOfAgents = await yaac('workspace', 'create', NAME, '--non-interactive', '--workflow', 'leak', '--no-repos')
+    expect(personOfAgents.exitCode).not.toBe(0)
+    expect(personOfAgents.stderr).toContain('last written by an agent')
+    expect((await yaac('workflow', 'delete', NAME, 'leak')).exitCode).toBe(0)
 
     // A person's routine at the commit approves it, and its run gets the value.
     const routine = await yaac('routine', 'create', NAME, '--name', 'Relay CI', '--cron', '@yearly',
@@ -277,13 +289,33 @@ describe.skipIf(!CAN_RUN)('workspace steps (containerless)', () => {
     const both = ['--repo', `${NAME}@${head}`, '--repo', `lib@${libHead}`]
     const twoRefused = await mamaStep(workspaceId, 'mama-two',
       `yaac-mama create --non-interactive --workflow relay ${both.join(' ')}; echo "refused=$?"`)
-    expect(twoRefused).toContain(`no person has run it on lib@${libHead.slice(0, 12)}`)
+    expect(twoRefused).toContain(`no person has approved this on lib@${libHead.slice(0, 12)}`)
     expect(twoRefused).toContain('refused=1')
     const byHand = await yaac('workspace', 'create', NAME, '--non-interactive', '--workflow', 'relay', ...both, '--wait')
     expect(byHand.exitCode, byHand.stderr).toBe(0)
     const twoAllowed = await mamaStep(workspaceId, 'mama-two-2',
       `yaac-mama create --non-interactive --workflow relay ${both.join(' ')} --wait; echo "exit=$?"`)
     expect(twoAllowed).toContain('exit=0')
+
+    // An agent's edit is new content: the routine's next run waits for a
+    // person, who is shown what it runs and approves exactly that.
+    const edited = await graphFile('relay-edited', { check: { run: 'test "$RELAY_KEY" = "relay-key-value" && echo edited' } })
+    expect(await mamaStep(workspaceId, 'mama-edit', `yaac-mama workflow edit relay --file ${edited}`))
+      .toContain('a launch that gets them waits until a person approves it')
+    await yaac('routine', 'run', routineId)
+    const waiting = await vi.waitFor(async () => {
+      const entries = await (await api('/workspace/queue/list')).json() as Array<{ id: string; routineId?: string; awaitingApproval?: { workflowId: string } }>
+      const entry = entries.find((e) => e.routineId === routineId && e.awaitingApproval !== undefined)
+      expect(entry).toBeDefined()
+      return entry!
+    }, { timeout: 30_000, interval: 500 })
+    const reviewed = await yaac('workspace', 'run-queued', waiting.id.slice(0, 8), '--yes')
+    expect(reviewed.exitCode, reviewed.stderr).toBe(0)
+    expect(reviewed.stdout).toContain(`workflow     ${waiting.awaitingApproval!.workflowId} (written by an agent)`)
+    expect(reviewed.stdout).toContain('run secrets  RELAY_KEY')
+    expect(reviewed.stdout).toContain('echo edited')
+    const approvedRun = /is starting as workspace (\S+)\./.exec(reviewed.stdout)![1]
+    await vi.waitFor(async () => expect((await stopped(approvedRun))?.stepsOutcome).toBe('succeeded'), { timeout: 60_000, interval: 500 })
 
     // A routine runs it, so it stays; it can lose its secrets.
     expect((await yaac('workflow', 'delete', NAME, 'relay')).stderr).toContain('is run by routine')

@@ -1358,6 +1358,9 @@ async function provisionWorkspace(
       secretEnvKeys.push(name)
     }
   }
+  // Their names, so its windows' logs blank their values
+  // (workspace-bin/yaac-log-mask).
+  if (runSecrets.length > 0) env.push(`YAAC_MASK_NAMES=${runSecrets.map(([name]) => name).join(' ')}`)
 
   // API-key env vars for every tool (a spare may be retooled at claim), so
   // no tool prompts for login. With mediated egress these are placeholders

@@ -25,12 +25,13 @@ import { startMockGit, seedMockGitRepo, cleanupMocks, type MockGit } from '#supp
  * `yaac site` (docs/public-sites.md): every command and option, on one
  * project and one site whose releases serve a one-line node server, and
  * the deployed release reached through the router by its hostname, as
- * cloudflared would reach it. No tunnel token is given, so `site create`
+ * cloudflared would reach it. No tunnel token is given, so `site publish`
  * warns that the install has none.
  *
- * Cases run in declaration order over the one site: create, read, edit,
- * a failing then a succeeding deploy, stop and start, following a branch,
- * and delete, then a tailnet site on the server redeployed in tailnet mode.
+ * Cases run in declaration order over the one site: create, publish, read,
+ * edit, a failing then a succeeding deploy, stop and start, following a
+ * branch, unpublish and delete, then a tailnet site on the server
+ * redeployed in tailnet mode.
  */
 
 const execFileAsync = promisify(execFile)
@@ -182,38 +183,45 @@ describe('yaac site (real CLI + real server)', () => {
     await testEnv.cleanup()
   })
 
-  it('create needs --hostname, --port, --workflow and --repo, refuses a malformed hostname, port or repo, and prints the tunnel\'s settings', async () => {
+  it('create needs --port, --workflow and --repo, refuses a malformed port or repo, and makes the site unpublished', async () => {
     const steps = await workflowOf('v1', serving(3000, 'v1'))
     const repo = ['--repo', `${NAME}@main`]
-    expect(await refused('site', 'create', NAME, 'web', '--port', '3000', '--workflow', steps, ...repo))
-      .toContain('--hostname <host>')
-    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', 'http', '--workflow', steps, ...repo))
+    expect(await refused('site', 'create', NAME, 'web', '--workflow', steps, ...repo)).toContain('--port <n>')
+    expect(await refused('site', 'create', NAME, 'web', '--port', 'http', '--workflow', steps, ...repo))
       .toContain('--port takes a port number')
-    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--admin-port', 'x', '--workflow', steps, ...repo))
+    expect(await refused('site', 'create', NAME, 'web', '--port', '3000', '--admin-port', 'x', '--workflow', steps, ...repo))
       .toContain('--admin-port takes a port number')
-    expect(await refused('site', 'create', NAME, 'web', '--hostname', `https://app.${DOMAIN}`, '--port', '3000', '--workflow', steps, ...repo))
-      .toContain('is not a hostname')
     // Its repos are required, each at a branch or commit, and none falls
     // back to a default branch.
-    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--workflow', steps))
-      .toContain('Name the repos')
-    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--workflow', steps, '--repo', NAME))
+    expect(await refused('site', 'create', NAME, 'web', '--port', '3000', '--workflow', steps)).toContain('Name the repos')
+    expect(await refused('site', 'create', NAME, 'web', '--port', '3000', '--workflow', steps, '--repo', NAME))
       .toContain('--repo takes <dir>@<branch or full commit>')
-    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--workflow', steps, '--no-repos'))
+    expect(await refused('site', 'create', NAME, 'web', '--port', '3000', '--workflow', steps, '--no-repos'))
       .toContain('at least one repo')
-    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--workflow', steps, '--repo', `${NAME}@a..b`))
+    expect(await refused('site', 'create', NAME, 'web', '--port', '3000', '--workflow', steps, '--repo', `${NAME}@a..b`))
       .toContain('is not a branch name')
-    expect(await refused('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000', '--workflow', steps, '--repo', 'nope@main'))
+    expect(await refused('site', 'create', NAME, 'web', '--port', '3000', '--workflow', steps, '--repo', 'nope@main'))
       .toContain('has no repo "nope"')
     expect(await yaac('site', 'list', NAME)).toContain(`No sites in ${NAME}`)
 
     // --repo names a repo its releases start with, by its folder.
-    const created = await yaac('site', 'create', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--port', '3000',
-      '--admin-port', '3002', '--workflow', steps, '--volume', 'data', ...repo)
-    expect(created).toContain('Created site "web"')
-    expect(created).toContain(`hostname  app.${DOMAIN}`)
-    expect(created).toContain('service   http://yaac-site-router:8080')
-    expect(created).toContain('no tunnel yet')
+    const created = await yaac('site', 'create', NAME, 'web', '--port', '3000', '--admin-port', '3002', '--workflow', steps,
+      '--volume', 'data', ...repo)
+    expect(created).toContain('Created site "web", unpublished')
+    expect(created).toContain(`yaac site publish ${NAME} web --hostname <host>`)
+    expect(await yaac('site', 'list', NAME)).toMatch(/web\s+\(unpublished\)\s+-\s+3000\s+-/)
+    expect(await yaac('site', 'show', NAME, 'web')).toContain('Site "web": unpublished, port 3000')
+  })
+
+  it('publish needs --hostname, refuses a malformed one or a release it does not serve, and prints the tunnel\'s settings', async () => {
+    expect(await refused('site', 'publish', NAME, 'web')).toContain('--hostname <host>')
+    expect(await refused('site', 'publish', NAME, 'web', '--hostname', `https://app.${DOMAIN}`)).toContain('is not a hostname')
+    expect(await refused('site', 'publish', NAME, 'web', '--hostname', `app.${DOMAIN}`, '--release', 'nope')).toContain('serves no release now')
+    const published = await yaac('site', 'publish', NAME, 'web', '--hostname', `app.${DOMAIN}`)
+    expect(published).toContain('Published site "web", a public site')
+    expect(published).toContain(`hostname  app.${DOMAIN}`)
+    expect(published).toContain('service   http://yaac-site-router:8080')
+    expect(published).toContain('no tunnel yet')
   })
 
   it('list and show name its hostname, ports, workflow and volume before any deploy', async () => {
@@ -229,11 +237,11 @@ describe('yaac site (real CLI + real server)', () => {
     expect(shown).toMatch(/follow\s+no/)
   })
 
-  it('edit changes --hostname, --port, --workflow and --volume, and --no-admin-port and --no-volume drop theirs', async () => {
+  it('edit changes --port, --workflow and --volume, and --no-admin-port and --no-volume drop theirs; publish moves the hostname', async () => {
     expect(await refused('site', 'edit', NAME, 'web')).toContain('Nothing to change')
+    expect(await yaac('site', 'publish', NAME, 'web', '--hostname', `www.${DOMAIN}`)).toContain(`hostname  www.${DOMAIN}`)
     const failing = await workflowOf('failing', { build: { run: 'exit 3' }, ...serving(3001, 'v2') })
-    await yaac('site', 'edit', NAME, 'web', '--hostname', `www.${DOMAIN}`, '--port', '3001', '--workflow', failing,
-      '--no-admin-port', '--no-volume')
+    await yaac('site', 'edit', NAME, 'web', '--port', '3001', '--workflow', failing, '--no-admin-port', '--no-volume')
     let shown = await yaac('site', 'show', NAME, 'web')
     expect(shown).toContain(`https://www.${DOMAIN} -> port 3001`)
     expect(shown).toMatch(/admin port\s+-/)
@@ -290,29 +298,28 @@ describe('yaac site (real CLI + real server)', () => {
     expect(stdout).toBe('403')
     expect((await execInJob(`yaac-${release}`, ['printenv', 'RELAY_KEY'])).stdout.trim()).toBe('relay-key-value')
 
-    // The admin port is the one port the release offers, and its owner
-    // reaches it as any workspace's forward.
+    // The port it serves on and the admin port are the ports the release
+    // offers, and its owner reaches each as any workspace's forward.
     const api = makeServerApiClient(server!)
     const { workspaces } = await (await api.workspace.list.$get({ query: { project: projectId } })).json()
-    expect(workspaces.find((w) => w.workspaceId === release)?.forwardedPorts.map((p) => p.containerPort)).toEqual([3002])
-    const admin = await forwardRelease(release!, 3002)
-    try {
-      await vi.waitFor(async () => {
-        expect(await viaRouter(admin.origin, 'localhost')).toEqual({ status: 200, body: 'admin' })
-      }, { timeout: 30_000, interval: 500 })
-    } finally {
-      admin.stop()
-    }
-    // Nothing else of the release is: not the port the internet reaches,
-    // nor streamd, though both listen.
-    for (const port of [3001, 10300]) {
-      const stray = await forwardRelease(release!, port)
+    expect(workspaces.find((w) => w.workspaceId === release)?.forwardedPorts.map((p) => p.containerPort).sort()).toEqual([3001, 3002])
+    for (const [port, body] of [[3001, 'v2'], [3002, 'admin']] as const) {
+      const forward = await forwardRelease(release!, port)
       try {
-        await expect(viaRouter(stray.origin, 'localhost')).rejects.toThrow()
-        expect(stray.output()).toMatch(/dial failed/)
+        await vi.waitFor(async () => {
+          expect(await viaRouter(forward.origin, 'localhost')).toEqual({ status: 200, body })
+        }, { timeout: 30_000, interval: 500 })
       } finally {
-        stray.stop()
+        forward.stop()
       }
+    }
+    // Nothing else of the release is: not streamd, though it listens.
+    const stray = await forwardRelease(release!, 10300)
+    try {
+      await expect(viaRouter(stray.origin, 'localhost')).rejects.toThrow()
+      expect(stray.output()).toMatch(/dial failed/)
+    } finally {
+      stray.stop()
     }
   }, 600_000)
 
@@ -408,6 +415,19 @@ describe('yaac site (real CLI + real server)', () => {
     }
   }, 900_000)
 
+  it('unpublish stops the router serving its hostname, and keeps its release for the owner\'s forward', async () => {
+    expect(await yaac('site', 'unpublish', NAME, 'web')).toContain('Unpublished site "web"')
+    expect(await yaac('site', 'list', NAME)).toMatch(/web\s+\(unpublished\)\s+-\s+3001\s+\S+ running/)
+    const router = await startKubectlForward({ namespace: k8sNamespace(), target: 'service/yaac-site-router', remotePort: 8080 })
+    try {
+      await vi.waitFor(async () => {
+        expect((await viaRouter(router.origin, `www.${DOMAIN}`)).status).toBe(404)
+      }, { timeout: 120_000, interval: 2_000 })
+    } finally {
+      await router.stop()
+    }
+  }, 180_000)
+
   // Last: it removes the site every case above reads.
   it('delete removes the site', async () => {
     expect(await yaac('site', 'delete', NAME, 'web')).toContain('Deleted site "web"')
@@ -490,14 +510,14 @@ describe('yaac site (real CLI + real server)', () => {
       if (serve) await new Promise((resolve) => serve!.close(resolve))
     })
 
-    it('create says a name under the site domain is a tailnet site, and deploy serves it on the tailnet listener only', async () => {
+    it('publish says a name under the site domain is a tailnet site, and deploy serves it on the tailnet listener only', async () => {
       const echo = `require('http').createServer((q, s) => s.end(JSON.stringify(q.headers))).listen(3000)`
       const file = await stepsFile('echo.json', { server: { run: `node -e "${echo}"`, service: true, ready: 'curl -sf localhost:3000' } })
       await as('workflow', 'create', NAME, 'echo', '--file', file)
-      const created = await as('site', 'create', NAME, 'kanban', '--hostname', SITE, '--port', '3000', '--workflow', 'echo',
-        '--repo', `${NAME}@main`)
-      expect(created).toContain(`Created site "kanban", a tailnet site: https://${SITE} answers only users on this install's tailnet.`)
-      expect(created).toContain('no tailnet tunnel yet')
+      await as('site', 'create', NAME, 'kanban', '--port', '3000', '--workflow', 'echo', '--repo', `${NAME}@main`)
+      const published = await as('site', 'publish', NAME, 'kanban', '--hostname', SITE)
+      expect(published).toContain(`Published site "kanban", a tailnet site: https://${SITE} answers only users on this install's tailnet.`)
+      expect(published).toContain('no tailnet tunnel yet')
       expect(await as('site', 'list', NAME)).toMatch(/kanban\s+kanban\.apps\.example\.test\s+tailnet\s+3000/)
       expect(await as('site', 'show', NAME, 'kanban')).toMatch(/edge\s+tailnet/)
       const deployed = await runYaac(aliceEnv, 'site', 'deploy', NAME, 'kanban', '--timeout', '10m', '--wait')

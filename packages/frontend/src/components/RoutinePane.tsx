@@ -172,6 +172,7 @@ function RoutineRuns({ routine }: { routine: RoutineEntry }): JSX.Element {
       case 'timed-out': return 'timed out'
       case 'died': return `died: ${run.deathReason !== undefined ? describeWorkspaceDeathReason(run.deathReason) : 'unknown'}`
       case 'failed': return <span className="text-danger">failed: {run.launchError}</span>
+      case 'awaiting-approval': return <span className="text-warning">awaiting approval: review it from its menu in the sidebar</span>
       case 'waiting': return 'waiting'
     }
   }

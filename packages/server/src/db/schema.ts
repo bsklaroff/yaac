@@ -480,8 +480,12 @@ export const sites = snakeCase.table('sites', {
   id: uuid().primaryKey().defaultRandom(),
   projectId: uuid().notNull(),
   name: text().notNull(),
-  /** Unique in the install: the router picks the site by it. */
-  hostname: text().notNull().unique(),
+  /** Unique in the install: the router picks the site by it. Set only
+   *  while the site is published. */
+  hostname: text().unique(),
+  /** Routed on its edge. An unpublished site is reached only by its
+   *  owner's forward (docs/public-sites.md "Publishing"). */
+  published: boolean().notNull().default(false),
   /** The port its releases serve on. */
   port: integer().notNull(),
   /** The one port of its releases its owner may forward, for an admin view
@@ -543,6 +547,14 @@ export const sites = snakeCase.table('sites', {
    *  the earliest the next replacement may start, for backoff. */
   replaceFailures: integer().notNull().default(0),
   replaceAfter: timestamp({ withTimezone: true }),
+  /** A deploy waiting for a person's approval: its commits, the workflow it
+   *  would run, when it was asked for, and who asked: an agent's workspace
+   *  id, `following`, or `person` for a person's deploy of content a person
+   *  has not approved. */
+  requestedCommits: jsonb().$type<RepoCommits>(),
+  requestedWorkflowId: uuid(),
+  requestedAt: timestamp({ withTimezone: true }),
+  requestedBy: text(),
 }, (t) => [uniqueIndex().on(t.projectId, t.name)])
 
 /**
@@ -826,7 +838,8 @@ export const workflows = snakeCase.table('workflows', {
   id: uuid().primaryKey().defaultRandom(),
   projectId: uuid().notNull(),
   steps: json().$type<StepGraph>().notNull(),
-  /** Only a person's edit of a named workflow names any. */
+  /** The run secrets it names, sorted; a launch gets them only once a
+   *  person approved it (docs/workflows.md "Approvals"). */
   secrets: text().array().notNull().default([]),
   /** The project's repos its steps are written for, by id: they start in
    *  that repo's checkout when it names one, and it runs only in a
@@ -834,6 +847,10 @@ export const workflows = snakeCase.table('workflows', {
   repos: uuid().array().notNull().default([]),
   /** Of `steps`, `secrets` and `repos` (`workflowHash`). */
   hash: text().notNull(),
+  /** A person wrote this content, or approved it as shown to them, so a
+   *  person's launch, routine save or deploy may approve commits for it
+   *  without showing it again (docs/workflows.md "Approvals"). */
+  personWritten: boolean().notNull().default(false),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 }, (t) => [uniqueIndex().on(t.projectId, t.hash)])
 
@@ -850,13 +867,21 @@ export const namedWorkflows = snakeCase.table('named_workflows', {
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 }, (t) => [uniqueIndex().on(t.projectId, t.name)])
 
-/** What a person's action approved a named workflow's current workflow to
- *  run on with its secrets (docs/workflows.md "Approvals"). */
-export const workflowApprovals = snakeCase.table('workflow_approvals', {
-  namedWorkflowId: uuid().notNull().references(() => namedWorkflows.id, { onDelete: 'cascade' }),
-  /** A full commit id, or `refs/heads/<branch>` for that branch's tip. */
+/**
+ * What a person approved a privileged launch to run on (docs/workflows.md
+ * "Approvals"): a commit, or a branch's tip, for a spec. A spec is what the
+ * launch runs apart from its commits: a workflow's id, or for a site's
+ * deploy its site, workflow, port and volume (`siteSpec`).
+ */
+export const launchApprovals = snakeCase.table('launch_approvals', {
+  spec: text().notNull(),
+  /** A full commit id, or `<repo id>:refs/heads/<branch>` for that
+   *  branch's tip. */
   ref: text().notNull(),
-}, (t) => [primaryKey({ columns: [t.namedWorkflowId, t.ref] })])
+  /** What the approval goes away with. */
+  workflowId: uuid().notNull().references(() => workflows.id, { onDelete: 'cascade' }),
+  siteId: uuid().references((): AnyPgColumn => sites.id, { onDelete: 'cascade' }),
+}, (t) => [primaryKey({ columns: [t.spec, t.ref] })])
 
 
 /**
@@ -989,6 +1014,10 @@ export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
   launchWorkspaceId: text(),
   /** Why the last launch failed; cleared by the next release. */
   launchError: text(),
+  /** What the last launch would have run, refused for want of a person's
+   *  approval: its workflow and each repo's commit, which a person shown
+   *  them approves by running the entry (docs/workflows.md "Approvals"). */
+  approvalRequest: jsonb().$type<{ workflowId: string; commits: RepoCommits }>(),
   /** The workspace a successful launch created. Once set, the entry is only
    *  a record: it keeps its claim (so edits skip it) and reads exclude it.
    *  Deleted with that workspace's row. */

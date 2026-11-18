@@ -24,6 +24,7 @@ import {
   listRoutines,
   startScheduledWorkspaces,
   reconcileRoutines,
+  runQueuedWorkspace,
   runRoutineNow,
   setRoutinePaused,
   updateRoutine,
@@ -119,11 +120,13 @@ describe('createRoutine', () => {
 })
 
 describe('createRoutine on a workflow', () => {
-  it('approves the commit or branch it runs on when a person saves it, and holds an agent to that', async () => {
+  it('approves the commit or branch it runs on when a person saves it, and nothing when an agent does', async () => {
     const agent = { kind: 'workspace', workspaceId: 'w1', userId: BUILT_IN_USER_ID } as const
     await setRunSecret(local, PROJ, { name: 'P8_KEY', value: 'pem' })
     await createWorkflow(local, PROJ, { name: 'relay', steps: { t: { run: 'true' } }, secrets: ['P8_KEY'] })
-    await expect(relayRoutine(agent, { branch: 'main' })).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    // An agent may save one, whose runs then wait for a person's approval.
+    expect((await relayRoutine(agent, { name: 'Agents', branch: 'main' })).workflow).toBe('relay')
+    expect((await listProjectWorkflows(PROJ))[0].approvedBranches).toEqual([])
     const r = await relayRoutine(local, { branch: 'main' })
     expect(r).toMatchObject({ workflow: 'relay', selection: { repos: [{ repo: PROJ, branch: 'main' }], nested: false, cwd: PROJ } })
     expect((await listProjectWorkflows(PROJ))[0].approvedBranches).toEqual(['main'])
@@ -258,9 +261,20 @@ describe('reconcileRoutines', () => {
     const r = await relayRoutine(local, { branch: 'main' })
     await due(r.id, latestCronRun('*/5 * * * *', 'UTC', new Date())!)
     await reconcileRoutines()
-    // Edits made while the run waits are what it starts with.
+    // Edits made while the run waits are what it starts with. That content
+    // is new, which nothing approved, so the run waits for a person, who is
+    // shown it and approves exactly that.
     await editWorkflow(local, PROJ, 'relay', { steps: { u: { run: 'true' } }, secrets: ['P8_KEY'] })
     await startScheduledWorkspaces()
+    const [run] = await runsOf(r.id)
+    const request = await vi.waitFor(async () => {
+      const row = (await listQueuedWorkspaceRows(PROJ)).find((e) => e.id === run.id)
+      expect(row?.approvalRequest).toBeDefined()
+      return row!.approvalRequest!
+    }, { timeout: 60_000 })
+    expect(request.workflowId).toBe((await resolveWorkflow(PROJ, 'relay')).workflow.id)
+    expect(specs).toEqual([])
+    await runQueuedWorkspace(local, run.id, { workflowId: request.workflowId, commits: Object.values(request.commits).map((commit) => ({ dir: '', commit })) })
     await vi.waitFor(() => { expect(specs).toHaveLength(1) }, { timeout: 60_000 })
     expect(specs[0].runSecrets).toEqual(['P8_KEY'])
     const row = await getWorkspaceRow(PROJ, specs[0].workspaceId)
@@ -360,6 +374,11 @@ describe('listRoutineRunPage', () => {
     const rest = await listRoutineRunPage(r.id, { limit: 1, cursor: first.nextCursor! })
     expect(rest.runs).toEqual([expect.objectContaining({ state: 'waiting', startAt: '2026-01-01T00:00:00.000Z' })])
     expect(rest.nextCursor).toBeUndefined()
+    // One whose launch waits for a person's approval says so.
+    const [waiting] = await runsOf(r.id)
+    await claimQueuedLaunch(waiting.id, 'wt-approval')
+    await failQueuedLaunch(waiting.id, 'wt-approval', 'no person has approved this', { workflowId: PROJ, commits: {} })
+    expect((await listRoutineRunPage(r.id, { limit: 1, cursor: first.nextCursor! })).runs[0]).toMatchObject({ state: 'awaiting-approval' })
 
     // Stopped at its deadline, the routine's next tick, it ended at the next
     // run, whatever timeout the routine is given later; its stopped listing

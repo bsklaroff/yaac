@@ -9,18 +9,21 @@ import type { Actor } from '#domain/access'
 /**
  * The ports a workspace offers, at launch and again when a server restart
  * declares them anew: its project's forwarded ports, or for a public site's
- * release only its site's admin port, if it has one. A release faces the
- * internet only through the router, and `dialPort` reaches no port a
- * workspace does not offer, so this is all of a release that a forward or
- * preview can reach (docs/public-sites.md "Admin port").
+ * release only the port its site serves on and its admin port, if it has
+ * one. A release faces the internet only through the router, and only once
+ * its site is published, and `dialPort` reaches no port a workspace does
+ * not offer, so this is all of a release that its owner's forward or
+ * preview can reach (docs/public-sites.md "Publishing", "Admin port").
  */
 export async function offeredForwards(
   portForwards: PortForwardConfig[],
   siteId: string | undefined,
 ): Promise<PortForwardConfig[]> {
   if (siteId === undefined) return portForwards
-  const adminPort = (await getSiteRow(siteId))?.adminPort
-  return adminPort !== undefined ? [{ containerPort: adminPort, hostPortStart: adminPort }] : []
+  const site = await getSiteRow(siteId)
+  if (site === undefined) return []
+  const ports = new Set([site.livePort ?? site.port, site.port, ...(site.adminPort !== undefined ? [site.adminPort] : [])])
+  return [...ports].map((port) => ({ containerPort: port, hostPortStart: port }))
 }
 
 /**

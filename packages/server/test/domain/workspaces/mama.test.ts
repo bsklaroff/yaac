@@ -33,7 +33,7 @@ import { getProjectWorkspaceRows, recordWorkspaceCreated, recordWorkspaceStopped
 import { listQueuedWorkspaceRows } from '#db/queued-workspace-store'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { _clearListActiveInflightForTests } from '#domain/workspaces/list'
-import { createRoutine, createVolume, listProvisioning, listRoutines, mamaCaller, queueWorkspace, runMamaCommand, setRoutinePaused } from '#domain/workspaces'
+import { answerSiteCommands, createRoutine, createVolume, listProvisioning, listRoutines, mamaCaller, queueWorkspace, runMamaCommand, setRoutinePaused } from '#domain/workspaces'
 import type { MamaCaller } from '#domain/workspaces/mama'
 import { SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE } from '#domain/workspaces/spawn-policy'
 import { recordProjectCreate } from '#db/project-store'
@@ -66,7 +66,7 @@ import {
 import { formatInZone } from '@yaac/shared/schedule'
 import { MAX_PROMPT_BYTES, PROMPT_TOO_LONG, type PermissionMode } from '@yaac/shared/types'
 import { cloneRepo } from '#domain/git'
-import { MAX_ICON_BYTES, createWorkflow, listProjects, readProjectIcon } from '#domain/projects'
+import { MAX_ICON_BYTES, createWorkflow, listProjects, readProjectIcon, setRunSecret, showWorkflow } from '#domain/projects'
 import { _resetWorkspaceStatusStoreForTests, setLiveAgents } from '#runtime/status/status-store'
 import { WorkspaceExecError, type RuntimeHandle, type WorkspaceDriver } from '#drivers/contract'
 import { git } from '@yaac/test-utils/git'
@@ -220,6 +220,25 @@ describe('mamaCaller', () => {
     const caller = await mamaCaller(at, undefined)
     expect(caller).toMatchObject({ tool: 'codex', permissionMode: 'read-only', mode: 'acp' })
     expect(caller).not.toHaveProperty('sessionId')
+  })
+})
+
+describe('answerSiteCommands', () => {
+  it('hands the site commands to what is registered, refusing them while nothing is', async () => {
+    expect(await run('site-list')).toEqual({ ok: false, error: 'this server serves no sites: it has no sandbox to put between the internet and its host' })
+    const answer = vi.fn((_caller: MamaCaller, request: { command: string; args: Record<string, string> }) =>
+      Promise.resolve({ ok: true as const, output: `${request.command} ${request.args.name ?? ''}` }))
+    answerSiteCommands(answer)
+    try {
+      expect(await output('site-deploy', '', { name: 'shop', refs: '["main"]' })).toBe('site-deploy shop')
+      expect(answer.mock.calls[0][0]).toMatchObject({ projectId: PROJ })
+      // Options are checked here first, as for every command.
+      expect(await run('site-stop', '', { name: 'shop', port: '1' }))
+        .toEqual({ ok: false, error: 'site-stop does not take \'--port\' (expected: --name)' })
+      expect(answer).toHaveBeenCalledTimes(1)
+    } finally {
+      answerSiteCommands(undefined as unknown as Parameters<typeof answerSiteCommands>[0])
+    }
   })
 })
 
@@ -483,7 +502,7 @@ describe('runMamaCommand', () => {
 
     it('marks a workspace pinned to a commit, and a site\'s release with its site, role and address', async () => {
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', repos: [{ repoId: PROJ, path: '', baseBranch: 'main' }] })
-      const site = await insertSite({ projectId: PROJ, repos: [{ repo: PROJ, branch: 'main' }], follow: false, name: 'shop', hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(PROJ) })
+      const site = await insertSite({ projectId: PROJ, repos: [{ repo: PROJ, branch: 'main' }], follow: false, name: 'shop', port: 3000, namedWorkflowId: await namedWorkflowFor(PROJ) })
       const pins: Array<[string, string, string?]> = [
         ['caller-workspace', 'd'.repeat(40)],
         ['live-rel', 'a'.repeat(40), site.id],
@@ -496,7 +515,7 @@ describe('runMamaCommand', () => {
         await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId: PROJ, workspaceId: id, repoId: PROJ, startCommit: commit })
       }
       await recordWorkspaceStopped(PROJ, 'old-rel')
-      await updateSite(site.id, { liveWorkspaceId: 'live-rel', deployWorkspaceId: 'next-rel', deployPhase: 'building' })
+      await updateSite(site.id, { liveWorkspaceId: 'live-rel', deployWorkspaceId: 'next-rel', deployPhase: 'building', published: true, hostname: 'shop.example.com' })
       running = ['caller-workspace', 'live-rel', 'next-rel', 'at-commit'].map((id) => podFor(id))
 
       const text = await output('list')
@@ -2099,6 +2118,34 @@ describe('runMamaCommand', () => {
     })
   })
 
+  describe('workflow writes', () => {
+    it('creates, edits and deletes the project\'s workflows, secrets included, which approves nothing', async () => {
+      await setRunSecret(local, PROJ, { name: 'P8_KEY', value: 'pem' })
+      const steps = JSON.stringify({ test: { run: 'pnpm test' } })
+      expect(await output('workflow-create', '', { name: 'ci', steps, repos: JSON.stringify([PROJ]), init: '1' }))
+        .toMatch(/^workflow ci: steps test; repos \S+; init$/)
+      const keyed = await output('workflow-edit', '', { name: 'ci', secrets: '["P8_KEY"]', 'no-repos': '1', 'no-init': '1' })
+      expect(keyed).toContain('workflow ci: steps test\n')
+      expect(keyed).toContain('run secrets P8_KEY: a launch that gets them waits until a person approves it')
+      expect(await showWorkflow(PROJ, 'ci')).toMatchObject({ secrets: ['P8_KEY'], repos: [], init: false, approvedCommits: [], approvedBranches: [] })
+      expect(await output('workflow-edit', '', { name: 'ci', steps: JSON.stringify({ lint: { run: 'pnpm lint' } }) })).toContain('steps lint')
+      expect((await showWorkflow(PROJ, 'ci')).secrets).toEqual(['P8_KEY'])
+      expect(await output('workflow-edit', '', { name: 'ci', 'no-secrets': '1' })).toBe('workflow ci: steps lint')
+      const refusals: Array<[string, Record<string, string>, string]> = [
+        ['workflow-create', { name: 'x' }, 'workflow create needs --file, a JSON object of its steps'],
+        ['workflow-create', { name: 'x', steps: '{' }, '--file is not JSON: give a JSON object of steps'],
+        ['workflow-create', { steps }, 'workflow create needs a workflow name'],
+        ['workflow-edit', { name: 'ci', init: '1', 'no-init': '1' }, 'give --init or --no-init, not both'],
+        ['workflow-edit', { name: 'ci', secrets: '["NOPE"]' }, 'this project has no run secret named NOPE'],
+        ['workflow-edit', { name: 'ci', repos: '"web"' }, '--repo is not a list of names'],
+        ['workflow-delete', {}, 'workflow delete needs a workflow name'],
+      ]
+      for (const [command, args, error] of refusals) expect(await run(command, '', args)).toEqual({ ok: false, error })
+      expect(await output('workflow-delete', '', { name: 'ci' })).toBe('deleted workflow ci')
+      expect(await output('workflow-list')).toBe('This project has no workflows.')
+    })
+  })
+
   describe('volumes', () => {
     it('lists the project\'s volumes and holders, and create --volume mounts one by name', async () => {
       expect(await output('volumes')).toBe('This project has no volumes.')
@@ -2115,6 +2162,16 @@ describe('runMamaCommand', () => {
       // A session in a running workspace mounts nothing new.
       const beside = await run('create', 'x', { volume: 'queue', workspace: 'w' })
       expect(beside.ok ? '' : beside.error).toContain('--volume')
+      // A published site's volume holds its live data, which an agent may
+      // not mount; an unpublished site's is staging data.
+      const site = await insertSite({
+        projectId: PROJ, repos: [{ repo: PROJ, branch: 'main' }], follow: false, name: 'shop', port: 3000,
+        namedWorkflowId: await namedWorkflowFor(PROJ), volumeId: queue!.id,
+      })
+      await output('create', 'stage it', { volume: 'queue' })
+      await updateSite(site.id, { published: true, hostname: 'shop.example.com' })
+      const live = await run('create', 'x', { volume: 'queue' })
+      expect(live.ok ? '' : live.error).toBe('volume "queue" holds the data of published site "shop", so only a person may attach it')
     })
   })
 

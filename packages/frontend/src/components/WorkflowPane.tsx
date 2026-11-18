@@ -92,7 +92,8 @@ export function workflowRepos(project: ProjectSummary | undefined, workflow: Wor
  * A named workflow in the main pane (docs/workflows.md), opened from its
  * sidebar row. The bar holds Run now and Run…, and Edit, Schedule and
  * Delete. The body shows its steps, repos and run secrets, whether it runs
- * at workspace start, what people approved it to run on, and what runs it.
+ * at workspace start, whether an agent wrote it, what people approved it
+ * to run on, and what runs it.
  * Its runs are the rows under it in the sidebar. With `workflow` absent it
  * is the form for a new one.
  */
@@ -231,9 +232,15 @@ function WorkflowDetail({ workflow, readOnly, bar }: {
             <>
               <p className="font-mono text-text">{workflow.secrets.join(', ')}</p>
               <p className="text-text-faint">
-                An unattended run gets them on commits a person ran it on. Running it by hand, or a run a person
-                queued, approves the commits it runs; saving a routine approves the branch or commit it starts at.
+                An unattended run gets them only on commits a person approved for exactly this content. Running it
+                by hand, or a run a person queued, approves the commits it runs; saving a routine approves the
+                branch or commit it starts at. The project&apos;s agents may write workflows too.
               </p>
+              {workflow.writtenByAgent === true && (
+                <p className="text-warning">
+                  Written by an agent: its runs with secrets wait for your review, and saving it here approves it.
+                </p>
+              )}
               {approved !== undefined && (
                 <p className="text-text-dim">Approved: {approved.length > 0 ? <span className="font-mono">{approved.join(', ')}</span> : 'nothing yet'}</p>
               )}
@@ -302,10 +309,9 @@ function Section({ title, children }: { title: string; children: ReactNode }): J
 }
 
 /**
- * Create a workflow, or edit `workflow`. An edit always sends the whole
- * graph with the secrets and repos, so a person never gives secrets to
- * steps they did not see (docs/workflows.md "Run secrets"). `onDone` gets
- * the workflow it saved.
+ * Create a workflow, or edit `workflow`, sending the whole graph with its
+ * secrets and repos: what a person saves here is what they approve
+ * (docs/workflows.md "Approvals"). `onDone` gets the workflow it saved.
  */
 function WorkflowForm({ project, workflow, onDone, onCancel }: {
   project: ProjectSummary

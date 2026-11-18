@@ -387,7 +387,7 @@ describe('deleteRepo', () => {
     // A site built from it keeps it: its next release would have no repo.
     await insertNamedWorkflow(project, 'serve', (await storeWorkflow(project, { steps: {}, secrets: [] })).id)
     const site = await insertSite({
-      projectId: project, name: 'www', hostname: 'www.example.com', port: 80, repos: [{ repo: repo.id, branch: 'main' }], follow: false,
+      projectId: project, name: 'www', port: 80, repos: [{ repo: repo.id, branch: 'main' }], follow: false,
       namedWorkflowId: (await findNamedWorkflow(project, 'serve'))?.id ?? '',
     })
     await expect(deleteRepo(local, repo.id)).rejects.toMatchObject({ code: 'CONFLICT', message: /site "www"/ })

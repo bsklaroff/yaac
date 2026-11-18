@@ -107,7 +107,8 @@ export async function configEnv(project: string, assignments: string[], opts: Co
     if (value === '') throw new Error(`A run secret needs a value; give ${secretName}'s on stdin.`)
     const { secret: saved } = await run.$put({ param: { projectId }, json: { name: secretName, value } })
     console.log(`Run secret ${saved.name} in ${name} is stored. A workflow gets it once it names it `
-      + `(yaac workflow edit ${name} <workflow> --file <path> --secret ${saved.name}).`)
+      + `(yaac workflow edit ${name} <workflow> --secret ${saved.name}), on commits you approve by running it.`)
+    if (value.length < 8) console.log('It is under 8 characters, which is too short to mask in step logs: a step that prints it shows it.')
     return
   }
 

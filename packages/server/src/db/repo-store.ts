@@ -3,7 +3,7 @@ import type { AnyPgColumn } from 'drizzle-orm/pg-core'
 import { getDb } from './client'
 import {
   draftWorkspaces, namedWorkflows, projectRepos, projects, queuedWorkspaces, repos, repoShares, routines, sites,
-  workflowApprovals, workflows, workspaceRepos, workspaces,
+  launchApprovals, workflows, workspaceRepos, workspaces,
 } from './schema'
 import { workflowHash } from './workflow-store'
 import { notifyWorkspaceListChanged } from '#lib/notify'
@@ -296,6 +296,7 @@ export async function repointProjectRepos(owner: string, fromRepoId: string, toR
       deployCommits: renamed(sites.deployCommits),
       lastDeployCommits: renamed(sites.lastDeployCommits),
       failedCommits: renamed(sites.failedCommits),
+      requestedCommits: renamed(sites.requestedCommits),
     }).where(inArray(sites.projectId, owned))
     // A workflow's repos are content, so its hash moves with them. Where the
     // project already holds that content, its names point there instead.
@@ -306,15 +307,21 @@ export async function repointProjectRepos(owner: string, fromRepoId: string, toR
       const hash = workflowHash(w.steps, w.secrets, repos)
       const [same] = await tx.select({ id: workflows.id }).from(workflows)
         .where(and(eq(workflows.projectId, w.projectId), eq(workflows.hash, hash)))
-      if (same === undefined) await tx.update(workflows).set({ repos, hash }).where(eq(workflows.id, w.id))
-      else await tx.update(namedWorkflows).set({ workflowId: same.id }).where(eq(namedWorkflows.workflowId, w.id))
+      if (same === undefined) {
+        await tx.update(workflows).set({ repos, hash }).where(eq(workflows.id, w.id))
+        continue
+      }
+      await tx.update(namedWorkflows).set({ workflowId: same.id }).where(eq(namedWorkflows.workflowId, w.id))
+      // Its approvals are the content's, so they move with it.
+      await tx.execute(sql`insert into ${launchApprovals} (spec, ref, workflow_id)
+        select ${same.id}, ref, ${same.id}::uuid from ${launchApprovals} where spec = ${w.id} on conflict do nothing`)
     }
-    await tx.update(workflowApprovals)
-      .set({ ref: sql`${toRepoId} || substr(${workflowApprovals.ref}, ${fromRepoId.length + 1})` })
+    await tx.update(launchApprovals)
+      .set({ ref: sql`${toRepoId} || substr(${launchApprovals.ref}, ${fromRepoId.length + 1})` })
       .where(and(
-        sql`starts_with(${workflowApprovals.ref}, ${`${fromRepoId}:`})`,
-        inArray(workflowApprovals.namedWorkflowId,
-          tx.select({ id: namedWorkflows.id }).from(namedWorkflows).where(inArray(namedWorkflows.projectId, owned))),
+        sql`starts_with(${launchApprovals.ref}, ${`${fromRepoId}:`})`,
+        inArray(launchApprovals.workflowId,
+          tx.select({ id: workflows.id }).from(workflows).where(inArray(workflows.projectId, owned))),
       ))
   })
   notifyWorkspaceListChanged()

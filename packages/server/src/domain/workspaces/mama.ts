@@ -16,11 +16,17 @@ import path from 'node:path'
  * stop, and is held to the caller's own permission mode, as is everything a
  * routine launches. Discarding a queued workspace loses only a prompt and
  * settings that never ran; deleting a routine loses its schedule and the
- * run history it lists, but no run's workspace. The project's icon is the
- * one piece of project config an agent may change: replacing it loses the
- * old picture, which every viewer of the project sees, but like a `rename`
- * title it changes nothing that runs. Deleting a workspace and the rest of
- * the project's config stay the user's.
+ * run history it lists, but no run's workspace. Replacing the project's
+ * icon loses the old picture, which every viewer of the project sees, but
+ * like a `rename` title it changes nothing that runs. An agent may also
+ * write the project's workflows and build, deploy, stop and delete its
+ * unpublished sites (the `site-*` commands, which `#domain/sites` answers):
+ * whatever of that would run with run secrets, or in front of a published
+ * site's visitors, waits for a person's review (docs/workflows.md
+ * "Approvals"). Deleting a workspace, publishing or changing a site once
+ * published and the rest of the project's config stay the user's. That
+ * holds because, under k8s, an agent reaches the server only here; under
+ * containerless its shell reaches the API as the user.
  *
  * The caller's workspace comes from the transport (pod IP under k8s, a
  * per-workspace token under containerless), never the request, and every
@@ -107,7 +113,16 @@ import {
   type WorkspaceListEntry,
 } from '@yaac/shared/types'
 import { authEntryEndpoint, authEntryProvider, loadToolAuthEntry, modelsForTool } from '#domain/auth'
-import { listProjectWorkflows, readProjectIcon, removeProjectIcon, setProjectIcon, showWorkflow } from '#domain/projects'
+import {
+  createWorkflow,
+  deleteWorkflow,
+  editWorkflow,
+  listProjectWorkflows,
+  readProjectIcon,
+  removeProjectIcon,
+  setProjectIcon,
+  showWorkflow,
+} from '#domain/projects'
 import { agentDriver, resolveAgentPermissionMode } from '#runtime/agents'
 import { liveAgents } from '#runtime/status'
 import { bundleCheckout } from '#domain/git'
@@ -126,6 +141,16 @@ import type { SessionRow, SiteRow, WorkspaceRepoRow, WorkspaceRow } from '#db'
 import { resolveCreate } from './create'
 import { setWorkspaceBase } from './base-branch'
 import { checkoutAt } from './checkouts'
+
+/** Answers the `site-*` commands, which `#domain/sites` owns and the
+ *  composition root wires (`answerSiteCommands`). */
+let siteCommands: ((caller: MamaCaller, request: MamaRequestInput) => Promise<MamaOutcome>) | undefined
+
+/** Register what answers the `site-*` commands. Sites sit above this
+ *  folder, so they are handed in rather than imported. */
+export function answerSiteCommands(fn: (caller: MamaCaller, request: MamaRequestInput) => Promise<MamaOutcome>): void {
+  siteCommands = fn
+}
 
 /** Who is asking — resolved by the transport and `mamaCaller`. */
 export interface MamaCaller {
@@ -242,6 +267,12 @@ const CREATE_ARGS = [
 /** What `create --workspace` takes to add a step rather than a session. */
 const STEP_ARGS = ['run', 'name', 'needs', 'service', 'ready'] as const
 
+/** The options a workflow write takes (docs/workflows.md). */
+const WORKFLOW_ARGS = ['name', 'steps', 'secrets', 'no-secrets', 'repos', 'no-repos', 'init', 'no-init']
+
+/** The options a site write takes (docs/public-sites.md). */
+const SITE_ARGS = ['port', 'workflow', 'repos', 'admin-port', 'no-admin-port', 'volume', 'no-volume', 'follow', 'no-follow']
+
 /** The options a routine write takes. Its runs are titled from its name. */
 const ROUTINE_ARGS = ['name', 'cron', 'tz', ...CREATE_ARGS.filter((a) => a !== 'title' && a !== 'steps' && a !== 'no-steps')]
 
@@ -284,6 +315,17 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   logs: ['workspace', 'step', 'tail'],
   'workflow-list': [],
   'workflow-show': ['name'],
+  'workflow-create': WORKFLOW_ARGS,
+  'workflow-edit': WORKFLOW_ARGS,
+  'workflow-delete': ['name'],
+  'site-list': [],
+  'site-show': ['name'],
+  'site-create': ['name', ...SITE_ARGS],
+  'site-edit': ['name', ...SITE_ARGS],
+  'site-deploy': ['name', 'refs'],
+  'site-start': ['name'],
+  'site-stop': ['name'],
+  'site-delete': ['name'],
 }
 
 /**
@@ -351,6 +393,21 @@ export async function runMamaCommand(
       case 'logs': return await runLogs(caller, request)
       case 'workflow-list': return await runWorkflowList(caller)
       case 'workflow-show': return await runWorkflowShow(caller, request)
+      case 'workflow-create': return await runWorkflowWrite(caller, request, 'create')
+      case 'workflow-edit': return await runWorkflowWrite(caller, request, 'edit')
+      case 'workflow-delete': return await runWorkflowDelete(caller, request)
+      case 'site-list':
+      case 'site-show':
+      case 'site-create':
+      case 'site-edit':
+      case 'site-deploy':
+      case 'site-start':
+      case 'site-stop':
+      case 'site-delete':
+        if (siteCommands === undefined) {
+          return { ok: false, error: 'this server serves no sites: it has no sandbox to put between the internet and its host' }
+        }
+        return await siteCommands(caller, request)
     }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -445,7 +502,8 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
         id: r.id,
         tools: [r.tool],
         status: 'queued',
-        queueState: r.launchWorkspaceId !== undefined ? 'launching' : r.launchError !== undefined ? 'failed'
+        queueState: r.launchWorkspaceId !== undefined ? 'launching' : r.approvalRequest !== undefined ? 'awaiting-approval'
+          : r.launchError !== undefined ? 'failed'
           : queuedState(r) === 'queued' ? 'queued' : 'waiting-for-room',
         launchWorkspaceId: r.launchWorkspaceId ?? null,
         launchError: r.launchError ?? null,
@@ -645,7 +703,7 @@ function placements(
     const role = site.liveWorkspaceId === workspaceId ? 'live'
       : site.deployWorkspaceId === workspaceId ? `deploying: ${site.deployPhase ?? 'launching'}`
       : 'not serving'
-    return { commit, site: `${site.name} (${role})`, url: `https://${site.hostname}` }
+    return { commit, site: `${site.name} (${role})`, url: site.hostname !== undefined ? `https://${site.hostname}` : '' }
   }
 }
 
@@ -735,6 +793,7 @@ function renderRoutines(routines: RoutineEntry[], clock: ListClock): string[] {
 /** A queued entry's state as the listing words it. */
 function queuedState(r: QueuedWorkspaceRow, errorChars = 200): string {
   return r.launchWorkspaceId !== undefined ? `launching as ${r.launchWorkspaceId.slice(0, 8)}`
+    : r.approvalRequest !== undefined ? 'awaiting a person\'s approval, which their review gives'
     : r.launchError !== undefined ? `failed: ${flatten(r.launchError, errorChars)}`
     : r.releasedAt !== undefined || (r.parentWorkspaceId ?? r.parentQueuedId ?? r.startAt) === undefined
       ? 'waiting for room'
@@ -2020,6 +2079,73 @@ async function runWorkflowShow(caller: MamaCaller, request: MamaRequestInput): P
     `approved commits: ${w.approvedCommits.join(', ') || 'none'}`,
     `approved branches: ${w.approvedBranches.join(', ') || 'none'}`,
   ].join('\n') }
+}
+
+/** A JSON list of strings an option carried, as the script sends one. */
+function stringList(raw: string | undefined, flag: string): string[] | undefined {
+  if (raw === undefined) return undefined
+  let list: unknown
+  try {
+    list = JSON.parse(raw)
+  } catch {
+    throw new ServerError('VALIDATION', `${flag} is not a JSON list`)
+  }
+  if (!Array.isArray(list) || !list.every((v) => typeof v === 'string')) throw new ServerError('VALIDATION', `${flag} is not a list of names`)
+  return list
+}
+
+/**
+ * Make or change a named workflow (docs/workflows.md): `--file`'s steps,
+ * the run secrets it names, the repos its steps are written for, and
+ * whether it is an init workflow. Its launches that would get secrets run
+ * only once a person approves this content, so they wait for one.
+ */
+async function runWorkflowWrite(caller: MamaCaller, request: MamaRequestInput, verb: 'create' | 'edit'): Promise<MamaOutcome> {
+  const { args } = request
+  const name = args.name?.trim() ?? ''
+  if (name === '') return { ok: false, error: `workflow ${verb} needs a workflow name` }
+  if (request.body.trim() !== '') return { ok: false, error: `workflow ${verb} takes no prompt` }
+  for (const [on, off] of [['secrets', 'no-secrets'], ['repos', 'no-repos'], ['init', 'no-init']] as const) {
+    if (args[on] !== undefined && args[off] !== undefined) return { ok: false, error: `give --${on.replace(/s$/, '')} or --${off}, not both` }
+  }
+  let steps: unknown
+  if (args.steps !== undefined) {
+    try {
+      steps = JSON.parse(args.steps)
+    } catch {
+      return { ok: false, error: '--file is not JSON: give a JSON object of steps' }
+    }
+  }
+  const secrets = args['no-secrets'] !== undefined ? [] : stringList(args.secrets, '--secret')
+  const repos = args['no-repos'] !== undefined ? [] : stringList(args.repos, '--repo')
+  const init = args.init !== undefined ? true : args['no-init'] !== undefined ? false : undefined
+  const input = {
+    ...(secrets !== undefined ? { secrets } : {}),
+    ...(repos !== undefined ? { repos } : {}),
+    ...(init !== undefined ? { init } : {}),
+  }
+  let w
+  if (verb === 'create') {
+    if (steps === undefined) return { ok: false, error: 'workflow create needs --file, a JSON object of its steps' }
+    w = await createWorkflow(caller.principal, caller.projectId, { name, steps, ...input })
+  } else {
+    w = await editWorkflow(caller.principal, caller.projectId, name, { ...(steps !== undefined ? { steps } : {}), ...input })
+  }
+  return { ok: true, output: [
+    `workflow ${w.name}: steps ${Object.keys(w.steps).join(',') || 'none'}`
+      + (w.repos.length > 0 ? `; repos ${w.repos.join(',')}` : '') + (w.init ? '; init' : ''),
+    ...(w.secrets.length > 0
+      ? [`run secrets ${w.secrets.join(',')}: a launch that gets them waits until a person approves it (docs/workflows.md "Approvals")`]
+      : []),
+  ].join('\n') }
+}
+
+/** Delete a named workflow nothing runs. */
+async function runWorkflowDelete(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const name = request.args.name?.trim() ?? ''
+  if (name === '') return { ok: false, error: 'workflow delete needs a workflow name' }
+  await deleteWorkflow(caller.principal, caller.projectId, name)
+  return { ok: true, output: `deleted workflow ${name}` }
 }
 
 /**

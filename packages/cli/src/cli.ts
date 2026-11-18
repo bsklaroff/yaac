@@ -27,11 +27,12 @@ import { workspaceList } from '#commands/workspace-list'
 import { workspaceRename } from '#commands/workspace-rename'
 import { workspaceStop } from '#commands/workspace-stop'
 import { workspaceDelete } from '#commands/workspace-delete'
+import { workspaceRunQueued } from '#commands/workspace-run-queued'
 import { workspaceRerun, workspaceRestart } from '#commands/workspace-restart'
 import { stepAdd, stepCancel, stepRerun, type StepAddOptions } from '#commands/workspace-steps'
 import { workspaceLogs } from '#commands/workspace-logs'
 import { volumeCreate, volumeDelete, volumeList, volumeResize } from '#commands/volume'
-import { siteCreate, siteDelete, siteDeploy, siteEdit, siteList, siteShow, siteStart, siteStop } from '#commands/site'
+import { siteCreate, siteDelete, siteDeploy, siteEdit, siteList, sitePublish, siteShow, siteStart, siteStop, siteUnpublish } from '#commands/site'
 import { workflowCreate, workflowDelete, workflowEdit, workflowList, workflowShow } from '#commands/workflow'
 import { workspaceTimeout } from '#commands/workspace-timeout'
 import { routineCreate, routineDelete, routineEdit, routineList, routinePause, routineResume, routineRun, type RoutineOptions } from '#commands/routine'
@@ -547,6 +548,13 @@ workspace
   .action(workspaceDelete)
 
 workspace
+  .command('run-queued')
+  .description('Run a queued workspace now, as the webapp\'s Run now does; for one awaiting a person\'s approval, shows what it would run and asks before approving it')
+  .argument('<queued-id>', 'Queued workspace ID or unique prefix')
+  .option('-y, --yes', 'Approve without asking, having reviewed what it runs')
+  .action(workspaceRunQueued)
+
+workspace
   .command('restart')
   .description('Restart a workspace: kill its container, reuse its checkout, resume the sessions it had open')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
@@ -736,15 +744,14 @@ volume
 
 const site = program
   .command('site')
-  .description('Manage a project\'s public sites: an app served on the internet at a hostname by a locked workspace, its release, through the install\'s Cloudflare tunnel (cluster servers only)')
+  .description('Manage a project\'s sites: an app served by a locked workspace, its release, which only you reach until a person publishes it at a hostname, on the internet through the install\'s Cloudflare tunnel or on its tailnet (cluster servers only)')
 
 /** The options `site create` and `site edit` share. */
 function siteOptions(cmd: Command, required: boolean): Command {
   const option = (flags: string, description: string): Command =>
     required ? cmd.requiredOption(flags, description) : cmd.option(flags, description)
-  option('--hostname <host>', 'The public hostname it serves, which the install\'s Cloudflare tunnel must route')
   option('--port <n>', 'The port its releases serve on')
-  option('--workflow <name>', 'The named workflow each release runs, one of its steps a service (docs/workflows.md); a deploy approves its commits, and following its branches, for its run secrets')
+  option('--workflow <name>', 'The named workflow each release runs, one of its steps a service (docs/workflows.md); your deploy approves its commits, and following its branches, once the site is published or the workflow names run secrets')
   return cmd
     .option('--repo <dir@ref>', 'A repo each release starts with, by folder, at a branch on origin or a full commit (repeatable: one sits at the release\'s root, several in their folders); on edit, the whole list', collect, [])
     .option('--admin-port <n>', 'A port of each release that only you can reach, by `yaac forward` or a preview, never the internet')
@@ -755,14 +762,14 @@ function siteOptions(cmd: Command, required: boolean): Command {
 
 siteOptions(site
   .command('create')
-  .description('Create a site, and print what to add to the Cloudflare tunnel; `site deploy` publishes it')
+  .description('Create a site, unpublished: deploy it with `site deploy`, preview it with `yaac forward`, then put it at a hostname with `site publish`')
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('<name>', 'Site name, unique in the project'), true)
   .action(siteCreate)
 
 siteOptions(site
   .command('edit')
-  .description('Change a site; the next deploy uses the new settings')
+  .description('Change how a site is built; the next deploy uses the new settings, and needs a person\'s approval once the site is published')
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('<name>', 'Site name'), false)
   .option('--no-admin-port', 'Offer no admin port')
@@ -784,18 +791,36 @@ site
   .action(siteShow)
 
 site
+  .command('publish')
+  .description('Put a site at a hostname, or move it to another; approves the release it serves, and the branches it follows (admins only)')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<name>', 'Site name')
+  .requiredOption('--hostname <host>', 'The hostname it serves: a public one the install\'s Cloudflare tunnel must route, or one under the site domain for a tailnet site')
+  .option('--release <id>', 'The release you previewed, by id or prefix; refused unless it is the one serving')
+  .action(sitePublish)
+
+site
+  .command('unpublish')
+  .description('Stop routing a site\'s hostname and let it go; its releases keep running for your forward')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<name>', 'Site name')
+  .action(siteUnpublish)
+
+site
   .command('deploy')
-  .description('Start a release with each repo at a commit; once it is ready the hostname moves to it and the old release stops')
+  .description('Start a release with each repo at a commit; once it is ready the site moves to it and the old release stops. Approves what it deploys; an unapproved deploy of a published site by anyone else waits as the site\'s requested deploy')
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('<name>', 'Site name')
   .option('--ref <[dir@]ref>', 'A branch or full commit to deploy a repo at, as <dir>@<ref> (a bare <ref> for a site of one repo; repeatable); a repo not named deploys at its --repo setting', collect, [])
   .option('--timeout <duration>', 'Fail the deploy if its release is not ready this long after it starts, like 30m (default 15m)')
   .option('--wait', 'Wait for the deploy to finish, exiting non-zero unless it succeeded')
+  .option('--approve <workflow-id>', 'Deploy the site\'s requested deploy, shown again and asked about first, approving that workflow\'s content and exactly its commits; refused if either changed since')
+  .option('-y, --yes', 'With --approve, approve without asking')
   .action(siteDeploy)
 
 site
   .command('stop')
-  .description('Stop the live release; the hostname answers 503 until a start or deploy')
+  .description('Stop the live release; a published site\'s hostname answers 503 until a start or deploy')
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('<name>', 'Site name')
   .action(siteStop)
@@ -824,7 +849,7 @@ workflow
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('<name>', 'Workflow name, unique in the project')
   .requiredOption('--file <path>', 'A JSON file of its steps')
-  .option('--secret <name>', 'A run secret its runs get (repeatable; see `yaac config env --run-secret`)', collect, [])
+  .option('--secret <name>', 'A run secret its runs get, once a person approved what they run (repeatable; see `yaac config env --run-secret`)', collect, [])
   .option('--repo <dir>', 'A repo its steps are written for, by folder (repeatable): they start in its checkout (the workspace root for several), and it runs only in a workspace with each', collect, [])
   .option('--init', 'Make it an init workflow: every workspace that brings no steps of its own and has its repos starts it')
   .action(workflowCreate)
@@ -834,7 +859,7 @@ workflow
   .description('Change a workflow\'s steps, run secrets or repos, or whether it is an init workflow; workspaces already started keep what they started with')
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('<name>', 'Workflow name')
-  .option('--file <path>', 'A JSON file of its new steps; needed to give it run secrets, so they reach the steps you gave')
+  .option('--file <path>', 'A JSON file of its new steps')
   .option('--secret <name>', 'A run secret its runs get, replacing those it had (repeatable)', collect, [])
   .option('--no-secrets', 'Give its runs no run secrets')
   .option('--repo <dir>', 'A repo its steps are written for, replacing those it named (repeatable)', collect, [])

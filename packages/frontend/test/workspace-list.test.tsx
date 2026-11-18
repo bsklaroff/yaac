@@ -1032,6 +1032,26 @@ describe('WorkspaceList', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
       await waitFor(() => expect(posted(QUEUE_DISCARD)).toEqual([{ id: 'q1' }]))
     })
+
+    it('shows what a launch awaiting approval would run, and approves exactly that workflow', async () => {
+      const awaitingApproval = {
+        workflowId: 'wf-agent', steps: { leak: { run: ['printenv KEY | base64'] } }, secrets: ['KEY'], writtenByAgent: true as const,
+        commits: [{ dir: '', commit: 'a'.repeat(40) }],
+      }
+      renderList([entry({ workspaceId: 'a', title: 'Parent' })], {
+        queued: [queuedEntry('q1', { launchError: 'no person has approved this', awaitingApproval })],
+      })
+      fireEvent.click(screen.getByRole('button', { name: '1 queued workspace· 1 awaiting approval' }))
+      expect(screen.getByText('awaiting your approval · review it from its menu')).toBeTruthy()
+      await pickAction('Review and approve…', 'Queued workspace actions')
+      const review = within(await screen.findByRole('alertdialog'))
+      expect(review.getByText(/An agent wrote this workflow/)).toBeTruthy()
+      expect(review.getByText('KEY')).toBeTruthy()
+      expect(review.getByText('a'.repeat(12))).toBeTruthy()
+      expect(review.getByLabelText('Workflow steps').textContent).toContain('printenv KEY | base64')
+      fireEvent.click(review.getByRole('button', { name: 'Approve and run' }))
+      await waitFor(() => expect(posted(QUEUE_RUN)).toEqual([{ id: 'q1', approve: { workflowId: 'wf-agent', commits: [{ dir: '', commit: 'a'.repeat(40) }] } }]))
+    })
   })
 
   describe('draft workspaces', () => {
@@ -1167,7 +1187,7 @@ describe('WorkspaceList', () => {
         id: 'wf-deploy', projectId: 'proj', name: 'deploy', steps: {}, secrets: [], repos: [], init: true, createdAt: '',
       }]
       const sites: SiteSummary[] = [{
-        id: 's-web', projectId: 'proj', name: 'web', hostname: 'app.example.com', edge: 'public', workflow: 'deploy', follow: false,
+        id: 's-web', projectId: 'proj', name: 'web', published: true, hostname: 'app.example.com', edge: 'public', workflow: 'deploy', follow: false,
         deploy: { workspaceId: 'w-rel', commits: [], startedAt: '', phase: 'building' },
       }]
       const groups = [

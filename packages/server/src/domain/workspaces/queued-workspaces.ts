@@ -32,7 +32,7 @@ import { toStoppedEntries } from './stopped-list'
 import { customEndpointFor, modelDisplayName, modelEfforts } from '#domain/auth'
 import { authorizeProject, isProjectHeld, systemPrincipal, type Actor } from '#domain/access'
 import { getDefaultBranch } from '#domain/git'
-import { assertWorkflowRepos, resolveWorkflow, savedByPerson } from '#domain/projects'
+import { ApprovalRequiredError, approveContent, assertWorkflowRepos, resolveWorkflow, savedByPerson } from '#domain/projects'
 import {
   claimQueuedLaunch,
   deleteQueuedWorkspace,
@@ -60,11 +60,13 @@ import {
   type ProjectRow,
   type QueuedWorkspaceRow,
   type QueuedWorkspaceSettings,
+  type WorkflowRow,
 } from '#db'
 import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
 import { repoDir } from '@yaac/shared/project-paths'
 import { formatUtcTimestamp } from '@yaac/shared/time'
+import { sameCommitList } from '@yaac/shared/steps'
 import { normalizeTitle } from '@yaac/shared/titles'
 import { nextCronRuns, resolveStartAt } from '@yaac/shared/schedule'
 import {
@@ -77,6 +79,7 @@ import {
   type AgentOptions,
   type AgentTool,
   type HeldWorkspaceEntry,
+  type LaunchApprovalRequest,
   type PermissionMode,
   type QueuedWorkspaceEntry,
   type RepoSelection,
@@ -308,15 +311,34 @@ export async function discardQueuedWorkspace(principal: Actor, id: string): Prom
  * the launch continues detached as a provisioning row. Refused while its
  * group is at its workspace limit. Its timeout counts from now, except a
  * routine's run's, which counts from its tick so it never outlives the next
- * one (docs/routines.md).
+ * one (docs/routines.md). A run approves nothing (docs/workflows.md
+ * "Approvals") unless a person passes `approve`, naming the workflow and
+ * the commits they were shown of the entry's approval request: that
+ * approves its content, and the launch runs it, pinned at those commits,
+ * as that person. One that differs from the request, or a request that no
+ * longer covers each of the entry's repos, is refused.
  */
-export async function runQueuedWorkspace(principal: Actor, id: string): Promise<{ workspaceId: string }> {
+export async function runQueuedWorkspace(
+  principal: Actor,
+  id: string,
+  approve?: { workflowId: string; commits: Array<{ dir: string; commit: string }> },
+): Promise<{ workspaceId: string }> {
   const row = await editableRow(principal, id)
+  if (approve !== undefined) {
+    const request = row.approvalRequest
+    if (request === undefined) throw new ServerError('CONFLICT', 'that queued workspace awaits no approval')
+    if (request.workflowId !== approve.workflowId || !sameCommitList(await commitsByDir(row.projectId, request.commits), approve.commits)
+      || row.repos.some((r) => request.commits[r.repo] === undefined)) {
+      throw new ServerError('CONFLICT', 'what it would run changed since you reviewed it; review it again')
+    }
+    await approveContent(principal, row.projectId, approve.workflowId)
+  }
   refuseFullGroup(await readGroupRoom(row.projectId, row.groupId), '')
   const released = await releaseQueuedWorkspace(id)
   if (!released) throw launchingConflict()
   const launched = await launch(released,
-    released.routineId !== undefined && released.startAt !== undefined ? released.startAt : new Date())
+    released.routineId !== undefined && released.startAt !== undefined ? released.startAt : new Date(),
+    approve !== undefined && row.approvalRequest !== undefined ? { approver: principal, request: row.approvalRequest } : undefined)
   if (launched === undefined) throw launchingConflict()
   // Released, so it starts as soon as a slot frees.
   if (launched === 'full') throw new ServerError('CONFLICT', 'its group filled up meanwhile; it starts once there is room')
@@ -438,12 +460,19 @@ export async function resumeQueuedWorkspaces(): Promise<void> {
 
 /**
  * Take a slot in the entry's group and claim its launch, then start it
- * detached. Returns the new workspace's id, `'full'` if the group has no
- * room, or undefined if another launcher claimed it. Claiming first means a
- * double-click or a race starts only one workspace. The entry's timeout
- * counts from `timeoutFrom`; one already over fails the launch.
+ * detached, as the server, or with `approved` as the person who approved
+ * its request, running exactly that. Returns the new workspace's id,
+ * `'full'` if the group has no room, or undefined if another launcher
+ * claimed it. Claiming first means a double-click or a race starts only one
+ * workspace. The entry's timeout counts from `timeoutFrom`; one already
+ * over fails the launch. One refused for want of a person's approval keeps
+ * what it would have run, for a person to be shown.
  */
-async function launch(row: QueuedWorkspaceRow, timeoutFrom: Date): Promise<{ workspaceId: string } | 'full' | undefined> {
+async function launch(
+  row: QueuedWorkspaceRow,
+  timeoutFrom: Date,
+  approved?: { approver: Actor; request: { workflowId: string; commits: Record<string, string> } },
+): Promise<{ workspaceId: string } | 'full' | undefined> {
   if (launching.has(row.id)) return undefined
   const [room, nextTick] = await Promise.all([readGroupRoom(row.projectId, row.groupId), nextRunOf(row)])
   const workspaceId = crypto.randomUUID()
@@ -481,9 +510,10 @@ async function launch(row: QueuedWorkspaceRow, timeoutFrom: Date): Promise<{ wor
       // A named workflow is followed until now; its current workflow and
       // name are what the workspace starts with and records.
       const named = row.namedWorkflowId !== undefined ? await getNamedWorkflow(row.namedWorkflowId) : undefined
-      // The server launches it: whoever queued or ran the entry was
-      // authorized then.
-      const run = await prepareStart(systemPrincipal, {
+      // The server launches it, whoever queued or ran the entry having been
+      // authorized then, unless a person approved what it runs.
+      const pinned = approved?.request
+      const run = await prepareStart(approved?.approver ?? systemPrincipal, {
         projectId: row.projectId,
         workspaceId,
         tool: row.tool,
@@ -493,7 +523,13 @@ async function launch(row: QueuedWorkspaceRow, timeoutFrom: Date): Promise<{ wor
         ...(row.effort !== undefined ? { effort: row.effort } : {}),
         agentOptions: row.agentOptions,
         ...selectionOf(row),
-        ...(named !== undefined ? { workflow: named.name } : row.workflowId !== undefined ? { workflowId: row.workflowId } : {}),
+        ...(pinned !== undefined
+          ? {
+            repos: row.repos.map((r) => (pinned.commits[r.repo] !== undefined ? { repo: r.repo, commit: pinned.commits[r.repo] } : r)),
+            workflowId: pinned.workflowId,
+            ...(named !== undefined ? { workflowName: named.name } : {}),
+          }
+          : named !== undefined ? { workflow: named.name } : row.workflowId !== undefined ? { workflowId: row.workflowId } : {}),
         ...(row.nonInteractive ? { nonInteractive: true } : {}),
         ...(row.personSaved ? { personSaved: true } : {}),
         ...(row.prompt !== undefined ? { prompt: row.prompt } : { noSession: true }),
@@ -520,7 +556,7 @@ async function launch(row: QueuedWorkspaceRow, timeoutFrom: Date): Promise<{ wor
           : row.startAt !== undefined ? 'stopped before it started; run it again when you are ready'
           : null
         : err instanceof Error ? err.message : String(err)
-      await failQueuedLaunch(row.id, workspaceId, error)
+      await failQueuedLaunch(row.id, workspaceId, error, err instanceof ApprovalRequiredError ? err.request : null)
         .catch((e: unknown) => serverLog(`[queue] recording a failed launch failed: ${String(e)}`))
       removeProvisioning(workspaceId)
     } finally {
@@ -819,7 +855,7 @@ async function resolveSettings(
   const changed = kept === undefined || kept.namedWorkflowId !== named?.id || kept.nonInteractive !== (unattended !== undefined)
     || JSON.stringify(kept.repos) !== JSON.stringify(selection.repos)
   const personSaved = unattended === undefined ? false
-    : changed ? await savedByPerson(principal, unattended.id, selection.repos)
+    : changed ? savedByPerson(principal)
     : kept.personSaved === true
   // An unattended run of a named workflow goes in the workflow's own group
   // unless it names one.
@@ -880,12 +916,20 @@ async function toEntries(rows: QueuedWorkspaceRow[]): Promise<QueuedWorkspaceEnt
   const known = new Set((await Promise.all(projectIds.map(async (projectId) =>
     [...(await getProjectWorkspaceRows(projectId)).keys()].map((id) => `${projectId}/${id}`)))).flat())
   for (const p of listProvisioning()) known.add(`${p.projectId}/${p.workspaceId}`)
-  // Each entry's graph as it would start now, and the workflow it follows.
+  // Each entry's graph as it would start now, the workflow it follows, and
+  // what a launch awaiting approval would run.
   const graphs = new Map(await Promise.all(rows.map(async (r) => {
     const named = r.namedWorkflowId !== undefined ? await getNamedWorkflow(r.namedWorkflowId) : undefined
     const own = r.workflowId !== undefined ? await getWorkflow(r.workflowId) : undefined
     const steps = named?.workflow.steps ?? own?.steps
-    return [r.id, { ...(steps !== undefined ? { steps } : {}), ...(named !== undefined ? { workflow: named.name } : {}) }] as const
+    const asked = r.approvalRequest !== undefined ? await getWorkflow(r.approvalRequest.workflowId) : undefined
+    return [r.id, {
+      ...(steps !== undefined ? { steps } : {}),
+      ...(named !== undefined ? { workflow: named.name } : {}),
+      ...(asked !== undefined && r.approvalRequest !== undefined
+        ? { awaitingApproval: await approvalView(r.projectId, asked, r.approvalRequest.commits) }
+        : {}),
+    }] as const
   })))
   return rows.map((r) => {
     const modelName = modelDisplayName(r.tool, r.model)
@@ -918,6 +962,29 @@ async function toEntries(rows: QueuedWorkspaceRow[]): Promise<QueuedWorkspaceEnt
       ...(waitsForRoom(r) ? { waitingForRoom: true } : {}),
     }
   })
+}
+
+/** What a launch awaiting approval would run, as a person reviewing it is
+ *  shown it: its workflow's content and each repo's commit by folder. */
+async function approvalView(projectId: string, workflow: WorkflowRow, commits: Record<string, string>): Promise<LaunchApprovalRequest> {
+  return {
+    workflowId: workflow.id,
+    steps: workflow.steps,
+    secrets: workflow.secrets,
+    ...(workflow.personWritten ? {} : { writtenByAgent: true as const }),
+    commits: await commitsByDir(projectId, commits),
+  }
+}
+
+/** Commits by repo id as a person reviewing them is shown them: by folder,
+ *  '' for a lone repo at the root. */
+async function commitsByDir(projectId: string, commits: Record<string, string>): Promise<Array<{ dir: string; commit: string }>> {
+  const project = await getProjectRow(projectId)
+  const entries = Object.entries(commits)
+  return entries.map(([repoId, commit]) => ({
+    dir: entries.length === 1 ? '' : project?.repos.find((l) => l.repo.id === repoId)?.dir ?? repoId,
+    commit,
+  }))
 }
 
 /** Test helper: forget which launches this process is running. */

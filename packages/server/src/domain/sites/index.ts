@@ -3,7 +3,8 @@
 //
 // This feature owns public sites (docs/public-sites.md): a project's app
 // served on the internet at a hostname by one release workspace at a time,
-// its settings, its deploys, and replacing a release that died. Releases
+// its settings, publishing it, its deploys, and replacing a release that
+// died. Releases
 // are workspaces, started and stopped through `#domain/workspaces`; the
 // routes to them are the driver's, handed over with `syncSites`.
 //
@@ -16,6 +17,9 @@ export {
   getSiteEdge,
   listProjectSiteEntries,
   listSiteSummaries,
+  publishSite,
   showSite,
+  unpublishSite,
 } from './sites'
 export { backfillSiteBranches, deploySite, onSiteTimer, reconcileSites, startSite, stopSite } from './deploys'
+export { runSiteCommand } from './mama'

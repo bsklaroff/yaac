@@ -185,8 +185,8 @@ identifies callers there exactly as it does behind `serve`.
   registers on its own machine. The name is an extra way in.
 - **The name is one label under the site domain**, which is what the
   wildcard certificate covers, and no site may hold it: install refuses a
-  name a tailnet site serves, and site create refuses every name the server
-  answers at. The tunnel's Secret records the name, so later installs keep
+  name a tailnet site serves, and site publish refuses every name the
+  server answers at. The tunnel's Secret records the name, so later installs keep
   it; `--no-server-name` drops it.
 - **Anyone the tailnet lets reach the site tunnel can reach the server at
   this name.** The tunnel's ACL grant (its tag on 443) is part of the
@@ -282,7 +282,7 @@ against a local or remote server:
   Project → Environment) and stored with the project, secrets
   encrypted at rest. Under `k8s` a secret's value never enters a workspace;
   the egress proxy injects it in flight. A run secret, which only a
-  workflow naming it gets, on a commit a person ran it on, is the exception
+  workflow naming it gets, on a commit a person approved, is the exception
   (docs/project-config.md "Run secrets").
 
 Things to keep in mind:

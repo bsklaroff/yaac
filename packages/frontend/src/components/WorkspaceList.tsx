@@ -462,7 +462,7 @@ export function WorkspaceList({
     !narrowed || ownedSection(kind, id) !== undefined || (!filtering && text.toLowerCase().includes(q))
   const shownWorkflows = workflows.filter((w) => objectShown('workflow', w.id, w.name))
   const shownRoutines = routines.filter((r) => objectShown('routine', r.id, `${r.name}\n${r.prompt}`))
-  const shownSites = sites.filter((st) => objectShown('site', st.id, `${st.name}\n${st.hostname}`))
+  const shownSites = sites.filter((st) => objectShown('site', st.id, `${st.name}\n${st.hostname ?? ''}`))
 
   // An owned group's stopped runs are its owner's history, kept under its
   // row whether shown or not, so the Stopped section never lists them.

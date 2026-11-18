@@ -511,6 +511,45 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     expect(stopped.exitCode, stopped.output).toBe(0)
   }, 300_000)
 
+  // An agent writes the project's workflows and builds its sites; a person
+  // publishes one, and from then on the agent's deploy of it waits for the
+  // person, and it may not take it down (docs/workflows.md "Approvals").
+  it('writes a workflow, builds an unpublished site, and asks a person to deploy it once published', async () => {
+    const serve = { server: { run: 'node -e "require(\'http\').createServer((q, s) => s.end(\'ok\')).listen(3000)"', service: true } }
+    const encoded = Buffer.from(JSON.stringify(serve)).toString('base64')
+    await execInJob(jobA, ['sh', '-c', `echo ${encoded} | base64 -d > /tmp/serve.json`])
+    const created = await runMama('workflow create serve --file /tmp/serve.json')
+    expect(created.exitCode, created.output).toBe(0)
+    expect(created.output).toContain('workflow serve: steps server')
+    const edited = await runMama('workflow edit serve --init')
+    expect(edited.output).toContain('; init')
+    expect((await runMama('workflow edit serve --no-init')).exitCode).toBe(0)
+
+    const site = await runMama(`site create shop --port 3000 --admin-port 3001 --workflow serve --repo ${NAME}@main`)
+    expect(site.exitCode, site.output).toBe(0)
+    expect(site.output).toContain('created site shop, unpublished')
+    expect((await runMama('site list')).output).toMatch(/^shop\s+unpublished\s+port 3000/m)
+    expect((await runMama('site edit shop --no-admin-port')).exitCode).toBe(0)
+    expect((await runMama('site show shop')).output).toContain(`workflow serve; repos ${NAME}@main`)
+
+    const published = await runYaac(serverEnv, 'site', 'publish', NAME, 'shop', '--hostname', 'shop.example.test')
+    expect(published.exitCode, published.stderr).toBe(0)
+    const asked = await runMama('site deploy shop')
+    expect(asked.exitCode, asked.output).toBe(0)
+    expect(asked.output).toContain('needs a person\'s approval')
+    expect((await runYaac(serverEnv, 'site', 'show', NAME, 'shop')).stdout).toMatch(/requested\s+\S+, asked by the agent of workspace \S+, awaiting your approval/)
+    for (const verb of ['stop', 'delete']) {
+      const refused = await runMama(`site ${verb} shop`)
+      expect(refused.exitCode, verb).toBe(1)
+      expect(refused.output).toContain('only a person may')
+    }
+    expect((await runMama('site start shop')).output).toContain('only a person may')
+
+    expect((await runYaac(serverEnv, 'site', 'unpublish', NAME, 'shop')).exitCode).toBe(0)
+    expect((await runMama('site delete shop')).output).toContain('deleted site shop')
+    expect((await runMama('workflow delete serve')).output).toContain('deleted workflow serve')
+  }, 300_000)
+
   // The destructive cases run last.
 
   it('stops the sibling it spawned, and the stop is a stop and not a delete', async () => {

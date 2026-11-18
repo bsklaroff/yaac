@@ -26,6 +26,21 @@ export type Actor =
  */
 export const systemPrincipal: Actor = { kind: 'system' }
 
+/**
+ * Whether `actor` is a person: a request's principal, as opposed to the
+ * server or a workspace's agent. Only a person approves a privileged launch
+ * (docs/workflows.md "Approvals") or changes what a site exposes.
+ */
+export function isPerson(actor: Actor): boolean {
+  return actor.kind === 'local' || actor.kind === 'tailnet'
+}
+
+/** Refuse with FORBIDDEN unless a person asks, naming what only a person
+ *  may do. */
+export function requirePerson(actor: Actor, what: string): void {
+  if (!isPerson(actor)) throw new ServerError('FORBIDDEN', `only a person may ${what}, in the webapp or with \`yaac\``)
+}
+
 /** Projects no one may write while a verb runs that a write would race,
  *  with why, by project id (`withProjectsHeld`). */
 const holds = new Map<string, string>()

@@ -113,7 +113,7 @@ export {
   uploadWorkspaceFile,
   writeWorkspaceFile,
 } from './files'
-export { mamaCaller, runMamaCommand } from './mama'
+export { answerSiteCommands, mamaCaller, runMamaCommand, type MamaCaller, type MamaOutcome, type MamaRequestInput } from './mama'
 export { convergeAgentHistory, removeAgentHistory } from './history'
 export { reconcileGeneratedTitles } from './title-generation'
 export { serverUsageReport } from './usage-report'

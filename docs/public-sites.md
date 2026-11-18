@@ -1,9 +1,11 @@
 # Public sites
 
-A **site** is a project's app published at a hostname, served by a locked,
-supervised workspace called a **release**. A deploy starts a new release
-with each of the site's repos at a commit, waits for it to be ready, points
-the hostname at it and stops the old one. Sites exist only under the k8s
+A **site** is a project's app served by a locked, supervised workspace
+called a **release**. A deploy starts a new release with each of the
+site's repos at a commit, waits for it to be ready, moves the site to it
+and stops the old one. A site starts **unpublished**, reached only by its
+owner's forward, and a person publishes it at a hostname (see
+"Publishing"). Sites exist only under the k8s
 driver, on kind and on byo, with two edges: Cloudflare Tunnel publishes a
 site on the internet, and a tailnet site under the install's site domain is
 served only to its tailnet, each request carrying the caller's tailnet login
@@ -67,7 +69,7 @@ anywhere but the router.
    Secret and applies the tunnel and router. A later install without the
    token keeps the Secret.
 3. For each site's hostname, add a public hostname to the tunnel with the
-   router as its service. `yaac site create` prints what to enter.
+   router as its service. `yaac site publish` prints what to enter.
 
 **The tunnel's routes are the boundary.** yaac accepts any well-formed
 hostname for a site, and the name is public as soon as a tunnel route
@@ -75,7 +77,7 @@ covers it. With one public hostname per site, a name goes live only once
 the Cloudflare admin adds it, so the admin reviews each one. A wildcard
 public hostname (`*.example.com`) or a catch-all rule pointing at the
 router instead makes every name under it public the moment any admin of
-the install creates a site on it, including names such as
+the install publishes a site on it, including names such as
 `www.example.com` or `login.example.com` meant for something else. Only
 admins publish sites (docs/multi-user.md "Roles"), so a wildcard is as
 safe as the trust put in every admin; otherwise route one public hostname
@@ -125,8 +127,9 @@ Envoy appends to `X-Forwarded-For`, trusting the tunnel in front (cloudflared
 or tailgate) as one hop.
 
 The kubelet can take up to about a minute to deliver a ConfigMap change,
-so a new site routes within a minute. Only site create, edit and delete
-change the table; a deploy changes the Service's selector.
+so a newly published site routes within a minute. Only publishing,
+unpublishing and deleting a site change the table; a deploy changes the
+Service's selector.
 
 ## Tailnet sites
 
@@ -300,24 +303,25 @@ checking machine is on the tailnet, whether the zone resolves to it.
 
 ## Sites and releases
 
-A site belongs to a project. Its owner creates, edits, deploys and starts
-it only while an admin of the install (docs/multi-user.md "Roles"); its
-owner, admin or not, and any admin may stop and delete it, so a site can
-always be taken down; and every user may list and view it
-(docs/multi-user.md "Authorization"). Demoting an owner stops nothing:
-their live releases keep serving and are still supervised, but they
-cannot deploy again. A hostname is unique in the install,
-and may be any name: only names the tunnel routes ever reach the router,
-so which are public is decided in the Cloudflare account, by whoever
-administers it (see "The edge" for why that means one route per site).
-yaac holds no Cloudflare API token, so it cannot check that a site's
-hostname is routed. Within the install a hostname is first come, first
-served: once a site
-lets one go (deleted, or edited to another), any admin may create a site
-on it, and the tunnel already routes it, so admins who share an install
-share its hostnames too.
+A site belongs to a project. Its owner builds it (creates, edits, deploys
+and starts it, and its agents may too while it is unpublished); only a
+person who is an admin of the install publishes it, or edits, deploys and
+starts it once published (docs/multi-user.md "Roles"); its owner, admin or not,
+and any admin may stop, unpublish and delete it, so a site can always be
+taken down, though an agent may do none of that to a published one; and
+every user may list and view it (docs/multi-user.md "Authorization").
+Demoting an owner stops nothing: their live releases keep serving and are
+still supervised, but they cannot deploy a published site again. A
+hostname is unique in the install, and may be any name: only names the
+tunnel routes ever reach the router, so which are public is decided in the
+Cloudflare account, by whoever administers it (see "The edge" for why that
+means one route per site). yaac holds no Cloudflare API token, so it cannot
+check that a site's hostname is routed. Within the install a hostname is
+first come, first served: once a site lets one go (deleted, unpublished, or
+published at another), any admin may publish a site on it, and the tunnel
+already routes it, so admins who share an install share its hostnames too.
 
-A site names its hostname, the port its releases serve on, the named
+A site names the port its releases serve on, the named
 workflow each release runs (docs/workflows.md), its repos (`sites.repos`),
 optionally a volume, which no other site may name and which cannot be
 deleted while named, and whether it follows (see "Following").
@@ -333,8 +337,8 @@ a release runs no agent, and its workflow says where its steps start
 workflow names. Every branch named is checked as for following: on origin
 now, and not `origin/…`, `refs/…` or `agent/…`.
 
-Editing the hostname moves it at once; the port, workflow, volume and repos
-apply from the next deploy, and an edit is refused while a deploy runs. "Built
+The port, workflow, volume and repos apply from the next deploy, and an
+edit is refused while a deploy runs. "Built
 from a repo" means named in the site's repos or in the commits its last
 release ran: unlinking or deleting such a repo is refused, and so is
 renaming the folder of one a site of several repos keeps in its folder,
@@ -346,16 +350,17 @@ deploy with each repo at a commit. It differs from an ordinary workspace in
 these ways:
 
 - **Locked.** `assertInteractive` refuses it: no sessions, terminals, added
-  steps, file writes or allow-host, and no forward but to its admin port
-  (see "Admin port"). Workspace stop,
+  steps, file writes or allow-host, and no forward but to the port its site
+  serves on and its admin port (see "Admin port"). Workspace stop,
   restart and timeout refuse it with `CONFLICT` naming `yaac site`; only
   the server stops one, unless its site no longer names it (a stop that
-  failed, a site deleted under it), when its owner may. `yaac-mama` has no
-  site verbs, so an agent can neither deploy nor stop production, except
-  by pushing to a branch a following site names (see "Following"). It can
-  watch one: `yaac-mama list` shows each release with its site, whether
-  the hostname points at it, the site's address and its commits, and
-  `yaac-mama logs` reads its steps' logs.
+  failed, a site deleted under it), when its owner may. An agent manages
+  sites through `yaac-mama site` (see "Publishing"), and changes nothing a
+  published site serves without a person's approval, except by pushing to
+  a branch a following site names (see "Following"). It can watch one:
+  `yaac-mama list` shows each release with its site, whether the hostname
+  points at it, the site's address and its commits, and `yaac-mama logs`
+  reads its steps' logs.
 - **Mounts nothing shared.** It runs no agent and faces the internet, so it
   gets only its own checkout, the main clone's `.git` read-only, its own
   step logs, the tmux socket dir and the staged helper commands: no tool
@@ -374,8 +379,9 @@ these ways:
   credential either, so a project needs none to deploy. The project's
   environment and secrets apply as for any workspace, and the run secrets
   its workflow names arrive as their real values (docs/workflows.md), for
-  a key the app signs with: its owner's deploy approves the commits, and
-  setting it to follow its branches and commits.
+  a key the app signs with: a person's deploy approves the commits, and
+  setting it to follow its branches and commits (docs/workflows.md
+  "Approvals").
 - **One image.** A deploy records the image its release launched, and every
   replacement launches that image again, so a release never changes under
   a later image config edit. The registry GC keeps a site's images though
@@ -408,13 +414,64 @@ policy where this podman supports one and asks for the engine's restart
 service on Linux, so the cluster, then the server, then the replacements
 come back without a command. On macOS the podman machine is not covered.
 
+## Publishing
+
+What a site serves and where it serves it are split, as Vercel splits a
+deployment from the domain pointed at it. Building an unpublished site (its
+repos, workflow, ports, volume, following) is its owner's, and its agents'
+through `yaac-mama site`. Exposing a site, and changing anything about a
+published one, is a person's who is an admin of the install.
+
+- **Unpublished.** A site is created with no hostname. `syncSiteRoutes`
+  hands the driver published sites only, so an unpublished site is in
+  neither edge's route table and no tunnel reaches it, however the
+  Cloudflare account is set up. Its owner previews a release through a
+  forward of the port it serves on (see "Admin port"); the project's
+  workspaces, and so its agents, cannot reach it. Its deploys, releases and
+  supervision are otherwise those of a published site.
+- **Publish** (`yaac site publish --hostname`, an admin's) routes the
+  hostname to the release the site serves, and publishing again moves it.
+  `--release` names the release the person previewed, refused unless it is
+  the one serving, so what goes live is what they saw. Publishing approves
+  that release's commits for the spec it ran, so its replacement passes,
+  and a following site's branches for that same spec, where a person wrote
+  its workflow; an edit made since the preview is approved for nothing.
+- **Published.** An agent may not edit, stop, start or delete a published
+  site, nor change its volume, so the published-volume guard below cannot
+  be walked around; it may still ask to deploy it.
+- **Unpublish** takes the route away and lets the hostname go; the release
+  keeps running for its owner's forward.
+- **Privileged deploys.** A deploy of a published site, or of a workflow
+  that names run secrets, runs only on commits a person approved for its
+  spec: the site, its workflow, port and volume (docs/workflows.md
+  "Approvals"). A person's deploy approves its commits where a person wrote
+  the workflow. Anything else that needs approval (an agent's deploy, a
+  follow target no person approved, a person's deploy of a workflow an
+  agent wrote) becomes the site's **requested deploy** instead of starting:
+  its commits, its workflow (`requestedWorkflowId`) and who asked
+  (`requestedBy`: the asking workspace, `following` or `person`). The live
+  release keeps serving.
+- **Review.** The webapp's Review, and `yaac site show`, show the request:
+  who asked, its commits, its workflow's graph and the run secrets it names,
+  whether an agent wrote it, and which of the live release's workflow, port
+  and volume it changes. Approving it (Approve and deploy, or `yaac site
+  deploy --approve <workflow-id>`, which prints the request again and asks)
+  sends back that workflow and those commits, refused unless they are still
+  the request's and the workflow the site's, so a newer request made
+  meanwhile cannot ride on it, and deploys exactly those commits. It approves those commits and that content, and no branch: a
+  following site's next tip waits again until a person's own deploy, of
+  content they have now seen, approves the branch.
+- **Volumes.** A published site's volume holds its live data, so an agent's
+  launch may not attach it (`create --volume`, `restart`); an unpublished
+  site's volume is staging data.
+
 ## Admin port
 
 A site may name an **admin port**, for an admin view of the live app that
-needs no login of its own. It is the one port a release offers
-(`offeredForwards`), declared at launch and again when a server restart
-declares forwards anew; the project's forwarded ports and a persisted
-"forward this port" fan-out skip releases. So the site's owner reaches it
+needs no login of its own. A release offers it and the port its site
+serves on, and nothing else (`offeredForwards`), declared at launch and
+again when a server restart declares forwards anew; the project's
+forwarded ports and a persisted "forward this port" fan-out skip releases. So the site's owner reaches it
 the way they reach any workspace's port, as the release's Preview in the
 webapp or with `yaac forward`, and the yaac server's own owner check
 (`/forward/attach`) is its whole access control. `assertInteractive` lets
@@ -434,7 +491,7 @@ the old one, so new connections to it are refused, and offer the new one.
 A restart then declares what the site names, which is what the edit
 already offered. Only a release started since listens on a new port. Each
 deploy is a new workspace, so the Preview to open is the live release's,
-which the site's row in project settings links to.
+which the site's pane links to.
 
 ## Deploys
 
@@ -448,8 +505,9 @@ go of it, so no release outlives the row that names it. A release is
 forgotten only once its stop succeeds, so a failed stop is retried.
 
 1. **Launch.** Resolve a commit per repo (the ref the deploy names for it,
-   else its setting: its branch's tip on origin, or its commit) and start a
-   release there, titled with them (`shop @ 1a2b3c4d` for one repo at the
+   else its setting: its branch's tip on origin, or its commit), check a
+   privileged deploy's approval (see "Publishing"), and start a release
+   there, titled with them (`shop @ 1a2b3c4d` for one repo at the
    root, `shop @ web@1a2b3c4d api@5e6f7a8b` otherwise).
 2. **Build.** The release runs the steps that do not need the volume.
 3. **Hand over** (sites with a volume; see below).
@@ -482,9 +540,11 @@ patches, and the record survives an edit that takes a repo off the site.
 A site may follow (`--follow`): while it serves, the `sites` reconcile step
 computes its **target**, each repo's branch tip in its main clone or the
 commit it names, and deploys it whenever it differs from what the site
-serves and from what last failed, as its project's owner, and only while
-that owner is an admin. While they are not, following is paused, and `site
-show` and the webapp say so. A repo at a commit never moves, so following
+serves and from what last failed, as its project's owner. Following a
+published site runs only while that owner is an admin; while they are not,
+it is paused, and `site show` and the webapp say so. A target no person
+approved for the site's spec becomes its requested deploy instead (see
+"Publishing"). A repo at a commit never moves, so following
 some repos and not others is naming a commit for the others; the flag is
 the site's rather than each repo's, so what a site serves reads off its
 settings.
@@ -518,14 +578,16 @@ release replaced at its own commits, against what the migration left (see
 **Whoever may push a branch the site names publishes the site.** That
 includes the project's agents, which push with its credential, and on a
 hosted project every workspace of it and of every share of it, since a push
-fans out to each. yaac does not stop them: the branch's protection is the
-remote's to set. A hosted remote has none beyond the default-branch guard,
+fans out to each, as long as the site's spec is one a person approved. yaac
+does not stop them: the branch's protection is the remote's to set. A hosted remote has none beyond the default-branch guard,
 and agents land work by pushing to the default branch
 (docs/hosted-projects.md), so follow a branch there only if an agent
-publishing is acceptable. A person setting a site to follow, or changing the
-repos or workflow of a following site, approves each branch and each commit
-it names for the run secrets of its workflow, refused before anything is
-written; a follow deploy runs as the server and passes on those. So whoever
+publishing is acceptable. A person setting a site to follow, changing a
+following site, deploying it or publishing it approves each branch and each
+commit it names for its spec (docs/workflows.md "Approvals"); a follow
+deploy runs as the server and passes on those. An agent's edit to the
+site's workflow, port or volume is a new spec, so following waits for a
+person again. So whoever
 may push a branch gets those values too, and can print them into the
 release's step logs, which the project's agents read (docs/workflows.md
 "Run secrets"); on a hosted repo shared with another user, that includes
@@ -601,35 +663,46 @@ never overlap, so migrations never race. A rollback does not undo a schema.
 ## Surfaces
 
 - **API**: `/api/site/edge`, `/list`, `/show` (readers), `/create`,
-  `/edit`, `/deploy`, `/start` (the project's owner, while an admin) and
-  `/stop`, `/delete` (the project's owner, or any admin). `/create` and
+  `/edit`, `/deploy`, `/start` (the project's owner; deploying and starting
+  a published site, a person's while an admin), `/publish` (the project's
+  owner, in person, while an admin), and `/stop`, `/unpublish`, `/delete`
+  (the project's owner, or any admin; for a published site, a person).
+  `/deploy` answers `awaitingApproval` with no release for a deploy it kept
+  as the site's requested deploy, and takes `approve: { workflowId }` to
+  deploy that request as reviewed. `/create` and
   `/edit` take `repos` (each a folder or id at a branch or commit; on edit
   the whole list) and `follow`; `/deploy` takes `refs` (folder or id to
   branch or commit) beside `ref`, the form for a site of one repo. Commits
   are answered per repo, `{ dir, commit }`.
   `/edge` answers both tunnels' state and the site domain, and every site
   entry its edge.
-- **CLI**: `yaac site create|edit|list|show|deploy|stop|start|delete`, the
-  project first, and `yaac cluster install` for the tunnels and
-  `--site-domain` (docs/cli.md). What `site create` prints follows the
+- **CLI**: `yaac site create|publish|unpublish|edit|list|show|deploy|stop|start|delete`,
+  the project first, and `yaac cluster install` for the tunnels and
+  `--site-domain` (docs/cli.md). What `site publish` prints follows the
   edge: the Cloudflare route to add, or the `https://` address and what the
-  tailnet tunnel still lacks. `list` and `show` print the edge.
+  tailnet tunnel still lacks. `list` and `show` print the edge, and `show`
+  a requested deploy.
+- **yaac-mama**: `site list|show|create|edit|deploy|start|stop|delete`,
+  as the verbs above allow an agent: everything for an unpublished site,
+  and only asking to deploy a published one.
 - **Webapp**: a Sites section in the sidebar, each site's row showing its
-  hostname and state with its releases under it (they go in a group the
-  site owns, docs/workspace-groups.md "Owned groups"); the snapshot carries
-  each site's state (`sites`), so the row follows a deploy live. A site's
+  hostname (or that it is unpublished) and state with its releases under it
+  (they go in a group the site owns, docs/workspace-groups.md "Owned
+  groups"); the snapshot carries each site's state (`sites`), so the row
+  follows a deploy live, and marks a deploy awaiting approval. A site's
   pane shows its address, its tunnel's state, its releases and settings,
-  with Deploy (a dialog with a ref per repo), Stop or Start, Edit and
-  Delete. The new-workspace pane's Site tab is the form: a row per repo
-  (include, branch or commit, starting empty) and a Follow switch. The edge
-  is in view while naming a site (a line under the hostname that follows
-  what is typed), in its pane and when deploying it, which is what stands
-  in for an explicit choice: a hostname mistyped out of the site domain
-  reads as public before anything is deployed. A release's workspace view
-  is read-only, with "release of `<site>`" on its header, linking to the
-  site.
-- **Modules**: `#domain/sites` (settings, the hostname rule, deploys,
-  supervision), `cluster/site-edge.ts` (every edge object), the `sites`
+  with Deploy (a dialog with a ref per repo), Publish (a dialog naming the
+  hostname and the release it goes live with) or Unpublish, a requested
+  deploy's Review, Stop or Start, Edit and Delete. The new-workspace pane's
+  Site tab is the form: a row per repo (include, branch or commit, starting
+  empty) and a Follow switch. The edge is in view while naming a hostname
+  (a line under the Publish dialog's field that follows what is typed), in
+  the site's pane and when deploying it, which is what stands in for an
+  explicit choice: a hostname mistyped out of the site domain reads as
+  public before it is published. A release's workspace view is read-only,
+  with "release of `<site>`" on its header, linking to the site.
+- **Modules**: `#domain/sites` (settings, publishing, the hostname rule,
+  deploys, supervision, the `yaac-mama site` commands), `cluster/site-edge.ts` (every edge object), the `sites`
   reconcile step, `k8s/tailgate`, and in `k8s/proxy` the site route.
 
 ## Not yet

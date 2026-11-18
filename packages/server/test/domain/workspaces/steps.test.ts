@@ -113,7 +113,7 @@ async function release(): Promise<{ siteId: string; volumeId: string }> {
   const volume = await insertVolume(DEMO_PROJECT_ID, 'data', '10Gi')
   const site = await insertSite({
     projectId: DEMO_PROJECT_ID, repos: [{ repo: DEMO_PROJECT_ID, branch: 'main' }], follow: false, name: 'shop',
-    hostname: 'shop.example.com', port: 3000, namedWorkflowId: await namedWorkflowFor(DEMO_PROJECT_ID), volumeId: volume.id,
+    port: 3000, namedWorkflowId: await namedWorkflowFor(DEMO_PROJECT_ID), volumeId: volume.id,
   })
   await startLife({
     build: { run: 'pnpm build' },
@@ -475,8 +475,11 @@ describe('assertInteractive', () => {
     await expect(assertInteractive(WS, { forward: true })).resolves.toBeUndefined()
   })
 
-  it('refuses a running non-interactive workspace, forwards included', async () => {
+  it('refuses a non-interactive workspace until it has stopped, settled or not, forwards included', async () => {
     await startLife({ test: { run: 'pnpm test' } }, { nonInteractive: true })
     await expect(assertInteractive(WS, { forward: true })).rejects.toMatchObject({ code: 'CONFLICT' })
+    // Settled but not yet stopped, it may still hold run secrets.
+    await applyWorkspaceEvent({ type: 'steps-settled', projectId: DEMO_PROJECT_ID, workspaceId: WS, outcome: 'succeeded' })
+    await expect(assertInteractive(WS)).rejects.toMatchObject({ code: 'CONFLICT' })
   })
 })

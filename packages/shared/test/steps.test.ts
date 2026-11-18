@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  FULL_COMMIT_PATTERN, findCycle, formatCommits, fullNeed, graphHasTask, isAgentWindow, isStepName, lifeDirName, parseStepGraph,
+  FULL_COMMIT_PATTERN, findCycle, formatCommits, fullNeed, graphHasTask, isAgentWindow, isStepName, lifeDirName, parseStepGraph, sameCommitList,
   stepFullName, stepSatisfiesNeeds, stepSettled,
 } from '@yaac/shared/steps'
 
@@ -114,6 +114,16 @@ describe('isAgentWindow', () => {
     expect(isAgentWindow('claude-c09f7077')).toBe(true)
     expect(isAgentWindow('claude-review.lint')).toBe(false)
     expect(isAgentWindow('shell')).toBe(false)
+  })
+})
+
+describe('sameCommitList', () => {
+  it('compares commits by folder, in any order', () => {
+    const a = [{ dir: 'web', commit: 'a' }, { dir: 'api', commit: 'b' }]
+    expect(sameCommitList(a, [...a].reverse())).toBe(true)
+    expect(sameCommitList(a, [{ dir: 'web', commit: 'b' }, { dir: 'api', commit: 'a' }])).toBe(false)
+    expect(sameCommitList(a, a.slice(1))).toBe(false)
+    expect(sameCommitList([], [])).toBe(true)
   })
 })
 

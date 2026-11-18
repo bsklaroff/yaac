@@ -76,8 +76,9 @@ such as cloning a project's remote, into the cluster's internal addresses
 ## Roles
 
 Every user is an **admin** or a **member** (`users.role`). Admins alone
-publish public sites (docs/public-sites.md "Sites and releases") and set
-roles; members have every other access a user has. "Owner" is a project's
+publish sites, and deploy or start published ones (docs/public-sites.md
+"Publishing"), and set roles; members have every other access a user has,
+building and deploying unpublished sites included. "Owner" is a project's
 owner and nothing else.
 
 - **Admins are peers.** Any admin may promote or demote anyone, themself
@@ -185,9 +186,21 @@ There are three access levels:
   user's it is shared with; a clone or fetch of it is a read
   (docs/hosted-projects.md).
 - **`admin`**: an admin of the install (see "Roles"), who must also own
-  what the route names, if anything: setting roles, and publishing a site
-  (create, edit, deploy, start). Stopping and deleting a site stay at
-  `owner`, open to any admin too.
+  what the route names, if anything: setting roles, and publishing a site.
+  Building a site (create, edit, deploy, start) is `owner`, though deploying
+  or starting a published one takes an admin too; stopping, unpublishing
+  and deleting one stay at `owner`, open to any admin too.
+
+A few verbs are a person's alone, never a workspace's agent's even as its
+project's owner (`requirePerson` in `#domain/access`): approving a
+privileged launch (docs/workflows.md "Approvals"), which a person's action
+does and an agent's never does, and publishing, unpublishing, changing,
+stopping, starting or deleting a published site. They change what reaches
+a run secret or the internet, which is what an agent writing a workflow or
+a site must leave to a person. That holds under `k8s`, where an agent
+reaches the server only through `yaac-mama`; under `containerless` an
+agent's shell reaches the API over loopback as the user, so these verbs
+organize there rather than protect (see "Trust model").
 
 `authorizeProject(actor, projectId)` is the check verbs make: every
 workspace-scoped verb resolves its workspace's project and asks it. A

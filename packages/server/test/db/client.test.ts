@@ -249,7 +249,7 @@ describe('openDb', () => {
       ])
       expect(await rows('SELECT repos FROM sites')).toEqual([{ repos: [{ repo: HOSTED }] }])
       // A share's approved branch is its source repo's; a commit is as it was.
-      expect(await rows('SELECT ref FROM workflow_approvals ORDER BY ref')).toEqual([
+      expect(await rows('SELECT ref FROM launch_approvals WHERE site_id IS NULL ORDER BY ref')).toEqual([
         { ref: `${HOSTED}:refs/heads/main` }, { ref: 'abc123' },
       ])
       expect(await rows('SELECT workspace_id FROM workspace_conversations')).toEqual([{ workspace_id: 'w-plain' }])
@@ -524,6 +524,58 @@ describe('openDb', () => {
         'SELECT workspace_id, name FROM workspace_steps ORDER BY workspace_id, ordinal')
       expect(steps.rows.map((r) => `${r.workspace_id}/${r.name}`))
         .toEqual(['w-dead/install', 'w-dead/test', 'w-run/lint', 'w-run/install', 'w-run/build'])
+    } finally {
+      await db.$client.close()
+    }
+  })
+
+  // Approvals move from a named workflow to its current workflow's content,
+  // and every site, routed as soon as it was made, stays published. What a
+  // non-interactive run with secrets ran on, a site's last release, and
+  // what a following site follows are approved for their specs, so nothing
+  // that ran before waits for a person after the upgrade; nothing else is,
+  // a named workflow's approvals never reaching a site that did not serve
+  // them. Every named workflow so far was a person's.
+  it('keys approvals by spec, approving only what already ran or was followed, and publishes every site', async () => {
+    const [P, REPO, F, G, N, M, S, T, V] = [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `0f0f0f0f-0000-4000-8000-00000000000${n}`)
+    const [A, B, C] = ['a'.repeat(40), 'b'.repeat(40), 'c'.repeat(40)]
+    const db = await seedBefore('gate_privileged_launches', `
+      INSERT INTO projects (id, owner, name, added_at) VALUES ('${P}', (SELECT id FROM users LIMIT 1), 'p', '2026-01-01');
+      INSERT INTO workflows (id, project_id, steps, hash, secrets) VALUES
+        ('${F}', '${P}', '{}', 'hf', '{KEY}'), ('${G}', '${P}', '{}', 'hg', '{}');
+      INSERT INTO named_workflows (id, project_id, name, workflow_id) VALUES ('${N}', '${P}', 'ci', '${F}'), ('${M}', '${P}', 'serve', '${G}');
+      INSERT INTO workflow_approvals (named_workflow_id, ref) VALUES ('${N}', '${A}'), ('${N}', '${REPO}:refs/heads/main');
+      INSERT INTO workspaces (project_id, workspace_id, workflow_id, non_interactive) VALUES
+        ('${P}', 'w-ci', '${F}', true), ('${P}', 'w-plain', '${G}', true), ('${P}', 'w-bare', '${F}', true);
+      INSERT INTO workflows (id, project_id, steps, hash, secrets) VALUES ('${V}', '${P}', '{}', 'hv', '{KEY}');
+      INSERT INTO workspaces (project_id, workspace_id, workflow_id, site_id, volume_id) VALUES ('${P}', 'w-rel', '${G}', '${S}', '${V}');
+      INSERT INTO workspace_repos (workspace_id, repo_id, path, start_commit) VALUES
+        ('w-ci', '${REPO}', '', '${B}'), ('w-plain', '${REPO}', '', '${C}'), ('w-rel', '${REPO}', '', '${C}');
+      INSERT INTO sites (id, project_id, name, hostname, port, named_workflow_id, repos, follow, live_port, release_workspace_id, release_commits) VALUES
+        ('${S}', '${P}', 'shop', 'shop.example.com', 80, '${M}', '[{"repo":"${REPO}","branch":"main"}]', true, 81, 'w-rel', '{"${REPO}":"${C}"}'),
+        ('${T}', '${P}', 'docs', 'docs.example.com', 80, '${N}', '[{"repo":"${REPO}","commit":"${A}"}]', false, NULL, NULL, NULL);
+    `)
+    try {
+      const rows = async (sql: string): Promise<unknown[]> => (await db.$client.query(sql)).rows
+      expect(await rows('SELECT name, published, hostname FROM sites ORDER BY name')).toEqual([
+        { name: 'docs', published: true, hostname: 'docs.example.com' },
+        { name: 'shop', published: true, hostname: 'shop.example.com' },
+      ])
+      expect(await rows('SELECT spec, ref, workflow_id, site_id FROM launch_approvals ORDER BY spec, ref')).toEqual([
+        // The run with no repos approved its workflow alone.
+        { spec: F, ref: '-', workflow_id: F, site_id: null },
+        { spec: F, ref: `${REPO}:refs/heads/main`, workflow_id: F, site_id: null },
+        { spec: F, ref: A, workflow_id: F, site_id: null },
+        { spec: F, ref: B, workflow_id: F, site_id: null },
+        // The live release ran on port 81 with its volume.
+        { spec: `${S}:${G}:81:${V}`, ref: C, workflow_id: G, site_id: S },
+        // Following its branch, on its current settings.
+        { spec: `${S}:${G}:80:`, ref: `${REPO}:refs/heads/main`, workflow_id: G, site_id: S },
+      ].sort((a, b) => a.spec.localeCompare(b.spec) || a.ref.localeCompare(b.ref)))
+      // Only named workflows' content is a person's.
+      expect(await rows('SELECT id, person_written FROM workflows ORDER BY id')).toEqual([
+        { id: F, person_written: true }, { id: G, person_written: true }, { id: V, person_written: false },
+      ])
     } finally {
       await db.$client.close()
     }

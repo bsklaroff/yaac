@@ -45,19 +45,26 @@ export function useSiteRow(site: SiteSummary): ObjectRowProps {
     name: site.name,
     detail: (
       <>
-        <span className="truncate font-mono">{site.hostname}</span>
-        <span className="ml-auto shrink-0">{siteState(site)}</span>
+        {site.hostname !== undefined
+          ? <span className="truncate font-mono">{site.hostname}</span>
+          : <span className="truncate">unpublished</span>}
+        <span className={`ml-auto shrink-0 ${site.awaitingApproval === true ? 'text-warning' : ''}`}>{siteState(site)}</span>
       </>
     ),
     object: { kind: 'site', id: site.name },
     projectId: site.projectId,
     items: [
-      ...(actions.canPublish && site.deploy === undefined ? [{ label: 'Deploy…', onSelect: () => actions.ask('deploy') }] : []),
+      ...(actions.canDeploy && site.deploy === undefined && site.awaitingApproval === true
+        ? [{ label: 'Review…', onSelect: () => actions.ask('approve') }] : []),
+      ...(actions.canDeploy && site.deploy === undefined ? [{ label: 'Deploy…', onSelect: () => actions.ask('deploy') }] : []),
       ...(actions.canEnd && site.live !== undefined ? [{ label: 'Stop…', onSelect: () => actions.ask('stop') }] : []),
-      ...(actions.canPublish && site.live === undefined && site.deploy === undefined && site.lastDeploy !== undefined
+      ...(actions.canDeploy && site.live === undefined && site.deploy === undefined && site.lastDeploy !== undefined
         ? [{ label: 'Start', onSelect: actions.start }] : []),
-      { label: 'Open site', onSelect: () => window.open(`https://${site.hostname}`, '_blank', 'noopener'), view: true as const },
-      ...(actions.canPublish ? [{ label: 'Edit…', onSelect: actions.edit }] : []),
+      ...(site.hostname !== undefined
+        ? [{ label: 'Open site', onSelect: () => window.open(`https://${site.hostname}`, '_blank', 'noopener'), view: true as const }] : []),
+      ...(actions.canDeploy ? [{ label: 'Edit…', onSelect: actions.edit }] : []),
+      ...(actions.canPublish ? [{ label: site.published ? 'Move…' : 'Publish…', onSelect: () => actions.ask('publish') }] : []),
+      ...(actions.canEnd && site.published ? [{ label: 'Unpublish…', onSelect: () => actions.ask('unpublish') }] : []),
       ...(actions.canEnd ? ['separator' as const, { label: 'Delete…', onSelect: () => actions.ask('delete') }] : []),
     ],
     ...(failure !== undefined ? { failure } : {}),

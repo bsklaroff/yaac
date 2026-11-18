@@ -41,6 +41,14 @@
 #   yaac-mama volumes
 #   yaac-mama workflow list
 #   yaac-mama workflow show <name>
+#   yaac-mama workflow create <name> --file F [--secret S]... [--repo DIR]... [--init]
+#   yaac-mama workflow edit <name> [--file F] [--secret S]... [--no-secrets] [--repo DIR]... [--no-repos] [--init | --no-init]
+#   yaac-mama workflow delete <name>
+#   yaac-mama site list
+#   yaac-mama site show|start|stop|delete <name>
+#   yaac-mama site create <name> --port N --workflow W --repo DIR@REF... [--admin-port N] [--volume V] [--follow]
+#   yaac-mama site edit <name> [--port N] [--workflow W] [--repo DIR@REF]... [--admin-port N | --no-admin-port] [--volume V | --no-volume] [--follow | --no-follow]   (unpublished)
+#   yaac-mama site deploy <name> [--ref [DIR@]REF]...
 #   yaac-mama fetch <workspace>
 #   yaac-mama history <workspace> [<conversation>] [-o <dir>]
 #
@@ -56,7 +64,11 @@
 # base branch, a group's workspace limit, which an orchestrator sets for the
 # workers it queues there, and the project's icon, which every viewer of the
 # project sees and whose old picture is not kept, but which, like a title,
-# changes nothing that runs; the rest stays with the user.
+# changes nothing that runs. It also writes the project's workflows and its
+# unpublished sites: what it writes runs with run secrets, or in front of a
+# published site's visitors, only once a person approves it, so those
+# launches wait for one (docs/workflows.md "Approvals"). The rest stays with
+# the user.
 # `as-repo` runs one command with `GH_TOKEN` set to another of this
 # workspace's repos' token, where the project lets that repo's be one.
 # `fetch` reads another workspace's branches into this
@@ -195,6 +207,23 @@ Usage:
 @u workflow
   yaac-mama workflow list                          # the project's workflows
   yaac-mama workflow show <name>                   # one's steps and run secrets
+  yaac-mama workflow create <name> --file <steps.json> [--secret <name>]...
+                    [--repo <dir>]... [--init]     # make a named workflow
+  yaac-mama workflow edit <name> [--file <steps.json>] [--secret <name>]...
+                    [--no-secrets] [--repo <dir>]... [--no-repos]
+                    [--init | --no-init]           # change one
+  yaac-mama workflow delete <name>                 # delete one nothing runs
+@u site
+  yaac-mama site list                              # the project's sites
+  yaac-mama site show <name>                       # one, and its releases
+  yaac-mama site create <name> --port <n> --workflow <name>
+                    --repo <dir>@<branch or commit>... [--admin-port <n>]
+                    [--volume <name>] [--follow]   # make one, unpublished
+  yaac-mama site edit <name> [same options] [--no-admin-port] [--no-volume]
+                    [--no-follow]                  # change an unpublished one
+  yaac-mama site deploy <name> [--ref [<dir>@]<ref>]...
+                                                   # start a release of it
+  yaac-mama site start|stop|delete <name>          # an unpublished one
 @u fetch
   yaac-mama fetch <workspace>                      # read its branches into git
 @u history
@@ -205,6 +234,24 @@ Usage:
 @
   yaac-mama --help
   yaac-mama <command> --help                       # just that command's part
+
+@d workflow
+A workflow names run secrets by name only: a launch that would get them
+(non-interactive, or a site's release) runs only on commits a person approved
+for exactly this content, so an edit's runs wait for a person's review
+(docs/workflows.md "Approvals"). --file is a JSON object of steps, as
+create --steps takes. --repo names the repos its steps are written for.
+Delete is refused while a routine, site or queued workspace runs it.
+
+@d site
+A site you create is unpublished: only your user reaches its releases, with
+`yaac forward` or the webapp's Preview, never the internet. Publishing it at
+a hostname is a person's (admins only). You may build, deploy, start, stop
+and delete an unpublished site; a published one you may only ask to deploy,
+which waits as the site's requested deploy for a person to review. A deploy
+of a workflow that names run secrets waits too unless a person approved its
+commits. Its releases are locked workspaces: read them
+with `yaac-mama logs <release>`.
 
 @d create queue edit-queued routine
 Options for create, queue and edit-queued (routine create and edit take all
@@ -265,9 +312,11 @@ but --title, --steps and --no-steps):
                    `yaac-mama workflow list`; docs/workflows.md); a queued one
                    takes it as it is at launch. A routine runs only a named
                    workflow, never --steps. One that names run secrets gets
-                   them only on a commit or branch a person already ran it
-                   on; anything else is refused. With create --workspace W,
-                   it adds that workflow's steps to W instead.
+                   them only on commits a person approved for exactly its
+                   content: create refuses anything else, and a queued run
+                   or routine run waits as awaiting approval for a person's
+                   review. With create --workspace W, it adds that workflow's
+                   steps to W instead.
   --non-interactive
                    run --steps untouched, with no session or prompt, then
                    stop: a CI run. Nothing can change it while it runs; it can
@@ -866,7 +915,76 @@ case "$1" in
       list) [ $# -eq 2 ] || { echo 'usage: yaac-mama workflow list' >&2; exit 2; }; run workflow-list '' ;;
       show) [ $# -eq 3 ] && [ -n "$3" ] || { echo 'usage: yaac-mama workflow show <name>' >&2; exit 2; }
         run workflow-show '' name "$3" ;;
-      *) echo 'usage: yaac-mama workflow list|show …' >&2; exit 2 ;;
+      delete) [ $# -eq 3 ] && [ -n "$3" ] || { echo 'usage: yaac-mama workflow delete <name>' >&2; exit 2; }
+        run workflow-delete '' name "$3" ;;
+      create|edit)
+        sub=$2; shift 2
+        name=""; steps=""; secrets=""; no_secrets=""; repos=""; no_repos=""; init=""; no_init=""
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            --no-secrets) no_secrets=1; shift; continue ;;
+            --no-repos) no_repos=1; shift; continue ;;
+            --init) init=1; shift; continue ;;
+            --no-init) no_init=1; shift; continue ;;
+            --file|--secret|--repo) [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a value" >&2; exit 2; } ;;
+            -*) echo "yaac-mama: workflow $sub does not take $1" >&2; exit 2 ;;
+            *) [ -z "$name" ] || { echo "yaac-mama: workflow $sub takes one name" >&2; exit 2; }; name=$1; shift; continue ;;
+          esac
+          case "$1" in
+            --file)
+              [ -r "$2" ] || { echo "yaac-mama: cannot read the steps from $2" >&2; exit 2; }
+              steps=$(cat -- "$2") ;;
+            --secret) item=$(printf '%s' "$2" | json_string)
+              if [ -z "$secrets" ]; then secrets="[$item]"; else secrets="${secrets%]},$item]"; fi ;;
+            --repo) item=$(printf '%s' "$2" | json_string)
+              if [ -z "$repos" ]; then repos="[$item]"; else repos="${repos%]},$item]"; fi ;;
+          esac
+          shift 2
+        done
+        [ -n "$name" ] || { echo "usage: yaac-mama workflow $sub <name> …" >&2; exit 2; }
+        run "workflow-$sub" '' name "$name" steps "$steps" secrets "$secrets" no-secrets "$no_secrets" \
+          repos "$repos" no-repos "$no_repos" init "$init" no-init "$no_init" ;;
+      *) echo 'usage: yaac-mama workflow list|show|create|edit|delete …' >&2; exit 2 ;;
+    esac
+    ;;
+
+  site)
+    case "${2:-}" in
+      list) [ $# -eq 2 ] || { echo 'usage: yaac-mama site list' >&2; exit 2; }; run site-list '' ;;
+      show|start|stop|delete)
+        [ $# -eq 3 ] && [ -n "$3" ] || { echo "usage: yaac-mama site $2 <name>" >&2; exit 2; }
+        run "site-$2" '' name "$3" ;;
+      create|edit|deploy)
+        sub=$2; shift 2
+        name=""; port=""; workflow=""; repos=""; admin_port=""; no_admin_port=""; volume=""; no_volume=""
+        follow=""; no_follow=""; refs=""
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            --no-admin-port) no_admin_port=1; shift; continue ;;
+            --no-volume) no_volume=1; shift; continue ;;
+            --follow) follow=1; shift; continue ;;
+            --no-follow) no_follow=1; shift; continue ;;
+            --port|--workflow|--repo|--admin-port|--volume|--ref)
+              [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a value" >&2; exit 2; } ;;
+            -*) echo "yaac-mama: site $sub does not take $1" >&2; exit 2 ;;
+            *) [ -z "$name" ] || { echo "yaac-mama: site $sub takes one name" >&2; exit 2; }; name=$1; shift; continue ;;
+          esac
+          case "$1" in
+            --port) port=$2 ;;
+            --workflow) workflow=$2 ;;
+            --admin-port) admin_port=$2 ;;
+            --volume) volume=$2 ;;
+            --repo) item=$(repo_start "$2")
+              if [ -z "$repos" ]; then repos="[$item]"; else repos="${repos%]},$item]"; fi ;;
+            --ref) item=$(printf '%s' "$2" | json_string)
+              if [ -z "$refs" ]; then refs="[$item]"; else refs="${refs%]},$item]"; fi ;;
+          esac
+          shift 2
+        done
+        [ -n "$name" ] || { echo "usage: yaac-mama site $sub <name> …" >&2; exit 2; }
+        run "site-$sub" '' name "$name" port "$port" workflow "$workflow" repos "$repos" admin-port "$admin_port" \
+          no-admin-port "$no_admin_port" volume "$volume" no-volume "$no_volume" follow "$follow" no-follow "$no_follow" refs "$refs" ;;
+      *) echo 'usage: yaac-mama site list|show|create|edit|deploy|start|stop|delete …' >&2; exit 2 ;;
     esac
     ;;
 
@@ -1356,7 +1474,7 @@ EOF
     ;;
 
   *)
-    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, run-queued, delete-queued, routine, send, rename, set-base, as-repo, icon, stop, restart, rerun, status, logs, group, models, volumes, workflow, fetch, history)" >&2
+    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, run-queued, delete-queued, routine, send, rename, set-base, as-repo, icon, stop, restart, rerun, status, logs, group, models, volumes, workflow, site, fetch, history)" >&2
     echo 'run "yaac-mama --help" for usage' >&2
     exit 2
     ;;

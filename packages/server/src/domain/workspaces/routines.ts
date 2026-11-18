@@ -344,7 +344,7 @@ function parseCursor(cursor: string | undefined): { startAt: Date; id: string } 
  *  more than "timed out". */
 function toRun(r: RoutineRunRow): RoutineRunEntry {
   const state: RoutineRunEntry['state'] = r.workspaceId === undefined
-    ? r.launchError !== undefined ? 'failed' : 'waiting'
+    ? r.approvalRequest !== undefined ? 'awaiting-approval' : r.launchError !== undefined ? 'failed' : 'waiting'
     : r.stoppedAt === undefined ? 'running'
     // A timeout is a natural stop, with no death reason; one that died after
     // its deadline died.

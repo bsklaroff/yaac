@@ -4,6 +4,11 @@
  * owns a site's settings and what the API answers about it, and hands the
  * driver the routes to converge. Deploys, and replacing a release that
  * died, are deploys.ts.
+ *
+ * Building a site (its repos, workflow, ports, volume, following) is its
+ * project owner's, and so its agents'. Exposing one (publishing it at a
+ * hostname, unpublishing, stopping or deleting it once published) is a
+ * person's, and publishing an admin's (docs/public-sites.md "Publishing").
  */
 import { workspaceDriver } from '#drivers/driver'
 import type { SiteRoute } from '#drivers/contract'
@@ -16,6 +21,7 @@ import {
   getSiteRow,
   getVolumeRow,
   getNamedWorkflow,
+  getWorkflow,
   insertSite,
   listNamedWorkflows,
   listProjectSites,
@@ -25,10 +31,11 @@ import {
   updateSite,
   type SitePatch,
   type SiteRow,
+  type WorkspaceRow,
 } from '#db'
-import { authorizeProject, isProjectHeld, requireAdmin, type Actor } from '#domain/access'
+import { authorizeProject, isProjectHeld, requireAdmin, requirePerson, type Actor } from '#domain/access'
 import { remoteBranchExists } from '#domain/git'
-import { approveWorkflowStart, checkWorkflowStart, missingRepos, projectRepo, resolveWorkflow } from '#domain/projects'
+import { approveStart, missingRepos, projectRepo, resolveWorkflow } from '#domain/projects'
 import { fetchRepoOrigin } from '#domain/repos'
 import { VOLUME_NEED } from '#domain/workspaces'
 import { isInfraPort } from '#lib/port-policy'
@@ -40,7 +47,9 @@ import { siteEdgeOf } from '@yaac/shared/site-edge'
 import { FULL_COMMIT_PATTERN, parseStepGraph } from '@yaac/shared/steps'
 import type { ProjectRow } from '#db'
 import type { RepoCommits, RepoStart, SiteCommit, SiteDetail, SiteEdgeStatus, SiteEntry, SiteSummary } from '@yaac/shared/types'
-import { endReleases, followPause, sameCommits, siteTarget, withSiteLock } from './deploys'
+import {
+  approveRelease, authorizeExposure, endReleases, followPause, sameCommits, siteConfig, siteSpec, siteTarget, withSiteLock,
+} from './deploys'
 
 const SITE_NAME = /^[a-z0-9-]{1,40}$/
 const DNS_NAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/
@@ -48,13 +57,11 @@ const DNS_NAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z
 /** How many releases `GET /site/show` lists. */
 const SHOWN_RELEASES = 20
 
-/**
- * Authorize publishing a site (create, edit, deploy, start): its project's
- * owner, who must also be an admin of the install (docs/public-sites.md
- * "Sites and releases").
- */
-export async function authorizeSitePublish(principal: Actor, projectId: string): Promise<void> {
+/** Authorize publishing a site or moving its hostname: its project's owner,
+ *  in person, while an admin of the install. */
+async function authorizeSitePublish(principal: Actor, projectId: string): Promise<void> {
   await authorizeProject(principal, projectId)
+  requirePerson(principal, 'publish a site')
   await requireAdmin(principal, 'publish sites')
 }
 
@@ -226,15 +233,14 @@ async function volumeId(projectId: string, name: string, siteId?: string): Promi
 }
 
 /**
- * Create a site. Its releases start with `repos`, each at a branch or a
- * full commit: one at the release's root, several in their folders.
- * Setting it to follow approves each branch and commit for its workflow
- * (docs/workflows.md "Approvals"), refused, if at all, before the site
- * exists.
+ * Create a site, unpublished: only its owner's forward reaches its releases
+ * until a person publishes it. Its releases start with `repos`, each at a
+ * branch or a full commit: one at the release's root, several in their
+ * folders. A person setting it to follow approves each branch and commit
+ * for its spec (docs/workflows.md "Approvals").
  */
 export async function createSite(principal: Actor, projectId: string, input: {
   name: string
-  hostname: string
   port: number
   adminPort?: number
   workflow: string
@@ -242,7 +248,7 @@ export async function createSite(principal: Actor, projectId: string, input: {
   repos: RepoStart[]
   follow?: boolean
 }): Promise<void> {
-  await authorizeSitePublish(principal, projectId)
+  await authorizeProject(principal, projectId)
   const project = await getProjectRow(projectId)
   if (!project) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
   if (!SITE_NAME.test(input.name)) {
@@ -252,11 +258,9 @@ export async function createSite(principal: Actor, projectId: string, input: {
   const repos = await siteRepos(project, input.repos)
   const namedWorkflowId = await siteWorkflow(projectId, input.workflow, input.volume !== undefined, repos)
   const follow = input.follow === true
-  if (follow) await checkWorkflowStart(principal, namedWorkflowId, repos)
-  await insertSite({
+  const site = await insertSite({
     projectId,
     name: input.name,
-    hostname: checkHostname(input.hostname),
     port: input.port,
     ...(input.adminPort !== undefined ? { adminPort: input.adminPort } : {}),
     namedWorkflowId,
@@ -264,21 +268,21 @@ export async function createSite(principal: Actor, projectId: string, input: {
     repos,
     follow,
   })
-  if (follow) await approveWorkflowStart(principal, namedWorkflowId, repos)
-  await syncSiteRoutes()
+  if (follow) await approveStart(principal, siteSpec(site.id, await siteConfig(site)), repos)
 }
 
 /**
- * Change a site. The hostname and admin port move at once; the port,
- * workflow, volume and repos apply from the next deploy, so the live
- * release keeps serving as it was started. A following site deploys its
- * target at the next reconcile if it is not what the site serves. Refused
- * while a deploy runs, which was started with the old settings, except an
- * edit that only stops following: that publishes nothing, so whoever may
- * stop the site may make it, mid-deploy too.
+ * Change how a site is built: its owner's, and its agents' while it is
+ * unpublished; a published site's, a person's who is an admin. The admin
+ * port moves at once; the port, workflow, volume and repos apply from the
+ * next deploy, so the live release keeps serving as it was started. A
+ * following site deploys its target at the next reconcile if it is not
+ * what the site serves. Refused while a deploy runs, which was
+ * started with the old settings, except an edit that only stops following:
+ * that publishes nothing, so whoever may stop the site may make it,
+ * mid-deploy too.
  */
 export async function editSite(principal: Actor, projectId: string, name: string, input: {
-  hostname?: string
   port?: number
   adminPort?: number | null
   workflow?: string
@@ -292,8 +296,10 @@ export async function editSite(principal: Actor, projectId: string, name: string
     await withSiteLock(id, () => updateSite(id, { follow: false }))
     return
   }
-  await authorizeSitePublish(principal, projectId)
-  const { id } = await requireSite(projectId, name)
+  await authorizeProject(principal, projectId)
+  const found = await requireSite(projectId, name)
+  await authorizeExposure(principal, found, 'change a published site')
+  const { id } = found
   const project = await getProjectRow(projectId)
   if (!project) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
   const repos = input.repos !== undefined ? await siteRepos(project, input.repos) : undefined
@@ -304,7 +310,6 @@ export async function editSite(principal: Actor, projectId: string, name: string
       throw new ServerError('CONFLICT', `site "${name}" is deploying; edit it once the deploy ends`)
     }
     const patch: SitePatch = {}
-    if (input.hostname !== undefined) patch.hostname = checkHostname(input.hostname)
     const adminPort = input.adminPort === undefined ? row.adminPort : input.adminPort ?? undefined
     checkPorts(input.port ?? row.port, adminPort)
     if (input.port !== undefined) patch.port = input.port
@@ -316,16 +321,53 @@ export async function editSite(principal: Actor, projectId: string, name: string
     // The graph is checked against the volume and repos it will run with,
     // so dropping the volume, or a repo, that the graph needs is refused.
     patch.namedWorkflowId = await siteWorkflow(projectId, input.workflow, hasVolume, repos ?? row.repos, row)
-    // A person setting a site to follow, or changing what a following site
-    // runs, approves each branch and commit it names for its workflow
-    // (docs/workflows.md "Approvals"), refused before anything is written.
-    const approves = (input.follow ?? row.follow)
-      && (input.follow === true || repos !== undefined || input.workflow !== undefined)
-    if (approves) await checkWorkflowStart(principal, patch.namedWorkflowId, repos ?? row.repos)
     await updateSite(id, patch)
-    if (approves) await approveWorkflowStart(principal, patch.namedWorkflowId, repos ?? row.repos)
+    // A person setting a site to follow, or changing what a following site
+    // runs, approves each branch and commit it names for its new spec
+    // (docs/workflows.md "Approvals").
+    const edited = await getSiteRow(id)
+    if (edited?.follow === true) await approveStart(principal, siteSpec(id, await siteConfig(edited)), edited.repos)
     await reofferAdminPort(row, adminPort)
   })
+}
+
+/**
+ * Publish a site at `hostname`, or move a published site to another: its
+ * hostname is routed on its edge from the next sync. `release`, the
+ * release the person previewed, must be the one serving, so what goes live
+ * is what they saw. Publishing approves that release's commits for the
+ * spec it ran, so its replacement passes, and for a following site its
+ * branches for that spec, where a person wrote its workflow
+ * (`approveRelease`).
+ */
+export async function publishSite(principal: Actor, projectId: string, name: string, input: {
+  hostname: string
+  release?: string
+}): Promise<void> {
+  await authorizeSitePublish(principal, projectId)
+  const { id } = await requireSite(projectId, name)
+  const hostname = checkHostname(input.hostname)
+  await withSiteLock(id, async () => {
+    const row = await getSiteRow(id)
+    if (!row) throw new ServerError('NOT_FOUND', `this project has no site named "${name}"`)
+    if (input.release !== undefined && !row.liveWorkspaceId?.startsWith(input.release)) {
+      throw new ServerError('CONFLICT', row.liveWorkspaceId === undefined
+        ? `site "${name}" serves no release now`
+        : `site "${name}" serves release ${row.liveWorkspaceId.slice(0, 8)}, not ${input.release}; preview that one first`)
+    }
+    await approveRelease(principal, row)
+    await updateSite(id, { published: true, hostname })
+  })
+  await syncSiteRoutes()
+}
+
+/** Stop routing a site's hostname and let it go. Its releases keep running
+ *  for its owner's forward, as before it was published. */
+export async function unpublishSite(principal: Actor, projectId: string, name: string): Promise<void> {
+  await authorizeSiteEnd(principal, projectId)
+  requirePerson(principal, 'unpublish a site')
+  const { id } = await requireSite(projectId, name)
+  await withSiteLock(id, () => updateSite(id, { published: false, hostname: null }))
   await syncSiteRoutes()
 }
 
@@ -333,7 +375,8 @@ export async function editSite(principal: Actor, projectId: string, name: string
  *  one lock so no deploy starts between, and the hostname stops routing. */
 export async function deleteSite(principal: Actor, projectId: string, name: string): Promise<void> {
   await authorizeSiteEnd(principal, projectId)
-  const { id } = await requireSite(projectId, name)
+  const { id, published } = await requireSite(projectId, name)
+  if (published) requirePerson(principal, 'delete a published site')
   await withSiteLock(id, async () => {
     await endReleases(id)
     await deleteSiteRow(id)
@@ -396,8 +439,8 @@ function siteSummary(row: SiteRow, project: ProjectRow | undefined, workflow: st
     id: row.id,
     projectId: row.projectId,
     name: row.name,
-    hostname: row.hostname,
-    edge: siteEdgeOf(row.hostname, env.siteDomain),
+    published: row.published,
+    ...(row.hostname !== undefined ? { hostname: row.hostname, edge: siteEdgeOf(row.hostname, env.siteDomain) } : {}),
     workflow,
     follow: row.follow,
     ...(row.liveWorkspaceId !== undefined && row.releaseCommits !== undefined && row.liveSince !== undefined
@@ -432,6 +475,33 @@ function siteSummary(row: SiteRow, project: ProjectRow | undefined, workflow: st
         },
       }
       : {}),
+    ...(row.requestedCommits !== undefined ? { awaitingApproval: true as const } : {}),
+  }
+}
+
+/** A site's requested deploy as a person reviewing it is shown it. */
+async function requestedOf(row: SiteRow, live: WorkspaceRow | undefined): Promise<Pick<SiteEntry, 'requested'>> {
+  const workflow = row.requestedWorkflowId !== undefined ? await getWorkflow(row.requestedWorkflowId) : undefined
+  if (row.requestedCommits === undefined || row.requestedAt === undefined || workflow === undefined) return {}
+  const by = row.requestedBy
+  const from = by === 'following' ? 'following' : by === 'person' ? 'person' : 'agent'
+  const changes = live === undefined ? [] : [
+    ...(live.workflowId !== workflow.id ? ['workflow' as const] : []),
+    ...((row.livePort ?? row.port) !== row.port ? ['port' as const] : []),
+    ...(live.volumeId !== row.volumeId ? ['volume' as const] : []),
+  ]
+  return {
+    requested: {
+      workflowId: workflow.id,
+      steps: workflow.steps,
+      secrets: workflow.secrets,
+      ...(workflow.personWritten ? {} : { writtenByAgent: true as const }),
+      commits: siteCommits(await getProjectRow(row.projectId), row.requestedCommits),
+      at: row.requestedAt.toISOString(),
+      from,
+      ...(from === 'agent' && by !== undefined ? { workspaceId: by } : {}),
+      changes,
+    },
   }
 }
 
@@ -442,7 +512,7 @@ async function toSiteEntry(row: SiteRow): Promise<SiteEntry> {
   const paused = row.follow ? await followPause(row) : undefined
   const target = row.follow && row.failedCommits !== undefined ? await siteTarget(row) : undefined
   const workflow = await getNamedWorkflow(row.namedWorkflowId)
-  const { id: _id, projectId: _projectId, live: served, ...summary } = siteSummary(row, project, workflow?.name ?? '')
+  const { id: _id, projectId: _projectId, live: served, awaitingApproval: _awaiting, ...summary } = siteSummary(row, project, workflow?.name ?? '')
   return {
     ...summary,
     port: row.port,
@@ -459,21 +529,22 @@ async function toSiteEntry(row: SiteRow): Promise<SiteEntry> {
       ? { followSkipped: siteCommits(project, target) } : {}),
     createdAt: row.createdAt.toISOString(),
     ...(served !== undefined ? { live: { ...served, running: live !== undefined && live.stoppedAt === undefined } } : {}),
+    ...(await requestedOf(row, live)),
   }
 }
 
 /**
- * Hand the driver every site's route: its hostname, the port its live
- * release serves on, and that release, which is absent while none is
- * meant to serve.
+ * Hand the driver every published site's route: its hostname, the port its
+ * live release serves on, and that release, which is absent while none is
+ * meant to serve. An unpublished site has none, so no edge reaches it.
  */
 export async function syncSiteRoutes(): Promise<void> {
-  const routes: SiteRoute[] = (await listSites()).map((row) => ({
+  const routes: SiteRoute[] = (await listSites()).flatMap((row) => (!row.published || row.hostname === undefined ? [] : [{
     siteId: row.id,
     hostname: row.hostname,
     edge: siteEdgeOf(row.hostname, env.siteDomain),
     port: row.livePort ?? row.port,
     ...(row.liveWorkspaceId !== undefined ? { liveWorkspaceId: row.liveWorkspaceId } : {}),
-  }))
+  }]))
   await workspaceDriver().syncSites(routes)
 }
