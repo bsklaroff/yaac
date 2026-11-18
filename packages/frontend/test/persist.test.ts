@@ -131,6 +131,44 @@ describe('saved fields', () => {
   })
 })
 
+describe('pane views', () => {
+  it('saves each pane’s view once changes settle, keeping the most recently changed', () => {
+    const { setPaneView } = useUiStore.getState()
+    for (let i = 0; i < 201; i++) setPaneView(`w${i}|files`, { scroll: i })
+    // Changing the oldest entry moves it to the newest end, so it is kept.
+    setPaneView('w0|files', { expanded: ['src'] })
+    expect(localStorage.getItem('yaac.paneview.v1')).toBeNull()
+    flushTypedText()
+    const saved = loadPersisted().paneView!
+    expect(Object.keys(saved)).toHaveLength(200)
+    expect(saved['w0|files']).toEqual({ scroll: 0, expanded: ['src'] })
+    expect(saved).not.toHaveProperty('w1|files')
+    expect(saved['w200|files']).toEqual({ scroll: 200 })
+  })
+
+  it('seeds a freshly created store', async () => {
+    localStorage.setItem('yaac.paneview.v1', JSON.stringify({ 'w|changes': { scroll: 40, openDiffs: ['a.ts'] } }))
+    vi.resetModules()
+    // eslint-disable-next-line no-restricted-syntax -- a fresh store, created over the seeded storage, is the point
+    const fresh = await import('#lib/store')
+    expect(fresh.useUiStore.getState().paneView).toEqual({ 'w|changes': { scroll: 40, openDiffs: ['a.ts'] } })
+  })
+
+  it('loads only entries whose fields have the right types', () => {
+    localStorage.setItem('yaac.paneview.v1', JSON.stringify({
+      'w|files': { expanded: ['src'], scroll: 40, find: 'app', showIgnored: true },
+      'w|file:a.ts': { topLine: 12 },
+      'w|changes': { openDiffs: ['a.ts', 3] },
+      'w|commits': { scroll: '40' },
+      'w|other': [],
+    }))
+    expect(loadPersisted().paneView).toEqual({
+      'w|files': { expanded: ['src'], scroll: 40, find: 'app', showIgnored: true },
+      'w|file:a.ts': { topLine: 12 },
+    })
+  })
+})
+
 describe('chat drafts', () => {
   it('validates each draft on load', () => {
     localStorage.setItem('yaac.chatdrafts.v1', JSON.stringify({

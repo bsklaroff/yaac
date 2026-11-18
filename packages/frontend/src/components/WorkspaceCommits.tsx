@@ -16,6 +16,7 @@ import {
 } from '#lib/icons'
 import { paneViewKey, useUiStore } from '#lib/store'
 import { relativeAge } from '#lib/time'
+import { useSavedScroll } from '#lib/useSavedScroll'
 import { useRepoBranches } from '#lib/repoApi'
 import { useCheckout } from '#lib/checkouts'
 import { CheckoutSwitcher } from '#components/CheckoutSwitcher'
@@ -72,6 +73,8 @@ export function WorkspaceCommits({ workspaceId }: { workspaceId: string }): JSX.
   const open = useMemo(() => new Set(openList ?? []), [openList])
   const setPaneView = useUiStore((s) => s.setPaneView)
   const openRange = useUiStore((s) => s.openRange)
+  const [list, setList] = useState<HTMLDivElement | null>(null)
+  const onListScroll = useSavedScroll(viewKey, list)
   const toggleOpen = (sha: string): void => {
     setPaneView(viewKey, { openCommits: open.has(sha) ? [...open].filter((o) => o !== sha) : [...open, sha] })
   }
@@ -155,7 +158,11 @@ export function WorkspaceCommits({ workspaceId }: { workspaceId: string }): JSX.
         <div className="flex flex-1 items-center justify-center text-xs text-text-dim">No commits yet.</div>
       ) : (
         <ContextMenu.Root>
-          <ContextMenu.Trigger className="min-h-0 flex-1 overflow-auto" onContextMenuCapture={() => setMenuCommit(null)}>
+          <ContextMenu.Trigger
+            ref={setList}
+            onScroll={onListScroll}
+            className="min-h-0 flex-1 overflow-auto"
+            onContextMenuCapture={() => setMenuCommit(null)}>
             {data.commits.map((c, i) => (
               <CommitRow
                 key={c.sha}

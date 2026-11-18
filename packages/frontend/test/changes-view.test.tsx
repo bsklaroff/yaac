@@ -755,3 +755,64 @@ describe('git views by checkout', () => {
     expect(server.called(CHANGES).every((c) => !c.query.has('repo'))).toBe(true)
   })
 })
+
+describe('the Changes pane’s scroll position', () => {
+  /**
+   * jsdom lays nothing out, so each scroller gets a geometry: every element
+   * inside it is 10px tall, in a 100px window, and the position is kept.
+   */
+  const at = new WeakMap<Element, number>()
+  const stubbed = ['scrollHeight', 'clientHeight', 'scrollTop'] as const
+  const height = (el: Element): number => el.querySelectorAll('*').length * 10
+  beforeEach(() => {
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get(this: Element) { return height(this) } })
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 100 })
+    Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
+      configurable: true,
+      get(this: Element) { return at.get(this) ?? 0 },
+      set(this: Element, v: number) { at.set(this, Math.max(0, Math.min(v, height(this) - 100))) },
+    })
+  })
+  afterEach(() => {
+    for (const key of stubbed) delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key]
+  })
+
+  // After a reload the saved position is further down than the rows alone
+  // reach; it is put back once the open diffs render, and the clamped
+  // scrolls on the way there are not saved over it.
+  it('comes back as the diffs render, then follows the user’s scrolling', async () => {
+    useUiStore.getState().setPaneView(CHANGES_VIEW, { openDiffs: ALL_PATHS, scroll: 800 })
+    intersection.startInView = false
+    renderChanges()
+    await waitFor(() => expect(row('src/app.ts')).toBeTruthy())
+    const list = row('src/app.ts').closest<HTMLElement>('.overflow-y-auto')!
+    expect(list.scrollTop).toBeLessThan(800)
+    fireEvent.scroll(list)
+    expect(useUiStore.getState().paneView[CHANGES_VIEW]?.scroll).toBe(800)
+
+    act(() => intersect())
+    await waitFor(() => expect(screen.getByText('needle1')).toBeTruthy())
+    await waitFor(() => expect(list.scrollTop).toBe(800))
+    list.scrollTop = 120
+    fireEvent.scroll(list)
+    expect(useUiStore.getState().paneView[CHANGES_VIEW]?.scroll).toBe(120)
+  })
+
+  // A position the content no longer reaches (a diff closed, a file cut
+  // short) is given up on as soon as anything else scrolls, here find, and
+  // that scroll stays put through later renders and is saved.
+  it('gives up on a position out of reach once something else scrolls', async () => {
+    useUiStore.getState().setPaneView(CHANGES_VIEW, { openDiffs: ALL_PATHS, scroll: 99_999 })
+    intersection.startInView = false
+    renderChanges()
+    await waitFor(() => expect(row('src/app.ts')).toBeTruthy())
+    const list = row('src/app.ts').closest<HTMLElement>('.overflow-y-auto')!
+    list.scrollTop = 100
+    fireEvent.scroll(list)
+    expect(useUiStore.getState().paneView[CHANGES_VIEW]?.scroll).toBe(100)
+
+    act(() => intersect())
+    await waitFor(() => expect(screen.getByText('needle1')).toBeTruthy())
+    expect(list.scrollTop).toBe(100)
+  })
+})

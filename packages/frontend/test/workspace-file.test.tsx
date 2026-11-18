@@ -159,7 +159,7 @@ afterEach(() => {
   discardFileSavers([fileKey('w1', 'a.ts')])
   vi.useRealTimers()
   vi.unstubAllGlobals()
-  useUiStore.setState({ dirtyFiles: {}, fileDiffMode: 'plain', filePreview: false, revealLine: null })
+  useUiStore.setState({ dirtyFiles: {}, fileDiffMode: 'plain', filePreview: false, revealLine: null, paneView: {} })
   cm.headless = false
   cm.view?.destroy()
   cm.view?.dom.remove()
@@ -595,9 +595,28 @@ describe('WorkspaceFile', () => {
     expect(Array.from({ length: 9 }, (_, i) => screen.queryByAltText(`m${i}`)).filter(Boolean)).toHaveLength(7)
     expect(screen.getByText('badge').closest('a')?.getAttribute('href')).toBe('https://example.com/b.svg')
 
+    // Its scroll position is saved, and put back when it shows again.
+    const at = new WeakMap<Element, number>()
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get: () => 5000 })
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 100 })
+    Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
+      configurable: true,
+      get(this: Element) { return at.get(this) ?? 0 },
+      set(this: Element, v: number) { at.set(this, v) },
+    })
+    onTestFinished(() => {
+      for (const key of ['scrollHeight', 'clientHeight', 'scrollTop']) delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key]
+    })
+    const scroller = (): HTMLElement => screen.getByRole('heading', { name: 'Guide' }).closest<HTMLElement>('.overflow-auto')!
+    scroller().scrollTop = 700
+    fireEvent.scroll(scroller())
+    expect(useUiStore.getState().paneView['w1|file:docs/guide.md']?.scroll).toBe(700)
+
     fireEvent.click(screen.getByLabelText('Show source'))
     expect(editor().closest('.hidden')).toBeNull()
     expect(screen.queryByRole('heading')).toBeNull()
+    fireEvent.click(screen.getByLabelText('Show rendered'))
+    expect(scroller().scrollTop).toBe(700)
   })
 
   it('shows an HTML file as a page that runs nothing and loads only its own inlined files', async () => {

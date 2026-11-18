@@ -5,10 +5,11 @@ import { Popover } from '@base-ui/react/popover'
 import { useQuery } from '@tanstack/react-query'
 import { EditorView, panels } from '@uiw/react-codemirror'
 import { openSearchPanel } from '@codemirror/search'
+import type { Extension } from '@codemirror/state'
 import { ServerError } from '@yaac/shared/errors'
 import { mediaType } from '@yaac/shared/media-types'
 import type { WorkspaceChange, WorkspaceFile as WorkspaceFileRead } from '@yaac/shared/types'
-import { DEFAULT_FONT_SIZE, useUiStore, type FileDiffMode } from '#lib/store'
+import { DEFAULT_FONT_SIZE, paneViewKey, useUiStore, type FileDiffMode } from '#lib/store'
 import { CodeEditor } from '#components/ui/CodeEditor'
 import { TextSizeMenu } from '#components/ui/TextSizeMenu'
 import { LineCountsLabel } from '#components/ui/LineCountsLabel'
@@ -23,12 +24,14 @@ import { useCheckout } from '#lib/checkouts'
 import { chordMatches, findChord, formatChord, saveChord, textSizeStep } from '#lib/shortcuts'
 import { IS_MAC } from '#lib/platform'
 import { usePinchSize, type TouchHandlers } from '#lib/usePinchSize'
+import { useSavedScroll } from '#lib/useSavedScroll'
 import { PHONE_TEXT_PX, focusRaisesKeyboard, useIsMobile } from '#lib/viewport'
 import {
   FileConflict,
   discardFileSavers,
   fileKey,
   fileSaver,
+  fileTarget,
   previewKind,
   readWorkspaceFile,
   registerFileSaver,
@@ -309,6 +312,25 @@ function MediaView({ src, type, path, failed }: {
   )
 }
 
+/** Keep the line at the top of a file pane's editor in its `paneView`
+ *  entry, for `restoreTopLine` to put back after a reload. */
+function recordTopLine(viewKey: string): Extension {
+  return EditorView.domEventHandlers({
+    scroll: (_, view) => {
+      const top = view.lineBlockAtHeight(view.scrollDOM.getBoundingClientRect().top - view.documentTop)
+      useUiStore.getState().setPaneView(viewKey, { topLine: view.state.doc.lineAt(top.from).number })
+    },
+  })
+}
+
+/** Scroll a new editor to the line `recordTopLine` saved. */
+function restoreTopLine(view: EditorView, viewKey: string): void {
+  const line = useUiStore.getState().paneView[viewKey]?.topLine
+  const { doc } = view.state
+  if (line === undefined || line <= 1) return
+  view.dispatch({ effects: EditorView.scrollIntoView(doc.line(Math.min(line, doc.lines)).from, { y: 'start', yMargin: 0 }) })
+}
+
 /**
  * The editor drawn at `scale`, filling the same box, and the one place a
  * pinch sizes the text (`touch`); elsewhere in the pane, a media file
@@ -368,6 +390,7 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
   const pinch = usePinchSize(fontSize, setFontSize)
   const mobile = useIsMobile()
   const viewRef = useRef<EditorView | null>(null)
+  const viewKey = paneViewKey(workspaceId, fileTarget(path))
   const openFind = (): void => { if (viewRef.current) openSearchPanel(viewRef.current) }
 
   // Put the cursor on the line a link asked for, centered, once the editor
@@ -402,6 +425,8 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
   const preview = useUiStore((s) => s.filePreview)
   const setPreview = useUiStore((s) => s.setFilePreview)
   const previewing = kind !== null && preview
+  const [rendered, setRendered] = useState<HTMLDivElement | null>(null)
+  const onRenderedScroll = useSavedScroll(viewKey, rendered)
   const diffing = original !== null
   // The find bar mounts above the editor rather than in it, so a phone's
   // text size (Scaled) leaves its controls their normal size. CodeMirror
@@ -411,7 +436,8 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
   const extensions = useMemo(() => [
     ...(panelHost ? [panels({ topContainer: panelHost })] : []),
     ...(original === null ? [] : diffExtensions(diffMode, original)),
-  ], [diffMode, original, panelHost])
+    recordTopLine(viewKey),
+  ], [diffMode, original, panelHost, viewKey])
   useEffect(() => {
     if (viewRef.current && original !== null) setOriginal(viewRef.current, original)
   }, [original, extensions])
@@ -536,7 +562,12 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
           <>
             {previewing && kind === 'html' && <HtmlDocument workspaceId={workspaceId} path={path} text={saver.text} />}
             {previewing && kind === 'markdown' && (
-              <div {...pinch} className="min-h-0 flex-1 touch-pan-x touch-pan-y overflow-auto px-6 py-4">
+              <div
+                ref={setRendered}
+                onScroll={onRenderedScroll}
+                {...pinch}
+                className="min-h-0 flex-1 touch-pan-x touch-pan-y overflow-auto px-6 py-4"
+              >
                 <MarkdownDocument workspaceId={workspaceId} path={path} text={saver.text} fontSize={fontSize} />
               </div>
             )}
@@ -553,6 +584,7 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
                 extensions={extensions}
                 onCreateEditor={(view) => {
                   viewRef.current = view
+                  restoreTopLine(view, viewKey)
                   revealPending(view)
                 }}
               />
