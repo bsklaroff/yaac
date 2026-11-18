@@ -10,6 +10,7 @@ import { useWhoami } from '#lib/viewer'
 import { useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
 import { useInlineEdit } from '#lib/useInlineRename'
 import { RowMenu } from '#components/sidebar/RowMenu'
+import { ObjectRow, type ObjectRowProps } from '#components/sidebar/ObjectRow'
 import { QueuedSet } from '#components/sidebar/QueuedRows'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { Modal } from '#components/ui/Modal'
@@ -31,6 +32,9 @@ import type { WorkspaceGroupSummary } from '@yaac/shared/types'
  * members just return to the default list, unless workspaces wait for room
  * in the group: the default list has no limit, so they would all start.
  *
+ * An owned group is headed by its owner's row instead (`object`), with the
+ * runs indented under it.
+ *
  * Ghost rows are the group's other stopped members, fetched a page at a
  * time while shown. Whether they are shown, and whether the group is
  * collapsed, live in the store, because while the ghosts are on screen the
@@ -49,6 +53,7 @@ export function GroupSection({
   elsewhere,
   hidden,
   notice,
+  object,
 }: {
   section: SidebarGroupSection
   /** The groups on screen, offered by a member row's group dialog. */
@@ -68,6 +73,11 @@ export function GroupSection({
   hidden: ReadonlySet<string>
   /** Why the last drop into this group was refused (say, at its limit). */
   notice?: string
+  /** The named workflow, routine or site that owns the group, whose row
+   *  heads it in place of the group's own header. It is renamed, pinned and
+   *  deleted with its owner, so its menu offers only the limit and the
+   *  stopped runs beside the owner's actions. */
+  object?: ObjectRowProps
 }): JSX.Element {
   const { group, provisioning, members, held } = section
   const collapsed = useUiStore((s) => s.collapsedGroups.includes(group.groupId))
@@ -134,7 +144,22 @@ export function GroupSection({
       className={clsx('py-1', dropTarget && 'rounded-lg bg-surface-2/40 ring-1 ring-accent/40')}
     >
       <Collapsible.Root open={expanded} onOpenChange={toggleExpanded}>
-        <div className="group relative">
+        {object !== undefined ? (
+          <ObjectRow
+            {...object}
+            items={[
+              ...object.items,
+              'separator',
+              // A site's next release runs beside its live one until it
+              // takes over, so a limit there would refuse every deploy.
+              ...(object.object.kind !== 'site' ? [{ label: 'Run limit…', onSelect: () => setSettingLimit(true) }] : []),
+              ...(group.stoppedCount > 0 || showStopped
+                ? [{ label: showStopped ? 'Hide stopped runs' : 'Show stopped runs', onSelect: toggleStopped, view: true as const }]
+                : []),
+            ]}
+            runs={{ expanded, onToggle: toggleExpanded, live: active, ...(limit !== undefined ? { limit } : {}), stopped, died }}
+          />
+        ) : <div className="group relative">
           {editing ? (
             <div className="px-3 py-1">
               <input
@@ -184,9 +209,9 @@ export function GroupSection({
               />
             </>
           )}
-        </div>
+        </div>}
         {notice !== undefined && <p className="px-3 pb-1 pl-7 text-xs text-danger">{notice}</p>}
-        <Collapsible.Panel>
+        <Collapsible.Panel className={object !== undefined ? 'pl-3' : undefined}>
           {/* Provisioning rows lead the section, as they lead the list. */}
           {provisioning.map((p) => (
             <Fragment key={p.workspaceId}>

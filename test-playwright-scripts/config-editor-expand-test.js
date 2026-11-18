@@ -1,6 +1,6 @@
 /*
  * Verifies the expand button on the settings file editors (FileEditor),
- * using Settings → Project Config's init steps. Expanding opens a
+ * using Settings → Project → Image's Dockerfile (a k8s server). Expanding opens a
  * near-fullscreen overlay (inset 16px) where the editor fills the height with
  * Save below; Escape closes only the overlay, keeping the settings dialog and
  * the unsaved edit. Nothing is saved. SCREENSHOT_DIR gets
@@ -11,7 +11,7 @@
  * Run: YAAC_DATA_DIR=... node test-playwright-scripts/config-editor-expand-test.js
  */
 import path from 'node:path'
-import { requirePlaywright, origin, until, check, finish, SHOTS } from './lib.js'
+import { requirePlaywright, origin, until, check, finish, SHOTS, projectPage } from './lib.js'
 
 const { chromium } = requirePlaywright()
 const viewport = { width: 1400, height: 900 }
@@ -20,7 +20,7 @@ const page = await browser.newPage({ viewport })
 page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
 await page.goto(`${origin}/`)
 await page.getByRole('button', { name: 'Settings' }).click()
-await page.getByRole('button', { name: 'Project Config' }).click()
+await projectPage(page, 'Image').click()
 await page.locator('.cm-editor').first().waitFor()
 
 await page.getByLabel('Expand editor').first().click()
@@ -53,7 +53,7 @@ await page.screenshot({ path: path.join(SHOTS, 'config-editor-expanded.png') })
 
 await page.keyboard.press('Escape')
 await pop.waitFor({ state: 'hidden' })
-check('the settings dialog stays open', await page.getByRole('button', { name: 'Project Config' }).isVisible())
+check('the settings dialog stays open', await projectPage(page, 'Image').isVisible())
 check('the edit survives collapsing', await page.getByRole('button', { name: 'Save' }).first().isEnabled())
 
 await browser.close()

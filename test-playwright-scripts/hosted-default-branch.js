@@ -11,7 +11,7 @@
  * Run: node test-playwright-scripts/hosted-default-branch.js
  */
 import path from 'node:path'
-import { SHOTS, api, check, finish, origin, requirePlaywright, resolveProject, until } from './lib.js'
+import { SHOTS, api, check, finish, origin, requirePlaywright, resolveProject, until, projectPage } from './lib.js'
 
 const PROJECT = process.env.PROJECT ?? 'default-branch-demo'
 const TO = process.env.TO ?? 'develop'
@@ -26,8 +26,8 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
 try {
   await page.goto(origin)
   await page.click('[title="Settings"]')
-  await page.click('text=Project Config')
   await page.getByRole('combobox', { name: 'Project', exact: true }).selectOption(id)
+  await projectPage(page, 'General').click()
   await page.getByRole('button', { name: 'Manage repo' }).first().click()
 
   const select = page.getByRole('combobox', { name: 'Default branch' })

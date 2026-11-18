@@ -2,12 +2,14 @@ import { useEffect, useLayoutEffect, useRef, useState, type JSX, type KeyboardEv
 import { createPortal } from 'react-dom'
 import clsx from 'clsx'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ChatIcon, CloseIcon, RenameIcon, SendIcon, TerminalIcon, TOOL_LABEL } from '#lib/icons'
+import { ChatIcon, CloseIcon, RenameIcon, RunIcon, SendIcon, SiteIcon, TerminalIcon, TOOL_LABEL, WorkflowIcon } from '#lib/icons'
 import { BranchPicker } from '#components/BranchPicker'
 import { AgentSettings, PermissionModeSelect } from '#components/ComposerSettings'
 import { ChatBottomBar, COMPOSER_INPUT, ROUND_BUTTON } from '#components/ConversationView'
 import { ContainerlessBadge } from '#components/ContainerlessBadge'
 import { PaneBarActions, PaneOverflowMenu } from '#components/PaneBar'
+import { SiteForm } from '#components/SitePane'
+import { StepList } from '#components/WorkflowPane'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { NumberInput } from '#components/ui/NumberInput'
 import { Typeahead } from '#components/ui/Typeahead'
@@ -66,6 +68,19 @@ const INPUT = 'h-[26px] min-w-0 flex-1 rounded-md border border-border bg-surfac
 
 /** A note under a form row, lined up with the controls. */
 const NOTE = '-mt-1 mb-1 pl-[92px] text-[11px] text-text-faint'
+
+const PRIMARY = 'flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-bg transition '
+  + 'hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50 max-md:py-2.5'
+
+/** The tabs: what the pane starts. */
+const KINDS: Array<{ value: 'agent' | 'workflow' | 'site'; label: string; help: string; Icon: typeof ChatIcon }> = [
+  { value: 'agent', label: 'Agent', help: 'A workspace with an agent to talk to', Icon: ChatIcon },
+  { value: 'workflow', label: 'Workflow', help: 'An unattended run of a named workflow', Icon: WorkflowIcon },
+  { value: 'site', label: 'Site', help: 'A site that publishes the project’s app', Icon: SiteIcon },
+]
+
+/** The workflow pickers' "+ New workflow…" option. */
+const NEW_WORKFLOW = '\u0000new-workflow'
 
 const BUTTON = 'flex items-center justify-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs '
   + 'text-text-dim outline-none transition hover:bg-surface-3 hover:text-text disabled:cursor-not-allowed '
@@ -134,8 +149,10 @@ function entrySeed(e: QueuedWorkspaceEntry): Seed {
 
 /** The Group dropdown's "+ New group" option, which swaps it for a name box. */
 const NEW_GROUP = '\u0000new'
-/** A new routine's untouched group: one the server makes, named after it. */
-const ROUTINE_GROUP = '\u0000routine'
+/** A new routine's or unattended run's untouched group: the one the server
+ *  makes for the routine or workflow (docs/workspace-groups.md "Owned
+ *  groups"). */
+const OWN_GROUP = '\u0000own'
 
 const workspaceName = (w: { title?: string; prompt?: string }): string =>
   clip(w.title || w.prompt || 'New workspace', 40)
@@ -214,6 +231,13 @@ export function NewWorkspacePane({ projectId, bar }: {
     : undefined
   const inWorkspace = inTarget !== undefined
   const noAgent = form.noAgent === true && !inWorkspace
+  // The tab: an agent workspace, an unattended run of a named workflow, or
+  // a new site. The workflow is also what an agent workspace's Steps picks.
+  const kind = inWorkspace ? undefined : form.kind
+  const unattended = kind === 'workflow'
+  const workflows = (snapshot?.workflows ?? []).filter((w) => w.projectId === projectId)
+  const workflow = workflows.find((w) => w.name === form.workflow)
+  const agentless = noAgent || unattended
   const start = inWorkspace || noAgent ? '' : form.start
   const defaults = useCreateDefaults(projectId)
   const createWorkspace = useCreateWorkspace()
@@ -334,8 +358,11 @@ export function NewWorkspacePane({ projectId, bar }: {
     })
   }
   // Offer the sidebar's groups, groups queued workspaces will launch into
-  // (the sidebar doesn't show those yet), and the current choice.
-  const routineGroup = routineMode && editingRoutine === undefined && form.groupId === undefined
+  // (the sidebar doesn't show those yet), and the current choice. A new
+  // routine, or a new unattended run, goes in a group of its own unless
+  // another is picked: the routine's, or the workflow's.
+  const ownGroupOffered = (routineMode && editingRoutine === undefined) || (unattended && !routineMode && editing === undefined)
+  const ownGroup = ownGroupOffered && form.groupId === undefined && newGroup === null
   const offeredGroups = shownGroups(groups, [
     ...(snapshot?.workspaces ?? []),
     ...(snapshot?.provisioning ?? []),
@@ -452,7 +479,7 @@ export function NewWorkspacePane({ projectId, bar }: {
     }
     : undefined
   const pending: PendingDraft | null = form.editId === undefined && form.editRoutineId === undefined && text !== ''
-    && !inWorkspace && !noAgent
+    && !inWorkspace && !agentless
     && (saved === undefined || DRAFT_FIELDS.some((k) => JSON.stringify(current[k]) !== JSON.stringify(saved[k])))
     ? { projectId, settings: current, ...(draft !== undefined ? { id: draft.id } : {}) }
     : null
@@ -464,12 +491,16 @@ export function NewWorkspacePane({ projectId, bar }: {
   // search, not a pick, so it blocks. A queued entry stores concrete
   // settings, so it also needs a model and a branch.
   const storesEntry = queued || editing !== undefined
+  // A workflow runs only in a workspace with each repo it names.
+  const missingRepo = workflow?.repos.find((dir) => !selection.included.some((r) => r.repo.dir === dir))
   const blocked = !defaults.ready || loadingPrompt ? 'Loading…'
+    : unattended && workflow === undefined ? 'Pick a workflow'
+    : workflow !== undefined && missingRepo !== undefined && !inWorkspace ? `${workflow.name} runs in ${missingRepo}: include it`
     : needsGitAuth !== undefined && !inWorkspace ? 'Add git authentication first'
-    : !noAgent && !signedIn ? `Sign in to ${TOOL_LABEL[tool]} first`
+    : !agentless && !signedIn ? `Sign in to ${TOOL_LABEL[tool]} first`
     : !inWorkspace && selection.blocked(false) !== null ? selection.blocked(false)
-    : !noAgent && !toolSupportsPermissionMode(tool, permissionMode) ? 'Pick a permission mode this agent offers'
-    : storesEntry && model === '' ? 'Pick a model'
+    : !agentless && !toolSupportsPermissionMode(tool, permissionMode) ? 'Pick a permission mode this agent offers'
+    : storesEntry && !unattended && model === '' ? 'Pick a model'
     : storesEntry && selection.blocked(true) !== null ? selection.blocked(true)
     : !inWorkspace && newGroup !== null && newGroupName === '' ? 'Name the new group'
     : !inWorkspace && timeoutText !== '' && timeout === undefined ? 'Give the timeout as a duration like 1h30m'
@@ -478,7 +509,10 @@ export function NewWorkspacePane({ projectId, bar }: {
     : routineMode && titleText === '' ? 'Name the routine'
     : scheduleError ?? null
   const submitLabel = editing !== undefined || editingRoutine !== undefined ? 'Save'
-    : routineMode ? 'Create routine' : queued ? 'Queue' : inWorkspace ? 'Start session' : 'Create'
+    : routineMode ? 'Create routine' : queued ? 'Queue' : unattended ? 'Run now' : inWorkspace ? 'Start session' : 'Create'
+  // What it runs: an unattended run of the workflow, or an agent workspace
+  // that starts with it in place of the project's init workflows.
+  const runs = workflow === undefined ? {} : { workflow: workflow.name, ...(unattended ? { nonInteractive: true as const } : {}) }
 
   // A routine needs a name, so its name box opens as soon as it is one.
   useEffect(() => { if (routineMode && titleText === '') titleEdit.start() }, [routineMode])
@@ -527,7 +561,8 @@ export function NewWorkspacePane({ projectId, bar }: {
     setForm(null)
     createWorkspace({
       projectId,
-      ...(noAgent ? { noSession: true } : {
+      ...runs,
+      ...(unattended ? {} : noAgent ? { noSession: true } : {
         tool,
         mode,
         permissionMode,
@@ -555,28 +590,31 @@ export function NewWorkspacePane({ projectId, bar }: {
       name: titleText,
       cron,
       timeZone: routineZone,
-      prompt: text,
-      tool,
-      model,
-      mode,
-      permissionMode,
-      ...(effort !== undefined ? { effort } : {}),
-      ...sentOptions,
+      ...(unattended ? {} : {
+        prompt: text,
+        tool,
+        model,
+        mode,
+        permissionMode,
+        ...(effort !== undefined ? { effort } : {}),
+        ...sentOptions,
+      }),
+      ...runs,
       ...selection.request,
     }
     const group = newGroup !== null ? newGroupName : groupId
     const show = (id: string): void => {
       setForm(null)
-      useUiStore.getState().openRoutine(projectId, id)
+      useUiStore.getState().openObject(projectId, { kind: 'routine', id })
     }
     run(editingRoutine !== undefined
-      ? api.routine.update.$post({ json: { id: editingRoutine.id, ...settings, group, timeout: timeout ?? null } })
+      ? api.routine.update.$post({ json: { id: editingRoutine.id, workflow: null, ...settings, group, timeout: timeout ?? null } })
         .then(() => show(editingRoutine.id))
       : api.routine.create.$post({
         json: {
           project: projectId,
           ...settings,
-          ...(routineGroup ? {} : { group }),
+          ...(ownGroup ? {} : { group }),
           ...(timeout !== undefined ? { timeout } : {}),
         },
       }).then((r) => {
@@ -591,7 +629,7 @@ export function NewWorkspacePane({ projectId, bar }: {
   /** Send: create, queue or save the entry, which needs a prompt (unless it
    *  starts no agent). */
   const submit = (): void => {
-    if (busy || blocked !== null || (text === '' && !noAgent)) return
+    if (busy || blocked !== null || (text === '' && !agentless)) return
     if (!storesEntry) {
       startNow()
       return
@@ -601,16 +639,19 @@ export function NewWorkspacePane({ projectId, bar }: {
       return
     }
     const settings = {
-      prompt: text,
-      tool,
-      model,
-      mode,
-      permissionMode,
-      ...(effort !== undefined ? { effort } : {}),
-      ...sentOptions,
+      ...(unattended ? {} : {
+        prompt: text,
+        tool,
+        model,
+        mode,
+        permissionMode,
+        ...(effort !== undefined ? { effort } : {}),
+        ...sentOptions,
+      }),
+      ...runs,
       ...selection.request,
       title: titleText,
-      group: newGroup !== null ? newGroupName : groupId,
+      ...(ownGroup ? {} : { group: newGroup !== null ? newGroupName : groupId }),
     }
     // Expand the sidebar section the entry lands in, if it is under a parent
     // or waits for room.
@@ -645,10 +686,11 @@ export function NewWorkspacePane({ projectId, bar }: {
         }))
   }
 
-  // Enter submits, except on a button or Shift+Enter in the prompt. A
-  // highlighted typeahead suggestion consumes Enter first.
+  // Enter submits, except on a button, Shift+Enter in the prompt, or in the
+  // site form, which submits itself. A highlighted typeahead suggestion
+  // consumes Enter first.
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
-    if (e.key !== 'Enter' || e.nativeEvent.isComposing || e.target instanceof HTMLButtonElement) return
+    if (e.key !== 'Enter' || e.nativeEvent.isComposing || e.target instanceof HTMLButtonElement || kind === 'site') return
     if (e.shiftKey && e.target instanceof HTMLTextAreaElement) return
     e.preventDefault()
     submit()
@@ -671,6 +713,22 @@ export function NewWorkspacePane({ projectId, bar }: {
 
   const sendTitle = blocked ?? (text === '' && !noAgent ? 'Type a prompt' : `${submitLabel} (Enter)`)
   const fresh = form.editId === undefined && form.editRoutineId === undefined && form.draftId === undefined
+  const hasSites = snapshot?.driver !== 'containerless'
+  const initWorkflows = workflows.filter((w) => w.init).map((w) => w.name)
+  /** Pick the workflow it runs, ticking the repos it needs; "+ New
+   *  workflow…" opens a new workflow's form instead. */
+  const pickWorkflow = (name: string): void => {
+    if (name === NEW_WORKFLOW) {
+      useUiStore.getState().openObject(projectId, { kind: 'workflow', id: '' })
+      return
+    }
+    const picked = workflows.find((w) => w.name === name)
+    const needed = (project?.repos ?? []).filter((r) => picked?.repos.includes(r.dir) === true)
+    update({
+      workflow: picked?.name,
+      repos: { ...form.repos, ...Object.fromEntries(needed.map((r) => [r.id, { ...form.repos?.[r.id], included: true }])) },
+    })
+  }
 
   return (
     <div onKeyDown={onKeyDown} className="@container flex h-full w-full flex-col bg-bg">
@@ -679,6 +737,8 @@ export function NewWorkspacePane({ projectId, bar }: {
           <span className="titlebar-drag flex min-w-0 flex-1 items-center gap-0.5">
             {inTarget !== undefined ? (
               <h2 className="min-w-0 truncate font-medium text-text">New session in “{workspaceName(inTarget)}”</h2>
+            ) : kind === 'site' ? (
+              <h2 className="min-w-0 truncate font-medium text-text">New site</h2>
             ) : titleEdit.editing ? (
               <input
                 ref={titleEdit.inputRef}
@@ -712,7 +772,7 @@ export function NewWorkspacePane({ projectId, bar }: {
             )}
           </span>
           <ContainerlessBadge />
-          {inWorkspace ? null : isMobile ? (
+          {inWorkspace || kind !== undefined ? null : isMobile ? (
             <PaneOverflowMenu
               label={noAgent ? 'No agent' : TOOL_LABEL[tool]}
               onNewShell={() => startNow('shell')}
@@ -739,9 +799,55 @@ export function NewWorkspacePane({ projectId, bar }: {
         </>,
         bar,
       )}
-      <div className="flex flex-1 overflow-y-auto px-4 py-4">
-        <div className="m-auto w-full max-w-md">
-          {fresh && live.length > 0 && (
+      <div className="flex-1 overflow-y-auto px-4 py-6">
+        <div className="mx-auto flex w-full max-w-4xl flex-col items-center gap-6 @4xl:flex-row @4xl:items-start @4xl:justify-center">
+        <div className="w-full max-w-xl">
+          {fresh && !inWorkspace && (
+            <div role="tablist" aria-label="What to start" className="mb-5 flex w-fit rounded-lg bg-surface-2 p-0.5">
+              {KINDS.filter((k) => k.value !== 'site' || hasSites).map((k) => (
+                <button
+                  key={k.value}
+                  type="button"
+                  role="tab"
+                  aria-selected={(kind ?? 'agent') === k.value}
+                  title={k.help}
+                  onClick={() => update({ kind: k.value === 'agent' ? undefined : k.value })}
+                  className={clsx('flex items-center gap-1.5 rounded-md px-3 py-1 text-xs transition max-md:py-2',
+                    (kind ?? 'agent') === k.value ? 'bg-surface font-medium text-text shadow-sm' : 'text-text-dim hover:text-text')}
+                >
+                  <k.Icon size={12} />
+                  {k.label}
+                </button>
+              ))}
+            </div>
+          )}
+          {kind === 'site' && project !== undefined ? (
+            <SiteForm project={project} onDone={(name) => { setForm(null); useUiStore.getState().openObject(projectId, { kind: 'site', id: name }) }} />
+          ) : <>
+          {unattended && <>
+            <Heading>Workflow</Heading>
+            <Row label="Runs" title="The named workflow it runs, unattended, with the run secrets it names">
+              <select
+                aria-label="Workflow"
+                value={workflow?.name ?? ''}
+                onChange={(e) => pickWorkflow(e.target.value)}
+                className={SELECT}
+              >
+                <option value="" disabled>Pick a workflow</option>
+                {workflows.map((w) => <option key={w.id} value={w.name}>{w.name}</option>)}
+                <option value={NEW_WORKFLOW}>+ New workflow…</option>
+              </select>
+            </Row>
+            {workflow !== undefined && workflow.secrets.length > 0 && (
+              <div className={NOTE}>
+                Gets {workflow.secrets.join(', ')}; {routineMode ? 'saving approves the branch or commit each run starts at'
+                  : queued ? 'when it starts, it approves the commit it runs' : 'running approves the commit it runs'}{' '}
+                for {workflow.secrets.length === 1 ? 'it' : 'them'}
+              </div>
+            )}
+          </>}
+          <Heading>Start</Heading>
+          {fresh && live.length > 0 && !unattended && (
             <Row label="Where" title="A new workspace, or another agent session in a running one, on its checkout">
               <select
                 aria-label="Where"
@@ -755,7 +861,7 @@ export function NewWorkspacePane({ projectId, bar }: {
             </Row>
           )}
           {!inWorkspace && !noAgent && (
-            <Row label="Start">
+            <Row label="When">
               <select aria-label="Start" value={start} onChange={(e) => update({ start: e.target.value })} className={SELECT}>
                 {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
@@ -800,16 +906,18 @@ export function NewWorkspacePane({ projectId, bar }: {
             {newGroup === null ? (
               <select
                 aria-label="Group"
-                value={routineGroup ? ROUTINE_GROUP : groupId ?? ''}
+                value={ownGroup ? OWN_GROUP : groupId ?? ''}
                 onChange={(e) => {
                   if (e.target.value === NEW_GROUP) setNewGroup('')
-                  else if (e.target.value === ROUTINE_GROUP) update({ groupId: undefined })
+                  else if (e.target.value === OWN_GROUP) update({ groupId: undefined })
                   else update({ groupId: e.target.value === '' ? null : e.target.value })
                 }}
                 className={SELECT}
               >
-                {routineMode && editingRoutine === undefined && (
-                  <option value={ROUTINE_GROUP}>New group: {titleText || 'the routine’s name'}</option>
+                {ownGroupOffered && (
+                  <option value={OWN_GROUP}>
+                    {routineMode ? `New group: ${titleText || 'the routine’s name'}` : `The workflow’s own: ${workflow?.name ?? 'its name'}`}
+                  </option>
                 )}
                 <option value="">None</option>
                 {offeredGroups.map((g) => <option key={g.groupId} value={g.groupId}>{g.name}</option>)}
@@ -858,6 +966,7 @@ export function NewWorkspacePane({ projectId, bar }: {
           </Row>
           {overlaps && <div className={NOTE}>Runs may overlap</div>}
 
+          <Heading>Code</Heading>
           {selection.rows.map((row, i) => {
             const lone = selection.rows.length === 1
             if (lone && !row.included) return null
@@ -933,6 +1042,20 @@ export function NewWorkspacePane({ projectId, bar }: {
           )}
           </>}
 
+          {!inWorkspace && !unattended && (
+            <Row label="Steps" title="What runs in the workspace beside its agent (docs/workflows.md)">
+              <select
+                aria-label="Steps"
+                value={workflow?.name ?? ''}
+                onChange={(e) => pickWorkflow(e.target.value)}
+                className={SELECT}
+              >
+                <option value="">{initWorkflows.length > 0 ? `Init workflows: ${initWorkflows.join(', ')}` : 'Init workflows (none)'}</option>
+                {workflows.map((w) => <option key={w.id} value={w.name}>Workflow {w.name}, in their place</option>)}
+              </select>
+            </Row>
+          )}
+
           {sessionCwds.length > 0 && (
             <Row label="Start in" title="The directory the agent starts in">
               <select
@@ -946,6 +1069,8 @@ export function NewWorkspacePane({ projectId, bar }: {
             </Row>
           )}
 
+          {!unattended && <>
+          <Heading>Agent</Heading>
           <Row label="Agent">
             <select
               aria-label="Agent"
@@ -995,7 +1120,9 @@ export function NewWorkspacePane({ projectId, bar }: {
             />
           )}
 
-          {editing === undefined && editingRoutine === undefined && (
+          </>}
+
+          {editing === undefined && editingRoutine === undefined && !unattended && (
             <div className="mt-3 flex gap-2 px-1 max-md:flex-col">
               {!queued && !noAgent && (
                 <button
@@ -1024,10 +1151,33 @@ export function NewWorkspacePane({ projectId, bar }: {
               )}
             </div>
           )}
+          </>}
+        </div>
+        {unattended && workflow !== undefined && (
+          <aside aria-label="Its steps" className="w-full max-w-xl text-xs @4xl:sticky @4xl:top-0 @4xl:w-72 @4xl:shrink-0">
+            <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-text-faint">Its steps</h3>
+            <StepList steps={workflow.steps} />
+          </aside>
+        )}
         </div>
       </div>
 
-      <ChatBottomBar
+      {kind === 'site' ? null : unattended ? (
+        <div className="flex shrink-0 items-center justify-end gap-3 border-t border-hairline-soft px-4 py-2.5">
+          {error !== null && <span className="mr-auto min-w-0 truncate text-xs text-danger" title={error}>{error}</span>}
+          {error === null && routineMode && <span className="mr-auto truncate text-[11px] text-text-faint">Each run starts unattended.</span>}
+          <button
+            type="button"
+            onClick={() => submit()}
+            disabled={busy || blocked !== null}
+            title={blocked ?? `${submitLabel} (Enter)`}
+            className={PRIMARY}
+          >
+            {!queued && editing === undefined && <RunIcon size={12} />}
+            {submitLabel}
+          </button>
+        </div>
+      ) : <ChatBottomBar
         above={error !== null && <div className="mb-1.5 px-1 text-xs text-danger">{error}</div>}
         onClick={(e) => { if (e.target === e.currentTarget) promptRef.current?.focus() }}
       >
@@ -1088,7 +1238,7 @@ export function NewWorkspacePane({ projectId, bar }: {
             <SendIcon size={15} strokeWidth={2.5} />
           </button>
         </div>
-      </ChatBottomBar>
+      </ChatBottomBar>}
     </div>
   )
 }
@@ -1295,6 +1445,11 @@ function RepoBranch({ row, lone, onQuery, onPick }: {
 
 /** A form row: fixed-width label, then the control (which has its own
  *  aria-label). */
+/** A heading over a group of the form's rows. */
+function Heading({ children }: { children: ReactNode }): JSX.Element {
+  return <div className="mb-1.5 mt-5 pl-1 text-[11px] font-medium uppercase tracking-wide text-text-faint">{children}</div>
+}
+
 function Row({ label, title, children }: { label: string; title?: string; children: ReactNode }): JSX.Element {
   return (
     <div className="mb-1 flex items-start gap-2 px-1 py-0.5 text-xs text-text-dim" title={title}>

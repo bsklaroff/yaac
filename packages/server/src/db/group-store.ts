@@ -4,6 +4,7 @@ import { draftWorkspaces, queuedWorkspaces, routines, workspaceGroups, workspace
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { ServerError } from '@yaac/shared/errors'
 import { normalizeTitle } from '@yaac/shared/titles'
+import type { GroupOwnerKind } from '@yaac/shared/types'
 
 /**
  * Named sidebar groups for a project's workspaces. Nothing observes a group,
@@ -27,13 +28,18 @@ export interface WorkspaceGroupRow {
   createdAt: Date
   /** Null is unlimited. */
   workspaceLimit: number | null
+  /** Null for a group a person made. */
+  ownerKind: GroupOwnerKind | null
+  ownerId: string | null
 }
 
 const key = (projectId: string, groupId: string) =>
   and(eq(workspaceGroups.projectId, projectId), eq(workspaceGroups.groupId, groupId))
 
 /**
- * Create a group around a founding workspace, or empty (`null`).
+ * Create a group around a founding workspace, or empty (`null`). An
+ * `owner` makes the group a named workflow's, routine's or site's: it
+ * starts empty and unpinned, since the sidebar draws it under its owner.
  *
  * With a founding workspace, the insert and the membership update share a
  * transaction; an unknown workspace (or one in another project) throws and
@@ -50,15 +56,18 @@ export async function createWorkspaceGroup(
   projectId: string,
   name: string,
   workspaceId: string | null,
+  owner?: { kind: GroupOwnerKind; id: string },
 ): Promise<WorkspaceGroupRow> {
   const groupId = crypto.randomUUID()
   const row: WorkspaceGroupRow = {
     projectId,
     groupId,
     name: groupName(name),
-    pinned: workspaceId === null,
+    pinned: workspaceId === null && owner === undefined,
     createdAt: new Date(),
     workspaceLimit: null,
+    ownerKind: owner?.kind ?? null,
+    ownerId: owner?.id ?? null,
   }
   const db = await getDb()
   await db.transaction(async (tx) => {
@@ -139,6 +148,16 @@ export async function deleteWorkspaceGroup(
     await tx.delete(workspaceGroups).where(key(projectId, groupId))
   })
   notifyWorkspaceListChanged()
+}
+
+/** Make the groups `owner` owns ordinary ones, once the owner is deleted:
+ *  its runs stay members, shown as any ordinary group's are. */
+export async function releaseOwnedGroups(owner: { kind: GroupOwnerKind; id: string }): Promise<void> {
+  const db = await getDb()
+  const released = await db.update(workspaceGroups).set({ ownerKind: null, ownerId: null })
+    .where(and(eq(workspaceGroups.ownerKind, owner.kind), eq(workspaceGroups.ownerId, owner.id)))
+    .returning({ groupId: workspaceGroups.groupId })
+  if (released.length > 0) notifyWorkspaceListChanged()
 }
 
 /** Every group of a project, or of all projects (the snapshot's source). */

@@ -10,6 +10,8 @@ import type {
   ProjectSummary,
   QueuedWorkspaceEntry,
   RoutineEntry,
+  SiteSummary,
+  WorkflowSummary,
   ServerSnapshot,
   StoppedWorkspaceEntry,
   StoppedWorkspacePage,
@@ -183,6 +185,8 @@ interface ListOpts {
   held?: HeldWorkspaceEntry[]
   drafts?: DraftWorkspaceEntry[]
   routines?: RoutineEntry[]
+  workflows?: WorkflowSummary[]
+  sites?: SiteSummary[]
   /** The stop dialog lists what is queued, off the snapshot. */
   snapshot?: ServerSnapshot
 }
@@ -206,6 +210,8 @@ function renderList(
         held={o.held ?? []}
         drafts={o.drafts ?? []}
         routines={o.routines ?? []}
+        workflows={o.workflows ?? []}
+        sites={o.sites ?? []}
       />
     </QueryClientProvider>
   )
@@ -1140,20 +1146,58 @@ describe('WorkspaceList', () => {
       expect(screen.getByRole('img', { name: 'Last run failed: no credential' })).toBeTruthy()
 
       fireEvent.click(screen.getByText('Triage'))
-      expect(useUiStore.getState().selectedRoutineId).toBe('r1')
+      expect(useUiStore.getState().selectedObject).toEqual({ kind: 'routine', id: 'r1' })
       await pickAction('Run now', 'Routine actions', 0)
       await waitFor(() => expect(posted('POST /api/routine/run')).toEqual([{ id: 'r1' }]))
       await pickAction('Resume', 'Routine actions', 1)
       await waitFor(() => expect(posted('POST /api/routine/resume')).toEqual([{ id: 'r2' }]))
       await pickAction('Edit…', 'Routine actions', 0)
       expect(useUiStore.getState()).toMatchObject({
-        selectedRoutineId: null, newWorkspace: expect.objectContaining({ editRoutineId: 'r1', title: 'Triage' }) as unknown,
+        selectedObject: null, newWorkspace: expect.objectContaining({ editRoutineId: 'r1', title: 'Triage' }) as unknown,
       })
 
       await pickAction('Delete…', 'Routine actions', 2)
       expect(await screen.findByText(/Runs already started keep going until their stop time\.$/)).toBeTruthy()
       fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
       await waitFor(() => expect(posted('POST /api/routine/delete')).toEqual([{ id: 'r3' }]))
+    })
+
+    it('draws a workflow\'s and a site\'s runs under their rows, with their stopped runs kept there', async () => {
+      const workflows: WorkflowSummary[] = [{
+        id: 'wf-deploy', projectId: 'proj', name: 'deploy', steps: {}, secrets: [], repos: [], init: true, createdAt: '',
+      }]
+      const sites: SiteSummary[] = [{
+        id: 's-web', projectId: 'proj', name: 'web', hostname: 'app.example.com', edge: 'public', workflow: 'deploy', follow: false,
+        deploy: { workspaceId: 'w-rel', commits: [], startedAt: '', phase: 'building' },
+      }]
+      const groups = [
+        group({ groupId: 'g-deploy', name: 'deploy', owner: { kind: 'workflow', id: 'wf-deploy' }, stoppedCount: 1 }),
+        group({ groupId: 'g-site', name: 'web', owner: { kind: 'site', id: 's-web' } }),
+        // A group whose owner is gone is an ordinary one again.
+        group({ groupId: 'g-gone', name: 'Old routine', owner: { kind: 'routine', id: 'r-gone' }, pinned: true }),
+      ]
+      stoppedRows.push(stoppedEntry('old-run', { title: 'Last night', groupId: 'g-deploy' }))
+      renderList([entry({ workspaceId: 'run', title: 'Deploying now', groupId: 'g-deploy' })], {
+        workflows, sites, groups, project: { stoppedCount: 1, deaths: 0, deathsSeenBy: {} },
+        snapshot: serverSnapshot({ workflows, sites, workspaceGroups: groups }),
+      })
+      const section = screen.getByRole('group', { name: 'Workflows' })
+      expect(section.textContent).toMatch(/deploy\(1\).*no repo.*at start.*Deploying now/)
+      expect(screen.getByRole('group', { name: 'Sites' }).textContent).toMatch(/web.*app\.example\.com.*building/)
+      // Neither owned group is a section of its own; the orphaned one is.
+      expect(within(section).getByRole('group', { name: 'deploy' })).toBeTruthy()
+      expect(screen.getByRole('group', { name: 'Old routine' }).closest('[aria-label="Workflows"]')).toBeNull()
+      // Its stopped run is its history, not the Stopped section's.
+      expect(screen.queryByText(/^Stopped/)).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Workflow actions' }))
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Show stopped runs' }))
+      expect(await within(section).findByText('Last night')).toBeTruthy()
+
+      // Its row opens its pane, and runs it from one click.
+      fireEvent.click(within(section).getByText('no repo'))
+      expect(useUiStore.getState().selectedObject).toEqual({ kind: 'workflow', id: 'wf-deploy' })
+      fireEvent.click(screen.getByRole('button', { name: 'Run now: deploy' }))
+      await waitFor(() => expect(provision).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'proj', groupId: 'g-deploy' }), expect.any(Function)))
     })
 
     it('marks a running workspace that will be stopped, and a stop that was a timeout', () => {

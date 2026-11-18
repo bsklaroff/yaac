@@ -232,7 +232,7 @@ export async function moveRepoToRemote(
     : linking.find((p) => p.owner === repo.owner && !allowlistAllows(p.egressAllowlist, host))
   if (closed !== undefined) {
     throw new ServerError('VALIDATION', `"${host}" is not in the egress allowlist of "${closed.name}", so its `
-      + 'workspaces could not reach the new remote. Add it in Settings → Project Config, then move.')
+      + 'workspaces could not reach the new remote. Add it in Settings → Project → Network, then move.')
   }
   await runtime.ensureRuntimeReachable()
   const hosted = hostedRepoDir(repoId)

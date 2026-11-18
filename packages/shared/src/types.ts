@@ -1107,6 +1107,10 @@ export interface WorkflowEntry {
   createdAt: string
 }
 
+/** A named workflow as the snapshot carries it: approvals, which grow
+ *  with every run by hand, come from `/workflow/show`. */
+export type WorkflowSummary = Omit<WorkflowEntry, 'approvedCommits' | 'approvedBranches'>
+
 // ---------------------------------------------------------------------------
 // Wire types: RPC request/response shapes shared by the server and clients.
 // ---------------------------------------------------------------------------
@@ -1470,10 +1474,17 @@ export interface WorkspaceListEntry {
  * A group is shown when `pinned` or when it holds a live workspace, and then
  * lists all its members, stopped ones as ghost rows with a restart action.
  */
+/** What a group was made for, whose runs it holds
+ *  (docs/workspace-groups.md "Owned groups"). */
+export type GroupOwnerKind = 'workflow' | 'routine' | 'site'
+
 export interface WorkspaceGroupSummary {
   groupId: string
   projectId: string
   name: string
+  /** The named workflow, routine or site the server made it for. The
+   *  sidebar draws it under that object's row while the object exists. */
+  owner?: { kind: GroupOwnerKind; id: string }
   /** Keep the group listed even with no live workspace in it. */
   pinned: boolean
   /** Most live workspaces it may hold at once; absent is unlimited
@@ -2243,6 +2254,14 @@ export interface SiteEntry {
   lastDeploy?: { workspaceId: string; commits: SiteCommit[]; outcome: 'succeeded' | 'failed'; error?: string; finishedAt: string }
 }
 
+/** A site as the snapshot carries it, read from its row alone; the rest
+ *  of `SiteEntry` comes from `/site/show`. `id` is what owns its group. */
+export type SiteSummary = Pick<SiteEntry, 'name' | 'hostname' | 'edge' | 'workflow' | 'follow' | 'deploy' | 'lastDeploy'> & {
+  id: string
+  projectId: string
+  live?: Omit<NonNullable<SiteEntry['live']>, 'running'>
+}
+
 /** A site with its recent releases, newest first, for `GET /site/show`. */
 export interface SiteDetail extends SiteEntry {
   releases: Array<{ workspaceId: string; commits: SiteCommit[]; createdAt: string; stoppedAt?: string; rerunOf?: string }>
@@ -2646,6 +2665,10 @@ export interface ServerSnapshot {
   draftWorkspaces: DraftWorkspaceEntry[]
   /** Every project's routines, oldest first. */
   routines: RoutineEntry[]
+  /** Every project's named workflows, by name. */
+  workflows: WorkflowSummary[]
+  /** Every project's sites, by name; none on a server without sites. */
+  sites: SiteSummary[]
   /** See `ActiveWorkspacesResult.gitAuthFailures`. */
   gitAuthFailures: Record<string, GitAuthFailure[]>
   imageBuilds: ImageBuildEntry[]

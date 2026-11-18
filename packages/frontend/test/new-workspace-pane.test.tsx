@@ -59,6 +59,8 @@ function project(
     heldWorkspaces: [],
     draftWorkspaces: [],
     routines: [],
+    workflows: [],
+    sites: [],
     provisioning: [],
     ...extra,
   } as unknown as ServerSnapshot
@@ -1394,7 +1396,7 @@ describe('NewWorkspacePane', () => {
       })]))
       // Left unset, the server files runs under a group named after it.
       expect(sent(CREATE_ROUTINE)[0]).not.toHaveProperty('group')
-      await waitFor(() => expect(useUiStore.getState()).toMatchObject({ selectedRoutineId: 'r-new', newWorkspace: null }))
+      await waitFor(() => expect(useUiStore.getState()).toMatchObject({ selectedObject: { kind: 'routine', id: 'r-new' }, newWorkspace: null }))
     })
 
     it('reopens a routine on its preset, zone and group, and saves an edit', async () => {
@@ -1424,7 +1426,7 @@ describe('NewWorkspacePane', () => {
         id: 'r1', name: 'Standup notes', cron: '0 9 * * 1,3,5', timeZone: 'Europe/Paris', tool: 'codex',
         model: 'gpt-5.5', ...at('dev'), group: 'g-review', timeout: null,
       })]))
-      await waitFor(() => expect(useUiStore.getState().selectedRoutineId).toBe('r1'))
+      await waitFor(() => expect(useUiStore.getState().selectedObject).toEqual({ kind: 'routine', id: 'r1' }))
     })
 
     it('keeps the schedule in a draft, and a passed start time goes back to now', async () => {
@@ -1641,5 +1643,68 @@ describe('NewWorkspacePane repos', () => {
     fireEvent.click(start())
     await waitFor(() => expect(sent(OPEN)).toHaveLength(1))
     expect(sent(OPEN)[0]).toMatchObject({ prompt: 'look across both', cwd: '.' })
+  })
+})
+
+describe('NewWorkspacePane workflows', () => {
+  /** A named workflow of the project's one repo, with a run secret. */
+  const DEPLOY = {
+    id: 'wf-deploy', projectId: 'proj', name: 'deploy', steps: { build: { run: ['make'] }, ship: { run: ['make ship'], needs: ['build'] } },
+    secrets: ['TOKEN'], repos: ['widgets'], init: false, createdAt: '',
+  }
+  const INIT = { ...DEPLOY, id: 'wf-init', name: 'setup', secrets: [], init: true }
+  const runButton = (name: RegExp): HTMLButtonElement => screen.getByRole<HTMLButtonElement>('button', { name })
+
+  it('starts an agent workspace with a workflow in place of the init workflows, and runs one unattended now or later', async () => {
+    setSnapshot(project({}, 'k8s', { workflows: [DEPLOY, INIT] }))
+    await openReady()
+    // The Agent tab names the init workflows it would run, and takes another.
+    expect(select('Steps').selectedOptions[0].textContent).toBe('Init workflows: setup')
+    fireEvent.change(select('Steps'), { target: { value: 'deploy' } })
+    typePrompt('debug the deploy')
+    fireEvent.click(sendButton())
+    await waitFor(() => expect(sent(CREATE)).toHaveLength(1))
+    expect(sent(CREATE)[0]).toMatchObject({ workflow: 'deploy', prompt: 'debug the deploy', tool: 'claude' })
+    expect(sent(CREATE)[0]).not.toHaveProperty('nonInteractive')
+    forget()
+    cleanup()
+
+    // The Workflow tab runs one unattended: no agent, no prompt, its repos
+    // ticked, and its own group, which the server picks.
+    await openReady()
+    fireEvent.click(screen.getByRole('tab', { name: 'Workflow' }))
+    expect(screen.queryByLabelText('Prompt')).toBeNull()
+    expect(runButton(/Run now/).title).toBe('Pick a workflow')
+    fireEvent.change(select('Workflow'), { target: { value: 'deploy' } })
+    expect(screen.getByText(/^Gets TOKEN; running approves the commit/)).toBeTruthy()
+    expect(within(screen.getByRole('complementary', { name: 'Its steps' })).getByText('ship')).toBeTruthy()
+    expect(select('Group').selectedOptions[0].textContent).toBe('The workflow’s own: deploy')
+    fireEvent.click(runButton(/Run now/))
+    await waitFor(() => expect(sent(CREATE)).toHaveLength(1))
+    const run = sent(CREATE)[0]
+    expect(run).toMatchObject({ project: 'proj', workflow: 'deploy', nonInteractive: true, ...at('main') })
+    for (const key of ['sessionId', 'tool', 'prompt', 'group']) expect(run).not.toHaveProperty(key)
+    forget()
+    cleanup()
+
+    // Later, it is queued the same way.
+    await openReady()
+    fireEvent.click(screen.getByRole('tab', { name: 'Workflow' }))
+    fireEvent.change(select('Workflow'), { target: { value: 'deploy' } })
+    fireEvent.change(select('Start'), { target: { value: START_IN } })
+    fireEvent.change(screen.getByLabelText('Delay'), { target: { value: '2h' } })
+    fireEvent.click(runButton(/^Queue$/))
+    await waitFor(() => expect(sent(QUEUE)).toHaveLength(1))
+    expect(sent(QUEUE)[0]).toMatchObject({ workflow: 'deploy', nonInteractive: true, startIn: 120 })
+    for (const key of ['tool', 'prompt', 'group']) expect(sent(QUEUE)[0]).not.toHaveProperty(key)
+  })
+
+  it('opens on a workflow from its sidebar row, and on its Site tab only where sites exist', () => {
+    setSnapshot(project({}, 'containerless', { workflows: [DEPLOY] }))
+    act(() => useUiStore.getState().openNewWorkspace({ projectId: 'proj', kind: 'workflow', workflow: 'deploy', schedule: true }))
+    mount()
+    expect(select('Workflow').value).toBe('deploy')
+    expect(select('Start').value).toBe(SCHEDULE)
+    expect(screen.queryByRole('tab', { name: 'Site' })).toBeNull()
   })
 })

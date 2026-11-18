@@ -145,8 +145,10 @@ yaac workspace
                                 place of the project's init workflows
     --no-steps                  Start with no steps
     --workflow <name>           Start with this named workflow; non-interactive,
-                                it gets its run secrets, and this launch
-                                approves each repo's commit (workflows.md)
+                                it gets its run secrets, its launch (now or
+                                scheduled) approves each repo's commit, and
+                                it goes in the workflow's own group unless
+                                --group names one (workflows.md)
     -t, --tool <tool>           claude, codex, opencode, pi or omp (default: the
                                 project's last, else claude)
     --repo <dir>[@<branch>]     A repo the workspace starts with, at this
@@ -251,8 +253,9 @@ yaac routine                    Workspaces started on a cron schedule (routines.
     --repo, --no-repos, --nested, --no-nested, --cwd,
     --commit, --non-interactive As for workspace create
     --workflow <name>           The named workflow each run starts with;
-                                saving approves the commit or branch each
-                                repo runs on for its run secrets, and is
+                                saving it non-interactive approves the
+                                commit or branch each repo runs on for its
+                                run secrets, and is
                                 refused if its runs lack a repo the workflow
                                 names (workflows.md)
     -g, --group <group>         Group runs are filed under (default: one named

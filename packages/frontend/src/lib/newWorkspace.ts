@@ -31,6 +31,12 @@ export interface NewWorkspaceForm {
   inWorkspace?: string
   /** Start a workspace with no session: no agent, so no prompt. */
   noAgent?: true
+  /** The tab: an agent workspace (absent), an unattended run of `workflow`,
+   *  or a new site. */
+  kind?: 'workflow' | 'site'
+  /** The named workflow it starts with: on the Agent tab in place of the
+   *  project's init workflows, on the Workflow tab the one it runs. */
+  workflow?: string
   prompt: string
   title: string
   /** '' starts now, `START_WHEN_ROOM` once its group has room; `START_AT`,
@@ -112,10 +118,15 @@ export function entryStart(entry: QueuedWorkspaceEntry): string {
 /** What opens the pane on something other than a blank form: `parent` sets
  *  Start to after that workspace or queued entry stops, `inWorkspace` aims
  *  it at a running workspace, `draftId` reopens a draft, `editId` edits a
- *  queued entry and `routineId` a routine. */
+ *  queued entry and `routineId` a routine. A sidebar workflow or site row
+ *  opens it on that tab. */
 export interface NewWorkspaceOpts {
   projectId: string
   parent?: string
+  /** Open on this tab and workflow, and on `schedule` as a routine. */
+  kind?: 'workflow' | 'site'
+  workflow?: string
+  schedule?: true
   inWorkspace?: string
   draftId?: string
   editId?: string
@@ -149,8 +160,10 @@ export function seedNewWorkspace(opts: NewWorkspaceOpts, snapshot: ServerSnapsho
     projectId: opts.projectId,
     prompt: '',
     title: '',
-    start: opts.parent ?? '',
+    start: opts.schedule === true ? SCHEDULE : opts.parent ?? '',
     ...(opts.inWorkspace !== undefined ? { inWorkspace: opts.inWorkspace } : {}),
+    ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
+    ...(opts.workflow !== undefined ? { workflow: opts.workflow } : {}),
   }
   const queued = snapshot?.queuedWorkspaces ?? []
   const entry = opts.editId !== undefined ? queued.find((e) => e.id === opts.editId) : undefined
@@ -188,6 +201,8 @@ export function seedNewWorkspace(opts: NewWorkspaceOpts, snapshot: ServerSnapsho
     timeout = routine.timeoutMinutes
   }
   const timeZone = routine?.timeZone ?? draft?.timeZone
+  const workflow = (entry ?? routine)?.workflow
+  const nonInteractive = (entry ?? routine)?.nonInteractive === true
   const projectRepos = snapshot?.projects.find((p) => p.id === opts.projectId)?.repos ?? []
   // A draft keeps what the dialog had resolved; an entry or routine its
   // whole selection.
@@ -218,6 +233,7 @@ export function seedNewWorkspace(opts: NewWorkspaceOpts, snapshot: ServerSnapsho
     ...(selection?.nested !== undefined ? { nested: selection.nested } : {}),
     ...(selection?.cwd !== undefined ? { cwd: selection.cwd } : {}),
     ...(groupId !== undefined ? { groupId } : {}),
+    ...(workflow !== undefined ? { workflow, ...(nonInteractive ? { kind: 'workflow' as const } : {}) } : {}),
     ...(entry !== undefined ? { editId: entry.id } : routine !== undefined ? { editRoutineId: routine.id } : { draftId: from.id }),
   }
 }

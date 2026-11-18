@@ -218,7 +218,7 @@ try {
   // Projects-screen controls: new project and the settings sections. Server
   // is desktop-only and User Dockerfile needs image builds (k8s).
   if (await stop('new-project', addProject)) await escape()
-  const SECTIONS = ['General', 'Shortcuts', 'Credentials', 'Project Config', 'User Dockerfile']
+  const SECTIONS = ['General', 'Shortcuts', 'Credentials', 'Environment', 'User Dockerfile']
   if (await tapIfPresent(projectsLayer.getByText('Settings', { exact: true }))) {
     for (const tab of SECTIONS) {
       if (!await stop(`settings-${tab}`, page.getByRole('button', { name: tab, exact: true }), 2000)) continue

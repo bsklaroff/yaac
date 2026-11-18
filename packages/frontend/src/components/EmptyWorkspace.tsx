@@ -34,7 +34,7 @@ export function EmptyWorkspace({ workspace, onNewSession, onNewShell, onOpenHist
           </p>
           <p className="mt-1 text-xs text-text-faint">
             {workspace.site !== undefined
-              ? 'Pick a step in the bar to follow its log. Deploy, stop or start the site from Project Config → Sites.'
+              ? 'Pick a step in the bar to follow its log. Deploy, stop or start the site from its row under Sites in the sidebar.'
               : 'Pick a step in the bar to follow its log. It stops once its steps finish, and can only be stopped before.'}
           </p>
         </div>

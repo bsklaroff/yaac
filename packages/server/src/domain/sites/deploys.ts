@@ -33,6 +33,7 @@ import { fetchRepoOrigin, freshenOrigin } from '#domain/repos'
 import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
 import {
   listProvisioning,
+  ownedGroup,
   prepareStart,
   startOf,
   stopWorkspace,
@@ -371,6 +372,7 @@ async function startDeploy(
         : { workflow: opts.workflow.name }),
       noSession: true,
       title: `${site.name} @ ${formatCommits(commits, 8)}`,
+      groupId: await ownedGroup(site.projectId, { kind: 'site', id: site.id }, site.name),
       siteId: site.id,
       ...(opts.image !== undefined ? { image: opts.image } : {}),
       ...(opts.volumeId !== undefined ? { stageVolumeId: opts.volumeId } : {}),

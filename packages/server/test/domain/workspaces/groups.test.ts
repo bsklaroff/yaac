@@ -4,7 +4,7 @@ import { closeDb } from '#db/client'
 import { createWorkspaceGroup, listWorkspaceGroupRows, setWorkspaceGroup, setWorkspaceGroupLimit } from '#db/group-store'
 import { recordDeathSeen, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
-import { listWorkspaceGroups, resolveGroup } from '#domain/workspaces/groups'
+import { listWorkspaceGroups, ownedGroup, resolveGroup } from '#domain/workspaces/groups'
 import { ServerError } from '@yaac/shared/errors'
 
 const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
@@ -129,6 +129,26 @@ describe('workspace groups (domain)', () => {
       // A blank name would create a group nothing could name.
       await expect(resolveGroup(PROJ, '   ', { create: true })).rejects.toThrow(ServerError)
       expect(await listWorkspaceGroupRows(PROJ)).toHaveLength(2)
+    })
+  })
+
+  describe('ownedGroup', () => {
+    it('makes an owner\'s group once, under its name, apart from a person\'s of the same name', async () => {
+      const mine = await createWorkspaceGroup(PROJ, 'deploy', null)
+      const workflow = { kind: 'workflow' as const, id: 'wf-1' }
+      const made = await ownedGroup(PROJ, workflow, 'deploy')
+      expect(made).not.toBe(mine.groupId)
+      // Found again by its owner, though two groups now share the name.
+      expect(await ownedGroup(PROJ, workflow, 'renamed since')).toBe(made)
+      expect(await ownedGroup(PROJ, { kind: 'site', id: 'wf-1' }, 'deploy')).not.toBe(made)
+      // Unpinned, since the sidebar draws it under its owner, and listed with it.
+      const listed = (await listWorkspaceGroups(PROJ)).find((g) => g.groupId === made)
+      expect(listed).toMatchObject({ name: 'deploy', pinned: false, owner: workflow })
+      expect((await listWorkspaceGroups(PROJ)).find((g) => g.groupId === mine.groupId)).not.toHaveProperty('owner')
+      // A name reaches only the person's group; the owned one is reached by id.
+      expect((await resolveGroup(PROJ, 'DEPLOY')).groupId).toBe(mine.groupId)
+      expect((await resolveGroup(PROJ, made)).groupId).toBe(made)
+      expect((await resolveGroup(PROJ, 'site group', { create: true })).groupId).not.toBe(made)
     })
   })
 })

@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto'
 import { and, eq, exists, inArray, isNotNull, lt, notExists, or, sql } from 'drizzle-orm'
 import type { AnyPgColumn } from 'drizzle-orm/pg-core'
 import { getDb } from './client'
+import { releaseOwnedGroups } from './group-store'
+import { notifyWorkspaceListChanged } from '#lib/notify'
 import {
   namedWorkflows, queuedWorkspaces, workflowApprovals, workflows, workspaceLifeWorkflows, workspaceRepos, workspaces,
 } from './schema'
@@ -14,7 +16,8 @@ import type { StepGraph } from '@yaac/shared/steps'
  * secrets it names and the repos its steps are written for, stored once per
  * content and never changed; the names a project points at them by, and
  * which of those are init workflows; and the commits and branches people
- * approved a named workflow's current workflow to run on.
+ * approved a named workflow's current workflow to run on. Writes to the
+ * names notify the snapshot hub, which carries every named workflow.
  */
 
 export interface WorkflowRow {
@@ -90,8 +93,9 @@ async function named(where: ReturnType<typeof eq> | undefined): Promise<NamedWor
   return rows
 }
 
-export async function listNamedWorkflows(projectId: string): Promise<NamedWorkflowRow[]> {
-  return await named(eq(namedWorkflows.projectId, projectId))
+/** A project's named workflows, or every project's for the snapshot. */
+export async function listNamedWorkflows(projectId?: string): Promise<NamedWorkflowRow[]> {
+  return await named(projectId !== undefined ? eq(namedWorkflows.projectId, projectId) : undefined)
 }
 
 export async function getNamedWorkflow(id: string): Promise<NamedWorkflowRow | undefined> {
@@ -108,6 +112,7 @@ export async function insertNamedWorkflow(projectId: string, name: string, workf
   const db = await getDb()
   const rows = await db.insert(namedWorkflows).values({ projectId, name, workflowId, init }).onConflictDoNothing().returning()
   if (rows.length === 0) throw new ServerError('CONFLICT', `this project already has a workflow named "${name}"`)
+  notifyWorkspaceListChanged()
 }
 
 /** Point a named workflow at another workflow, and mark or unmark it as an
@@ -115,6 +120,7 @@ export async function insertNamedWorkflow(projectId: string, name: string, workf
 export async function updateNamedWorkflow(id: string, patch: { workflowId?: string; init?: boolean }): Promise<void> {
   const db = await getDb()
   await db.update(namedWorkflows).set(patch).where(eq(namedWorkflows.id, id))
+  notifyWorkspaceListChanged()
 }
 
 /** Make exactly `ids` the project's init workflows. */
@@ -123,6 +129,7 @@ export async function setInitWorkflows(projectId: string, ids: string[]): Promis
   await db.update(namedWorkflows)
     .set({ init: ids.length > 0 ? inArray(namedWorkflows.id, ids) : sql`false` })
     .where(eq(namedWorkflows.projectId, projectId))
+  notifyWorkspaceListChanged()
 }
 
 /** Delete a named workflow and its approvals; the workflows stay while
@@ -130,6 +137,8 @@ export async function setInitWorkflows(projectId: string, ids: string[]): Promis
 export async function deleteNamedWorkflow(id: string): Promise<void> {
   const db = await getDb()
   await db.delete(namedWorkflows).where(eq(namedWorkflows.id, id))
+  await releaseOwnedGroups({ kind: 'workflow', id })
+  notifyWorkspaceListChanged()
 }
 
 /** Delete a project's named workflows and workflows, once nothing else of
@@ -138,6 +147,7 @@ export async function deleteProjectWorkflows(projectId: string): Promise<void> {
   const db = await getDb()
   await db.delete(namedWorkflows).where(eq(namedWorkflows.projectId, projectId))
   await db.delete(workflows).where(eq(workflows.projectId, projectId))
+  notifyWorkspaceListChanged()
 }
 
 /**

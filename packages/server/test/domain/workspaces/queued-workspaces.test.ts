@@ -34,7 +34,7 @@ import {
   updateQueuedWorkspace,
 } from '#domain/workspaces'
 import { clearQueuedLaunchesForTests, startQueuedChildren } from '#domain/workspaces/queued-workspaces'
-import { createWorkflow, editWorkflow } from '#domain/projects'
+import { createWorkflow, editWorkflow, listProjectWorkflows, setRunSecret } from '#domain/projects'
 import {
   clearAllProvisioningForTests,
   listProvisioning,
@@ -66,6 +66,7 @@ import { insertRepo, linkProjectRepo, unlinkProjectRepo } from '#db/repo-store'
 import { getProjectWorkspaceRows, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir, createTestRepo } from '@yaac/test-utils/setup'
+import { git } from '@yaac/test-utils/git'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
 import { projectDir, repoDir } from '@yaac/shared/project-paths'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
@@ -139,6 +140,14 @@ async function workspace(
 const startsAt = (branch: string): RepoSelection => ({ repos: [{ repo: PROJ, branch }], nested: false, cwd: PROJ })
 
 /** Wait for every detached launch to have reached the create. */
+/** Give the project's repo an origin at its head, as a clone has, and
+ *  skip the fetch a launch on secrets makes; answers that commit. */
+async function originAtHead(): Promise<string> {
+  await git(repoDir(PROJ), ['update-ref', 'refs/remotes/origin/master', 'HEAD'])
+  vi.stubEnv('YAAC_E2E_SKIP_FETCH', '1')
+  return (await git(repoDir(PROJ), ['rev-parse', 'HEAD'])).trim()
+}
+
 const launched = (n: number): Promise<void> =>
   vi.waitFor(() => { expect(mockCreate).toHaveBeenCalledTimes(n) })
 
@@ -193,6 +202,55 @@ describe('queueWorkspace', () => {
     await createWorkflow(local, PROJ, { name: 'everywhere', steps: { t: { run: 'true' } }, repos: [PROJ] })
     await expect(queueWorkspace(local, PROJ, { parent: 'parent-1', prompt: 'w', workflow: 'everywhere', repos: [] }, 'user'))
       .rejects.toThrow('runs in')
+  })
+
+  it('files an unattended run of a named workflow in its group; a person\'s save lets its launch approve the commit it runs', async () => {
+    const agent = { kind: 'workspace', workspaceId: 'w1', userId: BUILT_IN_USER_ID } as const
+    const tip = await originAtHead()
+    await setRunSecret(local, PROJ, { name: 'P8_KEY', value: 'pem' })
+    await createWorkflow(local, PROJ, { name: 'relay', steps: { t: { run: 'true' } }, secrets: ['P8_KEY'] })
+    const relay = async () => (await listProjectWorkflows(PROJ))[0]
+    const later = { start: { inMinutes: 60 }, nonInteractive: true, workflow: 'relay' } as const
+
+    // An agent's save on a start no person approved is refused, making no group.
+    await expect(queueWorkspace(agent, PROJ, later, { ceiling: 'bypass' })).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    expect(await listWorkspaceGroupRows(PROJ)).toEqual([])
+    // An interactive one gets no secrets, so an agent may queue it, and a
+    // person's queue of one approves nothing.
+    await queueWorkspace(agent, PROJ, { start: { inMinutes: 60 }, prompt: 'look', workflow: 'relay' }, { ceiling: 'bypass' })
+    expect((await queueWorkspace(local, PROJ, { start: { inMinutes: 60 }, prompt: 'look', workflow: 'relay' }, 'user')).groupId)
+      .toBeUndefined()
+
+    // A person's save approves no branch: it marks the entry, in the
+    // workflow's own group.
+    const entry = await queueWorkspace(local, PROJ, later, 'user')
+    expect((await getQueuedWorkspaceRow(entry.id))?.personSaved).toBe(true)
+    expect((await listWorkspaceGroupRows(PROJ)).find((g) => g.groupId === entry.groupId))
+      .toMatchObject({ name: 'relay', ownerKind: 'workflow', ownerId: (await relay()).id })
+    expect(await relay()).toMatchObject({ approvedBranches: [], approvedCommits: [] })
+    expect((await queueWorkspace(local, PROJ, later, 'user')).groupId).toBe(entry.groupId)
+    expect((await queueWorkspace(local, PROJ, { ...later, group: null }, 'user')).groupId).toBeUndefined()
+
+    // Its launch, as the server, approves the one commit it runs.
+    await runQueuedWorkspace(local, entry.id)
+    await launched(1)
+    expect(await relay()).toMatchObject({ approvedBranches: [], approvedCommits: [tip] })
+  })
+
+  it('keeps who saved an entry\'s workflow and start through an edit of anything else', async () => {
+    const agent = { kind: 'workspace', workspaceId: 'w1', userId: BUILT_IN_USER_ID } as const
+    // An agent queues a workflow that has no secrets yet, so nothing is checked.
+    await createWorkflow(local, PROJ, { name: 'relay', steps: { t: { run: 'true' } } })
+    const entry = await queueWorkspace(agent, PROJ, { start: { inMinutes: 60 }, nonInteractive: true, workflow: 'relay' }, { ceiling: 'bypass' })
+    expect((await getQueuedWorkspaceRow(entry.id))?.personSaved).toBe(false)
+    await setRunSecret(local, PROJ, { name: 'P8_KEY', value: 'pem' })
+    await editWorkflow(local, PROJ, 'relay', { steps: { t: { run: 'true' } }, secrets: ['P8_KEY'] })
+    // The owner retitling it approves nothing the agent chose.
+    await updateQueuedWorkspace(local, entry.id, { title: 'renamed' }, 'user')
+    expect((await getQueuedWorkspaceRow(entry.id))?.personSaved).toBe(false)
+    // Changing its start is the owner's own say.
+    await updateQueuedWorkspace(local, entry.id, { commit: await originAtHead() }, 'user')
+    expect((await getQueuedWorkspaceRow(entry.id))?.personSaved).toBe(true)
   })
 
   // The parent's model is as its agent reported it, which anything in that

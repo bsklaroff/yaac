@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, isNotNull, isNull, lt, or } from 'drizzle-orm'
 import { getDb } from './client'
+import { releaseOwnedGroups } from './group-store'
 import { queuedWorkspaces, routines, workspaceLives, workspaces } from './schema'
 import { currentLife } from './current-life'
 import { notifyWorkspaceListChanged } from '#lib/notify'
@@ -61,9 +62,17 @@ function columns(f: RoutineFields): Omit<typeof routines.$inferInsert, 'projectI
   }
 }
 
-export async function insertRoutine(projectId: string, fields: RoutineFields, nextRunAt: Date | null): Promise<RoutineRow> {
+/** Insert a routine, under `id` when its caller needed the id first (to
+ *  make the group it owns). */
+export async function insertRoutine(
+  projectId: string,
+  fields: RoutineFields,
+  nextRunAt: Date | null,
+  id?: string,
+): Promise<RoutineRow> {
   const db = await getDb()
-  const [row] = await db.insert(routines).values({ projectId, ...columns(fields), nextRunAt }).returning()
+  const [row] = await db.insert(routines).values({ projectId, ...columns(fields), nextRunAt, ...(id !== undefined ? { id } : {}) })
+    .returning()
   notifyWorkspaceListChanged()
   return toRow(row)
 }
@@ -117,6 +126,7 @@ export async function listRoutineRows(projectId?: string): Promise<RoutineRow[]>
 export async function deleteRoutine(id: string): Promise<boolean> {
   const db = await getDb()
   const rows = await db.delete(routines).where(eq(routines.id, id)).returning({ id: routines.id })
+  await releaseOwnedGroups({ kind: 'routine', id })
   notifyWorkspaceListChanged()
   return rows.length > 0
 }

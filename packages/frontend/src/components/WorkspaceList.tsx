@@ -26,11 +26,14 @@ import type {
   ProvisioningWorkspaceEntry,
   QueuedWorkspaceEntry,
   RoutineEntry,
+  SiteSummary,
+  WorkflowSummary,
   WorkspaceGroupSummary,
   WorkspaceListEntry,
 } from '@yaac/shared/types'
 import {
   DraftsSection,
+  SidebarSection,
   QueueContext,
   QueuedRows,
   QueuedSet,
@@ -39,7 +42,7 @@ import {
   type QueueContextValue,
   type QueueParent,
 } from '#components/sidebar/QueuedRows'
-import { RoutinesSection } from '#components/sidebar/RoutineRows'
+import { RoutineItem, SiteItem, WorkflowItem, type OwnedGroupProps } from '#components/sidebar/ObjectRows'
 import {
   isTerminating,
   ProvisioningRow,
@@ -127,9 +130,26 @@ export interface ProjectScope {
   held: HeldWorkspaceEntry[]
   drafts: DraftWorkspaceEntry[]
   routines: RoutineEntry[]
+  workflows: WorkflowSummary[]
+  sites: SiteSummary[]
   /** Hosts that rejected a git credential of one of the project's repos
    *  (project-wide). */
   gitAuthFailures: GitAuthFailure[]
+}
+
+/**
+ * The groups drawn under their owner's row rather than as sections of
+ * their own: those a named workflow, routine or site of the list owns
+ * (docs/workspace-groups.md "Owned groups"). One whose owner is gone is an
+ * ordinary group again.
+ */
+export function ownedGroupIds(
+  groups: WorkspaceGroupSummary[],
+  owners: Pick<ProjectScope, 'workflows' | 'routines' | 'sites'>,
+): Set<string> {
+  const ids = { workflow: owners.workflows, routine: owners.routines, site: owners.sites }
+  return new Set(groups.filter((g) => g.owner !== undefined && ids[g.owner.kind].some((o) => o.id === g.owner?.id))
+    .map((g) => g.groupId))
 }
 
 /** The list header's title: the project's actions menu, or the app name
@@ -249,18 +269,19 @@ export function sidebarRowIds(
   workspaces: WorkspaceListEntry[],
   groups: WorkspaceGroupSummary[],
   pendingDeleteIds: string[],
+  owned: ReadonlySet<string> = new Set(),
 ): string[] {
-  // Derived from the layout so it always matches what is drawn.
+  // Derived from the layout so it always matches what is drawn: the owned
+  // groups' runs head the list, under their owners' rows.
   const layout = sidebarLayout(workspaces, groups, provisioning)
   const selectable = (list: WorkspaceListEntry[]): string[] =>
     list.filter((w) => !isTerminating(w, pendingDeleteIds)).map((w) => w.workspaceId)
+  const rows = (s: SidebarGroupSection): string[] => [...s.provisioning.map((p) => p.workspaceId), ...selectable(s.members)]
   return [
+    ...layout.groups.filter((s) => owned.has(s.group.groupId)).flatMap(rows),
     ...layout.provisioning.map((p) => p.workspaceId),
     ...selectable(layout.defaultList),
-    ...layout.groups.flatMap((s) => [
-      ...s.provisioning.map((p) => p.workspaceId),
-      ...selectable(s.members),
-    ]),
+    ...layout.groups.filter((s) => !owned.has(s.group.groupId)).flatMap(rows),
   ]
 }
 
@@ -366,6 +387,8 @@ export function WorkspaceList({
   held,
   drafts,
   routines,
+  workflows,
+  sites,
 }: {
   projectId: string | null
   /** The active project's stopped counts, from the snapshot. */
@@ -381,6 +404,8 @@ export function WorkspaceList({
   /** The active project's draft workspaces. */
   drafts: DraftWorkspaceEntry[]
   routines: RoutineEntry[]
+  workflows: WorkflowSummary[]
+  sites: SiteSummary[]
 }): JSX.Element {
   // Keeps stopping rows out of `rowIds`.
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
@@ -415,22 +440,37 @@ export function WorkspaceList({
   const filtering = statuses.length > 0
   const narrowed = searching || filtering
   const shown = narrowRows(query, statuses, { workspaces, provisioning, queued, held, drafts })
-  const layout = sidebarLayout(shown.workspaces, groups, shown.provisioning, shown.queued, shown.held)
-  // A status filter hides rows with no status: orphans, scheduled entries
-  // and routines.
+  // An owned group is laid out whatever it holds, since its owner's row is
+  // always drawn and its stopped runs are its owner's history.
+  const ownedIds = ownedGroupIds(groups, { workflows, routines, sites })
+  const layout = sidebarLayout(shown.workspaces, groups.map((g) => (ownedIds.has(g.groupId) ? { ...g, pinned: true } : g)),
+    shown.provisioning, shown.queued, shown.held)
+  // A status filter hides rows with no status: orphans and scheduled
+  // entries.
   const orphans = filtering ? [] : layout.orphans
   const scheduled = filtering ? [] : layout.scheduled
   const q = query.trim().toLowerCase()
-  const shownRoutines = filtering ? [] : routines.filter((r) => `${r.name}\n${r.prompt}`.toLowerCase().includes(q))
-  const sections = narrowed
+  const allSections = narrowed
     ? layout.groups.filter((s) => s.provisioning.length + s.members.length + s.held.length + s.waiting.length > 0)
     : layout.groups
+  const sections = allSections.filter((s) => !ownedIds.has(s.group.groupId))
+  const ownedSection = (kind: 'workflow' | 'routine' | 'site', id: string): SidebarGroupSection | undefined =>
+    allSections.find((s) => s.group.owner?.kind === kind && s.group.owner.id === id && ownedIds.has(s.group.groupId))
+  // Narrowed, an object shows when its name matches the search or its runs
+  // match; a status filter, only for its runs.
+  const objectShown = (kind: 'workflow' | 'routine' | 'site', id: string, text: string): boolean =>
+    !narrowed || ownedSection(kind, id) !== undefined || (!filtering && text.toLowerCase().includes(q))
+  const shownWorkflows = workflows.filter((w) => objectShown('workflow', w.id, w.name))
+  const shownRoutines = routines.filter((r) => objectShown('routine', r.id, `${r.name}\n${r.prompt}`))
+  const shownSites = sites.filter((st) => objectShown('site', st.id, `${st.name}\n${st.hostname}`))
 
-  const owning = new Set(sections.filter((s) => groupDisplay(s, {
+  // An owned group's stopped runs are its owner's history, kept under its
+  // row whether shown or not, so the Stopped section never lists them.
+  const owning = new Set([...ownedIds, ...allSections.filter((s) => groupDisplay(s, {
     collapsed: collapsedGroups.includes(s.group.groupId),
     showStopped: stoppedShownGroups.includes(s.group.groupId),
     narrowed,
-  }).ownsGhosts).map((s) => s.group.groupId))
+  }).ownsGhosts).map((s) => s.group.groupId)])
   // Stopped workspaces with a row elsewhere, held or restarting. The server
   // leaves them out of the stopped lists, so each total counts only what it
   // lists. Live ids are left out on this side too, where a just-stopped
@@ -491,15 +531,23 @@ export function WorkspaceList({
   // the narrowing moved there returns to its group once it clears.
   const selectedRow = selectedLive ?? selectedProvisioning ?? selectedHeld
   const revealTarget = selectedRow?.groupId !== undefined ? `group:${selectedRow.groupId}`
+    : selectedStopped?.groupId !== undefined && ownedIds.has(selectedStopped.groupId) ? `runs:${selectedStopped.groupId}`
     : selectedStopped && !owning.has(selectedStopped.groupId ?? '') ? 'stopped' : null
   const revealed = useRef<string | null>(null)
+  const setGroupShowsStopped = useUiStore((s) => s.setGroupShowsStopped)
   useEffect(() => {
     const key = `${selectedId ?? ''} ${revealTarget ?? ''}`
     if (revealed.current === key || (revealTarget === 'stopped' && narrowed)) return
     revealed.current = key
     if (revealTarget === 'stopped') setStoppedExpanded(true)
-    else if (revealTarget !== null) setGroupCollapsed(revealTarget.slice('group:'.length), false)
-  }, [selectedId, revealTarget, narrowed, setStoppedExpanded, setGroupCollapsed])
+    else if (revealTarget?.startsWith('runs:') === true) {
+      // A stopped run of a workflow, routine or site shows among its
+      // owner's stopped runs.
+      const groupId = revealTarget.slice('runs:'.length)
+      setGroupShowsStopped(groupId, true)
+      setGroupCollapsed(groupId, false)
+    } else if (revealTarget !== null) setGroupCollapsed(revealTarget.slice('group:'.length), false)
+  }, [selectedId, revealTarget, narrowed, setStoppedExpanded, setGroupCollapsed, setGroupShowsStopped])
   // A stopped selection the Stopped section lists, but on a page not loaded
   // yet, is pinned to the section's top until its page loads. A search's
   // placeholder rows are another query's, so it waits for its own.
@@ -509,10 +557,10 @@ export function WorkspaceList({
   const stoppedList = pinned ? { ...stopped, entries: [pinned, ...stopped.entries] } : stopped
 
   // So a stop from a row's menu can select the next row.
-  const rowIds = sidebarRowIds(provisioning, workspaces, groups, pendingDeleteIds)
+  const rowIds = sidebarRowIds(provisioning, workspaces, groups, pendingDeleteIds, ownedIds)
   // Every queued row nests under a counted row or is an orphan.
   const visibleCount = layout.defaultList.length + layout.defaultHeld.length + orphans.length + scheduled.length
-    + shownRoutines.length
+    + shownRoutines.length + shownWorkflows.length + shownSites.length
     + sections.reduce((n, s) => n + s.members.length + s.held.length + s.waiting.length, 0)
   const nothingLive = visibleCount === 0 && shown.provisioning.length === 0 && shown.drafts.length === 0
   // Names of possible parents, for a queued row's discard dialog.
@@ -611,6 +659,22 @@ export function WorkspaceList({
   // The groups a row's dialog offers: those on screen, the same targets a
   // drag has.
   const shownGroups = layout.groups.map((s) => s.group)
+  /** The section props of an object's owned group, when it is laid out. */
+  const groupProps = (kind: 'workflow' | 'routine' | 'site', id: string): OwnedGroupProps | undefined => {
+    const section = ownedSection(kind, id)
+    return section === undefined ? undefined : {
+      section,
+      shownGroups,
+      drag: rowDrag,
+      rowIds,
+      dropTarget: dropTarget(section.group.groupId),
+      zoneRef: zoneRef(section.group.groupId),
+      narrowed,
+      elsewhere,
+      hidden,
+      ...(dropNotice?.groupId === section.group.groupId ? { notice: dropNotice.message } : {}),
+    }
+  }
 
   /** The open workspace's row when the search or filter hides it, else null.
    *  A stopped one is hidden when the filter leaves out the Stopped list, or
@@ -697,7 +761,7 @@ export function WorkspaceList({
                 : 'Pick a project from the rail on the left.'}
             />
           )}
-          {projectId && !narrowed && routines.length === 0
+          {projectId && !narrowed && routines.length + workflows.length + sites.length === 0
             && !projectHasWorkspaces(projectId, { workspaces, provisioning, queued, held, drafts }, project?.stoppedCount ?? 0)
             && (
             <EmptyState
@@ -736,7 +800,21 @@ export function WorkspaceList({
           )}
           {shown.drafts.length > 0 && <DraftsSection drafts={shown.drafts} />}
           {scheduled.length > 0 && <ScheduledSection entries={scheduled} />}
-          {shownRoutines.length > 0 && <RoutinesSection routines={shownRoutines} />}
+          {shownWorkflows.length > 0 && (
+            <SidebarSection label="Workflows" count={shownWorkflows.length}>
+              {shownWorkflows.map((w) => <WorkflowItem key={w.id} workflow={w} group={groupProps('workflow', w.id)} />)}
+            </SidebarSection>
+          )}
+          {shownRoutines.length > 0 && (
+            <SidebarSection label="Routines" count={shownRoutines.length}>
+              {shownRoutines.map((r) => <RoutineItem key={r.id} routine={r} group={groupProps('routine', r.id)} />)}
+            </SidebarSection>
+          )}
+          {shownSites.length > 0 && (
+            <SidebarSection label="Sites" count={shownSites.length}>
+              {shownSites.map((st) => <SiteItem key={st.id} site={st} group={groupProps('site', st.id)} />)}
+            </SidebarSection>
+          )}
           {orphans.map((e) => (
             <Fragment key={e.id}>
               <QueuedWorkspaceRow entry={e} depth={0} />

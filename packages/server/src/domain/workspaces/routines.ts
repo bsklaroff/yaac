@@ -12,10 +12,11 @@
  * (docs/workflows.md) approves, when a person saves it, the commit or branch
  * it runs on; an agent's must find that approved already.
  */
-import { resolveParentlessSettings, runQueuedWorkspace, type QueueSource } from './queued-workspaces'
+import { randomUUID } from 'node:crypto'
+import { ownedGroup } from './groups'
+import { resolveParentlessSettings, runQueuedWorkspace, type QueueSource, type SavedStart } from './queued-workspaces'
 import { authorizeProject, type Actor } from '#domain/access'
-import { getDefaultBranch } from '#domain/git'
-import { approveWorkflowStart, assertWorkflowRepos } from '#domain/projects'
+import { approveWorkflowStart } from '#domain/projects'
 import { modelDisplayName } from '#domain/auth'
 import {
   deleteQueuedWorkspace,
@@ -41,7 +42,6 @@ import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
 import { cronError, formatInZone, isTimeZone, latestCronRun, nextCronRuns } from '@yaac/shared/schedule'
 import { formatUtcTimestamp } from '@yaac/shared/time'
-import { repoDir } from '@yaac/shared/project-paths'
 import {
   ROUTINE_RUNS_PAGE_MAX,
   type RepoSelection,
@@ -59,8 +59,12 @@ export async function createRoutine(
   source: QueueSource,
 ): Promise<RoutineEntry> {
   await authorizeProject(principal, projectId)
-  const fields = await resolveRoutine(principal, projectId, request, source)
-  const row = await insertRoutine(projectId, fields, nextTick(fields.cron, fields.timeZone, new Date()))
+  // With no group named, the routine's runs go in a group of its own.
+  const fields = await resolveRoutine(principal, projectId, request.group === undefined ? { ...request, group: null } : request, source)
+  const id = randomUUID()
+  const groupId = request.group === undefined ? await ownedGroup(projectId, { kind: 'routine', id }, fields.name) : fields.groupId
+  const row = await insertRoutine(projectId, { ...fields, ...(groupId !== undefined ? { groupId } : {}) },
+    nextTick(fields.cron, fields.timeZone, new Date()), id)
   return (await toEntries([row]))[0]
 }
 
@@ -108,7 +112,7 @@ export async function updateRoutine(
       : !retooled && patch.model === undefined && row.effort !== undefined ? { effort: row.effort } : {}),
     ...(retooled ? patch.agentOptions !== undefined ? { agentOptions: patch.agentOptions } : {}
       : { agentOptions: { ...row.agentOptions, ...patch.agentOptions } }),
-  }, source, { repos: row.repos, nested: row.nested, cwd: row.cwd })
+  }, source, { repos: row.repos, nested: row.nested, cwd: row.cwd }, row)
   const rescheduled = fields.cron !== row.cron || fields.timeZone !== row.timeZone
   const updated = await updateRoutineRow(id, fields,
     rescheduled && !row.paused ? nextTick(fields.cron, fields.timeZone, new Date()) : undefined)
@@ -259,12 +263,12 @@ function nextTick(cron: string, timeZone: string, from: Date): Date | null {
 
 /**
  * Check and resolve a routine's fields. The zone defaults to the project
- * owner's, else UTC; a create that names no group files runs under one
- * named after the routine, made if need be. Its named workflow's current
- * graph is checked as its runs' steps and against its repos, and the
- * commit or branch each repo of its runs starts at approved for it
- * (`approveWorkflowStart`). On an edit, `own` is what its runs start with
- * now.
+ * owner's, else UTC; a create that names no group gets a group of its own
+ * from `createRoutine`. Its named workflow's current graph is checked as
+ * its runs' steps and against its repos, and, for an unattended routine
+ * whose workflow or start a person changes, the commit or branch each repo
+ * of its runs starts at approved for it. On an edit, `own` is what its
+ * runs start with now, and `kept` the workflow and start it was saved with.
  */
 async function resolveRoutine(
   principal: Actor,
@@ -272,6 +276,7 @@ async function resolveRoutine(
   request: RoutineSettings,
   source: QueueSource,
   own?: RepoSelection,
+  kept?: SavedStart,
 ): Promise<RoutineFields> {
   const cron = request.cron.trim()
   const invalid = cronError(cron)
@@ -279,7 +284,7 @@ async function resolveRoutine(
   const timeZone = request.timeZone ?? await ownerTimeZone(projectId)
   if (!isTimeZone(timeZone)) throw new ServerError('VALIDATION', `'${timeZone}' is not an IANA time zone`)
   const name = request.name.trim()
-  const settings = await resolveParentlessSettings(projectId, {
+  const settings = await resolveParentlessSettings(principal, projectId, {
     ...(request.prompt !== undefined ? { prompt: request.prompt } : {}),
     ...(request.repos !== undefined ? { repos: request.repos } : {}),
     ...(request.nested !== undefined ? { nested: request.nested } : {}),
@@ -294,8 +299,8 @@ async function resolveRoutine(
     ...(request.effort !== undefined ? { effort: request.effort } : {}),
     ...(request.agentOptions !== undefined ? { agentOptions: request.agentOptions } : {}),
     ...(request.branch !== undefined ? { branch: request.branch } : {}),
-    group: request.group !== undefined ? request.group : name,
-  }, source, own)
+    ...(request.group !== undefined ? { group: request.group } : {}),
+  }, source, own, kept)
   const fields: RoutineFields = {
     name,
     cron,
@@ -315,13 +320,11 @@ async function resolveRoutine(
     ...(settings.groupId !== undefined ? { groupId: settings.groupId } : {}),
     ...(request.timeout != null ? { timeoutMinutes: request.timeout } : {}),
   }
-  if (settings.namedWorkflowId !== undefined) {
-    const named = await getNamedWorkflow(settings.namedWorkflowId)
-    if (named !== undefined) {
-      await assertWorkflowRepos(projectId, `workflow "${named.name}"`, named.workflow.repos, settings.repos.map((r) => r.repo))
-    }
-    await approveWorkflowStart(principal, settings.namedWorkflowId, await Promise.all(settings.repos.map(async (r) => (
-      r.commit !== undefined ? r : { repo: r.repo, branch: r.branch ?? await getDefaultBranch(repoDir(r.repo)) }))))
+  // A person saving an unattended routine's workflow or start approves the
+  // commit or branch each repo starts at, since every run launches later as
+  // the server.
+  if (settings.personSaved === true && settings.namedWorkflowId !== undefined) {
+    await approveWorkflowStart(principal, settings.namedWorkflowId, settings.repos)
   }
   return fields
 }

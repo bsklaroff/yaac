@@ -98,7 +98,7 @@ async function due(id: string, at: Date): Promise<void> {
 const runsOf = async (id: string) => (await listQueuedWorkspaceRows(PROJ)).filter((e) => e.routineId === id)
 
 describe('createRoutine', () => {
-  it('resolves its settings, reads the cron in the owner\'s zone, and files runs under a group named after it', async () => {
+  it('resolves its settings, reads the cron in the owner\'s zone, and files runs under a group of its own', async () => {
     await setTimeZone(BUILT_IN_USER_ID, 'Asia/Tokyo', true)
     const r = await routine()
     expect(r).toMatchObject({ name: 'Nightly triage', timeZone: 'Asia/Tokyo', tool: 'claude', paused: false })
@@ -106,7 +106,10 @@ describe('createRoutine', () => {
     expect(r.timeoutMinutes).toBeUndefined()
     expect(r.nextRuns).toEqual(nextCronRuns('0 9 * * *', 'Asia/Tokyo', new Date(), 3).map((d) => d.toISOString()))
     const groups = await listWorkspaceGroupRows(PROJ)
-    expect(groups.find((g) => g.groupId === r.groupId)?.name).toBe('Nightly triage')
+    expect(groups.find((g) => g.groupId === r.groupId)).toMatchObject({ name: 'Nightly triage', ownerKind: 'routine', ownerId: r.id })
+    // A second of the same name gets its own, rather than joining the first's.
+    const twin = await routine()
+    expect(twin.groupId).not.toBe(r.groupId)
 
     // A named group, or none, is kept as given.
     expect((await routine({ name: 'Other', group: null })).groupId).toBeUndefined()
@@ -136,6 +139,15 @@ describe('createRoutine on a workflow', () => {
     const commit = (await git(repoDir(PROJ), ['rev-parse', 'origin/main'])).trim()
     await relayRoutine(local, { name: 'Two', repos: [{ repo: PROJ, branch: 'dev' }, { repo: 'docs', commit }] })
     expect((await listProjectWorkflows(PROJ))[0]).toMatchObject({ approvedCommits: [commit], approvedBranches: expect.arrayContaining(['demo@dev']) as unknown })
+    // An interactive routine's runs get no secrets, so saving one approves
+    // nothing, and an edit leaving the workflow and start alone approves
+    // nothing either.
+    const before = (await listProjectWorkflows(PROJ))[0]
+    await relayRoutine(local, { name: 'Look', nonInteractive: false, prompt: 'look', repos: [{ repo: PROJ, branch: 'other' }] })
+    await updateRoutine(local, r.id, { name: 'Relay renamed' }, 'user')
+    expect((await listProjectWorkflows(PROJ))[0]).toMatchObject({
+      approvedCommits: before.approvedCommits, approvedBranches: before.approvedBranches,
+    })
     // A routine whose workflow runs in a repo its runs lack is refused at save.
     await createWorkflow(local, PROJ, { name: 'docs-ci', steps: { t: { run: 'true' } }, repos: ['docs'] })
     await expect(relayRoutine(local, { name: 'Lacks', workflow: 'docs-ci', repos: [{ repo: PROJ, branch: 'main' }] }))
@@ -308,6 +320,8 @@ describe('deleteRoutine', () => {
     const after = await queueWorkspace(local, PROJ, { parent: run.id, prompt: 'follow up', branch: 'main' }, 'user')
     await deleteRoutine(local, r.id)
     expect(await getRoutineRow(r.id)).toBeUndefined()
+    // Its group stays, an ordinary one now, holding its runs.
+    expect((await listWorkspaceGroupRows(PROJ)).find((g) => g.groupId === r.groupId)).toMatchObject({ ownerKind: null, ownerId: null })
     expect((await listQueuedWorkspaceRows(PROJ)).filter((e) => e.prompt === 'triage the issues')).toEqual([])
     // What was queued after the discarded run takes its past start time,
     // but waits for the user rather than launching on the next pass.

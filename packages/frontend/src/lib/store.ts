@@ -477,9 +477,14 @@ export function resolveVacantSelection(args: {
   return rowIds[0] ?? null
 }
 
-/** Sections of the settings modal (left-nav entries). */
+/** Pages of the settings modal's Project group, for the project it picks. */
+export type ProjectPage = 'general' | 'env' | 'network' | 'storage' | 'image'
+
+/** Sections of the settings modal (left-nav entries): the Account group's,
+ *  then one per project page. */
 export type SettingsSection =
-  | 'general' | 'shortcuts' | 'credentials' | 'repos' | 'project' | 'skills' | 'userDockerfile' | 'users'
+  | 'general' | 'shortcuts' | 'credentials' | 'repos' | 'skills' | 'userDockerfile' | 'users'
+  | `project-${ProjectPage}`
 
 /** Which add-project form is open: clone a remote, or create a project
  *  whose remote yaac hosts. */
@@ -534,12 +539,12 @@ interface UiState {
   activeProjectId: string | null
   /** Workspace shown in the main pane. */
   selectedWorkspaceId: string | null
-  /** The routine shown in the main pane instead (docs/routines.md), while
-   *  no workspace is selected. Anything that selects a workspace or opens
-   *  the new-workspace pane clears it. */
-  selectedRoutineId: string | null
-  /** Show a routine's pane. */
-  openRoutine: (projectId: string, routineId: string) => void
+  /** The routine, named workflow or site shown in the main pane instead,
+   *  while no workspace is selected. Anything that selects a workspace or
+   *  opens the new-workspace pane clears it. */
+  selectedObject: SelectedObject | null
+  /** Show a routine's, workflow's or site's pane. */
+  openObject: (projectId: string, object: SelectedObject) => void
   /** The workspace last open in each project, which switching back to the
    *  project reopens (`resolveVacantSelection`). */
   lastWorkspaceOf: Record<string, string>
@@ -701,8 +706,9 @@ interface UiState {
    *  picker open, when opened from "Add git authentication". Cleared on
    *  close. */
   settingsFocusRepo: string | null
-  /** Project the project-scoped sections (Project Config, Skills) show, one
-   *  pick shared by both; null follows the active project. Cleared on close. */
+  /** Project the project-scoped sections (the Project pages, Skills) show,
+   *  one pick shared by all; null follows the active project. Cleared on
+   *  close. */
   settingsProjectId: string | null
   setSettingsProjectId: (projectId: string) => void
   /** Open settings, optionally onto a section, tool or repo. Without args
@@ -908,19 +914,30 @@ function navigate(go: () => void): void {
   else useUiStore.setState({ leaving: { draft, leave } })
 }
 
+/** A sidebar object with a pane of its own (`selectedObject`). */
+export interface SelectedObject {
+  kind: 'routine' | 'workflow' | 'site'
+  /** A routine's or workflow's id, or a site's name (unique in its
+   *  project, and all a create answers); '' for a workflow or site not
+   *  made yet, whose pane is its form. */
+  id: string
+  /** Open on its editor. */
+  edit?: true
+}
+
 export const useUiStore = create<UiState>((set, get) => ({
   snapshot: undefined,
   viewedUserId: null,
   viewUser: (userId, projectId) => navigate(() => set({
-    viewedUserId: userId, activeProjectId: projectId, selectedWorkspaceId: null, selectedRoutineId: null, sidebarQuery: '',
+    viewedUserId: userId, activeProjectId: projectId, selectedWorkspaceId: null, selectedObject: null, sidebarQuery: '',
   })),
   activeProjectId: initialSelection.projectId,
   selectedWorkspaceId: initialSelection.workspaceId,
-  selectedRoutineId: null,
-  openRoutine: (projectId, routineId) => navigate(() => set((s) => ({
+  selectedObject: null,
+  openObject: (projectId, object) => navigate(() => set((s) => ({
     activeProjectId: projectId,
     selectedWorkspaceId: null,
-    selectedRoutineId: routineId,
+    selectedObject: object,
     newWorkspace: null,
     focusNonce: s.focusNonce + 1,
     mobileScreen: 'pane',
@@ -984,14 +1001,15 @@ export const useUiStore = create<UiState>((set, get) => ({
     const show = (form: NewWorkspaceForm | null): void => set((s) => ({
       activeProjectId: opts.projectId,
       selectedWorkspaceId: null,
-      selectedRoutineId: null,
+      selectedObject: null,
       newWorkspace: form,
       focusNonce: s.focusNonce + 1,
       mobileScreen: 'pane',
     }))
     const kept = get().newWorkspace
     const blank = opts.parent === undefined && opts.draftId === undefined && opts.editId === undefined
-      && opts.routineId === undefined && opts.inWorkspace === undefined
+      && opts.routineId === undefined && opts.inWorkspace === undefined && opts.kind === undefined
+      && opts.workflow === undefined
     if (blank && kept?.projectId === opts.projectId && kept.editId === undefined && kept.draftId === undefined
       && kept.editRoutineId === undefined) {
       show(kept)
@@ -1124,7 +1142,7 @@ export const useUiStore = create<UiState>((set, get) => ({
     const go = (): void => set({
       activeProjectId: projectId,
       selectedWorkspaceId: null,
-      selectedRoutineId: null,
+      selectedObject: null,
       sidebarQuery: '',
       mobileScreen: projectId ? 'workspaces' : 'projects',
     })
@@ -1132,24 +1150,24 @@ export const useUiStore = create<UiState>((set, get) => ({
     else navigate(go)
   },
   restoreActiveProject: (projectId) => set({
-    activeProjectId: projectId, selectedWorkspaceId: null, selectedRoutineId: null, sidebarQuery: '',
+    activeProjectId: projectId, selectedWorkspaceId: null, selectedObject: null, sidebarQuery: '',
   }),
   // A deselect (null) doesn't change the mobile screen.
   selectWorkspace: (id) => {
     const go = (): void => set((s) => ({
       selectedWorkspaceId: id,
-      selectedRoutineId: null,
+      selectedObject: null,
       focusNonce: s.focusNonce + 1,
       mobileScreen: id ? 'pane' : s.mobileScreen,
     }))
     if (id === null) go()
     else navigate(go)
   },
-  autoSelectWorkspace: (id) => set((s) => ({ selectedWorkspaceId: id, selectedRoutineId: null, focusNonce: s.focusNonce + 1 })),
+  autoSelectWorkspace: (id) => set((s) => ({ selectedWorkspaceId: id, selectedObject: null, focusNonce: s.focusNonce + 1 })),
   openWorkspace: (projectId, workspaceId) => navigate(() => set((s) => ({
     activeProjectId: projectId,
     selectedWorkspaceId: workspaceId,
-    selectedRoutineId: null,
+    selectedObject: null,
     focusNonce: s.focusNonce + 1,
     mobileScreen: 'pane',
   }))),

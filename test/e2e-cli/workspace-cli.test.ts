@@ -959,7 +959,7 @@ describe('with seeded projects', () => {
       expect(gone.stderr).toContain('No routine')
     })
 
-    it('schedules --non-interactive --steps at a --commit, runs a routine on a --workflow, and refuses options that cannot mix', async () => {
+    it('schedules --non-interactive --steps or --workflow at a --commit, runs a routine on a --workflow, and refuses options that cannot mix', async () => {
       const sha = (await git(path.join(testEnv.scratchDir, NAME), ['rev-parse', 'HEAD'])).trim()
       const stepsFile = path.join(testEnv.scratchDir, 'ci-steps.json')
       await fs.writeFile(stepsFile, JSON.stringify({ check: { run: 'true' } }))
@@ -1024,6 +1024,23 @@ describe('with seeded projects', () => {
       expect(after).toMatchObject({ workflow: 'lint' })
       expect(after?.selection.repos).toEqual([{ repo: repoId, branch: 'master' }])
       await runYaac(testEnv.env, 'routine', 'delete', id)
+
+      // A scheduled workspace runs a named workflow too, filed in the
+      // workflow's own group.
+      const scheduled = await runYaac(testEnv.env, 'workspace', 'create', NAME, '--non-interactive',
+        '--workflow', 'ci', '--commit', sha, '--start-in', '2h')
+      expect(scheduled.exitCode, scheduled.stderr).toBe(0)
+      const scheduledId = /Queued workspace ([0-9a-f-]{36})/.exec(scheduled.stdout)?.[1] ?? ''
+      const queuedEntries = await (await fetch(`http://127.0.0.1:${server.lock.port}/api/workspace/queue/list`)).json() as Array<{
+        id: string; workflow?: string; nonInteractive?: boolean; groupId?: string
+      }>
+      const entry = queuedEntries.find((e) => e.id === scheduledId)
+      expect(entry).toMatchObject({ workflow: 'ci', nonInteractive: true })
+      const { groups } = await (await fetch(`http://127.0.0.1:${server.lock.port}/api/workspace/group/list`)).json() as {
+        groups: Array<{ groupId: string; name: string }>
+      }
+      expect(groups.find((g) => g.groupId === entry?.groupId)?.name).toBe('ci')
+      expect((await runYaac(testEnv.env, 'workspace', 'delete', scheduledId)).exitCode).toBe(0)
     })
   })
 

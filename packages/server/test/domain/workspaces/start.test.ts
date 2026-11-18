@@ -127,6 +127,9 @@ async function seedSecondRepo(dir: string): Promise<string> {
   const id = randomUUID()
   const clone = repoDir(id)
   await createTestRepo(clone)
+  // A commit of its own, so its tip never matches the first repo's, as two
+  // repos made from one template in the same second otherwise would.
+  await git(clone, ['commit', '--allow-empty', '-m', dir])
   await git(clone, ['branch', '-M', 'main'])
   for (const branch of ['main', 'dev']) await git(clone, ['update-ref', `refs/remotes/origin/${branch}`, 'HEAD'])
   await git(clone, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
@@ -813,6 +816,10 @@ describe('prepareStart', () => {
       const row = await getWorkspaceRow(DEMO_PROJECT_ID, workspaceId)
       expect(row?.workflowId).toBe((await resolveWorkflow(DEMO_PROJECT_ID, 'relay')).workflow.id)
       expect(row?.workflowName).toBe('relay')
+      expect(row?.title).toBe(`relay @ ${head.slice(0, 8)}`)
+      // Naming no group, it goes in the workflow's own.
+      expect((await listWorkspaceGroupRows(DEMO_PROJECT_ID)).find((g) => g.groupId === row?.groupId))
+        .toMatchObject({ name: 'relay', ownerKind: 'workflow' })
 
       installDriver({ kind: 'containerless' })
       await start(ci)
@@ -820,9 +827,11 @@ describe('prepareStart', () => {
       expect(specs[1].env).toContain('P8_KEY=pem')
       expect(specs[1].secretEnvKeys).toContain('P8_KEY')
 
-      // Interactive, it opens without them; steps beside it are refused.
-      await start({ noSession: true, workflow: 'relay' })
+      // Interactive, it opens without them, where its create puts it; steps
+      // beside it are refused.
+      const open = await start({ noSession: true, workflow: 'relay' })
       expect(specs[2].env.join('\n')).not.toContain('P8_KEY')
+      expect((await getWorkspaceRow(DEMO_PROJECT_ID, open.workspaceId))?.groupId).toBeUndefined()
       await expect(start({ ...ci, steps: { t: { run: 'true' } } })).rejects.toThrow('not both')
     })
 

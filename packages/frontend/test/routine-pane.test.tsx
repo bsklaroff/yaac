@@ -68,7 +68,7 @@ afterEach(() => {
 describe('the routine pane', () => {
   it('shows the schedule, settings and runs, acts on the routine, and opens a run', async () => {
     useUiStore.setState({ activeProjectId: 'proj' })
-    act(() => useUiStore.getState().openRoutine('proj', 'r1'))
+    act(() => useUiStore.getState().openObject('proj', { kind: 'routine', id: 'r1' }))
     show(serverSnapshot({
       routines: [ROUTINE],
       workspaceGroups: [{
@@ -100,11 +100,11 @@ describe('the routine pane', () => {
     await waitFor(() => expect(posted('POST /api/routine/run')).toEqual([{ id: 'r1' }]))
 
     fireEvent.click(screen.getByText('timed out'))
-    expect(useUiStore.getState()).toMatchObject({ selectedWorkspaceId: 'w3', selectedRoutineId: null })
+    expect(useUiStore.getState()).toMatchObject({ selectedWorkspaceId: 'w3', selectedObject: null })
   })
 
   it('falls back to a new workspace once its routine is gone', () => {
-    useUiStore.setState({ activeProjectId: 'proj', selectedRoutineId: 'r-gone' })
+    useUiStore.setState({ activeProjectId: 'proj', selectedObject: { kind: 'routine', id: 'r-gone' } })
     show(serverSnapshot({ routines: [ROUTINE] }))
     expect(screen.getByRole('heading').textContent).toBe('New workspace')
   })
@@ -132,6 +132,6 @@ describe('a workspace header', () => {
     ]))
 
     fireEvent.click(screen.getByRole('button', { name: 'from Nightly triage' }))
-    expect(useUiStore.getState()).toMatchObject({ selectedWorkspaceId: null, selectedRoutineId: 'r1' })
+    expect(useUiStore.getState()).toMatchObject({ selectedWorkspaceId: null, selectedObject: { kind: 'routine', id: 'r1' } })
   })
 })

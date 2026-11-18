@@ -23,7 +23,7 @@ import {
 import { ServerError } from '@yaac/shared/errors'
 import { isStepName, NAME_RULE, parseStepGraph, type StepGraph } from '@yaac/shared/steps'
 import { formatUtcTimestamp } from '@yaac/shared/time'
-import type { RepoStart, WorkflowEntry } from '@yaac/shared/types'
+import type { RepoStart, WorkflowEntry, WorkflowSummary } from '@yaac/shared/types'
 import { authorizeProject, type Actor } from '#domain/access'
 import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
 import { fetchRepoOrigin } from '#domain/repos'
@@ -66,6 +66,20 @@ const isPerson = (actor: Actor): boolean => actor.kind === 'local' || actor.kind
 const dirOf = (project: ProjectRow | undefined, repoId: string): string =>
   project?.repos.find((l) => l.repo.id === repoId)?.dir ?? repoId
 
+/** A named workflow without its approvals, as the snapshot carries it. */
+function summary(w: NamedWorkflowRow, project: ProjectRow | undefined): WorkflowSummary {
+  return {
+    id: w.id,
+    projectId: w.projectId,
+    name: w.name,
+    steps: w.workflow.steps,
+    secrets: w.workflow.secrets,
+    repos: w.workflow.repos.map((r) => dirOf(project, r)),
+    init: w.init,
+    createdAt: formatUtcTimestamp(w.createdAt.getTime()),
+  }
+}
+
 /** A workflow as listed. An approved branch of a repo that is not the
  *  project's only one reads `<repo's folder>@<branch>`. */
 async function entry(w: NamedWorkflowRow): Promise<WorkflowEntry> {
@@ -78,17 +92,20 @@ async function entry(w: NamedWorkflowRow): Promise<WorkflowEntry> {
     return [links.length === 1 && links[0].repo.id === m[1] ? m[2] : `${dirOf(project, m[1])}@${m[2]}`]
   })
   return {
-    id: w.id,
-    projectId: w.projectId,
-    name: w.name,
-    steps: w.workflow.steps,
-    secrets: w.workflow.secrets,
-    repos: w.workflow.repos.map((r) => dirOf(project, r)),
-    init: w.init,
+    ...summary(w, project),
     approvedCommits: approvals.filter((a) => !a.includes('refs/heads/')),
     approvedBranches: branches,
-    createdAt: formatUtcTimestamp(w.createdAt.getTime()),
   }
+}
+
+/** Every project's named workflows as the snapshot carries them, with no
+ *  approvals, so a build costs one query per project rather than per
+ *  workflow. */
+export async function listWorkflowSummaries(): Promise<WorkflowSummary[]> {
+  const rows = await listNamedWorkflows()
+  const projects = new Map(await Promise.all([...new Set(rows.map((r) => r.projectId))]
+    .map(async (id) => [id, await getProjectRow(id)] as const)))
+  return rows.map((w) => summary(w, projects.get(w.projectId)))
 }
 
 export async function listProjectWorkflows(projectId: string): Promise<WorkflowEntry[]> {
@@ -288,6 +305,17 @@ async function startApprovals(actor: Actor, namedWorkflowId: string, repos: Repo
   return refs.map((r) => r.ref)
 }
 
+/**
+ * Whether a save of an unattended entry starting `namedWorkflowId` on
+ * `repos` is a person's, whose launch then approves the commits it runs.
+ * An agent's is refused unless each start is approved already, since its
+ * launch approves nothing.
+ */
+export async function savedByPerson(actor: Actor, namedWorkflowId: string, repos: RepoStart[]): Promise<boolean> {
+  await startApprovals(actor, namedWorkflowId, repos)
+  return isPerson(actor)
+}
+
 /** `checkWorkflowStart`, then a person's action approves each repo's
  *  commit or branch: once what names them is written, for a caller that
  *  checked first. */
@@ -315,8 +343,9 @@ async function approvedTip(workflowId: string, projectId: string, repoId: string
  * The values of the run secrets a launch of `workflowId` gets, when
  * `secrets` (a non-interactive launch or a site's release), with the
  * commit each repo starts at. A repo at a branch runs at its tip, resolved
- * here after a fetch. A person's launch through a named workflow approves
- * each commit for it first. Each repo's commit must pass on its own
+ * here after a fetch. A person's launch through a named workflow, or the
+ * launch of an entry a person saved (`personSaved`), approves each commit
+ * for it first. Each repo's commit must pass on its own
  * (docs/workflows.md "The launch check"); a launch with no repos passes.
  * A launch the secrets may not reach is refused rather than run without
  * them.
@@ -326,6 +355,7 @@ export async function workflowLaunch(actor: Actor, projectId: string, opts: {
   namedWorkflowId?: string
   repos: Array<{ repoId: string; branch?: string; commit?: string }>
   secrets: boolean
+  personSaved?: boolean
 }): Promise<{ runSecrets: Record<string, string>; commits?: Record<string, string> }> {
   const workflow = await getWorkflow(opts.workflowId)
   if (workflow?.projectId !== projectId) throw new ServerError('NOT_FOUND', 'that workflow is gone')
@@ -344,7 +374,7 @@ export async function workflowLaunch(actor: Actor, projectId: string, opts: {
       throw new ServerError('VALIDATION', `${dirOf(project, r.repoId)}: branch "${branch}" not found on origin.`)
     })
   }
-  if (isPerson(actor) && opts.namedWorkflowId !== undefined) {
+  if ((isPerson(actor) || opts.personSaved === true) && opts.namedWorkflowId !== undefined) {
     for (const commit of Object.values(commits)) await addWorkflowApproval(opts.namedWorkflowId, commit)
   }
   for (const [repoId, commit] of Object.entries(commits)) {

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { workspaceDriver } from '#drivers/driver'
 import { createWorkspace, resolveCreate, type WorkspaceCreateResult } from './create'
 import { saveDraftWorkspace } from './drafts'
-import { resolveGroup } from './groups'
+import { ownedGroup, resolveGroup } from './groups'
 import { readGroupRoom, refuseFullGroup } from './group-limits'
 import {
   provision,
@@ -75,9 +75,14 @@ export interface StartWorkspaceRequest {
   /** Sidebar group by id or name. An unknown name is created, once the
    *  other settings have checked out. */
   group?: string
+  /** A queued entry a person saved (`queued_workspaces.personSaved`): its
+   *  launch approves the commits it runs, as the person's own would. */
+  personSaved?: true
   /** A group id filed under as is, never resolved or created: the group a
-   *  queued entry was filed into. One deleted since fails the create. */
-  groupId?: string
+   *  queued entry was filed into, null for none. One deleted since fails
+   *  the create. With neither this nor `group`, an unattended run of a
+   *  named workflow goes in the workflow's own group. */
+  groupId?: string | null
   /** When the server stops it (docs/routines.md "Timeouts"). */
   deadline?: Date
   /** A volume to mount, by name (docs/workspace-volumes.md). */
@@ -115,7 +120,7 @@ export async function prepareStart(
   principal: Actor,
   request: StartWorkspaceRequest,
 ): Promise<ProvisionRun<WorkspaceCreateResult>> {
-  const { projectId, workspaceId, prompt, title, generatedTitle } = request
+  const { projectId, workspaceId, prompt, generatedTitle } = request
   await authorizeProject(principal, projectId)
   if ([request.steps, request.workflow, request.workflowId].filter((g) => g !== undefined).length > 1) {
     throw new ServerError('VALIDATION', 'name steps or a workflow, not both')
@@ -141,6 +146,7 @@ export async function prepareStart(
         ...(r.branch !== undefined ? { branch: r.branch } : {}),
       })),
       secrets: request.nonInteractive === true || request.siteId !== undefined,
+      ...(request.personSaved === true ? { personSaved: true } : {}),
     })
     : undefined
   for (const r of start.repos) {
@@ -149,6 +155,12 @@ export async function prepareStart(
     r.commit = commit
     delete r.branch
   }
+  // An unattended run of a named workflow is titled after it and what it
+  // runs on, as a site's release is, so its runs under the workflow's row
+  // read apart.
+  const title = request.title ?? (request.nonInteractive === true && workflow?.namedWorkflowId !== undefined
+    ? `${workflow.name} @ ${start.repos.map((r) => `${start.repos.length > 1 ? `${r.link.dir}@` : ''}${r.commit?.slice(0, 8) ?? r.branch ?? 'default branch'}`).join(' ') || 'no repo'}`
+    : undefined)
   const selection = storedSelection(start)
   const atCommit = start.repos.some((r) => r.commit !== undefined)
   const setup = request.noSession === true ? undefined : await resolveCreate(projectId, {
@@ -163,18 +175,20 @@ export async function prepareStart(
     ? undefined
     : { ...setup, cwd: start.cwd, id: request.sessionId ?? randomUUID(), ...(prompt !== undefined ? { prompt } : {}) }
   // Before the group and defaults below, so a create refused as a duplicate
-  // leaves neither behind.
+  // or for a held volume leaves neither behind.
   refuseLiveProvision(workspaceId)
-  const groupId = request.groupId ?? (request.group === undefined
-    ? undefined
-    : (await resolveGroup(projectId, request.group, { create: true })).groupId)
+  const volume = request.volume !== undefined
+    ? await volumeForLaunch(projectId, workspaceId, request.volume)
+    : undefined
+  const groupId = request.groupId !== undefined ? request.groupId ?? undefined
+    : request.group !== undefined ? (await resolveGroup(projectId, request.group, { create: true })).groupId
+    : request.nonInteractive === true && workflow?.namedWorkflowId !== undefined
+      ? await ownedGroup(projectId, { kind: 'workflow', id: workflow.namedWorkflowId }, workflow.name)
+      : undefined
   // Checked once before the defaults are recorded, and again where the
   // provisioning row takes the slot (docs/workspace-groups.md).
   const room = await readGroupRoom(projectId, groupId)
   refuseFullGroup(room, workspaceId)
-  const volume = request.volume !== undefined
-    ? await volumeForLaunch(projectId, workspaceId, request.volume)
-    : undefined
   if (request.rememberDefaults && setup !== undefined) {
     // Only the named fields, so a resolved default never overwrites a pick.
     // What it starts with resolved from the last create's where unnamed, so

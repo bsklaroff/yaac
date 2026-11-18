@@ -134,7 +134,7 @@ describe('SkillsSettings', () => {
 
     fireEvent.change(screen.getByRole('combobox', { name: 'Project' }), { target: { value: 'id-beta' } })
     await waitFor(() => expect(listed()).toEqual(['# yaac built-in Pi', '/beta-only']))
-    // The pick is the one Project Config shows too.
+    // The pick is the one the Project pages show too.
     expect(useUiStore.getState().settingsProjectId).toBe('id-beta')
   })
 

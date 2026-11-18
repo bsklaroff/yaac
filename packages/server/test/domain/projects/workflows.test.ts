@@ -22,10 +22,12 @@ import {
   listInitWorkflows,
   listProjectRunSecrets,
   listProjectWorkflows,
+  listWorkflowSummaries,
   missingRepos,
   projectRepoIds,
   removeRunSecret,
   resolveWorkflow,
+  savedByPerson,
   setInitWorkflows,
   setRunSecret,
   showWorkflow,
@@ -200,6 +202,30 @@ describe('listProjectWorkflows', () => {
       { name: 'relay', steps: CI, secrets: ['P8_KEY'], repos: [], init: false, approvedCommits: [main], approvedBranches: ['main'] },
     ])
     await expect(listProjectWorkflows(DOCS)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+})
+
+describe('listWorkflowSummaries', () => {
+  it('lists every project\'s named workflows without their approvals, for the snapshot', async () => {
+    await relay()
+    await approveWorkflowStart(local, (await current('relay')).id, [{ repo: DEMO_PROJECT_ID, branch: 'main' }])
+    const [summary] = await listWorkflowSummaries()
+    expect(summary).toMatchObject({ projectId: DEMO_PROJECT_ID, name: 'relay', steps: CI, secrets: ['P8_KEY'], repos: [], init: false })
+    expect(summary).not.toHaveProperty('approvedBranches')
+  })
+})
+
+describe('savedByPerson', () => {
+  it('answers whether a person saved an unattended start, refusing an agent\'s on a start no person approved', async () => {
+    await relay()
+    const { id } = await current('relay')
+    const start = [{ repo: DEMO_PROJECT_ID, branch: 'main' }]
+    await expect(savedByPerson(agent, id, start)).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    // A person's save approves nothing by itself.
+    expect(await savedByPerson(local, id, start)).toBe(true)
+    expect((await listProjectWorkflows(DEMO_PROJECT_ID))[0].approvedBranches).toEqual([])
+    await approveWorkflowStart(local, id, start)
+    expect(await savedByPerson(agent, id, start)).toBe(false)
   })
 })
 

@@ -1,8 +1,9 @@
 # Project configuration
 
 A project's settings are stored on the server, so a client on another
-machine edits them as well as one beside it. Each is a section under Settings
-→ Project Config and a `yaac config <setting> <project>` command, which
+machine edits them as well as one beside it. Each is a section of one of
+the Settings → Project pages (General, Environment, Network, Storage, and
+Image under k8s) and a `yaac config <setting> <project>` command, which
 prints the setting given no value and replaces it given one (docs/cli.md);
 `yaac config show <project>` prints them all. They apply to workspaces
 created afterwards unless a section says otherwise.
@@ -10,7 +11,7 @@ created afterwards unless a section says otherwise.
 ## Repos
 
 Which repos a project links, from none to several, is a setting too
-(docs/project-repos.md): Settings → Project Config → Repos adds one by its
+(docs/project-repos.md): Settings → Project → General → Repos adds one by its
 remote and a git credential, by picking one of your repos or one shared
 with you, or as a new repo yaac hosts, and unlinks one, which deletes
 neither the repo nor any workspace's checkout of it. Each link has the
@@ -59,8 +60,8 @@ workspace start, each a graph of named steps, each a list of commands run in
 a tmux window of its own after the steps it `needs`, with long-running ones
 as services. Each names the repos its steps are written for, starts in
 their checkout, and runs only in a workspace that has them, so a project of
-several repos keeps one per repo. Make one under Settings → Project Config →
-Init workflows, or from a file with `yaac workflow create <project> <name>
+several repos keeps one per repo. Make one in the webapp with a workflow's
+*Run at workspace start* switch, or from a file with `yaac workflow create <project> <name>
 --file <path> [--repo <dir>]… --init`; `yaac config init-workflows
 <project> [workflows...] [--none]` sets the whole list. See
 [workflows.md](workflows.md) and [workspace-steps.md](workspace-steps.md).
@@ -75,7 +76,7 @@ checkout and empties when it stops
 cap: under k8s a write past it fails, and under containerless it is not
 enforced. A dir names its own cap or gets the default, 16 GiB, which a large
 cargo build can pass. The default dirs are `node_modules` and `target`. Edit
-them under Settings → Project Config, or with
+them under Settings → Project → Storage, or with
 `yaac config scratch-dirs <project> [dirs...]`, each dir `path` or `path:GiB`
 (`--none` for none). The webapp's file explorer hides them like ignored
 folders unless one holds a file git would list ([file-editor.md](file-editor.md)).
@@ -97,7 +98,7 @@ warned about again.
 
 ## Environment variables and secrets
 
-Set them under Settings → Project Config →
+Set them under Settings → Project →
 Environment, or with `yaac config env <project>` (`NAME=value` for a variable,
 `--secret NAME` with its rule as options and its value on stdin). A plain variable is placed in every workspace's environment. A
 secret is stored encrypted. Under k8s its value never enters the workspace:
@@ -118,7 +119,7 @@ are kept apart from the secrets above (`project_run_secrets`), encrypted
 the same way, and reach a workspace only through a named workflow that
 names them, when each repo it starts with is at a commit a person ran it on
 (docs/workflows.md). An interactive workspace never gets one. Only a person
-sets them, under Settings → Project Config → Run secrets or with `yaac
+sets them, under Settings → Project → Environment → Run secrets or with `yaac
 config env <project> NAME --run-secret`, the value on stdin (`--unset NAME`
 removes one); `yaac-mama` has no verb for them.
 
@@ -168,7 +169,7 @@ Stopping a workspace deletes every file the repository's `.gitignore`
 matches, not only build output: `.env` files, local databases, editor and
 agent settings, and any new file in an ignored folder. Files git lists as
 untracked stay. Under Settings
-→ Project Config → Kept ignored files, or with `yaac config
+→ Project → Storage → Kept ignored files, or with `yaac config
 kept-ignored-paths <project> [paths...]`, list paths relative to each
 checkout's root to keep anyway, each a file or a folder and everything in
 it (`.env`, `data/dev.db`). Changes apply from the next stop. See
@@ -176,7 +177,7 @@ it (`.env`, `data/dev.db`). Changes apply from the next stop. See
 
 ## Egress allowlist (k8s)
 
-Set it under Settings → Project Config →
+Set it under Settings → Project → Network →
 Egress allowlist, with `yaac config egress-allowlist <project> [hosts...]
 [--defaults on|off]`, or allow a blocked host for the whole project from a
 workspace's blocked-hosts badge. A workspace may reach the proxy's default
@@ -196,7 +197,7 @@ The default workspace image is Ubuntu 26.04 with Node.js, gh, tmux, the agent
 CLIs, and pnpm 12 through corepack (a project's own `packageManager` pin wins).
 Two files customize it:
 
-- **`Dockerfile.yaac`** (per project: Settings → Project Config → Dockerfile,
+- **`Dockerfile.yaac`** (per project: Settings → Project → Image → Dockerfile,
   or `yaac config dockerfile <project> --file <path>`, `-` for stdin).
   - **Layered (recommended):** built on top of the default image. It must
     start with:

@@ -42,6 +42,14 @@ async function openConfirm(): Promise<void> {
 }
 
 describe('ProjectActionsMenu', () => {
+  it('opens settings on this project\'s General page', async () => {
+    useUiStore.setState({ settingsOpen: false, settingsSection: 'shortcuts', settingsProjectId: null })
+    renderWithClient(<Harness />)
+    fireEvent.click(screen.getByRole('button', { name: 'widgets' }))
+    fireEvent.click(await screen.findByText('Project settings…'))
+    expect(useUiStore.getState()).toMatchObject({ settingsOpen: true, settingsSection: 'project-general', settingsProjectId: ID })
+  })
+
   it('requires typing the project\'s name, then removes in the background', async () => {
     let finishRemove = (): void => {}
     server.route(REMOVE, () => new Promise((resolve) => { finishRemove = () => resolve(undefined) }))

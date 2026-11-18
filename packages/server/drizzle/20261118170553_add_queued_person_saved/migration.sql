@@ -1,0 +1,1 @@
+ALTER TABLE "queued_workspaces" ADD COLUMN "person_saved" boolean DEFAULT false NOT NULL;

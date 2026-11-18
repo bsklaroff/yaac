@@ -20,7 +20,7 @@
  *      and Enter opens that one.
  *   6. For a look: SCREENSHOT_DIR gets explorer.png, find.png and
  *      replace.png.
- *   7. In a wide editor (Settings → Project Config, expanded) the bar sits
+ *   7. In a wide editor (Settings → Project → Image, expanded; k8s) the bar sits
  *      at the left, and Escape closes it without closing the dialog.
  *
  * Needs a running containerless `yaac server` (this script writes into the
@@ -31,7 +31,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { requirePlaywright, origin, api, check, finish, SHOTS, DATA_DIR } from './lib.js'
+import { requirePlaywright, origin, api, check, finish, SHOTS, DATA_DIR, projectPage } from './lib.js'
 
 const { chromium } = requirePlaywright()
 
@@ -177,11 +177,11 @@ check('focus returns to the editor', await editor.evaluate((el) => el.contains(d
 await pane.getByRole('button', { name: /^Find/ }).click()
 check('the header search button opens it', await eventually(async () => (await find.count()) === 1))
 
-// 7. In the expanded Project Config editor the bar sits at the left, and
+// 7. In the expanded Dockerfile editor the bar sits at the left, and
 //    Escape closes only the bar.
 await page.keyboard.press('Escape')
 await page.locator('[title="Settings"]').first().click()
-await page.locator('button', { hasText: 'Project Config' }).first().click()
+await projectPage(page, 'Image').click()
 await page.getByRole('button', { name: 'Expand editor' }).first().click()
 const dialog = page.getByRole('dialog').last()
 await dialog.locator('.cm-content').click()

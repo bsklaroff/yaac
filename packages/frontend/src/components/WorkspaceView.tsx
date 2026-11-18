@@ -31,6 +31,8 @@ import { HistoryPane } from '#components/HistoryPane'
 import { SessionPane, sessionPtyTarget } from '#components/SessionPane'
 import { NewWorkspacePane } from '#components/NewWorkspacePane'
 import { RoutinePane } from '#components/RoutinePane'
+import { SitePane } from '#components/SitePane'
+import { WorkflowPane } from '#components/WorkflowPane'
 import { StepPane } from '#components/StepPane'
 import { StepsBar } from '#components/StepsBar'
 import { isLocked, isStepTarget, stepTargetName } from '#lib/steps'
@@ -131,8 +133,8 @@ export function WorkspaceView({
   provisioning: ProvisioningWorkspaceEntry[]
 }): JSX.Element {
   const selectedWorkspaceId = useUiStore((s) => s.selectedWorkspaceId)
-  const selectedRoutineId = useUiStore((s) => s.selectedRoutineId)
-  const openRoutine = useUiStore((s) => s.openRoutine)
+  const selectedObject = useUiStore((s) => s.selectedObject)
+  const openObject = useUiStore((s) => s.openObject)
   const focusNonce = useUiStore((s) => s.focusNonce)
   const terminalNonces = useUiStore((s) => s.terminalNonces)
   const layouts = useUiStore((s) => s.layouts)
@@ -158,8 +160,14 @@ export function WorkspaceView({
   const workspace = workspaces.find((s) => s.workspaceId === selectedWorkspaceId)
   const sid = workspace?.workspaceId ?? null
   const routines = (snapshot?.routines ?? []).filter((r) => r.projectId === activeProjectId)
-  // A deleted routine's pane falls back to the new-workspace pane.
-  const routine = routines.find((r) => r.id === selectedRoutineId)
+  // A deleted object's pane falls back to the new-workspace pane; a
+  // workflow or site with id '' is the form for a new one.
+  const routine = selectedObject?.kind === 'routine' ? routines.find((r) => r.id === selectedObject.id) : undefined
+  const workflow = selectedObject?.kind === 'workflow'
+    ? (snapshot?.workflows ?? []).find((w) => w.projectId === activeProjectId && w.id === selectedObject.id) : undefined
+  const site = selectedObject?.kind === 'site'
+    ? (snapshot?.sites ?? []).find((st) => st.projectId === activeProjectId && st.name === selectedObject.id) : undefined
+  const activeProject = (snapshot?.projects ?? []).find((p) => p.id === activeProjectId)
   const routineOf = routines.find((r) => r.id === workspace?.routineId)
   // Project-wide, but shown here since it breaks git in this workspace too.
   const gitAuthFailures = (workspace && snapshot?.gitAuthFailures?.[workspace.projectId]) || []
@@ -595,7 +603,7 @@ export function WorkspaceView({
             after={routineOf !== undefined && (
               <button
                 type="button"
-                onClick={() => openRoutine(routineOf.projectId, routineOf.id)}
+                onClick={() => openObject(routineOf.projectId, { kind: 'routine', id: routineOf.id })}
                 title="Open the routine it is a run of"
                 className="no-drag min-w-0 shrink truncate text-[11px] text-text-faint hover:text-text-dim hover:underline"
               >
@@ -615,8 +623,8 @@ export function WorkspaceView({
           {workspace.site !== undefined && (
             <button
               type="button"
-              onClick={() => useUiStore.getState().openSettings('project')}
-              title={`A release of the public site “${workspace.site}”, managed from Project Config → Sites`}
+              onClick={() => openObject(workspace.projectId, { kind: 'site', id: workspace.site ?? '' })}
+              title={`A release of the public site “${workspace.site}”: open the site`}
               className="no-drag flex h-6 min-w-0 shrink items-center gap-1 rounded px-1.5 text-[11px] text-text-dim
                 hover:bg-surface-2 hover:text-text"
             >
@@ -740,8 +748,23 @@ export function WorkspaceView({
             workspace. */}
         {!workspace && !creatingHere && activeProjectId && (
           <PaneCard headerH={headerH}>
-            {routine !== undefined
-              ? <RoutinePane routine={routine} bar={newWorkspaceBar} />
+            {routine !== undefined ? <RoutinePane routine={routine} bar={newWorkspaceBar} />
+              : selectedObject?.kind === 'workflow' && (workflow !== undefined || selectedObject.id === '')
+                ? <WorkflowPane
+                  key={selectedObject.id}
+                  projectId={activeProjectId}
+                  {...(workflow !== undefined ? { workflow } : {})}
+                  editing={selectedObject.edit === true}
+                  bar={newWorkspaceBar}
+                />
+              : selectedObject?.kind === 'site' && activeProject !== undefined && (site !== undefined || selectedObject.id === '')
+                ? <SitePane
+                  key={selectedObject.id}
+                  project={activeProject}
+                  {...(site !== undefined ? { site } : {})}
+                  editing={selectedObject.edit === true}
+                  bar={newWorkspaceBar}
+                />
               : <NewWorkspacePane projectId={activeProjectId} bar={newWorkspaceBar} />}
           </PaneCard>
         )}

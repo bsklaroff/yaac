@@ -1,6 +1,6 @@
 /*
- * Verifies Settings → Project Config's Environment, Secrets and Egress
- * allowlist lists: secrets show masked with their hosts, the allowlist shows
+ * Verifies the Environment secrets list and the Egress allowlist under
+ * Settings → Project (the Environment and Network pages): secrets show masked with their hosts, the allowlist shows
  * the collapsed defaults, the project's added hosts and the closing
  * "everything else" row, and adding, removing and turning the defaults off
  * each PUT the whole list. The allowlist routes are stubbed in the page (a
@@ -15,7 +15,7 @@
  * Run: YAAC_DATA_DIR=... node test-playwright-scripts/project-egress-allowlist.js
  */
 import path from 'node:path'
-import { requirePlaywright, origin, check, finish, SHOTS } from './lib.js'
+import { requirePlaywright, origin, check, finish, SHOTS, projectPage } from './lib.js'
 
 const { chromium } = requirePlaywright()
 
@@ -42,7 +42,7 @@ await page.route('**/api/project/*/allowlist', async (route) => {
 
 await page.goto(`${origin}/`)
 await page.getByRole('button', { name: 'Settings' }).click()
-await page.getByRole('button', { name: 'Project Config' }).click()
+await projectPage(page, 'Network').click()
 await page.getByText('Egress allowlist').waitFor()
 await page.getByText('api.stripe.com').waitFor()
 

@@ -1,0 +1,100 @@
+/*
+ * Verifies the workflow UX in a real browser:
+ *
+ *  1. The new-workspace pane sits at the top of the main pane, wider than a
+ *     narrow centred column, with Agent and Workflow tabs (no Site tab on a
+ *     containerless server, which has no sites).
+ *  2. The Agent tab's Steps row names the init workflows a workspace would
+ *     run.
+ *  3. The Workflow tab picks a named workflow, shows its steps beside the
+ *     form, and Run now starts an unattended run with no agent.
+ *  4. The sidebar's Workflows section lists the workflow, and its run sits
+ *     under its row, in the group the workflow owns, not as a section of
+ *     its own.
+ *  5. The workflow's row opens its pane, with its steps and Run now.
+ *  6. Settings has an Account and a Project group, the project's pages
+ *     (General, Environment, Network, Storage), and no Workflows section.
+ *  7. The pane at a phone's width.
+ *
+ * Screenshots land in $SCREENSHOT_DIR (default /tmp/yaac-shots). Creates a
+ * workflow named `ux-check` and one run of it, and removes the workflow at
+ * the end; the run stays as a stopped workspace.
+ *
+ * Run: APP_URL=http://127.0.0.1:<port> PROJECT=<name or id> node test-playwright-scripts/workflows-sites-ux.js
+ */
+import { SHOTS, api, check, finish, origin, requirePlaywright, resolveProject, until } from './lib.js'
+
+const { chromium } = requirePlaywright()
+const project = await resolveProject(process.env.PROJECT ?? 'yaac')
+const NAME = 'ux-check'
+await api('/workflow/delete', { method: 'POST', body: JSON.stringify({ project: project.id, name: NAME }) }).catch(() => {})
+await api('/workflow/create', {
+  method: 'POST',
+  body: JSON.stringify({
+    project: project.id, name: NAME, repos: [],
+    steps: { build: { run: ['echo building', 'sleep 2'] }, check: { run: ['echo checked'], needs: ['build'] } },
+  }),
+})
+const browser = await chromium.launch()
+const page = await browser.newPage({ viewport: { width: 1500, height: 950 } })
+
+try {
+  await page.goto(`${origin}/?project=${project.id}`)
+  const tabs = page.getByRole('tablist', { name: 'What to start' })
+  await tabs.waitFor()
+  const main = await page.getByLabel('Prompt').evaluate((el) => el.closest('.\\@container')?.getBoundingClientRect().toJSON())
+  const tabBox = await tabs.boundingBox()
+  check('pane: tabs near the top, not centred', tabBox.y - main.top < 80, `tabs at ${tabBox.y}, pane top ${main.top}`)
+  const formWidth = await tabs.evaluate((el) => el.parentElement.getBoundingClientRect().width)
+  check('pane: form wider than the old 448px column', formWidth > 500, `${formWidth}px`)
+  check('pane: Agent and Workflow tabs', await page.getByRole('tab', { name: 'Agent' }).isVisible()
+    && await page.getByRole('tab', { name: 'Workflow' }).isVisible())
+  check('pane: no Site tab on containerless', await page.getByRole('tab', { name: 'Site' }).count() === 0)
+  check('agent tab: Steps row', (await page.getByLabel('Steps').locator('option').first().textContent()).startsWith('Init workflows'))
+  await page.screenshot({ path: `${SHOTS}/ux-agent-tab.png` })
+
+  await page.getByRole('tab', { name: 'Workflow' }).click()
+  await page.getByLabel('Workflow', { exact: true }).selectOption(NAME)
+  const steps = page.getByRole('complementary', { name: 'Its steps' })
+  await steps.waitFor()
+  check('workflow tab: steps beside the form', await steps.getByText('echo checked').isVisible())
+  check('workflow tab: no prompt', await page.getByLabel('Prompt').count() === 0)
+  await page.screenshot({ path: `${SHOTS}/ux-workflow-tab.png` })
+  await page.getByRole('button', { name: 'Run now', exact: true }).click()
+
+  const section = page.getByRole('group', { name: 'Workflows' })
+  await section.waitFor()
+  check('sidebar: Workflows section lists it', await section.getByText(NAME, { exact: true }).isVisible())
+  await until(page, (name) => {
+    const s = document.querySelector('[aria-label="Workflows"]')
+    return s?.querySelector(`[role="group"][aria-label="${name}"]`) !== null
+  }, NAME, 60_000)
+  check('sidebar: its run nests under its row', true)
+  check('sidebar: no separate group section', await page.locator(`[aria-label="Workflows"] ~ [role="group"][aria-label="${NAME}"]`).count() === 0)
+  await page.screenshot({ path: `${SHOTS}/ux-sidebar-run.png` })
+
+  await section.getByText(NAME, { exact: true }).click()
+  await page.getByText('echo building').waitFor()
+  check('pane: workflow pane with Run now', await page.getByRole('button', { name: 'Run now', exact: true }).isVisible())
+  await page.screenshot({ path: `${SHOTS}/ux-workflow-pane.png` })
+
+  await page.getByTitle('Settings').first().click()
+  const nav = page.getByRole('dialog')
+  await nav.getByRole('group', { name: 'Project' }).waitFor()
+  for (const label of ['General', 'Environment', 'Network', 'Storage']) {
+    check(`settings: project page ${label}`, await nav.getByRole('group', { name: 'Project' }).getByRole('button', { name: label }).isVisible())
+  }
+  await nav.getByRole('group', { name: 'Project' }).getByRole('button', { name: 'Environment' }).click()
+  check('settings: no Workflows section', await nav.getByText('Workflows', { exact: true }).count() === 0)
+  await page.screenshot({ path: `${SHOTS}/ux-settings.png` })
+  await page.keyboard.press('Escape')
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto(`${origin}/?project=${project.id}`)
+  await page.waitForTimeout(1500)
+  await page.screenshot({ path: `${SHOTS}/ux-mobile.png` })
+} finally {
+  await browser.close()
+  await api('/workflow/delete', { method: 'POST', body: JSON.stringify({ project: project.id, name: NAME }) }).catch(() => {})
+}
+finish()

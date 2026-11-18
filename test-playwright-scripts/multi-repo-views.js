@@ -7,7 +7,7 @@
  *  2. a workspace with several checkouts offers a repo switcher beside its
  *     changes;
  *  3. Settings → Repos lists the project's repos;
- *  4. Settings → Project Config has a Repos section naming each folder.
+ *  4. Settings → Project → General has a Repos section naming each folder.
  *
  * PROJECT (default `multi`) must link at least two repos, and WORKSPACE_ID
  * must be a running workspace of it created with both. To make them:
@@ -18,7 +18,7 @@
  * Run: WORKSPACE_ID=<id> node test-playwright-scripts/multi-repo-views.js
  */
 import path from 'node:path'
-import { SHOTS, api, check, finish, origin, requirePlaywright, resolveProject } from './lib.js'
+import { SHOTS, api, check, finish, origin, requirePlaywright, resolveProject, projectPage } from './lib.js'
 
 const project = await resolveProject(process.env.PROJECT ?? 'multi')
 const repos = (await api('/project/list')).find((p) => p.id === project.id).repos
@@ -57,10 +57,10 @@ try {
   await page.waitForTimeout(300)
   await shot('settings-repos')
 
-  await page.getByRole('button', { name: 'Project Config', exact: true }).first().click()
+  await projectPage(page, 'General').click()
   await page.getByText('Repos', { exact: true }).first().waitFor({ timeout: 15_000 })
   for (const repo of repos) {
-    check(`Project Config names the folder ${repo.dir}`,
+    check(`Project → General names the folder ${repo.dir}`,
       await page.locator(`input[value="${repo.dir}"]`).count() + await page.getByText(repo.dir, { exact: true }).count() > 0)
   }
   await shot('project-repos')
