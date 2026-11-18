@@ -23,6 +23,7 @@ import { createOutputBatcher } from '@yaac/shared/batcher'
 import type { WorkspaceFiles } from '@yaac/shared/types'
 import { resolveEffectiveTheme } from '#lib/theme'
 import { terminalTheme } from '#lib/terminalTheme'
+import { usePaneCwd } from '#lib/checkouts'
 import { useUiStore } from '#lib/store'
 import { focusRaisesKeyboard } from '#lib/viewport'
 import { DISCONNECT_NOTICE_DELAY_MS, reconnectingSocket, type ReconnectingSocket } from '#lib/reconnect'
@@ -51,12 +52,16 @@ const KEEPALIVE_MS = 10_000
 export function WorkspaceTerminal({
   workspaceId,
   target,
+  cwd,
   visible,
   focusKey,
 }: {
   workspaceId: string
   /** /pty/attach target: 'session:<window name>' or 'window:@<id>'. */
   target: string
+  /** Where its session's agent runs, which file links read relative paths
+   *  from; a shell or step starts where the workspace's shells do. */
+  cwd?: string
   /** Whether this pane is on-screen. Hidden panes drop their WebGL context
    *  (see createWebglController). */
   visible: boolean
@@ -71,6 +76,8 @@ export function WorkspaceTerminal({
   // Lets the mount effect read the current visibility without depending on it.
   const visibleRef = useRef(visible)
   visibleRef.current = visible
+  const linkCwdRef = useRef('')
+  linkCwdRef.current = usePaneCwd(workspaceId, cwd)
   const themePref = useUiStore((s) => s.themePref)
   // Hidden until the first attach settles (see #lib/attach-settle). Uses
   // opacity rather than display so FitAddon can still measure.
@@ -152,7 +159,10 @@ export function WorkspaceTerminal({
     const disposeLinks = installTerminalLinks(term, {
       isMac: IS_MAC,
       // The status bar's changes poll keeps the listing current.
-      listFiles: () => Promise.resolve(queryClient.getQueryData<WorkspaceFiles>(filesKey(workspaceId))),
+      listFiles: () => {
+        const files = queryClient.getQueryData<WorkspaceFiles>(filesKey(workspaceId))
+        return Promise.resolve(files && { root: files.root, cwd: linkCwdRef.current, paths: files.paths })
+      },
       openFile: (path, line) => useUiStore.getState().openFile(workspaceId, path, line),
     })
     fit.fit()

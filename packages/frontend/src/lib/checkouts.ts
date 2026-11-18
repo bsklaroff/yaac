@@ -41,6 +41,16 @@ export function useCheckout(workspaceId: string): CheckoutView {
 
 const NONE: WorkspaceRepo[] = []
 
+/**
+ * The folder under the workspace root that a pane's relative file links are
+ * read from: `cwd` when the pane has its own (a session's), else where the
+ * workspace's shells start.
+ */
+export function usePaneCwd(workspaceId: string, cwd?: string): string {
+  const workspace = useSnapshot()?.workspaces.find((w) => w.workspaceId === workspaceId)
+  return cwd ?? workspace?.cwd ?? ''
+}
+
 /** A checkout as a switcher or picker names it. */
 export function checkoutLabel(path: string): string {
   return path === '' ? 'workspace root' : `${path}/`

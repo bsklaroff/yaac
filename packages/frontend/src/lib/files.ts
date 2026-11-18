@@ -392,10 +392,13 @@ export interface FileRef {
   line?: number
 }
 
-/** What file links match against: the checkout's absolute root as the
- *  workspace sees it, and its files relative to that (`WorkspaceFiles`). */
+/** What file links match against: the workspace's absolute root as it
+ *  sees it, the folder under it where the pane's agent or shell started
+ *  (`''` or a checkout's path), and its files relative to the root
+ *  (`WorkspaceFiles`). */
 export interface CheckoutFiles {
   root: string
+  cwd: string
   paths: ReadonlySet<string>
 }
 
@@ -425,19 +428,35 @@ export function fileLinksIn(text: string, files: CheckoutFiles): FileLink[] {
 
 /**
  * The checkout file `token` names, if any, with the line of a trailing
- * `:line[:col]`. A token counts with an optional `./` and trailing
- * punctuation removed, and an absolute one only under the checkout's root,
- * so `/usr/lib/foo/package.json` never names the checkout's own.
+ * `:line[:col]`, after trailing punctuation is removed. An absolute token
+ * counts only under the root, so `/usr/lib/foo/package.json` never names the
+ * checkout's own. A relative one is read from `cwd`, as the agent's shell
+ * would, so where several checkouts hold the path, the agent's wins; failing
+ * that, it is read from the root (`other-repo/README.md`).
  */
 export function resolveFilePath(token: string, files: CheckoutFiles): FileRef | undefined {
   const trimmed = trimToken(token)
   if (!trimmed.includes('/') && !trimmed.includes('.')) return undefined
   const lineText = /^:(\d+)/.exec(token.slice(trimmed.length))?.[1]
-  const relative = trimmed.startsWith(`${files.root}/`)
+  const path = trimmed.startsWith(`${files.root}/`)
     ? trimmed.slice(files.root.length + 1)
-    : trimmed.replace(/^\.\//, '')
-  if (!files.paths.has(relative)) return undefined
-  return lineText ? { path: relative, line: Number(lineText) } : { path: relative }
+    : [underRoot(files.cwd, trimmed), underRoot('', trimmed)].find((p) => p !== undefined && files.paths.has(p))
+  if (path === undefined || !files.paths.has(path)) return undefined
+  return lineText ? { path, line: Number(lineText) } : { path }
+}
+
+/** Relative path `rel` read from folder `from`, both under the root, or
+ *  undefined when `rel` is absolute, names a folder (a trailing `/`) or
+ *  climbs out of the root. */
+function underRoot(from: string, rel: string): string | undefined {
+  if (rel.startsWith('/') || rel.endsWith('/')) return undefined
+  const out = from === '' ? [] : from.split('/')
+  for (const segment of rel.split('/')) {
+    if (segment === '..') {
+      if (out.pop() === undefined) return undefined
+    } else if (segment !== '.' && segment !== '') out.push(segment)
+  }
+  return out.join('/')
 }
 
 /** How a file pane can show a file rendered rather than as text. */

@@ -131,11 +131,47 @@ describe('fileLinksIn', () => {
       'notes.txt', // not in the checkout
       'v1.2', 'a/b', // path-shaped, not files
     ].join(' ')
-    const links = fileLinksIn(line, { root: '/workspace', paths: new Set(['packages/server/src/main.ts', 'README.md']) })
+    const links = fileLinksIn(line, { root: '/workspace', cwd: '', paths: new Set(['packages/server/src/main.ts', 'README.md']) })
     expect(links.map((l) => [line.slice(l.start, l.end), l.path, l.line])).toEqual([
       ['packages/server/src/main.ts', 'packages/server/src/main.ts', 12],
       ['./README.md', 'README.md', undefined],
       ['/workspace/packages/server/src/main.ts', 'packages/server/src/main.ts', 7],
+    ])
+  })
+
+  // Several checkouts: the agent starts in `api`, so a relative path is
+  // read from there first, as its shell would, and from the root after.
+  it('reads a relative path from where the agent starts, then from the root', () => {
+    const files = { root: '/workspace', cwd: 'api', paths: new Set(['api/README.md', 'web/README.md', 'web/src/x.ts']) }
+    const line = 'README.md ../web/README.md web/src/x.ts src/x.ts ../../etc/passwd /workspace/web/README.md'
+    expect(fileLinksIn(line, files).map((l) => [line.slice(l.start, l.end), l.path])).toEqual([
+      ['README.md', 'api/README.md'],
+      ['../web/README.md', 'web/README.md'],
+      ['web/src/x.ts', 'web/src/x.ts'],
+      ['/workspace/web/README.md', 'web/README.md'],
+    ])
+  })
+
+  // Dot segments and doubled slashes normalize; nothing climbs past the
+  // root, a trailing slash names no file, and only a listed file links.
+  it('normalizes dot segments and never leaves the root', () => {
+    const files = { root: '/workspace', cwd: 'api', paths: new Set(['api/README.md', 'web/README.md', 'README.md']) }
+    const line = [
+      './README.md', './/README.md', 'src/../README.md', '../web//README.md', '../../web/README.md',
+      '..', '../', '../..', '.', './', '../../../README.md', 'web/', 'api/README.md/', '/workspace/../README.md',
+    ].join(' ')
+    expect(fileLinksIn(line, files).map((l) => [line.slice(l.start, l.end), l.path])).toEqual([
+      ['./README.md', 'api/README.md'],
+      ['.//README.md', 'api/README.md'],
+      ['src/../README.md', 'api/README.md'],
+      ['../web//README.md', 'web/README.md'],
+    ])
+    const single = { root: '/workspace', cwd: '', paths: new Set(['README.md', 'docs/x.md']) }
+    const text = '../README.md /usr/lib/foo/README.md docs/x.md:12:3, ./docs/x.md. /workspace/docs/x.md:4'
+    expect(fileLinksIn(text, single).map((l) => [text.slice(l.start, l.end), l.path, l.line])).toEqual([
+      ['docs/x.md', 'docs/x.md', 12],
+      ['./docs/x.md', 'docs/x.md', undefined],
+      ['/workspace/docs/x.md', 'docs/x.md', 4],
     ])
   })
 })
