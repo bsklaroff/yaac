@@ -1,9 +1,11 @@
 import type { MenuItemConstructorOptions } from 'electron'
 
 /**
- * macOS application menu built from standard roles, so the app menu is
- * labeled "yaac" and the Edit menu makes Cmd-C / Cmd-V / Select All work in
- * the xterm terminals. main.ts builds it.
+ * The application menu, built from standard roles. On macOS the first menu
+ * is the app menu labeled "yaac"; elsewhere it is a File menu, since the
+ * app menu role exists only on macOS and closing the window only hides it,
+ * so Quit needs a home. The Edit menu makes Cmd/Ctrl-C, -V and Select All
+ * work in the xterm terminals. main.ts builds it.
  *
  * Edit > Find runs `onFind` on Cmd/Ctrl-F only when the focused page leaves
  * the key unhandled: Electron offers a page every key first and hands one
@@ -11,9 +13,9 @@ import type { MenuItemConstructorOptions } from 'electron'
  * Chrome shares the chord, so a previewed app with its own find keeps it,
  * and the preview's find opens for any other page.
  */
-export function appMenuTemplate(onFind: () => void): MenuItemConstructorOptions[] {
+export function appMenuTemplate(onFind: () => void, platform: NodeJS.Platform): MenuItemConstructorOptions[] {
   return [
-    { role: 'appMenu' },
+    platform === 'darwin' ? { role: 'appMenu' } : { label: 'File', submenu: [{ role: 'quit' }] },
     {
       label: 'Edit',
       submenu: [

@@ -1,14 +1,15 @@
 import type { JSX } from 'react'
 import clsx from 'clsx'
-import { IS_MAC, windowApi } from '#lib/platform'
+import { windowApi } from '#lib/platform'
 
 const DOT = 'no-drag flex h-3 w-3 items-center justify-center rounded-full bg-text-faint/45 '
   + 'text-[8px] font-bold leading-none text-black/0 transition-colors group-hover/wc:text-black/60'
 
 /**
  * Custom close / minimize / zoom dots in place of the macOS traffic lights,
- * which the desktop shell hides. Monochrome until hovered. The row is a drag
- * handle; the buttons opt out with .no-drag.
+ * which the desktop shell hides there (it keeps the native frame on other
+ * platforms, which never render this). Monochrome until hovered. The row is
+ * a drag handle; the buttons opt out with .no-drag.
  */
 export function WindowControls({ className }: { className?: string }): JSX.Element {
   return (
@@ -34,7 +35,7 @@ export function WindowControls({ className }: { className?: string }): JSX.Eleme
       <button
         type="button"
         aria-label="Zoom window"
-        title={IS_MAC ? 'Full screen (⌥ to zoom)' : 'Zoom'}
+        title="Full screen (⌥ to zoom)"
         className={clsx(DOT, 'group-hover/wc:bg-[#28c840]')}
         onClick={(e) => windowApi()?.toggleMaximize?.(e.altKey)}
       >

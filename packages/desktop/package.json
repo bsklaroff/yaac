@@ -2,6 +2,10 @@
   "name": "@yaac/desktop",
   "version": "0.0.0",
   "private": true,
+  "description": "Desktop app for the yaac agent sandbox manager",
+  "homepage": "https://github.com/bsklaroff/yaac",
+  "license": "MIT",
+  "desktopName": "yaac-desktop.desktop",
   "type": "module",
   "main": "dist/main.js",
   "imports": {
@@ -13,7 +17,10 @@
     "dev:hot": "bash scripts/dev-hot.sh",
     "app:build": "tsup && electron-builder --config electron-builder.yml",
     "app:install": "pnpm app:build && tsx scripts/install-app.ts",
-    "app:release": "tsup && tsx scripts/release-app.ts"
+    "app:release": "tsup && tsx scripts/release-app.ts",
+    "app:release-mac": "tsup && tsx scripts/release-app.ts mac",
+    "app:release-linux": "tsup && tsx scripts/release-app.ts linux",
+    "app:release-win": "tsup && tsx scripts/release-app.ts win"
   },
   "devDependencies": {
     "@types/node": "catalog:",

@@ -34,9 +34,13 @@
  *
  * Prerequisites (this needs a real Electron, which needs a real desktop):
  *   - `pnpm build` at the repo root, then `pnpm --filter @yaac/desktop build`
- *     (the shell always runs the tsup output, even in dev).
+ *     (the shell always runs the tsup output, even in dev), unless
+ *     YAAC_DESKTOP_APP names a packaged build's executable to test instead.
  *   - The Electron binary: `node packages/desktop/node_modules/electron/install.js`
  *     if `electron/path.txt` is missing.
+ *   - A `yaac` on PATH that runs this checkout's CLI (`dist/cli.js`). Off
+ *     macOS the shell does not adopt a login shell's PATH, so it is the
+ *     PATH this script runs with.
  *   - Electron's system libraries. On a bare container it will not start; run
  *     ldd against the unpacked electron binary and check nothing reports
  *     "not found". On Ubuntu 26.04 that is:
@@ -66,7 +70,13 @@ const CLI = path.join(REPO, 'dist', 'cli.js')
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-desktop-e2e-'))
 const CLIENT_DIR = `${DATA_DIR}-client`
 const CONFIG = path.join(CLIENT_DIR, 'server.json')
-const ENV = { ...process.env, YAAC_DATA_DIR: DATA_DIR }
+const ENV = {
+  ...process.env,
+  YAAC_DATA_DIR: DATA_DIR,
+  // The app manages this machine's installs only on macOS; this covers that
+  // behavior on any platform.
+  YAAC_E2E_DESKTOP_LOCAL_INSTALLS: '1',
+}
 
 function yaac(...args) {
   return execFileSync('node', [CLI, ...args], { env: ENV, encoding: 'utf8' })
@@ -106,14 +116,15 @@ function electronPath() {
   return path.join(pkg, 'dist', rel)
 }
 
-/** Launch the shell against DATA_DIR and hand back its window's own page. */
+/**
+ * Launch the shell against DATA_DIR and hand back its window's own page: the
+ * packaged executable YAAC_DESKTOP_APP names, else the repo's Electron.
+ */
 async function launch(electron) {
-  const app = await electron.launch({
-    executablePath: electronPath(),
-    args: [DESKTOP],
-    cwd: DESKTOP,
-    env: ENV,
-  })
+  const packaged = process.env.YAAC_DESKTOP_APP
+  const app = await electron.launch(packaged
+    ? { executablePath: packaged, args: [], env: ENV }
+    : { executablePath: electronPath(), args: [DESKTOP], cwd: DESKTOP, env: ENV })
   const win = await app.firstWindow()
   win.on('pageerror', (err) => console.error(`    [page error] ${err.message}`))
   await win.waitForLoadState('domcontentloaded')
@@ -173,7 +184,7 @@ async function main() {
   if (!fs.existsSync(CLI)) {
     throw new Error(`no ${CLI} — run \`pnpm build\` at the repo root first`)
   }
-  if (!fs.existsSync(path.join(DESKTOP, 'dist', 'main.js'))) {
+  if (!process.env.YAAC_DESKTOP_APP && !fs.existsSync(path.join(DESKTOP, 'dist', 'main.js'))) {
     throw new Error('no packages/desktop/dist/main.js — run `pnpm --filter @yaac/desktop build`')
   }
   const { _electron: electron } = requirePlaywright()

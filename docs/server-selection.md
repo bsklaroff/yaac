@@ -183,16 +183,21 @@ interface holds a Tailscale address (100.64.0.0/10 or fd7a:115c:a1e0::/48)
 the page warns that Tailscale does not seem to be running, and a switch to
 or an add of a non-loopback origin whose probe goes unanswered names
 Tailscale as the likely cause. Reading the interfaces rather than asking
-the `tailscale` CLI covers the Mac app, whose CLI is usually off PATH, and
+the `tailscale` CLI covers the desktop apps, whose CLI is usually off PATH, and
 the brew daemon alike. It is only a hint, so it never stops a probe: a
 Headscale tailnet may use other ranges, and other VPNs may use these.
 
-It sets up, starts and stops this machine's servers only when the user asks,
-always by running `brew` and `yaac server start|stop|restart` or `yaac
-cluster install|start|stop` (packages/desktop/README.md, "This machine's
-servers" and "Setup"). A setup ends the way the terminal's commands do:
-`yaac server start` or the first `yaac cluster install` registers and
-selects the new origin, and the shell lands on it.
+On macOS it sets up, starts and stops this machine's servers only when the
+user asks, always by running `brew` and `yaac server start|stop|restart` or
+`yaac cluster install|start|stop` (packages/desktop/README.md, "This
+machine's servers" and "Setup"). A setup ends the way the terminal's
+commands do: `yaac server start` or the first `yaac cluster install`
+registers and selects the new origin, and the shell lands on it.
+
+On Linux and Windows the shell is a client only: it never reads this
+machine's installs, so the page has no install rows and no setups, and a
+server started from a terminal appears as the saved origin it registered.
+Everything about this Mac's installs above is macOS behavior.
 
 Only that page may change servers or drive this Mac's: the main process
 answers its bridge for the main window's top frame showing a `data:` page,

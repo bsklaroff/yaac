@@ -89,7 +89,8 @@ describe('serversPageHtml', () => {
     expect(serversPageHtml(STATE)).not.toContain('id="back"')
   })
 
-  it('says so, and still takes a new server, when nothing is configured', () => {
+  // Linux and Windows never read this machine's installs, so they render this page.
+  it('says so, offers no setup, and still takes a new server, when nothing is configured or read', () => {
     const html = serversPageHtml({
       error: { title: 'No yaac server selected' },
       targets: { current: null, saved: [] },
@@ -97,6 +98,8 @@ describe('serversPageHtml', () => {
       tailnet: true,
     })
     expect(html).toContain('No servers configured yet.')
+    expect(html).not.toContain('class="setup"')
+    expect(html).not.toContain('id="install-')
     expect(html).not.toContain('class="connect"')
     expect(html).not.toContain('id="back"')
     expect(html.match(/class="add"/g) ?? []).toHaveLength(1)
@@ -235,7 +238,7 @@ describe('serversPageHtml', () => {
 
   it('off the tailnet, warns if any remote server is saved, and still lets it be connected to', () => {
     const html = serversPageHtml({ ...STATE, tailnet: false })
-    expect(html).toContain('<p class="banner">Tailscale does not seem to be running on this Mac.')
+    expect(html).toContain('<p class="banner">Tailscale does not seem to be running on this machine.')
     expect(html).toContain('<button class="connect" data-url="https://b.ts.net">Connect</button>')
     expect(serversPageHtml(STATE)).not.toContain('class="banner"')
     const localOnly = { current: STATE.targets.current, saved: [HOST] }

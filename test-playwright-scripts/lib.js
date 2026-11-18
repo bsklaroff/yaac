@@ -133,6 +133,7 @@ export function check(name, cond, detail = '') {
 
 /** Print the tally and exit non-zero if any check failed or exitCode is set. */
 export function finish() {
-  console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`)
-  process.exit(failures === 0 && !process.exitCode ? 0 : 1)
+  const ok = failures === 0 && !process.exitCode
+  console.log(ok ? '\nall checks passed' : failures > 0 ? `\n${failures} check(s) failed` : '\nstopped before every check ran')
+  process.exit(ok ? 0 : 1)
 }

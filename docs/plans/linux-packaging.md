@@ -1,32 +1,41 @@
-# Linux packaging: .deb packages and an apt repository
+# Linux packaging: the server and the cluster from apt
 
-The desktop app ships for macOS only. `pnpm desktop:release` builds a
-signed, notarized arm64 `.dmg` and the `yaac-desktop` cask installs it. The
-app runs the `yaac-server` formula's CLI for any server on the machine, and
-its setup installs that formula when asked (packages/desktop/README.md
-"Packaging", homebrew/README.md). On Linux today the only route is a source build
-(docs/install-from-source.md), and the desktop app is not distributed at all.
+On macOS a server is two commands: `brew install bsklaroff/yaac/yaac-server`
+and `yaac server start`. A local cluster adds the `yaac-cluster` formula and
+`yaac cluster install` (homebrew/README.md). On Linux the only route is
+a source build (docs/install-from-source.md): Node from nvm, pnpm, kind and
+kubectl downloaded by hand, and a systemd drop-in pasted in to grant the
+podman socket. The desktop app is a client only on Linux
+(packages/desktop/README.md), so it can't do any of this for the user.
 
-This plan ships Debian and Ubuntu packages with the same split, served from a
-signed apt repository so that `apt upgrade` moves the app and the CLI
-together, as `brew upgrade` does. The app carries no server and no Node of
-its own, the CLI is installed once and shared, and the cluster's tools are a
-separate, opt-in package.
+This plan gives Debian and Ubuntu the same two packages, served from a
+signed apt repository, so a laptop and an always-on server install alike:
 
-Installing a `.deb` takes one `sudo`, which is the norm for desktop apps on
-Debian (VS Code, Chrome, Slack and Docker Desktop work the same way). Past
-that point, the app's setup does the rest:
+```sh
+# once: trust the repo
+curl -fsSLO https://apt.<domain>/yaac-archive-keyring.deb
+sudo apt install ./yaac-archive-keyring.deb && sudo apt update
 
-- **A containerless server** needs nothing further. The CLI is already on
-  PATH, so the setup is `yaac server start`, the same as on a Mac with the
-  `yaac-server` formula installed.
-- **A cluster** needs one more root step, granting your user the rootful
-  podman socket. The app runs it through a polkit-guarded helper, so it
-  becomes a system password prompt rather than commands typed in a terminal.
+# a containerless server
+sudo apt install yaac-server
+yaac server start && yaac host check
 
-Other distros keep the source build. A no-root route for them is sketched
-under "Later: a home-dir install", along with why it is not worth building
-yet.
+# a local kubernetes cluster
+sudo apt install yaac-cluster
+sudo yaac-podman-access grant
+yaac cluster install
+```
+
+`apt upgrade` moves the CLI, the server and the cluster's tools together, as
+`brew upgrade` does. A server that has to survive a reboot gets one more
+command, `yaac server autostart on` ("Surviving a reboot"). The packages are
+the same on a laptop and on a server. A server machine only differs in how
+clients reach it (docs/remote-hosting.md).
+
+Homebrew on Linux keeps working for `yaac-server`, since the formula already
+installs there. `yaac-cluster` has no Linuxbrew route, because its krunkit
+dependency is macOS-only and the cluster needs the distro's rootful podman.
+Other distros keep the source build ("Later: a home-dir install").
 
 ## What ships
 
@@ -34,22 +43,25 @@ yet.
 |---|---|---|
 | `yaac-server_<v>_<arch>.deb` | the CLI and server, a private Node, the containerless driver's host deps | `yaac-server` formula |
 | `yaac-cluster_<v>_<arch>.deb` | the cluster's host deps and the podman-access helper | `yaac-cluster` formula |
-| `yaac-desktop_<v>_<arch>.deb` | the Electron app | `yaac-desktop` cask |
+| `yaac-desktop_<v>_<arch>.deb` | the client-only desktop app, as `pnpm desktop:release` builds it today | `yaac-desktop` cask |
 | `yaac-archive-keyring_<v>_all.deb` | the repo's signing key and its `.sources` entry | naming each formula in `brew install` |
 | `SHA256SUMS`, `SHA256SUMS.asc` | checksums, signed with the repo key | |
 
-Each package but the keyring is built for amd64 and arm64. They are published in the apt
-repository and also attached to the `v<VERSION>` GitHub Release beside the
-`.dmg`. Nothing stands in for `yaac-cluster`'s krunkit dependency, because
-on Linux the cluster runs on the host's rootful podman with no VM
-(docs/cluster-setup.md "Linux: rootful podman").
+Every package except the keyring is built for amd64 and arm64. They are
+attached to the `v<VERSION>` GitHub Release and published in the apt repo.
+The repo gives the desktop app an update path, which it lacks today. The
+packages don't depend on each other except `yaac-cluster` on `yaac-server`.
+A laptop that only connects to a server elsewhere installs `yaac-desktop`
+alone, and a headless server installs no desktop app.
 
 Supported releases are Debian 13 (trixie) and Ubuntu 24.04 LTS and later.
 Debian 12 is best effort: its tmux (3.3a) clears the containerless driver's
-3.3 floor, but `yaac cluster install` has never run on its podman (4.3),
-since docs/install-from-source.md covers podman 5.x. A release is listed as
-supported for clusters only once the k8s e2e tier passes on its stock podman
-(see "Verification").
+3.3 floor, but `yaac cluster install` has never run on its podman (4.3). A
+release counts as supported for clusters only once the k8s e2e tier passes
+on its stock podman ("Verification"). The cluster is supported on amd64. On
+arm64, gVisor, Calico and kind all publish builds, but yaac's image builds
+have never run there, so arm64 is listed once the e2e tier passes on an
+arm64 host.
 
 ## The `yaac-server` package
 
@@ -102,18 +114,58 @@ same directory because Debian names fd `fdfind` and the agents look for `fd`.
 **Architecture-specific, not `all`.** Node and `@lydell/node-pty`'s
 prebuilt binary differ per arch. `npm ci --os=linux --cpu=<arch>` selects
 the matching `@lydell/node-pty-linux-*` optional dependency, so both arches
-can be staged on one x64 host.
+can be staged on one host.
 
-**No maintainer scripts and no systemd unit.** The server is per-user, as on
-macOS: `yaac server start` runs it from the user's session, with its data in
-`~/.yaac-server`. A system service would be a different product (multi-user,
-a service account), and docs/multi-user.md is the place for that. `apt remove`
-leaves every data dir alone, like the cask's `zap`.
+**No maintainer scripts, no system service.** The server is per-user, as on
+macOS: `yaac server start` runs it as the user, with its data in
+`~/.yaac-server`. A system-wide service would be a different product (a
+service account, every user's projects in one place), and docs/multi-user.md
+is the place for that. `apt remove` leaves every data dir alone, like the
+cask's `zap`. After `apt upgrade` a running server is on the old build until
+restarted, as after `brew upgrade`: `yaac server start` says so and names
+`yaac server restart`.
 
 **Built with `dpkg-deb --build --root-owner-group`** from a staged tree, by a
 new `scripts/package-deb.ts`. This needs neither fpm nor Ruby, and it is the
 same tool on every Debian host. The script fetches the tarball by version, as
 the formula does, so the `.deb` holds exactly what npm published.
+
+## Surviving a reboot
+
+docs/remote-hosting.md lists this as not yet covered: after a reboot a
+containerless server has to be started again by hand, with the flags it was
+installed with. A server machine needs it; a laptop can take it or leave it.
+It belongs to the CLI rather than the package, so it works the same for a
+`.deb`, Homebrew on Linux and a source install:
+
+- **`yaac server autostart on`** writes a systemd **user** unit,
+  `~/.config/systemd/user/yaac-server.service`. The unit runs
+  `yaac server run` (the existing foreground mode) with the running
+  server's flags (`--tailnet <host>` for a tailnet install) and the data dir
+  that `YAAC_DATA_DIR` names. It then runs `systemctl --user enable --now`,
+  and `loginctl enable-linger` so the user's manager starts at boot with no
+  login. systemd's default polkit rule lets a user in an active local
+  session turn on lingering for themselves without a password. Where polkit
+  wants an admin instead (check an SSH session on each supported release),
+  the command fails with `sudo loginctl enable-linger <user>` to run. `autostart off` disables and removes the
+  unit and leaves lingering alone, since other things may rely on it.
+- **While the unit is enabled, `yaac server start|stop|restart` go through
+  `systemctl --user`**, so a restart to update never races systemd's own
+  restart of the unit. `yaac server status` reports whether autostart is on.
+- **Lingering also keeps workspaces alive across logout** in their systemd
+  slices (docs/containerless-driver.md "Lifetime"), which an always-on
+  server wants anyway.
+- **macOS** gets the counterpart later, a launchd agent written the same way,
+  but it isn't part of this plan.
+
+A cluster's server is a Deployment, so it comes back with the cluster. The
+cluster itself comes back only if the kind node container restarts at boot.
+Before shipping, check the restart policy kind gives the node under podman,
+and check whether podman's `podman-restart.service` brings it back. If it
+does, `yaac cluster install` enables that service on Linux. Otherwise
+`yaac cluster autostart on` gets a small system unit that runs
+`yaac cluster start` after `podman.socket`, installed with the same sudo as
+the grant.
 
 ## The `yaac-cluster` package
 
@@ -123,63 +175,46 @@ ships the helper below. kind and kubectl are not among them, because `yaac
 cluster install` fetches those itself (see "kind and kubectl are fetched,
 not packaged").
 
-- `Depends: yaac-server (= <v>), podman, aardvark-dns, nftables, acl, policykit-1 | polkitd`.
+- `Depends: yaac-server (= <v>), podman, aardvark-dns, nftables, acl`.
   podman, aardvark-dns, nftables and acl are what docs/install-from-source.md
   tells a Linux user to install, and `yaac cluster install` refuses to run
   without aardvark-dns, or without `nft` under netavark's nftables driver.
-  polkit is there for the helper.
 - **Swap is not touched.** docs/cluster-setup.md "Linux: swap" stays a manual
-  prerequisite, and the setup copy points to it.
+  prerequisite. It matters most on a laptop's smaller memory, so
+  `yaac cluster check` and linux/README.md point to it.
 - **A `--byo` install needs this package too.** It creates no kind cluster,
   but it builds every image yaac ships on this machine with podman and pushes
   them through a `kubectl port-forward` (docs/cluster-setup.md "Bring your own
   cluster"). On Linux, `ensureRootfulPodmanReachable` also runs on every
   install, byo included, so it needs the socket grant as well. A byo user
   gets aardvark-dns and nftables without using them, but they are small, and
-  splitting off a `yaac-byo` package is not worth a fourth package. Two
-  changes could remove the need, and both are out of scope here:
-  - letting byo build on rootless podman, which would drop the grant;
-  - publishing per-architecture images each release, which would drop
-    podman entirely and leave a byo user needing only `yaac-server`.
+  splitting off a `yaac-byo` package is not worth a fourth package.
 
-### Podman access through polkit
+### Podman access with one sudo
 
 Under `k8s` on Linux, the CLI needs read/write access to the root-owned
 `/run/podman/podman.sock`, which only an admin can grant
-(docs/cluster-setup.md "Linux: rootful podman"). The package installs a small
-privileged helper for that one step, plus a polkit policy, so the app can ask
-for it with a system password prompt. This follows the Linux pattern for a
-GUI app that needs one fixed root action, and is the counterpart of a macOS
-privileged helper.
+(docs/cluster-setup.md "Linux: rootful podman"). The package installs one
+helper for that step, so the user runs a single fixed command instead of
+pasting the drop-in:
 
-- **`/usr/lib/yaac/cluster/grant-podman-access`** (root-owned, 0755) is a
-  script form of the grant block in docs/cluster-setup.md "Linux: rootful
-  podman": the same drop-in, with the same `-`-prefixed `ExecStartPost=`
-  lines naming the numeric uid, then the same `daemon-reload`, `enable` and
-  `restart`. The restart makes the drop-in apply the grant. It runs once,
-  at setup, when nothing else is likely to be using the socket. A test holds it to that block, as one already
-  does for the hint `yaac cluster install` prints. As the one root entry
-  point in this plan, it is strict about what it accepts:
-  - It takes no arguments, and its target is `PKEXEC_UID`, which pkexec sets
-    after clearing the environment. Without it, the helper refuses.
+- **`/usr/sbin/yaac-podman-access grant|revoke`** (root-owned, 0755) is a
+  script form of the grant and revoke blocks in docs/cluster-setup.md
+  "Linux: rootful podman". `grant` writes the same drop-in, with the same
+  `-`-prefixed `ExecStartPost=` lines naming the numeric uid, then runs the
+  same `daemon-reload`, `enable` and `restart`. The restart is what makes
+  the drop-in apply the grant. It runs once, at setup, when nothing else is
+  likely to be using the socket. A test holds it to the doc's blocks, as one
+  already does for the hint `yaac cluster install` prints. It is the one
+  root entry point in this plan, so it is strict about what it accepts:
+  - Its target is `SUDO_UID`, the user who ran sudo. It refuses without it,
+    so a root shell can't grant root by accident. It takes no user argument.
   - The uid must resolve (`getent passwd`) and must not be 0.
   - It writes only `/etc/systemd/system/podman.socket.d/yaac-<name>.conf`,
     for the name the uid resolves to, and writes the grant by uid, never by
     name.
   - It sets a fixed `PATH` and calls only absolute paths (`/usr/bin/setfacl`,
     `/usr/bin/systemctl`, `/usr/bin/getent`).
-- **`/usr/lib/yaac/cluster/revoke-podman-access`** has the same shape and
-  runs the revoke block from the same section, for `PKEXEC_UID` only. A user
-  can therefore drop their own grant without removing the package for
-  everyone. `linux/README.md` documents it beside the manual revoke steps.
-- **`/usr/share/polkit-1/actions/com.bsklaroff.yaac.podman-access.policy`**
-  declares one action per helper, each naming its helper as
-  `org.freedesktop.policykit.exec.path`. Both pin their defaults in full
-  (`allow_any=no`, `allow_inactive=no`, `allow_active=auth_admin`), so an SSH
-  or inactive session never inherits a distro default, and the prompt is
-  asked every time and never kept. The grant's message says what it means:
-  *"Allow yaac to use the system podman engine. Access to it is equivalent
-  to root on this computer."* Neither helper needs `allow_gui`.
 - **`postrm`** handles `remove` and `purge` explicitly. The drop-ins are not
   dpkg-owned files, so neither case would clean them up on its own. For
   each `yaac-*.conf` drop-in, it reads the uid from the drop-in's
@@ -189,11 +224,13 @@ privileged helper.
   than at the next reboot. postrm never restarts `podman.socket`, which
   would drop other users' connections.
 
-This grants exactly the access the manual steps grant. The only difference
-is that removing the package withdraws it for every user at once.
-`yaac cluster install`'s own message for an unreachable socket names the
-helper (`pkexec /usr/lib/yaac/cluster/grant-podman-access`) when it is
-installed, and the manual steps otherwise.
+This grants exactly the access the manual steps grant, which is equivalent
+to root on the machine. linux/README.md says so beside the command. When the
+socket is unreachable, `yaac cluster install` names
+`sudo yaac-podman-access grant` if the helper is installed, and the manual
+steps otherwise. sudo works the same on a laptop and over SSH, so there is
+no polkit policy: the desktop app, the only GUI that could have used one, is
+a client only on Linux.
 
 ## kind and kubectl are fetched, not packaged
 
@@ -245,134 +282,12 @@ Dev and test hosts keep their own `kind` and `kubectl` on PATH, because the
 test harness (`test/global-setup.ts`) calls them
 directly. The CLI under test still runs its pinned copies.
 
-## The `yaac-desktop` package
+## CLI advice that names Homebrew
 
-The package is built by electron-builder, from a `linux:` block beside `mac:`
-in `packages/desktop/electron-builder.yml`:
-
-```yaml
-linux:
-  target: [dir]           # local builds; release-linux.ts overrides to deb
-  icon: build/icon.png    # electron-builder derives the hicolor sizes
-  category: Development
-  executableName: yaac
-  synopsis: Desktop app for the yaac agent sandbox manager
-  desktop:
-    entry:
-      StartupWMClass: yaac
-deb:
-  # Recommends, not Depends: apt installs Recommends by default, so a
-  # default install gets the CLI with the app, while
-  # --no-install-recommends gives a remote-only client with no Node or tmux.
-  recommends: [yaac-server]
-  afterInstall: build/linux/after-install.sh
-  afterRemove: build/linux/after-remove.sh
-```
-
-**The Chromium sandbox stays on.** The renderer loads web content from
-whichever server is selected, so `--no-sandbox` is never acceptable.
-electron-builder's deb makes `chrome-sandbox` `4755 root`. Ubuntu 23.10 and
-later also restrict unprivileged user namespaces through AppArmor
-(`kernel.apparmor_restrict_unprivileged_userns=1`), and an Electron app
-without a profile then has to rely on that SUID helper. `after-install.sh`
-installs `/etc/apparmor.d/yaac`, an `unconfined` profile with `userns,` for
-`/opt/yaac/yaac` (the same kind of profile Ubuntu ships for Chrome and VS
-Code), and loads it with `apparmor_parser -r` when AppArmor is active.
-`after-remove.sh` removes it. On Debian, which has no such restriction, the
-profile is inert.
-
-**No updater, as on macOS.** `publish: null` stays. The apt repository is the
-update path, and a `.deb` installed from the Release page gets no updates
-until the repo is added.
-
-**No native modules.** The app bundles every dependency into `dist/` and
-packs no `node_modules`, so one build serves both arches' JavaScript and
-only Electron itself differs per arch.
-
-## Shell changes for Linux
-
-The main process assumes macOS in about a dozen places. None is deep, but
-each needs a decision:
-
-- **Wording (`servers-page.ts`, `local-setup.ts`, `server-control.ts`,
-  `server-switch.ts`, `main.ts`, `@yaac/shared/setup-copy`).** "this Mac"
-  appears about 40 times in user-visible text. Add a `thisMachine` noun to
-  `@yaac/shared/setup-copy` ("this Mac" on darwin, "this computer" elsewhere)
-  and use it throughout. Doc comments in `types.ts` say "this machine".
-- **Setup (`local-setup.ts`).** `PLANS` becomes per-platform. Homebrew's
-  steps (tap, install) have no unprivileged counterpart on Linux,
-  because installing a package needs root. Linux setups therefore never run
-  apt. A step that needs a package shows its command to copy, and the setup
-  runs everything after it:
-
-  | | Containerless | Cluster |
-  |---|---|---|
-  | to copy, until installed | `sudo apt install yaac-server` | `sudo apt install yaac-cluster` |
-  | run by the app | `yaac server start` | `pkexec /usr/lib/yaac/cluster/grant-podman-access` |
-  | | `yaac host check` | `yaac cluster install` |
-
-  - While a package is missing (`yaac` not on PATH, or no helper for the
-    cluster), `blocked` is the new reason `'needs-package'`. The page shows
-    the command, preceded by the keyring package's two lines from "The apt
-    repository" when `/etc/apt/sources.list.d/yaac.sources` is absent, and
-    says "run this in a terminal, then come back". The tray's next status read notices the
-    install. After a default `yaac-desktop` install the CLI is already
-    present, so the containerless setup is never blocked.
-  - The grant step skips itself when the socket already accepts this user
-    (`fs.access(sock, R_OK | W_OK)`), the way a Homebrew step skips an
-    installed formula. The native confirmation before a cluster setup
-    repeats the policy's root-equivalence sentence, alongside the commands it
-    lists.
-  - `pkexec` fails without a polkit authentication agent (some minimal
-    window managers have none). The step's error then names the helper's
-    command for a terminal, where `pkexec` prompts on the TTY.
-  - The cluster card mentions swap (docs/cluster-setup.md "Linux: swap") but
-    does not check for it.
-  - `CLUSTER_SUPPORTED` becomes `darwin && arm64 || linux && x64`. arm64
-    Linux joins once the k8s e2e tier has passed on an arm64 host: gVisor,
-    Calico and kind all publish arm64, but yaac's image builds have never run
-    there.
-  - `no-brew` remains a macOS-only reason.
-- **PATH (`server-process.ts`).** `adoptLoginShellPath` stays: GNOME and KDE
-  launch apps from the systemd user environment, which usually lacks what
-  `~/.bashrc` adds (nvm), so the `-lic` read matters on Linux too.
-  `HOMEBREW_BINS` becomes per-platform: on Linux it is
-  `/home/linuxbrew/.linuxbrew/bin`, since the formula installs on Linuxbrew
-  too, and `/usr/bin` is always present. The "yaac is not on PATH" error
-  (`server-control.ts`) names the apt command on Linux.
-- **Tray (`main.ts`, `tray-icon.ts`).** Linux trays are StatusNotifierItems.
-  - Template images are ignored, so a black glyph vanishes on GNOME's and
-    KDE's dark panels. `buildTrayBitmap` takes a color, and Linux draws it
-    white at 24px.
-  - A click opens the menu and emits no `click`, so Linux puts **Open yaac**
-    first in the menu.
-  - `menu-will-show` never fires, so the menu is only as fresh as the
-    60-second poll. Every action re-reads the state anyway.
-  - Debian's stock GNOME has no tray without the AppIndicator extension,
-    where hiding the window would leave no visible way back. Relaunching from
-    the app grid already shows it again (`second-instance`), and the first
-    time the window hides on Linux, a notification says so.
-- **Badge (`applyAttention`).** On Linux, `app.setBadgeCount(n)` replaces
-  `app.dock.setBadge`. It shows on launchers that implement the Unity API
-  (Ubuntu's dock, KDE's task manager) when the `.desktop` file matches
-  `desktopName`, and does nothing elsewhere. The notifications carry the
-  signal either way.
-- **Window chrome.** `titleBarStyle: 'hidden'` makes a frameless window on
-  Linux. The SPA already draws its own controls, and the zoom button already
-  maximizes off darwin (`window-zoom.ts`). Electron 44 defaults to Wayland
-  where it is available, so dragging through `titlebar-drag`, edge resize and
-  the window shadow need a hand check under both GNOME Wayland and an X11
-  session. Keeping the controls on the left is fine for a first release.
-- **Menu (`menu.ts`).** `appMenu` and `windowMenu` are macOS roles. On Linux,
-  `appMenuTemplate` returns File (Quit, Ctrl+Q), Edit and View roles, and the
-  window sets `autoHideMenuBar`. Check that accelerators fire in a frameless
-  window with the bar hidden. Terminal copy and paste never depend on this,
-  because the SPA's `clipboardKeyAction` handles non-Mac keys itself.
-
-The CLI's own Mac-only advice also changes. `install/check.ts` fixes that
-name `brew install … yaac-cluster` should name `apt install yaac-cluster`
-when the CLI runs from `/usr/lib/yaac`; its package root tells it how it was
-installed.
+`install/check.ts` fixes that name `brew install … yaac-cluster` name
+`sudo apt install yaac-cluster` when the CLI runs from `/usr/lib/yaac`. The
+package root tells it how it was installed. A source install keeps the
+manual steps.
 
 ## The apt repository
 
@@ -390,12 +305,12 @@ yaac-archive-keyring.deb
 `scripts/publish-apt.ts` generates it with `apt-ftparchive` (packages,
 release) and `gpg --clearsign`, which writes `InRelease`, then uploads it.
 There is no detached `Release.gpg`, since every supported apt reads
-`InRelease`. It keeps the last three
-versions in `pool/`, so a rollback is one `apt install yaac-server=<v>`.
+`InRelease`. It keeps the last three versions in `pool/`, so a rollback is
+one `apt install yaac-server=<v>`.
 
 **Hosting.** The tree lives in object storage (Cloudflare R2, which charges
 nothing for egress) behind the custom domain. GitHub Pages does not fit:
-- its git backing rejects files over 100 MB, and an Electron `.deb` is
+- its git backing rejects files over 100 MB, and the desktop `.deb` is
   close to that;
 - its 1 GB site limit is about what three versions of three packages on two
   arches add up to;
@@ -410,36 +325,27 @@ nothing for egress) behind the custom domain. GitHub Pages does not fit:
 `Signed-By:` set to that key. It is the repo's entry point, the pattern
 Microsoft's `packages-microsoft-prod.deb` uses, and it is itself published in
 the repo, so a key rotation or a move to another URL reaches every install as
-an ordinary upgrade. End-user install:
-
-```sh
-curl -fsSLO https://apt.<domain>/yaac-archive-keyring.deb
-sudo apt install ./yaac-archive-keyring.deb
-sudo apt update
-sudo apt install yaac-desktop            # the app + yaac-server
-sudo apt install yaac-cluster            # for a local kubernetes cluster
-```
+an ordinary upgrade.
 
 The key is scoped with `Signed-By` and never added to the global trusted
 set. Installing the keyring package is the explicit step that trusts the
 repo, the apt counterpart of naming a formula in `brew install`, which
-trusts that item, and the Linux setup copy says that it trusts the repo.
-Before installing it, a user
-can check the key's fingerprint, which is published in `linux/README.md`,
-with `dpkg-deb -x` and `gpg --show-keys`.
+trusts that item. Before installing it, a user can check the key's
+fingerprint, which is published in linux/README.md, with `dpkg-deb -x` and
+`gpg --show-keys`.
 
 The `.deb`s on the GitHub Release also install without the repo (`sudo apt
-install ./yaac-server_<v>_amd64.deb ./yaac-desktop_<v>_amd64.deb`), and
-nothing updates them until the keyring package is installed. The packages
-do not add the repo from a postinst, as VS Code and Chrome do, because that
-would be a silent trust grant, and the Homebrew side keeps trust explicit:
-it extends only to the items a command names.
+install ./yaac-server_<v>_amd64.deb`), and nothing updates them until the
+keyring package is installed. The packages do not add the repo from a
+postinst, as VS Code and Chrome do, because that would be a silent trust
+grant, and the Homebrew side keeps trust explicit: it extends only to the
+items a command names.
 
 **Signing key.** The repo is signed with a dedicated ed25519 signing
 subkey. Its primary key stays offline with the Developer ID material. The
 subkey lives on a hardware token, which is plugged into the release machine
 only while `pnpm publish:apt` signs. The fingerprint goes in
-`linux/README.md` and docs/install-from-source.md, next to a published
+linux/README.md and docs/install-from-source.md, next to a published
 revocation certificate.
 
 **Rotation** needs an overlap. A client that holds only the old key cannot
@@ -453,182 +359,153 @@ keyring update that would fix it. The steps:
 4. In a later release, drop the old key from the keyring.
 
 **Compromise** cannot be handled through the repo, because the revocation
-would arrive signed by the revoked key. `linux/README.md` says so, and tells
+would arrive signed by the revoked key. linux/README.md says so, and tells
 users to re-fetch `yaac-archive-keyring.deb` by hand, check the new
 fingerprint, and install it.
 
 ## Build and release
 
-New scripts, alongside the macOS ones:
+The release machine is the Mac that already builds every desktop artifact
+(`pnpm desktop:release`, packages/desktop/README.md "Packaging"). No
+GitHub Actions are involved.
 
 ```sh
-pnpm desktop:package           # on Linux: unpacked app in dist-app/linux-unpacked
-pnpm desktop:install           # on Linux: apt install the locally built yaac-desktop .deb
-pnpm desktop:release-linux     # yaac-desktop .deb, both arches
-pnpm package:deb               # yaac-server + yaac-cluster .debs, both arches, and the keyring
-pnpm publish:apt               # regenerate and sign the repo from dist-deb/
+pnpm package:deb    # yaac-server + yaac-cluster .debs for amd64 and arm64, and the keyring
+pnpm test:packaging # the package install test, in Linux containers
+pnpm publish:apt    # regenerate and sign the repo from the release's .debs
 ```
 
-- `scripts/release-linux.ts` in packages/desktop is the counterpart of
-  `release-app.ts`. It runs electron-builder with `--linux deb --x64
-  --arm64`, stamps the root version, and checks each `.deb` before printing
-  its hash. It deletes any `.deb` that fails, the same guarantee the stapler
-  check gives the `.dmg`. The checks are:
-  - `dpkg-deb -c` shows `chrome-sandbox` as `-rwsr-xr-x root`;
-  - the AppArmor profile and `yaac.desktop` are present;
-  - the unpacked `pty.node` has the target ELF machine.
-- `scripts/package-deb.ts` ends with the same kind of check for its
-  packages: the helper is root-owned and 0755, the polkit policy is valid
-  XML naming the helper's path, and the keyring's key has the published
-  fingerprint.
-- `install-app.ts` branches on platform. macOS keeps `ditto`, and Linux runs
-  `sudo apt install --reinstall ./dist-app/yaac-desktop_*.deb`.
-- The release steps go in a sibling `linux/README.md`, because `homebrew/` is
-  mirrored into the tap verbatim:
-  1. after `pnpm publish`, run `pnpm package:deb`, which fetches the tarball
-     by version;
-  2. run `pnpm desktop:release-linux`;
-  3. upload the `.deb`s and the signed `SHA256SUMS` to the same `v<VERSION>`
-     release as the `.dmg`;
-  4. run `pnpm publish:apt`, which uploads the apt repo.
-- Every Linux artifact builds on any x64 Debian or Ubuntu host. The arm64
-  ones are cross-staged and smoke-tested under `qemu-user-static`. There is
-  no CI today, and this plan adds none. A GitHub Actions job on
-  `ubuntu-24.04` and `ubuntu-24.04-arm` is the next step once releases are
-  frequent enough to need it.
+- `scripts/package-deb.ts` fetches the published tarball by version, stages
+  each package's tree for each arch (`npm ci --os=linux --cpu=<arch>`
+  selects node-pty's binary, as it does from any host), and builds it with
+  `dpkg-deb --build --root-owner-group`, which Homebrew's `dpkg` provides
+  on macOS. It ends by checking what it can without running Linux code: the
+  helper is root-owned and 0755, the unpacked `pty.node` and the bundled
+  `node` have the target ELF machine, and the keyring's key has the
+  published fingerprint. It deletes any `.deb` that fails a check.
+- `pnpm test:packaging` runs the package install test below in
+  `debian:trixie` and `ubuntu:24.04` containers on the Mac's podman: arm64
+  natively, and amd64 under the podman machine's emulation, which is slow
+  but fine for a smoke test.
+- **Signing and publishing stay on the release machine**, because the
+  signing subkey lives on a hardware token. `pnpm publish:apt` signs
+  `SHA256SUMS` and the repo's `InRelease`, and uploads the repo.
+- The release steps go in a sibling linux/README.md, because `homebrew/` is
+  mirrored into the tap verbatim. After `pnpm publish`, run
+  `pnpm package:deb` and `pnpm test:packaging`. Upload the `.deb`s and the
+  signed `SHA256SUMS` to the `v<VERSION>` release with the desktop
+  artifacts (homebrew/README.md), then run `pnpm publish:apt`.
 
 ## Verification
 
-- **Unit tests (`packages/desktop/test/`).**
-  - `local-setup.test.ts`: the Linux plans, the `needs-package` block and its
-    copy, the grant step's skip, and `CLUSTER_SUPPORTED` per platform and
-    arch.
-  - `menu.test.ts`: the Linux template.
-  - `tray-icon.test.ts`: the colored bitmap.
-  - `server-process.test.ts`: the per-platform extra PATH dirs.
+- **Unit tests.**
   - `packages/server/test/drivers/containerless/`: `userEnvironment` appends
     the exec dir only when it is absent.
   - `packages/server/test/drivers/k8s/install/`: the install fetches kind
     and kubectl into the cache, refuses one whose hash does not match, reuses
     a cached copy, and runs them by path even with other copies on PATH. A
     stub HTTP server stands in for the download.
+  - `packages/cli/test/`: `autostart on` writes a unit with the running
+    server's flags and data dir, and `start|stop|restart` go through
+    `systemctl --user` while it is enabled. A stub `systemctl` and
+    `loginctl` record their calls.
+- **Package install test** (`test/packaging/`, run by `pnpm test:packaging`;
+  not a vitest project, since it needs the built artifacts). It installs the `.deb`s
+  into clean `debian:trixie` and `ubuntu:24.04` containers, then:
+  - runs `yaac --version` and `yaac host check`;
+  - runs a containerless `yaac server start` plus a workspace create with a
+    stub agent, which proves that `node`, `npm` and `fd` resolve for
+    workspaces;
+  - runs `sudo yaac-podman-access grant` as a test user and checks the
+    drop-in and the ACLs;
+  - checks that the helper refuses without `SUDO_UID` and for uid 0, and
+    that `revoke` removes both the drop-in and the ACLs;
+  - grants again, runs `apt remove yaac-cluster`, and checks that the
+    drop-in and the live ACL entries are both gone while `~/.yaac-server`
+    stays.
 
-  All of these run on any host, with `process.platform` injected.
-- **Package contents.** A small `test/packaging/` script (not a vitest
-  project, since it needs the built artifacts) installs the three `.deb`s
-  into clean `debian:trixie` and `ubuntu:24.04` containers. It runs `yaac
-  --version` and `yaac host check`, then a containerless `yaac server start`
-  plus a workspace create with a stub agent, which proves that `node`, `npm`
-  and `fd` resolve for workspaces. It then runs
-  `grant-podman-access` with a fake `PKEXEC_UID` and checks the drop-in and
-  the ACLs. It then checks that the helper refuses uid 0 and a missing
-  `PKEXEC_UID`, and that `revoke-podman-access` removes both. Finally, it
-  grants again, runs `apt remove yaac-cluster`, and checks that the drop-in
-  and the live ACL entries are both gone while `~/.yaac-server` stays.
   On a host with systemd, it also checks the generated drop-in with
   `systemd-analyze verify`, and confirms that a failing grant line (say,
   with `acl` removed) leaves `podman.socket` `active (listening)` after a
   restart.
-- **The desktop app, by hand.** The README's "Verifying by hand" list, run
-  on Ubuntu 24.04 (GNOME, Wayland), Debian 13 (GNOME without AppIndicator)
-  and KDE Plasma (X11). Beyond that list, check that:
-  - the window draws, drags and resizes;
-  - the tray glyph is visible and its menu works;
-  - a waiting workspace notifies, and clicking the notification focuses the
-    window;
-  - Ctrl+Shift+C/V work in a terminal;
-  - a cluster setup prompts once through polkit and lands on the new
-    cluster.
+- **The cluster and reboots, by hand.** On a clean Ubuntu 24.04 VM and a
+  clean Debian 13 VM:
+  - install `yaac-cluster` with no `kind` or `kubectl` on PATH, grant, run
+    `yaac cluster install`, then `yaac cluster check` and the k8s e2e tier
+    against the result. Passing is what lists a release as supported.
+  - turn on `yaac server autostart on` for a tailnet containerless server,
+    reboot without logging in, and check that a client on the tailnet
+    reaches it and its workspaces are back. Do the same for the cluster.
+  - on a laptop install (GNOME), check that the desktop app from the repo
+    lands on a server started with `yaac server start`.
 
-  The existing `test-playwright-scripts/desktop-*.js` scripts take a
-  packaged build's path, so they also run against `linux-unpacked/yaac` under
-  `xvfb-run`.
-- **The cluster.** On a clean Ubuntu 24.04 VM and a clean Debian 13 VM:
-  install `yaac-cluster` with no `kind` or `kubectl` on PATH, run the setup
-  from the app, then run `yaac cluster check` and the k8s e2e tier against
-  the result. Passing is what lists a release as supported. On a Mac, a
-  `yaac cluster install` with the formula's `kind` and `kubernetes-cli`
-  uninstalled checks the same fetch.
+  On a Mac, a `yaac cluster install` with the formula's `kind` and
+  `kubernetes-cli` uninstalled checks the same fetch.
 
 ## Later: a home-dir install
 
 For distros without a `.deb`, the no-root route would be the one rustup, uv
 and Claude Code take: a self-contained runtime under `~/.local/share/yaac`
 (the CLI, Node, and static tmux, socat, fd and ripgrep) with a link in
-`~/.local/bin`. A downloadable app (an AppImage or a tarball) could then set
-up a containerless server with no root at all. It is left out for three
-reasons:
+`~/.local/bin`, installed by `curl … | sh`. It is left out for three reasons:
 
 - **It conflicts with a package install.** Debian's `~/.profile` puts
   `~/.local/bin` ahead of `/usr/bin`, and both copies share `~/.yaac-server`
   and `~/.yaac-client/server.json`. Two versions would then manage one
-  server and migrate one database, and the tray's "restart to update" would
-  compare against whichever `yaac` came first. The installer would have to
-  refuse when a dpkg-installed `yaac-server` is present, and the setup would
-  have to treat one as done.
+  server and migrate one database. The installer would have to refuse when a
+  dpkg-installed `yaac-server` is present.
 - **It does not reach a cluster.** `yaac cluster install` fetches `kind`
-  and `kubectl` itself, but rootful podman, netavark, aardvark-dns and nftables cannot,
-  and neither can the QEMU a `podman machine` VM would need. A cluster user
-  would install those with their distro's package manager and sudo anyway.
+  and `kubectl` itself, but rootful podman, netavark, aardvark-dns and
+  nftables need the distro's package manager and sudo anyway.
 - **It needs its own updater**, which neither the Mac nor the apt side has.
 
-It becomes worth building if users on other distros ask for the desktop app.
-Until then, they use docs/install-from-source.md, and the desktop app builds
-from source there too (`pnpm desktop:package`).
-
-**A remote-only AppImage is a smaller option, and it can ship on its own.**
-None of the reasons above apply to an app with no CLI. It would be what
-`--no-install-recommends` gives on Debian: a client of servers elsewhere,
-plus a local one if the user installs the CLI some other way. It is
-deferred for reasons of its own:
-- It has no updater, and no package manager to stand in for one.
-- With no postinst to install the AppArmor profile, it cannot start
-  sandboxed on Ubuntu 23.10+, and it must never run with `--no-sandbox`.
-  That leaves it usable only on the distros it is meant for.
-- On distros where it can start, check whether electron-builder's
-  AppImage runtime still needs `libfuse2`.
-
-It is one more electron-builder target if a user of another distro asks for
-it.
+It becomes worth building if users on other distros ask. Until then, they
+use docs/install-from-source.md. An RPM and a dnf repo are the other way to
+reach them, and most of `package-deb.ts`'s staging would carry over.
 
 ## Docs to update when this ships
 
-- packages/desktop/README.md: a "Packaging (Linux)" section. The
-  macOS-only statements in "Shell behavior" (tray, Dock, Finder PATH) become
-  per-platform, and the setup table gets its Linux column.
 - `linux/README.md` (new): the end-user install, the packages, the podman
-  helper, the release flow and the key.
+  helper and what its grant means, autostart, the release flow and the key.
+- docs/remote-hosting.md: "Server setup" starts from the apt install, and
+  "Surviving a reboot" moves out of "Not yet covered" into a section on
+  autostart.
 - docs/cluster-setup.md "Linux: rootful podman": the helper as the packaged
   way to grant access, with the manual steps kept for source installs.
+  "kind and Kubernetes versions" names the pinned versions and the cache
+  dir, instead of a minimum version on PATH.
 - docs/install-from-source.md: Debian and Ubuntu users are pointed at the
   apt repo first. The manual `kind` and `kubectl` downloads are dropped,
   since `yaac cluster install` fetches them.
 - homebrew/README.md and `Formula/yaac-cluster.rb`: the formula no longer
-  depends on `kind` or `kubernetes-cli`.
-- docs/cluster-setup.md: "kind and Kubernetes versions" names the pinned
-  versions and the cache dir, instead of a minimum version on PATH.
+  depends on `kind` or `kubernetes-cli`. The release flow points at
+  linux/README.md for the apt step.
+- packages/desktop/README.md "Packaging": the Linux `.deb` updates from the
+  apt repo.
 - The root README's install section.
 - This plan is deleted once its material has moved into those references.
 
 ## Phases
 
-1. **The CLI packages.** `yaac cluster install` fetching kind and kubectl
-   (which can ship first and on its own, for macOS as well), then
-   `yaac-server`, `yaac-cluster` with the podman helper, the
-   `userEnvironment` PATH append, the keyring package, the apt repo and
-   `linux/README.md`. This is useful without the desktop app, since it
-   replaces the nvm-and-source build for CLI users.
-2. **The desktop app on Linux.** The shell changes, the electron-builder
-   `linux` block, and the `.deb` with its AppArmor profile, followed by a
-   release.
-3. **Follow-ups, if wanted.** arm64 cluster support, rootless podman for
-   `--byo`, CI builds, an RPM
-   (another electron-builder target, though the CLI package and a dnf repo
-   are the real work), and the home-dir install above.
+1. **kind and kubectl fetched by the CLI.** It ships on its own and helps
+   macOS too, since the formula drops two dependencies.
+2. **The packages and the repo.** `yaac-server` with the `userEnvironment`
+   PATH append, `yaac-cluster` with `yaac-podman-access`, the keyring, the
+   install test, `publish:apt`, and linux/README.md. This
+   replaces the nvm-and-source build for every Debian and Ubuntu user,
+   laptop or server.
+3. **Autostart.** `yaac server autostart` and the cluster's reboot path,
+   once the kind restart behavior is known.
+4. **Follow-ups, if wanted.** arm64 cluster support, a launchd agent for
+   macOS autostart, rootless podman for `--byo`, an RPM, and the home-dir
+   install above.
 
 ## Open questions
 
 - **The repo's domain.** Any domain yaac controls will do. The keyring
   package can move the URL later, but the keyring's own download link is
-  printed in docs and in the app's setup copy, so pick one before the first
-  public release.
+  printed in the docs, so pick one before the first public release.
+- **Autostart's home.** A CLI command keeps it the same on every install
+  route. The alternative is a packaged `yaac-server@.service` template
+  enabled per user. That is more familiar to Linux admins, but it doesn't
+  help Homebrew or source installs, and it still needs the user's flags.

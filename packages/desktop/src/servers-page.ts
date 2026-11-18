@@ -42,7 +42,7 @@ export interface ServersPageState {
   local: DesktopLocalState
   /** A setup to show opened, as the tray's "Set up…" asks. */
   setup?: ServerScope
-  /** Whether this Mac is on its tailnet (`onTailnet`). */
+  /** Whether this machine is on its tailnet (`onTailnet`). */
   tailnet: boolean
 }
 
@@ -208,7 +208,7 @@ export function serversPageHtml(state: ServersPageState): string {
   const back = `← Back to ${current ? SETUP_COPY[current].title : targets.current ?? 'the server'}`
   // Shown only to a Mac with a remote server saved, since one without needs no tailnet.
   const banner = !state.tailnet && targets.saved.some((url) => !isLoopbackOrigin(url)) ? `
-      <p class="banner">Tailscale does not seem to be running on this Mac. Remote servers are
+      <p class="banner">Tailscale does not seem to be running on this machine. Remote servers are
         reached over your tailnet, so connecting to one will likely fail until you start it.</p>` : ''
   const servers = fresh ? '' : `
       <h2>Servers</h2>${banner}
@@ -235,9 +235,10 @@ export function serversPageHtml(state: ServersPageState): string {
         color: light-dark(#222, #ddd);
         font-size: 13px;
       }
-      /* The native title bar is hidden, so provide a drag strip. It has no
-         close button, which is too easy to hit by accident; the Window menu's
-         Close (Cmd-W) still closes the window. */
+      /* On macOS the native title bar is hidden, so provide a drag strip
+         (elsewhere it is top padding). It has no close button, which is too
+         easy to hit by accident; the Window menu's Close still closes the
+         window. */
       .titlebar { height: 38px; -webkit-app-region: drag; }
       main { max-width: 560px; margin: 0 auto; padding: 6px 24px 40px; }
       h1 { font-size: 15px; margin: 0 0 6px; }

@@ -1,24 +1,76 @@
 /**
  * Build the tray glyph in-code (no binary asset — keeps the whole shell
  * editable/testable from a headless yaac workspace). Returns a raw BGRA bitmap
- * of the yaac logo's four strokes (packages/frontend/src/logo.svg) in black:
- * RGB=0, alpha=coverage, transparent outside. Template images ignore RGB and
- * use the alpha channel, so main.ts recolors it to match the menu bar. Pure
- * (no Electron) so it's unit-testable.
+ * of the yaac logo's four strokes (packages/frontend/src/logo.svg),
+ * transparent outside. In black it serves as a macOS template image, which
+ * ignores RGB and uses the alpha channel, so the menu bar recolors it.
+ * Windows uses the color as drawn, so main.ts picks white for a dark
+ * taskbar. Pure (no Electron) so it's unit-testable.
  */
-export function buildTrayBitmap(size: number): { data: Buffer; width: number; height: number } {
+export function buildTrayBitmap(size: number, color: 'black' | 'white' = 'black'): Bitmap {
+  const v = color === 'white' ? 255 : 0
+  const rgb: Rgb = [v, v, v]
+  return rasterize(size, (u, v) => inMark(u, v) ? rgb : null)
+}
+
+/**
+ * The app icon's look in miniature, an orange mark on a near-black rounded
+ * tile, for Linux trays. Their panels may be light or dark whatever the
+ * app's theme says (GNOME's is dark in its light style too), and they
+ * recolor only symbolic icons, so the icon has to read on either.
+ */
+export function buildTileBitmap(size: number): Bitmap {
+  return rasterize(size, (u, v) => {
+    if (!inRoundedSquare(u, v, TILE_RADIUS)) return null
+    return inMark((u - 0.5) / TILE_MARK_SCALE + 0.5, (v - 0.5) / TILE_MARK_SCALE + 0.5) ? ICON_ORANGE : ICON_TILE
+  })
+}
+
+/**
+ * A red dot, which Windows lays over the taskbar button while a workspace
+ * waits (its stand-in for a dock badge).
+ */
+export function buildBadgeBitmap(size: number): Bitmap {
+  const red: Rgb = [0xe5, 0x48, 0x4d]
+  return rasterize(size, (u, v) => Math.hypot(u - 0.5, v - 0.5) <= 0.45 ? red : null)
+}
+
+type Bitmap = { data: Buffer; width: number; height: number }
+type Rgb = [number, number, number]
+
+/** build/icon.png's tile and stroke colors. */
+const ICON_TILE: Rgb = [0x17, 0x17, 0x1a]
+const ICON_ORANGE: Rgb = [0xf2, 0x98, 0x52]
+const TILE_RADIUS = 0.22
+const TILE_MARK_SCALE = 0.72
+
+function inRoundedSquare(u: number, v: number, r: number): boolean {
+  const dx = Math.max(r - u, u - (1 - r), 0)
+  const dy = Math.max(r - v, v - (1 - r), 0)
+  return u >= 0 && u <= 1 && v >= 0 && v <= 1 && Math.hypot(dx, dy) <= r
+}
+
+/**
+ * A BGRA bitmap of what `paint` gives at each point (transparent where it
+ * gives null), antialiased by averaging a grid of samples per pixel.
+ */
+function rasterize(size: number, paint: (u: number, v: number) => Rgb | null): Bitmap {
   const data = Buffer.alloc(size * size * 4)
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      // Antialias by sampling a SAMPLES x SAMPLES grid inside each pixel.
       let hits = 0
+      const sum = [0, 0, 0]
       for (let j = 0; j < SAMPLES; j++) {
         for (let i = 0; i < SAMPLES; i++) {
-          if (inMark((x + (i + 0.5) / SAMPLES) / size, (y + (j + 0.5) / SAMPLES) / size)) hits++
+          const rgb = paint((x + (i + 0.5) / SAMPLES) / size, (y + (j + 0.5) / SAMPLES) / size)
+          if (!rgb) continue
+          hits++
+          for (let c = 0; c < 3; c++) sum[c] += rgb[c]
         }
       }
-      // BGRA, black shape: B=G=R=0; only alpha carries the coverage.
-      data[(y * size + x) * 4 + 3] = Math.round((hits / SAMPLES ** 2) * 255)
+      const at = (y * size + x) * 4
+      if (hits > 0) data.set([sum[2], sum[1], sum[0]].map((c) => Math.round(c / hits)), at)
+      data[at + 3] = Math.round((hits / SAMPLES ** 2) * 255)
     }
   }
   return { data, width: size, height: size }

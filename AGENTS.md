@@ -86,9 +86,14 @@ main process loads the server origin into the window, so the SPA it displays
 is whatever the target server serves (see packages/desktop/README.md). It lives
 in the tray (close hides; Quit never stops the server) and surfaces waiting
 workspaces via `/events`, and runs the bundled auth daemon in a
-`utilityProcess` that dies with the app. `pnpm desktop:package` /
-`desktop:install` build the unsigned macOS .app; it carries no server or Node
-of its own, so a server on this machine comes from the `yaac` on PATH.
+`utilityProcess` that dies with the app. `pnpm desktop:package` builds the
+unpacked app for the host platform (`desktop:install` copies the macOS .app
+into /Applications); it carries no server or Node of its own, so a server on
+this machine comes from the `yaac` on PATH. Only on macOS does it set up and
+manage that server; on Linux and Windows it is a client only. `pnpm
+desktop:release` builds all three platforms' release artifacts on a Mac
+(the `.dmg`, a `.deb` and an NSIS installer per arch), and
+`desktop:release-mac|linux|win` builds one.
 
 ## Runtime Architecture
 

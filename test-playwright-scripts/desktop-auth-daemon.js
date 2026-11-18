@@ -25,7 +25,7 @@
  *   xvfb-run -a node test-playwright-scripts/desktop-auth-daemon.js
  *
  * Set YAAC_DESKTOP_APP to a packaged build's executable (e.g.
- * packages/desktop/dist-app/linux-unpacked/@yaacdesktop, or
+ * packages/desktop/dist-app/linux-unpacked/yaac-desktop, or
  * yaac.app/Contents/MacOS/yaac) to check the packaged layout too.
  */
 import { execFileSync } from 'node:child_process'
@@ -63,7 +63,8 @@ async function poll(fn, timeoutMs) {
 }
 
 async function main() {
-  for (const f of [CLI, path.join(DESKTOP, 'dist', 'auth-daemon.js')]) {
+  const packaged = process.env.YAAC_DESKTOP_APP
+  for (const f of [CLI, ...packaged ? [] : [path.join(DESKTOP, 'dist', 'auth-daemon.js')]]) {
     if (!fs.existsSync(f)) throw new Error(`no ${f} — run \`pnpm build\` and \`pnpm desktop:build\``)
   }
   const { _electron: electron } = requirePlaywright()
@@ -77,7 +78,6 @@ async function main() {
   const get = async (p) => (await fetch(`${origin}/api${p}`)).json()
   console.log(`server at ${origin}`)
 
-  const packaged = process.env.YAAC_DESKTOP_APP
   const app = await electron.launch(packaged
     ? { executablePath: packaged, args: [], env: ENV }
     : { executablePath: electronPath(), args: [DESKTOP], cwd: DESKTOP, env: ENV })

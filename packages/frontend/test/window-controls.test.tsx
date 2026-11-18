@@ -1,14 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
-import type * as PlatformModule from '#lib/platform'
-
-// IS_MAC is read once at load; a getter over this lets a case flip it.
-const platform = vi.hoisted(() => ({ IS_MAC: false }))
-vi.mock('#lib/platform', async (importOriginal) => ({
-  ...(await importOriginal<typeof PlatformModule>()),
-  get IS_MAC() { return platform.IS_MAC },
-}))
-
 import { WindowControls } from '#components/WindowControls'
 
 afterEach(() => {
@@ -39,20 +30,6 @@ describe('WindowControls', () => {
     render(<WindowControls />)
     fireEvent.click(screen.getByRole('button', { name: 'Zoom window' }), { altKey: true })
     expect(bridge.toggleMaximize).toHaveBeenCalledExactlyOnceWith(true)
-  })
-
-  it('labels the zoom button for the platform', () => {
-    render(<WindowControls />)
-    expect(screen.getByRole('button', { name: 'Zoom window' }).getAttribute('title')).toBe('Zoom')
-    cleanup()
-    platform.IS_MAC = true
-    try {
-      render(<WindowControls />)
-      expect(screen.getByRole('button', { name: 'Zoom window' }).getAttribute('title'))
-        .toBe('Full screen (⌥ to zoom)')
-    } finally {
-      platform.IS_MAC = false
-    }
   })
 
   it('does not throw when the bridge is absent', () => {

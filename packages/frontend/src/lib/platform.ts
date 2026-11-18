@@ -9,6 +9,13 @@ export function isElectron(): boolean {
  *  iPadOS Safari reports "Macintosh", which is the right treatment. */
 export const IS_MAC = /Mac|iPhone|iPad/.test(navigator.userAgent)
 
+/** True in the desktop shell on macOS, which hides the native title bar, so
+ *  the SPA draws the window controls and leaves room to drag the window.
+ *  On Linux and Windows the shell keeps the native frame. */
+export function hidesTitleBar(): boolean {
+  return isElectron() && IS_MAC
+}
+
 /** A native shell's description of its own build. */
 export interface ShellApp {
   kind: string

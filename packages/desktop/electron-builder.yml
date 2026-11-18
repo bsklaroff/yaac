@@ -10,17 +10,61 @@ files:
   - dist/**
   - package.json
   - "!node_modules/**"
+# Every platform builds an unpacked dir locally; `pnpm desktop:release`
+# (scripts/release-app.ts) overrides the target with what a release ships.
 mac:
   target:
     - dir
   icon: build/icon.png
-  # Unsigned for a local build. `pnpm desktop:release` (scripts/release-app.ts)
-  # overrides this to sign and notarize the app, inside the .dmg the cask
-  # downloads.
+  # Unsigned for a local build. The release overrides this to sign and
+  # notarize the app, inside the .dmg the cask downloads.
   identity: null
   category: public.app-category.developer-tools
-# Brew upgrades the app, which has no updater, so there is no update feed to
-# publish, and the release .dmg is uploaded by hand (homebrew/README.md).
+linux:
+  target:
+    - dir
+  icon: build/icon.png
+  category: Development
+  # The .deb's one-line summary, which apt and package managers list.
+  synopsis: Desktop app for the yaac agent sandbox manager
+  # Not `yaac`: the .deb links /usr/bin/<executableName>, which would take
+  # the CLI's command. Also names the launcher entry, which package.json's
+  # desktopName must match for the desktop to link the window to it.
+  executableName: yaac-desktop
+# Linux ships only a .deb: its postinst installs the AppArmor profile that
+# lets Chromium's sandbox start on Ubuntu 23.10+, which an AppImage cannot.
+deb:
+  packageName: yaac-desktop
+  # electron-builder's default list plus ALSA, which Electron loads at startup
+  # and the default leaves out, so a minimal install could not launch the app.
+  # libasound2t64 first: on Ubuntu 24.04+ a bare libasound2 resolves to an OSS
+  # shim rather than ALSA itself.
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libuuid1
+    - libsecret-1-0
+    - libasound2t64 | libasound2
+  artifactName: yaac-desktop_${version}_${arch}.${ext}
+  maintainer: yaac
+win:
+  target:
+    - dir
+  icon: build/icon.png
+# A per-user install: no admin prompt, and the Start menu shortcut it makes
+# registers the app ID that Windows notifications need.
+nsis:
+  oneClick: true
+  perMachine: false
+  # Named per arch, since the x64 and arm64 installers share a release.
+  artifactName: ${productName}-${version}-${arch}-setup.${ext}
+# No update feed: brew upgrades the macOS app, and the Linux and Windows
+# builds are downloaded from the GitHub Release by hand (homebrew/README.md).
 # Without this, a GH_TOKEN in the environment makes electron-builder assume a
 # GitHub feed and write update metadata for it.
 publish: null

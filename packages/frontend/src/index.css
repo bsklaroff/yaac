@@ -470,8 +470,8 @@ body.col-resizing * {
   background: transparent;
 }
 
-/* Electron only: the strip App.tsx reserves for the floating macOS traffic
-   lights doubles as the window's drag handle. Interactive children opt out
+/* Electron only: the strip App.tsx reserves for the macOS window controls
+   doubles as the window's drag handle. Interactive children opt out
    with .no-drag, and so do modal backdrops: Electron hands a click
    on a drag strip to the window even when an overlay is painted above it.
    (No effect in a browser — these are -webkit-app-region.) */
