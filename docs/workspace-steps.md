@@ -114,8 +114,8 @@ graph of its own starts, at each life, every init workflow whose repos it
 has, each under its name, and its create's progress says which it skipped
 for lack of a repo. Mark them with `yaac workflow create|edit --init`, set
 the whole list with `yaac config init-workflows <project> [workflows...]
-[--none]` (`PUT /project/:projectId/init-workflows`), or in Settings →
-Project Config → Init workflows.
+[--none]` (`PUT /project/:projectId/init-workflows`), or in the webapp
+with a workflow's *Run at workspace start* switch.
 
 ## Running a step
 

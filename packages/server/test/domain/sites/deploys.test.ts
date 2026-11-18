@@ -36,6 +36,7 @@ import {
   findVolumeByName,
   findWorkspaceRow,
   getSiteRow,
+  listWorkspaceGroupRows,
   listWorkspaceRepos,
   listWorkspaceSteps,
   findSiteByName,
@@ -187,6 +188,11 @@ describe('deploySite', () => {
     const first = await deploySite(local, DEMO_PROJECT_ID, 'shop')
     expect(first.commits).toEqual([{ dir: '', commit: head }])
     await created(first.workspaceId)
+    // Its releases go in a group the site owns.
+    const shop = (await findSiteByName(DEMO_PROJECT_ID, 'shop'))!
+    const releaseGroup = (await findWorkspaceRow(first.workspaceId))?.groupId
+    expect((await listWorkspaceGroupRows(DEMO_PROJECT_ID)).find((g) => g.groupId === releaseGroup))
+      .toMatchObject({ name: 'shop', ownerKind: 'site', ownerId: shop.id })
     // Another deploy of the commit deploying is that deploy.
     expect(await deploySite(local, DEMO_PROJECT_ID, 'shop')).toEqual(first)
     const spec = launched.at(-1)!

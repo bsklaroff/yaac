@@ -8,7 +8,8 @@ import {
   listWorkspaceGroups,
 } from '#domain/workspaces'
 import { countStoppedWorkspaces } from '#db'
-import { listProjectAdds, listProjects } from '#domain/projects'
+import { listProjectAdds, listProjects, listWorkflowSummaries } from '#domain/projects'
+import { listSiteSummaries } from '#domain/sites'
 import { workspaceDriver } from '#drivers/driver'
 import { planUsageForSnapshot } from '#domain/auth'
 import { feedbackHost } from '#domain/feedback'
@@ -37,7 +38,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
   ))
   const [
     { active, held: heldWorkspaces, provisioning }, workspaceGroups, projects, usage, queuedWorkspaces, draftWorkspaces,
-    routines,
+    routines, workflows, sites,
   ] = await Promise.all([
     rows,
     listWorkspaceGroups(undefined, stoppedCounts),
@@ -46,6 +47,8 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     listQueuedWorkspaces(),
     listDraftWorkspaces(),
     listRoutines(),
+    listWorkflowSummaries(),
+    listSiteSummaries(),
   ])
   const imageBuilds = workspaceDriver().listImageBuilds()
   // A workspace with a provisioning entry is mid-create or mid-restart (or
@@ -69,6 +72,8 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     heldWorkspaces: heldWorkspaces.filter((w) => !hidden.has(w.workspaceId)).map((h) => previewed(h)),
     draftWorkspaces: draftWorkspaces.map((d) => previewed(d)),
     routines: routines.map((r) => previewed(r)),
+    workflows,
+    sites,
     gitAuthFailures: active.gitAuthFailures,
     imageBuilds,
     ...usage,

@@ -10,7 +10,7 @@
  * each to $SCREENSHOT_DIR (default /tmp/yaac-shots).
  *
  * Needs a running `yaac server` (see lib.js) with a project added, so the
- * Project Config section has content.
+ * Project pages have content.
  *
  * Run: node test-playwright-scripts/settings-close-button.js
  */
@@ -23,7 +23,7 @@ const VIEWPORTS = [
   ['narrow', { width: 1000, height: 600 }],
   ['phone', { width: 390, height: 800 }],
 ]
-const SECTIONS = ['General', 'Shortcuts', 'Credentials', 'Project Config', 'Skills']
+const SECTIONS = ['General', 'Shortcuts', 'Credentials', 'Environment', 'Skills']
 
 /*
  * In-page: the close button's rect, and whether the element at its center

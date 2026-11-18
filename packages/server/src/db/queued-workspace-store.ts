@@ -49,6 +49,8 @@ export interface QueuedWorkspaceSettings {
   workflowId?: string
   namedWorkflowId?: string
   nonInteractive?: boolean
+  /** `queued_workspaces.personSaved`. */
+  personSaved?: boolean
   title?: string
   groupId?: string
   /** The launched workspace's timeout (`queued_workspaces.timeoutMinutes`). */
@@ -84,6 +86,7 @@ function settingsColumns(s: QueuedWorkspaceSettings): Omit<typeof queuedWorkspac
     workflowId: s.workflowId ?? null,
     namedWorkflowId: s.namedWorkflowId ?? null,
     nonInteractive: s.nonInteractive === true,
+    personSaved: s.personSaved === true,
     title: s.title ?? null,
     groupId: s.groupId ?? null,
     effort: s.effort ?? null,

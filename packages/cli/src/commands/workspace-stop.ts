@@ -20,7 +20,7 @@ export async function workspaceStop(idOrName: string, options: { session?: boole
   console.log(info.provisioning === true
     ? `Workspace ${info.workspaceId} stopped while it was starting.`
     : `Workspace ${info.workspaceId} stopped; its checkout is kept, except files its .gitignore `
-      + 'matches that are not kept under Settings → Project Config.')
+      + 'matches that are not kept under Settings → Project → Storage.')
 }
 
 /** Close the open session `id` (or a unique prefix of it) names. */

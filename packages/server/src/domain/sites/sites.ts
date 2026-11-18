@@ -17,6 +17,7 @@ import {
   getVolumeRow,
   getNamedWorkflow,
   insertSite,
+  listNamedWorkflows,
   listProjectSites,
   listSiteReleases,
   listSites,
@@ -38,7 +39,7 @@ import { repoDir } from '@yaac/shared/project-paths'
 import { siteEdgeOf } from '@yaac/shared/site-edge'
 import { FULL_COMMIT_PATTERN, parseStepGraph } from '@yaac/shared/steps'
 import type { ProjectRow } from '#db'
-import type { RepoCommits, RepoStart, SiteCommit, SiteDetail, SiteEdgeStatus, SiteEntry } from '@yaac/shared/types'
+import type { RepoCommits, RepoStart, SiteCommit, SiteDetail, SiteEdgeStatus, SiteEntry, SiteSummary } from '@yaac/shared/types'
 import { endReleases, followPause, sameCommits, siteTarget, withSiteLock } from './deploys'
 
 const SITE_NAME = /^[a-z0-9-]{1,40}$/
@@ -379,40 +380,32 @@ export function siteCommits(project: ProjectRow | undefined, commits: RepoCommit
     .sort((a, b) => a.dir.localeCompare(b.dir))
 }
 
-async function toSiteEntry(row: SiteRow): Promise<SiteEntry> {
-  const project = await getProjectRow(row.projectId)
-  const volume = row.volumeId !== undefined ? await getVolumeRow(row.volumeId) : undefined
-  const live = row.liveWorkspaceId !== undefined ? await findWorkspaceRow(row.liveWorkspaceId) : undefined
-  const paused = row.follow ? await followPause(row) : undefined
-  const target = row.follow && row.failedCommits !== undefined ? await siteTarget(row) : undefined
-  const workflow = await getNamedWorkflow(row.namedWorkflowId)
+/** Every project's sites as the snapshot carries them, read from their
+ *  rows alone, so a snapshot build costs no git or user lookup. */
+export async function listSiteSummaries(): Promise<SiteSummary[]> {
+  const [rows, workflows] = await Promise.all([listSites(), listNamedWorkflows()])
+  const projects = new Map(await Promise.all([...new Set(rows.map((r) => r.projectId))]
+    .map(async (id) => [id, await getProjectRow(id)] as const)))
+  const names = new Map(workflows.map((w) => [w.id, w.name]))
+  return rows.map((row) => siteSummary(row, projects.get(row.projectId), names.get(row.namedWorkflowId) ?? ''))
+}
+
+function siteSummary(row: SiteRow, project: ProjectRow | undefined, workflow: string): SiteSummary {
   const commits = (map: RepoCommits): SiteCommit[] => siteCommits(project, map)
   return {
+    id: row.id,
+    projectId: row.projectId,
     name: row.name,
     hostname: row.hostname,
     edge: siteEdgeOf(row.hostname, env.siteDomain),
-    port: row.port,
-    ...(row.adminPort !== undefined ? { adminPort: row.adminPort } : {}),
-    workflow: workflow?.name ?? '',
-    steps: workflow?.workflow.steps ?? {},
-    ...(volume !== undefined ? { volume: volume.name } : {}),
-    repos: row.repos.map((r) => ({
-      dir: project?.repos.find((l) => l.repo.id === r.repo)?.dir ?? r.repo,
-      ...(r.branch !== undefined ? { branch: r.branch } : {}),
-      ...(r.commit !== undefined ? { commit: r.commit } : {}),
-    })),
+    workflow,
     follow: row.follow,
-    ...(paused !== undefined ? { followPaused: paused } : {}),
-    ...(target !== undefined && sameCommits(target, row.failedCommits) && !sameCommits(target, row.releaseCommits)
-      ? { followSkipped: commits(target) } : {}),
-    createdAt: row.createdAt.toISOString(),
     ...(row.liveWorkspaceId !== undefined && row.releaseCommits !== undefined && row.liveSince !== undefined
       ? {
         live: {
           workspaceId: row.liveWorkspaceId,
           commits: commits(row.releaseCommits),
           since: row.liveSince.toISOString(),
-          running: live !== undefined && live.stoppedAt === undefined,
         },
       }
       : {}),
@@ -439,6 +432,33 @@ async function toSiteEntry(row: SiteRow): Promise<SiteEntry> {
         },
       }
       : {}),
+  }
+}
+
+async function toSiteEntry(row: SiteRow): Promise<SiteEntry> {
+  const project = await getProjectRow(row.projectId)
+  const volume = row.volumeId !== undefined ? await getVolumeRow(row.volumeId) : undefined
+  const live = row.liveWorkspaceId !== undefined ? await findWorkspaceRow(row.liveWorkspaceId) : undefined
+  const paused = row.follow ? await followPause(row) : undefined
+  const target = row.follow && row.failedCommits !== undefined ? await siteTarget(row) : undefined
+  const workflow = await getNamedWorkflow(row.namedWorkflowId)
+  const { id: _id, projectId: _projectId, live: served, ...summary } = siteSummary(row, project, workflow?.name ?? '')
+  return {
+    ...summary,
+    port: row.port,
+    ...(row.adminPort !== undefined ? { adminPort: row.adminPort } : {}),
+    steps: workflow?.workflow.steps ?? {},
+    ...(volume !== undefined ? { volume: volume.name } : {}),
+    repos: row.repos.map((r) => ({
+      dir: project?.repos.find((l) => l.repo.id === r.repo)?.dir ?? r.repo,
+      ...(r.branch !== undefined ? { branch: r.branch } : {}),
+      ...(r.commit !== undefined ? { commit: r.commit } : {}),
+    })),
+    ...(paused !== undefined ? { followPaused: paused } : {}),
+    ...(target !== undefined && sameCommits(target, row.failedCommits) && !sameCommits(target, row.releaseCommits)
+      ? { followSkipped: siteCommits(project, target) } : {}),
+    createdAt: row.createdAt.toISOString(),
+    ...(served !== undefined ? { live: { ...served, running: live !== undefined && live.stoppedAt === undefined } } : {}),
   }
 }
 

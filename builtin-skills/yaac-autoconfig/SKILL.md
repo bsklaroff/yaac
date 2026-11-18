@@ -25,7 +25,8 @@ The job has three parts:
 
 - **The template is not the live config.** yaac keeps each
   project's settings on the server, set **only** with the `yaac` CLI or the
-  web app's Settings → Project Config: init steps as an init workflow with
+  web app (its Workflows, and Settings → Project): init steps as an init
+  workflow with
   `yaac workflow create <project> <name> --file <file> --init`, forwarded
   ports with
   `yaac config port-forwards <project> <port>...`. The file you write in the
@@ -146,8 +147,8 @@ Tell the user:
   (with `--repo <dir>` for the repo it is written for, in a project of several;
   `yaac workflow edit <project> init --file …` once it exists) and `yaac config
   port-forwards <project> <port>...` (plus `yaac config cache-volumes <project>
-  <name>=<path>` if the project needs it), or use the web app's Settings →
-  Project Config.
+  <name>=<path>` if the project needs it), or use the web app (its Workflows,
+  and Settings → Project → Network for ports).
 - that it then takes effect on the **next** session created for this project
   (not the current one),
 - how they'll reach the app: the Preview button in the desktop or iPhone app
@@ -208,7 +209,7 @@ needs.
 
 Dependency and build-output dirs each workspace keeps off its checkout
 (`node_modules` and `target` by default) are a project setting, not a config
-key: Settings → Project Config, or `yaac config scratch-dirs`.
+key: Settings → Project → Storage, or `yaac config scratch-dirs`.
 
 ## Gotchas
 
@@ -223,7 +224,7 @@ key: Settings → Project Config, or `yaac config scratch-dirs`.
   inside the pod, so `127.0.0.1`/`::1`/`0.0.0.0` are all fine; a private-only
   bind needs `--host 0.0.0.0`.
 - **Environment variables are not in this file.** They are stored with the
-  project and edited in the web app under Settings → Project Config →
+  project and edited in the web app under Settings → Project →
   Environment (a secret there is encrypted, and under the k8s driver its value
   is injected by the egress proxy rather than placed in the container). If the
   project needs any, say which in your summary rather than writing a config key

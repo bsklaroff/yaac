@@ -1,16 +1,18 @@
 import { useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { Menu } from '@base-ui/react/menu'
-import { DeleteIcon } from '#lib/icons'
+import { DeleteIcon, SettingsIcon } from '#lib/icons'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { removeProjectInBackground } from '#lib/projectOps'
+import { useUiStore } from '#lib/store'
 import { useReadOnly } from '#lib/viewer'
 import { useVolumes } from '#lib/volumes'
 import type { ProjectSummary } from '@yaac/shared/types'
 
-/** The project name as a menu trigger. The only action is Remove, which
- *  asks for confirmation and then runs in the background (#lib/projectOps).
+/** The project name as a menu trigger: Project settings, which opens the
+ *  settings modal on this project's General page, and Remove, which asks
+ *  for confirmation and then runs in the background (#lib/projectOps).
  *  The confirmation names the project's volumes, whose data goes with it
  *  though no workspace holds them, and says its repos stay. A teammate's
  *  project shows its plain name. */
@@ -19,6 +21,11 @@ export function ProjectActionsMenu({ project }: { project: ProjectSummary }): JS
   const { id: projectId, name } = project
   const readOnly = useReadOnly()
   const volumes = useVolumes(confirm ? projectId : null) ?? []
+  const openProjectSettings = (): void => {
+    const { openSettings, setSettingsProjectId } = useUiStore.getState()
+    openSettings('project-general')
+    setSettingsProjectId(projectId)
+  }
   if (readOnly) return <span className="truncate font-semibold tracking-tight">{name}</span>
 
   return (
@@ -29,6 +36,10 @@ export function ProjectActionsMenu({ project }: { project: ProjectSummary }): JS
           <span className="truncate">{name}</span>
         </Menu.Trigger>
         <MenuPopup side="bottom" align="start" sideOffset={6} className="min-w-[170px]">
+          <Menu.Item className={MENU_ITEM} onClick={openProjectSettings}>
+            <SettingsIcon size={14} />
+            Project settings…
+          </Menu.Item>
           <Menu.Item
             className={clsx(MENU_ITEM, 'text-danger data-[highlighted]:bg-[#c94a4a]/15 data-[highlighted]:text-danger')}
             onClick={() => setConfirm(true)}

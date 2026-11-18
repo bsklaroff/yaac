@@ -763,7 +763,7 @@ Tracked files are never touched.
 Two kinds of path are kept anyway:
 
 - **The project's kept paths** (`projects.keptIgnoredPaths`, set under
-  Settings → Project Config → Kept ignored files). Each is a literal path
+  Settings → Project → Storage → Kept ignored files). Each is a literal path
   relative to a checkout, kept in every checkout that has it: a file, or a
   folder and everything in it, even one inside an ignored folder.
 - **Every mount point under the checkout**, read from

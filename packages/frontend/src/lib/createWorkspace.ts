@@ -78,6 +78,11 @@ export interface WorkspaceCreate {
   pane?: LaunchPane
   /** The project volume to attach, by name. */
   volume?: string
+  /** A named workflow it starts with in place of the project's init
+   *  workflows; with `nonInteractive`, an unattended run of it that gets
+   *  its run secrets (docs/workflows.md). */
+  workflow?: string
+  nonInteractive?: true
 }
 
 export async function createWorkspace(
@@ -88,14 +93,15 @@ export async function createWorkspace(
   const group = c.groupId ?? c.newGroup
   // Minted here, like the workspace's, so the panes standing in for the
   // session's chat show the whole message this tab sent (`useOpening`).
-  const sessionId = c.noSession === true ? undefined : randomUUID()
+  const sessionId = c.noSession === true || c.nonInteractive === true ? undefined : randomUUID()
   if (sessionId !== undefined && c.prompt) rememberOpening(sessionId, c.prompt)
   const body = {
     project: c.projectId,
     workspaceId,
-    ...(sessionId === undefined
-      ? { noSession: true }
+    ...(c.nonInteractive === true ? { nonInteractive: true }
+      : sessionId === undefined ? { noSession: true }
       : { sessionId, tool: c.tool, mode: c.mode, permissionMode: c.permissionMode }),
+    ...(c.workflow !== undefined ? { workflow: c.workflow } : {}),
     ...(c.model ? { model: c.model } : {}),
     ...(c.effort !== undefined ? { effort: c.effort } : {}),
     ...(c.agentOptions !== undefined ? { agentOptions: c.agentOptions } : {}),

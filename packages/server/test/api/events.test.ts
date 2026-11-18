@@ -42,7 +42,7 @@ function emptySnapshot(): ServerSnapshot {
     driver: 'k8s',
     feedbackHost: null,
     workspaces: [], workspaceGroups: [], stale: [], projects: [], provisioning: [], projectAdds: [], gitAuthFailures: {},
-    queuedWorkspaces: [], heldWorkspaces: [], draftWorkspaces: [], routines: [],
+    queuedWorkspaces: [], heldWorkspaces: [], draftWorkspaces: [], routines: [], workflows: [], sites: [],
     imageBuilds: [],
     planUsage: {},
     codexPlanUsage: {},

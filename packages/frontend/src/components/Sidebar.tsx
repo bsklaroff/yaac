@@ -12,6 +12,7 @@ import {
 // Re-exported for App's Alt+K/J row cycling and the tests.
 export {
   sidebarLayout,
+  ownedGroupIds,
   sidebarRowIds,
   type SidebarGroupSection,
   type SidebarLayout,

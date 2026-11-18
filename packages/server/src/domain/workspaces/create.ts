@@ -860,7 +860,7 @@ async function provisionWorkspace(
       throw new ServerError(
         'VALIDATION',
         `The remote host "${host}" of ${c.repo.remoteUrl} is not in the egress allowlist. `
-        + 'Add it in Settings → Project Config.',
+        + 'Add it in Settings → Project → Network.',
       )
     }
   }

@@ -21,7 +21,7 @@
  */
 import { execSync } from 'node:child_process'
 import path from 'node:path'
-import { requirePlaywright, origin, check, finish, SHOTS, until } from './lib.js'
+import { requirePlaywright, origin, check, finish, SHOTS, until, projectPage } from './lib.js'
 
 const { chromium } = requirePlaywright()
 const browser = await chromium.launch()
@@ -65,8 +65,8 @@ check('the credential list shows the signed-in tool', await dialog.getByText(/cl
 await dialog.getByRole('button', { name: 'Shortcuts' }).click()
 check('shortcuts pane renders', await dialog.getByText('Reset all to defaults').isVisible())
 
-await dialog.getByRole('button', { name: 'Project Config' }).click()
-await dialog.getByText('Environment', { exact: true }).waitFor()
+await projectPage(dialog, 'Environment').click()
+await dialog.getByRole('heading', { name: 'Environment' }).waitFor()
 await until(page, () => !document.querySelector('[role="dialog"]')?.textContent?.includes('Loading…'), undefined, 15_000)
 const text = await dialog.textContent()
 check('project env and config load without an error', !/not found|failed|error/i.test(text), text.slice(0, 120))

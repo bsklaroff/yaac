@@ -118,9 +118,9 @@ branch's tip or at a fixed commit, the layout and the cwd. Its runs may run a
 named workflow
 (docs/workflows.md) in place of the init workflows, non-interactive, which
 makes a routine a nightly CI run (docs/workspace-steps.md). Saving one whose
-runs lack a repo its workflow names is refused. A person saving the routine
-approves the commit or branch each repo its runs start with is at for the
-workflow's run secrets; a branch approval gives them to whoever can push the
+runs lack a repo its workflow names is refused. A person saving an
+unattended routine's workflow or start approves the commit or branch each
+repo its runs start with is at for the workflow's run secrets; a branch approval gives them to whoever can push the
 branch, the project's agents included (docs/workflows.md "Run secrets"). A run copies its routine's settings at its tick and follows its
 named workflow until it launches; it cannot be edited.
 
@@ -151,7 +151,8 @@ place in line, so a run waiting for room in a busy group is not sent to the
 back each tick.
 
 **Groups.** A routine's group is an ordinary setting. Created without one,
-its runs go in a group named after it (made if need be); `null` is the
+its runs go in a group of its own, owned by the routine and drawn under its
+sidebar row (docs/workspace-groups.md "Owned groups"); `null` is the
 default list. Renaming the routine does not move it.
 
 **History.** A run launched with the next tick as its deadline is marked so
@@ -212,10 +213,12 @@ routine form says so beside the permission mode.
   (STOPS), scheduled entries under their time, the project's routines, and
   `timed out`. `routine create|edit|pause|resume|run|delete` manage
   routines (above).
-- **Webapp.** The new-workspace pane's Start offers a time, a delay, or a
+- **Webapp.** The new-workspace pane's When offers a time, a delay, or a
   schedule (a routine form with schedule presets that compile to cron, a
-  zone, and a live preview of the next runs), and a Timeout row. The sidebar
-  has Scheduled and Routines sections, describing each routine's cron in
-  words (cronstrue); a routine opens in its own pane with its cron and its
-  runs; a workspace with a deadline shows a chip to extend or clear it,
-  and a routine's run links back to its routine.
+  zone, and a live preview of the next runs), and a Timeout row; on its
+  Workflow tab the schedule makes a routine that runs a named workflow
+  unattended. The sidebar has Scheduled and Routines sections, describing
+  each routine's cron in words (cronstrue), with its runs under its row; a
+  routine opens in its own pane with its cron and its runs; a workspace with
+  a deadline shows a chip to extend or clear it, and a routine's run links
+  back to its routine.

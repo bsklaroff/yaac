@@ -279,7 +279,7 @@ against a local or remote server:
   SSH key is generated and stored encrypted by the server; you register its
   public half with the git host (docs/git-credentials.md).
 - **Project environment and secrets**: edited in the webapp (Settings →
-  Project Config → Environment) and stored with the project, secrets
+  Project → Environment) and stored with the project, secrets
   encrypted at rest. Under `k8s` a secret's value never enters a workspace;
   the egress proxy injects it in flight. A run secret, which only a
   workflow naming it gets, on a commit a person ran it on, is the exception

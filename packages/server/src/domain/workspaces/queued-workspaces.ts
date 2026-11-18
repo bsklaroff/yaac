@@ -14,7 +14,7 @@
  */
 import crypto from 'node:crypto'
 import { resolveCreate } from './create'
-import { resolveGroup } from './groups'
+import { ownedGroup, resolveGroup } from './groups'
 import { groupFull, readGroupRoom, refuseFullGroup, reserveGroupSlot } from './group-limits'
 import {
   inFlightCreate,
@@ -32,7 +32,7 @@ import { toStoppedEntries } from './stopped-list'
 import { customEndpointFor, modelDisplayName, modelEfforts } from '#domain/auth'
 import { authorizeProject, isProjectHeld, systemPrincipal, type Actor } from '#domain/access'
 import { getDefaultBranch } from '#domain/git'
-import { assertWorkflowRepos, resolveWorkflow } from '#domain/projects'
+import { assertWorkflowRepos, resolveWorkflow, savedByPerson } from '#domain/projects'
 import {
   claimQueuedLaunch,
   deleteQueuedWorkspace,
@@ -182,11 +182,11 @@ export async function queueWorkspace(
     : request.parent == null
       ? await roomToWaitIn(projectId, request.group)
       : await resolveParent(projectId, request.parent)
-  const settings = await resolveSettings(projectId, parent, {
+  refuseDeletedParent(parent.pointer)
+  const settings = await resolveSettings(principal, projectId, parent, {
     ...request,
     ...(parent.pointer === null ? { group: parent.groupId ?? null } : {}),
   }, source)
-  refuseDeletedParent(parent.pointer)
   const row = await insertQueuedWorkspace(projectId, parent.pointer, settings,
     generatedTitle !== undefined ? { generatedTitle } : {})
   const [entry] = await toEntries([row])
@@ -251,7 +251,8 @@ export async function updateQueuedWorkspace(
   const workflow = patch.workflow ?? named?.name
   const steps = patch.steps !== undefined ? patch.steps
     : workflow === undefined && row.workflowId !== undefined ? (await getWorkflow(row.workflowId))?.steps : undefined
-  const settings = await resolveSettings(row.projectId, parent, {
+  refuseDeletedParent(parent.pointer)
+  const settings = await resolveSettings(principal, row.projectId, parent, {
     ...(prompt !== undefined ? { prompt } : {}),
     tool: patch.tool ?? row.tool,
     mode: patch.mode ?? row.mode,
@@ -274,8 +275,7 @@ export async function updateQueuedWorkspace(
     ...(retooled ? patch.agentOptions !== undefined ? { agentOptions: patch.agentOptions } : {}
       : { agentOptions: { ...row.agentOptions, ...patch.agentOptions } }),
     timeout: patch.timeout !== undefined ? patch.timeout : row.timeoutMinutes ?? null,
-  }, source, selectionOf(row))
-  refuseDeletedParent(parent.pointer)
+  }, source, selectionOf(row), row)
   const updated = await updateQueuedWorkspaceRow(id, {
     ...settings,
     ...(patch.parent !== undefined || patch.start !== undefined ? { parent: parent.pointer } : {}),
@@ -495,10 +495,11 @@ async function launch(row: QueuedWorkspaceRow, timeoutFrom: Date): Promise<{ wor
         ...selectionOf(row),
         ...(named !== undefined ? { workflow: named.name } : row.workflowId !== undefined ? { workflowId: row.workflowId } : {}),
         ...(row.nonInteractive ? { nonInteractive: true } : {}),
+        ...(row.personSaved ? { personSaved: true } : {}),
         ...(row.prompt !== undefined ? { prompt: row.prompt } : { noSession: true }),
         ...(row.title !== undefined ? { title: row.title } : {}),
         ...(row.title === undefined && row.generatedTitle !== undefined ? { generatedTitle: row.generatedTitle } : {}),
-        ...(row.groupId !== undefined ? { groupId: row.groupId } : {}),
+        groupId: row.groupId ?? null,
         ...(deadline !== undefined ? { deadline } : {}),
         rememberDefaults: false,
         // Children point at `workspaceId`; a spare has a different id.
@@ -739,14 +740,21 @@ function settingsOf(entry: QueuedWorkspaceRow): Omit<ParentInfo, 'pointer'> {
  * only for the same tool), else the project's create defaults. The group is
  * fixed now, so moving the parent later does not move it. On an edit, `own`
  * is what the entry starts with now, which it keeps where the edit names
- * nothing else.
+ * nothing else, and `kept` the workflow and start it was saved with.
+ *
+ * An unattended start of a named workflow is checked as `savedByPerson`
+ * when its workflow or start changes, and keeps who saved it otherwise, so
+ * an edit of only its title approves nothing (docs/workflows.md
+ * "Approvals"). Groups are resolved last, so a refused save makes none.
  */
 async function resolveSettings(
+  principal: Actor,
   projectId: string,
   parent: ParentInfo,
   request: Omit<QueueRequest, 'parent' | 'start'>,
   source: QueueSource,
   own?: RepoSelection,
+  kept?: SavedStart,
 ): Promise<QueuedWorkspaceSettings> {
   const project = await getProjectRow(projectId)
   if (!project) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
@@ -791,9 +799,6 @@ async function resolveSettings(
     throw new ServerError('VALIDATION', `no model is known for ${setup.tool}; pick one`)
   }
   const title = normalizeTitle(request.title ?? '')
-  const groupId = request.group === undefined ? parent.groupId
-    : request.group === null ? undefined
-    : (await resolveGroup(projectId, request.group, { create: true })).groupId
   checkPrompt(request.prompt, request.nonInteractive)
   if (request.steps !== undefined && request.workflow !== undefined) {
     throw new ServerError('VALIDATION', 'name steps or a workflow, not both')
@@ -810,6 +815,20 @@ async function resolveSettings(
   if (named !== undefined) {
     await assertWorkflowRepos(projectId, `workflow "${named.name}"`, named.workflow.repos, selection.repos.map((r) => r.repo))
   }
+  const unattended = named !== undefined && request.nonInteractive === true ? named : undefined
+  const changed = kept === undefined || kept.namedWorkflowId !== named?.id || kept.nonInteractive !== (unattended !== undefined)
+    || JSON.stringify(kept.repos) !== JSON.stringify(selection.repos)
+  const personSaved = unattended === undefined ? false
+    : changed ? await savedByPerson(principal, unattended.id, selection.repos)
+    : kept.personSaved === true
+  // An unattended run of a named workflow goes in the workflow's own group
+  // unless it names one.
+  const groupId = request.group === undefined
+    ? unattended !== undefined
+      ? await ownedGroup(projectId, { kind: 'workflow', id: unattended.id }, unattended.name)
+      : parent.groupId
+    : request.group === null ? undefined
+    : (await resolveGroup(projectId, request.group, { create: true })).groupId
   return {
     ...(request.prompt !== undefined ? { prompt: request.prompt } : {}),
     tool: setup.tool,
@@ -822,10 +841,20 @@ async function resolveSettings(
     ...(named !== undefined ? { namedWorkflowId: named.id }
       : steps !== undefined ? { workflowId: (await storeWorkflow(projectId, { steps: steps ?? {}, secrets: [] })).id } : {}),
     ...(request.nonInteractive === true ? { nonInteractive: true } : {}),
+    ...(personSaved ? { personSaved } : {}),
     ...(title !== '' ? { title } : {}),
     ...(groupId !== undefined ? { groupId } : {}),
     ...(request.timeout != null ? { timeoutMinutes: request.timeout } : {}),
   }
+}
+
+/** The workflow and start an entry or routine was saved with, and whether
+ *  a person saved them, for an edit to tell what it changes. */
+export interface SavedStart {
+  namedWorkflowId?: string
+  nonInteractive: boolean
+  repos: RepoStart[]
+  personSaved?: boolean
 }
 
 /**
@@ -834,12 +863,14 @@ async function resolveSettings(
  * defaults to its ceiling.
  */
 export async function resolveParentlessSettings(
+  principal: Actor,
   projectId: string,
   request: Omit<QueueRequest, 'parent' | 'start'>,
   source: QueueSource,
   own?: RepoSelection,
+  kept?: SavedStart,
 ): Promise<QueuedWorkspaceSettings> {
-  return await resolveSettings(projectId, { pointer: { startAt: new Date() } }, request, source, own)
+  return await resolveSettings(principal, projectId, { pointer: { startAt: new Date() } }, request, source, own, kept)
 }
 
 /** Wire entries, flagging the ones whose parent workspace is gone. */

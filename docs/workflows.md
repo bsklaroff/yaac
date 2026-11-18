@@ -125,10 +125,18 @@ commit, which names its content whichever repo holds it, or
 `<repo id>:refs/heads/<branch>`). Only running something approves it, and
 only a person's action:
 
-- A person saving a routine approves the commit or branch each repo it
-  starts with is at (the repo's default branch when it names none). Every
+- A person saving an unattended routine approves the commit or branch each
+  repo it starts with is at (the repo's default branch when it names none),
+  when the save sets or changes its workflow or start; an edit of anything
+  else approves nothing. Every
   agent of the project can push to a branch with the project's git
   credential, so approving one approves whatever is pushed there.
+- A person queuing a named workflow to run unattended later (a scheduled
+  or queued create) marks the entry (`queued_workspaces.personSaved`), and
+  its launch approves each commit it runs, as their own launch would. It
+  approves no branch: a one-off run is not a standing setup. An agent's
+  queue, or an agent's edit of the entry's workflow or start, is refused
+  unless each start is approved already, and clears the mark.
 - A person deploying a site, or launching a named workflow
   non-interactively by hand (webapp, CLI, API), approves each commit it
   runs.
@@ -236,9 +244,15 @@ the value it started with, so stop the releases and runs that have it.
 - **yaac-mama**: `workflow list|show` (with each one's repos and whether it
   is an init workflow), and `--workflow` on `create`, `create --workspace`
   (adds its steps), `queue`, `edit-queued` and `routine create|edit`.
-- **Webapp**: Settings → Project Config → Run secrets, Workflows (each with
-  its repos and a "Run at workspace start" switch) and Init workflows (that
-  list filtered); a site's form picks its workflow.
+- **Webapp**: the sidebar's Workflows section lists each named workflow,
+  with Run now on its row and its unattended runs under it (they go in a
+  group the workflow owns, docs/workspace-groups.md "Owned groups"). Its
+  pane shows its steps, repos, run secrets, approvals, a "Run at workspace
+  start" switch and the routines and sites that run it, and edits it. The
+  new-workspace pane's Workflow tab runs one unattended now, later or on a
+  schedule, and its Agent tab's Steps row starts an agent workspace with
+  one in place of the init workflows. Run secrets are set under Settings →
+  Project › Environment; a site's form picks its workflow.
 
 | Concern | Path |
 |---|---|

@@ -9,13 +9,16 @@ import {
   BranchIcon,
   CloseIcon,
   DockerIcon,
+  EnvIcon,
   GeneralIcon,
   KeyboardIcon,
   KeyIcon,
+  NetworkIcon,
   ProjectConfigIcon,
   SettingsIcon,
   SkillsIcon,
   UsersIcon,
+  VolumeIcon,
 } from '#lib/icons'
 import { api } from '#lib/api'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
@@ -26,14 +29,15 @@ import { deviceTimeZone, timeZoneQuery } from '#lib/time'
 import { CredentialsPane } from '#components/settings/Credentials'
 import { Field } from '#components/settings/Field'
 import { PhoneLinkField } from '#components/settings/PhoneLink'
-import { ProjectSettings } from '#components/settings/ProjectSettings'
+import { PROJECT_PAGE_LABEL, ProjectSettings } from '#components/settings/ProjectSettings'
+import { ProjectSelect, useSettingsProject } from '#components/settings/ProjectPicker'
 import { ReposSettings } from '#components/settings/Repos'
 import { SkillsSettings } from '#components/settings/Skills'
 import { UsersPane } from '#components/settings/Users'
 import { FileEditor } from '#components/settings/FileEditor'
 import { BuildFiles } from '#components/settings/BuildFiles'
 import { userBuildFilesApi } from '#lib/buildFilesApi'
-import { useUiStore, type SettingsSection } from '#lib/store'
+import { useUiStore, type ProjectPage, type SettingsSection } from '#lib/store'
 import type { ThemePref } from '#lib/theme'
 import { useSnapshot } from '#lib/useSnapshot'
 import { useWhoami } from '#lib/viewer'
@@ -45,27 +49,34 @@ const THEMES: { value: ThemePref; label: string }[] = [
   { value: 'dark', label: 'Dark' },
 ]
 
-const SECTIONS: { key: SettingsSection; label: string; Icon: typeof GeneralIcon }[] = [
+type NavIcon = typeof GeneralIcon
+
+const ACCOUNT_SECTIONS: { key: SettingsSection; label: string; Icon: NavIcon }[] = [
   { key: 'general', label: 'General', Icon: GeneralIcon },
   { key: 'shortcuts', label: 'Shortcuts', Icon: KeyboardIcon },
   { key: 'credentials', label: 'Credentials', Icon: KeyIcon },
   { key: 'repos', label: 'Repos', Icon: BranchIcon },
-  { key: 'project', label: 'Project Config', Icon: ProjectConfigIcon },
   { key: 'skills', label: 'Skills', Icon: SkillsIcon },
   { key: 'userDockerfile', label: 'User Dockerfile', Icon: DockerIcon },
   { key: 'users', label: 'Users', Icon: UsersIcon },
 ]
 
-/** The nav sections this server can use: the user Dockerfile needs one that
- *  builds images, and Users one with more than one user (`tailnet`). */
-function visibleSections(buildsImages: boolean, multiUser: boolean): typeof SECTIONS {
-  return SECTIONS.filter((s) => (s.key !== 'userDockerfile' || buildsImages) && (s.key !== 'users' || multiUser))
-}
+const PROJECT_PAGES: { page: ProjectPage; Icon: NavIcon }[] = [
+  { page: 'general', Icon: ProjectConfigIcon },
+  { page: 'env', Icon: EnvIcon },
+  { page: 'network', Icon: NetworkIcon },
+  { page: 'storage', Icon: VolumeIcon },
+  { page: 'image', Icon: DockerIcon },
+]
+
+const NAV_HEADING = 'px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-text-faint max-md:hidden'
 
 /**
- * The settings button and its modal: a left nav of sections
- * beside the content pane. Open state lives in the store so other surfaces
- * (e.g. the new-workspace menu's "Sign in") can open it on a given section.
+ * The settings button and its modal: a left nav beside the content pane,
+ * in two groups. Account holds what is the user's or the install's; Project
+ * holds one project's pages, for the project its picker names. Open state
+ * lives in the store so other surfaces (e.g. the new-workspace menu's
+ * "Sign in") can open it on a given section.
  */
 export function SettingsButton(
   /** 'rail' is the desktop rail's 40px chip; 'row' is the mobile project
@@ -84,6 +95,24 @@ export function SettingsButton(
   const queryClient = useQueryClient()
   const buildsImages = useSnapshot()?.driver !== 'containerless'
   const multiUser = useWhoami()?.kind === 'tailnet'
+  const { projects, selected, pick } = useSettingsProject()
+
+  const navButton = (key: SettingsSection, label: string, Icon: NavIcon): JSX.Element => (
+    <button
+      key={key}
+      onClick={() => setSection(key)}
+      className={clsx(
+        'flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition',
+        'max-md:h-9 max-md:shrink-0 max-md:whitespace-nowrap',
+        section === key
+          ? 'bg-surface-2 font-medium text-text'
+          : 'text-text-dim hover:bg-surface-2/60 hover:text-text',
+      )}
+    >
+      <Icon size={13} className="shrink-0" />
+      {label}
+    </button>
+  )
 
   // Refetch credentials on open; the CLI may have changed them.
   useEffect(() => {
@@ -119,22 +148,27 @@ export function SettingsButton(
           <Dialog.Title className="px-2 pb-2 pt-1 text-xs font-semibold text-text-dim max-md:hidden">
             Settings
           </Dialog.Title>
-          {visibleSections(buildsImages, multiUser).map(({ key, label, Icon }) => (
-            <button
-              key={key}
-              onClick={() => setSection(key)}
-              className={clsx(
-                'flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition',
-                'max-md:h-9 max-md:shrink-0 max-md:whitespace-nowrap',
-                section === key
-                  ? 'bg-surface-2 font-medium text-text'
-                  : 'text-text-dim hover:bg-surface-2/60 hover:text-text',
-              )}
-            >
-              <Icon size={13} className="shrink-0" />
-              {label}
-            </button>
-          ))}
+          <div role="group" aria-label="Account" className="contents">
+            <div className={NAV_HEADING}>Account</div>
+            {ACCOUNT_SECTIONS
+              .filter((s) => (s.key !== 'userDockerfile' || buildsImages) && (s.key !== 'users' || multiUser))
+              .map(({ key, label, Icon }) => navButton(key, label, Icon))}
+          </div>
+          <div role="group" aria-label="Project" className="contents">
+            <div className={clsx(NAV_HEADING, 'mt-3')}>Project</div>
+            {selected === undefined ? (
+              <p className="px-2 text-[11px] text-text-faint max-md:hidden">No projects yet</p>
+            ) : <>
+              <ProjectSelect
+                projects={projects}
+                value={selected.id}
+                onChange={pick}
+                className="mx-1 mb-1 max-md:mx-0 max-md:mb-0 max-md:ml-2 max-md:h-9 max-md:shrink-0"
+              />
+              {PROJECT_PAGES.filter((p) => p.page !== 'image' || buildsImages)
+                .map(({ page, Icon }) => navButton(`project-${page}`, PROJECT_PAGE_LABEL[page], Icon))}
+            </>}
+          </div>
         </div>
 
         {/* The close button sits outside the scroller so it stays put, and
@@ -221,7 +255,7 @@ export function SettingsButton(
 
               {section === 'repos' && <ReposSettings />}
 
-              {section === 'project' && <ProjectSettings />}
+              {section.startsWith('project-') && <ProjectSettings page={section.slice('project-'.length) as ProjectPage} />}
 
               {section === 'userDockerfile' && <UserDockerfilePane />}
 

@@ -1,9 +1,11 @@
 import { and, asc, desc, eq, inArray, isNull, ne } from 'drizzle-orm'
 import { getDb } from './client'
+import { releaseOwnedGroups } from './group-store'
 import { sites, workspaceLives, workspaces } from './schema'
 import { currentLife } from './current-life'
 import { listWorkspaceReposFor, type WorkspaceRepoRow } from './repo-store'
 import { isUuid } from '#lib/uuid'
+import { notifyWorkspaceListChanged } from '#lib/notify'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
 import { ServerError } from '@yaac/shared/errors'
 import type { RepoStart } from '@yaac/shared/types'
@@ -11,7 +13,8 @@ import type { RepoStart } from '@yaac/shared/types'
 /**
  * Public sites (docs/public-sites.md). Everything here is the domain's own
  * decision, a user's intent or a deploy advancing, so it is written
- * directly rather than through `applyWorkspaceEvent`.
+ * directly rather than through `applyWorkspaceEvent`, and each write
+ * notifies the snapshot hub, whose sidebar shows every site's state.
  */
 
 type Row = typeof sites.$inferSelect
@@ -45,7 +48,10 @@ export async function insertSite(values: {
 }): Promise<SiteRow> {
   const db = await getDb()
   const [row] = await db.insert(sites).values(values).onConflictDoNothing().returning()
-  if (row) return toRow(row)
+  if (row) {
+    notifyWorkspaceListChanged()
+    return toRow(row)
+  }
   if (await findSiteByName(values.projectId, values.name)) {
     throw new ServerError('CONFLICT', `this project already has a site named "${values.name}"`)
   }
@@ -99,6 +105,7 @@ export async function updateSite(id: string, patch: SitePatch): Promise<void> {
     if (patch.hostname !== undefined && await hostnameTaken(patch.hostname, id)) throw taken()
     throw err
   }
+  notifyWorkspaceListChanged()
 }
 
 /** Start a deploy, only if none is in progress. Resolves whether it did. */
@@ -107,18 +114,22 @@ export async function beginSiteDeploy(id: string, patch: SitePatch): Promise<boo
   const rows = await db.update(sites).set(patch)
     .where(and(eq(sites.id, id), isNull(sites.deployWorkspaceId)))
     .returning({ id: sites.id })
+  if (rows.length > 0) notifyWorkspaceListChanged()
   return rows.length > 0
 }
 
 export async function deleteSiteRow(id: string): Promise<void> {
   const db = await getDb()
   await db.delete(sites).where(eq(sites.id, id))
+  await releaseOwnedGroups({ kind: 'site', id })
+  notifyWorkspaceListChanged()
 }
 
 /** Drop a deleted project's sites. The next sync stops routing them. */
 export async function deleteProjectSiteRows(projectId: string): Promise<void> {
   const db = await getDb()
   await db.delete(sites).where(eq(sites.projectId, projectId))
+  notifyWorkspaceListChanged()
 }
 
 /** Each site's name by id, for workspace listings. */

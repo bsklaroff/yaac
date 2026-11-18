@@ -4,6 +4,7 @@ import type {
   AgentMode,
   AgentTool,
   EgressAllowlist,
+  GroupOwnerKind,
   PermissionMode,
   PortForwardConfig,
   RepoCommits,
@@ -577,6 +578,11 @@ export const workspaceGroups = snakeCase.table('workspace_groups', {
   /** Most live workspaces the group may hold at once; null is unlimited
    *  (docs/workspace-groups.md). */
   workspaceLimit: integer(),
+  /** What the server made the group for, whose runs it holds: a named
+   *  workflow, routine or site (docs/workspace-groups.md "Owned groups").
+   *  No foreign key: an owner deleted since leaves an ordinary group. */
+  ownerKind: text().$type<GroupOwnerKind>(),
+  ownerId: text(),
 }, (t) => [primaryKey({ columns: [t.projectId, t.groupId] })])
 
 /**
@@ -962,6 +968,11 @@ export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
   namedWorkflowId: uuid().references((): AnyPgColumn => namedWorkflows.id, { onDelete: 'set null' }),
   /** It launches non-interactive: its workflow, untouched, with no session. */
   nonInteractive: boolean().notNull().default(false),
+  /** A person saved its unattended start of a named workflow, so its
+   *  launch approves the commits it runs, as a person's own launch does
+   *  (docs/workflows.md "Approvals"). An agent's save of its workflow or
+   *  start clears it. */
+  personSaved: boolean().notNull().default(false),
   /** The user's title for the launched workspace; wins over
    *  `generatedTitle`. */
   title: text(),

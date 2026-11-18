@@ -3,7 +3,7 @@
  * browser, with a 300x200 test image: red 50px bands either side of a blue
  * 200px square.
  *
- *  1. pasting a PNG on the preview chip under Settings → Project Config
+ *  1. pasting a PNG on the preview chip under Settings → Project → General
  *     opens the crop dialog; saving its starting crop uploads the centered
  *     square at 256px, so the red bands are gone;
  *  2. the rail chip then shows that picture in place of the initial;
@@ -18,7 +18,7 @@
  * Run: node test-playwright-scripts/project-icon-paste.js
  */
 import path from 'node:path'
-import { SHOTS, api, check, finish, origin, requirePlaywright, until } from './lib.js'
+import { SHOTS, api, check, finish, origin, requirePlaywright, until, projectPage } from './lib.js'
 
 const SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200">'
   + '<rect width="300" height="200" fill="#f00"/><rect x="50" width="200" height="200" fill="#00f"/></svg>'
@@ -30,7 +30,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1200, height: 800 } })
   await page.goto(`${origin}/?project=${project.id}`)
   await page.locator('[title="Settings"]').click()
-  await page.locator('text=Project Config').click()
+  await projectPage(page, 'General').click()
   const chip = page.locator('[aria-label="Project icon"]')
   await chip.waitFor()
   check('the chip starts on the initial', (await chip.textContent()) === 'I')

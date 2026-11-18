@@ -13,7 +13,7 @@ import {
   unreadWaitingByProject, useUiStore,
 } from './lib/store'
 import { ProjectRail } from './components/ProjectRail'
-import { Sidebar, sidebarRowIds } from './components/Sidebar'
+import { ownedGroupIds, Sidebar, sidebarRowIds } from './components/Sidebar'
 import { narrowRows, type ProjectScope } from './components/WorkspaceList'
 import { useStoppedEntry } from './lib/useStoppedWorkspaces'
 import { WorkspaceView } from './components/WorkspaceView'
@@ -203,6 +203,8 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
     held: inProject(snapshot?.heldWorkspaces),
     drafts: inProject(snapshot?.draftWorkspaces),
     routines: inProject(snapshot?.routines),
+    workflows: inProject(snapshot?.workflows),
+    sites: inProject(snapshot?.sites),
     gitAuthFailures: (activeProjectId && snapshot?.gitAuthFailures?.[activeProjectId]) || [],
   }
 
@@ -211,7 +213,8 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   // PTY, and live here rather than in Sidebar so they work with the sidebar
   // hidden. Terminal-scoped shortcuts belong to WorkspaceView. The ref lets
   // the one listener read the current render's state.
-  const rowIds = sidebarRowIds(scope.provisioning, scope.workspaces, scope.groups, pendingDeleteIds)
+  const owned = ownedGroupIds(scope.groups, scope)
+  const rowIds = sidebarRowIds(scope.provisioning, scope.workspaces, scope.groups, pendingDeleteIds, owned)
   // The cycle steps through the rows the sidebar search and status filter
   // leave on screen.
   const sidebarQuery = useUiStore((s) => s.sidebarQuery)
@@ -219,7 +222,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   const searched = narrowRows(sidebarQuery, sidebarStatuses, {
     workspaces: scope.workspaces, provisioning: scope.provisioning, queued: [], held: [], drafts: [],
   })
-  const cycleIds = sidebarRowIds(searched.provisioning, searched.workspaces, scope.groups, pendingDeleteIds)
+  const cycleIds = sidebarRowIds(searched.provisioning, searched.workspaces, scope.groups, pendingDeleteIds, owned)
   const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
   const newWorkspace = (): void => {
     if (activeProjectId && !readOnly) openNewWorkspace({ projectId: activeProjectId })

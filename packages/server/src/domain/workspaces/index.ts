@@ -23,7 +23,7 @@ export {
   getWorkspaceDetail,
 } from './detail'
 export { allowWorkspaceHost } from './allow-host'
-export { listWorkspaceGroups, resolveGroup } from './groups'
+export { listWorkspaceGroups, ownedGroup, resolveGroup } from './groups'
 export { moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit } from './group-edits'
 export { dismissWorkspacePort, forwardWorkspacePort, offeredForwards, unforwardWorkspacePort } from './forward-port'
 export { listActiveWorkspaces } from './list'

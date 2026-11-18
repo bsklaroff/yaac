@@ -105,6 +105,12 @@ export async function createWorkspaces(bodies) {
   throw failed.reason
 }
 
+/** A page of the settings modal's Project group, by its nav label
+ *  (General, Environment, Network, Storage, Image). */
+export function projectPage(page, label) {
+  return page.getByRole('group', { name: 'Project' }).getByRole('button', { name: label, exact: true })
+}
+
 /**
  * Poll an in-page predicate until it holds. Not `page.waitForFunction`,
  * which needs `unsafe-eval` and the app's CSP forbids it.

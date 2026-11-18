@@ -109,6 +109,6 @@ describe('WorkspaceView steps', () => {
     expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'release of web' }))
-    expect(useUiStore.getState()).toMatchObject({ settingsOpen: true, settingsSection: 'project' })
+    expect(useUiStore.getState()).toMatchObject({ selectedWorkspaceId: null, selectedObject: { kind: 'site', id: 'web' } })
   })
 })

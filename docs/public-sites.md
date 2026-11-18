@@ -614,15 +614,20 @@ never overlap, so migrations never race. A rollback does not undo a schema.
   `--site-domain` (docs/cli.md). What `site create` prints follows the
   edge: the Cloudflare route to add, or the `https://` address and what the
   tailnet tunnel still lacks. `list` and `show` print the edge.
-- **Webapp**: a Sites section in project settings, with both tunnels' state
-  and the site domain at its top, a form with a row per repo (include,
-  branch or commit, starting empty) and a Follow switch, and a deploy
-  dialog with a ref per repo. The edge is in view while naming a site (a
-  line under the form that follows the hostname being typed), after
-  creating it, on its row and when deploying it, which is what stands in
-  for an explicit choice: a hostname mistyped out of the site domain reads
-  as public before anything is deployed. A release's workspace view is
-  read-only, with "release of `<site>`" on its header.
+- **Webapp**: a Sites section in the sidebar, each site's row showing its
+  hostname and state with its releases under it (they go in a group the
+  site owns, docs/workspace-groups.md "Owned groups"); the snapshot carries
+  each site's state (`sites`), so the row follows a deploy live. A site's
+  pane shows its address, its tunnel's state, its releases and settings,
+  with Deploy (a dialog with a ref per repo), Stop or Start, Edit and
+  Delete. The new-workspace pane's Site tab is the form: a row per repo
+  (include, branch or commit, starting empty) and a Follow switch. The edge
+  is in view while naming a site (a line under the hostname that follows
+  what is typed), in its pane and when deploying it, which is what stands
+  in for an explicit choice: a hostname mistyped out of the site domain
+  reads as public before anything is deployed. A release's workspace view
+  is read-only, with "release of `<site>`" on its header, linking to the
+  site.
 - **Modules**: `#domain/sites` (settings, the hostname rule, deploys,
   supervision), `cluster/site-edge.ts` (every edge object), the `sites`
   reconcile step, `k8s/tailgate`, and in `k8s/proxy` the site route.

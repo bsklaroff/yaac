@@ -140,6 +140,7 @@ export async function workspaceCreate(project: string | undefined, options: Work
     group: options.group,
     timeout,
     ...(steps !== undefined ? { steps } : {}),
+    ...(options.workflow !== undefined ? { workflow: options.workflow } : {}),
     ...(nonInteractive ? { nonInteractive: true } : {}),
   }
 
@@ -149,7 +150,6 @@ export async function workspaceCreate(project: string | undefined, options: Work
   if (options.startAt !== undefined || startIn !== undefined) {
     if (prompt === undefined && !nonInteractive) throw new Error('A scheduled workspace needs a prompt: nobody is watching it start.')
     if (options.volume !== undefined) throw new Error('--volume starts a workspace now; a scheduled one cannot take it.')
-    if (options.workflow !== undefined) throw new Error('--workflow starts a workspace now; a scheduled one cannot take it.')
     const entry = await api.workspace.queue.create.$post({
       json: { ...settings, prompt, startAt: options.startAt, startIn },
     })
@@ -164,7 +164,6 @@ export async function workspaceCreate(project: string | undefined, options: Work
     prompt,
     ...(noSession ? { noSession: true } : {}),
     ...(options.volume !== undefined ? { volume: options.volume } : {}),
-    ...(options.workflow !== undefined ? { workflow: options.workflow } : {}),
   } })
   if (nonInteractive) {
     await followNonInteractive(res, { wait: options.wait === true })

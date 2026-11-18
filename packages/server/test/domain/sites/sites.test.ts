@@ -10,6 +10,7 @@ import {
   editSite,
   getSiteEdge,
   listProjectSiteEntries,
+  listSiteSummaries,
   showSite,
 } from '#domain/sites'
 import { createVolume, offeredForwards } from '#domain/workspaces'
@@ -308,6 +309,19 @@ describe('listProjectSiteEntries', () => {
       live: { workspaceId: 'rel-1', commits: [{ dir: '', commit: 'a'.repeat(40) }], since: since.toISOString(), running: true },
       deploy: { workspaceId: 'rel-2', commits: [{ dir: '', commit: 'b'.repeat(40) }], startedAt: since.toISOString(), phase: 'building', replacing: true },
     })])
+  })
+})
+
+describe('listSiteSummaries', () => {
+  it('answers every site\'s state from its row alone, with its workflow\'s name', async () => {
+    await create()
+    const row = (await findSiteByName(DEMO_PROJECT_ID, 'shop'))!
+    const since = new Date('2026-11-03T10:00:00Z')
+    await updateSite(row.id, { deployWorkspaceId: 'rel-2', deployCommits: { [DEMO_PROJECT_ID]: 'b'.repeat(40) }, deployStartedAt: since })
+    expect(await listSiteSummaries()).toEqual([{
+      id: row.id, projectId: DEMO_PROJECT_ID, name: 'shop', hostname: 'shop.example.com', edge: 'public', workflow: 'app', follow: false,
+      deploy: { workspaceId: 'rel-2', commits: [{ dir: '', commit: 'b'.repeat(40) }], startedAt: since.toISOString(), phase: 'launching' },
+    }])
   })
 })
 

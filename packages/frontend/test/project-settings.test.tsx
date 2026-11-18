@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
+import { act, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
 import type { ProjectEnvVar, ProjectRunSecret, ProjectSummary } from '@yaac/shared/types'
 
 // CodeMirror doesn't run under jsdom; each file editor gets a textarea.
@@ -10,7 +10,8 @@ vi.mock('#components/ui/CodeEditor', () => ({
 }))
 
 import { ProjectSettings } from '#components/settings/ProjectSettings'
-import { useUiStore } from '#lib/store'
+import { SettingsButton } from '#components/SettingsButton'
+import { useUiStore, type ProjectPage } from '#lib/store'
 import {
   mockFetch, projectRepo, renderWithClient, repoSummary, serverSnapshot, testQueryClient, TEST_USER_ID,
   type FetchCall, type FetchMock,
@@ -18,7 +19,7 @@ import {
 
 afterEach(() => {
   cleanup()
-  useUiStore.setState({ viewedUserId: null, settingsProjectId: null })
+  useUiStore.setState({ viewedUserId: null, settingsProjectId: null, settingsOpen: false, settingsSection: 'general' })
 })
 
 /** A project keyed by `id-<name>`, so a test can tell the key from the
@@ -26,9 +27,9 @@ afterEach(() => {
 const project = (name: string, remoteUrl: string): ProjectSummary =>
   ({ id: `id-${name}`, name, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [projectRepo({ id: `repo-${name}`, dir: name, remoteUrl })], scratchDirs: { dirs: [], ignoredTracked: [] }, portForwards: [], cacheVolumes: {}, npmCache: true })
 
-/** Show settings for `alpha` (and `beta`) on a containerless server, whose
- *  env routes keep `vars` in memory. */
-function renderAlpha(vars: ProjectEnvVar[] = []): FetchMock {
+/** Show `page` of the settings for `alpha` (and `beta`) on a containerless
+ *  server, whose env routes keep `vars` in memory. */
+function renderAlpha(page: ProjectPage, vars: ProjectEnvVar[] = []): FetchMock {
   useUiStore.setState({ activeProjectId: 'id-alpha' })
   const snapshot = serverSnapshot({
     driver: 'containerless',
@@ -48,47 +49,48 @@ function renderAlpha(vars: ProjectEnvVar[] = []): FetchMock {
     },
     'GET /api/project/id-beta/env': { vars: [] },
   })
-  renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
+  renderWithClient(<ProjectSettings page={page} />, testQueryClient(undefined, snapshot))
   return server
 }
 
+/** Open the settings modal on `alpha`'s General page, under `driver`. */
+function openProjectSettings(driver: 'k8s' | 'containerless'): void {
+  useUiStore.setState({ activeProjectId: 'id-alpha', settingsOpen: true, settingsSection: 'project-general' })
+  mockFetch({ 'GET /api/repo/list': [] })
+  renderWithClient(<SettingsButton />, testQueryClient(undefined, serverSnapshot({
+    driver,
+    projects: [project('alpha', 'https://github.com/o/alpha.git'), project('beta', 'git@gitlab.com:o/beta.git')],
+  })))
+}
+
 describe('ProjectSettings', () => {
-  it('picks a project by name and lists its repos, each in its folder, above the environment', () => {
-    renderAlpha()
-    expect([...screen.getByRole<HTMLSelectElement>('combobox').options].map((o) => [o.value, o.textContent]))
-      .toEqual([['id-alpha', 'alpha'], ['id-beta', 'beta']])
+  it('picks a project in the nav\'s Project group, whose pages follow the pick', () => {
+    openProjectSettings('containerless')
+    const nav = screen.getByRole('group', { name: 'Project' })
+    const picker = within(nav).getByRole<HTMLSelectElement>('combobox', { name: 'Project' })
+    expect([...picker.options].map((o) => [o.value, o.textContent])).toEqual([['id-alpha', 'alpha'], ['id-beta', 'beta']])
 
     const remote = screen.getByText('https://github.com/o/alpha.git')
     expect(remote.previousElementSibling?.textContent).toBe('alpha/')
-
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'id-beta' } })
+    fireEvent.change(picker, { target: { value: 'id-beta' } })
     expect(screen.getByText('git@gitlab.com:o/beta.git').previousElementSibling?.textContent).toBe('beta/')
+    expect(useUiStore.getState().settingsProjectId).toBe('id-beta')
   })
 
-  it('has no Volumes or Sites section on a containerless server, nor asks for either', () => {
-    const server = renderAlpha()
-    expect(screen.queryByText('Volumes')).toBeNull()
-    expect(screen.queryByText('Sites')).toBeNull()
-    expect(server.calls.filter((c) => c.path.startsWith('/api/volume') || c.path.startsWith('/api/site'))).toEqual([])
-  })
+  it('offers the project pages, Image only under k8s, and no workflows or sites', () => {
+    openProjectSettings('containerless')
+    const pages = (): string[] => within(screen.getByRole('group', { name: 'Project' })).getAllByRole('button').map((b) => b.textContent)
+    expect(pages()).toEqual(['General', 'Environment', 'Network', 'Storage'])
+    expect(within(screen.getByRole('group', { name: 'Account' })).queryByRole('button', { name: /Project/ })).toBeNull()
+    for (const page of pages()) {
+      fireEvent.click(within(screen.getByRole('group', { name: 'Project' })).getByRole('button', { name: page }))
+      expect(screen.getByRole('heading', { name: page })).toBeTruthy()
+      expect(screen.queryByText(/^(Init workflows|Workflows|Sites|Volumes)$/)).toBeNull()
+    }
+    cleanup()
 
-  it('shows the init workflows, each with its repos, apart from the project\'s other workflows', async () => {
-    useUiStore.setState({ activeProjectId: 'id-alpha' })
-    const snapshot = serverSnapshot({ driver: 'containerless', projects: [project('alpha', 'https://github.com/o/alpha.git')] })
-    const flow = (name: string, init: boolean): Record<string, unknown> => ({
-      id: `wf-${name}`, projectId: 'id-alpha', name, steps: { install: { run: ['pnpm install'] } }, secrets: [],
-      repos: init ? ['alpha'] : [], init, approvedCommits: [], approvedBranches: [], createdAt: '',
-    })
-    mockFetch({
-      'GET /api/project/id-alpha/env': { vars: [] },
-      'GET /api/workflow/list': [flow('alpha-init', true), flow('lint', false)],
-    })
-    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
-    const section = (await screen.findByText('Init workflows')).parentElement as HTMLElement
-    await waitFor(() => expect(within(section).getByText('alpha-init')).toBeTruthy())
-    expect(within(section).queryByText('lint')).toBeNull()
-    expect(within(section).getByText('repos: alpha')).toBeTruthy()
-    expect(within(section).getByRole('button', { name: 'Add init workflow' })).toBeTruthy()
+    openProjectSettings('k8s')
+    expect(pages()).toEqual(['General', 'Environment', 'Network', 'Storage', 'Image'])
   })
 
   it('adds a kept ignored path to the snapshot\'s list, and removes one', async () => {
@@ -101,7 +103,7 @@ describe('ProjectSettings', () => {
       'GET /api/project/id-alpha/env': { vars: [] },
       'PUT /api/project/id-alpha/kept-ignored-paths': ({ body }: FetchCall) => body,
     })
-    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
+    renderWithClient(<ProjectSettings page="storage" />, testQueryClient(undefined, snapshot))
 
     expect(screen.getByRole('button', { name: 'Remove .env' })).toBeTruthy()
     const input = screen.getByRole<HTMLInputElement>('textbox', { name: 'Path to keep' })
@@ -126,7 +128,7 @@ describe('ProjectSettings', () => {
       'GET /api/project/id-delta/env': { vars: [] },
       'PUT /api/project/id-delta/scratch-dirs': { dirs: [], ignoredTracked: [] },
     })
-    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
+    renderWithClient(<ProjectSettings page="storage" />, testQueryClient(undefined, snapshot))
     const puts = (): unknown[] => server.called('PUT /api/project/id-delta/scratch-dirs').map((c) => c.body)
     const settled = (name: string): Promise<void> =>
       waitFor(() => expect(screen.getByRole<HTMLButtonElement>('button', { name }).disabled).toBe(false))
@@ -175,7 +177,11 @@ describe('ProjectSettings', () => {
       'PUT /api/project/id-alpha/cache-volumes': {},
       'PUT /api/project/id-alpha/npm-cache': {},
     })
-    renderWithClient(<ProjectSettings />, testQueryClient(undefined, serverSnapshot({ driver: 'k8s', projects: [alpha] })))
+    renderWithClient(<>
+      <ProjectSettings page="network" />
+      <ProjectSettings page="storage" />
+      <ProjectSettings page="image" />
+    </>, testQueryClient(undefined, serverSnapshot({ driver: 'k8s', projects: [alpha] })))
     const bodies = (route: string): unknown[] => server.called(`PUT /api/project/id-alpha/${route}`).map((c) => c.body)
 
     // A host port left empty is the container port.
@@ -209,14 +215,18 @@ describe('ProjectSettings', () => {
 
     // A containerless server has no pods to give either.
     cleanup()
-    renderAlpha()
+    renderAlpha('network')
     expect(screen.getByRole('button', { name: 'Add forwarded port' })).toBeTruthy()
+    cleanup()
+    renderAlpha('storage')
     expect(screen.queryByText('Cache volumes')).toBeNull()
+    cleanup()
+    renderAlpha('image')
     expect(screen.queryByRole('checkbox', { name: /npm cache/ })).toBeNull()
   })
 
   it('confirms a stopped-workspace auto-delete with the count it deletes at once, and turns it off without asking', async () => {
-    const server = renderAlpha()
+    const server = renderAlpha('general')
     const before = '2026-10-16T12:00:00.000Z'
     server.route('GET /api/project/id-alpha/workspace-auto-delete', ({ query }: FetchCall) => ({ expired: query.get('days') === '7' ? 3 : 0, before }))
     server.route('PUT /api/project/id-alpha/workspace-auto-delete', {
@@ -250,7 +260,7 @@ describe('ProjectSettings', () => {
       'GET /api/project/id-alpha/workspace-auto-delete': { expired: 0, before: '2026-08-24T12:00:00.000Z' },
       'PUT /api/project/id-alpha/workspace-auto-delete': { deleted: 0, kept: [] },
     })
-    renderWithClient(<ProjectSettings />, testQueryClient(undefined, serverSnapshot({
+    renderWithClient(<ProjectSettings page="general" />, testQueryClient(undefined, serverSnapshot({
       driver: 'containerless',
       projects: [{ ...project('alpha', 'https://github.com/o/alpha.git'), stoppedWorkspaceRetentionDays: 30 }],
     })))
@@ -281,7 +291,7 @@ describe('ProjectSettings', () => {
     const show = (snapshot: ReturnType<typeof serverSnapshot>, routes: Record<string, unknown> = {}): FetchMock => {
       useUiStore.setState({ activeProjectId: 'id-alpha' })
       const server = mockFetch({ 'GET /api/project/id-alpha/env': { vars: [] }, 'GET /api/repo/list': [], ...routes })
-      renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
+      renderWithClient(<ProjectSettings page="general" />, testQueryClient(undefined, snapshot))
       return server
     }
 
@@ -387,7 +397,7 @@ describe('ProjectSettings', () => {
   })
 
   it('lists the project\'s variables, adds a secret with its proxy rule, and deletes one', async () => {
-    const server = renderAlpha([{ id: 'v1', name: 'FOO', secret: false, value: 'bar', hasValue: true }])
+    const server = renderAlpha('env', [{ id: 'v1', name: 'FOO', secret: false, value: 'bar', hasValue: true }])
     await screen.findByText('FOO')
     screen.getByText('bar')
 
@@ -425,7 +435,7 @@ describe('ProjectSettings', () => {
         return { secret: secrets[0] }
       },
     })
-    renderWithClient(<ProjectSettings />, testQueryClient(undefined, serverSnapshot({
+    renderWithClient(<ProjectSettings page="env" />, testQueryClient(undefined, serverSnapshot({
       driver: 'containerless',
       projects: [project('alpha', 'https://github.com/o/alpha.git')],
     })))
@@ -458,10 +468,13 @@ describe('ProjectSettings', () => {
       'GET /api/project/id-hers/build-files': { files: [{ path: 'init.lua', size: 3, binary: false }] },
       'GET /api/project/id-hers/build-files/file': { path: 'init.lua', size: 3, binary: false, content: 'x=1' },
     })
-    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
+    renderWithClient(<>
+      <ProjectSettings page="env" />
+      <ProjectSettings page="network" />
+      <ProjectSettings page="storage" />
+      <ProjectSettings page="image" />
+    </>, testQueryClient(undefined, snapshot))
 
-    // Only the viewed user's projects are offered.
-    expect([...screen.getByRole<HTMLSelectElement>('combobox').options].map((o) => o.value)).toEqual(['id-hers'])
     await screen.findByText('PLAIN')
     // A plain value reads as for the owner; a secret's never leaves the server.
     expect(screen.getByText('visible-elsewhere')).toBeTruthy()
@@ -470,12 +483,10 @@ describe('ProjectSettings', () => {
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
 
     // The Dockerfile and a build file read, with nothing to save or upload,
-    // no init workflow to add, and the launch settings shown but not
-    // editable.
+    // and the launch settings shown but not editable.
     await waitFor(() => expect(screen.getAllByLabelText('editor')).toHaveLength(1))
     fireEvent.click(await screen.findByRole('button', { name: 'init.lua' }))
     await waitFor(() => expect(screen.getAllByLabelText('editor')).toHaveLength(2))
-    expect(screen.queryByRole('button', { name: 'Add init workflow' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Add forwarded port' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Add cache volume' })).toBeNull()
     expect(screen.getAllByRole<HTMLInputElement>('checkbox').every((c) => c.disabled)).toBe(true)
@@ -483,6 +494,13 @@ describe('ProjectSettings', () => {
     expect(screen.queryByRole('button', { name: 'Upload files' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Rename init.lua' })).toBeNull()
     expect(server.calls.filter((c) => c.method !== 'GET')).toEqual([])
+
+    // Only the viewed user's projects are offered.
+    cleanup()
+    useUiStore.setState({ settingsOpen: true, settingsSection: 'project-general' })
+    renderWithClient(<SettingsButton />, testQueryClient(undefined, snapshot))
+    const picker = within(screen.getByRole('group', { name: 'Project' })).getByRole<HTMLSelectElement>('combobox')
+    expect([...picker.options].map((o) => o.value)).toEqual(['id-hers'])
   })
 
   it("shows the project's icon, offers it for download, crops a pasted image where it is dragged and zoomed, and removes the icon", async () => {
@@ -512,7 +530,7 @@ describe('ProjectSettings', () => {
       getContext() { return { drawImage } }
       convertToBlob() { return Promise.resolve(new Blob(['png'], { type: 'image/png' })) }
     })
-    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
+    renderWithClient(<ProjectSettings page="general" />, testQueryClient(undefined, snapshot))
 
     const chip = screen.getByLabelText('Project icon')
     expect(chip.querySelector('img')?.getAttribute('src')).toBe('/api/project/id-alpha/icon?v=h1')
@@ -564,15 +582,16 @@ describe('ProjectSettings', () => {
     fireEvent.error(chip.querySelector('img') as HTMLImageElement)
     expect(chip.textContent).toBe('A')
 
-    // A project without a picture has nothing to download or remove.
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'id-beta' } })
+    // A project without a picture has nothing to download or remove. The
+    // pick is the settings nav's.
+    act(() => useUiStore.getState().setSettingsProjectId('id-beta'))
     expect(screen.getByLabelText('Project icon').textContent).toBe('B')
     expect(screen.queryByRole('link', { name: 'Download' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull()
 
     // A dot in the name would read as the file's extension, and the browser
     // then adds none from the picture's type.
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'id-next.js' } })
+    act(() => useUiStore.getState().setSettingsProjectId('id-next.js'))
     expect(screen.getByRole('link', { name: 'Download' }).getAttribute('download')).toBe('next-js icon')
   })
 })

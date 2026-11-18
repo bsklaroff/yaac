@@ -4,10 +4,10 @@
  *      the "Tracked in git" badge on its workspace bar, naming the dir, and
  *      its popover offers "Keep in the checkout and restart" and "Don't show
  *      again for this project".
- *   2. "Don't show again" hides the badge; Settings → Project Config then
+ *   2. "Don't show again" hides the badge; Settings → Project → Storage then
  *      lists the dir under "Not warned about", and "Warn again" brings the
  *      badge back.
- *   3. Settings → Project Config's scratch directories section adds a dir,
+ *   3. Settings → Project → Storage's scratch directories section adds a dir,
  *      refuses one outside the checkout with the server's message, and
  *      removes it.
  *   4. "Keep in the checkout and restart" takes the dir off the project's
@@ -20,7 +20,7 @@
  *     APP_URL=http://127.0.0.1:<port> node test-playwright-scripts/tracked-scratch-dirs-badge.js
  */
 import path from 'node:path'
-import { requirePlaywright, origin, api, check, finish, SHOTS } from './lib.js'
+import { requirePlaywright, origin, api, check, finish, SHOTS, projectPage } from './lib.js'
 
 const { chromium } = requirePlaywright()
 const { TRACKED_PROJECT, TRACKED_WORKSPACE } = process.env
@@ -33,13 +33,13 @@ const gone = (loc, timeout = 15_000) => loc.waitFor({ state: 'hidden', timeout }
 const badge = page.getByRole('button', { name: 'Scratch directories tracked in git' })
 const openSettings = async () => {
   await page.getByRole('button', { name: 'Settings' }).click()
-  await page.getByRole('button', { name: 'Project Config' }).click()
+  await projectPage(page, 'Storage').click()
   await page.getByText('Scratch directories', { exact: true }).waitFor()
 }
 const closeSettings = async () => {
   await page.locator('body').click({ position: { x: 5, y: 5 } }).catch(() => {})
   await page.keyboard.press('Escape')
-  await page.getByRole('button', { name: 'Project Config' }).waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+  await projectPage(page, 'Storage').waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
 }
 
 // 1. The badge and its popover.

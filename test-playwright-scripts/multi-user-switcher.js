@@ -11,7 +11,7 @@
  *  3. Switching to Ada shows her project and workspace laid out as hers,
  *     read-only: banner, no new-workspace button, no row menu; the
  *     workspace opens in the transcript view, with no terminal.
- *  4. Settings → Project Config shows Ada's project with no Save button.
+ *  4. Settings → Project → Network shows Ada's project with no Save button.
  *  5. A fresh page deep-linked to Ada's workspace selects Ada by itself.
  *  6. Bob made no write the server refused (no 403 in any response).
  *
@@ -35,7 +35,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { check, finish, requirePlaywright, SHOTS, until } from './lib.js'
+import { check, finish, requirePlaywright, SHOTS, until, projectPage } from './lib.js'
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const CLI = path.join(REPO, 'dist', 'cli.js')
@@ -178,7 +178,7 @@ async function main() {
 
   // 4. Their project settings, read-only.
   await bob.getByTitle('Settings').click()
-  await bob.getByRole('button', { name: 'Project Config' }).click()
+  await projectPage(bob, 'Network').click()
   await bob.getByText('Forwarded ports').waitFor()
   check('the project picker offers Ada\'s project', await bob.locator('select option').allTextContents()
     .then((names) => names.join() === 'ada-demo'))

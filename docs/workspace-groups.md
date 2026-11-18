@@ -7,6 +7,35 @@ files its members, queued entries and drafts in the default list. The
 sidebar shows a group while it is pinned or has something live, held or
 waiting in it.
 
+## Owned groups
+
+A group the server makes for a named workflow, routine or site records it
+as its **owner** (`workspace_groups.ownerKind` and `ownerId`), and that
+object's runs go in it:
+
+| Owner | Its runs | Made |
+|---|---|---|
+| Named workflow | each unattended run started with no group named: a create's or queued entry's `--workflow` with `--non-interactive`, and the webapp's Run now | at the first such run or queue |
+| Routine | each run, unless the routine names another group or none | when a routine is created naming no group |
+| Site | each release | at the first deploy |
+
+`ownedGroup` finds the group by its owner, not by name, and `resolveGroup`
+matches a name only among groups no object owns, so an owned group is
+reached by id. Its name is its owner's when it was made and may be a
+person's group's too; neither takes the other's place, and renaming either
+moves nothing. A routine's run goes in the routine's group even when the
+routine runs a workflow; an interactive workspace that starts with a
+workflow goes where its create puts it.
+
+The sidebar draws an owned group under its owner's row in the Workflows,
+Routines or Sites section, rather than as a section of its own, and keeps
+its stopped runs there rather than in the Stopped section: they are its
+owner's history. Its menu sets the limit (a workflow limited to one run at
+a time; not a site, whose next release runs beside its live one) and shows
+or hides the stopped runs, but has no rename, pin or delete of its own.
+Deleting the owner releases the group (`releaseOwnedGroups`): it stays,
+with its runs, as an ordinary group.
+
 ## Workspace limits
 
 `workspaceLimit` is the most **live** workspaces a group holds at once.
