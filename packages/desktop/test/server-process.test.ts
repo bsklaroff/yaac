@@ -18,7 +18,7 @@ describe('adoptLoginShellPath', () => {
     const savedShell = process.env.SHELL
     process.env.SHELL = shell
     try {
-      await adoptLoginShellPath()
+      await adoptLoginShellPath(undefined, 'darwin')
       expect(process.env.PATH).toBe('/opt/homebrew/bin:/usr/bin:/usr/local/bin')
     } finally {
       process.env.SHELL = savedShell
@@ -34,11 +34,21 @@ describe('adoptLoginShellPath', () => {
       else cb(null, stdout, '')
     }) as unknown as typeof execFile
     process.env.PATH = '/usr/bin:/bin'
-    await adoptLoginShellPath(exec(new Error('no such shell')))
+    await adoptLoginShellPath(exec(new Error('no such shell')), 'darwin')
     expect(process.env.PATH).toBe('/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin')
     process.env.PATH = '/usr/bin:/bin'
-    await adoptLoginShellPath(exec('welcome back\n'))
+    await adoptLoginShellPath(exec('welcome back\n'), 'darwin')
     expect(process.env.PATH).toBe('/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin')
+  })
+  it('runs no shell and leaves PATH alone off macOS', async () => {
+    let runs = 0
+    const exec = (() => { runs++ }) as unknown as typeof execFile
+    for (const platform of ['linux', 'win32'] as const) {
+      process.env.PATH = '/usr/bin'
+      await adoptLoginShellPath(exec, platform)
+      expect(process.env.PATH).toBe('/usr/bin')
+    }
+    expect(runs).toBe(0)
   })
 })
 

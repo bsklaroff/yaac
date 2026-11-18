@@ -1,7 +1,7 @@
 # @yaac/desktop
 
-An Electron shell around the yaac webapp. It has no bundled frontend and no
-renderer code. At launch the main process:
+An Electron shell around the yaac webapp, for macOS, Linux and Windows. It
+has no bundled frontend and no renderer code. At launch the main process:
 
 1. resolves the selected server from `~/.yaac-client/server.json`;
 2. starts its bundled auth daemon, which catches tool sign-ins' redirects,
@@ -30,18 +30,33 @@ identify this device), adds one by origin, and
 lists this Mac's installs. While Tailscale seems not to be running, a banner
 says so, and a remote server that does not answer names Tailscale as the cause.
 
-**The shell sets up, starts and stops this machine's servers only when
-asked**, from the tray or the Servers page, by running `brew` and the
-`yaac` on PATH (`src/local-setup.ts`, `src/server-control.ts`). Quitting
+**On macOS the shell sets up, starts and stops this machine's servers
+only when asked**, from the tray or the Servers page, by running `brew` and
+the `yaac` on PATH (`src/local-setup.ts`, `src/server-control.ts`). Quitting
 never stops a server.
+
+**On Linux and Windows the app is a client only.** It never reads this
+machine's installs, so the Servers page has no install rows and no setup,
+and the tray has no server items (`MANAGES_LOCAL_INSTALLS`). A server the
+user starts from a terminal (`yaac server start`, `yaac cluster install`)
+registers in `server.json` like any other and is listed and connected to as
+a saved server. The server has no Windows build; one running in WSL2 is
+added by its origin. Everything below about this machine's servers, setup
+and `brew` is macOS behavior.
 
 ## Shell behavior
 
 - **Tray.** Closing the window hides it; the shell stays in the tray (Servers…,
-  this machine's servers, Quit). Quit exits the shell and its auth daemon;
+  this machine's servers on macOS, Quit). Quit exits the shell and its auth daemon;
   the servers keep running. Reopening (tray click or Dock activate) repeats
   the connect flow, so it notices a server that came back. A failed connect
-  does not quit either.
+  does not quit either. A Linux tray reports no clicks, so its menu leads
+  with **Show yaac**. Stock GNOME shows no tray icon without the
+  AppIndicator extension; there, launching the app again brings the hidden
+  window back. On Windows the glyph is drawn white or black to suit the
+  taskbar's theme. A Linux panel may be dark whatever the theme says
+  (GNOME's always is), so Linux shows the app icon's orange-on-black tile,
+  which reads on any panel.
 - **This machine's servers.** A Mac can run two installs side by side
   (docs/server-selection.md "Two installs on one machine"): the host server
   and a cluster's. The tray reads `yaac server status --json` and `yaac
@@ -148,9 +163,13 @@ never stops a server.
   WebSocket, re-resolving the server on every reconnect so it follows a
   change of selection. It reconnects on wake, and a ping heartbeat drops a
   connection that died silently, as one held across a sleep can. Workspaces
-  waiting for input show as a dock badge and one OS notification each time a
+  waiting for input show as a badge and one OS notification each time a
   workspace starts waiting (`waitingSinceMs`). A reconnect or the first
-  snapshot after launch does not re-notify.
+  snapshot after launch does not re-notify. The badge is the dock's count
+  on macOS, the launcher's count on Linux desktops that show one (Ubuntu's
+  dock, KDE), and a red dot over the taskbar button on Windows. Windows
+  shows notifications only for the app ID the installer's Start menu
+  shortcut registers, so an unpackaged Windows run shows none.
 - **Port forwarding.** The shell binds each workspace's forwarded ports on
   this machine's loopback and tunnels connections to the server, from the
   same `/api/events` stream (`src/forwarder.ts`,
@@ -158,10 +177,12 @@ never stops a server.
   loopback only; to expose ports to other machines use
   `yaac forward --bind`. It binds nothing against a containerless server on
   this machine, whose workspaces already hold their ports.
-- **Window chrome.** The title bar and native traffic lights are hidden
-  (`titleBarStyle: 'hidden'`); the SPA draws its own window controls
+- **Window chrome.** On macOS the title bar and native traffic lights are
+  hidden (`titleBarStyle: 'hidden'`); the SPA draws its own window controls
   (`WindowControls.tsx`) and marks `titlebar-drag` strips so the window can
-  still be moved. The native background follows the SPA's `--color-shell`
+  still be moved. On Linux and Windows the window keeps its native frame,
+  the SPA draws no controls, and the menu bar (a File menu with Quit in
+  place of the macOS app menu) is hidden until Alt is pressed. The native background follows the SPA's `--color-shell`
   for the OS appearance (`src/theme-bg.ts`). Window bounds persist across
   launches and are restored only if still on a display
   (`src/window-state.ts`). The role-based menu keeps Cmd-C/V working in the
@@ -174,9 +195,10 @@ never stops a server.
 - A registered server: add a remote one on the Servers page, or set one up
   on this machine from that page or the tray (or from a terminal with the
   same commands). A client of a remote server needs no `yaac` at all.
-- The shell adopts the login-shell PATH at startup, because a Finder launch
-  gets a minimal PATH and the daemon's children (claude, codex, the
-  installers) need the real one. Only PATH is taken from the login shell.
+- On macOS the shell adopts the login-shell PATH at startup, because a
+  Finder launch gets a minimal PATH and the `yaac` and `brew` it runs need
+  the real one. Only PATH is taken from the login shell. On Linux and
+  Windows the app runs no command, so it adopts nothing.
 
 ## Run
 
@@ -218,26 +240,54 @@ names.
 
 The desktop app is not part of `pnpm build` and is not in the npm package.
 
-## Packaging (macOS)
+## Packaging
 
 ```sh
-pnpm desktop:package   # tsup, then electron-builder (unsigned .app in dist-app/)
-pnpm desktop:install   # the above, then copy into /Applications
-pnpm desktop:release   # the .dmg the Homebrew cask downloads (signed, notarized app)
+pnpm desktop:package   # tsup, then electron-builder: the unpacked app in dist-app/
+pnpm desktop:install   # macOS: the above, then copy into /Applications
+pnpm desktop:release   # on a Mac: every platform's release artifacts (below)
+pnpm desktop:release-mac   # or -linux, -win: one platform's
 ```
+
+| | `desktop:package` | `desktop:release` |
+|---|---|---|
+| macOS | `mac-arm64/yaac.app`, unsigned | `yaac-<v>-arm64.dmg`, signed and notarized, for the Homebrew cask |
+| Linux | `linux-unpacked/yaac-desktop` | `yaac-desktop_<v>_<arch>.deb`, unsigned |
+| Windows | `win-unpacked/yaac.exe` | `yaac-<v>-<arch>-setup.exe`, a per-user NSIS installer, unsigned |
+
+The Linux binary and package are `yaac-desktop` because the `.deb` links
+`/usr/bin/<executable>`, and `yaac` is the CLI's command. Linux ships only a
+`.deb`: its postinst installs the AppArmor profile that lets Chromium's
+sandbox start on Ubuntu 23.10 and later, which an AppImage cannot do, and
+the renderer loads a server's web content, so the sandbox must stay on. An
+unsigned Windows installer meets a SmartScreen "unrecognized app" warning.
+No platform has an updater: brew upgrades the macOS app, and the Linux and
+Windows builds are downloaded from the GitHub Release.
+
+One Mac builds the release for every platform (`scripts/release-app.ts`).
+The `.dmg` has to be signed and notarized there. The app has no native
+modules, so nothing in it depends on the platform it is built on.
+electron-builder brings its own fpm and archive tools for the `.deb`, and
+on macOS it reads the NSIS uninstaller out of the built installer itself,
+so neither needs a container or Wine. On Linux the Windows build would run
+the installer under Wine instead. Each run removes only the outputs it
+builds, so `desktop:release-mac` followed by `desktop:release-linux` keeps
+the `.dmg`. No release build of Windows or Linux is launched
+automatically: check them by hand ("Verifying by hand"), the Linux one with
+`desktop-client-only.js` on a Linux machine.
 
 The app carries no server and no Node of its own. Every dependency is
 bundled into `dist/`, so the package has no runtime dependencies and no
 native modules, and `electron-builder.yml` packs no `node_modules` (with
 none of its own, electron-builder would otherwise pack the workspace
-root's). A server on this Mac comes from the `yaac` on PATH.
+root's). A server on this machine comes from the `yaac` on PATH.
 
 `scripts/install-app.ts` installs with `ditto`, because a copy that follows
 symlinks breaks the Electron framework's `Versions/Current` links and
 crashes the GPU process at launch.
 
-Local builds are unsigned. `scripts/release-app.ts` overrides the config on
-the command line to sign with the Developer ID identity named in `CSC_NAME`
+Local builds are unsigned. On macOS `scripts/release-app.ts` overrides the
+config on the command line to sign with the Developer ID identity named in `CSC_NAME`
 (electron-builder's default hardened runtime and entitlements), notarize with
 the `APPLE_*` credentials electron-builder reads, and build a `.dmg` named for
 the root package.json version. It fails, deleting the `.dmg`, unless the app
@@ -308,6 +358,9 @@ The Servers page:
 `test-playwright-scripts/desktop-server-picker.js` drives these against a real
 Electron build, and `test-playwright-scripts/desktop-onboarding.js` drives a
 setup against stand-in `brew` and `yaac` commands.
+These cover macOS behavior, and set `YAAC_E2E_DESKTOP_LOCAL_INSTALLS=1` so
+the shell manages this machine's installs on Linux too, which lets them run
+in a headless Linux workspace.
 
 The auth daemon:
 
@@ -320,3 +373,20 @@ The auth daemon:
 
 `test-playwright-scripts/desktop-auth-daemon.js` checks the first point and a
 sign-in against a fake vendor, against a dev or a packaged build.
+
+On Linux and Windows:
+
+- With nothing registered, the window is the Servers page with no install
+  rows and no setup; after `yaac server start` in a terminal, a relaunch
+  lands on that server. The window has its native frame, the SPA draws no
+  window controls, and Alt shows the menu bar.
+- Linux (GNOME with the AppIndicator extension, and KDE): the tray icon
+  reads on the panel, **Show yaac** brings the window back, the launcher shows
+  the waiting count, and the window groups under the launcher's icon.
+- Windows: the installer needs no admin prompt and adds a Start menu entry;
+  a waiting workspace puts a red dot on the taskbar button and shows a
+  toast; a Claude and a Codex sign-in from the SPA cards land back on the
+  daemon's "Signed in" page.
+
+`test-playwright-scripts/desktop-client-only.js` checks the first point
+against a packaged build.

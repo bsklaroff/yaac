@@ -74,7 +74,15 @@ const NODE_DIR = path.dirname(process.execPath)
  */
 const SHELL = path.join(SCRATCH, 'shell')
 const PATH = `${BIN}:${NODE_DIR}:/usr/bin:/bin`
-const ENV = { ...process.env, YAAC_DATA_DIR: DATA_DIR, PATH, SHELL }
+const ENV = {
+  ...process.env,
+  YAAC_DATA_DIR: DATA_DIR,
+  PATH,
+  SHELL,
+  // The app manages this machine's installs only on macOS; this covers that
+  // behavior on any platform.
+  YAAC_E2E_DESKTOP_LOCAL_INSTALLS: '1',
+}
 
 function write(file, text) {
   fs.writeFileSync(file, text, { mode: 0o755 })

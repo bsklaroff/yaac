@@ -25,7 +25,7 @@ import { goBackScreen, useMobileHistory } from './lib/mobileHistory'
 import { useIsMobile, useVisualViewportHeight } from './lib/viewport'
 import { newlyWaiting, waitingKeys } from '@yaac/shared/waiting'
 import { playChime } from './lib/sound'
-import { isElectron } from './lib/platform'
+import { hidesTitleBar } from './lib/platform'
 import { LeaveNewWorkspaceDialog } from './components/NewWorkspacePane'
 import { AddProjectDialog } from './components/NewProjectButton'
 import { ProjectOpPane } from './components/ProjectOpPane'
@@ -83,12 +83,13 @@ function App(): JSX.Element {
     )
   } else content = <Shell connected={connected} />
 
-  // In Electron the title bar is hidden and the window controls float over
-  // the UI. Full-screen states reserve a draggable strip for them; the
-  // workspace layout provides its own drag regions and clearance instead.
+  // In the macOS desktop shell the title bar is hidden and the window
+  // controls float over the UI. Full-screen states reserve a draggable
+  // strip for them; the workspace layout provides its own drag regions and
+  // clearance instead.
   return (
     <div className="flex h-full flex-col bg-shell">
-      {isElectron() && !authed && <div className="titlebar-drag h-7 shrink-0" aria-hidden="true" />}
+      {hidesTitleBar() && !authed && <div className="titlebar-drag h-7 shrink-0" aria-hidden="true" />}
       <div className="min-h-0 flex-1">{content}</div>
     </div>
   )

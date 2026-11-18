@@ -531,6 +531,15 @@ export const testEnv = {
     return process.env.YAAC_TEST_SHARED_DB === '1'
   },
 
+  /**
+   * `YAAC_E2E_DESKTOP_LOCAL_INSTALLS` — `1` makes the desktop shell set up
+   * and manage this machine's installs on any platform, as it does on macOS,
+   * so the Playwright scripts that cover that run in a Linux workspace.
+   */
+  get desktopLocalInstalls(): boolean {
+    return process.env.YAAC_E2E_DESKTOP_LOCAL_INSTALLS === '1'
+  },
+
   /** `YAAC_E2E_NO_ATTACH` — `1` skips attaching to the terminal after create/restart. */
   get e2eNoAttach(): boolean {
     return process.env.YAAC_E2E_NO_ATTACH === '1'

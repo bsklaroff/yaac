@@ -18,6 +18,7 @@
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import { findExecutable, pathDirs } from '@yaac/shared/executables'
+import { testEnv } from '@yaac/shared/env'
 import type {
   DesktopLocalState, DesktopSetupChoice, DesktopSetupRun, DesktopSetupStep,
 } from '@yaac/shared/types'
@@ -359,6 +360,15 @@ export function createSetupRunner(onChange: () => void, unfinishedFile: string):
     forget: (scope) => void mark(scope, false).then(onChange),
   }
 }
+
+/**
+ * Whether the app sets up and manages this machine's installs: on macOS
+ * only, bar a test override. Elsewhere it never reads them, so `localView`
+ * reports none and the Servers page and tray offer no install or setup; a
+ * server the user starts from a terminal registers in `server.json` and is
+ * listed like any other.
+ */
+export const MANAGES_LOCAL_INSTALLS = process.platform === 'darwin' || testEnv.desktopLocalInstalls
 
 /** Whether this Mac can run a local kind cluster: krunkit is Apple silicon only. */
 export const CLUSTER_SUPPORTED = process.platform === 'darwin' && process.arch === 'arm64'

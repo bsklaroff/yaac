@@ -9,7 +9,7 @@ import { UserSwitcher } from '#components/UserSwitcher'
 import { WindowControls } from '#components/WindowControls'
 import { api } from '#lib/api'
 import { LoadingIcon, WarningIcon } from '#lib/icons'
-import { isElectron } from '#lib/platform'
+import { hidesTitleBar } from '#lib/platform'
 import { identityColor, identityInitial, projectIconUrl } from '#lib/projectIdentity'
 import type { ProjectOp } from '#lib/store'
 import { usePressDrag } from '#lib/usePressDrag'
@@ -154,9 +154,9 @@ export function ProjectRail({
       // pl-2 centers the chips in the rail plus the 8px gap to the sidebar,
       // which read as one region.
       'flex w-16 shrink-0 flex-col items-center gap-2 pb-3 pl-2',
-      isElectron() ? 'pt-2' : 'pt-3',
+      hidesTitleBar() ? 'pt-2' : 'pt-3',
     )}>
-      {isElectron() && <WindowControls className="h-5" />}
+      {hidesTitleBar() && <WindowControls className="h-5" />}
       <UserSwitcher />
       {listedProjects(placed, ops).map(({ op, ...p }, i) => {
         const active = p.id === activeProjectId

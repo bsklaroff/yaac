@@ -141,7 +141,7 @@ try {
   console.log('4. off the tailnet')
   await load(page, pages.offTailnet)
   check('the banner shows under the Servers heading',
-    (await page.textContent('.banner')).includes('Tailscale does not seem to be running on this Mac'))
+    (await page.textContent('.banner')).includes('Tailscale does not seem to be running on this machine'))
   check('remote rows still offer Connect', await page.isVisible('button.connect[data-url="https://dead.ts.net"]'))
   await page.screenshot({ path: path.join(SHOTS, 'servers-page-off-tailnet.png'), fullPage: true })
   await page.evaluate((e) => { window.switchError = e }, pages.switchError)

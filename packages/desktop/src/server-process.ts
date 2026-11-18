@@ -8,9 +8,10 @@
  * window loads and talks to that server alone.
  *
  * An app launched from Finder inherits the OS's minimal PATH, not the login
- * shell's, so the shell adopts the login-shell PATH before starting
- * anything. The daemon's children (claude, codex, the installers) and
- * `yaac` are then found where the user's terminal finds them.
+ * shell's, so on macOS the shell adopts the login-shell PATH before starting
+ * anything. `yaac` and `brew`, which it runs to manage this machine's
+ * servers, are then found where the user's terminal finds them. Elsewhere
+ * the app runs no command, so it adopts nothing.
  */
 import { execFile } from 'node:child_process'
 import type { ServerTarget } from '@yaac/shared/server-api'
@@ -27,11 +28,14 @@ const PATH_MARK = '__YAAC_LOGIN_PATH__'
 const HOMEBREW_BINS = ['/opt/homebrew/bin', '/usr/local/bin']
 
 /**
- * Set this process's PATH to the login shell's, plus Homebrew's bin dirs.
- * Best effort: the inherited PATH stays when the shell can't be run or
- * prints none.
+ * On macOS, set this process's PATH to the login shell's, plus Homebrew's
+ * bin dirs. Best effort: the inherited PATH stays when the shell can't be
+ * run or prints none. A no-op elsewhere.
  */
-export function adoptLoginShellPath(execImpl: typeof execFile = execFile): Promise<void> {
+export function adoptLoginShellPath(
+  execImpl: typeof execFile = execFile, platform: NodeJS.Platform = process.platform,
+): Promise<void> {
+  if (platform !== 'darwin') return Promise.resolve()
   return new Promise((resolve) => {
     // eslint-disable-next-line no-process-env -- SHELL is the OS login shell, not yaac config
     const shell = process.env.SHELL ?? '/bin/sh'

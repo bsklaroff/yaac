@@ -4,13 +4,13 @@
  *
  * The shell is a client of whatever server `server.json` names. Which one
  * is chosen on its own Servers page (servers-page.ts), shown when no server
- * is reachable and opened on request from the SPA or the tray. That page and
- * the tray also set up, start, stop and restart this machine's servers
- * through `brew` and the `yaac` CLI (local-setup.ts, server-control.ts), but
- * only when asked: Close hides to the tray, and Quit exits the shell and its
- * auth daemon and leaves the server running. While running it follows
- * `/events` to show waiting workspaces (dock badge, notifications) and
- * to hold the workspaces' port forwards.
+ * is reachable and opened on request from the SPA or the tray. On macOS that
+ * page and the tray also set up, start, stop and restart this machine's
+ * servers through `brew` and the `yaac` CLI (local-setup.ts,
+ * server-control.ts), but only when asked. Close hides to the tray, and Quit
+ * exits the shell and its auth daemon and leaves any server running. While
+ * running it follows `/events` to show waiting workspaces (badge,
+ * notifications) and to hold the workspaces' port forwards.
  */
 import { networkInterfaces } from 'node:os'
 import path from 'node:path'
@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url'
 import {
   app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, powerMonitor, screen, shell,
   systemPreferences, Tray,
-  utilityProcess, webContents, WebContentsView, type WebContents,
+  utilityProcess, webContents, WebContentsView, type NativeImage, type WebContents,
 } from 'electron'
 import { isLoopbackOrigin, resolveServerTarget } from '@yaac/shared/server-api'
 import {
@@ -30,7 +30,9 @@ import { AttentionMonitor, badgeText, notificationFor } from '#attention'
 import { startEventsMonitor, type EventsMonitor } from '@yaac/shared/events'
 import { startForwarder, type DesktopForwarder } from '#forwarder'
 import { probeIdentity, runFlow } from '#flow'
-import { CLUSTER_SUPPORTED, createSetupRunner, localView, onPath, setupConfirmation } from '#local-setup'
+import {
+  CLUSTER_SUPPORTED, MANAGES_LOCAL_INSTALLS, createSetupRunner, localView, onPath, setupConfirmation,
+} from '#local-setup'
 import { appMenuTemplate } from '#menu'
 import { splashUrl, type LaunchError } from '#messages'
 import { serversPageUrl } from '#servers-page'
@@ -44,7 +46,7 @@ import {
   restoreSelection, serverHealth, type ServerSwitchDeps,
 } from '#server-switch'
 import { backgroundColorFor } from '#theme-bg'
-import { buildTrayBitmap } from '#tray-icon'
+import { buildBadgeBitmap, buildTileBitmap, buildTrayBitmap } from '#tray-icon'
 import { canDiscardPreview, setPreviewFrozen, trackPreviewGuest } from '#preview-lifecycle'
 import { watchMemoryPressure } from '#memory-pressure'
 import { hardenGuestWebPreferences, isAllowedPreviewUrl, isSameOriginNavigation, sanitizeWebviewSrc } from '#webview-guard'
@@ -52,6 +54,9 @@ import { boundsVisibleOn, readWindowState, saveWindowState } from '#window-state
 import { createFsTransitionGuard, zoomAction } from '#window-zoom'
 
 app.setName('yaac')
+// Windows shows a notification only for an app ID its Start menu shortcut
+// registers. This is electron-builder.yml's appId, which the installer uses.
+if (process.platform === 'win32') app.setAppUserModelId('com.bsklaroff.yaac')
 
 // A second instance would run a second auth daemon, and the two would take
 // each other's socket on the server. It hands its launch to this one.
@@ -146,9 +151,14 @@ async function createWindow(): Promise<BrowserWindow> {
     title: 'yaac',
     show: false,
     backgroundColor: backgroundColorFor(nativeTheme.shouldUseDarkColors),
-    // The traffic lights are hidden too (setWindowButtonVisibility below); the
-    // SPA draws its own controls (WindowControls.tsx) and drag strips.
-    titleBarStyle: 'hidden',
+    /*
+     * On macOS the title bar and traffic lights are hidden
+     * (setWindowButtonVisibility below), and the SPA draws its own controls
+     * (WindowControls.tsx) and drag strips. Elsewhere the window keeps its
+     * native frame, with the menu bar hidden until Alt is pressed; its
+     * accelerators work either way.
+     */
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hidden' as const } : { autoHideMenuBar: true }),
     // The renderer is web content from the server: sandboxed, no Node.
     webPreferences: {
       contextIsolation: true,
@@ -367,16 +377,26 @@ function showWindow(): void {
   void openWindow()
 }
 
+/**
+ * The tray icon. macOS recolors a template glyph for its menu bar; Windows
+ * shows the glyph as drawn, so it follows the taskbar's light or dark theme;
+ * Linux gets the app icon's tile, which reads on any panel (tray-icon.ts).
+ */
+function trayImage(): NativeImage {
+  const bmp = process.platform === 'linux'
+    ? buildTileBitmap(36)
+    : buildTrayBitmap(36, process.platform === 'win32' && nativeTheme.shouldUseDarkColorsForSystemIntegratedUI ? 'white' : 'black')
+  const image = nativeImage.createFromBitmap(bmp.data, { width: bmp.width, height: bmp.height, scaleFactor: 2 })
+  if (process.platform === 'darwin') image.setTemplateImage(true)
+  return image
+}
+
 function createTray(): void {
-  const bmp = buildTrayBitmap(36)
-  const image = nativeImage.createFromBitmap(bmp.data, {
-    width: bmp.width, height: bmp.height, scaleFactor: 2,
-  })
-  image.setTemplateImage(true)
-  tray = new Tray(image)
+  tray = new Tray(trayImage())
   tray.setToolTip(app.name)
   updateTray()
   tray.on('click', () => showWindow())
+  if (process.platform === 'win32') nativeTheme.on('updated', () => tray?.setImage(trayImage()))
   setInterval(() => void refreshLocalServer(), LOCAL_SERVER_POLL_MS)
 }
 
@@ -397,6 +417,8 @@ function updateTray(): void {
     },
   }))
   const menu = Menu.buildFromTemplate([
+    // A Linux tray reports no clicks, so the window needs a menu item.
+    ...(process.platform === 'linux' ? [{ label: 'Show yaac', click: () => showWindow() }] : []),
     { label: 'Servers…', click: () => void openServersPage() },
     { type: 'separator' },
     ...serverItems,
@@ -414,6 +436,7 @@ function updateTray(): void {
  * describe the server from before the action.
  */
 function refreshLocalServer(): Promise<void> {
+  if (!MANAGES_LOCAL_INSTALLS) return Promise.resolve()
   refreshing ??= readLocalServerState().finally(() => { refreshing = null })
   return refreshing
 }
@@ -447,6 +470,7 @@ async function readLocalServerState(): Promise<void> {
  * steps its confirmation listed, which `setupCli` decided.
  */
 async function serverAction(scoped: ScopedAction, setupCli = false): Promise<DesktopServerOutcome> {
+  if (!MANAGES_LOCAL_INSTALLS) return { ok: false, error: LOCAL_INSTALLS_UNMANAGED }
   if (serverBusy) return { ok: false, error: 'a server action is already running' }
   const { scope, action } = scoped
   serverBusy = scoped
@@ -476,6 +500,8 @@ async function serverAction(scoped: ScopedAction, setupCli = false): Promise<Des
   return { ok: true }
 }
 
+const LOCAL_INSTALLS_UNMANAGED = 'the app manages local servers only on macOS'
+
 async function trayServerAction(scoped: ScopedAction): Promise<void> {
   const outcome = await serverAction(scoped)
   if (!outcome.ok) dialog.showErrorBox(`Could not ${scoped.action} the server`, outcome.error)
@@ -489,12 +515,29 @@ async function showingLocalServer(): Promise<boolean> {
   }
 }
 
+/**
+ * How many workspaces wait, on the dock icon (macOS), the launcher icon
+ * where a Linux desktop shows counts, or as a dot over the taskbar button
+ * (Windows, which has no count badge).
+ */
+function showBadge(waitingCount: number): void {
+  if (process.platform === 'darwin') app.dock?.setBadge(badgeText(waitingCount))
+  else if (process.platform === 'linux') app.setBadgeCount(waitingCount)
+  else if (win && !win.isDestroyed()) {
+    const dot = buildBadgeBitmap(32)
+    const image = waitingCount > 0
+      ? nativeImage.createFromBitmap(dot.data, { width: dot.width, height: dot.height, scaleFactor: 2 })
+      : null
+    win.setOverlayIcon(image, waitingCount > 0 ? `${waitingCount} waiting` : '')
+  }
+}
+
 function applyAttention(
   waitingCount: number,
   toNotify: WorkspaceListEntry[],
   projects: ProjectSummary[],
 ): void {
-  if (process.platform === 'darwin') app.dock?.setBadge(badgeText(waitingCount))
+  showBadge(waitingCount)
   if (!Notification.isSupported()) return
   for (const s of toNotify) {
     const n = new Notification(notificationFor(s, projects))
@@ -629,6 +672,7 @@ handleFromServersPage('server:local', () => Promise.resolve(localState()), { rea
 handleFromServersPage('server:setup', async (raw): Promise<DesktopServerOutcome> => {
   const scope = parseScope(raw)
   if (!scope) return { ok: false, error: 'invalid arguments' }
+  if (!MANAGES_LOCAL_INSTALLS) return { ok: false, error: LOCAL_INSTALLS_UNMANAGED }
   if (serverBusy) return { ok: false, error: 'a server action is already running' }
   if (localState().choices[scope].blocked === 'unsupported') return { ok: false, error: 'this Mac cannot run a local cluster' }
   // Probed afresh, since the run's steps follow from it and the cached read can be a minute old.
@@ -648,12 +692,11 @@ handleFromServersPage('server:setup-cancel', (): Promise<DesktopServerOutcome> =
   return Promise.resolve({ ok: true })
 })
 
-// Window controls from WindowControls.tsx, via the preload bridge.
+// Window controls from WindowControls.tsx (macOS only), via the preload bridge.
 ipcMain.on('window:minimize', () => win?.minimize())
 ipcMain.on('window:toggle-maximize', (_e, altKey: unknown) => {
   if (!win || fsGuard.active()) return
   const action = zoomAction({
-    platform: process.platform,
     altKey: altKey === true,
     isFullScreen: win.isFullScreen(),
     isMaximized: win.isMaximized(),
@@ -726,7 +769,7 @@ async function boot(): Promise<void> {
   // A connection held across a sleep is often dead without either end being
   // told, so reconnect on wake rather than waiting out the heartbeat.
   powerMonitor.on('resume', () => events?.reconnect())
-  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(findInFocusedPreview)))
+  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(findInFocusedPreview, process.platform)))
   // A failed boot still shows the Servers page, so the shell keeps running.
   await openWindow()
   createTray()
@@ -737,7 +780,7 @@ void app.whenReady().then(boot)
 // Dock icon click (macOS) and tray both reopen the hidden window.
 app.on('activate', () => showWindow())
 
-// Stay in the tray; quitting is explicit (tray Quit or Cmd-Q).
+// Stay in the tray; quitting is explicit (tray Quit, or the menu's Quit).
 app.on('window-all-closed', () => { /* stay in the tray */ })
 
 /*

@@ -48,6 +48,9 @@
     "desktop:package": "pnpm --filter @yaac/desktop app:build",
     "desktop:install": "pnpm --filter @yaac/desktop app:install",
     "desktop:release": "pnpm --filter @yaac/desktop app:release",
+    "desktop:release-mac": "pnpm --filter @yaac/desktop app:release-mac",
+    "desktop:release-linux": "pnpm --filter @yaac/desktop app:release-linux",
+    "desktop:release-win": "pnpm --filter @yaac/desktop app:release-win",
     "prepublishOnly": "pnpm build",
     "modularity": "tsx scripts/modularity.ts",
     "depcruise": "depcruise"

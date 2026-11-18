@@ -34,7 +34,13 @@ const DESKTOP = path.join(REPO, 'packages', 'desktop')
 const CLI = path.join(REPO, 'dist', 'cli.js')
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-desktop-gate-'))
 const CLIENT_DIR = `${DATA_DIR}-client`
-const ENV = { ...process.env, YAAC_DATA_DIR: DATA_DIR }
+const ENV = {
+  ...process.env,
+  YAAC_DATA_DIR: DATA_DIR,
+  // The app manages this machine's installs only on macOS; this covers that
+  // behavior on any platform.
+  YAAC_E2E_DESKTOP_LOCAL_INSTALLS: '1',
+}
 
 const yaac = (...args) => execFileSync('node', [CLI, ...args], { env: ENV, encoding: 'utf8' })
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))

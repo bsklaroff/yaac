@@ -35,7 +35,7 @@ export interface ServerSwitchDeps {
   tailnetUp(): boolean
 }
 
-export const TAILSCALE_DOWN = 'Tailscale does not seem to be running on this Mac; start it to reach a remote server.'
+export const TAILSCALE_DOWN = 'Tailscale does not seem to be running on this machine; start it to reach a remote server.'
 
 /**
  * Whether this machine seems to be on its tailnet: some interface holds a

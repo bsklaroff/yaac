@@ -7,8 +7,12 @@ import { fileURLToPath } from 'node:url'
 /**
  * Copy the built `.app` into /Applications (fallback ~/Applications) so the
  * Dock shortcut launches the latest build. Run after `pnpm app:build` (or via
- * `pnpm app:install`, which chains both).
+ * `pnpm app:install`, which chains both). macOS only: on Linux and Windows
+ * run the unpacked build in dist-app/, or install a release artifact.
  */
+if (process.platform !== 'darwin') {
+  throw new Error('desktop:install is macOS-only; run the build in dist-app/ or install a release artifact')
+}
 const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const outDir = path.join(pkgRoot, 'dist-app')
 

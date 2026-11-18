@@ -47,7 +47,14 @@ const REMOTE = process.env.REMOTE_URL
   ?? JSON.parse(fs.readFileSync(path.join(os.homedir(), '.yaac-client/server.json'), 'utf8')).url
 
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-remote-'))
-const ENV = { ...process.env, YAAC_DATA_DIR: DATA_DIR, YAAC_SERVER_PORT: process.env.YAAC_SERVER_PORT ?? '8890' }
+const ENV = {
+  ...process.env,
+  YAAC_DATA_DIR: DATA_DIR,
+  YAAC_SERVER_PORT: process.env.YAAC_SERVER_PORT ?? '8890',
+  // The app manages this machine's installs only on macOS; this covers that
+  // behavior on any platform.
+  YAAC_E2E_DESKTOP_LOCAL_INSTALLS: '1',
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 function yaac(...args) {
