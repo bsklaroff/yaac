@@ -203,6 +203,22 @@ const jsonRecord = <V>(key: string, keep: (v: unknown) => v is V): Persisted<Rec
 
 const isString = (v: unknown): v is string => typeof v === 'string'
 
+/** The type of each `PaneView` field, for checking a stored one. */
+const PANE_VIEW_FIELDS: Record<keyof PaneView, 'number' | 'string' | 'boolean' | 'strings'> = {
+  expanded: 'strings', scroll: 'number', topLine: 'number', find: 'string', showIgnored: 'boolean',
+  flat: 'boolean', collapsed: 'strings', openDiffs: 'strings', openCommits: 'strings',
+}
+
+function isPaneView(v: unknown): v is PaneView {
+  return !!v && typeof v === 'object' && !Array.isArray(v) && Object.entries(v).every(([field, value]) => {
+    const kind = PANE_VIEW_FIELDS[field as keyof PaneView] as string | undefined
+    return kind === 'strings' ? Array.isArray(value) && value.every(isString) : typeof value === kind
+  })
+}
+
+/** How many panes' view state is saved: the most recently changed. */
+const MAX_PERSISTED_PANE_VIEWS = 200
+
 function isChatDraft(v: unknown): v is ChatDraft {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return false
   const { text, sent } = v as { text?: unknown; sent?: unknown }
@@ -254,6 +270,10 @@ const PERSISTED: { [K in keyof UiState]?: Persisted<UiState[K]> } = {
   filePreview: flag('yaac.filepreview.v1'),
   chatFullWidth: flag('yaac.chatfullwidth.v1'),
   chatCondensed: flag('yaac.chatcondensed.v1'),
+  paneView: {
+    ...jsonRecord('yaac.paneview.v1', isPaneView),
+    serialize: (views) => JSON.stringify(Object.fromEntries(Object.entries(views).slice(-MAX_PERSISTED_PANE_VIEWS))),
+  },
   lastWorkspaceOf: jsonRecord('yaac.lastworkspace.v1', isString),
   lastProjectOf: jsonRecord('yaac.lastproject.v1', isString),
   // index.html reads this key before first paint, to avoid a theme flash.
@@ -314,13 +334,18 @@ export function mergeProvisioning(
 }
 
 /**
- * View state of a pane that unmounts when off-screen (the explorer and the
- * Changes pane), kept here so it survives: expanded folders, scroll
- * position, filter, and its toggles. In memory only.
+ * View state of a pane, kept here so it survives the pane unmounting (the
+ * explorer, Changes and Commits panes do when off-screen) and the page
+ * reloading: expanded folders, scroll position, filter, and its toggles.
  */
 export interface PaneView {
   expanded?: string[]
+  /** Pixels scrolled down (`useSavedScroll`); in a file pane, its rendered
+   *  markdown's. */
   scroll?: number
+  /** In a file pane: the line at the top of its editor. Its scroll is kept
+   *  as a line, since wrapped lines measure differently at another width. */
+  topLine?: number
   find?: string
   showIgnored?: boolean
   /** In the Changes pane: one row per file with its full path, not a
@@ -923,10 +948,10 @@ export const useUiStore = create<UiState>((set, get) => ({
   newWorkspace: null,
   stoppedExpanded: false,
   sidebarStatuses: [],
+  paneView: {},
   // Every saved field's default goes above this line, so a loaded value wins.
   ...loadPersisted(),
   activeTabs: {},
-  paneView: {},
   findPending: null,
   dirtyFiles: {},
   optimisticProvisioning: [],
@@ -1193,11 +1218,13 @@ export const useUiStore = create<UiState>((set, get) => ({
       ? s
       : { activeTabs: { ...s.activeTabs, [workspaceId]: target } }
   )),
+  // A changed entry moves to the newest end, which decides what is saved
+  // (MAX_PERSISTED_PANE_VIEWS).
   setPaneView: (key, patch) => set((s) => {
-    const cur = s.paneView[key] ?? {}
+    const { [key]: cur = {}, ...rest } = s.paneView
     const next = { ...cur, ...patch }
     const same = (Object.keys(patch) as Array<keyof PaneView>).every((k) => cur[k] === next[k])
-    return same ? s : { paneView: { ...s.paneView, [key]: next } }
+    return same ? s : { paneView: { ...rest, [key]: next } }
   }),
   setFindPending: (target) => set((s) => (
     s.findPending === target ? s : { findPending: target }
@@ -1329,8 +1356,9 @@ export const useUiStore = create<UiState>((set, get) => ({
   )),
 }))
 
-/** Fields that change on every keystroke, saved on a trailing timer. */
-const TYPED_FIELDS: readonly (keyof UiState)[] = ['chatDrafts', 'newWorkspace']
+/** Fields that change on every keystroke or scroll, saved on a trailing
+ *  timer. */
+const TYPED_FIELDS: readonly (keyof UiState)[] = ['chatDrafts', 'newWorkspace', 'paneView']
 
 // Save each persisted field as it changes, and mirror the selection into
 // the URL so a link is shareable.
@@ -1369,14 +1397,14 @@ function rememberSelection(s: UiState): void {
   }
 }
 
-/** Delay before saving typed text after a change. */
+/** Delay before saving a change to one of the TYPED_FIELDS. */
 const TYPED_PERSIST_MS = 400
 
 let draftTimer: ReturnType<typeof setTimeout> | undefined
 const unwrittenDrafts = new Set<keyof UiState>()
 
-/** Save any pending typed text now, e.g. when the page is closing. Does
- *  nothing if there is none. */
+/** Save any pending change to the TYPED_FIELDS now, e.g. when the page is
+ *  closing. Does nothing if there is none. */
 export function flushTypedText(): void {
   if (draftTimer !== undefined) {
     clearTimeout(draftTimer)
@@ -1401,7 +1429,7 @@ window.addEventListener('beforeunload', (e) => {
   const { dirtyFiles, newWorkspace } = useUiStore.getState()
   if (Object.keys(dirtyFiles).length > 0 || (newWorkspace !== null && formTooLongToKeep(newWorkspace))) e.preventDefault()
 })
-// Flush drafts on pagehide, and on a hidden visibilitychange, since some
+// Flush them on pagehide, and on a hidden visibilitychange, since some
 // mobile and bfcache paths skip pagehide.
 window.addEventListener('pagehide', flushTypedText)
 document.addEventListener('visibilitychange', () => {

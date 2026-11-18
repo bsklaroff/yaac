@@ -560,7 +560,11 @@ path.
 ### Explorer and Changes pane (`WorkspaceFiles`)
 
 Both unmount when off-screen. Each keeps its own view state (expanded or
-collapsed folders, scroll, filter, its toggles) in the store's `paneView`.
+collapsed folders, scroll, filter, its toggles) in the store's `paneView`,
+which localStorage keeps across reloads, so a server switch in the desktop
+or iOS shell (a reload of each origin) leaves it as it was. The scroll
+position (`useSavedScroll`) is put back as the rows and open diffs render,
+since after a reload they arrive later than the list itself.
 
 The changes and the listing come from `useWorkspaceChanges`, one query
 shared by the explorer, the Changes pane, the status bar and every file
@@ -695,7 +699,10 @@ The editor is CodeMirror via `ui/CodeEditor`. Its language comes from
 `#lib/highlight` (`languageForPath` → `editorLanguage`), which the diff view
 also uses, and its theme uses the app's CSS variables and the same `tok-*`
 colors as the diff. The pane stays mounted while hidden, like a terminal, so
-undo history, cursor and unsaved text survive.
+undo history, cursor and unsaved text survive. Across a reload it keeps only
+the line at the top of the editor, in its `paneView` entry: a line rather
+than a pixel offset, since wrapped lines measure differently at another
+width.
 
 `openFile` takes an optional line, from a file link in a terminal or the
 chat pane. The store holds it as `revealLine` until that file's editor has
@@ -768,7 +775,9 @@ choice is one saved store value (`filePreview`) for every file pane, like
 the diff mode. The preview draws the editor's current text, unsaved edits
 included, and the editor stays mounted underneath, hidden, so switching back
 keeps its undo history. While previewing, the header's find and diff
-controls are hidden, since they act on the editor.
+controls are hidden, since they act on the editor. A markdown preview's
+scroll position is kept across reloads beside the editor's top line, so a
+reload puts back whichever of the two is showing.
 
 **Markdown** renders in the pane (`MarkdownDocument`) with the chat pane's
 GFM, code blocks and inline code, styled as a document by the Tailwind

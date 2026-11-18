@@ -1,5 +1,5 @@
 import {
-  memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState,
+  memo, useCallback, useEffect, useMemo, useRef, useState,
   type ChangeEvent, type DragEvent, type JSX, type KeyboardEvent, type ReactNode,
 } from 'react'
 import clsx from 'clsx'
@@ -28,6 +28,7 @@ import { CHANGES_POLL_MS, useComparison, useWorkspaceChanges, useWorkspaceFiles 
 import { useCheckout } from '#lib/checkouts'
 import { useDiffFind, type DiffMatch } from '#lib/useDiffFind'
 import { usePinchSize } from '#lib/usePinchSize'
+import { useSavedScroll } from '#lib/useSavedScroll'
 import { IS_MAC } from '#lib/platform'
 import { paneTargets } from '#lib/layout'
 import { PHONE_TEXT_PX, focusRaisesKeyboard, useIsMobile } from '#lib/viewport'
@@ -328,17 +329,11 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
     }
   }
 
-  const listRef = useRef<HTMLDivElement | null>(null)
+  const [list, setList] = useState<HTMLDivElement | null>(null)
   useEffect(() => {
-    if (finder.moved) listRef.current?.querySelector('[data-find-current]')?.scrollIntoView({ block: 'center', inline: 'nearest' })
+    if (finder.moved) list?.querySelector('[data-find-current]')?.scrollIntoView({ block: 'center', inline: 'nearest' })
   }, [finder.moved])
-  const restoredScroll = useRef(false)
-  useLayoutEffect(() => {
-    const el = listRef.current
-    if (!el || restoredScroll.current || !tree) return
-    restoredScroll.current = true
-    el.scrollTop = useUiStore.getState().paneView[viewKey]?.scroll ?? 0
-  }, [viewKey, tree])
+  const onListScroll = useSavedScroll(viewKey, list)
 
   // ── create / rename / delete ────────────────────────────────────────
   const [selected, setSelected] = useState<Row | null>(null)
@@ -920,12 +915,12 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
       ) : (
         <ContextMenu.Root>
           <ContextMenu.Trigger
-            ref={listRef}
+            ref={setList}
             onContextMenuCapture={() => setContextRow(null)}
             // Clicking empty space clears the selection, so New file / New
             // folder target the root.
             onClick={(e) => { if (e.target === e.currentTarget) setSelected(null) }}
-            onScroll={(e) => setPaneView(viewKey, { scroll: e.currentTarget.scrollTop })}
+            onScroll={onListScroll}
             style={{ zoom }}
             {...pinch}
             className="min-h-0 flex-1 touch-pan-x touch-pan-y overflow-y-auto py-0.5"
