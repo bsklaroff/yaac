@@ -13,7 +13,7 @@ describe('installTerminalLinks', () => {
       providers.push(p)
       return register(p)
     })
-    const listFiles = vi.fn(() => Promise.resolve({ root: '/workspace', paths: [...PATHS] }))
+    const listFiles = vi.fn(() => Promise.resolve({ root: '/workspace', cwd: '', paths: [...PATHS] }))
     const openFile = vi.fn()
     const dispose = installTerminalLinks(term, { isMac: false, listFiles, openFile })
     // The web-links add-on and the path provider.

@@ -73,6 +73,7 @@ export function SessionPane({ workspace, session, paneTarget, visible, focused, 
         <WorkspaceTerminal
           workspaceId={workspaceId}
           target={sessionPtyTarget(session)}
+          cwd={session.cwd}
           visible={visible}
           {...(focusKey !== undefined && !tuiStarting ? { focusKey } : {})}
         />

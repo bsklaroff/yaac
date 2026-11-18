@@ -8,6 +8,7 @@ import {
   InlineBudget, fileLinksIn, imageDataUrl, linkedCheckoutPath, resolveFilePath, type CheckoutFiles, type FileRef,
 } from '#lib/files'
 import { languageForFence, type HighlightLanguage } from '#lib/highlight'
+import { usePaneCwd } from '#lib/checkouts'
 import { useUiStore } from '#lib/store'
 import { useWorkspaceFiles } from '#lib/useWorkspaceChanges'
 
@@ -36,18 +37,21 @@ export interface FileLinks extends CheckoutFiles {
 export const FileLinksContext = createContext<FileLinks | null>(null)
 
 /** File links that open the file pane, matched against the listing the
- *  changes poll keeps; null until it lands. */
-export function useFileLinks(workspaceId: string): FileLinks | null {
+ *  changes poll keeps, reading relative paths from `cwd` (`usePaneCwd`);
+ *  null until the listing lands. */
+export function useFileLinks(workspaceId: string, cwd?: string): FileLinks | null {
   const listing = useWorkspaceFiles(workspaceId)
+  const from = usePaneCwd(workspaceId, cwd)
   // Keyed on the fields links read, so a listing change elsewhere (its
   // ignored entries) does not re-render every link.
   const root = listing?.root
   const paths = listing?.paths
   return useMemo(() => root !== undefined && paths ? {
     root,
+    cwd: from,
     paths: new Set(paths),
     open: ({ path, line }) => useUiStore.getState().openFile(workspaceId, path, line),
-  } : null, [root, paths, workspaceId])
+  } : null, [root, from, paths, workspaceId])
 }
 
 const LINK_CLASS = 'text-link underline decoration-link/40 underline-offset-2 hover:decoration-link'

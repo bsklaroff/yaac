@@ -47,8 +47,12 @@ a plain click stays the app's, and the click forwarder never sends a
 modified click to it. A path counts only if it names a file in the
 checkout's listing (fetched at most every 15 s); an absolute path counts
 only under the listing's `root`, where the workspace sees the checkout,
-since that differs by driver. A file opens in the webapp's editor, at the line of a
-trailing `:line[:col]`.
+since that differs by driver. A relative path is read from the checkout
+the pane started in (a session's own `cwd`, else the workspace's), and
+failing that from `root`: in a workspace of several checkouts, a path more
+than one holds names that checkout's file, and another's is reached as
+`../web/x.ts` or `web/x.ts`. A shell that `cd`s elsewhere is not followed. A file opens in the webapp's editor, at the
+line of a trailing `:line[:col]`.
 
 ## The control client
 

@@ -122,7 +122,7 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
     useUiStore.getState().chatDrafts[chatDraftKey(workspaceId, conversationId)]?.sent,
   )
   const reconciledRef = useRef(false)
-  const fileLinks = useFileLinks(workspaceId)
+  const fileLinks = useFileLinks(workspaceId, session?.cwd)
   const usage = useMemo(() => contextUsage(events), [events])
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)

@@ -53,7 +53,7 @@ export function installTerminalLinks(
   term: Terminal,
   opts: {
     isMac: boolean
-    listFiles: () => Promise<{ root: string; paths: string[] } | undefined>
+    listFiles: () => Promise<{ root: string; cwd: string; paths: string[] } | undefined>
     openFile: (path: string, line?: number) => void
   },
 ): () => void {
@@ -65,12 +65,12 @@ export function installTerminalLinks(
   let fetchedAt = -Infinity
   let pending: Promise<CheckoutFiles> | null = null
   let known: CheckoutFiles | null = null
-  const none: CheckoutFiles = { root: '', paths: new Set() }
+  const none: CheckoutFiles = { root: '', cwd: '', paths: new Set() }
   const files = (): Promise<CheckoutFiles> => {
     if (!pending || Date.now() - fetchedAt > LISTING_TTL_MS) {
       fetchedAt = Date.now()
       pending = opts.listFiles().then(
-        (f) => (known = f ? { root: f.root, paths: new Set(f.paths) } : none),
+        (f) => (known = f ? { root: f.root, cwd: f.cwd, paths: new Set(f.paths) } : none),
         () => known ?? none,
       )
     }

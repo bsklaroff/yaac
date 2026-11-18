@@ -29,7 +29,7 @@ const stream = {
 }
 
 vi.mock('#lib/acp', () => ({ useAcpStream: () => stream }))
-const snapshot = vi.fn((): { driver: string; workspaces: Array<{ workspaceId: string; sessions: SessionEntry[] }> } | undefined => undefined)
+const snapshot = vi.fn((): { driver: string; workspaces: Array<{ workspaceId: string; cwd?: string; sessions: SessionEntry[] }> } | undefined => undefined)
 vi.mock('#lib/useSnapshot', () => ({ useSnapshot: () => snapshot() }))
 
 import { WorkspaceChat } from '#components/WorkspaceChat'
@@ -2208,6 +2208,23 @@ describe('WorkspaceChat file links', () => {
       ['w1', 'docs/b c.md', 3], ['w1', 'packages/a.ts', 100], ['w1', 'packages/a.ts', 40],
       ['w1', 'packages/a.ts', 8], ['w1', 'README.md', 5],
     ])
+  })
+
+  // A session opened in another checkout than the workspace's reads its
+  // relative paths from its own.
+  it('reads relative paths from the session\'s checkout, not the workspace\'s', async () => {
+    snapshot.mockReturnValue({ driver: 'k8s', workspaces: [{
+      workspaceId: 'w1', cwd: 'api', sessions: [sessionEntry({ conversationId: 'acp-1', cwd: 'web' })],
+    }] })
+    stream.events = [{ type: 'agent', seq: 0, content: [{ type: 'text', text: 'See README.md and ../api/README.md.' }] }]
+    show()
+    act(() => { client.setQueryData(filesKey('w1'), { ...listing, paths: ['api/README.md', 'web/README.md'] }) })
+    await waitFor(() => expect(screen.getAllByRole('link')).toHaveLength(2))
+    expect(screen.getAllByRole('link').map((l) => [l.textContent, l.getAttribute('title')])).toEqual([
+      ['README.md', 'web/README.md'],
+      ['../api/README.md', 'api/README.md'],
+    ])
+    snapshot.mockReturnValue(undefined)
   })
 
   it('opens the page a tool call names, in a new tab, but links no URL a message left unlinked', async () => {
