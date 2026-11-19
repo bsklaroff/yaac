@@ -110,7 +110,7 @@ and no port links. (Even with a listener on the server host, a browser would
 refuse a plain-http link to a `*.ts.net` name, which is on the browsers'
 HSTS preload list.) The iPhone app tells the webapp it can preview by giving
 its bridge an `openPreview` call (`windowApi()` in
-`packages/frontend/src/components/WindowControls.tsx`).
+`packages/frontend/src/lib/platform.ts`).
 
 The desktop app's preview pane loads the port's workspace hostname, so
 previews of different workspaces keep their cookies apart and a preview

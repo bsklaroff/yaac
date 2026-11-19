@@ -1,7 +1,6 @@
-import type { JSX, KeyboardEvent, PointerEvent } from 'react'
+import type { JSX, KeyboardEvent, PointerEvent, ReactNode } from 'react'
 import { SidebarIcon } from '#lib/icons'
 import { HomeSessionList } from '#components/home/HomeSessionList'
-import { YWindowControls } from '#ui'
 import type { HomeRow } from '#components/home/homeRows'
 import { ListBadges, ListTitle, WorkspaceList, type ProjectScope } from '#components/WorkspaceList'
 import { IS_MAC } from '#lib/platform'
@@ -14,7 +13,7 @@ import {
   MIN_SIDEBAR_WIDTH,
   useUiStore,
 } from '#lib/store'
-import { YButton, YMenu, YMenuItem, YMenuLabel, YMenuPopup, YSidebar, YSidebarNewSession } from '#ui'
+import { YButton, YMenu, YMenuItem, YMenuLabel, YMenuPopup, YSidebar, YSidebarNewSession, YTrafficLights } from '#ui'
 
 // The list body lives in WorkspaceList, shared with the mobile screen.
 // Re-exported for App's Alt+K/J row cycling and the tests.
@@ -95,15 +94,20 @@ function ResizeHandle(): JSX.Element {
 }
 
 /**
- * The sidebar, scoped by the rail. On a project: its name and actions, New
- * session, then its workspaces, groups, workflows, routines and sites in
- * the order WorkspaceList keeps. On Home (`home`): every project's sessions
- * in status sections, and New session asks which project.
+ * The sidebar, scoped by the rail. Its header spans the rail as well, from
+ * the window's left edge (after the traffic lights' room in the macOS
+ * desktop app), and the rail sits under it beside the list. On a project:
+ * its name and actions, New session, then its workspaces, groups,
+ * workflows, routines and sites in the order WorkspaceList keeps. On Home
+ * (`home`): every project's sessions in status sections, and New session
+ * asks which project.
  */
-export function Sidebar({ scope, connected, home }: {
+export function Sidebar({ scope, connected, home, rail }: {
   scope: ProjectScope
   connected: boolean
   home?: { rows: HomeRow[]; projects: ProjectSummary[] }
+  /** The project rail, which sits under the header beside the list. */
+  rail: ReactNode
 }): JSX.Element {
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
   const sidebarWidth = useUiStore((s) => s.sidebarWidth)
@@ -129,29 +133,28 @@ export function Sidebar({ scope, connected, home }: {
     : scope.projectId && <YSidebarNewSession kbd={kbd} onClick={() => openNewWorkspace({ projectId: scope.projectId ?? '' })} />
 
   return (
-    <YSidebar
-      width={sidebarWidth}
-      className="isolate"
-      header={
-        <div className="titlebar-drag flex h-bar shrink-0 items-center gap-2 border-b border-line pl-3 pr-1.5">
-          <YWindowControls className="mr-1" />
-          <div className="no-drag flex min-w-0 flex-1 items-center">
-            {home ? <span className="text-base font-semibold tracking-tight text-text">Home</span> : <ListTitle scope={scope} />}
-          </div>
-          <div className="no-drag flex shrink-0 items-center gap-1">
-            {!connected && <span className="text-sm text-warning">reconnecting…</span>}
-            <YButton variant="ghost" size="sm" icon={SidebarIcon} onClick={toggleSidebar} title="Hide sidebar" aria-label="Hide sidebar" />
-          </div>
+    <div className="flex shrink-0 flex-col">
+      <div className="titlebar-drag flex h-bar shrink-0 items-center gap-2 border-b border-r border-line bg-shell pl-3 pr-1.5">
+        <YTrafficLights />
+        <div className="no-drag flex min-w-0 flex-1 items-center">
+          {home ? <span className="text-base font-semibold tracking-tight text-text">Home</span> : <ListTitle scope={scope} />}
         </div>
-      }
-      newSession={newSession || undefined}
-    >
-      <ListBadges
-        projectIds={home ? home.projects.map((p) => p.id) : scope.projectId !== null ? [scope.projectId] : []}
-        className="px-1 pt-2"
-      />
-      {home ? <HomeSessionList rows={home.rows} projects={home.projects} /> : <WorkspaceList {...scope} />}
-      <ResizeHandle />
-    </YSidebar>
+        <div className="no-drag flex shrink-0 items-center gap-1">
+          {!connected && <span className="text-sm text-warning">reconnecting…</span>}
+          <YButton variant="ghost" size="sm" icon={SidebarIcon} onClick={toggleSidebar} title="Hide sidebar" aria-label="Hide sidebar" />
+        </div>
+      </div>
+      <div className="flex min-h-0 flex-1">
+        {rail}
+        <YSidebar width={sidebarWidth} className="isolate" newSession={newSession || undefined}>
+          <ListBadges
+            projectIds={home ? home.projects.map((p) => p.id) : scope.projectId !== null ? [scope.projectId] : []}
+            className="px-1 pt-2"
+          />
+          {home ? <HomeSessionList rows={home.rows} projects={home.projects} /> : <WorkspaceList {...scope} />}
+          <ResizeHandle />
+        </YSidebar>
+      </div>
+    </div>
   )
 }

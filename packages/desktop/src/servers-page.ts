@@ -236,9 +236,8 @@ export function serversPageHtml(state: ServersPageState): string {
         font-size: 13px;
       }
       /* On macOS the native title bar is hidden, so provide a drag strip
-         (elsewhere it is top padding). It has no close button, which is too
-         easy to hit by accident; the Window menu's Close still closes the
-         window. */
+         (elsewhere it is top padding), which the window's native traffic
+         lights sit over. */
       .titlebar { height: 38px; -webkit-app-region: drag; }
       main { max-width: 560px; margin: 0 auto; padding: 6px 24px 40px; }
       h1 { font-size: 15px; margin: 0 0 6px; }

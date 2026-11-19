@@ -33,7 +33,6 @@ export { YTip, YTooltip, YTooltipProvider } from './YTooltip'
 export {
   filterSuggestions, suggestionId, YSuggestionList, YTypeahead, type YTypeaheadItem,
 } from './YTypeahead'
-export { YWindowControls } from './YWindowControls'
 export type { YIconGlyph } from './types'
 export { YAgentText, YAsk, YComposer, YUserMessage, type YAskAction } from './YChat'
 export { YBars, YMachineCard, YMeter, YStatCard } from './YData'
@@ -43,6 +42,7 @@ export { YDetailCard, YDetailRow, YDetailsPanel, YPanel, YPanelHeader, YPanelTab
 export { YProjectCard, YProjectTile, type YProjectTileProps } from './YProject'
 export { YRowFrame, type YRowFrameProps } from './YRow'
 export { YSessionRow } from './YSessionRow'
-export { YShaderTile } from './YShaderTile'
+export { YLanes } from './YLanes'
+export { YTrafficLights } from './YTrafficLights'
 export { YPageBody, YSection, YSettingGroup, YSettingRow } from './YPage'
 export { YCallout } from './YCallout'

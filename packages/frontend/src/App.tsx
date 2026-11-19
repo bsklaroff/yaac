@@ -33,11 +33,12 @@ import { mergeProjectOps } from './lib/projectOps'
 import { WelcomePane } from './components/WelcomePane'
 import { MobileHeader } from './components/mobile/MobileHeader'
 import { StopWorkspaceDialog } from './components/StopWorkspaceDialog'
-import { YWindowControls } from '#ui'
 import { SettingsDialog } from './components/SettingsButton'
 import { HomePage } from './components/home/HomePage'
 import { homeListOrder, homeRows, projectActivity } from './components/home/homeRows'
 import { CommandPalette } from './shell/CommandPalette'
+import { YTrafficLights } from '#ui'
+import { ShowSidebarButton } from '#components/PaneBar'
 import type { WorkspaceListEntry } from '@yaac/shared/types'
 
 function App(): JSX.Element {
@@ -88,13 +89,13 @@ function App(): JSX.Element {
     )
   } else content = <Shell connected={connected} />
 
-  // In the macOS desktop shell the title bar is hidden and the window
-  // controls float over the UI. Full-screen states reserve a draggable
-  // strip for them; the workspace layout provides its own drag regions and
-  // clearance instead.
+  // In the macOS desktop shell the title bar is hidden and the traffic
+  // lights float over the UI. Full-screen states reserve a draggable bar
+  // for them; the workspace layout leaves them room in its own bars
+  // (YTrafficLights).
   return (
     <div className="flex h-full flex-col bg-shell">
-      {hidesTitleBar() && !authed && <div className="titlebar-drag h-7 shrink-0" aria-hidden="true" />}
+      {hidesTitleBar() && !authed && <div className="titlebar-drag h-bar shrink-0" aria-hidden="true" />}
       <div className="min-h-0 flex-1">{content}</div>
     </div>
   )
@@ -344,6 +345,18 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   const placeholder = projectOp
     ? <ProjectOpPane op={projectOp} />
     : snapshot && projects.length === 0 && !readOnly ? <WelcomePane /> : null
+  const rail = (
+    <ProjectRail
+      projects={projects}
+      ops={ops}
+      activeProjectId={activeProjectId}
+      attentionByProject={attention}
+      tiles={activity}
+      homeActive={homeOpen}
+      onHome={openHome}
+      onSelect={setActiveProject}
+    />
+  )
 
   return (
     // Desktop: rail and sidebar beside an inset workspace card. Mobile: three
@@ -369,17 +382,22 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
             onSelect={setActiveProject}
           />
         </MobileScreenLayer>
-      ) : (
-        <ProjectRail
-          projects={projects}
-          ops={ops}
-          activeProjectId={activeProjectId}
-          attentionByProject={attention}
-          tiles={activity}
-          homeActive={homeOpen}
-          onHome={openHome}
-          onSelect={setActiveProject}
-        />
+      ) : placeholder ? (
+        // Room above the rail for the traffic lights.
+        <div className="flex shrink-0 flex-col">
+          {hidesTitleBar() && <div aria-hidden className="titlebar-drag h-bar shrink-0" />}
+          <div className="flex min-h-0 flex-1">{rail}</div>
+        </div>
+      ) : !sidebarOpen && (
+        // The pane's top bar carries on over the rail, holding the button
+        // that shows the sidebar, or the traffic lights in the macOS
+        // desktop app (PaneBarLeading).
+        <div className="flex shrink-0 flex-col">
+          <div className="titlebar-drag flex h-bar shrink-0 items-center justify-center border-b border-line bg-surface">
+            {!hidesTitleBar() && <span className="no-drag"><ShowSidebarButton /></span>}
+          </div>
+          <div className="flex min-h-0 flex-1">{rail}</div>
+        </div>
       )}
 
       {isMobile ? (
@@ -395,12 +413,12 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
         </MobileScreenLayer>
       ) : placeholder ? (
         <div className="flex min-w-0 flex-1 flex-col bg-surface">
-          {/* The window controls the hidden sidebar's header would hold. */}
-          <YWindowControls className="h-bar px-3" />
+          {/* The bar the hidden sidebar's header would be, for the traffic lights. */}
+          <YTrafficLights className="h-bar w-full" />
           {placeholder}
         </div>
       ) : sidebarOpen && (
-        <Sidebar scope={scope} connected={connected} {...(home ? { home } : {})} />
+        <Sidebar scope={scope} connected={connected} rail={rail} {...(home ? { home } : {})} />
       )}
 
       {(isMobile || !placeholder) && <div

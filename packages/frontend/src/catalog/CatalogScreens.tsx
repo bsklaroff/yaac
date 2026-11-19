@@ -12,6 +12,12 @@ import { Item, Section } from './CatalogParts'
 
 const P = { yaac: { id: 'p-yaac', name: 'yaac' }, site: { id: 'p-site2', name: 'site' }, infra: { id: 'p-infra', name: 'infra' } }
 const noop = (): void => {}
+/* Tile pictures: one on a solid background of its own, which a working
+ * tile keys out, and one with none. */
+const svgUrl = (body: string): string =>
+  `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">${body}</svg>`)}`
+const opaqueIcon = svgUrl('<rect width="10" height="10" fill="#17171a"/><path d="M3 2v6M5 3v6M7 2v6" stroke="#6bc87f" stroke-width="1.2"/>')
+const transparentIcon = svgUrl('<circle cx="5" cy="5" r="3" fill="#e8e8f0"/>')
 
 export function ProjectsSection(): JSX.Element {
   return (
@@ -26,6 +32,14 @@ export function ProjectsSection(): JSX.Element {
           <YProjectTile id="r" name="relay" current />
           <YProjectTile id="y" name="yaac" current agents={2} />
           <YProjectTile id="m" name="mobile" lit />
+        </div>
+      </Item>
+      <Item name="YProjectTile · a picture: quiet, working, current and working; a transparent one working">
+        <div className="flex gap-2 bg-shell p-2">
+          <YProjectTile id="y" name="yaac" imageUrl={opaqueIcon} />
+          <YProjectTile id="y" name="yaac" imageUrl={opaqueIcon} agents={1} />
+          <YProjectTile id="y" name="yaac" imageUrl={opaqueIcon} agents={3} current />
+          <YProjectTile id="s" name="site" imageUrl={transparentIcon} agents={2} />
         </div>
       </Item>
       <Item name="YProjectRail">

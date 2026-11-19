@@ -17,19 +17,25 @@ const STROKES = [
 const MARK_COLOURS = ['#ff8a82', '#f29852', '#6bc87f', '#ad9eff']
 
 /**
- * The yaac mark in currentColor. `animation` draws the strokes in turn over
- * a faint copy of the mark (the loader and the working status); without it
- * the mark is still, and `colour` paints each stroke its logo colour.
- * Motion stops under reduced-motion.
+ * The yaac mark in currentColor. `animation` lights the mark over a faint
+ * copy of it: `draw` and `step` draw the strokes in turn, left to right
+ * (the loader and the working status), and `rise` moves soft bands of
+ * light steadily up the whole mark over a less faint copy (background
+ * work). Like the rail's lanes, these keep moving under the OS's
+ * reduced-motion setting: the motion is how a status says something is
+ * running, not decoration. Without `animation` the mark is still, and
+ * `colour` paints each stroke its logo colour.
  */
 export function YLogoMark({ height, animation, colour = false, className }: {
   height: number
-  animation?: 'draw' | 'step'
+  animation?: 'draw' | 'step' | 'rise'
   colour?: boolean
   className?: string
 }): JSX.Element {
   const stroke = (i: number): string => (colour ? MARK_COLOURS[i] : 'currentColor')
   const clip = useId()
+  const mask = useId()
+  const band = useId()
   return (
     <svg
       viewBox="-138.2 -150.3 276.4 325.3"
@@ -41,12 +47,33 @@ export function YLogoMark({ height, animation, colour = false, className }: {
       {/* The inner strokes run past the top edge; the clip cuts them flat. */}
       <defs>
         <clipPath id={clip}><rect x="-198.2" y="-150.3" width="396.4" height="385.3" /></clipPath>
+        {animation === 'rise' && (
+          <>
+            {/* Two bands, each the mark's height, lit in the middle and
+                dark for a short stretch at both ends, so sliding up by one
+                band loops without a seam. */}
+            <linearGradient id={band} x1="0" y1="0" x2="0" y2="1">
+              {[0, 0.06, 0.25, 0.44, 0.56, 0.75, 0.94, 1].map((offset) => (
+                <stop key={offset} offset={offset} stopColor="white" stopOpacity={offset === 0.25 || offset === 0.75 ? 1 : 0} />
+              ))}
+            </linearGradient>
+            <mask id={mask}>
+              <rect x="-198.2" y="-150.3" width="396.4" height="650.6" fill={`url(#${band})`} className="animate-logo-rise"
+                style={{ transformBox: 'fill-box' }} />
+            </mask>
+          </>
+        )}
       </defs>
       <g clipPath={`url(#${clip})`} fill="none" strokeWidth={34} strokeLinejoin="miter">
         {STROKES.map((points, i) => (
-          <polyline key={`b${i}`} points={points} stroke={stroke(i)} opacity={animation ? 0.18 : 1} />
+          <polyline key={`b${i}`} points={points} stroke={stroke(i)} opacity={animation === 'rise' ? 0.3 : animation ? 0.18 : 1} />
         ))}
-        {animation && STROKES.map((points, i) => (
+        {animation === 'rise' && (
+          <g mask={`url(#${mask})`}>
+            {STROKES.map((points, i) => <polyline key={i} points={points} stroke={stroke(i)} />)}
+          </g>
+        )}
+        {(animation === 'draw' || animation === 'step') && STROKES.map((points, i) => (
           <polyline
             key={i}
             points={points}

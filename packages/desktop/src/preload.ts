@@ -2,17 +2,12 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { env } from '@yaac/shared/env'
 
 /**
- * The IPC surface the renderer gets. The native traffic lights are hidden, so
- * the web UI's WindowControls.tsx drives the window over these channels.
- * contextIsolation keeps ipcRenderer itself out of the renderer.
+ * The IPC surface the renderer gets. contextIsolation keeps ipcRenderer
+ * itself out of the renderer.
  */
 contextBridge.exposeInMainWorld('yaacWindow', {
   // This app's build, which the SPA sends with feedback (docs/feedback.md).
   app: { kind: 'desktop', version: env.version, gitCommit: env.gitCommit },
-  minimize: () => ipcRenderer.send('window:minimize'),
-  // altKey selects the macOS Option-click zoom (maximize) instead of full screen.
-  toggleMaximize: (altKey?: boolean) => ipcRenderer.send('window:toggle-maximize', altKey === true),
-  close: () => ipcRenderer.send('window:close'),
   // Open a URL in the system browser (the preview's "open external" action).
   openExternal: (url: string) => ipcRenderer.send('window:open-external', url),
   // Show the shell's Servers page (the SPA's Servers button and server badge).

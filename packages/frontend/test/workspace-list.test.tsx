@@ -261,7 +261,7 @@ describe('WorkspaceList', () => {
     const bold = (title: string): boolean => screen.getByText(title).closest('.font-semibold') !== null
     expect(mark('Working')).toBe('Working')
     expect(mark('Watching')).toBe('Background work running')
-    expect(mark('Done')).toBe('Waiting')
+    expect(mark('Done')).toBe('Finished since you looked')
     expect(mark('Blocked')).toBe('Waiting for your answer')
     expect(['Working', 'Watching', 'Done', 'Blocked'].map(bold)).toEqual([false, false, true, true])
   })
@@ -616,7 +616,7 @@ describe('WorkspaceList', () => {
     // Each session row: its own name, agent and status.
     const row = rowOf('Reviewer')
     expect(row.textContent).toContain('Codex')
-    expect(within(row).getByRole('img', { name: 'Waiting' })).toBeTruthy()
+    expect(within(row).getByRole('img', { name: 'Finished since you looked' })).toBeTruthy()
     expect(screen.getByText('Reviewer').className).toContain('font-semibold')
     expect(within(rowOf('write the parser')).getByRole('img', { name: 'Working' })).toBeTruthy()
 

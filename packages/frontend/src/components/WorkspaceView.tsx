@@ -506,7 +506,8 @@ export function WorkspaceView({
   // A session's tab leads with its status, as its sidebar row does.
   const tabStatus = (t: string): ReactNode => {
     const session = isSessionTarget(t) ? paneSession(workspace, t) : undefined
-    const kind = session && statusKind(session.exited === true ? undefined : session.status, session.asking === true)
+    const kind = session && statusKind(session.exited === true ? undefined : session.status, session.asking === true,
+      isSessionUnread(session, me))
     return kind ? <YStatus kind={kind} /> : null
   }
   const renderTab = (

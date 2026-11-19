@@ -38,7 +38,7 @@ export function HomeSessionList({ rows, projects }: { rows: HomeRow[]; projects:
                 <div key={r.id}>
                   <YSessionRow
                     label={r.title}
-                    status={r.status}
+                    status={r.status === 'done' && r.unread ? 'unread' : r.status}
                     title={r.title}
                     {...(r.sub !== undefined ? { sub: r.sub } : {})}
                     project={project(r.projectId)}
@@ -48,7 +48,8 @@ export function HomeSessionList({ rows, projects }: { rows: HomeRow[]; projects:
                   />
                   {sessions.length > 1 && sessions.map((s) => {
                     const name = s.title ?? s.prompt?.split('\n')[0] ?? agentLabel(s.tool, s)
-                    const kind = statusKind(s.exited === true ? undefined : s.status, s.asking === true)
+                    const unread = isSessionUnread(s, me)
+                    const kind = statusKind(s.exited === true ? undefined : s.status, s.asking === true, unread)
                     return (
                       <YSessionRow
                         key={s.sessionId}
@@ -56,7 +57,7 @@ export function HomeSessionList({ rows, projects }: { rows: HomeRow[]; projects:
                         depth={1}
                         {...(kind !== undefined ? { status: kind } : {})}
                         title={name}
-                        strong={isSessionUnread(s, me) || s.asking === true}
+                        strong={unread || s.asking === true}
                         onSelect={() => {
                           select(r.projectId, r.id)
                           focusTerminal(r.id, sessionTarget(s.sessionId))

@@ -33,7 +33,7 @@ describe('WorkspacePreview', () => {
   it('opens the current address in the system browser', () => {
     const openExternal = vi.fn()
     ;(window as unknown as { yaacWindow?: unknown }).yaacWindow = {
-      minimize() {}, toggleMaximize() {}, close() {}, openExternal,
+      openExternal,
     }
     render(<WorkspacePreview workspaceId="abc" visible containerPort={5173} url="http://127.0.0.1:15173/" />)
     fireEvent.click(screen.getByRole('button', { name: 'Open in browser' }))

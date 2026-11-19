@@ -51,7 +51,6 @@ import { canDiscardPreview, setPreviewFrozen, trackPreviewGuest } from '#preview
 import { watchMemoryPressure } from '#memory-pressure'
 import { hardenGuestWebPreferences, isAllowedPreviewUrl, isSameOriginNavigation, sanitizeWebviewSrc } from '#webview-guard'
 import { boundsVisibleOn, readWindowState, saveWindowState } from '#window-state'
-import { createFsTransitionGuard, zoomAction } from '#window-zoom'
 
 app.setName('yaac')
 // Windows shows a notification only for an app ID its Start menu shortcut
@@ -78,8 +77,6 @@ let tray: Tray | null = null
 let quitting = false
 // Set once the user agrees to quit through a running setup.
 let quitCancelsSetup = false
-// Zoom clicks are ignored during a full-screen transition (see window-zoom.ts).
-const fsGuard = createFsTransitionGuard()
 let events: EventsMonitor | null = null
 let forwarder: DesktopForwarder | null = null
 // One monitor per server, kept across WS reconnects so ongoing waits don't
@@ -152,13 +149,15 @@ async function createWindow(): Promise<BrowserWindow> {
     show: false,
     backgroundColor: backgroundColorFor(nativeTheme.shouldUseDarkColors),
     /*
-     * On macOS the title bar and traffic lights are hidden
-     * (setWindowButtonVisibility below), and the SPA draws its own controls
-     * (WindowControls.tsx) and drag strips. Elsewhere the window keeps its
-     * native frame, with the menu bar hidden until Alt is pressed; its
-     * accelerators work either way.
+     * On macOS the title bar is hidden and the native traffic lights sit in
+     * the room the SPA leaves for them (YTrafficLights) at the left of its
+     * top bar, past the bar's 12px padding and centred in its 44px height.
+     * Elsewhere the window keeps its native frame, with the menu bar hidden
+     * until Alt is pressed; its accelerators work either way.
      */
-    ...(process.platform === 'darwin' ? { titleBarStyle: 'hidden' as const } : { autoHideMenuBar: true }),
+    ...(process.platform === 'darwin'
+      ? { titleBarStyle: 'hidden' as const, trafficLightPosition: { x: 12, y: 16 } }
+      : { autoHideMenuBar: true }),
     // The renderer is web content from the server: sandboxed, no Node.
     webPreferences: {
       contextIsolation: true,
@@ -174,10 +173,6 @@ async function createWindow(): Promise<BrowserWindow> {
       plugins: true,
     },
   })
-  if (process.platform === 'darwin') w.setWindowButtonVisibility(false)
-  fsGuard.settle()
-  w.on('enter-full-screen', () => fsGuard.settle())
-  w.on('leave-full-screen', () => fsGuard.settle())
   // Only the shell moves the window to another origin (loadURL fires no
   // will-navigate), so the preload bridge stays with the pages it loaded.
   w.webContents.on('will-navigate', (e, url) => {
@@ -692,22 +687,6 @@ handleFromServersPage('server:setup-cancel', (): Promise<DesktopServerOutcome> =
   return Promise.resolve({ ok: true })
 })
 
-// Window controls from WindowControls.tsx (macOS only), via the preload bridge.
-ipcMain.on('window:minimize', () => win?.minimize())
-ipcMain.on('window:toggle-maximize', (_e, altKey: unknown) => {
-  if (!win || fsGuard.active()) return
-  const action = zoomAction({
-    altKey: altKey === true,
-    isFullScreen: win.isFullScreen(),
-    isMaximized: win.isMaximized(),
-  })
-  if (action === 'enter-full-screen' || action === 'exit-full-screen') {
-    fsGuard.begin()
-    win.setFullScreen(action === 'enter-full-screen')
-  } else if (action === 'unmaximize') win.unmaximize()
-  else win.maximize()
-})
-ipcMain.on('window:close', () => win?.close())
 // The SPA's Servers button and server badge, which can only be clicked in
 // a focused window, so a page cannot use it to raise a hidden one.
 ipcMain.on('window:show-servers', (e) => {

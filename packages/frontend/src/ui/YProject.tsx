@@ -1,7 +1,8 @@
 import { useState, type JSX, type ReactNode } from 'react'
 import { cn } from './cn'
 import { identityFamily, identityInitial, identityStyle } from './identity'
-import { YShaderTile } from './YShaderTile'
+import { useKeyedPicture } from './keyedPicture'
+import { YLanes } from './YLanes'
 import { YStatus } from './YStatus'
 
 /*
@@ -11,7 +12,7 @@ import { YStatus } from './YStatus'
 export interface YProjectTileProps {
   id: string
   name: string
-  /** A picture to show instead of the initial. */
+  /** A picture to fill the tile instead of the initial. */
   imageUrl?: string
   size?: number
   /** Agents working: the lanes run, faster with more (up to three). */
@@ -31,7 +32,10 @@ export interface YProjectTileProps {
 /**
  * A project's tile. Colour only when something is going on: a quiet
  * project is a softened initial; one that is working, waiting or failed
- * sits on its family's tint; the current or hovered one is solid.
+ * sits on its family's tint; the current or hovered one is solid. A
+ * picture fills the tile; while agents work, its own background is keyed
+ * out (keyedPicture) and the lanes run behind it in the dark or light
+ * shades that background had.
  */
 export function YProjectTile({ id, name, imageUrl, size = 38, agents = 0, waiting = 0, failed = false, current = false, lit = false, notch = true, className }: YProjectTileProps): JSX.Element {
   const family = identityFamily(id)
@@ -41,6 +45,9 @@ export function YProjectTile({ id, name, imageUrl, size = 38, agents = 0, waitin
   // A picture that fails to load falls back to the initial, until the URL changes.
   const [failedUrl, setFailedUrl] = useState<string | null>(null)
   const picture = imageUrl !== undefined && imageUrl !== failedUrl ? imageUrl : undefined
+  const keyed = useKeyedPicture(agents > 0 ? picture : undefined)
+  // Until the key is worked out, the picture covers the lanes as it is.
+  const scheme = keyed ? (keyed.dark ? 'dark' : 'light') : undefined
   return (
     <span
       className={cn('relative inline-flex shrink-0 items-center justify-center font-semibold leading-none', className)}
@@ -53,12 +60,14 @@ export function YProjectTile({ id, name, imageUrl, size = 38, agents = 0, waitin
       }}
     >
       {agents > 0 && (
-        <span className="absolute inset-0 overflow-hidden">
-          <YShaderTile family={family} seedKey={id} size={size} rate={agents} bright={solid} />
+        // data-theme, not an inline color-scheme: the tokens resolve
+        // light-dark() where they are declared, which [data-theme] repeats.
+        <span className="absolute inset-0" data-theme={scheme}>
+          <YLanes family={family} seedKey={id} size={size} rate={agents} bright={solid && !picture} />
         </span>
       )}
       {picture
-        ? <img src={picture} alt="" onError={() => setFailedUrl(picture)} className="relative h-[70%] w-[70%] object-contain" />
+        ? <img src={keyed?.src ?? picture} alt="" onError={() => setFailedUrl(picture)} className="absolute inset-0 h-full w-full object-cover" />
         : <span className="relative" style={{ opacity: active ? 1 : 0.55 }}>{identityInitial(name)}</span>}
       {current && notch && (
         <span aria-hidden className="absolute -right-px top-1/2 -mt-[5px] h-0 w-0 border-y-[5px] border-r-[5px] border-y-transparent border-r-shell" />
